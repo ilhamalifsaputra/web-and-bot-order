@@ -6824,6 +6824,32 @@ describe("H-4 — passwordHash never leaks into admin JSON responses", () => {
     expectNoLeak(res);
   });
 
+  it("GET /api/users/:userId sends real totals (T3) alongside the capped Orders/Tickets/Wallet Ledger lists", async () => {
+    const web = await makeWebBuyer("h4users3");
+    await createOrderDirect(prisma, { user: web, productId: seed.productId, quantity: 1 });
+    await createTicket(prisma, web.id, "first ticket");
+    await createTicket(prisma, web.id, "second ticket");
+    await post(`/api/users/${web.id}/wallet`, seed.cookie, { csrf_token: seed.csrf, delta: "5.00", note: "one" });
+    await post(`/api/users/${web.id}/wallet`, seed.cookie, { csrf_token: seed.csrf, delta: "2.00", note: "two" });
+
+    const res = await get(`/api/users/${web.id}`, seed.cookie);
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body) as {
+      orders: unknown[];
+      ordersTotal: number;
+      tickets: unknown[];
+      ticketsTotal: number;
+      ledger: unknown[];
+      ledgerTotal: number;
+    };
+    expect(body.ordersTotal).toBe(1);
+    expect(body.orders.length).toBe(1);
+    expect(body.ticketsTotal).toBe(2);
+    expect(body.tickets.length).toBe(2);
+    expect(body.ledgerTotal).toBe(2);
+    expect(body.ledger.length).toBe(2);
+  });
+
   it("GET /api/orders never exposes the buyer's passwordHash or email", async () => {
     const web = await makeWebBuyer("h4orders1");
     await createOrderDirect(prisma, { user: web, productId: seed.productId, quantity: 1 });
@@ -7034,6 +7060,56 @@ describe("restock waitlist", () => {
     const detail = await get(`/api/stock/${seed.productId}`, seed.cookie);
     expect(detail.statusCode).toBe(200);
     expect((JSON.parse(detail.body) as { waiting: number }).waiting).toBe(before + 1);
+  });
+});
+
+// ---- shared low-stock threshold (T3) --------------------------------------
+
+describe("shared low-stock threshold", () => {
+  it("GET /api/stock sends the shared config threshold for the client to use", async () => {
+    const res = await get("/api/stock", seed.cookie);
+    expect(res.statusCode).toBe(200);
+    expect((JSON.parse(res.body) as { lowStockThreshold: number }).lowStockThreshold).toBe(
+      config.LOW_STOCK_THRESHOLD,
+    );
+  });
+
+  it("GET /api/stock/export's Status column is Low Stock at exactly the threshold (<=, not <5)", async () => {
+    // Deliberate behavior change from the old hard-coded `<5`: with the
+    // shared config default of 3, a denomination sitting at exactly 3
+    // available is Low Stock (3 <= 3), and one at 4 is already back to In
+    // Stock (4 > 3) — neither would have been true under the old `<5` rule.
+    const cat = await createCategory(prisma, `ThresholdCat${counter++}`);
+    const parent = await createCatalogProduct(prisma, { categoryId: cat.id, name: "ThresholdProd", description: "x" });
+    const atThreshold = await createDenomination(prisma, {
+      productId: parent.id,
+      name: "AtThreshold",
+      type: ProductType.SHARED,
+      durationLabel: "AtThreshold",
+      price: "5.00",
+      description: "x",
+    });
+    const aboveThreshold = await createDenomination(prisma, {
+      productId: parent.id,
+      name: "AboveThreshold",
+      type: ProductType.SHARED,
+      durationLabel: "AboveThreshold",
+      price: "5.00",
+      description: "x",
+    });
+    expect(config.LOW_STOCK_THRESHOLD).toBe(3);
+    for (let i = 0; i < config.LOW_STOCK_THRESHOLD; i++) {
+      await prisma.stockItem.create({ data: { productId: atThreshold.id, credentials: `at-${i}@e.com:p`, status: "AVAILABLE" } });
+    }
+    for (let i = 0; i < config.LOW_STOCK_THRESHOLD + 1; i++) {
+      await prisma.stockItem.create({ data: { productId: aboveThreshold.id, credentials: `above-${i}@e.com:p`, status: "AVAILABLE" } });
+    }
+
+    const res = await get("/api/stock/export", seed.cookie);
+    const rows = res.body.split("\r\n");
+    const statusOf = (name: string) => rows.find((r) => r.startsWith(`${name},`))!.split(",").pop();
+    expect(statusOf("AtThreshold")).toBe("Low Stock");
+    expect(statusOf("AboveThreshold")).toBe("In Stock");
   });
 });
 

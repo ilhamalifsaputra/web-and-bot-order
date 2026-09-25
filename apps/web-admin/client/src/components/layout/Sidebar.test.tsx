@@ -11,7 +11,7 @@ function LocationDisplay() {
   return <span data-testid="location">{location.pathname}</span>;
 }
 
-function renderSidebar() {
+function renderSidebar(inventory: unknown[] = []) {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (path: string) => {
@@ -35,7 +35,7 @@ function renderSidebar() {
         };
       }
       if (path === "/api/dashboard/inventory") {
-        return { ok: true, json: async () => [] };
+        return { ok: true, json: async () => inventory };
       }
       return { ok: true, json: async () => ({}) };
     }),
@@ -73,6 +73,19 @@ describe("Sidebar", () => {
     await waitFor(() => expect(screen.getAllByText("Orders").length).toBeGreaterThan(0));
     expect(screen.queryByText("Awaiting Fulfillment")).not.toBeInTheDocument();
     expect(screen.getAllByText("Orders")[0]!.closest("a")).toHaveAttribute("href", "/orders");
+  });
+
+  it("counts a row sitting exactly at the shared threshold as low stock (<=, not <)", async () => {
+    // Every row /api/dashboard/inventory returns already satisfies
+    // available <= threshold — a `< threshold` badge filter would silently
+    // drop a row sitting exactly at the threshold.
+    renderSidebar([
+      { denominationId: 1, productName: "AtThreshold", available: 3, threshold: 3 },
+      { denominationId: 2, productName: "BelowThreshold", available: 1, threshold: 3 },
+    ]);
+    await waitFor(() => expect(screen.getAllByText("Stock").length).toBeGreaterThan(0));
+    const stockLink = screen.getAllByText("Stock")[0]!.closest("a")!;
+    await waitFor(() => expect(stockLink).toHaveTextContent("2"));
   });
 
   it("logs out via POST /logout and navigates to /login on click (F-002)", async () => {

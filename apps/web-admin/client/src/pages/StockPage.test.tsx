@@ -19,29 +19,35 @@ const DENOM_HEALTHY = {
   id: 10,
   name: "1 Month",
   isActive: true,
+  deliveryType: "auto",
   product: { id: 1, name: "CapCut Pro", category: { id: 1, name: "Apps" } },
 };
 const DENOM_LOW = {
   id: 20,
   name: "3 Months",
   isActive: true,
+  deliveryType: "auto",
   product: { id: 2, name: "Netflix Premium", category: { id: 2, name: "Streaming" } },
 };
 const DENOM_OUT = {
   id: 30,
   name: "1 Year",
   isActive: true,
+  deliveryType: "auto",
   product: { id: 3, name: "Spotify", category: { id: 2, name: "Streaming" } },
 };
 
 const STOCK_DATA = {
   denominations: [DENOM_HEALTHY, DENOM_LOW, DENOM_OUT],
   counts: {
+    // Threshold is 3 (STOCK_DATA's lowStockThreshold below) — 8 is healthy,
+    // 3 sits exactly at the threshold (low, per the shared `<=` rule), 0 is out.
     "10": { available: 8, reserved: 1, sold: 1, dead: 0 },
     "20": { available: 3, reserved: 0, sold: 7, dead: 0 },
     "30": { available: 0, reserved: 0, sold: 5, dead: 0 },
   },
   waiting: { "30": 2 },
+  lowStockThreshold: 3,
 };
 
 function mockStock(data: unknown = STOCK_DATA) {
@@ -87,27 +93,126 @@ describe("StockPage", () => {
     // so "Low Stock"/"Out of Stock" don't ambiguously match a row's badge too.
     const kpiRow = screen.getByText("Total SKU").closest('[data-slot="card"]')!.parentElement as HTMLElement;
     expect(tileValue(kpiRow, "Total SKU")).toBe("3");
-    expect(tileValue(kpiRow, "Available")).toBe("2");
+    expect(tileValue(kpiRow, "In stock (SKUs)")).toBe("2");
     expect(tileValue(kpiRow, "Low Stock")).toBe("1");
     expect(tileValue(kpiRow, "Out of Stock")).toBe("1");
   });
 
-  it("shows a status badge and the ready/total ratio for every row", async () => {
+  it("shows a loading skeleton in the KPI tiles, never a real-looking 0, while the fetch is in flight", async () => {
+    let resolveFetch!: (r: Response) => void;
+    vi.spyOn(globalThis, "fetch").mockReturnValueOnce(
+      new Promise<Response>((resolve) => { resolveFetch = resolve; }),
+    );
+    render(<StockPage />, { wrapper: Wrapper });
+
+    const kpiRow = screen.getByText("Total SKU").closest('[data-slot="card"]')!.parentElement as HTMLElement;
+    expect(tileValue(kpiRow, "Total SKU")).toBeNull();
+    expect(screen.queryByText("0", { selector: ".font-display" })).not.toBeInTheDocument();
+
+    resolveFetch(new Response(JSON.stringify(STOCK_DATA), { status: 200, headers: { "Content-Type": "application/json" } }));
+    await waitFor(() => expect(tileValue(kpiRow, "Total SKU")).toBe("3"));
+  });
+
+  it("shows a status badge and the ready-count for every row (S-UI: no percentage bar)", async () => {
     mockStock();
     render(<StockPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("1 Month")).toBeInTheDocument());
 
     const healthyRow = screen.getByText("1 Month").closest("tr")!;
     expect(within(healthyRow).getByText("In Stock")).toBeInTheDocument();
-    expect(within(healthyRow).getByText("8 / 10 Ready")).toBeInTheDocument();
+    expect(within(healthyRow).getByText("8 ready")).toBeInTheDocument();
+    expect(healthyRow.textContent).toContain("1 reserved");
 
     const lowRow = screen.getByText("3 Months").closest("tr")!;
     expect(within(lowRow).getByText("Low Stock")).toBeInTheDocument();
-    expect(within(lowRow).getByText("3 / 10 Ready")).toBeInTheDocument();
+    expect(within(lowRow).getByText("3 ready")).toBeInTheDocument();
 
     const outRow = screen.getByText("1 Year").closest("tr")!;
     expect(within(outRow).getByText("Out Of Stock")).toBeInTheDocument();
-    expect(within(outRow).getByText("0 / 5 Ready")).toBeInTheDocument();
+    // Sold out, not "No stock added" — this SKU has sold 5 units historically.
+    expect(within(outRow).getByText("Sold out")).toBeInTheDocument();
+  });
+
+  it("Stock column shows 'No stock added' only for a SKU that has never held a stock row", async () => {
+    const neverStocked = {
+      id: 40,
+      name: "Lifetime",
+      isActive: true,
+      deliveryType: "auto",
+      product: { id: 4, name: "CapCut Pro", category: { id: 1, name: "Apps" } },
+    };
+    mockStock({
+      ...STOCK_DATA,
+      denominations: [...STOCK_DATA.denominations, neverStocked],
+      counts: { ...STOCK_DATA.counts, "40": { available: 0, reserved: 0, sold: 0, dead: 0 } },
+    });
+    render(<StockPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Lifetime")).toBeInTheDocument());
+
+    const row = screen.getByText("Lifetime").closest("tr")!;
+    expect(within(row).getByText("No stock added")).toBeInTheDocument();
+    // Never having held stock is still "out of stock" from a Status-column
+    // perspective — only the Stock column's wording distinguishes it from
+    // "Sold out".
+    expect(within(row).getByText("Out Of Stock")).toBeInTheDocument();
+  });
+
+  it("gives a manual-delivery SKU a Manual badge, excludes it from the Out of Stock tile, and never shows Download Credentials for it", async () => {
+    const manualDenom = {
+      id: 50,
+      name: "Custom Rank Boost",
+      isActive: true,
+      deliveryType: "manual",
+      product: { id: 5, name: "Mobile Legends", category: { id: 1, name: "Apps" } },
+    };
+    mockStock({
+      ...STOCK_DATA,
+      denominations: [...STOCK_DATA.denominations, manualDenom],
+      // Manual SKUs never hold stock rows — no counts entry for id 50 at all.
+    });
+    render(<StockPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Custom Rank Boost")).toBeInTheDocument());
+
+    const kpiRow = screen.getByText("Total SKU").closest('[data-slot="card"]')!.parentElement as HTMLElement;
+    // Total SKU includes the manual SKU; Out of Stock does not.
+    expect(tileValue(kpiRow, "Total SKU")).toBe("4");
+    expect(tileValue(kpiRow, "Out of Stock")).toBe("1");
+
+    const row = screen.getByText("Custom Rank Boost").closest("tr")!;
+    expect(within(row).getByText("Manual")).toBeInTheDocument();
+    expect(within(row).queryByText("Out Of Stock")).not.toBeInTheDocument();
+    expect(within(row).getByText("No stock added")).toBeInTheDocument();
+
+    const user = userEvent.setup();
+    await user.click(within(row).getByRole("button", { name: "Actions for Custom Rank Boost" }));
+    const menu = await screen.findByRole("menu");
+    expect(within(menu).queryByText("Download Credentials")).not.toBeInTheDocument();
+  });
+
+  it("gives an inactive SKU an Inactive badge and excludes it from every KPI tile", async () => {
+    const inactiveDenom = {
+      id: 60,
+      name: "Discontinued Plan",
+      isActive: false,
+      deliveryType: "auto",
+      product: { id: 6, name: "Old App", category: { id: 1, name: "Apps" } },
+    };
+    mockStock({
+      ...STOCK_DATA,
+      denominations: [...STOCK_DATA.denominations, inactiveDenom],
+      counts: { ...STOCK_DATA.counts, "60": { available: 9, reserved: 0, sold: 0, dead: 0 } },
+    });
+    render(<StockPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Discontinued Plan")).toBeInTheDocument());
+
+    const kpiRow = screen.getByText("Total SKU").closest('[data-slot="card"]')!.parentElement as HTMLElement;
+    // The inactive row's 9-available stock never inflates Total SKU or In stock (SKUs).
+    expect(tileValue(kpiRow, "Total SKU")).toBe("3");
+    expect(tileValue(kpiRow, "In stock (SKUs)")).toBe("2");
+
+    const row = screen.getByText("Discontinued Plan").closest("tr")!;
+    expect(within(row).getByText("Inactive")).toBeInTheDocument();
+    expect(within(row).queryByText("In Stock")).not.toBeInTheDocument();
   });
 
   it("labels the column 'Restock requests' with an explanatory tooltip, and shows the count only while the SKU is out of stock", async () => {

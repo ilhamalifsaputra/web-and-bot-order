@@ -18,7 +18,6 @@ import {
 import { Boxes, Eye, Download, MoreVertical } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { SearchBar } from "../components/shared/SearchBar";
-import { ProgressBar } from "../components/shared/ProgressBar";
 import { StatusBadge } from "../components/shared/StatusBadge";
 import { RestockRequestsHeader } from "../components/shared/RestockRequestsHeader";
 import { apiGet } from "../api/client";
@@ -28,6 +27,9 @@ interface DenominationRow {
   id: number;
   name: string;
   isActive: boolean;
+  /** "auto" = fulfilled from stock rows; anything else (manual/form) never
+   *  holds stock, so it must never be scored against the stock tiers below. */
+  deliveryType: string;
   product: {
     id: number;
     name: string;
@@ -35,21 +37,41 @@ interface DenominationRow {
   } | null;
 }
 
+interface StockCounts {
+  available: number;
+  reserved: number;
+  sold: number;
+  dead: number;
+}
+
 interface StockData {
   denominations: DenominationRow[];
-  counts: Record<string, { available: number; reserved: number; sold: number; dead: number }>;
+  counts: Record<string, StockCounts>;
   waiting: Record<string, number>;
+  /** config.LOW_STOCK_THRESHOLD — the single shared source for "low stock"
+   *  across this page, the sidebar badge, and the dashboard's Critical Stock
+   *  card (see apps/web-admin/src/routes/api/stock.ts). */
+  lowStockThreshold: number;
 }
 
 type AvailabilityFilter = "all" | "in-stock" | "low" | "out";
 type SortMode = "name" | "available-asc" | "category";
 
-/** The three mutually-exclusive stock tiers a denomination can be in — the
- *  single source of truth for the KPI counts, the Availability filter, and
- *  the Status column, so the `<5`/`===0` thresholds only live in one place. */
-function stockTier(available: number): "out" | "low" | "healthy" {
+/** The mutually-exclusive states a denomination row can be in — the single
+ *  source of truth for the KPI counts, the Availability filter, and the
+ *  Status column, so the shared threshold and the manual/inactive carve-outs
+ *  only live in one place.
+ *
+ *  "manual"/"inactive" are deliberately never "out": a manual-delivery SKU
+ *  never holds stock rows (it's hand-fulfilled), so scoring it against the
+ *  stock tiers would always read "Out of Stock" for a SKU that was never
+ *  meant to carry stock at all. An inactive SKU is excluded from the KPI
+ *  tiles entirely regardless of delivery type. */
+function stockTier(row: DenominationRow, available: number, threshold: number): "inactive" | "manual" | "out" | "low" | "healthy" {
+  if (!row.isActive) return "inactive";
+  if (row.deliveryType !== "auto") return "manual";
   if (available === 0) return "out";
-  if (available < 5) return "low";
+  if (available <= threshold) return "low";
   return "healthy";
 }
 
@@ -106,10 +128,19 @@ export function StockPage() {
     .map(([id, name]) => ({ id, name }))
     .sort((a, b) => a.name.localeCompare(b.name));
 
-  const totalSku = denominations.length;
-  const availableCount = denominations.filter((d) => (counts[String(d.id)]?.available ?? 0) > 0).length;
-  const lowStockCount = denominations.filter((d) => stockTier(counts[String(d.id)]?.available ?? 0) === "low").length;
-  const outOfStockCount = denominations.filter((d) => stockTier(counts[String(d.id)]?.available ?? 0) === "out").length;
+  const lowStockThreshold = data?.lowStockThreshold ?? 0;
+  const tierOf = (d: DenominationRow) => stockTier(d, counts[String(d.id)]?.available ?? 0, lowStockThreshold);
+
+  // Inactive SKUs are excluded from every tile below (they're not part of the
+  // live catalog); manual-delivery SKUs count toward Total SKU but never
+  // toward the stock-tier tiles (Available/Low/Out) — they never hold stock
+  // rows, so scoring them against those tiers would always read "out".
+  const activeDenominations = denominations.filter((d) => d.isActive);
+  const stockTrackedDenominations = activeDenominations.filter((d) => d.deliveryType === "auto");
+  const totalSku = activeDenominations.length;
+  const availableCount = stockTrackedDenominations.filter((d) => tierOf(d) === "healthy" || tierOf(d) === "low").length;
+  const lowStockCount = stockTrackedDenominations.filter((d) => tierOf(d) === "low").length;
+  const outOfStockCount = stockTrackedDenominations.filter((d) => tierOf(d) === "out").length;
 
   const hasActiveFilter =
     !!filter || categoryFilter !== "all" || availabilityFilter !== "all" || sortBy !== "name";
@@ -131,10 +162,10 @@ export function StockPage() {
     .filter((d) => categoryFilter === "all" || String(d.product?.category?.id) === categoryFilter)
     .filter((d) => {
       if (availabilityFilter === "all") return true;
-      const available = counts[String(d.id)]?.available ?? 0;
-      if (availabilityFilter === "in-stock") return available > 0;
-      if (availabilityFilter === "low") return stockTier(available) === "low";
-      return stockTier(available) === "out";
+      const tier = tierOf(d);
+      if (availabilityFilter === "in-stock") return tier === "healthy" || tier === "low";
+      if (availabilityFilter === "low") return tier === "low";
+      return tier === "out";
     })
     .sort((a, b) => compareRows(a, b, sortBy, counts));
 
@@ -151,10 +182,10 @@ export function StockPage() {
       />
 
       <div className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
-        <StatTile label="Total SKU" value={totalSku} />
-        <StatTile label="Available" value={availableCount} />
-        <StatTile label="Low Stock" value={lowStockCount} />
-        <StatTile label="Out of Stock" value={outOfStockCount} />
+        <StatTile label="Total SKU" value={totalSku} isLoading={!data} />
+        <StatTile label="In stock (SKUs)" value={availableCount} isLoading={!data} />
+        <StatTile label="Low Stock" value={lowStockCount} isLoading={!data} />
+        <StatTile label="Out of Stock" value={outOfStockCount} isLoading={!data} />
       </div>
 
       <FilterBar onClear={hasActiveFilter ? clearFilters : undefined} className="mb-4">
@@ -235,7 +266,9 @@ export function StockPage() {
                 header: "Status",
                 render: (row) => {
                   const available = counts[String(row.id)]?.available ?? 0;
-                  const tier = stockTier(available);
+                  const tier = stockTier(row, available, lowStockThreshold);
+                  if (tier === "inactive") return <StatusBadge status="INACTIVE" />;
+                  if (tier === "manual") return <StatusBadge status="MANUAL" />;
                   if (tier === "out") return <StatusBadge status="OUT_OF_STOCK" />;
                   if (tier === "low") return <StatusBadge status="LOW_STOCK" />;
                   return <StatusBadge status="IN_STOCK" />;
@@ -276,15 +309,24 @@ export function StockPage() {
                   const available = cnt?.available ?? 0;
                   const reserved = cnt?.reserved ?? 0;
                   const sold = cnt?.sold ?? 0;
-                  const total = available + reserved + sold;
-                  const pct = total > 0 ? Math.round((available / total) * 100) : 0;
-                  const tone = pct < 20 ? "rust" : pct < 50 ? "amberx" : "grass";
+                  const dead = cnt?.dead ?? 0;
+                  // "No stock added" only when this SKU has NEVER held a
+                  // stock row at all (never an add, sale, reservation, or
+                  // dead mark) — distinct from "Sold out", which means it
+                  // once had stock but every unit is now spoken for.
+                  const everHadStock = available + reserved + sold + dead > 0;
+                  const toneClass = !everHadStock
+                    ? "text-ink-soft"
+                    : available === 0
+                      ? "font-semibold text-rust"
+                      : available <= lowStockThreshold
+                        ? "font-semibold text-amberx"
+                        : "font-semibold text-grass";
+                  const label = !everHadStock ? "No stock added" : available === 0 ? "Sold out" : `${available} ready`;
                   return (
-                    <div className="min-w-[120px]">
-                      <div className="mb-1 text-xs text-ink-soft">
-                        {total > 0 ? `${available} / ${total} Ready` : "No stock added"}
-                      </div>
-                      <ProgressBar value={pct} tone={tone} />
+                    <div className="min-w-[120px] text-sm">
+                      <span className={toneClass}>{label}</span>
+                      {reserved > 0 && <span className="text-ink-soft"> · {reserved} reserved</span>}
                     </div>
                   );
                 },

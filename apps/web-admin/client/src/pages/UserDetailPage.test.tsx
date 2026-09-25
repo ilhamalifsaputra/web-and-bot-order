@@ -40,8 +40,11 @@ const USER_DETAIL = {
   user: { id: 7, username: "andi", fullName: "Andi Santoso", telegramId: "111", role: "CUSTOMER", banned: false, banReason: null, walletBalance: "500000", walletBalanceUsdt: "12.5" },
   totalSpent: { idr: "150000", usdt: "0" },
   orders: [],
+  ordersTotal: 0,
   tickets: [],
+  ticketsTotal: 0,
   ledger: [],
+  ledgerTotal: 0,
   roles: ["CUSTOMER", "RESELLER"],
 };
 
@@ -171,6 +174,7 @@ describe("UserDetailPage — wallet ledger currency column", () => {
             { delta: "5.0000", balanceAfter: "505000.0000", currency: "IDR", reason: "admin_adjust", note: "goodwill", createdAt: "2026-07-01T00:00:00.000Z", createdAtDisplay: "2026-07-01" },
             { delta: "2.5000", balanceAfter: "15.0000", currency: "USDT", reason: "admin_adjust", note: "usdt credit", createdAt: "2026-07-02T00:00:00.000Z", createdAtDisplay: "2026-07-02" },
           ],
+          ledgerTotal: 2,
         }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       ),
@@ -208,6 +212,7 @@ describe("UserDetailPage — wallet ledger reason/note truncation (Task 4)", () 
               createdAtDisplay: "2026-07-01",
             },
           ],
+          ledgerTotal: 1,
         }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       ),
@@ -240,6 +245,7 @@ describe("UserDetailPage — wallet ledger reason/note truncation (Task 4)", () 
               createdAtDisplay: "2026-07-01",
             },
           ],
+          ledgerTotal: 1,
         }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       ),
@@ -262,6 +268,7 @@ describe("UserDetailPage — support tickets", () => {
             { id: 101, message: "Order not received", status: "OPEN", createdAt: "2026-07-15T10:00:00.000Z", createdAtDisplay: "2026-07-15" },
             { id: 102, message: "Payment issue", status: "CLOSED", createdAt: "2026-07-16T14:30:00.000Z", createdAtDisplay: "2026-07-16" },
           ],
+          ticketsTotal: 2,
         }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       ),
@@ -290,6 +297,7 @@ describe("UserDetailPage — support ticket subject truncation (Task 4)", () => 
           tickets: [
             { id: 101, message: longMessage, status: "OPEN", createdAt: "2026-07-15T10:00:00.000Z", createdAtDisplay: "2026-07-15" },
           ],
+          ticketsTotal: 1,
         }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       ),
@@ -300,6 +308,41 @@ describe("UserDetailPage — support ticket subject truncation (Task 4)", () => 
     const subjectEl = await screen.findByTitle(longMessage);
     expect(subjectEl).toHaveClass("truncate");
     expect(subjectEl.className).toMatch(/max-w-\[320px\]/);
+  });
+});
+
+describe("UserDetailPage — real totals, not .length of a capped list (T3)", () => {
+  it("shows the server's real total in each card title, and a capped note when the list was truncated", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          ...USER_DETAIL,
+          orders: [
+            { id: 1, orderCode: "ORD-1", status: "DELIVERED", totalIdr: "Rp10.000", createdAt: "2026-07-01T00:00:00.000Z", createdAtDisplay: "2026-07-01" },
+          ],
+          ordersTotal: 47, // real total far beyond the capped page of 1 shown here
+          tickets: [
+            { id: 101, message: "Order not received", status: "OPEN", createdAt: "2026-07-15T10:00:00.000Z", createdAtDisplay: "2026-07-15" },
+          ],
+          ticketsTotal: 3,
+          ledger: [
+            { delta: "5.0000", balanceAfter: "5.0000", currency: "IDR", reason: "admin_adjust", note: null, createdAt: "2026-07-01T00:00:00.000Z", createdAtDisplay: "2026-07-01" },
+          ],
+          ledgerTotal: 60,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    render(<UserDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Andi Santoso")).toBeInTheDocument());
+
+    // Titles show the real server totals, never the capped array's .length.
+    expect(screen.getByText("Recent Orders (47)")).toBeInTheDocument();
+    expect(screen.getByText("Support Tickets (3)")).toBeInTheDocument();
+    expect(screen.getByText("Wallet Ledger (60)")).toBeInTheDocument();
+
+    // Each of the three capped cards explains that only the most recent row is shown.
+    expect(screen.getAllByText("Showing the 1 most recent.")).toHaveLength(3);
   });
 });
 

@@ -22,14 +22,28 @@ const SORT_LABEL: Record<SortMode, string> = {
   lowest_rated: "Lowest Rated",
 };
 
+/** Minimum visible-review count a product needs before its average counts
+ *  for the Highest/Lowest Rated sort — otherwise one 5-star review would
+ *  outrank a product with 200 reviews averaging 4.8. Simpler than a Bayesian
+ *  average (the brief's other option) for the same effect: below this count,
+ *  a single fluke review just isn't a reliable-enough sample to rank by. */
+export const MIN_REVIEWS_FOR_RANKING = 3;
+
 /** Products with no visible average (`avg === null`) always sort to the end,
  *  regardless of direction — null isn't a real "highest" or "lowest" rating,
  *  just an absence of one, so it must never outrank a product with a real
- *  average in either sort mode. */
+ *  average in either sort mode. The same treatment applies to a product with
+ *  a real average but fewer than MIN_REVIEWS_FOR_RANKING reviews: its average
+ *  is real but too thin a sample to rank on, so it sorts after every
+ *  qualifying product (but still before/after a null average consistently —
+ *  a real 1-review 5★ isn't "no data", just not enough of it). */
 function compareByAvg(a: ProductRatingSummary, b: ProductRatingSummary, direction: "desc" | "asc"): number {
   if (a.avg == null && b.avg == null) return 0;
   if (a.avg == null) return 1;
   if (b.avg == null) return -1;
+  const aQualifies = a.count >= MIN_REVIEWS_FOR_RANKING;
+  const bQualifies = b.count >= MIN_REVIEWS_FOR_RANKING;
+  if (aQualifies !== bQualifies) return aQualifies ? -1 : 1;
   return direction === "desc" ? b.avg - a.avg : a.avg - b.avg;
 }
 
@@ -73,6 +87,11 @@ export function ProductRatingsCard({ summaries, isLoading }: ProductRatingsCardP
           </SelectContent>
         </Select>
       </CardHeader>
+      {(sort === "highest_rated" || sort === "lowest_rated") && (
+        <p className="px-6 text-xs text-ink-soft">
+          Ranked among products with {MIN_REVIEWS_FOR_RANKING}+ reviews — products with fewer sort last, so a single review can't outrank a large sample.
+        </p>
+      )}
       <CardContent className="flex flex-col divide-y divide-line">
         {isLoading && <p className="py-2 text-sm text-ink-soft">Loading…</p>}
         {!isLoading && top5.length === 0 && (

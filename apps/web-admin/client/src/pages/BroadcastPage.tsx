@@ -36,6 +36,7 @@ interface BroadcastRow {
   status: string;
   total: number;
   sent: number;
+  failed: number;
   /** Server-computed: this row is PENDING and its schedule has come round (or
    *  it never had one), so the drainer should be picking it up any moment. */
   isDue: boolean;
@@ -261,12 +262,14 @@ export function BroadcastPage() {
             <div className="flex flex-wrap gap-2">
               <ConfirmDialog
                 trigger={
-                  <Button disabled={!form.message || !form.segment || overLimit || send.isPending}>
+                  <Button
+                    disabled={!form.message || !form.segment || overLimit || send.isPending || !data}
+                  >
                     Send Broadcast
                   </Button>
                 }
                 title={form.scheduled_at ? "Schedule broadcast?" : "Send broadcast now?"}
-                description={`This will ${form.scheduled_at ? "schedule a" : "immediately send a"} broadcast to ${data?.counts[form.segment] ?? 0} ${form.segment} users. This cannot be undone.`}
+                description={`This will ${form.scheduled_at ? "schedule a" : "immediately send a"} broadcast to ${data?.counts[form.segment] ?? 0} Telegram users in the ${form.segment} segment. This cannot be undone.`}
                 confirmLabel={form.scheduled_at ? "Schedule" : "Send"}
                 variant="default"
                 onConfirm={() => send.mutate()}
@@ -329,7 +332,12 @@ export function BroadcastPage() {
                 {
                   key: "sent",
                   header: "Sent",
-                  render: b => `${b.sent}/${b.total}`,
+                  render: b => (
+                    <span>
+                      {b.sent}/{b.total}
+                      {b.failed > 0 && <span className="text-rust"> ({b.failed} failed)</span>}
+                    </span>
+                  ),
                 },
                 {
                   key: "scheduled",

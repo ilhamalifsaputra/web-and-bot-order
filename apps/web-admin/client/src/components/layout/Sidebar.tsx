@@ -129,8 +129,13 @@ function SidebarContent({ onClose }: { onClose: () => void }) {
     ? (operations.pendingPayments + operations.manualReviews) || 0
     : 0;
 
+  // `<=`, matching the shared low-stock rule (config.LOW_STOCK_THRESHOLD,
+  // see apps/web-admin/src/routes/api/stock.ts's stockStatusLabel) — every
+  // row `/api/dashboard/inventory` returns already satisfies
+  // `available <= threshold`, so this used to under-count by silently
+  // excluding rows sitting exactly at the threshold under the old `< threshold`.
   const stockBadge = inventory
-    ? inventory.filter((row) => row.available < row.threshold).length
+    ? inventory.filter((row) => row.available <= row.threshold).length
     : 0;
 
   function getBadgeValue(badge?: "orders" | "stock"): number {

@@ -36,6 +36,19 @@ interface UserDetail {
   tickets: { id: number; message: string; status: string; createdAt: string; createdAtDisplay: string | null }[];
   ledger: { delta: string; balanceAfter: string; currency: string; reason: string; note: string | null; createdAt: string; createdAtDisplay: string | null }[];
   roles: string[];
+  /** Real totals behind each capped list above — the card titles must show
+   *  these, not `.length` of the (possibly truncated) array the server sent. */
+  ordersTotal: number;
+  ticketsTotal: number;
+  ledgerTotal: number;
+}
+
+/** A card title's "(N)" — the real server total when the page has it, "N+"
+ *  when the visible rows were capped short of that total (an older response
+ *  shape with no total field, or the total genuinely missing). */
+function countLabel(shown: number, total: number | undefined): string {
+  if (total == null) return shown >= 20 ? `${shown}+` : String(shown);
+  return String(total);
 }
 
 function useUserDetail(userId: string) {
@@ -184,7 +197,12 @@ export function UserDetailPage() {
 
       {/* Orders */}
       <Card className="mb-6">
-        <CardHeader><CardTitle>Recent Orders ({data.orders.length})</CardTitle></CardHeader>
+        <CardHeader>
+          <CardTitle>Recent Orders ({countLabel(data.orders.length, data.ordersTotal)})</CardTitle>
+          {data.orders.length < data.ordersTotal && (
+            <p className="text-xs text-ink-soft">Showing the {data.orders.length} most recent.</p>
+          )}
+        </CardHeader>
         <CardContent>
           <DataTable
             nested
@@ -204,7 +222,12 @@ export function UserDetailPage() {
 
       {/* Wallet ledger */}
       <Card className="mt-6 scroll-mt-20" id="ledger">
-        <CardHeader><CardTitle>Wallet Ledger ({data.ledger.length})</CardTitle></CardHeader>
+        <CardHeader>
+          <CardTitle>Wallet Ledger ({countLabel(data.ledger.length, data.ledgerTotal)})</CardTitle>
+          {data.ledger.length < data.ledgerTotal && (
+            <p className="text-xs text-ink-soft">Showing the {data.ledger.length} most recent.</p>
+          )}
+        </CardHeader>
         <CardContent>
           <DataTable
             nested
@@ -244,7 +267,12 @@ export function UserDetailPage() {
 
       {/* Support Tickets */}
       <Card className="mt-6 scroll-mt-20" id="tickets">
-        <CardHeader><CardTitle>Support Tickets ({data.tickets.length})</CardTitle></CardHeader>
+        <CardHeader>
+          <CardTitle>Support Tickets ({countLabel(data.tickets.length, data.ticketsTotal)})</CardTitle>
+          {data.tickets.length < data.ticketsTotal && (
+            <p className="text-xs text-ink-soft">Showing the {data.tickets.length} most recent.</p>
+          )}
+        </CardHeader>
         <CardContent>
           <DataTable
             nested

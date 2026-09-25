@@ -491,6 +491,7 @@ async function viewStockItems(ctx: MyContext, productId: number): Promise<void> 
     const icon = statusIcons[it.status] ?? "⚪";
     // listStockItemsForProduct returns the raw encrypted envelope — decrypt just
     // for this preview; an unreadable row shows as unavailable, never as its envelope.
+    // A missing key throws here, but the boot-time key check makes that unreachable.
     const creds =
       tryDecryptCredentials(it.credentials ?? "", { stockItemId: it.id, purpose: "the admin bot stock preview" }) ??
       "[unavailable]";

@@ -167,6 +167,8 @@ pnpm install
 
 # Buat .env & siapkan database
 cp .env.example .env            # isi sesuai bagian 2
+openssl rand -hex 32            # tempel hasilnya ke CREDENTIAL_ENCRYPTION_KEY= di .env
+                                # (WAJIB — app menolak start tanpa key ini)
 pnpm prisma:generate
 pnpm exec prisma db push
 pnpm seed-chart-of-accounts     # akun ledger (cash.*, wallet_liability.*, ...);
@@ -182,6 +184,10 @@ pnpm start
 ```
 
 - Panel admin: `http://IP-VPS-KAMU:8000/login` · Toko web: `…:8100/`
+
+> 🔑 **Backup `CREDENTIAL_ENCRYPTION_KEY`** di tempat terpisah dari backup
+> database. Kalau key ini hilang, semua credential yang tersimpan (akun stok,
+> API key payment/provider) tidak bisa dibaca lagi selamanya.
 
 > 🛍️ `pnpm start` menjalankan **satu proses** berisi bot + panel admin
 > (`WEB_PORT`, 8000) + toko web (`STOREFRONT_PORT`, 8100) + pengiriman notifikasi

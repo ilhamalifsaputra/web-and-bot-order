@@ -456,12 +456,19 @@ otomatis sekali oleh `docker-entrypoint.sh` dan disimpan di
 ter-backup: kalau hilang, semua credential yang sudah terenkripsi (Digiflazz
 API key, akun manual di stok) tidak bisa dibaca lagi selamanya.
 Tiap proses (server, order-bot, web-admin, storefront) mengecek key ini saat
-start dan menolak jalan kalau kosong atau formatnya salah.
+start dan menolak jalan kalau key kosong atau gagal uji enkripsi/dekripsi.
+Instalasi tanpa Docker WAJIB mengisinya sendiri (`openssl rand -hex 32`).
 
-`ALLOW_LEGACY_PLAINTEXT` (default `true`): credential lama yang belum
-terenkripsi tetap terbaca, dengan warning di log. Set `false` hanya setelah
-`backfill-encrypt-stock-credentials` dan `backfill-encrypt-settings-secrets`
-selesai — sejak itu nilai plaintext ditolak (lihat `.env.example`).
+`ALLOW_LEGACY_PLAINTEXT` (default `true`): nilai lama yang belum terenkripsi
+tetap terbaca, dengan warning di log. Kalau `false`, setiap pembacaan nilai
+plaintext melempar error — credential stok **dan** secret terenkripsi di
+Settings (API key payment/provider). Hanya daftar/cari/export stok dan preview
+stok di bot yang melewati baris itu; jalur lain (detail order admin, pencarian
+admin, riwayat order pembeli, pengiriman) mengembalikan error. Jadi set `false`
+hanya setelah `backfill-encrypt-stock-credentials` **dan**
+`backfill-encrypt-settings-secrets` selesai. Cara tahu backfill sudah tuntas:
+jalankan kedua script itu, lalu restart — warning "legacy plaintext" (muncul
+sekali per proses) tidak muncul lagi di log.
 
 ### Jalur manual `/bootstrap` (deploy lama)
 

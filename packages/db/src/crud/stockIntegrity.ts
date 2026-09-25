@@ -28,6 +28,24 @@ function firstCount(rows: { count: number }[]): number {
   return rows[0]?.count ?? 0;
 }
 
+/**
+ * `count` is the true total (not capped); `sampleIds` is a bounded preview of
+ * it, capped at SAMPLE_LIMIT.
+ *
+ * `count`'s unit is NOT the same across every field of StockIntegrityReport —
+ * each field's own doc comment says which of these two conventions it uses:
+ *   - "duplicate TARGETS": one offending id counts once no matter how many
+ *     other rows point at it (duplicateStockItemPointers — a StockItem
+ *     pointed at by 3 OrderItems still counts as 1, because there is exactly
+ *     one StockItem an operator needs to go fix).
+ *   - "duplicate PARTICIPANTS": every row that took part in a duplicate group
+ *     counts (duplicateActiveCredentialFingerprints — 2 StockItem rows
+ *     sharing one fingerprint report count:2, because there are two rows an
+ *     operator has to go inspect/reassign).
+ * They were kept as-is rather than unified because the two checks disagree on
+ * what "the thing found" even is (a StockItem being pointed at, vs. a
+ * StockItem participating in a duplicate pair) — see each field's comment.
+ */
 export interface IntegrityFinding {
   count: number;
   sampleIds: number[];
@@ -41,7 +59,11 @@ export interface StockIntegrityReport {
   /** StockItem rows whose status column is not one of the StockStatus values. */
   statusOutsideEnum: IntegrityFinding;
   /** StockItem ids referenced by more than one OrderItem.stockItemId — the
-   * pointer duplication Fase 4b's unique constraint will forbid. */
+   * pointer duplication Fase 4b's unique constraint will forbid.
+   * COUNT CONVENTION: duplicate TARGETS, not participants — one StockItem id
+   * referenced by 3 OrderItems still counts as 1 here (there's exactly one
+   * StockItem an operator needs to fix), not 3. `sampleIds` is StockItem ids,
+   * a literal subset of what `count` counts. */
   duplicateStockItemPointers: IntegrityFinding;
   /** StockItem rows that are soft-deleted but still show RESERVED. */
   softDeletedStillReserved: IntegrityFinding;
@@ -63,7 +85,12 @@ export interface StockIntegrityReport {
   /** StockItem rows sharing a credentialFingerprint with another active
    * (non-DEAD, non-deleted) row of the SAME denomination. All-NULL tolerant:
    * Fase 5 has not populated this column yet, so a NULL fingerprint never
-   * counts as a duplicate. */
+   * counts as a duplicate.
+   * COUNT CONVENTION: duplicate PARTICIPANTS, not targets — a 2-row duplicate
+   * group reports count:2 (both rows), not 1, because there is no single
+   * "canonical" row in a fingerprint collision; every participating row is
+   * something an operator has to go inspect. This differs from
+   * duplicateStockItemPointers above; see IntegrityFinding's doc comment. */
   duplicateActiveCredentialFingerprints: IntegrityFinding;
 }
 

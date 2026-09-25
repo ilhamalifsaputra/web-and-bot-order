@@ -191,6 +191,19 @@ describe("checkStockIntegrity — duplicateStockItemPointers", () => {
     const report = await checkStockIntegrity(prisma);
     expect(report.duplicateStockItemPointers).toEqual(emptyFinding);
   });
+
+  it("counts a 3-way duplicate pointer as 1 — count is duplicate TARGETS, not participants", async () => {
+    // Locks in the documented convention on the field's JSDoc: this check
+    // counts the offending StockItem id (the thing an operator has to fix),
+    // not the number of OrderItems pointing at it.
+    const [row] = await rowsByStatus(StockStatus.AVAILABLE);
+    await rawOrderWithItem("ORD-TRIPLE-1", OrderStatus.PAID, row!.id);
+    await rawOrderWithItem("ORD-TRIPLE-2", OrderStatus.PAID, row!.id);
+    await rawOrderWithItem("ORD-TRIPLE-3", OrderStatus.PAID, row!.id);
+
+    const report = await checkStockIntegrity(prisma);
+    expect(report.duplicateStockItemPointers).toEqual({ count: 1, sampleIds: [row!.id] });
+  });
 });
 
 describe("checkStockIntegrity — softDeletedStillReserved", () => {

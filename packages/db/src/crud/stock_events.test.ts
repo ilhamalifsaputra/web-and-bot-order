@@ -69,7 +69,7 @@ describe("bulkAddStock writes IMPORTED events", () => {
     const denom = await freshDenomination("Import events");
 
     const res = await bulkAddStock(prisma, denom.id, ["imp1@x:pw", "imp2@x:pw", "imp3@x:pw"], user.id);
-    expect(res).toEqual({ added: 3, skipped: 0 });
+    expect(res).toMatchObject({ added: 3, skipped: 0 });
 
     const rows = await prisma.stockItem.findMany({ where: { productId: denom.id }, orderBy: { id: "asc" } });
     expect(rows).toHaveLength(3);
@@ -97,7 +97,7 @@ describe("bulkAddStock writes IMPORTED events", () => {
 
     const res = await bulkAddStock(prisma, denom.id, ["dup@x:pw", "new@x:pw", "new@x:pw"], user.id);
 
-    expect(res).toEqual({ added: 1, skipped: 2 });
+    expect(res).toMatchObject({ added: 1, skipped: 2, duplicateInBatch: 1, duplicateExisting: 1 });
     expect(await prisma.stockItemEvent.count()).toBe(before + 1);
   });
 

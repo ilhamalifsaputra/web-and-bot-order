@@ -3714,6 +3714,20 @@ describe("stock", () => {
     expect(audit.every((a) => !(a.details ?? "").includes("@"))).toBe(true);
   });
 
+  it("bulk add reports the import batch and duplicate counts", async () => {
+    const res = await post(`/api/stock/${seed.productId}/bulk-add`, seed.cookie, {
+      csrf_token: seed.csrf,
+      credentials: `batchdup${counter}@e.com:p\nbatchdup${counter}@e.com:p\nBATCHDUP${counter}@e.com:other`,
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body).toMatchObject({ ok: true, added: 2, skipped: 1, duplicateInBatch: 1, duplicateExisting: 0, identityWarnings: 2 });
+    const batch = await prisma.stockImportBatch.findUniqueOrThrow({ where: { id: body.batchId } });
+    expect(batch).toMatchObject({ productId: seed.productId, rowsSubmitted: 3, rowsInserted: 2, rowsDuplicate: 1 });
+    expect(body.message).toContain(`import batch #${body.batchId}`);
+    expect(body.message).not.toContain("@");
+  });
+
   it("bulk add requires auth", async () => {
     const res = await post(`/api/stock/${seed.productId}/bulk-add`, null, { csrf_token: "x", credentials: "leak@e.com:p" });
     expect(res.statusCode).toBe(401);

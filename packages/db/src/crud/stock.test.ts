@@ -18,8 +18,17 @@ import {
   listStockItemsForProductPage,
   countStockItemsForStatuses,
   searchStockCredentials,
+  deleteStockItem,
+  bulkDeleteStock,
 } from "./stock";
-import { decryptCredentials } from "@app/core/credentialCrypto";
+import { createHash } from "node:crypto";
+import {
+  decryptCredentials,
+  encryptCredentials,
+  computeCredentialFingerprint,
+  computeIdentityFingerprint,
+  CredentialKeyConfigError,
+} from "@app/core/credentialCrypto";
 import { createDenomination } from "./catalog";
 import { StockStatus } from "@app/core/enums";
 
@@ -146,7 +155,218 @@ describe("bulkAddStock dedup", () => {
 
   it("empty input returns added=0, skipped=0 without querying", async () => {
     const { product } = sample;
-    expect(await bulkAddStock(prisma, product.id, [])).toEqual({ added: 0, skipped: 0 });
+    const batchesBefore = await prisma.stockImportBatch.count();
+    expect(await bulkAddStock(prisma, product.id, [])).toEqual({
+      added: 0,
+      skipped: 0,
+      duplicateInBatch: 0,
+      duplicateExisting: 0,
+      identityWarnings: 0,
+      unreadableExisting: 0,
+      batchId: null,
+    });
+    expect(await prisma.stockImportBatch.count()).toBe(batchesBefore);
+  });
+});
+
+describe("bulkAddStock import batch + fingerprint dedup (Fase 5a)", () => {
+  const LIVE = [StockStatus.AVAILABLE, StockStatus.RESERVED, StockStatus.SOLD];
+
+  /** A pre-Fase-5 row: no fingerprints, no claim, as legacy data or a direct fixture write leaves it. */
+  async function legacyRow(productId: number, stored: string, status: string = StockStatus.AVAILABLE) {
+    return prisma.stockItem.create({ data: { productId, credentials: stored, status } });
+  }
+
+  it("records a StockImportBatch and stamps each new row with its provenance, fingerprints and claim", async () => {
+    const { product, user } = sample;
+    const res = await bulkAddStock(prisma, product.id, ["prov1@x.com:pw", "prov2@x.com:pw", "prov1@x.com:pw"], {
+      adminId: user.id,
+      sourceLabel: "supplier-sheet.csv",
+    });
+
+    expect(res).toMatchObject({ added: 2, skipped: 1, duplicateInBatch: 1, duplicateExisting: 0 });
+    expect(res.batchId).toEqual(expect.any(Number));
+    const batch = await prisma.stockImportBatch.findUniqueOrThrow({ where: { id: res.batchId! } });
+    expect(batch).toMatchObject({
+      adminId: user.id,
+      productId: product.id,
+      sourceLabel: "supplier-sheet.csv",
+      rowsSubmitted: 3,
+      rowsInserted: 2,
+      rowsDuplicate: 1,
+    });
+    // Keyed HMAC, not a plain hash of the pasted text.
+    expect(batch.sourceHash).toMatch(/^[0-9a-f]{64}$/);
+    const plainSha = createHash("sha256").update("prov1@x.com:pw\nprov2@x.com:pw\nprov1@x.com:pw").digest("hex");
+    expect(batch.sourceHash).not.toBe(plainSha);
+
+    const rows = await prisma.stockItem.findMany({ where: { importBatchId: batch.id }, orderBy: { id: "asc" } });
+    expect(rows).toHaveLength(2);
+    for (const r of rows) {
+      const plain = decryptCredentials(r.credentials);
+      expect(r.addedByAdminId).toBe(user.id);
+      expect(r.credentialKeyVersion).toBe(1);
+      expect(r.credentialFingerprint).toBe(computeCredentialFingerprint(plain));
+      expect(r.identityFingerprint).toBe(computeIdentityFingerprint(plain));
+      expect(r.activeCredentialKey).toBe(`${product.id}:${computeCredentialFingerprint(plain)}`);
+    }
+  });
+
+  it("the same content always yields the same sourceHash, different content a different one", async () => {
+    const { product } = sample;
+    const a = await bulkAddStock(prisma, product.id, ["hash1@x.com:pw"]);
+    const b = await bulkAddStock(prisma, product.id, ["hash1@x.com:pw"]);
+    const c = await bulkAddStock(prisma, product.id, ["hash2@x.com:pw"]);
+    const [ba, bb, bc] = await Promise.all(
+      [a, b, c].map((r) => prisma.stockImportBatch.findUniqueOrThrow({ where: { id: r.batchId! } })),
+    );
+    expect(ba!.sourceHash).toBe(bb!.sourceHash);
+    expect(bc!.sourceHash).not.toBe(ba!.sourceHash);
+    // An all-duplicate upload is still recorded as a batch.
+    expect(bb).toMatchObject({ rowsSubmitted: 1, rowsInserted: 0, rowsDuplicate: 1 });
+  });
+
+  it("dedups by credential fingerprint, so identity case and the : / | delimiter don't sneak a duplicate in", async () => {
+    const { product } = sample;
+    await bulkAddStock(prisma, product.id, ["Mixed.Case@x.com:Secret"]);
+    const res = await bulkAddStock(prisma, product.id, ["mixed.case@X.COM|Secret", " MIXED.case@x.com : Secret "]);
+    expect(res).toMatchObject({ added: 0, duplicateExisting: 1, duplicateInBatch: 1 });
+  });
+
+  it("a different password on the same account is added, with an identity warning (never a rejection)", async () => {
+    const { product } = sample;
+    await bulkAddStock(prisma, product.id, ["same.id@x.com:old-pass"]);
+    const res = await bulkAddStock(prisma, product.id, ["same.id@x.com:new-pass", "other.id@x.com:pw"]);
+    expect(res).toMatchObject({ added: 2, skipped: 0, identityWarnings: 1 });
+  });
+
+  it("warns about an identity repeated inside one upload with different passwords", async () => {
+    const { product } = sample;
+    const res = await bulkAddStock(prisma, product.id, ["twin@x.com:a", "twin@x.com:b"]);
+    expect(res).toMatchObject({ added: 2, identityWarnings: 2 });
+  });
+
+  it("password case matters: the same identity with a differently-cased password is a new credential", async () => {
+    const { product } = sample;
+    await bulkAddStock(prisma, product.id, ["case.pw@x.com:Secret"]);
+    const res = await bulkAddStock(prisma, product.id, ["case.pw@x.com:secret"]);
+    expect(res).toMatchObject({ added: 1, identityWarnings: 1 });
+  });
+
+  it("still dedups against un-backfilled legacy rows (encrypted and plaintext) via decrypt-compare", async () => {
+    const { product } = sample;
+    await legacyRow(product.id, encryptCredentials("legacy.enc@x.com:pw"), StockStatus.SOLD);
+    await legacyRow(product.id, "legacy.plain@x.com:pw", StockStatus.RESERVED);
+    await legacyRow(product.id, encryptCredentials("legacy.dead@x.com:pw"), StockStatus.DEAD);
+
+    const res = await bulkAddStock(prisma, product.id, [
+      "LEGACY.enc@x.com:pw",
+      "legacy.plain@x.com|pw",
+      "legacy.dead@x.com:pw",
+      "brand.new@x.com:pw",
+    ]);
+    expect(res).toMatchObject({ added: 2, duplicateExisting: 2, unreadableExisting: 0 });
+  });
+
+  it("warns about an identity collision with an un-backfilled legacy row", async () => {
+    const { product } = sample;
+    await legacyRow(product.id, encryptCredentials("legacy.id@x.com:old"));
+    const res = await bulkAddStock(prisma, product.id, ["legacy.id@x.com:new"]);
+    expect(res).toMatchObject({ added: 1, identityWarnings: 1 });
+  });
+
+  it("one corrupt legacy row is counted and skipped instead of aborting the whole upload", async () => {
+    const { product } = sample;
+    const good = JSON.parse(encryptCredentials("whatever@x.com:pw")) as Record<string, unknown>;
+    const corrupt = JSON.stringify({ ...good, authTag: Buffer.alloc(16).toString("base64") });
+    await legacyRow(product.id, corrupt);
+    await legacyRow(product.id, encryptCredentials("legacy.ok@x.com:pw"));
+
+    const res = await bulkAddStock(prisma, product.id, ["legacy.ok@x.com:pw", "fine@x.com:pw"]);
+    expect(res).toMatchObject({ added: 1, duplicateExisting: 1, unreadableExisting: 1 });
+  });
+
+  it("a missing encryption key still fails the upload loudly (never treated as a corrupt row)", async () => {
+    const { product } = sample;
+    const saved = process.env.CREDENTIAL_ENCRYPTION_KEY;
+    delete process.env.CREDENTIAL_ENCRYPTION_KEY;
+    try {
+      await expect(bulkAddStock(prisma, product.id, ["nokey@x.com:pw"])).rejects.toBeInstanceOf(CredentialKeyConfigError);
+    } finally {
+      process.env.CREDENTIAL_ENCRYPTION_KEY = saved;
+    }
+    expect(await prisma.stockImportBatch.count()).toBe(1); // only buildSampleData's own import
+  });
+
+  it("stays positional-compatible: a bare admin id still attributes the batch and rows", async () => {
+    const { product, user } = sample;
+    const res = await bulkAddStock(prisma, product.id, ["positional@x.com:pw"], user.id);
+    const batch = await prisma.stockImportBatch.findUniqueOrThrow({ where: { id: res.batchId! } });
+    expect(batch.adminId).toBe(user.id);
+    expect(batch.sourceLabel).toBeNull();
+  });
+
+  it("every live row a fresh import creates holds a distinct claim", async () => {
+    const { product } = sample;
+    await bulkAddStock(prisma, product.id, ["c1@x.com:pw", "c2@x.com:pw"]);
+    const live = await prisma.stockItem.findMany({
+      where: { productId: product.id, status: { in: LIVE }, deletedAt: null },
+      select: { activeCredentialKey: true },
+    });
+    const keys = live.map((r) => r.activeCredentialKey);
+    expect(keys.every((k) => k !== null)).toBe(true);
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+});
+
+describe("claim key release (Fase 5b): DEAD / soft-deleted rows free the credential for re-import", () => {
+  async function importOne(cred: string) {
+    await bulkAddStock(prisma, sample.product.id, [cred]);
+    const row = (await prisma.stockItem.findMany({ where: { productId: sample.product.id }, orderBy: { id: "desc" }, take: 1 }))[0]!;
+    expect(row.activeCredentialKey).not.toBeNull();
+    return row;
+  }
+
+  it("markStockDead releases the claim and the credential can be imported again", async () => {
+    const row = await importOne("dies@x.com:pw");
+    await markStockDead(prisma, row.id, "dead", sample.user.id);
+    expect((await prisma.stockItem.findUniqueOrThrow({ where: { id: row.id } })).activeCredentialKey).toBeNull();
+    expect(await bulkAddStock(prisma, sample.product.id, ["dies@x.com:pw"])).toMatchObject({ added: 1 });
+  });
+
+  it("bulkMarkStockDead releases every claim it kills", async () => {
+    const a = await importOne("bulkdie1@x.com:pw");
+    const b = await importOne("bulkdie2@x.com:pw");
+    await bulkMarkStockDead(prisma, [a.id, b.id], "dead", sample.user.id);
+    const after = await prisma.stockItem.findMany({ where: { id: { in: [a.id, b.id] } } });
+    expect(after.map((r) => r.activeCredentialKey)).toEqual([null, null]);
+  });
+
+  it("a refused markStockDead (SOLD row) keeps the claim", async () => {
+    const row = await importOne("sold.keep@x.com:pw");
+    await prisma.stockItem.update({ where: { id: row.id }, data: { status: StockStatus.SOLD, soldAt: new Date() } });
+    expect(await markStockDead(prisma, row.id, "x", sample.user.id)).toBe(0);
+    expect((await prisma.stockItem.findUniqueOrThrow({ where: { id: row.id } })).activeCredentialKey).toBe(row.activeCredentialKey);
+    expect(await bulkAddStock(prisma, sample.product.id, ["sold.keep@x.com:pw"])).toMatchObject({ added: 0, duplicateExisting: 1 });
+  });
+
+  it("soft delete (single and bulk) releases the claim and the credential can be imported again", async () => {
+    const a = await importOne("del1@x.com:pw");
+    const b = await importOne("del2@x.com:pw");
+    expect(await deleteStockItem(prisma, a.id, sample.user.id)).toBe(true);
+    expect(await bulkDeleteStock(prisma, [b.id], sample.user.id)).toBe(1);
+    const after = await prisma.stockItem.findMany({ where: { id: { in: [a.id, b.id] } } });
+    expect(after.map((r) => r.activeCredentialKey)).toEqual([null, null]);
+    expect(await bulkAddStock(prisma, sample.product.id, ["del1@x.com:pw", "del2@x.com:pw"])).toMatchObject({ added: 2 });
+  });
+
+  it("a stale claim left on a DEAD row by some other writer is reclaimed instead of blocking re-import", async () => {
+    const row = await importOne("stale@x.com:pw");
+    // Bypasses markStockDead on purpose: the claim is left behind.
+    await prisma.stockItem.update({ where: { id: row.id }, data: { status: StockStatus.DEAD } });
+    const res = await bulkAddStock(prisma, sample.product.id, ["stale@x.com:pw"]);
+    expect(res).toMatchObject({ added: 1, duplicateExisting: 0 });
+    expect((await prisma.stockItem.findUniqueOrThrow({ where: { id: row.id } })).activeCredentialKey).toBeNull();
   });
 });
 

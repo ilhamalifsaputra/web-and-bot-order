@@ -254,3 +254,11 @@ export function computeIdentityFingerprint(plaintext: string): string {
 export function computeCredentialFingerprint(plaintext: string): string {
   return createHmac("sha256", deriveCredentialIndexKey()).update(normalizeCredential(plaintext)).digest("hex");
 }
+
+/** Keyed HMAC of one stock-import upload's raw lines, in order (StockImportBatch.sourceHash):
+ * lets two batches be recognised as the same upload without the hash confirming guessed content. */
+export function computeImportSourceHash(lines: string[]): string {
+  const mac = createHmac("sha256", deriveCredentialIndexKey()).update("stock-import-source/v1");
+  for (const line of lines) mac.update("\n").update(line);
+  return mac.digest("hex");
+}

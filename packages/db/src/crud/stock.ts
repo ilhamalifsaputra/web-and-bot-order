@@ -11,7 +11,15 @@
  * code paths. `revealStockCredentials` is the sole explicit-reveal read.
  */
 import { StockStatus, StockEventType, StockActorType, DeadReason } from "@app/core/enums";
-import { encryptCredentials, decryptCredentials, CredentialKeyConfigError } from "@app/core/credentialCrypto";
+import {
+  encryptCredentials,
+  decryptCredentials,
+  computeCredentialFingerprint,
+  computeIdentityFingerprint,
+  computeImportSourceHash,
+  CredentialKeyConfigError,
+  type CredentialEnvelope,
+} from "@app/core/credentialCrypto";
 import type { Db } from "./_types";
 import { recordStockEvent, recordStockEvents, type StockEventActor } from "./stockEvents";
 
@@ -45,30 +53,75 @@ async function lockStockRows(tx: Db, ids: number[]): Promise<void> {
 /** Namespace half of the two-key advisory lock `bulkAddStock` takes per denomination. */
 const STOCK_IMPORT_LOCK_NAMESPACE = 0x53544b31; // "STK1"
 
+/** Statuses in which a row still holds its credential (and its claim key). */
+const LIVE_STOCK_STATUSES = [StockStatus.AVAILABLE, StockStatus.RESERVED, StockStatus.SOLD];
+
+/** The `activeCredentialKey` a live row holds: one per credential per denomination. */
+export function stockClaimKey(productId: number, credentialFingerprint: string): string {
+  return `${productId}:${credentialFingerprint}`;
+}
+
+export interface BulkAddStockOptions {
+  adminId?: number | null;
+  /** Free-text label of where the upload came from (file name, supplier); never credentials. */
+  sourceLabel?: string | null;
+}
+
+export interface BulkAddStockResult {
+  added: number;
+  /** Every submitted line that did not become a new row: duplicateInBatch + duplicateExisting. */
+  skipped: number;
+  /** Repeats of a credential earlier in the same upload. */
+  duplicateInBatch: number;
+  /** Credentials already live (AVAILABLE/RESERVED/SOLD) for this denomination. */
+  duplicateExisting: number;
+  /** Added rows whose account identity is already live here with a different password. */
+  identityWarnings: number;
+  /** Existing un-backfilled rows that could not be decrypted, so dedup could not check against them. */
+  unreadableExisting: number;
+  /** The StockImportBatch recorded for this upload; null only for an empty upload. */
+  batchId: number | null;
+}
+
 /**
- * Bulk-insert AVAILABLE stock, deduping against the incoming batch itself
- * (e.g. the same CSV pasted twice) AND against existing
- * AVAILABLE/RESERVED/SOLD rows for this product — two identical credential
- * strings stored as separate AVAILABLE rows could later be allocated to TWO
- * different buyers, delivering the same digital account twice (Stock-1 fix,
- * security audit 2026-06-23). `skipped` covers both kinds of duplicates so
- * the caller can report one honest total to the admin.
+ * Bulk-insert AVAILABLE stock as one recorded StockImportBatch, deduping
+ * against the incoming batch itself AND against live (AVAILABLE/RESERVED/SOLD)
+ * rows for this denomination — two live rows holding one credential could be
+ * allocated to TWO buyers, delivering the same account twice (Stock-1 fix,
+ * security audit 2026-06-23). DEAD and soft-deleted rows don't count, so a
+ * dead account may be re-imported.
  *
- * Dedup can no longer filter existing rows in SQL (`credentials: { in: ... }`):
- * each encryption uses a fresh random IV, so the same plaintext never
- * produces the same stored ciphertext twice, and there is nothing left in the
- * column for a plaintext `IN (...)` match to find. Instead this fetches every
- * existing AVAILABLE/RESERVED/SOLD row for the product and decrypts each to
- * compare — O(existing rows) per call, acceptable for what's documented
- * (Task 2 brief) as a low-volume table.
+ * Dedup compares keyed credential fingerprints (@app/core/credentialCrypto),
+ * so the same account with a differently-cased email or a "|" delimiter is
+ * still a duplicate; the password is compared exactly. Rows that predate
+ * fingerprints (not yet backfilled) are decrypted one by one and compared the
+ * same way; a row that fails to decrypt is counted in `unreadableExisting`
+ * and skipped rather than failing the whole upload (a missing/misconfigured
+ * key still throws). A new credential whose identity is already live with a
+ * different password is added and only counted in `identityWarnings`.
+ *
+ * Each new row holds `activeCredentialKey` (unique) while live, so even a
+ * writer that bypasses the advisory lock below can't insert a second live
+ * copy; a row that loses on that constraint is counted as a duplicate.
  */
 export async function bulkAddStock(
   db: Db,
   productId: number,
   credentials: string[],
-  adminId?: number | null,
-): Promise<{ added: number; skipped: number }> {
-  if (credentials.length === 0) return { added: 0, skipped: 0 };
+  options?: number | null | BulkAddStockOptions,
+): Promise<BulkAddStockResult> {
+  const opts: BulkAddStockOptions =
+    options != null && typeof options === "object" ? options : { adminId: options ?? null };
+  const empty: BulkAddStockResult = {
+    added: 0,
+    skipped: 0,
+    duplicateInBatch: 0,
+    duplicateExisting: 0,
+    identityWarnings: 0,
+    unreadableExisting: 0,
+    batchId: null,
+  };
+  if (credentials.length === 0) return empty;
 
   return inTransaction(db, async (tx) => {
     // Serialize imports per denomination: the dedup read below and the insert
@@ -80,29 +133,103 @@ export async function bulkAddStock(
     // second caller's dedup read sees the first caller's committed rows.
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(${STOCK_IMPORT_LOCK_NAMESPACE}::int, ${productId}::int)`;
 
-    const deduped = [...new Set(credentials)];
-    const existingRows = await tx.stockItem.findMany({
-      where: {
-        productId,
-        deletedAt: null,
-        status: { in: [StockStatus.AVAILABLE, StockStatus.RESERVED, StockStatus.SOLD] },
-      },
+    // First occurrence of each credential fingerprint wins within the upload.
+    const incoming = new Map<string, { plain: string; identity: string }>();
+    for (const plain of credentials) {
+      const fp = computeCredentialFingerprint(plain);
+      if (!incoming.has(fp)) incoming.set(fp, { plain, identity: computeIdentityFingerprint(plain) });
+    }
+    const duplicateInBatch = credentials.length - incoming.size;
+
+    const live = { productId, deletedAt: null, status: { in: LIVE_STOCK_STATUSES } };
+    const existingCredentials = new Set<string>();
+    const existingIdentities = new Set<string>();
+    const byFingerprint = await tx.stockItem.findMany({
+      where: { ...live, credentialFingerprint: { in: [...incoming.keys()] } },
+      select: { credentialFingerprint: true },
+    });
+    for (const r of byFingerprint) existingCredentials.add(r.credentialFingerprint!);
+    const byIdentity = await tx.stockItem.findMany({
+      where: { ...live, identityFingerprint: { in: [...new Set([...incoming.values()].map((v) => v.identity))] } },
+      select: { identityFingerprint: true },
+    });
+    for (const r of byIdentity) existingIdentities.add(r.identityFingerprint!);
+
+    // Rows not yet backfilled carry no fingerprint: decrypt-compare them one by one.
+    let unreadableExisting = 0;
+    const legacy = await tx.stockItem.findMany({
+      where: { ...live, credentialFingerprint: null },
       select: { credentials: true },
     });
-    const existing = new Set(existingRows.map((r) => decryptCredentials(r.credentials)));
-    const fresh = deduped.filter((c) => !existing.has(c));
+    for (const r of legacy) {
+      let plain: string;
+      try {
+        plain = decryptCredentials(r.credentials);
+      } catch (err) {
+        if (err instanceof CredentialKeyConfigError) throw err;
+        unreadableExisting++;
+        continue;
+      }
+      existingCredentials.add(computeCredentialFingerprint(plain));
+      existingIdentities.add(computeIdentityFingerprint(plain));
+    }
 
-    if (fresh.length === 0) return { added: 0, skipped: credentials.length };
+    const fresh = [...incoming].filter(([fp]) => !existingCredentials.has(fp));
+    const freshKeys = fresh.map(([fp]) => stockClaimKey(productId, fp));
 
-    // createMany returns no ids, and each new row needs its own IMPORTED event.
-    const created = await tx.stockItem.createManyAndReturn({
-      data: fresh.map((c) => ({
+    // A DEAD/deleted row must never block re-import, even if some writer forgot to release its claim.
+    if (freshKeys.length) {
+      await tx.stockItem.updateMany({
+        where: {
+          activeCredentialKey: { in: freshKeys },
+          OR: [{ deletedAt: { not: null } }, { status: { notIn: LIVE_STOCK_STATUSES } }],
+        },
+        data: { activeCredentialKey: null },
+      });
+    }
+
+    const adminId = opts.adminId ?? null;
+    const batch = await tx.stockImportBatch.create({
+      data: {
+        adminId,
         productId,
-        credentials: encryptCredentials(c),
-        status: StockStatus.AVAILABLE,
-      })),
+        sourceLabel: opts.sourceLabel ?? null,
+        sourceHash: computeImportSourceHash(credentials),
+        rowsSubmitted: credentials.length,
+        rowsInserted: 0,
+        rowsDuplicate: 0,
+      },
       select: { id: true },
     });
+
+    // skipDuplicates: a claim held by a live row the dedup read didn't see is a duplicate, not a crash.
+    const created = fresh.length
+      ? await tx.stockItem.createManyAndReturn({
+          data: fresh.map(([fp, { plain, identity }]) => {
+            const stored = encryptCredentials(plain);
+            return {
+              productId,
+              credentials: stored,
+              status: StockStatus.AVAILABLE,
+              importBatchId: batch.id,
+              addedByAdminId: adminId,
+              credentialFingerprint: fp,
+              identityFingerprint: identity,
+              credentialKeyVersion: (JSON.parse(stored) as CredentialEnvelope).keyVersion,
+              activeCredentialKey: stockClaimKey(productId, fp),
+            };
+          }),
+          select: { id: true, identityFingerprint: true, credentialFingerprint: true },
+          skipDuplicates: true,
+        })
+      : [];
+
+    const identityCounts = new Map<string, number>();
+    for (const r of created) identityCounts.set(r.identityFingerprint!, (identityCounts.get(r.identityFingerprint!) ?? 0) + 1);
+    const identityWarnings = created.filter(
+      (r) => existingIdentities.has(r.identityFingerprint!) || identityCounts.get(r.identityFingerprint!)! > 1,
+    ).length;
+
     const actor = adminActor(adminId);
     await recordStockEvents(
       tx,
@@ -113,8 +240,35 @@ export async function bulkAddStock(
         actor,
       })),
     );
-    return { added: created.length, skipped: credentials.length - created.length };
+
+    const duplicateExisting = incoming.size - created.length;
+    await tx.stockImportBatch.update({
+      where: { id: batch.id },
+      data: { rowsInserted: created.length, rowsDuplicate: duplicateInBatch + duplicateExisting },
+    });
+    return {
+      added: created.length,
+      skipped: credentials.length - created.length,
+      duplicateInBatch,
+      duplicateExisting,
+      identityWarnings,
+      unreadableExisting,
+      batchId: batch.id,
+    };
   });
+}
+
+/** The shop-admin audit sentence for one bulk import (docs/LOGGING.md): counts only, never credentials. */
+export function stockImportAuditDetails(r: BulkAddStockResult, invalidLines = 0): string {
+  const skipped = invalidLines > 0 ? `${invalidLines} invalid lines and ${r.skipped} duplicates` : `${r.skipped} duplicates`;
+  let details = `Added ${r.added} stock items in import batch #${r.batchId}; skipped ${skipped}.`;
+  if (r.identityWarnings > 0) {
+    details += ` ${r.identityWarnings} of the added items use an account already in stock with a different password.`;
+  }
+  if (r.unreadableExisting > 0) {
+    details += ` ${r.unreadableExisting} existing items could not be read and were not checked for duplicates.`;
+  }
+  return details;
 }
 
 /**
@@ -138,7 +292,8 @@ async function markDead(db: Db, ids: number[], note: string, adminId: number, re
     if (!rows.length) return 0;
     const res = await tx.stockItem.updateMany({
       where: { id: { in: rows.map((r) => r.id) }, ...eligible },
-      data: { status: StockStatus.DEAD, note, deadReason: reason },
+      // Releasing the claim lets the dead credential be imported again.
+      data: { status: StockStatus.DEAD, note, deadReason: reason, activeCredentialKey: null },
     });
     const actor = adminActor(adminId);
     await recordStockEvents(
@@ -204,7 +359,7 @@ async function softDelete(db: Db, ids: number[], adminId: number): Promise<numbe
     if (!rows.length) return 0;
     const res = await tx.stockItem.updateMany({
       where: { id: { in: rows.map((r) => r.id) }, ...deletable },
-      data: { deletedAt: new Date(), deletedByAdminId: adminId },
+      data: { deletedAt: new Date(), deletedByAdminId: adminId, activeCredentialKey: null },
     });
     const actor = adminActor(adminId);
     await recordStockEvents(

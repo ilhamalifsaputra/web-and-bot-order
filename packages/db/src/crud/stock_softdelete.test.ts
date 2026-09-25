@@ -58,7 +58,7 @@ beforeEach(async () => {
 describe("stock reads exclude soft-deleted rows", () => {
   it("bulkAddStock dedup ignores a soft-deleted credential (it can be re-added)", async () => {
     const res = await bulkAddStock(prisma, sample.product.id, [deletedCred]);
-    expect(res).toEqual({ added: 1, skipped: 0 });
+    expect(res).toMatchObject({ added: 1, skipped: 0 });
   });
 
   it("listAvailableCredentials", async () => {

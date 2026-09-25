@@ -539,6 +539,25 @@ describe("admin conversations", () => {
     expect(await prisma.auditLog.count({ where: { action: "stock_upload" } })).toBe(1);
   });
 
+  it("stockUpload: reports the import batch, the duplicate count and an identity warning", async () => {
+    const sink: SentCall[] = [];
+    const entry = entryAdmin(sink, `v1:adm:stock:add:${sample.product.id}`);
+    const conv = new FakeConversation([
+      msg(sink, { text: "batchnew@x.com:pw\nuser1@example.com:pwd1\nuser1@example.com:changed" }),
+    ]);
+    await stockUploadConversation(conv.asMyConversation(), entry);
+
+    const batch = await prisma.stockImportBatch.findFirstOrThrow({ orderBy: { id: "desc" } });
+    expect(batch).toMatchObject({ productId: sample.product.id, rowsSubmitted: 3, rowsInserted: 2, rowsDuplicate: 1 });
+    expect(sentIncludes(sink, `#${batch.id}`)).toBe(true);
+    expect(sentIncludes(sink, "(1 ")).toBe(true); // "(1 duplicates)" / "(1 duplikat)"
+    expect(sentIncludes(sink, "⚠️ 1 ")).toBe(true);
+    const audit = await prisma.auditLog.findFirstOrThrow({ where: { action: "stock_upload" }, orderBy: { id: "desc" } });
+    expect(audit.details).toBe(
+      `Added 2 stock items in import batch #${batch.id}; skipped 1 duplicates. 1 of the added items use an account already in stock with a different password.`,
+    );
+  });
+
   it("stockUpload: each new row's IMPORTED event is attributed to the uploading admin (admin resolved before the insert)", async () => {
     const before = await prisma.stockItem.findMany({ where: { productId: sample.product.id }, select: { id: true } });
     const sink: SentCall[] = [];

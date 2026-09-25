@@ -22,6 +22,7 @@ import {
   getVoucherByCode,
   createVoucher,
   bulkAddStock,
+  stockImportAuditDetails,
   afterStockAdded,
   getUserByTelegramId,
   logAdminAction,
@@ -161,33 +162,36 @@ export async function stockUploadConversation(conversation: MyConversation, ctx:
   await adminAnchor(ctx, t(ctx, "admin.processing"));
 
   const adminTg = ctx.from!.id;
-  const { added, dedupSkipped } = await prisma.$transaction(async (tx) => {
+  const res = await prisma.$transaction(async (tx) => {
     // Resolved before the insert: each new stock row's IMPORTED event names this admin.
     const admin = await getUserByTelegramId(tx, adminTg);
     const adminId = requireAdminId(admin);
-    const { added: n, skipped } = await bulkAddStock(tx, productId, credentials, adminId);
+    const r = await bulkAddStock(tx, productId, credentials, { adminId });
     await logAdminAction(tx, {
       adminId,
       action: "stock_upload",
       targetType: "product",
       targetId: productId,
-      details: `Added ${n} items; skipped ${skippedCount} invalid lines and ${skipped} duplicates.`,
+      details: stockImportAuditDetails(r, skippedCount),
     });
     // Same transaction as the insert: stock, subscriber DMs and the optional
     // broadcast commit or roll back together.
-    await afterStockAdded(tx, productId, n, adminId);
-    return { added: n, dedupSkipped: skipped };
+    await afterStockAdded(tx, productId, r.added, adminId);
+    return r;
   });
 
   // Parse-time skips (malformed lines) and dedup skips (already-existing or
   // repeated credentials — Stock-1 fix, security audit 2026-06-23) are both
   // "this line didn't become new stock", so they're combined into one total
   // for the admin-facing summary; the audit row above keeps them distinct.
-  await adminEdit(
-    ctx,
-    t(ctx, "admin.stock_added", { count: added, skipped: skippedCount + dedupSkipped }),
-    akb.backToAdminKb(lang),
-  );
+  let text = t(ctx, "admin.stock_added", {
+    count: res.added,
+    batch: res.batchId ?? "-",
+    skipped: skippedCount + res.skipped,
+    duplicates: res.skipped,
+  });
+  if (res.identityWarnings > 0) text += `\n${t(ctx, "admin.stock_identity_warning", { count: res.identityWarnings })}`;
+  await adminEdit(ctx, text, akb.backToAdminKb(lang));
 }
 
 // ===========================================================================

@@ -1829,15 +1829,38 @@ export async function approveOrder(
   const credentials: string[] = [];
 
   for (const item of order.items) {
-    let stock = item.stockItem;
-    // getOrder already decrypted whatever came off `order.items`; the
-    // substitution branch below re-reads its row straight off Prisma and so
-    // has to decrypt for itself. Keeping the plaintext in its own variable is
-    // what lets this stop calling decryptCredentials on an already-decrypted
-    // string (it used to lean on the legacy passthrough, which Fase 6's
-    // strict mode removes).
-    let credential = stock ? stock.credentials : null;
-    if (!stock || stock.status !== StockStatus.RESERVED) {
+    // Warranty runs from the sale, using the days frozen onto the line at
+    // checkout. Zero days means the SKU carries no warranty, so leave the
+    // column null rather than stamping an already-expired instant.
+    const warrantyDays = Number(item.warrantyDaysSnapshot ?? 0);
+    const soldData = {
+      status: StockStatus.SOLD,
+      soldAt: now,
+      soldToOrderId: order.id,
+      soldToOrderItemId: item.id,
+      warrantyUntil: warrantyDays > 0 ? addDays(now, warrantyDays) : null,
+    };
+    // Flip a row to SOLD only if THIS order still holds it. `order` is a
+    // snapshot read before the claim above, and the reserved row can have
+    // moved on since: an admin's markStockDead locks the RESERVED row, sets it
+    // DEAD and commits in between. An unconditional update off the snapshot
+    // would overwrite that DEAD with SOLD and hand the buyer a credential the
+    // admin had just declared dead. Postgres re-checks this WHERE against the
+    // committed row after waiting out any lock on it, so a row that died in
+    // the meantime matches nothing and the line falls through to substitution
+    // below, exactly as if it had died before approve read the order.
+    const sellIfStillHeld = async (stockId: number): Promise<boolean> => {
+      const res = await db.stockItem.updateMany({
+        where: { id: stockId, status: StockStatus.RESERVED, orderId: order.id, deletedAt: null },
+        data: soldData,
+      });
+      return res.count === 1;
+    };
+
+    const stock = item.stockItem;
+    let soldId: number | null =
+      stock !== null && stock.status === StockStatus.RESERVED && (await sellIfStillHeld(stock.id)) ? stock.id : null;
+    if (soldId === null) {
       const substitutedOut = stock;
       const replacement = await allocateOneAvailableStock(db, item.productId, order.id, actor, item.id);
       if (!replacement) {
@@ -1871,25 +1894,21 @@ export async function approveOrder(
         orderItemId: item.id,
         actor,
       });
-      stock = replacement;
-      credential = decryptStockCredentials(replacement.credentials, replacement.id);
+      // The replacement was reserved for this order inside this same
+      // transaction, so its row lock is ours until commit and this cannot
+      // lose — but a miss would mean selling a row we don't hold, so it is
+      // checked rather than assumed.
+      if (!(await sellIfStillHeld(replacement.id))) throw new Error(`Stock item ${replacement.id} was reserved for order ${order.id} but could not be marked sold.`);
+      soldId = replacement.id;
     }
-    // Warranty runs from the sale, using the days frozen onto the line at
-    // checkout. Zero days means the SKU carries no warranty, so leave the
-    // column null rather than stamping an already-expired instant.
-    const warrantyDays = Number(item.warrantyDaysSnapshot ?? 0);
-    await db.stockItem.update({
-      where: { id: stock.id },
-      data: {
-        status: StockStatus.SOLD,
-        soldAt: now,
-        soldToOrderId: order.id,
-        soldToOrderItemId: item.id,
-        warrantyUntil: warrantyDays > 0 ? addDays(now, warrantyDays) : null,
-      },
-    });
+    // Decrypt from the row as it is now, after the SOLD flip has locked it —
+    // never from the pre-claim snapshot. Throws on an unreadable credential,
+    // which rolls the whole approval back: a buyer must never be sent
+    // ciphertext or a placeholder.
+    const soldRow = await db.stockItem.findUniqueOrThrow({ where: { id: soldId }, select: { credentials: true } });
+    const credential = decryptStockCredentials(soldRow.credentials, soldId);
     await recordStockEvent(db, {
-      stockItemId: stock.id,
+      stockItemId: soldId,
       eventType: StockEventType.SOLD,
       fromStatus: StockStatus.RESERVED,
       toStatus: StockStatus.SOLD,
@@ -1897,7 +1916,7 @@ export async function approveOrder(
       orderItemId: item.id,
       actor,
     });
-    credentials.push(credential!);
+    credentials.push(credential);
   }
 
   await db.order.update({

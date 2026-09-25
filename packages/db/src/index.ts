@@ -45,6 +45,7 @@ export * from "./crud/setup";
 export * from "./crud/smtp";
 export * from "./crud/ownerEmail";
 export * from "./crud/integrity";
+export * from "./crud/stockIntegrity";
 export * from "./crud/storageMaintenance";
 export * from "./crud/nickname";
 export * from "./crud/productProviderMappings";

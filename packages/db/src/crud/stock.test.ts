@@ -5,7 +5,8 @@
  * twice. bulkAddStock now skips anything already AVAILABLE/RESERVED/SOLD for
  * the product, and de-dupes the incoming batch against itself.
  */
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
+import { logger } from "@app/core/logger";
 import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
@@ -691,6 +692,28 @@ describe("countStockItemsForStatuses", () => {
 });
 
 describe("searchStockCredentials", () => {
+  it("skips an unreadable row with a row-id warning and still returns the readable matches", async () => {
+    const { product } = sample;
+    await bulkAddStock(prisma, product.id, ["findme-ok@example.com:pw"]);
+    const good = JSON.parse(encryptCredentials("findme-bad@example.com:pw")) as Record<string, unknown>;
+    const bad = await prisma.stockItem.create({
+      data: {
+        productId: product.id,
+        credentials: JSON.stringify({ ...good, authTag: Buffer.alloc(16).toString("base64") }),
+        status: StockStatus.AVAILABLE,
+      },
+    });
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    try {
+      const results = await searchStockCredentials(prisma, product.id, [StockStatus.AVAILABLE], "findme");
+      expect(results.map((r) => decryptCredentials(r.credentials))).toEqual(["findme-ok@example.com:pw"]);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]![0]).toMatchObject({ stockItemId: bad.id });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("finds a row by substring of credentials", async () => {
     const { product } = sample;
 

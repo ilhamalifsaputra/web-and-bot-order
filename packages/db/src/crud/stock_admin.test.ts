@@ -3,12 +3,14 @@
  * remaining (AVAILABLE) credentials for download. SOLD rows and anything tied
  * to an order item are never deleted, so fulfilled-order history stays intact.
  */
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
 import { bulkDeleteStock, deleteStockItem, listAvailableCredentials } from "@app/db";
 import { StockActorType, StockEventType, StockStatus } from "@app/core/enums";
+import { encryptCredentials, CredentialKeyConfigError } from "@app/core/credentialCrypto";
+import { logger } from "@app/core/logger";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -215,5 +217,38 @@ describe("listAvailableCredentials", () => {
     expect(creds).toHaveLength(3);
     expect(creds).not.toContain("user1@example.com:pwd1");
     expect(creds).not.toContain("user2@example.com:pwd2");
+  });
+
+  it("skips an unreadable row with a row-id warning instead of failing the whole export", async () => {
+    const { product } = sample;
+    const [first] = await idsFor(product.id, StockStatus.AVAILABLE);
+    const good = JSON.parse(encryptCredentials("gone@example.com:pw")) as Record<string, unknown>;
+    await prisma.stockItem.update({
+      where: { id: first },
+      data: { credentials: JSON.stringify({ ...good, authTag: Buffer.alloc(16).toString("base64") }) },
+    });
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    try {
+      const creds = await listAvailableCredentials(prisma, product.id);
+      expect(creds).toHaveLength(4);
+      expect(creds).not.toContain("user1@example.com:pwd1");
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]![0]).toMatchObject({ stockItemId: first });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("still fails loudly when the encryption key is missing", async () => {
+    const { product } = sample;
+    const [first] = await idsFor(product.id, StockStatus.AVAILABLE);
+    await prisma.stockItem.update({ where: { id: first }, data: { credentials: encryptCredentials("x@example.com:pw") } });
+    const saved = process.env.CREDENTIAL_ENCRYPTION_KEY;
+    delete process.env.CREDENTIAL_ENCRYPTION_KEY;
+    try {
+      await expect(listAvailableCredentials(prisma, product.id)).rejects.toBeInstanceOf(CredentialKeyConfigError);
+    } finally {
+      process.env.CREDENTIAL_ENCRYPTION_KEY = saved;
+    }
   });
 });

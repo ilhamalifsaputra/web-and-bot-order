@@ -34,6 +34,7 @@ import {
   listUserOrders,
   countUserOrders,
   getOrderByCodeFull,
+  getOrderByCodeFullForDisplay,
   updateOrderCustomerData,
   listUserDeliveredOrders,
   listUserTickets,
@@ -231,7 +232,8 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
   app.get<{ Params: { code: string } }>("/account/orders/:code", async (req, reply) => {
     const customer = await requireCustomer(req, reply);
     if (!customer) return;
-    const order = await getOrderByCodeFull(prisma, req.params.code);
+    // Display-only reader: one unreadable credential shows as null, not a 500.
+    const order = await getOrderByCodeFullForDisplay(prisma, req.params.code);
     // Ownership check — 404 (not 403) so codes can't be probed. A
     // WALLET_TOPUP order is also 404'd here: it's not a "My Orders" purchase
     // (it's already visible via the wallet ledger), so it should not be

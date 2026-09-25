@@ -554,7 +554,7 @@ export async function getOrder(db: Db, orderId: number) {
  * getOrder/getOrderByCodeFull (which throw on an unreadable value), a page
  * through getOrderByCodeFullForDisplay.
  */
-export function getOrderRaw(db: Db, orderId: number) {
+export async function getOrderRaw(db: Db, orderId: number) {
   return db.order.findUnique({ where: { id: orderId }, include: fullInclude });
 }
 

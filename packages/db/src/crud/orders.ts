@@ -500,11 +500,12 @@ export async function uniqueOrderCode(db: Db): Promise<string> {
  * Decrypts `item.stockItem.credentials` in place on an order fetched with
  * `fullInclude` — `StockItem.credentials` is encrypted at rest (Task 2, see
  * @app/core/credentialCrypto). This is the single choke point: every caller
- * of getOrder/getOrderByCodeFull/listUserDeliveredOrders (buyer-facing order
+ * of getOrder/getOrderByCodeFull (buyer-facing order
  * detail in the bot and storefront, the account-file DM builders, the
  * web-admin order detail page) reads `stockItem.credentials` expecting
  * plaintext, and all of them ultimately source the row from one of these
- * three functions. Returns `order` unchanged if it's null (not-found) or has
+ * two functions (the state machine reads through getOrderRaw instead, and
+ * never decrypts). Returns `order` unchanged if it's null (not-found) or has
  * no items with stock attached — cheap no-op for every non-manual-account
  * order kind. `Order.deliveredContent` (encrypted since Fase 6c) is decrypted
  * here too, throwing on an unreadable value like the stock credentials do.
@@ -538,6 +539,23 @@ function withDecryptedStockCredentials<
 export async function getOrder(db: Db, orderId: number) {
   const order = await db.order.findUnique({ where: { id: orderId }, include: fullInclude });
   return order ? withDecryptedStockCredentials(order) : order;
+}
+
+/**
+ * getOrder WITHOUT decrypting anything: `stockItem.credentials` and
+ * `deliveredContent` come back exactly as stored (ciphertext). For the order
+ * state machine only — cancel, reject, credit-to-balance, approve's pre-claim
+ * read, the expiry sweep — which decides on statuses, ids and amounts and
+ * never needs a secret. Decrypting there made one unreadable row (a corrupt
+ * value, or legacy plaintext once ALLOW_LEGACY_PLAINTEXT=false) block the
+ * order from ever being cancelled or expired, leaking its reservation.
+ *
+ * Never deliver, display or log what this returns: a delivery reads through
+ * getOrder/getOrderByCodeFull (which throw on an unreadable value), a page
+ * through getOrderByCodeFullForDisplay.
+ */
+export function getOrderRaw(db: Db, orderId: number) {
+  return db.order.findUnique({ where: { id: orderId }, include: fullInclude });
 }
 
 export function getOrderByCode(db: Db, orderCode: string) {
@@ -1260,14 +1278,21 @@ export function countUserPendingOrders(db: Db, userId: number) {
   });
 }
 
+/**
+ * A buyer's delivered PRODUCT orders, for lists that only need ids and product
+ * names (the storefront's "orders to review"). Carries no secret at all — no
+ * stock row, no deliveredContent — so it never decrypts, and one unreadable
+ * row can't fail the page. PRODUCT only: a wallet top-up can't be reviewed,
+ * and letting top-ups in would eat the row limit.
+ */
 export async function listUserDeliveredOrders(db: Db, userId: number, limit = 50) {
   const orders = await db.order.findMany({
-    where: { userId, status: OrderStatus.DELIVERED },
+    where: { userId, status: OrderStatus.DELIVERED, kind: OrderKind.PRODUCT },
     orderBy: { createdAt: "desc" },
     take: limit,
-    include: { items: { include: { product: true, stockItem: true } } },
+    include: { items: { include: { product: true } } },
   });
-  return orders.map(withDecryptedStockCredentials);
+  return orders.map(withoutDeliveredContent);
 }
 
 export async function attachPaymentProof(
@@ -1452,7 +1477,7 @@ export function listExpiringPendingPayments(db: Db, now: Date, until: Date, limi
  */
 async function releaseOrderHolds(
   db: Db,
-  order: NonNullable<Awaited<ReturnType<typeof getOrder>>>,
+  order: NonNullable<Awaited<ReturnType<typeof getOrderRaw>>>,
   actor: StockEventActor,
   occurredAt: Date = new Date(),
 ) {
@@ -1558,7 +1583,7 @@ async function assertNotPaidWithoutCredit(
  * `user_cancelled` anti-abuse guard below).
  */
 export async function cancelOrder(db: Db, orderId: number, reason: string, actor: StockEventActor) {
-  const order = await getOrder(db, orderId);
+  const order = await getOrderRaw(db, orderId);
   if (!order) throw new ValidationError("error.order_not_found");
   if (
     order.status === OrderStatus.CANCELLED ||
@@ -1596,7 +1621,10 @@ export async function cancelOrder(db: Db, orderId: number, reason: string, actor
   });
   await transitionOrderStatus(db, { orderId, from: order.status, to: OrderStatus.CANCELLED, meta: reason });
   logger.info(`Cancelled order ${order.orderCode} — reason: ${reason}`);
-  return getOrder(db, orderId);
+  // Raw on purpose, like the read above: callers only need the code and the
+  // buyer, and a decrypt here would roll the whole cancel back over one
+  // unreadable row the cancel never needed.
+  return getOrderRaw(db, orderId);
 }
 
 /**
@@ -1622,7 +1650,7 @@ export async function creditOrderToBalance(
   db: Db,
   args: { orderId: number; amount?: Decimal.Value; adminId: number; binanceTxId?: string | null },
 ): Promise<{ credited: Decimal; currency: "IDR" | "USDT" }> {
-  const order = await getOrder(db, args.orderId);
+  const order = await getOrderRaw(db, args.orderId);
   if (!order) throw new ValidationError("error.order_not_found");
 
   const terminal: string[] = [
@@ -1708,7 +1736,7 @@ export async function rejectOrder(
   orderId: number,
   args: { adminId: number; reason: string },
 ) {
-  const order = await getOrder(db, orderId);
+  const order = await getOrderRaw(db, orderId);
   if (!order) throw new ValidationError("error.order_not_found");
   // PROCESSING = a paid manual/manual_with_info order awaiting hand-fulfilment
   // (settlePaidOrder's manual branch) — legal per LEGAL_TRANSITIONS so an admin
@@ -1744,7 +1772,8 @@ export async function rejectOrder(
     meta: `by admin_id=${args.adminId}: ${args.reason}`,
   });
   logger.info(`Rejected order ${order.orderCode} by admin ${args.adminId} — reason: ${args.reason}`);
-  return getOrder(db, orderId);
+  // Raw for the same reason as cancelOrder's return.
+  return getOrderRaw(db, orderId);
 }
 
 /**
@@ -1767,7 +1796,10 @@ export async function approveOrder(
   orderId: number,
   args: { adminId: number },
 ): Promise<{ order: NonNullable<Awaited<ReturnType<typeof getOrder>>>; credentials: string[] }> {
-  const order = await getOrder(db, orderId);
+  // Raw: nothing before the delivery loop needs a secret, and the loop
+  // decrypts each row itself from the row it has just sold (and throws there,
+  // rolling the approval back, if that row is unreadable).
+  const order = await getOrderRaw(db, orderId);
   if (!order) throw new ValidationError("error.order_not_found");
   if (order.kind === OrderKind.WALLET_TOPUP) {
     throw new ValidationError("error.order_is_wallet_topup");
@@ -2688,7 +2720,8 @@ export async function updateOrderCustomerData(
   orderId: number,
   answers: unknown,
 ): Promise<OrderWithIncludes> {
-  const order = await getOrder(db, orderId);
+  // Raw reads: editing the buyer's answers needs no secret (see getOrderRaw).
+  const order = await getOrderRaw(db, orderId);
   if (!order) throw new ValidationError("error.order_not_found");
   if (order.status !== OrderStatus.PROCESSING) {
     throw new ValidationError("error.order_not_processing");
@@ -2701,7 +2734,7 @@ export async function updateOrderCustomerData(
     where: { id: orderId },
     data: { customerData: JSON.stringify(normalized) },
   });
-  const refreshed = await getOrder(db, orderId);
+  const refreshed = await getOrderRaw(db, orderId);
   return refreshed!;
 }
 

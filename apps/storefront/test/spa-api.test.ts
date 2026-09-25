@@ -3016,6 +3016,39 @@ describe("GET/PATCH /api/v1/account/orders/:code (Task 10: PROCESSING info edit 
     }
   });
 
+  // Neither route needs a secret, so an unreadable one on the order must not
+  // turn them into a 500 (final review F2).
+  function unreadable(plain: string): string {
+    const good = JSON.parse(encryptLegacyV1(plain)) as Record<string, unknown>;
+    return JSON.stringify({ ...good, authTag: Buffer.alloc(16).toString("base64") });
+  }
+
+  it("PATCH info still saves when the order carries an unreadable delivered_content", async () => {
+    const orderCode = await makeProcessingOrder([{ game_id: "player1" }]);
+    await prisma.order.update({ where: { orderCode }, data: { deliveredContent: unreadable("user: y\npass: hunter5") } });
+    const res = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/account/orders/${orderCode}/info`,
+      headers: { cookie, "x-csrf-token": csrf },
+      payload: { customer_data: [{ game_id: "fixed-id" }] },
+    });
+    expect(res.statusCode).toBe(200);
+    const stored = await prisma.order.findUniqueOrThrow({ where: { orderCode } });
+    expect(JSON.parse(stored.customerData!)).toEqual([{ game_id: "fixed-id" }]);
+  });
+
+  it("GET /account/reviews still lists a delivered order whose delivered_content is unreadable", async () => {
+    const orderCode = await makeProcessingOrder([{ game_id: "player1" }]);
+    await prisma.order.update({
+      where: { orderCode },
+      data: { status: OrderStatus.DELIVERED, deliveredContent: unreadable("user: z\npass: hunter6") },
+    });
+    const res = await app.inject({ method: "GET", url: "/api/v1/account/reviews", headers: { cookie } });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().pending.map((p: { code: string }) => p.code)).toContain(orderCode);
+    expect(res.body).not.toContain("hunter6");
+  });
+
   it("PATCH info: anonymous 401s, wrong CSRF 403s", async () => {
     const orderCode = await makeProcessingOrder([{ game_id: "player1" }]);
     const anon = await app.inject({

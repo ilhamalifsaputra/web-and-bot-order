@@ -15,7 +15,7 @@
  * file — including error messages, which must stay structural ("missing
  * field X") and never interpolate the value under (de/en)cryption.
  */
-import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, randomBytes, hkdfSync, createHmac } from "node:crypto";
 // Read directly from process.env rather than the validated `config` singleton
 // (@app/core/config): `config` is parsed once at module import time, which
 // would make the key impossible to vary between tests (see password.ts's
@@ -161,4 +161,96 @@ export function decryptCredentials(stored: string): string {
     decipher.final(),
   ]);
   return plaintext.toString("utf8");
+}
+
+// ── Stock traceability hardening plan, Fase 2 ──────────────────────────────
+// identityFingerprint/credentialFingerprint (StockItem, Fase 1 schema) are
+// keyed HMACs so DB read access alone can never confirm a guessed credential
+// offline (see schema.prisma's comment on those columns). The HMAC key is
+// derived via HKDF from the SAME CREDENTIAL_ENCRYPTION_KEY material used for
+// AES-GCM above, but cryptographically separated from it by a distinct HKDF
+// `info` string — this index key can never be reused to decrypt a
+// credentials envelope, and the AES key can never be reused to forge a
+// fingerprint.
+
+const INDEX_KEY_LENGTH_BYTES = 32;
+const INDEX_KEY_INFO = "trustance/credential-index/v1";
+
+/**
+ * Derives a 32-byte key for computing keyed HMAC fingerprints
+ * (identityFingerprint/credentialFingerprint on StockItem), via HKDF from
+ * the SAME `CREDENTIAL_ENCRYPTION_KEY` material used for AES-GCM — but
+ * cryptographically separated from it by a distinct HKDF `info` string, so
+ * this index key can never be reused to decrypt a credentials envelope (and
+ * vice versa). Deliberately does NOT feed into `keyForVersion`/AES at all;
+ * this is purely for the HMAC fingerprint use case.
+ */
+export function deriveCredentialIndexKey(): Buffer {
+  // Rotating CREDENTIAL_ENCRYPTION_KEY changes this key and orphans every stored fingerprint (re-run the backfill).
+  const masterKey = keyForVersion(CURRENT_KEY_VERSION);
+  return Buffer.from(
+    hkdfSync("sha256", masterKey, Buffer.alloc(0), Buffer.from(INDEX_KEY_INFO, "utf8"), INDEX_KEY_LENGTH_BYTES),
+  );
+}
+
+interface IdentitySplit {
+  /** Raw text before the identity segment's leading delimiter, or null if the identity is first. */
+  before: string | null;
+  identity: string;
+  /** Raw text after the identity segment's trailing delimiter, or null if the identity is last. */
+  after: string | null;
+}
+
+/** Splits on ":"/"|" the same way `redactCredentials` (@app/core/formatters)
+ * does. The identity is the first segment containing "@"; with no "@" it is
+ * the first segment (the whole string for a single-segment credential). Text
+ * around it is returned raw so password delimiters/whitespace survive. */
+function splitIdentity(plaintext: string): IdentitySplit {
+  const tokens = plaintext.split(/([:|])/); // segments at even indexes, delimiters at odd ones
+  const segmentCount = (tokens.length + 1) / 2;
+  let index = 0;
+  for (let i = 0; i < segmentCount; i++) {
+    if (tokens[i * 2]!.includes("@")) {
+      index = i;
+      break;
+    }
+  }
+  return {
+    before: index > 0 ? tokens.slice(0, index * 2 - 1).join("") : null,
+    identity: tokens[index * 2]!,
+    after: index < segmentCount - 1 ? tokens.slice(index * 2 + 2).join("") : null,
+  };
+}
+
+function canonicalIdentity(raw: string): string {
+  return raw.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+/** Trimmed, whitespace-collapsed, lowercased identity segment only. */
+export function normalizeIdentity(plaintext: string): string {
+  return canonicalIdentity(splitIdentity(plaintext).identity);
+}
+
+/** Canonical form of the WHOLE credential for fingerprinting: the identity
+ * segment is normalized as in normalizeIdentity, the delimiters on either
+ * side of it become ":" (so "email|pw" and "email:pw" match) with the
+ * whitespace hugging them trimmed, and every other character — password
+ * case, inner whitespace, inner ":"/"|" — is kept exactly. */
+export function normalizeCredential(plaintext: string): string {
+  const { before, identity, after } = splitIdentity(plaintext);
+  const parts: string[] = [];
+  if (before !== null) parts.push(before.trim());
+  parts.push(canonicalIdentity(identity));
+  if (after !== null) parts.push(after.trim());
+  return parts.join(":");
+}
+
+/** HMAC-SHA256(indexKey, normalizeIdentity(plaintext)), hex-encoded. */
+export function computeIdentityFingerprint(plaintext: string): string {
+  return createHmac("sha256", deriveCredentialIndexKey()).update(normalizeIdentity(plaintext)).digest("hex");
+}
+
+/** HMAC-SHA256(indexKey, normalizeCredential(plaintext)), hex-encoded. */
+export function computeCredentialFingerprint(plaintext: string): string {
+  return createHmac("sha256", deriveCredentialIndexKey()).update(normalizeCredential(plaintext)).digest("hex");
 }

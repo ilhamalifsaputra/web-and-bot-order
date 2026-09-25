@@ -4133,6 +4133,17 @@ describe("admin handlers", () => {
     expect(markup).toContain("205");
   });
 
+  // Regression: the ticket list header used listOpenTickets(prisma, 50).length,
+  // so more than 50 open tickets showed a stuck "50 open ticket(s)".
+  it("showTicketsAdmin's header shows the true open-ticket count past the 50-row page cap", async () => {
+    await prisma.supportTicket.createMany({
+      data: Array.from({ length: 55 }, (_, i) => ({ userId: sample.user.id, message: `open ${i}` })),
+    });
+    const { ctx, sink } = adminCtx({ callbackData: "v1:adm:ticket:menu" });
+    await handleAdminCallback(ctx, "v1:adm:ticket:menu".split(":"));
+    expect(sentIncludes(sink, "55 open ticket(s)")).toBe(true);
+  });
+
   it("showDashboard's Pending verifications line shows the true count past the old 200-row page cap", async () => {
     await prisma.order.createMany({
       data: Array.from({ length: 205 }, (_, i) => ({

@@ -36,6 +36,7 @@ import {
   getBulkPricingForDenomination,
   deleteBulkPricing,
   listOpenTickets,
+  countOpenTickets,
   closeTicket,
   enqueueTicketClosedDm,
   logAdminAction,
@@ -614,7 +615,9 @@ async function showTicketsAdmin(ctx: MyContext): Promise<void> {
     await adminEdit(ctx, t(ctx, "admin.hdr_tickets_none"), akb.backToAdminKb(lang));
     return;
   }
-  await adminEdit(ctx, t(ctx, "admin.hdr_tickets", { count: tickets.length }), akb.ticketsListKb(tickets, lang));
+  // The header's count is the true total; `tickets` is capped at 50 buttons.
+  const total = await countOpenTickets(prisma);
+  await adminEdit(ctx, t(ctx, "admin.hdr_tickets", { count: total }), akb.ticketsListKb(tickets, lang));
 }
 
 async function closeTicketAdmin(ctx: MyContext, ticketId: number): Promise<void> {

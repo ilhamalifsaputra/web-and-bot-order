@@ -423,8 +423,6 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
     const stockId = Number((req.params as { stockId: string }).stockId);
     const body = (req.body ?? {}) as Record<string, unknown>;
     const note = (typeof body.note === "string" ? body.note.trim() : "");
-    const reason = parseDeadReason(body.reason);
-    if (!reason) return reply.code(400).send({ error: "Unknown dead reason." });
     const item = await getStockItem(prisma, stockId);
     if (!item) return reply.code(404).send({ error: "Stock item not found." });
 

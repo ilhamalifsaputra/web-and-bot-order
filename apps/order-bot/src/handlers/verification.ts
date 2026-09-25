@@ -15,6 +15,7 @@ import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import {
   prisma,
   listPendingVerifications,
+  countPendingVerifications,
   getOrder,
   getUserByTelegramId,
   settlePaidOrder,
@@ -63,7 +64,11 @@ export async function showQueue(ctx: MyContext): Promise<void> {
     await adminEdit(ctx, t(ctx, "admin.no_pending_verifications"), akb.backToAdminKb(lang));
     return;
   }
-  const text = t(ctx, "admin.hdr_pending_verifications", { count: orders.length });
+  // The header's count must be the true total, not `orders.length` — that list
+  // is capped at listPendingVerifications's own page size, so a queue larger
+  // than one page would otherwise show a stale, too-low number.
+  const total = await countPendingVerifications(prisma);
+  const text = t(ctx, "admin.hdr_pending_verifications", { count: total });
   await adminEdit(ctx, text, akb.verificationQueueKb(orders, lang));
 }
 

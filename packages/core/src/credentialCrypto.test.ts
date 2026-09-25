@@ -60,7 +60,12 @@ describe("credentialCrypto", () => {
   });
 
   it("decryptCredentials passes through a legacy plaintext value unchanged (backward compat before backfill)", () => {
-    expect(decryptCredentials("legacy@plain.com:pw")).toBe("legacy@plain.com:pw");
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    try {
+      expect(decryptCredentials("legacy@plain.com:pw")).toBe("legacy@plain.com:pw");
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("throws a structural error (never the value) when the key is unconfigured", () => {
@@ -285,13 +290,23 @@ describe("ALLOW_LEGACY_PLAINTEXT (Fase 6b — legacy plaintext passthrough flag)
     expect(legacyPlaintextPassthroughCount()).toBe(before + 1);
   });
 
-  it("warns without the plaintext when it passes a legacy row through", () => {
+  it("warns exactly once per process, without the plaintext, however many legacy rows pass through", async () => {
     delete process.env.ALLOW_LEGACY_PLAINTEXT;
-    decryptCredentials("warn-me@plain.com:Hunter2");
-    decryptCredentials("warn-me-again@plain.com:Hunter3");
-    for (const call of warn.mock.calls) expect(JSON.stringify(call)).not.toMatch(/Hunter|warn-me/);
-    // Warned at most once per process, so a scan over many legacy rows does not flood the log.
-    expect(warn.mock.calls.length).toBeLessThanOrEqual(1);
+    // Fresh module instances, so the once-per-process state starts from zero.
+    vi.resetModules();
+    const fresh = await import("./credentialCrypto");
+    const freshLogger = (await import("./logger")).logger;
+    const freshWarn = vi.spyOn(freshLogger, "warn").mockImplementation(() => undefined);
+    try {
+      fresh.decryptCredentials("warn-me@plain.com:Hunter2");
+      fresh.decryptCredentials("warn-me-again@plain.com:Hunter3");
+      fresh.decryptCredentials("warn-me-thrice@plain.com:Hunter4");
+      expect(freshWarn).toHaveBeenCalledTimes(1);
+      expect(fresh.legacyPlaintextPassthroughCount()).toBe(3);
+      expect(JSON.stringify(freshWarn.mock.calls)).not.toMatch(/Hunter|warn-me/);
+    } finally {
+      freshWarn.mockRestore();
+    }
   });
 
   it.each(["true", "1", "yes", "on", "", "anything-else"])("stays permissive for %j", (value) => {

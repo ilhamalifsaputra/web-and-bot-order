@@ -790,6 +790,7 @@ ditindaklanjuti.
    (bukan di route, bukan di handler bot) — kandidat untuk dihapus atau,
    kalau memang ditinggalkan sengaja sebagai helper test, didokumentasikan
    sebagai demikian.
+   **→ sudah terjawab, lihat docs/sales-metrics-contract.md:301-311**
 3. **Sumber timestamp `StockItemEvent` bercampur JS vs DB.** Sebagian besar
    penulisan (`IMPORTED`, `RESERVED`, `SOLD`, `MARKED_DEAD`, dst.) tidak
    memberi `occurredAt`, jadi memakai default kolom `now()` DI SISI DATABASE.

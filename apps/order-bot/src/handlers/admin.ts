@@ -12,7 +12,7 @@ import { config } from "@app/core/config";
 import { isAdmin } from "@app/core/runtime";
 import { Decimal } from "@app/core/money";
 import { ensureUtc } from "@app/core/datetime";
-import { UserRole, DeadReason, langCode } from "@app/core/enums";
+import { UserRole, DeadReason, langCode, OrderKind } from "@app/core/enums";
 import { logger } from "@app/core/logger";
 import { tryDecryptCredentials } from "@app/core/credentialCrypto";
 import {
@@ -363,7 +363,7 @@ async function exportReport(ctx: MyContext, period: string): Promise<void> {
   }
 
   const rows = await prisma.order.findMany({
-    where: { status: "DELIVERED", deliveredAt: { gte: since } },
+    where: { status: "DELIVERED", kind: OrderKind.PRODUCT, deliveredAt: { gte: since } },
     orderBy: { deliveredAt: "desc" },
   });
 

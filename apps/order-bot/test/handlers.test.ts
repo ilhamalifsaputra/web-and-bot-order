@@ -4542,6 +4542,47 @@ describe("admin handlers", () => {
     expect(answerOpts.show_alert).toBe(true);
   });
 
+  // exportReport counted a settled WALLET_TOPUP order (a DELIVERED row with
+  // deliveredAt stamped, same as a real sale) as a product sale in the CSV
+  // export — the query filtered on status + deliveredAt only, no kind. Fixed
+  // by adding kind: OrderKind.PRODUCT as a sibling where-clause key, matching
+  // listUserDeliveredOrders's existing pattern (packages/db/src/crud/orders.ts).
+  it("exportReport's CSV excludes settled wallet top-ups, counting only product sales", async () => {
+    const now = new Date();
+    await prisma.order.create({
+      data: {
+        orderCode: `PRODSALE-${Math.random()}`,
+        userId: sample.user.id,
+        subtotalAmount: "10000",
+        totalAmount: "10000",
+        status: OrderStatus.DELIVERED,
+        kind: OrderKind.PRODUCT,
+        deliveredAt: now,
+      },
+    });
+    await prisma.order.create({
+      data: {
+        orderCode: `TOPUP-${Math.random()}`,
+        userId: sample.user.id,
+        subtotalAmount: "50000",
+        totalAmount: "50000",
+        status: OrderStatus.DELIVERED,
+        kind: OrderKind.WALLET_TOPUP,
+        deliveredAt: now,
+      },
+    });
+
+    const { ctx, sink } = adminCtx({ callbackData: "v1:adm:reports:csv:today" });
+    await handleAdminCallback(ctx, "v1:adm:reports:csv:today".split(":"));
+
+    const docs = calls(sink, "replyWithDocument");
+    expect(docs.length).toBe(1);
+    // The caption reports the row count that was actually exported — asserting
+    // on it proves the WALLET_TOPUP order was excluded (1, not 2).
+    expect(sentIncludes(sink, "1 delivered orders")).toBe(true);
+    expect(sentIncludes(sink, "2 delivered orders")).toBe(false);
+  });
+
   it("dashboard / product / settings menus render", async () => {
     for (const data of ["v1:adm:dash", "v1:adm:prod:menu", "v1:adm:settings:menu", "v1:adm:vouch:menu"]) {
       const { ctx, sink } = adminCtx({ callbackData: data });

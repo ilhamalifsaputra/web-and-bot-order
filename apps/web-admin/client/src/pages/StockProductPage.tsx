@@ -7,6 +7,7 @@ import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
 import { StatusBadge } from "../components/shared/StatusBadge";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
+import { StockHistoryDialog } from "../components/shared/StockHistoryDialog";
 import { Pagination } from "../components/shared/Pagination";
 import { SearchBar } from "../components/shared/SearchBar";
 import { RestockRequestsHeader } from "../components/shared/RestockRequestsHeader";
@@ -17,7 +18,7 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { Eye, EyeOff, Copy, Check, Save, X, Ban, SquarePen, Lock, MoreVertical, Trash2 } from "lucide-react";
+import { Eye, EyeOff, Copy, Check, Save, X, Ban, SquarePen, Lock, MoreVertical, Trash2, History } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -145,6 +146,7 @@ export function StockProductPage() {
   const [copiedId, setCopiedId] = useState<number | null>(null);
   const [pendingMarkDead, setPendingMarkDead] = useState<StockItem | null>(null);
   const [deadReason, setDeadReason] = useState<string>(DEFAULT_DEAD_REASON);
+  const [historyItemId, setHistoryItemId] = useState<number | null>(null);
   const [pendingDelete, setPendingDelete] = useState<StockItem | null>(null);
 
   function changeTab(tab: string) {
@@ -488,6 +490,10 @@ export function StockProductPage() {
                             <SquarePen className="h-4 w-4" />
                             Edit Note
                           </DropdownMenuItem>
+                          <DropdownMenuItem onSelect={() => setHistoryItemId(item.id)}>
+                            <History className="h-4 w-4" />
+                            History
+                          </DropdownMenuItem>
                           {item.status !== "DEAD" && (
                             <>
                               <DropdownMenuSeparator />
@@ -659,6 +665,10 @@ export function StockProductPage() {
         >
           <DeadReasonSelect value={deadReason} onChange={setDeadReason} />
         </ConfirmDialog>
+      )}
+
+      {historyItemId !== null && (
+        <StockHistoryDialog stockItemId={historyItemId} onClose={() => setHistoryItemId(null)} />
       )}
 
       {pendingDelete && (

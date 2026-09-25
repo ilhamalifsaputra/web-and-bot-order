@@ -316,7 +316,7 @@ describe("StockProductPage", () => {
     render(<StockProductPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByRole("tab", { name: "Available (1)" })).toBeInTheDocument());
     // "Sold" groups SOLD + RESERVED (statusCounts.sold + statusCounts.reserved = 1 + 1).
-    expect(screen.getByRole("tab", { name: "Sold (2)" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Sold / Reserved (2)" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Dead (1)" })).toBeInTheDocument();
 
     // Available tab is the default view: item 101 visible, download link shown.
@@ -328,7 +328,7 @@ describe("StockProductPage", () => {
     // triggers a fresh fetch — queue its response before clicking.
     // Radix Tabs selects on mousedown (or focus), not click — see Tabs.Trigger's onMouseDown handler.
     fetchSpy.mockResolvedValueOnce(jsonResponse(soldResp));
-    fireEvent.mouseDown(screen.getByRole("tab", { name: "Sold (2)" }));
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Sold / Reserved (2)" }));
     expect(await screen.findByText("102")).toBeInTheDocument();
     expect(screen.getByText("103")).toBeInTheDocument();
     expect(screen.queryByText("101")).not.toBeInTheDocument();
@@ -480,7 +480,7 @@ describe("StockProductPage", () => {
 
     // Radix Tabs selects on mousedown, not click. New tab, new query key, new fetch.
     fetchSpy.mockResolvedValueOnce(jsonResponse(soldResp));
-    fireEvent.mouseDown(screen.getByRole("tab", { name: "Sold (1)" }));
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Sold / Reserved (1)" }));
     expect(await screen.findByText("••••••••")).toBeInTheDocument();
     expect(screen.queryByText("a@mail.com:Pw1")).not.toBeInTheDocument();
 

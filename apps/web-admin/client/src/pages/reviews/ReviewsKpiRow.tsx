@@ -17,7 +17,15 @@ export function ReviewsKpiRow({
   onNegativeClick,
   onHiddenClick,
 }: ReviewsKpiRowProps): JSX.Element {
-  const { data, isLoading } = useReviewsKpis();
+  const { data, isError } = useReviewsKpis();
+
+  // See OrdersKpiRow's identical comment: `!data`, not react-query's
+  // `isLoading`, is what actually distinguishes "nothing loaded yet or the
+  // fetch failed" from "a real (possibly zero) count arrived".
+  if (isError && !data) {
+    return <p className="mb-4 text-sm text-rust">Couldn't load review stats.</p>;
+  }
+  const isLoading = !data;
 
   return (
     <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">

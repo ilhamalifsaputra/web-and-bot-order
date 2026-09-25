@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { hkdfSync } from "node:crypto";
 import {
   encryptCredentials,
@@ -10,7 +10,10 @@ import {
   computeIdentityFingerprint,
   computeCredentialFingerprint,
   CredentialKeyConfigError,
+  assertCredentialKeyConfigured,
+  tryDecryptCredentials,
 } from "./credentialCrypto";
+import { logger } from "./logger";
 
 const ORIGINAL_KEY = process.env.CREDENTIAL_ENCRYPTION_KEY;
 
@@ -183,5 +186,80 @@ describe("credential fingerprints (Fase 2 — stock traceability hardening)", ()
     delete process.env.CREDENTIAL_ENCRYPTION_KEY;
     expect(() => deriveCredentialIndexKey()).toThrow(CredentialKeyConfigError);
     expect(() => deriveCredentialIndexKey()).toThrow(/CREDENTIAL_ENCRYPTION_KEY is not configured/);
+  });
+});
+
+describe("assertCredentialKeyConfigured (Fase 6a — boot-time key check)", () => {
+  afterEach(() => {
+    if (ORIGINAL_KEY === undefined) delete process.env.CREDENTIAL_ENCRYPTION_KEY;
+    else process.env.CREDENTIAL_ENCRYPTION_KEY = ORIGINAL_KEY;
+  });
+
+  it("passes silently when a valid 32-byte hex key is configured", () => {
+    process.env.CREDENTIAL_ENCRYPTION_KEY = "ab".repeat(32);
+    expect(() => assertCredentialKeyConfigured()).not.toThrow();
+  });
+
+  it("throws CredentialKeyConfigError when the key is unset", () => {
+    delete process.env.CREDENTIAL_ENCRYPTION_KEY;
+    expect(() => assertCredentialKeyConfigured()).toThrow(CredentialKeyConfigError);
+  });
+
+  it("throws CredentialKeyConfigError when the key has the wrong length", () => {
+    process.env.CREDENTIAL_ENCRYPTION_KEY = "ab".repeat(16);
+    expect(() => assertCredentialKeyConfigured()).toThrow(CredentialKeyConfigError);
+  });
+
+  it("throws CredentialKeyConfigError when the key is 64 characters but not hex", () => {
+    process.env.CREDENTIAL_ENCRYPTION_KEY = "zz".repeat(32);
+    expect(() => assertCredentialKeyConfigured()).toThrow(CredentialKeyConfigError);
+  });
+
+  it("never puts the key material in the error message", () => {
+    const bad = "ab".repeat(20);
+    process.env.CREDENTIAL_ENCRYPTION_KEY = bad;
+    try {
+      assertCredentialKeyConfigured();
+      expect.unreachable();
+    } catch (err) {
+      expect((err as Error).message).not.toContain(bad);
+    }
+  });
+});
+
+describe("tryDecryptCredentials (Fase 6a — guarded decrypt for display paths)", () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+  });
+  afterEach(() => {
+    warn.mockRestore();
+    if (ORIGINAL_KEY === undefined) delete process.env.CREDENTIAL_ENCRYPTION_KEY;
+    else process.env.CREDENTIAL_ENCRYPTION_KEY = ORIGINAL_KEY;
+  });
+
+  it("returns the plaintext of a readable envelope without logging", () => {
+    const stored = encryptCredentials("a@b.com:pw");
+    expect(tryDecryptCredentials(stored, { stockItemId: 7, purpose: "test" })).toBe("a@b.com:pw");
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("returns null and warns with the row id (never the content) for a tampered envelope", () => {
+    const envelope = JSON.parse(encryptCredentials("secret@b.com:Hunter2")) as { authTag: string };
+    envelope.authTag = Buffer.from("0000000000000000", "hex").toString("base64");
+    const stored = JSON.stringify(envelope);
+    expect(tryDecryptCredentials(stored, { stockItemId: 42, purpose: "the admin stock search" })).toBeNull();
+    expect(warn).toHaveBeenCalledTimes(1);
+    const logged = JSON.stringify(warn.mock.calls[0]);
+    expect(logged).toContain("42");
+    expect(logged).not.toContain("Hunter2");
+    expect(logged).not.toContain(envelope.authTag);
+    expect(logged).not.toContain((JSON.parse(stored) as { ciphertext: string }).ciphertext);
+  });
+
+  it("rethrows CredentialKeyConfigError instead of hiding a misconfigured key", () => {
+    const stored = encryptCredentials("a@b.com:pw");
+    delete process.env.CREDENTIAL_ENCRYPTION_KEY;
+    expect(() => tryDecryptCredentials(stored, { stockItemId: 1, purpose: "test" })).toThrow(CredentialKeyConfigError);
   });
 });

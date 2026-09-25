@@ -23,6 +23,7 @@ import { createCipheriv, createDecipheriv, randomBytes, hkdfSync, createHmac } f
 // isn't in the Env schema either). dotenv (config.ts's own import) already
 // loads the root .env before this runs, so a `.env`-only key still resolves.
 import "./config";
+import { logger } from "./logger";
 
 const ALGORITHM = "aes-256-gcm";
 const IV_LENGTH_BYTES = 12; // NIST-recommended GCM IV length.
@@ -161,6 +162,46 @@ export function decryptCredentials(stored: string): string {
     decipher.final(),
   ]);
   return plaintext.toString("utf8");
+}
+
+/**
+ * Boot-time check, called from each process's `start()` only (never from
+ * buildServer/buildApp, so tests that build an app without a key still run):
+ * fails fast with CredentialKeyConfigError when the key is missing or
+ * malformed, instead of the first stock upload or delivery discovering it.
+ * The round-trip canary proves the key actually works for AES-256-GCM.
+ */
+export function assertCredentialKeyConfigured(): void {
+  keyForVersion(CURRENT_KEY_VERSION);
+  const canary = "credential-key-canary";
+  if (decryptCredentials(encryptCredentials(canary)) !== canary) {
+    throw new CredentialKeyConfigError("CREDENTIAL_ENCRYPTION_KEY failed its encrypt/decrypt round-trip check.");
+  }
+}
+
+/**
+ * Guarded decrypt for DISPLAY and SEARCH paths only (admin lists, exports,
+ * previews): an unreadable row becomes null plus a warning naming the row,
+ * so one corrupt row cannot break the whole screen. Delivery paths must keep
+ * calling `decryptCredentials` so a failure throws and the delivery retries
+ * rather than handing a buyer nothing. A misconfigured key is not a per-row
+ * problem, so CredentialKeyConfigError is rethrown.
+ */
+export function tryDecryptCredentials(
+  stored: string,
+  ctx: { stockItemId: number | null; purpose: string },
+): string | null {
+  try {
+    return decryptCredentials(stored);
+  } catch (err) {
+    if (err instanceof CredentialKeyConfigError) throw err;
+    // Only the error's name: a message could echo part of the stored value.
+    logger.warn(
+      { stockItemId: ctx.stockItemId, errorName: err instanceof Error ? err.name : typeof err },
+      `Could not decrypt the credentials of stock item ${ctx.stockItemId ?? "(unknown)"} for ${ctx.purpose}; the row is skipped there. It is corrupted, tampered with, or was encrypted under a different key.`,
+    );
+    return null;
+  }
 }
 
 // ── Stock traceability hardening plan, Fase 2 ──────────────────────────────

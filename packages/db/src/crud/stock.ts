@@ -13,7 +13,8 @@
 import { StockStatus, StockEventType, StockActorType, DeadReason } from "@app/core/enums";
 import {
   encryptCredentials,
-  decryptCredentials,
+  encryptStockCredentials,
+  decryptStockCredentials,
   tryDecryptCredentials,
   computeCredentialFingerprint,
   computeIdentityFingerprint,
@@ -22,6 +23,9 @@ import {
 } from "@app/core/credentialCrypto";
 import type { Db } from "./_types";
 import { recordStockEvent, recordStockEvents, type StockEventActor } from "./stockEvents";
+
+/** Context of bulkAddStock's pre-insert placeholder (an empty string, never a secret, never visible outside its transaction). */
+const PENDING_STOCK_CREDENTIALS_AAD = "stock_items.credentials:pending-insert";
 
 /** Runs `fn` on the caller's transaction, or opens one when handed a bare client. */
 async function inTransaction<T>(db: Db, fn: (tx: Db) => Promise<T>): Promise<T> {
@@ -103,6 +107,10 @@ export interface BulkAddStockResult {
  * Each new row holds `activeCredentialKey` (unique) while live, so even a
  * writer that bypasses the advisory lock below can't insert a second live
  * copy; a row that loses on that constraint is counted as a duplicate.
+ *
+ * Each row's envelope is bound to its own id (Fase 6d), so every inserted row
+ * costs one extra UPDATE inside the transaction; fine for the small-to-medium
+ * uploads the admin bulk-add form sends.
  */
 export async function bulkAddStock(
   db: Db,
@@ -199,27 +207,34 @@ export async function bulkAddStock(
       select: { id: true },
     });
 
+    // The envelope's AAD names the row id, which only exists after the insert:
+    // insert with a secret-free placeholder, then write each row's real
+    // envelope in this same transaction (nothing outside it ever sees the placeholder).
     // skipDuplicates: a claim held by a live row the dedup read didn't see is a duplicate, not a crash.
+    const placeholder = encryptCredentials("", PENDING_STOCK_CREDENTIALS_AAD);
     const created = fresh.length
       ? await tx.stockItem.createManyAndReturn({
-          data: fresh.map(([fp, { plain, identity }]) => {
-            const stored = encryptCredentials(plain);
-            return {
-              productId,
-              credentials: stored,
-              status: StockStatus.AVAILABLE,
-              importBatchId: batch.id,
-              addedByAdminId: adminId,
-              credentialFingerprint: fp,
-              identityFingerprint: identity,
-              credentialKeyVersion: (JSON.parse(stored) as CredentialEnvelope).keyVersion,
-              activeCredentialKey: stockClaimKey(productId, fp),
-            };
-          }),
+          data: fresh.map(([fp, { identity }]) => ({
+            productId,
+            credentials: placeholder,
+            status: StockStatus.AVAILABLE,
+            importBatchId: batch.id,
+            addedByAdminId: adminId,
+            credentialFingerprint: fp,
+            identityFingerprint: identity,
+            activeCredentialKey: stockClaimKey(productId, fp),
+          })),
           select: { id: true, identityFingerprint: true, credentialFingerprint: true },
           skipDuplicates: true,
         })
       : [];
+    for (const row of created) {
+      const stored = encryptStockCredentials(incoming.get(row.credentialFingerprint!)!.plain, row.id);
+      await tx.stockItem.update({
+        where: { id: row.id },
+        data: { credentials: stored, credentialKeyVersion: (JSON.parse(stored) as CredentialEnvelope).keyVersion },
+      });
+    }
 
     const identityCounts = new Map<string, number>();
     for (const r of created) identityCounts.set(r.identityFingerprint!, (identityCounts.get(r.identityFingerprint!) ?? 0) + 1);
@@ -425,7 +440,7 @@ export async function listAvailableCredentials(db: Db, productId: number): Promi
 export async function revealStockCredentials(db: Db, stockId: number, adminId: number): Promise<string | null> {
   const item = await db.stockItem.findFirst({ where: { id: stockId, deletedAt: null }, select: { credentials: true } });
   if (!item) return null;
-  const credentials = decryptCredentials(item.credentials);
+  const credentials = decryptStockCredentials(item.credentials, stockId);
   await recordStockEvent(db, {
     stockItemId: stockId,
     eventType: StockEventType.CREDENTIAL_REVEALED,

@@ -41,7 +41,8 @@ import { Decimal } from "@app/core/money";
 import { ValidationError } from "@app/core/errors";
 import { createCategory, createCatalogProduct, createDenomination, updateDenomination } from "./catalog";
 import { createGuestUser } from "./webauth";
-import { encryptCredentials, encryptDeliveredContent } from "@app/core/credentialCrypto";
+import { CredentialEnvelopeError, credentialEnvelopeVersion, encryptDeliveredContent } from "@app/core/credentialCrypto";
+import { encryptLegacyV1, useEnvelopeWriteV2 } from "../../../../tests/helpers/envelopeFlag";
 import { logger } from "@app/core/logger";
 
 describe("service activation at order creation", () => {
@@ -1625,7 +1626,7 @@ describe("order credential decrypt: display reader is guarded, delivery readers 
   async function orderWithTamperedStock() {
     const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
     const stockItemId = order.items[0]!.stockItemId!;
-    const good = JSON.parse(encryptCredentials("tampered@example.com:pw")) as Record<string, unknown>;
+    const good = JSON.parse(encryptLegacyV1("tampered@example.com:pw")) as Record<string, unknown>;
     await prisma.stockItem.update({
       where: { id: stockItemId },
       data: { credentials: JSON.stringify({ ...good, authTag: Buffer.alloc(16).toString("base64") }) },
@@ -1674,7 +1675,7 @@ describe("Order.deliveredContent is decrypted at the order read choke points (Fa
   }
 
   it("getOrder, getOrderByCodeFull, listUserDeliveredOrders and the display reader return the plaintext of an encrypted value", async () => {
-    const order = await deliveredOrderWith(encryptDeliveredContent("user:acc1 pass:Hunter2"));
+    const order = await deliveredOrderWith(encryptLegacyV1("user:acc1 pass:Hunter2"));
     expect((await getOrder(prisma, order.id))!.deliveredContent).toBe("user:acc1 pass:Hunter2");
     expect((await getOrderByCodeFull(prisma, order.orderCode))!.deliveredContent).toBe("user:acc1 pass:Hunter2");
     expect((await getOrderByCodeFullForDisplay(prisma, order.orderCode))!.deliveredContent).toBe("user:acc1 pass:Hunter2");
@@ -1689,7 +1690,7 @@ describe("Order.deliveredContent is decrypted at the order read choke points (Fa
   });
 
   it("delivery readers throw on a tampered value; the display reader shows null with an order-id warning and no content", async () => {
-    const good = JSON.parse(encryptDeliveredContent("user:x pass:Hunter2")) as Record<string, unknown>;
+    const good = JSON.parse(encryptLegacyV1("user:x pass:Hunter2")) as Record<string, unknown>;
     const order = await deliveredOrderWith(JSON.stringify({ ...good, authTag: Buffer.alloc(16).toString("base64") }));
     await expect(getOrder(prisma, order.id)).rejects.toThrow();
     await expect(getOrderByCodeFull(prisma, order.orderCode)).rejects.toThrow();
@@ -1703,5 +1704,73 @@ describe("Order.deliveredContent is decrypted at the order read choke points (Fa
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+describe.each([false, true])("order read choke points with CREDENTIAL_ENVELOPE_WRITE_V2 %s (Fase 6d)", (on) => {
+  useEnvelopeWriteV2(on);
+  let sample: SampleData;
+  beforeEach(async () => {
+    await resetDb(prisma);
+    sample = await buildSampleData(prisma);
+  });
+
+  async function deliveredOrder() {
+    const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    await prisma.order.update({ where: { id: order.id }, data: { status: "DELIVERED" } });
+    return order;
+  }
+
+  it("deliveredContent bound to its order reads back through every order reader", async () => {
+    const order = await deliveredOrder();
+    const stored = encryptDeliveredContent("user:6d pass:Hunter2", order.id);
+    expect(credentialEnvelopeVersion(stored)).toBe(on ? 2 : 1);
+    await prisma.order.update({ where: { id: order.id }, data: { deliveredContent: stored } });
+
+    expect((await getOrder(prisma, order.id))!.deliveredContent).toBe("user:6d pass:Hunter2");
+    expect((await getOrderByCodeFull(prisma, order.orderCode))!.deliveredContent).toBe("user:6d pass:Hunter2");
+    expect((await getOrderByCodeFullForDisplay(prisma, order.orderCode))!.deliveredContent).toBe("user:6d pass:Hunter2");
+    const listed = await listUserDeliveredOrders(prisma, sample.user.id);
+    expect(listed.find((o) => o.id === order.id)!.deliveredContent).toBe("user:6d pass:Hunter2");
+  });
+
+  it("deliveredContent copied onto another order only reads there when it is v1", async () => {
+    const source = await deliveredOrder();
+    const target = await deliveredOrder();
+    await prisma.order.update({
+      where: { id: target.id },
+      data: { deliveredContent: encryptDeliveredContent("SN-COPIED", source.id) },
+    });
+    if (!on) {
+      expect((await getOrder(prisma, target.id))!.deliveredContent).toBe("SN-COPIED");
+      return;
+    }
+    await expect(getOrder(prisma, target.id)).rejects.toThrow(CredentialEnvelopeError);
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    try {
+      expect((await getOrderByCodeFullForDisplay(prisma, target.orderCode))!.deliveredContent).toBeNull();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("stock credentials imported under the flag read back through the delivery and display readers", async () => {
+    const denom = await createDenomination(prisma, {
+      productId: sample.parentProduct.id,
+      name: "6d denom",
+      type: "SHARED",
+      durationLabel: "1 month",
+      price: "5.00",
+    });
+    await bulkAddStock(prisma, denom.id, ["order-6d@x.com:pw"]);
+    const order = (await createOrderDirect(prisma, { user: sample.user, productId: denom.id, quantity: 1 }))!;
+    const row = await prisma.stockItem.findUniqueOrThrow({ where: { id: order.items[0]!.stockItemId! } });
+    expect(credentialEnvelopeVersion(row.credentials)).toBe(on ? 2 : 1);
+
+    expect((await getOrder(prisma, order.id))!.items[0]!.stockItem!.credentials).toBe("order-6d@x.com:pw");
+    expect((await getOrderByCodeFull(prisma, order.orderCode))!.items[0]!.stockItem!.credentials).toBe("order-6d@x.com:pw");
+    expect((await getOrderByCodeFullForDisplay(prisma, order.orderCode))!.items[0]!.stockItem!.credentials).toBe(
+      "order-6d@x.com:pw",
+    );
   });
 });

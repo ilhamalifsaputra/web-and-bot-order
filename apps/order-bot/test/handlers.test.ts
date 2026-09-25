@@ -85,7 +85,8 @@ import { routeCallback } from "../src/handlers/callbacks";
 import { t } from "../src/util/i18n";
 import { upsertUser } from "@app/db";
 import { logger } from "@app/core/logger";
-import { decryptCredentials, encryptCredentials, CredentialKeyConfigError } from "@app/core/credentialCrypto";
+import { decryptCredentials, CredentialKeyConfigError } from "@app/core/credentialCrypto";
+import { encryptLegacyV1 } from "../../../tests/helpers/envelopeFlag";
 
 let sample: SampleData;
 let adminDbId: number;
@@ -4486,7 +4487,7 @@ describe("admin handlers", () => {
 
   it("the admin stock browser shows an unreadable row as unavailable without leaking its envelope", async () => {
     await bulkAddStock(prisma, sample.product.id, ["fine@example.com:okpass"]);
-    const good = JSON.parse(encryptCredentials("broken@example.com:pw")) as Record<string, unknown>;
+    const good = JSON.parse(encryptLegacyV1("broken@example.com:pw")) as Record<string, unknown>;
     const tampered = JSON.stringify({ ...good, authTag: Buffer.alloc(16).toString("base64") });
     const bad = await prisma.stockItem.create({
       data: { productId: sample.product.id, credentials: tampered, status: StockStatus.AVAILABLE },

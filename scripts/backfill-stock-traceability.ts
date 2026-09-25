@@ -32,7 +32,7 @@ import { StockActorType, StockEventType, StockStatus } from "@app/core/enums";
 import {
   computeCredentialFingerprint,
   computeIdentityFingerprint,
-  decryptCredentials,
+  decryptStockCredentials,
   deriveCredentialIndexKey,
   isEncryptedCredentialEnvelope,
   type CredentialEnvelope,
@@ -212,7 +212,7 @@ async function processRow(db: Db, row: Row, dryRun: boolean, claim: ClaimContext
   } else {
     let plaintext: string | null = null;
     try {
-      plaintext = decryptCredentials(row.credentials);
+      plaintext = decryptStockCredentials(row.credentials, row.id);
     } catch (err) {
       counters.fingerprints.decryptFailed++;
       console.warn(

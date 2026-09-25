@@ -1001,7 +1001,7 @@ describe("order lists never carry deliveredContent", () => {
     const orderId = await makeProcessingOrder();
     await prisma.order.update({
       where: { id: orderId },
-      data: { status, deliveredContent: encryptDeliveredContent(SECRET) },
+      data: { status, deliveredContent: encryptDeliveredContent(SECRET, orderId) },
     });
     return orderId;
   }

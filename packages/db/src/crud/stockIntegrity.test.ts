@@ -21,7 +21,7 @@ import { createDenomination } from "./catalog";
 import { bulkAddStock } from "./stock";
 import { recordStockEvent } from "./stockEvents";
 import { StockStatus, OrderStatus, StockEventType, StockActorType } from "@app/core/enums";
-import { encryptCredentials } from "@app/core/credentialCrypto";
+import { encryptLegacyV1 } from "../../../../tests/helpers/envelopeFlag";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -315,7 +315,7 @@ describe("checkStockIntegrity — statusEventMismatch / legacyRowsWithoutEvents"
     const legacy = await prisma.stockItem.create({
       data: {
         productId: sample.product.id,
-        credentials: encryptCredentials("legacy@x:pw"),
+        credentials: encryptLegacyV1("legacy@x:pw"),
         status: StockStatus.AVAILABLE,
       },
     });
@@ -337,7 +337,7 @@ describe("checkStockIntegrity — statusEventMismatch / legacyRowsWithoutEvents"
     const legacy = await prisma.stockItem.create({
       data: {
         productId: sample.product.id,
-        credentials: encryptCredentials("legacy-revealed@x:pw"),
+        credentials: encryptLegacyV1("legacy-revealed@x:pw"),
         status: StockStatus.AVAILABLE,
       },
     });

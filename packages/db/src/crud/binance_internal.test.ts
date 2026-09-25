@@ -44,7 +44,7 @@ import {
 } from "@app/db";
 import { OrderStatus, OrderKind, PaymentMethod, NotificationEvent, DeliveryType, StockStatus, StockActorType } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
-import { encryptCredentials } from "@app/core/credentialCrypto";
+import { encryptCredentials, settingValueAad } from "@app/core/credentialCrypto";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -1240,8 +1240,8 @@ describe("payment-message anchor reuse", () => {
 describe("resolveBinanceInternalConfig — encrypted secrets (Task 13)", () => {
   it("decrypts binance_api_key and binance_api_secret when stored as encrypted envelopes", async () => {
     await setSetting(prisma, "binance_receive_uid", "db-uid");
-    await setSetting(prisma, "binance_api_key", encryptCredentials("real-binance-apikey"));
-    await setSetting(prisma, "binance_api_secret", encryptCredentials("real-binance-apisecret"));
+    await setSetting(prisma, "binance_api_key", encryptCredentials("real-binance-apikey", settingValueAad("binance_api_key")));
+    await setSetting(prisma, "binance_api_secret", encryptCredentials("real-binance-apisecret", settingValueAad("binance_api_secret")));
     const cfg = await resolveBinanceInternalConfig(prisma);
     expect(cfg.apiKey).toBe("real-binance-apikey");
     expect(cfg.apiSecret).toBe("real-binance-apisecret");

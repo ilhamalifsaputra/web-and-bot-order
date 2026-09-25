@@ -31,7 +31,7 @@ import { pathToFileURL } from "node:url";
 import type { PrismaClient } from "@prisma/client";
 import { prisma, initDb, recordStockEvent } from "@app/db";
 import { StockActorType, StockEventType } from "@app/core/enums";
-import { encryptCredentials, isEncryptedCredentialEnvelope } from "@app/core/credentialCrypto";
+import { encryptStockCredentials, isEncryptedCredentialEnvelope } from "@app/core/credentialCrypto";
 
 export interface BackfillEncryptReport {
   scanned: number;
@@ -52,7 +52,7 @@ export async function backfillEncryptStockCredentials(db: PrismaClient): Promise
     await db.$transaction(async (tx) => {
       await tx.stockItem.update({
         where: { id: row.id },
-        data: { credentials: encryptCredentials(row.credentials) },
+        data: { credentials: encryptStockCredentials(row.credentials, row.id) },
       });
       await recordStockEvent(tx, {
         stockItemId: row.id,

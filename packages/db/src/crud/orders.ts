@@ -34,7 +34,7 @@ import { logger } from "@app/core/logger";
 import { NotificationEvent } from "@app/core/enums";
 import { publicChannelId } from "@app/core/runtime";
 import {
-  decryptCredentials,
+  decryptStockCredentials,
   tryDecryptCredentials,
   encryptDeliveredContent,
   decryptDeliveredContent,
@@ -510,7 +510,11 @@ export async function uniqueOrderCode(db: Db): Promise<string> {
  * here too, throwing on an unreadable value like the stock credentials do.
  */
 function withDecryptedStockCredentials<
-  T extends { deliveredContent: string | null; items: Array<{ stockItem: { credentials: string } | null }> },
+  T extends {
+    id: number;
+    deliveredContent: string | null;
+    items: Array<{ stockItem: { id: number; credentials: string } | null }>;
+  },
 >(order: T): T {
   // Cast at the end, not the object literal itself: TypeScript can't verify
   // a spread literal satisfies an unconstrained generic T even when it's
@@ -519,10 +523,13 @@ function withDecryptedStockCredentials<
   // stockItem.credentials's runtime value is.
   return {
     ...order,
-    deliveredContent: decryptDeliveredContent(order.deliveredContent),
+    deliveredContent: decryptDeliveredContent(order.deliveredContent, order.id),
     items: order.items.map((item) =>
       item.stockItem
-        ? { ...item, stockItem: { ...item.stockItem, credentials: decryptCredentials(item.stockItem.credentials) } }
+        ? {
+            ...item,
+            stockItem: { ...item.stockItem, credentials: decryptStockCredentials(item.stockItem.credentials, item.stockItem.id) },
+          }
         : item,
     ),
   } as T;
@@ -1865,7 +1872,7 @@ export async function approveOrder(
         actor,
       });
       stock = replacement;
-      credential = decryptCredentials(replacement.credentials);
+      credential = decryptStockCredentials(replacement.credentials, replacement.id);
     }
     // Warranty runs from the sale, using the days frozen onto the line at
     // checkout. Zero days means the SKU carries no warranty, so leave the
@@ -2601,7 +2608,7 @@ export async function fulfillManualOrder(
   // same UPDATE so a double-tap can't fulfil twice (count!==1 on a lost race).
   const claim = await db.order.updateMany({
     where: { id: orderId, status: OrderStatus.PROCESSING },
-    data: { status: OrderStatus.DELIVERED, deliveredContent: encryptDeliveredContent(content), deliveredAt: now },
+    data: { status: OrderStatus.DELIVERED, deliveredContent: encryptDeliveredContent(content, orderId), deliveredAt: now },
   });
   if (claim.count !== 1) throw new ValidationError("error.order_not_processing");
   await db.orderStatusHistory.create({

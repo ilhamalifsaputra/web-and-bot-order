@@ -24,7 +24,7 @@
  * NEVER logs a credential value, plaintext or encrypted — only counts.
  */
 import { prisma, initDb, ENCRYPTED_SETTING_KEYS } from "@app/db";
-import { encryptCredentials, isEncryptedCredentialEnvelope } from "@app/core/credentialCrypto";
+import { encryptCredentials, isEncryptedCredentialEnvelope, settingValueAad } from "@app/core/credentialCrypto";
 
 async function main(): Promise<void> {
   await initDb();
@@ -33,7 +33,7 @@ async function main(): Promise<void> {
   for (const row of rows) {
     if (!row.value) { skippedEmpty++; continue; }
     if (isEncryptedCredentialEnvelope(row.value)) { alreadyEncrypted++; continue; }
-    await prisma.setting.update({ where: { key: row.key }, data: { value: encryptCredentials(row.value) } });
+    await prisma.setting.update({ where: { key: row.key }, data: { value: encryptCredentials(row.value, settingValueAad(row.key)) } });
     encrypted++;
   }
   console.log(`[backfill-encrypt-settings-secrets] ${rows.length} row(s) scanned: ${encrypted} encrypted, ${alreadyEncrypted} already encrypted, ${skippedEmpty} empty (skipped).`);

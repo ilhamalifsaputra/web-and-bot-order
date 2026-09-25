@@ -18,10 +18,18 @@ import {
   createOrderDirect,
   attachPaymentProof,
   updateOrderCustomerData,
+  getOrder,
 } from "./orders";
 import { createWalletTopupOrder } from "./wallet_topup";
-import { markStockDead } from "./stock";
-import { decryptCredentials, decryptDeliveredContent, isEncryptedCredentialEnvelope } from "@app/core/credentialCrypto";
+import { markStockDead, bulkAddStock } from "./stock";
+import {
+  credentialEnvelopeVersion,
+  decryptCredentials,
+  decryptDeliveredContent,
+  decryptStockCredentials,
+  isEncryptedCredentialEnvelope,
+} from "@app/core/credentialCrypto";
+import { useEnvelopeWriteV2 } from "../../../../tests/helpers/envelopeFlag";
 import { createCategory, createCatalogProduct, createDenomination, updateDenomination } from "./catalog";
 import { LEGAL_TRANSITIONS, transitionOrderStatus } from "./orderStatus";
 import {
@@ -1036,7 +1044,7 @@ describe("fulfillManualOrder", () => {
 
     // The first delivery's content must survive untouched.
     const fresh = await prisma.order.findUnique({ where: { id: order.id } });
-    expect(decryptDeliveredContent(fresh!.deliveredContent)).toBe("first delivery");
+    expect(decryptDeliveredContent(fresh!.deliveredContent, order.id)).toBe("first delivery");
   });
 
   it("empty/whitespace-only content throws error.manual_content_required and leaves the order PROCESSING", async () => {
@@ -1402,3 +1410,58 @@ describe("approveOrder substitution events", () => {
     expect(credentials).toEqual([decryptCredentials(replacement.credentials)]);
   });
 });
+
+describe.each([false, true])(
+  "credential envelopes through approve and manual fulfilment with CREDENTIAL_ENVELOPE_WRITE_V2 %s (Fase 6d)",
+  (on) => {
+    useEnvelopeWriteV2(on);
+
+    // Stock imported after the flag is set, so its rows carry the flag's envelope version.
+    async function autoDenomWith(creds: string[]) {
+      const denom = await makeManualDenom(DeliveryType.AUTO);
+      await bulkAddStock(prisma, denom.id, creds);
+      return denom;
+    }
+
+    it("approveOrder delivers the reserved row's plaintext, and getOrder reads it under the row's own context", async () => {
+      const denom = await autoDenomWith(["deliver-6d@x.com:pw"]);
+      const order = await makePendingVerificationOrder(denom.id, 1);
+
+      const { credentials } = await approveOrder(prisma, order.id, { adminId });
+
+      expect(credentials).toEqual(["deliver-6d@x.com:pw"]);
+      const item = await prisma.orderItem.findFirstOrThrow({ where: { orderId: order.id }, include: { stockItem: true } });
+      expect(credentialEnvelopeVersion(item.stockItem!.credentials)).toBe(on ? 2 : 1);
+      expect((await getOrder(prisma, order.id))!.items[0]!.stockItem!.credentials).toBe("deliver-6d@x.com:pw");
+    });
+
+    it("a substituted-in replacement is decrypted under the replacement's own context", async () => {
+      const denom = await autoDenomWith(["sub-a-6d@x.com:pw", "sub-b-6d@x.com:pw"]);
+      const order = await makePendingVerificationOrder(denom.id, 1);
+      const item = await prisma.orderItem.findFirstOrThrow({ where: { orderId: order.id }, include: { stockItem: true } });
+      const deadPlain = decryptStockCredentials(item.stockItem!.credentials, item.stockItemId!);
+      expect(await markStockDead(prisma, item.stockItemId!, "test: supplier revoked it", sample.user.id)).toBe(1);
+
+      const { credentials } = await approveOrder(prisma, order.id, { adminId });
+
+      const itemAfter = await prisma.orderItem.findUniqueOrThrow({ where: { id: item.id } });
+      const replacement = await prisma.stockItem.findUniqueOrThrow({ where: { id: itemAfter.stockItemId! } });
+      expect(credentials).toEqual([decryptStockCredentials(replacement.credentials, replacement.id)]);
+      expect(credentials[0]).not.toBe(deadPlain);
+      expect(["sub-a-6d@x.com:pw", "sub-b-6d@x.com:pw"]).toContain(credentials[0]);
+    });
+
+    it("fulfillManualOrder stores the flag's envelope bound to the order, and getOrder reads it back", async () => {
+      const manualDenom = await makeManualDenom(DeliveryType.MANUAL);
+      const order = await makePendingVerificationOrder(manualDenom.id, 1);
+      await settlePaidOrder(prisma, order.id, { adminId });
+
+      await fulfillManualOrder(prisma, order.id, { adminId, content: "user: m6d\npass: Hunter2" });
+
+      const raw = (await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).deliveredContent!;
+      expect(credentialEnvelopeVersion(raw)).toBe(on ? 2 : 1);
+      expect(decryptDeliveredContent(raw, order.id)).toBe("user: m6d\npass: Hunter2");
+      expect((await getOrder(prisma, order.id))!.deliveredContent).toBe("user: m6d\npass: Hunter2");
+    });
+  },
+);

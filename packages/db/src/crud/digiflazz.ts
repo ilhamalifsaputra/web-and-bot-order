@@ -802,7 +802,7 @@ export async function fulfillDigiflazzOrder(
     where: { id: orderId, status: OrderStatus.PROCESSING },
     data: {
       status: OrderStatus.DELIVERED,
-      deliveredContent: encryptDeliveredContent(args.sn),
+      deliveredContent: encryptDeliveredContent(args.sn, orderId),
       deliveredAt: now,
       // Final whole-branch review I-1 (+ deferred #1/#2): this order is no
       // longer "in flight at the supplier" once it's DELIVERED — clear the

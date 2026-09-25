@@ -21,14 +21,19 @@ import {
   searchStockCredentials,
   deleteStockItem,
   bulkDeleteStock,
+  revealStockCredentials,
+  listAvailableCredentials,
 } from "./stock";
+import { useEnvelopeWriteV2, encryptLegacyV1 } from "../../../../tests/helpers/envelopeFlag";
 import { createHash } from "node:crypto";
 import {
   decryptCredentials,
-  encryptCredentials,
   computeCredentialFingerprint,
   computeIdentityFingerprint,
   CredentialKeyConfigError,
+  CredentialEnvelopeError,
+  credentialEnvelopeVersion,
+  decryptStockCredentials,
 } from "@app/core/credentialCrypto";
 import { createDenomination } from "./catalog";
 import { StockStatus } from "@app/core/enums";
@@ -264,9 +269,9 @@ describe("bulkAddStock import batch + fingerprint dedup (Fase 5a)", () => {
 
   it("still dedups against un-backfilled legacy rows (encrypted and plaintext) via decrypt-compare", async () => {
     const { product } = sample;
-    await legacyRow(product.id, encryptCredentials("legacy.enc@x.com:pw"), StockStatus.SOLD);
+    await legacyRow(product.id, encryptLegacyV1("legacy.enc@x.com:pw"), StockStatus.SOLD);
     await legacyRow(product.id, "legacy.plain@x.com:pw", StockStatus.RESERVED);
-    await legacyRow(product.id, encryptCredentials("legacy.dead@x.com:pw"), StockStatus.DEAD);
+    await legacyRow(product.id, encryptLegacyV1("legacy.dead@x.com:pw"), StockStatus.DEAD);
 
     const res = await bulkAddStock(prisma, product.id, [
       "LEGACY.enc@x.com:pw",
@@ -279,17 +284,17 @@ describe("bulkAddStock import batch + fingerprint dedup (Fase 5a)", () => {
 
   it("warns about an identity collision with an un-backfilled legacy row", async () => {
     const { product } = sample;
-    await legacyRow(product.id, encryptCredentials("legacy.id@x.com:old"));
+    await legacyRow(product.id, encryptLegacyV1("legacy.id@x.com:old"));
     const res = await bulkAddStock(prisma, product.id, ["legacy.id@x.com:new"]);
     expect(res).toMatchObject({ added: 1, identityWarnings: 1 });
   });
 
   it("one corrupt legacy row is counted and skipped instead of aborting the whole upload", async () => {
     const { product } = sample;
-    const good = JSON.parse(encryptCredentials("whatever@x.com:pw")) as Record<string, unknown>;
+    const good = JSON.parse(encryptLegacyV1("whatever@x.com:pw")) as Record<string, unknown>;
     const corrupt = JSON.stringify({ ...good, authTag: Buffer.alloc(16).toString("base64") });
     await legacyRow(product.id, corrupt);
-    await legacyRow(product.id, encryptCredentials("legacy.ok@x.com:pw"));
+    await legacyRow(product.id, encryptLegacyV1("legacy.ok@x.com:pw"));
 
     const res = await bulkAddStock(prisma, product.id, ["legacy.ok@x.com:pw", "fine@x.com:pw"]);
     expect(res).toMatchObject({ added: 1, duplicateExisting: 1, unreadableExisting: 1 });
@@ -695,7 +700,7 @@ describe("searchStockCredentials", () => {
   it("skips an unreadable row with a row-id warning and still returns the readable matches", async () => {
     const { product } = sample;
     await bulkAddStock(prisma, product.id, ["findme-ok@example.com:pw"]);
-    const good = JSON.parse(encryptCredentials("findme-bad@example.com:pw")) as Record<string, unknown>;
+    const good = JSON.parse(encryptLegacyV1("findme-bad@example.com:pw")) as Record<string, unknown>;
     const bad = await prisma.stockItem.create({
       data: {
         productId: product.id,
@@ -797,6 +802,67 @@ describe("searchStockCredentials", () => {
         plainCredential,
       );
       expect(resultsReserved.some((r) => r.id === items[0]!.id)).toBe(true);
+    }
+  });
+});
+
+describe.each([false, true])("stock credentials with CREDENTIAL_ENVELOPE_WRITE_V2 %s (Fase 6d)", (on) => {
+  useEnvelopeWriteV2(on);
+
+  it("bulkAddStock binds each row to its own id and every reader round-trips it", async () => {
+    const { product, user } = sample;
+    const plains = ["v2a@x.com:pw", "v2b@x.com:pw", "v2c@x.com:pw"];
+    const res = await bulkAddStock(prisma, product.id, plains, { adminId: user.id });
+    expect(res.added).toBe(3);
+
+    const rows = await prisma.stockItem.findMany({ where: { importBatchId: res.batchId }, orderBy: { id: "asc" } });
+    expect(rows).toHaveLength(3);
+    const byPlain = new Map<string, (typeof rows)[number]>();
+    for (const row of rows) {
+      expect(credentialEnvelopeVersion(row.credentials)).toBe(on ? 2 : 1);
+      expect(row.credentialKeyVersion).toBe(1);
+      const plain = decryptStockCredentials(row.credentials, row.id);
+      // Fingerprints and the claim key come from the plaintext, not the ciphertext.
+      expect(row.credentialFingerprint).toBe(computeCredentialFingerprint(plain));
+      expect(row.identityFingerprint).toBe(computeIdentityFingerprint(plain));
+      expect(row.activeCredentialKey).toContain(computeCredentialFingerprint(plain));
+      byPlain.set(plain, row);
+    }
+    expect([...byPlain.keys()].sort()).toEqual(plains);
+
+    const target = byPlain.get("v2b@x.com:pw")!;
+    expect(await revealStockCredentials(prisma, target.id, user.id)).toBe("v2b@x.com:pw");
+    expect((await listAvailableCredentials(prisma, product.id)).filter((c) => plains.includes(c)).sort()).toEqual(plains);
+    const found = await searchStockCredentials(prisma, product.id, [StockStatus.AVAILABLE], "v2b@");
+    expect(found.map((r) => r.id)).toEqual([target.id]);
+  });
+
+  it("re-importing the same credential is still caught as a duplicate", async () => {
+    const { product } = sample;
+    await bulkAddStock(prisma, product.id, ["dup-6d@x.com:pw"]);
+    const res = await bulkAddStock(prisma, product.id, ["DUP-6d@x.com:pw"]);
+    expect(res).toMatchObject({ added: 0, duplicateExisting: 1, unreadableExisting: 0 });
+  });
+
+  it("a pre-6d v1 row stays readable and still dedups", async () => {
+    const { product, user } = sample;
+    const legacy = await prisma.stockItem.create({
+      data: { productId: product.id, credentials: encryptLegacyV1("old-v1@x.com:pw"), status: StockStatus.AVAILABLE },
+    });
+    expect(await revealStockCredentials(prisma, legacy.id, user.id)).toBe("old-v1@x.com:pw");
+    const res = await bulkAddStock(prisma, product.id, ["old-v1@x.com:pw"]);
+    expect(res).toMatchObject({ added: 0, duplicateExisting: 1, unreadableExisting: 0 });
+  });
+
+  it("a ciphertext copied onto another row only reads there when it is v1", async () => {
+    const { product, user } = sample;
+    const res = await bulkAddStock(prisma, product.id, ["copy-src@x.com:pw", "copy-dst@x.com:pw"]);
+    const [src, dst] = await prisma.stockItem.findMany({ where: { importBatchId: res.batchId }, orderBy: { id: "asc" } });
+    await prisma.stockItem.update({ where: { id: dst!.id }, data: { credentials: src!.credentials } });
+    if (on) {
+      await expect(revealStockCredentials(prisma, dst!.id, user.id)).rejects.toThrow(CredentialEnvelopeError);
+    } else {
+      expect(await revealStockCredentials(prisma, dst!.id, user.id)).toBe(decryptStockCredentials(src!.credentials, src!.id));
     }
   });
 });

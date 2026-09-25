@@ -9,7 +9,10 @@
  *   - soldToOrderId / soldToOrderItemId for sold rows (SOLD, or soldAt set),
  *   - a synthetic SYSTEM event history (meta.backfilled = true) rebuilt from
  *     the row's own addedAt/reservedAt/soldAt timestamps, only for rows with
- *     no status-transition event yet.
+ *     no status-transition event yet,
+ *   - activeCredentialKey (Fase 5b) for live rows, lowest id first; a live
+ *     duplicate of an already-claimed credential is counted and left NULL,
+ *     and a stale claim on a DEAD/soft-deleted row is released.
  *
  * Idempotent per field, so an interrupted run is simply re-run from the start.
  * Scans in batches of 500 by id, one small transaction per row; each row is
@@ -24,7 +27,7 @@
  */
 import { pathToFileURL } from "node:url";
 import type { Prisma, PrismaClient } from "@prisma/client";
-import { prisma, initDb, recordStockEvents, type Db, type StockEventInput } from "@app/db";
+import { prisma, initDb, recordStockEvents, stockClaimKey, type Db, type StockEventInput } from "@app/db";
 import { StockActorType, StockEventType, StockStatus } from "@app/core/enums";
 import {
   computeCredentialFingerprint,
@@ -57,6 +60,16 @@ export interface BackfillSummary {
     statusUnreconciled: number;
   };
   keyVersion: { backfilled: number; legacyPlaintext: number };
+  claims: {
+    claimed: number;
+    alreadyClaimed: number;
+    /** Live rows left unclaimed because another live row already holds the same credential. */
+    duplicate: number;
+    /** DEAD/soft-deleted rows whose leftover claim was cleared. */
+    released: number;
+    /** Live rows with no fingerprint (failed to decrypt), so nothing to claim with. */
+    unfingerprinted: number;
+  };
 }
 
 type Counters = Omit<BackfillSummary, "dryRun" | "scanned" | "batches">;
@@ -67,6 +80,7 @@ function emptyCounters(): Counters {
     soldTo: { backfilled: 0, soldWithNoOrderId: 0, soldWithNoOrderItem: 0, soldOrderMismatch: 0 },
     events: { rowsBackfilled: 0, eventsCreated: 0, rowsAlreadyTraced: 0, statusReconciled: 0, statusUnreconciled: 0 },
     keyVersion: { backfilled: 0, legacyPlaintext: 0 },
+    claims: { claimed: 0, alreadyClaimed: 0, duplicate: 0, released: 0, unfingerprinted: 0 },
   };
 }
 
@@ -79,7 +93,10 @@ function addCounters(into: Counters, from: Counters): void {
 
 const ROW_SELECT = {
   id: true,
+  productId: true,
   status: true,
+  deletedAt: true,
+  activeCredentialKey: true,
   orderId: true,
   credentials: true,
   addedAt: true,
@@ -174,7 +191,16 @@ function syntheticEvents(
   return events;
 }
 
-async function processRow(db: Db, row: Row, dryRun: boolean): Promise<Counters> {
+const LIVE_STATUSES: string[] = [StockStatus.AVAILABLE, StockStatus.RESERVED, StockStatus.SOLD];
+
+/** Claim state shared across one run: `claimInRun` false retries a row without claiming (lost a race). */
+interface ClaimContext {
+  claimInRun: boolean;
+  /** Keys this run has claimed (or, in a dry run, would have). */
+  claimedKeys: Set<string>;
+}
+
+async function processRow(db: Db, row: Row, dryRun: boolean, claim: ClaimContext): Promise<Counters> {
   const counters = emptyCounters();
   const data: Prisma.StockItemUncheckedUpdateInput = {};
 
@@ -241,6 +267,31 @@ async function processRow(db: Db, row: Row, dryRun: boolean): Promise<Counters> 
     if (keyVersion === 0) counters.keyVersion.legacyPlaintext++;
   }
 
+  // 2e. activeCredentialKey — the unique dedup claim bulkAddStock relies on.
+  const live = row.deletedAt === null && LIVE_STATUSES.includes(row.status);
+  const fingerprint = (data.credentialFingerprint as string | undefined) ?? row.credentialFingerprint;
+  if (!live) {
+    if (row.activeCredentialKey !== null) {
+      data.activeCredentialKey = null;
+      counters.claims.released++;
+    }
+  } else if (row.activeCredentialKey !== null) {
+    counters.claims.alreadyClaimed++;
+  } else if (fingerprint === null) {
+    counters.claims.unfingerprinted++;
+  } else {
+    const key = stockClaimKey(row.productId, fingerprint);
+    const holder = claim.claimInRun
+      ? await db.stockItem.findFirst({ where: { activeCredentialKey: key }, select: { id: true } })
+      : null;
+    if (!claim.claimInRun || holder || claim.claimedKeys.has(key)) {
+      counters.claims.duplicate++;
+    } else {
+      data.activeCredentialKey = key;
+      counters.claims.claimed++;
+    }
+  }
+
   // 2c. Synthetic events — only when no status transition is recorded yet
   // (a REENCRYPTED/SOFT_DELETED/reveal event alone leaves the row untraced).
   let events: StockEventInput[] = [];
@@ -257,6 +308,7 @@ async function processRow(db: Db, row: Row, dryRun: boolean): Promise<Counters> 
     if (Object.keys(data).length > 0) await db.stockItem.update({ where: { id: row.id }, data });
     await recordStockEvents(db, events);
   }
+  if (typeof data.activeCredentialKey === "string") claim.claimedKeys.add(data.activeCredentialKey);
   return counters;
 }
 
@@ -265,6 +317,7 @@ export async function runBackfill(db: PrismaClient, opts: { dryRun: boolean }): 
   deriveCredentialIndexKey();
 
   const summary: BackfillSummary = { dryRun: opts.dryRun, scanned: 0, batches: 0, ...emptyCounters() };
+  const claimedKeys = new Set<string>();
   let afterId = 0;
   for (;;) {
     const batch = await db.stockItem.findMany({
@@ -276,15 +329,26 @@ export async function runBackfill(db: PrismaClient, opts: { dryRun: boolean }): 
     if (batch.length === 0) break;
     summary.batches++;
     for (const row of batch) {
-      const counters = opts.dryRun
-        ? await processRow(db, row, true)
-        : await db.$transaction(async (tx) => {
-            // Same row lock as stock.ts's lockStockRows, then re-read: the app may
-            // have moved this row since the batch read, and must wait for this commit.
-            await tx.$queryRaw`SELECT id FROM stock_items WHERE id = ${row.id} FOR UPDATE`;
-            const fresh = await tx.stockItem.findUnique({ where: { id: row.id }, select: ROW_SELECT });
-            return fresh ? processRow(tx, fresh, false) : emptyCounters();
-          });
+      const writeRow = (claimInRun: boolean) =>
+        db.$transaction(async (tx) => {
+          // Same row lock as stock.ts's lockStockRows, then re-read: the app may
+          // have moved this row since the batch read, and must wait for this commit.
+          await tx.$queryRaw`SELECT id FROM stock_items WHERE id = ${row.id} FOR UPDATE`;
+          const fresh = await tx.stockItem.findUnique({ where: { id: row.id }, select: ROW_SELECT });
+          return fresh ? processRow(tx, fresh, false, { claimInRun, claimedKeys }) : emptyCounters();
+        });
+      let counters: Counters;
+      if (opts.dryRun) {
+        counters = await processRow(db, row, true, { claimInRun: true, claimedKeys });
+      } else {
+        try {
+          counters = await writeRow(true);
+        } catch (err) {
+          // A live import claimed the same credential between our check and our write.
+          if ((err as { code?: string }).code !== "P2002") throw err;
+          counters = await writeRow(false);
+        }
+      }
       addCounters(summary, counters);
       summary.scanned++;
     }
@@ -304,6 +368,9 @@ export function formatSummary(s: BackfillSummary): string {
       `${s.events.rowsAlreadyTraced} row(s) already had events (skipped); ${s.events.statusReconciled} closed with a status-reconciling event, ` +
       `${s.events.statusUnreconciled} left for review (see lines above).`,
     `  credentialKeyVersion: ${s.keyVersion.backfilled} backfilled (${s.keyVersion.legacyPlaintext} as legacy/0).`,
+    `  activeCredentialKey: ${s.claims.claimed} claimed, ${s.claims.alreadyClaimed} already claimed, ` +
+      `${s.claims.duplicate} live duplicates left unclaimed (review them), ${s.claims.released} stale claims released, ` +
+      `${s.claims.unfingerprinted} live rows with no fingerprint to claim with.`,
   ].join("\n");
 }
 

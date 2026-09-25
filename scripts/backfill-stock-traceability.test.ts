@@ -452,6 +452,96 @@ describe("runBackfill — legacy, corrupt, dead and soft-deleted rows", () => {
   });
 });
 
+describe("runBackfill — activeCredentialKey claims (Fase 5b)", () => {
+  const keyOf = (p: string) => `${sample.product.id}:${computeCredentialFingerprint(p)}`;
+
+  it("claims every live legacy row and leaves DEAD / soft-deleted rows unclaimed", async () => {
+    const pa = plain("claim-a");
+    const pb = plain("claim-b");
+    const a = await legacyRow({ credentials: encryptCredentials(pa) });
+    const b = await legacyRow({ credentials: pb, status: StockStatus.RESERVED, reservedAt: T_RESERVED });
+    const dead = await legacyRow({ credentials: encryptCredentials(plain("claim-dead")), status: StockStatus.DEAD });
+    const gone = await legacyRow({ credentials: encryptCredentials(plain("claim-gone")), deletedAt: new Date() });
+
+    const summary = await runBackfill(prisma, { dryRun: false });
+
+    const byId = async (id: number) => (await prisma.stockItem.findUniqueOrThrow({ where: { id } })).activeCredentialKey;
+    expect(await byId(a.id)).toBe(keyOf(pa));
+    expect(await byId(b.id)).toBe(keyOf(pb));
+    expect(await byId(dead.id)).toBeNull();
+    expect(await byId(gone.id)).toBeNull();
+    expect(summary.claims).toEqual({ claimed: 2, alreadyClaimed: 0, duplicate: 0, released: 0, unfingerprinted: 0 });
+  });
+
+  it("counts a duplicate live legacy credential and leaves it unclaimed instead of crashing", async () => {
+    const p = plain("claim-dup");
+    const first = await legacyRow({ credentials: encryptCredentials(p) });
+    const second = await legacyRow({ credentials: p.replace("@legacy.example", "@LEGACY.example") });
+
+    const summary = await runBackfill(prisma, { dryRun: false });
+
+    expect((await prisma.stockItem.findUniqueOrThrow({ where: { id: first.id } })).activeCredentialKey).toBe(keyOf(p));
+    const dup = await prisma.stockItem.findUniqueOrThrow({ where: { id: second.id } });
+    expect(dup.activeCredentialKey).toBeNull();
+    // Everything else about the duplicate row is still backfilled.
+    expect(dup.credentialFingerprint).toBe(computeCredentialFingerprint(p));
+    expect(summary.claims).toMatchObject({ claimed: 1, duplicate: 1 });
+  });
+
+  it("a legacy row duplicating an already-claimed imported row is counted, not claimed", async () => {
+    const p = plain("claim-vs-new");
+    await prisma.stockItem.create({
+      data: {
+        productId: sample.product.id,
+        credentials: encryptCredentials(p),
+        credentialFingerprint: computeCredentialFingerprint(p),
+        identityFingerprint: computeIdentityFingerprint(p),
+        credentialKeyVersion: 1,
+        activeCredentialKey: keyOf(p),
+      },
+    });
+    const legacy = await legacyRow({ credentials: encryptCredentials(p) });
+
+    const summary = await runBackfill(prisma, { dryRun: false });
+
+    expect((await prisma.stockItem.findUniqueOrThrow({ where: { id: legacy.id } })).activeCredentialKey).toBeNull();
+    expect(summary.claims).toMatchObject({ claimed: 0, alreadyClaimed: 1, duplicate: 1 });
+  });
+
+  it("releases a stale claim left on a DEAD row", async () => {
+    const p = plain("claim-stale");
+    const row = await legacyRow({ credentials: encryptCredentials(p), status: StockStatus.DEAD });
+    await prisma.stockItem.update({ where: { id: row.id }, data: { activeCredentialKey: keyOf(p) } });
+
+    const summary = await runBackfill(prisma, { dryRun: false });
+
+    expect((await prisma.stockItem.findUniqueOrThrow({ where: { id: row.id } })).activeCredentialKey).toBeNull();
+    expect(summary.claims.released).toBe(1);
+  });
+
+  it("a corrupt live row can't be fingerprinted, so it is counted and left unclaimed", async () => {
+    const good = JSON.parse(encryptCredentials(plain("claim-corrupt"))) as Record<string, unknown>;
+    await legacyRow({ credentials: JSON.stringify({ ...good, authTag: Buffer.alloc(16).toString("base64") }) });
+
+    const summary = await runBackfill(prisma, { dryRun: false });
+    expect(summary.claims).toMatchObject({ claimed: 0, unfingerprinted: 1 });
+  });
+
+  it("a second run claims nothing new; a dry run reports claims (and in-run duplicates) without writing", async () => {
+    const p = plain("claim-dry");
+    await legacyRow({ credentials: encryptCredentials(p) });
+    await legacyRow({ credentials: p });
+
+    const dry = await runBackfill(prisma, { dryRun: true });
+    expect(dry.claims).toMatchObject({ claimed: 1, duplicate: 1 });
+    expect(await prisma.stockItem.count({ where: { activeCredentialKey: { not: null } } })).toBe(0);
+
+    await runBackfill(prisma, { dryRun: false });
+    const second = await runBackfill(prisma, { dryRun: false });
+    expect(second.claims).toEqual({ claimed: 0, alreadyClaimed: 1, duplicate: 1, released: 0, unfingerprinted: 0 });
+  });
+});
+
 describe("runBackfill — dry run", () => {
   it("writes nothing but reports what it would have done", async () => {
     await soldLegacyRowWithOrder("dry");

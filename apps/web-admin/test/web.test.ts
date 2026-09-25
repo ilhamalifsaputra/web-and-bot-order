@@ -3862,6 +3862,50 @@ describe("stock", () => {
     expect(item).not.toHaveProperty("orderId");
   });
 
+  describe("GET /api/stock/item/:stockId/history", () => {
+    it("returns the item's events in order with no credentials and writes no audit row", async () => {
+      const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId } }))!;
+      const secret = decryptCredentials(item.credentials);
+      await prisma.stockItemEvent.deleteMany({ where: { stockItemId: item.id } });
+      await prisma.stockItemEvent.createMany({
+        data: [
+          { stockItemId: item.id, eventType: "MARKED_DEAD", fromStatus: "AVAILABLE", toStatus: "DEAD", actorType: "ADMIN", actorAdminId: seed.adminId, reasonCode: "EXPIRED", occurredAt: new Date("2026-01-02T00:00:00Z") },
+          { stockItemId: item.id, eventType: "IMPORTED", toStatus: "AVAILABLE", actorType: "ADMIN", actorAdminId: seed.adminId, occurredAt: new Date("2026-01-01T00:00:00Z") },
+        ],
+      });
+      const auditsBefore = await prisma.auditLog.count();
+
+      const res = await get(`/api/stock/item/${item.id}/history`, seed.cookie);
+      expect(res.statusCode).toBe(200);
+      expect(res.body).not.toContain(secret);
+      const body = res.json() as { events: { eventType: string; reasonCode: string | null; occurredAtDisplay: string; actorName: string | null }[] };
+      expect(body.events.map((e) => e.eventType)).toEqual(["IMPORTED", "MARKED_DEAD"]);
+      expect(body.events[1]!.reasonCode).toBe("EXPIRED");
+      expect(typeof body.events[0]!.occurredAtDisplay).toBe("string");
+      expect(JSON.stringify(body)).not.toMatch(/credentials|meta/);
+      expect(await prisma.auditLog.count()).toBe(auditsBefore);
+    });
+
+    it("returns an empty list for an item with no recorded events", async () => {
+      const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId } }))!;
+      await prisma.stockItemEvent.deleteMany({ where: { stockItemId: item.id } });
+      const res = await get(`/api/stock/item/${item.id}/history`, seed.cookie);
+      expect(res.statusCode).toBe(200);
+      expect((res.json() as { events: unknown[] }).events).toEqual([]);
+    });
+
+    it("404s for an unknown stock item", async () => {
+      const res = await get(`/api/stock/item/999999/history`, seed.cookie);
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("rejects anonymous callers with 401", async () => {
+      const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId } }))!;
+      const res = await get(`/api/stock/item/${item.id}/history`, null);
+      expect(res.statusCode).toBe(401);
+    });
+  });
+
   describe("POST /api/stock/item/:stockId/reveal", () => {
     it("returns the decrypted credential and audits credential_revealed", async () => {
       const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId } }))!;

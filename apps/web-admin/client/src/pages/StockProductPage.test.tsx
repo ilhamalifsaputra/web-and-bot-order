@@ -51,6 +51,11 @@ const STOCK_PRODUCT_DATA = {
 
 beforeEach(() => {
   vi.restoreAllMocks();
+  // Radix Select uses pointer-capture APIs jsdom doesn't implement.
+  Element.prototype.scrollIntoView = vi.fn();
+  Element.prototype.hasPointerCapture = vi.fn(() => false);
+  Element.prototype.setPointerCapture = vi.fn();
+  Element.prototype.releasePointerCapture = vi.fn();
 });
 
 describe("StockProductPage", () => {
@@ -103,7 +108,7 @@ describe("StockProductPage", () => {
     await waitFor(() =>
       expect(fetchSpy).toHaveBeenCalledWith(
         "/api/stock/10/bulk-dead",
-        expect.objectContaining({ method: "POST", body: JSON.stringify({ ids: [101] }) }),
+        expect.objectContaining({ method: "POST", body: JSON.stringify({ ids: [101], reason: "OTHER" }) }),
       ),
     );
   });
@@ -224,8 +229,80 @@ describe("StockProductPage", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Mark Dead" }));
 
     await waitFor(() =>
-      expect(fetchSpy).toHaveBeenCalledWith("/api/stock/item/101/dead", expect.objectContaining({ method: "POST" })),
+      expect(fetchSpy).toHaveBeenCalledWith(
+        "/api/stock/item/101/dead",
+        expect.objectContaining({ method: "POST", body: JSON.stringify({ reason: "OTHER" }) }),
+      ),
     );
+  });
+
+  it("sends the reason picked in the single mark-dead dialog", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(jsonResponse(STOCK_PRODUCT_DATA));
+    render(<StockProductPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Available")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "Actions for stock item 101" }));
+    await user.click(within(await screen.findByRole("menu")).getByText("Mark Dead"));
+    const dialog = await screen.findByRole("dialog");
+    // Defaults to "Other".
+    expect(within(dialog).getByRole("combobox")).toHaveTextContent("Other");
+    await user.click(within(dialog).getByRole("combobox"));
+    await user.click(await screen.findByRole("option", { name: "Password changed" }));
+
+    fetchSpy.mockResolvedValueOnce(jsonResponse({ ok: true }));
+    fetchSpy.mockResolvedValueOnce(jsonResponse({ ...STOCK_PRODUCT_DATA, items: [], total: 0 }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Mark Dead" }));
+
+    await waitFor(() =>
+      expect(fetchSpy).toHaveBeenCalledWith(
+        "/api/stock/item/101/dead",
+        expect.objectContaining({ body: JSON.stringify({ reason: "PASSWORD_CHANGED" }) }),
+      ),
+    );
+  });
+
+  it("sends the reason picked in the bulk mark-dead dialog", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(jsonResponse(STOCK_PRODUCT_DATA));
+    render(<StockProductPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Available")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /select stock item 101/i }));
+    await user.click(screen.getByRole("button", { name: "Mark selected dead" }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("combobox"));
+    await user.click(await screen.findByRole("option", { name: "Region lock" }));
+
+    fetchSpy.mockResolvedValueOnce(jsonResponse({ ok: true, count: 1 }));
+    fetchSpy.mockResolvedValueOnce(jsonResponse({ ...STOCK_PRODUCT_DATA, items: [], total: 0 }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Mark Dead" }));
+
+    await waitFor(() =>
+      expect(fetchSpy).toHaveBeenCalledWith(
+        "/api/stock/10/bulk-dead",
+        expect.objectContaining({ body: JSON.stringify({ ids: [101], reason: "REGION_LOCK" }) }),
+      ),
+    );
+  });
+
+  it("shows the stored reason label on a dead row, and nothing for a dead row without one", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      jsonResponse({
+        ...STOCK_PRODUCT_DATA,
+        items: [
+          { id: 201, status: "DEAD", note: null, deadReason: "SUPPLIER_REVOKED", credentials: "••••••••", createdAtDisplay: "2026-01-01" },
+          { id: 202, status: "DEAD", note: null, deadReason: null, credentials: "••••••••", createdAtDisplay: "2026-01-01" },
+        ],
+        statusCounts: { available: 0, reserved: 0, sold: 0, dead: 2 },
+        total: 2,
+      }),
+    );
+    render(<StockProductPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("201")).toBeInTheDocument());
+    expect(screen.getAllByText("Supplier revoked")).toHaveLength(1);
   });
 
   it("deletes a single item after confirming", async () => {

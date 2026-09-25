@@ -27,6 +27,9 @@ interface ConfirmDialogProps {
   /** shadcn Button variant applied to the confirm button. Default: "destructive". */
   variant?: "default" | "destructive";
   onConfirm: () => void | Promise<void>;
+  /** Extra body content rendered between the description and the buttons
+   *  (e.g. a reason picker). */
+  children?: ReactNode;
   /** Controlled mode: pass both to drive `open` from page-level state instead
    *  of the self-managed default (used together, `trigger` is typically omitted). */
   open?: boolean;
@@ -41,6 +44,7 @@ export function ConfirmDialog({
   cancelLabel = "Cancel",
   variant = "destructive",
   onConfirm,
+  children,
   open: openProp,
   onOpenChange: onOpenChangeProp,
 }: ConfirmDialogProps): JSX.Element {
@@ -65,6 +69,7 @@ export function ConfirmDialog({
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>{description}</DialogDescription>
         </DialogHeader>
+        {children}
         <DialogFooter>
           <DialogClose asChild>
             <Button variant="outline">{cancelLabel}</Button>

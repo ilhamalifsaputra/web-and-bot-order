@@ -4462,7 +4462,10 @@ describe("admin handlers", () => {
       toStatus: StockStatus.DEAD,
       actorType: StockActorType.ADMIN,
       actorAdminId: adminDbId,
+      reasonCode: "OTHER",
     });
+    // The bot has no reason prompt: the row carries the same explicit OTHER.
+    expect((await prisma.stockItem.findUnique({ where: { id: item!.id } }))!.deadReason).toBe("OTHER");
   });
 
   it("viewing the admin stock browser writes one audit row stating the count, never the credential text", async () => {

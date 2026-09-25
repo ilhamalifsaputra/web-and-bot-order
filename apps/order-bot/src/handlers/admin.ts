@@ -12,7 +12,7 @@ import { config } from "@app/core/config";
 import { isAdmin } from "@app/core/runtime";
 import { Decimal } from "@app/core/money";
 import { ensureUtc } from "@app/core/datetime";
-import { UserRole, langCode } from "@app/core/enums";
+import { UserRole, DeadReason, langCode } from "@app/core/enums";
 import { logger } from "@app/core/logger";
 import { decryptCredentials } from "@app/core/credentialCrypto";
 import {
@@ -534,7 +534,7 @@ async function adminMarkStockDead(ctx: MyContext, stockId: number, productId: nu
     // Resolved before the update: its MARKED_DEAD event names this admin.
     const admin = await getUserByTelegramId(tx, adminTg);
     const adminId = requireAdminId(admin);
-    const updated = await markStockDead(tx, stockId, "marked dead by admin", adminId);
+    const updated = await markStockDead(tx, stockId, "marked dead by admin", adminId, DeadReason.OTHER); // no reason prompt in the bot
     if (updated === 0) return 0; // already SOLD/DEAD — nothing to audit
     await logAdminAction(tx, {
       adminId,

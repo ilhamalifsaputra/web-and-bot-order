@@ -74,9 +74,17 @@ export interface StockIntegrityReport {
    * events are legacy data predating the event ledger and are excluded here
    * — see legacyRowsWithoutEvents. */
   statusEventMismatch: IntegrityFinding;
-  /** Count of StockItem rows with zero StockItemEvent rows — legacy data
-   * written before the event ledger existed. Reported as a plain count (not a
-   * defect), and never mixed into statusEventMismatch. */
+  /** Count of StockItem rows with zero recorded STATUS-TRANSITION events —
+   * i.e. no event with `toStatus` set, whether because the row has zero
+   * events at all (legacy data written before the event ledger existed) or
+   * because every event it does have is a non-transition one (e.g. a
+   * CREDENTIAL_REVEALED or REENCRYPTED recorded on an otherwise-legacy row).
+   * Either way there is no transition to compare `status` against, so the row
+   * is unverifiable via events rather than a defect: reported as a plain
+   * count (not a defect finding), and mutually exclusive with
+   * statusEventMismatch — every StockItem row falls into exactly one of "has
+   * a comparable transition" (checked by statusEventMismatch) or "does not"
+   * (counted here), never both and never neither. */
   legacyRowsWithoutEvents: number;
   /** OrderItem rows still pointing at a StockItem while their order is
    * CANCELLED/REJECTED. releaseOrderHolds (Fase 3b) nulls this pointer on
@@ -163,6 +171,17 @@ async function checkDuplicateStockItemPointers(db: Db): Promise<IntegrityFinding
  * it is "keep looking further back until a real transition event is found".
  * Split into a count query and a bounded sample query (rather than fetching
  * every StockItem row) so this scales against a production-sized table.
+ *
+ * "Legacy" mirrors the same `to_status IS NOT NULL` filter as the mismatch
+ * query below: a row counts as legacy/unverifiable when it has NO event with
+ * a recorded transition, whether that's because it has zero events at all, or
+ * because every event it has is a non-transition one (a reveal/re-encrypt
+ * recorded on a row that predates the event ledger). Using a bare
+ * "NOT EXISTS any event" here (the original, narrower definition) would make
+ * such a row vanish from BOTH this count and the mismatch check below —
+ * having an event would exclude it from "legacy", but that event having no
+ * transition would also exclude it from "mismatch" — so the two queries must
+ * use the same transition-events filter to stay exhaustive and disjoint.
  */
 async function checkStatusEventMismatchAndLegacy(
   db: Db,
@@ -172,7 +191,9 @@ async function checkStatusEventMismatchAndLegacy(
   const legacyCount = firstCount(await db.$queryRaw<{ count: number }[]>`
     SELECT COUNT(*)::int AS count
     FROM stock_items si
-    WHERE NOT EXISTS (SELECT 1 FROM stock_item_events e WHERE e.stock_item_id = si.id)
+    WHERE NOT EXISTS (
+      SELECT 1 FROM stock_item_events e WHERE e.stock_item_id = si.id AND e.to_status IS NOT NULL
+    )
   `);
   const mismatchCount = firstCount(await db.$queryRaw<{ count: number }[]>`
     SELECT COUNT(*)::int AS count

@@ -326,6 +326,33 @@ describe("checkStockIntegrity — statusEventMismatch / legacyRowsWithoutEvents"
     // sanity: the row really has no events
     expect(await prisma.stockItemEvent.count({ where: { stockItemId: legacy.id } })).toBe(0);
   });
+
+  it("counts a row whose only event is a non-transition CREDENTIAL_REVEALED as legacy too, not as a mismatch", async () => {
+    // A row that predates the event ledger (zero transition events) can still
+    // pick up a routine CREDENTIAL_REVEALED later — the row HAS an event now,
+    // but still has no recorded status transition to compare against. It must
+    // not silently disappear from both checks: not a mismatch (no transition
+    // to compare), and not silently "clean" either — it belongs in the legacy
+    // bucket precisely because its status is still unverifiable via events.
+    const legacy = await prisma.stockItem.create({
+      data: {
+        productId: sample.product.id,
+        credentials: encryptCredentials("legacy-revealed@x:pw"),
+        status: StockStatus.AVAILABLE,
+      },
+    });
+    await recordStockEvent(prisma, {
+      stockItemId: legacy.id,
+      eventType: StockEventType.CREDENTIAL_REVEALED,
+      actor: { type: StockActorType.ADMIN, adminId: sample.user.id },
+    });
+
+    const report = await checkStockIntegrity(prisma);
+    expect(report.legacyRowsWithoutEvents).toBe(1);
+    expect(report.statusEventMismatch).toEqual(emptyFinding);
+    // sanity: the row really does have an event, just not a transition one
+    expect(await prisma.stockItemEvent.count({ where: { stockItemId: legacy.id } })).toBe(1);
+  });
 });
 
 describe("checkStockIntegrity — cancelledOrRejectedOrderItemsStillLinked", () => {

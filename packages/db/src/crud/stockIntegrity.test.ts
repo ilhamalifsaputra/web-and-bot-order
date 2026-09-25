@@ -19,7 +19,8 @@ import { buildSampleData, resetDb, type SampleData } from "../../../../tests/hel
 import { checkStockIntegrity } from "./stockIntegrity";
 import { createDenomination } from "./catalog";
 import { bulkAddStock } from "./stock";
-import { StockStatus, OrderStatus } from "@app/core/enums";
+import { recordStockEvent } from "./stockEvents";
+import { StockStatus, OrderStatus, StockEventType, StockActorType } from "@app/core/enums";
 import { encryptCredentials } from "@app/core/credentialCrypto";
 
 let db: TestDb;
@@ -233,6 +234,66 @@ describe("checkStockIntegrity — statusEventMismatch / legacyRowsWithoutEvents"
   });
 
   it("does not flag a row whose latest event matches its current status", async () => {
+    const report = await checkStockIntegrity(prisma);
+    expect(report.statusEventMismatch).toEqual(emptyFinding);
+  });
+
+  it("does not flag a row whose latest event is a non-transition CREDENTIAL_REVEALED on top of a matching transition", async () => {
+    // buildSampleData's bulkAddStock wrote row's only event as
+    // IMPORTED(toStatus=AVAILABLE), matching row's current status. A LATER
+    // CREDENTIAL_REVEALED event carries toStatus=NULL (recordStockEvent's
+    // default — see stock.ts's revealStockCredentials, which never passes
+    // toStatus) because a reveal is not a status transition. Reveals are
+    // routine, frequent admin actions, so this must not be flagged as drift.
+    const [row] = await rowsByStatus(StockStatus.AVAILABLE);
+    await recordStockEvent(prisma, {
+      stockItemId: row!.id,
+      eventType: StockEventType.CREDENTIAL_REVEALED,
+      actor: { type: StockActorType.ADMIN, adminId: sample.user.id },
+    });
+
+    const report = await checkStockIntegrity(prisma);
+    expect(report.statusEventMismatch).toEqual(emptyFinding);
+  });
+
+  it("does not flag a row whose latest event is a non-transition REENCRYPTED on top of a matching transition", async () => {
+    const [row] = await rowsByStatus(StockStatus.AVAILABLE);
+    await recordStockEvent(prisma, {
+      stockItemId: row!.id,
+      eventType: StockEventType.REENCRYPTED,
+      actor: { type: StockActorType.SYSTEM },
+      reasonCode: "PLAINTEXT_BACKFILL",
+    });
+
+    const report = await checkStockIntegrity(prisma);
+    expect(report.statusEventMismatch).toEqual(emptyFinding);
+  });
+
+  it("breaks a same-occurredAt tie by the higher event id (the more recently written event wins)", async () => {
+    // Fixes the misleading comment on checkStatusEventMismatchAndLegacy,
+    // which cited a nonexistent assertion in stock_events.test.ts for this
+    // same behavior. The id-tiebreak logic itself was already correct; this
+    // locks it in with an explicit same-instant tie rather than relying on
+    // real clock resolution to separate two writes.
+    const [row] = await rowsByStatus(StockStatus.AVAILABLE);
+    const tieInstant = new Date();
+    await recordStockEvent(prisma, {
+      stockItemId: row!.id,
+      eventType: StockEventType.RESERVED,
+      toStatus: StockStatus.RESERVED,
+      actor: { type: StockActorType.SYSTEM },
+      occurredAt: tieInstant,
+    });
+    await recordStockEvent(prisma, {
+      stockItemId: row!.id,
+      eventType: StockEventType.RESERVATION_RELEASED,
+      toStatus: StockStatus.AVAILABLE,
+      actor: { type: StockActorType.SYSTEM },
+      occurredAt: tieInstant,
+    });
+
+    // row!.status is still AVAILABLE; the higher-id (later-written) event of
+    // the tied pair also says AVAILABLE, so the id tiebreak must pick it.
     const report = await checkStockIntegrity(prisma);
     expect(report.statusEventMismatch).toEqual(emptyFinding);
   });

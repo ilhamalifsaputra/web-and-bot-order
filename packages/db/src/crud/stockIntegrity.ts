@@ -45,9 +45,12 @@ export interface StockIntegrityReport {
   duplicateStockItemPointers: IntegrityFinding;
   /** StockItem rows that are soft-deleted but still show RESERVED. */
   softDeletedStillReserved: IntegrityFinding;
-  /** StockItem rows whose latest StockItemEvent.toStatus disagrees with the
-   * row's own status column. Rows with zero events are legacy data predating
-   * the event ledger and are excluded here — see legacyRowsWithoutEvents. */
+  /** StockItem rows whose latest STATUS-TRANSITION StockItemEvent.toStatus
+   * (i.e. an event with toStatus not null — CREDENTIAL_REVEALED/REENCRYPTED
+   * and any other non-transition event type are skipped when finding "the
+   * latest") disagrees with the row's own status column. Rows with zero
+   * events are legacy data predating the event ledger and are excluded here
+   * — see legacyRowsWithoutEvents. */
   statusEventMismatch: IntegrityFinding;
   /** Count of StockItem rows with zero StockItemEvent rows — legacy data
    * written before the event ledger existed. Reported as a plain count (not a
@@ -120,11 +123,19 @@ async function checkDuplicateStockItemPointers(db: Db): Promise<IntegrityFinding
 }
 
 /**
- * A row's latest event by (occurredAt, id) — id as the tiebreaker for events
- * written in the same millisecond, same ordering `stock_events.test.ts`
- * asserts the ledger keeps. Split into a count query and a bounded sample
- * query (rather than fetching every StockItem row) so this scales against a
- * production-sized table.
+ * A row's latest STATUS TRANSITION event by (occurredAt, id) — id as the
+ * tiebreaker for events written in the same instant. Deliberately restricted
+ * to `to_status IS NOT NULL` events: recordStockEvent defaults `toStatus` to
+ * NULL for event types that aren't a status change at all (CREDENTIAL_REVEALED
+ * — stock.ts's revealStockCredentials — and REENCRYPTED — the backfill
+ * script), and reveals in particular are routine, frequent admin actions. If
+ * "latest event" meant "latest event of any type", a reveal or re-encrypt
+ * landing after the real last transition would make every such row look like
+ * drift, even though its status is perfectly consistent with its transition
+ * history — this is not "skip flagging when the latest happens to be null",
+ * it is "keep looking further back until a real transition event is found".
+ * Split into a count query and a bounded sample query (rather than fetching
+ * every StockItem row) so this scales against a production-sized table.
  */
 async function checkStatusEventMismatchAndLegacy(
   db: Db,
@@ -141,7 +152,7 @@ async function checkStatusEventMismatchAndLegacy(
     FROM stock_items si
     JOIN LATERAL (
       SELECT to_status FROM stock_item_events e
-      WHERE e.stock_item_id = si.id
+      WHERE e.stock_item_id = si.id AND e.to_status IS NOT NULL
       ORDER BY e.occurred_at DESC, e.id DESC
       LIMIT 1
     ) e ON true
@@ -155,7 +166,7 @@ async function checkStatusEventMismatchAndLegacy(
     FROM stock_items si
     JOIN LATERAL (
       SELECT to_status FROM stock_item_events e
-      WHERE e.stock_item_id = si.id
+      WHERE e.stock_item_id = si.id AND e.to_status IS NOT NULL
       ORDER BY e.occurred_at DESC, e.id DESC
       LIMIT 1
     ) e ON true

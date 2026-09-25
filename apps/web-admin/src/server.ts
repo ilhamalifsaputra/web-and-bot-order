@@ -11,6 +11,7 @@ import formbody from "@fastify/formbody";
 import fastifyStatic from "@fastify/static";
 import multipart from "@fastify/multipart";
 import { config } from "@app/core/config";
+import { assertCredentialKeyConfigured } from "@app/core/credentialCrypto";
 import { logger } from "@app/core/logger";
 import authPlugin from "./plugins/auth";
 import setupGatePlugin from "./plugins/setupGate";
@@ -169,6 +170,8 @@ export async function buildApp(): Promise<FastifyInstance> {
 }
 
 export async function start(): Promise<void> {
+  // Fail fast on a missing/malformed CREDENTIAL_ENCRYPTION_KEY rather than at the first stock upload or delivery.
+  assertCredentialKeyConfigured();
   const { initDb, prisma, resolveAdminIds, resolveWebCookieSecret } = await import("@app/db");
   const { setAdminIds, setWebSecret } = await import("@app/core/runtime");
   await initDb();

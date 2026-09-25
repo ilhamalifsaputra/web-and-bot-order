@@ -22,6 +22,7 @@ import { run } from "@grammyjs/runner";
 import { config } from "@app/core/config";
 import { botToken as runtimeBotToken, notifBotToken, publicChannelId, setBotIdentity, setAdminIds, setWebSecret } from "@app/core/runtime";
 import { logger } from "@app/core/logger";
+import { assertCredentialKeyConfigured } from "@app/core/credentialCrypto";
 import { CUSTOM_EMOJI_MAP_SETTING, setCustomEmojiMap } from "@app/core/customEmoji";
 import { initDb, prisma, resolveBotCredentials, resolveAdminIds, resolveWebCookieSecret, missingTables, PAYMENT_LEDGER_TABLES, getSetting } from "@app/db";
 import { buildBot, setupCommandMenu, guardRunnerTask } from "@app/order-bot/main";
@@ -204,6 +205,8 @@ async function startNotifier(mainBot: ReturnType<typeof buildBot> | null, signal
 
 /** Side-effectful boot: DB, command menu, workers, transport, listen, shutdown. */
 export async function start(): Promise<void> {
+  // Fail fast on a missing/malformed CREDENTIAL_ENCRYPTION_KEY rather than at the first stock upload or delivery.
+  assertCredentialKeyConfigured();
   await initDb(); // no-op on Postgres; kept so this boot path matches every other caller
 
   // Fail-loud on a drifted live DB: a missing payment-ledger table makes that

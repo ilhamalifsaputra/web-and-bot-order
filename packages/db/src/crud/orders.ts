@@ -500,11 +500,12 @@ export async function uniqueOrderCode(db: Db): Promise<string> {
  * Decrypts `item.stockItem.credentials` in place on an order fetched with
  * `fullInclude` — `StockItem.credentials` is encrypted at rest (Task 2, see
  * @app/core/credentialCrypto). This is the single choke point: every caller
- * of getOrder/getOrderByCodeFull/listUserDeliveredOrders (buyer-facing order
+ * of getOrder/getOrderByCodeFull (buyer-facing order
  * detail in the bot and storefront, the account-file DM builders, the
  * web-admin order detail page) reads `stockItem.credentials` expecting
  * plaintext, and all of them ultimately source the row from one of these
- * three functions. Returns `order` unchanged if it's null (not-found) or has
+ * two functions (the state machine reads through getOrderRaw instead, and
+ * never decrypts). Returns `order` unchanged if it's null (not-found) or has
  * no items with stock attached — cheap no-op for every non-manual-account
  * order kind. `Order.deliveredContent` (encrypted since Fase 6c) is decrypted
  * here too, throwing on an unreadable value like the stock credentials do.
@@ -538,6 +539,23 @@ function withDecryptedStockCredentials<
 export async function getOrder(db: Db, orderId: number) {
   const order = await db.order.findUnique({ where: { id: orderId }, include: fullInclude });
   return order ? withDecryptedStockCredentials(order) : order;
+}
+
+/**
+ * getOrder WITHOUT decrypting anything: `stockItem.credentials` and
+ * `deliveredContent` come back exactly as stored (ciphertext). For the order
+ * state machine only — cancel, reject, credit-to-balance, approve's pre-claim
+ * read, the expiry sweep — which decides on statuses, ids and amounts and
+ * never needs a secret. Decrypting there made one unreadable row (a corrupt
+ * value, or legacy plaintext once ALLOW_LEGACY_PLAINTEXT=false) block the
+ * order from ever being cancelled or expired, leaking its reservation.
+ *
+ * Never deliver, display or log what this returns: a delivery reads through
+ * getOrder/getOrderByCodeFull (which throw on an unreadable value), a page
+ * through getOrderByCodeFullForDisplay.
+ */
+export async function getOrderRaw(db: Db, orderId: number) {
+  return db.order.findUnique({ where: { id: orderId }, include: fullInclude });
 }
 
 export function getOrderByCode(db: Db, orderCode: string) {
@@ -1260,14 +1278,21 @@ export function countUserPendingOrders(db: Db, userId: number) {
   });
 }
 
+/**
+ * A buyer's delivered PRODUCT orders, for lists that only need ids and product
+ * names (the storefront's "orders to review"). Carries no secret at all — no
+ * stock row, no deliveredContent — so it never decrypts, and one unreadable
+ * row can't fail the page. PRODUCT only: a wallet top-up can't be reviewed,
+ * and letting top-ups in would eat the row limit.
+ */
 export async function listUserDeliveredOrders(db: Db, userId: number, limit = 50) {
   const orders = await db.order.findMany({
-    where: { userId, status: OrderStatus.DELIVERED },
+    where: { userId, status: OrderStatus.DELIVERED, kind: OrderKind.PRODUCT },
     orderBy: { createdAt: "desc" },
     take: limit,
-    include: { items: { include: { product: true, stockItem: true } } },
+    include: { items: { include: { product: true } } },
   });
-  return orders.map(withDecryptedStockCredentials);
+  return orders.map(withoutDeliveredContent);
 }
 
 export async function attachPaymentProof(
@@ -1432,6 +1457,23 @@ export function listExpiringPendingPayments(db: Db, now: Date, until: Date, limi
 }
 
 /**
+ * The line's reserved row was marked DEAD by an admin (before this order's
+ * snapshot was read, or in between) and is still tied to this order. It has
+ * nothing to release — it stays DEAD, keeps its `orderId` and its ledger — but
+ * the voided order's line must stop pointing at it, like a released row's
+ * does. Left linked, the integrity check reported it as pre-3b legacy data and
+ * soft-deleting the dead row was refused forever. No event: nothing about the
+ * row changes, and its RESERVED event already records the order and line.
+ */
+async function unlinkIfDeadHere(db: Db, orderId: number, orderItemId: number, stockItemId: number): Promise<void> {
+  const deadHere = await db.stockItem.count({
+    where: { id: stockItemId, status: StockStatus.DEAD, orderId },
+  });
+  if (deadHere !== 1) return;
+  await db.orderItem.updateMany({ where: { id: orderItemId, stockItemId }, data: { stockItemId: null } });
+}
+
+/**
  * Release any reserved stock + refund wallet + roll back voucher usage.
  *
  * Called from three places with genuinely different accounting consequences —
@@ -1452,12 +1494,13 @@ export function listExpiringPendingPayments(db: Db, now: Date, until: Date, limi
  */
 async function releaseOrderHolds(
   db: Db,
-  order: NonNullable<Awaited<ReturnType<typeof getOrder>>>,
+  order: NonNullable<Awaited<ReturnType<typeof getOrderRaw>>>,
   actor: StockEventActor,
   occurredAt: Date = new Date(),
 ) {
   for (const item of order.items) {
-    if (item.stockItem && item.stockItem.status === StockStatus.RESERVED) {
+    if (!item.stockItem) continue;
+    if (item.stockItem.status === StockStatus.RESERVED) {
       // Release only a row THIS order still holds. `order` is a snapshot taken
       // before this function ran, and the row can have moved on since: an
       // expiry sweep can read O1, stall, and by the time it writes, a competing
@@ -1470,7 +1513,10 @@ async function releaseOrderHolds(
         where: { id: item.stockItem.id, status: StockStatus.RESERVED, orderId: order.id },
         data: { status: StockStatus.AVAILABLE, orderId: null, reservedAt: null },
       });
-      if (res.count !== 1) continue;
+      if (res.count !== 1) {
+        await unlinkIfDeadHere(db, order.id, item.id, item.stockItem.id);
+        continue;
+      }
       await recordStockEvent(db, {
         stockItemId: item.stockItem.id,
         eventType: StockEventType.RESERVATION_RELEASED,
@@ -1482,6 +1528,8 @@ async function releaseOrderHolds(
         occurredAt,
       });
       await db.orderItem.update({ where: { id: item.id }, data: { stockItemId: null } });
+    } else {
+      await unlinkIfDeadHere(db, order.id, item.id, item.stockItem.id);
     }
   }
   if (new Decimal(order.walletUsed).greaterThan(0)) {
@@ -1558,7 +1606,7 @@ async function assertNotPaidWithoutCredit(
  * `user_cancelled` anti-abuse guard below).
  */
 export async function cancelOrder(db: Db, orderId: number, reason: string, actor: StockEventActor) {
-  const order = await getOrder(db, orderId);
+  const order = await getOrderRaw(db, orderId);
   if (!order) throw new ValidationError("error.order_not_found");
   if (
     order.status === OrderStatus.CANCELLED ||
@@ -1596,7 +1644,10 @@ export async function cancelOrder(db: Db, orderId: number, reason: string, actor
   });
   await transitionOrderStatus(db, { orderId, from: order.status, to: OrderStatus.CANCELLED, meta: reason });
   logger.info(`Cancelled order ${order.orderCode} — reason: ${reason}`);
-  return getOrder(db, orderId);
+  // Raw on purpose, like the read above: callers only need the code and the
+  // buyer, and a decrypt here would roll the whole cancel back over one
+  // unreadable row the cancel never needed.
+  return getOrderRaw(db, orderId);
 }
 
 /**
@@ -1622,7 +1673,7 @@ export async function creditOrderToBalance(
   db: Db,
   args: { orderId: number; amount?: Decimal.Value; adminId: number; binanceTxId?: string | null },
 ): Promise<{ credited: Decimal; currency: "IDR" | "USDT" }> {
-  const order = await getOrder(db, args.orderId);
+  const order = await getOrderRaw(db, args.orderId);
   if (!order) throw new ValidationError("error.order_not_found");
 
   const terminal: string[] = [
@@ -1708,7 +1759,7 @@ export async function rejectOrder(
   orderId: number,
   args: { adminId: number; reason: string },
 ) {
-  const order = await getOrder(db, orderId);
+  const order = await getOrderRaw(db, orderId);
   if (!order) throw new ValidationError("error.order_not_found");
   // PROCESSING = a paid manual/manual_with_info order awaiting hand-fulfilment
   // (settlePaidOrder's manual branch) — legal per LEGAL_TRANSITIONS so an admin
@@ -1744,7 +1795,8 @@ export async function rejectOrder(
     meta: `by admin_id=${args.adminId}: ${args.reason}`,
   });
   logger.info(`Rejected order ${order.orderCode} by admin ${args.adminId} — reason: ${args.reason}`);
-  return getOrder(db, orderId);
+  // Raw for the same reason as cancelOrder's return.
+  return getOrderRaw(db, orderId);
 }
 
 /**
@@ -1767,7 +1819,10 @@ export async function approveOrder(
   orderId: number,
   args: { adminId: number },
 ): Promise<{ order: NonNullable<Awaited<ReturnType<typeof getOrder>>>; credentials: string[] }> {
-  const order = await getOrder(db, orderId);
+  // Raw: nothing before the delivery loop needs a secret, and the loop
+  // decrypts each row itself from the row it has just sold (and throws there,
+  // rolling the approval back, if that row is unreadable).
+  const order = await getOrderRaw(db, orderId);
   if (!order) throw new ValidationError("error.order_not_found");
   if (order.kind === OrderKind.WALLET_TOPUP) {
     throw new ValidationError("error.order_is_wallet_topup");
@@ -1829,15 +1884,38 @@ export async function approveOrder(
   const credentials: string[] = [];
 
   for (const item of order.items) {
-    let stock = item.stockItem;
-    // getOrder already decrypted whatever came off `order.items`; the
-    // substitution branch below re-reads its row straight off Prisma and so
-    // has to decrypt for itself. Keeping the plaintext in its own variable is
-    // what lets this stop calling decryptCredentials on an already-decrypted
-    // string (it used to lean on the legacy passthrough, which Fase 6's
-    // strict mode removes).
-    let credential = stock ? stock.credentials : null;
-    if (!stock || stock.status !== StockStatus.RESERVED) {
+    // Warranty runs from the sale, using the days frozen onto the line at
+    // checkout. Zero days means the SKU carries no warranty, so leave the
+    // column null rather than stamping an already-expired instant.
+    const warrantyDays = Number(item.warrantyDaysSnapshot ?? 0);
+    const soldData = {
+      status: StockStatus.SOLD,
+      soldAt: now,
+      soldToOrderId: order.id,
+      soldToOrderItemId: item.id,
+      warrantyUntil: warrantyDays > 0 ? addDays(now, warrantyDays) : null,
+    };
+    // Flip a row to SOLD only if THIS order still holds it. `order` is a
+    // snapshot read before the claim above, and the reserved row can have
+    // moved on since: an admin's markStockDead locks the RESERVED row, sets it
+    // DEAD and commits in between. An unconditional update off the snapshot
+    // would overwrite that DEAD with SOLD and hand the buyer a credential the
+    // admin had just declared dead. Postgres re-checks this WHERE against the
+    // committed row after waiting out any lock on it, so a row that died in
+    // the meantime matches nothing and the line falls through to substitution
+    // below, exactly as if it had died before approve read the order.
+    const sellIfStillHeld = async (stockId: number): Promise<boolean> => {
+      const res = await db.stockItem.updateMany({
+        where: { id: stockId, status: StockStatus.RESERVED, orderId: order.id, deletedAt: null },
+        data: soldData,
+      });
+      return res.count === 1;
+    };
+
+    const stock = item.stockItem;
+    let soldId: number | null =
+      stock !== null && stock.status === StockStatus.RESERVED && (await sellIfStillHeld(stock.id)) ? stock.id : null;
+    if (soldId === null) {
       const substitutedOut = stock;
       const replacement = await allocateOneAvailableStock(db, item.productId, order.id, actor, item.id);
       if (!replacement) {
@@ -1871,25 +1949,21 @@ export async function approveOrder(
         orderItemId: item.id,
         actor,
       });
-      stock = replacement;
-      credential = decryptStockCredentials(replacement.credentials, replacement.id);
+      // The replacement was reserved for this order inside this same
+      // transaction, so its row lock is ours until commit and this cannot
+      // lose — but a miss would mean selling a row we don't hold, so it is
+      // checked rather than assumed.
+      if (!(await sellIfStillHeld(replacement.id))) throw new Error(`Stock item ${replacement.id} was reserved for order ${order.id} but could not be marked sold.`);
+      soldId = replacement.id;
     }
-    // Warranty runs from the sale, using the days frozen onto the line at
-    // checkout. Zero days means the SKU carries no warranty, so leave the
-    // column null rather than stamping an already-expired instant.
-    const warrantyDays = Number(item.warrantyDaysSnapshot ?? 0);
-    await db.stockItem.update({
-      where: { id: stock.id },
-      data: {
-        status: StockStatus.SOLD,
-        soldAt: now,
-        soldToOrderId: order.id,
-        soldToOrderItemId: item.id,
-        warrantyUntil: warrantyDays > 0 ? addDays(now, warrantyDays) : null,
-      },
-    });
+    // Decrypt from the row as it is now, after the SOLD flip has locked it —
+    // never from the pre-claim snapshot. Throws on an unreadable credential,
+    // which rolls the whole approval back: a buyer must never be sent
+    // ciphertext or a placeholder.
+    const soldRow = await db.stockItem.findUniqueOrThrow({ where: { id: soldId }, select: { credentials: true } });
+    const credential = decryptStockCredentials(soldRow.credentials, soldId);
     await recordStockEvent(db, {
-      stockItemId: stock.id,
+      stockItemId: soldId,
       eventType: StockEventType.SOLD,
       fromStatus: StockStatus.RESERVED,
       toStatus: StockStatus.SOLD,
@@ -1897,7 +1971,7 @@ export async function approveOrder(
       orderItemId: item.id,
       actor,
     });
-    credentials.push(credential!);
+    credentials.push(credential);
   }
 
   await db.order.update({
@@ -2669,7 +2743,8 @@ export async function updateOrderCustomerData(
   orderId: number,
   answers: unknown,
 ): Promise<OrderWithIncludes> {
-  const order = await getOrder(db, orderId);
+  // Raw reads: editing the buyer's answers needs no secret (see getOrderRaw).
+  const order = await getOrderRaw(db, orderId);
   if (!order) throw new ValidationError("error.order_not_found");
   if (order.status !== OrderStatus.PROCESSING) {
     throw new ValidationError("error.order_not_processing");
@@ -2682,7 +2757,7 @@ export async function updateOrderCustomerData(
     where: { id: orderId },
     data: { customerData: JSON.stringify(normalized) },
   });
-  const refreshed = await getOrder(db, orderId);
+  const refreshed = await getOrderRaw(db, orderId);
   return refreshed!;
 }
 

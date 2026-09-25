@@ -21,6 +21,7 @@ import {
   rejectOrder,
   cancelOrder,
   creditOrderToBalance,
+  approveOrder,
   getOrder,
   getOrderByCodeFull,
   listUserDeliveredOrders,
@@ -1659,6 +1660,89 @@ describe("order credential decrypt: display reader is guarded, delivery readers 
     await expect(getOrder(prisma, order.id)).rejects.toThrow();
     await expect(getOrderByCodeFull(prisma, order.orderCode)).rejects.toThrow();
   });
+
+  // One unreadable row must not make an order impossible to void: the state
+  // machine never needs the plaintext, so it must not decrypt (final review F2).
+  it("an order holding an unreadable reserved row can still be cancelled, and its hold is released", async () => {
+    const { order, stockItemId } = await orderWithTamperedStock();
+    await cancelOrder(prisma, order.id, "admin_cancelled: test", { type: StockActorType.ADMIN, adminId: sample.user.id });
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe("CANCELLED");
+    const row = await prisma.stockItem.findUniqueOrThrow({ where: { id: stockItemId } });
+    expect(row.status).toBe("AVAILABLE");
+    expect(row.orderId).toBeNull();
+  });
+
+  it("the expiry sweep's transactional cancel expires such an order instead of retrying it forever", async () => {
+    const { order, stockItemId } = await orderWithTamperedStock();
+    await prisma.$transaction((tx) => cancelOrder(tx, order.id, "expired", { type: StockActorType.SYSTEM }));
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe("CANCELLED");
+    expect((await prisma.stockItem.findUniqueOrThrow({ where: { id: stockItemId } })).status).toBe("AVAILABLE");
+  });
+
+  it("such an order can still be rejected or credited to balance", async () => {
+    // Both built before either is released, so the second checkout doesn't
+    // pick up the first one's (unreadable) row once it is back in stock.
+    const rejected = await orderWithTamperedStock();
+    const credited = await orderWithTamperedStock();
+    await prisma.order.update({ where: { id: rejected.order.id }, data: { status: "PENDING_VERIFICATION" } });
+    await rejectOrder(prisma, rejected.order.id, { adminId: sample.user.id, reason: "bad proof" });
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: rejected.order.id } })).status).toBe("REJECTED");
+    expect((await prisma.stockItem.findUniqueOrThrow({ where: { id: rejected.stockItemId } })).status).toBe("AVAILABLE");
+
+    await prisma.order.update({ where: { id: credited.order.id }, data: { status: "PENDING_VERIFICATION" } });
+    await creditOrderToBalance(prisma, { orderId: credited.order.id, adminId: sample.user.id });
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: credited.order.id } })).status).toBe("CANCELLED");
+    expect((await prisma.stockItem.findUniqueOrThrow({ where: { id: credited.stockItemId } })).status).toBe("AVAILABLE");
+  });
+
+  it("approving such an order still throws at delivery and rolls the whole approval back", async () => {
+    const { order, stockItemId } = await orderWithTamperedStock();
+    await prisma.order.update({ where: { id: order.id }, data: { status: "PENDING_VERIFICATION" } });
+    await expect(prisma.$transaction((tx) => approveOrder(tx, order.id, { adminId: sample.user.id }))).rejects.toThrow();
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe("PENDING_VERIFICATION");
+    expect((await prisma.stockItem.findUniqueOrThrow({ where: { id: stockItemId } })).status).toBe("RESERVED");
+  });
+});
+
+describe("listUserDeliveredOrders is a display list that needs no secret (final review F2)", () => {
+  let sample: SampleData;
+  beforeEach(async () => {
+    await resetDb(prisma);
+    sample = await buildSampleData(prisma);
+  });
+
+  it("does not fail on an unreadable deliveredContent or credential, and never carries either", async () => {
+    const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    const good = JSON.parse(encryptLegacyV1("user:x pass:Hunter2")) as Record<string, unknown>;
+    const tampered = JSON.stringify({ ...good, authTag: Buffer.alloc(16).toString("base64") });
+    await prisma.order.update({ where: { id: order.id }, data: { status: "DELIVERED", deliveredContent: tampered } });
+    await prisma.stockItem.update({ where: { id: order.items[0]!.stockItemId! }, data: { credentials: tampered } });
+
+    const listed = await listUserDeliveredOrders(prisma, sample.user.id);
+    expect(listed.map((o) => o.id)).toEqual([order.id]);
+    expect(listed[0]!.items[0]!.product.name).toBeTruthy();
+    expect(JSON.stringify(listed)).not.toContain(tampered.slice(0, 40));
+    expect(listed[0]).not.toHaveProperty("deliveredContent");
+  });
+
+  it("lists only product orders, so wallet top-ups don't eat the row limit", async () => {
+    const product = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    await prisma.order.update({ where: { id: product.id }, data: { status: "DELIVERED", createdAt: new Date("2026-01-01T00:00:00Z") } });
+    for (let i = 0; i < 3; i++) {
+      await prisma.order.create({
+        data: {
+          orderCode: `TOPUP-F2-${i}`,
+          userId: sample.user.id,
+          kind: OrderKind.WALLET_TOPUP,
+          status: "DELIVERED",
+          subtotalAmount: new Decimal("10"),
+          totalAmount: new Decimal("10"),
+        },
+      });
+    }
+    const listed = await listUserDeliveredOrders(prisma, sample.user.id, 2);
+    expect(listed.map((o) => o.id)).toEqual([product.id]);
+  });
 });
 
 describe("Order.deliveredContent is decrypted at the order read choke points (Fase 6c)", () => {
@@ -1674,13 +1758,11 @@ describe("Order.deliveredContent is decrypted at the order read choke points (Fa
     return order;
   }
 
-  it("getOrder, getOrderByCodeFull, listUserDeliveredOrders and the display reader return the plaintext of an encrypted value", async () => {
+  it("getOrder, getOrderByCodeFull and the display reader return the plaintext of an encrypted value", async () => {
     const order = await deliveredOrderWith(encryptLegacyV1("user:acc1 pass:Hunter2"));
     expect((await getOrder(prisma, order.id))!.deliveredContent).toBe("user:acc1 pass:Hunter2");
     expect((await getOrderByCodeFull(prisma, order.orderCode))!.deliveredContent).toBe("user:acc1 pass:Hunter2");
     expect((await getOrderByCodeFullForDisplay(prisma, order.orderCode))!.deliveredContent).toBe("user:acc1 pass:Hunter2");
-    const listed = await listUserDeliveredOrders(prisma, sample.user.id);
-    expect(listed.find((o) => o.id === order.id)!.deliveredContent).toBe("user:acc1 pass:Hunter2");
   });
 
   it("a pre-encryption plaintext row still reads unchanged (permissive legacy mode)", async () => {
@@ -1730,8 +1812,6 @@ describe.each([false, true])("order read choke points with CREDENTIAL_ENVELOPE_W
     expect((await getOrder(prisma, order.id))!.deliveredContent).toBe("user:6d pass:Hunter2");
     expect((await getOrderByCodeFull(prisma, order.orderCode))!.deliveredContent).toBe("user:6d pass:Hunter2");
     expect((await getOrderByCodeFullForDisplay(prisma, order.orderCode))!.deliveredContent).toBe("user:6d pass:Hunter2");
-    const listed = await listUserDeliveredOrders(prisma, sample.user.id);
-    expect(listed.find((o) => o.id === order.id)!.deliveredContent).toBe("user:6d pass:Hunter2");
   });
 
   it("deliveredContent copied onto another order only reads there when it is v1", async () => {

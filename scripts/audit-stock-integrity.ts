@@ -35,6 +35,9 @@ async function main(): Promise<void> {
   console.log(
     `  duplicateActiveCredentialFingerprints: ${report.duplicateActiveCredentialFingerprints.count}`,
   );
+  console.log(`  liveRowsWithoutClaimKey: ${report.liveRowsWithoutClaimKey.count}`);
+  console.log(`  deadOrDeletedRowsHoldingClaimKey: ${report.deadOrDeletedRowsHoldingClaimKey.count}`);
+  console.log(`  soldWithoutSoldToOrderId: ${report.soldWithoutSoldToOrderId.count}`);
 
   const totalFindings =
     report.reservedOrSoldWithoutOrderId.count +
@@ -44,7 +47,10 @@ async function main(): Promise<void> {
     report.softDeletedStillReserved.count +
     report.statusEventMismatch.count +
     report.cancelledOrRejectedOrderItemsStillLinked.count +
-    report.duplicateActiveCredentialFingerprints.count;
+    report.duplicateActiveCredentialFingerprints.count +
+    report.liveRowsWithoutClaimKey.count +
+    report.deadOrDeletedRowsHoldingClaimKey.count +
+    report.soldWithoutSoldToOrderId.count;
 
   if (totalFindings === 0) {
     console.log("\nNo integrity violations found.");

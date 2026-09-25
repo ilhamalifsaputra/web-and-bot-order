@@ -431,6 +431,10 @@ export async function deleteStockItem(db: Db, stockId: number, adminId: number):
  * is responsible for never logging the result.
  */
 export async function listAvailableCredentials(db: Db, productId: number): Promise<string[]> {
+  return (await readAvailableCredentials(db, productId)).map((r) => r.plain);
+}
+
+async function readAvailableCredentials(db: Db, productId: number): Promise<{ id: number; plain: string }[]> {
   const rows = await db.stockItem.findMany({
     where: { productId, deletedAt: null, status: StockStatus.AVAILABLE },
     orderBy: { id: "asc" },
@@ -438,8 +442,33 @@ export async function listAvailableCredentials(db: Db, productId: number): Promi
   });
   return rows.flatMap((r) => {
     const plain = tryDecryptCredentials(r.credentials, { stockItemId: r.id, purpose: "the available-stock export" });
-    return plain === null ? [] : [plain];
+    return plain === null ? [] : [{ id: r.id, plain }];
   });
+}
+
+/**
+ * The admin's plaintext download of a product's remaining stock:
+ * listAvailableCredentials plus one CREDENTIAL_REVEALED event per row actually
+ * exported, attributed to the admin — the same per-row trail a single reveal
+ * leaves, so "who has seen this credential?" still has an answer after a bulk
+ * export. An unreadable row is not exported and gets no event. The event meta
+ * names the export, never the credential. Call it inside the same transaction
+ * as the `stock_download` audit row, so a failed audit leaves no trace and
+ * serves no file.
+ */
+export async function exportAvailableCredentials(db: Db, productId: number, adminId: number): Promise<string[]> {
+  const rows = await readAvailableCredentials(db, productId);
+  const actor = adminActor(adminId);
+  await recordStockEvents(
+    db,
+    rows.map((r) => ({
+      stockItemId: r.id,
+      eventType: StockEventType.CREDENTIAL_REVEALED,
+      actor,
+      meta: { via: "available_stock_download" },
+    })),
+  );
+  return rows.map((r) => r.plain);
 }
 
 /**

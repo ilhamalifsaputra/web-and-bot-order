@@ -18,8 +18,10 @@ import {
   approveOrder,
   attachPaymentProof,
   markStockDead,
+  deleteStockItem,
   upsertUser,
 } from "@app/db";
+import { checkStockIntegrity } from "./stockIntegrity";
 import { OrderStatus, StockActorType, StockEventType, StockStatus } from "@app/core/enums";
 
 let db: TestDb;
@@ -222,6 +224,100 @@ describe("stock event ledger across an order's lifecycle", () => {
     // The cancel itself still succeeded — a row it no longer owns is skipped,
     // not an error.
     expect((await prisma.order.findUniqueOrThrow({ where: { id: first.id } })).status).toBe(OrderStatus.CANCELLED);
+  });
+
+  it("a row marked DEAD between approve's read and its claim is substituted, never sold", async () => {
+    // The race: approveOrder reads the order (row R is RESERVED), then an admin
+    // marks R dead and commits, then approve claims the order. Approve must not
+    // deliver R off its stale snapshot — the buyer would get a credential the
+    // admin just declared dead. The proxy runs markStockDead at exactly that
+    // moment: right before the order claim, after the read.
+    const { product, user } = sample;
+    const admin = await upsertUser(prisma, { telegramId: 777004, username: "admin-d", fullName: "Admin D" });
+    const order = (await createOrderDirect(prisma, { user, productId: product.id, quantity: 1 }))!;
+    const item = await prisma.orderItem.findFirstOrThrow({ where: { orderId: order.id } });
+    const deadId = item.stockItemId!;
+    await attachPaymentProof(prisma, order.id, { fileId: "dummy", txid: "RACE123XYZ" });
+
+    let fired = false;
+    const racing = new Proxy(prisma, {
+      get(target, prop) {
+        const value = Reflect.get(target, prop, target) as unknown;
+        if (prop !== "order") return typeof value === "function" ? value.bind(target) : value;
+        const delegate = value as PrismaClient["order"];
+        return new Proxy(delegate, {
+          get(d, p) {
+            const fn = Reflect.get(d, p, d) as unknown;
+            if (p === "updateMany" && !fired) {
+              return async (args: Parameters<PrismaClient["order"]["updateMany"]>[0]) => {
+                fired = true;
+                expect(await markStockDead(prisma, deadId, "died mid-approve", admin.id)).toBe(1);
+                return delegate.updateMany(args);
+              };
+            }
+            return typeof fn === "function" ? fn.bind(d) : fn;
+          },
+        });
+      },
+    }) as PrismaClient;
+
+    const { credentials } = await approveOrder(racing, order.id, { adminId: admin.id });
+    expect(fired).toBe(true);
+
+    const dead = await prisma.stockItem.findUniqueOrThrow({ where: { id: deadId } });
+    expect(dead.status).toBe(StockStatus.DEAD);
+    expect(dead.soldToOrderId).toBeNull();
+    expect(dead.soldAt).toBeNull();
+
+    const line = await prisma.orderItem.findUniqueOrThrow({ where: { id: item.id } });
+    expect(line.stockItemId).not.toBe(deadId);
+    const sub = await prisma.stockItem.findUniqueOrThrow({ where: { id: line.stockItemId! } });
+    expect(sub.status).toBe(StockStatus.SOLD);
+    expect(sub.soldToOrderId).toBe(order.id);
+    expect(credentials).toHaveLength(1);
+    expect(credentials[0]).toMatch(/^user\d@example\.com:pwd\d$/);
+    expect(credentials[0]).not.toBe("user1@example.com:pwd1");
+
+    expect((await eventsFor(deadId)).map((e) => e.eventType)).toEqual([
+      StockEventType.RESERVED,
+      StockEventType.MARKED_DEAD,
+      StockEventType.SUBSTITUTED_OUT,
+    ]);
+    expect((await eventsFor(sub.id)).map((e) => e.eventType)).toEqual([
+      StockEventType.RESERVED,
+      StockEventType.SUBSTITUTED_IN,
+      StockEventType.SOLD,
+    ]);
+
+    const report = await checkStockIntegrity(prisma);
+    for (const [key, finding] of Object.entries(report)) {
+      if (key === "legacyRowsWithoutEvents") continue;
+      expect({ key, count: (finding as { count: number }).count }).toEqual({ key, count: 0 });
+    }
+  });
+
+  it("cancelling an order whose reserved row an admin marked DEAD unlinks the line but keeps the row DEAD", async () => {
+    // Before: releaseOrderHolds only unlinked RESERVED rows, so the DEAD row
+    // stayed pointed at by a cancelled order forever — the integrity check
+    // reported it as pre-3b legacy data and soft-deleting the row was refused.
+    const { product, user } = sample;
+    const admin = await upsertUser(prisma, { telegramId: 777005, username: "admin-e", fullName: "Admin E" });
+    const order = (await createOrderDirect(prisma, { user, productId: product.id, quantity: 1 }))!;
+    const item = await prisma.orderItem.findFirstOrThrow({ where: { orderId: order.id } });
+    const rowId = item.stockItemId!;
+    expect(await markStockDead(prisma, rowId, "died while reserved", admin.id)).toBe(1);
+
+    await cancelOrder(prisma, order.id, "expired", { type: StockActorType.SYSTEM });
+
+    expect((await prisma.orderItem.findUniqueOrThrow({ where: { id: item.id } })).stockItemId).toBeNull();
+    const row = await prisma.stockItem.findUniqueOrThrow({ where: { id: rowId } });
+    expect(row.status).toBe(StockStatus.DEAD);
+    // No release is claimed for a row that was never released.
+    expect((await eventsFor(rowId)).map((e) => e.eventType)).toEqual([StockEventType.RESERVED, StockEventType.MARKED_DEAD]);
+
+    const report = await checkStockIntegrity(prisma);
+    expect(report.cancelledOrRejectedOrderItemsStillLinked.count).toBe(0);
+    expect(await deleteStockItem(prisma, rowId, admin.id)).toBe(true);
   });
 
   it("the expiry sweep's cancel is attributed to the system", async () => {

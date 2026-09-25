@@ -32,6 +32,7 @@ import { logger } from "@app/core/logger";
 import {
   prisma,
   getOrder,
+  getOrderRaw,
   getDenomination,
   getDenominationWithProduct,
   buildNicknameProviderEntries,
@@ -1915,7 +1916,9 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
 export async function cancelPendingOrder(ctx: MyContext, orderId: number): Promise<void> {
   const info = requireUser(ctx);
 
-  const order = await getOrder(prisma, orderId);
+  // Raw (no decrypt): this only needs owner/status, and a decrypting read
+  // would let one unreadable reserved row stop the buyer from cancelling.
+  const order = await getOrderRaw(prisma, orderId);
   if (order === null || order.userId !== info.id) {
     if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "error.order_not_found"), show_alert: true });
     return;
@@ -2058,7 +2061,7 @@ export async function changePaymentRail(
   const info = requireUser(ctx);
   const lang = ctx.session.lang;
 
-  const order = await getOrder(prisma, orderId);
+  const order = await getOrderRaw(prisma, orderId);
   if (!order || order.userId !== info.id) {
     if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "error.order_not_found"), show_alert: true });
     return;
@@ -2203,7 +2206,7 @@ const REFRESHABLE_STATUSES: readonly string[] = [
  */
 async function flipSettledBubble(
   ctx: MyContext,
-  order: NonNullable<Awaited<ReturnType<typeof getOrder>>>,
+  order: NonNullable<Awaited<ReturnType<typeof getOrderRaw>>>,
   opts?: { editTimeoutMs?: number },
 ): Promise<void> {
   const editTimeoutMs = opts?.editTimeoutMs ?? TELEGRAM_MESSAGE_TIMEOUT_MS;
@@ -2245,7 +2248,7 @@ export async function refreshPaymentStatus(
   opts?: { editTimeoutMs?: number },
 ): Promise<void> {
   const info = requireUser(ctx);
-  const order = await getOrder(prisma, orderId);
+  const order = await getOrderRaw(prisma, orderId);
   if (!order || order.userId !== info.id) {
     if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "error.order_not_found"), show_alert: true });
     return;

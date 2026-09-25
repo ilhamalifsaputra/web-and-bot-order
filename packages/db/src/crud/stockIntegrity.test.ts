@@ -93,6 +93,9 @@ describe("checkStockIntegrity — clean database", () => {
       legacyRowsWithoutEvents: 0,
       cancelledOrRejectedOrderItemsStillLinked: emptyFinding,
       duplicateActiveCredentialFingerprints: emptyFinding,
+      liveRowsWithoutClaimKey: emptyFinding,
+      deadOrDeletedRowsHoldingClaimKey: emptyFinding,
+      soldWithoutSoldToOrderId: emptyFinding,
     });
   });
 });
@@ -381,6 +384,18 @@ describe("checkStockIntegrity — cancelledOrRejectedOrderItemsStillLinked", () 
     expect(report.cancelledOrRejectedOrderItemsStillLinked).toEqual(emptyFinding);
   });
 
+  it("does not flag a CANCELLED order's item still pointing at a row an admin marked DEAD", async () => {
+    // A DEAD row can never be re-reserved, so the stale pointer can't become a
+    // duplicate; releaseOrderHolds now unlinks it too, but rows voided before
+    // that fix keep the pointer and are not legacy defects.
+    const [row] = await rowsByStatus(StockStatus.AVAILABLE);
+    const { order } = await rawOrderWithItem("ORD-CANCELLED-DEAD", OrderStatus.CANCELLED, row!.id);
+    await prisma.stockItem.update({ where: { id: row!.id }, data: { status: StockStatus.DEAD, orderId: order.id, activeCredentialKey: null } });
+
+    const report = await checkStockIntegrity(prisma);
+    expect(report.cancelledOrRejectedOrderItemsStillLinked).toEqual(emptyFinding);
+  });
+
   it("does not flag a PAID order's item that still points at a StockItem", async () => {
     const [row] = await rowsByStatus(StockStatus.AVAILABLE);
     await rawOrderWithItem("ORD-PAID-LINKED", OrderStatus.PAID, row!.id);
@@ -444,6 +459,115 @@ describe("checkStockIntegrity — duplicateActiveCredentialFingerprints", () => 
 
     const report = await checkStockIntegrity(prisma);
     expect(report.duplicateActiveCredentialFingerprints).toEqual(emptyFinding);
+  });
+});
+
+describe("checkStockIntegrity — liveRowsWithoutClaimKey", () => {
+  it("flags a live row with no claim key once its denomination is fingerprinted", async () => {
+    const [row] = await rowsByStatus(StockStatus.AVAILABLE);
+    await prisma.stockItem.update({ where: { id: row!.id }, data: { activeCredentialKey: null } });
+
+    const report = await checkStockIntegrity(prisma);
+    expect(report.liveRowsWithoutClaimKey).toEqual({ count: 1, sampleIds: [row!.id] });
+  });
+
+  it("one fingerprinted row marks its denomination as backfilled, so every keyless live row in it is flagged", async () => {
+    await prisma.stockItem.updateMany({ data: { credentialFingerprint: null, activeCredentialKey: null } });
+    const rows = await rowsByStatus(StockStatus.AVAILABLE);
+    await prisma.stockItem.update({ where: { id: rows[0]!.id }, data: { credentialFingerprint: "fp-own" } });
+
+    const report = await checkStockIntegrity(prisma);
+    expect(report.liveRowsWithoutClaimKey).toEqual({ count: rows.length, sampleIds: rows.map((r) => r.id) });
+  });
+
+  it("does not flag a denomination no row of which is fingerprinted yet (not backfilled)", async () => {
+    await prisma.stockItem.updateMany({ data: { credentialFingerprint: null, activeCredentialKey: null } });
+
+    const report = await checkStockIntegrity(prisma);
+    expect(report.liveRowsWithoutClaimKey).toEqual(emptyFinding);
+  });
+
+  it("does not flag a SOLD duplicate whose credential another row already claims (historical, not actionable)", async () => {
+    const [holder, sold] = await rowsByStatus(StockStatus.AVAILABLE);
+    const order = await rawOrder("ORD-SOLD-DUP", OrderStatus.DELIVERED);
+    await prisma.stockItem.update({
+      where: { id: sold!.id },
+      data: {
+        status: StockStatus.SOLD,
+        orderId: order.id,
+        soldAt: new Date(),
+        soldToOrderId: order.id,
+        credentialFingerprint: holder!.credentialFingerprint,
+        activeCredentialKey: null,
+      },
+    });
+
+    const report = await checkStockIntegrity(prisma);
+    expect(report.liveRowsWithoutClaimKey).toEqual(emptyFinding);
+  });
+
+  it("does flag a SOLD row whose credential nobody claims (it could be imported and sold again)", async () => {
+    const [sold] = await rowsByStatus(StockStatus.AVAILABLE);
+    const order = await rawOrder("ORD-SOLD-UNCLAIMED", OrderStatus.DELIVERED);
+    await prisma.stockItem.update({
+      where: { id: sold!.id },
+      data: { status: StockStatus.SOLD, orderId: order.id, soldAt: new Date(), soldToOrderId: order.id, activeCredentialKey: null },
+    });
+
+    const report = await checkStockIntegrity(prisma);
+    expect(report.liveRowsWithoutClaimKey).toEqual({ count: 1, sampleIds: [sold!.id] });
+  });
+
+  it("does not flag a DEAD or soft-deleted row without a claim key (released on purpose)", async () => {
+    const [dead, deleted] = await rowsByStatus(StockStatus.AVAILABLE);
+    await prisma.stockItem.update({ where: { id: dead!.id }, data: { status: StockStatus.DEAD, activeCredentialKey: null } });
+    await prisma.stockItem.update({ where: { id: deleted!.id }, data: { deletedAt: new Date(), activeCredentialKey: null } });
+
+    const report = await checkStockIntegrity(prisma);
+    expect(report.liveRowsWithoutClaimKey).toEqual(emptyFinding);
+  });
+});
+
+describe("checkStockIntegrity — deadOrDeletedRowsHoldingClaimKey", () => {
+  it("flags a DEAD row and a soft-deleted row that still hold their claim key", async () => {
+    const [dead, deleted] = await rowsByStatus(StockStatus.AVAILABLE);
+    await prisma.stockItem.update({ where: { id: dead!.id }, data: { status: StockStatus.DEAD } });
+    await prisma.stockItem.update({ where: { id: deleted!.id }, data: { deletedAt: new Date() } });
+
+    const report = await checkStockIntegrity(prisma);
+    expect(report.deadOrDeletedRowsHoldingClaimKey.count).toBe(2);
+    expect(report.deadOrDeletedRowsHoldingClaimKey.sampleIds).toEqual([dead!.id, deleted!.id].sort((a, b) => a - b));
+  });
+
+  it("does not flag a live row holding its claim key", async () => {
+    const report = await checkStockIntegrity(prisma);
+    expect(report.deadOrDeletedRowsHoldingClaimKey).toEqual(emptyFinding);
+  });
+});
+
+describe("checkStockIntegrity — soldWithoutSoldToOrderId", () => {
+  it("flags a SOLD row that names no order it was sold to", async () => {
+    const [row] = await rowsByStatus(StockStatus.AVAILABLE);
+    const order = await rawOrder("ORD-SOLD-NO-SOLDTO", OrderStatus.DELIVERED);
+    await prisma.stockItem.update({
+      where: { id: row!.id },
+      data: { status: StockStatus.SOLD, orderId: order.id, soldAt: new Date() },
+    });
+
+    const report = await checkStockIntegrity(prisma);
+    expect(report.soldWithoutSoldToOrderId).toEqual({ count: 1, sampleIds: [row!.id] });
+  });
+
+  it("does not flag a SOLD row that names its order", async () => {
+    const [row] = await rowsByStatus(StockStatus.AVAILABLE);
+    const order = await rawOrder("ORD-SOLD-WITH-SOLDTO", OrderStatus.DELIVERED);
+    await prisma.stockItem.update({
+      where: { id: row!.id },
+      data: { status: StockStatus.SOLD, orderId: order.id, soldAt: new Date(), soldToOrderId: order.id },
+    });
+
+    const report = await checkStockIntegrity(prisma);
+    expect(report.soldWithoutSoldToOrderId).toEqual(emptyFinding);
   });
 });
 

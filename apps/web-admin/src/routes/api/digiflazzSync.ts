@@ -39,11 +39,10 @@ function parsePrice(value: string): Decimal | null {
 
 // N5: cap the total row count across every brand in a single /sync/apply
 // request. This is a manual, human-reviewed wizard action (not a bulk data
-// pipeline) — each brand's import runs its own $transaction, and this
-// repo's shared SQLite is single-writer (see CLAUDE.md), so a very large
-// request would hold a long sequence of writes against it. 500 rows
-// comfortably covers a real bulk-import session while keeping that
-// sequence bounded.
+// pipeline) — each brand's import runs its own $transaction, so a very
+// large request would run a long sequence of writes while the admin waits
+// on one HTTP request. 500 rows comfortably covers a real bulk-import
+// session while keeping that sequence bounded.
 const MAX_APPLY_ROWS = 500;
 
 export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Promise<void> {
@@ -79,8 +78,8 @@ export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Prom
     const groups = await groupDigiflazzPriceListByBrand(prisma, gameItems);
     // I3 fix: read the markup setting ONCE for this whole preview call, not
     // once per SKU — the old computeDigiflazzMarkupPrice-per-item shape could
-    // issue thousands of concurrent Settings reads against single-writer
-    // SQLite on one preview click.
+    // issue thousands of concurrent Settings reads against the database on
+    // one preview click.
     const markupSettings = await getDigiflazzMarkupSettings(prisma);
     const withPrices = groups.map((g) => ({
       brand: g.brand,

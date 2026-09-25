@@ -1618,6 +1618,25 @@ describe("POST /api/orders/:orderId/cancel", () => {
 });
 
 describe("POST /api/orders/bulk-action", () => {
+  it("bulk cancel still cancels an order whose reserved credential can't be decrypted (final review F2)", async () => {
+    const orderId = await makePendingOrder();
+    const item = await prisma.orderItem.findFirstOrThrow({ where: { orderId } });
+    const row = await prisma.stockItem.findUniqueOrThrow({ where: { id: item.stockItemId! } });
+    const tampered = { ...(JSON.parse(row.credentials) as Record<string, unknown>), authTag: Buffer.alloc(16).toString("base64") };
+    await prisma.stockItem.update({ where: { id: row.id }, data: { credentials: JSON.stringify(tampered) } });
+    await prisma.order.update({ where: { id: orderId }, data: { status: "PENDING_PAYMENT" } });
+
+    const res = await postJsonOrders("/api/orders/bulk-action", seed.cookie, seed.csrf, {
+      ids: [orderId],
+      action: "cancel",
+      reason: "unreadable stock cleanup",
+    });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({ succeeded: [orderId], failed: [] });
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: orderId } })).status).toBe("CANCELLED");
+    expect((await prisma.stockItem.findUniqueOrThrow({ where: { id: row.id } })).status).toBe("AVAILABLE");
+  });
+
   it("bulk deliver: eligible PENDING_VERIFICATION orders succeed, a PROCESSING (manual) order is skipped, exactly one summary audit row", async () => {
     setBotIdentity({ publicChannelId: -100123456789 });
     const eligible1 = await makePendingOrder();
@@ -4514,6 +4533,37 @@ describe("stock JSON API — bulk-dead, bulk-delete, item note/dead, download", 
       await prisma.$executeRawUnsafe(`DROP TRIGGER IF EXISTS test_fail_audit ON audit_logs`);
       await prisma.$executeRawUnsafe(`DROP FUNCTION IF EXISTS test_fail_audit()`);
     }
+
+    it("records one CREDENTIAL_REVEALED event per exported row, attributed to the admin and carrying no credential", async () => {
+      const avail = await prisma.stockItem.findMany({ where: { productId: seed.productId, status: "AVAILABLE", deletedAt: null } });
+      expect(avail.length).toBeGreaterThan(0);
+      const before = await prisma.stockItemEvent.count({ where: { eventType: StockEventType.CREDENTIAL_REVEALED } });
+      const res = await get(`/api/stock/${seed.productId}/download`, seed.cookie);
+      expect(res.statusCode).toBe(200);
+
+      for (const item of avail) {
+        const events = await eventsOfType(item.id, StockEventType.CREDENTIAL_REVEALED);
+        expect(events.length).toBeGreaterThanOrEqual(1);
+        expect(events.at(-1)).toMatchObject({ actorType: StockActorType.ADMIN, actorAdminId: seed.adminId });
+        expect(JSON.stringify(events.at(-1)!.meta ?? null)).not.toContain(decryptCredentials(item.credentials));
+      }
+      const after = await prisma.stockItemEvent.count({ where: { eventType: StockEventType.CREDENTIAL_REVEALED } });
+      expect(after - before).toBe(avail.length);
+    });
+
+    it("the plaintext download writes nothing when its audit row fails: no event, no file", async () => {
+      const avail = await prisma.stockItem.findMany({ where: { productId: seed.productId, status: "AVAILABLE", deletedAt: null } });
+      const before = await prisma.stockItemEvent.count({ where: { eventType: StockEventType.CREDENTIAL_REVEALED } });
+      await failAuditInsertsFor("stock_download");
+      try {
+        const res = await get(`/api/stock/${seed.productId}/download`, seed.cookie);
+        expect(res.statusCode).toBe(500);
+        for (const item of avail) expect(res.body).not.toContain(decryptCredentials(item.credentials));
+      } finally {
+        await restoreAuditInserts();
+      }
+      expect(await prisma.stockItemEvent.count({ where: { eventType: StockEventType.CREDENTIAL_REVEALED } })).toBe(before);
+    });
 
     it("bulk-add writes an IMPORTED event per new row, attributed to the logged-in admin", async () => {
       const res = await post(`/api/stock/${seed.productId}/bulk-add`, seed.cookie, {

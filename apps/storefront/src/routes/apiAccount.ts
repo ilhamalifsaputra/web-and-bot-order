@@ -33,6 +33,7 @@ import {
   setSetting,
   listUserOrders,
   countUserOrders,
+  getOrderByCode,
   getOrderByCodeFull,
   getOrderByCodeFullForDisplay,
   updateOrderCustomerData,
@@ -293,7 +294,9 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
       const customer = await requireCustomer(req, reply);
       if (!customer) return;
       if (!csrfHeaderOk(req, customer)) return reply.code(403).send({ error: "csrf_failed" });
-      const order = await getOrderByCodeFull(prisma, req.params.code);
+      // Ownership + kind only — no secret needed, so no decrypting reader (a
+      // decrypt here turned one unreadable row into a 500 on this edit).
+      const order = await getOrderByCode(prisma, req.params.code);
       if (!order || order.userId !== customer.userId || order.kind !== OrderKind.PRODUCT) {
         return reply.code(404).send({ error: "not_found" });
       }

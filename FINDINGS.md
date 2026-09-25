@@ -1,12 +1,60 @@
 # FINDINGS — Fase 0 Audit: Stock Traceability & Credential Encryption Hardening
 
-Audit-only pass, tidak ada perubahan kode. Setiap `[VERIFIKASI]` di brief
-diverifikasi terhadap kode saat ini (bukan hanya `INVENTORY_TRACEABILITY.md`,
-yang tetap akurat untuk sebagian besar §0.1 tapi tidak dijadikan sumber
-kebenaran tunggal). Severity: **critical / high / medium / low**. Status:
-**confirmed-as-designed** (sudah benar), **gap — targeted by Fase N** (sudah
-direncanakan diperbaiki di fase berikutnya), atau **gap — not yet covered**
-(temuan baru, belum ada di rencana fase manapun).
+Audit-only pass, tidak ada perubahan kode (pada saat ditulis). Setiap
+`[VERIFIKASI]` di brief diverifikasi terhadap kode saat ini (bukan hanya
+`INVENTORY_TRACEABILITY.md`, yang tetap akurat untuk sebagian besar §0.1 tapi
+tidak dijadikan sumber kebenaran tunggal). Severity: **critical / high /
+medium / low**. Status pada saat audit ditulis: **confirmed-as-designed**
+(sudah benar), **gap — targeted by Fase N** (sudah direncanakan diperbaiki di
+fase berikutnya), atau **gap — not yet covered** (temuan baru, belum ada di
+rencana fase manapun).
+
+**Dokumen ini adalah snapshot Fase 0 dan dibiarkan apa adanya di bawah** —
+setiap subbagian sekarang punya baris **"Status akhir (final review):"**
+yang mengoreksi/memperbarui status itu terhadap kode yang benar-benar
+terkirim (rencana lengkapnya ada di `~/.claude/plans/cheerful-toasting-nova.md`,
+dieksekusi sebagai Fase 1-7 + Track T). Tabel ringkas di bawah ini untuk
+lompat cepat; detail per temuan tetap ada di masing-masing subbagian.
+
+## Status ringkas per temuan (final review)
+
+| # | Temuan (§) | Status akhir | Fase/PR |
+|---|---|---|---|
+| 1 | StockItem fields (0.1) | **fixed** — kolom terisi & dipakai, bukan lagi scaffold kosong | Fase 3-6 |
+| 2 | StockStatus enum values (0.1) | tidak berubah — confirmed-as-designed | — |
+| 3 | `OrderItem.stockItemId` unique constraint (0.1) | **partially fixed** — jaring pengaman baca (`checkStockIntegrity` + SQL audit) ada; `@unique` sungguhan **deferred**, digantung gate G4 (audit produksi bersih) | Fase 4a shipped, 4b gated |
+| 4 | Rollback order batal/expired — `releaseOrderHolds` (0.1) | **fixed**, dan klaim "bukan bug aktif" di temuan asli **dikoreksi jadi salah** — lihat §-nya | Fase 3b |
+| 5 | `settlePaidOrder` overwrite `stockItemId` (0.1) | **fixed** — event substitusi + flip SOLD bersyarat | Fase 3b + final-review 4a74107f |
+| 6 | `allocateOneAvailableStock` (0.1) | tidak berubah secara perilaku; kini juga menulis event RESERVED | Fase 3b |
+| 7 | `bulkAddStock` dedup (0.1) | **superseded** — dedup decrypt-semua diganti fingerprint keyed-HMAC | Fase 5a/5b |
+| 8 | Refund tidak menyentuh StockItem (0.1) | tidak berubah — confirmed-as-designed | — |
+| 9 | Sold count (0.1) | **updated** — sekarang dikonsumsi bot ("Popular", "Sold: N"), bukan lagi tak terpakai | Track T (T4) |
+| 10 | Bentuk envelope (0.2) | tidak berubah untuk v1; v2 menambah penanda `v:2` | Fase 6d |
+| 11 | Sumber & validasi kunci — harus gagal saat boot (0.2) | **fixed** | Fase 6a |
+| 12 | AAD (0.2) | **fixed** — v2 + `setAAD`, rollout dua tahap; **tidak** menutup gap rotasi kunci | Fase 6d |
+| 13 | Fallback legacy-plaintext / flag belum ada (0.2) | **fixed** — `ALLOW_LEGACY_PLAINTEXT` sekarang ada | Fase 6b |
+| 14 | Jumlah baris legacy — tak terukur (0.2) | **masih terbuka**, kini bagian resmi checklist rollout `DOCS.md` | operasional, belum dijalankan |
+| 15 | Isolasi kegagalan dekripsi (0.2) | **fixed** untuk 3 pemanggil yang disebut temuan ini | Fase 6a + final-review 1868815f |
+| 16 | Key reuse (0.2) | tidak berubah — confirmed-as-designed | — |
+| 17 | `Order.deliveredContent` plaintext (0.3) | **fixed** — dienkripsi at rest | Fase 6c |
+| 18 | 🔴 Critical — reveal tanpa audit `GET /api/orders/:orderId` (0.3) | **fixed** | Track T (T0-A/H-A) |
+| 19 | 🔴 High — reveal tanpa audit bot `viewStockItems` (0.3) | **fixed** | Track T (T0-A/H-C) |
+| 20 | `StockItem.note` ter-echo ke AuditLog (0.3) | **fixed** | Track T (T0-A/H-C) |
+| 21 | AuditLog.details / OrderStatusHistory.meta (0.3) | tidak berubah, kecuali #20 di atas | — |
+| 22 | 🟠 High — kebocoran payload GrammyError ke log pino (0.3) | **fixed** | Track T (T0-B) |
+| 23 | Telegram bot — retensi pesan (0.3) | tidak berubah; pengecualian (#22) kini tertutup | — |
+| 24 | Export/CSV admin (0.3) | tidak berubah, diperkuat event reveal per baris | Fase 3c |
+| 25 | Ringkasan jalur dekripsi tanpa audit — tabel (0.3) | dua baris ❌ tebal jadi ✅ (lihat #18, #19) | Track T |
+| 26 | Kunci ter-commit (0.4) | tidak berubah — confirmed clean | — |
+| 27 | Auto-generation & pemisahan dari DB (0.4) | tidak berubah — confirmed-as-designed | — |
+| 28 | Backup DB terenkripsi (0.4) | tidak berubah — accepted risk, di luar cakupan | — |
+
+Temuan yang muncul BARU selama eksekusi (bukan di audit Fase 0 ini) — pointer
+duplikat `OrderItem.stockItemId` yang ternyata bug aktif (bukan cuma
+teoretis), dan gap rotasi kunci — dijelaskan di subbagian masing-masing dan
+di `INVENTORY_TRACEABILITY.md` §10. Item yang masih terbuka setelah SELURUH
+eksekusi ini (termasuk yang tidak ada di audit Fase 0 sama sekali) ada di
+**"Temuan tambahan — final review (item terbuka)"** di akhir dokumen ini.
 
 ---
 
@@ -102,6 +150,22 @@ Implikasi baik untuk Fase 3: karena hanya satu fungsi yang menulis transisi
 ini, dual-write ke `StockItemEvent` cukup ditambahkan di **satu tempat**
 (`releaseOrderHolds` itu sendiri), bukan tiga kali terpisah.
 
+**Status akhir (final review): fixed (Fase 3b) — DAN klaim di atas soal
+"tidak menghapus pointer" ternyata BUG AKTIF, bukan cuma gap teoretis.**
+Riset lanjutan (sebelum eksekusi Fase 3, lihat
+`~/.claude/plans/cheerful-toasting-nova.md` temuan #1) menemukan
+`releaseOrderHolds` versi audit ini TIDAK PERNAH melepas
+`OrderItem.stockItemId` saat mengembalikan baris ke AVAILABLE — order yang
+batal/expired tetap menunjuk baris yang lalu direservasi order lain, jadi
+dua `OrderItem` bisa menunjuk satu `StockItem` yang sama lewat alur
+cancel→re-reserve NORMAL, bukan kasus tepi. `releaseOrderHolds` sekarang
+menerima `actor: StockEventActor` eksplisit (bukan lagi diparsing dari
+string `reason` `cancelOrder`), menulis event RESERVATION_RELEASED, DAN
+meng-null-kan `OrderItem.stockItemId` (perbaikan L-6) — plus melepas pointer
+baris yang sudah DEAD di antara reservasi dan release
+(`unlinkIfDeadHere`, ditambahkan di final review, commit `96944fb1`).
+Lihat `INVENTORY_TRACEABILITY.md` §8.
+
 ### settlePaidOrder re-alokasi & overwrite stockItemId
 **Status: confirmed-as-designed.**
 `settlePaidOrder` (`orders.ts:2091`) untuk branch AUTO mendelegasikan ke
@@ -124,6 +188,17 @@ for (const item of order.items) {
 Konfirmasi: ya, `OrderItem.stockItemId` ditimpa (line 1583-1586) tanpa jejak
 baris lama — persis masalah #1 di brief ("jejak tidak boleh hilang"). Ini
 target langsung Fase 3's `SUBSTITUTED_OUT`/`SUBSTITUTED_IN` events.
+
+**Status akhir (final review): fixed, dalam dua tahap.** Fase 3b menambah
+event `SUBSTITUTED_OUT` (baris lama) + `SUBSTITUTED_IN` (baris baru) tepat di
+titik overwrite ini. Final review menambah satu lapis lagi (`4a74107f`): flip
+ke SOLD sendiri sekarang bersyarat (`updateMany` dengan
+`status: RESERVED, orderId: <order ini>, deletedAt: null`, bukan update tanpa
+syarat dari snapshot pra-klaim `approveOrder`) — menutup race admin
+men-`markStockDead` baris RESERVED itu tepat di antara `approveOrder`
+membaca order dan mengklaim barisnya, yang sebelumnya bisa membuat baris
+DEAD ditimpa balik jadi SOLD dan pembeli menerima kredensial yang baru saja
+dinyatakan mati. Lihat `INVENTORY_TRACEABILITY.md` §8.
 
 ### allocateOneAvailableStock — optimistic lock & retry
 **Status: confirmed-as-designed, satu detail dikoreksi.**
@@ -161,6 +236,17 @@ tabel low-volume). **`DEAD` dikecualikan dari dedup** — kredensial yang
 pernah ditandai DEAD bisa diimpor ulang tanpa dianggap duplikat. Sesuai
 asumsi brief persis.
 
+**Status akhir (final review): superseded oleh Fase 5a/5b.** Dedup
+decrypt-semua-baris-eksisting yang dijelaskan di atas tidak lagi jadi jalur
+utama: baris yang sudah di-backfill dibandingkan lewat
+`identityFingerprint`/`credentialFingerprint` (HMAC-SHA256 keyed, diturunkan
+HKDF dari `CREDENTIAL_ENCRYPTION_KEY`) — lihat `INVENTORY_TRACEABILITY.md`
+§4. Baris lama yang belum di-backfill masih jatuh ke decrypt-compare seperti
+dulu, tapi sekarang **ber-guard**: baris yang gagal didekripsi dihitung
+`unreadableExisting` dan dilewati, tidak lagi membatalkan seluruh upload
+seperti yang dikhawatirkan temuan "Isolasi kegagalan dekripsi" di bawah.
+Klaim unik `activeCredentialKey` menambah jaring pengaman kedua di level DB.
+
 ### Refund tidak menyentuh StockItem
 **Status: confirmed-as-designed.**
 `packages/db/src/crud/refunds.ts` (workflow `Refund`/`RefundItem` murni,
@@ -176,6 +262,14 @@ bukan counter tersimpan. Ada di tiga tempat: `orders.ts:2480-2497`
 (`soldCountsByDenomination`), `:2500-2503`, `:2511-2519`, dan sengaja
 diduplikasi di `catalog.ts:1055-1084` untuk menghindari circular import
 `catalog.ts ↔ orders.ts`. Tidak ada field `soldCount` di schema manapun.
+
+**Status akhir (final review): updated — sekarang dikonsumsi.** Track T (T4,
+"buyer-copy-truth") menyambungkan `soldCountsByProduct` ke daftar "Popular"
+bot dan `soldCountForProduct`/`soldCountForDenomination` ke baris "Sold: N"
+pada detail denominasi (`apps/order-bot/src/handlers/customer.ts`) — klaim
+lama "nothing consumes these yet" (`sold_counts.test.ts`) tidak berlaku lagi.
+Refund tetap tidak menguranginya (tidak ada counter untuk dikurangi) —
+perilaku itu tidak berubah.
 
 ---
 
@@ -215,6 +309,14 @@ key salah panjang/format yang di-set manual secara keliru. Ini target
 eksplisit Fase 6.3 ("Validasi panjang kunci saat boot; gagal keras kalau
 salah").
 
+**Status akhir (final review): fixed (Fase 6a).**
+`assertCredentialKeyConfigured()` sekarang dipanggil dari `start()` tiap
+proses (`apps/web-admin`, `apps/storefront`, `apps/server`,
+`apps/order-bot` — sengaja bukan dari `buildServer`/`buildApp`, supaya test
+yang membangun app tanpa key tetap jalan): memvalidasi panjang/format kunci
+lalu menjalankan round-trip enkripsi/dekripsi kanari, dan melempar
+`CredentialKeyConfigError` sebelum proses menerima trafik kalau gagal.
+
 ### AAD
 **Status: gap — targeted by Fase 6.2. Severity: high (confirmed sesuai
 dugaan brief).**
@@ -225,6 +327,19 @@ environment — menyalin `credentials` satu baris ke baris lain (atau restore
 DB ke environment lain yang berbagi `CREDENTIAL_ENCRYPTION_KEY` yang sama)
 akan berhasil didekripsi tanpa sinyal integritas bahwa baris itu dipindah.
 Hanya `keyVersion` yang tertanam, bukan binding ke row/table.
+
+**Status akhir (final review): fixed (Fase 6d) — dengan satu batasan penting
+yang tetap terbuka.** Envelope v2 menambah penanda `v: 2` dan mengikat
+ciphertext lewat `cipher.setAAD`/`decipher.setAAD` ke salah satu dari tiga
+konteks (`stock_items.credentials:{id}`, `orders.delivered_content:{orderId}`,
+`settings.value:{key}`) — menyalin ciphertext ke baris/kolom lain sekarang
+gagal autentikasi. Penulisan v2 digate flag `CREDENTIAL_ENVELOPE_WRITE_V2`
+(default MATI) sehingga rollout dua tahap: kode pembaca v2 harus ter-deploy
+ke semua proses dulu sebelum baris v2 pertama ditulis di mana pun. **AAD
+TIDAK menutup gap rotasi kunci** — ia mengikat ciphertext ke lokasi
+penyimpanannya, bukan ke versi kuncinya; rotasi `CREDENTIAL_ENCRYPTION_KEY`
+tetap satu arah dan merusak riwayat kalau tidak di-re-encrypt dulu (lihat
+`INVENTORY_TRACEABILITY.md` §10, masih gap terbuka).
 
 ### Fallback legacy-plaintext
 **Status: gap — targeted by Fase 6.5. Severity: high.**
@@ -250,6 +365,14 @@ mentoleransi baris yang belum tersentuh backfill satu-kali
 `scripts/backfill-encrypt-settings-secrets.ts`). Koreksi terhadap brief:
 Fase 6.5 tidak "mematikan" flag yang sudah ada — flag `ALLOW_LEGACY_PLAINTEXT`
 **harus dibuat dari nol**, belum ada sama sekali.
+
+**Status akhir (final review): fixed (Fase 6b).** `ALLOW_LEGACY_PLAINTEXT`
+sekarang ada (dibaca lazy seperti kunci; default permisif `true` sampai
+backfill produksi terukur — lihat temuan berikut). Permisif: passthrough
+tetap terjadi, tapi sekarang dihitung (`legacyPlaintextPassthroughCount`) dan
+di-log SEKALI per proses (bukan per baris, untuk menghindari banjir log).
+`false`: melempar `LegacyPlaintextCredentialError`. Nilai kosong (`""`)
+selalu lolos tanpa syarat karena tidak membawa rahasia apa pun.
 
 ### Jumlah baris legacy — TIDAK DAPAT DIUKUR di environment ini
 **Status: outstanding action, bukan gap kode.**
@@ -290,6 +413,14 @@ FROM stock_items;
 Ganti nama tabel/kolom secara sama untuk menghitung baris `Setting` yang
 terenkripsi kalau dibutuhkan.
 
+**Status akhir (final review): masih terbuka — belum dijalankan.** Ini satu
+dari sedikit item di seluruh audit yang murni operasional, bukan kode.
+Sekarang bagian resmi checklist rollout di `DOCS.md` (ditambahkan bersama
+dokumentasi backfill Fase 6c, commit `8d0c54fd`): pemilik produksi perlu
+menjalankan query di atas SEBELUM mengandalkan
+`credentialKeyVersion`/`ALLOW_LEGACY_PLAINTEXT=false`/mode ketat manapun.
+Lihat juga "Temuan tambahan — final review" di akhir dokumen ini.
+
 ### Isolasi kegagalan dekripsi
 **Status: gap — not yet covered by rencana fase manapun (paling dekat ke
 Fase 6.4, tapi 6.4 belum menyebutkan pemanggil spesifik ini). Severity:
@@ -323,6 +454,32 @@ menunjukkan tim **sudah pernah** menemukan dan memperbaiki persis kelas bug
 ini untuk `searchStockCredentials` — tapi perbaikan itu tidak
 diterapkan ke tiga pemanggil lain di atas, yang masih rentan pada pola
 kegagalan yang sama.
+
+**Status akhir (final review): fixed (Fase 6a, diperkuat final review) untuk
+ketiga pemanggil yang disebut di atas.**
+- `bulkAddStock` dedup — sekarang lewat `tryDecryptCredentials` (guarded);
+  baris tak terbaca dihitung `unreadableExisting`, tidak lagi membatalkan
+  upload. Lihat "bulkAddStock dedup" di atas dan `INVENTORY_TRACEABILITY.md`
+  §4.
+- `listAvailableCredentials`/export CSV (`exportAvailableCredentials`) —
+  masih memakai jalur yang melempar untuk kredensial (desain yang benar untuk
+  jalur yang MEMANG mengekspor plaintext dan wajib diaudit), tapi sekarang
+  juga menulis satu event `CREDENTIAL_REVEALED` per baris yang berhasil
+  diekspor (final review, commit `9d63197b`) — menutup gap traceability
+  terpisah yang ditemukan belakangan (satu baris audit `stock_download` untuk
+  seluruh unduhan tidak memberi jejak PER-BARIS).
+- `withDecryptedStockCredentials`/`getOrder`/`getOrderByCodeFull` — TETAP
+  melempar dengan sengaja (jalur pengiriman/detail admin harus gagal-dan-
+  retry, bukan diam-diam menyembunyikan baris rusak). Yang berubah:
+  `listUserDeliveredOrders` (dipakai `/account/reviews`, endpoint buyer-
+  facing yang disorot temuan ini sebagai risiko tertinggi) **tidak lagi
+  memuat atau mendekripsi `stockItem.credentials`/`deliveredContent` sama
+  sekali** — ia cuma butuh id produk untuk `createReview`, jadi satu baris
+  `StockItem` yang corrupt tidak bisa lagi men-500-kan riwayat order
+  customer (final review, commit `1868815f`). Halaman detail pembeli sendiri
+  memakai `getOrderByCodeFullForDisplay`/`withDisplayStockCredentials`
+  (guarded, baru di final review) yang mengembalikan `null` per baris rusak,
+  bukan melempar.
 
 ### Key reuse
 **Status: confirmed-as-designed, tidak ada masalah.**
@@ -363,6 +520,17 @@ Pembacaan:
 - Export CSV order (`GET /api/orders/export`) — **bersih**, tidak menyertakan
   `deliveredContent`.
 
+**Status akhir (final review): fixed (Fase 6c).** Kolom sekarang dienkripsi
+at rest dengan mesin envelope yang sama (AAD dedicated
+`orders.delivered_content:{orderId}` begitu v2 menyala). Kedua penulis
+(`fulfillManualOrder`, `fulfillDigiflazzOrder`) mengenkripsi sebelum
+menyimpan. Tiga choke point baca: dekripsi-melempar (jalur pengiriman +
+admin detail), dekripsi-berpengaman (halaman detail pembeli), dan daftar
+admin (`GET /api/orders`/`export`) yang sekarang membuang kolom ini sama
+sekali lewat `withoutDeliveredContent` alih-alih membacanya — bukan cuma
+"bersih secara kebetulan" seperti klaim CSV di atas, tapi di-strip secara
+eksplisit di titik query.
+
 ### 🔴 Temuan baru — kritikal: reveal tanpa audit di GET /api/orders/:orderId
 **Status: gap — not yet covered oleh rencana fase manapun. Severity:
 critical.** Ini kemungkinan temuan paling serius dari seluruh audit.
@@ -383,6 +551,17 @@ sendiri **sudah ada dan benar** di satu tempat, tapi terlewat sepenuhnya di
 jalur order-detail yang jauh lebih sering diakses. Setiap kali admin membuka
 halaman detail order manapun, itu adalah reveal kredensial senyap.
 
+**Status akhir (final review): fixed (Track T, T0-A/H-A).**
+`GET /api/orders/:orderId` sekarang mengembalikan `MASKED_CREDENTIAL` untuk
+`stockItem.credentials` dan `deliveredContent`, plus flag `hasDeliveredContent`
+— tidak ada lagi plaintext di respons GET ini. Route baru `POST
+/api/orders/:orderId/reveal` (ber-CSRF, ditolak untuk role readonly) adalah
+satu-satunya jalan membaca nilai aslinya, dan setiap panggilan yang benar-benar
+membocorkan sesuatu menulis `logAdminAction` (`order_credentials_revealed`,
+detail: kalimat natural tanpa isi kredensial) — persis pola
+`/api/stock/item/:stockId/reveal` yang sudah dipuji temuan ini di atas.
+Dikonfirmasi di `apps/web-admin/src/routes/api/orders.ts`.
+
 ### 🔴 Temuan baru: reveal tanpa audit di bot admin (viewStockItems)
 **Status: gap — not yet covered. Severity: high.**
 `apps/order-bot/src/handlers/admin.ts:464-503` (`viewStockItems`) mendekripsi
@@ -390,6 +569,12 @@ setiap item untuk preview 30-karakter yang ditampilkan ke admin di Telegram
 — tidak ada `AuditLog`/event tertulis. Sudah ditangani dengan baik untuk
 isolasi kegagalan (lihat 0.2), tapi tetap merupakan reveal plaintext nyata
 tanpa jejak audit.
+
+**Status akhir (final review): fixed (Track T, T0-A/H-C).** `viewStockItems`
+sekarang menulis satu baris `AuditLog` per tampilan
+(`"Viewed N stock items in the admin bot."`, dikonfirmasi
+`apps/order-bot/test/handlers.test.ts:4489`) — kalimat generik, tidak
+membawa isi kredensial atau preview yang ditampilkan.
 
 ### StockItem.note
 **Status: gap — not yet covered. Severity: medium.**
@@ -412,6 +597,13 @@ Kalau admin pernah menempel kredensial ke field note ini, sampai 200 karakter
 kredensial itu terduplikasi **plaintext ke audit log** — tempat yang justru
 dimaksudkan sebagai jejak tepercaya, sekarang juga jadi sink kredensial di
 luar batas enkripsi `credentials`.
+
+**Status akhir (final review): fixed (Track T, T0-A/H-C).** Ketiga route
+sekarang menulis kalimat generik tanpa isi `note`: `"Marked 2 stock items
+dead."` dan `"Updated the note on stock item #{id}."` (dikonfirmasi
+`apps/web-admin/src/routes/api/stock.ts` dan `web.test.ts:4259,4486`). Kolom
+`note` sendiri tetap ada dan tetap ikut di-scan `searchStockCredentials` —
+itu tidak berubah, hanya jalur echo-ke-audit-log yang ditutup.
 
 ### AuditLog.details / OrderStatusHistory.meta
 **Status: confirmed-as-designed, kecuali temuan note di atas.**
@@ -449,6 +641,14 @@ plaintext langsung ke log aplikasi. Ini kebocoran nyata dan sudah live di
 kode saat ini, di luar cakupan Fase 1-7 yang sudah direncanakan — layak
 dipertimbangkan untuk diperbaiki lebih cepat daripada menunggu giliran fase.
 
+**Status akhir (final review): fixed (Track T, T0-B "log-payload-redaction").**
+`packages/core/src/logger.ts` sekarang memasang `serializers: { err: safeErr }`
+— `safeErr` menjalankan serializer default pino lalu menghapus properti
+`payload` secara rekursif dari hasilnya (`stripPayload`) sebelum masuk
+record log. Ini menutup kebocoran untuk **setiap** situs log `{ err }` di
+seluruh repo (bukan cuma dispatcher outbox yang disebut temuan ini), karena
+serializer dipasang satu kali di modul `logger.ts` yang dipakai bersama.
+
 ### Telegram bot — retensi pesan
 **Status: confirmed-as-designed (dengan pengecualian temuan di atas).**
 Pengiriman kredensial (`deliverAccountDm`, dispatcher.ts:393-424) dan
@@ -477,18 +677,22 @@ Satu-satunya kebocoran ke log adalah lewat jalur error serializer di atas.
 |---|---|
 | `/api/stock/item/:stockId/reveal` | ✅ `credential_revealed` |
 | `/api/stock/:productId/download` | ✅ `stock_download` |
-| **`GET /api/orders/:orderId`** | ❌ **tidak ada audit sama sekali** |
+| ~~`GET /api/orders/:orderId`~~ → `POST /api/orders/:orderId/reveal` | ✅ **fixed** — `order_credentials_revealed` (Track T); GET sendiri sekarang cuma mengirim `MASKED_CREDENTIAL` |
 | `/api/orders/:orderId/resend` | ✅ `order_resend_credentials` |
 | `/api/orders/bulk-action` (getOrder internal) | ❌ tapi nilai tidak dipakai/dikembalikan — exposure nihil |
 | `/api/search` (getOrder internal, untuk redirect) | ❌ tapi nilai tidak dipakai — exposure nihil |
 | `searchStockCredentials` (admin search) | ❌ tapi respons di-mask (`MASKED_CREDENTIAL`) — exposure nihil |
 | `bulkAddStock` dedup | ❌ internal-only, tidak pernah dikembalikan — exposure nihil |
-| **bot `viewStockItems`** | ❌ **reveal nyata (preview terpotong), tanpa audit** |
+| ~~bot `viewStockItems`~~ | ✅ **fixed** — `"Viewed N stock items in the admin bot."` (Track T) |
 | `approveOrder` auto-deliver | ✅ diaudit oleh caller (`auto_deliver` atau `approve_order`) |
+| `exportAvailableCredentials` (`/api/stock/:productId/download`) | ✅ `stock_download` (audit lama) **+** satu `CREDENTIAL_REVEALED` per baris (final review, ledger per-item — lihat `INVENTORY_TRACEABILITY.md` §2) |
 
-Dua baris bertanda ❌ tebal di atas adalah reveal nyata tanpa audit yang
-perlu ditindaklanjuti; sisanya secara teknis tidak diaudit tapi tidak
-membocorkan apa pun ke luar.
+**Status akhir (final review): kedua baris yang dulu ❌ tebal (reveal nyata
+tanpa audit) sudah fixed** — lihat masing-masing subbagian di atas untuk
+detail commit/fase. Baris ❌ yang tersisa di tabel ini tetap dibiarkan ❌
+dengan sengaja: exposure-nya memang nihil (nilai tidak pernah dipakai/
+dikembalikan, atau responsnya sudah di-mask), jadi mengaudit jalur itu hanya
+akan menambah noise ke `AuditLog` tanpa menutup risiko nyata apa pun.
 
 ---
 
@@ -526,7 +730,7 @@ terdokumentasi.
 
 ---
 
-## Ringkasan prioritas untuk ditindaklanjuti
+## Ringkasan prioritas untuk ditindaklanjuti (snapshot Fase 0 — lihat status akhir di bawah)
 
 Selain gap yang sudah tercakup rencana Fase 1-7, dua temuan berikut **belum**
 punya slot di rencana manapun dan sebaiknya dipertimbangkan terpisah/lebih
@@ -536,9 +740,13 @@ sekadar hardening preventif:
 1. **Critical** — `GET /api/orders/:orderId` mengembalikan kredensial stok
    terdekripsi + `deliveredContent` tanpa audit sama sekali. Setiap admin
    yang membuka halaman detail order mana pun adalah reveal senyap.
+   **→ fixed, Track T T0-A/H-A (lihat §0.3).**
 2. **High** — `packages/outbox-dispatcher/src/dispatcher.ts:621` membocorkan
    kredensial/`deliveredContent` plaintext ke log aplikasi lewat error
    serializer pino pada kegagalan kirim Telegram non-fatal apa pun.
+   **→ fixed, Track T T0-B (lihat §0.3, "Logger & error handler") — perbaikan
+   dipasang di `packages/core/src/logger.ts`, bukan di file dispatcher itu
+   sendiri, jadi menutup pola yang sama di setiap situs log `{ err }`.**
 
 Ditambah satu item yang butuh tindakan operasional (bukan kode) sebelum Fase
 2 (backfill) bisa dijalankan dengan percaya diri:
@@ -546,6 +754,83 @@ Ditambah satu item yang butuh tindakan operasional (bukan kode) sebelum Fase
 3. Jalankan query SQL read-only di §0.2 terhadap **DB produksi** untuk
    mengetahui jumlah baris legacy-plaintext dan `keyVersion != 1` — tidak
    bisa diukur dari environment audit ini karena DB dev lokal kosong.
+   **→ masih terbuka** (murni operasional; sekarang bagian resmi checklist
+   rollout `DOCS.md`).
 
 Semua temuan lain sudah tercakup oleh urutan Fase 1 (skema additive) → Fase 6
-(pengerasan enkripsi) sebagaimana didesain di brief.
+(pengerasan enkripsi) sebagaimana didesain di brief, dan sudah selesai
+dikerjakan — lihat "Status ringkas per temuan" di awal dokumen dan bagian
+berikut untuk daftar lengkap item yang MASIH terbuka setelah seluruh
+eksekusi (termasuk yang tidak pernah muncul di audit Fase 0 ini).
+
+---
+
+## Temuan tambahan — final review (item terbuka)
+
+Item berikut ditemukan/diketahui SETELAH audit Fase 0 di atas — sebagian
+selama eksekusi Fase 1-7 (dicatat di `~/.claude/plans/cheerful-toasting-nova.md`),
+sebagian dari review akhir seluruh rangkaian kerja. Semuanya **masih
+terbuka** pada saat dokumen ini ditulis; tidak satu pun butuh keputusan
+mendesak, tapi masing-masing punya pemilik/prasyarat yang jelas kalau mau
+ditindaklanjuti.
+
+1. **`exportReport` (bot admin, `apps/order-bot/src/handlers/admin.ts`) masih
+   menghitung top-up saldo sebagai penjualan.** Query-nya
+   `where: { status: "DELIVERED", deliveredAt: { gte: since } }` tanpa filter
+   `kind: PRODUCT` — beda dari agregat revenue admin-web (`revenue.ts`) yang
+   sudah disaring `kind: PRODUCT` oleh Track T (T2a). CSV "Export Report" di
+   bot bisa menghitung deposit wallet sebagai order produk.
+   `listUserDeliveredOrders` (dipakai storefront `/account/reviews`) SUDAH
+   diperbaiki jadi PRODUCT-only lebih dulu (final review, commit `1868815f`)
+   — jadi kedua fungsi ini sekarang TIDAK KONSISTEN satu sama lain soal
+   `kind`, bukan sama-sama salah.
+2. **`botOverallStats` (`packages/db/src/crud/revenue.ts`) adalah kode
+   mati.** Dipakai di beberapa test (`revenue.test.ts`,
+   `ledger.regression.test.ts`) tapi tidak ada pemanggil produksi mana pun
+   (bukan di route, bukan di handler bot) — kandidat untuk dihapus atau,
+   kalau memang ditinggalkan sengaja sebagai helper test, didokumentasikan
+   sebagai demikian.
+3. **Sumber timestamp `StockItemEvent` bercampur JS vs DB.** Sebagian besar
+   penulisan (`IMPORTED`, `RESERVED`, `SOLD`, `MARKED_DEAD`, dst.) tidak
+   memberi `occurredAt`, jadi memakai default kolom `now()` DI SISI DATABASE.
+   `releaseOrderHolds` (`orders.ts`) sengaja mengirim `occurredAt` eksplisit
+   (`new Date()` yang dihitung di proses Node) supaya event-nya selaras
+   dengan timestamp lain yang ditulis fungsi yang sama dalam transaksi itu.
+   Keduanya valid untuk alasan masing-masing, tapi artinya `occurredAt` di
+   ledger BUKAN dari satu jam yang konsisten (drift antara jam aplikasi dan
+   jam Postgres, sekecil apa pun, bisa membuat urutan `ORDER BY occurredAt`
+   antar dua event dari fungsi berbeda meleset dari urutan sebenarnya).
+4. **`createOrderDirect`/`createOrderFromCart`/`attachPaymentProof`/
+   `settlePaidOrder`/`fulfillManualOrder` masih diakhiri `getOrder` yang
+   mendekripsi** (`orders.ts`, beberapa titik `return getOrder(db, ...)`/
+   `await getOrder(db, ...)`). Ini BENAR untuk kasus normal (nilai baliknya
+   memang dipakai jalur yang butuh plaintext), tapi berarti satu baris
+   `AVAILABLE` yang tidak terbaca (kunci salah, korup) tetap bisa memblokir
+   checkout untuk produk itu — bukan lagi memblokir CANCEL/EXPIRE (sudah
+   diperbaiki lewat `getOrderRaw`, lihat `INVENTORY_TRACEABILITY.md` §8),
+   tapi jalur beli-baru untuk produk yang sama masih macet sampai baris itu
+   di-`markStockDead`. Belum ada mitigasi untuk kasus ini.
+5. **Gap rotasi kunci enkripsi** — lihat `INVENTORY_TRACEABILITY.md` §10.
+   AAD v2 (Fase 6d) tidak menyelesaikannya; fingerprint (Fase 5a/5b) mewarisi
+   risiko yang sama karena kunci indeksnya diturunkan dari kunci master yang
+   sama.
+6. **Fase 4b (`@unique` pada `OrderItem.stockItemId`) masih digantung gate
+   G4** — hanya diterapkan setelah pemilik repo melaporkan hasil bersih dari
+   `scripts/audit-stock-duplicates.sql` terhadap DB produksi, DAN Fase 3b
+   (perbaikan pointer L-6) sudah ter-deploy cukup lama untuk membersihkan
+   data lama. Skema saat ini (`schema.prisma`) belum punya constraint ini;
+   `checkStockIntegrity`'s `duplicateStockItemPointers` adalah jaring
+   pengaman sementara sampai gate itu terpenuhi.
+7. **Guard `tests/no-fake-claims.test.ts` (Track T) hanya memindai JSON
+   locale** (`packages/core/locales/*.json`), bukan literal string di
+   komponen TSX (`apps/web-admin/client`, `apps/storefront/client`). Klaim
+   marketing yang di-hardcode langsung di JSX (bukan lewat kunci locale)
+   tidak akan tertangkap guard ini.
+8. **Tidak ada job CI yang menjalankan test dengan
+   `CREDENTIAL_ENVELOPE_WRITE_V2=1`.** Suite default berjalan dengan flag
+   mati (v1, sesuai default produksi hari ini), jadi jalur penulisan v2 +
+   AAD hanya tervalidasi oleh test unit yang secara eksplisit mengatur env
+   var itu sendiri (`packages/core/src/credentialCrypto.test.ts` dan
+   sejenisnya) — belum ada lapisan "jalankan seluruh suite `packages/db` +
+   `scripts` dengan v2 menyala" untuk menangkap interaksi lintas-modul yang
+   mungkin terlewat oleh test unit yang sudah ada.

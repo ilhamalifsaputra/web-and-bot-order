@@ -598,23 +598,20 @@ model StockItem {
 // Immutable lifecycle-event log for a StockItem (stock traceability
 // hardening plan, Fase 1). Recorded alongside — never instead of — the
 // mutable columns on StockItem itself, so a rollback/substitution keeps its
-// history instead of losing it to a null-out/overwrite. Fase 1 only adds
-// this table; no crud code writes to it yet.
+// history instead of losing it to a null-out/overwrite. Every stock
+// lifecycle path writes its event here (import, reserve/release, sale,
+// substitution, dead/soft-delete, reveal, re-encrypt, backfill).
 //
 // onDelete: Restrict on stockItem is deliberate — a lifecycle event must
-// never disappear along with the row it describes — but it is only safe
-// once every path that can remove a StockItem row is soft-delete-only.
-// Today that is NOT yet true: bulkDeleteStock/deleteStockItem
-// (packages/db/src/crud/stock.ts) hard-delete directly, and
-// Denomination's `onDelete: Cascade` to StockItem (this file, `product`
-// relation above) hard-deletes every one of a product's stock rows when the
-// product itself is deleted. The moment a later phase starts writing real
-// events, all of those paths — plus the shared test-reset helper that does
-// `stockItem.deleteMany()` — will start failing with a P2003 foreign-key
-// violation the instant a StockItem has a child event. Converting
-// bulkDeleteStock/deleteStockItem to soft-delete (already planned, Fase 3)
-// and switching that Cascade to a soft-delete-aware path MUST land in the
-// same change as the first real event write, not after it.
+// never disappear along with the row it describes. It holds because no app
+// path hard-deletes a StockItem: bulkDeleteStock/deleteStockItem
+// (packages/db/src/crud/stock.ts) only soft-delete (set deletedAt), and
+// Denomination's `onDelete: Cascade` to StockItem (the `product` relation
+// above) is never reached for a denomination that ever held stock —
+// deleteDenomination and the product delete refuse it first
+// (assertNoStockHistory in packages/db/src/crud/catalog.ts; the denomination
+// can only be deactivated). Only the test-reset helper deletes stock rows,
+// and it deletes their events first.
 model StockItemEvent {
   id          Int     @id @default(autoincrement())
   stockItemId Int     @map("stock_item_id")

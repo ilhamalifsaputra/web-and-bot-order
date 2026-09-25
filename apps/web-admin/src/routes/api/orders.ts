@@ -13,6 +13,7 @@ import {
   listOrders,
   countOrders,
   getOrder,
+  getOrderRaw,
   settlePaidOrder,
   rejectOrder,
   cancelOrder,
@@ -624,7 +625,10 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
     const failed: { id: number; error: string }[] = [];
 
     for (const orderId of ids) {
-      const order = await getOrder(prisma, orderId);
+      // Raw (no decrypt): every action here decides on status/kind/user and
+      // enqueues by id; a decrypting read let one unreadable row fail a bulk
+      // cancel. Delivery reads and decrypts on its own path.
+      const order = await getOrderRaw(prisma, orderId);
       if (!order) {
         failed.push({ id: orderId, error: "error.order_not_found" });
         continue;

@@ -292,9 +292,13 @@ view `stock_product.njk`):
 - **Download remaining** — `GET /stock/:productId/download` mengembalikan `.txt`,
   satu kredensial per baris, hanya item **AVAILABLE**. Read-only (`currentAdmin`),
   `Content-Disposition: attachment` + `Cache-Control: no-store`, **diaudit hanya
-  jumlahnya** (`stock_download`) — kredensial tak pernah masuk log.
-- **Delete selected** — `POST /stock/:productId/bulk-delete` menghapus baris
-  permanen (beda dari "Mark as bad" yang menyetel status DEAD). Pengaman di crud
+  jumlahnya** (`stock_download`) — kredensial tak pernah masuk log. Tiap baris
+  yang ikut ter-download juga mendapat event `CREDENTIAL_REVEALED` atas nama
+  admin itu (satu transaksi dengan baris audit), sama seperti reveal satuan.
+- **Delete selected** — `POST /stock/:productId/bulk-delete` melakukan *soft
+  delete*: baris diberi `deletedAt` dan hilang dari semua tampilan, tapi tetap
+  tersimpan beserta riwayat event-nya untuk jejak audit (beda dari "Mark as
+  bad" yang menyetel status DEAD). Pengaman di crud
   `bulkDeleteStock`: item **SOLD tak pernah dihapus** dan item yang terkait order
   item dilewati, sehingga histori order terkirim tetap utuh. CSRF-protected,
   diaudit `stock_bulk_delete` tanpa kredensial.
@@ -462,13 +466,15 @@ Instalasi tanpa Docker WAJIB mengisinya sendiri (`openssl rand -hex 32`).
 `ALLOW_LEGACY_PLAINTEXT` (default `true`): nilai lama yang belum terenkripsi
 tetap terbaca, dengan warning di log. Kalau `false`, setiap pembacaan nilai
 plaintext melempar error — credential stok **dan** secret terenkripsi di
-Settings (API key payment/provider). Hanya daftar/cari/export stok dan preview
+Settings (API key payment/provider), **dan** `Order.deliveredContent` (akun yang
+diketik admin untuk order manual). Hanya daftar/cari/export stok dan preview
 stok di bot yang melewati baris itu; jalur lain (detail order admin, pencarian
 admin, riwayat order pembeli, pengiriman) mengembalikan error. Jadi set `false`
-hanya setelah `backfill-encrypt-stock-credentials` **dan**
-`backfill-encrypt-settings-secrets` selesai. Cara tahu backfill sudah tuntas:
-jalankan kedua script itu, lalu restart — warning "legacy plaintext" (muncul
-sekali per proses) tidak muncul lagi di log.
+hanya setelah **ketiga** backfill selesai: `backfill-encrypt-stock-credentials`,
+`backfill-encrypt-settings-secrets`, dan `backfill-encrypt-delivered-content`.
+Cara tahu backfill sudah tuntas: jalankan ketiga script itu, lalu restart —
+warning "legacy plaintext" (muncul sekali per proses) tidak muncul lagi di log
+**semua** proses. Urutan lengkapnya ada di "Checklist rollout" di bawah.
 
 ### Envelope credential v2 (AAD) — rollout dua tahap
 
@@ -528,6 +534,78 @@ deploy lama (sebelum tahap 1) akan membuat credential v2 tidak terbaca.
 Rotasi `CREDENTIAL_ENCRYPTION_KEY` tetap di luar cakupan: envelope v2 tetap
 `keyVersion: 1`, dan fingerprint stok (HMAC dari key yang sama) tidak berubah
 oleh re-encrypt ini.
+
+### Traceability stok: backfill & audit integritas
+
+**`pnpm backfill-stock-traceability`** — backfill sekali jalan untuk baris stok
+lama: fingerprint credential, `soldToOrderId` untuk baris terjual, riwayat event
+sintetis (aktor SYSTEM, `meta.backfilled`), dan klaim dedup
+`activeCredentialKey`. Idempotent (aman diulang kalau terputus) dan aman
+dijalankan saat app hidup. Selalu jalankan `--dry-run` dulu — hanya menghitung,
+tidak menulis. Arti angka ringkasannya:
+
+- `fingerprints` — `computed` baru dihitung, `alreadyPresent` sudah ada,
+  `decryptFailed` credential tidak terbaca (harus 0 atau diselidiki dulu).
+- `soldTo` — `backfilled` terisi; `soldWithNoOrderId` / `soldWithNoOrderItem` /
+  `soldOrderMismatch` = baris SOLD yang tidak bisa dipastikan pembelinya →
+  cek manual.
+- `events` — `rowsBackfilled`/`eventsCreated` riwayat yang dibuat,
+  `rowsAlreadyTraced` sudah punya riwayat, `statusReconciled` diberi satu event
+  penutup, `statusUnreconciled` status tidak bisa dicapai tanpa mengarang
+  riwayat → cek manual.
+- `keyVersion` — `legacyPlaintext` = baris yang masih plaintext (jalankan
+  `backfill-encrypt-stock-credentials`).
+- `claims` — `claimed`/`alreadyClaimed` normal; `duplicate` = baris hidup
+  dengan credential yang sudah dipegang baris lain (dobel stok AVAILABLE/
+  RESERVED → tandai DEAD salah satunya; duplikat SOLD dari sebelum Fase 5a
+  adalah riwayat, tidak bisa dan tidak perlu diperbaiki); `released` = klaim sisa di baris DEAD/terhapus yang
+  dilepas; `unfingerprinted` = baris hidup tanpa fingerprint (gagal dekripsi).
+
+**`pnpm audit-stock-integrity`** — read-only, hanya mencetak jumlah per temuan
+(tidak pernah id atau credential). Semua angka selain `legacyRowsWithoutEvents`
+harus 0. Temuan yang paling sering muncul setelah backfill:
+`liveRowsWithoutClaimKey` (baris hidup tanpa klaim di denominasi yang sudah
+di-fingerprint — biasanya `duplicate`/`unfingerprinted` dari backfill; baris
+SOLD yang credential-nya sudah diklaim baris lain tidak dihitung karena itu
+riwayat, sedangkan baris SOLD yang credential-nya tidak diklaim siapa pun tetap
+dihitung karena credential itu bisa diimpor dan dijual lagi),
+`deadOrDeletedRowsHoldingClaimKey` (jalankan ulang backfill untuk melepasnya),
+dan `soldWithoutSoldToOrderId` (penjualan tanpa order tujuan). Untuk mendapat
+id barisnya, panggil `checkStockIntegrity` langsung atau pakai
+**`scripts/audit-stock-duplicates.sql`** (`psql "$DATABASE_URL_PRISMA" -f
+scripts/audit-stock-duplicates.sql`, hanya SELECT): pointer stok dobel, order
+batal/ditolak yang masih menunjuk stok, dan baris SOLD yang order-nya hilang
+atau tidak DELIVERED.
+
+### Checklist rollout: traceability stok + enkripsi credential
+
+Urutan ini wajib; jangan lompat langkah.
+
+1. **Backup.** `pg_dump` database dulu.
+2. **Key enkripsi.** Pastikan `CREDENTIAL_ENCRYPTION_KEY` (atau
+   `data/credential_encryption.key`) ada dan sama di semua proses — tiap proses
+   menolak start tanpa key. Di Docker, file key yang hilang membuat
+   entrypoint men-generate key **baru**, dan semua ciphertext lama tidak
+   terbaca lagi selamanya.
+3. **Skema + restart bersamaan.** `prisma db push` (entrypoint Docker sudah
+   menjalankannya), lalu restart order-bot, server, web-admin, dan storefront
+   **bersama-sama** sebelum kode baru melayani trafik — kalau tidak, muncul
+   `P2022 column … does not exist`.
+4. **Traceability.** `pnpm backfill-stock-traceability --dry-run`, baca
+   angkanya (lihat di atas), lalu jalankan tanpa `--dry-run`.
+5. **Enkripsi.** `pnpm backfill-encrypt-stock-credentials`,
+   `pnpm backfill-encrypt-settings-secrets`,
+   `pnpm backfill-encrypt-delivered-content`.
+6. **Audit.** `pnpm audit-stock-integrity` dan
+   `scripts/audit-stock-duplicates.sql`; selesaikan temuannya dulu.
+7. **Mode ketat.** Hanya setelah warning "legacy plaintext" hilang dari log
+   **semua** proses: set `ALLOW_LEGACY_PLAINTEXT=false`, lalu restart.
+8. **Envelope v2.** Semua host dan cron sudah di kode ini →
+   `pnpm reencrypt-credentials-v2 --dry-run` → set
+   `CREDENTIAL_ENVELOPE_WRITE_V2=true` di semua proses dan restart →
+   `pnpm reencrypt-credentials-v2` → `--dry-run` lagi, `v1` harus 0. Sejak
+   itu rollback wajib tetap ke kode tahap 1 atau lebih baru (lihat "Envelope
+   credential v2" di atas).
 
 ### Jalur manual `/bootstrap` (deploy lama)
 

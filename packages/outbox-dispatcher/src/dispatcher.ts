@@ -389,6 +389,38 @@ export async function drainBatch(bot: Bot): Promise<number> {
 }
 
 /**
+ * Read an order for a credential DM, decrypting its secrets. An unreadable
+ * secret (a corrupt value, a missing or wrong key, legacy plaintext under
+ * strict mode) must not escape: thrown out of drainBatch it aborted the whole
+ * batch, left this row SENDING to be reclaimed and retried forever without
+ * ever counting an attempt, and starved every row queued behind it. Instead it
+ * is recorded as a failed attempt on this row only — so it backs off, retries
+ * (the key may be fixed meanwhile) and dead-letters at NOTIF_MAX_ATTEMPTS like
+ * any other failed send — and nothing is sent: never ciphertext, never a
+ * placeholder. The error names the order and the reason class, never content.
+ */
+async function readOrderForDelivery(
+  row: PendingRow,
+  code: string,
+): Promise<Awaited<ReturnType<typeof getOrderByCodeFull>> | "unreadable"> {
+  try {
+    return await getOrderByCodeFull(prisma, code);
+  } catch (e) {
+    logger.error(
+      { err: e, notificationId: row.id, orderCode: code },
+      `Could not read the delivered credentials for order ${code}, so notification ${row.id} was not sent — recording a failed attempt; it retries with backoff and dead-letters at the attempt limit`,
+    );
+    await markNotificationFailed(
+      prisma,
+      row.id,
+      `could not decrypt the delivered credentials for order ${code}: ${e instanceof Error ? e.name : "error"}`,
+      config.NOTIF_MAX_ATTEMPTS,
+    );
+    return "unreadable";
+  }
+}
+
+/**
  * Deliver a buyer's account(s) as a `<order-code>.txt` document. Reads the order
  * (incl. stock credentials) live from the DB — the outbox payload only carries
  * the order code + chat id, never credentials.
@@ -404,7 +436,8 @@ async function deliverAccountDm(
     return "ok";
   }
   const code = typeof payload.order_code === "string" ? payload.order_code : "";
-  const order = code ? await getOrderByCodeFull(prisma, code) : null;
+  const order = code ? await readOrderForDelivery(row, code) : null;
+  if (order === "unreadable") return "ok";
   if (!order) {
     await markNotificationFailed(prisma, row.id, `order not found for code ${code}`, 1);
     return "ok";
@@ -469,7 +502,8 @@ async function deliverManualContentDm(
     return "ok";
   }
   const code = typeof payload.order_code === "string" ? payload.order_code : "";
-  const order = code ? await getOrderByCodeFull(prisma, code) : null;
+  const order = code ? await readOrderForDelivery(row, code) : null;
+  if (order === "unreadable") return "ok";
   if (!order) {
     await markNotificationFailed(prisma, row.id, `order not found for code ${code}`, 1);
     return "ok";

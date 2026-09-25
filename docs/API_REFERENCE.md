@@ -1,8 +1,8 @@
 # API Reference
 
 **Tidak ada REST/GraphQL API publik untuk konsumsi pihak ketiga.** Kedua app
-(`apps/web-admin`, `apps/storefront`) server-rendered HTML penuh
-(Fastify+Nunjucks+HTMX) — lihat [`../DOCS.md` §1](../DOCS.md#1-arsitektur).
+(`apps/web-admin`, `apps/storefront`) adalah React SPA yang dilayani JSON API
+internal oleh Fastify — lihat [`../DOCS.md` §1](../DOCS.md#1-arsitektur).
 Tabel di bawah mendaftar **semua** route Fastify yang sungguhan terdaftar,
 dibaca langsung dari `apps/*/src/routes/*.ts` (2026-06-24). Satu-satunya
 endpoint non-HTML untuk integrasi eksternal: `/healthz`, webhook gateway
@@ -50,7 +50,7 @@ pembayaran, dan webhook Telegram — detail lengkap di
 | POST | `/logout` | — | Rotasi JTI sesi |
 | GET/POST | `/setup`, `/setup/bot`, `/setup/owner`, `/setup/shop`, `/setup/done`, `/setup/restart` | — (pre-auth, terkunci pasca-setup) | Wizard instalasi awal |
 | GET | `/` | `currentAdmin` | Dashboard |
-| GET | `/partials/dashboard-sla` | `currentAdmin` | Partial HTMX SLA widget |
+| GET | `/api/dashboard/health` | `currentAdmin` | JSON dashboard/SLA metrics, fetched by the React DashboardPage |
 | GET | `/search` | `currentAdmin` | Pencarian global |
 | GET | `/catalog`, `/catalog/product/:id` | `currentAdmin` | Lihat katalog |
 | POST | `/catalog/category[...]`, `/catalog/product[...]`, `/catalog/products/[...]`, `/catalog/denomination/[...]` | `csrfProtect` | Mutasi katalog (CRUD Category/Product/Denomination, bulk import, bulk-pricing) |
@@ -113,7 +113,7 @@ pembayaran, dan webhook Telegram — detail lengkap di
 | GET | `/checkout` | `currentCustomer` | Halaman checkout |
 | POST | `/checkout` | `csrfProtect` | Submit pilihan metode bayar + voucher |
 | GET | `/checkout/:code/pay` | `currentCustomer` | Instruksi bayar (QR/alamat) |
-| GET | `/checkout/:code/status` | `currentCustomer` | Partial HTMX di-poll ~5 detik |
+| GET | `/api/v1/orders/:code/status` | `currentCustomer` | JSON status, di-poll React via `fetch` ~5 detik |
 | POST | `/checkout/:code/cancel` | `csrfProtect` | Batalkan order pending |
 | POST | `/pay/tokopay/callback`, `/pay/paydisini/callback`, `/pay/nowpayments/callback` | — (signature gateway sebagai auth) | Webhook konfirmasi bayar — lihat [PAYMENT_GATEWAY.md](PAYMENT_GATEWAY.md) |
 | GET | `/account` | `currentCustomer` | Ringkasan akun |
@@ -124,7 +124,7 @@ pembayaran, dan webhook Telegram — detail lengkap di
 | GET | `/account/referral` | `currentCustomer` | Kode & statistik referral |
 | GET/POST | `/account/reviews` | `currentCustomer`/`csrfProtect` | Lihat/tulis review |
 | GET/POST | `/account/support`, `/account/support/:id`, `/account/support/:id/reply` | `currentCustomer`/`csrfProtect` | Tiket dukungan |
-| GET/POST | `/categories`, `/categories/:slug/products`, `/products`, `/products/:slug`, `/products/:slug/denominations`, `/cart` (POST), `/checkout` (POST) | — | `/api/v1/*` internal — dipakai **fetch/HTMX dari halaman storefront sendiri**, BUKAN API publik pihak ketiga (lihat `apps/storefront/src/routes/api.ts`) |
+| GET/POST | `/categories`, `/categories/:slug/products`, `/products`, `/products/:slug`, `/products/:slug/denominations`, `/cart` (POST), `/checkout` (POST) | — | `/api/v1/*` internal — dipakai **fetch dari halaman storefront React sendiri**, BUKAN API publik pihak ketiga (lihat `apps/storefront/src/routes/api.ts`) |
 
 > **Cart guest tidak pakai CSRF** (mengandalkan `SameSite=Lax` saja) —
 > risiko diterima karena cart bebas-uang dan harga selalu di-recompute

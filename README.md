@@ -420,14 +420,13 @@ sebelum menjalankannya di produksi.
 ```
 apps/
   order-bot/    Bot Telegram (grammY) — alur pelanggan + admin
-  web-admin/    Panel admin (Fastify + Nunjucks + HTMX)
+  web-admin/    Panel admin (Fastify JSON API + React SPA)
   storefront/   Website toko pelanggan
   server/       Composition root satu-proses (dipakai oleh pnpm start)
 packages/
   core/             Config, money (Decimal), i18n, password, mailer, fx
   db/               Prisma client + CRUD per-domain (+ tes Vitest)
   outbox-dispatcher/ Pengirim notifikasi (drain notification_outbox → Telegram)
-  web-ui/           Tema & template bersama
 prisma/schema.prisma   Skema database (PostgreSQL)
 data/                  Log & snapshot backup lokal (di-gitignore)
 ```

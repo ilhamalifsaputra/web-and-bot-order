@@ -13,8 +13,8 @@ istilah-istilah generik sering diasumsikan ada padahal tidak:
   notifikasi adalah satu tabel database yang di-poll in-process, lihat
   [QUEUE_SYSTEM.md](QUEUE_SYSTEM.md).
 - **Tidak ada WebSocket.** Update status pembayaran live di storefront
-  memakai **HTMX polling** (`GET /checkout/:code/status` setiap ~5 detik),
-  bukan koneksi persisten.
+  memakai **polling `fetch` dari React** (`GET /api/v1/orders/:code/status`
+  setiap ~5 detik), bukan koneksi persisten.
 - **Server database terpisah — tergantung status cutover toko:** instance
   yang masih di engine lama tidak punya server DB terpisah (SQLite satu file
   `data/bot.db`, mode WAL, diakses langsung dalam proses). Instance yang
@@ -22,23 +22,27 @@ istilah-istilah generik sering diasumsikan ada padahal tidak:
   engine-swap 2026-08-27) menjalankan Postgres sebagai proses/container
   server sendiri — lihat [`POSTGRES_MIGRATION.md`](POSTGRES_MIGRATION.md)
   untuk status cutover per toko.
-- **Tidak ada API publik (REST/GraphQL)** untuk pihak ketiga — server-rendered
-  HTML penuh, lihat [API_REFERENCE.md](API_REFERENCE.md).
+- **Tidak ada API publik (REST/GraphQL)** untuk pihak ketiga — admin &
+  storefront adalah React SPA yang dilayani JSON API internal (bukan
+  kontrak stabil untuk klien luar), lihat [API_REFERENCE.md](API_REFERENCE.md).
 
 ## Frontend
 
-Tiga permukaan, satu bahasa visual ("Clean Modern", tema bersama
-`packages/web-ui/_theme.njk`):
+Tiga permukaan, satu bahasa visual ("Clean Modern" — token warna/font/
+radius/shadow yang sama, ditranskripsi ke `client/src/index.css` masing-
+masing app sejak migrasi ke React; lihat riwayatnya di
+[REACT_STOREFRONT_MIGRATION.md](REACT_STOREFRONT_MIGRATION.md)):
 
 | Permukaan | Teknologi | Rendering |
 |---|---|---|
 | Bot Telegram (`apps/order-bot`) | grammY 1.30 + `@grammyjs/conversations` (wizard) + `@grammyjs/runner` | Pesan/keyboard inline Telegram |
-| Panel admin (`apps/web-admin`) | Fastify 5 + Nunjucks 3 + HTMX | Server-rendered HTML |
-| Toko web (`apps/storefront`) | Fastify 5 + Nunjucks 3 + HTMX | Server-rendered HTML |
+| Panel admin (`apps/web-admin`) | Fastify 5 (JSON API) + React 18 SPA (Vite, `apps/web-admin/client`) | Client-rendered SPA |
+| Toko web (`apps/storefront`) | Fastify 5 (JSON API `/api/v1/*`) + React 18 SPA (Vite, `apps/storefront/client`) | Client-rendered SPA |
 
-Tidak ada SPA, tidak ada bundle JS framework (React/Vue) — HTMX menangani
-interaksi dinamis (submit form tanpa reload penuh, polling status) di atas
-HTML yang di-render server.
+Admin dan storefront masing-masing adalah React SPA (build Vite,
+`client/` per app) yang fetch JSON dari Fastify — tidak ada Nunjucks/HTMX
+lagi. React + `fetch` menangani interaksi dinamis (submit form, polling
+status).
 
 ## Backend
 
@@ -58,8 +62,8 @@ yang:
 ```mermaid
 graph TD
     subgraph "apps/server (satu proses Node)"
-        Admin[apps/web-admin<br/>Fastify+Nunjucks]
-        Shop[apps/storefront<br/>Fastify+Nunjucks+HTMX]
+        Admin[apps/web-admin<br/>Fastify+React SPA]
+        Shop[apps/storefront<br/>Fastify+React SPA]
         Bot[apps/order-bot<br/>grammY]
         Outbox[packages/outbox-dispatcher<br/>poll notification_outbox]
         Pollers[Payment pollers<br/>Binance/Bybit/TokoPay/PayDisini/NOWPayments]
@@ -169,8 +173,8 @@ Stok direservasi **atomik saat checkout** (bukan saat approve) — lihat
 
 Tidak ada socket persisten. Dua mekanisme live-update:
 
-1. **HTMX polling** — `GET /checkout/:code/status` di-poll browser pembeli
-   tiap ~5 detik selama halaman bayar terbuka.
+1. **Polling `fetch` React** — `GET /api/v1/orders/:code/status` di-poll
+   browser pembeli tiap ~5 detik selama halaman bayar terbuka.
 2. **Bubble edit Telegram** — bot meng-edit pesan yang sama (`editMessageCaption`/
    `editMessageText`) saat status order berubah (poller/reconcile/webhook),
    bukan mengirim pesan baru — lihat konvensi "Edit the bubble, don't just

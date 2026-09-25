@@ -11,8 +11,8 @@ The platform is structured as a TypeScript monorepo using `pnpm` workspaces, run
 ```mermaid
 graph TD
     subgraph "Frontend Layer"
-        ShopFront[Storefront Web - Fastify + Nunjucks + HTMX]
-        AdminFront[Web Admin Panel - Fastify + Nunjucks]
+        ShopFront[Storefront Web - Fastify JSON API + React SPA]
+        AdminFront[Web Admin Panel - Fastify JSON API + React SPA]
         BotUI[Telegram Bot UI - grammY]
     end
     
@@ -33,8 +33,8 @@ graph TD
         DB[(PostgreSQL - schema's target engine)]
     end
 
-    AdminApp & ShopApp & BotApp & NotifierApp --> CorePkg
-    AdminApp & ShopApp & BotApp & NotifierApp --> DbPkg
+    AdminApp & ShopApp & BotApp --> CorePkg
+    AdminApp & ShopApp & BotApp --> DbPkg
     DbPkg --> DB
 ```
 
@@ -42,10 +42,10 @@ graph TD
 *   **Runtime & Language:** Node.js (ESM) + TypeScript 5.
 *   **Package Manager:** pnpm 9.15.9 (configured via [pnpm-workspace.yaml](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/pnpm-workspace.yaml)).
 *   **Database ORM:** Prisma 5.22. The `schema.prisma` `datasource` targets **PostgreSQL** since the 2026-08-27 engine-swap (no longer optional — the `postgresql` provider rejects a SQLite `file:` URL outright). A given shop's production instance may still be running the pre-cutover **SQLite** engine (WAL mode) until its operator completes the [`POSTGRES_MIGRATION.md`](POSTGRES_MIGRATION.md) runbook.
-*   **Web Framework:** Fastify 5 (routing, hooks, cookie session management, templates).
+*   **Web Framework:** Fastify 5 (routing, hooks, cookie session management, JSON API + serving the built React SPA's `index.html`).
 *   **Telegram Bot Framework:** grammY 1.30 + `@grammyjs/conversations` (wizard states) + `@grammyjs/runner` (concurrency controls).
-*   **HTML Templating Engine:** Nunjucks 3 (compiled server-side; shared components via Nunjucks macros).
-*   **Client Interactions:** HTMX (for dynamic, single-page-like updates on the storefront without heavy JS).
+*   **Frontend Framework:** React 18 + Vite (per-app `client/` — `apps/web-admin/client`, `apps/storefront/client`), Tailwind CSS.
+*   **Client Interactions:** Client-side `fetch` to the internal JSON API (`/api/v1/*` storefront, `/api/*` admin) — no HTMX, no server-rendered templates.
 *   **Validation:** Zod (strict validation for incoming configurations and schemas).
 *   **Encryption & Hashing:** `bcryptjs` (password storage), `node:crypto` (HMAC signatures for session cookies, Telegram Widget signatures, and TOTP 2FA).
 *   **Precision Math:** `decimal.js` (essential to prevent float precision issues with transaction balances and micro-payment currency calculations).
@@ -63,13 +63,12 @@ The repository organizes code into modular applications (`apps/`) and shared pac
 ├── apps/
 │   ├── server/            # Composition Root: bundles web-admin, storefront, bot, and jobs into 1 process
 │   ├── order-bot/         # Telegram Bot service (handlers, menus, cron jobs, payment pollers)
-│   ├── web-admin/         # Administrative Web Portal Fastify application
-│   ├── storefront/        # Customer-facing Shop Fastify application
-│   └── notifier/          # Background worker draining the outbox and sending Telegram notifications
+│   ├── web-admin/         # Administrative Web Portal — Fastify JSON API + React SPA (`client/`)
+│   └── storefront/        # Customer-facing Shop — Fastify JSON API (`/api/v1/*`) + React SPA (`client/`)
 ├── packages/
 │   ├── core/              # Shared config schema, enums, currency, SMTP mailer, locales/i18n
 │   ├── db/                # Shared Prisma client initialization and transaction-safe CRUD modules
-│   └── web-ui/            # Shared layouts, visual style assets, Nunjucks macros, and main CSS
+│   └── outbox-dispatcher/ # Drains notification_outbox → Telegram, runs in-process inside apps/server
 ├── prisma/                # schema.prisma declaration and Prisma migration logs
 ├── scripts/               # Maintenance scripts (passwords resets, catalog migrations, dev probes)
 └── data/                  # (Runtime) Local file attachments and logs; also the legacy SQLite DB file for shops not yet cut over to Postgres (see POSTGRES_MIGRATION.md)
@@ -84,7 +83,6 @@ The repository organizes code into modular applications (`apps/`) and shared pac
 *   **[packages/outbox-dispatcher](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/packages/outbox-dispatcher):** The messaging subsystem (library). Its polling loop (`runDispatcher`) regularly queries the `NotificationOutbox` table and delivers messages (e.g., transactional receipts, password resets, digital delivery DMs) to users via the Telegram Bot. Run in-process by `apps/server`.
 *   **[packages/core](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/packages/core):** Enforces settings schema validations, manages application-wide enums, handles multi-language keys, currency conversions, and defines core business logic helpers.
 *   **[packages/db](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/packages/db):** Holds database transaction scripts, database client singletons, and CRUD abstraction modules.
-*   **[packages/web-ui](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/packages/web-ui):** Common CSS systems, global responsive layouts, typography templates, and macro functions.
 
 ---
 
@@ -161,9 +159,9 @@ For local debugging, standalone entry points bypass the unified server wrapper:
 *   **Cart & Operations:**
     *   `GET/POST /cart` - Session-cached (guest) or DB-backed (authenticated) shopping cart contents.
     *   `GET/POST /checkout` - Prompts customer to select payment methods (e.g. QRIS, Bybit, Binance).
-*   **Payment Processing & HTMX Status Polling:**
-    *   `GET /checkout/:code/pay` - Renders transaction page (QR code, address, instructions).
-    *   `GET /checkout/:code/status` - Returns raw HTMX snippet. Storefront client page polls this endpoint every 5 seconds; once order changes to `DELIVERED`, HTMX triggers page reload or customer dashboard redirect.
+*   **Payment Processing & Status Polling:**
+    *   `GET /checkout/:code/pay` - React SPA route rendering the payment page (QR code, address, instructions).
+    *   `GET /api/v1/orders/:code/status` - JSON status endpoint. The React payment page polls this every 5 seconds via `fetch`; once the order changes to `DELIVERED`, the page updates in place and redirects to the customer dashboard.
     *   `POST /checkout/:code/cancel` - Cancels pending order, returning reserved items to stock.
 *   **User Space:**
     *   `GET /account` - Lists wallet transactions, referrals, and account details.
@@ -277,7 +275,7 @@ erDiagram
     3.  `Denomination` (the actual SKU, e.g., "1 Month Shared Profile")
 *   **`StockItem`:** Holds stock items (keys, accounts, license credentials) for a denomination. Items are marked as `AVAILABLE`, `RESERVED`, `SOLD`, or `DEAD`.
 *   **`Order`, `OrderItem`:** The checkout contract. Tracks payment method, expiry timestamps, amounts, and associated stock items.
-*   **`NotificationOutbox`:** Serves as an async messaging queue. Instead of sending messages inline during requests (which can delay responses or fail), apps write notification records (e.g., event, payload) to this table. The notifier service then processes them sequentially.
+*   **`NotificationOutbox`:** Serves as an async messaging queue. Instead of sending messages inline during requests (which can delay responses or fail), apps write notification records (e.g., event, payload) to this table. The in-process outbox dispatcher (`packages/outbox-dispatcher`, run by `apps/server`) then processes them sequentially.
 *   **Idempotency Ledgers:** Tables like `ProcessedTokopayTx`, `ProcessedPaydisiniTx`, `ProcessedNowpaymentsTx`, `ProcessedBinanceTx`, and `ProcessedBybitTx` store unique transaction hashes. Webhooks and pollers check these tables first to prevent double-crediting orders.
 
 ### Database Transaction Pattern
@@ -529,7 +527,7 @@ The customer-facing web storefront allows users to browse products, manage their
 5.  **Payment Processing:**
     *   For **TokoPay/PayDisini (QRIS)**: Renders a QR code that the user scans to pay.
     *   For **USDT (Binance Internal / Bybit)**: Displays transfer instructions and target wallet addresses.
-6.  **Order Status Polling:** The payment page uses HTMX to poll `/checkout/:code/status` every 5 seconds. Once the system registers the payment, the page dynamically updates.
+6.  **Order Status Polling:** The React payment page polls `GET /api/v1/orders/:code/status` via `fetch` every 5 seconds. Once the system registers the payment, the page updates in place.
 7.  **Digital Delivery:** Upon successful payment, the system marks the order as `DELIVERED`, retrieves stock items, and displays the credentials on the checkout page. The credentials are also sent to the customer via Telegram DM and made available in their account history.
 
 ---

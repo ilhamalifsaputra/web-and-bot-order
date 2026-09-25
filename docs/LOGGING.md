@@ -20,11 +20,11 @@ keduanya.
 ## 1. Audit log — kalimat untuk admin toko
 
 `logAdminAction(db, { adminId, action, targetType, targetId, details })`
-menulis satu baris ke tabel `auditLog`. Halaman `/audit`
-(`apps/web-admin/views/audit.njk`) menampilkan `details` **mentah, tanpa
-parsing** — jadi satu-satunya cara membuatnya terbaca adalah menulis kalimat
-yang benar dari awal di setiap titik pemanggilan, bukan memformat ulang di
-template.
+menulis satu baris ke tabel `auditLog`. Halaman `/audit` (React
+`AuditPage.tsx`, data dari `apps/web-admin/src/routes/api/audit.ts`)
+menampilkan `details` **mentah, tanpa parsing** — jadi satu-satunya cara
+membuatnya terbaca adalah menulis kalimat yang benar dari awal di setiap
+titik pemanggilan, bukan memformat ulang di komponen.
 
 **Aturan:**
 1. Tulis kalimat pendek yang utuh (diawali huruf kapital, diakhiri titik),
@@ -35,8 +35,10 @@ template.
    `key=value`.
 4. **Jangan pernah** menyisipkan daftar id/nama yang dipotong
    (`.slice(0, N)`) ke dalam kalimat — ringkas jadi jumlah saja. Kolom
-   `details` di `audit.njk` memakai CSS `break-all`, jadi string panjang
-   akan terpotong tengah kata dan makin tidak terbaca.
+   `details` di `AuditPage.tsx` di-`truncate` pada `max-w-[320px]` (teks
+   penuh hanya muncul lewat tooltip `title` saat hover; tampilan kartu
+   mobile pakai `break-words`), jadi string panjang tak pernah terlihat
+   utuh dan makin tidak terbaca.
 5. Nama/key yang berasal dari input user boleh diberi tanda kutip ganda
    agar mudah dipindai: `Changed setting "MAINTENANCE_MODE".`
 6. Tetap singkat — satu kalimat. Detail yang hanya berguna untuk developer
@@ -120,8 +122,8 @@ penting.
 
 - Penulis audit log: `packages/db/src/crud/audit.ts` (`logAdminAction`,
   `listAuditLogs`, `countAuditLogs`).
-- Tampilan audit log: `apps/web-admin/views/audit.njk` +
-  `apps/web-admin/src/routes/audit.ts` (render `details` mentah, tanpa
+- Tampilan audit log: `apps/web-admin/client/src/pages/AuditPage.tsx` +
+  `apps/web-admin/src/routes/api/audit.ts` (render `details` mentah, tanpa
   parsing apa pun — jangan menambah logic parsing di sini, perbaiki di
   titik panggilnya).
 - Instance Pino: `packages/core/src/logger.ts`.

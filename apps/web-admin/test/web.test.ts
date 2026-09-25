@@ -1618,6 +1618,25 @@ describe("POST /api/orders/:orderId/cancel", () => {
 });
 
 describe("POST /api/orders/bulk-action", () => {
+  it("bulk cancel still cancels an order whose reserved credential can't be decrypted (final review F2)", async () => {
+    const orderId = await makePendingOrder();
+    const item = await prisma.orderItem.findFirstOrThrow({ where: { orderId } });
+    const row = await prisma.stockItem.findUniqueOrThrow({ where: { id: item.stockItemId! } });
+    const tampered = { ...(JSON.parse(row.credentials) as Record<string, unknown>), authTag: Buffer.alloc(16).toString("base64") };
+    await prisma.stockItem.update({ where: { id: row.id }, data: { credentials: JSON.stringify(tampered) } });
+    await prisma.order.update({ where: { id: orderId }, data: { status: "PENDING_PAYMENT" } });
+
+    const res = await postJsonOrders("/api/orders/bulk-action", seed.cookie, seed.csrf, {
+      ids: [orderId],
+      action: "cancel",
+      reason: "unreadable stock cleanup",
+    });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({ succeeded: [orderId], failed: [] });
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: orderId } })).status).toBe("CANCELLED");
+    expect((await prisma.stockItem.findUniqueOrThrow({ where: { id: row.id } })).status).toBe("AVAILABLE");
+  });
+
   it("bulk deliver: eligible PENDING_VERIFICATION orders succeed, a PROCESSING (manual) order is skipped, exactly one summary audit row", async () => {
     setBotIdentity({ publicChannelId: -100123456789 });
     const eligible1 = await makePendingOrder();

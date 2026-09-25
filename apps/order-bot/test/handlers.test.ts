@@ -41,17 +41,23 @@ vi.mock("@app/core/payments/nowpayments", async (orig) => ({
 // default) so the M-6 race tests below can override it once to simulate a
 // concurrent claimant — see "doesn't create a second TokoPay transaction
 // when it loses the gateway claim to a concurrent request".
-// getOrder is wrapped the same way, for the changePaymentRail guard test:
+// getOrderRaw (the non-decrypting read the handler uses) is wrapped the same
+// way, for the changePaymentRail guard test:
 // that handler's status/ownership checks necessarily read the order before
 // its write transaction opens, so overriding this read once is how a test
 // hands it the stale "still awaiting payment" view a real concurrent payment
 // confirmation would leave it holding.
 vi.mock("@app/db", async (orig) => {
   const actual = await orig<typeof import("@app/db")>();
-  return { ...actual, claimGatewaySlot: vi.fn(actual.claimGatewaySlot), getOrder: vi.fn(actual.getOrder) };
+  return {
+    ...actual,
+    claimGatewaySlot: vi.fn(actual.claimGatewaySlot),
+    getOrder: vi.fn(actual.getOrder),
+    getOrderRaw: vi.fn(actual.getOrderRaw),
+  };
 });
 
-import { prisma, createOrderDirect, upsertBulkPricing, deleteBulkPricing, attachPaymentProof, approveOrder, getOrder, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createCategory, createDenomination, updateDenomination, bulkAddStock, finalizeOrderPayment, listPendingTokopayOrders, createBybitBscOrder, adjustWallet, getCatalogProduct, settlePaidOrder, fulfillManualOrder, claimGatewaySlot, createPaymentAttempt, MAX_CART_ORDER_UNITS, BINANCE_UID_KEY, BINANCE_API_KEY_KEY, BINANCE_API_SECRET_KEY, BYBIT_UID_KEY, BYBIT_API_KEY_KEY, BYBIT_API_SECRET_KEY, BYBIT_BSC_DEPOSIT_ADDRESS_KEY, BYBIT_BSC_ENABLED_KEY } from "@app/db";
+import { prisma, createOrderDirect, upsertBulkPricing, deleteBulkPricing, attachPaymentProof, approveOrder, getOrder, getOrderRaw, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createCategory, createDenomination, updateDenomination, bulkAddStock, finalizeOrderPayment, listPendingTokopayOrders, createBybitBscOrder, adjustWallet, getCatalogProduct, settlePaidOrder, fulfillManualOrder, claimGatewaySlot, createPaymentAttempt, MAX_CART_ORDER_UNITS, BINANCE_UID_KEY, BINANCE_API_KEY_KEY, BINANCE_API_SECRET_KEY, BYBIT_UID_KEY, BYBIT_API_KEY_KEY, BYBIT_API_SECRET_KEY, BYBIT_BSC_DEPOSIT_ADDRESS_KEY, BYBIT_BSC_ENABLED_KEY } from "@app/db";
 import { BANNER_IMAGE_KEY } from "../src/util/banner";
 import { createTransaction as mockedCreateTokopayTransaction } from "@app/core/payments/tokopay";
 import { createTransaction as mockedCreatePaydisiniTransaction } from "@app/core/payments/paydisini";
@@ -3310,8 +3316,8 @@ describe("changePaymentRail (Task A2a)", () => {
     // above uses. Real overlapping Postgres transactions prove the guard
     // itself in packages/db/src/crud/orders.test.ts's setOrderPaymentRail
     // block; what this adds is that the HANDLER is actually gated by it.)
-    vi.mocked(getOrder).mockImplementationOnce(async (db, id) => {
-      const staleSnapshot = await getOrder(db, id); // the once-impl is spent — this is the real read
+    vi.mocked(getOrderRaw).mockImplementationOnce(async (db, id) => {
+      const staleSnapshot = await getOrderRaw(db, id); // the once-impl is spent — this is the real read
       await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.PAID } });
       return staleSnapshot;
     });
@@ -4857,5 +4863,44 @@ describe("callback router", () => {
     expect(fresh!.status).toBe(TicketStatus.CLOSED);
     const body = JSON.stringify(calls(sink, "answerCallbackQuery"));
     expect(body).toContain("Ticket not found");
+  });
+});
+
+// ===========================================================================
+// Final review F2: the buyer-side order handlers only read owner/status/rail,
+// so an order whose reserved stock row can't be decrypted must still be
+// cancellable, re-railable and refreshable — none may fail on a decrypt.
+describe("checkout handlers on an order with an unreadable reserved credential", () => {
+  async function orderWithUnreadableStock() {
+    const order = (await makeOrder())!;
+    const row = await prisma.stockItem.findUniqueOrThrow({ where: { id: order.items[0]!.stockItemId! } });
+    const tampered = { ...(JSON.parse(row.credentials) as Record<string, unknown>), authTag: Buffer.alloc(16).toString("base64") };
+    await prisma.stockItem.update({ where: { id: row.id }, data: { credentials: JSON.stringify(tampered) } });
+    return { order, stockItemId: row.id };
+  }
+  const statusOf = async (id: number) => (await prisma.order.findUniqueOrThrow({ where: { id } })).status;
+
+  it("cancelPendingOrder still cancels it and releases the row", async () => {
+    const { order, stockItemId } = await orderWithUnreadableStock();
+    const { ctx } = customerCtx({ callbackData: `v1:checkout:cancel:${order.id}` });
+    await checkout.cancelPendingOrder(ctx, order.id);
+    expect(await statusOf(order.id)).toBe(OrderStatus.CANCELLED);
+    expect((await prisma.stockItem.findUniqueOrThrow({ where: { id: stockItemId } })).status).toBe(StockStatus.AVAILABLE);
+  });
+
+  it("changePaymentRail still switches its rail", async () => {
+    const { order } = await orderWithUnreadableStock();
+    await prisma.order.update({ where: { id: order.id }, data: { paymentMethod: PaymentMethod.TOKOPAY } });
+    const { ctx } = customerCtx({ callbackData: `v1:checkout:rail:${order.id}` });
+    await checkout.changePaymentRail(ctx, order.id, PaymentMethod.PAYDISINI);
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).paymentMethod).toBe(PaymentMethod.PAYDISINI);
+  });
+
+  it("refreshPaymentStatus still answers the tap instead of throwing", async () => {
+    const { order } = await orderWithUnreadableStock();
+    await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.CANCELLED } });
+    const { ctx, sink } = customerCtx({ callbackData: `v1:checkout:refresh:${order.id}` });
+    await checkout.refreshPaymentStatus(ctx, order.id);
+    expect(calls(sink, "answerCallbackQuery").length).toBeGreaterThan(0);
   });
 });

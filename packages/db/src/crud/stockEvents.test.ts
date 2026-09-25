@@ -103,6 +103,19 @@ describe("recordStockEvent", () => {
     ).rejects.toThrow("boom");
     expect(await prisma.stockItemEvent.count()).toBe(0);
   });
+
+  it("defaults occurredAt to a JS-clock read (not the DB default) when omitted", async () => {
+    const stockItemId = await firstStockId();
+    const before = Date.now();
+    const row = await recordStockEvent(prisma, {
+      stockItemId,
+      eventType: StockEventType.MARKED_DEAD,
+      actor: { type: StockActorType.SYSTEM },
+    });
+    const after = Date.now();
+    expect(row.occurredAt.getTime()).toBeGreaterThanOrEqual(before);
+    expect(row.occurredAt.getTime()).toBeLessThanOrEqual(after);
+  });
 });
 
 describe("recordStockEvents", () => {

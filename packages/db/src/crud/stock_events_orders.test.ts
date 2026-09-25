@@ -278,16 +278,37 @@ describe("stock event ledger across an order's lifecycle", () => {
     expect(credentials[0]).toMatch(/^user\d@example\.com:pwd\d$/);
     expect(credentials[0]).not.toBe("user1@example.com:pwd1");
 
-    expect((await eventsFor(deadId)).map((e) => e.eventType)).toEqual([
+    const deadEvents = await eventsFor(deadId);
+    expect(deadEvents.map((e) => e.eventType)).toEqual([
       StockEventType.RESERVED,
       StockEventType.MARKED_DEAD,
       StockEventType.SUBSTITUTED_OUT,
     ]);
-    expect((await eventsFor(sub.id)).map((e) => e.eventType)).toEqual([
+    const subEvents = await eventsFor(sub.id);
+    expect(subEvents.map((e) => e.eventType)).toEqual([
       StockEventType.RESERVED,
       StockEventType.SUBSTITUTED_IN,
       StockEventType.SOLD,
     ]);
+
+    // Every event on a given stock item must have a non-decreasing occurredAt
+    // in WRITE order (`eventsFor` orders by `id: "asc"`, i.e. insertion order,
+    // never by occurredAt itself — so this is a real chronology check, not a
+    // tautological re-sort of the field under test). This is the exact
+    // invariant `checkStatusEventMismatchAndLegacy` depends on: it picks a
+    // stock item's "latest" event via `ORDER BY occurred_at DESC, id DESC`,
+    // which only agrees with true write order when occurredAt never goes
+    // backwards between two events on the same row (Task C: before this fix,
+    // `approveOrder` captured one early `now` for SUBSTITUTED_OUT/IN/SOLD
+    // while the replacement's implicit RESERVED event — written via
+    // `allocateOneAvailableStock`, in between — got a live, later JS-clock
+    // read from the old DB-default fallback, inverting the order and making
+    // this exact check below fail with a false statusEventMismatch).
+    for (const seq of [deadEvents, subEvents]) {
+      for (let i = 1; i < seq.length; i++) {
+        expect(seq[i]!.occurredAt.getTime()).toBeGreaterThanOrEqual(seq[i - 1]!.occurredAt.getTime());
+      }
+    }
 
     const report = await checkStockIntegrity(prisma);
     for (const [key, finding] of Object.entries(report)) {

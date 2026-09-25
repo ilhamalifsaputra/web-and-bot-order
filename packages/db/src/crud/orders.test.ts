@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
@@ -22,6 +22,8 @@ import {
   cancelOrder,
   creditOrderToBalance,
   getOrder,
+  getOrderByCodeFull,
+  getOrderByCodeFullForDisplay,
   listOrders,
   countOrders,
   listUserOrders,
@@ -38,6 +40,8 @@ import { Decimal } from "@app/core/money";
 import { ValidationError } from "@app/core/errors";
 import { createCategory, createCatalogProduct, createDenomination, updateDenomination } from "./catalog";
 import { createGuestUser } from "./webauth";
+import { encryptCredentials } from "@app/core/credentialCrypto";
+import { logger } from "@app/core/logger";
 
 describe("service activation at order creation", () => {
   let sample: SampleData;
@@ -1607,5 +1611,50 @@ describe("findUnderpaidReceived", () => {
 
     const received = await findUnderpaidReceived(prisma, order.id);
     expect(received!.toString()).toBe("2");
+  });
+});
+
+describe("order credential decrypt: display reader is guarded, delivery readers stay strict (Fase 6a)", () => {
+  let sample: SampleData;
+  beforeEach(async () => {
+    await resetDb(prisma);
+    sample = await buildSampleData(prisma);
+  });
+
+  async function orderWithTamperedStock() {
+    const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    const stockItemId = order.items[0]!.stockItemId!;
+    const good = JSON.parse(encryptCredentials("tampered@example.com:pw")) as Record<string, unknown>;
+    await prisma.stockItem.update({
+      where: { id: stockItemId },
+      data: { credentials: JSON.stringify({ ...good, authTag: Buffer.alloc(16).toString("base64") }) },
+    });
+    return { order, stockItemId };
+  }
+
+  it("getOrderByCodeFullForDisplay shows an unreadable credential as null with a row-id warning", async () => {
+    const { order, stockItemId } = await orderWithTamperedStock();
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    try {
+      const shown = await getOrderByCodeFullForDisplay(prisma, order.orderCode);
+      expect(shown!.items[0]!.stockItem!.credentials).toBeNull();
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]![0]).toMatchObject({ stockItemId });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("getOrderByCodeFullForDisplay returns readable credentials as plaintext", async () => {
+    const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    const shown = await getOrderByCodeFullForDisplay(prisma, order.orderCode);
+    expect(shown!.items[0]!.stockItem!.credentials).toBe((await getOrder(prisma, order.id))!.items[0]!.stockItem!.credentials);
+    expect(shown!.items[0]!.stockItem!.credentials).toMatch(/@example\.com:/);
+  });
+
+  it("the delivery readers getOrder and getOrderByCodeFull still throw on an unreadable credential", async () => {
+    const { order } = await orderWithTamperedStock();
+    await expect(getOrder(prisma, order.id)).rejects.toThrow();
+    await expect(getOrderByCodeFull(prisma, order.orderCode)).rejects.toThrow();
   });
 });

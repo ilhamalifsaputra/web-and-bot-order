@@ -873,6 +873,50 @@ describe("drainBatch delivers the per-SKU manual delivery-flow DMs", () => {
     expect(row!.status).toBe("SENT");
   });
 
+  it("reads the encrypted column: the DB holds an envelope, the buyer gets the plaintext", async () => {
+    const buyer = await makeBuyer(500_006);
+    const admin = await makeAdmin(900_000_006);
+    const denom = await makeManualDenom();
+    const order = await createOrderDirect(prisma, { user: buyer, productId: denom.id, quantity: 1 });
+    await attachPaymentProof(prisma, order!.id, { fileId: "file123", txid: "TX-1" });
+    await settlePaidOrder(prisma, order!.id, { adminId: admin.id });
+    await fulfillManualOrder(prisma, order!.id, { adminId: admin.id, content: "user: enc@example.com / pass: Hunter6" });
+    const raw = await prisma.order.findUniqueOrThrow({ where: { id: order!.id } });
+    expect(raw.deliveredContent).not.toContain("Hunter6");
+
+    const { bot, sendMessage } = fakeBot();
+    await drainBatch(bot);
+
+    expect(sendMessage.mock.calls.some((call) => (call[1] as string).includes("pass: Hunter6"))).toBe(true);
+  });
+
+  it("an unreadable deliveredContent throws out of the batch without sending anything, so the row retries", async () => {
+    const buyer = await makeBuyer(500_007);
+    const admin = await makeAdmin(900_000_007);
+    const denom = await makeManualDenom();
+    const order = await createOrderDirect(prisma, { user: buyer, productId: denom.id, quantity: 1 });
+    await attachPaymentProof(prisma, order!.id, { fileId: "file123", txid: "TX-1" });
+    await settlePaidOrder(prisma, order!.id, { adminId: admin.id });
+    await fulfillManualOrder(prisma, order!.id, { adminId: admin.id, content: "user: t@example.com / pass: Hunter7" });
+    const raw = await prisma.order.findUniqueOrThrow({ where: { id: order!.id } });
+    const tampered = { ...(JSON.parse(raw.deliveredContent!) as Record<string, unknown>), authTag: Buffer.alloc(16).toString("base64") };
+    await prisma.order.update({ where: { id: order!.id }, data: { deliveredContent: JSON.stringify(tampered) } });
+    // Only the manual DM is left to drain, so the throw is attributable to it.
+    await prisma.notificationOutbox.deleteMany({
+      where: { orderId: order!.id, event: { not: NotificationEvent.ORDER_MANUAL_DELIVERED_DM } },
+    });
+
+    const { bot, sendMessage } = fakeBot();
+    await expect(drainBatch(bot)).rejects.toThrow();
+
+    expect(sendMessage).not.toHaveBeenCalled();
+    const row = await prisma.notificationOutbox.findFirst({
+      where: { orderId: order!.id, event: NotificationEvent.ORDER_MANUAL_DELIVERED_DM },
+    });
+    expect(row!.status).not.toBe("SENT");
+    expect(row!.status).not.toBe("FAILED");
+  });
+
   it("fails the row without sending when the order has no deliveredContent (defensive — should not normally happen)", async () => {
     await prisma.notificationOutbox.create({
       data: {

@@ -124,10 +124,10 @@ export async function bulkAddStock(
  * the status the update really replaced.
  *
  * The admin's `note` stays out of the event on purpose — admins paste
- * credentials into it. The reason is OTHER because no caller collects a
- * structured one yet.
+ * credentials into it. `reason` is the structured, credential-free why; it is
+ * stored on the row and on the event, only for rows that really changed.
  */
-async function markDead(db: Db, ids: number[], note: string, adminId: number): Promise<number> {
+async function markDead(db: Db, ids: number[], note: string, adminId: number, reason: DeadReason): Promise<number> {
   return inTransaction(db, async (tx) => {
     await lockStockRows(tx, ids);
     const eligible = { deletedAt: null, status: { in: [StockStatus.AVAILABLE, StockStatus.RESERVED] } };
@@ -138,7 +138,7 @@ async function markDead(db: Db, ids: number[], note: string, adminId: number): P
     if (!rows.length) return 0;
     const res = await tx.stockItem.updateMany({
       where: { id: { in: rows.map((r) => r.id) }, ...eligible },
-      data: { status: StockStatus.DEAD, note },
+      data: { status: StockStatus.DEAD, note, deadReason: reason },
     });
     const actor = adminActor(adminId);
     await recordStockEvents(
@@ -149,7 +149,7 @@ async function markDead(db: Db, ids: number[], note: string, adminId: number): P
         fromStatus: r.status,
         toStatus: StockStatus.DEAD,
         actor,
-        reasonCode: DeadReason.OTHER,
+        reasonCode: reason,
       })),
     );
     return res.count;
@@ -163,8 +163,14 @@ async function markDead(db: Db, ids: number[], note: string, adminId: number): P
  * item was updated, 0 if it wasn't eligible (already SOLD/DEAD, or the id
  * doesn't exist) — callers must check this instead of assuming success.
  */
-export async function markStockDead(db: Db, stockId: number, note: string, adminId: number): Promise<number> {
-  return markDead(db, [stockId], note, adminId);
+export async function markStockDead(
+  db: Db,
+  stockId: number,
+  note: string,
+  adminId: number,
+  reason: DeadReason = DeadReason.OTHER,
+): Promise<number> {
+  return markDead(db, [stockId], note, adminId, reason);
 }
 
 /**
@@ -177,9 +183,10 @@ export async function bulkMarkStockDead(
   ids: number[],
   note: string,
   adminId: number,
+  reason: DeadReason = DeadReason.OTHER,
 ): Promise<number> {
   if (!ids.length) return 0;
-  return markDead(db, ids, note, adminId);
+  return markDead(db, ids, note, adminId, reason);
 }
 
 /**

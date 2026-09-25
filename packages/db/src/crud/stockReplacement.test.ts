@@ -806,6 +806,13 @@ describe("replacement — stock traceability wiring (Fase 5e)", () => {
     expect(spare1.status).toBe(StockStatus.DEAD);
     expect(spare1.activeCredentialKey).toBeNull();
     expect(spare2.replacesStockItemId).toBe(spare1.id);
+    // The chain is FK-valid: original <- spare1 <- spare2 resolves through the relation.
+    const chained = await prisma.stockItem.findUniqueOrThrow({
+      where: { id: spare2.id },
+      include: { replacesStockItem: { include: { replacesStockItem: true } } },
+    });
+    expect(chained.replacesStockItem!.id).toBe(spare1.id);
+    expect(chained.replacesStockItem!.replacesStockItem!.id).toBe(originalStockId);
     expect(spare2.status).toBe(StockStatus.SOLD);
     expect((await prisma.orderItem.findUniqueOrThrow({ where: { id: item.id } })).stockItemId).toBe(spare2.id);
 

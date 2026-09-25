@@ -7037,6 +7037,56 @@ describe("restock waitlist", () => {
   });
 });
 
+// ---- shared low-stock threshold (T3) --------------------------------------
+
+describe("shared low-stock threshold", () => {
+  it("GET /api/stock sends the shared config threshold for the client to use", async () => {
+    const res = await get("/api/stock", seed.cookie);
+    expect(res.statusCode).toBe(200);
+    expect((JSON.parse(res.body) as { lowStockThreshold: number }).lowStockThreshold).toBe(
+      config.LOW_STOCK_THRESHOLD,
+    );
+  });
+
+  it("GET /api/stock/export's Status column is Low Stock at exactly the threshold (<=, not <5)", async () => {
+    // Deliberate behavior change from the old hard-coded `<5`: with the
+    // shared config default of 3, a denomination sitting at exactly 3
+    // available is Low Stock (3 <= 3), and one at 4 is already back to In
+    // Stock (4 > 3) — neither would have been true under the old `<5` rule.
+    const cat = await createCategory(prisma, `ThresholdCat${counter++}`);
+    const parent = await createCatalogProduct(prisma, { categoryId: cat.id, name: "ThresholdProd", description: "x" });
+    const atThreshold = await createDenomination(prisma, {
+      productId: parent.id,
+      name: "AtThreshold",
+      type: ProductType.SHARED,
+      durationLabel: "AtThreshold",
+      price: "5.00",
+      description: "x",
+    });
+    const aboveThreshold = await createDenomination(prisma, {
+      productId: parent.id,
+      name: "AboveThreshold",
+      type: ProductType.SHARED,
+      durationLabel: "AboveThreshold",
+      price: "5.00",
+      description: "x",
+    });
+    expect(config.LOW_STOCK_THRESHOLD).toBe(3);
+    for (let i = 0; i < config.LOW_STOCK_THRESHOLD; i++) {
+      await prisma.stockItem.create({ data: { productId: atThreshold.id, credentials: `at-${i}@e.com:p`, status: "AVAILABLE" } });
+    }
+    for (let i = 0; i < config.LOW_STOCK_THRESHOLD + 1; i++) {
+      await prisma.stockItem.create({ data: { productId: aboveThreshold.id, credentials: `above-${i}@e.com:p`, status: "AVAILABLE" } });
+    }
+
+    const res = await get("/api/stock/export", seed.cookie);
+    const rows = res.body.split("\r\n");
+    const statusOf = (name: string) => rows.find((r) => r.startsWith(`${name},`))!.split(",").pop();
+    expect(statusOf("AtThreshold")).toBe("Low Stock");
+    expect(statusOf("AboveThreshold")).toBe("In Stock");
+  });
+});
+
 // ---- global search (Tier 3 §13) -------------------------------------------
 
 describe("global search", () => {

@@ -23,6 +23,7 @@ import {
   creditOrderToBalance,
   getOrder,
   getOrderByCodeFull,
+  listUserDeliveredOrders,
   getOrderByCodeFullForDisplay,
   listOrders,
   countOrders,
@@ -40,7 +41,7 @@ import { Decimal } from "@app/core/money";
 import { ValidationError } from "@app/core/errors";
 import { createCategory, createCatalogProduct, createDenomination, updateDenomination } from "./catalog";
 import { createGuestUser } from "./webauth";
-import { encryptCredentials } from "@app/core/credentialCrypto";
+import { encryptCredentials, encryptDeliveredContent } from "@app/core/credentialCrypto";
 import { logger } from "@app/core/logger";
 
 describe("service activation at order creation", () => {
@@ -1656,5 +1657,51 @@ describe("order credential decrypt: display reader is guarded, delivery readers 
     const { order } = await orderWithTamperedStock();
     await expect(getOrder(prisma, order.id)).rejects.toThrow();
     await expect(getOrderByCodeFull(prisma, order.orderCode)).rejects.toThrow();
+  });
+});
+
+describe("Order.deliveredContent is decrypted at the order read choke points (Fase 6c)", () => {
+  let sample: SampleData;
+  beforeEach(async () => {
+    await resetDb(prisma);
+    sample = await buildSampleData(prisma);
+  });
+
+  async function deliveredOrderWith(stored: string) {
+    const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    await prisma.order.update({ where: { id: order.id }, data: { status: "DELIVERED", deliveredContent: stored } });
+    return order;
+  }
+
+  it("getOrder, getOrderByCodeFull, listUserDeliveredOrders and the display reader return the plaintext of an encrypted value", async () => {
+    const order = await deliveredOrderWith(encryptDeliveredContent("user:acc1 pass:Hunter2"));
+    expect((await getOrder(prisma, order.id))!.deliveredContent).toBe("user:acc1 pass:Hunter2");
+    expect((await getOrderByCodeFull(prisma, order.orderCode))!.deliveredContent).toBe("user:acc1 pass:Hunter2");
+    expect((await getOrderByCodeFullForDisplay(prisma, order.orderCode))!.deliveredContent).toBe("user:acc1 pass:Hunter2");
+    const listed = await listUserDeliveredOrders(prisma, sample.user.id);
+    expect(listed.find((o) => o.id === order.id)!.deliveredContent).toBe("user:acc1 pass:Hunter2");
+  });
+
+  it("a pre-encryption plaintext row still reads unchanged (permissive legacy mode)", async () => {
+    const order = await deliveredOrderWith("SN-LEGACY-7");
+    expect((await getOrder(prisma, order.id))!.deliveredContent).toBe("SN-LEGACY-7");
+    expect((await getOrderByCodeFullForDisplay(prisma, order.orderCode))!.deliveredContent).toBe("SN-LEGACY-7");
+  });
+
+  it("delivery readers throw on a tampered value; the display reader shows null with an order-id warning and no content", async () => {
+    const good = JSON.parse(encryptDeliveredContent("user:x pass:Hunter2")) as Record<string, unknown>;
+    const order = await deliveredOrderWith(JSON.stringify({ ...good, authTag: Buffer.alloc(16).toString("base64") }));
+    await expect(getOrder(prisma, order.id)).rejects.toThrow();
+    await expect(getOrderByCodeFull(prisma, order.orderCode)).rejects.toThrow();
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    try {
+      const shown = await getOrderByCodeFullForDisplay(prisma, order.orderCode);
+      expect(shown!.deliveredContent).toBeNull();
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]![0]).toMatchObject({ orderId: order.id });
+      expect(JSON.stringify(warn.mock.calls)).not.toContain("Hunter2");
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

@@ -605,7 +605,14 @@ export function ProductDetailPage() {
               { key: "type", header: "Type", render: d => <StatusBadge status={d.type} /> },
               { key: "duration", header: "Duration", render: d => <span className="text-sm text-ink-soft">{d.durationLabel}</span> },
               { key: "price", header: "Price", render: d => <span className="font-mono text-sm">{d.price}</span> },
-              { key: "stock", header: "Stock", render: d => { const stat = statsByDenom[String(d.id)]; return <span className="text-sm">{stat?.available ?? 0}</span>; } },
+              {
+                key: "stock",
+                header: "Stock",
+                // "—" (not a fake 0) when the server sent no stat for this
+                // denomination at all — a genuine 0 (a manual SKU, or an
+                // auto one that has simply sold out) still renders as 0.
+                render: d => { const stat = statsByDenom[String(d.id)]; return <span className="text-sm">{stat ? stat.available : "—"}</span>; },
+              },
               { key: "waiting", header: <RestockRequestsHeader />, render: d => { const stat = statsByDenom[String(d.id)]; return <span className="text-sm text-ink-soft">{formatRestockRequests(stat?.waiting, stat?.available)}</span>; } },
               {
                 key: "active",

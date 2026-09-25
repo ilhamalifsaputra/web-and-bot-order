@@ -91,6 +91,11 @@ const TONE: Record<string, Tone> = {
   AWAITING_STOCK: "warning",
   REFUNDED_INSTEAD: "neutral",
   REQUESTED: "warning",
+  // StockPage's Status column (T3): a denomination that never holds stock
+  // rows (Denomination.deliveryType !== "auto") gets this instead of a
+  // stock-tier badge — falls back to neutral anyway, listed explicitly like
+  // every other domain above for clarity.
+  MANUAL: "neutral",
 };
 
 const TONE_CLASS: Record<Tone, string> = {

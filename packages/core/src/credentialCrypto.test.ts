@@ -111,14 +111,23 @@ describe("credential fingerprints (Fase 2 — stock traceability hardening)", ()
   });
 
   it("normalizeIdentity uses the first segment when no segment contains '@', so identity and credential fingerprints differ", () => {
-    expect(normalizeIdentity("  SomeUser :pass")).toBe("someuser");
-    expect(normalizeIdentity("SomeUser|pass|extra")).toBe("someuser");
+    expect(normalizeIdentity("  SomeUser :pass")).toBe("SomeUser");
+    expect(normalizeIdentity("SomeUser|pass|extra")).toBe("SomeUser");
     expect(computeIdentityFingerprint("user:pass")).not.toBe(computeCredentialFingerprint("user:pass"));
     expect(computeIdentityFingerprint("user:pass")).toBe(computeIdentityFingerprint("user:other"));
   });
 
   it("normalizeIdentity uses the whole trimmed string for a single-segment credential", () => {
-    expect(normalizeIdentity("  LicenseKey-ABC  ")).toBe("licensekey-abc");
+    expect(normalizeIdentity("  LicenseKey-ABC  ")).toBe("LicenseKey-ABC");
+  });
+
+  it("only an '@' identity is case-insensitive; a no-'@' identity and a single-segment code keep their case", () => {
+    expect(computeIdentityFingerprint("User@X.com:a")).toBe(computeIdentityFingerprint("user@x.com:b"));
+    expect(computeCredentialFingerprint("User@X.com:pw")).toBe(computeCredentialFingerprint("user@x.com:pw"));
+    expect(computeIdentityFingerprint("User:a")).not.toBe(computeIdentityFingerprint("user:a"));
+    expect(computeCredentialFingerprint("User:pw")).not.toBe(computeCredentialFingerprint("user:pw"));
+    expect(computeCredentialFingerprint("SteamCode-ABC")).not.toBe(computeCredentialFingerprint("steamcode-abc"));
+    expect(computeCredentialFingerprint(" SteamCode-ABC ")).toBe(computeCredentialFingerprint("SteamCode-ABC"));
   });
 
   it("normalizeCredential leaves password whitespace and inner '|' untouched", () => {
@@ -128,8 +137,9 @@ describe("credential fingerprints (Fase 2 — stock traceability hardening)", ()
     expect(computeCredentialFingerprint("a@b.com:pa|ss")).not.toBe(computeCredentialFingerprint("a@b.com:pa:ss"));
   });
 
-  it("normalizeCredential collapses whitespace inside the identity segment only", () => {
-    expect(normalizeCredential(" Some  User :x  y")).toBe("some user:x  y");
+  it("normalizeCredential collapses whitespace inside an e-mail identity segment only", () => {
+    expect(normalizeCredential(" Some  User@X.com :x  y")).toBe("some user@x.com:x  y");
+    expect(normalizeCredential(" Some  User :x  y")).toBe("Some  User:x  y");
   });
 
   it("normalizeCredential is delimiter-independent (':' and '|' normalize identically)", () => {

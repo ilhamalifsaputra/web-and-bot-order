@@ -233,6 +233,14 @@ describe("bulkAddStock import batch + fingerprint dedup (Fase 5a)", () => {
     expect(res).toMatchObject({ added: 0, duplicateExisting: 1, duplicateInBatch: 1 });
   });
 
+  it("codes differing only in case are both imported, while e-mails differing only in identity case are deduped", async () => {
+    const { product } = sample;
+    const codes = await bulkAddStock(prisma, product.id, ["SteamCode-ABC", "steamcode-abc", "User:pw", "user:pw"]);
+    expect(codes).toMatchObject({ added: 4, skipped: 0 });
+    const emails = await bulkAddStock(prisma, product.id, ["Case.Id@X.com:pw", "case.id@x.com:pw"]);
+    expect(emails).toMatchObject({ added: 1, duplicateInBatch: 1 });
+  });
+
   it("a different password on the same account is added, with an identity warning (never a rejection)", async () => {
     const { product } = sample;
     await bulkAddStock(prisma, product.id, ["same.id@x.com:old-pass"]);

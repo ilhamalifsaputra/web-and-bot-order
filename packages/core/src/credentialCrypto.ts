@@ -222,17 +222,20 @@ function splitIdentity(plaintext: string): IdentitySplit {
   };
 }
 
+/** An e-mail identity is case-insensitive (trimmed, whitespace-collapsed, lowercased); any other
+ * identity — a username or a voucher/game code — is case-sensitive and only trimmed. */
 function canonicalIdentity(raw: string): string {
+  if (!raw.includes("@")) return raw.trim();
   return raw.trim().replace(/\s+/g, " ").toLowerCase();
 }
 
-/** Trimmed, whitespace-collapsed, lowercased identity segment only. */
+/** The identity segment, canonicalized as in canonicalIdentity. */
 export function normalizeIdentity(plaintext: string): string {
   return canonicalIdentity(splitIdentity(plaintext).identity);
 }
 
 /** Canonical form of the WHOLE credential for fingerprinting: the identity
- * segment is normalized as in normalizeIdentity, the delimiters on either
+ * segment is normalized as in normalizeIdentity (case-folded only for an e-mail), the delimiters on either
  * side of it become ":" (so "email|pw" and "email:pw" match) with the
  * whitespace hugging them trimmed, and every other character — password
  * case, inner whitespace, inner ":"/"|" — is kept exactly. */

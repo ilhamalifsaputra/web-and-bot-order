@@ -295,8 +295,10 @@ view `stock_product.njk`):
   jumlahnya** (`stock_download`) — kredensial tak pernah masuk log. Tiap baris
   yang ikut ter-download juga mendapat event `CREDENTIAL_REVEALED` atas nama
   admin itu (satu transaksi dengan baris audit), sama seperti reveal satuan.
-- **Delete selected** — `POST /stock/:productId/bulk-delete` menghapus baris
-  permanen (beda dari "Mark as bad" yang menyetel status DEAD). Pengaman di crud
+- **Delete selected** — `POST /stock/:productId/bulk-delete` melakukan *soft
+  delete*: baris diberi `deletedAt` dan hilang dari semua tampilan, tapi tetap
+  tersimpan beserta riwayat event-nya untuk jejak audit (beda dari "Mark as
+  bad" yang menyetel status DEAD). Pengaman di crud
   `bulkDeleteStock`: item **SOLD tak pernah dihapus** dan item yang terkait order
   item dilewati, sehingga histori order terkirim tetap utuh. CSRF-protected,
   diaudit `stock_bulk_delete` tanpa kredensial.
@@ -554,15 +556,19 @@ tidak menulis. Arti angka ringkasannya:
 - `keyVersion` — `legacyPlaintext` = baris yang masih plaintext (jalankan
   `backfill-encrypt-stock-credentials`).
 - `claims` — `claimed`/`alreadyClaimed` normal; `duplicate` = baris hidup
-  dengan credential yang sudah dipegang baris lain (dobel stok → tandai DEAD
-  salah satunya); `released` = klaim sisa di baris DEAD/terhapus yang
+  dengan credential yang sudah dipegang baris lain (dobel stok AVAILABLE/
+  RESERVED → tandai DEAD salah satunya; duplikat SOLD dari sebelum Fase 5a
+  adalah riwayat, tidak bisa dan tidak perlu diperbaiki); `released` = klaim sisa di baris DEAD/terhapus yang
   dilepas; `unfingerprinted` = baris hidup tanpa fingerprint (gagal dekripsi).
 
 **`pnpm audit-stock-integrity`** — read-only, hanya mencetak jumlah per temuan
 (tidak pernah id atau credential). Semua angka selain `legacyRowsWithoutEvents`
 harus 0. Temuan yang paling sering muncul setelah backfill:
 `liveRowsWithoutClaimKey` (baris hidup tanpa klaim di denominasi yang sudah
-di-fingerprint — biasanya `duplicate`/`unfingerprinted` dari backfill),
+di-fingerprint — biasanya `duplicate`/`unfingerprinted` dari backfill; baris
+SOLD yang credential-nya sudah diklaim baris lain tidak dihitung karena itu
+riwayat, sedangkan baris SOLD yang credential-nya tidak diklaim siapa pun tetap
+dihitung karena credential itu bisa diimpor dan dijual lagi),
 `deadOrDeletedRowsHoldingClaimKey` (jalankan ulang backfill untuk melepasnya),
 dan `soldWithoutSoldToOrderId` (penjualan tanpa order tujuan). Untuk mendapat
 id barisnya, panggil `checkStockIntegrity` langsung atau pakai

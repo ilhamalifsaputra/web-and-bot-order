@@ -487,6 +487,37 @@ describe("checkStockIntegrity — liveRowsWithoutClaimKey", () => {
     expect(report.liveRowsWithoutClaimKey).toEqual(emptyFinding);
   });
 
+  it("does not flag a SOLD duplicate whose credential another row already claims (historical, not actionable)", async () => {
+    const [holder, sold] = await rowsByStatus(StockStatus.AVAILABLE);
+    const order = await rawOrder("ORD-SOLD-DUP", OrderStatus.DELIVERED);
+    await prisma.stockItem.update({
+      where: { id: sold!.id },
+      data: {
+        status: StockStatus.SOLD,
+        orderId: order.id,
+        soldAt: new Date(),
+        soldToOrderId: order.id,
+        credentialFingerprint: holder!.credentialFingerprint,
+        activeCredentialKey: null,
+      },
+    });
+
+    const report = await checkStockIntegrity(prisma);
+    expect(report.liveRowsWithoutClaimKey).toEqual(emptyFinding);
+  });
+
+  it("does flag a SOLD row whose credential nobody claims (it could be imported and sold again)", async () => {
+    const [sold] = await rowsByStatus(StockStatus.AVAILABLE);
+    const order = await rawOrder("ORD-SOLD-UNCLAIMED", OrderStatus.DELIVERED);
+    await prisma.stockItem.update({
+      where: { id: sold!.id },
+      data: { status: StockStatus.SOLD, orderId: order.id, soldAt: new Date(), soldToOrderId: order.id, activeCredentialKey: null },
+    });
+
+    const report = await checkStockIntegrity(prisma);
+    expect(report.liveRowsWithoutClaimKey).toEqual({ count: 1, sampleIds: [sold!.id] });
+  });
+
   it("does not flag a DEAD or soft-deleted row without a claim key (released on purpose)", async () => {
     const [dead, deleted] = await rowsByStatus(StockStatus.AVAILABLE);
     await prisma.stockItem.update({ where: { id: dead!.id }, data: { status: StockStatus.DEAD, activeCredentialKey: null } });

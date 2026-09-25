@@ -17,6 +17,7 @@
  * capped at SAMPLE_LIMIT, so a large production table never turns this report
  * itself into an unbounded id dump.
  */
+import { Prisma } from "@prisma/client";
 import { StockStatus, OrderStatus } from "@app/core/enums";
 import type { Db } from "./_types";
 
@@ -110,7 +111,10 @@ export interface StockIntegrityReport {
    * carries a credentialFingerprint. Such a row is invisible to the unique
    * claim, so the same credential could be imported and sold twice. A
    * denomination with no fingerprinted row at all is simply not backfilled yet
-   * (backfill-stock-traceability) and is not counted. */
+   * (backfill-stock-traceability) and is not counted. A SOLD row is counted
+   * only when no other row holds its credential's claim: a pre-Fase-5a SOLD
+   * duplicate is historical, can't be marked DEAD, and its credential is
+   * already protected by the claim holder. */
   liveRowsWithoutClaimKey: IntegrityFinding;
   /** StockItem rows that are DEAD or soft-deleted but still hold an
    * activeCredentialKey — the claim should have been released (markStockDead,
@@ -304,10 +308,14 @@ async function checkDuplicateActiveCredentialFingerprints(db: Db): Promise<Integ
 
 async function checkLiveRowsWithoutClaimKey(db: Db): Promise<IntegrityFinding> {
   const [available, reserved, sold] = [StockStatus.AVAILABLE, StockStatus.RESERVED, StockStatus.SOLD];
-  const count = firstCount(await db.$queryRaw<{ count: number }[]>`
-    SELECT COUNT(*)::int AS count
-    FROM stock_items si
-    WHERE si.active_credential_key IS NULL
+  // A SOLD row is only flagged when nothing else holds its credential's claim.
+  // A SOLD duplicate from before Fase 5a (the backfill gave the claim to the
+  // lowest-id live row) is historical and not actionable — a sold row can't be
+  // marked DEAD — and the credential is still protected by the other row's
+  // claim. An unclaimed SOLD credential, though, could be imported and sold
+  // again, so that stays a finding.
+  const condition = Prisma.sql`
+    si.active_credential_key IS NULL
       AND si.deleted_at IS NULL
       AND si.status IN (${available}, ${reserved}, ${sold})
       AND (
@@ -319,25 +327,21 @@ async function checkLiveRowsWithoutClaimKey(db: Db): Promise<IntegrityFinding> {
             AND other.credential_fingerprint IS NOT NULL
         )
       )
-  `);
+      AND NOT (
+        si.status = ${sold}
+        AND si.credential_fingerprint IS NOT NULL
+        AND EXISTS (
+          SELECT 1 FROM stock_items holder
+          WHERE holder.active_credential_key = si.product_id::text || ':' || si.credential_fingerprint
+        )
+      )
+  `;
+  const count = firstCount(
+    await db.$queryRaw<{ count: number }[]>`SELECT COUNT(*)::int AS count FROM stock_items si WHERE ${condition}`,
+  );
   if (count === 0) return { count: 0, sampleIds: [] };
   const rows = await db.$queryRaw<{ id: number }[]>`
-    SELECT si.id
-    FROM stock_items si
-    WHERE si.active_credential_key IS NULL
-      AND si.deleted_at IS NULL
-      AND si.status IN (${available}, ${reserved}, ${sold})
-      AND (
-        si.credential_fingerprint IS NOT NULL
-        OR EXISTS (
-          SELECT 1 FROM stock_items other
-          WHERE other.product_id = si.product_id
-            AND other.id != si.id
-            AND other.credential_fingerprint IS NOT NULL
-        )
-      )
-    ORDER BY si.id ASC
-    LIMIT ${SAMPLE_LIMIT}
+    SELECT si.id FROM stock_items si WHERE ${condition} ORDER BY si.id ASC LIMIT ${SAMPLE_LIMIT}
   `;
   return { count, sampleIds: rows.map((r) => r.id) };
 }

@@ -470,6 +470,52 @@ hanya setelah `backfill-encrypt-stock-credentials` **dan**
 jalankan kedua script itu, lalu restart — warning "legacy plaintext" (muncul
 sekali per proses) tidak muncul lagi di log.
 
+### Envelope credential v2 (AAD) — rollout dua tahap
+
+Envelope v2 (`"v":2`) mengikat ciphertext ke tempat penyimpanannya lewat AAD
+AES-GCM, jadi ciphertext yang disalin ke baris/kolom lain tidak bisa didekripsi.
+Konteks AAD (JANGAN pernah diubah — mengubahnya membuat semua nilai v2 di
+bawahnya tidak terbaca selamanya):
+
+| Kolom | Konteks |
+| --- | --- |
+| `StockItem.credentials` | `stock_items.credentials:{id}` |
+| `Order.deliveredContent` | `orders.delivered_content:{orderId}` |
+| `Setting.value` (kunci di `ENCRYPTED_SETTING_KEYS`) | `settings.value:{key}` |
+
+Kode pembaca menerima v1 (tanpa AAD, konteks diabaikan) dan v2 (konteks wajib
+cocok). Penulis tetap menulis v1 kecuali `CREDENTIAL_ENVELOPE_WRITE_V2=true`
+(default mati). Urutan operator:
+
+1. **Tahap 1 — deploy kode pembaca.** Deploy versi ini ke SEMUA proses (server,
+   order-bot, web-admin, storefront) dengan flag belum di-set. Perilaku sama
+   persis dengan sebelumnya; tidak ada nilai v2 yang tertulis.
+2. **Verifikasi.** Pastikan semua proses sudah restart ke versi ini (tidak ada
+   instance lama yang masih jalan), dan detail order, reveal stok, serta
+   pengiriman berjalan normal.
+3. **Dry run.** `pnpm reencrypt-credentials-v2 --dry-run` — hanya menghitung
+   (v1, sudah v2, belum terenkripsi, tidak terbaca) per kolom, tidak menulis
+   apa pun. Angka "unreadable" harus 0 atau sudah dipahami penyebabnya; nilai
+   "not encrypted" diurus dulu oleh script `backfill-encrypt-*`.
+4. **Nyalakan flag.** Set `CREDENTIAL_ENVELOPE_WRITE_V2=true` di `.env` semua
+   proses, lalu restart. Mulai saat ini nilai baru ditulis sebagai v2.
+5. **Re-encrypt.** `pnpm reencrypt-credentials-v2` — menulis ulang setiap v1
+   menjadi v2 per batch (compare-and-set, idempotent, aman diulang), mencatat
+   event `REENCRYPTED` (aktor SYSTEM) per baris stok, dan hanya mencetak
+   jumlah. Script menolak jalan (selain `--dry-run`) selama flag mati.
+6. **Verifikasi.** Jalankan lagi `--dry-run`: `v1` harus 0 di ketiga kolom
+   (kalau ada "changed during the run", ulangi langkah 5).
+
+**Rollback.** Setelah langkah 4, nilai v2 sudah ada di database. Mematikan flag
+hanya menghentikan penulisan v2 baru — nilai v2 yang ada tetap v2. Karena itu
+rollback setelah flag menyala WAJIB tetap memakai kode tahap 1 (atau lebih
+baru); kode sebelum tahap 1 tidak bisa membaca v2 dan akan gagal di setiap
+credential yang sudah v2. Sebelum langkah 4, rollback ke kode lama aman.
+
+Rotasi `CREDENTIAL_ENCRYPTION_KEY` tetap di luar cakupan: envelope v2 tetap
+`keyVersion: 1`, dan fingerprint stok (HMAC dari key yang sama) tidak berubah
+oleh re-encrypt ini.
+
 ### Jalur manual `/bootstrap` (deploy lama)
 
 1. Isi `.env` minimum + `prisma db push`.

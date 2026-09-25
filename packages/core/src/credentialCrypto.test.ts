@@ -12,6 +12,8 @@ import {
   CredentialKeyConfigError,
   assertCredentialKeyConfigured,
   tryDecryptCredentials,
+  LegacyPlaintextCredentialError,
+  legacyPlaintextPassthroughCount,
 } from "./credentialCrypto";
 import { logger } from "./logger";
 
@@ -261,5 +263,71 @@ describe("tryDecryptCredentials (Fase 6a — guarded decrypt for display paths)"
     const stored = encryptCredentials("a@b.com:pw");
     delete process.env.CREDENTIAL_ENCRYPTION_KEY;
     expect(() => tryDecryptCredentials(stored, { stockItemId: 1, purpose: "test" })).toThrow(CredentialKeyConfigError);
+  });
+});
+
+describe("ALLOW_LEGACY_PLAINTEXT (Fase 6b — legacy plaintext passthrough flag)", () => {
+  const ORIGINAL_FLAG = process.env.ALLOW_LEGACY_PLAINTEXT;
+  let warn: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+  });
+  afterEach(() => {
+    warn.mockRestore();
+    if (ORIGINAL_FLAG === undefined) delete process.env.ALLOW_LEGACY_PLAINTEXT;
+    else process.env.ALLOW_LEGACY_PLAINTEXT = ORIGINAL_FLAG;
+  });
+
+  it("defaults to permissive: unset passes a legacy plaintext row through and counts it", () => {
+    delete process.env.ALLOW_LEGACY_PLAINTEXT;
+    const before = legacyPlaintextPassthroughCount();
+    expect(decryptCredentials("legacy@plain.com:pw")).toBe("legacy@plain.com:pw");
+    expect(legacyPlaintextPassthroughCount()).toBe(before + 1);
+  });
+
+  it("warns without the plaintext when it passes a legacy row through", () => {
+    delete process.env.ALLOW_LEGACY_PLAINTEXT;
+    decryptCredentials("warn-me@plain.com:Hunter2");
+    decryptCredentials("warn-me-again@plain.com:Hunter3");
+    for (const call of warn.mock.calls) expect(JSON.stringify(call)).not.toMatch(/Hunter|warn-me/);
+    // Warned at most once per process, so a scan over many legacy rows does not flood the log.
+    expect(warn.mock.calls.length).toBeLessThanOrEqual(1);
+  });
+
+  it.each(["true", "1", "yes", "on", "", "anything-else"])("stays permissive for %j", (value) => {
+    process.env.ALLOW_LEGACY_PLAINTEXT = value;
+    expect(decryptCredentials("legacy@plain.com:pw")).toBe("legacy@plain.com:pw");
+  });
+
+  it.each(["false", "0", "no", "off", " FALSE "])("refuses a legacy plaintext row in strict mode (%j)", (value) => {
+    process.env.ALLOW_LEGACY_PLAINTEXT = value;
+    expect(() => decryptCredentials("strict@plain.com:Hunter2")).toThrow(LegacyPlaintextCredentialError);
+  });
+
+  it("the strict-mode error never contains the stored value", () => {
+    process.env.ALLOW_LEGACY_PLAINTEXT = "false";
+    try {
+      decryptCredentials("strict@plain.com:Hunter2");
+      expect.unreachable();
+    } catch (err) {
+      expect((err as Error).message).not.toContain("Hunter2");
+      expect((err as Error).message).not.toContain("strict@plain.com");
+    }
+  });
+
+  it("strict mode also refuses JSON that is not an envelope", () => {
+    process.env.ALLOW_LEGACY_PLAINTEXT = "false";
+    expect(() => decryptCredentials('{"user":"a@b.com"}')).toThrow(LegacyPlaintextCredentialError);
+  });
+
+  it("strict mode still decrypts a real envelope and passes an empty value through", () => {
+    process.env.ALLOW_LEGACY_PLAINTEXT = "false";
+    expect(decryptCredentials(encryptCredentials("ok@b.com:pw"))).toBe("ok@b.com:pw");
+    expect(decryptCredentials("")).toBe("");
+  });
+
+  it("strict mode makes a display read skip the legacy row instead of failing", () => {
+    process.env.ALLOW_LEGACY_PLAINTEXT = "false";
+    expect(tryDecryptCredentials("strict@plain.com:pw", { stockItemId: 5, purpose: "test" })).toBeNull();
   });
 });

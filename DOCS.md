@@ -455,6 +455,13 @@ otomatis sekali oleh `docker-entrypoint.sh` dan disimpan di
 `data/credential_encryption.key` (lihat `.env.example`). Pastikan file itu ikut
 ter-backup: kalau hilang, semua credential yang sudah terenkripsi (Digiflazz
 API key, akun manual di stok) tidak bisa dibaca lagi selamanya.
+Tiap proses (server, order-bot, web-admin, storefront) mengecek key ini saat
+start dan menolak jalan kalau kosong atau formatnya salah.
+
+`ALLOW_LEGACY_PLAINTEXT` (default `true`): credential lama yang belum
+terenkripsi tetap terbaca, dengan warning di log. Set `false` hanya setelah
+`backfill-encrypt-stock-credentials` dan `backfill-encrypt-settings-secrets`
+selesai — sejak itu nilai plaintext ditolak (lihat `.env.example`).
 
 ### Jalur manual `/bootstrap` (deploy lama)
 

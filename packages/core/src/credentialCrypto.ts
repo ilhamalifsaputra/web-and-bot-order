@@ -58,6 +58,45 @@ export class CredentialKeyConfigError extends Error {
   }
 }
 
+/** Raised by `decryptCredentials` for a legacy plaintext (non-envelope) value
+ * when ALLOW_LEGACY_PLAINTEXT is off. Never carries the stored value. */
+export class LegacyPlaintextCredentialError extends Error {
+  constructor() {
+    super(
+      "A stored credential is legacy plaintext rather than an encrypted envelope, and ALLOW_LEGACY_PLAINTEXT is off. Run the credential encryption backfill scripts, or turn the flag back on.",
+    );
+    this.name = "LegacyPlaintextCredentialError";
+  }
+}
+
+/** Read lazily (like the key) so tests can flip it. Permissive unless explicitly
+ * set to a false value, until the backfills have been measured on production. */
+function legacyPlaintextAllowed(): boolean {
+  const raw = process.env.ALLOW_LEGACY_PLAINTEXT;
+  if (raw === undefined) return true;
+  return !["0", "false", "no", "off"].includes(raw.trim().toLowerCase());
+}
+
+let legacyPassthroughs = 0;
+
+/** How many legacy plaintext values this process has passed through unchanged. */
+export function legacyPlaintextPassthroughCount(): number {
+  return legacyPassthroughs;
+}
+
+function legacyPlaintext(stored: string): string {
+  // An empty value carries no secret; refusing it would only break blank settings.
+  if (stored === "") return stored;
+  if (!legacyPlaintextAllowed()) throw new LegacyPlaintextCredentialError();
+  legacyPassthroughs++;
+  if (legacyPassthroughs === 1) {
+    logger.warn(
+      "A stored credential was read as legacy plaintext (not encrypted). Run the credential encryption backfill scripts; further occurrences in this process are only counted, not logged.",
+    );
+  }
+  return stored;
+}
+
 /** Resolve the raw AES-256 key bytes for a given envelope key version.
  * Throws (never logs the key material) if unconfigured, malformed, or the
  * requested version has no known key — the last case only matters once a
@@ -140,6 +179,8 @@ function isEnvelopeShape(value: unknown): value is CredentialEnvelope {
  * established pattern for tolerating rows that predate a schema/format
  * change (see OrderItem.deliveryTypeSnapshot's null-fallback in
  * schema.prisma) rather than crashing every read path on stale data.
+ * Setting ALLOW_LEGACY_PLAINTEXT=false turns that fallback into a
+ * LegacyPlaintextCredentialError once the backfills are done.
  *
  * A value that DOES look like an envelope but fails to decrypt (wrong key,
  * corrupted ciphertext, tampered auth tag) still throws — that's a real
@@ -150,9 +191,9 @@ export function decryptCredentials(stored: string): string {
   try {
     parsed = JSON.parse(stored);
   } catch {
-    return stored;
+    return legacyPlaintext(stored);
   }
-  if (!isEnvelopeShape(parsed)) return stored;
+  if (!isEnvelopeShape(parsed)) return legacyPlaintext(stored);
 
   const key = keyForVersion(parsed.keyVersion);
   const decipher = createDecipheriv(ALGORITHM, key, Buffer.from(parsed.iv, "base64"));

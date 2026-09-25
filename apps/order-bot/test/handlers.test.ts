@@ -85,7 +85,7 @@ import { routeCallback } from "../src/handlers/callbacks";
 import { t } from "../src/util/i18n";
 import { upsertUser } from "@app/db";
 import { logger } from "@app/core/logger";
-import { decryptCredentials } from "@app/core/credentialCrypto";
+import { decryptCredentials, encryptCredentials, CredentialKeyConfigError } from "@app/core/credentialCrypto";
 
 let sample: SampleData;
 let adminDbId: number;
@@ -4482,6 +4482,35 @@ describe("admin handlers", () => {
     expect(rows[0]!.details).toBe(`Viewed ${total} stock items in the admin bot.`);
     expect(rows[0]!.details).not.toContain("hunter2");
     expect(rows[0]!.details).not.toContain("user@example.com");
+  });
+
+  it("the admin stock browser shows an unreadable row as unavailable without leaking its envelope", async () => {
+    await bulkAddStock(prisma, sample.product.id, ["fine@example.com:okpass"]);
+    const good = JSON.parse(encryptCredentials("broken@example.com:pw")) as Record<string, unknown>;
+    const tampered = JSON.stringify({ ...good, authTag: Buffer.alloc(16).toString("base64") });
+    const bad = await prisma.stockItem.create({
+      data: { productId: sample.product.id, credentials: tampered, status: StockStatus.AVAILABLE },
+    });
+    const { ctx, sink } = adminCtx({ callbackData: `v1:adm:prod:stock:${sample.product.id}` });
+    await handleAdminCallback(ctx, `v1:adm:prod:stock:${sample.product.id}`.split(":"));
+    const out = JSON.stringify(sink);
+    expect(out).toContain("okpass");
+    expect(out).toContain(`#${bad.id} — [unavailable]`);
+    expect(out).not.toContain(good.ciphertext as string);
+  });
+
+  it("the admin stock browser fails loudly when the encryption key is missing instead of hiding every row", async () => {
+    await bulkAddStock(prisma, sample.product.id, ["keyless@example.com:pw"]);
+    const saved = process.env.CREDENTIAL_ENCRYPTION_KEY;
+    delete process.env.CREDENTIAL_ENCRYPTION_KEY;
+    try {
+      const { ctx } = adminCtx({ callbackData: `v1:adm:prod:stock:${sample.product.id}` });
+      await expect(
+        handleAdminCallback(ctx, `v1:adm:prod:stock:${sample.product.id}`.split(":")),
+      ).rejects.toBeInstanceOf(CredentialKeyConfigError);
+    } finally {
+      process.env.CREDENTIAL_ENCRYPTION_KEY = saved;
+    }
   });
 
   // M-8 fix, backend audit 2026-07-31: the keyboard already omits the "Dead"

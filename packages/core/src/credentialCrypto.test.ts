@@ -1,8 +1,15 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { hkdfSync } from "node:crypto";
 import {
   encryptCredentials,
   decryptCredentials,
   isEncryptedCredentialEnvelope,
+  deriveCredentialIndexKey,
+  normalizeIdentity,
+  normalizeCredential,
+  computeIdentityFingerprint,
+  computeCredentialFingerprint,
+  CredentialKeyConfigError,
 } from "./credentialCrypto";
 
 const ORIGINAL_KEY = process.env.CREDENTIAL_ENCRYPTION_KEY;
@@ -73,5 +80,76 @@ describe("credentialCrypto", () => {
     const envelope = JSON.parse(stored) as { authTag: string };
     envelope.authTag = Buffer.from("0000000000000000", "hex").toString("base64");
     expect(() => decryptCredentials(JSON.stringify(envelope))).toThrow();
+  });
+});
+
+describe("credential fingerprints (Fase 2 — stock traceability hardening)", () => {
+  afterEach(() => {
+    if (ORIGINAL_KEY === undefined) delete process.env.CREDENTIAL_ENCRYPTION_KEY;
+    else process.env.CREDENTIAL_ENCRYPTION_KEY = ORIGINAL_KEY;
+  });
+
+  it("normalizeIdentity lowercases the email segment when it comes first", () => {
+    expect(normalizeIdentity("User@Example.com:MyPw123")).toBe("user@example.com");
+  });
+
+  it("normalizeIdentity finds the email segment even when it isn't first", () => {
+    expect(normalizeIdentity("MyPw123|User@Example.com")).toBe("user@example.com");
+  });
+
+  it("normalizeCredential lowercases only the email segment, preserving password case", () => {
+    expect(normalizeCredential("User@Example.com:MyPw123")).toBe("user@example.com:MyPw123");
+  });
+
+  it("normalizeCredential trims and collapses whitespace in each segment", () => {
+    expect(normalizeCredential("  User@Example.com  :  MyPw123  ")).toBe("user@example.com:MyPw123");
+  });
+
+  it("normalizeCredential never lowercases a password that happens to contain '@'", () => {
+    expect(normalizeCredential("User@Example.com:P@ssWord")).toBe("user@example.com:P@ssWord");
+    expect(computeCredentialFingerprint("a@b.com:P@ss")).not.toBe(computeCredentialFingerprint("a@b.com:p@ss"));
+  });
+
+  it("normalizeCredential is delimiter-independent (':' and '|' normalize identically)", () => {
+    expect(normalizeCredential("a@b.com|pw")).toBe(normalizeCredential("a@b.com:pw"));
+  });
+
+  it("computeCredentialFingerprint is deterministic and differs for different passwords with the same email", () => {
+    const a1 = computeCredentialFingerprint("same@x.com:pw1");
+    const a2 = computeCredentialFingerprint("same@x.com:pw1");
+    const b = computeCredentialFingerprint("same@x.com:pw2");
+    expect(a1).toBe(a2);
+    expect(a1).not.toBe(b);
+  });
+
+  it("computeIdentityFingerprint matches across different passwords for the same email, while computeCredentialFingerprint differs", () => {
+    const credA = "same@x.com:pw1";
+    const credB = "same@x.com:pw2";
+    expect(computeIdentityFingerprint(credA)).toBe(computeIdentityFingerprint(credB));
+    expect(computeCredentialFingerprint(credA)).not.toBe(computeCredentialFingerprint(credB));
+  });
+
+  it("deriveCredentialIndexKey is cryptographically distinct from the raw AES key material, though both derive from the same env var", () => {
+    // The fixed test key from vitest.config.ts/playwright.config.ts.
+    const rawKeyHex = "00".repeat(32);
+    process.env.CREDENTIAL_ENCRYPTION_KEY = rawKeyHex;
+    const rawAesKey = Buffer.from(rawKeyHex, "hex");
+
+    const indexKey = deriveCredentialIndexKey();
+    expect(indexKey.equals(rawAesKey)).toBe(false);
+
+    // Independently recompute via Node's hkdfSync using the same env var and
+    // the documented info string, to pin down the exact derivation (not just
+    // "it isn't the raw key").
+    const expected = Buffer.from(
+      hkdfSync("sha256", rawAesKey, Buffer.alloc(0), Buffer.from("trustance/credential-index/v1", "utf8"), 32),
+    );
+    expect(indexKey.equals(expected)).toBe(true);
+  });
+
+  it("deriveCredentialIndexKey throws CredentialKeyConfigError when CREDENTIAL_ENCRYPTION_KEY is unset", () => {
+    delete process.env.CREDENTIAL_ENCRYPTION_KEY;
+    expect(() => deriveCredentialIndexKey()).toThrow(CredentialKeyConfigError);
+    expect(() => deriveCredentialIndexKey()).toThrow(/CREDENTIAL_ENCRYPTION_KEY is not configured/);
   });
 });

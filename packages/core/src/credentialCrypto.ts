@@ -15,7 +15,7 @@
  * file — including error messages, which must stay structural ("missing
  * field X") and never interpolate the value under (de/en)cryption.
  */
-import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, randomBytes, hkdfSync, createHmac } from "node:crypto";
 // Read directly from process.env rather than the validated `config` singleton
 // (@app/core/config): `config` is parsed once at module import time, which
 // would make the key impossible to vary between tests (see password.ts's
@@ -161,4 +161,76 @@ export function decryptCredentials(stored: string): string {
     decipher.final(),
   ]);
   return plaintext.toString("utf8");
+}
+
+// ── Stock traceability hardening plan, Fase 2 ──────────────────────────────
+// identityFingerprint/credentialFingerprint (StockItem, Fase 1 schema) are
+// keyed HMACs so DB read access alone can never confirm a guessed credential
+// offline (see schema.prisma's comment on those columns). The HMAC key is
+// derived via HKDF from the SAME CREDENTIAL_ENCRYPTION_KEY material used for
+// AES-GCM above, but cryptographically separated from it by a distinct HKDF
+// `info` string — this index key can never be reused to decrypt a
+// credentials envelope, and the AES key can never be reused to forge a
+// fingerprint.
+
+const INDEX_KEY_LENGTH_BYTES = 32;
+const INDEX_KEY_INFO = "trustance/credential-index/v1";
+
+/**
+ * Derives a 32-byte key for computing keyed HMAC fingerprints
+ * (identityFingerprint/credentialFingerprint on StockItem), via HKDF from
+ * the SAME `CREDENTIAL_ENCRYPTION_KEY` material used for AES-GCM — but
+ * cryptographically separated from it by a distinct HKDF `info` string, so
+ * this index key can never be reused to decrypt a credentials envelope (and
+ * vice versa). Deliberately does NOT feed into `keyForVersion`/AES at all;
+ * this is purely for the HMAC fingerprint use case.
+ */
+export function deriveCredentialIndexKey(): Buffer {
+  // Rotating CREDENTIAL_ENCRYPTION_KEY changes this key and orphans every stored fingerprint (re-run the backfill).
+  const masterKey = keyForVersion(CURRENT_KEY_VERSION);
+  return Buffer.from(
+    hkdfSync("sha256", masterKey, Buffer.alloc(0), Buffer.from(INDEX_KEY_INFO, "utf8"), INDEX_KEY_LENGTH_BYTES),
+  );
+}
+
+/** Splits a stock credential string into segments the same way
+ * `redactCredentials` (@app/core/formatters) does, and returns the segment
+ * containing "@" (the identity/email part), or the whole trimmed string if
+ * no segment contains "@". */
+function extractIdentitySegment(plaintext: string): string {
+  const parts = plaintext.replace(/\|/g, ":").split(":");
+  const withAt = parts.find((p) => p.includes("@"));
+  return (withAt ?? plaintext).trim();
+}
+
+/** trim().toLowerCase() of the identity/email segment only. */
+export function normalizeIdentity(plaintext: string): string {
+  return extractIdentitySegment(plaintext).toLowerCase();
+}
+
+/** Canonical form of the WHOLE credential string for fingerprinting: split
+ * the same way as extractIdentitySegment, trim each segment, collapse
+ * internal whitespace in each segment, lowercase ONLY the identity segment
+ * (the first one containing "@" — never a password segment), rejoin with ":" so "email|pw" and
+ * "email:pw" (same real credential, different admin-typed delimiter)
+ * normalize identically. */
+export function normalizeCredential(plaintext: string): string {
+  const parts = plaintext.replace(/\|/g, ":").split(":");
+  // Only the FIRST "@" segment is the identity; a later one is a password containing "@".
+  const identityIndex = parts.findIndex((p) => p.includes("@"));
+  const normalized = parts.map((raw, i) => {
+    const collapsed = raw.trim().replace(/\s+/g, " ");
+    return i === identityIndex ? collapsed.toLowerCase() : collapsed;
+  });
+  return normalized.join(":");
+}
+
+/** HMAC-SHA256(indexKey, normalizeIdentity(plaintext)), hex-encoded. */
+export function computeIdentityFingerprint(plaintext: string): string {
+  return createHmac("sha256", deriveCredentialIndexKey()).update(normalizeIdentity(plaintext)).digest("hex");
+}
+
+/** HMAC-SHA256(indexKey, normalizeCredential(plaintext)), hex-encoded. */
+export function computeCredentialFingerprint(plaintext: string): string {
+  return createHmac("sha256", deriveCredentialIndexKey()).update(normalizeCredential(plaintext)).digest("hex");
 }

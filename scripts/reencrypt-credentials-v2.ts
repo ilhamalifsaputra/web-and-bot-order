@@ -7,7 +7,9 @@
  *
  * Run it only after the stage-1 reader code is deployed to EVERY process and
  * CREDENTIAL_ENVELOPE_WRITE_V2 is on (see DOCS.md, "Credential envelope v2").
- * A real run refuses to start while the flag is off: the flag is the single
+ * A real run refuses to start while the flag is off in THIS script's own
+ * environment. That check proves nothing about the rest of the fleet (app
+ * processes, other hosts, cron jobs); the operator must confirm those. The flag is the single
  * switch meaning "v2 values may now exist", and once they do, only code that
  * reads v2 can be rolled back to. `--dry-run` is allowed at any time.
  *
@@ -207,6 +209,7 @@ export async function reencryptCredentialsV2(
   opts: { dryRun?: boolean } = {},
 ): Promise<ReencryptReport> {
   const dryRun = opts.dryRun ?? false;
+  // Only this process's own env is checked: it proves nothing about the app processes, other hosts or cron.
   if (!dryRun && credentialEnvelopeWriteVersion() !== 2) throw new ReencryptRefusedError();
   const report: ReencryptReport = {
     dryRun,

@@ -3,6 +3,11 @@
  * on or off, restoring the previous value afterwards. Callers pair it with
  * `describe.each([false, true])` so every credential caller is proven under
  * both rollout stages.
+ *
+ * Test debt: older tests call decryptCredentials(x) without a context, which
+ * only works on v1, so they fail when the whole suite runs with the flag on.
+ * A future CI job should run packages/db and scripts with
+ * CREDENTIAL_ENVELOPE_WRITE_V2=true once those calls pass their context.
  */
 import { afterEach, beforeEach } from "vitest";
 import { encryptCredentials } from "@app/core/credentialCrypto";

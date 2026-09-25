@@ -502,7 +502,10 @@ cocok). Penulis tetap menulis v1 kecuali `CREDENTIAL_ENVELOPE_WRITE_V2=true`
 5. **Re-encrypt.** `pnpm reencrypt-credentials-v2` — menulis ulang setiap v1
    menjadi v2 per batch (compare-and-set, idempotent, aman diulang), mencatat
    event `REENCRYPTED` (aktor SYSTEM) per baris stok, dan hanya mencetak
-   jumlah. Script menolak jalan (selain `--dry-run`) selama flag mati.
+   jumlah. Script menolak jalan (selain `--dry-run`) selama flag mati —
+   tapi cek itu HANYA membaca environment proses script itu sendiri. Ia tidak
+   membuktikan apa pun tentang proses aplikasi, host lain, atau cron; pastikan
+   langkah 1 dan 4 sudah benar di semua tempat itu secara manual.
 6. **Verifikasi.** Jalankan lagi `--dry-run`: `v1` harus 0 di ketiga kolom
    (kalau ada "changed during the run", ulangi langkah 5).
 
@@ -511,6 +514,16 @@ hanya menghentikan penulisan v2 baru — nilai v2 yang ada tetap v2. Karena itu
 rollback setelah flag menyala WAJIB tetap memakai kode tahap 1 (atau lebih
 baru); kode sebelum tahap 1 tidak bisa membaca v2 dan akan gagal di setiap
 credential yang sudah v2. Sebelum langkah 4, rollback ke kode lama aman.
+
+"Semua tempat" berarti setiap host/container yang memakai database ini:
+proses server, order-bot, web-admin, storefront, **dan** setiap host yang
+menjalankan `scripts/*` (backfill, `reencrypt-credentials-v2`, script
+maintenance lain), cron job, atau tooling ops yang membaca credential. Semuanya
+harus tetap di kode tahap 1 atau lebih baru setelah langkah 4.
+
+Backup database yang diambil SETELAH langkah 4/5 berisi nilai v2: backup itu
+hanya bisa di-restore dan dibaca oleh kode tahap 1 atau lebih baru. Restore ke
+deploy lama (sebelum tahap 1) akan membuat credential v2 tidak terbaca.
 
 Rotasi `CREDENTIAL_ENCRYPTION_KEY` tetap di luar cakupan: envelope v2 tetap
 `keyVersion: 1`, dan fingerprint stok (HMAC dari key yang sama) tidak berubah

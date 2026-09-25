@@ -17,7 +17,7 @@ import { logger } from "@app/core/logger";
 import { decryptCredentials } from "@app/core/credentialCrypto";
 import {
   prisma,
-  listPendingVerifications,
+  countPendingVerifications,
   revenueSummary,
   lowStockDenominations,
   countAvailableStock,
@@ -36,6 +36,7 @@ import {
   getBulkPricingForDenomination,
   deleteBulkPricing,
   listOpenTickets,
+  countOpenTickets,
   closeTicket,
   enqueueTicketClosedDm,
   logAdminAction,
@@ -64,8 +65,11 @@ export async function adminCommand(ctx: MyContext): Promise<void> {
   if (ctx.message) ctx.session.adminMsgId = undefined; // drop the old anchor
   logger.info(`Admin command from user ${ctx.from?.id} via ${ctx.callbackQuery ? "a callback button" : "a typed command"}`);
 
-  const pending = await listPendingVerifications(prisma, 200);
-  await adminEdit(ctx, t(ctx, "admin.menu"), akb.adminMenu(lang, pending.length));
+  // countPendingVerifications has no page-size cap, unlike
+  // listPendingVerifications(db, limit) — this badge must reflect the real
+  // queue size even when it's larger than any single page of it.
+  const pendingCount = await countPendingVerifications(prisma);
+  await adminEdit(ctx, t(ctx, "admin.menu"), akb.adminMenu(lang, pendingCount));
 }
 
 // ===========================================================================
@@ -77,13 +81,14 @@ async function showDashboard(ctx: MyContext): Promise<void> {
   const todayStart = ensureUtc(new Date()).startOf("day").toJSDate();
 
   const today = await revenueSummary(prisma, todayStart);
-  const pending = await listPendingVerifications(prisma, 200);
+  // See the comment in adminCommand above — same true-count-vs-page-cap fix.
+  const pendingCount = await countPendingVerifications(prisma);
   const lowStock = await lowStockDenominations(prisma, config.LOW_STOCK_THRESHOLD);
 
   let text = t(ctx, "admin.dashboard_text", {
     today_revenue: mixedAmount(today.revenue_idr, today.revenue_usdt),
     today_orders: today.orders,
-    pending: pending.length,
+    pending: pendingCount,
     low_stock: lowStock.length,
   });
   if (lowStock.length) {
@@ -610,7 +615,9 @@ async function showTicketsAdmin(ctx: MyContext): Promise<void> {
     await adminEdit(ctx, t(ctx, "admin.hdr_tickets_none"), akb.backToAdminKb(lang));
     return;
   }
-  await adminEdit(ctx, t(ctx, "admin.hdr_tickets", { count: tickets.length }), akb.ticketsListKb(tickets, lang));
+  // The header's count is the true total; `tickets` is capped at 50 buttons.
+  const total = await countOpenTickets(prisma);
+  await adminEdit(ctx, t(ctx, "admin.hdr_tickets", { count: total }), akb.ticketsListKb(tickets, lang));
 }
 
 async function closeTicketAdmin(ctx: MyContext, ticketId: number): Promise<void> {

@@ -37,6 +37,8 @@ import {
   getUserTicketStats,
   listUserTickets,
   countUserTickets,
+  countOpenTickets,
+  listOpenTickets,
 } from "./support";
 import { TicketStatus, TicketPriority, TicketCategory, SenderType, NotificationEvent } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
@@ -854,6 +856,20 @@ describe("listTicketsPaged / countTickets — filtering + pagination", () => {
     const rows = await listTicketsPaged(prisma, {});
     expect(rows[0]!.user).toBeDefined();
     expect(rows[0]!.user.fullName).toBe("Populated User");
+  });
+});
+
+describe("countOpenTickets — the real total behind listOpenTickets's capped page", () => {
+  it("counts every non-CLOSED ticket (RESOLVED included), past listOpenTickets's page size", async () => {
+    const user = await makeUser(1901n);
+    for (let i = 0; i < 4; i++) await createTicket(prisma, user.id, `open ${i}`);
+    const resolved = await createTicket(prisma, user.id, "resolved one");
+    await prisma.supportTicket.update({ where: { id: resolved.id }, data: { status: TicketStatus.RESOLVED } });
+    const closed = await createTicket(prisma, user.id, "closed one");
+    await prisma.supportTicket.update({ where: { id: closed.id }, data: { status: TicketStatus.CLOSED } });
+
+    expect(await countOpenTickets(prisma)).toBe(5);
+    expect((await listOpenTickets(prisma, 2)).length).toBe(2); // the page cap this count must not share
   });
 });
 

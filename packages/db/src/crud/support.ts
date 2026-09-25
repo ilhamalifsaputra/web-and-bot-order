@@ -215,6 +215,11 @@ export function listOpenTickets(db: Db, limit = 50) {
   });
 }
 
+/** True count behind `listOpenTickets` (same predicate, no page-size cap). */
+export function countOpenTickets(db: Db): Promise<number> {
+  return db.supportTicket.count({ where: { status: { not: TicketStatus.CLOSED } } });
+}
+
 // ---- Operational queue (web-admin) ----------------------------------------
 
 /**

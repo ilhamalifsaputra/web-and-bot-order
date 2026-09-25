@@ -3,7 +3,7 @@ import { logger } from "@app/core/logger";
 import { config } from "@app/core/config";
 import { CredentialKeyConfigError } from "@app/core/credentialCrypto";
 import { formatIdr, formatUsdt, usdtFromIdr } from "@app/core/formatters";
-import { StockStatus } from "@app/core/enums";
+import { StockStatus, DeadReason, DEAD_REASON_PHRASES, zDeadReason } from "@app/core/enums";
 import {
   prisma,
   getUsdIdrRate,
@@ -58,6 +58,16 @@ function csvRow(fields: string[]): string {
  * partial plaintext (or its length) to a page load nobody asked to reveal
  * anything on. */
 export const MASKED_CREDENTIAL = "••••••••";
+
+/** Absent reason defaults to OTHER (old clients, the bot); an unknown one is a 400. */
+function parseDeadReason(raw: unknown): DeadReason | null {
+  if (raw === undefined || raw === null || raw === "") return DeadReason.OTHER;
+  const parsed = zDeadReason.safeParse(raw);
+  return parsed.success ? parsed.data : null;
+}
+
+/** " (password changed)" for a real reason; empty for OTHER, which says nothing. */
+const reasonSuffix = (reason: DeadReason) => (reason === DeadReason.OTHER ? "" : ` (${DEAD_REASON_PHRASES[reason]})`);
 
 /** Page size for GET /api/stock/:productId's tab/page pagination — replaces
  * the old flat `take: 500` that spanned every status at once (the bug this
@@ -213,6 +223,7 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
       id: i.id,
       status: i.status,
       note: i.note,
+      deadReason: i.deadReason,
       // Masked by default — see MASKED_CREDENTIAL's own comment. The real
       // value is fetched per-row, on demand, via the reveal route below.
       credentials: MASKED_CREDENTIAL,
@@ -302,17 +313,19 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
     const ids = Array.isArray(body.ids) ? body.ids.filter((n): n is number => Number.isInteger(n) && n > 0) : [];
     if (!ids.length) return reply.code(400).send({ error: "Select at least one stock item." });
     const note = (typeof body.note === "string" ? body.note.trim() : "") || "bulk marked dead via web";
+    const reason = parseDeadReason(body.reason);
+    if (!reason) return reply.code(400).send({ error: "Unknown dead reason." });
 
     const adminId = req.admin!.userId;
     // One transaction: the status change, its MARKED_DEAD events and the audit row stand or fall together.
     const count = await prisma.$transaction(async (tx) => {
-      const n = await bulkMarkStockDead(tx, ids, note, adminId);
+      const n = await bulkMarkStockDead(tx, ids, note, adminId, reason);
       await logAdminAction(tx, {
         adminId,
         action: "stock_bulk_dead",
         targetType: "product",
         targetId: productId,
-        details: `Marked ${n} stock ${n === 1 ? "item" : "items"} dead.`, // never the note — admins paste credentials into it
+        details: `Marked ${n} stock ${n === 1 ? "item" : "items"} dead${reasonSuffix(reason)}.`, // never the note — admins paste credentials into it
       });
       return n;
     });
@@ -349,19 +362,21 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
     const stockId = Number((req.params as { stockId: string }).stockId);
     const body = (req.body ?? {}) as Record<string, unknown>;
     const note = (typeof body.note === "string" ? body.note.trim() : "");
+    const reason = parseDeadReason(body.reason);
+    if (!reason) return reply.code(400).send({ error: "Unknown dead reason." });
     const item = await getStockItem(prisma, stockId);
     if (!item) return reply.code(404).send({ error: "Stock item not found." });
 
     const adminId = req.admin!.userId;
     const count = await prisma.$transaction(async (tx) => {
-      const n = await markStockDead(tx, stockId, note || "marked dead via web", adminId);
+      const n = await markStockDead(tx, stockId, note || "marked dead via web", adminId, reason);
       if (n === 0) return 0; // nothing changed, so nothing to audit
       await logAdminAction(tx, {
         adminId,
         action: "stock_mark_dead",
         targetType: "stock_item",
         targetId: stockId,
-        details: `Marked stock item #${stockId} dead.`, // never the note — admins paste credentials into it
+        details: `Marked stock item #${stockId} dead${reasonSuffix(reason)}.`, // never the note — admins paste credentials into it
       });
       return n;
     });
@@ -408,6 +423,8 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
     const stockId = Number((req.params as { stockId: string }).stockId);
     const body = (req.body ?? {}) as Record<string, unknown>;
     const note = (typeof body.note === "string" ? body.note.trim() : "");
+    const reason = parseDeadReason(body.reason);
+    if (!reason) return reply.code(400).send({ error: "Unknown dead reason." });
     const item = await getStockItem(prisma, stockId);
     if (!item) return reply.code(404).send({ error: "Stock item not found." });
 

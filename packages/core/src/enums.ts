@@ -122,6 +122,16 @@ export const DeadReason = {
 } as const;
 export type DeadReason = (typeof DeadReason)[keyof typeof DeadReason];
 export const zDeadReason = z.nativeEnum(DeadReason);
+/** Lower-case phrases for audit-log sentences ("Marked 3 stock items dead (password changed)."). */
+export const DEAD_REASON_PHRASES: Record<DeadReason, string> = {
+  PASSWORD_CHANGED: "password changed",
+  REGION_LOCK: "region lock",
+  SUPPLIER_REVOKED: "supplier revoked",
+  EXPIRED: "expired",
+  DUPLICATE: "duplicate",
+  TEST: "test",
+  OTHER: "other",
+};
 
 export const OrderStatus = {
   PENDING_PAYMENT: "PENDING_PAYMENT",

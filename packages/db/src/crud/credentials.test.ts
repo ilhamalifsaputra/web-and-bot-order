@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 
 vi.mock("@app/core/config", () => ({
-  config: { BOT_TOKEN: undefined, BOT_USERNAME: undefined, NOTIF_BOT_TOKEN: undefined, PUBLIC_CHANNEL_ID: -100999 },
+  config: { BOT_TOKEN: undefined, BOT_USERNAME: undefined, NOTIF_BOT_TOKEN: undefined, PUBLIC_CHANNEL_ID: -100999, LOG_LEVEL: "silent" },
 }));
 
 import { resolveBotCredentials } from "./credentials";

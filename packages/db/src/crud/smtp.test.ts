@@ -7,6 +7,7 @@ const mockConfig = vi.hoisted(() => ({
   SMTP_PASS: undefined as string | undefined,
   SMTP_FROM: undefined as string | undefined,
   SMTP_SECURE: false,
+  LOG_LEVEL: "silent",
 }));
 
 vi.mock("@app/core/config", () => ({ config: mockConfig }));

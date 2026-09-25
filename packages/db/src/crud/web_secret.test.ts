@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 
-vi.mock("@app/core/config", () => ({ config: { WEB_COOKIE_SECRET: undefined } }));
+vi.mock("@app/core/config", () => ({ config: { WEB_COOKIE_SECRET: undefined, LOG_LEVEL: "silent" } }));
 
 import { resolveWebCookieSecret, WEB_COOKIE_SECRET_KEY } from "./web_secret";
 import type { Db } from "./_types";

@@ -890,31 +890,79 @@ describe("drainBatch delivers the per-SKU manual delivery-flow DMs", () => {
     expect(sendMessage.mock.calls.some((call) => (call[1] as string).includes("pass: Hunter6"))).toBe(true);
   });
 
-  it("an unreadable deliveredContent throws out of the batch without sending anything, so the row retries", async () => {
+  it("an unreadable deliveredContent fails only its own row: the rest of the batch is sent, and the row counts attempts until it dead-letters", async () => {
     const buyer = await makeBuyer(500_007);
     const admin = await makeAdmin(900_000_007);
     const denom = await makeManualDenom();
     const order = await createOrderDirect(prisma, { user: buyer, productId: denom.id, quantity: 1 });
     await attachPaymentProof(prisma, order!.id, { fileId: "file123", txid: "TX-1" });
     await settlePaidOrder(prisma, order!.id, { adminId: admin.id });
+    // Rows 1 and 3 of the batch bracket the bad one, so "the rest of the batch
+    // continues" is observable on both sides of it.
+    await enqueueAdminPasswordReset(prisma, { telegramId: 710_001, code: "BEFORE1", ttlMinutes: 10 });
     await fulfillManualOrder(prisma, order!.id, { adminId: admin.id, content: "user: t@example.com / pass: Hunter7" });
+    await enqueueAdminPasswordReset(prisma, { telegramId: 710_003, code: "AFTER3", ttlMinutes: 10 });
     const raw = await prisma.order.findUniqueOrThrow({ where: { id: order!.id } });
     const tampered = { ...(JSON.parse(raw.deliveredContent!) as Record<string, unknown>), authTag: Buffer.alloc(16).toString("base64") };
     await prisma.order.update({ where: { id: order!.id }, data: { deliveredContent: JSON.stringify(tampered) } });
-    // Only the manual DM is left to drain, so the throw is attributable to it.
     await prisma.notificationOutbox.deleteMany({
       where: { orderId: order!.id, event: { not: NotificationEvent.ORDER_MANUAL_DELIVERED_DM } },
     });
-
-    const { bot, sendMessage } = fakeBot();
-    await expect(drainBatch(bot)).rejects.toThrow();
-
-    expect(sendMessage).not.toHaveBeenCalled();
-    const row = await prisma.notificationOutbox.findFirst({
+    const bad = await prisma.notificationOutbox.findFirstOrThrow({
       where: { orderId: order!.id, event: NotificationEvent.ORDER_MANUAL_DELIVERED_DM },
     });
-    expect(row!.status).not.toBe("SENT");
-    expect(row!.status).not.toBe("FAILED");
+
+    const { bot, sendMessage } = fakeBot();
+    await expect(drainBatch(bot)).resolves.toBeGreaterThanOrEqual(3);
+
+    const chats = sendMessage.mock.calls.map((call) => call[0]);
+    expect(chats).toContain(710_001);
+    expect(chats).toContain(710_003);
+    expect(chats).not.toContain(500_007); // never ciphertext, never a placeholder
+    let row = await prisma.notificationOutbox.findUniqueOrThrow({ where: { id: bad.id } });
+    expect(row.status).toBe("PENDING"); // released with backoff, not stuck SENDING
+    expect(row.attempts).toBe(1);
+    expect(row.claimedAt).toBeNull();
+    expect(row.lastError).not.toContain("Hunter7");
+
+    // At the attempt ceiling it dead-letters like any other exhausted send.
+    await prisma.notificationOutbox.update({
+      where: { id: bad.id },
+      data: { attempts: config.NOTIF_MAX_ATTEMPTS - 1, nextRetryAt: new Date(0) },
+    });
+    await drainBatch(bot);
+    row = await prisma.notificationOutbox.findUniqueOrThrow({ where: { id: bad.id } });
+    expect(row.status).toBe("DEAD_LETTER");
+    expect(sendMessage.mock.calls.map((call) => call[0])).not.toContain(500_007);
+  });
+
+  it("an unreadable stock credential fails its ORDER_DELIVERED_DM row the same way, without sending a document", async () => {
+    const buyer = await makeBuyer(500_008);
+    const category = await createCategory(prisma, `doc-cat-${Math.random()}`);
+    const product = await createCatalogProduct(prisma, { categoryId: category.id, name: `Doc Product ${Math.random()}` });
+    const denom = await createDenomination(prisma, {
+      productId: product.id,
+      name: "Doc Denom",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10.00",
+    });
+    await bulkAddStock(prisma, denom.id, ["unreadable-doc@example.com:pw"]);
+    const order = (await createOrderDirect(prisma, { user: buyer, productId: denom.id, quantity: 1 }))!;
+    const stockItemId = order.items[0]!.stockItemId!;
+    const good = await prisma.stockItem.findUniqueOrThrow({ where: { id: stockItemId } });
+    const tampered = { ...(JSON.parse(good.credentials) as Record<string, unknown>), authTag: Buffer.alloc(16).toString("base64") };
+    await prisma.stockItem.update({ where: { id: stockItemId }, data: { credentials: JSON.stringify(tampered) } });
+    await enqueueOrderDeliveredDm(prisma, { orderId: order.id, orderCode: order.orderCode, telegramId: BigInt(500_008), language: "en" });
+
+    const { bot, sendDocument } = fakeDocBot();
+    await expect(drainBatch(bot)).resolves.toBeGreaterThanOrEqual(1);
+    expect(sendDocument).not.toHaveBeenCalled();
+    const row = await prisma.notificationOutbox.findFirstOrThrow({
+      where: { orderId: order.id, event: NotificationEvent.ORDER_DELIVERED_DM },
+    });
+    expect(row.status).toBe("PENDING");
+    expect(row.attempts).toBe(1);
   });
 
   it("fails the row without sending when the order has no deliveredContent (defensive — should not normally happen)", async () => {

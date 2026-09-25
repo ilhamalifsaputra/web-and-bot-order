@@ -31,8 +31,10 @@ const T_SOLD = new Date("2025-01-03T00:00:00Z");
 // Every plaintext used below, so the leak assertion can check all of them.
 const PLAINTEXTS: string[] = [];
 function plain(label: string): string {
-  const value = `${label}@legacy.example:Secret-${label}`;
-  PLAINTEXTS.push(value);
+  const password = `Secret-${label}`;
+  const value = `${label}@legacy.example:${password}`;
+  // The password alone must never leak either, not only the full credential.
+  PLAINTEXTS.push(value, password);
   return value;
 }
 
@@ -279,6 +281,38 @@ describe("runBackfill — idempotency", () => {
     expect(types).toEqual([StockEventType.IMPORTED, StockEventType.REENCRYPTED].sort());
   });
 
+  it("re-reads each row inside its transaction, so a change made after the batch read is not overwritten", async () => {
+    const row = await legacyRow({ credentials: encryptCredentials(plain("race")) });
+    // Simulate the app fingerprinting the row between the batch read and the
+    // per-row transaction. (A Proxy, not vi.spyOn: spying on a Prisma model
+    // delegate breaks it for the rest of the file.)
+    const bindAll = (t: object, p: string | symbol) => {
+      const v = Reflect.get(t, p) as unknown;
+      return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(t) : v;
+    };
+    const stockItem = new Proxy(prisma.stockItem, {
+      get(t, p) {
+        if (p !== "findMany") return bindAll(t, p);
+        return async (args: Parameters<typeof t.findMany>[0]) => {
+          const batch = await t.findMany(args);
+          await prisma.stockItem.update({
+            where: { id: row.id },
+            data: { identityFingerprint: "set-by-app", credentialFingerprint: "set-by-app" },
+          });
+          return batch;
+        };
+      },
+    });
+    const racingClient = new Proxy(prisma, { get: (t, p) => (p === "stockItem" ? stockItem : bindAll(t, p)) });
+
+    const summary = await runBackfill(racingClient, { dryRun: false });
+
+    const after = await prisma.stockItem.findUniqueOrThrow({ where: { id: row.id } });
+    expect(after.identityFingerprint).toBe("set-by-app");
+    expect(after.credentialFingerprint).toBe("set-by-app");
+    expect(summary.fingerprints).toMatchObject({ computed: 0, alreadyPresent: 1 });
+  });
+
   it("a second full run changes nothing and reports zero new work", async () => {
     await legacyRow({ credentials: encryptCredentials(plain("idem1")) });
     await soldLegacyRowWithOrder("idem2");
@@ -345,6 +379,48 @@ describe("runBackfill — legacy, corrupt, dead and soft-deleted rows", () => {
     ]);
     expect(events[1]).toMatchObject({ actorType: StockActorType.SYSTEM, actorAdminId: null });
     expect(summary.events.statusReconciled).toBe(1);
+  });
+
+  it("backfills the buyer of a sold row later retired to DEAD, and closes its history SOLD → DEAD", async () => {
+    const { order, row, item } = await soldLegacyRowWithOrder("retired");
+    await prisma.stockItem.update({ where: { id: row.id }, data: { status: StockStatus.DEAD } });
+
+    const summary = await runBackfill(prisma, { dryRun: false });
+
+    const after = await prisma.stockItem.findUniqueOrThrow({ where: { id: row.id } });
+    expect(after.soldToOrderId).toBe(order.id);
+    expect(after.soldToOrderItemId).toBe(item.id);
+    expect(summary.soldTo.backfilled).toBe(1);
+    const events = await eventsOf(row.id);
+    expect(events.map((e) => [e.eventType, e.fromStatus, e.toStatus])).toEqual([
+      [StockEventType.IMPORTED, null, StockStatus.AVAILABLE],
+      [StockEventType.RESERVED, StockStatus.AVAILABLE, StockStatus.RESERVED],
+      [StockEventType.SOLD, StockStatus.RESERVED, StockStatus.SOLD],
+      [StockEventType.MARKED_DEAD, StockStatus.SOLD, StockStatus.DEAD],
+    ]);
+    expect(events[3]!.occurredAt).toEqual(T_SOLD);
+    expect((await checkStockIntegrity(prisma)).statusEventMismatch.count).toBe(0);
+  });
+
+  it("closes an AVAILABLE row that still carries a stale reservedAt with RESERVATION_RELEASED", async () => {
+    const row = await legacyRow({ credentials: encryptCredentials(plain("released")), reservedAt: T_RESERVED });
+
+    const summary = await runBackfill(prisma, { dryRun: false });
+
+    const events = await eventsOf(row.id);
+    expect(events.map((e) => [e.eventType, e.fromStatus, e.toStatus])).toEqual([
+      [StockEventType.IMPORTED, null, StockStatus.AVAILABLE],
+      [StockEventType.RESERVED, StockStatus.AVAILABLE, StockStatus.RESERVED],
+      [StockEventType.RESERVATION_RELEASED, StockStatus.RESERVED, StockStatus.AVAILABLE],
+    ]);
+    expect(events[2]).toMatchObject({
+      actorType: StockActorType.SYSTEM,
+      reasonCode: "BACKFILL_STATUS_RECONCILE",
+      meta: { backfilled: true, occurredAtIsLowerBound: true },
+      occurredAt: T_RESERVED,
+    });
+    expect(summary.events.statusReconciled).toBe(1);
+    expect((await checkStockIntegrity(prisma)).statusEventMismatch.count).toBe(0);
   });
 
   it("fingerprints a soft-deleted row but invents no RESERVED/SOLD history for it", async () => {

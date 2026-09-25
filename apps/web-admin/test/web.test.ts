@@ -4515,6 +4515,37 @@ describe("stock JSON API — bulk-dead, bulk-delete, item note/dead, download", 
       await prisma.$executeRawUnsafe(`DROP FUNCTION IF EXISTS test_fail_audit()`);
     }
 
+    it("records one CREDENTIAL_REVEALED event per exported row, attributed to the admin and carrying no credential", async () => {
+      const avail = await prisma.stockItem.findMany({ where: { productId: seed.productId, status: "AVAILABLE", deletedAt: null } });
+      expect(avail.length).toBeGreaterThan(0);
+      const before = await prisma.stockItemEvent.count({ where: { eventType: StockEventType.CREDENTIAL_REVEALED } });
+      const res = await get(`/api/stock/${seed.productId}/download`, seed.cookie);
+      expect(res.statusCode).toBe(200);
+
+      for (const item of avail) {
+        const events = await eventsOfType(item.id, StockEventType.CREDENTIAL_REVEALED);
+        expect(events.length).toBeGreaterThanOrEqual(1);
+        expect(events.at(-1)).toMatchObject({ actorType: StockActorType.ADMIN, actorAdminId: seed.adminId });
+        expect(JSON.stringify(events.at(-1)!.meta ?? null)).not.toContain(decryptCredentials(item.credentials));
+      }
+      const after = await prisma.stockItemEvent.count({ where: { eventType: StockEventType.CREDENTIAL_REVEALED } });
+      expect(after - before).toBe(avail.length);
+    });
+
+    it("the plaintext download writes nothing when its audit row fails: no event, no file", async () => {
+      const avail = await prisma.stockItem.findMany({ where: { productId: seed.productId, status: "AVAILABLE", deletedAt: null } });
+      const before = await prisma.stockItemEvent.count({ where: { eventType: StockEventType.CREDENTIAL_REVEALED } });
+      await failAuditInsertsFor("stock_download");
+      try {
+        const res = await get(`/api/stock/${seed.productId}/download`, seed.cookie);
+        expect(res.statusCode).toBe(500);
+        for (const item of avail) expect(res.body).not.toContain(decryptCredentials(item.credentials));
+      } finally {
+        await restoreAuditInserts();
+      }
+      expect(await prisma.stockItemEvent.count({ where: { eventType: StockEventType.CREDENTIAL_REVEALED } })).toBe(before);
+    });
+
     it("bulk-add writes an IMPORTED event per new row, attributed to the logged-in admin", async () => {
       const res = await post(`/api/stock/${seed.productId}/bulk-add`, seed.cookie, {
         csrf_token: seed.csrf,

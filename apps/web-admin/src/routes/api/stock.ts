@@ -23,7 +23,7 @@ import {
   bulkMarkStockDead,
   bulkDeleteStock,
   deleteStockItem,
-  listAvailableCredentials,
+  exportAvailableCredentials,
   getStockItem,
   markStockDead,
   setStockNote,
@@ -529,13 +529,19 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
     const product = await getDenominationWithProduct(prisma, productId);
     if (!product) return reply.code(404).send({ error: "Product not found." });
 
-    const creds = await listAvailableCredentials(prisma, productId);
-    await logAdminAction(prisma, {
-      adminId: req.admin!.userId,
-      action: "stock_download",
-      targetType: "product",
-      targetId: productId,
-      details: `Downloaded ${creds.length} available credentials.`, // never the credentials
+    // One CREDENTIAL_REVEALED event per exported row and the audit row, in
+    // one transaction: if the audit write fails, no event is left behind and
+    // no file is served.
+    const creds = await prisma.$transaction(async (tx) => {
+      const exported = await exportAvailableCredentials(tx, productId, req.admin!.userId);
+      await logAdminAction(tx, {
+        adminId: req.admin!.userId,
+        action: "stock_download",
+        targetType: "product",
+        targetId: productId,
+        details: `Downloaded ${exported.length} available credentials.`, // never the credentials
+      });
+      return exported;
     });
     const slug = product.name.replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "").toLowerCase() || "stock";
     const body = creds.length ? creds.join("\n") + "\n" : "";

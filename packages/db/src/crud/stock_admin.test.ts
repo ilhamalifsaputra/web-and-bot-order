@@ -7,7 +7,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vites
 import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
-import { bulkDeleteStock, deleteStockItem, listAvailableCredentials } from "@app/db";
+import { bulkDeleteStock, deleteStockItem, exportAvailableCredentials, listAvailableCredentials } from "@app/db";
 import { StockActorType, StockEventType, StockStatus } from "@app/core/enums";
 import { CredentialKeyConfigError } from "@app/core/credentialCrypto";
 import { encryptLegacyV1 } from "../../../../tests/helpers/envelopeFlag";
@@ -250,6 +250,39 @@ describe("listAvailableCredentials", () => {
       await expect(listAvailableCredentials(prisma, product.id)).rejects.toBeInstanceOf(CredentialKeyConfigError);
     } finally {
       process.env.CREDENTIAL_ENCRYPTION_KEY = saved;
+    }
+  });
+});
+
+describe("exportAvailableCredentials", () => {
+  it("returns what listAvailableCredentials does and leaves one CREDENTIAL_REVEALED event per exported row", async () => {
+    const { product, user } = sample;
+    const [sold, unreadable] = await idsFor(product.id, StockStatus.AVAILABLE);
+    await prisma.stockItem.update({ where: { id: sold }, data: { status: StockStatus.SOLD } });
+    const good = JSON.parse(encryptLegacyV1("gone@example.com:pw")) as Record<string, unknown>;
+    await prisma.stockItem.update({
+      where: { id: unreadable },
+      data: { credentials: JSON.stringify({ ...good, authTag: Buffer.alloc(16).toString("base64") }) },
+    });
+    const exportedIds = (await idsFor(product.id, StockStatus.AVAILABLE)).filter((id) => id !== unreadable);
+
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    try {
+      const creds = await exportAvailableCredentials(prisma, product.id, user.id);
+      expect(creds).toEqual(await listAvailableCredentials(prisma, product.id));
+      expect(creds).toHaveLength(3);
+    } finally {
+      warn.mockRestore();
+    }
+
+    const events = await prisma.stockItemEvent.findMany({
+      where: { eventType: StockEventType.CREDENTIAL_REVEALED },
+      orderBy: { stockItemId: "asc" },
+    });
+    expect(events.map((e) => e.stockItemId)).toEqual(exportedIds);
+    for (const e of events) {
+      expect(e).toMatchObject({ actorType: StockActorType.ADMIN, actorAdminId: user.id, fromStatus: null, toStatus: null });
+      expect(JSON.stringify(e.meta)).not.toContain("@example.com");
     }
   });
 });

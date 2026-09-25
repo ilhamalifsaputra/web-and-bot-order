@@ -193,36 +193,56 @@ export function deriveCredentialIndexKey(): Buffer {
   );
 }
 
-/** Splits a stock credential string into segments the same way
- * `redactCredentials` (@app/core/formatters) does, and returns the segment
- * containing "@" (the identity/email part), or the whole trimmed string if
- * no segment contains "@". */
-function extractIdentitySegment(plaintext: string): string {
-  const parts = plaintext.replace(/\|/g, ":").split(":");
-  const withAt = parts.find((p) => p.includes("@"));
-  return (withAt ?? plaintext).trim();
+interface IdentitySplit {
+  /** Raw text before the identity segment's leading delimiter, or null if the identity is first. */
+  before: string | null;
+  identity: string;
+  /** Raw text after the identity segment's trailing delimiter, or null if the identity is last. */
+  after: string | null;
 }
 
-/** trim().toLowerCase() of the identity/email segment only. */
+/** Splits on ":"/"|" the same way `redactCredentials` (@app/core/formatters)
+ * does. The identity is the first segment containing "@"; with no "@" it is
+ * the first segment (the whole string for a single-segment credential). Text
+ * around it is returned raw so password delimiters/whitespace survive. */
+function splitIdentity(plaintext: string): IdentitySplit {
+  const tokens = plaintext.split(/([:|])/); // segments at even indexes, delimiters at odd ones
+  const segmentCount = (tokens.length + 1) / 2;
+  let index = 0;
+  for (let i = 0; i < segmentCount; i++) {
+    if (tokens[i * 2]!.includes("@")) {
+      index = i;
+      break;
+    }
+  }
+  return {
+    before: index > 0 ? tokens.slice(0, index * 2 - 1).join("") : null,
+    identity: tokens[index * 2]!,
+    after: index < segmentCount - 1 ? tokens.slice(index * 2 + 2).join("") : null,
+  };
+}
+
+function canonicalIdentity(raw: string): string {
+  return raw.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+/** Trimmed, whitespace-collapsed, lowercased identity segment only. */
 export function normalizeIdentity(plaintext: string): string {
-  return extractIdentitySegment(plaintext).toLowerCase();
+  return canonicalIdentity(splitIdentity(plaintext).identity);
 }
 
-/** Canonical form of the WHOLE credential string for fingerprinting: split
- * the same way as extractIdentitySegment, trim each segment, collapse
- * internal whitespace in each segment, lowercase ONLY the identity segment
- * (the first one containing "@" — never a password segment), rejoin with ":" so "email|pw" and
- * "email:pw" (same real credential, different admin-typed delimiter)
- * normalize identically. */
+/** Canonical form of the WHOLE credential for fingerprinting: the identity
+ * segment is normalized as in normalizeIdentity, the delimiters on either
+ * side of it become ":" (so "email|pw" and "email:pw" match) with the
+ * whitespace hugging them trimmed, and every other character — password
+ * case, inner whitespace, inner ":"/"|" — is kept exactly. */
 export function normalizeCredential(plaintext: string): string {
-  const parts = plaintext.replace(/\|/g, ":").split(":");
-  // Only the FIRST "@" segment is the identity; a later one is a password containing "@".
-  const identityIndex = parts.findIndex((p) => p.includes("@"));
-  const normalized = parts.map((raw, i) => {
-    const collapsed = raw.trim().replace(/\s+/g, " ");
-    return i === identityIndex ? collapsed.toLowerCase() : collapsed;
-  });
-  return normalized.join(":");
+  const { before, identity, after } = splitIdentity(plaintext);
+  const parts: string[] = [];
+  if (before !== null) parts.push(before.trim());
+  parts.push(canonicalIdentity(identity));
+  if (after !== null) parts.push(after.trim());
+  return parts.join(":");
 }
 
 /** HMAC-SHA256(indexKey, normalizeIdentity(plaintext)), hex-encoded. */

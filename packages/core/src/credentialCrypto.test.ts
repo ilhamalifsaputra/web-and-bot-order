@@ -110,6 +110,28 @@ describe("credential fingerprints (Fase 2 — stock traceability hardening)", ()
     expect(computeCredentialFingerprint("a@b.com:P@ss")).not.toBe(computeCredentialFingerprint("a@b.com:p@ss"));
   });
 
+  it("normalizeIdentity uses the first segment when no segment contains '@', so identity and credential fingerprints differ", () => {
+    expect(normalizeIdentity("  SomeUser :pass")).toBe("someuser");
+    expect(normalizeIdentity("SomeUser|pass|extra")).toBe("someuser");
+    expect(computeIdentityFingerprint("user:pass")).not.toBe(computeCredentialFingerprint("user:pass"));
+    expect(computeIdentityFingerprint("user:pass")).toBe(computeIdentityFingerprint("user:other"));
+  });
+
+  it("normalizeIdentity uses the whole trimmed string for a single-segment credential", () => {
+    expect(normalizeIdentity("  LicenseKey-ABC  ")).toBe("licensekey-abc");
+  });
+
+  it("normalizeCredential leaves password whitespace and inner '|' untouched", () => {
+    expect(normalizeCredential("a@b.com:pa  ss")).toBe("a@b.com:pa  ss");
+    expect(computeCredentialFingerprint("a@b.com:pa  ss")).not.toBe(computeCredentialFingerprint("a@b.com:pa ss"));
+    expect(normalizeCredential("a@b.com:pa|ss")).toBe("a@b.com:pa|ss");
+    expect(computeCredentialFingerprint("a@b.com:pa|ss")).not.toBe(computeCredentialFingerprint("a@b.com:pa:ss"));
+  });
+
+  it("normalizeCredential collapses whitespace inside the identity segment only", () => {
+    expect(normalizeCredential(" Some  User :x  y")).toBe("some user:x  y");
+  });
+
   it("normalizeCredential is delimiter-independent (':' and '|' normalize identically)", () => {
     expect(normalizeCredential("a@b.com|pw")).toBe(normalizeCredential("a@b.com:pw"));
   });

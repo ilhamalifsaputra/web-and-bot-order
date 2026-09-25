@@ -90,7 +90,7 @@ import {
   PAYMENTS_MUTATION_RATE_LIMIT_MAX,
 } from "../src/auth";
 import { registerOutboxNudge } from "@app/core/nudge";
-import { decryptCredentials, isEncryptedCredentialEnvelope } from "@app/core/credentialCrypto";
+import { decryptCredentials, encryptDeliveredContent, isEncryptedCredentialEnvelope } from "@app/core/credentialCrypto";
 import { canMutate } from "../src/plugins/auth";
 import { SETUP_INCOMPLETE_MESSAGE } from "../src/plugins/setupGate";
 import { isAdmin, adminIds, setAdminIds, setBotIdentity, resetBotIdentity } from "@app/core/runtime";
@@ -989,6 +989,60 @@ describe("orders", () => {
     const res = await post(`/api/orders/${orderId}/credit-balance`, seed.cookie, { csrf_token: "bad" });
     expect(res.statusCode).toBe(403);
     expect((await getOrder(prisma, orderId))!.status).toBe("PENDING_VERIFICATION");
+  });
+});
+
+// ---- delivered secrets never ride along in list/summary responses (Fase 6c follow-up) ----
+
+describe("order lists never carry deliveredContent", () => {
+  const SECRET = "user:list-leak pass:Hunter-LIST-9";
+
+  async function seedDeliveredOrder(status: string = "DELIVERED"): Promise<number> {
+    const orderId = await makeProcessingOrder();
+    await prisma.order.update({
+      where: { id: orderId },
+      data: { status, deliveredContent: encryptDeliveredContent(SECRET) },
+    });
+    return orderId;
+  }
+
+  function assertNoDeliveredContent(body: string) {
+    expect(body).not.toContain("Hunter-LIST-9");
+    expect(body).not.toContain("deliveredContent");
+  }
+
+  it("GET /api/orders", async () => {
+    await seedDeliveredOrder();
+    const res = await get("/api/orders", seed.cookie);
+    expect(res.statusCode).toBe(200);
+    expect((res.json() as { orders: unknown[] }).orders.length).toBeGreaterThan(0);
+    assertNoDeliveredContent(res.body);
+  });
+
+  it("GET /api/payments (underpaid list)", async () => {
+    await seedDeliveredOrder("UNDERPAID");
+    const res = await get("/api/payments", seed.cookie);
+    expect(res.statusCode).toBe(200);
+    assertNoDeliveredContent(res.body);
+  });
+
+  it("GET /api/users/:userId (the user's orders)", async () => {
+    await seedDeliveredOrder();
+    const res = await get(`/api/users/${seed.customerId}`, seed.cookie);
+    expect(res.statusCode).toBe(200);
+    expect((res.json() as { orders: unknown[] }).orders.length).toBeGreaterThan(0);
+    assertNoDeliveredContent(res.body);
+  });
+
+  it("GET /api/support/:ticketId (linked order and the buyer's recent orders)", async () => {
+    const orderId = await seedDeliveredOrder();
+    const ticket = await createTicket(prisma, seed.customerId, "about my order", null, null, orderId);
+    const res = await get(`/api/support/${ticket.id}`, seed.cookie);
+    expect(res.statusCode).toBe(200);
+    const data = res.json() as { ticket: { order: unknown }; customer: { recentOrders: unknown[] } };
+    expect(data.ticket.order).not.toBeNull();
+    expect(data.customer.recentOrders.length).toBeGreaterThan(0);
+    assertNoDeliveredContent(res.body);
   });
 });
 

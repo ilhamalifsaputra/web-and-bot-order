@@ -36,6 +36,7 @@ import {
   applyUsdtWalletToOrder,
   findUnderpaidReceived,
   ORDER_USER_SELECT,
+  withoutDeliveredContent,
   type SettleResult,
 } from "./orders";
 import { transitionOrderStatus } from "./orderStatus";
@@ -369,8 +370,8 @@ export function getSettledBubbleOrder(db: Db, orderId: number) {
  * projected through orders.ts's ORDER_USER_SELECT, never `include: { user:
  * true }`, so a raw passwordHash/email can't ship in that response
  * (backend audit finding H-4). */
-export function listPendingInternalOrders(db: Db, now: Date) {
-  return db.order.findMany({
+export async function listPendingInternalOrders(db: Db, now: Date) {
+  const orders = await db.order.findMany({
     where: {
       status: OrderStatus.PENDING_PAYMENT,
       paymentMethod: PaymentMethod.BINANCE_INTERNAL,
@@ -379,6 +380,7 @@ export function listPendingInternalOrders(db: Db, now: Date) {
     },
     include: { user: { select: ORDER_USER_SELECT } },
   });
+  return orders.map(withoutDeliveredContent);
 }
 
 export type DeliverResult =

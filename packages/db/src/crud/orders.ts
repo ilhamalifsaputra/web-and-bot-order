@@ -1203,14 +1203,26 @@ export async function applyUsdtWalletToOrder(
   });
 }
 
-export function listUserOrders(db: Db, userId: number, limit = 5, offset = 0) {
-  return db.order.findMany({
+/**
+ * List/summary rows are spread straight into admin JSON, so they never carry
+ * the delivered secret; only getOrder's detail/reveal/resend paths read it.
+ */
+export function withoutDeliveredContent<T extends { deliveredContent: string | null }>(
+  order: T,
+): Omit<T, "deliveredContent"> {
+  const { deliveredContent: _deliveredContent, ...rest } = order;
+  return rest;
+}
+
+export async function listUserOrders(db: Db, userId: number, limit = 5, offset = 0) {
+  const orders = await db.order.findMany({
     where: { userId, kind: OrderKind.PRODUCT },
     orderBy: { createdAt: "desc" },
     skip: offset,
     take: limit,
     include: { items: { include: { product: true } } },
   });
+  return orders.map(withoutDeliveredContent);
 }
 
 export function countUserOrders(db: Db, userId: number) {
@@ -2792,17 +2804,18 @@ function orderWhere(f: OrderFilter): Prisma.OrderWhereInput {
   return where;
 }
 
-export function listOrders(
+export async function listOrders(
   db: Db,
   opts: OrderFilter & { limit?: number; offset?: number } = {},
 ) {
-  return db.order.findMany({
+  const orders = await db.order.findMany({
     where: orderWhere(opts),
     include: { user: { select: ORDER_USER_SELECT }, items: { include: { product: true } } },
     orderBy: { createdAt: "desc" },
     skip: opts.offset ?? 0,
     take: opts.limit ?? 50,
   });
+  return orders.map(withoutDeliveredContent);
 }
 
 export function countOrders(db: Db, opts: OrderFilter = {}) {

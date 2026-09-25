@@ -28,6 +28,8 @@ import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
 import { approveOrder, attachPaymentProof, createOrderDirect, getOrder } from "./orders";
 import { bulkAddStock } from "./stock";
+import { listStockItemEvents } from "./stockEvents";
+import { checkStockIntegrity } from "./stockIntegrity";
 import { decryptCredentials } from "@app/core/credentialCrypto";
 import {
   STOCK_REPLACEMENT_LEGAL_TRANSITIONS,
@@ -239,8 +241,9 @@ describe("replaceStockItem — replacement stock available", () => {
       StockEventType.IMPORTED,
       StockEventType.RESERVED,
       StockEventType.SOLD,
+      StockEventType.WARRANTY_REPLACED,
     ]);
-    expect(issued.at(-1)).toMatchObject({
+    expect(issued.at(-2)).toMatchObject({
       fromStatus: StockStatus.RESERVED,
       toStatus: StockStatus.SOLD,
       orderId: order.id,
@@ -248,9 +251,25 @@ describe("replaceStockItem — replacement stock available", () => {
       actorType: StockActorType.ADMIN,
       actorAdminId: adminId,
     });
-    // Both ledgers chain: each event starts where the previous one ended.
+    // Not a status change of its own (the SOLD event above is), so both
+    // status columns stay null — same shape as SUBSTITUTED_IN.
+    expect(issued.at(-1)).toMatchObject({
+      fromStatus: null,
+      toStatus: null,
+      orderId: order.id,
+      orderItemId: item.id,
+      actorType: StockActorType.ADMIN,
+      actorAdminId: adminId,
+      meta: { stockReplacementId: replacement.id, replacesStockItemId: originalStockId },
+    });
+    expect(JSON.stringify(issued)).not.toContain("password changed");
+    expect(JSON.stringify(issued)).not.toContain("spare-");
+    // Both ledgers chain: each transition starts where the previous one ended.
     for (const chain of [retired, issued]) {
-      for (let i = 1; i < chain.length; i++) expect(chain[i]!.fromStatus).toBe(chain[i - 1]!.toStatus);
+      const transitions = chain.filter((e) => e.toStatus !== null);
+      for (let i = 1; i < transitions.length; i++) {
+        expect(transitions[i]!.fromStatus).toBe(transitions[i - 1]!.toStatus);
+      }
     }
   });
 
@@ -691,6 +710,191 @@ describe("retryReplacementAllocation", () => {
     await expect(
       retryReplacementAllocation(prisma, { stockReplacementId: replacement.id, executedBy: adminId }),
     ).rejects.toThrow(ValidationError);
+  });
+});
+
+describe("replacement — stock traceability wiring (Fase 5e)", () => {
+  it("stamps the spare as sold to this order line, links it to the row it replaces, and inherits (never extends) the warranty", async () => {
+    const { order, items } = await makeDeliveredOrder(1);
+    const item = items[0]!;
+    const originalStockId = item.stockItemId!;
+    const warrantyUntil = new Date("2026-12-01T00:00:00.000Z");
+    await prisma.stockItem.update({ where: { id: originalStockId }, data: { warrantyUntil } });
+    await restock(1);
+
+    const { replacementStockItem } = await replaceStockItem(prisma, {
+      orderItemId: item.id,
+      reason: "password changed by the account owner",
+      executedBy: adminId,
+    });
+
+    const spare = await prisma.stockItem.findUniqueOrThrow({ where: { id: replacementStockItem!.id } });
+    expect(spare).toMatchObject({
+      status: StockStatus.SOLD,
+      orderId: order.id,
+      soldToOrderId: order.id,
+      soldToOrderItemId: item.id,
+      replacesStockItemId: originalStockId,
+      warrantyUntil,
+    });
+    expect(spare.soldAt).not.toBeNull();
+    expect(spare.activeCredentialKey).not.toBeNull();
+    expect(replacementStockItem).toMatchObject({ soldToOrderItemId: item.id, replacesStockItemId: originalStockId });
+  });
+
+  it("inherits a null warranty as null rather than inventing one", async () => {
+    const { items } = await makeDeliveredOrder(1);
+    await prisma.stockItem.update({ where: { id: items[0]!.stockItemId! }, data: { warrantyUntil: null } });
+    await restock(1);
+    const { replacementStockItem } = await replaceStockItem(prisma, {
+      orderItemId: items[0]!.id,
+      reason: "dead",
+      executedBy: adminId,
+    });
+    expect(
+      (await prisma.stockItem.findUniqueOrThrow({ where: { id: replacementStockItem!.id } })).warrantyUntil,
+    ).toBeNull();
+  });
+
+  it("records the dead reason on the retired row, mapping a reason that names a DeadReason and falling back to OTHER", async () => {
+    const { items } = await makeDeliveredOrder(2);
+    await restock(2);
+
+    await replaceStockItem(prisma, { orderItemId: items[0]!.id, reason: "Password changed", executedBy: adminId });
+    await replaceStockItem(prisma, {
+      orderItemId: items[1]!.id,
+      reason: "the buyer says it stopped working",
+      executedBy: adminId,
+    });
+
+    const first = await prisma.stockItem.findUniqueOrThrow({ where: { id: items[0]!.stockItemId! } });
+    const second = await prisma.stockItem.findUniqueOrThrow({ where: { id: items[1]!.stockItemId! } });
+    expect(first.deadReason).toBe(DeadReason.PASSWORD_CHANGED);
+    expect(second.deadReason).toBe(DeadReason.OTHER);
+    const deadEvents = await prisma.stockItemEvent.findMany({
+      where: { eventType: StockEventType.MARKED_DEAD },
+      orderBy: { id: "asc" },
+    });
+    expect(deadEvents.map((e) => [e.stockItemId, e.reasonCode])).toEqual([
+      [first.id, DeadReason.PASSWORD_CHANGED],
+      [second.id, DeadReason.OTHER],
+    ]);
+  });
+
+  it("leaves checkStockIntegrity clean after a replacement", async () => {
+    const { items } = await makeDeliveredOrder(1);
+    await restock(1);
+    await replaceStockItem(prisma, { orderItemId: items[0]!.id, reason: "dead", executedBy: adminId });
+
+    const report = await checkStockIntegrity(prisma);
+    const { legacyRowsWithoutEvents: _legacy, ...findings } = report;
+    for (const finding of Object.values(findings)) expect(finding).toEqual({ count: 0, sampleIds: [] });
+  });
+
+  it("chains replacesStockItemId across two consecutive replacements, and the spare's history shows the swap", async () => {
+    const { order, items } = await makeDeliveredOrder(1);
+    const item = items[0]!;
+    const originalStockId = item.stockItemId!;
+    await restock(2);
+
+    const first = await replaceStockItem(prisma, { orderItemId: item.id, reason: "dead", executedBy: adminId });
+    const second = await replaceStockItem(prisma, { orderItemId: item.id, reason: "dead again", executedBy: adminId });
+
+    const spare1 = await prisma.stockItem.findUniqueOrThrow({ where: { id: first.replacementStockItem!.id } });
+    const spare2 = await prisma.stockItem.findUniqueOrThrow({ where: { id: second.replacementStockItem!.id } });
+    expect(spare1.replacesStockItemId).toBe(originalStockId);
+    expect(spare1.status).toBe(StockStatus.DEAD);
+    expect(spare1.activeCredentialKey).toBeNull();
+    expect(spare2.replacesStockItemId).toBe(spare1.id);
+    expect(spare2.status).toBe(StockStatus.SOLD);
+    expect((await prisma.orderItem.findUniqueOrThrow({ where: { id: item.id } })).stockItemId).toBe(spare2.id);
+
+    const history1 = await listStockItemEvents(prisma, spare1.id);
+    expect(history1!.map((e) => e.eventType)).toEqual([
+      StockEventType.IMPORTED,
+      StockEventType.RESERVED,
+      StockEventType.SOLD,
+      StockEventType.WARRANTY_REPLACED,
+      StockEventType.MARKED_DEAD,
+    ]);
+    const history2 = await listStockItemEvents(prisma, spare2.id);
+    expect(history2!.map((e) => e.eventType)).toEqual([
+      StockEventType.IMPORTED,
+      StockEventType.RESERVED,
+      StockEventType.SOLD,
+      StockEventType.WARRANTY_REPLACED,
+    ]);
+    expect(history2!.at(-1)).toMatchObject({ orderCode: order.orderCode, actorType: StockActorType.ADMIN });
+
+    const report = await checkStockIntegrity(prisma);
+    expect(report.statusEventMismatch.count).toBe(0);
+    expect(report.duplicateStockItemPointers.count).toBe(0);
+  });
+
+  it("wires the retry path the same way: the restocked spare is stamped, linked and evented", async () => {
+    const { order, items } = await makeDeliveredOrder(1);
+    const originalStockId = items[0]!.stockItemId!;
+    const { replacement } = await replaceStockItem(prisma, {
+      orderItemId: items[0]!.id,
+      reason: "dead",
+      executedBy: adminId,
+    });
+    await restock(1);
+
+    const retried = await retryReplacementAllocation(prisma, {
+      stockReplacementId: replacement.id,
+      executedBy: adminId,
+    });
+
+    const spare = await prisma.stockItem.findUniqueOrThrow({ where: { id: retried.replacementStockItem!.id } });
+    expect(spare).toMatchObject({
+      status: StockStatus.SOLD,
+      soldToOrderId: order.id,
+      soldToOrderItemId: items[0]!.id,
+      replacesStockItemId: originalStockId,
+    });
+    const events = await prisma.stockItemEvent.findMany({ where: { stockItemId: spare.id }, orderBy: { id: "asc" } });
+    expect(events.map((e) => e.eventType)).toEqual([
+      StockEventType.IMPORTED,
+      StockEventType.RESERVED,
+      StockEventType.SOLD,
+      StockEventType.WARRANTY_REPLACED,
+    ]);
+    expect(events.at(-1)!.meta).toEqual({ stockReplacementId: replacement.id, replacesStockItemId: originalStockId });
+  });
+
+  it("is atomic: a failure after the swap rolls back the rows AND the events", async () => {
+    const { items } = await makeDeliveredOrder(1);
+    const item = items[0]!;
+    const originalStockId = item.stockItemId!;
+    await restock(1);
+    const spareId = (await prisma.stockItem.findFirstOrThrow({ where: { status: StockStatus.AVAILABLE } })).id;
+    const eventsBefore = await prisma.stockItemEvent.count();
+
+    await expect(
+      prisma.$transaction(async (tx) => {
+        await replaceStockItem(tx as unknown as PrismaClient, {
+          orderItemId: item.id,
+          reason: "dead",
+          executedBy: adminId,
+        });
+        throw new Error("simulated failure after the replacement");
+      }),
+    ).rejects.toThrow("simulated failure");
+
+    expect(await prisma.stockItemEvent.count()).toBe(eventsBefore);
+    expect(await prisma.stockReplacement.count()).toBe(0);
+    const original = await prisma.stockItem.findUniqueOrThrow({ where: { id: originalStockId } });
+    expect(original).toMatchObject({ status: StockStatus.SOLD, deadReason: null });
+    expect(original.activeCredentialKey).not.toBeNull();
+    const spare = await prisma.stockItem.findUniqueOrThrow({ where: { id: spareId } });
+    expect(spare).toMatchObject({
+      status: StockStatus.AVAILABLE,
+      soldToOrderId: null,
+      soldToOrderItemId: null,
+      replacesStockItemId: null,
+    });
+    expect((await prisma.orderItem.findUniqueOrThrow({ where: { id: item.id } })).stockItemId).toBe(originalStockId);
   });
 });
 

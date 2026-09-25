@@ -392,6 +392,10 @@ describe("checkStockIntegrity — cancelledOrRejectedOrderItemsStillLinked", () 
 
 describe("checkStockIntegrity — duplicateActiveCredentialFingerprints", () => {
   it("is all-NULL tolerant: NULL fingerprints (Fase 5 not populated yet) never count as duplicates", async () => {
+    // bulkAddStock now fingerprints on import, so recreate the legacy shape (rows added before Fase 5a).
+    await prisma.stockItem.updateMany({
+      data: { credentialFingerprint: null, identityFingerprint: null, activeCredentialKey: null },
+    });
     const rows = await rowsByStatus(StockStatus.AVAILABLE);
     expect(rows.every((r) => r.credentialFingerprint === null)).toBe(true);
 

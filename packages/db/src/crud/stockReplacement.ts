@@ -82,6 +82,7 @@
  * that is the sign the payout stopped going through `executeRefund`.
  */
 import {
+  DEAD_REASON_PHRASES,
   DeadReason,
   OrderStatus,
   RefundExecutionMethod,
@@ -280,16 +281,18 @@ async function claimStockReplacementStatus(
  * loser away regardless).
  *
  * Writes the MARKED_DEAD event in the same transaction, attributed to the admin
- * running the replacement. The reason code is OTHER: the free-text complaint
- * the request carries does not map onto any `DeadReason`, and the request id in
- * the event's meta is the link back to it.
+ * running the replacement, and stamps the same code on `deadReason`. The code
+ * comes from `deadReasonFromText` (OTHER unless the reason literally names a
+ * `DeadReason`); the request id in the event's meta is the link back to the
+ * free-text complaint, which never enters the ledger itself.
  */
 async function killDeliveredStockItem(
   db: Db,
   stockItemId: number,
   stockReplacementId: number,
-  context: { adminId: number; orderId: number; orderItemId: number },
+  context: { adminId: number; orderId: number; orderItemId: number; reason: string },
 ): Promise<void> {
+  const deadReason = deadReasonFromText(context.reason);
   const existing = await db.stockItem.findUnique({
     where: { id: stockItemId },
     select: { note: true },
@@ -300,6 +303,7 @@ async function killDeliveredStockItem(
     where: { id: stockItemId, status: StockStatus.SOLD },
     data: {
       status: StockStatus.DEAD,
+      deadReason,
       note: previous ? `${previous}\n${stamp}` : stamp,
       // Same as markStockDead: a dead credential frees its claim for re-import.
       activeCredentialKey: null,
@@ -320,9 +324,23 @@ async function killDeliveredStockItem(
     orderId: context.orderId,
     orderItemId: context.orderItemId,
     actor: { type: StockActorType.ADMIN, adminId: context.adminId },
-    reasonCode: DeadReason.OTHER,
+    reasonCode: deadReason,
     meta: { stockReplacementId },
   });
+}
+
+/**
+ * The `DeadReason` a replacement's free-text reason names, or OTHER. Only an
+ * exact match counts — the code itself ("PASSWORD_CHANGED") or its phrase
+ * ("password changed"), ignoring case and surrounding space — so a sentence
+ * that merely mentions a password is never guessed into a category.
+ */
+function deadReasonFromText(reason: string): DeadReason {
+  const text = reason.trim().toLowerCase();
+  for (const code of Object.values(DeadReason)) {
+    if (text === code.toLowerCase() || text === DEAD_REASON_PHRASES[code]) return code;
+  }
+  return DeadReason.OTHER;
 }
 
 /**
@@ -474,18 +492,35 @@ async function notifyBuyerOfRedelivery(
  * from it: the swap and the buyer being told are two different facts, and a
  * caller that conflates them ends up claiming a message was sent to a buyer who
  * has no address of any kind.
+ *
+ * The spare is stamped exactly as `approveOrder` stamps a sale (soldTo*), plus
+ * `replacesStockItemId` pointing at the retired row, and a WARRANTY_REPLACED
+ * event after its SOLD one. `warrantyUntil` is copied from the retired row, so
+ * a replacement never restarts or extends the warranty clock.
  */
 async function issueReplacementCredential(
   db: Db,
   item: Awaited<ReturnType<typeof loadUnit>>,
   actor: StockEventActor,
+  swap: { stockReplacementId: number; originalStockItemId: number },
 ): Promise<{ stockItem: StockItem; notice: ReplacementNotice } | null> {
   const reserved = await allocateOneAvailableStock(db, item.productId, item.order.id, actor, item.id);
   if (!reserved) return null;
 
+  const original = await db.stockItem.findUniqueOrThrow({
+    where: { id: swap.originalStockItemId },
+    select: { warrantyUntil: true },
+  });
   const sold = await db.stockItem.update({
     where: { id: reserved.id },
-    data: { status: StockStatus.SOLD, soldAt: new Date() },
+    data: {
+      status: StockStatus.SOLD,
+      soldAt: new Date(),
+      soldToOrderId: item.order.id,
+      soldToOrderItemId: item.id,
+      warrantyUntil: original.warrantyUntil,
+      replacesStockItemId: swap.originalStockItemId,
+    },
   });
   await recordStockEvent(db, {
     stockItemId: sold.id,
@@ -495,6 +530,16 @@ async function issueReplacementCredential(
     orderId: item.order.id,
     orderItemId: item.id,
     actor,
+  });
+  // Not a status change (the SOLD event above is), so both status columns stay
+  // null — the same shape as approveOrder's SUBSTITUTED_IN.
+  await recordStockEvent(db, {
+    stockItemId: sold.id,
+    eventType: StockEventType.WARRANTY_REPLACED,
+    orderId: item.order.id,
+    orderItemId: item.id,
+    actor,
+    meta: { stockReplacementId: swap.stockReplacementId, replacesStockItemId: swap.originalStockItemId },
   });
   await db.orderItem.update({ where: { id: item.id }, data: { stockItemId: sold.id } });
   const notice = await notifyBuyerOfRedelivery(db, item);
@@ -599,12 +644,15 @@ export async function replaceStockItem(
       adminId: args.executedBy,
       orderId: item.order.id,
       orderItemId: item.id,
+      reason: args.reason,
     });
 
-    const issued = await issueReplacementCredential(tx, item, {
-      type: StockActorType.ADMIN,
-      adminId: args.executedBy,
-    });
+    const issued = await issueReplacementCredential(
+      tx,
+      item,
+      { type: StockActorType.ADMIN, adminId: args.executedBy },
+      { stockReplacementId: replacementRow.id, originalStockItemId: item.stockItem.id },
+    );
     const { index, total } = await unitPosition(tx, item.order.id, item.id);
     const which = `${index} of ${total}`;
 
@@ -698,10 +746,12 @@ export async function retryReplacementAllocation(
     }
 
     const item = await loadUnit(tx, existing.orderItemId);
-    const issued = await issueReplacementCredential(tx, item, {
-      type: StockActorType.ADMIN,
-      adminId: args.executedBy,
-    });
+    const issued = await issueReplacementCredential(
+      tx,
+      item,
+      { type: StockActorType.ADMIN, adminId: args.executedBy },
+      { stockReplacementId: existing.id, originalStockItemId: existing.originalStockItemId },
+    );
     if (!issued) {
       return { replacement: existing, replacementStockItem: null, buyerNotified: false };
     }

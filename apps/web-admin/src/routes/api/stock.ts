@@ -440,6 +440,18 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
     return reply.send({ ok: true });
   });
 
+  // Read-only timeline of one stock item. Carries no credentials (and no raw event
+  // meta), so any admin may read it and no audit row is written. A soft-deleted
+  // item still has its history; only an id that never existed is a 404.
+  app.get("/api/stock/item/:stockId/history", { preHandler: currentAdmin }, async (req, reply) => {
+    const stockId = Number((req.params as { stockId: string }).stockId);
+    const events = Number.isInteger(stockId) ? await listStockItemEvents(prisma, stockId) : null;
+    if (events === null) return reply.code(404).send({ error: "Stock item not found." });
+    return reply.send({
+      events: events.map((e) => ({ ...e, occurredAt: undefined, occurredAtDisplay: displayDate(e.occurredAt) })),
+    });
+  });
+
   // Explicit, audited reveal of ONE stock item's real credential — the only
   // route that ever returns a decrypted value from this file. csrfProtect
   // (not currentAdmin) even though it's read-only in effect: revealing a
@@ -453,18 +465,6 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
   // every time an admin actually looked, not just the first. One query
   // (revealStockCredentials) covers both the existence check and the read —
   // its null return doubles as "no such stock item".
-  // Read-only timeline of one stock item. Carries no credentials (and no raw event
-  // meta), so any admin may read it and no audit row is written. A soft-deleted
-  // item still has its history; only an id that never existed is a 404.
-  app.get("/api/stock/item/:stockId/history", { preHandler: currentAdmin }, async (req, reply) => {
-    const stockId = Number((req.params as { stockId: string }).stockId);
-    const events = Number.isInteger(stockId) ? await listStockItemEvents(prisma, stockId) : null;
-    if (events === null) return reply.code(404).send({ error: "Stock item not found." });
-    return reply.send({
-      events: events.map((e) => ({ ...e, occurredAt: undefined, occurredAtDisplay: displayDate(e.occurredAt) })),
-    });
-  });
-
   app.post("/api/stock/item/:stockId/reveal", { preHandler: csrfProtect }, async (req, reply) => {
     const stockId = Number((req.params as { stockId: string }).stockId);
     const adminId = req.admin!.userId;

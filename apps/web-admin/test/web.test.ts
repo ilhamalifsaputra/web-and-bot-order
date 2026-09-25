@@ -3856,10 +3856,54 @@ describe("stock", () => {
     expect(data.items.length).toBeGreaterThan(0);
     const item = data.items[0]!;
     expect(Object.keys(item).sort()).toEqual(
-      ["createdAtDisplay", "credentials", "id", "note", "status"],
+      ["createdAtDisplay", "credentials", "deadReason", "id", "note", "status"],
     );
     expect(item.credentials).toBe("••••••••");
     expect(item).not.toHaveProperty("orderId");
+  });
+
+  describe("GET /api/stock/item/:stockId/history", () => {
+    it("returns the item's events in order with no credentials and writes no audit row", async () => {
+      const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId } }))!;
+      const secret = decryptCredentials(item.credentials);
+      await prisma.stockItemEvent.deleteMany({ where: { stockItemId: item.id } });
+      await prisma.stockItemEvent.createMany({
+        data: [
+          { stockItemId: item.id, eventType: "MARKED_DEAD", fromStatus: "AVAILABLE", toStatus: "DEAD", actorType: "ADMIN", actorAdminId: seed.adminId, reasonCode: "EXPIRED", occurredAt: new Date("2026-01-02T00:00:00Z") },
+          { stockItemId: item.id, eventType: "IMPORTED", toStatus: "AVAILABLE", actorType: "ADMIN", actorAdminId: seed.adminId, occurredAt: new Date("2026-01-01T00:00:00Z") },
+        ],
+      });
+      const auditsBefore = await prisma.auditLog.count();
+
+      const res = await get(`/api/stock/item/${item.id}/history`, seed.cookie);
+      expect(res.statusCode).toBe(200);
+      expect(res.body).not.toContain(secret);
+      const body = res.json() as { events: { eventType: string; reasonCode: string | null; occurredAtDisplay: string; actorName: string | null }[] };
+      expect(body.events.map((e) => e.eventType)).toEqual(["IMPORTED", "MARKED_DEAD"]);
+      expect(body.events[1]!.reasonCode).toBe("EXPIRED");
+      expect(typeof body.events[0]!.occurredAtDisplay).toBe("string");
+      expect(JSON.stringify(body)).not.toMatch(/credentials|meta/);
+      expect(await prisma.auditLog.count()).toBe(auditsBefore);
+    });
+
+    it("returns an empty list for an item with no recorded events", async () => {
+      const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId } }))!;
+      await prisma.stockItemEvent.deleteMany({ where: { stockItemId: item.id } });
+      const res = await get(`/api/stock/item/${item.id}/history`, seed.cookie);
+      expect(res.statusCode).toBe(200);
+      expect((res.json() as { events: unknown[] }).events).toEqual([]);
+    });
+
+    it("404s for an unknown stock item", async () => {
+      const res = await get(`/api/stock/item/999999/history`, seed.cookie);
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("rejects anonymous callers with 401", async () => {
+      const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId } }))!;
+      const res = await get(`/api/stock/item/${item.id}/history`, null);
+      expect(res.statusCode).toBe(401);
+    });
   });
 
   describe("POST /api/stock/item/:stockId/reveal", () => {
@@ -4130,6 +4174,30 @@ describe("stock JSON API — bulk-dead, bulk-delete, item note/dead, download", 
       expect(audit!.details).not.toContain("user@example.com");
     });
 
+    it("stores the chosen reason on rows and events, names it in the audit sentence, and rejects an unknown one", async () => {
+      const items = await prisma.stockItem.findMany({ where: { productId: seed.productId, status: "AVAILABLE" } });
+      const ids = items.slice(0, 2).map((i) => i.id);
+      const bad = await postJson(`/api/stock/${seed.productId}/bulk-dead`, seed.cookie, seed.csrf, { ids, reason: "BOGUS" });
+      expect(bad.statusCode).toBe(400);
+      expect(await prisma.stockItem.count({ where: { id: { in: ids }, status: "DEAD" } })).toBe(0);
+
+      const res = await postJson(`/api/stock/${seed.productId}/bulk-dead`, seed.cookie, seed.csrf, { ids, reason: "PASSWORD_CHANGED" });
+      expect(res.statusCode).toBe(200);
+      for (const id of ids) {
+        expect((await prisma.stockItem.findUnique({ where: { id } }))!.deadReason).toBe("PASSWORD_CHANGED");
+        expect((await prisma.stockItemEvent.findFirst({ where: { stockItemId: id, eventType: StockEventType.MARKED_DEAD } }))!.reasonCode).toBe("PASSWORD_CHANGED");
+      }
+      const audit = await prisma.auditLog.findFirst({ where: { action: "stock_bulk_dead", targetId: seed.productId } });
+      expect(audit!.details).toBe("Marked 2 stock items dead (password changed).");
+    });
+
+    it("defaults the reason to OTHER when omitted", async () => {
+      const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId, status: "AVAILABLE" } }))!;
+      const res = await postJson(`/api/stock/${seed.productId}/bulk-dead`, seed.cookie, seed.csrf, { ids: [item.id] });
+      expect(res.statusCode).toBe(200);
+      expect((await prisma.stockItem.findUnique({ where: { id: item.id } }))!.deadReason).toBe("OTHER");
+    });
+
     it("rejects an empty ids array with 400", async () => {
       const res = await postJson(`/api/stock/${seed.productId}/bulk-dead`, seed.cookie, seed.csrf, { ids: [] });
       expect(res.statusCode).toBe(400);
@@ -4190,6 +4258,28 @@ describe("stock JSON API — bulk-dead, bulk-delete, item note/dead, download", 
       const audit = await prisma.auditLog.findFirst({ where: { action: "stock_mark_dead", targetId: item.id } });
       expect(audit).toBeTruthy();
       expect((audit!.details ?? "").includes("@")).toBe(false);
+    });
+
+    it("stores the chosen reason on the row and event and rejects an unknown one with 400", async () => {
+      const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId, status: "AVAILABLE" } }))!;
+      const bad = await postJson(`/api/stock/item/${item.id}/dead`, seed.cookie, seed.csrf, { reason: "nope" });
+      expect(bad.statusCode).toBe(400);
+      expect((await prisma.stockItem.findUnique({ where: { id: item.id } }))!.status).toBe("AVAILABLE");
+
+      const res = await postJson(`/api/stock/item/${item.id}/dead`, seed.cookie, seed.csrf, { reason: "REGION_LOCK" });
+      expect(res.statusCode).toBe(200);
+      expect((await prisma.stockItem.findUnique({ where: { id: item.id } }))!.deadReason).toBe("REGION_LOCK");
+      expect((await prisma.stockItemEvent.findFirst({ where: { stockItemId: item.id, eventType: StockEventType.MARKED_DEAD } }))!.reasonCode).toBe("REGION_LOCK");
+      const audit = await prisma.auditLog.findFirst({ where: { action: "stock_mark_dead", targetId: item.id } });
+      expect(audit!.details).toBe(`Marked stock item #${item.id} dead (region lock).`);
+    });
+
+    it("lists the stored reason on dead rows in the product payload", async () => {
+      const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId, status: "AVAILABLE" } }))!;
+      await postJson(`/api/stock/item/${item.id}/dead`, seed.cookie, seed.csrf, { reason: "EXPIRED" });
+      const res = await app.inject({ method: "GET", url: `/api/stock/${seed.productId}?tab=dead`, cookies: { [COOKIE]: seed.cookie } });
+      const row = JSON.parse(res.body).items.find((i: { id: number }) => i.id === item.id);
+      expect(row.deadReason).toBe("EXPIRED");
     });
 
     it("audits a sentence naming the item and never echoes the admin-typed note", async () => {

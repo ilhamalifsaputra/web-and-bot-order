@@ -4007,6 +4007,27 @@ describe("verification handlers", () => {
     expect(JSON.stringify(sink)).toContain(order.orderCode);
   });
 
+  // Regression: the header used listPendingVerifications(prisma)'s own
+  // default page size (50) as the displayed "(count)" — a shop with more
+  // pending verifications than fit on one screen saw a stale, too-low number
+  // instead of the real total. countPendingVerifications(prisma) has no page
+  // cap and must back the header, independent of how many buttons render.
+  it("showQueue's header count is the true total, not the queue's own page size", async () => {
+    await pendingVerificationOrder();
+    await prisma.order.createMany({
+      data: Array.from({ length: 55 }, (_, i) => ({
+        orderCode: `PV-BULK-${i}-${Math.random()}`,
+        userId: sample.user.id,
+        subtotalAmount: "1",
+        totalAmount: "1",
+        status: OrderStatus.PENDING_VERIFICATION,
+      })),
+    });
+    const { ctx, sink } = adminCtx({ callbackData: "v1:adm:verif:list" });
+    await verification.showQueue(ctx);
+    expect(sentIncludes(sink, "(56)")).toBe(true);
+  });
+
   it("viewOrder with a payment screenshot retires the previous admin screen and tracks the new photo message", async () => {
     // Regression test: viewOrder used to send the screenshot via a bare
     // ctx.replyWithPhoto that never retired the queue list's keyboard nor
@@ -4089,6 +4110,53 @@ describe("admin handlers", () => {
     const { ctx, sink } = adminCtx();
     await adminCommand(ctx);
     expect(sink.length).toBeGreaterThan(0);
+  });
+
+  // Regression: the Verifications button badge and the dashboard's own
+  // "Pending verifications" line both came from
+  // listPendingVerifications(prisma, 200).length — a shop with more than 200
+  // pending verifications would see a stuck "(200)"/"200" instead of the real
+  // count. countPendingVerifications(prisma) has no page-size cap.
+  it("adminCommand's Verifications badge shows the true count past the old 200-row page cap", async () => {
+    await prisma.order.createMany({
+      data: Array.from({ length: 205 }, (_, i) => ({
+        orderCode: `PV-MENU-${i}-${Math.random()}`,
+        userId: sample.user.id,
+        subtotalAmount: "1",
+        totalAmount: "1",
+        status: OrderStatus.PENDING_VERIFICATION,
+      })),
+    });
+    const { ctx, sink } = adminCtx();
+    await adminCommand(ctx);
+    const markup = JSON.stringify(lastMarkup(sink));
+    expect(markup).toContain("205");
+  });
+
+  // Regression: the ticket list header used listOpenTickets(prisma, 50).length,
+  // so more than 50 open tickets showed a stuck "50 open ticket(s)".
+  it("showTicketsAdmin's header shows the true open-ticket count past the 50-row page cap", async () => {
+    await prisma.supportTicket.createMany({
+      data: Array.from({ length: 55 }, (_, i) => ({ userId: sample.user.id, message: `open ${i}` })),
+    });
+    const { ctx, sink } = adminCtx({ callbackData: "v1:adm:ticket:menu" });
+    await handleAdminCallback(ctx, "v1:adm:ticket:menu".split(":"));
+    expect(sentIncludes(sink, "55 open ticket(s)")).toBe(true);
+  });
+
+  it("showDashboard's Pending verifications line shows the true count past the old 200-row page cap", async () => {
+    await prisma.order.createMany({
+      data: Array.from({ length: 205 }, (_, i) => ({
+        orderCode: `PV-DASH-${i}-${Math.random()}`,
+        userId: sample.user.id,
+        subtotalAmount: "1",
+        totalAmount: "1",
+        status: OrderStatus.PENDING_VERIFICATION,
+      })),
+    });
+    const { ctx, sink } = adminCtx({ callbackData: "v1:adm:dash" });
+    await handleAdminCallback(ctx, "v1:adm:dash".split(":"));
+    expect(sentIncludes(sink, "205")).toBe(true);
   });
 
   it("non-admin is denied at the router gate", async () => {
@@ -4394,7 +4462,10 @@ describe("admin handlers", () => {
       toStatus: StockStatus.DEAD,
       actorType: StockActorType.ADMIN,
       actorAdminId: adminDbId,
+      reasonCode: "OTHER",
     });
+    // The bot has no reason prompt: the row carries the same explicit OTHER.
+    expect((await prisma.stockItem.findUnique({ where: { id: item!.id } }))!.deadReason).toBe("OTHER");
   });
 
   it("viewing the admin stock browser writes one audit row stating the count, never the credential text", async () => {

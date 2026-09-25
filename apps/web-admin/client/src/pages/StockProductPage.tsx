@@ -7,6 +7,7 @@ import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
 import { StatusBadge } from "../components/shared/StatusBadge";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
+import { StockHistoryDialog } from "../components/shared/StockHistoryDialog";
 import { Pagination } from "../components/shared/Pagination";
 import { SearchBar } from "../components/shared/SearchBar";
 import { RestockRequestsHeader } from "../components/shared/RestockRequestsHeader";
@@ -15,8 +16,9 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { Eye, EyeOff, Copy, Check, Save, X, Ban, SquarePen, Lock, MoreVertical, Trash2 } from "lucide-react";
+import { Eye, EyeOff, Copy, Check, Save, X, Ban, SquarePen, Lock, MoreVertical, Trash2, History } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -30,10 +32,44 @@ import { describeError } from "../lib/errorMessages";
 import { visibleSelection } from "../lib/selection";
 import { formatRestockRequests } from "../lib/restockRequests";
 
+/** Mirrors DeadReason in @app/core/enums (the client doesn't import @app/core). */
+const DEAD_REASONS = [
+  { value: "PASSWORD_CHANGED", label: "Password changed" },
+  { value: "REGION_LOCK", label: "Region lock" },
+  { value: "SUPPLIER_REVOKED", label: "Supplier revoked" },
+  { value: "EXPIRED", label: "Expired" },
+  { value: "DUPLICATE", label: "Duplicate" },
+  { value: "TEST", label: "Test" },
+  { value: "OTHER", label: "Other" },
+] as const;
+const DEFAULT_DEAD_REASON = "OTHER";
+const deadReasonLabel = (value: string) => DEAD_REASONS.find((r) => r.value === value)?.label ?? value;
+
+function DeadReasonSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  return (
+    <div className="space-y-1.5">
+      <label className="text-sm font-medium text-ink" id="dead-reason-label">Reason</label>
+      <Select value={value} onValueChange={onChange}>
+        <SelectTrigger aria-labelledby="dead-reason-label" className="w-full">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {DEAD_REASONS.map((r) => (
+            <SelectItem key={r.value} value={r.value}>{r.label}</SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  );
+}
+
 interface StockItem {
   id: number;
   status: string;
   note: string | null;
+  /** Why an admin retired this account; null on non-DEAD rows and on rows
+   *  marked dead before reasons were captured. */
+  deadReason?: string | null;
   /** Always the server's constant mask placeholder — StockItem.credentials is
    *  encrypted at rest and this list payload never carries a decrypted value.
    *  The real credential is fetched per-row, on demand, via the reveal
@@ -109,6 +145,8 @@ export function StockProductPage() {
   const [revealedText, setRevealedText] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<number | null>(null);
   const [pendingMarkDead, setPendingMarkDead] = useState<StockItem | null>(null);
+  const [deadReason, setDeadReason] = useState<string>(DEFAULT_DEAD_REASON);
+  const [historyItemId, setHistoryItemId] = useState<number | null>(null);
   const [pendingDelete, setPendingDelete] = useState<StockItem | null>(null);
 
   function changeTab(tab: string) {
@@ -244,7 +282,7 @@ export function StockProductPage() {
     const count = ids.length;
     setBulkActing(true);
     try {
-      await apiPost(`/api/stock/${productId}/bulk-dead`, { ids });
+      await apiPost(`/api/stock/${productId}/bulk-dead`, { ids, reason: deadReason });
       setSelected(new Set());
       await qc.invalidateQueries({ queryKey: ["stock", productId] });
       toast.success(`${count} item(s) marked dead.`);
@@ -252,6 +290,7 @@ export function StockProductPage() {
       toast.error(describeError(e, "Failed to mark items dead."));
     } finally {
       setBulkActing(false);
+      setDeadReason(DEFAULT_DEAD_REASON);
     }
   }
 
@@ -278,11 +317,13 @@ export function StockProductPage() {
 
   async function markItemDead(id: number) {
     try {
-      await apiPost(`/api/stock/item/${id}/dead`, {});
+      await apiPost(`/api/stock/item/${id}/dead`, { reason: deadReason });
       await qc.invalidateQueries({ queryKey: ["stock", productId] });
       toast.success("Stock item marked dead.");
     } catch (e) {
       toast.error(describeError(e, "Failed to mark item dead."));
+    } finally {
+      setDeadReason(DEFAULT_DEAD_REASON);
     }
   }
 
@@ -318,12 +359,14 @@ export function StockProductPage() {
           <div className="sticky bottom-4 z-10 mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-line bg-card px-3 py-2 text-sm shadow-lift transition-all duration-150">
             <span className="text-ink-soft">{visibleSelected.size} selected</span>
             <ConfirmDialog
-              trigger={<Button size="sm" variant="destructive" disabled={bulkActing}>Mark selected dead</Button>}
+              trigger={<Button size="sm" variant="destructive" disabled={bulkActing} onClick={() => setDeadReason(DEFAULT_DEAD_REASON)}>Mark selected dead</Button>}
               title="Mark selected stock items dead?"
               description={`Mark ${visibleSelected.size} stock item(s) dead. This removes them from availability.`}
               confirmLabel="Mark Dead"
               onConfirm={() => bulkMarkDead(Array.from(visibleSelected))}
-            />
+            >
+              <DeadReasonSelect value={deadReason} onChange={setDeadReason} />
+            </ConfirmDialog>
             <ConfirmDialog
               trigger={<Button size="sm" variant="destructive" disabled={bulkActing}>Delete</Button>}
               title="Delete selected stock items?"
@@ -420,12 +463,14 @@ export function StockProductPage() {
                         <Button size="sm" variant="ghost" onClick={() => setEditingNoteId(null)}><X className="h-4 w-4" />Cancel</Button>
                       </div>
                     ) : (
-                      <span
-                        className="block max-w-[240px] truncate text-xs text-ink-soft"
-                        title={item.note ?? undefined}
-                      >
-                        {item.note ?? "—"}
-                      </span>
+                      <div className="flex max-w-[240px] flex-col gap-0.5">
+                        <span className="block truncate text-xs text-ink-soft" title={item.note ?? undefined}>
+                          {item.note ?? "—"}
+                        </span>
+                        {item.status === "DEAD" && item.deadReason && (
+                          <span className="text-xs font-medium text-ink-soft">{deadReasonLabel(item.deadReason)}</span>
+                        )}
+                      </div>
                     ),
                 },
                 { key: "added", header: "Added", render: item => <span className="text-xs text-ink-soft">{item.createdAtDisplay ?? "—"}</span> },
@@ -445,12 +490,16 @@ export function StockProductPage() {
                             <SquarePen className="h-4 w-4" />
                             Edit Note
                           </DropdownMenuItem>
+                          <DropdownMenuItem onSelect={() => setHistoryItemId(item.id)}>
+                            <History className="h-4 w-4" />
+                            History
+                          </DropdownMenuItem>
                           {item.status !== "DEAD" && (
                             <>
                               <DropdownMenuSeparator />
                               <DropdownMenuItem
                                 variant="destructive"
-                                onSelect={(e) => { e.preventDefault(); setPendingMarkDead(item); }}
+                                onSelect={(e) => { e.preventDefault(); setDeadReason(DEFAULT_DEAD_REASON); setPendingMarkDead(item); }}
                               >
                                 <Ban className="h-4 w-4" />
                                 Mark Dead
@@ -613,7 +662,13 @@ export function StockProductPage() {
           description={`Mark stock item #${pendingMarkDead.id} dead. This removes it from availability.`}
           confirmLabel="Mark Dead"
           onConfirm={() => markItemDead(pendingMarkDead.id)}
-        />
+        >
+          <DeadReasonSelect value={deadReason} onChange={setDeadReason} />
+        </ConfirmDialog>
+      )}
+
+      {historyItemId !== null && (
+        <StockHistoryDialog stockItemId={historyItemId} onClose={() => setHistoryItemId(null)} />
       )}
 
       {pendingDelete && (

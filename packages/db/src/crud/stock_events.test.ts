@@ -250,6 +250,31 @@ describe("markStockDead / bulkMarkStockDead write MARKED_DEAD only for rows that
     }
   });
 
+  it("markStockDead stores the supplied reason on the row and on the event; default is OTHER", async () => {
+    const { user } = sample;
+    const [a, b] = await rowsByStatus(StockStatus.AVAILABLE);
+
+    expect(await markStockDead(prisma, a!.id, "n", user.id, DeadReason.PASSWORD_CHANGED)).toBe(1);
+    expect(await markStockDead(prisma, b!.id, "n", user.id)).toBe(1);
+
+    expect((await prisma.stockItem.findUnique({ where: { id: a!.id } }))!.deadReason).toBe(DeadReason.PASSWORD_CHANGED);
+    expect((await eventsFor(a!.id)).at(-1)!.reasonCode).toBe(DeadReason.PASSWORD_CHANGED);
+    expect((await prisma.stockItem.findUnique({ where: { id: b!.id } }))!.deadReason).toBe(DeadReason.OTHER);
+    expect((await eventsFor(b!.id)).at(-1)!.reasonCode).toBe(DeadReason.OTHER);
+  });
+
+  it("bulkMarkStockDead sets the reason only on the rows that actually changed", async () => {
+    const { user } = sample;
+    const [avail, sold] = await rowsByStatus(StockStatus.AVAILABLE);
+    await prisma.stockItem.update({ where: { id: sold!.id }, data: { status: StockStatus.SOLD, soldAt: new Date() } });
+
+    expect(await bulkMarkStockDead(prisma, [avail!.id, sold!.id], "n", user.id, DeadReason.REGION_LOCK)).toBe(1);
+
+    expect((await prisma.stockItem.findUnique({ where: { id: avail!.id } }))!.deadReason).toBe(DeadReason.REGION_LOCK);
+    expect((await eventsFor(avail!.id)).at(-1)!.reasonCode).toBe(DeadReason.REGION_LOCK);
+    expect((await prisma.stockItem.findUnique({ where: { id: sold!.id } }))!.deadReason).toBeNull();
+  });
+
   it("never copies the admin's note (or a credential) into an event", async () => {
     const { user } = sample;
     const [row] = await rowsByStatus(StockStatus.AVAILABLE);

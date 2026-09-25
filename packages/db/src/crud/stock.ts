@@ -260,13 +260,17 @@ export async function bulkAddStock(
 
 /** The shop-admin audit sentence for one bulk import (docs/LOGGING.md): counts only, never credentials. */
 export function stockImportAuditDetails(r: BulkAddStockResult, invalidLines = 0): string {
-  const skipped = invalidLines > 0 ? `${invalidLines} invalid lines and ${r.skipped} duplicates` : `${r.skipped} duplicates`;
-  let details = `Added ${r.added} stock items in import batch #${r.batchId}; skipped ${skipped}.`;
+  const n = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
+  const dups = n(r.skipped, "duplicate", "duplicates");
+  const skipped = invalidLines > 0 ? `${n(invalidLines, "invalid line", "invalid lines")} and ${dups}` : dups;
+  let details = `Added ${n(r.added, "stock item", "stock items")} in import batch #${r.batchId}; skipped ${skipped}.`;
   if (r.identityWarnings > 0) {
-    details += ` ${r.identityWarnings} of the added items use an account already in stock with a different password.`;
+    const verb = r.identityWarnings === 1 ? "uses" : "use";
+    details += ` ${r.identityWarnings} of the added items ${verb} an account already in stock with a different password.`;
   }
   if (r.unreadableExisting > 0) {
-    details += ` ${r.unreadableExisting} existing items could not be read and were not checked for duplicates.`;
+    const verb = r.unreadableExisting === 1 ? "item could not be read and was" : "items could not be read and were";
+    details += ` ${r.unreadableExisting} existing ${verb} not checked for duplicates.`;
   }
   return details;
 }

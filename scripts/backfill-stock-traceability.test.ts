@@ -519,6 +519,32 @@ describe("runBackfill — activeCredentialKey claims (Fase 5b)", () => {
     expect(summary.claims.released).toBe(1);
   });
 
+  it("claims a live row in one run even when a later DEAD row still holds its key", async () => {
+    const p = plain("claim-stale-later");
+    const liveRow = await legacyRow({ credentials: encryptCredentials(p) });
+    const deadRow = await legacyRow({ credentials: encryptCredentials(p), status: StockStatus.DEAD });
+    await prisma.stockItem.update({ where: { id: deadRow.id }, data: { activeCredentialKey: keyOf(p) } });
+
+    const summary = await runBackfill(prisma, { dryRun: false });
+
+    expect((await prisma.stockItem.findUniqueOrThrow({ where: { id: liveRow.id } })).activeCredentialKey).toBe(keyOf(p));
+    expect((await prisma.stockItem.findUniqueOrThrow({ where: { id: deadRow.id } })).activeCredentialKey).toBeNull();
+    expect(summary.claims).toMatchObject({ claimed: 1, duplicate: 0, released: 1 });
+  });
+
+  it("lists the ids of live duplicates it left unclaimed, and nothing secret", async () => {
+    const p = plain("claim-dup-ids");
+    await legacyRow({ credentials: encryptCredentials(p) });
+    const dup = await legacyRow({ credentials: p });
+
+    await runBackfill(prisma, { dryRun: false });
+
+    const warnings = (console.warn as unknown as MockInstance).mock.calls.map((c) => String(c[0]));
+    const line = warnings.find((w) => w.includes("left without a claim"));
+    expect(line).toContain(String(dup.id));
+    expect(line).not.toContain(computeCredentialFingerprint(p));
+  });
+
   it("a corrupt live row can't be fingerprinted, so it is counted and left unclaimed", async () => {
     const good = JSON.parse(encryptCredentials(plain("claim-corrupt"))) as Record<string, unknown>;
     await legacyRow({ credentials: JSON.stringify({ ...good, authTag: Buffer.alloc(16).toString("base64") }) });

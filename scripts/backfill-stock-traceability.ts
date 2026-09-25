@@ -198,6 +198,8 @@ interface ClaimContext {
   claimInRun: boolean;
   /** Keys this run has claimed (or, in a dry run, would have). */
   claimedKeys: Set<string>;
+  /** Dead rows whose stale claim was already released (so a dry run doesn't count one twice). */
+  releasedIds: Set<number>;
 }
 
 async function processRow(db: Db, row: Row, dryRun: boolean, claim: ClaimContext): Promise<Counters> {
@@ -271,7 +273,7 @@ async function processRow(db: Db, row: Row, dryRun: boolean, claim: ClaimContext
   const live = row.deletedAt === null && LIVE_STATUSES.includes(row.status);
   const fingerprint = (data.credentialFingerprint as string | undefined) ?? row.credentialFingerprint;
   if (!live) {
-    if (row.activeCredentialKey !== null) {
+    if (row.activeCredentialKey !== null && !(dryRun && claim.releasedIds.has(row.id))) {
       data.activeCredentialKey = null;
       counters.claims.released++;
     }
@@ -282,11 +284,21 @@ async function processRow(db: Db, row: Row, dryRun: boolean, claim: ClaimContext
   } else {
     const key = stockClaimKey(row.productId, fingerprint);
     const holder = claim.claimInRun
-      ? await db.stockItem.findFirst({ where: { activeCredentialKey: key }, select: { id: true } })
+      ? await db.stockItem.findFirst({
+          where: { activeCredentialKey: key },
+          select: { id: true, status: true, deletedAt: true },
+        })
       : null;
-    if (!claim.claimInRun || holder || claim.claimedKeys.has(key)) {
+    const holderLive = holder !== null && holder.deletedAt === null && LIVE_STATUSES.includes(holder.status);
+    if (!claim.claimInRun || holderLive || claim.claimedKeys.has(key)) {
       counters.claims.duplicate++;
     } else {
+      if (holder) {
+        // A DEAD/deleted row still holds this key: free it first, or our claim would hit the unique index.
+        if (!dryRun) await db.stockItem.update({ where: { id: holder.id }, data: { activeCredentialKey: null } });
+        counters.claims.released++;
+        claim.releasedIds.add(holder.id);
+      }
       data.activeCredentialKey = key;
       counters.claims.claimed++;
     }
@@ -318,6 +330,8 @@ export async function runBackfill(db: PrismaClient, opts: { dryRun: boolean }): 
 
   const summary: BackfillSummary = { dryRun: opts.dryRun, scanned: 0, batches: 0, ...emptyCounters() };
   const claimedKeys = new Set<string>();
+  const releasedIds = new Set<number>();
+  const unclaimedDuplicateIds: number[] = [];
   let afterId = 0;
   for (;;) {
     const batch = await db.stockItem.findMany({
@@ -335,11 +349,11 @@ export async function runBackfill(db: PrismaClient, opts: { dryRun: boolean }): 
           // have moved this row since the batch read, and must wait for this commit.
           await tx.$queryRaw`SELECT id FROM stock_items WHERE id = ${row.id} FOR UPDATE`;
           const fresh = await tx.stockItem.findUnique({ where: { id: row.id }, select: ROW_SELECT });
-          return fresh ? processRow(tx, fresh, false, { claimInRun, claimedKeys }) : emptyCounters();
+          return fresh ? processRow(tx, fresh, false, { claimInRun, claimedKeys, releasedIds }) : emptyCounters();
         });
       let counters: Counters;
       if (opts.dryRun) {
-        counters = await processRow(db, row, true, { claimInRun: true, claimedKeys });
+        counters = await processRow(db, row, true, { claimInRun: true, claimedKeys, releasedIds });
       } else {
         try {
           counters = await writeRow(true);
@@ -349,11 +363,18 @@ export async function runBackfill(db: PrismaClient, opts: { dryRun: boolean }): 
           counters = await writeRow(false);
         }
       }
+      if (counters.claims.duplicate > 0) unclaimedDuplicateIds.push(row.id);
       addCounters(summary, counters);
       summary.scanned++;
     }
     afterId = batch[batch.length - 1]!.id;
     if (batch.length < BATCH_SIZE) break;
+  }
+  if (unclaimedDuplicateIds.length > 0) {
+    console.warn(
+      `${LOG_PREFIX} ${unclaimedDuplicateIds.length} live stock row(s) were left without a claim because another live row ` +
+        `holds the same credential, so the same account may be sellable twice; review stock items ${unclaimedDuplicateIds.join(", ")}.`,
+    );
   }
   return summary;
 }

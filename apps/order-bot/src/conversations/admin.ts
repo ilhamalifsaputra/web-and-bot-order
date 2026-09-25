@@ -117,11 +117,13 @@ export async function stockUploadConversation(conversation: MyConversation, ctx:
 
   let credentials: string[];
   let skippedCount: number;
+  let sourceLabel: string | null = null;
   for (;;) {
     const u = await conversation.wait();
     if (await handledEscape(u)) return;
 
     let rawText = "";
+    sourceLabel = null;
     const doc = u.message?.document;
     if (doc) {
       if (!doc.file_name || !doc.file_name.toLowerCase().endsWith(".txt")) {
@@ -133,6 +135,8 @@ export async function stockUploadConversation(conversation: MyConversation, ctx:
         continue;
       }
       rawText = await conversation.external(() => downloadTgText(u, doc.file_id));
+      // Only the file's name labels the import batch; its contents never do.
+      sourceLabel = doc.file_name.slice(0, 200);
       // Delete only after the download — keeps pasted credentials out of the
       // visible chat history once they're safely captured.
       await consumeInput(u);
@@ -166,7 +170,7 @@ export async function stockUploadConversation(conversation: MyConversation, ctx:
     // Resolved before the insert: each new stock row's IMPORTED event names this admin.
     const admin = await getUserByTelegramId(tx, adminTg);
     const adminId = requireAdminId(admin);
-    const r = await bulkAddStock(tx, productId, credentials, { adminId });
+    const r = await bulkAddStock(tx, productId, credentials, { adminId, sourceLabel });
     await logAdminAction(tx, {
       adminId,
       action: "stock_upload",

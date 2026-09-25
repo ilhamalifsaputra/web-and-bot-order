@@ -128,7 +128,46 @@ describe("SearchPage", () => {
     render(<SearchPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("Andi Santoso")).toBeInTheDocument());
 
-    expect(screen.getByText(/no matching products/i)).toBeInTheDocument();
+    expect(screen.getByText(/no matching skus/i)).toBeInTheDocument();
+  });
+
+  it("labels the second section 'SKUs' (denominations), not 'Products'", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          q: "netflix",
+          exactOrderId: null,
+          users: [],
+          products: [{ id: 10, name: "Netflix 1mo", product: { name: "Netflix" } }],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    render(<SearchPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Netflix 1mo")).toBeInTheDocument());
+
+    expect(screen.getByText("SKUs (1)")).toBeInTheDocument();
+    expect(screen.queryByText(/^Products /)).not.toBeInTheDocument();
+  });
+
+  it("shows '25+' (not a bare 25) and a narrow-your-search note when a result list is capped", async () => {
+    const users = Array.from({ length: 25 }, (_, i) => ({
+      id: i + 1,
+      username: `user${i}`,
+      fullName: `User ${i}`,
+      telegramId: String(1000 + i),
+    }));
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ q: "a", exactOrderId: null, users, products: [] }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    render(<SearchPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("User 0")).toBeInTheDocument());
+
+    expect(screen.getByText("Customers (25+)")).toBeInTheDocument();
+    expect(screen.getByText(/showing the first 25 matches/i)).toBeInTheDocument();
   });
 
   it("shows an icon and description on the all-empty state, not just a title", async () => {

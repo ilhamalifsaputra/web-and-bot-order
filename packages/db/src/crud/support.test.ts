@@ -35,6 +35,8 @@ import {
   listStaleRepliedTickets,
   listUserTicketsPaged,
   getUserTicketStats,
+  listUserTickets,
+  countUserTickets,
 } from "./support";
 import { TicketStatus, TicketPriority, TicketCategory, SenderType, NotificationEvent } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
@@ -312,6 +314,21 @@ describe("createTicket — subject/category/productId opts (Task 10)", () => {
     await deleteSetting(prisma, "owner_email_enabled");
     await deleteSetting(prisma, "owner_email");
     await deleteSetting(prisma, "owner_email_on_new_ticket");
+  });
+});
+
+describe("countUserTickets (T3) — the real total behind listUserTickets's capped page", () => {
+  it("counts every ticket for the user, independent of the limit passed to listUserTickets", async () => {
+    const user = await makeUser(3199n);
+    const other = await makeUser(3198n);
+    await createTicket(prisma, user.id, "mine 1");
+    await createTicket(prisma, user.id, "mine 2");
+    await createTicket(prisma, user.id, "mine 3");
+    await createTicket(prisma, other.id, "not mine");
+
+    const capped = await listUserTickets(prisma, user.id, 2);
+    expect(capped.length).toBe(2);
+    expect(await countUserTickets(prisma, user.id)).toBe(3);
   });
 });
 

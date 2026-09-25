@@ -58,7 +58,7 @@ describe("GET /api/broadcast", () => {
     // route for this, so update the counters directly, same as the drainer would.
     await prisma.broadcast.update({
       where: { id: broadcast.id },
-      data: { totalCount: 200, sentCount: 12 },
+      data: { totalCount: 200, sentCount: 12, failedCount: 3 },
     });
 
     const res = await getJson("/api/broadcast", cookie);
@@ -68,8 +68,12 @@ describe("GET /api/broadcast", () => {
     expect(row).toBeTruthy();
     expect(row!.total).toBe(200);
     expect(row!.sent).toBe(12);
+    // T3: the client's Sent column shows the failed count too — the route
+    // must send it under the same total/sent naming convention.
+    expect(row!.failed).toBe(3);
     expect(row!.totalCount).toBeUndefined();
     expect(row!.sentCount).toBeUndefined();
+    expect(row!.failedCount).toBeUndefined();
   });
 
   // The client polls this (heaviest-read) endpoint every few seconds while

@@ -6,7 +6,18 @@ import { useOrdersKpis } from "../../hooks/useOrdersKpis";
 const ALL_KINDS = "Counts every order, including wallet top-up orders, across the whole shop (not just the filtered list below).";
 
 export function OrdersKpiRow(): JSX.Element {
-  const { data, isLoading } = useOrdersKpis();
+  const { data, isError } = useOrdersKpis();
+
+  // `!data` (not react-query's own `isLoading`) is the loading flag every
+  // tile below uses: `isLoading` goes false the moment a fetch fails even
+  // with no data ever having arrived, which used to let every StatCard fall
+  // through to its `?? 0` and render a real-looking zero for a failed
+  // request. A background refetch failure with stale `data` still in cache
+  // keeps showing that last-known-good data rather than an error.
+  if (isError && !data) {
+    return <p className="mb-4 text-sm text-rust">Couldn't load order stats.</p>;
+  }
+  const isLoading = !data;
 
   // Never concatenate multiple currencies into one string (the exact bug
   // CurrencyStack exists to prevent) — render whichever of IDR/USDT today's

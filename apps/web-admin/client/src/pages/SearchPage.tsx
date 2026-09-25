@@ -29,6 +29,18 @@ interface SearchResult {
   products: ProductHit[];
 }
 
+/** Both /api/search lists are capped at this many rows server-side
+ *  (apps/web-admin/src/routes/api/search.ts calls searchUsers/
+ *  searchDenominations with an explicit 25) — a list at exactly this length
+ *  may really be longer, so it must never be presented as an exact count. */
+const SEARCH_CAP = 25;
+
+/** "N" normally, "25+" when the list arrived at the server's cap and may be
+ *  hiding more matches. */
+function countLabel(n: number): string {
+  return n >= SEARCH_CAP ? `${SEARCH_CAP}+` : String(n);
+}
+
 function useSearch(q: string) {
   return useQuery<SearchResult>({
     queryKey: ["search", q],
@@ -90,7 +102,10 @@ export function SearchPage() {
               <section className="mb-6">
                 <Card>
                   <CardHeader>
-                    <CardTitle as="h2">Customers ({data.users.length})</CardTitle>
+                    <CardTitle as="h2">Customers ({countLabel(data.users.length)})</CardTitle>
+                    {data.users.length >= SEARCH_CAP && (
+                      <p className="text-xs text-ink-soft">Showing the first {SEARCH_CAP} matches — narrow your search.</p>
+                    )}
                   </CardHeader>
                   <CardContent>
                     <DataTable
@@ -132,7 +147,12 @@ export function SearchPage() {
               <section>
                 <Card>
                   <CardHeader>
-                    <CardTitle as="h2">Products ({data.products.length})</CardTitle>
+                    {/* "SKUs", not "Products" — these rows are denominations
+                        (Netflix "1 Month"), not the parent Product. */}
+                    <CardTitle as="h2">SKUs ({countLabel(data.products.length)})</CardTitle>
+                    {data.products.length >= SEARCH_CAP && (
+                      <p className="text-xs text-ink-soft">Showing the first {SEARCH_CAP} matches — narrow your search.</p>
+                    )}
                   </CardHeader>
                   <CardContent>
                     <DataTable
@@ -160,7 +180,7 @@ export function SearchPage() {
                       data={data.products}
                       keyExtractor={p => p.id}
                       onRowClick={p => navigate(`/catalog/${p.id}`)}
-                      empty={<EmptyState icon={PackageSearch} title="No matching products." description="Try a different search term." />}
+                      empty={<EmptyState icon={PackageSearch} title="No matching SKUs." description="Try a different search term." />}
                     />
                   </CardContent>
                 </Card>

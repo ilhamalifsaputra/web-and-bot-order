@@ -4,7 +4,15 @@ import { CurrencyStack, type CurrencyAmount } from "../../components/shared/Curr
 import { useCustomersKpis } from "../../hooks/useCustomersKpis";
 
 export function CustomersKpiRow(): JSX.Element {
-  const { data, isLoading } = useCustomersKpis();
+  const { data, isError } = useCustomersKpis();
+
+  // See OrdersKpiRow's identical comment: `!data`, not react-query's
+  // `isLoading`, is what actually distinguishes "nothing loaded yet or the
+  // fetch failed" from "a real (possibly zero) count arrived".
+  if (isError && !data) {
+    return <p className="mb-4 text-sm text-rust">Couldn't load customer stats.</p>;
+  }
+  const isLoading = !data;
 
   const revenueAmounts: CurrencyAmount[] = [
     data?.totalRevenue.idr != null ? ({ currency: "IDR", value: data.totalRevenue.idr } as CurrencyAmount) : null,

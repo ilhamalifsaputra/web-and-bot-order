@@ -67,6 +67,42 @@ describe("ProductDetailPage", () => {
     expect(screen.getByText("1 Month")).toBeInTheDocument();
   });
 
+  it("shows '—' (not a fake 0) in the Stock column for a denomination the server sent no stat for", async () => {
+    const missingStat = {
+      ...PRODUCT_DETAIL,
+      product: {
+        ...PRODUCT_DETAIL.product,
+        denominations: [
+          ...PRODUCT_DETAIL.product.denominations,
+          {
+            id: 20,
+            name: "3 Months",
+            price: "120000",
+            costPrice: null,
+            isActive: true,
+            type: "PRIVATE",
+            durationLabel: "Quarterly",
+          },
+        ],
+      },
+      // No "20" entry — statsByDenom is missing data for this denomination.
+    };
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(missingStat), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    render(<ProductDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("3 Months")).toBeInTheDocument());
+
+    // Column order: select, name, type, duration, price, stock, … — index 5
+    // is the Stock cell.
+    const row = screen.getByText("3 Months").closest("tr")!;
+    expect(row.querySelectorAll("td")[5]).toHaveTextContent("—");
+
+    // The denomination WITH a real stat still shows its true (possibly zero) count.
+    const otherRow = screen.getByText("1 Month").closest("tr")!;
+    expect(otherRow.querySelectorAll("td")[5]).toHaveTextContent("5");
+  });
+
   it("shows the product photo upload field with no image set", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       new Response(JSON.stringify(PRODUCT_DETAIL), { status: 200, headers: { "Content-Type": "application/json" } }),

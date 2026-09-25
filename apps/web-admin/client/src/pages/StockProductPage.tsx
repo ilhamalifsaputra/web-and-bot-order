@@ -583,7 +583,7 @@ export function StockProductPage() {
       <Tabs value={activeTab} onValueChange={changeTab}>
         <TabsList>
           <TabsTrigger value="available">Available ({statusCounts.available})</TabsTrigger>
-          <TabsTrigger value="sold">Sold ({statusCounts.sold + statusCounts.reserved})</TabsTrigger>
+          <TabsTrigger value="sold">Sold / Reserved ({statusCounts.sold + statusCounts.reserved})</TabsTrigger>
           <TabsTrigger value="dead">Dead ({statusCounts.dead})</TabsTrigger>
         </TabsList>
         <TabsContent value="available">

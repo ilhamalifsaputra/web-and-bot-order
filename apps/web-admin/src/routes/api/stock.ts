@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { logger } from "@app/core/logger";
+import { config } from "@app/core/config";
 import { CredentialKeyConfigError } from "@app/core/credentialCrypto";
 import { formatIdr, formatUsdt, usdtFromIdr } from "@app/core/formatters";
 import { StockStatus } from "@app/core/enums";
@@ -74,12 +75,17 @@ const PAGE_SIZE = 50;
 export const CREDENTIAL_KEY_ERROR_MESSAGE =
   "Stock credential encryption is not configured correctly — check CREDENTIAL_ENCRYPTION_KEY.";
 
-/** Same `<5`/`===0` thresholds the client's Status column and KPI tiles use
- * (StockPage.tsx's `stockTier`) — kept in sync manually since this is a
- * tiny, stable threshold and the two sides don't share a module. */
-function stockStatusLabel(available: number): string {
+/** Single source of truth for "low stock": `config.LOW_STOCK_THRESHOLD`,
+ * the same value GET /api/stock hands the client as `lowStockThreshold` for
+ * StockPage's Status/Stock columns, and that the dashboard's inventory route
+ * and the sidebar badge read too — `available === 0` is out, `available <=
+ * threshold` is low. Previously each of those four places hard-coded its own
+ * `<5` (this function) or `<threshold` (the sidebar), which could silently
+ * disagree; unifying on `<=` is a small, deliberate behavior change from the
+ * old `<5` here (see the T3 task brief/commit for the full comparison). */
+function stockStatusLabel(available: number, threshold: number): string {
   if (available === 0) return "Out of Stock";
-  if (available < 5) return "Low Stock";
+  if (available <= threshold) return "Low Stock";
   return "In Stock";
 }
 
@@ -90,7 +96,7 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
       stockStatusCounts(prisma),
       restockSubscriberCounts(prisma),
     ]);
-    return reply.send({ denominations, counts, waiting });
+    return reply.send({ denominations, counts, waiting, lowStockThreshold: config.LOW_STOCK_THRESHOLD });
   });
 
   // Full, unfiltered inventory export — mirrors GET /api/stock's own data
@@ -133,7 +139,7 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
         String(cnt?.sold ?? 0),
         // Same rule as the admin UI: blank unless out of stock with requests.
         available === 0 && waiting[d.id] ? String(waiting[d.id]) : "",
-        stockStatusLabel(available),
+        stockStatusLabel(available, config.LOW_STOCK_THRESHOLD),
       ]);
     }
 

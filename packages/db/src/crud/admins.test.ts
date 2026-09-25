@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 
-vi.mock("@app/core/config", () => ({ config: { ADMIN_IDS: [111] } }));
+vi.mock("@app/core/config", () => ({ config: { ADMIN_IDS: [111], LOG_LEVEL: "silent" } }));
 
 import { resolveAdminIds, ADMIN_IDS_KEY } from "./admins";
 import type { Db } from "./_types";

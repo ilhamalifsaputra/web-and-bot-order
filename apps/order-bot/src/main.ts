@@ -8,7 +8,7 @@
  *
  * Middleware order mirrors the PTB handler groups:
  *   bindUpdateId → sequentialize(per-chat) → session → conversations() →
- *   registeredUser → requireCurrency → rateLimit → commerceGate → joinGate →
+ *   registeredUser → rateLimit → commerceGate → joinGate → requireCurrency →
  *   (conversation resumes) → conversation entry triggers → commands →
  *   callback router → product-number message handler.
  *
@@ -101,10 +101,11 @@ export function buildBot(token?: string): Bot<MyContext> {
   );
   bot.use(conversations());
   bot.use(registeredUser); // upsert user, sync session.lang, block bans
-  bot.use(requireCurrency); // block customers with no display currency until /start onboarding picks one
   bot.use(rateLimit);
   bot.use(commerceGate); // block every commerce command/callback from a non-private chat (unconditional)
   bot.use(joinGate); // block every interaction until required channel/group are joined (if configured)
+  // After joinGate + rateLimit: the join prompt comes first, and these block replies are rate limited.
+  bot.use(requireCurrency); // block customers with no display currency until /start onboarding stores one
 
   // --- Conversations (resume first; consume the update if one is active) ---
   for (const spec of CONVERSATIONS) {

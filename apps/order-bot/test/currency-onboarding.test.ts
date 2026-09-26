@@ -1,12 +1,16 @@
 // setup-db MUST be first — temp DB + push before any @app import.
 import "./setup-db";
 
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { prisma, upsertUser, setUserLanguage, setUserPreferredCurrency, getUser } from "@app/db";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { logger } from "@app/core/logger";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { prisma, upsertUser, setUserLanguage, setUserPreferredCurrency, getUser, setSetting } from "@app/db";
 import { t as coreT } from "@app/core/i18n";
 import { buildSampleData, resetDb } from "../../../tests/helpers/sampleData";
 import { BotState, initialSession, type MyContext, type SessionData } from "../src/context";
-import { registeredUser, requireCurrency } from "../src/middleware";
+import { registeredUser, requireCurrency, joinGate } from "../src/middleware";
 import { routeCallback } from "../src/handlers/callbacks";
 import * as customer from "../src/handlers/customer";
 import * as ckb from "../src/keyboards/customer";
@@ -50,10 +54,16 @@ async function route(ctx: MyContext): Promise<void> {
 async function send(tgId: number, session: SessionData, opts: MakeCtxOptions): Promise<Step> {
   const { ctx, sink } = makeCtx({ from: { id: tgId, username: `u${tgId}`, first_name: "T" }, sharedSession: session, ...opts });
   let reached = false;
+  // Same relative order as main.ts: registeredUser → (rateLimit, commerceGate)
+  // → joinGate → requireCurrency. rateLimit is left out on purpose (these
+  // scripted flows send more than RATE_LIMIT_MAX updates per window);
+  // commerceGate only matters for non-private chats.
   await registeredUser(ctx, async () => {
-    await requireCurrency(ctx, async () => {
-      reached = true;
-      await route(ctx);
+    await joinGate(ctx, async () => {
+      await requireCurrency(ctx, async () => {
+        reached = true;
+        await route(ctx);
+      });
     });
   });
   return { reached, sink, ctx };
@@ -193,6 +203,21 @@ describe("cur:set callback edge cases", () => {
     expect(s.dbUser?.preferredCurrency).toBe("USD");
   });
 
+  it("logs a rejected code only in the structured metadata, never in the message string", async () => {
+    const warn = vi.spyOn(logger, "warn");
+    try {
+      const tg = nextTgId();
+      const u = await makeLegacyUser(tg, "en");
+      await setUserPreferredCurrency(prisma, u.id, "USD");
+      await tap(tg, freshSession(), "v1:cur:set:EURX");
+      const call = warn.mock.calls.find((c) => typeof c[0] === "object" && (c[0] as { code?: string }).code === "EURX");
+      expect(call).toBeDefined();
+      expect(String(call![1])).not.toContain("EURX");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("rejects an invalid code mid-onboarding without leaving the currency step", async () => {
     const tg = nextTgId();
     const s = freshSession();
@@ -294,12 +319,153 @@ describe("requireCurrency guard", () => {
     expect(member.reached).toBe(true);
   });
 
-  it("passes any update while onboarding is in progress", async () => {
+  it.each(["language", "currency"] as const)(
+    "while onboarding is at %s with no currency yet, only /start, /language, lang:* and cur:* get through",
+    async (step) => {
+      const tg = nextTgId();
+      await makeLegacyUser(tg, "en");
+      const s = freshSession();
+      await say(tg, s, "/start", "");
+      if (step === "currency") await tap(tg, s, ckb.cb("lang", "set", "en"));
+      expect(s.onboarding).toBe(step);
+
+      for (const blocked of [
+        await say(tg, s, ckb.persistentLabel("browse", "en")),
+        await say(tg, s, "1"),
+        await say(tg, s, "/menu"),
+        await say(tg, s, "/cancel"),
+        await tap(tg, s, ckb.cb("browse", "groups")),
+        await tap(tg, s, ckb.cb("wallet", "view")),
+      ]) {
+        expect(blocked.reached).toBe(false);
+        expect(sentIncludes(blocked.sink, blockedText("en"))).toBe(true);
+      }
+      expect(s.onboarding).toBe(step); // blocking never corrupts the onboarding step
+
+      expect((await say(tg, s, "/language")).reached).toBe(true);
+      expect((await tap(tg, s, ckb.cb("lang", "menu"))).reached).toBe(true);
+    },
+  );
+
+  it("a configured user with a stale onboarding value is unaffected: /language → lang:set ends at the main menu", async () => {
+    const tg = nextTgId();
+    const u = await makeLegacyUser(tg, "en");
+    await setUserPreferredCurrency(prisma, u.id, "USD");
+    const s = freshSession();
+    s.onboarding = "language"; // left over from an abandoned /start
+
+    expect((await tap(tg, s, ckb.cb("browse", "groups"))).reached).toBe(true);
+    expect((await say(tg, s, "/language")).reached).toBe(true);
+    const langTap = await tap(tg, s, ckb.cb("lang", "set", "id"));
+    expect(isMainMenu(langTap.sink)).toBe(true);
+    expect(sentIncludes(langTap.sink, ckb.cb("cur", "set", "USD"))).toBe(false);
+    expect(s.onboarding ?? null).toBeNull();
+    expect((await getUser(prisma, u.id))?.preferredCurrency).toBe("USD");
+  });
+});
+
+describe("requireCurrency runs after joinGate", () => {
+  beforeEach(async () => {
+    await resetDb(prisma);
+  });
+
+  it("main.ts wires requireCurrency after registeredUser, rateLimit, commerceGate and joinGate", () => {
+    const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "src", "main.ts"), "utf8");
+    const at = (mw: string) => src.indexOf(`bot.use(${mw});`);
+    for (const mw of ["registeredUser", "rateLimit", "commerceGate", "joinGate", "requireCurrency"]) {
+      expect(at(mw), `${mw} is wired`).toBeGreaterThan(-1);
+    }
+    expect(at("requireCurrency")).toBeGreaterThan(at("joinGate"));
+    expect(at("joinGate")).toBeGreaterThan(at("rateLimit"));
+    expect(at("rateLimit")).toBeGreaterThan(at("registeredUser"));
+  });
+
+  it("a not-yet-joined user with no currency sees the join prompt first, then reaches the currency flow right after joining", async () => {
+    await setSetting(prisma, "join_gate_channel_id", "-100111");
     const tg = nextTgId();
     await makeLegacyUser(tg, "en");
     const s = freshSession();
-    s.onboarding = "currency";
-    const r = await tap(tg, s, ckb.cb("noop"));
-    expect(r.reached).toBe(true);
+    let joined = false;
+    const getChatMember = async () => ({ status: joined ? "member" : "left" });
+    const withGate = (o: MakeCtxOptions) => send(tg, s, { getChatMember, ...o });
+
+    const start = await withGate({ text: "/start", match: "" });
+    expect(start.reached).toBe(false);
+    expect(sentIncludes(start.sink, coreT("gate.btn_check_again", "en"))).toBe(true);
+    expect(sentIncludes(start.sink, blockedText("en"))).toBe(false);
+
+    joined = true;
+    // "I've joined" re-check (forces a fresh membership check, no cache stall).
+    const recheck = await withGate({ callbackData: ckb.cb("menu", "main") });
+    expect(sentIncludes(recheck.sink, blockedText("en"))).toBe(true);
+
+    const start2 = await withGate({ text: "/start", match: "" });
+    expect(start2.reached).toBe(true);
+    expect(s.onboarding).toBe("language");
+    expect((await withGate({ callbackData: ckb.cb("lang", "set", "en") })).reached).toBe(true);
+    const cur = await withGate({ callbackData: ckb.cb("cur", "set", "USD") });
+    expect(cur.reached).toBe(true);
+    expect((await dbUserByTg(tg)).preferredCurrency).toBe("USD");
+  });
+});
+
+describe("onboarding duplicate taps and deep-link hygiene", () => {
+  beforeEach(async () => {
+    await resetDb(prisma);
+  });
+
+  it("a double lang:set tap during onboarding keeps showing the currency picker", async () => {
+    const tg = nextTgId();
+    const s = freshSession();
+    await say(tg, s, "/start", "");
+    await tap(tg, s, ckb.cb("lang", "set", "en"));
+    const second = await tap(tg, s, ckb.cb("lang", "set", "id"));
+    expect(s.onboarding).toBe("currency");
+    expect(sentIncludes(second.sink, ckb.cb("cur", "set", "USD"))).toBe(true);
+    expect(isMainMenu(second.sink)).toBe(false);
+    expect((await dbUserByTg(tg)).preferredCurrency).toBeNull();
+  });
+
+  it("a plain /start drops a deep link remembered by an earlier /start prod_<id>", async () => {
+    const sample = await buildSampleData(prisma);
+    const tg = nextTgId();
+    const s = freshSession();
+    await say(tg, s, `/start prod_${sample.product.id}`, `prod_${sample.product.id}`);
+    expect(s.pendingDeepLinkDenomId).toBe(sample.product.id);
+    await say(tg, s, "/start", "");
+    expect(s.pendingDeepLinkDenomId).toBeUndefined();
+    await tap(tg, s, ckb.cb("lang", "set", "en"));
+    const cur = await tap(tg, s, ckb.cb("cur", "set", "USD"));
+    expect(sentIncludes(cur.sink, "Netflix Premium 1M")).toBe(false);
+    expect(isMainMenu(cur.sink)).toBe(true);
+  });
+
+  it("an abandoned deep-link onboarding never opens the product on a later currency tap", async () => {
+    const sample = await buildSampleData(prisma);
+    const tg = nextTgId();
+    const u = await makeLegacyUser(tg, "en");
+    await setUserPreferredCurrency(prisma, u.id, "USD");
+    const s = freshSession();
+    await say(tg, s, `/start prod_${sample.product.id}`, `prod_${sample.product.id}`);
+    // Abandon onboarding through /language, then later change currency.
+    await say(tg, s, "/language");
+    expect(s.pendingDeepLinkDenomId).toBeUndefined();
+    await tap(tg, s, ckb.cb("lang", "set", "en"));
+    const cur = await tap(tg, s, ckb.cb("cur", "set", "IDR"));
+    expect(sentIncludes(cur.sink, "Netflix Premium 1M")).toBe(false);
+    expect(isMainMenu(cur.sink)).toBe(true);
+  });
+
+  it("a leftover pendingDeepLinkDenomId outside onboarding is ignored and cleared by a currency tap", async () => {
+    const sample = await buildSampleData(prisma);
+    const tg = nextTgId();
+    const u = await makeLegacyUser(tg, "en");
+    await setUserPreferredCurrency(prisma, u.id, "USD");
+    const s = freshSession();
+    s.pendingDeepLinkDenomId = sample.product.id;
+    const cur = await tap(tg, s, ckb.cb("cur", "set", "IDR"));
+    expect(sentIncludes(cur.sink, "Netflix Premium 1M")).toBe(false);
+    expect(isMainMenu(cur.sink)).toBe(true);
+    expect(s.pendingDeepLinkDenomId).toBeUndefined();
   });
 });

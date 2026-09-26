@@ -148,11 +148,18 @@ const CURRENCY_EXEMPT_CALLBACK_RE = new RegExp(`^${ckb.CB_PREFIX}:(lang|cur):`);
  * every callback, and the persistent-keyboard / typed-number text path.
  *
  * Never guesses a currency on the user's behalf. Passes through: updates
- * without a user, non-private chats (commerceGate/joinGate own those),
+ * without a user, non-private chats (commerceGate already drops commerce
+ * there; plain group text such as ticket support must keep working),
  * updates that are neither a message nor a callback (e.g. my_chat_member),
- * admins, anything while /start onboarding is in progress, `/start`,
- * `/language`, and `v1:lang:*` / `v1:cur:*` callbacks. Mirrors joinGate's
- * callback handling: answer the tap (alert), then post the message.
+ * admins, `/start`, `/language`, and `v1:lang:*` / `v1:cur:*` callbacks.
+ * An in-progress /start onboarding is NOT an exemption: until a currency is
+ * actually stored, nothing else (persistent keyboard, typed numbers, /menu,
+ * /cancel, product/checkout/wallet callbacks) gets through.
+ *
+ * Wired AFTER rateLimit and joinGate (main.ts): a user who hasn't joined the
+ * required channel sees the join prompt first, and these blocked replies are
+ * rate limited like any other update. Mirrors joinGate's callback handling:
+ * answer the tap (alert), then post the message.
  */
 export const requireCurrency: MiddlewareFn<MyContext> = async (ctx, next) => {
   const from = ctx.from;
@@ -160,7 +167,6 @@ export const requireCurrency: MiddlewareFn<MyContext> = async (ctx, next) => {
   if (!isPrivateChat(ctx)) return next();
   if (!ctx.message && !ctx.callbackQuery) return next();
   if (isAdmin(from.id)) return next();
-  if (ctx.session.onboarding) return next();
   if (ctx.session.dbUser?.preferredCurrency) return next();
 
   const text = ctx.message?.text;

@@ -772,7 +772,7 @@ export async function handleProductNumber(ctx: MyContext): Promise<void> {
     case "referral":
       return void (await viewReferral(ctx));
     case "language":
-      return void (await showLanguageMenu(ctx));
+      return void (await openLanguageMenu(ctx));
     case "faq":
       return void (await showFaq(ctx));
     case "terms":
@@ -1501,13 +1501,31 @@ export async function setLanguage(ctx: MyContext, code: string): Promise<void> {
   info.language = code.toUpperCase();
   ctx.session.lang = code.toLowerCase();
   if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "language.set") });
-  if (ctx.session.onboarding === "language") {
+  if (ctx.session.onboarding === "language" || ctx.session.onboarding === "currency") {
     // /start onboarding: language done, currency next (never derived from it).
+    // A duplicate/stale lang:set tap while already on the currency step just
+    // re-shows the currency picker and stays there.
     ctx.session.onboarding = "currency";
     await showCurrencyMenu(ctx);
     return;
   }
   await showMainMenu(ctx);
+}
+
+/**
+ * Language settings entry points outside /start (/language, the Help Center
+ * button, the persistent-keyboard label). A user who already has a currency
+ * and is sitting on a leftover, unfinished /start onboarding abandons it
+ * here, so their language pick ends at the main menu and a remembered deep
+ * link can never pop up later. A user with no currency keeps their
+ * onboarding (they still have to pick one).
+ */
+export async function openLanguageMenu(ctx: MyContext): Promise<void> {
+  if (ctx.session.dbUser?.preferredCurrency) {
+    ctx.session.onboarding = null;
+    ctx.session.pendingDeepLinkDenomId = undefined;
+  }
+  await showLanguageMenu(ctx);
 }
 
 export async function showCurrencyMenu(ctx: MyContext): Promise<void> {
@@ -1524,7 +1542,7 @@ export async function showCurrencyMenu(ctx: MyContext): Promise<void> {
 export async function setCurrency(ctx: MyContext, code: string): Promise<void> {
   const currency = parseDisplayCurrency(code);
   if (!currency) {
-    logger.warn(`A currency button carried the unsupported code "${code}" — treated as a stale screen and nothing was changed`);
+    logger.warn({ code }, "A currency button carried an unsupported currency code, so it was treated as a stale screen and nothing was changed.");
     if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
     return;
   }
@@ -1533,10 +1551,13 @@ export async function setCurrency(ctx: MyContext, code: string): Promise<void> {
   info.preferredCurrency = currency;
   if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "currency.set") });
 
+  // A remembered deep link only ever resumes the onboarding that stored it;
+  // it is cleared either way so a later currency tap can't open it.
+  const wasOnboarding = ctx.session.onboarding != null;
   ctx.session.onboarding = null;
   const pendingDenomId = ctx.session.pendingDeepLinkDenomId;
   ctx.session.pendingDeepLinkDenomId = undefined;
-  if (pendingDenomId !== undefined) {
+  if (wasOnboarding && pendingDenomId !== undefined) {
     await browseDenomination(ctx, pendingDenomId);
     return;
   }
@@ -1662,7 +1683,7 @@ export async function listprodukCommand(ctx: MyContext): Promise<void> {
 
 export async function languageCommand(ctx: MyContext): Promise<void> {
   ctx.session.awaitingQtyDenomId = undefined;
-  await showLanguageMenu(ctx);
+  await openLanguageMenu(ctx);
 }
 
 export async function searchCommand(ctx: MyContext): Promise<void> {

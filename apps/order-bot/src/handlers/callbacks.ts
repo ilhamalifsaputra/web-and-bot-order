@@ -234,7 +234,7 @@ const dispatchTopup: DomainDispatcher = async (ctx, parts) => {
 
 const dispatchLang: DomainDispatcher = async (ctx, parts) => {
   const action = parts[2];
-  if (action === "menu") await customer.showLanguageMenu(ctx);
+  if (action === "menu") await customer.openLanguageMenu(ctx);
   else if (action === "set") await customer.setLanguage(ctx, parts[3]!);
 };
 

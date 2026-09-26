@@ -158,4 +158,9 @@ describe("currency onboarding copy", () => {
     }
     expect(en["currency.required"]).toBe("Please run /start and select your preferred currency first.");
   });
+
+  it("defines the price-vs-payable line with {total} and {pay} in both languages", () => {
+    expect(en["checkout.price_and_pay"]).toBe("Total {total} · Pay {pay}");
+    expect(id["checkout.price_and_pay"]).toBe("Total {total} · Bayar {pay}");
+  });
 });

@@ -182,6 +182,7 @@
   "checkout.paydisini_instructions": "🧾 <b>Order {code}</b>\nScan the QR below with any QRIS or e-wallet app to pay.\n\n💵 Amount: <b>{amount}</b>\n⏳ Pay before: {expiry}\n\nDelivery is automatic once your payment is confirmed.",
   "checkout.qris_instructions": "🧾 <b>Order {code}</b>\nScan the QR below with any QRIS app (GoPay, OVO, DANA, bank).\n\n🧮 Subtotal: {subtotal}\n➕ QRIS admin fee: {fee}\n💵 Total to pay: <b>{amount}</b>\n⏳ Pay before: {expiry}\n\nDelivery is automatic once your payment is confirmed.",
   "checkout.min_amount_note": "ℹ️ Minimum payment for this method: {min}.",
+  "checkout.price_and_pay": "Total {total} · Pay {pay}",
   "checkout.no_method_for_total": "This total is below the minimum every available payment method accepts. Add more items, or buy a larger package.",
   "checkout.payment_unavailable": "This payment method isn't available right now. Please try a different payment method, or come back a little later.",
   "checkout.rail_changed_toast": "Payment method updated for this order.",

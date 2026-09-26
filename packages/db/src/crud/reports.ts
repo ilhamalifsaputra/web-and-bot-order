@@ -398,19 +398,23 @@ function isActionableLedgerOrderStatus(status: string | undefined): boolean {
 }
 
 /**
- * Like `manualMatchQueueCounts`, but only rows that still need an admin: a
- * `delivery_failed`/`unmatched` row counts when it has no order, its order no
- * longer exists, or its order is not DELIVERED/REFUNDED/CANCELLED. This is the
- * dashboard's "Pending actions" figure; the Payments page's tiles keep the
- * lifetime tally from `ledgerOutcomeCounts`.
+ * Like `ledgerOutcomeCounts`, but only rows that still need an admin: a row
+ * counts when it has no order, its order no longer exists, or its order is not
+ * DELIVERED/REFUNDED/CANCELLED (`isActionableLedgerOrderStatus`, the same rule
+ * `listCombinedLedger`'s `actionable` filter applies). The Payments page uses
+ * this for its tiles and outcome dropdown under `?actionable=1`, so they equal
+ * the list total.
  *
  * None of the five ledger tables has a Prisma relation to `Order` (a bare
  * `orderId` column only), so this is two steps: fetch the rows' order ids,
- * then ONE `order.findMany` for the resolved ones among them.
+ * then ONE `order.findMany` for the statuses of those orders.
  */
-export async function actionableManualMatchQueueCounts(db: Db): Promise<ManualMatchQueueCounts> {
+export async function actionableLedgerOutcomeCounts(
+  db: Db,
+  onlyOutcomes?: readonly string[],
+): Promise<Record<string, number>> {
   const args = {
-    where: { outcome: { in: ["unmatched", "delivery_failed"] } },
+    ...(onlyOutcomes ? { where: { outcome: { in: [...onlyOutcomes] } } } : {}),
     select: { outcome: true, orderId: true },
   };
   const tables = await Promise.all([
@@ -428,14 +432,24 @@ export async function actionableManualMatchQueueCounts(db: Db): Promise<ManualMa
     : [];
   const statusById = new Map(orders.map((o) => [o.id, o.status]));
 
-  const result: ManualMatchQueueCounts = { unmatched: 0, deliveryFailed: 0 };
+  const counts: Record<string, number> = {};
   for (const r of rows) {
     const status = r.orderId != null ? statusById.get(r.orderId) : undefined;
     if (!isActionableLedgerOrderStatus(status)) continue;
-    if (r.outcome === "unmatched") result.unmatched += 1;
-    else result.deliveryFailed += 1;
+    counts[r.outcome] = (counts[r.outcome] ?? 0) + 1;
   }
-  return result;
+  return counts;
+}
+
+/**
+ * Like `manualMatchQueueCounts`, but only rows that still need an admin (see
+ * `actionableLedgerOutcomeCounts`). This is the dashboard's "Pending actions"
+ * figure; the Payments page's tiles keep the lifetime tally from
+ * `ledgerOutcomeCounts` unless `?actionable=1` is set.
+ */
+export async function actionableManualMatchQueueCounts(db: Db): Promise<ManualMatchQueueCounts> {
+  const counts = await actionableLedgerOutcomeCounts(db, ["unmatched", "delivery_failed"]);
+  return { unmatched: counts["unmatched"] ?? 0, deliveryFailed: counts["delivery_failed"] ?? 0 };
 }
 
 /**

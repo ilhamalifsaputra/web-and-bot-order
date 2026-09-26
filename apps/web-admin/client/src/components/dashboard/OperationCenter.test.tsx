@@ -35,7 +35,7 @@ describe("OperationCenter", () => {
     expect(screen.getByText("Awaiting Fulfillment")).toBeInTheDocument();
     // Failed Deliveries card links to the payments ledger filtered to delivery failures.
     const failedLink = screen.getByText("Failed Deliveries").closest("a");
-    expect(failedLink).toHaveAttribute("href", "/payments?outcome=delivery_failed");
+    expect(failedLink).toHaveAttribute("href", "/payments?outcome=delivery_failed&actionable=1");
     // Expired Payments has no orders-page filter, so its card is not a link.
     expect(screen.getByText("Expired Payments").closest("a")).toBeNull();
     // Awaiting Fulfillment (the NEW manual-fulfilment queue) links to a

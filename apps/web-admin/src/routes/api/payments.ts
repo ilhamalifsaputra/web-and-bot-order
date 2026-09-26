@@ -10,6 +10,7 @@ import {
   resolveBinanceInternalConfig,
   countLedgerRowsToday,
   ledgerOutcomeCounts,
+  actionableLedgerOutcomeCounts,
   countUnderpaid,
   getBinancePollHealth,
   TX_OUTCOMES,
@@ -97,7 +98,9 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
     const [ledgerPage, todayCount, counts, health, underpaid, underpaidCount, pendingInternal] = await Promise.all([
       listCombinedLedger(prisma, { outcome, q: search, kind, actionable, limit: PAGE_SIZE, offset }),
       countLedgerRowsToday(prisma),
-      ledgerOutcomeCounts(prisma),
+      // Under ?actionable=1 the tiles and dropdown count by the same rule the
+      // list filters by, so a tile equals the list total it links to.
+      actionable ? actionableLedgerOutcomeCounts(prisma) : ledgerOutcomeCounts(prisma),
       getBinancePollHealth(prisma),
       listOrders(prisma, { status: OrderStatus.UNDERPAID, limit: 50 }),
       // The list above is capped at 50; the badge needs the real total, the

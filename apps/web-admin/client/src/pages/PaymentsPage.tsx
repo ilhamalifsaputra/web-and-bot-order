@@ -181,14 +181,15 @@ interface OrderCodeSearchResult {
   exactOrderId: number | null;
 }
 
-function usePayments(outcome: string, kind: string, q: string, page: number) {
+function usePayments(outcome: string, kind: string, q: string, page: number, actionable: boolean) {
   return useQuery<PaymentsData>({
-    queryKey: ["payments", outcome, kind, q, page],
+    queryKey: ["payments", outcome, kind, q, page, actionable],
     queryFn: async () => {
       const params = new URLSearchParams({ page: String(page) });
       if (outcome) params.set("outcome", outcome);
       if (kind) params.set("kind", kind);
       if (q) params.set("q", q);
+      if (actionable) params.set("actionable", "1");
       return apiGet<PaymentsData>(`/api/payments?${params.toString()}`);
     },
   });
@@ -230,7 +231,17 @@ function useOrderCodeSuggest(orderCode: string) {
 
 export function PaymentsPage() {
   const qc = useQueryClient();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
+  // `?actionable=1` (the dashboard "Pending Actions" links) limits the ledger,
+  // tiles and dropdown counts to rows whose order still needs an admin. Kept in
+  // the URL so the note below can clear it with one click.
+  const actionable = searchParams.get("actionable") === "1";
+  const clearActionable = () =>
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete("actionable");
+      return next;
+    });
   // Seeds the outcome filter from `?outcome=` on mount (e.g. the Operation
   // Center's "Failed Deliveries" card links here as
   // /payments?outcome=delivery_failed) — same pattern as OrdersPage.tsx's
@@ -259,7 +270,7 @@ export function PaymentsPage() {
     return () => clearTimeout(timer);
   }, [qDraft]);
   useEffect(() => { setSelected(new Set()); }, [outcome, kind, q, page]);
-  const { data, isError } = usePayments(outcome, kind, q, page);
+  const { data, isError } = usePayments(outcome, kind, q, page, actionable);
   const { suggestion, searched, loading: suggestLoading } = useOrderCodeSuggest(matchForm.order_code);
   const { suggestion: creditSuggestion, loading: creditSuggestLoading } = useOrderCodeSuggest(creditOrderCode);
   const underpaid = data?.underpaid ?? [];
@@ -656,6 +667,15 @@ export function PaymentsPage() {
           />
           </CardContent>
         </Card>
+      )}
+
+      {actionable && (
+        <p className="mb-2 text-xs text-ink-soft">
+          Showing only items still needing action.{" "}
+          <button type="button" className="font-medium text-pine hover:underline" onClick={clearActionable}>
+            Show all
+          </button>
+        </p>
       )}
 
       {/* Ledger search + outcome filter */}

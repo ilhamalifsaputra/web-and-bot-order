@@ -619,6 +619,32 @@ describe("PaymentsPage", () => {
     );
   });
 
+  it("forwards ?actionable=1 to the ledger request and shows a note that clears it", async () => {
+    const user = userEvent.setup();
+    mockPaymentsFetch({ enabled: true, ledger: [], total: 0, todayCount: 0, page: 1, hasNext: false, outcomes: ["delivery_failed"], counts: {} });
+    render(
+      <WrapperAt initialEntries={["/payments?outcome=delivery_failed&actionable=1"]}>
+        <PaymentsPage />
+      </WrapperAt>,
+    );
+    await waitFor(() => expect(apiGet).toHaveBeenCalledWith(expect.stringContaining("actionable=1")));
+    expect(screen.getByText(/showing only items still needing action/i)).toBeInTheDocument();
+
+    vi.mocked(apiGet).mockClear();
+    await user.click(screen.getByRole("button", { name: /show all/i }));
+    await waitFor(() => expect(screen.queryByText(/showing only items still needing action/i)).not.toBeInTheDocument());
+    await waitFor(() => expect(apiGet).toHaveBeenCalled());
+    expect(vi.mocked(apiGet).mock.calls.some(([p]) => String(p).startsWith("/api/payments") && !String(p).includes("actionable"))).toBe(true);
+  });
+
+  it("does not send actionable when the URL flag is absent", async () => {
+    mockPaymentsFetch({ enabled: true, ledger: [], total: 0, todayCount: 0, page: 1, hasNext: false, outcomes: [], counts: {} });
+    render(<PaymentsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(apiGet).toHaveBeenCalled());
+    expect(vi.mocked(apiGet).mock.calls.every(([p]) => !String(p).includes("actionable"))).toBe(true);
+    expect(screen.queryByText(/showing only items still needing action/i)).not.toBeInTheDocument();
+  });
+
   it("renders a gateway column and omits the row-action dropdown for a non-Binance row, even when unmatched", async () => {
     const ledger = [
       { id: 1, gateway: "binance", reference: "BN-1", amount: "1", currency: "IDR", outcome: "unmatched", memo: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },

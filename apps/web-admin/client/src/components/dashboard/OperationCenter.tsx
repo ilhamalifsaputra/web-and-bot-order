@@ -21,7 +21,7 @@ const PROCESSING_STATUSES = "CONFIRMED,PAID";
 const CARDS: OpCardDef[] = [
   { key: "pendingPayments", label: "Pending Payments", href: `/orders?status=${PENDING_PAYMENT_STATUSES}` },
   { key: "manualReviews", label: "Manual Reviews", href: "/orders?status=PENDING_VERIFICATION" },
-  { key: "failedDeliveries", label: "Failed Deliveries", href: "/payments?outcome=delivery_failed", critical: true },
+  { key: "failedDeliveries", label: "Failed Deliveries", href: "/payments?outcome=delivery_failed&actionable=1", critical: true },
   { key: "ordersProcessing", label: "Orders Processing", href: `/orders?status=${PROCESSING_STATUSES}` },
   // No orders-page filter isolates expired payments, so this card is a non-clickable counter.
   { key: "expiredPayments", label: "Expired Payments", href: null },

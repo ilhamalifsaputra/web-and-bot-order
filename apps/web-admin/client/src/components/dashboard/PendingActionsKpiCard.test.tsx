@@ -2,6 +2,7 @@ import "@testing-library/jest-dom";
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router-dom";
 import { PendingActionsKpiCard } from "./PendingActionsKpiCard";
 
 function renderWith(pendingActions: unknown) {
@@ -20,17 +21,31 @@ function renderWith(pendingActions: unknown) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <PendingActionsKpiCard />
+      <MemoryRouter>
+        <PendingActionsKpiCard />
+      </MemoryRouter>
     </QueryClientProvider>,
   );
 }
 
 describe("PendingActionsKpiCard", () => {
-  it("sums the four pending-action counts and lists each", async () => {
+  it("shows the total and four drill-down links with the exact hrefs", async () => {
     renderWith({ toReview: 3, refundDecisions: 1, failedDeliveries: 2, manualApprovals: 0 });
     await waitFor(() => expect(screen.getByText("6")).toBeInTheDocument()); // 3+1+2+0
-    expect(screen.getByText(/3 to review/i)).toBeInTheDocument();
-    expect(screen.getByText(/2 failed deliveries/i)).toBeInTheDocument();
+    const hrefOf = (name: RegExp) => screen.getByRole("link", { name }).getAttribute("href");
+    expect(hrefOf(/payments to review/i)).toBe("/orders?status=PENDING_VERIFICATION");
+    expect(hrefOf(/underpaid orders/i)).toBe("/orders?status=UNDERPAID");
+    expect(hrefOf(/failed deliveries/i)).toBe("/payments?outcome=delivery_failed&actionable=1");
+    expect(hrefOf(/unmatched payments/i)).toBe("/payments?outcome=unmatched&actionable=1");
+    expect(screen.getAllByRole("link")).toHaveLength(4);
+  });
+
+  it("still renders a zero row, muted, as a link", async () => {
+    renderWith({ toReview: 3, refundDecisions: 1, failedDeliveries: 2, manualApprovals: 0 });
+    const link = await screen.findByRole("link", { name: /unmatched payments/i });
+    expect(link).toHaveTextContent("0");
+    expect(link.className).toMatch(/text-ink-soft/);
+    expect(screen.getByRole("link", { name: /failed deliveries/i }).className).not.toMatch(/text-ink-soft/);
   });
 
   it("shows an all-clear empty state when every count is zero", async () => {

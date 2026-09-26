@@ -324,6 +324,42 @@ describe("GET /api/dashboard/operations", () => {
   });
 });
 
+describe("actionable counts across Operation Center and Payments", () => {
+  async function seed() {
+    const buyer = await upsertUser(prisma, { telegramId: 42, username: "buyer", fullName: "Buyer" });
+    const mk = (code: string, status: string) =>
+      prisma.order.create({ data: { orderCode: code, userId: buyer.id, subtotalAmount: "1", totalAmount: "1", status } });
+    const delivered = await mk("ORD-AC-D", "DELIVERED");
+    const processing = await mk("ORD-AC-P", "PROCESSING");
+    await prisma.processedTokopayTx.create({ data: { trxId: "TP-AC-1", amount: "1", outcome: "delivery_failed", orderId: delivered.id } });
+    await prisma.processedBybitTx.create({ data: { bybitTxId: "BY-AC-2", amount: "1", outcome: "delivery_failed", orderId: processing.id } });
+    await prisma.processedBinanceTx.create({ data: { binanceTxId: "BN-AC-3", amount: "1", outcome: "unmatched" } });
+    await prisma.processedTokopayTx.create({ data: { trxId: "TP-AC-4", amount: "1", outcome: "unmatched", orderId: delivered.id } });
+  }
+
+  it("/operations failedDeliveries excludes a row whose order is DELIVERED and equals the actionable Payments total", async () => {
+    await seed();
+    const ops = (await get("/api/dashboard/operations", cookie)).json();
+    expect(ops.failedDeliveries).toBe(1);
+    const list = (await get("/api/payments?outcome=delivery_failed&actionable=1", cookie)).json();
+    expect(list.total).toBe(ops.failedDeliveries);
+  });
+
+  it("/api/payments counts equal the list totals with actionable=1, and stay lifetime without it", async () => {
+    await seed();
+    const on = (await get("/api/payments?actionable=1", cookie)).json();
+    expect(on.counts.delivery_failed).toBe(1);
+    expect(on.counts.unmatched).toBe(1);
+    for (const outcome of ["delivery_failed", "unmatched"]) {
+      const list = (await get(`/api/payments?outcome=${outcome}&actionable=1`, cookie)).json();
+      expect(list.total).toBe(on.counts[outcome]);
+    }
+    const off = (await get("/api/payments", cookie)).json();
+    expect(off.counts.delivery_failed).toBe(2);
+    expect(off.counts.unmatched).toBe(2);
+  });
+});
+
 describe("GET /api/dashboard/inventory", () => {
   it("anon gets a JSON 401", async () => {
     const res = await get("/api/dashboard/inventory", null);

@@ -23,7 +23,6 @@ import {
   refundTotalsSince,
   profitSummarySince,
   ordersByStatusSince,
-  manualMatchQueueCounts,
   actionableManualMatchQueueCounts,
   countPendingVerifications,
   countUnderpaid,
@@ -230,7 +229,7 @@ export default async function dashboardApiRoutes(app: FastifyInstance): Promise<
       await Promise.all([
         countPendingPaymentLike(prisma),
         countPendingVerifications(prisma),
-        manualMatchQueueCounts(prisma),
+        actionableManualMatchQueueCounts(prisma),
         countProcessing(prisma),
         countExpiredPending(prisma, now),
         countAwaitingManualFulfillment(prisma),

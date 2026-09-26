@@ -6,6 +6,7 @@
  */
 import { randomInt, randomBytes } from "node:crypto";
 import { Decimal } from "./money";
+import { DisplayCurrency } from "./enums";
 
 /** Round to `decimals` places, half-up (matches Python quantize_money). */
 export function quantizeMoney(amount: Decimal.Value, decimals = 2): Decimal {
@@ -96,6 +97,88 @@ export function formatMoney(amount: Decimal.Value, currency: string): string {
  */
 export function usdtFromIdr(idr: Decimal.Value, rate: Decimal.Value): Decimal {
   return new Decimal(idr).div(rate).toDecimalPlaces(2, Decimal.ROUND_CEIL);
+}
+
+/** Result of converting a canonical IDR amount into a user's display currency. */
+export type DisplayConversion =
+  | { ok: true; currency: DisplayCurrency; amount: Decimal }
+  | { ok: false; reason: "rate_unavailable" };
+
+/** A rate usable for USD display: present, finite and strictly positive. */
+function usableRate(fx: Decimal.Value | null | undefined): Decimal | null {
+  if (fx == null) return null;
+  let rate: Decimal;
+  try {
+    rate = new Decimal(fx);
+  } catch {
+    return null;
+  }
+  return rate.isFinite() && rate.gt(0) ? rate : null;
+}
+
+/**
+ * Convert a canonical IDR amount for DISPLAY in `currency` (the user's
+ * `preferredCurrency`). IDR is returned unchanged. USD is {@link usdtFromIdr}
+ * — the same ceil-to-0.01 quote the USDT rails charge, so the displayed price
+ * never disagrees with the invoice. When the rate is missing/stale (callers
+ * pass `getUsdIdrRate`'s null through), zero, negative or non-finite, the
+ * result is `rate_unavailable` — a rate is never invented.
+ */
+export function convertIdrToDisplay(
+  idrAmount: Decimal.Value,
+  currency: DisplayCurrency,
+  fx: Decimal.Value | null | undefined,
+): DisplayConversion {
+  if (currency === DisplayCurrency.IDR) {
+    return { ok: true, currency: DisplayCurrency.IDR, amount: new Decimal(idrAmount) };
+  }
+  const rate = usableRate(fx);
+  if (!rate) return { ok: false, reason: "rate_unavailable" };
+  return { ok: true, currency: DisplayCurrency.USD, amount: usdtFromIdr(idrAmount, rate) };
+}
+
+/** "$1,250.00" — 2dp, comma thousands. Decimal-based, never a float. */
+function formatUsdDisplay(amount: Decimal): string {
+  const fixed = amount.abs().toFixed(2, Decimal.ROUND_HALF_UP);
+  const [whole, cents] = fixed.split(".");
+  const grouped = (whole ?? "0").replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return `${amount.isNegative() && !amount.isZero() ? "-" : ""}$${grouped}.${cents}`;
+}
+
+/** What {@link formatDisplayMoneyResult} rendered: `currency` is the currency
+ * actually shown, and `fellBack` is true when USD was asked for but the rate
+ * was unavailable so the explicit IDR string was shown instead. */
+export interface DisplayMoneyText {
+  text: string;
+  currency: DisplayCurrency;
+  fellBack: boolean;
+}
+
+/**
+ * Render a canonical IDR amount in the user's display currency: IDR →
+ * {@link formatIdr} ("Rp79.000"); USD → "$4.94". If USD is requested without a
+ * usable rate the text falls back to the explicit "Rp…" string — never a bare
+ * number and never a "$" figure derived without a rate.
+ */
+export function formatDisplayMoneyResult(
+  idrAmount: Decimal.Value,
+  currency: DisplayCurrency,
+  fx: Decimal.Value | null | undefined,
+): DisplayMoneyText {
+  const conv = convertIdrToDisplay(idrAmount, currency, fx);
+  if (conv.ok && conv.currency === DisplayCurrency.USD) {
+    return { text: formatUsdDisplay(conv.amount), currency: DisplayCurrency.USD, fellBack: false };
+  }
+  return { text: formatIdr(idrAmount), currency: DisplayCurrency.IDR, fellBack: !conv.ok };
+}
+
+/** {@link formatDisplayMoneyResult}'s text only. */
+export function formatDisplayMoney(
+  idrAmount: Decimal.Value,
+  currency: DisplayCurrency,
+  fx: Decimal.Value | null | undefined,
+): string {
+  return formatDisplayMoneyResult(idrAmount, currency, fx).text;
 }
 
 const ORD_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";

@@ -40,6 +40,28 @@ export const zLanguage = z.nativeEnum(Language);
 export const langCode = (l: string | null | undefined): string =>
   (l ?? "EN").toLowerCase();
 
+/**
+ * A user's DISPLAY currency preference (`User.preferredCurrency`). Display-only:
+ * catalog prices stay canonical IDR and the payment currency is still chosen at
+ * pay time. "USD" here means the USDT-derived quote (`usdtFromIdr`, 1 USDT =
+ * 1 USD), so what a USD viewer sees is exactly what the USDT rails charge.
+ * A NULL column means "not chosen yet" — deliberately not an enum member.
+ */
+export const DisplayCurrency = {
+  IDR: "IDR",
+  USD: "USD",
+} as const;
+export type DisplayCurrency = (typeof DisplayCurrency)[keyof typeof DisplayCurrency];
+export const DISPLAY_CURRENCIES: readonly DisplayCurrency[] = Object.values(DisplayCurrency);
+export const zDisplayCurrency = z.nativeEnum(DisplayCurrency);
+
+/** Case-STRICT parse of a stored/submitted display currency: only exactly
+ * "USD" or "IDR" pass. Anything else ("usd", "$", "Rp", "EUR", "", null, a
+ * number) is null — callers must never guess a currency from a symbol. */
+export function parseDisplayCurrency(value: unknown): DisplayCurrency | null {
+  return value === DisplayCurrency.IDR || value === DisplayCurrency.USD ? value : null;
+}
+
 export const ProductType = {
   SHARED: "SHARED",
   PRIVATE: "PRIVATE",

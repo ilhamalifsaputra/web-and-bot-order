@@ -323,9 +323,12 @@ interface DenominationLike {
 /**
  * Denomination picker shown when a customer taps a mid-tier Product with ≥2
  * active denominations: one button per denomination (tapping opens its detail
- * bubble via `browse:denom`), laid out 2 per row. The buttons carry only the
- * plan name — price and stock live in the message body (built by
- * `browseProduct`), so the keyboard stays a clean list of plan types. A
+ * bubble via `browse:denom`), laid out 2 per row. By default a button carries
+ * only the plan name and price/stock live in the message body (built by
+ * `browseProduct`). A Game Top Up SKU with qtyValue/qtyUnit instead arrives
+ * with a precomputed `buttonLabel` carrying its own price (qty + unit +
+ * price); when every button does, `browseProduct` drops the per-plan
+ * price/stock lines and the body shows game info instead. A
  * `Perbarui`/Refresh row re-renders the picker (re-reads stock + the "updated"
  * timestamp) and a Back row returns to the flat product list.
  */

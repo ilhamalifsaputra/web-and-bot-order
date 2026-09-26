@@ -58,6 +58,7 @@ import { productPhotoArg, cacheProductPhotoFileId } from "../util/productPhoto";
 import { t } from "../util/i18n";
 import { logErrorRef } from "../util/errors";
 import { gameTopUpDenomLabel } from "../util/denominationLabel";
+import { gameInputFieldsLabel, resolveGameInputFlags } from "../util/gameInfo";
 import { esc, formatUsdtAmount, formatIdr, statusBadge, groupOrderItems, formatCountdown, formatFlashRemaining, priceIdr, orderAmount, mixedAmount, renderBybitBscTrackingScreen, summarizeTicketOrder } from "../util/format";
 import { effectiveUnitPrice, flashPrice, activeFlashPercent } from "@app/core/flash";
 import { currentUsdtRate } from "../util/rate";
@@ -797,6 +798,14 @@ export async function handleProductNumber(ctx: MyContext): Promise<void> {
   await browseProduct(ctx, productId);
 }
 
+/** "🎮 Data needed at checkout: User ID, Server ID" for a Game Top Up SKU
+ * set, or null when none of them maps to a GAME_CATALOG entry. */
+function gameInputHint(ctx: MyContext, denominations: Parameters<typeof resolveGameInputFlags>[0]): string | null {
+  const flags = resolveGameInputFlags(denominations);
+  if (!flags) return null;
+  return t(ctx, "browse.game_input_hint", { fields: gameInputFieldsLabel((key) => t(ctx, key), flags) });
+}
+
 /**
  * Tap a mid-tier Product → its Denomination picker. A Product with exactly ONE
  * active denomination collapses straight to that denomination's detail bubble
@@ -830,9 +839,12 @@ export async function browseProduct(ctx: MyContext, productId: number): Promise<
   const isReseller = info.role === UserRole.RESELLER;
   const rate = await currentUsdtRate();
 
-  // Per-plan price + stock live in the message body now (the picker buttons
-  // carry only the plan name). Reseller price wins for reseller users when set,
-  // mirroring the detail screen. Stock is read per denomination in parallel.
+  // Per-plan price + stock lines for the message body — used when the picker
+  // buttons carry only the plan name (every non-game product, and any Game Top
+  // Up SKU without qtyValue/qtyUnit). A Game Top Up whose buttons all carry
+  // their price drops these lines (see isGameWithInlinePrices below). Reseller
+  // price wins for reseller users when set, mirroring the detail screen.
+  // Stock is read per denomination in parallel.
   const planData = await Promise.all(
     active.map(async (d) => {
       const unitPrice = effectiveUnitPrice(d, isReseller);
@@ -889,13 +901,37 @@ export async function browseProduct(ctx: MyContext, productId: number): Promise<
   const planLines = planData.map((p) => p.line);
   const sold = await soldCountForProduct(prisma, productId);
 
-  let text = t(ctx, "browse.choose_denomination", {
-    name: esc(product.name),
-    sold: t(ctx, "browse.sold_count", { count: sold }),
-    plans: planLines.join("\n"),
-  });
-  if (product.description) {
-    text += "\n\n" + t(ctx, "browse.description", { description: esc(product.description) });
+  // Game Top Up whose every button already carries its own price (compact
+  // qty+unit+price label): repeating price/stock per plan in the body would
+  // just duplicate the keyboard, so the body describes the GAME instead —
+  // the admin's description plus which account data checkout will ask for.
+  // A game with even one un-backfilled SKU (no inline price on its button)
+  // keeps the plan lines, since that SKU's price would otherwise be nowhere.
+  const isGameWithInlinePrices =
+    product.category.group === CategoryGroup.GAME_TOPUP && planData.every((p) => p.buttonLabel !== undefined);
+
+  let text: string;
+  if (isGameWithInlinePrices) {
+    const blocks: string[] = [];
+    if (product.description) {
+      blocks.push(t(ctx, "browse.description", { description: esc(product.description) }));
+    }
+    const hint = gameInputHint(ctx, active.map((d) => ({ ...d, product })));
+    if (hint) blocks.push(hint);
+    text = t(ctx, "browse.choose_denomination_game", {
+      name: esc(product.name),
+      sold: t(ctx, "browse.sold_count", { count: sold }),
+      info: blocks.length ? "\n\n" + blocks.join("\n\n") : "",
+    });
+  } else {
+    text = t(ctx, "browse.choose_denomination", {
+      name: esc(product.name),
+      sold: t(ctx, "browse.sold_count", { count: sold }),
+      plans: planLines.join("\n"),
+    });
+    if (product.description) {
+      text += "\n\n" + t(ctx, "browse.description", { description: esc(product.description) });
+    }
   }
   const pickerDenoms = active.map((d, i) => ({ ...d, buttonLabel: planData[i]!.buttonLabel }));
   const photoArg = productPhotoArg(product);
@@ -979,19 +1015,33 @@ export async function browseDenomination(
         : stock
       : "—";
 
-  let text = t(ctx, "browse.denomination_detail", {
-    product: esc(d.product.name),
-    plan: esc(d.name),
-    price: onSale
-      ? t(ctx, "browse.flash_price", { old: priceIdr(d.price, rate), new: priceIdr(unit, rate) })
-      : priceIdr(unit, rate),
-    duration: esc(d.durationLabel),
-    type: d.type.toLowerCase(),
-    warranty: d.warrantyDays,
-    stock: stockDisplay,
-    sold,
-    rating: ratingStr,
-  });
+  const priceText = onSale
+    ? t(ctx, "browse.flash_price", { old: priceIdr(d.price, rate), new: priceIdr(unit, rate) })
+    : priceIdr(unit, rate);
+  // Game Top Up SKUs (diamonds, UC, …) have no meaningful Duration/Type/
+  // Warranty — those lines are Premium Apps account attributes — so the game
+  // variant of this bubble keeps only Price/Stock/Sold/Rating.
+  const isGame = d.product.category.group === CategoryGroup.GAME_TOPUP;
+  let text = isGame
+    ? t(ctx, "browse.denomination_detail_game", {
+        product: esc(d.product.name),
+        plan: esc(d.name),
+        price: priceText,
+        stock: stockDisplay,
+        sold,
+        rating: ratingStr,
+      })
+    : t(ctx, "browse.denomination_detail", {
+        product: esc(d.product.name),
+        plan: esc(d.name),
+        price: priceText,
+        duration: esc(d.durationLabel),
+        type: d.type.toLowerCase(),
+        warranty: d.warrantyDays,
+        stock: stockDisplay,
+        sold,
+        rating: ratingStr,
+      });
   if (onSale) {
     text +=
       "\n\n" +
@@ -1010,6 +1060,12 @@ export async function browseDenomination(
   }
   if (d.product.description) {
     text += "\n\n" + t(ctx, "browse.description", { description: esc(d.product.description) });
+  }
+  if (isGame) {
+    // Also reached directly via the single-denomination collapse, which
+    // skips the picker's game-info block entirely — so show the hint here too.
+    const hint = gameInputHint(ctx, [d]);
+    if (hint) text += "\n\n" + hint;
   }
 
   if (opts?.noticePrefix) {

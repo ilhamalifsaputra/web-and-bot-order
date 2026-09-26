@@ -9,8 +9,7 @@ import {
   prisma,
   resolveBinanceInternalConfig,
   countLedgerRowsToday,
-  ledgerOutcomeCounts,
-  actionableLedgerOutcomeCounts,
+  ledgerOutcomeCountsForView,
   countUnderpaid,
   getBinancePollHealth,
   TX_OUTCOMES,
@@ -75,9 +74,11 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
     // Unrecognized values fall back to "no kind filter" rather than an empty
     // ledger, matching how `outcome` above ignores anything not in TX_OUTCOMES.
     const kind = q.kind && (ORDER_KINDS as readonly string[]).includes(q.kind) ? q.kind : null;
-    // `?actionable=1` (the dashboard "Pending actions" card's link) hides rows
-    // whose order is already DELIVERED/REFUNDED/CANCELLED, so the list shows
-    // exactly what the card counted. Absent, the full ledger history is listed.
+    // `?actionable=1` (the dashboard "Pending actions" card's link) hides
+    // unmatched/delivery_failed rows that no longer need an admin (order
+    // DELIVERED or REFUNDED, or CANCELLED with the money credited/refunded), so
+    // the list shows exactly what the card counted. It has no effect on any
+    // other outcome. Absent, the full ledger history is listed.
     const actionable = q.actionable === "1" || q.actionable === "true";
     const page = Math.max(Number(q.page) || 1, 1);
     const offset = (page - 1) * PAGE_SIZE;
@@ -90,17 +91,19 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
     // that ledger, so a tile can never read 0 above rows it counts:
     //  - `todayCount` ("Today's Transactions"): rows of any outcome recorded
     //    today, all gateways.
-    //  - `counts.unmatched` ("Unmatched"): rows still waiting for an admin to
-    //    match them to an order, all-time.
+    //  - `counts.unmatched` ("Unmatched"): rows no admin has matched to an
+    //    order.
     //  - `counts.delivery_failed` ("Failed Deliveries"): rows whose order could
-    //    not be delivered, all-time — the figure the dashboard card links here with.
+    //    not be delivered.
+    // Both are all-time by default; under `?actionable=1` they count only the
+    // rows that still need an admin — the same rule the list filters by, so a
+    // tile equals the list total it links to (and the dashboard card's
+    // figure). Every other outcome keeps its all-time count either way.
     // `counts` also feeds the outcome dropdown's "(n)" labels.
     const [ledgerPage, todayCount, counts, health, underpaid, underpaidCount, pendingInternal] = await Promise.all([
       listCombinedLedger(prisma, { outcome, q: search, kind, actionable, limit: PAGE_SIZE, offset }),
       countLedgerRowsToday(prisma),
-      // Under ?actionable=1 the tiles and dropdown count by the same rule the
-      // list filters by, so a tile equals the list total it links to.
-      actionable ? actionableLedgerOutcomeCounts(prisma) : ledgerOutcomeCounts(prisma),
+      ledgerOutcomeCountsForView(prisma, actionable),
       getBinancePollHealth(prisma),
       listOrders(prisma, { status: OrderStatus.UNDERPAID, limit: 50 }),
       // The list above is capped at 50; the badge needs the real total, the

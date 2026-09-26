@@ -57,7 +57,7 @@ vi.mock("@app/db", async (orig) => {
   };
 });
 
-import { prisma, createOrderDirect, upsertBulkPricing, deleteBulkPricing, attachPaymentProof, approveOrder, getOrder, getOrderRaw, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createCategory, createDenomination, updateDenomination, bulkAddStock, finalizeOrderPayment, listPendingTokopayOrders, createBybitBscOrder, adjustWallet, getCatalogProduct, settlePaidOrder, fulfillManualOrder, claimGatewaySlot, createPaymentAttempt, MAX_CART_ORDER_UNITS, BINANCE_UID_KEY, BINANCE_API_KEY_KEY, BINANCE_API_SECRET_KEY, BYBIT_UID_KEY, BYBIT_API_KEY_KEY, BYBIT_API_SECRET_KEY, BYBIT_BSC_DEPOSIT_ADDRESS_KEY, BYBIT_BSC_ENABLED_KEY } from "@app/db";
+import { prisma, createOrderDirect, upsertBulkPricing, deleteBulkPricing, attachPaymentProof, approveOrder, getOrder, getOrderRaw, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createCategory, createDenomination, updateDenomination, bulkAddStock, finalizeOrderPayment, listPendingTokopayOrders, createBybitBscOrder, adjustWallet, getCatalogProduct, settlePaidOrder, fulfillManualOrder, claimGatewaySlot, createPaymentAttempt, MAX_CART_ORDER_UNITS, BINANCE_UID_KEY, BINANCE_API_KEY_KEY, BINANCE_API_SECRET_KEY, BYBIT_UID_KEY, BYBIT_API_KEY_KEY, BYBIT_API_SECRET_KEY, BYBIT_BSC_DEPOSIT_ADDRESS_KEY, BYBIT_BSC_ENABLED_KEY, KOKINPAY_API_KEY_KEY } from "@app/db";
 import { BANNER_IMAGE_KEY } from "../src/util/banner";
 import { createTransaction as mockedCreateTokopayTransaction } from "@app/core/payments/tokopay";
 import { createTransaction as mockedCreatePaydisiniTransaction } from "@app/core/payments/paydisini";
@@ -1241,7 +1241,12 @@ describe("denomination picker", () => {
 
   // --- Game Top Up: buttons carry the price, so the body describes the game --
 
-  async function makeGameProduct(opts: { description?: string | null; qtyOnAll?: boolean; brand?: string | null } = {}) {
+  async function makeGameProduct(
+    opts: { description?: string | null; qtyOnAll?: boolean; brand?: string | null; withNicknameProvider?: boolean } = {},
+  ) {
+    // Checkout only runs the nickname-check wizard (and so only asks for
+    // User ID / Server ID) when a provider is configured — the hint mirrors it.
+    if (opts.withNicknameProvider !== false) await setSetting(prisma, KOKINPAY_API_KEY_KEY, "kp-key");
     const cat = await createCategory(prisma, { name: `ML ${Math.random()}`, group: CategoryGroup.GAME_TOPUP });
     const product = await createCatalogProduct(prisma, {
       categoryId: cat.id,
@@ -1306,6 +1311,24 @@ describe("denomination picker", () => {
     expect(body).not.toContain("User ID");
     expect(body).not.toContain("(Stock");
     expect(body).toContain("Choose a top-up amount:");
+  });
+
+  it("Game Top Up picker and detail omit the data-needed hint when no nickname-check provider is configured (checkout won't ask)", async () => {
+    const { product, d1 } = await makeGameProduct({ description: "Official ML diamonds", withNicknameProvider: false });
+    const picker = customerCtx();
+    await customer.browseProduct(picker.ctx, product.id);
+    const pickerBody = bodyText(picker.sink);
+    expect(pickerBody).toContain("Official ML diamonds");
+    expect(pickerBody).toContain("Choose a top-up amount:");
+    expect(pickerBody).not.toContain("User ID");
+    expect(pickerBody).not.toContain("Server ID");
+
+    const detail = customerCtx();
+    await customer.browseDenomination(detail.ctx, d1.id);
+    const detailBody = bodyText(detail.sink);
+    expect(detailBody).toContain("Price:");
+    expect(detailBody).not.toContain("User ID");
+    expect(detailBody).not.toContain("Server ID");
   });
 
   it("Game Top Up picker keeps the old plan lines when a SKU has no inline price on its button", async () => {

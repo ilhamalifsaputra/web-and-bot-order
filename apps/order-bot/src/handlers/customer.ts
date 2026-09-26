@@ -799,9 +799,13 @@ export async function handleProductNumber(ctx: MyContext): Promise<void> {
 }
 
 /** "🎮 Data needed at checkout: User ID, Server ID" for a Game Top Up SKU
- * set, or null when none of them maps to a GAME_CATALOG entry. */
-function gameInputHint(ctx: MyContext, denominations: Parameters<typeof resolveGameInputFlags>[0]): string | null {
-  const flags = resolveGameInputFlags(denominations);
+ * set, or null when checkout won't run the nickname-check wizard for any of
+ * them (see resolveGameInputFlags). */
+async function gameInputHint(
+  ctx: MyContext,
+  denominations: Parameters<typeof resolveGameInputFlags>[0],
+): Promise<string | null> {
+  const flags = await resolveGameInputFlags(denominations);
   if (!flags) return null;
   return t(ctx, "browse.game_input_hint", { fields: gameInputFieldsLabel((key) => t(ctx, key), flags) });
 }
@@ -839,15 +843,43 @@ export async function browseProduct(ctx: MyContext, productId: number): Promise<
   const isReseller = info.role === UserRole.RESELLER;
   const rate = await currentUsdtRate();
 
+  // Game Top Up whose every button will carry its own price (compact
+  // qty+unit+price label — same qtyValue/qtyUnit condition as buttonLabel
+  // below): repeating price/stock per plan in the body would just duplicate
+  // the keyboard, so the body describes the GAME instead — the admin's
+  // description plus which account data checkout will ask for. A game with
+  // even one un-backfilled SKU (no inline price on its button) keeps the plan
+  // lines, since that SKU's price would otherwise be nowhere.
+  const isGameWithInlinePrices =
+    product.category.group === CategoryGroup.GAME_TOPUP && active.every((d) => d.qtyValue != null && !!d.qtyUnit);
+
   // Per-plan price + stock lines for the message body — used when the picker
   // buttons carry only the plan name (every non-game product, and any Game Top
-  // Up SKU without qtyValue/qtyUnit). A Game Top Up whose buttons all carry
-  // their price drops these lines (see isGameWithInlinePrices below). Reseller
-  // price wins for reseller users when set, mirroring the detail screen.
-  // Stock is read per denomination in parallel.
+  // Up SKU without qtyValue/qtyUnit). Skipped entirely (no stock reads) when
+  // isGameWithInlinePrices, since the body won't show them. Reseller price
+  // wins for reseller users when set, mirroring the detail screen. Stock is
+  // read per denomination in parallel.
   const planData = await Promise.all(
     active.map(async (d) => {
       const unitPrice = effectiveUnitPrice(d, isReseller);
+      // Compact Game Top Up button label (qty + unit + price), only when the
+      // admin has actually backfilled qtyValue/qtyUnit on this denomination —
+      // leaving buttonLabel undefined otherwise so denominationPickerKb falls
+      // through to its existing formatDenominationLabel(...) call, exactly as
+      // before this task (the hard zero-behavior-change bar for Premium Apps,
+      // and for any Game Top Up SKU an admin hasn't backfilled yet).
+      // Finding I3 (final-review): the PRODUCT's own gameVariantEmoji wins —
+      // session scratch is only a fallback for the rare case it has none. The
+      // old precedence (scratch first) meant a leftover emoji from a
+      // PREVIOUSLY-browsed Game Top Up category's variant navigation could
+      // leak onto a completely different product's denomination buttons here
+      // (this screen is also reached via Popular/search, which never go
+      // through the variant-picker flow that sets/clears scratch at all).
+      const buttonLabel =
+        d.qtyValue != null && d.qtyUnit
+          ? gameTopUpDenomLabel(d, unitPrice, product.gameVariantEmoji ?? sc(ctx).gameVariantEmoji)
+          : undefined;
+      if (isGameWithInlinePrices) return { line: "", buttonLabel };
       const stock = await countAvailableStock(prisma, d.id);
       // Stock rows only ever exist for AUTO SKUs — a manual/manual_with_info
       // plan has none by design, so showing a literal "0" here would read as
@@ -878,37 +910,11 @@ export async function browseProduct(ctx: MyContext, productId: number): Promise<
         price: priceText,
         stock: stockDisplay,
       });
-      // Compact Game Top Up button label (qty + unit + price), only when the
-      // admin has actually backfilled qtyValue/qtyUnit on this denomination —
-      // leaving buttonLabel undefined otherwise so denominationPickerKb falls
-      // through to its existing formatDenominationLabel(...) call, exactly as
-      // before this task (the hard zero-behavior-change bar for Premium Apps,
-      // and for any Game Top Up SKU an admin hasn't backfilled yet).
-      // Finding I3 (final-review): the PRODUCT's own gameVariantEmoji wins —
-      // session scratch is only a fallback for the rare case it has none. The
-      // old precedence (scratch first) meant a leftover emoji from a
-      // PREVIOUSLY-browsed Game Top Up category's variant navigation could
-      // leak onto a completely different product's denomination buttons here
-      // (this screen is also reached via Popular/search, which never go
-      // through the variant-picker flow that sets/clears scratch at all).
-      const buttonLabel =
-        d.qtyValue != null && d.qtyUnit
-          ? gameTopUpDenomLabel(d, unitPrice, product.gameVariantEmoji ?? sc(ctx).gameVariantEmoji)
-          : undefined;
       return { line, buttonLabel };
     }),
   );
   const planLines = planData.map((p) => p.line);
   const sold = await soldCountForProduct(prisma, productId);
-
-  // Game Top Up whose every button already carries its own price (compact
-  // qty+unit+price label): repeating price/stock per plan in the body would
-  // just duplicate the keyboard, so the body describes the GAME instead —
-  // the admin's description plus which account data checkout will ask for.
-  // A game with even one un-backfilled SKU (no inline price on its button)
-  // keeps the plan lines, since that SKU's price would otherwise be nowhere.
-  const isGameWithInlinePrices =
-    product.category.group === CategoryGroup.GAME_TOPUP && planData.every((p) => p.buttonLabel !== undefined);
 
   let text: string;
   if (isGameWithInlinePrices) {
@@ -916,7 +922,7 @@ export async function browseProduct(ctx: MyContext, productId: number): Promise<
     if (product.description) {
       blocks.push(t(ctx, "browse.description", { description: esc(product.description) }));
     }
-    const hint = gameInputHint(ctx, active.map((d) => ({ ...d, product })));
+    const hint = await gameInputHint(ctx, active.map((d) => ({ ...d, product })));
     if (hint) blocks.push(hint);
     text = t(ctx, "browse.choose_denomination_game", {
       name: esc(product.name),
@@ -1064,7 +1070,7 @@ export async function browseDenomination(
   if (isGame) {
     // Also reached directly via the single-denomination collapse, which
     // skips the picker's game-info block entirely — so show the hint here too.
-    const hint = gameInputHint(ctx, [d]);
+    const hint = await gameInputHint(ctx, [d]);
     if (hint) text += "\n\n" + hint;
   }
 

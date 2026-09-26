@@ -93,30 +93,72 @@ const FORBIDDEN: Forbidden[] = [
 const STRING_LITERAL_RE = /"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`/g;
 /** Matches `/* ... *\/` block comments, including the `{/* ... *\/}` JSX comment form. */
 const BLOCK_COMMENT_RE = /\/\*[\s\S]*?\*\//g;
+/** Matches `//` line comments. */
+const LINE_COMMENT_RE = /\/\/.*$/gm;
+
+interface ExtractedLiteral {
+  value: string;
+  start: number;
+  end: number;
+}
+
 /**
- * Matches `//` line comments, but not a `//` immediately after `:` (so
- * `https://...` inside a string literal survives). Comment prose in this
- * codebase is full of possessive apostrophes ("ProductPage's own fetch"),
- * which the string-literal regex below would otherwise misread as an
- * opening `'` and run off matching to the next apostrophe several lines
- * later — stripping comments first avoids that.
+ * Extracts string/template literals from raw TSX source, correctly excluding
+ * any literal that actually lives inside a comment.
+ *
+ * Order matters here: literals are found in the RAW text FIRST and their
+ * contents (including the surrounding quotes) are blanked out — replaced
+ * with same-length whitespace — BEFORE comment detection ever runs. An
+ * earlier version of this scan stripped comments first, which is unsound:
+ * comment-detection on raw source can be fooled by a `//` or `/* *\/` that
+ * appears *inside* a real string literal. Confirmed case in this codebase —
+ * `apps/storefront/client/src/pages/LoginPage.tsx` and `RegisterPage.tsx`
+ * both contain `!raw.startsWith("//")`, a real `"//"` literal. Stripping
+ * `//` comments first misreads that literal's `//` as a line-comment start,
+ * deleting the closing quote and everything after it on that line, which
+ * then leaves the opening quote dangling — the literal-extraction regex
+ * then runs it forward to the next unrelated `"` later in the file,
+ * merging unrelated statements into one corrupted "literal" (and can
+ * silently swallow a genuine literal that falls inside that span). Blanking
+ * literals first means comment detection never sees a `//`/`/* *\/` that
+ * lives inside a string, so it can only ever match a real comment.
  */
-const LINE_COMMENT_RE = /(^|[^:])\/\/.*$/gm;
+function extractLiterals(text: string): string[] {
+  const literals: ExtractedLiteral[] = [];
+  let m: RegExpExecArray | null;
+  STRING_LITERAL_RE.lastIndex = 0;
+  while ((m = STRING_LITERAL_RE.exec(text))) {
+    literals.push({ value: m[0].slice(1, -1), start: m.index, end: m.index + m[0].length });
+  }
+
+  let blanked = text;
+  for (const lit of literals) {
+    blanked = blanked.slice(0, lit.start) + " ".repeat(lit.end - lit.start) + blanked.slice(lit.end);
+  }
+
+  const commentRanges: Array<[number, number]> = [];
+  BLOCK_COMMENT_RE.lastIndex = 0;
+  while ((m = BLOCK_COMMENT_RE.exec(blanked))) commentRanges.push([m.index, m.index + m[0].length]);
+  LINE_COMMENT_RE.lastIndex = 0;
+  while ((m = LINE_COMMENT_RE.exec(blanked))) commentRanges.push([m.index, m.index + m[0].length]);
+
+  return literals
+    .filter((lit) => !commentRanges.some(([s, e]) => lit.start >= s && lit.start < e))
+    .map((lit) => lit.value);
+}
 
 function loadStorefrontTsxFiles(): Array<{ file: string; literals: string[] }> {
   return (readdirSync(STOREFRONT_SRC_DIR, { recursive: true }) as string[])
     .filter((f) => f.endsWith(".tsx") && !f.endsWith(".test.tsx"))
+    // Excludes any path with a directory segment literally named `dev`, which is
+    // intentionally broader than just `pages/dev/**` — harmless today because
+    // `pages/dev` is the only `dev`-named directory under storefront src, but
+    // worth knowing this isn't a typo'd/narrower match.
     .filter((f) => !f.split(/[\\/]/).includes("dev"))
     .map((f) => {
       const relFile = `apps/storefront/client/src/${f.split("\\").join("/")}`;
       const raw = readFileSync(join(STOREFRONT_SRC_DIR, f), "utf8");
-      // Strip comments first — a quoted/apostrophe'd phrase inside a comment
-      // explaining rendered copy isn't itself rendered copy, and would
-      // otherwise false-positive (or corrupt subsequent matches) against
-      // FORBIDDEN.
-      const withoutComments = raw.replace(BLOCK_COMMENT_RE, "").replace(LINE_COMMENT_RE, "$1");
-      const literals = withoutComments.match(STRING_LITERAL_RE) ?? [];
-      return { file: relFile, literals: literals.map((l) => l.slice(1, -1)) };
+      return { file: relFile, literals: extractLiterals(raw) };
     });
 }
 
@@ -160,6 +202,40 @@ describe("no unsupported claims in buyer-facing locale copy", () => {
     for (const { allowKeys } of FORBIDDEN) {
       for (const k of Object.keys(allowKeys ?? {})) expect(keys.has(k), `allowKeys names unknown key ${k}`).toBe(true);
     }
+  });
+});
+
+describe("extractLiterals: comment/literal extraction order", () => {
+  it("keeps a real \"//\"-shaped literal intact and still excludes literals inside comments", () => {
+    // Mirrors the confirmed bug shape from LoginPage.tsx/RegisterPage.tsx: a
+    // real `"//"` string literal, plus comments (line and block) that happen
+    // to contain quoted phrases of their own — the exact combination that
+    // corrupted extraction when comments were stripped before literals were
+    // extracted.
+    const fixture = [
+      'function check(raw: string) {',
+      '  if (!raw.startsWith("//")) return "safe";',
+      '}',
+      '// a real line comment mentioning "instant" delivery in passing',
+      '/* a block comment with an example literal "instant delivery" inside */',
+      'const claim = "instant delivery";',
+    ].join("\n");
+
+    const literals = extractLiterals(fixture);
+
+    // The "//" literal must survive intact, not be merged with everything
+    // that follows it in the file.
+    expect(literals).toContain("//");
+    expect(literals).toContain("safe");
+    // The genuine code literal is kept...
+    expect(literals).toContain("instant delivery");
+    // ...but it must appear exactly once: the quoted phrases inside the line
+    // comment ("instant") and the block comment ("instant delivery") must be
+    // excluded, not counted as hardcoded literals.
+    expect(literals.filter((l) => l === "instant delivery")).toHaveLength(1);
+    expect(literals).not.toContain("instant");
+    // Nothing should have merged into one corrupted multi-line blob.
+    for (const literal of literals) expect(literal).not.toContain("\n");
   });
 });
 

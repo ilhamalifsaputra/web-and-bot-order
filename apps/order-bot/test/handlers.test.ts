@@ -124,6 +124,7 @@ function userSession(): Partial<SessionData> {
       language: sample.user.language,
       referralCode: sample.user.referralCode,
       walletBalance: String(sample.user.walletBalance),
+      preferredCurrency: null,
     },
   };
 }
@@ -170,6 +171,7 @@ function adminCtx(opts: Parameters<typeof makeCtx>[0] = {}) {
         language: "EN",
         referralCode: "ADMINREF",
         walletBalance: "0",
+        preferredCurrency: null,
       },
     },
     ...opts,
@@ -539,7 +541,7 @@ describe("customer handlers", () => {
 
     const stranger = makeCtx({
       from: { id: 777 },
-      session: { lang: "en", scratch: {}, dbUser: { id: 99999, telegramId: "777", role: "CUSTOMER", language: "EN", referralCode: "X", walletBalance: "0" } },
+      session: { lang: "en", scratch: {}, dbUser: { id: 99999, telegramId: "777", role: "CUSTOMER", language: "EN", referralCode: "X", walletBalance: "0", preferredCurrency: null } },
     });
     await customer.viewOrder(stranger.ctx, order!.id);
     // not_found path → still sends something, but never leaks the code
@@ -580,7 +582,7 @@ describe("customer handlers", () => {
     const order = await makeOrder();
     const stranger = makeCtx({
       from: { id: 777 },
-      session: { lang: "en", scratch: {}, dbUser: { id: 99999, telegramId: "777", role: "CUSTOMER", language: "EN", referralCode: "X", walletBalance: "0" } },
+      session: { lang: "en", scratch: {}, dbUser: { id: 99999, telegramId: "777", role: "CUSTOMER", language: "EN", referralCode: "X", walletBalance: "0", preferredCurrency: null } },
     });
     await customer.viewOrder(stranger.ctx, order!.id);
     expect(offersForwardAction(stranger.sink)).toBe(true);
@@ -843,7 +845,7 @@ describe("refreshOrderDetail", () => {
 
     const stranger = makeCtx({
       from: { id: 777 },
-      session: { lang: "en", scratch: {}, dbUser: { id: 99999, telegramId: "777", role: "CUSTOMER", language: "EN", referralCode: "X", walletBalance: "0" } },
+      session: { lang: "en", scratch: {}, dbUser: { id: 99999, telegramId: "777", role: "CUSTOMER", language: "EN", referralCode: "X", walletBalance: "0", preferredCurrency: null } },
       callbackData: `v1:order:refresh:${orderId}`,
     });
 
@@ -1060,9 +1062,9 @@ describe("Home screen (persistent keyboard)", () => {
     expect(sentIncludes(sink, "What are you shopping for")).toBe(false);
   });
 
-  it("startCommand and the persistent-keyboard 'main' back-action render Home with the persistent keyboard", async () => {
+  it("menuCommand and the persistent-keyboard 'main' back-action render Home with the persistent keyboard", async () => {
     const start = customerCtx({ callbackData: "v1:menu:main" });
-    await customer.startCommand(start.ctx);
+    await customer.menuCommand(start.ctx);
     expect(calls(start.sink, "reply").length).toBeGreaterThan(0);
 
     const back = customerCtx({ text: persistentLabel("main", "en") });
@@ -3760,7 +3762,7 @@ describe("Refresh Status button (§7)", () => {
     const stranger = makeCtx({
       from: { id: 777 },
       callbackData: `v1:checkout:refresh:${order!.id}`,
-      session: { lang: "en", scratch: {}, dbUser: { id: 99999, telegramId: "777", role: "CUSTOMER", language: "EN", referralCode: "X", walletBalance: "0" } },
+      session: { lang: "en", scratch: {}, dbUser: { id: 99999, telegramId: "777", role: "CUSTOMER", language: "EN", referralCode: "X", walletBalance: "0", preferredCurrency: null } },
     });
 
     await checkout.refreshPaymentStatus(stranger.ctx, order!.id);
@@ -4387,7 +4389,7 @@ describe("admin handlers", () => {
     const { ctx, sink } = makeCtx({
       from: { id: 999, username: "boss" },
       match: `${sample.user.id} 5`,
-      session: { lang: "id", scratch: {}, dbUser: { id: adminDbId, telegramId: "999", role: UserRole.ADMIN, language: "ID", referralCode: "A", walletBalance: "0" } },
+      session: { lang: "id", scratch: {}, dbUser: { id: adminDbId, telegramId: "999", role: UserRole.ADMIN, language: "ID", referralCode: "A", walletBalance: "0", preferredCurrency: null } },
     });
     await adminWalletCommand(ctx);
     expect(sentIncludes(sink, "Saldo baru")).toBe(true); // localized to the admin's language
@@ -4427,7 +4429,7 @@ describe("admin handlers", () => {
     const { ctx, sink } = makeCtx({
       from: { id: 999, username: "boss" },
       callbackData,
-      session: { lang: "id", scratch: {}, dbUser: { id: adminDbId, telegramId: "999", role: UserRole.ADMIN, language: "ID", referralCode: "A", walletBalance: "0" } },
+      session: { lang: "id", scratch: {}, dbUser: { id: adminDbId, telegramId: "999", role: UserRole.ADMIN, language: "ID", referralCode: "A", walletBalance: "0", preferredCurrency: null } },
     });
     await handleAdminCallback(ctx, callbackData.split(":"));
     const toast = calls(sink, "answerCallbackQuery").at(-1);

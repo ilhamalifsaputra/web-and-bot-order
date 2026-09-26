@@ -12,7 +12,7 @@ import { config } from "@app/core/config";
 import { botUsername } from "@app/core/runtime";
 import { Decimal } from "@app/core/money";
 import { ensureUtc, localize, addDays } from "@app/core/datetime";
-import { UserRole, OrderStatus, OrderKind, PaymentMethod, TicketStatus, SenderType, DeliveryType, CategoryGroup, customerStatusLabel } from "@app/core/enums";
+import { UserRole, OrderStatus, OrderKind, PaymentMethod, TicketStatus, SenderType, DeliveryType, CategoryGroup, customerStatusLabel, parseDisplayCurrency } from "@app/core/enums";
 import { parseAdditionalFields, parseCustomerData } from "@app/core/deliveryFields";
 import { logger } from "@app/core/logger";
 import { CUSTOMER_SERVICES } from "@app/core/services";
@@ -37,6 +37,7 @@ import {
   getOrder,
   getUser,
   setUserLanguage,
+  setUserPreferredCurrency,
   subscribeToRestock,
   productRating,
   soldCountForDenomination,
@@ -259,26 +260,45 @@ async function handleBackButton(ctx: MyContext): Promise<void> {
   await backToHome(ctx);
 }
 
+/** `t.me/<bot>?start=prod_<id>` → the Denomination/SKU id (share links), or
+ * undefined when the command carries no such deep link. */
+function deepLinkDenomId(ctx: MyContext): number | undefined {
+  const args = (ctx.match && typeof ctx.match === "string" ? ctx.match : "").trim().split(/\s+/).filter(Boolean);
+  if (!args.length || !args[0]!.startsWith("prod_")) return undefined;
+  const denomId = parseInt(args[0]!.slice(5), 10);
+  return isNaN(denomId) ? undefined : denomId;
+}
+
+/**
+ * `/start` — for every user, new or existing (idempotent): run onboarding,
+ * language first, then display currency (setLanguage → setCurrency). A
+ * `prod_<id>` deep link is remembered and opened once the currency is picked.
+ *
+ * `ref_<code>` referral attribution happens in the registeredUser middleware
+ * (apps/order-bot/src/middleware.ts), not here: that's what actually creates
+ * the User row for a brand-new customer, and it always runs before this
+ * handler — upsertUser only ever applies referredByCode on the row's initial
+ * creation, so calling it again here would be a no-op every time.
+ */
 export async function startCommand(ctx: MyContext): Promise<void> {
-  const tg = ctx.from!;
+  ctx.session.awaitingQtyDenomId = undefined;
+  ctx.session.pendingDeepLinkDenomId = deepLinkDenomId(ctx);
+  delete sc(ctx).browseEntries;
+  delete sc(ctx).page;
+  ctx.session.state = BotState.HOME;
+  ctx.session.onboarding = "language";
+  await showLanguageMenu(ctx);
+}
+
+/** `/menu` (and /cancel's fallback) — straight to the Home dashboard. */
+export async function menuCommand(ctx: MyContext): Promise<void> {
   ctx.session.awaitingQtyDenomId = undefined;
 
-  // `ref_<code>` referral attribution happens in the registeredUser
-  // middleware (apps/order-bot/src/middleware.ts), not here: that's what
-  // actually creates the User row for a brand-new customer, and it always
-  // runs before this handler — upsertUser only ever applies referredByCode
-  // on the row's initial creation, so calling it again here would be a
-  // no-op every time.
-  const args = (ctx.match && typeof ctx.match === "string" ? ctx.match : "").trim().split(/\s+/).filter(Boolean);
-
-  // Deep-link: t.me/<bot>?start=prod_<id> → open a denomination detail bubble
-  // directly (the id is a Denomination/SKU id, as used in share links).
-  if (args.length && args[0]!.startsWith("prod_")) {
-    const denomId = parseInt(args[0]!.slice(5), 10);
-    if (!isNaN(denomId)) {
-      await browseDenomination(ctx, denomId);
-      return;
-    }
+  // Deep-link: prod_<id> → open a denomination detail bubble directly.
+  const denomId = deepLinkDenomId(ctx);
+  if (denomId !== undefined) {
+    await browseDenomination(ctx, denomId);
+    return;
   }
 
   delete sc(ctx).browseEntries;
@@ -300,7 +320,7 @@ export async function cancelCommand(ctx: MyContext): Promise<void> {
   ctx.session.scratch = {};
   ctx.session.awaitingQtyDenomId = undefined;
   await ctx.reply(t(ctx, "conv.cancelled_idle"));
-  await startCommand(ctx);
+  await menuCommand(ctx);
 }
 
 // ---------------------------------------------------------------------------
@@ -1481,6 +1501,45 @@ export async function setLanguage(ctx: MyContext, code: string): Promise<void> {
   info.language = code.toUpperCase();
   ctx.session.lang = code.toLowerCase();
   if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "language.set") });
+  if (ctx.session.onboarding === "language") {
+    // /start onboarding: language done, currency next (never derived from it).
+    ctx.session.onboarding = "currency";
+    await showCurrencyMenu(ctx);
+    return;
+  }
+  await showMainMenu(ctx);
+}
+
+export async function showCurrencyMenu(ctx: MyContext): Promise<void> {
+  await smartEdit(ctx, t(ctx, "currency.choose"), ckb.currencyKb(ctx.session.lang));
+}
+
+/**
+ * `v1:cur:set:<USD|IDR>` — store the display-currency preference. An unknown
+ * or wrong-case code is treated as a stale/forged button: toast and change
+ * nothing. Idempotent (a double tap re-writes the same value). Finishes
+ * onboarding if it was in progress (opening a remembered deep link), and
+ * otherwise just re-renders the main menu.
+ */
+export async function setCurrency(ctx: MyContext, code: string): Promise<void> {
+  const currency = parseDisplayCurrency(code);
+  if (!currency) {
+    logger.warn(`A currency button carried the unsupported code "${code}" — treated as a stale screen and nothing was changed`);
+    if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
+    return;
+  }
+  const info = requireUser(ctx);
+  await setUserPreferredCurrency(prisma, info.id, currency);
+  info.preferredCurrency = currency;
+  if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "currency.set") });
+
+  ctx.session.onboarding = null;
+  const pendingDenomId = ctx.session.pendingDeepLinkDenomId;
+  ctx.session.pendingDeepLinkDenomId = undefined;
+  if (pendingDenomId !== undefined) {
+    await browseDenomination(ctx, pendingDenomId);
+    return;
+  }
   await showMainMenu(ctx);
 }
 

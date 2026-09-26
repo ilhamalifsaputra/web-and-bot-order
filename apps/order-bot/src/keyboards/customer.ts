@@ -980,6 +980,19 @@ export function languageKb(): InlineKeyboard {
 }
 
 // ---------------------------------------------------------------------------
+// Display currency (/start onboarding, after language)
+// ---------------------------------------------------------------------------
+
+export function currencyKb(lang = "en"): InlineKeyboard {
+  return ik([
+    [
+      { text: `🇺🇸 ${coreT("currency.usd", lang)}`, data: cb("cur", "set", "USD") },
+      { text: `🇮🇩 ${coreT("currency.idr", lang)}`, data: cb("cur", "set", "IDR") },
+    ],
+  ]);
+}
+
+// ---------------------------------------------------------------------------
 // Help Center hub
 // ---------------------------------------------------------------------------
 

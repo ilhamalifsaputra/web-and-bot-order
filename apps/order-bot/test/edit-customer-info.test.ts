@@ -54,6 +54,7 @@ function userSession(): Partial<SessionData> {
       language: sample.user.language,
       referralCode: sample.user.referralCode,
       walletBalance: String(sample.user.walletBalance),
+      preferredCurrency: null,
     },
   };
 }
@@ -373,7 +374,7 @@ describe("editCustomerInfoConversation — ownership guard", () => {
       session: {
         lang: "en",
         scratch: { editInfoOrderId: orderId },
-        dbUser: { id: 99999, telegramId: "777", role: "CUSTOMER", language: "EN", referralCode: "X", walletBalance: "0" },
+        dbUser: { id: 99999, telegramId: "777", role: "CUSTOMER", language: "EN", referralCode: "X", walletBalance: "0", preferredCurrency: null },
       },
       callbackData: `v1:order:editinfo:${orderId}`,
     }).ctx;

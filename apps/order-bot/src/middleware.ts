@@ -8,6 +8,8 @@
  *    re-run a handler a second time.
  *  - registeredUser: upsert the User row, cache a snapshot on the session,
  *    sync session.lang, and block banned users (mirrors @registered_user).
+ *  - requireCurrency: block a customer with no display currency until they
+ *    finish /start onboarding (language, then currency).
  *  - rateLimit    : per-user sliding-window guard (@rate_limit).
  *  - adminOnly    : guard a composer/handler to ADMIN_IDS (@admin_only).
  *  - joinGate     : block every interaction until the configured join-gate
@@ -121,8 +123,55 @@ export const registeredUser: MiddlewareFn<MyContext> = async (ctx, next) => {
     language: snap.language,
     referralCode: snap.referralCode,
     walletBalance: snap.walletBalance,
+    preferredCurrency: snap.preferredCurrency,
   };
   return next();
+};
+
+// --- missing-currency guard -------------------------------------------------
+
+/** `/start` and `/language` stay usable without a currency: `/start` is the
+ * way out of the block, `/language` is independent of it. Read off the raw
+ * text for the same reason as START_REF_RE (runs before grammY's command
+ * router). */
+const CURRENCY_EXEMPT_COMMAND_RE = /^\/(start|language)(?:@\S+)?(?:\s|$)/i;
+
+/** Language and currency pickers must work mid-selection (and a stale
+ * currency button tapped outside onboarding simply sets the currency). */
+const CURRENCY_EXEMPT_CALLBACK_RE = new RegExp(`^${ckb.CB_PREFIX}:(lang|cur):`);
+
+/**
+ * Block a customer who has not chosen a display currency yet (User.
+ * preferredCurrency NULL — every account that existed before the feature,
+ * with no backfill) until they run `/start` and pick one. Middleware rather
+ * than a per-handler check so it covers every entry point at once: commands,
+ * every callback, and the persistent-keyboard / typed-number text path.
+ *
+ * Never guesses a currency on the user's behalf. Passes through: updates
+ * without a user, non-private chats (commerceGate/joinGate own those),
+ * updates that are neither a message nor a callback (e.g. my_chat_member),
+ * admins, anything while /start onboarding is in progress, `/start`,
+ * `/language`, and `v1:lang:*` / `v1:cur:*` callbacks. Mirrors joinGate's
+ * callback handling: answer the tap (alert), then post the message.
+ */
+export const requireCurrency: MiddlewareFn<MyContext> = async (ctx, next) => {
+  const from = ctx.from;
+  if (!from) return next();
+  if (!isPrivateChat(ctx)) return next();
+  if (!ctx.message && !ctx.callbackQuery) return next();
+  if (isAdmin(from.id)) return next();
+  if (ctx.session.onboarding) return next();
+  if (ctx.session.dbUser?.preferredCurrency) return next();
+
+  const text = ctx.message?.text;
+  if (text && CURRENCY_EXEMPT_COMMAND_RE.test(text)) return next();
+  const data = ctx.callbackQuery?.data;
+  if (data && CURRENCY_EXEMPT_CALLBACK_RE.test(data)) return next();
+
+  logger.info(`User ${from.id} has not chosen a display currency yet, so this update was blocked and they were asked to run /start`);
+  const msg = t(ctx, "currency.required");
+  if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: msg, show_alert: true });
+  await ctx.reply(msg);
 };
 
 // --- rate limit (sliding window, in-memory) -------------------------------

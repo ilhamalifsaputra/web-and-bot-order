@@ -73,6 +73,7 @@ function custSession(): Partial<SessionData> {
       language: sample.user.language,
       referralCode: sample.user.referralCode,
       walletBalance: String(sample.user.walletBalance),
+      preferredCurrency: null,
     },
   };
 }
@@ -84,7 +85,7 @@ function entryAdmin(sink: SentCall[], callbackData: string) {
   return makeCtx({
     sink,
     from: { id: 999, username: "boss" },
-    session: { lang: "en", scratch: {}, dbUser: { id: adminDbId, telegramId: "999", role: UserRole.ADMIN, language: "EN", referralCode: "A", walletBalance: "0" } },
+    session: { lang: "en", scratch: {}, dbUser: { id: adminDbId, telegramId: "999", role: UserRole.ADMIN, language: "EN", referralCode: "A", walletBalance: "0", preferredCurrency: null } },
     callbackData,
   }).ctx;
 }
@@ -865,7 +866,7 @@ describe("admin conversations", () => {
     const cancel = makeCtx({
       sink,
       from: { id: 999, username: "boss" },
-      session: { lang: "en", scratch: {}, dbUser: { id: adminDbId, telegramId: "999", role: UserRole.ADMIN, language: "EN", referralCode: "A", walletBalance: "0" } },
+      session: { lang: "en", scratch: {}, dbUser: { id: adminDbId, telegramId: "999", role: UserRole.ADMIN, language: "EN", referralCode: "A", walletBalance: "0", preferredCurrency: null } },
       callbackData: "v1:adm:cancel",
     }).ctx;
     const conv = new FakeConversation([cancel]);

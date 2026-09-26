@@ -55,6 +55,7 @@ function userSession(): Partial<SessionData> {
       language: sample.user.language,
       referralCode: sample.user.referralCode,
       walletBalance: String(sample.user.walletBalance),
+      preferredCurrency: null,
     },
   };
 }

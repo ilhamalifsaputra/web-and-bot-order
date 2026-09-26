@@ -228,6 +228,7 @@ describe("end-to-end: customerInfoConversation through the REAL Prisma session a
       language: user.language,
       referralCode: user.referralCode,
       walletBalance: String(user.walletBalance),
+      preferredCurrency: null,
     };
 
     const sink: SentCall[] = [];

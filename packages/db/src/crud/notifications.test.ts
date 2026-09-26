@@ -1128,6 +1128,46 @@ describe("enqueueFlashSaleBroadcast", () => {
     expect(row!.message).not.toContain("<s>");
   });
 
+  it("renders each recipient's prices with pricesForRecipient(preferredCurrency), keeping the admin Broadcast row on the shop prices", async () => {
+    await prisma.user.updateMany({ data: { banned: true } }); // neutralize leftovers from earlier tests
+    const usd = await prisma.user.create({
+      data: { telegramId: BigInt(7_100_001), referralCode: `r${Math.random()}`, preferredCurrency: "USD" },
+    });
+    const idr = await prisma.user.create({
+      data: { telegramId: BigInt(7_100_002), referralCode: `r${Math.random()}`, preferredCurrency: "IDR" },
+    });
+    const unset = await prisma.user.create({
+      data: { telegramId: BigInt(7_100_003), referralCode: `r${Math.random()}` },
+    });
+    const seen: Array<string | null> = [];
+
+    const notified = await enqueueFlashSaleBroadcast(prisma, {
+      ...sale,
+      pricesForRecipient: (cur) => {
+        seen.push(cur);
+        return cur === "USD"
+          ? { oldPrice: "$3.13", newPrice: "$2.35" }
+          : { oldPrice: "Rp50.000", newPrice: "Rp37.500" };
+      },
+    });
+
+    expect(notified).toBe(3);
+    expect(seen.sort()).toEqual(["IDR", "USD", null].sort());
+    const rows = await prisma.notificationOutbox.findMany({ where: { event: NotificationEvent.FLASH_SALE_BROADCAST } });
+    const byChat = new Map(
+      rows.map((r) => {
+        const p = JSON.parse(r.payloadJson) as { chat_id: number; old_price: string; new_price: string };
+        return [p.chat_id, p] as const;
+      }),
+    );
+    expect(byChat.get(Number(usd.telegramId))).toMatchObject({ old_price: "$3.13", new_price: "$2.35" });
+    expect(byChat.get(Number(idr.telegramId))).toMatchObject({ old_price: "Rp50.000", new_price: "Rp37.500" });
+    expect(byChat.get(Number(unset.telegramId))).toMatchObject({ old_price: "Rp50.000", new_price: "Rp37.500" });
+    const bc = await prisma.broadcast.findFirst({ orderBy: { id: "desc" } });
+    expect(bc!.message).toContain("Rp37.500");
+    expect(bc!.message).not.toContain("$");
+  });
+
   it("returns 0 and enqueues nothing (no outbox rows, no Broadcast row) when there are no eligible customers", async () => {
     const before = await prisma.notificationOutbox.count({ where: { event: NotificationEvent.FLASH_SALE_BROADCAST } });
     const broadcastsBefore = await prisma.broadcast.count();

@@ -13,6 +13,7 @@ import {
   setUserRole,
   setUserBanned,
   setUserLanguage,
+  setUserPreferredCurrency,
   adjustWallet,
   listUsers,
   countUsers,
@@ -22,7 +23,7 @@ import {
   listAllWalletTransactions,
   countAllWalletTransactions,
 } from "./users";
-import { primeWarmUser, peekWarmUser } from "./warmUserCache";
+import { primeWarmUser, peekWarmUser, toWarmUserSnap } from "./warmUserCache";
 import { UserRole, OrderKind } from "@app/core/enums";
 import { startOfDayUtc } from "@app/core/datetime";
 
@@ -219,6 +220,7 @@ describe("warm-cache invalidation (bot's registeredUser middleware relies on thi
       walletBalance: "0",
       banned: false,
       bannedReason: null,
+      preferredCurrency: null,
     });
   }
 
@@ -243,11 +245,93 @@ describe("warm-cache invalidation (bot's registeredUser middleware relies on thi
     expect(peekWarmUser("9203")).toBeUndefined();
   });
 
+  it("setUserPreferredCurrency evicts the warm entry", async () => {
+    const user = await upsertUser(prisma, { telegramId: 9205, username: "c", fullName: null });
+    prime("9205", user.id);
+    await setUserPreferredCurrency(prisma, user.id, "USD");
+    expect(peekWarmUser("9205")).toBeUndefined();
+  });
+
   it("adjustWallet evicts the warm entry", async () => {
     const user = await upsertUser(prisma, { telegramId: 9204, username: "w", fullName: null });
     prime("9204", user.id);
     await adjustWallet(prisma, user.id, 10, { allowNegative: true });
     expect(peekWarmUser("9204")).toBeUndefined();
+  });
+});
+
+describe("setUserPreferredCurrency", () => {
+  it("a freshly registered user has no preference (NULL = not chosen yet)", async () => {
+    const user = await upsertUser(prisma, { telegramId: 19401, username: "cur_fresh", fullName: null });
+    expect(user.preferredCurrency).toBeNull();
+    expect((await getUser(prisma, user.id))!.preferredCurrency).toBeNull();
+  });
+
+  it("persists USD, then IDR", async () => {
+    const user = await upsertUser(prisma, { telegramId: 19402, username: "cur_switch", fullName: null });
+    await setUserPreferredCurrency(prisma, user.id, "USD");
+    expect((await getUser(prisma, user.id))!.preferredCurrency).toBe("USD");
+    await setUserPreferredCurrency(prisma, user.id, "IDR");
+    expect((await getUser(prisma, user.id))!.preferredCurrency).toBe("IDR");
+  });
+
+  it("is idempotent — setting the same value twice is fine and ends in the same state", async () => {
+    const user = await upsertUser(prisma, { telegramId: 19403, username: "cur_twice", fullName: null });
+    await setUserPreferredCurrency(prisma, user.id, "USD");
+    await expect(setUserPreferredCurrency(prisma, user.id, "USD")).resolves.toBeUndefined();
+    expect((await getUser(prisma, user.id))!.preferredCurrency).toBe("USD");
+  });
+
+  it("rejects unsupported codes (incl. wrong case) and leaves the row unchanged", async () => {
+    const user = await upsertUser(prisma, { telegramId: 19404, username: "cur_invalid", fullName: null });
+    await setUserPreferredCurrency(prisma, user.id, "IDR");
+    for (const bad of ["EUR", "usd", "", "$"]) {
+      await expect(setUserPreferredCurrency(prisma, user.id, bad)).rejects.toThrow(/unsupported display currency/i);
+    }
+    expect((await getUser(prisma, user.id))!.preferredCurrency).toBe("IDR");
+
+    const untouched = await upsertUser(prisma, { telegramId: 19405, username: "cur_invalid_null", fullName: null });
+    await expect(setUserPreferredCurrency(prisma, untouched.id, "EUR")).rejects.toThrow();
+    expect((await getUser(prisma, untouched.id))!.preferredCurrency).toBeNull();
+  });
+
+  it("upsertUser on an existing user keeps the stored preference", async () => {
+    const user = await upsertUser(prisma, { telegramId: 19406, username: "cur_keep", fullName: null });
+    await setUserPreferredCurrency(prisma, user.id, "USD");
+    const again = await upsertUser(prisma, { telegramId: 19406, username: "cur_keep_renamed", fullName: "Renamed" });
+    expect(again.id).toBe(user.id);
+    expect(again.preferredCurrency).toBe("USD");
+  });
+
+  it("the warm snapshot rebuilt after a set carries the new value", async () => {
+    const user = await upsertUser(prisma, { telegramId: 19407, username: "cur_warm", fullName: null });
+    primeWarmUser("19407", toWarmUserSnap(user));
+    expect(peekWarmUser("19407")!.preferredCurrency).toBeNull();
+
+    await setUserPreferredCurrency(prisma, user.id, "USD");
+    expect(peekWarmUser("19407")).toBeUndefined();
+
+    // Same path the bot's registeredUser middleware takes on a warm miss.
+    const refreshed = await upsertUser(prisma, { telegramId: 19407, username: "cur_warm", fullName: null });
+    primeWarmUser("19407", toWarmUserSnap(refreshed));
+    expect(peekWarmUser("19407")!.preferredCurrency).toBe("USD");
+  });
+
+  it("toWarmUserSnap drops an unrecognised stored value to null rather than trusting it", () => {
+    const snap = toWarmUserSnap({
+      id: 1,
+      username: null,
+      fullName: null,
+      role: "CUSTOMER",
+      language: "EN",
+      referralCode: "X",
+      walletBalance: new Decimal(0),
+      banned: false,
+      bannedReason: null,
+      preferredCurrency: "usd",
+    });
+    expect(snap.preferredCurrency).toBeNull();
+    expect(snap.walletBalance).toBe("0");
   });
 });
 

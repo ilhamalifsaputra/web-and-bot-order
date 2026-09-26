@@ -4,7 +4,7 @@
  */
 import { config } from "@app/core/config";
 import { isAdmin } from "@app/core/runtime";
-import { UserRole, Language, OrderStatus, OrderKind } from "@app/core/enums";
+import { UserRole, Language, OrderStatus, OrderKind, DISPLAY_CURRENCIES, parseDisplayCurrency } from "@app/core/enums";
 import { quantizeMoney, generateReferralCode } from "@app/core/formatters";
 import { Decimal } from "@app/core/money";
 import { ValidationError } from "@app/core/errors";
@@ -76,6 +76,7 @@ const USER_SELECT = {
   referredById: true,
   banned: true,
   bannedReason: true,
+  preferredCurrency: true,
   createdAt: true,
   lastSeenAt: true,
 } as const;
@@ -188,6 +189,31 @@ export async function setUserLanguage(db: Db, userId: number, lang: string) {
     where: { id: userId },
     data: { language: lang.toUpperCase() as Language },
   });
+  invalidateWarmUser(userId);
+}
+
+/** Thrown by `setUserPreferredCurrency` for a code outside DISPLAY_CURRENCIES.
+ * A plain developer-facing error (not an i18n-keyed ValidationError): callers
+ * only ever offer the fixed USD/IDR choices, so reaching this is a bug or a
+ * forged callback, not user input to translate. */
+export class UnsupportedDisplayCurrencyError extends Error {
+  constructor(public readonly code: string) {
+    super(`Unsupported display currency "${code}"; expected one of ${DISPLAY_CURRENCIES.join(", ")}.`);
+    this.name = "UnsupportedDisplayCurrencyError";
+  }
+}
+
+/**
+ * Store a user's DISPLAY currency preference ("USD" | "IDR"). Display-only —
+ * never touches orders, payments or wallets. Case-strict: anything
+ * `parseDisplayCurrency` rejects throws UnsupportedDisplayCurrencyError and
+ * nothing is written. Idempotent (re-setting the same value is a harmless
+ * no-op update).
+ */
+export async function setUserPreferredCurrency(db: Db, userId: number, code: string) {
+  const currency = parseDisplayCurrency(code);
+  if (!currency) throw new UnsupportedDisplayCurrencyError(code);
+  await db.user.update({ where: { id: userId }, data: { preferredCurrency: currency } });
   invalidateWarmUser(userId);
 }
 

@@ -25,7 +25,7 @@ import { config } from "@app/core/config";
 import { isAdmin } from "@app/core/runtime";
 import { langCode } from "@app/core/enums";
 import { logger, withUpdateId } from "@app/core/logger";
-import { prisma, upsertUser, peekWarmUser, primeWarmUser, getSetting, claimTelegramUpdate, type WarmUserSnap } from "@app/db";
+import { prisma, upsertUser, peekWarmUser, primeWarmUser, toWarmUserSnap, getSetting, claimTelegramUpdate, type WarmUserSnap } from "@app/db";
 import type { MyContext } from "./context";
 import { t } from "./util/i18n";
 import * as ckb from "./keyboards/customer";
@@ -100,19 +100,7 @@ export const registeredUser: MiddlewareFn<MyContext> = async (ctx, next) => {
   } else {
     const referredByCode = ctx.message?.text?.match(START_REF_RE)?.[1];
     const user = await upsertUser(prisma, { telegramId: from.id, username, fullName, referredByCode });
-    snap = {
-      id: user.id,
-      telegramId: telegramIdKey,
-      username: user.username,
-      fullName: user.fullName,
-      role: user.role,
-      language: user.language,
-      referralCode: user.referralCode,
-      walletBalance: String(user.walletBalance),
-      banned: user.banned,
-      bannedReason: user.bannedReason,
-      syncedAt: Date.now(),
-    };
+    snap = { ...toWarmUserSnap(user), telegramId: telegramIdKey, syncedAt: Date.now() };
     primeWarmUser(telegramIdKey, snap);
   }
 

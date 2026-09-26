@@ -13,6 +13,8 @@
  * apps/web-admin call the mutators that must invalidate it, and web-admin
  * does not depend on @app/order-bot.
  */
+import { parseDisplayCurrency, type DisplayCurrency } from "@app/core/enums";
+
 export interface WarmUserSnap {
   id: number;
   telegramId: string;
@@ -26,7 +28,43 @@ export interface WarmUserSnap {
   walletBalance: string;
   banned: boolean;
   bannedReason: string | null;
+  /** Display-currency preference; null = not chosen yet (or an unrecognised
+   * stored value, which is treated the same way rather than trusted). */
+  preferredCurrency: DisplayCurrency | null;
   syncedAt: number;
+}
+
+/** The User columns a warm snapshot is built from (structural, so this module
+ * stays free of a Prisma import; a full `User` row satisfies it). */
+export interface WarmUserSource {
+  id: number;
+  username: string | null;
+  fullName: string | null;
+  role: string;
+  language: string;
+  referralCode: string;
+  walletBalance: { toString(): string };
+  banned: boolean;
+  bannedReason: string | null;
+  preferredCurrency: string | null;
+}
+
+/** Build the snapshot body `primeWarmUser` takes from a freshly read User row
+ * — the single place snapshot fields are mapped, so a new column cannot be
+ * silently dropped by one builder and not another. */
+export function toWarmUserSnap(user: WarmUserSource): Omit<WarmUserSnap, "telegramId" | "syncedAt"> {
+  return {
+    id: user.id,
+    username: user.username,
+    fullName: user.fullName,
+    role: user.role,
+    language: user.language,
+    referralCode: user.referralCode,
+    walletBalance: String(user.walletBalance),
+    banned: user.banned,
+    bannedReason: user.bannedReason,
+    preferredCurrency: parseDisplayCurrency(user.preferredCurrency),
+  };
 }
 
 const TTL_MS = 5 * 60 * 1000;

@@ -74,3 +74,23 @@ jobs:
 
       - name: Test
         run: npx vitest run
+
+      # Known-failing today: 27 pre-existing tests across 7 files call
+      # decryptCredentials/encryptCredentials without the context/AAD
+      # argument v2 writes need (see tests/helpers/envelopeFlag.ts's comment;
+      # full breakdown in .superpowers/sdd/task-E-report.md):
+      #   packages/core/src/credentialCrypto.test.ts        4
+      #   packages/db/src/crud/settlePaidOrder.test.ts       2
+      #   packages/db/src/crud/stock.test.ts                11
+      #   packages/db/src/crud/stockReplacement.test.ts      1
+      #   packages/db/src/crud/stock_concurrency.test.ts     3
+      #   packages/db/src/crud/stock_events.test.ts          2
+      #   scripts/reencrypt-credentials-v2.test.ts           4
+      # continue-on-error keeps this step's failure visible in the run
+      # without blocking every other PR on debt this step was never meant to
+      # fix — flip back to hard-fail once all 27 of the above are fixed (each
+      # call site given a real derived context, or pinned to v1 via
+      # encryptLegacyV1 where that's the actual intent).
+      - name: Test (CREDENTIAL_ENVELOPE_WRITE_V2 coverage)
+        run: pnpm run test:envelope-v2
+        continue-on-error: true

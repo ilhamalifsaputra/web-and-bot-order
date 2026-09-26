@@ -6,8 +6,16 @@
  *
  * Test debt: older tests call decryptCredentials(x) without a context, which
  * only works on v1, so they fail when the whole suite runs with the flag on.
- * A future CI job should run packages/db and scripts with
- * CREDENTIAL_ENVELOPE_WRITE_V2=true once those calls pass their context.
+ * That CI coverage now exists — `pnpm run test:envelope-v2`, wired as a
+ * `continue-on-error` step in `.github/workflows/ci.yml` right after the
+ * normal Test step — and running it surfaces exactly this debt: 27
+ * pre-existing failures across 7 files, all tracing to bare
+ * decryptCredentials()/encryptCredentials() calls missing their context/AAD
+ * argument (the same gap this comment already described). It's
+ * `continue-on-error` specifically because of that debt, not because the
+ * mechanism itself doesn't work — flip it to hard-fail once those call sites
+ * are audited and given a real derived context (or pinned to v1 via
+ * `encryptLegacyV1`, for fixtures that intend to).
  */
 import { afterEach, beforeEach } from "vitest";
 import { encryptCredentials } from "@app/core/credentialCrypto";

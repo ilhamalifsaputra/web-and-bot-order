@@ -31,7 +31,8 @@ export interface StockEventInput {
   meta?: Prisma.InputJsonValue;
   /** When the change happened, if the caller already has an authoritative
    *  instant (e.g. the one it also stamps on a ledger posting, so the two
-   *  agree). Omitted means now() — the column's own default. */
+   *  agree). Omitted means a fresh JS-clock read (`new Date()`) taken when
+   *  the row is written — never the column's own DB-side default. */
   occurredAt?: Date;
 }
 
@@ -56,9 +57,23 @@ function toRow(e: StockEventInput): Prisma.StockItemEventUncheckedCreateInput {
     reasonCode: e.reasonCode ?? null,
     correlationId: e.correlationId ?? null,
     meta: e.meta,
-    // undefined (not null) so Prisma falls through to the column default; the
-    // column is NOT NULL, so an explicit null would be rejected.
-    occurredAt: e.occurredAt ?? undefined,
+    // Always a JS-clock read by default now — never falls through to the
+    // column's DB-side default, so every StockItemEvent row gets its
+    // timestamp from the same clock (the app process), eliminating a
+    // DB-clock-vs-app-clock drift risk that could misorder `ORDER BY
+    // occurredAt` between two events written by different functions.
+    // Callers still pass an explicit occurredAt when they need intra-
+    // transaction agreement with a ledger posting written alongside the
+    // event — see releaseOrderHolds, which threads its own already-captured
+    // `now` through so the RESERVATION_RELEASED event agrees with the other
+    // timestamps that function writes in the same transaction. (approveOrder
+    // does NOT pass an explicit occurredAt to any stock event it writes —
+    // an earlier mid-development attempt to thread its own `now` through was
+    // deliberately reverted, since it inverted real write order relative to
+    // allocateOneAvailableStock's live-read RESERVED event; approveOrder's
+    // own timestamp-sharing is a separate mechanism, for its ledger posting,
+    // not for stock events.)
+    occurredAt: e.occurredAt ?? new Date(),
   };
 }
 

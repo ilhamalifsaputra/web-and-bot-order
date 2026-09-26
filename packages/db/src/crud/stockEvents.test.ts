@@ -2,7 +2,7 @@
  * recordStockEvent / recordStockEvents — the single write path for the
  * StockItemEvent ledger (stock traceability hardening plan, Fase 3a).
  */
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
@@ -102,6 +102,43 @@ describe("recordStockEvent", () => {
       }),
     ).rejects.toThrow("boom");
     expect(await prisma.stockItemEvent.count()).toBe(0);
+  });
+
+  it("defaults occurredAt to a JS-clock read (not the DB default) when omitted", async () => {
+    const stockItemId = await firstStockId();
+    const before = Date.now();
+    const row = await recordStockEvent(prisma, {
+      stockItemId,
+      eventType: StockEventType.MARKED_DEAD,
+      actor: { type: StockActorType.SYSTEM },
+    });
+    const after = Date.now();
+    expect(row.occurredAt.getTime()).toBeGreaterThanOrEqual(before);
+    expect(row.occurredAt.getTime()).toBeLessThanOrEqual(after);
+  });
+
+  it("defaults occurredAt to the JS-clock read at call time (not the DB default)", async () => {
+    // The [before, after] window above doesn't actually distinguish "JS
+    // clock" from "DB clock": Postgres's CURRENT_TIMESTAMP (the OLD
+    // behavior, before this column got a JS-clock default) would also land
+    // inside that same window for a single fast create() call, so that test
+    // would likely have passed against the pre-fix code too. Pinning the JS
+    // clock to a fixed instant and asserting an EXACT match is the only way
+    // to prove the value came from `Date.now()` in this process, not from
+    // whatever Postgres's own clock happened to read.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date("2001-02-03T04:05:06.789Z"));
+      const stockItemId = await firstStockId();
+      const row = await recordStockEvent(prisma, {
+        stockItemId,
+        eventType: StockEventType.MARKED_DEAD,
+        actor: { type: StockActorType.SYSTEM },
+      });
+      expect(row.occurredAt.toISOString()).toBe("2001-02-03T04:05:06.789Z");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

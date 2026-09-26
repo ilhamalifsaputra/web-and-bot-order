@@ -1422,6 +1422,20 @@ describe("group/category browsing handlers", () => {
     expect(scratch.productId).toBeUndefined();
   });
 
+  it("browseGroups skips straight to the sole enabled service's categories", async () => {
+    await setSetting(prisma, "service_game_topup_enabled", "false");
+    const cat = await createCategory(prisma, { name: `Solo Premium ${Math.random()}`, group: CategoryGroup.PREMIUM_APPS });
+    const { ctx, sink } = customerCtx({
+      session: { ...userSession(), scratch: { categoryId: 1, group: "X", productId: 2 } },
+    });
+    await customer.browseGroups(ctx);
+    expect(sentIncludes(sink, "What are you shopping for")).toBe(false);
+    const scratch = ctx.session.scratch as { group?: string };
+    expect(scratch.group).toBe(CategoryGroup.PREMIUM_APPS);
+    await setSetting(prisma, "service_game_topup_enabled", "true"); // restore — DB is shared across this file's tests
+    void cat;
+  });
+
   it("browseCategoriesInGroup lists active categories in that group and records the group in scratch", async () => {
     // Two categories on purpose — see the auto-skip tests below for the
     // single-category case, which this picker-rendering test must not

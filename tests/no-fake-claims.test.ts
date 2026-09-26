@@ -332,6 +332,20 @@ describe("no unsupported claims hardcoded directly in storefront TSX", () => {
     // turn a legitimate style choice into a false positive; it would not
     // catch any additional corruption, since both confirmed prior
     // regressions manifested in `"`/`'`-delimited literals, not backticks.
+    //
+    // Known gap (accepted, not a defect to fix here — per this guard's own
+    // brief, nested `${...}` interpolation inside a template literal isn't
+    // specially handled): this check has NO correctness coverage for
+    // backtick-literal mis-tokenization. A real example exists in this repo
+    // today — apps/storefront/client/src/pages/ProductPage.tsx's WhatsApp
+    // share link nests a template literal inside `encodeURIComponent(...)`,
+    // which the tokenizer splits into two garbage single-line backtick
+    // fragments. Confirmed (final review pass) that this garbage stays
+    // single-line and self-contained — it does not corrupt any subsequent
+    // literal in the file — so it's invisible to this newline check by
+    // construction, not just by scope. FORBIDDEN-pattern detection is
+    // unaffected either way (substring search still finds a real violation
+    // even inside a garbage span).
     const offenders: string[] = [];
     for (const { file, quotedLiterals } of files) {
       for (const literal of quotedLiterals) {

@@ -74,3 +74,6 @@ jobs:
 
       - name: Test
         run: npx vitest run
+
+      - name: Test (CREDENTIAL_ENVELOPE_WRITE_V2 coverage)
+        run: pnpm run test:envelope-v2

@@ -12,6 +12,8 @@ import { prisma, getVoucherByCode, applyVoucherToSubtotal } from "@app/db";
 import type { MyContext, MyConversation } from "../context";
 import { smartEdit, menuAnchor, consumeInput } from "../util/chat";
 import { coreT, t } from "../util/i18n";
+import { ctxPriceFormatter, displayValidationArgs } from "../util/format";
+import { currentUsdtRate } from "../util/rate";
 import * as ckb from "../keyboards/customer";
 import { renderOrderConfirmation } from "../handlers/checkout";
 import { startCommand, handleProductNumber } from "../handlers/customer";
@@ -87,7 +89,13 @@ export async function voucherConversation(conversation: MyConversation, ctx: MyC
       applyVoucherToSubtotal(voucher, new Decimal("999999"), new Decimal("999999"));
     } catch (e) {
       if (e instanceof ValidationError) {
-        await menuAnchor(u, promptAgain(e.key, e.formatArgs), ckb.voucherCancelKb(productId, qty, lang));
+        // A minimum purchase is IDR-canonical — show it in the buyer's display
+        // currency. The rate read is DB I/O before a further wait(), so it
+        // runs in external(); only the plain formatted args are replayed.
+        const args = await conversation.external(async () =>
+          displayValidationArgs(e.key, e.formatArgs, ctxPriceFormatter(u, await currentUsdtRate())),
+        );
+        await menuAnchor(u, promptAgain(e.key, args), ckb.voucherCancelKb(productId, qty, lang));
         continue;
       }
       throw e;

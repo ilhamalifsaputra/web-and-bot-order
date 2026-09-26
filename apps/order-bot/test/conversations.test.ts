@@ -14,10 +14,13 @@ import {
   setSetting,
   deleteSetting,
   updateDenomination,
+  createVoucher,
   DIGIFLAZZ_MARKUP_TYPE_KEY,
   DIGIFLAZZ_MARKUP_VALUE_KEY,
 } from "@app/db";
-import { NotificationEvent, OrderStatus, SenderType, StockActorType, StockEventType, TicketStatus, UserRole } from "@app/core/enums";
+import { DisplayCurrency, NotificationEvent, OrderStatus, SenderType, StockActorType, StockEventType, TicketStatus, UserRole, VoucherType } from "@app/core/enums";
+import { invalidateRateCache } from "../src/util/rate";
+import { coreT } from "../src/util/i18n";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import {
   makeCtx,
@@ -156,6 +159,30 @@ describe("checkout conversations", () => {
     const conv = new FakeConversation([msg(sink, { text: "save10" })]);
     await voucherConversation(conv.asMyConversation(), entry);
     expect(sentIncludes(sink, "SAVE10")).toBe(true); // confirm_voucher_line shows the code
+  });
+
+  it("voucher: a minimum-purchase rejection shows the IDR minimum in the buyer's display currency", async () => {
+    await setSetting(prisma, "usd_idr_rate", "16000");
+    invalidateRateCache();
+    // Above the conversation's 999999 sanity subtotal, so its gate trips.
+    await createVoucher(prisma, { code: "HUGEMIN", type: VoucherType.PERCENT, value: "10", usageLimit: 10, minPurchase: "1600000" });
+    const usdSession = (): Partial<SessionData> => ({
+      ...custSession(),
+      dbUser: { ...custSession().dbUser!, preferredCurrency: DisplayCurrency.USD },
+    });
+    const sink: SentCall[] = [];
+    const entry = makeCtx({ sink, from: { id: 42, username: "tester" }, session: usdSession(), callbackData: `v1:voucher:start:${sample.product.id}:1` }).ctx;
+    const conv = new FakeConversation([
+      makeCtx({ sink, from: { id: 42, username: "tester" }, session: usdSession(), text: "hugemin" }).ctx,
+      // The rejection re-prompts; /cancel then leaves the conversation.
+      makeCtx({ sink, from: { id: 42, username: "tester" }, session: usdSession(), text: "/cancel" }).ctx,
+    ]);
+    try {
+      await voucherConversation(conv.asMyConversation(), entry);
+    } finally {
+      invalidateRateCache(); // don't leak the cached rate into later tests
+    }
+    expect(sentIncludes(sink, coreT("error.voucher_min_purchase", "en", { min: "$100.00" }))).toBe(true);
   });
 });
 

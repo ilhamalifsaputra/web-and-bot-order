@@ -93,7 +93,16 @@ import { flipSettledOrderBubble } from "../jobs";
 import { TELEGRAM_MESSAGE_TIMEOUT_MS } from "../payments/telegramTimeout";
 import { coreT, t } from "../util/i18n";
 import { logErrorRef } from "../util/errors";
-import { esc, formatIdr, formatUsdtAmount, priceIdr, usdtFromIdr } from "../util/format";
+import {
+  esc,
+  formatIdr,
+  formatUsdtAmount,
+  usdtFromIdr,
+  ctxPriceFormatter,
+  payAlongsidePriceLine,
+  displayValidationArgs,
+  type UserPriceFormatter,
+} from "../util/format";
 import { currentUsdtRate } from "../util/rate";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import * as ckb from "../keyboards/customer";
@@ -106,8 +115,18 @@ export { cancelPaymentJobs };
 
 const MAX_PENDING_ORDERS = 10;
 // USDT figures only (the charged total of Binance orders). Catalog/confirmation
-// amounts are central Rupiah — use priceIdr(v, rate).
+// amounts are central Rupiah rendered in the buyer's display currency — use
+// ctxPriceFormatter(ctx, rate).price(v). Payment payables stay in the rail's
+// own currency.
 const price = (v: Decimal.Value) => formatUsdtAmount(v);
+
+/**
+ * A ValidationError's localized text, with any IDR-canonical money in its
+ * args (a voucher's minimum purchase) shown in the buyer's display currency.
+ */
+async function validationText(ctx: MyContext, e: ValidationError): Promise<string> {
+  return t(ctx, e.key, displayValidationArgs(e.key, e.formatArgs, ctxPriceFormatter(ctx, await currentUsdtRate())));
+}
 
 /**
  * Per-method minimum-payment note, appended to a rail's instructions when an
@@ -349,6 +368,8 @@ async function computeConfirmation(
   ]);
   if (product === null || user === null) return null;
   const bulkRule = await getBulkPricingForDenomination(prisma, productId);
+  // Voucher amounts are IDR-canonical; shown in the buyer's display currency.
+  const prices = ctxPriceFormatter(ctx, rate);
 
   const isReseller = info.role === UserRole.RESELLER;
   // Same helper createOrderDirect prices with, so the confirmation screen can
@@ -386,7 +407,7 @@ async function computeConfirmation(
         const discount = applyVoucherToSubtotal(voucherObj, subtotal, eligibleSubtotal.minus(eligibleBulkDiscount));
         voucherLine = coreT("checkout.confirm_voucher_line", lang, {
           code: voucherCode,
-          discount: formatIdr(discount),
+          discount: prices.price(discount),
         });
         subtotal = subtotal.minus(discount);
       } else {
@@ -403,7 +424,7 @@ async function computeConfirmation(
       // into on success — matches how the first-apply path
       // (conversations/checkout.ts:81-87) surfaces the same ValidationError.
       if (e instanceof ValidationError) {
-        voucherLine = `${coreT(e.key, lang, e.formatArgs)}\n`;
+        voucherLine = `${coreT(e.key, lang, displayValidationArgs(e.key, e.formatArgs, prices))}\n`;
       } else {
         // Anything else (DB error, etc.) is unexpected — log it under a ref
         // so a customer report maps to the stack trace, same convention as
@@ -580,15 +601,7 @@ export async function showOrderConfirmation(
   const rails = await offerableRails(r.subtotal, rate);
   await smartEdit(
     ctx,
-    t(ctx, "checkout.confirm_order", {
-      product: esc(r.productName),
-      qty: quantity,
-      unit_price: priceIdr(r.unitPrice, rate),
-      voucher_line: r.voucherLine,
-      wallet_line: r.walletLine,
-      total: priceIdr(r.subtotal, rate),
-      closing_line: closingLineFor(ctx, r, rails),
-    }),
+    confirmOrderText(ctx, r, quantity, closingLineFor(ctx, r, rails), ctxPriceFormatter(ctx, rate)),
     ckb.orderConfirmKb(
       productId,
       quantity,
@@ -620,6 +633,31 @@ function closingLineFor(ctx: MyContext, r: ConfirmRender, rails: OfferableRails)
   return r.closingLine;
 }
 
+/**
+ * The "Confirm Order" summary body shared by every render of it. Unit price
+ * and total are canonical IDR, shown in the buyer's display currency (one
+ * conversion here); the wallet line stays in the wallet's own currency.
+ */
+function confirmOrderText(
+  ctx: MyContext,
+  r: ConfirmRender,
+  quantity: number,
+  closingLine: string,
+  prices: UserPriceFormatter,
+): string {
+  return (
+    t(ctx, "checkout.confirm_order", {
+      product: esc(r.productName),
+      qty: quantity,
+      unit_price: prices.price(r.unitPrice),
+      voucher_line: r.voucherLine,
+      wallet_line: r.walletLine,
+      total: prices.price(r.subtotal),
+      closing_line: closingLine,
+    }) + prices.rateNotice(ctx.session.lang)
+  );
+}
+
 /** Re-render confirmation as a fresh message (used after voucher entry). */
 export async function renderOrderConfirmation(
   ctx: MyContext,
@@ -633,15 +671,7 @@ export async function renderOrderConfirmation(
   const rails = await offerableRails(r.subtotal, rate);
   const msg = await ctx.api.sendMessage(
     ctx.chat!.id,
-    t(ctx, "checkout.confirm_order", {
-      product: esc(r.productName),
-      qty: quantity,
-      unit_price: priceIdr(r.unitPrice, rate),
-      voucher_line: r.voucherLine,
-      wallet_line: r.walletLine,
-      total: priceIdr(r.subtotal, rate),
-      closing_line: closingLineFor(ctx, r, rails),
-    }),
+    confirmOrderText(ctx, r, quantity, closingLineFor(ctx, r, rails), ctxPriceFormatter(ctx, rate)),
     {
       parse_mode: "HTML",
       reply_markup: ckb.orderConfirmKb(
@@ -680,15 +710,7 @@ export async function showUsdtMethods(ctx: MyContext, productId: number, quantit
   const rails = await offerableRails(r.subtotal, rate);
   await smartEdit(
     ctx,
-    t(ctx, "checkout.confirm_order", {
-      product: esc(r.productName),
-      qty: quantity,
-      unit_price: priceIdr(r.unitPrice, rate),
-      voucher_line: r.voucherLine,
-      wallet_line: r.walletLine,
-      total: priceIdr(r.subtotal, rate),
-      closing_line: closingLineFor(ctx, r, rails),
-    }),
+    confirmOrderText(ctx, r, quantity, closingLineFor(ctx, r, rails), ctxPriceFormatter(ctx, rate)),
     ckb.usdtMethodsKb(productId, quantity, lang, rails.binance, rails.bybit, rails.nowpayments, rails.bybitBsc),
   );
 }
@@ -707,15 +729,7 @@ export async function showWalletCreditMenu(ctx: MyContext, productId: number, qu
 
   await smartEdit(
     ctx,
-    t(ctx, "checkout.confirm_order", {
-      product: esc(r.productName),
-      qty: quantity,
-      unit_price: priceIdr(r.unitPrice, rate),
-      voucher_line: r.voucherLine,
-      wallet_line: r.walletLine,
-      total: priceIdr(r.subtotal, rate),
-      closing_line: r.closingLine,
-    }),
+    confirmOrderText(ctx, r, quantity, r.closingLine, ctxPriceFormatter(ctx, rate)),
     ckb.walletCreditKb(productId, quantity, lang, r.idrBalance, r.useWalletIdr, r.usdtBalance, r.useWalletUsdt),
   );
 }
@@ -828,7 +842,7 @@ export async function buyNowInternal(ctx: MyContext, productId: number, quantity
       return;
     }
     if (e instanceof ValidationError) {
-      await smartEdit(ctx, t(ctx, e.key, e.formatArgs), ckb.backToMain(lang));
+      await smartEdit(ctx, await validationText(ctx, e), ckb.backToMain(lang));
       return;
     }
     throw e;
@@ -950,7 +964,7 @@ export async function buyNowBybit(ctx: MyContext, productId: number, quantity: n
       return;
     }
     if (e instanceof ValidationError) {
-      await smartEdit(ctx, t(ctx, e.key, e.formatArgs), ckb.backToMain(lang));
+      await smartEdit(ctx, await validationText(ctx, e), ckb.backToMain(lang));
       return;
     }
     throw e;
@@ -1067,7 +1081,7 @@ export async function buyNowBybitBsc(ctx: MyContext, productId: number, quantity
       return;
     }
     if (e instanceof ValidationError) {
-      await smartEdit(ctx, t(ctx, e.key, e.formatArgs), ckb.backToMain(lang));
+      await smartEdit(ctx, await validationText(ctx, e), ckb.backToMain(lang));
       return;
     }
     throw e;
@@ -1198,7 +1212,7 @@ export async function buyNowNowpayments(ctx: MyContext, productId: number, quant
       return;
     }
     if (e instanceof ValidationError) {
-      await smartEdit(ctx, t(ctx, e.key, e.formatArgs), ckb.backToMain(lang));
+      await smartEdit(ctx, await validationText(ctx, e), ckb.backToMain(lang));
       return;
     }
     throw e;
@@ -1370,7 +1384,7 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
       return;
     }
     if (e instanceof ValidationError) {
-      await smartEdit(ctx, t(ctx, e.key, e.formatArgs), ckb.backToMain(lang));
+      await smartEdit(ctx, await validationText(ctx, e), ckb.backToMain(lang));
       return;
     }
     throw e;
@@ -1455,13 +1469,19 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
   const expiry = order.expiresAt
     ? `${localize(order.expiresAt, "yyyy-LL-dd HH:mm")} WIB`
     : `${config.PAYMENT_WINDOW_MINUTES}m`;
+  // The payable is the rail's own whole-Rupiah figure, exactly as before; a
+  // USD-display buyer additionally sees the order's $ price beside it
+  // (derived once from the canonical IDR total, never from the payable).
+  const payText = formatIdr(chargeAmount);
   const caption = t(ctx, "checkout.qris_instructions", {
     code: order.orderCode,
     subtotal: formatIdr(order.subtotalAmount),
     fee: formatIdr(adminFee),
-    amount: formatIdr(chargeAmount),
+    amount: payText,
     expiry,
-  }) + minAmountNote(ctx, creds.minAmount, "IDR");
+  }) +
+    payAlongsidePriceLine(ctxPriceFormatter(ctx, await currentUsdtRate()), order.totalAmount, payText, lang) +
+    minAmountNote(ctx, creds.minAmount, "IDR");
 
   // Unify the QR image and the payment instructions into ONE photo+caption
   // bubble (image + caption + waiting keyboard), so the QR reads as part of the
@@ -1558,7 +1578,7 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
       return;
     }
     if (e instanceof ValidationError) {
-      await smartEdit(ctx, t(ctx, e.key, e.formatArgs), ckb.backToMain(lang));
+      await smartEdit(ctx, await validationText(ctx, e), ckb.backToMain(lang));
       return;
     }
     throw e;
@@ -1638,11 +1658,16 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
   const expiry = order.expiresAt
     ? `${localize(order.expiresAt, "yyyy-LL-dd HH:mm")} WIB`
     : `${config.PAYMENT_WINDOW_MINUTES}m`;
+  // Same truthful-payable rule as buyNowTokopay: native Rp payable, plus the
+  // $ price beside it for a USD-display buyer.
+  const payText = formatIdr(order.totalAmount);
   const caption = t(ctx, "checkout.paydisini_instructions", {
     code: order.orderCode,
-    amount: formatIdr(order.totalAmount),
+    amount: payText,
     expiry,
-  }) + minAmountNote(ctx, creds.minAmount, "IDR");
+  }) +
+    payAlongsidePriceLine(ctxPriceFormatter(ctx, await currentUsdtRate()), order.totalAmount, payText, lang) +
+    minAmountNote(ctx, creds.minAmount, "IDR");
 
   // Unify the QR image and the payment instructions into ONE photo+caption
   // bubble (image + caption + waiting keyboard), so the QR reads as part of the
@@ -1817,7 +1842,7 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
       return;
     }
     if (e instanceof ValidationError) {
-      await smartEdit(ctx, t(ctx, e.key, e.formatArgs), ckb.backToMain(lang));
+      await smartEdit(ctx, await validationText(ctx, e), ckb.backToMain(lang));
       return;
     }
     // A genuine double-tap here can also surface as a Prisma P2028 (write-

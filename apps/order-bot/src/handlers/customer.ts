@@ -60,7 +60,7 @@ import { t } from "../util/i18n";
 import { logErrorRef } from "../util/errors";
 import { gameTopUpDenomLabel } from "../util/denominationLabel";
 import { gameInputFieldsLabel, resolveGameInputFlags } from "../util/gameInfo";
-import { esc, formatUsdtAmount, formatIdr, statusBadge, groupOrderItems, formatCountdown, formatFlashRemaining, priceIdr, orderAmount, mixedAmount, renderBybitBscTrackingScreen, summarizeTicketOrder } from "../util/format";
+import { esc, formatUsdtAmount, formatIdr, statusBadge, groupOrderItems, formatCountdown, formatFlashRemaining, priceIdr, ctxPriceFormatter, orderAmount, mixedAmount, renderBybitBscTrackingScreen, summarizeTicketOrder } from "../util/format";
 import { effectiveUnitPrice, flashPrice, activeFlashPercent } from "@app/core/flash";
 import { currentUsdtRate } from "../util/rate";
 import * as ckb from "../keyboards/customer";
@@ -68,7 +68,8 @@ import { showFaq, showTerms } from "./static";
 
 const PAGE_SIZE = 10;
 // USDT-denominated figures only (wallet balance, commissions). Catalog prices
-// are central Rupiah — use priceIdr(v, rate); order totals — orderAmount(o).
+// are central Rupiah rendered in the buyer's display currency —
+// ctxPriceFormatter(ctx, rate).price(v); order totals — orderAmount(o).
 const price = (v: Decimal.Value) => formatUsdtAmount(v);
 
 // Bybit BSC's in-flight pre-delivery states — viewOrder() routes these
@@ -862,6 +863,9 @@ export async function browseProduct(ctx: MyContext, productId: number): Promise<
   delete sc(ctx).variantId;
   const isReseller = info.role === UserRole.RESELLER;
   const rate = await currentUsdtRate();
+  // Catalog prices in the buyer's display currency (canonical IDR in, one
+  // conversion at this render edge).
+  const prices = ctxPriceFormatter(ctx, rate);
 
   // Game Top Up whose every button will carry its own price (compact
   // qty+unit+price label — same qtyValue/qtyUnit condition as buttonLabel
@@ -897,7 +901,7 @@ export async function browseProduct(ctx: MyContext, productId: number): Promise<
       // through the variant-picker flow that sets/clears scratch at all).
       const buttonLabel =
         d.qtyValue != null && d.qtyUnit
-          ? gameTopUpDenomLabel(d, unitPrice, product.gameVariantEmoji ?? sc(ctx).gameVariantEmoji)
+          ? gameTopUpDenomLabel(d, unitPrice, product.gameVariantEmoji ?? sc(ctx).gameVariantEmoji, prices)
           : undefined;
       if (isGameWithInlinePrices) return { line: "", buttonLabel };
       const stock = await countAvailableStock(prisma, d.id);
@@ -921,10 +925,10 @@ export async function browseProduct(ctx: MyContext, productId: number): Promise<
       const priceText =
         sale && unitPrice.equals(sale)
           ? t(ctx, "browse.flash_price", {
-              old: priceIdr(d.price, rate),
-              new: priceIdr(unitPrice, rate),
+              old: prices.price(d.price),
+              new: prices.price(unitPrice),
             })
-          : priceIdr(unitPrice, rate);
+          : prices.price(unitPrice);
       const line = t(ctx, "browse.denomination_line", {
         duration: esc(d.durationLabel || d.name),
         price: priceText,
@@ -959,6 +963,9 @@ export async function browseProduct(ctx: MyContext, productId: number): Promise<
       text += "\n\n" + t(ctx, "browse.description", { description: esc(product.description) });
     }
   }
+  // Prices on this screen (body lines or button labels) fell back to Rp for a
+  // USD buyer because no rate is available — say so, once.
+  text += prices.rateNotice(lang);
   const pickerDenoms = active.map((d, i) => ({ ...d, buttonLabel: planData[i]!.buttonLabel }));
   const photoArg = productPhotoArg(product);
   if (photoArg) {
@@ -1023,6 +1030,7 @@ export async function browseDenomination(
   const isReseller = info.role === UserRole.RESELLER;
   const unit = effectiveUnitPrice(d, isReseller);
   const rate = await currentUsdtRate();
+  const prices = ctxPriceFormatter(ctx, rate);
   const sale = flashPrice(d);
   const onSale = sale !== null && unit.equals(sale);
 
@@ -1042,8 +1050,8 @@ export async function browseDenomination(
       : "—";
 
   const priceText = onSale
-    ? t(ctx, "browse.flash_price", { old: priceIdr(d.price, rate), new: priceIdr(unit, rate) })
-    : priceIdr(unit, rate);
+    ? t(ctx, "browse.flash_price", { old: prices.price(d.price), new: prices.price(unit) })
+    : prices.price(unit);
   // Game Top Up SKUs (diamonds, UC, …) have no meaningful Duration/Type/
   // Warranty — those lines are Premium Apps account attributes — so the game
   // variant of this bubble keeps only Price/Stock/Sold/Rating.
@@ -1093,6 +1101,7 @@ export async function browseDenomination(
     const hint = await gameInputHint(ctx, [d]);
     if (hint) text += "\n\n" + hint;
   }
+  text += prices.rateNotice(lang);
 
   if (opts?.noticePrefix) {
     text = opts.noticePrefix + "\n\n" + text;

@@ -1,6 +1,9 @@
 import "./setup-env"; // FIRST import — sets env before @app/* load
 import { describe, it, expect } from "vitest";
 import { formatDenominationLabel, gameTopUpDenomLabel } from "../src/util/denominationLabel";
+import { userPriceFormatter } from "../src/util/format";
+import { Decimal } from "@app/core/money";
+import { DisplayCurrency } from "@app/core/enums";
 
 describe("formatDenominationLabel", () => {
   it('moves quantity to front: "Bonds 1580" → "1580 Bonds"', () => {
@@ -112,5 +115,20 @@ describe("gameTopUpDenomLabel", () => {
     const d = { qtyValue: 1580, qtyUnit: "Bonds", durationLabel: "1580 Bonds", name: "1580 Bonds" };
     expect(gameTopUpDenomLabel(d, 79000, null)).toBe("1.58K Bonds — Rp79K");
     expect(gameTopUpDenomLabel(d, 79000, undefined)).toBe("1.58K Bonds — Rp79K");
+  });
+
+  it("follows the display currency when given a price formatter (USD user → $, IDR user → Rp79K)", () => {
+    const d = { qtyValue: 1580, qtyUnit: "Bonds", durationLabel: "1580 Bonds", name: "1580 Bonds" };
+    const rate = new Decimal(16000);
+    expect(gameTopUpDenomLabel(d, 79000, null, userPriceFormatter(DisplayCurrency.USD, rate))).toBe(
+      "1.58K Bonds — $4.94",
+    );
+    expect(gameTopUpDenomLabel(d, 79000, "🔫", userPriceFormatter(DisplayCurrency.IDR, rate))).toBe(
+      "🔫 1.58K Bonds — Rp79K",
+    );
+    // USD without a rate falls back to the explicit compact Rp form.
+    expect(gameTopUpDenomLabel(d, 79000, null, userPriceFormatter(DisplayCurrency.USD, null))).toBe(
+      "1.58K Bonds — Rp79K",
+    );
   });
 });

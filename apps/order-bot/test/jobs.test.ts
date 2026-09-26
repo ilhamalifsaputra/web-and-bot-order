@@ -96,6 +96,7 @@ import {
   NOWPAYMENTS_POLL_STALE_MS,
 } from "../src/jobs";
 import { NotificationEvent } from "@app/core/enums";
+import { invalidateRateCache } from "../src/util/rate";
 
 let sample: SampleData;
 
@@ -1531,6 +1532,33 @@ describe("announceStartedFlashSales", () => {
     await announceStartedFlashSales();
     expect((await flashRows()).length).toBe(1); // still exactly one batch
     expect(await prisma.broadcast.count()).toBe(1);
+  });
+
+  it("prices each recipient's DM in their own display currency (USD → $, IDR/unset → Rp)", async () => {
+    await setSetting(prisma, "usd_idr_rate", "16000");
+    invalidateRateCache();
+    try {
+      const now = Date.now();
+      await scheduleFlash(sample.product.id, new Date(now - HOUR), new Date(now + HOUR));
+      await prisma.user.update({ where: { id: sample.user.id }, data: { preferredCurrency: "USD" } });
+      await prisma.user.create({ data: { telegramId: BigInt(6_100_001), referralCode: "flash-idr", preferredCurrency: "IDR" } });
+      await prisma.user.create({ data: { telegramId: BigInt(6_100_002), referralCode: "flash-unset" } });
+
+      await announceStartedFlashSales();
+
+      const byChat = new Map(
+        (await flashRows()).map((r) => {
+          const p = JSON.parse(r.payloadJson) as { chat_id: number; old_price: string; new_price: string };
+          return [p.chat_id, p] as const;
+        }),
+      );
+      // 50000 → $3.125 → $3.13; 37500 → $2.34375 → $2.35 (ceil to the cent).
+      expect(byChat.get(42)).toMatchObject({ old_price: "$3.13", new_price: "$2.35" });
+      expect(byChat.get(6_100_001)).toMatchObject({ old_price: "Rp50.000", new_price: "Rp37.500" });
+      expect(byChat.get(6_100_002)).toMatchObject({ old_price: "Rp50.000", new_price: "Rp37.500" });
+    } finally {
+      invalidateRateCache();
+    }
   });
 
   // H-7 fix (backend audit 2026-07-31): the `flashAnnouncedAt` claim and the

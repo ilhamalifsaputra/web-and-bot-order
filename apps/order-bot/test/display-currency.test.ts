@@ -19,6 +19,17 @@ vi.mock("@app/core/payments/tokopay", async (orig) => ({
   }),
 }));
 
+vi.mock("@app/core/payments/paydisini", async (orig) => ({
+  ...(await orig<typeof import("@app/core/payments/paydisini")>()),
+  createTransaction: vi.fn().mockResolvedValue({
+    trxId: "PD-TEST",
+    qrString: "000",
+    qrUrl: "https://x/pd-qr.png",
+    checkoutUrl: null,
+    totalBayar: "100",
+  }),
+}));
+
 import {
   prisma,
   setSetting,
@@ -31,6 +42,7 @@ import {
   BINANCE_API_KEY_KEY,
   BINANCE_API_SECRET_KEY,
 } from "@app/db";
+import { PAYDISINI_USERKEY_KEY, PAYDISINI_APIKEY_KEY } from "@app/core/payments/paydisini";
 import { Decimal } from "@app/core/money";
 import { DisplayCurrency, OrderCurrency, UserRole, VoucherType } from "@app/core/enums";
 import { formatIdr, formatUsdtAmount } from "@app/core/formatters";
@@ -205,6 +217,17 @@ describe("order confirmation", () => {
     expect(text).not.toContain("Rp");
   });
 
+  it("a USD user with NO rate gets Rp amounts and exactly one rate-unavailable notice", async () => {
+    const { ctx, sink } = customerCtx(DisplayCurrency.USD);
+    await checkout.showOrderConfirmation(ctx, sample.product.id, 2);
+    const text = sentText(sink);
+    expect(text).toContain("Rp79.000 × 2");
+    expect(text).toContain("<b>Rp158.000</b>");
+    expect(text).not.toContain("$");
+    const notice = coreT("currency.rate_unavailable", "en");
+    expect(text.split(notice).length - 1).toBe(1);
+  });
+
   it("prices in Rp only for an IDR user", async () => {
     await useRate();
     const { ctx, sink } = customerCtx(DisplayCurrency.IDR);
@@ -251,13 +274,34 @@ describe("payment screens", () => {
     return { ctx, caption, charge, order };
   }
 
-  it("a USD user on QRIS sees the $ price AND the Rp payable (Total $… · Pay Rp…)", async () => {
+  it("a USD user on QRIS sees the $ price AND the Rp payable (Price $… · Pay Rp…)", async () => {
     await useRate();
     const { caption, charge, order } = await tokopay(DisplayCurrency.USD);
     expect(order.currency).toBe(OrderCurrency.IDR);
-    expect(caption).toContain(`Total $4.94 · Pay ${formatIdr(charge)}`);
+    expect(caption).toContain(`Price $4.94 · Pay ${formatIdr(charge)}`);
+    expect(caption).not.toContain("Total $");
     // The payable itself is still the native Rupiah figure.
     expect(caption).toContain(`<b>${formatIdr(charge)}</b>`);
+  });
+
+  it("a USD user on QRIS with NO rate gets no dual line and the native Rp payable", async () => {
+    const { caption, charge } = await tokopay(DisplayCurrency.USD);
+    expect(caption).toContain(`<b>${formatIdr(charge)}</b>`);
+    expect(caption).not.toContain("$");
+    expect(caption).not.toContain(" · Pay ");
+  });
+
+  it("a USD user on PayDisini sees the $ price AND the Rp payable (Price $… · Pay Rp…)", async () => {
+    await useRate();
+    await setSetting(prisma, PAYDISINI_USERKEY_KEY, "uk");
+    await setSetting(prisma, PAYDISINI_APIKEY_KEY, "ak");
+    const { ctx, sink } = customerCtx(DisplayCurrency.USD);
+    await checkout.buyNowPaydisini(ctx, sample.product.id, 1);
+    const order = (await prisma.order.findFirst({ where: { userId: sample.user.id }, orderBy: { id: "desc" } }))!;
+    expect(order.currency).toBe(OrderCurrency.IDR);
+    const caption = (calls(sink, "replyWithPhoto")[0]!.args[1] as { caption: string }).caption;
+    expect(caption).toContain(`Price $4.94 · Pay ${formatIdr(order.totalAmount)}`);
+    expect(caption).toContain(`<b>${formatIdr(order.totalAmount)}</b>`);
   });
 
   it("an IDR user on QRIS sees only the Rp payable", async () => {
@@ -278,7 +322,7 @@ describe("payment screens", () => {
     expect(order.currency).toBe(OrderCurrency.USDT);
     const text = sentText(sink);
     expect(text).toContain(`<b>${formatUsdtAmount(order.totalAmount)}</b>`);
-    expect(text).not.toContain("Total $");
+    expect(text).not.toContain("Price $");
   });
 });
 

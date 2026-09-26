@@ -106,9 +106,10 @@ describe("payAlongsidePriceLine", () => {
   it("shows the $ price next to the native payable for a USD user on an IDR rail", () => {
     const f = userPriceFormatter(DisplayCurrency.USD, RATE);
     expect(payAlongsidePriceLine(f, 156800, "Rp160.000", "en")).toBe(
-      `\n\n${coreT("checkout.price_and_pay", "en", { total: "$9.80", pay: "Rp160.000" })}`,
+      `\n\n${coreT("checkout.price_and_pay", "en", { price: "$9.80", pay: "Rp160.000" })}`,
     );
-    expect(payAlongsidePriceLine(f, 156800, "Rp160.000", "en")).toContain("Total $9.80 · Pay Rp160.000");
+    expect(payAlongsidePriceLine(f, 156800, "Rp160.000", "en")).toContain("Price $9.80 · Pay Rp160.000");
+    expect(payAlongsidePriceLine(f, 156800, "Rp160.000", "id")).toContain("Harga $9.80 · Bayar Rp160.000");
   });
 
   it("adds nothing when the display currency already matches the rail (IDR/NULL user, or USD with no rate)", () => {

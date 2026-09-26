@@ -112,8 +112,10 @@ export function ctxPriceFormatter(
  * Payment screens stay truthful: the payable is always the rail's own figure
  * (`payText`, already formatted in the rail currency). When the user's
  * display currency differs from it (a USD user on an IDR rail), add one line
- * showing both — "Total $9.80 · Pay Rp160.000" — with the price derived from
- * the order's canonical IDR total. Never re-derives the payable. Returns ""
+ * showing both — "Price $9.80 · Pay Rp160.000" — with the price derived from
+ * the order's canonical IDR total (pre-fee, converted once) and Pay the rail's
+ * existing fee-inclusive charge. Labelled "Price", not "Total", since the two
+ * figures differ by the rail fee. Never re-derives the payable. Returns ""
  * when the display currency already matches (IDR/NULL user, or no rate).
  */
 export function payAlongsidePriceLine(
@@ -123,7 +125,7 @@ export function payAlongsidePriceLine(
   lang: string,
 ): string {
   if (!fmt.showsUsd) return "";
-  return `\n\n${coreT("checkout.price_and_pay", lang, { total: fmt.price(priceIdrAmount), pay: payText })}`;
+  return `\n\n${coreT("checkout.price_and_pay", lang, { price: fmt.price(priceIdrAmount), pay: payText })}`;
 }
 
 /**

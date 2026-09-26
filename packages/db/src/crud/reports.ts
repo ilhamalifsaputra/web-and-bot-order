@@ -379,6 +379,66 @@ export async function manualMatchQueueCounts(db: Db): Promise<ManualMatchQueueCo
 }
 
 /**
+ * Order statuses that close out a `delivery_failed` / `unmatched` ledger row.
+ * Nothing ever rewrites a ledger row's `outcome` once the admin fulfils the
+ * order by hand, refunds it or cancels it, so the row itself cannot say
+ * whether it still needs attention — its order's status can.
+ */
+const RESOLVED_LEDGER_ORDER_STATUSES: string[] = [OrderStatus.DELIVERED, OrderStatus.REFUNDED, OrderStatus.CANCELLED];
+
+/**
+ * Whether a ledger row is still work for an admin, given its order's status
+ * (`undefined` when the row has no order, or its order no longer exists —
+ * both still need a human). The one rule shared by
+ * `actionableManualMatchQueueCounts` and `listCombinedLedger`'s `actionable`
+ * filter, so the dashboard card and the Payments list it links to agree.
+ */
+function isActionableLedgerOrderStatus(status: string | undefined): boolean {
+  return status === undefined || !RESOLVED_LEDGER_ORDER_STATUSES.includes(status);
+}
+
+/**
+ * Like `manualMatchQueueCounts`, but only rows that still need an admin: a
+ * `delivery_failed`/`unmatched` row counts when it has no order, its order no
+ * longer exists, or its order is not DELIVERED/REFUNDED/CANCELLED. This is the
+ * dashboard's "Pending actions" figure; the Payments page's tiles keep the
+ * lifetime tally from `ledgerOutcomeCounts`.
+ *
+ * None of the five ledger tables has a Prisma relation to `Order` (a bare
+ * `orderId` column only), so this is two steps: fetch the rows' order ids,
+ * then ONE `order.findMany` for the resolved ones among them.
+ */
+export async function actionableManualMatchQueueCounts(db: Db): Promise<ManualMatchQueueCounts> {
+  const args = {
+    where: { outcome: { in: ["unmatched", "delivery_failed"] } },
+    select: { outcome: true, orderId: true },
+  };
+  const tables = await Promise.all([
+    db.processedBinanceTx.findMany(args),
+    db.processedBybitTx.findMany(args),
+    db.processedTokopayTx.findMany(args),
+    db.processedPaydisiniTx.findMany(args),
+    db.processedNowpaymentsTx.findMany(args),
+  ]);
+  const rows = tables.flat();
+
+  const orderIds = [...new Set(rows.map((r) => r.orderId).filter((id): id is number => id != null))];
+  const orders = orderIds.length
+    ? await db.order.findMany({ where: { id: { in: orderIds } }, select: { id: true, status: true } })
+    : [];
+  const statusById = new Map(orders.map((o) => [o.id, o.status]));
+
+  const result: ManualMatchQueueCounts = { unmatched: 0, deliveryFailed: 0 };
+  for (const r of rows) {
+    const status = r.orderId != null ? statusById.get(r.orderId) : undefined;
+    if (!isActionableLedgerOrderStatus(status)) continue;
+    if (r.outcome === "unmatched") result.unmatched += 1;
+    else result.deliveryFailed += 1;
+  }
+  return result;
+}
+
+/**
  * The five gateway ledger tables `manualMatchQueueCounts`/`listCombinedLedger`
  * cover. There is NOT a sixth `processedBybitBscTx` table: `ProcessedBybitTx`
  * (see its schema doc comment) is shared by BOTH Bybit payment methods —
@@ -427,6 +487,11 @@ export interface CombinedLedgerFilter {
    *  kind. Applied in JS after the order join, because `kind` lives on
    *  `Order` and none of the five ledger tables carry it. */
   kind?: string | null;
+  /** Drop rows whose order is DELIVERED/REFUNDED/CANCELLED — the same rule
+   *  `actionableManualMatchQueueCounts` counts by, so the dashboard's
+   *  "Pending actions" card and this list agree. Rows with no order (or a
+   *  deleted one) are kept. Applied in JS after the order join, like `kind`. */
+  actionable?: boolean;
   limit?: number;
   offset?: number;
 }
@@ -567,11 +632,18 @@ export async function listCombinedLedger(db: Db, opts: CombinedLedgerFilter = {}
   // admin most needs to see.
   const orderIds = [...new Set(merged.map((r) => r.orderId).filter((id): id is number => id != null))];
   const orders = orderIds.length
-    ? await db.order.findMany({ where: { id: { in: orderIds } }, select: { id: true, orderCode: true, kind: true } })
+    ? await db.order.findMany({
+        where: { id: { in: orderIds } },
+        select: { id: true, orderCode: true, kind: true, status: true },
+      })
     : [];
   const orderById = new Map(orders.map((o) => [o.id, o]));
 
-  let joined: UnifiedLedgerRow[] = merged.map((r) => {
+  const kept = opts.actionable
+    ? merged.filter((r) => isActionableLedgerOrderStatus(r.orderId != null ? orderById.get(r.orderId)?.status : undefined))
+    : merged;
+
+  let joined: UnifiedLedgerRow[] = kept.map((r) => {
     const order = r.orderId != null ? orderById.get(r.orderId) : undefined;
     return { ...r, orderCode: order?.orderCode ?? null, orderKind: order?.kind ?? null };
   });

@@ -74,6 +74,10 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
     // Unrecognized values fall back to "no kind filter" rather than an empty
     // ledger, matching how `outcome` above ignores anything not in TX_OUTCOMES.
     const kind = q.kind && (ORDER_KINDS as readonly string[]).includes(q.kind) ? q.kind : null;
+    // `?actionable=1` (the dashboard "Pending actions" card's link) hides rows
+    // whose order is already DELIVERED/REFUNDED/CANCELLED, so the list shows
+    // exactly what the card counted. Absent, the full ledger history is listed.
+    const actionable = q.actionable === "1" || q.actionable === "true";
     const page = Math.max(Number(q.page) || 1, 1);
     const offset = (page - 1) * PAGE_SIZE;
 
@@ -91,7 +95,7 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
     //    not be delivered, all-time — the figure the dashboard card links here with.
     // `counts` also feeds the outcome dropdown's "(n)" labels.
     const [ledgerPage, todayCount, counts, health, underpaid, underpaidCount, pendingInternal] = await Promise.all([
-      listCombinedLedger(prisma, { outcome, q: search, kind, limit: PAGE_SIZE, offset }),
+      listCombinedLedger(prisma, { outcome, q: search, kind, actionable, limit: PAGE_SIZE, offset }),
       countLedgerRowsToday(prisma),
       ledgerOutcomeCounts(prisma),
       getBinancePollHealth(prisma),

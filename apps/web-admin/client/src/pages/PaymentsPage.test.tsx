@@ -637,6 +637,35 @@ describe("PaymentsPage", () => {
     expect(vi.mocked(apiGet).mock.calls.some(([p]) => String(p).startsWith("/api/payments") && !String(p).includes("actionable"))).toBe(true);
   });
 
+  // The server ignores `actionable` for any outcome but unmatched /
+  // delivery_failed, so keeping the flag (and its note) after switching to
+  // another outcome would claim a filter that is not being applied.
+  it("drops ?actionable=1 when the outcome changes to one the flag does not apply to", async () => {
+    const user = userEvent.setup();
+    const payload = { enabled: true, ledger: [], total: 0, todayCount: 0, page: 1, hasNext: false, outcomes: ["matched", "unmatched", "delivery_failed"], counts: {} };
+    mockPaymentsFetch(payload);
+    render(
+      <WrapperAt initialEntries={["/payments?outcome=delivery_failed&actionable=1"]}>
+        <PaymentsPage />
+      </WrapperAt>,
+    );
+    await waitFor(() => expect(screen.getByText(/showing only items still needing action/i)).toBeInTheDocument());
+
+    // Switching between the two actionable outcomes keeps the flag.
+    await user.click(screen.getByRole("combobox", { name: /outcome/i }));
+    await user.click(await screen.findByRole("option", { name: /^unmatched/ }));
+    await waitFor(() => expect(apiGet).toHaveBeenCalledWith(expect.stringMatching(/outcome=unmatched.*actionable=1|actionable=1.*outcome=unmatched/)));
+    expect(screen.getByText(/showing only items still needing action/i)).toBeInTheDocument();
+
+    vi.mocked(apiGet).mockClear();
+    mockPaymentsFetch(payload);
+    await user.click(screen.getByRole("combobox", { name: /outcome/i }));
+    await user.click(await screen.findByRole("option", { name: /^matched/ }));
+    await waitFor(() => expect(screen.queryByText(/showing only items still needing action/i)).not.toBeInTheDocument());
+    await waitFor(() => expect(apiGet).toHaveBeenCalledWith(expect.stringContaining("outcome=matched")));
+    expect(vi.mocked(apiGet).mock.calls.map(([p]) => String(p)).filter((p) => p.includes("actionable"))).toEqual([]);
+  });
+
   it("does not send actionable when the URL flag is absent", async () => {
     mockPaymentsFetch({ enabled: true, ledger: [], total: 0, todayCount: 0, page: 1, hasNext: false, outcomes: [], counts: {} });
     render(<PaymentsPage />, { wrapper: Wrapper });

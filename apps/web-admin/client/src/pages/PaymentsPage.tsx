@@ -229,19 +229,28 @@ function useOrderCodeSuggest(orderCode: string) {
   return { suggestion, searched, loading };
 }
 
+/** The ledger outcomes the server applies `?actionable=1` to (mirrors
+ *  `ACTIONABLE_LEDGER_OUTCOMES` in packages/db/src/crud/reports.ts). */
+function isActionableOutcome(outcome: string): boolean {
+  return outcome === "unmatched" || outcome === "delivery_failed";
+}
+
 export function PaymentsPage() {
   const qc = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
-  // `?actionable=1` (the dashboard "Pending Actions" links) limits the ledger,
-  // tiles and dropdown counts to rows whose order still needs an admin. Kept in
+  // `?actionable=1` (the dashboard "Pending Actions" links) limits the
+  // unmatched/delivery_failed ledger rows, tiles and dropdown counts to rows
+  // that still need an admin. Kept in
   // the URL so the note below can clear it with one click.
   const actionable = searchParams.get("actionable") === "1";
-  const clearActionable = () =>
+  const clearActionable = () => {
     setSearchParams((prev) => {
       const next = new URLSearchParams(prev);
       next.delete("actionable");
       return next;
     });
+    setPage(1);
+  };
   // Seeds the outcome filter from `?outcome=` on mount (e.g. the Operation
   // Center's "Failed Deliveries" card links here as
   // /payments?outcome=delivery_failed) — same pattern as OrdersPage.tsx's
@@ -252,6 +261,14 @@ export function PaymentsPage() {
   // WALLET_TOPUP lands on just the wallet top-ups.
   const [kind, setKind] = useState(searchParams.get("kind") ?? "");
   const [page, setPage] = useState(1);
+  // The server only applies `actionable` to these two outcomes; for any other
+  // choice the flag would do nothing, so drop it rather than leave the
+  // "Showing only items still needing action" note claiming otherwise.
+  const changeOutcome = (v: string) => {
+    setOutcome(v);
+    setPage(1);
+    if (actionable && !isActionableOutcome(v)) clearActionable();
+  };
   const [qDraft, setQDraft] = useState("");
   const [q, setQ] = useState("");
   const [matchForm, setMatchForm] = useState({ binance_tx_id: "", order_code: "" });
@@ -270,7 +287,11 @@ export function PaymentsPage() {
     return () => clearTimeout(timer);
   }, [qDraft]);
   useEffect(() => { setSelected(new Set()); }, [outcome, kind, q, page]);
-  const { data, isError } = usePayments(outcome, kind, q, page, actionable);
+  // Gated on the outcome as well as the URL flag: the URL update in
+  // `changeOutcome` lands a render after the outcome state, and without this the
+  // in-between render would fire one request with the stale flag.
+  const actionableApplied = actionable && isActionableOutcome(outcome);
+  const { data, isError } = usePayments(outcome, kind, q, page, actionableApplied);
   const { suggestion, searched, loading: suggestLoading } = useOrderCodeSuggest(matchForm.order_code);
   const { suggestion: creditSuggestion, loading: creditSuggestLoading } = useOrderCodeSuggest(creditOrderCode);
   const underpaid = data?.underpaid ?? [];
@@ -669,7 +690,7 @@ export function PaymentsPage() {
         </Card>
       )}
 
-      {actionable && (
+      {actionableApplied && (
         <p className="mb-2 text-xs text-ink-soft">
           Showing only items still needing action.{" "}
           <button type="button" className="font-medium text-pine hover:underline" onClick={clearActionable}>
@@ -690,9 +711,9 @@ export function PaymentsPage() {
           <label className="text-xs text-ink-soft">Outcome</label>
           <Select
             value={outcome || "_all_"}
-            onValueChange={v => { setOutcome(v === "_all_" ? "" : v); setPage(1); }}
+            onValueChange={v => changeOutcome(v === "_all_" ? "" : v)}
           >
-            <SelectTrigger className="w-40"><SelectValue placeholder="All outcomes" /></SelectTrigger>
+            <SelectTrigger className="w-40" aria-label="Outcome"><SelectValue placeholder="All outcomes" /></SelectTrigger>
             <SelectContent>
               <SelectItem value="_all_">All</SelectItem>
               {(data?.outcomes ?? []).map(o => (
@@ -857,7 +878,7 @@ export function PaymentsPage() {
             icon={CreditCard}
             title="No transactions found"
             description={outcome || kind ? "Try a different filter." : "Transactions will appear here once payments are processed."}
-            secondaryAction={outcome || kind ? { label: "Clear Filters", onClick: () => { setOutcome(""); setKind(""); setPage(1); } } : undefined}
+            secondaryAction={outcome || kind ? { label: "Clear Filters", onClick: () => { changeOutcome(""); setKind(""); } } : undefined}
           />
         }
         />

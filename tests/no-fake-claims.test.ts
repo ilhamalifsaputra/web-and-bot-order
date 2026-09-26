@@ -158,7 +158,15 @@ function extractLiteralsWithDelimiter(
       // multiple lines, e.g. a wrapped paragraph), so it's marked "`" to
       // exclude it from the quote-delimited-literal newline check below,
       // same as a template literal.
-      const t = node.getText(source).trim();
+      //
+      // Collapse internal whitespace (including newlines/indentation from
+      // source-formatting a wrapped paragraph) to single spaces, matching
+      // how React actually renders JSX text — otherwise a real multi-line
+      // marketing paragraph like `<p>\n  Instant\n  delivery\n</p>` would
+      // extract as "Instant\n  delivery", which none of the FORBIDDEN
+      // patterns match (they all require a literal single space), silently
+      // defeating the whole point of scanning JSX text at all.
+      const t = node.getText(source).replace(/\s+/g, " ").trim();
       if (t) out.push({ value: t, quote: "`" });
     }
     ts.forEachChild(node, visit);
@@ -305,6 +313,37 @@ describe("extractLiterals: AST parsing handles every regex-tokenizer regression 
 
     expect(literals).toContain("Don't worry, we handle it automatically");
     expect(literals).toContain("unrelated code that must not be swallowed");
+  });
+
+  it("collapses whitespace in wrapped, multi-line JSX text so a FORBIDDEN pattern still matches", () => {
+    // A final-review pass found this gap: source-formatting wraps a long
+    // JSX paragraph across lines with indentation, e.g.
+    //   <p>
+    //     Instant
+    //     delivery for every order
+    //   </p>
+    // React collapses that to "Instant delivery for every order" on screen,
+    // but a raw `.getText().trim()` (pre-fix) keeps the internal newlines/
+    // indentation verbatim — "Instant\n    delivery for every order" — which
+    // no FORBIDDEN pattern matches, since they all require a literal single
+    // space. That would have silently defeated the entire point of scanning
+    // JSX text (FINDINGS item 7). Confirmed RED before collapsing internal
+    // whitespace to single spaces; GREEN after.
+    const fixture = [
+      "function Comp() {",
+      "  return (",
+      "    <p>",
+      "      Instant",
+      "      delivery for every order",
+      "    </p>",
+      "  );",
+      "}",
+    ].join("\n");
+
+    const literals = extractLiterals(fixture);
+
+    expect(literals).toContain("Instant delivery for every order");
+    expect(literals.some((l) => l.includes("\n"))).toBe(false);
   });
 
   it("ignores a quote character inside a regex literal, without corrupting subsequent code", () => {

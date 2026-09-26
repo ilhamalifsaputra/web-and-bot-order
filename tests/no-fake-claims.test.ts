@@ -19,6 +19,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import * as ts from "typescript";
 
 const LOCALES_DIR = join(__dirname, "..", "packages", "core", "locales");
 const STOREFRONT_SRC_DIR = join(__dirname, "..", "apps", "storefront", "client", "src");
@@ -90,101 +91,86 @@ const FORBIDDEN: Forbidden[] = [
 ];
 
 /**
- * Single global regex tokenizing raw TSX source into comment tokens and
- * string/template-literal tokens. Each alternative's leading character is
- * mutually exclusive with the others (`/` can only start a comment, `"`/`'`/
- * `` ` `` can only start a string), and each alternative consumes its ENTIRE
- * token in one match — a full line comment to end-of-line, a full block
- * comment to its closing `*​/`, a full string to its own closing quote
- * respecting `\`-escapes. That means the scan's `lastIndex` always jumps
- * past a whole token before continuing, so content inside a matched comment
- * is never re-examined for a string start, and content inside a matched
- * string is never re-examined for a comment start.
+ * Extracts string/template literals AND JSX text content from raw TSX
+ * source, via a real TypeScript-compiler-API parse — not a hand-rolled
+ * regex tokenizer. `typescript` is already a root devDependency.
+ *
+ * This replaces three prior rounds of patching a regex-based tokenizer
+ * (each of which fixed one corruption direction while leaving another):
+ *   - stripping comments first got fooled by a real `"//"` string literal
+ *     (`LoginPage.tsx`/`RegisterPage.tsx`);
+ *   - extracting literals from raw text first got fooled by an apostrophe
+ *     inside comment prose (`InstantBuyPage.tsx` and 20 other files);
+ *   - even the final single-pass, mutually-exclusive-token regex still had
+ *     a fourth latent bug: an apostrophe inside JSX text (`<p>Don't
+ *     worry</p>`) or a quote inside a regex literal (`v.replace(/'/g, "")`)
+ *     both still fooled a flat character scan into opening a fake `'`-string
+ *     that swallows real code until the next stray `'`.
+ *
+ * Real parsing sidesteps the whole bug class instead of patching around it
+ * again: the compiler's scanner/parser knows the actual language grammar, so
+ * a regex literal is tokenized as a regex (full stop, never confusable with
+ * a string), and JSX text is its own node kind distinct from code.
+ *
+ * `ts.createSourceFile` needs a filename argument, but it's never resolved
+ * against the real filesystem here — it's only used for the parser's own
+ * bookkeeping (e.g. what it would put in a diagnostic message), so a fixed
+ * placeholder is fine for ad-hoc fixtures in the tests below; the corpus
+ * scan (`loadStorefrontTsxFiles`) passes the real relative path.
+ *
+ * `ScriptKind.TSX` is required (not the default `.ts`) so JSX syntax parses
+ * instead of erroring or being misread as generic-type syntax.
+ *
+ * String/no-substitution-template literals use the literal's RAW source
+ * text (quotes stripped), not the AST's "cooked" `.text` — deliberately:
+ * `.text` decodes escape sequences, so a perfectly ordinary `"line1\nline2"`
+ * would decode to a value containing an actual newline character, which
+ * would spuriously trip the corpus-wide newline-invariant check below (that
+ * check exists to catch corruption, not to flag normal `\n` escapes as if
+ * they were raw newlines). Using the raw slice keeps this extraction
+ * semantically identical to what the old regex tokenizer captured, just
+ * with correct boundaries. Template-literal pieces (spans of a substitution
+ * template) DO use the cooked `.text` for the head/tail: stripping the
+ * `` ` ``/`${`/`}` delimiters from raw text by hand is more error-prone than
+ * reading the already-parsed piece, and template pieces are excluded from
+ * the newline-invariant check anyway (they can legitimately span lines).
  */
-const TOKEN_RE = /\/\/[^\n]*|\/\*[\s\S]*?\*\/|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`/g;
+function extractLiteralsWithDelimiter(
+  fileName: string,
+  text: string,
+): Array<{ value: string; quote: '"' | "'" | "`" }> {
+  const source = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, /* setParentNodes */ true, ts.ScriptKind.TSX);
+  const out: Array<{ value: string; quote: '"' | "'" | "`" }> = [];
 
-/**
- * Extracts string/template literals from raw TSX source, correctly excluding
- * any literal that lives inside a comment — in BOTH directions at once.
- *
- * This must be a single left-to-right pass, not two independent regex
- * passes in either order, because comment syntax and string syntax are
- * mutually context-dependent: whether a `/` starts a comment depends on
- * whether you're already inside a string, and whether a `"`/`'` starts a
- * string depends on whether you're already inside a comment. Two prior
- * attempts at this guard each got exactly one of those directions wrong:
- *
- *   - Stripping comments first (pass 1) is unsound because comment
- *     detection on raw source can be fooled by a `//` that appears *inside*
- *     a real string literal. Confirmed case: `apps/storefront/client/src/
- *     pages/LoginPage.tsx` and `RegisterPage.tsx` both contain
- *     `!raw.startsWith("//")` — a real `"//"` literal. Stripping `//`
- *     comments first misreads that literal's `//` as a line-comment start,
- *     corrupting the rest of the file's literal boundaries.
- *   - Extracting literals from raw text first, then blanking them before
- *     detecting comments (pass 2, the previous fix), reintroduces the same
- *     class of bug in the OPPOSITE direction: an unescaped apostrophe
- *     inside comment prose (e.g. `// ProductPage's own fetch`) looks
- *     exactly like a string-literal start to the raw-text literal scan,
- *     before anything knows it's inside a comment — corrupting 21 files
- *     including `InstantBuyPage.tsx`.
- *
- * A single pass with mutually-exclusive, whole-token-consuming
- * alternatives sidesteps this: whichever kind of token starts first at the
- * current scan position is the one that matches, and it swallows its own
- * content wholesale (including any character that would otherwise look
- * like the start of the other kind) before the scan moves on.
- *
- * Known, accepted limitations (matching the original brief's "crude regex,
- * not full parse" scope): a `/` that's actually division (not a comment)
- * could theoretically confuse this, but TSX source essentially never has
- * bare division adjacent to a lone `/` in a way that looks like `//` or
- * `/*`; nested `${...}` interpolation inside a template literal isn't
- * specially handled (a backtick-delimited match is greedy to the next
- * backtick). Regex literals and JSX-specific tokenization are out of scope.
- */
-function extractLiterals(text: string): string[] {
-  const literals: string[] = [];
-  let m: RegExpExecArray | null;
-  TOKEN_RE.lastIndex = 0;
-  while ((m = TOKEN_RE.exec(text))) {
-    const tok = m[0];
-    const first = tok[0];
-    if (first === '"' || first === "'" || first === "`") {
-      literals.push(tok.slice(1, -1));
+  function visit(node: ts.Node): void {
+    if (ts.isStringLiteral(node)) {
+      const raw = node.getText(source);
+      const quote = raw[0] === "'" ? "'" : '"';
+      out.push({ value: raw.slice(1, -1), quote });
+    } else if (ts.isNoSubstitutionTemplateLiteral(node)) {
+      const raw = node.getText(source);
+      out.push({ value: raw.slice(1, -1), quote: "`" });
+    } else if (ts.isTemplateExpression(node)) {
+      out.push({ value: node.head.text, quote: "`" });
+      for (const span of node.templateSpans) out.push({ value: span.literal.text, quote: "`" });
+    } else if (ts.isJsxText(node)) {
+      // JSX text is never quote-delimited (and can legitimately span
+      // multiple lines, e.g. a wrapped paragraph), so it's marked "`" to
+      // exclude it from the quote-delimited-literal newline check below,
+      // same as a template literal.
+      const t = node.getText(source).trim();
+      if (t) out.push({ value: t, quote: "`" });
     }
-    // else: a comment token — deliberately skip, contributing nothing to
-    // `literals`. Its content is never re-scanned for a string start
-    // because lastIndex has already moved past it in this single pass.
+    ts.forEachChild(node, visit);
   }
-  return literals;
+  visit(source);
+  return out;
 }
 
-/**
- * Same tokenization as `extractLiterals`, but also reports each literal's
- * opening delimiter. Used only by the corpus-wide newline invariant below:
- * a raw newline inside a `"`/`'`-delimited literal is invalid JS/TSX syntax
- * (the file wouldn't compile), so seeing one can only mean the extraction
- * itself is corrupted — that's the exact shape both prior regressions took.
- * A backtick-delimited template literal is different: it can legitimately
- * span multiple lines when it wraps a multi-line `${...}` expression, which
- * is a real, common pattern in this codebase (multi-line conditional
- * Tailwind `className` strings — see e.g. `Footer.tsx`, `TicketRow.tsx`,
- * `Stepper.tsx`). Lumping template literals into the same newline check
- * would flag that legitimate style as if it were corruption.
- */
-function extractLiteralsWithDelimiter(text: string): Array<{ value: string; quote: '"' | "'" | "`" }> {
-  const out: Array<{ value: string; quote: '"' | "'" | "`" }> = [];
-  let m: RegExpExecArray | null;
-  TOKEN_RE.lastIndex = 0;
-  while ((m = TOKEN_RE.exec(text))) {
-    const tok = m[0];
-    const first = tok[0];
-    if (first === '"' || first === "'" || first === "`") {
-      out.push({ value: tok.slice(1, -1), quote: first });
-    }
-  }
-  return out;
+/** Flat literal values only (for the FORBIDDEN-pattern scans, which don't
+ *  care about delimiter kind). */
+function extractLiterals(text: string): string[] {
+  return extractLiteralsWithDelimiter("fixture.tsx", text).map((d) => d.value);
 }
 
 function loadStorefrontTsxFiles(): Array<{ file: string; literals: string[]; quotedLiterals: string[] }> {
@@ -198,7 +184,7 @@ function loadStorefrontTsxFiles(): Array<{ file: string; literals: string[]; quo
     .map((f) => {
       const relFile = `apps/storefront/client/src/${f.split("\\").join("/")}`;
       const raw = readFileSync(join(STOREFRONT_SRC_DIR, f), "utf8");
-      const detailed = extractLiteralsWithDelimiter(raw);
+      const detailed = extractLiteralsWithDelimiter(relFile, raw);
       return {
         file: relFile,
         literals: detailed.map((d) => d.value),
@@ -250,12 +236,19 @@ describe("no unsupported claims in buyer-facing locale copy", () => {
   });
 });
 
-describe("extractLiterals: single-pass tokenizer handles both directions", () => {
-  it("keeps a real \"//\"-shaped literal intact (direction 1: string containing comment-like text)", () => {
+describe("extractLiterals: AST parsing handles every regex-tokenizer regression trivially", () => {
+  // These four fixtures each reproduce a real corruption shape a prior
+  // regex-based tokenizer got wrong (three fixed across earlier rounds, one
+  // found by the final whole-branch review and fixed by replacing the
+  // tokenizer with a real TypeScript-compiler-API parse). None of them can
+  // fool an AST parse: the compiler's scanner/parser knows the actual
+  // language grammar (strings, comments, JSX text, and regex literals are
+  // all distinct node/token kinds), so there's no flat-character-scan state
+  // to trick.
+  it('keeps a real "//"-shaped literal intact (a string containing comment-like text)', () => {
     // Mirrors the confirmed bug shape from LoginPage.tsx/RegisterPage.tsx: a
-    // real `"//"` string literal. A two-pass "strip comments first" approach
-    // misreads this literal's `//` as a line-comment start and corrupts
-    // everything after it on the line (and beyond, once quote parity shifts).
+    // real `"//"` string literal, which a naive "strip comments first" scan
+    // misreads as a line-comment start.
     const fixture = [
       'function check(raw: string) {',
       '  if (!raw.startsWith("//")) return "safe";',
@@ -269,13 +262,11 @@ describe("extractLiterals: single-pass tokenizer handles both directions", () =>
     for (const literal of literals) expect(literal).not.toContain("\n");
   });
 
-  it("excludes quoted phrases inside comments, including an apostrophe in comment prose (direction 2: comment containing string-like text)", () => {
+  it("excludes quoted phrases inside comments, including an apostrophe in comment prose (a comment containing string-like text)", () => {
     // Mirrors the confirmed bug shape from ProductCard.tsx/InstantBuyPage.tsx:
-    // comments containing quoted phrases and possessive apostrophes. A
-    // two-pass "extract literals from raw text first" approach misreads the
-    // apostrophe (`ProductPage's`) as opening a string literal and runs the
-    // match forward to the next unrelated apostrophe/quote later in the
-    // file, merging unrelated code into one corrupted "literal".
+    // comments containing quoted phrases and possessive apostrophes, which a
+    // naive "extract literals from raw text first" scan misreads as opening
+    // a string literal, merging unrelated code into one corrupted "literal".
     const fixture = [
       "// a real line comment mentioning \"instant\" delivery in passing",
       "// ProductPage's own fetch, not this component's own useQuery",
@@ -294,6 +285,55 @@ describe("extractLiterals: single-pass tokenizer handles both directions", () =>
     expect(literals).toContain("unrelated code that must not be swallowed");
     for (const literal of literals) expect(literal).not.toContain("\n");
   });
+
+  it("extracts JSX text content, including an apostrophe, without corrupting subsequent code", () => {
+    // The fourth tokenizer edge case the final review found: a regex
+    // tokenizer has no notion of JSX at all, so an apostrophe inside
+    // ordinary JSX text (e.g. "Don't") looks exactly like a string-literal
+    // open to a flat character scan, swallowing everything after it up to
+    // the next stray quote. A JsxText node is unambiguous to a real parse —
+    // this fixture failed against the old TOKEN_RE-based extractLiterals
+    // (confirmed RED before this rewrite) and passes now.
+    const fixture = [
+      "function Comp() {",
+      "  return <p>Don't worry, we handle it automatically</p>;",
+      "}",
+      'const other = "unrelated code that must not be swallowed";',
+    ].join("\n");
+
+    const literals = extractLiterals(fixture);
+
+    expect(literals).toContain("Don't worry, we handle it automatically");
+    expect(literals).toContain("unrelated code that must not be swallowed");
+  });
+
+  it("ignores a quote character inside a regex literal, without corrupting subsequent code", () => {
+    // Same edge-case class as above, other direction: a regex tokenizer
+    // doesn't know about RegExp literals either, so the `'` inside `/'/g`
+    // looks like a string-literal open to a flat scan — and this fixture
+    // gives it a LATER stray `'` to falsely "close" on (the real
+    // `'trailing literal'` string two lines down), which is exactly what
+    // turns this into genuine corruption rather than a harmless unmatched
+    // scan: everything between the two apostrophes would merge into one
+    // fake multi-line "literal", and the real string's own opening quote
+    // would get consumed as somebody else's closing delimiter. A real parse
+    // tokenizes `/'/g` as a single RegularExpressionLiteral in this
+    // (post-`(`) position, never confusing it with a string — confirmed RED
+    // against the old TOKEN_RE-based extractLiterals before this rewrite.
+    const fixture = [
+      "function clean(v: string) {",
+      "  const cleaned = v.replace(/'/g, \"\");",
+      "  const other = 'trailing literal';",
+      '  return "safe after regex literal";',
+      "}",
+    ].join("\n");
+
+    const literals = extractLiterals(fixture);
+
+    expect(literals).toContain("trailing literal");
+    expect(literals).toContain("safe after regex literal");
+    for (const literal of literals) expect(literal).not.toContain("\n");
+  });
 });
 
 describe("no unsupported claims hardcoded directly in storefront TSX", () => {
@@ -310,42 +350,33 @@ describe("no unsupported claims hardcoded directly in storefront TSX", () => {
     expect(files.length).toBeGreaterThan(50);
   });
 
-  it("extracts no quote-delimited literal containing a newline, across every scanned file (corpus-wide extraction-correctness check)", () => {
-    // This is the check that would have caught BOTH prior regressions: a
-    // `"`/`'`-delimited literal can NEVER legitimately contain a raw newline
-    // in valid JS/TSX (that's a hard syntax rule, not a style convention —
-    // the file wouldn't compile otherwise), so a newline inside one of these
-    // is exactly the signature of the two-pass corruption bug, in either
-    // direction (comment text merged into a string across a line break, or
-    // code merged into a corrupted multi-line blob). Checking only the 2-4
-    // files named in the brief is exactly how the previous two fix passes
-    // each missed a regression elsewhere in the corpus — this asserts the
-    // invariant across all 118 scanned files, not a hand-picked few.
+  it("extracts no quote-delimited literal containing a newline, across every scanned file (secondary safety net for the AST-based extraction)", () => {
+    // Under the old regex tokenizer this was THE check that would have
+    // caught both historical regressions: a `"`/`'`-delimited literal can
+    // never legitimately contain a raw newline in valid JS/TSX, so a
+    // newline inside one was exactly the signature of that tokenizer's
+    // corruption bugs. Under the AST-based extraction above, a
+    // StringLiteral/NoSubstitutionTemplateLiteral node genuinely cannot span
+    // a raw newline per the language grammar (TSX would fail to parse a bare
+    // newline inside `"..."` at all), so this check can no longer catch a
+    // real bug the way it used to — it's kept as a cheap, free sanity net
+    // across all 118 scanned files, not because it's expected to ever fire.
     //
     // Deliberately scoped to `quotedLiterals` (excludes backtick template
-    // literals): unlike `"`/`'` strings, a backtick template literal CAN
-    // legitimately span multiple lines when it wraps a multi-line `${...}`
-    // expression, which is a real, common pattern in this codebase (e.g.
+    // literals and JSX text): unlike `"`/`'` strings, a backtick template
+    // literal and JSX text can BOTH legitimately span multiple lines (e.g.
     // multi-line conditional Tailwind `className` strings in `Footer.tsx`,
-    // `TicketRow.tsx`, `Stepper.tsx`, `CategoryPage.tsx`, and others —
-    // confirmed by direct inspection, not assumed). Including those would
-    // turn a legitimate style choice into a false positive; it would not
-    // catch any additional corruption, since both confirmed prior
-    // regressions manifested in `"`/`'`-delimited literals, not backticks.
+    // `TicketRow.tsx`, `Stepper.tsx`, `CategoryPage.tsx`, and a wrapped JSX
+    // paragraph), so including them here would just be false positives on a
+    // legitimate style choice, not a correctness signal.
     //
-    // Known gap (accepted, not a defect to fix here — per this guard's own
-    // brief, nested `${...}` interpolation inside a template literal isn't
-    // specially handled): this check has NO correctness coverage for
-    // backtick-literal mis-tokenization. A real example exists in this repo
-    // today — apps/storefront/client/src/pages/ProductPage.tsx's WhatsApp
-    // share link nests a template literal inside `encodeURIComponent(...)`,
-    // which the tokenizer splits into two garbage single-line backtick
-    // fragments. Confirmed (final review pass) that this garbage stays
-    // single-line and self-contained — it does not corrupt any subsequent
-    // literal in the file — so it's invisible to this newline check by
-    // construction, not just by scope. FORBIDDEN-pattern detection is
-    // unaffected either way (substring search still finds a real violation
-    // even inside a garbage span).
+    // Nested `${...}` interpolation inside a template literal — a real
+    // example in this repo, apps/storefront/client/src/pages/ProductPage.tsx's
+    // WhatsApp share link, which nests a template literal inside
+    // `encodeURIComponent(...)` — is no longer a gap: the AST visitor
+    // recurses into every TemplateSpan's expression subtree the same as any
+    // other node, so a nested literal is extracted correctly and separately,
+    // not split into garbage fragments the way the old regex tokenizer did.
     const offenders: string[] = [];
     for (const { file, quotedLiterals } of files) {
       for (const literal of quotedLiterals) {

@@ -298,12 +298,17 @@ describe("stock event ledger across an order's lifecycle", () => {
     // invariant `checkStatusEventMismatchAndLegacy` depends on: it picks a
     // stock item's "latest" event via `ORDER BY occurred_at DESC, id DESC`,
     // which only agrees with true write order when occurredAt never goes
-    // backwards between two events on the same row (Task C: before this fix,
-    // `approveOrder` captured one early `now` for SUBSTITUTED_OUT/IN/SOLD
-    // while the replacement's implicit RESERVED event — written via
-    // `allocateOneAvailableStock`, in between — got a live, later JS-clock
-    // read from the old DB-default fallback, inverting the order and making
-    // this exact check below fail with a false statusEventMismatch).
+    // backwards between two events on the same row.
+    //
+    // This guards against a specific regression, not a bug that ever
+    // shipped: during development, threading approveOrder's own
+    // already-captured `now` into its SUBSTITUTED_OUT/IN/SOLD stock events
+    // (an approach considered and reverted) would have inverted real write
+    // order relative to the replacement's implicit RESERVED event — written
+    // via `allocateOneAvailableStock`, in between, with a live, later
+    // JS-clock read — making this exact check fail with a false
+    // statusEventMismatch. That approach was reverted before it ever
+    // shipped; this test protects against it being re-introduced.
     for (const seq of [deadEvents, subEvents]) {
       for (let i = 1; i < seq.length; i++) {
         expect(seq[i]!.occurredAt.getTime()).toBeGreaterThanOrEqual(seq[i - 1]!.occurredAt.getTime());

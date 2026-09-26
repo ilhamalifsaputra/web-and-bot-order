@@ -64,7 +64,15 @@ function toRow(e: StockEventInput): Prisma.StockItemEventUncheckedCreateInput {
     // occurredAt` between two events written by different functions.
     // Callers still pass an explicit occurredAt when they need intra-
     // transaction agreement with a ledger posting written alongside the
-    // event (see releaseOrderHolds/approveOrder for why).
+    // event — see releaseOrderHolds, which threads its own already-captured
+    // `now` through so the RESERVATION_RELEASED event agrees with the other
+    // timestamps that function writes in the same transaction. (approveOrder
+    // does NOT pass an explicit occurredAt to any stock event it writes —
+    // an earlier mid-development attempt to thread its own `now` through was
+    // deliberately reverted, since it inverted real write order relative to
+    // allocateOneAvailableStock's live-read RESERVED event; approveOrder's
+    // own timestamp-sharing is a separate mechanism, for its ledger posting,
+    // not for stock events.)
     occurredAt: e.occurredAt ?? new Date(),
   };
 }

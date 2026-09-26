@@ -784,6 +784,9 @@ ditindaklanjuti.
    diperbaiki jadi PRODUCT-only lebih dulu (final review, commit `1868815f`)
    — jadi kedua fungsi ini sekarang TIDAK KONSISTEN satu sama lain soal
    `kind`, bukan sama-sama salah.
+   **→ fixed, commit `9207025f`** — `exportReport` sekarang menyaring
+   `kind: OrderKind.PRODUCT` sebagai sibling where-key, persis pola
+   `listUserDeliveredOrders`, jadi kedua fungsi konsisten kembali.
 2. **`botOverallStats` (`packages/db/src/crud/revenue.ts`) adalah kode
    mati.** Dipakai di beberapa test (`revenue.test.ts`,
    `ledger.regression.test.ts`) tapi tidak ada pemanggil produksi mana pun
@@ -801,6 +804,19 @@ ditindaklanjuti.
    ledger BUKAN dari satu jam yang konsisten (drift antara jam aplikasi dan
    jam Postgres, sekecil apa pun, bisa membuat urutan `ORDER BY occurredAt`
    antar dua event dari fungsi berbeda meleset dari urutan sebenarnya).
+   **→ fixed, commit `c485a255`** — `stockEvents.ts`'s `toRow` sekarang
+   default ke `new Date()` (JS-clock read) kapan pun `occurredAt` tidak
+   diberikan eksplisit, bukan lagi jatuh ke default kolom sisi-DB, jadi
+   setiap `StockItemEvent` memakai jam yang sama (proses aplikasi) kecuali
+   caller sengaja butuh agreement intra-transaksi (lihat
+   `releaseOrderHolds`). Catatan penting: ide menge-thread timestamp
+   `approveOrder` yang sudah ditangkap ke event stok-nya sendiri (supaya
+   "seragam" dengan fungsi lain) SENGAJA TIDAK dilakukan — itu akan membalik
+   urutan tulis sebenarnya relatif terhadap event RESERVED live-read
+   `allocateOneAvailableStock` yang ditulis di antaranya. Jangan
+   "membantu" menambahkannya kembali di masa depan; lihat
+   `stock_events_orders.test.ts`'s monotonicity test untuk regression
+   guard-nya.
 4. **`createOrderDirect`/`createOrderFromCart`/`attachPaymentProof`/
    `settlePaidOrder`/`fulfillManualOrder` masih diakhiri `getOrder` yang
    mendekripsi** (`orders.ts`, beberapa titik `return getOrder(db, ...)`/
@@ -827,6 +843,16 @@ ditindaklanjuti.
    komponen TSX (`apps/web-admin/client`, `apps/storefront/client`). Klaim
    marketing yang di-hardcode langsung di JSX (bukan lewat kunci locale)
    tidak akan tertangkap guard ini.
+   **→ fixed, commit `18b97061`** (memindai literal string/template
+   hardcoded di `apps/storefront/client` — web-admin sengaja dikecualikan,
+   operator-facing dan tidak punya lapisan i18n) **dan commit `6cdad066`**
+   (mengganti tokenizer regex dengan parse AST TypeScript-compiler-API
+   sungguhan, bagian dari batch fix review akhir ini) — versi AST-nya
+   sekarang benar-benar memindai KONTEN TEKS JSX juga, bukan cuma literal
+   string/template berkutip, jadi item ini sekarang tertutup PENUH, bukan
+   sekadar dikurangi cakupannya: 53 node teks JSX ditemukan di seluruh
+   storefront (semua label UI/tanda baca pendek yang tidak berbahaya), nol
+   pelanggaran FORBIDDEN asli.
 8. **Tidak ada job CI yang menjalankan test dengan
    `CREDENTIAL_ENVELOPE_WRITE_V2=1`.** Suite default berjalan dengan flag
    mati (v1, sesuai default produksi hari ini), jadi jalur penulisan v2 +
@@ -835,3 +861,14 @@ ditindaklanjuti.
    sejenisnya) — belum ada lapisan "jalankan seluruh suite `packages/db` +
    `scripts` dengan v2 menyala" untuk menangkap interaksi lintas-modul yang
    mungkin terlewat oleh test unit yang sudah ada.
+   **→ fixed, commit `18dfb3e4`** — script root baru `pnpm run
+   test:envelope-v2` (`cross-env CREDENTIAL_ENVELOPE_WRITE_V2=1 vitest run
+   packages/core packages/db scripts`) plus step CI baru di
+   `.github/workflows/ci.yml`. Step ini **`continue-on-error: true`**
+   (commit `6a4d5d22`) karena menjalankannya betul-betul menyingkap utang
+   pre-existing nyata — 27 test gagal di 7 file, semuanya berasal dari
+   pemanggilan `decryptCredentials()`/`encryptCredentials()` telanjang tanpa
+   argumen context/AAD yang dibutuhkan envelope v2 (lihat
+   `.superpowers/sdd/task-E-report.md`) — bukan karena mekanisme step-nya
+   sendiri tidak berfungsi. Non-blocking ini disengaja sampai utang itu
+   dibereskan.

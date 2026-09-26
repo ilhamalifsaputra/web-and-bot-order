@@ -4578,9 +4578,13 @@ describe("admin handlers", () => {
     const docs = calls(sink, "replyWithDocument");
     expect(docs.length).toBe(1);
     // The caption reports the row count that was actually exported — asserting
-    // on it proves the WALLET_TOPUP order was excluded (1, not 2).
-    expect(sentIncludes(sink, "1 delivered orders")).toBe(true);
-    expect(sentIncludes(sink, "2 delivered orders")).toBe(false);
+    // on it proves the WALLET_TOPUP order was excluded (1, not 2). Matches the
+    // exact caption prefix from admin.ts's exportReport (emoji included), not
+    // a loose substring: "1 delivered orders" would also match "11 delivered
+    // orders" or "21 delivered orders", which happens to work today only
+    // because the seeded counts don't produce those numbers.
+    expect(sentIncludes(sink, "📊 1 delivered orders (today).")).toBe(true);
+    expect(sentIncludes(sink, "📊 2 delivered orders (today).")).toBe(false);
   });
 
   it("dashboard / product / settings menus render", async () => {

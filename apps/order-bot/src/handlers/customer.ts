@@ -328,6 +328,12 @@ export async function browseGroups(ctx: MyContext): Promise<void> {
   delete sc(ctx).gameVariantDimensionSkipped;
   const enabledGroups = await activeServiceGroups(prisma);
   const enabledServices = CUSTOMER_SERVICES.filter((service) => enabledGroups.has(service.group));
+  if (enabledServices.length === 1) {
+    // Mirrors browseCategoriesInGroup's own single-category skip: a lone
+    // enabled service is no real choice, so don't make the customer tap it.
+    await browseCategoriesInGroup(ctx, enabledServices[0]!.group);
+    return;
+  }
   await smartEdit(
     ctx,
     t(ctx, "browse.group_picker_title"),

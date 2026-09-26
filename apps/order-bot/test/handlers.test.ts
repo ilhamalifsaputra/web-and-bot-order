@@ -57,7 +57,7 @@ vi.mock("@app/db", async (orig) => {
   };
 });
 
-import { prisma, createOrderDirect, upsertBulkPricing, deleteBulkPricing, attachPaymentProof, approveOrder, getOrder, getOrderRaw, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createCategory, createDenomination, updateDenomination, bulkAddStock, finalizeOrderPayment, listPendingTokopayOrders, createBybitBscOrder, adjustWallet, getCatalogProduct, settlePaidOrder, fulfillManualOrder, claimGatewaySlot, createPaymentAttempt, MAX_CART_ORDER_UNITS, BINANCE_UID_KEY, BINANCE_API_KEY_KEY, BINANCE_API_SECRET_KEY, BYBIT_UID_KEY, BYBIT_API_KEY_KEY, BYBIT_API_SECRET_KEY, BYBIT_BSC_DEPOSIT_ADDRESS_KEY, BYBIT_BSC_ENABLED_KEY } from "@app/db";
+import { prisma, createOrderDirect, upsertBulkPricing, deleteBulkPricing, attachPaymentProof, approveOrder, getOrder, getOrderRaw, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createCategory, createDenomination, updateDenomination, bulkAddStock, finalizeOrderPayment, listPendingTokopayOrders, createBybitBscOrder, adjustWallet, getCatalogProduct, settlePaidOrder, fulfillManualOrder, claimGatewaySlot, createPaymentAttempt, MAX_CART_ORDER_UNITS, BINANCE_UID_KEY, BINANCE_API_KEY_KEY, BINANCE_API_SECRET_KEY, BYBIT_UID_KEY, BYBIT_API_KEY_KEY, BYBIT_API_SECRET_KEY, BYBIT_BSC_DEPOSIT_ADDRESS_KEY, BYBIT_BSC_ENABLED_KEY, KOKINPAY_API_KEY_KEY } from "@app/db";
 import { BANNER_IMAGE_KEY } from "../src/util/banner";
 import { createTransaction as mockedCreateTokopayTransaction } from "@app/core/payments/tokopay";
 import { createTransaction as mockedCreatePaydisiniTransaction } from "@app/core/payments/paydisini";
@@ -89,6 +89,7 @@ import * as verification from "../src/handlers/verification";
 import { handleAdminCallback, adminCommand, adminWalletCommand, adminEmojiIdCommand, renderUserCard } from "../src/handlers/admin";
 import { routeCallback } from "../src/handlers/callbacks";
 import { t } from "../src/util/i18n";
+import { gameInputFieldsLabel } from "../src/util/gameInfo";
 import { upsertUser } from "@app/db";
 import { logger } from "@app/core/logger";
 import { decryptCredentials, CredentialKeyConfigError } from "@app/core/credentialCrypto";
@@ -129,6 +130,17 @@ function userSession(): Partial<SessionData> {
 
 function customerCtx(opts: Parameters<typeof makeCtx>[0] = {}) {
   return makeCtx({ from: { id: 42, username: "tester" }, session: userSession(), ...opts });
+}
+
+/** Everything the bot sent EXCEPT inline keyboards — i.e. the message
+ * text/caption bodies — so a test can tell body text apart from button
+ * labels (Game Top Up buttons carry prices the body must not repeat). */
+function bodyText(sink: SentCall[]): string {
+  return JSON.stringify(
+    sink.map((c) =>
+      c.args.map((a) => (a && typeof a === "object" && "reply_markup" in a ? { ...a, reply_markup: undefined } : a)),
+    ),
+  );
 }
 
 /**
@@ -1144,8 +1156,9 @@ describe("denomination picker", () => {
     expect(flat.some((b) => b.callback_data === "v1:browse:pick:99")).toBe(true); // Perbarui (refresh)
     expect(flat.some((b) => b.callback_data === "v1:browse:prods")).toBe(true); // back to list
 
-    // Buttons carry only the plan name now — price/stock live in the message
-    // body (browseProduct), never on the button.
+    // Without a precomputed buttonLabel (every non-game SKU, and any Game Top
+    // Up SKU lacking qtyValue/qtyUnit) the button carries only the plan name —
+    // price/stock live in the message body (browseProduct).
     const member1 = flat.find((b) => b.callback_data === "v1:browse:denom:1")!;
     expect(member1.text).toBe("7 day");
     expect(member1.text).not.toContain("Rp");
@@ -1219,6 +1232,148 @@ describe("denomination picker", () => {
     // button, and is never the USDT-only formatPrice (Finding 1).
     expect(sentIncludes(sink, "Rp30.000")).toBe(true);
     expect(sentIncludes(sink, "USDT")).toBe(false);
+    // Non-game products keep the per-plan price+stock lines in the body.
+    const body = bodyText(sink);
+    expect(body).toContain("Rp30.000 (Stock");
+    expect(body).toContain("Rp75.000 (Stock");
+    expect(body).toContain("Choose a plan:");
+  });
+
+  // --- Game Top Up: buttons carry the price, so the body describes the game --
+
+  async function makeGameProduct(
+    opts: { description?: string | null; qtyOnAll?: boolean; brand?: string | null; withNicknameProvider?: boolean } = {},
+  ) {
+    // Checkout only runs the nickname-check wizard (and so only asks for
+    // User ID / Server ID) when a provider is configured — the hint mirrors it.
+    if (opts.withNicknameProvider !== false) await setSetting(prisma, KOKINPAY_API_KEY_KEY, "kp-key");
+    const cat = await createCategory(prisma, { name: `ML ${Math.random()}`, group: CategoryGroup.GAME_TOPUP });
+    const product = await createCatalogProduct(prisma, {
+      categoryId: cat.id,
+      name: "Mobile Legends",
+      digiflazzBrand: opts.brand === undefined ? "Mobile Legends" : opts.brand,
+      description: opts.description ?? null,
+    });
+    const d1 = await createDenomination(prisma, {
+      productId: product.id, name: "86 Diamonds", type: "SHARED", durationLabel: "86 Diamonds", price: "15000",
+    });
+    const d2 = await createDenomination(prisma, {
+      productId: product.id, name: "172 Diamonds", type: "SHARED", durationLabel: "172 Diamonds", price: "30000",
+    });
+    await prisma.denomination.update({ where: { id: d1.id }, data: { qtyValue: 86, qtyUnit: "Diamonds" } });
+    if (opts.qtyOnAll !== false) {
+      await prisma.denomination.update({ where: { id: d2.id }, data: { qtyValue: 172, qtyUnit: "Diamonds" } });
+    }
+    return { product, d1, d2 };
+  }
+
+  it("Game Top Up picker body drops the per-plan price/stock lines and shows game info + data-needed hint instead", async () => {
+    const { product, d1 } = await makeGameProduct({ description: "Official <b>ML</b> diamonds" });
+    const { ctx, sink } = customerCtx();
+    await customer.browseProduct(ctx, product.id);
+    const body = bodyText(sink);
+    expect(body).toContain("Mobile Legends");
+    expect(body).toContain("sold (all-time)");
+    // Price and stock are on the buttons now, never repeated in the body.
+    expect(body).not.toContain("Rp15.000");
+    expect(body).not.toContain("Rp30.000");
+    expect(body).not.toContain("(Stock");
+    expect(body).not.toContain("Choose a plan:");
+    expect(body).toContain("Choose a top-up amount:");
+    // Admin-written description, escaped, shown exactly once.
+    expect(body).toContain("Official &lt;b&gt;ML&lt;/b&gt; diamonds");
+    expect(body.split("Official &lt;b&gt;ML&lt;/b&gt; diamonds").length - 1).toBe(1);
+    // Mobile Legends needs User ID + Server ID (GAME_CATALOG requiresServer).
+    expect(body).toContain("User ID");
+    expect(body).toContain("Server ID");
+    expect(body).not.toContain("Zone ID");
+    // The buttons still carry the price.
+    const markup = JSON.stringify(lastMarkup(sink));
+    expect(markup).toContain(`v1:browse:denom:${d1.id}`);
+    expect(markup).toContain("Rp");
+  });
+
+  it("Game Top Up picker body renders in Indonesian", async () => {
+    const { product } = await makeGameProduct();
+    const { ctx, sink } = customerCtx({ session: { ...userSession(), lang: "id" } });
+    await customer.browseProduct(ctx, product.id);
+    const body = bodyText(sink);
+    expect(body).toContain("Pilih nominal top up:");
+    expect(body).toContain("Data yang dibutuhkan");
+    expect(body).not.toContain("(Stok");
+  });
+
+  it("Game Top Up picker omits the data-needed hint when the game isn't in the catalog", async () => {
+    const { product } = await makeGameProduct({ brand: null });
+    const { ctx, sink } = customerCtx();
+    await customer.browseProduct(ctx, product.id);
+    const body = bodyText(sink);
+    expect(body).not.toContain("User ID");
+    expect(body).not.toContain("(Stock");
+    expect(body).toContain("Choose a top-up amount:");
+  });
+
+  it("Game Top Up picker and detail omit the data-needed hint when no nickname-check provider is configured (checkout won't ask)", async () => {
+    const { product, d1 } = await makeGameProduct({ description: "Official ML diamonds", withNicknameProvider: false });
+    const picker = customerCtx();
+    await customer.browseProduct(picker.ctx, product.id);
+    const pickerBody = bodyText(picker.sink);
+    expect(pickerBody).toContain("Official ML diamonds");
+    expect(pickerBody).toContain("Choose a top-up amount:");
+    expect(pickerBody).not.toContain("User ID");
+    expect(pickerBody).not.toContain("Server ID");
+
+    const detail = customerCtx();
+    await customer.browseDenomination(detail.ctx, d1.id);
+    const detailBody = bodyText(detail.sink);
+    expect(detailBody).toContain("Price:");
+    expect(detailBody).not.toContain("User ID");
+    expect(detailBody).not.toContain("Server ID");
+  });
+
+  it("Game Top Up picker keeps the old plan lines when a SKU has no inline price on its button", async () => {
+    const { product } = await makeGameProduct({ qtyOnAll: false });
+    const { ctx, sink } = customerCtx();
+    await customer.browseProduct(ctx, product.id);
+    const body = bodyText(sink);
+    expect(body).toContain("Rp15.000");
+    expect(body).toContain("Rp30.000");
+    expect(body).toContain("Choose a plan:");
+    expect(body).not.toContain("Choose a top-up amount:");
+  });
+
+  it("Game Top Up detail hides Duration/Type/Warranty, keeps Price/Stock, and shows the description once", async () => {
+    const { d1 } = await makeGameProduct({ description: "Official ML diamonds" });
+    const { ctx, sink } = customerCtx();
+    await customer.browseDenomination(ctx, d1.id);
+    const body = bodyText(sink);
+    expect(body).toContain("Price:");
+    expect(body).toContain("Rp15.000");
+    expect(body).toContain("In stock:");
+    expect(body).not.toContain("Duration:");
+    expect(body).not.toContain("Type:");
+    expect(body).not.toContain("Warranty:");
+    expect(body.split("Official ML diamonds").length - 1).toBe(1);
+    expect(body).toContain("Server ID");
+  });
+
+  it("gameInputFieldsLabel lists User ID plus Zone ID / Server ID per the catalog flags", () => {
+    const tr = (key: string) => t(customerCtx().ctx, key);
+    expect(gameInputFieldsLabel(tr, { requiresZone: false, requiresServer: false })).toBe("User ID");
+    expect(gameInputFieldsLabel(tr, { requiresZone: true, requiresServer: false })).toBe("User ID, Zone ID");
+    expect(gameInputFieldsLabel(tr, { requiresZone: false, requiresServer: true })).toBe("User ID, Server ID");
+    expect(gameInputFieldsLabel(tr, { requiresZone: true, requiresServer: true })).toBe("User ID, Zone ID, Server ID");
+  });
+
+  it("non-game detail still shows Duration/Type/Warranty", async () => {
+    const { m1 } = await makeProductWithTwo();
+    const { ctx, sink } = customerCtx();
+    await customer.browseDenomination(ctx, m1.id);
+    const body = bodyText(sink);
+    expect(body).toContain("Duration:");
+    expect(body).toContain("Type:");
+    expect(body).toContain("Warranty:");
+    expect(body).not.toContain("User ID");
   });
 
   it("browseProductsFlat records the parent Product id and the number opens its picker", async () => {

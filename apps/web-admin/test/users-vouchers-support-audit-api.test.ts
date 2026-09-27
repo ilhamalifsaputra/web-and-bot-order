@@ -3,7 +3,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import type { FastifyInstance } from "fastify";
 import { config } from "@app/core/config";
 import { addMinutes } from "@app/core/datetime";
-import { prisma, initDb, upsertUser, setSetting, createTicket, assignTicket, createCategory, createCatalogProduct, createDenomination, bulkAddStock, createOrderDirect } from "@app/db";
+import { prisma, initDb, upsertUser, setSetting, createTicket, assignTicket, createCategory, createCatalogProduct, createDenomination, bulkAddStock, createOrderDirect, setUserPreferredCurrency } from "@app/db";
 import { resetDb } from "../../../tests/helpers/sampleData";
 import { makeSession, sessionJtiKey, newJti } from "../src/auth";
 import { buildApp } from "../src/server";
@@ -942,6 +942,24 @@ describe("GET /api/users", () => {
     const res = await get("/api/users", null);
     expect(res.statusCode).toBe(401);
     expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
+  });
+
+  // Task 6: admin's Customers list surfaces the bot/storefront display-currency
+  // preference read-only — no write path here, just confirming the existing
+  // column (Task 2) round-trips through this response for USD, IDR, and unset.
+  it("includes each user's preferredCurrency (USD, IDR, or null when unset)", async () => {
+    await setUserPreferredCurrency(prisma, customerId, "USD");
+    const idrUser = await upsertUser(prisma, { telegramId: 77, username: "idruser", fullName: "IDR User" });
+    await setUserPreferredCurrency(prisma, idrUser.id, "IDR");
+    const unsetUser = await upsertUser(prisma, { telegramId: 78, username: "unsetuser", fullName: "Unset User" });
+
+    const res = await get("/api/users", cookie);
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { users: Array<{ id: number; preferredCurrency: string | null }> };
+
+    expect(body.users.find((u) => u.id === customerId)?.preferredCurrency).toBe("USD");
+    expect(body.users.find((u) => u.id === idrUser.id)?.preferredCurrency).toBe("IDR");
+    expect(body.users.find((u) => u.id === unsetUser.id)?.preferredCurrency).toBeNull();
   });
 });
 

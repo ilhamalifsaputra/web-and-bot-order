@@ -11,6 +11,7 @@ import { EmptyState } from "../components/shared/EmptyState";
 import { StatusBadge } from "../components/shared/StatusBadge";
 import { Pagination } from "../components/shared/Pagination";
 import { CurrencyStack, type CurrencyAmount } from "../components/shared/CurrencyAmount";
+import { CurrencyBadge } from "../components/shared/CurrencyBadge";
 import { CustomersKpiRow } from "./customers/CustomersKpiRow";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { Button } from "@/components/ui/button";
@@ -41,6 +42,9 @@ interface CustomerRow {
   telegramId: string | null;
   role: string;
   banned: boolean;
+  // Read-only display-currency preference (Task 2/6) — bot/storefront write
+  // it, admin only shows it (CurrencyBadge). Never admin-editable.
+  preferredCurrency: string | null;
   createdAt: string;
   createdAtDisplay: string | null;
   lastSeenAt: string | null;
@@ -544,6 +548,11 @@ export function UsersPage() {
                 render: (row) => (
                   <span className="text-xs text-ink-soft">{row.lastOrderAtDisplay ?? "—"}</span>
                 ),
+              },
+              {
+                key: "currency",
+                header: "Currency",
+                render: (row) => <CurrencyBadge currency={row.preferredCurrency as "USD" | "IDR" | null} />,
               },
               {
                 key: "actions",

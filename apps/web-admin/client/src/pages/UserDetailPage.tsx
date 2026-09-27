@@ -6,6 +6,7 @@ import { PageHeader } from "../components/shared/PageHeader";
 import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
 import { StatusBadge } from "../components/shared/StatusBadge";
+import { CurrencyBadge } from "../components/shared/CurrencyBadge";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { CurrencyStack } from "../components/shared/CurrencyAmount";
 import { CardRow } from "../components/shared/CardRow";
@@ -26,7 +27,20 @@ import { apiGet, apiPost } from "../api/client";
 import { describeError } from "../lib/errorMessages";
 
 interface UserDetail {
-  user: { id: number; username: string | null; fullName: string | null; telegramId: string | null; role: string; banned: boolean; banReason: string | null; walletBalance: string; walletBalanceUsdt: string };
+  user: {
+    id: number;
+    username: string | null;
+    fullName: string | null;
+    telegramId: string | null;
+    role: string;
+    banned: boolean;
+    banReason: string | null;
+    walletBalance: string;
+    walletBalanceUsdt: string;
+    // Read-only display-currency preference (Task 2/6) — bot/storefront write
+    // it via their own flows; admin only shows it (CurrencyBadge), never edits it.
+    preferredCurrency: string | null;
+  };
   totalSpent: { idr: string; usdt: string };
   orders: { id: number; orderCode: string; status: string; totalIdr: string; createdAt: string; createdAtDisplay: string | null }[];
   // No `subject` field — SupportTicket has no such column (Task 3 fixed the
@@ -143,6 +157,7 @@ export function UserDetailPage() {
                 )
               }
             />
+            <CardRow label="Display Currency" value={<CurrencyBadge currency={user.preferredCurrency as "USD" | "IDR" | null} />} />
             <CardRow label="Wallet" value={<CurrencyStack amounts={[{ currency: "IDR", value: user.walletBalance }, { currency: "USDT", value: user.walletBalanceUsdt }]} />} />
             <CardRow label="Total spent" value={<CurrencyStack amounts={[{ currency: "IDR", value: data.totalSpent.idr }, { currency: "USDT", value: data.totalSpent.usdt }]} />} />
           </CardContent>

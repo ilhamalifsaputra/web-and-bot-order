@@ -47,6 +47,7 @@ import {
   USD_IDR_RATE_UPDATED_AT_KEY,
   setUserRole,
   setUserBanned,
+  setUserPreferredCurrency,
   BINANCE_UID_KEY,
   BINANCE_API_KEY_KEY,
   BINANCE_API_SECRET_KEY,
@@ -7056,6 +7057,25 @@ describe("H-4 — passwordHash never leaks into admin JSON responses", () => {
     expect(body.tickets.length).toBe(2);
     expect(body.ledgerTotal).toBe(2);
     expect(body.ledger.length).toBe(2);
+  });
+
+  // Task 6: read-only display-currency badge on the user-detail page — the
+  // detail endpoint must surface the same preferredCurrency column the list
+  // endpoint does, for all three states (USD, IDR, unset).
+  it("GET /api/users/:userId includes preferredCurrency (USD, IDR, or null when unset)", async () => {
+    const web = await makeWebBuyer("h4users4");
+    await setUserPreferredCurrency(prisma, web.id, "USD");
+
+    const usd = await get(`/api/users/${web.id}`, seed.cookie);
+    expect(usd.statusCode).toBe(200);
+    expect((usd.json() as { user: { preferredCurrency: string | null } }).user.preferredCurrency).toBe("USD");
+
+    await setUserPreferredCurrency(prisma, web.id, "IDR");
+    const idr = await get(`/api/users/${web.id}`, seed.cookie);
+    expect((idr.json() as { user: { preferredCurrency: string | null } }).user.preferredCurrency).toBe("IDR");
+
+    const unsetRes = await get(`/api/users/${seed.customerId}`, seed.cookie);
+    expect((unsetRes.json() as { user: { preferredCurrency: string | null } }).user.preferredCurrency).toBeNull();
   });
 
   it("GET /api/orders never exposes the buyer's passwordHash or email", async () => {

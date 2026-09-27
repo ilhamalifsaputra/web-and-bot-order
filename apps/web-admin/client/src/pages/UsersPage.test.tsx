@@ -77,6 +77,7 @@ const USER_ANDI = {
   telegramId: "111",
   role: "CUSTOMER",
   banned: false,
+  preferredCurrency: null,
   createdAt: "2026-01-01T00:00:00.000Z",
   createdAtDisplay: "2026-01-01",
   lastSeenAt: "2026-01-02T00:00:00.000Z",
@@ -97,6 +98,7 @@ const USER_BUDI = {
   telegramId: null,
   role: "RESELLER",
   banned: true,
+  preferredCurrency: null,
   createdAt: "2026-01-03T00:00:00.000Z",
   createdAtDisplay: "2026-01-03",
   lastSeenAt: null,
@@ -117,6 +119,7 @@ const USER_CITRA = {
   telegramId: null,
   role: "CUSTOMER",
   banned: false,
+  preferredCurrency: null,
   createdAt: "2026-01-04T00:00:00.000Z",
   createdAtDisplay: "2026-01-04",
   lastSeenAt: "2026-01-05T00:00:00.000Z",
@@ -236,6 +239,34 @@ describe("UsersPage", () => {
     for (const header of ["Orders", "Last Order"]) {
       expect(screen.getByText(header)).toHaveAttribute("title", expect.stringMatching(/wallet top-up/i));
     }
+  });
+
+  // Task 6: read-only display-currency badge — admin never edits it here.
+  it("shows a Currency column with USD/IDR/Not set per row, from preferredCurrency", async () => {
+    mockFetchRouter({
+      users: {
+        users: [
+          { ...USER_ANDI, preferredCurrency: "USD" },
+          { ...USER_BUDI, preferredCurrency: "IDR" },
+          { ...USER_CITRA, preferredCurrency: null },
+        ],
+        total: 3,
+        page: 1,
+        pageSize: 20,
+        hasNext: false,
+        roles: ["CUSTOMER", "RESELLER"],
+      },
+    });
+    render(<UsersPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Andi Santoso")).toBeInTheDocument());
+
+    const andiRow = screen.getByText("Andi Santoso").closest("tr")!;
+    const budiRow = screen.getByText("Unknown Customer").closest("tr")!;
+    const citraRow = screen.getByText("Citra Dewi").closest("tr")!;
+
+    expect(within(andiRow).getByText("USD")).toBeInTheDocument();
+    expect(within(budiRow).getByText("IDR")).toBeInTheDocument();
+    expect(within(citraRow).getByText("Not set")).toBeInTheDocument();
   });
 
   it("shows the Banned badge for a banned row, New Customer for a recently-joined row, and Returning otherwise", async () => {

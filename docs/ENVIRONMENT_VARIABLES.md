@@ -57,7 +57,7 @@ setelah setup awal — lihat [CONFIGURATION.md](CONFIGURATION.md).
 
 | Variabel | Default | Keterangan |
 |---|---|---|
-| `COINGECKO_API_KEY` | opsional | Demo API key untuk CoinGecko. Free tier works keyless; memberikan API key meningkatkan rate limit. |
+| `COINGECKO_API_KEY` | opsional | Demo API key untuk CoinGecko. Free tier tetap jalan tanpa key; API key opsional menaikkan rate limit. |
 | `COINGECKO_API_BASE` | `https://api.coingecko.com/api/v3` | Base URL CoinGecko API. |
 
 ## Database

@@ -61,7 +61,7 @@ Ditegaskan langsung di komentar `packages/core/src/enums.ts:288-289`
 ## 4. FX rate — `packages/core/src/fx.ts`
 
 - `fetchUsdIdrMarketRate()` — narik rate USDT→IDR dari CoinGecko's `/simple/price?ids=tether&vs_currencies=idr`
-  (gratis, keyless, optional demo API key untuk raise rate limit).
+  (gratis, keyless, API key demo opsional untuk menaikkan rate limit).
 - `roundRateToStep(rate, step)` — bulatkan ke kelipatan `step` rupiah
   (default Rp100, half-up).
 - `refreshUsdIdrRate` (`crud/pricing.ts`, dipanggil job `reconcileFinancesJob`

@@ -553,6 +553,10 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
       await prisma.$transaction(async (tx) => {
         const target = await getOrderByCode(tx, orderCode);
         if (!target) throw new NotFoundError(`Order ${orderCode} not found.`);
+        // Read only for the amount to credit and a clear 404 on a mistyped id.
+        // Whether the transfer may still be used (actionable outcome, not
+        // linked to another order, USDT order) is decided — and the row
+        // consumed atomically — by creditOrderToBalance itself.
         const ledger = await tx.processedBinanceTx.findUnique({ where: { binanceTxId } });
         if (!ledger) throw new NotFoundError("Transfer not found.");
         const { credited, currency } = await creditOrderToBalance(tx, {

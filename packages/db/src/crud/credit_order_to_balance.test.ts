@@ -63,6 +63,18 @@ const balances = (userId: number) =>
     select: { walletBalance: true, walletBalanceUsdt: true },
   });
 
+/** An open (PENDING_PAYMENT) USDT order — the only currency a Binance transfer
+ *  (always USDT-denominated) may be credited onto. */
+async function usdtOrder() {
+  const { user, product } = sample;
+  const created = await prisma.$transaction((tx) =>
+    createInternalOrder(tx, { user: { id: user.id, role: user.role }, productId: product.id, quantity: 1, rate: 1 }),
+  );
+  const order = (await getOrder(prisma, created!.id))!;
+  expect(order.currency).toBe("USDT");
+  return order;
+}
+
 describe("creditOrderToBalance", () => {
   it("credits the IDR balance with the paid amount and marks the order CANCELLED", async () => {
     const { user, product } = sample;
@@ -166,12 +178,7 @@ describe("creditOrderToBalance", () => {
   });
 
   it("re-tags a linked processed_binance_tx row as credited_to_balance", async () => {
-    const { user, product } = sample;
-    const order = (await createOrderDirect(prisma, {
-      user: { id: user.id, role: user.role },
-      productId: product.id,
-      quantity: 1,
-    }))!;
+    const order = await usdtOrder();
     await prisma.processedBinanceTx.create({
       data: { binanceTxId: "CTX-1", amount: new Decimal("5.00"), outcome: "unmatched" },
     });
@@ -186,6 +193,125 @@ describe("creditOrderToBalance", () => {
     const row = await prisma.processedBinanceTx.findUniqueOrThrow({ where: { binanceTxId: "CTX-1" } });
     expect(row.outcome).toBe("credited_to_balance");
     expect(row.orderId).toBe(order.id);
+  });
+});
+
+/** Final-review I1 on the ordinary (not-yet-cancelled) path, plus the currency
+ *  guard: a passed binanceTxId must be a still-actionable transfer, and the
+ *  credit must fail — not silently skip the link — when it isn't. */
+describe("creditOrderToBalance with a binanceTxId on an open order", () => {
+  it.each([
+    ["credited_to_balance", "elsewhere"],
+    ["matched", "elsewhere"],
+    ["dismissed", "unlinked"],
+    ["underpaid", "elsewhere"],
+    ["credited_to_balance", "on this order"],
+    ["delivery_failed", "elsewhere"],
+  ])("refuses a transfer that is %s (%s) with error.transfer_already_used", async (outcome, where) => {
+    const order = await usdtOrder();
+    const other = await usdtOrder();
+    const linkTo = where === "elsewhere" ? other.id : where === "on this order" ? order.id : null;
+    await prisma.processedBinanceTx.create({
+      data: { binanceTxId: "REUSE", orderId: linkTo, amount: order.totalAmount, outcome },
+    });
+    const before = await balances(sample.user.id);
+
+    await expect(
+      creditOrderToBalance(prisma, { orderId: order.id, adminId, binanceTxId: "REUSE" }),
+    ).rejects.toMatchObject({ key: "error.transfer_already_used" });
+
+    expect((await balances(sample.user.id)).walletBalanceUsdt.toString()).toBe(before.walletBalanceUsdt.toString());
+    expect((await getOrder(prisma, order.id))!.status).toBe("PENDING_PAYMENT");
+    const row = await prisma.processedBinanceTx.findUniqueOrThrow({ where: { binanceTxId: "REUSE" } });
+    expect(row.outcome).toBe(outcome);
+    expect(row.orderId).toBe(linkTo);
+  });
+
+  it("refuses a transfer id that has no ledger row at all", async () => {
+    const order = await usdtOrder();
+    await expect(
+      creditOrderToBalance(prisma, { orderId: order.id, adminId, binanceTxId: "NO-SUCH-TX" }),
+    ).rejects.toMatchObject({ key: "error.transfer_already_used" });
+    expect(await prisma.walletTransaction.count({ where: { orderId: order.id, reason: "unfulfilled_credit" } })).toBe(0);
+  });
+
+  it("accepts a delivery_failed transfer already linked to this same order and consumes it", async () => {
+    const order = await usdtOrder();
+    await prisma.processedBinanceTx.create({
+      data: { binanceTxId: "OWN-DF", orderId: order.id, amount: order.totalAmount, outcome: "delivery_failed" },
+    });
+    const res = await creditOrderToBalance(prisma, { orderId: order.id, adminId, binanceTxId: "OWN-DF" });
+    expect(res.evidenceRowsConsumed).toBe(1);
+    const row = await prisma.processedBinanceTx.findUniqueOrThrow({ where: { binanceTxId: "OWN-DF" } });
+    expect(row.outcome).toBe("credited_to_balance");
+    expect(row.orderId).toBe(order.id);
+  });
+
+  // processedBinanceTx.amount is always USDT; crediting it onto a rupiah order
+  // would book USDT figures as rupiah.
+  it("refuses a non-USDT order with error.payment_currency_mismatch, leaving the transfer untouched", async () => {
+    const { user, product } = sample;
+    const order = (await createOrderDirect(prisma, {
+      user: { id: user.id, role: user.role },
+      productId: product.id,
+      quantity: 1,
+    }))!;
+    expect(order.currency).toBe("IDR");
+    await prisma.processedBinanceTx.create({
+      data: { binanceTxId: "IDR-TX", amount: new Decimal("5.00"), outcome: "unmatched" },
+    });
+    const before = await balances(user.id);
+
+    await expect(
+      creditOrderToBalance(prisma, { orderId: order.id, adminId, binanceTxId: "IDR-TX" }),
+    ).rejects.toMatchObject({ key: "error.payment_currency_mismatch" });
+
+    expect((await balances(user.id)).walletBalance.toString()).toBe(before.walletBalance.toString());
+    const row = await prisma.processedBinanceTx.findUniqueOrThrow({ where: { binanceTxId: "IDR-TX" } });
+    expect(row.outcome).toBe("unmatched");
+    expect(row.orderId).toBeNull();
+  });
+});
+
+/** Final-review M1: evidence rows are consumed on EVERY credit, not only the
+ *  already-CANCELLED one — but for any status other than CANCELLED, whether the
+ *  credit is allowed never depends on finding one. */
+describe("creditOrderToBalance consumes evidence on the ordinary (not-yet-cancelled) path", () => {
+  it("credits an open order with no evidence rows at all, exactly as before", async () => {
+    const order = await usdtOrder();
+    const res = await creditOrderToBalance(prisma, { orderId: order.id, adminId });
+    expect(res.wasAlreadyCancelled).toBe(false);
+    expect(res.evidenceRowsConsumed).toBe(0);
+    expect(await prisma.walletTransaction.count({ where: { orderId: order.id, reason: "unfulfilled_credit" } })).toBe(1);
+  });
+
+  // End-to-end: without the consume, crediting the still-PENDING_PAYMENT top-up
+  // cancels it, a cancelled top-up stays late-settleable, and the duplicate
+  // TokoPay callback reclaims the still-delivery_failed row and credits
+  // `wallet_topup` on top of the admin's `unfulfilled_credit`.
+  it("a duplicate TokoPay callback cannot re-settle a top-up credited while still open", async () => {
+    const order = await prisma.$transaction((tx) =>
+      createWalletTopupOrder(tx, { userId: sample.user.id, amount: "20000", currency: "IDR", method: PaymentMethod.TOKOPAY }),
+    );
+    expect(order.status).toBe("PENDING_PAYMENT");
+    const trxId = `TP-open-topup-${order.id}`;
+    await prisma.processedTokopayTx.create({
+      data: { trxId, orderId: order.id, amount: order.totalAmount, outcome: "delivery_failed" },
+    });
+    const before = await balances(sample.user.id);
+
+    const res = await creditOrderToBalance(prisma, { orderId: order.id, adminId });
+    expect(res.wasAlreadyCancelled).toBe(false);
+    expect(res.evidenceRowsConsumed).toBe(1);
+    expect((await prisma.processedTokopayTx.findUniqueOrThrow({ where: { trxId } })).outcome).toBe(
+      "credited_to_balance",
+    );
+
+    const result = await deliverPaidTokopayOrder(prisma, { orderId: order.id, trxId, amount: order.totalAmount });
+    expect(result.status).toBe("already_processed");
+    const after = await balances(sample.user.id);
+    expect(new Decimal(after.walletBalance).minus(before.walletBalance).equals(order.totalAmount)).toBe(true);
+    expect(await prisma.walletTransaction.count({ where: { orderId: order.id, reason: "wallet_topup" } })).toBe(0);
   });
 });
 
@@ -301,7 +427,9 @@ describe("creditOrderToBalance on an already-CANCELLED order", () => {
   // transaction that is not linked to the order yet — the linking happens in
   // this same call — so the passed binanceTxId is itself the evidence.
   it("credits a never-linked cancelled order when a binanceTxId is passed, and links that row", async () => {
-    const order = await cancelledOrder({ paid: false });
+    const open = await usdtOrder();
+    await cancelOrder(prisma, open.id, "expired", { type: StockActorType.SYSTEM });
+    const order = (await getOrder(prisma, open.id))!;
     await prisma.processedBinanceTx.create({
       data: { binanceTxId: "CTX-CANCELLED", amount: order.totalAmount, outcome: "unmatched" },
     });
@@ -443,6 +571,55 @@ describe("creditOrderToBalance on an already-CANCELLED order", () => {
         await prisma.walletTransaction.count({ where: { orderId: created!.id, reason: "unfulfilled_credit" } }),
       ).toBe(0);
     }
+  });
+
+  // Final-review I1: a binanceTxId is only evidence of payment while its row is
+  // still actionable (unmatched/delivery_failed) and unlinked or linked to THIS
+  // order. Otherwise any abandoned, never-paid CANCELLED order could be credited
+  // by naming a transfer that already paid for something else.
+  it.each(["credited_to_balance", "matched", "dismissed", "underpaid"])(
+    "refuses a never-paid cancelled order credited via a transfer already %s elsewhere",
+    async (outcome) => {
+      const open = await usdtOrder();
+      const other = await usdtOrder();
+      await cancelOrder(prisma, open.id, "expired", { type: StockActorType.SYSTEM });
+      await prisma.processedBinanceTx.create({
+        data: { binanceTxId: `USED-${outcome}`, orderId: other.id, amount: open.totalAmount, outcome },
+      });
+      const before = await balances(sample.user.id);
+
+      await expect(
+        creditOrderToBalance(prisma, { orderId: open.id, adminId, binanceTxId: `USED-${outcome}` }),
+      ).rejects.toMatchObject({ key: "error.transfer_already_used" });
+
+      expect((await balances(sample.user.id)).walletBalanceUsdt.toString()).toBe(before.walletBalanceUsdt.toString());
+      expect(await prisma.walletTransaction.count({ where: { orderId: open.id, reason: "unfulfilled_credit" } })).toBe(0);
+      const row = await prisma.processedBinanceTx.findUniqueOrThrow({ where: { binanceTxId: `USED-${outcome}` } });
+      expect(row.outcome).toBe(outcome);
+      expect(row.orderId).toBe(other.id);
+    },
+  );
+
+  it("consumes the passed transfer AND any other evidence rows linked to the cancelled order", async () => {
+    const open = await usdtOrder();
+    await prisma.processedBybitTx.create({
+      data: { bybitTxId: `BY-${open.id}`, orderId: open.id, amount: open.totalAmount, outcome: "delivery_failed" },
+    });
+    await cancelOrder(prisma, open.id, "expired", { type: StockActorType.SYSTEM });
+    await prisma.processedBinanceTx.create({
+      data: { binanceTxId: "CTX-PLUS", amount: open.totalAmount, outcome: "unmatched" },
+    });
+
+    const res = await creditOrderToBalance(prisma, { orderId: open.id, adminId, binanceTxId: "CTX-PLUS" });
+
+    expect(res.wasAlreadyCancelled).toBe(true);
+    expect(res.evidenceRowsConsumed).toBe(2);
+    expect((await prisma.processedBinanceTx.findUniqueOrThrow({ where: { binanceTxId: "CTX-PLUS" } })).outcome).toBe(
+      "credited_to_balance",
+    );
+    expect((await prisma.processedBybitTx.findUniqueOrThrow({ where: { bybitTxId: `BY-${open.id}` } })).outcome).toBe(
+      "credited_to_balance",
+    );
   });
 
   it("still refuses a DELIVERED order with error.order_terminal", async () => {

@@ -30,7 +30,17 @@ describe("describeError", () => {
     );
   });
 
-  it("maps the two credit-to-balance refusals to readable sentences", () => {
+  it("maps the five credit-to-balance refusals to readable sentences", () => {
+    expect(describeError("error.transfer_already_used")).toBe(
+      "This transfer has already been matched, credited, or dismissed, or belongs to another order, so it can't be credited here. Refresh the page to see the current state.",
+    );
+    expect(
+      describeError(
+        Object.assign(new Error("error.payment_currency_mismatch"), {
+          errorArgs: { paymentCurrency: "USDT", orderCurrency: "IDR" },
+        }),
+      ),
+    ).toBe("This payment's currency (USDT) does not match the order's currency (IDR), so it can't be applied to this order.");
     expect(describeError("error.already_credited")).toBe(
       "This order's payment has already been credited to the buyer's balance, so nothing was handed over a second time. Refresh the page to see the current state.",
     );

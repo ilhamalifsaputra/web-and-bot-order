@@ -228,6 +228,7 @@
   "error.already_credited": "This order's payment has already been added to the buyer's credit balance.",
   "error.order_already_refunded": "This cancelled order has already been refunded, so its payment can't also be credited to balance.",
   "error.order_never_paid": "This cancelled order was never paid, so there's nothing to credit to the buyer's balance.",
+  "error.transfer_already_used": "This transfer has already been matched, credited, or dismissed, or belongs to another order, so it can't be credited here.",
   "error.order_already_delivered": "This order has already been delivered.",
   "error.order_not_found": "Order not found.",
   "error.denomination_has_stock_history": "This item has stock history and cannot be deleted; deactivate it instead.",

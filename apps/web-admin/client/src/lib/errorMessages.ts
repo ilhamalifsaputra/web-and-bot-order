@@ -53,6 +53,12 @@ const KNOWN_ERROR_MESSAGES: Record<string, string> = {
     "This cancelled order has already been refunded, so its payment can't also be credited to balance. Refresh the page to see the current state.",
   "error.order_never_paid":
     "This cancelled order was never paid, so there's nothing to credit to the buyer's balance. Refresh the page to see the current state.",
+  "error.transfer_already_used":
+    "This transfer has already been matched, credited, or dismissed, or belongs to another order, so it can't be credited here. Refresh the page to see the current state.",
+  // `{paymentCurrency}`/`{orderCurrency}` from crud/payments.ts and
+  // creditOrderToBalance (a Binance transfer is always USDT).
+  "error.payment_currency_mismatch":
+    "This payment's currency ({paymentCurrency}) does not match the order's currency ({orderCurrency}), so it can't be applied to this order.",
   "error.illegal_admin_task_status_transition":
     "This task's status just changed — refresh the page and try again.",
   "error.admin_task_assignee_not_found":

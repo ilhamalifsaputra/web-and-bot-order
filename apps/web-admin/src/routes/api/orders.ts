@@ -45,8 +45,9 @@ const STATUS_VALUES = Object.values(OrderStatus) as string[];
 const PAGE_SIZE_OPTIONS = [20, 50, 100];
 const DEFAULT_PAGE_SIZE = 20;
 // Orders "not delivered and not otherwise voided" — the bulk-cancel
-// eligibility gate. Mirrors the terminal set `creditOrderToBalance` guards
-// against, minus DELIVERED (checked separately via `isDelivered`).
+// eligibility gate: every voided status plus DELIVERED (checked separately via
+// `isDelivered`). Not the same set `creditOrderToBalance` refuses — that one
+// deliberately still accepts CANCELLED, for its cancelled-order recovery path.
 const TERMINAL_NON_DELIVERED_STATUSES: string[] = [OrderStatus.CANCELLED, OrderStatus.REJECTED, OrderStatus.REFUNDED];
 const BULK_ACTIONS = ["deliver", "resend", "cancel"] as const;
 type BulkAction = (typeof BULK_ACTIONS)[number];
@@ -501,16 +502,23 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
       const orderId = Number((req.params as { orderId: string }).orderId);
       try {
         await prisma.$transaction(async (tx) => {
-          const { credited, currency } = await creditOrderToBalance(tx, {
+          const { credited, currency, wasAlreadyCancelled, evidenceRowsConsumed } = await creditOrderToBalance(tx, {
             orderId,
             adminId: req.admin!.userId,
           });
+          const paid = `${credited.toString()} ${currency}`;
+          let details = wasAlreadyCancelled
+            ? `Credited already-cancelled order ${orderId}'s paid amount (${paid}) to the buyer's balance, recovering a payment that arrived but was never delivered.`
+            : `Credited order ${orderId}'s paid amount (${paid}) to the buyer's balance.`;
+          if (evidenceRowsConsumed > 1) {
+            details += ` ${evidenceRowsConsumed} gateway payment records linked to this order were closed out by this credit.`;
+          }
           await logAdminAction(tx, {
             adminId: req.admin!.userId,
             action: "order_credit_balance",
             targetType: "order",
             targetId: orderId,
-            details: `Credited order ${orderId}'s paid amount (${credited.toString()} ${currency}) to the buyer's balance.`,
+            details,
           });
         });
       } catch (e) {

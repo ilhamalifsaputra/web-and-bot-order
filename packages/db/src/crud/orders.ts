@@ -55,7 +55,7 @@ import {
 import { countAvailableStock, allocateOneAvailableStock } from "./stock";
 import { recordStockEvent, type StockEventActor } from "./stockEvents";
 import { adjustWallet, getUser } from "./users";
-import { cancelledOrderIdsWithMoneyReturned, consumeIncomingLedgerPayment } from "./reports";
+import { ACTIONABLE_LEDGER_OUTCOMES, cancelledOrderIdsWithMoneyReturned, consumeIncomingLedgerPayment } from "./reports";
 import { clearCart, getCart } from "./cart";
 import { getSetting } from "./settings";
 import { maybePayReferralCommission } from "./referrals";
@@ -1672,25 +1672,40 @@ export async function cancelOrder(db: Db, orderId: number, reason: string, actor
  * `error.order_never_paid` when nothing proves a payment ever arrived for it
  * (no `delivery_failed`/`unmatched` gateway ledger row linked to it, and no
  * `binanceTxId` passed). An `underpaid` row never counts: underpaid orders
- * resolve through their own flows (see `orderHasIncomingLedgerPayment`). The
- * evidence rows are re-tagged `credited_to_balance` by the credit itself
- * (`consumeIncomingLedgerPayment`), so no gateway settle path can reclaim and
- * pay out the same payment again afterwards.
+ * resolve through their own flows (see `orderHasIncomingLedgerPayment`).
+ *
+ * On EVERY path (not only the cancelled one) the order's linked
+ * `delivery_failed`/`unmatched` rows are re-tagged `credited_to_balance` by the
+ * credit itself (`consumeIncomingLedgerPayment`), so no gateway settle path can
+ * reclaim and pay out the same payment again afterwards. Only the CANCELLED
+ * path's success depends on finding one.
  *
  * Idempotent: a REJECTED/REFUNDED/DELIVERED order, or a pre-existing
  * `unfulfilled_credit` ledger row for this order, is refused — a
  * retry/double-tap can't double-credit. Concurrent calls for one order are
  * serialised on the order row (`FOR UPDATE`), so the loser of a double-tap reads
  * the winner's committed credit and gets `error.already_credited`. When
- * `binanceTxId` is given, that ledger row is re-tagged `credited_to_balance`
- * and linked to the order (mirrors `manualMatchTx`).
+ * `binanceTxId` is given, that ledger row must still be actionable and unlinked
+ * (or linked to this order); it is atomically re-tagged `credited_to_balance`
+ * and linked to the order, and the whole credit is refused with
+ * `error.transfer_already_used` otherwise, or with
+ * `error.payment_currency_mismatch` for a non-USDT order.
  *
  * Audited at the route layer via `logAdminAction`.
  */
+export type CreditOrderToBalanceResult = {
+  credited: Decimal;
+  currency: "IDR" | "USDT";
+  /** The order was already CANCELLED before this call (the recovery path). */
+  wasAlreadyCancelled: boolean;
+  /** Gateway ledger rows this credit re-tagged `credited_to_balance`. */
+  evidenceRowsConsumed: number;
+};
+
 export async function creditOrderToBalance(
   db: Db,
   args: { orderId: number; amount?: Decimal.Value; adminId: number; binanceTxId?: string | null },
-): Promise<{ credited: Decimal; currency: "IDR" | "USDT" }> {
+): Promise<CreditOrderToBalanceResult> {
   // The order-row lock below only lasts as long as the transaction holding it,
   // so open one when handed the bare client and reuse the caller's otherwise —
   // the same rule (and the same bare-client test) as `adjustWallet`.
@@ -1703,7 +1718,7 @@ export async function creditOrderToBalance(
 async function creditOrderToBalanceLocked(
   db: Db,
   args: { orderId: number; amount?: Decimal.Value; adminId: number; binanceTxId?: string | null },
-): Promise<{ credited: Decimal; currency: "IDR" | "USDT" }> {
+): Promise<CreditOrderToBalanceResult> {
   // Hold the ORDER row for the rest of this transaction before any guard below
   // reads anything, then read the order under that lock. Two admins crediting
   // the same order at the same instant would otherwise both pass the
@@ -1757,27 +1772,64 @@ async function creditOrderToBalanceLocked(
     // buyer twice.
     const settled = await cancelledOrderIdsWithMoneyReturned(db, [order.id]);
     if (settled.has(order.id)) throw new ValidationError("error.order_already_refunded");
-    // Nothing went back — but that is equally true of an order that was never
-    // paid at all (the ordinary abandoned checkout the expiry sweep cancels), and
-    // crediting that would mint balance out of nothing. `order.paidAt` can't
-    // decide it: the case this path exists for — a gateway payment whose delivery
-    // threw — rolled the paidAt write back with the rest of the delivery
-    // transaction. What survives is the gateway ledger row, claimed with this
-    // order's id before that transaction began and left `delivery_failed` (or
-    // `unmatched`) — never an `underpaid` row, whose order has its own
-    // resolution flow and records only part of the total. A passed `binanceTxId` is the
-    // evidence instead: the caller (POST /api/payments/credit) resolved a real
-    // transaction and this call links it below, so it has no link yet to find.
-    //
-    // The evidence is CONSUMED, not just read: its rows are re-tagged
-    // `credited_to_balance` in this same transaction. Left at
-    // `delivery_failed`/`unmatched` they would stay reclaimable by the gateway
-    // settle paths — a duplicate QRIS callback would settle this (late-
-    // settleable) top-up again under `wallet_topup`, or the amount-match poller
-    // would hand the same transfer to another order — paying the money twice.
-    if (!args.binanceTxId && (await consumeIncomingLedgerPayment(db, order.id)) === 0) {
-      throw new ValidationError("error.order_never_paid");
+  }
+
+  // A passed `binanceTxId` (POST /api/payments/credit) names the transfer this
+  // credit is paid from. It is only proof of a payment while its ledger row is
+  // still actionable (`unmatched`/`delivery_failed`) and unlinked or linked to
+  // THIS order: a row already `matched`/`credited_to_balance`/`dismissed`/
+  // `underpaid` paid for (or was ruled out for) something else, and trusting it
+  // would both credit money that never arrived for this order — any abandoned,
+  // never-paid CANCELLED order would do — and re-point that transfer's audit
+  // trail away from the order it really belongs to. So the link is an atomic,
+  // gated consume, and a miss (row gone, used, or someone else's) refuses the
+  // whole credit. Binance transfers are always USDT, so a non-USDT order is
+  // refused first — crediting them would book USDT figures as another currency.
+  let evidenceRowsConsumed = 0;
+  if (args.binanceTxId) {
+    if (order.currency !== "USDT") {
+      throw new ValidationError("error.payment_currency_mismatch", {
+        paymentCurrency: "USDT",
+        orderCurrency: order.currency,
+      });
     }
+    const retag = await db.processedBinanceTx.updateMany({
+      where: {
+        binanceTxId: args.binanceTxId,
+        outcome: { in: [...ACTIONABLE_LEDGER_OUTCOMES] },
+        OR: [{ orderId: null }, { orderId: order.id }],
+      },
+      data: { orderId: order.id, outcome: "credited_to_balance" },
+    });
+    if (retag.count !== 1) throw new ValidationError("error.transfer_already_used");
+    evidenceRowsConsumed += retag.count;
+  }
+
+  // Consume every other gateway ledger row still linked to this order as
+  // `delivery_failed`/`unmatched`, on every path: re-tag it
+  // `credited_to_balance` in this same transaction. Left actionable it would
+  // stay reclaimable by the gateway settle paths — a duplicate QRIS callback
+  // would settle a (late-settleable) cancelled top-up again under
+  // `wallet_topup`, or the amount-match poller would hand the same transfer to
+  // another order — paying the money twice.
+  const linkedConsumed = await consumeIncomingLedgerPayment(db, order.id);
+  evidenceRowsConsumed += linkedConsumed;
+
+  // Only an already-CANCELLED order's credit HINGES on that evidence. Nothing
+  // went back (checked above) — but that is equally true of an order that was
+  // never paid at all (the ordinary abandoned checkout the expiry sweep
+  // cancels), and crediting that would mint balance out of nothing.
+  // `order.paidAt` can't decide it: the case this path exists for — a gateway
+  // payment whose delivery threw — rolled the paidAt write back with the rest
+  // of the delivery transaction. What survives is the gateway ledger row,
+  // claimed with this order's id before that transaction began and left
+  // `delivery_failed` (or `unmatched`) — never an `underpaid` row, whose order
+  // has its own resolution flow and records only part of the total — or the
+  // gated `binanceTxId` consumed above. Every other creditable status keeps its
+  // existing rule (an admin verified the payment by hand; gateway evidence was
+  // never required), so there a zero count is simply nothing to close out.
+  if (wasAlreadyCancelled && evidenceRowsConsumed === 0) {
+    throw new ValidationError("error.order_never_paid");
   }
 
   const currency: "IDR" | "USDT" = order.currency === "USDT" ? "USDT" : "IDR";
@@ -1832,19 +1884,10 @@ async function creditOrderToBalanceLocked(
     });
   }
 
-  if (args.binanceTxId) {
-    await db.processedBinanceTx
-      .update({
-        where: { binanceTxId: args.binanceTxId },
-        data: { orderId: order.id, outcome: "credited_to_balance" },
-      })
-      .catch(() => undefined);
-  }
-
   logger.info(
     `Credited order ${order.orderCode} (${amount.toString()} ${currency}) to buyer's credit balance — approved by admin ${args.adminId}`,
   );
-  return { credited: amount, currency };
+  return { credited: amount, currency, wasAlreadyCancelled, evidenceRowsConsumed };
 }
 
 export async function rejectOrder(

@@ -56,7 +56,7 @@ import type { AdditionalField, CheckoutData, PlaceOrderResponse } from "../api/t
 import { useShopContext } from "../components/Layout";
 import { t } from "../lib/i18n";
 import { humanError } from "../lib/errors";
-import { formatIdr } from "../lib/format";
+import { formatPriceFor } from "../lib/format";
 import { rememberCodeEmailed } from "../lib/orderCodeEmailed";
 import { allFieldsValid, isValidEmail } from "../lib/deliveryFields";
 import { useIsDesktop } from "../lib/useMediaQuery";
@@ -574,7 +574,7 @@ export default function CheckoutPage() {
         <StickyPurchaseBar
           ariaLabel={t("web.purchase_bar")}
           priceLabel={t("web.order_total")}
-          price={formatIdr(method === "qris" ? totals.qris_grand_total : totals.total)}
+          price={formatPriceFor(method === "qris" ? totals.qris_grand_total : totals.total, ctx?.currency ?? null, ctx?.fx)}
           primaryAction={{
             label: t("web.place_order"),
             onClick: () => placeOrderMutation.mutate(),

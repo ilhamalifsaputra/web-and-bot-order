@@ -47,7 +47,7 @@ import { useShopContext } from "../components/Layout";
 import { useDocumentTitle } from "../lib/useDocumentTitle";
 import { t } from "../lib/i18n";
 import { humanError } from "../lib/errors";
-import { formatIdr } from "../lib/format";
+import { formatPriceFor } from "../lib/format";
 import { fadeUp } from "../lib/motion";
 import { rememberCodeEmailed } from "../lib/orderCodeEmailed";
 import { allFieldsValid, isValidEmail } from "../lib/deliveryFields";
@@ -621,7 +621,7 @@ export default function InstantBuyPage() {
         <StickyPurchaseBar
           ariaLabel={t("web.purchase_bar")}
           priceLabel={t("web.order_total")}
-          price={formatIdr(method === "qris" ? totals.qris_grand_total : totals.total)}
+          price={formatPriceFor(method === "qris" ? totals.qris_grand_total : totals.total, ctx?.currency ?? null, fx)}
           primaryAction={{
             label: t("web.buy_now"),
             onClick: () => placeOrderMutation.mutate(),

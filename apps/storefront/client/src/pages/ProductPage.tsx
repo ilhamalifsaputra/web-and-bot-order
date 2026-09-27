@@ -25,7 +25,7 @@ import { useShopContext } from "../components/Layout";
 import { useDocumentTitle } from "../lib/useDocumentTitle";
 import { t, tCount } from "../lib/i18n";
 import { tError } from "../lib/errors";
-import { formatIdr } from "../lib/format";
+import { formatPriceFor } from "../lib/format";
 import { fadeUp } from "../lib/motion";
 import { useIsDesktop } from "../lib/useMediaQuery";
 import Breadcrumb from "../components/shop/Breadcrumb";
@@ -375,7 +375,9 @@ export default function ProductPage() {
               <div className="flex items-baseline gap-2 flex-wrap">
                 {/* `selected.price` already carries the flash discount — the
                     struck figure beside it is the pre-sale one. */}
-                <div className="font-display font-semibold text-pine text-2xl">{formatIdr(selected.price)}</div>
+                <div className="font-display font-semibold text-pine text-2xl">
+                  {formatPriceFor(selected.price, ctx?.currency ?? null, fx)}
+                </div>
                 {selected.flash && (
                   <FlashWasPrice value={selected.flash.base_price} endsAt={selected.flash.ends_at} />
                 )}
@@ -600,7 +602,7 @@ export default function ProductPage() {
         <StickyPurchaseBar
           ariaLabel={t("web.purchase_bar")}
           priceLabel={selected.duration_label || selected.name}
-          price={formatIdr(selected.price)}
+          price={formatPriceFor(selected.price, ctx?.currency ?? null, fx)}
           primaryAction={
             purchasable(selected)
               ? {

@@ -72,6 +72,7 @@ const context: ShopContext = {
   bot_username: "tokobot",
   wa_number: null,
   tzname: "Asia/Jakarta",
+  currency: null,
 };
 
 const productData: ProductPageData = {

@@ -9,9 +9,14 @@
  * Design-system migration (Fase 7c): the two `.card.card-pad` blocks are now
  * `<Card>`, the voucher control is `<Label>` + `<Input>` + an inline apply
  * `<Button variant="soft">`, and the submit is `<Button variant="primary"
- * fullWidth>`. The summary line rows — which numbers show, and how they are
- * computed / formatted (`formatIdr`, `<Price>`) — are UNCHANGED: money is
- * Decimal, formatted only at this render boundary. The voucher field composes
+ * fullWidth>`. The summary line rows — which numbers show, and where they
+ * come from — are UNCHANGED: money is Decimal, formatted only at this render
+ * boundary. Task 5 (multi-currency display): every row here is a
+ * catalog/cart/checkout-preview IDR figure (subtotal, discounts, the QRIS
+ * admin fee preview), so `formatPriceFor`/`<Price>` — both currency-aware —
+ * replace the old unconditional `formatIdr`; `currency` is read off the
+ * shared `["context"]` query (`useShopContext`) rather than threaded as a
+ * prop, same as `<Price>` itself. The voucher field composes
  * `<Label>` + `<Input>` directly rather than a literal `<FormField>` because
  * the apply `<Button>` sits inline beside the input (FormField clones a single
  * control child and cannot hold the adjacent button).
@@ -27,7 +32,8 @@ import { Link } from "react-router-dom";
 import { AlertTriangle, ChevronRight } from "lucide-react";
 import type { CheckoutData } from "../../api/types";
 import { t } from "../../lib/i18n";
-import { formatIdr } from "../../lib/format";
+import { formatPriceFor } from "../../lib/format";
+import { useShopContext } from "../../lib/useShopContext";
 import FlashBadge, { flashPercentLabel } from "./FlashBadge";
 import Price from "./Price";
 import Spinner from "./Spinner";
@@ -107,6 +113,8 @@ export default function OrderSummaryCard({
   backTo,
 }: OrderSummaryCardProps) {
   const flashSummary = cartFlashSummary(totals);
+  const { data: ctx } = useShopContext();
+  const currency = ctx?.currency ?? null;
 
   return (
     // A single grid child (space-y-6 stacks the two cards) rather than a bare
@@ -155,7 +163,7 @@ export default function OrderSummaryCard({
           <div className="text-sm divide-y divide-line">
             <div className="flex justify-between py-2">
               <span className="text-ink-soft">{t("web.subtotal")}</span>
-              <span>{formatIdr(totals.subtotal)}</span>
+              <span>{formatPriceFor(totals.subtotal, currency, fx)}</span>
             </div>
             {/* Modest marker only: the subtotal above is already the sale
                 price, and the full countdown belongs on the product page. */}
@@ -168,19 +176,19 @@ export default function OrderSummaryCard({
             {totals.bulk_discount !== "0" && (
               <div className="flex justify-between py-2 text-grass-dark">
                 <span>{t("web.bulk_discount")}</span>
-                <span>−{formatIdr(totals.bulk_discount)}</span>
+                <span>−{formatPriceFor(totals.bulk_discount, currency, fx)}</span>
               </div>
             )}
             {totals.voucher_discount !== "0" && (
               <div className="flex justify-between py-2 text-grass-dark">
                 <span>{t("web.voucher_discount")}</span>
-                <span>−{formatIdr(totals.voucher_discount)}</span>
+                <span>−{formatPriceFor(totals.voucher_discount, currency, fx)}</span>
               </div>
             )}
             {method === "qris" && (
               <div className="flex justify-between py-2">
                 <span className="text-ink-soft">{t("web.qris_admin_fee")}</span>
-                <span>{formatIdr(totals.qris_admin_fee)}</span>
+                <span>{formatPriceFor(totals.qris_admin_fee, currency, fx)}</span>
               </div>
             )}
             <div className="flex items-baseline justify-between py-3">

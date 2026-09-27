@@ -24,6 +24,7 @@ const context: ShopContext = {
   bot_username: "tokobot",
   wa_number: null,
   tzname: "Asia/Jakarta",
+  currency: null,
 };
 
 // Task 16 (page-templates.md §6): two distinguishable orders — different codes,

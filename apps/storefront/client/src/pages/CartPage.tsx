@@ -31,7 +31,7 @@ import { apiGet, apiPost } from "../api/client";
 import type { CartLineView, CartPageData } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import { t } from "../lib/i18n";
-import { formatIdr, formatUsdt } from "../lib/format";
+import { formatPriceFor, formatUsdt } from "../lib/format";
 import { useIsDesktop } from "../lib/useMediaQuery";
 import { useSuggestedProducts } from "../lib/useSuggestedProducts";
 import FlashBadge, { FlashWasPrice } from "../components/shop/FlashBadge";
@@ -232,6 +232,7 @@ export default function CartPage() {
 
   const { items, subtotal } = cart;
   const fx = ctx?.fx;
+  const currency = ctx?.currency ?? null;
   const cartCount = ctx?.cart_count ?? 0;
 
   return (
@@ -297,9 +298,12 @@ export default function CartPage() {
             <StickyPurchaseBar
               ariaLabel={t("web.purchase_bar")}
               priceLabel={t("web.subtotal")}
-              price={formatIdr(subtotal)}
+              price={formatPriceFor(subtotal, currency, fx)}
+              // Same rule as Price.tsx: the "≈ $" hint only applies to the
+              // undecided (null) default — once a currency preference is
+              // set, that IS the one figure shown, above.
               secondaryChip={
-                formatUsdt(subtotal, fx) ? (
+                currency === null && formatUsdt(subtotal, fx) ? (
                   <span className="text-xs text-ink-faint">{formatUsdt(subtotal, fx)}</span>
                 ) : undefined
               }

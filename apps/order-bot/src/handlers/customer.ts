@@ -521,7 +521,7 @@ export async function browseCategoryEntry(ctx: MyContext, categoryId: number, ba
     // picker's own option count, BEFORE the picker's own inline-keyboard
     // render below, so that edit/send stays the chat's most recently
     // rendered screen (its inline buttons are what a tap should act on).
-    await ctx.reply(t(ctx, "browse.choose_variant"), {
+    await ctx.reply(t(ctx, "browse.use_numbers"), {
       reply_markup: ckb.gamePickerPersistentKb(variants.length, ctx.session.lang),
     });
     // Back goes UP to the category picker (Finding I2/3 of the final-review)
@@ -604,7 +604,7 @@ async function enterGameVariant(
     // Same reasoning as the variant picker's render above — resend the
     // bottom digit keyboard, sized to this picker's own option count, before
     // the picker's own inline-keyboard render.
-    await ctx.reply(t(ctx, "browse.choose_region"), {
+    await ctx.reply(t(ctx, "browse.use_numbers"), {
       reply_markup: ckb.gamePickerPersistentKb(regions.length, ctx.session.lang),
     });
     await smartEdit(ctx, t(ctx, "browse.choose_region"), ckb.gameRegionPickerKb(regions, categoryId, regionBackTarget, ctx.session.lang));

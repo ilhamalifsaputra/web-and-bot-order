@@ -83,6 +83,7 @@
   "browse.game_field_server_id": "Server ID",
   "browse.choose_region": "Pilih region:",
   "browse.choose_variant": "Pilih edisi:",
+  "browse.use_numbers": "Gunakan angka di bawah untuk memilih:",
   "browse.denomination_line": "{duration} — {price} (Stok {stock})",
   "browse.description": "📝 {description}",
   "browse.flash_deal": "⚡ <b>Flash Sale — Diskon {percent}%</b>\nBerakhir dalam {remaining}.",

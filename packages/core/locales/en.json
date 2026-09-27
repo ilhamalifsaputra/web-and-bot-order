@@ -83,6 +83,7 @@
   "browse.game_field_server_id": "Server ID",
   "browse.choose_region": "Choose region:",
   "browse.choose_variant": "Choose edition:",
+  "browse.use_numbers": "Use the numbers below to choose:",
   "browse.denomination_line": "{duration} — {price} (Stock {stock})",
   "browse.description": "📝 {description}",
   "browse.flash_deal": "⚡ <b>Flash Sale — {percent}% OFF</b>\nEnds in {remaining}.",

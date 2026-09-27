@@ -56,7 +56,7 @@ import {
 import { apiGet, apiPost } from "../api/client";
 import type { PayData, PayState, PayStatusData } from "../api/types";
 import { t } from "../lib/i18n";
-import { formatIdr } from "../lib/format";
+import { formatOrderAmount } from "../lib/format";
 import { readCodeEmailed } from "../lib/orderCodeEmailed";
 import Stepper from "../components/shop/Stepper";
 import ErrorPage from "./ErrorPage";
@@ -350,18 +350,20 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
                   <>
                     <div className="text-sm text-ink-soft flex justify-between">
                       <span>{t("web.subtotal")}</span>
-                      <span>{formatIdr(order.total)}</span>
+                      <span>{formatOrderAmount(order.total, order.currency)}</span>
                     </div>
                     <div className="text-sm text-ink-soft flex justify-between">
                       <span>{t("web.qris_admin_fee")}</span>
-                      <span>{formatIdr(order.qris_admin_fee)}</span>
+                      <span>{formatOrderAmount(order.qris_admin_fee, order.currency)}</span>
                     </div>
                     <div className="font-display font-semibold text-pine text-2xl mt-1">
-                      {formatIdr(order.qris_grand_total)}
+                      {formatOrderAmount(order.qris_grand_total, order.currency)}
                     </div>
                   </>
                 ) : (
-                  <div className="font-display font-semibold text-pine text-2xl">{formatIdr(order.total)}</div>
+                  <div className="font-display font-semibold text-pine text-2xl">
+                    {formatOrderAmount(order.total, order.currency)}
+                  </div>
                 )}
                 {data.gateway ? (
                   <>
@@ -394,7 +396,9 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
             ) : data.is_paydisini ? (
               <>
                 <h2 className="section-title mb-3">{t("web.pay_paydisini_title")}</h2>
-                <div className="font-display font-semibold text-pine text-2xl">{formatIdr(order.total)}</div>
+                <div className="font-display font-semibold text-pine text-2xl">
+                  {formatOrderAmount(order.total, order.currency)}
+                </div>
                 {data.paydisini_gateway ? (
                   <>
                     {data.paydisini_gateway.qrUrl && (

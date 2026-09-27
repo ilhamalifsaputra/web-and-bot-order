@@ -93,6 +93,24 @@ describe("PayPage", () => {
     expect(screen.getByRole("link", { name: /Open payment page/ })).toHaveAttribute("href", "https://pay.example/trx1");
   });
 
+  // Task 5 bug fix (regression guard): formatIdr used to be called
+  // unconditionally on order.total/qris_admin_fee/qris_grand_total. A
+  // defensive, synthetic case — order.currency "USDT" reaching the is_qris
+  // branch — proves the fix actually branches on order.currency rather than
+  // relying on "only IDR-only gateways ever set is_qris" holding everywhere.
+  it("renders a USDT-currency order's amount as a native USDT string, never an IDR-formatted number", async () => {
+    const pay: PayData = {
+      ...basePay,
+      state: "waiting",
+      is_qris: true,
+      order: { ...basePay.order, currency: "USDT", total: "9.88", qris_admin_fee: null, qris_grand_total: null },
+    };
+    renderPay(respondFor(pay));
+    await screen.findByRole("heading", { name: "Payment" });
+    expect(screen.getByText("9.88 USDT")).toBeInTheDocument();
+    expect(screen.queryByText(/^Rp/)).not.toBeInTheDocument();
+  });
+
   it("renders the QRIS admin fee breakdown and fee-inclusive grand total when present", async () => {
     const pay: PayData = {
       ...basePay,

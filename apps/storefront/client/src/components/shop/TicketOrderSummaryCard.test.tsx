@@ -11,6 +11,7 @@ const order: TicketOrderSummary = {
   created_at_display: "2026-07-01 10:00",
   paid_at_display: "2026-07-01 10:01",
   payment_method: "BINANCE_PAY",
+  currency: "IDR",
   total: "158000",
   voucher_code: "SAVE10",
   delivered: true,
@@ -77,5 +78,22 @@ describe("TicketOrderSummaryCard", () => {
   it("omits the voucher row when voucher_code is null", () => {
     render(<TicketOrderSummaryCard order={{ ...order, voucher_code: null }} />, { wrapper: MemoryRouter });
     expect(screen.queryByText("Voucher used")).not.toBeInTheDocument();
+  });
+
+  // Task 5 bug fix (regression guard): formatIdr used to be called on
+  // `total` unconditionally, mis-rendering a USDT-currency order's total as
+  // if it were a Rupiah figure.
+  it("renders a USDT-currency order's total as a native USDT string, not an IDR-formatted number", () => {
+    render(
+      <TicketOrderSummaryCard order={{ ...order, currency: "USDT", total: "9.88" }} />,
+      { wrapper: MemoryRouter },
+    );
+    expect(screen.getByText("9.88 USDT")).toBeInTheDocument();
+    expect(screen.queryByText(/^Rp/)).not.toBeInTheDocument();
+  });
+
+  it("renders an IDR-currency order's total as Rp — unaffected by the fix", () => {
+    render(<TicketOrderSummaryCard order={order} />, { wrapper: MemoryRouter });
+    expect(screen.getByText("Rp158.000")).toBeInTheDocument();
   });
 });

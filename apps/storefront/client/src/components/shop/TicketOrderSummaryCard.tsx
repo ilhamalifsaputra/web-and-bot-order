@@ -11,7 +11,7 @@
 import { Copy, ExternalLink, ShieldCheck, ShieldAlert, Clock } from "lucide-react";
 import { Link } from "react-router-dom";
 import { t } from "../../lib/i18n";
-import { formatIdr } from "../../lib/format";
+import { formatOrderAmount } from "../../lib/format";
 import type { TicketOrderSummary } from "../../api/types";
 import Button from "../ui/Button";
 import StatusBadge from "./StatusBadge";
@@ -66,7 +66,7 @@ export default function TicketOrderSummaryCard({ order }: { order: TicketOrderSu
         )}
         <div className="flex justify-between gap-3 border-t border-line pt-1.5 font-semibold">
           <dt>{t("web.order_total")}</dt>
-          <dd>{formatIdr(order.total)}</dd>
+          <dd>{formatOrderAmount(order.total, order.currency)}</dd>
         </div>
       </dl>
       <div className="mt-3 flex flex-wrap gap-2">

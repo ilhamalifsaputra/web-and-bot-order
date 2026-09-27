@@ -699,6 +699,12 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
             created_at_display: dt(order.createdAt),
             paid_at_display: order.paidAt ? dt(order.paidAt) : null,
             payment_method: order.paymentMethod,
+            // Task 5 (multi-currency display client): already on the Order
+            // row (`currency` — see prisma/schema.prisma), just not exposed
+            // here before. `total` above is denominated in THIS, not always
+            // IDR — the client's TicketOrderSummaryCard branches on it via
+            // formatOrderAmount() rather than assuming Rupiah.
+            currency: order.currency,
             total: order.totalAmount.toString(),
             voucher_code: order.voucher?.code ?? null,
             delivered: order.status === OrderStatus.DELIVERED,

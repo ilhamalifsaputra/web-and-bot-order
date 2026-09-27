@@ -347,6 +347,44 @@ describe("requireCurrency guard", () => {
     },
   );
 
+  // Follow-up fix: /language is exempt from the guard, so a no-currency user
+  // who never ran /start (onboarding still null) used to land on the main
+  // menu after lang:set. They must be routed to the currency picker instead.
+  it("a no-currency user who never ran /start: /language → lang:set lands on the currency picker, not the main menu", async () => {
+    const tg = nextTgId();
+    await makeLegacyUser(tg, "en");
+    const s = freshSession();
+
+    const cmd = await say(tg, s, "/language");
+    expect(cmd.reached).toBe(true);
+    expect(s.onboarding ?? null).toBeNull();
+
+    const langTap = await tap(tg, s, ckb.cb("lang", "set", "en"));
+    expect(langTap.reached).toBe(true);
+    expect(s.onboarding).toBe("currency");
+    expect(sentIncludes(langTap.sink, ckb.cb("cur", "set", "USD"))).toBe(true);
+    expect(sentIncludes(langTap.sink, ckb.cb("cur", "set", "IDR"))).toBe(true);
+    expect(isMainMenu(langTap.sink)).toBe(false);
+
+    const curTap = await tap(tg, s, ckb.cb("cur", "set", "IDR"));
+    expect(s.onboarding).toBeNull();
+    expect(isMainMenu(curTap.sink)).toBe(true);
+    expect((await dbUserByTg(tg)).preferredCurrency).toBe("IDR");
+  });
+
+  it("a configured user with no onboarding in progress: /language → lang:set still ends at the main menu", async () => {
+    const tg = nextTgId();
+    const u = await makeLegacyUser(tg, "en");
+    await setUserPreferredCurrency(prisma, u.id, "USD");
+    const s = freshSession();
+
+    expect((await say(tg, s, "/language")).reached).toBe(true);
+    const langTap = await tap(tg, s, ckb.cb("lang", "set", "id"));
+    expect(isMainMenu(langTap.sink)).toBe(true);
+    expect(sentIncludes(langTap.sink, ckb.cb("cur", "set", "USD"))).toBe(false);
+    expect(s.onboarding ?? null).toBeNull();
+  });
+
   it("a configured user with a stale onboarding value is unaffected: /language → lang:set ends at the main menu", async () => {
     const tg = nextTgId();
     const u = await makeLegacyUser(tg, "en");

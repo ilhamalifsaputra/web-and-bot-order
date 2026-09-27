@@ -1510,10 +1510,14 @@ export async function setLanguage(ctx: MyContext, code: string): Promise<void> {
   info.language = code.toUpperCase();
   ctx.session.lang = code.toLowerCase();
   if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "language.set") });
-  if (ctx.session.onboarding === "language" || ctx.session.onboarding === "currency") {
+  if (ctx.session.onboarding === "language" || ctx.session.onboarding === "currency" || !info.preferredCurrency) {
     // /start onboarding: language done, currency next (never derived from it).
     // A duplicate/stale lang:set tap while already on the currency step just
     // re-shows the currency picker and stays there.
+    // A user with no currency yet goes to the picker too even when onboarding
+    // was never started: /language (and the Help Center / persistent-keyboard
+    // Language entry) is exempt from requireCurrency, so without this they
+    // would land on the main menu having never chosen a currency.
     ctx.session.onboarding = "currency";
     await showCurrencyMenu(ctx);
     return;

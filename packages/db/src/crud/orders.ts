@@ -55,7 +55,7 @@ import {
 import { countAvailableStock, allocateOneAvailableStock } from "./stock";
 import { recordStockEvent, type StockEventActor } from "./stockEvents";
 import { adjustWallet, getUser } from "./users";
-import { cancelledOrderIdsWithMoneyReturned, orderHasIncomingLedgerPayment } from "./reports";
+import { cancelledOrderIdsWithMoneyReturned, consumeIncomingLedgerPayment } from "./reports";
 import { clearCart, getCart } from "./cart";
 import { getSetting } from "./settings";
 import { maybePayReferralCommission } from "./referrals";
@@ -1672,7 +1672,10 @@ export async function cancelOrder(db: Db, orderId: number, reason: string, actor
  * `error.order_never_paid` when nothing proves a payment ever arrived for it
  * (no `delivery_failed`/`unmatched` gateway ledger row linked to it, and no
  * `binanceTxId` passed). An `underpaid` row never counts: underpaid orders
- * resolve through their own flows (see `orderHasIncomingLedgerPayment`).
+ * resolve through their own flows (see `orderHasIncomingLedgerPayment`). The
+ * evidence rows are re-tagged `credited_to_balance` by the credit itself
+ * (`consumeIncomingLedgerPayment`), so no gateway settle path can reclaim and
+ * pay out the same payment again afterwards.
  *
  * Idempotent: a REJECTED/REFUNDED/DELIVERED order, or a pre-existing
  * `unfulfilled_credit` ledger row for this order, is refused — a
@@ -1765,7 +1768,14 @@ async function creditOrderToBalanceLocked(
     // resolution flow and records only part of the total. A passed `binanceTxId` is the
     // evidence instead: the caller (POST /api/payments/credit) resolved a real
     // transaction and this call links it below, so it has no link yet to find.
-    if (!args.binanceTxId && !(await orderHasIncomingLedgerPayment(db, order.id))) {
+    //
+    // The evidence is CONSUMED, not just read: its rows are re-tagged
+    // `credited_to_balance` in this same transaction. Left at
+    // `delivery_failed`/`unmatched` they would stay reclaimable by the gateway
+    // settle paths — a duplicate QRIS callback would settle this (late-
+    // settleable) top-up again under `wallet_topup`, or the amount-match poller
+    // would hand the same transfer to another order — paying the money twice.
+    if (!args.binanceTxId && (await consumeIncomingLedgerPayment(db, order.id)) === 0) {
       throw new ValidationError("error.order_never_paid");
     }
   }

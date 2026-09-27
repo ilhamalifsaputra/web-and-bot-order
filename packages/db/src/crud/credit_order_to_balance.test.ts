@@ -17,8 +17,11 @@ import {
   createOrderDirect,
   createInternalOrder,
   creditOrderToBalance,
+  createWalletTopupOrder,
+  deliverPaidTokopayOrder,
   getOrder,
 } from "@app/db";
+import { PaymentMethod } from "@app/core/enums";
 import { markUnderpaid } from "./binance_internal";
 import { markUnderpaidBybit } from "./bybit_deposit";
 import { Decimal } from "@app/core/money";
@@ -308,6 +311,59 @@ describe("creditOrderToBalance on an already-CANCELLED order", () => {
     const row = await prisma.processedBinanceTx.findUniqueOrThrow({ where: { binanceTxId: "CTX-CANCELLED" } });
     expect(row.outcome).toBe("credited_to_balance");
     expect(row.orderId).toBe(order.id);
+  });
+
+  // Re-review finding 3: the evidence row must be CONSUMED by the credit, not
+  // just read. Left at delivery_failed/unmatched it stays reclaimable by the
+  // gateways' own settle paths, which would pay the same money out again.
+  it("consumes the evidence ledger row: it is re-tagged credited_to_balance", async () => {
+    const order = await cancelledOrder();
+    await creditOrderToBalance(prisma, { orderId: order.id, adminId });
+
+    const row = await prisma.processedTokopayTx.findUniqueOrThrow({ where: { trxId: `TP-${order.id}` } });
+    expect(row.outcome).toBe("credited_to_balance");
+    expect(row.orderId).toBe(order.id);
+  });
+
+  it("consumes evidence rows in every gateway table linked to the order (Bybit too)", async () => {
+    const order = await cancelledOrder();
+    await prisma.processedBybitTx.create({
+      data: { bybitTxId: `BY-${order.id}`, orderId: order.id, amount: order.totalAmount, outcome: "unmatched" },
+    });
+    await creditOrderToBalance(prisma, { orderId: order.id, adminId });
+
+    expect((await prisma.processedTokopayTx.findUniqueOrThrow({ where: { trxId: `TP-${order.id}` } })).outcome).toBe(
+      "credited_to_balance",
+    );
+    expect((await prisma.processedBybitTx.findUniqueOrThrow({ where: { bybitTxId: `BY-${order.id}` } })).outcome).toBe(
+      "credited_to_balance",
+    );
+  });
+
+  // The end-to-end double-credit this closes: a cancelled QRIS wallet top-up is
+  // still late-settleable (isLateSettleableWalletTopup), so a duplicate/retried
+  // TokoPay callback for the same trxId would reclaim a still-delivery_failed
+  // row and credit `wallet_topup` on top of the admin's `unfulfilled_credit`.
+  it("a later duplicate TokoPay callback cannot settle a credited cancelled top-up a second time", async () => {
+    const order = await prisma.$transaction((tx) =>
+      createWalletTopupOrder(tx, { userId: sample.user.id, amount: "20000", currency: "IDR", method: PaymentMethod.TOKOPAY }),
+    );
+    const trxId = `TP-topup-${order.id}`;
+    await prisma.processedTokopayTx.create({
+      data: { trxId, orderId: order.id, amount: order.totalAmount, outcome: "delivery_failed" },
+    });
+    await cancelOrder(prisma, order.id, "expired", { type: StockActorType.SYSTEM });
+    const before = await balances(sample.user.id);
+
+    await creditOrderToBalance(prisma, { orderId: order.id, adminId });
+    const result = await deliverPaidTokopayOrder(prisma, { orderId: order.id, trxId, amount: order.totalAmount });
+
+    expect(result.status).toBe("already_processed");
+    const after = await balances(sample.user.id);
+    expect(new Decimal(after.walletBalance).minus(before.walletBalance).equals(order.totalAmount)).toBe(true);
+    expect(await prisma.walletTransaction.count({ where: { orderId: order.id, reason: "unfulfilled_credit" } })).toBe(1);
+    expect(await prisma.walletTransaction.count({ where: { orderId: order.id, reason: "wallet_topup" } })).toBe(0);
+    expect((await getOrder(prisma, order.id))!.status).toBe("CANCELLED");
   });
 
   it("refuses to credit a cancelled order a second time", async () => {

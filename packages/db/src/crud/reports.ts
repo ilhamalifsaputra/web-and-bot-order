@@ -463,6 +463,34 @@ export async function orderHasIncomingLedgerPayment(db: Db, orderId: number): Pr
   return binance != null || bybit != null || tokopay != null || paydisini != null || nowpayments != null;
 }
 
+/** The enforcing form of `orderHasIncomingLedgerPayment`: re-tags every row in
+ *  the five processed*Tx ledger tables linked to this order whose outcome is
+ *  one of `ACTIONABLE_LEDGER_OUTCOMES` as `credited_to_balance`, and returns
+ *  how many it re-tagged (0 = no proof a payment ever arrived).
+ *
+ *  Reading the evidence is not enough for a credit: a row left at
+ *  `delivery_failed`/`unmatched` is still reclaimable by the gateways' own
+ *  settle paths (QRIS_RECLAIMABLE_OUTCOMES / AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES
+ *  in ./binance_internal), so a duplicate callback or a later amount-match
+ *  would pay the same money out a second time. `credited_to_balance` is in
+ *  neither reclaimable set. Each `UPDATE ... WHERE outcome IN (...)` row-locks
+ *  what it matches, so a concurrent reclaim of the same row serialises against
+ *  the caller's transaction and, once this commits, no longer matches its own
+ *  outcome gate. Must run inside the caller's transaction (the credit it
+ *  justifies has to roll back with it). Sequential on purpose — one
+ *  interactive transaction runs one statement at a time anyway. */
+export async function consumeIncomingLedgerPayment(db: Db, orderId: number): Promise<number> {
+  const where = { orderId, outcome: { in: [...ACTIONABLE_LEDGER_OUTCOMES] } };
+  const data = { outcome: "credited_to_balance" };
+  let consumed = 0;
+  consumed += (await db.processedBinanceTx.updateMany({ where, data })).count;
+  consumed += (await db.processedBybitTx.updateMany({ where, data })).count;
+  consumed += (await db.processedTokopayTx.updateMany({ where, data })).count;
+  consumed += (await db.processedPaydisiniTx.updateMany({ where, data })).count;
+  consumed += (await db.processedNowpaymentsTx.updateMany({ where, data })).count;
+  return consumed;
+}
+
 /**
  * Builds the one rule shared by `actionableLedgerOutcomeCounts` and
  * `listCombinedLedger`'s `actionable` filter, so the dashboard card and the

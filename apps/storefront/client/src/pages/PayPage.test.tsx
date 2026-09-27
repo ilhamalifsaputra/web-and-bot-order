@@ -308,6 +308,104 @@ describe("PayPage", () => {
     });
   });
 
+  // Final-review fix: the web twin of the bot's payAlongsidePriceLine. A
+  // USD-display viewer on an IDR-settled QRIS/PayDisini order sees
+  // "Price $X · Pay RpY" (Price = order.total pre-fee, converted once; Pay =
+  // the rail's fee-inclusive charge) ALONGSIDE the native Rp payable, which
+  // keeps rendering exactly as Task 5 left it. fx 16000: 158000 → $9.88.
+  describe("Price · Pay line for a USD-display viewer", () => {
+    const ctxFor = (currency: "USD" | "IDR" | null, fx: string | null = "16000") => ({
+      lang: "en",
+      fx,
+      shop_name: "Toko Digital",
+      shop_tagline: "",
+      cart_count: 0,
+      customer: null,
+      favicon_url: "/static/favicon.svg",
+      logo_url: "",
+      bot_username: "tokobot",
+      wa_number: null,
+      tzname: "Asia/Jakarta",
+      currency,
+    });
+    function respondWithCtx(pay: PayData, ctx: ReturnType<typeof ctxFor>) {
+      const base = respondFor(pay);
+      return (path: string) => (path === "/api/v1/pages/context" ? ctx : base(path));
+    }
+    const qrisWithFee: PayData = {
+      ...basePay,
+      state: "waiting",
+      is_qris: true,
+      order: { ...basePay.order, total: "158000", qris_admin_fee: "1206", qris_grand_total: "159206" },
+      gateway: { trxId: "TRX1", payUrl: "https://pay.example/trx1", qrLink: "https://img.example/qr.png", qrString: null, totalBayar: "159206" },
+    };
+    const paydisini: PayData = { ...basePay, state: "waiting", is_paydisini: true };
+
+    it("QRIS + USD: adds the line and keeps the native Rp breakdown and payable unchanged", async () => {
+      renderPay(respondWithCtx(qrisWithFee, ctxFor("USD")));
+      expect(await screen.findByText("Price $9.88 · Pay Rp159.206")).toBeInTheDocument();
+      // Task 5's regression guard: the payable is still the order's own figure.
+      expect(screen.getByText("Rp158.000")).toBeInTheDocument();
+      expect(screen.getByText("Rp1.206")).toBeInTheDocument();
+      expect(screen.getByText("Rp159.206")).toBeInTheDocument();
+    });
+
+    it("QRIS without a fee breakdown + USD: Pay is order.total", async () => {
+      renderPay(respondWithCtx({ ...basePay, state: "waiting", is_qris: true }, ctxFor("USD")));
+      expect(await screen.findByText("Price $9.88 · Pay Rp158.000")).toBeInTheDocument();
+      expect(screen.getByText("Rp158.000")).toBeInTheDocument();
+    });
+
+    it("QRIS + USD in Indonesian uses the shared checkout.price_and_pay wording", async () => {
+      document.documentElement.lang = "id";
+      renderPay(respondWithCtx(qrisWithFee, ctxFor("USD")));
+      expect(await screen.findByText("Harga $9.88 · Bayar Rp159.206")).toBeInTheDocument();
+    });
+
+    it("PayDisini + USD: adds the line beside the unchanged Rp payable", async () => {
+      renderPay(respondWithCtx(paydisini, ctxFor("USD")));
+      expect(await screen.findByText("Price $9.88 · Pay Rp158.000")).toBeInTheDocument();
+      expect(screen.getByText("Rp158.000")).toBeInTheDocument();
+    });
+
+    it("IDR / no-preference / no-rate viewers: unchanged, no line", async () => {
+      for (const ctx of [ctxFor("IDR"), ctxFor(null), ctxFor("USD", null)]) {
+        const view = renderPay(respondWithCtx(qrisWithFee, ctx));
+        await screen.findByText("Rp159.206");
+        await waitFor(() => expect(apiGet).toHaveBeenCalledWith("/api/v1/pages/context"));
+        expect(screen.queryByText(/Pay Rp/)).not.toBeInTheDocument();
+        view.unmount();
+      }
+    });
+
+    it("USDT-settled order + USD: already native, no line added", async () => {
+      const bybit: PayData = {
+        ...basePay,
+        state: "waiting",
+        is_bybit: true,
+        bybit_uid: "UID-999",
+        order: { ...basePay.order, currency: "USDT", total: "9.88" },
+      };
+      renderPay(respondWithCtx(bybit, ctxFor("USD")));
+      await screen.findByText("$9.88");
+      await waitFor(() => expect(apiGet).toHaveBeenCalledWith("/api/v1/pages/context"));
+      expect(screen.queryByText(/Pay Rp/)).not.toBeInTheDocument();
+    });
+
+    it("a USDT-currency order that reaches the QRIS branch gets no line (never a Rp claim on a USDT order)", async () => {
+      const pay: PayData = {
+        ...basePay,
+        state: "waiting",
+        is_qris: true,
+        order: { ...basePay.order, currency: "USDT", total: "9.88" },
+      };
+      renderPay(respondWithCtx(pay, ctxFor("USD")));
+      await screen.findByText("9.88 USDT");
+      await waitFor(() => expect(apiGet).toHaveBeenCalledWith("/api/v1/pages/context"));
+      expect(screen.queryByText(/Pay /)).not.toBeInTheDocument();
+    });
+  });
+
   it("renders stepper outside the max-w-2xl container (njk parity)", async () => {
     const pay: PayData = { ...basePay, state: "waiting", is_qris: true };
     const { container } = renderPay(respondFor(pay));

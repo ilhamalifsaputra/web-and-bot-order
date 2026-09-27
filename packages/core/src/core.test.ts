@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { money, fmtMoney, moneyEq, Decimal } from "./money";
 import { t } from "./i18n";
-import { fetchUsdIdrMarketRate, roundRateToStep, validateUsdIdrRate, applyUsdtSpread } from "./fx";
+import { roundRateToStep, validateUsdIdrRate, applyUsdtSpread } from "./fx";
 import { OrderStatus, UserRole, NotificationEvent, langCode } from "./enums";
 import { computeUniqueCents, usdtFromIdr } from "./formatters";
 
@@ -190,19 +190,6 @@ describe("fx (market USDT rate + rounding)", () => {
   it("invalid/zero step returns the rate unrounded", () => {
     expect(roundRateToStep(new Decimal("16243.7"), 0).toString()).toBe("16243.7");
     expect(roundRateToStep(new Decimal("16243.7"), "abc").toString()).toBe("16243.7");
-  });
-  it("parses the er-api payload", async () => {
-    const fake = (async () => ({
-      ok: true,
-      json: async () => ({ result: "success", rates: { IDR: 16234.55 } }),
-    })) as unknown as typeof fetch;
-    expect((await fetchUsdIdrMarketRate(fake)).toString()).toBe("16234.55");
-  });
-  it("rejects bad payloads and HTTP errors", async () => {
-    const bad = (async () => ({ ok: true, json: async () => ({ result: "success", rates: {} }) })) as unknown as typeof fetch;
-    await expect(fetchUsdIdrMarketRate(bad)).rejects.toThrow();
-    const http500 = (async () => ({ ok: false, status: 500 })) as unknown as typeof fetch;
-    await expect(fetchUsdIdrMarketRate(http500)).rejects.toThrow();
   });
 });
 

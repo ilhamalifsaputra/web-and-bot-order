@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom";
-import { describe, it, expect, beforeEach, vi, type Mock } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
@@ -32,14 +32,14 @@ const context: ShopContext = {
 // pick can narrow to exactly one.
 const TWO_ORDERS: AccountOrdersData = {
   orders: [
-    { code: "ORD-NFLX", status: "delivered", total: "158000", created_at_display: "2026-07-01 10:00", items: "Netflix 1 month" },
-    { code: "ORD-SPOT", status: "pending", total: "20000", created_at_display: "2026-07-02 09:00", items: "Spotify Premium" },
+    { code: "ORD-NFLX", status: "delivered", currency: "IDR", total: "158000", created_at_display: "2026-07-01 10:00", items: "Netflix 1 month" },
+    { code: "ORD-SPOT", status: "pending", currency: "IDR", total: "20000", created_at_display: "2026-07-02 09:00", items: "Spotify Premium" },
   ],
 };
 
-function renderOrders(respond: (path: string) => unknown) {
+function renderOrders(respond: (path: string) => unknown, ctx: ShopContext = context) {
   (apiGet as Mock).mockImplementation(async (path: string) => {
-    if (path === "/api/v1/pages/context") return context;
+    if (path === "/api/v1/pages/context") return ctx;
     return respond(path);
   });
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -67,6 +67,7 @@ describe("OrdersPage", () => {
         {
           code: "ORD1",
           status: "delivered",
+          currency: "IDR",
           total: "158000",
           created_at_display: "2026-07-01 10:00",
           items: "Netflix 1 month",
@@ -82,14 +83,57 @@ describe("OrdersPage", () => {
     expect(screen.getByText("Delivered")).toBeInTheDocument();
   });
 
+  // Task 5 fix pass: `total` is each order's OWN settlement amount, in its own
+  // `currency` — the viewer's display preference must never re-convert it
+  // (9.88 USDT pushed through IDR→USD would print "$0.01").
+  describe("settled totals ignore the display-currency preference", () => {
+    const MIXED: AccountOrdersData = {
+      orders: [
+        { code: "ORD-USDT", status: "delivered", currency: "USDT", total: "9.88", created_at_display: "2026-07-01 10:00", items: "Netflix 1 month" },
+        { code: "ORD-IDR", status: "delivered", currency: "IDR", total: "158000", created_at_display: "2026-07-02 09:00", items: "Spotify Premium" },
+      ],
+    };
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it.each([["USD" as const], ["IDR" as const], [null]])(
+      "cards show each order's native total (viewer preference %s)",
+      async (currency) => {
+        renderOrders(() => MIXED, { ...context, currency });
+        expect(await screen.findByText("9.88 USDT")).toBeInTheDocument();
+        expect(screen.getByText("Rp158.000")).toBeInTheDocument();
+        expect(screen.queryByText(/\$/)).not.toBeInTheDocument();
+      },
+    );
+
+    it.each([["USD" as const], ["IDR" as const]])(
+      "the desktop table shows each order's native total (viewer preference %s)",
+      async (currency) => {
+        vi.stubGlobal("matchMedia", (query: string) => ({
+          matches: true,
+          media: query,
+          addEventListener: () => {},
+          removeEventListener: () => {},
+        }));
+        renderOrders(() => MIXED, { ...context, currency });
+        expect(await screen.findByRole("table")).toBeInTheDocument();
+        expect(screen.getByText("9.88 USDT")).toBeInTheDocument();
+        expect(screen.getByText("Rp158.000")).toBeInTheDocument();
+        expect(screen.queryByText(/\$/)).not.toBeInTheDocument();
+      },
+    );
+  });
+
   // The point of the card layout: on a phone this page used to be a
   // five-column table behind a horizontal scroll. jsdom has no matchMedia, so
   // useIsDesktop() reports false and the mobile branch is what renders here.
   it("renders orders as cards, with no table, on a small viewport", async () => {
     const data: AccountOrdersData = {
       orders: [
-        { code: "ORD1", status: "delivered", total: "158000", created_at_display: "2026-07-01 10:00", items: "Netflix 1 month" },
-        { code: "ORD2", status: "pending", total: "20000", created_at_display: "2026-07-02 09:00", items: "Spotify" },
+        { code: "ORD1", status: "delivered", currency: "IDR", total: "158000", created_at_display: "2026-07-01 10:00", items: "Netflix 1 month" },
+        { code: "ORD2", status: "pending", currency: "IDR", total: "20000", created_at_display: "2026-07-02 09:00", items: "Spotify" },
       ],
     };
     renderOrders(() => data);
@@ -115,7 +159,7 @@ describe("OrdersPage", () => {
   it("hides the filter row when there is only one order to filter", async () => {
     renderOrders(() => ({
       orders: [
-        { code: "ORD1", status: "delivered", total: "158000", created_at_display: "2026-07-01 10:00", items: "Netflix 1 month" },
+        { code: "ORD1", status: "delivered", currency: "IDR", total: "158000", created_at_display: "2026-07-01 10:00", items: "Netflix 1 month" },
       ],
     }));
     await screen.findByRole("link", { name: "ORD1" });

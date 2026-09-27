@@ -43,14 +43,12 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { BadgeCheck, Clock, Copy, Pencil, RefreshCw, Wallet } from "lucide-react";
 import { apiGet, apiPatch } from "../api/client";
 import type { OrderDetailData } from "../api/types";
-import { useShopContext } from "../components/Layout";
 import { t, currentLang } from "../lib/i18n";
 import { tError } from "../lib/errors";
-import { formatIdr } from "../lib/format";
+import { formatIdr, formatOrderAmount } from "../lib/format";
 import { allFieldsValid } from "../lib/deliveryFields";
 import { useIsDesktop } from "../lib/useMediaQuery";
 import { useSse } from "../hooks/useSse";
-import Price from "../components/shop/Price";
 import Skeleton from "../components/shop/Skeleton";
 import StatusBadge from "../components/shop/StatusBadge";
 import DeliveryFieldInput from "../components/shop/DeliveryFieldInput";
@@ -62,7 +60,6 @@ import Card from "../components/ui/Card";
 
 export default function OrderDetailPage() {
   const { code = "" } = useParams<{ code: string }>();
-  const { data: ctx } = useShopContext();
   const isDesktop = useIsDesktop();
   const { data, error, refetch, isFetching } = useQuery({
     queryKey: ["account-order", code],
@@ -260,7 +257,7 @@ export default function OrderDetailPage() {
                     <div className="text-xs text-ink-faint">{i.duration}</div>
                   </td>
                   <td>
-                    <Price value={i.unit_price} fx={ctx?.fx} size="text-sm" />
+                    <span className="font-semibold text-pine text-sm whitespace-nowrap">{formatIdr(i.unit_price)}</span>
                   </td>
                   <td className="text-xs text-ink-soft">{t("web.warranty_days", { days: i.warranty_days })}</td>
                 </tr>
@@ -275,7 +272,7 @@ export default function OrderDetailPage() {
               <div className="text-sm font-semibold text-ink">{i.name}</div>
               {i.duration && <div className="text-xs text-ink-faint">{i.duration}</div>}
               <div className="mt-2 flex items-center justify-between gap-3">
-                <Price value={i.unit_price} fx={ctx?.fx} size="text-sm" />
+                <span className="font-semibold text-pine text-sm whitespace-nowrap">{formatIdr(i.unit_price)}</span>
                 <span className="text-xs text-ink-soft">{t("web.warranty_days", { days: i.warranty_days })}</span>
               </div>
             </li>
@@ -283,6 +280,12 @@ export default function OrderDetailPage() {
         </ul>
       )}
 
+      {/* Every figure on this card and the item lines above describes ONE
+          settled order, so none of them follow the viewer's display-currency
+          preference (<Price/> is for live catalog/cart prices). The subtotal,
+          discounts and unit prices are central-IDR for every order; `total` is
+          in the order's own settlement currency (`order.currency`) — see
+          apps/storefront/src/routes/buyerOrderSummary.ts. */}
       <Card className="mb-5 max-w-md ml-auto text-sm">
         <div className="flex justify-between py-1">
           <span className="text-ink-soft">{t("web.subtotal")}</span> <span>{formatIdr(order.subtotal)}</span>
@@ -303,7 +306,9 @@ export default function OrderDetailPage() {
           </div>
         )}
         <div className="flex justify-between py-2 border-t border-line mt-1 font-semibold">
-          <span>{t("web.order_total")}</span> <Price value={order.total} fx={ctx?.fx} size="text-base" />
+          <span>{t("web.order_total")}</span> <span className="font-semibold text-pine text-base whitespace-nowrap">
+            {formatOrderAmount(order.total, order.currency)}
+          </span>
         </div>
       </Card>
 

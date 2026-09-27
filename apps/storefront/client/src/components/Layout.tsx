@@ -5,8 +5,10 @@
  *
  * The chrome was one 661-line file until Task 5 split it into
  * src/components/layout/{Navbar,Footer,MobileDrawer,MobileTabBar,SearchForm}.
- * `useShopContext` still lives here (25 files import it from this path) and the
- * one context query runs here, passed down to each chrome piece as props.
+ * `useShopContext` is implemented in lib/useShopContext.ts (Task 5) and only
+ * re-exported here, so the 25+ files that import it from this path keep
+ * working; Layout's own call is the one context query whose result is passed
+ * down to each chrome piece as props.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Outlet, useLocation, useSearchParams } from "react-router-dom";

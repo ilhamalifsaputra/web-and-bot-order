@@ -46,9 +46,9 @@ const cartData: CartPageData = {
   subtotal: "158000",
 };
 
-function renderCart(respond: (path: string) => unknown) {
+function renderCart(respond: (path: string) => unknown, ctx: ShopContext = context) {
   (apiGet as Mock).mockImplementation(async (path: string) => {
-    if (path === "/api/v1/pages/context") return context;
+    if (path === "/api/v1/pages/context") return ctx;
     return respond(path);
   });
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -75,6 +75,19 @@ describe("CartPage", () => {
     expect(await screen.findByRole("heading", { name: "Cart (4)" })).toBeInTheDocument();
     expect(screen.getByText("Netflix Premium - 1 Month")).toBeInTheDocument();
     expect(screen.getAllByText("Rp158.000").length).toBeGreaterThan(0);
+  });
+
+  // Task 5 fix pass (review Minor #1): pin the USD display state on a sweep
+  // site, so a regression back to a plain formatIdr subtotal is caught.
+  // 158000 / 16000 = 9.875 -> ceil to $9.88; 79000 / 16000 -> $4.94.
+  it("shows a $ subtotal and no ≈ hint chip for a USD-preference viewer", async () => {
+    renderCart(() => cartData, { ...context, currency: "USD" });
+    await screen.findByRole("heading", { name: "Cart (4)" });
+    // The context query (which carries `currency`) may land after the cart.
+    expect((await screen.findAllByText("$9.88")).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("$4.94").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Rp158.000")).not.toBeInTheDocument();
+    expect(screen.queryByText(/≈/)).not.toBeInTheDocument();
   });
 
   it("editing qty then clicking update posts the new qty and re-renders from the response", async () => {

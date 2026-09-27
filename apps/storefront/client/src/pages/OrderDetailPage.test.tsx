@@ -55,6 +55,7 @@ const baseOrder: OrderDetailData["order"] = {
   discount: "0",
   bulk_discount: "0",
   wallet_credit: "0",
+  currency: "IDR",
   total: "158000",
   created_at_display: "2026-07-01 10:00",
   customer_data_fields: [],
@@ -69,9 +70,9 @@ const infoFields: AdditionalField[] = [
   { key: "game_id", label: { id: "ID Game", en: "Game ID" }, type: "text", required: true, options: [], placeholder: "" },
 ];
 
-function renderDetail(respond: (path: string) => unknown, code = "ORD1") {
+function renderDetail(respond: (path: string) => unknown, code = "ORD1", ctx: ShopContext = context) {
   (apiGet as Mock).mockImplementation(async (path: string) => {
-    if (path === "/api/v1/pages/context") return context;
+    if (path === "/api/v1/pages/context") return ctx;
     return respond(path);
   });
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -142,6 +143,54 @@ describe("OrderDetailPage", () => {
     renderDetail(() => ({ order: baseOrder, delivered: true, pending_payment: false, processing: false }));
     await screen.findByRole("heading", { name: /Order code/ });
     expect(screen.queryByText("Wallet credit")).not.toBeInTheDocument();
+  });
+
+  // Task 5 fix pass: `order.total` is the order's OWN settlement amount (IDR or
+  // USDT, per `order.currency`), fixed at pay time — the viewer's display-
+  // currency preference must never re-convert it. `unit_price`/`subtotal`/
+  // discounts are stored in central IDR for every order (see
+  // packages/db/src/crud/orders.ts's orderCurrencyConverter doc), so they are
+  // printed as the Rupiah figures they are, not display-converted either.
+  describe("settled amounts ignore the display-currency preference", () => {
+    const usdtOrder: OrderDetailData = {
+      order: { ...baseOrder, currency: "USDT", total: "9.88" },
+      delivered: true,
+      pending_payment: false,
+      processing: false,
+    };
+
+    it.each([["USD" as const], ["IDR" as const], [null]])(
+      "a USDT-settled order shows its native USDT total (viewer preference %s)",
+      async (currency) => {
+        renderDetail(() => usdtOrder, "ORD1", { ...context, fx: "16000", currency });
+        expect(await screen.findByText("9.88 USDT")).toBeInTheDocument();
+        // Re-converting 9.88 as if it were IDR would print "$0.01" (USD) or
+        // "Rp10 ≈ $0.01" (null) — neither may appear, nor any "$" figure at all.
+        expect(screen.queryByText(/\$/)).not.toBeInTheDocument();
+        expect(screen.queryByText("Rp10")).not.toBeInTheDocument();
+        // The item line + subtotal stay the central-IDR figures they are.
+        expect(screen.getAllByText("Rp158.000")).toHaveLength(2);
+      },
+    );
+
+    it.each([["USD" as const], ["IDR" as const]])(
+      "an IDR-settled order keeps subtotal, discounts, item price and total all in Rupiah (viewer preference %s)",
+      async (currency) => {
+        const data: OrderDetailData = {
+          order: { ...baseOrder, bulk_discount: "20000", discount: "30000", total: "108000" },
+          delivered: true,
+          pending_payment: false,
+          processing: false,
+        };
+        renderDetail(() => data, "ORD1", { ...context, fx: "16000", currency });
+        expect(await screen.findByText("Rp108.000")).toBeInTheDocument();
+        expect(screen.getAllByText("Rp158.000")).toHaveLength(2); // item line + subtotal
+        expect(screen.getByText("−Rp20.000")).toBeInTheDocument();
+        expect(screen.getByText("−Rp30.000")).toBeInTheDocument();
+        // One basis for the whole card: nothing on it is display-converted.
+        expect(screen.queryByText(/\$/)).not.toBeInTheDocument();
+      },
+    );
   });
 
   it("hides credentials for a non-delivered order", async () => {

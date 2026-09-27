@@ -487,6 +487,11 @@ export interface AccountData {
 export interface AccountOrderSummary {
   code: string;
   status: string;
+  /** This order's OWN settlement currency ("IDR" | "USDT") — `total` below is
+   * denominated in THIS. Format with `formatOrderAmount(total, currency)`,
+   * never `<Price/>` (which applies the viewer's display-currency conversion
+   * and would double-convert an already-settled amount — Task 5 fix pass). */
+  currency: string;
   total: string;
   created_at_display: string;
   items: string;
@@ -500,6 +505,8 @@ export interface AccountOrdersData {
 export interface OrderDetailItem {
   name: string;
   duration: string | null;
+  /** Central-IDR price charged at order time, for every order (even a
+   * USDT-settled one) — a historical figure, not a live catalog price. */
   unit_price: string;
   warranty_days: number;
   /** Only populated when the order is DELIVERED and the owner is asking — null otherwise. */
@@ -526,6 +533,13 @@ export interface OrderDetailData {
      * would be printed as Rupiah here (see
      * apps/storefront/src/routes/buyerOrderSummary.ts). */
     wallet_credit: string;
+    /** This order's OWN settlement currency ("IDR" | "USDT") — the unit of
+     * `total` ONLY. `subtotal`/`discount`/`bulk_discount` and each item's
+     * `unit_price` are central-IDR for every order regardless of this (see
+     * apps/storefront/src/routes/buyerOrderSummary.ts). Format `total` with
+     * `formatOrderAmount(total, currency)`; none of these fields go through
+     * `<Price/>`'s display-currency conversion (Task 5 fix pass). */
+    currency: string;
     total: string;
     created_at_display: string;
     /** Parsed manual_with_info field spec — [] for auto/manual orders. */

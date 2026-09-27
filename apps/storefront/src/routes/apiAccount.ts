@@ -224,6 +224,10 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
       orders: orders.map((o) => ({
         code: o.orderCode,
         status: o.status,
+        // Task 5 fix pass: `total` is denominated in the order's OWN
+        // settlement currency ("IDR" | "USDT"), not always IDR — the client
+        // formats it natively (formatOrderAmount), never display-converts it.
+        currency: o.currency,
         total: o.totalAmount.toString(),
         created_at_display: dt(o.createdAt),
         items: o.items.map((i) => i.product.name).join(", "),
@@ -260,6 +264,11 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
         discount: money.discount.toString(),
         bulk_discount: money.bulkDiscount.toString(),
         wallet_credit: money.walletCredit.toString(),
+        // Task 5 fix pass: the currency `total` is denominated in (the order's
+        // own settlement rail). subtotal/discount/bulk_discount/unit_price
+        // above/below stay central-IDR for every order — see
+        // buyerOrderSummary.ts's "IDR ONLY, DELIBERATELY" note.
+        currency: order.currency,
         total: order.totalAmount.toString(),
         created_at_display: dt(order.createdAt),
         customer_data_fields: customerDataFields,

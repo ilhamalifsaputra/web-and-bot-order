@@ -93,7 +93,7 @@ describe("SupportPage", () => {
 
   it("includes the picked order_code when creating a ticket", async () => {
     renderSupport(() => supportData, () => ({
-      orders: [{ code: "ORD-PICK-1", status: "delivered", total: "10000", created_at_display: "2026-07-01 09:00", items: "Netflix" }],
+      orders: [{ code: "ORD-PICK-1", status: "delivered", currency: "IDR", total: "10000", created_at_display: "2026-07-01 09:00", items: "Netflix" }],
     }));
     await screen.findByRole("link", { name: "#1" });
     fireEvent.change(screen.getByLabelText("Which order is this about? (optional)"), { target: { value: "ORD-PICK-1" } });
@@ -124,7 +124,7 @@ describe("SupportPage", () => {
 
   it("navigates to the existing ticket with a 'wasn't saved' notice when the server reports a duplicate", async () => {
     renderSupport(() => supportData, () => ({
-      orders: [{ code: "ORD-PICK-1", status: "delivered", total: "10000", created_at_display: "2026-07-01 09:00", items: "Netflix" }],
+      orders: [{ code: "ORD-PICK-1", status: "delivered", currency: "IDR", total: "10000", created_at_display: "2026-07-01 09:00", items: "Netflix" }],
     }));
     await screen.findByRole("link", { name: "#1" });
     fireEvent.change(screen.getByLabelText("Which order is this about? (optional)"), { target: { value: "ORD-PICK-1" } });

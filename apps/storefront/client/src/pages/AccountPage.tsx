@@ -62,11 +62,10 @@ import { apiGet, apiPost } from "../api/client";
 import type { AccountData, AccountOrderSummary, AccountOrdersData } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import { t } from "../lib/i18n";
-import { formatIdr, formatNativeUsdt } from "../lib/format";
+import { formatIdr, formatNativeUsdt, formatOrderAmount } from "../lib/format";
 import { useMediaQuery } from "../lib/useMediaQuery";
 import { useSuggestedProducts } from "../lib/useSuggestedProducts";
 import EmptyState from "../components/shop/EmptyState";
-import Price from "../components/shop/Price";
 import Skeleton from "../components/shop/Skeleton";
 import StatusBadge from "../components/shop/StatusBadge";
 import Toast from "../components/shop/Toast";
@@ -235,7 +234,7 @@ function SummaryCard(props: SummaryCardProps) {
 }
 
 /** One order row inside the desktop Recent Orders widget. */
-function RecentOrderRow({ order, fx }: { order: AccountOrderSummary; fx: string | null | undefined }) {
+function RecentOrderRow({ order }: { order: AccountOrderSummary }) {
   return (
     <Link
       to={`/account/orders/${order.code}`}
@@ -247,7 +246,12 @@ function RecentOrderRow({ order, fx }: { order: AccountOrderSummary; fx: string 
       </span>
       <span className="flex shrink-0 flex-col items-end gap-1.5">
         <StatusBadge value={order.status} />
-        <Price value={order.total} fx={fx} size="text-xs" />
+        {/* The order's settled total in its OWN currency — not <Price/>,
+            whose display-currency conversion would double-convert it
+            (Task 5 fix pass). */}
+        <span className="font-semibold text-pine text-xs whitespace-nowrap">
+          {formatOrderAmount(order.total, order.currency)}
+        </span>
       </span>
     </Link>
   );
@@ -574,7 +578,7 @@ export default function AccountPage() {
             ) : (
               <div className="divide-y divide-line">
                 {recentOrders.orders.slice(0, 4).map((order) => (
-                  <RecentOrderRow key={order.code} order={order} fx={shopCtx?.fx} />
+                  <RecentOrderRow key={order.code} order={order} />
                 ))}
               </div>
             )}

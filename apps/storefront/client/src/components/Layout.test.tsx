@@ -356,6 +356,26 @@ describe("Layout", () => {
       );
     });
 
+    // Task 5 fix pass (review Minor #2): a failed switch used to be silent.
+    // It now surfaces an error toast, and the toggle stays on the currency
+    // the server still holds — no optimistic flip, no context refetch.
+    it("a failed switch shows an error toast and leaves the toggle on its prior currency", async () => {
+      const user = userEvent.setup();
+      (apiPost as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("/api/v1/preferences/currency responded 500"));
+      renderLayout({ currency: "IDR", fx: "16000" });
+      await waitFor(() => expect(apiGet).toHaveBeenCalled());
+      await screen.findByText("home content");
+      const callsBefore = (apiGet as unknown as ReturnType<typeof vi.fn>).mock.calls.length;
+
+      const header = within(screen.getByRole("banner"));
+      await user.click(header.getByRole("button", { name: "USD ($)" }));
+
+      expect(await screen.findByText("Something went wrong. Please try again.")).toBeInTheDocument();
+      expect(header.getByRole("button", { name: "IDR (Rp)" })).toHaveAttribute("aria-pressed", "true");
+      expect(header.getByRole("button", { name: "USD ($)" })).toHaveAttribute("aria-pressed", "false");
+      expect((apiGet as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(callsBefore);
+    });
+
     it("disables the USD option (never hides it) when no exchange rate is set", async () => {
       renderLayout({ fx: null });
       await waitFor(() => expect(apiGet).toHaveBeenCalled());

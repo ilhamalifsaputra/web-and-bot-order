@@ -13,8 +13,12 @@
  * (formatPriceFor's own rule), so the switch never lets a visitor choose a
  * currency they can't actually be priced in.
  */
+import { useCallback, useState } from "react";
+import { createPortal } from "react-dom";
 import { useCurrencySwitch } from "../../lib/currency";
+import { humanError } from "../../lib/errors";
 import { t } from "../../lib/i18n";
+import Toast from "../ui/Toast";
 
 export default function CurrencyToggle({
   currency,
@@ -29,7 +33,11 @@ export default function CurrencyToggle({
   fx: string | null | undefined;
   variant?: "desktop" | "stacked";
 }) {
-  const { setCurrency, isPending } = useCurrencySwitch();
+  // A failed switch leaves the toggle where it was (useCurrencySwitch is never
+  // optimistic) — this toast is what tells the visitor why nothing changed.
+  const [errorText, setErrorText] = useState<string | null>(null);
+  const dismissError = useCallback(() => setErrorText(null), []);
+  const { setCurrency, isPending } = useCurrencySwitch({ onError: (err) => setErrorText(humanError(err)) });
   const usdUnavailable = !fx;
   const idrActive = currency !== "USD";
   const usdActive = currency === "USD";
@@ -68,6 +76,10 @@ export default function CurrencyToggle({
       {variant === "stacked" && usdUnavailable && (
         <p className="text-xs text-ink-faint">{t("web.currency_unavailable_hint")}</p>
       )}
+      {/* Portaled: the Navbar/drawer this toggle sits in can establish a
+          containing block (backdrop-filter/transform) that would pin the
+          fixed-position toast inside the header instead of the viewport. */}
+      {createPortal(<Toast text={errorText} onDismiss={dismissError} kind="error" />, document.body)}
     </div>
   );
 }

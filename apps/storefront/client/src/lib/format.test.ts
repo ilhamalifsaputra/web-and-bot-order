@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { formatIdr, formatUsdt, formatUsdtAmount, formatNativeUsdt, formatPriceFor, formatOrderAmount } from "./format";
+import { formatIdr, formatUsdt, formatUsdtAmount, formatNativeUsdt, formatPriceFor, formatOrderAmount, showsUsdDisplay, isIdrRail } from "./format";
 
 describe("formatIdr", () => {
   it("formats with Rp prefix and dotted thousands (core formatIdr parity)", () => {
@@ -144,5 +144,26 @@ describe("formatOrderAmount", () => {
     expect(formatOrderAmount("158000", "IDR")).toBe("Rp158.000");
     expect(formatOrderAmount("158000", null)).toBe("Rp158.000");
     expect(formatOrderAmount("158000", undefined)).toBe("Rp158.000");
+  });
+});
+
+describe("showsUsdDisplay", () => {
+  it("is true only for a USD preference with a usable rate", () => {
+    expect(showsUsdDisplay("USD", "16000")).toBe(true);
+    expect(showsUsdDisplay("USD", null)).toBe(false);
+    expect(showsUsdDisplay("USD", "0")).toBe(false);
+    expect(showsUsdDisplay("USD", "abc")).toBe(false);
+    expect(showsUsdDisplay("IDR", "16000")).toBe(false);
+    expect(showsUsdDisplay(null, "16000")).toBe(false);
+  });
+});
+
+describe("isIdrRail", () => {
+  it("covers QRIS/TokoPay and PayDisini only", () => {
+    expect(isIdrRail("qris")).toBe(true);
+    expect(isIdrRail("paydisini")).toBe(true);
+    for (const m of ["binance", "bybit", "bybit_bsc", "nowpayments", "wallet_idr", "wallet_usdt", null, undefined]) {
+      expect(isIdrRail(m)).toBe(false);
+    }
   });
 });

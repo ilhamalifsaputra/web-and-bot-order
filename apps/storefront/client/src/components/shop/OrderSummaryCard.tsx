@@ -32,7 +32,7 @@ import { Link } from "react-router-dom";
 import { AlertTriangle, ChevronRight } from "lucide-react";
 import type { CheckoutData } from "../../api/types";
 import { t } from "../../lib/i18n";
-import { formatPriceFor } from "../../lib/format";
+import { formatIdr, formatPriceFor, isIdrRail, showsUsdDisplay } from "../../lib/format";
 import { useShopContext } from "../../lib/useShopContext";
 import FlashBadge, { flashPercentLabel } from "./FlashBadge";
 import Price from "./Price";
@@ -115,6 +115,17 @@ export default function OrderSummaryCard({
   const flashSummary = cartFlashSummary(totals);
   const { data: ctx } = useShopContext();
   const currency = ctx?.currency ?? null;
+  // What the selected rail will charge, still in canonical IDR: the checkout
+  // preview's `qris_grand_total`/`total` are Decimal strings the server
+  // computes in Rupiah (routes/checkout.ts cartTotals) — no rail has converted
+  // them yet.
+  const payableIdr = method === "qris" ? totals.qris_grand_total : totals.total;
+  // Final-review fix: a USD viewer on an IDR-settlement rail (QRIS/TokoPay,
+  // PayDisini) would otherwise see only "$" figures that no rail charges.
+  // Same rule as the bot's payAlongsidePriceLine — shown only when the
+  // display currency actually differs from what the rail charges; USDT rails
+  // and IDR/null viewers are untouched.
+  const idrRailDualLine = isIdrRail(method) && showsUsdDisplay(currency, fx);
 
   return (
     // A single grid child (space-y-6 stacks the two cards) rather than a bare
@@ -188,14 +199,27 @@ export default function OrderSummaryCard({
             {method === "qris" && (
               <div className="flex justify-between py-2">
                 <span className="text-ink-soft">{t("web.qris_admin_fee")}</span>
-                <span>{formatPriceFor(totals.qris_admin_fee, currency, fx)}</span>
+                <span>
+                  {formatPriceFor(totals.qris_admin_fee, currency, fx)}
+                  {idrRailDualLine && (
+                    <span className="text-ink-faint"> · {formatIdr(totals.qris_admin_fee)}</span>
+                  )}
+                </span>
               </div>
             )}
             <div className="flex items-baseline justify-between py-3">
               <span className="text-base font-semibold text-ink">{t("web.order_total")}</span>
-              <Price value={method === "qris" ? totals.qris_grand_total : totals.total} fx={fx} size="text-lg" />
+              <Price value={payableIdr} fx={fx} size="text-lg" />
             </div>
           </div>
+          {idrRailDualLine && (
+            <p className="mb-2 text-right text-sm text-ink-soft">
+              {t("checkout.price_and_pay", {
+                price: formatPriceFor(payableIdr, currency, fx),
+                pay: formatIdr(payableIdr),
+              })}
+            </p>
+          )}
           {fx && <p className="text-xs text-ink-faint">{t("web.usdt_note")}</p>}
           {/* Desktop only: on a phone this button lives in the sticky bar
               below instead. Rendering it in both places would put two

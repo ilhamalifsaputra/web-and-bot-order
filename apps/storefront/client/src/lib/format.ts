@@ -143,6 +143,33 @@ export function formatPriceFor(
 }
 
 /**
+ * True when {@link formatPriceFor} will actually render a "$" figure for this
+ * viewer — a `"USD"` preference AND a usable rate. Mirrors the bot's
+ * `userPriceFormatter().showsUsd` (apps/order-bot/src/util/format.ts), which
+ * probes the same way (format 0, look at what came out) so the two can never
+ * disagree about when the rate-missing fallback kicked in. Used to gate the
+ * "Price $X · Pay RpY" line on IDR-rail pay surfaces: with no usable rate the
+ * display price already fell back to Rp, so a dual line would say nothing.
+ */
+export function showsUsdDisplay(
+  currency: "USD" | "IDR" | null | undefined,
+  fx: string | number | null | undefined,
+): boolean {
+  return currency === "USD" && formatPriceFor(0, currency, fx).startsWith("$");
+}
+
+/**
+ * The checkout method tokens (PaymentMethodSelector's radio values) whose
+ * gateway settles in Rupiah — QRIS/TokoPay and PayDisini. The bot adds its
+ * "Price · Pay" line on exactly these two rails; USDT rails charge natively in
+ * the currency the viewer already sees, and wallet credit is a balance debit,
+ * not a payment rail.
+ */
+export function isIdrRail(method: string | null | undefined): boolean {
+  return method === "qris" || method === "paydisini";
+}
+
+/**
  * An order's OWN settlement-currency amount — `order.total`,
  * `order.qris_admin_fee`, a linked ticket order's `total`, etc. (see
  * api/types.ts's `PayData`/`TicketOrderSummary`). `orderCurrency` is the

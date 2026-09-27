@@ -30,6 +30,7 @@ import {
   getDenomination,
   getDenominationWithProduct,
   countAvailableStock,
+  availableStockCountsByDenomination,
   MAX_CART_ORDER_UNITS,
   getBulkPricingForDenomination,
   countUserOrders,
@@ -58,9 +59,9 @@ import { BANNER_IMAGE_KEY, BANNER_FILEID_KEY, bannerPhotoArg } from "../util/ban
 import { productPhotoArg, cacheProductPhotoFileId } from "../util/productPhoto";
 import { t } from "../util/i18n";
 import { logErrorRef } from "../util/errors";
-import { gameTopUpDenomLabel } from "../util/denominationLabel";
+import { gameTopUpDenomLabel, formatDenominationLabel } from "../util/denominationLabel";
 import { gameInputFieldsLabel, resolveGameInputFlags } from "../util/gameInfo";
-import { esc, formatUsdtAmount, formatIdr, statusBadge, groupOrderItems, formatCountdown, formatFlashRemaining, priceIdr, ctxPriceFormatter, orderAmount, mixedAmount, renderBybitBscTrackingScreen, summarizeTicketOrder } from "../util/format";
+import { esc, formatUsdtAmount, formatIdr, statusBadge, groupOrderItems, formatCountdown, formatFlashRemaining, priceIdr, ctxPriceFormatter, orderAmount, mixedAmount, renderBybitBscTrackingScreen, summarizeTicketOrder, truncLabel, BUTTON_LABEL_MAX } from "../util/format";
 import { effectiveUnitPrice, flashPrice, activeFlashPercent } from "@app/core/flash";
 import { currentUsdtRate } from "../util/rate";
 import * as ckb from "../keyboards/customer";
@@ -108,6 +109,15 @@ const PENDING_PAYMENT_METHOD_LABEL_KEYS: Partial<Record<string, string>> = {
 interface BrowseScratch {
   page?: number;
   browseEntries?: number[];
+  /** Which numbered list a typed digit currently resolves against — set by
+   * whichever of browseProductsFlat / the variant-picker render / the
+   * region-picker render ran most recently. Each of those three clears the
+   * OTHER two scratch fields (browseEntries / gameVariantEntries /
+   * gameRegionEntries) at the same time it sets this, so a stale list can
+   * never be read even by accident. Undefined means "products" too — an
+   * in-flight session that predates this field never set it, and its only
+   * possible numbered screen before this field existed was the product list. */
+  activeNumberedScreen?: "products" | "gameVariant" | "gameRegion";
   /** The active Category scope for the flat product list (Products entry
    * flow's third step) — set by browseCategoryEntry, read by
    * browseProductsFlat. Undefined means no category scope (shouldn't
@@ -348,6 +358,13 @@ export async function browseGroups(ctx: MyContext): Promise<void> {
   delete sc(ctx).resolvedGameVariant;
   delete sc(ctx).resolvedGameRegion;
   delete sc(ctx).gameVariantDimensionSkipped;
+  // Finding I2 (final-review): this screen renders without going through
+  // browseProductsFlat/the variant-picker-render/the region-picker-render —
+  // none of which run here — so a leftover "gameVariant"/"gameRegion" from a
+  // picker two screens back must be cleared here too, or a stray typed digit
+  // on this screen would resolve against an emptied picker snapshot instead
+  // of falling through to the product-list default.
+  delete sc(ctx).activeNumberedScreen;
   const enabledGroups = await activeServiceGroups(prisma);
   const enabledServices = CUSTOMER_SERVICES.filter((service) => enabledGroups.has(service.group));
   if (enabledServices.length === 1) {
@@ -391,6 +408,11 @@ export async function browseCategoriesInGroup(ctx: MyContext, group: string): Pr
   delete sc(ctx).resolvedGameVariant;
   delete sc(ctx).resolvedGameRegion;
   delete sc(ctx).gameVariantDimensionSkipped;
+  // Finding I2 (final-review): same reasoning as browseGroups' own reset
+  // above — this screen (both its empty-state and its normal category-list
+  // render below) never goes through browseProductsFlat/a picker render, so
+  // a leftover "gameVariant"/"gameRegion" must be cleared here too.
+  delete sc(ctx).activeNumberedScreen;
   sc(ctx).group = group;
 
   const categories = await listActiveCategoriesByGroup(prisma, group);
@@ -501,6 +523,20 @@ export async function browseCategoryEntry(ctx: MyContext, categoryId: number, ba
 
   if (variants.length > 1) {
     sc(ctx).gameVariantEntries = variants;
+    sc(ctx).activeNumberedScreen = "gameVariant";
+    // A typed digit must resolve against THIS picker now, not whatever the
+    // flat list or the region picker last snapshotted — see
+    // BrowseScratch.activeNumberedScreen.
+    delete sc(ctx).browseEntries;
+    delete sc(ctx).gameRegionEntries;
+    // Telegram can't edit away the OLD bottom ReplyKeyboardMarkup (only a
+    // fresh sendMessage can replace it) — resend it now, sized to this
+    // picker's own option count, BEFORE the picker's own inline-keyboard
+    // render below, so that edit/send stays the chat's most recently
+    // rendered screen (its inline buttons are what a tap should act on).
+    await ctx.reply(t(ctx, "browse.use_numbers"), {
+      reply_markup: ckb.gamePickerPersistentKb(variants.length, ctx.session.lang),
+    });
     // Back goes UP to the category picker (Finding I2/3 of the final-review)
     // — `cb("browse", "cat", categoryId)` would just re-render this SAME
     // variant picker, a no-op loop, since this category has >1 variant.
@@ -517,19 +553,31 @@ export async function browseCategoryEntry(ctx: MyContext, categoryId: number, ba
   await enterGameVariant(ctx, categoryId, variants[0]?.label ?? null, variants[0]?.emoji ?? null, effectiveBackTarget);
 }
 
+/** Shared index-resolution for the variant picker — resolves an index (tapped
+ * via the inline picker's callback, or typed as a digit while it's the active
+ * numbered screen, see handleProductNumber) against the gameVariantEntries
+ * snapshot taken when that picker was rendered, then continues into the
+ * region step. Returns false when the index doesn't match a snapshotted
+ * entry (stale screen) — the caller decides how to surface that: a toast for
+ * a callback tap (pickGameVariant), an inline message for a typed digit
+ * (handleProductNumber). */
+async function resolveGameVariantByIndex(ctx: MyContext, categoryId: number, idx: number): Promise<boolean> {
+  const entry = sc(ctx).gameVariantEntries?.[idx];
+  if (!entry) return false;
+  // A real variant picker WAS shown for this tap — the region step's own Back
+  // (if it renders) should re-open it.
+  await enterGameVariant(ctx, categoryId, entry.label, entry.emoji, ckb.cb("browse", "gvars", categoryId));
+  return true;
+}
+
 /** A customer tapped one entry on the variant picker rendered by
  * browseCategoryEntry — resolve the tapped index against the snapshot taken
  * when that picker was rendered (mirrors handleProductNumber's
  * browseEntries pattern), then continue into the region step. */
 export async function pickGameVariant(ctx: MyContext, categoryId: number, idx: number): Promise<void> {
-  const entry = sc(ctx).gameVariantEntries?.[idx];
-  if (!entry) {
+  if (!(await resolveGameVariantByIndex(ctx, categoryId, idx))) {
     await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
-    return;
   }
-  // A real variant picker WAS shown for this tap — the region step's own Back
-  // (if it renders) should re-open it.
-  await enterGameVariant(ctx, categoryId, entry.label, entry.emoji, ckb.cb("browse", "gvars", categoryId));
 }
 
 /** Shared by browseCategoryEntry's single-variant skip and pickGameVariant's
@@ -560,21 +608,43 @@ async function enterGameVariant(
   const regions = await listCategoryGameRegions(prisma, categoryId, gameVariant);
   if (regions.length > 1) {
     sc(ctx).gameRegionEntries = regions;
+    sc(ctx).activeNumberedScreen = "gameRegion";
+    // A typed digit must resolve against THIS picker now, not whatever the
+    // flat list or the variant picker last snapshotted — see
+    // BrowseScratch.activeNumberedScreen.
+    delete sc(ctx).browseEntries;
+    delete sc(ctx).gameVariantEntries;
+    // Same reasoning as the variant picker's render above — resend the
+    // bottom digit keyboard, sized to this picker's own option count, before
+    // the picker's own inline-keyboard render.
+    await ctx.reply(t(ctx, "browse.use_numbers"), {
+      reply_markup: ckb.gamePickerPersistentKb(regions.length, ctx.session.lang),
+    });
     await smartEdit(ctx, t(ctx, "browse.choose_region"), ckb.gameRegionPickerKb(regions, categoryId, regionBackTarget, ctx.session.lang));
     return;
   }
   await enterGameRegion(ctx, categoryId, gameVariant, regions[0] ?? null);
 }
 
+/** Shared index-resolution for the region picker — same pattern as
+ * resolveGameVariantByIndex, resolving an index (tapped via the inline
+ * picker's callback, or typed as a digit while it's the active numbered
+ * screen) against the gameRegionEntries snapshot. Returns false on a stale
+ * index — region strings can legitimately be "" so the entry is checked with
+ * `=== undefined`, not falsy. */
+async function resolveGameRegionByIndex(ctx: MyContext, categoryId: number, idx: number): Promise<boolean> {
+  const region = sc(ctx).gameRegionEntries?.[idx];
+  if (region === undefined) return false;
+  await enterGameRegion(ctx, categoryId, sc(ctx).resolvedGameVariant ?? null, region);
+  return true;
+}
+
 /** A customer tapped one entry on the region picker rendered by
  * enterGameVariant — same stale-index guard as pickGameVariant. */
 export async function pickGameRegion(ctx: MyContext, categoryId: number, idx: number): Promise<void> {
-  const region = sc(ctx).gameRegionEntries?.[idx];
-  if (region === undefined) {
+  if (!(await resolveGameRegionByIndex(ctx, categoryId, idx))) {
     await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
-    return;
   }
-  await enterGameRegion(ctx, categoryId, sc(ctx).resolvedGameVariant ?? null, region);
 }
 
 /** Shared by enterGameVariant's single-region skip and pickGameRegion's
@@ -663,8 +733,22 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
     sc(ctx).group === CategoryGroup.GAME_TOPUP && !sc(ctx).gameVariantDimensionSkipped
       ? { gameVariant: sc(ctx).resolvedGameVariant ?? null, gameRegion: sc(ctx).resolvedGameRegion ?? null }
       : undefined;
+  // Finding I2 (final-review): captured BEFORE it's overwritten below (and
+  // before the empty-products early return), so both this function's own
+  // early return and its normal render path can tell whether a variant/
+  // region picker was actually on screen a moment ago — a screen that never
+  // touches browseEntries/activeNumberedScreen itself, so a leftover
+  // "gameVariant"/"gameRegion" value here would otherwise survive into
+  // whatever screen a typed digit is next checked against.
+  const previousActiveScreen = sc(ctx).activeNumberedScreen;
   const products = await listCatalogProducts(prisma, categoryId, filter);
   if (!products.length) {
+    // Finding I2 (final-review): a picker's activeNumberedScreen must not
+    // survive into this empty-list screen either — an empty gameVariant/
+    // gameRegion snapshot left in place would make a stray typed digit here
+    // resolve against 0 entries ("Enter a number between 1 and 0") instead of
+    // falling through to this screen's own (numberless) contract.
+    delete sc(ctx).activeNumberedScreen;
     await smartEdit(ctx, t(ctx, "browse.no_products"), ckb.backToMain(lang));
     return;
   }
@@ -677,6 +761,12 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
   ctx.session.state = BotState.PRODUCT_LIST;
   sc(ctx).page = page;
   sc(ctx).browseEntries = pageProducts.map((p) => p.id);
+  sc(ctx).activeNumberedScreen = "products";
+  // A typed digit must resolve against THIS list now, not whatever a
+  // variant/region picker last snapshotted — see
+  // BrowseScratch.activeNumberedScreen.
+  delete sc(ctx).gameVariantEntries;
+  delete sc(ctx).gameRegionEntries;
   delete sc(ctx).productId;
   delete sc(ctx).variantId;
 
@@ -700,6 +790,30 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
   // only be set via a fresh send, which happens once per Browse entry, not on
   // every page turn. The banner (if set) rides on top as a photo+caption,
   // unless the list is too long.
+  //
+  // Finding I1 (final-review): a variant/region picker tap (pickGameVariant/
+  // pickGameRegion) that lands here IS a callback — the picker's own bottom
+  // keyboard (gamePickerPersistentKb, sized to ITS OWN option count) is still
+  // showing, and Telegram can only replace a ReplyKeyboardMarkup via a fresh
+  // send, not an edit.
+  //
+  // Finding (final-review round 2): the first fix for I1 made THIS list's own
+  // message use `productsPersistentKb` (no Prev/Next) whenever it landed here
+  // from a picker tap, so a >10-product variant/region-scoped list became
+  // unreachable past page 1 — a real pagination regression. Fixed the same
+  // way the variant/region pickers above already solve this exact problem
+  // (enterGameVariant/enterGameRegion): the resized digit reply-keyboard is
+  // sent as a SEPARATE companion message via `ctx.reply` (a fresh send can
+  // always carry a new ReplyKeyboardMarkup), while the actual list message
+  // keeps using the inline `productsNavKb` — so it stays tap-friendly and
+  // keeps working Prev/Next AND the bottom digit keyboard ends up correctly
+  // sized either way.
+  const cameFromPicker = previousActiveScreen === "gameVariant" || previousActiveScreen === "gameRegion";
+  if (cameFromPicker) {
+    await ctx.reply(t(ctx, "browse.use_numbers"), {
+      reply_markup: ckb.productsPersistentKb(pageProducts.length, lang),
+    });
+  }
   const replyMarkup = ctx.callbackQuery
     ? ckb.productsNavKb(page, totalPages, lang)
     : ckb.productsPersistentKb(pageProducts.length, lang);
@@ -790,6 +904,36 @@ export async function handleProductNumber(ctx: MyContext): Promise<void> {
 
   // Number buttons — entry selection. Only short digit strings.
   if (!/^\d+$/.test(text) || text.length > 4) return;
+  const idx = parseInt(text, 10);
+
+  // A variant/region picker is the active numbered screen — resolve the
+  // typed digit against ITS OWN snapshot instead of falling through to the
+  // product-list logic below, which would otherwise silently resolve against
+  // a stale or unscoped browseEntries (see BrowseScratch.activeNumberedScreen
+  // for why exactly one of these three fields is ever populated at a time).
+  // "products", or undefined (an in-flight session that predates this
+  // field), falls through unchanged to the existing browseEntries logic.
+  const activeScreen = sc(ctx).activeNumberedScreen;
+  if (activeScreen === "gameVariant" || activeScreen === "gameRegion") {
+    const pickerEntries = activeScreen === "gameVariant" ? sc(ctx).gameVariantEntries : sc(ctx).gameRegionEntries;
+    const count = pickerEntries?.length ?? 0;
+    const categoryId = sc(ctx).categoryId;
+    // categoryId is always set alongside these entries by browseCategoryEntry/
+    // enterGameVariant — shouldn't normally be missing. Bounds-check first
+    // (matching the existing browseEntries out-of-range message below
+    // exactly), so a missing categoryId on an otherwise-valid index also
+    // degrades to that same message rather than a silent no-op.
+    if (idx < 1 || idx > count || categoryId == null) {
+      await smartEdit(ctx, t(ctx, "browse.invalid_number", { max: count }), ckb.backToMain(lang));
+      return;
+    }
+    if (activeScreen === "gameVariant") {
+      await resolveGameVariantByIndex(ctx, categoryId, idx - 1);
+    } else {
+      await resolveGameRegionByIndex(ctx, categoryId, idx - 1);
+    }
+    return;
+  }
 
   // Resolve against the SNAPSHOT captured when the list was rendered, so a
   // catalog change between render and tap can't shift the numbering. Each entry
@@ -808,7 +952,6 @@ export async function handleProductNumber(ctx: MyContext): Promise<void> {
     return;
   }
 
-  const idx = parseInt(text, 10);
   if (idx < 1 || idx > entries.length) {
     await smartEdit(ctx, t(ctx, "browse.invalid_number", { max: entries.length }), ckb.backToMain(lang));
     return;
@@ -867,57 +1010,35 @@ export async function browseProduct(ctx: MyContext, productId: number): Promise<
   // conversion at this render edge).
   const prices = ctxPriceFormatter(ctx, rate);
 
-  // Game Top Up whose every button will carry its own price (compact
-  // qty+unit+price label — same qtyValue/qtyUnit condition as buttonLabel
-  // below): repeating price/stock per plan in the body would just duplicate
-  // the keyboard, so the body describes the GAME instead — the admin's
-  // description plus which account data checkout will ask for. A game with
-  // even one un-backfilled SKU (no inline price on its button) keeps the plan
-  // lines, since that SKU's price would otherwise be nowhere.
-  const isGameWithInlinePrices =
-    product.category.group === CategoryGroup.GAME_TOPUP && active.every((d) => d.qtyValue != null && !!d.qtyUnit);
+  // Compact catalog mode: ONLY a genuine Game Top Up category skips the flat
+  // per-plan price/stock dump — repeating price/stock per plan in the body
+  // would just duplicate the keyboard, so the body describes the PRODUCT
+  // instead (the admin's description plus which account data checkout will
+  // ask for, when applicable). Every other category, including an
+  // as-yet-unclassified null-group one, keeps the per-plan body lines (price
+  // + stock) — this mirrors `serviceForCategoryGroup(null)` in
+  // packages/core/src/services.ts, which already treats a null group as
+  // PREMIUM_APPS-equivalent; the final-review's user decision (finding I3)
+  // is to keep that equivalence here too rather than let a broadened compact
+  // gate silently contradict it.
+  const isCompactCatalog = product.category.group === CategoryGroup.GAME_TOPUP;
 
-  // Per-plan price + stock lines for the message body — used when the picker
-  // buttons carry only the plan name (every non-game product, and any Game Top
-  // Up SKU without qtyValue/qtyUnit). Skipped entirely (no stock reads) when
-  // isGameWithInlinePrices, since the body won't show them. Reseller price
-  // wins for reseller users when set, mirroring the detail screen. Stock is
-  // read per denomination in parallel.
+  // Batched stock read for the non-compact (Premium Apps) branch only — the
+  // compact branch never shows a stock line, so it must not read stock at
+  // all. One grouped query up front covers every active denomination instead
+  // of the old N-parallel-round-trips-per-denomination shape (a real N+1
+  // whose result used to be thrown away for any non-AUTO denomination anyway).
+  const stockCounts = isCompactCatalog
+    ? null
+    : await availableStockCountsByDenomination(prisma, active.map((d) => d.id));
+
+  // Per-plan price (+ stock, non-compact only) — used when the picker buttons
+  // carry only the plan name (Premium Apps, and any compact-mode SKU without
+  // qtyValue/qtyUnit backfilled). Reseller price wins for reseller users when
+  // set, mirroring the detail screen.
   const planData = await Promise.all(
     active.map(async (d) => {
       const unitPrice = effectiveUnitPrice(d, isReseller);
-      // Compact Game Top Up button label (qty + unit + price), only when the
-      // admin has actually backfilled qtyValue/qtyUnit on this denomination —
-      // leaving buttonLabel undefined otherwise so denominationPickerKb falls
-      // through to its existing formatDenominationLabel(...) call, exactly as
-      // before this task (the hard zero-behavior-change bar for Premium Apps,
-      // and for any Game Top Up SKU an admin hasn't backfilled yet).
-      // Finding I3 (final-review): the PRODUCT's own gameVariantEmoji wins —
-      // session scratch is only a fallback for the rare case it has none. The
-      // old precedence (scratch first) meant a leftover emoji from a
-      // PREVIOUSLY-browsed Game Top Up category's variant navigation could
-      // leak onto a completely different product's denomination buttons here
-      // (this screen is also reached via Popular/search, which never go
-      // through the variant-picker flow that sets/clears scratch at all).
-      const buttonLabel =
-        d.qtyValue != null && d.qtyUnit
-          ? gameTopUpDenomLabel(d, unitPrice, product.gameVariantEmoji ?? sc(ctx).gameVariantEmoji, prices)
-          : undefined;
-      if (isGameWithInlinePrices) return { line: "", buttonLabel };
-      const stock = await countAvailableStock(prisma, d.id);
-      // Stock rows only ever exist for AUTO SKUs — a manual/manual_with_info
-      // plan has none by design, so showing a literal "0" here would read as
-      // sold out right next to a (correctly) purchasable Buy button. Within
-      // a Game Top Up category, an AUTO denomination's exact count is an
-      // internal supplier-stock detail, not something a buyer needs to see —
-      // show an "Automated" indicator instead. Premium Apps AUTO
-      // denominations keep showing the raw number, unchanged.
-      const stockDisplay =
-        d.deliveryType === DeliveryType.AUTO
-          ? product.category.group === CategoryGroup.GAME_TOPUP
-            ? t(ctx, "browse.stock_auto_value")
-            : stock
-          : "—";
       // A flash sale shows as the old price struck through next to the new one,
       // but only when this buyer is actually paying the sale price — a reseller
       // whose standing price still wins sees the plain line.
@@ -929,6 +1050,66 @@ export async function browseProduct(ctx: MyContext, productId: number): Promise<
               new: prices.price(unitPrice),
             })
           : prices.price(unitPrice);
+      // Compact Game Top Up button label (qty + unit + price), only when the
+      // admin has actually backfilled qtyValue/qtyUnit on this denomination —
+      // falls through to formatDenominationLabel(...) (via denominationPickerKb)
+      // for Premium Apps, exactly as before this task (the hard zero-behavior-
+      // change bar for Premium Apps). In compact mode, a denomination missing
+      // qtyValue/qtyUnit still needs a price on its button — the body won't
+      // show one — so it gets a plain "{plan} — {price}" fallback label
+      // instead of being left name-only.
+      // Finding I3 (final-review): the PRODUCT's own gameVariantEmoji wins —
+      // session scratch is only a fallback for the rare case it has none. The
+      // old precedence (scratch first) meant a leftover emoji from a
+      // PREVIOUSLY-browsed Game Top Up category's variant navigation could
+      // leak onto a completely different product's denomination buttons here
+      // (this screen is also reached via Popular/search, which never go
+      // through the variant-picker flow that sets/clears scratch at all).
+      // Finding C1 (final-review): this fallback label used to be
+      // `${d.durationLabel || d.name} — ${priceText}` — plain-text-only
+      // Telegram button text built from `priceText`, which is either the
+      // FULL price format ("Rp150.000", long) or, during a flash sale, an
+      // HTML string (`browse.flash_price` — "<s>old</s> new ⚡") that a
+      // button can't render (buttons show literal tags) and that
+      // truncLabel(..., 24) then chops mid-tag. It also skipped
+      // formatDenominationLabel's repeated-product-name tidy-up entirely, so
+      // a raw Digiflazz name like "Delta Force 60 Coins" survived untouched
+      // into a 24-char button and got truncated to something meaningless.
+      // Fixed the same way gameTopUpDenomLabel builds its own compact price
+      // segment: plain-text `formatDenominationLabel` output + a plain-text
+      // COMPACT price (`prices.compact`, e.g. "Rp15K"), never `priceText`
+      // (which can carry HTML on a flash sale) and never the full format.
+      // Finding (final-review round 2): building the full "{name} — {price}"
+      // label first and truncating the WHOLE thing (denominationPickerKb's
+      // truncLabel(..., 24) safety net) still lets a long name eat into the
+      // PRICE segment at the tail — e.g. "1680 Coins + Bonus — Rp300K" (27
+      // chars) truncated to "1680 Coins + Bonus — Rp…", losing the price
+      // again, just at a higher name-length threshold than the originally-
+      // reported bug. Fixed by truncating the NAME segment first, budgeted to
+      // whatever room is left after the " — " separator and the (short,
+      // compact) price segment, so the combined string fits inside the same
+      // budget WITHOUT ever needing truncLabel's own truncation to kick in —
+      // the price is therefore always intact, and only the name is ever
+      // shortened.
+      const buttonLabel =
+        d.qtyValue != null && d.qtyUnit
+          ? gameTopUpDenomLabel(d, unitPrice, product.gameVariantEmoji ?? sc(ctx).gameVariantEmoji, prices)
+          : isCompactCatalog
+            ? (() => {
+                const sep = " — ";
+                const priceSegment = prices.compact(unitPrice);
+                const name = formatDenominationLabel(product.name, d.durationLabel || d.name);
+                const nameBudget = Math.max(1, BUTTON_LABEL_MAX - sep.length - priceSegment.length);
+                return `${truncLabel(name, nameBudget)}${sep}${priceSegment}`;
+              })()
+            : undefined;
+      if (isCompactCatalog) return { line: "", buttonLabel };
+      const stock = stockCounts?.get(d.id) ?? 0;
+      // Stock rows only ever exist for AUTO SKUs — a manual/manual_with_info
+      // plan has none by design, so showing a literal "0" here would read as
+      // sold out right next to a (correctly) purchasable Buy button. Premium
+      // Apps AUTO denominations show the raw number.
+      const stockDisplay = d.deliveryType === DeliveryType.AUTO ? stock : "—";
       const line = t(ctx, "browse.denomination_line", {
         duration: esc(d.durationLabel || d.name),
         price: priceText,
@@ -941,7 +1122,7 @@ export async function browseProduct(ctx: MyContext, productId: number): Promise<
   const sold = await soldCountForProduct(prisma, productId);
 
   let text: string;
-  if (isGameWithInlinePrices) {
+  if (isCompactCatalog) {
     const blocks: string[] = [];
     if (product.description) {
       blocks.push(t(ctx, "browse.description", { description: esc(product.description) }));
@@ -1039,29 +1220,31 @@ export async function browseDenomination(
   // read as sold out directly beside the (correctly) purchasable Buy button
   // below. `stock` itself stays the raw count for denominationDetailKb's
   // gating/stepper-bound logic further down; only the displayed text changes.
-  // Within a Game Top Up category, the exact AUTO count is an internal
-  // supplier-stock detail — show an "Automated" indicator instead. Premium
-  // Apps AUTO denominations keep showing the raw number, unchanged.
-  const stockDisplay =
-    d.deliveryType === DeliveryType.AUTO
-      ? d.product.category.group === CategoryGroup.GAME_TOPUP
-        ? t(ctx, "browse.stock_auto_value")
-        : stock
-      : "—";
+  // This template reaches every non-GAME_TOPUP category now — Premium Apps
+  // and any as-yet-unclassified null-group category (the compact detail
+  // template below drops the stock line entirely, GAME_TOPUP only) — so an
+  // AUTO denomination always shows the raw number here.
+  const stockDisplay = d.deliveryType === DeliveryType.AUTO ? stock : "—";
 
   const priceText = onSale
     ? t(ctx, "browse.flash_price", { old: prices.price(d.price), new: prices.price(unit) })
     : prices.price(unit);
   // Game Top Up SKUs (diamonds, UC, …) have no meaningful Duration/Type/
-  // Warranty — those lines are Premium Apps account attributes — so the game
-  // variant of this bubble keeps only Price/Stock/Sold/Rating.
+  // Warranty (those are Premium Apps account attributes) and no meaningful
+  // stock line either (the one Premium Apps keeps is the one real, buyer-
+  // meaningful local inventory count), so this compact variant of the
+  // bubble keeps only Price/Sold/Rating. An as-yet-unclassified null-group
+  // category is NOT included here (Finding I3, final-review, user decision)
+  // — it mirrors `serviceForCategoryGroup(null)` in
+  // packages/core/src/services.ts, which already treats null as
+  // PREMIUM_APPS-equivalent, so it keeps the full Duration/Type/Warranty +
+  // stock template like Premium Apps.
   const isGame = d.product.category.group === CategoryGroup.GAME_TOPUP;
   let text = isGame
     ? t(ctx, "browse.denomination_detail_game", {
         product: esc(d.product.name),
         plan: esc(d.name),
         price: priceText,
-        stock: stockDisplay,
         sold,
         rating: ratingStr,
       })
@@ -1697,6 +1880,11 @@ export async function listprodukCommand(ctx: MyContext): Promise<void> {
 export async function languageCommand(ctx: MyContext): Promise<void> {
   ctx.session.awaitingQtyDenomId = undefined;
   await openLanguageMenu(ctx);
+}
+
+export async function currencyCommand(ctx: MyContext): Promise<void> {
+  ctx.session.awaitingQtyDenomId = undefined;
+  await showCurrencyMenu(ctx);
 }
 
 export async function searchCommand(ctx: MyContext): Promise<void> {

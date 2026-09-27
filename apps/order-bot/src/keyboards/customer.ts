@@ -135,6 +135,34 @@ export function productsPersistentKb(count: number, lang: string): Keyboard {
   return kb.resized();
 }
 
+/**
+ * Reply keyboard shown while a Game Top Up variant/region picker is the
+ * active numbered screen: digits 1..count (rows of 5) so a customer can tap
+ * or type the same number the picker's own inline buttons carry, plus a Menu
+ * button back to `mainPersistentKb`. Identical shape to
+ * `productsPersistentKb`, just sized to the picker's own option count
+ * instead of the product-list page size — see `BrowseScratch.activeNumberedScreen`
+ * in `handlers/customer.ts` for why entering a picker needs its own fresh
+ * send of this (a reply keyboard can't ride on the picker's own
+ * inline-keyboard edit; only a fresh `sendMessage` can replace the bottom
+ * bar). Shared by both the variant and region picker renders since their
+ * reply keyboard need is identical — only the option count differs.
+ */
+export function gamePickerPersistentKb(count: number, lang: string): Keyboard {
+  const kb = new Keyboard();
+  let inRow = 0;
+  for (let n = 1; n <= count; n++) {
+    kb.text(String(n));
+    if (++inRow === 5) {
+      kb.row();
+      inRow = 0;
+    }
+  }
+  if (inRow > 0) kb.row();
+  kb.text(persistentLabel("main", lang));
+  return kb.resized();
+}
+
 export function backToMain(lang: string): InlineKeyboard {
   return ik([[{ text: coreT("menu.main", lang), data: cb("menu", "main") }]]);
 }
@@ -1001,6 +1029,7 @@ export function helpCenterKb(lang: string): InlineKeyboard {
   return ik([
     [{ text: coreT("help.referral_btn", lang), data: cb("ref", "view") }],
     [{ text: coreT("help.language_btn", lang), data: cb("lang", "menu") }],
+    [{ text: coreT("help.currency_btn", lang), data: cb("cur", "menu") }],
     [{ text: coreT("help.faq_btn", lang), data: cb("page", "faq") }],
     [{ text: coreT("help.terms_btn", lang), data: cb("page", "terms") }],
     [{ text: coreT("help.support_btn", lang), data: cb("support", "open") }],

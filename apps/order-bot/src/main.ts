@@ -126,6 +126,7 @@ export function buildBot(token?: string): Bot<MyContext> {
   bot.command("cancel", customer.cancelCommand);
   bot.command("listproduk", customer.listprodukCommand);
   bot.command("language", customer.languageCommand);
+  bot.command("currency", customer.currencyCommand);
   bot.command("search", customer.searchCommand);
   bot.command("faq", staticPages.faqCommand);
   bot.command("terms", staticPages.termsCommand);
@@ -206,6 +207,7 @@ export async function setupCommandMenu(bot: Bot<MyContext>): Promise<void> {
     { command: "start", description: "Start bot" },
     { command: "listproduk", description: "View product list" },
     { command: "language", description: "Change language" },
+    { command: "currency", description: "Change currency" },
     { command: "search", description: "Search for a product" },
     { command: "faq", description: "Frequently asked questions" },
     { command: "howtopay", description: "How to pay" },
@@ -217,6 +219,7 @@ export async function setupCommandMenu(bot: Bot<MyContext>): Promise<void> {
     { command: "start", description: "Mulai bot" },
     { command: "listproduk", description: "Lihat daftar produk" },
     { command: "language", description: "Ganti bahasa" },
+    { command: "currency", description: "Ganti mata uang" },
     { command: "search", description: "Cari produk" },
     { command: "faq", description: "Pertanyaan umum" },
     { command: "howtopay", description: "Cara pembayaran" },

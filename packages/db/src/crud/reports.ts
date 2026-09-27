@@ -416,7 +416,7 @@ const RESOLVED_LEDGER_ORDER_STATUSES: string[] = [OrderStatus.DELIVERED, OrderSt
  *
  * One batched query per evidence table over the whole id set, never one per row.
  */
-async function cancelledOrderIdsWithMoneyReturned(db: Db, cancelledIds: number[]): Promise<Set<number>> {
+export async function cancelledOrderIdsWithMoneyReturned(db: Db, cancelledIds: number[]): Promise<Set<number>> {
   if (cancelledIds.length === 0) return new Set();
   const [credits, refunds] = await Promise.all([
     db.walletTransaction.findMany({

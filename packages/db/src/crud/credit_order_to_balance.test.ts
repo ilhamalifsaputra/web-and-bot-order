@@ -8,17 +8,20 @@
  * `credited_to_balance` outcome when a binanceTxId is passed.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
-import type { PrismaClient } from "@prisma/client";
+import { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
 import {
   adjustWallet,
+  cancelOrder,
   createOrderDirect,
   createInternalOrder,
   creditOrderToBalance,
   getOrder,
 } from "@app/db";
 import { Decimal } from "@app/core/money";
+import { StockActorType } from "@app/core/enums";
+import { ValidationError } from "@app/core/errors";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -138,9 +141,12 @@ describe("creditOrderToBalance", () => {
     await creditOrderToBalance(prisma, { orderId: order.id, adminId });
     const after1 = await balances(user.id);
 
+    // The first call leaves the order CANCELLED, which is no longer terminal to
+    // this function (an already-cancelled order can still be credited once), so
+    // the retry is refused by the more precise double-credit guard instead.
     await expect(
       creditOrderToBalance(prisma, { orderId: order.id, adminId }),
-    ).rejects.toMatchObject({ key: "error.order_terminal" });
+    ).rejects.toMatchObject({ key: "error.already_credited" });
 
     const after2 = await balances(user.id);
     expect(Number(after2.walletBalance)).toBeCloseTo(Number(after1.walletBalance));
@@ -172,5 +178,175 @@ describe("creditOrderToBalance", () => {
     const row = await prisma.processedBinanceTx.findUniqueOrThrow({ where: { binanceTxId: "CTX-1" } });
     expect(row.outcome).toBe("credited_to_balance");
     expect(row.orderId).toBe(order.id);
+  });
+});
+
+/**
+ * Crediting an order that something else (the expiry sweep, the buyer, an
+ * admin) already CANCELLED — the only admin action that can produce the "money
+ * went back" proof `cancelledOrderIdsWithMoneyReturned` looks for once the
+ * order is already cancelled.
+ */
+describe("creditOrderToBalance on an already-CANCELLED order", () => {
+  /** A PENDING_PAYMENT order (a gateway settle whose delivery threw leaves the
+   *  order exactly here, with no paidAt) cancelled by the expiry sweep. */
+  async function cancelledOrder(opts: { walletAmount?: string; voucherCode?: string } = {}) {
+    const { user, product } = sample;
+    const fresh = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
+    const order = (await createOrderDirect(prisma, {
+      user: { id: user.id, role: user.role, walletBalance: fresh.walletBalance },
+      productId: product.id,
+      quantity: 1,
+      voucherCode: opts.voucherCode ?? null,
+      walletAmount: opts.walletAmount,
+    }))!;
+    await cancelOrder(prisma, order.id, "expired", { type: StockActorType.SYSTEM });
+    const cancelled = (await getOrder(prisma, order.id))!;
+    expect(cancelled.status).toBe("CANCELLED");
+    return cancelled;
+  }
+
+  it("credits the paid amount without re-running the cancel's hold release or status transition", async () => {
+    const { user, voucher } = sample;
+    await adjustWallet(prisma, user.id, "2", { reason: "admin_adjust" });
+    const usedBefore = (await prisma.voucher.findUniqueOrThrow({ where: { id: voucher.id } })).usedCount;
+
+    const order = await cancelledOrder({ walletAmount: "1", voucherCode: voucher.code });
+    expect(new Decimal(order.walletUsed).greaterThan(0)).toBe(true);
+    expect(order.voucherId).toBe(voucher.id);
+    expect(new Decimal(order.totalAmount).greaterThan(0)).toBe(true);
+    // Checkout took one voucher use and the cancel gave it back.
+    const usedAfterCancel = (await prisma.voucher.findUniqueOrThrow({ where: { id: voucher.id } })).usedCount;
+    expect(usedAfterCancel).toBe(usedBefore);
+
+    const historyAfterCancel = await prisma.orderStatusHistory.count({ where: { orderId: order.id } });
+    const before = await balances(user.id);
+
+    const res = await creditOrderToBalance(prisma, { orderId: order.id, adminId });
+
+    expect(new Decimal(res.credited).equals(order.totalAmount)).toBe(true);
+    const after = await balances(user.id);
+    // Only the external payment: the walletUsed portion already went back at the cancel.
+    expect(new Decimal(after.walletBalance).minus(before.walletBalance).equals(order.totalAmount)).toBe(true);
+
+    expect((await getOrder(prisma, order.id))!.status).toBe("CANCELLED");
+    // transitionOrderStatus was skipped: no second CANCELLED history row.
+    expect(await prisma.orderStatusHistory.count({ where: { orderId: order.id } })).toBe(historyAfterCancel);
+    // releaseOrderHolds was skipped: the walletUsed portion went back exactly once.
+    expect(await prisma.walletTransaction.count({ where: { orderId: order.id, reason: "order_refund" } })).toBe(1);
+    expect(await prisma.walletTransaction.count({ where: { orderId: order.id, reason: "unfulfilled_credit" } })).toBe(1);
+    // Net voucher movement across checkout + cancel + credit is exactly the one
+    // decrement the cancel made — the credit did not decrement it again.
+    const usedAfter = (await prisma.voucher.findUniqueOrThrow({ where: { id: voucher.id } })).usedCount;
+    expect(usedAfter).toBe(usedAfterCancel);
+  });
+
+  it("refuses to credit a cancelled order a second time", async () => {
+    const order = await cancelledOrder();
+    await creditOrderToBalance(prisma, { orderId: order.id, adminId });
+    const after1 = await balances(sample.user.id);
+
+    await expect(creditOrderToBalance(prisma, { orderId: order.id, adminId })).rejects.toMatchObject({
+      key: "error.already_credited",
+    });
+    expect((await balances(sample.user.id)).walletBalance.toString()).toBe(after1.walletBalance.toString());
+    expect(await prisma.walletTransaction.count({ where: { orderId: order.id, reason: "unfulfilled_credit" } })).toBe(1);
+  });
+
+  it("refuses to credit a cancelled order that already has a COMPLETED refund", async () => {
+    const order = await cancelledOrder();
+    await prisma.refund.create({ data: { orderId: order.id, amount: "1", currency: "IDR", status: "COMPLETED" } });
+    const before = await balances(sample.user.id);
+
+    await expect(creditOrderToBalance(prisma, { orderId: order.id, adminId })).rejects.toMatchObject({
+      key: "error.order_already_refunded",
+    });
+    expect((await balances(sample.user.id)).walletBalance.toString()).toBe(before.walletBalance.toString());
+    expect(await prisma.walletTransaction.count({ where: { orderId: order.id, reason: "unfulfilled_credit" } })).toBe(0);
+  });
+
+  // Same evidence line reports.test.ts draws for "still counts as actionable":
+  // a refund not yet paid out, or a wallet movement that isn't the credit.
+  it("still credits a cancelled order whose only evidence is an unpaid refund or a non-credit wallet movement", async () => {
+    const pendingRefund = await cancelledOrder();
+    await prisma.refund.create({ data: { orderId: pendingRefund.id, amount: "1", currency: "IDR", status: "PENDING" } });
+    const walletUsedBack = await cancelledOrder();
+    await prisma.walletTransaction.create({
+      data: { userId: sample.user.id, delta: "1", balanceAfter: "1", reason: "order_refund", orderId: walletUsedBack.id },
+    });
+
+    await expect(creditOrderToBalance(prisma, { orderId: pendingRefund.id, adminId })).resolves.toBeTruthy();
+    await expect(creditOrderToBalance(prisma, { orderId: walletUsedBack.id, adminId })).resolves.toBeTruthy();
+    expect(
+      await prisma.walletTransaction.count({
+        where: { orderId: { in: [pendingRefund.id, walletUsedBack.id] }, reason: "unfulfilled_credit" },
+      }),
+    ).toBe(2);
+  });
+
+  it("still refuses a DELIVERED order with error.order_terminal", async () => {
+    const { user, product } = sample;
+    const order = (await createOrderDirect(prisma, {
+      user: { id: user.id, role: user.role },
+      productId: product.id,
+      quantity: 1,
+    }))!;
+    await prisma.order.update({ where: { id: order.id }, data: { status: "DELIVERED" } });
+
+    await expect(creditOrderToBalance(prisma, { orderId: order.id, adminId })).rejects.toMatchObject({
+      key: "error.order_terminal",
+    });
+    expect(await prisma.walletTransaction.count({ where: { orderId: order.id, reason: "unfulfilled_credit" } })).toBe(0);
+  });
+
+  // True Postgres concurrency, same two-PrismaClient shape as
+  // refundExecution.test.ts section 9 (see its header for why two interactive
+  // transactions from ONE client never actually overlap). Without the order-row
+  // lock the loser still could not double-credit — the (orderId, reason) unique
+  // index rejects its insert — but it would fail with a raw unique-violation
+  // instead of the clean error.already_credited an admin UI can render.
+  describe("under true Postgres concurrency", () => {
+    async function connectRivalClient(): Promise<PrismaClient> {
+      const baseUrl = process.env.DATABASE_URL_PRISMA;
+      if (!baseUrl) throw new Error("DATABASE_URL_PRISMA must be set to a Postgres connection string for tests.");
+      const rows = await prisma.$queryRaw<Array<{ schema: string }>>`SELECT current_schema() AS schema`;
+      const url = new URL(baseUrl);
+      url.searchParams.set("schema", rows[0]!.schema);
+      const rival = new PrismaClient({ datasourceUrl: url.toString() });
+      // Connect before the race so the rival waits on the row lock, not a handshake.
+      await prisma.$queryRaw`SELECT 1`;
+      await rival.$queryRaw`SELECT 1`;
+      return rival;
+    }
+
+    it("two admins credit the same cancelled order at the same instant: exactly one credit lands", async () => {
+      const order = await cancelledOrder();
+      const before = await balances(sample.user.id);
+      const rival = await connectRivalClient();
+      try {
+        // Raised maxWait/timeout: the loser blocks on the winner's row lock for
+        // the winner's whole transaction, which counts against its own budget.
+        const credit = (client: PrismaClient) =>
+          client.$transaction((tx) => creditOrderToBalance(tx, { orderId: order.id, adminId }), {
+            maxWait: 30_000,
+            timeout: 60_000,
+          });
+
+        const results = await Promise.allSettled([credit(prisma), credit(rival)]);
+        const fulfilled = results.filter((r) => r.status === "fulfilled");
+        const rejected = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+
+        expect(fulfilled.length).toBe(1);
+        expect(rejected.length).toBe(1);
+        expect(rejected[0]!.reason).toBeInstanceOf(ValidationError);
+        expect((rejected[0]!.reason as ValidationError).key).toBe("error.already_credited");
+
+        expect(await prisma.walletTransaction.count({ where: { orderId: order.id, reason: "unfulfilled_credit" } })).toBe(1);
+        const after = await balances(sample.user.id);
+        expect(new Decimal(after.walletBalance).minus(before.walletBalance).equals(order.totalAmount)).toBe(true);
+      } finally {
+        await rival.$disconnect();
+      }
+    }, 60_000);
   });
 });

@@ -361,6 +361,7 @@ describe("computeOrderEligibility", () => {
       canFulfill: false,
       canReject: true,
       canResend: false,
+      canCreditCancelled: false,
     });
   });
 
@@ -372,6 +373,7 @@ describe("computeOrderEligibility", () => {
       canFulfill: false,
       canReject: false,
       canResend: false,
+      canCreditCancelled: false,
     });
   });
 
@@ -387,6 +389,7 @@ describe("computeOrderEligibility", () => {
       canFulfill: true,
       canReject: true,
       canResend: false,
+      canCreditCancelled: false,
     });
   });
 
@@ -398,6 +401,7 @@ describe("computeOrderEligibility", () => {
       canFulfill: false,
       canReject: false,
       canResend: true,
+      canCreditCancelled: false,
     });
   });
 
@@ -409,10 +413,14 @@ describe("computeOrderEligibility", () => {
       canFulfill: false,
       canReject: false,
       canResend: false,
+      canCreditCancelled: false,
     });
   });
 
-  it("a terminal status with no action left (e.g. CANCELLED) has every flag false", () => {
+  // canCreditCancelled fails closed: status alone can't say whether a
+  // cancelled order's money already went back, so with no caller-resolved
+  // evidence it stays false.
+  it("a terminal status with no action left (e.g. CANCELLED, no evidence resolved) has every flag false", () => {
     expect(computeOrderEligibility("CANCELLED", null)).toEqual({
       isDelivered: false,
       canAct: false,
@@ -420,6 +428,30 @@ describe("computeOrderEligibility", () => {
       canFulfill: false,
       canReject: false,
       canResend: false,
+      canCreditCancelled: false,
+    });
+  });
+  it("CANCELLED with the caller-resolved answer 'no money returned': only canCreditCancelled", () => {
+    expect(computeOrderEligibility("CANCELLED", null, { cancelledOrderHasMoneyReturned: false })).toEqual({
+      isDelivered: false,
+      canAct: false,
+      canCredit: false,
+      canFulfill: false,
+      canReject: false,
+      canResend: false,
+      canCreditCancelled: true,
+    });
+  });
+
+  it("CANCELLED whose money was already returned: canCreditCancelled stays false", () => {
+    expect(computeOrderEligibility("CANCELLED", null, { cancelledOrderHasMoneyReturned: true })).toEqual({
+      isDelivered: false,
+      canAct: false,
+      canCredit: false,
+      canFulfill: false,
+      canReject: false,
+      canResend: false,
+      canCreditCancelled: false,
     });
   });
 });

@@ -32,6 +32,7 @@ import apiAccountRoutes from "./routes/apiAccount";
 import apiOrderDigiflazzStreamRoutes from "./routes/apiOrderDigiflazzStream";
 import apiWalletTopupRoutes from "./routes/apiWalletTopup";
 import apiTopupRoutes from "./routes/apiTopup";
+import apiPreferencesRoutes from "./routes/apiPreferences";
 import seoRoutes from "./routes/seo";
 import spaShellRoutes from "./routes/spaShell";
 import { requestLang } from "./shop";
@@ -185,6 +186,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(apiOrderDigiflazzStreamRoutes, { prefix: "/api/v1" });
   await app.register(apiWalletTopupRoutes, { prefix: "/api/v1" });
   await app.register(apiTopupRoutes, { prefix: "/api/v1" });
+  await app.register(apiPreferencesRoutes, { prefix: "/api/v1" });
   await app.register(seoRoutes);
 
   // Liveness probe for the combined server / uptime pings (admin has its own).

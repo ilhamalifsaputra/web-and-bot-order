@@ -14,6 +14,7 @@ import {
   setUserBanned,
   setUserLanguage,
   setUserPreferredCurrency,
+  adoptUserPreferredCurrencyIfUnset,
   adjustWallet,
   listUsers,
   countUsers,
@@ -332,6 +333,42 @@ describe("setUserPreferredCurrency", () => {
     });
     expect(snap.preferredCurrency).toBeNull();
     expect(snap.walletBalance).toBe("0");
+  });
+});
+
+describe("adoptUserPreferredCurrencyIfUnset", () => {
+  it("fills a NULL preference on a non-guest account and reports it adopted", async () => {
+    const user = await upsertUser(prisma, { telegramId: 19501, username: "adopt_null", fullName: null });
+    await expect(adoptUserPreferredCurrencyIfUnset(prisma, user.id, "USD")).resolves.toBe(true);
+    expect((await getUser(prisma, user.id))!.preferredCurrency).toBe("USD");
+  });
+
+  it("never overwrites an existing preference", async () => {
+    const user = await upsertUser(prisma, { telegramId: 19502, username: "adopt_keep", fullName: null });
+    await setUserPreferredCurrency(prisma, user.id, "IDR");
+    await expect(adoptUserPreferredCurrencyIfUnset(prisma, user.id, "USD")).resolves.toBe(false);
+    expect((await getUser(prisma, user.id))!.preferredCurrency).toBe("IDR");
+  });
+
+  it("skips guest rows (display preference for guests lives in the cookie only)", async () => {
+    const guest = await prisma.user.create({
+      data: { isGuest: true, guestEmail: "adopt-guest@g.test", referralCode: `AG${Math.random()}` },
+    });
+    await expect(adoptUserPreferredCurrencyIfUnset(prisma, guest.id, "USD")).resolves.toBe(false);
+    expect((await getUser(prisma, guest.id))!.preferredCurrency).toBeNull();
+  });
+
+  it("rejects an unsupported code without writing", async () => {
+    const user = await upsertUser(prisma, { telegramId: 19503, username: "adopt_bad", fullName: null });
+    await expect(adoptUserPreferredCurrencyIfUnset(prisma, user.id, "usd")).rejects.toThrow(/unsupported display currency/i);
+    expect((await getUser(prisma, user.id))!.preferredCurrency).toBeNull();
+  });
+
+  it("evicts the warm entry only when it actually wrote", async () => {
+    const user = await upsertUser(prisma, { telegramId: 19504, username: "adopt_warm", fullName: null });
+    primeWarmUser("19504", toWarmUserSnap(user));
+    await adoptUserPreferredCurrencyIfUnset(prisma, user.id, "USD");
+    expect(peekWarmUser("19504")).toBeUndefined();
   });
 });
 

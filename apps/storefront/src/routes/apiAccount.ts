@@ -55,6 +55,7 @@ import {
   subscribeToRestock,
   getDenominationWithProduct,
   setLoginCredentials,
+  adoptUserPreferredCurrencyIfUnset,
   LOGIN_USERNAME_RE,
   getReferralSummary,
   isServiceActive,
@@ -68,7 +69,7 @@ import {
   SHOP_SESSION_TTL_HOURS,
 } from "../auth";
 import { optionalCustomer, type Customer } from "../plugins/auth";
-import { resolveBotId, resolveBotUsername } from "../shop";
+import { resolveBotId, resolveBotUsername, requestCurrency } from "../shop";
 import { constantTimeEqual } from "../auth";
 import { errorBody } from "@app/core/errorBody";
 import { originOk } from "./cart";
@@ -829,6 +830,11 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
     let passwordChanged = false;
     if (changes.passwordHash) {
       passwordChanged = true;
+      // A guest converting to a real account keeps this session (no
+      // establishSession), so adopt the shop_currency cookie here too — same
+      // one-time, never-overwrite rule as sign-in.
+      const cookieCurrency = requestCurrency(req);
+      if (cookieCurrency) await adoptUserPreferredCurrencyIfUnset(prisma, customer.userId, cookieCurrency);
       const jti = newJti();
       await setSetting(prisma, shopSessionJtiKey(customer.userId), jti);
       const { raw } = makeCustomerSession(customer.userId, customer.user.telegramId, jti);

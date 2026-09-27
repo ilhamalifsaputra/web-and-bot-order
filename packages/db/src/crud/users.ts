@@ -217,6 +217,28 @@ export async function setUserPreferredCurrency(db: Db, userId: number, code: str
   invalidateWarmUser(userId);
 }
 
+/**
+ * One-time adoption of a display-currency choice made before sign-in (the
+ * storefront's `shop_currency` cookie) into a real account: writes ONLY when
+ * the account has no preference yet and is not a guest row, so a stale cookie
+ * never overwrites a choice the user already made (on the web or in the bot).
+ * The condition sits in the UPDATE's WHERE, so a concurrent explicit
+ * `setUserPreferredCurrency` can't be clobbered between a read and a write.
+ * Guest rows are skipped: a guest's display preference lives in the cookie
+ * only. Same case-strict validation as `setUserPreferredCurrency`. Returns
+ * whether it wrote.
+ */
+export async function adoptUserPreferredCurrencyIfUnset(db: Db, userId: number, code: string): Promise<boolean> {
+  const currency = parseDisplayCurrency(code);
+  if (!currency) throw new UnsupportedDisplayCurrencyError(code);
+  const { count } = await db.user.updateMany({
+    where: { id: userId, preferredCurrency: null, isGuest: false },
+    data: { preferredCurrency: currency },
+  });
+  if (count > 0) invalidateWarmUser(userId);
+  return count > 0;
+}
+
 export interface WalletAdjustOpts {
   allowNegative?: boolean;
   /** Machine reason code for the ledger (e.g. admin_adjust, referral, refund). */

@@ -281,9 +281,15 @@ function deepLinkDenomId(ctx: MyContext): number | undefined {
 }
 
 /**
- * `/start` — for every user, new or existing (idempotent): run onboarding,
- * language first, then display currency (setLanguage → setCurrency). A
- * `prod_<id>` deep link is remembered and opened once the currency is picked.
+ * `/start` — runs the language→currency onboarding wizard (setLanguage →
+ * setCurrency) only for a user who hasn't finished it yet (no
+ * `preferredCurrency` set). A user who already has both goes straight to the
+ * Home dashboard, same as `/menu` — re-running the full wizard on every
+ * `/start` regardless of prior setup was a real reported bug (every restart
+ * forced language+currency again); `/language`/`/currency` remain the
+ * dedicated commands for changing either later. A `prod_<id>` deep link is
+ * remembered and opened once currency is picked (only reachable for a user
+ * still mid-onboarding).
  *
  * `ref_<code>` referral attribution happens in the registeredUser middleware
  * (apps/order-bot/src/middleware.ts), not here: that's what actually creates
@@ -293,10 +299,17 @@ function deepLinkDenomId(ctx: MyContext): number | undefined {
  */
 export async function startCommand(ctx: MyContext): Promise<void> {
   ctx.session.awaitingQtyDenomId = undefined;
-  ctx.session.pendingDeepLinkDenomId = deepLinkDenomId(ctx);
   delete sc(ctx).browseEntries;
   delete sc(ctx).page;
   ctx.session.state = BotState.HOME;
+
+  if (ctx.session.dbUser?.preferredCurrency) {
+    ctx.session.onboarding = null;
+    await showMainMenu(ctx);
+    return;
+  }
+
+  ctx.session.pendingDeepLinkDenomId = deepLinkDenomId(ctx);
   ctx.session.onboarding = "language";
   await showLanguageMenu(ctx);
 }
@@ -808,8 +821,23 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
   // keeps using the inline `productsNavKb` — so it stays tap-friendly and
   // keeps working Prev/Next AND the bottom digit keyboard ends up correctly
   // sized either way.
-  const cameFromPicker = previousActiveScreen === "gameVariant" || previousActiveScreen === "gameRegion";
-  if (cameFromPicker) {
+  //
+  // Reported bug (post-merge): the resend only fired for
+  // previousActiveScreen === "gameVariant"/"gameRegion", so any OTHER
+  // callback-driven route into this same list — the ordinary group→category
+  // picker chain (browseGroups/browseCategoriesInGroup, both inline/callback
+  // and both clearing activeNumberedScreen entirely, per Finding I2) — left
+  // whatever reply keyboard was showing before (Home's mainPersistentKb, most
+  // commonly) stuck on screen, since the inline productsNavKb branch below
+  // never touches the ReplyKeyboardMarkup at all. The real invariant is "the
+  // bottom digit keyboard is stale unless the immediately-previous screen was
+  // THIS SAME list" — which is exactly what "previousActiveScreen ===
+  // 'products'" alone would mean (a genuine same-list Prev/Next page-turn
+  // re-enters with the flag already set to "products" from the prior call,
+  // since it's written unconditionally below on every render) — so the fix is
+  // the inverse of that, not an allowlist of specific prior screens.
+  const needsKeyboardResend = previousActiveScreen !== "products";
+  if (needsKeyboardResend) {
     await ctx.reply(t(ctx, "browse.use_numbers"), {
       reply_markup: ckb.productsPersistentKb(pageProducts.length, lang),
     });

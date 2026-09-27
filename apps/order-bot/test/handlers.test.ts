@@ -283,7 +283,18 @@ describe("customer handlers", () => {
   // a callback-driven page render must edit (mirrors the Home regression test
   // above).
   it("browseProductsFlat via a callback (page nav) edits the existing bubble, never sends a fresh message", async () => {
-    const { ctx, sink } = customerCtx({ callbackData: "v1:browse:page:0" });
+    // Simulates a REAL Prev/Next tap: the list is already on screen, so
+    // activeNumberedScreen is already "products" from that earlier render —
+    // this is what tells browseProductsFlat "the bottom keyboard is already
+    // correctly sized, no companion resend needed" (see the "Reported bug
+    // (post-merge)" comment on needsKeyboardResend). A fresh session with no
+    // prior render (activeNumberedScreen undefined) is a DIFFERENT case —
+    // arriving at this list for the first time via Home/a category picker —
+    // and correctly triggers the resend, covered by the test below.
+    const { ctx, sink } = customerCtx({
+      callbackData: "v1:browse:page:0",
+      session: { ...userSession(), scratch: { activeNumberedScreen: "products" } },
+    });
     await customer.browseProductsFlat(ctx, 0);
     expect(calls(sink, "editMessageText").length).toBeGreaterThan(0);
     expect(calls(sink, "reply").length).toBe(0);
@@ -2753,6 +2764,37 @@ describe("Finding I1 (final-review): persistent keyboard resend when a picker ta
     expect(kbCall).toBeUndefined();
     const markup = lastMarkup(next.sink) as { inline_keyboard?: unknown[][] };
     expect(markup?.inline_keyboard).toBeDefined();
+  });
+
+  it("Reported bug: reaching the flat list for the first time via the group/category picker chain (not a game picker) still resends the digit keyboard, replacing whatever was showing before", async () => {
+    // The original I1 fix only resent the persistent keyboard when the
+    // PREVIOUS screen was a game variant/region picker — but the ordinary
+    // group -> category picker chain (browseGroups/browseCategoriesInGroup,
+    // both callback-driven and both clearing activeNumberedScreen entirely
+    // per Finding I2) reaches this same list just as freshly, and left
+    // whatever reply keyboard was showing before (commonly Home's
+    // mainPersistentKb) stuck on screen — a real reported bug ("nomornya
+    // masih belum ada"). previousActiveScreen is undefined here (a fresh
+    // session, never having rendered any numbered screen), which is exactly
+    // the "not already showing this list" case needsKeyboardResend must
+    // catch — not just the two game-picker screen names.
+    const group = await createCategory(prisma, { name: "I1 Fresh Entry Group A", group: CategoryGroup.PREMIUM_APPS });
+    const group2 = await createCategory(prisma, { name: "I1 Fresh Entry Group B", group: CategoryGroup.PREMIUM_APPS });
+    const p = await createCatalogProduct(prisma, { categoryId: group.id, name: "I1 Fresh Entry Product" });
+    await createDenomination(prisma, { productId: p.id, name: "1 Month", type: "SHARED", durationLabel: "1 Month", price: "15000" });
+    await createCatalogProduct(prisma, { categoryId: group2.id, name: "I1 Fresh Entry Product B" });
+
+    const { ctx, sink } = customerCtx({ callbackData: `v1:browse:cat:${group.id}` });
+    await customer.browseCategoryEntry(ctx, group.id);
+
+    const replyCalls = calls(sink, "reply");
+    const kbCall = replyCalls.find((c) => {
+      const opts = c.args[1] as { reply_markup?: { keyboard?: unknown[][] } } | undefined;
+      return !!opts?.reply_markup?.keyboard;
+    });
+    expect(kbCall).toBeDefined();
+    const kb = (kbCall!.args[1] as { reply_markup: { keyboard: Array<Array<{ text: string }>> } }).reply_markup;
+    expect(kb.keyboard.flat().map((b) => b.text)).toEqual(["1", persistentLabel("main", "en")]);
   });
 });
 

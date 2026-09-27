@@ -159,10 +159,11 @@ describe("showsUsdDisplay", () => {
 });
 
 describe("isIdrRail", () => {
-  it("covers QRIS/TokoPay and PayDisini only", () => {
+  it("covers QRIS/TokoPay, PayDisini and the IDR wallet debit only", () => {
     expect(isIdrRail("qris")).toBe(true);
     expect(isIdrRail("paydisini")).toBe(true);
-    for (const m of ["binance", "bybit", "bybit_bsc", "nowpayments", "wallet_idr", "wallet_usdt", null, undefined]) {
+    expect(isIdrRail("wallet_idr")).toBe(true);
+    for (const m of ["binance", "bybit", "bybit_bsc", "nowpayments", "wallet_usdt", null, undefined]) {
       expect(isIdrRail(m)).toBe(false);
     }
   });

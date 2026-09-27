@@ -131,6 +131,24 @@ describe("OrderSummaryCard — Price · Pay on IDR rails for a USD viewer", () =
     expect(summary).not.toHaveTextContent("Pay Rp");
   });
 
+  // Follow-up fix: wallet-IDR is not a gateway rail, but it is still an
+  // IDR-settled debit, so a USD viewer gets the same Rp anchor (no fee).
+  it("wallet_idr + USD: shows the Rp debit (no fee) alongside the $ total", () => {
+    const summary = renderCard("USD", "wallet_idr");
+    expect(summary).toHaveTextContent("Price $9.88 · Pay Rp158.000");
+  });
+
+  it.each([["IDR"], [null]] as const)("wallet_idr + %s: unchanged — no Price · Pay line", (currency) => {
+    const summary = renderCard(currency, "wallet_idr");
+    expect(summary).toHaveTextContent("Rp158.000");
+    expect(summary).not.toHaveTextContent("Pay Rp");
+  });
+
+  it("wallet_usdt + USD: no dual line, no Rp payable", () => {
+    const summary = renderCard("USD", "wallet_usdt");
+    expect(summary).not.toHaveTextContent("Pay Rp");
+  });
+
   it("USDT rail (binance) + USD: no dual line, no Rp payable", () => {
     const summary = renderCard("USD", "binance");
     expect(summary).toHaveTextContent("$9.88");

@@ -160,13 +160,15 @@ export function showsUsdDisplay(
 
 /**
  * The checkout method tokens (PaymentMethodSelector's radio values) whose
- * gateway settles in Rupiah — QRIS/TokoPay and PayDisini. The bot adds its
- * "Price · Pay" line on exactly these two rails; USDT rails charge natively in
- * the currency the viewer already sees, and wallet credit is a balance debit,
- * not a payment rail.
+ * charge settles in Rupiah and so get the "Price $X · Pay RpY" line for a
+ * USD-preference viewer — QRIS/TokoPay, PayDisini and the IDR wallet debit.
+ * `wallet_idr` isn't a "rail" in the gateway sense (it's a synchronous balance
+ * debit, no fee), but it is still an IDR-settled charge a USD viewer needs
+ * anchored to the Rupiah figure actually leaving their balance. USDT rails
+ * and `wallet_usdt` charge natively in the currency the viewer already sees.
  */
 export function isIdrRail(method: string | null | undefined): boolean {
-  return method === "qris" || method === "paydisini";
+  return method === "qris" || method === "paydisini" || method === "wallet_idr";
 }
 
 /**

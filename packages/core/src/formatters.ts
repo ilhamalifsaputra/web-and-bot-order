@@ -99,6 +99,20 @@ export function usdtFromIdr(idr: Decimal.Value, rate: Decimal.Value): Decimal {
   return new Decimal(idr).div(rate).toDecimalPlaces(2, Decimal.ROUND_CEIL);
 }
 
+/**
+ * Derived IDR for a USDT amount: usdt × rate, UNROUNDED. The inverse of
+ * {@link usdtFromIdr}, but deliberately not its mirror: usdtFromIdr rounds
+ * because its result is charged/displayed as a real quote, while this one
+ * exists only as a COMPARISON OPERAND (e.g. judging a USDT wallet top-up
+ * against the shop-wide Rupiah floor) — rounding it would move whatever
+ * it's compared against by up to half a Rupiah. Callers that need a
+ * roundable, displayable IDR figure should not use this helper as-is; none
+ * do today.
+ */
+export function idrFromUsdt(usdt: Decimal.Value, rate: Decimal.Value): Decimal {
+  return new Decimal(usdt).times(rate);
+}
+
 /** Result of converting a canonical IDR amount into a user's display currency. */
 export type DisplayConversion =
   | { ok: true; currency: DisplayCurrency; amount: Decimal }

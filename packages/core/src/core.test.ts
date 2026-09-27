@@ -3,7 +3,7 @@ import { money, fmtMoney, moneyEq, Decimal } from "./money";
 import { t } from "./i18n";
 import { roundRateToStep, validateUsdIdrRate, applyUsdtSpread } from "./fx";
 import { OrderStatus, UserRole, NotificationEvent, langCode } from "./enums";
-import { computeUniqueCents, usdtFromIdr } from "./formatters";
+import { computeUniqueCents, idrFromUsdt, usdtFromIdr } from "./formatters";
 
 describe("money", () => {
   it("quantizes to 4 dp", () => {
@@ -151,6 +151,28 @@ describe("usdtFromIdr (step 0.01, always rounded up — P2-1)", () => {
     expect(usdtFromIdr("100", "16000").toString()).toBe("0.01");
     expect(usdtFromIdr("1", "16000").toString()).toBe("0.01");
     expect(usdtFromIdr("5", "16000").greaterThan(0)).toBe(true);
+  });
+});
+
+/**
+ * `idrFromUsdt` is the other direction and deliberately does NOT round — its
+ * result is only ever a comparison operand against a Rupiah floor. The vectors
+ * below would all change under any rounding step, so they pin "unrounded", not
+ * just "roughly right".
+ */
+describe("idrFromUsdt (unrounded — a comparison operand, not a quote)", () => {
+  it("keeps every digit of usdt × rate", () => {
+    expect(idrFromUsdt("0.333", "16000").toString()).toBe("5328");
+    expect(idrFromUsdt("2.5", "16000").toString()).toBe("40000");
+    // Sub-Rupiah remainder survives: whole-Rupiah rounding would give 5000.
+    expect(idrFromUsdt("0.31253", "16000").toString()).toBe("5000.48");
+    expect(idrFromUsdt("12.3456789", "15873.4567").toString()).toBe("195968.59945125363");
+  });
+
+  it("is not usdtFromIdr's mirror: a round trip does not come back exact", () => {
+    // usdtFromIdr ceils Rp44.500 to 2.79; converting back lands above the
+    // original Rupiah figure, because only one direction rounds.
+    expect(idrFromUsdt(usdtFromIdr("44500", "16000"), "16000").toString()).toBe("44640");
   });
 });
 

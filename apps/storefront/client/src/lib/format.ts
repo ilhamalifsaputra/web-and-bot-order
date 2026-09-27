@@ -92,3 +92,72 @@ export function formatNativeUsdt(value: string | number | null | undefined): str
   const amount = formatUsdtAmount(value);
   return amount === "—" ? amount : `${amount} USDT`;
 }
+
+/** "$1,250.00" — 2dp, comma thousands. Mirrors core's formatUsdDisplay
+ * (packages/core/src/formatters.ts) exactly, so a display-currency figure
+ * over $999 groups the same way the bot/core would render it. Plain-number
+ * based (not Decimal) like the rest of this file — see the file header. */
+function formatUsdGrouped(amount: number): string {
+  const fixed = Math.abs(amount).toFixed(2);
+  const [whole, cents] = fixed.split(".");
+  const grouped = (whole ?? "0").replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return `${amount < 0 ? "-" : ""}$${grouped}.${cents}`;
+}
+
+/**
+ * The PRIMARY display string for a canonical IDR amount, in the viewer's
+ * display-currency preference — mirrors core's convertIdrToDisplay /
+ * formatDisplayMoney (packages/core/src/formatters.ts) exactly:
+ *  - `"IDR"` or `null` (no preference chosen yet — today's default): the same
+ *    "Rp…" string formatIdr always produced. `null` is intentionally treated
+ *    identically to `"IDR"` here — the null-only "≈ $" hint is Price.tsx's
+ *    own concern, layered on top of this helper's primary string, not this
+ *    function's.
+ *  - `"USD"`: the ceil-to-0.01 figure formatUsdt already computes (reused,
+ *    not reimplemented — same rounding, so a display price never disagrees
+ *    with what formatUsdt's "≈ $" hint would have shown), thousands-grouped
+ *    like core's formatUsdDisplay, no "≈ " prefix (this IS the primary
+ *    figure, not a hint).
+ *  - `"USD"` with a missing/invalid rate: falls back to the explicit "Rp…"
+ *    string — never a bare number, never a "$" figure invented without a
+ *    rate. Same rule the bot follows (bot: currency.rate_unavailable). The
+ *    caller's `currency` state is NOT silently reset to IDR by this — it's
+ *    purely what gets rendered for this one value.
+ *
+ * Never applies to an order's own settlement currency (order.currency) —
+ * that's what {@link formatOrderAmount} is for, applied to an
+ * already-canonical IDR catalog/cart/preview price only.
+ */
+export function formatPriceFor(
+  idrValue: string | number | null | undefined,
+  currency: "USD" | "IDR" | null | undefined,
+  fx: string | number | null | undefined,
+): string {
+  if (currency !== "USD") return formatIdr(idrValue);
+  if (idrValue === null || idrValue === undefined || idrValue === "") return formatIdr(idrValue);
+  const idr = Number(idrValue);
+  const rate = Number(fx);
+  if (!fx || Number.isNaN(idr) || Number.isNaN(rate) || rate <= 0) return formatIdr(idrValue);
+  const usdt = roundCeil(idr / rate, 2);
+  return formatUsdGrouped(usdt);
+}
+
+/**
+ * An order's OWN settlement-currency amount — `order.total`,
+ * `order.qris_admin_fee`, a linked ticket order's `total`, etc. (see
+ * api/types.ts's `PayData`/`TicketOrderSummary`). `orderCurrency` is the
+ * order's stored rail currency ("IDR" | "USDT"), NEVER the viewer's
+ * display-currency preference — do not run this through
+ * {@link formatPriceFor}'s conversion, that would double-convert an amount
+ * that is already denominated in whatever the order actually settled in.
+ *
+ * Task 5 bug fix: PayPage.tsx and TicketOrderSummaryCard.tsx used to call
+ * formatIdr on these fields unconditionally, which mis-renders a USDT
+ * order's total as if it were a Rupiah figure.
+ */
+export function formatOrderAmount(
+  value: string | number | null | undefined,
+  orderCurrency: string | null | undefined,
+): string {
+  return orderCurrency === "USDT" ? formatNativeUsdt(value) : formatIdr(value);
+}

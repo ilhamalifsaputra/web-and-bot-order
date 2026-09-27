@@ -10,10 +10,8 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Outlet, useLocation, useSearchParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
-import { apiGet } from "../api/client";
-import type { ShopContext } from "../api/types";
 import { currentLang, t } from "../lib/i18n";
+import { useShopContext } from "../lib/useShopContext";
 import { PageTransition } from "./PageTransition";
 import Toast from "./shop/Toast";
 import Navbar from "./layout/Navbar";
@@ -22,17 +20,11 @@ import MobileDrawer from "./layout/MobileDrawer";
 import MobileTabBar, { isTabBarHidden } from "./layout/MobileTabBar";
 import { SearchOverlayProvider } from "./shop/SearchOverlay";
 
-/** Header context, shared by every page under the shop chrome. staleTime
- * doesn't poll — it just permits TanStack to refetch on refocus/remount once
- * 30s have passed, so the cart badge catches up across tabs without hammering
- * the API on every render. */
-export function useShopContext() {
-  return useQuery({
-    queryKey: ["context"],
-    queryFn: () => apiGet<ShopContext>("/api/v1/pages/context"),
-    staleTime: 30_000,
-  });
-}
+/** Re-exported for callers that historically imported it from Layout (25+
+ * existing sites) — the implementation itself lives in lib/useShopContext.ts
+ * now (Task 5), so a lean consumer can use it without pulling in this whole
+ * chrome subtree; see that file's doc comment for why. */
+export { useShopContext };
 
 /** Re-exported for callers that historically imported it from Layout. */
 export { FOOTER_LINKS } from "./layout/Footer";

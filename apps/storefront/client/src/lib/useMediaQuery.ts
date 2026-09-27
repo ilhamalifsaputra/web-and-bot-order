@@ -36,3 +36,12 @@ export function useMediaQuery(query: string): boolean {
 export function useIsDesktop(): boolean {
   return useMediaQuery("(min-width: 768px)");
 }
+
+/** Tailwind's `lg` breakpoint — the point where the checkout/cart/instant-buy
+ * grid actually goes two-column (content + summary sidebar). Deliberately
+ * separate from useIsDesktop() (md, 768px): those two breakpoints used to be
+ * conflated for the mobile-bar-vs-inline-button decision on those three
+ * pages, leaving a 768-1024px dead zone where neither applied. */
+export function useIsWideDesktop(): boolean {
+  return useMediaQuery("(min-width: 1024px)");
+}

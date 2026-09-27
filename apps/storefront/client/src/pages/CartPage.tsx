@@ -32,7 +32,7 @@ import type { CartLineView, CartPageData } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import { t } from "../lib/i18n";
 import { formatPriceFor, formatUsdt } from "../lib/format";
-import { useIsDesktop } from "../lib/useMediaQuery";
+import { useIsWideDesktop } from "../lib/useMediaQuery";
 import { useSuggestedProducts } from "../lib/useSuggestedProducts";
 import FlashBadge, { FlashWasPrice } from "../components/shop/FlashBadge";
 import EmptyState from "../components/shop/EmptyState";
@@ -187,7 +187,10 @@ export default function CartPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { data: ctx } = useShopContext();
-  const isDesktop = useIsDesktop();
+  // Tailwind's lg breakpoint (1024px) — the point where the grid actually goes
+  // two-column (lines + summary). At this width, the summary stays in view beside
+  // the lines while scrolling, so it doesn't need the mobile sticky bar.
+  const isDesktop = useIsWideDesktop();
   const { data } = useQuery({
     queryKey: ["cart"],
     queryFn: () => apiGet<CartPageData>("/api/v1/cart"),
@@ -260,29 +263,31 @@ export default function CartPage() {
             </Card>
 
             {/* Summary */}
-            <Card>
-              <h2 className="section-title mb-3">{t("web.summary")}</h2>
-              <div className="flex items-center justify-between text-sm py-1.5">
-                <span className="text-ink-soft">{t("web.subtotal")}</span>
-                <Price value={subtotal} fx={fx} size="text-sm" />
-              </div>
-              <p className="text-xs text-ink-faint mt-1">{t("web.discounts_at_checkout")}</p>
-              {/* On a phone the checkout call to action lives in the sticky bar
-                  below, so the card must not repeat it — two identical links to
-                  /checkout on one page is noise for anything reading the page
-                  sequentially, and the card's copy is the one nobody scrolls to. */}
-              {isDesktop && (
-                <Link to="/checkout" className="btn btn-primary w-full mt-4">
-                  {t("web.to_checkout")} <ChevronRight className="w-4 h-4" />
+            <div className="lg:sticky lg:top-4">
+              <Card>
+                <h2 className="section-title mb-3">{t("web.summary")}</h2>
+                <div className="flex items-center justify-between text-sm py-1.5">
+                  <span className="text-ink-soft">{t("web.subtotal")}</span>
+                  <Price value={subtotal} fx={fx} size="text-sm" />
+                </div>
+                <p className="text-xs text-ink-faint mt-1">{t("web.discounts_at_checkout")}</p>
+                {/* On a phone the checkout call to action lives in the sticky bar
+                    below, so the card must not repeat it — two identical links to
+                    /checkout on one page is noise for anything reading the page
+                    sequentially, and the card's copy is the one nobody scrolls to. */}
+                {isDesktop && (
+                  <Link to="/checkout" className="btn btn-primary w-full mt-4">
+                    {t("web.to_checkout")} <ChevronRight className="w-4 h-4" />
+                  </Link>
+                )}
+                {/* STO-008: cart previously offered no way back to browsing —
+                    only "Continue to payment". */}
+                <Link to="/" className="btn btn-ghost w-full mt-2">
+                  {t("web.continue_shopping")}
                 </Link>
-              )}
-              {/* STO-008: cart previously offered no way back to browsing —
-                  only "Continue to payment". */}
-              <Link to="/" className="btn btn-ghost w-full mt-2">
-                {t("web.continue_shopping")}
-              </Link>
-              {ctx && !ctx.customer && <p className="text-xs text-ink-faint mt-3">{t("web.login_to_checkout")}</p>}
-            </Card>
+                {ctx && !ctx.customer && <p className="text-xs text-ink-faint mt-3">{t("web.login_to_checkout")}</p>}
+              </Card>
+            </div>
           </div>
 
           {/* The summary card stacks below every line item on a phone, which

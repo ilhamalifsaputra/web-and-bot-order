@@ -59,7 +59,7 @@ import { humanError } from "../lib/errors";
 import { formatPriceFor } from "../lib/format";
 import { rememberCodeEmailed } from "../lib/orderCodeEmailed";
 import { allFieldsValid, isValidEmail } from "../lib/deliveryFields";
-import { useIsDesktop } from "../lib/useMediaQuery";
+import { useIsWideDesktop } from "../lib/useMediaQuery";
 import { useSuggestedProducts } from "../lib/useSuggestedProducts";
 import EmptyState from "../components/shop/EmptyState";
 import Skeleton from "../components/shop/Skeleton";
@@ -246,8 +246,10 @@ export default function CheckoutPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { data: ctx } = useShopContext();
+  // Tailwind's lg breakpoint (1024px) — the point where the grid actually goes
+  // two-column (methods + summary), so the summary stays in view while scrolling.
   // Decides which of the two submit controls exists — see the sticky bar below.
-  const isDesktop = useIsDesktop();
+  const isDesktop = useIsWideDesktop();
   const { data, error } = useQuery({
     queryKey: ["checkout"],
     queryFn: () => apiGet<CheckoutData>("/api/v1/checkout"),
@@ -529,23 +531,25 @@ export default function CheckoutPage() {
           )}
         </div>
 
-        <OrderSummaryCard
-          totals={totals}
-          method={method}
-          fx={ctx?.fx}
-          voucherInput={voucherInput}
-          onVoucherInputChange={setVoucherInput}
-          onVoucherApply={applyVoucher}
-          onVoucherKeyDown={onVoucherKeyDown}
-          voucherPending={previewMutation.isPending}
-          showDesktopSubmit={isDesktop}
-          submitLabel={t("web.place_order")}
-          submitDisabled={placeOrderDisabled}
-          submitBlocked={placeOrderBlocked}
-          onSubmit={() => placeOrderMutation.mutate()}
-          submitPending={placeOrderMutation.isPending}
-          backTo={{ label: t("web.back_to_cart"), to: "/cart" }}
-        />
+        <div className="lg:sticky lg:top-4">
+          <OrderSummaryCard
+            totals={totals}
+            method={method}
+            fx={ctx?.fx}
+            voucherInput={voucherInput}
+            onVoucherInputChange={setVoucherInput}
+            onVoucherApply={applyVoucher}
+            onVoucherKeyDown={onVoucherKeyDown}
+            voucherPending={previewMutation.isPending}
+            showDesktopSubmit={isDesktop}
+            submitLabel={t("web.place_order")}
+            submitDisabled={placeOrderDisabled}
+            submitBlocked={placeOrderBlocked}
+            onSubmit={() => placeOrderMutation.mutate()}
+            submitPending={placeOrderMutation.isPending}
+            backTo={{ label: t("web.back_to_cart"), to: "/cart" }}
+          />
+        </div>
 
         {/* Payment method — full-width row below both columns (Task 5): see
             InstantBuyPage.tsx's matching call site for the grid-auto-placement

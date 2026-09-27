@@ -63,6 +63,36 @@ function cartFlashSummary(data: CheckoutData | undefined): { percent: number; en
   return percent === null ? null : { percent, endsAt };
 }
 
+/**
+ * Final-review fix: the "Price $X · Pay RpY" line for a checkout preview — the
+ * web twin of the bot's payAlongsidePriceLine, through the same shared
+ * `checkout.price_and_pay` locale key. Non-null ONLY when the viewer's display
+ * currency renders as "$" (USD preference + usable rate) AND the selected
+ * method is an IDR-settlement rail (QRIS/TokoPay, PayDisini) — exactly the case
+ * where what the viewer sees differs from what the rail will charge. IDR/null
+ * viewers, a missing rate, USDT rails and wallet credit all get null.
+ *
+ * Both figures are the SAME amount — the rail's payable, still canonical IDR
+ * in the preview (`qris_grand_total`/`total` are Decimal strings the server
+ * computes in Rupiah, routes/checkout.ts cartTotals): the $ side is the very
+ * figure the Total row/sticky bar already shows, the Rp side is `formatIdr` of
+ * it directly (never re-converted). Shared by this card and both pages' sticky
+ * bars so the three surfaces cannot drift apart.
+ */
+export function idrRailPriceAndPay(
+  method: string | null,
+  totals: Pick<CheckoutData, "total" | "qris_grand_total">,
+  currency: "USD" | "IDR" | null,
+  fx: string | null | undefined,
+): string | null {
+  if (!isIdrRail(method) || !showsUsdDisplay(currency, fx)) return null;
+  const payableIdr = method === "qris" ? totals.qris_grand_total : totals.total;
+  return t("checkout.price_and_pay", {
+    price: formatPriceFor(payableIdr, currency, fx),
+    pay: formatIdr(payableIdr),
+  });
+}
+
 export interface OrderSummaryCardProps {
   totals: CheckoutData;
   method: string | null;
@@ -115,17 +145,10 @@ export default function OrderSummaryCard({
   const flashSummary = cartFlashSummary(totals);
   const { data: ctx } = useShopContext();
   const currency = ctx?.currency ?? null;
-  // What the selected rail will charge, still in canonical IDR: the checkout
-  // preview's `qris_grand_total`/`total` are Decimal strings the server
-  // computes in Rupiah (routes/checkout.ts cartTotals) — no rail has converted
-  // them yet.
-  const payableIdr = method === "qris" ? totals.qris_grand_total : totals.total;
   // Final-review fix: a USD viewer on an IDR-settlement rail (QRIS/TokoPay,
-  // PayDisini) would otherwise see only "$" figures that no rail charges.
-  // Same rule as the bot's payAlongsidePriceLine — shown only when the
-  // display currency actually differs from what the rail charges; USDT rails
-  // and IDR/null viewers are untouched.
-  const idrRailDualLine = isIdrRail(method) && showsUsdDisplay(currency, fx);
+  // PayDisini) would otherwise see only "$" figures that no rail charges —
+  // see idrRailPriceAndPay above. Non-null gates the Rp fee suffix too.
+  const priceAndPay = idrRailPriceAndPay(method, totals, currency, fx);
 
   return (
     // A single grid child (space-y-6 stacks the two cards) rather than a bare
@@ -201,7 +224,7 @@ export default function OrderSummaryCard({
                 <span className="text-ink-soft">{t("web.qris_admin_fee")}</span>
                 <span>
                   {formatPriceFor(totals.qris_admin_fee, currency, fx)}
-                  {idrRailDualLine && (
+                  {priceAndPay && (
                     <span className="text-ink-faint"> · {formatIdr(totals.qris_admin_fee)}</span>
                   )}
                 </span>
@@ -209,17 +232,10 @@ export default function OrderSummaryCard({
             )}
             <div className="flex items-baseline justify-between py-3">
               <span className="text-base font-semibold text-ink">{t("web.order_total")}</span>
-              <Price value={payableIdr} fx={fx} size="text-lg" />
+              <Price value={method === "qris" ? totals.qris_grand_total : totals.total} fx={fx} size="text-lg" />
             </div>
           </div>
-          {idrRailDualLine && (
-            <p className="mb-2 text-right text-sm text-ink-soft">
-              {t("checkout.price_and_pay", {
-                price: formatPriceFor(payableIdr, currency, fx),
-                pay: formatIdr(payableIdr),
-              })}
-            </p>
-          )}
+          {priceAndPay && <p className="mb-2 text-right text-sm text-ink-soft">{priceAndPay}</p>}
           {fx && <p className="text-xs text-ink-faint">{t("web.usdt_note")}</p>}
           {/* Desktop only: on a phone this button lives in the sticky bar
               below instead. Rendering it in both places would put two

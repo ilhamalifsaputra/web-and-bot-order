@@ -55,9 +55,9 @@ const checkoutData: CheckoutData = {
   below_all_minimums: false,
 };
 
-function renderCheckout(respond: (path: string) => unknown) {
+function renderCheckout(respond: (path: string) => unknown, ctx: ShopContext = context) {
   (apiGet as Mock).mockImplementation(async (path: string) => {
-    if (path === "/api/v1/pages/context") return context;
+    if (path === "/api/v1/pages/context") return ctx;
     return respond(path);
   });
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -513,6 +513,50 @@ describe("CheckoutPage", () => {
           customer_data: [{ game_id: "abc" }],
         }, expect.objectContaining({ idempotencyKey: expect.any(String) })),
       );
+    });
+
+    // Final-review fix: a USD-display viewer on an IDR-settlement rail
+    // (QRIS/PayDisini) must see the Rp payable next to the $ figure, like the
+    // bot's payAlongsidePriceLine. fx 16000: qris_grand_total 159206 → $9.96,
+    // total 158000 → $9.88.
+    describe("Price · Pay line for a USD viewer", () => {
+      const usdContext: ShopContext = { ...context, currency: "USD" };
+      const bar = () => document.querySelector(".fixed.bottom-0")!;
+
+      it("QRIS: shows the $ total and the Rp payable the rail will charge", async () => {
+        renderCheckout(() => ({ ...checkoutData, idr_enabled: true }), usdContext);
+        await screen.findByRole("heading", { name: "Checkout" });
+        await waitFor(() => expect(bar()).toHaveTextContent("Price $9.96 · Pay Rp159.206"));
+        expect(bar()).toHaveTextContent("$9.96");
+      });
+
+      it("PayDisini: the Rp payable is the fee-free total", async () => {
+        renderCheckout(() => ({ ...checkoutData, paydisini_enabled: true }), usdContext);
+        await screen.findByRole("heading", { name: "Checkout" });
+        await waitFor(() => expect(bar()).toHaveTextContent("Price $9.88 · Pay Rp158.000"));
+      });
+
+      it("USDT rail (binance default): no dual line", async () => {
+        renderCheckout(() => checkoutData, usdContext);
+        await screen.findByRole("heading", { name: "Checkout" });
+        await waitFor(() => expect(bar()).toHaveTextContent("$9.88"));
+        expect(bar()).not.toHaveTextContent("Pay Rp");
+      });
+
+      it("QRIS for an IDR / no-preference viewer: unchanged, Rp only", async () => {
+        renderCheckout(() => ({ ...checkoutData, idr_enabled: true }), { ...context, currency: "IDR" });
+        await screen.findByRole("heading", { name: "Checkout" });
+        await waitFor(() => expect(bar()).toHaveTextContent("Rp159.206"));
+        expect(bar()).not.toHaveTextContent("Pay Rp");
+        expect(bar()).not.toHaveTextContent("$");
+      });
+
+      it("QRIS for a null-preference viewer: unchanged, no dual line", async () => {
+        renderCheckout(() => ({ ...checkoutData, idr_enabled: true }));
+        await screen.findByRole("heading", { name: "Checkout" });
+        await waitFor(() => expect(bar()).toHaveTextContent("Rp159.206"));
+        expect(bar()).not.toHaveTextContent("Pay Rp");
+      });
     });
 
     it("is absent on desktop, where the summary card keeps the submit button", async () => {

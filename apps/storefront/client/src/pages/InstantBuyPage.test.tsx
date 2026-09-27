@@ -152,15 +152,17 @@ function renderInstantBuy(
     checkout?: CheckoutData;
     slug?: string;
     preview?: (body: Record<string, unknown>) => CheckoutData;
+    ctx?: ShopContext;
   } = {},
 ) {
+  const ctx = options.ctx ?? context;
   const product = options.product ?? productData;
   const checkout = options.checkout ?? checkoutData;
   const slug = options.slug ?? product.product.slug;
   const emptyCart: CartPageData = { items: [], subtotal: "0" };
 
   (apiGet as Mock).mockImplementation(async (path: string) => {
-    if (path === "/api/v1/pages/context") return context;
+    if (path === "/api/v1/pages/context") return ctx;
     if (path === `/api/v1/pages/product/${slug}`) return product;
     if (path === "/api/v1/cart") return emptyCart;
     if (path === "/api/v1/checkout") return checkout;
@@ -725,6 +727,49 @@ describe("InstantBuyPage", () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+  });
+
+  // Final-review fix: a USD-display viewer on an IDR-settlement rail
+  // (QRIS/PayDisini) sees the Rp payable next to the $ figure in the sticky
+  // bar, like the bot's payAlongsidePriceLine. fx 16000: qris_grand_total
+  // 20240 → $1.27, total 20000 → $1.25.
+  describe("sticky bar Price · Pay line for a USD viewer", () => {
+    const usdContext: ShopContext = { ...context, currency: "USD" };
+    const bar = () => document.querySelector(".fixed.bottom-0");
+
+    it("QRIS: shows the $ total and the Rp payable the rail will charge", async () => {
+      renderInstantBuy({ checkout: { ...checkoutData, idr_enabled: true }, ctx: usdContext });
+      await screen.findByText("Summary");
+      await waitFor(() => expect(bar()).toHaveTextContent("Price $1.27 · Pay Rp20.240"));
+    });
+
+    it("PayDisini: the Rp payable is the fee-free total", async () => {
+      renderInstantBuy({ checkout: { ...checkoutData, paydisini_enabled: true }, ctx: usdContext });
+      await screen.findByText("Summary");
+      await waitFor(() => expect(bar()).toHaveTextContent("Price $1.25 · Pay Rp20.000"));
+    });
+
+    it("USDT rail (binance default): no dual line", async () => {
+      renderInstantBuy({ ctx: usdContext });
+      await screen.findByText("Summary");
+      await waitFor(() => expect(bar()).toHaveTextContent("$1.25"));
+      expect(bar()).not.toHaveTextContent("Pay Rp");
+    });
+
+    it("QRIS for an IDR viewer: unchanged, Rp only", async () => {
+      renderInstantBuy({ checkout: { ...checkoutData, idr_enabled: true }, ctx: { ...context, currency: "IDR" } });
+      await screen.findByText("Summary");
+      await waitFor(() => expect(bar()).toHaveTextContent("Rp20.240"));
+      expect(bar()).not.toHaveTextContent("Pay Rp");
+      expect(bar()).not.toHaveTextContent("$");
+    });
+
+    it("QRIS for a null-preference viewer: unchanged, no dual line", async () => {
+      renderInstantBuy({ checkout: { ...checkoutData, idr_enabled: true } });
+      await screen.findByText("Summary");
+      await waitFor(() => expect(bar()).toHaveTextContent("Rp20.240"));
+      expect(bar()).not.toHaveTextContent("Pay Rp");
     });
   });
 

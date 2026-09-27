@@ -15,7 +15,7 @@ import {
 import { finalizeOrderPayment } from "./pricing";
 import { NotificationEvent } from "@app/core/enums";
 import { config } from "@app/core/config";
-import { cancelOrder, createOrderDirect } from "./orders";
+import { cancelOrder, createOrderDirect, creditOrderToBalance } from "./orders";
 import { markUnderpaid } from "./binance_internal";
 import { markUnderpaidBybit } from "./bybit_deposit";
 import { markOrderUnderpaid } from "./orderStatus";
@@ -1567,6 +1567,26 @@ describe("creditUnderpaidTopupAnyway", () => {
     await creditUnderpaidTopupAnyway(prisma, { orderId: order.id, adminId: ADMIN_ID });
     await expect(creditUnderpaidTopupAnyway(prisma, { orderId: order.id, adminId: ADMIN_ID })).rejects.toMatchObject({
       key: "error.order_not_underpaid",
+    });
+
+    expect(new Decimal((await freshUser()).walletBalanceUsdt).toString()).toBe("6.5");
+    expect(await prisma.walletTransaction.count({ where: { orderId: order.id } })).toBe(1);
+  });
+
+  // Regression guard (re-review Critical): the order this leaves behind is
+  // CANCELLED with a linked `underpaid` ledger row and an `admin_adjust` (not
+  // `unfulfilled_credit`) wallet movement. The generic CANCELLED-order credit
+  // must not read that row as "paid, nothing returned yet" and hand over the
+  // full top-up total on top of the 6.5 already credited.
+  it("leaves an order the generic CANCELLED-order credit refuses (no double credit)", async () => {
+    const order = await makeUsdtTopupOrder("10");
+    expect(
+      await markUnderpaid(prisma, { orderId: order.id, binanceTxId: "bin-topup-underpaid-dbl", amount: "6.5" }),
+    ).toBe(true);
+    await creditUnderpaidTopupAnyway(prisma, { orderId: order.id, adminId: ADMIN_ID });
+
+    await expect(creditOrderToBalance(prisma, { orderId: order.id, adminId: ADMIN_ID })).rejects.toMatchObject({
+      key: "error.order_never_paid",
     });
 
     expect(new Decimal((await freshUser()).walletBalanceUsdt).toString()).toBe("6.5");

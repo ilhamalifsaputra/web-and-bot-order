@@ -1670,7 +1670,9 @@ export async function cancelOrder(db: Db, orderId: number, reason: string, actor
  * around `releaseOrderHolds` below. Refused with `error.order_already_refunded`
  * when such an order already has a COMPLETED refund, and with
  * `error.order_never_paid` when nothing proves a payment ever arrived for it
- * (no gateway ledger row linked to it, and no `binanceTxId` passed).
+ * (no `delivery_failed`/`unmatched` gateway ledger row linked to it, and no
+ * `binanceTxId` passed). An `underpaid` row never counts: underpaid orders
+ * resolve through their own flows (see `orderHasIncomingLedgerPayment`).
  *
  * Idempotent: a REJECTED/REFUNDED/DELIVERED order, or a pre-existing
  * `unfulfilled_credit` ledger row for this order, is refused — a
@@ -1758,7 +1760,9 @@ async function creditOrderToBalanceLocked(
     // decide it: the case this path exists for — a gateway payment whose delivery
     // threw — rolled the paidAt write back with the rest of the delivery
     // transaction. What survives is the gateway ledger row, claimed with this
-    // order's id before that transaction began. A passed `binanceTxId` is the
+    // order's id before that transaction began and left `delivery_failed` (or
+    // `unmatched`) — never an `underpaid` row, whose order has its own
+    // resolution flow and records only part of the total. A passed `binanceTxId` is the
     // evidence instead: the caller (POST /api/payments/credit) resolved a real
     // transaction and this call links it below, so it has no link yet to find.
     if (!args.binanceTxId && !(await orderHasIncomingLedgerPayment(db, order.id))) {
@@ -2862,7 +2866,7 @@ export interface OrderEligibility {
   canReject: boolean;
   /** Delivered orders with a Telegram buyer can have their credentials DM resent. */
   canResend: boolean;
-  /** CANCELLED, actually paid (a gateway ledger row is linked to it —
+  /** CANCELLED, actually paid (a `delivery_failed`/`unmatched` gateway ledger row is linked to it —
    * `orderHasIncomingLedgerPayment`), and with no proof that payment was ever
    * handed back (`cancelledOrderIdsWithMoneyReturned`) — credit it to the
    * buyer's balance (`creditOrderToBalance`'s already-cancelled path, which

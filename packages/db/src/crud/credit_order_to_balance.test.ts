@@ -19,6 +19,8 @@ import {
   creditOrderToBalance,
   getOrder,
 } from "@app/db";
+import { markUnderpaid } from "./binance_internal";
+import { markUnderpaidBybit } from "./bybit_deposit";
 import { Decimal } from "@app/core/money";
 import { StockActorType } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
@@ -44,6 +46,7 @@ beforeEach(async () => {
   await prisma.processedBinanceTx.deleteMany();
   await prisma.processedTokopayTx.deleteMany();
   await prisma.processedBybitTx.deleteMany();
+  await prisma.qrisUnderpaidTx.deleteMany();
   sample = await buildSampleData(prisma);
   const admin = await prisma.user.create({
     data: { telegramId: BigInt(880_000_000 + Math.floor(Math.random() * 1_000_000)), referralCode: `credit-admin-${Math.random()}`, role: "ADMIN" },
@@ -348,6 +351,42 @@ describe("creditOrderToBalance on an already-CANCELLED order", () => {
         where: { orderId: { in: [pendingRefund.id, walletUsedBack.id] }, reason: "unfulfilled_credit" },
       }),
     ).toBe(2);
+  });
+
+  // Regression guard (re-review Critical): an UNDERPAID order an admin cancelled
+  // through the underpaid-cancel route (POST /api/payments/:id/cancel, reason
+  // `underpaid_cancelled`) keeps its linked `underpaid` ledger row, which
+  // records only the PART that arrived. Taking that row as proof of payment
+  // would credit the full totalAmount, minting the shortfall; underpaid orders
+  // resolve through their own flows, never this one.
+  it("refuses a cancelled UNDERPAID order whose only ledger row is the underpaid one (Binance and Bybit)", async () => {
+    const { user, product } = sample;
+    const flaggers = [
+      (orderId: number) => markUnderpaid(prisma, { orderId, binanceTxId: `BN-under-${orderId}`, amount: "2" }),
+      (orderId: number) => markUnderpaidBybit(prisma, { orderId, bybitTxId: `BY-under-${orderId}`, amount: "2" }),
+    ];
+    for (const flag of flaggers) {
+      const created = await prisma.$transaction((tx) =>
+        createInternalOrder(tx, { user: { id: user.id, role: user.role }, productId: product.id, quantity: 1, rate: 1 }),
+      );
+      expect(await flag(created!.id)).toBe(true);
+      expect((await getOrder(prisma, created!.id))!.status).toBe("UNDERPAID");
+      // Same call the underpaid-cancel route makes.
+      await cancelOrder(prisma, created!.id, `underpaid_cancelled by admin_id=${adminId}`, {
+        type: StockActorType.ADMIN,
+        adminId,
+      });
+      expect((await getOrder(prisma, created!.id))!.status).toBe("CANCELLED");
+      const before = await balances(user.id);
+
+      await expect(creditOrderToBalance(prisma, { orderId: created!.id, adminId })).rejects.toMatchObject({
+        key: "error.order_never_paid",
+      });
+      expect((await balances(user.id)).walletBalanceUsdt.toString()).toBe(before.walletBalanceUsdt.toString());
+      expect(
+        await prisma.walletTransaction.count({ where: { orderId: created!.id, reason: "unfulfilled_credit" } }),
+      ).toBe(0);
+    }
   });
 
   it("still refuses a DELIVERED order with error.order_terminal", async () => {

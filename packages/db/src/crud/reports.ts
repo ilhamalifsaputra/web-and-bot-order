@@ -435,20 +435,30 @@ export async function cancelledOrderIdsWithMoneyReturned(db: Db, cancelledIds: n
 }
 
 /** True when at least one of the five processed*Tx ledger tables has a row
- *  already linked to this order — proof a real gateway payment was processed
- *  for it, independent of `Order.paidAt` (which a rolled-back delivery
- *  transaction can leave null even though money arrived — see the comment on
- *  creditOrderToBalance's CANCELLED path). A gateway links a row to an order
- *  only when it claims an actual incoming payment for it, whatever outcome the
- *  row later records (matched, delivery_failed, stale, ...). Single-order form:
- *  used where one order is being looked at or acted on, never per list row. */
+ *  linked to this order whose outcome is one of `ACTIONABLE_LEDGER_OUTCOMES`
+ *  (`delivery_failed` or `unmatched`) — proof a full gateway payment arrived
+ *  for it and was never settled, independent of `Order.paidAt` (which a
+ *  rolled-back delivery transaction can leave null even though money arrived —
+ *  see the comment on creditOrderToBalance's CANCELLED path).
+ *
+ *  Only those two outcomes count because they are exactly what the
+ *  CANCELLED-order credit exists to close out. Every other outcome has its own
+ *  resolution path or owes nothing, and folding it in here would double- or
+ *  over-credit: an `underpaid` row records only the PART that arrived, and its
+ *  order resolves through `creditUnderpaidTopupAnyway` (which credits via
+ *  `admin_adjust` and cancels — so the order then looks "paid, nothing returned
+ *  yet") or the underpaid cancel/refund routes; a `matched`, `stale`,
+ *  `dismissed` or `credited_to_balance` row was already settled or deliberately
+ *  closed. Single-order form: used where one order is being looked at or acted
+ *  on, never per list row. */
 export async function orderHasIncomingLedgerPayment(db: Db, orderId: number): Promise<boolean> {
+  const where = { orderId, outcome: { in: [...ACTIONABLE_LEDGER_OUTCOMES] } };
   const [binance, bybit, tokopay, paydisini, nowpayments] = await Promise.all([
-    db.processedBinanceTx.findFirst({ where: { orderId }, select: { id: true } }),
-    db.processedBybitTx.findFirst({ where: { orderId }, select: { id: true } }),
-    db.processedTokopayTx.findFirst({ where: { orderId }, select: { id: true } }),
-    db.processedPaydisiniTx.findFirst({ where: { orderId }, select: { id: true } }),
-    db.processedNowpaymentsTx.findFirst({ where: { orderId }, select: { id: true } }),
+    db.processedBinanceTx.findFirst({ where, select: { id: true } }),
+    db.processedBybitTx.findFirst({ where, select: { id: true } }),
+    db.processedTokopayTx.findFirst({ where, select: { id: true } }),
+    db.processedPaydisiniTx.findFirst({ where, select: { id: true } }),
+    db.processedNowpaymentsTx.findFirst({ where, select: { id: true } }),
   ]);
   return binance != null || bybit != null || tokopay != null || paydisini != null || nowpayments != null;
 }

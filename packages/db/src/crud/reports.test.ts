@@ -55,6 +55,7 @@ beforeEach(async () => {
   await prisma.processedTokopayTx.deleteMany();
   await prisma.processedPaydisiniTx.deleteMany();
   await prisma.processedNowpaymentsTx.deleteMany();
+  await prisma.qrisUnderpaidTx.deleteMany();
   // D8 gave the legacy-rounding exemption a dated cutoff read from settings, so
   // a leftover row would silently decide a later test's outcome. The cache has
   // to go with the rows: `getSetting` holds a 30s per-client cache, and wiping
@@ -119,18 +120,54 @@ describe("orderHasIncomingLedgerPayment", () => {
     expect(await orderHasIncomingLedgerPayment(prisma, order.id)).toBe(false);
   });
 
-  it("is true when any one of the five gateway tables has a row linked to the order", async () => {
+  it("is true when any one of the five gateway tables has a delivery_failed or unmatched row linked to the order", async () => {
     const linkers: Array<(orderId: number) => Promise<unknown>> = [
-      (orderId) => prisma.processedBinanceTx.create({ data: { binanceTxId: `BN-${orderId}`, orderId, amount: "5", outcome: "matched" } }),
+      (orderId) => prisma.processedBinanceTx.create({ data: { binanceTxId: `BN-${orderId}`, orderId, amount: "5", outcome: "unmatched" } }),
       (orderId) => prisma.processedBybitTx.create({ data: { bybitTxId: `BY-${orderId}`, orderId, amount: "5", outcome: "delivery_failed" } }),
       (orderId) => prisma.processedTokopayTx.create({ data: { trxId: `TP-${orderId}`, orderId, amount: "5", outcome: "delivery_failed" } }),
-      (orderId) => prisma.processedPaydisiniTx.create({ data: { trxId: `PD-${orderId}`, orderId, amount: "5", outcome: "stale" } }),
+      (orderId) => prisma.processedPaydisiniTx.create({ data: { trxId: `PD-${orderId}`, orderId, amount: "5", outcome: "unmatched" } }),
       (orderId) => prisma.processedNowpaymentsTx.create({ data: { trxId: `NP-${orderId}`, orderId, amount: "5", outcome: "delivery_failed" } }),
     ];
     for (const link of linkers) {
       const order = await makeOrder();
       await link(order.id);
       expect(await orderHasIncomingLedgerPayment(prisma, order.id)).toBe(true);
+    }
+  });
+
+  // Regression guard (re-review Critical): an `underpaid` row is linked to its
+  // order too, but underpaid orders have their own resolution flows
+  // (`creditUnderpaidTopupAnyway`, the underpaid cancel/refund routes). Counting
+  // it here let the CANCELLED-order credit double-credit an underpaid top-up
+  // already credited via `admin_adjust`, or credit the full total for an order
+  // that only ever received part of it.
+  it("is false when the only linked row is an underpaid one, on every rail that records one", async () => {
+    const linkers: Array<(orderId: number) => Promise<unknown>> = [
+      (orderId) => prisma.processedBinanceTx.create({ data: { binanceTxId: `BN-u-${orderId}`, orderId, amount: "3", outcome: "underpaid" } }),
+      (orderId) => prisma.processedBybitTx.create({ data: { bybitTxId: `BY-u-${orderId}`, orderId, amount: "3", outcome: "underpaid" } }),
+      // The QRIS/IDR gateways record their shortfall in qrisUnderpaidTx (see
+      // _underpaid.ts), never in a processed*Tx table.
+      (orderId) => prisma.qrisUnderpaidTx.create({ data: { orderId, gateway: "TokoPay", receivedAmount: "3", expectedAmount: "5" } }),
+    ];
+    for (const link of linkers) {
+      const order = await makeOrder();
+      await link(order.id);
+      expect(await orderHasIncomingLedgerPayment(prisma, order.id)).toBe(false);
+    }
+  });
+
+  // Only the two outcomes this admin action exists to close out count as proof;
+  // every other outcome has its own resolution path (or none is owed).
+  it("is false when the only linked rows carry a non-actionable outcome", async () => {
+    for (const outcome of ["matched", "stale", "dismissed", "credited_to_balance", "underpaid"]) {
+      const order = await makeOrder();
+      const id = order.id;
+      await prisma.processedBinanceTx.create({ data: { binanceTxId: `BN-${outcome}-${id}`, orderId: id, amount: "5", outcome } });
+      await prisma.processedBybitTx.create({ data: { bybitTxId: `BY-${outcome}-${id}`, orderId: id, amount: "5", outcome } });
+      await prisma.processedTokopayTx.create({ data: { trxId: `TP-${outcome}-${id}`, orderId: id, amount: "5", outcome } });
+      await prisma.processedPaydisiniTx.create({ data: { trxId: `PD-${outcome}-${id}`, orderId: id, amount: "5", outcome } });
+      await prisma.processedNowpaymentsTx.create({ data: { trxId: `NP-${outcome}-${id}`, orderId: id, amount: "5", outcome } });
+      expect(await orderHasIncomingLedgerPayment(prisma, id), outcome).toBe(false);
     }
   });
 });

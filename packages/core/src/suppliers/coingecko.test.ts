@@ -25,6 +25,7 @@ function stubFetchReject(error: Error) {
 describe("fetchTetherIdrPrice", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
   });
 
   it("success: resolves to a Decimal equal to 16350", async () => {
@@ -128,6 +129,21 @@ describe("fetchTetherIdrPrice", () => {
     const headers = init?.headers as Record<string, string> | undefined;
     // By default, API_KEY is empty, so the header should not be present
     expect(headers?.["x-cg-demo-api-key"]).toBeUndefined();
+  });
+
+  it("x-cg-demo-api-key header is present when COINGECKO_API_KEY is set", async () => {
+    vi.stubEnv("COINGECKO_API_KEY", "some-test-key");
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ tether: { idr: 16350 } }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await fetchTetherIdrPrice();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const init = fetchMock.mock.calls[0]![1] as RequestInit | undefined;
+    const headers = init?.headers as Record<string, string> | undefined;
+    expect(headers?.["x-cg-demo-api-key"]).toBe("some-test-key");
   });
 
   it("resolves with a proper Decimal type that supports arithmetic", async () => {

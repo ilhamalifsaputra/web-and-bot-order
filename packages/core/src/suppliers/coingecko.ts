@@ -2,7 +2,6 @@ import { Decimal } from "../money";
 import { fetchWithTimeoutSafe, HTTP_TIMEOUT_MS } from "../http";
 
 const API_BASE = process.env.COINGECKO_API_BASE ?? "https://api.coingecko.com/api/v3";
-const API_KEY = process.env.COINGECKO_API_KEY ?? "";
 
 /**
  * Fetch tether's current IDR spot price from CoinGecko's `/simple/price`
@@ -14,7 +13,8 @@ const API_KEY = process.env.COINGECKO_API_KEY ?? "";
 export async function fetchTetherIdrPrice(): Promise<Decimal> {
   const url = `${API_BASE}/simple/price?ids=tether&vs_currencies=idr`;
   const headers: Record<string, string> = {};
-  if (API_KEY) headers["x-cg-demo-api-key"] = API_KEY;
+  const apiKey = process.env.COINGECKO_API_KEY ?? "";
+  if (apiKey) headers["x-cg-demo-api-key"] = apiKey;
 
   const res = await fetchWithTimeoutSafe(
     url,
@@ -37,7 +37,7 @@ export async function fetchTetherIdrPrice(): Promise<Decimal> {
     }
     throw new Error("CoinGecko price lookup returned an unparseable response");
   }
-  const idr = data?.tether?.idr;
+  const idr = data.tether?.idr;
   if (typeof idr !== "number" || !Number.isFinite(idr) || idr <= 0) {
     throw new Error("CoinGecko price lookup returned no usable tether.idr figure");
   }

@@ -502,7 +502,7 @@ export function DigiflazzSyncPage() {
                         </div>
                         <span className="hidden flex-1 text-sm sm:inline">{s.productName}</span>
                         <div className="flex items-center gap-3 pl-7 sm:pl-0">
-                          <span className="shrink-0 text-xs text-ink-soft">Cost {s.costPrice}</span>
+                          <span className="shrink-0 text-xs text-ink-soft">Cost {s.costPrice} (IDR)</span>
                           <Input
                             className={invalid ? "w-full border-rust sm:w-32" : "w-full sm:w-32"}
                             value={priceFor(key, s.suggestedPrice)}

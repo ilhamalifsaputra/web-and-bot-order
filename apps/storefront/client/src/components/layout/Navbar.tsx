@@ -16,6 +16,7 @@ import type { ShopContext } from "../../api/types";
 import { currentLang, t } from "../../lib/i18n";
 import { useSearchOverlay } from "../shop/SearchOverlay";
 import { SearchForm } from "./SearchForm";
+import CurrencyToggle from "./CurrencyToggle";
 
 export default function Navbar({
   ctx,
@@ -101,6 +102,13 @@ export default function Navbar({
           >
             <Globe className="h-4 w-4" /> {lang}
           </a>
+
+          {/* Task 5: display-currency switcher — an XHR + re-render (never a
+              full navigation like the language link above), so it lives
+              beside it rather than folded into the same control. */}
+          <div className="hidden sm:flex">
+            <CurrencyToggle currency={ctx?.currency ?? null} fx={ctx?.fx} />
+          </div>
 
           {/* Desktop-only by design: the mobile header row is already three
               items wide plus the hamburger, so mobile reaches /track via the

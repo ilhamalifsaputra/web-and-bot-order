@@ -6,7 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { Link, MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import Layout from "./Layout";
-import { apiGet } from "../api/client";
+import { apiGet, apiPost } from "../api/client";
 import type { ShopContext } from "../api/types";
 
 /** Exposes the router's current search string so a test can confirm Layout's
@@ -18,6 +18,7 @@ function LocationSearchProbe() {
 
 vi.mock("../api/client", () => ({
   apiGet: vi.fn(),
+  apiPost: vi.fn(),
 }));
 
 const context: ShopContext = {
@@ -32,6 +33,7 @@ const context: ShopContext = {
   bot_username: "tokobot",
   wa_number: null,
   tzname: "Asia/Jakarta",
+  currency: null,
 };
 
 function renderLayout(overrides: Partial<ShopContext> = {}, path = "/") {
@@ -313,6 +315,63 @@ describe("Layout", () => {
     await waitFor(() => expect(apiGet).toHaveBeenCalled());
     const header = within(screen.getByRole("banner"));
     expect(header.getByRole("link", { name: "Track order" })).toHaveAttribute("href", "/track");
+  });
+
+  // Task 5: display-currency switcher. An XHR + re-render (never a full
+  // navigation like the language link) — POSTs the Task-4 endpoint, then
+  // invalidates the shared ["context"] query so <Price/> et al. re-render
+  // from the fresh value on their very next paint.
+  describe("currency switcher", () => {
+    it("desktop Navbar: clicking USD posts the preference and refetches the context query", async () => {
+      const user = userEvent.setup();
+      (apiPost as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ currency: "USD" });
+      renderLayout({ currency: null, fx: "16000" });
+      await waitFor(() => expect(apiGet).toHaveBeenCalled());
+      await screen.findByText("home content");
+      const callsBefore = (apiGet as unknown as ReturnType<typeof vi.fn>).mock.calls.length;
+
+      const header = within(screen.getByRole("banner"));
+      await user.click(header.getByRole("button", { name: "USD ($)" }));
+
+      await waitFor(() =>
+        expect(apiPost).toHaveBeenCalledWith("/api/v1/preferences/currency", { currency: "USD" }),
+      );
+      await waitFor(() =>
+        expect((apiGet as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(callsBefore),
+      );
+    });
+
+    it("desktop Navbar: clicking IDR posts the preference too", async () => {
+      const user = userEvent.setup();
+      (apiPost as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ currency: "IDR" });
+      renderLayout({ currency: "USD", fx: "16000" });
+      await waitFor(() => expect(apiGet).toHaveBeenCalled());
+      await screen.findByText("home content");
+
+      const header = within(screen.getByRole("banner"));
+      await user.click(header.getByRole("button", { name: "IDR (Rp)" }));
+
+      await waitFor(() =>
+        expect(apiPost).toHaveBeenCalledWith("/api/v1/preferences/currency", { currency: "IDR" }),
+      );
+    });
+
+    it("disables the USD option (never hides it) when no exchange rate is set", async () => {
+      renderLayout({ fx: null });
+      await waitFor(() => expect(apiGet).toHaveBeenCalled());
+      await screen.findByText("home content");
+      const header = within(screen.getByRole("banner"));
+      expect(header.getByRole("button", { name: "USD ($)" })).toBeDisabled();
+      expect(header.getByRole("button", { name: "IDR (Rp)" })).not.toBeDisabled();
+    });
+
+    it("offers the same toggle as a row in the mobile drawer", async () => {
+      const { drawer } = await openDrawer({ currency: "IDR", fx: "16000" });
+      const row = within(drawer);
+      expect(row.getByText("Currency")).toBeInTheDocument();
+      expect(row.getByRole("button", { name: "USD ($)" })).toBeInTheDocument();
+      expect(row.getByRole("button", { name: "IDR (Rp)" })).toBeInTheDocument();
+    });
   });
 
   // Task 12: App.tsx lazy-loads most routes rendered through Layout's

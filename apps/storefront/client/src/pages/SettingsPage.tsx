@@ -35,13 +35,15 @@ import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiGet, apiPost } from "../api/client";
 import type { SettingsData } from "../api/types";
-import { t } from "../lib/i18n";
+import { useShopContext } from "../components/Layout";
+import { currentLang, t } from "../lib/i18n";
 import { tError } from "../lib/errors";
 import Alert from "../components/ui/Alert";
 import Button from "../components/ui/Button";
 import Card from "../components/ui/Card";
 import FormField from "../components/ui/FormField";
 import Input from "../components/ui/Input";
+import CurrencyToggle from "../components/layout/CurrencyToggle";
 import PasswordInput from "../components/shop/PasswordInput";
 import Spinner from "../components/shop/Spinner";
 import TelegramLoginButton from "../components/shop/TelegramLoginButton";
@@ -55,6 +57,7 @@ interface CredentialsVars {
 
 export default function SettingsPage() {
   const [params] = useSearchParams();
+  const { data: ctx } = useShopContext();
   const { data, error } = useQuery({
     queryKey: ["account-settings"],
     queryFn: () => apiGet<SettingsData>("/api/v1/account/settings"),
@@ -222,6 +225,25 @@ export default function SettingsPage() {
               {t("web.settings_save")}
             </Button>
           </form>
+        </Card>
+
+        {/* Task 5: currency + a read-only glance at the language setting.
+            Currency persists via the same Task-4 endpoint the Navbar/
+            MobileDrawer switcher uses (useCurrencySwitch, inside
+            CurrencyToggle) — language stays the server-driven /lang
+            round-trip, so it's shown here for reference only, not editable. */}
+        <Card>
+          <h2 className="font-display text-lg font-semibold mb-4">{t("web.settings_preferences_section")}</h2>
+          <div className="space-y-4">
+            <div>
+              <p className="field-label mb-1.5">{t("web.currency_label")}</p>
+              <CurrencyToggle currency={ctx?.currency ?? null} fx={ctx?.fx} variant="stacked" />
+            </div>
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-ink-soft">{t("web.lang_label")}</span>
+              <span className="font-medium">{t(`web.lang_name_${currentLang()}`)}</span>
+            </div>
+          </div>
         </Card>
 
         <Card>

@@ -3,6 +3,9 @@ import { fetchWithTimeoutSafe, HTTP_TIMEOUT_MS } from "../http";
 
 const API_BASE = process.env.COINGECKO_API_BASE ?? "https://api.coingecko.com/api/v3";
 
+// Note: This client supports only CoinGecko's demo-tier API key (x-cg-demo-api-key header).
+// Pro-tier keys (x-cg-pro-api-key, pro-api.coingecko.com) are not supported.
+
 /**
  * Fetch tether's current IDR spot price from CoinGecko's `/simple/price`
  * endpoint. Throws on any failure — timeout, non-2xx (429 included), a

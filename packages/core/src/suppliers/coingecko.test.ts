@@ -117,6 +117,7 @@ describe("fetchTetherIdrPrice", () => {
   });
 
   it("x-cg-demo-api-key header is absent by default (when COINGECKO_API_KEY is not set)", async () => {
+    vi.stubEnv("COINGECKO_API_KEY", "");
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,

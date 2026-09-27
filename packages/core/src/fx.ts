@@ -1,5 +1,5 @@
 /**
- * Live USD→IDR market rate (closes plan.md §15.8's "auto-update FX" question):
+ * Live USDT→IDR market rate (closes plan.md §15.8's "auto-update FX" question):
  * the `usd_idr_rate` setting now tracks the REAL market rate, rounded to a
  * clean step (default Rp100) so buyers see tidy numbers.
  *

@@ -68,15 +68,16 @@ function cartFlashSummary(data: CheckoutData | undefined): { percent: number; en
  * web twin of the bot's payAlongsidePriceLine, through the same shared
  * `checkout.price_and_pay` locale key. Non-null ONLY when the viewer's display
  * currency renders as "$" (USD preference + usable rate) AND the selected
- * method is an IDR-settlement rail (QRIS/TokoPay, PayDisini) — exactly the case
- * where what the viewer sees differs from what the rail will charge. IDR/null
- * viewers, a missing rate, USDT rails and wallet credit all get null.
+ * method is IDR-settled (QRIS/TokoPay, PayDisini, or a wallet_idr balance
+ * debit) — exactly the case where what the viewer sees differs from what
+ * they're actually charged. IDR/null viewers, a missing rate, and USDT rails
+ * all get null.
  *
  * Same two figures the bot uses (and PayPage.tsx after the order exists), so
  * "Price" means one thing on every surface: Price is the pre-fee order total
- * (`totals.total`) converted once via formatPriceFor; Pay is the rail's own
- * fee-inclusive charge — `qris_grand_total` on QRIS, `total` on PayDisini
- * (no rail fee) — formatted with `formatIdr` directly, never re-converted.
+ * (`totals.total`) converted once via formatPriceFor; Pay is the actual IDR
+ * charge — `qris_grand_total` on QRIS (fee-inclusive), `total` on PayDisini or
+ * wallet_idr (no fee) — formatted with `formatIdr` directly, never re-converted.
  * Both are still canonical IDR in the preview: Decimal strings the server
  * computes in Rupiah (routes/checkout.ts cartTotals) before any rail has
  * touched them. Shared by this card and both pages' sticky bars so the three
@@ -148,9 +149,10 @@ export default function OrderSummaryCard({
   const flashSummary = cartFlashSummary(totals);
   const { data: ctx } = useShopContext();
   const currency = ctx?.currency ?? null;
-  // Final-review fix: a USD viewer on an IDR-settlement rail (QRIS/TokoPay,
-  // PayDisini) would otherwise see only "$" figures that no rail charges —
-  // see idrRailPriceAndPay above. Non-null gates the Rp fee suffix too.
+  // Final-review fix: a USD viewer on an IDR-settled method (QRIS/TokoPay,
+  // PayDisini, wallet_idr) would otherwise see only "$" figures that don't
+  // match what they're charged — see idrRailPriceAndPay above. Non-null gates
+  // the Rp fee suffix too.
   const priceAndPay = idrRailPriceAndPay(method, totals, currency, fx);
 
   return (

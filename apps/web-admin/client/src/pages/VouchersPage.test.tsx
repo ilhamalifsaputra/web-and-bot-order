@@ -357,6 +357,21 @@ describe("VouchersPage", () => {
     expect(screen.getByText("Select products")).toBeInTheDocument();
   });
 
+  it("gives the product-picker trigger the same darker border-input token as the Select/Input fields around it", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(listResponse([]));
+    render(<VouchersPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText(/no vouchers/i)).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "New Voucher" }));
+    await user.click(screen.getByRole("combobox", { name: "Scope" }));
+    await waitFor(() => screen.getByRole("option", { name: "Selected Products" }));
+    await user.click(screen.getByRole("option", { name: "Selected Products" }));
+
+    const trigger = await screen.findByRole("button", { name: "Select products" });
+    expect(trigger).toHaveClass("border-input");
+  });
+
   it("creates a SELECTED-scope voucher via a single POST /api/vouchers call, never the update endpoint", async () => {
     // Regression test for the create-route gap found in review: POST
     // /api/vouchers used to only accept the original 6 fields, so this page

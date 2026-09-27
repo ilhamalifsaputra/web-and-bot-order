@@ -264,7 +264,7 @@ function ProductScopePicker({
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <Button type="button" variant="outline" className="w-56 justify-start font-normal">
+        <Button type="button" variant="outline" className="w-56 justify-start font-normal border-input">
           {selectedIds.length > 0
             ? `${selectedIds.length} product${selectedIds.length === 1 ? "" : "s"} selected`
             : "Select products"}

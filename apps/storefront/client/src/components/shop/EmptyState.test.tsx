@@ -1,13 +1,35 @@
 import "@testing-library/jest-dom";
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Receipt } from "lucide-react";
 import EmptyState from "./EmptyState";
 import type { ProductCardData } from "./ProductCard";
+import { apiGet } from "../../api/client";
+
+// The "suggestions shelf" cases render a ProductCard, which renders <Price/>,
+// which (Task 5) reads the display-currency preference off the shared
+// ["context"] query itself — every render here needs the same
+// QueryClientProvider wrapper the ProductCard tests already use. No
+// currency-specific assertion in this file, so a single static resolution
+// (the null-currency default) is enough for every existing assertion.
+vi.mock("../../api/client", () => ({
+  apiGet: vi.fn(),
+}));
+
+const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+beforeEach(() => {
+  (apiGet as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ currency: null, fx: null });
+});
 
 function renderState(ui: React.ReactElement) {
-  return render(<MemoryRouter>{ui}</MemoryRouter>);
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>{ui}</MemoryRouter>
+    </QueryClientProvider>,
+  );
 }
 
 function product(slug: string): ProductCardData {

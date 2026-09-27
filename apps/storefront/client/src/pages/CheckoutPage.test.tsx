@@ -526,7 +526,7 @@ describe("CheckoutPage", () => {
       it("QRIS: shows the $ total and the Rp payable the rail will charge", async () => {
         renderCheckout(() => ({ ...checkoutData, idr_enabled: true }), usdContext);
         await screen.findByRole("heading", { name: "Checkout" });
-        await waitFor(() => expect(bar()).toHaveTextContent("Price $9.96 · Pay Rp159.206"));
+        await waitFor(() => expect(bar()).toHaveTextContent("Price $9.88 · Pay Rp159.206"));
         expect(bar()).toHaveTextContent("$9.96");
       });
 

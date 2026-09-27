@@ -741,7 +741,7 @@ describe("InstantBuyPage", () => {
     it("QRIS: shows the $ total and the Rp payable the rail will charge", async () => {
       renderInstantBuy({ checkout: { ...checkoutData, idr_enabled: true }, ctx: usdContext });
       await screen.findByText("Summary");
-      await waitFor(() => expect(bar()).toHaveTextContent("Price $1.27 · Pay Rp20.240"));
+      await waitFor(() => expect(bar()).toHaveTextContent("Price $1.25 · Pay Rp20.240"));
     });
 
     it("PayDisini: the Rp payable is the fee-free total", async () => {

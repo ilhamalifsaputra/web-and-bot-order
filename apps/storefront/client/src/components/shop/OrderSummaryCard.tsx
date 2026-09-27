@@ -72,12 +72,15 @@ function cartFlashSummary(data: CheckoutData | undefined): { percent: number; en
  * where what the viewer sees differs from what the rail will charge. IDR/null
  * viewers, a missing rate, USDT rails and wallet credit all get null.
  *
- * Both figures are the SAME amount — the rail's payable, still canonical IDR
- * in the preview (`qris_grand_total`/`total` are Decimal strings the server
- * computes in Rupiah, routes/checkout.ts cartTotals): the $ side is the very
- * figure the Total row/sticky bar already shows, the Rp side is `formatIdr` of
- * it directly (never re-converted). Shared by this card and both pages' sticky
- * bars so the three surfaces cannot drift apart.
+ * Same two figures the bot uses (and PayPage.tsx after the order exists), so
+ * "Price" means one thing on every surface: Price is the pre-fee order total
+ * (`totals.total`) converted once via formatPriceFor; Pay is the rail's own
+ * fee-inclusive charge — `qris_grand_total` on QRIS, `total` on PayDisini
+ * (no rail fee) — formatted with `formatIdr` directly, never re-converted.
+ * Both are still canonical IDR in the preview: Decimal strings the server
+ * computes in Rupiah (routes/checkout.ts cartTotals) before any rail has
+ * touched them. Shared by this card and both pages' sticky bars so the three
+ * surfaces cannot drift apart.
  */
 export function idrRailPriceAndPay(
   method: string | null,
@@ -88,7 +91,7 @@ export function idrRailPriceAndPay(
   if (!isIdrRail(method) || !showsUsdDisplay(currency, fx)) return null;
   const payableIdr = method === "qris" ? totals.qris_grand_total : totals.total;
   return t("checkout.price_and_pay", {
-    price: formatPriceFor(payableIdr, currency, fx),
+    price: formatPriceFor(totals.total, currency, fx),
     pay: formatIdr(payableIdr),
   });
 }

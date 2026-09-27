@@ -97,13 +97,13 @@ describe("OrderSummaryCard — Price · Pay on IDR rails for a USD viewer", () =
     expect(summary).toHaveTextContent("$0.08");
     expect(summary).toHaveTextContent("Rp1.206");
     expect(summary).toHaveTextContent("$9.96");
-    expect(summary).toHaveTextContent("Price $9.96 · Pay Rp159.206");
+    expect(summary).toHaveTextContent("Price $9.88 · Pay Rp159.206");
   });
 
   it("QRIS + USD in Indonesian uses the shared checkout.price_and_pay wording", () => {
     document.documentElement.lang = "id";
     const summary = renderCard("USD", "qris");
-    expect(summary).toHaveTextContent("Harga $9.96 · Bayar Rp159.206");
+    expect(summary).toHaveTextContent("Harga $9.88 · Bayar Rp159.206");
   });
 
   it("PayDisini + USD: shows the Rp payable (no QRIS fee) alongside the $ total", () => {

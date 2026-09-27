@@ -314,7 +314,7 @@ export function ImageUploadField({
           disabled={uploading}
           className="hidden"
         />
-        <span className="inline-flex items-center rounded border border-line bg-card px-3 py-1 text-sm text-ink hover:bg-sand">
+        <span className="inline-flex items-center rounded border border-input bg-card px-3 py-1 text-sm text-ink hover:bg-sand">
           Choose file…
         </span>
       </label>

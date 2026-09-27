@@ -416,7 +416,7 @@ describe("deliverPaidBybitBscOrder — processing branch (manual SKU)", () => {
 // unreachable "matched".
 //
 // Bybit's ledger IS visible to admins — reports.ts's listCombinedLedger puts
-// both rails' rows in the Payments page table, and manualMatchQueueCounts
+// both rails' rows in the Payments page table, and actionableManualMatchQueueCounts
 // counts their "unmatched"/"delivery_failed" rows into the dashboard cards.
 // What Bybit lacks is the ACTION side: no manualMatchTx/dismissUnmatchedTx
 // equivalent — an unmatched deposit here has no automatic OR manual recovery

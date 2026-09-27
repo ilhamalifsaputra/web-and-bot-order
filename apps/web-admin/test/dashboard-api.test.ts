@@ -22,8 +22,9 @@ import {
   createRefund,
   transitionRefundStatus,
   executeRefund,
+  cancelOrder,
 } from "@app/db";
-import { RefundExecutionMethod, RefundStatus } from "@app/core/enums";
+import { RefundExecutionMethod, RefundStatus, StockActorType } from "@app/core/enums";
 import { TOKOPAY_MERCHANT_KEY, TOKOPAY_SECRET_KEY } from "@app/core/payments/tokopay";
 import { TOKOPAY_POLL_STALE_MS } from "@app/core/payments/reconcileCycleBudget";
 import { resetDb } from "../../../tests/helpers/sampleData";
@@ -46,6 +47,13 @@ afterAll(async () => {
 });
 beforeEach(async () => {
   await resetDb(prisma);
+  // resetDb leaves the five gateway ledger tables alone; the pending-action
+  // and failed-delivery counts below read them, so clear them per test.
+  await prisma.processedBinanceTx.deleteMany();
+  await prisma.processedBybitTx.deleteMany();
+  await prisma.processedTokopayTx.deleteMany();
+  await prisma.processedPaydisiniTx.deleteMany();
+  await prisma.processedNowpaymentsTx.deleteMany();
   const admin = await upsertUser(prisma, { telegramId: ADMIN_TG, username: "admin", fullName: "Admin" });
   const jti = newJti();
   await setSetting(prisma, sessionJtiKey(ADMIN_TG), jti);
@@ -100,6 +108,64 @@ describe("GET /api/dashboard/kpis", () => {
     expect(body.orders.total).toBe(1);
     expect(body.orders.delivered).toBe(1);
     expect(body.pendingActions).toEqual({ toReview: 0, refundDecisions: 0, failedDeliveries: 0, manualApprovals: 0 });
+  });
+
+  // The "Pending actions" card links to /payments?outcome=…&actionable=1, so
+  // its two ledger counts must equal the rows that page then lists. Ledger
+  // rows whose order was since delivered by hand, refunded, or cancelled with
+  // the money credited back are no longer work for anyone and must drop out
+  // of both.
+  it("counts only actionable failed deliveries / unmatched payments, matching the Payments list with actionable=1", async () => {
+    const buyer = await upsertUser(prisma, { telegramId: 42, username: "buyer", fullName: "Buyer" });
+    const mk = (code: string, status: string) =>
+      prisma.order.create({ data: { orderCode: code, userId: buyer.id, subtotalAmount: "1", totalAmount: "1", status } });
+    const delivered = await mk("ORD-PA-D", "DELIVERED");
+    const refunded = await mk("ORD-PA-R", "REFUNDED");
+    const cancelled = await mk("ORD-PA-C", "CANCELLED");
+    // What creditOrderToBalance leaves behind: the paid amount credited to the buyer.
+    await prisma.walletTransaction.create({
+      data: { userId: buyer.id, delta: "1", balanceAfter: "1", reason: "unfulfilled_credit", orderId: cancelled.id },
+    });
+    const processing = await mk("ORD-PA-P", "PROCESSING");
+    await prisma.processedTokopayTx.create({ data: { trxId: "TP-PA-1", amount: "1", outcome: "delivery_failed", orderId: delivered.id } });
+    await prisma.processedBybitTx.create({ data: { bybitTxId: "BY-PA-2", amount: "1", outcome: "delivery_failed", orderId: refunded.id } });
+    await prisma.processedNowpaymentsTx.create({ data: { trxId: "NP-PA-3", amount: "1", outcome: "delivery_failed", orderId: cancelled.id } });
+    await prisma.processedPaydisiniTx.create({ data: { trxId: "PD-PA-4", amount: "1", outcome: "delivery_failed", orderId: processing.id } });
+    await prisma.processedBinanceTx.create({ data: { binanceTxId: "BN-PA-5", amount: "1", outcome: "unmatched" } });
+    await prisma.processedTokopayTx.create({ data: { trxId: "TP-PA-6", amount: "1", outcome: "unmatched", orderId: delivered.id } });
+
+    const { pendingActions } = (await get("/api/dashboard/kpis", cookie)).json();
+    expect(pendingActions.failedDeliveries).toBe(1);
+    expect(pendingActions.manualApprovals).toBe(1);
+
+    const failedList = (await get("/api/payments?outcome=delivery_failed&actionable=1", cookie)).json();
+    expect(failedList.total).toBe(pendingActions.failedDeliveries);
+    expect(failedList.ledger.map((r: { reference: string }) => r.reference)).toEqual(["PD-PA-4"]);
+    const unmatchedList = (await get("/api/payments?outcome=unmatched&actionable=1", cookie)).json();
+    expect(unmatchedList.total).toBe(pendingActions.manualApprovals);
+    expect(unmatchedList.ledger.map((r: { reference: string }) => r.reference)).toEqual(["BN-PA-5"]);
+
+    // Without the flag the Payments list still shows the full history.
+    expect((await get("/api/payments?outcome=delivery_failed", cookie)).json().total).toBe(4);
+  });
+
+  // Money safety: a gateway settle whose delivery throws leaves the order
+  // PENDING_PAYMENT, so the expiry sweep cancels it. The buyer paid and got
+  // nothing — the row must stay on the card and in the list it links to.
+  it("keeps counting a failed delivery whose order was cancelled as expired with no credit or refund", async () => {
+    const buyer = await upsertUser(prisma, { telegramId: 42, username: "buyer", fullName: "Buyer" });
+    const order = await prisma.order.create({
+      data: { orderCode: "ORD-PA-EXP", userId: buyer.id, subtotalAmount: "1", totalAmount: "1", status: "PENDING_PAYMENT" },
+    });
+    await prisma.processedTokopayTx.create({ data: { trxId: "TP-PA-EXP", amount: "1", outcome: "delivery_failed", orderId: order.id } });
+    await cancelOrder(prisma, order.id, "expired", { type: StockActorType.SYSTEM });
+
+    const { pendingActions } = (await get("/api/dashboard/kpis", cookie)).json();
+    expect(pendingActions.failedDeliveries).toBe(1);
+    expect((await get("/api/dashboard/operations", cookie)).json().failedDeliveries).toBe(1);
+    const list = (await get("/api/payments?outcome=delivery_failed&actionable=1", cookie)).json();
+    expect(list.ledger.map((r: { reference: string }) => r.reference)).toEqual(["TP-PA-EXP"]);
+    expect(list.counts.delivery_failed).toBe(1);
   });
 
   // Financial Ledger M6, Task 6b. Before this, a refund changed no dashboard
@@ -267,7 +333,7 @@ describe("GET /api/dashboard/operations", () => {
     expect(res.json()).toMatchObject({ awaitingFulfillment: 1, ordersProcessing: 1 });
   });
 
-  // Task 47 audit: confirms manualMatchQueueCounts (which drives this
+  // Task 47 audit: confirms actionableManualMatchQueueCounts (which drives this
   // failedDeliveries figure) already sums delivery_failed rows across every
   // non-Binance gateway table too — there is no sixth `processedBybitBscTx`
   // table missing from the sum; ProcessedBybitTx already covers both Bybit
@@ -280,6 +346,62 @@ describe("GET /api/dashboard/operations", () => {
     const res = await get("/api/dashboard/operations", cookie);
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({ failedDeliveries: 2 });
+  });
+});
+
+describe("actionable counts across Operation Center and Payments", () => {
+  async function seed() {
+    const buyer = await upsertUser(prisma, { telegramId: 42, username: "buyer", fullName: "Buyer" });
+    const mk = (code: string, status: string) =>
+      prisma.order.create({ data: { orderCode: code, userId: buyer.id, subtotalAmount: "1", totalAmount: "1", status } });
+    const delivered = await mk("ORD-AC-D", "DELIVERED");
+    const processing = await mk("ORD-AC-P", "PROCESSING");
+    await prisma.processedTokopayTx.create({ data: { trxId: "TP-AC-1", amount: "1", outcome: "delivery_failed", orderId: delivered.id } });
+    await prisma.processedBybitTx.create({ data: { bybitTxId: "BY-AC-2", amount: "1", outcome: "delivery_failed", orderId: processing.id } });
+    await prisma.processedBinanceTx.create({ data: { binanceTxId: "BN-AC-3", amount: "1", outcome: "unmatched" } });
+    await prisma.processedTokopayTx.create({ data: { trxId: "TP-AC-4", amount: "1", outcome: "unmatched", orderId: delivered.id } });
+  }
+
+  it("/operations failedDeliveries excludes a row whose order is DELIVERED and equals the actionable Payments total", async () => {
+    await seed();
+    const ops = (await get("/api/dashboard/operations", cookie)).json();
+    expect(ops.failedDeliveries).toBe(1);
+    const list = (await get("/api/payments?outcome=delivery_failed&actionable=1", cookie)).json();
+    expect(list.total).toBe(ops.failedDeliveries);
+  });
+
+  it("/api/payments counts equal the list totals with actionable=1, and stay lifetime without it", async () => {
+    await seed();
+    const on = (await get("/api/payments?actionable=1", cookie)).json();
+    expect(on.counts.delivery_failed).toBe(1);
+    expect(on.counts.unmatched).toBe(1);
+    for (const outcome of ["delivery_failed", "unmatched"]) {
+      const list = (await get(`/api/payments?outcome=${outcome}&actionable=1`, cookie)).json();
+      expect(list.total).toBe(on.counts[outcome]);
+    }
+    const off = (await get("/api/payments", cookie)).json();
+    expect(off.counts.delivery_failed).toBe(2);
+    expect(off.counts.unmatched).toBe(2);
+  });
+
+  it("actionable=1 changes nothing for an outcome other than unmatched/delivery_failed, or no outcome", async () => {
+    await seed();
+    const buyer = await prisma.user.findFirstOrThrow({ where: { telegramId: 42 } });
+    const delivered = await prisma.order.create({
+      data: { orderCode: "ORD-AC-M", userId: buyer.id, subtotalAmount: "1", totalAmount: "1", status: "DELIVERED" },
+    });
+    await prisma.processedPaydisiniTx.create({ data: { trxId: "PD-AC-M", amount: "1", outcome: "matched", orderId: delivered.id } });
+
+    for (const query of ["outcome=matched", ""]) {
+      const off = (await get(`/api/payments?${query}`, cookie)).json();
+      const on = (await get(`/api/payments?${query}${query ? "&" : ""}actionable=1`, cookie)).json();
+      expect(on.total).toBe(off.total);
+      expect(on.ledger.map((r: { reference: string }) => r.reference)).toEqual(off.ledger.map((r: { reference: string }) => r.reference));
+    }
+    const off = (await get("/api/payments", cookie)).json();
+    const on = (await get("/api/payments?actionable=1", cookie)).json();
+    expect(on.counts.matched).toBe(off.counts.matched);
+    expect(on.counts.matched).toBe(1);
   });
 });
 

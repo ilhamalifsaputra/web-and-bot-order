@@ -53,7 +53,7 @@ export function TopBar({ onMenuClick, onSearchOpen }: TopBarProps): JSX.Element 
         type="button"
         onClick={onSearchOpen}
         aria-label="Search"
-        className="flex items-center gap-2 rounded-md border border-line bg-paper px-3 py-1.5 text-sm text-ink-faint transition-colors duration-150 hover:bg-sand hover:text-ink-soft"
+        className="flex items-center gap-2 rounded-md border border-input bg-card px-3 py-1.5 text-sm text-ink-faint transition-colors duration-150 hover:bg-sand hover:text-ink-soft"
       >
         <Search className="h-4 w-4 flex-shrink-0" />
         <span className="hidden sm:inline">Search...</span>

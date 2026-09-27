@@ -180,7 +180,7 @@ function TextFieldRow({
                   type="color"
                   value={colorPickerValue(draft)}
                   onChange={(e) => setDraft(e.target.value)}
-                  className="h-9 w-9 shrink-0 cursor-pointer rounded border border-line p-0.5"
+                  className="h-9 w-9 shrink-0 cursor-pointer rounded border border-input p-0.5"
                   aria-label={`${label} picker`}
                 />
               )}

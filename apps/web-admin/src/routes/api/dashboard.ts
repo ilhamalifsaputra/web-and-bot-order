@@ -23,7 +23,7 @@ import {
   refundTotalsSince,
   profitSummarySince,
   ordersByStatusSince,
-  manualMatchQueueCounts,
+  actionableManualMatchQueueCounts,
   countPendingVerifications,
   countUnderpaid,
   countPendingPaymentLike,
@@ -160,7 +160,11 @@ export default async function dashboardApiRoutes(app: FastifyInstance): Promise<
     const todayGrossForNet = await grossSalesForNetSales(prisma, todayStart);
     const profit = await profitSummarySince(prisma, todayStart);
     const orderStatus = await ordersByStatusSince(prisma, todayStart);
-    const manualQueue = await manualMatchQueueCounts(prisma);
+    // Actionable only: a delivery_failed/unmatched ledger row whose order was
+    // since delivered by hand, refunded or cancelled is no longer work. The
+    // card links to /payments?outcome=…&actionable=1, which lists by the same
+    // rule (see actionableManualMatchQueueCounts).
+    const manualQueue = await actionableManualMatchQueueCounts(prisma);
     const toReview = await countPendingVerifications(prisma);
     const underpaid = await countUnderpaid(prisma);
 
@@ -225,7 +229,7 @@ export default async function dashboardApiRoutes(app: FastifyInstance): Promise<
       await Promise.all([
         countPendingPaymentLike(prisma),
         countPendingVerifications(prisma),
-        manualMatchQueueCounts(prisma),
+        actionableManualMatchQueueCounts(prisma),
         countProcessing(prisma),
         countExpiredPending(prisma, now),
         countAwaitingManualFulfillment(prisma),

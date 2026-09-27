@@ -1130,7 +1130,12 @@ describe("showHelpCenter (§10 Help Center hub)", () => {
 
 describe("denomination picker", () => {
   async function makeProductWithTwo() {
-    const cat = await prisma.category.create({ data: { name: `gc${Math.random()}`, slug: `gc-${Math.random()}` } });
+    // Task 3: the compact catalog view now covers every category EXCEPT
+    // Premium Apps (including a null/unclassified `group`), so this fixture
+    // must explicitly opt into PREMIUM_APPS to keep exercising the flat
+    // per-plan price/stock dump + Duration/Type/Warranty detail template it
+    // was written for — an unclassified category would now render compact.
+    const cat = await createCategory(prisma, { name: `gc${Math.random()}`, group: CategoryGroup.PREMIUM_APPS });
     // The mid-tier Product holds ≥2 denominations → it renders a picker.
     const product = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Capcut" });
     const m1 = await createDenomination(prisma, {
@@ -1333,25 +1338,50 @@ describe("denomination picker", () => {
     expect(detailBody).not.toContain("Server ID");
   });
 
-  it("Game Top Up picker keeps the old plan lines when a SKU has no inline price on its button", async () => {
-    const { product } = await makeGameProduct({ qtyOnAll: false });
+  it("Game Top Up picker stays compact (no flat plan dump, no stock line) even when a SKU is missing qtyValue/qtyUnit — the Delta Force bug", async () => {
+    // Task 3 regression: a real GAME_TOPUP product with 20+ SKUs where at
+    // least one is missing admin-backfilled qtyValue/qtyUnit used to fall
+    // all the way back to the flat per-line "{duration} — {price} (Stok –)"
+    // dump for EVERY denomination (the qtyValue/qtyUnit-completeness "every"
+    // gate that used to guard compact mode). Compact mode is now gated on
+    // category group alone — an incomplete SKU only loses its qty+unit
+    // compact label, never the whole product's compact rendering.
+    const { product, d1, d2 } = await makeGameProduct({ qtyOnAll: false });
     const { ctx, sink } = customerCtx();
     await customer.browseProduct(ctx, product.id);
     const body = bodyText(sink);
-    expect(body).toContain("Rp15.000");
-    expect(body).toContain("Rp30.000");
-    expect(body).toContain("Choose a plan:");
-    expect(body).not.toContain("Choose a top-up amount:");
+    // No flat per-line dump and no stock text anywhere in the message body.
+    expect(body).not.toContain("Rp15.000 (");
+    expect(body).not.toContain("Rp30.000 (");
+    expect(body).not.toContain("Stock");
+    expect(body).not.toContain("Stok");
+    expect(body).toContain("Choose a top-up amount:");
+    expect(body).not.toContain("Choose a plan:");
+
+    const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ text: string; callback_data?: string }>> };
+    const flat = (markup?.inline_keyboard ?? []).flat();
+    // d1 has qtyValue/qtyUnit backfilled -> compact qty+unit+price label.
+    const button1 = flat.find((b) => b.callback_data === `v1:browse:denom:${d1.id}`)!;
+    expect(button1.text).toContain("86");
+    expect(button1.text).toContain("Rp");
+    // d2 is missing qtyValue/qtyUnit -> price-appended fallback label, never
+    // name-only (the exact bug: a button with no price anywhere on it).
+    const button2 = flat.find((b) => b.callback_data === `v1:browse:denom:${d2.id}`)!;
+    expect(button2.text).toContain("172 Diamonds");
+    expect(button2.text).toContain("Rp30.000");
   });
 
-  it("Game Top Up detail hides Duration/Type/Warranty, keeps Price/Stock, and shows the description once", async () => {
+  it("Game Top Up detail hides Duration/Type/Warranty AND the stock line, keeps Price, and shows the description once", async () => {
+    // Task 3: the stock line ("In stock: …") is now Premium-Apps-only —
+    // Game Top Up (and any unclassified category) drops it entirely, since
+    // it was never a real, buyer-meaningful count for these categories.
     const { d1 } = await makeGameProduct({ description: "Official ML diamonds" });
     const { ctx, sink } = customerCtx();
     await customer.browseDenomination(ctx, d1.id);
     const body = bodyText(sink);
     expect(body).toContain("Price:");
     expect(body).toContain("Rp15.000");
-    expect(body).toContain("In stock:");
+    expect(body).not.toContain("In stock:");
     expect(body).not.toContain("Duration:");
     expect(body).not.toContain("Type:");
     expect(body).not.toContain("Warranty:");
@@ -1945,7 +1975,11 @@ describe("browseCategoryEntry — Game Top Up variant/region navigation + AUTO s
     expect(sentIncludes(sink, "VP Points B")).toBe(false);
   });
 
-  it("browseProduct shows the Automated stock indicator (not a raw number) for an AUTO denomination inside a GAME_TOPUP category", async () => {
+  it("browseProduct shows no stock line at all for a GAME_TOPUP AUTO denomination — compact mode drops the stock display (and read) entirely", async () => {
+    // Task 3: the "Automated" indicator used to exist to hide a raw AUTO
+    // count in the flat per-plan dump — that whole dump (and the per-
+    // denomination stock read behind it) is gone for GAME_TOPUP now, so
+    // neither the indicator nor a raw number ever appears.
     const cat = await createCategory(prisma, { name: "Mobile Legends Diamonds", group: CategoryGroup.GAME_TOPUP });
     const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "ML Diamonds Stock Test" });
     const d1 = await createDenomination(prisma, { productId: p.id, name: "86", type: "SHARED", durationLabel: "86 Diamonds", price: "20000", deliveryType: DeliveryType.AUTO });
@@ -1955,8 +1989,9 @@ describe("browseCategoryEntry — Game Top Up variant/region navigation + AUTO s
     const { ctx, sink } = customerCtx();
     await customer.browseProduct(ctx, p.id);
 
-    expect(sentIncludes(sink, t(ctx, "browse.stock_auto_value"))).toBe(true);
+    expect(sentIncludes(sink, t(ctx, "browse.stock_auto_value"))).toBe(false);
     expect(sentIncludes(sink, "(Stock 2)")).toBe(false);
+    expect(bodyText(sink)).not.toContain("(Stock");
   });
 
   it("PREMIUM APPS ZERO-BEHAVIOR-CHANGE REGRESSION: browseProduct keeps the raw AUTO stock number for a Premium Apps category", async () => {
@@ -1973,11 +2008,37 @@ describe("browseCategoryEntry — Game Top Up variant/region navigation + AUTO s
     expect(sentIncludes(sink, t(ctx, "browse.stock_auto_value"))).toBe(false);
   });
 
-  it("browseProduct keeps the em-dash stock placeholder for a MANUAL_WITH_INFO denomination regardless of category group", async () => {
-    const cat = await createCategory(prisma, { name: "Mobile Legends Manual", group: CategoryGroup.GAME_TOPUP });
-    const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "ML Manual Diamonds" });
-    await createDenomination(prisma, { productId: p.id, name: "86", type: "SHARED", durationLabel: "86 Diamonds", price: "20000", deliveryType: DeliveryType.MANUAL_WITH_INFO });
-    await createDenomination(prisma, { productId: p.id, name: "172", type: "SHARED", durationLabel: "172 Diamonds", price: "40000", deliveryType: DeliveryType.MANUAL_WITH_INFO });
+  it("PREMIUM APPS: browseProduct's per-denomination stock counts stay correct per-row when sourced from the batched availableStockCountsByDenomination query", async () => {
+    // Task 3 replaced N parallel countAvailableStock calls with a single
+    // batched availableStockCountsByDenomination query — this proves the
+    // batched result is still mapped back to the RIGHT denomination (not,
+    // say, every row showing the first denomination's count, or the total).
+    const cat = await createCategory(prisma, { name: "Batched Stock Test", group: CategoryGroup.PREMIUM_APPS });
+    const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Batched Streaming" });
+    const d1 = await createDenomination(prisma, { productId: p.id, name: "1 Month", type: "SHARED", durationLabel: "1 Month", price: "20000", deliveryType: DeliveryType.AUTO });
+    await bulkAddStock(prisma, d1.id, ["a", "b"]); // 2 in stock
+    const d2 = await createDenomination(prisma, { productId: p.id, name: "3 Months", type: "SHARED", durationLabel: "3 Months", price: "50000", deliveryType: DeliveryType.AUTO });
+    await bulkAddStock(prisma, d2.id, ["c", "d", "e", "f", "g"]); // 5 in stock, deliberately different from d1
+    const d3 = await createDenomination(prisma, { productId: p.id, name: "6 Months", type: "SHARED", durationLabel: "6 Months", price: "90000", deliveryType: DeliveryType.AUTO });
+    // d3 gets no stock at all -> should read 0, not a missing/undefined count.
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseProduct(ctx, p.id);
+
+    expect(sentIncludes(sink, "(Stock 2)")).toBe(true);
+    expect(sentIncludes(sink, "(Stock 5)")).toBe(true);
+    expect(sentIncludes(sink, "(Stock 0)")).toBe(true);
+  });
+
+  it("browseProduct keeps the em-dash stock placeholder for a MANUAL_WITH_INFO denomination in a Premium Apps category", async () => {
+    // Task 3 narrowed this to Premium Apps only — every other/unclassified
+    // category is compact now and drops the stock line entirely (see the
+    // GAME_TOPUP compact-mode test below), so "regardless of category group"
+    // no longer holds; Premium Apps is the one group that still renders it.
+    const cat = await createCategory(prisma, { name: "Streaming Manual Test", group: CategoryGroup.PREMIUM_APPS });
+    const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Streaming Manual" });
+    await createDenomination(prisma, { productId: p.id, name: "1 Month", type: "SHARED", durationLabel: "1 Month", price: "20000", deliveryType: DeliveryType.MANUAL_WITH_INFO });
+    await createDenomination(prisma, { productId: p.id, name: "3 Months", type: "SHARED", durationLabel: "3 Months", price: "40000", deliveryType: DeliveryType.MANUAL_WITH_INFO });
 
     const { ctx, sink } = customerCtx();
     await customer.browseProduct(ctx, p.id);
@@ -1986,7 +2047,20 @@ describe("browseCategoryEntry — Game Top Up variant/region navigation + AUTO s
     expect(sentIncludes(sink, t(ctx, "browse.stock_auto_value"))).toBe(false);
   });
 
-  it("browseDenomination shows the Automated stock indicator for an AUTO denomination inside a GAME_TOPUP category", async () => {
+  it("browseProduct shows no stock line for a MANUAL_WITH_INFO denomination in a GAME_TOPUP category (compact mode)", async () => {
+    const cat = await createCategory(prisma, { name: "Mobile Legends Manual", group: CategoryGroup.GAME_TOPUP });
+    const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "ML Manual Diamonds" });
+    await createDenomination(prisma, { productId: p.id, name: "86", type: "SHARED", durationLabel: "86 Diamonds", price: "20000", deliveryType: DeliveryType.MANUAL_WITH_INFO });
+    await createDenomination(prisma, { productId: p.id, name: "172", type: "SHARED", durationLabel: "172 Diamonds", price: "40000", deliveryType: DeliveryType.MANUAL_WITH_INFO });
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseProduct(ctx, p.id);
+
+    expect(sentIncludes(sink, "(Stock —)")).toBe(false);
+    expect(bodyText(sink)).not.toContain("(Stock");
+  });
+
+  it("browseDenomination shows no stock line at all for an AUTO denomination inside a GAME_TOPUP category — compact detail drops stock display entirely", async () => {
     const cat = await createCategory(prisma, { name: "Free Fire Detail Test", group: CategoryGroup.GAME_TOPUP });
     const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "FF Diamonds Detail" });
     const d = await createDenomination(prisma, { productId: p.id, name: "100", type: "SHARED", durationLabel: "100 Diamonds", price: "15000", deliveryType: DeliveryType.AUTO });
@@ -1995,17 +2069,25 @@ describe("browseCategoryEntry — Game Top Up variant/region navigation + AUTO s
     const { ctx, sink } = customerCtx();
     await customer.browseDenomination(ctx, d.id);
 
-    expect(sentIncludes(sink, t(ctx, "browse.stock_auto_value"))).toBe(true);
+    expect(sentIncludes(sink, t(ctx, "browse.stock_auto_value"))).toBe(false);
     expect(sentIncludes(sink, "<b>4</b>")).toBe(false);
+    expect(bodyText(sink)).not.toContain("In stock");
   });
 
-  it("PREMIUM APPS ZERO-BEHAVIOR-CHANGE REGRESSION: browseDenomination keeps the raw AUTO stock number for a Premium Apps (ungrouped) category", async () => {
-    // sample.product is AUTO, in a category with no `group` set (the sample
-    // fixture never assigns one) — exercises the exact pre-Task-12 code path.
+  it("PREMIUM APPS ZERO-BEHAVIOR-CHANGE REGRESSION: browseDenomination keeps the raw AUTO stock number for a Premium Apps category", async () => {
+    // Task 3 broadened compact mode to cover a null/unclassified `group`
+    // too, so `sample.product` (whose category has no `group` set) is no
+    // longer a Premium Apps stand-in — use an explicit PREMIUM_APPS category
+    // instead to keep proving this real case is untouched.
+    const cat = await createCategory(prisma, { name: "Streaming Detail Test", group: CategoryGroup.PREMIUM_APPS });
+    const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Streaming Detail" });
+    const d = await createDenomination(prisma, { productId: p.id, name: "1 Month", type: "SHARED", durationLabel: "1 Month", price: "20000", deliveryType: DeliveryType.AUTO });
+    await bulkAddStock(prisma, d.id, ["a", "b", "c", "d", "e"]);
+
     const { ctx, sink } = customerCtx();
-    await customer.browseDenomination(ctx, sample.product.id);
+    await customer.browseDenomination(ctx, d.id);
     expect(sentIncludes(sink, t(ctx, "browse.stock_auto_value"))).toBe(false);
-    expect(sentIncludes(sink, "<b>5</b>")).toBe(true); // the sample fixture seeds 5 stock items
+    expect(sentIncludes(sink, "<b>5</b>")).toBe(true);
   });
 
   it("browseCategoryEntry cascades into browseProduct's compact buttonLabel for a Game Top Up denomination with qtyValue/qtyUnit backfilled", async () => {

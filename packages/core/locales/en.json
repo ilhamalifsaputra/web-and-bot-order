@@ -76,7 +76,7 @@
   "browse.category_picker_title": "🗂 <b>{group}</b>\n\nChoose one:",
   "browse.choose_denomination": "<b>{name}</b>\n\n{sold}\n\n{plans}\n\nChoose a plan:",
   "browse.choose_denomination_game": "<b>{name}</b>\n\n{sold}{info}\n\nChoose a top-up amount:",
-  "browse.denomination_detail_game": "<b>{product}</b>\nAmount: <b>{plan}</b>\n\nPrice: <b>{price}</b>\nIn stock: <b>{stock}</b>\nSold (all-time): <b>{sold}</b>\nRating: {rating}",
+  "browse.denomination_detail_game": "<b>{product}</b>\nAmount: <b>{plan}</b>\n\nPrice: <b>{price}</b>\nSold (all-time): <b>{sold}</b>\nRating: {rating}",
   "browse.game_input_hint": "🎮 Data needed at checkout: <b>{fields}</b>",
   "browse.game_field_user_id": "User ID",
   "browse.game_field_zone_id": "Zone ID",

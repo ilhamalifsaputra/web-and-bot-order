@@ -30,6 +30,7 @@ import {
   getDenomination,
   getDenominationWithProduct,
   countAvailableStock,
+  availableStockCountsByDenomination,
   MAX_CART_ORDER_UNITS,
   getBulkPricingForDenomination,
   countUserOrders,
@@ -959,57 +960,32 @@ export async function browseProduct(ctx: MyContext, productId: number): Promise<
   // conversion at this render edge).
   const prices = ctxPriceFormatter(ctx, rate);
 
-  // Game Top Up whose every button will carry its own price (compact
-  // qty+unit+price label — same qtyValue/qtyUnit condition as buttonLabel
-  // below): repeating price/stock per plan in the body would just duplicate
-  // the keyboard, so the body describes the GAME instead — the admin's
-  // description plus which account data checkout will ask for. A game with
-  // even one un-backfilled SKU (no inline price on its button) keeps the plan
-  // lines, since that SKU's price would otherwise be nowhere.
-  const isGameWithInlinePrices =
-    product.category.group === CategoryGroup.GAME_TOPUP && active.every((d) => d.qtyValue != null && !!d.qtyUnit);
+  // Compact catalog mode: every category EXCEPT Premium Apps (Game Top Up,
+  // and any as-yet-unclassified null-group category) skips the flat per-plan
+  // price/stock dump entirely — repeating price/stock per plan in the body
+  // would just duplicate the keyboard, so the body describes the PRODUCT
+  // instead (the admin's description plus which account data checkout will
+  // ask for, when applicable). Premium Apps is the one group with real,
+  // buyer-meaningful local inventory, so it's the only one that keeps the
+  // per-plan body lines (price + stock).
+  const isCompactCatalog = product.category.group !== CategoryGroup.PREMIUM_APPS;
 
-  // Per-plan price + stock lines for the message body — used when the picker
-  // buttons carry only the plan name (every non-game product, and any Game Top
-  // Up SKU without qtyValue/qtyUnit). Skipped entirely (no stock reads) when
-  // isGameWithInlinePrices, since the body won't show them. Reseller price
-  // wins for reseller users when set, mirroring the detail screen. Stock is
-  // read per denomination in parallel.
+  // Batched stock read for the non-compact (Premium Apps) branch only — the
+  // compact branch never shows a stock line, so it must not read stock at
+  // all. One grouped query up front covers every active denomination instead
+  // of the old N-parallel-round-trips-per-denomination shape (a real N+1
+  // whose result used to be thrown away for any non-AUTO denomination anyway).
+  const stockCounts = isCompactCatalog
+    ? null
+    : await availableStockCountsByDenomination(prisma, active.map((d) => d.id));
+
+  // Per-plan price (+ stock, non-compact only) — used when the picker buttons
+  // carry only the plan name (Premium Apps, and any compact-mode SKU without
+  // qtyValue/qtyUnit backfilled). Reseller price wins for reseller users when
+  // set, mirroring the detail screen.
   const planData = await Promise.all(
     active.map(async (d) => {
       const unitPrice = effectiveUnitPrice(d, isReseller);
-      // Compact Game Top Up button label (qty + unit + price), only when the
-      // admin has actually backfilled qtyValue/qtyUnit on this denomination —
-      // leaving buttonLabel undefined otherwise so denominationPickerKb falls
-      // through to its existing formatDenominationLabel(...) call, exactly as
-      // before this task (the hard zero-behavior-change bar for Premium Apps,
-      // and for any Game Top Up SKU an admin hasn't backfilled yet).
-      // Finding I3 (final-review): the PRODUCT's own gameVariantEmoji wins —
-      // session scratch is only a fallback for the rare case it has none. The
-      // old precedence (scratch first) meant a leftover emoji from a
-      // PREVIOUSLY-browsed Game Top Up category's variant navigation could
-      // leak onto a completely different product's denomination buttons here
-      // (this screen is also reached via Popular/search, which never go
-      // through the variant-picker flow that sets/clears scratch at all).
-      const buttonLabel =
-        d.qtyValue != null && d.qtyUnit
-          ? gameTopUpDenomLabel(d, unitPrice, product.gameVariantEmoji ?? sc(ctx).gameVariantEmoji, prices)
-          : undefined;
-      if (isGameWithInlinePrices) return { line: "", buttonLabel };
-      const stock = await countAvailableStock(prisma, d.id);
-      // Stock rows only ever exist for AUTO SKUs — a manual/manual_with_info
-      // plan has none by design, so showing a literal "0" here would read as
-      // sold out right next to a (correctly) purchasable Buy button. Within
-      // a Game Top Up category, an AUTO denomination's exact count is an
-      // internal supplier-stock detail, not something a buyer needs to see —
-      // show an "Automated" indicator instead. Premium Apps AUTO
-      // denominations keep showing the raw number, unchanged.
-      const stockDisplay =
-        d.deliveryType === DeliveryType.AUTO
-          ? product.category.group === CategoryGroup.GAME_TOPUP
-            ? t(ctx, "browse.stock_auto_value")
-            : stock
-          : "—";
       // A flash sale shows as the old price struck through next to the new one,
       // but only when this buyer is actually paying the sale price — a reseller
       // whose standing price still wins sees the plain line.
@@ -1021,6 +997,34 @@ export async function browseProduct(ctx: MyContext, productId: number): Promise<
               new: prices.price(unitPrice),
             })
           : prices.price(unitPrice);
+      // Compact Game Top Up button label (qty + unit + price), only when the
+      // admin has actually backfilled qtyValue/qtyUnit on this denomination —
+      // falls through to formatDenominationLabel(...) (via denominationPickerKb)
+      // for Premium Apps, exactly as before this task (the hard zero-behavior-
+      // change bar for Premium Apps). In compact mode, a denomination missing
+      // qtyValue/qtyUnit still needs a price on its button — the body won't
+      // show one — so it gets a plain "{plan} — {price}" fallback label
+      // instead of being left name-only.
+      // Finding I3 (final-review): the PRODUCT's own gameVariantEmoji wins —
+      // session scratch is only a fallback for the rare case it has none. The
+      // old precedence (scratch first) meant a leftover emoji from a
+      // PREVIOUSLY-browsed Game Top Up category's variant navigation could
+      // leak onto a completely different product's denomination buttons here
+      // (this screen is also reached via Popular/search, which never go
+      // through the variant-picker flow that sets/clears scratch at all).
+      const buttonLabel =
+        d.qtyValue != null && d.qtyUnit
+          ? gameTopUpDenomLabel(d, unitPrice, product.gameVariantEmoji ?? sc(ctx).gameVariantEmoji, prices)
+          : isCompactCatalog
+            ? `${d.durationLabel || d.name} — ${priceText}`
+            : undefined;
+      if (isCompactCatalog) return { line: "", buttonLabel };
+      const stock = stockCounts?.get(d.id) ?? 0;
+      // Stock rows only ever exist for AUTO SKUs — a manual/manual_with_info
+      // plan has none by design, so showing a literal "0" here would read as
+      // sold out right next to a (correctly) purchasable Buy button. Premium
+      // Apps AUTO denominations show the raw number.
+      const stockDisplay = d.deliveryType === DeliveryType.AUTO ? stock : "—";
       const line = t(ctx, "browse.denomination_line", {
         duration: esc(d.durationLabel || d.name),
         price: priceText,
@@ -1033,7 +1037,7 @@ export async function browseProduct(ctx: MyContext, productId: number): Promise<
   const sold = await soldCountForProduct(prisma, productId);
 
   let text: string;
-  if (isGameWithInlinePrices) {
+  if (isCompactCatalog) {
     const blocks: string[] = [];
     if (product.description) {
       blocks.push(t(ctx, "browse.description", { description: esc(product.description) }));
@@ -1131,29 +1135,26 @@ export async function browseDenomination(
   // read as sold out directly beside the (correctly) purchasable Buy button
   // below. `stock` itself stays the raw count for denominationDetailKb's
   // gating/stepper-bound logic further down; only the displayed text changes.
-  // Within a Game Top Up category, the exact AUTO count is an internal
-  // supplier-stock detail — show an "Automated" indicator instead. Premium
-  // Apps AUTO denominations keep showing the raw number, unchanged.
-  const stockDisplay =
-    d.deliveryType === DeliveryType.AUTO
-      ? d.product.category.group === CategoryGroup.GAME_TOPUP
-        ? t(ctx, "browse.stock_auto_value")
-        : stock
-      : "—";
+  // This template reaches Premium Apps only now (the compact detail template
+  // below drops the stock line entirely for every other/unclassified
+  // category), so an AUTO denomination always shows the raw number here.
+  const stockDisplay = d.deliveryType === DeliveryType.AUTO ? stock : "—";
 
   const priceText = onSale
     ? t(ctx, "browse.flash_price", { old: prices.price(d.price), new: prices.price(unit) })
     : prices.price(unit);
-  // Game Top Up SKUs (diamonds, UC, …) have no meaningful Duration/Type/
-  // Warranty — those lines are Premium Apps account attributes — so the game
-  // variant of this bubble keeps only Price/Stock/Sold/Rating.
-  const isGame = d.product.category.group === CategoryGroup.GAME_TOPUP;
+  // Game Top Up SKUs (diamonds, UC, …) — and any as-yet-unclassified null-
+  // group category — have no meaningful Duration/Type/Warranty (those are
+  // Premium Apps account attributes) and no meaningful stock line either (the
+  // one Premium Apps keeps is the one real, buyer-meaningful local inventory
+  // count), so this compact variant of the bubble keeps only Price/Sold/
+  // Rating.
+  const isGame = d.product.category.group !== CategoryGroup.PREMIUM_APPS;
   let text = isGame
     ? t(ctx, "browse.denomination_detail_game", {
         product: esc(d.product.name),
         plan: esc(d.name),
         price: priceText,
-        stock: stockDisplay,
         sold,
         rating: ratingStr,
       })

@@ -49,9 +49,13 @@ Ditegaskan langsung di komentar `packages/core/src/enums.ts:288-289`
 - `formatMoney(amount, currency)` — dispatch ke salah satu berdasarkan
   `Order.currency` (bukan `Intl.NumberFormat` karena `"USDT"` bukan kode
   ISO-4217 yang valid).
-- `usdtFromIdr(idr, rate)` — konversi IDR→USDT, dibulatkan ke **0.1 USDT
-  terdekat** (plan.md §15.1). Dilakukan **sekali per total**, bukan per item,
-  untuk menghindari drift pembulatan berganda.
+- `usdtFromIdr(idr, rate)` — konversi IDR→USDT, `ceil₂(idr / rate)`:
+  dibulatkan ke **ATAS (ceiling)**, bukan half-up, ke kelipatan **0.01 USDT**
+  (M13/P2-1 — perubahan kebijakan pricing yang disengaja dari step-0.1
+  half-up sebelumnya, karena half-up membulatkan separuh quote ke bawah
+  sehingga toko systematically undercharge di separuh transaksi crypto;
+  ceiling tidak pernah undercharge). Dilakukan **sekali per total**, bukan
+  per item, untuk menghindari drift pembulatan berganda.
 - `computeUniqueCents(orderId)` — offset unik 0.002–0.098 USDT (49 bucket,
   step 0.002) untuk membedakan dua order bernominal sama saat matching
   transfer manual (Binance/Bybit) berbasis jumlah. Step ini sengaja lebih
@@ -64,9 +68,13 @@ Ditegaskan langsung di komentar `packages/core/src/enums.ts:288-289`
   (gratis, keyless, API key demo opsional untuk menaikkan rate limit).
 - `roundRateToStep(rate, step)` — bulatkan ke kelipatan `step` rupiah
   (default Rp100, half-up).
-- `refreshUsdIdrRate` (`crud/pricing.ts`, dipanggil job `reconcileFinancesJob`
-  tiap jam via cron) — auto-update `usd_idr_rate` kecuali setting
-  `usd_idr_rate_auto` = `"false"`.
+- `refreshUsdIdrRate` (`crud/pricing.ts`) — auto-update `usd_idr_rate` kecuali
+  setting `usd_idr_rate_auto` = `"false"`. Dipanggil **tiap jam** oleh
+  `scheduleFxRefresh`/`runFxRefreshTick` (`apps/order-bot/src/jobs/index.ts`,
+  cron `"5 * * * *"`) — **bukan** `reconcileFinancesJob`. Itu job yang
+  berbeda: read-only drift detector 6-jam-sekali di §7
+  (`crud/reports.ts: reconcileFinances`), tidak pernah memanggil
+  `refreshUsdIdrRate`.
 
 ## 5. Layering harga per line
 
@@ -135,7 +143,10 @@ data:
 ## 9. Math logic — formula lengkap & contoh numerik
 
 Notasi: `round₀`, `round₁`, `round₄` = pembulatan half-up ke 0/1/4 desimal
-(`quantizeMoney`). Semua nilai intermediate adalah `Decimal`, bukan float.
+(`quantizeMoney`). `ceil₂` = pembulatan ke ATAS (ceiling, bukan half-up) ke 2
+desimal — dipakai HANYA oleh `usdtFromIdr`, yang tidak lewat `quantizeMoney`
+sama sekali (lihat §3, §9.6). Semua nilai intermediate adalah `Decimal`, bukan
+float.
 
 ### 9.1 Harga per unit (flash sale) — `core/flash.ts`
 
@@ -203,25 +214,35 @@ Lanjutan contoh: `100.000 − 10.000 − 12.000 = Rp78.000`.
 ### 9.6 Konversi ke USDT — `usdtFromIdr` (`core/formatters.ts`)
 
 ```
-usdt = round₁( idr / rate )        // ke KELIPATAN 0.1 USDT terdekat, half-up
+usdt = ceil₂( idr / rate )        // dibulatkan KE ATAS ke 2 desimal (0.01 USDT), bukan half-up
 ```
 Dipanggil **sekali** atas TOTAL (`baseIdr = afterDiscount − walletIdrLeg`),
 tidak pernah per line — mengalikan/menjumlah hasil yang sudah dikonversi
 menggandakan error pembulatan. Contoh nyata dari kode (`orders.ts` L1856-1866):
 5 unit @ Rp8.900 pada `fxRate = 16.000`:
-- Salah (per-unit): `unitPrice = round₁(8900/16000) = round₁(0.55625) = 0.6` →
-  `5 × 0.6 = 3.0 USDT`.
-- Benar (per-total): `round₁((5×8900)/16000) = round₁(44500/16000) =
-  round₁(2.78125) = 2.8 USDT`.
+- Salah (per-unit): `unitPrice = ceil₂(8900/16000) = ceil₂(0.55625) = 0.56` →
+  `5 × 0.56 = 2.80 USDT`.
+- Benar (per-total): `ceil₂((5×8900)/16000) = ceil₂(44500/16000) =
+  ceil₂(2.78125) = 2.79 USDT`.
+- **2.80 ≠ 2.79** — masih divergen 0.01 USDT walau presisinya jauh lebih
+  halus dari step-0.1 yang lama; membulatkan per-unit lalu mengalikan tetap
+  menggandakan error pembulatan dibanding membulatkan sekali di akhir.
 
-Kasus reconciliation-drift lain (docstring `orders.ts` L1808-1810): subtotal
-Rp45.000 dengan voucher Rp9.000 pada `fxRate = 16.000`:
-- Convert subtotal & discount independen: `2.8125→2.8` dan `0.5625→0.6`,
-  `2.8 − 0.6 = 2.2 USDT`.
-- Convert net sekali: `(45000−9000)/16000 = 2.25 → round₁ half-up = 2.3 USDT`.
-- **2.2 ≠ 2.3** — kontradiksi 0.1 USDT. Karena itu halaman order/receipt
-  men-derive subtotal DARI net + discount (satu konversi), bukan mengonversi
-  keduanya secara independen (lihat komentar `enqueueBuyerOrderReadyEmailIfGuest`).
+Kasus reconciliation-drift lain (docstring `orders.ts` L1808-1810, angka
+disesuaikan untuk presisi 0.01): subtotal Rp45.000 dengan voucher Rp4.500
+pada `fxRate = 16.000`:
+- Convert subtotal & discount independen: `ceil₂(45000/16000) = ceil₂(2.8125)
+  = 2.82` dan `ceil₂(4500/16000) = ceil₂(0.28125) = 0.29`,
+  `2.82 − 0.29 = 2.53 USDT`.
+- Convert net sekali: `ceil₂((45000−4500)/16000) = ceil₂(40500/16000) =
+  ceil₂(2.53125) = 2.54 USDT`.
+- **2.53 ≠ 2.54** — kontradiksi 0.01 USDT. Presisi yang lebih halus (0.01
+  vs 0.1) mengecilkan besar drift-nya, tapi tidak menghilangkannya: dua
+  angka Rupiah yang tidak jatuh pas di kelipatan 0.01×rate tetap bisa
+  divergen kalau tiap komponen dibulatkan sendiri-sendiri. Karena itu
+  halaman order/receipt men-derive subtotal DARI net + discount (satu
+  konversi), bukan mengonversi keduanya secara independen (lihat komentar
+  `enqueueBuyerOrderReadyEmailIfGuest`).
 
 ### 9.7 Unique cents (disambiguasi transfer manual) — `computeUniqueCents`
 

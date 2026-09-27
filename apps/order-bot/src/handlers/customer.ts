@@ -108,6 +108,15 @@ const PENDING_PAYMENT_METHOD_LABEL_KEYS: Partial<Record<string, string>> = {
 interface BrowseScratch {
   page?: number;
   browseEntries?: number[];
+  /** Which numbered list a typed digit currently resolves against — set by
+   * whichever of browseProductsFlat / the variant-picker render / the
+   * region-picker render ran most recently. Each of those three clears the
+   * OTHER two scratch fields (browseEntries / gameVariantEntries /
+   * gameRegionEntries) at the same time it sets this, so a stale list can
+   * never be read even by accident. Undefined means "products" too — an
+   * in-flight session that predates this field never set it, and its only
+   * possible numbered screen before this field existed was the product list. */
+  activeNumberedScreen?: "products" | "gameVariant" | "gameRegion";
   /** The active Category scope for the flat product list (Products entry
    * flow's third step) — set by browseCategoryEntry, read by
    * browseProductsFlat. Undefined means no category scope (shouldn't
@@ -501,6 +510,20 @@ export async function browseCategoryEntry(ctx: MyContext, categoryId: number, ba
 
   if (variants.length > 1) {
     sc(ctx).gameVariantEntries = variants;
+    sc(ctx).activeNumberedScreen = "gameVariant";
+    // A typed digit must resolve against THIS picker now, not whatever the
+    // flat list or the region picker last snapshotted — see
+    // BrowseScratch.activeNumberedScreen.
+    delete sc(ctx).browseEntries;
+    delete sc(ctx).gameRegionEntries;
+    // Telegram can't edit away the OLD bottom ReplyKeyboardMarkup (only a
+    // fresh sendMessage can replace it) — resend it now, sized to this
+    // picker's own option count, BEFORE the picker's own inline-keyboard
+    // render below, so that edit/send stays the chat's most recently
+    // rendered screen (its inline buttons are what a tap should act on).
+    await ctx.reply(t(ctx, "browse.choose_variant"), {
+      reply_markup: ckb.gamePickerPersistentKb(variants.length, ctx.session.lang),
+    });
     // Back goes UP to the category picker (Finding I2/3 of the final-review)
     // — `cb("browse", "cat", categoryId)` would just re-render this SAME
     // variant picker, a no-op loop, since this category has >1 variant.
@@ -517,19 +540,31 @@ export async function browseCategoryEntry(ctx: MyContext, categoryId: number, ba
   await enterGameVariant(ctx, categoryId, variants[0]?.label ?? null, variants[0]?.emoji ?? null, effectiveBackTarget);
 }
 
+/** Shared index-resolution for the variant picker — resolves an index (tapped
+ * via the inline picker's callback, or typed as a digit while it's the active
+ * numbered screen, see handleProductNumber) against the gameVariantEntries
+ * snapshot taken when that picker was rendered, then continues into the
+ * region step. Returns false when the index doesn't match a snapshotted
+ * entry (stale screen) — the caller decides how to surface that: a toast for
+ * a callback tap (pickGameVariant), an inline message for a typed digit
+ * (handleProductNumber). */
+async function resolveGameVariantByIndex(ctx: MyContext, categoryId: number, idx: number): Promise<boolean> {
+  const entry = sc(ctx).gameVariantEntries?.[idx];
+  if (!entry) return false;
+  // A real variant picker WAS shown for this tap — the region step's own Back
+  // (if it renders) should re-open it.
+  await enterGameVariant(ctx, categoryId, entry.label, entry.emoji, ckb.cb("browse", "gvars", categoryId));
+  return true;
+}
+
 /** A customer tapped one entry on the variant picker rendered by
  * browseCategoryEntry — resolve the tapped index against the snapshot taken
  * when that picker was rendered (mirrors handleProductNumber's
  * browseEntries pattern), then continue into the region step. */
 export async function pickGameVariant(ctx: MyContext, categoryId: number, idx: number): Promise<void> {
-  const entry = sc(ctx).gameVariantEntries?.[idx];
-  if (!entry) {
+  if (!(await resolveGameVariantByIndex(ctx, categoryId, idx))) {
     await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
-    return;
   }
-  // A real variant picker WAS shown for this tap — the region step's own Back
-  // (if it renders) should re-open it.
-  await enterGameVariant(ctx, categoryId, entry.label, entry.emoji, ckb.cb("browse", "gvars", categoryId));
 }
 
 /** Shared by browseCategoryEntry's single-variant skip and pickGameVariant's
@@ -560,21 +595,43 @@ async function enterGameVariant(
   const regions = await listCategoryGameRegions(prisma, categoryId, gameVariant);
   if (regions.length > 1) {
     sc(ctx).gameRegionEntries = regions;
+    sc(ctx).activeNumberedScreen = "gameRegion";
+    // A typed digit must resolve against THIS picker now, not whatever the
+    // flat list or the variant picker last snapshotted — see
+    // BrowseScratch.activeNumberedScreen.
+    delete sc(ctx).browseEntries;
+    delete sc(ctx).gameVariantEntries;
+    // Same reasoning as the variant picker's render above — resend the
+    // bottom digit keyboard, sized to this picker's own option count, before
+    // the picker's own inline-keyboard render.
+    await ctx.reply(t(ctx, "browse.choose_region"), {
+      reply_markup: ckb.gamePickerPersistentKb(regions.length, ctx.session.lang),
+    });
     await smartEdit(ctx, t(ctx, "browse.choose_region"), ckb.gameRegionPickerKb(regions, categoryId, regionBackTarget, ctx.session.lang));
     return;
   }
   await enterGameRegion(ctx, categoryId, gameVariant, regions[0] ?? null);
 }
 
+/** Shared index-resolution for the region picker — same pattern as
+ * resolveGameVariantByIndex, resolving an index (tapped via the inline
+ * picker's callback, or typed as a digit while it's the active numbered
+ * screen) against the gameRegionEntries snapshot. Returns false on a stale
+ * index — region strings can legitimately be "" so the entry is checked with
+ * `=== undefined`, not falsy. */
+async function resolveGameRegionByIndex(ctx: MyContext, categoryId: number, idx: number): Promise<boolean> {
+  const region = sc(ctx).gameRegionEntries?.[idx];
+  if (region === undefined) return false;
+  await enterGameRegion(ctx, categoryId, sc(ctx).resolvedGameVariant ?? null, region);
+  return true;
+}
+
 /** A customer tapped one entry on the region picker rendered by
  * enterGameVariant — same stale-index guard as pickGameVariant. */
 export async function pickGameRegion(ctx: MyContext, categoryId: number, idx: number): Promise<void> {
-  const region = sc(ctx).gameRegionEntries?.[idx];
-  if (region === undefined) {
+  if (!(await resolveGameRegionByIndex(ctx, categoryId, idx))) {
     await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
-    return;
   }
-  await enterGameRegion(ctx, categoryId, sc(ctx).resolvedGameVariant ?? null, region);
 }
 
 /** Shared by enterGameVariant's single-region skip and pickGameRegion's
@@ -677,6 +734,12 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
   ctx.session.state = BotState.PRODUCT_LIST;
   sc(ctx).page = page;
   sc(ctx).browseEntries = pageProducts.map((p) => p.id);
+  sc(ctx).activeNumberedScreen = "products";
+  // A typed digit must resolve against THIS list now, not whatever a
+  // variant/region picker last snapshotted — see
+  // BrowseScratch.activeNumberedScreen.
+  delete sc(ctx).gameVariantEntries;
+  delete sc(ctx).gameRegionEntries;
   delete sc(ctx).productId;
   delete sc(ctx).variantId;
 
@@ -790,6 +853,36 @@ export async function handleProductNumber(ctx: MyContext): Promise<void> {
 
   // Number buttons — entry selection. Only short digit strings.
   if (!/^\d+$/.test(text) || text.length > 4) return;
+  const idx = parseInt(text, 10);
+
+  // A variant/region picker is the active numbered screen — resolve the
+  // typed digit against ITS OWN snapshot instead of falling through to the
+  // product-list logic below, which would otherwise silently resolve against
+  // a stale or unscoped browseEntries (see BrowseScratch.activeNumberedScreen
+  // for why exactly one of these three fields is ever populated at a time).
+  // "products", or undefined (an in-flight session that predates this
+  // field), falls through unchanged to the existing browseEntries logic.
+  const activeScreen = sc(ctx).activeNumberedScreen;
+  if (activeScreen === "gameVariant" || activeScreen === "gameRegion") {
+    const pickerEntries = activeScreen === "gameVariant" ? sc(ctx).gameVariantEntries : sc(ctx).gameRegionEntries;
+    const count = pickerEntries?.length ?? 0;
+    const categoryId = sc(ctx).categoryId;
+    // categoryId is always set alongside these entries by browseCategoryEntry/
+    // enterGameVariant — shouldn't normally be missing. Bounds-check first
+    // (matching the existing browseEntries out-of-range message below
+    // exactly), so a missing categoryId on an otherwise-valid index also
+    // degrades to that same message rather than a silent no-op.
+    if (idx < 1 || idx > count || categoryId == null) {
+      await smartEdit(ctx, t(ctx, "browse.invalid_number", { max: count }), ckb.backToMain(lang));
+      return;
+    }
+    if (activeScreen === "gameVariant") {
+      await resolveGameVariantByIndex(ctx, categoryId, idx - 1);
+    } else {
+      await resolveGameRegionByIndex(ctx, categoryId, idx - 1);
+    }
+    return;
+  }
 
   // Resolve against the SNAPSHOT captured when the list was rendered, so a
   // catalog change between render and tap can't shift the numbering. Each entry
@@ -808,7 +901,6 @@ export async function handleProductNumber(ctx: MyContext): Promise<void> {
     return;
   }
 
-  const idx = parseInt(text, 10);
   if (idx < 1 || idx > entries.length) {
     await smartEdit(ctx, t(ctx, "browse.invalid_number", { max: entries.length }), ckb.backToMain(lang));
     return;

@@ -2064,6 +2064,182 @@ describe("browseCategoryEntry — Game Top Up variant/region navigation + AUTO s
 });
 
 // ===========================================================================
+// Task 2: numbered shortcuts go stale on variant/region picker screens.
+// Root cause: browseEntries was only ever written by browseProductsFlat, so
+// a digit typed while a variant/region picker was on screen silently
+// resolved against whatever browseEntries last held (a different category,
+// an earlier page, or nothing) instead of the picker actually on screen.
+// activeNumberedScreen is the fix's single source of truth for "what a typed
+// digit currently means" — these tests drive a typed digit straight through
+// handleProductNumber (the real plain-text handler) while a picker is active,
+// not just the inline-callback handlers pickGameVariant/pickGameRegion.
+// ===========================================================================
+
+describe("Task 2: typed-digit shortcuts resolve correctly on variant/region picker screens", () => {
+  it("a typed digit resolves against the variant picker when it's the active numbered screen, not a stale browseEntries snapshot", async () => {
+    const cat = await createCategory(prisma, { name: "Free Fire Typed", group: CategoryGroup.GAME_TOPUP });
+    const a = await createCatalogProduct(prisma, { categoryId: cat.id, name: "FF Typed Diamonds A" });
+    await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "Global", gameVariantEmoji: "🌍" } });
+    await createDenomination(prisma, { productId: a.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    const b = await createCatalogProduct(prisma, { categoryId: cat.id, name: "FF Typed Diamonds B" });
+    await prisma.product.update({ where: { id: b.id }, data: { gameVariant: "Max", gameVariantEmoji: "🔥" } });
+    await createDenomination(prisma, { productId: b.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+
+    const { ctx } = customerCtx();
+    await customer.browseCategoryEntry(ctx, cat.id); // renders the 2-entry variant picker
+
+    // Simulate the exact root-cause scenario: a stale browseEntries from an
+    // earlier, totally unrelated browse (a different category, or an earlier
+    // page) is still sitting in scratch while the picker is on screen.
+    (ctx.session.scratch as Record<string, unknown>).browseEntries = [999999];
+
+    const digit = customerCtx({ text: "1", session: { ...userSession(), scratch: ctx.session.scratch } });
+    await customer.handleProductNumber(digit.ctx);
+
+    // Index 0 ("Global", name-asc order) has a single matching product with
+    // no region dimension, so it collapses straight to that product's detail
+    // — mirrors the existing inline-callback test for the same fixture shape
+    // (pickGameVariant resolving v1:browse:gvar:<id>:0).
+    expect(sentIncludes(digit.sink, "FF Typed Diamonds A")).toBe(true);
+    expect(sentIncludes(digit.sink, "FF Typed Diamonds B")).toBe(false);
+    const scratch = digit.ctx.session.scratch as { resolvedGameVariant?: string | null };
+    expect(scratch.resolvedGameVariant).toBe("Global");
+  });
+
+  it("a typed digit resolves against the region picker when it's the active numbered screen, not a stale browseEntries snapshot", async () => {
+    const cat = await createCategory(prisma, { name: "Valorant Typed", group: CategoryGroup.GAME_TOPUP });
+    const a = await createCatalogProduct(prisma, { categoryId: cat.id, name: "VP Typed Points A" });
+    await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "Standard", gameRegion: "Asia" } });
+    await createDenomination(prisma, { productId: a.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    const b = await createCatalogProduct(prisma, { categoryId: cat.id, name: "VP Typed Points B" });
+    await prisma.product.update({ where: { id: b.id }, data: { gameVariant: "Standard", gameRegion: "Europe" } });
+    await createDenomination(prisma, { productId: b.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+
+    const { ctx } = customerCtx();
+    await customer.browseCategoryEntry(ctx, cat.id); // 1 variant (auto-skipped) + 2 regions -> region picker rendered
+
+    (ctx.session.scratch as Record<string, unknown>).browseEntries = [999999];
+
+    const digit = customerCtx({ text: "1", session: { ...userSession(), scratch: ctx.session.scratch } });
+    await customer.handleProductNumber(digit.ctx);
+
+    // Index 0 ("Asia", name-asc order) resolves to the single matching product.
+    expect(sentIncludes(digit.sink, "VP Typed Points A")).toBe(true);
+    expect(sentIncludes(digit.sink, "VP Typed Points B")).toBe(false);
+    const scratch = digit.ctx.session.scratch as { resolvedGameRegion?: string | null };
+    expect(scratch.resolvedGameRegion).toBe("Asia");
+  });
+
+  it("an out-of-range typed digit on the variant picker shows the same invalid-number message an out-of-range product-list digit gets, not a crash or the callback-only stale-screen toast", async () => {
+    const cat = await createCategory(prisma, { name: "Free Fire OOR", group: CategoryGroup.GAME_TOPUP });
+    const a = await createCatalogProduct(prisma, { categoryId: cat.id, name: "FF OOR A" });
+    await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "Global" } });
+    await createDenomination(prisma, { productId: a.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    const b = await createCatalogProduct(prisma, { categoryId: cat.id, name: "FF OOR B" });
+    await prisma.product.update({ where: { id: b.id }, data: { gameVariant: "Max" } });
+    await createDenomination(prisma, { productId: b.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+
+    const { ctx } = customerCtx();
+    await customer.browseCategoryEntry(ctx, cat.id); // 2-entry variant picker
+
+    const digit = customerCtx({ text: "9", session: { ...userSession(), scratch: ctx.session.scratch } });
+    await customer.handleProductNumber(digit.ctx);
+
+    expect(sentIncludes(digit.sink, t(digit.ctx, "browse.invalid_number", { max: 2 }))).toBe(true);
+    expect(sentIncludes(digit.sink, t(digit.ctx, "error.stale_screen"))).toBe(false);
+  });
+
+  it("browseEntries / gameVariantEntries / gameRegionEntries are mutually exclusive, matching activeNumberedScreen, at every numbered screen", async () => {
+    // The flat product list — "products" is active, the other two are cleared.
+    const { ctx: flatCtx } = customerCtx();
+    await customer.browseProductsFlat(flatCtx);
+    const flatScratch = flatCtx.session.scratch as {
+      activeNumberedScreen?: string;
+      browseEntries?: unknown[];
+      gameVariantEntries?: unknown[];
+      gameRegionEntries?: unknown[];
+    };
+    expect(flatScratch.activeNumberedScreen).toBe("products");
+    expect(flatScratch.browseEntries?.length).toBeGreaterThan(0);
+    expect(flatScratch.gameVariantEntries).toBeUndefined();
+    expect(flatScratch.gameRegionEntries).toBeUndefined();
+
+    // The variant picker.
+    const varCat = await createCategory(prisma, { name: "Mutex Variant Cat", group: CategoryGroup.GAME_TOPUP });
+    const va = await createCatalogProduct(prisma, { categoryId: varCat.id, name: "Mutex Variant A" });
+    await prisma.product.update({ where: { id: va.id }, data: { gameVariant: "Global" } });
+    await createDenomination(prisma, { productId: va.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    const vb = await createCatalogProduct(prisma, { categoryId: varCat.id, name: "Mutex Variant B" });
+    await prisma.product.update({ where: { id: vb.id }, data: { gameVariant: "Max" } });
+    await createDenomination(prisma, { productId: vb.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+
+    const { ctx: varCtx } = customerCtx();
+    await customer.browseCategoryEntry(varCtx, varCat.id);
+    const varScratch = varCtx.session.scratch as {
+      activeNumberedScreen?: string;
+      browseEntries?: unknown[];
+      gameVariantEntries?: unknown[];
+      gameRegionEntries?: unknown[];
+    };
+    expect(varScratch.activeNumberedScreen).toBe("gameVariant");
+    expect(varScratch.gameVariantEntries?.length).toBe(2);
+    expect(varScratch.browseEntries).toBeUndefined();
+    expect(varScratch.gameRegionEntries).toBeUndefined();
+
+    // The region picker (single resolved variant, 2 distinct regions).
+    const regCat = await createCategory(prisma, { name: "Mutex Region Cat", group: CategoryGroup.GAME_TOPUP });
+    const rc = await createCatalogProduct(prisma, { categoryId: regCat.id, name: "Mutex Region C" });
+    await prisma.product.update({ where: { id: rc.id }, data: { gameVariant: "Standard", gameRegion: "Asia" } });
+    await createDenomination(prisma, { productId: rc.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    const rd = await createCatalogProduct(prisma, { categoryId: regCat.id, name: "Mutex Region D" });
+    await prisma.product.update({ where: { id: rd.id }, data: { gameVariant: "Standard", gameRegion: "Europe" } });
+    await createDenomination(prisma, { productId: rd.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+
+    const { ctx: regCtx } = customerCtx();
+    await customer.browseCategoryEntry(regCtx, regCat.id);
+    const regScratch = regCtx.session.scratch as {
+      activeNumberedScreen?: string;
+      browseEntries?: unknown[];
+      gameVariantEntries?: unknown[];
+      gameRegionEntries?: unknown[];
+    };
+    expect(regScratch.activeNumberedScreen).toBe("gameRegion");
+    expect(regScratch.gameRegionEntries?.length).toBe(2);
+    expect(regScratch.browseEntries).toBeUndefined();
+    expect(regScratch.gameVariantEntries).toBeUndefined();
+  });
+
+  it("entering the variant picker resends a persistent reply keyboard sized to the picker's own option count", async () => {
+    const cat = await createCategory(prisma, { name: "Persistent Kb Variant Cat", group: CategoryGroup.GAME_TOPUP });
+    const a = await createCatalogProduct(prisma, { categoryId: cat.id, name: "PKV A" });
+    await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "Global" } });
+    await createDenomination(prisma, { productId: a.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    const b = await createCatalogProduct(prisma, { categoryId: cat.id, name: "PKV B" });
+    await prisma.product.update({ where: { id: b.id }, data: { gameVariant: "Max" } });
+    await createDenomination(prisma, { productId: b.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseCategoryEntry(ctx, cat.id);
+
+    const replyCalls = calls(sink, "reply");
+    const kbCall = replyCalls.find((c) => {
+      const opts = c.args[1] as { reply_markup?: { keyboard?: unknown[][] } } | undefined;
+      return !!opts?.reply_markup?.keyboard;
+    });
+    expect(kbCall).toBeDefined();
+    const kb = (kbCall!.args[1] as { reply_markup: { keyboard: Array<Array<{ text: string }>> } }).reply_markup;
+    const flat = kb.keyboard.flat().map((b) => b.text);
+    expect(flat).toEqual(["1", "2", persistentLabel("main", "en")]);
+
+    // The picker's own inline keyboard render must still be the LAST
+    // screen-producing call — the persistent-keyboard resend must not
+    // clobber or reorder past the picker's real (tappable) screen.
+    const markup = lastMarkup(sink) as { inline_keyboard?: unknown[][] };
+    expect(markup?.inline_keyboard).toBeDefined();
+  });
+});
+
+// ===========================================================================
 // Final-review fixes (Findings 3-6): Back-button targets for the variant/
 // region pickers, scratch-clearing for the Game Top Up navigation fields,
 // trusting a fresh Category.group read, and keeping sc(ctx).categoryId in

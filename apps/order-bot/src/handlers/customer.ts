@@ -1792,6 +1792,11 @@ export async function languageCommand(ctx: MyContext): Promise<void> {
   await openLanguageMenu(ctx);
 }
 
+export async function currencyCommand(ctx: MyContext): Promise<void> {
+  ctx.session.awaitingQtyDenomId = undefined;
+  await showCurrencyMenu(ctx);
+}
+
 export async function searchCommand(ctx: MyContext): Promise<void> {
   const lang = ctx.session.lang;
   const query = (typeof ctx.match === "string" ? ctx.match : "").trim();

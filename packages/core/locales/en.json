@@ -329,6 +329,7 @@
   "faq.content": "<b>FAQ</b>\n\n<b>Q: How long does delivery take?</b>\nA: Once payment is confirmed, products with automatic delivery are sent right away. Products that need manual fulfilment are handled by our team — your order shows its current status.\n\n<b>Q: What about warranty?</b>\nA: It depends on the plan — each plan's page lists its warranty period, and some plans have none. Contact support if a covered product stops working.\n\n<b>Q: Can I get a refund?</b>\nA: Refunds are considered case by case. We always attempt a replacement first.\n\n<b>Q: Why does the payment amount have odd decimals?</b>\nA: A unique identifier is added to each order for payment matching. Do not round the amount.",
   "help.faq_btn": "❓ FAQ",
   "help.language_btn": "🌐 Language",
+  "help.currency_btn": "💱 Currency",
   "help.referral_btn": "🤝 Referral",
   "help.support_btn": "💬 Support",
   "help.terms_btn": "📄 Terms",

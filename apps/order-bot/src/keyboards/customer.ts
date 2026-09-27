@@ -1029,6 +1029,7 @@ export function helpCenterKb(lang: string): InlineKeyboard {
   return ik([
     [{ text: coreT("help.referral_btn", lang), data: cb("ref", "view") }],
     [{ text: coreT("help.language_btn", lang), data: cb("lang", "menu") }],
+    [{ text: coreT("help.currency_btn", lang), data: cb("cur", "menu") }],
     [{ text: coreT("help.faq_btn", lang), data: cb("page", "faq") }],
     [{ text: coreT("help.terms_btn", lang), data: cb("page", "terms") }],
     [{ text: coreT("help.support_btn", lang), data: cb("support", "open") }],

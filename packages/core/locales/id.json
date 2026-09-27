@@ -329,6 +329,7 @@
   "faq.content": "<b>FAQ</b>\n\n<b>T: Berapa lama pengiriman?</b>\nJ: Setelah pembayaran terkonfirmasi, produk dengan pengiriman otomatis langsung dikirim. Produk yang perlu proses manual ditangani tim kami — statusnya bisa dilihat di pesananmu.\n\n<b>T: Bagaimana garansi?</b>\nJ: Tergantung paketnya — halaman tiap paket mencantumkan masa garansinya, dan sebagian paket tidak bergaransi. Hubungi support jika produk yang bergaransi bermasalah.\n\n<b>T: Bisa refund?</b>\nJ: Refund dipertimbangkan kasus per kasus. Kami selalu coba replacement terlebih dahulu.\n\n<b>T: Kenapa jumlah pembayaran ada desimal aneh?</b>\nJ: Angka unik ditambahkan agar sistem dapat mengidentifikasi pembayaran. Jangan dibulatkan.",
   "help.faq_btn": "❓ FAQ",
   "help.language_btn": "🌐 Bahasa",
+  "help.currency_btn": "💱 Mata Uang",
   "help.referral_btn": "🤝 Referral",
   "help.support_btn": "💬 Bantuan",
   "help.terms_btn": "📄 Ketentuan",

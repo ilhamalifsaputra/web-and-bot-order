@@ -239,7 +239,9 @@ const dispatchLang: DomainDispatcher = async (ctx, parts) => {
 };
 
 const dispatchCurrency: DomainDispatcher = async (ctx, parts) => {
-  if (parts[2] === "set") await customer.setCurrency(ctx, parts[3] ?? "");
+  const action = parts[2];
+  if (action === "menu") await customer.showCurrencyMenu(ctx);
+  else if (action === "set") await customer.setCurrency(ctx, parts[3] ?? "");
   else await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
 };
 

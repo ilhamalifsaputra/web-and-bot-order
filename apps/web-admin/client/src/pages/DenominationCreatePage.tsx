@@ -220,7 +220,7 @@ export function DenominationCreatePage() {
 
         <div>
           <label className="text-sm font-medium text-ink">
-            Price <span className="text-rust">*</span>
+            Price (IDR) <span className="text-rust">*</span>
           </label>
           <Input
             className="mt-1"
@@ -232,7 +232,7 @@ export function DenominationCreatePage() {
         </div>
 
         <div>
-          <label className="text-sm font-medium text-ink">Cost Price</label>
+          <label className="text-sm font-medium text-ink">Cost Price (IDR)</label>
           <Input
             className="mt-1"
             placeholder="Optional"
@@ -245,7 +245,7 @@ export function DenominationCreatePage() {
         </div>
 
         <div>
-          <label className="text-sm font-medium text-ink">Reseller Price</label>
+          <label className="text-sm font-medium text-ink">Reseller Price (IDR)</label>
           <Input
             className="mt-1"
             placeholder="Optional"

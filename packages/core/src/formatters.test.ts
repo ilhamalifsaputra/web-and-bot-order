@@ -1,5 +1,13 @@
 import { describe, it, expect } from "vitest";
-import { formatMoney, formatUsdt, formatUsdtAmount } from "./formatters";
+import {
+  formatMoney,
+  formatUsdt,
+  formatUsdtAmount,
+  usdtFromIdr,
+  convertIdrToDisplay,
+  formatDisplayMoney,
+  formatDisplayMoneyResult,
+} from "./formatters";
 import { Decimal } from "./money";
 
 describe("formatMoney", () => {
@@ -57,5 +65,82 @@ describe("formatUsdtAmount / formatUsdt", () => {
   it("formatUsdt appends the ' USDT' suffix", () => {
     expect(formatUsdt(0)).toBe("0 USDT");
     expect(formatUsdt(123.456789)).toBe("123.4568 USDT");
+  });
+});
+
+describe("convertIdrToDisplay", () => {
+  it("IDR display returns the IDR amount unchanged, no rate needed", () => {
+    const r = convertIdrToDisplay("79000", "IDR", null);
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error("unreachable");
+    expect(r.currency).toBe("IDR");
+    expect(r.amount.equals(new Decimal("79000"))).toBe(true);
+  });
+
+  it("USD display equals usdtFromIdr exactly (the amount the USDT rails charge)", () => {
+    for (const idr of ["79000", "44500", "40000", "15999", "16001", "1"]) {
+      const r = convertIdrToDisplay(idr, "USD", "16000");
+      expect(r.ok).toBe(true);
+      if (!r.ok) throw new Error("unreachable");
+      expect(r.currency).toBe("USD");
+      expect(r.amount.equals(usdtFromIdr(idr, "16000"))).toBe(true);
+    }
+  });
+
+  it("rounds UP to the next cent at the boundary (ceil, never undercharges)", () => {
+    const below = convertIdrToDisplay("15999", "USD", "16000");
+    const exact = convertIdrToDisplay("16000", "USD", "16000");
+    const above = convertIdrToDisplay("16001", "USD", "16000");
+    if (!below.ok || !exact.ok || !above.ok) throw new Error("unreachable");
+    expect(below.amount.toFixed(2)).toBe("1.00"); // 0.99993… → 1.00
+    expect(exact.amount.toFixed(2)).toBe("1.00");
+    expect(above.amount.toFixed(2)).toBe("1.01"); // 1.0000625 → 1.01
+  });
+
+  it("returns rate_unavailable for USD when the rate is missing, zero, negative or non-finite", () => {
+    const badRates: Array<Decimal.Value | null | undefined> = [null, undefined, 0, "0", -16000, "-1", Infinity, NaN];
+    for (const fx of badRates) {
+      expect(convertIdrToDisplay("79000", "USD", fx)).toEqual({ ok: false, reason: "rate_unavailable" });
+    }
+  });
+
+  it("stays in Decimal — no float drift on 0.1+0.2-prone amounts", () => {
+    const r = convertIdrToDisplay("0.3", "IDR", null);
+    if (!r.ok) throw new Error("unreachable");
+    expect(r.amount.equals(new Decimal("0.1").plus("0.2"))).toBe(true);
+    const u = convertIdrToDisplay("48000.3", "USD", "16000.1");
+    if (!u.ok) throw new Error("unreachable");
+    expect(u.amount.equals(usdtFromIdr("48000.3", "16000.1"))).toBe(true);
+    expect(u.amount.toFixed(2)).toBe("3.00");
+  });
+});
+
+describe("formatDisplayMoney / formatDisplayMoneyResult", () => {
+  it("IDR renders exactly like formatIdr", () => {
+    expect(formatDisplayMoney("79000", "IDR", "16000")).toBe("Rp79.000");
+    expect(formatDisplayMoney("79000", "IDR", null)).toBe("Rp79.000");
+  });
+
+  it("USD renders as $ with 2dp", () => {
+    expect(formatDisplayMoney("79000", "USD", "16000")).toBe("$4.94");
+    expect(formatDisplayMoney("40000", "USD", "16000")).toBe("$2.50");
+  });
+
+  it("USD groups thousands with commas", () => {
+    expect(formatDisplayMoney("20000000", "USD", "16000")).toBe("$1,250.00");
+    expect(formatDisplayMoney("20000000000", "USD", "16000")).toBe("$1,250,000.00");
+  });
+
+  it("falls back to an explicit Rp string when the USD rate is unavailable — never a bare number or $", () => {
+    const badRates: Array<Decimal.Value | null | undefined> = [null, undefined, 0, -5];
+    for (const fx of badRates) {
+      expect(formatDisplayMoneyResult("79000", "USD", fx)).toEqual({ text: "Rp79.000", currency: "IDR", fellBack: true });
+      expect(formatDisplayMoney("79000", "USD", fx)).toBe("Rp79.000");
+    }
+  });
+
+  it("reports no fallback when the requested currency was honoured", () => {
+    expect(formatDisplayMoneyResult("79000", "USD", "16000")).toEqual({ text: "$4.94", currency: "USD", fellBack: false });
+    expect(formatDisplayMoneyResult("79000", "IDR", null)).toEqual({ text: "Rp79.000", currency: "IDR", fellBack: false });
   });
 });

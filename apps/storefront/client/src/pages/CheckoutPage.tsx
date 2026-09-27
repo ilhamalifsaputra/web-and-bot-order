@@ -56,7 +56,7 @@ import type { AdditionalField, CheckoutData, PlaceOrderResponse } from "../api/t
 import { useShopContext } from "../components/Layout";
 import { t } from "../lib/i18n";
 import { humanError } from "../lib/errors";
-import { formatIdr } from "../lib/format";
+import { formatPriceFor } from "../lib/format";
 import { rememberCodeEmailed } from "../lib/orderCodeEmailed";
 import { allFieldsValid, isValidEmail } from "../lib/deliveryFields";
 import { useIsDesktop } from "../lib/useMediaQuery";
@@ -72,7 +72,7 @@ import PaymentMethodSelector, {
   isIdrWalletSufficient,
   isUsdtWalletSufficient,
 } from "../components/shop/PaymentMethodSelector";
-import OrderSummaryCard from "../components/shop/OrderSummaryCard";
+import OrderSummaryCard, { idrRailPriceAndPay } from "../components/shop/OrderSummaryCard";
 import Card from "../components/ui/Card";
 import Label from "../components/ui/Label";
 import Input from "../components/ui/Input";
@@ -475,6 +475,10 @@ export default function CheckoutPage() {
   const guestEmailValid = !page.is_guest || isValidEmail(guestEmail);
   const placeOrderBlocked = !anyMethod || !infoValid || !guestEmailValid;
   const placeOrderDisabled = placeOrderBlocked || placeOrderMutation.isPending;
+  // Final-review fix: the sticky bar's "Price $X · Pay RpY" line for a USD
+  // viewer on QRIS/PayDisini — same helper (and so the same rule and figures)
+  // as the summary card; null everywhere else, which leaves the bar unchanged.
+  const barPriceAndPay = idrRailPriceAndPay(method, totals, ctx?.currency ?? null, ctx?.fx);
 
   function setAnswer(unitIdx: number, key: string, value: string): void {
     setAnswers((prev) => {
@@ -574,7 +578,8 @@ export default function CheckoutPage() {
         <StickyPurchaseBar
           ariaLabel={t("web.purchase_bar")}
           priceLabel={t("web.order_total")}
-          price={formatIdr(method === "qris" ? totals.qris_grand_total : totals.total)}
+          price={formatPriceFor(method === "qris" ? totals.qris_grand_total : totals.total, ctx?.currency ?? null, ctx?.fx)}
+          secondaryChip={barPriceAndPay && <span className="text-xs text-ink-soft">{barPriceAndPay}</span>}
           primaryAction={{
             label: t("web.place_order"),
             onClick: () => placeOrderMutation.mutate(),

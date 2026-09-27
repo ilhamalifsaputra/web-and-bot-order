@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { formatIdr, formatUsdt, formatUsdtAmount, formatNativeUsdt } from "./format";
+import { formatIdr, formatUsdt, formatUsdtAmount, formatNativeUsdt, formatPriceFor, formatOrderAmount, showsUsdDisplay, isIdrRail } from "./format";
 
 describe("formatIdr", () => {
   it("formats with Rp prefix and dotted thousands (core formatIdr parity)", () => {
@@ -85,5 +85,86 @@ describe("formatUsdtAmount / formatNativeUsdt", () => {
     expect(formatNativeUsdt(0)).toBe("0 USDT");
     expect(formatNativeUsdt(123.456789)).toBe("123.4568 USDT");
     expect(formatNativeUsdt(null)).toBe("—");
+  });
+});
+
+describe("formatPriceFor", () => {
+  // currency === "IDR": identical to formatIdr — today's behavior, unchanged.
+  it("currency IDR: same Rp string formatIdr would produce", () => {
+    expect(formatPriceFor("79000", "IDR", "16000")).toBe(formatIdr("79000"));
+    expect(formatPriceFor("79000", "IDR", "16000")).toBe("Rp79.000");
+  });
+
+  // currency === null: no preference chosen — same primary as today (Rp),
+  // the "≈ $" hint is Price.tsx's own concern, not this helper's.
+  it("currency null: same Rp string as today, regardless of fx", () => {
+    expect(formatPriceFor("79000", null, "16000")).toBe("Rp79.000");
+    expect(formatPriceFor("79000", null, null)).toBe("Rp79.000");
+  });
+
+  // currency === "USD": ceil-to-0.01, same rounding formatUsdt uses — parity
+  // pinned against the exact same fixtures format.test.ts already asserts for
+  // formatUsdt, just without the "≈ " prefix and with thousands-grouping
+  // (core's formatDisplayMoney/formatUsdDisplay parity).
+  it("currency USD: ceil-to-0.01 matches formatUsdt's own rounding, no ≈ prefix", () => {
+    expect(formatPriceFor("40000", "USD", "16000")).toBe("$2.50");
+    expect(formatPriceFor("79000", "USD", "16000")).toBe("$4.94");
+    expect(formatPriceFor("44500", "USD", "16000")).toBe("$2.79");
+  });
+
+  it("currency USD: groups thousands like core's formatUsdDisplay ($1,000.00, not $1000.00)", () => {
+    expect(formatPriceFor("16000000", "USD", "16000")).toBe("$1,000.00");
+  });
+
+  // Rate unavailable while USD is requested: never a bare number, never a
+  // "$" invented without a rate — falls back to the explicit Rp string,
+  // same rule the bot follows (bot: currency.rate_unavailable).
+  it("currency USD + fx null/invalid: falls back to the IDR string, never a bare/invented $", () => {
+    expect(formatPriceFor("79000", "USD", null)).toBe("Rp79.000");
+    expect(formatPriceFor("79000", "USD", "")).toBe("Rp79.000");
+    expect(formatPriceFor("79000", "USD", "0")).toBe("Rp79.000");
+    expect(formatPriceFor("79000", "USD", "-16000")).toBe("Rp79.000");
+  });
+
+  it("passes null/empty through to formatIdr's own em-dash, for any currency", () => {
+    expect(formatPriceFor(null, "USD", "16000")).toBe("—");
+    expect(formatPriceFor(undefined, "IDR", "16000")).toBe("—");
+  });
+});
+
+describe("formatOrderAmount", () => {
+  // An order's OWN settlement currency (order.currency, "IDR" | "USDT") —
+  // never the viewer's display-currency preference. Task 5 bug fix: PayPage
+  // and TicketOrderSummaryCard used to call formatIdr on these unconditionally.
+  it('orderCurrency "USDT": renders the native USDT string, not an IDR-formatted number', () => {
+    expect(formatOrderAmount("9.88", "USDT")).toBe("9.88 USDT");
+  });
+
+  it('orderCurrency "IDR" (or anything else): renders the Rp string, unaffected', () => {
+    expect(formatOrderAmount("158000", "IDR")).toBe("Rp158.000");
+    expect(formatOrderAmount("158000", null)).toBe("Rp158.000");
+    expect(formatOrderAmount("158000", undefined)).toBe("Rp158.000");
+  });
+});
+
+describe("showsUsdDisplay", () => {
+  it("is true only for a USD preference with a usable rate", () => {
+    expect(showsUsdDisplay("USD", "16000")).toBe(true);
+    expect(showsUsdDisplay("USD", null)).toBe(false);
+    expect(showsUsdDisplay("USD", "0")).toBe(false);
+    expect(showsUsdDisplay("USD", "abc")).toBe(false);
+    expect(showsUsdDisplay("IDR", "16000")).toBe(false);
+    expect(showsUsdDisplay(null, "16000")).toBe(false);
+  });
+});
+
+describe("isIdrRail", () => {
+  it("covers QRIS/TokoPay, PayDisini and the IDR wallet debit only", () => {
+    expect(isIdrRail("qris")).toBe(true);
+    expect(isIdrRail("paydisini")).toBe(true);
+    expect(isIdrRail("wallet_idr")).toBe(true);
+    for (const m of ["binance", "bybit", "bybit_bsc", "nowpayments", "wallet_usdt", null, undefined]) {
+      expect(isIdrRail(m)).toBe(false);
+    }
   });
 });

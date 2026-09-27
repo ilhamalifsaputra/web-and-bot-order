@@ -1,5 +1,6 @@
 import type { Decimal } from "@app/core/money";
 import { formatCompactQty, formatCompactPrice } from "@app/core/compactFormat";
+import type { UserPriceFormatter } from "./format";
 
 /**
  * Concise denomination-picker button label: pulls a leading/embedded
@@ -92,8 +93,12 @@ export function gameTopUpDenomLabel(
   d: GameTopUpDenomLike,
   unitPrice: Decimal.Value,
   variantEmoji?: string | null,
+  prices?: Pick<UserPriceFormatter, "compact">,
 ): string {
   if (d.qtyValue == null || !d.qtyUnit) return d.durationLabel || d.name;
-  const label = `${formatCompactQty(d.qtyValue)} ${d.qtyUnit} — ${formatCompactPrice(unitPrice)}`;
+  // `unitPrice` is canonical IDR; the formatter (the buyer's display
+  // currency) converts it once. No formatter → the legacy compact Rupiah.
+  const priceText = prices ? prices.compact(unitPrice) : formatCompactPrice(unitPrice);
+  const label = `${formatCompactQty(d.qtyValue)} ${d.qtyUnit} — ${priceText}`;
   return variantEmoji ? `${variantEmoji} ${label}` : label;
 }

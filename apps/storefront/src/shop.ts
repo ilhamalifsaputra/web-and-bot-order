@@ -1,9 +1,10 @@
 /**
  * Per-request storefront context helpers: language (cookie, bilingual EN+ID),
- * shop identity (Settings), the USDT fx rate, and the guest cart cookie.
+ * display currency (account preference, else cookie), shop identity (Settings), the USDT fx rate, and the guest cart cookie.
  */
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { config } from "@app/core/config";
+import { parseDisplayCurrency, type DisplayCurrency } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { botUsername } from "@app/core/runtime";
 import { prisma, getSetting } from "@app/db";
@@ -99,6 +100,46 @@ interface GuestCartPayload {
 export function requestLang(req: FastifyRequest): string {
   const raw = (req.cookies[LANG_COOKIE] ?? "").toLowerCase();
   return raw === "id" || raw === "en" ? raw : config.DEFAULT_LANGUAGE;
+}
+
+/** Buyer's DISPLAY-currency choice cookie ("USD" | "IDR"). Display only —
+ * checkout still charges each rail in its own currency (see pricing.ts). */
+export const CURRENCY_COOKIE = "shop_currency";
+
+/** Same flags as the shop_lang cookie (routes/home.ts `GET /lang`): a
+ * per-browser UI preference, not a credential, kept for a year. */
+export function writeCurrencyCookie(reply: FastifyReply, currency: DisplayCurrency): void {
+  void reply.setCookie(CURRENCY_COOKIE, currency, {
+    path: "/",
+    httpOnly: true,
+    sameSite: "lax",
+    secure: config.WEB_COOKIE_SECURE,
+    maxAge: 60 * 60 * 24 * 365,
+  });
+}
+
+/** "USD" | "IDR" from the cookie, else null (missing or not exactly one of
+ * the two — case-strict, never guessed, never defaulted here). */
+export function requestCurrency(req: FastifyRequest): DisplayCurrency | null {
+  return parseDisplayCurrency(req.cookies[CURRENCY_COOKIE]);
+}
+
+/**
+ * Which display currency this request should render in. A signed-in,
+ * non-guest account's stored preference wins (it is shared with the bot via
+ * the same `User` row); otherwise the cookie; otherwise null — the client
+ * then falls back to IDR display. Guests and anonymous visitors always use
+ * the cookie: a guest row's column is never consulted.
+ */
+export function resolveDisplayCurrency(
+  user: { isGuest: boolean; preferredCurrency: string | null } | null | undefined,
+  cookieValue: DisplayCurrency | null,
+): DisplayCurrency | null {
+  if (user && !user.isGuest) {
+    const stored = parseDisplayCurrency(user.preferredCurrency);
+    if (stored) return stored;
+  }
+  return cookieValue;
 }
 
 /**

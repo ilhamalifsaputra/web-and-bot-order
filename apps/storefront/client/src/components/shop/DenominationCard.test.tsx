@@ -1,8 +1,19 @@
 import "@testing-library/jest-dom";
 import type { ComponentProps } from "react";
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import DenominationCard, { type DenominationCardData } from "./DenominationCard";
+import { apiGet } from "../../api/client";
+
+// DenominationCard renders <Price/>, which (Task 5) reads the display-currency
+// preference off the shared ["context"] query itself — needs the same
+// QueryClientProvider wrapper the page tests already use. No currency-specific
+// assertion in this file, so a static null-currency mock keeps every existing
+// assertion's today's-default expectation unchanged.
+vi.mock("../../api/client", () => ({
+  apiGet: vi.fn(),
+}));
 
 const AUTO: DenominationCardData = {
   id: 1,
@@ -16,12 +27,19 @@ const AUTO: DenominationCardData = {
 };
 
 function renderCard(overrides: Partial<ComponentProps<typeof DenominationCard>> = {}) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <DenominationCard d={AUTO} fx={null} lowThreshold={5} checked={false} onChange={() => {}} {...overrides} />,
+    <QueryClientProvider client={queryClient}>
+      <DenominationCard d={AUTO} fx={null} lowThreshold={5} checked={false} onChange={() => {}} {...overrides} />
+    </QueryClientProvider>,
   );
 }
 
 describe("DenominationCard", () => {
+  beforeEach(() => {
+    (apiGet as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ currency: null, fx: null });
+  });
+
   it("uses the 8px radius surface (rounded-lg), not the 16px .card class", () => {
     renderCard();
     const label = screen.getByText("5 Diamonds").closest("label")!;

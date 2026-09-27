@@ -1750,6 +1750,9 @@ describe("checkout business rules (migrated from the Nunjucks checkout tests)", 
       expect(detail.statusCode).toBe(200);
       expect(detail.json().delivered).toBe(true);
       expect(detail.json().order.items[0].credentials).toBeTruthy();
+      // Task 5 fix pass: `total` is in the order's own settlement currency,
+      // which the client needs to format it natively.
+      expect(detail.json().order.currency).toBe("IDR");
     });
 
     it("wallet_idr, insufficient balance: 400 error.insufficient_wallet, no order created, wallet untouched", async () => {
@@ -1781,6 +1784,19 @@ describe("checkout business rules (migrated from the Nunjucks checkout tests)", 
 
       const buyer = await prisma.user.findUniqueOrThrow({ where: { id: buyerId } });
       expect(Number(buyer.walletBalanceUsdt)).toBeCloseTo(0);
+
+      // Task 5 fix pass: the buyer's order list + detail both carry the
+      // order's own settlement currency, so the client formats `total` as
+      // USDT instead of re-converting it through the display preference.
+      const list = await app.inject({ method: "GET", url: "/api/v1/account/orders", headers: { cookie } });
+      expect(list.statusCode).toBe(200);
+      const row = (list.json().orders as Array<{ code: string; currency: string }>).find(
+        (o) => o.code === order!.orderCode,
+      );
+      expect(row?.currency).toBe("USDT");
+      const detail = await app.inject({ method: "GET", url: `/api/v1/account/orders/${order!.orderCode}`, headers: { cookie } });
+      expect(detail.statusCode).toBe(200);
+      expect(detail.json().order.currency).toBe("USDT");
     });
 
     it("wallet_usdt with no USD/IDR rate configured: 400 web.pay_method_unavailable", async () => {

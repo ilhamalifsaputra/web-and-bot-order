@@ -5,9 +5,17 @@
  */
 import { Decimal } from "@app/core/money";
 import { ensureUtc, addDays } from "@app/core/datetime";
-import { formatIdr, formatPrice, formatUsdt, usdtFromIdr } from "@app/core/formatters";
+import {
+  formatIdr,
+  formatPrice,
+  formatUsdt,
+  usdtFromIdr,
+  formatDisplayMoneyResult,
+  type DisplayMoneyText,
+} from "@app/core/formatters";
 import { esc } from "@app/core/formatters";
-import { OrderStatus } from "@app/core/enums";
+import { formatCompactPrice } from "@app/core/compactFormat";
+import { OrderStatus, DisplayCurrency, parseDisplayCurrency } from "@app/core/enums";
 import { coreT } from "./i18n";
 export {
   esc,
@@ -22,13 +30,119 @@ export {
 export { formatCompactQty, formatCompactPrice } from "@app/core/compactFormat";
 
 /**
- * Catalog price display (plan.md §15.6): the central Rupiah price with the
- * derived USDT info BESIDE it — "Rp79.000 (≈ $4.94)" — or just the Rupiah when
- * no usd_idr_rate is set. Use for product/cart/confirmation amounts; NOT for
- * wallet balances or USDT-order totals (those are USDT figures).
+ * Legacy "Rp79.000 (≈ $4.94)" string, independent of any user preference.
+ * Catalog/detail/confirmation screens no longer use it — they go through
+ * {@link formatUserPrice}/{@link userPriceFormatter}. It remains only for the
+ * order-detail item lines (an order snapshot, which must read the same
+ * whatever display currency the buyer picks later).
  */
 export function priceIdr(v: Decimal.Value, rate: Decimal | null): string {
   return rate ? `${formatIdr(v)} (≈ $${usdtFromIdr(v, rate).toString()})` : formatIdr(v);
+}
+
+// ---------------------------------------------------------------------------
+// Display-currency price rendering (the single render-edge entry point)
+// ---------------------------------------------------------------------------
+
+/**
+ * Catalog price in the user's display currency. `idr` MUST be a canonical
+ * IDR amount (catalog price, flash price, cart/confirmation subtotal,
+ * voucher value, minimum purchase): it is converted exactly once here —
+ * never pass an amount that is already USDT/rail currency.
+ *
+ * - USD → "$4.94" (usdtFromIdr, ceil 0.01 — the figure the USDT rails charge).
+ * - IDR → "Rp79.000" only (no "≈ $" hint).
+ * - NULL/unknown preference → IDR-labelled, never USD.
+ * - USD with no usable rate → explicit "Rp…" and `fellBack: true`.
+ */
+export function formatUserPrice(
+  currency: DisplayCurrency | null | undefined,
+  idr: Decimal.Value,
+  rate: Decimal | null,
+): DisplayMoneyText {
+  return formatDisplayMoneyResult(idr, parseDisplayCurrency(currency) ?? DisplayCurrency.IDR, rate);
+}
+
+/** One screen's price renderer, bound to a display currency and the rate
+ * fetched once for that screen (currentUsdtRate). Never cache its output in
+ * the session — screens re-render from DB values. */
+export interface UserPriceFormatter {
+  /** The effective display currency asked for (NULL preference → IDR). */
+  readonly currency: DisplayCurrency;
+  /** True when prices on this screen actually render in $. */
+  readonly showsUsd: boolean;
+  /** USD was asked for but the rate is unavailable, so Rp is shown instead. */
+  readonly fellBack: boolean;
+  /** Full price text for a canonical IDR amount. */
+  price(idr: Decimal.Value): string;
+  /** Short price for inline-button labels: "Rp79K" (IDR) or "$4.94" (USD). */
+  compact(idr: Decimal.Value): string;
+  /** "\n\n<currency.rate_unavailable>" when fellBack, else "" — append once per screen. */
+  rateNotice(lang: string): string;
+}
+
+export function userPriceFormatter(
+  currency: DisplayCurrency | null | undefined,
+  rate: Decimal | null,
+): UserPriceFormatter {
+  const effective = parseDisplayCurrency(currency) ?? DisplayCurrency.IDR;
+  // The rate is fixed for the screen, so whether USD renders is too — probe once.
+  const probe = formatDisplayMoneyResult(0, effective, rate);
+  const showsUsd = probe.currency === DisplayCurrency.USD;
+  const fellBack = probe.fellBack;
+  return {
+    currency: effective,
+    showsUsd,
+    fellBack,
+    price: (idr) => formatDisplayMoneyResult(idr, effective, rate).text,
+    compact: (idr) => (showsUsd ? formatDisplayMoneyResult(idr, effective, rate).text : formatCompactPrice(idr)),
+    rateNotice: (lang) => (fellBack ? `\n\n${coreT("currency.rate_unavailable", lang)}` : ""),
+  };
+}
+
+/** {@link userPriceFormatter} for the ctx's own user (session.dbUser.preferredCurrency). */
+export function ctxPriceFormatter(
+  ctx: { session: { dbUser?: { preferredCurrency?: DisplayCurrency | null } | null } },
+  rate: Decimal | null,
+): UserPriceFormatter {
+  return userPriceFormatter(ctx.session.dbUser?.preferredCurrency ?? null, rate);
+}
+
+/**
+ * Payment screens stay truthful: the payable is always the rail's own figure
+ * (`payText`, already formatted in the rail currency). When the user's
+ * display currency differs from it (a USD user on an IDR rail), add one line
+ * showing both — "Price $9.80 · Pay Rp160.000" — with the price derived from
+ * the order's canonical IDR total (pre-fee, converted once) and Pay the rail's
+ * existing fee-inclusive charge. Labelled "Price", not "Total", since the two
+ * figures differ by the rail fee. Never re-derives the payable. Returns ""
+ * when the display currency already matches (IDR/NULL user, or no rate).
+ */
+export function payAlongsidePriceLine(
+  fmt: UserPriceFormatter,
+  priceIdrAmount: Decimal.Value,
+  payText: string,
+  lang: string,
+): string {
+  if (!fmt.showsUsd) return "";
+  return `\n\n${coreT("checkout.price_and_pay", lang, { price: fmt.price(priceIdrAmount), pay: payText })}`;
+}
+
+/**
+ * A ValidationError's format args with any IDR-canonical money converted for
+ * display. Only `error.voucher_min_purchase` carries one today (the voucher's
+ * minPurchase, a raw IDR decimal string); every other key's args are returned
+ * as-is (same object).
+ */
+export function displayValidationArgs(
+  key: string,
+  args: Record<string, unknown>,
+  fmt: UserPriceFormatter,
+): Record<string, unknown> {
+  if (key === "error.voucher_min_purchase" && args.min != null) {
+    return { ...args, min: fmt.price(String(args.min)) };
+  }
+  return args;
 }
 
 /**

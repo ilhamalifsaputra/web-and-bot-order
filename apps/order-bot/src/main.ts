@@ -8,7 +8,7 @@
  *
  * Middleware order mirrors the PTB handler groups:
  *   bindUpdateId → sequentialize(per-chat) → session → conversations() →
- *   registeredUser → rateLimit → commerceGate → joinGate →
+ *   registeredUser → rateLimit → commerceGate → joinGate → requireCurrency →
  *   (conversation resumes) → conversation entry triggers → commands →
  *   callback router → product-number message handler.
  *
@@ -28,7 +28,7 @@ import { logger } from "@app/core/logger";
 import { assertCredentialKeyConfigured } from "@app/core/credentialCrypto";
 import type { MyContext } from "./context";
 import { initialSession } from "./context";
-import { bindUpdateId, registeredUser, rateLimit, adminOnly, joinGate, commerceGate } from "./middleware";
+import { bindUpdateId, registeredUser, requireCurrency, rateLimit, adminOnly, joinGate, commerceGate } from "./middleware";
 import { prismaSessionStorage } from "./util/prismaSessionStorage";
 import { htmlDefaultsTransformer } from "./util/apiDefaults";
 import { CONVERSATIONS } from "./conversations";
@@ -104,6 +104,8 @@ export function buildBot(token?: string): Bot<MyContext> {
   bot.use(rateLimit);
   bot.use(commerceGate); // block every commerce command/callback from a non-private chat (unconditional)
   bot.use(joinGate); // block every interaction until required channel/group are joined (if configured)
+  // After joinGate + rateLimit: the join prompt comes first, and these block replies are rate limited.
+  bot.use(requireCurrency); // block customers with no display currency until /start onboarding stores one
 
   // --- Conversations (resume first; consume the update if one is active) ---
   for (const spec of CONVERSATIONS) {
@@ -119,7 +121,8 @@ export function buildBot(token?: string): Bot<MyContext> {
   }
 
   // --- Commands (PTB group 1) ----------------------------------------------
-  bot.command(["start", "menu"], customer.startCommand);
+  bot.command("start", customer.startCommand); // onboarding: language, then currency
+  bot.command("menu", customer.menuCommand);
   bot.command("cancel", customer.cancelCommand);
   bot.command("listproduk", customer.listprodukCommand);
   bot.command("language", customer.languageCommand);

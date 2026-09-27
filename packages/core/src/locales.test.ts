@@ -139,3 +139,28 @@ describe("guest-facing copy never promises an email the shop may not send", () =
     });
   }
 });
+
+describe("currency onboarding copy", () => {
+  const en = load("en");
+  const id = load("id");
+
+  it("defines every currency.* key in both languages", () => {
+    for (const key of [
+      "currency.choose",
+      "currency.usd",
+      "currency.idr",
+      "currency.set",
+      "currency.required",
+      "currency.rate_unavailable",
+    ]) {
+      expect(en[key], `${key} missing from en`).toBeTruthy();
+      expect(id[key], `${key} missing from id`).toBeTruthy();
+    }
+    expect(en["currency.required"]).toBe("Please run /start and select your preferred currency first.");
+  });
+
+  it("defines the price-vs-payable line with {price} and {pay} in both languages", () => {
+    expect(en["checkout.price_and_pay"]).toBe("Price {price} · Pay {pay}");
+    expect(id["checkout.price_and_pay"]).toBe("Harga {price} · Bayar {pay}");
+  });
+});

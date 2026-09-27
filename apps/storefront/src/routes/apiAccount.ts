@@ -55,6 +55,7 @@ import {
   subscribeToRestock,
   getDenominationWithProduct,
   setLoginCredentials,
+  adoptUserPreferredCurrencyIfUnset,
   LOGIN_USERNAME_RE,
   getReferralSummary,
   isServiceActive,
@@ -68,7 +69,7 @@ import {
   SHOP_SESSION_TTL_HOURS,
 } from "../auth";
 import { optionalCustomer, type Customer } from "../plugins/auth";
-import { resolveBotId, resolveBotUsername } from "../shop";
+import { resolveBotId, resolveBotUsername, requestCurrency } from "../shop";
 import { constantTimeEqual } from "../auth";
 import { errorBody } from "@app/core/errorBody";
 import { originOk } from "./cart";
@@ -223,6 +224,10 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
       orders: orders.map((o) => ({
         code: o.orderCode,
         status: o.status,
+        // Task 5 fix pass: `total` is denominated in the order's OWN
+        // settlement currency ("IDR" | "USDT"), not always IDR — the client
+        // formats it natively (formatOrderAmount), never display-converts it.
+        currency: o.currency,
         total: o.totalAmount.toString(),
         created_at_display: dt(o.createdAt),
         items: o.items.map((i) => i.product.name).join(", "),
@@ -259,6 +264,11 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
         discount: money.discount.toString(),
         bulk_discount: money.bulkDiscount.toString(),
         wallet_credit: money.walletCredit.toString(),
+        // Task 5 fix pass: the currency `total` is denominated in (the order's
+        // own settlement rail). subtotal/discount/bulk_discount/unit_price
+        // above/below stay central-IDR for every order — see
+        // buyerOrderSummary.ts's "IDR ONLY, DELIBERATELY" note.
+        currency: order.currency,
         total: order.totalAmount.toString(),
         created_at_display: dt(order.createdAt),
         customer_data_fields: customerDataFields,
@@ -698,6 +708,12 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
             created_at_display: dt(order.createdAt),
             paid_at_display: order.paidAt ? dt(order.paidAt) : null,
             payment_method: order.paymentMethod,
+            // Task 5 (multi-currency display client): already on the Order
+            // row (`currency` — see prisma/schema.prisma), just not exposed
+            // here before. `total` above is denominated in THIS, not always
+            // IDR — the client's TicketOrderSummaryCard branches on it via
+            // formatOrderAmount() rather than assuming Rupiah.
+            currency: order.currency,
             total: order.totalAmount.toString(),
             voucher_code: order.voucher?.code ?? null,
             delivered: order.status === OrderStatus.DELIVERED,
@@ -829,6 +845,11 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
     let passwordChanged = false;
     if (changes.passwordHash) {
       passwordChanged = true;
+      // A guest converting to a real account keeps this session (no
+      // establishSession), so adopt the shop_currency cookie here too — same
+      // one-time, never-overwrite rule as sign-in.
+      const cookieCurrency = requestCurrency(req);
+      if (cookieCurrency) await adoptUserPreferredCurrencyIfUnset(prisma, customer.userId, cookieCurrency);
       const jti = newJti();
       await setSetting(prisma, shopSessionJtiKey(customer.userId), jti);
       const { raw } = makeCustomerSession(customer.userId, customer.user.telegramId, jti);

@@ -12,7 +12,7 @@ import { config } from "@app/core/config";
 import { botUsername } from "@app/core/runtime";
 import { Decimal } from "@app/core/money";
 import { ensureUtc, localize, addDays } from "@app/core/datetime";
-import { UserRole, OrderStatus, OrderKind, PaymentMethod, TicketStatus, SenderType, DeliveryType, CategoryGroup, customerStatusLabel } from "@app/core/enums";
+import { UserRole, OrderStatus, OrderKind, PaymentMethod, TicketStatus, SenderType, DeliveryType, CategoryGroup, customerStatusLabel, parseDisplayCurrency } from "@app/core/enums";
 import { parseAdditionalFields, parseCustomerData } from "@app/core/deliveryFields";
 import { logger } from "@app/core/logger";
 import { CUSTOMER_SERVICES } from "@app/core/services";
@@ -37,6 +37,7 @@ import {
   getOrder,
   getUser,
   setUserLanguage,
+  setUserPreferredCurrency,
   subscribeToRestock,
   productRating,
   soldCountForDenomination,
@@ -59,7 +60,7 @@ import { t } from "../util/i18n";
 import { logErrorRef } from "../util/errors";
 import { gameTopUpDenomLabel } from "../util/denominationLabel";
 import { gameInputFieldsLabel, resolveGameInputFlags } from "../util/gameInfo";
-import { esc, formatUsdtAmount, formatIdr, statusBadge, groupOrderItems, formatCountdown, formatFlashRemaining, priceIdr, orderAmount, mixedAmount, renderBybitBscTrackingScreen, summarizeTicketOrder } from "../util/format";
+import { esc, formatUsdtAmount, formatIdr, statusBadge, groupOrderItems, formatCountdown, formatFlashRemaining, priceIdr, ctxPriceFormatter, orderAmount, mixedAmount, renderBybitBscTrackingScreen, summarizeTicketOrder } from "../util/format";
 import { effectiveUnitPrice, flashPrice, activeFlashPercent } from "@app/core/flash";
 import { currentUsdtRate } from "../util/rate";
 import * as ckb from "../keyboards/customer";
@@ -67,7 +68,8 @@ import { showFaq, showTerms } from "./static";
 
 const PAGE_SIZE = 10;
 // USDT-denominated figures only (wallet balance, commissions). Catalog prices
-// are central Rupiah — use priceIdr(v, rate); order totals — orderAmount(o).
+// are central Rupiah rendered in the buyer's display currency —
+// ctxPriceFormatter(ctx, rate).price(v); order totals — orderAmount(o).
 const price = (v: Decimal.Value) => formatUsdtAmount(v);
 
 // Bybit BSC's in-flight pre-delivery states — viewOrder() routes these
@@ -259,26 +261,45 @@ async function handleBackButton(ctx: MyContext): Promise<void> {
   await backToHome(ctx);
 }
 
+/** `t.me/<bot>?start=prod_<id>` → the Denomination/SKU id (share links), or
+ * undefined when the command carries no such deep link. */
+function deepLinkDenomId(ctx: MyContext): number | undefined {
+  const args = (ctx.match && typeof ctx.match === "string" ? ctx.match : "").trim().split(/\s+/).filter(Boolean);
+  if (!args.length || !args[0]!.startsWith("prod_")) return undefined;
+  const denomId = parseInt(args[0]!.slice(5), 10);
+  return isNaN(denomId) ? undefined : denomId;
+}
+
+/**
+ * `/start` — for every user, new or existing (idempotent): run onboarding,
+ * language first, then display currency (setLanguage → setCurrency). A
+ * `prod_<id>` deep link is remembered and opened once the currency is picked.
+ *
+ * `ref_<code>` referral attribution happens in the registeredUser middleware
+ * (apps/order-bot/src/middleware.ts), not here: that's what actually creates
+ * the User row for a brand-new customer, and it always runs before this
+ * handler — upsertUser only ever applies referredByCode on the row's initial
+ * creation, so calling it again here would be a no-op every time.
+ */
 export async function startCommand(ctx: MyContext): Promise<void> {
-  const tg = ctx.from!;
+  ctx.session.awaitingQtyDenomId = undefined;
+  ctx.session.pendingDeepLinkDenomId = deepLinkDenomId(ctx);
+  delete sc(ctx).browseEntries;
+  delete sc(ctx).page;
+  ctx.session.state = BotState.HOME;
+  ctx.session.onboarding = "language";
+  await showLanguageMenu(ctx);
+}
+
+/** `/menu` (and /cancel's fallback) — straight to the Home dashboard. */
+export async function menuCommand(ctx: MyContext): Promise<void> {
   ctx.session.awaitingQtyDenomId = undefined;
 
-  // `ref_<code>` referral attribution happens in the registeredUser
-  // middleware (apps/order-bot/src/middleware.ts), not here: that's what
-  // actually creates the User row for a brand-new customer, and it always
-  // runs before this handler — upsertUser only ever applies referredByCode
-  // on the row's initial creation, so calling it again here would be a
-  // no-op every time.
-  const args = (ctx.match && typeof ctx.match === "string" ? ctx.match : "").trim().split(/\s+/).filter(Boolean);
-
-  // Deep-link: t.me/<bot>?start=prod_<id> → open a denomination detail bubble
-  // directly (the id is a Denomination/SKU id, as used in share links).
-  if (args.length && args[0]!.startsWith("prod_")) {
-    const denomId = parseInt(args[0]!.slice(5), 10);
-    if (!isNaN(denomId)) {
-      await browseDenomination(ctx, denomId);
-      return;
-    }
+  // Deep-link: prod_<id> → open a denomination detail bubble directly.
+  const denomId = deepLinkDenomId(ctx);
+  if (denomId !== undefined) {
+    await browseDenomination(ctx, denomId);
+    return;
   }
 
   delete sc(ctx).browseEntries;
@@ -300,7 +321,7 @@ export async function cancelCommand(ctx: MyContext): Promise<void> {
   ctx.session.scratch = {};
   ctx.session.awaitingQtyDenomId = undefined;
   await ctx.reply(t(ctx, "conv.cancelled_idle"));
-  await startCommand(ctx);
+  await menuCommand(ctx);
 }
 
 // ---------------------------------------------------------------------------
@@ -752,7 +773,7 @@ export async function handleProductNumber(ctx: MyContext): Promise<void> {
     case "referral":
       return void (await viewReferral(ctx));
     case "language":
-      return void (await showLanguageMenu(ctx));
+      return void (await openLanguageMenu(ctx));
     case "faq":
       return void (await showFaq(ctx));
     case "terms":
@@ -842,6 +863,9 @@ export async function browseProduct(ctx: MyContext, productId: number): Promise<
   delete sc(ctx).variantId;
   const isReseller = info.role === UserRole.RESELLER;
   const rate = await currentUsdtRate();
+  // Catalog prices in the buyer's display currency (canonical IDR in, one
+  // conversion at this render edge).
+  const prices = ctxPriceFormatter(ctx, rate);
 
   // Game Top Up whose every button will carry its own price (compact
   // qty+unit+price label — same qtyValue/qtyUnit condition as buttonLabel
@@ -877,7 +901,7 @@ export async function browseProduct(ctx: MyContext, productId: number): Promise<
       // through the variant-picker flow that sets/clears scratch at all).
       const buttonLabel =
         d.qtyValue != null && d.qtyUnit
-          ? gameTopUpDenomLabel(d, unitPrice, product.gameVariantEmoji ?? sc(ctx).gameVariantEmoji)
+          ? gameTopUpDenomLabel(d, unitPrice, product.gameVariantEmoji ?? sc(ctx).gameVariantEmoji, prices)
           : undefined;
       if (isGameWithInlinePrices) return { line: "", buttonLabel };
       const stock = await countAvailableStock(prisma, d.id);
@@ -901,10 +925,10 @@ export async function browseProduct(ctx: MyContext, productId: number): Promise<
       const priceText =
         sale && unitPrice.equals(sale)
           ? t(ctx, "browse.flash_price", {
-              old: priceIdr(d.price, rate),
-              new: priceIdr(unitPrice, rate),
+              old: prices.price(d.price),
+              new: prices.price(unitPrice),
             })
-          : priceIdr(unitPrice, rate);
+          : prices.price(unitPrice);
       const line = t(ctx, "browse.denomination_line", {
         duration: esc(d.durationLabel || d.name),
         price: priceText,
@@ -939,6 +963,9 @@ export async function browseProduct(ctx: MyContext, productId: number): Promise<
       text += "\n\n" + t(ctx, "browse.description", { description: esc(product.description) });
     }
   }
+  // Prices on this screen (body lines or button labels) fell back to Rp for a
+  // USD buyer because no rate is available — say so, once.
+  text += prices.rateNotice(lang);
   const pickerDenoms = active.map((d, i) => ({ ...d, buttonLabel: planData[i]!.buttonLabel }));
   const photoArg = productPhotoArg(product);
   if (photoArg) {
@@ -1003,6 +1030,7 @@ export async function browseDenomination(
   const isReseller = info.role === UserRole.RESELLER;
   const unit = effectiveUnitPrice(d, isReseller);
   const rate = await currentUsdtRate();
+  const prices = ctxPriceFormatter(ctx, rate);
   const sale = flashPrice(d);
   const onSale = sale !== null && unit.equals(sale);
 
@@ -1022,8 +1050,8 @@ export async function browseDenomination(
       : "—";
 
   const priceText = onSale
-    ? t(ctx, "browse.flash_price", { old: priceIdr(d.price, rate), new: priceIdr(unit, rate) })
-    : priceIdr(unit, rate);
+    ? t(ctx, "browse.flash_price", { old: prices.price(d.price), new: prices.price(unit) })
+    : prices.price(unit);
   // Game Top Up SKUs (diamonds, UC, …) have no meaningful Duration/Type/
   // Warranty — those lines are Premium Apps account attributes — so the game
   // variant of this bubble keeps only Price/Stock/Sold/Rating.
@@ -1073,6 +1101,7 @@ export async function browseDenomination(
     const hint = await gameInputHint(ctx, [d]);
     if (hint) text += "\n\n" + hint;
   }
+  text += prices.rateNotice(lang);
 
   if (opts?.noticePrefix) {
     text = opts.noticePrefix + "\n\n" + text;
@@ -1481,6 +1510,70 @@ export async function setLanguage(ctx: MyContext, code: string): Promise<void> {
   info.language = code.toUpperCase();
   ctx.session.lang = code.toLowerCase();
   if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "language.set") });
+  if (ctx.session.onboarding === "language" || ctx.session.onboarding === "currency" || !info.preferredCurrency) {
+    // /start onboarding: language done, currency next (never derived from it).
+    // A duplicate/stale lang:set tap while already on the currency step just
+    // re-shows the currency picker and stays there.
+    // A user with no currency yet goes to the picker too even when onboarding
+    // was never started: /language (and the Help Center / persistent-keyboard
+    // Language entry) is exempt from requireCurrency, so without this they
+    // would land on the main menu having never chosen a currency.
+    ctx.session.onboarding = "currency";
+    await showCurrencyMenu(ctx);
+    return;
+  }
+  await showMainMenu(ctx);
+}
+
+/**
+ * Language settings entry points outside /start (/language, the Help Center
+ * button, the persistent-keyboard label). A user who already has a currency
+ * and is sitting on a leftover, unfinished /start onboarding abandons it
+ * here, so their language pick ends at the main menu and a remembered deep
+ * link can never pop up later. A user with no currency keeps their
+ * onboarding (they still have to pick one).
+ */
+export async function openLanguageMenu(ctx: MyContext): Promise<void> {
+  if (ctx.session.dbUser?.preferredCurrency) {
+    ctx.session.onboarding = null;
+    ctx.session.pendingDeepLinkDenomId = undefined;
+  }
+  await showLanguageMenu(ctx);
+}
+
+export async function showCurrencyMenu(ctx: MyContext): Promise<void> {
+  await smartEdit(ctx, t(ctx, "currency.choose"), ckb.currencyKb(ctx.session.lang));
+}
+
+/**
+ * `v1:cur:set:<USD|IDR>` — store the display-currency preference. An unknown
+ * or wrong-case code is treated as a stale/forged button: toast and change
+ * nothing. Idempotent (a double tap re-writes the same value). Finishes
+ * onboarding if it was in progress (opening a remembered deep link), and
+ * otherwise just re-renders the main menu.
+ */
+export async function setCurrency(ctx: MyContext, code: string): Promise<void> {
+  const currency = parseDisplayCurrency(code);
+  if (!currency) {
+    logger.warn({ code }, "A currency button carried an unsupported currency code, so it was treated as a stale screen and nothing was changed.");
+    if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
+    return;
+  }
+  const info = requireUser(ctx);
+  await setUserPreferredCurrency(prisma, info.id, currency);
+  info.preferredCurrency = currency;
+  if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "currency.set") });
+
+  // A remembered deep link only ever resumes the onboarding that stored it;
+  // it is cleared either way so a later currency tap can't open it.
+  const wasOnboarding = ctx.session.onboarding != null;
+  ctx.session.onboarding = null;
+  const pendingDenomId = ctx.session.pendingDeepLinkDenomId;
+  ctx.session.pendingDeepLinkDenomId = undefined;
+  if (wasOnboarding && pendingDenomId !== undefined) {
+    await browseDenomination(ctx, pendingDenomId);
+    return;
+  }
   await showMainMenu(ctx);
 }
 
@@ -1603,7 +1696,7 @@ export async function listprodukCommand(ctx: MyContext): Promise<void> {
 
 export async function languageCommand(ctx: MyContext): Promise<void> {
   ctx.session.awaitingQtyDenomId = undefined;
-  await showLanguageMenu(ctx);
+  await openLanguageMenu(ctx);
 }
 
 export async function searchCommand(ctx: MyContext): Promise<void> {

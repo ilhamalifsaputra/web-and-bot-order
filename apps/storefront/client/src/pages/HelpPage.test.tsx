@@ -83,7 +83,7 @@ const populatedFormOptions: SupportFormOptions = {
 const emptyOrders: AccountOrdersData = { orders: [] };
 const populatedOrders: AccountOrdersData = {
   orders: [
-    { code: "ORD-2001", status: "delivered", total: "150000", created_at_display: "2026-08-01 09:00", items: "Alight Motion 1 year" },
+    { code: "ORD-2001", status: "delivered", currency: "IDR", total: "150000", created_at_display: "2026-08-01 09:00", items: "Alight Motion 1 year" },
   ],
 };
 

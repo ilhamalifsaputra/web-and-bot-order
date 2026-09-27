@@ -24,6 +24,7 @@ const context: ShopContext = {
   bot_username: "tokobot",
   wa_number: null,
   tzname: "Asia/Jakarta",
+  currency: null,
 };
 
 /** Stand-in for Layout's <main> + PageTransition — a real navigation swaps

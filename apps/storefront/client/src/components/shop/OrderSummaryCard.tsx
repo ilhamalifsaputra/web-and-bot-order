@@ -9,9 +9,14 @@
  * Design-system migration (Fase 7c): the two `.card.card-pad` blocks are now
  * `<Card>`, the voucher control is `<Label>` + `<Input>` + an inline apply
  * `<Button variant="soft">`, and the submit is `<Button variant="primary"
- * fullWidth>`. The summary line rows — which numbers show, and how they are
- * computed / formatted (`formatIdr`, `<Price>`) — are UNCHANGED: money is
- * Decimal, formatted only at this render boundary. The voucher field composes
+ * fullWidth>`. The summary line rows — which numbers show, and where they
+ * come from — are UNCHANGED: money is Decimal, formatted only at this render
+ * boundary. Task 5 (multi-currency display): every row here is a
+ * catalog/cart/checkout-preview IDR figure (subtotal, discounts, the QRIS
+ * admin fee preview), so `formatPriceFor`/`<Price>` — both currency-aware —
+ * replace the old unconditional `formatIdr`; `currency` is read off the
+ * shared `["context"]` query (`useShopContext`) rather than threaded as a
+ * prop, same as `<Price>` itself. The voucher field composes
  * `<Label>` + `<Input>` directly rather than a literal `<FormField>` because
  * the apply `<Button>` sits inline beside the input (FormField clones a single
  * control child and cannot hold the adjacent button).
@@ -27,7 +32,8 @@ import { Link } from "react-router-dom";
 import { AlertTriangle, ChevronRight } from "lucide-react";
 import type { CheckoutData } from "../../api/types";
 import { t } from "../../lib/i18n";
-import { formatIdr } from "../../lib/format";
+import { formatIdr, formatPriceFor, isIdrRail, showsUsdDisplay } from "../../lib/format";
+import { useShopContext } from "../../lib/useShopContext";
 import FlashBadge, { flashPercentLabel } from "./FlashBadge";
 import Price from "./Price";
 import Spinner from "./Spinner";
@@ -55,6 +61,40 @@ function cartFlashSummary(data: CheckoutData | undefined): { percent: number; en
     if (lineEnd && (endsAt === null || lineEnd > endsAt)) endsAt = lineEnd;
   }
   return percent === null ? null : { percent, endsAt };
+}
+
+/**
+ * Final-review fix: the "Price $X · Pay RpY" line for a checkout preview — the
+ * web twin of the bot's payAlongsidePriceLine, through the same shared
+ * `checkout.price_and_pay` locale key. Non-null ONLY when the viewer's display
+ * currency renders as "$" (USD preference + usable rate) AND the selected
+ * method is IDR-settled (QRIS/TokoPay, PayDisini, or a wallet_idr balance
+ * debit) — exactly the case where what the viewer sees differs from what
+ * they're actually charged. IDR/null viewers, a missing rate, and USDT rails
+ * all get null.
+ *
+ * Same two figures the bot uses (and PayPage.tsx after the order exists), so
+ * "Price" means one thing on every surface: Price is the pre-fee order total
+ * (`totals.total`) converted once via formatPriceFor; Pay is the actual IDR
+ * charge — `qris_grand_total` on QRIS (fee-inclusive), `total` on PayDisini or
+ * wallet_idr (no fee) — formatted with `formatIdr` directly, never re-converted.
+ * Both are still canonical IDR in the preview: Decimal strings the server
+ * computes in Rupiah (routes/checkout.ts cartTotals) before any rail has
+ * touched them. Shared by this card and both pages' sticky bars so the three
+ * surfaces cannot drift apart.
+ */
+export function idrRailPriceAndPay(
+  method: string | null,
+  totals: Pick<CheckoutData, "total" | "qris_grand_total">,
+  currency: "USD" | "IDR" | null,
+  fx: string | null | undefined,
+): string | null {
+  if (!isIdrRail(method) || !showsUsdDisplay(currency, fx)) return null;
+  const payableIdr = method === "qris" ? totals.qris_grand_total : totals.total;
+  return t("checkout.price_and_pay", {
+    price: formatPriceFor(totals.total, currency, fx),
+    pay: formatIdr(payableIdr),
+  });
 }
 
 export interface OrderSummaryCardProps {
@@ -107,6 +147,13 @@ export default function OrderSummaryCard({
   backTo,
 }: OrderSummaryCardProps) {
   const flashSummary = cartFlashSummary(totals);
+  const { data: ctx } = useShopContext();
+  const currency = ctx?.currency ?? null;
+  // Final-review fix: a USD viewer on an IDR-settled method (QRIS/TokoPay,
+  // PayDisini, wallet_idr) would otherwise see only "$" figures that don't
+  // match what they're charged — see idrRailPriceAndPay above. Non-null gates
+  // the Rp fee suffix too.
+  const priceAndPay = idrRailPriceAndPay(method, totals, currency, fx);
 
   return (
     // A single grid child (space-y-6 stacks the two cards) rather than a bare
@@ -155,7 +202,7 @@ export default function OrderSummaryCard({
           <div className="text-sm divide-y divide-line">
             <div className="flex justify-between py-2">
               <span className="text-ink-soft">{t("web.subtotal")}</span>
-              <span>{formatIdr(totals.subtotal)}</span>
+              <span>{formatPriceFor(totals.subtotal, currency, fx)}</span>
             </div>
             {/* Modest marker only: the subtotal above is already the sale
                 price, and the full countdown belongs on the product page. */}
@@ -168,19 +215,24 @@ export default function OrderSummaryCard({
             {totals.bulk_discount !== "0" && (
               <div className="flex justify-between py-2 text-grass-dark">
                 <span>{t("web.bulk_discount")}</span>
-                <span>−{formatIdr(totals.bulk_discount)}</span>
+                <span>−{formatPriceFor(totals.bulk_discount, currency, fx)}</span>
               </div>
             )}
             {totals.voucher_discount !== "0" && (
               <div className="flex justify-between py-2 text-grass-dark">
                 <span>{t("web.voucher_discount")}</span>
-                <span>−{formatIdr(totals.voucher_discount)}</span>
+                <span>−{formatPriceFor(totals.voucher_discount, currency, fx)}</span>
               </div>
             )}
             {method === "qris" && (
               <div className="flex justify-between py-2">
                 <span className="text-ink-soft">{t("web.qris_admin_fee")}</span>
-                <span>{formatIdr(totals.qris_admin_fee)}</span>
+                <span>
+                  {formatPriceFor(totals.qris_admin_fee, currency, fx)}
+                  {priceAndPay && (
+                    <span className="text-ink-faint"> · {formatIdr(totals.qris_admin_fee)}</span>
+                  )}
+                </span>
               </div>
             )}
             <div className="flex items-baseline justify-between py-3">
@@ -188,6 +240,7 @@ export default function OrderSummaryCard({
               <Price value={method === "qris" ? totals.qris_grand_total : totals.total} fx={fx} size="text-lg" />
             </div>
           </div>
+          {priceAndPay && <p className="mb-2 text-right text-sm text-ink-soft">{priceAndPay}</p>}
           {fx && <p className="text-xs text-ink-faint">{t("web.usdt_note")}</p>}
           {/* Desktop only: on a phone this button lives in the sticky bar
               below instead. Rendering it in both places would put two

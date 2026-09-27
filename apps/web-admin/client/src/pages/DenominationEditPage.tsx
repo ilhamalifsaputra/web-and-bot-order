@@ -325,14 +325,14 @@ export function DenominationEditPage() {
 
         <div>
           <label className="text-sm font-medium text-ink">
-            Price <span className="text-rust">*</span>
+            Price (IDR) <span className="text-rust">*</span>
           </label>
           <Input className="mt-1" placeholder="e.g. 15000" value={price} onChange={(e) => setPrice(e.target.value)} />
           <p className="mt-1 text-xs text-ink-soft">Shown to customers.</p>
         </div>
 
         <div>
-          <label className="text-sm font-medium text-ink">Cost Price</label>
+          <label className="text-sm font-medium text-ink">Cost Price (IDR)</label>
           <Input className="mt-1" placeholder="Optional" value={costPrice} onChange={(e) => setCostPrice(e.target.value)} />
           <p className="mt-1 text-xs text-ink-soft">
             What you pay your supplier. For margin reports only — buyers never see this.
@@ -340,7 +340,7 @@ export function DenominationEditPage() {
         </div>
 
         <div>
-          <label className="text-sm font-medium text-ink">Reseller Price</label>
+          <label className="text-sm font-medium text-ink">Reseller Price (IDR)</label>
           <Input className="mt-1" placeholder="Optional" value={resellerPrice} onChange={(e) => setResellerPrice(e.target.value)} />
           <p className="mt-1 text-xs text-ink-soft">Charged instead of Price to reseller-role customers.</p>
         </div>

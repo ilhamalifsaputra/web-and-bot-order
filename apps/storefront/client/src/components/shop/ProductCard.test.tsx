@@ -1,8 +1,31 @@
 import "@testing-library/jest-dom";
-import { describe, it, expect, beforeEach } from "vitest";
+import type { ReactElement } from "react";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import ProductCard, { type ProductCardData } from "./ProductCard";
+import { apiGet } from "../../api/client";
+
+// ProductCard renders <Price/>, which (Task 5) reads the display-currency
+// preference off the shared ["context"] query itself — every render here
+// needs the same QueryClientProvider wrapper the page tests already use.
+// No currency-specific assertion in this file, so a single static mock
+// (undefined ctx while the query is pending, same as a real cold mount) is
+// enough for the null-currency default every existing assertion expects.
+vi.mock("../../api/client", () => ({
+  apiGet: vi.fn(),
+}));
+
+const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+function renderCard(ui: ReactElement) {
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>{ui}</MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
 
 const base: ProductCardData = {
   slug: "netflix-premium",
@@ -22,13 +45,12 @@ const base: ProductCardData = {
 describe("ProductCard", () => {
   beforeEach(() => {
     document.documentElement.lang = "en";
+    (apiGet as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ currency: null, fx: null });
   });
 
   it("shows name, category, from-price and rating count", () => {
-    render(
-      <MemoryRouter>
-        <ProductCard p={base} fx="16000" lowThreshold={5} />
-      </MemoryRouter>,
+    renderCard(
+      <ProductCard p={base} fx="16000" lowThreshold={5} />,
     );
     expect(screen.getByRole("heading", { name: "Netflix Premium" })).toBeInTheDocument();
     expect(screen.getByText("Streaming")).toBeInTheDocument();
@@ -38,10 +60,8 @@ describe("ProductCard", () => {
   });
 
   it("says '1 review' (singular) for a single review", () => {
-    render(
-      <MemoryRouter>
-        <ProductCard p={{ ...base, rating_count: 1 }} fx="16000" lowThreshold={5} />
-      </MemoryRouter>,
+    renderCard(
+      <ProductCard p={{ ...base, rating_count: 1 }} fx="16000" lowThreshold={5} />,
     );
     expect(screen.getByText("· 1 review")).toBeInTheDocument();
     expect(screen.queryByText("· 1 reviews")).not.toBeInTheDocument();
@@ -49,10 +69,8 @@ describe("ProductCard", () => {
 
   it("shows the bulk discount badge and hint when present", () => {
     const withBulk: ProductCardData = { ...base, bulk_discount: "15", bulk_min_qty: 3 };
-    render(
-      <MemoryRouter>
-        <ProductCard p={withBulk} fx="16000" lowThreshold={5} />
-      </MemoryRouter>,
+    renderCard(
+      <ProductCard p={withBulk} fx="16000" lowThreshold={5} />,
     );
     expect(screen.getByText("−15%")).toBeInTheDocument();
     expect(screen.getByText("Buy 3+ and save 15%")).toBeInTheDocument();
@@ -60,10 +78,8 @@ describe("ProductCard", () => {
 
   it("shows the out-of-stock presentation when available is 0", () => {
     const outOfStock: ProductCardData = { ...base, available: 0 };
-    render(
-      <MemoryRouter>
-        <ProductCard p={outOfStock} fx="16000" lowThreshold={5} />
-      </MemoryRouter>,
+    renderCard(
+      <ProductCard p={outOfStock} fx="16000" lowThreshold={5} />,
     );
     const badge = screen.getByText("Out of stock");
     expect(badge).toHaveClass("bg-rust-tint", "text-rust-dark");
@@ -71,20 +87,16 @@ describe("ProductCard", () => {
 
   it("does not show out-of-stock when every denomination is non-auto delivery (STO-001)", () => {
     const manualDelivery: ProductCardData = { ...base, available: 0, all_non_auto: true };
-    render(
-      <MemoryRouter>
-        <ProductCard p={manualDelivery} fx="16000" lowThreshold={5} />
-      </MemoryRouter>,
+    renderCard(
+      <ProductCard p={manualDelivery} fx="16000" lowThreshold={5} />,
     );
     expect(screen.queryByText("Out of stock")).not.toBeInTheDocument();
     expect(screen.getByText("Available")).toBeInTheDocument();
   });
 
   it("uses the design-system card elevation: shadow-soft resting, shadow-lift on hover", () => {
-    render(
-      <MemoryRouter>
-        <ProductCard p={base} fx="16000" lowThreshold={5} />
-      </MemoryRouter>,
+    renderCard(
+      <ProductCard p={base} fx="16000" lowThreshold={5} />,
     );
     const card = screen.getByRole("link");
     expect(card).toHaveClass("shadow-soft");
@@ -100,10 +112,8 @@ describe("ProductCard", () => {
   // task-24: the chip is also gated on !all_non_auto (dedicated test below);
   // `base` has all_non_auto:false so the chip still renders here.
   it("gives the instant chip an opaque, legible grass background (not bg-black/40 + text-grass) and no amber", () => {
-    render(
-      <MemoryRouter>
-        <ProductCard p={base} fx="16000" lowThreshold={5} />
-      </MemoryRouter>,
+    renderCard(
+      <ProductCard p={base} fx="16000" lowThreshold={5} />,
     );
     const chip = screen.getByText("Instant delivery");
     expect(chip).toHaveClass("bg-grass-dark", "text-white");
@@ -115,19 +125,15 @@ describe("ProductCard", () => {
   // instantly, so the solid-green "Instant delivery" pill would be false
   // advertising — it must not render for those.
   it("shows the instant chip for an auto-delivery product (all_non_auto false)", () => {
-    render(
-      <MemoryRouter>
-        <ProductCard p={base} fx="16000" lowThreshold={5} />
-      </MemoryRouter>,
+    renderCard(
+      <ProductCard p={base} fx="16000" lowThreshold={5} />,
     );
     expect(screen.getByText("Instant delivery")).toBeInTheDocument();
   });
 
   it("hides the instant chip when every denomination is manual delivery (all_non_auto)", () => {
-    render(
-      <MemoryRouter>
-        <ProductCard p={{ ...base, all_non_auto: true }} fx="16000" lowThreshold={5} />
-      </MemoryRouter>,
+    renderCard(
+      <ProductCard p={{ ...base, all_non_auto: true }} fx="16000" lowThreshold={5} />,
     );
     expect(screen.queryByText("Instant delivery")).not.toBeInTheDocument();
   });
@@ -135,39 +141,31 @@ describe("ProductCard", () => {
   // Instant delivery is only true while there is something to deliver: an
   // auto-delivery product with no available stock is out of stock, not instant.
   it("hides the instant chip when an auto-delivery product has no available stock", () => {
-    render(
-      <MemoryRouter>
-        <ProductCard p={{ ...base, available: 0, all_non_auto: false }} fx="16000" lowThreshold={5} />
-      </MemoryRouter>,
+    renderCard(
+      <ProductCard p={{ ...base, available: 0, all_non_auto: false }} fx="16000" lowThreshold={5} />,
     );
     expect(screen.queryByText("Instant delivery")).not.toBeInTheDocument();
     expect(screen.getByText("Out of stock")).toBeInTheDocument();
   });
 
   it("shows the instant chip for an auto-delivery product with exactly one unit available", () => {
-    render(
-      <MemoryRouter>
-        <ProductCard p={{ ...base, available: 1, all_non_auto: false }} fx="16000" lowThreshold={5} />
-      </MemoryRouter>,
+    renderCard(
+      <ProductCard p={{ ...base, available: 1, all_non_auto: false }} fx="16000" lowThreshold={5} />,
     );
     expect(screen.getByText("Instant delivery")).toBeInTheDocument();
   });
 
   it("keeps the instant chip hidden for a manual-delivery product even when its stock figure is positive", () => {
-    render(
-      <MemoryRouter>
-        <ProductCard p={{ ...base, available: 10, all_non_auto: true }} fx="16000" lowThreshold={5} />
-      </MemoryRouter>,
+    renderCard(
+      <ProductCard p={{ ...base, available: 10, all_non_auto: true }} fx="16000" lowThreshold={5} />,
     );
     expect(screen.queryByText("Instant delivery")).not.toBeInTheDocument();
   });
 
   it("renders whole-number ratings without trailing .0", () => {
     const wholeRating: ProductCardData = { ...base, rating: 5, rating_count: 1 };
-    render(
-      <MemoryRouter>
-        <ProductCard p={wholeRating} fx="16000" lowThreshold={5} />
-      </MemoryRouter>,
+    renderCard(
+      <ProductCard p={wholeRating} fx="16000" lowThreshold={5} />,
     );
     expect(screen.getByText("5")).toBeInTheDocument();
     expect(screen.queryByText("5.0")).not.toBeInTheDocument();
@@ -178,10 +176,8 @@ describe("ProductCard", () => {
   // keyed by the server-resolved `image_kind`, with no <img>/<picture> at all.
   describe("image fallback (DefaultThumb)", () => {
     it("renders DefaultThumb (no <img>/<picture>) when image is null", () => {
-      const { container } = render(
-        <MemoryRouter>
-          <ProductCard p={{ ...base, image: null, image_kind: "entertainment" }} fx="16000" lowThreshold={5} />
-        </MemoryRouter>,
+      const { container } = renderCard(
+        <ProductCard p={{ ...base, image: null, image_kind: "entertainment" }} fx="16000" lowThreshold={5} />,
       );
       expect(container.querySelector("img")).toBeNull();
       expect(container.querySelector("picture")).toBeNull();
@@ -189,10 +185,8 @@ describe("ProductCard", () => {
     });
 
     it("defaults to the generic icon when image_kind is absent", () => {
-      const { container } = render(
-        <MemoryRouter>
-          <ProductCard p={{ ...base, image: null, image_kind: undefined }} fx="16000" lowThreshold={5} />
-        </MemoryRouter>,
+      const { container } = renderCard(
+        <ProductCard p={{ ...base, image: null, image_kind: undefined }} fx="16000" lowThreshold={5} />,
       );
       expect(container.querySelector(".lucide-package")).toBeInTheDocument();
     });
@@ -203,10 +197,8 @@ describe("ProductCard", () => {
         image: "/uploads/products/netflix.jpg",
         image_kind: "entertainment",
       };
-      const { container } = render(
-        <MemoryRouter>
-          <ProductCard p={withImage} fx="16000" lowThreshold={5} />
-        </MemoryRouter>,
+      const { container } = renderCard(
+        <ProductCard p={withImage} fx="16000" lowThreshold={5} />,
       );
       const img = screen.getByAltText("Netflix Premium");
       expect(img).toHaveAttribute("src", "/uploads/products/netflix.jpg");

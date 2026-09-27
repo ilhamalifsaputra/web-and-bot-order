@@ -25,7 +25,7 @@ import { t } from "../lib/i18n";
 import { useIsDesktop } from "../lib/useMediaQuery";
 import { useSuggestedProducts } from "../lib/useSuggestedProducts";
 import EmptyState from "../components/shop/EmptyState";
-import Price from "../components/shop/Price";
+import { formatOrderAmount } from "../lib/format";
 import Skeleton from "../components/shop/Skeleton";
 import StatusBadge, { statusLabel } from "../components/shop/StatusBadge";
 import Button from "../components/ui/Button";
@@ -35,8 +35,19 @@ import Select from "../components/ui/Select";
 
 const SKELETON_ROWS = Array.from({ length: 4 }, (_, i) => i);
 
+/** An order's settled total, in the order's OWN currency — never through
+ * <Price/>, whose display-currency conversion would double-convert it (a
+ * 9.88 USDT order re-read as Rp9.88 and shown as "$0.01"). Task 5 fix pass. */
+function OrderTotal({ order }: { order: AccountOrderSummary }) {
+  return (
+    <span className="font-semibold text-pine text-sm whitespace-nowrap">
+      {formatOrderAmount(order.total, order.currency)}
+    </span>
+  );
+}
+
 /** One order as a card — the whole card is the tap target. */
-function OrderCard({ order, fx }: { order: AccountOrderSummary; fx: string | null | undefined }) {
+function OrderCard({ order }: { order: AccountOrderSummary }) {
   return (
     <Link
       to={`/account/orders/${order.code}`}
@@ -51,7 +62,7 @@ function OrderCard({ order, fx }: { order: AccountOrderSummary; fx: string | nul
       </div>
       <p className="mt-2 line-clamp-2 text-sm text-ink">{order.items}</p>
       <div className="mt-3 flex items-center justify-between gap-3 border-t border-line pt-3">
-        <Price value={order.total} fx={fx} size="text-sm" />
+        <OrderTotal order={order} />
         <span className="text-xs text-ink-soft">{order.created_at_display}</span>
       </div>
     </Link>
@@ -198,7 +209,7 @@ export default function OrdersPage() {
                   </td>
                   <td className="max-w-[16rem] truncate">{o.items}</td>
                   <td>
-                    <Price value={o.total} fx={ctx?.fx} size="text-sm" />
+                    <OrderTotal order={o} />
                   </td>
                   <td>
                     <StatusBadge value={o.status} />
@@ -213,7 +224,7 @@ export default function OrdersPage() {
         <ul className="space-y-3">
           {orders.map((o) => (
             <li key={o.code}>
-              <OrderCard order={o} fx={ctx?.fx} />
+              <OrderCard order={o} />
             </li>
           ))}
         </ul>

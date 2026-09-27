@@ -228,6 +228,44 @@ describe("AccountPage", () => {
         ),
       ).toBeInTheDocument();
     });
+
+    // Task 5 fix pass: a recent order's `total` is its OWN settlement amount in
+    // its own `currency` — never re-converted through the viewer's display
+    // preference (9.88 USDT pushed through IDR→USD would print "$0.01").
+    it.each([["USD" as const], ["IDR" as const], [null]])(
+      "shows each recent order's native total (viewer preference %s)",
+      async (currency) => {
+        (apiGet as Mock).mockImplementation(async (path: string) => {
+          if (path === "/api/v1/account/orders") {
+            return {
+              orders: [
+                { code: "ORD-USDT", status: "delivered", currency: "USDT", total: "9.88", created_at_display: "2026-07-01 10:00", items: "Netflix" },
+                { code: "ORD-IDR", status: "delivered", currency: "IDR", total: "158000", created_at_display: "2026-07-02 09:00", items: "Spotify" },
+              ],
+            };
+          }
+          if (path === "/api/v1/pages/context") {
+            return { lang: "en", fx: "16000", currency, customer: { username: "alice", email: null, telegram_linked: false } };
+          }
+          return account;
+        });
+        const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+        render(
+          <QueryClientProvider client={queryClient}>
+            <MemoryRouter initialEntries={["/account"]}>
+              <Routes>
+                <Route path="/account" element={<AccountPage />} />
+              </Routes>
+            </MemoryRouter>
+          </QueryClientProvider>,
+        );
+        expect(await screen.findByText("9.88 USDT")).toBeInTheDocument();
+        expect(screen.getByText("Rp158.000")).toBeInTheDocument();
+        expect(screen.queryByText("$0.01")).not.toBeInTheDocument();
+        expect(screen.queryByText("$9.88")).not.toBeInTheDocument();
+        expect(screen.queryByText(/≈ \$/)).not.toBeInTheDocument();
+      },
+    );
   });
 
   describe("guest account", () => {

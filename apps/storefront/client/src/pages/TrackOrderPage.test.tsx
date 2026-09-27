@@ -31,6 +31,7 @@ const context: ShopContext = {
   tzname: "Asia/Jakarta",
   analytics_enabled: false,
   flash_active: false,
+  currency: null,
 };
 
 function renderTrack(ctx: ShopContext = context) {

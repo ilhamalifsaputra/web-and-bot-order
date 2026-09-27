@@ -89,6 +89,24 @@ describe("DenominationEditPage", () => {
     expect(screen.queryByRole("link", { name: "Product" })).not.toBeInTheDocument();
   });
 
+  // Task 6: same "(IDR)" disambiguation as DenominationCreatePage — the
+  // display-currency preference is now per-user, so a bare "Price" label is
+  // ambiguous about which currency the admin is editing in.
+  it("labels every price-type input with its currency (IDR) — Price, Cost Price, Reseller Price", async () => {
+    vi.mocked(apiGet).mockResolvedValue(PRODUCT_DETAIL);
+    render(<DenominationEditPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByDisplayValue("Netflix 1 Month")).toBeInTheDocument());
+
+    function label(text: string): HTMLElement {
+      return screen.getByText(
+        (_content, element) => element?.tagName.toLowerCase() === "label" && (element.textContent ?? "").startsWith(text),
+      );
+    }
+    expect(label("Price (IDR)")).toBeInTheDocument();
+    expect(label("Cost Price (IDR)")).toBeInTheDocument();
+    expect(label("Reseller Price (IDR)")).toBeInTheDocument();
+  });
+
   it("prefills the form from the existing denomination", async () => {
     vi.mocked(apiGet).mockResolvedValue(PRODUCT_DETAIL);
     render(<DenominationEditPage />, { wrapper: Wrapper });

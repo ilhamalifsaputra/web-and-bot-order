@@ -462,6 +462,13 @@ export interface ShopContext {
    * older/mocked payload reads as "a normal registered customer", which keeps
    * the full menu — the safe direction to be wrong in for a signed-in user. */
   is_guest?: boolean;
+  /** Display-currency preference (Task 4): account preference > the
+   * `shop_currency` cookie > null when neither is set. `null` means "no
+   * preference chosen yet" — renders exactly like today (Rp primary + "≈ $"
+   * hint), NOT the same as `"IDR"` (which shows Rp with no hint — see
+   * Price.tsx). Never affects which currency an order is actually charged
+   * in; display only. */
+  currency: "USD" | "IDR" | null;
 }
 
 /** GET /api/v1/account — account.njk's overview stats + logout button
@@ -480,6 +487,11 @@ export interface AccountData {
 export interface AccountOrderSummary {
   code: string;
   status: string;
+  /** This order's OWN settlement currency ("IDR" | "USDT") — `total` below is
+   * denominated in THIS. Format with `formatOrderAmount(total, currency)`,
+   * never `<Price/>` (which applies the viewer's display-currency conversion
+   * and would double-convert an already-settled amount — Task 5 fix pass). */
+  currency: string;
   total: string;
   created_at_display: string;
   items: string;
@@ -493,6 +505,8 @@ export interface AccountOrdersData {
 export interface OrderDetailItem {
   name: string;
   duration: string | null;
+  /** Central-IDR price charged at order time, for every order (even a
+   * USDT-settled one) — a historical figure, not a live catalog price. */
   unit_price: string;
   warranty_days: number;
   /** Only populated when the order is DELIVERED and the owner is asking — null otherwise. */
@@ -519,6 +533,13 @@ export interface OrderDetailData {
      * would be printed as Rupiah here (see
      * apps/storefront/src/routes/buyerOrderSummary.ts). */
     wallet_credit: string;
+    /** This order's OWN settlement currency ("IDR" | "USDT") — the unit of
+     * `total` ONLY. `subtotal`/`discount`/`bulk_discount` and each item's
+     * `unit_price` are central-IDR for every order regardless of this (see
+     * apps/storefront/src/routes/buyerOrderSummary.ts). Format `total` with
+     * `formatOrderAmount(total, currency)`; none of these fields go through
+     * `<Price/>`'s display-currency conversion (Task 5 fix pass). */
+    currency: string;
     total: string;
     created_at_display: string;
     /** Parsed manual_with_info field spec — [] for auto/manual orders. */
@@ -667,6 +688,12 @@ export interface TicketOrderSummary {
   created_at_display: string;
   paid_at_display: string | null;
   payment_method: string;
+  /** This order's OWN settlement currency ("IDR" | "USDT", same values as
+   * PayData.order.currency) — `total` below is denominated in THIS, not
+   * necessarily IDR. Format with `formatOrderAmount(total, currency)`, never
+   * a bare `formatIdr`, which mis-renders a USDT order's total as if it were
+   * a Rupiah figure (Task 5 bug fix). */
+  currency: string;
   total: string;
   voucher_code: string | null;
   delivered: boolean;

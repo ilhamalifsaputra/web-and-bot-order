@@ -7,6 +7,7 @@
 import type { Context, SessionFlavor } from "grammy";
 import type { ConversationFlavor, Conversation } from "@grammyjs/conversations";
 import { config } from "@app/core/config";
+import type { DisplayCurrency } from "@app/core/enums";
 
 /** Plain snapshot of the DB user, mirroring decorators.registered_user. */
 export interface DbUserSnap {
@@ -16,7 +17,13 @@ export interface DbUserSnap {
   language: string;
   referralCode: string;
   walletBalance: string;
+  /** Display-currency preference; null = not chosen yet (requireCurrency
+   * blocks the user until /start onboarding sets it). */
+  preferredCurrency: DisplayCurrency | null;
 }
+
+/** Which /start onboarding step is waiting for the user's tap, if any. */
+export type OnboardingStep = "language" | "currency";
 
 /**
  * Customer navigation state. Bookkeeping/observability only — control flow stays
@@ -62,6 +69,12 @@ export interface SessionData {
   awaitingTopupCurrency?: "IDR" | "USDT";
   /** Transient scratch for multi-step flows (mirrors context.user_data extras). */
   scratch: Record<string, unknown>;
+  /** /start onboarding step in progress (language, then currency); null or
+   * absent (a session persisted before this field existed) = not onboarding. */
+  onboarding?: OnboardingStep | null;
+  /** Denomination id from a `/start prod_<id>` deep link, opened once
+   * onboarding finishes (setCurrency). */
+  pendingDeepLinkDenomId?: number;
 }
 
 type BaseContext = Context & SessionFlavor<SessionData>;
@@ -73,5 +86,5 @@ export type MyContext = Omit<ConversationFlavor<BaseContext>, "session"> &
 export type MyConversation = Conversation<MyContext>;
 
 export function initialSession(): SessionData {
-  return { state: BotState.HOME, lang: config.DEFAULT_LANGUAGE, scratch: {} };
+  return { state: BotState.HOME, lang: config.DEFAULT_LANGUAGE, scratch: {}, onboarding: null };
 }

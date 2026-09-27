@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { OrderStatus, customerStatusLabel } from "./enums";
+import {
+  OrderStatus,
+  customerStatusLabel,
+  DisplayCurrency,
+  DISPLAY_CURRENCIES,
+  parseDisplayCurrency,
+} from "./enums";
 
 describe("customerStatusLabel", () => {
   it("maps every stored status to one of the 7 customer-facing buckets", () => {
@@ -24,5 +30,22 @@ describe("customerStatusLabel", () => {
 
   it("falls back to 'processing' for an unrecognized status rather than throwing", () => {
     expect(customerStatusLabel("SOME_FUTURE_STATUS")).toBe("status.label.processing");
+  });
+});
+
+describe("parseDisplayCurrency", () => {
+  it("accepts exactly the two stored codes", () => {
+    expect(parseDisplayCurrency("USD")).toBe(DisplayCurrency.USD);
+    expect(parseDisplayCurrency("IDR")).toBe(DisplayCurrency.IDR);
+  });
+
+  it("is case-strict and rejects symbols, other codes and non-strings", () => {
+    for (const bad of ["usd", "idr", "Usd", "$", "Rp", "EUR", "USDT", "", " USD", null, undefined, 123, {}]) {
+      expect(parseDisplayCurrency(bad)).toBeNull();
+    }
+  });
+
+  it("DISPLAY_CURRENCIES lists both codes", () => {
+    expect([...DISPLAY_CURRENCIES].sort()).toEqual(["IDR", "USD"]);
   });
 });

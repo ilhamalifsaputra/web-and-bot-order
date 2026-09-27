@@ -47,7 +47,7 @@ import { useShopContext } from "../components/Layout";
 import { useDocumentTitle } from "../lib/useDocumentTitle";
 import { t } from "../lib/i18n";
 import { humanError } from "../lib/errors";
-import { formatIdr } from "../lib/format";
+import { formatPriceFor } from "../lib/format";
 import { fadeUp } from "../lib/motion";
 import { rememberCodeEmailed } from "../lib/orderCodeEmailed";
 import { allFieldsValid, isValidEmail } from "../lib/deliveryFields";
@@ -67,7 +67,7 @@ import PaymentMethodSelector, {
   isMethodValid,
   isUsdtWalletSufficient,
 } from "../components/shop/PaymentMethodSelector";
-import OrderSummaryCard from "../components/shop/OrderSummaryCard";
+import OrderSummaryCard, { idrRailPriceAndPay } from "../components/shop/OrderSummaryCard";
 import { GuestContactCard } from "./CheckoutPage";
 import ErrorPage from "./ErrorPage";
 
@@ -395,6 +395,10 @@ export default function InstantBuyPage() {
   const submitBlocked =
     !readyToPay || !purchasable(selected) || !infoValid || !guestEmailValid || !anyMethod || !method || previewErrorKey !== null;
   const submitDisabled = submitBlocked || placeOrderMutation.isPending;
+  // Final-review fix: the sticky bar's "Price $X · Pay RpY" line for a USD
+  // viewer on QRIS/PayDisini — same helper (and so the same rule and figures)
+  // as the summary card; null everywhere else, which leaves the bar unchanged.
+  const barPriceAndPay = totals ? idrRailPriceAndPay(method, totals, ctx?.currency ?? null, fx) : null;
 
   return (
     <>
@@ -621,7 +625,8 @@ export default function InstantBuyPage() {
         <StickyPurchaseBar
           ariaLabel={t("web.purchase_bar")}
           priceLabel={t("web.order_total")}
-          price={formatIdr(method === "qris" ? totals.qris_grand_total : totals.total)}
+          price={formatPriceFor(method === "qris" ? totals.qris_grand_total : totals.total, ctx?.currency ?? null, fx)}
+          secondaryChip={barPriceAndPay && <span className="text-xs text-ink-soft">{barPriceAndPay}</span>}
           primaryAction={{
             label: t("web.buy_now"),
             onClick: () => placeOrderMutation.mutate(),

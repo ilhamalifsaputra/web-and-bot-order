@@ -234,8 +234,13 @@ const dispatchTopup: DomainDispatcher = async (ctx, parts) => {
 
 const dispatchLang: DomainDispatcher = async (ctx, parts) => {
   const action = parts[2];
-  if (action === "menu") await customer.showLanguageMenu(ctx);
+  if (action === "menu") await customer.openLanguageMenu(ctx);
   else if (action === "set") await customer.setLanguage(ctx, parts[3]!);
+};
+
+const dispatchCurrency: DomainDispatcher = async (ctx, parts) => {
+  if (parts[2] === "set") await customer.setCurrency(ctx, parts[3] ?? "");
+  else await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
 };
 
 const dispatchTicket: DomainDispatcher = async (ctx, parts) => {
@@ -271,6 +276,7 @@ const DOMAIN_ROUTES: Record<string, DomainDispatcher> = {
   browse: dispatchBrowse,
   buy: dispatchBuy,
   checkout: dispatchCheckout,
+  cur: dispatchCurrency,
   help: dispatchHelp,
   lang: dispatchLang,
   menu: dispatchMenu,

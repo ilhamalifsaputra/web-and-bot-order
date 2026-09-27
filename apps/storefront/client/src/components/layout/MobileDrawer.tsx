@@ -18,6 +18,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import {
   Check,
   CircleUser,
+  DollarSign,
   Globe,
   House,
   LayoutGrid,
@@ -35,6 +36,7 @@ import {
 import type { ShopContext } from "../../api/types";
 import { t } from "../../lib/i18n";
 import { scrim, slideInLeft } from "../../lib/motion";
+import CurrencyToggle from "./CurrencyToggle";
 
 /** Row styling for the mobile nav drawer — hover/active both use the "pine"
  * token. Icons are `currentColor` (lucide-react), so tinting the row text also
@@ -317,6 +319,16 @@ export default function MobileDrawer({
                   <span className="text-xs font-semibold uppercase text-ink-faint">{otherLang}</span>
                 }
               />
+              {/* Task 5: display-currency switcher — not a DrawerRow (it
+                  doesn't navigate; an XHR + re-render, unlike the language
+                  row above), so it's composed directly in the same row shell. */}
+              <div className={`${drawerRowClass(false)} justify-between`}>
+                <span className="flex items-center gap-2">
+                  <DollarSign {...DRAWER_ICON} />
+                  {t("web.currency_label")}
+                </span>
+                <CurrencyToggle currency={ctx?.currency ?? null} fx={ctx?.fx} variant="stacked" />
+              </div>
               <DrawerRow
                 icon={LifeBuoy}
                 label={t("web.nav_help")}

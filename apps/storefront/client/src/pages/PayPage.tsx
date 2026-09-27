@@ -56,7 +56,8 @@ import {
 import { apiGet, apiPost } from "../api/client";
 import type { PayData, PayState, PayStatusData } from "../api/types";
 import { t } from "../lib/i18n";
-import { formatIdr } from "../lib/format";
+import { formatOrderAmount, formatPriceFor, showsUsdDisplay } from "../lib/format";
+import { useShopContext } from "../lib/useShopContext";
 import { readCodeEmailed } from "../lib/orderCodeEmailed";
 import Stepper from "../components/shop/Stepper";
 import ErrorPage from "./ErrorPage";
@@ -242,6 +243,9 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
 
   const countdownText = useCountdown(data?.order.expires_at_iso ?? null);
 
+  // Display-currency preference + rate, for the "Price · Pay" line below only.
+  const { data: ctx } = useShopContext();
+
   // "We emailed this code to <address>" — the guest order-code mail
   // (routes/api.ts sendGuestOrderCodeEmail). The notice belongs HERE and not
   // on the checkout page: a successful guest checkout leaves the SPA by full
@@ -269,6 +273,29 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
 
   const { order, state } = data;
   const stripState = poll?.state ?? state;
+
+  // Final-review fix — the web twin of the bot's payAlongsidePriceLine
+  // (apps/order-bot/src/util/format.ts), through the same shared
+  // `checkout.price_and_pay` key. Only on the IDR-rail branches (QRIS/TokoPay,
+  // PayDisini) of an IDR-settled product order, and only when the viewer's
+  // display currency actually renders as "$" — the one case where what they
+  // see elsewhere differs from what the rail charges. Price is the order's
+  // canonical IDR total (pre-fee) converted once; Pay is exactly the payable
+  // string already rendered above it via formatOrderAmount — never
+  // re-derived, and the payable itself is untouched. Top-ups are excluded:
+  // the buyer typed that amount in Rupiah, and the bot adds no such line to
+  // its top-up screens either.
+  const currency = ctx?.currency ?? null;
+  const showPriceAndPay = !isTopup && order.currency !== "USDT" && showsUsdDisplay(currency, ctx?.fx);
+  const priceAndPayLine = (payable: string | null) =>
+    showPriceAndPay ? (
+      <p className="text-sm text-ink-soft mt-1">
+        {t("checkout.price_and_pay", {
+          price: formatPriceFor(order.total, currency, ctx?.fx),
+          pay: formatOrderAmount(payable, order.currency),
+        })}
+      </p>
+    ) : null;
 
   return (
     <>
@@ -350,18 +377,24 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
                   <>
                     <div className="text-sm text-ink-soft flex justify-between">
                       <span>{t("web.subtotal")}</span>
-                      <span>{formatIdr(order.total)}</span>
+                      <span>{formatOrderAmount(order.total, order.currency)}</span>
                     </div>
                     <div className="text-sm text-ink-soft flex justify-between">
                       <span>{t("web.qris_admin_fee")}</span>
-                      <span>{formatIdr(order.qris_admin_fee)}</span>
+                      <span>{formatOrderAmount(order.qris_admin_fee, order.currency)}</span>
                     </div>
                     <div className="font-display font-semibold text-pine text-2xl mt-1">
-                      {formatIdr(order.qris_grand_total)}
+                      {formatOrderAmount(order.qris_grand_total, order.currency)}
                     </div>
+                    {priceAndPayLine(order.qris_grand_total)}
                   </>
                 ) : (
-                  <div className="font-display font-semibold text-pine text-2xl">{formatIdr(order.total)}</div>
+                  <>
+                    <div className="font-display font-semibold text-pine text-2xl">
+                      {formatOrderAmount(order.total, order.currency)}
+                    </div>
+                    {priceAndPayLine(order.total)}
+                  </>
                 )}
                 {data.gateway ? (
                   <>
@@ -394,7 +427,10 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
             ) : data.is_paydisini ? (
               <>
                 <h2 className="section-title mb-3">{t("web.pay_paydisini_title")}</h2>
-                <div className="font-display font-semibold text-pine text-2xl">{formatIdr(order.total)}</div>
+                <div className="font-display font-semibold text-pine text-2xl">
+                  {formatOrderAmount(order.total, order.currency)}
+                </div>
+                {priceAndPayLine(order.total)}
                 {data.paydisini_gateway ? (
                   <>
                     {data.paydisini_gateway.qrUrl && (

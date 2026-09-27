@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -37,7 +37,7 @@ function Wrapper({ children }: { children: React.ReactNode }) {
 }
 
 const USER_DETAIL = {
-  user: { id: 7, username: "andi", fullName: "Andi Santoso", telegramId: "111", role: "CUSTOMER", banned: false, banReason: null, walletBalance: "500000", walletBalanceUsdt: "12.5" },
+  user: { id: 7, username: "andi", fullName: "Andi Santoso", telegramId: "111", role: "CUSTOMER", banned: false, banReason: null, walletBalance: "500000", walletBalanceUsdt: "12.5", preferredCurrency: null },
   totalSpent: { idr: "150000", usdt: "0" },
   orders: [],
   ordersTotal: 0,
@@ -110,6 +110,54 @@ describe("UserDetailPage — role change", () => {
     await user.click(screen.getByRole("option", { name: "RESELLER" }));
 
     expect(await screen.findByText("Invalid role.")).toBeInTheDocument();
+  });
+});
+
+describe("UserDetailPage — display currency badge (Task 6, read-only)", () => {
+  // The Profile card's "Display Currency" row, scoped away from the Wallet/
+  // Total Spent CurrencyStack rows below it, which also render bare "IDR"/
+  // "USD" text as a currency-amount label.
+  function displayCurrencyRow(): HTMLElement {
+    return screen.getByText("Display Currency").closest("div")!;
+  }
+
+  it("shows a USD badge for a USD preference", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ ...USER_DETAIL, user: { ...USER_DETAIL.user, preferredCurrency: "USD" } }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    render(<UserDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Andi Santoso")).toBeInTheDocument());
+    expect(within(displayCurrencyRow()).getByText("USD")).toBeInTheDocument();
+  });
+
+  it("shows an IDR badge for an IDR preference", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ ...USER_DETAIL, user: { ...USER_DETAIL.user, preferredCurrency: "IDR" } }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    render(<UserDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Andi Santoso")).toBeInTheDocument());
+    expect(within(displayCurrencyRow()).getByText("IDR")).toBeInTheDocument();
+  });
+
+  it("shows 'Not set' when the user has no preference, with no edit control offered", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ ...USER_DETAIL, user: { ...USER_DETAIL.user, preferredCurrency: null } }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    render(<UserDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Andi Santoso")).toBeInTheDocument());
+    expect(within(displayCurrencyRow()).getByText("Not set")).toBeInTheDocument();
+    // Read-only: no combobox/button offers to change it (Role's Select is the
+    // only combobox on this page).
+    expect(screen.getAllByRole("combobox")).toHaveLength(1);
   });
 });
 

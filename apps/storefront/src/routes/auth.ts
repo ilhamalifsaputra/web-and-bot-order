@@ -26,6 +26,7 @@ import {
   getDenomination,
   getUserByTelegramId,
   hasCartItem,
+  adoptUserPreferredCurrencyIfUnset,
 } from "@app/db";
 import { cartAdditionError, type CartCompositionLine } from "@app/core/cartComposition";
 import {
@@ -37,7 +38,7 @@ import {
   SHOP_SESSION_TTL_HOURS,
   type CustomerSession,
 } from "../auth";
-import { readGuestCart, writeGuestCart, resolveBotToken } from "../shop";
+import { readGuestCart, writeGuestCart, resolveBotToken, requestCurrency } from "../shop";
 
 /** Only ever redirect to a local path (open-redirect guard). */
 export const safeNext = (raw: unknown): string => {
@@ -48,7 +49,8 @@ export const safeNext = (raw: unknown): string => {
 type SessionUser = { id: number; telegramId: bigint | null };
 
 /**
- * Shared sign-in tail: merge guest cart, rotate jti, set the cookie.
+ * Shared sign-in tail: merge guest cart, adopt the display-currency cookie,
+ * rotate jti, set the cookie.
  *
  * Returns the session payload it just minted. Most callers (the Telegram
  * widget callback below, the JSON login/register endpoints) only care about
@@ -139,6 +141,13 @@ export async function establishSession(
     );
   }
   if (guestCart.length) writeGuestCart(reply, []);
+
+  // Display currency chosen before signing in (shop_currency cookie) becomes
+  // the account's preference — once: the crud helper writes only when the
+  // account has none yet and is not a guest row, so a stale cookie never
+  // overwrites a choice already made here or in the bot.
+  const cookieCurrency = requestCurrency(req);
+  if (cookieCurrency) await adoptUserPreferredCurrencyIfUnset(prisma, user.id, cookieCurrency);
 
   const jti = newJti();
   await setSetting(prisma, shopSessionJtiKey(user.id), jti);

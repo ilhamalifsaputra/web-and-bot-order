@@ -222,6 +222,17 @@ describe("DigiflazzSyncPage", () => {
     expect(importButton).not.toBeDisabled();
   });
 
+  // Task 6: this wizard's per-SKU price input has no label at all beyond the
+  // adjacent "Cost <value>" span — now that display currency is a per-user
+  // choice elsewhere in the app, that span must say which currency it's in.
+  it("shows the cost figure labeled (IDR), disambiguating the currency of the price being edited", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    await syncWizard(user);
+
+    await user.click(screen.getByRole("button", { name: /mobile legends/i }));
+    expect(screen.getByText("Cost 15000 (IDR)")).toBeInTheDocument();
+  });
+
   it("I13: the brand-group expander is a real button with aria-expanded, and is keyboard-operable", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     await syncWizard(user);

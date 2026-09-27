@@ -18,6 +18,8 @@ import {
   NotificationChannel,
   BroadcastStatus,
   langCode,
+  parseDisplayCurrency,
+  type DisplayCurrency,
 } from "@app/core/enums";
 import type { Decimal } from "@app/core/money";
 import { resolveAdminIds } from "./admins";
@@ -1372,6 +1374,11 @@ export const FLASH_SALE_BROADCAST_CHUNK_SIZE = 500;
  * (shop currency via `formatIdr`, shop timezone via `localize`) — the caller
  * owns that formatting, exactly like ORDER_DELIVERED's `delivered_at`, so the
  * dispatcher never has to do money or timezone math at send time.
+ * `oldPrice`/`newPrice` are the shop (IDR) strings used for the admin-facing
+ * Broadcast row; when `pricesForRecipient` is given, each customer's DM
+ * instead carries the strings it returns for that customer's
+ * `preferredCurrency` (NULL when unchosen — the caller renders it as IDR), so
+ * a USD-display buyer is told the sale price in $.
  *
  * The `Broadcast` row (so the announcement shows up in the web-admin
  * Broadcast History table alongside the restock ones) is written BEFORE the
@@ -1437,27 +1444,44 @@ export async function enqueueFlashSaleBroadcast(
     newPrice: string;
     endsAt: string;
     createdById?: number | null;
+    /** Per-recipient price strings in that customer's display currency. */
+    pricesForRecipient?: (preferredCurrency: DisplayCurrency | null) => { oldPrice: string; newPrice: string };
   },
 ): Promise<number> {
   const users = await db.user.findMany({
     where: { banned: false, telegramId: { not: null } },
-    select: { telegramId: true, language: true },
+    select: { telegramId: true, language: true, preferredCurrency: true },
   });
   if (!users.length) return 0;
-  const rows = users.map((u) => ({
-    event: NotificationEvent.FLASH_SALE_BROADCAST,
-    orderId: null,
-    payloadJson: JSON.stringify({
-      chat_id: Number(u.telegramId),
-      product_name: args.productName,
-      denomination_name: args.denominationName,
-      discount_percent: args.discountPercent,
-      old_price: args.oldPrice,
-      new_price: args.newPrice,
-      ends_at: args.endsAt,
-      buyer_language: langCode(u.language),
-    }),
-  }));
+  // At most three distinct currencies (USD / IDR / unset) — render each once.
+  const priceCache = new Map<DisplayCurrency | null, { oldPrice: string; newPrice: string }>();
+  const pricesFor = (raw: string | null) => {
+    if (!args.pricesForRecipient) return { oldPrice: args.oldPrice, newPrice: args.newPrice };
+    const cur = parseDisplayCurrency(raw);
+    let p = priceCache.get(cur);
+    if (!p) {
+      p = args.pricesForRecipient(cur);
+      priceCache.set(cur, p);
+    }
+    return p;
+  };
+  const rows = users.map((u) => {
+    const p = pricesFor(u.preferredCurrency);
+    return {
+      event: NotificationEvent.FLASH_SALE_BROADCAST,
+      orderId: null,
+      payloadJson: JSON.stringify({
+        chat_id: Number(u.telegramId),
+        product_name: args.productName,
+        denomination_name: args.denominationName,
+        discount_percent: args.discountPercent,
+        old_price: p.oldPrice,
+        new_price: p.newPrice,
+        ends_at: args.endsAt,
+        buyer_language: langCode(u.language),
+      }),
+    };
+  });
 
   const bc = await db.broadcast.create({
     data: {

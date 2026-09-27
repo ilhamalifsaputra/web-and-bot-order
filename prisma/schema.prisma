@@ -52,6 +52,10 @@ model User {
   /// session, and the same email may be used repeatedly. Nulled together
   /// with `isGuest` when the row gains a password (see above).
   guestEmail        String?   @map("guest_email")
+  /// Display-only currency preference: "USD" | "IDR" (`DisplayCurrency` in
+  /// @app/core/enums). NULL = not chosen yet — no default, no backfill. Never
+  /// affects the payment currency, which is still chosen at pay time.
+  preferredCurrency String?   @map("preferred_currency")
 
   referredBy User?  @relation("UserReferral", fields: [referredById], references: [id], onUpdate: NoAction)
   referees   User[] @relation("UserReferral")

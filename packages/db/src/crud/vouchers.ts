@@ -267,6 +267,7 @@ export function applyVoucherToSubtotal(
     throw new ValidationError("error.voucher_used_up");
   }
   if (sub.lessThan(voucher.minPurchase)) {
+    // `min` is IDR; the bot converts it for display in displayValidationArgs (apps/order-bot/src/util/format.ts) — any future error key carrying an IDR amount must be added there too.
     throw new ValidationError("error.voucher_min_purchase", {
       min: new Decimal(voucher.minPurchase).toString(),
     });

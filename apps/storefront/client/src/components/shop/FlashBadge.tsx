@@ -25,7 +25,8 @@
 import { useEffect, useState } from "react";
 import { Zap } from "lucide-react";
 import { t } from "../../lib/i18n";
-import { formatIdr } from "../../lib/format";
+import { formatPriceFor } from "../../lib/format";
+import { useShopContext } from "../../lib/useShopContext";
 
 /** JSON twin of FlashLineView (apps/storefront/src/routes/cart.ts) and of the
  * `flash` object on a product-page denomination (pageData.ts). */
@@ -162,11 +163,15 @@ export interface FlashWasPriceProps {
 
 /** The struck-through pre-sale price. `line-through` alone says nothing to a
  * screen reader, so the visible figure is aria-hidden and paired with an
- * sr-only "Was Rp…". */
+ * sr-only "Was Rp…" (or "Was $…" — this is a catalog price, so it follows the
+ * viewer's display-currency preference exactly like the live <Price/> figure
+ * beside it; reads ctx off the shared ["context"] query itself, same as
+ * Price.tsx, so none of this component's four call sites need to change). */
 export function FlashWasPrice({ value, endsAt = null, className = "" }: FlashWasPriceProps) {
   const { ended } = useFlashCountdown(endsAt);
+  const { data: ctx } = useShopContext();
   if (ended || value === null || value === undefined || value === "") return null;
-  const formatted = formatIdr(value);
+  const formatted = formatPriceFor(value, ctx?.currency ?? null, ctx?.fx);
   return (
     <span className={`text-xs text-ink-faint ${className}`}>
       <span className="sr-only">{t("web.flash_was", { price: formatted })}</span>

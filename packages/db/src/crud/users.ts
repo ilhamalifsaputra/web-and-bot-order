@@ -4,7 +4,7 @@
  */
 import { config } from "@app/core/config";
 import { isAdmin } from "@app/core/runtime";
-import { UserRole, Language, OrderStatus, OrderKind } from "@app/core/enums";
+import { UserRole, Language, OrderStatus, OrderKind, DISPLAY_CURRENCIES, parseDisplayCurrency } from "@app/core/enums";
 import { quantizeMoney, generateReferralCode } from "@app/core/formatters";
 import { Decimal } from "@app/core/money";
 import { ValidationError } from "@app/core/errors";
@@ -76,6 +76,7 @@ const USER_SELECT = {
   referredById: true,
   banned: true,
   bannedReason: true,
+  preferredCurrency: true,
   createdAt: true,
   lastSeenAt: true,
 } as const;
@@ -189,6 +190,53 @@ export async function setUserLanguage(db: Db, userId: number, lang: string) {
     data: { language: lang.toUpperCase() as Language },
   });
   invalidateWarmUser(userId);
+}
+
+/** Thrown by `setUserPreferredCurrency` for a code outside DISPLAY_CURRENCIES.
+ * A plain developer-facing error (not an i18n-keyed ValidationError): callers
+ * only ever offer the fixed USD/IDR choices, so reaching this is a bug or a
+ * forged callback, not user input to translate. */
+export class UnsupportedDisplayCurrencyError extends Error {
+  constructor(public readonly code: string) {
+    super(`Unsupported display currency "${code}"; expected one of ${DISPLAY_CURRENCIES.join(", ")}.`);
+    this.name = "UnsupportedDisplayCurrencyError";
+  }
+}
+
+/**
+ * Store a user's DISPLAY currency preference ("USD" | "IDR"). Display-only —
+ * never touches orders, payments or wallets. Case-strict: anything
+ * `parseDisplayCurrency` rejects throws UnsupportedDisplayCurrencyError and
+ * nothing is written. Idempotent (re-setting the same value is a harmless
+ * no-op update).
+ */
+export async function setUserPreferredCurrency(db: Db, userId: number, code: string) {
+  const currency = parseDisplayCurrency(code);
+  if (!currency) throw new UnsupportedDisplayCurrencyError(code);
+  await db.user.update({ where: { id: userId }, data: { preferredCurrency: currency } });
+  invalidateWarmUser(userId);
+}
+
+/**
+ * One-time adoption of a display-currency choice made before sign-in (the
+ * storefront's `shop_currency` cookie) into a real account: writes ONLY when
+ * the account has no preference yet and is not a guest row, so a stale cookie
+ * never overwrites a choice the user already made (on the web or in the bot).
+ * The condition sits in the UPDATE's WHERE, so a concurrent explicit
+ * `setUserPreferredCurrency` can't be clobbered between a read and a write.
+ * Guest rows are skipped: a guest's display preference lives in the cookie
+ * only. Same case-strict validation as `setUserPreferredCurrency`. Returns
+ * whether it wrote.
+ */
+export async function adoptUserPreferredCurrencyIfUnset(db: Db, userId: number, code: string): Promise<boolean> {
+  const currency = parseDisplayCurrency(code);
+  if (!currency) throw new UnsupportedDisplayCurrencyError(code);
+  const { count } = await db.user.updateMany({
+    where: { id: userId, preferredCurrency: null, isGuest: false },
+    data: { preferredCurrency: currency },
+  });
+  if (count > 0) invalidateWarmUser(userId);
+  return count > 0;
 }
 
 export interface WalletAdjustOpts {

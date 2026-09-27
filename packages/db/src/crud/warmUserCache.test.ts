@@ -12,6 +12,7 @@ function sampleSnap(overrides: Partial<Parameters<typeof primeWarmUser>[1]> = {}
     walletBalance: "0",
     banned: false,
     bannedReason: null,
+    preferredCurrency: null,
     ...overrides,
   };
 }

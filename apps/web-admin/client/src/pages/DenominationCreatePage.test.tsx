@@ -72,6 +72,21 @@ describe("DenominationCreatePage", () => {
     expect(screen.getByRole("button", { name: /create denomination/i })).toBeInTheDocument();
   });
 
+  // Task 6: admin stays IDR-native, but with USD/IDR display now a real
+  // per-user choice, these bare "Price"/"Cost Price"/"Reseller Price" labels
+  // are ambiguous about which currency the admin is typing in.
+  it("labels every price-type input with its currency (IDR) — Price, Cost Price, Reseller Price", () => {
+    render(<DenominationCreatePage />, { wrapper: Wrapper });
+    function label(text: string): HTMLElement {
+      return screen.getByText(
+        (_content, element) => element?.tagName.toLowerCase() === "label" && (element.textContent ?? "").startsWith(text),
+      );
+    }
+    expect(label("Price (IDR)")).toBeInTheDocument();
+    expect(label("Cost Price (IDR)")).toBeInTheDocument();
+    expect(label("Reseller Price (IDR)")).toBeInTheDocument();
+  });
+
   it("renders Delivery Type as two radio options defaulting to Automatic Delivery", () => {
     render(<DenominationCreatePage />, { wrapper: Wrapper });
     expect(screen.getByRole("radio", { name: /^automatic delivery/i })).toBeChecked();

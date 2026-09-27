@@ -14,7 +14,7 @@ import { localize } from "@app/core/datetime";
 import { UserRole } from "@app/core/enums";
 import { prisma, getSetting, hasActiveFlashSale } from "@app/db";
 import { optionalCustomer } from "../plugins/auth";
-import { requestLang, readGuestCart, resolveBotUsername } from "../shop";
+import { requestLang, requestCurrency, resolveDisplayCurrency, readGuestCart, resolveBotUsername } from "../shop";
 import { getUsdIdrRate } from "../pricing";
 import {
   homePageData,
@@ -54,6 +54,10 @@ const apiPagesRoutes: FastifyPluginAsync = async (app) => {
     return reply.send({
       lang: requestLang(req),
       fx: fxRate ? fxRate.toString() : null,
+      // Buyer's DISPLAY currency: a signed-in account's stored preference,
+      // else the shop_currency cookie, else null (client shows IDR). The
+      // client converts with `fx` above; checkout amounts never depend on it.
+      currency: resolveDisplayCurrency(customer?.user, requestCurrency(req)),
       shop_name: shopName ?? "Toko Digital",
       shop_tagline: shopTagline ?? "",
       cart_count: cartCount,

@@ -39,7 +39,9 @@ export default function CurrencyToggle({
   const dismissError = useCallback(() => setErrorText(null), []);
   const { setCurrency, isPending } = useCurrencySwitch({ onError: (err) => setErrorText(humanError(err)) });
   const usdUnavailable = !fx;
-  const idrActive = currency !== "USD";
+  // Only an explicit choice is "pressed": a null preference renders as
+  // "Rp + ≈$ hint", which is not the same as having picked IDR.
+  const idrActive = currency === "IDR";
   const usdActive = currency === "USD";
   const optionClass = (active: boolean) =>
     `rounded-md px-2.5 py-1 text-xs font-semibold uppercase transition-colors ${

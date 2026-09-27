@@ -376,6 +376,21 @@ describe("Layout", () => {
       expect((apiGet as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(callsBefore);
     });
 
+    // Follow-up fix: a null preference renders as "Rp + ≈$ hint", which is
+    // not an explicit IDR choice — neither option may claim to be pressed.
+    it.each([
+      [null, "false", "false"],
+      ["IDR", "true", "false"],
+      ["USD", "false", "true"],
+    ] as const)("currency %s: IDR pressed=%s, USD pressed=%s", async (currency, idrPressed, usdPressed) => {
+      renderLayout({ currency, fx: "16000" });
+      await waitFor(() => expect(apiGet).toHaveBeenCalled());
+      await screen.findByText("home content");
+      const header = within(screen.getByRole("banner"));
+      expect(header.getByRole("button", { name: "IDR (Rp)" })).toHaveAttribute("aria-pressed", idrPressed);
+      expect(header.getByRole("button", { name: "USD ($)" })).toHaveAttribute("aria-pressed", usdPressed);
+    });
+
     it("disables the USD option (never hides it) when no exchange rate is set", async () => {
       renderLayout({ fx: null });
       await waitFor(() => expect(apiGet).toHaveBeenCalled());

@@ -51,7 +51,7 @@ import { formatPriceFor } from "../lib/format";
 import { fadeUp } from "../lib/motion";
 import { rememberCodeEmailed } from "../lib/orderCodeEmailed";
 import { allFieldsValid, isValidEmail } from "../lib/deliveryFields";
-import { useIsDesktop } from "../lib/useMediaQuery";
+import { useIsWideDesktop } from "../lib/useMediaQuery";
 import Breadcrumb from "../components/shop/Breadcrumb";
 import DefaultThumb from "../components/shop/DefaultThumb";
 import DenominationCard from "../components/shop/DenominationCard";
@@ -113,7 +113,9 @@ export default function InstantBuyPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { data: ctx } = useShopContext();
-  const isDesktop = useIsDesktop();
+  // Tailwind's lg breakpoint (1024px) — the point where the grid actually goes
+  // two-column (content + summary), so the summary stays in view while scrolling.
+  const isDesktop = useIsWideDesktop();
 
   // Same query key ProductPage.tsx's own useQuery uses for this endpoint —
   // when this page is reached via ProductPage's checkout_flow branch, the
@@ -537,32 +539,34 @@ export default function InstantBuyPage() {
 
         {/* 6. Order summary — voucher + live totals + the single submit
             button (desktop inline here; mobile via the sticky bar below). */}
-        {page && totals ? (
-          <OrderSummaryCard
-            totals={totals}
-            method={method}
-            fx={fx}
-            voucherInput={voucherInput}
-            onVoucherInputChange={setVoucherInput}
-            onVoucherApply={applyVoucher}
-            onVoucherKeyDown={onVoucherKeyDown}
-            voucherPending={previewMutation.isPending}
-            showDesktopSubmit={isDesktop}
-            submitLabel={t("web.buy_now")}
-            submitIcon={<Zap className="w-4 h-4" />}
-            submitDisabled={submitDisabled}
-            submitBlocked={submitBlocked}
-            onSubmit={() => placeOrderMutation.mutate()}
-            submitPending={placeOrderMutation.isPending}
-          />
-        ) : (
-          <div className="card card-pad space-y-3" aria-busy="true" aria-label={t("web.loading")}>
-            <Skeleton className="h-5 w-28" />
-            <Skeleton className="h-4 w-full" />
-            <Skeleton className="h-4 w-2/3" />
-            <Skeleton className="h-10 w-full" />
-          </div>
-        )}
+        <div className="lg:sticky lg:top-4">
+          {page && totals ? (
+            <OrderSummaryCard
+              totals={totals}
+              method={method}
+              fx={fx}
+              voucherInput={voucherInput}
+              onVoucherInputChange={setVoucherInput}
+              onVoucherApply={applyVoucher}
+              onVoucherKeyDown={onVoucherKeyDown}
+              voucherPending={previewMutation.isPending}
+              showDesktopSubmit={isDesktop}
+              submitLabel={t("web.buy_now")}
+              submitIcon={<Zap className="w-4 h-4" />}
+              submitDisabled={submitDisabled}
+              submitBlocked={submitBlocked}
+              onSubmit={() => placeOrderMutation.mutate()}
+              submitPending={placeOrderMutation.isPending}
+            />
+          ) : (
+            <div className="card card-pad space-y-3" aria-busy="true" aria-label={t("web.loading")}>
+              <Skeleton className="h-5 w-28" />
+              <Skeleton className="h-4 w-full" />
+              <Skeleton className="h-4 w-2/3" />
+              <Skeleton className="h-10 w-full" />
+            </div>
+          )}
+        </div>
 
         {/* 5. Payment method — full-width row below both columns (Task 5):
             with grid-cols-3 and the left column (col-span-2) plus

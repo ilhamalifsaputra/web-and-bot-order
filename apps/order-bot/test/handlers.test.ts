@@ -508,6 +508,63 @@ describe("customer handlers", () => {
     expect(u?.language).toBe("ID");
   });
 
+  // be4ea6c5 (Task 4): standalone currency preference entry point — `cur:menu`
+  // (Help Center button / `/currency` command) must re-render the currency
+  // picker even for a user who is NOT mid-onboarding (preferredCurrency
+  // already set). dispatchCurrency (callbacks.ts) only recognizes "menu" and
+  // "set" — every other action falls through to the stale-screen toast, so
+  // this also proves "menu" didn't silently fall into that default branch.
+  it("router wires v1:cur:menu to showCurrencyMenu even post-onboarding (not the stale-screen toast)", async () => {
+    const { ctx, sink } = customerCtx({
+      callbackData: "v1:cur:menu",
+      session: { ...userSession(), onboarding: null, dbUser: { ...userSession().dbUser!, preferredCurrency: "USD" } },
+    });
+    await routeCallback(ctx);
+    expect(sentIncludes(sink, t(ctx, "currency.choose"))).toBe(true);
+    expect(sentIncludes(sink, t(ctx, "error.stale_screen"))).toBe(false);
+    const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ callback_data?: string }>> };
+    const flat = (markup?.inline_keyboard ?? []).flat().map((b) => b.callback_data);
+    expect(flat).toContain("v1:cur:set:USD");
+    expect(flat).toContain("v1:cur:set:IDR");
+  });
+
+  // Companion to the above: picking a currency FROM this entry point must
+  // return to the main menu, not resume/re-enter onboarding — setCurrency's
+  // existing `wasOnboarding` gate (customer.ts) already guarantees this since
+  // `onboarding` is null here, but that gate is exactly what a future edit
+  // could break, so it needs its own regression test. A stray
+  // pendingDeepLinkDenomId left over from an earlier, already-abandoned
+  // onboarding is deliberately included to prove it's `onboarding` (not the
+  // presence of a pending deep link) that decides whether setCurrency resumes
+  // it — the picker must NOT reopen that denomination.
+  it("router wires v1:cur:set:<code> from the standalone entry point back to the main menu, not onboarding", async () => {
+    const { ctx, sink } = customerCtx({
+      callbackData: "v1:cur:set:IDR",
+      session: {
+        ...userSession(),
+        onboarding: null,
+        pendingDeepLinkDenomId: sample.product.id,
+        dbUser: { ...userSession().dbUser!, preferredCurrency: "USD" },
+      },
+    });
+    await routeCallback(ctx);
+
+    const u = await getUser(prisma, sample.user.id);
+    expect(u?.preferredCurrency).toBe("IDR");
+    expect(ctx.session.onboarding).toBeNull();
+    expect(ctx.session.pendingDeepLinkDenomId).toBeUndefined();
+
+    // Main menu is a fresh reply (persistent keyboard), never an edit — same
+    // signature the "Home screen" tests below use to identify it. If setCurrency
+    // had mistakenly resumed onboarding, this would instead show the
+    // denomination bubble (browseDenomination) via an edited/replied product
+    // detail, not the Home reply-keyboard.
+    const markup = lastMarkup(sink) as { keyboard?: Array<Array<{ text: string }>> };
+    const labels = (markup?.keyboard ?? []).flat().map((b) => b.text);
+    expect(labels).toContain(persistentLabel("browse", "en"));
+    expect(sentIncludes(sink, sample.product.name)).toBe(false);
+  });
+
   it("subscribeRestock creates a subscription once (idempotent)", async () => {
     const { ctx } = customerCtx({ callbackData: "v1:restock:sub:1" });
     await customer.subscribeRestock(ctx, sample.product.id);

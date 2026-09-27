@@ -1187,11 +1187,12 @@ describe("showHelpCenter (§10 Help Center hub)", () => {
 
 describe("denomination picker", () => {
   async function makeProductWithTwo() {
-    // Task 3: the compact catalog view now covers every category EXCEPT
-    // Premium Apps (including a null/unclassified `group`), so this fixture
-    // must explicitly opt into PREMIUM_APPS to keep exercising the flat
-    // per-plan price/stock dump + Duration/Type/Warranty detail template it
-    // was written for — an unclassified category would now render compact.
+    // Task 3 / Finding I3 (final-review): the compact catalog view is gated
+    // on `group === GAME_TOPUP` only — Premium Apps AND a null/unclassified
+    // `group` both keep the full flat per-plan price/stock dump +
+    // Duration/Type/Warranty detail template. This fixture opts into
+    // PREMIUM_APPS explicitly anyway, just to be unambiguous about which of
+    // the two full-view categories it's exercising.
     const cat = await createCategory(prisma, { name: `gc${Math.random()}`, group: CategoryGroup.PREMIUM_APPS });
     // The mid-tier Product holds ≥2 denominations → it renders a picker.
     const product = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Capcut" });
@@ -1525,10 +1526,60 @@ describe("denomination picker", () => {
     expect(button.text).not.toContain("…");
   });
 
+  it("Finding (final-review round 2): a LONGER realistic name no longer loses the price to denominationPickerKb's truncLabel(..., 24) safety net", async () => {
+    // The C1 fix above (truncate the whole "{name} — {price}" string)
+    // comfortably covers a ~20-char pre-collapse name like "Delta Force 60
+    // Coins", but a longer, still-realistic Digiflazz-style name pushes the
+    // combined string back over the 24-char budget and loses the price
+    // again — just at a higher threshold. "Arena Breakout" + "1680 Coins +
+    // Bonus" collapses (via formatDenominationLabel) to the 18-char name
+    // "1680 Coins + Bonus"; appended to " — Rp300K" (9 more chars) that's 27
+    // chars total — truncLabel(..., 24) would have chopped it down to
+    // "1680 Coins + Bonus — Rp…", losing the price exactly like the
+    // originally-reported bug. The fix truncates the NAME segment first
+    // (budgeted to 24 - 3 - "Rp300K".length = 15 chars) so the price segment
+    // always survives intact.
+    const cat = await createCategory(prisma, { name: `Arena Breakout ${Math.random()}`, group: CategoryGroup.GAME_TOPUP });
+    const product = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Arena Breakout" });
+    const denom = await createDenomination(prisma, {
+      productId: product.id,
+      name: "Arena Breakout 1680 Coins + Bonus",
+      type: "SHARED",
+      durationLabel: "Arena Breakout 1680 Coins + Bonus",
+      price: "300000",
+    });
+    // Deliberately no qtyValue/qtyUnit — the fallback-label path.
+    // A second denomination so the Product has ≥2 active SKUs — see the
+    // identical comment on the tests above.
+    await createDenomination(prisma, {
+      productId: product.id,
+      name: "Arena Breakout 3600 Coins + Bonus",
+      type: "SHARED",
+      durationLabel: "Arena Breakout 3600 Coins + Bonus",
+      price: "600000",
+    });
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseProduct(ctx, product.id);
+
+    const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ text: string; callback_data?: string }>> };
+    const flat = (markup?.inline_keyboard ?? []).flat();
+    const button = flat.find((b) => b.callback_data === `v1:browse:denom:${denom.id}`)!;
+    // Name segment truncated to fit the 15-char budget ("1680 Coins + B…"),
+    // price segment ("Rp300K") always intact — never chopped to "Rp…" or
+    // dropped entirely.
+    expect(button.text).toBe("1680 Coins + B… — Rp300K");
+    expect(button.text.endsWith("Rp300K")).toBe(true);
+    expect(button.text).not.toContain("Rp…");
+    expect(button.text.length).toBeLessThanOrEqual(24);
+  });
+
   it("Game Top Up detail hides Duration/Type/Warranty AND the stock line, keeps Price, and shows the description once", async () => {
-    // Task 3: the stock line ("In stock: …") is now Premium-Apps-only —
-    // Game Top Up (and any unclassified category) drops it entirely, since
-    // it was never a real, buyer-meaningful count for these categories.
+    // Task 3 / Finding I3 (final-review): the stock line ("In stock: …") is
+    // gated on `group === GAME_TOPUP` only — a null/unclassified `group`
+    // keeps the full Premium-Apps-style view (stock line included), same as
+    // a genuine PREMIUM_APPS category. Only a genuine Game Top Up category
+    // drops it, since it was never a real, buyer-meaningful count there.
     const { d1 } = await makeGameProduct({ description: "Official ML diamonds" });
     const { ctx, sink } = customerCtx();
     await customer.browseDenomination(ctx, d1.id);
@@ -2185,10 +2236,11 @@ describe("browseCategoryEntry — Game Top Up variant/region navigation + AUTO s
   });
 
   it("browseProduct keeps the em-dash stock placeholder for a MANUAL_WITH_INFO denomination in a Premium Apps category", async () => {
-    // Task 3 narrowed this to Premium Apps only — every other/unclassified
-    // category is compact now and drops the stock line entirely (see the
-    // GAME_TOPUP compact-mode test below), so "regardless of category group"
-    // no longer holds; Premium Apps is the one group that still renders it.
+    // Task 3 / Finding I3 (final-review): the compact-mode gate is
+    // `group === GAME_TOPUP` only — a null/unclassified `group` keeps the
+    // full Premium-Apps-style stock line too (see the dedicated null-group
+    // test below), so PREMIUM_APPS isn't the ONLY group that still renders
+    // it, but it IS the one this specific test targets to stay unambiguous.
     const cat = await createCategory(prisma, { name: "Streaming Manual Test", group: CategoryGroup.PREMIUM_APPS });
     const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Streaming Manual" });
     await createDenomination(prisma, { productId: p.id, name: "1 Month", type: "SHARED", durationLabel: "1 Month", price: "20000", deliveryType: DeliveryType.MANUAL_WITH_INFO });
@@ -2229,10 +2281,12 @@ describe("browseCategoryEntry — Game Top Up variant/region navigation + AUTO s
   });
 
   it("PREMIUM APPS ZERO-BEHAVIOR-CHANGE REGRESSION: browseDenomination keeps the raw AUTO stock number for a Premium Apps category", async () => {
-    // Task 3 broadened compact mode to cover a null/unclassified `group`
-    // too, so `sample.product` (whose category has no `group` set) is no
-    // longer a Premium Apps stand-in — use an explicit PREMIUM_APPS category
-    // instead to keep proving this real case is untouched.
+    // Compact mode is gated on `group === GAME_TOPUP` only, so a
+    // null/unclassified `group` (e.g. `sample.product`'s category, which has
+    // no `group` set) already renders the full Premium-Apps-style view too
+    // (see the dedicated null-group test below) — this test uses an explicit
+    // PREMIUM_APPS category anyway, to stay unambiguous about which of the
+    // two full-view categories it's proving untouched.
     const cat = await createCategory(prisma, { name: "Streaming Detail Test", group: CategoryGroup.PREMIUM_APPS });
     const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Streaming Detail" });
     const d = await createDenomination(prisma, { productId: p.id, name: "1 Month", type: "SHARED", durationLabel: "1 Month", price: "20000", deliveryType: DeliveryType.AUTO });
@@ -2242,6 +2296,37 @@ describe("browseCategoryEntry — Game Top Up variant/region navigation + AUTO s
     await customer.browseDenomination(ctx, d.id);
     expect(sentIncludes(sink, t(ctx, "browse.stock_auto_value"))).toBe(false);
     expect(sentIncludes(sink, "<b>5</b>")).toBe(true);
+  });
+
+  it("Finding I3 (final-review) locked in: a null/unclassified `group` category gets the full Premium-Apps-style view — real stock, Duration/Type/Warranty, no compact treatment", async () => {
+    // No `group` passed at all -> Category.group stays null in the DB
+    // (Prisma has no default for it), exactly the "as-yet-unclassified"
+    // fixture shape the surrounding comments describe. This is the ONE case
+    // the other two tests around it (explicit GAME_TOPUP vs explicit
+    // PREMIUM_APPS) don't cover directly — it proves the user's decision
+    // (keep null-group on the full-view side, same as `serviceForCategoryGroup
+    // (null)` in packages/core/src/services.ts) rather than just asserting it
+    // in a comment.
+    const cat = await createCategory(prisma, { name: `Unclassified ${Math.random()}` });
+    const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Unclassified Product" });
+    const d = await createDenomination(prisma, {
+      productId: p.id, name: "1 Month", type: "SHARED", durationLabel: "1 Month", price: "20000", warrantyDays: 14,
+      deliveryType: DeliveryType.AUTO,
+    });
+    await bulkAddStock(prisma, d.id, ["a", "b", "c"]); // 3 in stock
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseDenomination(ctx, d.id);
+    const body = bodyText(sink);
+
+    // Full Premium-Apps-style template: Duration/Type/Warranty + the raw
+    // stock number, none of which the GAME_TOPUP compact template renders.
+    expect(body).toContain("Duration:");
+    expect(body).toContain("Type:");
+    expect(body).toContain("Warranty:");
+    expect(body).toContain("14 days");
+    expect(sentIncludes(sink, "<b>3</b>")).toBe(true);
+    expect(sentIncludes(sink, t(ctx, "browse.stock_auto_value"))).toBe(false);
   });
 
   it("browseCategoryEntry cascades into browseProduct's compact buttonLabel for a Game Top Up denomination with qtyValue/qtyUnit backfilled", async () => {
@@ -2593,6 +2678,54 @@ describe("Finding I1 (final-review): persistent keyboard resend when a picker ta
     // 3 products -> digits 1-3 must all be present, not capped at the
     // picker's own 2-option size.
     expect(flat).toEqual(["1", "2", "3", persistentLabel("main", "en")]);
+  });
+
+  it("Finding (final-review round 2): a variant-picker tap landing on a >10-product list still shows a Prev/Next-capable inline keyboard, not just the digit-only persistent keyboard", async () => {
+    // The I1 fix above made this exact transition (picker tap -> flat list)
+    // resend `productsPersistentKb` as the LIST's own reply_markup — but that
+    // keyboard has no Prev/Next, so an 11-product variant-scoped list (>
+    // PAGE_SIZE=10) became unreachable past page 1: "Page 1/2" shown with no
+    // way to reach page 2. Fixed by sending the resized digit keyboard as a
+    // SEPARATE companion message (mirroring the variant/region pickers' own
+    // existing pattern) while the list message itself keeps the inline
+    // `productsNavKb` — so both the digit shortcuts AND Prev/Next work.
+    const cat = await createCategory(prisma, { name: "I1 Pagination Cat", group: CategoryGroup.GAME_TOPUP });
+    for (let i = 0; i < 11; i++) {
+      const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: `I1 Page Global ${i}` });
+      await prisma.product.update({ where: { id: p.id }, data: { gameVariant: "Global" } });
+      await createDenomination(prisma, { productId: p.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    }
+    const other = await createCatalogProduct(prisma, { categoryId: cat.id, name: "I1 Page Max" });
+    await prisma.product.update({ where: { id: other.id }, data: { gameVariant: "Max" } });
+    await createDenomination(prisma, { productId: other.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+
+    const { ctx } = customerCtx();
+    await customer.browseCategoryEntry(ctx, cat.id); // 2-entry variant picker
+
+    const tap = customerCtx({ callbackData: `v1:browse:gvar:${cat.id}:0`, session: { ...userSession(), scratch: ctx.session.scratch } });
+    await customer.pickGameVariant(tap.ctx, cat.id, 0);
+
+    // The digit-only persistent reply keyboard is still sent as a companion
+    // message, sized to this page's 10 products (PAGE_SIZE) — the I1 fix
+    // itself must not regress.
+    const replyCalls = calls(tap.sink, "reply");
+    const kbCall = replyCalls.find((c) => {
+      const opts = c.args[1] as { reply_markup?: { keyboard?: unknown[][] } } | undefined;
+      return !!opts?.reply_markup?.keyboard;
+    });
+    expect(kbCall).toBeDefined();
+    const kb = (kbCall!.args[1] as { reply_markup: { keyboard: Array<Array<{ text: string }>> } }).reply_markup;
+    expect(kb.keyboard.flat().map((b) => b.text)).toEqual([
+      "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", persistentLabel("main", "en"),
+    ]);
+
+    // The LIST message itself (the last screen-producing send) must carry
+    // the inline productsNavKb with a working Next button — never the
+    // reply-keyboard-only, pagination-less markup.
+    const markup = lastMarkup(tap.sink) as { inline_keyboard?: Array<Array<{ callback_data?: string }>> } | undefined;
+    expect(markup?.inline_keyboard).toBeDefined();
+    const flatButtons = (markup?.inline_keyboard ?? []).flat();
+    expect(flatButtons.some((b) => b.callback_data === "v1:browse:page:1")).toBe(true);
   });
 
   it("a plain page-turn tap (no picker involved) still uses the in-place inline nav keyboard, not a fresh persistent-keyboard resend", async () => {

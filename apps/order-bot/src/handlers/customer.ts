@@ -61,7 +61,7 @@ import { t } from "../util/i18n";
 import { logErrorRef } from "../util/errors";
 import { gameTopUpDenomLabel, formatDenominationLabel } from "../util/denominationLabel";
 import { gameInputFieldsLabel, resolveGameInputFlags } from "../util/gameInfo";
-import { esc, formatUsdtAmount, formatIdr, statusBadge, groupOrderItems, formatCountdown, formatFlashRemaining, priceIdr, ctxPriceFormatter, orderAmount, mixedAmount, renderBybitBscTrackingScreen, summarizeTicketOrder } from "../util/format";
+import { esc, formatUsdtAmount, formatIdr, statusBadge, groupOrderItems, formatCountdown, formatFlashRemaining, priceIdr, ctxPriceFormatter, orderAmount, mixedAmount, renderBybitBscTrackingScreen, summarizeTicketOrder, truncLabel, BUTTON_LABEL_MAX } from "../util/format";
 import { effectiveUnitPrice, flashPrice, activeFlashPercent } from "@app/core/flash";
 import { currentUsdtRate } from "../util/rate";
 import * as ckb from "../keyboards/customer";
@@ -792,18 +792,31 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
   // unless the list is too long.
   //
   // Finding I1 (final-review): a variant/region picker tap (pickGameVariant/
-  // pickGameRegion) that lands here IS a callback, so the "in-place edit"
-  // branch above would normally apply — but the picker's own bottom keyboard
-  // (gamePickerPersistentKb, sized to ITS OWN option count) is still showing,
-  // and Telegram can only replace a ReplyKeyboardMarkup via a fresh send, not
-  // an edit. Treat that one transition like a fresh entry too, so the bottom
-  // keyboard gets resized to this list's actual product count instead of
-  // being stuck at the picker's old (possibly smaller) size.
+  // pickGameRegion) that lands here IS a callback — the picker's own bottom
+  // keyboard (gamePickerPersistentKb, sized to ITS OWN option count) is still
+  // showing, and Telegram can only replace a ReplyKeyboardMarkup via a fresh
+  // send, not an edit.
+  //
+  // Finding (final-review round 2): the first fix for I1 made THIS list's own
+  // message use `productsPersistentKb` (no Prev/Next) whenever it landed here
+  // from a picker tap, so a >10-product variant/region-scoped list became
+  // unreachable past page 1 — a real pagination regression. Fixed the same
+  // way the variant/region pickers above already solve this exact problem
+  // (enterGameVariant/enterGameRegion): the resized digit reply-keyboard is
+  // sent as a SEPARATE companion message via `ctx.reply` (a fresh send can
+  // always carry a new ReplyKeyboardMarkup), while the actual list message
+  // keeps using the inline `productsNavKb` — so it stays tap-friendly and
+  // keeps working Prev/Next AND the bottom digit keyboard ends up correctly
+  // sized either way.
   const cameFromPicker = previousActiveScreen === "gameVariant" || previousActiveScreen === "gameRegion";
-  const replyMarkup =
-    ctx.callbackQuery && !cameFromPicker
-      ? ckb.productsNavKb(page, totalPages, lang)
-      : ckb.productsPersistentKb(pageProducts.length, lang);
+  if (cameFromPicker) {
+    await ctx.reply(t(ctx, "browse.use_numbers"), {
+      reply_markup: ckb.productsPersistentKb(pageProducts.length, lang),
+    });
+  }
+  const replyMarkup = ctx.callbackQuery
+    ? ckb.productsNavKb(page, totalPages, lang)
+    : ckb.productsPersistentKb(pageProducts.length, lang);
   await renderMenuBanner(ctx, text, replyMarkup);
 }
 
@@ -1066,11 +1079,29 @@ export async function browseProduct(ctx: MyContext, productId: number): Promise<
       // segment: plain-text `formatDenominationLabel` output + a plain-text
       // COMPACT price (`prices.compact`, e.g. "Rp15K"), never `priceText`
       // (which can carry HTML on a flash sale) and never the full format.
+      // Finding (final-review round 2): building the full "{name} — {price}"
+      // label first and truncating the WHOLE thing (denominationPickerKb's
+      // truncLabel(..., 24) safety net) still lets a long name eat into the
+      // PRICE segment at the tail — e.g. "1680 Coins + Bonus — Rp300K" (27
+      // chars) truncated to "1680 Coins + Bonus — Rp…", losing the price
+      // again, just at a higher name-length threshold than the originally-
+      // reported bug. Fixed by truncating the NAME segment first, budgeted to
+      // whatever room is left after the " — " separator and the (short,
+      // compact) price segment, so the combined string fits inside the same
+      // budget WITHOUT ever needing truncLabel's own truncation to kick in —
+      // the price is therefore always intact, and only the name is ever
+      // shortened.
       const buttonLabel =
         d.qtyValue != null && d.qtyUnit
           ? gameTopUpDenomLabel(d, unitPrice, product.gameVariantEmoji ?? sc(ctx).gameVariantEmoji, prices)
           : isCompactCatalog
-            ? `${formatDenominationLabel(product.name, d.durationLabel || d.name)} — ${prices.compact(unitPrice)}`
+            ? (() => {
+                const sep = " — ";
+                const priceSegment = prices.compact(unitPrice);
+                const name = formatDenominationLabel(product.name, d.durationLabel || d.name);
+                const nameBudget = Math.max(1, BUTTON_LABEL_MAX - sep.length - priceSegment.length);
+                return `${truncLabel(name, nameBudget)}${sep}${priceSegment}`;
+              })()
             : undefined;
       if (isCompactCatalog) return { line: "", buttonLabel };
       const stock = stockCounts?.get(d.id) ?? 0;

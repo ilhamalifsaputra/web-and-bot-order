@@ -174,12 +174,20 @@ export function mixedAmount(idr: Decimal.Value, usdt: Decimal.Value): string {
 }
 
 /**
- * Truncate a string to `max` characters with a trailing ellipsis so it fits
- * safely inside a Telegram inline-button label (Telegram renders ~30 chars per
- * row button; keeping labels under 24 chars prevents visual clipping on most
- * devices).
+ * Default inline-button label budget (Telegram renders ~30 chars per row
+ * button; keeping labels under 24 chars prevents visual clipping on most
+ * devices). Exported so a caller that needs to sub-divide the budget between
+ * two segments of one label (e.g. a name segment and a price segment) can
+ * reference the same number `truncLabel`'s own default uses, rather than
+ * duplicating the literal `24`.
  */
-export function truncLabel(text: string, max = 24): string {
+export const BUTTON_LABEL_MAX = 24;
+
+/**
+ * Truncate a string to `max` characters with a trailing ellipsis so it fits
+ * safely inside a Telegram inline-button label.
+ */
+export function truncLabel(text: string, max = BUTTON_LABEL_MAX): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 

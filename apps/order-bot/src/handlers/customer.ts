@@ -59,7 +59,7 @@ import { BANNER_IMAGE_KEY, BANNER_FILEID_KEY, bannerPhotoArg } from "../util/ban
 import { productPhotoArg, cacheProductPhotoFileId } from "../util/productPhoto";
 import { t } from "../util/i18n";
 import { logErrorRef } from "../util/errors";
-import { gameTopUpDenomLabel } from "../util/denominationLabel";
+import { gameTopUpDenomLabel, formatDenominationLabel } from "../util/denominationLabel";
 import { gameInputFieldsLabel, resolveGameInputFlags } from "../util/gameInfo";
 import { esc, formatUsdtAmount, formatIdr, statusBadge, groupOrderItems, formatCountdown, formatFlashRemaining, priceIdr, ctxPriceFormatter, orderAmount, mixedAmount, renderBybitBscTrackingScreen, summarizeTicketOrder } from "../util/format";
 import { effectiveUnitPrice, flashPrice, activeFlashPercent } from "@app/core/flash";
@@ -358,6 +358,13 @@ export async function browseGroups(ctx: MyContext): Promise<void> {
   delete sc(ctx).resolvedGameVariant;
   delete sc(ctx).resolvedGameRegion;
   delete sc(ctx).gameVariantDimensionSkipped;
+  // Finding I2 (final-review): this screen renders without going through
+  // browseProductsFlat/the variant-picker-render/the region-picker-render —
+  // none of which run here — so a leftover "gameVariant"/"gameRegion" from a
+  // picker two screens back must be cleared here too, or a stray typed digit
+  // on this screen would resolve against an emptied picker snapshot instead
+  // of falling through to the product-list default.
+  delete sc(ctx).activeNumberedScreen;
   const enabledGroups = await activeServiceGroups(prisma);
   const enabledServices = CUSTOMER_SERVICES.filter((service) => enabledGroups.has(service.group));
   if (enabledServices.length === 1) {
@@ -401,6 +408,11 @@ export async function browseCategoriesInGroup(ctx: MyContext, group: string): Pr
   delete sc(ctx).resolvedGameVariant;
   delete sc(ctx).resolvedGameRegion;
   delete sc(ctx).gameVariantDimensionSkipped;
+  // Finding I2 (final-review): same reasoning as browseGroups' own reset
+  // above — this screen (both its empty-state and its normal category-list
+  // render below) never goes through browseProductsFlat/a picker render, so
+  // a leftover "gameVariant"/"gameRegion" must be cleared here too.
+  delete sc(ctx).activeNumberedScreen;
   sc(ctx).group = group;
 
   const categories = await listActiveCategoriesByGroup(prisma, group);
@@ -721,8 +733,22 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
     sc(ctx).group === CategoryGroup.GAME_TOPUP && !sc(ctx).gameVariantDimensionSkipped
       ? { gameVariant: sc(ctx).resolvedGameVariant ?? null, gameRegion: sc(ctx).resolvedGameRegion ?? null }
       : undefined;
+  // Finding I2 (final-review): captured BEFORE it's overwritten below (and
+  // before the empty-products early return), so both this function's own
+  // early return and its normal render path can tell whether a variant/
+  // region picker was actually on screen a moment ago — a screen that never
+  // touches browseEntries/activeNumberedScreen itself, so a leftover
+  // "gameVariant"/"gameRegion" value here would otherwise survive into
+  // whatever screen a typed digit is next checked against.
+  const previousActiveScreen = sc(ctx).activeNumberedScreen;
   const products = await listCatalogProducts(prisma, categoryId, filter);
   if (!products.length) {
+    // Finding I2 (final-review): a picker's activeNumberedScreen must not
+    // survive into this empty-list screen either — an empty gameVariant/
+    // gameRegion snapshot left in place would make a stray typed digit here
+    // resolve against 0 entries ("Enter a number between 1 and 0") instead of
+    // falling through to this screen's own (numberless) contract.
+    delete sc(ctx).activeNumberedScreen;
     await smartEdit(ctx, t(ctx, "browse.no_products"), ckb.backToMain(lang));
     return;
   }
@@ -764,9 +790,20 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
   // only be set via a fresh send, which happens once per Browse entry, not on
   // every page turn. The banner (if set) rides on top as a photo+caption,
   // unless the list is too long.
-  const replyMarkup = ctx.callbackQuery
-    ? ckb.productsNavKb(page, totalPages, lang)
-    : ckb.productsPersistentKb(pageProducts.length, lang);
+  //
+  // Finding I1 (final-review): a variant/region picker tap (pickGameVariant/
+  // pickGameRegion) that lands here IS a callback, so the "in-place edit"
+  // branch above would normally apply — but the picker's own bottom keyboard
+  // (gamePickerPersistentKb, sized to ITS OWN option count) is still showing,
+  // and Telegram can only replace a ReplyKeyboardMarkup via a fresh send, not
+  // an edit. Treat that one transition like a fresh entry too, so the bottom
+  // keyboard gets resized to this list's actual product count instead of
+  // being stuck at the picker's old (possibly smaller) size.
+  const cameFromPicker = previousActiveScreen === "gameVariant" || previousActiveScreen === "gameRegion";
+  const replyMarkup =
+    ctx.callbackQuery && !cameFromPicker
+      ? ckb.productsNavKb(page, totalPages, lang)
+      : ckb.productsPersistentKb(pageProducts.length, lang);
   await renderMenuBanner(ctx, text, replyMarkup);
 }
 
@@ -960,15 +997,18 @@ export async function browseProduct(ctx: MyContext, productId: number): Promise<
   // conversion at this render edge).
   const prices = ctxPriceFormatter(ctx, rate);
 
-  // Compact catalog mode: every category EXCEPT Premium Apps (Game Top Up,
-  // and any as-yet-unclassified null-group category) skips the flat per-plan
-  // price/stock dump entirely — repeating price/stock per plan in the body
+  // Compact catalog mode: ONLY a genuine Game Top Up category skips the flat
+  // per-plan price/stock dump — repeating price/stock per plan in the body
   // would just duplicate the keyboard, so the body describes the PRODUCT
   // instead (the admin's description plus which account data checkout will
-  // ask for, when applicable). Premium Apps is the one group with real,
-  // buyer-meaningful local inventory, so it's the only one that keeps the
-  // per-plan body lines (price + stock).
-  const isCompactCatalog = product.category.group !== CategoryGroup.PREMIUM_APPS;
+  // ask for, when applicable). Every other category, including an
+  // as-yet-unclassified null-group one, keeps the per-plan body lines (price
+  // + stock) — this mirrors `serviceForCategoryGroup(null)` in
+  // packages/core/src/services.ts, which already treats a null group as
+  // PREMIUM_APPS-equivalent; the final-review's user decision (finding I3)
+  // is to keep that equivalence here too rather than let a broadened compact
+  // gate silently contradict it.
+  const isCompactCatalog = product.category.group === CategoryGroup.GAME_TOPUP;
 
   // Batched stock read for the non-compact (Premium Apps) branch only — the
   // compact branch never shows a stock line, so it must not read stock at
@@ -1012,11 +1052,25 @@ export async function browseProduct(ctx: MyContext, productId: number): Promise<
       // leak onto a completely different product's denomination buttons here
       // (this screen is also reached via Popular/search, which never go
       // through the variant-picker flow that sets/clears scratch at all).
+      // Finding C1 (final-review): this fallback label used to be
+      // `${d.durationLabel || d.name} — ${priceText}` — plain-text-only
+      // Telegram button text built from `priceText`, which is either the
+      // FULL price format ("Rp150.000", long) or, during a flash sale, an
+      // HTML string (`browse.flash_price` — "<s>old</s> new ⚡") that a
+      // button can't render (buttons show literal tags) and that
+      // truncLabel(..., 24) then chops mid-tag. It also skipped
+      // formatDenominationLabel's repeated-product-name tidy-up entirely, so
+      // a raw Digiflazz name like "Delta Force 60 Coins" survived untouched
+      // into a 24-char button and got truncated to something meaningless.
+      // Fixed the same way gameTopUpDenomLabel builds its own compact price
+      // segment: plain-text `formatDenominationLabel` output + a plain-text
+      // COMPACT price (`prices.compact`, e.g. "Rp15K"), never `priceText`
+      // (which can carry HTML on a flash sale) and never the full format.
       const buttonLabel =
         d.qtyValue != null && d.qtyUnit
           ? gameTopUpDenomLabel(d, unitPrice, product.gameVariantEmoji ?? sc(ctx).gameVariantEmoji, prices)
           : isCompactCatalog
-            ? `${d.durationLabel || d.name} — ${priceText}`
+            ? `${formatDenominationLabel(product.name, d.durationLabel || d.name)} — ${prices.compact(unitPrice)}`
             : undefined;
       if (isCompactCatalog) return { line: "", buttonLabel };
       const stock = stockCounts?.get(d.id) ?? 0;
@@ -1135,21 +1189,26 @@ export async function browseDenomination(
   // read as sold out directly beside the (correctly) purchasable Buy button
   // below. `stock` itself stays the raw count for denominationDetailKb's
   // gating/stepper-bound logic further down; only the displayed text changes.
-  // This template reaches Premium Apps only now (the compact detail template
-  // below drops the stock line entirely for every other/unclassified
-  // category), so an AUTO denomination always shows the raw number here.
+  // This template reaches every non-GAME_TOPUP category now — Premium Apps
+  // and any as-yet-unclassified null-group category (the compact detail
+  // template below drops the stock line entirely, GAME_TOPUP only) — so an
+  // AUTO denomination always shows the raw number here.
   const stockDisplay = d.deliveryType === DeliveryType.AUTO ? stock : "—";
 
   const priceText = onSale
     ? t(ctx, "browse.flash_price", { old: prices.price(d.price), new: prices.price(unit) })
     : prices.price(unit);
-  // Game Top Up SKUs (diamonds, UC, …) — and any as-yet-unclassified null-
-  // group category — have no meaningful Duration/Type/Warranty (those are
-  // Premium Apps account attributes) and no meaningful stock line either (the
-  // one Premium Apps keeps is the one real, buyer-meaningful local inventory
-  // count), so this compact variant of the bubble keeps only Price/Sold/
-  // Rating.
-  const isGame = d.product.category.group !== CategoryGroup.PREMIUM_APPS;
+  // Game Top Up SKUs (diamonds, UC, …) have no meaningful Duration/Type/
+  // Warranty (those are Premium Apps account attributes) and no meaningful
+  // stock line either (the one Premium Apps keeps is the one real, buyer-
+  // meaningful local inventory count), so this compact variant of the
+  // bubble keeps only Price/Sold/Rating. An as-yet-unclassified null-group
+  // category is NOT included here (Finding I3, final-review, user decision)
+  // — it mirrors `serviceForCategoryGroup(null)` in
+  // packages/core/src/services.ts, which already treats null as
+  // PREMIUM_APPS-equivalent, so it keeps the full Duration/Type/Warranty +
+  // stock template like Premium Apps.
+  const isGame = d.product.category.group === CategoryGroup.GAME_TOPUP;
   let text = isGame
     ? t(ctx, "browse.denomination_detail_game", {
         product: esc(d.product.name),

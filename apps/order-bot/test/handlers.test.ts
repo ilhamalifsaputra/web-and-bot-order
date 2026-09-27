@@ -1423,9 +1423,106 @@ describe("denomination picker", () => {
     expect(button1.text).toContain("Rp");
     // d2 is missing qtyValue/qtyUnit -> price-appended fallback label, never
     // name-only (the exact bug: a button with no price anywhere on it).
+    // Finding C1 (final-review): the price segment is the COMPACT format
+    // ("Rp30K"), matching gameTopUpDenomLabel's own compact price segment —
+    // not the full "Rp30.000" the pre-fix code used (too long for a button,
+    // and — on a flash sale — not even plain text, see the dedicated C1
+    // tests below).
     const button2 = flat.find((b) => b.callback_data === `v1:browse:denom:${d2.id}`)!;
     expect(button2.text).toContain("172 Diamonds");
-    expect(button2.text).toContain("Rp30.000");
+    expect(button2.text).toContain("Rp30K");
+    expect(button2.text).not.toContain("Rp30.000");
+  });
+
+  it("Finding C1 (final-review): the price-appended fallback label collapses a realistic long Digiflazz name and never truncates to something meaningless", async () => {
+    // The exact reported bug: a raw Digiflazz name ("Delta Force 60 Coins",
+    // 20 characters) plus the FULL price format ("Rp150.000") used to exceed
+    // truncLabel's 24-char budget and get chopped to "Delta Force 60 Coins —
+    // R…" — no price visible anywhere on the button. The fix runs the label
+    // through formatDenominationLabel (product-name-prefix collapse, same as
+    // every other denomination button) and appends a COMPACT price, so the
+    // realistic case comfortably fits under the truncation budget.
+    const cat = await createCategory(prisma, { name: `Delta Force ${Math.random()}`, group: CategoryGroup.GAME_TOPUP });
+    const product = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Delta Force" });
+    const denom = await createDenomination(prisma, {
+      productId: product.id,
+      name: "Delta Force 60 Coins",
+      type: "SHARED",
+      durationLabel: "Delta Force 60 Coins",
+      price: "150000",
+    });
+    // Deliberately no qtyValue/qtyUnit — this is the fallback-label path.
+    // A second denomination so the Product has ≥2 active SKUs — a single
+    // active denomination collapses straight to browseDenomination (no
+    // picker at all), which would make this test vacuous.
+    await createDenomination(prisma, {
+      productId: product.id,
+      name: "Delta Force 300 Coins",
+      type: "SHARED",
+      durationLabel: "Delta Force 300 Coins",
+      price: "700000",
+    });
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseProduct(ctx, product.id);
+
+    const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ text: string; callback_data?: string }>> };
+    const flat = (markup?.inline_keyboard ?? []).flat();
+    const button = flat.find((b) => b.callback_data === `v1:browse:denom:${denom.id}`)!;
+    // formatDenominationLabel("Delta Force", "Delta Force 60 Coins") strips
+    // the redundant "Delta Force" prefix -> "60 Coins"; compact price of
+    // 150000 is "Rp150K".
+    expect(button.text).toBe("60 Coins — Rp150K");
+    expect(button.text.length).toBeLessThanOrEqual(24);
+    expect(button.text).not.toContain("…"); // truncLabel never had to cut it
+    expect(button.text).not.toMatch(/[<>]/); // no HTML leaking into button text
+  });
+
+  it("Finding C1 (final-review): the price-appended fallback label uses the CURRENT (discounted) plain-text price during a flash sale, never the HTML flash_price string", async () => {
+    const cat = await createCategory(prisma, { name: `Flash Sale Fallback ${Math.random()}`, group: CategoryGroup.GAME_TOPUP });
+    const product = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Delta Force" });
+    const denom = await createDenomination(prisma, {
+      productId: product.id,
+      name: "Delta Force 60 Coins",
+      type: "SHARED",
+      durationLabel: "Delta Force 60 Coins",
+      price: "150000",
+    });
+    // A second denomination so the Product has ≥2 active SKUs — see the
+    // identical comment in the test above.
+    await createDenomination(prisma, {
+      productId: product.id,
+      name: "Delta Force 300 Coins",
+      type: "SHARED",
+      durationLabel: "Delta Force 300 Coins",
+      price: "700000",
+    });
+    const hour = 3_600_000;
+    await prisma.denomination.update({
+      where: { id: denom.id },
+      data: {
+        flashDiscountPercent: "20",
+        flashStartsAt: new Date(Date.now() - hour),
+        flashEndsAt: new Date(Date.now() + hour),
+      },
+    });
+    // Deliberately no qtyValue/qtyUnit — still the fallback-label path with a
+    // live flash sale on top (the review's "flash-sale case").
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseProduct(ctx, product.id);
+
+    const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ text: string; callback_data?: string }>> };
+    const flat = (markup?.inline_keyboard ?? []).flat();
+    const button = flat.find((b) => b.callback_data === `v1:browse:denom:${denom.id}`)!;
+    // 150000 - 20% = 120000 -> compact "Rp120K". Never the HTML
+    // browse.flash_price string (<s>old</s> new ⚡) — buttons can't render
+    // HTML, so it would show literal tags — and never the un-discounted
+    // "Rp150K" either.
+    expect(button.text).toBe("60 Coins — Rp120K");
+    expect(button.text).not.toMatch(/[<>]/);
+    expect(button.text).not.toContain("⚡");
+    expect(button.text).not.toContain("…");
   });
 
   it("Game Top Up detail hides Duration/Type/Warranty AND the stock line, keeps Price, and shows the description once", async () => {
@@ -2375,6 +2472,237 @@ describe("Task 2: typed-digit shortcuts resolve correctly on variant/region pick
     // clobber or reorder past the picker's real (tappable) screen.
     const markup = lastMarkup(sink) as { inline_keyboard?: unknown[][] };
     expect(markup?.inline_keyboard).toBeDefined();
+  });
+
+  // Bundled Minor (final-review ledger): the test above only ever covered the
+  // variant-picker path — the region picker resends its own persistent
+  // keyboard the exact same way (enterGameVariant's region branch), but that
+  // symmetric path had no direct test of its own until now.
+  it("entering the region picker resends a persistent reply keyboard sized to the picker's own option count", async () => {
+    const cat = await createCategory(prisma, { name: "Persistent Kb Region Cat", group: CategoryGroup.GAME_TOPUP });
+    const a = await createCatalogProduct(prisma, { categoryId: cat.id, name: "PKR A" });
+    await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "Standard", gameRegion: "Asia" } });
+    await createDenomination(prisma, { productId: a.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    const b = await createCatalogProduct(prisma, { categoryId: cat.id, name: "PKR B" });
+    await prisma.product.update({ where: { id: b.id }, data: { gameVariant: "Standard", gameRegion: "Europe" } });
+    await createDenomination(prisma, { productId: b.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+
+    const { ctx, sink } = customerCtx();
+    // Single distinct variant ("Standard") auto-skips the variant picker, so
+    // this lands straight on the region picker (2 distinct regions).
+    await customer.browseCategoryEntry(ctx, cat.id);
+
+    const replyCalls = calls(sink, "reply");
+    const kbCall = replyCalls.find((c) => {
+      const opts = c.args[1] as { reply_markup?: { keyboard?: unknown[][] } } | undefined;
+      return !!opts?.reply_markup?.keyboard;
+    });
+    expect(kbCall).toBeDefined();
+    const kb = (kbCall!.args[1] as { reply_markup: { keyboard: Array<Array<{ text: string }>> } }).reply_markup;
+    const flat = kb.keyboard.flat().map((b) => b.text);
+    expect(flat).toEqual(["1", "2", persistentLabel("main", "en")]);
+
+    // Same ordering guarantee as the variant-picker test above — the
+    // region picker's own inline keyboard render must be the LAST
+    // screen-producing call.
+    const markup = lastMarkup(sink) as { inline_keyboard?: unknown[][] };
+    expect(markup?.inline_keyboard).toBeDefined();
+  });
+});
+
+// ===========================================================================
+// Final-review fixes (I1/I2): the bottom persistent keyboard staying picker-
+// sized after landing on the product list, and activeNumberedScreen leaking
+// past a Back navigation off a picker.
+// ===========================================================================
+
+describe("Finding I1 (final-review): persistent keyboard resend when a picker tap lands on the product list", () => {
+  it("a variant-picker tap that collapses/resolves straight onto the product list resends productsPersistentKb sized to the list, not the stale picker-sized nav keyboard", async () => {
+    // 3 variants (so the variant picker itself renders and is genuinely
+    // tapped, not auto-skipped) all sharing one product each, so resolving
+    // any one variant lands on a >1-product flat list scoped to it — never
+    // triggers enterGameRegion's single-product collapse, which would skip
+    // browseProductsFlat (and this fix) entirely.
+    const cat = await createCategory(prisma, { name: "I1 Variant Cat", group: CategoryGroup.GAME_TOPUP });
+    const a1 = await createCatalogProduct(prisma, { categoryId: cat.id, name: "I1 Global A" });
+    await prisma.product.update({ where: { id: a1.id }, data: { gameVariant: "Global" } });
+    await createDenomination(prisma, { productId: a1.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    const a2 = await createCatalogProduct(prisma, { categoryId: cat.id, name: "I1 Global B" });
+    await prisma.product.update({ where: { id: a2.id }, data: { gameVariant: "Global" } });
+    await createDenomination(prisma, { productId: a2.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    const b = await createCatalogProduct(prisma, { categoryId: cat.id, name: "I1 Max" });
+    await prisma.product.update({ where: { id: b.id }, data: { gameVariant: "Max" } });
+    await createDenomination(prisma, { productId: b.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+
+    const { ctx } = customerCtx();
+    await customer.browseCategoryEntry(ctx, cat.id); // renders the 2-entry variant picker
+
+    // Tap variant index 0 ("Global") via the real inline-callback handler —
+    // this is a genuine ctx.callbackQuery tap, the exact condition that used
+    // to route through productsNavKb (in-place edit) instead of resending
+    // productsPersistentKb.
+    const tap = customerCtx({ callbackData: `v1:browse:gvar:${cat.id}:0`, session: { ...userSession(), scratch: ctx.session.scratch } });
+    await customer.pickGameVariant(tap.ctx, cat.id, 0);
+
+    const replyCalls = calls(tap.sink, "reply");
+    const kbCall = replyCalls.find((c) => {
+      const opts = c.args[1] as { reply_markup?: { keyboard?: unknown[][] } } | undefined;
+      return !!opts?.reply_markup?.keyboard;
+    });
+    expect(kbCall).toBeDefined();
+    const kb = (kbCall!.args[1] as { reply_markup: { keyboard: Array<Array<{ text: string }>> } }).reply_markup;
+    const flat = kb.keyboard.flat().map((b) => b.text);
+    // Sized to the 2-product list ("Global" has 2 products), not the
+    // 2-entry variant picker it came from (same count here on purpose is
+    // avoided by using a differently-countable assertion below — the real
+    // proof is that a FRESH persistent keyboard was sent at all for a
+    // callback-tap transition, which pre-fix never happened).
+    expect(flat).toEqual(["1", "2", persistentLabel("main", "en")]);
+  });
+
+  it("a variant-picker tap that lands on a product list bigger than the picker's own option count exposes every digit on the resent keyboard", async () => {
+    // 2-entry variant picker, but the resolved variant scopes to 3 products —
+    // proves the resent keyboard is sized to the LIST, not stuck at the
+    // picker's smaller size (the exact bug: "digits beyond the picker's old
+    // count can't be tapped even though they're valid product-list
+    // positions").
+    const cat = await createCategory(prisma, { name: "I1 Bigger List Cat", group: CategoryGroup.GAME_TOPUP });
+    for (let i = 0; i < 3; i++) {
+      const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: `I1 Global ${i}` });
+      await prisma.product.update({ where: { id: p.id }, data: { gameVariant: "Global" } });
+      await createDenomination(prisma, { productId: p.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    }
+    const other = await createCatalogProduct(prisma, { categoryId: cat.id, name: "I1 Max" });
+    await prisma.product.update({ where: { id: other.id }, data: { gameVariant: "Max" } });
+    await createDenomination(prisma, { productId: other.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+
+    const { ctx } = customerCtx();
+    await customer.browseCategoryEntry(ctx, cat.id); // 2-entry variant picker
+
+    const tap = customerCtx({ callbackData: `v1:browse:gvar:${cat.id}:0`, session: { ...userSession(), scratch: ctx.session.scratch } });
+    await customer.pickGameVariant(tap.ctx, cat.id, 0);
+
+    const replyCalls = calls(tap.sink, "reply");
+    const kbCall = replyCalls.find((c) => {
+      const opts = c.args[1] as { reply_markup?: { keyboard?: unknown[][] } } | undefined;
+      return !!opts?.reply_markup?.keyboard;
+    });
+    expect(kbCall).toBeDefined();
+    const kb = (kbCall!.args[1] as { reply_markup: { keyboard: Array<Array<{ text: string }>> } }).reply_markup;
+    const flat = kb.keyboard.flat().map((b) => b.text);
+    // 3 products -> digits 1-3 must all be present, not capped at the
+    // picker's own 2-option size.
+    expect(flat).toEqual(["1", "2", "3", persistentLabel("main", "en")]);
+  });
+
+  it("a plain page-turn tap (no picker involved) still uses the in-place inline nav keyboard, not a fresh persistent-keyboard resend", async () => {
+    // Regression guard: I1's fix must not turn EVERY callback-tap landing on
+    // browseProductsFlat into a fresh send — only the picker-to-list
+    // transition. An ordinary Prev/Next tap (activeNumberedScreen already
+    // "products") must keep editing in place via productsNavKb.
+    const cat = await createCategory(prisma, { name: "I1 Plain Paging Cat", group: CategoryGroup.PREMIUM_APPS });
+    for (let i = 0; i < 12; i++) {
+      const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: `I1 Plain ${i}` });
+      await createDenomination(prisma, { productId: p.id, name: "1 Month", type: "SHARED", durationLabel: "1 Month", price: "15000" });
+    }
+    const { ctx, sink } = customerCtx();
+    await customer.browseProductsFlat(ctx, 0); // page 0, activeNumberedScreen="products"
+
+    const next = customerCtx({ callbackData: "v1:browse:next", session: { ...userSession(), scratch: ctx.session.scratch } });
+    await customer.browseProductsFlat(next.ctx, 1);
+
+    const replyCalls = calls(next.sink, "reply");
+    const kbCall = replyCalls.find((c) => {
+      const opts = c.args[1] as { reply_markup?: { keyboard?: unknown[][] } } | undefined;
+      return !!opts?.reply_markup?.keyboard;
+    });
+    // No fresh reply-keyboard send for an ordinary page turn.
+    expect(kbCall).toBeUndefined();
+    const markup = lastMarkup(next.sink) as { inline_keyboard?: unknown[][] };
+    expect(markup?.inline_keyboard).toBeDefined();
+  });
+});
+
+describe("Finding I2 (final-review): activeNumberedScreen is cleared when a picker's list is cleared", () => {
+  it("Back from the variant picker to the category picker clears activeNumberedScreen — a stray typed digit there is not resolved against the (now-cleared) variant entries", async () => {
+    const cat1 = await createCategory(prisma, { name: "I2 Cat One", group: CategoryGroup.GAME_TOPUP });
+    const a = await createCatalogProduct(prisma, { categoryId: cat1.id, name: "I2 Cat One Variant A" });
+    await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "Global" } });
+    await createDenomination(prisma, { productId: a.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    const b = await createCatalogProduct(prisma, { categoryId: cat1.id, name: "I2 Cat One Variant B" });
+    await prisma.product.update({ where: { id: b.id }, data: { gameVariant: "Max" } });
+    await createDenomination(prisma, { productId: b.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    // A second active category in the same group, so the category picker
+    // (not the group picker) is what Back actually renders.
+    const cat2 = await createCategory(prisma, { name: "I2 Cat Two", group: CategoryGroup.GAME_TOPUP });
+    const c = await createCatalogProduct(prisma, { categoryId: cat2.id, name: "I2 Cat Two Product" });
+    await createDenomination(prisma, { productId: c.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+
+    const { ctx } = customerCtx();
+    await customer.browseCategoryEntry(ctx, cat1.id); // renders the 2-entry variant picker
+    expect((ctx.session.scratch as { activeNumberedScreen?: string }).activeNumberedScreen).toBe("gameVariant");
+
+    // Back from the variant picker targets the category picker directly
+    // (ckb.cb("browse", "cat", ...) with backTarget = the group's category
+    // picker) — simulate the real Back tap through the group entry point,
+    // matching how a customer actually gets there.
+    const back = customerCtx({ session: { ...userSession(), scratch: ctx.session.scratch } });
+    await customer.browseCategoriesInGroup(back.ctx, CategoryGroup.GAME_TOPUP);
+    const scratch = back.ctx.session.scratch as { activeNumberedScreen?: string; gameVariantEntries?: unknown[] };
+    expect(scratch.activeNumberedScreen).toBeUndefined();
+
+    // A stray typed "1" now must NOT hit the stale variant-picker branch
+    // (which would show "Enter a number between 1 and 0" against the
+    // now-irrelevant gameVariantEntries) — it falls through to this file's
+    // existing default digit-handling instead.
+    const digit = customerCtx({ text: "1", session: { ...userSession(), scratch: back.ctx.session.scratch } });
+    await customer.handleProductNumber(digit.ctx);
+    expect(sentIncludes(digit.sink, t(digit.ctx, "browse.invalid_number", { max: 0 }))).toBe(false);
+  });
+
+  it("browseGroups (a fresh Products entry) always clears a leftover activeNumberedScreen", async () => {
+    const cat = await createCategory(prisma, { name: "I2 Fresh Entry Cat", group: CategoryGroup.GAME_TOPUP });
+    const a = await createCatalogProduct(prisma, { categoryId: cat.id, name: "I2 Fresh A" });
+    await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "Global" } });
+    await createDenomination(prisma, { productId: a.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    const b = await createCatalogProduct(prisma, { categoryId: cat.id, name: "I2 Fresh B" });
+    await prisma.product.update({ where: { id: b.id }, data: { gameVariant: "Max" } });
+    await createDenomination(prisma, { productId: b.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+
+    const { ctx } = customerCtx();
+    await customer.browseCategoryEntry(ctx, cat.id); // "gameVariant"
+    expect((ctx.session.scratch as { activeNumberedScreen?: string }).activeNumberedScreen).toBe("gameVariant");
+
+    const fresh = customerCtx({ session: { ...userSession(), scratch: ctx.session.scratch } });
+    await customer.browseGroups(fresh.ctx);
+    expect((fresh.ctx.session.scratch as { activeNumberedScreen?: string }).activeNumberedScreen).toBeUndefined();
+  });
+
+  it("browseCategoriesInGroup's empty-state render clears a leftover activeNumberedScreen", async () => {
+    // GAME_TOPUP is this suite's one group with no default categories (see
+    // the existing empty-state test above), so calling it straight after
+    // seeding a leftover "gameVariant" flag proves the empty-render path
+    // itself clears it, independent of any category's own picker flow.
+    const { ctx } = customerCtx();
+    (ctx.session.scratch as Record<string, unknown>).activeNumberedScreen = "gameVariant";
+    (ctx.session.scratch as Record<string, unknown>).gameVariantEntries = [];
+
+    await customer.browseCategoriesInGroup(ctx, CategoryGroup.GAME_TOPUP);
+    expect((ctx.session.scratch as { activeNumberedScreen?: string }).activeNumberedScreen).toBeUndefined();
+  });
+
+  it("browseProductsFlat's early-return-on-empty path clears a leftover activeNumberedScreen", async () => {
+    // A category-scoped list that resolves to zero products (e.g. every
+    // product in scope got deactivated) — browseProductsFlat's OWN
+    // empty-state early return, not a picker-clearing screen elsewhere.
+    const cat = await createCategory(prisma, { name: "I2 Empty List Cat", group: CategoryGroup.PREMIUM_APPS });
+    const { ctx } = customerCtx();
+    (ctx.session.scratch as Record<string, unknown>).categoryId = cat.id;
+    (ctx.session.scratch as Record<string, unknown>).activeNumberedScreen = "gameVariant";
+    (ctx.session.scratch as Record<string, unknown>).gameVariantEntries = [{ label: "X", emoji: null }];
+
+    await customer.browseProductsFlat(ctx, 0);
+    expect((ctx.session.scratch as { activeNumberedScreen?: string }).activeNumberedScreen).toBeUndefined();
   });
 });
 

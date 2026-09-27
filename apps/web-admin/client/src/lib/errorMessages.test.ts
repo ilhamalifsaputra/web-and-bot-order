@@ -37,6 +37,9 @@ describe("describeError", () => {
     expect(describeError("error.order_already_refunded")).toBe(
       "This cancelled order has already been refunded, so its payment can't also be credited to balance. Refresh the page to see the current state.",
     );
+    expect(describeError("error.order_never_paid")).toBe(
+      "This cancelled order was never paid, so there's nothing to credit to the buyer's balance. Refresh the page to see the current state.",
+    );
   });
 
   it("falls back to the raw string for an unknown key, so it's always safe to wrap any e.message", () => {

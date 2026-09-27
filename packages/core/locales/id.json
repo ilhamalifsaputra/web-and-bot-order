@@ -227,6 +227,7 @@
   "error.invalid_voucher_code": "Format kode voucher tidak valid.",
   "error.already_credited": "Pembayaran pesanan ini sudah ditambahkan ke credit balance pembeli.",
   "error.order_already_refunded": "Pesanan yang dibatalkan ini sudah di-refund, jadi pembayarannya tidak bisa juga dikreditkan ke saldo.",
+  "error.order_never_paid": "Pesanan yang dibatalkan ini tidak pernah dibayar, jadi tidak ada yang bisa dikreditkan ke saldo pembeli.",
   "error.order_already_delivered": "Pesanan ini sudah diterima.",
   "error.order_not_found": "Pesanan tidak ditemukan.",
   "error.denomination_has_stock_history": "Item ini punya riwayat stok dan tidak bisa dihapus; nonaktifkan saja.",

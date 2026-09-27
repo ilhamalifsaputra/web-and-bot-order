@@ -42,6 +42,8 @@ beforeEach(async () => {
   await resetDb(prisma);
   await prisma.walletTransaction.deleteMany();
   await prisma.processedBinanceTx.deleteMany();
+  await prisma.processedTokopayTx.deleteMany();
+  await prisma.processedBybitTx.deleteMany();
   sample = await buildSampleData(prisma);
   const admin = await prisma.user.create({
     data: { telegramId: BigInt(880_000_000 + Math.floor(Math.random() * 1_000_000)), referralCode: `credit-admin-${Math.random()}`, role: "ADMIN" },
@@ -189,8 +191,15 @@ describe("creditOrderToBalance", () => {
  */
 describe("creditOrderToBalance on an already-CANCELLED order", () => {
   /** A PENDING_PAYMENT order (a gateway settle whose delivery threw leaves the
-   *  order exactly here, with no paidAt) cancelled by the expiry sweep. */
-  async function cancelledOrder(opts: { walletAmount?: string; voucherCode?: string } = {}) {
+   *  order exactly here, with no paidAt) cancelled by the expiry sweep.
+   *
+   *  `paid` (default true) links a gateway ledger row to the order first — what
+   *  `deliverPaidTokopayOrder` leaves behind when it claimed the payment for this
+   *  order and the delivery transaction then threw: the row keeps its `orderId`
+   *  and is flagged `delivery_failed`, while the order's own `paidAt` write rolled
+   *  back. `paid: false` is the ordinary abandoned checkout: no payment ever
+   *  arrived, so no ledger row points at the order. */
+  async function cancelledOrder(opts: { walletAmount?: string; voucherCode?: string; paid?: boolean } = {}) {
     const { user, product } = sample;
     const fresh = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
     const order = (await createOrderDirect(prisma, {
@@ -200,6 +209,11 @@ describe("creditOrderToBalance on an already-CANCELLED order", () => {
       voucherCode: opts.voucherCode ?? null,
       walletAmount: opts.walletAmount,
     }))!;
+    if (opts.paid ?? true) {
+      await prisma.processedTokopayTx.create({
+        data: { trxId: `TP-${order.id}`, orderId: order.id, amount: order.totalAmount, outcome: "delivery_failed" },
+      });
+    }
     await cancelOrder(prisma, order.id, "expired", { type: StockActorType.SYSTEM });
     const cancelled = (await getOrder(prisma, order.id))!;
     expect(cancelled.status).toBe("CANCELLED");
@@ -239,6 +253,58 @@ describe("creditOrderToBalance on an already-CANCELLED order", () => {
     // decrement the cancel made — the credit did not decrement it again.
     const usedAfter = (await prisma.voucher.findUniqueOrThrow({ where: { id: voucher.id } })).usedCount;
     expect(usedAfter).toBe(usedAfterCancel);
+  });
+
+  // The Critical finding: a CANCELLED order that was never paid (an abandoned
+  // checkout the expiry sweep cancelled) has no money to hand back — crediting
+  // it would mint wallet balance out of nothing.
+  it("refuses to credit a cancelled order that was never paid, with error.order_never_paid", async () => {
+    const order = await cancelledOrder({ paid: false });
+    const before = await balances(sample.user.id);
+
+    await expect(creditOrderToBalance(prisma, { orderId: order.id, adminId })).rejects.toMatchObject({
+      key: "error.order_never_paid",
+    });
+    expect((await balances(sample.user.id)).walletBalance.toString()).toBe(before.walletBalance.toString());
+    expect(await prisma.walletTransaction.count({ where: { orderId: order.id, reason: "unfulfilled_credit" } })).toBe(0);
+  });
+
+  // paidAt stays null in the delivery-failed scenario (the settle transaction
+  // rolled back), so the linked ledger row is the only proof money arrived.
+  it("credits a cancelled order with no paidAt whose gateway ledger row is linked to it", async () => {
+    const order = await cancelledOrder({ paid: true });
+    expect(order.paidAt).toBeNull();
+    const before = await balances(sample.user.id);
+
+    await creditOrderToBalance(prisma, { orderId: order.id, adminId });
+
+    const after = await balances(sample.user.id);
+    expect(new Decimal(after.walletBalance).minus(before.walletBalance).equals(order.totalAmount)).toBe(true);
+  });
+
+  // Any of the five gateway tables counts, not just TokoPay.
+  it("accepts a linked ledger row from another gateway (Bybit) as proof of payment", async () => {
+    const order = await cancelledOrder({ paid: false });
+    await prisma.processedBybitTx.create({
+      data: { bybitTxId: `BY-${order.id}`, orderId: order.id, amount: order.totalAmount, outcome: "delivery_failed" },
+    });
+    await expect(creditOrderToBalance(prisma, { orderId: order.id, adminId })).resolves.toBeTruthy();
+  });
+
+  // POST /api/payments/credit: the admin attaches a specific, already-verified
+  // transaction that is not linked to the order yet — the linking happens in
+  // this same call — so the passed binanceTxId is itself the evidence.
+  it("credits a never-linked cancelled order when a binanceTxId is passed, and links that row", async () => {
+    const order = await cancelledOrder({ paid: false });
+    await prisma.processedBinanceTx.create({
+      data: { binanceTxId: "CTX-CANCELLED", amount: order.totalAmount, outcome: "unmatched" },
+    });
+
+    await creditOrderToBalance(prisma, { orderId: order.id, adminId, binanceTxId: "CTX-CANCELLED" });
+
+    const row = await prisma.processedBinanceTx.findUniqueOrThrow({ where: { binanceTxId: "CTX-CANCELLED" } });
+    expect(row.outcome).toBe("credited_to_balance");
+    expect(row.orderId).toBe(order.id);
   });
 
   it("refuses to credit a cancelled order a second time", async () => {
@@ -319,7 +385,7 @@ describe("creditOrderToBalance on an already-CANCELLED order", () => {
       return rival;
     }
 
-    it("two admins credit the same cancelled order at the same instant: exactly one credit lands", async () => {
+    it("two concurrent credits of the same cancelled order: exactly one credit lands", async () => {
       const order = await cancelledOrder();
       const before = await balances(sample.user.id);
       const rival = await connectRivalClient();

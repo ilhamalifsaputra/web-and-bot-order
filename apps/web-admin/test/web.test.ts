@@ -874,8 +874,29 @@ describe("orders", () => {
     expect(processingRes.json().canCredit).toBe(true);
   });
 
-  it("GET order detail: a CANCELLED order is canCreditCancelled until its payment is credited, then not", async () => {
+  // Regression guard for the Critical finding: an order cancelled without ever
+  // being paid has nothing to hand back, so neither the flag nor the route may
+  // credit it (that would mint wallet balance out of nothing).
+  it("GET order detail: a CANCELLED order that was never paid is not canCreditCancelled, and the credit is refused", async () => {
     const orderId = await makePendingOrder();
+    await cancelOrder(prisma, orderId, "expired", { type: StockActorType.SYSTEM });
+    const res = await app.inject({ method: "GET", url: `/api/orders/${orderId}`, cookies: { [COOKIE]: seed.cookie } });
+    expect(res.json().canCreditCancelled).toBe(false);
+
+    const creditRes = await post(`/api/orders/${orderId}/credit-balance`, seed.cookie, { csrf_token: seed.csrf });
+    expect(creditRes.statusCode).toBe(422);
+    expect(JSON.parse(creditRes.body).error).toBe("error.order_never_paid");
+    expect(await prisma.walletTransaction.count({ where: { orderId, reason: "unfulfilled_credit" } })).toBe(0);
+  });
+
+  it("GET order detail: a paid CANCELLED order is canCreditCancelled until its payment is credited, then not", async () => {
+    const orderId = await makePendingOrder();
+    // A gateway payment claimed for this order whose delivery then threw: the
+    // ledger row keeps its orderId (flagged delivery_failed) and the order is
+    // later cancelled by the expiry sweep.
+    await prisma.processedTokopayTx.create({
+      data: { trxId: `TP-WEB-${orderId}`, orderId, amount: "5", outcome: "delivery_failed" },
+    });
     await cancelOrder(prisma, orderId, "expired", { type: StockActorType.SYSTEM });
     const detail = () => app.inject({ method: "GET", url: `/api/orders/${orderId}`, cookies: { [COOKIE]: seed.cookie } });
 

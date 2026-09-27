@@ -434,6 +434,25 @@ export async function cancelledOrderIdsWithMoneyReturned(db: Db, cancelledIds: n
   return ids;
 }
 
+/** True when at least one of the five processed*Tx ledger tables has a row
+ *  already linked to this order — proof a real gateway payment was processed
+ *  for it, independent of `Order.paidAt` (which a rolled-back delivery
+ *  transaction can leave null even though money arrived — see the comment on
+ *  creditOrderToBalance's CANCELLED path). A gateway links a row to an order
+ *  only when it claims an actual incoming payment for it, whatever outcome the
+ *  row later records (matched, delivery_failed, stale, ...). Single-order form:
+ *  used where one order is being looked at or acted on, never per list row. */
+export async function orderHasIncomingLedgerPayment(db: Db, orderId: number): Promise<boolean> {
+  const [binance, bybit, tokopay, paydisini, nowpayments] = await Promise.all([
+    db.processedBinanceTx.findFirst({ where: { orderId }, select: { id: true } }),
+    db.processedBybitTx.findFirst({ where: { orderId }, select: { id: true } }),
+    db.processedTokopayTx.findFirst({ where: { orderId }, select: { id: true } }),
+    db.processedPaydisiniTx.findFirst({ where: { orderId }, select: { id: true } }),
+    db.processedNowpaymentsTx.findFirst({ where: { orderId }, select: { id: true } }),
+  ]);
+  return binance != null || bybit != null || tokopay != null || paydisini != null || nowpayments != null;
+}
+
 /**
  * Builds the one rule shared by `actionableLedgerOutcomeCounts` and
  * `listCombinedLedger`'s `actionable` filter, so the dashboard card and the

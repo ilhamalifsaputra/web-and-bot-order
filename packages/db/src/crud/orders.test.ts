@@ -431,8 +431,10 @@ describe("computeOrderEligibility", () => {
       canCreditCancelled: false,
     });
   });
-  it("CANCELLED with the caller-resolved answer 'no money returned': only canCreditCancelled", () => {
-    expect(computeOrderEligibility("CANCELLED", null, { cancelledOrderHasMoneyReturned: false })).toEqual({
+  it("CANCELLED, paid, and no money returned (both caller-resolved): only canCreditCancelled", () => {
+    expect(
+      computeOrderEligibility("CANCELLED", null, { cancelledOrderHasMoneyReturned: false, cancelledOrderWasPaid: true }),
+    ).toEqual({
       isDelivered: false,
       canAct: false,
       canCredit: false,
@@ -443,8 +445,22 @@ describe("computeOrderEligibility", () => {
     });
   });
 
+  // The Critical finding: "nothing went back" alone is also true of an order
+  // that was never paid — offering the credit there mints money.
+  it("CANCELLED with no money returned but never paid (or unresolved): canCreditCancelled stays false", () => {
+    expect(
+      computeOrderEligibility("CANCELLED", null, { cancelledOrderHasMoneyReturned: false, cancelledOrderWasPaid: false })
+        .canCreditCancelled,
+    ).toBe(false);
+    expect(computeOrderEligibility("CANCELLED", null, { cancelledOrderHasMoneyReturned: false }).canCreditCancelled).toBe(
+      false,
+    );
+  });
+
   it("CANCELLED whose money was already returned: canCreditCancelled stays false", () => {
-    expect(computeOrderEligibility("CANCELLED", null, { cancelledOrderHasMoneyReturned: true })).toEqual({
+    expect(
+      computeOrderEligibility("CANCELLED", null, { cancelledOrderHasMoneyReturned: true, cancelledOrderWasPaid: true }),
+    ).toEqual({
       isDelivered: false,
       canAct: false,
       canCredit: false,

@@ -15,6 +15,7 @@ import {
   listCombinedLedger,
   recentOrders,
   reconcileFinances,
+  orderHasIncomingLedgerPayment,
   USDT_ROUNDING_CEIL_SINCE_KEY,
 } from "./reports";
 import { setSetting, __clearSettingsCacheForTests } from "./settings";
@@ -100,6 +101,37 @@ describe("ordersByStatusSince", () => {
 
     const result = await ordersByStatusSince(prisma, new Date(now.getTime() - 60_000));
     expect(result).toEqual([{ status: "DELIVERED", count: 1 }]);
+  });
+});
+
+describe("orderHasIncomingLedgerPayment", () => {
+  async function makeOrder() {
+    return prisma.order.create({
+      data: { orderCode: `ORD-${Math.random()}`, userId, subtotalAmount: "5", totalAmount: "5", status: "CANCELLED" },
+    });
+  }
+
+  it("is false for an order no ledger row points at, even when rows exist for other orders or none", async () => {
+    const order = await makeOrder();
+    const other = await makeOrder();
+    await prisma.processedTokopayTx.create({ data: { trxId: "TP-other", orderId: other.id, amount: "5", outcome: "matched" } });
+    await prisma.processedBinanceTx.create({ data: { binanceTxId: "BN-unlinked", amount: "5", outcome: "unmatched" } });
+    expect(await orderHasIncomingLedgerPayment(prisma, order.id)).toBe(false);
+  });
+
+  it("is true when any one of the five gateway tables has a row linked to the order", async () => {
+    const linkers: Array<(orderId: number) => Promise<unknown>> = [
+      (orderId) => prisma.processedBinanceTx.create({ data: { binanceTxId: `BN-${orderId}`, orderId, amount: "5", outcome: "matched" } }),
+      (orderId) => prisma.processedBybitTx.create({ data: { bybitTxId: `BY-${orderId}`, orderId, amount: "5", outcome: "delivery_failed" } }),
+      (orderId) => prisma.processedTokopayTx.create({ data: { trxId: `TP-${orderId}`, orderId, amount: "5", outcome: "delivery_failed" } }),
+      (orderId) => prisma.processedPaydisiniTx.create({ data: { trxId: `PD-${orderId}`, orderId, amount: "5", outcome: "stale" } }),
+      (orderId) => prisma.processedNowpaymentsTx.create({ data: { trxId: `NP-${orderId}`, orderId, amount: "5", outcome: "delivery_failed" } }),
+    ];
+    for (const link of linkers) {
+      const order = await makeOrder();
+      await link(order.id);
+      expect(await orderHasIncomingLedgerPayment(prisma, order.id)).toBe(true);
+    }
   });
 });
 

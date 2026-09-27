@@ -51,6 +51,8 @@ const KNOWN_ERROR_MESSAGES: Record<string, string> = {
     "This order's payment has already been credited to the buyer's balance, so nothing was handed over a second time. Refresh the page to see the current state.",
   "error.order_already_refunded":
     "This cancelled order has already been refunded, so its payment can't also be credited to balance. Refresh the page to see the current state.",
+  "error.order_never_paid":
+    "This cancelled order was never paid, so there's nothing to credit to the buyer's balance. Refresh the page to see the current state.",
   "error.illegal_admin_task_status_transition":
     "This task's status just changed — refresh the page and try again.",
   "error.admin_task_assignee_not_found":

@@ -55,7 +55,7 @@ import {
 import { countAvailableStock, allocateOneAvailableStock } from "./stock";
 import { recordStockEvent, type StockEventActor } from "./stockEvents";
 import { adjustWallet, getUser } from "./users";
-import { cancelledOrderIdsWithMoneyReturned } from "./reports";
+import { cancelledOrderIdsWithMoneyReturned, orderHasIncomingLedgerPayment } from "./reports";
 import { clearCart, getCart } from "./cart";
 import { getSetting } from "./settings";
 import { maybePayReferralCommission } from "./referrals";
@@ -1668,7 +1668,9 @@ export async function cancelOrder(db: Db, orderId: number, reason: string, actor
  * buyer cancelled it after a gateway payment whose delivery threw): the paid
  * amount is credited and nothing else about the order changes — see the guard
  * around `releaseOrderHolds` below. Refused with `error.order_already_refunded`
- * when such an order already has a COMPLETED refund.
+ * when such an order already has a COMPLETED refund, and with
+ * `error.order_never_paid` when nothing proves a payment ever arrived for it
+ * (no gateway ledger row linked to it, and no `binanceTxId` passed).
  *
  * Idempotent: a REJECTED/REFUNDED/DELIVERED order, or a pre-existing
  * `unfulfilled_credit` ledger row for this order, is refused — a
@@ -1707,6 +1709,17 @@ async function creditOrderToBalanceLocked(
   // wallet — so the two agree on lock order (order, then user) and a refund
   // payout and a credit on one order queue behind each other instead of both
   // reading "nothing returned yet".
+  //
+  // Not every caller agrees on that order: `refundUnderpaidOrder`
+  // (./binance_internal) and `cancelOrder` (whose `releaseOrderHolds` locks the
+  // buyer's wallet row via `adjustWallet` before `transitionOrderStatus` writes
+  // the order row) both take user-then-order, so either could in principle
+  // deadlock with this function on one order+buyer — `cancelOrder` more
+  // plausibly now that this path accepts CANCELLED orders, since a sweep cancel
+  // and an admin credit can land on the same order. Postgres detects the cycle
+  // and aborts one transaction, which is the harmless direction here: nothing is
+  // credited and nothing recorded, versus a buyer credited twice (same reasoning
+  // as `executeRefund`'s note in ./refunds).
   await db.$queryRaw`SELECT id FROM orders WHERE id = ${args.orderId} FOR UPDATE`;
   const order = await getOrderRaw(db, args.orderId);
   if (!order) throw new ValidationError("error.order_not_found");
@@ -1739,6 +1752,18 @@ async function creditOrderToBalanceLocked(
     // buyer twice.
     const settled = await cancelledOrderIdsWithMoneyReturned(db, [order.id]);
     if (settled.has(order.id)) throw new ValidationError("error.order_already_refunded");
+    // Nothing went back — but that is equally true of an order that was never
+    // paid at all (the ordinary abandoned checkout the expiry sweep cancels), and
+    // crediting that would mint balance out of nothing. `order.paidAt` can't
+    // decide it: the case this path exists for — a gateway payment whose delivery
+    // threw — rolled the paidAt write back with the rest of the delivery
+    // transaction. What survives is the gateway ledger row, claimed with this
+    // order's id before that transaction began. A passed `binanceTxId` is the
+    // evidence instead: the caller (POST /api/payments/credit) resolved a real
+    // transaction and this call links it below, so it has no link yet to find.
+    if (!args.binanceTxId && !(await orderHasIncomingLedgerPayment(db, order.id))) {
+      throw new ValidationError("error.order_never_paid");
+    }
   }
 
   const currency: "IDR" | "USDT" = order.currency === "USDT" ? "USDT" : "IDR";
@@ -2837,19 +2862,24 @@ export interface OrderEligibility {
   canReject: boolean;
   /** Delivered orders with a Telegram buyer can have their credentials DM resent. */
   canResend: boolean;
-  /** CANCELLED with no proof its payment was ever handed back — credit it to
-   * the buyer's balance (`creditOrderToBalance`'s already-cancelled path).
-   * Unlike every other flag this is NOT derivable from `status` alone, so it
-   * fails closed: false unless the caller explicitly resolved the evidence and
-   * passed `cancelledOrderHasMoneyReturned: false`. List/bulk callers that
-   * don't look it up per row therefore never offer it. */
+  /** CANCELLED, actually paid (a gateway ledger row is linked to it —
+   * `orderHasIncomingLedgerPayment`), and with no proof that payment was ever
+   * handed back (`cancelledOrderIdsWithMoneyReturned`) — credit it to the
+   * buyer's balance (`creditOrderToBalance`'s already-cancelled path, which
+   * enforces the same two checks). Both halves matter: "nothing went back" is
+   * also true of an abandoned order that was never paid, and offering the
+   * credit there would mint money. Unlike every other flag this is NOT
+   * derivable from `status` alone, so it fails closed: false unless the caller
+   * explicitly resolved both and passed `cancelledOrderHasMoneyReturned: false`
+   * AND `cancelledOrderWasPaid: true`. List/bulk callers that don't look them
+   * up per row therefore never offer it. */
   canCreditCancelled: boolean;
 }
 
 export function computeOrderEligibility(
   status: string,
   telegramId: bigint | null,
-  opts?: { cancelledOrderHasMoneyReturned?: boolean },
+  opts?: { cancelledOrderHasMoneyReturned?: boolean; cancelledOrderWasPaid?: boolean },
 ): OrderEligibility {
   const isDelivered = status === OrderStatus.DELIVERED;
   return {
@@ -2862,7 +2892,10 @@ export function computeOrderEligibility(
     canFulfill: status === OrderStatus.PROCESSING,
     canReject: status === OrderStatus.PENDING_VERIFICATION || status === OrderStatus.PROCESSING,
     canResend: isDelivered && telegramId != null,
-    canCreditCancelled: status === OrderStatus.CANCELLED && opts?.cancelledOrderHasMoneyReturned === false,
+    canCreditCancelled:
+      status === OrderStatus.CANCELLED &&
+      opts?.cancelledOrderHasMoneyReturned === false &&
+      opts?.cancelledOrderWasPaid === true,
   };
 }
 

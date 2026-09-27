@@ -24,6 +24,7 @@ import {
   logAdminAction,
   computeOrderEligibility,
   cancelledOrderIdsWithMoneyReturned,
+  orderHasIncomingLedgerPayment,
   revenueSummary,
   countAwaitingManualFulfillment,
   countProcessing,
@@ -268,16 +269,19 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
     // asked to trust a button. The amount is always derived server-side from the
     // rail's own record; nothing the client sends here is ever used as an amount.
     const overpaidExcess = await findOverpaidExcess(prisma, orderId);
-    // Only this single-order page resolves whether a CANCELLED order's money
-    // already went back (credit or completed refund) — one query for one order.
-    // The list and bulk-action routes deliberately don't, so their
-    // canCreditCancelled stays false (it fails closed).
+    // Only this single-order page resolves, for a CANCELLED order, whether a
+    // real payment ever arrived for it (a gateway ledger row linked to it) and
+    // whether that money already went back (credit or completed refund) — a
+    // handful of queries for one order. The list and bulk-action routes
+    // deliberately don't, so their canCreditCancelled stays false (it fails
+    // closed). creditOrderToBalance re-checks both under the order-row lock.
     const eligibilityOpts =
       order.status === OrderStatus.CANCELLED
         ? {
             cancelledOrderHasMoneyReturned: (await cancelledOrderIdsWithMoneyReturned(prisma, [order.id])).has(
               order.id,
             ),
+            cancelledOrderWasPaid: await orderHasIncomingLedgerPayment(prisma, order.id),
           }
         : undefined;
     return reply.send({

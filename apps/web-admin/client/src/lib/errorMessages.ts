@@ -47,6 +47,10 @@ const KNOWN_ERROR_MESSAGES: Record<string, string> = {
     "This order is no longer awaiting fulfilment — it may have already been processed.",
   "error.order_paid_needs_credit":
     "This order was already paid — use \"Credit to Balance\" instead of Reject/Cancel, so the payment isn't lost.",
+  "error.already_credited":
+    "This order's payment has already been credited to the buyer's balance, so nothing was handed over a second time. Refresh the page to see the current state.",
+  "error.order_already_refunded":
+    "This cancelled order has already been refunded, so its payment can't also be credited to balance. Refresh the page to see the current state.",
   "error.illegal_admin_task_status_transition":
     "This task's status just changed — refresh the page and try again.",
   "error.admin_task_assignee_not_found":

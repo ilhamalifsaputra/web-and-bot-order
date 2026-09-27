@@ -23,6 +23,7 @@ import {
   enqueueManualDeliveredDm,
   logAdminAction,
   computeOrderEligibility,
+  cancelledOrderIdsWithMoneyReturned,
   revenueSummary,
   countAwaitingManualFulfillment,
   countProcessing,
@@ -267,14 +268,27 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
     // asked to trust a button. The amount is always derived server-side from the
     // rail's own record; nothing the client sends here is ever used as an amount.
     const overpaidExcess = await findOverpaidExcess(prisma, orderId);
+    // Only this single-order page resolves whether a CANCELLED order's money
+    // already went back (credit or completed refund) — one query for one order.
+    // The list and bulk-action routes deliberately don't, so their
+    // canCreditCancelled stays false (it fails closed).
+    const eligibilityOpts =
+      order.status === OrderStatus.CANCELLED
+        ? {
+            cancelledOrderHasMoneyReturned: (await cancelledOrderIdsWithMoneyReturned(prisma, [order.id])).has(
+              order.id,
+            ),
+          }
+        : undefined;
     return reply.send({
       order: { ...masked, createdAtDisplay: displayDateTime(order.createdAt) },
       hasDeliveredContent,
       money: serializeMoneyView(orderMoneyView(order)),
-      // isDelivered/canAct/canCredit/canFulfill/canReject/canResend — one
-      // shared eligibility function (packages/db/src/crud/orders.ts) so the
-      // list, detail, and bulk-action routes can't drift apart.
-      ...computeOrderEligibility(order.status, order.user.telegramId),
+      // isDelivered/canAct/canCredit/canFulfill/canReject/canResend/
+      // canCreditCancelled — one shared eligibility function
+      // (packages/db/src/crud/orders.ts) so the list, detail, and bulk-action
+      // routes can't drift apart.
+      ...computeOrderEligibility(order.status, order.user.telegramId, eligibilityOpts),
       customerDataFields,
       customerData,
       stockReplacements: stockReplacements.map(serializeStockReplacement),

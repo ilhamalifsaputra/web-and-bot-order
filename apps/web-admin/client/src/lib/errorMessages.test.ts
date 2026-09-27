@@ -30,6 +30,15 @@ describe("describeError", () => {
     );
   });
 
+  it("maps the two credit-to-balance refusals to readable sentences", () => {
+    expect(describeError("error.already_credited")).toBe(
+      "This order's payment has already been credited to the buyer's balance, so nothing was handed over a second time. Refresh the page to see the current state.",
+    );
+    expect(describeError("error.order_already_refunded")).toBe(
+      "This cancelled order has already been refunded, so its payment can't also be credited to balance. Refresh the page to see the current state.",
+    );
+  });
+
   it("falls back to the raw string for an unknown key, so it's always safe to wrap any e.message", () => {
     expect(describeError("error.some_unmapped_key")).toBe("error.some_unmapped_key");
     expect(describeError("Failed to load")).toBe("Failed to load");

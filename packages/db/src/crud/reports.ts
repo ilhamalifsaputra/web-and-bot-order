@@ -573,6 +573,11 @@ export interface UnifiedLedgerRow {
    *  order, same as `orderCode`. Without this the Payments ledger cannot tell
    *  top-up money from product-sale money. */
   orderKind: string | null;
+  /** `Order.status` of the order this row points at, null like `orderCode`.
+   *  Lets the Payments list show at a glance whether a delivery_failed /
+   *  unmatched row's order is already closed out (e.g. CANCELLED) without
+   *  opening it. */
+  orderStatus: string | null;
 }
 
 export interface CombinedLedgerFilter {
@@ -669,8 +674,9 @@ export async function listCombinedLedger(db: Db, opts: CombinedLedgerFilter = {}
   ]);
 
   // Pre-join shape: everything the ledger tables themselves can supply.
-  // `orderCode`/`orderKind` are filled in from the single order query below.
-  type PreJoinRow = Omit<UnifiedLedgerRow, "orderCode" | "orderKind">;
+  // `orderCode`/`orderKind`/`orderStatus` are filled in from the single order
+  // query below.
+  type PreJoinRow = Omit<UnifiedLedgerRow, "orderCode" | "orderKind" | "orderStatus">;
   const merged: PreJoinRow[] = [
     ...binance.map((r) => ({
       id: r.id,
@@ -750,7 +756,12 @@ export async function listCombinedLedger(db: Db, opts: CombinedLedgerFilter = {}
 
   let joined: UnifiedLedgerRow[] = kept.map((r) => {
     const order = r.orderId != null ? orderById.get(r.orderId) : undefined;
-    return { ...r, orderCode: order?.orderCode ?? null, orderKind: order?.kind ?? null };
+    return {
+      ...r,
+      orderCode: order?.orderCode ?? null,
+      orderKind: order?.kind ?? null,
+      orderStatus: order?.status ?? null,
+    };
   });
 
   // Applied to the whole merged set BEFORE slicing, so the filter spans every

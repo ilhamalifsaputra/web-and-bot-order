@@ -26,6 +26,7 @@ import {
   getUser,
   getUserByTelegramId,
   getOrder,
+  cancelOrder,
   createOrderDirect,
   finalizeOrderPayment,
   createWebUser,
@@ -871,6 +872,26 @@ describe("orders", () => {
     // H-2 (backend audit, 2026-07-31): canCredit now covers PROCESSING too —
     // reject alone can no longer recover a paid PROCESSING order's money.
     expect(processingRes.json().canCredit).toBe(true);
+  });
+
+  it("GET order detail: a CANCELLED order is canCreditCancelled until its payment is credited, then not", async () => {
+    const orderId = await makePendingOrder();
+    await cancelOrder(prisma, orderId, "expired", { type: StockActorType.SYSTEM });
+    const detail = () => app.inject({ method: "GET", url: `/api/orders/${orderId}`, cookies: { [COOKIE]: seed.cookie } });
+
+    const before = (await detail()).json();
+    expect(before.canCreditCancelled).toBe(true);
+    expect(before.canCredit).toBe(false);
+
+    const creditRes = await post(`/api/orders/${orderId}/credit-balance`, seed.cookie, { csrf_token: seed.csrf });
+    expect(creditRes.statusCode).toBe(200);
+    expect((await getOrder(prisma, orderId))!.status).toBe("CANCELLED");
+
+    expect((await detail()).json().canCreditCancelled).toBe(false);
+    // A second tap is refused with the key the admin client maps to a sentence.
+    const again = await post(`/api/orders/${orderId}/credit-balance`, seed.cookie, { csrf_token: seed.csrf });
+    expect(again.statusCode).toBe(422);
+    expect(JSON.parse(again.body).error).toBe("error.already_credited");
   });
 
   it("approve requires auth (anon → 401)", async () => {
@@ -6856,6 +6877,20 @@ describe("payments", () => {
     const data = JSON.parse(res.body) as { ledger: Array<{ reference: string; orderCode: string | null; orderKind: string | null }> };
     expect(data.ledger.find((tx) => tx.reference === "TP-KIND-SALE")).toMatchObject({ orderCode: "ORD-KIND-SALE", orderKind: "PRODUCT" });
     expect(data.ledger.find((tx) => tx.reference === "TP-KIND-TOPUP")).toMatchObject({ orderCode: "ORD-KIND-TOPUP", orderKind: "WALLET_TOPUP" });
+  });
+
+  it("GET /api/payments carries each ledger row's order status, null when the row has no order", async () => {
+    const cancelled = await prisma.order.create({
+      data: { orderCode: "ORD-STATUS-CXL", userId: seed.customerId, subtotalAmount: "1", totalAmount: "1", status: "CANCELLED" },
+    });
+    await prisma.processedTokopayTx.create({ data: { trxId: "TP-STATUS-CXL", amount: "1", outcome: "delivery_failed", orderId: cancelled.id } });
+    await prisma.processedTokopayTx.create({ data: { trxId: "TP-STATUS-NONE", amount: "1", outcome: "unmatched" } });
+
+    const res = await get("/api/payments", seed.cookie);
+    expect(res.statusCode).toBe(200);
+    const data = JSON.parse(res.body) as { ledger: Array<{ reference: string; orderId: number | null; orderStatus: string | null }> };
+    expect(data.ledger.find((tx) => tx.reference === "TP-STATUS-CXL")).toMatchObject({ orderId: cancelled.id, orderStatus: "CANCELLED" });
+    expect(data.ledger.find((tx) => tx.reference === "TP-STATUS-NONE")).toMatchObject({ orderId: null, orderStatus: null });
   });
 
   it("GET /api/payments?kind=WALLET_TOPUP narrows the ledger to top-ups and reports a matching total", async () => {

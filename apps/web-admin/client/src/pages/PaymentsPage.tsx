@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { PageLayout } from "../components/shared/PageLayout";
 import { PageHeader } from "../components/shared/PageHeader";
 import { FilterBar } from "../components/shared/FilterBar";
@@ -73,13 +73,16 @@ interface TxRow {
   currency: string | null;
   outcome: string;
   memo: string | null;
-  /** The order this payment settled, when there is one. `orderKind` is the
-   *  raw `OrderKind` code ("PRODUCT" | "WALLET_TOPUP") — both are null on
-   *  transfers that were never matched to an order. (The route also sends the
-   *  numeric `orderId`; this page renders the code, so it is left off the
-   *  type.) */
+  /** The order this payment settled, when there is one. `orderId` links the
+   *  Order cell to the order's page; `orderKind` is the raw `OrderKind` code
+   *  ("PRODUCT" | "WALLET_TOPUP") and `orderStatus` the order's current status,
+   *  shown beside the code so an admin can see a delivery_failed row's order is
+   *  already CANCELLED without opening it. All null on transfers that were
+   *  never matched to an order. */
+  orderId: number | null;
   orderCode: string | null;
   orderKind: string | null;
+  orderStatus: string | null;
   processedAt: string;
   processedAtDisplay: string | null;
 }
@@ -797,9 +800,17 @@ export function PaymentsPage() {
             {
               key: "order",
               header: "Order",
-              render: tx => (
-                <span className="font-mono text-xs">{tx.orderCode ?? "—"}</span>
-              ),
+              render: tx =>
+                tx.orderId != null ? (
+                  <span className="inline-flex flex-wrap items-center gap-2">
+                    <Link to={`/orders/${tx.orderId}`} className="font-mono text-xs text-ink hover:underline">
+                      {tx.orderCode ?? `#${tx.orderId}`}
+                    </Link>
+                    {tx.orderStatus && <StatusBadge status={tx.orderStatus} />}
+                  </span>
+                ) : (
+                  <span className="font-mono text-xs">—</span>
+                ),
             },
             {
               key: "kind",

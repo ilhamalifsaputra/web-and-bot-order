@@ -53,6 +53,13 @@ setelah setup awal — lihat [CONFIGURATION.md](CONFIGURATION.md).
 |---|---|---|
 | `NOWPAYMENTS_PAYMENT_WINDOW_MINUTES` | `30` | Jendela bayar — lebih lebar karena pembeli membuka wallet app di luar Telegram/browser. Kredensial (`nowpayments_api_key`, `nowpayments_ipn_secret`, `nowpayments_pay_currency`) **hanya** di Settings, tidak ada di `.env`. |
 
+## Finance — CoinGecko (market rate source)
+
+| Variabel | Default | Keterangan |
+|---|---|---|
+| `COINGECKO_API_KEY` | opsional | Demo API key untuk CoinGecko. Free tier works keyless; memberikan API key meningkatkan rate limit. |
+| `COINGECKO_API_BASE` | `https://api.coingecko.com/api/v3` | Base URL CoinGecko API. |
+
 ## Database
 
 | Variabel | Default | Keterangan |

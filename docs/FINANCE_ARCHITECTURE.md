@@ -195,8 +195,9 @@ same lever and they do not have the same consequence.
 
 `refreshUsdIdrRate` (`pricing.ts:273`) is the market updater. It:
 
-1. Fetches the live USD→IDR rate from `open.er-api.com`
-   (`packages/core/src/fx.ts`, `fetchUsdIdrMarketRate`).
+1. Fetches the live USDT→IDR rate from CoinGecko's `/simple/price?ids=tether&vs_currencies=idr`
+   endpoint (`packages/core/src/fx.ts`, `fetchUsdIdrMarketRate`). CoinGecko quotes USDT
+   directly against IDR rather than proxying through a USD/IDR forex figure.
 2. Applies the shop's protective spread (`applyUsdtSpread`, `fx.ts:149`).
 3. Rounds to the configured step, default Rp100 (`roundRateToStep`, `fx.ts:32`).
 4. Validates the **resulting figure** — after spread and rounding, not the raw

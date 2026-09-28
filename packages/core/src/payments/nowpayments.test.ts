@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto";
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { verifyIpn, getPaymentStatus, createInvoice, NOWPAYMENTS_IPN_MAX_AGE_MS } from "./nowpayments";
+import { verifyIpn, getPaymentStatus, createInvoice, NOWPAYMENTS_IPN_MAX_AGE_MS, RateLimitedError } from "./nowpayments";
 
 const CREDS = { apiKey: "API-KEY", ipnSecret: "ipn-s3cr3t" };
 const FULL_CREDS = { apiKey: "API-KEY", ipnSecret: "ipn-s3cr3t", payCurrency: "usdttrc20" };
@@ -368,6 +368,17 @@ describe("getPaymentStatus", () => {
   it("throws on a non-2xx HTTP response", async () => {
     stubFetchJson({}, { ok: false, status: 404 });
     await expect(getPaymentStatus(FULL_CREDS, { invoiceId: "INV-3" })).rejects.toThrow(/HTTP 404/);
+    // Only a 429 is a rate-limit — any other non-2xx stays a plain Error.
+    stubFetchJson({}, { ok: false, status: 404 });
+    await expect(getPaymentStatus(FULL_CREDS, { invoiceId: "INV-3" })).rejects.not.toBeInstanceOf(RateLimitedError);
+  });
+
+  it("throws RateLimitedError (same message shape) on HTTP 429, so the reconcile poller can back off", async () => {
+    stubFetchJson({}, { ok: false, status: 429 });
+    const err = await getPaymentStatus(FULL_CREDS, { invoiceId: "INV-3b" }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(RateLimitedError);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toBe("NOWPayments status HTTP 429");
   });
 
   it("bounds the request so a hung gateway cannot stall the reconcile poller forever", async () => {

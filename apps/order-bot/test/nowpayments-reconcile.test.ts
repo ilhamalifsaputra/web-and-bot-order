@@ -550,3 +550,128 @@ describe("pollOnce (heartbeat + bounded cycle — Task 11)", () => {
     expect(seenInvoiceIds.size).toBe(total); // full coverage within 2 cycles, no starved tail
   });
 });
+
+// A gateway HTTP 429 arms this rail's backoff gate (pollBackoff.ts, 3s doubling
+// to a 30s cap) — same shape as tokopay-reconcile.test.ts's own block. The gate
+// lives at module scope, so every test here drives `Date.now()` from a frozen
+// clock and ends on a clean cycle that clears the gate for later tests.
+describe("pollOnce rate-limit backoff (HTTP 429)", () => {
+  let clock: number;
+  let nowSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    clock = Date.now();
+    nowSpy = vi.spyOn(Date, "now").mockImplementation(() => clock);
+  });
+
+  afterEach(() => {
+    nowSpy.mockRestore();
+  });
+
+  const rateLimited = () => Promise.resolve({ ok: false, status: 429, json: async () => ({}) });
+  const waiting = () => Promise.resolve({ ok: true, status: 200, json: async () => ({ payment_status: "waiting" }) });
+
+  it("a 429 makes the next cycle skip without a gateway call, and a clean cycle afterwards resets the backoff", async () => {
+    await seedNowpaymentsCreds();
+    await makeNowpaymentsOrder("INV-RL");
+    const start = clock;
+    const fetchMock = vi.fn(rateLimited);
+    vi.stubGlobal("fetch", fetchMock);
+
+    await pollOnce(fakeApi());
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const afterHit = await getPollHealth(prisma, "nowpayments");
+    expect(afterHit.consecutiveFailures).toBe(1);
+
+    await pollOnce(fakeApi()); // same instant — inside the 3s window
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect((await getPollHealth(prisma, "nowpayments")).lastRun).toEqual(afterHit.lastRun);
+
+    clock = start + 60_000;
+    fetchMock.mockImplementation(waiting);
+    await pollOnce(fakeApi());
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    // A fresh 429 after the reset arms the base 3s window again (hit #1), not
+    // the 6s one a second consecutive hit would get.
+    fetchMock.mockImplementation(rateLimited);
+    await pollOnce(fakeApi());
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    clock = start + 64_000;
+    fetchMock.mockImplementation(waiting);
+    await pollOnce(fakeApi());
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("keeps the backoff armed when one order in a batch was rate-limited even though a later one got through", async () => {
+    await seedNowpaymentsCreds();
+    await makeNowpaymentsOrder("INV-RL-1");
+    await makeNowpaymentsOrder("INV-RL-2");
+    const start = clock;
+    let call = 0;
+    const fetchMock = vi.fn(() => (++call === 1 ? rateLimited() : waiting()));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await pollOnce(fakeApi());
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect((await getPollHealth(prisma, "nowpayments")).consecutiveFailures).toBe(0);
+
+    clock = start + 1_000;
+    await pollOnce(fakeApi());
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    clock = start + 60_000;
+    await pollOnce(fakeApi());
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  // An invoice-less order makes no gateway call ("skipped"), so a cycle of
+  // nothing but those is no evidence the gateway recovered — it must not
+  // reset the hit count a real 429 left behind.
+  it("an all-skipped (invoice-less) cycle neither arms nor resets the backoff", async () => {
+    await seedNowpaymentsCreds();
+    await makeNowpaymentsOrderWithoutInvoice();
+    const invoiced = await makeNowpaymentsOrder("INV-RL-SKIP");
+    const start = clock;
+    const fetchMock = vi.fn(rateLimited);
+    vi.stubGlobal("fetch", fetchMock);
+
+    await pollOnce(fakeApi()); // hit #1 → 3s window
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // Take the invoiced order out of the pending set, leaving only the
+    // invoice-less one: the next cycle makes zero gateway calls.
+    await prisma.order.update({ where: { id: invoiced.id }, data: { paymentRef: null } });
+    clock = start + 10_000;
+    await pollOnce(fakeApi());
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // Hit #2 must now arm the doubled 6s window — the skipped cycle did not
+    // reset the count — so a poll 4s later is still skipped.
+    await prisma.order.update({
+      where: { id: invoiced.id },
+      data: { paymentRef: JSON.stringify({ gateway: "nowpayments", invoiceId: "INV-RL-SKIP" }) },
+    });
+    await pollOnce(fakeApi());
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    clock = start + 14_000;
+    await pollOnce(fakeApi());
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    clock = start + 60_000;
+    fetchMock.mockImplementation(waiting);
+    await pollOnce(fakeApi()); // clean cycle — clears the gate for later tests
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not back off on a non-429 gateway error", async () => {
+    await seedNowpaymentsCreds();
+    await makeNowpaymentsOrder("INV-RL-500");
+    const fetchMock = vi.fn(() => Promise.resolve({ ok: false, status: 500, json: async () => ({}) }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await pollOnce(fakeApi());
+    await pollOnce(fakeApi());
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});

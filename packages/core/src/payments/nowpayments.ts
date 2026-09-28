@@ -122,6 +122,16 @@ export async function createInvoice(
   return { invoiceId: String(body.id), invoiceUrl: body.invoice_url };
 }
 
+/**
+ * Thrown by `getPaymentStatus` instead of a plain `Error` when NOWPayments
+ * answers HTTP 429 — lets the bot's reconcile poller
+ * (apps/order-bot/src/payments/nowpaymentsReconcile.ts) tell a rate-limit
+ * apart from any other failure and back off (`pollBackoff.ts`) instead of
+ * retrying at the flat poll interval. Same message text as the generic
+ * non-OK branch, and still an `Error`.
+ */
+export class RateLimitedError extends Error {}
+
 export interface NowpaymentsStatus {
   paid: boolean;
   amount: Decimal;
@@ -150,6 +160,9 @@ export async function getPaymentStatus(
     },
     "NOWPayments status request", // never log err — it may carry the api-key header
   );
+  if (res.status === 429) {
+    throw new RateLimitedError(`NOWPayments status HTTP ${res.status}`);
+  }
   if (!res.ok) {
     throw new Error(`NOWPayments status HTTP ${res.status}`);
   }

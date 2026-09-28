@@ -609,3 +609,94 @@ describe("pollOnce (heartbeat + bounded cycle — Task 11)", () => {
     expect(seenRefIds.size).toBe(total); // full coverage within 2 cycles, no starved tail
   });
 });
+
+// A gateway HTTP 429 arms this rail's backoff gate (pollBackoff.ts, 3s doubling
+// to a 30s cap), the same one binanceInternal.ts and the Bybit rails use. The
+// gate lives at module scope, so it outlives a single test: every test here
+// drives `Date.now()` from a frozen clock (no flakiness under a slow suite) and
+// ends on a clean cycle that clears the gate, so no other test inherits a
+// skipped cycle.
+describe("pollOnce rate-limit backoff (HTTP 429)", () => {
+  let clock: number;
+  let nowSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    clock = Date.now();
+    nowSpy = vi.spyOn(Date, "now").mockImplementation(() => clock);
+  });
+
+  afterEach(() => {
+    nowSpy.mockRestore();
+  });
+
+  const rateLimited = () => Promise.resolve({ ok: false, status: 429, json: async () => ({}) });
+  const unpaid = () => Promise.resolve({ ok: true, status: 200, json: async () => ({ status: "success", data: { status: "Unpaid" } }) });
+
+  it("a 429 makes the next cycle skip without a gateway call, and a clean cycle afterwards resets the backoff", async () => {
+    await seedTokopayCreds();
+    await makeTokopayOrder();
+    const start = clock;
+    const fetchMock = vi.fn(rateLimited);
+    vi.stubGlobal("fetch", fetchMock);
+
+    await pollOnce(fakeApi());
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    // Still a failed gateway call as far as the heartbeat is concerned.
+    const afterHit = await getPollHealth(prisma, "tokopay");
+    expect(afterHit.consecutiveFailures).toBe(1);
+
+    await pollOnce(fakeApi()); // same instant — inside the 3s window
+    expect(fetchMock).toHaveBeenCalledTimes(1); // skipped: the gateway was never called
+    expect((await getPollHealth(prisma, "tokopay")).lastRun).toEqual(afterHit.lastRun); // and no heartbeat written
+
+    clock = start + 60_000; // well past the window
+    fetchMock.mockImplementation(unpaid);
+    await pollOnce(fakeApi());
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    // Proof the clean cycle RESET the gate rather than just outliving it: a
+    // fresh 429 must arm the base 3s window (hit #1) again, not the 6s one a
+    // second consecutive hit would get — so a poll 4s later goes through.
+    fetchMock.mockImplementation(rateLimited);
+    await pollOnce(fakeApi());
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    clock = start + 64_000;
+    fetchMock.mockImplementation(unpaid);
+    await pollOnce(fakeApi());
+    expect(fetchMock).toHaveBeenCalledTimes(4); // also leaves the gate clear for later tests
+  });
+
+  it("keeps the backoff armed when one order in a batch was rate-limited even though a later one got through", async () => {
+    await seedTokopayCreds();
+    await makeTokopayOrder();
+    await makeTokopayOrder();
+    const start = clock;
+    let call = 0;
+    const fetchMock = vi.fn(() => (++call === 1 ? rateLimited() : unpaid()));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await pollOnce(fakeApi());
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // One answered call is not an outage — heartbeat semantics are unchanged.
+    expect((await getPollHealth(prisma, "tokopay")).consecutiveFailures).toBe(0);
+
+    clock = start + 1_000; // inside the 3s window the first order's 429 armed
+    await pollOnce(fakeApi());
+    expect(fetchMock).toHaveBeenCalledTimes(2); // skipped — the later success did not wipe the 429
+
+    clock = start + 60_000;
+    await pollOnce(fakeApi()); // clean cycle — clears the gate for later tests
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("does not back off on a non-429 gateway error", async () => {
+    await seedTokopayCreds();
+    await makeTokopayOrder();
+    const fetchMock = vi.fn(() => Promise.resolve({ ok: false, status: 500, json: async () => ({}) }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await pollOnce(fakeApi());
+    await pollOnce(fakeApi()); // same instant — would be skipped if a 500 had armed the gate
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});

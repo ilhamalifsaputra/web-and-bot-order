@@ -39,6 +39,16 @@ export interface PaydisiniOrderInfo {
 }
 
 /**
+ * Thrown instead of a plain `Error` when PayDisini answers HTTP 429 — lets the
+ * bot's reconcile poller (apps/order-bot/src/payments/paydisiniReconcile.ts)
+ * tell a rate-limit apart from any other failure and back off
+ * (`pollBackoff.ts`) instead of retrying at the flat poll interval. Same
+ * message text as the generic non-OK branch, and still an `Error`, so every
+ * other caller (checkout's `createTransaction`) sees no difference.
+ */
+export class RateLimitedError extends Error {}
+
+/**
  * GET a PayDisini endpoint whose query string carries `user_key`/`api_key`,
  * and return its parsed JSON body. PayDisini's API (per its public docs,
  * flagged ASSUMPTION above) only accepts these credentials via query string
@@ -60,6 +70,9 @@ export interface PaydisiniOrderInfo {
  */
 async function fetchPaydisiniJson(url: string, errorPrefix: string, timeoutMs: number): Promise<Record<string, unknown>> {
   const res = await fetchWithTimeoutSafe(url, { timeoutMs }, errorPrefix); // never log the query — it carries the api key
+  if (res.status === 429) {
+    throw new RateLimitedError(`${errorPrefix} HTTP ${res.status}`); // never log the query — it carries the api key
+  }
   if (!res.ok) {
     throw new Error(`${errorPrefix} HTTP ${res.status}`); // never log the query — it carries the api key
   }

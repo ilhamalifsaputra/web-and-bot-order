@@ -20,6 +20,7 @@ import type { Api } from "grammy";
 import { DeliveryType, OrderStatus, OrderCurrency, PaymentMethod } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { logger } from "@app/core/logger";
+import { config } from "@app/core/config";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { telegramError } from "./helpers/ctx";
 import { onlyBubbleEdit } from "./helpers/settledBubble";
@@ -610,13 +611,15 @@ describe("pollOnce (heartbeat + bounded cycle — Task 11)", () => {
   });
 });
 
-// A gateway HTTP 429 arms this rail's backoff gate (pollBackoff.ts, 3s doubling
-// to a 30s cap), the same one binanceInternal.ts and the Bybit rails use. The
-// gate lives at module scope, so it outlives a single test: every test here
-// drives `Date.now()` from a frozen clock (no flakiness under a slow suite) and
-// ends on a clean cycle that clears the gate, so no other test inherits a
-// skipped cycle.
+// A gateway HTTP 429 arms this rail's backoff gate (pollBackoff.ts, one poll
+// interval doubling to a 30s cap), the same one binanceInternal.ts and the
+// Bybit rails use. The gate lives at module scope, so it outlives a single
+// test: every test here drives `Date.now()` from a frozen clock (no flakiness
+// under a slow suite) and ends on a clean cycle that clears the gate, so no
+// other test inherits a skipped cycle.
 describe("pollOnce rate-limit backoff (HTTP 429)", () => {
+  // The gate's base window is one full poll interval (tokopayReconcile.ts).
+  const baseMs = config.POLL_INTERVAL_SECONDS * 1000;
   let clock: number;
   let nowSpy: ReturnType<typeof vi.spyOn>;
 
@@ -645,7 +648,8 @@ describe("pollOnce rate-limit backoff (HTTP 429)", () => {
     const afterHit = await getPollHealth(prisma, "tokopay");
     expect(afterHit.consecutiveFailures).toBe(1);
 
-    await pollOnce(fakeApi()); // same instant — inside the 3s window
+    clock = start + baseMs - 1; // just short of the next poll tick — still inside the base window
+    await pollOnce(fakeApi());
     expect(fetchMock).toHaveBeenCalledTimes(1); // skipped: the gateway was never called
     expect((await getPollHealth(prisma, "tokopay")).lastRun).toEqual(afterHit.lastRun); // and no heartbeat written
 
@@ -655,12 +659,13 @@ describe("pollOnce rate-limit backoff (HTTP 429)", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
 
     // Proof the clean cycle RESET the gate rather than just outliving it: a
-    // fresh 429 must arm the base 3s window (hit #1) again, not the 6s one a
-    // second consecutive hit would get — so a poll 4s later goes through.
+    // fresh 429 must arm the base window (hit #1) again, not the doubled one a
+    // second consecutive hit would get — so a poll 1s past the base window
+    // goes through.
     fetchMock.mockImplementation(rateLimited);
     await pollOnce(fakeApi());
     expect(fetchMock).toHaveBeenCalledTimes(3);
-    clock = start + 64_000;
+    clock = start + 60_000 + baseMs + 1_000;
     fetchMock.mockImplementation(unpaid);
     await pollOnce(fakeApi());
     expect(fetchMock).toHaveBeenCalledTimes(4); // also leaves the gate clear for later tests
@@ -680,7 +685,7 @@ describe("pollOnce rate-limit backoff (HTTP 429)", () => {
     // One answered call is not an outage — heartbeat semantics are unchanged.
     expect((await getPollHealth(prisma, "tokopay")).consecutiveFailures).toBe(0);
 
-    clock = start + 1_000; // inside the 3s window the first order's 429 armed
+    clock = start + 1_000; // inside the base window the first order's 429 armed
     await pollOnce(fakeApi());
     expect(fetchMock).toHaveBeenCalledTimes(2); // skipped — the later success did not wipe the 429
 

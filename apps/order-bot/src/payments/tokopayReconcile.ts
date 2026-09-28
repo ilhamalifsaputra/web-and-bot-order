@@ -282,13 +282,15 @@ export const RECONCILE_CYCLE_TIMEOUT_MS = TOKOPAY_RECONCILE_CYCLE_TIMEOUT_MS;
 // scan, reused here via rotatingCursor.ts rather than re-implemented.
 const cursor = createRotatingCursor();
 
-// Bounded exponential backoff on gateway HTTP 429s (pollBackoff.ts, base 3s
-// doubling to a 30s cap) — the same gate binanceInternal.ts and the Bybit
-// rails use. Armed by reconcileOrder's catch on a RateLimitedError, checked at
+// Bounded exponential backoff on gateway HTTP 429s (pollBackoff.ts, doubling
+// to a 30s cap) — the same gate binanceInternal.ts and the Bybit rails use.
+// The base window is one full poll interval, so even the first 429 skips at
+// least one cycle (the gate's 3s default would expire before the next tick).
+// Armed by reconcileOrder's catch on a RateLimitedError, checked at
 // the top of pollOnce (a skipped cycle writes no heartbeat, exactly like
 // binanceInternal.ts), and cleared only by a cycle in which the gateway
 // answered at least one call and threw no rate-limit at all.
-const backoff = createBackoffGate();
+const backoff = createBackoffGate({ baseMs: config.POLL_INTERVAL_SECONDS * 1000 });
 
 export async function pollOnce(api: Api, isCurrent: () => boolean = () => true): Promise<void> {
   const creds = await getTokopayCreds(prisma);

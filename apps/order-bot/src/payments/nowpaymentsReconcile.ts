@@ -377,7 +377,7 @@ const cursor = createRotatingCursor();
 // Bounded exponential backoff on gateway HTTP 429s — identical wiring to
 // tokopayReconcile.ts's own gate (see the comment there). An invoice-less
 // "skipped" order makes no gateway call, so it neither arms nor clears it.
-const backoff = createBackoffGate();
+const backoff = createBackoffGate({ baseMs: config.POLL_INTERVAL_SECONDS * 1000 });
 
 export async function pollOnce(api: Api, isCurrent: () => boolean = () => true): Promise<void> {
   const creds = await getNowpaymentsCreds(prisma);

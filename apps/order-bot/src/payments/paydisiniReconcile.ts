@@ -279,7 +279,7 @@ const cursor = createRotatingCursor();
 
 // Bounded exponential backoff on gateway HTTP 429s — identical wiring to
 // tokopayReconcile.ts's own gate (see the comment there).
-const backoff = createBackoffGate();
+const backoff = createBackoffGate({ baseMs: config.POLL_INTERVAL_SECONDS * 1000 });
 
 export async function pollOnce(api: Api, isCurrent: () => boolean = () => true): Promise<void> {
   const creds = await getPaydisiniCreds(prisma);

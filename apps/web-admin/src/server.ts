@@ -6,6 +6,7 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import Fastify, { type FastifyInstance } from "fastify";
+import compress from "@fastify/compress";
 import cookie from "@fastify/cookie";
 import formbody from "@fastify/formbody";
 import fastifyStatic from "@fastify/static";
@@ -100,6 +101,11 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(cookie);
   await app.register(formbody);
   await app.register(multipart);
+  // SEO/perf: gzip/br/zstd HTML, JSON and static-asset responses. `global: true`
+  // is the plugin default, so every route gets compressed transparently. Must
+  // be registered before @fastify/static per its own docs, so the compress
+  // hook wraps the static-file send path too (mirrors apps/storefront/src/server.ts).
+  await app.register(compress);
   await app.register(fastifyStatic, { root: STATIC_DIR, prefix: "/static/" });
   await app.register(fastifyStatic, {
     root: UPLOADS_DIR,

@@ -8543,3 +8543,19 @@ describe("setup wizard — JSON mode", () => {
     expect(res.body).toContain('id="root"');
   });
 });
+
+describe("static assets — compression", () => {
+  // @fastify/compress only engages above its default 1024-byte threshold, so
+  // this hits static/app.css (a real committed file, well above that floor —
+  // not the content-hashed dashboard-app/assets/* whose filenames change every
+  // build). Mirrors apps/storefront/test/storefront.test.ts's equivalent case.
+  it("compresses a large static response when the client sends Accept-Encoding: gzip", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: "/static/app.css",
+      headers: { "accept-encoding": "gzip" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-encoding"]).toBe("gzip");
+  });
+});

@@ -1317,6 +1317,21 @@ export async function importDigiflazzBrand(
     // pass never has to re-query for rows this same loop already touched.
     const touchedDenoms: { id: number; name: string }[] = [];
 
+    // De-dupe by buyerSkuCode BEFORE the batched existence check below, last
+    // occurrence wins (regression fix for the Task 6 batching change). Before
+    // that change, a duplicate buyerSkuCode within one call's rows was
+    // create-then-update-in-place: each loop iteration re-queried the DB, so
+    // the second occurrence's findFirst saw the first occurrence's
+    // just-created row and updated it — final state always reflected the
+    // LAST occurrence. The batched existence-check Map is built once before
+    // the loop from what existed before this call started, so it never sees
+    // rows created earlier in the same loop — without this de-dupe, a
+    // duplicate buyerSkuCode would create two rows with the same
+    // supplierSku instead. Building a Map keyed by buyerSkuCode and
+    // iterating args.rows in order reproduces "last write wins" exactly,
+    // since a later entry naturally overwrites an earlier one in a Map.
+    const rows = [...new Map(args.rows.map((row) => [row.buyerSkuCode, row])).values()];
+
     // Batch the existence check that used to run as one findFirst PER row
     // (N sequential round-trips inside this 10s-bounded transaction — P1,
     // Task 6 fix) into a single findMany, then look up by supplierSku via a
@@ -1324,11 +1339,11 @@ export async function importDigiflazzBrand(
     // stay untouched — they have their own side effects (e.g. slug
     // generation on create) that must not be batched.
     const existingDenoms = await tx.denomination.findMany({
-      where: { productId: product.id, supplierSku: { in: args.rows.map((r) => r.buyerSkuCode) } },
+      where: { productId: product.id, supplierSku: { in: rows.map((r) => r.buyerSkuCode) } },
     });
     const existingDenomBySku = new Map(existingDenoms.map((d) => [d.supplierSku, d]));
 
-    for (const row of args.rows) {
+    for (const row of rows) {
       const price = quantizeMoney(row.price, 4);
       const costPrice = quantizeMoney(row.costPrice, 4);
       const suggestedPrice = quantizeMoney(applyDigiflazzMarkup(costPrice, markupSettings), 4);
@@ -1403,7 +1418,9 @@ export async function importDigiflazzBrand(
     );
   }
 
-  return { productId, denominationCount: args.rows.length };
+  // touchedDenoms.length, not args.rows.length — it reflects the deduped
+  // row count (one entry per unique buyerSkuCode), not the raw input size.
+  return { productId, denominationCount: touchedDenoms.length };
 }
 
 /**

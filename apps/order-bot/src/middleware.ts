@@ -184,6 +184,12 @@ export const requireCurrency: MiddlewareFn<MyContext> = async (ctx, next) => {
 
 const buckets = new Map<number, number[]>();
 
+/** Test-only observation hook: whether `userId` currently holds a bucket
+ * entry, without exposing the Map (or its deque contents) itself. */
+export function hasBucket(userId: number): boolean {
+  return buckets.has(userId);
+}
+
 export const rateLimit: MiddlewareFn<MyContext> = async (ctx, next) => {
   const from = ctx.from;
   if (!from) return next();
@@ -199,10 +205,43 @@ export const rateLimit: MiddlewareFn<MyContext> = async (ctx, next) => {
     return; // drop silently
   }
   dq.push(now);
-  if (dq.length) buckets.set(from.id, dq);
-  else buckets.delete(from.id);
+  // dq.length is always >= 1 here (the push above), so this can never leave
+  // an empty deque in `buckets` — an idle user (whose whole window ages out)
+  // is instead reclaimed by sweepRateLimitBuckets below, not by this path.
+  buckets.set(from.id, dq);
   return next();
 };
+
+/** How often sweepRateLimitBuckets runs. Fixed rather than derived from
+ * config.RATE_LIMIT_WINDOW_SECONDS — that value defaults to a few seconds
+ * (tuned for burst detection, not for sizing a cleanup cadence), and a
+ * sweep this coarse doesn't need to track it: 10 minutes is frequent enough
+ * to bound memory growth from idle users without meaningfully increasing
+ * peak Map size between sweeps. */
+const SWEEP_INTERVAL_MS = 10 * 60 * 1000;
+
+/**
+ * Reclaims bucket entries for users who have gone idle — the case
+ * `rateLimit` itself can never clean up, since every call that touches a
+ * bucket immediately re-populates it with the current hit. Without this,
+ * `buckets` grows by one entry per unique Telegram user for the life of the
+ * process, never shrinking even after that user stops messaging the bot.
+ *
+ * Exported so a test can call it directly rather than waiting on the real
+ * timer below.
+ */
+export function sweepRateLimitBuckets(): void {
+  const now = Date.now() / 1000;
+  const window = config.RATE_LIMIT_WINDOW_SECONDS;
+  for (const [userId, dq] of buckets) {
+    while (dq.length && dq[0]! <= now - window) dq.shift();
+    if (dq.length === 0) buckets.delete(userId);
+  }
+}
+
+// `.unref()` so this background sweep never keeps the process alive on its
+// own (this repo's convention for non-critical background timers).
+setInterval(sweepRateLimitBuckets, SWEEP_INTERVAL_MS).unref();
 
 /** Guard: only ADMIN_IDS proceed; others get a polite refusal. */
 export const adminOnly: MiddlewareFn<MyContext> = async (ctx, next) => {

@@ -1,9 +1,9 @@
 import { describe, it, expect } from "vitest";
 import { money, fmtMoney, moneyEq, Decimal } from "./money";
 import { t } from "./i18n";
-import { fetchUsdIdrMarketRate, roundRateToStep, validateUsdIdrRate, applyUsdtSpread } from "./fx";
+import { roundRateToStep, validateUsdIdrRate, applyUsdtSpread } from "./fx";
 import { OrderStatus, UserRole, NotificationEvent, langCode } from "./enums";
-import { computeUniqueCents, usdtFromIdr } from "./formatters";
+import { computeUniqueCents, idrFromUsdt, usdtFromIdr } from "./formatters";
 
 describe("money", () => {
   it("quantizes to 4 dp", () => {
@@ -154,6 +154,28 @@ describe("usdtFromIdr (step 0.01, always rounded up — P2-1)", () => {
   });
 });
 
+/**
+ * `idrFromUsdt` is the other direction and deliberately does NOT round — its
+ * result is only ever a comparison operand against a Rupiah floor. The vectors
+ * below would all change under any rounding step, so they pin "unrounded", not
+ * just "roughly right".
+ */
+describe("idrFromUsdt (unrounded — a comparison operand, not a quote)", () => {
+  it("keeps every digit of usdt × rate", () => {
+    expect(idrFromUsdt("0.333", "16000").toString()).toBe("5328");
+    expect(idrFromUsdt("2.5", "16000").toString()).toBe("40000");
+    // Sub-Rupiah remainder survives: whole-Rupiah rounding would give 5000.
+    expect(idrFromUsdt("0.31253", "16000").toString()).toBe("5000.48");
+    expect(idrFromUsdt("12.3456789", "15873.4567").toString()).toBe("195968.59945125363");
+  });
+
+  it("is not usdtFromIdr's mirror: a round trip does not come back exact", () => {
+    // usdtFromIdr ceils Rp44.500 to 2.79; converting back lands above the
+    // original Rupiah figure, because only one direction rounds.
+    expect(idrFromUsdt(usdtFromIdr("44500", "16000"), "16000").toString()).toBe("44640");
+  });
+});
+
 describe("enums match stored DB names (uppercase)", () => {
   it("uses SQLAlchemy member names", () => {
     expect(OrderStatus.DELIVERED).toBe("DELIVERED");
@@ -190,19 +212,6 @@ describe("fx (market USDT rate + rounding)", () => {
   it("invalid/zero step returns the rate unrounded", () => {
     expect(roundRateToStep(new Decimal("16243.7"), 0).toString()).toBe("16243.7");
     expect(roundRateToStep(new Decimal("16243.7"), "abc").toString()).toBe("16243.7");
-  });
-  it("parses the er-api payload", async () => {
-    const fake = (async () => ({
-      ok: true,
-      json: async () => ({ result: "success", rates: { IDR: 16234.55 } }),
-    })) as unknown as typeof fetch;
-    expect((await fetchUsdIdrMarketRate(fake)).toString()).toBe("16234.55");
-  });
-  it("rejects bad payloads and HTTP errors", async () => {
-    const bad = (async () => ({ ok: true, json: async () => ({ result: "success", rates: {} }) })) as unknown as typeof fetch;
-    await expect(fetchUsdIdrMarketRate(bad)).rejects.toThrow();
-    const http500 = (async () => ({ ok: false, status: 500 })) as unknown as typeof fetch;
-    await expect(fetchUsdIdrMarketRate(http500)).rejects.toThrow();
   });
 });
 

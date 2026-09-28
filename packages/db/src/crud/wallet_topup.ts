@@ -29,7 +29,7 @@
  */
 import { config } from "@app/core/config";
 import { OrderCurrency, OrderKind, OrderStatus, PaymentMethod, StockActorType } from "@app/core/enums";
-import { computeUniqueCents, generatePaymentRef, quantizeMoney } from "@app/core/formatters";
+import { computeUniqueCents, generatePaymentRef, idrFromUsdt, quantizeMoney, usdtFromIdr } from "@app/core/formatters";
 import { Decimal } from "@app/core/money";
 import { addMinutes } from "@app/core/datetime";
 import { ValidationError } from "@app/core/errors";
@@ -167,7 +167,7 @@ export function walletTopupRailAmounts(
   // already raise for an unusable rate — a top-up priced off a zero or
   // non-finite rate has no Rupiah equivalent to judge at all.
   if (!rate.isFinite() || rate.lessThanOrEqualTo(0)) throw new ValidationError("error.generic");
-  return { idrAmount: amount.times(rate), railAmount: amount };
+  return { idrAmount: idrFromUsdt(amount, rate), railAmount: amount };
 }
 
 /** Why `method` cannot collect a top-up of `amount`, or null when it can. The
@@ -220,7 +220,7 @@ export async function resolveWalletTopupRailFloor(
   // rails' own minimums are Rupiah and so is the fallback.)
   const rate = new Decimal((args as { rate: Decimal.Value }).rate);
   if (!rate.isFinite() || rate.lessThanOrEqualTo(0)) throw new ValidationError("error.generic");
-  return minimum.amount.dividedBy(rate).toDecimalPlaces(2, Decimal.ROUND_CEIL);
+  return usdtFromIdr(minimum.amount, rate);
 }
 
 /**

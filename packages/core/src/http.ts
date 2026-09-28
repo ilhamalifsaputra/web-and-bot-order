@@ -24,6 +24,9 @@ export const HTTP_TIMEOUT_MS = {
   /** Public block-explorer RPC calls (Bybit BSC on-chain confirmation
    * tracker) — cheap, read-only, and already retried every tracker tick. */
   explorerRead: 8_000,
+  /** Public market-price lookups (CoinGecko) — cheap, read-only, and already
+   * retried on the next hourly cron tick if this one is slow. */
+  priceRead: 5_000,
 } as const;
 
 /**

@@ -573,6 +573,61 @@ describe("resolveWalletTopupRailFloor — the floor in the currency the buyer ty
   });
 });
 
+/**
+ * Pins the IDR↔USDT dedup into `@app/core/formatters` (`usdtFromIdr` /
+ * `idrFromUsdt`) as a pure refactor. Each expected value is the ORIGINAL inline
+ * expression the call site used, reproduced verbatim, and compared by string
+ * form (not just `.equals`) so a change in scale or trailing digits — not only
+ * in value — would fail. Rates and amounts are deliberately awkward (fractional
+ * rates, non-terminating quotients, amounts past 4dp) because a clean
+ * 16000-rate example passes under almost any rounding rule.
+ */
+describe("IDR↔USDT conversion dedup — call sites are byte-identical to the old inline formulas", () => {
+  const RATES = ["16000", "15873.4567", "16234.9"];
+
+  it("walletTopupRailAmounts' Rupiah figure equals the old `amount.times(rate)`, unrounded", () => {
+    for (const rate of RATES) {
+      for (const amount of ["0.333", "12.3456789", "1", "2.5"]) {
+        const expected = new Decimal(amount).times(new Decimal(rate)); // pre-refactor inline expression
+        const { idrAmount, railAmount } = walletTopupRailAmounts({ currency: "USDT", amount, rate });
+        expect(idrAmount.toString()).toBe(expected.toString());
+        expect(idrAmount.equals(expected)).toBe(true);
+        expect(railAmount.toString()).toBe(new Decimal(amount).toString());
+      }
+    }
+    // Spot-check one value by hand so the loop above is not merely comparing a
+    // formula against itself: 12.3456789 × 15873.4567 is exactly
+    // 195968.59945125363 — all 11 decimal places kept, nothing rounded.
+    const { idrAmount } = walletTopupRailAmounts({ currency: "USDT", amount: "12.3456789", rate: "15873.4567" });
+    expect(idrAmount.toString()).toBe("195968.59945125363");
+  });
+
+  it("resolveWalletTopupRailFloor's converted floor equals the old `minimum.amount.dividedBy(rate)` ceil-to-cent", async () => {
+    __clearSettingsCacheForTests(prisma);
+    for (const idrFloor of ["10001", "7777", "15000"]) {
+      await setSetting(prisma, MIN_ORDER_AMOUNT_IDR_KEY, idrFloor);
+      for (const rate of RATES) {
+        // pre-refactor inline expression
+        const expected = new Decimal(idrFloor).dividedBy(new Decimal(rate)).toDecimalPlaces(2, Decimal.ROUND_CEIL);
+        const floor = await resolveWalletTopupRailFloor(prisma, {
+          currency: "USDT",
+          rate,
+          method: PaymentMethod.BINANCE_INTERNAL,
+        });
+        expect(floor?.toString()).toBe(expected.toString());
+      }
+    }
+    // Hand-checked: 7777 / 15873.4567 = 0.48994... → ceil to the cent = 0.49.
+    await setSetting(prisma, MIN_ORDER_AMOUNT_IDR_KEY, "7777");
+    const floor = await resolveWalletTopupRailFloor(prisma, {
+      currency: "USDT",
+      rate: "15873.4567",
+      method: PaymentMethod.BINANCE_INTERNAL,
+    });
+    expect(floor?.toString()).toBe("0.49");
+  });
+});
+
 describe("resolveWalletTopupEffectiveMin — what the top-up form should advertise (F4b)", () => {
   beforeEach(async () => {
     __clearSettingsCacheForTests(prisma);

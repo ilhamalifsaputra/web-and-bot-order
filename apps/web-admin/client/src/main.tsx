@@ -12,6 +12,13 @@ if (!root) throw new Error("Missing #root element");
 
 const queryClient = new QueryClient();
 
+// A tab left open across a deploy still references the old hashed chunks,
+// which the new build deleted — reload once so it picks up the current
+// index.html and chunk manifest instead of sticking on a failed lazy page.
+window.addEventListener("vite:preloadError", () => {
+  window.location.reload();
+});
+
 createRoot(root).render(
   <StrictMode>
     <MotionConfig reducedMotion="user">

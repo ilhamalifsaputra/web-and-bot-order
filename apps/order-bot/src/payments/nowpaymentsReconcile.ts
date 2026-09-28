@@ -41,7 +41,7 @@ import { adminIds } from "@app/core/runtime";
 import { logger } from "@app/core/logger";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import { Decimal } from "@app/core/money";
-import { getPaymentStatus } from "@app/core/payments/nowpayments";
+import { getPaymentStatus, RateLimitedError } from "@app/core/payments/nowpayments";
 import {
   MAX_ORDERS_PER_CYCLE,
   RECONCILE_TELEGRAM_TIMEOUT_MS,
@@ -58,6 +58,7 @@ import {
 } from "@app/db";
 import { esc } from "../util/format";
 import { flipSettledOrderBubble } from "../jobs";
+import { createBackoffGate } from "./pollBackoff";
 import { createPollLoop } from "./pollLoop";
 import { createRotatingCursor } from "./rotatingCursor";
 
@@ -207,7 +208,15 @@ export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof 
   try {
     status = await getPaymentStatus(creds, { invoiceId });
   } catch (err) {
-    logger.warn({ err }, `Failed to check NOWPayments status for order ${order.orderCode} — will retry on the next reconcile cycle`);
+    if (err instanceof RateLimitedError) {
+      // Still a "gateway_error" for pollOnce's outage tally below — only the
+      // backoff gate is new: it makes the next cycles skip instead of hitting
+      // a throttling gateway again at the flat poll interval.
+      const { hitCount, delayMs } = backoff.recordRateLimit();
+      logger.warn(`NOWPayments rate-limited the status check for order ${order.orderCode} (hit #${hitCount}) — backing off ${delayMs}ms before the next reconcile cycle`);
+    } else {
+      logger.warn({ err }, `Failed to check NOWPayments status for order ${order.orderCode} — will retry on the next reconcile cycle`);
+    }
     return "gateway_error";
   }
 
@@ -365,9 +374,15 @@ export const RECONCILE_CYCLE_TIMEOUT_MS = NOWPAYMENTS_RECONCILE_CYCLE_TIMEOUT_MS
 // scan, reused here via rotatingCursor.ts rather than re-implemented.
 const cursor = createRotatingCursor();
 
+// Bounded exponential backoff on gateway HTTP 429s — identical wiring to
+// tokopayReconcile.ts's own gate (see the comment there). An invoice-less
+// "skipped" order makes no gateway call, so it neither arms nor clears it.
+const backoff = createBackoffGate({ baseMs: config.POLL_INTERVAL_SECONDS * 1000 });
+
 export async function pollOnce(api: Api, isCurrent: () => boolean = () => true): Promise<void> {
   const creds = await getNowpaymentsCreds(prisma);
   if (!creds) return; // rail genuinely off — no heartbeat; its watchdog is gated on credentials too
+  if (backoff.shouldSkip()) return;
 
   const allPending = await listPendingNowpaymentsOrders(prisma, new Date());
   if (!allPending.length) {
@@ -399,6 +414,10 @@ export async function pollOnce(api: Api, isCurrent: () => boolean = () => true):
 
   let gatewayCalls = 0;
   let gatewayErrors = 0;
+  // recordRateLimit() only ever increments hitCount and nothing inside this
+  // loop resets it, so an unchanged count after the loop means no call in
+  // this cycle was rate-limited.
+  const rateLimitHitsBefore = backoff.hitCount;
   for (const order of orders) {
     const outcome = await reconcileOrder(api, creds, order);
     if (outcome === "skipped") continue; // no gateway call made — an invoice-less order, not evidence either way
@@ -406,6 +425,9 @@ export async function pollOnce(api: Api, isCurrent: () => boolean = () => true):
     if (outcome === "gateway_error") gatewayErrors++;
   }
   cursor.advance(orders.length);
+  // Cleared once per cycle, after the loop — never per order, so a rate-limit
+  // earlier in this batch can't be wiped by a later order that got through.
+  if (gatewayErrors < gatewayCalls && backoff.hitCount === rateLimitHitsBefore) backoff.recordSuccess();
 
   // A cycle counts as failed only when EVERY gateway call in it failed — one
   // flaky order is normal noise; a gateway that answered zero of N calls is
@@ -464,9 +486,10 @@ let boundApi: Api | undefined;
 // it, an abandoned cycle recorded NOTHING, so a hung NOWPayments poller was
 // indistinguishable from a healthy-but-quiet one until Task 12's watchdog
 // (not yet landed) started comparing `lastRun` against the interval. Unlike
-// binanceInternal.ts's abandon heartbeat, this rail has no backoff gate or
-// rate-limit counter to preserve, so the payload is just the bare failure
-// shape — `lastTxCount: 0` (never the success branch's `orders.length`; the
+// binanceInternal.ts's abandon heartbeat, this rail's heartbeats do not carry
+// its backoff gate's state (the gate above only decides whether a cycle runs;
+// none of this file's heartbeat writes report it), so the payload is just the
+// bare failure shape — `lastTxCount: 0` (never the success branch's `orders.length`; the
 // cycle was abandoned mid-flight, so how many orders it actually finished
 // checking is unknown).
 const loop = createPollLoop({

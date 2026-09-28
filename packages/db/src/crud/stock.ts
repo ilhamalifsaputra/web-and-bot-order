@@ -682,6 +682,11 @@ export async function searchStockCredentials(
   const rows = await db.stockItem.findMany({
     where: { productId, deletedAt: null, status: { in: statuses } },
     orderBy: { id: "asc" },
+    // Narrowed to exactly what this function's own decrypt-and-search body
+    // and its one caller (apps/web-admin/src/routes/api/stock.ts's
+    // GET /api/stock/:productId search path) read off the rows — see
+    // task-9-report.md for the caller trace.
+    select: { id: true, credentials: true, note: true, status: true, deadReason: true, addedAt: true },
   });
   const q = query.toLowerCase();
   const matches = rows.filter((r) => {

@@ -19,7 +19,6 @@
  *   - /reset/:token pages get Referrer-Policy: no-referrer (the single-use
  *     token rides in the URL — same Storefront-1 guard as the HTML route).
  */
-import { readFileSync } from "node:fs";
 import type { FastifyInstance } from "fastify";
 import { config } from "@app/core/config";
 import { t } from "@app/core/i18n";
@@ -38,7 +37,7 @@ import {
 } from "@app/db";
 import { optionalCustomer } from "../plugins/auth";
 import { requestLang } from "../shop";
-import { SPA_INDEX_PATH, esc } from "../lib/spaFallback";
+import { loadSpaIndexHtml, esc } from "../lib/spaFallback";
 
 /** Public origin for absolute canonical URLs — same fallback chain used in
  * checkout.ts's shopPublicUrl() / seo.ts's baseUrl(). */
@@ -627,7 +626,7 @@ export default async function spaShellRoutes(app: FastifyInstance): Promise<void
     // by String.replace as a $-pattern (`$&`, `$'`, `` $` ``, `$1`, ...) — any
     // of shop_name/product/category name containing one would corrupt the
     // HTML. The function form treats the return value as a literal string.
-    const html = readFileSync(SPA_INDEX_PATH, "utf-8")
+    const html = loadSpaIndexHtml()
       .replace("__CSRF_TOKEN__", () => customer?.csrf ?? "")
       .replace("__LANG__", () => lang)
       .replace("__TITLE__", () => esc(head.title))

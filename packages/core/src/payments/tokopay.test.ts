@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { verifyCallback, checkTransaction, createTransaction, computeQrisAdminFee, qrisChargeAmount } from "./tokopay";
+import { verifyCallback, checkTransaction, createTransaction, computeQrisAdminFee, qrisChargeAmount, RateLimitedError } from "./tokopay";
 
 const CREDS = { merchantId: "MERCH", secret: "s3cr3t" };
 const FULL_CREDS = { merchantId: "MERCH", secret: "s3cr3t", channel: "QRIS" };
@@ -157,6 +157,17 @@ describe("checkTransaction", () => {
   it("throws on a non-2xx HTTP response", async () => {
     stubFetchJson({}, { ok: false, status: 502 });
     await expect(checkTransaction(FULL_CREDS, { refId: "ORD-5", amountIdr: 1000 })).rejects.toThrow(/HTTP 502/);
+    // Only a 429 is a rate-limit — any other non-2xx stays a plain Error.
+    stubFetchJson({}, { ok: false, status: 502 });
+    await expect(checkTransaction(FULL_CREDS, { refId: "ORD-5", amountIdr: 1000 })).rejects.not.toBeInstanceOf(RateLimitedError);
+  });
+
+  it("throws RateLimitedError (same message shape) on HTTP 429, so the reconcile poller can back off", async () => {
+    stubFetchJson({}, { ok: false, status: 429 });
+    const err = await checkTransaction(FULL_CREDS, { refId: "ORD-5b", amountIdr: 1000 }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(RateLimitedError);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toBe("TokoPay status HTTP 429");
   });
 
   it("never leaks the secret-bearing query string when fetch() itself rejects (M-15)", async () => {

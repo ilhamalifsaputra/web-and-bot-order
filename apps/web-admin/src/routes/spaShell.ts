@@ -25,6 +25,17 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const STATIC_DIR = process.env.STATIC_DIR ?? join(HERE, "..", "..", "static");
 const SPA_INDEX_PATH = join(STATIC_DIR, "dashboard-app", "index.html");
 
+// The built index.html never changes at runtime, so the disk read is done
+// once and cached — avoids a synchronous readFileSync on every request to
+// this wildcard route (the busiest route in the app).
+let cachedIndexHtml: string | undefined;
+function loadSpaIndexHtml(): string {
+  if (cachedIndexHtml === undefined) {
+    cachedIndexHtml = readFileSync(SPA_INDEX_PATH, "utf-8");
+  }
+  return cachedIndexHtml;
+}
+
 function esc(str: string): string {
   return str
     .replace(/&/g, "&amp;")
@@ -36,7 +47,7 @@ function esc(str: string): string {
 export default async function spaShellRoutes(app: FastifyInstance): Promise<void> {
   app.get("/*", { preHandler: currentAdmin }, async (req, reply) => {
     const favicon = await getSetting(prisma, "web_favicon_url").then((v) => v || "/static/favicon.svg");
-    const raw = readFileSync(SPA_INDEX_PATH, "utf-8");
+    const raw = loadSpaIndexHtml();
     const faviconTag = `<link rel="icon" href="${esc(favicon)}">`;
     const html = raw.includes('<link rel="icon"')
       ? raw.replace(/<link rel="icon"[^>]*>/, faviconTag).replace("__CSRF_TOKEN__", req.admin?.csrf ?? "")

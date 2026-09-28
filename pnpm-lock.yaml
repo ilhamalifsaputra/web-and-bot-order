@@ -211,6 +211,9 @@ importers:
       '@app/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@fastify/compress':
+        specifier: ^9.1.0
+        version: 9.1.0
       '@fastify/cookie':
         specifier: ^11.0.1
         version: 11.0.2

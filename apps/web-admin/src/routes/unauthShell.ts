@@ -22,6 +22,17 @@ const SPA_INDEX = process.env.STATIC_DIR
   ? join(process.env.STATIC_DIR, "dashboard-app", "index.html")
   : join(HERE, "..", "..", "static", "dashboard-app", "index.html");
 
+// The built index.html never changes at runtime, so the disk read is done
+// once and cached — avoids a synchronous readFileSync on every request to
+// these routes.
+let cachedIndexHtml: string | undefined;
+function loadSpaIndexHtml(): string {
+  if (cachedIndexHtml === undefined) {
+    cachedIndexHtml = readFileSync(SPA_INDEX, "utf-8");
+  }
+  return cachedIndexHtml;
+}
+
 function esc(str: string): string {
   return str
     .replace(/&/g, "&amp;")
@@ -36,7 +47,7 @@ export default async function unauthShellRoutes(app: FastifyInstance): Promise<v
     app.get(path, async (_req, reply) => {
       const favicon = await getSetting(prisma, "web_favicon_url").then((v) => v || "/static/favicon.svg");
       const faviconTag = `<link rel="icon" href="${esc(favicon)}">`;
-      const raw = readFileSync(SPA_INDEX, "utf-8");
+      const raw = loadSpaIndexHtml();
       const html = raw.includes('<link rel="icon"')
         ? raw.replace(/<link rel="icon"[^>]*>/, faviconTag).replace("__CSRF_TOKEN__", "")
         : raw.replace("__CSRF_TOKEN__", "").replace("</head>", `${faviconTag}</head>`);
@@ -49,7 +60,7 @@ export default async function unauthShellRoutes(app: FastifyInstance): Promise<v
   app.get("/bootstrap", async (_req, reply) => {
     const favicon = await getSetting(prisma, "web_favicon_url").then((v) => v || "/static/favicon.svg");
     const faviconTag = `<link rel="icon" href="${esc(favicon)}">`;
-    const raw = readFileSync(SPA_INDEX, "utf-8");
+    const raw = loadSpaIndexHtml();
     const adminIds = JSON.stringify(config.ADMIN_IDS);
     const html = raw.includes('<link rel="icon"')
       ? raw

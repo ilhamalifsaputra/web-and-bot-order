@@ -354,7 +354,18 @@ export async function deleteCatalogProduct(db: Db, productId: number): Promise<v
 export async function deleteCatalogProductCascade(db: PrismaClient, productId: number): Promise<void> {
   await db.$transaction(async (tx) => {
     const denoms = await tx.denomination.findMany({ where: { productId }, select: { id: true } });
-    for (const d of denoms) await assertNoStockHistory(tx, d.id);
+    // Same check as assertNoStockHistory, batched across every denomination
+    // at once (2 counts total) instead of calling it once per denomination
+    // (2N counts) — the error message doesn't identify which denomination
+    // triggered it either way, so batching loses no information.
+    const denomIds = denoms.map((d) => d.id);
+    if (denomIds.length) {
+      const [stock, events] = await Promise.all([
+        tx.stockItem.count({ where: { productId: { in: denomIds } } }),
+        tx.stockItemEvent.count({ where: { stockItem: { productId: { in: denomIds } } } }),
+      ]);
+      if (stock > 0 || events > 0) throw new ValidationError("error.denomination_has_stock_history");
+    }
     await tx.denomination.deleteMany({ where: { productId } });
     await tx.product.delete({ where: { id: productId } });
   });

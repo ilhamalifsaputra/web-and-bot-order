@@ -19,6 +19,27 @@ data/
 .env.*
 !.env.example
 
+# AI coding-assistant tooling (not read by build or runtime).
+.agents/
+.augment/
+.claude/
+.codebuddy/
+.codewhale/
+.continue/
+.cursor/
+.factory/
+.gemini/
+.kilocode/
+.kiro/
+.opencode/
+.qoder/
+.roo/
+.superpowers/
+.trae/
+.warp/
+.windsurf/
+.audit-data/
+
 # Editor / OS noise.
 .vscode
 .idea

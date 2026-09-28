@@ -18,6 +18,17 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const STATIC_DIR = process.env.STATIC_DIR ?? join(HERE, "..", "..", "static");
 const SPA_INDEX = join(STATIC_DIR, "dashboard-app", "index.html");
 
+// The built index.html never changes at runtime, so the disk read is done
+// once and cached — avoids a synchronous readFileSync on every request to
+// these routes.
+let cachedIndexHtml: string | undefined;
+function loadSpaIndexHtml(): string {
+  if (cachedIndexHtml === undefined) {
+    cachedIndexHtml = readFileSync(SPA_INDEX, "utf-8");
+  }
+  return cachedIndexHtml;
+}
+
 function esc(str: string): string {
   return str
     .replace(/&/g, "&amp;")
@@ -33,7 +44,7 @@ export default async function setupShellRoutes(app: FastifyInstance): Promise<vo
       if (await checkSetupLock(reply)) return; // already redirected
       const favicon = await getSetting(prisma, "web_favicon_url").then((v) => v || "/static/favicon.svg");
       const faviconTag = `<link rel="icon" href="${esc(favicon)}">`;
-      const raw = readFileSync(SPA_INDEX, "utf-8");
+      const raw = loadSpaIndexHtml();
       const html = raw.includes('<link rel="icon"')
         ? raw.replace(/<link rel="icon"[^>]*>/, faviconTag).replace("__CSRF_TOKEN__", "")
         : raw.replace("__CSRF_TOKEN__", "").replace("</head>", `${faviconTag}</head>`);
@@ -48,7 +59,7 @@ export default async function setupShellRoutes(app: FastifyInstance): Promise<vo
     const favicon = await getSetting(prisma, "web_favicon_url").then((v) => v || "/static/favicon.svg");
     const faviconTag = `<link rel="icon" href="${esc(favicon)}">`;
     const botConfigured = (await getSetting(prisma, "bot_token")) !== null;
-    const raw = readFileSync(SPA_INDEX, "utf-8");
+    const raw = loadSpaIndexHtml();
     const html = raw.includes('<link rel="icon"')
       ? raw
           .replace(/<link rel="icon"[^>]*>/, faviconTag)

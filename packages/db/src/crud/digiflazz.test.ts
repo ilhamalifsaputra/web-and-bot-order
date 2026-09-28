@@ -1653,6 +1653,86 @@ describe("importDigiflazzBrand", () => {
     expect(denoms[0]!.costPrice!.toString()).toBe("15500");
   });
 
+  // Task 6: the per-row existence-check findFirst was batched into one
+  // findMany + Map lookup ahead of the loop. Confirms the batched lookup
+  // still routes each row to the correct create/update path when a single
+  // import call mixes brand-new SKUs with already-existing ones.
+  it("Task 6: a single import mixing new and already-existing SKUs creates the new ones and updates the existing ones, not vice versa", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    const first = await importDigiflazzBrand(prisma, {
+      brand: "Mobile Legends", categoryId: category.id,
+      rows: [
+        { buyerSkuCode: "ml100", productName: "Mobile Legends 100 Diamond", price: "16500", costPrice: "15000" },
+        { buyerSkuCode: "ml250", productName: "Mobile Legends 250 Diamond", price: "41000", costPrice: "38000" },
+      ],
+    });
+    const preexisting = await prisma.denomination.findMany({
+      where: { productId: first.productId, supplierSku: { in: ["ml100", "ml250"] } },
+    });
+    const preexistingIds = new Map(preexisting.map((d) => [d.supplierSku, d.id]));
+
+    const second = await importDigiflazzBrand(prisma, {
+      brand: "Mobile Legends", categoryId: category.id,
+      rows: [
+        // Existing — must UPDATE in place, keeping the same row id.
+        { buyerSkuCode: "ml100", productName: "Mobile Legends 100 Diamond Updated", price: "17000", costPrice: "15500" },
+        { buyerSkuCode: "ml250", productName: "Mobile Legends 250 Diamond Updated", price: "42000", costPrice: "39000" },
+        // Brand-new — must CREATE.
+        { buyerSkuCode: "ml500", productName: "Mobile Legends 500 Diamond", price: "82000", costPrice: "76000" },
+        { buyerSkuCode: "ml1000", productName: "Mobile Legends 1000 Diamond", price: "160000", costPrice: "148000" },
+      ],
+    });
+    expect(second.denominationCount).toBe(4);
+    expect(second.productId).toBe(first.productId);
+
+    const denoms = await prisma.denomination.findMany({ where: { productId: first.productId } });
+    expect(denoms).toHaveLength(4); // exactly 4 rows total — no duplicates from the "existing" SKUs
+
+    const bySku = new Map(denoms.map((d) => [d.supplierSku, d]));
+    // Updated in place — same row id as before, new name/price.
+    expect(bySku.get("ml100")!.id).toBe(preexistingIds.get("ml100"));
+    expect(bySku.get("ml100")!.name).toBe("Mobile Legends 100 Diamond Updated");
+    expect(bySku.get("ml100")!.price.toString()).toBe("17000");
+    expect(bySku.get("ml250")!.id).toBe(preexistingIds.get("ml250"));
+    expect(bySku.get("ml250")!.name).toBe("Mobile Legends 250 Diamond Updated");
+    expect(bySku.get("ml250")!.price.toString()).toBe("42000");
+    // Newly created — fresh rows, not among the pre-existing ids.
+    expect(bySku.has("ml500")).toBe(true);
+    expect(preexistingIds.has("ml500")).toBe(false);
+    expect(bySku.get("ml500")!.name).toBe("Mobile Legends 500 Diamond");
+    expect(bySku.has("ml1000")).toBe(true);
+    expect(bySku.get("ml1000")!.name).toBe("Mobile Legends 1000 Diamond");
+  });
+
+  // Regression fix (task review on the Task 6 batching change): the batched
+  // existence-check Map is built once before the loop, from what existed in
+  // the DB before this call started — it never sees rows created earlier in
+  // the SAME loop iteration. Before batching, a duplicate buyerSkuCode
+  // within one call's rows was create-then-update-in-place (each iteration
+  // re-queried the DB and saw its own prior write), ending in exactly one
+  // row with the LAST occurrence's data. De-duping args.rows by
+  // buyerSkuCode before the loop (last occurrence wins) restores that
+  // exact behavior.
+  it("a single import with a duplicate buyerSkuCode in args.rows creates exactly one denomination, with the last occurrence's data", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    const result = await importDigiflazzBrand(prisma, {
+      brand: "Mobile Legends", categoryId: category.id,
+      rows: [
+        { buyerSkuCode: "ml100", productName: "Mobile Legends 100 Diamond First", price: "16500", costPrice: "15000" },
+        { buyerSkuCode: "ml100", productName: "Mobile Legends 100 Diamond Last", price: "17000", costPrice: "15500" },
+      ],
+    });
+    expect(result.denominationCount).toBe(1); // deduped count, not the raw 2-row input
+
+    const denoms = await prisma.denomination.findMany({
+      where: { productId: result.productId, supplierSku: "ml100" },
+    });
+    expect(denoms).toHaveLength(1); // exactly one row, not two
+    expect(denoms[0]!.name).toBe("Mobile Legends 100 Diamond Last"); // last occurrence's data wins
+    expect(denoms[0]!.price.toString()).toBe("17000");
+    expect(denoms[0]!.costPrice!.toString()).toBe("15500");
+  });
+
   // I11: a freshly-imported denomination must have the correct costPrice
   // immediately — no resync needed to fill it in.
   it("I11: a freshly-imported denomination has costPrice set immediately, matching the submitted value", async () => {

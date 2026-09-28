@@ -30,6 +30,28 @@ describe("describeError", () => {
     );
   });
 
+  it("maps the five credit-to-balance refusals to readable sentences", () => {
+    expect(describeError("error.transfer_already_used")).toBe(
+      "This transfer has already been matched, credited, or dismissed, or belongs to another order, so it can't be credited here. Refresh the page to see the current state.",
+    );
+    expect(
+      describeError(
+        Object.assign(new Error("error.payment_currency_mismatch"), {
+          errorArgs: { paymentCurrency: "USDT", orderCurrency: "IDR" },
+        }),
+      ),
+    ).toBe("This payment's currency (USDT) does not match the order's currency (IDR), so it can't be applied to this order.");
+    expect(describeError("error.already_credited")).toBe(
+      "This order's payment has already been credited to the buyer's balance, so nothing was handed over a second time. Refresh the page to see the current state.",
+    );
+    expect(describeError("error.order_already_refunded")).toBe(
+      "This cancelled order has already been refunded, so its payment can't also be credited to balance. Refresh the page to see the current state.",
+    );
+    expect(describeError("error.order_never_paid")).toBe(
+      "This cancelled order was never paid, so there's nothing to credit to the buyer's balance. Refresh the page to see the current state.",
+    );
+  });
+
   it("falls back to the raw string for an unknown key, so it's always safe to wrap any e.message", () => {
     expect(describeError("error.some_unmapped_key")).toBe("error.some_unmapped_key");
     expect(describeError("Failed to load")).toBe("Failed to load");

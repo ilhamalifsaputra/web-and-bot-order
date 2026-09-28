@@ -26,7 +26,9 @@ import {
   getUser,
   getUserByTelegramId,
   getOrder,
+  cancelOrder,
   createOrderDirect,
+  createInternalOrder,
   finalizeOrderPayment,
   createWebUser,
   attachPaymentProof,
@@ -873,6 +875,51 @@ describe("orders", () => {
     expect(processingRes.json().canCredit).toBe(true);
   });
 
+  // Regression guard for the Critical finding: an order cancelled without ever
+  // being paid has nothing to hand back, so neither the flag nor the route may
+  // credit it (that would mint wallet balance out of nothing).
+  it("GET order detail: a CANCELLED order that was never paid is not canCreditCancelled, and the credit is refused", async () => {
+    const orderId = await makePendingOrder();
+    await cancelOrder(prisma, orderId, "expired", { type: StockActorType.SYSTEM });
+    const res = await app.inject({ method: "GET", url: `/api/orders/${orderId}`, cookies: { [COOKIE]: seed.cookie } });
+    expect(res.json().canCreditCancelled).toBe(false);
+
+    const creditRes = await post(`/api/orders/${orderId}/credit-balance`, seed.cookie, { csrf_token: seed.csrf });
+    expect(creditRes.statusCode).toBe(422);
+    expect(JSON.parse(creditRes.body).error).toBe("error.order_never_paid");
+    expect(await prisma.walletTransaction.count({ where: { orderId, reason: "unfulfilled_credit" } })).toBe(0);
+  });
+
+  it("GET order detail: a paid CANCELLED order is canCreditCancelled until its payment is credited, then not", async () => {
+    const orderId = await makePendingOrder();
+    // A gateway payment claimed for this order whose delivery then threw: the
+    // ledger row keeps its orderId (flagged delivery_failed) and the order is
+    // later cancelled by the expiry sweep.
+    await prisma.processedTokopayTx.create({
+      data: { trxId: `TP-WEB-${orderId}`, orderId, amount: "5", outcome: "delivery_failed" },
+    });
+    await cancelOrder(prisma, orderId, "expired", { type: StockActorType.SYSTEM });
+    const detail = () => app.inject({ method: "GET", url: `/api/orders/${orderId}`, cookies: { [COOKIE]: seed.cookie } });
+
+    const before = (await detail()).json();
+    expect(before.canCreditCancelled).toBe(true);
+    expect(before.canCredit).toBe(false);
+
+    const creditRes = await post(`/api/orders/${orderId}/credit-balance`, seed.cookie, { csrf_token: seed.csrf });
+    expect(creditRes.statusCode).toBe(200);
+    expect((await getOrder(prisma, orderId))!.status).toBe("CANCELLED");
+    // The audit sentence names the cancelled-order recovery path.
+    const audit = await prisma.auditLog.findFirstOrThrow({ where: { action: "order_credit_balance", targetId: orderId } });
+    expect(audit.details).toContain("already-cancelled order");
+    expect(audit.details).not.toContain("gateway payment records");
+
+    expect((await detail()).json().canCreditCancelled).toBe(false);
+    // A second tap is refused with the key the admin client maps to a sentence.
+    const again = await post(`/api/orders/${orderId}/credit-balance`, seed.cookie, { csrf_token: seed.csrf });
+    expect(again.statusCode).toBe(422);
+    expect(JSON.parse(again.body).error).toBe("error.already_credited");
+  });
+
   it("approve requires auth (anon → 401)", async () => {
     const orderId = await makePendingOrder();
     const res = await post(`/api/orders/${orderId}/approve`, null, { csrf_token: "anything" });
@@ -975,6 +1022,26 @@ describe("orders", () => {
     expect(after - before).toBeCloseTo(Number(order.totalAmount));
     const audit = await prisma.auditLog.findMany({ where: { action: "order_credit_balance", targetId: orderId } });
     expect(audit.length).toBe(1);
+    expect(audit[0]!.details).toBe(
+      `Credited order ${orderId}'s paid amount (${new Decimal(order.totalAmount).toString()} IDR) to the buyer's balance.`,
+    );
+  });
+
+  it("credit-balance on a cancelled order with two linked gateway records says both were closed out", async () => {
+    const orderId = await makePendingOrder();
+    await prisma.processedTokopayTx.create({
+      data: { trxId: `TP-WEB2-${orderId}`, orderId, amount: "5", outcome: "delivery_failed" },
+    });
+    await prisma.processedBybitTx.create({
+      data: { bybitTxId: `BY-WEB2-${orderId}`, orderId, amount: "5", outcome: "unmatched" },
+    });
+    await cancelOrder(prisma, orderId, "expired", { type: StockActorType.SYSTEM });
+
+    const res = await post(`/api/orders/${orderId}/credit-balance`, seed.cookie, { csrf_token: seed.csrf });
+    expect(res.statusCode).toBe(200);
+    const audit = await prisma.auditLog.findFirstOrThrow({ where: { action: "order_credit_balance", targetId: orderId } });
+    expect(audit.details).toContain("already-cancelled order");
+    expect(audit.details).toContain("2 gateway payment records linked to this order were closed out by this credit.");
   });
 
   it("credit-balance requires auth (anon → 401)", async () => {
@@ -6659,8 +6726,11 @@ describe("payments", () => {
 
   it("credit unmatched tx → buyer credit balance + order CANCELLED + tx credited_to_balance + audit", async () => {
     const user = (await getUser(prisma, seed.customerId))!;
-    const order = (await createOrderDirect(prisma, { user, productId: seed.productId, quantity: 1 }))!;
-    const before = Number((await getUser(prisma, seed.customerId))!.walletBalance);
+    // A Binance transfer is USDT, so only a USDT order can take it.
+    const order = (await prisma.$transaction((tx) =>
+      createInternalOrder(tx, { user, productId: seed.productId, quantity: 1, rate: 1 }),
+    ))!;
+    const before = Number((await getUser(prisma, seed.customerId))!.walletBalanceUsdt);
     await recordUnmatchedTx(prisma, { binanceTxId: "CRTX1", amount: "5.00" });
 
     const res = await post("/api/payments/credit", seed.cookie, {
@@ -6671,7 +6741,7 @@ describe("payments", () => {
     expect(res.statusCode).toBe(200);
 
     expect((await getOrder(prisma, order.id))!.status).toBe("CANCELLED");
-    const after = Number((await getUser(prisma, seed.customerId))!.walletBalance);
+    const after = Number((await getUser(prisma, seed.customerId))!.walletBalanceUsdt);
     expect(after - before).toBeCloseTo(5);
 
     const tx = await prisma.processedBinanceTx.findUnique({ where: { binanceTxId: "CRTX1" } });
@@ -6680,6 +6750,32 @@ describe("payments", () => {
 
     const logs = await listAuditLogs(prisma, { limit: 5 });
     expect(logs.some((l) => l.action === "tx_credit_balance")).toBe(true);
+  });
+
+  // Final-review I1: a transfer that already paid for another order is not
+  // evidence for this one — the route must refuse, not silently re-link it.
+  it("credit refuses a transfer already matched to another order (422 error.transfer_already_used)", async () => {
+    const user = (await getUser(prisma, seed.customerId))!;
+    const mk = () =>
+      prisma.$transaction((tx) => createInternalOrder(tx, { user, productId: seed.productId, quantity: 1, rate: 1 }));
+    const owner = (await mk())!;
+    const target = (await mk())!;
+    await prisma.processedBinanceTx.create({
+      data: { binanceTxId: "CRTX-USED", orderId: owner.id, amount: "5.00", outcome: "matched" },
+    });
+    const before = Number((await getUser(prisma, seed.customerId))!.walletBalanceUsdt);
+
+    const res = await post("/api/payments/credit", seed.cookie, {
+      csrf_token: seed.csrf,
+      binance_tx_id: "CRTX-USED",
+      order_code: target.orderCode,
+    });
+    expect(res.statusCode).toBe(422);
+    expect(res.json().error).toBe("error.transfer_already_used");
+    expect(Number((await getUser(prisma, seed.customerId))!.walletBalanceUsdt)).toBeCloseTo(before);
+    const row = await prisma.processedBinanceTx.findUniqueOrThrow({ where: { binanceTxId: "CRTX-USED" } });
+    expect(row.orderId).toBe(owner.id);
+    expect(row.outcome).toBe("matched");
   });
 
   it("credit requires auth (anon → 401)", async () => {
@@ -6856,6 +6952,20 @@ describe("payments", () => {
     const data = JSON.parse(res.body) as { ledger: Array<{ reference: string; orderCode: string | null; orderKind: string | null }> };
     expect(data.ledger.find((tx) => tx.reference === "TP-KIND-SALE")).toMatchObject({ orderCode: "ORD-KIND-SALE", orderKind: "PRODUCT" });
     expect(data.ledger.find((tx) => tx.reference === "TP-KIND-TOPUP")).toMatchObject({ orderCode: "ORD-KIND-TOPUP", orderKind: "WALLET_TOPUP" });
+  });
+
+  it("GET /api/payments carries each ledger row's order status, null when the row has no order", async () => {
+    const cancelled = await prisma.order.create({
+      data: { orderCode: "ORD-STATUS-CXL", userId: seed.customerId, subtotalAmount: "1", totalAmount: "1", status: "CANCELLED" },
+    });
+    await prisma.processedTokopayTx.create({ data: { trxId: "TP-STATUS-CXL", amount: "1", outcome: "delivery_failed", orderId: cancelled.id } });
+    await prisma.processedTokopayTx.create({ data: { trxId: "TP-STATUS-NONE", amount: "1", outcome: "unmatched" } });
+
+    const res = await get("/api/payments", seed.cookie);
+    expect(res.statusCode).toBe(200);
+    const data = JSON.parse(res.body) as { ledger: Array<{ reference: string; orderId: number | null; orderStatus: string | null }> };
+    expect(data.ledger.find((tx) => tx.reference === "TP-STATUS-CXL")).toMatchObject({ orderId: cancelled.id, orderStatus: "CANCELLED" });
+    expect(data.ledger.find((tx) => tx.reference === "TP-STATUS-NONE")).toMatchObject({ orderId: null, orderStatus: null });
   });
 
   it("GET /api/payments?kind=WALLET_TOPUP narrows the ledger to top-ups and reports a matching total", async () => {

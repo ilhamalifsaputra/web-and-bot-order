@@ -701,15 +701,19 @@ describe("PaymentsPage", () => {
       { id: 1, gateway: "tokopay", reference: "TP-SALE", amount: "50000", currency: "IDR", outcome: "matched", memo: null, orderId: 11, orderCode: "ORD-SALE", orderKind: "PRODUCT", processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
       { id: 2, gateway: "tokopay", reference: "TP-TOPUP", amount: "100000", currency: "IDR", outcome: "matched", memo: null, orderId: 12, orderCode: "ORD-TOPUP", orderKind: "WALLET_TOPUP", processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
       { id: 3, gateway: "binance", reference: "BN-ORPHAN", amount: "1", currency: "IDR", outcome: "unmatched", memo: null, orderId: null, orderCode: null, orderKind: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
+      { id: 4, gateway: "tokopay", reference: "TP-CXL", amount: "1", currency: "IDR", outcome: "delivery_failed", memo: null, orderId: 13, orderCode: "ORD-CXL", orderKind: "PRODUCT", orderStatus: "CANCELLED", processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
     ];
-    mockPaymentsFetch({ enabled: true, ledger, total: 3, todayCount: 0, page: 1, hasNext: false, outcomes: ["matched"], kinds: ["PRODUCT", "WALLET_TOPUP"], counts: {} });
+    mockPaymentsFetch({ enabled: true, ledger, total: 4, todayCount: 0, page: 1, hasNext: false, outcomes: ["matched"], kinds: ["PRODUCT", "WALLET_TOPUP"], counts: {} });
     render(<PaymentsPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("TP-SALE")).toBeInTheDocument());
 
     expect(screen.getByText("ORD-SALE")).toBeInTheDocument();
     expect(screen.getByText("ORD-TOPUP")).toBeInTheDocument();
     expect(screen.getByText("Wallet Topup")).toBeInTheDocument();
-    expect(screen.getByText("Product")).toBeInTheDocument();
+    expect(screen.getAllByText("Product").length).toBeGreaterThan(0);
+    // A row with an order links to it and shows where that order ended up.
+    expect(screen.getByRole("link", { name: "ORD-CXL" })).toHaveAttribute("href", "/orders/13");
+    expect(screen.getByText("Cancelled")).toBeInTheDocument();
   });
 
   it("seeds the order-type filter from ?kind= in the URL on mount", async () => {

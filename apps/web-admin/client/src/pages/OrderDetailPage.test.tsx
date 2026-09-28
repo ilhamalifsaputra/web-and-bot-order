@@ -171,6 +171,33 @@ describe("OrderDetailPage", () => {
     expect(screen.getByRole("button", { name: /resend to telegram/i })).toBeInTheDocument();
   });
 
+  it("offers Credit to Balance on a cancelled order whose payment was never returned, and posts it", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          ...ORDER_DETAIL_DATA,
+          order: { ...ORDER_DETAIL_DATA.order, status: "CANCELLED" },
+          canAct: false,
+          canCredit: false,
+          canReject: false,
+          canCreditCancelled: true,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    vi.mocked(apiPost).mockResolvedValueOnce({ ok: true });
+    render(<OrderDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("CapCut Pro 1M")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: /credit to balance/i }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Credit this cancelled order's payment to the buyer?")).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: /^credit$/i }));
+
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/orders/1/credit-balance", {}));
+  });
+
   it("hides the Resend button before the order is delivered", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       new Response(JSON.stringify(ORDER_DETAIL_DATA), {

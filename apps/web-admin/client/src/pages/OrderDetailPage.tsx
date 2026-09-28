@@ -123,6 +123,9 @@ interface OrderDetailData {
   isDelivered: boolean;
   canAct: boolean;
   canCredit: boolean;
+  /** CANCELLED, and the server found no proof its payment was ever handed back
+   * (no balance credit, no completed refund) — offer to credit it now. */
+  canCreditCancelled: boolean;
   /** True once the order is PROCESSING (manual/manual_with_info SKU, paid,
    * awaiting an admin to hand-type and send the account content). */
   canFulfill: boolean;
@@ -306,7 +309,7 @@ export function OrderDetailPage() {
     );
   }
 
-  const { order, money, canAct, canCredit, canFulfill, canReject, isDelivered, hasDeliveredContent, customerDataFields, customerData } = data;
+  const { order, money, canAct, canCredit, canCreditCancelled, canFulfill, canReject, isDelivered, hasDeliveredContent, customerDataFields, customerData } = data;
   const stockReplacements = data.stockReplacements ?? [];
   const overpayment = data.overpayment ?? null;
   /** Offer the action only while there really is something to hand back — the
@@ -599,7 +602,7 @@ export function OrderDetailPage() {
       )}
 
       {/* Actions */}
-      {(canAct || canCredit || canResend || canFulfill || canReject) && (
+      {(canAct || canCredit || canCreditCancelled || canResend || canFulfill || canReject) && (
         <Card className="mt-6">
           <CardHeader><CardTitle>Actions</CardTitle></CardHeader>
           <CardContent className="flex flex-wrap gap-3">
@@ -651,6 +654,17 @@ export function OrderDetailPage() {
                 trigger={<Button variant="outline" disabled={creditBalance.isPending}><CircleDollarSign className="h-4 w-4" />{creditBalance.isPending ? "Processing…" : "Credit to Balance"}</Button>}
                 title="Credit to wallet balance?"
                 description="The paid amount will be credited to the buyer's wallet balance."
+                confirmLabel="Credit"
+                variant="default"
+                onConfirm={() => creditBalance.mutate()}
+              />
+            )}
+
+            {canCreditCancelled && (
+              <ConfirmDialog
+                trigger={<Button variant="outline" disabled={creditBalance.isPending}><CircleDollarSign className="h-4 w-4" />{creditBalance.isPending ? "Processing…" : "Credit to Balance"}</Button>}
+                title="Credit this cancelled order's payment to the buyer?"
+                description="This order is cancelled, but its payment was never returned. The paid amount will be credited to the buyer's wallet balance — nothing else about the order changes."
                 confirmLabel="Credit"
                 variant="default"
                 onConfirm={() => creditBalance.mutate()}

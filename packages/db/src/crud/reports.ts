@@ -416,7 +416,7 @@ const RESOLVED_LEDGER_ORDER_STATUSES: string[] = [OrderStatus.DELIVERED, OrderSt
  *
  * One batched query per evidence table over the whole id set, never one per row.
  */
-async function cancelledOrderIdsWithMoneyReturned(db: Db, cancelledIds: number[]): Promise<Set<number>> {
+export async function cancelledOrderIdsWithMoneyReturned(db: Db, cancelledIds: number[]): Promise<Set<number>> {
   if (cancelledIds.length === 0) return new Set();
   const [credits, refunds] = await Promise.all([
     db.walletTransaction.findMany({
@@ -432,6 +432,63 @@ async function cancelledOrderIdsWithMoneyReturned(db: Db, cancelledIds: number[]
   for (const c of credits) if (c.orderId != null) ids.add(c.orderId);
   for (const r of refunds) ids.add(r.orderId);
   return ids;
+}
+
+/** True when at least one of the five processed*Tx ledger tables has a row
+ *  linked to this order whose outcome is one of `ACTIONABLE_LEDGER_OUTCOMES`
+ *  (`delivery_failed` or `unmatched`) — proof a full gateway payment arrived
+ *  for it and was never settled, independent of `Order.paidAt` (which a
+ *  rolled-back delivery transaction can leave null even though money arrived —
+ *  see the comment on creditOrderToBalance's CANCELLED path).
+ *
+ *  Only those two outcomes count because they are exactly what the
+ *  CANCELLED-order credit exists to close out. Every other outcome has its own
+ *  resolution path or owes nothing, and folding it in here would double- or
+ *  over-credit: an `underpaid` row records only the PART that arrived, and its
+ *  order resolves through `creditUnderpaidTopupAnyway` (which credits via
+ *  `admin_adjust` and cancels — so the order then looks "paid, nothing returned
+ *  yet") or the underpaid cancel/refund routes; a `matched`, `stale`,
+ *  `dismissed` or `credited_to_balance` row was already settled or deliberately
+ *  closed. Single-order form: used where one order is being looked at or acted
+ *  on, never per list row. */
+export async function orderHasIncomingLedgerPayment(db: Db, orderId: number): Promise<boolean> {
+  const where = { orderId, outcome: { in: [...ACTIONABLE_LEDGER_OUTCOMES] } };
+  const [binance, bybit, tokopay, paydisini, nowpayments] = await Promise.all([
+    db.processedBinanceTx.findFirst({ where, select: { id: true } }),
+    db.processedBybitTx.findFirst({ where, select: { id: true } }),
+    db.processedTokopayTx.findFirst({ where, select: { id: true } }),
+    db.processedPaydisiniTx.findFirst({ where, select: { id: true } }),
+    db.processedNowpaymentsTx.findFirst({ where, select: { id: true } }),
+  ]);
+  return binance != null || bybit != null || tokopay != null || paydisini != null || nowpayments != null;
+}
+
+/** The enforcing form of `orderHasIncomingLedgerPayment`: re-tags every row in
+ *  the five processed*Tx ledger tables linked to this order whose outcome is
+ *  one of `ACTIONABLE_LEDGER_OUTCOMES` as `credited_to_balance`, and returns
+ *  how many it re-tagged (0 = no proof a payment ever arrived).
+ *
+ *  Reading the evidence is not enough for a credit: a row left at
+ *  `delivery_failed`/`unmatched` is still reclaimable by the gateways' own
+ *  settle paths (QRIS_RECLAIMABLE_OUTCOMES / AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES
+ *  in ./binance_internal), so a duplicate callback or a later amount-match
+ *  would pay the same money out a second time. `credited_to_balance` is in
+ *  neither reclaimable set. Each `UPDATE ... WHERE outcome IN (...)` row-locks
+ *  what it matches, so a concurrent reclaim of the same row serialises against
+ *  the caller's transaction and, once this commits, no longer matches its own
+ *  outcome gate. Must run inside the caller's transaction (the credit it
+ *  justifies has to roll back with it). Sequential on purpose — one
+ *  interactive transaction runs one statement at a time anyway. */
+export async function consumeIncomingLedgerPayment(db: Db, orderId: number): Promise<number> {
+  const where = { orderId, outcome: { in: [...ACTIONABLE_LEDGER_OUTCOMES] } };
+  const data = { outcome: "credited_to_balance" };
+  let consumed = 0;
+  consumed += (await db.processedBinanceTx.updateMany({ where, data })).count;
+  consumed += (await db.processedBybitTx.updateMany({ where, data })).count;
+  consumed += (await db.processedTokopayTx.updateMany({ where, data })).count;
+  consumed += (await db.processedPaydisiniTx.updateMany({ where, data })).count;
+  consumed += (await db.processedNowpaymentsTx.updateMany({ where, data })).count;
+  return consumed;
 }
 
 /**
@@ -573,6 +630,11 @@ export interface UnifiedLedgerRow {
    *  order, same as `orderCode`. Without this the Payments ledger cannot tell
    *  top-up money from product-sale money. */
   orderKind: string | null;
+  /** `Order.status` of the order this row points at, null like `orderCode`.
+   *  Lets the Payments list show at a glance whether a delivery_failed /
+   *  unmatched row's order is already closed out (e.g. CANCELLED) without
+   *  opening it. */
+  orderStatus: string | null;
 }
 
 export interface CombinedLedgerFilter {
@@ -669,8 +731,9 @@ export async function listCombinedLedger(db: Db, opts: CombinedLedgerFilter = {}
   ]);
 
   // Pre-join shape: everything the ledger tables themselves can supply.
-  // `orderCode`/`orderKind` are filled in from the single order query below.
-  type PreJoinRow = Omit<UnifiedLedgerRow, "orderCode" | "orderKind">;
+  // `orderCode`/`orderKind`/`orderStatus` are filled in from the single order
+  // query below.
+  type PreJoinRow = Omit<UnifiedLedgerRow, "orderCode" | "orderKind" | "orderStatus">;
   const merged: PreJoinRow[] = [
     ...binance.map((r) => ({
       id: r.id,
@@ -750,7 +813,12 @@ export async function listCombinedLedger(db: Db, opts: CombinedLedgerFilter = {}
 
   let joined: UnifiedLedgerRow[] = kept.map((r) => {
     const order = r.orderId != null ? orderById.get(r.orderId) : undefined;
-    return { ...r, orderCode: order?.orderCode ?? null, orderKind: order?.kind ?? null };
+    return {
+      ...r,
+      orderCode: order?.orderCode ?? null,
+      orderKind: order?.kind ?? null,
+      orderStatus: order?.status ?? null,
+    };
   });
 
   // Applied to the whole merged set BEFORE slicing, so the filter spans every

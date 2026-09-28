@@ -11,7 +11,7 @@ import "./setup-env";
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { config } from "@app/core/config";
-import { prisma, initDb, setSetting, markUnderpaid, createOrderDirect, recordUnmatchedTx } from "@app/db";
+import { prisma, initDb, setSetting, markUnderpaid, createOrderDirect, createInternalOrder, recordUnmatchedTx } from "@app/db";
 import { resetDb, buildSampleData, type SampleData } from "../../../tests/helpers/sampleData";
 import { buildApp } from "../src/server";
 import { makeSession, sessionJtiKey, newJti } from "../src/auth";
@@ -58,6 +58,14 @@ async function makeUnderpaidOrder(txId: string) {
  * the fixture manualMatchTx/creditOrderToBalance both need. */
 async function makePendingOrder() {
   return (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+}
+
+/** A PENDING_PAYMENT USDT order — credit-to-balance only accepts a Binance
+ * transfer (always USDT) onto a USDT order. */
+async function makePendingUsdtOrder() {
+  return (await prisma.$transaction((tx) =>
+    createInternalOrder(tx, { user: sample.user, productId: sample.product.id, quantity: 1, rate: 1 }),
+  ))!;
 }
 
 function deliver(orderId: number, headers: Record<string, string> = {}) {
@@ -294,7 +302,7 @@ describe("POST /api/payments/match — Idempotency-Key", () => {
 
 describe("POST /api/payments/credit — Idempotency-Key", () => {
   it("with no header: two credit attempts on the same transfer behave as before (first succeeds, second 422s)", async () => {
-    const order = await makePendingOrder();
+    const order = await makePendingUsdtOrder();
     await recordUnmatchedTx(prisma, { binanceTxId: "crtx-no-header", amount: "1.00" });
 
     const first = await credit("crtx-no-header", order.orderCode);
@@ -306,7 +314,7 @@ describe("POST /api/payments/credit — Idempotency-Key", () => {
   });
 
   it("replays the exact success response for a repeated request with the same key, crediting only once", async () => {
-    const order = await makePendingOrder();
+    const order = await makePendingUsdtOrder();
     await recordUnmatchedTx(prisma, { binanceTxId: "crtx-replay-success", amount: "1.00" });
     const key = "credit-key-1";
 
@@ -337,8 +345,8 @@ describe("POST /api/payments/credit — Idempotency-Key", () => {
   });
 
   it("409s when the same key is reused for a DIFFERENT credit request (different request hash)", async () => {
-    const orderA = await makePendingOrder();
-    const orderB = await makePendingOrder();
+    const orderA = await makePendingUsdtOrder();
+    const orderB = await makePendingUsdtOrder();
     await recordUnmatchedTx(prisma, { binanceTxId: "crtx-conflict-a", amount: "1.00" });
     await recordUnmatchedTx(prisma, { binanceTxId: "crtx-conflict-b", amount: "1.00" });
     const key = "credit-key-conflict";

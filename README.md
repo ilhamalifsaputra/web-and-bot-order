@@ -300,35 +300,24 @@ pm2 restart bot-order
 > push` **dulu** baru kode baru — kalau terbalik muncul `P2022: column does not
 > exist` (atau `P2021: table does not exist` bila tabelnya berganti nama).
 
-> 🛠️ **Cek dulu `scripts/migrate-*.ts` sebelum `git pull` dieksekusi ulang ke
-> produksi.** Beberapa rilis menyertakan migrasi data **sekali-jalan** (bukan
-> `prisma db push` biasa) — mis. `migrate-catalog-rename` (Category → Product →
-> Denomination). Skrip ini **tidak idempotent**: matikan semua service dulu,
-> backup `data/bot.db` (+ `-wal`/`-shm`), baru jalankan `pnpm <nama-skrip>`
-> sesuai komentar di kepala filenya, lalu `pnpm prisma generate` sebelum start
-> ulang. Lewati langkah ini kalau skrip yang sama sudah pernah dijalankan di DB
-> ini.
+> 🛠️ **Periksa migrasi data saat update.** `prisma db push` hanya menyelaraskan
+> skema. Pada jalur Docker, entrypoint menjalankan migrasi data-only yang
+> terdaftar untuk rilis ini dan melaporkan kegagalan sebagai WARNING. Baca log
+> `entrypoint:` setelah deploy; jika perlu penanganan manual, ikuti
+> [`docs/MIGRATIONS.md`](docs/MIGRATIONS.md).
 
-**Backup database** (rutin — jalur SQLite/Postgres terdeteksi otomatis sesuai status cutover toko ini):
+**Backup database PostgreSQL** (rutin):
 
-> `deploy/backup/backup.sh`/`restore.sh` (dan cron 6-jamannya) **engine-aware**:
-> satu skrip yang sama menangani SQLite maupun PostgreSQL, jalurnya dideteksi
-> otomatis — `backup.sh` dari prefix `DATABASE_URL_PRISMA`, `restore.sh` dari
-> ekstensi file backup. Jadi setelah engine-swap tidak ada skrip atau entri
-> cron yang perlu diganti; yang berubah hanya env var di depan pemanggilannya.
-> Sumber kebenaran untuk backup/restore: **[`deploy/backup/README.md`](deploy/backup/README.md)**.
-> Langkah memindahkan entri cron produksi dari varian SQLite ke varian Postgres
-> setelah cutover ada di **bagian 8a**
-> [`docs/POSTGRES_MIGRATION.md`](docs/POSTGRES_MIGRATION.md).
+> `deploy/backup/backup.sh` memilih PostgreSQL dari prefix
+> `DATABASE_URL_PRISMA`; `restore.sh` memilihnya dari ekstensi `.dump`.
+> Pastikan cron produksi memanggil `backup.sh` dengan prefix `postgresql://`
+> (lihat **bagian 8a** [`docs/POSTGRES_MIGRATION.md`](docs/POSTGRES_MIGRATION.md)).
+> Prosedur backup dan restore lengkap ada di
+> [`deploy/backup/README.md`](deploy/backup/README.md).
 
 ```bash
-# Jalur Postgres (deployment yang sudah cutover):
 DATABASE_URL_PRISMA=postgresql://engine-marker deploy/backup/backup.sh   # pg_dump -Fc + verifikasi + retensi
 deploy/backup/restore.sh data/backups/pg-<stamp>.dump
-
-# Jalur SQLite (checkout pra-migrasi):
-deploy/backup/backup.sh        # .backup + integrity_check + gzip + retensi
-deploy/backup/restore.sh data/backups/bot-<stamp>.db
 ```
 
 **Kelola stok** (panel admin → Stock → pilih produk): tambah stok (satu baris per
@@ -365,7 +354,7 @@ VPS"**.
 | Gejala | Solusi |
 |---|---|
 | `P2022: column does not exist` | `prisma db push` lalu restart |
-| HTTP 500 / `readonly database` | `sudo chown -R 999:999 data` lalu `docker compose restart server` |
+| Database PostgreSQL tidak tersambung | Cek container `postgres`, `DATABASE_URL_PRISMA`, dan log `server` dengan kedua file Compose dari Jalur A |
 | Bot tak membalas `/start` | Cek panel admin → Settings → bot token (atau jalankan Setup Wizard kalau belum); cek `docker compose logs server` / `pm2 logs` |
 | Tak bisa login / loop login | HTTP lokal: `WEB_COOKIE_SECURE=false`; produksi: HTTPS + `WEB_COOKIE_SECURE=true` |
 | Pembayaran Bybit tak otomatis | Kirim **jumlah persis** via Bybit Internal Transfer; pastikan `USE_UNIQUE_CENTS=1` |
@@ -431,8 +420,12 @@ prisma/schema.prisma   Skema database (PostgreSQL)
 data/                  Log & snapshot backup lokal (di-gitignore)
 ```
 
-**Dokumen lain:** [`DOCS.md`](DOCS.md) (arsitektur, fitur, env lengkap) ·
-[`CLAUDE.md`](CLAUDE.md) (konvensi koding) · `.env.example` (semua variabel).
+**Dokumen lain:** [`DOCS.md`](DOCS.md) (referensi teknis arsitektur, fitur, dan env) ·
+[`migrate.md`](migrate.md) (panduan migrasi database) ·
+[`docs/README.md`](docs/README.md) (indeks seluruh dokumentasi) ·
+[`docs/arsitektur/ARCHITECTURE.md`](docs/arsitektur/ARCHITECTURE.md) (arsitektur detail) ·
+[`.claude/CLAUDE.md`](.claude/CLAUDE.md) (konvensi koding) ·
+`.env.example` (semua variabel).
 
 ---
 

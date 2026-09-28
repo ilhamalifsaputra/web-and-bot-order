@@ -1,7 +1,10 @@
 # Dokumentasi Teknis — `telegram-order-bot`
 
-Arsitektur, fitur, dan setup environment proyek. Konvensi koding ada di
-[`CLAUDE.md`](CLAUDE.md); panduan instalasi (VPS) ada di [`README.md`](README.md).
+Arsitektur, fitur, dan setup environment proyek. Panduan instalasi (VPS) ada
+di [`README.md`](README.md), tutorial migrasi database di
+[`migrate.md`](migrate.md), indeks seluruh dokumentasi di
+[`docs/README.md`](docs/README.md), dan konvensi koding di
+[`.claude/CLAUDE.md`](.claude/CLAUDE.md).
 
 ## Daftar Isi
 
@@ -29,6 +32,11 @@ Arsitektur, fitur, dan setup environment proyek. Konvensi koding ada di
 Monorepo pnpm: empat workspace `apps/*` + tiga `packages/*`, berbagi **satu
 database PostgreSQL** (schema `public`; lihat `docs/POSTGRES_MIGRATION.md`
 untuk runbook deploy produksi).
+
+Bagian ini adalah peta singkat. Diagram proses, boundary, alur order, dan
+referensi arsitektur terperinci ada di
+[`docs/arsitektur/ARCHITECTURE.md`](docs/arsitektur/ARCHITECTURE.md); indeks
+referensi per-domain ada di [`docs/README.md`](docs/README.md).
 
 | Workspace | Peran |
 |---|---|
@@ -77,9 +85,10 @@ untuk runbook deploy produksi).
 `BOT_MODE` (`polling` | `webhook`) memilih transport bot. Web tetap jalan walau
 token bot kosong (bot OFF sampai diisi + restart).
 
-> Pada deploy Docker (README Jalur A), tiap layanan jalan sebagai container
-> terpisah berbagi `./data`. Pada Jalur B, `apps/server` menjalankan semuanya
-> dalam satu proses.
+> Pada deploy Docker (README Jalur A), satu container `server` menjalankan
+> `apps/server` sebagai proses gabungan, berdampingan dengan satu container
+> PostgreSQL. Pada Jalur B, proses gabungan yang sama dijalankan langsung lewat
+> `pnpm start`.
 
 ---
 
@@ -657,8 +666,8 @@ Aplikasi ini **single-tenant**: `satu deploy = satu bot = satu toko = satu DB`.
 Untuk menjalankan **beberapa bisnis yang benar-benar terpisah** (produk, stok,
 order, admin, dan bot Telegram berbeda) di satu VPS, jalankan **beberapa instance
 penuh yang berdiri sendiri** — tiap toko dari direktori repo sendiri dengan `.env`,
-folder `./data` (DB sendiri), bot, dan port sendiri. nginx me-route tiap domain ke
-port loopback instance yang sesuai.
+folder `./data`, volume PostgreSQL sendiri, bot, dan port sendiri. nginx
+me-route tiap domain ke port loopback instance yang sesuai.
 
 > **Apakah bot order & pengiriman notifikasi bentrok antar-toko?** Tidak —
 > **selama tiap instance pakai bot @BotFather yang berbeda.** Error Telegram 409
@@ -711,7 +720,7 @@ otomatis terpisah). Pakai akun gateway berbeda per toko.
 ```bash
 git clone <repo-url> /opt/shop-a && cd /opt/shop-a
 cp .env.example .env                                      # isi sesuai tabel di atas
-docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml run --rm server pnpm prisma db push   # skema sebelum start (hindari P2022)
+docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml run --rm server pnpm exec prisma db push   # skema sebelum start (hindari P2022)
 docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml up -d                                 # nama container otomatis dari COMPOSE_PROJECT_NAME
 ```
 
@@ -743,8 +752,9 @@ nginx -t && systemctl reload nginx
 - **Tiap instance punya database Postgres sendiri** (bukan beberapa writer ke
   satu DB yang sama), jadi isolasi antar-toko tetap terjaga sama seperti era
   SQLite sebelumnya.
-- **Batas praktis**: N toko = 4×N container; yang membatasi adalah RAM/CPU VPS
-  (kira-kira ~1 GB per toko), bukan arsitektur DB.
+- **Batas praktis**: N toko = 2×N container (`server` + `postgres` per toko);
+  yang membatasi adalah RAM/CPU VPS (kira-kira ~1 GB per toko), bukan
+  arsitektur DB.
 
 ---
 
@@ -761,7 +771,7 @@ dari luar proses ini: health check, webhook Telegram, dan webhook gateway
 pembayaran. Integrasi eksternal lain harus lewat DB + `packages/db/src/crud/*`,
 bukan HTTP.
 
-### 12.1 Health check
+### 16.1 Health check
 
 | Endpoint | Proses | Auth | Respons |
 |---|---|---|---|
@@ -771,7 +781,7 @@ bukan HTTP.
 Dipakai uptime monitor / reverse proxy; tetap menjawab walau setup wizard
 belum selesai atau bot OFF (token kosong).
 
-### 12.2 Webhook Telegram
+### 16.2 Webhook Telegram
 
 `POST /tg/<WEBHOOK_SECRET>` — hanya didaftarkan saat `BOT_MODE=webhook` dan
 token bot terisi (`apps/server/src/index.ts`). Default transport tetap
@@ -781,7 +791,7 @@ Auth dua lapis: path harus cocok `WEBHOOK_SECRET`, lalu grammY (`webhookCallback
 memverifikasi header `X-Telegram-Bot-Api-Secret-Token` sebelum update
 diteruskan ke bot — mismatch dibalas `401` sebelum logic bot jalan sama sekali.
 
-### 12.3 Webhook gateway pembayaran (storefront, public)
+### 16.3 Webhook gateway pembayaran (storefront, public)
 
 Tiga gateway auto-confirm (lihat §5) punya webhook dengan kontrak request/respons
 yang sengaja dibuat seragam (`apps/storefront/src/routes/checkout.ts`):
@@ -823,7 +833,7 @@ bayar, idempoten lewat ledger yang sama dengan webhook-nya.
 > `packages/core/src/payments/{paydisini,nowpayments}.ts`. Verifikasi sebelum
 > go-live.
 
-### 12.4 Endpoint internal lain (bukan API publik)
+### 16.4 Endpoint internal lain (bukan API publik)
 
 - `GET /api/v1/orders/:code/status` — JSON yang di-poll halaman bayar
   storefront (React PayPage) tiap ~5 detik (§5); butuh sesi pembeli pemilik

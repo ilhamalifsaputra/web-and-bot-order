@@ -47,6 +47,7 @@ async function route(ctx: MyContext): Promise<void> {
   const text = ctx.message.text;
   if (/^\/start\b/.test(text)) return customer.startCommand(ctx);
   if (/^\/language\b/.test(text)) return customer.languageCommand(ctx);
+  if (/^\/currency\b/.test(text)) return customer.currencyCommand(ctx);
   if (/^\/menu\b/.test(text)) return customer.menuCommand(ctx);
   return customer.handleProductNumber(ctx);
 }
@@ -132,15 +133,21 @@ describe("currency onboarding — /start → language → currency", () => {
     expect(row.language).toBe(lang.toUpperCase());
   });
 
-  it("an existing configured user (USD) re-running /start can switch to IDR without a duplicate row", async () => {
+  it("an existing configured user (USD) re-running /start skips onboarding, and /currency can still switch to IDR without a duplicate row", async () => {
     const tg = nextTgId();
     const u = await makeLegacyUser(tg, "en");
     await setUserPreferredCurrency(prisma, u.id, "USD");
     const s = freshSession();
 
-    await say(tg, s, "/start", "");
-    expect(s.onboarding).toBe("language");
-    await tap(tg, s, ckb.cb("lang", "set", "en"));
+    // /start for an already-configured user goes straight to the dashboard
+    // now (the onboarding wizard no longer re-runs every time — see
+    // startCommand's doc comment) — /currency is the dedicated command for
+    // changing the preference afterwards.
+    const start = await say(tg, s, "/start", "");
+    expect(s.onboarding).toBeNull();
+    expect(isMainMenu(start.sink)).toBe(true);
+
+    await say(tg, s, "/currency", "");
     await tap(tg, s, ckb.cb("cur", "set", "IDR"));
 
     expect((await getUser(prisma, u.id))?.preferredCurrency).toBe("IDR");

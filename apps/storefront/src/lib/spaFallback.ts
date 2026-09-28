@@ -32,6 +32,20 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const STATIC_DIR = process.env.STOREFRONT_STATIC_DIR ?? join(HERE, "..", "..", "static");
 export const SPA_INDEX_PATH = join(STATIC_DIR, "shop-app", "index.html");
 
+// The built index.html never changes at runtime, so the disk read is done
+// once and cached — avoids a synchronous readFileSync on every request to
+// the routes that use it (spaShell.ts's wildcard route and this module's
+// own 404/500/503 shells). Only a successful read is cached: if the file is
+// missing (e.g. a fresh clone before `pnpm build`), readFileSync keeps
+// throwing on every call, exactly as before, until the file appears.
+let cachedIndexHtml: string | undefined;
+export function loadSpaIndexHtml(): string {
+  if (cachedIndexHtml === undefined) {
+    cachedIndexHtml = readFileSync(SPA_INDEX_PATH, "utf-8");
+  }
+  return cachedIndexHtml;
+}
+
 /** Minimal HTML escape for text interpolated into the shell or the fallback. */
 export function esc(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -57,7 +71,7 @@ export interface SpecialShellOpts {
  */
 export function renderSpecialShell(reply: FastifyReply, opts: SpecialShellOpts): void {
   try {
-    const html = readFileSync(SPA_INDEX_PATH, "utf-8")
+    const html = loadSpaIndexHtml()
       .replace("__CSRF_TOKEN__", "")
       .replace("__LANG__", () => opts.lang)
       .replace("__TITLE__", () => esc(opts.title))

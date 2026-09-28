@@ -1316,6 +1316,18 @@ export async function importDigiflazzBrand(
     // {id, name} of every denomination this call created/updated, so that
     // pass never has to re-query for rows this same loop already touched.
     const touchedDenoms: { id: number; name: string }[] = [];
+
+    // Batch the existence check that used to run as one findFirst PER row
+    // (N sequential round-trips inside this 10s-bounded transaction — P1,
+    // Task 6 fix) into a single findMany, then look up by supplierSku via a
+    // Map inside the loop below. The per-row create/update calls themselves
+    // stay untouched — they have their own side effects (e.g. slug
+    // generation on create) that must not be batched.
+    const existingDenoms = await tx.denomination.findMany({
+      where: { productId: product.id, supplierSku: { in: args.rows.map((r) => r.buyerSkuCode) } },
+    });
+    const existingDenomBySku = new Map(existingDenoms.map((d) => [d.supplierSku, d]));
+
     for (const row of args.rows) {
       const price = quantizeMoney(row.price, 4);
       const costPrice = quantizeMoney(row.costPrice, 4);
@@ -1330,9 +1342,7 @@ export async function importDigiflazzBrand(
       // resync matching key) stays row.buyerSkuCode, untouched.
       const denomName = stripRegionSuffix(row.productName);
 
-      const existingDenom = await tx.denomination.findFirst({
-        where: { productId: product.id, supplierSku: row.buyerSkuCode },
-      });
+      const existingDenom = existingDenomBySku.get(row.buyerSkuCode);
       if (existingDenom) {
         await updateDenomination(tx, existingDenom.id, {
           name: denomName,

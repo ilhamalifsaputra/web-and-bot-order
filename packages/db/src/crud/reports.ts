@@ -844,7 +844,21 @@ export async function listOrderItemsExpiringWarranty(
         deliveredAt: { not: null, gte: lookback },
       },
     },
-    include: { product: true, order: { include: { user: true } } },
+    // Narrowed to exactly what this function and its one caller
+    // (apps/web-admin/src/routes/api/dashboard.ts's /api/dashboard/expirations)
+    // read off the rows — see task-9-report.md for the caller trace.
+    select: {
+      warrantyDaysSnapshot: true,
+      product: { select: { name: true } },
+      order: {
+        select: {
+          id: true,
+          orderCode: true,
+          deliveredAt: true,
+          user: { select: { username: true, telegramId: true } },
+        },
+      },
+    },
   });
   return rows.filter((item) => {
     const deliveredAt = item.order.deliveredAt;

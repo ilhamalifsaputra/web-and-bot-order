@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { peekWarmUser, primeWarmUser, invalidateWarmUser } from "./warmUserCache";
+import { peekWarmUser, primeWarmUser, invalidateWarmUser, pruneWarmUserCache, cacheSize } from "./warmUserCache";
 
 function sampleSnap(overrides: Partial<Parameters<typeof primeWarmUser>[1]> = {}) {
   return {
@@ -56,5 +56,30 @@ describe("warmUserCache", () => {
     primeWarmUser("444", sampleSnap({ id: 444 }));
     invalidateWarmUser(999);
     expect(peekWarmUser("444")).toBeDefined();
+  });
+
+  it("pruneWarmUserCache reclaims an entry whose TTL elapsed without it ever being read again", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    primeWarmUser("555", sampleSnap({ id: 555 }));
+    const sizeBefore = cacheSize();
+
+    // Past the 5-minute TTL, but never read via peekWarmUser (which would
+    // have lazily evicted it itself) — only pruneWarmUserCache touches it.
+    vi.setSystemTime(6 * 60 * 1000);
+    pruneWarmUserCache();
+
+    expect(cacheSize()).toBe(sizeBefore - 1);
+    expect(peekWarmUser("555")).toBeUndefined();
+  });
+
+  it("pruneWarmUserCache leaves an unexpired entry alone", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    primeWarmUser("666", sampleSnap({ id: 666 }));
+
+    pruneWarmUserCache(); // runs immediately, well within the TTL
+
+    expect(peekWarmUser("666")).toBeDefined();
   });
 });

@@ -382,6 +382,41 @@ export const joinGate: MiddlewareFn<MyContext> = async (ctx, next) => {
   await ctx.reply(text, { reply_markup: kb });
 };
 
+/** Test-only observation hook: current entry count, without exposing the Map
+ * itself. */
+export function joinGateCacheSize(): number {
+  return joinGateCache.size;
+}
+
+/** How often pruneJoinGateCache runs. Fixed, mirroring sweepRateLimitBuckets
+ * above — 10 minutes is frequent enough to bound memory growth from users
+ * who never come back without meaningfully increasing peak Map size between
+ * sweeps. */
+const JOIN_GATE_SWEEP_INTERVAL_MS = 10 * 60 * 1000;
+
+/**
+ * Reclaims join-gate verdicts whose TTL has fully elapsed, for a user who
+ * never triggers another `joinGate` update after going stale — `joinGate`
+ * itself only ever refreshes an entry on its own next read (or leaves a
+ * stale one in place if it's still within the TTL), so it can never reach
+ * this case on its own. Without this, `joinGateCache` grows by one entry per
+ * unique Telegram user for the life of the process, never shrinking after
+ * that user stops interacting with the bot.
+ *
+ * Exported so a test can call it directly rather than waiting on the real
+ * timer below.
+ */
+export function pruneJoinGateCache(): void {
+  const now = Date.now();
+  for (const [userId, entry] of joinGateCache) {
+    if (now - entry.checkedAt > JOIN_GATE_CACHE_TTL_MS) joinGateCache.delete(userId);
+  }
+}
+
+// `.unref()` so this background sweep never keeps the process alive on its
+// own (this repo's convention for non-critical background timers).
+setInterval(pruneJoinGateCache, JOIN_GATE_SWEEP_INTERVAL_MS).unref();
+
 // --- commerce gate (blanket private-chat-only guard) -----------------------
 
 /** Slash commands that ARE a customer commerce action in their own right —

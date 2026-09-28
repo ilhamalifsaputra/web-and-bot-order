@@ -97,3 +97,37 @@ export function invalidateWarmUser(userId: number): void {
     }
   }
 }
+
+/** Test-only observation hook: current entry count, without exposing the Map
+ * itself. */
+export function cacheSize(): number {
+  return cache.size;
+}
+
+/** How often pruneWarmUserCache runs. Fixed, mirroring middleware.ts's
+ * sweepRateLimitBuckets — 10 minutes is frequent enough to bound memory
+ * growth from users who never come back without meaningfully increasing
+ * peak Map size between sweeps. */
+const SWEEP_INTERVAL_MS = 10 * 60 * 1000;
+
+/**
+ * Reclaims warm-cache entries whose TTL has fully elapsed, for a user who
+ * never triggers another `peekWarmUser` read after going stale — the case
+ * lazy eviction (inside `peekWarmUser` itself) can never reach on its own.
+ * Without this, `cache` grows by one entry per unique Telegram user for the
+ * life of the process, never shrinking after that user stops interacting
+ * with the bot.
+ *
+ * Exported so a test can call it directly rather than waiting on the real
+ * timer below.
+ */
+export function pruneWarmUserCache(): void {
+  const now = Date.now();
+  for (const [telegramId, snap] of cache) {
+    if (now - snap.syncedAt > TTL_MS) cache.delete(telegramId);
+  }
+}
+
+// `.unref()` so this background sweep never keeps the process alive on its
+// own (this repo's convention for non-critical background timers).
+setInterval(pruneWarmUserCache, SWEEP_INTERVAL_MS).unref();

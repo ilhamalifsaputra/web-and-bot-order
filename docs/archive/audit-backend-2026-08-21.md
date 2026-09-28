@@ -12,7 +12,7 @@ and prioritization before any fix lands.
 (317 files / 5,018 tests) as of commit `93f4995`.
 **Methodology:** 3 parallel agents, each covering a disjoint slice of the backend
 (core+db; the two Fastify server layers; the Telegram bot + process orchestration +
-outbox dispatcher). Each was required to read `docs/audit-backend-2026-07-31.md` first
+outbox dispatcher). Each was required to read `docs/archive/audit-backend-2026-07-31.md` first
 and report only genuinely new issues or regressions, noting explicitly what from that
 audit is now fixed vs. still open. Every Critical below was independently traced to
 source by its agent, not inferred.
@@ -27,7 +27,7 @@ source by its agent, not inferred.
 
 ### The good news first: remediation from the prior audit is real
 
-Every High from `docs/audit-backend-2026-07-31.md` reachable in this pass's scope is
+Every High from `docs/archive/audit-backend-2026-07-31.md` reachable in this pass's scope is
 **fixed and independently re-verified against source** — not just marked fixed. That
 includes H-1 (TokoPay fee-base mismatch), H-2 (`canCredit`/`canReject` asymmetry), H-3
 (claim consumed on failed delivery), H-4 (bcrypt hash/email leakage — closed via

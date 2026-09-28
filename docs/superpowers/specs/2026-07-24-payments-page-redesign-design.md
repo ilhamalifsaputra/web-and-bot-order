@@ -5,7 +5,7 @@
 
 ## Problem
 
-`docs/audit-ui-ux-structural-2026-07-24.md` ranked `PaymentsPage.tsx` P0/P1: its summary
+`docs/archive/audit-ui-ux-structural-2026-07-24.md` ranked `PaymentsPage.tsx` P0/P1: its summary
 stat cards are computed client-side from only the current page of the ledger (so "Today's
 Transactions" silently becomes wrong once pagination is in play — a real correctness bug, not
 just a cosmetic gap), and the page is missing search, bulk actions, a shared `Pagination`

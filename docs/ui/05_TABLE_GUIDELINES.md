@@ -109,7 +109,7 @@ add it to a single table's columns.
 - Render identifiers/codes with `font-mono` (`01_DESIGN_SYSTEM.md` §4).
 - Never render a raw backend enum, snake_case action code, or bare numeric ID as a
   cell value — always map it to a human-readable label (this is a repo-wide rule, not
-  table-specific — see `docs/ui-refactor/design-system.md`'s findings on the Orders
+  table-specific — see `docs/archive/ui-refactor/design-system.md`'s findings on the Orders
   status filter and the Audit Log's admin-as-numeric-ID column for the exact bugs
   this rule prevents).
 

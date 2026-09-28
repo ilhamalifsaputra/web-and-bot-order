@@ -21,7 +21,7 @@ export default function StockBadge({ available, lowThreshold, allNonAuto }: Stoc
       // 4.49:1 on grass-tint, 0.01 short of WCAG AA. This one-off nudge is a
       // §26.2 extension token scoped to this badge's foreground only — the
       // shared --color-grass-dark (StatusBadge, ProductCard, …) is untouched.
-      // See src/styles/tokens.extensions.css + docs/implementation/extensions.md.
+      // See src/styles/tokens.extensions.css + docs/archive/implementation/extensions.md.
       <span className="rounded-full bg-grass-tint px-2.5 py-1 text-xs font-medium text-grass-dark-aa">
         {t("web.stock_available")}
       </span>

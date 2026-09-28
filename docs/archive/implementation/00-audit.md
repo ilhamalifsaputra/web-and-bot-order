@@ -1,7 +1,7 @@
 # 00 — Repository & Design-System Audit
 
 Produced for Task 1 of the storefront redesign (`.superpowers/sdd/plan.md`).
-Covers §5.2 of `FRONTEND_IMPLEMENTATION_PROMPT_v3.md`. No `TBD` cells.
+Covers §5.2 of `docs/archive/FRONTEND_IMPLEMENTATION_PROMPT_v3.md`. No `TBD` cells.
 
 > **Note on sources.** `gogogo-frontend/design-system/*` and
 > `FRONTEND_IMPLEMENTATION_PROMPT_v3.md` are untracked in the main repo and

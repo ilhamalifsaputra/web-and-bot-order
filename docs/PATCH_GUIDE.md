@@ -2,7 +2,7 @@
 
 Setiap bugfix — sekecil apa pun — didokumentasikan dengan template di bawah,
 ditambahkan sebagai entri baru ke [CHANGELOG.md](CHANGELOG.md) (bagian
-`Fixed`) dan, bila ada perubahan skema, ke [DATABASE.md](DATABASE.md) +
+`Fixed`) dan, bila ada perubahan skema, ke [DATABASE.md](arsitektur/DATABASE.md) +
 [MIGRATIONS.md](MIGRATIONS.md). Dokumentasi adalah bagian dari fix, bukan
 langkah opsional setelahnya.
 

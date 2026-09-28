@@ -60,7 +60,7 @@ export async function optionalAdmin(req: FastifyRequest): Promise<AdminSession |
 // Structural / money / account / high-impact routes — super only. All
 // mutations now arrive at the JSON /api/* surface (the legacy form routes
 // these prefixes originally matched were deleted once the React SPA became
-// the only caller — see docs/audit-fitur-md-2026-07-04.md); these prefixes
+// the only caller — see docs/archive/audit-fitur-md-2026-07-04.md); these prefixes
 // must track the live paths or every non-super role silently loses its RBAC
 // grants (a real regression caught by the /api/* test-trio work).
 // `/api/settlements` (task F1) is listed EXPLICITLY rather than left to

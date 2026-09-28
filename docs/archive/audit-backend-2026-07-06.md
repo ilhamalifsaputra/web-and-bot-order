@@ -9,7 +9,7 @@ and prioritization before any fix lands.
 **Methodology:** 6 parallel agents, one per area below, each independently auditing its
 slice against `auditBackend.md`'s brief. Each agent was instructed to first check whether
 a finding was already covered by the prior full security/business-logic audit at
-`docs/audit-security-2026-06-23.md` (56 findings, most Critical/High already fixed) and
+`docs/archive/audit-security-2026-06-23.md` (56 findings, most Critical/High already fixed) and
 only report genuinely new issues, regressions of previously-fixed items, or items that
 doc explicitly left deferred.
 
@@ -447,11 +447,11 @@ with its web-admin counterpart, rather than fixing each individually.
 
 ## 6. Schema & deploy discipline
 
-### Schema-1 [MEDIUM] — `docs/DATABASE.md` missing model-inventory rows for the two newest migrations
+### Schema-1 [MEDIUM] — `docs/arsitektur/DATABASE.md` missing model-inventory rows for the two newest migrations
 **Problem:** `prisma/migrations/20260624160712_add_order_status_history/` adds a whole
 new table (`order_status_history`) plus 5 columns to `orders` (`confirmations`,
 `confirmed_at`, `first_detected_at`, `network`, `required_confirmations`) — none of this
-appears in `docs/DATABASE.md`'s Order table. `prisma/migrations/20260706120000_broadcast_image/`
+appears in `docs/arsitektur/DATABASE.md`'s Order table. `prisma/migrations/20260706120000_broadcast_image/`
 (today's `ab1411a`) adds `broadcasts.web_image_url`/`image_file_id` — also undocumented.
 **Impact:** No P2022 risk (columns nullable), but `docs/PATCH_GUIDE.md` explicitly
 requires updating `DATABASE.md`/`MIGRATIONS.md` on schema change; that step was skipped

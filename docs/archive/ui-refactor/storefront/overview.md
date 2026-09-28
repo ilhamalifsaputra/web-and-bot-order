@@ -67,7 +67,7 @@ journey. It is an environment/config limitation, not a code defect, and is calle
 
 ## Deliverables
 
-All files below live under `docs/ui-refactor/storefront/`:
+All files below now live under `docs/archive/ui-refactor/storefront/`:
 
 - `overview.md` (this file)
 - `findings.md` — every issue (ID, severity, page, screenshot, current/expected behavior, recommendation,

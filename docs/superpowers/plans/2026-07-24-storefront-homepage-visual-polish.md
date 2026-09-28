@@ -466,7 +466,7 @@ git commit -m "feat(storefront-client): standardize category/contact card hover 
 
 **Interfaces:**
 - Consumes: nothing new.
-- Produces: nothing consumed by later tasks. Closes the gap flagged in `docs/ui-refactor/storefront/design-system.md` ("Cards" section: "Coming soon" teasers visually match real clickable cards).
+- Produces: nothing consumed by later tasks. Closes the gap flagged in `docs/archive/ui-refactor/storefront/design-system.md` ("Cards" section: "Coming soon" teasers visually match real clickable cards).
 
 - [ ] **Step 1: Write the failing test**
 

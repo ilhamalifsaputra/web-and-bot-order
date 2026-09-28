@@ -53,7 +53,7 @@ const ARBITRARY_OFFTOKEN = String.raw`-\[[^\]]*(?:#[0-9a-fA-F]{3,8}|(?:rgba?|hsl
 const INLINE_LENGTH = String.raw`\d(?:\.\d+)?(?:px|rem|em)\b`;
 
 const MSG_ARBITRARY =
-  "Off-token Tailwind arbitrary value (hard-coded colour or px). Use a design token utility (bg-pine, text-ink, p-4, …) or add a --gg-* extension token in src/styles/tokens.extensions.css and log it in docs/implementation/extensions.md (§26.2).";
+  "Off-token Tailwind arbitrary value (hard-coded colour or px). Use a design token utility (bg-pine, text-ink, p-4, …) or add a --gg-* extension token in src/styles/tokens.extensions.css and log it in docs/archive/implementation/extensions.md (§26.2).";
 const MSG_HEX =
   "Raw colour literal in application code. Reference a design token instead; raw colour values belong only in src/styles/**.";
 const MSG_INLINE_LEN =

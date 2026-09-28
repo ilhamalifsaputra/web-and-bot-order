@@ -104,7 +104,7 @@ outbox (`sendMessage` saja, bukan `getUpdates`) tidak memicu error ini.
 ### Sesi/conversation bot reset ke menu utama setelah restart
 
 **Bukan bug** — sesi bot disimpan in-memory (lihat
-[ARCHITECTURE.md](ARCHITECTURE.md) "Catatan desain yang diketahui"). Restart
+[ARCHITECTURE.md](arsitektur/ARCHITECTURE.md) "Catatan desain yang diketahui"). Restart
 proses mereset state aktif. Informasikan ke pengguna sebelum maintenance
 window jika memungkinkan.
 
@@ -174,7 +174,7 @@ internet gateway.
 **Fix:** Daftarkan `https://<SHOP_PUBLIC_URL>/pay/{tokopay,paydisini}/callback`
 di dashboard masing-masing (NOWPayments otomatis, tidak perlu manual).
 Reconcile poller (`POLL_INTERVAL_SECONDS`) tetap jadi fallback selama
-jendela bayar belum habis — lihat [PAYMENT_GATEWAY.md](PAYMENT_GATEWAY.md).
+jendela bayar belum habis — lihat [PAYMENT_GATEWAY.md](arsitektur/PAYMENT_GATEWAY.md).
 
 **Sejak Task 12:** kalau reconcile poller-nya sendiri juga berhenti (bukan
 cuma webhook-nya) — bukan lagi silent sampai order menumpuk lalu
@@ -213,7 +213,7 @@ intervensi manual untuk kasus ini.
 
 **Fix:** Panel admin `/outbox` → tombol **Retry** (`retryNotification`) —
 reset `attempts=0`, hapus backoff, requeue ke `PENDING`. Lihat
-[QUEUE_SYSTEM.md](QUEUE_SYSTEM.md).
+[QUEUE_SYSTEM.md](arsitektur/QUEUE_SYSTEM.md).
 
 ### Channel testimoni tidak pernah posting
 

@@ -227,6 +227,6 @@ Settings writes already audit through `logAdminAction`, so no extra audit wiring
 
 **Surface the channel** so email rows are distinguishable from Telegram rows and the existing Retry button reads sensibly: include `channel` in `listNotifications` (`packages/db/src/crud/notifications.ts:719`) and in the route response (`apps/web-admin/src/routes/outbox.ts`), then render it as a badge in `apps/web-admin/client/src/pages/OutboxPage.tsx` using the existing `StatusBadge`/badge idiom on that page. Extend `humanizeEventCode`/`eventLabel` (:39/:47) to give the four new events readable labels.
 
-**Docs — `docs/QUEUE_SYSTEM.md`** (written in Indonesian; match that): document the `channel` column in the "Skema kolom" table, and add a short section on the email lane — what it delivers, that SMTP-unconfigured releases with backoff rather than failing, and the subject-line rule about the order code.
+**Docs — `docs/arsitektur/QUEUE_SYSTEM.md`** (written in Indonesian; match that): document the `channel` column in the "Skema kolom" table, and add a short section on the email lane — what it delivers, that SMTP-unconfigured releases with backoff rather than failing, and the subject-line rule about the order code.
 
 **Verify:** `pnpm exec vitest run apps/web-admin/`, then the full `pnpm typecheck` and `pnpm test`.

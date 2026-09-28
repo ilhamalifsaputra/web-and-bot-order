@@ -189,8 +189,7 @@ bordered content card, not a full-bleed band.
 
 **Files.** `apps/storefront/client/src/styles/tokens.extensions.css`,
 `apps/storefront/client/src/index.css`,
-`apps/storefront/client/docs/implementation/extensions.md` *(repo path:
-`docs/implementation/extensions.md`)*, `apps/storefront/client/src/pages/HomePage.tsx`,
+`docs/archive/implementation/extensions.md`, `apps/storefront/client/src/pages/HomePage.tsx`,
 `apps/storefront/client/src/components/AuthBrandPanel.tsx`.
 
 ---
@@ -1347,7 +1346,7 @@ changed value, endpoint or handler.
    `text-[11px]` allowlist** in `apps/storefront/client/eslint.config.js`.
    `TicketDetailPage.tsx` stays in Group-B for its `grid-cols-[1fr_320px]`
    side-rail layout (unchanged). Logged in
-   `docs/implementation/extensions.md` under "Component-pattern exceptions": no
+   `docs/archive/implementation/extensions.md` under "Component-pattern exceptions": no
    new hue, radius or shadow; derived entirely from `Card` / `pine-tint/30` /
    `pine`-`sand` avatar circle / 4px spacing / `text-xs ink-faint` timestamps.
    No pricing/auth/legal/destructive semantics, so **not** a §28.2 escalation.
@@ -1449,7 +1448,7 @@ copy, none of which moved.
 `apps/storefront/client/src/components/shop/TicketStatusBadge.tsx`,
 `apps/storefront/client/src/components/shop/TicketOrderSummaryCard.tsx`,
 `apps/storefront/client/eslint.config.js` (Group-B allowlist: `TicketMessageThread` removed),
-`docs/implementation/extensions.md` (§26.2 chat/thread row).
+`docs/archive/implementation/extensions.md` (§26.2 chat/thread row).
 
 ---
 

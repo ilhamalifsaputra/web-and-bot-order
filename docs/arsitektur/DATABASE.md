@@ -21,11 +21,11 @@ SQLite. **Yang bisa berbeda per toko adalah status cutover instance
 produksinya**: toko yang belum menjalankan proses migrasi masih menjalankan
 database live-nya di SQLite lama (`data/bot.db`, mode **WAL**) sampai
 operatornya menjalankan runbook
-[`POSTGRES_MIGRATION.md`](POSTGRES_MIGRATION.md). Sebelum cutover itu
+[`POSTGRES_MIGRATION.md`](../POSTGRES_MIGRATION.md). Sebelum cutover itu
 selesai untuk toko tersebut, jangan campur "skema di repo" (selalu
 Postgres-only sejak commit engine-swap) dengan "database yang sedang jalan
 di produksi toko itu" (bisa saja masih SQLite). Backup/restore untuk kedua
-kondisi ini dijelaskan di [`BACKUP_AND_RESTORE.md`](BACKUP_AND_RESTORE.md).
+kondisi ini dijelaskan di [`BACKUP_AND_RESTORE.md`](../BACKUP_AND_RESTORE.md).
 
 > ⚠️ **Jangan ubah nama kolom/tabel** tanpa migrasi — setiap `@map`/`@@map`
 > mempertahankan nama kolom apa adanya dari skema lama (lihat komentar header
@@ -156,7 +156,7 @@ erDiagram
 | `NotificationOutbox` | `notification_outbox` | Antrian — lihat [QUEUE_SYSTEM.md](QUEUE_SYSTEM.md) untuk `claimedAt`/`nextRetryAt`. |
 | `Broadcast` | `broadcasts` | Diisi web, dikonsumsi bot (`drainBroadcasts`) — web tidak pernah kirim Telegram langsung. Kolom `webImageUrl`/`imageFileId` (migrasi `20260706120000_broadcast_image`) — pasangan yang sama dengan produk/denominasi: `webImageUrl` path upload disk, `imageFileId` cache Telegram `file_id` yang di-resolve saat `sendPhoto` pertama. Kalau ada image, `drainBroadcasts` kirim via `sendPhoto` (caption maks 1024 char), bukan `sendMessage`. |
 | `AuditLog` | `audit_logs` | `adminId` nullable (`null` = aksi sistem/auto). Index `createdAt`. |
-| `Setting` | `settings` | Key-value generik — kredensial, flag, JTI sesi, semua bercampur di satu tabel (lihat catatan desain di [SECURITY.md](SECURITY.md)). |
+| `Setting` | `settings` | Key-value generik — kredensial, flag, JTI sesi, semua bercampur di satu tabel (lihat catatan desain di [SECURITY.md](../SECURITY.md)). |
 
 ### Idempotency ledger pembayaran
 

@@ -87,7 +87,7 @@ h1, h2, h3 { font-family: 'Outfit', system-ui, sans-serif; }
 
    This is the "containment depth may use a fill" half of the amended
    tokens.css §6 rule — INTERACTION depth (hover/active) is still shadow-only
-   and must not recolour a surface. See docs/implementation/deviations.md
+   and must not recolour a surface. See docs/archive/implementation/deviations.md
    §20-nested-surface. Cap nesting at this level: there is no .card-3.
 
    .card-pad-2 is a flat 1rem, not .card-pad's responsive 1.25→1.5rem — an

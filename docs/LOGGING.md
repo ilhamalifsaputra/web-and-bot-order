@@ -12,7 +12,8 @@ untuk keduanya.
 | Contoh buruk | `"added=150 parse_skipped=2 dedup_skipped=1"` | `"admin_command: user=123 via=cb"` |
 | Contoh baik | `"Added 150 items; skipped 2 invalid lines and 1 duplicate."` | `"Admin command from user 123 via a callback button"` |
 
-Lihat juga aturan **"Never log secrets"** di [`../CLAUDE.md`](../CLAUDE.md)
+Lihat juga aturan **"Never log secrets"** di
+[`../.claude/CLAUDE.md`](../.claude/CLAUDE.md)
 ("Never do") — kredensial, `file_id` bukti bayar, hash password, dan DB URL
 lengkap tidak boleh masuk ke `details` audit log maupun ke pesan Pino,
 keduanya.

@@ -2,7 +2,7 @@
 
 Ringkasan arsitektur uang (money), model harga, dan logika matematis di repo
 ini. Ditulis sebagai referensi cepat — untuk detail historis/bug-fix lihat
-`docs/audit-security-2026-06-23.md` (bagian C: Pricing, Voucher, Wallet & FX).
+`docs/archive/audit-security-2026-06-23.md` (bagian C: Pricing, Voucher, Wallet & FX).
 
 ## 1. Base currency: IDR, bukan multicurrency sejajar
 
@@ -303,5 +303,5 @@ apa pun (IDR saja, USDT saja, keduanya, atau tidak ada).
 
 - `packages/core/src/{money,formatters,fx,flash,bulk}.ts`
 - `packages/db/src/crud/{pricing,orders,vouchers,wallet_checkout,reports}.ts`
-- `docs/audit-security-2026-06-23.md` (bagian C: Pricing, Voucher, Wallet &
+- `docs/archive/audit-security-2026-06-23.md` (bagian C: Pricing, Voucher, Wallet &
   FX) untuk histori bug-fix di area ini.

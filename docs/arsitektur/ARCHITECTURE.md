@@ -20,18 +20,18 @@ istilah-istilah generik sering diasumsikan ada padahal tidak:
   `data/bot.db`, mode WAL, diakses langsung dalam proses). Instance yang
   sudah cutover ke **PostgreSQL** (target skema `datasource` sejak
   engine-swap 2026-08-27) menjalankan Postgres sebagai proses/container
-  server sendiri — lihat [`POSTGRES_MIGRATION.md`](POSTGRES_MIGRATION.md)
+  server sendiri — lihat [`POSTGRES_MIGRATION.md`](../POSTGRES_MIGRATION.md)
   untuk status cutover per toko.
 - **Tidak ada API publik (REST/GraphQL)** untuk pihak ketiga — admin &
   storefront adalah React SPA yang dilayani JSON API internal (bukan
-  kontrak stabil untuk klien luar), lihat [API_REFERENCE.md](API_REFERENCE.md).
+  kontrak stabil untuk klien luar), lihat [API_REFERENCE.md](../API_REFERENCE.md).
 
 ## Frontend
 
 Tiga permukaan, satu bahasa visual ("Clean Modern" — token warna/font/
 radius/shadow yang sama, ditranskripsi ke `client/src/index.css` masing-
 masing app sejak migrasi ke React; lihat riwayatnya di
-[REACT_STOREFRONT_MIGRATION.md](REACT_STOREFRONT_MIGRATION.md)):
+[REACT_STOREFRONT_MIGRATION.md](../REACT_STOREFRONT_MIGRATION.md)):
 
 | Permukaan | Teknologi | Rendering |
 |---|---|---|
@@ -52,7 +52,7 @@ yang:
    per-koneksi); dulu mengaktifkan PRAGMA SQLite (WAL + `busy_timeout`),
    dipertahankan sebagai fungsi kosong supaya caller lama tidak perlu diubah.
 2. Resolve token bot/admin ids/cookie secret (DB menang atas `.env` — lihat
-   [CONFIGURATION.md](CONFIGURATION.md)).
+   [CONFIGURATION.md](../CONFIGURATION.md)).
 3. Boot instance Fastify untuk admin + storefront.
 4. Inisialisasi bot grammY (`polling` atau `webhook` sesuai `BOT_MODE`).
 5. Jalankan worker in-process (lihat bagian Workers di bawah).
@@ -113,7 +113,7 @@ sendiri (mis. tick lambat bertemu tick berikutnya) — mencegah double-send.
 **PostgreSQL** — target skema `datasource` sejak engine-swap 2026-08-27 —
 satu `PrismaClient` singleton dibagi semua komponen di atas. Instance toko
 yang belum menjalankan runbook
-[`POSTGRES_MIGRATION.md`](POSTGRES_MIGRATION.md) masih di SQLite satu file,
+[`POSTGRES_MIGRATION.md`](../POSTGRES_MIGRATION.md) masih di SQLite satu file,
 mode WAL. Detail model/relasi: [DATABASE.md](DATABASE.md).
 
 ## Sistem antrian (bukan queue eksternal)
@@ -184,7 +184,7 @@ Tidak ada socket persisten. Dua mekanisme live-update:
 
 - **Sesi bot in-memory** — restart proses mereset conversation/menu state
   pengguna aktif ke menu utama. Lihat catatan di
-  [UPDATE_GUIDE.md](UPDATE_GUIDE.md) "Cache & Redis".
+  [UPDATE_GUIDE.md](../UPDATE_GUIDE.md) "Cache & Redis".
 - **Rate-limit in-memory** — reset saat restart, tidak terbagi antar proses
   (tapi hanya ada satu proses, jadi ini bukan masalah horizontal-scaling
   hari ini).
@@ -192,10 +192,10 @@ Tidak ada socket persisten. Dua mekanisme live-update:
   postgres-only sejak engine-swap 2026-08-27, jadi ini bukan lagi constraint
   arsitektur yang berlaku untuk skema itu sendiri. Constraint-nya masih
   berlaku untuk toko yang **belum** menjalankan runbook
-  [`POSTGRES_MIGRATION.md`](POSTGRES_MIGRATION.md): `apps/server` SATU
+  [`POSTGRES_MIGRATION.md`](../POSTGRES_MIGRATION.md): `apps/server` SATU
   proses adalah jaminan keamanan-nya di sana, jadi jangan jalankan dua
   instance menulis ke `bot.db` yang sama. Setelah cutover ke Postgres,
   concurrent writer ditangani native oleh database — unifikasi proses
   `apps/server` tetap dipertahankan untuk alasan lain (routing by-hostname),
   bukan lagi syarat korektnes tulis-data (lihat catatan lintas-domain di
-  `docs/audit-security-2026-06-23.md`).
+  `docs/archive/audit-security-2026-06-23.md`).

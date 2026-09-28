@@ -62,7 +62,7 @@ alongside the content:
 
 **Rule: use this jump-nav + flat-cards pattern for any new settings surface. Do not
 introduce an accordion/collapsible-section pattern** — it's a deliberate choice
-(F-012 in `docs/ui-refactor/`) so an admin can jump straight to one section instead
+(F-012 in `docs/archive/ui-refactor/`) so an admin can jump straight to one section instead
 of expanding/collapsing through 9+ others.
 
 **Exception — the Payment Gateways nav group only**: the nav's list of individual

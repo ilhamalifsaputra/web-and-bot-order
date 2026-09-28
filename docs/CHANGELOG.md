@@ -73,7 +73,7 @@ tag git yang sungguhan sampai dokumen ini ditulis.
   checkout/ghost-order dedup, reservasi stok atomik, validasi qty
   server-side, voucher per-user cap, klaim atomik outbox + backoff, RBAC
   default-deny, setup-wizard re-lock, FK finansial `Restrict`, crash handler
-  global, dan lainnya. Detail penuh: `docs/audit-security-2026-06-23.md`.
+  global, dan lainnya. Detail penuh: `docs/archive/audit-security-2026-06-23.md`.
 - 4 migrasi Prisma baru: voucher redemptions, kolom klaim/backoff outbox,
   FK finansial restricted.
 

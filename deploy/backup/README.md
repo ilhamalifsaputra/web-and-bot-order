@@ -1,9 +1,9 @@
 # Backup & Restore — SQLite & PostgreSQL (execution/06, M-5)
 
-Stack ini sedang dalam masa transisi engine: produksi hari ini masih memakai
-**satu** file SQLite `data/bot.db` dalam mode **WAL**
-(`PRAGMA journal_mode=WAL`, `packages/db/src/client.ts`), dan akan pindah ke
-**PostgreSQL** lewat proses cutover di [../../docs/POSTGRES_MIGRATION.md](../../docs/POSTGRES_MIGRATION.md).
+Stack saat ini memakai **PostgreSQL**. Bagian SQLite di bawah berlaku untuk
+instalasi lama yang belum menyelesaikan cutover dari file `data/bot.db` mode
+**WAL**; ikuti [runbook cutover](../../docs/POSTGRES_MIGRATION.md) untuk
+memindahkannya ke PostgreSQL.
 `backup.sh` dan `restore.sh` di folder ini adalah **skrip yang sama** untuk
 kedua engine — keduanya mendeteksi otomatis mana yang aktif, jadi entri cron
 dan kebiasaan operator tidak berubah saat cutover terjadi. Dokumen ini

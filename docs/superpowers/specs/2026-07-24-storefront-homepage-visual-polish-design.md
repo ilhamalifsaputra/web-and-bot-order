@@ -25,8 +25,8 @@ cards, a solid-`pine` "Our Promise" stat band, a trust checklist card, testimoni
 scroll via `.reveal`/`IntersectionObserver` with a 2s fallback timeout (STO-006,
 already fixed, untouched by this spec).
 
-Reference audit: `docs/ui-refactor/storefront/homepage.md`,
-`docs/ui-refactor/storefront/design-system.md` (colors/branding/component library
+Reference audit: `docs/archive/ui-refactor/storefront/homepage.md`,
+`docs/archive/ui-refactor/storefront/design-system.md` (colors/branding/component library
 "treated as fixed" per this repo's CLAUDE.md).
 
 ## A. Hero background — layered depth, no new colors
@@ -96,7 +96,7 @@ polish, so treatment depends on whether the card is a link:
   a visually distinct non-interactive treatment — dashed border
   (`border-dashed`) and reduced-opacity icon well — so they read as "not yet
   available" without depending solely on the text badge. This closes an existing,
-  already-flagged gap in `docs/ui-refactor/storefront/design-system.md` ("Cards"
+  already-flagged gap in `docs/archive/ui-refactor/storefront/design-system.md` ("Cards"
   section).
 
 ## E. Color balance

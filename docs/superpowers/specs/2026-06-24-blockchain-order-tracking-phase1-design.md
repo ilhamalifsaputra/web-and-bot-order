@@ -191,7 +191,7 @@ tidak pernah jadi gerbang pengiriman barang.
   `PAY_BYBIT_BSC_KEYS`.
 - Env var baru (`.env.example`): `BSCSCAN_API_BASE`, `BSCSCAN_API_KEY`,
   `BYBIT_BSC_REQUIRED_CONFIRMATIONS`, `BYBIT_BSC_TRACKER_POLL_INTERVAL_SECONDS`.
-- `docs/ORDER_STATE_MACHINE.md` + `docs/PAYMENT_GATEWAY.md` diperbarui dengan
+- `docs/arsitektur/ORDER_STATE_MACHINE.md` + `docs/arsitektur/PAYMENT_GATEWAY.md` diperbarui dengan
   diagram transisi, tabel status, dan penjelasan "siapa yang memicu" untuk
   keempat status baru.
 

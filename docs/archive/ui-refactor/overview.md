@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-14
 **Scope:** `apps/web-admin` React SPA dashboard (`apps/web-admin/client`), served by the Fastify backend at `apps/web-admin/src`.
-**Constraint:** Audit and document only — no application source code was modified. The only writes in this phase are under `docs/ui-refactor/`.
+**Constraint:** Audit and document only — no application source code was modified. The only writes in this phase are now archived under `docs/archive/ui-refactor/`.
 
 ## How the app was run
 

@@ -1,6 +1,6 @@
 # Plan: Perbaikan UX/UI Storefront + Web-Admin
 
-Basis: `docs/audit-ui-ux-2026-06-21.md`. Eksekusi via subagent-driven development.
+Basis: `docs/archive/audit-ui-ux-2026-06-21.md`. Eksekusi via subagent-driven development.
 
 ## Global Constraints (WAJIB dipatuhi semua task)
 

@@ -3,12 +3,12 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development
 > to implement this plan task-by-task.
 
-**Goal:** Fix the 9 High and 37 Medium findings from `docs/audit-backend-2026-07-31.md`
+**Goal:** Fix the 9 High and 37 Medium findings from `docs/archive/audit-backend-2026-07-31.md`
 without regressing the baseline (typecheck clean, `pnpm test` green — 250 files / 3,106
 tests at the time of the audit). Low findings (26) are explicitly out of scope for this
 plan.
 
-**Source of truth for every finding:** `docs/audit-backend-2026-07-31.md`. Each task below
+**Source of truth for every finding:** `docs/archive/audit-backend-2026-07-31.md`. Each task below
 gives the finding ID, files, root cause and fix direction already verified against the
 source during the audit — the audit doc has the full failure-scenario narrative if an
 implementer wants more context, but the task text below is self-sufficient to implement.

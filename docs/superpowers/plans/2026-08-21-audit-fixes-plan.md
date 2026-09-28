@@ -1,4 +1,4 @@
-# Audit fixes plan — `docs/audit-backend-2026-08-21.md`
+# Audit fixes plan — `docs/archive/audit-backend-2026-08-21.md`
 
 Standalone numbered tasks (continuing the numbering from Task 8, the
 order-bot manual-SKU-buyability fix already committed as `1c540c8` on this
@@ -24,7 +24,7 @@ independent of each other unless stated otherwise.
 
 ## Task 9: Reject non-finite/non-positive prices from the Digiflazz price list instead of defaulting to zero
 
-**Finding:** `docs/audit-backend-2026-08-21.md` §1 Critical C-1 (first half).
+**Finding:** `docs/archive/audit-backend-2026-08-21.md` §1 Critical C-1 (first half).
 `packages/core/src/suppliers/digiflazz.ts:119-131` (`toPriceListItem`) maps
 `price: toDecimalOrZero(d.price)` — any unparseable, absent, non-finite, or
 non-positive supplier `price` field silently becomes `Decimal(0)` instead of
@@ -96,7 +96,7 @@ Self-review before committing: confirm `pnpm exec vitest run packages/core/src/s
 row after Task 9 lands — do not start this task until Task 9's commit exists
 on this branch).
 
-**Finding:** `docs/audit-backend-2026-08-21.md` §1 Critical C-1 (second half)
+**Finding:** `docs/archive/audit-backend-2026-08-21.md` §1 Critical C-1 (second half)
 + recommendation #1. Even with Task 9's per-row rejection, a different
 failure mode remains: a genuinely malformed *response* (e.g. a field rename,
 partial outage, wrong endpoint) could still cause `resyncDigiflazzCatalog`
@@ -199,7 +199,7 @@ is green, and run `pnpm typecheck` (the new `NotificationEvent` member and
 
 ## Task 11: Read-side role gate on credential/export routes (web-admin C-1)
 
-**Finding:** `docs/audit-backend-2026-08-21.md` §2 Critical C-1. The `readonly`
+**Finding:** `docs/archive/audit-backend-2026-08-21.md` §2 Critical C-1. The `readonly`
 web-admin role — the default for every newly-created admin
 (`apps/web-admin/src/routes/api/admins.ts:64`) — can currently read every
 unsold account credential and every CSV export, because
@@ -270,7 +270,7 @@ them first) and `pnpm typecheck` are green.
 
 ## Task 12: Live re-verification + order-kind check on the Digiflazz webhook (I-1/I-4)
 
-**Finding:** `docs/audit-backend-2026-08-21.md` §2 Important I-1 + §1 Important
+**Finding:** `docs/archive/audit-backend-2026-08-21.md` §2 Important I-1 + §1 Important
 I-4. `apps/storefront/src/routes/checkout.ts:1272-1325` (`POST
 /pay/digiflazz/callback`) trusts the callback body's `status`/`sn` once the
 signature (`verifyDigiflazzCallback`,
@@ -426,7 +426,7 @@ in behavior) and `pnpm typecheck` are green.
 
 ## Task 13: Alert admins + flag UNDERPAID on the three QRIS/IDR reconcile pollers (I-5)
 
-**Finding:** `docs/audit-backend-2026-08-21.md` §3 Important I-5. Three of six
+**Finding:** `docs/archive/audit-backend-2026-08-21.md` §3 Important I-5. Three of six
 payment reconcile pollers —
 `apps/order-bot/src/payments/tokopayReconcile.ts:189-193`,
 `paydisiniReconcile.ts:187-193`, `nowpaymentsReconcile.ts:223-227` (exact line
@@ -513,7 +513,7 @@ real paths first) are green, and `pnpm typecheck` passes.
 
 ## Task 14: Exclude wallet-topup orders from `reconcileFinances`'s order-drift check (I-1)
 
-**Finding:** `docs/audit-backend-2026-08-21.md` §1 Important I-1.
+**Finding:** `docs/archive/audit-backend-2026-08-21.md` §1 Important I-1.
 `packages/db/src/crud/reports.ts:28-30`'s order-drift query
 (`reconcileFinances`) has no `kind` filter — it loads every non-cancelled
 `Order` regardless of `kind`, then (further down the same function, past
@@ -558,7 +558,7 @@ are green.
 
 ## Task 15: Health watchdog for the outbox dispatcher (I-3)
 
-**Finding:** `docs/audit-backend-2026-08-21.md` §3 Important I-3. All six
+**Finding:** `docs/archive/audit-backend-2026-08-21.md` §3 Important I-3. All six
 payment reconcile pollers have a heartbeat-based health watchdog (see
 `apps/order-bot/src/jobs/index.ts:820-863`'s shared `pollWatchdog`, wrapped
 per-rail by `binancePollWatchdog`/`tokopayPollWatchdog`/etc., each reading a

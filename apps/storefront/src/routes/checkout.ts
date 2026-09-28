@@ -1367,7 +1367,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
   // Registered inside its own nested `app.register` so the raw-body-capturing
   // `addContentTypeParser` below is scoped ONLY to this one route (Fastify
   // encapsulates content-type parsers to the plugin context they're declared
-  // in — docs/Reference/ContentTypeParser.md) and never touches the
+  // in — see Fastify's ContentTypeParser reference) and never touches the
   // TokoPay/PayDisini/Digiflazz webhooks that share this file's outer
   // registration, none of which need the raw body (their signature schemes
   // hash specific fields, not the whole body — see tokopay.ts/paydisini.ts).

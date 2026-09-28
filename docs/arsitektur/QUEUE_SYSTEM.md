@@ -175,7 +175,7 @@ ulang dari query live pada setiap scrape (tidak ada cache polling).
 
 ## Kapan baris outbox tidak terkirim — diagnosis cepat
 
-Lihat [TROUBLESHOOTING.md](TROUBLESHOOTING.md) untuk daftar gejala→fix,
+Lihat [TROUBLESHOOTING.md](../TROUBLESHOOTING.md) untuk daftar gejala→fix,
 termasuk kasus `P2022` yang ditemukan saat dokumentasi ini ditulis (kolom
 `claimed_at`/`next_retry_at` hilang dari DB live karena `db push` belum
 dijalankan ulang pasca-update skema).

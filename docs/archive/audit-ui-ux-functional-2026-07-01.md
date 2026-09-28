@@ -12,9 +12,9 @@ Setiap temuan: **Severity · File:baris · Penyebab · Dampak · Solusi**. Sever
 Low / Info.
 
 > Audit ini melengkapi, bukan mengulang, tiga dokumen yang sudah ada:
-> `docs/audit-ui-ux-2026-06-21.md` (visual/responsive, storefront+web-admin lama, bot di luar
-> cakupan), `docs/audit-security-2026-06-23.md` (auth/CSRF/IDOR), dan
-> `docs/admin-ux-pass-v2-plan.md` (gap fitur vs brief eksternal `ui.txt`). Tidak ada temuan di
+> `docs/archive/audit-ui-ux-2026-06-21.md` (visual/responsive, storefront+web-admin lama, bot di luar
+> cakupan), `docs/archive/audit-security-2026-06-23.md` (auth/CSRF/IDOR), dan
+> `docs/archive/admin-ux-pass-v2-plan.md` (gap fitur vs brief eksternal `ui.txt`). Tidak ada temuan di
 > bawah yang tumpang tindih dengan ketiganya — semua diverifikasi ulang terhadap kode saat ini.
 
 ---
@@ -173,7 +173,7 @@ Low / Info.
 
 ### Sudah baik (web-admin) — tidak perlu tindakan
 - CSRF coverage lengkap di semua mutating fetch (`apiPost` + header `X-CSRF-Token`) — konsisten
-  dengan `docs/audit-security-2026-06-23.md`. Masalah 2.1 adalah bug bentuk-response, bukan CSRF.
+  dengan `docs/archive/audit-security-2026-06-23.md`. Masalah 2.1 adalah bug bentuk-response, bukan CSRF.
 - Denomination create, password-toggle di LoginPage, dan banner sukses/error di SettingsPage
   (password, 2FA, FX refresh, payment-method toggle) semuanya diverifikasi tersambung penuh ke
   route yang benar.

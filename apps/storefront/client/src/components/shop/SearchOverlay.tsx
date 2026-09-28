@@ -18,7 +18,7 @@
  *
  * Live results debounce (220ms) the EXISTING `GET /api/v1/pages/search?q=`
  * endpoint — no `?sort=`, no shareable results page (both dropped with the
- * route; logged in docs/implementation/deviations.md §12-search-overlay).
+ * route; logged in docs/archive/implementation/deviations.md §12-search-overlay).
  *
  * `SearchOverlayProvider` owns the open/close state and is mounted once in
  * `Layout.tsx`, above the routed page, so the overlay can float over any route

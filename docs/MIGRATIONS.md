@@ -118,7 +118,7 @@ catatan "skema mana yang sudah diterapkan" di DB manapun di repo ini —
 `db push` tidak menulis baris ke tabel itu. Folder `prisma/migrations/*`
 berfungsi sebagai **dokumentasi/audit-trail SQL**, bukan mekanisme penerapan
 yang dijalankan otomatis. Sebagian batch (mis. Infra-5/Pricing-1, lihat
-komentar di `docs/audit-security-2026-06-23.md`) memang dibuat & divalidasi
+komentar di `docs/archive/audit-security-2026-06-23.md`) memang dibuat & divalidasi
 byte-identik via `prisma migrate diff` terhadap shadow DB saat fitur
 ditambahkan — **tapi itu bukan jaminan yang berlaku untuk seluruh folder.**
 H-8 (2026-08-01) membuktikan sebaliknya: 12+ kolom dan 2 index nyata-nyata

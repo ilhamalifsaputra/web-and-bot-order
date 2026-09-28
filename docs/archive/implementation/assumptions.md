@@ -1,12 +1,12 @@
 # Assumptions & Escalation Log
 
-Per `FRONTEND_IMPLEMENTATION_PROMPT_v3.md` §28.3. One row per decision:
+Per `docs/archive/FRONTEND_IMPLEMENTATION_PROMPT_v3.md` §28.3. One row per decision:
 **date · question · decision / status · risk level · what changes if the
 assumption proves wrong.** Escalations that were resolved by a controller
 call under Auto Mode are recorded here as ASSUMPTIONs the user may still veto.
 
 Derived, low-risk `ASSUMPTION:` tags that live in code or in the audit
-(`docs/implementation/00-audit.md` §F) are not duplicated here — this file
+(`docs/archive/implementation/00-audit.md` §F) are not duplicated here — this file
 tracks the decisions that needed an explicit call.
 
 ---

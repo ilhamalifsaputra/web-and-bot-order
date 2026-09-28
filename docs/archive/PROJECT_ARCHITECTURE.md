@@ -40,8 +40,8 @@ graph TD
 
 ### Core Technologies
 *   **Runtime & Language:** Node.js (ESM) + TypeScript 5.
-*   **Package Manager:** pnpm 9.15.9 (configured via [pnpm-workspace.yaml](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/pnpm-workspace.yaml)).
-*   **Database ORM:** Prisma 5.22. The `schema.prisma` `datasource` targets **PostgreSQL** since the 2026-08-27 engine-swap (no longer optional — the `postgresql` provider rejects a SQLite `file:` URL outright). A given shop's production instance may still be running the pre-cutover **SQLite** engine (WAL mode) until its operator completes the [`POSTGRES_MIGRATION.md`](POSTGRES_MIGRATION.md) runbook.
+*   **Package Manager:** pnpm 9.15.9 (configured via [pnpm-workspace.yaml](../../pnpm-workspace.yaml)).
+*   **Database ORM:** Prisma 5.22. The `schema.prisma` `datasource` targets **PostgreSQL** since the 2026-08-27 engine-swap (no longer optional — the `postgresql` provider rejects a SQLite `file:` URL outright). A given shop's production instance may still be running the pre-cutover **SQLite** engine (WAL mode) until its operator completes the [`POSTGRES_MIGRATION.md`](../POSTGRES_MIGRATION.md) runbook.
 *   **Web Framework:** Fastify 5 (routing, hooks, cookie session management, JSON API + serving the built React SPA's `index.html`).
 *   **Telegram Bot Framework:** grammY 1.30 + `@grammyjs/conversations` (wizard states) + `@grammyjs/runner` (concurrency controls).
 *   **Frontend Framework:** React 18 + Vite (per-app `client/` — `apps/web-admin/client`, `apps/storefront/client`), Tailwind CSS.
@@ -76,13 +76,13 @@ The repository organizes code into modular applications (`apps/`) and shared pac
 
 ### Folder Responsibilities
 
-*   **[apps/server](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/apps/server):** The orchestrator. Combines all apps to run within a single Node.js process. Historically (pre-cutover, on SQLite) this was required to avoid concurrent-write conflicts; on the current Postgres-targeting schema, Postgres itself handles concurrent writers, so this is no longer a correctness requirement — but the unified process is still used, since it also multiplexes incoming HTTP traffic by hostname (e.g., routing storefront requests to one sub-app and admin panel requests to another).
-*   **[apps/order-bot](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/apps/order-bot):** Handles Telegram updates. Contains chat menus, slash command routers, interactive dialog flows (conversations), database synchronization checks, and active background payment polling engines.
-*   **[apps/web-admin](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/apps/web-admin):** The store administration interface. Handles catalog configurations, stock imports, payment configs, manual order resolutions, user audits, and ticket messaging.
-*   **[apps/storefront](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/apps/storefront):** The public web shop. Serves product groups, processes user accounts (with local signup or Telegram Login Widget validation), supports shopping carts, processes orders, and handles gateway webhooks.
-*   **[packages/outbox-dispatcher](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/packages/outbox-dispatcher):** The messaging subsystem (library). Its polling loop (`runDispatcher`) regularly queries the `NotificationOutbox` table and delivers messages (e.g., transactional receipts, password resets, digital delivery DMs) to users via the Telegram Bot. Run in-process by `apps/server`.
-*   **[packages/core](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/packages/core):** Enforces settings schema validations, manages application-wide enums, handles multi-language keys, currency conversions, and defines core business logic helpers.
-*   **[packages/db](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/packages/db):** Holds database transaction scripts, database client singletons, and CRUD abstraction modules.
+*   **[apps/server](../../apps/server):** The orchestrator. Combines all apps to run within a single Node.js process. Historically (pre-cutover, on SQLite) this was required to avoid concurrent-write conflicts; on the current Postgres-targeting schema, Postgres itself handles concurrent writers, so this is no longer a correctness requirement — but the unified process is still used, since it also multiplexes incoming HTTP traffic by hostname (e.g., routing storefront requests to one sub-app and admin panel requests to another).
+*   **[apps/order-bot](../../apps/order-bot):** Handles Telegram updates. Contains chat menus, slash command routers, interactive dialog flows (conversations), database synchronization checks, and active background payment polling engines.
+*   **[apps/web-admin](../../apps/web-admin):** The store administration interface. Handles catalog configurations, stock imports, payment configs, manual order resolutions, user audits, and ticket messaging.
+*   **[apps/storefront](../../apps/storefront):** The public web shop. Serves product groups, processes user accounts (with local signup or Telegram Login Widget validation), supports shopping carts, processes orders, and handles gateway webhooks.
+*   **[packages/outbox-dispatcher](../../packages/outbox-dispatcher):** The messaging subsystem (library). Its polling loop (`runDispatcher`) regularly queries the `NotificationOutbox` table and delivers messages (e.g., transactional receipts, password resets, digital delivery DMs) to users via the Telegram Bot. Run in-process by `apps/server`.
+*   **[packages/core](../../packages/core):** Enforces settings schema validations, manages application-wide enums, handles multi-language keys, currency conversions, and defines core business logic helpers.
+*   **[packages/db](../../packages/db):** Holds database transaction scripts, database client singletons, and CRUD abstraction modules.
 
 ---
 
@@ -91,10 +91,10 @@ The repository organizes code into modular applications (`apps/`) and shared pac
 The system has a main combined entry point for production, and separate lightweight entry points for developers wishing to run individual services locally.
 
 ### Production Entry Point (Combined Process)
-*   **Path:** [apps/server/src/index.ts](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/apps/server/src/index.ts)
+*   **Path:** [apps/server/src/index.ts](../../apps/server/src/index.ts)
 *   **Execution:** `pnpm start` (which runs the compiled JS file under `dist/apps/server/src/index.js`).
 *   **Behavior:**
-    1. Invokes [initDb()](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/packages/db/src/client.ts) — a no-op on the current Postgres-targeting schema (Postgres needs no per-connection setup statements). It previously applied SQLite PRAGMAs (WAL mode, `busy_timeout` of 5000ms) and is kept as an empty async function only so existing call sites don't need touching.
+    1. Invokes [initDb()](../../packages/db/src/client.ts) — a no-op on the current Postgres-targeting schema (Postgres needs no per-connection setup statements). It previously applied SQLite PRAGMAs (WAL mode, `busy_timeout` of 5000ms) and is kept as an empty async function only so existing call sites don't need touching.
     2. Dynamically pulls system configs, bot tokens, and cryptographic keys from the `Setting` database table (falling back to environment variables).
     3. Builds and boots Fastify instances for both the Admin and Storefront web apps.
     4. Initializes the GrammY bot instance. If `BOT_MODE` is `webhook`, it registers a POST handler `/tg/${WEBHOOK_SECRET}` directly on the Fastify instance. If `polling`, it spawns an asynchronous long-polling runner.
@@ -103,10 +103,10 @@ The system has a main combined entry point for production, and separate lightwei
 
 ### Standalone / Development Entry Points
 For local debugging, standalone entry points bypass the unified server wrapper:
-*   **Telegram Bot Standalone:** [apps/order-bot/src/main.ts](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/apps/order-bot/src/main.ts) (`pnpm dev:bot`)
-*   **Web Admin Standalone:** [apps/web-admin/src/server.ts](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/apps/web-admin/src/server.ts) (`pnpm dev:web` / starts server on `WEB_PORT`)
-*   **Storefront Standalone:** [apps/storefront/src/server.ts](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/apps/storefront/src/server.ts) (`pnpm dev:store` / starts storefront on `STOREFRONT_PORT`)
-*   **Outbox dispatcher:** [packages/outbox-dispatcher/src/dispatcher.ts](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/packages/outbox-dispatcher/src/dispatcher.ts) — a library (`runDispatcher`), not a standalone daemon; runs in-process inside `pnpm start`.
+*   **Telegram Bot Standalone:** [apps/order-bot/src/main.ts](../../apps/order-bot/src/main.ts) (`pnpm dev:bot`)
+*   **Web Admin Standalone:** [apps/web-admin/src/server.ts](../../apps/web-admin/src/server.ts) (`pnpm dev:web` / starts server on `WEB_PORT`)
+*   **Storefront Standalone:** [apps/storefront/src/server.ts](../../apps/storefront/src/server.ts) (`pnpm dev:store` / starts storefront on `STOREFRONT_PORT`)
+*   **Outbox dispatcher:** [packages/outbox-dispatcher/src/dispatcher.ts](../../packages/outbox-dispatcher/src/dispatcher.ts) — a library (`runDispatcher`), not a standalone daemon; runs in-process inside `pnpm start`.
 
 ---
 
@@ -178,7 +178,7 @@ For local debugging, standalone entry points bypass the unified server wrapper:
 
 ## 5. Database Schema & ORM Usage
 
-The database schema ([schema.prisma](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/prisma/schema.prisma)) contains **26 models** that map directly to database tables — **PostgreSQL** per the schema's `datasource` block since the 2026-08-27 engine-swap; a shop's production instance may still be running these same tables under pre-cutover SQLite until it completes [`POSTGRES_MIGRATION.md`](POSTGRES_MIGRATION.md). 
+The database schema ([schema.prisma](../../prisma/schema.prisma)) contains **26 models** that map directly to database tables — **PostgreSQL** per the schema's `datasource` block since the 2026-08-27 engine-swap; a shop's production instance may still be running these same tables under pre-cutover SQLite until it completes [`POSTGRES_MIGRATION.md`](../POSTGRES_MIGRATION.md).
 
 ### Core Database Model Diagram
 
@@ -376,7 +376,7 @@ Background jobs run concurrently within the server process, split into scheduled
 
 ### Scheduled Cron Tasks (utilizing `croner`)
 
-These jobs are defined in [apps/order-bot/src/jobs/index.ts](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/apps/order-bot/src/jobs/index.ts):
+These jobs are defined in [apps/order-bot/src/jobs/index.ts](../../apps/order-bot/src/jobs/index.ts):
 
 | Cron Pattern | Task Target | Core Purpose |
 |---|---|---|
@@ -409,7 +409,7 @@ This background worker polls the `NotificationOutbox` table every 10 seconds:
 
 ## 9. Environment Variables
 
-Configuration is validated at startup by [packages/core/src/config.ts](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/packages/core/src/config.ts) using Zod.
+Configuration is validated at startup by [packages/core/src/config.ts](../../packages/core/src/config.ts) using Zod.
 
 > [!NOTE]
 > Settings stored in the `Setting` database table override their respective environment variable fallbacks (e.g., `bot_token`, `bybit_deposit_address`).
@@ -539,7 +539,7 @@ During architectural inspection, the following components were identified as pot
 *   **Standalone Server `start()` Functions:**
     *   `apps/order-bot/src/main.ts` -> contains a standalone runner.
     *   `apps/web-admin/src/server.ts` -> contains a standalone boot function.
-    *   These standalone startup codes are bypassed in production, as the unified process in [apps/server/src/index.ts](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/apps/server/src/index.ts) initializes and orchestrates all components directly.
+    *   These standalone startup codes are bypassed in production, as the unified process in [apps/server/src/index.ts](../../apps/server/src/index.ts) initializes and orchestrates all components directly.
 *   **Legacy Binance Pay Manual Checks:**
     *   References to `PaymentMethod.BINANCE_PAY` and associated QR code assets (e.g., `BINANCE_PAY_ID`, `BINANCE_QR_PATH`) remain in the codebase. However, customer checkouts are routed to the automated `BINANCE_INTERNAL` and `BYBIT` paths instead.
 *   **Hardcoded Environment Variables:**
@@ -577,7 +577,7 @@ These structural issues could impact scaling, reliability, and security:
     *   *Consequence:* Missing translation keys or incorrect variable interpolation placeholders are not caught at compile time.
 *   **Global Single-Writer Database Constraint (resolved by the Postgres engine-swap):**
     *   *Problem (historical):* Before the 2026-08-27 engine-swap, the platform ran on a single SQLite database file. SQLite only supports a single writer at a time, so if the bot, storefront, admin panel, and payment pollers wrote to the database concurrently, write collisions could occur; WAL mode and `busy_timeout` mitigated but did not eliminate this, and it limited the system's ability to scale horizontally.
-    *   *Current status:* The Prisma schema now targets PostgreSQL, which handles concurrent writers natively — this constraint no longer applies to the schema. A given production instance may still be running the pre-cutover SQLite engine until its operator completes the [`POSTGRES_MIGRATION.md`](POSTGRES_MIGRATION.md) runbook; until then, the historical constraint above still applies to that instance.
+    *   *Current status:* The Prisma schema now targets PostgreSQL, which handles concurrent writers natively — this constraint no longer applies to the schema. A given production instance may still be running the pre-cutover SQLite engine until its operator completes the [`POSTGRES_MIGRATION.md`](../POSTGRES_MIGRATION.md) runbook; until then, the historical constraint above still applies to that instance.
 *   **Security Defaults Configuration:**
     *   *Problem:* `WEB_COOKIE_SECURE` defaults to `false` in the configuration schema.
     *   *Consequence:* Admins must manually enable secure cookies in production, which increases the risk of misconfiguration.

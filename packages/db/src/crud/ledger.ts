@@ -922,7 +922,7 @@ export async function getAccountBalance(db: Db, accountCode: string): Promise<De
  * `wallet_liability.*`, `adjustment.*`, `referral_expense.usdt`,
  * `payment_shortfall.*` — is fully posted and can be read as it stands. Recorded
  * here rather than left to be rediscovered as drift; see known gap 6 in
- * docs/FINANCE_ARCHITECTURE.md.
+ * docs/arsitektur/FINANCE_ARCHITECTURE.md.
  *
  * It does NOT assert that debits equal credits across accounts: that property is
  * true by construction, because `postFinancialTransaction` refuses to write an

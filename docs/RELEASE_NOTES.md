@@ -11,7 +11,7 @@ tag git nyata).
 
 **Fitur:** —  (rilis hardening, bukan fitur baru)
 **Fixes:** 1 Critical + 9 High + 24 Medium dari audit keamanan penuh (lihat
-`docs/audit-security-2026-06-23.md`) — auth bot `/admin`/`/wallet`,
+`docs/archive/audit-security-2026-06-23.md`) — auth bot `/admin`/`/wallet`,
 RBAC default-deny, reservasi stok atomik, voucher per-user cap, klaim outbox
 atomik+backoff, FK finansial restricted, crash handler global, dan lainnya.
 **Known issues:** Beberapa temuan Low (lihat dokumen audit) belum ditutup —
@@ -66,7 +66,7 @@ state DB yang perlu dikembalikan.
 **Known issues:** Endpoint/skema signature PayDisini & sebagian NOWPayments
 ditandai `ASSUMPTION (flagged)` di kode — **belum diverifikasi ke dashboard
 live**, verifikasi sebelum go-live dengan gateway ini (lihat
-[PAYMENT_GATEWAY.md](PAYMENT_GATEWAY.md)).
+[PAYMENT_GATEWAY.md](arsitektur/PAYMENT_GATEWAY.md)).
 **Migration required?:** Ya — tabel `processed_paydisini_tx` +
 `processed_nowpayments_tx` baru.
 **Restart required?:** Ya.

@@ -9,12 +9,12 @@
 > Source of truth for everything below: the repository —
 > `apps/storefront/client/src/**`, `packages/core/locales/{id,en}.json`,
 > `packages/core/src/enums.ts` — plus the Task 1 audit
-> (`docs/implementation/00-audit.md`). Reference vocabulary being mapped away
+> (`docs/archive/implementation/00-audit.md`). Reference vocabulary being mapped away
 > from comes from `foundations.md` / `page-templates.md` / the gogogo.id
 > screenshots.
 >
 > **Companion docs:** resolved escalations are logged in
-> `docs/implementation/assumptions.md` (mobile-nav model, form library).
+> `docs/archive/implementation/assumptions.md` (mobile-nav model, form library).
 
 ---
 
@@ -142,7 +142,7 @@ Two nav blocks: **Quick Links** — Browse products, Categories, Track order, Ab
 
 **Today:** a hamburger button opens a slide-in **left drawer** (`role="dialog"`, focus-trapped, Esc-to-close, scrim) containing labelled copies of the header links in three divider-separated groups (mine → for-sale → everything else), a language row, a help row, and a muted trust footer. A persistent search field sits in a mobile secondary header row.
 
-**Resolution (ASSUMPTION — logged in `docs/implementation/assumptions.md`, 2026-09-02; controller made this call under Auto Mode, user may veto):** **adopt the design system's fixed bottom tab bar** for mobile primary navigation. `foundations.md` §7 and `components.md` "Bottom navigation (mobile)" make it the visual authority (prompt §2 KEEP: "navigation patterns"), and `tokens.json` already reserves `layout.bottomNavHeight` (`56px`). Adapt **composition, not invention** (prompt §3.2 rule 3):
+**Resolution (ASSUMPTION — logged in `docs/archive/implementation/assumptions.md`, 2026-09-02; controller made this call under Auto Mode, user may veto):** **adopt the design system's fixed bottom tab bar** for mobile primary navigation. `foundations.md` §7 and `components.md` "Bottom navigation (mobile)" make it the visual authority (prompt §2 KEEP: "navigation patterns"), and `tokens.json` already reserves `layout.bottomNavHeight` (`56px`). Adapt **composition, not invention** (prompt §3.2 rule 3):
 
 - **(a) The bottom tab bar is HIDDEN on the full-funnel screens that already own the bottom edge with a sticky action bar** — product detail (`/p/:slug`), cart (`/cart`), checkout (`/checkout`), pay (`/checkout/:code/pay`), wallet top-up (`/wallet/topup`), wallet-top-up pay (`/wallet/topup/:code/pay`). Two fixed bottom elements must never coexist on one screen (prompt §15: no route with two visual languages / colliding chrome). The sticky purchase / checkout bar wins on those six; the tab bar returns everywhere else.
 - **(b) Tab items — this shop's real destinations, 5 tabs:**

@@ -11,7 +11,7 @@
  * the app-wide `<MotionConfig reducedMotion="user">`.
  *
  * Logged as a §26.2 component-pattern exception in
- * `docs/implementation/extensions.md`.
+ * `docs/archive/implementation/extensions.md`.
  *
  * Business-agnostic: no domain types, no routing, no i18n — the caller passes
  * `title` / `children` / `footer` content.

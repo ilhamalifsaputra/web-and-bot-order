@@ -2252,8 +2252,8 @@ export function customerLabel(
  * BEWARE THE OTHER HALF OF THAT RULE: separately-rounded figures need not
  * reconcile with each other. Two values that each went through here are each
  * rounded UP to the next 0.01 USDT on their own, so their difference can be up
- * to ~0.01 USDT away from the converted difference (docs/audit-backend-2026-07
- * -31.md's L-1 finding flags exactly this for orderMoneyView.ts). A caller
+ * to ~0.01 USDT away from the converted difference (L-1 in
+ * docs/archive/audit-backend-2026-07-31.md flags this for orderMoneyView.ts). A caller
  * whose figures a reader will ADD UP therefore cannot convert each of them
  * here and hope: it must convert ONE and derive the rest from figures already
  * in the settlement currency, which is what enqueueBuyerOrderReadyEmailIfGuest

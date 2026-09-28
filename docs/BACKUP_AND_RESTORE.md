@@ -5,7 +5,7 @@ upload (`data/uploads/`). **Tidak ada Redis** — tidak ada state cache
 eksternal untuk dibackup.
 
 Database-nya bisa **SQLite atau PostgreSQL** tergantung status cutover toko
-— lihat [`DATABASE.md`](DATABASE.md) untuk penjelasan kenapa dua-duanya
+— lihat [`DATABASE.md`](arsitektur/DATABASE.md) untuk penjelasan kenapa dua-duanya
 masih relevan: `schema.prisma` sudah Postgres-only sejak engine-swap, tapi
 toko yang belum menjalankan runbook
 [`POSTGRES_MIGRATION.md`](POSTGRES_MIGRATION.md) database live-nya

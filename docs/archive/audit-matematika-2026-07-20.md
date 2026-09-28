@@ -42,7 +42,7 @@ order path call it.
 The preview capped the voucher against the **gross** subtotal, while
 `createOrderFromCart` (`packages/db/src/crud/orders.ts`) caps it against the
 subtotal **net of the bulk discount** — the deliberate Money-2 rule from
-`docs/audit-backend-2026-07-06.md`. With both a bulk rule and a percent voucher
+`docs/archive/audit-backend-2026-07-06.md`. With both a bulk rule and a percent voucher
 on one cart the two disagreed:
 
 > Subtotal Rp80.000, bulk 25% (Rp20.000), voucher 50%.

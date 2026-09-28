@@ -514,7 +514,7 @@ export interface PostableSettlement {
  *
  * The fee leg is where `payment_fee.*` finally has a real amount to hold, and it
  * is a genuine one rather than the estimate `FEE` postings were rejected over
- * (see this file's module comment, and known gap 1 in docs/FINANCE_ARCHITECTURE.md):
+ * (see this file's module comment, and known gap 1 in docs/arsitektur/FINANCE_ARCHITECTURE.md):
  * `Settlement.feeAmount` is a figure an admin read off the provider's own
  * statement, not a locally computed guess. That is the whole difference, and it
  * is why the fee belongs on THIS posting and not on the order payment.
@@ -532,7 +532,7 @@ export interface PostableSettlement {
  * What remains manual is the ENTRY, not the accounting: no importer polls any
  * provider's payout API, so `provider_clearing.*` still over-reads and `cash.*`
  * still under-reads by exactly the batches nobody has typed in yet. That is an
- * operational gap (known gap 6 in docs/FINANCE_ARCHITECTURE.md), not a mapping
+ * operational gap (known gap 6 in docs/arsitektur/FINANCE_ARCHITECTURE.md), not a mapping
  * one. An importer added later calls this same function through
  * `recordSettlement` rather than posting directly, for the reason this whole file
  * exists.

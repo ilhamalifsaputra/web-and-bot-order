@@ -2,7 +2,7 @@
 
 Ringkasan model keamanan aplikasi + status audit. Untuk laporan audit penuh
 (56 temuan, metodologi, kode contoh per fix) lihat
-[`../docs/audit-security-2026-06-23.md`](audit-security-2026-06-23.md) —
+[`archive/audit-security-2026-06-23.md`](archive/audit-security-2026-06-23.md) —
 dokumen ini **tidak menduplikasi** isinya, hanya merangkum model yang
 berlaku **setelah** semua fix Critical/High/Medium diterapkan (commit
 `c4778c8`).
@@ -69,7 +69,8 @@ di-recompute server-side saat checkout login-gated.
   reset/token bot/URL webhook. Path token reset di-redaksi dari access log
   (`/reset/[redacted]`) — lihat Storefront-1 fix.
 - **Jangan log:** kredensial, `file_id` bukti bayar, hash password, full DB
-  URL — aturan eksplisit di [`../CLAUDE.md`](../CLAUDE.md). Permukaan
+  URL — aturan eksplisit di
+  [`../.claude/CLAUDE.md`](../.claude/CLAUDE.md). Permukaan
   risiko berikutnya yang disebut eksplisit di CLAUDE.md: jalur bulk/CSV.
 
 ## Settings whitelist — guardrail "jangan brick toko"
@@ -84,7 +85,7 @@ mematahkan boot aplikasi.
 
 Setiap gateway punya idempotency ledger dengan UNIQUE constraint pada ID
 transaksi gateway — pola insert-first-on-unique (SQLite tidak punya row
-lock). Detail per gateway: [PAYMENT_GATEWAY.md](PAYMENT_GATEWAY.md).
+lock). Detail per gateway: [PAYMENT_GATEWAY.md](arsitektur/PAYMENT_GATEWAY.md).
 **Catatan arsitektural:** beberapa invarian (klaim atomik `approveOrder`,
 increment `usedCount` voucher) aman HARI INI karena `BEGIN IMMEDIATE`
 SQLite menyerialkan transaksi — begitu migrasi ke Postgres (trigger resmi:
@@ -121,7 +122,7 @@ Metodologi: 8 agen paralel meng-audit slice arsitektur independen
 (checkout, payment, pricing/voucher/wallet, stock/delivery, admin-web,
 storefront auth, bot concurrency, infra/secrets/schema) dengan instruksi
 roleplay penyerang/fraudster/rogue-staff. Detail penuh + kode contoh fix:
-[`audit-security-2026-06-23.md`](audit-security-2026-06-23.md).
+[`archive/audit-security-2026-06-23.md`](archive/audit-security-2026-06-23.md).
 
 ## Melaporkan temuan baru
 

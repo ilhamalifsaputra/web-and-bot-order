@@ -708,7 +708,7 @@ batch).
   batch started and this batch never touched it.
 - No live browser/Playwright verification was performed against a running
   dev server in this batch — doing so would need a disposable
-  `DATABASE_URL_PRISMA` SQLite file per `docs/ui-refactor/overview.md`, which
+  `DATABASE_URL_PRISMA` SQLite file per `docs/archive/ui-refactor/overview.md`, which
   was out of scope for the time available; the fixes are covered by the
   updated component tests and manual code review of the request/response
   contract (`apps/web-admin/src/routes/auth.ts`) instead.

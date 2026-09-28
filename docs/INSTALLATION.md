@@ -105,7 +105,7 @@ pnpm start            # SATU proses: web-admin + storefront + order-bot + outbox
 
 Tidak ada proses worker terpisah yang perlu dinyalakan manual — semua
 in-process di dalam `apps/server` (composition root). Lihat
-[ARCHITECTURE.md](ARCHITECTURE.md).
+[ARCHITECTURE.md](arsitektur/ARCHITECTURE.md).
 
 ### Run workers
 

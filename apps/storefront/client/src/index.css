@@ -19,7 +19,7 @@
  */
 @import "tailwindcss";
 @import "./styles/tokens.css";
-@import "./styles/tokens.extensions.css"; /* §26.2 reviewed exceptions — see docs/implementation/extensions.md */
+@import "./styles/tokens.extensions.css"; /* §26.2 reviewed exceptions — see docs/archive/implementation/extensions.md */
 
 /* Latin subset only. The unscoped `@fontsource/<font>/<weight>.css` entrypoints
    declare every subset the family ships — cyrillic, greek, vietnamese and
@@ -68,7 +68,7 @@
  * `--tw-shadow-color` recolour channel on `shadow-soft`/`shadow-lift`. Both are
  * real changes to the built CSS, so this block stays a literal mirror.
  * Values mirror src/styles/tokens.css — keep in sync. See
- * docs/implementation/deviations.md (A1). `static` so Tailwind v4 emits every
+ * docs/archive/implementation/deviations.md (A1). `static` so Tailwind v4 emits every
  * token even when unreferenced. */
 @theme static {
   --color-paper: #f6f8fb;

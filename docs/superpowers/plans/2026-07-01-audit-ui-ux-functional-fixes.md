@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Fix all 10 confirmed findings from `docs/audit-ui-ux-functional-2026-07-01.md` — features across the Telegram bot, web-admin panel, and storefront that appear to work but actually fail (wrong payment instructions, silent-fail admin actions, dead-end backends with no UI, an "Apply" button that secretly places a real order, dead links, dead code, and a progressive-enhancement 404).
+**Goal:** Fix all 10 confirmed findings from `docs/archive/audit-ui-ux-functional-2026-07-01.md` — features across the Telegram bot, web-admin panel, and storefront that appear to work but actually fail (wrong payment instructions, silent-fail admin actions, dead-end backends with no UI, an "Apply" button that secretly places a real order, dead links, dead code, and a progressive-enhancement 404).
 
 **Architecture:** Ten independent tasks grouped by app surface — Tasks 1-2 (`apps/order-bot`), Tasks 3-7 (`apps/web-admin`, backend Fastify routes under `src/routes/api/*` + React SPA under `client/src`), Tasks 8-10 (`apps/storefront`, Fastify + Nunjucks + HTMX). Each task touches a disjoint set of files — no task depends on another's output. Every fix reuses existing crud/service functions (`packages/db/src/crud/*`, `packages/core`) rather than duplicating logic; several tasks (4, 5, 6) only add UI/routes for backend logic that already exists and works.
 

@@ -242,7 +242,7 @@ describe("PayPage", () => {
     expect(await screen.findByText("404")).toBeInTheDocument();
   });
 
-  // Guest checkout's order-code email (docs/PROJECT_ARCHITECTURE.md §Guest
+  // Guest checkout's order-code email (docs/archive/PROJECT_ARCHITECTURE.md §Guest
   // Checkout). CheckoutPage cannot show this itself — a successful guest
   // checkout leaves the SPA via a full page load — so the notice lands here,
   // beside the very code that was mailed, carried over by lib/orderCodeEmailed.

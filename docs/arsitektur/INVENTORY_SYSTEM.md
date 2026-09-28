@@ -47,7 +47,7 @@ SQLite menyerialkan writer dalam satu `$transaction` sehingga ini race-free
 hari ini; guard `updateMany WHERE status=AVAILABLE` + retry tetap dipasang
 agar tidak diam-diam bergantung pada detail isolasi SQLite (penting jika
 suatu saat migrasi ke Postgres — lihat catatan lintas-domain di
-`docs/audit-security-2026-06-23.md`).
+`docs/archive/audit-security-2026-06-23.md`).
 
 Sebelum loop reservasi, `countAvailableStock` dicek per baris cart sebagai
 **fast-fail** — supaya permintaan qty lebih dari stok yang ada tidak

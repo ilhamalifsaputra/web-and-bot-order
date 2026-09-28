@@ -26,7 +26,7 @@ itself; this file tells you how to *use* them.
 5. Only then start editing.
 
 Skipping step 1–3 is the single most common cause of design-system drift. Every
-inconsistency documented in `docs/ui-refactor/` and the two 2026-07 consistency
+inconsistency documented in `docs/archive/ui-refactor/` and the two 2026-07 consistency
 passes traces back to a page being built by reading a sibling page instead of the
 docs, and copying that sibling's mistakes forward.
 
@@ -169,7 +169,7 @@ possible design for this one screen." Concretely:
 ## 8. Known, already-flagged inconsistencies — do not copy these
 
 The codebase is not 100% consistent yet. These are known gaps, already identified by
-prior audits (`docs/ui-refactor/` and the 2026-07 consistency passes), and must not
+prior audits (`docs/archive/ui-refactor/` and the 2026-07 consistency passes), and must not
 be treated as valid alternative patterns:
 
 - A handful of create/reply-form flows (e.g. FlashSales, Vouchers-create,

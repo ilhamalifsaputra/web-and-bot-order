@@ -147,7 +147,7 @@ When business functionality and visual specification collide:
 3. Adapt the *composition* — add a section, change a grid span, extend a variant.
 4. Never resolve a conflict by inventing a different visual style, a one-off palette, or an unstyled escape hatch.
 
-Every conflict resolved this way is logged in `docs/implementation/deviations.md` (§29).
+Every conflict resolved this way is logged in `docs/archive/implementation/deviations.md` (§29).
 
 ---
 
@@ -189,7 +189,7 @@ Do not ask unnecessary questions if the answer can be derived from the repositor
 
 ## 5.2 Required audit output
 
-v1 asked for an "internal mapping." Make it an artifact — an audit nobody can inspect is unverifiable. Produce `docs/implementation/00-audit.md` containing:
+v1 asked for an "internal mapping." Make it an artifact — an audit nobody can inspect is unverifiable. Produce `docs/archive/implementation/00-audit.md` containing:
 
 **A. Stack statement** — framework and version, router, styling solution, state library, form/validation library, test runner, package manager, TypeScript strictness. Note anything that constrains implementation.
 
@@ -351,7 +351,7 @@ Do not replace functional behavior with hardcoded fake interactions.
 
 Do not invent backend endpoints that do not exist.
 
-**Missing endpoints:** define a typed adapter interface in `src/features/<domain>/api/` and back it with a clearly marked mock implementation. The UI depends on the interface only — never on the mock's shape. Every mocked adapter is listed in `docs/implementation/mocked-adapters.md` with its expected contract, so nothing ships silently faked.
+**Missing endpoints:** define a typed adapter interface in `src/features/<domain>/api/` and back it with a clearly marked mock implementation. The UI depends on the interface only — never on the mock's shape. Every mocked adapter is listed in `docs/archive/implementation/mocked-adapters.md` with its expected contract, so nothing ships silently faked.
 
 **Forms:** use the repository's existing form and validation library, schema-driven. Validation messages come from a shared message map, not inline strings. Validate on blur, re-validate on change after first error, block submit while invalid, show pending state during submission, map server errors to field level where possible with a form-level `Alert` fallback.
 
@@ -547,7 +547,7 @@ Visual fidelity does not justify blowing these budgets. A pixel-perfect page tha
 
 1. **Length tolerance.** Every component must survive both a very short string and a roughly 3× longer one without breaking. Test with the longest realistic value, not lorem ipsum.
 2. **Overflow strategy.** Decide per component — wrap, clamp, or truncate with tooltip — and apply it consistently. Text must never collide with adjacent elements.
-3. **Placeholder copy.** Mark it with a single unambiguous convention (`TODO_COPY`) and list every instance in `docs/implementation/todo-copy.md`. Placeholder copy must never ship silently.
+3. **Placeholder copy.** Mark it with a single unambiguous convention (`TODO_COPY`) and list every instance in `docs/archive/implementation/todo-copy.md`. Placeholder copy must never ship silently.
 4. **Localization posture.** Even if single-language today: no string concatenation to build sentences, no text baked into images, no layout assuming English word lengths. If RTL is plausible, use logical CSS properties (`margin-inline-start`, not `margin-left`).
 5. **Formatting.** Numbers, dates, and currency go through shared formatters with explicit locale — never ad hoc.
 
@@ -641,7 +641,7 @@ Do not silently rewrite the spec to make implementation easier.
 1. Identify the inconsistency precisely.
 2. Determine whether it is a source-specification issue or an implementation issue.
 3. **Prefer correcting the implementation.**
-4. If the evidence genuinely points at the source: write the proposed change to `docs/implementation/deviations.md` with the evidence **before** editing anything, and edit only after that entry exists.
+4. If the evidence genuinely points at the source: write the proposed change to `docs/archive/implementation/deviations.md` with the evidence **before** editing anything, and edit only after that entry exists.
 5. Any change must remain internally consistent across `foundations.md`, `components.md`, `page-templates.md`, `tokens.json`, `tokens.css`, and `tailwind.preset.js` — all six, in the same commit.
 
 v1's phrasing ("only modify when there is strong evidence") left the agent as sole judge of its own evidence. Requiring a written proposal first is what makes this checkable.
@@ -653,7 +653,7 @@ This is a different problem and needs a different answer. A new semantic status 
 1. Do **not** edit `design-system/`.
 2. Add the value to `src/styles/tokens.extensions.css` and `tokens.extensions.json`, named in the same convention as the source tokens.
 3. Derive it from existing primitives where possible — a new status color drawn from the existing palette ramp, not a new hue invented ad hoc.
-4. Record it in `docs/implementation/extensions.md` with justification.
+4. Record it in `docs/archive/implementation/extensions.md` with justification.
 
 Extensions are a controlled surface. If the file grows past roughly a dozen entries, stop and escalate — it means the mapping in §5.2C is wrong.
 
@@ -750,21 +750,21 @@ v1 said "do not ask unnecessary questions" and "proceed unless genuinely blockin
 
 ## 28.3 Log format
 
-Maintain `docs/implementation/assumptions.md`: date · question · decision or status · risk level · what would need to change if the assumption proves wrong.
+Maintain `docs/archive/implementation/assumptions.md`: date · question · decision or status · risk level · what would need to change if the assumption proves wrong.
 
 ---
 
 # 29. DELIVERABLES
 
-1. `docs/implementation/00-audit.md` — repository and design-system audit (§5.2)
+1. `docs/archive/implementation/00-audit.md` — repository and design-system audit (§5.2)
 2. `design-system/business-adaptation.md` — semantic layer (§27)
 3. Working implementation, committed route by route
-4. `docs/implementation/assumptions.md` — assumption and escalation log
-5. `docs/implementation/deviations.md` — every departure from `design-system/`, with the business requirement that forced it
-6. `docs/implementation/extensions.md` — token extensions with justification
-7. `docs/implementation/mocked-adapters.md` — every adapter not backed by a real endpoint, with expected contract
-8. `docs/implementation/todo-copy.md` — every placeholder string awaiting real copy
-9. `docs/implementation/99-verification.md` — final results against §23 and §30
+4. `docs/archive/implementation/assumptions.md` — assumption and escalation log
+5. `docs/archive/implementation/deviations.md` — every departure from `design-system/`, with the business requirement that forced it
+6. `docs/archive/implementation/extensions.md` — token extensions with justification
+7. `docs/archive/implementation/mocked-adapters.md` — every adapter not backed by a real endpoint, with expected contract
+8. `docs/archive/implementation/todo-copy.md` — every placeholder string awaiting real copy
+9. `docs/archive/implementation/99-verification.md` — final results against §23 and §30
 
 ---
 

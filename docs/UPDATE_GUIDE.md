@@ -8,7 +8,7 @@ jalan (produksi atau staging). Untuk konsep versi/rilis, lihat
 
 Aplikasi ini **satu proses** (`apps/server`) yang memegang **satu** koneksi
 database — SQLite atau PostgreSQL tergantung status cutover toko (lihat
-[DATABASE.md](DATABASE.md) dan [POSTGRES_MIGRATION.md](POSTGRES_MIGRATION.md)).
+[DATABASE.md](arsitektur/DATABASE.md) dan [POSTGRES_MIGRATION.md](POSTGRES_MIGRATION.md)).
 Tidak ada rolling-update multi-instance, tidak ada load balancer di depan
 beberapa replica — jadi "zero-downtime" di sini berarti **downtime
 seminimal mungkin** (~detik, bukan nol mutlak) lewat urutan yang benar, bukan
@@ -92,7 +92,7 @@ skema**, sebelum `git pull` dieksekusi ulang ke produksi. Skrip seperti
 **Tidak ada Redis atau cache layer eksternal di stack ini.** Tidak ada
 langkah "flush cache" dalam prosedur update — satu-satunya state in-memory
 yang hilang saat restart adalah sesi bot grammY (lihat catatan "In-Memory Bot
-Sessions" di [ARCHITECTURE.md](ARCHITECTURE.md)): pengguna yang sedang di
+Sessions" di [ARCHITECTURE.md](arsitektur/ARCHITECTURE.md)): pengguna yang sedang di
 tengah wizard/conversation akan kembali ke menu utama setelah restart. Ini
 risiko yang diketahui & diterima, bukan bug — informasikan ke pengguna lewat
 jendela maintenance singkat jika memungkinkan.

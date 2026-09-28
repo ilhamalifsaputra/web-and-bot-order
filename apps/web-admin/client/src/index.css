@@ -138,7 +138,7 @@
      "byte-for-byte" comment, but that file drives the Nunjucks-rendered
      storefront + surviving admin pages, which are out of scope for this
      web-admin-SPA-only audit — left unchanged here; flagged in
-     docs/ui-refactor/before-after.md as a follow-up if the same audit is
+     docs/archive/ui-refactor/before-after.md as a follow-up if the same audit is
      ever extended to those surfaces. */
   --color-ink-faint: #626f83;
 

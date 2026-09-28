@@ -4,7 +4,7 @@
    Values the running app genuinely needs that the design-system spec
    (src/styles/tokens.css / gogogo-frontend/design-system/tokens.css) does not
    define. Everything here is a documented, reviewed exception — NOT a second
-   token source. Each entry is logged in docs/implementation/extensions.md with
+   token source. Each entry is logged in docs/archive/implementation/extensions.md with
    its rationale.
 
    Rules:
@@ -43,7 +43,7 @@
      `--radius-xl` 0.75rem would silently re-radius ~33 existing `rounded-xl`
      call sites storefront-wide. Tailwind's core `--radius-3xl` is coincidentally
      also 1.5rem; pinning it makes the storefront own the value and ties the
-     class to this documented exception. See docs/implementation/deviations.md
+     class to this documented exception. See docs/archive/implementation/deviations.md
      §D2-radius.) If you resize this, update BOTH copies (this one and that
      @theme line). */
   --gg-radius-xl: 1.5rem;

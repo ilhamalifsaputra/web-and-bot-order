@@ -14,9 +14,9 @@ suite does not catch.
 (money/reconciliation, order-checkout-stock, payment gateways, auth/CSRF); two audited
 the *delta* of the 211 commits landed since the last backend audit (order-bot; data
 layer + schema); one acted as a dedicated **regression verifier** against the two prior
-audits. Each agent was required to dedup against `docs/audit-security-2026-06-23.md`,
-`docs/audit-backend-2026-07-06.md`, `docs/audit-matematika-2026-07-20.md`,
-`docs/audit-per-sku-delivery-flows-2026-07-13.md` and `docs/audit-fitur-md-2026-07-04.md`,
+audits. Each agent was required to dedup against `docs/archive/audit-security-2026-06-23.md`,
+`docs/archive/audit-backend-2026-07-06.md`, `docs/archive/audit-matematika-2026-07-20.md`,
+`docs/archive/audit-per-sku-delivery-flows-2026-07-13.md` and `docs/archive/audit-fitur-md-2026-07-04.md`,
 and to report only genuinely new issues, regressions, or explicitly-deferred items.
 Every High below was then re-verified by hand against the source before inclusion.
 
@@ -751,7 +751,7 @@ colliding folders; and add a "Recovering from a failed `migrate deploy`" section
 | ID | Finding | Location |
 |---|---|---|
 | L-21 | The boot-time drift check never learned about the new tables — `voucher_products` and `order_status_history` are absent from `PAYMENT_LEDGER_TABLES`, so a missed `db push` passes boot and throws `P2021` at payment time instead | `packages/db/src/crud/integrity.ts:26-36` |
-| L-22 | `DATABASE.md` and `CHANGELOG.md` are now stale across eleven schema commits (prior Schema-1/2, widened by an order of magnitude) — zero mentions of `voucher_products`, `delivery_type`, `priority`, `customer_data`… | `docs/DATABASE.md`, `docs/CHANGELOG.md:9,38` |
+| L-22 | `DATABASE.md` and `CHANGELOG.md` are now stale across eleven schema commits (prior Schema-1/2, widened by an order of magnitude) — zero mentions of `voucher_products`, `delivery_type`, `priority`, `customer_data`… | `docs/arsitektur/DATABASE.md`, `docs/CHANGELOG.md:9,38` |
 | L-23 | `deleteCatalogProductCascade` bypasses the order-history guard its sibling `deleteDenomination` enforces; saved today only by an `ON DELETE RESTRICT` FK that was already wrong once before 06-23 | `packages/db/src/crud/catalog.ts:240-245` |
 
 ---

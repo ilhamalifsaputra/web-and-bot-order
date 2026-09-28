@@ -10,7 +10,7 @@
  * nothing in this codebase ever recorded a provider PAYING OUT — the
  * `Settlement`/`SettlementTransaction` models shipped as schema only (decision
  * D1's "NO PRODUCTION CALLER TODAY", known gap 6 in
- * docs/FINANCE_ARCHITECTURE.md). The consequence is not a rounding error: the
+ * docs/arsitektur/FINANCE_ARCHITECTURE.md). The consequence is not a rounding error: the
  * receivable grows without bound while `cash.*` is only ever debited by a
  * manual-transfer refund, so the account named "Cash" trends monotonically
  * NEGATIVE and neither account can be read as a cash position.

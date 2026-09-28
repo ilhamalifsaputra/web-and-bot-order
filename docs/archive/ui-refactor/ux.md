@@ -4,7 +4,7 @@ Cross-cutting recommendations synthesized from the findings gathered during
 the crawl (see `findings.md` for the itemized list with screenshots — note:
 due to a tooling restriction encountered mid-audit, `findings.md` content is
 included in this agent's final response text for the coordinator to persist;
-this file assumes that content exists at `docs/ui-refactor/findings.md`).
+this file assumes that content exists at `docs/archive/ui-refactor/findings.md`).
 
 ## 1. Fix the two broken core actions first
 

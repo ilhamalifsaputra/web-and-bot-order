@@ -305,9 +305,9 @@ Ini **bukan bug** — itu adalah jalur defensif yang disengaja: pembayaran
 sudah tercatat di ledger (`outcome: delivery_failed`), order TIDAK hilang,
 tapi butuh intervensi admin (resolve manual dari panel `/orders` — cek stok,
 deliver manual, atau credit ke saldo via `creditOrderToBalance`). Lihat
-contoh investigasi nyata kasus ini di [PATCH_GUIDE.md](PATCH_GUIDE.md) —
+contoh investigasi nyata kasus ini di [PATCH_GUIDE.md](../PATCH_GUIDE.md) —
 root cause yang ditemukan bukan di jalur pembayaran sama sekali, melainkan
-schema-drift `notification_outbox` (lihat [TROUBLESHOOTING.md](TROUBLESHOOTING.md)).
+schema-drift `notification_outbox` (lihat [TROUBLESHOOTING.md](../TROUBLESHOOTING.md)).
 
 ## Tes koneksi sebelum go-live
 

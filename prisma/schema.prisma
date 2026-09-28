@@ -542,7 +542,8 @@ model StockItem {
   // Query-only mirror of the keyVersion already stored authoritatively
   // inside the credentials envelope (credentialCrypto.ts's encryptCredentials
   // writes keyVersion into the JSON blob; decryptCredentials reads it back
-  // from there). Left nullable with NO default here deliberately: FINDINGS.md
+  // from there). Left nullable with NO default here deliberately:
+  // docs/archive/audit-stock-traceability-fase0.md
   // notes the count of legacy-plaintext / non-v1 rows has not been measured
   // against production, so stamping every existing row "1" would assert an
   // unverified fact. A later phase's backfill populates this from the

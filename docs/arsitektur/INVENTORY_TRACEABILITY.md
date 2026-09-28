@@ -7,7 +7,9 @@ sepanjang jalan. Ini adalah dokumen "arsitektur seperti yang sudah dikirim"
 Credential Encryption" + Track T ("tidak ada tampilan data
 palsu/menyesatkan") selesai dikerjakan. Untuk status per-temuan audit (apa
 yang sudah diperbaiki di fase mana, apa yang sengaja diterima sebagai risiko,
-apa yang masih terbuka) lihat `FINDINGS.md`. Untuk langkah rollout operasional
+apa yang masih terbuka) lihat
+[`audit-stock-traceability-fase0.md`](../archive/audit-stock-traceability-fase0.md).
+Untuk langkah rollout operasional
 (backfill, urutan flag, query produksi) lihat checklist di `DOCS.md` — tidak
 diduplikasi di sini.
 
@@ -275,7 +277,8 @@ sejak Fase 4a, tiga di antaranya baru ditambahkan di final review):
   `softDeletedStillReserved` — pelanggaran invarian dasar per baris.
 - `duplicateStockItemPointers` — id `StockItem` yang dirujuk lebih dari satu
   `OrderItem.stockItemId` (bentuk persis yang akan dilarang `@unique` Fase
-  4b, masih belum diterapkan — lihat `FINDINGS.md`).
+  4b, masih belum diterapkan — lihat
+  [`audit-stock-traceability-fase0.md`](../archive/audit-stock-traceability-fase0.md)).
 - `statusEventMismatch` / `legacyRowsWithoutEvents` — status kolom
   dibandingkan dengan event **transisi-status** terakhir (`toStatus IS NOT
   NULL`; event non-transisi seperti `CREDENTIAL_REVEALED`/`REENCRYPTED`
@@ -316,7 +319,8 @@ sejak Fase 4a, tiga di antaranya baru ditambahkan di final review):
 
 `OrderItem.stockItemId` (`prisma/schema.prisma`, nullable, **belum**
 `@unique` — Fase 4b digantung menunggu audit produksi bersih, lihat
-`FINDINGS.md`) adalah paper trail utamanya: satu baris order-item terhubung
+[`audit-stock-traceability-fase0.md`](../archive/audit-stock-traceability-fase0.md))
+adalah paper trail utamanya: satu baris order-item terhubung
 ke persis satu `StockItem` **selagi masih relevan**.
 
 - Dari sisi **order** → tahu persis kredensial mana yang dikirim untuk baris
@@ -432,7 +436,8 @@ plaintext, sekarang dienkripsi seperti kredensial stok (AAD
 `withDecryptedStockCredentials` (lempar, jalur pengiriman/detail admin),
 `withDisplayStockCredentials` (berpengaman, halaman detail pembeli), dan
 `listUserDeliveredOrders` (tidak lagi memuat/mendekripsi sama sekali — lihat
-`FINDINGS.md`). **Daftar admin di-strip, bukan didekripsi**:
+[`audit-stock-traceability-fase0.md`](../archive/audit-stock-traceability-fase0.md)).
+**Daftar admin di-strip, bukan didekripsi**:
 `withoutDeliveredContent` (`orders.ts`) membuang kolom ini sepenuhnya dari
 setiap baris `listOrders` (endpoint `GET /api/orders` dan `/export`) sebelum
 ke JSON — daftar/ringkasan order tidak pernah membawa rahasia terkirim,
@@ -509,7 +514,9 @@ perbaikan lintas admin/buyer:
   setelah pembayaran terkonfirmasi" alih-alih janji waktu tetap).
   **Guard anti-regresi**: `tests/no-fake-claims.test.ts` memindai
   `packages/core/locales/*.json` untuk pola-pola ini (klaim jumlah pelanggan,
-  "24/7", waktu balas/kirim tetap, dst.) — lihat `FINDINGS.md` untuk batasan
+  "24/7", waktu balas/kirim tetap, dst.) — lihat
+  [`audit-stock-traceability-fase0.md`](../archive/audit-stock-traceability-fase0.md)
+  untuk batasan
   cakupannya (hanya JSON locale, bukan literal string di komponen TSX).
 
 ## 12. Jalur fulfillment eksternal (Digiflazz) — SKU tanpa `StockItem`
@@ -698,4 +705,5 @@ paranoid di titik-titik "tidak boleh ganda / tidak boleh hilang jejak":
 - `tests/no-fake-claims.test.ts` — guard anti-regresi Track T
 - `DOCS.md` — checklist rollout operator (backfill, urutan flag, query
   produksi)
-- `FINDINGS.md` — status per-temuan audit
+- [`audit-stock-traceability-fase0.md`](../archive/audit-stock-traceability-fase0.md)
+  — status per-temuan audit

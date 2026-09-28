@@ -69,7 +69,7 @@ export default defineConfig({
     // builtins list — externalise it so vite-node leaves the import alone.
     server: { deps: { external: [/^node:sqlite$/] } },
     // No coverage tooling existed in this repo before the detection engine
-    // (docs/DETECTION_ENGINE.md "Baseline"). Global coverage is recorded for
+    // (docs/arsitektur/DETECTION_ENGINE.md "Baseline"). Global coverage is recorded for
     // visibility but NOT enforced — retrofitting a threshold onto a decade of
     // untested code is a separate, unrelated project. The threshold below is
     // scoped to only the new engine, where 100% test-first coverage is a

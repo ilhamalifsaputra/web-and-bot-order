@@ -128,7 +128,7 @@ Surface `channel` in the route response (`apps/web-admin/src/routes/outbox.ts`, 
 
 ## Known tradeoff (inherited)
 
-If `sendMail` succeeds but `markNotificationSent` fails, the row stays `SENDING` and becomes claimable again after `STALE_CLAIM_MS` (5 minutes), re-sending — a rare duplicate email. This is the same crash-window tradeoff the Telegram path already accepts (`docs/QUEUE_SYSTEM.md`, "Klaim atomik sebelum kirim"). The alternative — dropping the row — loses notifications instead, which is worse for an alerting feature.
+If `sendMail` succeeds but `markNotificationSent` fails, the row stays `SENDING` and becomes claimable again after `STALE_CLAIM_MS` (5 minutes), re-sending — a rare duplicate email. This is the same crash-window tradeoff the Telegram path already accepts (`docs/arsitektur/QUEUE_SYSTEM.md`, "Klaim atomik sebelum kirim"). The alternative — dropping the row — loses notifications instead, which is worse for an alerting feature.
 
 ## Deployment
 

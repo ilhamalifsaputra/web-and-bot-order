@@ -7,7 +7,7 @@
  *
  * §26.2 extension — the chat/thread pattern. `components.md` has no template
  * for a message-bubble timeline; it is composed entirely from existing
- * tokens/primitives (see docs/implementation/extensions.md): each bubble is a
+ * tokens/primitives (see docs/archive/implementation/extensions.md): each bubble is a
  * `<Card>` surface, the customer tint is `pine-tint/30`, the avatar is a
  * `pine`/`sand` circle, spacing is the 4px scale, timestamps are
  * `text-xs ink-faint`. No new hue, radius or shadow. Task 17 refactored the

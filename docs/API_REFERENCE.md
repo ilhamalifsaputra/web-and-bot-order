@@ -7,7 +7,7 @@ Tabel di bawah mendaftar **semua** route Fastify yang sungguhan terdaftar,
 dibaca langsung dari `apps/*/src/routes/*.ts` (2026-06-24). Satu-satunya
 endpoint non-HTML untuk integrasi eksternal: `/healthz`, webhook gateway
 pembayaran, dan webhook Telegram — detail lengkap di
-[`../DOCS.md` §12](../DOCS.md#12-api--webhook).
+[`../DOCS.md` §16](../DOCS.md#16-api--webhook).
 
 ## Mekanisme guard
 
@@ -90,7 +90,7 @@ pembayaran, dan webhook Telegram — detail lengkap di
 > cocok dengan pengecekan `body.csrf_token` JSON biasa; verifikasi CSRF untuk
 > upload ditangani di lapisan lain (`lib/upload.ts`, dicek lewat `canMutate`
 > dengan path yang dinormalisasi). Lihat Admin-4 fix di
-> `docs/audit-security-2026-06-23.md` untuk konteks normalisasi path ini.
+> `docs/archive/audit-security-2026-06-23.md` untuk konteks normalisasi path ini.
 
 ## storefront — semua route
 
@@ -115,7 +115,7 @@ pembayaran, dan webhook Telegram — detail lengkap di
 | GET | `/checkout/:code/pay` | `currentCustomer` | Instruksi bayar (QR/alamat) |
 | GET | `/api/v1/orders/:code/status` | `currentCustomer` | JSON status, di-poll React via `fetch` ~5 detik |
 | POST | `/checkout/:code/cancel` | `csrfProtect` | Batalkan order pending |
-| POST | `/pay/tokopay/callback`, `/pay/paydisini/callback`, `/pay/nowpayments/callback` | — (signature gateway sebagai auth) | Webhook konfirmasi bayar — lihat [PAYMENT_GATEWAY.md](PAYMENT_GATEWAY.md) |
+| POST | `/pay/tokopay/callback`, `/pay/paydisini/callback`, `/pay/nowpayments/callback` | — (signature gateway sebagai auth) | Webhook konfirmasi bayar — lihat [PAYMENT_GATEWAY.md](arsitektur/PAYMENT_GATEWAY.md) |
 | GET | `/account` | `currentCustomer` | Ringkasan akun |
 | GET | `/account/orders`, `/account/orders/:code` | `currentCustomer` | Riwayat order + kredensial (jika DELIVERED) |
 | GET/POST | `/account/settings` | `currentCustomer`/`csrfProtect` | Identitas dasar |
@@ -135,9 +135,9 @@ pembayaran, dan webhook Telegram — detail lengkap di
 | Endpoint | Auth | Detail |
 |---|---|---|
 | `POST /tg/<WEBHOOK_SECRET>` | Path secret + header `X-Telegram-Bot-Api-Secret-Token` | Hanya ada jika `BOT_MODE=webhook` |
-| `POST /pay/{tokopay,paydisini,nowpayments}/callback` | Signature gateway | Lihat [PAYMENT_GATEWAY.md](PAYMENT_GATEWAY.md) |
+| `POST /pay/{tokopay,paydisini,nowpayments}/callback` | Signature gateway | Lihat [PAYMENT_GATEWAY.md](arsitektur/PAYMENT_GATEWAY.md) |
 | `GET /healthz` (admin & storefront) | — | Uptime monitor / reverse proxy |
 
 Kontrak request/respons penuh webhook ada di
-[`../DOCS.md` §12](../DOCS.md#12-api--webhook) dan
-[PAYMENT_GATEWAY.md](PAYMENT_GATEWAY.md).
+[`../DOCS.md` §16](../DOCS.md#16-api--webhook) dan
+[PAYMENT_GATEWAY.md](arsitektur/PAYMENT_GATEWAY.md).

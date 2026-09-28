@@ -1,6 +1,6 @@
 /**
  * Settlement ingestion (task F1) — the caller `postSettlementPosting` shipped
- * without (decision D1, known gap 6 in docs/FINANCE_ARCHITECTURE.md).
+ * without (decision D1, known gap 6 in docs/arsitektur/FINANCE_ARCHITECTURE.md).
  *
  * What these tests are really about is the ATOMICITY of three writes that must
  * agree or not happen: the `Settlement` row, its `SettlementTransaction` lines,

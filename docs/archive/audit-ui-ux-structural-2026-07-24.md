@@ -14,9 +14,9 @@ SearchBar) → bulk-action bar (kondisional) → DataTable → Pagination — da
 itu domain dokumen lain.
 
 > Audit ini melengkapi, bukan mengulang, dua dokumen yang sudah ada:
-> - `docs/admin-ux-pass-v2-plan.md` — gap **fungsional** (CSV export, Add Category, toggle
+> - `docs/archive/admin-ux-pass-v2-plan.md` — gap **fungsional** (CSV export, Add Category, toggle
 >   switch aktif/nonaktif, lastSeenAt/totalSpent di kolom Customers, ticket assign, dll).
-> - `docs/audit-ui-ux-2026-06-21.md` / `docs/audit-ui-ux-functional-2026-07-01.md` — perilaku
+> - `docs/archive/audit-ui-ux-2026-06-21.md` / `docs/archive/audit-ui-ux-functional-2026-07-01.md` — perilaku
 >   yang **rusak atau menyesatkan** (tombol ke endpoint salah, error yang ditelan diam-diam).
 >
 > Beberapa halaman muncul di lebih dari satu dokumen; di setiap kasus itu, bagian temuan di
@@ -187,7 +187,7 @@ pnpm --filter @app/web-admin-client build
 
 ditambah pengecekan manual di browser (`pnpm dev:web`) mengikuti bagian "Final check" pada
 `docs/ui/10_UI_REVIEW_CHECKLIST.md` — pola yang sama seperti yang sudah dipakai
-`docs/admin-ux-pass-v2-plan.md` untuk fase-fasenya.
+`docs/archive/admin-ux-pass-v2-plan.md` untuk fase-fasenya.
 
 Urutan yang disarankan: mulai dari P0/P1 (Payments+Vouchers+Search+Audit/Outbox) karena
 dampaknya paling besar dan/atau memperbaiki bug nyata, baru lanjut ke P2 satu per satu.

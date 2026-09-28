@@ -1,7 +1,7 @@
 /**
  * Fixed mobile bottom tab bar — the PRIMARY mobile navigation (the left drawer
  * is now secondary "more" nav). Five destinations mapped to this shop's real
- * IA, per docs/implementation/assumptions.md ASSUMPTION 1 and
+ * IA, per docs/archive/implementation/assumptions.md ASSUMPTION 1 and
  * gogogo-frontend/design-system/business-adaptation.md → Navigation → "Mobile
  * navigation behavior":
  *
@@ -23,7 +23,7 @@ import { t } from "../../lib/i18n";
 /**
  * Routes where the bar is HIDDEN: the six full-funnel screens that already
  * dock a sticky action bar at the bottom edge. Two fixed bottom elements must
- * never coexist on one screen (FRONTEND_IMPLEMENTATION_PROMPT_v3.md §15).
+ * never coexist on one screen (docs/archive/FRONTEND_IMPLEMENTATION_PROMPT_v3.md §15).
  * Keep this list in step with business-adaptation.md → Navigation (a).
  */
 export const TAB_BAR_HIDDEN_ROUTES = [

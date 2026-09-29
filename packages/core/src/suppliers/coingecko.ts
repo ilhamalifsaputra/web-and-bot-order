@@ -13,10 +13,9 @@ const API_BASE = process.env.COINGECKO_API_BASE ?? "https://api.coingecko.com/ap
  * (`fx.ts`'s `fetchUsdIdrMarketRate`) treats every throw identically: the
  * previously saved `usd_idr_rate` stays in effect.
  */
-export async function fetchTetherIdrPrice(): Promise<Decimal> {
+export async function fetchTetherIdrPrice(apiKey?: string): Promise<Decimal> {
   const url = `${API_BASE}/simple/price?ids=tether&vs_currencies=idr`;
   const headers: Record<string, string> = {};
-  const apiKey = process.env.COINGECKO_API_KEY ?? "";
   if (apiKey) headers["x-cg-demo-api-key"] = apiKey;
 
   const res = await fetchWithTimeoutSafe(

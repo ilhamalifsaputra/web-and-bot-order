@@ -58,6 +58,7 @@ const EDITABLE: Record<string, string> = {
   usd_idr_rate: "USDT rate (IDR per 1 USDT)",
   usd_idr_rate_auto: "Auto-update USDT rate",
   usd_idr_rate_rounding: "Rate rounding",
+  coingecko_api_key: "CoinGecko API key",
   // M13 / audit P0-3. Plain free-text numeric fields, same shape as
   // `usd_idr_rate_rounding` right above: no validation branch in
   // `applyFieldEdit`, because every reader already treats a blank/unusable
@@ -147,7 +148,7 @@ const EDITABLE: Record<string, string> = {
   kokinpay_api_key: "KokinPay API key",
 };
 
-const SECRET_KEYS = new Set(["tokopay_secret", "paydisini_apikey", "bot_token", "notif_bot_token", "bybit_api_key", "bybit_api_secret", "binance_api_key", "binance_api_secret", "nowpayments_api_key", "nowpayments_ipn_secret", "bscscan_api_key", "smtp_pass", "digiflazz_api_key", "kokinpay_api_key"]);
+const SECRET_KEYS = new Set(["tokopay_secret", "paydisini_apikey", "bot_token", "notif_bot_token", "bybit_api_key", "bybit_api_secret", "binance_api_key", "binance_api_secret", "nowpayments_api_key", "nowpayments_ipn_secret", "bscscan_api_key", "smtp_pass", "digiflazz_api_key", "kokinpay_api_key", "coingecko_api_key"]);
 const TOKEN_KEYS = new Set(["bot_token", "notif_bot_token"]);
 // Fields whose /telegram/test check reuses the getChat-based "is this chat
 // reachable" flow — the original public_channel_id plus the two join-gate

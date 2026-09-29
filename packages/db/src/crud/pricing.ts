@@ -25,7 +25,7 @@ import { addMinutes } from "@app/core/datetime";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
 import type { Db } from "./_types";
-import { getSetting, setSetting } from "./settings";
+import { getDecryptedSetting, getSetting, setSetting } from "./settings";
 import { assertOrderTotalClearsRailMinimum } from "./orderMinimums";
 import { getOrder } from "./orders";
 import { enqueueAdminFxRateStale, enqueueAdminFxRateRejected } from "./notifications";
@@ -246,10 +246,13 @@ export const FX_STALE_ALERTED_FOR_KEY = "fx_stale_alerted_for";
  */
 export const FX_REJECTED_ALERTED_FOR_KEY = "fx_rejected_alerted_for";
 
+/** Optional CoinGecko demo-tier API key managed from web-admin Settings. */
+export const COINGECKO_API_KEY_KEY = "coingecko_api_key";
+
 // Swappable market-rate fetcher so tests never hit the network.
-let fxFetcher: () => Promise<Decimal> = () => fetchUsdIdrMarketRate();
+let fxFetcher: (apiKey?: string) => Promise<Decimal> = (apiKey) => fetchUsdIdrMarketRate(apiKey);
 /** Test hook: stub the market-rate fetch. */
-export function setFxRateFetcher(fn: () => Promise<Decimal>): void {
+export function setFxRateFetcher(fn: (apiKey?: string) => Promise<Decimal>): void {
   fxFetcher = fn;
 }
 
@@ -414,7 +417,8 @@ export async function refreshUsdIdrRate(db: Db, opts: { force?: boolean } = {}):
   }
   const step = (await getSetting(db, USD_IDR_RATE_ROUNDING_KEY)) ?? DEFAULT_RATE_ROUNDING;
   const spreadBps = (await getSetting(db, USDT_SPREAD_BPS_KEY)) ?? DEFAULT_USDT_SPREAD_BPS;
-  const market = await fxFetcher();
+  const coinGeckoApiKey = await getDecryptedSetting(db, COINGECKO_API_KEY_KEY);
+  const market = await fxFetcher(coinGeckoApiKey || undefined);
   // Spread first, THEN round: rounding the already-shaved figure keeps the
   // saved rate a clean multiple of the step, which is the whole point of the
   // step (buyers see tidy numbers). Shaving a rounded figure would produce

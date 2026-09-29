@@ -77,6 +77,25 @@ describe("SettingsPage", () => {
     expect(screen.getByText("Order Bot token")).toBeInTheDocument();
   });
 
+  it("groups the CoinGecko API key with Exchange Rates instead of Other Settings", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({
+        ...SETTINGS_DATA,
+        fields: [
+          ...SETTINGS_DATA.fields,
+          { key: "coingecko_api_key", label: "CoinGecko API key", secret: true, hasValue: false, value: "", needsRestart: false },
+        ],
+      }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+
+    render(<SettingsPage />, { wrapper: Wrapper });
+
+    const exchangeRates = await screen.findByRole("heading", { name: "Exchange Rates" });
+    const exchangeRatesCard = exchangeRates.closest('[data-slot="card"]') as HTMLElement;
+    expect(within(exchangeRatesCard).getByText("CoinGecko API key")).toBeInTheDocument();
+    expect(document.getElementById("settings-other")).toBeNull();
+  });
+
   it("shows loading state while fetching", () => {
     vi.spyOn(globalThis, "fetch").mockReturnValueOnce(new Promise(() => {}));
     render(<SettingsPage />, { wrapper: Wrapper });

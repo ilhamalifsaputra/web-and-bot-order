@@ -7,7 +7,7 @@ import { usdtFromIdr, computeUniqueCents } from "@app/core/formatters";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
 import { addToCart, createOrderFromCart, bulkAddStock } from "@app/db";
-import { getSetting, setSetting, __clearSettingsCacheForTests } from "./settings";
+import { getSetting, setSetting, setEncryptedSetting, __clearSettingsCacheForTests } from "./settings";
 import {
   refreshUsdIdrRate,
   setFxRateFetcher,
@@ -56,6 +56,19 @@ beforeEach(async () => {
 });
 
 describe("refreshUsdIdrRate (market rate + rounding — plan.md §15.8)", () => {
+  it("passes the decrypted CoinGecko API key from admin settings to the market fetcher", async () => {
+    await setEncryptedSetting(prisma, "coingecko_api_key", "admin-coingecko-key");
+    let receivedApiKey: string | undefined;
+    setFxRateFetcher(async (apiKey?: string) => {
+      receivedApiKey = apiKey;
+      return new Decimal("16243.7");
+    });
+
+    await refreshUsdIdrRate(prisma);
+
+    expect(receivedApiKey).toBe("admin-coingecko-key");
+  });
+
   it("saves the market rate rounded to the default Rp100 step", async () => {
     const r = await refreshUsdIdrRate(prisma);
     expect(r.status).toBe("updated");

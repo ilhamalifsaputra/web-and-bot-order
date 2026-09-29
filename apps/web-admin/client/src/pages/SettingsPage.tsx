@@ -87,6 +87,7 @@ const FX_KEYS = new Set([
   "usd_idr_rate",
   "usd_idr_rate_auto",
   "usd_idr_rate_rounding",
+  "coingecko_api_key",
   "usdt_spread_bps",
   "usdt_rounding_ceil_since",
   "fx_rate_min",
@@ -224,6 +225,7 @@ const FIELD_DESCRIPTIONS: Record<string, string> = {
   usd_idr_rate: "Rupiah per 1 USDT, used to price USDT gateways in IDR.",
   usd_idr_rate_auto: "Automatically refresh the rate from the market instead of setting it by hand.",
   usd_idr_rate_rounding: "Rounds the auto-fetched rate to the nearest step (e.g. 100).",
+  coingecko_api_key: "Optional CoinGecko demo API key used when refreshing the USDT/IDR market rate.",
   usdt_spread_bps:
     "Shaves the auto-fetched rate down so buyers send slightly more USDT — 100 = 1%. It is applied only to the automatic refresh; a rate you type in by hand is saved exactly as typed. It does not count towards the maximum move below, so any size is safe there, but the floor and ceiling above still judge the rate after it is applied.",
   usdt_rounding_ceil_since:

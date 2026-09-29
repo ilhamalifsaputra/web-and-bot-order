@@ -1130,6 +1130,16 @@ describe("Home screen (persistent keyboard)", () => {
     expect(sentIncludes(sink, "What are you shopping for")).toBe(false);
   });
 
+  it("router wires v1:browse:prods to browseResume — resumes the category-free Premium Apps list", async () => {
+    const { ctx, sink } = customerCtx({
+      callbackData: "v1:browse:prods",
+      session: { ...userSession(), scratch: { group: CategoryGroup.PREMIUM_APPS } },
+    });
+    await routeCallback(ctx);
+    expect(sentIncludes(sink, sample.parentProduct.name)).toBe(true);
+    expect(sentIncludes(sink, "What are you shopping for")).toBe(false);
+  });
+
   it("menuCommand and the persistent-keyboard 'main' back-action render Home with the persistent keyboard", async () => {
     const start = customerCtx({ callbackData: "v1:menu:main" });
     await customer.menuCommand(start.ctx);
@@ -1851,6 +1861,86 @@ describe("group/category browsing handlers", () => {
     expect((ctx.session.scratch as { group?: string }).group).toBe(CategoryGroup.GAME_TOPUP);
   });
 
+  it("browseCategoriesInGroup skips Premium Apps categories and lists products from every premium category only", async () => {
+    const streaming = await createCategory(prisma, { name: "Premium Streaming Category", group: CategoryGroup.PREMIUM_APPS });
+    const productivity = await createCategory(prisma, { name: "Premium Productivity Category", group: CategoryGroup.PREMIUM_APPS });
+    const game = await createCategory(prisma, { name: "Premium Flow Excluded Game", group: CategoryGroup.GAME_TOPUP });
+    const inactive = await createCategory(prisma, { name: "Premium Flow Inactive Category", group: CategoryGroup.PREMIUM_APPS });
+    await prisma.category.update({ where: { id: inactive.id }, data: { isActive: false } });
+    const netflix = await createCatalogProduct(prisma, { categoryId: streaming.id, name: "Premium Flow Netflix" });
+    const canva = await createCatalogProduct(prisma, { categoryId: productivity.id, name: "Premium Flow Canva" });
+    const diamonds = await createCatalogProduct(prisma, { categoryId: game.id, name: "Premium Flow Game Diamonds" });
+    const hidden = await createCatalogProduct(prisma, { categoryId: inactive.id, name: "Premium Flow Hidden App" });
+    await createDenomination(prisma, { productId: netflix.id, name: "1 Month", type: "SHARED", durationLabel: "1 Month", price: "10000" });
+    await createDenomination(prisma, { productId: canva.id, name: "1 Month", type: "SHARED", durationLabel: "1 Month", price: "12000" });
+    await createDenomination(prisma, { productId: diamonds.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    await createDenomination(prisma, { productId: hidden.id, name: "1 Month", type: "SHARED", durationLabel: "1 Month", price: "9000" });
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseCategoriesInGroup(ctx, CategoryGroup.PREMIUM_APPS);
+
+    const scratch = ctx.session.scratch as { categoryId?: number; group?: string; browseEntries?: number[] };
+    expect(scratch.group).toBe(CategoryGroup.PREMIUM_APPS);
+    expect(scratch.categoryId).toBeUndefined();
+    expect(scratch.browseEntries).toEqual(expect.arrayContaining([netflix.id, canva.id]));
+    expect(scratch.browseEntries).not.toContain(diamonds.id);
+    expect(scratch.browseEntries).not.toContain(hidden.id);
+    expect(sentIncludes(sink, "Premium Streaming Category")).toBe(false);
+    expect(sentIncludes(sink, "Premium Productivity Category")).toBe(false);
+    expect(sentIncludes(sink, "Premium Flow Netflix")).toBe(true);
+    expect(sentIncludes(sink, "Premium Flow Canva")).toBe(true);
+    expect(sentIncludes(sink, "Premium Flow Hidden App")).toBe(false);
+  });
+
+  it("empty category-free Premium Apps list offers Back to the service picker", async () => {
+    await prisma.category.updateMany({ data: { isActive: false } });
+    const { ctx, sink } = customerCtx();
+
+    await customer.browseCategoriesInGroup(ctx, CategoryGroup.PREMIUM_APPS);
+
+    expect(sentIncludes(sink, "No products available at the moment")).toBe(true);
+    const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ callback_data?: string }>> };
+    expect(markup.inline_keyboard?.flat().map((button) => button.callback_data)).toContain("v1:browse:grps");
+  });
+
+  it("empty Premium Apps resume clears the previous product snapshot so an old number cannot reopen it", async () => {
+    await prisma.category.update({ where: { id: sample.category.id }, data: { isActive: false } });
+    const initial = customerCtx({
+      callbackData: "v1:browse:prods",
+      session: {
+        ...userSession(),
+        scratch: {
+          group: CategoryGroup.PREMIUM_APPS,
+          page: 2,
+          browseEntries: [sample.parentProduct.id],
+          productId: sample.parentProduct.id,
+          variantId: sample.product.id,
+          activeNumberedScreen: "products",
+        },
+      },
+    });
+
+    await routeCallback(initial.ctx);
+
+    const scratch = initial.ctx.session.scratch as {
+      page?: number;
+      browseEntries?: number[];
+      productId?: number;
+      variantId?: number;
+      activeNumberedScreen?: string;
+    };
+    expect(scratch.page).toBeUndefined();
+    expect(scratch.browseEntries).toEqual([]);
+    expect(scratch.productId).toBeUndefined();
+    expect(scratch.variantId).toBeUndefined();
+    expect(scratch.activeNumberedScreen).toBeUndefined();
+
+    const typed = customerCtx({ text: "1", session: initial.ctx.session });
+    await customer.handleProductNumber(typed.ctx);
+    expect(sentIncludes(typed.sink, "No products available at the moment")).toBe(true);
+    expect(sentIncludes(typed.sink, sample.parentProduct.name)).toBe(false);
+  });
+
   it("browseCategoriesInGroup auto-skips the picker and goes straight to the sole category's entry point when the group has exactly one active category", async () => {
     const cat = await createCategory(prisma, { name: "Mobile Legends", group: CategoryGroup.GAME_TOPUP });
     const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "ML Diamonds" });
@@ -1980,6 +2070,15 @@ describe("group/category browsing handlers", () => {
     const { ctx, sink } = customerCtx({
       text: persistentLabel("back", "en"),
       session: { ...userSession(), scratch: { categoryId: sample.parentProduct.categoryId } },
+    });
+    await customer.handleProductNumber(ctx);
+    expect(sentIncludes(sink, "What are you shopping for")).toBe(true);
+  });
+
+  it("Back from the category-free Premium Apps product list returns to the group picker", async () => {
+    const { ctx, sink } = customerCtx({
+      text: persistentLabel("back", "en"),
+      session: { ...userSession(), scratch: { group: CategoryGroup.PREMIUM_APPS } },
     });
     await customer.handleProductNumber(ctx);
     expect(sentIncludes(sink, "What are you shopping for")).toBe(true);

@@ -10,7 +10,7 @@ vi.mock("@app/core/mailer", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@app/core/mailer")>()),
   verifySmtp: vi.fn(),
 }));
-import { prisma, initDb, upsertUser, setSetting, getSetting, setFxRateFetcher, getShopMinOrderAmountIdr } from "@app/db";
+import { prisma, initDb, upsertUser, setSetting, getSetting, getDecryptedSetting, setFxRateFetcher, getShopMinOrderAmountIdr } from "@app/db";
 import { resetDb } from "../../../tests/helpers/sampleData";
 import {
   makeSession,
@@ -102,6 +102,28 @@ describe("POST /api/settings/edit", () => {
     expect(await getSetting(prisma, "shop_name")).toBe("New Shop");
     const audit = await prisma.auditLog.findFirst({ where: { action: "setting_set" } });
     expect(audit).toBeTruthy();
+  });
+
+  it("stores the CoinGecko API key encrypted and returns it only as a masked secret field", async () => {
+    const saved = await postJson("/api/settings/edit", cookie, csrf, {
+      key: "coingecko_api_key",
+      value: "admin-coingecko-key",
+    });
+    expect(saved.statusCode).toBe(200);
+    expect(await getSetting(prisma, "coingecko_api_key")).not.toBe("admin-coingecko-key");
+    expect(await getDecryptedSetting(prisma, "coingecko_api_key")).toBe("admin-coingecko-key");
+
+    const response = await getJson("/api/settings", cookie);
+    const field = (response.json() as { fields: Array<{ key: string; label: string; secret: boolean; hasValue: boolean; value: string; needsRestart: boolean }> }).fields
+      .find((entry) => entry.key === "coingecko_api_key");
+    expect(field).toEqual({
+      key: "coingecko_api_key",
+      label: "CoinGecko API key",
+      secret: true,
+      hasValue: true,
+      value: "",
+      needsRestart: false,
+    });
   });
 
   it("rejects a non-whitelisted key with 400, writes nothing", async () => {

@@ -132,19 +132,19 @@ describe("fetchTetherIdrPrice", () => {
     expect(headers?.["x-cg-demo-api-key"]).toBeUndefined();
   });
 
-  it("x-cg-demo-api-key header is present when COINGECKO_API_KEY is set", async () => {
-    vi.stubEnv("COINGECKO_API_KEY", "some-test-key");
+  it("x-cg-demo-api-key header uses the API key supplied by runtime settings", async () => {
+    vi.stubEnv("COINGECKO_API_KEY", "legacy-env-key");
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
       json: async () => ({ tether: { idr: 16350 } }),
     });
     vi.stubGlobal("fetch", fetchMock);
-    await fetchTetherIdrPrice();
+    await fetchTetherIdrPrice("admin-settings-key");
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const init = fetchMock.mock.calls[0]![1] as RequestInit | undefined;
     const headers = init?.headers as Record<string, string> | undefined;
-    expect(headers?.["x-cg-demo-api-key"]).toBe("some-test-key");
+    expect(headers?.["x-cg-demo-api-key"]).toBe("admin-settings-key");
   });
 
   it("resolves with a proper Decimal type that supports arithmetic", async () => {

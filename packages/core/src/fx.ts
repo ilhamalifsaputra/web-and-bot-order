@@ -17,8 +17,8 @@ import { Decimal } from "./money";
 import { fetchTetherIdrPrice } from "./suppliers/coingecko";
 
 /** Fetch the current market Rupiah-per-USDT rate. Throws on any failure. */
-export async function fetchUsdIdrMarketRate(): Promise<Decimal> {
-  return fetchTetherIdrPrice();
+export async function fetchUsdIdrMarketRate(apiKey?: string): Promise<Decimal> {
+  return fetchTetherIdrPrice(apiKey);
 }
 
 /**

@@ -615,6 +615,7 @@ export async function listCatalogProducts(
     where: {
       isActive: true,
       isArchived: false,
+      category: { isActive: true },
       ...(categoryId != null ? { categoryId } : {}),
       ...(filter && "gameVariant" in filter ? { gameVariant: filter.gameVariant } : {}),
       ...(filter && "gameRegion" in filter ? { gameRegion: filter.gameRegion } : {}),
@@ -627,6 +628,16 @@ export async function listCatalogProducts(
     orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
   }), activeServiceGroups(db)]);
   return products.filter((product) => groups.has(product.category.group ?? CategoryGroup.PREMIUM_APPS));
+}
+
+/**
+ * Active catalog products belonging to one customer-facing service group.
+ * Categories with no explicit group retain the catalog's historical Premium
+ * Apps fallback, matching listActiveCategoriesByGroup and service availability.
+ */
+export async function listCatalogProductsByGroup(db: Db, group: string): Promise<CatalogProduct[]> {
+  const products = await listCatalogProducts(db);
+  return products.filter((product) => (product.category.group ?? CategoryGroup.PREMIUM_APPS) === group);
 }
 
 export interface GameVariantOption {

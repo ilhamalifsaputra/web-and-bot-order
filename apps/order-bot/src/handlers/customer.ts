@@ -20,6 +20,7 @@ import {
   prisma,
   userTotalSpent,
   listCatalogProducts,
+  listCatalogProductsByGroup,
   listActiveCategoriesByGroup,
   listCategoryGameVariants,
   countCategoryProductsWithoutGameVariant,
@@ -268,6 +269,13 @@ async function handleBackButton(ctx: MyContext): Promise<void> {
     }
     return;
   }
+  // Premium Apps deliberately skips the category screen. Its flat group list
+  // therefore has a group scope but no category scope; Back returns to the
+  // service picker instead of treating it as an unscoped Home screen.
+  if (sc(ctx).group) {
+    await browseGroups(ctx);
+    return;
+  }
   await backToHome(ctx);
 }
 
@@ -427,6 +435,14 @@ export async function browseCategoriesInGroup(ctx: MyContext, group: string): Pr
   // a leftover "gameVariant"/"gameRegion" must be cleared here too.
   delete sc(ctx).activeNumberedScreen;
   sc(ctx).group = group;
+
+  // Premium Apps is intentionally one flat product catalog. Categories remain
+  // useful admin metadata, but presenting them to customers adds a redundant
+  // click and can split closely related apps across separate screens.
+  if (group === CategoryGroup.PREMIUM_APPS) {
+    await browseProductsFlat(ctx, 0);
+    return;
+  }
 
   const categories = await listActiveCategoriesByGroup(prisma, group);
   const groupLabel = t(ctx, service.translationKey);
@@ -701,6 +717,10 @@ export async function browseResume(ctx: MyContext): Promise<void> {
     await browseProductsFlat(ctx, sc(ctx).page ?? 0);
     return;
   }
+  if (sc(ctx).group === CategoryGroup.PREMIUM_APPS) {
+    await browseProductsFlat(ctx, sc(ctx).page ?? 0);
+    return;
+  }
   await browseGroups(ctx);
 }
 
@@ -754,7 +774,10 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
   // "gameVariant"/"gameRegion" value here would otherwise survive into
   // whatever screen a typed digit is next checked against.
   const previousActiveScreen = sc(ctx).activeNumberedScreen;
-  const products = await listCatalogProducts(prisma, categoryId, filter);
+  const products =
+    categoryId == null && sc(ctx).group === CategoryGroup.PREMIUM_APPS
+      ? await listCatalogProductsByGroup(prisma, CategoryGroup.PREMIUM_APPS)
+      : await listCatalogProducts(prisma, categoryId, filter);
   if (!products.length) {
     // Finding I2 (final-review): a picker's activeNumberedScreen must not
     // survive into this empty-list screen either — an empty gameVariant/
@@ -762,7 +785,20 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
     // resolve against 0 entries ("Enter a number between 1 and 0") instead of
     // falling through to this screen's own (numberless) contract.
     delete sc(ctx).activeNumberedScreen;
-    await smartEdit(ctx, t(ctx, "browse.no_products"), ckb.backToMain(lang));
+    // The catalog may have become empty while the customer was viewing a
+    // product. An explicit empty snapshot prevents a digit from falling back
+    // to an older list (or to the legacy unscoped catalog lookup below).
+    sc(ctx).browseEntries = [];
+    delete sc(ctx).page;
+    delete sc(ctx).productId;
+    delete sc(ctx).variantId;
+    delete sc(ctx).gameVariantEntries;
+    delete sc(ctx).gameRegionEntries;
+    const emptyKeyboard =
+      categoryId == null && sc(ctx).group === CategoryGroup.PREMIUM_APPS
+        ? ckb.categoryPickerKb([], lang)
+        : ckb.backToMain(lang);
+    await smartEdit(ctx, t(ctx, "browse.no_products"), emptyKeyboard);
     return;
   }
 
@@ -966,8 +1002,8 @@ export async function handleProductNumber(ctx: MyContext): Promise<void> {
   // Resolve against the SNAPSHOT captured when the list was rendered, so a
   // catalog change between render and tap can't shift the numbering. Each entry
   // is a mid-tier Product id.
-  let entries = sc(ctx).browseEntries ?? [];
-  if (!entries.length) {
+  let entries = sc(ctx).browseEntries;
+  if (entries == null) {
     const all = await listCatalogProducts(prisma);
     const page = sc(ctx).page ?? 0;
     const startIdx = page * PAGE_SIZE;
@@ -976,7 +1012,11 @@ export async function handleProductNumber(ctx: MyContext): Promise<void> {
   }
 
   if (!entries.length) {
-    await smartEdit(ctx, t(ctx, "browse.no_products"), ckb.backToMain(lang));
+    const emptyKeyboard =
+      sc(ctx).categoryId == null && sc(ctx).group === CategoryGroup.PREMIUM_APPS
+        ? ckb.categoryPickerKb([], lang)
+        : ckb.backToMain(lang);
+    await smartEdit(ctx, t(ctx, "browse.no_products"), emptyKeyboard);
     return;
   }
 

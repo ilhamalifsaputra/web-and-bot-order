@@ -4,10 +4,10 @@ Stack saat ini memakai **PostgreSQL**. Bagian SQLite di bawah berlaku untuk
 instalasi lama yang belum menyelesaikan cutover dari file `data/bot.db` mode
 **WAL**; ikuti [runbook cutover](../../docs/POSTGRES_MIGRATION.md) untuk
 memindahkannya ke PostgreSQL.
-`backup.sh` dan `restore.sh` di folder ini adalah **skrip yang sama** untuk
-kedua engine — keduanya mendeteksi otomatis mana yang aktif, jadi entri cron
-dan kebiasaan operator tidak berubah saat cutover terjadi. Dokumen ini
-menjelaskan kedua jalur.
+`backup.sh` dan `restore.sh` di folder ini mendukung kedua engine. `backup.sh`
+memilih dari `DATABASE_URL_PRISMA` di environment prosesnya (tidak memuat
+`.env` sendiri), sedangkan `restore.sh` memilih dari ekstensi file backup.
+Dokumen ini menjelaskan kedua jalur.
 
 Untuk SQLite: transaksi terbaru bisa masih berada di `bot.db-wal` yang belum
 di-checkpoint — jadi **menyalin `bot.db` mentah saat layanan jalan bisa
@@ -160,9 +160,9 @@ DB=/srv/app/data/bot.db DEST=/srv/backups RETENTION=28 deploy/backup/backup.sh
 ## Backup — Postgres
 
 ```bash
-deploy/backup/backup.sh
+DATABASE_URL_PRISMA=postgresql://engine-marker deploy/backup/backup.sh
 # atau dengan path produksi:
-DEST=/srv/backups RETENTION=28 deploy/backup/backup.sh
+DATABASE_URL_PRISMA=postgresql://engine-marker DEST=/srv/backups RETENTION=28 deploy/backup/backup.sh
 ```
 
 Jalur ini aktif otomatis begitu `DATABASE_URL_PRISMA` di environment skrip
@@ -273,7 +273,7 @@ Langkah (otomatis di skrip):
 7. `integrity_check` pada DB hasil restore.
 8. `docker compose start …` lalu smoke `GET /healthz` sampai 200.
 
-### Setelah restore: lepas jedanya
+### Setelah restore SQLite: lepas jedanya
 
 Selama `data/SKIP_AUTO_MIGRATE` ada, **tidak ada** perubahan skema yang
 diterapkan otomatis — termasuk pada deploy berikutnya. Itu disengaja (melindungi
@@ -323,15 +323,33 @@ Langkah (otomatis di skrip):
    `BEGIN`/`COMMIT` (gagal ⇒ DB kembali ke keadaan **sebelum** restore, bukan
    setengah jadi) dan `--exit-on-error` ikut aktif, jadi kegagalan sungguhan
    benar-benar exit non-zero.
-5. `docker compose start …` lalu smoke `GET /healthz` sampai 200.
+5. Tulis `data/SKIP_AUTO_MIGRATE` **sebelum** `server` dimulai lagi. Entrypoint
+   menghormati sentinel ini juga untuk PostgreSQL; tanpa jeda, ia langsung
+   menjalankan `prisma db push` → seed chart of accounts → migrasi data-only
+   pada database yang baru direstore dan dapat membatalkan rollback.
+6. `docker compose start …` lalu smoke `GET /healthz` sampai 200. Skrip
+   mencetak pengingat pelepasan sentinel, baik smoke berhasil maupun gagal.
 
-**Tidak ada sentinel `SKIP_AUTO_MIGRATE` di jalur ini** — tidak diperlukan.
-`docker-entrypoint.sh`'s `auto_migrate()` sudah no-op total (tidak pernah
-menjalankan `prisma db push` otomatis) untuk `DATABASE_URL_PRISMA` yang bukan
-`file:...`, jadi tidak ada risiko container "memigrasi maju lagi" DB Postgres
-yang baru direstore — beda dengan jalur SQLite yang butuh jeda eksplisit.
-`restore.sh` juga tidak mencetak pengingat pelepasan sentinel untuk jalur ini
-(pengingatnya khusus SQLite).
+### Setelah restore PostgreSQL: cocokkan kode, lalu lepas jedanya
+
+Biarkan `data/SKIP_AUTO_MIGRATE` tetap ada sampai kode yang akan dijalankan
+benar-benar cocok dengan skema dan data pada dump yang dipilih. Jika restore
+dipakai untuk rollback deploy, kembalikan juga kode ke versi yang kompatibel;
+health check 200 saja tidak membuktikan seluruh alur aplikasi cocok. Selama
+sentinel ada, start/restart berikutnya **tidak** menjalankan schema push, seed,
+atau migrasi data-only. Setelah versi kode/skema cocok dan siap kembali ke
+alur update otomatis:
+
+```bash
+rm ./data/SKIP_AUTO_MIGRATE
+docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml restart server
+docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml logs --since 10m server | grep entrypoint
+```
+
+Baca log setelah restart: pada start tanpa sentinel, entrypoint kembali
+menjalankan schema push → seed ledger → migrasi data-only. Jangan hapus
+sentinel selama masih menjalankan kode yang tidak cocok dengan database
+hasil restore.
 
 ---
 
@@ -365,11 +383,11 @@ deploy/backup/restore.sh ./data/backups/bot-<stamp>.db
 # 4) verifikasi: /healthz 200 + baris yang tadi muncul kembali utuh
 ```
 
-**Postgres** (setelah cutover, `DATABASE_URL_PRISMA` sudah menunjuk Postgres):
+**Postgres** (setelah cutover):
 
 ```bash
 # 1) ambil backup
-deploy/backup/backup.sh
+DATABASE_URL_PRISMA=postgresql://engine-marker deploy/backup/backup.sh
 # 2) catat satu baris data yang diketahui, lalu "rusak"/ubah DB live
 #    (mis. hapus sebuah order) untuk mensimulasikan kehilangan
 # 3) restore dari backup

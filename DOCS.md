@@ -186,7 +186,8 @@ memang untuk disalin).
 diturunkan: `idrPrice / usd_idr_rate`, dibulatkan ke 0,1, dan **tampil
 bersisian** dengan IDR di storefront dan bot (mis. `Rp79.000 ≈ $4,9`). Tidak ada
 deteksi IP atau preferensi mata uang per-user — mata uang transaksi dipilih **saat
-bayar** (IDR → TokoPay, USDT → Binance Internal / Bybit Internal Transfer).
+bayar** (IDR → TokoPay/PayDisini; USDT → NOWPayments/Binance Internal/
+Bybit Internal Transfer/Bybit BSC).
 
 `usd_idr_rate` **auto-update dari pasar** (`scheduleFxRefresh`,
 `packages/core/src/fx.ts`), dibulatkan ke kelipatan `usd_idr_rate_rounding`
@@ -200,7 +201,7 @@ Tiap order menyimpan snapshot: `Order.currency` (`IDR`/`USDT`), `Order.fxRate`
 
 ## 5. Pembayaran
 
-**Lima metode auto-confirm, simetris di bot & storefront:**
+**Enam metode auto-confirm, tersedia di bot & storefront saat dikonfigurasi:**
 
 | Metode | Mata uang | Mekanisme | Kelola |
 |---|---|---|---|
@@ -209,6 +210,7 @@ Tiap order menyimpan snapshot: `Order.currency` (`IDR`/`USDT`), `Order.fxRate`
 | **PayDisini (QRIS/e-wallet)** | IDR | webhook `POST /pay/paydisini/callback` + reconcile poller fallback; idempoten `ProcessedPaydisiniTx` | Settings |
 | **NOWPayments (hosted invoice)** | USDT | IPN webhook `POST /pay/nowpayments/callback` (HMAC-SHA512, header `x-nowpayments-sig`) + reconcile poller fallback; idempoten `ProcessedNowpaymentsTx` | Settings |
 | **Bybit Internal Transfer** (UID-based, instant off-chain) | USDT | poller cocokkan **nominal unik**; tak cocok → "unmatched" untuk review; idempoten `processed_bybit_tx` | Settings |
+| **Bybit BSC** (on-chain BEP20) | USDT | poller deposit Bybit cocokkan **nominal unik** setelah status sukses on-chain, dengan filter jaringan/alamat; ledger `ProcessedBybitTx` | Settings |
 
 Kontrak webhook + reconcile poller ketiga gateway IDR/USDT di atas (TokoPay,
 PayDisini, NOWPayments) didokumentasikan lengkap di **§16**.
@@ -242,7 +244,7 @@ menampilkan tombol untuk memilihnya (dikonfirmasi test `payment-menu.test.ts:40`
 order lama yang dibuat sebelum dipensiunkan — tidak ada jalur aktif untuk
 order baru.
 
-Menu bayar: **QRIS / PayDisini / NOWPayments / Binance / Bybit**. Tes koneksi
+Menu bayar: **QRIS / PayDisini / NOWPayments / Binance / Bybit Internal / Bybit BSC**. Tes koneksi
 API: `pnpm binance-probe`, `pnpm bybit-probe`.
 
 ---

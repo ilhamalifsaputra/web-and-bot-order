@@ -30,9 +30,9 @@ git clone https://github.com/ilhamalifsaputra/web-and-bot-order.git
 cd web-and-bot-order
 cp .env.example .env                          # isi sesuai docs/CONFIGURATION.md
 docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml build
-docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml run --rm server pnpm exec prisma db push   # buat skema
 docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml up -d   # admin :8000, storefront :8100
 docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml ps      # tunggu "healthy"
+docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml logs --since 10m server | grep entrypoint
 ```
 
 ### Jalur B — tanpa Docker (dev lokal / VPS manual)
@@ -43,8 +43,11 @@ git clone https://github.com/ilhamalifsaputra/web-and-bot-order.git
 cd web-and-bot-order
 pnpm install
 cp .env.example .env
+# Siapkan PostgreSQL 16 lokal dan URL @127.0.0.1:5432 di .env; lihat ../README.md Jalur B
+# Set CREDENTIAL_ENCRYPTION_KEY= hasil `openssl rand -hex 32` di .env
 pnpm prisma:generate
 pnpm exec prisma db push
+pnpm seed-chart-of-accounts
 pnpm start                                    # satu proses: bot+admin+storefront+worker
 ```
 
@@ -62,17 +65,18 @@ ini, `@prisma/client` tidak punya kode yang digenerate dan setiap import dari
 ### Migrasi/schema
 
 ```bash
-pnpm exec prisma db push    # non-Docker
-docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml run --rm server pnpm exec prisma db push   # Docker
+pnpm exec prisma db push    # non-Docker, sebelum start
+# Docker: otomatis di entrypoint; perintah manual hanya bila AUTO_MIGRATE=0
 ```
 
-**Di Docker ini TIDAK otomatis untuk PostgreSQL:** `docker-entrypoint.sh`'s
-snapshot-then-`db push` auto-migrate hanya berlaku untuk `DATABASE_URL_PRISMA`
-berformat `file:` (SQLite) — untuk URL `postgresql://` ia sengaja no-op (log
-"Skipping the automatic schema update") karena tidak ada file untuk di-snapshot
-dengan cara yang sama. Jadi `prisma db push` di atas WAJIB dijalankan manual
-setiap kali skema berubah, sebelum atau sesudah `docker compose up -d
---build` — `AUTO_MIGRATE` tidak relevan untuk jalur Postgres.
+**Di Docker PostgreSQL ini otomatis secara default:** sebelum aplikasi start,
+`docker-entrypoint.sh` menjalankan `prisma db push` → seed chart of accounts
+ledger → migrasi data-only. `AUTO_MIGRATE=0` mematikan urutan tersebut dan
+memindahkan tanggung jawabnya ke operator. Ambil dump PostgreSQL di host
+sebelum update karena entrypoint tidak mengambil snapshot pra-push pada jalur
+ini. Baca log `entrypoint:` setelah deploy: push skema gagal menghentikan
+start, sedangkan seed/migrasi data-only yang gagal dilaporkan sebagai WARNING.
+Jalur non-Docker harus menjalankan `db push` dan seed sendiri sebelum start.
 
 Detail kapan harus `db push` vs `migrate deploy`, cara menutup gap kolom
 yang hilang (`P2022`), dan alur lengkap entrypoint ada di
@@ -80,8 +84,12 @@ yang hilang (`P2022`), dan alur lengkap entrypoint ada di
 
 ### Seed database
 
-**Tidak ada seed script** — repo ini tidak menyediakan data contoh (produk,
-kategori, dsb). Database baru dimulai kosong; admin pertama dibuat lewat
+**Seed wajib ledger:** `pnpm seed-chart-of-accounts` menyediakan akun dasar
+untuk posting ledger. Docker menjalankannya lewat entrypoint; jalur non-Docker
+harus menjalankannya setelah `prisma db push`, sebelum aplikasi dipakai.
+Tanpa chart ini, posting ledger dapat dilewati. Seed ini berbeda dari data
+contoh katalog: repo tidak menyediakan seed produk/kategori. Admin pertama
+dibuat lewat
 **setup wizard** (`/setup`, default) atau jalur manual `/bootstrap` — lihat
 DOCS.md §10. Katalog (Category/Product/Denomination) dan stok diisi manual
 lewat panel admin setelah login.

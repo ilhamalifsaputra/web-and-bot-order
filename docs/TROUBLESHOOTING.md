@@ -16,25 +16,31 @@ FAILED ... Manual action needed").
 
 **Diagnosis:** Schema-drift — kode sudah mereferensikan kolom yang baru
 ditambah ke `schema.prisma`, tapi `pnpm exec prisma db push` belum
-dijalankan ulang ke `data/bot.db` yang sungguhan. Konfirmasi:
+dijalankan ke database PostgreSQL yang dipakai aplikasi. Konfirmasi kolom
+aktual di katalog PostgreSQL (contoh `notification_outbox.claimed_at`; ganti
+nama tabel/kolom sesuai error). Perintah berikut memakai user/DB default
+`bot_order`; sesuaikan jika `.env` memakai nama lain:
 
 ```bash
-python3 -c "
-import sqlite3
-con = sqlite3.connect('data/bot.db')
-print(con.execute(\"PRAGMA table_info(notification_outbox)\").fetchall())
-"
+docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml exec -T postgres \
+  psql -U bot_order -d bot_order -c "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'notification_outbox' ORDER BY ordinal_position;"
 ```
 
 Bandingkan kolom yang muncul dengan field di `prisma/schema.prisma` untuk
-model terkait — kolom yang ada di schema tapi tidak di output ini adalah
-gap-nya.
+model terkait (perhatikan `@map` pada nama kolom) — kolom yang ada di schema
+tapi tidak di output ini adalah gap-nya. Untuk non-Docker, jalankan query
+yang sama dengan `psql` terhadap URL host di `.env`.
 
 **Fix:**
 ```bash
-pnpm exec prisma db push     # ALTER TABLE ADD COLUMN — additive, aman
-# restart proses
+# Docker: setelah backup dan bila tidak sedang rollback, deploy kode/schema yang cocok:
+docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml up -d --build
+docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml logs --since 10m server | grep entrypoint
+# Non-Docker: pnpm exec prisma db push, lalu restart proses aplikasi
 ```
+Jika `data/SKIP_AUTO_MIGRATE` ada karena restore, selesaikan pencocokan
+kode/database rollback sebelum melepasnya; entrypoint sengaja melewati
+schema push selama sentinel ada.
 Lihat detail lengkap insiden ini (root cause, fix, testing steps) di
 [PATCH_GUIDE.md](PATCH_GUIDE.md) dan mekanisme penuh di
 [MIGRATIONS.md](MIGRATIONS.md). **Order yang gagal selama gap terbuka tidak
@@ -46,7 +52,7 @@ Sama akar masalah dengan P2022 tapi untuk tabel yang baru di-rename — lihat
 catatan migrasi data sekali-jalan (`migrate-catalog-rename.ts`) di
 [MIGRATIONS.md](MIGRATIONS.md).
 
-### `readonly database` / HTTP 500
+### Legacy SQLite pra-cutover: `readonly database` / HTTP 500
 
 **Diagnosis:** Permission file `data/` salah (biasanya setelah clone fresh
 di host baru — direktori jadi milik root, bukan UID container).
@@ -57,7 +63,7 @@ sudo chown -R 999:999 data
 docker compose restart server
 ```
 
-### `database is locked` / write timeout
+### Legacy SQLite pra-cutover: `database is locked` / write timeout
 
 **Diagnosis:** SQLite single-writer — kemungkinan ada **dua proses**
 menulis ke `bot.db` yang sama (mis. order-bot Python lama masih jalan

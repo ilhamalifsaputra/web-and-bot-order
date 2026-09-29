@@ -6,9 +6,10 @@ Toko digital lengkap dalam satu aplikasi:
 - **Panel admin web** — kelola produk, stok, pesanan, dan pengaturan.
 - **Toko web** — etalase untuk berjualan lewat website/domain sendiri.
 
-Pembayaran lewat **QRIS (TokoPay)**, **Binance Internal**, atau **Bybit
-(UID Internal Transfer)** — ketiganya **terkonfirmasi otomatis**, akun langsung terkirim
-tanpa cek manual.
+Enam metode pembayaran aktif: **TokoPay (QRIS)**, **PayDisini (QRIS/e-wallet)**,
+**NOWPayments (USDT)**, **Binance Internal**, **Bybit Internal Transfer**, dan
+**Bybit BSC (on-chain)**. Semuanya terkonfirmasi otomatis; akun langsung
+terkirim setelah pembayaran terverifikasi.
 
 Dibangun dengan **Node.js + TypeScript** (monorepo pnpm). Bot, panel admin, dan
 toko web berbagi **satu database PostgreSQL**.
@@ -70,6 +71,12 @@ WEB_COOKIE_SECRET=hasil_openssl_rand_hex_32   # kunci login panel admin
 TIMEZONE=Asia/Jakarta
 DEFAULT_LANGUAGE=id
 ```
+
+Hostname `postgres` pada contoh ini hanya untuk **Jalur A (Docker Compose)**.
+Untuk **Jalur B**, gunakan PostgreSQL yang berjalan di host dan ganti URL menjadi
+`postgresql://bot_order:<password-yang-disetel-di-PostgreSQL>@127.0.0.1:5432/bot_order`.
+Nama database, user, password, dan port dalam URL harus sama dengan layanan
+PostgreSQL yang Anda siapkan di langkah Jalur B.
 
 > 💡 **Token bot, UID & API key Binance/Bybit TIDAK diisi di `.env`** — semua
 > diisi lewat Setup Wizard (saat pertama buka panel admin) atau panel admin →
@@ -153,7 +160,20 @@ docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml logs -f
 
 ## 4. Jalur B — tanpa Docker
 
-Butuh **Node.js ≥ 22.13** + **pnpm 9** di VPS.
+Butuh **Node.js ≥ 22.13**, **pnpm 9**, dan **PostgreSQL 16** di VPS.
+Contoh penyiapan database berikut untuk Ubuntu 24.04; pada distro lain,
+pasang PostgreSQL 16 dari repositori distribusi lalu buat user/database yang sama.
+
+```bash
+sudo apt-get update && sudo apt-get install -y postgresql-16
+sudo systemctl enable --now postgresql
+sudo -u postgres psql -c 'CREATE ROLE bot_order LOGIN'
+sudo -u postgres psql -c 'CREATE DATABASE bot_order OWNER bot_order'
+sudo -u postgres psql -c '\password bot_order'   # masukkan password kuat dua kali
+```
+
+PostgreSQL lokal menerima koneksi TCP di `127.0.0.1:5432` pada konfigurasi
+Ubuntu standar. Jika port diubah, pakai port itu di URL `.env` juga.
 
 ```bash
 # Install Node & pnpm
@@ -166,7 +186,8 @@ cd web-and-bot-order
 pnpm install
 
 # Buat .env & siapkan database
-cp .env.example .env            # isi sesuai bagian 2
+cp .env.example .env            # isi sesuai bagian 2; gunakan URL @127.0.0.1:5432/bot_order
+                                # password URL sama dengan hasil \password bot_order
 openssl rand -hex 32            # tempel hasilnya ke CREDENTIAL_ENCRYPTION_KEY= di .env
                                 # (WAJIB — app menolak start tanpa key ini)
 pnpm prisma:generate
@@ -237,14 +258,17 @@ Detail alur setup & jalur manual `/bootstrap` ada di [`DOCS.md`](DOCS.md).
 ## 6. Pembayaran & Branding
 
 Semua diatur dari **panel admin → Settings** — tanpa edit `.env`, tanpa restart
-untuk sebagian besar. Pembeli memilih **QRIS** atau **USDT** (Binance / Bybit)
-saat membeli, di bot maupun website. Ketiganya auto-confirm:
+untuk sebagian besar. Pembeli memilih rail IDR atau USDT saat membeli, di bot
+maupun website. Keenam metode aktif ini terkonfirmasi otomatis:
 
 | Metode | Mata uang | Konfirmasi | Yang diisi |
 |---|---|---|---|
 | **QRIS (TokoPay)** | Rupiah | Otomatis (webhook) | Merchant ID + Secret |
-| **Binance Internal** | USDT | Otomatis (transfer antar-UID) | UID + API key/secret read-only |
-| **Bybit Internal Transfer** | USDT | Otomatis (transfer antar-UID, instant off-chain) | UID + API key/secret |
+| **PayDisini (QRIS/e-wallet)** | Rupiah | Otomatis (webhook + poller cadangan) | Kredensial PayDisini |
+| **NOWPayments (hosted invoice)** | USDT | Otomatis (IPN webhook + poller cadangan) | Kredensial NOWPayments |
+| **Binance Internal** | USDT | Otomatis (poller; note referensi, nominal unik sebagai cadangan) | UID + API key/secret read-only |
+| **Bybit Internal Transfer** | USDT | Otomatis (poller; nominal unik, antar-UID) | UID + API key/secret Wallet read-only |
+| **Bybit BSC (on-chain BEP20)** | USDT | Otomatis (poller deposit; nominal unik + filter jaringan/alamat) | Alamat deposit BSC + API key/secret Bybit Wallet read-only |
 
 > **Binance Pay manual** (upload bukti, approve manual) sudah **dipensiunkan**
 > — tak ada lagi jalur bot untuk memilih/mengunggah bukti metode ini; label

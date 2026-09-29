@@ -232,7 +232,7 @@ guard-nya menuntut kesetaraan himpunan: folder tambahan, folder yang hilang,
 atau folder yang di-rename sama-sama gagal (ketiganya diverifikasi negatif —
 lihat `.superpowers/sdd/2026-07-31-audit-backend-fixes/task-37-report.md`).
 
-## Pemulihan dari `migrate deploy` yang gagal (P3018 / P3009)
+## Arsip SQLite pra-cutover: pemulihan dari `migrate deploy` yang gagal (P3018 / P3009)
 
 Bagian ini relevan hanya kalau Anda menjalankan `prisma migrate deploy`
 (bukan alur normal repo ini, yang memakai `db push` — lihat bagian paling
@@ -384,7 +384,7 @@ pnpm exec prisma migrate dev --create-only --name <nama_deskriptif>
 ```
 
 Ini menulis `prisma/migrations/<timestamp>_<nama>/migration.sql` untuk dibaca
-manusia, tapi **belum** menyentuh `data/bot.db`. Review SQL-nya, lalu terapkan
+manusia, tapi **belum** menerapkan SQL itu ke database aplikasi. Review SQL-nya, lalu terapkan
 dengan `db push` (bukan `migrate deploy`) seperti langkah berikutnya.
 
 ## Cara menerapkan migrasi (yang sungguhan dipakai)
@@ -536,29 +536,47 @@ entrypoint; yang perlu Anda jaga manual hanyalah jalur non-Docker
 
 Tidak ada "migrate rollback" karena tidak ada migration history yang
 diterapkan secara formal. Rollback yang sungguhan tersedia adalah **restore
-dari backup pra-migrasi**:
+dari dump PostgreSQL pra-migrasi**. `backup.sh` memilih engine dari environment
+prosesnya sendiri, sehingga penanda PostgreSQL wajib diberikan eksplisit:
 
 ```bash
-deploy/backup/backup.sh                       # WAJIB sebelum migrasi apa pun
-# ... jalankan db push, terjadi masalah ...
-deploy/backup/restore.sh data/backups/bot-<stamp-sebelum-migrasi>.db
+DATABASE_URL_PRISMA=postgresql://engine-marker deploy/backup/backup.sh
+# ... update dijalankan, terjadi masalah ...
+deploy/backup/restore.sh data/backups/pg-<stamp-sebelum-update>.dump
 ```
 
-Detail lengkap (stop writer → swap file → integrity check → restart →
-smoke test) ada di [BACKUP_AND_RESTORE.md](BACKUP_AND_RESTORE.md) dan
+`restore.sh` menghentikan penulis, mengambil dump pengaman database saat ini,
+me-restore `.dump`, lalu membuat `data/SKIP_AUTO_MIGRATE` **sebelum** server
+dimulai. Selama sentinel ada, entrypoint tidak menjalankan schema push, seed,
+atau migrasi data-only. Pilih versi kode yang cocok dengan skema/data dump
+tersebut; setelah cocok, hapus sentinel dan restart dengan kedua file Compose.
+Langkah lengkap ada di [panduan backup/restore](../deploy/backup/README.md),
+[BACKUP_AND_RESTORE.md](BACKUP_AND_RESTORE.md), dan
 [ROLLBACK.md](ROLLBACK.md).
+
+### Legacy SQLite, hanya checkout pra-cutover
+
+Pada versi lama yang masih memakai `data/bot.db`, backup `bot-*.db` dibuat
+melalui SQLite online backup lalu direstore dengan `restore.sh`. Perintah
+`.db` itu tidak berlaku untuk PostgreSQL saat ini.
 
 ## Contoh per environment
 
 ### Development (lokal)
 
+Nyalakan PostgreSQL lokal lewat Compose dan gunakan URL host
+`postgresql://bot_order:<password>@127.0.0.1:5432/bot_order` di `.env`
+(sesuaikan user, password, DB, dan `POSTGRES_PORT` dengan file Compose):
+
 ```bash
+docker compose -f docker-compose.postgres.yml up -d
 pnpm exec prisma db push
 pnpm prisma:generate     # regenerate client jika schema berubah field/model
+pnpm seed-chart-of-accounts
 ```
-Tidak perlu backup untuk DB dev (`data/bot.db` lokal, biasanya berisi data
-uji coba) — tapi tetap disiplin commit `schema.prisma` + folder migrasi SQL
-(jika dibuat) di PR yang sama dengan kode yang memakainya.
+DB dev ada di volume PostgreSQL, bukan `data/bot.db`. Jika data uji perlu
+dipertahankan sebelum perubahan skema, ambil dump dulu. Tetap commit
+`schema.prisma` + folder migrasi SQL (jika dibuat) bersama kode pemakainya.
 
 ### Staging
 
@@ -576,7 +594,7 @@ produksi (lihat "Uji end-to-end" di `deploy/backup/README.md`).
 ```bash
 COMPOSE="docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml"
 
-deploy/backup/backup.sh                             # 1. dump manual, SELALU (lihat catatan)
+DATABASE_URL_PRISMA=postgresql://engine-marker deploy/backup/backup.sh  # 1. dump manual, SELALU
 $COMPOSE up -d --build                              # 2. entrypoint: db push → seed ledger → migrasi data → app
 $COMPOSE logs --since 10m server | grep entrypoint  # 3. BACA barisnya (lihat catatan)
 curl -I https://admin.contoh.com/healthz            # 4. smoke test
@@ -605,14 +623,14 @@ sudah sinkron; seed dan migrasi data-only tetap jalan dan tetap no-op.
 ### `P2022: column ... does not exist`
 
 **Sebab:** kode baru sudah jalan (mereferensikan kolom yang baru ditambah ke
-`schema.prisma`), tapi `db push` belum dijalankan ulang ke `data/bot.db` yang
-sungguhan — *schema drift* antara kode dan DB live.
+`schema.prisma`), tapi `db push` belum dijalankan ke database PostgreSQL
+yang dipakai aplikasi — *schema drift* antara kode dan DB live.
 
-**Contoh nyata yang ditemukan saat menyusun dokumentasi ini:** kolom
+**Contoh historis SQLite pra-cutover:** kolom
 `claimed_at`/`next_retry_at` ditambahkan ke `NotificationOutbox` di commit
 `c4778c8` (2026-06-23, paket fix audit keamanan — lihat
-`prisma/migrations/20260623082258_add_notification_claimed_at/` dan
-`20260623174936_add_notification_next_retry_at/`). `PRAGMA table_info` pada
+`prisma/migrations-sqlite-archive/20260623082258_add_notification_claimed_at/` dan
+`prisma/migrations-sqlite-archive/20260623174936_add_notification_next_retry_at/`). `PRAGMA table_info` pada
 `data/bot.db` lokal menunjukkan kolom itu **tidak ada** — `db push` belum
 pernah dijalankan ulang pasca-commit tersebut, padahal kode
 (`packages/db/src/crud/notifications.ts`) sudah memakainya. Akibatnya
@@ -647,9 +665,9 @@ memeriksa kolom per tabel. Jadi migrasi column-only (mis.
 `broadcasts.web_image_url`/`image_file_id` dari `20260706120000_broadcast_image`)
 tidak memicu peringatan apa pun saat boot kalau operator lupa `db push` —
 gejala baru muncul sebagai `P2022` pertama kali kode menulis ke kolom yang
-belum ada (lihat contoh nyata `claimed_at`/`next_retry_at` di bawah), bukan
+belum ada (lihat contoh historis `claimed_at`/`next_retry_at` di atas), bukan
 sebagai log error saat startup. Ini keterbatasan yang disengaja: menambah
-deteksi drift level-kolom (PRAGMA table_info per tabel, dibandingkan terhadap
+deteksi drift level-kolom (`information_schema.columns` per tabel, dibandingkan terhadap
 skema Prisma) adalah mesin schema-diffing kustom — dicatat sebagai
 keterbatasan yang diketahui/didokumentasikan di sini, bukan dibangun, karena
 lebih murah dan lebih rendah risiko daripada menambah mekanisme deteksi baru.

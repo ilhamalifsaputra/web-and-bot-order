@@ -16,10 +16,9 @@
 # a pg_dump safety copy of the CURRENT live database (so a bad restore is
 # itself reversible — postgres itself keeps running, only `server` is
 # stopped), `pg_restore --clean --if-exists --single-transaction` into the
-# target DB, restart `server`, smoke /healthz. No SKIP_AUTO_MIGRATE sentinel
-# needed on this path — docker-entrypoint.sh's auto_migrate() already no-ops
-# entirely for non-`file:` DATABASE_URL_PRISMA values
-# (docker-entrypoint.sh:99-102).
+# target DB, pause automatic migrations with SKIP_AUTO_MIGRATE, restart
+# `server`, smoke /healthz. The entrypoint honors this sentinel for both
+# engines, preserving the restored schema until matching code is deployed.
 #
 # Run on the HOST. Requires docker compose; sqlite3 for the SQLite path. The
 # Postgres path needs NO host-side postgresql-client: both the dump
@@ -40,10 +39,9 @@ SRC="${1:-}"
 DB="${DB:-./data/bot.db}"
 WEB_PORT="${WEB_PORT:-8000}"
 SERVICES="${SERVICES:-server}"
-# Honoured by docker-entrypoint.sh, which otherwise brings the schema up to date
-# on every start — that would migrate a restored SQLite DB straight back forward
-# and undo the rollback. Lives beside the DB so it travels with the ./data mount.
-# (Only ever written on the SQLite path — see restore_sqlite below.)
+# Honoured by docker-entrypoint.sh for both engines, which otherwise updates
+# the schema on every start and could immediately undo a rollback. The data
+# directory is bind-mounted into the server container for both engines.
 SENTINEL="$(dirname "$DB")/SKIP_AUTO_MIGRATE"
 
 if [ -z "$SRC" ] || [ ! -f "$SRC" ]; then
@@ -82,6 +80,22 @@ detect_engine() {
   esac
 }
 
+pause_auto_migrate() {
+  local restart_command="$1"
+  echo "==> Pausing automatic schema updates ($SENTINEL)"
+  cat > "$SENTINEL" <<EOF
+Created by deploy/backup/restore.sh at $(date +%F' '%T) while restoring:
+  $SRC
+
+Automatic schema updates are paused so this restored database is not migrated
+forward again, which would undo the rollback.
+
+Delete this file once the running code matches this database's schema:
+  rm $SENTINEL
+Then: $restart_command
+EOF
+}
+
 # ---------------------------------------------------------------------------
 # SQLite path — logic unchanged from the pre-engine-aware script (only its
 # surrounding structure, now a function, changed).
@@ -117,18 +131,7 @@ restore_sqlite() {
   # that change again the moment it starts — silently undoing the rollback. Also
   # guards any `docker compose run --rm server ...` issued while we work, since
   # those go through the entrypoint too.
-  echo "==> Pausing automatic schema updates ($SENTINEL)"
-  cat > "$SENTINEL" <<EOF
-Created by deploy/backup/restore.sh at $(date +%F' '%T) while restoring:
-  $SRC
-
-Automatic schema updates are paused so this restored database is not migrated
-forward again, which would undo the rollback.
-
-Delete this file once the running code matches this database's schema:
-  rm $SENTINEL
-Then: docker compose restart $SERVICES
-EOF
+  pause_auto_migrate "docker compose restart $SERVICES"
 
   # Keep a safety copy of the current DB so a wrong restore is itself reversible.
   if [ -f "$DB" ]; then
@@ -158,7 +161,7 @@ EOF
 # ---------------------------------------------------------------------------
 # Postgres path — mirrors the SQLite path's safety properties: verify the
 # backup before touching anything live, a pre-restore safety copy of the
-# current DB, restart, smoke /healthz. No sentinel: see header comment.
+# current DB, pause migrations, restart, smoke /healthz.
 # ---------------------------------------------------------------------------
 restore_postgres() {
   POSTGRES_USER="${POSTGRES_USER:-bot_order}"
@@ -220,6 +223,10 @@ restore_postgres() {
     exit 1
   fi
 
+  # Prevent the entrypoint's schema push, ledger seed, and data-only migrations
+  # from immediately advancing the just-restored database on server start.
+  pause_auto_migrate "docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml restart $SERVICES"
+
   echo "==> Starting services"
   docker compose start $SERVICES
 }
@@ -234,16 +241,16 @@ case "$ENGINE" in
     ;;
 esac
 
-# Reminder printed on both exit paths below — SQLite only: a forgotten
-# sentinel means the next deploy quietly stops updating the schema, which is
-# the failure this repo's automatic migration exists to prevent. The Postgres
-# path never writes this sentinel (see header comment), so it's a no-op there.
+# A forgotten sentinel keeps future schema updates paused for either engine.
 remind_sentinel() {
-  [ "$ENGINE" = "sqlite" ] || return 0
+  local restart_command="docker compose restart $SERVICES"
+  if [ "$ENGINE" = "postgres" ]; then
+    restart_command="docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml restart $SERVICES"
+  fi
   echo
   echo "NOTE: automatic schema updates are PAUSED by $SENTINEL"
   echo "      Remove it once the deployed code matches this schema:"
-  echo "        rm $SENTINEL && docker compose restart $SERVICES"
+  echo "        rm $SENTINEL && $restart_command"
 }
 
 # Smoke: wait for web-admin /healthz to go green (DB ping inside).

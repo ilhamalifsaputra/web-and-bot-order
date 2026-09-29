@@ -444,7 +444,7 @@ async function fetchForeignKeys(prisma: PrismaClient): Promise<ForeignKeyInfo[]>
     FROM information_schema.table_constraints tc
     -- Joining kcu/ccu on constraint_name alone (no column ordinal) assumes a
     -- single-column FK per constraint. That holds for every @relation in the
-    -- current schema.prisma (none declare a composite `fields: [a, b]`), but
+    -- current schema.prisma (none declare a composite fields: [a, b]), but
     -- a future composite FK would produce a cross-product of column pairs
     -- here and mispair columns — known limitation, not handled.
     JOIN information_schema.key_column_usage kcu

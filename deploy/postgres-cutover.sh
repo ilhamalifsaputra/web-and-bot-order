@@ -121,6 +121,13 @@ done
 
 COMPOSE_BASE=(docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml)
 
+# `server` normally starts with AUTO_MIGRATE=1, which is correct for ordinary
+# deploys. These cutover one-offs are different: the entrypoint must not seed
+# ledger_accounts or data-only settings before the SQLite importer has proved
+# the Postgres target is empty. Override the setting only for these commands;
+# the final `up -d --build` deliberately keeps the operator's normal value.
+COMPOSE_RUN_SERVER=("${COMPOSE_BASE[@]}" run --rm -e AUTO_MIGRATE=0 server)
+
 # run CMD... — executes a command for real, or just echoes it under --dry-run.
 run() {
   if [ "$DRY_RUN" = "true" ]; then
@@ -344,7 +351,7 @@ bring_up_postgres() {
 # ---------------------------------------------------------------------------
 push_schema() {
   echo "==> Applying the schema to the empty Postgres database (runbook §5)"
-  if ! run "${COMPOSE_BASE[@]}" run --rm server pnpm exec prisma db push --schema prisma/schema.prisma; then
+  if ! run "${COMPOSE_RUN_SERVER[@]}" pnpm exec prisma db push --schema prisma/schema.prisma; then
     fail "§5" "'prisma db push' failed. Do NOT blindly re-run or add --accept-data-loss/--force-reset here — investigate manually per the runbook."
   fi
 }
@@ -356,13 +363,13 @@ run_migrate() {
   echo "==> Running the data-transform script (runbook §6)"
 
   if [ "$DRY_RUN" = "true" ]; then
-    run "${COMPOSE_BASE[@]}" run --rm server pnpm exec tsx scripts/migrate-sqlite-to-postgres.ts "$DEST/$BACKUP_FILENAME"
+    run "${COMPOSE_RUN_SERVER[@]}" pnpm exec tsx scripts/migrate-sqlite-to-postgres.ts "$DEST/$BACKUP_FILENAME"
     return 0
   fi
 
   # if/else (not a bare assignment) so `set -e` does not abort before we get
   # a chance to inspect $? and print our own fail() message below.
-  if MIGRATE_OUTPUT="$("${COMPOSE_BASE[@]}" run --rm server pnpm exec tsx scripts/migrate-sqlite-to-postgres.ts "$DEST/$BACKUP_FILENAME" 2>&1)"; then
+  if MIGRATE_OUTPUT="$("${COMPOSE_RUN_SERVER[@]}" pnpm exec tsx scripts/migrate-sqlite-to-postgres.ts "$DEST/$BACKUP_FILENAME" 2>&1)"; then
     MIGRATE_STATUS=0
   else
     MIGRATE_STATUS=$?
@@ -383,13 +390,13 @@ run_reconcile() {
   echo "==> Running reconciliation (runbook §7 — required gate)"
 
   if [ "$DRY_RUN" = "true" ]; then
-    run "${COMPOSE_BASE[@]}" run --rm server pnpm exec tsx scripts/reconcile-sqlite-postgres.ts "$DEST/$BACKUP_FILENAME"
+    run "${COMPOSE_RUN_SERVER[@]}" pnpm exec tsx scripts/reconcile-sqlite-postgres.ts "$DEST/$BACKUP_FILENAME"
     return 0
   fi
 
   # if/else (not a bare assignment) so `set -e` does not abort before we get
   # a chance to inspect $? and print our own fail() message below.
-  if RECONCILE_OUTPUT="$("${COMPOSE_BASE[@]}" run --rm server pnpm exec tsx scripts/reconcile-sqlite-postgres.ts "$DEST/$BACKUP_FILENAME" 2>&1)"; then
+  if RECONCILE_OUTPUT="$("${COMPOSE_RUN_SERVER[@]}" pnpm exec tsx scripts/reconcile-sqlite-postgres.ts "$DEST/$BACKUP_FILENAME" 2>&1)"; then
     RECONCILE_STATUS=0
   else
     RECONCILE_STATUS=$?

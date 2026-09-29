@@ -185,7 +185,7 @@ reads it to produce the snapshot in `data/backups/`.
 ## 3a. Build the application image for this branch
 
 Sections 4–8 below all run schema pushes, the data migration, and the
-reconciliation gate through `docker compose ... run --rm server ...` (and,
+reconciliation gate through `docker compose ... run --rm -e AUTO_MIGRATE=0 server ...` (and,
 for section 8, `up -d`) — every one of those needs THIS branch's code
 already baked into the image: the Postgres-provider Prisma client, and the
 `node:sqlite`-based migration/reconciliation scripts. Build it now, before
@@ -209,11 +209,11 @@ error message telling them so.
 
 ## 4. Bring up the Postgres container (schema-empty)
 
-Bring up **only** the `postgres` service first — not `server` — since
-`server` will crash-loop with Prisma `P2021` (`table ... does not exist`)
-until the schema is pushed in section 5 (confirmed in Task 8's own
-verification: this is the real, reproduced failure mode, not a hypothetical
-one).
+Bring up **only** the `postgres` service first — not `server`. Ordinary
+`server` startup runs the Postgres entrypoint migration automatically; during
+this cutover that would push the schema and seed rows before the empty-target
+import gate runs. Keeping `server` down also preserves the write freeze until
+reconciliation has passed.
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml up -d postgres
@@ -234,18 +234,21 @@ until it shows healthy.
 
 ## 5. Apply the schema to the empty Postgres database
 
-`docker-entrypoint.sh`'s `auto_migrate()` only knows how to snapshot-and-push
-a `file:` (SQLite) URL — for a `postgresql://` `DATABASE_URL_PRISMA` it
-deliberately no-ops (`resolve_db_path()` returns non-zero, so `auto_migrate()`
-logs "Skipping the automatic schema update; apply it yourself." and returns
-0, no crash). This is confirmed directly in `docker-compose.postgres.prod.yml`'s
-own header comment and reproduced end-to-end in Task 8's verification. So the
-schema push is an explicit manual step here, run once against the still-empty
-database:
+`docker-entrypoint.sh` normally handles a `postgresql://` target in full: it
+pushes the schema, seeds the ledger chart, and applies data-only migrations.
+That is correct for ordinary deploys, but wrong for this one-time import: the
+data-only migration can create a `settings` row before
+`migrate-sqlite-to-postgres.ts` checks that every source table is empty. The
+importer then correctly refuses to run against that non-empty target.
+
+Override `AUTO_MIGRATE=0` on every cutover `docker compose run` below. This
+does not change `.env` or normal startup behavior; it only bypasses the
+entrypoint's automatic row creation for the one-off container. Push the schema
+explicitly, once, while the target is still empty:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml \
-  run --rm server pnpm exec prisma db push --schema prisma/schema.prisma
+  run --rm -e AUTO_MIGRATE=0 server pnpm exec prisma db push --schema prisma/schema.prisma
 ```
 
 Expected output ends with:
@@ -268,7 +271,8 @@ container, since it needs the built app + `node_modules` (`node:sqlite` +
 the generated Postgres-provider `@prisma/client`) — this mirrors how Task
 5/6/7 actually ran the scripts in this worktree (via `pnpm tsx`/`pnpm exec
 tsx`), adapted to run inside the production container via `docker compose
-run --rm server` the same way section 5's `prisma db push` does.
+run --rm -e AUTO_MIGRATE=0 server` the same way section 5's `prisma db push`
+does.
 
 The script takes the source SQLite path as `argv[2]` (default `./data/bot.db`
 — see the script's own `resolveSqlitePath()`) and reads `DATABASE_URL_PRISMA`
@@ -279,7 +283,7 @@ so there is no ambiguity about which snapshot was actually imported:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml \
-  run --rm server pnpm exec tsx scripts/migrate-sqlite-to-postgres.ts data/backups/bot-<your-timestamp>.db
+  run --rm -e AUTO_MIGRATE=0 server pnpm exec tsx scripts/migrate-sqlite-to-postgres.ts data/backups/bot-<your-timestamp>.db
 ```
 
 Replace `bot-<your-timestamp>.db` with the exact filename section 3 printed.
@@ -303,7 +307,7 @@ the script's own header comment recommends exactly this (`prisma db push
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml \
-  run --rm server pnpm exec prisma db push --schema prisma/schema.prisma --force-reset
+  run --rm -e AUTO_MIGRATE=0 server pnpm exec prisma db push --schema prisma/schema.prisma --force-reset
 ```
 
 and re-run this step.
@@ -327,7 +331,7 @@ Same invocation pattern as section 6, pointed at the same backup file:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml \
-  run --rm server pnpm exec tsx scripts/reconcile-sqlite-postgres.ts data/backups/bot-<your-timestamp>.db
+  run --rm -e AUTO_MIGRATE=0 server pnpm exec tsx scripts/reconcile-sqlite-postgres.ts data/backups/bot-<your-timestamp>.db
 ```
 
 This script (Task 6) is read-only on both sides — it opens the SQLite source

@@ -325,6 +325,9 @@ model Denomination {
   /// Null for every non-Digiflazz SKU — set only when autoDeliverySource
   /// points at the Digiflazz supplier.
   supplierSku           String?   @map("supplier_sku")
+  /// Exact supplier product name from the latest import/resync, before any
+  /// display cleaning. Null for legacy rows until a real supplier sync.
+  supplierRawName       String?   @map("supplier_raw_name")
   /// Manual override for the auto-detected nickname-check game (KokinPay's
   /// game_code, e.g. "mobile-legends") — normally the engine auto-detects the
   /// game from Product.digiflazzBrand against the static catalog

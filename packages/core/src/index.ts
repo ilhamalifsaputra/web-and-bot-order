@@ -3,6 +3,7 @@ export * from "./enums";
 export * from "./cartComposition";
 export * from "./orderItemStatus";
 export * from "./money";
+export * from "./canonicalProduct";
 export * from "./datetime";
 export * from "./errors";
 export * from "./deliveryFields";

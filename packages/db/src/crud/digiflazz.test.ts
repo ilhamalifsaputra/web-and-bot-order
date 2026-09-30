@@ -1601,6 +1601,7 @@ describe("importDigiflazzBrand", () => {
     expect(product!.denominations).toHaveLength(2);
     const denom = product!.denominations.find((d) => d.supplierSku === "ml100")!;
     expect(denom.autoDeliverySource).toBe("digiflazz");
+    expect(denom.supplierRawName).toBe("Mobile Legends 100 Diamond");
     expect(denom.deliveryType).toBe("manual_with_info");
     expect(JSON.parse(denom.additionalFields!)).toEqual([
       { key: "user_id", label: { id: "Game ID", en: "Game ID" }, type: "text", required: true, options: [], placeholder: "" },
@@ -1649,6 +1650,7 @@ describe("importDigiflazzBrand", () => {
     expect(denoms).toHaveLength(1); // still exactly one row, not two
     expect(denoms[0]!.id).toBe(firstDenom.id); // same row, updated in place
     expect(denoms[0]!.name).toBe("Mobile Legends 100 Diamond Updated");
+    expect(denoms[0]!.supplierRawName).toBe("Mobile Legends 100 Diamond Updated");
     expect(denoms[0]!.price.toString()).toBe("17000");
     expect(denoms[0]!.costPrice!.toString()).toBe("15500");
   });
@@ -1797,6 +1799,7 @@ describe("importDigiflazzBrand", () => {
     const denom = await prisma.denomination.findFirstOrThrow({ where: { productId, supplierSku: "ml100id" } });
     expect(denom.name).toBe("Mobile Legends 100 Diamond");
     expect(denom.durationLabel).toBe("Mobile Legends 100 Diamond");
+    expect(denom.supplierRawName).toBe("Mobile Legends 100 Diamond (Indonesia)");
     expect(denom.supplierSku).toBe("ml100id"); // resync matching key — exact, untouched by the strip
   });
 
@@ -1861,8 +1864,8 @@ describe("resyncDigiflazzCatalog", () => {
     });
 
     digiflazzMock.getPriceList.mockResolvedValue([
-      priceListItem({ buyerSkuCode: "ml100", price: new Decimal(20000), buyerProductStatus: true }),
-      priceListItem({ buyerSkuCode: "ml250", price: new Decimal(45000), buyerProductStatus: false }),
+      priceListItem({ buyerSkuCode: "ml100", productName: "Mobile Legends 100 Diamond Fresh (Global)", price: new Decimal(20000), buyerProductStatus: true }),
+      priceListItem({ buyerSkuCode: "ml250", productName: "Mobile Legends 250 Diamond Fresh (Indonesia)", price: new Decimal(45000), buyerProductStatus: false }),
     ]);
 
     const result = await resyncDigiflazzCatalog(prisma);
@@ -1872,9 +1875,11 @@ describe("resyncDigiflazzCatalog", () => {
     const ml100 = await prisma.denomination.findFirstOrThrow({ where: { productId, supplierSku: "ml100" } });
     expect(ml100.costPrice!.toString()).toBe("20000");
     expect(ml100.price.toString()).toBe("22000"); // 20000 + 10%
+    expect(ml100.supplierRawName).toBe("Mobile Legends 100 Diamond Fresh (Global)");
 
     const ml250After = await prisma.denomination.findFirstOrThrow({ where: { id: ml250.id } });
     expect(ml250After.price.toString()).toBe("50000"); // untouched
+    expect(ml250After.supplierRawName).toBe("Mobile Legends 250 Diamond Fresh (Indonesia)");
     expect(ml250After.isActive).toBe(false); // status still mirrors buyerProductStatus
   });
 

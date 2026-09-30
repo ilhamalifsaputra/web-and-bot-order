@@ -1362,6 +1362,7 @@ export async function importDigiflazzBrand(
         await updateDenomination(tx, existingDenom.id, {
           name: denomName,
           durationLabel: denomName,
+          supplierRawName: row.productName,
           price,
           costPrice,
           priceOverridden,
@@ -1381,6 +1382,7 @@ export async function importDigiflazzBrand(
           priceOverridden,
           autoDeliverySource: "digiflazz",
           supplierSku: row.buyerSkuCode,
+          supplierRawName: row.productName,
           deliveryType: DeliveryType.MANUAL_WITH_INFO,
           additionalFields: JSON.stringify(DEFAULT_DIGIFLAZZ_FIELDS),
           isActive: false,
@@ -1595,7 +1597,11 @@ export async function resyncDigiflazzCatalog(
     // I5 fix: quantize to the same 4-decimal precision createDenomination
     // already uses, so a percentage markup can't drift the stored price
     // away from import-time precision.
-    const data: Record<string, unknown> = { costPrice: quantizeMoney(item.price, 4) };
+    const data: Record<string, unknown> = {
+      costPrice: quantizeMoney(item.price, 4),
+      // Raw identity updates even when a manual price override is protected.
+      supplierRawName: item.productName,
+    };
     if (!denom.priceOverridden) {
       data.price = newSellPriceFor(item);
       result.updated++;

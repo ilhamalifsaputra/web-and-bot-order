@@ -1,10 +1,10 @@
 # Canonical products: catatan verifikasi
 
-Status 1 Oktober 2026: source final `21cf36f8` selesai diverifikasi, seluruh finding review teratasi. Pengguna meminta merge lokal + push origin/master; integrasi masih menunggu izin eksplisit atas checkout utama yang dirty (perubahan existing tidak overlap). Kode belum di-merge/push.
+Status 1 Oktober 2026: seluruh finding review teratasi. Pengguna mengizinkan merge lokal + push origin/master, termasuk mempertahankan perubahan lokal non-overlap. Merge lokal `0d063d49` berhasil dan lolos pemeriksaan ulang lengkap: typecheck, pretest guards, serta8617/8617 tes pada505 file. Catatan ini disimpan sebelum push normal; hasil SHA remote dilaporkan pada handoff akhir.
 
 ## Lingkup dan isolasi
 
-Branch `worktree-canonical-products`, base `c0a56595`; perubahan berada di `.claude/worktrees/canonical-products`. Checkout utama memiliki perubahan sebelumnya (.env.example, graphify-out, cache), tidak di-commit/ditimpa oleh patch. Belum ada merge/push; pengguna kini mengotorisasi keduanya setelah verifikasi. Tidak ada deployment, migration produksi, atau pengiriman Telegram nyata.
+Branch `worktree-canonical-products`, base `c0a56595`; perubahan berada di `.claude/worktrees/canonical-products`. Checkout utama memiliki perubahan sebelumnya (.env.example, graphify-out, cache), tidak di-commit/ditimpa oleh patch. Merge lokal telah berhasil atas izin pengguna; push dilakukan sesudah verifikasi hasil merge. Tidak ada deployment, migration produksi, atau pengiriman Telegram nyata.
 
 Database pengujian PostgreSQL16 disposable milik tugas ini berjalan di localhost port55839. Helper Vitest membuat schema acak per suite. Playwright memakai schema fixture terpisah dan wallet lokal, tanpa payment gateway nyata. Container lain tidak dipakai atau dihentikan.
 
@@ -43,7 +43,11 @@ Database pengujian PostgreSQL16 disposable milik tugas ini berjalan di localhost
 
 ## Integrasi yang diminta pengguna
 
-Fetch origin/master berhasil; saat diperiksa branch7 commit ahead,0 behind, master/origin/master masihbasec0a56595. Checkout utama memiliki9 tracked local changes (.env.example dan graphify-out), serta cache untracked;0 overlap dengan47 file patch. Tidak ada unrelated change yang di-commit, dihapus, di-stash atau ditimpa. Aturan repo meminta main bersih sebelum merge, sehingga pertanyaan izin merge non-overlap dengan local changes tetap dipertahankan dikirim; menunggu jawaban eksplisit. Workflow CI hanya workflow_dispatch, bukan trigger push otomatis. Tidak ada klaim CI remote/deployment dijalankan.
+Fetch origin/master berhasil; sebelum integrasi master/origin/master masih base `c0a56595`. Checkout utama memiliki9 tracked local changes (.env.example dan graphify-out), serta cache untracked;0 overlap dengan47 file patch. Pengguna menjawab "ya" atas izin merge sambil mempertahankan perubahan tersebut. Merge `--no-ff` menghasilkan `0d063d49`; SHA256 seluruh9 file lokal terverifikasi identik sebelum/sesudah merge. Tidak ada unrelated change yang di-commit, dihapus, di-stash atau ditimpa.
+
+Master dan worktree pengujian menunjuk merge commit yang sama, dengan tracked tree `1574817f0e23781c23fdf964017beca5de8bef98`. Pemeriksaan hasil merge dilakukan pada worktree tersebut dengan database disposable agar tidak membaca environment produksi checkout utama. Recursive typecheck + test-tsconfig exit0; seluruh guard pretest lulus. Suite lengkap hasil merge exit0:505/505 file,8617/8617 tes,0 gagal/skip,788.22s. Command: `pnpm.cmd --pm-on-fail=ignore test --maxWorkers 4 --minWorkers 1 --silent --reporter=json --outputFile .superpowers/sdd/2026-09-30-canonical-products/merged-suite.json`. Source tidak berubah selama run; pembaruan sesudahnya hanya laporan ini.
+
+Workflow CI hanya workflow_dispatch, bukan trigger push otomatis. Tidak ada klaim CI remote/deployment dijalankan. Verifikasi SHA origin/master sesudah push dilaporkan pada handoff akhir; catatan ini disiapkan sebelum push.
 
 ## Hambatan environment yang ditangani
 

@@ -133,6 +133,78 @@ function customerCtx(opts: Parameters<typeof makeCtx>[0] = {}) {
   return makeCtx({ from: { id: 42, username: "tester" }, session: userSession(), ...opts });
 }
 
+describe("canonical current SKU flow", () => {
+  it("shows a parent and identical canonical variant once in a routed confirmation", async () => {
+    await prisma.denomination.update({
+      where: { id: sample.product.id },
+      data: { name: "Netflix Premium 1M", durationLabel: "Netflix Premium 1M", supplierRawName: "Netflix Premium 1M" },
+    });
+    const { ctx, sink } = customerCtx({ callbackData: `v1:buy:${sample.product.id}:1` });
+    await routeCallback(ctx);
+    expect(bodyText(sink)).toContain("Product: <b>Netflix Premium 1M</b>");
+    expect(bodyText(sink)).not.toContain("Netflix Premium 1M · Netflix Premium 1M");
+  });
+
+  it("keeps the parent game identity in a routed Buy confirmation after stripping the supplier prefix", async () => {
+    const game = await createCatalogProduct(prisma, { categoryId: sample.category.id, name: "Mobile Legends", gameRegion: "Indonesia" });
+    const denom = await createDenomination(prisma, {
+      productId: game.id, name: "86 Diamonds", type: "SHARED", durationLabel: "86 Diamonds", price: "21000", deliveryType: DeliveryType.MANUAL,
+    });
+    await prisma.denomination.update({ where: { id: denom.id }, data: { supplierRawName: "Mobile Legends 86 Diamonds" } });
+    const { ctx, sink } = customerCtx({ callbackData: `v1:buy:${denom.id}:1` });
+    await routeCallback(ctx);
+    expect(bodyText(sink)).toContain("Mobile Legends · 86 Diamonds · Indonesia");
+    expect(bodyText(sink)).toContain("Rp21,000");
+    expect(await prisma.order.count()).toBe(0);
+  });
+
+  it("delivers an oversized parent name in full before a routed confirmation", async () => {
+    const parentName = `Brand ${"p".repeat(5000)} final parent marker`;
+    const parent = await createCatalogProduct(prisma, { categoryId: sample.category.id, name: parentName });
+    const denom = await createDenomination(prisma, {
+      productId: parent.id, name: "1 Month", type: "SHARED", durationLabel: "1 Month", price: "21000", deliveryType: DeliveryType.MANUAL,
+    });
+    const { ctx, sink } = customerCtx({ callbackData: `v1:buy:${denom.id}:1` });
+    await routeCallback(ctx);
+    expect(bodyText(sink)).toContain("final parent marker");
+    expect(bodyText(sink)).toContain("Confirm Order");
+    for (const call of sink) if (call.method === "sendMessage") expect(String(call.args[1]).length).toBeLessThanOrEqual(4096);
+    expect(await prisma.order.count()).toBe(0);
+  });
+
+  it("shows supplier bonus and qualifiers on fresh detail and confirmation after price changes", async () => {
+    await prisma.product.update({ where: { id: sample.parentProduct.id }, data: { gameRegion: "Indonesia", gameVariant: "Server A" } });
+    await prisma.denomination.update({ where: { id: sample.product.id }, data: { supplierRawName: "86 Diamonds + 8 Bonus via ID Promo", price: "21001" } });
+    const detail = customerCtx();
+    await customer.browseDenomination(detail.ctx, sample.product.id);
+    expect(bodyText(detail.sink)).toContain("86 Diamonds + 8 Bonus via ID Promo");
+    expect(bodyText(detail.sink)).toContain("Indonesia");
+    expect(bodyText(detail.sink)).toContain("Server A");
+    expect(bodyText(detail.sink)).toContain("Rp21,001");
+    await prisma.denomination.update({ where: { id: sample.product.id }, data: { price: "23002" } });
+    const confirmation = customerCtx();
+    await checkout.showOrderConfirmation(confirmation.ctx, sample.product.id, 1);
+    expect(bodyText(confirmation.sink)).toContain("86 Diamonds + 8 Bonus via ID Promo");
+    expect(bodyText(confirmation.sink)).toContain("Indonesia");
+    expect(bodyText(confirmation.sink)).toContain("Rp23,002");
+    expect(await prisma.order.count()).toBe(0);
+    await prisma.denomination.update({ where: { id: sample.product.id }, data: { isActive: false } });
+    const stale = customerCtx();
+    await customer.browseDenomination(stale.ctx, sample.product.id);
+    expect(JSON.stringify(stale.sink)).not.toContain(`v1:buy:${sample.product.id}`);
+  });
+  it("retains every part of an oversized unknown name in bounded detail and confirmation messages", async () => {
+    const name = `Mystery ${"unique ".repeat(800)} final qualifier`;
+    await prisma.denomination.update({ where: { id: sample.product.id }, data: { name, durationLabel: name, supplierRawName: name, price: "21000" } });
+    for (const show of [customer.browseDenomination, checkout.showOrderConfirmation]) {
+      const { ctx, sink } = customerCtx();
+      await show(ctx, sample.product.id, 1);
+      expect(bodyText(sink)).toContain("final qualifier");
+      for (const call of sink) if (call.method === "sendMessage") expect(String(call.args[1]).length).toBeLessThanOrEqual(4096);
+    }
+  });
+});
+
 /** Everything the bot sent EXCEPT inline keyboards — i.e. the message
  * text/caption bodies — so a test can tell body text apart from button
  * labels (Game Top Up buttons carry prices the body must not repeat). */
@@ -1316,12 +1388,12 @@ describe("denomination picker", () => {
     expect(markup).toContain(`v1:browse:denom:${m2.id}`);
     // The Rupiah price now lives in the message body (priceIdr), not on the
     // button, and is never the USDT-only formatPrice (Finding 1).
-    expect(sentIncludes(sink, "Rp30.000")).toBe(true);
+    expect(sentIncludes(sink, "Rp30,000")).toBe(true);
     expect(sentIncludes(sink, "USDT")).toBe(false);
     // Non-game products keep the per-plan price+stock lines in the body.
     const body = bodyText(sink);
-    expect(body).toContain("Rp30.000 (Stock");
-    expect(body).toContain("Rp75.000 (Stock");
+    expect(body).toContain("Rp30,000 (Stock");
+    expect(body).toContain("Rp75,000 (Stock");
     expect(body).toContain("Choose a plan:");
   });
 
@@ -1360,9 +1432,9 @@ describe("denomination picker", () => {
     const body = bodyText(sink);
     expect(body).toContain("Mobile Legends");
     expect(body).toContain("sold (all-time)");
-    // Price and stock are on the buttons now, never repeated in the body.
-    expect(body).not.toContain("Rp15.000");
-    expect(body).not.toContain("Rp30.000");
+    // Full semantic list carries exact prices; buttons remain compact browsing hints.
+    expect(body).toContain("Rp15,000");
+    expect(body).toContain("Rp30,000");
     expect(body).not.toContain("(Stock");
     expect(body).not.toContain("Choose a plan:");
     expect(body).toContain("Choose a top-up amount:");
@@ -1494,7 +1566,7 @@ describe("denomination picker", () => {
     // formatDenominationLabel("Delta Force", "Delta Force 60 Coins") strips
     // the redundant "Delta Force" prefix -> "60 Coins"; compact price of
     // 150000 is "Rp150K".
-    expect(button.text).toBe("60 Coins — Rp150K");
+    expect(button.text).toBe("60 Coins · Rp150K");
     expect(button.text.length).toBeLessThanOrEqual(24);
     expect(button.text).not.toContain("…"); // truncLabel never had to cut it
     expect(button.text).not.toMatch(/[<>]/); // no HTML leaking into button text
@@ -1541,7 +1613,7 @@ describe("denomination picker", () => {
     // browse.flash_price string (<s>old</s> new ⚡) — buttons can't render
     // HTML, so it would show literal tags — and never the un-discounted
     // "Rp150K" either.
-    expect(button.text).toBe("60 Coins — Rp120K");
+    expect(button.text).toBe("60 Coins · Rp120K");
     expect(button.text).not.toMatch(/[<>]/);
     expect(button.text).not.toContain("⚡");
     expect(button.text).not.toContain("…");
@@ -1589,10 +1661,10 @@ describe("denomination picker", () => {
     // Name segment truncated to fit the 15-char budget ("1680 Coins + B…"),
     // price segment ("Rp300K") always intact — never chopped to "Rp…" or
     // dropped entirely.
-    expect(button.text).toBe("1680 Coins + B… — Rp300K");
+    expect(button.text).toBe("1.68K Coins + Bonus · Rp300K");
     expect(button.text.endsWith("Rp300K")).toBe(true);
-    expect(button.text).not.toContain("Rp…");
-    expect(button.text.length).toBeLessThanOrEqual(24);
+    expect(button.text).not.toContain("…");
+    expect(bodyText(sink)).toContain("1680 Coins + Bonus");
   });
 
   it("Game Top Up detail hides Duration/Type/Warranty AND the stock line, keeps Price, and shows the description once", async () => {
@@ -1606,7 +1678,7 @@ describe("denomination picker", () => {
     await customer.browseDenomination(ctx, d1.id);
     const body = bodyText(sink);
     expect(body).toContain("Price:");
-    expect(body).toContain("Rp15.000");
+    expect(body).toContain("Rp15,000");
     expect(body).not.toContain("In stock:");
     expect(body).not.toContain("Duration:");
     expect(body).not.toContain("Type:");
@@ -2453,7 +2525,7 @@ describe("browseCategoryEntry — Game Top Up variant/region navigation + AUTO s
     const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ text: string; callback_data?: string }>> };
     const flat = (markup?.inline_keyboard ?? []).flat();
     const button = flat.find((b) => b.callback_data === `v1:browse:denom:${d1.id}`)!;
-    expect(button.text).toContain("🔫");
+    expect(button.text).toContain("Standard");
     expect(button.text).toContain("UC");
     expect(button.text).toContain("Rp15K");
   });
@@ -2490,7 +2562,7 @@ describe("browseCategoryEntry — Game Top Up variant/region navigation + AUTO s
     const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ text: string; callback_data?: string }>> };
     const flat = (markup?.inline_keyboard ?? []).flat();
     const button = flat.find((b) => b.callback_data === `v1:browse:denom:${d1.id}`)!;
-    expect(button.text).toBe("1 Bulan"); // formatDenominationLabel output — buttonLabel stays undefined
+    expect(button.text).toBe("Spotify Premium 1 Bulan · Rp10K"); // unknown names remain complete
   });
 });
 
@@ -3279,7 +3351,7 @@ describe("Finding 4 (I3): Game Top Up scratch-field clearing + emoji precedence"
     const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ text: string; callback_data?: string }>> };
     const flat = (markup?.inline_keyboard ?? []).flat();
     const button = flat.find((b) => b.callback_data === `v1:browse:denom:${d1.id}`)!;
-    expect(button.text).toContain("🆕"); // the product's own emoji wins
+    expect(button.text).toContain("Standard"); // semantic variant remains visible
     expect(button.text).not.toContain("🕹️"); // the stale session one never leaks in
   });
 });
@@ -3617,6 +3689,29 @@ describe("browseDenomination — manual/manual_with_info SKUs are buyable (Task 
 // ===========================================================================
 
 describe("checkout handlers", () => {
+  it.each(["inactive denomination", "inactive product", "archived product", "inactive category"] as const)(
+    "rejects a stale Buy callback for an %s before showing payment confirmation",
+    async (state) => {
+      if (state === "inactive denomination") {
+        await prisma.denomination.update({ where: { id: sample.product.id }, data: { isActive: false } });
+      } else if (state === "inactive product") {
+        await prisma.product.update({ where: { id: sample.parentProduct.id }, data: { isActive: false } });
+      } else if (state === "archived product") {
+        await prisma.product.update({ where: { id: sample.parentProduct.id }, data: { isArchived: true } });
+      } else {
+        await prisma.category.update({ where: { id: sample.category.id }, data: { isActive: false } });
+      }
+
+      const { ctx, sink } = customerCtx({ callbackData: `v1:buy:${sample.product.id}:1` });
+      await routeCallback(ctx);
+      expect(sentIncludes(sink, t(ctx, "error.try_again"))).toBe(true);
+      expect(sentIncludes(sink, "Confirm Order")).toBe(false);
+      expect(JSON.stringify(sink)).not.toContain("v1:pay");
+      expect(ctx.session.scratch.checkoutIntentId).toBeUndefined();
+      expect(await prisma.order.count()).toBe(0);
+    },
+  );
+
   it("showOrderConfirmation rejects a stale Buy callback for a disabled service before starting a conversation", async () => {
     await setSetting(prisma, "service_premium_apps_enabled", "false");
     const { ctx, sink } = customerCtx({ callbackData: `v1:buy:${sample.product.id}:1` });

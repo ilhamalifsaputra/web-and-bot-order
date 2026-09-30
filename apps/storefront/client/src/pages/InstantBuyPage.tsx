@@ -122,7 +122,7 @@ export default function InstantBuyPage() {
   // product payload is already cached from ProductPage's own fetch, so this
   // resolves instantly instead of a second round trip.
   const { data, error } = useQuery({
-    queryKey: ["product", slug],
+    queryKey: ["product", slug, ctx?.currency ?? null, ctx?.lang, ctx?.pricing_context],
     queryFn: () => apiGet<ProductPageData>(`/api/v1/pages/product/${slug}`),
     retry: false,
   });

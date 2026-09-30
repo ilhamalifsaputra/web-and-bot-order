@@ -49,6 +49,8 @@ import {
   E2E_GOLDEN_PRODUCT_NAME,
   E2E_RACE_PRODUCT_NAME,
   E2E_PRODUCT_PRICE_DISPLAY,
+  E2E_CANONICAL_PRODUCT_NAME,
+  E2E_CANONICAL_NAME,
 } from "./fixtures";
 
 // Deliberately just `@prisma/client` (no `@app/db`) — see fixtures.ts's doc
@@ -69,6 +71,21 @@ async function login(page: import("@playwright/test").Page): Promise<void> {
 }
 
 test.describe("storefront checkout", () => {
+  test("canonical full names and exact prices wrap on desktop and mobile without overflow", async ({ page }) => {
+    for (const width of [1280, 375]) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.goto("/p/e2e-canonical-product");
+      await expect(page.getByRole("heading", { name: E2E_CANONICAL_PRODUCT_NAME })).toBeVisible();
+      await expect(page.getByText(E2E_CANONICAL_NAME, { exact: true }).first()).toBeVisible();
+      await expect(page.getByText("Indonesia · Server A", { exact: true }).first()).toBeVisible();
+      const card = page.locator(".denom-card").first();
+      await expect(card.getByText("Rp21,000", { exact: true })).toBeVisible();
+      const dimensions = await page.evaluate(() => ({ document: document.documentElement.scrollWidth, viewport: window.innerWidth }));
+      expect(dimensions.document).toBeLessThanOrEqual(dimensions.viewport);
+      const cardWidths = await card.evaluate((element) => ({ content: element.scrollWidth, box: element.clientWidth }));
+      expect(cardWidths.content).toBeLessThanOrEqual(cardWidths.box);
+    }
+  });
   test("golden path: catalog -> product -> checkout -> paid & delivered", async ({ page }) => {
     // ---- Catalog -> product detail ----
     await page.goto("/");

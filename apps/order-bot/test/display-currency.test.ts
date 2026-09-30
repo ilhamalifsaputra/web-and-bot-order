@@ -134,7 +134,7 @@ describe("denomination detail", () => {
     const { ctx, sink } = customerCtx(DisplayCurrency.IDR);
     await customer.browseDenomination(ctx, sample.product.id);
     const text = sentText(sink);
-    expect(text).toContain("Rp79.000");
+    expect(text).toContain("Rp79,000");
     expect(text).not.toContain("≈");
     expect(text).not.toContain("$");
   });
@@ -144,7 +144,7 @@ describe("denomination detail", () => {
     const { ctx, sink } = customerCtx(null);
     await customer.browseDenomination(ctx, sample.product.id);
     const text = sentText(sink);
-    expect(text).toContain("Rp79.000");
+    expect(text).toContain("Rp79,000");
     expect(text).not.toContain("$");
   });
 
@@ -152,7 +152,7 @@ describe("denomination detail", () => {
     const { ctx, sink } = customerCtx(DisplayCurrency.USD);
     await customer.browseDenomination(ctx, sample.product.id);
     const text = sentText(sink);
-    expect(text).toContain("Rp79.000");
+    expect(text).toContain("Rp79,000");
     expect(text).not.toContain("$");
     const notice = coreT("currency.rate_unavailable", "en");
     expect(text.split(notice).length - 1).toBe(1);
@@ -195,8 +195,8 @@ describe("denomination picker", () => {
 
     const idr = customerCtx(DisplayCurrency.IDR);
     await customer.browseProduct(idr.ctx, sample.parentProduct.id);
-    expect(sentText(idr.sink)).toContain("Rp79.000");
-    expect(sentText(idr.sink)).toContain("Rp160.000");
+    expect(sentText(idr.sink)).toContain("Rp79,000");
+    expect(sentText(idr.sink)).toContain("Rp160,000");
     expect(sentText(idr.sink)).not.toContain("$");
   });
 });
@@ -221,8 +221,8 @@ describe("order confirmation", () => {
     const { ctx, sink } = customerCtx(DisplayCurrency.USD);
     await checkout.showOrderConfirmation(ctx, sample.product.id, 2);
     const text = sentText(sink);
-    expect(text).toContain("Rp79.000 × 2");
-    expect(text).toContain("<b>Rp158.000</b>");
+    expect(text).toContain("Rp79,000 × 2");
+    expect(text).toContain("<b>Rp158,000</b>");
     expect(text).not.toContain("$");
     const notice = coreT("currency.rate_unavailable", "en");
     expect(text.split(notice).length - 1).toBe(1);
@@ -233,10 +233,37 @@ describe("order confirmation", () => {
     const { ctx, sink } = customerCtx(DisplayCurrency.IDR);
     await checkout.showOrderConfirmation(ctx, sample.product.id, 2);
     const text = sentText(sink);
-    expect(text).toContain("Rp79.000 × 2");
-    expect(text).toContain("<b>Rp158.000</b>");
+    expect(text).toContain("Rp79,000 × 2");
+    expect(text).toContain("<b>Rp158,000</b>");
     expect(text).not.toContain("≈");
     expect(text).not.toContain("$");
+  });
+
+  it("keeps Indonesian grouping for the canonical unit and confirmation total", async () => {
+    const { ctx, sink } = customerCtx(DisplayCurrency.IDR, {
+      session: { ...session(DisplayCurrency.IDR), lang: "id" },
+    });
+    await checkout.showOrderConfirmation(ctx, sample.product.id, 2);
+    const text = sentText(sink);
+    expect(text).toContain("Rp79.000 × 2");
+    expect(text).toContain("<b>Rp158.000</b>");
+  });
+
+  it("uses English IDR grouping for the voucher and wallet lines in confirmation", async () => {
+    await createVoucher(prisma, { code: "FLAT16", type: VoucherType.FIXED, value: "16000", usageLimit: 10 });
+    const voucher = customerCtx(DisplayCurrency.IDR, {
+      session: { ...session(DisplayCurrency.IDR), scratch: { appliedVoucherCode: "FLAT16" } },
+    });
+    await checkout.showOrderConfirmation(voucher.ctx, sample.product.id, 2);
+    expect(sentText(voucher.sink)).toContain(coreT("checkout.confirm_voucher_line", "en", { code: "FLAT16", discount: "Rp16,000" }));
+    expect(sentText(voucher.sink)).toContain("<b>Rp142,000</b>");
+
+    await prisma.user.update({ where: { id: sample.user.id }, data: { walletBalance: "200000" } });
+    const wallet = customerCtx(DisplayCurrency.IDR, {
+      session: { ...session(DisplayCurrency.IDR), scratch: { useWalletIdr: true } },
+    });
+    await checkout.showOrderConfirmation(wallet.ctx, sample.product.id, 2);
+    expect(sentText(wallet.sink)).toContain(coreT("checkout.confirm_wallet_line", "en", { amount: "Rp158,000" }));
   });
 
   it("shows the voucher discount and a failed minimum purchase in the user's currency", async () => {

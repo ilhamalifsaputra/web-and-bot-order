@@ -134,7 +134,7 @@ export default function ProductPage() {
   const queryClient = useQueryClient();
   const { data: ctx } = useShopContext();
   const { data, error } = useQuery({
-    queryKey: ["product", slug],
+    queryKey: ["product", slug, ctx?.currency ?? null, ctx?.lang, ctx?.pricing_context],
     queryFn: () => apiGet<ProductPageData>(`/api/v1/pages/product/${slug}`),
     retry: false,
   });
@@ -376,7 +376,7 @@ export default function ProductPage() {
                 {/* `selected.price` already carries the flash discount — the
                     struck figure beside it is the pre-sale one. */}
                 <div className="font-display font-semibold text-pine text-2xl">
-                  {formatPriceFor(selected.price, ctx?.currency ?? null, fx)}
+                  {selected.canonical?.formattedPrice ?? formatPriceFor(selected.price, ctx?.currency ?? null, fx)}
                 </div>
                 {selected.flash && (
                   <FlashWasPrice value={selected.flash.base_price} endsAt={selected.flash.ends_at} />
@@ -601,8 +601,8 @@ export default function ProductPage() {
       {!isDesktop && !buyAreaVisible && (purchasable(selected) || !needsTelegram) && (
         <StickyPurchaseBar
           ariaLabel={t("web.purchase_bar")}
-          priceLabel={selected.duration_label || selected.name}
-          price={formatPriceFor(selected.price, ctx?.currency ?? null, fx)}
+          priceLabel={selected.canonical ? [selected.canonical.displayName, ...selected.canonical.qualifiers].join(" · ") : selected.duration_label || selected.name}
+          price={selected.canonical?.formattedPrice ?? formatPriceFor(selected.price, ctx?.currency ?? null, fx)}
           primaryAction={
             purchasable(selected)
               ? {

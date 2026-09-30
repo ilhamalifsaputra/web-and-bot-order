@@ -23,7 +23,14 @@ export function useCurrencySwitch(options: { onError?: (err: unknown) => void } 
   const mutation = useMutation({
     mutationFn: (currency: DisplayCurrency) =>
       apiPost<{ currency: DisplayCurrency }>("/api/v1/preferences/currency", { currency }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["context"] }),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["context"] }),
+        queryClient.invalidateQueries({ queryKey: ["product"] }),
+        queryClient.invalidateQueries({ queryKey: ["cart"] }),
+        queryClient.invalidateQueries({ queryKey: ["checkout"] }),
+      ]);
+    },
     onError: (err) => options.onError?.(err),
   });
   return { setCurrency: mutation.mutate, isPending: mutation.isPending };

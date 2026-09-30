@@ -7,6 +7,7 @@
     ".": "./src/index.ts",
     "./config": "./src/config.ts",
     "./money": "./src/money.ts",
+    "./canonicalProduct": "./src/canonicalProduct.ts",
     "./datetime": "./src/datetime.ts",
     "./i18n": "./src/i18n.ts",
     "./formatters": "./src/formatters.ts",

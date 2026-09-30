@@ -7,6 +7,7 @@ import CheckoutPage from "./CheckoutPage";
 import { apiGet, apiPost } from "../api/client";
 import { readCodeEmailed } from "../lib/orderCodeEmailed";
 import type { AdditionalField, CheckoutData, PlaceOrderResponse, ShopContext } from "../api/types";
+import type { CanonicalProduct } from "../api/canonical";
 
 vi.mock("../api/client", () => ({
   apiGet: vi.fn(),
@@ -55,6 +56,19 @@ const checkoutData: CheckoutData = {
   below_all_minimums: false,
 };
 
+function canonicalMonth(id: number, parentName: string): CanonicalProduct {
+  return {
+    id, supplierSku: null, rawName: "1 Month", rawNameProvenance: "supplier",
+    displayName: "1 Month", variant: { type: "subscription", name: "1 Month", residual: [], duration: { value: 1, unit: "month" } },
+    qualifiers: [], product: { id: id + 100, name: parentName, gameVariant: null, gameRegion: null },
+    category: { id: 1, name: "Premium Apps", group: "PREMIUM_APPS" },
+    priceIDR: { currency: "IDR", amountMinor: "79000", scale: 0 },
+    displayPrice: { currency: "IDR", amountMinor: "79000", scale: 0 },
+    formattedPrice: "Rp79,000", currencyFallback: false, conversion: null,
+    availability: { status: "available", purchasable: true }, createdAt: null, generatedAt: "2026-09-30T00:00:00.000Z",
+  };
+}
+
 function renderCheckout(respond: (path: string) => unknown, ctx: ShopContext = context) {
   (apiGet as Mock).mockImplementation(async (path: string) => {
     if (path === "/api/v1/pages/context") return ctx;
@@ -86,6 +100,26 @@ describe("CheckoutPage", () => {
     expect(await screen.findByRole("heading", { name: "Checkout" })).toBeInTheDocument();
     expect(screen.getByText("Summary")).toBeInTheDocument();
     expect(screen.getAllByText("Rp158.000").length).toBeGreaterThan(0);
+  });
+
+  it("identifies two different parent products with the same canonical plan name", async () => {
+    const items = [
+      { ...checkoutData.items[0]!, denomination_id: 1, canonical: canonicalMonth(1, "Netflix Premium") },
+      { ...checkoutData.items[0]!, denomination_id: 2, canonical: canonicalMonth(2, "Spotify Premium") },
+    ];
+    renderCheckout(() => ({ ...checkoutData, items }));
+    expect(await screen.findByText("Netflix Premium · 1 Month")).toBeInTheDocument();
+    expect(screen.getByText("Spotify Premium · 1 Month")).toBeInTheDocument();
+  });
+
+  it("shows an identical canonical parent and variant once while keeping qualifiers", async () => {
+    const canonical: CanonicalProduct = {
+      ...canonicalMonth(1, "Netflix Premium"), displayName: "Netflix Premium",
+      variant: { type: "unknown", name: "Netflix Premium", residual: [] }, qualifiers: ["Indonesia"],
+    };
+    renderCheckout(() => ({ ...checkoutData, items: [{ ...checkoutData.items[0]!, canonical }] }));
+    expect(await screen.findByText("Netflix Premium · Indonesia")).toBeInTheDocument();
+    expect(screen.queryByText("Netflix Premium · Netflix Premium · Indonesia")).not.toBeInTheDocument();
   });
 
   it("defaults the method radio to the first enabled method (idr disabled, binance enabled)", async () => {

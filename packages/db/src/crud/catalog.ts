@@ -411,6 +411,8 @@ export async function createDenomination(
      * lets dispatchPendingDigiflazzOrders / resyncDigiflazzCatalog match this
      * row back to a Digiflazz price-list entry. */
     supplierSku?: string | null;
+    /** Exact supplier name; no guessed backfill for hand-created or legacy rows. */
+    supplierRawName?: string | null;
     /** KokinPay's game_code for this denomination's title (Task 7) — offers
      * the storefront's live nickname-check UX. Independent of supplierSku/
      * autoDeliverySource above. */
@@ -454,6 +456,7 @@ export async function createDenomination(
       ...(args.deliveryType !== undefined ? { deliveryType: args.deliveryType } : {}),
       ...(args.additionalFields !== undefined ? { additionalFields: args.additionalFields } : {}),
       supplierSku: args.supplierSku ?? null,
+      supplierRawName: args.supplierRawName ?? null,
       nicknameCheckGameCode: args.nicknameCheckGameCode ?? null,
       priceOverridden: args.priceOverridden ?? false,
       qtyValue: args.qtyValue ?? null,

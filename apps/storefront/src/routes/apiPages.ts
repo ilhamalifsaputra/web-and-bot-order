@@ -31,6 +31,7 @@ import { isSortKey } from "../cards";
 const apiPagesRoutes: FastifyPluginAsync = async (app) => {
   // ---- Shop chrome context (header/footer/cart badge) ----
   app.get("/pages/context", async (req, reply) => {
+    reply.header("Cache-Control", "private, no-store");
     const customer = await optionalCustomer(req);
     const [fxRate, shopName, shopTagline, cartCount, favicon, logo, botUsername, analyticsId, flashOn, waNumber] = await Promise.all([
       getUsdIdrRate(prisma),
@@ -58,6 +59,8 @@ const apiPagesRoutes: FastifyPluginAsync = async (app) => {
       // else the shop_currency cookie, else null (client shows IDR). The
       // client converts with `fx` above; checkout amounts never depend on it.
       currency: resolveDisplayCurrency(customer?.user, requestCurrency(req)),
+      // Private client-cache partition; changes when account or pricing tier changes.
+      pricing_context: customer ? `${customer.userId}:${customer.user.role}` : "guest",
       shop_name: shopName ?? "Toko Digital",
       shop_tagline: shopTagline ?? "",
       cart_count: cartCount,
@@ -111,6 +114,7 @@ const apiPagesRoutes: FastifyPluginAsync = async (app) => {
 
   // ---- Product detail ----
   app.get<{ Params: { slug: string } }>("/pages/product/:slug", async (req, reply) => {
+    reply.header("Cache-Control", "private, no-store");
     // Price the page for whoever is asking — a reseller pays
     // min(resellerPrice, flashPrice) at checkout, so quoting the everyone-price
     // here would show them a number they'll never be charged.
@@ -118,6 +122,7 @@ const apiPagesRoutes: FastifyPluginAsync = async (app) => {
     const data = await productPageData(
       req.params.slug,
       viewer?.user.role === UserRole.RESELLER,
+      { preferredCurrency: resolveDisplayCurrency(viewer?.user, requestCurrency(req)) ?? "IDR", locale: requestLang(req) },
     );
     if (!data) return reply.code(404).send({ error: "not_found" });
     return reply.send({

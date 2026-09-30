@@ -72,6 +72,8 @@ import {
   E2E_GOLDEN_PRODUCT_NAME,
   E2E_RACE_PRODUCT_NAME,
   E2E_PRODUCT_PRICE,
+  E2E_CANONICAL_PRODUCT_NAME,
+  E2E_CANONICAL_NAME,
 } from "./fixtures";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -154,6 +156,14 @@ async function main(): Promise<void> {
     // Exactly one unit — deleted by checkout.spec.ts between "add to cart"
     // and "submit checkout" to force a deterministic error.out_of_stock.
     await bulkAddStock(db, raceDenom.id, ["race-cred-1"]);
+
+    const canonicalProduct = await createCatalogProduct(db, {
+      categoryId: category.id, name: E2E_CANONICAL_PRODUCT_NAME, gameRegion: "Indonesia", gameVariant: "Server A",
+    });
+    await createDenomination(db, {
+      productId: canonicalProduct.id, name: E2E_CANONICAL_NAME, supplierRawName: E2E_CANONICAL_NAME,
+      durationLabel: E2E_CANONICAL_NAME, type: ProductType.SHARED, price: "21000.1254", deliveryType: "manual",
+    });
 
     const user = await createWebUser(db, {
       loginUsername: E2E_SHOPPER_USERNAME,

@@ -58,10 +58,17 @@ function compactName(product: CanonicalProduct, locale: string): string {
 function escapedChunks(value: string, limit: number): string[] {
   const chunks: string[] = [];
   let chunk = "";
-  for (const { segment } of graphemes.segment(value)) {
-    const escaped = esc(segment);
+  const append = (escaped: string) => {
     if (chunk.length + escaped.length > limit && chunk) { chunks.push(chunk); chunk = ""; }
     chunk += escaped;
+  };
+  for (const { segment } of graphemes.segment(value)) {
+    const escaped = esc(segment);
+    if (escaped.length <= limit) append(escaped);
+    // One combining grapheme can exceed a whole Telegram message. Split only
+    // that exceptional segment by code point; escaping each keeps entities and
+    // surrogate pairs intact while every chunk stays within the budget.
+    else for (const codePoint of segment) append(esc(codePoint));
   }
   if (chunk) chunks.push(chunk);
   return chunks;
@@ -76,7 +83,9 @@ export function presentCanonicalCatalog(products: CanonicalProduct[], context: {
   const entries = products.map((product, index) => {
     let label = candidates[index]!;
     if (counts.get(label)! > 1) label += ` #${product.id}`;
-    const fallback = visualWidth(label) > 44;
+    // Width alone misses thousands of combining marks in one visual cell.
+    // Keep the serialized button label conservatively bounded to 64 UTF-8 bytes.
+    const fallback = visualWidth(label) > 44 || Buffer.byteLength(label, "utf8") > 64;
     if (fallback) label = `#${product.id}`;
     const callback_data = `v1:browse:denom:${product.id}`;
     if (Buffer.byteLength(callback_data, "utf8") > 64) throw new Error("Catalog callback exceeds Telegram byte limit");

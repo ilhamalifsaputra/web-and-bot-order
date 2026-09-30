@@ -346,10 +346,14 @@ type CheckoutDenomination = NonNullable<Awaited<ReturnType<typeof getDenominatio
 /** Resolve a still-buyable denomination and replace stale checkout UI on failure. */
 async function availableCheckoutDenomination(ctx: MyContext, productId: number): Promise<CheckoutDenomination | null> {
   const product = await getDenominationWithProduct(prisma, productId);
-  const key = product && await isServiceActive(prisma, product.product.category.group as CategoryGroup | null)
-    ? null
-    : product ? "error.service_unavailable" : "error.try_again";
-  if (!key) return product;
+  let key: "error.try_again" | "error.service_unavailable";
+  if (!product || !product.isActive || !product.product.isActive || product.product.isArchived || !product.product.category.isActive) {
+    key = "error.try_again";
+  } else if (!(await isServiceActive(prisma, product.product.category.group as CategoryGroup | null))) {
+    key = "error.service_unavailable";
+  } else {
+    return product;
+  }
   if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, key), show_alert: true });
   await smartEdit(ctx, t(ctx, key), ckb.backToMain(ctx.session.lang));
   return null;

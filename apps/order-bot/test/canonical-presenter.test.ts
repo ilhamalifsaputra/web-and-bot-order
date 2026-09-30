@@ -79,4 +79,23 @@ describe("canonical Telegram catalog", () => {
     }
     expect(result.pages.flatMap((p) => p.rows.flat()).map((b) => b.callback_data)).toContain("v1:browse:denom:99");
   });
+
+  it("bounds a single oversized combining grapheme without losing text or creating a huge button", () => {
+    const name = `x${"\u0301".repeat(5000)} <&> final qualifier \u{1F642}`;
+    const product = item(91, name);
+    product.qualifiers = [];
+
+    const result = presentCanonicalCatalog([product]);
+    const blocks = result.pages.flatMap((page) => {
+      expect(page.text.length).toBeLessThanOrEqual(3000);
+      return [...page.text.matchAll(/#91 · Rp21\.000\n([\s\S]*?)\n\n/g)].map((match) => match[1]!);
+    });
+    expect(blocks.join("")).toBe(`x${"\u0301".repeat(5000)} &lt;&amp;&gt; final qualifier \u{1F642}`);
+    const buttons = result.pages.flatMap((page) => page.rows.flat());
+    expect(buttons.length).toBeGreaterThan(0);
+    for (const button of buttons) {
+      expect(button.text).toBe("#91");
+      expect(button.callback_data).toBe("v1:browse:denom:91");
+    }
+  });
 });

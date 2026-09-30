@@ -3651,6 +3651,29 @@ describe("browseDenomination — manual/manual_with_info SKUs are buyable (Task 
 // ===========================================================================
 
 describe("checkout handlers", () => {
+  it.each(["inactive denomination", "inactive product", "archived product", "inactive category"] as const)(
+    "rejects a stale Buy callback for an %s before showing payment confirmation",
+    async (state) => {
+      if (state === "inactive denomination") {
+        await prisma.denomination.update({ where: { id: sample.product.id }, data: { isActive: false } });
+      } else if (state === "inactive product") {
+        await prisma.product.update({ where: { id: sample.parentProduct.id }, data: { isActive: false } });
+      } else if (state === "archived product") {
+        await prisma.product.update({ where: { id: sample.parentProduct.id }, data: { isArchived: true } });
+      } else {
+        await prisma.category.update({ where: { id: sample.category.id }, data: { isActive: false } });
+      }
+
+      const { ctx, sink } = customerCtx({ callbackData: `v1:buy:${sample.product.id}:1` });
+      await routeCallback(ctx);
+      expect(sentIncludes(sink, t(ctx, "error.try_again"))).toBe(true);
+      expect(sentIncludes(sink, "Confirm Order")).toBe(false);
+      expect(JSON.stringify(sink)).not.toContain("v1:pay");
+      expect(ctx.session.scratch.checkoutIntentId).toBeUndefined();
+      expect(await prisma.order.count()).toBe(0);
+    },
+  );
+
   it("showOrderConfirmation rejects a stale Buy callback for a disabled service before starting a conversation", async () => {
     await setSetting(prisma, "service_premium_apps_enabled", "false");
     const { ctx, sink } = customerCtx({ callbackData: `v1:buy:${sample.product.id}:1` });

@@ -70,6 +70,22 @@ describe("canonical product semantics", () => {
     expect(present("Mobile Legends 10,000 Bonds").variant.type).toBe("unknown");
     expect(present("Mobile Legends 1.050 Diamonds", { autoDeliverySource: null }).variant.type).toBe("unknown");
   });
+  it.each(["1, 050 Diamonds", "1 050 Diamonds", "1, 234 Diamonds", "1 234 Diamonds", "1 , 050 Diamonds", "1,050 + 15 Diamonds"])("does not reinterpret a suffix of unsupported grouping %s", (name) => {
+    const rawName = `Mobile Legends ${name}`;
+    const result = present(rawName);
+    expect(result.variant.type).toBe("unknown");
+    expect(result.displayName).toBe(name);
+    expect(result.rawName).toBe(rawName);
+  });
+  it.each(["1, 050 Diamonds", "1 050 Diamonds"])("preserves ambiguous %s beside a structured quantity rather than agreeing with its tail", (name) => {
+    const result = present(`Mobile Legends ${name}`, { qtyValue: 50, qtyUnit: "Diamonds" });
+    expect(result.variant).toMatchObject({ type: "amount", quantity: 50, residual: [name] });
+    expect(result.displayName).toContain(name);
+  });
+  it("still parses a simple quantity after a genuine named qualifier", () => {
+    const result = present("Arena Breakout Infinite 50 Bonds", {}, "Arena Breakout");
+    expect(result.variant).toMatchObject({ type: "amount", quantity: 50, unit: "Bonds", residual: ["Infinite"] });
+  });
   it("keeps game names inside meaningful text and refuses unverified short aliases", () => {
     expect(present("Special Mobile Legends Bundle").displayName).toBe("Special Mobile Legends Bundle");
     expect(present("ML 86 Diamonds").displayName).toContain("ML");

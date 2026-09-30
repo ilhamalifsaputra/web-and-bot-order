@@ -95,7 +95,12 @@ function parseVariant(name: string, input: CanonicalProductInput): CanonicalVari
   const match = sharedBonus ?? name.match(/(?:^|\s)(\d+(?:\.\d{3})*)\s+(World Locks?|Delta Coins|Diamonds?|Bonds?|UC|VP|Gems?|Coins?|Tokens?)(?=\s|$|\+)/i);
   const parsedUnit = sharedBonus?.[3] ?? match?.[2];
   const grouped = (match?.[1]?.includes(".") || sharedBonus?.[2]?.includes(".")) ?? false;
-  const parsed = match && (!grouped || denom.autoDeliverySource === "digiflazz") ? Number(match[1]!.replace(/\./g, "")) : null;
+  // A whitespace match may be only the tail of an unsupported numeric group
+  // ("1, 050" or "1 050"). Never reinterpret that tail as a smaller amount.
+  // Require a standalone preceding numeric token, so named qualifiers such
+  // as "Infinite" or "Edition2" can still precede a simple quantity.
+  const numericContinuation = !!match && /(?:^|\s)\d+(?:[.,]\d+|\s+\d+)*(?:\s*[.,])?\s*(?:\+\s*)?$/.test(name.slice(0, match.index));
+  const parsed = match && !numericContinuation && (!grouped || denom.autoDeliverySource === "digiflazz") ? Number(match[1]!.replace(/\./g, "")) : null;
   const safeParsed = parsed != null && parsed > 0 && Number.isSafeInteger(parsed);
   // Subscription/package meaning wins over a coincidental number in a name.
   const namedResidual = structured ? [`${denom.qtyValue} ${denom.qtyUnit!.trim()}`] : [];

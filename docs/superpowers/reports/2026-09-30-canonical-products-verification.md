@@ -1,10 +1,10 @@
 # Canonical products: catatan verifikasi
 
-Status: integrasi `bc403360` dan fix review `171d691a` committed; re-review dan suite penuh post-review masih berjalan. Belum merupakan klaim selesai.
+Status 1 Oktober 2026: source final `21cf36f8` selesai diverifikasi, seluruh finding review teratasi. Pengguna meminta merge lokal + push origin/master; integrasi masih menunggu izin eksplisit atas checkout utama yang dirty (perubahan existing tidak overlap). Kode belum di-merge/push.
 
 ## Lingkup dan isolasi
 
-Branch `worktree-canonical-products`, base `c0a56595`; perubahan berada di `.claude/worktrees/canonical-products`. Checkout utama memiliki perubahan sebelum tugas ini dan tidak disentuh. Tidak ada merge, push, deployment, migration produksi, atau pengiriman Telegram nyata.
+Branch `worktree-canonical-products`, base `c0a56595`; perubahan berada di `.claude/worktrees/canonical-products`. Checkout utama memiliki perubahan sebelumnya (.env.example, graphify-out, cache), tidak di-commit/ditimpa oleh patch. Belum ada merge/push; pengguna kini mengotorisasi keduanya setelah verifikasi. Tidak ada deployment, migration produksi, atau pengiriman Telegram nyata.
 
 Database pengujian PostgreSQL16 disposable milik tugas ini berjalan di localhost port55839. Helper Vitest membuat schema acak per suite. Playwright memakai schema fixture terpisah dan wallet lokal, tanpa payment gateway nyata. Container lain tidak dipakai atau dihentikan.
 
@@ -33,7 +33,17 @@ Database pengujian PostgreSQL16 disposable milik tugas ini berjalan di localhost
 - Suite penuh ulang selesai exit0:505/505 file dan8603/8603 tes lulus,0 gagal. Ini hasil sebelum dua fix review tambahan, bukan klaim verifikasi final setelah fix.
 - Review Task2 menemukan dua Important: satu grapheme ekstrem melewati batas chunk/button; callback Buy lama mengabaikan active/archive flags saat konfirmasi. Fix terfokus dan re-review sedang berjalan. Minor separator unit/total English dan React act warnings dicatat untuk triage review akhir.
 - Fix `171d691a`: hanya grapheme melebihi budget dipecah per code point dengan HTML entity/surrogate tetap utuh; label di atas64 bytes memakai #ID fallback. Empat active/archive flags dicek sebelum callback Buy masuk konfirmasi. Regresi Unicode RED1 lalu GREEN10; byte-guard mutation RED lalu GREEN; empat stale callback RED4 lalu GREEN4. Full covering bot333/333, bot/test TypeScript dan diffcheck exit0.
-- Suite post-review berjalan pada source fix committed dan reviewer read-only; tidak ada implementer yang mengubah source bersamaan.
+- Suite post-review pada source `171d691a`:exit0,505/505 file dan8608/8608 tes lulus,0 gagal (826.39s). Source stabil sepanjang run dan reviewer read-only; ini hasil sebelum final fix wave, bukan klaim final source green.
+- Whole-branch reviewer memeriksa seluruh4174 line package: no Critical; satu Important parent product name hilang pada cart, web checkout dan konfirmasi Telegram; dua Minor grouping English dan async fixture warning. Satu patch terakhir menangani seluruh finding. Contextual picker/detail tetap dipertahankan; ringkasan standalone harus memperlihatkan nama induk + variant + qualifier.
+- Final wave `21cf36f8`: standalone cart/web checkout/bot confirmation memuat nama induk + variant + qualifier, tanpa duplikasi jika nama tepat sama. Nama induk sangat panjang tetap dikirim lengkap dalam pesan berbatas. Regresi identitas RED4/GREEN4, exact-equality RED3/GREEN3. English confirmation total/voucher/wallet memakai grouping konsisten tanpa perubahan arithmetic; RED3/GREEN6. Covering web82/82, bot356/356, client/bot/test TypeScript + storefront lint exit0.
+- React card fixture memakai seeded shop-context query. Isolated15/15 pre/post tanpa warning yang direproduksi; ini stabilisasi fixture, bukan klaim seluruh historical act warning hilang.
+- Satu scoped final re-review menyatakan Important + dua Minor ADDRESSED, no new breakage. Tidak ada review/implementasi duplikat setelahnya.
+- Build storefront terbaru2375 modules exit0; browser Chromium terbaru3/3 lulus18.3s, desktop/mobile wrapping + wallet delivered + stale stock retry. Warning bundling/NO_COLOR existing tetap dicatat.
+- Suite penuh final setelah semua source fix:exit0,505/505 file dan8617/8617 tes lulus,0 gagal,734.11s. Command: `node node_modules/vitest/vitest.mjs run --maxWorkers 4 --minWorkers 1 --silent --reporter=json --outputFile .superpowers/sdd/2026-09-30-canonical-products/post-final-wave-suite.json`. DATABASE_URL_PRISMA hanya mengarah ke disposable PostgreSQL port55839; pnpm dependency-verification guards dipakai. Source `21cf36f8` tidak berubah sepanjang run.
+
+## Integrasi yang diminta pengguna
+
+Fetch origin/master berhasil; saat diperiksa branch7 commit ahead,0 behind, master/origin/master masihbasec0a56595. Checkout utama memiliki9 tracked local changes (.env.example dan graphify-out), serta cache untracked;0 overlap dengan47 file patch. Tidak ada unrelated change yang di-commit, dihapus, di-stash atau ditimpa. Aturan repo meminta main bersih sebelum merge, sehingga pertanyaan izin merge non-overlap dengan local changes tetap dipertahankan dikirim; menunggu jawaban eksplisit. Workflow CI hanya workflow_dispatch, bukan trigger push otomatis. Tidak ada klaim CI remote/deployment dijalankan.
 
 ## Hambatan environment yang ditangani
 

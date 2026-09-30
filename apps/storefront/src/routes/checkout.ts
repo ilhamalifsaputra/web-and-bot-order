@@ -24,6 +24,7 @@ import { ValidationError } from "@app/core/errors";
 import { parseAdditionalFields, validateCustomerData } from "@app/core/deliveryFields";
 import { logger } from "@app/core/logger";
 import { Decimal } from "@app/core/money";
+import { canonicalProduct } from "@app/core/canonicalProduct";
 import { effectiveUnitPrice, type FlashFields } from "@app/core/flash";
 import { bulkDiscountFor } from "@app/core/bulk";
 import { ensureUtc } from "@app/core/datetime";
@@ -50,6 +51,9 @@ import {
   createOrderDirect,
   finalizeOrderPayment,
   getUsdIdrRate,
+  getCanonicalRateContext,
+  getDenominationWithProduct,
+  countAvailableStock,
   getOrderByCode,
   countUserPendingOrders,
   deliverPaidTokopayOrder,
@@ -106,7 +110,7 @@ import { gatewayLedgerTrxId } from "@app/core/payments/ledgerKey";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import { usdtFromIdr } from "../pricing";
 import { flashViewFor, loadGuestCartItems } from "./cart";
-import { resolveBotUsername } from "../shop";
+import { resolveBotUsername, requestLang, requestCurrency, resolveDisplayCurrency } from "../shop";
 
 /** Per-buyer cap on simultaneously unpaid orders. Exported so every
  * order-creating storefront rail enforces the SAME number (the cart-based
@@ -378,9 +382,9 @@ export async function checkoutView(
   errorKey: string | null,
   adHocLine?: AdHocLine | null,
 ) {
-  const [totals, fxRate, tokopay, bybit, bybitBsc, binance, paydisini, nowpayments] = await Promise.all([
+  const [totals, rateContext, tokopay, bybit, bybitBsc, binance, paydisini, nowpayments] = await Promise.all([
     computeTotals(req, customer, voucherCode, adHocLine),
-    getUsdIdrRate(prisma),
+    getCanonicalRateContext(prisma),
     getTokopayCreds(prisma),
     resolveBybitConfig(prisma),
     resolveBybitBscConfig(prisma),
@@ -388,6 +392,12 @@ export async function checkoutView(
     getPaydisiniCreds(prisma),
     getNowpaymentsCreds(prisma),
   ]);
+  const fxRate = rateContext.rate ? new Decimal(rateContext.rate) : null;
+  const display = { ...rateContext, preferredCurrency: resolveDisplayCurrency(customer?.user, requestCurrency(req)) ?? "IDR", locale: requestLang(req), generatedAt: new Date().toISOString() };
+  const canonicalItems = await Promise.all(totals.lines.map(async (ci) => {
+    const [denom, available] = await Promise.all([getDenominationWithProduct(prisma, ci.productId), countAvailableStock(prisma, ci.productId)]);
+    return denom ? canonicalProduct({ denomination: { ...denom, createdAt: denom.createdAt.toISOString() }, product: denom.product, category: denom.product.category, stockAvailable: denom.deliveryType !== DeliveryType.AUTO || available > 0 }, { ...display, effectivePriceIDR: effectiveUnitPrice(ci.product, totals.isReseller, totals.pricedAt).toString() }) : null;
+  }));
   const haveRate = Boolean(fxRate);
   // Third condition on every USDT rail, beyond "configured" and "clears the
   // minimum": the saved rate must still be inside its quote lifetime, read
@@ -425,7 +435,8 @@ export async function checkoutView(
     // Given the single-SKU-per-non-auto-cart guard (routes/api.ts POST
     // /cart), a non-auto cart always has exactly one entry here; an auto cart
     // can have many (irrelevant to the info step).
-    items: totals.lines.map((ci) => ({
+    items: totals.lines.map((ci, index) => ({
+      canonical: canonicalItems[index],
       denomination_id: ci.productId,
       delivery_type: ci.product.deliveryType,
       additional_fields: parseAdditionalFields(ci.product.additionalFields),

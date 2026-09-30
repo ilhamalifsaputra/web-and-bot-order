@@ -97,14 +97,14 @@ function CartLine({ item, fx, onMutated }: CartLineProps) {
         <div className="flex-1 min-w-0">
           <Link
             to={`/p/${item.product_slug}`}
-            className="font-display text-sm font-semibold text-ink transition-colors hover:text-pine line-clamp-2"
+            className="font-display text-sm font-semibold text-ink transition-colors hover:text-pine break-words [overflow-wrap:anywhere]"
           >
-            {item.name}
+            {item.canonical ? [item.canonical.displayName, ...item.canonical.qualifiers].join(" · ") : item.name}
           </Link>
           {/* `unit_price` already carries the flash discount — the badge and
               the struck figure only explain where the price came from. */}
           <div className="mt-1 flex flex-wrap items-center gap-2">
-            <Price value={item.unit_price} fx={fx} size="text-sm" />
+            {item.canonical ? <span className="text-pine text-sm font-semibold">{item.canonical.formattedPrice}</span> : <Price value={item.unit_price} fx={fx} size="text-sm" />}
             {item.flash && <FlashWasPrice value={item.flash.base_price} endsAt={item.flash.ends_at} />}
           </div>
           {item.flash && (
@@ -192,7 +192,7 @@ export default function CartPage() {
   // the lines while scrolling, so it doesn't need the mobile sticky bar.
   const isDesktop = useIsWideDesktop();
   const { data } = useQuery({
-    queryKey: ["cart"],
+    queryKey: ["cart", ctx?.currency ?? null, ctx?.lang, ctx?.pricing_context],
     queryFn: () => apiGet<CartPageData>("/api/v1/cart"),
   });
   // Cart mutations respond with a fresh {items, subtotal} payload — apply it

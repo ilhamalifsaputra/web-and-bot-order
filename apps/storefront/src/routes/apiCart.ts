@@ -33,6 +33,7 @@ async function cartPayload(req: FastifyRequest, customer: Customer | null) {
 const apiCartRoutes: FastifyPluginAsync = async (app) => {
   // ---- Cart page data (guests OK) ----
   app.get("/cart", async (req, reply) => {
+    reply.header("Cache-Control", "private, no-store");
     const customer = await optionalCustomer(req);
     return reply.send(await cartPayload(req, customer));
   });

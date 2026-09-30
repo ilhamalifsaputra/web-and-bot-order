@@ -251,7 +251,7 @@ export default function CheckoutPage() {
   // Decides which of the two submit controls exists — see the sticky bar below.
   const isDesktop = useIsWideDesktop();
   const { data, error } = useQuery({
-    queryKey: ["checkout"],
+    queryKey: ["checkout", ctx?.currency ?? null, ctx?.lang, ctx?.pricing_context],
     queryFn: () => apiGet<CheckoutData>("/api/v1/checkout"),
     retry: false,
   });
@@ -292,6 +292,10 @@ export default function CheckoutPage() {
       if (infoItem) setAnswers(Array.from({ length: infoItem.qty }, () => ({})));
     }
   }, [data, page]);
+  // Preference refetches update item text while preserving the buyer's inputs.
+  useEffect(() => {
+    if (data) setPage((previous) => previous ? { ...previous, items: data.items } : previous);
+  }, [data]);
 
   // Fetched only once the cart is known to be empty at checkout — never
   // delays the empty-cart card itself, which paints from `page` alone. Not
@@ -516,6 +520,14 @@ export default function CheckoutPage() {
         className={cn("grid lg:grid-cols-3 gap-6 items-start", !isDesktop && "pb-28")}
       >
         <div className="lg:col-span-2 space-y-6">
+          {page.items.some((item) => item.canonical) && (
+            <div className="card card-pad space-y-3">
+              {page.items.map((item) => item.canonical && <div key={item.denomination_id} className="break-words [overflow-wrap:anywhere]">
+                <p className="font-semibold">{[item.canonical.displayName, ...item.canonical.qualifiers].join(" · ")}</p>
+                <p className="text-sm text-pine">{item.canonical.formattedPrice} × {item.qty}</p>
+              </div>)}
+            </div>
+          )}
           {/* First card in the column for a guest: the shop needs to know
               where the order goes before anything about paying for it. */}
           {page.is_guest && (

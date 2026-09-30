@@ -60,6 +60,7 @@ import {
 } from "@app/db";
 import { DeliveryType, OrderStatus, VoucherType } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
+import { CanonicalProductSchema } from "@app/core/canonicalProduct";
 import { AdditionalFieldType, type AdditionalField } from "@app/core/deliveryFields";
 import { hashPassword } from "@app/core/password";
 import { TICKET_DIR } from "../src/lib/ticketAttachments";
@@ -1342,8 +1343,13 @@ describe("/api/v1/checkout + orders", () => {
       // Per-item data (Task 6): the SPA's checkout info-collection step needs
       // delivery_type + the parsed field spec per cart line.
       expect(body.items).toEqual([
-        { denomination_id: denomId, delivery_type: "auto", additional_fields: [], qty: 1, flash: null },
+        { denomination_id: denomId, delivery_type: "auto", additional_fields: [], qty: 1, flash: null, canonical: expect.any(Object) },
       ]);
+      expect(CanonicalProductSchema.parse(body.items[0].canonical)).toMatchObject({
+        id: denomId,
+        formattedPrice: "Rp40,000",
+        priceIDR: { currency: "IDR", amountMinor: "40000", scale: 0 },
+      });
     });
 
     // The summary's "flash sale price applied" marker reads these flags, so
@@ -1921,8 +1927,14 @@ describe("POST /api/v1/checkout — manual_with_info customer_data revalidation"
         additional_fields: fields,
         qty: 2,
         flash: null,
+        canonical: expect.any(Object),
       },
     ]);
+    expect(CanonicalProductSchema.parse(res.json().items[0].canonical)).toMatchObject({
+      id: infoDenomId,
+      formattedPrice: "Rp25,000",
+      priceIDR: { currency: "IDR", amountMinor: "25000", scale: 0 },
+    });
   });
 
   it("400s error.customer_data_incomplete when customer_data is missing entirely", async () => {

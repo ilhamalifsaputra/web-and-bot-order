@@ -70,7 +70,7 @@ const dispatchBrowse: DomainDispatcher = async (ctx, parts) => {
   const action = parts[2];
   if (action === "prods") await customer.browseResume(ctx);
   else if (action === "page") await customer.browseProductsFlat(ctx, parseInt(parts[3]!, 10));
-  else if (action === "pick") await customer.browseProduct(ctx, parseInt(parts[3]!, 10));
+  else if (action === "pick") await customer.browseProduct(ctx, parseInt(parts[3]!, 10), parts[4] ? parseInt(parts[4], 10) : 0);
   else if (action === "denom") await customer.browseDenomination(ctx, parseInt(parts[3]!, 10));
   else if (action === "refresh")
     await customer.browseDenomination(ctx, parseInt(parts[3]!, 10), parts[4] ? parseInt(parts[4]!, 10) : 1);

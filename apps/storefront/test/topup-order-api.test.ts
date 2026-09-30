@@ -33,6 +33,7 @@ import {
 } from "@app/db";
 import { VoucherType } from "@app/core/enums";
 import { hashPassword } from "@app/core/password";
+import { CanonicalProductSchema, type CanonicalProduct } from "@app/core/canonicalProduct";
 import { buildApp } from "../src/server";
 import { CART_COOKIE, CART_COOKIE_VERSION } from "../src/shop";
 import { SHOP_COOKIE_NAME } from "../src/auth";
@@ -50,6 +51,19 @@ let inactiveDenomId: number;
 let digiflazzDenomId: number;
 
 const DENOM_PRICE = "40000";
+
+/** Validate each additive item, then compare every response field except the
+ * canonical timestamp generated independently for each request. */
+function comparableCheckout(body: { items: Array<{ canonical: CanonicalProduct }> }) {
+  return {
+    ...body,
+    items: body.items.map(({ canonical, ...item }) => {
+      CanonicalProductSchema.parse(canonical);
+      const { generatedAt: _generatedAt, ...stableCanonical } = canonical;
+      return { ...item, canonical: stableCanonical };
+    }),
+  };
+}
 
 function cartCookie(items: Array<{ p: number; q: number }>): string {
   return `${CART_COOKIE}=` + encodeURIComponent(JSON.stringify({ v: CART_COOKIE_VERSION, items }));
@@ -209,7 +223,7 @@ describe("POST /api/v1/topup/preview", () => {
     });
     expect(cartBased.statusCode).toBe(200);
     expect(adHoc.statusCode).toBe(200);
-    expect(adHoc.json()).toEqual(cartBased.json());
+    expect(comparableCheckout(adHoc.json())).toEqual(comparableCheckout(cartBased.json()));
     expect(adHoc.json().subtotal).toBe(DENOM_PRICE);
 
     await clearCart(prisma, uid);
@@ -233,7 +247,7 @@ describe("POST /api/v1/topup/preview", () => {
       payload: { denomination_id: denomId, qty: 1, voucher_code: "topup10" },
     });
     expect(adHoc.statusCode).toBe(200);
-    expect(adHoc.json()).toEqual(cartBased.json());
+    expect(comparableCheckout(adHoc.json())).toEqual(comparableCheckout(cartBased.json()));
     expect(adHoc.json().voucher_discount).toBe("4000"); // 10% of 40000
     expect(adHoc.json().total).toBe("36000");
     expect(adHoc.json().error_key).toBeNull();
@@ -267,8 +281,13 @@ describe("POST /api/v1/topup/preview", () => {
     expect(body.wallet_usdt_enabled).toBe(false);
     expect(body.subtotal).toBe(DENOM_PRICE);
     expect(body.items).toEqual([
-      { denomination_id: denomId, delivery_type: "auto", additional_fields: [], qty: 1, flash: null },
+      { denomination_id: denomId, delivery_type: "auto", additional_fields: [], qty: 1, flash: null, canonical: expect.any(Object) },
     ]);
+    expect(CanonicalProductSchema.parse(body.items[0].canonical)).toMatchObject({
+      id: denomId,
+      formattedPrice: "Rp40,000",
+      priceIDR: { currency: "IDR", amountMinor: DENOM_PRICE, scale: 0 },
+    });
     // Nothing about the guest cart cookie is read or written by a preview.
     expect(res.headers["set-cookie"]).toBeUndefined();
   });

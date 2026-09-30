@@ -11,6 +11,12 @@ const context = { effectivePriceIDR: "130833.1254", preferredCurrency: "IDR" as 
 const present = (name: string, overrides = {}, productName?: string) => canonicalProduct(input(name, overrides, productName), context);
 
 describe("canonical product semantics", () => {
+  it("reports the actual rate source and confirmation time, never render time", () => {
+    const result = canonicalProduct(input("86 Diamonds"), { ...context, preferredCurrency: "USD", rate: "16000", rateSource: "settings:usd_idr_rate", rateAsOf: "2026-09-29T04:00:00.000Z" });
+    expect(result.conversion).toMatchObject({ source: "settings:usd_idr_rate", asOf: "2026-09-29T04:00:00.000Z" });
+    const fallback = canonicalProduct(input("86 Diamonds"), { ...context, preferredCurrency: "USD", rate: "16000", rateSource: "config:USDT_IDR_RATE" });
+    expect(fallback.conversion).toMatchObject({ source: "config:USDT_IDR_RATE", asOf: null });
+  });
   it("interprets verified Digiflazz dot grouping without losing supplier identity", () => {
     const real = catalog.find((row) => row.denominationName === "Mobile Legends 1.050 Diamonds")!;
     const result = present(real.denominationName);
@@ -157,7 +163,7 @@ describe("canonical exact price and runtime contract", () => {
     expect(result.displayPrice).toEqual({ currency: "USD", amountMinor: "818", scale: 2 });
     expect(result.formattedPrice).toBe("$8,18");
     expect(result.conversion).toMatchObject({ basis: "USDT", direction: "IDR_PER_USDT", rate: "16000", rounding: "CEIL_2DP" });
-    expect(result.conversion).not.toHaveProperty("asOf");
+    expect(result.conversion).toMatchObject({ source: "caller", asOf: null });
   });
   it.each([undefined, null, "0", "-1", "NaN", "garbage"])("falls back to exact IDR for unusable rate %s", (rate) => {
     const result = canonicalProduct(input("86 Diamonds"), { ...context, preferredCurrency: "USD", rate });

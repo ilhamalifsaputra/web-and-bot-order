@@ -14,15 +14,18 @@
  */
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { Decimal } from "@app/core/money";
+import { canonicalProduct, type CanonicalProduct, type CanonicalProductContext } from "@app/core/canonicalProduct";
+import { effectiveUnitPrice } from "@app/core/flash";
 import { config } from "@app/core/config";
 import { logger } from "@app/core/logger";
 import { sendMail } from "@app/core/mailer";
 import { ValidationError } from "@app/core/errors";
-import { CategoryGroup, OrderCurrency } from "@app/core/enums";
+import { CategoryGroup, OrderCurrency, UserRole } from "@app/core/enums";
 import {
   prisma,
   getCategoryBySlug,
   getSetting,
+  getCanonicalRateContext,
   getSmtpCreds,
   listActiveCategories,
   listCatalogProducts,
@@ -48,6 +51,7 @@ import {
   publicBase,
   CART_COOKIE,
   CART_COOKIE_VERSION,
+  requestLang, requestCurrency, resolveDisplayCurrency,
   type GuestCartLine,
 } from "../shop";
 import { loadCartLines, loadGuestCartItems, cartCompositionLineOf, originOk } from "./cart";
@@ -68,6 +72,7 @@ interface CategoryJson {
 }
 
 interface DenominationJson {
+  canonical: CanonicalProduct;
   id: number;
   name: string;
   price: string;
@@ -96,12 +101,13 @@ function categoryJson(category: Category): CategoryJson {
   };
 }
 
-async function denominationJson(d: Denomination): Promise<DenominationJson> {
+async function denominationJson(d: Denomination, product: CatalogProduct, display: Omit<CanonicalProductContext, "effectivePriceIDR">, isReseller: boolean): Promise<DenominationJson> {
   const stock = await countAvailableStock(prisma, d.id);
   const status: DenominationJson["status"] =
     stock <= 0 ? "out_of_stock" : stock <= config.LOW_STOCK_THRESHOLD ? "low_stock" : "in_stock";
   return {
     id: d.id,
+    canonical: canonicalProduct({ denomination: { ...d, createdAt: d.createdAt.toISOString() }, product, category: product.category, stockAvailable: d.deliveryType !== "auto" || stock > 0 }, { ...display, effectivePriceIDR: effectiveUnitPrice(d, isReseller).toString() }),
     name: d.name,
     price: new Decimal(d.price).toString(),
     stock,
@@ -109,8 +115,8 @@ async function denominationJson(d: Denomination): Promise<DenominationJson> {
   };
 }
 
-async function productJson(product: CatalogProduct): Promise<ProductJson> {
-  const denominations = await Promise.all(product.denominations.map(denominationJson));
+async function productJson(product: CatalogProduct, display: Omit<CanonicalProductContext, "effectivePriceIDR">, isReseller: boolean): Promise<ProductJson> {
+  const denominations = await Promise.all(product.denominations.map((d) => denominationJson(d, product, display, isReseller)));
   return {
     id: product.id,
     slug: product.slug,
@@ -120,6 +126,12 @@ async function productJson(product: CatalogProduct): Promise<ProductJson> {
     category: categoryJson(product.category),
     denominations,
   };
+}
+
+async function catalogDisplay(req: FastifyRequest, reply: FastifyReply) {
+  reply.header("Cache-Control", "private, no-store");
+  const [viewer, rate] = await Promise.all([optionalCustomer(req), getCanonicalRateContext(prisma)]);
+  return { display: { ...rate, preferredCurrency: resolveDisplayCurrency(viewer?.user, requestCurrency(req)) ?? "IDR", locale: requestLang(req), generatedAt: new Date().toISOString() }, isReseller: viewer?.user.role === UserRole.RESELLER };
 }
 
 /** clamp 1-99, default 1 — mirrors clampQty in ./cart, applied to a JSON qty. */
@@ -391,36 +403,40 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
 
   // ---- 2. GET /categories/:slug/products ----
   app.get<{ Params: { slug: string } }>("/categories/:slug/products", async (req, reply) => {
+    const { display, isReseller } = await catalogDisplay(req, reply);
     const category = await getCategoryBySlug(prisma, req.params.slug);
     if (!category || !category.isActive) {
       return reply.code(404).send({ error: "not_found" });
     }
     const products = await listCatalogProducts(prisma, category.id);
-    return reply.send({ products: await Promise.all(products.map(productJson)) });
+    return reply.send({ products: await Promise.all(products.map((p) => productJson(p, display, isReseller))) });
   });
 
   // ---- 3. GET /products ----
-  app.get("/products", async (_req, reply) => {
+  app.get("/products", async (req, reply) => {
+    const { display, isReseller } = await catalogDisplay(req, reply);
     const products = await listCatalogProducts(prisma);
-    return reply.send({ products: await Promise.all(products.map(productJson)) });
+    return reply.send({ products: await Promise.all(products.map((p) => productJson(p, display, isReseller))) });
   });
 
   // ---- 4. GET /products/:slug ----
   app.get<{ Params: { slug: string } }>("/products/:slug", async (req, reply) => {
+    const { display, isReseller } = await catalogDisplay(req, reply);
     const product = await getCatalogProductBySlugWithDenominations(prisma, req.params.slug);
     if (!product || !product.isActive || product.isArchived || product.denominations.length === 0) {
       return reply.code(404).send({ error: "not_found" });
     }
-    return reply.send({ product: await productJson(product) });
+    return reply.send({ product: await productJson(product, display, isReseller) });
   });
 
   // ---- 5. GET /products/:slug/denominations ----
   app.get<{ Params: { slug: string } }>("/products/:slug/denominations", async (req, reply) => {
+    const { display, isReseller } = await catalogDisplay(req, reply);
     const product = await getCatalogProductBySlugWithDenominations(prisma, req.params.slug);
     if (!product || !product.isActive || product.isArchived || product.denominations.length === 0) {
       return reply.code(404).send({ error: "not_found" });
     }
-    return reply.send({ denominations: await Promise.all(product.denominations.map(denominationJson)) });
+    return reply.send({ denominations: await Promise.all(product.denominations.map((d) => denominationJson(d, product, display, isReseller))) });
   });
 
   // ---- 6. POST /cart ----

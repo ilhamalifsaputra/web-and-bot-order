@@ -6,12 +6,14 @@
  * helper returns exactly the keys its page needs.
  */
 import { config } from "@app/core/config";
+import { canonicalProduct, type CanonicalProductContext } from "@app/core/canonicalProduct";
 import { Decimal } from "@app/core/money";
 import { activeFlashPercent, effectiveUnitPrice, flashPrice } from "@app/core/flash";
 import { parseAdditionalFields } from "@app/core/deliveryFields";
 import {
   prisma,
   getSetting,
+  getCanonicalRateContext,
   getCategoryBySlug,
   listActiveCategories,
   listNewestCatalogProducts,
@@ -128,13 +130,13 @@ export async function categoryPageData(rawSlug: string, sort: SortKey = "default
  * higher than they pay whenever their standing price is the cheaper of the two.
  * Guests and signed-out visitors keep the everyone price (the default).
  */
-export async function productPageData(rawSlug: string, isReseller = false) {
+export async function productPageData(rawSlug: string, isReseller = false, display: { preferredCurrency?: "IDR" | "USD"; locale?: string } = {}) {
   const slug = (rawSlug ?? "").trim();
   const product = slug ? await getCatalogProductBySlugWithDenominations(prisma, slug) : null;
   if (!product || !product.isActive || product.isArchived || product.denominations.length === 0) return null;
 
   // Per-denomination stock + bulk-pricing badge (price-asc order preserved).
-  const [stock, bulkRules, reviews, sameCategoryProducts, ratings] = await Promise.all([
+  const [stock, bulkRules, reviews, sameCategoryProducts, ratings, rateContext] = await Promise.all([
     stockStatusCounts(prisma),
     activeBulkPricingByDenomination(prisma),
     // Reviews are tied to the specific denomination the customer bought —
@@ -144,7 +146,9 @@ export async function productPageData(rawSlug: string, isReseller = false) {
     // STO-011 "You might also like" — same category, current product excluded below.
     listCatalogProducts(prisma, product.categoryId),
     productRatingSummaries(prisma),
+    getCanonicalRateContext(prisma),
   ]);
+  const displayContext: Omit<CanonicalProductContext, "effectivePriceIDR"> = { ...rateContext, preferredCurrency: display.preferredCurrency ?? "IDR", locale: display.locale ?? "id", generatedAt: new Date().toISOString() };
 
   const catName = product.category.name;
   const denominations = product.denominations.map((d) => {
@@ -157,6 +161,7 @@ export async function productPageData(rawSlug: string, isReseller = false) {
     const flashPct = salePrice !== null && unit.equals(salePrice) ? activeFlashPercent(d) : null;
     return {
       id: d.id,
+      canonical: canonicalProduct({ denomination: { ...d, createdAt: d.createdAt.toISOString() }, product, category: product.category, stockAvailable: d.deliveryType !== "auto" || available > 0 }, { ...displayContext, effectivePriceIDR: unit.toString() }),
       name: d.name,
       duration_label: d.durationLabel,
       // Always the price a shopper actually pays — the pre-sale figure lives

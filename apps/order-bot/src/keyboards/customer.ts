@@ -14,6 +14,7 @@ import { t as coreT } from "@app/core/i18n";
 import { MAX_CART_ORDER_UNITS } from "@app/db";
 import { formatPrice, formatUsdtAmount, formatIdr, truncLabel } from "../util/format";
 import { formatDenominationLabel } from "../util/denominationLabel";
+import type { CatalogButton } from "../util/canonicalPresenter";
 
 export const CB_PREFIX = "v1";
 
@@ -346,6 +347,19 @@ interface DenominationLike {
   /** Precomputed compact Game Top Up label (gameTopUpDenomLabel); falls back
    * to durationLabel||name when absent. Computed by the caller, not here. */
   buttonLabel?: string;
+}
+
+/** Catalog presenter owns labels and adaptive rows; callbacks stay compatible. */
+export function canonicalDenominationPickerKb(buttonRows: CatalogButton[][], productId: number, lang: string, page: number, pageCount: number): InlineKeyboard {
+  const keyboard = new InlineKeyboard(buttonRows);
+  if (pageCount > 1) {
+    if (page > 0) keyboard.text("‹", cb("browse", "pick", productId, page - 1));
+    if (page < pageCount - 1) keyboard.text("›", cb("browse", "pick", productId, page + 1));
+    keyboard.row();
+  }
+  keyboard.text(coreT("browse.refresh_btn", lang), cb("browse", "pick", productId, page)).row();
+  keyboard.text(coreT("menu.back", lang), cb("browse", "prods"));
+  return keyboard;
 }
 
 /**

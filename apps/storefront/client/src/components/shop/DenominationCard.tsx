@@ -43,6 +43,7 @@ const ICON_KIND_ICONS: Record<DenomIconKind, LucideIcon> = {
 };
 
 export interface DenominationCardData {
+  canonical?: import("../../api/canonical").CanonicalProduct;
   id: number;
   name: string;
   duration_label: string | null;
@@ -61,7 +62,7 @@ export interface DenominationCardData {
  * never have stock rows by design — Task 2 skips stock reservation for
  * them). Mirrors ProductPage.tsx's `purchasable`. */
 function purchasable(d: DenominationCardData): boolean {
-  return d.delivery_type !== "auto" || d.in_stock;
+  return d.canonical?.availability.purchasable ?? (d.delivery_type !== "auto" || d.in_stock);
 }
 
 export interface DenominationCardProps {
@@ -80,7 +81,7 @@ export default function DenominationCard({ d, fx, lowThreshold, checked, onChang
   const Icon = iconKind ? ICON_KIND_ICONS[iconKind] : null;
   return (
     <label
-      className={`denom-card cursor-pointer flex items-center justify-between gap-3 rounded-lg border-2 border-line bg-card p-4 shadow-soft transition-all duration-150 hover:shadow-lift has-[:checked]:border-pine has-[:checked]:ring-2 has-[:checked]:ring-pine/35 ${!buyable ? "opacity-60" : ""}`}
+      className={`denom-card cursor-pointer flex flex-wrap items-center justify-between gap-3 rounded-lg border-2 border-line bg-card p-4 shadow-soft transition-all duration-150 hover:shadow-lift has-[:checked]:border-pine has-[:checked]:ring-2 has-[:checked]:ring-pine/35 ${!buyable ? "opacity-60" : ""}`}
       data-denom-id={d.id}
       data-price={d.price}
       data-available={d.available}
@@ -106,9 +107,10 @@ export default function DenominationCard({ d, fx, lowThreshold, checked, onChang
           </span>
         )}
         <div className="min-w-0">
-          <div className="font-display text-sm font-semibold text-ink leading-snug">
-            {d.duration_label || d.name}
+          <div className="font-display text-sm font-semibold text-ink leading-snug break-words [overflow-wrap:anywhere]">
+            {d.canonical?.displayName || d.duration_label || d.name}
           </div>
+          {!!d.canonical?.qualifiers.length && <div className="text-xs text-ink-soft break-words">{d.canonical.qualifiers.join(" · ")}</div>}
           {/* Non-auto (provider-backed, e.g. Digiflazz) plans have no real
               stock count — a number would be misleading, but rendering
               nothing left the buyer with no "purchasable" cue at all. Show
@@ -125,7 +127,7 @@ export default function DenominationCard({ d, fx, lowThreshold, checked, onChang
         </div>
       </div>
       <div className="text-right shrink-0">
-        <Price value={d.price} fx={fx} size="text-sm" />
+        {d.canonical ? <span className="font-semibold text-pine text-sm break-words">{d.canonical.formattedPrice}</span> : <Price value={d.price} fx={fx} size="text-sm" />}
         {/* `price` is already the sale price — this is the pre-sale figure. */}
         {d.flash && (
           <div>

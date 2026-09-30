@@ -12,6 +12,8 @@ import { randomUUID } from "node:crypto";
 import { InlineKeyboard } from "grammy";
 import { config } from "@app/core/config";
 import { Decimal } from "@app/core/money";
+import { canonicalProduct } from "@app/core/canonicalProduct";
+import { boundedCanonicalName } from "../util/canonicalPresenter";
 import { effectiveUnitPrice } from "@app/core/flash";
 import { bulkDiscountFor } from "@app/core/bulk";
 import { quantizeMoney } from "@app/core/formatters";
@@ -26,6 +28,7 @@ import {
   PaymentMethod,
   StockActorType,
   UserRole,
+  parseDisplayCurrency,
 } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
@@ -313,6 +316,7 @@ async function refuseDuplicateCheckout(
 
 interface ConfirmRender {
   productName: string;
+  unitPriceText: string;
   unitPrice: Decimal;
   subtotal: Decimal;
   /** The IDR subtotal before any wallet credit is applied — the amount a credit
@@ -375,6 +379,8 @@ async function computeConfirmation(
   // Same helper createOrderDirect prices with, so the confirmation screen can
   // never quote a figure the order itself won't charge.
   const unitPrice = effectiveUnitPrice(product, isReseller);
+  const canonical = canonicalProduct({ denomination: { ...product, createdAt: product.createdAt.toISOString() }, product: product.product, category: product.product.category }, { effectivePriceIDR: unitPrice.toString(), preferredCurrency: parseDisplayCurrency(ctx.session.dbUser?.preferredCurrency) ?? "IDR", rate: rate?.toString(), locale: lang });
+  const productName = await boundedCanonicalName(canonical, (html) => ctx.api.sendMessage(ctx.chat!.id, html, { parse_mode: "HTML" }));
   // Quantized and bulk-reduced exactly the way createOrderDirect does it
   // (q4 subtotal, then subtract bulkDiscountFor) — this screen previously
   // multiplied by (1 − percent/100) instead, which is the same value only up to
@@ -486,7 +492,8 @@ async function computeConfirmation(
   );
 
   return {
-    productName: product.name,
+    productName,
+    unitPriceText: canonical.formattedPrice,
     unitPrice,
     subtotal,
     subtotalBeforeWallet,
@@ -649,7 +656,7 @@ function confirmOrderText(
     t(ctx, "checkout.confirm_order", {
       product: esc(r.productName),
       qty: quantity,
-      unit_price: prices.price(r.unitPrice),
+      unit_price: r.unitPriceText,
       voucher_line: r.voucherLine,
       wallet_line: r.walletLine,
       total: prices.price(r.subtotal),

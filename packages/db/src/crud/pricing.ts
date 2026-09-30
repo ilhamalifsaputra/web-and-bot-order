@@ -583,6 +583,20 @@ export async function getUsdIdrRate(db: Db, opts: { allowStale?: boolean } = {})
   return rate;
 }
 
+/** Catalog display metadata. Call once per screen, alongside its existing pricing. */
+export async function getCanonicalRateContext(db: Db) {
+  const [rate, savedRate, confirmedAt] = await Promise.all([
+    getUsdIdrRate(db), getSetting(db, USD_IDR_RATE_KEY), getSetting(db, USD_IDR_RATE_UPDATED_AT_KEY),
+  ]);
+  const persisted = savedRate !== null;
+  const timestamp = persisted && confirmedAt ? new Date(confirmedAt) : null;
+  return {
+    rate: rate?.toString() ?? null,
+    rateSource: persisted ? "settings:usd_idr_rate" as const : "config:USDT_IDR_RATE" as const,
+    rateAsOf: timestamp && Number.isFinite(timestamp.getTime()) ? timestamp.toISOString() : null,
+  };
+}
+
 /**
  * Which staleness threshold the saved rate has crossed, or null while it is
  * inside both (whole-branch review D7).

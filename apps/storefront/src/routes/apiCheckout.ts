@@ -44,6 +44,7 @@ async function requireCustomer(req: FastifyRequest, reply: FastifyReply): Promis
 }
 
 const apiCheckoutRoutes: FastifyPluginAsync = async (app) => {
+  app.addHook("onRequest", async (_req, reply) => { reply.header("Cache-Control", "private, no-store"); });
   // ---- Checkout summary + method availability ----
   // Guest checkout (Task 4): anonymous visitors get the summary too, priced
   // from their cart cookie, with `is_guest: true` telling the SPA to collect

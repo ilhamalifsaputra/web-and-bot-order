@@ -11,6 +11,8 @@ import { InputFile } from "grammy";
 import { config } from "@app/core/config";
 import { botUsername } from "@app/core/runtime";
 import { Decimal } from "@app/core/money";
+import { canonicalProduct } from "@app/core/canonicalProduct";
+import { presentCanonicalCatalog, boundedCanonicalName } from "../util/canonicalPresenter";
 import { ensureUtc, localize, addDays } from "@app/core/datetime";
 import { UserRole, OrderStatus, OrderKind, PaymentMethod, TicketStatus, SenderType, DeliveryType, CategoryGroup, customerStatusLabel, parseDisplayCurrency } from "@app/core/enums";
 import { parseAdditionalFields, parseCustomerData } from "@app/core/deliveryFields";
@@ -45,6 +47,7 @@ import {
   soldCountForDenomination,
   soldCountForProduct,
   getSetting,
+  getCanonicalRateContext,
   setSetting,
   searchCatalog,
   listUserTickets,
@@ -60,9 +63,8 @@ import { BANNER_IMAGE_KEY, BANNER_FILEID_KEY, bannerPhotoArg } from "../util/ban
 import { productPhotoArg, cacheProductPhotoFileId } from "../util/productPhoto";
 import { t } from "../util/i18n";
 import { logErrorRef } from "../util/errors";
-import { gameTopUpDenomLabel, formatDenominationLabel } from "../util/denominationLabel";
 import { gameInputFieldsLabel, resolveGameInputFlags } from "../util/gameInfo";
-import { esc, formatUsdtAmount, formatIdr, statusBadge, groupOrderItems, formatCountdown, formatFlashRemaining, priceIdr, ctxPriceFormatter, orderAmount, mixedAmount, renderBybitBscTrackingScreen, summarizeTicketOrder, truncLabel, BUTTON_LABEL_MAX } from "../util/format";
+import { esc, formatUsdtAmount, formatIdr, statusBadge, groupOrderItems, formatCountdown, formatFlashRemaining, priceIdr, ctxPriceFormatter, orderAmount, mixedAmount, renderBybitBscTrackingScreen, summarizeTicketOrder, truncLabel } from "../util/format";
 import { effectiveUnitPrice, flashPrice, activeFlashPercent } from "@app/core/flash";
 import { currentUsdtRate } from "../util/rate";
 import * as ckb from "../keyboards/customer";
@@ -1048,185 +1050,47 @@ async function gameInputHint(
  * (skip a pointless 1-item picker, mirroring the old single-member group
  * collapse); ≥2 active denominations render the picker.
  */
-export async function browseProduct(ctx: MyContext, productId: number): Promise<void> {
+export async function browseProduct(ctx: MyContext, productId: number, requestedPage = 0): Promise<void> {
   const info = requireUser(ctx);
   const lang = ctx.session.lang;
-
   const product = await getCatalogProductWithDenominations(prisma, productId);
   const active = (product?.denominations ?? []).filter((d) => d.isActive);
-  if (!product || active.length === 0 || !(await isServiceActive(prisma, product.category.group as CategoryGroup | null))) {
-    // Product emptied/deactivated between render and tap — don't strand the user.
+  if (!product || !product.isActive || product.isArchived || !product.category.isActive || active.length === 0 || !(await isServiceActive(prisma, product.category.group as CategoryGroup | null))) {
     await smartEdit(ctx, t(ctx, "browse.no_products"), ckb.backToMain(lang));
     return;
   }
-
-  // Single-denomination collapse threshold: exactly 1 active denomination skips
-  // the picker and lands on the detail bubble. Leave viewingProductId UNSET —
-  // no picker was rendered, so the detail's Back must escape to the product list
-  // (a browse:pick Back would re-collapse to this same detail and strand the user).
   if (active.length === 1) {
     delete sc(ctx).productId;
     await browseDenomination(ctx, active[0]!.id);
     return;
   }
-
   sc(ctx).productId = productId;
   delete sc(ctx).variantId;
-  const isReseller = info.role === UserRole.RESELLER;
-  const rate = await currentUsdtRate();
-  // Catalog prices in the buyer's display currency (canonical IDR in, one
-  // conversion at this render edge).
-  const prices = ctxPriceFormatter(ctx, rate);
-
-  // Compact catalog mode: ONLY a genuine Game Top Up category skips the flat
-  // per-plan price/stock dump — repeating price/stock per plan in the body
-  // would just duplicate the keyboard, so the body describes the PRODUCT
-  // instead (the admin's description plus which account data checkout will
-  // ask for, when applicable). Every other category, including an
-  // as-yet-unclassified null-group one, keeps the per-plan body lines (price
-  // + stock) — this mirrors `serviceForCategoryGroup(null)` in
-  // packages/core/src/services.ts, which already treats a null group as
-  // PREMIUM_APPS-equivalent; the final-review's user decision (finding I3)
-  // is to keep that equivalence here too rather than let a broadened compact
-  // gate silently contradict it.
-  const isCompactCatalog = product.category.group === CategoryGroup.GAME_TOPUP;
-
-  // Batched stock read for the non-compact (Premium Apps) branch only — the
-  // compact branch never shows a stock line, so it must not read stock at
-  // all. One grouped query up front covers every active denomination instead
-  // of the old N-parallel-round-trips-per-denomination shape (a real N+1
-  // whose result used to be thrown away for any non-AUTO denomination anyway).
-  const stockCounts = isCompactCatalog
-    ? null
-    : await availableStockCountsByDenomination(prisma, active.map((d) => d.id));
-
-  // Per-plan price (+ stock, non-compact only) — used when the picker buttons
-  // carry only the plan name (Premium Apps, and any compact-mode SKU without
-  // qtyValue/qtyUnit backfilled). Reseller price wins for reseller users when
-  // set, mirroring the detail screen.
-  const planData = await Promise.all(
-    active.map(async (d) => {
-      const unitPrice = effectiveUnitPrice(d, isReseller);
-      // A flash sale shows as the old price struck through next to the new one,
-      // but only when this buyer is actually paying the sale price — a reseller
-      // whose standing price still wins sees the plain line.
-      const sale = flashPrice(d);
-      const priceText =
-        sale && unitPrice.equals(sale)
-          ? t(ctx, "browse.flash_price", {
-              old: prices.price(d.price),
-              new: prices.price(unitPrice),
-            })
-          : prices.price(unitPrice);
-      // Compact Game Top Up button label (qty + unit + price), only when the
-      // admin has actually backfilled qtyValue/qtyUnit on this denomination —
-      // falls through to formatDenominationLabel(...) (via denominationPickerKb)
-      // for Premium Apps, exactly as before this task (the hard zero-behavior-
-      // change bar for Premium Apps). In compact mode, a denomination missing
-      // qtyValue/qtyUnit still needs a price on its button — the body won't
-      // show one — so it gets a plain "{plan} — {price}" fallback label
-      // instead of being left name-only.
-      // Finding I3 (final-review): the PRODUCT's own gameVariantEmoji wins —
-      // session scratch is only a fallback for the rare case it has none. The
-      // old precedence (scratch first) meant a leftover emoji from a
-      // PREVIOUSLY-browsed Game Top Up category's variant navigation could
-      // leak onto a completely different product's denomination buttons here
-      // (this screen is also reached via Popular/search, which never go
-      // through the variant-picker flow that sets/clears scratch at all).
-      // Finding C1 (final-review): this fallback label used to be
-      // `${d.durationLabel || d.name} — ${priceText}` — plain-text-only
-      // Telegram button text built from `priceText`, which is either the
-      // FULL price format ("Rp150.000", long) or, during a flash sale, an
-      // HTML string (`browse.flash_price` — "<s>old</s> new ⚡") that a
-      // button can't render (buttons show literal tags) and that
-      // truncLabel(..., 24) then chops mid-tag. It also skipped
-      // formatDenominationLabel's repeated-product-name tidy-up entirely, so
-      // a raw Digiflazz name like "Delta Force 60 Coins" survived untouched
-      // into a 24-char button and got truncated to something meaningless.
-      // Fixed the same way gameTopUpDenomLabel builds its own compact price
-      // segment: plain-text `formatDenominationLabel` output + a plain-text
-      // COMPACT price (`prices.compact`, e.g. "Rp15K"), never `priceText`
-      // (which can carry HTML on a flash sale) and never the full format.
-      // Finding (final-review round 2): building the full "{name} — {price}"
-      // label first and truncating the WHOLE thing (denominationPickerKb's
-      // truncLabel(..., 24) safety net) still lets a long name eat into the
-      // PRICE segment at the tail — e.g. "1680 Coins + Bonus — Rp300K" (27
-      // chars) truncated to "1680 Coins + Bonus — Rp…", losing the price
-      // again, just at a higher name-length threshold than the originally-
-      // reported bug. Fixed by truncating the NAME segment first, budgeted to
-      // whatever room is left after the " — " separator and the (short,
-      // compact) price segment, so the combined string fits inside the same
-      // budget WITHOUT ever needing truncLabel's own truncation to kick in —
-      // the price is therefore always intact, and only the name is ever
-      // shortened.
-      const buttonLabel =
-        d.qtyValue != null && d.qtyUnit
-          ? gameTopUpDenomLabel(d, unitPrice, product.gameVariantEmoji ?? sc(ctx).gameVariantEmoji, prices)
-          : isCompactCatalog
-            ? (() => {
-                const sep = " — ";
-                const priceSegment = prices.compact(unitPrice);
-                const name = formatDenominationLabel(product.name, d.durationLabel || d.name);
-                const nameBudget = Math.max(1, BUTTON_LABEL_MAX - sep.length - priceSegment.length);
-                return `${truncLabel(name, nameBudget)}${sep}${priceSegment}`;
-              })()
-            : undefined;
-      if (isCompactCatalog) return { line: "", buttonLabel };
-      const stock = stockCounts?.get(d.id) ?? 0;
-      // Stock rows only ever exist for AUTO SKUs — a manual/manual_with_info
-      // plan has none by design, so showing a literal "0" here would read as
-      // sold out right next to a (correctly) purchasable Buy button. Premium
-      // Apps AUTO denominations show the raw number.
-      const stockDisplay = d.deliveryType === DeliveryType.AUTO ? stock : "—";
-      const line = t(ctx, "browse.denomination_line", {
-        duration: esc(d.durationLabel || d.name),
-        price: priceText,
-        stock: stockDisplay,
-      });
-      return { line, buttonLabel };
-    }),
-  );
-  const planLines = planData.map((p) => p.line);
+  const rateContext = await getCanonicalRateContext(prisma);
+  const prices = ctxPriceFormatter(ctx, rateContext.rate ? new Decimal(rateContext.rate) : null);
+  const stocks = await availableStockCountsByDenomination(prisma, active.map((d) => d.id));
+  const products = active.map((d) => canonicalProduct({
+    denomination: { ...d, createdAt: d.createdAt.toISOString() }, product, category: product.category,
+    stockAvailable: d.deliveryType !== DeliveryType.AUTO || (stocks.get(d.id) ?? 0) > 0,
+  }, { ...rateContext, effectivePriceIDR: effectiveUnitPrice(d, info.role === UserRole.RESELLER).toString(), preferredCurrency: parseDisplayCurrency(ctx.session.dbUser?.preferredCurrency) ?? "IDR", locale: lang }));
   const sold = await soldCountForProduct(prisma, productId);
-
-  let text: string;
-  if (isCompactCatalog) {
-    const blocks: string[] = [];
-    if (product.description) {
-      blocks.push(t(ctx, "browse.description", { description: esc(product.description) }));
-    }
-    const hint = await gameInputHint(ctx, active.map((d) => ({ ...d, product })));
-    if (hint) blocks.push(hint);
-    text = t(ctx, "browse.choose_denomination_game", {
-      name: esc(product.name),
-      sold: t(ctx, "browse.sold_count", { count: sold }),
-      info: blocks.length ? "\n\n" + blocks.join("\n\n") : "",
-    });
-  } else {
-    text = t(ctx, "browse.choose_denomination", {
-      name: esc(product.name),
-      sold: t(ctx, "browse.sold_count", { count: sold }),
-      plans: planLines.join("\n"),
-    });
-    if (product.description) {
-      text += "\n\n" + t(ctx, "browse.description", { description: esc(product.description) });
-    }
-  }
-  // Prices on this screen (body lines or button labels) fell back to Rp for a
-  // USD buyer because no rate is available — say so, once.
-  text += prices.rateNotice(lang);
-  const pickerDenoms = active.map((d, i) => ({ ...d, buttonLabel: planData[i]!.buttonLabel }));
+  const isGame = product.category.group === CategoryGroup.GAME_TOPUP;
+  const hint = isGame ? await gameInputHint(ctx, active.map((d) => ({ ...d, product }))) : null;
+  const title = t(ctx, isGame ? "browse.choose_denomination_game" : "browse.choose_denomination", {
+    name: "__CANONICAL_NAME__", sold: t(ctx, "browse.sold_count", { count: sold }), info: "", plans: "",
+  }).replace(/<[^>]*>/g, "").replace("__CANONICAL_NAME__", product.name);
+  const intro = [title, product.description, hint?.replace(/<[^>]*>/g, "")].filter(Boolean).join("\n\n");
+  const stockLabels = isGame ? undefined : Object.fromEntries(active.map((d) => [d.id, d.deliveryType === DeliveryType.AUTO ? String(stocks.get(d.id) ?? 0) : "—"]));
+  const { pages } = presentCanonicalCatalog(products, { locale: lang, intro, stockLabels });
+  const pageIndex = Math.min(Math.max(0, Number.isFinite(requestedPage) ? Math.trunc(requestedPage) : 0), pages.length - 1);
+  const page = pages[pageIndex]!;
+  const text = page.text + prices.rateNotice(lang) + (pages.length > 1 ? `\n${pageIndex + 1}/${pages.length}` : "");
+  const keyboard = ckb.canonicalDenominationPickerKb(page.rows, productId, lang, pageIndex, pages.length);
   const photoArg = productPhotoArg(product);
   if (photoArg) {
-    await renderMenu(
-      ctx,
-      text,
-      ckb.denominationPickerKb(pickerDenoms, productId, product.name, lang),
-      photoArg.photo,
-      photoArg.needsCache ? cacheProductPhotoFileId(productId) : undefined,
-    );
+    await renderMenu(ctx, text, keyboard, photoArg.photo, photoArg.needsCache ? cacheProductPhotoFileId(productId) : undefined);
   } else {
-    await renderMenuBanner(ctx, text, ckb.denominationPickerKb(pickerDenoms, productId, product.name, lang));
+    await renderMenuBanner(ctx, text, keyboard);
   }
 }
 
@@ -1253,7 +1117,7 @@ export async function browseDenomination(
   let bulkRule: Awaited<ReturnType<typeof getBulkPricingForDenomination>>;
   try {
     d = await getDenominationWithProduct(prisma, denominationId);
-    if (d === null || !(await isServiceActive(prisma, d.product.category.group as CategoryGroup | null))) {
+    if (d === null || !d.isActive || !d.product.isActive || d.product.isArchived || !d.product.category.isActive || !(await isServiceActive(prisma, d.product.category.group as CategoryGroup | null))) {
       logger.warn(`Denomination ${denominationId} not found — likely deleted/deactivated between render and tap, showing a try-again screen instead of a crash`);
       // Expected-but-rare (denomination deleted/deactivated between render and
       // tap) — transient copy, no ref. Forward action so it isn't a dead end.
@@ -1278,8 +1142,11 @@ export async function browseDenomination(
 
   const isReseller = info.role === UserRole.RESELLER;
   const unit = effectiveUnitPrice(d, isReseller);
-  const rate = await currentUsdtRate();
+  const rateContext = await getCanonicalRateContext(prisma);
+  const rate = rateContext.rate ? new Decimal(rateContext.rate) : null;
   const prices = ctxPriceFormatter(ctx, rate);
+  const canonical = canonicalProduct({ denomination: { ...d, createdAt: d.createdAt.toISOString() }, product: d.product, category: d.product.category, stockAvailable: d.deliveryType !== DeliveryType.AUTO || stock > 0 }, { ...rateContext, effectivePriceIDR: unit.toString(), preferredCurrency: parseDisplayCurrency(ctx.session.dbUser?.preferredCurrency) ?? "IDR", locale: lang });
+  const plan = await boundedCanonicalName(canonical, (html) => ctx.api.sendMessage(ctx.chat!.id, html, { parse_mode: "HTML" }));
   const sale = flashPrice(d);
   const onSale = sale !== null && unit.equals(sale);
 
@@ -1295,8 +1162,8 @@ export async function browseDenomination(
   const stockDisplay = d.deliveryType === DeliveryType.AUTO ? stock : "—";
 
   const priceText = onSale
-    ? t(ctx, "browse.flash_price", { old: prices.price(d.price), new: prices.price(unit) })
-    : prices.price(unit);
+    ? t(ctx, "browse.flash_price", { old: prices.price(d.price), new: canonical.formattedPrice })
+    : canonical.formattedPrice;
   // Game Top Up SKUs (diamonds, UC, …) have no meaningful Duration/Type/
   // Warranty (those are Premium Apps account attributes) and no meaningful
   // stock line either (the one Premium Apps keeps is the one real, buyer-
@@ -1311,16 +1178,16 @@ export async function browseDenomination(
   let text = isGame
     ? t(ctx, "browse.denomination_detail_game", {
         product: esc(d.product.name),
-        plan: esc(d.name),
+        plan: esc(plan),
         price: priceText,
         sold,
         rating: ratingStr,
       })
     : t(ctx, "browse.denomination_detail", {
         product: esc(d.product.name),
-        plan: esc(d.name),
+        plan: esc(plan),
         price: priceText,
-        duration: esc(d.durationLabel),
+        duration: esc(d.durationLabel.length > 1200 ? `#${d.id}` : d.durationLabel),
         type: d.type.toLowerCase(),
         warranty: d.warrantyDays,
         stock: stockDisplay,

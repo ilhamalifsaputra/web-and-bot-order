@@ -134,7 +134,7 @@ describe("denomination detail", () => {
     const { ctx, sink } = customerCtx(DisplayCurrency.IDR);
     await customer.browseDenomination(ctx, sample.product.id);
     const text = sentText(sink);
-    expect(text).toContain("Rp79.000");
+    expect(text).toContain("Rp79,000");
     expect(text).not.toContain("≈");
     expect(text).not.toContain("$");
   });
@@ -144,7 +144,7 @@ describe("denomination detail", () => {
     const { ctx, sink } = customerCtx(null);
     await customer.browseDenomination(ctx, sample.product.id);
     const text = sentText(sink);
-    expect(text).toContain("Rp79.000");
+    expect(text).toContain("Rp79,000");
     expect(text).not.toContain("$");
   });
 
@@ -152,7 +152,7 @@ describe("denomination detail", () => {
     const { ctx, sink } = customerCtx(DisplayCurrency.USD);
     await customer.browseDenomination(ctx, sample.product.id);
     const text = sentText(sink);
-    expect(text).toContain("Rp79.000");
+    expect(text).toContain("Rp79,000");
     expect(text).not.toContain("$");
     const notice = coreT("currency.rate_unavailable", "en");
     expect(text.split(notice).length - 1).toBe(1);
@@ -195,8 +195,8 @@ describe("denomination picker", () => {
 
     const idr = customerCtx(DisplayCurrency.IDR);
     await customer.browseProduct(idr.ctx, sample.parentProduct.id);
-    expect(sentText(idr.sink)).toContain("Rp79.000");
-    expect(sentText(idr.sink)).toContain("Rp160.000");
+    expect(sentText(idr.sink)).toContain("Rp79,000");
+    expect(sentText(idr.sink)).toContain("Rp160,000");
     expect(sentText(idr.sink)).not.toContain("$");
   });
 });
@@ -221,7 +221,7 @@ describe("order confirmation", () => {
     const { ctx, sink } = customerCtx(DisplayCurrency.USD);
     await checkout.showOrderConfirmation(ctx, sample.product.id, 2);
     const text = sentText(sink);
-    expect(text).toContain("Rp79.000 × 2");
+    expect(text).toContain("Rp79,000 × 2");
     expect(text).toContain("<b>Rp158.000</b>");
     expect(text).not.toContain("$");
     const notice = coreT("currency.rate_unavailable", "en");
@@ -233,7 +233,7 @@ describe("order confirmation", () => {
     const { ctx, sink } = customerCtx(DisplayCurrency.IDR);
     await checkout.showOrderConfirmation(ctx, sample.product.id, 2);
     const text = sentText(sink);
-    expect(text).toContain("Rp79.000 × 2");
+    expect(text).toContain("Rp79,000 × 2");
     expect(text).toContain("<b>Rp158.000</b>");
     expect(text).not.toContain("≈");
     expect(text).not.toContain("$");

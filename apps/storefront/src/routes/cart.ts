@@ -15,6 +15,7 @@
 import type { FastifyRequest } from "fastify";
 import { config } from "@app/core/config";
 import { Decimal } from "@app/core/money";
+import { canonicalProduct, type CanonicalProduct } from "@app/core/canonicalProduct";
 import { effectiveUnitPrice, flashPrice, activeFlashPercent } from "@app/core/flash";
 import { CategoryGroup, UserRole } from "@app/core/enums";
 import type { CartCompositionLine } from "@app/core/cartComposition";
@@ -24,10 +25,11 @@ import {
   getDenominationWithProduct,
   countAvailableStock,
   activeServiceGroups,
+  getCanonicalRateContext,
 } from "@app/db";
 import type { Customer } from "../plugins/auth";
 import { productImage } from "../images";
-import { readGuestCart } from "../shop";
+import { readGuestCart, requestLang, requestCurrency, resolveDisplayCurrency } from "../shop";
 import { constantTimeEqual } from "../auth";
 
 /** Cart-line label per the 3-tier spec: `Product - Denomination`. */
@@ -78,6 +80,7 @@ export function originOk(req: FastifyRequest): boolean {
 }
 
 export interface CartLineView {
+  canonical?: CanonicalProduct;
   key: number; // cartItemId (signed in) or denomination id (guest)
   /** Denomination id — the sellable SKU (cart cookie `p`). */
   denomination_id: number;
@@ -183,6 +186,8 @@ export async function loadCartLines(
   customer: Customer | null,
 ): Promise<CartLineView[]> {
   const groups = await activeServiceGroups(prisma);
+  const display = { ...await getCanonicalRateContext(prisma), preferredCurrency: resolveDisplayCurrency(customer?.user, requestCurrency(req)) ?? "IDR", locale: requestLang(req), generatedAt: new Date().toISOString() };
+  const canonicalOf = (denom: GuestCartItem["product"], unit: Decimal, available: number) => canonicalProduct({ denomination: { ...denom, createdAt: denom.createdAt.toISOString() }, product: denom.product, category: denom.product.category, stockAvailable: denom.deliveryType !== "auto" || available > 0 }, { ...display, effectivePriceIDR: unit.toString() });
   if (customer) {
     const isReseller = customer.user.role === UserRole.RESELLER;
     // Join the parent Product so the line can show `Product - Denomination`.
@@ -199,7 +204,9 @@ export async function loadCartLines(
           const denom = r.product; // the Denomination (SKU)
           const parent = denom.product; // the mid-tier Product
           const unit = effectiveUnitPrice(denom, isReseller);
+          const available = await countAvailableStock(prisma, r.productId);
           return {
+            canonical: canonicalOf(denom, unit, available),
             key: r.id,
             denomination_id: r.productId,
             product_slug: parent.slug,
@@ -214,7 +221,7 @@ export async function loadCartLines(
             unit_price: unit.toString(),
             qty: r.quantity,
             line_total: unit.times(r.quantity).toString(),
-            available: await countAvailableStock(prisma, r.productId),
+            available,
             delivery_type: denom.deliveryType,
             auto_delivery_source: denom.autoDeliverySource,
             flash: flashViewFor(denom, unit),
@@ -234,6 +241,7 @@ export async function loadCartLines(
       // Guests are never resellers, so the everyone price is the right one.
       const unit = effectiveUnitPrice(denom, false);
       return {
+        canonical: canonicalOf(denom, unit, available),
         key: l.p,
         denomination_id: l.p,
         product_slug: parent.slug,
@@ -254,5 +262,5 @@ export async function loadCartLines(
       } satisfies CartLineView;
     }),
   );
-  return resolved.filter((l): l is CartLineView => l !== null);
+  return resolved.filter((l): l is NonNullable<typeof l> => l !== null);
 }

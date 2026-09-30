@@ -112,6 +112,7 @@ export interface AdditionalField {
 /** A single denomination (plan/variant) on the product detail page — JSON twin
  * of the `denominations` entries productPageData() builds (apps/storefront/src/pageData.ts). */
 export interface ProductDenomination {
+  canonical?: import("./canonical").CanonicalProduct;
   id: number;
   name: string;
   duration_label: string | null;
@@ -204,6 +205,7 @@ export type SortKey = (typeof SORT_KEYS)[number];
 
 /** One cart line — JSON twin of CartLineView (apps/storefront/src/routes/cart.ts). */
 export interface CartLineView {
+  canonical?: import("./canonical").CanonicalProduct;
   key: number;
   denomination_id: number;
   product_slug: string;
@@ -240,6 +242,7 @@ export interface CartPageData {
  * Given the single-SKU-per-non-auto-cart guard (routes/api.ts POST /cart), a
  * non-auto cart's `items` always has exactly one entry. */
 export interface CheckoutItem {
+  canonical?: import("./canonical").CanonicalProduct | null;
   denomination_id: number;
   delivery_type: string;
   additional_fields: AdditionalField[];
@@ -430,6 +433,7 @@ export interface WalletTopupCreateResponse {
  * (apps/storefront/src/shop.ts) minus csrf/active_nav/path, which the SPA
  * derives client-side. */
 export interface ShopContext {
+  pricing_context?: string;
   lang: string;
   /** USDT rate (Rupiah per 1 USDT) as a string, or null = hide USDT hints. */
   fx: string | null;

@@ -21,6 +21,9 @@ export const E2E_SHOPPER_PASSWORD = "E2ePlaywright-1";
 export const E2E_GOLDEN_PRODUCT_NAME = "E2E Golden Path Product";
 export const E2E_RACE_PRODUCT_NAME = "E2E Stock Race Product";
 export const E2E_PRODUCT_PRICE = "5000";
+// Clearly synthetic supplier text; exercises wrapping without consuming checkout stock.
+export const E2E_CANONICAL_PRODUCT_NAME = "E2E Canonical Product";
+export const E2E_CANONICAL_NAME = `86 Diamonds + 8 Bonus Global Server A via ID Promo ${"OpaqueSupplierToken".repeat(20)} final qualifier`;
 
 /**
  * `E2E_PRODUCT_PRICE` as the storefront actually renders it ("Rp5.000"), so a

@@ -41,7 +41,7 @@ export const CanonicalProductSchema = z.object({
   currencyFallback: z.boolean(),
   conversion: z.object({ basis: z.literal("USDT"), direction: z.literal("IDR_PER_USDT"), rate: text.refine((value) => {
     try { return new Decimal(value).isFinite() && new Decimal(value).gt(0); } catch { return false; }
-  }), rounding: z.literal("CEIL_2DP") }).nullable(),
+  }), rounding: z.literal("CEIL_2DP"), source: z.enum(["settings:usd_idr_rate", "config:USDT_IDR_RATE", "caller"]), asOf: z.string().datetime().nullable() }).nullable(),
   availability: z.object({ status: z.enum(["available", "inactive", "out_of_stock"]), purchasable: z.boolean() }),
   createdAt: z.string().datetime().nullable(),
   generatedAt: z.string().datetime(),
@@ -68,6 +68,8 @@ export interface CanonicalProductContext {
   preferredCurrency: "IDR" | "USD";
   /** Existing setting is IDR per USDT, despite the USD display label. */
   rate?: string | null;
+  rateSource?: "settings:usd_idr_rate" | "config:USDT_IDR_RATE" | "caller";
+  rateAsOf?: string | null;
   locale?: string;
   generatedAt?: string;
 }
@@ -167,7 +169,7 @@ export function canonicalProduct(input: CanonicalProductInput, context: Canonica
   const priceIDR = exactMoney(price, "IDR");
   const converted = convertIdrToDisplay(price, context.preferredCurrency, context.rate);
   const displayPrice = converted.ok ? exactMoney(converted.amount, converted.currency) : priceIDR;
-  const conversion = displayPrice.currency === "USD" ? { basis: "USDT" as const, direction: "IDR_PER_USDT" as const, rate: new Decimal(context.rate!).toString(), rounding: "CEIL_2DP" as const } : null;
+  const conversion = displayPrice.currency === "USD" ? { basis: "USDT" as const, direction: "IDR_PER_USDT" as const, rate: new Decimal(context.rate!).toString(), rounding: "CEIL_2DP" as const, source: context.rateSource ?? "caller", asOf: context.rateAsOf ?? null } : null;
   const inactive = !denom.isActive || !input.product.isActive || input.product.isArchived || !input.category.isActive;
   const status = inactive ? "inactive" : input.stockAvailable === false ? "out_of_stock" : "available";
   return CanonicalProductSchema.parse({

@@ -28,6 +28,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronRight, Package, RefreshCw, ShoppingBag, Trash2 } from "lucide-react";
 import { apiGet, apiPost } from "../api/client";
+import { canonicalPurchaseName } from "../api/canonical";
 import type { CartLineView, CartPageData } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import { t } from "../lib/i18n";
@@ -99,7 +100,7 @@ function CartLine({ item, fx, onMutated }: CartLineProps) {
             to={`/p/${item.product_slug}`}
             className="font-display text-sm font-semibold text-ink transition-colors hover:text-pine break-words [overflow-wrap:anywhere]"
           >
-            {item.canonical ? [item.canonical.displayName, ...item.canonical.qualifiers].join(" · ") : item.name}
+            {item.canonical ? canonicalPurchaseName(item.canonical) : item.name}
           </Link>
           {/* `unit_price` already carries the flash discount — the badge and
               the struck figure only explain where the price came from. */}

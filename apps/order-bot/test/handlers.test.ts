@@ -134,6 +134,44 @@ function customerCtx(opts: Parameters<typeof makeCtx>[0] = {}) {
 }
 
 describe("canonical current SKU flow", () => {
+  it("shows a parent and identical canonical variant once in a routed confirmation", async () => {
+    await prisma.denomination.update({
+      where: { id: sample.product.id },
+      data: { name: "Netflix Premium 1M", durationLabel: "Netflix Premium 1M", supplierRawName: "Netflix Premium 1M" },
+    });
+    const { ctx, sink } = customerCtx({ callbackData: `v1:buy:${sample.product.id}:1` });
+    await routeCallback(ctx);
+    expect(bodyText(sink)).toContain("Product: <b>Netflix Premium 1M</b>");
+    expect(bodyText(sink)).not.toContain("Netflix Premium 1M · Netflix Premium 1M");
+  });
+
+  it("keeps the parent game identity in a routed Buy confirmation after stripping the supplier prefix", async () => {
+    const game = await createCatalogProduct(prisma, { categoryId: sample.category.id, name: "Mobile Legends", gameRegion: "Indonesia" });
+    const denom = await createDenomination(prisma, {
+      productId: game.id, name: "86 Diamonds", type: "SHARED", durationLabel: "86 Diamonds", price: "21000", deliveryType: DeliveryType.MANUAL,
+    });
+    await prisma.denomination.update({ where: { id: denom.id }, data: { supplierRawName: "Mobile Legends 86 Diamonds" } });
+    const { ctx, sink } = customerCtx({ callbackData: `v1:buy:${denom.id}:1` });
+    await routeCallback(ctx);
+    expect(bodyText(sink)).toContain("Mobile Legends · 86 Diamonds · Indonesia");
+    expect(bodyText(sink)).toContain("Rp21,000");
+    expect(await prisma.order.count()).toBe(0);
+  });
+
+  it("delivers an oversized parent name in full before a routed confirmation", async () => {
+    const parentName = `Brand ${"p".repeat(5000)} final parent marker`;
+    const parent = await createCatalogProduct(prisma, { categoryId: sample.category.id, name: parentName });
+    const denom = await createDenomination(prisma, {
+      productId: parent.id, name: "1 Month", type: "SHARED", durationLabel: "1 Month", price: "21000", deliveryType: DeliveryType.MANUAL,
+    });
+    const { ctx, sink } = customerCtx({ callbackData: `v1:buy:${denom.id}:1` });
+    await routeCallback(ctx);
+    expect(bodyText(sink)).toContain("final parent marker");
+    expect(bodyText(sink)).toContain("Confirm Order");
+    for (const call of sink) if (call.method === "sendMessage") expect(String(call.args[1]).length).toBeLessThanOrEqual(4096);
+    expect(await prisma.order.count()).toBe(0);
+  });
+
   it("shows supplier bonus and qualifiers on fresh detail and confirmation after price changes", async () => {
     await prisma.product.update({ where: { id: sample.parentProduct.id }, data: { gameRegion: "Indonesia", gameVariant: "Server A" } });
     await prisma.denomination.update({ where: { id: sample.product.id }, data: { supplierRawName: "86 Diamonds + 8 Bonus via ID Promo", price: "21001" } });

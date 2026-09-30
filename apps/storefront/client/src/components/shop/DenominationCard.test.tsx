@@ -5,6 +5,7 @@ import { render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import DenominationCard, { type DenominationCardData } from "./DenominationCard";
 import { apiGet } from "../../api/client";
+import type { ShopContext } from "../../api/types";
 
 // DenominationCard renders <Price/>, which (Task 5) reads the display-currency
 // preference off the shared ["context"] query itself — needs the same
@@ -26,8 +27,17 @@ const AUTO: DenominationCardData = {
   delivery_type: "auto",
 };
 
+const context: ShopContext = {
+  lang: "en", fx: null, shop_name: "Test Shop", shop_tagline: "", cart_count: 0,
+  customer: null, favicon_url: "/static/favicon.svg", logo_url: "", bot_username: null,
+  wa_number: null, tzname: "Asia/Jakarta", currency: null,
+};
+
 function renderCard(overrides: Partial<ComponentProps<typeof DenominationCard>> = {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  // Price reads the shared context query. Seed its complete response so a
+  // synchronous card assertion cannot outlive a mock API promise settling.
+  queryClient.setQueryData(["context"], context);
   return render(
     <QueryClientProvider client={queryClient}>
       <DenominationCard d={AUTO} fx={null} lowThreshold={5} checked={false} onChange={() => {}} {...overrides} />

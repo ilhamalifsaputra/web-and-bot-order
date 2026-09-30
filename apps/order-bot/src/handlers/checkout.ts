@@ -341,6 +341,12 @@ interface ConfirmRender {
   closingLine: string;
 }
 
+/** Keep the confirmation's existing IDR rounding, but group it like its
+ * canonical unit price for the buyer's language. Other screens stay native. */
+function confirmationIdrText(text: string, lang: string): string {
+  return lang.toLowerCase().startsWith("id") || !/^-?Rp/.test(text) ? text : text.replaceAll(".", ",");
+}
+
 type CheckoutDenomination = NonNullable<Awaited<ReturnType<typeof getDenominationWithProduct>>>;
 
 /** Resolve a still-buyable denomination and replace stale checkout UI on failure. */
@@ -384,7 +390,7 @@ async function computeConfirmation(
   // never quote a figure the order itself won't charge.
   const unitPrice = effectiveUnitPrice(product, isReseller);
   const canonical = canonicalProduct({ denomination: { ...product, createdAt: product.createdAt.toISOString() }, product: product.product, category: product.product.category }, { effectivePriceIDR: unitPrice.toString(), preferredCurrency: parseDisplayCurrency(ctx.session.dbUser?.preferredCurrency) ?? "IDR", rate: rate?.toString(), locale: lang });
-  const productName = await boundedCanonicalName(canonical, (html) => ctx.api.sendMessage(ctx.chat!.id, html, { parse_mode: "HTML" }));
+  const productName = await boundedCanonicalName(canonical, (html) => ctx.api.sendMessage(ctx.chat!.id, html, { parse_mode: "HTML" }), { includeProductName: true });
   // Quantized and bulk-reduced exactly the way createOrderDirect does it
   // (q4 subtotal, then subtract bulkDiscountFor) — this screen previously
   // multiplied by (1 − percent/100) instead, which is the same value only up to
@@ -417,7 +423,7 @@ async function computeConfirmation(
         const discount = applyVoucherToSubtotal(voucherObj, subtotal, eligibleSubtotal.minus(eligibleBulkDiscount));
         voucherLine = coreT("checkout.confirm_voucher_line", lang, {
           code: voucherCode,
-          discount: prices.price(discount),
+          discount: confirmationIdrText(prices.price(discount), lang),
         });
         subtotal = subtotal.minus(discount);
       } else {
@@ -469,8 +475,9 @@ async function computeConfirmation(
   let walletLine = "";
   let walletDeduction: ConfirmRender["walletDeduction"] = null;
   if (useWalletIdr && idrBalance.greaterThanOrEqualTo(subtotal) && subtotal.greaterThan(0)) {
-    walletLine = coreT("checkout.confirm_wallet_line", lang, { amount: formatIdr(subtotal) });
-    walletDeduction = { currency: "IDR", amount: formatIdr(subtotal) };
+    const amount = confirmationIdrText(formatIdr(subtotal), lang);
+    walletLine = coreT("checkout.confirm_wallet_line", lang, { amount });
+    walletDeduction = { currency: "IDR", amount };
     subtotal = new Decimal(0);
   } else if (useWalletUsdt && usdtBalance.greaterThan(0) && rate && subtotal.greaterThan(0)) {
     // The USDT amount the crud layer (finalizeOrderPayment) will actually
@@ -482,7 +489,7 @@ async function computeConfirmation(
     if (usdtBalance.greaterThanOrEqualTo(usdtTotal)) {
       walletLine = coreT("checkout.confirm_wallet_usdt_line", lang, {
         usdt_amount: formatUsdtAmount(usdtTotal),
-        idr_amount: formatIdr(subtotal),
+        idr_amount: confirmationIdrText(formatIdr(subtotal), lang),
       });
       walletDeduction = { currency: "USDT", amount: formatUsdtAmount(usdtTotal) };
       subtotal = new Decimal(0);
@@ -663,7 +670,7 @@ function confirmOrderText(
       unit_price: r.unitPriceText,
       voucher_line: r.voucherLine,
       wallet_line: r.walletLine,
-      total: prices.price(r.subtotal),
+      total: confirmationIdrText(prices.price(r.subtotal), ctx.session.lang),
       closing_line: closingLine,
     }) + prices.rateNotice(ctx.session.lang)
   );

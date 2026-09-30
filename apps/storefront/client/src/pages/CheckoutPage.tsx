@@ -51,6 +51,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, ShoppingCart } from "lucide-react";
 import { apiGet, apiPost } from "../api/client";
+import { canonicalPurchaseName } from "../api/canonical";
 import { useIdempotentPost } from "../api/idempotency";
 import type { AdditionalField, CheckoutData, PlaceOrderResponse } from "../api/types";
 import { useShopContext } from "../components/Layout";
@@ -523,7 +524,7 @@ export default function CheckoutPage() {
           {page.items.some((item) => item.canonical) && (
             <div className="card card-pad space-y-3">
               {page.items.map((item) => item.canonical && <div key={item.denomination_id} className="break-words [overflow-wrap:anywhere]">
-                <p className="font-semibold">{[item.canonical.displayName, ...item.canonical.qualifiers].join(" · ")}</p>
+                <p className="font-semibold">{canonicalPurchaseName(item.canonical)}</p>
                 <p className="text-sm text-pine">{item.canonical.formattedPrice} × {item.qty}</p>
               </div>)}
             </div>

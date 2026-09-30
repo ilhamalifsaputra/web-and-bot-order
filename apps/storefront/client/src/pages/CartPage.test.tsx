@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import CartPage from "./CartPage";
 import { apiGet, apiPost } from "../api/client";
 import type { CartPageData, ShelfPageData, ShopContext } from "../api/types";
+import type { CanonicalProduct } from "../api/canonical";
 import type { ProductCardData } from "../components/shop/ProductCard";
 
 vi.mock("../api/client", () => ({
@@ -46,6 +47,19 @@ const cartData: CartPageData = {
   subtotal: "158000",
 };
 
+function canonicalMonth(id: number, parentName: string): CanonicalProduct {
+  return {
+    id, supplierSku: null, rawName: "1 Month", rawNameProvenance: "supplier",
+    displayName: "1 Month", variant: { type: "subscription", name: "1 Month", residual: [], duration: { value: 1, unit: "month" } },
+    qualifiers: [], product: { id: id + 100, name: parentName, gameVariant: null, gameRegion: null },
+    category: { id: 1, name: "Premium Apps", group: "PREMIUM_APPS" },
+    priceIDR: { currency: "IDR", amountMinor: "79000", scale: 0 },
+    displayPrice: { currency: "IDR", amountMinor: "79000", scale: 0 },
+    formattedPrice: "Rp79,000", currencyFallback: false, conversion: null,
+    availability: { status: "available", purchasable: true }, createdAt: null, generatedAt: "2026-09-30T00:00:00.000Z",
+  };
+}
+
 function renderCart(respond: (path: string) => unknown, ctx: ShopContext = context) {
   (apiGet as Mock).mockImplementation(async (path: string) => {
     if (path === "/api/v1/pages/context") return ctx;
@@ -75,6 +89,26 @@ describe("CartPage", () => {
     expect(await screen.findByRole("heading", { name: "Cart (4)" })).toBeInTheDocument();
     expect(screen.getByText("Netflix Premium - 1 Month")).toBeInTheDocument();
     expect(screen.getAllByText("Rp158.000").length).toBeGreaterThan(0);
+  });
+
+  it("identifies two different parent products with the same canonical plan name", async () => {
+    const items = [
+      { ...cartData.items[0]!, qty: 1, line_total: "79000", canonical: canonicalMonth(1, "Netflix Premium") },
+      { ...cartData.items[0]!, key: 11, denomination_id: 2, product_slug: "spotify-premium", name: "Spotify legacy name", qty: 1, line_total: "79000", canonical: canonicalMonth(2, "Spotify Premium") },
+    ];
+    renderCart(() => ({ ...cartData, items }));
+    expect(await screen.findByRole("link", { name: "Netflix Premium · 1 Month" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Spotify Premium · 1 Month" })).toBeInTheDocument();
+  });
+
+  it("shows an identical canonical parent and variant once while keeping qualifiers", async () => {
+    const canonical: CanonicalProduct = {
+      ...canonicalMonth(1, "Netflix Premium"), displayName: "Netflix Premium",
+      variant: { type: "unknown", name: "Netflix Premium", residual: [] }, qualifiers: ["Indonesia"],
+    };
+    renderCart(() => ({ ...cartData, items: [{ ...cartData.items[0]!, canonical }] }));
+    expect(await screen.findByRole("link", { name: "Netflix Premium · Indonesia" })).toBeInTheDocument();
+    expect(screen.queryByText("Netflix Premium · Netflix Premium · Indonesia")).not.toBeInTheDocument();
   });
 
   // Task 5 fix pass (review Minor #1): pin the USD display state on a sweep

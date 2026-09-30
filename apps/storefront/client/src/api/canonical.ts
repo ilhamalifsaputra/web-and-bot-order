@@ -14,3 +14,12 @@ export interface CanonicalProduct {
   availability: { status: "available" | "inactive" | "out_of_stock"; purchasable: boolean };
   createdAt: string | null; generatedAt: string;
 }
+
+/** Standalone purchase summaries include the parent without repeating an identical variant. */
+export function canonicalPurchaseName(value: CanonicalProduct): string {
+  return [
+    ...(value.product.name === value.displayName ? [] : [value.product.name]),
+    value.displayName,
+    ...value.qualifiers,
+  ].join(" · ");
+}

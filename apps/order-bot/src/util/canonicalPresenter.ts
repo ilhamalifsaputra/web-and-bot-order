@@ -41,10 +41,12 @@ export function canonicalName(product: CanonicalProduct): string {
 }
 
 /** Oversized names are delivered in full before the interactive summary references their ID. */
-export async function boundedCanonicalName(product: CanonicalProduct, send: (html: string) => Promise<unknown>): Promise<string> {
-  const name = canonicalName(product);
+export async function boundedCanonicalName(product: CanonicalProduct, send: (html: string) => Promise<unknown>, options: { includeProductName?: boolean } = {}): Promise<string> {
+  const name = options.includeProductName && product.product.name !== product.displayName
+    ? `${product.product.name} · ${canonicalName(product)}`
+    : canonicalName(product);
   if (esc(name).length <= 1200) return name;
-  for (const page of presentCanonicalCatalog([product]).pages) await send(page.text);
+  for (const page of presentCanonicalCatalog([product], { bodyName: name }).pages) await send(page.text);
   return `#${product.id}`;
 }
 function compactName(product: CanonicalProduct, locale: string): string {
@@ -75,7 +77,7 @@ function escapedChunks(value: string, limit: number): string[] {
 }
 
 /** Final labels resolve collisions before measuring; body always supplies exact full meaning. */
-export function presentCanonicalCatalog(products: CanonicalProduct[], context: { locale?: string; intro?: string; stockLabels?: Record<number, string> } = {}): { pages: CatalogPage[] } {
+export function presentCanonicalCatalog(products: CanonicalProduct[], context: { locale?: string; intro?: string; stockLabels?: Record<number, string>; bodyName?: string } = {}): { pages: CatalogPage[] } {
   const locale = context.locale ?? "id";
   const candidates = products.map((p) => `${compactName(p, locale)} · ${compactPrice(p, locale)}`);
   const counts = new Map<string, number>();
@@ -102,7 +104,7 @@ export function presentCanonicalCatalog(products: CanonicalProduct[], context: {
   for (const entry of entries) {
     const stock = context.stockLabels?.[entry.product.id];
     const prefix = `#${entry.product.id} · ${esc(entry.product.formattedPrice)}${stock !== undefined ? ` (${locale.startsWith("id") ? "Stok" : "Stock"} ${esc(stock)})` : ""}\n`;
-    const chunks = escapedChunks(canonicalName(entry.product), 2800 - prefix.length);
+    const chunks = escapedChunks(context.bodyName ?? canonicalName(entry.product), 2800 - prefix.length);
     for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
       const block = `${prefix}${chunks[chunkIndex]}\n\n`;
       if (page.text.length + block.length > 3000 || page.rows.flat().length >= 20) flush();

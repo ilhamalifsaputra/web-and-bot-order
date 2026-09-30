@@ -1,6 +1,6 @@
 # Canonical products: catatan verifikasi
 
-Status: implementasi Task2 sudah committed (`bc403360`); review eksternal dan suite penuh final masih berjalan. Belum merupakan klaim selesai.
+Status: integrasi `bc403360` dan fix review `171d691a` committed; re-review dan suite penuh post-review masih berjalan. Belum merupakan klaim selesai.
 
 ## Lingkup dan isolasi
 
@@ -30,7 +30,10 @@ Database pengujian PostgreSQL16 disposable milik tugas ini berjalan di localhost
 - `integrity.test.ts` membaca schema default dev; database disposable sebelumnya kosong. Semua22 migration diaplikasikan sukses pada database disposable saja; integrity5/5 kemudian lulus.
 - Storage summary legacy mengukur file lokal `data/bot.db`, bukan ukuran database PostgreSQL. Fixture file-size synthetic (bukan database/copy data nyata) disediakan sementara di worktree agar assertion existing tetap diuji tanpa melemahkan tes atau mengubah route di luar scope.
 - Tiga file kompatibilitas setelah perbaikan:205/205 lulus (sebelumnya194/205,11 gagal), test TypeScript dan diff check exit0. Assertion bentuk item tetap exact plus runtime schema; hanya timestamp canonical.generatedAt yang dikecualikan pada perbandingan dua request terpisah.
-- Menunggu review dan hasil suite ulang setelah perbaikan.
+- Suite penuh ulang selesai exit0:505/505 file dan8603/8603 tes lulus,0 gagal. Ini hasil sebelum dua fix review tambahan, bukan klaim verifikasi final setelah fix.
+- Review Task2 menemukan dua Important: satu grapheme ekstrem melewati batas chunk/button; callback Buy lama mengabaikan active/archive flags saat konfirmasi. Fix terfokus dan re-review sedang berjalan. Minor separator unit/total English dan React act warnings dicatat untuk triage review akhir.
+- Fix `171d691a`: hanya grapheme melebihi budget dipecah per code point dengan HTML entity/surrogate tetap utuh; label di atas64 bytes memakai #ID fallback. Empat active/archive flags dicek sebelum callback Buy masuk konfirmasi. Regresi Unicode RED1 lalu GREEN10; byte-guard mutation RED lalu GREEN; empat stale callback RED4 lalu GREEN4. Full covering bot333/333, bot/test TypeScript dan diffcheck exit0.
+- Suite post-review berjalan pada source fix committed dan reviewer read-only; tidak ada implementer yang mengubah source bersamaan.
 
 ## Hambatan environment yang ditangani
 

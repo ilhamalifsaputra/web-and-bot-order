@@ -87,9 +87,15 @@ function remainderAfter(name: string, candidate: string): string | null {
   return rest;
 }
 const withoutTrailingParens = (value: string) => value.replace(/\s*\([^()]*\)\s*$/, "");
-function cleanName(name: string, product: CanonicalProductInput["product"]): string {
+/** Only Game Top Up opts into the newer catalog semantics; Premium Apps and any other (or null) group keep the original behavior. */
+const isGameTopUp = (input: CanonicalProductInput) => input.category.group === "GAME_TOPUP";
+function cleanName(name: string, product: CanonicalProductInput["product"], isGame: boolean): string {
   const identities = [product.name, product.digiflazzBrand ?? ""];
   const prefix = VERIFIED_GAME_PREFIXES.find((candidate) => identities.some((identity) => identity.toLowerCase() === candidate.toLowerCase() || identity.toLowerCase().startsWith(`${candidate.toLowerCase()} `)));
+  if (!isGame) {
+    if (prefix && name.toLowerCase().startsWith(`${prefix.toLowerCase()} `)) return name.slice(prefix.length).trim() || name.trim();
+    return name.trim();
+  }
   if (prefix) {
     const rest = remainderAfter(name, prefix);
     if (rest) return rest;
@@ -139,7 +145,7 @@ function parseVariant(name: string, input: CanonicalProductInput): CanonicalVari
     // A unit outside the closed regex still agrees when the whole cleaned name is exactly the structured quantity and unit.
     const ungroup = (value: string) => value.replace(/\d{1,3}(?:\.\d{3})+/g, (group) => group.replace(/\./g, ""));
     const nameIsStructured = !!structured && nameTokens(ungroup(name)).join(" ") === nameTokens(`${denom.qtyValue} ${unit}`).join(" ");
-    if (structured && !agrees) return { type: "amount", quantity: value, unit, residual: nameIsStructured ? [] : [name] };
+    if (structured && !agrees) return { type: "amount", quantity: value, unit, residual: isGameTopUp(input) && nameIsStructured ? [] : [name] };
     const before = name.slice(0, match!.index!).trim();
     let after = name.slice(match!.index! + match![0].length).trim();
     const bonusMatch = after.match(/^\+\s*(\d+)\s+(Bonus|Diamonds?|Bonds?|UC|World Locks?)(?=\s|$)/i);
@@ -198,10 +204,11 @@ function nameContainsQualifier(name: string, qualifier: string): boolean {
 export function canonicalProduct(input: CanonicalProductInput, context: CanonicalProductContext): CanonicalProduct {
   const denom = input.denomination;
   const rawName = denom.supplierRawName ?? denom.name;
-  const cleaned = cleanName(rawName, input.product);
+  const isGame = isGameTopUp(input);
+  const cleaned = cleanName(rawName, input.product, isGame);
   const variant = parseVariant(cleaned, input);
   for (const source of [denom.name, denom.durationLabel]) {
-    const extra = cleanName(source, input.product);
+    const extra = cleanName(source, input.product, isGame);
     // A substring inside a word is not redundant editable metadata.
     const alreadyPresent = ` ${cleaned} `.includes(` ${extra} `);
     if (extra && !alreadyPresent && !variant.residual.includes(extra)) variant.residual.push(extra);
@@ -217,7 +224,7 @@ export function canonicalProduct(input: CanonicalProductInput, context: Canonica
   // A qualifier already spelled out as a "- Garena" / "(Global)" segment of this product's own name is redundant; different ones stay.
   const qualifiers = [input.product.gameRegion, input.product.gameVariant]
     .filter((value): value is string => !!value?.trim())
-    .filter((value) => !nameContainsQualifier(displayName, value));
+    .filter((value) => !isGame || !nameContainsQualifier(displayName, value));
   return CanonicalProductSchema.parse({
     id: denom.id, supplierSku: denom.supplierSku ?? null, rawName,
     rawNameProvenance: denom.supplierRawName != null ? "supplier" : "legacy_name",

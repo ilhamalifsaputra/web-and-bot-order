@@ -326,3 +326,38 @@ describe("canonical exact price and runtime contract", () => {
     expect(CanonicalProductSchema.safeParse({ ...result, availability: { status: "inactive", purchasable: true } }).success).toBe(false);
   });
 });
+
+describe("canonical product: Premium Apps and other non-game categories keep the original semantics", () => {
+  const inGroup = (group: string | null, name: string, productName: string, overrides: Partial<CanonicalProductInput["denomination"]> = {}) => {
+    const data = input(name, overrides, productName);
+    data.category.group = group;
+    return data;
+  };
+  it.each(["PREMIUM_APPS", null] as const)("keeps the product name inside the display name (group %s)", (group) => {
+    const result = canonicalProduct(inGroup(group, "Spotify Premium 1 Bulan", "Spotify Premium"), context);
+    expect(result.displayName).toBe("Spotify Premium 1 Bulan");
+    expect(canonicalProduct(inGroup(group, "Where Winds Meet 60 Echo Beads", "Where Winds Meet (Global)"), context).displayName).toBe("Where Winds Meet 60 Echo Beads");
+  });
+  it("still strips a verified game prefix exactly as before", () => {
+    expect(canonicalProduct(inGroup("PREMIUM_APPS", "Mobile Legends 86 Diamonds", "Mobile Legends"), context).displayName).toBe("86 Diamonds");
+  });
+  it("keeps the structured-quantity contradiction rule instead of the relaxed agreement", () => {
+    const result = canonicalProduct(inGroup("PREMIUM_APPS", "Where Winds Meet 12.000 Echo Beads", "Where Winds Meet", { qtyValue: 12000, qtyUnit: "Echo Beads" }), context);
+    expect(result.variant).toMatchObject({ type: "amount", quantity: 12000, residual: ["Where Winds Meet 12.000 Echo Beads"] });
+  });
+  it("keeps both region and variant qualifiers even when the name spells them out", () => {
+    const data = inGroup("PREMIUM_APPS", "Spotify Premium - Garena (Global)", "Spotify Premium");
+    data.product.gameVariant = "Garena";
+    data.product.gameRegion = "Global";
+    expect(canonicalProduct(data, context).qualifiers).toEqual(["Global", "Garena"]);
+  });
+  it("applies the new behavior to the same inputs under GAME_TOPUP", () => {
+    expect(canonicalProduct(inGroup("GAME_TOPUP", "Spotify Premium 1 Bulan", "Spotify Premium"), context).displayName).toBe("1 Bulan");
+    const data = inGroup("GAME_TOPUP", "Spotify Premium - Garena (Global)", "Spotify Premium");
+    data.product.gameVariant = "Garena";
+    data.product.gameRegion = "Global";
+    expect(canonicalProduct(data, context).qualifiers).toEqual([]);
+    const relaxed = canonicalProduct(inGroup("GAME_TOPUP", "Where Winds Meet 12.000 Echo Beads", "Where Winds Meet", { qtyValue: 12000, qtyUnit: "Echo Beads" }), context);
+    expect(relaxed.variant).toMatchObject({ residual: [] });
+  });
+});

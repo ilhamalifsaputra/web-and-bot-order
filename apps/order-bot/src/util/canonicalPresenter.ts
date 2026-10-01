@@ -57,7 +57,7 @@ export async function boundedCanonicalName(product: CanonicalProduct, send: (htm
 /** Telegram button budget: conservative cells, and a byte cap that also bounds combining marks. */
 export const MAX_LABEL_WIDTH = 44;
 export const MAX_LABEL_BYTES = 64;
-/** Two buttons share a row only when each is at most this wide. */
+/** Two buttons share a row only when each is at most this wide: about half of MAX_LABEL_WIDTH minus padding (icon labels are short, so 24 paired wide USD figures). */
 export const NARROW_LABEL_WIDTH = 18;
 /** Product buttons per catalog page, for every game. */
 export const CATALOG_PAGE_SIZE = 20;
@@ -114,7 +114,7 @@ function compactMain(product: CanonicalProduct, s: Shape, locale: string, spelle
   const qty = `${compactQuantity(v.quantity, locale)}${v.bonus ? `+${compactQuantity(v.bonus.quantity, locale)}` : ""}`;
   return [`${qty} ${unit}`, ...s.leftover].join(" ");
 }
-const withPrice = (main: string, quals: string[], price: string) => [collapse(main), ...quals, price].join(" · ");
+const withQuals = (main: string, quals: string[]) => [collapse(main), ...quals].join(" · ");
 const fits = (label: string) => visualWidth(label) <= MAX_LABEL_WIDTH && Buffer.byteLength(label, "utf8") <= MAX_LABEL_BYTES;
 
 function duplicates(labels: string[]): number[][] {
@@ -155,29 +155,38 @@ function catalogLabels(products: CanonicalProduct[], locale: string, sharedQuals
     const s = shape(product);
     const quals = sharedQuals ? [] : s.quals;
     const price = compactPrice(product, locale);
-    const full = withPrice(fullMain(product, s), quals, price);
     const compact = compactMain(product, s, locale, spelled);
+    // Identity = the label without its price. Price alone must never be what tells two SKUs apart.
+    const fullIdentity = withQuals(fullMain(product, s), quals);
+    const identity = compact === null ? fullIdentity : withQuals(compact, quals);
     return {
-      text: compact === null ? full : withPrice(compact, quals, price), full, fallback: false,
+      identity, fullIdentity, price, fallback: false,
       complex: product.variant.type === "unknown" || (product.variant.type === "amount" && compact === null) || s.leftover.length > 0,
     };
   });
-  const texts = () => items.map((item) => item.text);
-  for (const group of duplicates(texts())) {
-    const fulls = group.map((index) => items[index]!.full);
-    const others = new Set(texts().filter((_, index) => !group.includes(index)));
-    if (new Set(fulls).size === group.length && !fulls.some((full) => others.has(full))) group.forEach((index, i) => { items[index]!.text = fulls[i]!; });
-    else for (const index of group) Object.assign(items[index]!, { text: `${items[index]!.text} #${products[index]!.id}`, fallback: true });
+  // Same identity (whatever the price, rounded or not) is a collision: try the
+  // full form, which shows what compacting hid; otherwise suffix the ID and
+  // explain both in the body.
+  const identities = () => items.map((item) => item.identity);
+  for (const group of duplicates(identities())) {
+    const fulls = group.map((index) => items[index]!.fullIdentity);
+    const others = new Set(identities().filter((_, index) => !group.includes(index)));
+    if (new Set(fulls).size === group.length && !fulls.some((full) => others.has(full))) group.forEach((index, i) => { items[index]!.identity = fulls[i]!; });
+    else for (const index of group) items[index]!.fallback = true;
   }
-  items.forEach((item, index) => {
+  const labels = items.map((item, index) => ({
+    text: `${item.identity} · ${item.price}${item.fallback ? ` #${products[index]!.id}` : ""}`, fallback: item.fallback, complex: item.complex,
+  }));
+  const texts = () => labels.map((label) => label.text);
+  labels.forEach((label, index) => {
     // Width alone misses thousands of combining marks in one visual cell, so bytes are bounded too.
-    if (!fits(item.text)) Object.assign(item, { text: `#${products[index]!.id}`, fallback: true });
+    if (!fits(label.text)) Object.assign(label, { text: `#${products[index]!.id}`, fallback: true });
   });
   // IDs are unique, so turning every remaining duplicate into its bare ID terminates.
   for (let group = duplicates(texts()); group.length; group = duplicates(texts())) {
-    for (const index of group.flat()) Object.assign(items[index]!, { text: `#${products[index]!.id}`, fallback: true });
+    for (const index of group.flat()) Object.assign(labels[index]!, { text: `#${products[index]!.id}`, fallback: true });
   }
-  return items;
+  return labels;
 }
 
 /** `Product · Region · Variant` when every product carries the same qualifiers, else null (they stay on the buttons). */

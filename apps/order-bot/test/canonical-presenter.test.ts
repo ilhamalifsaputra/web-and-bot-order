@@ -192,6 +192,37 @@ describe("canonical Telegram label candidates", () => {
     ]));
     expect(result).toEqual(["100 World Lock · Rp25K", "100 World Locks · Rp25K"]);
   });
+  it("never lets price be the only difference between two SKUs with the same name", () => {
+    const result = presentCanonicalCatalog([make(1, "86 Diamonds", { price: "20000" }), make(2, "86 Diamonds", { price: "25000" })]);
+    expect(labels(result)).toEqual(["86 💎 · Rp20K #1", "86 💎 · Rp25K #2"]);
+    expect(result.pages[0]!.text).toContain("#1 · Rp20.000\n86 Diamonds");
+    expect(result.pages[0]!.text).toContain("#2 · Rp25.000\n86 Diamonds");
+  });
+  it("spells out what compacting hid when only the price would differ", () => {
+    expect(labels(presentCanonicalCatalog([
+      make(1, "100 World Lock", { price: "25000", product: growtopia }),
+      make(2, "100 World Locks", { price: "26000", product: growtopia }),
+    ]))).toEqual(["100 World Lock · Rp25K", "100 World Locks · Rp26K"]);
+  });
+  it("leaves no two buttons identical once the price is removed, unless the body explains both", () => {
+    // Synthetic mix: same name, compact-hidden plural, same-unit bonus label, rounding collision, distinct items.
+    const products = [
+      make(1, "86 Diamonds", { price: "20000" }), make(2, "86 Diamonds", { price: "25000" }),
+      make(3, "100 World Lock", { price: "25000", product: growtopia }), make(4, "100 World Locks", { price: "26000", product: growtopia }),
+      make(5, "86 Diamonds + 8 Bonus", { price: "30000" }), make(6, "86 + 8 Diamonds", { price: "31000" }),
+      make(7, "172 Diamonds", { price: "40001" }), make(8, "172 Diamonds", { price: "40002" }),
+      make(9, "257 Diamonds", { price: "60000" }),
+    ];
+    const result = presentCanonicalCatalog(products);
+    const text = result.pages.map((p) => p.text).join("");
+    const buttons = result.pages.flatMap((p) => p.rows.flat());
+    const identity = (label: string) => label.replace(/ · [^·]*$/, "");
+    for (const a of buttons) for (const b of buttons) {
+      if (a === b || identity(a.text) !== identity(b.text)) continue;
+      for (const button of [a, b]) expect(text).toContain(`#${button.callback_data.split(":").at(-1)} · `);
+    }
+    expect(new Set(buttons.map((b) => b.text)).size).toBe(buttons.length);
+  });
   it("re-checks collisions after the width fallback and explains every fallback", () => {
     const name = "Long Seasonal Collector Pass Edition";
     const result = presentCanonicalCatalog([make(17, name, { price: "20001" }), make(18, name, { price: "20002" })]);

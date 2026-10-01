@@ -233,7 +233,11 @@ checklist for the task list.
   (36 cells, soft target `TARGET_LABEL_WIDTH` 32), two per row only at or under
   `NARROW_LABEL_WIDTH` (18), measured with `visualWidth` (emoji/CJK = 2 cells),
   never `string.length`. The constants live in
-  `apps/order-bot/src/util/canonicalPresenter.ts`; do not hardcode numbers.
+  `packages/core/src/buttonLimits.ts` (re-exported by `canonicalPresenter.ts`;
+  the admin client keeps a test-enforced copy); do not hardcode numbers. The
+  admin panel shows the budget beside every field that reaches a button
+  (`ButtonLabelInput`), and `apps/order-bot/test/keyboard-label-guard.test.ts`
+  fails any label that overflows.
 - **Icons and abbreviations only from the dictionary**
   `packages/core/src/unitDictionary.ts`. A bare `#id` button is the last
   resort and must be explained (full name + exact price) in the message body.

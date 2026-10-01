@@ -77,13 +77,30 @@ export interface CanonicalProductContext {
 // Full-name prefixes verified in detection/__fixtures__/catalogSnapshot.json.
 // No ML/AB aliases: that snapshot does not establish them as supplier prefixes.
 const VERIFIED_GAME_PREFIXES = ["Mobile Legends", "Arena Breakout", "Growtopia", "Free Fire", "PUBG Mobile", "Valorant", "Delta Force"];
+/** The remainder after a whole-token, case-insensitive leading `candidate`, or null when it is not a prefix or the remainder would read badly. */
+function remainderAfter(name: string, candidate: string): string | null {
+  const own = candidate.trim();
+  if (!own || !name.toLowerCase().startsWith(`${own.toLowerCase()} `)) return null;
+  const rest = name.slice(own.length).trim();
+  // "- Family 3 Bulan", "(Duo) 1 Bulan", "+ Netflix" and a bare "400" lose their meaning without the product name.
+  if (!rest || !/^[\p{L}\p{N}]/u.test(rest) || /^[\d.,]+$/.test(rest)) return null;
+  return rest;
+}
+const withoutTrailingParens = (value: string) => value.replace(/\s*\([^()]*\)\s*$/, "");
 function cleanName(name: string, product: CanonicalProductInput["product"]): string {
   const identities = [product.name, product.digiflazzBrand ?? ""];
   const prefix = VERIFIED_GAME_PREFIXES.find((candidate) => identities.some((identity) => identity.toLowerCase() === candidate.toLowerCase() || identity.toLowerCase().startsWith(`${candidate.toLowerCase()} `)));
-  if (prefix && name.toLowerCase().startsWith(`${prefix.toLowerCase()} `)) return name.slice(prefix.length).trim() || name.trim();
-  // The list intro/header already names the product, so its own name is a safe whole-token prefix to drop (not a guessed alias).
-  const own = product.name.trim();
-  if (own && name.toLowerCase().startsWith(`${own.toLowerCase()} `)) return name.slice(own.length).trim() || name.trim();
+  if (prefix) {
+    const rest = remainderAfter(name, prefix);
+    if (rest) return rest;
+  }
+  // The list intro/header already names the product, so its own name (or its brand), with or without a trailing
+  // "(Region)" suffix, is a safe whole-token prefix to drop (not a guessed alias). Longest candidate first.
+  const candidates = identities.flatMap((identity) => [identity.trim(), withoutTrailingParens(identity.trim())]).filter(Boolean).sort((x, y) => y.length - x.length);
+  for (const candidate of candidates) {
+    const rest = remainderAfter(name, candidate);
+    if (rest) return rest;
+  }
   return name.trim();
 }
 
@@ -120,7 +137,8 @@ function parseVariant(name: string, input: CanonicalProductInput): CanonicalVari
     const unit = structured ? denom.qtyUnit!.trim() : parsedUnit!;
     const agrees = safeParsed && value === parsed && unit.toLowerCase() === parsedUnit!.toLowerCase();
     // A unit outside the closed regex still agrees when the whole cleaned name is exactly the structured quantity and unit.
-    const nameIsStructured = !!structured && nameTokens(name).join(" ") === nameTokens(`${denom.qtyValue} ${unit}`).join(" ");
+    const ungroup = (value: string) => value.replace(/\d{1,3}(?:\.\d{3})+/g, (group) => group.replace(/\./g, ""));
+    const nameIsStructured = !!structured && nameTokens(ungroup(name)).join(" ") === nameTokens(`${denom.qtyValue} ${unit}`).join(" ");
     if (structured && !agrees) return { type: "amount", quantity: value, unit, residual: nameIsStructured ? [] : [name] };
     const before = name.slice(0, match!.index!).trim();
     let after = name.slice(match!.index! + match![0].length).trim();

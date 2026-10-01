@@ -169,6 +169,62 @@ describe("canonical product-name prefix", () => {
   });
 });
 
+describe("canonical product-name prefix with a trailing region suffix", () => {
+  const WWM_G = "Where Winds Meet (Global)";
+  it("strips the product name without its trailing parenthesised suffix", () => {
+    expect(present("Where Winds Meet 60 Echo Beads", {}, WWM_G).displayName).toBe("60 Echo Beads");
+    expect(present("where winds meet 60 Echo Beads", {}, WWM_G).displayName).toBe("60 Echo Beads");
+  });
+  it("agrees with a structured quantity once the suffix-less name is stripped", () => {
+    const result = present("Where Winds Meet 60 Echo Beads", { qtyValue: 60, qtyUnit: "Echo Beads" }, WWM_G);
+    expect(result.variant).toMatchObject({ type: "amount", quantity: 60, unit: "Echo Beads", residual: [] });
+    expect(result.displayName).toBe("60 Echo Beads");
+  });
+  it("still handles an uppercase region-suffixed verified game", () => {
+    expect(present("Mobile Legends 86 Diamonds", {}, "MOBILE LEGENDS (Global)").displayName).toBe("86 Diamonds");
+  });
+  it("strips the supplier brand, with or without a suffix, as a whole-token prefix", () => {
+    const withBrand = (name: string, brand: string) => canonicalProduct({ ...input(name, {}, "Some Shop Title"), product: { id: 3, name: "Some Shop Title", digiflazzBrand: brand, isActive: true } }, context);
+    expect(withBrand("Where Winds Meet 60 Echo Beads", "Where Winds Meet").displayName).toBe("60 Echo Beads");
+    expect(withBrand("Where Winds Meet 60 Echo Beads", "Where Winds Meet (Global)").displayName).toBe("60 Echo Beads");
+    expect(withBrand("Where Winds Meetings 60 Echo Beads", "Where Winds Meet (Global)").displayName).toBe("Where Winds Meetings 60 Echo Beads");
+  });
+  it("does not strip a name that is only the start of a longer word, even with a suffix", () => {
+    expect(present("Where Winds Meetings 60 Echo Beads", {}, WWM_G).displayName).toBe("Where Winds Meetings 60 Echo Beads");
+  });
+  it("never produces an empty name", () => {
+    expect(present("Where Winds Meet", {}, WWM_G).displayName).toBe("Where Winds Meet");
+  });
+});
+
+describe("canonical product-name prefix: unsuitable remainders", () => {
+  const SP = "Spotify Premium";
+  it("keeps the full name when the remainder starts with punctuation", () => {
+    expect(present("Spotify Premium - Family 3 Bulan", {}, SP).displayName).toBe("Spotify Premium - Family 3 Bulan");
+    expect(present("Spotify Premium (Duo) 1 Bulan", {}, SP).displayName).toBe("Spotify Premium (Duo) 1 Bulan");
+    expect(present("Spotify Premium + Netflix 1 Bulan", {}, SP).displayName).toBe("Spotify Premium + Netflix 1 Bulan");
+  });
+  it("keeps the full name when the remainder is purely numeric", () => {
+    expect(present("Roblox 400", {}, "Roblox").displayName).toBe("Roblox 400");
+  });
+  it("still strips when the remainder starts with a letter or digit plus text", () => {
+    expect(present("Spotify Premium 1 Bulan", {}, SP).displayName).toBe("1 Bulan");
+    expect(present("Roblox 800 Robux", {}, "Roblox").displayName).toBe("800 Robux");
+  });
+});
+
+describe("canonical structured quantity with dot grouping", () => {
+  it("treats 12.000 and 12000 as the same quantity so the name is not repeated", () => {
+    const result = present("Where Winds Meet 12.000 Echo Beads", { qtyValue: 12000, qtyUnit: "Echo Beads" }, "Where Winds Meet");
+    expect(result.variant).toMatchObject({ type: "amount", quantity: 12000, unit: "Echo Beads", residual: [] });
+    expect(result.displayName).toBe("12000 Echo Beads");
+  });
+  it("still keeps a contradicting grouped quantity", () => {
+    const result = present("Where Winds Meet 13.000 Echo Beads", { qtyValue: 12000, qtyUnit: "Echo Beads" }, "Where Winds Meet");
+    expect(result.variant).toMatchObject({ type: "amount", quantity: 12000, residual: ["13.000 Echo Beads"] });
+  });
+});
+
 describe("canonical qualifier de-duplication", () => {
   const withQualifiers = (name: string, gameVariant: string | null, gameRegion: string | null, productName = "Delta Force") => {
     const data = input(name, {}, productName);

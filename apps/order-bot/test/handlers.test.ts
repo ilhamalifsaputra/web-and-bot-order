@@ -1388,20 +1388,25 @@ describe("denomination picker", () => {
     expect(markup).toContain(`v1:browse:denom:${m2.id}`);
     // The Rupiah price now lives in the message body (priceIdr), not on the
     // button, and is never the USDT-only formatPrice (Finding 1).
-    expect(sentIncludes(sink, "Rp30,000")).toBe(true);
+    expect(sentIncludes(sink, "Rp30.000")).toBe(true);
     expect(sentIncludes(sink, "USDT")).toBe(false);
     // Non-game products keep the per-plan price+stock lines in the body.
     const body = bodyText(sink);
-    expect(body).toContain("Rp30,000 (Stock");
-    expect(body).toContain("Rp75,000 (Stock");
+    expect(body).toContain("Rp30.000 (Stock");
+    expect(body).toContain("Rp75.000 (Stock");
     expect(body).toContain("Choose a plan:");
+    // Plan-name-only buttons: no price, no #id.
+    const planButtons = ((lastMarkup(sink) as { inline_keyboard?: Array<Array<{ text: string; callback_data?: string }>> }).inline_keyboard ?? [])
+      .flat().filter((b) => b.callback_data?.startsWith("v1:browse:denom:"));
+    expect(planButtons.map((b) => b.text)).toEqual(["7 day", "1 Month"]);
   });
 
   it("detail opened from the picker: Back returns to the picker page recorded in scratch; without state it falls back to the list", async () => {
     const { product, m1 } = await makeProductWithTwo();
     const { ctx, sink } = customerCtx();
     await customer.browseProduct(ctx, product.id);
-    expect((ctx.session.scratch as { productPage?: number }).productPage).toBe(0);
+    // The Premium Apps picker has no pages: a stale page index is cleared so Back goes to the plain picker.
+    expect((ctx.session.scratch as { productPage?: number }).productPage).toBeUndefined();
     // Simulate having come from picker page 2 (multi-page lists are covered at keyboard level).
     (ctx.session.scratch as { productPage?: number }).productPage = 2;
     await customer.browseDenomination(ctx, m1.id);
@@ -1416,7 +1421,8 @@ describe("denomination picker", () => {
   });
 
   it("reply-keyboard Back from a denomination detail re-opens the originating picker page and keeps productPage", async () => {
-    const cat = await createCategory(prisma, { name: `gc${Math.random()}`, group: CategoryGroup.PREMIUM_APPS });
+    // Only the paged (Game Top Up) picker records a page; the Premium Apps picker has none.
+    const cat = await createCategory(prisma, { name: `gc${Math.random()}`, group: CategoryGroup.GAME_TOPUP });
     const product = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Many Plans" });
     const denoms = [];
     for (let i = 0; i < 25; i++) {
@@ -2571,15 +2577,12 @@ describe("browseCategoryEntry — Game Top Up variant/region navigation + AUTO s
     expect(bodyText(sink)).not.toContain("PUBG UC · Standard");
   });
 
-  it("PREMIUM APPS DELIBERATE LABEL CHANGE: browseProduct's picker button drops the redundant product-name prefix when no qtyValue/qtyUnit is set", async () => {
+  it("PREMIUM APPS ZERO-BEHAVIOR-CHANGE REGRESSION: browseProduct's picker button is the plain formatDenominationLabel plan name and the price lives in the body", async () => {
     const cat = await createCategory(prisma, { name: "Spotify Category", group: CategoryGroup.PREMIUM_APPS });
     const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Spotify Premium" });
-    // This is an intentional behavior change, not a zero-behavior-change guarantee: the button used to read
-    // "Spotify Premium 1 Bulan · Rp10K" and now reads "1 Bulan · Rp10K". The canonical presenter removes the
-    // product's own name as a whole-token prefix of the supplier name, because the picker intro already names
-    // the product ("Pilih nominal Spotify Premium ..."). The product identity is not lost: it stays in the
-    // intro, in the denomination detail and in the order confirmation. "Bulan" stays on the button so it
-    // remains distinguishable from a hypothetical "... 1 Tahun" SKU, and rawName/supplierSku are unchanged.
+    // Premium Apps never goes through the canonical presenter: the button is exactly
+    // formatDenominationLabel("Spotify Premium", "Spotify Premium 1 Bulan") = "1 Bulan" (the redundant product
+    // prefix is stripped, "Bulan" kept), with NO price and NO "#id" on it; the price is in the message body.
     const d1 = await createDenomination(prisma, {
       productId: p.id,
       name: "Spotify Premium 1 Bulan",
@@ -2595,8 +2598,46 @@ describe("browseCategoryEntry — Game Top Up variant/region navigation + AUTO s
     const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ text: string; callback_data?: string }>> };
     const flat = (markup?.inline_keyboard ?? []).flat();
     const button = flat.find((b) => b.callback_data === `v1:browse:denom:${d1.id}`)!;
-    // Deliberate: the product's own name is a redundant prefix (the picker intro names it), so it is dropped; "Bulan" stays.
-    expect(button.text).toBe("1 Bulan · Rp10K");
+    expect(button.text).toBe("1 Bulan");
+    expect(bodyText(sink)).toContain("Spotify Premium 1 Bulan — Rp10.000 (Stock 0)");
+  });
+
+  it("CapCut Pro (Premium Apps, USD buyer): body lists each plan once with price + stock, no #id, buttons are plan names only", async () => {
+    const cat = await createCategory(prisma, { name: "Premium CapCut", group: CategoryGroup.PREMIUM_APPS });
+    const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "CapCut Pro" });
+    const plans: Array<[string, number]> = [
+      ["CC - 7 Day", 5], ["CC - 1 Month Team", 2], ["CC - 3 Month", 0], ["CC - 6 Month Indplan 6 Month (150-180 day)", 2],
+    ];
+    const made = [];
+    for (const [name, n] of plans) {
+      const d = await createDenomination(prisma, { productId: p.id, name, type: "SHARED", durationLabel: name, price: "4480" });
+      if (n > 0) await bulkAddStock(prisma, d.id, Array.from({ length: n }, (_, i) => `cc${i}@example.com:pw${i}`));
+      made.push(d);
+    }
+    await setSetting(prisma, "usd_idr_rate", "16000");
+    invalidateRateCache();
+    const { ctx, sink } = customerCtx({ session: { ...userSession(), dbUser: { ...userSession().dbUser!, preferredCurrency: "USD" } } });
+    await customer.browseProduct(ctx, p.id);
+
+    const body = bodyText(sink);
+    expect(body).not.toMatch(/#\d/);
+    expect(body).toContain("Choose a plan:");
+    for (const [name, n] of plans) {
+      const line = `${name} — $0.28 (Stock ${n})`;
+      expect(body.split(line).length - 1).toBe(1);
+    }
+    const flat = ((lastMarkup(sink) as { inline_keyboard?: Array<Array<{ text: string; callback_data?: string }>> }).inline_keyboard ?? []).flat();
+    const buttons = flat.filter((b) => b.callback_data?.startsWith("v1:browse:denom:"));
+    expect(buttons).toHaveLength(4);
+    for (const b of buttons) {
+      expect(b.text.startsWith("#")).toBe(false);
+      expect(b.text).not.toContain(" · $");
+      expect(b.text).not.toContain("$");
+    }
+    const long = buttons.find((b) => b.callback_data === `v1:browse:denom:${made[3]!.id}`)!;
+    // The original label rule (formatDenominationLabel + truncLabel) keeps it readable and name-derived.
+    expect(long.text).toContain("Indplan");
+    expect(long.text.length).toBeLessThanOrEqual(24);
   });
 });
 

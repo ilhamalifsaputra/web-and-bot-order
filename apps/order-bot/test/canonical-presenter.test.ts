@@ -324,6 +324,28 @@ describe("canonical Telegram label candidates", () => {
     expect(labels(structured)).toEqual(["60 Echo Beads · Rp15K"]);
     expect(structured.pages[0]!.text).not.toContain("Where Winds Meet 60");
   });
+  it("does not repeat a region-suffixed product name, and never falls back to the ID for it", () => {
+    const make3 = (id: number, raw: string, productName: string, qty?: { qtyValue: number; qtyUnit: string }) => canonicalProduct({
+      denomination: { id, name: raw, durationLabel: raw, supplierRawName: raw, supplierSku: `sku-${id}`, autoDeliverySource: "digiflazz", isActive: true, ...qty },
+      product: { id: 9, name: productName, isActive: true, gameRegion: null, gameVariant: null },
+      category: { id: 1, name: "Top Up", isActive: true },
+    }, { effectivePriceIDR: "15000", preferredCurrency: "IDR", locale: "id" });
+    const wwm = "Where Winds Meet (Global)";
+    expect(labels(presentCanonicalCatalog([make3(87, "Where Winds Meet 60 Echo Beads", wwm)]))).toEqual(["60 Echo Beads · Rp15K"]);
+    const structured = presentCanonicalCatalog([make3(87, "Where Winds Meet 60 Echo Beads", wwm, { qtyValue: 60, qtyUnit: "Echo Beads" })]);
+    expect(labels(structured)).toEqual(["60 Echo Beads · Rp15K"]);
+    expect(labels(structured)[0]).not.toContain("#87");
+    expect(labels(presentCanonicalCatalog([make3(5, "Mobile Legends 86 Diamonds", "MOBILE LEGENDS (Global)")]))).toEqual(["86 💎 · Rp15K"]);
+    expect(labels(presentCanonicalCatalog([make3(88, "Where Winds Meet 12.000 Echo Beads", "Where Winds Meet", { qtyValue: 12000, qtyUnit: "Echo Beads" })]))).toEqual(["12K Echo Beads · Rp15K"]);
+  });
+  it("falls back to a qualifier-only header on later pages when the product name is too long for one", () => {
+    const longName = "L".repeat(310);
+    const many = Array.from({ length: 25 }, (_, i) => make(i + 1, `${i + 1} Diamonds`, { product: { name: longName, gameRegion: "Global" } }));
+    const result = presentCanonicalCatalog(many, { intro: "Pilih nominal" });
+    expect(result.pages.length).toBeGreaterThan(1);
+    expect(result.pages[1]!.text).toBe("Global\n\n");
+    expect(labels(result).join(" ")).not.toContain("Global");
+  });
   it("names the product on every page, and on page 1 only when the intro title does not", () => {
     const many = (opts: Opts) => Array.from({ length: 45 }, (_, i) => make(i + 1, `${i + 1} Diamonds`, opts));
     const plain = presentCanonicalCatalog(many({}));

@@ -247,7 +247,7 @@ export function presentCanonicalCatalog(products: CanonicalProduct[], context: {
   // Page 1 skips the product name when the intro title already has it; later pages always carry it, so they are never blank.
   const introNamesProduct = !!context.intro && !!shared.name && context.intro.toLowerCase().includes(shared.name.toLowerCase());
   const firstHeader = headerLine([introNamesProduct ? null : shared.name, ...quals]);
-  const laterHeader = headerLine([shared.name, ...quals]);
+  const laterHeader = headerLine([shared.name, ...quals]) || headerLine(quals);
   const labels = catalogLabels(products, locale, sharedQuals);
   const entries = products.map((product, index) => {
     const label = labels[index]!;

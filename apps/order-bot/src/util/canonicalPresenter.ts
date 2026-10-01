@@ -48,7 +48,9 @@ function collapse(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
 export function canonicalName(product: CanonicalProduct): string {
-  return [collapse(product.displayName), ...product.qualifiers].join(" · ");
+  // Only Game Top-Up is tidied; every other group (Premium Apps, unclassified) keeps its name exactly as before.
+  const name = product.category.group === "GAME_TOPUP" ? collapse(product.displayName) : product.displayName;
+  return [name, ...product.qualifiers].join(" · ");
 }
 
 /** Oversized names are delivered in full before the interactive summary references their ID. */

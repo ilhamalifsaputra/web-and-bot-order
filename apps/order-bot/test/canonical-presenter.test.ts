@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { canonicalProduct } from "@app/core/canonicalProduct";
 import catalog from "../../../packages/core/src/detection/__fixtures__/catalogSnapshot.json";
-import { presentCanonicalCatalog, visualWidth, compactQuantity, MAX_LABEL_WIDTH, NARROW_LABEL_WIDTH } from "../src/util/canonicalPresenter";
+import { canonicalName, presentCanonicalCatalog, visualWidth, compactQuantity, MAX_LABEL_WIDTH, NARROW_LABEL_WIDTH } from "../src/util/canonicalPresenter";
 
 const item = (id: number, name: string, price = "21000", currency: "IDR" | "USD" = "IDR", locale = "id") => canonicalProduct({
   denomination: { id, name, durationLabel: name, supplierRawName: name, supplierSku: `sku-${id}`, autoDeliverySource: "digiflazz", isActive: true },
@@ -430,5 +430,19 @@ describe("canonical Telegram labels: a qualifier spelled by only some SKUs", () 
     const texts = labels(result);
     expect(new Set(texts).size).toBe(2);
     for (const text of texts) expect(text).not.toMatch(/#\d+/);
+  });
+});
+
+describe("canonicalName whitespace by category group", () => {
+  const named = (group: string) => canonicalProduct({
+    denomination: { id: 1, name: "CC  - 3 Month", durationLabel: "CC  - 3 Month", isActive: true },
+    product: { id: 3, name: "CapCut Pro", isActive: true, gameRegion: null, gameVariant: null },
+    category: { id: 1, name: "Cat", group, isActive: true },
+  }, { effectivePriceIDR: "4480", preferredCurrency: "IDR", locale: "id" });
+  it("leaves a Premium name byte-identical to master, double space included", () => {
+    expect(canonicalName(named("PREMIUM_APPS"))).toBe("CC  - 3 Month");
+  });
+  it("collapses repeated whitespace for a Game Top-Up name", () => {
+    expect(canonicalName(named("GAME_TOPUP"))).toBe("CC - 3 Month");
   });
 });

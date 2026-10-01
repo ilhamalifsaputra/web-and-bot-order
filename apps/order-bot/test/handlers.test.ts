@@ -2608,7 +2608,7 @@ describe("browseCategoryEntry — Game Top Up variant/region navigation + AUTO s
     const plans: Array<[string, number]> = [
       ["CC - 7 Day", 5], ["CC - 1 Month Team", 2], ["CC - 3 Month", 0], ["CC - 6 Month Indplan 6 Month (150-180 day)", 2],
     ];
-    const made = [];
+    const made: Array<{ id: number }> = [];
     for (const [name, n] of plans) {
       const d = await createDenomination(prisma, { productId: p.id, name, type: "SHARED", durationLabel: name, price: "4480" });
       if (n > 0) await bulkAddStock(prisma, d.id, Array.from({ length: n }, (_, i) => `cc${i}@example.com:pw${i}`));

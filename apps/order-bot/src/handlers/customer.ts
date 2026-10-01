@@ -158,6 +158,8 @@ interface BrowseScratch {
    * products would vanish. Deleted on every non-mixed path. */
   gameVariantDimensionSkipped?: boolean;
   productId?: number;
+  /** 0-based picker page browseProduct last rendered for `productId`. */
+  productPage?: number;
   variantId?: number;
   quantity?: number;
   paymentMethod?: string;
@@ -1061,6 +1063,7 @@ export async function browseProduct(ctx: MyContext, productId: number, requested
   }
   if (active.length === 1) {
     delete sc(ctx).productId;
+    delete sc(ctx).productPage;
     await browseDenomination(ctx, active[0]!.id);
     return;
   }
@@ -1085,6 +1088,8 @@ export async function browseProduct(ctx: MyContext, productId: number, requested
   const pageIndex = Math.min(Math.max(0, Number.isFinite(requestedPage) ? Math.trunc(requestedPage) : 0), pages.length - 1);
   const page = pages[pageIndex]!;
   const text = page.text + prices.rateNotice(lang) + (pages.length > 1 ? `\n${pageIndex + 1}/${pages.length}` : "");
+  // Remembered so the denomination detail's Back returns to this same page.
+  sc(ctx).productPage = pageIndex;
   const keyboard = ckb.canonicalDenominationPickerKb(page.rows, productId, lang, pageIndex, pages.length);
   const photoArg = productPhotoArg(product);
   if (photoArg) {
@@ -1230,17 +1235,18 @@ export async function browseDenomination(
   // product list per denominationDetailKb's contract — never to a product that
   // would immediately re-collapse to this same detail.
   const parentProductId = sc(ctx).productId ?? null;
+  const parentPage = parentProductId != null ? (sc(ctx).productPage ?? 0) : 0;
   const photoArg = productPhotoArg(d.product);
   if (photoArg) {
     await renderMenu(
       ctx,
       text,
-      ckb.denominationDetailKb(d, stock, lang, qty, parentProductId),
+      ckb.denominationDetailKb(d, stock, lang, qty, parentProductId, parentPage),
       photoArg.photo,
       photoArg.needsCache ? cacheProductPhotoFileId(d.product.id) : undefined,
     );
   } else {
-    await smartEdit(ctx, text, ckb.denominationDetailKb(d, stock, lang, qty, parentProductId));
+    await smartEdit(ctx, text, ckb.denominationDetailKb(d, stock, lang, qty, parentProductId, parentPage));
   }
   ctx.session.state = BotState.PRODUCT_DETAIL;
   sc(ctx).variantId = denominationId;

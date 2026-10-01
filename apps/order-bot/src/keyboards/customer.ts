@@ -287,6 +287,8 @@ export function denominationDetailKb(
   lang: string,
   qty = 1,
   parentProductId: number | null = null,
+  /** Picker page (0-based) the detail was opened from; Back returns to it. */
+  parentPage = 0,
 ): InlineKeyboard {
   const rows: Btn[][] = [];
   // Stock rows only ever exist for AUTO SKUs (manual/manual_with_info skip
@@ -334,7 +336,10 @@ export function denominationDetailKb(
   ]);
   const back: Btn =
     parentProductId != null
-      ? { text: coreT("menu.back", lang), data: cb("browse", "pick", parentProductId) }
+      ? {
+          text: coreT("menu.back", lang),
+          data: parentPage > 0 ? cb("browse", "pick", parentProductId, parentPage) : cb("browse", "pick", parentProductId),
+        }
       : { text: coreT("menu.back", lang), data: cb("browse", "prods") };
   rows.push([back]);
   return ik(rows);
@@ -351,15 +356,21 @@ interface DenominationLike {
 
 /** Catalog presenter owns labels and adaptive rows; callbacks stay compatible. */
 export function canonicalDenominationPickerKb(buttonRows: CatalogButton[][], productId: number, lang: string, page: number, pageCount: number): InlineKeyboard {
-  const keyboard = new InlineKeyboard(buttonRows);
+  // grammY's add() appends to the LAST existing row, so each group of buttons
+  // below is built as its own explicit row. Product rows are copied so the
+  // presenter's page.rows are never aliased/mutated by the keyboard.
+  const rows: Array<Array<{ text: string; callback_data: string }>> = buttonRows
+    .filter((row) => row.length > 0)
+    .map((row) => row.map((button) => ({ text: button.text, callback_data: button.callback_data })));
   if (pageCount > 1) {
-    if (page > 0) keyboard.text("‹", cb("browse", "pick", productId, page - 1));
-    if (page < pageCount - 1) keyboard.text("›", cb("browse", "pick", productId, page + 1));
-    keyboard.row();
+    const arrows: Array<{ text: string; callback_data: string }> = [];
+    if (page > 0) arrows.push({ text: "‹", callback_data: cb("browse", "pick", productId, page - 1) });
+    if (page < pageCount - 1) arrows.push({ text: "›", callback_data: cb("browse", "pick", productId, page + 1) });
+    if (arrows.length > 0) rows.push(arrows);
   }
-  keyboard.text(coreT("browse.refresh_btn", lang), cb("browse", "pick", productId, page)).row();
-  keyboard.text(coreT("menu.back", lang), cb("browse", "prods"));
-  return keyboard;
+  rows.push([{ text: coreT("browse.refresh_btn", lang), callback_data: cb("browse", "pick", productId, page) }]);
+  rows.push([{ text: coreT("menu.back", lang), callback_data: cb("browse", "prods") }]);
+  return new InlineKeyboard(rows);
 }
 
 /**

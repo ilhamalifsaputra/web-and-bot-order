@@ -1397,6 +1397,24 @@ describe("denomination picker", () => {
     expect(body).toContain("Choose a plan:");
   });
 
+  it("detail opened from the picker: Back returns to the picker page recorded in scratch; without state it falls back to the list", async () => {
+    const { product, m1 } = await makeProductWithTwo();
+    const { ctx, sink } = customerCtx();
+    await customer.browseProduct(ctx, product.id);
+    expect((ctx.session.scratch as { productPage?: number }).productPage).toBe(0);
+    // Simulate having come from picker page 2 (multi-page lists are covered at keyboard level).
+    (ctx.session.scratch as { productPage?: number }).productPage = 2;
+    await customer.browseDenomination(ctx, m1.id);
+    const flat = ((lastMarkup(sink) as { inline_keyboard?: Array<Array<{ callback_data?: string }>> }).inline_keyboard ?? []).flat();
+    expect(flat.some((b) => b.callback_data === `v1:browse:pick:${product.id}:2`)).toBe(true);
+
+    const fresh = customerCtx();
+    await customer.browseDenomination(fresh.ctx, m1.id);
+    const freshFlat = ((lastMarkup(fresh.sink) as { inline_keyboard?: Array<Array<{ callback_data?: string }>> }).inline_keyboard ?? []).flat();
+    expect(freshFlat.some((b) => b.callback_data === "v1:browse:prods")).toBe(true);
+    expect(freshFlat.some((b) => b.callback_data?.startsWith("v1:browse:pick:"))).toBe(false);
+  });
+
   // --- Game Top Up: buttons carry the price, so the body describes the game --
 
   async function makeGameProduct(

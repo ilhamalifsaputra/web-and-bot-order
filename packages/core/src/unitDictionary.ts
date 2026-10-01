@@ -10,7 +10,8 @@
  * HOW TO ADD
  *  - A unit: append one line to UNITS. `canonical` is the name, `aliases` are the other exact spellings
  *    (singular/plural). Give it an `icon` (exactly one emoji) and/or a `short` text form. Do not add a unit
- *    only because it "looks like" another one: Tokens, Credits and Points are not Coins.
+ *    only because it "looks like" another one: Tokens, Credits and Points are not Coins, and Star / Ticket are
+ *    often part of a game's own name ("Honkai Star Rail", "Gold Ticket"), so they are not units either.
  *  - An abbreviation: append one line to ABBREVIATIONS (`word` -> shorter `short`). A whole word only.
  *
  * MATCHING RULES (applied by unitDisplay.ts)
@@ -29,7 +30,6 @@ export interface UnitEntry {
   icon?: string;
   /** Text short form: shown when there is no icon, and used by the abbreviation fallback otherwise. */
   short?: string;
-  kind: "unit";
 }
 
 export interface Abbreviation {
@@ -41,20 +41,18 @@ export interface Abbreviation {
 
 export const UNITS: readonly UnitEntry[] = [
   // Gem-like in-game currencies share the diamond icon on purpose: the user asked for it.
-  { canonical: "Diamonds", aliases: ["Diamond"], icon: "💎", kind: "unit" },
-  { canonical: "Crystals", aliases: ["Crystal"], icon: "💎", kind: "unit" },
-  { canonical: "Genesis Crystals", aliases: ["Genesis Crystal"], icon: "💎", short: "Gen Crystals", kind: "unit" },
-  { canonical: "Gems", aliases: ["Gem"], icon: "💎", kind: "unit" },
-  { canonical: "Primogems", aliases: ["Primogem"], icon: "💎", kind: "unit" },
-  { canonical: "Jewels", aliases: ["Jewel"], icon: "💎", kind: "unit" },
-  { canonical: "Coins", aliases: ["Coin"], icon: "🪙", kind: "unit" },
-  { canonical: "Delta Coins", aliases: ["Delta Coin"], icon: "🪙", kind: "unit" },
+  { canonical: "Diamonds", aliases: ["Diamond"], icon: "💎" },
+  { canonical: "Crystals", aliases: ["Crystal"], icon: "💎" },
+  { canonical: "Genesis Crystals", aliases: ["Genesis Crystal"], icon: "💎", short: "Gen Crystals" },
+  { canonical: "Gems", aliases: ["Gem"], icon: "💎" },
+  { canonical: "Primogems", aliases: ["Primogem"], icon: "💎" },
+  { canonical: "Jewels", aliases: ["Jewel"], icon: "💎" },
+  { canonical: "Coins", aliases: ["Coin"], icon: "🪙" },
+  { canonical: "Delta Coins", aliases: ["Delta Coin"], icon: "🪙" },
   // Change the icon here if 🥇 is not the one you want for Gold.
-  { canonical: "Gold", aliases: [], icon: "🥇", kind: "unit" },
-  { canonical: "Stars", aliases: ["Star"], icon: "⭐", kind: "unit" },
-  { canonical: "Tickets", aliases: ["Ticket"], icon: "🎫", kind: "unit" },
+  { canonical: "Gold", aliases: [], icon: "🥇" },
   // Growtopia's World Lock has no verified emoji; "WL" is the community's own abbreviation.
-  { canonical: "World Lock", aliases: ["World Locks"], short: "WL", kind: "unit" },
+  { canonical: "World Lock", aliases: ["World Locks"], short: "WL" },
 ];
 
 export const ABBREVIATIONS: readonly Abbreviation[] = [

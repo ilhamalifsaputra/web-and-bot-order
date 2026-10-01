@@ -50,6 +50,9 @@ describe("unit dictionary integrity", () => {
       expect(displayUnit(name.toUpperCase()), name).toBe(entry.icon ?? entry.short);
     }
   });
+  it("carries no fields beyond the name, aliases, icon and short form", () => {
+    for (const entry of UNITS) expect(Object.keys(entry).filter((key) => !["canonical", "aliases", "icon", "short"].includes(key)), entry.canonical).toEqual([]);
+  });
   it("leaves an unknown unit unchanged", () => {
     for (const unit of ["Oneiric Shards", "Robux", "Bonds", "UC", "Weekly Diamond Pass", "Gold Pass", "Diamondz"]) expect(displayUnit(unit)).toBe(unit);
   });
@@ -60,9 +63,10 @@ describe("requested icon mappings", () => {
     ["Diamonds", "💎"], ["Diamond", "💎"], ["Crystals", "💎"], ["Crystal", "💎"], ["Genesis Crystals", "💎"], ["Genesis Crystal", "💎"],
     ["Gems", "💎"], ["Gem", "💎"], ["Primogems", "💎"], ["Primogem", "💎"], ["Jewels", "💎"], ["Jewel", "💎"],
     ["Coins", "🪙"], ["Coin", "🪙"], ["Delta Coins", "🪙"], ["Delta Coin", "🪙"],
-    ["Gold", "🥇"], ["Stars", "⭐"], ["Star", "⭐"], ["Tickets", "🎫"], ["Ticket", "🎫"], ["World Lock", "WL"], ["World Locks", "WL"],
+    ["Gold", "🥇"], ["World Lock", "WL"], ["World Locks", "WL"],
   ])("maps %s to %s", (unit, short) => expect(displayUnit(unit)).toBe(short));
-  it.each(["UC", "VP", "Bonds", "Robux", "Tokens", "Credits", "Points"])("keeps %s as text", (unit) => expect(displayUnit(unit)).toBe(unit));
+  // "Star" and "Ticket" are often part of a game's own name ("Honkai Star Rail", "Gold Ticket Membership"), so they are not units.
+  it.each(["UC", "VP", "Bonds", "Robux", "Tokens", "Credits", "Points", "Stars", "Star", "Tickets", "Ticket"])("keeps %s as text", (unit) => expect(displayUnit(unit)).toBe(unit));
   it("reports different units that share one icon", () => {
     expect(sharedIconUnits(["Crystals", "Diamonds", "Diamond"])).toEqual([{ short: "💎", units: ["Crystals", "Diamonds"] }]);
     expect(sharedIconUnits(["Genesis Crystals", "Primogems", "Crystals"])[0]!.units).toEqual(["Genesis Crystals", "Primogems", "Crystals"]);

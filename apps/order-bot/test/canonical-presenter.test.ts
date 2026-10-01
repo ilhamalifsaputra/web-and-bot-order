@@ -608,11 +608,11 @@ describe("Game Top-Up button fallback chain before a bare ID", () => {
   });
   it.each([
     ["Diamonds", "💎"], ["Crystals", "💎"], ["Genesis Crystals", "💎"], ["Gems", "💎"], ["Primogems", "💎"], ["Jewels", "💎"],
-    ["Coins", "🪙"], ["Gold", "🥇"], ["Stars", "⭐"], ["Tickets", "🎫"],
+    ["Coins", "🪙"], ["Gold", "🥇"],
   ])("shows %s as %s when it is the only unit in the list", (unit, icon) => {
     expect(texts([item(1, `${unit} 250`, "20000", { qty: [250, unit] })])).toEqual([`250 ${icon} · Rp20K`]);
   });
-  it.each([["UC"], ["VP"], ["Bonds"], ["Robux"], ["Tokens"], ["Credits"], ["Points"]])("keeps %s as text", (unit) => {
+  it.each([["UC"], ["VP"], ["Bonds"], ["Robux"], ["Tokens"], ["Credits"], ["Points"], ["Stars"], ["Tickets"]])("keeps %s as text", (unit) => {
     expect(texts([item(1, `${unit} 250`, "20000", { qty: [250, unit] })])).toEqual([`250 ${unit} · Rp20K`]);
   });
 });

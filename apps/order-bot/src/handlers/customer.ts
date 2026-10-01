@@ -244,15 +244,17 @@ async function handleBackButton(ctx: MyContext): Promise<void> {
     await browseProduct(ctx, sc(ctx).productId!, sc(ctx).productPage ?? 0);
     return;
   }
-  // Viewing a picker (product but no denomination) → back to the product list.
+  // Viewing a picker (product but no denomination) → back to the product list,
+  // on the page it was opened from (same as the inline Back, browseResume);
+  // browseProductsFlat clamps the page if the list has shrunk since.
   if (sc(ctx).productId != null) {
-    await browseProductsFlat(ctx);
+    await browseProductsFlat(ctx, sc(ctx).page ?? 0);
     return;
   }
   // Viewing a collapsed/deep-link detail (denomination but no parent picker) →
   // back to the product list, not the main menu (don't strand the user).
   if (sc(ctx).variantId != null) {
-    await browseProductsFlat(ctx);
+    await browseProductsFlat(ctx, sc(ctx).page ?? 0);
     return;
   }
   // Viewing a category-scoped product list (nothing deeper in scope) → back to

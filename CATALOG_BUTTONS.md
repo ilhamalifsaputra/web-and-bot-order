@@ -60,7 +60,8 @@ File utama: `apps/order-bot/src/util/canonicalPresenter.ts` (presenter), `packag
   atau menempatkan dua ikon kamus berdampingan tidak pernah diterima. Tombol yang dipendekkan atau berupa `#id`
   dijelaskan di body halaman yang sama (nama lengkap dan harga exact).
 - **Baris keyboard:** produk dulu, lalu Previous/Next, Refresh, dan Back, masing-masing satu baris sendiri. Back dari
-  detail kembali ke halaman asal. Keyboard angka 1-5 dan Menu tidak diubah.
+  detail kembali ke halaman asal picker, dan Back dari picker (keyboard balasan maupun inline) kembali ke halaman asal
+  daftar produk. Keyboard angka 1-5 dan Menu tidak diubah.
 - **Callback stabil:** `v1:browse:denom:<id>` (maks 64 byte), tidak pernah diturunkan dari label atau harga.
 
 ### Batas lebar (`packages/core/src/buttonLimits.ts`)
@@ -227,7 +228,7 @@ dikerjakan **satu branch per item**, berurutan.
 |---|---|---|
 | `price-format-by-language` | Picker memakai pemformat harga sadar-bahasa seperti layar detail/konfirmasi (sebelumnya picker memakai format tetap `Rp4.480` / `$0.28`). Dampak: untuk pembeli berbahasa Inggris, baris harga picker Premium menjadi `Rp30,000`; pembeli id tidak berubah | menunggu |
 | `region-dedupe-header` | Region yang sudah ada di nama produk (`Valorant (Indonesia)`) tidak diulang di tombol dan header halaman 2 | menunggu |
-| `back-page-reply-kb` | Back dari picker lewat keyboard balasan kembali ke halaman asal (sekarang halaman 0); spesifikasi §9 | menunggu |
+| `back-page-reply-kb` | Back dari picker atau detail tunggal lewat keyboard balasan kembali ke halaman daftar produk asal (sebelumnya selalu halaman 0), sama seperti Back inline; halaman di luar jangkauan dipangkas ke halaman terakhir yang valid. Premium Apps memakai jalur kode yang sama dan tidak berubah; spesifikasi §9 | selesai |
 | `storage-api-dbbytes` | Ukuran database dari Postgres (`pg_database_size` lewat helper di `packages/db/src/crud`), bukan file SQLite; tes `storage-api` lulus lagi dan suite tanpa kegagalan yang diketahui | selesai |
 | `dictionary-prune-abbrevs` | Hapus Premium, Membership, Subscription dari singkatan (tersisa Genesis, Package, Weekly, Monthly). Sapuan atas snapshot nyata (232 label GAME_TOPUP, harga sintetis): 0 label berubah, karena tidak ada nama snapshot yang memakai singkatan yang dihapus; label sintetis `Weekly Premium Subscription Package` berubah dari `Wkly Prem Sub Pkg` menjadi `Wkly… Subscription Pkg` (dipotong, bukan disingkat) | selesai |
 

@@ -1388,13 +1388,56 @@ describe("denomination picker", () => {
     expect(markup).toContain(`v1:browse:denom:${m2.id}`);
     // The Rupiah price now lives in the message body (priceIdr), not on the
     // button, and is never the USDT-only formatPrice (Finding 1).
-    expect(sentIncludes(sink, "Rp30,000")).toBe(true);
+    expect(sentIncludes(sink, "Rp30.000")).toBe(true);
     expect(sentIncludes(sink, "USDT")).toBe(false);
     // Non-game products keep the per-plan price+stock lines in the body.
     const body = bodyText(sink);
-    expect(body).toContain("Rp30,000 (Stock");
-    expect(body).toContain("Rp75,000 (Stock");
+    expect(body).toContain("Rp30.000 (Stock");
+    expect(body).toContain("Rp75.000 (Stock");
     expect(body).toContain("Choose a plan:");
+    // Plan-name-only buttons: no price, no #id.
+    const planButtons = ((lastMarkup(sink) as { inline_keyboard?: Array<Array<{ text: string; callback_data?: string }>> }).inline_keyboard ?? [])
+      .flat().filter((b) => b.callback_data?.startsWith("v1:browse:denom:"));
+    expect(planButtons.map((b) => b.text)).toEqual(["7 day", "1 Month"]);
+  });
+
+  it("detail opened from the picker: Back returns to the picker page recorded in scratch; without state it falls back to the list", async () => {
+    const { product, m1 } = await makeProductWithTwo();
+    const { ctx, sink } = customerCtx();
+    await customer.browseProduct(ctx, product.id);
+    // The Premium Apps picker has no pages: a stale page index is cleared so Back goes to the plain picker.
+    expect((ctx.session.scratch as { productPage?: number }).productPage).toBeUndefined();
+    // Simulate having come from picker page 2 (multi-page lists are covered at keyboard level).
+    (ctx.session.scratch as { productPage?: number }).productPage = 2;
+    await customer.browseDenomination(ctx, m1.id);
+    const flat = ((lastMarkup(sink) as { inline_keyboard?: Array<Array<{ callback_data?: string }>> }).inline_keyboard ?? []).flat();
+    expect(flat.some((b) => b.callback_data === `v1:browse:pick:${product.id}:2`)).toBe(true);
+
+    const fresh = customerCtx();
+    await customer.browseDenomination(fresh.ctx, m1.id);
+    const freshFlat = ((lastMarkup(fresh.sink) as { inline_keyboard?: Array<Array<{ callback_data?: string }>> }).inline_keyboard ?? []).flat();
+    expect(freshFlat.some((b) => b.callback_data === "v1:browse:prods")).toBe(true);
+    expect(freshFlat.some((b) => b.callback_data?.startsWith("v1:browse:pick:"))).toBe(false);
+  });
+
+  it("reply-keyboard Back from a denomination detail re-opens the originating picker page and keeps productPage", async () => {
+    // Only the paged (Game Top Up) picker records a page; the Premium Apps picker has none.
+    const cat = await createCategory(prisma, { name: `gc${Math.random()}`, group: CategoryGroup.GAME_TOPUP });
+    const product = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Many Plans" });
+    const denoms = [];
+    for (let i = 0; i < 25; i++) {
+      denoms.push(await createDenomination(prisma, {
+        productId: product.id, name: `Many Plans ${i + 1} Month`, type: "SHARED", durationLabel: `${i + 1} Month`, price: String(10000 + i * 1000),
+      }));
+    }
+    const { ctx } = customerCtx();
+    await customer.browseProduct(ctx, product.id, 1);
+    expect((ctx.session.scratch as { productPage?: number }).productPage).toBe(1);
+    await customer.browseDenomination(ctx, denoms[0]!.id);
+
+    const back = customerCtx({ text: persistentLabel("back", "en"), session: { ...userSession(), scratch: ctx.session.scratch } });
+    await customer.handleProductNumber(back.ctx);
+    expect((back.ctx.session.scratch as { productPage?: number }).productPage).toBe(1);
   });
 
   // --- Game Top Up: buttons carry the price, so the body describes the game --
@@ -1432,9 +1475,10 @@ describe("denomination picker", () => {
     const body = bodyText(sink);
     expect(body).toContain("Mobile Legends");
     expect(body).toContain("sold (all-time)");
-    // Full semantic list carries exact prices; buttons remain compact browsing hints.
-    expect(body).toContain("Rp15,000");
-    expect(body).toContain("Rp30,000");
+    // Plain amounts are clear on their buttons, so the body does not repeat
+    // them (exact prices are on the detail view).
+    expect(body).not.toContain("Rp15,000");
+    expect(body).not.toContain("Rp30,000");
     expect(body).not.toContain("(Stock");
     expect(body).not.toContain("Choose a plan:");
     expect(body).toContain("Choose a top-up amount:");
@@ -1448,7 +1492,7 @@ describe("denomination picker", () => {
     // The buttons still carry the price.
     const markup = JSON.stringify(lastMarkup(sink));
     expect(markup).toContain(`v1:browse:denom:${d1.id}`);
-    expect(markup).toContain("Rp");
+    expect(markup).toContain("86 💎 · Rp15K");
   });
 
   it("Game Top Up picker body renders in Indonesian", async () => {
@@ -1523,7 +1567,8 @@ describe("denomination picker", () => {
     // and — on a flash sale — not even plain text, see the dedicated C1
     // tests below).
     const button2 = flat.find((b) => b.callback_data === `v1:browse:denom:${d2.id}`)!;
-    expect(button2.text).toContain("172 Diamonds");
+    // Parsed from the name, so it gets the same icon label as d1.
+    expect(button2.text).toContain("172 💎");
     expect(button2.text).toContain("Rp30K");
     expect(button2.text).not.toContain("Rp30.000");
   });
@@ -1563,10 +1608,9 @@ describe("denomination picker", () => {
     const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ text: string; callback_data?: string }>> };
     const flat = (markup?.inline_keyboard ?? []).flat();
     const button = flat.find((b) => b.callback_data === `v1:browse:denom:${denom.id}`)!;
-    // formatDenominationLabel("Delta Force", "Delta Force 60 Coins") strips
-    // the redundant "Delta Force" prefix -> "60 Coins"; compact price of
-    // 150000 is "Rp150K".
-    expect(button.text).toBe("60 Coins · Rp150K");
+    // The redundant "Delta Force" prefix is stripped -> "60 Coins", Coins
+    // shows as its icon; compact price of 150000 is "Rp150K".
+    expect(button.text).toBe("60 🪙 · Rp150K");
     expect(button.text.length).toBeLessThanOrEqual(24);
     expect(button.text).not.toContain("…"); // truncLabel never had to cut it
     expect(button.text).not.toMatch(/[<>]/); // no HTML leaking into button text
@@ -1613,7 +1657,7 @@ describe("denomination picker", () => {
     // browse.flash_price string (<s>old</s> new ⚡) — buttons can't render
     // HTML, so it would show literal tags — and never the un-discounted
     // "Rp150K" either.
-    expect(button.text).toBe("60 Coins · Rp120K");
+    expect(button.text).toBe("60 🪙 · Rp120K");
     expect(button.text).not.toMatch(/[<>]/);
     expect(button.text).not.toContain("⚡");
     expect(button.text).not.toContain("…");
@@ -1661,7 +1705,7 @@ describe("denomination picker", () => {
     // Name segment truncated to fit the 15-char budget ("1680 Coins + B…"),
     // price segment ("Rp300K") always intact — never chopped to "Rp…" or
     // dropped entirely.
-    expect(button.text).toBe("1.68K Coins + Bonus · Rp300K");
+    expect(button.text).toBe("1680 🪙 + Bonus · Rp300K");
     expect(button.text.endsWith("Rp300K")).toBe(true);
     expect(button.text).not.toContain("…");
     expect(bodyText(sink)).toContain("1680 Coins + Bonus");
@@ -2525,28 +2569,20 @@ describe("browseCategoryEntry — Game Top Up variant/region navigation + AUTO s
     const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ text: string; callback_data?: string }>> };
     const flat = (markup?.inline_keyboard ?? []).flat();
     const button = flat.find((b) => b.callback_data === `v1:browse:denom:${d1.id}`)!;
-    expect(button.text).toContain("Standard");
-    expect(button.text).toContain("UC");
-    expect(button.text).toContain("Rp15K");
+    expect(button.text).toBe("60 UC · Rp15K");
+    // Every SKU shares the "Standard" variant, so it is stated once in the body; the intro title already
+    // names the product, so page 1 does not repeat it beside the variant.
+    expect(bodyText(sink)).toContain("PUBG UC");
+    expect(bodyText(sink)).toContain("Standard");
+    expect(bodyText(sink)).not.toContain("PUBG UC · Standard");
   });
 
-  it("PREMIUM APPS ZERO-BEHAVIOR-CHANGE REGRESSION: browseProduct's denomination-picker labels still go through formatDenominationLabel when no qtyValue/qtyUnit is set", async () => {
+  it("PREMIUM APPS ZERO-BEHAVIOR-CHANGE REGRESSION: browseProduct's picker button is the plain formatDenominationLabel plan name and the price lives in the body", async () => {
     const cat = await createCategory(prisma, { name: "Spotify Category", group: CategoryGroup.PREMIUM_APPS });
     const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Spotify Premium" });
-    // durationLabel embeds the product name around the digit ("Spotify Premium
-    // 1 Bulan") so the two candidate code paths genuinely diverge:
-    //   - formatDenominationLabel("Spotify Premium", "Spotify Premium 1 Bulan")
-    //     pulls "1" to the front, strips the redundant "Spotify Premium" prefix
-    //     out of the leading descriptor text, and keeps the genuine trailing
-    //     distinguisher ("Bulan") intact -> "1 Bulan" (Finding 2/I1+I6 of the
-    //     final-review fixed a bug where this used to collapse the WHOLE
-    //     descriptor down to the bare product name, discarding "Bulan" and
-    //     making this indistinguishable from a hypothetical "...1 Tahun" SKU).
-    //   - the raw gameTopUpDenomLabel fallback (d.durationLabel || d.name),
-    //     which is what would leak through as an unconditional buttonLabel if
-    //     the qtyValue/qtyUnit gate were ever removed, stays verbatim:
-    //     "Spotify Premium 1 Bulan".
-    // These strings differ, so this test fails if the gating regresses.
+    // Premium Apps never goes through the canonical presenter: the button is exactly
+    // formatDenominationLabel("Spotify Premium", "Spotify Premium 1 Bulan") = "1 Bulan" (the redundant product
+    // prefix is stripped, "Bulan" kept), with NO price and NO "#id" on it; the price is in the message body.
     const d1 = await createDenomination(prisma, {
       productId: p.id,
       name: "Spotify Premium 1 Bulan",
@@ -2562,7 +2598,60 @@ describe("browseCategoryEntry — Game Top Up variant/region navigation + AUTO s
     const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ text: string; callback_data?: string }>> };
     const flat = (markup?.inline_keyboard ?? []).flat();
     const button = flat.find((b) => b.callback_data === `v1:browse:denom:${d1.id}`)!;
-    expect(button.text).toBe("Spotify Premium 1 Bulan · Rp10K"); // unknown names remain complete
+    expect(button.text).toBe("1 Bulan");
+    expect(bodyText(sink)).toContain("Spotify Premium 1 Bulan — Rp10.000 (Stock 0)");
+  });
+
+  it("CapCut Pro (Premium Apps, USD buyer): body lists each plan once with price + stock, no #id, buttons are plan names only", async () => {
+    const cat = await createCategory(prisma, { name: "Premium CapCut", group: CategoryGroup.PREMIUM_APPS });
+    const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "CapCut Pro" });
+    const plans: Array<[string, number]> = [
+      ["CC - 7 Day", 5], ["CC - 1 Month Team", 2], ["CC - 3 Month", 0], ["CC - 6 Month Indplan 6 Month (150-180 day)", 2],
+    ];
+    const made: Array<{ id: number }> = [];
+    for (const [name, n] of plans) {
+      const d = await createDenomination(prisma, { productId: p.id, name, type: "SHARED", durationLabel: name, price: "4480" });
+      if (n > 0) await bulkAddStock(prisma, d.id, Array.from({ length: n }, (_, i) => `cc${i}@example.com:pw${i}`));
+      made.push(d);
+    }
+    await setSetting(prisma, "usd_idr_rate", "16000");
+    invalidateRateCache();
+    const { ctx, sink } = customerCtx({ session: { ...userSession(), dbUser: { ...userSession().dbUser!, preferredCurrency: "USD" } } });
+    await customer.browseProduct(ctx, p.id);
+
+    const body = bodyText(sink);
+    expect(body).not.toMatch(/#\d/);
+    expect(body).toContain("Choose a plan:");
+    for (const [name, n] of plans) {
+      const line = `${name} — $0.28 (Stock ${n})`;
+      expect(body.split(line).length - 1).toBe(1);
+    }
+    const flat = ((lastMarkup(sink) as { inline_keyboard?: Array<Array<{ text: string; callback_data?: string }>> }).inline_keyboard ?? []).flat();
+    const buttons = flat.filter((b) => b.callback_data?.startsWith("v1:browse:denom:"));
+    expect(buttons).toHaveLength(4);
+    for (const b of buttons) {
+      expect(b.text.startsWith("#")).toBe(false);
+      expect(b.text).not.toContain(" · $");
+      expect(b.text).not.toContain("$");
+    }
+    // The exact original label rule (formatDenominationLabel + truncLabel), in plan order.
+    expect(buttons.map((b) => b.text)).toEqual(["7 CC - Day", "1 CC - Month Team", "3 CC - Month", "6 CC - Month Indplan 6 …"]);
+    expect(buttons.map((b) => b.callback_data)).toEqual(made.map((d) => `v1:browse:denom:${d.id}`));
+  });
+
+  it("Premium Apps: a plan with qtyValue + qtyUnit gets the original compact quantity button; one without keeps its plan name", async () => {
+    const cat = await createCategory(prisma, { name: "Premium CapCut qty", group: CategoryGroup.PREMIUM_APPS });
+    const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "CapCut Pro" });
+    const withQty = await createDenomination(prisma, { productId: p.id, name: "CC - 12 Month", type: "SHARED", durationLabel: "CC - 12 Month", price: "4480", qtyValue: 12, qtyUnit: "Month" });
+    const plain = await createDenomination(prisma, { productId: p.id, name: "CC - 7 Day", type: "SHARED", durationLabel: "CC - 7 Day", price: "4480" });
+    await setSetting(prisma, "usd_idr_rate", "16000");
+    invalidateRateCache();
+    const { ctx, sink } = customerCtx({ session: { ...userSession(), dbUser: { ...userSession().dbUser!, preferredCurrency: "USD" } } });
+    await customer.browseProduct(ctx, p.id);
+    const flat = ((lastMarkup(sink) as { inline_keyboard?: Array<Array<{ text: string; callback_data?: string }>> }).inline_keyboard ?? []).flat();
+    const text = (id: number) => flat.find((b) => b.callback_data === `v1:browse:denom:${id}`)!.text;
+    expect(text(withQty.id)).toBe("12 Month — $0.28");
+    expect(text(plain.id)).toBe("7 CC - Day");
   });
 });
 
@@ -3351,7 +3440,7 @@ describe("Finding 4 (I3): Game Top Up scratch-field clearing + emoji precedence"
     const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ text: string; callback_data?: string }>> };
     const flat = (markup?.inline_keyboard ?? []).flat();
     const button = flat.find((b) => b.callback_data === `v1:browse:denom:${d1.id}`)!;
-    expect(button.text).toContain("Standard"); // semantic variant remains visible
+    expect(bodyText(sink)).toContain("Standard"); // shared semantic variant remains visible, once, in the body
     expect(button.text).not.toContain("🕹️"); // the stale session one never leaks in
   });
 });

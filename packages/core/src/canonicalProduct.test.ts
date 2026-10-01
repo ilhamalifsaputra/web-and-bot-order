@@ -143,6 +143,141 @@ describe("canonical product semantics", () => {
   });
 });
 
+describe("canonical product-name prefix", () => {
+  const WWM = "Where Winds Meet";
+  it("strips the product's own name even when it is not a verified game prefix", () => {
+    const result = present("Where Winds Meet 60 Echo Beads", {}, WWM);
+    expect(result.displayName).toBe("60 Echo Beads");
+    expect(result.variant.type).toBe("unknown");
+    expect(result.rawName).toBe("Where Winds Meet 60 Echo Beads");
+  });
+  it("treats a structured quantity that equals the cleaned name as agreeing, so nothing is left over", () => {
+    const result = present("Where Winds Meet 60 Echo Beads", { qtyValue: 60, qtyUnit: "Echo Beads" }, WWM);
+    expect(result.variant).toMatchObject({ type: "amount", quantity: 60, unit: "Echo Beads", residual: [] });
+    expect(result.displayName).toBe("60 Echo Beads");
+  });
+  it("still preserves a genuine contradiction between structured quantity and name", () => {
+    const result = present("Where Winds Meet 61 Echo Beads", { qtyValue: 60, qtyUnit: "Echo Beads" }, WWM);
+    expect(result.variant).toMatchObject({ type: "amount", quantity: 60, residual: ["61 Echo Beads"] });
+  });
+  it("keeps a verified game prefix working as before", () => {
+    expect(present("Valorant 1.000 VP", {}, "Valorant").variant).toMatchObject({ type: "amount", quantity: 1000, unit: "VP", residual: [] });
+  });
+  it("does not strip a product name that is only the start of a longer word", () => {
+    expect(present("Where Winds Meetings 60 Echo Beads", {}, WWM).displayName).toBe("Where Winds Meetings 60 Echo Beads");
+    expect(present("where winds meet 60 Echo Beads", {}, WWM).displayName).toBe("60 Echo Beads");
+  });
+});
+
+describe("canonical product-name prefix with a trailing region suffix", () => {
+  const WWM_G = "Where Winds Meet (Global)";
+  it("strips the product name without its trailing parenthesised suffix", () => {
+    expect(present("Where Winds Meet 60 Echo Beads", {}, WWM_G).displayName).toBe("60 Echo Beads");
+    expect(present("where winds meet 60 Echo Beads", {}, WWM_G).displayName).toBe("60 Echo Beads");
+  });
+  it("agrees with a structured quantity once the suffix-less name is stripped", () => {
+    const result = present("Where Winds Meet 60 Echo Beads", { qtyValue: 60, qtyUnit: "Echo Beads" }, WWM_G);
+    expect(result.variant).toMatchObject({ type: "amount", quantity: 60, unit: "Echo Beads", residual: [] });
+    expect(result.displayName).toBe("60 Echo Beads");
+  });
+  it("still handles an uppercase region-suffixed verified game", () => {
+    expect(present("Mobile Legends 86 Diamonds", {}, "MOBILE LEGENDS (Global)").displayName).toBe("86 Diamonds");
+  });
+  it("strips the supplier brand, with or without a suffix, as a whole-token prefix", () => {
+    const withBrand = (name: string, brand: string) => canonicalProduct({ ...input(name, {}, "Some Shop Title"), product: { id: 3, name: "Some Shop Title", digiflazzBrand: brand, isActive: true } }, context);
+    expect(withBrand("Where Winds Meet 60 Echo Beads", "Where Winds Meet").displayName).toBe("60 Echo Beads");
+    expect(withBrand("Where Winds Meet 60 Echo Beads", "Where Winds Meet (Global)").displayName).toBe("60 Echo Beads");
+    expect(withBrand("Where Winds Meetings 60 Echo Beads", "Where Winds Meet (Global)").displayName).toBe("Where Winds Meetings 60 Echo Beads");
+  });
+  it("does not strip a name that is only the start of a longer word, even with a suffix", () => {
+    expect(present("Where Winds Meetings 60 Echo Beads", {}, WWM_G).displayName).toBe("Where Winds Meetings 60 Echo Beads");
+  });
+  it("never produces an empty name", () => {
+    expect(present("Where Winds Meet", {}, WWM_G).displayName).toBe("Where Winds Meet");
+  });
+});
+
+describe("canonical product-name prefix: unsuitable remainders", () => {
+  const SP = "Spotify Premium";
+  it("keeps the full name when the remainder starts with punctuation", () => {
+    expect(present("Spotify Premium - Family 3 Bulan", {}, SP).displayName).toBe("Spotify Premium - Family 3 Bulan");
+    expect(present("Spotify Premium (Duo) 1 Bulan", {}, SP).displayName).toBe("Spotify Premium (Duo) 1 Bulan");
+    expect(present("Spotify Premium + Netflix 1 Bulan", {}, SP).displayName).toBe("Spotify Premium + Netflix 1 Bulan");
+  });
+  it("keeps the full name when the remainder is purely numeric", () => {
+    expect(present("Roblox 400", {}, "Roblox").displayName).toBe("Roblox 400");
+  });
+  it("still strips when the remainder starts with a letter or digit plus text", () => {
+    expect(present("Spotify Premium 1 Bulan", {}, SP).displayName).toBe("1 Bulan");
+    expect(present("Roblox 800 Robux", {}, "Roblox").displayName).toBe("800 Robux");
+  });
+});
+
+describe("canonical structured quantity with dot grouping", () => {
+  it("treats 12.000 and 12000 as the same quantity so the name is not repeated", () => {
+    const result = present("Where Winds Meet 12.000 Echo Beads", { qtyValue: 12000, qtyUnit: "Echo Beads" }, "Where Winds Meet");
+    expect(result.variant).toMatchObject({ type: "amount", quantity: 12000, unit: "Echo Beads", residual: [] });
+    expect(result.displayName).toBe("12000 Echo Beads");
+  });
+  it("still keeps a contradicting grouped quantity", () => {
+    const result = present("Where Winds Meet 13.000 Echo Beads", { qtyValue: 12000, qtyUnit: "Echo Beads" }, "Where Winds Meet");
+    expect(result.variant).toMatchObject({ type: "amount", quantity: 12000, residual: ["13.000 Echo Beads"] });
+  });
+});
+
+describe("canonical qualifier de-duplication", () => {
+  const withQualifiers = (name: string, gameVariant: string | null, gameRegion: string | null, productName = "Delta Force") => {
+    const data = input(name, {}, productName);
+    data.product.gameVariant = gameVariant;
+    data.product.gameRegion = gameRegion;
+    return canonicalProduct(data, context);
+  };
+  it("drops a variant qualifier already present in the name (Delta Coins - Garena)", () => {
+    const result = withQualifiers("18 Delta Coins - Garena", "Garena", null);
+    expect(result.qualifiers).toEqual([]);
+    expect(result.displayName).toBe("18 Delta Coins - Garena");
+    expect(result.product.gameVariant).toBe("Garena");
+  });
+  it("drops a region qualifier already present in brackets (Diamonds (Global))", () => {
+    const result = withQualifiers("86 Diamonds (Global)", null, "Global", "Mobile Legends");
+    expect(result.qualifiers).toEqual([]);
+    expect(result.displayName).toBe("86 Diamonds (Global)");
+  });
+  it("matches case-insensitively and ignoring extra spaces", () => {
+    expect(withQualifiers("Redefine  - garena", "GARENA", null).qualifiers).toEqual([]);
+  });
+  it("keeps a different qualifier and only drops the duplicate one", () => {
+    expect(withQualifiers("18 Delta Coins - Garena", "Garena", "Indonesia").qualifiers).toEqual(["Indonesia"]);
+    expect(withQualifiers("18 Delta Coins - Garena", "Steam", null).qualifiers).toEqual(["Steam"]);
+  });
+  it("keeps a qualifier that is only a substring of a different word", () => {
+    expect(withQualifiers("18 Delta Coins Garenaxyz", "Garena", null).qualifiers).toEqual(["Garena"]);
+    expect(withQualifiers("86 Diamonds Globalized", null, "Global", "Mobile Legends").qualifiers).toEqual(["Global"]);
+  });
+  it("keeps a multi-word qualifier unless all its tokens appear contiguously", () => {
+    expect(withQualifiers("18 Coins - South East", null, "South East Asia").qualifiers).toEqual(["South East Asia"]);
+    expect(withQualifiers("18 Coins - South East Asia", null, "South East Asia").qualifiers).toEqual([]);
+  });
+  it("keeps both qualifiers when neither is in the name, and the schema still parses", () => {
+    const result = withQualifiers("86 Diamonds", "Fast", "Indonesia", "Mobile Legends");
+    expect(result.qualifiers).toEqual(["Indonesia", "Fast"]);
+    expect(CanonicalProductSchema.safeParse(result).success).toBe(true);
+  });
+  it("preserves a legitimately repeated word inside the package name", () => {
+    const result = withQualifiers("Gem Gem Pack Package", "Gem", null, "Growtopia");
+    expect(result.displayName).toBe("Gem Gem Pack Package");
+    // "Gem" is a word of the package name, not a "- Gem" / "(Gem)" qualifier segment, so it stays a qualifier.
+    expect(result.qualifiers).toEqual(["Gem"]);
+  });
+  it("keeps a region that is only part of a package name rather than a qualifier segment", () => {
+    const result = withQualifiers("Indonesia Merdeka Package", null, "Indonesia", "Mobile Legends");
+    expect(result.displayName).toBe("Indonesia Merdeka Package");
+    expect(result.qualifiers).toEqual(["Indonesia"]);
+    expect(withQualifiers("Merdeka Package - Indonesia", null, "Indonesia", "Mobile Legends").qualifiers).toEqual([]);
+    expect(withQualifiers("Merdeka Package (indonesia)", null, "Indonesia", "Mobile Legends").qualifiers).toEqual([]);
+  });
+});
+
 describe("canonical exact price and runtime contract", () => {
   it.each([
     ["0", "0", 0, "Rp0"],
@@ -189,5 +324,40 @@ describe("canonical exact price and runtime contract", () => {
     }
     expect(CanonicalProductSchema.safeParse({ ...result, variant: { type: "amount", quantity: Number.MAX_SAFE_INTEGER + 1, unit: "UC", residual: [] } }).success).toBe(false);
     expect(CanonicalProductSchema.safeParse({ ...result, availability: { status: "inactive", purchasable: true } }).success).toBe(false);
+  });
+});
+
+describe("canonical product: Premium Apps and other non-game categories keep the original semantics", () => {
+  const inGroup = (group: string | null, name: string, productName: string, overrides: Partial<CanonicalProductInput["denomination"]> = {}) => {
+    const data = input(name, overrides, productName);
+    data.category.group = group;
+    return data;
+  };
+  it.each(["PREMIUM_APPS", null] as const)("keeps the product name inside the display name (group %s)", (group) => {
+    const result = canonicalProduct(inGroup(group, "Spotify Premium 1 Bulan", "Spotify Premium"), context);
+    expect(result.displayName).toBe("Spotify Premium 1 Bulan");
+    expect(canonicalProduct(inGroup(group, "Where Winds Meet 60 Echo Beads", "Where Winds Meet (Global)"), context).displayName).toBe("Where Winds Meet 60 Echo Beads");
+  });
+  it("still strips a verified game prefix exactly as before", () => {
+    expect(canonicalProduct(inGroup("PREMIUM_APPS", "Mobile Legends 86 Diamonds", "Mobile Legends"), context).displayName).toBe("86 Diamonds");
+  });
+  it("keeps the structured-quantity contradiction rule instead of the relaxed agreement", () => {
+    const result = canonicalProduct(inGroup("PREMIUM_APPS", "Where Winds Meet 12.000 Echo Beads", "Where Winds Meet", { qtyValue: 12000, qtyUnit: "Echo Beads" }), context);
+    expect(result.variant).toMatchObject({ type: "amount", quantity: 12000, residual: ["Where Winds Meet 12.000 Echo Beads"] });
+  });
+  it("keeps both region and variant qualifiers even when the name spells them out", () => {
+    const data = inGroup("PREMIUM_APPS", "Spotify Premium - Garena (Global)", "Spotify Premium");
+    data.product.gameVariant = "Garena";
+    data.product.gameRegion = "Global";
+    expect(canonicalProduct(data, context).qualifiers).toEqual(["Global", "Garena"]);
+  });
+  it("applies the new behavior to the same inputs under GAME_TOPUP", () => {
+    expect(canonicalProduct(inGroup("GAME_TOPUP", "Spotify Premium 1 Bulan", "Spotify Premium"), context).displayName).toBe("1 Bulan");
+    const data = inGroup("GAME_TOPUP", "Spotify Premium - Garena (Global)", "Spotify Premium");
+    data.product.gameVariant = "Garena";
+    data.product.gameRegion = "Global";
+    expect(canonicalProduct(data, context).qualifiers).toEqual([]);
+    const relaxed = canonicalProduct(inGroup("GAME_TOPUP", "Where Winds Meet 12.000 Echo Beads", "Where Winds Meet", { qtyValue: 12000, qtyUnit: "Echo Beads" }), context);
+    expect(relaxed.variant).toMatchObject({ residual: [] });
   });
 });

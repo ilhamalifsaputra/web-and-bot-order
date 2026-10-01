@@ -195,8 +195,8 @@ describe("denomination picker", () => {
 
     const idr = customerCtx(DisplayCurrency.IDR);
     await customer.browseProduct(idr.ctx, sample.parentProduct.id);
-    expect(sentText(idr.sink)).toContain("Rp79,000");
-    expect(sentText(idr.sink)).toContain("Rp160,000");
+    expect(sentText(idr.sink)).toContain("Rp79.000");
+    expect(sentText(idr.sink)).toContain("Rp160.000");
     expect(sentText(idr.sink)).not.toContain("$");
   });
 });

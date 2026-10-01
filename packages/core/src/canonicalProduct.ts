@@ -77,10 +77,36 @@ export interface CanonicalProductContext {
 // Full-name prefixes verified in detection/__fixtures__/catalogSnapshot.json.
 // No ML/AB aliases: that snapshot does not establish them as supplier prefixes.
 const VERIFIED_GAME_PREFIXES = ["Mobile Legends", "Arena Breakout", "Growtopia", "Free Fire", "PUBG Mobile", "Valorant", "Delta Force"];
-function cleanName(name: string, product: CanonicalProductInput["product"]): string {
+/** The remainder after a whole-token, case-insensitive leading `candidate`, or null when it is not a prefix or the remainder would read badly. */
+function remainderAfter(name: string, candidate: string): string | null {
+  const own = candidate.trim();
+  if (!own || !name.toLowerCase().startsWith(`${own.toLowerCase()} `)) return null;
+  const rest = name.slice(own.length).trim();
+  // "- Family 3 Bulan", "(Duo) 1 Bulan", "+ Netflix" and a bare "400" lose their meaning without the product name.
+  if (!rest || !/^[\p{L}\p{N}]/u.test(rest) || /^[\d.,]+$/.test(rest)) return null;
+  return rest;
+}
+const withoutTrailingParens = (value: string) => value.replace(/\s*\([^()]*\)\s*$/, "");
+/** Only Game Top Up opts into the newer catalog semantics; Premium Apps and any other (or null) group keep the original behavior. */
+const isGameTopUp = (input: CanonicalProductInput) => input.category.group === "GAME_TOPUP";
+function cleanName(name: string, product: CanonicalProductInput["product"], isGame: boolean): string {
   const identities = [product.name, product.digiflazzBrand ?? ""];
   const prefix = VERIFIED_GAME_PREFIXES.find((candidate) => identities.some((identity) => identity.toLowerCase() === candidate.toLowerCase() || identity.toLowerCase().startsWith(`${candidate.toLowerCase()} `)));
-  if (prefix && name.toLowerCase().startsWith(`${prefix.toLowerCase()} `)) return name.slice(prefix.length).trim() || name.trim();
+  if (!isGame) {
+    if (prefix && name.toLowerCase().startsWith(`${prefix.toLowerCase()} `)) return name.slice(prefix.length).trim() || name.trim();
+    return name.trim();
+  }
+  if (prefix) {
+    const rest = remainderAfter(name, prefix);
+    if (rest) return rest;
+  }
+  // The list intro/header already names the product, so its own name (or its brand), with or without a trailing
+  // "(Region)" suffix, is a safe whole-token prefix to drop (not a guessed alias). Longest candidate first.
+  const candidates = identities.flatMap((identity) => [identity.trim(), withoutTrailingParens(identity.trim())]).filter(Boolean).sort((x, y) => y.length - x.length);
+  for (const candidate of candidates) {
+    const rest = remainderAfter(name, candidate);
+    if (rest) return rest;
+  }
   return name.trim();
 }
 
@@ -116,7 +142,10 @@ function parseVariant(name: string, input: CanonicalProductInput): CanonicalVari
     const value = structured ? denom.qtyValue! : parsed!;
     const unit = structured ? denom.qtyUnit!.trim() : parsedUnit!;
     const agrees = safeParsed && value === parsed && unit.toLowerCase() === parsedUnit!.toLowerCase();
-    if (structured && !agrees) return { type: "amount", quantity: value, unit, residual: [name] };
+    // A unit outside the closed regex still agrees when the whole cleaned name is exactly the structured quantity and unit.
+    const ungroup = (value: string) => value.replace(/\d{1,3}(?:\.\d{3})+/g, (group) => group.replace(/\./g, ""));
+    const nameIsStructured = !!structured && nameTokens(ungroup(name)).join(" ") === nameTokens(`${denom.qtyValue} ${unit}`).join(" ");
+    if (structured && !agrees) return { type: "amount", quantity: value, unit, residual: isGameTopUp(input) && nameIsStructured ? [] : [name] };
     const before = name.slice(0, match!.index!).trim();
     let after = name.slice(match!.index! + match![0].length).trim();
     const bonusMatch = after.match(/^\+\s*(\d+)\s+(Bonus|Diamonds?|Bonds?|UC|World Locks?)(?=\s|$)/i);
@@ -154,13 +183,32 @@ function formatExactMoney(value: CanonicalMoney, locale: string): string {
   return `${value.currency === "IDR" ? "Rp" : "$"}${whole.replace(/\B(?=(\d{3})+(?!\d))/g, grouping)}${fraction}`;
 }
 
+/** Lowercased whole tokens; brackets, dashes and repeated whitespace are separators. */
+function nameTokens(value: string): string[] {
+  return value.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+}
+
+/** The "- X" and "(X)" segments of a name: the only places a region/variant is spelled out as a qualifier rather than as part of a package name. */
+function qualifierSegments(name: string): string[] {
+  const bracketed = [...name.matchAll(/\(([^()]*)\)/g)].map((match) => match[1]!);
+  const dashed = name.split(/\s*-\s*/).slice(1).map((part) => part.replace(/\(.*$/, ""));
+  return [...bracketed, ...dashed];
+}
+
+/** True when a "- X" or "(X)" segment of `name` is exactly `qualifier`, whole tokens, any case. The word elsewhere in the name ("Indonesia Merdeka Package") does not count. */
+function nameContainsQualifier(name: string, qualifier: string): boolean {
+  const wanted = nameTokens(qualifier).join(" ");
+  return wanted !== "" && qualifierSegments(name).some((segment) => nameTokens(segment).join(" ") === wanted);
+}
+
 export function canonicalProduct(input: CanonicalProductInput, context: CanonicalProductContext): CanonicalProduct {
   const denom = input.denomination;
   const rawName = denom.supplierRawName ?? denom.name;
-  const cleaned = cleanName(rawName, input.product);
+  const isGame = isGameTopUp(input);
+  const cleaned = cleanName(rawName, input.product, isGame);
   const variant = parseVariant(cleaned, input);
   for (const source of [denom.name, denom.durationLabel]) {
-    const extra = cleanName(source, input.product);
+    const extra = cleanName(source, input.product, isGame);
     // A substring inside a word is not redundant editable metadata.
     const alreadyPresent = ` ${cleaned} `.includes(` ${extra} `);
     if (extra && !alreadyPresent && !variant.residual.includes(extra)) variant.residual.push(extra);
@@ -172,10 +220,15 @@ export function canonicalProduct(input: CanonicalProductInput, context: Canonica
   const conversion = displayPrice.currency === "USD" ? { basis: "USDT" as const, direction: "IDR_PER_USDT" as const, rate: new Decimal(context.rate!).toString(), rounding: "CEIL_2DP" as const, source: context.rateSource ?? "caller", asOf: context.rateAsOf ?? null } : null;
   const inactive = !denom.isActive || !input.product.isActive || input.product.isArchived || !input.category.isActive;
   const status = inactive ? "inactive" : input.stockAvailable === false ? "out_of_stock" : "available";
+  const displayName = renderVariant(variant);
+  // A qualifier already spelled out as a "- Garena" / "(Global)" segment of this product's own name is redundant; different ones stay.
+  const qualifiers = [input.product.gameRegion, input.product.gameVariant]
+    .filter((value): value is string => !!value?.trim())
+    .filter((value) => !isGame || !nameContainsQualifier(displayName, value));
   return CanonicalProductSchema.parse({
     id: denom.id, supplierSku: denom.supplierSku ?? null, rawName,
     rawNameProvenance: denom.supplierRawName != null ? "supplier" : "legacy_name",
-    variant, displayName: renderVariant(variant), qualifiers: [input.product.gameRegion, input.product.gameVariant].filter((value): value is string => !!value?.trim()),
+    variant, displayName, qualifiers,
     product: { id: input.product.id, name: input.product.name, gameVariant: input.product.gameVariant || null, gameRegion: input.product.gameRegion || null },
     category: { id: input.category.id, name: input.category.name, group: input.category.group || null },
     priceIDR, displayPrice, formattedPrice: formatExactMoney(displayPrice, context.locale ?? "id"),

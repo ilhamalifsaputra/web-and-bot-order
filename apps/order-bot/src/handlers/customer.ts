@@ -13,6 +13,7 @@ import { botUsername } from "@app/core/runtime";
 import { Decimal } from "@app/core/money";
 import { canonicalProduct } from "@app/core/canonicalProduct";
 import { presentCanonicalCatalog, boundedCanonicalName } from "../util/canonicalPresenter";
+import { gameTopUpDenomLabel } from "../util/denominationLabel";
 import { ensureUtc, localize, addDays } from "@app/core/datetime";
 import { UserRole, OrderStatus, OrderKind, PaymentMethod, TicketStatus, SenderType, DeliveryType, CategoryGroup, customerStatusLabel, parseDisplayCurrency } from "@app/core/enums";
 import { parseAdditionalFields, parseCustomerData } from "@app/core/deliveryFields";
@@ -158,6 +159,8 @@ interface BrowseScratch {
    * products would vanish. Deleted on every non-mixed path. */
   gameVariantDimensionSkipped?: boolean;
   productId?: number;
+  /** 0-based picker page browseProduct last rendered for `productId`. */
+  productPage?: number;
   variantId?: number;
   quantity?: number;
   paymentMethod?: string;
@@ -238,7 +241,7 @@ async function handleBackButton(ctx: MyContext): Promise<void> {
   }
   // Viewing a denomination detail → step back to its parent product's picker.
   if (sc(ctx).variantId != null && sc(ctx).productId != null) {
-    await browseProduct(ctx, sc(ctx).productId!);
+    await browseProduct(ctx, sc(ctx).productId!, sc(ctx).productPage ?? 0);
     return;
   }
   // Viewing a picker (product but no denomination) → back to the product list.
@@ -1061,6 +1064,7 @@ export async function browseProduct(ctx: MyContext, productId: number, requested
   }
   if (active.length === 1) {
     delete sc(ctx).productId;
+    delete sc(ctx).productPage;
     await browseDenomination(ctx, active[0]!.id);
     return;
   }
@@ -1068,30 +1072,75 @@ export async function browseProduct(ctx: MyContext, productId: number, requested
   delete sc(ctx).variantId;
   const rateContext = await getCanonicalRateContext(prisma);
   const prices = ctxPriceFormatter(ctx, rateContext.rate ? new Decimal(rateContext.rate) : null);
-  const stocks = await availableStockCountsByDenomination(prisma, active.map((d) => d.id));
-  const products = active.map((d) => canonicalProduct({
-    denomination: { ...d, createdAt: d.createdAt.toISOString() }, product, category: product.category,
-    stockAvailable: d.deliveryType !== DeliveryType.AUTO || (stocks.get(d.id) ?? 0) > 0,
-  }, { ...rateContext, effectivePriceIDR: effectiveUnitPrice(d, info.role === UserRole.RESELLER).toString(), preferredCurrency: parseDisplayCurrency(ctx.session.dbUser?.preferredCurrency) ?? "IDR", locale: lang }));
   const sold = await soldCountForProduct(prisma, productId);
   const isGame = product.category.group === CategoryGroup.GAME_TOPUP;
-  const hint = isGame ? await gameInputHint(ctx, active.map((d) => ({ ...d, product }))) : null;
-  const title = t(ctx, isGame ? "browse.choose_denomination_game" : "browse.choose_denomination", {
+  const photoArg = productPhotoArg(product);
+  const render = async (text: string, keyboard: ReturnType<typeof ckb.denominationPickerKb>) => {
+    if (photoArg) {
+      await renderMenu(ctx, text, keyboard, photoArg.photo, photoArg.needsCache ? cacheProductPhotoFileId(productId) : undefined);
+    } else {
+      await renderMenuBanner(ctx, text, keyboard);
+    }
+  };
+
+  if (!isGame) {
+    // Premium Apps (and any null/unclassified group): the original per-plan body lines (price + stock) with
+    // plan-name-only buttons. This picker has no pages, so drop any page index left over from a paged picker
+    // so the detail's Back returns to this plain picker.
+    delete sc(ctx).productPage;
+    const isReseller = info.role === UserRole.RESELLER;
+    const stocks = await availableStockCountsByDenomination(prisma, active.map((d) => d.id));
+    const planLines: string[] = [];
+    const buttonLabels = new Map<number, string | undefined>();
+    for (const d of active) {
+      const unitPrice = effectiveUnitPrice(d, isReseller);
+      // A flash sale shows the old price struck through next to the new one, but only when this buyer is
+      // actually paying the sale price — a reseller whose standing price still wins sees the plain line.
+      const sale = flashPrice(d);
+      const priceText = sale && unitPrice.equals(sale)
+        ? t(ctx, "browse.flash_price", { old: prices.price(d.price), new: prices.price(unitPrice) })
+        : prices.price(unitPrice);
+      // Stock rows only exist for AUTO SKUs; a manual plan has none by design, so show a dash, not a "0".
+      const stockDisplay = d.deliveryType === DeliveryType.AUTO ? (stocks.get(d.id) ?? 0) : "—";
+      planLines.push(t(ctx, "browse.denomination_line", { duration: esc(d.durationLabel || d.name), price: priceText, stock: stockDisplay }));
+      // The original rule: a compact quantity button only when the admin set qtyValue + qtyUnit; otherwise the
+      // picker falls back to the plan name (formatDenominationLabel).
+      buttonLabels.set(d.id, d.qtyValue != null && d.qtyUnit
+        ? gameTopUpDenomLabel(d, unitPrice, product.gameVariantEmoji ?? sc(ctx).gameVariantEmoji, prices)
+        : undefined);
+    }
+    let text = t(ctx, "browse.choose_denomination", {
+      name: esc(product.name),
+      sold: t(ctx, "browse.sold_count", { count: sold }),
+      plans: planLines.join("\n"),
+    });
+    if (product.description) {
+      text += "\n\n" + t(ctx, "browse.description", { description: esc(product.description) });
+    }
+    // A USD buyer whose rate is unavailable saw Rp prices above — say so, once.
+    text += prices.rateNotice(lang);
+    await render(text, ckb.denominationPickerKb(active.map((d) => ({ ...d, buttonLabel: buttonLabels.get(d.id) })), productId, product.name, lang));
+    return;
+  }
+
+  // Game Top Up keeps the canonical presenter; the stock read only feeds each SKU's availability flag.
+  const gameStocks = await availableStockCountsByDenomination(prisma, active.map((d) => d.id));
+  const products = active.map((d) => canonicalProduct({
+    denomination: { ...d, createdAt: d.createdAt.toISOString() }, product, category: product.category,
+    stockAvailable: d.deliveryType !== DeliveryType.AUTO || (gameStocks.get(d.id) ?? 0) > 0,
+  }, { ...rateContext, effectivePriceIDR: effectiveUnitPrice(d, info.role === UserRole.RESELLER).toString(), preferredCurrency: parseDisplayCurrency(ctx.session.dbUser?.preferredCurrency) ?? "IDR", locale: lang }));
+  const hint = await gameInputHint(ctx, active.map((d) => ({ ...d, product })));
+  const title = t(ctx, "browse.choose_denomination_game", {
     name: "__CANONICAL_NAME__", sold: t(ctx, "browse.sold_count", { count: sold }), info: "", plans: "",
   }).replace(/<[^>]*>/g, "").replace("__CANONICAL_NAME__", product.name);
   const intro = [title, product.description, hint?.replace(/<[^>]*>/g, "")].filter(Boolean).join("\n\n");
-  const stockLabels = isGame ? undefined : Object.fromEntries(active.map((d) => [d.id, d.deliveryType === DeliveryType.AUTO ? String(stocks.get(d.id) ?? 0) : "—"]));
-  const { pages } = presentCanonicalCatalog(products, { locale: lang, intro, stockLabels });
+  const { pages } = presentCanonicalCatalog(products, { locale: lang, intro });
   const pageIndex = Math.min(Math.max(0, Number.isFinite(requestedPage) ? Math.trunc(requestedPage) : 0), pages.length - 1);
   const page = pages[pageIndex]!;
   const text = page.text + prices.rateNotice(lang) + (pages.length > 1 ? `\n${pageIndex + 1}/${pages.length}` : "");
-  const keyboard = ckb.canonicalDenominationPickerKb(page.rows, productId, lang, pageIndex, pages.length);
-  const photoArg = productPhotoArg(product);
-  if (photoArg) {
-    await renderMenu(ctx, text, keyboard, photoArg.photo, photoArg.needsCache ? cacheProductPhotoFileId(productId) : undefined);
-  } else {
-    await renderMenuBanner(ctx, text, keyboard);
-  }
+  // Remembered so the denomination detail's Back returns to this same page.
+  sc(ctx).productPage = pageIndex;
+  await render(text, ckb.canonicalDenominationPickerKb(page.rows, productId, lang, pageIndex, pages.length));
 }
 
 /**
@@ -1230,17 +1279,18 @@ export async function browseDenomination(
   // product list per denominationDetailKb's contract — never to a product that
   // would immediately re-collapse to this same detail.
   const parentProductId = sc(ctx).productId ?? null;
+  const parentPage = parentProductId != null ? (sc(ctx).productPage ?? 0) : 0;
   const photoArg = productPhotoArg(d.product);
   if (photoArg) {
     await renderMenu(
       ctx,
       text,
-      ckb.denominationDetailKb(d, stock, lang, qty, parentProductId),
+      ckb.denominationDetailKb(d, stock, lang, qty, parentProductId, parentPage),
       photoArg.photo,
       photoArg.needsCache ? cacheProductPhotoFileId(d.product.id) : undefined,
     );
   } else {
-    await smartEdit(ctx, text, ckb.denominationDetailKb(d, stock, lang, qty, parentProductId));
+    await smartEdit(ctx, text, ckb.denominationDetailKb(d, stock, lang, qty, parentProductId, parentPage));
   }
   ctx.session.state = BotState.PRODUCT_DETAIL;
   sc(ctx).variantId = denominationId;

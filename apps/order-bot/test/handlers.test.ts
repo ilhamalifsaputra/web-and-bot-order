@@ -2571,23 +2571,15 @@ describe("browseCategoryEntry — Game Top Up variant/region navigation + AUTO s
     expect(bodyText(sink)).not.toContain("PUBG UC · Standard");
   });
 
-  it("PREMIUM APPS ZERO-BEHAVIOR-CHANGE REGRESSION: browseProduct's denomination-picker labels still go through formatDenominationLabel when no qtyValue/qtyUnit is set", async () => {
+  it("PREMIUM APPS DELIBERATE LABEL CHANGE: browseProduct's picker button drops the redundant product-name prefix when no qtyValue/qtyUnit is set", async () => {
     const cat = await createCategory(prisma, { name: "Spotify Category", group: CategoryGroup.PREMIUM_APPS });
     const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Spotify Premium" });
-    // durationLabel embeds the product name around the digit ("Spotify Premium
-    // 1 Bulan") so the two candidate code paths genuinely diverge:
-    //   - formatDenominationLabel("Spotify Premium", "Spotify Premium 1 Bulan")
-    //     pulls "1" to the front, strips the redundant "Spotify Premium" prefix
-    //     out of the leading descriptor text, and keeps the genuine trailing
-    //     distinguisher ("Bulan") intact -> "1 Bulan" (Finding 2/I1+I6 of the
-    //     final-review fixed a bug where this used to collapse the WHOLE
-    //     descriptor down to the bare product name, discarding "Bulan" and
-    //     making this indistinguishable from a hypothetical "...1 Tahun" SKU).
-    //   - the raw gameTopUpDenomLabel fallback (d.durationLabel || d.name),
-    //     which is what would leak through as an unconditional buttonLabel if
-    //     the qtyValue/qtyUnit gate were ever removed, stays verbatim:
-    //     "Spotify Premium 1 Bulan".
-    // These strings differ, so this test fails if the gating regresses.
+    // This is an intentional behavior change, not a zero-behavior-change guarantee: the button used to read
+    // "Spotify Premium 1 Bulan · Rp10K" and now reads "1 Bulan · Rp10K". The canonical presenter removes the
+    // product's own name as a whole-token prefix of the supplier name, because the picker intro already names
+    // the product ("Pilih nominal Spotify Premium ..."). The product identity is not lost: it stays in the
+    // intro, in the denomination detail and in the order confirmation. "Bulan" stays on the button so it
+    // remains distinguishable from a hypothetical "... 1 Tahun" SKU, and rawName/supplierSku are unchanged.
     const d1 = await createDenomination(prisma, {
       productId: p.id,
       name: "Spotify Premium 1 Bulan",
@@ -2603,7 +2595,7 @@ describe("browseCategoryEntry — Game Top Up variant/region navigation + AUTO s
     const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ text: string; callback_data?: string }>> };
     const flat = (markup?.inline_keyboard ?? []).flat();
     const button = flat.find((b) => b.callback_data === `v1:browse:denom:${d1.id}`)!;
-    // The product's own name is a redundant prefix (the picker intro names it), so it is dropped; "Bulan" stays.
+    // Deliberate: the product's own name is a redundant prefix (the picker intro names it), so it is dropped; "Bulan" stays.
     expect(button.text).toBe("1 Bulan · Rp10K");
   });
 });

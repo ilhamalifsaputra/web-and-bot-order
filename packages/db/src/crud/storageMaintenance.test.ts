@@ -25,6 +25,7 @@ import {
   listTicketsForAttachmentCleanup,
   clearTicketAttachments,
   runStorageCleanup,
+  getDatabaseSizeBytes,
 } from "./storageMaintenance";
 import { TicketStatus, SenderType } from "@app/core/enums";
 
@@ -283,5 +284,19 @@ describe("runStorageCleanup", () => {
     expect(await prisma.notificationOutbox.count()).toBe(1);
     expect(await prisma.passwordResetToken.count()).toBe(0);
     expect(await prisma.cartItem.count()).toBe(0);
+  });
+});
+
+describe("getDatabaseSizeBytes", () => {
+  it("returns the size of the current Postgres database as a positive whole JS number", async () => {
+    const bytes = await getDatabaseSizeBytes(prisma);
+    expect(typeof bytes).toBe("number");
+    expect(Number.isInteger(bytes)).toBe(true);
+    expect(bytes).toBeGreaterThan(0);
+  });
+
+  it("also works inside an interactive transaction client", async () => {
+    const bytes = await prisma.$transaction((tx) => getDatabaseSizeBytes(tx));
+    expect(bytes).toBeGreaterThan(0);
   });
 });

@@ -24,6 +24,19 @@ const TERMINAL_OUTBOX_STATUSES: string[] = [
   NotificationStatus.DEAD_LETTER,
 ];
 
+/**
+ * On-disk size, in bytes, of the Postgres database the client is connected to.
+ * Feeds the web-admin Storage page's "Database" card.
+ */
+export async function getDatabaseSizeBytes(db: Db): Promise<number> {
+  // Raw SQL because Prisma has no model for server statistics; the query takes no user input.
+  const rows = await db.$queryRaw<Array<{ size: bigint | number | string }>>`
+    SELECT pg_database_size(current_database())::bigint AS size
+  `;
+  const bytes = Number(rows[0]?.size ?? 0); // BigInt -> number is safe: a database never nears 2^53 bytes
+  return Number.isFinite(bytes) ? bytes : 0;
+}
+
 /** Delete SENT/FAILED/DEAD_LETTER outbox rows older than `cutoff`. Returns the count removed. */
 export async function pruneSentOutbox(db: Db, cutoff: Date): Promise<number> {
   const { count } = await db.notificationOutbox.deleteMany({

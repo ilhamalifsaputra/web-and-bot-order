@@ -1,8 +1,9 @@
 import "./setup-env"; // MUST be first: sets env + builds the temp DB schema.
 import { mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { config } from "@app/core/config";
+import { logger } from "@app/core/logger";
 import { prisma, initDb, upsertUser, setSetting } from "@app/db";
 import { resetDb } from "../../../tests/helpers/sampleData";
 import { makeSession, sessionJtiKey, newJti } from "../src/auth";
@@ -53,7 +54,27 @@ function postJson(url: string, c: string | null, csrfToken: string) {
 }
 
 describe("GET /api/storage/summary", () => {
-  it("happy path: reports folder byte totals and DB file size", async () => {
+  it("falls back to dbBytes 0 and still lists the upload folders when the database size query fails", async () => {
+    writeFileSync(join(UPLOADS_DIR, "broadcasts", "storage-api-test.png"), "hello-world");
+    const sizeQuery = vi.spyOn(prisma, "$queryRaw").mockRejectedValue(new Error("permission denied for pg_database_size"));
+    const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => undefined as never);
+    try {
+      const res = await getJson("/api/storage/summary", cookie);
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.dbBytes).toBe(0);
+      const broadcasts = body.folders.find((f: { name: string }) => f.name === "broadcasts");
+      expect(broadcasts.fileCount).toBeGreaterThanOrEqual(1);
+      expect(sizeQuery).toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(String(warnSpy.mock.calls[0]![1])).toContain("database size");
+    } finally {
+      sizeQuery.mockRestore();
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("happy path: reports folder byte totals and the Postgres database size", async () => {
     writeFileSync(join(UPLOADS_DIR, "broadcasts", "storage-api-test.png"), "hello-world");
     const res = await getJson("/api/storage/summary", cookie);
     expect(res.statusCode).toBe(200);

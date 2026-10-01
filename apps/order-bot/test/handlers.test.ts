@@ -1432,9 +1432,10 @@ describe("denomination picker", () => {
     const body = bodyText(sink);
     expect(body).toContain("Mobile Legends");
     expect(body).toContain("sold (all-time)");
-    // Full semantic list carries exact prices; buttons remain compact browsing hints.
-    expect(body).toContain("Rp15,000");
-    expect(body).toContain("Rp30,000");
+    // Plain amounts are clear on their buttons, so the body does not repeat
+    // them (exact prices are on the detail view).
+    expect(body).not.toContain("Rp15,000");
+    expect(body).not.toContain("Rp30,000");
     expect(body).not.toContain("(Stock");
     expect(body).not.toContain("Choose a plan:");
     expect(body).toContain("Choose a top-up amount:");
@@ -1448,7 +1449,7 @@ describe("denomination picker", () => {
     // The buttons still carry the price.
     const markup = JSON.stringify(lastMarkup(sink));
     expect(markup).toContain(`v1:browse:denom:${d1.id}`);
-    expect(markup).toContain("Rp");
+    expect(markup).toContain("86 💎 · Rp15K");
   });
 
   it("Game Top Up picker body renders in Indonesian", async () => {
@@ -1523,7 +1524,8 @@ describe("denomination picker", () => {
     // and — on a flash sale — not even plain text, see the dedicated C1
     // tests below).
     const button2 = flat.find((b) => b.callback_data === `v1:browse:denom:${d2.id}`)!;
-    expect(button2.text).toContain("172 Diamonds");
+    // Parsed from the name, so it gets the same icon label as d1.
+    expect(button2.text).toContain("172 💎");
     expect(button2.text).toContain("Rp30K");
     expect(button2.text).not.toContain("Rp30.000");
   });
@@ -1563,10 +1565,9 @@ describe("denomination picker", () => {
     const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ text: string; callback_data?: string }>> };
     const flat = (markup?.inline_keyboard ?? []).flat();
     const button = flat.find((b) => b.callback_data === `v1:browse:denom:${denom.id}`)!;
-    // formatDenominationLabel("Delta Force", "Delta Force 60 Coins") strips
-    // the redundant "Delta Force" prefix -> "60 Coins"; compact price of
-    // 150000 is "Rp150K".
-    expect(button.text).toBe("60 Coins · Rp150K");
+    // The redundant "Delta Force" prefix is stripped -> "60 Coins", Coins
+    // shows as its icon; compact price of 150000 is "Rp150K".
+    expect(button.text).toBe("60 🪙 · Rp150K");
     expect(button.text.length).toBeLessThanOrEqual(24);
     expect(button.text).not.toContain("…"); // truncLabel never had to cut it
     expect(button.text).not.toMatch(/[<>]/); // no HTML leaking into button text
@@ -1613,7 +1614,7 @@ describe("denomination picker", () => {
     // browse.flash_price string (<s>old</s> new ⚡) — buttons can't render
     // HTML, so it would show literal tags — and never the un-discounted
     // "Rp150K" either.
-    expect(button.text).toBe("60 Coins · Rp120K");
+    expect(button.text).toBe("60 🪙 · Rp120K");
     expect(button.text).not.toMatch(/[<>]/);
     expect(button.text).not.toContain("⚡");
     expect(button.text).not.toContain("…");
@@ -1661,7 +1662,7 @@ describe("denomination picker", () => {
     // Name segment truncated to fit the 15-char budget ("1680 Coins + B…"),
     // price segment ("Rp300K") always intact — never chopped to "Rp…" or
     // dropped entirely.
-    expect(button.text).toBe("1.68K Coins + Bonus · Rp300K");
+    expect(button.text).toBe("1.68K 🪙 + Bonus · Rp300K");
     expect(button.text.endsWith("Rp300K")).toBe(true);
     expect(button.text).not.toContain("…");
     expect(bodyText(sink)).toContain("1680 Coins + Bonus");
@@ -2525,9 +2526,9 @@ describe("browseCategoryEntry — Game Top Up variant/region navigation + AUTO s
     const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ text: string; callback_data?: string }>> };
     const flat = (markup?.inline_keyboard ?? []).flat();
     const button = flat.find((b) => b.callback_data === `v1:browse:denom:${d1.id}`)!;
-    expect(button.text).toContain("Standard");
-    expect(button.text).toContain("UC");
-    expect(button.text).toContain("Rp15K");
+    expect(button.text).toBe("60 UC · Rp15K");
+    // Every SKU shares the "Standard" variant, so it is stated once in the body.
+    expect(bodyText(sink)).toContain("PUBG UC · Standard");
   });
 
   it("PREMIUM APPS ZERO-BEHAVIOR-CHANGE REGRESSION: browseProduct's denomination-picker labels still go through formatDenominationLabel when no qtyValue/qtyUnit is set", async () => {
@@ -3351,7 +3352,7 @@ describe("Finding 4 (I3): Game Top Up scratch-field clearing + emoji precedence"
     const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ text: string; callback_data?: string }>> };
     const flat = (markup?.inline_keyboard ?? []).flat();
     const button = flat.find((b) => b.callback_data === `v1:browse:denom:${d1.id}`)!;
-    expect(button.text).toContain("Standard"); // semantic variant remains visible
+    expect(bodyText(sink)).toContain("Standard"); // shared semantic variant remains visible, once, in the body
     expect(button.text).not.toContain("🕹️"); // the stale session one never leaks in
   });
 });

@@ -2,6 +2,7 @@ import type { CanonicalProduct, CanonicalMoney } from "@app/core/canonicalProduc
 import { Decimal } from "@app/core/money";
 import { esc } from "@app/core/formatters";
 import { formatCompactPrice } from "@app/core/compactFormat";
+import { displayUnit, sharedIconUnits } from "@app/core/unitDisplay";
 
 export interface CatalogButton { text: string; callback_data: string }
 export interface CatalogPage { text: string; rows: CatalogButton[][] }
@@ -36,8 +37,12 @@ function compactPrice(product: CanonicalProduct, locale: string): string {
   const formatted = formatCompactPrice(major(product.displayPrice));
   return locale.startsWith("id") ? formatted.replace(".", ",") : formatted;
 }
+/** Repeated supplier whitespace ("Redefine  - Garena") is collapsed for display only; stored names keep it. */
+function collapse(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
 export function canonicalName(product: CanonicalProduct): string {
-  return [product.displayName, ...product.qualifiers].join(" · ");
+  return [collapse(product.displayName), ...product.qualifiers].join(" · ");
 }
 
 /** Oversized names are delivered in full before the interactive summary references their ID. */
@@ -49,11 +54,73 @@ export async function boundedCanonicalName(product: CanonicalProduct, send: (htm
   for (const page of presentCanonicalCatalog([product], { bodyName: name }).pages) await send(page.text);
   return `#${product.id}`;
 }
-function compactName(product: CanonicalProduct, locale: string): string {
+/** Telegram button budget: conservative cells, and a byte cap that also bounds combining marks. */
+export const MAX_LABEL_WIDTH = 44;
+export const MAX_LABEL_BYTES = 64;
+/** Two buttons share a row only when each is at most this wide. */
+export const NARROW_LABEL_WIDTH = 18;
+/** Product buttons per catalog page, for every game. */
+export const CATALOG_PAGE_SIZE = 20;
+const PAGE_TEXT_LIMIT = 3000;
+const MAX_SHARED_LINE = 300;
+
+/** Lowercased whole tokens; brackets, dashes and repeated whitespace are separators. */
+const tokenKey = (value: string): string => value.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean).join(" ");
+
+/** A product's name split into what the button needs and the qualifiers that may be stated once for the list. */
+interface Shape {
+  /** Non-amount name without a trailing qualifier segment listed in `quals` ("" for amounts). */
+  main: string;
+  /** Free text the parser could not place (shown on the button, explained in the body). */
+  leftover: string[];
+  /** Product-level region/variant this item carries, whether still in `qualifiers` or spelled in its own name. */
+  quals: string[];
+}
+function shape(product: CanonicalProduct): Shape {
+  const known = [product.product.gameRegion, product.product.gameVariant].filter((value): value is string => !!value?.trim());
+  const qualifierFor = (segment: string) => known.find((q) => tokenKey(q) !== "" && tokenKey(q) === tokenKey(segment));
+  const quals = [...product.qualifiers];
+  const addQual = (q: string) => { if (!quals.some((have) => tokenKey(have) === tokenKey(q))) quals.push(q); };
   const variant = product.variant;
-  if (variant.type !== "amount") return canonicalName(product);
-  const name = `${compactQuantity(variant.quantity, locale)} ${variant.unit}${variant.bonus ? ` + ${compactQuantity(variant.bonus.quantity, locale)} ${variant.bonus.label ?? variant.bonus.unit}` : ""}`;
-  return [name, ...variant.residual, ...product.qualifiers].join(" ");
+  if (variant.type === "amount") {
+    const leftover: string[] = [];
+    for (const segment of variant.residual) {
+      const q = qualifierFor(segment);
+      if (q) addQual(q); else leftover.push(collapse(segment));
+    }
+    return { main: "", leftover, quals };
+  }
+  let main = collapse(variant.name);
+  // Only a trailing "- Garena" / "(Global)" segment that equals a known qualifier is lifted; inner words stay.
+  const tail = main.match(/^(.+?)\s*(?:-\s*([^()\-]+)|\(([^()]+)\))$/);
+  const q = tail ? qualifierFor(tail[2] ?? tail[3]!) : undefined;
+  if (tail && q) { main = tail[1]!; addQual(q); }
+  return { main, leftover: variant.residual.map(collapse), quals };
+}
+
+const sameUnit = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+function fullMain(product: CanonicalProduct, s: Shape): string {
+  const v = product.variant;
+  if (v.type !== "amount") return [s.main, ...s.leftover].join(" ");
+  const bonus = v.bonus ? ` + ${v.bonus.quantity} ${v.bonus.label ?? v.bonus.unit}` : "";
+  return [`${v.quantity} ${v.unit}${bonus}`, ...s.leftover].join(" ");
+}
+/** Compact amount text, or null when compacting would hide meaning (a bonus in a different unit). */
+function compactMain(product: CanonicalProduct, s: Shape, locale: string, spelled: Set<string>): string | null {
+  const v = product.variant;
+  if (v.type !== "amount") return null;
+  if (v.bonus && !sameUnit(v.bonus.unit, v.unit)) return null;
+  const unit = spelled.has(v.unit.toLowerCase()) ? v.unit : displayUnit(v.unit);
+  const qty = `${compactQuantity(v.quantity, locale)}${v.bonus ? `+${compactQuantity(v.bonus.quantity, locale)}` : ""}`;
+  return [`${qty} ${unit}`, ...s.leftover].join(" ");
+}
+const withPrice = (main: string, quals: string[], price: string) => [collapse(main), ...quals, price].join(" · ");
+const fits = (label: string) => visualWidth(label) <= MAX_LABEL_WIDTH && Buffer.byteLength(label, "utf8") <= MAX_LABEL_BYTES;
+
+function duplicates(labels: string[]): number[][] {
+  const groups = new Map<string, number[]>();
+  labels.forEach((label, index) => groups.set(label, [...(groups.get(label) ?? []), index]));
+  return [...groups.values()].filter((group) => group.length > 1);
 }
 
 /** Split escaped text only at grapheme boundaries, so no HTML entity or emoji is cut. */
@@ -76,38 +143,93 @@ function escapedChunks(value: string, limit: number): string[] {
   return chunks;
 }
 
-/** Final labels resolve collisions before measuring; body always supplies exact full meaning. */
+/**
+ * Button labels, in order: compact (or full where compacting would hide
+ * meaning) → full name on a collision → ` #id` suffix → `#id` when too wide.
+ * Collisions are re-checked after every step, so no two final labels match.
+ */
+function catalogLabels(products: CanonicalProduct[], locale: string, sharedQuals: boolean): { text: string; fallback: boolean; complex: boolean }[] {
+  const conflictingShorts = new Set(sharedIconUnits(products.flatMap((p) => p.variant.type === "amount" ? [p.variant.unit] : [])).map((group) => group.short));
+  const spelled = new Set(products.flatMap((p) => p.variant.type === "amount" && conflictingShorts.has(displayUnit(p.variant.unit)) ? [p.variant.unit.toLowerCase()] : []));
+  const items = products.map((product) => {
+    const s = shape(product);
+    const quals = sharedQuals ? [] : s.quals;
+    const price = compactPrice(product, locale);
+    const full = withPrice(fullMain(product, s), quals, price);
+    const compact = compactMain(product, s, locale, spelled);
+    return {
+      text: compact === null ? full : withPrice(compact, quals, price), full, fallback: false,
+      complex: product.variant.type === "unknown" || (product.variant.type === "amount" && compact === null) || s.leftover.length > 0,
+    };
+  });
+  const texts = () => items.map((item) => item.text);
+  for (const group of duplicates(texts())) {
+    const fulls = group.map((index) => items[index]!.full);
+    const others = new Set(texts().filter((_, index) => !group.includes(index)));
+    if (new Set(fulls).size === group.length && !fulls.some((full) => others.has(full))) group.forEach((index, i) => { items[index]!.text = fulls[i]!; });
+    else for (const index of group) Object.assign(items[index]!, { text: `${items[index]!.text} #${products[index]!.id}`, fallback: true });
+  }
+  items.forEach((item, index) => {
+    // Width alone misses thousands of combining marks in one visual cell, so bytes are bounded too.
+    if (!fits(item.text)) Object.assign(item, { text: `#${products[index]!.id}`, fallback: true });
+  });
+  // IDs are unique, so turning every remaining duplicate into its bare ID terminates.
+  for (let group = duplicates(texts()); group.length; group = duplicates(texts())) {
+    for (const index of group.flat()) Object.assign(items[index]!, { text: `#${products[index]!.id}`, fallback: true });
+  }
+  return items;
+}
+
+/** `Product · Region · Variant` when every product carries the same qualifiers, else null (they stay on the buttons). */
+function sharedQualifierLine(products: CanonicalProduct[]): string | null {
+  if (products.length === 0) return null;
+  const sets = products.map((p) => shape(p).quals);
+  const keyOf = (quals: string[]) => quals.map(tokenKey).sort().join("|");
+  const first = sets[0]!;
+  if (first.length === 0 || sets.some((quals) => keyOf(quals) !== keyOf(first))) return null;
+  const names = new Set(products.map((p) => p.product.name));
+  const line = esc([...(names.size === 1 ? [products[0]!.product.name] : []), ...first].join(" · "));
+  return line.length <= MAX_SHARED_LINE ? `${line}\n\n` : null;
+}
+
+/**
+ * Body: intro, the shared qualifier line, then name + exact price only for the
+ * page's items whose button cannot carry their meaning (ID fallback, unknown or
+ * unparsed text, stock). Items already clear on their button are not repeated.
+ */
 export function presentCanonicalCatalog(products: CanonicalProduct[], context: { locale?: string; intro?: string; stockLabels?: Record<number, string>; bodyName?: string } = {}): { pages: CatalogPage[] } {
   const locale = context.locale ?? "id";
-  const candidates = products.map((p) => `${compactName(p, locale)} · ${compactPrice(p, locale)}`);
-  const counts = new Map<string, number>();
-  for (const label of candidates) counts.set(label, (counts.get(label) ?? 0) + 1);
+  const header = context.bodyName === undefined ? sharedQualifierLine(products) ?? "" : "";
+  const labels = catalogLabels(products, locale, header !== "");
   const entries = products.map((product, index) => {
-    let label = candidates[index]!;
-    if (counts.get(label)! > 1) label += ` #${product.id}`;
-    // Width alone misses thousands of combining marks in one visual cell.
-    // Keep the serialized button label conservatively bounded to 64 UTF-8 bytes.
-    const fallback = visualWidth(label) > 44 || Buffer.byteLength(label, "utf8") > 64;
-    if (fallback) label = `#${product.id}`;
+    const label = labels[index]!;
     const callback_data = `v1:browse:denom:${product.id}`;
-    if (Buffer.byteLength(callback_data, "utf8") > 64) throw new Error("Catalog callback exceeds Telegram byte limit");
-    return { product, button: { text: label, callback_data }, narrow: !fallback && product.variant.type !== "unknown" && visualWidth(label) <= 24 };
+    if (Buffer.byteLength(callback_data, "utf8") > MAX_LABEL_BYTES) throw new Error("Catalog callback exceeds Telegram byte limit");
+    const stock = context.stockLabels?.[product.id];
+    return {
+      product, stock, button: { text: label.text, callback_data },
+      explain: label.fallback || label.complex || stock !== undefined || context.bodyName !== undefined,
+      narrow: !label.fallback && product.variant.type !== "unknown" && visualWidth(label.text) <= NARROW_LABEL_WIDTH,
+    };
   });
   const pages: CatalogPage[] = [];
   let page: CatalogPage = { text: "", rows: [] };
+  let hasHeader = false;
   let priorNarrow = false;
-  const flush = () => { if (page.text || page.rows.length) pages.push(page); page = { text: "", rows: [] }; priorNarrow = false; };
+  const flush = () => { if (page.text || page.rows.length) pages.push(page); page = { text: "", rows: [] }; hasHeader = false; priorNarrow = false; };
   if (context.intro) {
     const chunks = escapedChunks(context.intro, 2800);
     for (let i = 0; i < chunks.length; i++) { page.text = chunks[i]! + "\n\n"; if (i < chunks.length - 1) flush(); }
   }
   for (const entry of entries) {
-    const stock = context.stockLabels?.[entry.product.id];
-    const prefix = `#${entry.product.id} · ${esc(entry.product.formattedPrice)}${stock !== undefined ? ` (${locale.startsWith("id") ? "Stok" : "Stock"} ${esc(stock)})` : ""}\n`;
-    const chunks = escapedChunks(context.bodyName ?? canonicalName(entry.product), 2800 - prefix.length);
+    const prefix = `#${entry.product.id} · ${esc(entry.product.formattedPrice)}${entry.stock !== undefined ? ` (${locale.startsWith("id") ? "Stok" : "Stock"} ${esc(entry.stock)})` : ""}\n`;
+    const chunks = entry.explain ? escapedChunks(context.bodyName ?? canonicalName(entry.product), 2800 - prefix.length - header.length) : [""];
     for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
-      const block = `${prefix}${chunks[chunkIndex]}\n\n`;
-      if (page.text.length + block.length > 3000 || page.rows.flat().length >= 20) flush();
+      const block = entry.explain ? `${prefix}${chunks[chunkIndex]}\n\n` : "";
+      const needed = (hasHeader ? 0 : header.length) + block.length;
+      if (page.text.length + needed > PAGE_TEXT_LIMIT || page.rows.flat().length >= CATALOG_PAGE_SIZE) flush();
+      // Each page repeats the shared qualifier so a later page still says which region/variant it lists.
+      if (!hasHeader) { page.text += header; hasHeader = true; }
       page.text += block;
       const last = page.rows.at(-1);
       if (chunkIndex === 0 && priorNarrow && entry.narrow && last?.length === 1) last.push(entry.button);

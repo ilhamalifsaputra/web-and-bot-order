@@ -5,14 +5,14 @@
  * admin isn't stuck waiting for 03:15 if disk fills up unexpectedly.
  */
 import { readdir, stat } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import type { FastifyInstance } from "fastify";
-import { prisma, runStorageCleanup, logAdminAction } from "@app/db";
+import { logger } from "@app/core/logger";
+import { prisma, runStorageCleanup, getDatabaseSizeBytes, logAdminAction } from "@app/db";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
 import { UPLOADS_DIR } from "../../paths";
 
 const UPLOAD_SUBFOLDERS = ["branding", "products", "broadcasts", "tickets"] as const;
-const DB_FILE = join(dirname(UPLOADS_DIR), "bot.db");
 
 async function folderStats(dir: string): Promise<{ fileCount: number; totalBytes: number }> {
   let entries: string[];
@@ -37,9 +37,16 @@ export default async function storageApiRoutes(app: FastifyInstance): Promise<vo
     const folders = await Promise.all(
       UPLOAD_SUBFOLDERS.map(async (name) => ({ name, ...(await folderStats(join(UPLOADS_DIR, name))) })),
     );
-    const dbBytes = await stat(DB_FILE)
-      .then((s) => s.size)
-      .catch(() => 0);
+    let dbBytes = 0;
+    try {
+      dbBytes = await getDatabaseSizeBytes(prisma);
+    } catch (err) {
+      // Don't fail the whole page over the size card — the upload folders are still useful to show.
+      logger.warn(
+        { err },
+        "Could not read the database size for the admin Storage page, so it will show 0 bytes for the database; check that the database user is allowed to call pg_database_size().",
+      );
+    }
     return reply.send({ folders, dbBytes });
   });
 

@@ -563,7 +563,16 @@ describe("Game Top-Up button fallback chain before a bare ID", () => {
     expect(out.every((text) => !/^#\d+$/.test(text))).toBe(true);
     expect(result.pages[0]!.text).toContain("#1 · Rp1.000.000\nWeekly Premium Subscription Package Bonus");
     expect(result.pages[0]!.text).toContain("#2 · Rp1.000.000\nWeekly Premium Subscription Pkg Bonus");
-    expect(texts([item(1, "Weekly Premium Subscription Package")])).toEqual(["Wkly Prem Sub Pkg · Rp1M"]);
+    expect(texts([item(1, "Weekly Premium Subscription Package")])).toEqual(["Wkly Premium Subscription Pkg · Rp1M"]);
+  });
+  it("never abbreviates Premium, Membership or Subscription inside a shortened official pass or plan name", () => {
+    // Too wide as typed, so the dictionary step runs: Weekly/Monthly/Package/Genesis shrink, the identity words stay whole.
+    expect(texts([item(1, "Weekly Premium Battle Pass Package")])).toEqual(["Wkly Premium Battle Pass Pkg · Rp1M"]);
+    expect(texts([item(1, "Genesis Monthly Membership Package")])).toEqual(["Gen Mthly Membership Pkg · Rp1M"]);
+    expect(texts([item(1, "Weekly Subscription Package Bonus")])).toEqual(["Wkly Subscription Pkg Bonus · Rp1M"]);
+    // A name too long even for that is cut by the ellipsis step, never spelled with an invented short form.
+    const out = texts([item(1, "Valorant Indonesia Premium Battle Pass Monthly Package")])[0]!;
+    expect(out).not.toMatch(/\b(?:Prem|Member|Sub)\b/);
   });
   it("keeps the first word and the END of a long name behind one ellipsis, with the price intact and the full name in the body", () => {
     const products = [8000, 9000, 10000].map((n, i) => item(i + 1, `Ultra Mega Collector Edition Special Pack ${n}`));

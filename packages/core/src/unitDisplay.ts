@@ -104,8 +104,8 @@ const followCase = (source: string, short: string): string => {
   return short.toLowerCase();
 };
 /**
- * Abbreviates, as whole tokens and keeping their case, the dictionary's long words ("Weekly Premium
- * Subscription" -> "Wkly Prem Sub") and the short forms of icon units ("Genesis Crystals" -> "Gen Crystals").
+ * Abbreviates, as whole tokens and keeping their case, the dictionary's long words ("Monthly Package"
+ * -> "Mthly Pkg"; "Premium", "Membership" and "Subscription" stay whole) and the short forms of icon units ("Genesis Crystals" -> "Gen Crystals").
  * A last-resort label form; never applied to a label that already fits.
  */
 export function abbreviateText(text: string): string {

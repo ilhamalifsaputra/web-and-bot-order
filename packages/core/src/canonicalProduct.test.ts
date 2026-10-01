@@ -143,6 +143,49 @@ describe("canonical product semantics", () => {
   });
 });
 
+describe("canonical qualifier de-duplication", () => {
+  const withQualifiers = (name: string, gameVariant: string | null, gameRegion: string | null, productName = "Delta Force") => {
+    const data = input(name, {}, productName);
+    data.product.gameVariant = gameVariant;
+    data.product.gameRegion = gameRegion;
+    return canonicalProduct(data, context);
+  };
+  it("drops a variant qualifier already present in the name (Delta Coins - Garena)", () => {
+    const result = withQualifiers("18 Delta Coins - Garena", "Garena", null);
+    expect(result.qualifiers).toEqual([]);
+    expect(result.displayName).toBe("18 Delta Coins - Garena");
+    expect(result.product.gameVariant).toBe("Garena");
+  });
+  it("drops a region qualifier already present in brackets (Diamonds (Global))", () => {
+    const result = withQualifiers("86 Diamonds (Global)", null, "Global", "Mobile Legends");
+    expect(result.qualifiers).toEqual([]);
+    expect(result.displayName).toBe("86 Diamonds (Global)");
+  });
+  it("matches case-insensitively and ignoring extra spaces", () => {
+    expect(withQualifiers("Redefine  - garena", "GARENA", null).qualifiers).toEqual([]);
+  });
+  it("keeps a different qualifier and only drops the duplicate one", () => {
+    expect(withQualifiers("18 Delta Coins - Garena", "Garena", "Indonesia").qualifiers).toEqual(["Indonesia"]);
+    expect(withQualifiers("18 Delta Coins - Garena", "Steam", null).qualifiers).toEqual(["Steam"]);
+  });
+  it("keeps a qualifier that is only a substring of a different word", () => {
+    expect(withQualifiers("18 Delta Coins Garenaxyz", "Garena", null).qualifiers).toEqual(["Garena"]);
+    expect(withQualifiers("86 Diamonds Globalized", null, "Global", "Mobile Legends").qualifiers).toEqual(["Global"]);
+  });
+  it("keeps a multi-word qualifier unless all its tokens appear contiguously", () => {
+    expect(withQualifiers("18 Coins - South East", null, "South East Asia").qualifiers).toEqual(["South East Asia"]);
+    expect(withQualifiers("18 Coins - South East Asia", null, "South East Asia").qualifiers).toEqual([]);
+  });
+  it("keeps both qualifiers when neither is in the name, and the schema still parses", () => {
+    const result = withQualifiers("86 Diamonds", "Fast", "Indonesia", "Mobile Legends");
+    expect(result.qualifiers).toEqual(["Indonesia", "Fast"]);
+    expect(CanonicalProductSchema.safeParse(result).success).toBe(true);
+  });
+  it("preserves a legitimately repeated word inside the package name", () => {
+    expect(withQualifiers("Gem Gem Pack Package", null, null, "Growtopia").displayName).toBe("Gem Gem Pack Package");
+  });
+});
+
 describe("canonical exact price and runtime contract", () => {
   it.each([
     ["0", "0", 0, "Rp0"],

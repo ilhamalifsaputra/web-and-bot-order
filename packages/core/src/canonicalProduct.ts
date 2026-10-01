@@ -154,6 +154,22 @@ function formatExactMoney(value: CanonicalMoney, locale: string): string {
   return `${value.currency === "IDR" ? "Rp" : "$"}${whole.replace(/\B(?=(\d{3})+(?!\d))/g, grouping)}${fraction}`;
 }
 
+/** Lowercased whole tokens; brackets, dashes and repeated whitespace are separators. */
+function nameTokens(value: string): string[] {
+  return value.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+}
+
+/** True when every token of `qualifier` appears, contiguously and whole, in `name`. A substring of a longer word does not count. */
+function nameContainsQualifier(name: string, qualifier: string): boolean {
+  const wanted = nameTokens(qualifier);
+  if (wanted.length === 0) return false;
+  const have = nameTokens(name);
+  for (let start = 0; start + wanted.length <= have.length; start += 1) {
+    if (wanted.every((token, offset) => have[start + offset] === token)) return true;
+  }
+  return false;
+}
+
 export function canonicalProduct(input: CanonicalProductInput, context: CanonicalProductContext): CanonicalProduct {
   const denom = input.denomination;
   const rawName = denom.supplierRawName ?? denom.name;
@@ -172,10 +188,15 @@ export function canonicalProduct(input: CanonicalProductInput, context: Canonica
   const conversion = displayPrice.currency === "USD" ? { basis: "USDT" as const, direction: "IDR_PER_USDT" as const, rate: new Decimal(context.rate!).toString(), rounding: "CEIL_2DP" as const, source: context.rateSource ?? "caller", asOf: context.rateAsOf ?? null } : null;
   const inactive = !denom.isActive || !input.product.isActive || input.product.isArchived || !input.category.isActive;
   const status = inactive ? "inactive" : input.stockAvailable === false ? "out_of_stock" : "available";
+  const displayName = renderVariant(variant);
+  // A qualifier already spelled out in this product's own name ("- Garena") is redundant; different ones stay.
+  const qualifiers = [input.product.gameRegion, input.product.gameVariant]
+    .filter((value): value is string => !!value?.trim())
+    .filter((value) => !nameContainsQualifier(displayName, value));
   return CanonicalProductSchema.parse({
     id: denom.id, supplierSku: denom.supplierSku ?? null, rawName,
     rawNameProvenance: denom.supplierRawName != null ? "supplier" : "legacy_name",
-    variant, displayName: renderVariant(variant), qualifiers: [input.product.gameRegion, input.product.gameVariant].filter((value): value is string => !!value?.trim()),
+    variant, displayName, qualifiers,
     product: { id: input.product.id, name: input.product.name, gameVariant: input.product.gameVariant || null, gameRegion: input.product.gameRegion || null },
     category: { id: input.category.id, name: input.category.name, group: input.category.group || null },
     priceIDR, displayPrice, formattedPrice: formatExactMoney(displayPrice, context.locale ?? "id"),

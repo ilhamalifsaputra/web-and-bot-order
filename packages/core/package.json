@@ -8,6 +8,7 @@
     "./config": "./src/config.ts",
     "./money": "./src/money.ts",
     "./canonicalProduct": "./src/canonicalProduct.ts",
+    "./unitDisplay": "./src/unitDisplay.ts",
     "./datetime": "./src/datetime.ts",
     "./i18n": "./src/i18n.ts",
     "./formatters": "./src/formatters.ts",

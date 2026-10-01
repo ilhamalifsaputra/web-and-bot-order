@@ -5,7 +5,7 @@ import { formatCompactPrice } from "./compactFormat";
 import { canonicalProduct } from "./canonicalProduct";
 import {
   buttonNameBudget, visualWidth, MAX_LABEL_WIDTH, TARGET_LABEL_WIDTH, NARROW_LABEL_WIDTH, MAX_LABEL_BYTES, CATALOG_PAGE_SIZE,
-  LIST_LABEL_MAX_CHARS, COMPACT_PRICE_CELLS, QUANTITY_CELLS, SEPARATOR_CELLS, EMOJI_PREFIX_CELLS, type ButtonNameKind,
+  LIST_LABEL_MAX_CHARS, COMPACT_PRICE_CELLS, QUANTITY_CELLS, SEPARATOR_CELLS, EMOJI_PREFIX_CELLS, nameAfterProductPrefix, type ButtonNameKind,
 } from "./buttonLimits";
 
 describe("button limits", () => {
@@ -79,5 +79,49 @@ describe("button limits", () => {
     const here = readFileSync(new URL("./buttonLimits.ts", import.meta.url), "utf8");
     const copy = readFileSync(new URL("../../../apps/web-admin/client/src/lib/buttonLimits.ts", import.meta.url), "utf8");
     expect(copy, "apps/web-admin/client/src/lib/buttonLimits.ts must be an exact copy of packages/core/src/buttonLimits.ts").toBe(here);
+  });
+});
+
+describe("nameAfterProductPrefix", () => {
+  it("drops the product name from the start of a name, whole token and case-insensitive", () => {
+    expect(nameAfterProductPrefix("Mobile Legends 86 Diamonds", "Mobile Legends")).toBe("86 Diamonds");
+    expect(nameAfterProductPrefix("MOBILE LEGENDS 86 Diamonds", "mobile legends")).toBe("86 Diamonds");
+    expect(nameAfterProductPrefix("Mobile Legends Event Gift Pack 1 Diamonds", "Mobile Legends")).toBe("Event Gift Pack 1 Diamonds");
+  });
+  it("also drops a product name written without its trailing (Region)", () => {
+    expect(nameAfterProductPrefix("Where Winds Meet 60 Echo Beads", "Where Winds Meet (Global)")).toBe("60 Echo Beads");
+    expect(nameAfterProductPrefix("Valorant (Indonesia) 1000 VP", "Valorant (Indonesia)")).toBe("1000 VP");
+  });
+  it("collapses repeated whitespace like the bot", () => {
+    expect(nameAfterProductPrefix("  Delta Force   Black Hawk   Down  ", "Delta Force")).toBe("Black Hawk Down");
+    expect(nameAfterProductPrefix("a   b ", "")).toBe("a b");
+  });
+  it("keeps the whole name when the product name is not a whole-token prefix or the rest would read badly", () => {
+    expect(nameAfterProductPrefix("Mobile Legends86 Diamonds", "Mobile Legends")).toBe("Mobile Legends86 Diamonds");
+    expect(nameAfterProductPrefix("Valorants 100", "Valorant")).toBe("Valorants 100");
+    expect(nameAfterProductPrefix("Mobile Legends", "Mobile Legends")).toBe("Mobile Legends");
+    expect(nameAfterProductPrefix("Delta Force 400", "Delta Force")).toBe("Delta Force 400");
+    expect(nameAfterProductPrefix("Delta Force - Family", "Delta Force")).toBe("Delta Force - Family");
+    expect(nameAfterProductPrefix("Weekly Pass", "Mobile Legends")).toBe("Weekly Pass");
+  });
+  it("agrees with what the bot's own canonical name keeps (canonicalProduct drops the same prefix)", () => {
+    const cases: [string, string][] = [
+      ["Genshin Impact", "Genshin Impact Blessing of the Welkin Moon Package"],
+      ["Where Winds Meet (Global)", "Where Winds Meet Starter Package"],
+      ["Delta Force", "Delta Force 400 Package"],
+      ["Delta Force", "Delta Force - Family Package"],
+      ["Honkai Star Rail", "honkai star rail Oneiric Package"],
+      ["Valorant (Indonesia)", "Valorant Premium Battle Package"],
+      ["Arena Breakout", "Arena Breakout Infinite Edition Starter Package"],
+    ];
+    for (const [productName, raw] of cases) {
+      const product = canonicalProduct({
+        denomination: { id: 1, name: raw, durationLabel: raw, supplierRawName: raw, isActive: true },
+        product: { id: 1, name: productName, isActive: true },
+        category: { id: 1, name: "Top Up", group: "GAME_TOPUP", isActive: true },
+      }, { effectivePriceIDR: "1000", preferredCurrency: "IDR", locale: "id" });
+      expect(product.variant.type, raw).toBe("package");
+      expect(nameAfterProductPrefix(raw, productName), raw).toBe((product.variant as { name: string }).name);
+    }
   });
 });

@@ -381,6 +381,34 @@ describe("DenominationCreatePage Telegram button hints", () => {
     expect(screen.getByTestId("button-label-counter")).toHaveTextContent("7/18");
   });
 
+  it("Game Top Up: does not count the game name at the start of the Name", async () => {
+    vi.mocked(apiGet).mockResolvedValue(gameProduct);
+    render(<DenominationCreatePage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getAllByTestId("button-label-counter")).toHaveLength(2));
+    fireEvent.change(screen.getByPlaceholderText(/^e\.g\. netflix premium$/i), { target: { value: "Mobile Legends 86 Diamonds" } });
+    // 26 cells raw, 11 once "Mobile Legends " is dropped, which is what the bot shows next to the price.
+    expect(screen.getAllByTestId("button-label-counter")[0]).toHaveTextContent("11/24");
+    expect(screen.getAllByTestId("button-label-counter")[0]).toHaveAttribute("data-state", "ok");
+    expect(screen.queryByTestId("button-label-warning")).toBeNull();
+    expect(screen.getByText(/game name at the start is not counted/i)).toBeInTheDocument();
+  });
+
+  it("Game Top Up: swaps the Name counter for a neutral note once quantity and unit are both filled", async () => {
+    vi.mocked(apiGet).mockResolvedValue(gameProduct);
+    render(<DenominationCreatePage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getAllByTestId("button-label-counter")).toHaveLength(2));
+    fireEvent.change(screen.getByPlaceholderText(/^e\.g\. netflix premium$/i), { target: { value: "Mobile Legends Weekly Diamond Pass Bundle Supplier Name" } });
+    expect(screen.getAllByTestId("button-label-counter")[0]).toHaveAttribute("data-state", "over");
+    fireEvent.change(screen.getByPlaceholderText(/^e\.g\. 86$/i), { target: { value: "86" } });
+    // Only the unit is filled so far: still the name that is on the button.
+    expect(screen.getAllByTestId("button-label-counter")).toHaveLength(2);
+    fireEvent.change(screen.getByPlaceholderText(/^e\.g\. diamonds$/i), { target: { value: "Diamonds" } });
+    expect(screen.getAllByTestId("button-label-counter")).toHaveLength(1);
+    expect(screen.getByTestId("button-label-counter")).toHaveTextContent("8/16");
+    expect(screen.getByTestId("button-label-note")).toHaveTextContent(/built from the quantity and unit/i);
+    expect(screen.queryByTestId("button-label-warning")).toBeNull();
+  });
+
   it("saving still works with a name over the budget (warning only)", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     vi.mocked(apiGet).mockResolvedValue(gameProduct);

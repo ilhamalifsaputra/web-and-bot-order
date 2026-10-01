@@ -23,9 +23,18 @@ describe("ButtonLabelInput", () => {
     expect(counter()).toHaveTextContent("0/18");
   });
 
-  it("makes the counter a polite live region", () => {
-    render(<Harness />);
-    expect(counter()).toHaveAttribute("aria-live", "polite");
+  it("announces only the warning, not every keystroke of the counter", async () => {
+    const user = userEvent.setup();
+    render(<Harness kind="gameRegion" />);
+    // The counter itself is silent; the live region is there from the start so crossing the limit is announced.
+    expect(counter()).not.toHaveAttribute("aria-live");
+    expect(counter().closest("[aria-live]")).toBeNull();
+    const announcer = screen.getByTestId("button-label-announcer");
+    expect(announcer).toHaveAttribute("aria-live", "polite");
+    expect(announcer).toBeEmptyDOMElement();
+    await user.type(screen.getByLabelText("Name"), "a".repeat(19));
+    expect(announcer).toContainElement(screen.getByTestId("button-label-warning"));
+    expect(counter().closest("[aria-live]")).toBeNull();
   });
 
   it("counts cells: an emoji and a CJK character count as 2", async () => {
@@ -79,5 +88,51 @@ describe("ButtonLabelInput", () => {
   it("passes input props through (placeholder, className) so pages keep their layout", () => {
     render(<ButtonLabelInput kind="gameRegion" aria-label="Region" placeholder="e.g. Global" className="mt-1" value="" onChange={() => {}} />);
     expect(screen.getByPlaceholderText("e.g. Global")).toHaveClass("mt-1");
+  });
+
+  describe("Game Top-Up denomination name", () => {
+    const Game = ({ initial, productName = "Mobile Legends", builtFromQuantity }: { initial: string; productName?: string; builtFromQuantity?: boolean }) => {
+      const [value, setValue] = useState(initial);
+      return <ButtonLabelInput kind="denominationGame" productName={productName} builtFromQuantity={builtFromQuantity} aria-label="Name" value={value} onChange={(e) => setValue(e.target.value)} />;
+    };
+
+    it("does not count the product name the bot drops from the start of the name", () => {
+      // "Mobile Legends Event Gift Pack 1 Diamonds" is 41 cells raw, 26 without the game name.
+      render(<Game initial="Mobile Legends Event Gift Pack 1 Diamonds" />);
+      expect(counter()).toHaveTextContent("26/24");
+      expect(counter()).toHaveAttribute("data-state", "over");
+    });
+    it("stays quiet for a typical supplier name that the bot shows whole once the game name is dropped", () => {
+      render(<Game initial="Mobile Legends 86 Diamonds" />);
+      expect(counter()).toHaveTextContent("11/24");
+      expect(counter()).toHaveAttribute("data-state", "ok");
+      expect(screen.queryByTestId("button-label-warning")).toBeNull();
+    });
+    it("also drops the product name written without its (Region) suffix, ignoring case", () => {
+      render(<Game productName="Where Winds Meet (Global)" initial="where winds meet 60 Echo Beads" />);
+      expect(counter()).toHaveTextContent("13/24");
+    });
+    it("says in the hint that the game name at the start is not counted", () => {
+      render(<Game initial="" />);
+      expect(screen.getByText(/game name at the start is not counted/i)).toBeInTheDocument();
+    });
+    it("measures the whole name when the page does not know the product name yet", () => {
+      render(<ButtonLabelInput kind="denominationGame" aria-label="Name" value="Mobile Legends 86 Diamonds" onChange={() => {}} />);
+      expect(counter()).toHaveTextContent("26/24");
+      expect(screen.queryByText(/game name at the start is not counted/i)).toBeNull();
+    });
+    it("shows a neutral note instead of a counter or warning when the button is built from quantity and unit", () => {
+      render(<Game initial="Mobile Legends Event Gift Pack 1 Diamonds And A Lot More Supplier Words" builtFromQuantity />);
+      expect(screen.queryByTestId("button-label-counter")).toBeNull();
+      expect(screen.queryByTestId("button-label-warning")).toBeNull();
+      const note = screen.getByTestId("button-label-note");
+      expect(note).toHaveTextContent(/quantity and unit/i);
+      expect(note.className).not.toContain("text-amberx");
+      expect(screen.getByLabelText("Name").getAttribute("aria-describedby")).toContain(note.id);
+    });
+    it("keeps the product-name rule for other kinds out of the way", () => {
+      render(<ButtonLabelInput kind="productList" productName="Mobile Legends" aria-label="Name" value="Mobile Legends 86" onChange={() => {}} />);
+      expect(counter()).toHaveTextContent("17/30");
+    });
   });
 });

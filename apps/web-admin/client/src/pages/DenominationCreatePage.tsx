@@ -57,6 +57,8 @@ function useParentProduct(productId: string | undefined) {
     // Fallback while loading (or if the fetch hasn't resolved yet): the
     // product id, not a hardcoded generic "Product" label.
     name: data?.product.name ?? `Product #${productId ?? "?"}`,
+    /** The real name once loaded (the fallback above is not a name the bot would ever strip). */
+    loadedName: data?.product.name,
     isGame: data?.product.category?.group === "GAME_TOPUP",
   };
 }
@@ -65,7 +67,7 @@ export function DenominationCreatePage() {
   const { productId } = useParams<{ productId: string }>();
   const navigate = useNavigate();
   const qc = useQueryClient();
-  const { name: productName, isGame } = useParentProduct(productId);
+  const { name: productName, loadedName, isGame } = useParentProduct(productId);
   const [name, setName] = useState("");
   const [type, setType] = useState<string | null>(null);
   const [durationLabel, setDurationLabel] = useState("");
@@ -144,6 +146,8 @@ export function DenominationCreatePage() {
           {isGame ? (
             <ButtonLabelInput
               kind="denominationGame"
+              productName={loadedName}
+              builtFromQuantity={qtyValue.trim() !== "" && qtyUnit.trim() !== ""}
               className="mt-1"
               placeholder="e.g. Netflix Premium"
               value={name}

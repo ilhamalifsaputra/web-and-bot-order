@@ -326,6 +326,24 @@ describe("DenominationEditPage Telegram button hints", () => {
     expect(screen.getAllByTestId("button-label-counter").map((el) => el.textContent)).toEqual(["15/24", "0/16"]);
   });
 
+  it("Game Top Up: does not count the game name at the start of the Name", async () => {
+    vi.mocked(apiGet).mockResolvedValue(withGroup("GAME_TOPUP"));
+    render(<DenominationEditPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByDisplayValue("Netflix 1 Month")).toBeInTheDocument());
+    fireEvent.change(screen.getByDisplayValue("Netflix 1 Month"), { target: { value: "netflix premium Family 1 Month" } });
+    // "Family 1 Month" is 14 cells once the product's name "Netflix Premium" is dropped.
+    expect(screen.getAllByTestId("button-label-counter").map((el) => el.textContent)).toEqual(["14/24", "0/16"]);
+  });
+
+  it("Game Top Up: a SKU with quantity and unit shows the note, not a Name counter", async () => {
+    const detail = withGroup("GAME_TOPUP");
+    vi.mocked(apiGet).mockResolvedValue({ product: { ...detail.product, denominations: [{ ...detail.product.denominations[0], qtyValue: 86, qtyUnit: "Diamonds" }] } });
+    render(<DenominationEditPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByDisplayValue("Netflix 1 Month")).toBeInTheDocument());
+    expect(screen.getAllByTestId("button-label-counter").map((el) => el.textContent)).toEqual(["8/16"]);
+    expect(screen.getByTestId("button-label-note")).toBeInTheDocument();
+  });
+
   it("Premium Apps: hints Duration Label and still saves an over-budget label", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     vi.mocked(apiGet).mockResolvedValue(withGroup("PREMIUM_APPS"));

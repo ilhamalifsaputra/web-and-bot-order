@@ -258,7 +258,15 @@ export function DenominationEditPage() {
             Name <span className="text-rust">*</span>
           </label>
           {isGame ? (
-            <ButtonLabelInput kind="denominationGame" className="mt-1" placeholder="e.g. Netflix Premium" value={name} onChange={(e) => setName(e.target.value)} />
+            <ButtonLabelInput
+              kind="denominationGame"
+              productName={data?.product.name}
+              builtFromQuantity={qtyValue.trim() !== "" && qtyUnit.trim() !== ""}
+              className="mt-1"
+              placeholder="e.g. Netflix Premium"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+            />
           ) : (
             <Input className="mt-1" placeholder="e.g. Netflix Premium" value={name} onChange={(e) => setName(e.target.value)} />
           )}

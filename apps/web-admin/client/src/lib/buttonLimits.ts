@@ -112,3 +112,23 @@ export function buttonNameBudget(kind: ButtonNameKind, options: ButtonNameBudget
     case "qtyUnit": return MAX_LABEL_WIDTH - QUANTITY_CELLS - 1 - SEPARATOR_CELLS - priceCells(options.currency);
   }
 }
+
+/**
+ * What the bot keeps of a Game Top-Up denomination name once it is on a button: the list header already names the
+ * product, so the product's own name at the START of the name (whole token, case-insensitive, also written without
+ * its trailing "(Region)") is dropped. Mirrors `cleanName` in `canonicalProduct.ts` (a test compares the two);
+ * the bot's extra list of verified brand prefixes is not mirrored, so this can only OVER-measure, never under-measure.
+ * The rest must start with a letter or digit and not be a bare number ("Delta Force 400" keeps its name), else the
+ * whole name stays. Repeated whitespace is collapsed and the ends trimmed, as on the button.
+ */
+export function nameAfterProductPrefix(name: string, productName: string): string {
+  const text = name.replace(/\s+/g, " ").trim();
+  const product = productName.replace(/\s+/g, " ").trim();
+  const candidates = [product, product.replace(/\s*\([^()]*\)\s*$/, "")].filter(Boolean).sort((a, b) => b.length - a.length);
+  for (const candidate of candidates) {
+    if (!text.toLowerCase().startsWith(`${candidate.toLowerCase()} `)) continue;
+    const rest = text.slice(candidate.length).trim();
+    if (rest && /^[\p{L}\p{N}]/u.test(rest) && !/^[\d.,]+$/.test(rest)) return rest;
+  }
+  return text;
+}

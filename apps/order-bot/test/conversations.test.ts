@@ -1,4 +1,5 @@
 // setup-db MUST be first — temp DB + push before any @app import.
+import { buttonNameBudget } from "@app/core/buttonLimits";
 import "./setup-db";
 
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -967,6 +968,8 @@ describe("admin conversations", () => {
     expect(p).toBeTruthy();
     expect(Number(p!.price)).toBe(3.5);
     expect(await prisma.auditLog.count({ where: { action: "product_create" } })).toBe(1);
+    // The duration label becomes the plan button's text, so its prompt states the button budget.
+    expect(sentIncludes(sink, t(entry, "admin.button_hint_plan", { max: buttonNameBudget("denominationPlan") }))).toBe(true);
   });
 
   // The regression guard for M-22: the rejected "fold into handledEscape"
@@ -1014,6 +1017,7 @@ describe("admin conversations", () => {
     const p = await prisma.denomination.findUnique({ where: { id: sample.product.id } });
     expect(p!.name).toBe("Netflix Renamed");
     expect(await prisma.auditLog.count({ where: { action: "product_rename" } })).toBe(1);
+    expect(sentIncludes(sink, t(entry, "admin.button_hint_name", { max: buttonNameBudget("denominationGame") }))).toBe(true);
   });
 
   // Final-review C2 fix, closed on this third write path too (besides the

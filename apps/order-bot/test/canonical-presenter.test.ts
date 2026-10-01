@@ -608,7 +608,7 @@ describe("Game Top-Up button fallback chain before a bare ID", () => {
   });
   it.each([
     ["Diamonds", "💎"], ["Crystals", "💎"], ["Genesis Crystals", "💎"], ["Gems", "💎"], ["Primogems", "💎"], ["Jewels", "💎"],
-    ["Coins", "🪙"], ["Gold", "🥇"],
+    ["Coins", "🪙"], ["Gold", "🪙"],
   ])("shows %s as %s when it is the only unit in the list", (unit, icon) => {
     expect(texts([item(1, `${unit} 250`, "20000", { qty: [250, unit] })])).toEqual([`250 ${icon} · Rp20K`]);
   });
@@ -623,7 +623,7 @@ describe("Game Top-Up icon fallback never doubles or misplaces an icon", () => {
     product: { id: 3, name: opts.product ?? "Some Game", isActive: true, gameRegion: null, gameVariant: null },
     category: { id: 1, name: "Top Up", group: "GAME_TOPUP", isActive: true },
   }, { effectivePriceIDR: price, preferredCurrency: opts.currency ?? "IDR", rate: "16000", locale: "id" });
-  const iconCount = (text: string) => (text.match(/💎|🪙|🥇/gu) ?? []).length;
+  const iconCount = (text: string) => (text.match(/💎|🪙/gu) ?? []).length;
 
   it("never shows the unit icon twice on an event pack that also spells the unit in its name", () => {
     const products = Array.from({ length: 11 }, (_, i) => sku(869 + i, `Event Gift Pack ${i + 1} Diamonds`, "18000", { qty: [7 * (i + 1), "Diamonds"], product: "Mobile Legends" }));
@@ -646,6 +646,20 @@ describe("Game Top-Up icon fallback never doubles or misplaces an icon", () => {
       sku(2, "Primogems 160", "40000", { qty: [160, "Primogems"] }),
     ]));
     expect(out).toEqual(["7 Diamonds Event Gift Pack 1 · Rp18K", "160 Primogems · Rp40K"]);
+  });
+  it("spells Gold, Coins and Delta Coins out when they share one list, since all three are the coin icon", () => {
+    const out = labels(presentCanonicalCatalog([
+      sku(1, "Gold 100", "5000", { qty: [100, "Gold"] }),
+      sku(2, "Coins 100", "5000", { qty: [100, "Coins"] }),
+      sku(3, "Delta Coins 18", "5000", { qty: [18, "Delta Coins"] }),
+    ]));
+    expect(out).toEqual(["100 Gold · Rp5K", "100 Coins · Rp5K", "18 Delta Coins · Rp5K"]);
+    expect(new Set(out).size).toBe(3);
+    for (const text of out) expect(iconCount(text), text).toBe(0);
+  });
+  it("shows Gold as the coin icon when it is the only coin-like unit in the list", () => {
+    expect(labels(presentCanonicalCatalog([sku(1, "Gold 100", "5000", { qty: [100, "Gold"] }), sku(2, "Gold 250", "9000", { qty: [250, "Gold"] }), sku(3, "Diamonds 86", "20000", { qty: [86, "Diamonds"] })])))
+      .toEqual(["100 🪙 · Rp5K", "250 🪙 · Rp9K", "86 💎 · Rp20K"]);
   });
   it("does not turn a literal icon plus the unit word of a combo name into two icons", () => {
     const [text] = labels(presentCanonicalCatalog([sku(1, "💎 Diamonds 100 ✨🔥 Mega Combo 🎁", "18000")]));

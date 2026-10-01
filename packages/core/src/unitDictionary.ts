@@ -49,8 +49,8 @@ export const UNITS: readonly UnitEntry[] = [
   { canonical: "Jewels", aliases: ["Jewel"], icon: "💎" },
   { canonical: "Coins", aliases: ["Coin"], icon: "🪙" },
   { canonical: "Delta Coins", aliases: ["Delta Coin"], icon: "🪙" },
-  // Change the icon here if 🥇 is not the one you want for Gold.
-  { canonical: "Gold", aliases: [], icon: "🥇" },
+  // Gold shares the coin icon on purpose: the user asked for it. A list holding Gold with Coins or Delta Coins spells them out.
+  { canonical: "Gold", aliases: [], icon: "🪙" },
   // Growtopia's World Lock has no verified emoji; "WL" is the community's own abbreviation.
   { canonical: "World Lock", aliases: ["World Locks"], short: "WL" },
 ];

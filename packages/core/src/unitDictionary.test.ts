@@ -63,13 +63,16 @@ describe("requested icon mappings", () => {
     ["Diamonds", "💎"], ["Diamond", "💎"], ["Crystals", "💎"], ["Crystal", "💎"], ["Genesis Crystals", "💎"], ["Genesis Crystal", "💎"],
     ["Gems", "💎"], ["Gem", "💎"], ["Primogems", "💎"], ["Primogem", "💎"], ["Jewels", "💎"], ["Jewel", "💎"],
     ["Coins", "🪙"], ["Coin", "🪙"], ["Delta Coins", "🪙"], ["Delta Coin", "🪙"],
-    ["Gold", "🥇"], ["World Lock", "WL"], ["World Locks", "WL"],
+    ["Gold", "🪙"], ["World Lock", "WL"], ["World Locks", "WL"],
   ])("maps %s to %s", (unit, short) => expect(displayUnit(unit)).toBe(short));
   // "Star" and "Ticket" are often part of a game's own name ("Honkai Star Rail", "Gold Ticket Membership"), so they are not units.
   it.each(["UC", "VP", "Bonds", "Robux", "Tokens", "Credits", "Points", "Stars", "Star", "Tickets", "Ticket"])("keeps %s as text", (unit) => expect(displayUnit(unit)).toBe(unit));
   it("reports different units that share one icon", () => {
     expect(sharedIconUnits(["Crystals", "Diamonds", "Diamond"])).toEqual([{ short: "💎", units: ["Crystals", "Diamonds"] }]);
     expect(sharedIconUnits(["Genesis Crystals", "Primogems", "Crystals"])[0]!.units).toEqual(["Genesis Crystals", "Primogems", "Crystals"]);
+    // Gold, Coins and Delta Coins all render as the coin icon, so a list holding two of them must spell them out.
+    expect(sharedIconUnits(["Gold", "Coins", "Delta Coins"])).toEqual([{ short: "🪙", units: ["Gold", "Coins", "Delta Coins"] }]);
+    expect(sharedIconUnits(["Gold", "Gold"])).toEqual([]);
   });
 });
 
@@ -98,7 +101,7 @@ describe("icon repetition", () => {
     expect(hasRepeatedIcon("💎 Bundle 8.000 💎")).toBe(true);
     expect(hasRepeatedIcon("💎 💎 100")).toBe(true);
     expect(hasRepeatedIcon("💎🪙 100")).toBe(true);
-    expect(hasRepeatedIcon("🥇 🪙 Pack")).toBe(true);
+    expect(hasRepeatedIcon("🪙 Gold 🪙 Pack")).toBe(true);
   });
   it("accepts one icon, or different icons that something separates, and icons the dictionary does not own", () => {
     expect(hasRepeatedIcon("7 💎 Event Gift Pack")).toBe(false);

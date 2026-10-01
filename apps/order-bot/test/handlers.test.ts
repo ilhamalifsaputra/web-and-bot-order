@@ -1699,7 +1699,7 @@ describe("denomination picker", () => {
     // Name segment truncated to fit the 15-char budget ("1680 Coins + B…"),
     // price segment ("Rp300K") always intact — never chopped to "Rp…" or
     // dropped entirely.
-    expect(button.text).toBe("1.68K 🪙 + Bonus · Rp300K");
+    expect(button.text).toBe("1680 🪙 + Bonus · Rp300K");
     expect(button.text.endsWith("Rp300K")).toBe(true);
     expect(button.text).not.toContain("…");
     expect(bodyText(sink)).toContain("1680 Coins + Bonus");

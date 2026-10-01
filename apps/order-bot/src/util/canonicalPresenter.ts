@@ -20,12 +20,18 @@ export function visualWidth(value: string): number {
   return width;
 }
 
-/** No quantity rounding. Decimal division retains every significant digit. */
+/**
+ * Quantities are never rounded. Full digits are shown unless the value is a clean multiple of 1000
+ * from 10000 up: then thousands ("10K", "1234K"), or millions with at most one decimal when it is a
+ * multiple of 100000 ("1,5M" for Indonesian). "1,186K" would read as 1.186 million to an English reader.
+ */
 export function compactQuantity(value: number, locale = "en"): string {
-  if (value < 1000) return String(value);
-  const divisor = value >= 1000000 ? 1000000 : 1000;
-  const digits = new Decimal(value).div(divisor).toFixed();
-  return `${locale.startsWith("id") ? digits.replace(".", ",") : digits}${divisor === 1000000 ? "M" : "K"}`;
+  if (!Number.isInteger(value) || value < 10000 || value % 1000 !== 0) return String(value);
+  if (value >= 1000000 && value % 100000 === 0) {
+    const digits = new Decimal(value).div(1000000).toFixed();
+    return `${locale.startsWith("id") ? digits.replace(".", ",") : digits}M`;
+  }
+  return `${value / 1000}K`;
 }
 
 function major(money: CanonicalMoney): Decimal {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { canonicalProduct } from "@app/core/canonicalProduct";
-import { presentCanonicalCatalog, visualWidth, compactQuantity } from "../src/util/canonicalPresenter";
+import { presentCanonicalCatalog, visualWidth, compactQuantity, MAX_LABEL_WIDTH, NARROW_LABEL_WIDTH } from "../src/util/canonicalPresenter";
 
 const item = (id: number, name: string, price = "21000", currency: "IDR" | "USD" = "IDR", locale = "id") => canonicalProduct({
   denomination: { id, name, durationLabel: name, supplierRawName: name, supplierSku: `sku-${id}`, autoDeliverySource: "digiflazz", isActive: true },
@@ -45,11 +45,17 @@ describe("canonical Telegram catalog", () => {
     expect(result.pages[0]!.text).toContain("Rp20.001");
     expect(result.pages[0]!.text).toContain("Rp20.002");
   });
-  it("uses lossless compact quantities including 9375 and large safe integers", () => {
+  it("shows quantities in full unless they are a clean multiple of 1000 from 10K", () => {
+    expect(compactQuantity(999)).toBe("999");
+    expect(compactQuantity(1186)).toBe("1186");
+    expect(compactQuantity(9375)).toBe("9375");
     expect(compactQuantity(10000)).toBe("10K");
-    expect(compactQuantity(9375)).toBe("9.375K");
-    expect(compactQuantity(10001)).toBe("10.001K");
-    expect(compactQuantity(Number.MAX_SAFE_INTEGER)).toBe("9007199254.740991M");
+    expect(compactQuantity(10001)).toBe("10001");
+    expect(compactQuantity(1234000)).toBe("1234K");
+    expect(compactQuantity(1500000, "en")).toBe("1.5M");
+    expect(compactQuantity(1500000, "id")).toBe("1,5M");
+    expect(compactQuantity(25000000)).toBe("25M");
+    expect(compactQuantity(Number.MAX_SAFE_INTEGER)).toBe("9007199254740991");
   });
   it("measures CJK and emoji graphemes conservatively", () => {
     expect(visualWidth("你好")).toBe(4);
@@ -181,9 +187,22 @@ describe("canonical Telegram label candidates", () => {
     expect(labels(presentCanonicalCatalog([make(1, "Diamond Diamond Package", { price: "30000", product: { gameVariant: "Diamond" } })]))).toEqual(["Diamond Diamond Package · Rp30K"]);
   });
   it("never rounds a non-round quantity and keeps big values exact", () => {
-    expect(labels(presentCanonicalCatalog([make(1, "1186 Diamonds", { price: "300000" })]))).toEqual(["1,186K 💎 · Rp300K"]);
-    expect(labels(presentCanonicalCatalog([make(1, "1186 Diamonds", { price: "300000", locale: "en" })], { locale: "en" }))).toEqual(["1.186K 💎 · Rp300K"]);
-    expect(labels(presentCanonicalCatalog([make(1, "9007199254740991 Diamonds", { price: "300000" })]))).toEqual(["9007199254,740991M 💎 · Rp300K"]);
+    expect(labels(presentCanonicalCatalog([make(1, "1186 Diamonds", { price: "300000" })]))).toEqual(["1186 💎 · Rp300K"]);
+    expect(labels(presentCanonicalCatalog([make(1, "1186 Diamonds", { price: "300000", locale: "en" })], { locale: "en" }))).toEqual(["1186 💎 · Rp300K"]);
+    expect(labels(presentCanonicalCatalog([make(1, "9007199254740991 Diamonds", { price: "300000" })]))).toEqual(["9007199254740991 💎 · Rp300K"]);
+  });
+  it("shows bonus, coin, WL and Bonds amounts in full, and keeps wide bonus labels within the button budget", () => {
+    expect(labels(presentCanonicalCatalog([make(1, "500 + 65 Diamonds", { price: "100000" })]))).toEqual(["500+65 💎 · Rp100K"]);
+    expect(labels(presentCanonicalCatalog([make(1, "1186 + 224 Diamonds", { price: "300000" })]))).toEqual(["1186+224 💎 · Rp300K"]);
+    expect(labels(presentCanonicalCatalog([make(1, "1280 Delta Coins", { price: "150000", product: deltaForce })]))).toEqual(["1280 🪙 · Rp150K"]);
+    expect(labels(presentCanonicalCatalog([make(1, "100 World Lock", { price: "25000", product: growtopia })]))).toEqual(["100 WL · Rp25K"]);
+    expect(labels(presentCanonicalCatalog([make(1, "10000 Bonds", { price: "150000" })]))).toEqual(["10K Bonds · Rp150K"]);
+    const usd = presentCanonicalCatalog([make(1, "5136 + 1027 Diamonds", { price: "1644000", currency: "USD", locale: "en" }), make(2, "86 Diamonds", { price: "20000", currency: "USD", locale: "en" })], { locale: "en" });
+    const [wide] = labels(usd);
+    expect(wide).toBe("5136+1027 💎 · $102.75");
+    expect(visualWidth(wide!)).toBeLessThanOrEqual(MAX_LABEL_WIDTH);
+    expect(visualWidth(wide!)).toBeGreaterThan(NARROW_LABEL_WIDTH);
+    expect(usd.pages[0]!.rows.map((row) => row.length)).toEqual([1, 1]);
   });
   it("resolves a collision after formatting with the full unit name before an ID", () => {
     const result = labels(presentCanonicalCatalog([

@@ -5,7 +5,7 @@ import { presentCanonicalCatalog, visualWidth, compactQuantity, MAX_LABEL_WIDTH,
 const item = (id: number, name: string, price = "21000", currency: "IDR" | "USD" = "IDR", locale = "id") => canonicalProduct({
   denomination: { id, name, durationLabel: name, supplierRawName: name, supplierSku: `sku-${id}`, autoDeliverySource: "digiflazz", isActive: true },
   product: { id: 3, name: "Mobile Legends", isActive: true, gameRegion: "Indonesia" },
-  category: { id: 1, name: "Top Up", isActive: true },
+  category: { id: 1, name: "Top Up", group: "GAME_TOPUP", isActive: true },
 }, { effectivePriceIDR: price, preferredCurrency: currency, rate: "16000", locale });
 
 describe("canonical Telegram catalog", () => {
@@ -114,7 +114,7 @@ interface Opts { price?: string; currency?: "IDR" | "USD"; locale?: string; prod
 const make = (id: number, raw: string, opts: Opts = {}) => canonicalProduct({
   denomination: { id, name: raw, durationLabel: raw, supplierRawName: raw, supplierSku: `sku-${id}`, autoDeliverySource: "digiflazz", isActive: true },
   product: { id: 3, name: "Mobile Legends", isActive: true, gameRegion: null, gameVariant: null, ...opts.product },
-  category: { id: 1, name: "Top Up", isActive: true },
+  category: { id: 1, name: "Top Up", group: "GAME_TOPUP", isActive: true },
 }, { effectivePriceIDR: opts.price ?? "21000", preferredCurrency: opts.currency ?? "IDR", rate: "16000", locale: opts.locale ?? "id" });
 const deltaForce = { name: "Delta Force", gameVariant: "Garena" };
 const growtopia = { name: "Growtopia" };
@@ -316,7 +316,7 @@ describe("canonical Telegram label candidates", () => {
     const make2 = (id: number, raw: string, qty?: { qtyValue: number; qtyUnit: string }) => canonicalProduct({
       denomination: { id, name: raw, durationLabel: raw, supplierRawName: raw, supplierSku: `sku-${id}`, autoDeliverySource: "digiflazz", isActive: true, ...qty },
       product: { id: 9, name: "Where Winds Meet", isActive: true, gameRegion: null, gameVariant: null },
-      category: { id: 1, name: "Top Up", isActive: true },
+      category: { id: 1, name: "Top Up", group: "GAME_TOPUP", isActive: true },
     }, { effectivePriceIDR: "15000", preferredCurrency: "IDR", locale: "id" });
     const plain = presentCanonicalCatalog([make2(84, "Where Winds Meet 60 Echo Beads")]);
     expect(labels(plain)).toEqual(["60 Echo Beads · Rp15K"]);
@@ -328,7 +328,7 @@ describe("canonical Telegram label candidates", () => {
     const make3 = (id: number, raw: string, productName: string, qty?: { qtyValue: number; qtyUnit: string }) => canonicalProduct({
       denomination: { id, name: raw, durationLabel: raw, supplierRawName: raw, supplierSku: `sku-${id}`, autoDeliverySource: "digiflazz", isActive: true, ...qty },
       product: { id: 9, name: productName, isActive: true, gameRegion: null, gameVariant: null },
-      category: { id: 1, name: "Top Up", isActive: true },
+      category: { id: 1, name: "Top Up", group: "GAME_TOPUP", isActive: true },
     }, { effectivePriceIDR: "15000", preferredCurrency: "IDR", locale: "id" });
     const wwm = "Where Winds Meet (Global)";
     expect(labels(presentCanonicalCatalog([make3(87, "Where Winds Meet 60 Echo Beads", wwm)]))).toEqual(["60 Echo Beads · Rp15K"]);

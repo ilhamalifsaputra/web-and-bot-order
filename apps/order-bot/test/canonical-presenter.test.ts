@@ -162,7 +162,7 @@ describe("canonical Telegram label candidates", () => {
     const mixed = labels(presentCanonicalCatalog([make(1, "300 Delta Coins", { price: "5000" }), make(2, "300 Coins", { price: "5000" })]));
     expect(mixed).toEqual(["300 Delta Coins · Rp5K", "300 Coins · Rp5K"]);
   });
-  it("never doubles a qualifier and keeps a conflicting one visible", () => {
+  it("never doubles a qualifier", () => {
     const result = presentCanonicalCatalog([
       make(1, "Delta Force 18 Delta Coins - Garena", { price: "5000", product: deltaForce }),
       make(2, "Delta Force 60 Delta Coins - Garena", { price: "15000", product: deltaForce }),
@@ -170,9 +170,19 @@ describe("canonical Telegram label candidates", () => {
     const all = labels(result).join(" ") + result.pages[0]!.text;
     expect(all).not.toMatch(/Garena\W+Garena/);
     expect(result.pages[0]!.text).toContain("Delta Force · Garena");
+  });
+  it("does not state a shared qualifier in the header when an item carries a conflicting one; the SKU keeps both", () => {
     const conflict = presentCanonicalCatalog([make(1, "Delta Force 18 Delta Coins - Tencent", { price: "5000", product: deltaForce })]);
+    expect(conflict.pages[0]!.text).not.toContain("Delta Force · Garena");
     expect(labels(conflict)[0]).toContain("Tencent");
-    expect(conflict.pages[0]!.text).toContain("Garena");
+    expect(labels(conflict)[0]).toContain("Garena");
+    expect(conflict.pages[0]!.text).toContain("18 Delta Coins - Tencent · Garena");
+    const mixed = presentCanonicalCatalog([
+      make(1, "Delta Force 18 Delta Coins - Garena", { price: "5000", product: deltaForce }),
+      make(2, "Delta Force 18 Delta Coins - Tencent", { price: "5000", product: deltaForce }),
+    ]);
+    expect(mixed.pages[0]!.text).not.toContain("Delta Force · Garena");
+    expect(labels(mixed).join(" ")).toContain("Tencent");
   });
   it("only lifts a qualifier into the body when every product shares it", () => {
     const a = make(1, "86 Diamonds", { price: "20000" });
@@ -288,6 +298,27 @@ describe("canonical Telegram label candidates", () => {
     const structured = presentCanonicalCatalog([make2(84, "Where Winds Meet 60 Echo Beads", { qtyValue: 60, qtyUnit: "Echo Beads" })]);
     expect(labels(structured)).toEqual(["60 Echo Beads · Rp15K"]);
     expect(structured.pages[0]!.text).not.toContain("Where Winds Meet 60");
+  });
+  it("names the product on every page, and on page 1 only when the intro title does not", () => {
+    const many = (opts: Opts) => Array.from({ length: 45 }, (_, i) => make(i + 1, `${i + 1} Diamonds`, opts));
+    const plain = presentCanonicalCatalog(many({}));
+    expect(plain.pages).toHaveLength(3);
+    for (const page of plain.pages) expect(page.text).toContain("Mobile Legends");
+    const intro = "Mobile Legends - 45 terjual";
+    const shared = presentCanonicalCatalog(many({ product: { gameRegion: "Global" } }), { intro });
+    expect(shared.pages).toHaveLength(3);
+    expect(shared.pages[0]!.text.split("Mobile Legends")).toHaveLength(2);
+    expect(shared.pages[0]!.text).toContain("Global");
+    for (const page of shared.pages.slice(1)) expect(page.text).toContain("Mobile Legends · Global");
+    const noName = presentCanonicalCatalog(many({}), { intro: "Pilih nominal" });
+    expect(noName.pages[0]!.text).toContain("Mobile Legends");
+    const plainIntro = presentCanonicalCatalog(many({}), { intro });
+    expect(plainIntro.pages[0]!.text.split("Mobile Legends")).toHaveLength(2);
+    for (const page of plainIntro.pages.slice(1)) expect(page.text).toBe("Mobile Legends\n\n");
+  });
+  it("escapes the product name in the repeated page header", () => {
+    const result = presentCanonicalCatalog(Array.from({ length: 21 }, (_, i) => make(i + 1, `${i + 1} Diamonds`, { product: { name: "Rock <&> Roll" } })), { intro: "x" });
+    expect(result.pages[1]!.text).toBe("Rock &lt;&amp;&gt; Roll\n\n");
   });
   it("keeps stock lines in the body and callbacks within 64 bytes", () => {
     const id = Number.MAX_SAFE_INTEGER;

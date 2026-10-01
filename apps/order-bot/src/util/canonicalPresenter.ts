@@ -85,6 +85,8 @@ interface Shape {
   leftover: string[];
   /** Product-level region/variant this item carries, whether still in `qualifiers` or spelled in its own name. */
   quals: string[];
+  /** True when the name carries a "- X" / "(X)" segment that is not one of the product's own qualifiers. */
+  conflict: boolean;
 }
 function shape(product: CanonicalProduct): Shape {
   const known = [product.product.gameRegion, product.product.gameVariant].filter((value): value is string => !!value?.trim());
@@ -94,18 +96,23 @@ function shape(product: CanonicalProduct): Shape {
   const variant = product.variant;
   if (variant.type === "amount") {
     const leftover: string[] = [];
+    let conflict = false;
     for (const segment of variant.residual) {
       const q = qualifierFor(segment);
-      if (q) addQual(q); else leftover.push(collapse(segment));
+      if (q) addQual(q);
+      else {
+        leftover.push(collapse(segment));
+        if (/^\s*[-(]/.test(segment)) conflict = true;
+      }
     }
-    return { main: "", leftover, quals };
+    return { main: "", leftover, quals, conflict };
   }
   let main = collapse(variant.name);
   // Only a trailing "- Garena" / "(Global)" segment that equals a known qualifier is lifted; inner words stay.
   const tail = main.match(/^(.+?)\s*(?:-\s*([^()\-]+)|\(([^()]+)\))$/);
   const q = tail ? qualifierFor(tail[2] ?? tail[3]!) : undefined;
   if (tail && q) { main = tail[1]!; addQual(q); }
-  return { main, leftover: variant.residual.map(collapse), quals };
+  return { main, leftover: variant.residual.map(collapse), quals, conflict: !!tail && !q };
 }
 
 const sameUnit = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
@@ -199,16 +206,26 @@ function catalogLabels(products: CanonicalProduct[], locale: string, sharedQuals
   return labels;
 }
 
-/** `Product · Region · Variant` when every product carries the same qualifiers, else null (they stay on the buttons). */
-function sharedQualifierLine(products: CanonicalProduct[]): string | null {
-  if (products.length === 0) return null;
-  const sets = products.map((p) => shape(p).quals);
+/**
+ * What the list header may state once. `quals` is the region/variant shared by every product, or [] when
+ * the group does not verifiably share it (they then stay on the buttons); `name` is the product's name
+ * when all products are one product.
+ */
+function sharedHeader(products: CanonicalProduct[]): { name: string | null; quals: string[] } {
+  if (products.length === 0) return { name: null, quals: [] };
+  const shapes = products.map(shape);
   const keyOf = (quals: string[]) => quals.map(tokenKey).sort().join("|");
-  const first = sets[0]!;
-  if (first.length === 0 || sets.some((quals) => keyOf(quals) !== keyOf(first))) return null;
+  const first = shapes[0]!.quals;
+  const shared = first.length > 0 && !shapes.some((s) => s.conflict || keyOf(s.quals) !== keyOf(first));
   const names = new Set(products.map((p) => p.product.name));
-  const line = esc([...(names.size === 1 ? [products[0]!.product.name] : []), ...first].join(" · "));
-  return line.length <= MAX_SHARED_LINE ? `${line}\n\n` : null;
+  return { name: names.size === 1 ? products[0]!.product.name : null, quals: shared ? first : [] };
+}
+/** `Product · Region · Variant` (either part may be absent), escaped, or "" when empty or too long for a header. */
+function headerLine(parts: (string | null)[]): string {
+  const line = esc(parts.filter((part): part is string => !!part).join(" · "));
+  return line && line.length <= MAX_SHARED_LINE ? `${line}
+
+` : "";
 }
 
 /**
@@ -218,8 +235,14 @@ function sharedQualifierLine(products: CanonicalProduct[]): string | null {
  */
 export function presentCanonicalCatalog(products: CanonicalProduct[], context: { locale?: string; intro?: string; stockLabels?: Record<number, string>; bodyName?: string } = {}): { pages: CatalogPage[] } {
   const locale = context.locale ?? "id";
-  const header = context.bodyName === undefined ? sharedQualifierLine(products) ?? "" : "";
-  const labels = catalogLabels(products, locale, header !== "");
+  const shared = context.bodyName === undefined ? sharedHeader(products) : { name: null, quals: [] };
+  const sharedQuals = shared.quals.length > 0 && headerLine(shared.quals) !== "";
+  const quals = sharedQuals ? shared.quals : [];
+  // Page 1 skips the product name when the intro title already has it; later pages always carry it, so they are never blank.
+  const introNamesProduct = !!context.intro && !!shared.name && context.intro.toLowerCase().includes(shared.name.toLowerCase());
+  const firstHeader = headerLine([introNamesProduct ? null : shared.name, ...quals]);
+  const laterHeader = headerLine([shared.name, ...quals]);
+  const labels = catalogLabels(products, locale, sharedQuals);
   const entries = products.map((product, index) => {
     const label = labels[index]!;
     const callback_data = `v1:browse:denom:${product.id}`;
@@ -242,13 +265,14 @@ export function presentCanonicalCatalog(products: CanonicalProduct[], context: {
   }
   for (const entry of entries) {
     const prefix = `#${entry.product.id} · ${esc(entry.product.formattedPrice)}${entry.stock !== undefined ? ` (${locale.startsWith("id") ? "Stok" : "Stock"} ${esc(entry.stock)})` : ""}\n`;
-    const chunks = entry.explain ? escapedChunks(context.bodyName ?? canonicalName(entry.product), 2800 - prefix.length - header.length) : [""];
+    const chunks = entry.explain ? escapedChunks(context.bodyName ?? canonicalName(entry.product), 2800 - prefix.length - Math.max(firstHeader.length, laterHeader.length)) : [""];
     for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
       const block = entry.explain ? `${prefix}${chunks[chunkIndex]}\n\n` : "";
-      const needed = (hasHeader ? 0 : header.length) + block.length;
+      // Budget for the longer header: the flush below may move this block onto a page with the other one.
+      const needed = (hasHeader ? 0 : Math.max(firstHeader.length, laterHeader.length)) + block.length;
       if (page.text.length + needed > PAGE_TEXT_LIMIT || page.rows.flat().length >= CATALOG_PAGE_SIZE) flush();
-      // Each page repeats the shared qualifier so a later page still says which region/variant it lists.
-      if (!hasHeader) { page.text += header; hasHeader = true; }
+      // Each page repeats the product (and shared qualifier) so a later page still says what it lists.
+      if (!hasHeader) { page.text += pages.length === 0 ? firstHeader : laterHeader; hasHeader = true; }
       page.text += block;
       const last = page.rows.at(-1);
       if (chunkIndex === 0 && priorNarrow && entry.narrow && last?.length === 1) last.push(entry.button);

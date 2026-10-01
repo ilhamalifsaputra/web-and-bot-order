@@ -2564,8 +2564,11 @@ describe("browseCategoryEntry — Game Top Up variant/region navigation + AUTO s
     const flat = (markup?.inline_keyboard ?? []).flat();
     const button = flat.find((b) => b.callback_data === `v1:browse:denom:${d1.id}`)!;
     expect(button.text).toBe("60 UC · Rp15K");
-    // Every SKU shares the "Standard" variant, so it is stated once in the body.
-    expect(bodyText(sink)).toContain("PUBG UC · Standard");
+    // Every SKU shares the "Standard" variant, so it is stated once in the body; the intro title already
+    // names the product, so page 1 does not repeat it beside the variant.
+    expect(bodyText(sink)).toContain("PUBG UC");
+    expect(bodyText(sink)).toContain("Standard");
+    expect(bodyText(sink)).not.toContain("PUBG UC · Standard");
   });
 
   it("PREMIUM APPS ZERO-BEHAVIOR-CHANGE REGRESSION: browseProduct's denomination-picker labels still go through formatDenominationLabel when no qtyValue/qtyUnit is set", async () => {
@@ -2600,7 +2603,8 @@ describe("browseCategoryEntry — Game Top Up variant/region navigation + AUTO s
     const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ text: string; callback_data?: string }>> };
     const flat = (markup?.inline_keyboard ?? []).flat();
     const button = flat.find((b) => b.callback_data === `v1:browse:denom:${d1.id}`)!;
-    expect(button.text).toBe("Spotify Premium 1 Bulan · Rp10K"); // unknown names remain complete
+    // The product's own name is a redundant prefix (the picker intro names it), so it is dropped; "Bulan" stays.
+    expect(button.text).toBe("1 Bulan · Rp10K");
   });
 });
 

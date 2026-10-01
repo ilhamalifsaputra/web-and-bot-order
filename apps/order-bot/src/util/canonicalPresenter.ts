@@ -2,7 +2,7 @@ import type { CanonicalProduct, CanonicalMoney } from "@app/core/canonicalProduc
 import { Decimal } from "@app/core/money";
 import { esc } from "@app/core/formatters";
 import { formatCompactPrice } from "@app/core/compactFormat";
-import { displayUnit, sharedIconUnits } from "@app/core/unitDisplay";
+import { abbreviateText, displayUnit, inlineUnitIcons, sharedIconUnits } from "@app/core/unitDisplay";
 
 export interface CatalogButton { text: string; callback_data: string }
 export interface CatalogPage { text: string; rows: CatalogButton[][] }
@@ -62,8 +62,13 @@ export async function boundedCanonicalName(product: CanonicalProduct, send: (htm
   for (const page of presentCanonicalCatalog([product], { bodyName: name }).pages) await send(page.text);
   return `#${product.id}`;
 }
-/** Telegram button budget: conservative cells, and a byte cap that also bounds combining marks. */
-export const MAX_LABEL_WIDTH = 44;
+/**
+ * Telegram button budget: conservative cells, and a byte cap that also bounds combining marks. Telegram
+ * truncates by pixels: a full-width bold button shows roughly 28-34 characters on a phone (50+ on desktop),
+ * so a single-column label is capped at 36 cells, with 32 as the soft target the shortening fallbacks aim for.
+ */
+export const MAX_LABEL_WIDTH = 36;
+export const TARGET_LABEL_WIDTH = 32;
 export const MAX_LABEL_BYTES = 64;
 /**
  * Width limit (in cells) for pairing two buttons in one row. It was 24 and is now 18, so wide
@@ -141,23 +146,28 @@ function shapesOf(products: CanonicalProduct[]): Shape[] {
 }
 
 const sameUnit = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
-function fullMain(product: CanonicalProduct, s: Shape, tails: string[] = []): string {
+/** The leading "quantity unit (+ bonus)" of an amount's full text ("" for any other variant). */
+function fullHead(product: CanonicalProduct): string {
   const v = product.variant;
-  if (v.type !== "amount") return [s.main, ...s.leftover, ...tails].join(" ");
+  if (v.type !== "amount") return "";
   const bonus = v.bonus ? ` + ${v.bonus.quantity} ${v.bonus.label ?? v.bonus.unit}` : "";
-  return [`${v.quantity} ${v.unit}${bonus}`, ...s.leftover, ...tails].join(" ");
+  return `${v.quantity} ${v.unit}${bonus}`;
 }
-/** Compact amount text, or null when compacting would hide meaning (a bonus in a different unit). */
-function compactMain(product: CanonicalProduct, s: Shape, locale: string, spelled: Set<string>): string | null {
+function fullMain(product: CanonicalProduct, s: Shape, tails: string[] = []): string {
+  if (product.variant.type !== "amount") return [s.main, ...s.leftover, ...tails].join(" ");
+  return [fullHead(product), ...s.leftover, ...tails].join(" ");
+}
+/** Compact "quantity unit" of an amount, or null when compacting would hide meaning (a bonus in a different unit). */
+function compactHead(product: CanonicalProduct, locale: string, spelled: Set<string>): string | null {
   const v = product.variant;
   if (v.type !== "amount") return null;
   if (v.bonus && !sameUnit(v.bonus.unit, v.unit)) return null;
   const unit = spelled.has(v.unit.toLowerCase()) ? v.unit : displayUnit(v.unit);
   const qty = `${compactQuantity(v.quantity, locale)}${v.bonus ? `+${compactQuantity(v.bonus.quantity, locale)}` : ""}`;
-  return [`${qty} ${unit}`, ...s.leftover].join(" ");
+  return `${qty} ${unit}`;
 }
 const withQuals = (main: string, quals: string[]) => [collapse(main), ...quals].join(" · ");
-const fits = (label: string) => visualWidth(label) <= MAX_LABEL_WIDTH && Buffer.byteLength(label, "utf8") <= MAX_LABEL_BYTES;
+const fits = (label: string, limit = MAX_LABEL_WIDTH) => visualWidth(label) <= limit && Buffer.byteLength(label, "utf8") <= MAX_LABEL_BYTES;
 
 function duplicates(labels: string[]): number[][] {
   const groups = new Map<string, number[]>();
@@ -185,10 +195,55 @@ function escapedChunks(value: string, limit: number): string[] {
   return chunks;
 }
 
+/** True when `name` begins and ends like the "lead…tail" cut `candidate`, i.e. the cut would read the same for it. */
+function endsLike(name: string, candidate: string): boolean {
+  const cut = candidate.indexOf("…");
+  const lead = candidate.slice(0, cut);
+  const tail = candidate.slice(cut + 1);
+  return name.length >= lead.length + tail.length && name.startsWith(lead) && name.endsWith(tail);
+}
+
+/** True when a word (letters only, any case) occurs twice. */
+function repeatsAWord(value: string): boolean {
+  const seen = new Set<string>();
+  for (const word of value.toLowerCase().split(/[^\p{L}]+/u).filter((w) => w.length > 1)) {
+    if (seen.has(word)) return true;
+    seen.add(word);
+  }
+  return false;
+}
+
+/**
+ * The fallback forms of `main`, in order, for a label that does not fit: the name without its qualifiers;
+ * its unit words replaced by their registered icon; its long words abbreviated; both; and finally its END behind one
+ * "…" (the end carries the number that tells siblings apart). The head (an amount's "quantity unit") is kept whole.
+ * Only the "…" forms are `tail`: they drop words and are the last resort.
+ */
+function* shorterNames(main: string, head: string): Generator<{ text: string; tail: boolean }> {
+  const name = collapse(main);
+  const lead = head ? `${head} ` : "";
+  const body = collapse(name.slice(head.length));
+  const reduced = collapse(abbreviateText(inlineUnitIcons(body)));
+  const steps = [name, collapse(`${lead}${inlineUnitIcons(body)}`), collapse(`${lead}${abbreviateText(body)}`), collapse(`${lead}${reduced}`)];
+  for (const [i, text] of steps.entries()) if (steps.indexOf(text) === i) yield { text, tail: false };
+  const words = reduced.split(" ").filter(Boolean);
+  for (let drop = 1; drop < words.length; drop++) yield { text: `${lead}…${words.slice(drop).join(" ")}`, tail: true };
+  // One enormous last word: keep its end, never cutting inside a grapheme.
+  const last = words.at(-1);
+  if (last) {
+    const parts = [...graphemes.segment(last)].map((part) => part.segment);
+    for (let keep = parts.length - 1; keep >= 4; keep--) yield { text: `${lead}…${parts.slice(parts.length - keep).join("")}`, tail: true };
+  }
+}
+
 /**
  * Button labels, in order: compact (or full where compacting would hide
- * meaning) → full name on a collision → ` #id` suffix → `#id` when too wide.
- * Collisions are re-checked after every step, so no two final labels match.
+ * meaning) → full name on a collision → ` #id` suffix. A label that is then too
+ * wide tries, while it still fits and stays distinct, the name without its
+ * qualifiers, then the name's END behind one "…" (the end carries the number that
+ * tells siblings apart), and only then the bare `#id`. Anything shortened is
+ * explained in the body. Collisions are re-checked after every step, so no two
+ * final labels match.
  */
 function catalogLabels(products: CanonicalProduct[], locale: string, sharedQuals: boolean): { text: string; fallback: boolean; complex: boolean }[] {
   const conflictingShorts = new Set(sharedIconUnits(products.flatMap((p) => p.variant.type === "amount" ? [p.variant.unit] : [])).map((group) => group.short));
@@ -198,15 +253,19 @@ function catalogLabels(products: CanonicalProduct[], locale: string, sharedQuals
     const s = shapes[index]!;
     const quals = sharedQuals ? [] : s.quals;
     const price = compactPrice(product, locale);
-    const compact = compactMain(product, s, locale, spelled);
+    const head = compactHead(product, locale, spelled);
+    const compact = head === null ? null : [head, ...s.leftover].join(" ");
     // Identity = the label without its price. Price alone must never be what tells two SKUs apart.
     // The full form restores what lifting hid: the name's own "- Garena" tail, and not the same qualifier twice.
     const tails = s.lifted.map((l) => l.text);
     const fullQuals = quals.filter((q) => !s.lifted.some((l) => l.key === tokenKey(q)));
-    const fullIdentity = withQuals(fullMain(product, s, tails), fullQuals);
-    const identity = compact === null ? withQuals(fullMain(product, s), quals) : withQuals(compact, quals);
+    const fullText = fullMain(product, s, tails);
+    const fullIdentity = withQuals(fullText, fullQuals);
+    const main = compact ?? fullMain(product, s);
     return {
-      identity, fullIdentity, price, fallback: false,
+      identity: withQuals(main, quals), fullIdentity, price, fallback: false,
+      // What the shortening fallbacks start from: the identity's name part and the leading "quantity unit" they keep whole.
+      main, mainHead: head ?? fullHead(product), fullText, fullHead: fullHead(product),
       complex: product.variant.type === "unknown" || (product.variant.type === "amount" && compact === null) || s.leftover.length > 0,
     };
   });
@@ -217,16 +276,43 @@ function catalogLabels(products: CanonicalProduct[], locale: string, sharedQuals
   for (const group of duplicates(identities())) {
     const fulls = group.map((index) => items[index]!.fullIdentity);
     const others = new Set(identities().filter((_, index) => !group.includes(index)));
-    if (new Set(fulls).size === group.length && !fulls.some((full) => others.has(full))) group.forEach((index, i) => { items[index]!.identity = fulls[i]!; });
-    else for (const index of group) items[index]!.fallback = true;
+    if (new Set(fulls).size === group.length && !fulls.some((full) => others.has(full))) {
+      group.forEach((index, i) => { Object.assign(items[index]!, { identity: fulls[i]!, main: items[index]!.fullText, mainHead: items[index]!.fullHead }); });
+    } else for (const index of group) items[index]!.fallback = true;
   }
   const labels = items.map((item, index) => ({
     text: `${item.identity} · ${item.price}${item.fallback ? ` #${products[index]!.id}` : ""}`, fallback: item.fallback, complex: item.complex,
   }));
   const texts = () => labels.map((label) => label.text);
+  const identityKey = (value: string) => collapse(value).toLowerCase();
   labels.forEach((label, index) => {
     // Width alone misses thousands of combining marks in one visual cell, so bytes are bounded too.
-    if (!fits(label.text)) Object.assign(label, { text: `#${products[index]!.id}`, fallback: true });
+    if (fits(label.text)) return;
+    const item = items[index]!;
+    const suffix = item.fallback ? ` #${products[index]!.id}` : "";
+    const candidates = [...shorterNames(item.main, item.mainHead)];
+    // Substitutions first (any that fits the cap), then cuts: those aim for the soft target and avoid a stutter
+    // ("…Crystals Bundle 8.000 Crystals" repeats a word), each relaxed only when nothing else fits.
+    const passes = [
+      { tail: false, limit: MAX_LABEL_WIDTH, strict: false },
+      { tail: true, limit: TARGET_LABEL_WIDTH, strict: true }, { tail: true, limit: MAX_LABEL_WIDTH, strict: true },
+      { tail: true, limit: TARGET_LABEL_WIDTH, strict: false }, { tail: true, limit: MAX_LABEL_WIDTH, strict: false },
+    ];
+    for (const pass of passes) for (const { text: candidate, tail } of candidates) {
+      // Strict cuts also keep at least two words: a lone word is a worse label than a cut that repeats one.
+      if (tail !== pass.tail || (pass.strict && (repeatsAWord(candidate) || candidate.slice(candidate.indexOf("…") + 1).split(" ").length < 2))) continue;
+      const text = `${candidate} · ${item.price}${suffix}`;
+      if (!fits(text, pass.limit)) continue;
+      // A suffixed (colliding) item is told apart by its ID; any other must not equal another item's identity.
+      if (!item.fallback && items.some((other, otherIndex) => otherIndex !== index && identityKey(other.identity) === identityKey(candidate))) continue;
+      // A cut that another SKU's name also ends with does not tell the two apart (only the dropped beginning does).
+      if (!item.fallback && candidate.includes("…") && items.some((other, otherIndex) => otherIndex !== index && endsLike(collapse(other.main), candidate))) continue;
+      // Qualifiers, or part of the name, were dropped: the body explains this item in full.
+      Object.assign(label, { text, complex: true });
+      item.identity = candidate;
+      return;
+    }
+    Object.assign(label, { text: `#${products[index]!.id}`, fallback: true });
   });
   // IDs are unique, so turning every remaining duplicate into its bare ID terminates.
   for (let group = duplicates(texts()); group.length; group = duplicates(texts())) {

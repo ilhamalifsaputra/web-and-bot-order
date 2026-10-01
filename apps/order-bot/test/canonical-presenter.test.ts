@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { canonicalProduct } from "@app/core/canonicalProduct";
 import catalog from "../../../packages/core/src/detection/__fixtures__/catalogSnapshot.json";
-import { canonicalName, presentCanonicalCatalog, visualWidth, compactQuantity, MAX_LABEL_WIDTH, NARROW_LABEL_WIDTH } from "../src/util/canonicalPresenter";
+import { canonicalName, presentCanonicalCatalog, visualWidth, compactQuantity, MAX_LABEL_WIDTH, NARROW_LABEL_WIDTH, TARGET_LABEL_WIDTH } from "../src/util/canonicalPresenter";
 
 const item = (id: number, name: string, price = "21000", currency: "IDR" | "USD" = "IDR", locale = "id") => canonicalProduct({
   denomination: { id, name, durationLabel: name, supplierRawName: name, supplierSku: `sku-${id}`, autoDeliverySource: "digiflazz", isActive: true },
@@ -103,7 +103,8 @@ describe("canonical Telegram catalog", () => {
     const buttons = result.pages.flatMap((page) => page.rows.flat());
     expect(buttons.length).toBeGreaterThan(0);
     for (const button of buttons) {
-      expect(button.text).toBe("#91");
+      // The enormous first word leaves the button (the end of the name survives behind one ellipsis); the body keeps all of it.
+      expect(button.text).toBe("…<&> final qualifier 🙂 · Rp21K");
       expect(button.callback_data).toBe("v1:browse:denom:91");
     }
   });
@@ -281,15 +282,16 @@ describe("canonical Telegram label candidates", () => {
   it("re-checks collisions after the width fallback and explains every fallback", () => {
     const name = "Long Seasonal Collector Pass Edition";
     const result = presentCanonicalCatalog([make(17, name, { price: "20001" }), make(18, name, { price: "20002" })]);
-    expect(labels(result)).toEqual(["#17", "#18"]);
+    // Both still collide after the width fallback, so the ID tells them apart; the body carries the full name and exact price.
+    expect(labels(result)).toEqual(["…Pass Edition · Rp20K #17", "…Pass Edition · Rp20K #18"]);
     expect(result.pages[0]!.text).toContain(`#17 · Rp20.001\n${name}`);
     expect(result.pages[0]!.text).toContain(`#18 · Rp20.002\n${name}`);
   });
   it("decides fit after the final currency is formatted", () => {
-    const name = "Long Seasonal Collector Pass Edition";
+    const name = "Seasonal Collector Pass";
     expect(labels(presentCanonicalCatalog([make(1, name, { price: "1000000", currency: "IDR" })]))).toEqual([`${name} · Rp1M`]);
     const usd = presentCanonicalCatalog([make(1, name, { price: "1600000000", currency: "USD" })]);
-    expect(labels(usd)).toEqual(["#1"]);
+    expect(labels(usd)).toEqual(["…Collector Pass · $100.000,00"]);
     expect(usd.pages[0]!.text).toContain(`#1 · $100.000,00\n${name}`);
   });
   it("labels the 'Black Hawk Down Redefine  - Garena' unknown item instead of falling back to its ID", () => {
@@ -299,7 +301,7 @@ describe("canonical Telegram label candidates", () => {
     // Unknown items still get their exact name and price in the body.
     expect(shared.pages[0]!.text).toContain("#30025111 · Rp150.000\nBlack Hawk Down Redefine - Garena");
     const usd = presentCanonicalCatalog([make(1, raw, { price: "150000", currency: "USD", product: { name: "Delta Force", gameVariant: null } })]);
-    expect(labels(usd)).toEqual(["Black Hawk Down Redefine - Garena · $9,38"]);
+    expect(labels(usd)).toEqual(["…Down Redefine - Garena · $9,38"]);
   });
   it("puts each fallback item's name and price on the same page as its button", () => {
     const products = Array.from({ length: 21 }, (_, i) => make(i + 1, `${i + 1} Diamonds`, { price: "20000" }));
@@ -308,7 +310,11 @@ describe("canonical Telegram label candidates", () => {
     expect(result.pages).toHaveLength(2);
     expect(result.pages[0]!.rows.flat()).toHaveLength(20);
     const last = result.pages[1]!;
-    expect(last.rows.flat().map((b) => b.text)).toEqual(["21 💎 · Rp20K", "#122"]);
+    const [amount, shortened] = last.rows.flat().map((b) => b.text);
+    expect(amount).toBe("21 💎 · Rp20K");
+    // The name's end survives behind one ellipsis, and the full name stays in the body below.
+    expect(shortened).toMatch(/^…(?:long words )*(?:long )?words · Rp20K$/);
+    expect(visualWidth(shortened!)).toBeLessThanOrEqual(MAX_LABEL_WIDTH);
     expect(last.text).toContain("#122 · Rp20.000\nMystery");
     expect(result.pages[0]!.text).not.toContain("#122");
     expect(last.text).not.toContain("#21 ·");
@@ -444,5 +450,154 @@ describe("canonicalName whitespace by category group", () => {
   });
   it("collapses repeated whitespace for a Game Top-Up name", () => {
     expect(canonicalName(named("GAME_TOPUP"))).toBe("CC - 3 Month");
+  });
+});
+
+// The real "Genshin Impact" product of the dummy catalog (20 SKUs): structured quantities beside names that reorder
+// the same tokens, bonus-including totals and a bundle whose label is wider than a phone button.
+describe("Game Top-Up buttons for a product with reordered, bonus-including and bundle names", () => {
+  const sku = (id: number, raw: string, price: string, qty?: [number, string], currency: "IDR" | "USD" = "USD", locale = "id") => canonicalProduct({
+    denomination: { id, name: raw, durationLabel: raw, supplierRawName: raw, supplierSku: `sku-${id}`, autoDeliverySource: null, isActive: true, ...(qty ? { qtyValue: qty[0], qtyUnit: qty[1] } : {}) },
+    product: { id: 38, name: "Genshin Impact", isActive: true, gameRegion: null, gameVariant: null },
+    category: { id: 1, name: "Top Up", group: "GAME_TOPUP", isActive: true },
+  }, { effectivePriceIDR: price, preferredCurrency: currency, rate: "16000", locale });
+  const rows: [number, string, string, [number, string]?][] = [
+    [663, "Genshin Impact 60 Genesis Crystals", "15300", [60, "Genesis Crystals"]], [664, "Genshin Impact 300 Genesis Crystals", "76500", [300, "Genesis Crystals"]],
+    [665, "Genshin Impact 980 Genesis Crystals", "249900", [980, "Genesis Crystals"]], [666, "Genshin Impact 1.980 Genesis Crystals", "504900", [1980, "Genesis Crystals"]],
+    [667, "Genshin Impact 3.280 Genesis Crystals", "836400", [3280, "Genesis Crystals"]], [668, "Genshin Impact 6.480 Genesis Crystals", "1652400", [6480, "Genesis Crystals"]],
+    [669, "Genshin Impact 300 + 30 Genesis Crystals", "75800", [330, "Genesis Crystals"]], [670, "Genshin Impact 980 + 110 Genesis Crystals", "247800", [1090, "Genesis Crystals"]],
+    [671, "Genshin Impact 1980 + 260 Genesis Crystals", "501500", [2240, "Genesis Crystals"]], [672, "Genshin Impact 3280 + 600 Genesis Crystals", "835000", [3880, "Genesis Crystals"]],
+    [673, "Genshin Impact 6480 + 1600 Genesis Crystals", "1660000", [8080, "Genesis Crystals"]],
+    [674, "Genshin Impact Blessing of the Welkin Moon", "79000"], [675, "Genshin Impact Blessing of the Welkin Moon x2", "155000"], [676, "Genshin Impact Gnostic Hymn", "159000"],
+    [677, "Genshin Impact Primogems 160", "40000", [160, "Primogems"]], [678, "Genshin Impact Primogems 330", "79000", [330, "Primogems"]], [679, "Genshin Impact Crystals 330", "79500", [330, "Crystals"]],
+    [680, "Genshin Impact Genesis Crystals Bundle 8.000 Crystals", "2000000", [8000, "Crystals"]], [681, "Genshin Impact Genesis Crystals Bundle 9.000 Crystals", "2250000", [9000, "Crystals"]],
+    [682, "Genshin Impact Genesis Crystals Bundle 10.000 Crystals", "2500000", [10000, "Crystals"]],
+  ];
+  const list = (currency: "IDR" | "USD", locale: string) => rows.map(([id, raw, price, qty]) => sku(id, raw, price, qty, currency, locale));
+  const repeatedWord = (label: string) => {
+    const body = label.replace(/\s#\d+$/, "").replace(/ · [^·]*$/, "");
+    const seen = new Set<string>();
+    for (const word of body.toLowerCase().split(/[^\p{L}]+/u).filter((w) => w.length > 1)) { if (seen.has(word)) return word; seen.add(word); }
+    return null;
+  };
+  const byId = (result: ReturnType<typeof presentCanonicalCatalog>) => new Map(result.pages.flatMap((p) => p.rows.flat()).map((b) => [Number(b.callback_data.split(":").at(-1)), b.text]));
+
+  it.each([["USD", "id"], ["USD", "en"], ["IDR", "id"], ["IDR", "en"]] as const)("labels all 20 SKUs distinctly and readably (%s, %s)", (currency, locale) => {
+    const result = presentCanonicalCatalog(list(currency, locale), { locale });
+    const texts = result.pages.flatMap((p) => p.rows.flat().map((b) => b.text));
+    expect(texts).toHaveLength(20);
+    expect(new Set(texts).size).toBe(20);
+    for (const text of texts) {
+      expect(text, text).not.toMatch(/^#\d+$/);
+      expect(text, text).not.toMatch(/\s#\d+$/);
+      expect(repeatedWord(text), text).toBeNull();
+      expect(visualWidth(text), text).toBeLessThanOrEqual(MAX_LABEL_WIDTH);
+      expect(Buffer.byteLength(text, "utf8"), text).toBeLessThanOrEqual(64);
+    }
+    for (const button of result.pages.flatMap((p) => p.rows.flat())) expect(button.callback_data).toMatch(/^v1:browse:denom:6\d\d$/);
+  });
+  it("shows the reordered Primogems and Crystals once, as 160 Primogems / 330 Crystals", () => {
+    const labelsById = byId(presentCanonicalCatalog(list("USD", "id"), { locale: "id" }));
+    expect(labelsById.get(677)).toBe("160 Primogems · $2,50");
+    expect(labelsById.get(678)).toBe("330 Primogems · $4,94");
+    expect(labelsById.get(679)).toBe("330 Crystals · $4,97");
+    expect(byId(presentCanonicalCatalog(list("USD", "en"), { locale: "en" })).get(679)).toBe("330 Crystals · $4.97");
+  });
+  it("labels the bonus-including totals as base+bonus in the structured unit's own name", () => {
+    const labelsById = byId(presentCanonicalCatalog(list("USD", "id"), { locale: "id" }));
+    expect(labelsById.get(673)).toBe("6480+1600 Genesis Crystals · $103,75");
+    expect(labelsById.get(669)).toBe("300+30 Genesis Crystals · $4,74");
+    // Genesis Crystals, Primogems and Crystals share one icon in this list, so their amounts stay spelled out.
+    for (const id of [663, 669, 673, 677, 678, 679]) expect(labelsById.get(id), String(id)).not.toContain("💎");
+  });
+  it("swaps a too-wide bundle's unit words for their icon and keeps its distinguishing number", () => {
+    const result = presentCanonicalCatalog(list("USD", "id"), { locale: "id" });
+    const labelsById = byId(result);
+    expect(labelsById.get(680)).toBe("💎 Bundle 8.000 💎 · $125,00");
+    expect(labelsById.get(681)).toBe("💎 Bundle 9.000 💎 · $140,63");
+    expect(labelsById.get(682)).toBe("💎 Bundle 10.000 💎 · $156,25");
+    // The body still explains each of them with its full name and exact price, on the page that holds the button.
+    const page = result.pages.find((p) => p.rows.flat().some((b) => b.callback_data.endsWith(":680")))!;
+    expect(page.text).toContain("#680 · $125,00\nGenesis Crystals Bundle 8.000 Crystals");
+    expect(page.text).toContain("#682 · $156,25\nGenesis Crystals Bundle 10.000 Crystals");
+  });
+  it("keeps the original name for a Premium Apps SKU (no structured-quantity rule applies)", () => {
+    const premium = canonicalProduct({
+      denomination: { id: 5, name: "Primogems 160", durationLabel: "Primogems 160", supplierRawName: "Primogems 160", isActive: true, qtyValue: 160, qtyUnit: "Primogems" },
+      product: { id: 9, name: "Shop", isActive: true }, category: { id: 2, name: "Apps", group: "PREMIUM_APPS", isActive: true },
+    }, { effectivePriceIDR: "40000", preferredCurrency: "IDR", locale: "id" });
+    expect(canonicalName(premium)).toBe("160 Primogems Primogems 160");
+  });
+});
+
+describe("Game Top-Up button fallback chain before a bare ID", () => {
+  const item = (id: number, raw: string, price = "1000000", opts: { qty?: [number, string]; currency?: "IDR" | "USD"; locale?: string } = {}) => canonicalProduct({
+    denomination: { id, name: raw, durationLabel: raw, supplierRawName: raw, supplierSku: `sku-${id}`, autoDeliverySource: null, isActive: true, ...(opts.qty ? { qtyValue: opts.qty[0], qtyUnit: opts.qty[1] } : {}) },
+    product: { id: 3, name: "Some Game", isActive: true, gameRegion: null, gameVariant: null },
+    category: { id: 1, name: "Top Up", group: "GAME_TOPUP", isActive: true },
+  }, { effectivePriceIDR: price, preferredCurrency: opts.currency ?? "IDR", rate: "16000", locale: opts.locale ?? "id" });
+  const texts = (products: ReturnType<typeof item>[]) => labels(presentCanonicalCatalog(products));
+
+  it("keeps a label of exactly the hard cap and falls back one cell later", () => {
+    expect(MAX_LABEL_WIDTH).toBe(36);
+    expect(TARGET_LABEL_WIDTH).toBe(32);
+    const at = "Alpha Bravo Charlie Delta Eco";
+    expect(visualWidth(`${at} · Rp1M`)).toBe(36);
+    expect(texts([item(1, at)])).toEqual([`${at} · Rp1M`]);
+    const over = texts([item(1, `${at}x`)]);
+    expect(over[0]).not.toBe(`${at}x · Rp1M`);
+    expect(over[0]).toMatch(/^…/);
+    expect(visualWidth(over[0]!)).toBeLessThanOrEqual(MAX_LABEL_WIDTH);
+  });
+  it("abbreviates long words only when the label does not fit, and never makes two SKUs identical", () => {
+    expect(texts([item(1, "Weekly Premium Pass")])).toEqual(["Weekly Premium Pass · Rp1M"]);
+    const result = presentCanonicalCatalog([item(1, "Weekly Premium Subscription Package Bonus"), item(2, "Weekly Premium Subscription Pkg Bonus")]);
+    const out = labels(result);
+    expect(new Set(out).size).toBe(2);
+    expect(out.every((text) => !/^#\d+$/.test(text))).toBe(true);
+    expect(result.pages[0]!.text).toContain("#1 · Rp1.000.000\nWeekly Premium Subscription Package Bonus");
+    expect(result.pages[0]!.text).toContain("#2 · Rp1.000.000\nWeekly Premium Subscription Pkg Bonus");
+    expect(texts([item(1, "Weekly Premium Subscription Package")])).toEqual(["Wkly Prem Sub Pkg · Rp1M"]);
+  });
+  it("keeps the END of a long name behind one ellipsis, with the price intact and the full name in the body", () => {
+    const products = [8000, 9000, 10000].map((n, i) => item(i + 1, `Ultra Mega Collector Edition Special Pack ${n}`));
+    const result = presentCanonicalCatalog(products);
+    const out = labels(result);
+    expect(out).toEqual(["…Special Pack 8000 · Rp1M", "…Special Pack 9000 · Rp1M", "…Special Pack 10000 · Rp1M"]);
+    for (const text of out) expect(visualWidth(text)).toBeLessThanOrEqual(TARGET_LABEL_WIDTH);
+    expect(result.pages[0]!.text).toContain("#1 · Rp1.000.000\nUltra Mega Collector Edition Special Pack 8000");
+    expect(result.pages[0]!.text).toContain("#3 · Rp1.000.000\nUltra Mega Collector Edition Special Pack 10000");
+    expect(result.pages[0]!.rows.flat().map((b) => b.callback_data)).toEqual(["v1:browse:denom:1", "v1:browse:denom:2", "v1:browse:denom:3"]);
+  });
+  it("falls back to the bare ID only when no shortening can tell siblings apart, and explains both", () => {
+    const result = presentCanonicalCatalog([item(1, "Alpha Series Gamma Edition Special Collector Pack Plus"), item(2, "Beta Series Gamma Edition Special Collector Pack Plus")]);
+    expect(labels(result)).toEqual(["#1", "#2"]);
+    expect(result.pages[0]!.text).toContain("#1 · Rp1.000.000\nAlpha Series Gamma Edition Special Collector Pack Plus");
+    expect(result.pages[0]!.text).toContain("#2 · Rp1.000.000\nBeta Series Gamma Edition Special Collector Pack Plus");
+  });
+  it("never cuts inside a grapheme", () => {
+    const [text] = texts([item(1, "Famille 👨‍👩‍👧‍👦 Mega Special Event Pack 👨‍👩‍👧‍👦 Gift")]);
+    expect(text).toMatch(/^….*👨‍👩‍👧‍👦 Gift · Rp1M$/u);
+    const [single] = texts([item(1, "Ünïcödé".repeat(10))]);
+    expect(visualWidth(single!)).toBeLessThanOrEqual(MAX_LABEL_WIDTH);
+    expect(single).toMatch(/^….+ · Rp1M$/u);
+  });
+  it("aims cuts at the soft target", () => {
+    const [cut] = texts([item(1, "Ultra Mega Collector Edition Special Bundle Pack Plus Max")]);
+    expect(visualWidth(cut!)).toBeLessThanOrEqual(TARGET_LABEL_WIDTH);
+  });
+  it("shows Crystals as an icon alone, but spells Crystals and Diamonds out when they share an icon in one list", () => {
+    expect(texts([item(1, "Crystals 330", "79500", { qty: [330, "Crystals"] })])).toEqual(["330 💎 · Rp80K"]);
+    const mixed = presentCanonicalCatalog([item(1, "Crystals 330", "79500", { qty: [330, "Crystals"] }), item(2, "Diamonds 86", "20000", { qty: [86, "Diamonds"] })]);
+    expect(labels(mixed)).toEqual(["330 Crystals · Rp80K", "86 Diamonds · Rp20K"]);
+  });
+  it.each([
+    ["Diamonds", "💎"], ["Crystals", "💎"], ["Genesis Crystals", "💎"], ["Gems", "💎"], ["Primogems", "💎"], ["Jewels", "💎"],
+    ["Coins", "🪙"], ["Gold", "🥇"], ["Stars", "⭐"], ["Tickets", "🎫"],
+  ])("shows %s as %s when it is the only unit in the list", (unit, icon) => {
+    expect(texts([item(1, `${unit} 250`, "20000", { qty: [250, unit] })])).toEqual([`250 ${icon} · Rp20K`]);
+  });
+  it.each([["UC"], ["VP"], ["Bonds"], ["Robux"], ["Tokens"], ["Credits"], ["Points"]])("keeps %s as text", (unit) => {
+    expect(texts([item(1, `${unit} 250`, "20000", { qty: [250, unit] })])).toEqual([`250 ${unit} · Rp20K`]);
   });
 });

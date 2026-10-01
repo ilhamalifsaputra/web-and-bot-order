@@ -228,6 +228,20 @@ checklist for the task list.
   the migration) and restart order-bot **before** new code runs, or you get
   `P2022 column … does not exist`.
 
+## Telegram inline keyboard labels
+- **A button label must fit a phone**: single-column cap `MAX_LABEL_WIDTH`
+  (36 cells, soft target `TARGET_LABEL_WIDTH` 32), two per row only at or under
+  `NARROW_LABEL_WIDTH` (18), measured with `visualWidth` (emoji/CJK = 2 cells),
+  never `string.length`. The constants live in
+  `apps/order-bot/src/util/canonicalPresenter.ts`; do not hardcode numbers.
+- **Icons and abbreviations only from the dictionary**
+  `packages/core/src/unitDictionary.ts`. A bare `#id` button is the last
+  resort and must be explained (full name + exact price) in the message body.
+- **Premium Apps keep their original picker** (`denominationPickerKb`,
+  `browse.denomination_line`); canonical naming rules apply to `GAME_TOPUP`
+  only. Full rules, fallback order and test guard: `.claude/skills/bot-ux-grammy/SKILL.md`
+  ("Inline keyboard button labels").
+
 ## Never do
 - **Never send Telegram from the web** (admin or storefront) — enqueue to
   `notification_outbox`; the notifier/bot delivers.

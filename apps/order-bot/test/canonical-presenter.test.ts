@@ -713,6 +713,17 @@ describe("Game Top-Up labels keep the START of a name that fits whole without th
     expect(labels(result)[0]).toBe("Black Hawk Down Redefine · Rp125K");
     expect(result.pages[0]!.text).toContain("#1 · Rp125.000\nBlack Hawk Down Redefine - Garena");
   });
+  it("cuts the name without its qualifier before it cuts the name that keeps it, so an id-suffixed twin still shows what it is", () => {
+    const delta = { name: "Delta Force" };
+    const out = labels(presentCanonicalCatalog([
+      sku(1032, "Delta Force Black Hawk Down Redefine  - Garena", "79000", delta),
+      sku(1033, "Delta Force Black Hawk Down Redefine - Garena", "80000", delta),
+      sku(1035, "Delta Force 18 Delta Coins - Garena", "5000", delta),
+    ]));
+    // Same name twice, so an id tells them apart; the words that name the item stay and the shared "Garena" does not take their place.
+    expect(out[0]).toBe("Black… Down Redefine · Rp79K #1032");
+    expect(out[1]).toBe("Black… Down Redefine · Rp80K #1033");
+  });
   it("leaves the qualifier alone when dropping it would make two labels identical", () => {
     const delta = { name: "Delta Force" };
     const out = labels(presentCanonicalCatalog([

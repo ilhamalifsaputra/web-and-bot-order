@@ -220,7 +220,8 @@ function withoutRepeatedUnit(body: string, unit: string): string | null {
   return edge.test(body) ? collapse(body.replace(edge, "")) : null;
 }
 
-type CutKind = "swap" | "qualifier" | "middle" | "tail";
+/** `Alt` cuts start from the name as it is (qualifier and repeated unit kept); they are tried only after every cut of the reduced name failed. */
+type CutKind = "swap" | "qualifier" | "middle" | "tail" | "middleAlt" | "tailAlt";
 /**
  * The fallback forms of `main`, in order, for a label that does not fit. An amount's head ("quantity unit") is kept whole.
  *  - swap: the name as is, the amount's own unit as its icon (`iconHead`, one unit, only when it is not spelled in this list), long words abbreviated;
@@ -253,17 +254,17 @@ function* shorterNames(main: string, head: string, options: { iconHead: string |
   // Cuts start from the name without its droppable qualifier (and its repeated unit); if every such cut reads like a sibling, from the name with them.
   const cutBodies = [...(dropped !== null ? [dropped] : []), base, ...(unitless !== null ? [body] : [])].map((text) => collapse(abbreviateText(text)).split(" ").filter(Boolean));
   // Most words kept first; of equal size, the longest end. Names of more than 30 words go straight to the end cut.
-  for (const words of cutBodies) {
+  for (const [group, words] of cutBodies.entries()) {
     if (words.length < 3 || words.length > 30) continue;
     for (let kept = words.length - 1; kept >= 2; kept--) {
       for (let end = kept - 1; end >= 1; end--) {
         const first = words.slice(0, kept - end);
         const last = words.slice(words.length - end);
-        yield { text: `${lead}${first.join(" ")}… ${last.join(" ")}`, kind: "middle", kept: meaningfulWords([...first, ...last]) };
+        yield { text: `${lead}${first.join(" ")}… ${last.join(" ")}`, kind: group === 0 ? "middle" : "middleAlt", kept: meaningfulWords([...first, ...last]) };
       }
     }
   }
-  for (const words of cutBodies) for (let drop = 1; drop < words.length; drop++) yield { text: `${lead}…${words.slice(drop).join(" ")}`, kind: "tail", kept: meaningfulWords(words.slice(drop)) };
+  for (const [group, words] of cutBodies.entries()) for (let drop = 1; drop < words.length; drop++) yield { text: `${lead}…${words.slice(drop).join(" ")}`, kind: group === 0 ? "tail" : "tailAlt", kept: meaningfulWords(words.slice(drop)) };
   // One enormous last word: keep its end, never cutting inside a grapheme.
   const last = cutBodies[0]!.at(-1);
   if (last) {
@@ -340,19 +341,16 @@ function catalogLabels(products: CanonicalProduct[], locale: string, sharedQuals
     const candidates = [...shorterNames(item.main, item.mainHead, { iconHead: iconizedHead(products[index]!, item.mainHead, spelled), qualifierKeys, repeatedUnit: item.unit })];
     // A name that already doubles an icon on its own may keep doing so; no step may add that.
     const nameStutters = hasRepeatedIcon(collapse(item.main));
-    // Substitutions and a dropped qualifier first (any that fits the cap), then cuts: the first words plus the end, then the end alone.
+    // Substitutions and a dropped qualifier first (any that fits the cap), then cuts: the first words plus the end, then the end alone,
+    // each of the reduced name before the "Alt" cuts of the name that keeps its qualifier and unit word.
     // Cuts aim for the soft target and avoid a stutter ("…Crystals Bundle 8.000 Crystals" repeats a word), each relaxed only when nothing else fits.
-    const passes: { kinds: CutKind[]; limit: number; strict: boolean }[] = [
-      { kinds: ["swap", "qualifier"], limit: MAX_LABEL_WIDTH, strict: false },
-      { kinds: ["middle"], limit: TARGET_LABEL_WIDTH, strict: true }, { kinds: ["middle"], limit: MAX_LABEL_WIDTH, strict: true },
-      { kinds: ["tail"], limit: TARGET_LABEL_WIDTH, strict: true }, { kinds: ["tail"], limit: MAX_LABEL_WIDTH, strict: true },
-      { kinds: ["middle"], limit: TARGET_LABEL_WIDTH, strict: false }, { kinds: ["middle"], limit: MAX_LABEL_WIDTH, strict: false },
-      { kinds: ["tail"], limit: TARGET_LABEL_WIDTH, strict: false }, { kinds: ["tail"], limit: MAX_LABEL_WIDTH, strict: false },
-    ];
+    const cuts = (strict: boolean): { kinds: CutKind[]; limit: number; strict: boolean }[] => (["middle", "middleAlt", "tail", "tailAlt"] as const)
+      .flatMap((kind) => [{ kinds: [kind], limit: TARGET_LABEL_WIDTH, strict }, { kinds: [kind], limit: MAX_LABEL_WIDTH, strict }]);
+    const passes = [{ kinds: ["swap", "qualifier"] as CutKind[], limit: MAX_LABEL_WIDTH, strict: false }, ...cuts(true), ...cuts(false)];
     for (const pass of passes) for (const { text: candidate, kind, kept } of candidates) {
       // Strict cuts also keep enough words (two after an end-only ellipsis, three around a middle one): a lone word is a worse label than a cut that repeats one.
       if (!pass.kinds.includes(kind) || (!nameStutters && hasRepeatedIcon(candidate))) continue;
-      if (pass.strict && (stutters(candidate) || kept < (kind === "middle" ? 3 : 2))) continue;
+      if (pass.strict && (stutters(candidate) || kept < (kind.startsWith("middle") ? 3 : 2))) continue;
       const text = `${candidate} · ${item.price}${suffix}`;
       if (!fits(text, pass.limit)) continue;
       // A suffixed (colliding) item is told apart by its ID; any other must not equal another item's identity.

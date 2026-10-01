@@ -635,9 +635,17 @@ describe("Game Top-Up icon fallback never doubles or misplaces an icon", () => {
       expect(text, text).not.toMatch(/^#\d+$/);
       expect(visualWidth(text), text).toBeLessThanOrEqual(MAX_LABEL_WIDTH);
     }
-    // The icon stays where the quantity is, and the body still gives the full name.
-    expect(out[0]).toMatch(/^7 💎 Event/u);
+    // The icon stays where the quantity is, the unit word the head already states is not repeated, and the body still gives the full name.
+    expect(out[0]).toBe("7 💎 Event Gift Pack 1 · Rp18K");
+    expect(out[10]).toBe("77 💎 Event Gift Pack 11 · Rp18K");
     expect(result.pages[0]!.text).toContain("#869 · Rp18.000\n7 Diamonds Event Gift Pack 1 Diamonds");
+  });
+  it("does not repeat a spelled-out unit either, when the list spells it because other units share its icon", () => {
+    const out = labels(presentCanonicalCatalog([
+      sku(1, "Event Gift Pack 1 Diamonds", "18000", { qty: [7, "Diamonds"], product: "Mobile Legends" }),
+      sku(2, "Primogems 160", "40000", { qty: [160, "Primogems"] }),
+    ]));
+    expect(out).toEqual(["7 Diamonds Event Gift Pack 1 · Rp18K", "160 Primogems · Rp40K"]);
   });
   it("does not turn a literal icon plus the unit word of a combo name into two icons", () => {
     const [text] = labels(presentCanonicalCatalog([sku(1, "💎 Diamonds 100 ✨🔥 Mega Combo 🎁", "18000")]));

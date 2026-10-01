@@ -212,6 +212,14 @@ function iconizedHead(product: CanonicalProduct, head: string, spelled: Set<stri
   return swapped === head ? null : swapped;
 }
 
+/** `body` without a unit phrase it begins or ends with (the amount's head already states the unit), or null when it does neither. */
+function withoutRepeatedUnit(body: string, unit: string): string | null {
+  const phrase = unit.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, String.raw`\s+`);
+  if (!phrase) return null;
+  const edge = new RegExp(String.raw`^${phrase}(?![\p{L}\p{N}])|(?<![\p{L}\p{N}])${phrase}$`, "iu");
+  return edge.test(body) ? collapse(body.replace(edge, "")) : null;
+}
+
 type CutKind = "swap" | "qualifier" | "middle" | "tail";
 /**
  * The fallback forms of `main`, in order, for a label that does not fit. An amount's head ("quantity unit") is kept whole.
@@ -223,7 +231,7 @@ type CutKind = "swap" | "qualifier" | "middle" | "tail";
  */
 /** Words that carry meaning: a bare "-" or "&" does not count towards what a cut keeps. */
 const meaningfulWords = (words: string[]) => words.filter((word) => /[\p{L}\p{N}]/u.test(word)).length;
-function* shorterNames(main: string, head: string, options: { iconHead: string | null; qualifierKeys: ReadonlySet<string> }): Generator<{ text: string; kind: CutKind; kept: number }> {
+function* shorterNames(main: string, head: string, options: { iconHead: string | null; qualifierKeys: ReadonlySet<string>; repeatedUnit?: string | null }): Generator<{ text: string; kind: CutKind; kept: number }> {
   const name = collapse(main);
   const body = collapse(name.slice(head.length));
   const joined = (lead: string, rest: string) => collapse(lead ? `${lead} ${rest}` : rest);
@@ -234,12 +242,16 @@ function* shorterNames(main: string, head: string, options: { iconHead: string |
   };
   const seen = new Set<string>();
   for (const text of forms(body)) if (!seen.has(text)) { seen.add(text); yield { text, kind: "swap", kept: Infinity }; }
-  const dropped = withoutTrailingQualifier(body, options.qualifierKeys);
+  // An amount whose name still begins or ends with the unit its head states ("7 💎 Event Gift Pack 1 Diamonds") says it only once.
+  const unitless = options.repeatedUnit ? withoutRepeatedUnit(body, options.repeatedUnit) : null;
+  if (unitless !== null) for (const text of forms(unitless)) if (!seen.has(text)) { seen.add(text); yield { text, kind: "swap", kept: Infinity }; }
+  const base = unitless ?? body;
+  const dropped = withoutTrailingQualifier(base, options.qualifierKeys);
   if (dropped !== null) for (const text of forms(dropped)) if (!seen.has(text)) { seen.add(text); yield { text, kind: "qualifier", kept: Infinity }; }
   const prefix = options.iconHead ?? head;
   const lead = prefix ? `${prefix} ` : "";
-  // Cuts start from the name without its droppable qualifier; if every such cut reads like a sibling, from the name with it.
-  const cutBodies = (dropped !== null ? [dropped, body] : [body]).map((text) => collapse(abbreviateText(text)).split(" ").filter(Boolean));
+  // Cuts start from the name without its droppable qualifier (and its repeated unit); if every such cut reads like a sibling, from the name with them.
+  const cutBodies = [...(dropped !== null ? [dropped] : []), base, ...(unitless !== null ? [body] : [])].map((text) => collapse(abbreviateText(text)).split(" ").filter(Boolean));
   // Most words kept first; of equal size, the longest end. Names of more than 30 words go straight to the end cut.
   for (const words of cutBodies) {
     if (words.length < 3 || words.length > 30) continue;
@@ -264,7 +276,7 @@ function* shorterNames(main: string, head: string, options: { iconHead: string |
  * Button labels, in order: compact (or full where compacting would hide
  * meaning) → full name on a collision → ` #id` suffix. A label that is then too
  * wide tries, while it still fits and stays distinct, the name without its
- * qualifiers, the amount's own unit as its icon, abbreviations, a trailing
+ * qualifiers, the amount's own unit as its icon, abbreviations, a repeat of the unit word dropped, a trailing
  * qualifier dropped, the first words plus the END behind one "…", the END alone,
  * and only then the bare `#id` (see `shorterNames`). Anything shortened is
  * explained in the body. Collisions are re-checked after every step, so no two
@@ -291,6 +303,8 @@ function catalogLabels(products: CanonicalProduct[], locale: string, sharedQuals
       identity: withQuals(main, quals), fullIdentity, price, fallback: false,
       // What the shortening fallbacks start from: the identity's name part and the leading "quantity unit" they keep whole.
       main, mainHead: head ?? fullHead(product), fullText, fullHead: fullHead(product),
+      // The structured unit, whose repeat inside the name a shortened label may drop (amounts only).
+      unit: product.variant.type === "amount" ? product.variant.unit : null,
       complex: product.variant.type === "unknown" || (product.variant.type === "amount" && compact === null) || s.leftover.length > 0,
     };
   });
@@ -323,7 +337,7 @@ function catalogLabels(products: CanonicalProduct[], locale: string, sharedQuals
     if (fits(label.text)) return;
     const item = items[index]!;
     const suffix = item.fallback ? ` #${products[index]!.id}` : "";
-    const candidates = [...shorterNames(item.main, item.mainHead, { iconHead: iconizedHead(products[index]!, item.mainHead, spelled), qualifierKeys })];
+    const candidates = [...shorterNames(item.main, item.mainHead, { iconHead: iconizedHead(products[index]!, item.mainHead, spelled), qualifierKeys, repeatedUnit: item.unit })];
     // A name that already doubles an icon on its own may keep doing so; no step may add that.
     const nameStutters = hasRepeatedIcon(collapse(item.main));
     // Substitutions and a dropped qualifier first (any that fits the cap), then cuts: the first words plus the end, then the end alone.

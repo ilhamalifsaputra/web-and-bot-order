@@ -4,6 +4,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { PageLayout } from "../components/shared/PageLayout";
 import { PageHeader } from "../components/shared/PageHeader";
 import { DeliveryTypeSection } from "../components/shared/DeliveryTypeSection";
+import { ButtonLabelInput } from "../components/shared/ButtonLabelInput";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -70,7 +71,8 @@ interface ProductDetailForEdit {
   product: {
     id: number;
     name: string;
-    category: { id: number; name: string } | null;
+    /** `group` decides which Telegram button the denomination text lands on (Game Top Up vs Premium Apps). */
+    category: { id: number; name: string; group?: string | null } | null;
     denominations: EditableDenomination[];
   };
   statsByDenom: Record<number, { rule: BulkPricingRule | null }>;
@@ -102,6 +104,7 @@ export function DenominationEditPage() {
     enabled: !!productId,
   });
   const denomination = data?.product.denominations.find((d) => d.id === Number(denomId));
+  const isGame = data?.product.category?.group === "GAME_TOPUP";
 
   const { data: catalogList } = useQuery<CatalogListData>({
     queryKey: ["catalog"],
@@ -254,14 +257,22 @@ export function DenominationEditPage() {
           <label className="text-sm font-medium text-ink">
             Name <span className="text-rust">*</span>
           </label>
-          <Input className="mt-1" placeholder="e.g. Netflix Premium" value={name} onChange={(e) => setName(e.target.value)} />
+          {isGame ? (
+            <ButtonLabelInput kind="denominationGame" className="mt-1" placeholder="e.g. Netflix Premium" value={name} onChange={(e) => setName(e.target.value)} />
+          ) : (
+            <Input className="mt-1" placeholder="e.g. Netflix Premium" value={name} onChange={(e) => setName(e.target.value)} />
+          )}
         </div>
 
         <div>
           <label className="text-sm font-medium text-ink">
             Duration Label <span className="text-rust">*</span>
           </label>
-          <Input className="mt-1" placeholder="e.g. 1 Month" value={durationLabel} onChange={(e) => setDurationLabel(e.target.value)} />
+          {isGame ? (
+            <Input className="mt-1" placeholder="e.g. 1 Month" value={durationLabel} onChange={(e) => setDurationLabel(e.target.value)} />
+          ) : (
+            <ButtonLabelInput kind="denominationPlan" className="mt-1" placeholder="e.g. 1 Month" value={durationLabel} onChange={(e) => setDurationLabel(e.target.value)} />
+          )}
         </div>
 
         {/* Compact-button quantity (Task 8/14) — optional, powers the bot's
@@ -279,14 +290,24 @@ export function DenominationEditPage() {
               onChange={(e) => setQtyValue(e.target.value)}
             />
           </div>
-          <div>
+          <div className="min-w-0 flex-1">
             <label className="block text-sm font-medium text-ink">Quantity Unit</label>
-            <Input
-              className="mt-1"
-              placeholder="e.g. Diamonds"
-              value={qtyUnit}
-              onChange={(e) => setQtyUnit(e.target.value)}
-            />
+            {isGame ? (
+              <ButtonLabelInput
+                kind="qtyUnit"
+                className="mt-1"
+                placeholder="e.g. Diamonds"
+                value={qtyUnit}
+                onChange={(e) => setQtyUnit(e.target.value)}
+              />
+            ) : (
+              <Input
+                className="mt-1"
+                placeholder="e.g. Diamonds"
+                value={qtyUnit}
+                onChange={(e) => setQtyUnit(e.target.value)}
+              />
+            )}
           </div>
         </div>
 

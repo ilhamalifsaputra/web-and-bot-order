@@ -338,3 +338,47 @@ describe("ProductCreatePage", () => {
     expect(within(group).queryByRole("option", { name: "Apps" })).not.toBeInTheDocument();
   });
 });
+
+describe("ProductCreatePage Telegram button hints", () => {
+  const jsonOk = () =>
+    new Response(JSON.stringify(CATALOG_DATA), { status: 200, headers: { "Content-Type": "application/json" } });
+
+  it("explains the Telegram button limit and counts cells under Name, Game Variant and Game Region", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(jsonOk());
+    render(<ProductCreatePage />, { wrapper: Wrapper });
+    await waitFor(() => screen.getByPlaceholderText(/capcut pro/i));
+
+    expect(screen.getAllByText(/Shown on the Telegram/)).toHaveLength(3);
+    expect(screen.getAllByTestId("button-label-counter").map((el) => el.textContent)).toEqual(["0/30", "0/18", "0/18"]);
+
+    fireEvent.change(screen.getByPlaceholderText(/capcut pro/i), { target: { value: "Ab💎你" } });
+    expect(screen.getAllByTestId("button-label-counter")[0]).toHaveTextContent("6/30");
+    // An emoji in the variant emoji field leaves less room for the variant name.
+    fireEvent.change(screen.getByPlaceholderText(/e\.g\. 💎/i), { target: { value: "💎" } });
+    expect(screen.getAllByTestId("button-label-counter")[1]).toHaveTextContent("0/15");
+  });
+
+  it("only warns when the name is over the budget: it is never truncated, capped, or blocked from saving", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.mocked(apiPost).mockResolvedValueOnce({ id: 42, name: "x", slug: "x" });
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(jsonOk());
+    render(<ProductCreatePage />, { wrapper: Wrapper });
+    await waitFor(() => screen.getByPlaceholderText(/capcut pro/i));
+    await user.click(screen.getByRole("combobox"));
+    await waitFor(() => screen.getByRole("option", { name: "Apps" }));
+    await user.click(screen.getByRole("option", { name: "Apps" }));
+
+    const longName = "Supplier Product Name That Is Far Too Long For A Button";
+    const input = screen.getByPlaceholderText(/capcut pro/i);
+    fireEvent.change(input, { target: { value: longName } });
+    expect(input).toHaveValue(longName);
+    expect(input).not.toHaveAttribute("maxlength");
+    expect(screen.getAllByTestId("button-label-counter")[0]).toHaveAttribute("data-state", "over");
+    expect(screen.getByTestId("button-label-warning")).toBeInTheDocument();
+
+    const btn = screen.getByRole("button", { name: /create product/i });
+    await waitFor(() => expect(btn).not.toBeDisabled());
+    await user.click(btn);
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/catalog/products", expect.objectContaining({ name: longName })));
+  });
+});

@@ -492,6 +492,28 @@ any new stock/capacity-style progress bar unless there's a specific reason to di
 
 ---
 
+## Input for Telegram button text (ButtonLabelInput)
+
+**File:** `components/shared/ButtonLabelInput.tsx`
+**Purpose:** the `Input` to use for any field whose value is shown on a Telegram inline-keyboard button
+(product, category, denomination/plan, game variant/region, quantity unit).
+
+```ts
+interface ButtonLabelInputProps extends InputProps {
+  kind: "productList" | "category" | "gameVariant" | "gameRegion" | "denominationPlan" | "denominationGame" | "qtyUnit";
+  currency?: "IDR" | "USD"; // omitted = the wider one
+  emoji?: boolean;          // an emoji is shown in front (category, variant)
+}
+```
+
+Renders the input plus a one-line hint (where the text appears, the budget) linked with `aria-describedby`, and
+an `aria-live="polite"` `used/budget` counter in cells (emoji and CJK count 2). Over the budget the counter and a
+short explanation turn `amberx`; the limit is soft (never `maxLength`, never blocks saving). The budgets come from
+`lib/buttonLimits.ts`, a byte-identical copy of `packages/core/src/buttonLimits.ts` (the client cannot import
+`@app/core`; a core test fails when the copy drifts). Do not write per-page hint text.
+
+---
+
 ## Table (primitive)
 
 **File:** `components/ui/table.tsx`

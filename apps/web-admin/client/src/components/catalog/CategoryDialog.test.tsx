@@ -192,3 +192,28 @@ describe("CategoryDialog", () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 });
+
+describe("CategoryDialog Telegram button hint", () => {
+  it("shows the hint and a cell counter that makes room for the emoji, and warns without blocking Save", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ category: { id: 7 } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const onSaved = vi.fn();
+    render(<CategoryDialog category={CATEGORY} onClose={vi.fn()} onSaved={onSaved} />);
+
+    expect(screen.getByText(/Shown on the Telegram category button/)).toBeInTheDocument();
+    // "Apps" = 4 cells; the category has an emoji, which takes 3 of the 18.
+    expect(screen.getByTestId("button-label-counter")).toHaveTextContent("4/15");
+    expect(screen.getByLabelText("Name").getAttribute("aria-describedby")).toBeTruthy();
+
+    const long = "Mobile Legends Bang Bang Indonesia";
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: long } });
+    expect(screen.getByTestId("button-label-counter")).toHaveAttribute("data-state", "over");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    expect(lastRequest(fetchMock).body).toMatchObject({ name: long });
+
+    // Clearing the emoji gives the full 18.
+    fireEvent.change(screen.getByLabelText("Emoji"), { target: { value: "" } });
+    expect(screen.getByTestId("button-label-counter")).toHaveTextContent(`${long.length}/18`);
+  });
+});

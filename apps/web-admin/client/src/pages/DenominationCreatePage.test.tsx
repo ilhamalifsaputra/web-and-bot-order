@@ -360,3 +360,40 @@ describe("DenominationCreatePage", () => {
     await waitFor(() => expect(screen.getByText(/a valid type is required/i)).toBeInTheDocument());
   });
 });
+
+describe("DenominationCreatePage Telegram button hints", () => {
+  const gameProduct = { product: { id: 42, name: "Mobile Legends", category: { group: "GAME_TOPUP" } } };
+
+  it("Game Top Up: hints Name and Quantity Unit with their own budgets, not Duration Label", async () => {
+    vi.mocked(apiGet).mockResolvedValue(gameProduct);
+    render(<DenominationCreatePage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getAllByTestId("button-label-counter")).toHaveLength(2));
+    expect(screen.getAllByTestId("button-label-counter").map((el) => el.textContent)).toEqual(["0/24", "0/16"]);
+    expect(screen.getAllByText(/Shown on the Telegram Game Top Up button/)).toHaveLength(2);
+  });
+
+  it("Premium Apps (and while the product is loading): hints Duration Label, the text on the plan button", async () => {
+    vi.mocked(apiGet).mockResolvedValue({ product: { id: 42, name: "Netflix Premium", category: { group: "PREMIUM_APPS" } } });
+    render(<DenominationCreatePage />, { wrapper: Wrapper });
+    await waitFor(() => screen.getByRole("link", { name: "Netflix Premium" }));
+    expect(screen.getAllByTestId("button-label-counter").map((el) => el.textContent)).toEqual(["0/18"]);
+    fireEvent.change(screen.getByPlaceholderText(/1 month/i), { target: { value: "1 Month" } });
+    expect(screen.getByTestId("button-label-counter")).toHaveTextContent("7/18");
+  });
+
+  it("saving still works with a name over the budget (warning only)", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.mocked(apiGet).mockResolvedValue(gameProduct);
+    vi.mocked(apiPost).mockResolvedValueOnce({ id: 7, name: "x", slug: "x" });
+    render(<DenominationCreatePage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getAllByTestId("button-label-counter")).toHaveLength(2));
+    await fillBaseFields(user);
+    const longName = "Mobile Legends Weekly Diamond Pass Bundle Supplier Name";
+    fireEvent.change(screen.getByPlaceholderText(/^e\.g\. netflix premium$/i), { target: { value: longName } });
+    expect(screen.getAllByTestId("button-label-counter")[0]).toHaveAttribute("data-state", "over");
+    const btn = screen.getByRole("button", { name: /create denomination/i });
+    await waitFor(() => expect(btn).not.toBeDisabled());
+    await user.click(btn);
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/catalog/products/42/denominations", expect.objectContaining({ name: longName })));
+  });
+});

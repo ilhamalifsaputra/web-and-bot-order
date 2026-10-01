@@ -3,6 +3,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { PageLayout } from "../components/shared/PageLayout";
 import { PageHeader } from "../components/shared/PageHeader";
+import { ButtonLabelInput } from "../components/shared/ButtonLabelInput";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -99,7 +100,8 @@ export function ProductCreatePage() {
           </label>
           {creatingCategory ? (
             <div className="mt-1 flex flex-col gap-2">
-              <Input
+              <ButtonLabelInput
+                kind="category"
                 autoFocus
                 placeholder="New category name"
                 value={newCategoryName}
@@ -174,7 +176,8 @@ export function ProductCreatePage() {
           <label className="text-sm font-medium text-ink">
             Name <span className="text-rust">*</span>
           </label>
-          <Input
+          <ButtonLabelInput
+            kind="productList"
             className="mt-1"
             placeholder="e.g. CapCut Pro"
             value={name}
@@ -197,7 +200,9 @@ export function ProductCreatePage() {
             top-up products (e.g. Mobile Legends' Diamonds variant). */}
         <div>
           <label className="block text-sm font-medium text-ink">Game Variant</label>
-          <Input
+          <ButtonLabelInput
+            kind="gameVariant"
+            emoji={gameVariantEmoji.trim() !== ""}
             className="mt-1"
             placeholder="e.g. Diamonds"
             value={gameVariant}
@@ -217,7 +222,8 @@ export function ProductCreatePage() {
 
         <div>
           <label className="block text-sm font-medium text-ink">Game Region</label>
-          <Input
+          <ButtonLabelInput
+            kind="gameRegion"
             className="mt-1"
             placeholder="e.g. Global"
             value={gameRegion}

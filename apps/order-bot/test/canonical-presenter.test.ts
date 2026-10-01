@@ -184,6 +184,31 @@ describe("canonical Telegram label candidates", () => {
     expect(mixed.pages[0]!.text).not.toContain("Delta Force · Garena");
     expect(labels(mixed).join(" ")).toContain("Tencent");
   });
+  it("keeps the shared region in the header when other items only carry parentheses, digits or an intra-word hyphen", () => {
+    const global = { gameRegion: "Global" };
+    const wdp = presentCanonicalCatalog([
+      make(1, "86 Diamonds", { price: "20000", product: global }),
+      make(2, "172 Diamonds", { price: "40000", product: global }),
+      make(3, "Weekly Diamond Pass (x2)", { price: "54000", product: global }),
+    ]);
+    expect(labels(wdp)).toEqual(["86 💎 · Rp20K", "172 💎 · Rp40K", "Weekly Diamond Pass (x2) · Rp54K"]);
+    expect(wdp.pages[0]!.text).toContain("Mobile Legends · Global");
+    expect(wdp.pages[0]!.rows.map((row) => row.length)).toEqual([2, 1]);
+    const hyphen = presentCanonicalCatalog([
+      make(1, "86 Diamonds", { price: "20000", product: global }),
+      make(2, "Super-Value Package", { price: "30000", product: global }),
+      make(3, "Twilight Pass", { price: "150000", product: global }),
+    ]);
+    expect(labels(hyphen).join(" ")).not.toContain("Global");
+    expect(hyphen.pages[0]!.text).toContain("Mobile Legends · Global");
+    const promo = presentCanonicalCatalog([
+      make(1, "86 Diamonds (Promo)", { price: "19000" , product: { gameRegion: "Indonesia" } }),
+      make(2, "172 Diamonds", { price: "40000", product: { gameRegion: "Indonesia" } }),
+    ]);
+    expect(labels(promo)).toEqual(["86 💎 (Promo) · Rp19K", "172 💎 · Rp40K"]);
+    expect(promo.pages[0]!.text).toContain("Mobile Legends · Indonesia");
+    expect(promo.pages[0]!.rows.map((row) => row.length)).toEqual([1, 1]); // "(Promo)" already makes the first label wider than the pairing limit
+  });
   it("only lifts a qualifier into the body when every product shares it", () => {
     const a = make(1, "86 Diamonds", { price: "20000" });
     const b = make(2, "172 Diamonds", { price: "40000" });

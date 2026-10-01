@@ -85,8 +85,13 @@ interface Shape {
   leftover: string[];
   /** Product-level region/variant this item carries, whether still in `qualifiers` or spelled in its own name. */
   quals: string[];
-  /** True when the name carries a "- X" / "(X)" segment that is not one of the product's own qualifiers. */
+  /** True when the name ends in a supplier-style spaced " - X" segment (no digit in X) that is not one of the product's own qualifiers. */
   conflict: boolean;
+}
+/** The X of a trailing spaced hyphen segment ("... - Tencent"); parentheses, intra-word hyphens and digits never count. */
+function spacedHyphenTail(text: string): string | null {
+  const match = text.match(/(?:^|\s)-\s+([^-]*)$/);
+  return match && !/\d/.test(match[1]!) ? match[1]! : null;
 }
 function shape(product: CanonicalProduct): Shape {
   const known = [product.product.gameRegion, product.product.gameVariant].filter((value): value is string => !!value?.trim());
@@ -102,7 +107,7 @@ function shape(product: CanonicalProduct): Shape {
       if (q) addQual(q);
       else {
         leftover.push(collapse(segment));
-        if (/^\s*[-(]/.test(segment)) conflict = true;
+        if (spacedHyphenTail(segment) !== null) conflict = true;
       }
     }
     return { main: "", leftover, quals, conflict };
@@ -112,7 +117,8 @@ function shape(product: CanonicalProduct): Shape {
   const tail = main.match(/^(.+?)\s*(?:-\s*([^()\-]+)|\(([^()]+)\))$/);
   const q = tail ? qualifierFor(tail[2] ?? tail[3]!) : undefined;
   if (tail && q) { main = tail[1]!; addQual(q); }
-  return { main, leftover: variant.residual.map(collapse), quals, conflict: !!tail && !q };
+  const hyphenTail = spacedHyphenTail(collapse(variant.name));
+  return { main, leftover: variant.residual.map(collapse), quals, conflict: hyphenTail !== null && !(q && tail && tail[2] !== undefined) };
 }
 
 const sameUnit = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();

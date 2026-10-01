@@ -1440,6 +1440,112 @@ describe("denomination picker", () => {
     expect((back.ctx.session.scratch as { productPage?: number }).productPage).toBe(1);
   });
 
+  // --- Spec §9: reply-keyboard Back returns to the originating list page -------
+  // 25 products at PAGE_SIZE 10 = 3 list pages. handleBackButton used to call
+  // browseProductsFlat(ctx) with no page, so Back from a picker or a collapsed
+  // detail always landed on page 1 of the list.
+  describe("reply-keyboard Back returns to the originating product list page", () => {
+    async function makeListScene(group: CategoryGroup, denomsPerProduct: number, productCount = 25) {
+      const cat = await createCategory(prisma, { name: `lp${Math.random()}`, group });
+      const productIds: number[] = [];
+      for (let i = 0; i < productCount; i++) {
+        const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: `ListProd ${String(i).padStart(2, "0")}` });
+        for (let d = 0; d < denomsPerProduct; d++) {
+          await createDenomination(prisma, {
+            productId: p.id, name: `Plan ${d}`, type: "SHARED", durationLabel: `${d + 1} Month`, price: String(10000 + d * 1000),
+          });
+        }
+        productIds.push(p.id);
+      }
+      return { cat, productIds };
+    }
+
+    type PageScratch = { page?: number; browseEntries?: number[]; productId?: number; variantId?: number };
+    const pageOf = (ctx: { session: { scratch: unknown } }) => (ctx.session.scratch as PageScratch).page;
+
+    /** Open the list on `page`, then press the digit "1" on it (a picker or a collapsed detail). */
+    async function openFirstItemFromPage(group: CategoryGroup, cat: { id: number }, page: number) {
+      const list = customerCtx({
+        callbackData: `v1:browse:page:${page}`,
+        session: { ...userSession(), scratch: { categoryId: cat.id, group } },
+      });
+      await customer.browseProductsFlat(list.ctx, page);
+      const open = customerCtx({ text: "1", session: { ...userSession(), scratch: list.ctx.session.scratch } });
+      await customer.handleProductNumber(open.ctx);
+      return open;
+    }
+
+    const pressBack = async (scratch: unknown) => {
+      const back = customerCtx({ text: persistentLabel("back", "en"), session: { ...userSession(), scratch: scratch as Record<string, unknown> } });
+      await customer.handleProductNumber(back.ctx);
+      return back;
+    };
+
+    it("Back from a Game Top Up product picker opened on list page 3 re-renders page 3, not page 1", async () => {
+      const { cat } = await makeListScene(CategoryGroup.GAME_TOPUP, 2);
+      const open = await openFirstItemFromPage(CategoryGroup.GAME_TOPUP, cat, 2);
+      const opened = open.ctx.session.scratch as PageScratch;
+      expect(opened.productId).toBeDefined(); // really on a picker
+      expect(opened.variantId).toBeUndefined();
+      expect(opened.page).toBe(2); // nothing between the list render and Back cleared the page
+
+      const back = await pressBack(open.ctx.session.scratch);
+      expect(bodyText(back.sink)).toContain("Page 3/3");
+      expect(pageOf(back.ctx)).toBe(2);
+      expect((back.ctx.session.scratch as PageScratch).browseEntries).toHaveLength(5);
+    });
+
+    it("Back from a Premium Apps product picker opened on list page 3 re-renders page 3 too (same code path)", async () => {
+      const { cat } = await makeListScene(CategoryGroup.PREMIUM_APPS, 2);
+      const open = await openFirstItemFromPage(CategoryGroup.PREMIUM_APPS, cat, 2);
+      expect((open.ctx.session.scratch as PageScratch).productId).toBeDefined();
+
+      const back = await pressBack(open.ctx.session.scratch);
+      expect(bodyText(back.sink)).toContain("Page 3/3");
+      expect(pageOf(back.ctx)).toBe(2);
+    });
+
+    it("Back from a collapsed single-denomination detail opened on list page 2 re-renders page 2", async () => {
+      const { cat } = await makeListScene(CategoryGroup.GAME_TOPUP, 1);
+      const open = await openFirstItemFromPage(CategoryGroup.GAME_TOPUP, cat, 1);
+      const opened = open.ctx.session.scratch as PageScratch;
+      expect(opened.productId).toBeUndefined(); // collapsed: no picker
+      expect(opened.variantId).toBeDefined();
+      expect(opened.page).toBe(1);
+
+      const back = await pressBack(open.ctx.session.scratch);
+      expect(bodyText(back.sink)).toContain("Page 2/3");
+      expect(pageOf(back.ctx)).toBe(1);
+      expect((back.ctx.session.scratch as PageScratch).variantId).toBeUndefined();
+    });
+
+    it("Back lands on the last valid page when the list shrank while a picker was open", async () => {
+      const { cat, productIds } = await makeListScene(CategoryGroup.GAME_TOPUP, 2);
+      const open = await openFirstItemFromPage(CategoryGroup.GAME_TOPUP, cat, 2);
+      // 20 of the 25 products disappear: the list is now a single page.
+      await prisma.product.updateMany({ where: { id: { in: productIds.slice(0, 20) } }, data: { isActive: false } });
+
+      const back = await pressBack(open.ctx.session.scratch);
+      expect(bodyText(back.sink)).toContain("Page 1/1");
+      expect(pageOf(back.ctx)).toBe(0);
+    });
+
+    it("Back from a picker opened on list page 1 still lands on page 1", async () => {
+      const { cat } = await makeListScene(CategoryGroup.GAME_TOPUP, 2);
+      const open = await openFirstItemFromPage(CategoryGroup.GAME_TOPUP, cat, 0);
+      const back = await pressBack(open.ctx.session.scratch);
+      expect(bodyText(back.sink)).toContain("Page 1/3");
+      expect(pageOf(back.ctx)).toBe(0);
+    });
+
+    it("Back with no recorded list page (stale session) falls back to page 1 without error", async () => {
+      const { cat } = await makeListScene(CategoryGroup.GAME_TOPUP, 2, 12);
+      const back = await pressBack({ categoryId: cat.id, group: CategoryGroup.GAME_TOPUP, productId: 123456 });
+      expect(bodyText(back.sink)).toContain("Page 1/2");
+      expect(pageOf(back.ctx)).toBe(0);
+    });
+  });
+
   // --- Game Top Up: buttons carry the price, so the body describes the game --
 
   async function makeGameProduct(

@@ -113,3 +113,9 @@ capture-storefront/
 
 # Codex isolated development worktrees.
 /.worktrees/
+
+# --- pnpm content-addressable store that landed inside the repo (local only) ---
+.pnpm-store/
+
+# --- graphify knowledge graph: kept locally for queries, never on origin/master ---
+graphify-out/

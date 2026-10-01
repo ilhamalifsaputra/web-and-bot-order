@@ -2634,10 +2634,24 @@ describe("browseCategoryEntry — Game Top Up variant/region navigation + AUTO s
       expect(b.text).not.toContain(" · $");
       expect(b.text).not.toContain("$");
     }
-    const long = buttons.find((b) => b.callback_data === `v1:browse:denom:${made[3]!.id}`)!;
-    // The original label rule (formatDenominationLabel + truncLabel) keeps it readable and name-derived.
-    expect(long.text).toContain("Indplan");
-    expect(long.text.length).toBeLessThanOrEqual(24);
+    // The exact original label rule (formatDenominationLabel + truncLabel), in plan order.
+    expect(buttons.map((b) => b.text)).toEqual(["7 CC - Day", "1 CC - Month Team", "3 CC - Month", "6 CC - Month Indplan 6 …"]);
+    expect(buttons.map((b) => b.callback_data)).toEqual(made.map((d) => `v1:browse:denom:${d.id}`));
+  });
+
+  it("Premium Apps: a plan with qtyValue + qtyUnit gets the original compact quantity button; one without keeps its plan name", async () => {
+    const cat = await createCategory(prisma, { name: "Premium CapCut qty", group: CategoryGroup.PREMIUM_APPS });
+    const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "CapCut Pro" });
+    const withQty = await createDenomination(prisma, { productId: p.id, name: "CC - 12 Month", type: "SHARED", durationLabel: "CC - 12 Month", price: "4480", qtyValue: 12, qtyUnit: "Month" });
+    const plain = await createDenomination(prisma, { productId: p.id, name: "CC - 7 Day", type: "SHARED", durationLabel: "CC - 7 Day", price: "4480" });
+    await setSetting(prisma, "usd_idr_rate", "16000");
+    invalidateRateCache();
+    const { ctx, sink } = customerCtx({ session: { ...userSession(), dbUser: { ...userSession().dbUser!, preferredCurrency: "USD" } } });
+    await customer.browseProduct(ctx, p.id);
+    const flat = ((lastMarkup(sink) as { inline_keyboard?: Array<Array<{ text: string; callback_data?: string }>> }).inline_keyboard ?? []).flat();
+    const text = (id: number) => flat.find((b) => b.callback_data === `v1:browse:denom:${id}`)!.text;
+    expect(text(withQty.id)).toBe("12 Month — $0.28");
+    expect(text(plain.id)).toBe("7 CC - Day");
   });
 });
 

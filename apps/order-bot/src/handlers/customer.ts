@@ -13,6 +13,7 @@ import { botUsername } from "@app/core/runtime";
 import { Decimal } from "@app/core/money";
 import { canonicalProduct } from "@app/core/canonicalProduct";
 import { presentCanonicalCatalog, boundedCanonicalName } from "../util/canonicalPresenter";
+import { gameTopUpDenomLabel } from "../util/denominationLabel";
 import { ensureUtc, localize, addDays } from "@app/core/datetime";
 import { UserRole, OrderStatus, OrderKind, PaymentMethod, TicketStatus, SenderType, DeliveryType, CategoryGroup, customerStatusLabel, parseDisplayCurrency } from "@app/core/enums";
 import { parseAdditionalFields, parseCustomerData } from "@app/core/deliveryFields";
@@ -1089,7 +1090,9 @@ export async function browseProduct(ctx: MyContext, productId: number, requested
     delete sc(ctx).productPage;
     const isReseller = info.role === UserRole.RESELLER;
     const stocks = await availableStockCountsByDenomination(prisma, active.map((d) => d.id));
-    const planLines = active.map((d) => {
+    const planLines: string[] = [];
+    const buttonLabels = new Map<number, string | undefined>();
+    for (const d of active) {
       const unitPrice = effectiveUnitPrice(d, isReseller);
       // A flash sale shows the old price struck through next to the new one, but only when this buyer is
       // actually paying the sale price — a reseller whose standing price still wins sees the plain line.
@@ -1099,8 +1102,13 @@ export async function browseProduct(ctx: MyContext, productId: number, requested
         : prices.price(unitPrice);
       // Stock rows only exist for AUTO SKUs; a manual plan has none by design, so show a dash, not a "0".
       const stockDisplay = d.deliveryType === DeliveryType.AUTO ? (stocks.get(d.id) ?? 0) : "—";
-      return t(ctx, "browse.denomination_line", { duration: esc(d.durationLabel || d.name), price: priceText, stock: stockDisplay });
-    });
+      planLines.push(t(ctx, "browse.denomination_line", { duration: esc(d.durationLabel || d.name), price: priceText, stock: stockDisplay }));
+      // The original rule: a compact quantity button only when the admin set qtyValue + qtyUnit; otherwise the
+      // picker falls back to the plan name (formatDenominationLabel).
+      buttonLabels.set(d.id, d.qtyValue != null && d.qtyUnit
+        ? gameTopUpDenomLabel(d, unitPrice, product.gameVariantEmoji ?? sc(ctx).gameVariantEmoji, prices)
+        : undefined);
+    }
     let text = t(ctx, "browse.choose_denomination", {
       name: esc(product.name),
       sold: t(ctx, "browse.sold_count", { count: sold }),
@@ -1111,7 +1119,7 @@ export async function browseProduct(ctx: MyContext, productId: number, requested
     }
     // A USD buyer whose rate is unavailable saw Rp prices above — say so, once.
     text += prices.rateNotice(lang);
-    await render(text, ckb.denominationPickerKb(active, productId, product.name, lang));
+    await render(text, ckb.denominationPickerKb(active.map((d) => ({ ...d, buttonLabel: buttonLabels.get(d.id) })), productId, product.name, lang));
     return;
   }
 

@@ -361,3 +361,85 @@ describe("canonical product: Premium Apps and other non-game categories keep the
     expect(relaxed.variant).toMatchObject({ residual: [] });
   });
 });
+
+// Real shapes from the dummy catalog's "Genshin Impact" product (the structured quantity and the name list the same
+// tokens in a different order, or the structured total includes a bonus). Game Top-Up only: Premium Apps is guarded below.
+describe("structured quantity beside a differently ordered or bonus-including name", () => {
+  const genshin = (group: string | null, name: string, qty: { qtyValue: number; qtyUnit: string }, productName = "Genshin Impact") => {
+    const data = input(name, { ...qty, autoDeliverySource: null }, productName);
+    data.category.group = group;
+    return canonicalProduct(data, context);
+  };
+  it.each([
+    ["Genshin Impact Primogems 160", 160, "Primogems"],
+    ["Genshin Impact Primogems 330", 330, "Primogems"],
+    ["Genshin Impact Crystals 330", 330, "Crystals"],
+  ])("treats %s as the structured quantity in another order, with nothing left over", (name, qtyValue, qtyUnit) => {
+    const result = genshin("GAME_TOPUP", name, { qtyValue, qtyUnit });
+    expect(result.variant).toMatchObject({ type: "amount", quantity: qtyValue, unit: qtyUnit, residual: [] });
+    expect(result.displayName).toBe(`${qtyValue} ${qtyUnit}`);
+  });
+  it("drops a repeated quantity and unit but keeps what differs, whatever the order", () => {
+    const result = genshin("GAME_TOPUP", "Valorant Indonesia 1.000 VP", { qtyValue: 1000, qtyUnit: "VP" }, "Valorant (Indonesia)");
+    expect(result.variant).toMatchObject({ type: "amount", quantity: 1000, unit: "VP", residual: ["Indonesia"] });
+    const swapped = genshin("GAME_TOPUP", "Genshin Impact Edition Primogems 160 Gift", { qtyValue: 160, qtyUnit: "Primogems" });
+    expect(swapped.variant).toMatchObject({ quantity: 160, residual: ["Edition Gift"] });
+    // A genuine contradiction keeps its visible difference.
+    const contradiction = genshin("GAME_TOPUP", "Genshin Impact 86 Primogems + 8 Bonus", { qtyValue: 100, qtyUnit: "Primogems" });
+    expect(contradiction.displayName).toBe("100 Primogems 86 Primogems + 8 Bonus");
+    // A different number is never swallowed just because it looks like part of the quantity.
+    const fragment = genshin("GAME_TOPUP", "Genshin Impact 1, 160 Primogems", { qtyValue: 160, qtyUnit: "Primogems" });
+    expect(fragment.variant).toMatchObject({ residual: ["1, 160 Primogems"] });
+  });
+  it("matches singular and plural spellings of the structured unit", () => {
+    const result = genshin("GAME_TOPUP", "Growtopia 2 World Locks", { qtyValue: 2, qtyUnit: "World Lock" }, "Growtopia");
+    expect(result.variant).toMatchObject({ type: "amount", quantity: 2, residual: [] });
+  });
+  it("lets a number-free name or a unit-free name stand for the structured quantity", () => {
+    const lock = genshin("GAME_TOPUP", "Growtopia Diamond Lock", { qtyValue: 1, qtyUnit: "Diamond Lock" }, "Growtopia");
+    expect(lock.variant).toMatchObject({ type: "amount", quantity: 1, unit: "Diamond Lock", residual: [] });
+    const voucher = genshin("GAME_TOPUP", "Google Play 300.000", { qtyValue: 300000, qtyUnit: "IDR" }, "Google Play Indonesia");
+    expect(voucher.variant).toMatchObject({ type: "amount", quantity: 300000, unit: "IDR", residual: ["Google Play"] });
+  });
+  it("recognises the SKU's own admin-structured unit and verifies a bonus its total reconciles with", () => {
+    const result = genshin("GAME_TOPUP", "Genshin Impact 6480 + 1600 Genesis Crystals", { qtyValue: 8080, qtyUnit: "Genesis Crystals" });
+    expect(result.variant).toMatchObject({ type: "amount", quantity: 6480, unit: "Genesis Crystals", residual: [], bonus: { quantity: 1600, unit: "Genesis Crystals" } });
+    expect(result.displayName).toBe("6480 Genesis Crystals + 1600 Genesis Crystals");
+    const grouped = genshin("GAME_TOPUP", "Genshin Impact 6.480 + 1.600 Genesis Crystals", { qtyValue: 8080, qtyUnit: "Genesis Crystals" });
+    expect(grouped.variant).toMatchObject({ quantity: 6480, bonus: { quantity: 1600 } });
+    const uc = genshin("GAME_TOPUP", "PUBG Mobile 60 + 6 UC", { qtyValue: 66, qtyUnit: "UC" }, "PUBG Mobile");
+    expect(uc.variant).toMatchObject({ quantity: 60, unit: "UC", residual: [], bonus: { quantity: 6, unit: "UC" } });
+  });
+  it("keeps the conservative reading when the numbers do not reconcile", () => {
+    const result = genshin("GAME_TOPUP", "Genshin Impact 6480 + 1600 Genesis Crystals", { qtyValue: 9000, qtyUnit: "Genesis Crystals" });
+    expect(result.variant).toMatchObject({ type: "amount", quantity: 9000, residual: ["6480 + 1600 Genesis Crystals"] });
+    expect((result.variant as { bonus?: unknown }).bonus).toBeUndefined();
+  });
+  it("does not repeat the structured quantity and unit beside a bundle that already names them", () => {
+    const bundle = genshin("GAME_TOPUP", "Genshin Impact Genesis Crystals Bundle 8.000 Crystals", { qtyValue: 8000, qtyUnit: "Crystals" });
+    expect(bundle.variant).toMatchObject({ type: "bundle", name: "Genesis Crystals Bundle 8.000 Crystals", residual: [] });
+    const other = genshin("GAME_TOPUP", "Genshin Impact Starter Bundle", { qtyValue: 500, qtyUnit: "Gems" });
+    expect(other.variant).toMatchObject({ type: "bundle", residual: ["500 Gems"] });
+  });
+  describe("Premium Apps keeps the original reading of the same inputs", () => {
+    it.each([
+      ["Primogems 160", { qtyValue: 160, qtyUnit: "Primogems" }, { quantity: 160, residual: ["Primogems 160"] }],
+      ["Growtopia 2 World Locks", { qtyValue: 2, qtyUnit: "World Lock" }, { quantity: 2, residual: ["Growtopia 2 World Locks"] }],
+      ["Diamond Lock", { qtyValue: 1, qtyUnit: "Diamond Lock" }, { quantity: 1, residual: ["Diamond Lock"] }],
+      ["Google Play 300.000", { qtyValue: 300000, qtyUnit: "IDR" }, { quantity: 300000, residual: ["Google Play 300.000"] }],
+      ["Genshin Impact 6480 + 1600 Genesis Crystals", { qtyValue: 8080, qtyUnit: "Genesis Crystals" }, { quantity: 8080, residual: ["Genshin Impact 6480 + 1600 Genesis Crystals"] }],
+      ["PUBG Mobile 60 + 6 UC", { qtyValue: 66, qtyUnit: "UC" }, { quantity: 66, residual: ["PUBG Mobile 60 + 6 UC"] }],
+    ])("%s", (name, qty, expected) => {
+      const result = genshin("PREMIUM_APPS", name, qty);
+      expect(result.variant).toMatchObject({ type: "amount", ...expected });
+      expect((result.variant as { bonus?: unknown }).bonus).toBeUndefined();
+    });
+    it("keeps the bundle's structured quantity beside its name", () => {
+      const bundle = genshin("PREMIUM_APPS", "Genesis Crystals Bundle 8.000 Crystals", { qtyValue: 8000, qtyUnit: "Crystals" });
+      expect(bundle.variant).toMatchObject({ type: "bundle", residual: ["8000 Crystals"] });
+    });
+    it("is the same for an unclassified (null) group", () => {
+      expect(genshin(null, "Primogems 160", { qtyValue: 160, qtyUnit: "Primogems" }).variant).toMatchObject({ residual: ["Primogems 160"] });
+    });
+  });
+});

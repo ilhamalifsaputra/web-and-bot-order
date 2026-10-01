@@ -110,6 +110,59 @@ function cleanName(name: string, product: CanonicalProductInput["product"], isGa
   return name.trim();
 }
 
+const KNOWN_UNITS = "World Locks?|Delta Coins|Diamonds?|Bonds?|UC|VP|Gems?|Coins?|Tokens?";
+const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+/** The closed unit list, plus the SKU's own admin-structured unit as a whole token (Game Top Up only, see `isGameTopUp`). */
+function unitPattern(structuredUnit: string | null): string {
+  return structuredUnit ? `${escapeRegExp(structuredUnit).replace(/\s+/g, "\\s+")}|${KNOWN_UNITS}` : KNOWN_UNITS;
+}
+/** Singular and plural spell one unit ("World Lock" / "World Locks"); short codes like UC and VP are left alone. */
+const stem = (word: string) => (word.length > 3 && word.endsWith("s") ? word.slice(0, -1) : word);
+const sameWord = (a: string, b: string) => nameTokens(a).map(stem).join(" ") === nameTokens(b).map(stem).join(" ");
+const groupedNumber = /^\d+(?:\.\d{3})*$/;
+const wordTokens = (value: string) => [...value.matchAll(/\d+(?:\.\d{3})+|[\p{L}\p{N}]+/gu)].map((m) => ({ text: m[0], start: m.index!, end: m.index! + m[0].length }));
+/**
+ * Removes from `name` what merely repeats the structured quantity and unit, whatever their order ("Primogems 160"
+ * and "160 Primogems" are the same tokens): the quantity token (dot grouping normalised, never a fragment of a
+ * numeric group) and the unit's words as a whole phrase. Everything else, including every differing number, stays;
+ * null means the name was not recognised as repeating them and is left untouched.
+ *  - "pair": only a unit phrase directly beside the quantity, each repeat of the pair ("160 Primogems Primogems 160").
+ *  - "both": a pair, or else the unit and the quantity wherever they sit ("Primogems Pack 160").
+ *  - "amount": a "both", or else the unit alone in a number-free name ("Diamond Lock"), or else the one quantity
+ *    token alone ("Google Play 300.000"); the label prints the structured quantity and unit itself.
+ */
+function withoutStructuredQuantity(name: string, value: number, unit: string, mode: "pair" | "both" | "amount"): string | null {
+  const unitWords = nameTokens(unit).map(stem);
+  if (unitWords.length === 0) return null;
+  const tokens = wordTokens(name);
+  const lower = tokens.map((token) => stem(token.text.toLowerCase()));
+  const unitStarts = tokens.flatMap((_, i) => i + unitWords.length <= tokens.length && unitWords.every((word, k) => lower[i + k] === word) ? [i] : []);
+  const unitIndices = (start: number) => unitWords.map((_, k) => start + k);
+  // A standalone quantity only: never the tail of an unsupported group ("1, 050", "1 050") or a zero-padded number.
+  const standalone = (i: number) => !/\d\s*[.,]?\s*$/.test(name.slice(0, tokens[i]!.start));
+  const isQuantity = (i: number) => i >= 0 && i < tokens.length && groupedNumber.test(tokens[i]!.text) && tokens[i]!.text.replace(/\./g, "") === String(value) && standalone(i);
+  const drop = new Set<number>();
+  for (const start of unitStarts) {
+    const beside = [start - 1, start + unitWords.length].find((i) => !drop.has(i) && isQuantity(i));
+    if (beside !== undefined) for (const i of [...unitIndices(start), beside]) drop.add(i);
+  }
+  if (drop.size === 0 && mode !== "pair") {
+    const quantity = tokens.findIndex((_, i) => isQuantity(i));
+    if (unitStarts.length > 0 && quantity >= 0) for (const i of [...unitIndices(unitStarts[0]!), quantity]) drop.add(i);
+    else if (mode === "amount" && unitStarts.length > 0 && !tokens.some((token) => /\d/.test(token.text))) for (const i of unitIndices(unitStarts[0]!)) drop.add(i);
+    else if (mode === "amount" && unitStarts.length === 0 && tokens.filter((_, i) => isQuantity(i)).length === 1) drop.add(quantity);
+  }
+  if (drop.size === 0) return null;
+  let rest = "";
+  let cursor = 0;
+  for (const [i, token] of tokens.entries()) {
+    if (!drop.has(i)) continue;
+    rest += `${name.slice(cursor, token.start)} `;
+    cursor = token.end;
+  }
+  return `${rest}${name.slice(cursor)}`.replace(/\s+/g, " ").trim();
+}
+
 function parseVariant(name: string, input: CanonicalProductInput): CanonicalVariant {
   const { denomination: denom } = input;
   const durationMatch = name.match(/(?:^|\s)(\d+)\s+(days?|weeks?|months?|years?)\b/i);
@@ -119,8 +172,10 @@ function parseVariant(name: string, input: CanonicalProductInput): CanonicalVari
     : undefined;
   const structured = denom.qtyValue != null && denom.qtyUnit?.trim();
   // Only known, complete semantic units; punctuation and residual stay visible.
-  const sharedBonus = name.match(/(?:^|\s)(\d+(?:\.\d{3})*)\s*\+\s*(\d+(?:\.\d{3})*)\s+(World Locks?|Delta Coins|Diamonds?|Bonds?|UC|VP|Gems?|Coins?|Tokens?)(?=\s|$)/i);
-  const match = sharedBonus ?? name.match(/(?:^|\s)(\d+(?:\.\d{3})*)\s+(World Locks?|Delta Coins|Diamonds?|Bonds?|UC|VP|Gems?|Coins?|Tokens?)(?=\s|$|\+)/i);
+  // Game Top Up: the SKU's admin-structured unit is also a recognised unit when parsing its own name.
+  const units = unitPattern(isGameTopUp(input) && structured ? denom.qtyUnit!.trim() : null);
+  const sharedBonus = name.match(new RegExp(String.raw`(?:^|\s)(\d+(?:\.\d{3})*)\s*\+\s*(\d+(?:\.\d{3})*)\s+(${units})(?=\s|$)`, "i"));
+  const match = sharedBonus ?? name.match(new RegExp(String.raw`(?:^|\s)(\d+(?:\.\d{3})*)\s+(${units})(?=\s|$|\+)`, "i"));
   const parsedUnit = sharedBonus?.[3] ?? match?.[2];
   const grouped = (match?.[1]?.includes(".") || sharedBonus?.[2]?.includes(".")) ?? false;
   // A whitespace match may be only the tail of an unsupported numeric group
@@ -131,7 +186,9 @@ function parseVariant(name: string, input: CanonicalProductInput): CanonicalVari
   const parsed = match && !numericContinuation && (!grouped || denom.autoDeliverySource === "digiflazz") ? Number(match[1]!.replace(/\./g, "")) : null;
   const safeParsed = parsed != null && parsed > 0 && Number.isSafeInteger(parsed);
   // Subscription/package meaning wins over a coincidental number in a name.
-  const namedResidual = structured ? [`${denom.qtyValue} ${denom.qtyUnit!.trim()}`] : [];
+  // Game Top Up: a name that already spells the structured quantity and unit, in any order, does not need them repeated.
+  const namedResidual = structured && !(isGameTopUp(input) && withoutStructuredQuantity(name, denom.qtyValue!, denom.qtyUnit!.trim(), "both") !== null)
+    ? [`${denom.qtyValue} ${denom.qtyUnit!.trim()}`] : [];
   if (/\bsubscription\b/i.test(name)) return { type: "subscription", name, residual: namedResidual, ...(duration ? { duration } : {}) };
   if (/\bpass\b/i.test(name)) return { type: "pass", name, residual: namedResidual, ...(duration ? { duration } : {}) };
   if (/\bbundle\b/i.test(name)) return { type: "bundle", name, residual: namedResidual };
@@ -142,10 +199,21 @@ function parseVariant(name: string, input: CanonicalProductInput): CanonicalVari
     const value = structured ? denom.qtyValue! : parsed!;
     const unit = structured ? denom.qtyUnit!.trim() : parsedUnit!;
     const agrees = safeParsed && value === parsed && unit.toLowerCase() === parsedUnit!.toLowerCase();
-    // A unit outside the closed regex still agrees when the whole cleaned name is exactly the structured quantity and unit.
-    const ungroup = (value: string) => value.replace(/\d{1,3}(?:\.\d{3})+/g, (group) => group.replace(/\./g, ""));
-    const nameIsStructured = !!structured && nameTokens(ungroup(name)).join(" ") === nameTokens(`${denom.qtyValue} ${unit}`).join(" ");
-    if (structured && !agrees) return { type: "amount", quantity: value, unit, residual: isGameTopUp(input) && nameIsStructured ? [] : [name] };
+    if (structured && !agrees) {
+      if (!isGameTopUp(input)) return { type: "amount", quantity: value, unit, residual: [name] };
+      // "A + B <unit>" whose parts add up to the structured total: the structured data verifies the bonus.
+      if (sharedBonus && !numericContinuation && sameWord(sharedBonus[3]!, unit)) {
+        const base = Number(sharedBonus[1]!.replace(/\./g, ""));
+        const extra = Number(sharedBonus[2]!.replace(/\./g, ""));
+        if (Number.isSafeInteger(base) && Number.isSafeInteger(extra) && base > 0 && extra > 0 && base + extra === value) {
+          const rest = [name.slice(0, sharedBonus.index!).trim(), name.slice(sharedBonus.index! + sharedBonus[0].length).trim()].filter(Boolean);
+          return { type: "amount", quantity: base, unit, residual: rest, bonus: { quantity: extra, unit } };
+        }
+      }
+      // Same tokens as the structured quantity and unit in any order: nothing left to show but what differs.
+      const rest = withoutStructuredQuantity(name, value, unit, "amount");
+      return { type: "amount", quantity: value, unit, residual: rest === null ? [name] : rest ? [rest] : [] };
+    }
     const before = name.slice(0, match!.index!).trim();
     let after = name.slice(match!.index! + match![0].length).trim();
     const bonusMatch = after.match(/^\+\s*(\d+)\s+(Bonus|Diamonds?|Bonds?|UC|World Locks?)(?=\s|$)/i);
@@ -161,7 +229,10 @@ function parseVariant(name: string, input: CanonicalProductInput): CanonicalVari
       bonus = { quantity: Number(bonusMatch[1]), unit: /^bonus$/i.test(bonusMatch[2]!) ? unit : bonusMatch[2]!, label: bonusMatch[2]! };
       after = after.slice(bonusMatch[0].length).trim();
     }
-    return { type: "amount", quantity: value, unit, residual: [before, after].filter(Boolean), ...(bonus ? { bonus } : {}) };
+    const pieces = [before, after].filter(Boolean);
+    // Game Top Up: words that only repeat the quantity and unit already shown are not residual.
+    const residual = isGameTopUp(input) && structured ? pieces.map((piece) => withoutStructuredQuantity(piece, value, unit, "pair") ?? piece).filter(Boolean) : pieces;
+    return { type: "amount", quantity: value, unit, residual, ...(bonus ? { bonus } : {}) };
   }
   return { type: "unknown", name, residual: [] };
 }

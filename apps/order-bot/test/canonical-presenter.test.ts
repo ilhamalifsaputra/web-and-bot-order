@@ -277,6 +277,18 @@ describe("canonical Telegram label candidates", () => {
     expect(result.pages[0]!.text).not.toContain("#122");
     expect(last.text).not.toContain("#21 ·");
   });
+  it("does not repeat an unlisted game's own name on every button, with or without structured quantity", () => {
+    const make2 = (id: number, raw: string, qty?: { qtyValue: number; qtyUnit: string }) => canonicalProduct({
+      denomination: { id, name: raw, durationLabel: raw, supplierRawName: raw, supplierSku: `sku-${id}`, autoDeliverySource: "digiflazz", isActive: true, ...qty },
+      product: { id: 9, name: "Where Winds Meet", isActive: true, gameRegion: null, gameVariant: null },
+      category: { id: 1, name: "Top Up", isActive: true },
+    }, { effectivePriceIDR: "15000", preferredCurrency: "IDR", locale: "id" });
+    const plain = presentCanonicalCatalog([make2(84, "Where Winds Meet 60 Echo Beads")]);
+    expect(labels(plain)).toEqual(["60 Echo Beads · Rp15K"]);
+    const structured = presentCanonicalCatalog([make2(84, "Where Winds Meet 60 Echo Beads", { qtyValue: 60, qtyUnit: "Echo Beads" })]);
+    expect(labels(structured)).toEqual(["60 Echo Beads · Rp15K"]);
+    expect(structured.pages[0]!.text).not.toContain("Where Winds Meet 60");
+  });
   it("keeps stock lines in the body and callbacks within 64 bytes", () => {
     const id = Number.MAX_SAFE_INTEGER;
     const result = presentCanonicalCatalog([make(id, "1 Month Premium Package", { price: "50000" })], { stockLabels: { [id]: "3" } });

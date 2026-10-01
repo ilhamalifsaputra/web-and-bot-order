@@ -143,6 +143,32 @@ describe("canonical product semantics", () => {
   });
 });
 
+describe("canonical product-name prefix", () => {
+  const WWM = "Where Winds Meet";
+  it("strips the product's own name even when it is not a verified game prefix", () => {
+    const result = present("Where Winds Meet 60 Echo Beads", {}, WWM);
+    expect(result.displayName).toBe("60 Echo Beads");
+    expect(result.variant.type).toBe("unknown");
+    expect(result.rawName).toBe("Where Winds Meet 60 Echo Beads");
+  });
+  it("treats a structured quantity that equals the cleaned name as agreeing, so nothing is left over", () => {
+    const result = present("Where Winds Meet 60 Echo Beads", { qtyValue: 60, qtyUnit: "Echo Beads" }, WWM);
+    expect(result.variant).toMatchObject({ type: "amount", quantity: 60, unit: "Echo Beads", residual: [] });
+    expect(result.displayName).toBe("60 Echo Beads");
+  });
+  it("still preserves a genuine contradiction between structured quantity and name", () => {
+    const result = present("Where Winds Meet 61 Echo Beads", { qtyValue: 60, qtyUnit: "Echo Beads" }, WWM);
+    expect(result.variant).toMatchObject({ type: "amount", quantity: 60, residual: ["61 Echo Beads"] });
+  });
+  it("keeps a verified game prefix working as before", () => {
+    expect(present("Valorant 1.000 VP", {}, "Valorant").variant).toMatchObject({ type: "amount", quantity: 1000, unit: "VP", residual: [] });
+  });
+  it("does not strip a product name that is only the start of a longer word", () => {
+    expect(present("Where Winds Meetings 60 Echo Beads", {}, WWM).displayName).toBe("Where Winds Meetings 60 Echo Beads");
+    expect(present("where winds meet 60 Echo Beads", {}, WWM).displayName).toBe("60 Echo Beads");
+  });
+});
+
 describe("canonical qualifier de-duplication", () => {
   const withQualifiers = (name: string, gameVariant: string | null, gameRegion: string | null, productName = "Delta Force") => {
     const data = input(name, {}, productName);

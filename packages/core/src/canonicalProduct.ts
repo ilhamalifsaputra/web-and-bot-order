@@ -81,6 +81,9 @@ function cleanName(name: string, product: CanonicalProductInput["product"]): str
   const identities = [product.name, product.digiflazzBrand ?? ""];
   const prefix = VERIFIED_GAME_PREFIXES.find((candidate) => identities.some((identity) => identity.toLowerCase() === candidate.toLowerCase() || identity.toLowerCase().startsWith(`${candidate.toLowerCase()} `)));
   if (prefix && name.toLowerCase().startsWith(`${prefix.toLowerCase()} `)) return name.slice(prefix.length).trim() || name.trim();
+  // The list intro/header already names the product, so its own name is a safe whole-token prefix to drop (not a guessed alias).
+  const own = product.name.trim();
+  if (own && name.toLowerCase().startsWith(`${own.toLowerCase()} `)) return name.slice(own.length).trim() || name.trim();
   return name.trim();
 }
 
@@ -116,7 +119,9 @@ function parseVariant(name: string, input: CanonicalProductInput): CanonicalVari
     const value = structured ? denom.qtyValue! : parsed!;
     const unit = structured ? denom.qtyUnit!.trim() : parsedUnit!;
     const agrees = safeParsed && value === parsed && unit.toLowerCase() === parsedUnit!.toLowerCase();
-    if (structured && !agrees) return { type: "amount", quantity: value, unit, residual: [name] };
+    // A unit outside the closed regex still agrees when the whole cleaned name is exactly the structured quantity and unit.
+    const nameIsStructured = !!structured && nameTokens(name).join(" ") === nameTokens(`${denom.qtyValue} ${unit}`).join(" ");
+    if (structured && !agrees) return { type: "amount", quantity: value, unit, residual: nameIsStructured ? [] : [name] };
     const before = name.slice(0, match!.index!).trim();
     let after = name.slice(match!.index! + match![0].length).trim();
     const bonusMatch = after.match(/^\+\s*(\d+)\s+(Bonus|Diamonds?|Bonds?|UC|World Locks?)(?=\s|$)/i);

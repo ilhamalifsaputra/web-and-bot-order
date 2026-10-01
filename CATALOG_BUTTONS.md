@@ -96,9 +96,10 @@ Satuan berbeda yang berbagi ikon dieja namanya bila bertemu dalam satu daftar.
 | Gold | - | 🪙 (pilihan pemilik proyek; sama dengan Coins, jadi dieja bila bercampur) |
 | World Lock | World Locks | `WL` |
 
-Singkatan kata saat ini: Genesis -> Gen, Membership -> Member, Subscription -> Sub, Package -> Pkg, Premium -> Prem,
-Weekly -> Wkly, Monthly -> Mthly. **Diputuskan untuk dipangkas** menjadi Genesis, Weekly, Monthly, Package saja
-(Premium/Membership/Subscription adalah bagian nama resmi paket); lihat bagian 10.
+Singkatan kata saat ini: Genesis -> Gen, Package -> Pkg, Weekly -> Wkly, Monthly -> Mthly. Premium, Membership dan
+Subscription **tidak** disingkat (bagian nama resmi paket, mis. `Valorant Indonesia Premium Battle Pass`); dipangkas
+lewat branch `dictionary-prune-abbrevs` (bagian 10). Bila label masih terlalu lebar setelah singkatan, langkah
+pemotongan (`…`) yang berjalan, bukan singkatan karangan.
 
 Tidak diberi ikon: Tokens, Credits, Points (spesifikasi §5: jangan menyamakan dengan Coins hanya karena mirip),
 UC, VP, Bonds, Robux. Ikon Stars dan Tickets sempat ditambahkan lalu dicabut (rawan salah kena nama seperti
@@ -228,7 +229,7 @@ dikerjakan **satu branch per item**, berurutan.
 | `region-dedupe-header` | Region yang sudah ada di nama produk (`Valorant (Indonesia)`) tidak diulang di tombol dan header halaman 2 | menunggu |
 | `back-page-reply-kb` | Back dari picker lewat keyboard balasan kembali ke halaman asal (sekarang halaman 0); spesifikasi §9 | menunggu |
 | `storage-api-dbbytes` | Ukuran database dari Postgres (`pg_database_size` lewat helper di `packages/db/src/crud`), bukan file SQLite; tes `storage-api` lulus lagi dan suite tanpa kegagalan yang diketahui | selesai |
-| `dictionary-prune-abbrevs` | Hapus Premium, Membership, Subscription dari singkatan | menunggu |
+| `dictionary-prune-abbrevs` | Hapus Premium, Membership, Subscription dari singkatan (tersisa Genesis, Package, Weekly, Monthly). Sapuan atas snapshot nyata (232 label GAME_TOPUP, harga sintetis): 0 label berubah, karena tidak ada nama snapshot yang memakai singkatan yang dihapus; label sintetis `Weekly Premium Subscription Package` berubah dari `Wkly Prem Sub Pkg` menjadi `Wkly… Subscription Pkg` (dipotong, bukan disingkat) | selesai |
 
 Ditunda, prioritas rendah: pembersihan kode mati (`stockLabels`, `unitIcon`, jalur non-game
 `canonicalDenominationPickerKb`; `gameTopUpDenomLabel` kini dipakai lagi oleh Premium dan jangan dihapus); mencatat
@@ -250,8 +251,9 @@ Premium atau kategori ke batas 18; menurunkan batas lebar lebih jauh sebelum cek
   (mis. `💎… 100 ✨🔥 Mega Combo 🎁`); selalu unik, dalam batas lebar, dan dijelaskan di body.
 - Angka bergrup pada SKU non-Digiflazz tanpa qty terstruktur (`10.000 Bonds + 1.000 Bonus`) sengaja tidak diurai
   karena titik ambigu.
-- Singkatan di nama resmi (`Premium Battle Pass` menjadi `Prem Battle Pass`) dipangkas lewat branch
-  `dictionary-prune-abbrevs`.
+- Singkatan di nama resmi (`Premium Battle Pass` menjadi `Prem Battle Pass`) sudah dihapus lewat branch
+  `dictionary-prune-abbrevs`. Akibatnya nama panjang bergaya itu kini lebih sering jatuh ke langkah potong (`…`) pada
+  tombol; nama lengkap tetap ada di body.
 
 ## 12. Pelajaran proses
 

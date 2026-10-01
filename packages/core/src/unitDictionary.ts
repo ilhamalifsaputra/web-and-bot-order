@@ -58,11 +58,10 @@ export const UNITS: readonly UnitEntry[] = [
 export const ABBREVIATIONS: readonly Abbreviation[] = [
   // "Genesis Crystals" is a Genshin currency name; the dictionary above has its own short form for the phrase.
   { word: "Genesis", short: "Gen" },
-  { word: "Membership", short: "Member" },
-  { word: "Subscription", short: "Sub" },
   { word: "Package", short: "Pkg" },
-  { word: "Premium", short: "Prem" },
   { word: "Weekly", short: "Wkly" },
   { word: "Monthly", short: "Mthly" },
   // "Bundle" stays Bundle: it is already short and unambiguous.
+  // "Premium", "Membership" and "Subscription" are never abbreviated: they are part of official pass and plan
+  // names ("Valorant Indonesia Premium Battle Pass"), so shortening them would change what the SKU is called.
 ];

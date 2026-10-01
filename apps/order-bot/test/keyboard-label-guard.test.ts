@@ -296,8 +296,9 @@ describe("keyboard label guard: the dictionary first, then a unique shortened fo
   };
 
   it("uses the dictionary's abbreviations before it cuts a name", () => {
-    const texts = expectReadable(["Weekly Premium Subscription Package", "Monthly Membership Subscription Deal"]);
-    expect(texts).toEqual(["Wkly Prem Sub Pkg · Rp125K", "Mthly Member Sub Deal · Rp125K"]);
+    const texts = expectReadable(["Weekly Premium Package Bonus Pack", "Monthly Membership Package Deal"]);
+    expect(texts).toEqual(["Wkly Premium Pkg Bonus Pack · Rp125K", "Mthly Membership Pkg Deal · Rp125K"]);
+    for (const text of texts) expect(text).not.toMatch(/\b(?:Prem|Member|Sub)\b/);
   });
   it("shows a too-wide bonus amount's own unit as its icon before it cuts anything", () => {
     const [text] = textsOf([build({ id: idOf(0), name: "1000 Diamonds + 100 Bonds", price: "1000000000" }, "USD", "en", QUALIFIERS[0]!)]);

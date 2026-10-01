@@ -89,10 +89,23 @@ describe("single-unit substitution and abbreviation", () => {
     expect(iconizeUnitOnce("Diamondz Gemstone Coinage", "Gem")).toBe("Diamondz Gemstone Coinage");
   });
   it("abbreviates whole words only, keeping their case, and leaves other words alone", () => {
-    expect(abbreviateText("Weekly Premium Subscription")).toBe("Wkly Prem Sub");
-    expect(abbreviateText("MONTHLY membership Package")).toBe("MTHLY member Pkg");
+    expect(abbreviateText("Weekly Premium Subscription")).toBe("Wkly Premium Subscription");
+    expect(abbreviateText("MONTHLY membership Package")).toBe("MTHLY membership Pkg");
     expect(abbreviateText("Subscriptions Genesisx Preweekly")).toBe("Subscriptions Genesisx Preweekly");
     expect(abbreviateText("Genesis Crystals Bundle")).toBe("Gen Crystals Bundle");
+  });
+  it("abbreviates exactly Genesis, Weekly, Monthly and Package", () => {
+    expect(ABBREVIATIONS.map(({ word, short }) => [word, short])).toEqual([["Genesis", "Gen"], ["Package", "Pkg"], ["Weekly", "Wkly"], ["Monthly", "Mthly"]]);
+    expect(abbreviateText("Genesis Weekly Monthly Package")).toBe("Gen Wkly Mthly Pkg");
+  });
+  it("keeps Premium, Membership and Subscription whole: they belong to official pass and plan names", () => {
+    for (const word of ["Premium", "Membership", "Subscription"]) {
+      expect(ABBREVIATIONS.some((entry) => norm(entry.word) === norm(word)), word).toBe(false);
+      expect(abbreviateText(word), word).toBe(word);
+      expect(abbreviateText(word.toUpperCase()), word).toBe(word.toUpperCase());
+    }
+    expect(abbreviateText("Valorant Indonesia Premium Battle Pass")).toBe("Valorant Indonesia Premium Battle Pass");
+    expect(abbreviateText("Monthly Membership Subscription Premium")).toBe("Mthly Membership Subscription Premium");
   });
 });
 

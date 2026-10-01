@@ -1,6 +1,6 @@
 // setup-db MUST be first — temp DB + push before any @app import.
-import { buttonNameBudget } from "@app/core/buttonLimits";
 import "./setup-db";
+import { buttonNameBudget, PLAN_LABEL_MAX_CHARS } from "@app/core/buttonLimits";
 
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -969,7 +969,7 @@ describe("admin conversations", () => {
     expect(Number(p!.price)).toBe(3.5);
     expect(await prisma.auditLog.count({ where: { action: "product_create" } })).toBe(1);
     // The duration label becomes the plan button's text, so its prompt states the button budget.
-    expect(sentIncludes(sink, t(entry, "admin.button_hint_plan", { max: buttonNameBudget("denominationPlan") }))).toBe(true);
+    expect(sentIncludes(sink, t(entry, "admin.button_hint_plan", { max: buttonNameBudget("denominationPlan"), cut: PLAN_LABEL_MAX_CHARS }))).toBe(true);
   });
 
   // The regression guard for M-22: the rejected "fold into handledEscape"

@@ -45,6 +45,13 @@ export const CATALOG_PAGE_SIZE = 20;
  * search-result, popular-product and category-picker buttons (`apps/order-bot/src/keyboards/customer.ts`).
  */
 export const LIST_LABEL_MAX_CHARS = 30;
+/**
+ * The Premium Apps plan picker (`denominationPickerKb`, two buttons per row, no width check) cuts a label with
+ * `truncLabel(label, PLAN_LABEL_MAX_CHARS)` (string length, ends with "…"); `apps/order-bot/src/util/format.ts` reads
+ * this constant. The admin budget for a plan label is NARROW_LABEL_WIDTH, the width at which two buttons still fit
+ * side by side, not this hard cut.
+ */
+export const PLAN_LABEL_MAX_CHARS = 24;
 
 // ---------------------------------------------------------------------------
 // How many cells an admin-typed NAME may use, per kind of button.

@@ -1,7 +1,7 @@
 import { useId } from "react";
 import type { ComponentProps } from "react";
 import { Input } from "@/components/ui/input";
-import { buttonNameBudget, nameAfterProductPrefix, visualWidth, type ButtonNameBudgetOptions, type ButtonNameKind } from "../../lib/buttonLimits";
+import { buttonNameBudget, nameAfterProductPrefix, PLAN_LABEL_MAX_CHARS, visualWidth, type ButtonNameBudgetOptions, type ButtonNameKind } from "../../lib/buttonLimits";
 
 /**
  * A text input whose value ends up on a Telegram inline-keyboard button. Under the field it shows where the text
@@ -19,7 +19,7 @@ import { buttonNameBudget, nameAfterProductPrefix, visualWidth, type ButtonNameB
  * the quantity and the unit are both filled in, because then the button is built from them instead of the name.
  */
 
-const COPY: Record<ButtonNameKind, { where: string; over: string }> = {
+const COPY: Record<ButtonNameKind, { where: string; over: string; fit?: string }> = {
   productList: {
     where: "Shown on the Telegram search and popular-product buttons",
     over: "the bot cuts the end of the name with “…” on the button",
@@ -38,7 +38,8 @@ const COPY: Record<ButtonNameKind, { where: string; over: string }> = {
   },
   denominationPlan: {
     where: "Shown on the Telegram plan button, two per row",
-    over: "the bot cuts the end of the label with “…” on the button",
+    fit: "so two buttons fit side by side",
+    over: `two buttons may no longer fit side by side, and the bot cuts the label with “…” beyond ${PLAN_LABEL_MAX_CHARS} characters`,
   },
   denominationGame: {
     where: "Shown on the Telegram Game Top Up button next to the price when no quantity and unit are set",
@@ -73,7 +74,7 @@ export function ButtonLabelInput({ kind, currency, emoji, value, productName, bu
   const budget = buttonNameBudget(kind, { currency, emoji });
   const used = visualWidth(dropsProductName ? nameAfterProductPrefix(value, productName!) : buttonText(value));
   const over = fromQuantity ? 0 : used - budget;
-  const { where, over: overCopy } = COPY[kind];
+  const { where, over: overCopy, fit = "so it fits on a phone" } = COPY[kind];
   return (
     <div className="flex flex-col gap-1">
       <Input
@@ -83,7 +84,7 @@ export function ButtonLabelInput({ kind, currency, emoji, value, productName, bu
       />
       <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-0.5 text-xs">
         <p id={hintId} className="min-w-0 flex-1 text-ink-soft">
-          {where}. Aim for {budget} characters or fewer so it fits on a phone (an emoji counts as 2).
+          {where}. Aim for {budget} characters or fewer {fit} (an emoji counts as 2).
           {dropsProductName && " The game name at the start is not counted."}
         </p>
         {!fromQuantity && (

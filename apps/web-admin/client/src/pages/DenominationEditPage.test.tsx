@@ -326,6 +326,13 @@ describe("DenominationEditPage Telegram button hints", () => {
     expect(screen.getAllByTestId("button-label-counter").map((el) => el.textContent)).toEqual(["15/24", "0/16"]);
   });
 
+  it("Game Top Up: tells that Duration Label only reaches the button when it differs from the Name", async () => {
+    vi.mocked(apiGet).mockResolvedValue(withGroup("GAME_TOPUP"));
+    render(<DenominationEditPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByDisplayValue("Netflix 1 Month")).toBeInTheDocument());
+    expect(screen.getByTestId("duration-label-game-hint")).toHaveTextContent(/only when it differs from the name/i);
+  });
+
   it("Game Top Up: does not count the game name at the start of the Name", async () => {
     vi.mocked(apiGet).mockResolvedValue(withGroup("GAME_TOPUP"));
     render(<DenominationEditPage />, { wrapper: Wrapper });

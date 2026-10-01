@@ -381,6 +381,20 @@ describe("DenominationCreatePage Telegram button hints", () => {
     expect(screen.getByTestId("button-label-counter")).toHaveTextContent("7/18");
   });
 
+  it("Game Top Up: tells that Duration Label only reaches the button when it differs from the Name", async () => {
+    vi.mocked(apiGet).mockResolvedValue(gameProduct);
+    render(<DenominationCreatePage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getAllByTestId("button-label-counter")).toHaveLength(2));
+    expect(screen.getByTestId("duration-label-game-hint")).toHaveTextContent(/only when it differs from the name/i);
+  });
+
+  it("Premium Apps: Duration Label keeps its own button hint, not the Game note", async () => {
+    vi.mocked(apiGet).mockResolvedValue({ product: { id: 42, name: "Netflix Premium", category: { group: "PREMIUM_APPS" } } });
+    render(<DenominationCreatePage />, { wrapper: Wrapper });
+    await waitFor(() => screen.getByRole("link", { name: "Netflix Premium" }));
+    expect(screen.queryByTestId("duration-label-game-hint")).toBeNull();
+  });
+
   it("Game Top Up: does not count the game name at the start of the Name", async () => {
     vi.mocked(apiGet).mockResolvedValue(gameProduct);
     render(<DenominationCreatePage />, { wrapper: Wrapper });

@@ -9,7 +9,7 @@
  * Replay-safety: DB/IO that precedes another wait() is wrapped in
  * conversation.external(); terminal mutations run once.
  */
-import { buttonNameBudget } from "@app/core/buttonLimits";
+import { buttonNameBudget, PLAN_LABEL_MAX_CHARS } from "@app/core/buttonLimits";
 import { InputMediaBuilder } from "grammy";
 import type { MessageEntity } from "grammy/types";
 import { config } from "@app/core/config";
@@ -785,7 +785,7 @@ export async function productCreateConversation(conversation: MyConversation, ct
   } else {
     await adminEdit(
       ctx,
-      `${t(ctx, "admin.prod_step3", { name: esc(name!), type: typeLabel })}\n\n${t(ctx, "admin.button_hint_plan", { max: buttonNameBudget("denominationPlan") })}`,
+      `${t(ctx, "admin.prod_step3", { name: esc(name!), type: typeLabel })}\n\n${t(ctx, "admin.button_hint_plan", { max: buttonNameBudget("denominationPlan"), cut: PLAN_LABEL_MAX_CHARS })}`,
       akb.cancelInputKb(),
     );
     for (;;) {

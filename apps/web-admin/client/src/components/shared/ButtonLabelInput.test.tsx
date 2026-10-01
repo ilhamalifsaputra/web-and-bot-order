@@ -71,6 +71,17 @@ describe("ButtonLabelInput", () => {
     expect(input).not.toHaveAttribute("maxlength");
   });
 
+  it("does not claim a plan label is cut at the two-per-row budget: the bot cuts at 24", async () => {
+    const user = userEvent.setup();
+    render(<Harness kind="denominationPlan" />);
+    expect(screen.getByText(/so two buttons fit side by side/i)).toBeInTheDocument();
+    await user.type(screen.getByLabelText("Name"), "a".repeat(20));
+    const warning = screen.getByTestId("button-label-warning");
+    expect(warning).toHaveTextContent("2 over");
+    expect(warning).toHaveTextContent(/side by side/i);
+    expect(warning).toHaveTextContent(/cuts .* beyond 24 characters/i);
+  });
+
   it("subtracts the emoji prefix from the budget when asked", () => {
     render(<Harness kind="category" emoji initial="a" />);
     expect(counter()).toHaveTextContent("1/15");

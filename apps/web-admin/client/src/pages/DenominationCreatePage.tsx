@@ -168,12 +168,17 @@ export function DenominationCreatePage() {
             Duration Label <span className="text-rust">*</span>
           </label>
           {isGame ? (
-            <Input
-              className="mt-1"
-              placeholder="e.g. 1 Month"
-              value={durationLabel}
-              onChange={(e) => setDurationLabel(e.target.value)}
-            />
+            <>
+              <Input
+                className="mt-1"
+                placeholder="e.g. 1 Month"
+                value={durationLabel}
+                onChange={(e) => setDurationLabel(e.target.value)}
+              />
+              <p data-testid="duration-label-game-hint" className="mt-1 text-xs text-ink-soft">
+              Game Top Up: this reaches the Telegram button only when it differs from the Name, and is then added after the quantity. Keep it short.
+            </p>
+            </>
           ) : (
             <ButtonLabelInput
               kind="denominationPlan"

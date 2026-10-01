@@ -5,7 +5,7 @@ import { formatCompactPrice } from "./compactFormat";
 import { canonicalProduct } from "./canonicalProduct";
 import {
   buttonNameBudget, visualWidth, MAX_LABEL_WIDTH, TARGET_LABEL_WIDTH, NARROW_LABEL_WIDTH, MAX_LABEL_BYTES, CATALOG_PAGE_SIZE,
-  LIST_LABEL_MAX_CHARS, COMPACT_PRICE_CELLS, QUANTITY_CELLS, SEPARATOR_CELLS, EMOJI_PREFIX_CELLS, nameAfterProductPrefix, type ButtonNameKind,
+  LIST_LABEL_MAX_CHARS, PLAN_LABEL_MAX_CHARS, COMPACT_PRICE_CELLS, QUANTITY_CELLS, SEPARATOR_CELLS, EMOJI_PREFIX_CELLS, nameAfterProductPrefix, type ButtonNameKind,
 } from "./buttonLimits";
 
 describe("button limits", () => {
@@ -13,6 +13,12 @@ describe("button limits", () => {
     expect([MAX_LABEL_WIDTH, TARGET_LABEL_WIDTH, NARROW_LABEL_WIDTH, MAX_LABEL_BYTES, CATALOG_PAGE_SIZE]).toEqual([36, 32, 18, 64, 20]);
     expect(TARGET_LABEL_WIDTH).toBeLessThan(MAX_LABEL_WIDTH);
     expect(NARROW_LABEL_WIDTH).toBeLessThan(TARGET_LABEL_WIDTH);
+  });
+
+  it("names the hard cut of the Premium plan picker and keeps its two-per-row budget below it", () => {
+    expect(PLAN_LABEL_MAX_CHARS).toBe(24);
+    expect(buttonNameBudget("denominationPlan")).toBe(NARROW_LABEL_WIDTH);
+    expect(buttonNameBudget("denominationPlan")).toBeLessThan(PLAN_LABEL_MAX_CHARS);
   });
 
   it("measures cells, not string length", () => {

@@ -314,3 +314,54 @@ describe("DenominationEditPage", () => {
     await waitFor(() => expect(screen.getByText(/a valid type is required/i)).toBeInTheDocument());
   });
 });
+
+describe("DenominationEditPage Telegram button hints", () => {
+  const withGroup = (group: string) => ({ product: { ...PRODUCT_DETAIL.product, category: { id: 3, name: "Cat", group } } });
+
+  it("Game Top Up: hints Name and Quantity Unit", async () => {
+    vi.mocked(apiGet).mockResolvedValue(withGroup("GAME_TOPUP"));
+    render(<DenominationEditPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByDisplayValue("Netflix 1 Month")).toBeInTheDocument());
+    // "Netflix 1 Month" is 15 cells; the Quantity Unit starts empty.
+    expect(screen.getAllByTestId("button-label-counter").map((el) => el.textContent)).toEqual(["15/24", "0/16"]);
+  });
+
+  it("Game Top Up: tells that Duration Label only reaches the button when it differs from the Name", async () => {
+    vi.mocked(apiGet).mockResolvedValue(withGroup("GAME_TOPUP"));
+    render(<DenominationEditPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByDisplayValue("Netflix 1 Month")).toBeInTheDocument());
+    expect(screen.getByTestId("duration-label-game-hint")).toHaveTextContent(/only when it differs from the name/i);
+  });
+
+  it("Game Top Up: does not count the game name at the start of the Name", async () => {
+    vi.mocked(apiGet).mockResolvedValue(withGroup("GAME_TOPUP"));
+    render(<DenominationEditPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByDisplayValue("Netflix 1 Month")).toBeInTheDocument());
+    fireEvent.change(screen.getByDisplayValue("Netflix 1 Month"), { target: { value: "netflix premium Family 1 Month" } });
+    // "Family 1 Month" is 14 cells once the product's name "Netflix Premium" is dropped.
+    expect(screen.getAllByTestId("button-label-counter").map((el) => el.textContent)).toEqual(["14/24", "0/16"]);
+  });
+
+  it("Game Top Up: a SKU with quantity and unit shows the note, not a Name counter", async () => {
+    const detail = withGroup("GAME_TOPUP");
+    vi.mocked(apiGet).mockResolvedValue({ product: { ...detail.product, denominations: [{ ...detail.product.denominations[0], qtyValue: 86, qtyUnit: "Diamonds" }] } });
+    render(<DenominationEditPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByDisplayValue("Netflix 1 Month")).toBeInTheDocument());
+    expect(screen.getAllByTestId("button-label-counter").map((el) => el.textContent)).toEqual(["8/16"]);
+    expect(screen.getByTestId("button-label-note")).toBeInTheDocument();
+  });
+
+  it("Premium Apps: hints Duration Label and still saves an over-budget label", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.mocked(apiGet).mockResolvedValue(withGroup("PREMIUM_APPS"));
+    vi.mocked(apiPatch).mockResolvedValue({ ok: true });
+    render(<DenominationEditPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByDisplayValue("1 Month")).toBeInTheDocument());
+    expect(screen.getAllByTestId("button-label-counter").map((el) => el.textContent)).toEqual(["7/18"]);
+    const long = "1 Month Family Plan With Extras";
+    fireEvent.change(screen.getByDisplayValue("1 Month"), { target: { value: long } });
+    expect(screen.getByTestId("button-label-counter")).toHaveAttribute("data-state", "over");
+    await user.click(screen.getByRole("button", { name: /save changes/i }));
+    await waitFor(() => expect(apiPatch).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ durationLabel: long })));
+  });
+});

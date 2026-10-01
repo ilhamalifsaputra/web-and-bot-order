@@ -9,6 +9,7 @@
  * Replay-safety: DB/IO that precedes another wait() is wrapped in
  * conversation.external(); terminal mutations run once.
  */
+import { buttonNameBudget, PLAN_LABEL_MAX_CHARS } from "@app/core/buttonLimits";
 import { InputMediaBuilder } from "grammy";
 import type { MessageEntity } from "grammy/types";
 import { config } from "@app/core/config";
@@ -782,7 +783,11 @@ export async function productCreateConversation(conversation: MyConversation, ct
   if (skip >= 3) {
     duration = dr.duration!;
   } else {
-    await adminEdit(ctx, t(ctx, "admin.prod_step3", { name: esc(name!), type: typeLabel }), akb.cancelInputKb());
+    await adminEdit(
+      ctx,
+      `${t(ctx, "admin.prod_step3", { name: esc(name!), type: typeLabel })}\n\n${t(ctx, "admin.button_hint_plan", { max: buttonNameBudget("denominationPlan"), cut: PLAN_LABEL_MAX_CHARS })}`,
+      akb.cancelInputKb(),
+    );
     for (;;) {
       const u = await conversation.wait();
       if (await handledEscape(u)) return;
@@ -934,7 +939,7 @@ export async function productEditConversation(conversation: MyConversation, ctx:
   const denominationId = parseInt(parts[4]!, 10);
 
   const prompts: Record<string, string> = {
-    rename: t(ctx, "admin.prod_ask_rename"),
+    rename: `${t(ctx, "admin.prod_ask_rename")}\n\n${t(ctx, "admin.button_hint_name", { max: buttonNameBudget("denominationGame") })}`,
     price: t(ctx, "admin.prod_ask_price"),
   };
   await ctx.answerCallbackQuery();

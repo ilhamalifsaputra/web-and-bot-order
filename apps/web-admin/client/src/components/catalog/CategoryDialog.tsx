@@ -24,6 +24,7 @@ import {
   SelectContent,
   SelectItem,
 } from "@/components/ui/select";
+import { ButtonLabelInput } from "../shared/ButtonLabelInput";
 import { apiPatch, apiPost } from "../../api/client";
 import type { CategoryRow } from "../../api/catalog";
 
@@ -91,8 +92,10 @@ export function CategoryDialog({
         <div className="flex flex-col gap-3">
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="cat-name">Name</Label>
-            <Input
+            <ButtonLabelInput
               id="cat-name"
+              kind="category"
+              emoji={emoji.trim() !== ""}
               value={name}
               onChange={(e) => setName(e.target.value)}
               autoFocus

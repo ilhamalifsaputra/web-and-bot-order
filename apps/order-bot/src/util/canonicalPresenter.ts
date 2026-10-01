@@ -2,23 +2,15 @@ import type { CanonicalProduct, CanonicalMoney } from "@app/core/canonicalProduc
 import { Decimal } from "@app/core/money";
 import { esc } from "@app/core/formatters";
 import { formatCompactPrice } from "@app/core/compactFormat";
-import { displayUnit, sharedIconUnits } from "@app/core/unitDisplay";
+import { visualWidth, MAX_LABEL_WIDTH, TARGET_LABEL_WIDTH, NARROW_LABEL_WIDTH, MAX_LABEL_BYTES, CATALOG_PAGE_SIZE } from "@app/core/buttonLimits";
+import { abbreviateText, displayUnit, hasRepeatedIcon, iconizeUnitOnce, sharedIconUnits } from "@app/core/unitDisplay";
 
 export interface CatalogButton { text: string; callback_data: string }
 export interface CatalogPage { text: string; rows: CatalogButton[][] }
 const graphemes = new Intl.Segmenter("en", { granularity: "grapheme" });
 
-/** A conservative cell estimate, not a guarantee about Telegram client pixels. */
-export function visualWidth(value: string): number {
-  let width = 0;
-  for (const { segment } of graphemes.segment(value)) {
-    const cp = segment.codePointAt(0)!;
-    width += /\p{Extended_Pictographic}|\p{Regional_Indicator}/u.test(segment) || cp >= 0x1100 && (
-      cp <= 0x115f || cp >= 0x2e80 && cp <= 0xa4cf || cp >= 0xac00 && cp <= 0xd7af || cp >= 0xf900 && cp <= 0xfaff || cp >= 0xff01 && cp <= 0xff60 || cp >= 0x20000
-    ) ? 2 : 1;
-  }
-  return width;
-}
+// The limits live in one browser-safe module shared with the admin panel; re-exported so existing imports keep working.
+export { visualWidth, MAX_LABEL_WIDTH, TARGET_LABEL_WIDTH, NARROW_LABEL_WIDTH, MAX_LABEL_BYTES, CATALOG_PAGE_SIZE };
 
 /**
  * Quantities are never rounded. Full digits are shown unless the value is a clean multiple of 1000
@@ -62,17 +54,6 @@ export async function boundedCanonicalName(product: CanonicalProduct, send: (htm
   for (const page of presentCanonicalCatalog([product], { bodyName: name }).pages) await send(page.text);
   return `#${product.id}`;
 }
-/** Telegram button budget: conservative cells, and a byte cap that also bounds combining marks. */
-export const MAX_LABEL_WIDTH = 44;
-export const MAX_LABEL_BYTES = 64;
-/**
- * Width limit (in cells) for pairing two buttons in one row. It was 24 and is now 18, so wide
- * labels, such as USD amounts with thousands separators like `5 💎 · $1,000,000.00`, stay one
- * per row on narrow phones instead of being squeezed side by side.
- */
-export const NARROW_LABEL_WIDTH = 18;
-/** Product buttons per catalog page, for every game. */
-export const CATALOG_PAGE_SIZE = 20;
 const PAGE_TEXT_LIMIT = 3000;
 const MAX_SHARED_LINE = 300;
 
@@ -141,23 +122,28 @@ function shapesOf(products: CanonicalProduct[]): Shape[] {
 }
 
 const sameUnit = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
-function fullMain(product: CanonicalProduct, s: Shape, tails: string[] = []): string {
+/** The leading "quantity unit (+ bonus)" of an amount's full text ("" for any other variant). */
+function fullHead(product: CanonicalProduct): string {
   const v = product.variant;
-  if (v.type !== "amount") return [s.main, ...s.leftover, ...tails].join(" ");
+  if (v.type !== "amount") return "";
   const bonus = v.bonus ? ` + ${v.bonus.quantity} ${v.bonus.label ?? v.bonus.unit}` : "";
-  return [`${v.quantity} ${v.unit}${bonus}`, ...s.leftover, ...tails].join(" ");
+  return `${v.quantity} ${v.unit}${bonus}`;
 }
-/** Compact amount text, or null when compacting would hide meaning (a bonus in a different unit). */
-function compactMain(product: CanonicalProduct, s: Shape, locale: string, spelled: Set<string>): string | null {
+function fullMain(product: CanonicalProduct, s: Shape, tails: string[] = []): string {
+  if (product.variant.type !== "amount") return [s.main, ...s.leftover, ...tails].join(" ");
+  return [fullHead(product), ...s.leftover, ...tails].join(" ");
+}
+/** Compact "quantity unit" of an amount, or null when compacting would hide meaning (a bonus in a different unit). */
+function compactHead(product: CanonicalProduct, locale: string, spelled: Set<string>): string | null {
   const v = product.variant;
   if (v.type !== "amount") return null;
   if (v.bonus && !sameUnit(v.bonus.unit, v.unit)) return null;
   const unit = spelled.has(v.unit.toLowerCase()) ? v.unit : displayUnit(v.unit);
   const qty = `${compactQuantity(v.quantity, locale)}${v.bonus ? `+${compactQuantity(v.bonus.quantity, locale)}` : ""}`;
-  return [`${qty} ${unit}`, ...s.leftover].join(" ");
+  return `${qty} ${unit}`;
 }
 const withQuals = (main: string, quals: string[]) => [collapse(main), ...quals].join(" · ");
-const fits = (label: string) => visualWidth(label) <= MAX_LABEL_WIDTH && Buffer.byteLength(label, "utf8") <= MAX_LABEL_BYTES;
+const fits = (label: string, limit = MAX_LABEL_WIDTH) => visualWidth(label) <= limit && Buffer.byteLength(label, "utf8") <= MAX_LABEL_BYTES;
 
 function duplicates(labels: string[]): number[][] {
   const groups = new Map<string, number[]>();
@@ -185,10 +171,117 @@ function escapedChunks(value: string, limit: number): string[] {
   return chunks;
 }
 
+/** True when `name` begins and ends like the "lead…tail" cut `candidate`, i.e. the cut would read the same for it. */
+function endsLike(name: string, candidate: string): boolean {
+  const cut = candidate.indexOf("…");
+  const lead = candidate.slice(0, cut);
+  const tail = candidate.slice(cut + 1);
+  return name.length >= lead.length + tail.length && name.startsWith(lead) && name.endsWith(tail);
+}
+
+/** True when a word (letters only, any case) or a dictionary icon occurs twice, or two dictionary icons sit side by side. */
+function stutters(value: string): boolean {
+  const seen = new Set<string>();
+  for (const word of value.toLowerCase().split(/[^\p{L}]+/u).filter((w) => w.length > 1)) {
+    if (seen.has(word)) return true;
+    seen.add(word);
+  }
+  return hasRepeatedIcon(value);
+}
+
+/**
+ * The trailing spaced " - X" or "(X)" segment of `text` and what precedes it. X never holds a digit ("(x2)" is a
+ * variant, not a qualifier) and a hyphen inside a word ("Super-Value") is never a separator.
+ */
+function trailingQualifier(text: string): { rest: string; key: string } | null {
+  const match = text.match(/^(.*?)(?:^|\s)-\s+([^()-]+)$/) ?? text.match(/^(.*?)\s*\(([^()]+)\)$/);
+  if (!match || /\d/.test(match[2]!)) return null;
+  const key = tokenKey(match[2]!);
+  return key ? { rest: collapse(match[1]!), key } : null;
+}
+/** `text` without its trailing qualifier segment when that qualifier is one of `keys` (the product's own or one shared by the list), else null. */
+function withoutTrailingQualifier(text: string, keys: ReadonlySet<string>): string | null {
+  const q = trailingQualifier(text);
+  return q && keys.has(q.key) ? q.rest : null;
+}
+/** The amount's head with ITS OWN unit as the dictionary icon ("1000 💎 + 100 Bonds"), only for a head that spells the unit and a unit the list does not spell. */
+function iconizedHead(product: CanonicalProduct, head: string, spelled: Set<string>): string | null {
+  const v = product.variant;
+  if (v.type !== "amount" || head !== fullHead(product) || spelled.has(v.unit.toLowerCase())) return null;
+  const swapped = iconizeUnitOnce(head, v.unit);
+  return swapped === head ? null : swapped;
+}
+
+/** `body` without a unit phrase it begins or ends with (the amount's head already states the unit), or null when it does neither. */
+function withoutRepeatedUnit(body: string, unit: string): string | null {
+  const phrase = unit.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, String.raw`\s+`);
+  if (!phrase) return null;
+  const edge = new RegExp(String.raw`^${phrase}(?![\p{L}\p{N}])|(?<![\p{L}\p{N}])${phrase}$`, "iu");
+  return edge.test(body) ? collapse(body.replace(edge, "")) : null;
+}
+
+/** `Alt` cuts start from the name as it is (qualifier and repeated unit kept); they are tried only after every cut of the reduced name failed. */
+type CutKind = "swap" | "qualifier" | "middle" | "tail" | "middleAlt" | "tailAlt";
+/**
+ * The fallback forms of `main`, in order, for a label that does not fit. An amount's head ("quantity unit") is kept whole.
+ *  - swap: the name as is, the amount's own unit as its icon (`iconHead`, one unit, only when it is not spelled in this list), long words abbreviated;
+ *  - qualifier: the same without a trailing "- Garena" / "(Global)" that is the product's own qualifier or one the list shares;
+ *  - middle: the first words and the END behind one "…" ("Blessing of… Moon x2"), so the start that names the item survives;
+ *  - tail: only the END behind one "…" (the end carries the number that tells siblings apart).
+ * Icons replace nothing but the SKU's own unit; no other word of a name is ever turned into an icon.
+ */
+/** Words that carry meaning: a bare "-" or "&" does not count towards what a cut keeps. */
+const meaningfulWords = (words: string[]) => words.filter((word) => /[\p{L}\p{N}]/u.test(word)).length;
+function* shorterNames(main: string, head: string, options: { iconHead: string | null; qualifierKeys: ReadonlySet<string>; repeatedUnit?: string | null }): Generator<{ text: string; kind: CutKind; kept: number }> {
+  const name = collapse(main);
+  const body = collapse(name.slice(head.length));
+  const joined = (lead: string, rest: string) => collapse(lead ? `${lead} ${rest}` : rest);
+  const forms = (rest: string) => {
+    const abbreviated = collapse(abbreviateText(rest));
+    const heads = options.iconHead ? [head, options.iconHead] : [head];
+    return [...heads.map((lead) => joined(lead, rest)), ...heads.map((lead) => joined(lead, abbreviated))];
+  };
+  const seen = new Set<string>();
+  for (const text of forms(body)) if (!seen.has(text)) { seen.add(text); yield { text, kind: "swap", kept: Infinity }; }
+  // An amount whose name still begins or ends with the unit its head states ("7 💎 Event Gift Pack 1 Diamonds") says it only once.
+  const unitless = options.repeatedUnit ? withoutRepeatedUnit(body, options.repeatedUnit) : null;
+  if (unitless !== null) for (const text of forms(unitless)) if (!seen.has(text)) { seen.add(text); yield { text, kind: "swap", kept: Infinity }; }
+  const base = unitless ?? body;
+  const dropped = withoutTrailingQualifier(base, options.qualifierKeys);
+  if (dropped !== null) for (const text of forms(dropped)) if (!seen.has(text)) { seen.add(text); yield { text, kind: "qualifier", kept: Infinity }; }
+  const prefix = options.iconHead ?? head;
+  const lead = prefix ? `${prefix} ` : "";
+  // Cuts start from the name without its droppable qualifier (and its repeated unit); if every such cut reads like a sibling, from the name with them.
+  const cutBodies = [...(dropped !== null ? [dropped] : []), base, ...(unitless !== null ? [body] : [])].map((text) => collapse(abbreviateText(text)).split(" ").filter(Boolean));
+  // Most words kept first; of equal size, the longest end. Names of more than 30 words go straight to the end cut.
+  for (const [group, words] of cutBodies.entries()) {
+    if (words.length < 3 || words.length > 30) continue;
+    for (let kept = words.length - 1; kept >= 2; kept--) {
+      for (let end = kept - 1; end >= 1; end--) {
+        const first = words.slice(0, kept - end);
+        const last = words.slice(words.length - end);
+        yield { text: `${lead}${first.join(" ")}… ${last.join(" ")}`, kind: group === 0 ? "middle" : "middleAlt", kept: meaningfulWords([...first, ...last]) };
+      }
+    }
+  }
+  for (const [group, words] of cutBodies.entries()) for (let drop = 1; drop < words.length; drop++) yield { text: `${lead}…${words.slice(drop).join(" ")}`, kind: group === 0 ? "tail" : "tailAlt", kept: meaningfulWords(words.slice(drop)) };
+  // One enormous last word: keep its end, never cutting inside a grapheme.
+  const last = cutBodies[0]!.at(-1);
+  if (last) {
+    const parts = [...graphemes.segment(last)].map((part) => part.segment);
+    for (let keep = parts.length - 1; keep >= 4; keep--) yield { text: `${lead}…${parts.slice(parts.length - keep).join("")}`, kind: "tail", kept: 1 };
+  }
+}
+
 /**
  * Button labels, in order: compact (or full where compacting would hide
- * meaning) → full name on a collision → ` #id` suffix → `#id` when too wide.
- * Collisions are re-checked after every step, so no two final labels match.
+ * meaning) → full name on a collision → ` #id` suffix. A label that is then too
+ * wide tries, while it still fits and stays distinct, the name without its
+ * qualifiers, the amount's own unit as its icon, abbreviations, a repeat of the unit word dropped, a trailing
+ * qualifier dropped, the first words plus the END behind one "…", the END alone,
+ * and only then the bare `#id` (see `shorterNames`). Anything shortened is
+ * explained in the body. Collisions are re-checked after every step, so no two
+ * final labels match.
  */
 function catalogLabels(products: CanonicalProduct[], locale: string, sharedQuals: boolean): { text: string; fallback: boolean; complex: boolean }[] {
   const conflictingShorts = new Set(sharedIconUnits(products.flatMap((p) => p.variant.type === "amount" ? [p.variant.unit] : [])).map((group) => group.short));
@@ -198,15 +291,21 @@ function catalogLabels(products: CanonicalProduct[], locale: string, sharedQuals
     const s = shapes[index]!;
     const quals = sharedQuals ? [] : s.quals;
     const price = compactPrice(product, locale);
-    const compact = compactMain(product, s, locale, spelled);
+    const head = compactHead(product, locale, spelled);
+    const compact = head === null ? null : [head, ...s.leftover].join(" ");
     // Identity = the label without its price. Price alone must never be what tells two SKUs apart.
     // The full form restores what lifting hid: the name's own "- Garena" tail, and not the same qualifier twice.
     const tails = s.lifted.map((l) => l.text);
     const fullQuals = quals.filter((q) => !s.lifted.some((l) => l.key === tokenKey(q)));
-    const fullIdentity = withQuals(fullMain(product, s, tails), fullQuals);
-    const identity = compact === null ? withQuals(fullMain(product, s), quals) : withQuals(compact, quals);
+    const fullText = fullMain(product, s, tails);
+    const fullIdentity = withQuals(fullText, fullQuals);
+    const main = compact ?? fullMain(product, s);
     return {
-      identity, fullIdentity, price, fallback: false,
+      identity: withQuals(main, quals), fullIdentity, price, fallback: false,
+      // What the shortening fallbacks start from: the identity's name part and the leading "quantity unit" they keep whole.
+      main, mainHead: head ?? fullHead(product), fullText, fullHead: fullHead(product),
+      // The structured unit, whose repeat inside the name a shortened label may drop (amounts only).
+      unit: product.variant.type === "amount" ? product.variant.unit : null,
       complex: product.variant.type === "unknown" || (product.variant.type === "amount" && compact === null) || s.leftover.length > 0,
     };
   });
@@ -217,16 +316,53 @@ function catalogLabels(products: CanonicalProduct[], locale: string, sharedQuals
   for (const group of duplicates(identities())) {
     const fulls = group.map((index) => items[index]!.fullIdentity);
     const others = new Set(identities().filter((_, index) => !group.includes(index)));
-    if (new Set(fulls).size === group.length && !fulls.some((full) => others.has(full))) group.forEach((index, i) => { items[index]!.identity = fulls[i]!; });
-    else for (const index of group) items[index]!.fallback = true;
+    if (new Set(fulls).size === group.length && !fulls.some((full) => others.has(full))) {
+      group.forEach((index, i) => { Object.assign(items[index]!, { identity: fulls[i]!, main: items[index]!.fullText, mainHead: items[index]!.fullHead }); });
+    } else for (const index of group) items[index]!.fallback = true;
   }
   const labels = items.map((item, index) => ({
     text: `${item.identity} · ${item.price}${item.fallback ? ` #${products[index]!.id}` : ""}`, fallback: item.fallback, complex: item.complex,
   }));
   const texts = () => labels.map((label) => label.text);
+  const identityKey = (value: string) => collapse(value).toLowerCase();
+  // A trailing "- Garena" / "(Global)" may be dropped from a button when it is the product's own qualifier or the list repeats it.
+  const qualifierKeys = new Set(products.flatMap((p) => [p.product.gameRegion, p.product.gameVariant]).filter((q): q is string => !!q?.trim()).map(tokenKey));
+  const trailing = new Map<string, number>();
+  for (const item of items) {
+    const q = trailingQualifier(collapse(item.main.slice(item.mainHead.length)));
+    if (q) trailing.set(q.key, (trailing.get(q.key) ?? 0) + 1);
+  }
+  for (const [key, count] of trailing) if (count >= 2) qualifierKeys.add(key);
   labels.forEach((label, index) => {
     // Width alone misses thousands of combining marks in one visual cell, so bytes are bounded too.
-    if (!fits(label.text)) Object.assign(label, { text: `#${products[index]!.id}`, fallback: true });
+    if (fits(label.text)) return;
+    const item = items[index]!;
+    const suffix = item.fallback ? ` #${products[index]!.id}` : "";
+    const candidates = [...shorterNames(item.main, item.mainHead, { iconHead: iconizedHead(products[index]!, item.mainHead, spelled), qualifierKeys, repeatedUnit: item.unit })];
+    // A name that already doubles an icon on its own may keep doing so; no step may add that.
+    const nameStutters = hasRepeatedIcon(collapse(item.main));
+    // Substitutions and a dropped qualifier first (any that fits the cap), then cuts: the first words plus the end, then the end alone,
+    // each of the reduced name before the "Alt" cuts of the name that keeps its qualifier and unit word.
+    // Cuts aim for the soft target and avoid a stutter ("…Crystals Bundle 8.000 Crystals" repeats a word), each relaxed only when nothing else fits.
+    const cuts = (strict: boolean): { kinds: CutKind[]; limit: number; strict: boolean }[] => (["middle", "middleAlt", "tail", "tailAlt"] as const)
+      .flatMap((kind) => [{ kinds: [kind], limit: TARGET_LABEL_WIDTH, strict }, { kinds: [kind], limit: MAX_LABEL_WIDTH, strict }]);
+    const passes = [{ kinds: ["swap", "qualifier"] as CutKind[], limit: MAX_LABEL_WIDTH, strict: false }, ...cuts(true), ...cuts(false)];
+    for (const pass of passes) for (const { text: candidate, kind, kept } of candidates) {
+      // Strict cuts also keep enough words (two after an end-only ellipsis, three around a middle one): a lone word is a worse label than a cut that repeats one.
+      if (!pass.kinds.includes(kind) || (!nameStutters && hasRepeatedIcon(candidate))) continue;
+      if (pass.strict && (stutters(candidate) || kept < (kind.startsWith("middle") ? 3 : 2))) continue;
+      const text = `${candidate} · ${item.price}${suffix}`;
+      if (!fits(text, pass.limit)) continue;
+      // A suffixed (colliding) item is told apart by its ID; any other must not equal another item's identity.
+      if (!item.fallback && items.some((other, otherIndex) => otherIndex !== index && identityKey(other.identity) === identityKey(candidate))) continue;
+      // A cut that another SKU's name also ends with does not tell the two apart (only the dropped beginning does).
+      if (!item.fallback && candidate.includes("…") && items.some((other, otherIndex) => otherIndex !== index && endsLike(collapse(other.main), candidate))) continue;
+      // Qualifiers, or part of the name, were dropped: the body explains this item in full.
+      Object.assign(label, { text, complex: true });
+      item.identity = candidate;
+      return;
+    }
+    Object.assign(label, { text: `#${products[index]!.id}`, fallback: true });
   });
   // IDs are unique, so turning every remaining duplicate into its bare ID terminates.
   for (let group = duplicates(texts()); group.length; group = duplicates(texts())) {

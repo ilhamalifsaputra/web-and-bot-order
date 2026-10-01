@@ -1,7 +1,9 @@
+import { ABBREVIATIONS, UNITS } from "./unitDictionary";
+
 /**
- * Declarative short forms for canonical quantity units, used by compact
- * presenters (Telegram buttons). Only exact unit names or listed aliases match;
- * a unit is never recognised by a substring of a package name, so
+ * Lookups over the unit dictionary (`unitDictionary.ts`, the single source of truth) for compact
+ * presenters (Telegram buttons). Only exact unit names or listed aliases match, as whole
+ * case-insensitive tokens; a unit is never recognised by a substring of a package name, so
  * "Weekly Diamond Pass" is not a diamond amount.
  */
 export interface UnitDisplayEntry {
@@ -13,12 +15,9 @@ export interface UnitDisplayEntry {
   shortAlias?: string;
 }
 
-export const UNIT_DISPLAY_REGISTRY: readonly UnitDisplayEntry[] = [
-  { unit: "Diamonds", aliases: ["Diamond"], icon: "💎" },
-  { unit: "Coins", aliases: ["Coin"], icon: "🪙" },
-  { unit: "Delta Coins", aliases: ["Delta Coin"], icon: "🪙" },
-  { unit: "World Lock", aliases: ["World Locks"], shortAlias: "WL" },
-];
+export const UNIT_DISPLAY_REGISTRY: readonly UnitDisplayEntry[] = UNITS.map((entry) => ({
+  unit: entry.canonical, aliases: entry.aliases, ...(entry.icon ? { icon: entry.icon } : {}), ...(entry.short ? { shortAlias: entry.short } : {}),
+}));
 
 /** Per-category replacement of a canonical unit's short form: { [category]: { [unit or alias]: short } }. */
 export type UnitDisplayOverrides = Record<string, Record<string, string>>;
@@ -70,4 +69,49 @@ export function sharedIconUnits(units: readonly string[], ctx?: UnitDisplayConte
     byShort.set(short, set);
   }
   return [...byShort].filter(([, set]) => set.size > 1).map(([short, set]) => ({ short, units: [...set] }));
+}
+
+const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const phraseRegExp = (names: string[], flags = "giu") => new RegExp(
+  String.raw`(?<![\p{L}\p{N}])(${names.map((name) => escapeRegExp(name.trim()).replace(/\s+/g, String.raw`\s+`)).join("|")})(?![\p{L}\p{N}])`, flags,
+);
+const SHORT_PHRASES = UNIT_DISPLAY_REGISTRY.filter((entry) => entry.icon && entry.shortAlias);
+const ABBREVIATION_WORDS = phraseRegExp(ABBREVIATIONS.map((entry) => entry.word));
+
+/**
+ * Replaces the FIRST whole-token occurrence of `unit` inside `text` by the unit's icon or short form
+ * ("1000 Diamonds + 100 Bonds" -> "1000 💎 + 100 Bonds"). Exactly one phrase and exactly the named unit: a presenter
+ * passes the SKU's own structured unit, so no other word of a package or bundle name is ever turned into an icon.
+ * An unregistered unit, or a text without it, comes back unchanged.
+ */
+export function iconizeUnitOnce(text: string, unit: string, ctx?: UnitDisplayContext): string {
+  const short = displayUnit(unit, ctx);
+  if (!unit.trim() || short === unit) return text;
+  return text.replace(phraseRegExp([unit], "iu"), short);
+}
+
+const UNIT_ICONS = [...new Set(UNIT_DISPLAY_REGISTRY.flatMap((entry) => entry.icon ? [entry.icon] : []))];
+const ICON_ALTERNATIVES = UNIT_ICONS.join("|");
+const ADJACENT_ICONS = new RegExp(String.raw`(?:${ICON_ALTERNATIVES})\s*(?:${ICON_ALTERNATIVES})`, "u");
+/** True when the same dictionary icon occurs twice in `text`, or two dictionary icons sit side by side. */
+export function hasRepeatedIcon(text: string): boolean {
+  return UNIT_ICONS.some((icon) => text.split(icon).length > 2) || ADJACENT_ICONS.test(text);
+}
+
+const followCase = (source: string, short: string): string => {
+  if (source.length > 1 && source === source.toUpperCase()) return short.toUpperCase();
+  if (source[0] === source[0]!.toUpperCase() && source[0] !== source[0]!.toLowerCase()) return short[0]!.toUpperCase() + short.slice(1);
+  return short.toLowerCase();
+};
+/**
+ * Abbreviates, as whole tokens and keeping their case, the dictionary's long words ("Weekly Premium
+ * Subscription" -> "Wkly Prem Sub") and the short forms of icon units ("Genesis Crystals" -> "Gen Crystals").
+ * A last-resort label form; never applied to a label that already fits.
+ */
+export function abbreviateText(text: string): string {
+  let out = text;
+  for (const entry of SHORT_PHRASES) {
+    out = out.replace(phraseRegExp([entry.unit, ...entry.aliases]), (phrase) => followCase(phrase, entry.shortAlias!));
+  }
+  return out.replace(ABBREVIATION_WORDS, (word) => followCase(word, ABBREVIATIONS.find((entry) => entry.word.toLowerCase() === word.toLowerCase())!.short));
 }

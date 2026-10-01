@@ -1198,6 +1198,8 @@
   "admin.prod_ask_rename": "✏️ Kirim <b>nama produk</b> baru:",
   "admin.prod_ask_price": "💲 Kirim <b>harga</b> baru (angka, mis. <code>5.50</code>):",
   "admin.prod_renamed": "✅ Produk diganti nama menjadi <b>{name}</b>.",
+  "admin.button_hint_plan": "ℹ️ Di Premium Apps, label ini adalah teks tombol yang diketuk pelanggan, dua per baris: maksimal {max} karakter (emoji dihitung 2) agar dua tombol muat berdampingan. Bot memotong teks yang lebih dari {cut} karakter dengan “…”. Tombol Game Top Up dibuat dari nama dan kuantitas.",
+  "admin.button_hint_name": "ℹ️ Di tombol Game Top Up, nama ini berdampingan dengan harga: maksimal {max} karakter (emoji dihitung 2; nama game di awal tidak dihitung). Nama yang lebih panjang disingkat atau diganti nomor.",
   "admin.prod_price_updated": "✅ Harga diperbarui menjadi <b>{price}</b>.",
   "admin.bulk_step1": "💰 <b>Harga Grosir</b> — Langkah 1/2\n\nKirim <b>jumlah minimum</b> (angka bulat ≥ 5).\nPelanggan yang membeli minimal sebanyak ini mendapat diskon.",
   "admin.bulk_step2": "💰 <b>Harga Grosir</b> — Langkah 2/2\n\n✓ Jumlah minimum: <b>{minQty}</b>\n\nKirim <b>persen diskon</b> (1–99, mis. <code>10</code>).",

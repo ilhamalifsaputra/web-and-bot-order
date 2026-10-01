@@ -5,6 +5,7 @@
  */
 import { Decimal } from "@app/core/money";
 import { ensureUtc, addDays } from "@app/core/datetime";
+import { PLAN_LABEL_MAX_CHARS } from "@app/core/buttonLimits";
 import {
   formatIdr,
   formatPrice,
@@ -176,12 +177,12 @@ export function mixedAmount(idr: Decimal.Value, usdt: Decimal.Value): string {
 /**
  * Default inline-button label budget (Telegram renders ~30 chars per row
  * button; keeping labels under 24 chars prevents visual clipping on most
- * devices). Exported so a caller that needs to sub-divide the budget between
- * two segments of one label (e.g. a name segment and a price segment) can
- * reference the same number `truncLabel`'s own default uses, rather than
- * duplicating the literal `24`.
+ * devices). The number lives in `@app/core/buttonLimits` (`PLAN_LABEL_MAX_CHARS`) next to the other
+ * button limits, which the admin panel also reads; exported here so a caller that needs to sub-divide the
+ * budget between two segments of one label (e.g. a name segment and a price segment) can reference
+ * the same number `truncLabel`'s own default uses, rather than duplicating the literal `24`.
  */
-export const BUTTON_LABEL_MAX = 24;
+export const BUTTON_LABEL_MAX = PLAN_LABEL_MAX_CHARS;
 
 /**
  * Truncate a string to `max` characters with a trailing ellipsis so it fits

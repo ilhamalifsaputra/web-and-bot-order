@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor, within, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -507,5 +507,35 @@ describe("ProductDetailPage", () => {
     await waitFor(() => expect(screen.getByText("Private")).toBeInTheDocument());
 
     expect(screen.getByRole("button", { name: "Apps" })).toBeInTheDocument();
+  });
+});
+
+describe("ProductDetailPage Telegram button hints", () => {
+  it("hints Name, Game Variant and Game Region in the edit form, and an over-budget name still saves", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const detail = { ...PRODUCT_DETAIL, product: { ...PRODUCT_DETAIL.product, gameVariant: "Diamonds", gameVariantEmoji: "💎", gameRegion: "Global" } };
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      const body = url.startsWith("/api/catalog/1") && !init?.method ? detail : { ok: true };
+      return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+    render(<ProductDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Private")).toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: /edit product/i }));
+
+    // CapCut Pro = 10 cells of 30; Diamonds = 8 of 15 (a variant emoji is set); Global = 6 of 18.
+    expect(screen.getAllByTestId("button-label-counter").map((el) => el.textContent)).toEqual(["10/30", "8/15", "6/18"]);
+    expect(screen.getAllByText(/Shown on the Telegram/)).toHaveLength(3);
+
+    const longName = "CapCut Pro Supplier Name That Is Far Too Long For One Button";
+    const nameInput = screen.getByDisplayValue("CapCut Pro");
+    fireEvent.change(nameInput, { target: { value: longName } });
+    expect(screen.getAllByTestId("button-label-counter")[0]).toHaveAttribute("data-state", "over");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(fetchSpy).toHaveBeenCalledWith("/api/catalog/products/1", expect.objectContaining({ method: "PATCH" })),
+    );
+    const patch = fetchSpy.mock.calls.find(([url, init]) => url === "/api/catalog/products/1" && (init as RequestInit)?.method === "PATCH")!;
+    expect(JSON.parse(String((patch[1] as RequestInit).body))).toMatchObject({ name: longName });
   });
 });

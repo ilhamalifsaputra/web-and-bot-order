@@ -492,6 +492,34 @@ any new stock/capacity-style progress bar unless there's a specific reason to di
 
 ---
 
+## Input for Telegram button text (ButtonLabelInput)
+
+**File:** `components/shared/ButtonLabelInput.tsx`
+**Purpose:** the `Input` to use for any field whose value is shown on a Telegram inline-keyboard button
+(product, category, denomination/plan, game variant/region, quantity unit).
+
+```ts
+interface ButtonLabelInputProps extends InputProps {
+  kind: "productList" | "category" | "gameVariant" | "gameRegion" | "denominationPlan" | "denominationGame" | "qtyUnit";
+  currency?: "IDR" | "USD"; // omitted = the wider one
+  emoji?: boolean;          // an emoji is shown in front (category, variant)
+  productName?: string;     // denominationGame: the bot drops it from the start of the name, so it is not counted
+  builtFromQuantity?: boolean; // denominationGame: quantity and unit are both filled, so the button is built from them
+}
+```
+
+Renders the input plus a one-line hint (where the text appears, the budget) linked with `aria-describedby`, and
+a `used/budget` counter in cells (emoji and CJK count 2). Over the budget the counter and a short explanation turn
+`amberx`; only that explanation sits in an `aria-live="polite"` region, so crossing the limit is announced but a
+keystroke is not. The limit is soft (never `maxLength`, never blocks saving). For a Game Top-Up denomination name
+(`denominationGame`) pass `productName` (the bot drops the game name from the start of the name, so the counter
+measures what is left, via `nameAfterProductPrefix`) and `builtFromQuantity` (quantity and unit both set: a neutral
+note replaces the counter and warning, because the button is then built from them). The budgets come from
+`lib/buttonLimits.ts`, a byte-identical copy of `packages/core/src/buttonLimits.ts` (the client cannot import
+`@app/core`; a core test fails when the copy drifts). Do not write per-page hint text.
+
+---
+
 ## Table (primitive)
 
 **File:** `components/ui/table.tsx`

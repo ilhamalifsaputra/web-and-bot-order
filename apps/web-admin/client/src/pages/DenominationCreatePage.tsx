@@ -4,6 +4,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { PageLayout } from "../components/shared/PageLayout";
 import { PageHeader } from "../components/shared/PageHeader";
 import { DeliveryTypeSection } from "../components/shared/DeliveryTypeSection";
+import { ButtonLabelInput } from "../components/shared/ButtonLabelInput";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -39,6 +40,8 @@ interface ProductForBreadcrumb {
   product: {
     id: number;
     name: string;
+    /** Decides which Telegram button the denomination text lands on (Game Top Up vs Premium Apps). */
+    category?: { group: string | null } | null;
   };
 }
 
@@ -54,6 +57,9 @@ function useParentProduct(productId: string | undefined) {
     // Fallback while loading (or if the fetch hasn't resolved yet): the
     // product id, not a hardcoded generic "Product" label.
     name: data?.product.name ?? `Product #${productId ?? "?"}`,
+    /** The real name once loaded (the fallback above is not a name the bot would ever strip). */
+    loadedName: data?.product.name,
+    isGame: data?.product.category?.group === "GAME_TOPUP",
   };
 }
 
@@ -61,7 +67,7 @@ export function DenominationCreatePage() {
   const { productId } = useParams<{ productId: string }>();
   const navigate = useNavigate();
   const qc = useQueryClient();
-  const { name: productName } = useParentProduct(productId);
+  const { name: productName, loadedName, isGame } = useParentProduct(productId);
   const [name, setName] = useState("");
   const [type, setType] = useState<string | null>(null);
   const [durationLabel, setDurationLabel] = useState("");
@@ -137,24 +143,51 @@ export function DenominationCreatePage() {
           <label className="text-sm font-medium text-ink">
             Name <span className="text-rust">*</span>
           </label>
-          <Input
-            className="mt-1"
-            placeholder="e.g. Netflix Premium"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-          />
+          {isGame ? (
+            <ButtonLabelInput
+              kind="denominationGame"
+              productName={loadedName}
+              builtFromQuantity={qtyValue.trim() !== "" && qtyUnit.trim() !== ""}
+              className="mt-1"
+              placeholder="e.g. Netflix Premium"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+            />
+          ) : (
+            <Input
+              className="mt-1"
+              placeholder="e.g. Netflix Premium"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+            />
+          )}
         </div>
 
         <div>
           <label className="text-sm font-medium text-ink">
             Duration Label <span className="text-rust">*</span>
           </label>
-          <Input
-            className="mt-1"
-            placeholder="e.g. 1 Month"
-            value={durationLabel}
-            onChange={(e) => setDurationLabel(e.target.value)}
-          />
+          {isGame ? (
+            <>
+              <Input
+                className="mt-1"
+                placeholder="e.g. 1 Month"
+                value={durationLabel}
+                onChange={(e) => setDurationLabel(e.target.value)}
+              />
+              <p data-testid="duration-label-game-hint" className="mt-1 text-xs text-ink-soft">
+              Game Top Up: this reaches the Telegram button only when it differs from the Name, and is then added after the quantity. Keep it short.
+            </p>
+            </>
+          ) : (
+            <ButtonLabelInput
+              kind="denominationPlan"
+              className="mt-1"
+              placeholder="e.g. 1 Month"
+              value={durationLabel}
+              onChange={(e) => setDurationLabel(e.target.value)}
+            />
+          )}
         </div>
 
         {/* Compact-button quantity (Task 8/14) — optional, powers the bot's
@@ -172,14 +205,24 @@ export function DenominationCreatePage() {
               onChange={(e) => setQtyValue(e.target.value)}
             />
           </div>
-          <div>
+          <div className="min-w-0 flex-1">
             <label className="block text-sm font-medium text-ink">Quantity Unit</label>
-            <Input
-              className="mt-1"
-              placeholder="e.g. Diamonds"
-              value={qtyUnit}
-              onChange={(e) => setQtyUnit(e.target.value)}
-            />
+            {isGame ? (
+              <ButtonLabelInput
+                kind="qtyUnit"
+                className="mt-1"
+                placeholder="e.g. Diamonds"
+                value={qtyUnit}
+                onChange={(e) => setQtyUnit(e.target.value)}
+              />
+            ) : (
+              <Input
+                className="mt-1"
+                placeholder="e.g. Diamonds"
+                value={qtyUnit}
+                onChange={(e) => setQtyUnit(e.target.value)}
+              />
+            )}
           </div>
         </div>
 

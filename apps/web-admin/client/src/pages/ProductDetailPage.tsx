@@ -7,6 +7,7 @@ import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { ImageUploadField } from "../components/shared/ImageUploadField";
+import { ButtonLabelInput } from "../components/shared/ButtonLabelInput";
 import { StatusBadge } from "../components/shared/StatusBadge";
 import { RestockRequestsHeader } from "../components/shared/RestockRequestsHeader";
 import { Button } from "@/components/ui/button";
@@ -374,7 +375,7 @@ export function ProductDetailPage() {
             </div>
             <div>
               <label className="text-sm font-medium text-ink">Name</label>
-              <Input className="mt-1" value={nameDraft} onChange={(e) => setNameDraft(e.target.value)} />
+              <ButtonLabelInput kind="productList" className="mt-1" value={nameDraft} onChange={(e) => setNameDraft(e.target.value)} />
             </div>
             <div>
               <label className="text-sm font-medium text-ink">Description</label>
@@ -429,7 +430,9 @@ export function ProductDetailPage() {
                 game top-up products (e.g. Mobile Legends' Diamonds variant). */}
             <div>
               <label className="text-sm font-medium text-ink">Game Variant</label>
-              <Input
+              <ButtonLabelInput
+                kind="gameVariant"
+                emoji={gameVariantEmojiDraft.trim() !== ""}
                 className="mt-1"
                 placeholder="e.g. Diamonds"
                 value={gameVariantDraft}
@@ -447,7 +450,8 @@ export function ProductDetailPage() {
             </div>
             <div>
               <label className="text-sm font-medium text-ink">Game Region</label>
-              <Input
+              <ButtonLabelInput
+                kind="gameRegion"
                 className="mt-1"
                 placeholder="e.g. Global"
                 value={gameRegionDraft}

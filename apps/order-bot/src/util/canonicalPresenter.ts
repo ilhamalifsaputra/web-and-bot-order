@@ -39,10 +39,14 @@ function compactPrice(product: CanonicalProduct, locale: string): string {
 function collapse(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
+// Only Game Top-Up is tidied; every other group (Premium Apps, unclassified) keeps its name exactly as before.
+const tidyName = (product: CanonicalProduct): string => product.category.group === "GAME_TOPUP" ? collapse(product.displayName) : product.displayName;
 export function canonicalName(product: CanonicalProduct): string {
-  // Only Game Top-Up is tidied; every other group (Premium Apps, unclassified) keeps its name exactly as before.
-  const name = product.category.group === "GAME_TOPUP" ? collapse(product.displayName) : product.displayName;
-  return [name, ...product.qualifiers].join(" · ");
+  return [tidyName(product), ...product.qualifiers].join(" · ");
+}
+/** `canonicalName` for a catalog body block: the list header already names the product, so a region/variant its name states is left out. */
+function catalogBodyName(product: CanonicalProduct): string {
+  return [tidyName(product), ...notInProductName(product, product.qualifiers)].join(" · ");
 }
 
 /** Oversized names are delivered in full before the interactive summary references their ID. */
@@ -66,7 +70,7 @@ interface Shape {
   main: string;
   /** Free text the parser could not place (shown on the button, explained in the body). */
   leftover: string[];
-  /** Product-level region/variant this item carries, whether still in `qualifiers` or spelled in its own name. */
+  /** Product-level region/variant this item carries (whether still in `qualifiers` or spelled in its own name) that the product name does not already state. */
   quals: string[];
   /** True when the name ends in a supplier-style spaced " - X" segment (no digit in X) that is not one of the product's own qualifiers. */
   conflict: boolean;
@@ -77,6 +81,17 @@ interface Shape {
 function spacedHyphenTail(text: string): string | null {
   const match = text.match(/(?:^|\s)-\s+([^-]*)$/);
   return match && !/\d/.test(match[1]!) ? match[1]! : null;
+}
+/**
+ * `quals` without those the product's own name already states ("Indonesia" for "Valorant (Indonesia)"): every token of
+ * the qualifier is a token of the name. The intro and header name the product, so repeating it would only add noise;
+ * a qualifier only partly in the name ("South East Asia" for "Game (Asia)") is not stated and stays.
+ * Presenter-only: core's `qualifiers` (website, detail screens) keep listing it.
+ */
+function notInProductName(product: CanonicalProduct, quals: string[]): string[] {
+  if (product.category.group !== "GAME_TOPUP") return quals;
+  const nameTokens = new Set(tokenKey(product.product.name).split(" "));
+  return quals.filter((q) => { const tokens = tokenKey(q).split(" "); return !tokens.every((token) => token !== "" && nameTokens.has(token)); });
 }
 /** `keep`: qualifier keys that must stay spelled on the item's own label instead of being lifted (see `shapesOf`). */
 function shape(product: CanonicalProduct, keep: ReadonlySet<string> = new Set()): Shape {
@@ -97,7 +112,7 @@ function shape(product: CanonicalProduct, keep: ReadonlySet<string> = new Set())
         if (spacedHyphenTail(segment) !== null) conflict = true;
       }
     }
-    return { main: "", leftover, quals, conflict, lifted };
+    return { main: "", leftover, quals: notInProductName(product, quals), conflict, lifted };
   }
   let main = collapse(variant.name);
   // Only a trailing "- Garena" / "(Global)" segment that equals a known qualifier is lifted; inner words stay.
@@ -105,7 +120,7 @@ function shape(product: CanonicalProduct, keep: ReadonlySet<string> = new Set())
   const q = tail ? qualifierFor(tail[2] ?? tail[3]!) : undefined;
   if (tail && q) { lifted.push({ key: tokenKey(q), text: main.slice(tail[1]!.length).trim() }); main = tail[1]!; addQual(q); }
   const hyphenTail = spacedHyphenTail(collapse(variant.name));
-  return { main, leftover: variant.residual.map(collapse), quals, conflict: hyphenTail !== null && !(q && tail && tail[2] !== undefined), lifted };
+  return { main, leftover: variant.residual.map(collapse), quals: notInProductName(product, quals), conflict: hyphenTail !== null && !(q && tail && tail[2] !== undefined), lifted };
 }
 /**
  * Shapes for one list. A qualifier that some items spell themselves and others merely inherit from the
@@ -430,7 +445,7 @@ export function presentCanonicalCatalog(products: CanonicalProduct[], context: {
   }
   for (const entry of entries) {
     const prefix = `#${entry.product.id} · ${esc(entry.product.formattedPrice)}${entry.stock !== undefined ? ` (${locale.startsWith("id") ? "Stok" : "Stock"} ${esc(entry.stock)})` : ""}\n`;
-    const chunks = entry.explain ? escapedChunks(context.bodyName ?? canonicalName(entry.product), 2800 - prefix.length - Math.max(firstHeader.length, laterHeader.length)) : [""];
+    const chunks = entry.explain ? escapedChunks(context.bodyName ?? catalogBodyName(entry.product), 2800 - prefix.length - Math.max(firstHeader.length, laterHeader.length)) : [""];
     for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
       const block = entry.explain ? `${prefix}${chunks[chunkIndex]}\n\n` : "";
       // Budget for the longer header: the flush below may move this block onto a page with the other one.

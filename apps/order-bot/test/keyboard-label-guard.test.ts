@@ -62,10 +62,12 @@ const SHAPES: Record<string, (i: number) => Fixture> = {
 };
 // 1, 2, 19, 20, 21 (page boundary), 61 and 83 (several pages; odd and even).
 const COUNTS = [1, 2, 19, 20, 21, 61, 83];
-const QUALIFIERS: Array<{ label: string; gameRegion: string | null; gameVariant: string | null }> = [
+const QUALIFIERS: Array<{ label: string; gameRegion: string | null; gameVariant: string | null; /** The product's name, when it differs from the default (a name that already states its region). */ productName?: string }> = [
   { label: "none", gameRegion: null, gameVariant: null },
   { label: "region", gameRegion: "Indonesia", gameVariant: null },
   { label: "region and long variant", gameRegion: "Global", gameVariant: "Limited Special Collaboration Edition Pack" },
+  { label: "region the product name states", gameRegion: "Indonesia", gameVariant: null, productName: "Mobile Legends (Indonesia)" },
+  { label: "region the product name states, plus a variant it does not", gameRegion: "Indonesia", gameVariant: "Global", productName: "MOBILE LEGENDS (Indonesia)" },
 ];
 const CURRENCIES: Currency[] = ["IDR", "USD"];
 const LOCALES = ["id", "en"] as const;
@@ -76,7 +78,7 @@ function build(fixture: Fixture, currency: Currency, locale: string, qualifiers:
       id: fixture.id, name: fixture.name, durationLabel: fixture.name, supplierRawName: fixture.name, supplierSku: `sku-${fixture.id}`, autoDeliverySource: "digiflazz", isActive: true,
       ...(fixture.qty ? { qtyValue: fixture.qty[0], qtyUnit: fixture.qty[1] } : {}),
     },
-    product: { id: PRODUCT_ID, name: "Mobile Legends", isActive: true, gameRegion: qualifiers.gameRegion, gameVariant: qualifiers.gameVariant },
+    product: { id: PRODUCT_ID, name: qualifiers.productName ?? "Mobile Legends", isActive: true, gameRegion: qualifiers.gameRegion, gameVariant: qualifiers.gameVariant },
     category: { id: 1, name: "Top Up", group: "GAME_TOPUP", isActive: true },
   }, { effectivePriceIDR: fixture.price, preferredCurrency: currency, rate: "16000", locale });
 }
@@ -184,6 +186,23 @@ describe("keyboard label guard: hostile matrix through presenter and picker keyb
     for (const currency of CURRENCIES) for (const locale of LOCALES) {
       const found = violations(fixtures.map((fixture) => build(fixture, currency, locale, QUALIFIERS[1]!)), locale);
       expect(found, found.slice(0, 8).join("\n")).toEqual([]);
+    }
+  });
+
+  it("states a region the product name already spells nowhere else: not on a button, a header or a body block, on every page", () => {
+    const [stated, withVariant] = [QUALIFIERS[3]!, QUALIFIERS[4]!];
+    for (const locale of LOCALES) for (const currency of CURRENCIES) {
+      const plain = Array.from({ length: 83 }, (_, i) => build(SHAPES.plainAmounts!(i), currency, locale, stated));
+      for (const { page, rows } of render(plain, locale)) {
+        expect(page.text, page.text).not.toMatch(/·\s*Indonesia/);
+        for (const button of rows.flat()) expect(button.text).not.toContain("Indonesia");
+      }
+      const variant = Array.from({ length: 83 }, (_, i) => build(SHAPES.plainAmounts!(i), currency, locale, withVariant));
+      for (const { page, rows } of render(variant, locale)) {
+        expect(page.text, page.text).not.toMatch(/·\s*Indonesia/);
+        expect(page.text).toContain("Global");
+        for (const button of rows.flat()) expect(button.text).not.toContain("Indonesia");
+      }
     }
   });
 

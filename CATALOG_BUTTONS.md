@@ -53,6 +53,12 @@ File utama: `apps/order-bot/src/util/canonicalPresenter.ts` (presenter), `packag
 - **Qualifier dihapus bila sudah tertulis di nama** (`Garena` tidak dua kali), dan header bersama hanya dipakai bila
   seluruh daftar benar-benar berbagi qualifier itu. Seri campuran (`- Garena` pada sebagian SKU) tetap
   dibedakan per tombol.
+- **Qualifier yang sudah tertulis di nama produk tidak diulang sama sekali.** Region/variant yang seluruh token-nya
+  sudah ada di nama produk (`Indonesia` pada `Valorant (Indonesia)`; token utuh, huruf besar-kecil, tanda kurung dan
+  strip diabaikan) tidak muncul di tombol, baris header bersama, header halaman 2+, maupun blok penjelasan `#id`.
+  Qualifier yang hanya sebagian ada di nama (`South East Asia` pada `Game (Asia)`) atau berbeda dari nama
+  (`Indonesia` pada `Valorant (Malaysia)`) tetap ditampilkan. Ini murni aturan presenter: `qualifiers` di core tidak
+  berubah, jadi toko web dan layar detail/konfirmasi tetap menampilkan region.
 - **Urutan langkah bila label tidak muat** (berhenti di langkah pertama yang muat **dan** unik dalam daftar):
   bentuk compact/ikon, bentuk lengkap, nama saja, unit milik jumlah itu menjadi ikon (satu frasa saja), singkatan,
   kata unit yang sudah dinyatakan kepala jumlah dibuang, qualifier akhir `- Garena` / `(Global)` dibuang, kata
@@ -227,7 +233,7 @@ dikerjakan **satu branch per item**, berurutan.
 | Branch | Isi | Status |
 |---|---|---|
 | `price-format-by-language` | Picker memakai pemformat harga sadar-bahasa seperti layar detail/konfirmasi (sebelumnya picker memakai format tetap `Rp4.480` / `$0.28`). Dampak: untuk pembeli berbahasa Inggris, baris harga picker Premium menjadi `Rp30,000`; pembeli id tidak berubah | menunggu |
-| `region-dedupe-header` | Region yang sudah ada di nama produk (`Valorant (Indonesia)`) tidak diulang di tombol dan header halaman 2 | menunggu |
+| `region-dedupe-header` | Region yang sudah ada di nama produk (`Valorant (Indonesia)`) tidak diulang di tombol, header bersama, header halaman 2+, dan blok penjelasan. Hanya presenter yang berubah (Game Top-Up saja); `qualifiers` core tidak berubah. Sapuan atas snapshot nyata (15 produk, 10 skenario region/variant sintetis, 600 daftar, 9.460 tombol, versi master vs HEAD): skenario tanpa qualifier 0 perubahan; 1.060 label berubah dan semuanya hanya kehilangan qualifier yang sudah ada di nama (960) atau kini menampilkan satu-satunya qualifier yang belum ada di nama karena sudah muat (100, sebelumnya semua qualifier dibuang demi lebar); 0 label lebih buruk, tidak ada callback/urutan berubah, semua label unik dan dalam batas lebar | selesai |
 | `back-page-reply-kb` | Back dari picker atau detail tunggal lewat keyboard balasan kembali ke halaman daftar produk asal (sebelumnya selalu halaman 0), sama seperti Back inline; halaman di luar jangkauan dipangkas ke halaman terakhir yang valid. Premium Apps memakai jalur kode yang sama dan tidak berubah; spesifikasi §9 | selesai |
 | `storage-api-dbbytes` | Ukuran database dari Postgres (`pg_database_size` lewat helper di `packages/db/src/crud`), bukan file SQLite; tes `storage-api` lulus lagi dan suite tanpa kegagalan yang diketahui | selesai |
 | `dictionary-prune-abbrevs` | Hapus Premium, Membership, Subscription dari singkatan (tersisa Genesis, Package, Weekly, Monthly). Sapuan atas snapshot nyata (232 label GAME_TOPUP, harga sintetis): 0 label berubah, karena tidak ada nama snapshot yang memakai singkatan yang dihapus; label sintetis `Weekly Premium Subscription Package` berubah dari `Wkly Prem Sub Pkg` menjadi `Wkly… Subscription Pkg` (dipotong, bukan disingkat) | selesai |

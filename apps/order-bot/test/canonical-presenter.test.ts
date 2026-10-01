@@ -754,3 +754,85 @@ describe("Game Top-Up labels keep the START of a name that fits whole without th
     expect(text).not.toMatch(/(^|\s)…/);
   });
 });
+
+describe("a qualifier the product name already states is not repeated", () => {
+  const valorant = { name: "Valorant (Indonesia)", gameRegion: "Indonesia" };
+  const vp = (opts: Opts = {}) => [make(1, "Valorant 1.000 VP", { price: "150000", ...opts, product: valorant }), make(2, "Valorant 2.000 VP", { price: "300000", ...opts, product: valorant })];
+  const many = (product: NonNullable<Opts["product"]>, count = 45) => Array.from({ length: count }, (_, i) => make(i + 1, `${i + 1} Diamonds`, { product }));
+  const bodyOf = (result: ReturnType<typeof presentCanonicalCatalog>) => result.pages.map((page) => page.text).join("\n");
+
+  it("keeps the region off every button and out of the header when the product name spells it", () => {
+    const result = presentCanonicalCatalog(vp(), { intro: "Pilih nominal Valorant (Indonesia)" });
+    expect(labels(result)).toEqual(["1000 VP · Rp150K", "2000 VP · Rp300K"]);
+    expect(result.pages[0]!.text).toBe("Pilih nominal Valorant (Indonesia)\n\n");
+    // Without the intro the header names the product once and nothing else.
+    expect(presentCanonicalCatalog(vp()).pages[0]!.text).toBe("Valorant (Indonesia)\n\n");
+  });
+  it("never writes 'Name · Region' on a later page of a long list", () => {
+    const result = presentCanonicalCatalog(many(valorant), { intro: "Pilih nominal Valorant (Indonesia)" });
+    expect(result.pages).toHaveLength(3);
+    for (const page of result.pages.slice(1)) expect(page.text).toBe("Valorant (Indonesia)\n\n");
+    expect(labels(result).join(" ")).not.toContain("Indonesia");
+    const upper = presentCanonicalCatalog(many({ name: "MOBILE LEGENDS (Indonesia)", gameRegion: "Indonesia" }), { intro: "Pilih nominal" });
+    for (const page of upper.pages) expect(page.text).not.toMatch(/\) · Indonesia/);
+    for (const page of upper.pages.slice(1)) expect(page.text).toBe("MOBILE LEGENDS (Indonesia)\n\n");
+  });
+  it("does not repeat it in a body block either", () => {
+    const result = presentCanonicalCatalog([make(1, "Valorant 1.000 VP", { price: "150000", product: valorant }), make(2, "Valorant 2.000 VP", { price: "300000", product: valorant })], { stockLabels: { 2: "5" } });
+    const body = bodyOf(result);
+    expect(body).toContain("#2 · Rp300.000 (Stok 5)\n2000 VP\n");
+    expect(body).not.toMatch(/·\s*Indonesia/);
+  });
+  it("shows only the qualifier the name does not state when region and variant are both set", () => {
+    const mlbb = { name: "MOBILE LEGENDS (Indonesia)", gameRegion: "Indonesia", gameVariant: "Global" };
+    const result = presentCanonicalCatalog(many(mlbb, 3), { intro: "Pilih nominal MOBILE LEGENDS (Indonesia)" });
+    expect(result.pages[0]!.text).toBe("Pilih nominal MOBILE LEGENDS (Indonesia)\n\nGlobal\n\n");
+    expect(labels(result)).toEqual(["1 💎 · Rp21K", "2 💎 · Rp21K", "3 💎 · Rp21K"]);
+    expect(presentCanonicalCatalog(many(mlbb, 3)).pages[0]!.text).toBe("MOBILE LEGENDS (Indonesia) · Global\n\n");
+  });
+  it("keeps a qualifier the name does not state, shared or per item (Delta Force / Garena)", () => {
+    const shared = presentCanonicalCatalog([make(1, "Delta Force 18 Delta Coins", { price: "5000", product: deltaForce }), make(2, "Delta Force 60 Delta Coins", { price: "15000", product: deltaForce })]);
+    expect(shared.pages[0]!.text).toBe("Delta Force · Garena\n\n");
+    const mixed = presentCanonicalCatalog([make(1, "Delta Force 18 Delta Coins - Garena", { price: "5000", product: deltaForce }), make(2, "Delta Force 18 Delta Coins - Tencent", { price: "5000", product: deltaForce })]);
+    expect(labels(mixed).join(" ")).toContain("Tencent");
+    expect(labels(mixed).join(" ")).toContain("Garena");
+  });
+  it("keeps a qualifier only partly contained in the name (South East Asia vs Game (Asia))", () => {
+    const partial = { name: "Game (Asia)", gameRegion: "South East Asia" };
+    expect(presentCanonicalCatalog(many(partial, 3), { intro: "Pilih nominal Game (Asia)" }).pages[0]!.text).toBe("Pilih nominal Game (Asia)\n\nSouth East Asia\n\n");
+    const later = presentCanonicalCatalog(many(partial), { intro: "x" });
+    for (const page of later.pages.slice(1)) expect(page.text).toBe("Game (Asia) · South East Asia\n\n");
+    // A superset of the name's words does not count either: "Asia Pacific" is not stated by "(Asia)".
+    expect(presentCanonicalCatalog(many({ name: "Game (Asia)", gameRegion: "Asia Pacific" }, 2)).pages[0]!.text).toBe("Game (Asia) · Asia Pacific\n\n");
+  });
+  it("keeps a region that differs from the one in the name", () => {
+    expect(presentCanonicalCatalog(many({ name: "Valorant (Malaysia)", gameRegion: "Indonesia" }, 2)).pages[0]!.text).toBe("Valorant (Malaysia) · Indonesia\n\n");
+  });
+  it("compares whole tokens, ignoring case, brackets and dashes", () => {
+    for (const name of ["Valorant - INDONESIA", "valorant [indonesia]", "Valorant (Indonesia Server)"]) {
+      expect(presentCanonicalCatalog(many({ name, gameRegion: "indonesia" }, 2)).pages[0]!.text).toBe(`${name}\n\n`);
+    }
+    // A word that merely starts with the qualifier is not the qualifier.
+    expect(presentCanonicalCatalog(many({ name: "Valorant Indonesian Edition", gameRegion: "Indonesia" }, 2)).pages[0]!.text).toBe("Valorant Indonesian Edition · Indonesia\n\n");
+  });
+  it("still lifts a SKU's own '- Indonesia' tail without showing the region anywhere", () => {
+    const result = presentCanonicalCatalog([make(1, "Valorant 1.000 VP - Indonesia", { price: "150000", product: valorant }), make(2, "Valorant 2.000 VP", { price: "300000", product: valorant })]);
+    expect(labels(result)).toEqual(["1000 VP · Rp150K", "2000 VP · Rp300K"]);
+    expect(result.pages[0]!.text).toBe("Valorant (Indonesia)\n\n");
+  });
+  it("gives the same text in both locales and currencies, with unique labels, unchanged callbacks and the core qualifiers untouched", () => {
+    const baseline = presentCanonicalCatalog(vp({ locale: "id" }), { locale: "id" });
+    for (const [locale, currency] of [["en", "IDR"], ["id", "USD"], ["en", "USD"]] as const) {
+      const result = presentCanonicalCatalog(vp({ locale, currency }), { locale });
+      expect(result.pages.map((page) => page.text)).toEqual(baseline.pages.map((page) => page.text));
+      for (const text of labels(result)) {
+        expect(text).not.toContain("Indonesia");
+        expect(visualWidth(text)).toBeLessThanOrEqual(MAX_LABEL_WIDTH);
+      }
+      expect(new Set(labels(result)).size).toBe(2);
+      expect(result.pages[0]!.rows.flat().map((b) => b.callback_data)).toEqual(["v1:browse:denom:1", "v1:browse:denom:2"]);
+    }
+    // The website and detail screens still read the region from core.
+    expect(vp()[0]!.qualifiers).toEqual(["Indonesia"]);
+  });
+});

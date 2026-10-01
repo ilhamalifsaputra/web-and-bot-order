@@ -283,7 +283,7 @@ describe("canonical Telegram label candidates", () => {
     const name = "Long Seasonal Collector Pass Edition";
     const result = presentCanonicalCatalog([make(17, name, { price: "20001" }), make(18, name, { price: "20002" })]);
     // Both still collide after the width fallback, so the ID tells them apart; the body carries the full name and exact price.
-    expect(labels(result)).toEqual(["…Pass Edition · Rp20K #17", "…Pass Edition · Rp20K #18"]);
+    expect(labels(result)).toEqual(["Long… Pass Edition · Rp20K #17", "Long… Pass Edition · Rp20K #18"]);
     expect(result.pages[0]!.text).toContain(`#17 · Rp20.001\n${name}`);
     expect(result.pages[0]!.text).toContain(`#18 · Rp20.002\n${name}`);
   });
@@ -300,8 +300,12 @@ describe("canonical Telegram label candidates", () => {
     expect(labels(shared)).toEqual(["Black Hawk Down Redefine · Rp150K", "18 🪙 · Rp5K"]);
     // Unknown items still get their exact name and price in the body.
     expect(shared.pages[0]!.text).toContain("#30025111 · Rp150.000\nBlack Hawk Down Redefine - Garena");
-    const usd = presentCanonicalCatalog([make(1, raw, { price: "150000", currency: "USD", product: { name: "Delta Force", gameVariant: null } })]);
-    expect(labels(usd)).toEqual(["…Down Redefine - Garena · $9,38"]);
+    // A lone SKU whose product never declared "Garena" keeps the qualifier and its first word; the middle goes behind one ellipsis.
+    const unlisted = presentCanonicalCatalog([make(1, raw, { price: "150000", currency: "USD", product: { name: "Delta Force", gameVariant: null } })]);
+    expect(labels(unlisted)).toEqual(["Black… Redefine - Garena · $9,38"]);
+    expect(unlisted.pages[0]!.text).toContain("#1 · $9,38\nBlack Hawk Down Redefine - Garena");
+    // When the product declares it, the header states it once and the button keeps the whole name (spec: "Black Hawk Down Redefine · $4.78").
+    expect(labels(presentCanonicalCatalog([make(1, raw, { price: "150000", currency: "USD", product: deltaForce })]))).toEqual(["Black Hawk Down Redefine · $9,38"]);
   });
   it("puts each fallback item's name and price on the same page as its button", () => {
     const products = Array.from({ length: 21 }, (_, i) => make(i + 1, `${i + 1} Diamonds`, { price: "20000" }));
@@ -312,8 +316,8 @@ describe("canonical Telegram label candidates", () => {
     const last = result.pages[1]!;
     const [amount, shortened] = last.rows.flat().map((b) => b.text);
     expect(amount).toBe("21 💎 · Rp20K");
-    // The name's end survives behind one ellipsis, and the full name stays in the body below.
-    expect(shortened).toMatch(/^…(?:long words )*(?:long )?words · Rp20K$/);
+    // The first word and the end survive behind one ellipsis, and the full name stays in the body below.
+    expect(shortened).toMatch(/^Mystery… (?:long )?words · Rp20K$/);
     expect(visualWidth(shortened!)).toBeLessThanOrEqual(MAX_LABEL_WIDTH);
     expect(last.text).toContain("#122 · Rp20.000\nMystery");
     expect(result.pages[0]!.text).not.toContain("#122");
@@ -510,12 +514,14 @@ describe("Game Top-Up buttons for a product with reordered, bonus-including and 
     // Genesis Crystals, Primogems and Crystals share one icon in this list, so their amounts stay spelled out.
     for (const id of [663, 669, 673, 677, 678, 679]) expect(labelsById.get(id), String(id)).not.toContain("💎");
   });
-  it("swaps a too-wide bundle's unit words for their icon and keeps its distinguishing number", () => {
+  it("shortens a too-wide bundle without icons, keeping its first word and its distinguishing number", () => {
     const result = presentCanonicalCatalog(list("USD", "id"), { locale: "id" });
     const labelsById = byId(result);
-    expect(labelsById.get(680)).toBe("💎 Bundle 8.000 💎 · $125,00");
-    expect(labelsById.get(681)).toBe("💎 Bundle 9.000 💎 · $140,63");
-    expect(labelsById.get(682)).toBe("💎 Bundle 10.000 💎 · $156,25");
+    expect(labelsById.get(680)).toBe("Gen… 8.000 Crystals · $125,00");
+    expect(labelsById.get(681)).toBe("Gen… 9.000 Crystals · $140,63");
+    expect(labelsById.get(682)).toBe("Gen… 10.000 Crystals · $156,25");
+    // Crystals, Primogems and Genesis Crystals share one icon in this list, so no bundle button may use it (nor print it twice).
+    for (const id of [680, 681, 682]) expect(labelsById.get(id), String(id)).not.toContain("💎");
     // The body still explains each of them with its full name and exact price, on the page that holds the button.
     const page = result.pages.find((p) => p.rows.flat().some((b) => b.callback_data.endsWith(":680")))!;
     expect(page.text).toContain("#680 · $125,00\nGenesis Crystals Bundle 8.000 Crystals");
@@ -546,7 +552,7 @@ describe("Game Top-Up button fallback chain before a bare ID", () => {
     expect(texts([item(1, at)])).toEqual([`${at} · Rp1M`]);
     const over = texts([item(1, `${at}x`)]);
     expect(over[0]).not.toBe(`${at}x · Rp1M`);
-    expect(over[0]).toMatch(/^…/);
+    expect(over[0]).toMatch(/^Alpha… /);
     expect(visualWidth(over[0]!)).toBeLessThanOrEqual(MAX_LABEL_WIDTH);
   });
   it("abbreviates long words only when the label does not fit, and never makes two SKUs identical", () => {
@@ -559,25 +565,34 @@ describe("Game Top-Up button fallback chain before a bare ID", () => {
     expect(result.pages[0]!.text).toContain("#2 · Rp1.000.000\nWeekly Premium Subscription Pkg Bonus");
     expect(texts([item(1, "Weekly Premium Subscription Package")])).toEqual(["Wkly Prem Sub Pkg · Rp1M"]);
   });
-  it("keeps the END of a long name behind one ellipsis, with the price intact and the full name in the body", () => {
+  it("keeps the first word and the END of a long name behind one ellipsis, with the price intact and the full name in the body", () => {
     const products = [8000, 9000, 10000].map((n, i) => item(i + 1, `Ultra Mega Collector Edition Special Pack ${n}`));
     const result = presentCanonicalCatalog(products);
     const out = labels(result);
-    expect(out).toEqual(["…Special Pack 8000 · Rp1M", "…Special Pack 9000 · Rp1M", "…Special Pack 10000 · Rp1M"]);
+    expect(out).toEqual(["Ultra… Special Pack 8000 · Rp1M", "Ultra… Special Pack 9000 · Rp1M", "Ultra… Special Pack 10000 · Rp1M"]);
     for (const text of out) expect(visualWidth(text)).toBeLessThanOrEqual(TARGET_LABEL_WIDTH);
     expect(result.pages[0]!.text).toContain("#1 · Rp1.000.000\nUltra Mega Collector Edition Special Pack 8000");
     expect(result.pages[0]!.text).toContain("#3 · Rp1.000.000\nUltra Mega Collector Edition Special Pack 10000");
     expect(result.pages[0]!.rows.flat().map((b) => b.callback_data)).toEqual(["v1:browse:denom:1", "v1:browse:denom:2", "v1:browse:denom:3"]);
   });
-  it("falls back to the bare ID only when no shortening can tell siblings apart, and explains both", () => {
+  it("tells siblings apart by the first words when the end is shared", () => {
     const result = presentCanonicalCatalog([item(1, "Alpha Series Gamma Edition Special Collector Pack Plus"), item(2, "Beta Series Gamma Edition Special Collector Pack Plus")]);
+    const [first, second] = labels(result);
+    expect(first).toMatch(/^Alpha[^…]*… .*Pack Plus · Rp1M$/);
+    expect(second).toMatch(/^Beta[^…]*… .*Pack Plus · Rp1M$/);
+  });
+  it("falls back to the bare ID only when no shortening can tell siblings apart, and explains both", () => {
+    const result = presentCanonicalCatalog([item(1, "Alpha Bravo Charlie Delta Echo Foxtrot Golf Hotel India"), item(2, "Alpha Bravo Charlie Delta Eagle Foxtrot Golf Hotel India")]);
     expect(labels(result)).toEqual(["#1", "#2"]);
-    expect(result.pages[0]!.text).toContain("#1 · Rp1.000.000\nAlpha Series Gamma Edition Special Collector Pack Plus");
-    expect(result.pages[0]!.text).toContain("#2 · Rp1.000.000\nBeta Series Gamma Edition Special Collector Pack Plus");
+    expect(result.pages[0]!.text).toContain("#1 · Rp1.000.000\nAlpha Bravo Charlie Delta Echo Foxtrot Golf Hotel India");
+    expect(result.pages[0]!.text).toContain("#2 · Rp1.000.000\nAlpha Bravo Charlie Delta Eagle Foxtrot Golf Hotel India");
+  });
+  it("cuts the start only when the first words cannot stay: a name of three words or one enormous word", () => {
+    expect(texts([item(1, "Seasonal Collector Pass", "1600000000", { currency: "USD" })])).toEqual(["…Collector Pass · $100.000,00"]);
   });
   it("never cuts inside a grapheme", () => {
     const [text] = texts([item(1, "Famille 👨‍👩‍👧‍👦 Mega Special Event Pack 👨‍👩‍👧‍👦 Gift")]);
-    expect(text).toMatch(/^….*👨‍👩‍👧‍👦 Gift · Rp1M$/u);
+    expect(text).toMatch(/^Famille… .*👨‍👩‍👧‍👦 Gift · Rp1M$/u);
     const [single] = texts([item(1, "Ünïcödé".repeat(10))]);
     expect(visualWidth(single!)).toBeLessThanOrEqual(MAX_LABEL_WIDTH);
     expect(single).toMatch(/^….+ · Rp1M$/u);
@@ -599,5 +614,101 @@ describe("Game Top-Up button fallback chain before a bare ID", () => {
   });
   it.each([["UC"], ["VP"], ["Bonds"], ["Robux"], ["Tokens"], ["Credits"], ["Points"]])("keeps %s as text", (unit) => {
     expect(texts([item(1, `${unit} 250`, "20000", { qty: [250, unit] })])).toEqual([`250 ${unit} · Rp20K`]);
+  });
+});
+
+describe("Game Top-Up icon fallback never doubles or misplaces an icon", () => {
+  const sku = (id: number, raw: string, price: string, opts: { qty?: [number, string]; product?: string; currency?: "IDR" | "USD" } = {}) => canonicalProduct({
+    denomination: { id, name: raw, durationLabel: raw, supplierRawName: raw, supplierSku: `sku-${id}`, autoDeliverySource: null, isActive: true, ...(opts.qty ? { qtyValue: opts.qty[0], qtyUnit: opts.qty[1] } : {}) },
+    product: { id: 3, name: opts.product ?? "Some Game", isActive: true, gameRegion: null, gameVariant: null },
+    category: { id: 1, name: "Top Up", group: "GAME_TOPUP", isActive: true },
+  }, { effectivePriceIDR: price, preferredCurrency: opts.currency ?? "IDR", rate: "16000", locale: "id" });
+  const iconCount = (text: string) => (text.match(/💎|🪙|🥇/gu) ?? []).length;
+
+  it("never shows the unit icon twice on an event pack that also spells the unit in its name", () => {
+    const products = Array.from({ length: 11 }, (_, i) => sku(869 + i, `Event Gift Pack ${i + 1} Diamonds`, "18000", { qty: [7 * (i + 1), "Diamonds"], product: "Mobile Legends" }));
+    const result = presentCanonicalCatalog(products);
+    const out = labels(result);
+    expect(new Set(out).size).toBe(11);
+    for (const text of out) {
+      expect(iconCount(text), text).toBeLessThanOrEqual(1);
+      expect(text, text).not.toMatch(/^#\d+$/);
+      expect(visualWidth(text), text).toBeLessThanOrEqual(MAX_LABEL_WIDTH);
+    }
+    // The icon stays where the quantity is, and the body still gives the full name.
+    expect(out[0]).toMatch(/^7 💎 Event/u);
+    expect(result.pages[0]!.text).toContain("#869 · Rp18.000\n7 Diamonds Event Gift Pack 1 Diamonds");
+  });
+  it("does not turn a literal icon plus the unit word of a combo name into two icons", () => {
+    const [text] = labels(presentCanonicalCatalog([sku(1, "💎 Diamonds 100 ✨🔥 Mega Combo 🎁", "18000")]));
+    expect(text).not.toMatch(/💎\s*💎/u);
+    expect(iconCount(text!)).toBeLessThanOrEqual(1);
+  });
+  it("keeps the words of a membership or pass name, whatever words the dictionary knows", () => {
+    const out = labels(presentCanonicalCatalog([sku(1, "Gold Ticket Monthly Membership Deluxe", "150000")]));
+    expect(iconCount(out[0]!)).toBe(0);
+    expect(out[0]).toContain("Gold");
+    expect(out[0]).toContain("Deluxe");
+    const pass = labels(presentCanonicalCatalog([sku(2, "Super Diamond Gems Premium Battle Pass Gold Season", "150000")]));
+    expect(iconCount(pass[0]!)).toBe(0);
+  });
+  it("shortens a too-wide different-unit bonus by swapping only its own unit for the icon", () => {
+    const result = presentCanonicalCatalog([sku(1, "1000 Diamonds + 100 Bonds", "1000000000", { currency: "USD" })]);
+    expect(labels(result)).toEqual(["1000 💎 + 100 Bonds · $62.500,00"]);
+    expect(result.pages[0]!.text).toContain("#1 · $62.500,00\n1000 Diamonds + 100 Bonds");
+  });
+  it("never uses the icon for a unit that must stay spelled out in the same list", () => {
+    const out = labels(presentCanonicalCatalog([sku(1, "1000 Diamonds + 100 Bonds", "1000000000", { currency: "USD" }), sku(2, "330 Crystals", "79500", { qty: [330, "Crystals"] })]));
+    for (const text of out) expect(iconCount(text), text).toBe(0);
+    expect(out[1]).toBe("330 Crystals · Rp80K");
+  });
+  it("never touches words of a bundle name and never prints the bundle's unit icon twice", () => {
+    const products = [8000, 9000, 10000].map((n, i) => sku(i + 1, `Genesis Crystals Bundle ${n} Crystals`, "2000000", { qty: [n, "Crystals"] }));
+    products.push(sku(9, "330 Primogems", "79000", { qty: [330, "Primogems"] }));
+    const out = labels(presentCanonicalCatalog(products));
+    expect(new Set(out).size).toBe(out.length);
+    for (const text of out) expect(text, text).not.toMatch(/^#\d+$/);
+    // The three bundles are not amounts: not one of their words becomes an icon.
+    for (const text of out.slice(0, 3)) expect(iconCount(text), text).toBe(0);
+    expect(out[0]).toMatch(/8000/);
+  });
+});
+
+describe("Game Top-Up labels keep the START of a name that fits whole without the qualifier or the middle", () => {
+  const sku = (id: number, raw: string, price: string, product: { name: string; gameVariant?: string | null } = { name: "Some Game" }) => canonicalProduct({
+    denomination: { id, name: raw, durationLabel: raw, supplierRawName: raw, supplierSku: `sku-${id}`, autoDeliverySource: null, isActive: true },
+    product: { id: 3, isActive: true, gameRegion: null, gameVariant: null, ...product },
+    category: { id: 1, name: "Top Up", group: "GAME_TOPUP", isActive: true },
+  }, { effectivePriceIDR: price, preferredCurrency: "IDR", rate: "16000", locale: "id" });
+
+  it("drops a shared trailing '- Garena' before it would cut the beginning, even when the product never declared it", () => {
+    const delta = { name: "Delta Force" };
+    const result = presentCanonicalCatalog([
+      sku(1, "Delta Force Black Hawk Down Redefine  - Garena", "125000", delta),
+      sku(2, "Delta Force 18 Delta Coins - Garena", "5000", delta),
+      sku(3, "Delta Force Operations Pass - Garena", "45000", delta),
+    ]);
+    expect(labels(result)[0]).toBe("Black Hawk Down Redefine · Rp125K");
+    expect(result.pages[0]!.text).toContain("#1 · Rp125.000\nBlack Hawk Down Redefine - Garena");
+  });
+  it("leaves the qualifier alone when dropping it would make two labels identical", () => {
+    const delta = { name: "Delta Force" };
+    const out = labels(presentCanonicalCatalog([
+      sku(1, "Delta Force Black Hawk Down Redefine - Garena", "125000", delta),
+      sku(2, "Delta Force Black Hawk Down Redefine", "125000", delta),
+      sku(3, "Delta Force 18 Delta Coins - Garena", "5000", delta),
+    ]));
+    expect(new Set(out).size).toBe(3);
+    expect(out[0]).toContain("Garena");
+  });
+  it("keeps the first words and the end behind a middle ellipsis", () => {
+    const out = labels(presentCanonicalCatalog([sku(1, "Blessing of the Welkin Moon x2", "155000"), sku(2, "Blessing of the Welkin Moon", "79000")]));
+    expect(out[0]).toMatch(/^Blessing of(?: the)?… (?:\S+ )?Moon x2 · Rp155K$/);
+    expect(out[1]).toBe("Blessing of the Welkin Moon · Rp79K");
+  });
+  it("keeps 'Infinite' of an Arena Breakout pack", () => {
+    const [text] = labels(presentCanonicalCatalog([sku(1, "Infinite Edition Starter Pack", "1000000", { name: "Arena Breakout" })]));
+    expect(text).toMatch(/^Infinite/);
+    expect(text).not.toMatch(/(^|\s)…/);
   });
 });

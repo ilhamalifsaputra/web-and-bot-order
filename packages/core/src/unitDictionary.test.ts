@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ABBREVIATIONS, UNITS } from "./unitDictionary";
-import { abbreviateText, displayUnit, inlineUnitIcons, sharedIconUnits } from "./unitDisplay";
+import { abbreviateText, displayUnit, hasRepeatedIcon, iconizeUnitOnce, sharedIconUnits } from "./unitDisplay";
 
 const norm = (value: string) => value.trim().replace(/\s+/g, " ").toLowerCase();
 const graphemes = new Intl.Segmenter("en", { granularity: "grapheme" });
@@ -69,16 +69,36 @@ describe("requested icon mappings", () => {
   });
 });
 
-describe("inline substitution and abbreviation", () => {
-  it("replaces whole unit phrases by their icon, longest phrase first, never inside another word", () => {
-    expect(inlineUnitIcons("Genesis Crystals Bundle 8.000 Crystals")).toBe("💎 Bundle 8.000 💎");
-    expect(inlineUnitIcons("Weekly Diamond Pass")).toBe("Weekly 💎 Pass");
-    expect(inlineUnitIcons("Diamondz Gemstone Coinage")).toBe("Diamondz Gemstone Coinage");
+describe("single-unit substitution and abbreviation", () => {
+  it("replaces only the first whole-token occurrence of the named unit, never another word", () => {
+    expect(iconizeUnitOnce("1000 Diamonds + 100 Bonds", "Diamonds")).toBe("1000 💎 + 100 Bonds");
+    expect(iconizeUnitOnce("Diamonds Pack 1 Diamonds", "Diamonds")).toBe("💎 Pack 1 Diamonds");
+    expect(iconizeUnitOnce("Weekly Diamond Pass", "Gold")).toBe("Weekly Diamond Pass");
+    expect(iconizeUnitOnce("Gemstone Gem Gems", "Gem")).toBe("Gemstone 💎 Gems");
+    expect(iconizeUnitOnce("Genesis Crystals Bundle 8.000 Crystals", "Crystals")).toBe("Genesis 💎 Bundle 8.000 Crystals");
+  });
+  it("leaves an unregistered unit, and a name without the unit, unchanged", () => {
+    expect(iconizeUnitOnce("500 Tokens", "Tokens")).toBe("500 Tokens");
+    expect(iconizeUnitOnce("Diamondz Gemstone Coinage", "Gem")).toBe("Diamondz Gemstone Coinage");
   });
   it("abbreviates whole words only, keeping their case, and leaves other words alone", () => {
     expect(abbreviateText("Weekly Premium Subscription")).toBe("Wkly Prem Sub");
     expect(abbreviateText("MONTHLY membership Package")).toBe("MTHLY member Pkg");
     expect(abbreviateText("Subscriptions Genesisx Preweekly")).toBe("Subscriptions Genesisx Preweekly");
     expect(abbreviateText("Genesis Crystals Bundle")).toBe("Gen Crystals Bundle");
+  });
+});
+
+describe("icon repetition", () => {
+  it("flags the same dictionary icon twice, and two dictionary icons side by side", () => {
+    expect(hasRepeatedIcon("💎 Bundle 8.000 💎")).toBe(true);
+    expect(hasRepeatedIcon("💎 💎 100")).toBe(true);
+    expect(hasRepeatedIcon("💎🪙 100")).toBe(true);
+    expect(hasRepeatedIcon("🥇 🪙 Pack")).toBe(true);
+  });
+  it("accepts one icon, or different icons that something separates, and icons the dictionary does not own", () => {
+    expect(hasRepeatedIcon("7 💎 Event Gift Pack")).toBe(false);
+    expect(hasRepeatedIcon("💎 Pack 🪙")).toBe(false);
+    expect(hasRepeatedIcon("✨🔥 Mega Combo 🎁 🎁")).toBe(false);
   });
 });

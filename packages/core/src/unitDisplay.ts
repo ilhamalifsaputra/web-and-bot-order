@@ -75,19 +75,27 @@ const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\
 const phraseRegExp = (names: string[], flags = "giu") => new RegExp(
   String.raw`(?<![\p{L}\p{N}])(${names.map((name) => escapeRegExp(name.trim()).replace(/\s+/g, String.raw`\s+`)).join("|")})(?![\p{L}\p{N}])`, flags,
 );
-// Longest phrase first, so "Genesis Crystals" wins over "Crystals".
-const byLengthDesc = (names: string[]) => [...names].sort((a, b) => b.length - a.length);
-const UNIT_PHRASES = phraseRegExp(byLengthDesc(UNIT_DISPLAY_REGISTRY.flatMap((entry) => [entry.unit, ...entry.aliases])));
 const SHORT_PHRASES = UNIT_DISPLAY_REGISTRY.filter((entry) => entry.icon && entry.shortAlias);
 const ABBREVIATION_WORDS = phraseRegExp(ABBREVIATIONS.map((entry) => entry.word));
 
 /**
- * Replaces every registered unit phrase inside `text` by its icon or short form, longest phrase first
- * ("Genesis Crystals Bundle 8.000 Crystals" -> "💎 Bundle 8.000 💎"). Whole tokens only. A last-resort
- * label form: the full text is still explained elsewhere.
+ * Replaces the FIRST whole-token occurrence of `unit` inside `text` by the unit's icon or short form
+ * ("1000 Diamonds + 100 Bonds" -> "1000 💎 + 100 Bonds"). Exactly one phrase and exactly the named unit: a presenter
+ * passes the SKU's own structured unit, so no other word of a package or bundle name is ever turned into an icon.
+ * An unregistered unit, or a text without it, comes back unchanged.
  */
-export function inlineUnitIcons(text: string, ctx?: UnitDisplayContext): string {
-  return text.replace(UNIT_PHRASES, (phrase) => displayUnit(phrase, ctx));
+export function iconizeUnitOnce(text: string, unit: string, ctx?: UnitDisplayContext): string {
+  const short = displayUnit(unit, ctx);
+  if (!unit.trim() || short === unit) return text;
+  return text.replace(phraseRegExp([unit], "iu"), short);
+}
+
+const UNIT_ICONS = [...new Set(UNIT_DISPLAY_REGISTRY.flatMap((entry) => entry.icon ? [entry.icon] : []))];
+const ICON_ALTERNATIVES = UNIT_ICONS.join("|");
+const ADJACENT_ICONS = new RegExp(String.raw`(?:${ICON_ALTERNATIVES})\s*(?:${ICON_ALTERNATIVES})`, "u");
+/** True when the same dictionary icon occurs twice in `text`, or two dictionary icons sit side by side. */
+export function hasRepeatedIcon(text: string): boolean {
+  return UNIT_ICONS.some((icon) => text.split(icon).length > 2) || ADJACENT_ICONS.test(text);
 }
 
 const followCase = (source: string, short: string): string => {

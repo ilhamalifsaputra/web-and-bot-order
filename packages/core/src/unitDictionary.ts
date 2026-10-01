@@ -4,7 +4,8 @@
  * It holds DATA ONLY; the lookups live in `unitDisplay.ts`.
  *
  * Presentation only: icons and abbreviations never change identity, callbacks, SKUs, prices or what the
- * body/detail screens say. They are used for button labels (and only as a fallback for the inline forms).
+ * body/detail screens say. They are used for button labels. An icon stands in for a SKU's OWN unit only (one
+ * phrase, never another word of a package or bundle name) and never twice in one label.
  *
  * HOW TO ADD
  *  - A unit: append one line to UNITS. `canonical` is the name, `aliases` are the other exact spellings

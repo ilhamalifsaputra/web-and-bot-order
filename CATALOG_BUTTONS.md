@@ -155,7 +155,8 @@ atau qty unit lewat bot. Setelah perbaikan, peringatan keliru untuk nama game tu
 **Tes:** typecheck exit 0; `scripts/check-frontend-boundaries.ts` lulus; tes terkait 77 file / 1897 tes lulus.
 Suite penuh terakhir yang dijalankan pada basis pekerjaan ini: 506 dari 507 file lulus; satu-satunya gagal
 `apps/web-admin/test/storage-api.test.ts` (`dbBytes` = 0, bug lama di `master`: `storage.ts` masih men-stat file
-SQLite).
+SQLite). Sudah diperbaiki di branch `storage-api-dbbytes` (ukuran database kini dibaca dari Postgres), sehingga suite
+tidak lagi punya kegagalan yang diketahui.
 
 **Sapuan** (seluruh produk game dummy, 515 SKU, dan 232 nama nyata dari `catalogSnapshot.json` dalam 3 varian;
 semua dalam 4 mode id/en x IDR/USD):
@@ -226,7 +227,7 @@ dikerjakan **satu branch per item**, berurutan.
 | `price-format-by-language` | Picker memakai pemformat harga sadar-bahasa seperti layar detail/konfirmasi (sebelumnya picker memakai format tetap `Rp4.480` / `$0.28`). Dampak: untuk pembeli berbahasa Inggris, baris harga picker Premium menjadi `Rp30,000`; pembeli id tidak berubah | menunggu |
 | `region-dedupe-header` | Region yang sudah ada di nama produk (`Valorant (Indonesia)`) tidak diulang di tombol dan header halaman 2 | menunggu |
 | `back-page-reply-kb` | Back dari picker lewat keyboard balasan kembali ke halaman asal (sekarang halaman 0); spesifikasi §9 | menunggu |
-| `storage-api-dbbytes` | Ukuran database dari Postgres (`pg_database_size` lewat helper di `packages/db/src/crud`), bukan file SQLite | menunggu |
+| `storage-api-dbbytes` | Ukuran database dari Postgres (`pg_database_size` lewat helper di `packages/db/src/crud`), bukan file SQLite; tes `storage-api` lulus lagi dan suite tanpa kegagalan yang diketahui | selesai |
 | `dictionary-prune-abbrevs` | Hapus Premium, Membership, Subscription dari singkatan | menunggu |
 
 Ditunda, prioritas rendah: pembersihan kode mati (`stockLabels`, `unitIcon`, jalur non-game

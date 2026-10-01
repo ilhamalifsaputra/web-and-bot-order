@@ -240,7 +240,7 @@ async function handleBackButton(ctx: MyContext): Promise<void> {
   }
   // Viewing a denomination detail → step back to its parent product's picker.
   if (sc(ctx).variantId != null && sc(ctx).productId != null) {
-    await browseProduct(ctx, sc(ctx).productId!);
+    await browseProduct(ctx, sc(ctx).productId!, sc(ctx).productPage ?? 0);
     return;
   }
   // Viewing a picker (product but no denomination) → back to the product list.

@@ -57,7 +57,11 @@ export async function boundedCanonicalName(product: CanonicalProduct, send: (htm
 /** Telegram button budget: conservative cells, and a byte cap that also bounds combining marks. */
 export const MAX_LABEL_WIDTH = 44;
 export const MAX_LABEL_BYTES = 64;
-/** Two buttons share a row only when each is at most this wide: about half of MAX_LABEL_WIDTH minus padding (icon labels are short, so 24 paired wide USD figures). */
+/**
+ * Width limit (in cells) for pairing two buttons in one row. It was 24 and is now 18, so wide
+ * labels, such as USD amounts with thousands separators like `5 💎 · $1,000,000.00`, stay one
+ * per row on narrow phones instead of being squeezed side by side.
+ */
 export const NARROW_LABEL_WIDTH = 18;
 /** Product buttons per catalog page, for every game. */
 export const CATALOG_PAGE_SIZE = 20;

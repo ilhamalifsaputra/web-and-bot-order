@@ -1415,6 +1415,25 @@ describe("denomination picker", () => {
     expect(freshFlat.some((b) => b.callback_data?.startsWith("v1:browse:pick:"))).toBe(false);
   });
 
+  it("reply-keyboard Back from a denomination detail re-opens the originating picker page and keeps productPage", async () => {
+    const cat = await createCategory(prisma, { name: `gc${Math.random()}`, group: CategoryGroup.PREMIUM_APPS });
+    const product = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Many Plans" });
+    const denoms = [];
+    for (let i = 0; i < 25; i++) {
+      denoms.push(await createDenomination(prisma, {
+        productId: product.id, name: `Many Plans ${i + 1} Month`, type: "SHARED", durationLabel: `${i + 1} Month`, price: String(10000 + i * 1000),
+      }));
+    }
+    const { ctx } = customerCtx();
+    await customer.browseProduct(ctx, product.id, 1);
+    expect((ctx.session.scratch as { productPage?: number }).productPage).toBe(1);
+    await customer.browseDenomination(ctx, denoms[0]!.id);
+
+    const back = customerCtx({ text: persistentLabel("back", "en"), session: { ...userSession(), scratch: ctx.session.scratch } });
+    await customer.handleProductNumber(back.ctx);
+    expect((back.ctx.session.scratch as { productPage?: number }).productPage).toBe(1);
+  });
+
   // --- Game Top Up: buttons carry the price, so the body describes the game --
 
   async function makeGameProduct(

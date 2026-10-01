@@ -87,15 +87,19 @@ interface Shape {
   quals: string[];
   /** True when the name ends in a supplier-style spaced " - X" segment (no digit in X) that is not one of the product's own qualifiers. */
   conflict: boolean;
+  /** Product qualifiers this name spelled itself ("- Garena", "(Global)") and that were lifted into `quals`, with the spelled text. */
+  lifted: { key: string; text: string }[];
 }
 /** The X of a trailing spaced hyphen segment ("... - Tencent"); parentheses, intra-word hyphens and digits never count. */
 function spacedHyphenTail(text: string): string | null {
   const match = text.match(/(?:^|\s)-\s+([^-]*)$/);
   return match && !/\d/.test(match[1]!) ? match[1]! : null;
 }
-function shape(product: CanonicalProduct): Shape {
+/** `keep`: qualifier keys that must stay spelled on the item's own label instead of being lifted (see `shapesOf`). */
+function shape(product: CanonicalProduct, keep: ReadonlySet<string> = new Set()): Shape {
   const known = [product.product.gameRegion, product.product.gameVariant].filter((value): value is string => !!value?.trim());
-  const qualifierFor = (segment: string) => known.find((q) => tokenKey(q) !== "" && tokenKey(q) === tokenKey(segment));
+  const qualifierFor = (segment: string) => known.find((q) => tokenKey(q) !== "" && tokenKey(q) === tokenKey(segment) && !keep.has(tokenKey(q)));
+  const lifted: Shape["lifted"] = [];
   const quals = [...product.qualifiers];
   const addQual = (q: string) => { if (!quals.some((have) => tokenKey(have) === tokenKey(q))) quals.push(q); };
   const variant = product.variant;
@@ -104,29 +108,42 @@ function shape(product: CanonicalProduct): Shape {
     let conflict = false;
     for (const segment of variant.residual) {
       const q = qualifierFor(segment);
-      if (q) addQual(q);
+      if (q) { addQual(q); lifted.push({ key: tokenKey(q), text: collapse(segment) }); }
       else {
         leftover.push(collapse(segment));
         if (spacedHyphenTail(segment) !== null) conflict = true;
       }
     }
-    return { main: "", leftover, quals, conflict };
+    return { main: "", leftover, quals, conflict, lifted };
   }
   let main = collapse(variant.name);
   // Only a trailing "- Garena" / "(Global)" segment that equals a known qualifier is lifted; inner words stay.
   const tail = main.match(/^(.+?)\s*(?:-\s*([^()\-]+)|\(([^()]+)\))$/);
   const q = tail ? qualifierFor(tail[2] ?? tail[3]!) : undefined;
-  if (tail && q) { main = tail[1]!; addQual(q); }
+  if (tail && q) { lifted.push({ key: tokenKey(q), text: main.slice(tail[1]!.length).trim() }); main = tail[1]!; addQual(q); }
   const hyphenTail = spacedHyphenTail(collapse(variant.name));
-  return { main, leftover: variant.residual.map(collapse), quals, conflict: hyphenTail !== null && !(q && tail && tail[2] !== undefined) };
+  return { main, leftover: variant.residual.map(collapse), quals, conflict: hyphenTail !== null && !(q && tail && tail[2] !== undefined), lifted };
+}
+/**
+ * Shapes for one list. A qualifier that some items spell themselves and others merely inherit from the
+ * product is "mixed": it cannot be stated once for everybody, so the spelling items keep it on their own
+ * label (and the others carry the product qualifier) instead of both collapsing into the same text.
+ */
+function shapesOf(products: CanonicalProduct[]): Shape[] {
+  const first = products.map((p) => shape(p));
+  const mixed = new Set<string>();
+  for (const s of first) for (const { key } of s.lifted) {
+    if (first.some((other) => other.quals.some((q) => tokenKey(q) === key) && !other.lifted.some((l) => l.key === key))) mixed.add(key);
+  }
+  return mixed.size === 0 ? first : products.map((p, i) => first[i]!.lifted.some((l) => mixed.has(l.key)) ? shape(p, mixed) : first[i]!);
 }
 
 const sameUnit = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
-function fullMain(product: CanonicalProduct, s: Shape): string {
+function fullMain(product: CanonicalProduct, s: Shape, tails: string[] = []): string {
   const v = product.variant;
-  if (v.type !== "amount") return [s.main, ...s.leftover].join(" ");
+  if (v.type !== "amount") return [s.main, ...s.leftover, ...tails].join(" ");
   const bonus = v.bonus ? ` + ${v.bonus.quantity} ${v.bonus.label ?? v.bonus.unit}` : "";
-  return [`${v.quantity} ${v.unit}${bonus}`, ...s.leftover].join(" ");
+  return [`${v.quantity} ${v.unit}${bonus}`, ...s.leftover, ...tails].join(" ");
 }
 /** Compact amount text, or null when compacting would hide meaning (a bonus in a different unit). */
 function compactMain(product: CanonicalProduct, s: Shape, locale: string, spelled: Set<string>): string | null {
@@ -174,14 +191,18 @@ function escapedChunks(value: string, limit: number): string[] {
 function catalogLabels(products: CanonicalProduct[], locale: string, sharedQuals: boolean): { text: string; fallback: boolean; complex: boolean }[] {
   const conflictingShorts = new Set(sharedIconUnits(products.flatMap((p) => p.variant.type === "amount" ? [p.variant.unit] : [])).map((group) => group.short));
   const spelled = new Set(products.flatMap((p) => p.variant.type === "amount" && conflictingShorts.has(displayUnit(p.variant.unit)) ? [p.variant.unit.toLowerCase()] : []));
-  const items = products.map((product) => {
-    const s = shape(product);
+  const shapes = shapesOf(products);
+  const items = products.map((product, index) => {
+    const s = shapes[index]!;
     const quals = sharedQuals ? [] : s.quals;
     const price = compactPrice(product, locale);
     const compact = compactMain(product, s, locale, spelled);
     // Identity = the label without its price. Price alone must never be what tells two SKUs apart.
-    const fullIdentity = withQuals(fullMain(product, s), quals);
-    const identity = compact === null ? fullIdentity : withQuals(compact, quals);
+    // The full form restores what lifting hid: the name's own "- Garena" tail, and not the same qualifier twice.
+    const tails = s.lifted.map((l) => l.text);
+    const fullQuals = quals.filter((q) => !s.lifted.some((l) => l.key === tokenKey(q)));
+    const fullIdentity = withQuals(fullMain(product, s, tails), fullQuals);
+    const identity = compact === null ? withQuals(fullMain(product, s), quals) : withQuals(compact, quals);
     return {
       identity, fullIdentity, price, fallback: false,
       complex: product.variant.type === "unknown" || (product.variant.type === "amount" && compact === null) || s.leftover.length > 0,
@@ -219,7 +240,7 @@ function catalogLabels(products: CanonicalProduct[], locale: string, sharedQuals
  */
 function sharedHeader(products: CanonicalProduct[]): { name: string | null; quals: string[] } {
   if (products.length === 0) return { name: null, quals: [] };
-  const shapes = products.map(shape);
+  const shapes = shapesOf(products);
   const keyOf = (quals: string[]) => quals.map(tokenKey).sort().join("|");
   const first = shapes[0]!.quals;
   const shared = first.length > 0 && !shapes.some((s) => s.conflict || keyOf(s.quals) !== keyOf(first));

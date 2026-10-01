@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { canonicalProduct } from "@app/core/canonicalProduct";
+import catalog from "../../../packages/core/src/detection/__fixtures__/catalogSnapshot.json";
 import { presentCanonicalCatalog, visualWidth, compactQuantity, MAX_LABEL_WIDTH, NARROW_LABEL_WIDTH } from "../src/util/canonicalPresenter";
 
 const item = (id: number, name: string, price = "21000", currency: "IDR" | "USD" = "IDR", locale = "id") => canonicalProduct({
@@ -375,5 +376,59 @@ describe("canonical Telegram label candidates", () => {
     expect(button.callback_data).toBe(`v1:browse:denom:${id}`);
     expect(Buffer.byteLength(button.callback_data, "utf8")).toBeLessThanOrEqual(64);
     expect(Buffer.byteLength(button.text, "utf8")).toBeLessThanOrEqual(64);
+  });
+});
+
+describe("canonical Telegram labels: a qualifier spelled by only some SKUs", () => {
+  const delta = (id: number, raw: string, price: string, product: Opts["product"] = deltaForce) => make(id, raw, { price, product });
+  it("keeps two same-quantity SKUs distinct when one spells the product qualifier and one does not", () => {
+    const result = presentCanonicalCatalog([
+      delta(12, "Delta Force 60 Delta Coins - Garena", "14000"),
+      delta(13, "Delta Force 60 Delta Coins", "15500"),
+    ]);
+    const texts = labels(result);
+    expect(texts).toHaveLength(2);
+    expect(new Set(texts).size).toBe(2);
+    for (const text of texts) expect(text).not.toMatch(/#\d+/);
+    expect(texts[0]).toContain("Rp14K");
+    expect(texts[1]).toContain("Rp16K");
+    // The spelled SKU keeps its own text; the header must not claim Garena for the unspelled one.
+    expect(texts[0]).toContain("Garena");
+    expect(result.pages[0]!.text).not.toContain("Delta Force · Garena");
+  });
+  it("renders the same two SKUs as before when the product has no variant", () => {
+    expect(labels(presentCanonicalCatalog([
+      delta(12, "Delta Force 60 Delta Coins - Garena", "14000", { name: "Delta Force" }),
+      delta(13, "Delta Force 60 Delta Coins", "15500", { name: "Delta Force" }),
+    ]))).toEqual(["60 🪙 - Garena · Rp14K", "60 🪙 · Rp16K"]);
+  });
+  it("never produces an id-only or id-suffixed button for the whole real Delta Force series", () => {
+    const names = (catalog as { productName: string; denominationName: string }[]).filter((row) => row.productName === "Delta Force").map((row) => row.denominationName);
+    expect(names).toHaveLength(23);
+    const result = presentCanonicalCatalog(names.map((name, i) => delta(1000 + i, name, String(7000 + i * 1000))));
+    const texts = labels(result);
+    expect(texts).toHaveLength(23);
+    for (const text of texts) {
+      expect(text).not.toMatch(/^#\d+$/);
+      expect(text).not.toMatch(/ #\d+$/);
+    }
+    expect(new Set(texts).size).toBe(texts.length);
+  });
+  it("still states the qualifier once in the header when every SKU spells it, or none does", () => {
+    const all = presentCanonicalCatalog([delta(1, "Delta Force 18 Delta Coins - Garena", "5000"), delta(2, "Delta Force 60 Delta Coins - Garena", "15000")]);
+    expect(all.pages[0]!.text).toContain("Delta Force · Garena");
+    expect(labels(all)).toEqual(["18 🪙 · Rp5K", "60 🪙 · Rp15K"]);
+    const none = presentCanonicalCatalog([delta(1, "Delta Force 18 Delta Coins", "5000"), delta(2, "Delta Force 60 Delta Coins", "15000")]);
+    expect(none.pages[0]!.text).toContain("Delta Force · Garena");
+    expect(labels(none)).toEqual(["18 🪙 · Rp5K", "60 🪙 · Rp15K"]);
+  });
+  it("includes the lifted tail in the full form before falling back to an id", () => {
+    const result = presentCanonicalCatalog([
+      delta(1, "Delta Force 60 Delta Coins - Garena", "14000"),
+      delta(2, "Delta Force 60 Delta Coins (Garena)", "14000"),
+    ]);
+    const texts = labels(result);
+    expect(new Set(texts).size).toBe(2);
+    for (const text of texts) expect(text).not.toMatch(/#\d+/);
   });
 });

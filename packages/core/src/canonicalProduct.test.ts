@@ -208,7 +208,17 @@ describe("canonical qualifier de-duplication", () => {
     expect(CanonicalProductSchema.safeParse(result).success).toBe(true);
   });
   it("preserves a legitimately repeated word inside the package name", () => {
-    expect(withQualifiers("Gem Gem Pack Package", null, null, "Growtopia").displayName).toBe("Gem Gem Pack Package");
+    const result = withQualifiers("Gem Gem Pack Package", "Gem", null, "Growtopia");
+    expect(result.displayName).toBe("Gem Gem Pack Package");
+    // "Gem" is a word of the package name, not a "- Gem" / "(Gem)" qualifier segment, so it stays a qualifier.
+    expect(result.qualifiers).toEqual(["Gem"]);
+  });
+  it("keeps a region that is only part of a package name rather than a qualifier segment", () => {
+    const result = withQualifiers("Indonesia Merdeka Package", null, "Indonesia", "Mobile Legends");
+    expect(result.displayName).toBe("Indonesia Merdeka Package");
+    expect(result.qualifiers).toEqual(["Indonesia"]);
+    expect(withQualifiers("Merdeka Package - Indonesia", null, "Indonesia", "Mobile Legends").qualifiers).toEqual([]);
+    expect(withQualifiers("Merdeka Package (indonesia)", null, "Indonesia", "Mobile Legends").qualifiers).toEqual([]);
   });
 });
 

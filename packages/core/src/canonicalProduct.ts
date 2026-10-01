@@ -164,15 +164,17 @@ function nameTokens(value: string): string[] {
   return value.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
 }
 
-/** True when every token of `qualifier` appears, contiguously and whole, in `name`. A substring of a longer word does not count. */
+/** The "- X" and "(X)" segments of a name: the only places a region/variant is spelled out as a qualifier rather than as part of a package name. */
+function qualifierSegments(name: string): string[] {
+  const bracketed = [...name.matchAll(/\(([^()]*)\)/g)].map((match) => match[1]!);
+  const dashed = name.split(/\s*-\s*/).slice(1).map((part) => part.replace(/\(.*$/, ""));
+  return [...bracketed, ...dashed];
+}
+
+/** True when a "- X" or "(X)" segment of `name` is exactly `qualifier`, whole tokens, any case. The word elsewhere in the name ("Indonesia Merdeka Package") does not count. */
 function nameContainsQualifier(name: string, qualifier: string): boolean {
-  const wanted = nameTokens(qualifier);
-  if (wanted.length === 0) return false;
-  const have = nameTokens(name);
-  for (let start = 0; start + wanted.length <= have.length; start += 1) {
-    if (wanted.every((token, offset) => have[start + offset] === token)) return true;
-  }
-  return false;
+  const wanted = nameTokens(qualifier).join(" ");
+  return wanted !== "" && qualifierSegments(name).some((segment) => nameTokens(segment).join(" ") === wanted);
 }
 
 export function canonicalProduct(input: CanonicalProductInput, context: CanonicalProductContext): CanonicalProduct {
@@ -194,7 +196,7 @@ export function canonicalProduct(input: CanonicalProductInput, context: Canonica
   const inactive = !denom.isActive || !input.product.isActive || input.product.isArchived || !input.category.isActive;
   const status = inactive ? "inactive" : input.stockAvailable === false ? "out_of_stock" : "available";
   const displayName = renderVariant(variant);
-  // A qualifier already spelled out in this product's own name ("- Garena") is redundant; different ones stay.
+  // A qualifier already spelled out as a "- Garena" / "(Global)" segment of this product's own name is redundant; different ones stay.
   const qualifiers = [input.product.gameRegion, input.product.gameVariant]
     .filter((value): value is string => !!value?.trim())
     .filter((value) => !nameContainsQualifier(displayName, value));

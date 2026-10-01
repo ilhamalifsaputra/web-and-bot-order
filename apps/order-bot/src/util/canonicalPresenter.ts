@@ -2,23 +2,15 @@ import type { CanonicalProduct, CanonicalMoney } from "@app/core/canonicalProduc
 import { Decimal } from "@app/core/money";
 import { esc } from "@app/core/formatters";
 import { formatCompactPrice } from "@app/core/compactFormat";
+import { visualWidth, MAX_LABEL_WIDTH, TARGET_LABEL_WIDTH, NARROW_LABEL_WIDTH, MAX_LABEL_BYTES, CATALOG_PAGE_SIZE } from "@app/core/buttonLimits";
 import { abbreviateText, displayUnit, inlineUnitIcons, sharedIconUnits } from "@app/core/unitDisplay";
 
 export interface CatalogButton { text: string; callback_data: string }
 export interface CatalogPage { text: string; rows: CatalogButton[][] }
 const graphemes = new Intl.Segmenter("en", { granularity: "grapheme" });
 
-/** A conservative cell estimate, not a guarantee about Telegram client pixels. */
-export function visualWidth(value: string): number {
-  let width = 0;
-  for (const { segment } of graphemes.segment(value)) {
-    const cp = segment.codePointAt(0)!;
-    width += /\p{Extended_Pictographic}|\p{Regional_Indicator}/u.test(segment) || cp >= 0x1100 && (
-      cp <= 0x115f || cp >= 0x2e80 && cp <= 0xa4cf || cp >= 0xac00 && cp <= 0xd7af || cp >= 0xf900 && cp <= 0xfaff || cp >= 0xff01 && cp <= 0xff60 || cp >= 0x20000
-    ) ? 2 : 1;
-  }
-  return width;
-}
+// The limits live in one browser-safe module shared with the admin panel; re-exported so existing imports keep working.
+export { visualWidth, MAX_LABEL_WIDTH, TARGET_LABEL_WIDTH, NARROW_LABEL_WIDTH, MAX_LABEL_BYTES, CATALOG_PAGE_SIZE };
 
 /**
  * Quantities are never rounded. Full digits are shown unless the value is a clean multiple of 1000
@@ -62,22 +54,6 @@ export async function boundedCanonicalName(product: CanonicalProduct, send: (htm
   for (const page of presentCanonicalCatalog([product], { bodyName: name }).pages) await send(page.text);
   return `#${product.id}`;
 }
-/**
- * Telegram button budget: conservative cells, and a byte cap that also bounds combining marks. Telegram
- * truncates by pixels: a full-width bold button shows roughly 28-34 characters on a phone (50+ on desktop),
- * so a single-column label is capped at 36 cells, with 32 as the soft target the shortening fallbacks aim for.
- */
-export const MAX_LABEL_WIDTH = 36;
-export const TARGET_LABEL_WIDTH = 32;
-export const MAX_LABEL_BYTES = 64;
-/**
- * Width limit (in cells) for pairing two buttons in one row. It was 24 and is now 18, so wide
- * labels, such as USD amounts with thousands separators like `5 💎 · $1,000,000.00`, stay one
- * per row on narrow phones instead of being squeezed side by side.
- */
-export const NARROW_LABEL_WIDTH = 18;
-/** Product buttons per catalog page, for every game. */
-export const CATALOG_PAGE_SIZE = 20;
 const PAGE_TEXT_LIMIT = 3000;
 const MAX_SHARED_LINE = 300;
 

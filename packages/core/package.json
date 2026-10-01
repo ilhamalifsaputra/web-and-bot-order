@@ -8,6 +8,7 @@
     "./config": "./src/config.ts",
     "./money": "./src/money.ts",
     "./canonicalProduct": "./src/canonicalProduct.ts",
+    "./buttonLimits": "./src/buttonLimits.ts",
     "./unitDictionary": "./src/unitDictionary.ts",
     "./unitDisplay": "./src/unitDisplay.ts",
     "./datetime": "./src/datetime.ts",

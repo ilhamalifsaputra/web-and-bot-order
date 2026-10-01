@@ -14,6 +14,7 @@ import { t as coreT } from "@app/core/i18n";
 import { MAX_CART_ORDER_UNITS } from "@app/db";
 import { formatPrice, formatUsdtAmount, formatIdr, truncLabel } from "../util/format";
 import { formatDenominationLabel } from "../util/denominationLabel";
+import { LIST_LABEL_MAX_CHARS } from "@app/core/buttonLimits";
 import type { CatalogButton } from "../util/canonicalPresenter";
 
 export const CB_PREFIX = "v1";
@@ -445,7 +446,7 @@ export function categoryPickerKb(categories: CategoryLike[], lang: string): Inli
   for (let i = 0; i < categories.length; i += 2) {
     rows.push(
       categories.slice(i, i + 2).map((c) => ({
-        text: truncLabel(`${c.emoji ? c.emoji + " " : ""}${c.name}`, 30),
+        text: truncLabel(`${c.emoji ? c.emoji + " " : ""}${c.name}`, LIST_LABEL_MAX_CHARS),
         data: cb("browse", "cat", c.id),
       })),
     );
@@ -550,7 +551,7 @@ export function productsNavKb(page: number, totalPages: number, lang: string): I
 /** Inline keyboard for /search results — each mid-tier Product opens its picker. */
 export function searchResultsKb(products: Array<{ id: number; name: string }>, lang: string): InlineKeyboard {
   const rows: Btn[][] = products.map((p) => [
-    { text: truncLabel(p.name, 30), data: cb("browse", "pick", p.id) },
+    { text: truncLabel(p.name, LIST_LABEL_MAX_CHARS), data: cb("browse", "pick", p.id) },
   ]);
   rows.push([{ text: coreT("menu.main", lang), data: cb("menu", "main") }]);
   return ik(rows);
@@ -559,7 +560,7 @@ export function searchResultsKb(products: Array<{ id: number; name: string }>, l
 /** Inline keyboard for the Produk Populer list — one `browse:pick` button per product + Menu row. */
 export function popularKb(products: Array<{ id: number; name: string }>, lang: string): InlineKeyboard {
   const rows: Btn[][] = products.map((p) => [
-    { text: truncLabel(p.name, 30), data: cb("browse", "pick", p.id) },
+    { text: truncLabel(p.name, LIST_LABEL_MAX_CHARS), data: cb("browse", "pick", p.id) },
   ]);
   rows.push([{ text: coreT("menu.main", lang), data: cb("menu", "main") }]);
   return ik(rows);

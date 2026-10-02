@@ -134,7 +134,7 @@ async function makeReview(hidden = false): Promise<{ reviewId: number; buyerId: 
   // thrown error.out_of_stock).
   await bulkAddStock(prisma, product.id, [`stock-${Math.random()}`]);
   const buyer = await upsertUser(prisma, { telegramId: Math.floor(Math.random() * 1_000_000_000), username: "buyer", fullName: "Buyer" });
-  const order = await createOrderDirect(prisma, { user: buyer, productId: product.id, quantity: 1 });
+  const order = await createOrderDirect(prisma, { channel: "web", user: buyer, productId: product.id, quantity: 1 });
   const r = await prisma.review.create({
     data: { userId: buyer.id, orderId: order!.id, productId: product.id, rating: 5, comment: "great", hidden },
   });

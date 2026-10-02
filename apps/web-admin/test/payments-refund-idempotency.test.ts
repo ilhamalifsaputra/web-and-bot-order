@@ -51,7 +51,7 @@ beforeEach(async () => {
  * underpaid (markUnderpaid), same as a real Binance-internal-transfer
  * shortfall would. refundUnderpaidOrder only accepts orders in this state. */
 async function makeUnderpaidOrder(txId: string) {
-  const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+  const order = (await createOrderDirect(prisma, { channel: "web", user: sample.user, productId: sample.product.id, quantity: 1 }))!;
   const flagged = await markUnderpaid(prisma, { orderId: order.id, binanceTxId: txId, amount: "1.00" });
   expect(flagged).toBe(true);
   return order;
@@ -153,7 +153,7 @@ describe("POST /api/payments/order/:orderId/refund — when no rail recorded wha
     // every PRODUCT order that was already sitting in UNDERPAID before this
     // branch's QRIS ledger table landed has. The route still marks it
     // REFUNDED (terminal), so it has to say plainly that no money moved.
-    const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    const order = (await createOrderDirect(prisma, { channel: "web", user: sample.user, productId: sample.product.id, quantity: 1 }))!;
     await prisma.order.update({ where: { id: order.id }, data: { status: "UNDERPAID" } });
     const buyerBefore = (await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } })).walletBalance.toString();
 

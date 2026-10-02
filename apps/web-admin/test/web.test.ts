@@ -272,7 +272,7 @@ function containsKeyDeep(value: unknown, key: string): boolean {
 
 async function makePendingOrder(): Promise<number> {
   const user = (await getUser(prisma, seed.customerId))!;
-  const order = (await createOrderDirect(prisma, { user, productId: seed.productId, quantity: 1 }))!;
+  const order = (await createOrderDirect(prisma, { channel: "web", user, productId: seed.productId, quantity: 1 }))!;
   await attachPaymentProof(prisma, order.id, { fileId: "proof123", txid: "TX1234567890" });
   return order.id;
 }
@@ -292,7 +292,7 @@ async function makeProcessingOrder(): Promise<number> {
   });
   await updateDenomination(prisma, manualDenom.id, { deliveryType: DeliveryType.MANUAL });
   const user = (await getUser(prisma, seed.customerId))!;
-  const order = (await createOrderDirect(prisma, { user, productId: manualDenom.id, quantity: 1 }))!;
+  const order = (await createOrderDirect(prisma, { channel: "web", user, productId: manualDenom.id, quantity: 1 }))!;
   await attachPaymentProof(prisma, order.id, { fileId: "proof123", txid: "TX1234567890" });
   await settlePaidOrder(prisma, order.id, { adminId: seed.adminId });
   return order.id;
@@ -687,7 +687,7 @@ describe("orders", () => {
     const user = (await getUser(prisma, seed.customerId))!;
     // Seed has 4 AVAILABLE stock items; a qty=2 order reserves 2 of them,
     // leaving 2 AVAILABLE.
-    const order = (await createOrderDirect(prisma, { user, productId: seed.productId, quantity: 2 }))!;
+    const order = (await createOrderDirect(prisma, { channel: "web", user, productId: seed.productId, quantity: 2 }))!;
     await attachPaymentProof(prisma, order.id, { fileId: "proof123", txid: "TX1234567890" });
     const orderId = order.id;
 
@@ -742,7 +742,7 @@ describe("orders", () => {
       fullName: "placeholder",
     });
     await prisma.user.update({ where: { id: web.id }, data: { fullName: null } });
-    await createOrderDirect(prisma, { user: web, productId: seed.productId, quantity: 1 });
+    await createOrderDirect(prisma, { channel: "web", user: web, productId: seed.productId, quantity: 1 });
 
     const res = await get("/api/orders", seed.cookie);
     expect(res.statusCode).toBe(200);
@@ -769,7 +769,7 @@ describe("orders", () => {
       await bulkAddStock(prisma, seed.productId, items);
       const user = (await getUser(prisma, seed.customerId))!;
       for (let i = 0; i < 55; i++) {
-        await createOrderDirect(prisma, { user, productId: seed.productId, quantity: 1 });
+        await createOrderDirect(prisma, { channel: "web", user, productId: seed.productId, quantity: 1 });
       }
 
       const res = await get("/api/orders/export", seed.cookie);
@@ -784,7 +784,7 @@ describe("orders", () => {
         username: "commauser",
         fullName: "Doe, Jane",
       });
-      await createOrderDirect(prisma, { user: commaUser, productId: seed.productId, quantity: 1 });
+      await createOrderDirect(prisma, { channel: "web", user: commaUser, productId: seed.productId, quantity: 1 });
 
       const res = await get("/api/orders/export", seed.cookie);
       expect(res.statusCode).toBe(200);
@@ -1213,7 +1213,7 @@ describe("orders API — approve/resend enqueue the buyer's account DM", () => {
       fullName: "placeholder",
     });
     await prisma.user.update({ where: { id: web.id }, data: { fullName: null } });
-    const order = (await createOrderDirect(prisma, { user: web, productId: seed.productId, quantity: 1 }))!;
+    const order = (await createOrderDirect(prisma, { channel: "web", user: web, productId: seed.productId, quantity: 1 }))!;
     await attachPaymentProof(prisma, order.id, { fileId: "proof", txid: `TX${loginUsername.toUpperCase()}` });
     return order.id;
   }
@@ -1436,7 +1436,7 @@ describe("orders API — credential masking and audited reveal", () => {
 
   it("POST reveal omits an item whose stock row now belongs to another order, but reveals the rest", async () => {
     const user = (await getUser(prisma, seed.customerId))!;
-    const order = (await createOrderDirect(prisma, { user, productId: seed.productId, quantity: 2 }))!;
+    const order = (await createOrderDirect(prisma, { channel: "web", user, productId: seed.productId, quantity: 2 }))!;
     await attachPaymentProof(prisma, order.id, { fileId: "proof123", txid: "TX1234567890" });
     const { secret: firstSecret } = await approveAndReadSecret(order.id);
     const items = (await getOrder(prisma, order.id))!.items;
@@ -1588,7 +1588,7 @@ describe("GET /api/orders — pageSize resolution + eligibility", () => {
 describe("CSV export — q multi-field search + ids filter", () => {
   it("q now matches customer identity fields too, not just orderCode", async () => {
     const buyer = await upsertUser(prisma, { telegramId: 314159, username: "csvsearchuser", fullName: "CSV Search" });
-    await createOrderDirect(prisma, { user: buyer, productId: seed.productId, quantity: 1 });
+    await createOrderDirect(prisma, { channel: "web", user: buyer, productId: seed.productId, quantity: 1 });
     await makePendingOrder(); // unrelated order, must be excluded
 
     const res = await get("/api/orders/export?q=csvsearchuser", seed.cookie);
@@ -3768,7 +3768,7 @@ describe("denominations (leaf SKU, inside product detail)", () => {
   it("delete denomination with order history is blocked", async () => {
     // seed.productId is already stocked — place an order against it first.
     const user = (await getUser(prisma, seed.customerId))!;
-    await createOrderDirect(prisma, { user, productId: seed.productId, quantity: 1 });
+    await createOrderDirect(prisma, { channel: "web", user, productId: seed.productId, quantity: 1 });
     const blocked = await deleteForm(`/api/catalog/denominations/${seed.productId}`, seed.cookie, { csrf_token: seed.csrf });
     expect(blocked.statusCode).toBe(409);
     expect(await getDenomination(prisma, seed.productId)).not.toBeNull();
@@ -5016,7 +5016,7 @@ describe("users", () => {
       await setUserRole(prisma, exportUser.id, UserRole.RESELLER);
       await setUserBanned(prisma, exportUser.id, true, "test ban");
 
-      const order = (await createOrderDirect(prisma, { user: exportUser, productId: seed.productId, quantity: 1 }))!;
+      const order = (await createOrderDirect(prisma, { channel: "web", user: exportUser, productId: seed.productId, quantity: 1 }))!;
       await attachPaymentProof(prisma, order.id, { fileId: "proof123", txid: "TX1234567890" });
       const approveRes = await post(`/api/orders/${order.id}/approve`, seed.cookie, { csrf_token: seed.csrf });
       expect(approveRes.statusCode).toBe(200);
@@ -6668,7 +6668,7 @@ describe("settings: bot tokens (§16)", () => {
 describe("payments", () => {
   async function makeUnderpaidOrder(received = "3.00"): Promise<number> {
     const user = (await getUser(prisma, seed.customerId))!;
-    const order = (await createOrderDirect(prisma, { user, productId: seed.productId, quantity: 1 }))!;
+    const order = (await createOrderDirect(prisma, { channel: "web", user, productId: seed.productId, quantity: 1 }))!;
     await markUnderpaid(prisma, { orderId: order.id, binanceTxId: `UTX-${order.id}`, amount: received });
     return order.id;
   }
@@ -6708,7 +6708,7 @@ describe("payments", () => {
     // a public channel is configured.
     setBotIdentity({ publicChannelId: -100123456789 });
     const user = (await getUser(prisma, seed.customerId))!;
-    const order = (await createOrderDirect(prisma, { user, productId: seed.productId, quantity: 1 }))!;
+    const order = (await createOrderDirect(prisma, { channel: "web", user, productId: seed.productId, quantity: 1 }))!;
     await recordUnmatchedTx(prisma, { binanceTxId: "MTX1", amount: "5.00" });
     const res = await post("/api/payments/match", seed.cookie, {
       csrf_token: seed.csrf,
@@ -6728,7 +6728,7 @@ describe("payments", () => {
     const user = (await getUser(prisma, seed.customerId))!;
     // A Binance transfer is USDT, so only a USDT order can take it.
     const order = (await prisma.$transaction((tx) =>
-      createInternalOrder(tx, { user, productId: seed.productId, quantity: 1, rate: 1 }),
+      createInternalOrder(tx, { channel: "web", user, productId: seed.productId, quantity: 1, rate: 1 }),
     ))!;
     const before = Number((await getUser(prisma, seed.customerId))!.walletBalanceUsdt);
     await recordUnmatchedTx(prisma, { binanceTxId: "CRTX1", amount: "5.00" });
@@ -6757,7 +6757,7 @@ describe("payments", () => {
   it("credit refuses a transfer already matched to another order (422 error.transfer_already_used)", async () => {
     const user = (await getUser(prisma, seed.customerId))!;
     const mk = () =>
-      prisma.$transaction((tx) => createInternalOrder(tx, { user, productId: seed.productId, quantity: 1, rate: 1 }));
+      prisma.$transaction((tx) => createInternalOrder(tx, { channel: "web", user, productId: seed.productId, quantity: 1, rate: 1 }));
     const owner = (await mk())!;
     const target = (await mk())!;
     await prisma.processedBinanceTx.create({
@@ -6780,7 +6780,7 @@ describe("payments", () => {
 
   it("credit requires auth (anon → 401)", async () => {
     const user = (await getUser(prisma, seed.customerId))!;
-    const order = (await createOrderDirect(prisma, { user, productId: seed.productId, quantity: 1 }))!;
+    const order = (await createOrderDirect(prisma, { channel: "web", user, productId: seed.productId, quantity: 1 }))!;
     await recordUnmatchedTx(prisma, { binanceTxId: "CRTX2", amount: "5.00" });
     const res = await post("/api/payments/credit", null, {
       csrf_token: "x",
@@ -6794,7 +6794,7 @@ describe("payments", () => {
 
   it("credit rejects bad CSRF (403)", async () => {
     const user = (await getUser(prisma, seed.customerId))!;
-    const order = (await createOrderDirect(prisma, { user, productId: seed.productId, quantity: 1 }))!;
+    const order = (await createOrderDirect(prisma, { channel: "web", user, productId: seed.productId, quantity: 1 }))!;
     await recordUnmatchedTx(prisma, { binanceTxId: "CRTX3", amount: "5.00" });
     const res = await post("/api/payments/credit", seed.cookie, {
       csrf_token: "bad",
@@ -7145,7 +7145,7 @@ describe("H-4 — passwordHash never leaks into admin JSON responses", () => {
 
   it("GET /api/users/:userId sends real totals (T3) alongside the capped Orders/Tickets/Wallet Ledger lists", async () => {
     const web = await makeWebBuyer("h4users3");
-    await createOrderDirect(prisma, { user: web, productId: seed.productId, quantity: 1 });
+    await createOrderDirect(prisma, { channel: "web", user: web, productId: seed.productId, quantity: 1 });
     await createTicket(prisma, web.id, "first ticket");
     await createTicket(prisma, web.id, "second ticket");
     await post(`/api/users/${web.id}/wallet`, seed.cookie, { csrf_token: seed.csrf, delta: "5.00", note: "one" });
@@ -7190,7 +7190,7 @@ describe("H-4 — passwordHash never leaks into admin JSON responses", () => {
 
   it("GET /api/orders never exposes the buyer's passwordHash or email", async () => {
     const web = await makeWebBuyer("h4orders1");
-    await createOrderDirect(prisma, { user: web, productId: seed.productId, quantity: 1 });
+    await createOrderDirect(prisma, { channel: "web", user: web, productId: seed.productId, quantity: 1 });
     const res = await get("/api/orders", seed.cookie);
     expect(res.statusCode).toBe(200);
     expectNoLeak(res);
@@ -7198,7 +7198,7 @@ describe("H-4 — passwordHash never leaks into admin JSON responses", () => {
 
   it("GET /api/orders/:orderId never exposes the buyer's passwordHash or email", async () => {
     const web = await makeWebBuyer("h4orders2");
-    const order = (await createOrderDirect(prisma, { user: web, productId: seed.productId, quantity: 1 }))!;
+    const order = (await createOrderDirect(prisma, { channel: "web", user: web, productId: seed.productId, quantity: 1 }))!;
     const res = await get(`/api/orders/${order.id}`, seed.cookie);
     expect(res.statusCode).toBe(200);
     expectNoLeak(res);
@@ -7206,7 +7206,7 @@ describe("H-4 — passwordHash never leaks into admin JSON responses", () => {
 
   it("GET /api/payments never exposes an underpaid buyer's passwordHash or email", async () => {
     const web = await makeWebBuyer("h4pay1");
-    const order = (await createOrderDirect(prisma, { user: web, productId: seed.productId, quantity: 1 }))!;
+    const order = (await createOrderDirect(prisma, { channel: "web", user: web, productId: seed.productId, quantity: 1 }))!;
     await markUnderpaid(prisma, { orderId: order.id, binanceTxId: `H4TX-${order.id}`, amount: "1.00" });
     const res = await get("/api/payments", seed.cookie);
     expect(res.statusCode).toBe(200);
@@ -7218,7 +7218,7 @@ describe("H-4 — passwordHash never leaks into admin JSON responses", () => {
   // exercises a different crud query than the "underpaid" test above.
   it("GET /api/payments never exposes a pending-internal-transfer buyer's passwordHash or email", async () => {
     const web = await makeWebBuyer("h4pay2");
-    const order = (await createOrderDirect(prisma, { user: web, productId: seed.productId, quantity: 1 }))!;
+    const order = (await createOrderDirect(prisma, { channel: "web", user: web, productId: seed.productId, quantity: 1 }))!;
     await prisma.order.update({
       where: { id: order.id },
       data: {
@@ -7240,7 +7240,7 @@ describe("H-4 — passwordHash never leaks into admin JSON responses", () => {
   // lowest-privilege `readonly` admin role, same as the leaks above.
   it("GET /api/reviews never exposes the reviewer's passwordHash or email", async () => {
     const web = await makeWebBuyer("h4reviews1");
-    const order = (await createOrderDirect(prisma, { user: web, productId: seed.productId, quantity: 1 }))!;
+    const order = (await createOrderDirect(prisma, { channel: "web", user: web, productId: seed.productId, quantity: 1 }))!;
     await prisma.review.create({
       data: { userId: web.id, orderId: order.id, productId: seed.productId, rating: 5, comment: "great" },
     });
@@ -7338,7 +7338,7 @@ describe("reviews moderation", () => {
 
   async function makeReview(hidden = false): Promise<number> {
     const user = (await getUser(prisma, seed.customerId))!;
-    const order = (await createOrderDirect(prisma, { user, productId: seed.productId, quantity: 1 }))!;
+    const order = (await createOrderDirect(prisma, { channel: "web", user, productId: seed.productId, quantity: 1 }))!;
     const r = await prisma.review.create({
       data: { userId: seed.customerId, orderId: order.id, productId: seed.productId, rating: 5, comment: "great", hidden },
     });
@@ -8074,7 +8074,7 @@ describe("page smoke tests", () => {
     // the `idr` filter regardless of `order.currency`. The API must return the
     // correct currency so the React client renders it properly.
     const user = (await getUser(prisma, seed.customerId))!;
-    const order = (await createOrderDirect(prisma, { user, productId: seed.productId, quantity: 1 }))!;
+    const order = (await createOrderDirect(prisma, { channel: "web", user, productId: seed.productId, quantity: 1 }))!;
     // rate "1" keeps the USDT total numerically equal to the central price,
     // so the rendered total is a deterministic, non-trivial USDT amount.
     await finalizeOrderPayment(prisma, order.id, { currency: "USDT", rate: "1" });

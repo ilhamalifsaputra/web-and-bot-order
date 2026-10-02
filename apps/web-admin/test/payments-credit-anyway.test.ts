@@ -61,7 +61,7 @@ async function makeUnderpaidTopupOrder(txId: string, received = "6.5") {
 /** A PRODUCT-kind UNDERPAID order — creditUnderpaidTopupAnyway must refuse
  * these with `error.order_not_wallet_topup`. */
 async function makeUnderpaidProductOrder(txId: string) {
-  const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+  const order = (await createOrderDirect(prisma, { channel: "web", user: sample.user, productId: sample.product.id, quantity: 1 }))!;
   const flagged = await markUnderpaid(prisma, { orderId: order.id, binanceTxId: txId, amount: "1.00" });
   expect(flagged).toBe(true);
   return order;

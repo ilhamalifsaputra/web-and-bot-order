@@ -40,7 +40,7 @@ function setRole(role: string) {
 }
 
 async function makeOrder(): Promise<number> {
-  const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+  const order = (await createOrderDirect(prisma, { channel: "web", user: sample.user, productId: sample.product.id, quantity: 1 }))!;
   return order.id;
 }
 

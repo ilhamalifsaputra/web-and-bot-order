@@ -74,6 +74,7 @@ beforeEach(async () => {
   });
   await bulkAddStock(prisma, denomination.id, ["test@example.com:code1"]);
   const order = await createOrderDirect(prisma, {
+    channel: "web",
     user: { id: customerId, role: customer.role },
     productId: denomination.id,
     quantity: 1,

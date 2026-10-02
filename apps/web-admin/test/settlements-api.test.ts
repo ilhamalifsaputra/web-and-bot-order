@@ -164,6 +164,7 @@ describe("POST /api/settlements", () => {
   it("matches a line to the payment whose provider transaction id it names", async () => {
     const buyer = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
     const order = await createOrderDirect(prisma, {
+      channel: "web",
       user: { id: buyer.id, role: buyer.role, walletBalance: buyer.walletBalance },
       productId: sample.product.id,
       quantity: 1,

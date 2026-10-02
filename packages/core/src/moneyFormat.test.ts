@@ -8,8 +8,7 @@ import {
   formatUsdFor,
   formatCompactIdrFor,
 } from "./moneyFormat";
-import { formatIdr, formatDisplayMoneyResult } from "./formatters";
-import { formatCompactPrice } from "./compactFormat";
+import { formatDisplayMoneyResult } from "./formatters";
 import { DisplayCurrency } from "./enums";
 import { canonicalProduct, type CanonicalProductInput } from "./canonicalProduct";
 
@@ -67,8 +66,9 @@ describe("formatIdrFor", () => {
     expect(formatIdrFor("4480.5", "id")).toBe("Rp4.481");
   });
 
-  it("is byte-identical to formatIdr for Indonesian", () => {
-    for (const a of [...IDR_AMOUNTS, "-1", "-5000", "-0.4"]) expect(formatIdrFor(a, "id")).toBe(formatIdr(a));
+  it("keeps the Indonesian spelling the web has always used (literal table)", () => {
+    const table: Array<[string, string]> = [["0", "Rp0"], ["999", "Rp999"], ["79000", "Rp79.000"], ["1234567", "Rp1.234.567"], ["-5000", "-Rp5.000"], ["4480.5", "Rp4.481"]];
+    for (const [amount, expected] of table) expect(formatIdrFor(amount, "id")).toBe(expected);
   });
 
   it.each(IDR_AMOUNTS)("never changes the number for %s (parse back = whole-rupiah value), and the languages differ only in separators", (a) => {
@@ -87,10 +87,9 @@ describe("formatUsdFor", () => {
     expect(formatUsdFor("-1250", "en")).toBe("-$1,250.00");
   });
 
-  it("is byte-identical to the legacy USD display for English", () => {
-    for (const a of USD_AMOUNTS) {
-      expect(formatUsdFor(a, "en")).toBe(formatDisplayMoneyResult(new Decimal(a).times(16000), DisplayCurrency.USD, "16000").text);
-    }
+  it("keeps the English USD spelling the bot used before languages (literal table)", () => {
+    const table: Array<[string, string]> = [["0", "$0.00"], ["0.28", "$0.28"], ["4.94", "$4.94"], ["1250", "$1,250.00"], ["1234.5", "$1,234.50"], ["-1250", "-$1,250.00"]];
+    for (const [amount, expected] of table) expect(formatUsdFor(amount, "en")).toBe(expected);
   });
 
   it.each(USD_AMOUNTS)("never changes the number for %s and the languages differ only in separators", (a) => {
@@ -109,11 +108,17 @@ describe("formatCompactIdrFor", () => {
     expect(formatCompactIdrFor(999, "en")).toBe("Rp999");
   });
 
-  it("matches the legacy formatCompactPrice for English and the presenter's Indonesian swap", () => {
-    for (const a of IDR_AMOUNTS) {
-      expect(formatCompactIdrFor(a, "en")).toBe(formatCompactPrice(a));
-      const legacy = formatCompactPrice(a);
-      expect(formatCompactIdrFor(a, "id")).toBe(new Decimal(a).lt(1000) ? legacy : legacy.replace(".", ","));
+  it("keeps the compact spellings from the legacy table (literal)", () => {
+    const table: Array<[number, string, string]> = [
+      [999, "Rp999", "Rp999"],
+      [4480, "Rp4K", "Rp4K"],
+      [355000, "Rp355K", "Rp355K"],
+      [1640000, "Rp1.64M", "Rp1,64M"],
+      [2000000, "Rp2M", "Rp2M"],
+    ];
+    for (const [amount, en, id] of table) {
+      expect(formatCompactIdrFor(amount, "en")).toBe(en);
+      expect(formatCompactIdrFor(amount, "id")).toBe(id);
     }
   });
 

@@ -14,6 +14,9 @@ import {
   ctxPriceFormatter,
   payAlongsidePriceLine,
   displayValidationArgs,
+  orderAmount,
+  mixedAmount,
+  priceIdr,
 } from "../src/util/format";
 import { coreT } from "../src/util/i18n";
 
@@ -99,6 +102,64 @@ describe("userPriceFormatter", () => {
     const ctx = { session: { dbUser: { preferredCurrency: "USD" as const } } };
     expect(ctxPriceFormatter(ctx, RATE).price(16000)).toBe("$1.00");
     expect(ctxPriceFormatter({ session: {} }, RATE).price(16000)).toBe("Rp16.000");
+  });
+});
+
+describe("prices follow the buyer's language", () => {
+  it("formatUserPrice uses the language's separators for both currencies", () => {
+    expect(formatUserPrice(DisplayCurrency.IDR, 4480, RATE, "id").text).toBe("Rp4.480");
+    expect(formatUserPrice(DisplayCurrency.IDR, 4480, RATE, "en").text).toBe("Rp4,480");
+    expect(formatUserPrice(DisplayCurrency.USD, 4480, RATE, "id").text).toBe("$0,28");
+    expect(formatUserPrice(DisplayCurrency.USD, 4480, RATE, "en").text).toBe("$0.28");
+    expect(formatUserPrice(DisplayCurrency.USD, 19_752_000, RATE, "id").text).toBe("$1.234,50");
+    expect(formatUserPrice(DisplayCurrency.USD, 19_752_000, RATE, "en").text).toBe("$1,234.50");
+    // A USD buyer without a rate gets the explicit Rupiah in their own language.
+    expect(formatUserPrice(DisplayCurrency.USD, 79000, null, "en")).toEqual({ text: "Rp79,000", currency: DisplayCurrency.IDR, fellBack: true });
+  });
+
+  it("price() and compact() agree with the language, the USD compact being the full price", () => {
+    const idrId = userPriceFormatter(DisplayCurrency.IDR, RATE, "id");
+    const idrEn = userPriceFormatter(DisplayCurrency.IDR, RATE, "en");
+    expect(idrId.lang).toBe("id");
+    expect(idrId.price(30000)).toBe("Rp30.000");
+    expect(idrEn.price(30000)).toBe("Rp30,000");
+    expect(idrId.compact(1_640_000)).toBe("Rp1,64M");
+    expect(idrEn.compact(1_640_000)).toBe("Rp1.64M");
+    expect(idrId.compact(79000)).toBe("Rp79K");
+    expect(idrEn.compact(79000)).toBe("Rp79K");
+    expect(userPriceFormatter(DisplayCurrency.USD, RATE, "id").compact(4480)).toBe("$0,28");
+    expect(userPriceFormatter(DisplayCurrency.USD, RATE, "en").compact(4480)).toBe("$0.28");
+  });
+
+  it("the language-less call keeps the long-standing output", () => {
+    const legacy = userPriceFormatter(DisplayCurrency.IDR, RATE);
+    expect(legacy.lang).toBeUndefined();
+    expect(legacy.price(30000)).toBe("Rp30.000");
+    expect(legacy.compact(1_640_000)).toBe("Rp1.64M");
+    expect(userPriceFormatter(DisplayCurrency.USD, RATE).price(19_752_000)).toBe("$1,234.50");
+  });
+
+  it("ctxPriceFormatter takes the language from the session", () => {
+    const usdId = { session: { lang: "id", dbUser: { preferredCurrency: "USD" as const } } };
+    const idrEn = { session: { lang: "en", dbUser: { preferredCurrency: "IDR" as const } } };
+    expect(ctxPriceFormatter(usdId, RATE).price(4480)).toBe("$0,28");
+    expect(ctxPriceFormatter(idrEn, RATE).price(4480)).toBe("Rp4,480");
+  });
+
+  it("orderAmount, mixedAmount and priceIdr localize Rupiah and never touch USDT", () => {
+    expect(orderAmount({ totalAmount: "40000", currency: "IDR" }, 2, "en")).toBe("Rp40,000");
+    expect(orderAmount({ totalAmount: "40000", currency: "IDR" }, 2, "id")).toBe("Rp40.000");
+    expect(orderAmount({ totalAmount: "2.5", currency: "USDT" }, 2, "id")).toBe("2.50 USDT");
+    expect(orderAmount({ totalAmount: "2.5", currency: "USDT" }, 4, "en")).toBe("2.5000 USDT");
+    expect(orderAmount({ totalAmount: "40000", currency: "IDR" })).toBe("Rp40.000");
+    expect(mixedAmount("1234000", "5", "en")).toBe("Rp1,234,000 + 5 USDT");
+    expect(mixedAmount("1234000", "5", "id")).toBe("Rp1.234.000 + 5 USDT");
+    expect(mixedAmount("1234000", "5")).toBe("Rp1.234.000 + 5 USDT");
+    // 79000 / 16000 = 4.9375 → 4.94 (ceil); only the separators move.
+    expect(priceIdr(79000, RATE, "en")).toBe("Rp79,000 (≈ $4.94)");
+    expect(priceIdr(79000, RATE, "id")).toBe("Rp79.000 (≈ $4,94)");
+    expect(priceIdr(79000, RATE)).toBe("Rp79.000 (≈ $4.94)");
+    expect(priceIdr(79000, null, "en")).toBe("Rp79,000");
   });
 });
 

@@ -16,6 +16,7 @@ import {
 } from "@app/core/formatters";
 import { esc } from "@app/core/formatters";
 import { formatCompactPrice } from "@app/core/compactFormat";
+import { formatIdrFor, formatCompactIdrFor, groupDecimalDigits } from "@app/core/moneyFormat";
 import { OrderStatus, DisplayCurrency, parseDisplayCurrency } from "@app/core/enums";
 import { coreT } from "./i18n";
 export {
@@ -29,6 +30,7 @@ export {
   usdtFromIdr,
 } from "@app/core/formatters";
 export { formatCompactQty, formatCompactPrice } from "@app/core/compactFormat";
+export { formatIdrFor, formatUsdFor, formatCompactIdrFor } from "@app/core/moneyFormat";
 
 /**
  * Legacy "Rp79.000 (≈ $4.94)" string, independent of any user preference.
@@ -36,9 +38,16 @@ export { formatCompactQty, formatCompactPrice } from "@app/core/compactFormat";
  * {@link formatUserPrice}/{@link userPriceFormatter}. It remains only for the
  * order-detail item lines (an order snapshot, which must read the same
  * whatever display currency the buyer picks later).
+ *
+ * With the buyer's `lang` both figures use that language's separators
+ * ("Rp79,000 (≈ $4.94)" / "Rp79.000 (≈ $4,94)"); the "$" hint keeps exactly
+ * the digits it always had. Without it the output is the original one.
  */
-export function priceIdr(v: Decimal.Value, rate: Decimal | null): string {
-  return rate ? `${formatIdr(v)} (≈ $${usdtFromIdr(v, rate).toString()})` : formatIdr(v);
+export function priceIdr(v: Decimal.Value, rate: Decimal | null, lang?: string): string {
+  const idr = lang === undefined ? formatIdr(v) : formatIdrFor(v, lang);
+  if (!rate) return idr;
+  const usd = usdtFromIdr(v, rate);
+  return `${idr} (≈ $${lang === undefined ? usd.toString() : groupDecimalDigits(usd.toFixed(), lang)})`;
 }
 
 // ---------------------------------------------------------------------------
@@ -55,13 +64,16 @@ export function priceIdr(v: Decimal.Value, rate: Decimal | null): string {
  * - IDR → "Rp79.000" only (no "≈ $" hint).
  * - NULL/unknown preference → IDR-labelled, never USD.
  * - USD with no usable rate → explicit "Rp…" and `fellBack: true`.
+ * - `lang` (the buyer's language) picks the separators: id "Rp79.000" /
+ *   "$4,94", en "Rp79,000" / "$4.94". Omitted → the long-standing output.
  */
 export function formatUserPrice(
   currency: DisplayCurrency | null | undefined,
   idr: Decimal.Value,
   rate: Decimal | null,
+  lang?: string,
 ): DisplayMoneyText {
-  return formatDisplayMoneyResult(idr, parseDisplayCurrency(currency) ?? DisplayCurrency.IDR, rate);
+  return formatDisplayMoneyResult(idr, parseDisplayCurrency(currency) ?? DisplayCurrency.IDR, rate, lang);
 }
 
 /** One screen's price renderer, bound to a display currency and the rate
@@ -70,43 +82,54 @@ export function formatUserPrice(
 export interface UserPriceFormatter {
   /** The effective display currency asked for (NULL preference → IDR). */
   readonly currency: DisplayCurrency;
+  /** The buyer's language whose separators prices use (undefined = the long-standing output). */
+  readonly lang: string | undefined;
   /** True when prices on this screen actually render in $. */
   readonly showsUsd: boolean;
   /** USD was asked for but the rate is unavailable, so Rp is shown instead. */
   readonly fellBack: boolean;
   /** Full price text for a canonical IDR amount. */
   price(idr: Decimal.Value): string;
-  /** Short price for inline-button labels: "Rp79K" (IDR) or "$4.94" (USD). */
+  /** Short price for inline-button labels: "Rp79K" / "Rp1,64M" (IDR) or "$4.94" (USD). */
   compact(idr: Decimal.Value): string;
   /** "\n\n<currency.rate_unavailable>" when fellBack, else "" — append once per screen. */
   rateNotice(lang: string): string;
 }
 
+/**
+ * `lang` is the reader's language and picks the separators for every price
+ * this formatter renders (bot screens always pass it; ctxPriceFormatter takes
+ * it from the session). Omitted, the output is the long-standing one (Rupiah
+ * dotted, dollars "$1,234.50", compact "Rp1.64M"), so an old call never breaks.
+ */
 export function userPriceFormatter(
   currency: DisplayCurrency | null | undefined,
   rate: Decimal | null,
+  lang?: string,
 ): UserPriceFormatter {
   const effective = parseDisplayCurrency(currency) ?? DisplayCurrency.IDR;
   // The rate is fixed for the screen, so whether USD renders is too — probe once.
   const probe = formatDisplayMoneyResult(0, effective, rate);
   const showsUsd = probe.currency === DisplayCurrency.USD;
   const fellBack = probe.fellBack;
+  const price = (idr: Decimal.Value) => formatDisplayMoneyResult(idr, effective, rate, lang).text;
   return {
     currency: effective,
+    lang,
     showsUsd,
     fellBack,
-    price: (idr) => formatDisplayMoneyResult(idr, effective, rate).text,
-    compact: (idr) => (showsUsd ? formatDisplayMoneyResult(idr, effective, rate).text : formatCompactPrice(idr)),
-    rateNotice: (lang) => (fellBack ? `\n\n${coreT("currency.rate_unavailable", lang)}` : ""),
+    price,
+    compact: (idr) => (showsUsd ? price(idr) : lang === undefined ? formatCompactPrice(idr) : formatCompactIdrFor(idr, lang)),
+    rateNotice: (noticeLang) => (fellBack ? `\n\n${coreT("currency.rate_unavailable", noticeLang)}` : ""),
   };
 }
 
-/** {@link userPriceFormatter} for the ctx's own user (session.dbUser.preferredCurrency). */
+/** {@link userPriceFormatter} for the ctx's own user: session.dbUser.preferredCurrency, in the session's language. */
 export function ctxPriceFormatter(
-  ctx: { session: { dbUser?: { preferredCurrency?: DisplayCurrency | null } | null } },
+  ctx: { session: { lang?: string; dbUser?: { preferredCurrency?: DisplayCurrency | null } | null } },
   rate: Decimal | null,
 ): UserPriceFormatter {
-  return userPriceFormatter(ctx.session.dbUser?.preferredCurrency ?? null, rate);
+  return userPriceFormatter(ctx.session.dbUser?.preferredCurrency ?? null, rate, ctx.session.lang);
 }
 
 /**
@@ -150,26 +173,31 @@ export function displayValidationArgs(
  * An order's charged total in ITS transaction currency: IDR (TokoPay) orders
  * as "Rp40.000", USDT (Binance) orders — and pre-cutover snapshots — as
  * "2.50 USDT" (the rounded amount Binance actually charges).
+ *
+ * With the buyer's `lang` an IDR total uses that language's separators
+ * ("Rp40,000" for English); a USDT total is a crypto amount and stays
+ * "2.50 USDT" in every language.
  */
 export function orderAmount(
   o: { totalAmount: Decimal.Value; currency?: string | null },
   decimals = 2,
+  lang?: string,
 ): string {
-  return (o.currency ?? "USDT") === "IDR"
-    ? formatIdr(o.totalAmount)
-    : formatPrice(o.totalAmount, "USDT", decimals);
+  if ((o.currency ?? "USDT") !== "IDR") return formatPrice(o.totalAmount, "USDT", decimals);
+  return lang === undefined ? formatIdr(o.totalAmount) : formatIdrFor(o.totalAmount, lang);
 }
 
 /**
  * Per-currency totals as one line: "Rp1.234.000 + 5.00 USDT". Currencies are
  * never summed into one number (plan.md §15.8) — zero buckets are dropped,
- * an all-zero pair renders as "Rp0".
+ * an all-zero pair renders as "Rp0". With the buyer's `lang` the Rupiah part
+ * uses that language's separators; the USDT part never changes.
  */
-export function mixedAmount(idr: Decimal.Value, usdt: Decimal.Value): string {
+export function mixedAmount(idr: Decimal.Value, usdt: Decimal.Value, lang?: string): string {
   const idrDec = new Decimal(idr);
   const usdtDec = new Decimal(usdt);
   const parts: string[] = [];
-  if (idrDec.greaterThan(0) || usdtDec.lessThanOrEqualTo(0)) parts.push(formatIdr(idrDec));
+  if (idrDec.greaterThan(0) || usdtDec.lessThanOrEqualTo(0)) parts.push(lang === undefined ? formatIdr(idrDec) : formatIdrFor(idrDec, lang));
   if (usdtDec.greaterThan(0)) parts.push(formatUsdt(usdtDec));
   return parts.join(" + ");
 }

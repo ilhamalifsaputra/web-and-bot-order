@@ -327,8 +327,10 @@ describe("the amount prompt advertises the effective minimum", () => {
     await walletTopup.promptTopupAmount(ctx, "IDR");
 
     const shown = JSON.stringify(sink);
-    expect(shown).toContain("Rp10.000");
-    // The figure it used to quote, which the buyer would then have been refused at.
+    // English buyer: English separators (was "Rp10.000" before prices followed the buyer's language).
+    expect(shown).toContain("Rp10,000");
+    // The figure it used to quote, which the buyer would then have been refused at — in either spelling.
+    expect(shown).not.toContain("Rp1,000");
     expect(shown).not.toContain("Rp1.000");
   });
 
@@ -339,7 +341,7 @@ describe("the amount prompt advertises the effective minimum", () => {
 
     const { ctx, sink } = customerCtx();
     await walletTopup.promptTopupAmount(ctx, "IDR");
-    expect(JSON.stringify(sink)).toContain("Rp20.000");
+    expect(JSON.stringify(sink)).toContain("Rp20,000"); // English buyer (was "Rp20.000")
   });
 
   it("keeps the top-up bound when it is the higher of the two", async () => {
@@ -350,7 +352,7 @@ describe("the amount prompt advertises the effective minimum", () => {
 
     const { ctx, sink } = customerCtx();
     await walletTopup.promptTopupAmount(ctx, "IDR");
-    expect(JSON.stringify(sink)).toContain("Rp50.000");
+    expect(JSON.stringify(sink)).toContain("Rp50,000"); // English buyer (was "Rp50.000")
   });
 
   it("refuses a typed amount the effective minimum rejects, re-prompting with that same figure", async () => {
@@ -363,7 +365,7 @@ describe("the amount prompt advertises the effective minimum", () => {
 
     const shown = JSON.stringify(sink);
     expect(shown).toContain("valid amount");
-    expect(shown).toContain("Rp10.000");
+    expect(shown).toContain("Rp10,000"); // English buyer (was "Rp10.000")
     // Still capturing: the buyer retypes into the same screen rather than being
     // dropped into a gateway picker with nothing in it.
     expect(ctx.session.awaitingTopupCurrency).toBe("IDR");

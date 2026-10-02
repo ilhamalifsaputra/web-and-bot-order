@@ -11,6 +11,7 @@ import {
 import { formatIdr, formatDisplayMoneyResult } from "./formatters";
 import { formatCompactPrice } from "./compactFormat";
 import { DisplayCurrency } from "./enums";
+import { canonicalProduct, type CanonicalProductInput } from "./canonicalProduct";
 
 /** Undo a language's money formatting: drop the symbol and the group separator, turn the decimal separator into ".". */
 function parseBack(text: string, lang: string): Decimal {
@@ -118,6 +119,22 @@ describe("formatCompactIdrFor", () => {
 
   it.each(IDR_AMOUNTS)("differs between languages only in separators for %s", (a) => {
     expect(swapSeparators(formatCompactIdrFor(a, "id"))).toBe(formatCompactIdrFor(a, "en"));
+  });
+});
+
+describe("one amount, one string across the canonical price and the display-currency price", () => {
+  // The detail/confirmation unit price comes from canonicalProduct().formattedPrice; the picker lines, the
+  // confirmation Total and the payment "Price" line from formatDisplayMoneyResult. They must agree per language.
+  const input: CanonicalProductInput = {
+    denomination: { id: 1, name: "86 Diamonds", durationLabel: "86 Diamonds", isActive: true },
+    product: { id: 1, name: "Mobile Legends", isActive: true },
+    category: { id: 1, name: "Top Up", group: "GAME_TOPUP", isActive: true },
+  };
+  const cases = ["id", "en"].flatMap((lang) => ["0", "999", "4480", "79000", "1234567"].flatMap((idr) => (["IDR", "USD"] as const).map((cur) => ({ lang, idr, cur }))));
+
+  it.each(cases)("$lang / $cur / Rp$idr", ({ lang, idr, cur }) => {
+    const canonical = canonicalProduct(input, { effectivePriceIDR: idr, preferredCurrency: cur, rate: "16000", locale: lang });
+    expect(canonical.formattedPrice).toBe(formatDisplayMoneyResult(idr, cur as DisplayCurrency, "16000", lang).text);
   });
 });
 

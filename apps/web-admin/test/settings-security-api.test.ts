@@ -72,27 +72,64 @@ function getJson(url: string, c: string | null) {
 }
 
 describe("POST /api/settings/edit", () => {
-  it("exposes independent active service switches by default", async () => {
+  it("exposes independent per-channel service switches by default", async () => {
     const res = await getJson("/api/settings", cookie);
     expect(res.statusCode).toBe(200);
     expect(res.json().serviceStates).toEqual([
-      { id: "game_topup", label: "Top Up Game", enabled: true },
-      { id: "premium_apps", label: "Premium Apps", enabled: true },
+      { id: "game_topup", label: "Top Up Game", enabledBot: true, enabledWeb: true },
+      { id: "premium_apps", label: "Premium Apps", enabledBot: true, enabledWeb: true },
     ]);
   });
 
-  it("persists a single service switch, audits it, and rejects non-boolean input", async () => {
-    const disabled = await postJson("/api/settings/services/toggle", cookie, csrf, { service: "game_topup", enabled: false });
-    expect(disabled.statusCode).toBe(200);
-    expect(await getSetting(prisma, "service_game_topup_enabled")).toBe("false");
+  it("persists one channel of one service, leaves the other channel and the legacy key alone, and audits in plain words", async () => {
+    const botOff = await postJson("/api/settings/services/toggle", cookie, csrf, { service: "game_topup", channel: "bot", enabled: false });
+    expect(botOff.statusCode).toBe(200);
+    expect(await getSetting(prisma, "service_game_topup_enabled_bot")).toBe("false");
+    expect(await getSetting(prisma, "service_game_topup_enabled_web")).toBeNull();
+    expect(await getSetting(prisma, "service_game_topup_enabled")).toBeNull();
     expect((await getJson("/api/settings", cookie)).json().serviceStates).toEqual([
-      { id: "game_topup", label: "Top Up Game", enabled: false },
-      { id: "premium_apps", label: "Premium Apps", enabled: true },
+      { id: "game_topup", label: "Top Up Game", enabledBot: false, enabledWeb: true },
+      { id: "premium_apps", label: "Premium Apps", enabledBot: true, enabledWeb: true },
     ]);
-    expect(await prisma.auditLog.findFirst({ where: { action: "setting_set", details: { contains: "service_game_topup_enabled" } } })).toBeTruthy();
-    const invalid = await postJson("/api/settings/services/toggle", cookie, csrf, { service: "game_topup", enabled: "yes" });
-    expect(invalid.statusCode).toBe(400);
-    expect(await getSetting(prisma, "service_game_topup_enabled")).toBe("false");
+    expect(await prisma.auditLog.findFirst({ where: { action: "setting_set", details: "Disabled Top Up Game for the Telegram bot." } })).toBeTruthy();
+
+    const webOff = await postJson("/api/settings/services/toggle", cookie, csrf, { service: "game_topup", channel: "web", enabled: false });
+    expect(webOff.statusCode).toBe(200);
+    const botOn = await postJson("/api/settings/services/toggle", cookie, csrf, { service: "game_topup", channel: "bot", enabled: true });
+    expect(botOn.statusCode).toBe(200);
+    expect((await getJson("/api/settings", cookie)).json().serviceStates[0]).toEqual(
+      { id: "game_topup", label: "Top Up Game", enabledBot: true, enabledWeb: false },
+    );
+    expect(await prisma.auditLog.findFirst({ where: { action: "setting_set", details: "Disabled Top Up Game for the website." } })).toBeTruthy();
+    expect(await prisma.auditLog.findFirst({ where: { action: "setting_set", details: "Enabled Top Up Game for the Telegram bot." } })).toBeTruthy();
+    expect(await getSetting(prisma, "service_game_topup_enabled")).toBeNull();
+  });
+
+  it("rejects an unknown service, a missing or invalid channel, and non-boolean input without writing", async () => {
+    const bad = [
+      { service: "nope", channel: "bot", enabled: false },
+      { service: "game_topup", enabled: false },
+      { service: "game_topup", channel: "sms", enabled: false },
+      { service: "game_topup", channel: "bot", enabled: "yes" },
+    ];
+    for (const payload of bad) {
+      const res = await postJson("/api/settings/services/toggle", cookie, csrf, payload);
+      expect(res.statusCode).toBe(400);
+    }
+    expect(await getSetting(prisma, "service_game_topup_enabled_bot")).toBeNull();
+    expect(await getSetting(prisma, "service_game_topup_enabled_web")).toBeNull();
+  });
+
+  it("reports a legacy-disabled service as disabled on both channels until a channel key is set", async () => {
+    await setSetting(prisma, "service_premium_apps_enabled", "false");
+    expect((await getJson("/api/settings", cookie)).json().serviceStates[1]).toEqual(
+      { id: "premium_apps", label: "Premium Apps", enabledBot: false, enabledWeb: false },
+    );
+    await postJson("/api/settings/services/toggle", cookie, csrf, { service: "premium_apps", channel: "web", enabled: true });
+    expect((await getJson("/api/settings", cookie)).json().serviceStates[1]).toEqual(
+      { id: "premium_apps", label: "Premium Apps", enabledBot: false, enabledWeb: true },
+    );
+    expect(await getSetting(prisma, "service_premium_apps_enabled")).toBe("false");
   });
 
   it("happy path: edits a whitelisted key and audits", async () => {

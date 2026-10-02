@@ -28,8 +28,8 @@ const SETTINGS_DATA = {
     tokopay: { enabled: true, configured: true },
   },
   serviceStates: [
-    { id: "game_topup", label: "Top Up Game", enabled: true },
-    { id: "premium_apps", label: "Premium Apps", enabled: false },
+    { id: "game_topup", label: "Top Up Game", enabledBot: true, enabledWeb: true },
+    { id: "premium_apps", label: "Premium Apps", enabledBot: false, enabledWeb: true },
   ],
   // Non-nullable verdict shape from evaluatePollHealth (packages/core/src/
   // payments/pollHealth.ts) — the server always returns a verdict, even when
@@ -46,22 +46,46 @@ beforeEach(() => {
 });
 
 describe("SettingsPage", () => {
-  it("shows each customer service switch and saves a change through the services endpoint", async () => {
+  it("shows a bot and a website switch per service and saves one channel through the services endpoint", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify(SETTINGS_DATA), { status: 200, headers: { "Content-Type": "application/json" } }));
     render(<SettingsPage />, { wrapper: Wrapper });
     expect(await screen.findByRole("heading", { name: "Services" })).toBeInTheDocument();
-    expect(screen.getByRole("switch", { name: "Top Up Game" })).toBeChecked();
-    expect(screen.getByRole("switch", { name: "Premium Apps" })).not.toBeChecked();
+    expect(screen.getByRole("switch", { name: "Top Up Game on the Telegram bot" })).toBeChecked();
+    expect(screen.getByRole("switch", { name: "Top Up Game on the website" })).toBeChecked();
+    expect(screen.getByRole("switch", { name: "Premium Apps on the Telegram bot" })).not.toBeChecked();
+    expect(screen.getByRole("switch", { name: "Premium Apps on the website" })).toBeChecked();
 
     fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } }));
     const user = userEvent.setup();
-    await user.click(screen.getByRole("switch", { name: "Top Up Game" }));
+    await user.click(screen.getByRole("switch", { name: "Top Up Game on the Telegram bot" }));
     const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Disable Top Up Game for the Telegram bot?")).toBeInTheDocument();
+    expect(within(dialog).getByText(/Telegram bot only/)).toBeInTheDocument();
+    // Opening the dialog changes nothing until confirmed.
+    expect(screen.getByRole("switch", { name: "Top Up Game on the website", hidden: true })).toBeChecked();
     await user.click(within(dialog).getByRole("button", { name: "Disable" }));
     await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith(
       expect.stringContaining("/api/settings/services/toggle"),
-      expect.objectContaining({ body: JSON.stringify({ service: "game_topup", enabled: false }) }),
+      expect.objectContaining({ body: JSON.stringify({ service: "game_topup", channel: "bot", enabled: false }) }),
+    ));
+    expect(screen.getByRole("switch", { name: "Top Up Game on the website", hidden: true })).toBeChecked();
+  });
+
+  it("names the website in the confirm dialog and posts the web channel when enabling", async () => {
+    const data = { ...SETTINGS_DATA, serviceStates: [{ id: "premium_apps", label: "Premium Apps", enabledBot: true, enabledWeb: false }] };
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify(data), { status: 200, headers: { "Content-Type": "application/json" } }));
+    render(<SettingsPage />, { wrapper: Wrapper });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("switch", { name: "Premium Apps on the website" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Enable Premium Apps for the website?")).toBeInTheDocument();
+    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    await user.click(within(dialog).getByRole("button", { name: "Enable" }));
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith(
+      expect.stringContaining("/api/settings/services/toggle"),
+      expect.objectContaining({ body: JSON.stringify({ service: "premium_apps", channel: "web", enabled: true }) }),
     ));
   });
 

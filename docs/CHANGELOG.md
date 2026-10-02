@@ -9,6 +9,14 @@ tag git yang sungguhan sampai dokumen ini ditulis.
 ## [Unreleased]
 
 ### Added
+- **Saklar layanan (Top Up Game / Premium Apps) kini dipisah per kanal: bot
+  Telegram dan website.** Tiap layanan punya dua kunci setting,
+  `service_<id>_enabled_bot` dan `service_<id>_enabled_web`; halaman Settings
+  admin menampilkan dua switch per layanan dan `POST /api/settings/services/toggle`
+  menerima `{ service, channel, enabled }`. Kunci lama `service_<id>_enabled`
+  tetap dibaca sebagai fallback selama kunci kanalnya belum ada (nilai lama
+  `false` = kedua kanal mati sampai salah satu disetel), tidak pernah ditulis
+  atau dihapus oleh saklar baru. Tanpa kunci apa pun, layanan aktif.
 - **Audit alur pembayaran menyeluruh (6 rail: TokoPay, PayDisini, NOWPayments,
   Binance Internal, Bybit Internal, Bybit BSC).** Dikerjakan sebagai satu
   branch bertahap; ringkasnya:

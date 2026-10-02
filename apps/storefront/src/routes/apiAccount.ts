@@ -770,7 +770,7 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
     const denom = await getDenominationWithProduct(prisma, Number(req.params.id));
     // The SPA bounces back to the parent product detail (slug URL).
     const redirect = denom ? `/p/${denom.product.slug}` : "/";
-    if (!denom?.isActive || !(await isServiceActive(prisma, denom.product.category.group as CategoryGroup | null))) {
+    if (!denom?.isActive || !(await isServiceActive(prisma, denom.product.category.group as CategoryGroup | null, "web"))) {
       return reply.send({ ok: false, result: "unavailable", redirect });
     }
     // Restock DMs go out over Telegram, so a web-only account can never be served.

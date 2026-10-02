@@ -169,7 +169,7 @@ export type GuestCartItem = {
 
 export async function loadGuestCartItems(req: FastifyRequest): Promise<GuestCartItem[]> {
   const lines = readGuestCart(req);
-  const groups = await activeServiceGroups(prisma);
+  const groups = await activeServiceGroups(prisma, "web");
   const resolved = await Promise.all(
     lines.map(async (l) => {
       const denom = await getDenominationWithProduct(prisma, l.p);
@@ -185,7 +185,7 @@ export async function loadCartLines(
   req: FastifyRequest,
   customer: Customer | null,
 ): Promise<CartLineView[]> {
-  const groups = await activeServiceGroups(prisma);
+  const groups = await activeServiceGroups(prisma, "web");
   const display = { ...await getCanonicalRateContext(prisma), preferredCurrency: resolveDisplayCurrency(customer?.user, requestCurrency(req)) ?? "IDR", locale: requestLang(req), generatedAt: new Date().toISOString() };
   const canonicalOf = (denom: GuestCartItem["product"], unit: Decimal, available: number) => canonicalProduct({ denomination: { ...denom, createdAt: denom.createdAt.toISOString() }, product: denom.product, category: denom.product.category, stockAvailable: denom.deliveryType !== "auto" || available > 0 }, { ...display, effectivePriceIDR: unit.toString() });
   if (customer) {

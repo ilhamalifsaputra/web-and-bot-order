@@ -32,8 +32,8 @@ const seoRoutes: FastifyPluginAsync = async (app) => {
     }
 
     const [categories, products] = await Promise.all([
-      listActiveCategories(prisma),
-      listCatalogProducts(prisma),
+      listActiveCategories(prisma, "web"),
+      listCatalogProducts(prisma, "web"),
     ]);
 
     // The home page and the informational pages are static but indexable, and

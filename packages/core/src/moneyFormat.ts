@@ -12,6 +12,9 @@
  *
  * Not for crypto payables (`formatUsdt`, `formatUsdtAmount`, `formatPrice`):
  * those are copied into exchanges and stay "5.07 USDT" in every language.
+ *
+ * The one input-side helper, {@link parseMoneyInput}, reads an amount a buyer
+ * typed back from either style by its shape.
  */
 import { Decimal } from "./money";
 
@@ -76,4 +79,66 @@ export function formatCompactIdrFor(amount: Decimal.Value, lang: string | null |
   if (value.lessThan(1000)) return formatIdrFor(value, lang);
   if (value.lessThan(1_000_000)) return `Rp${value.div(1000).toDecimalPlaces(0, Decimal.ROUND_HALF_UP).toFixed(0)}K`;
   return `Rp${trimTwoDecimals(value.div(1_000_000)).replace(".", moneySeparators(lang).decimal)}${isIndonesianLanguage(lang) ? "jt" : "M"}`;
+}
+
+/** Drop every group separator, then turn the decimal separator (if any) into ".". */
+const normalize = (group: string, decimal?: string) => (s: string) => {
+  const ungrouped = s.split(group).join("");
+  return decimal ? ungrouped.replace(decimal, ".") : ungrouped;
+};
+const asIs = (s: string) => s;
+
+type ShapeRule = readonly [RegExp, (s: string) => string];
+
+const IDR_SHAPES: readonly ShapeRule[] = [
+  [/^\d+$/, asIs],
+  [/^\d{1,3}(\.\d{3})+$/, normalize(".")],
+  [/^\d{1,3}(,\d{3})+$/, normalize(",")],
+  [/^\d+\.\d{1,2}$/, asIs],
+  [/^\d+,\d{1,2}$/, normalize(".", ",")],
+  [/^\d{1,3}(\.\d{3})+,\d{1,2}$/, normalize(".", ",")],
+  [/^\d{1,3}(,\d{3})+\.\d{1,2}$/, normalize(",")],
+];
+
+const USDT_SHAPES: readonly ShapeRule[] = [
+  [/^\d+$/, asIs],
+  // A single separator + exactly 3 digits is decimal-or-thousands: ambiguous, never matched.
+  [/^\d+\.(\d{1,2}|\d{4,8})$/, asIs],
+  [/^\d+,(\d{1,2}|\d{4,8})$/, normalize(".", ",")],
+  [/^\d{1,3}(,\d{3})+\.\d{1,8}$/, normalize(",")],
+  [/^\d{1,3}(\.\d{3})+,\d{1,8}$/, normalize(".", ",")],
+  [/^\d{1,3}(,\d{3}){2,}$/, normalize(",")],
+  [/^\d{1,3}(\.\d{3}){2,}$/, normalize(".")],
+];
+
+/**
+ * Read a money amount a buyer TYPED, by its shape alone — never by guessing the
+ * buyer's language, and never by guessing an ambiguous shape (it returns null so
+ * the caller re-prompts). Range checks (> 0, min, max) stay with the caller.
+ *
+ * Common to both: trimmed, at most 20 characters, digits plus `.`/`,` only (no
+ * spaces, signs, letters or "Rp"/"$"), else null. Plain digits are an integer.
+ *
+ * IDR (whole rupiah, so "sep + exactly 3 digits" is thousands grouping):
+ * - `10.000`, `1,000,000`  grouped integer, ONE separator kind throughout
+ * - `10000.5`, `10000,50`  one separator + 1-2 digits: that is the decimal point
+ * - `1.000.000,50` (id), `1,000,000.50` (en)  grouped + 1-2 decimal digits
+ * - anything else (`1.2.3`, `1,0000`, `.5`, `5.`, mixed) -> null
+ *
+ * USDT (displayed "5.07 USDT" in every language, so "." stays the decimal point):
+ * - `5.5`, `5.07`, `1.0000`  one "." + 1-2 or 4-8 digits: decimal
+ * - `5,5`, `12,3456`         one "," + 1-2 or 4-8 digits: decimal comma
+ * - `1.000`, `1,000`         one separator + exactly 3 digits: ambiguous -> null
+ * - `1,000,000.50` (en), `1.000.000,50` (id)  grouped + 1-8 decimal digits
+ * - `1,000,000`, `1.000.000`  2+ groups, no tail: integer
+ * - anything else -> null
+ */
+export function parseMoneyInput(raw: string, currency: "IDR" | "USDT"): Decimal | null {
+  const text = raw.trim();
+  if (text.length === 0 || text.length > 20 || !/^[\d.,]+$/.test(text)) return null;
+  const shapes = currency === "IDR" ? IDR_SHAPES : USDT_SHAPES;
+  for (const [shape, toPlain] of shapes) {
+    if (shape.test(text)) return new Decimal(toPlain(text));
+  }
+  return null;
 }

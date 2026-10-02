@@ -385,3 +385,71 @@ describe("the amount prompt advertises the effective minimum", () => {
     expect(JSON.stringify(sink)).toContain("v1:topup:pay:tokopay");
   });
 });
+
+// ===========================================================================
+// The typed amount is read by its shape (parseMoneyInput), not by stripping
+// commas. Rupiah is shown in the buyer's language ("Rp10.000" to an Indonesian
+// buyer), so a buyer copying what they see must get that amount — and a USDT
+// decimal comma ("5,5") must never turn into ten times the money.
+// ===========================================================================
+
+describe("the typed top-up amount is parsed by its shape", () => {
+  function indonesianCtx() {
+    return customerCtx({ session: { ...userSession(), lang: "id" } });
+  }
+
+  async function enableTokopay() {
+    await setSetting(prisma, "tokopay_merchant_id", "M1");
+    await setSetting(prisma, "tokopay_secret", "S1");
+  }
+
+  async function enableBinanceInternal() {
+    await setSetting(prisma, BINANCE_UID_KEY, "UID123");
+    await setSetting(prisma, BINANCE_API_KEY_KEY, "key");
+    await setSetting(prisma, BINANCE_API_SECRET_KEY, "secret");
+    await setSetting(prisma, "usd_idr_rate", "16000");
+  }
+
+  it("IDR: an Indonesian buyer typing the advertised minimum \"10.000\" tops up Rp10.000", async () => {
+    await enableTokopay();
+    await setSetting(prisma, "min_order_amount_idr", "10000");
+
+    const { ctx, sink } = indonesianCtx();
+    await walletTopup.handleTopupAmountInput(ctx, "IDR", "10.000");
+
+    expect(ctx.session.awaitingTopupCurrency).toBeUndefined();
+    expect((ctx.session.scratch as Record<string, unknown>).topupAmount).toBe("10000");
+    expect(JSON.stringify(sink)).toContain("v1:topup:pay:tokopay");
+  });
+
+  it("IDR: \"1.000.000\" is one million rupiah, not an invalid entry", async () => {
+    await enableTokopay();
+
+    const { ctx } = indonesianCtx();
+    await walletTopup.handleTopupAmountInput(ctx, "IDR", "1.000.000");
+
+    expect(ctx.session.awaitingTopupCurrency).toBeUndefined();
+    expect((ctx.session.scratch as Record<string, unknown>).topupAmount).toBe("1000000");
+  });
+
+  it("USDT: \"5,5\" is 5.5 USDT, never 55", async () => {
+    await enableBinanceInternal();
+
+    const { ctx } = indonesianCtx();
+    await walletTopup.handleTopupAmountInput(ctx, "USDT", "5,5");
+
+    expect(ctx.session.awaitingTopupCurrency).toBeUndefined();
+    expect((ctx.session.scratch as Record<string, unknown>).topupAmount).toBe("5.5");
+  });
+
+  it("USDT: the ambiguous \"1.000\" is refused with the invalid-amount reply and capture stays on", async () => {
+    await enableBinanceInternal();
+
+    const { ctx, sink } = customerCtx();
+    await walletTopup.handleTopupAmountInput(ctx, "USDT", "1.000");
+
+    expect(JSON.stringify(sink)).toContain("valid amount");
+    expect(ctx.session.awaitingTopupCurrency).toBe("USDT");
+    expect((ctx.session.scratch as Record<string, unknown>).topupAmount).toBeUndefined();
+  });
+});

@@ -15,6 +15,7 @@
 import { InlineKeyboard } from "grammy";
 import { config } from "@app/core/config";
 import { Decimal } from "@app/core/money";
+import { parseMoneyInput } from "@app/core/moneyFormat";
 import { localize } from "@app/core/datetime";
 import { PaymentMethod, StockActorType } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
@@ -194,11 +195,11 @@ export async function handleTopupAmountInput(ctx: MyContext, currency: "IDR" | "
   const { limits, min } = await topupBounds(currency);
   const rangeLine = topupRangeLine(ctx, limits, currency, min);
 
-  // Length cap before parsing — same defensive spirit as handleQtyTextInput's
-  // digit-string checks, just guarding against a pathologically long paste
-  // rather than a real amount.
-  const trimmed = rawText.trim().replace(/,/g, "");
-  const amount = trimmed.length <= 20 && /^\d+(\.\d+)?$/.test(trimmed) ? new Decimal(trimmed) : null;
+  // Read by shape, not by stripping commas: Rupiah is shown in the buyer's
+  // language ("Rp10.000" / "Rp10,000"), so "10.000" must be ten thousand and a
+  // USDT "5,5" must be 5.5, not 55. An ambiguous or malformed entry is null and
+  // lands on the same invalid-amount re-prompt (length cap included).
+  const amount = parseMoneyInput(rawText, currency);
   // `min` is the EFFECTIVE minimum (F4b), so an amount no configured rail would
   // accept is refused here — on the screen the buyer can retype into — instead of
   // being carried into a gateway picker that would have nothing in it.

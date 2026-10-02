@@ -162,6 +162,13 @@ describe("prices follow the buyer's language", () => {
     expect(priceIdr(79000, null, "en")).toBe("Rp79,000");
   });
 
+  it("mixedAmount never shows a USDT balance with exactly three decimals", () => {
+    expect(mixedAmount("1234000", "12.345", "id")).toBe("Rp1.234.000 + 12.3450 USDT");
+    expect(mixedAmount("0", "12.345", "en")).toBe("12.3450 USDT");
+    expect(mixedAmount("0", "12.34", "id")).toBe("12.34 USDT");
+    expect(mixedAmount("0", "12.3456", "id")).toBe("12.3456 USDT");
+  });
+
   it("priceIdr lets the $ hint use its own spelling so a USDT order reads as one style", () => {
     // An Indonesian buyer's USDT order shows "2.50 USDT" as the total, so the "≈ $" hint beside the Rupiah
     // snapshot must not flip to a decimal comma on the same screen.

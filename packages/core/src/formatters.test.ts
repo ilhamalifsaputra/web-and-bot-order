@@ -3,6 +3,7 @@ import {
   formatMoney,
   formatUsdt,
   formatUsdtAmount,
+  formatUsdtBalance,
   usdtFromIdr,
   convertIdrToDisplay,
   formatDisplayMoney,
@@ -65,6 +66,27 @@ describe("formatUsdtAmount / formatUsdt", () => {
   it("formatUsdt appends the ' USDT' suffix", () => {
     expect(formatUsdt(0)).toBe("0 USDT");
     expect(formatUsdt(123.456789)).toBe("123.4568 USDT");
+  });
+});
+
+describe("formatUsdtBalance", () => {
+  // A balance is read, not copied into a transfer, so it must never show exactly three decimals: a reader who
+  // groups thousands with "." would take "12.345" for twelve thousand.
+  it("pads a three-decimal fraction to four so it cannot be read as a thousands group", () => {
+    expect(formatUsdtBalance("12.345")).toBe("12.3450");
+    expect(formatUsdtBalance("0.125")).toBe("0.1250");
+    expect(formatUsdtBalance("-7.005")).toBe("-7.0050");
+    expect(formatUsdtBalance("12.34567")).toBe("12.3457");
+  });
+
+  it("is otherwise exactly formatUsdtAmount", () => {
+    for (const v of ["0", "1", "1.5", "12.34", "96.7", "20.0000", "123.4568", "0.00001", "1000"]) {
+      expect(formatUsdtBalance(v)).toBe(formatUsdtAmount(v));
+    }
+  });
+
+  it("keeps the payable formatter unchanged", () => {
+    expect(formatUsdtAmount("12.345")).toBe("12.345");
   });
 });
 

@@ -1,7 +1,7 @@
 import type { CanonicalProduct, CanonicalMoney } from "@app/core/canonicalProduct";
 import { Decimal } from "@app/core/money";
 import { esc } from "@app/core/formatters";
-import { formatCompactPrice } from "@app/core/compactFormat";
+import { formatCompactIdrFor } from "@app/core/moneyFormat";
 import { visualWidth, MAX_LABEL_WIDTH, TARGET_LABEL_WIDTH, NARROW_LABEL_WIDTH, MAX_LABEL_BYTES, CATALOG_PAGE_SIZE } from "@app/core/buttonLimits";
 import { abbreviateText, displayUnit, hasRepeatedIcon, iconizeUnitOnce, sharedIconUnits } from "@app/core/unitDisplay";
 
@@ -32,8 +32,7 @@ function major(money: CanonicalMoney): Decimal {
 function compactPrice(product: CanonicalProduct, locale: string): string {
   if (product.displayPrice.currency === "USD") return product.formattedPrice;
   if (major(product.displayPrice).lt(1000)) return product.formattedPrice;
-  const formatted = formatCompactPrice(major(product.displayPrice));
-  return locale.startsWith("id") ? formatted.replace(".", ",") : formatted;
+  return formatCompactIdrFor(major(product.displayPrice), locale);
 }
 /** Repeated supplier whitespace ("Redefine  - Garena") is collapsed for display only; stored names keep it. */
 function collapse(value: string): string {

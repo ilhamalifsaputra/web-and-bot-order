@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { Decimal } from "./money";
 import { convertIdrToDisplay } from "./formatters";
+import { groupDecimalDigits } from "./moneyFormat";
 
 const text = z.string().min(1);
 const quantity = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
@@ -245,13 +246,10 @@ function exactMoney(value: Decimal, currency: "IDR" | "USD"): CanonicalMoney {
 
 /** Exact, Decimal-based localized display; fractions of a rupiah are never rounded away. */
 function formatExactMoney(value: CanonicalMoney, locale: string): string {
-  const id = locale.toLowerCase().startsWith("id");
-  const decimal = id ? "," : ".";
-  const grouping = id ? "." : ",";
+  // Separators come from the one language rule in ./moneyFormat; every digit of amountMinor/scale is kept.
   const padded = value.amountMinor.padStart(value.scale + 1, "0");
-  const whole = value.scale === 0 ? padded : padded.slice(0, -value.scale);
-  const fraction = value.scale === 0 ? "" : `${decimal}${padded.slice(-value.scale)}`;
-  return `${value.currency === "IDR" ? "Rp" : "$"}${whole.replace(/\B(?=(\d{3})+(?!\d))/g, grouping)}${fraction}`;
+  const plain = value.scale === 0 ? padded : `${padded.slice(0, -value.scale)}.${padded.slice(-value.scale)}`;
+  return `${value.currency === "IDR" ? "Rp" : "$"}${groupDecimalDigits(plain, locale)}`;
 }
 
 /** Lowercased whole tokens; brackets, dashes and repeated whitespace are separators. */

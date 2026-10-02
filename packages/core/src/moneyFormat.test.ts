@@ -7,6 +7,7 @@ import {
   formatIdrFor,
   formatUsdFor,
   formatCompactIdrFor,
+  parseMoneyInput,
 } from "./moneyFormat";
 import { formatDisplayMoneyResult } from "./formatters";
 import { DisplayCurrency } from "./enums";
@@ -158,5 +159,128 @@ describe("formatDisplayMoneyResult with a language", () => {
     // USD asked for without a rate falls back to an explicit Rupiah string in the same language.
     const fellBack = formatDisplayMoneyResult(79000, DisplayCurrency.USD, null, "en");
     expect(fellBack).toEqual({ text: "Rp79,000", currency: DisplayCurrency.IDR, fellBack: true });
+  });
+});
+
+describe("parseMoneyInput", () => {
+  // [typed text, expected value as a plain decimal string, or null when refused]
+  const IDR_CASES: Array<[string, string | null]> = [
+    // plain digits
+    ["10000", "10000"],
+    ["0", "0"],
+    ["  25000  ", "25000"],
+    // grouped integers, one kind of separator throughout
+    ["10.000", "10000"],
+    ["10,000", "10000"],
+    ["1.000.000", "1000000"],
+    ["1,000,000", "1000000"],
+    ["999.999", "999999"],
+    // a single separator followed by 1-2 digits is the decimal point
+    ["10000.5", "10000.5"],
+    ["10000,50", "10000.5"],
+    ["10000,5", "10000.5"],
+    ["10.5", "10.5"],
+    // grouped with a decimal tail, either style
+    ["1.000.000,50", "1000000.5"],
+    ["1,000,000.50", "1000000.5"],
+    ["10.000,5", "10000.5"],
+    // refused: malformed or mixed shapes
+    ["1.2.3", null],
+    ["1,0000", null],
+    ["1.0000", null],
+    [".5", null],
+    ["5.", null],
+    ["10.000,", null],
+    ["1.000,000", null],
+    ["1,000.000", null],
+    ["1,000.000,50", null],
+    ["10.000.5", null],
+    ["1000.000", null],
+    ["10.000,500", null],
+    // refused: anything but digits and . ,
+    ["", null],
+    ["   ", null],
+    [" 5", "5"],
+    ["5 000", null],
+    ["Rp10.000", null],
+    ["-5000", null],
+    ["+5000", null],
+    ["10k", null],
+    ["1e5", null],
+    // refused: longer than 20 characters after trimming
+    ["123456789012345678901", null],
+  ];
+
+  const USDT_CASES: Array<[string, string | null]> = [
+    // plain digits
+    ["5", "5"],
+    ["100", "100"],
+    // decimal dot, as every language displays USDT
+    ["5.5", "5.5"],
+    ["5.07", "5.07"],
+    ["0.5", "0.5"],
+    ["1.0000", "1"],
+    ["12.3456", "12.3456"],
+    ["0.12345678", "0.12345678"],
+    // decimal comma
+    ["5,5", "5.5"],
+    ["5,07", "5.07"],
+    ["12,3456", "12.3456"],
+    // fully grouped, with or without a decimal tail
+    ["1,000,000.50", "1000000.5"],
+    ["1.000.000,50", "1000000.5"],
+    ["1,000.5", "1000.5"],
+    ["1.000,5", "1000.5"],
+    // both separators present, so the grouping is unambiguous even with a 3-digit tail
+    ["1,000.000", "1000"],
+    ["1.000,000", "1000"],
+    ["1,000,000", "1000000"],
+    ["1.000.000", "1000000"],
+    // refused: a single separator + exactly 3 digits is decimal-or-thousands, ambiguous
+    ["1.000", null],
+    ["12.345", null],
+    ["1,000", null],
+    ["12,345", null],
+    // refused: malformed
+    ["0.123456789", null],
+    ["5,123456789", null],
+    ["1.2.3", null],
+    [".5", null],
+    ["5.", null],
+    ["5,", null],
+    ["1,000,000,", null],
+    ["1.000,000.5", null],
+    ["1,000.123456789", null],
+    ["10.000,", null],
+    // refused: anything but digits and . ,
+    ["", null],
+    [" 5", "5"],
+    ["5 USDT", null],
+    ["$5", null],
+    ["-5", null],
+    ["123456789012345678901", null],
+  ];
+
+  it.each(IDR_CASES)("IDR %j -> %s", (typed, expected) => {
+    const result = parseMoneyInput(typed, "IDR");
+    if (expected === null) expect(result).toBeNull();
+    else {
+      expect(result).toBeInstanceOf(Decimal);
+      expect(result!.equals(new Decimal(expected))).toBe(true);
+    }
+  });
+
+  it.each(USDT_CASES)("USDT %j -> %s", (typed, expected) => {
+    const result = parseMoneyInput(typed, "USDT");
+    if (expected === null) expect(result).toBeNull();
+    else {
+      expect(result).toBeInstanceOf(Decimal);
+      expect(result!.equals(new Decimal(expected))).toBe(true);
+    }
+  });
+
+  it("allows exactly 20 characters", () => {
+    expect(parseMoneyInput("12345678901234567890", "IDR")?.toFixed()).toBe("12345678901234567890");
+    expect(parseMoneyInput("12345678901234567890", "USDT")?.toFixed()).toBe("12345678901234567890");
   });
 });

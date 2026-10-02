@@ -752,6 +752,25 @@ describe("customer handlers", () => {
     expect(JSON.stringify(markup)).toContain(`v1:checkout:refresh:${order!.id}`);
   });
 
+  it("viewOrder keeps the '≈ $' hint in the USDT total's decimal-point style for an Indonesian buyer, but follows the language for an IDR order", async () => {
+    await setSetting(prisma, "usd_idr_rate", "16000");
+    invalidateRateCache();
+    const order = await makeOrder();
+    await prisma.order.update({ where: { id: order!.id }, data: { paymentMethod: PaymentMethod.BYBIT_BSC, currency: "USDT", totalAmount: "2.5" } });
+    const usdt = customerCtx({ session: { ...userSession(), lang: "id" } });
+    await customer.viewOrder(usdt.ctx, order!.id);
+    const usdtBody = JSON.stringify(usdt.sink);
+    expect(usdtBody).toMatch(/≈ \$\d+\.\d+\)/);
+    expect(usdtBody).not.toMatch(/≈ \$\d+,\d+\)/);
+    expect(usdtBody).toContain("2.5000 USDT");
+
+    await prisma.order.update({ where: { id: order!.id }, data: { paymentMethod: PaymentMethod.TOKOPAY, currency: "IDR", totalAmount: "40000" } });
+    const idr = customerCtx({ session: { ...userSession(), lang: "id" } });
+    await customer.viewOrder(idr.ctx, order!.id);
+    expect(JSON.stringify(idr.sink)).toMatch(/≈ \$\d+,\d+\)/);
+    invalidateRateCache();
+  });
+
   it.each([OrderStatus.PAYMENT_DETECTED, OrderStatus.CONFIRMING, OrderStatus.CONFIRMED])(
     "viewOrder routes a BYBIT_BSC order at %s through the live tracking screen, not the generic order.detail",
     async (status) => {

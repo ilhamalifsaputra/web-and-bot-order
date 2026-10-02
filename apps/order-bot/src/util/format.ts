@@ -34,6 +34,9 @@ export { formatIdrFor, formatUsdFor, formatCompactIdrFor } from "@app/core/money
 
 /**
  * Legacy "Rp79.000 (≈ $4.94)" string, independent of any user preference.
+ * `hintLang` spells only the "$" hint (default: `lang`): a screen whose charged
+ * total is a USDT payable, always written with a decimal point, passes "en" so
+ * the hint does not switch to the buyer's decimal comma beside it.
  * Catalog/detail/confirmation screens no longer use it — they go through
  * {@link formatUserPrice}/{@link userPriceFormatter}. It remains only for the
  * order-detail item lines (an order snapshot, which must read the same
@@ -43,11 +46,11 @@ export { formatIdrFor, formatUsdFor, formatCompactIdrFor } from "@app/core/money
  * ("Rp79,000 (≈ $4.94)" / "Rp79.000 (≈ $4,94)"); the "$" hint keeps exactly
  * the digits it always had. Without it the output is the original one.
  */
-export function priceIdr(v: Decimal.Value, rate: Decimal | null, lang?: string): string {
+export function priceIdr(v: Decimal.Value, rate: Decimal | null, lang?: string, hintLang: string | undefined = lang): string {
   const idr = lang === undefined ? formatIdr(v) : formatIdrFor(v, lang);
   if (!rate) return idr;
   const usd = usdtFromIdr(v, rate);
-  return `${idr} (≈ $${lang === undefined ? usd.toString() : groupDecimalDigits(usd.toFixed(), lang)})`;
+  return `${idr} (≈ $${hintLang === undefined ? usd.toString() : groupDecimalDigits(usd.toFixed(), hintLang)})`;
 }
 
 // ---------------------------------------------------------------------------

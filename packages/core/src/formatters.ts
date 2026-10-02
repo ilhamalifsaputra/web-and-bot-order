@@ -34,6 +34,18 @@ export function formatUsdtAmount(amount: Decimal.Value): string {
   return new Decimal(amount).toDecimalPlaces(4, Decimal.ROUND_HALF_UP).toString();
 }
 
+/**
+ * formatUsdtAmount for a balance the buyer only reads (wallet, dashboard,
+ * commission earned), never a payable they copy into a transfer. A fraction of
+ * exactly three digits is padded to four ("12.345" → "12.3450"): a reader who
+ * groups thousands with "." would otherwise take "12.345" for twelve thousand.
+ * Every other value is exactly formatUsdtAmount's output.
+ */
+export function formatUsdtBalance(amount: Decimal.Value): string {
+  const text = formatUsdtAmount(amount);
+  return /\.\d{3}$/.test(text) ? `${text}0` : text;
+}
+
 /** formatUsdtAmount with the " USDT" suffix, e.g. "12.34 USDT". */
 export function formatUsdt(amount: Decimal.Value): string {
   return `${formatUsdtAmount(amount)} USDT`;

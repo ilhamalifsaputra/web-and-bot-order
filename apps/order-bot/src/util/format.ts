@@ -10,6 +10,7 @@ import {
   formatIdr,
   formatPrice,
   formatUsdt,
+  formatUsdtBalance,
   usdtFromIdr,
   formatDisplayMoneyResult,
   type DisplayMoneyText,
@@ -27,6 +28,7 @@ export {
   formatIdr,
   formatUsdt,
   formatUsdtAmount,
+  formatUsdtBalance,
   usdtFromIdr,
 } from "@app/core/formatters";
 export { formatCompactQty, formatCompactPrice } from "@app/core/compactFormat";
@@ -201,7 +203,7 @@ export function mixedAmount(idr: Decimal.Value, usdt: Decimal.Value, lang?: stri
   const usdtDec = new Decimal(usdt);
   const parts: string[] = [];
   if (idrDec.greaterThan(0) || usdtDec.lessThanOrEqualTo(0)) parts.push(lang === undefined ? formatIdr(idrDec) : formatIdrFor(idrDec, lang));
-  if (usdtDec.greaterThan(0)) parts.push(formatUsdt(usdtDec));
+  if (usdtDec.greaterThan(0)) parts.push(`${formatUsdtBalance(usdtDec)} USDT`);
   return parts.join(" + ");
 }
 

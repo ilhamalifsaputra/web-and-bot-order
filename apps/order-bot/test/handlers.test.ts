@@ -771,6 +771,15 @@ describe("customer handlers", () => {
     invalidateRateCache();
   });
 
+  it("viewWallet pads a three-decimal USDT balance so an Indonesian reader cannot take 12.345 for twelve thousand", async () => {
+    await prisma.user.update({ where: { id: sample.user.id }, data: { walletBalanceUsdt: "12.345" } });
+    const { ctx, sink } = customerCtx({ session: { ...userSession(), lang: "id" } });
+    await customer.viewWallet(ctx);
+    const body = JSON.stringify(sink);
+    expect(body).toContain("12.3450");
+    expect(body).not.toMatch(/12\.345[^0]/);
+  });
+
   it.each([OrderStatus.PAYMENT_DETECTED, OrderStatus.CONFIRMING, OrderStatus.CONFIRMED])(
     "viewOrder routes a BYBIT_BSC order at %s through the live tracking screen, not the generic order.detail",
     async (status) => {

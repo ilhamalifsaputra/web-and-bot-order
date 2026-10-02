@@ -65,7 +65,7 @@ import { productPhotoArg, cacheProductPhotoFileId } from "../util/productPhoto";
 import { t } from "../util/i18n";
 import { logErrorRef } from "../util/errors";
 import { gameInputFieldsLabel, resolveGameInputFlags } from "../util/gameInfo";
-import { esc, formatUsdtAmount, formatIdrFor, statusBadge, groupOrderItems, formatCountdown, formatFlashRemaining, priceIdr, ctxPriceFormatter, orderAmount, mixedAmount, renderBybitBscTrackingScreen, summarizeTicketOrder, truncLabel } from "../util/format";
+import { esc, formatUsdtAmount, formatUsdtBalance, formatIdrFor, statusBadge, groupOrderItems, formatCountdown, formatFlashRemaining, priceIdr, ctxPriceFormatter, orderAmount, mixedAmount, renderBybitBscTrackingScreen, summarizeTicketOrder, truncLabel } from "../util/format";
 import { effectiveUnitPrice, flashPrice, activeFlashPercent } from "@app/core/flash";
 import { currentUsdtRate } from "../util/rate";
 import * as ckb from "../keyboards/customer";
@@ -1638,7 +1638,7 @@ export async function viewWallet(ctx: MyContext): Promise<void> {
   const usdtBalance = user ? user.walletBalanceUsdt : new Decimal(0);
   const text = t(ctx, "wallet.credit_balances", {
     idr: formatIdrFor(idrBalance, lang),
-    usdt: price(usdtBalance),
+    usdt: formatUsdtBalance(usdtBalance),
   });
   await smartEdit(ctx, text, ckb.walletKb(lang));
 }

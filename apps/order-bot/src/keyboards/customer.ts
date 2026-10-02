@@ -12,7 +12,7 @@ import { CategoryGroup, DeliveryType, OrderStatus, PaymentMethod, StockStatus, T
 import { CUSTOMER_SERVICES, type CustomerService } from "@app/core/services";
 import { t as coreT } from "@app/core/i18n";
 import { MAX_CART_ORDER_UNITS } from "@app/db";
-import { formatPrice, formatUsdtAmount, formatIdrFor, truncLabel } from "../util/format";
+import { formatPrice, formatUsdtBalance, formatIdrFor, truncLabel } from "../util/format";
 import { formatDenominationLabel } from "../util/denominationLabel";
 import { LIST_LABEL_MAX_CHARS } from "@app/core/buttonLimits";
 import type { CatalogButton } from "../util/canonicalPresenter";
@@ -763,7 +763,7 @@ export function walletCreditKb(
       useWalletUsdt
         ? { text: coreT("checkout.wallet_menu_usdt_active_btn", lang), data: cb("walletm", "usdt", productId, qty) }
         : {
-            text: coreT("checkout.wallet_menu_usdt_btn", lang, { amount: formatUsdtAmount(usdtBalance) }),
+            text: coreT("checkout.wallet_menu_usdt_btn", lang, { amount: formatUsdtBalance(usdtBalance) }),
             data: cb("walletm", "usdt", productId, qty),
           },
     ]);

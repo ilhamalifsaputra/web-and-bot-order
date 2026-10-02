@@ -426,6 +426,9 @@ describe("reconcileOrder (PayDisini poller safety net)", () => {
       expect(edit.text).not.toContain(topup.orderCode);
       expect(edit.text).not.toContain("Rp173.456"); // Rp123.456 already held + Rp50.000 topped up
       expect(edit.text).not.toContain("Rp123.456"); // never the pre-credit snapshot either
+      // Nor the English spelling (prices follow the buyer's language).
+      expect(edit.text).not.toContain("Rp173,456");
+      expect(edit.text).not.toContain("Rp123,456");
 
       // The wallet WAS actually credited even though the bubble stays silent
       // about the number — that number is what the outbox DM carries.

@@ -1168,6 +1168,36 @@ describe("enqueueFlashSaleBroadcast", () => {
     expect(bc!.message).not.toContain("$");
   });
 
+  it("passes each recipient's stored language to pricesForRecipient so their DM uses its separators", async () => {
+    await prisma.user.updateMany({ data: { banned: true } }); // neutralize leftovers from earlier tests
+    const english = await prisma.user.create({
+      data: { telegramId: BigInt(7_200_001), referralCode: `r${Math.random()}`, preferredCurrency: "IDR", language: "EN" },
+    });
+    const indonesian = await prisma.user.create({
+      data: { telegramId: BigInt(7_200_002), referralCode: `r${Math.random()}`, preferredCurrency: "IDR", language: "ID" },
+    });
+    const seen: string[] = [];
+
+    await enqueueFlashSaleBroadcast(prisma, {
+      ...sale,
+      pricesForRecipient: (cur, language) => {
+        seen.push(`${cur}|${language}`);
+        return language === "id"
+          ? { oldPrice: "Rp50.000", newPrice: "Rp37.500" }
+          : { oldPrice: "Rp50,000", newPrice: "Rp37,500" };
+      },
+    });
+
+    expect(seen.sort()).toEqual(["IDR|en", "IDR|id"]);
+    const rows = await prisma.notificationOutbox.findMany({ where: { event: NotificationEvent.FLASH_SALE_BROADCAST } });
+    const byChat = new Map(rows.map((r) => {
+      const p = JSON.parse(r.payloadJson) as { chat_id: number; new_price: string; buyer_language: string };
+      return [p.chat_id, p] as const;
+    }));
+    expect(byChat.get(Number(english.telegramId))).toMatchObject({ new_price: "Rp37,500", buyer_language: "en" });
+    expect(byChat.get(Number(indonesian.telegramId))).toMatchObject({ new_price: "Rp37.500", buyer_language: "id" });
+  });
+
   it("returns 0 and enqueues nothing (no outbox rows, no Broadcast row) when there are no eligible customers", async () => {
     const before = await prisma.notificationOutbox.count({ where: { event: NotificationEvent.FLASH_SALE_BROADCAST } });
     const broadcastsBefore = await prisma.broadcast.count();

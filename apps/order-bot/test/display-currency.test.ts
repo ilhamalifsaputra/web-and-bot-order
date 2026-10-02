@@ -45,7 +45,8 @@ import {
 import { PAYDISINI_USERKEY_KEY, PAYDISINI_APIKEY_KEY } from "@app/core/payments/paydisini";
 import { Decimal } from "@app/core/money";
 import { DisplayCurrency, OrderCurrency, UserRole, VoucherType } from "@app/core/enums";
-import { formatIdr, formatUsdtAmount } from "@app/core/formatters";
+import { formatUsdtAmount } from "@app/core/formatters";
+import { formatIdrFor } from "@app/core/moneyFormat";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { makeCtx, sentIncludes, calls, type SentCall } from "./helpers/ctx";
 import type { SessionData } from "../src/context";
@@ -193,10 +194,11 @@ describe("denomination picker", () => {
     expect(sentText(usd.sink)).toContain("$10.00");
     expect(sentText(usd.sink)).not.toContain("Rp");
 
+    // English buyer: Premium picker lines use English separators (was "Rp79.000"/"Rp160.000").
     const idr = customerCtx(DisplayCurrency.IDR);
     await customer.browseProduct(idr.ctx, sample.parentProduct.id);
-    expect(sentText(idr.sink)).toContain("Rp79.000");
-    expect(sentText(idr.sink)).toContain("Rp160.000");
+    expect(sentText(idr.sink)).toContain("Rp79,000");
+    expect(sentText(idr.sink)).toContain("Rp160,000");
     expect(sentText(idr.sink)).not.toContain("$");
   });
 });
@@ -289,6 +291,9 @@ describe("order confirmation", () => {
 // ===========================================================================
 
 describe("payment screens", () => {
+  // These sessions are English, so every Rupiah figure is expected in English
+  // separators (formatIdrFor(x, "en")); before prices followed the buyer's
+  // language they used the fixed dotted formatIdr. The amounts are unchanged.
   async function tokopay(cur: Cur) {
     await setSetting(prisma, "tokopay_merchant_id", "M1");
     await setSetting(prisma, "tokopay_secret", "S1");
@@ -305,15 +310,15 @@ describe("payment screens", () => {
     await useRate();
     const { caption, charge, order } = await tokopay(DisplayCurrency.USD);
     expect(order.currency).toBe(OrderCurrency.IDR);
-    expect(caption).toContain(`Price $4.94 · Pay ${formatIdr(charge)}`);
+    expect(caption).toContain(`Price $4.94 · Pay ${formatIdrFor(charge, "en")}`);
     expect(caption).not.toContain("Total $");
     // The payable itself is still the native Rupiah figure.
-    expect(caption).toContain(`<b>${formatIdr(charge)}</b>`);
+    expect(caption).toContain(`<b>${formatIdrFor(charge, "en")}</b>`);
   });
 
   it("a USD user on QRIS with NO rate gets no dual line and the native Rp payable", async () => {
     const { caption, charge } = await tokopay(DisplayCurrency.USD);
-    expect(caption).toContain(`<b>${formatIdr(charge)}</b>`);
+    expect(caption).toContain(`<b>${formatIdrFor(charge, "en")}</b>`);
     expect(caption).not.toContain("$");
     expect(caption).not.toContain(" · Pay ");
   });
@@ -327,14 +332,14 @@ describe("payment screens", () => {
     const order = (await prisma.order.findFirst({ where: { userId: sample.user.id }, orderBy: { id: "desc" } }))!;
     expect(order.currency).toBe(OrderCurrency.IDR);
     const caption = (calls(sink, "replyWithPhoto")[0]!.args[1] as { caption: string }).caption;
-    expect(caption).toContain(`Price $4.94 · Pay ${formatIdr(order.totalAmount)}`);
-    expect(caption).toContain(`<b>${formatIdr(order.totalAmount)}</b>`);
+    expect(caption).toContain(`Price $4.94 · Pay ${formatIdrFor(order.totalAmount, "en")}`);
+    expect(caption).toContain(`<b>${formatIdrFor(order.totalAmount, "en")}</b>`);
   });
 
   it("an IDR user on QRIS sees only the Rp payable", async () => {
     await useRate();
     const { caption, charge } = await tokopay(DisplayCurrency.IDR);
-    expect(caption).toContain(formatIdr(charge));
+    expect(caption).toContain(formatIdrFor(charge, "en"));
     expect(caption).not.toContain("$");
   });
 
@@ -350,6 +355,68 @@ describe("payment screens", () => {
     const text = sentText(sink);
     expect(text).toContain(`<b>${formatUsdtAmount(order.totalAmount)}</b>`);
     expect(text).not.toContain("Price $");
+  });
+});
+
+// ===========================================================================
+// One amount, one string: every screen agrees for the buyer's language
+// ===========================================================================
+
+describe("prices follow the buyer's language on every screen", () => {
+  // Rp79.000 at 16000/USDT = $4.94 (ceil). The decided spellings per language.
+  const expected: Record<string, Record<string, string>> = {
+    id: { IDR: "Rp79.000", USD: "$4,94" },
+    en: { IDR: "Rp79,000", USD: "$4.94" },
+  };
+  const cases = (["id", "en"] as const).flatMap((lang) => (["IDR", "USD"] as const).map((cur) => ({ lang, cur })));
+
+  function ctxFor(lang: string, cur: Cur) {
+    return customerCtx(cur, { session: { ...session(cur), lang } });
+  }
+
+  it.each(cases)("$lang / $cur: picker, detail, confirmation (unit × qty and Total) and the QRIS screen show the same string", async ({ lang, cur }) => {
+    await useRate();
+    await setSetting(prisma, "tokopay_merchant_id", "M1");
+    await setSetting(prisma, "tokopay_secret", "S1");
+    await createDenomination(prisma, { productId: sample.parentProduct.id, name: "Second plan", type: "SHARED", durationLabel: "Second plan", price: "160000" });
+    const want = expected[lang]![cur]!;
+    const other = expected[lang === "id" ? "en" : "id"]![cur]!;
+
+    const picker = ctxFor(lang, cur);
+    await customer.browseProduct(picker.ctx, sample.parentProduct.id);
+    expect(sentText(picker.sink)).toContain(want);
+
+    const detail = ctxFor(lang, cur);
+    await customer.browseDenomination(detail.ctx, sample.product.id);
+    expect(sentText(detail.sink)).toContain(want);
+
+    const confirm = ctxFor(lang, cur);
+    await checkout.showOrderConfirmation(confirm.ctx, sample.product.id, 1);
+    const confirmation = sentText(confirm.sink);
+    expect(confirmation).toContain(`${want} × 1`);
+    expect(confirmation).toContain(`<b>${want}</b>`);
+
+    const pay = ctxFor(lang, cur);
+    await checkout.buyNowTokopay(pay.ctx, sample.product.id, 1);
+    const caption = (calls(pay.sink, "replyWithPhoto")[0]!.args[1] as { caption: string }).caption;
+    // IDR buyer: the subtotal line is the same amount; USD buyer: the "Price $…" line.
+    expect(caption).toContain(cur === "USD" ? ` ${want} · ` : want);
+
+    // The other language's spelling never appears on any of these screens.
+    for (const text of [sentText(picker.sink), sentText(detail.sink), confirmation, caption]) expect(text).not.toContain(other);
+  });
+
+  it.each(["id", "en"] as const)("%s: the order message shows the Rupiah snapshot and total in the same spelling", async (lang) => {
+    await useRate();
+    const order = await prisma.$transaction(async (tx) => {
+      const created = await createOrderDirect(tx, { user: { id: sample.user.id, role: sample.user.role }, productId: sample.product.id, quantity: 1 });
+      return finalizeOrderPayment(tx, created!.id, { currency: OrderCurrency.IDR });
+    });
+    const view = ctxFor(lang, DisplayCurrency.IDR);
+    await customer.viewOrder(view.ctx, order!.id);
+    const text = sentText(view.sink);
+    expect(text).toContain(`${expected[lang]!.IDR} (≈ ${expected[lang]!.USD})`);
+    expect(text).toContain(formatIdrFor(order!.totalAmount, lang));
   });
 });
 
@@ -376,14 +443,14 @@ describe("screens that must not follow the display currency", () => {
     await customer.viewOrder(asIdr.ctx, order.id);
     const asUsd = customerCtx(DisplayCurrency.USD);
     await customer.viewOrder(asUsd.ctx, order.id);
-    expect(sentText(asIdr.sink)).toContain(formatIdr(order.totalAmount));
+    expect(sentText(asIdr.sink)).toContain(formatIdrFor(order.totalAmount, "en"));
     expect(sentText(asUsd.sink)).toBe(sentText(asIdr.sink));
 
     const listIdr = customerCtx(DisplayCurrency.IDR);
     await customer.listMyOrders(listIdr.ctx);
     const listUsd = customerCtx(DisplayCurrency.USD);
     await customer.listMyOrders(listUsd.ctx);
-    expect(sentText(listUsd.sink)).toContain(formatIdr(order.totalAmount));
+    expect(sentText(listUsd.sink)).toContain(formatIdrFor(order.totalAmount, "en"));
     expect(sentText(listUsd.sink)).toBe(sentText(listIdr.sink));
   });
 
@@ -394,7 +461,7 @@ describe("screens that must not follow the display currency", () => {
     await customer.viewWallet(usd.ctx);
     const idr = customerCtx(DisplayCurrency.IDR);
     await customer.viewWallet(idr.ctx);
-    expect(sentText(usd.sink)).toContain("Rp50.000");
+    expect(sentText(usd.sink)).toContain("Rp50,000"); // English buyer (was "Rp50.000")
     expect(sentText(usd.sink)).toBe(sentText(idr.sink));
   });
 

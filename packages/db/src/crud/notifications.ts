@@ -1444,8 +1444,8 @@ export async function enqueueFlashSaleBroadcast(
     newPrice: string;
     endsAt: string;
     createdById?: number | null;
-    /** Per-recipient price strings in that customer's display currency. */
-    pricesForRecipient?: (preferredCurrency: DisplayCurrency | null) => { oldPrice: string; newPrice: string };
+    /** Per-recipient price strings in that customer's display currency and stored language (its separators). */
+    pricesForRecipient?: (preferredCurrency: DisplayCurrency | null, language: string) => { oldPrice: string; newPrice: string };
   },
 ): Promise<number> {
   const users = await db.user.findMany({
@@ -1453,20 +1453,21 @@ export async function enqueueFlashSaleBroadcast(
     select: { telegramId: true, language: true, preferredCurrency: true },
   });
   if (!users.length) return 0;
-  // At most three distinct currencies (USD / IDR / unset) — render each once.
-  const priceCache = new Map<DisplayCurrency | null, { oldPrice: string; newPrice: string }>();
-  const pricesFor = (raw: string | null) => {
+  // A handful of distinct currency × language pairs (USD / IDR / unset × id / en) — render each once.
+  const priceCache = new Map<string, { oldPrice: string; newPrice: string }>();
+  const pricesFor = (raw: string | null, language: string) => {
     if (!args.pricesForRecipient) return { oldPrice: args.oldPrice, newPrice: args.newPrice };
     const cur = parseDisplayCurrency(raw);
-    let p = priceCache.get(cur);
+    const key = `${cur ?? ""}|${language}`;
+    let p = priceCache.get(key);
     if (!p) {
-      p = args.pricesForRecipient(cur);
-      priceCache.set(cur, p);
+      p = args.pricesForRecipient(cur, language);
+      priceCache.set(key, p);
     }
     return p;
   };
   const rows = users.map((u) => {
-    const p = pricesFor(u.preferredCurrency);
+    const p = pricesFor(u.preferredCurrency, langCode(u.language));
     return {
       event: NotificationEvent.FLASH_SALE_BROADCAST,
       orderId: null,

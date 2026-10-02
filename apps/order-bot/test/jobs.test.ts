@@ -508,6 +508,8 @@ describe("sweepPaidOrderBubbles", () => {
         expect(edit.text).toContain("top-up has been credited");
         expect(edit.text).not.toContain(order.orderCode);
         expect(edit.text).not.toContain(RAIL_CURRENCY[method] === "IDR" ? "Rp123.456" : "77.5 USDT");
+        // Neither language's spelling of the balance (prices follow the buyer's language).
+        expect(edit.text).not.toContain("Rp123,456");
         expect(edit.buttons).toContain("v1:topup:open");
       } else if (status === OrderStatus.DELIVERED) {
         expect(edit.text).toContain(order.orderCode);
@@ -1524,7 +1526,8 @@ describe("announceStartedFlashSales", () => {
     expect(payload.product_name).toBe(sample.parentProduct.name);
     expect(payload.denomination_name).toBe(sample.product.name);
     expect(payload.discount_percent).toBe("25");
-    expect(payload.new_price).toBe("Rp37.500");
+    // The sample user's stored language is EN, so the DM's Rupiah uses English separators.
+    expect(payload.new_price).toBe("Rp37,500");
 
     const stamped = await prisma.denomination.findUnique({ where: { id: sample.product.id } });
     expect(stamped!.flashAnnouncedAt).not.toBeNull();
@@ -1543,6 +1546,8 @@ describe("announceStartedFlashSales", () => {
       await prisma.user.update({ where: { id: sample.user.id }, data: { preferredCurrency: "USD" } });
       await prisma.user.create({ data: { telegramId: BigInt(6_100_001), referralCode: "flash-idr", preferredCurrency: "IDR" } });
       await prisma.user.create({ data: { telegramId: BigInt(6_100_002), referralCode: "flash-unset" } });
+      await prisma.user.create({ data: { telegramId: BigInt(6_100_003), referralCode: "flash-idr-id", preferredCurrency: "IDR", language: "ID" } });
+      await prisma.user.create({ data: { telegramId: BigInt(6_100_004), referralCode: "flash-usd-id", preferredCurrency: "USD", language: "ID" } });
 
       await announceStartedFlashSales();
 
@@ -1553,9 +1558,12 @@ describe("announceStartedFlashSales", () => {
         }),
       );
       // 50000 → $3.125 → $3.13; 37500 → $2.34375 → $2.35 (ceil to the cent).
+      // Separators follow each recipient's stored language (EN by default, ID where set); the amounts never change.
       expect(byChat.get(42)).toMatchObject({ old_price: "$3.13", new_price: "$2.35" });
-      expect(byChat.get(6_100_001)).toMatchObject({ old_price: "Rp50.000", new_price: "Rp37.500" });
-      expect(byChat.get(6_100_002)).toMatchObject({ old_price: "Rp50.000", new_price: "Rp37.500" });
+      expect(byChat.get(6_100_001)).toMatchObject({ old_price: "Rp50,000", new_price: "Rp37,500" });
+      expect(byChat.get(6_100_002)).toMatchObject({ old_price: "Rp50,000", new_price: "Rp37,500" });
+      expect(byChat.get(6_100_003)).toMatchObject({ old_price: "Rp50.000", new_price: "Rp37.500" });
+      expect(byChat.get(6_100_004)).toMatchObject({ old_price: "$3,13", new_price: "$2,35" });
     } finally {
       invalidateRateCache();
     }

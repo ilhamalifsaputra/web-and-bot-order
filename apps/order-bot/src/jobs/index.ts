@@ -1457,7 +1457,8 @@ export async function announceStartedFlashSales(): Promise<void> {
     try {
       // One rate read per sale (cached 60s); each recipient's DM prices the
       // canonical IDR list/sale price in their own display currency (NULL →
-      // IDR). The Broadcast History row keeps the shop's Rupiah strings.
+      // IDR) with their own stored language's separators. The Broadcast
+      // History row (admin-facing) keeps the shop's Rupiah strings.
       const rate = await currentUsdtRate();
       const sent = await enqueueFlashSaleBroadcast(prisma, {
         productName: denom.product.name,
@@ -1466,8 +1467,8 @@ export async function announceStartedFlashSales(): Promise<void> {
         oldPrice: formatIdr(denom.price),
         newPrice: formatIdr(discounted),
         endsAt: localize(endsAt, "yyyy-LL-dd HH:mm ZZZZ"),
-        pricesForRecipient: (currency) => {
-          const prices = userPriceFormatter(currency, rate);
+        pricesForRecipient: (currency, language) => {
+          const prices = userPriceFormatter(currency, rate, language);
           return { oldPrice: prices.price(denom.price), newPrice: prices.price(discounted) };
         },
       });

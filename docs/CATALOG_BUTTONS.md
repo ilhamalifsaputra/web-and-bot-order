@@ -230,9 +230,12 @@ Keputusan: fokus Top Up Game; Premium Apps tidak berubah; ikon Gold 🪙; singka
 mengikuti bahasa pembeli** (id: `Rp4.480`, `Rp1,64M`, `$0,28`; en: `Rp4,480`, `Rp1.64M`, `$0.28`); setiap follow-up
 dikerjakan **satu branch per item**, berurutan.
 
+Aturan: harga di bot hanya lewat pemformat sadar-bahasa (`formatIdrFor`/`formatUsdFor`/`formatCompactIdrFor`,
+`ctxPriceFormatter`); jangan menulis pemisah ribuan sendiri di handler.
+
 | Branch | Isi | Status |
 |---|---|---|
-| `price-format-by-language` | Picker memakai pemformat harga sadar-bahasa seperti layar detail/konfirmasi (sebelumnya picker memakai format tetap `Rp4.480` / `$0.28`). Dampak: untuk pembeli berbahasa Inggris, baris harga picker Premium menjadi `Rp30,000`; pembeli id tidak berubah | menunggu |
+| `price-format-by-language` | Semua layar pembeli di bot (picker, detail, konfirmasi `Harga × qty` dan `Total`, layar bayar QRIS/PayDisini, pesanan, riwayat, dompet, top-up, DM flash sale dan DM top-up) memformat Rupiah dan dolar dari satu modul `packages/core/src/moneyFormat.ts` sesuai bahasa pembeli (id `Rp4.480`, `Rp1,64M`, `$0,28`; en `Rp4,480`, `Rp1.64M`, `$0.28`). Angka tidak berubah, hanya pemisah. Dampak Premium: pembeli en kini melihat `Rp30,000` di baris picker; pembeli id tetap `Rp30.000`, kecuali tombol kuantitas ≥ Rp1 juta (`Rp1,64M`) dan harga USD (`$0,28`). Pengecualian: jumlah USDT/kripto (`5.07 USDT`), layar admin, log, dan web | selesai |
 | `region-dedupe-header` | Region yang sudah ada di nama produk (`Valorant (Indonesia)`) tidak diulang di tombol, header bersama, header halaman 2+, dan blok penjelasan. Hanya presenter yang berubah (Game Top-Up saja); `qualifiers` core tidak berubah. Sapuan atas snapshot nyata (15 produk, 10 skenario region/variant sintetis, 600 daftar, 9.460 tombol, versi master vs HEAD): skenario tanpa qualifier 0 perubahan; 1.060 label berubah dan semuanya hanya kehilangan qualifier yang sudah ada di nama (960) atau kini menampilkan satu-satunya qualifier yang belum ada di nama karena sudah muat (100, sebelumnya semua qualifier dibuang demi lebar); 0 label lebih buruk, tidak ada callback/urutan berubah, semua label unik dan dalam batas lebar | selesai |
 | `back-page-reply-kb` | Back dari picker atau detail tunggal lewat keyboard balasan kembali ke halaman daftar produk asal (sebelumnya selalu halaman 0), sama seperti Back inline; halaman di luar jangkauan dipangkas ke halaman terakhir yang valid. Premium Apps memakai jalur kode yang sama dan tidak berubah; spesifikasi §9 | selesai |
 | `storage-api-dbbytes` | Ukuran database dari Postgres (`pg_database_size` lewat helper di `packages/db/src/crud`), bukan file SQLite; tes `storage-api` lulus lagi dan suite tanpa kegagalan yang diketahui | selesai |

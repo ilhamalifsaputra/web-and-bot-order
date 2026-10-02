@@ -65,7 +65,7 @@ import { productPhotoArg, cacheProductPhotoFileId } from "../util/productPhoto";
 import { t } from "../util/i18n";
 import { logErrorRef } from "../util/errors";
 import { gameInputFieldsLabel, resolveGameInputFlags } from "../util/gameInfo";
-import { esc, formatUsdtAmount, formatIdr, statusBadge, groupOrderItems, formatCountdown, formatFlashRemaining, priceIdr, ctxPriceFormatter, orderAmount, mixedAmount, renderBybitBscTrackingScreen, summarizeTicketOrder, truncLabel } from "../util/format";
+import { esc, formatUsdtAmount, formatIdrFor, statusBadge, groupOrderItems, formatCountdown, formatFlashRemaining, priceIdr, ctxPriceFormatter, orderAmount, mixedAmount, renderBybitBscTrackingScreen, summarizeTicketOrder, truncLabel } from "../util/format";
 import { effectiveUnitPrice, flashPrice, activeFlashPercent } from "@app/core/flash";
 import { currentUsdtRate } from "../util/rate";
 import * as ckb from "../keyboards/customer";
@@ -74,7 +74,8 @@ import { showFaq, showTerms } from "./static";
 const PAGE_SIZE = 10;
 // USDT-denominated figures only (wallet balance, commissions). Catalog prices
 // are central Rupiah rendered in the buyer's display currency —
-// ctxPriceFormatter(ctx, rate).price(v); order totals — orderAmount(o).
+// ctxPriceFormatter(ctx, rate).price(v); order totals — orderAmount(o, decimals, lang).
+// Every Rupiah/dollar figure takes the buyer's language (formatIdrFor(v, lang)).
 const price = (v: Decimal.Value) => formatUsdtAmount(v);
 
 // Bybit BSC's in-flight pre-delivery states — viewOrder() routes these
@@ -219,7 +220,7 @@ async function buildDashboardText(ctx: MyContext): Promise<string> {
     now: nowStr,
     tg_id: tg.id,
     username: tg.username ? `@${tg.username}` : "—",
-    spent: mixedAmount(spent.idr, spent.usdt),
+    spent: mixedAmount(spent.idr, spent.usdt, lang),
   });
 }
 
@@ -1413,7 +1414,7 @@ export async function listMyOrders(ctx: MyContext): Promise<void> {
         duration: g ? esc(g.product.durationLabel) : "-",
         type: g ? esc(g.product.type) : "-",
         qty: g ? String(g.quantity) : "-",
-        total: orderAmount(o),
+        total: orderAmount(o, 2, lang),
         time: ensureUtc(o.createdAt).toFormat("dd/LL/yyyy HH:mm"),
       }),
     );
@@ -1436,10 +1437,10 @@ export async function allOrderHistory(ctx: MyContext): Promise<void> {
     lines.push(`${t(ctx, "order.history_file_order")}: ${o.orderCode}`);
     lines.push(`Status: ${o.status}`);
     lines.push(`${t(ctx, "order.history_file_date")}: ${ensureUtc(o.createdAt).toFormat("dd/LL/yyyy HH:mm")}`);
-    lines.push(`${t(ctx, "order.history_file_amount")}: ${orderAmount(o)}`);
+    lines.push(`${t(ctx, "order.history_file_amount")}: ${orderAmount(o, 2, ctx.session.lang)}`);
     lines.push(`${t(ctx, "order.history_file_items")}:`);
     for (const g of groupOrderItems(o.items)) {
-      lines.push(`  - ${g.product.name} × ${g.quantity}  ${formatIdr(g.lineTotal)}`);
+      lines.push(`  - ${g.product.name} × ${g.quantity}  ${formatIdrFor(g.lineTotal, ctx.session.lang)}`);
     }
     lines.push("-".repeat(36));
   }
@@ -1468,7 +1469,7 @@ export async function viewOrder(ctx: MyContext, orderId: number): Promise<void> 
   // renders in the order's own transaction currency.
   const rate = await currentUsdtRate();
   const itemLines = groupOrderItems(order.items).map(
-    (g) => `• ${esc(g.product.name)} × ${g.quantity} — ${priceIdr(g.lineTotal, rate)}`,
+    (g) => `• ${esc(g.product.name)} × ${g.quantity} — ${priceIdr(g.lineTotal, rate, lang)}`,
   );
 
   let text: string;
@@ -1482,7 +1483,7 @@ export async function viewOrder(ctx: MyContext, orderId: number): Promise<void> 
       text = t(ctx, "order.pending_payment_detail", {
         code: order.orderCode,
         lines: itemLines.join("\n"),
-        total: orderAmount(order, 4),
+        total: orderAmount(order, 4, lang),
         binance_id: esc(binanceId),
         countdown,
       });
@@ -1498,7 +1499,7 @@ export async function viewOrder(ctx: MyContext, orderId: number): Promise<void> 
         code: order.orderCode,
         method: methodKey ? t(ctx, methodKey) : order.paymentMethod,
         lines: itemLines.join("\n"),
-        total: orderAmount(order, 4),
+        total: orderAmount(order, 4, lang),
         countdown,
       });
     }
@@ -1517,7 +1518,7 @@ export async function viewOrder(ctx: MyContext, orderId: number): Promise<void> 
     text = t(ctx, "order.detail", {
       code: order.orderCode,
       status: t(ctx, customerStatusLabel(order.status)),
-      total: orderAmount(order),
+      total: orderAmount(order, 2, lang),
       created: ensureUtc(order.createdAt).toFormat("yyyy-LL-dd HH:mm 'UTC'"),
       lines: itemLines.join("\n"),
     });
@@ -1576,7 +1577,7 @@ export async function viewOrder(ctx: MyContext, orderId: number): Promise<void> 
       t(ctx, "order.detail", {
         code: order.orderCode,
         status: statusBadge(order.status),
-        total: orderAmount(order),
+        total: orderAmount(order, 2, lang),
         created: ensureUtc(order.createdAt).toFormat("yyyy-LL-dd HH:mm 'UTC'"),
         lines: itemLines.join("\n"),
       }) + credentialsBlock;
@@ -1633,7 +1634,7 @@ export async function viewWallet(ctx: MyContext): Promise<void> {
   const idrBalance = user ? user.walletBalance : new Decimal(0);
   const usdtBalance = user ? user.walletBalanceUsdt : new Decimal(0);
   const text = t(ctx, "wallet.credit_balances", {
-    idr: formatIdr(idrBalance),
+    idr: formatIdrFor(idrBalance, lang),
     usdt: price(usdtBalance),
   });
   await smartEdit(ctx, text, ckb.walletKb(lang));

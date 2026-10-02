@@ -1387,13 +1387,15 @@ describe("denomination picker", () => {
     expect(markup).toContain(`v1:browse:denom:${m1.id}`);
     expect(markup).toContain(`v1:browse:denom:${m2.id}`);
     // The Rupiah price now lives in the message body (priceIdr), not on the
-    // button, and is never the USDT-only formatPrice (Finding 1).
-    expect(sentIncludes(sink, "Rp30.000")).toBe(true);
+    // button, and is never the USDT-only formatPrice (Finding 1). This buyer's
+    // language is English, so the Rupiah uses English separators ("Rp30,000",
+    // was "Rp30.000" before prices followed the buyer's language).
+    expect(sentIncludes(sink, "Rp30,000")).toBe(true);
     expect(sentIncludes(sink, "USDT")).toBe(false);
     // Non-game products keep the per-plan price+stock lines in the body.
     const body = bodyText(sink);
-    expect(body).toContain("Rp30.000 (Stock");
-    expect(body).toContain("Rp75.000 (Stock");
+    expect(body).toContain("Rp30,000 (Stock");
+    expect(body).toContain("Rp75,000 (Stock");
     expect(body).toContain("Choose a plan:");
     // Plan-name-only buttons: no price, no #id.
     const planButtons = ((lastMarkup(sink) as { inline_keyboard?: Array<Array<{ text: string; callback_data?: string }>> }).inline_keyboard ?? [])
@@ -1654,6 +1656,9 @@ describe("denomination picker", () => {
     // No flat per-line dump and no stock text anywhere in the message body.
     expect(body).not.toContain("Rp15.000 (");
     expect(body).not.toContain("Rp30.000 (");
+    // Nor in the English spelling (prices follow the buyer's language).
+    expect(body).not.toContain("Rp15,000 (");
+    expect(body).not.toContain("Rp30,000 (");
     expect(body).not.toContain("Stock");
     expect(body).not.toContain("Stok");
     expect(body).toContain("Choose a top-up amount:");
@@ -1677,6 +1682,7 @@ describe("denomination picker", () => {
     expect(button2.text).toContain("172 💎");
     expect(button2.text).toContain("Rp30K");
     expect(button2.text).not.toContain("Rp30.000");
+    expect(button2.text).not.toContain("Rp30,000");
   });
 
   it("Finding C1 (final-review): the price-appended fallback label collapses a realistic long Digiflazz name and never truncates to something meaningless", async () => {
@@ -2705,7 +2711,8 @@ describe("browseCategoryEntry — Game Top Up variant/region navigation + AUTO s
     const flat = (markup?.inline_keyboard ?? []).flat();
     const button = flat.find((b) => b.callback_data === `v1:browse:denom:${d1.id}`)!;
     expect(button.text).toBe("1 Bulan");
-    expect(bodyText(sink)).toContain("Spotify Premium 1 Bulan — Rp10.000 (Stock 0)");
+    // Layout unchanged; only the separators follow this English buyer's language (was "Rp10.000").
+    expect(bodyText(sink)).toContain("Spotify Premium 1 Bulan — Rp10,000 (Stock 0)");
   });
 
   it("CapCut Pro (Premium Apps, USD buyer): body lists each plan once with price + stock, no #id, buttons are plan names only", async () => {
@@ -5105,6 +5112,7 @@ describe("Refresh Status button (§7)", () => {
     // that now lives exclusively in the outbox DM (WALLET_TOPUP_CREDITED_DM).
     expect(edit.text).not.toContain(order.orderCode);
     expect(edit.text).not.toContain("Rp123.456");
+    expect(edit.text).not.toContain("Rp123,456"); // nor the English spelling (prices follow the buyer's language)
     // A top-up produces nothing to look up under "My Orders", so the wallet
     // keyboard replaces paymentSuccessKb here.
     expect(edit.buttons).toContain("v1:topup:open");

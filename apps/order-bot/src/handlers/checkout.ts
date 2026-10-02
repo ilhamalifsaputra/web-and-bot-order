@@ -98,7 +98,7 @@ import { coreT, t } from "../util/i18n";
 import { logErrorRef } from "../util/errors";
 import {
   esc,
-  formatIdr,
+  formatIdrFor,
   formatUsdtAmount,
   usdtFromIdr,
   ctxPriceFormatter,
@@ -138,7 +138,7 @@ async function validationText(ctx: MyContext, e: ValidationError): Promise<strin
  */
 function minAmountNote(ctx: MyContext, minAmount: Decimal.Value | null, currency: "USDT" | "IDR"): string {
   if (!minAmount) return "";
-  const formatted = currency === "USDT" ? price(minAmount) : formatIdr(minAmount);
+  const formatted = currency === "USDT" ? price(minAmount) : formatIdrFor(minAmount, ctx.session.lang);
   return "\n\n" + t(ctx, "checkout.min_amount_note", { min: formatted });
 }
 
@@ -341,12 +341,6 @@ interface ConfirmRender {
   closingLine: string;
 }
 
-/** Keep the confirmation's existing IDR rounding, but group it like its
- * canonical unit price for the buyer's language. Other screens stay native. */
-function confirmationIdrText(text: string, lang: string): string {
-  return lang.toLowerCase().startsWith("id") || !/^-?Rp/.test(text) ? text : text.replaceAll(".", ",");
-}
-
 type CheckoutDenomination = NonNullable<Awaited<ReturnType<typeof getDenominationWithProduct>>>;
 
 /** Resolve a still-buyable denomination and replace stale checkout UI on failure. */
@@ -423,7 +417,7 @@ async function computeConfirmation(
         const discount = applyVoucherToSubtotal(voucherObj, subtotal, eligibleSubtotal.minus(eligibleBulkDiscount));
         voucherLine = coreT("checkout.confirm_voucher_line", lang, {
           code: voucherCode,
-          discount: confirmationIdrText(prices.price(discount), lang),
+          discount: prices.price(discount),
         });
         subtotal = subtotal.minus(discount);
       } else {
@@ -475,7 +469,7 @@ async function computeConfirmation(
   let walletLine = "";
   let walletDeduction: ConfirmRender["walletDeduction"] = null;
   if (useWalletIdr && idrBalance.greaterThanOrEqualTo(subtotal) && subtotal.greaterThan(0)) {
-    const amount = confirmationIdrText(formatIdr(subtotal), lang);
+    const amount = formatIdrFor(subtotal, lang);
     walletLine = coreT("checkout.confirm_wallet_line", lang, { amount });
     walletDeduction = { currency: "IDR", amount };
     subtotal = new Decimal(0);
@@ -489,7 +483,7 @@ async function computeConfirmation(
     if (usdtBalance.greaterThanOrEqualTo(usdtTotal)) {
       walletLine = coreT("checkout.confirm_wallet_usdt_line", lang, {
         usdt_amount: formatUsdtAmount(usdtTotal),
-        idr_amount: confirmationIdrText(formatIdr(subtotal), lang),
+        idr_amount: formatIdrFor(subtotal, lang),
       });
       walletDeduction = { currency: "USDT", amount: formatUsdtAmount(usdtTotal) };
       subtotal = new Decimal(0);
@@ -670,7 +664,7 @@ function confirmOrderText(
       unit_price: r.unitPriceText,
       voucher_line: r.voucherLine,
       wallet_line: r.walletLine,
-      total: confirmationIdrText(prices.price(r.subtotal), ctx.session.lang),
+      total: prices.price(r.subtotal),
       closing_line: closingLine,
     }) + prices.rateNotice(ctx.session.lang)
   );
@@ -898,7 +892,7 @@ export async function buyNowInternal(ctx: MyContext, productId: number, quantity
   // The charged amount is USDT; show the central-IDR equivalent beside it
   // (totalAmount × the fxRate snapshot, which includes the unique cents).
   const fxRate = order.fxRate != null ? new Decimal(order.fxRate) : rate;
-  const idrLine = ` (≈ ${formatIdr(new Decimal(order.totalAmount).times(fxRate))})`;
+  const idrLine = ` (≈ ${formatIdrFor(new Decimal(order.totalAmount).times(fxRate), ctx.session.lang)})`;
   const expiry = order.expiresAt
     ? `${localize(order.expiresAt, "yyyy-LL-dd HH:mm")} WIB`
     : `${config.INTERNAL_PAYMENT_WINDOW_MINUTES}m`;
@@ -1018,7 +1012,7 @@ export async function buyNowBybit(ctx: MyContext, productId: number, quantity: n
   // The charged amount is USDT; show the central-IDR equivalent beside it
   // (totalAmount × the fxRate snapshot, which includes the unique cents).
   const fxRate = order.fxRate != null ? new Decimal(order.fxRate) : rate;
-  const idrLine = ` (≈ ${formatIdr(new Decimal(order.totalAmount).times(fxRate))})`;
+  const idrLine = ` (≈ ${formatIdrFor(new Decimal(order.totalAmount).times(fxRate), ctx.session.lang)})`;
   const expiry = order.expiresAt
     ? `${localize(order.expiresAt, "yyyy-LL-dd HH:mm")} WIB`
     : `${config.BYBIT_PAYMENT_WINDOW_MINUTES}m`;
@@ -1136,7 +1130,7 @@ export async function buyNowBybitBsc(ctx: MyContext, productId: number, quantity
   // The charged amount is USDT; show the central-IDR equivalent beside it
   // (totalAmount × the fxRate snapshot, which includes the unique cents).
   const fxRate = order.fxRate != null ? new Decimal(order.fxRate) : rate;
-  const idrLine = ` (≈ ${formatIdr(new Decimal(order.totalAmount).times(fxRate))})`;
+  const idrLine = ` (≈ ${formatIdrFor(new Decimal(order.totalAmount).times(fxRate), ctx.session.lang)})`;
   const expiry = order.expiresAt
     ? `${localize(order.expiresAt, "yyyy-LL-dd HH:mm")} WIB`
     : `${config.BYBIT_BSC_PAYMENT_WINDOW_MINUTES}m`;
@@ -1490,11 +1484,11 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
   // The payable is the rail's own whole-Rupiah figure, exactly as before; a
   // USD-display buyer additionally sees the order's $ price beside it
   // (derived once from the canonical IDR total, never from the payable).
-  const payText = formatIdr(chargeAmount);
+  const payText = formatIdrFor(chargeAmount, lang);
   const caption = t(ctx, "checkout.qris_instructions", {
     code: order.orderCode,
-    subtotal: formatIdr(order.subtotalAmount),
-    fee: formatIdr(adminFee),
+    subtotal: formatIdrFor(order.subtotalAmount, lang),
+    fee: formatIdrFor(adminFee, lang),
     amount: payText,
     expiry,
   }) +
@@ -1678,7 +1672,7 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
     : `${config.PAYMENT_WINDOW_MINUTES}m`;
   // Same truthful-payable rule as buyNowTokopay: native Rp payable, plus the
   // $ price beside it for a USD-display buyer.
-  const payText = formatIdr(order.totalAmount);
+  const payText = formatIdrFor(order.totalAmount, lang);
   const caption = t(ctx, "checkout.paydisini_instructions", {
     code: order.orderCode,
     amount: payText,

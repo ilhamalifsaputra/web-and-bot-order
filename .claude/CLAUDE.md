@@ -213,7 +213,13 @@ checklist for the task list.
 ## Money, data, audit
 - **Decimal for all money** (`@app/core/money`), never `float`. Web formats it
   client-side (storefront: `formatIdr` etc. in `apps/storefront/client/src/lib/format.ts`;
-  admin: `CurrencyAmount` component); bot uses `formatPrice`.
+  admin: `CurrencyAmount` component); the bot's buyer screens use the
+  language-aware formatters below (admin-facing bot screens still use `formatIdr`).
+- **Bot price strings follow the buyer's language** and come only from the
+  language-aware formatters in `packages/core/src/moneyFormat.ts` (via
+  `ctxPriceFormatter`, `formatIdrFor`, `orderAmount(o, d, lang)`) — never
+  hand-format or hard-code separators in handlers. Crypto payables
+  (`formatUsdt`, `formatPrice(..., "USDT")`) are the documented exception.
 - **No raw SQL in routes/handlers** — add helpers to `packages/db/src/crud/*`
   (per-domain split, e.g. `orders.ts`, `stock.ts`, `pricing.ts`, `vouchers.ts`)
   and cover them with Vitest (`*.test.ts` colocated in `crud/`).

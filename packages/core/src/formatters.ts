@@ -7,6 +7,7 @@
 import { randomInt, randomBytes } from "node:crypto";
 import { Decimal } from "./money";
 import { DisplayCurrency } from "./enums";
+import { formatIdrFor, formatUsdFor } from "./moneyFormat";
 
 /** Round to `decimals` places, half-up (matches Python quantize_money). */
 export function quantizeMoney(amount: Decimal.Value, decimals = 2): Decimal {
@@ -46,10 +47,9 @@ export function formatUsdt(amount: Decimal.Value): string {
  * caller passes an already-converted IDR amount.
  */
 export function formatIdr(amount: Decimal.Value): string {
-  const whole = new Decimal(amount).toDecimalPlaces(0, Decimal.ROUND_HALF_UP);
-  const digits = whole.abs().toFixed(0);
-  const grouped = digits.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
-  return `${whole.isNegative() ? "-" : ""}Rp${grouped}`;
+  // The language-less form is the Indonesian style; bot screens that know the
+  // buyer's language use formatIdrFor(amount, lang) instead.
+  return formatIdrFor(amount, "id");
 }
 
 /**
@@ -151,14 +151,6 @@ export function convertIdrToDisplay(
   return { ok: true, currency: DisplayCurrency.USD, amount: usdtFromIdr(idrAmount, rate) };
 }
 
-/** "$1,250.00" — 2dp, comma thousands. Decimal-based, never a float. */
-function formatUsdDisplay(amount: Decimal): string {
-  const fixed = amount.abs().toFixed(2, Decimal.ROUND_HALF_UP);
-  const [whole, cents] = fixed.split(".");
-  const grouped = (whole ?? "0").replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-  return `${amount.isNegative() && !amount.isZero() ? "-" : ""}$${grouped}.${cents}`;
-}
-
 /** What {@link formatDisplayMoneyResult} rendered: `currency` is the currency
  * actually shown, and `fellBack` is true when USD was asked for but the rate
  * was unavailable so the explicit IDR string was shown instead. */
@@ -173,17 +165,24 @@ export interface DisplayMoneyText {
  * {@link formatIdr} ("Rp79.000"); USD → "$4.94". If USD is requested without a
  * usable rate the text falls back to the explicit "Rp…" string — never a bare
  * number and never a "$" figure derived without a rate.
+ *
+ * `lang` (the reader's language) picks the separators for both currencies via
+ * `./moneyFormat` (id "Rp79.000" / "$1.234,50", en "Rp79,000" / "$1,234.50").
+ * Without it the output is the long-standing one, byte-identical: Rupiah in the
+ * Indonesian style, dollars in the English style — kept for callers that have
+ * no reader language (web server routes).
  */
 export function formatDisplayMoneyResult(
   idrAmount: Decimal.Value,
   currency: DisplayCurrency,
   fx: Decimal.Value | null | undefined,
+  lang?: string,
 ): DisplayMoneyText {
   const conv = convertIdrToDisplay(idrAmount, currency, fx);
   if (conv.ok && conv.currency === DisplayCurrency.USD) {
-    return { text: formatUsdDisplay(conv.amount), currency: DisplayCurrency.USD, fellBack: false };
+    return { text: formatUsdFor(conv.amount, lang ?? "en"), currency: DisplayCurrency.USD, fellBack: false };
   }
-  return { text: formatIdr(idrAmount), currency: DisplayCurrency.IDR, fellBack: !conv.ok };
+  return { text: formatIdrFor(idrAmount, lang ?? "id"), currency: DisplayCurrency.IDR, fellBack: !conv.ok };
 }
 
 /** {@link formatDisplayMoneyResult}'s text only. */
@@ -191,8 +190,9 @@ export function formatDisplayMoney(
   idrAmount: Decimal.Value,
   currency: DisplayCurrency,
   fx: Decimal.Value | null | undefined,
+  lang?: string,
 ): string {
-  return formatDisplayMoneyResult(idrAmount, currency, fx).text;
+  return formatDisplayMoneyResult(idrAmount, currency, fx, lang).text;
 }
 
 const ORD_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";

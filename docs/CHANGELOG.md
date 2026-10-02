@@ -16,7 +16,11 @@ tag git yang sungguhan sampai dokumen ini ditulis.
   menerima `{ service, channel, enabled }`. Kunci lama `service_<id>_enabled`
   tetap dibaca sebagai fallback selama kunci kanalnya belum ada (nilai lama
   `false` = kedua kanal mati sampai salah satu disetel), tidak pernah ditulis
-  atau dihapus oleh saklar baru. Tanpa kunci apa pun, layanan aktif.
+  atau dihapus oleh saklar baru. Tanpa kunci apa pun, layanan aktif. Rollback:
+  kode lama hanya membaca kunci lama, jadi setelah rollback layanan yang
+  dimatikan lewat saklar per kanal yang baru kembali aktif di kedua kanal;
+  untuk menerapkannya lagi, setel `service_game_topup_enabled=false` /
+  `service_premium_apps_enabled=false` untuk tiap layanan yang harus tetap mati.
 - **Audit alur pembayaran menyeluruh (6 rail: TokoPay, PayDisini, NOWPayments,
   Binance Internal, Bybit Internal, Bybit BSC).** Dikerjakan sebagai satu
   branch bertahap; ringkasnya:

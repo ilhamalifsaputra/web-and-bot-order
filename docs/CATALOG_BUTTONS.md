@@ -221,7 +221,7 @@ vitest, dan sesi Claude pernah berebut memori sampai sistem mematikan proses).
 
 Catatan lain: database dev lokal `bot_order` dan bot `@testtoko_bot` adalah data uji (bukan produksi); skemanya
 tertinggal dari kode (belum ada kolom `supplier_raw_name`), jadi `prisma db push` harus dijalankan lebih dulu bila
-kode ini diarahkan ke sana, lalu order-bot di-restart. saklar layanan Top Up Game bernilai mati di database
+kode ini diarahkan ke sana, lalu order-bot di-restart. Saklar layanan Top Up Game bernilai mati di database
 itu lewat kunci lama `service_game_topup_enabled=false` (dibaca sebagai fallback untuk kedua kanal sampai
 `service_game_topup_enabled_bot` / `service_game_topup_enabled_web` disetel); di database dummy disetel `true`.
 

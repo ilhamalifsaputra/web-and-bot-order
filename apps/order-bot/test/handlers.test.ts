@@ -3988,6 +3988,7 @@ describe("checkout handlers", () => {
     const webOff = customerCtx({ callbackData: `v1:buy:${sample.product.id}:1` });
     await checkout.renderOrderConfirmation(webOff.ctx, sample.product.id, 1);
     expect(sentIncludes(webOff.sink, t(webOff.ctx, "error.service_unavailable"))).toBe(false);
+    expect(sentIncludes(webOff.sink, "Confirm Order")).toBe(true);
 
     await setSetting(prisma, "service_premium_apps_enabled_web", "true");
     await setSetting(prisma, "service_premium_apps_enabled_bot", "false");

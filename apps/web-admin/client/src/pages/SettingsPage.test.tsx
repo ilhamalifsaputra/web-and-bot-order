@@ -61,7 +61,7 @@ describe("SettingsPage", () => {
     await user.click(screen.getByRole("switch", { name: "Top Up Game on the Telegram bot" }));
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByText("Disable Top Up Game for the Telegram bot?")).toBeInTheDocument();
-    expect(within(dialog).getByText(/Telegram bot only/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/blocks new orders on the Telegram bot\./)).toBeInTheDocument();
     // Opening the dialog changes nothing until confirmed.
     expect(screen.getByRole("switch", { name: "Top Up Game on the website", hidden: true })).toBeChecked();
     await user.click(within(dialog).getByRole("button", { name: "Disable" }));

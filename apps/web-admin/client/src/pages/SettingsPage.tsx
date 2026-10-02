@@ -56,7 +56,6 @@ import { HEALTH_DOT } from "@/lib/healthDot";
 import { UrgencyDot } from "@/components/shared/UrgencyDot";
 import type { HealthEntry } from "@/api/types";
 
-
 // Per-channel service switches: the same service can be on for the Telegram
 // bot and off for the website (or vice versa).
 const SERVICE_CHANNEL_ROWS = [
@@ -1316,8 +1315,8 @@ export function SettingsPage() {
             onOpenChange={(open) => { if (!open) setPendingService(null); }}
             title={pendingService ? `${pendingService.nextEnabled ? "Enable" : "Disable"} ${pendingService.label} for ${CHANNEL_PHRASE[pendingService.channel]}?` : ""}
             description={!pendingService ? "" : pendingService.nextEnabled
-              ? `Customers can browse and place new orders for this service on ${CHANNEL_PHRASE[pendingService.channel]} immediately. This applies to ${CHANNEL_PHRASE[pendingService.channel]} only.`
-              : `This hides the service and blocks new orders on ${CHANNEL_PHRASE[pendingService.channel]}. Existing orders continue processing. This applies to ${CHANNEL_PHRASE[pendingService.channel]} only.`}
+              ? `Customers can browse and place new orders for this service on ${CHANNEL_PHRASE[pendingService.channel]} immediately.`
+              : `This hides the service and blocks new orders on ${CHANNEL_PHRASE[pendingService.channel]}. Existing orders continue processing.`}
             confirmLabel={pendingService?.nextEnabled ? "Enable" : "Disable"}
             variant={pendingService?.nextEnabled ? "default" : "destructive"}
             successMessage="Service availability updated"

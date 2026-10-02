@@ -43,6 +43,7 @@ beforeEach(async () => {
 async function makeFullyDiscountedOrder() {
   const order = await prisma.$transaction((tx) =>
     createOrderDirect(tx, {
+     channel: "bot",
       user: { id: sample.user.id, role: sample.user.role },
       productId: sample.product.id,
       quantity: 1,
@@ -102,6 +103,7 @@ describe("settleFullyDiscountedOrder", () => {
   it("refuses an order that still has money owing on it, leaving it untouched", async () => {
     const created = await prisma.$transaction((tx) =>
       createOrderDirect(tx, {
+       channel: "bot",
         user: { id: sample.user.id, role: sample.user.role },
         productId: sample.product.id,
         quantity: 1,

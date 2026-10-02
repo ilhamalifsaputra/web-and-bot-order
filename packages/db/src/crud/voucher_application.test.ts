@@ -110,7 +110,7 @@ describe("createOrderFromCart with voucher", () => {
   it("applies 10% discount and bumps used_count", async () => {
     const { user, product, voucher } = sample;
     await addToCart(prisma, user.id, product.id, 2); // 10.00
-    const order = await createOrderFromCart(prisma, { user, voucherCode: "SAVE10" });
+    const order = await createOrderFromCart(prisma, { channel: "bot", user, voucherCode: "SAVE10" });
 
     expect(new Decimal(order!.discountAmount).equals("1.0000")).toBe(true);
     expect(order!.voucherId).toBe(voucher.id);
@@ -123,7 +123,7 @@ describe("createOrderFromCart with voucher", () => {
     const { user, product } = sample;
     await addToCart(prisma, user.id, product.id, 1);
     await expect(
-      createOrderFromCart(prisma, { user, voucherCode: "NOPE" }),
+      createOrderFromCart(prisma, { channel: "bot", user, voucherCode: "NOPE" }),
     ).rejects.toMatchObject({ key: "error.voucher_not_found" });
   });
 
@@ -133,7 +133,7 @@ describe("createOrderFromCart with voucher", () => {
   it("records a VoucherRedemption row on first use", async () => {
     const { user, product, voucher } = sample;
     await addToCart(prisma, user.id, product.id, 2);
-    const order = await createOrderFromCart(prisma, { user, voucherCode: "SAVE10" });
+    const order = await createOrderFromCart(prisma, { channel: "bot", user, voucherCode: "SAVE10" });
 
     const redemption = await prisma.voucherRedemption.findUnique({
       where: { voucherId_userId: { voucherId: voucher.id, userId: user.id } },
@@ -145,22 +145,22 @@ describe("createOrderFromCart with voucher", () => {
   it("the SAME user reusing a voucher on a second order raises error.voucher_already_redeemed", async () => {
     const { user, product } = sample;
     await addToCart(prisma, user.id, product.id, 2);
-    await createOrderFromCart(prisma, { user, voucherCode: "SAVE10" }); // 1st use — succeeds
+    await createOrderFromCart(prisma, { channel: "bot", user, voucherCode: "SAVE10" }); // 1st use — succeeds
 
     await addToCart(prisma, user.id, product.id, 2);
     await expect(
-      createOrderFromCart(prisma, { user, voucherCode: "SAVE10" }), // 2nd use — blocked
+      createOrderFromCart(prisma, { channel: "bot", user, voucherCode: "SAVE10" }), // 2nd use — blocked
     ).rejects.toMatchObject({ key: "error.voucher_already_redeemed" });
   });
 
   it("a DIFFERENT user can still redeem the same voucher (cap is per-user, not global)", async () => {
     const { user, product, voucher } = sample;
     await addToCart(prisma, user.id, product.id, 2);
-    await createOrderFromCart(prisma, { user, voucherCode: "SAVE10" });
+    await createOrderFromCart(prisma, { channel: "bot", user, voucherCode: "SAVE10" });
 
     const otherUser = await prisma.user.create({ data: { telegramId: 9_988_776, referralCode: "OTHERUSR" } });
     await addToCart(prisma, otherUser.id, product.id, 2);
-    const order2 = await createOrderFromCart(prisma, { user: { id: otherUser.id, role: "CUSTOMER", walletBalance: "0" }, voucherCode: "SAVE10" });
+    const order2 = await createOrderFromCart(prisma, { channel: "bot", user: { id: otherUser.id, role: "CUSTOMER", walletBalance: "0" }, voucherCode: "SAVE10" });
 
     expect(order2!.voucherId).toBe(voucher.id);
     const fresh = await prisma.voucher.findUnique({ where: { id: voucher.id } });
@@ -170,10 +170,10 @@ describe("createOrderFromCart with voucher", () => {
   it("a rejected reuse does NOT double-bump the global usedCount", async () => {
     const { user, product, voucher } = sample;
     await addToCart(prisma, user.id, product.id, 2);
-    await createOrderFromCart(prisma, { user, voucherCode: "SAVE10" });
+    await createOrderFromCart(prisma, { channel: "bot", user, voucherCode: "SAVE10" });
 
     await addToCart(prisma, user.id, product.id, 2);
-    await expect(createOrderFromCart(prisma, { user, voucherCode: "SAVE10" })).rejects.toThrow();
+    await expect(createOrderFromCart(prisma, { channel: "bot", user, voucherCode: "SAVE10" })).rejects.toThrow();
 
     const fresh = await prisma.voucher.findUnique({ where: { id: voucher.id } });
     expect(fresh!.usedCount).toBe(1); // the blocked attempt never reached the increment
@@ -186,7 +186,7 @@ describe("createOrderFromCart with voucher", () => {
   it("cancelling the order lets the same user redeem the voucher again", async () => {
     const { user, product, voucher } = sample;
     await addToCart(prisma, user.id, product.id, 2);
-    const order = await createOrderFromCart(prisma, { user, voucherCode: "SAVE10" });
+    const order = await createOrderFromCart(prisma, { channel: "bot", user, voucherCode: "SAVE10" });
 
     await cancelOrder(prisma, order!.id, "user_cancelled", {
       type: StockActorType.CUSTOMER,
@@ -202,7 +202,7 @@ describe("createOrderFromCart with voucher", () => {
     expect(freshVoucher!.usedCount).toBe(0);
 
     await addToCart(prisma, user.id, product.id, 2);
-    const secondOrder = await createOrderFromCart(prisma, { user, voucherCode: "SAVE10" });
+    const secondOrder = await createOrderFromCart(prisma, { channel: "bot", user, voucherCode: "SAVE10" });
     expect(secondOrder!.voucherId).toBe(voucher.id);
   });
 
@@ -212,7 +212,7 @@ describe("createOrderFromCart with voucher", () => {
   it("expiring the order (cancelOrder with reason 'expired') also releases the redemption", async () => {
     const { user, product, voucher } = sample;
     await addToCart(prisma, user.id, product.id, 2);
-    const order = await createOrderFromCart(prisma, { user, voucherCode: "SAVE10" });
+    const order = await createOrderFromCart(prisma, { channel: "bot", user, voucherCode: "SAVE10" });
 
     await cancelOrder(prisma, order!.id, "expired", { type: StockActorType.SYSTEM });
 

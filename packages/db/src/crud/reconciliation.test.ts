@@ -47,6 +47,7 @@ describe("reconcileFinances", () => {
   it("catches order total drift", async () => {
     const { user, product } = sample;
     const order = (await createOrderDirect(prisma, {
+     channel: "bot",
       user,
       productId: product.id,
       quantity: 2,
@@ -70,7 +71,7 @@ describe("reconcileFinances", () => {
   // subtracted before conversion like the cart/direct-order wallet paths.
   it("USDT order fully paid via USDT wallet credit → no false drift", async () => {
     const { user, product } = sample;
-    const created = (await createOrderDirect(prisma, { user, productId: product.id, quantity: 1 }))!;
+    const created = (await createOrderDirect(prisma, { channel: "bot", user, productId: product.id, quantity: 1 }))!;
     // Sample product price ("5.00") is too small to survive USDT rounding —
     // bump the order to prod-realistic numbers (order #182 was 28000 IDR).
     await prisma.order.update({
@@ -122,9 +123,9 @@ describe("reconcileFinances", () => {
     const user2 = await upsertUser(prisma, { telegramId: 9301, username: "voucher_user2", fullName: null });
 
     // `voucher` (SAVE10) gets 2 real non-cancelled orders; `other` (SAVE20) gets 1.
-    await createOrderDirect(prisma, { user, productId: product.id, quantity: 1, voucherCode: voucher.code });
-    await createOrderDirect(prisma, { user: user2, productId: product.id, quantity: 1, voucherCode: voucher.code });
-    await createOrderDirect(prisma, { user, productId: product.id, quantity: 1, voucherCode: other.code });
+    await createOrderDirect(prisma, { channel: "bot", user, productId: product.id, quantity: 1, voucherCode: voucher.code });
+    await createOrderDirect(prisma, { channel: "bot", user: user2, productId: product.id, quantity: 1, voucherCode: voucher.code });
+    await createOrderDirect(prisma, { channel: "bot", user, productId: product.id, quantity: 1, voucherCode: other.code });
 
     // Fake recorded usedCount drift on both so both show up in findings.
     await prisma.voucher.update({ where: { id: voucher.id }, data: { usedCount: 99 } });

@@ -158,7 +158,7 @@ describe("finalizeOrderPayment — rejects a gateway-bound total below the rail 
     // The shared fixture's product is Rp5.00 — comfortably under any real
     // minimum, which is exactly what these cases need.
     await addToCart(prisma, sample.user.id, sample.product.id, 1);
-    orderId = (await createOrderFromCart(prisma, { user: sample.user }))!.id;
+    orderId = (await createOrderFromCart(prisma, { channel: "bot", user: sample.user }))!.id;
   });
 
   it("IDR: throws error.amount_below_rail_minimum and leaves the order row untouched", async () => {
@@ -263,7 +263,7 @@ describe("finalizeOrderPayment — rejects a gateway-bound total below the rail 
     // A second order for the USDT half — the first is no longer PENDING-eligible
     // for a re-finalize in a meaningful way once stamped.
     await addToCart(prisma, sample.user.id, sample.product.id, 1);
-    const second = (await createOrderFromCart(prisma, { user: sample.user }))!;
+    const second = (await createOrderFromCart(prisma, { channel: "bot", user: sample.user }))!;
     const original = config.USE_UNIQUE_CENTS;
     config.USE_UNIQUE_CENTS = true;
     try {
@@ -315,7 +315,7 @@ describe("finalizeOrderPayment — the USDT minimum is judged after the buyer's 
       data: { price: "160000" },
     });
     await addToCart(prisma, sample.user.id, sample.product.id, 1);
-    orderId = (await createOrderFromCart(prisma, { user: sample.user }))!.id;
+    orderId = (await createOrderFromCart(prisma, { channel: "bot", user: sample.user }))!.id;
   });
 
   const finalizeUsdt = (walletAmount?: string) =>

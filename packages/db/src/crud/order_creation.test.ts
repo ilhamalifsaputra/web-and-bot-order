@@ -48,7 +48,7 @@ describe("create order from cart", () => {
   it("happy path: buying 2 units of a 5.00 product", async () => {
     const { user, product } = sample;
     await addToCart(prisma, user.id, product.id, 2);
-    const created = await createOrderFromCart(prisma, { user });
+    const created = await createOrderFromCart(prisma, { channel: "bot", user });
     const order = (await getOrder(prisma, created!.id))!;
 
     expect(new Decimal(order.subtotalAmount).equals("10.0000")).toBe(true);
@@ -81,7 +81,7 @@ describe("create order from cart", () => {
 
   it("empty cart raises error.cart_empty", async () => {
     const { user } = sample;
-    await expect(createOrderFromCart(prisma, { user })).rejects.toMatchObject({
+    await expect(createOrderFromCart(prisma, { channel: "bot", user })).rejects.toMatchObject({
       key: "error.cart_empty",
     });
   });
@@ -99,7 +99,7 @@ describe("create order from cart", () => {
 
     // Request 3 — fails the availability check.
     await addToCart(prisma, user.id, product.id, 3);
-    await expect(createOrderFromCart(prisma, { user })).rejects.toMatchObject({
+    await expect(createOrderFromCart(prisma, { channel: "bot", user })).rejects.toMatchObject({
       key: "error.out_of_stock",
     });
 
@@ -142,7 +142,7 @@ describe("total-units cap and batched insert (M-7 fix)", () => {
       await addToCart(prisma, user.id, denom.id, 99);
     }
 
-    await expect(createOrderFromCart(prisma, { user })).rejects.toMatchObject({
+    await expect(createOrderFromCart(prisma, { channel: "bot", user })).rejects.toMatchObject({
       key: "error.cart_too_large",
     });
 
@@ -169,7 +169,7 @@ describe("total-units cap and batched insert (M-7 fix)", () => {
       denomIds.push(denom.id);
     }
 
-    const created = await createOrderFromCart(prisma, { user });
+    const created = await createOrderFromCart(prisma, { channel: "bot", user });
     const order = (await getOrder(prisma, created!.id))!;
 
     expect(order.items.length).toBe(perLine * denomIds.length);
@@ -209,6 +209,7 @@ describe("discounts can zero an order but never take it negative", () => {
     await createVoucher(prisma, { code: "ONTOP", type: VoucherType.PERCENT, value: "50" });
 
     const created = await createOrderDirect(prisma, {
+     channel: "bot",
       user,
       productId: product.id,
       quantity: 2,
@@ -232,7 +233,7 @@ describe("discounts can zero an order but never take it negative", () => {
       data: { productId: product.id, minQuantity: 1, discountPercent: new Decimal("150"), isActive: true },
     });
 
-    const created = await createOrderDirect(prisma, { user, productId: product.id, quantity: 2 });
+    const created = await createOrderDirect(prisma, { channel: "bot", user, productId: product.id, quantity: 2 });
     const order = (await getOrder(prisma, created!.id))!;
 
     expect(new Decimal(order.bulkDiscountAmount).equals(0)).toBe(true);

@@ -92,6 +92,7 @@ describe("payment settlement logging never leaks a secret", () => {
     });
     await bulkAddStock(prisma, sample.product.id, [BUYER_CREDENTIAL]);
     const order = (await createOrderDirect(prisma, {
+     channel: "bot",
       user: sample.user,
       productId: sample.product.id,
       quantity: 1,
@@ -131,6 +132,7 @@ describe("payment settlement logging never leaks a secret", () => {
     // with the agreed field names, or the vocabulary buys nothing.
     await bulkAddStock(prisma, sample.product.id, ["cred-a"]);
     const order = (await createOrderDirect(prisma, {
+     channel: "bot",
       user: sample.user,
       productId: sample.product.id,
       quantity: 1,

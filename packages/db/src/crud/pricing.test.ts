@@ -874,7 +874,7 @@ describe("finalizeOrderPayment — refuses to convert at a rate nobody has confi
     // convert to 0.0 USDT and trip M11's guard before this one is reached.
     await prisma.denomination.update({ where: { id: sample.product.id }, data: { price: "80000" } });
     await addToCart(prisma, sample.user.id, sample.product.id, 1);
-    const created = await createOrderFromCart(prisma, { user: sample.user });
+    const created = await createOrderFromCart(prisma, { channel: "bot", user: sample.user });
     orderId = created!.id;
   });
 
@@ -928,7 +928,7 @@ describe("finalizeOrderPayment — refuses to convert at a rate nobody has confi
     for (const ttl of ["", "0", "-5", "abc"]) {
       await setSetting(prisma, FX_QUOTE_TTL_MINUTES_KEY, ttl);
       await addToCart(prisma, sample.user.id, sample.product.id, 1);
-      const fresh = (await createOrderFromCart(prisma, { user: sample.user }))!;
+      const fresh = (await createOrderFromCart(prisma, { channel: "bot", user: sample.user }))!;
       const order = await finalizeOrderPayment(prisma, fresh.id, { currency: "USDT", rate: "16000" });
       expect(order!.currency, `ttl ${JSON.stringify(ttl)} should disable the check`).toBe("USDT");
     }
@@ -959,7 +959,7 @@ describe("finalizeOrderPayment — refuses to convert at a rate nobody has confi
     );
     const guardAccepts = async () => {
       await addToCart(prisma, sample.user.id, sample.product.id, 1);
-      const fresh = (await createOrderFromCart(prisma, { user: sample.user }))!;
+      const fresh = (await createOrderFromCart(prisma, { channel: "bot", user: sample.user }))!;
       try {
         await finalizeOrderPayment(prisma, fresh.id, { currency: "USDT", rate: "16000" });
         return true;
@@ -1007,7 +1007,7 @@ describe("finalizeOrderPayment — PaymentChoice widening (PAYDISINI/NOWPAYMENTS
     // assertion below is about which fields get stamped, not about the amount.
     await prisma.denomination.update({ where: { id: sample.product.id }, data: { price: "80000" } });
     await addToCart(prisma, sample.user.id, sample.product.id, 1);
-    const created = await createOrderFromCart(prisma, { user: sample.user });
+    const created = await createOrderFromCart(prisma, { channel: "bot", user: sample.user });
     orderId = created!.id;
   });
 
@@ -1052,7 +1052,7 @@ describe("finalizeOrderPayment — WALLET method never attaches unique cents", (
     await resetDb(prisma);
     sample = await buildSampleData(prisma);
     await addToCart(prisma, sample.user.id, sample.product.id, 1);
-    const created = await createOrderFromCart(prisma, { user: sample.user });
+    const created = await createOrderFromCart(prisma, { channel: "bot", user: sample.user });
     orderId = created!.id;
   });
 
@@ -1102,7 +1102,7 @@ describe("finalizeOrderPayment — BYBIT vs BYBIT_BSC collision-avoidance is sco
 
   async function makeOrder() {
     await addToCart(prisma, sample.user.id, sample.product.id, 1);
-    return (await createOrderFromCart(prisma, { user: sample.user }))!;
+    return (await createOrderFromCart(prisma, { channel: "bot", user: sample.user }))!;
   }
 
   /** What finalizeOrderPayment computes on its FIRST attempt, before any

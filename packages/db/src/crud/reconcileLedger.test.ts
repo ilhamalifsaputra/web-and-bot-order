@@ -134,6 +134,7 @@ async function anchorLedger(occurredAt = ANCHOR_AT) {
  *  its `order:{id}:payment` posting is a real one. */
 async function makeDeliveredOrder() {
   const created = await createOrderDirect(prisma, {
+   channel: "bot",
     user: sample.user,
     productId: sample.product.id,
     quantity: 1,
@@ -195,6 +196,7 @@ async function makeInFlightWalletSpendOrder(walletAmount: string) {
   // non-zero and a term that wrongly cancelled the whole balance would show up.
   const user = await fundWallet("20.00");
   const created = await createOrderDirect(prisma, {
+   channel: "bot",
     user,
     productId: sample.product.id,
     quantity: 1,

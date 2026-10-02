@@ -43,6 +43,7 @@ describe("completeOrderWithWalletCredit — IDR track", () => {
 
     const result = await prisma.$transaction((tx) =>
       completeOrderWithWalletCredit(tx, {
+        channel: "bot",
         user: { id: user.id, role: user.role, walletBalance: user.walletBalance },
         productId: sample.product.id,
         quantity: 1,
@@ -74,6 +75,7 @@ describe("completeOrderWithWalletCredit — IDR track", () => {
 
     const result = await prisma.$transaction((tx) =>
       completeOrderWithWalletCredit(tx, {
+        channel: "bot",
         user: { id: user.id, role: user.role, walletBalance: user.walletBalance },
         productId: sample.product.id,
         quantity: 1,
@@ -92,6 +94,7 @@ describe("completeOrderWithWalletCredit — IDR track", () => {
     await expect(
       prisma.$transaction((tx) =>
         completeOrderWithWalletCredit(tx, {
+          channel: "bot",
           user: { id: user.id, role: user.role, walletBalance: user.walletBalance },
           productId: sample.product.id,
           quantity: 1,
@@ -113,6 +116,7 @@ describe("completeOrderWithWalletCredit — IDR track", () => {
 
     const result = await prisma.$transaction((tx) =>
       completeOrderWithWalletCredit(tx, {
+        channel: "bot",
         user: { id: user.id, role: user.role, walletBalance: user.walletBalance },
         productId: sample.product.id,
         quantity: 1,
@@ -135,6 +139,7 @@ describe("completeOrderWithWalletCredit — USDT track", () => {
 
     const result = await prisma.$transaction((tx) =>
       completeOrderWithWalletCredit(tx, {
+        channel: "bot",
         user: { id: user.id, role: user.role, walletBalanceUsdt: user.walletBalanceUsdt },
         productId: sample.product.id,
         quantity: 1,
@@ -164,6 +169,7 @@ describe("completeOrderWithWalletCredit — USDT track", () => {
 
     const result = await prisma.$transaction((tx) =>
       completeOrderWithWalletCredit(tx, {
+        channel: "bot",
         user: { id: user.id, role: user.role, walletBalanceUsdt: user.walletBalanceUsdt },
         productId: sample.product.id,
         quantity: 1,
@@ -183,6 +189,7 @@ describe("completeOrderWithWalletCredit — USDT track", () => {
     await expect(
       prisma.$transaction((tx) =>
         completeOrderWithWalletCredit(tx, {
+          channel: "bot",
           user: { id: user.id, role: user.role, walletBalanceUsdt: user.walletBalanceUsdt },
           productId: sample.product.id,
           quantity: 1,
@@ -207,6 +214,7 @@ describe("completeOrderWithWalletCredit — USDT track", () => {
     await expect(
       prisma.$transaction((tx) =>
         completeOrderWithWalletCredit(tx, {
+          channel: "bot",
           user: { id: user.id, role: user.role, walletBalanceUsdt: user.walletBalanceUsdt },
           productId: sample.product.id,
           quantity: 1,
@@ -248,6 +256,7 @@ describe("completeCartOrderWithWalletCredit — IDR track", () => {
 
     const result = await prisma.$transaction((tx) =>
       completeCartOrderWithWalletCredit(tx, {
+        channel: "bot",
         user: { id: user.id, role: user.role, walletBalance: user.walletBalance },
         currency: OrderCurrency.IDR,
       }),
@@ -275,6 +284,7 @@ describe("completeCartOrderWithWalletCredit — IDR track", () => {
     await expect(
       prisma.$transaction((tx) =>
         completeCartOrderWithWalletCredit(tx, {
+          channel: "bot",
           user: { id: user.id, role: user.role, walletBalance: user.walletBalance },
           currency: OrderCurrency.IDR,
         }),
@@ -297,6 +307,7 @@ describe("completeCartOrderWithWalletCredit — IDR track", () => {
 
     const result = await prisma.$transaction((tx) =>
       completeCartOrderWithWalletCredit(tx, {
+        channel: "bot",
         user: { id: user.id, role: user.role, walletBalance: user.walletBalance },
         voucherCode: sample.voucher.code,
         currency: OrderCurrency.IDR,
@@ -319,6 +330,7 @@ describe("completeCartOrderWithWalletCredit — IDR track", () => {
 
     const result = await prisma.$transaction((tx) =>
       completeCartOrderWithWalletCredit(tx, {
+        channel: "bot",
         user: { id: user.id, role: user.role, walletBalance: user.walletBalance },
         currency: OrderCurrency.IDR,
         customerData: [{ game_id: "GID-CART-WALLET" }],
@@ -339,6 +351,7 @@ describe("completeCartOrderWithWalletCredit — IDR track", () => {
     await expect(
       prisma.$transaction((tx) =>
         completeCartOrderWithWalletCredit(tx, {
+          channel: "bot",
           user: { id: user.id, role: user.role, walletBalance: user.walletBalance },
           currency: OrderCurrency.IDR,
         }),
@@ -357,6 +370,7 @@ describe("completeCartOrderWithWalletCredit — IDR track", () => {
 
     const result = await prisma.$transaction((tx) =>
       completeCartOrderWithWalletCredit(tx, {
+        channel: "bot",
         user: { id: user.id, role: user.role, walletBalance: user.walletBalance },
         currency: OrderCurrency.IDR,
       }),
@@ -381,6 +395,7 @@ describe("completeCartOrderWithWalletCredit — USDT track", () => {
 
     const result = await prisma.$transaction((tx) =>
       completeCartOrderWithWalletCredit(tx, {
+        channel: "bot",
         user: { id: user.id, role: user.role, walletBalance: user.walletBalance, walletBalanceUsdt: user.walletBalanceUsdt },
         currency: OrderCurrency.USDT,
         rate: 1,
@@ -405,6 +420,7 @@ describe("completeCartOrderWithWalletCredit — USDT track", () => {
     await expect(
       prisma.$transaction((tx) =>
         completeCartOrderWithWalletCredit(tx, {
+          channel: "bot",
           user: { id: user.id, role: user.role, walletBalance: user.walletBalance, walletBalanceUsdt: user.walletBalanceUsdt },
           currency: OrderCurrency.USDT,
           rate: 1,
@@ -426,6 +442,7 @@ describe("completeCartOrderWithWalletCredit — USDT track", () => {
     await expect(
       prisma.$transaction((tx) =>
         completeCartOrderWithWalletCredit(tx, {
+          channel: "bot",
           user: { id: user.id, role: user.role, walletBalance: user.walletBalance, walletBalanceUsdt: user.walletBalanceUsdt },
           currency: OrderCurrency.USDT,
           rate: 1,

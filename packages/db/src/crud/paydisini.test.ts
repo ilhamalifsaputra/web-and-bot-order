@@ -61,7 +61,7 @@ beforeEach(async () => {
 /** Create a PENDING_PAYMENT order stamped as a PayDisini payment. */
 async function makePendingPaydisiniOrder() {
   const { user, product } = sample;
-  const order = (await createOrderDirect(prisma, { user, productId: product.id, quantity: 1 }))!;
+  const order = (await createOrderDirect(prisma, { channel: "bot", user, productId: product.id, quantity: 1 }))!;
   await prisma.order.update({
     where: { id: order.id },
     data: { paymentMethod: PaymentMethod.PAYDISINI },
@@ -73,7 +73,7 @@ async function makePendingPaydisiniOrder() {
  * (used to route through a manual-delivery SKU instead of sample.product). */
 async function makePendingPaydisiniOrderFor(productId: number) {
   const { user } = sample;
-  const order = (await createOrderDirect(prisma, { user, productId, quantity: 1 }))!;
+  const order = (await createOrderDirect(prisma, { channel: "bot", user, productId, quantity: 1 }))!;
   await prisma.order.update({
     where: { id: order.id },
     data: { paymentMethod: PaymentMethod.PAYDISINI },

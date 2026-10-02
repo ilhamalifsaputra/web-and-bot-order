@@ -37,7 +37,10 @@ import {
   findUnderpaidReceived,
 } from "./orders";
 import { addToCart, upsertBulkPricing, createVoucher, setFlashSale, bulkAddStock, setSetting } from "@app/db";
-import { VoucherType, VoucherScope, OrderKind, StockActorType } from "@app/core/enums";
+import { VoucherType, VoucherScope, OrderKind, StockActorType, StockStatus, OrderCurrency, OrderStatus } from "@app/core/enums";
+import type { ServiceChannel } from "@app/core/services";
+import { completeOrderWithWalletCredit } from "./wallet_checkout";
+import { adjustWallet } from "./users";
 import { Decimal } from "@app/core/money";
 import { ValidationError } from "@app/core/errors";
 import { createCategory, createCatalogProduct, createDenomination, updateDenomination } from "./catalog";
@@ -55,9 +58,9 @@ describe("service activation at order creation", () => {
   });
 
   it("rejects a new direct purchase after Premium Apps is disabled while existing orders remain readable", async () => {
-    const first = await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 });
+    const first = await createOrderDirect(prisma, { channel: "bot", user: sample.user, productId: sample.product.id, quantity: 1 });
     await setSetting(prisma, "service_premium_apps_enabled", "false");
-    await expect(createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))
+    await expect(createOrderDirect(prisma, { channel: "bot", user: sample.user, productId: sample.product.id, quantity: 1 }))
       .rejects.toMatchObject({ key: "error.service_unavailable" });
     expect((await getOrder(prisma, first!.id))?.id).toBe(first!.id);
   });
@@ -65,10 +68,10 @@ describe("service activation at order creation", () => {
   it("rejects a stale cart checkout while disabled and restores it after reactivation", async () => {
     await addToCart(prisma, sample.user.id, sample.product.id, 1);
     await setSetting(prisma, "service_premium_apps_enabled", "false");
-    await expect(createOrderFromCart(prisma, { user: sample.user }))
+    await expect(createOrderFromCart(prisma, { channel: "bot", user: sample.user }))
       .rejects.toMatchObject({ key: "error.service_unavailable" });
     await setSetting(prisma, "service_premium_apps_enabled", "true");
-    expect(await createOrderFromCart(prisma, { user: sample.user })).toBeTruthy();
+    expect(await createOrderFromCart(prisma, { channel: "bot", user: sample.user })).toBeTruthy();
   });
 
   it("blocks Game Top Up independently while legacy Premium Apps still sells", async () => {
@@ -79,9 +82,59 @@ describe("service activation at order creation", () => {
       deliveryType: "manual",
     });
     await setSetting(prisma, "service_game_topup_enabled", "false");
-    await expect(createOrderDirect(prisma, { user: sample.user, productId: sku.id, quantity: 1 }))
+    await expect(createOrderDirect(prisma, { channel: "bot", user: sample.user, productId: sku.id, quantity: 1 }))
       .rejects.toMatchObject({ key: "error.service_unavailable" });
-    expect(await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 })).toBeTruthy();
+    expect(await createOrderDirect(prisma, { channel: "bot", user: sample.user, productId: sample.product.id, quantity: 1 })).toBeTruthy();
+  });
+
+  const pairs: Array<[ServiceChannel, ServiceChannel]> = [["bot", "web"], ["web", "bot"]];
+
+  async function snapshot() {
+    return {
+      orders: await prisma.order.count(),
+      available: await prisma.stockItem.count({ where: { productId: sample.product.id, status: StockStatus.AVAILABLE } }),
+      cartLines: await prisma.cartItem.count({ where: { userId: sample.user.id } }),
+      wallet: (await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } })).walletBalance.toString(),
+    };
+  }
+
+  it.each(pairs)("createOrderDirect refuses on %s with Premium Apps off there and writes nothing; %s still sells", async (off, on) => {
+    await setSetting(prisma, `service_premium_apps_enabled_${off}`, "false");
+    const before = await snapshot();
+    await expect(createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1, channel: off }))
+      .rejects.toMatchObject({ key: "error.service_unavailable" });
+    expect(await snapshot()).toEqual(before);
+    expect(await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1, channel: on }))
+      .toBeTruthy();
+  });
+
+  it.each(pairs)("createOrderFromCart refuses on %s with Premium Apps off there and keeps the cart; %s still sells", async (off, on) => {
+    await addToCart(prisma, sample.user.id, sample.product.id, 1);
+    await setSetting(prisma, `service_premium_apps_enabled_${off}`, "false");
+    const before = await snapshot();
+    await expect(createOrderFromCart(prisma, { user: sample.user, channel: off }))
+      .rejects.toMatchObject({ key: "error.service_unavailable" });
+    expect(await snapshot()).toEqual(before);
+    expect(await createOrderFromCart(prisma, { user: sample.user, channel: on })).toBeTruthy();
+  });
+
+  it.each(pairs)("completeOrderWithWalletCredit refuses on %s before spending credit; %s still delivers", async (off, on) => {
+    await adjustWallet(prisma, sample.user.id, "10", { currency: "IDR", reason: "admin_adjust" });
+    await setSetting(prisma, `service_premium_apps_enabled_${off}`, "false");
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
+    const before = await snapshot();
+    const run = (channel: ServiceChannel) => prisma.$transaction((tx) =>
+      completeOrderWithWalletCredit(tx, {
+        user: { id: user.id, role: user.role, walletBalance: user.walletBalance },
+        productId: sample.product.id,
+        quantity: 1,
+        currency: OrderCurrency.IDR,
+        channel,
+      }),
+    );
+    await expect(run(off)).rejects.toMatchObject({ key: "error.service_unavailable" });
+    expect(await snapshot()).toEqual(before);
+    expect((await run(on)).order.status).toBe(OrderStatus.DELIVERED);
   });
 });
 
@@ -906,7 +959,7 @@ describe("createOrderFromCart bulk+voucher discount cap (Money-2)", () => {
     // discounts only what's left.
     await createVoucher(prisma, { code: "FULL100", type: VoucherType.PERCENT, value: "100" });
 
-    const order = await createOrderFromCart(prisma, { user, voucherCode: "FULL100" });
+    const order = await createOrderFromCart(prisma, { channel: "bot", user, voucherCode: "FULL100" });
 
     expect(new Decimal(order!.bulkDiscountAmount).equals("10.0000")).toBe(true);
     expect(new Decimal(order!.discountAmount).equals("10.0000")).toBe(true); // capped at the NET subtotal, not the gross
@@ -1096,7 +1149,7 @@ describe("createOrderFromCart — isActive filtering (Finding #5)", () => {
     await addToCart(prisma, user.id, product.id, 1);
     await updateDenomination(prisma, product.id, { isActive: false });
 
-    await expect(createOrderFromCart(prisma, { user })).rejects.toMatchObject({ key: "error.cart_empty" });
+    await expect(createOrderFromCart(prisma, { channel: "bot", user })).rejects.toMatchObject({ key: "error.cart_empty" });
   });
 
   it("drops a deactivated line but still creates the order from the remaining active line", async () => {
@@ -1116,7 +1169,7 @@ describe("createOrderFromCart — isActive filtering (Finding #5)", () => {
     // scenario Finding #5 describes.
     await updateDenomination(prisma, otherDenom.id, { isActive: false });
 
-    const order = await createOrderFromCart(prisma, { user });
+    const order = await createOrderFromCart(prisma, { channel: "bot", user });
     const items = await prisma.orderItem.findMany({ where: { orderId: order!.id } });
     expect(items.map((i) => i.productId)).toEqual([product.id]);
   });
@@ -1130,7 +1183,7 @@ describe("createOrderFromCart — isActive filtering (Finding #5)", () => {
     const { user, product } = sample;
     await addToCart(prisma, user.id, product.id, 1);
 
-    const order = await createOrderFromCart(prisma, { user });
+    const order = await createOrderFromCart(prisma, { channel: "bot", user });
     const items = await prisma.orderItem.findMany({ where: { orderId: order!.id } });
     expect(items).toHaveLength(1);
     expect(items[0]!.deliveryTypeSnapshot).toBe(product.deliveryType);
@@ -1175,7 +1228,7 @@ describe("createOrderFromCart — manual_with_info customerData re-validation (F
 
     let caught: unknown;
     try {
-      await createOrderFromCart(prisma, { user, customerData: staleCustomerData });
+      await createOrderFromCart(prisma, { channel: "bot", user, customerData: staleCustomerData });
     } catch (e) {
       caught = e;
     }
@@ -1205,7 +1258,7 @@ describe("createOrderFromCart — manual_with_info customerData re-validation (F
     await addToCart(prisma, user.id, infoDenom.id, 1);
     const customerData = JSON.stringify([{ game_id: "12345" }]);
 
-    const order = await createOrderFromCart(prisma, { user, customerData });
+    const order = await createOrderFromCart(prisma, { channel: "bot", user, customerData });
     expect(order!.customerData).toBe(customerData);
   });
 });
@@ -1235,7 +1288,7 @@ describe("createOrderFromCart / createOrderDirect — flash sale pricing", () =>
     await flash("40"); // 5.00 -> 3.00
     await addToCart(prisma, user.id, product.id, 2);
 
-    const order = await createOrderFromCart(prisma, { user });
+    const order = await createOrderFromCart(prisma, { channel: "bot", user });
 
     expect(new Decimal(order!.subtotalAmount).equals("6.0000")).toBe(true);
     for (const item of order!.items) {
@@ -1259,7 +1312,7 @@ describe("createOrderFromCart / createOrderDirect — flash sale pricing", () =>
     });
     await addToCart(prisma, user.id, product.id, 1);
 
-    const order = await createOrderFromCart(prisma, { user });
+    const order = await createOrderFromCart(prisma, { channel: "bot", user });
 
     expect(new Decimal(order!.subtotalAmount).equals("5.0000")).toBe(true);
   });
@@ -1277,6 +1330,7 @@ describe("createOrderFromCart / createOrderDirect — flash sale pricing", () =>
     // 10% off 5.00 = 4.50, which is worse than the 4.00 reseller price.
     await flash("10");
     const keepsResellerPrice = await createOrderDirect(prisma, {
+     channel: "bot",
       user: reseller,
       productId: product.id,
       quantity: 1,
@@ -1286,6 +1340,7 @@ describe("createOrderFromCart / createOrderDirect — flash sale pricing", () =>
     // 40% off 5.00 = 3.00, which now beats the reseller price.
     await flash("40");
     const takesFlashPrice = await createOrderDirect(prisma, {
+     channel: "bot",
       user: reseller,
       productId: product.id,
       quantity: 1,
@@ -1300,7 +1355,7 @@ describe("createOrderFromCart / createOrderDirect — flash sale pricing", () =>
     await upsertBulkPricing(prisma, { denominationId: product.id, minQuantity: 4, discountPercent: 50 });
     await createVoucher(prisma, { code: "TEN", type: VoucherType.PERCENT, value: "10" });
 
-    const order = await createOrderFromCart(prisma, { user, voucherCode: "TEN" });
+    const order = await createOrderFromCart(prisma, { channel: "bot", user, voucherCode: "TEN" });
 
     expect(new Decimal(order!.subtotalAmount).equals("12.0000")).toBe(true);
     expect(new Decimal(order!.bulkDiscountAmount).equals("6.0000")).toBe(true); // 50% of 12.00
@@ -1344,7 +1399,7 @@ describe("createOrderFromCart / createOrderDirect — voucher scope (SELECTED)",
       productIds: [parentProduct.id],
     });
 
-    const order = await createOrderFromCart(prisma, { user, voucherCode: "SCOPED1" });
+    const order = await createOrderFromCart(prisma, { channel: "bot", user, voucherCode: "SCOPED1" });
 
     expect(new Decimal(order!.subtotalAmount).equals("15.0000")).toBe(true);
     // 10% of the scoped 5.00 line only, not the full 15.00 subtotal.
@@ -1366,7 +1421,7 @@ describe("createOrderFromCart / createOrderDirect — voucher scope (SELECTED)",
     });
 
     await expect(
-      createOrderFromCart(prisma, { user, voucherCode: "SCOPEDMISS" }),
+      createOrderFromCart(prisma, { channel: "bot", user, voucherCode: "SCOPEDMISS" }),
     ).rejects.toMatchObject({ key: "error.voucher_not_applicable" });
   });
 
@@ -1384,7 +1439,7 @@ describe("createOrderFromCart / createOrderDirect — voucher scope (SELECTED)",
     });
 
     await expect(
-      createOrderDirect(prisma, { user, productId: product.id, quantity: 1, voucherCode: "SCOPEDDIRECT" }),
+      createOrderDirect(prisma, { channel: "bot", user, productId: product.id, quantity: 1, voucherCode: "SCOPEDDIRECT" }),
     ).rejects.toMatchObject({ key: "error.voucher_not_applicable" });
   });
 
@@ -1398,7 +1453,7 @@ describe("createOrderFromCart / createOrderDirect — voucher scope (SELECTED)",
       productIds: [parentProduct.id],
     });
 
-    const order = await createOrderDirect(prisma, { user, productId: product.id, quantity: 1, voucherCode: "SCOPEDDIRECTOK" });
+    const order = await createOrderDirect(prisma, { channel: "bot", user, productId: product.id, quantity: 1, voucherCode: "SCOPEDDIRECTOK" });
     expect(new Decimal(order!.discountAmount).equals("0.5000")).toBe(true); // 10% of 5.00
   });
 
@@ -1413,7 +1468,7 @@ describe("createOrderFromCart / createOrderDirect — voucher scope (SELECTED)",
     });
 
     await expect(
-      createOrderFromCart(prisma, { user, voucherCode: "SCHEDVOUCH" }),
+      createOrderFromCart(prisma, { channel: "bot", user, voucherCode: "SCHEDVOUCH" }),
     ).rejects.toMatchObject({ key: "error.voucher_not_yet_active" });
 
     // Move the start date into the past — same voucher now applies. The
@@ -1423,7 +1478,7 @@ describe("createOrderFromCart / createOrderDirect — voucher scope (SELECTED)",
     const v = await prisma.voucher.findUnique({ where: { code: "SCHEDVOUCH" } });
     await prisma.voucher.update({ where: { id: v!.id }, data: { startAt: new Date(Date.now() - 60_000) } });
 
-    const order = await createOrderFromCart(prisma, { user, voucherCode: "SCHEDVOUCH" });
+    const order = await createOrderFromCart(prisma, { channel: "bot", user, voucherCode: "SCHEDVOUCH" });
     expect(new Decimal(order!.discountAmount).equals("0.5000")).toBe(true); // 10% of 5.00
   });
 });
@@ -1673,7 +1728,7 @@ describe("order credential decrypt: display reader is guarded, delivery readers 
   });
 
   async function orderWithTamperedStock() {
-    const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    const order = (await createOrderDirect(prisma, { channel: "bot", user: sample.user, productId: sample.product.id, quantity: 1 }))!;
     const stockItemId = order.items[0]!.stockItemId!;
     const good = JSON.parse(encryptLegacyV1("tampered@example.com:pw")) as Record<string, unknown>;
     await prisma.stockItem.update({
@@ -1697,7 +1752,7 @@ describe("order credential decrypt: display reader is guarded, delivery readers 
   });
 
   it("getOrderByCodeFullForDisplay returns readable credentials as plaintext", async () => {
-    const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    const order = (await createOrderDirect(prisma, { channel: "bot", user: sample.user, productId: sample.product.id, quantity: 1 }))!;
     const shown = await getOrderByCodeFullForDisplay(prisma, order.orderCode);
     expect(shown!.items[0]!.stockItem!.credentials).toBe((await getOrder(prisma, order.id))!.items[0]!.stockItem!.credentials);
     expect(shown!.items[0]!.stockItem!.credentials).toMatch(/@example\.com:/);
@@ -1760,7 +1815,7 @@ describe("listUserDeliveredOrders is a display list that needs no secret (final 
   });
 
   it("does not fail on an unreadable deliveredContent or credential, and never carries either", async () => {
-    const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    const order = (await createOrderDirect(prisma, { channel: "bot", user: sample.user, productId: sample.product.id, quantity: 1 }))!;
     const good = JSON.parse(encryptLegacyV1("user:x pass:Hunter2")) as Record<string, unknown>;
     const tampered = JSON.stringify({ ...good, authTag: Buffer.alloc(16).toString("base64") });
     await prisma.order.update({ where: { id: order.id }, data: { status: "DELIVERED", deliveredContent: tampered } });
@@ -1774,7 +1829,7 @@ describe("listUserDeliveredOrders is a display list that needs no secret (final 
   });
 
   it("lists only product orders, so wallet top-ups don't eat the row limit", async () => {
-    const product = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    const product = (await createOrderDirect(prisma, { channel: "bot", user: sample.user, productId: sample.product.id, quantity: 1 }))!;
     await prisma.order.update({ where: { id: product.id }, data: { status: "DELIVERED", createdAt: new Date("2026-01-01T00:00:00Z") } });
     for (let i = 0; i < 3; i++) {
       await prisma.order.create({
@@ -1801,7 +1856,7 @@ describe("Order.deliveredContent is decrypted at the order read choke points (Fa
   });
 
   async function deliveredOrderWith(stored: string) {
-    const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    const order = (await createOrderDirect(prisma, { channel: "bot", user: sample.user, productId: sample.product.id, quantity: 1 }))!;
     await prisma.order.update({ where: { id: order.id }, data: { status: "DELIVERED", deliveredContent: stored } });
     return order;
   }
@@ -1846,7 +1901,7 @@ describe.each([false, true])("order read choke points with CREDENTIAL_ENVELOPE_W
   });
 
   async function deliveredOrder() {
-    const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    const order = (await createOrderDirect(prisma, { channel: "bot", user: sample.user, productId: sample.product.id, quantity: 1 }))!;
     await prisma.order.update({ where: { id: order.id }, data: { status: "DELIVERED" } });
     return order;
   }
@@ -1891,7 +1946,7 @@ describe.each([false, true])("order read choke points with CREDENTIAL_ENVELOPE_W
       price: "5.00",
     });
     await bulkAddStock(prisma, denom.id, ["order-6d@x.com:pw"]);
-    const order = (await createOrderDirect(prisma, { user: sample.user, productId: denom.id, quantity: 1 }))!;
+    const order = (await createOrderDirect(prisma, { channel: "bot", user: sample.user, productId: denom.id, quantity: 1 }))!;
     const row = await prisma.stockItem.findUniqueOrThrow({ where: { id: order.items[0]!.stockItemId! } });
     expect(credentialEnvelopeVersion(row.credentials)).toBe(on ? 2 : 1);
 

@@ -76,7 +76,7 @@ beforeEach(async () => {
  *  rail this file drives for real. */
 async function makePendingInternalOrder() {
   const { user, product } = sample;
-  const order = (await createOrderDirect(prisma, { user, productId: product.id, quantity: 1 }))!;
+  const order = (await createOrderDirect(prisma, { channel: "bot", user, productId: product.id, quantity: 1 }))!;
   await prisma.order.update({
     where: { id: order.id },
     data: { paymentMethod: PaymentMethod.BINANCE_INTERNAL },
@@ -170,7 +170,7 @@ describe("findOverpaidExcess", () => {
     // Comparing against `totalAmount` here would invent an excess equal to the
     // shop's own fee and hand it to the buyer.
     const { user, product } = sample;
-    const order = (await createOrderDirect(prisma, { user, productId: product.id, quantity: 1 }))!;
+    const order = (await createOrderDirect(prisma, { channel: "bot", user, productId: product.id, quantity: 1 }))!;
     await prisma.order.update({
       where: { id: order.id },
       data: { paymentMethod: PaymentMethod.TOKOPAY },
@@ -192,7 +192,7 @@ describe("findOverpaidExcess", () => {
       await resetDb(prisma);
       sample = await buildSampleData(prisma);
       const { user, product } = sample;
-      const order = (await createOrderDirect(prisma, { user, productId: product.id, quantity: 1 }))!;
+      const order = (await createOrderDirect(prisma, { channel: "bot", user, productId: product.id, quantity: 1 }))!;
       const table = rail === "paydisini" ? prisma.processedPaydisiniTx : prisma.processedNowpaymentsTx;
       await table.create({
         data: {
@@ -211,7 +211,7 @@ describe("findOverpaidExcess", () => {
 
   it("reports no excess for a flagged row that records no amount, or an amount at or below the total", async () => {
     const { user, product } = sample;
-    const order = (await createOrderDirect(prisma, { user, productId: product.id, quantity: 1 }))!;
+    const order = (await createOrderDirect(prisma, { channel: "bot", user, productId: product.id, quantity: 1 }))!;
     // A row with a null amount: the rail flagged it but recorded no figure, so
     // there is nothing to derive and inventing one would credit a guess.
     await prisma.processedBinanceTx.create({
@@ -389,7 +389,7 @@ describe("creditOverpaymentToBalance", () => {
 
   it("refuses a flagged order whose derived excess is zero, rather than crediting nothing loudly", async () => {
     const { user, product } = sample;
-    const order = (await createOrderDirect(prisma, { user, productId: product.id, quantity: 1 }))!;
+    const order = (await createOrderDirect(prisma, { channel: "bot", user, productId: product.id, quantity: 1 }))!;
     await prisma.processedBinanceTx.create({
       data: {
         binanceTxId: `equal-${order.id}`,
@@ -413,7 +413,7 @@ describe("creditOverpaymentToBalance", () => {
 
   it("credits an IDR excess into the IDR balance, leaving the USDT balance alone", async () => {
     const { user, product } = sample;
-    const order = (await createOrderDirect(prisma, { user, productId: product.id, quantity: 1 }))!;
+    const order = (await createOrderDirect(prisma, { channel: "bot", user, productId: product.id, quantity: 1 }))!;
     await prisma.order.update({
       where: { id: order.id },
       data: { paymentMethod: PaymentMethod.PAYDISINI, currency: "IDR", status: OrderStatus.DELIVERED },

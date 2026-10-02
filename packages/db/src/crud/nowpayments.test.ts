@@ -59,7 +59,7 @@ beforeEach(async () => {
 /** Create a PENDING_PAYMENT order stamped as a NOWPayments payment. */
 async function makePendingNowpaymentsOrder() {
   const { user, product } = sample;
-  const order = (await createOrderDirect(prisma, { user, productId: product.id, quantity: 1 }))!;
+  const order = (await createOrderDirect(prisma, { channel: "bot", user, productId: product.id, quantity: 1 }))!;
   await prisma.order.update({
     where: { id: order.id },
     data: { paymentMethod: PaymentMethod.NOWPAYMENTS },
@@ -71,7 +71,7 @@ async function makePendingNowpaymentsOrder() {
  * (used to route through a manual-delivery SKU instead of sample.product). */
 async function makePendingNowpaymentsOrderFor(productId: number) {
   const { user } = sample;
-  const order = (await createOrderDirect(prisma, { user, productId, quantity: 1 }))!;
+  const order = (await createOrderDirect(prisma, { channel: "bot", user, productId, quantity: 1 }))!;
   await prisma.order.update({
     where: { id: order.id },
     data: { paymentMethod: PaymentMethod.NOWPAYMENTS },
@@ -415,6 +415,7 @@ describe("deliverPaidNowpaymentsOrder — WALLET_TOPUP routing", () => {
 
   it("a CANCELLED PRODUCT order paid late is still stale — the top-up relaxation does not leak", async () => {
     const productOrder = (await createOrderDirect(prisma, {
+     channel: "bot",
       user: sample.user,
       productId: sample.product.id,
       quantity: 1,

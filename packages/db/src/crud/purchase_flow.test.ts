@@ -36,6 +36,7 @@ describe("createOrderDirect", () => {
   it("happy path: single product, qty=2, no voucher", async () => {
     const { user, product } = sample;
     const order = (await createOrderDirect(prisma, {
+     channel: "bot",
       user,
       productId: product.id,
       quantity: 2,
@@ -53,7 +54,7 @@ describe("createOrderDirect", () => {
   it("rejects qty over available stock", async () => {
     const { user, product } = sample;
     await expect(
-      createOrderDirect(prisma, { user, productId: product.id, quantity: 10 }),
+      createOrderDirect(prisma, { channel: "bot", user, productId: product.id, quantity: 10 }),
     ).rejects.toMatchObject({ key: "error.out_of_stock" });
   });
 
@@ -63,7 +64,7 @@ describe("createOrderDirect", () => {
     const { user, product } = sample;
     for (const bad of [0, -5, 1.5]) {
       await expect(
-        createOrderDirect(prisma, { user, productId: product.id, quantity: bad }),
+        createOrderDirect(prisma, { channel: "bot", user, productId: product.id, quantity: bad }),
       ).rejects.toMatchObject({ key: "error.invalid_quantity" });
     }
     expect(await prisma.order.count()).toBe(0);
@@ -72,20 +73,21 @@ describe("createOrderDirect", () => {
   it("rejects a quantity above the 99 cap with error.invalid_quantity", async () => {
     const { user, product } = sample;
     await expect(
-      createOrderDirect(prisma, { user, productId: product.id, quantity: 100 }),
+      createOrderDirect(prisma, { channel: "bot", user, productId: product.id, quantity: 100 }),
     ).rejects.toMatchObject({ key: "error.invalid_quantity" });
   });
 
   it("unknown product → error.out_of_stock", async () => {
     const { user } = sample;
     await expect(
-      createOrderDirect(prisma, { user, productId: 99999, quantity: 1 }),
+      createOrderDirect(prisma, { channel: "bot", user, productId: 99999, quantity: 1 }),
     ).rejects.toMatchObject({ key: "error.out_of_stock" });
   });
 
   it("with voucher SAVE10 → 10% off + used_count bumps", async () => {
     const { user, product, voucher } = sample;
     const order = (await createOrderDirect(prisma, {
+     channel: "bot",
       user,
       productId: product.id,
       quantity: 2,
@@ -103,6 +105,7 @@ describe("createOrderDirect", () => {
     const { user, product } = sample;
     await expect(
       createOrderDirect(prisma, {
+       channel: "bot",
         user,
         productId: product.id,
         quantity: 1,
@@ -115,10 +118,10 @@ describe("createOrderDirect", () => {
   // the same buyer across multiple direct (bot) orders.
   it("the SAME user reusing SAVE10 on a second direct order → error.voucher_already_redeemed", async () => {
     const { user, product, voucher } = sample;
-    await createOrderDirect(prisma, { user, productId: product.id, quantity: 1, voucherCode: "SAVE10" });
+    await createOrderDirect(prisma, { channel: "bot", user, productId: product.id, quantity: 1, voucherCode: "SAVE10" });
 
     await expect(
-      createOrderDirect(prisma, { user, productId: product.id, quantity: 1, voucherCode: "SAVE10" }),
+      createOrderDirect(prisma, { channel: "bot", user, productId: product.id, quantity: 1, voucherCode: "SAVE10" }),
     ).rejects.toMatchObject({ key: "error.voucher_already_redeemed" });
 
     const fresh = await prisma.voucher.findUnique({ where: { id: voucher.id } });
@@ -133,11 +136,12 @@ describe("createOrderDirect", () => {
   it("a GLOBAL usageLimit=1 voucher is refused for a second order by a DIFFERENT user once exhausted", async () => {
     const { user, product } = sample;
     const v = await createVoucher(prisma, { code: "ONESHOT", type: VoucherType.PERCENT, value: "10", usageLimit: 1 });
-    await createOrderDirect(prisma, { user, productId: product.id, quantity: 1, voucherCode: "ONESHOT" });
+    await createOrderDirect(prisma, { channel: "bot", user, productId: product.id, quantity: 1, voucherCode: "ONESHOT" });
 
     const otherUser = await prisma.user.create({ data: { telegramId: 5_551_234, referralCode: "ONESHOT-U2" } });
     await expect(
       createOrderDirect(prisma, {
+       channel: "bot",
         user: { id: otherUser.id, role: "CUSTOMER" },
         productId: product.id,
         quantity: 1,
@@ -155,6 +159,7 @@ describe("createOrderDirect", () => {
     await addToCart(prisma, user.id, product.id, 3);
 
     const order = (await createOrderDirect(prisma, {
+     channel: "bot",
       user,
       productId: product.id,
       quantity: 1,

@@ -42,7 +42,7 @@ beforeEach(async () => {
 /** Create + deliver an order for `productId` (a denomination id) at `quantity`. */
 async function deliverOrder(productId: number, quantity: number) {
   const { user } = sample;
-  const created = await createOrderDirect(prisma, { user, productId, quantity });
+  const created = await createOrderDirect(prisma, { channel: "bot", user, productId, quantity });
   await attachPaymentProof(prisma, created!.id, { fileId: "fid", txid: `TX${created!.id}` });
   return approveOrder(prisma, created!.id, { adminId: user.id });
 }
@@ -73,10 +73,10 @@ describe("soldCountForDenomination / soldCountsByDenomination", () => {
     const { user, product } = sample;
 
     // PENDING_PAYMENT — never attaches proof, never approved.
-    await createOrderDirect(prisma, { user, productId: product.id, quantity: 2 });
+    await createOrderDirect(prisma, { channel: "bot", user, productId: product.id, quantity: 2 });
 
     // CANCELLED — created then cancelled before delivery.
-    const toCancel = await createOrderDirect(prisma, { user, productId: product.id, quantity: 1 });
+    const toCancel = await createOrderDirect(prisma, { channel: "bot", user, productId: product.id, quantity: 1 });
     await cancelOrder(prisma, toCancel!.id, "user_cancelled", {
       type: StockActorType.CUSTOMER,
       customerId: user.id,
@@ -89,7 +89,7 @@ describe("soldCountForDenomination / soldCountsByDenomination", () => {
 
   it("excludes REJECTED orders from the count", async () => {
     const { user, product } = sample;
-    const toReject = await createOrderDirect(prisma, { user, productId: product.id, quantity: 1 });
+    const toReject = await createOrderDirect(prisma, { channel: "bot", user, productId: product.id, quantity: 1 });
     await attachPaymentProof(prisma, toReject!.id, { fileId: "fid", txid: "TXREJ" });
     await rejectOrder(prisma, toReject!.id, { adminId: user.id, reason: "bad proof" });
 
@@ -165,11 +165,11 @@ describe("soldCountsByProduct", () => {
     // product1 (Netflix denomination) gets 3 delivered units; denom3 gets 1;
     // denom2 (Spotify) gets none.
     await deliverOrder(product1.id, 3);
-    const created3 = await createOrderDirect(prisma, { user, productId: denom3.id, quantity: 1 });
+    const created3 = await createOrderDirect(prisma, { channel: "bot", user, productId: denom3.id, quantity: 1 });
     await attachPaymentProof(prisma, created3!.id, { fileId: "fid3", txid: "TX3" });
     await approveOrder(prisma, created3!.id, { adminId: user.id });
 
-    const results = await soldCountsByProduct(prisma, 10);
+    const results = await soldCountsByProduct(prisma, "bot", 10);
 
     // Only products with ≥1 sale appear.
     expect(results.map((r) => r.product.id).sort()).toEqual([parent1.id, parent3.id].sort());
@@ -182,13 +182,13 @@ describe("soldCountsByProduct", () => {
     expect(results[1]?.sold).toBe(1);
 
     // Respects limit.
-    const limited = await soldCountsByProduct(prisma, 1);
+    const limited = await soldCountsByProduct(prisma, "bot", 1);
     expect(limited.length).toBe(1);
     expect(limited[0]?.product.id).toBe(parent1.id);
   });
 
   it("returns an empty array when no products have sales", async () => {
-    const results = await soldCountsByProduct(prisma, 10);
+    const results = await soldCountsByProduct(prisma, "bot", 10);
     expect(results).toEqual([]);
   });
 });

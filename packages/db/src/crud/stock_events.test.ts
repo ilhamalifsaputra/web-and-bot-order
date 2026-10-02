@@ -137,7 +137,7 @@ describe("a row's whole life: import → reserve → sold", () => {
     await bulkAddStock(prisma, denom.id, ["life@x:pw"], user.id);
     const row = await prisma.stockItem.findFirstOrThrow({ where: { productId: denom.id } });
 
-    const order = (await createOrderDirect(prisma, { user, productId: denom.id, quantity: 1 }))!;
+    const order = (await createOrderDirect(prisma, { channel: "bot", user, productId: denom.id, quantity: 1 }))!;
     await attachPaymentProof(prisma, order.id, { fileId: "dummy", txid: "TX-LIFE-1" });
     await approveOrder(prisma, order.id, { adminId: 0 });
 
@@ -161,7 +161,7 @@ describe("a row's whole life: import → reserve → sold", () => {
     await bulkAddStock(prisma, denom.id, ["lifedead@x:pw"], user.id);
     const row = await prisma.stockItem.findFirstOrThrow({ where: { productId: denom.id } });
 
-    await createOrderDirect(prisma, { user, productId: denom.id, quantity: 1 });
+    await createOrderDirect(prisma, { channel: "bot", user, productId: denom.id, quantity: 1 });
     expect(await markStockDead(prisma, row.id, "supplier revoked it", user.id)).toBe(1);
 
     const events = await eventsFor(row.id);

@@ -65,7 +65,7 @@ describe("stock event ledger across an order's lifecycle", () => {
     const row = (await prisma.stockItem.findFirst({ where: { productId: product.id, status: StockStatus.AVAILABLE } }))!;
 
     // 1. Buyer A reserves the row.
-    const first = (await createOrderDirect(prisma, { user, productId: product.id, quantity: 1 }))!;
+    const first = (await createOrderDirect(prisma, { channel: "bot", user, productId: product.id, quantity: 1 }))!;
     const firstItem = (await prisma.orderItem.findFirstOrThrow({ where: { orderId: first.id } }));
     expect(firstItem.stockItemId).toBe(row.id);
 
@@ -107,7 +107,7 @@ describe("stock event ledger across an order's lifecycle", () => {
 
     // 3. A different buyer reserves the very same row.
     const buyerB = await upsertUser(prisma, { telegramId: 777001, username: "buyer-b", fullName: "Buyer B" });
-    const second = (await createOrderDirect(prisma, { user: buyerB, productId: product.id, quantity: 1 }))!;
+    const second = (await createOrderDirect(prisma, { channel: "bot", user: buyerB, productId: product.id, quantity: 1 }))!;
     const secondItem = await prisma.orderItem.findFirstOrThrow({ where: { orderId: second.id } });
     expect(secondItem.stockItemId).toBe(row.id);
 
@@ -156,7 +156,7 @@ describe("stock event ledger across an order's lifecycle", () => {
   it("an admin cancel is attributed to that admin, not to the buyer", async () => {
     const { product, user } = sample;
     const admin = await upsertUser(prisma, { telegramId: 777002, username: "admin-x", fullName: "Admin X" });
-    const order = (await createOrderDirect(prisma, { user, productId: product.id, quantity: 1 }))!;
+    const order = (await createOrderDirect(prisma, { channel: "bot", user, productId: product.id, quantity: 1 }))!;
     const item = await prisma.orderItem.findFirstOrThrow({ where: { orderId: order.id } });
 
     await cancelOrder(prisma, order.id, "admin_cancelled: duplicate order", {
@@ -191,7 +191,7 @@ describe("stock event ledger across an order's lifecycle", () => {
     const { product, user } = sample;
     await reduceStockTo(product.id, 1);
 
-    const first = (await createOrderDirect(prisma, { user, productId: product.id, quantity: 1 }))!;
+    const first = (await createOrderDirect(prisma, { channel: "bot", user, productId: product.id, quantity: 1 }))!;
     const firstItem = await prisma.orderItem.findFirstOrThrow({ where: { orderId: first.id } });
     const rowId = firstItem.stockItemId!;
 
@@ -202,7 +202,7 @@ describe("stock event ledger across an order's lifecycle", () => {
       data: { status: StockStatus.AVAILABLE, orderId: null, reservedAt: null },
     });
     const buyerB = await upsertUser(prisma, { telegramId: 777003, username: "buyer-c", fullName: "Buyer C" });
-    const second = (await createOrderDirect(prisma, { user: buyerB, productId: product.id, quantity: 1 }))!;
+    const second = (await createOrderDirect(prisma, { channel: "bot", user: buyerB, productId: product.id, quantity: 1 }))!;
     const secondItem = await prisma.orderItem.findFirstOrThrow({ where: { orderId: second.id } });
     expect(secondItem.stockItemId).toBe(rowId);
 
@@ -234,7 +234,7 @@ describe("stock event ledger across an order's lifecycle", () => {
     // moment: right before the order claim, after the read.
     const { product, user } = sample;
     const admin = await upsertUser(prisma, { telegramId: 777004, username: "admin-d", fullName: "Admin D" });
-    const order = (await createOrderDirect(prisma, { user, productId: product.id, quantity: 1 }))!;
+    const order = (await createOrderDirect(prisma, { channel: "bot", user, productId: product.id, quantity: 1 }))!;
     const item = await prisma.orderItem.findFirstOrThrow({ where: { orderId: order.id } });
     const deadId = item.stockItemId!;
     await attachPaymentProof(prisma, order.id, { fileId: "dummy", txid: "RACE123XYZ" });
@@ -328,7 +328,7 @@ describe("stock event ledger across an order's lifecycle", () => {
     // reported it as pre-3b legacy data and soft-deleting the row was refused.
     const { product, user } = sample;
     const admin = await upsertUser(prisma, { telegramId: 777005, username: "admin-e", fullName: "Admin E" });
-    const order = (await createOrderDirect(prisma, { user, productId: product.id, quantity: 1 }))!;
+    const order = (await createOrderDirect(prisma, { channel: "bot", user, productId: product.id, quantity: 1 }))!;
     const item = await prisma.orderItem.findFirstOrThrow({ where: { orderId: order.id } });
     const rowId = item.stockItemId!;
     expect(await markStockDead(prisma, rowId, "died while reserved", admin.id)).toBe(1);
@@ -348,7 +348,7 @@ describe("stock event ledger across an order's lifecycle", () => {
 
   it("the expiry sweep's cancel is attributed to the system", async () => {
     const { product, user } = sample;
-    const order = (await createOrderDirect(prisma, { user, productId: product.id, quantity: 1 }))!;
+    const order = (await createOrderDirect(prisma, { channel: "bot", user, productId: product.id, quantity: 1 }))!;
     const item = await prisma.orderItem.findFirstOrThrow({ where: { orderId: order.id } });
 
     await cancelOrder(prisma, order.id, "expired", { type: StockActorType.SYSTEM });

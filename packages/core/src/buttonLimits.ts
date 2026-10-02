@@ -64,10 +64,10 @@ export const EMOJI_PREFIX_CELLS = visualWidth("💎 ");
 /**
  * The widest compact price that shares a Game Top-Up button with the name (`compactPrice` in
  * canonicalPresenter.ts). IDR: `formatCompactPrice` gives `Rp999K` (6) below one million and `Rp{n,nn}M`
- * above it, so `Rp99,99M` = 8 cells covers every SKU under Rp100 million. USD is shown exact (`$9,999.99`,
+ * above it (`Rp99,99jt` in Indonesian, the wider spelling), so 9 cells covers every SKU under Rp100 million. USD is shown exact (`$9,999.99`,
  * 9 cells, covers every SKU under $10,000).
  */
-export const COMPACT_PRICE_CELLS = { IDR: 8, USD: 9 } as const;
+export const COMPACT_PRICE_CELLS = { IDR: 9, USD: 9 } as const;
 /** The widest quantity beside a unit: `compactQuantity` prints a non-round value in full, so 7 digits (under 10 million). */
 export const QUANTITY_CELLS = 7;
 

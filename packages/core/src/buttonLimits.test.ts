@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { Decimal } from "./money";
-import { formatCompactPrice } from "./compactFormat";
+import { formatCompactIdrFor } from "./moneyFormat";
 import { canonicalProduct } from "./canonicalProduct";
 import {
   buttonNameBudget, visualWidth, MAX_LABEL_WIDTH, TARGET_LABEL_WIDTH, NARROW_LABEL_WIDTH, MAX_LABEL_BYTES, CATALOG_PAGE_SIZE,
@@ -38,9 +38,10 @@ describe("button limits", () => {
   it("covers the widest compact price the bot prints on a Game Top-Up button", () => {
     // IDR: every SKU under Rp100 million, in both decimal-separator spellings.
     for (const amount of ["999", "1000", "999499", "999500", "1640000", "10250000", "99990000"]) {
-      const price = formatCompactPrice(new Decimal(amount));
-      expect(visualWidth(price), price).toBeLessThanOrEqual(COMPACT_PRICE_CELLS.IDR);
-      expect(visualWidth(price.replace(".", ",")), price).toBeLessThanOrEqual(COMPACT_PRICE_CELLS.IDR);
+      for (const lang of ["en", "id"]) {
+        const price = formatCompactIdrFor(new Decimal(amount), lang);
+        expect(visualWidth(price), `${lang} ${price}`).toBeLessThanOrEqual(COMPACT_PRICE_CELLS.IDR);
+      }
     }
     // USD: exact amounts under $10,000, in both locales.
     for (const locale of ["en", "id"]) {
@@ -62,10 +63,10 @@ describe("button limits", () => {
     expect(buttonNameBudget("gameVariant", { emoji: true })).toBe(15);
     expect(buttonNameBudget("gameRegion")).toBe(18);
     expect(buttonNameBudget("denominationPlan")).toBe(18);
-    expect(buttonNameBudget("denominationGame", { currency: "IDR" })).toBe(25);
+    expect(buttonNameBudget("denominationGame", { currency: "IDR" })).toBe(24);
     expect(buttonNameBudget("denominationGame", { currency: "USD" })).toBe(24);
     expect(buttonNameBudget("denominationGame")).toBe(24);
-    expect(buttonNameBudget("qtyUnit", { currency: "IDR" })).toBe(17);
+    expect(buttonNameBudget("qtyUnit", { currency: "IDR" })).toBe(16);
     expect(buttonNameBudget("qtyUnit")).toBe(16);
   });
 

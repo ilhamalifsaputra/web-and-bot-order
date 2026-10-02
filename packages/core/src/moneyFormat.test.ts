@@ -100,11 +100,11 @@ describe("formatUsdFor", () => {
 
 describe("formatCompactIdrFor", () => {
   it("renders the decided examples", () => {
-    expect(formatCompactIdrFor(1640000, "id")).toBe("Rp1,64M");
+    expect(formatCompactIdrFor(1640000, "id")).toBe("Rp1,64jt");
     expect(formatCompactIdrFor(1640000, "en")).toBe("Rp1.64M");
     expect(formatCompactIdrFor(4480, "id")).toBe("Rp4K");
     expect(formatCompactIdrFor(4480, "en")).toBe("Rp4K");
-    expect(formatCompactIdrFor(2000000, "id")).toBe("Rp2M");
+    expect(formatCompactIdrFor(2000000, "id")).toBe("Rp2jt");
     expect(formatCompactIdrFor(999, "en")).toBe("Rp999");
   });
 
@@ -113,8 +113,8 @@ describe("formatCompactIdrFor", () => {
       [999, "Rp999", "Rp999"],
       [4480, "Rp4K", "Rp4K"],
       [355000, "Rp355K", "Rp355K"],
-      [1640000, "Rp1.64M", "Rp1,64M"],
-      [2000000, "Rp2M", "Rp2M"],
+      [1640000, "Rp1.64M", "Rp1,64jt"],
+      [2000000, "Rp2M", "Rp2jt"],
     ];
     for (const [amount, en, id] of table) {
       expect(formatCompactIdrFor(amount, "en")).toBe(en);
@@ -123,7 +123,8 @@ describe("formatCompactIdrFor", () => {
   });
 
   it.each(IDR_AMOUNTS)("differs between languages only in separators for %s", (a) => {
-    expect(swapSeparators(formatCompactIdrFor(a, "id"))).toBe(formatCompactIdrFor(a, "en"));
+    // Indonesian writes millions "jt" where English writes "M"; everything else differs only in separators.
+    expect(swapSeparators(formatCompactIdrFor(a, "id").replace(/jt$/, "M"))).toBe(formatCompactIdrFor(a, "en"));
   });
 });
 

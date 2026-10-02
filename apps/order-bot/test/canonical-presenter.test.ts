@@ -54,7 +54,8 @@ describe("canonical Telegram catalog", () => {
     expect(compactQuantity(10001)).toBe("10001");
     expect(compactQuantity(1234000)).toBe("1234K");
     expect(compactQuantity(1500000, "en")).toBe("1.5M");
-    expect(compactQuantity(1500000, "id")).toBe("1,5M");
+    expect(compactQuantity(1500000, "id")).toBe("1,5jt");
+    expect(compactQuantity(25000000, "id")).toBe("25jt");
     expect(compactQuantity(25000000)).toBe("25M");
     expect(compactQuantity(Number.MAX_SAFE_INTEGER)).toBe("9007199254740991");
   });
@@ -66,7 +67,7 @@ describe("canonical Telegram catalog", () => {
   it("uses final currency/locale price before layout and exact fallback", () => {
     const idr = presentCanonicalCatalog([item(1, "5 Diamonds", "1000000", "IDR", "id"), item(2, "6 Diamonds", "1000000", "IDR", "id")], { locale: "id" });
     const usd = presentCanonicalCatalog([item(1, "5 Diamonds", "1000000", "USD", "id"), item(2, "6 Diamonds", "1000000", "USD", "id")], { locale: "id" });
-    expect(idr.pages[0]!.rows.flat()[0]!.text).toContain("Rp1M");
+    expect(idr.pages[0]!.rows.flat()[0]!.text).toContain("Rp1jt");
     expect(usd.pages[0]!.rows.flat()[0]!.text).toContain("$62,50");
     // An item already clear on its button is not repeated in the body.
     expect(usd.pages[0]!.rows.flat()[0]!.text).toBe("5 💎 · $62,50");
@@ -289,7 +290,7 @@ describe("canonical Telegram label candidates", () => {
   });
   it("decides fit after the final currency is formatted", () => {
     const name = "Seasonal Collector Pass";
-    expect(labels(presentCanonicalCatalog([make(1, name, { price: "1000000", currency: "IDR" })]))).toEqual([`${name} · Rp1M`]);
+    expect(labels(presentCanonicalCatalog([make(1, name, { price: "1000000", currency: "IDR" })]))).toEqual([`${name} · Rp1jt`]);
     const usd = presentCanonicalCatalog([make(1, name, { price: "1600000000", currency: "USD" })]);
     expect(labels(usd)).toEqual(["…Collector Pass · $100.000,00"]);
     expect(usd.pages[0]!.text).toContain(`#1 · $100.000,00\n${name}`);
@@ -547,29 +548,30 @@ describe("Game Top-Up button fallback chain before a bare ID", () => {
   it("keeps a label of exactly the hard cap and falls back one cell later", () => {
     expect(MAX_LABEL_WIDTH).toBe(36);
     expect(TARGET_LABEL_WIDTH).toBe(32);
-    const at = "Alpha Bravo Charlie Delta Eco";
-    expect(visualWidth(`${at} · Rp1M`)).toBe(36);
-    expect(texts([item(1, at)])).toEqual([`${at} · Rp1M`]);
+    const at = "Alpha Bravo Charlie Delta Ex";
+    expect(visualWidth(`${at} · Rp1jt`)).toBe(36);
+    expect(texts([item(1, at)])).toEqual([`${at} · Rp1jt`]);
     const over = texts([item(1, `${at}x`)]);
-    expect(over[0]).not.toBe(`${at}x · Rp1M`);
+    expect(over[0]).not.toBe(`${at}x · Rp1jt`);
     expect(over[0]).toMatch(/^Alpha… /);
     expect(visualWidth(over[0]!)).toBeLessThanOrEqual(MAX_LABEL_WIDTH);
   });
   it("abbreviates long words only when the label does not fit, and never makes two SKUs identical", () => {
-    expect(texts([item(1, "Weekly Premium Pass")])).toEqual(["Weekly Premium Pass · Rp1M"]);
+    expect(texts([item(1, "Weekly Premium Pass")])).toEqual(["Weekly Premium Pass · Rp1jt"]);
     const result = presentCanonicalCatalog([item(1, "Weekly Premium Subscription Package Bonus"), item(2, "Weekly Premium Subscription Pkg Bonus")]);
     const out = labels(result);
     expect(new Set(out).size).toBe(2);
     expect(out.every((text) => !/^#\d+$/.test(text))).toBe(true);
     expect(result.pages[0]!.text).toContain("#1 · Rp1.000.000\nWeekly Premium Subscription Package Bonus");
     expect(result.pages[0]!.text).toContain("#2 · Rp1.000.000\nWeekly Premium Subscription Pkg Bonus");
-    expect(texts([item(1, "Weekly Premium Subscription Package")])).toEqual(["Wkly Premium Subscription Pkg · Rp1M"]);
+    // English spelling (Rp1M) so the label stays exactly 36 cells; the Indonesian "jt" is one cell wider.
+    expect(labels(presentCanonicalCatalog([item(1, "Weekly Premium Subscription Package", "1000000", { locale: "en" })], { locale: "en" }))).toEqual(["Wkly Premium Subscription Pkg · Rp1M"]);
   });
   it("never abbreviates Premium, Membership or Subscription inside a shortened official pass or plan name", () => {
     // Too wide as typed, so the dictionary step runs: Weekly/Monthly/Package/Genesis shrink, the identity words stay whole.
-    expect(texts([item(1, "Weekly Premium Battle Pass Package")])).toEqual(["Wkly Premium Battle Pass Pkg · Rp1M"]);
-    expect(texts([item(1, "Genesis Monthly Membership Package")])).toEqual(["Gen Mthly Membership Pkg · Rp1M"]);
-    expect(texts([item(1, "Weekly Subscription Package Bonus")])).toEqual(["Wkly Subscription Pkg Bonus · Rp1M"]);
+    expect(texts([item(1, "Weekly Premium Battle Pass Package")])).toEqual(["Wkly Premium Battle Pass Pkg · Rp1jt"]);
+    expect(texts([item(1, "Genesis Monthly Membership Package")])).toEqual(["Gen Mthly Membership Pkg · Rp1jt"]);
+    expect(texts([item(1, "Weekly Subscription Package Bonus")])).toEqual(["Wkly Subscription Pkg Bonus · Rp1jt"]);
     // A name too long even for that is cut by the ellipsis step, never spelled with an invented short form.
     const out = texts([item(1, "Valorant Indonesia Premium Battle Pass Monthly Package")])[0]!;
     expect(out).not.toMatch(/\b(?:Prem|Member|Sub)\b/);
@@ -578,7 +580,8 @@ describe("Game Top-Up button fallback chain before a bare ID", () => {
     const products = [8000, 9000, 10000].map((n, i) => item(i + 1, `Ultra Mega Collector Edition Special Pack ${n}`));
     const result = presentCanonicalCatalog(products);
     const out = labels(result);
-    expect(out).toEqual(["Ultra… Special Pack 8000 · Rp1M", "Ultra… Special Pack 9000 · Rp1M", "Ultra… Special Pack 10000 · Rp1M"]);
+    // "jt" is one cell wider than "M", so the longest name keeps one more word at the start.
+    expect(out).toEqual(["Ultra… Special Pack 8000 · Rp1jt", "Ultra… Special Pack 9000 · Rp1jt", "Ultra Mega… Pack 10000 · Rp1jt"]);
     for (const text of out) expect(visualWidth(text)).toBeLessThanOrEqual(TARGET_LABEL_WIDTH);
     expect(result.pages[0]!.text).toContain("#1 · Rp1.000.000\nUltra Mega Collector Edition Special Pack 8000");
     expect(result.pages[0]!.text).toContain("#3 · Rp1.000.000\nUltra Mega Collector Edition Special Pack 10000");
@@ -587,8 +590,8 @@ describe("Game Top-Up button fallback chain before a bare ID", () => {
   it("tells siblings apart by the first words when the end is shared", () => {
     const result = presentCanonicalCatalog([item(1, "Alpha Series Gamma Edition Special Collector Pack Plus"), item(2, "Beta Series Gamma Edition Special Collector Pack Plus")]);
     const [first, second] = labels(result);
-    expect(first).toMatch(/^Alpha[^…]*… .*Pack Plus · Rp1M$/);
-    expect(second).toMatch(/^Beta[^…]*… .*Pack Plus · Rp1M$/);
+    expect(first).toMatch(/^Alpha[^…]*… .*Pack Plus · Rp1jt$/);
+    expect(second).toMatch(/^Beta[^…]*… .*Pack Plus · Rp1jt$/);
   });
   it("falls back to the bare ID only when no shortening can tell siblings apart, and explains both", () => {
     const result = presentCanonicalCatalog([item(1, "Alpha Bravo Charlie Delta Echo Foxtrot Golf Hotel India"), item(2, "Alpha Bravo Charlie Delta Eagle Foxtrot Golf Hotel India")]);
@@ -601,10 +604,10 @@ describe("Game Top-Up button fallback chain before a bare ID", () => {
   });
   it("never cuts inside a grapheme", () => {
     const [text] = texts([item(1, "Famille 👨‍👩‍👧‍👦 Mega Special Event Pack 👨‍👩‍👧‍👦 Gift")]);
-    expect(text).toMatch(/^Famille… .*👨‍👩‍👧‍👦 Gift · Rp1M$/u);
+    expect(text).toMatch(/^Famille… .*👨‍👩‍👧‍👦 Gift · Rp1jt$/u);
     const [single] = texts([item(1, "Ünïcödé".repeat(10))]);
     expect(visualWidth(single!)).toBeLessThanOrEqual(MAX_LABEL_WIDTH);
-    expect(single).toMatch(/^….+ · Rp1M$/u);
+    expect(single).toMatch(/^….+ · Rp1jt$/u);
   });
   it("aims cuts at the soft target", () => {
     const [cut] = texts([item(1, "Ultra Mega Collector Edition Special Bundle Pack Plus Max")]);

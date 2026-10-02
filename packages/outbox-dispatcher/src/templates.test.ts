@@ -392,8 +392,11 @@ describe("notifier templates.render", () => {
       new_balance: "125000",
     });
     expect(out).toContain("TOPUP-IDR-1");
-    expect(out).toContain("Rp50.000");
-    expect(out).toContain("Rp125.000");
+    // Each language block uses its own separators: English "Rp50,000", Indonesian "Rp50.000".
+    expect(out).toContain("— Rp50,000 has been added to your wallet.");
+    expect(out).toContain("New balance: <b>Rp125,000</b>");
+    expect(out).toContain("— Rp50.000 telah ditambahkan ke saldo kamu.");
+    expect(out).toContain("Saldo baru: <b>Rp125.000</b>");
     expect(out).toMatch(/top-?up successful/i);
     expect(out).toMatch(/top up berhasil/i); // Indonesian line
   });
@@ -409,6 +412,8 @@ describe("notifier templates.render", () => {
     expect(out).toContain("10.5 USDT");
     expect(out).toContain("30.25 USDT");
     expect(out).not.toContain("Rp");
+    // A crypto amount is identical in both language blocks.
+    expect(out).not.toContain("10,5");
   });
 
   it("HTML-escapes a malicious WALLET_TOPUP_CREDITED_DM order_code", () => {
@@ -433,7 +438,8 @@ describe("notifier templates.render", () => {
     });
     expect(out).not.toContain("Order <code>");
     expect(out).not.toContain("Order <code></code>");
-    expect(out).toContain("Rp50.000 has been added to your wallet.");
+    // The English sentence uses English separators (was "Rp50.000" before prices followed the language).
+    expect(out).toContain("Rp50,000 has been added to your wallet.");
     expect(out).toContain("Rp50.000 telah ditambahkan ke saldo kamu.");
   });
 

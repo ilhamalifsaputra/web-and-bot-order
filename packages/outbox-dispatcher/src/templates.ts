@@ -8,7 +8,8 @@
  * returns here. We match on the stored name (NotificationEvent.ORDER_DELIVERED).
  */
 import { NotificationEvent } from "@app/core/enums";
-import { formatIdr, formatUsdt } from "@app/core/formatters";
+import { formatUsdt } from "@app/core/formatters";
+import { formatIdrFor } from "@app/core/moneyFormat";
 
 interface Strings {
   title: string;
@@ -292,19 +293,23 @@ export function render(
     // prefix rather than an empty tag pair.
     const rawCode = payload.order_code;
     const code = typeof rawCode === "string" && rawCode ? escape(rawCode) : "";
+    // Each language block shows Rupiah with its own language's separators
+    // (EN "Rp50,000", ID "Rp50.000"); a USDT amount is a crypto figure and
+    // reads the same in both.
     const currency = String(payload.currency ?? "");
-    const formatMoney = currency === "IDR" ? formatIdr : formatUsdt;
-    const amount = escape(formatMoney(String(payload.amount ?? "0")));
-    const newBalance = escape(formatMoney(String(payload.new_balance ?? "0")));
-    const creditedEn = code ? `Order <code>${code}</code> — ${amount} has been added to your wallet.` : `${amount} has been added to your wallet.`;
-    const creditedId = code ? `Order <code>${code}</code> — ${amount} telah ditambahkan ke saldo kamu.` : `${amount} telah ditambahkan ke saldo kamu.`;
+    const money = (raw: unknown, lang: "en" | "id") =>
+      escape(currency === "IDR" ? formatIdrFor(String(raw ?? "0"), lang) : formatUsdt(String(raw ?? "0")));
+    const [amountEn, amountId] = [money(payload.amount, "en"), money(payload.amount, "id")];
+    const [newBalanceEn, newBalanceId] = [money(payload.new_balance, "en"), money(payload.new_balance, "id")];
+    const creditedEn = code ? `Order <code>${code}</code> — ${amountEn} has been added to your wallet.` : `${amountEn} has been added to your wallet.`;
+    const creditedId = code ? `Order <code>${code}</code> — ${amountId} telah ditambahkan ke saldo kamu.` : `${amountId} telah ditambahkan ke saldo kamu.`;
     return (
       `✅ <b>Top-up successful!</b>\n\n` +
       `${creditedEn}\n` +
-      `New balance: <b>${newBalance}</b>\n\n` +
+      `New balance: <b>${newBalanceEn}</b>\n\n` +
       `✅ <b>Top up berhasil!</b>\n\n` +
       `${creditedId}\n` +
-      `Saldo baru: <b>${newBalance}</b>`
+      `Saldo baru: <b>${newBalanceId}</b>`
     );
   }
   if (event === NotificationEvent.BULK_PURCHASE_BROADCAST) {

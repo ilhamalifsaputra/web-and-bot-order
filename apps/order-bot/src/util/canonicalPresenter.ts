@@ -15,13 +15,13 @@ export { visualWidth, MAX_LABEL_WIDTH, TARGET_LABEL_WIDTH, NARROW_LABEL_WIDTH, M
 /**
  * Quantities are never rounded. Full digits are shown unless the value is a clean multiple of 1000
  * from 10000 up: then thousands ("10K", "1234K"), or millions with at most one decimal when it is a
- * multiple of 100000 ("1,5M" for Indonesian). "1,186K" would read as 1.186 million to an English reader.
+ * multiple of 100000 ("1,5jt" for Indonesian, where a bare "M" reads as billion). "1,186K" would read as 1.186 million to an English reader.
  */
 export function compactQuantity(value: number, locale = "en"): string {
   if (!Number.isInteger(value) || value < 10000 || value % 1000 !== 0) return String(value);
   if (value >= 1000000 && value % 100000 === 0) {
     const digits = new Decimal(value).div(1000000).toFixed();
-    return `${locale.startsWith("id") ? digits.replace(".", ",") : digits}M`;
+    return locale.startsWith("id") ? `${digits.replace(".", ",")}jt` : `${digits}M`;
   }
   return `${value / 1000}K`;
 }
@@ -253,7 +253,10 @@ function* shorterNames(main: string, head: string, options: { iconHead: string |
   const forms = (rest: string) => {
     const abbreviated = collapse(abbreviateText(rest));
     const heads = options.iconHead ? [head, options.iconHead] : [head];
-    return [...heads.map((lead) => joined(lead, rest)), ...heads.map((lead) => joined(lead, abbreviated))];
+    // The head's own unit may be abbreviated too ("6480+1600 Gen Crystals"), but only after every form that keeps it whole.
+    const abbreviatedHead = collapse(abbreviateText(head));
+    const abbreviatedHeads = abbreviatedHead && abbreviatedHead !== head ? [joined(abbreviatedHead, rest), joined(abbreviatedHead, abbreviated)] : [];
+    return [...heads.map((lead) => joined(lead, rest)), ...heads.map((lead) => joined(lead, abbreviated)), ...abbreviatedHeads];
   };
   const seen = new Set<string>();
   for (const text of forms(body)) if (!seen.has(text)) { seen.add(text); yield { text, kind: "swap", kept: Infinity }; }

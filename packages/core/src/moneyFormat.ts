@@ -68,11 +68,12 @@ function trimTwoDecimals(value: Decimal): string {
  * Short Rupiah for a button label: below 1,000 the full {@link formatIdrFor};
  * below a million the nearest whole thousand ("Rp4K"); from a million up the
  * millions with up to 2 decimals in the language's decimal separator
- * (id "Rp1,64M", en "Rp1.64M"). The K/M count is never grouped (as before).
+ * (id "Rp1,64jt", en "Rp1.64M"). The K/M/jt count is never grouped. Indonesian
+ * writes millions "jt" because a bare "M" reads as miliar (billion) there.
  */
 export function formatCompactIdrFor(amount: Decimal.Value, lang: string | null | undefined): string {
   const value = new Decimal(amount);
   if (value.lessThan(1000)) return formatIdrFor(value, lang);
   if (value.lessThan(1_000_000)) return `Rp${value.div(1000).toDecimalPlaces(0, Decimal.ROUND_HALF_UP).toFixed(0)}K`;
-  return `Rp${trimTwoDecimals(value.div(1_000_000)).replace(".", moneySeparators(lang).decimal)}M`;
+  return `Rp${trimTwoDecimals(value.div(1_000_000)).replace(".", moneySeparators(lang).decimal)}${isIndonesianLanguage(lang) ? "jt" : "M"}`;
 }

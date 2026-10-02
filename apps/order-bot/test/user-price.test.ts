@@ -123,7 +123,7 @@ describe("prices follow the buyer's language", () => {
     expect(idrId.lang).toBe("id");
     expect(idrId.price(30000)).toBe("Rp30.000");
     expect(idrEn.price(30000)).toBe("Rp30,000");
-    expect(idrId.compact(1_640_000)).toBe("Rp1,64M");
+    expect(idrId.compact(1_640_000)).toBe("Rp1,64jt");
     expect(idrEn.compact(1_640_000)).toBe("Rp1.64M");
     expect(idrId.compact(79000)).toBe("Rp79K");
     expect(idrEn.compact(79000)).toBe("Rp79K");

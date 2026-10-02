@@ -1466,10 +1466,13 @@ export async function viewOrder(ctx: MyContext, orderId: number): Promise<void> 
   }
 
   // Item lines show the central-IDR snapshot (+ USDT info); the charged total
-  // renders in the order's own transaction currency.
+  // renders in the order's own transaction currency. A USDT total is always
+  // written with a decimal point, so the "≈ $" hint stays in that style there
+  // rather than switching to the buyer's decimal comma on the same screen.
   const rate = await currentUsdtRate();
+  const hintLang = order.currency === "IDR" ? lang : "en";
   const itemLines = groupOrderItems(order.items).map(
-    (g) => `• ${esc(g.product.name)} × ${g.quantity} — ${priceIdr(g.lineTotal, rate, lang)}`,
+    (g) => `• ${esc(g.product.name)} × ${g.quantity} — ${priceIdr(g.lineTotal, rate, lang, hintLang)}`,
   );
 
   let text: string;

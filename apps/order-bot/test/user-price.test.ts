@@ -161,6 +161,16 @@ describe("prices follow the buyer's language", () => {
     expect(priceIdr(79000, RATE)).toBe("Rp79.000 (≈ $4.94)");
     expect(priceIdr(79000, null, "en")).toBe("Rp79,000");
   });
+
+  it("priceIdr lets the $ hint use its own spelling so a USDT order reads as one style", () => {
+    // An Indonesian buyer's USDT order shows "2.50 USDT" as the total, so the "≈ $" hint beside the Rupiah
+    // snapshot must not flip to a decimal comma on the same screen.
+    expect(priceIdr(79000, RATE, "id", "en")).toBe("Rp79.000 (≈ $4.94)");
+    expect(priceIdr(79000, RATE, "en", "id")).toBe("Rp79,000 (≈ $4,94)");
+    // Omitted → the hint follows `lang`, exactly as before.
+    expect(priceIdr(79000, RATE, "id")).toBe("Rp79.000 (≈ $4,94)");
+    expect(priceIdr(79000, null, "id", "en")).toBe("Rp79.000");
+  });
 });
 
 describe("payAlongsidePriceLine", () => {

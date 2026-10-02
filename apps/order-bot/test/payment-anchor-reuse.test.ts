@@ -66,7 +66,7 @@ async function makePendingOrder() {
     // below — finalizeOrderPayment now refuses to put a nothing-to-collect
     // total on a gateway. Nothing in this file asserts on the amount.
     await tx.denomination.update({ where: { id: sample.product.id }, data: { price: "80000" } });
-    const created = await createOrderDirect(tx, {
+    const created = await createOrderDirect(tx, { channel: "bot",
       user: { id: sample.user.id, role: sample.user.role },
       productId: sample.product.id,
       quantity: 1,

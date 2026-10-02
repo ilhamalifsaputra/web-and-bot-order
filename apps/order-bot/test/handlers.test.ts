@@ -253,7 +253,7 @@ function adminCtx(opts: Parameters<typeof makeCtx>[0] = {}) {
 /** Create a PENDING_PAYMENT order for the sample user. */
 async function makeOrder(qty = 1) {
   return prisma.$transaction((tx) =>
-    createOrderDirect(tx, { user: { id: sample.user.id, role: sample.user.role }, productId: sample.product.id, quantity: qty }),
+    createOrderDirect(tx, { channel: "bot", user: { id: sample.user.id, role: sample.user.role }, productId: sample.product.id, quantity: qty }),
   );
 }
 
@@ -313,7 +313,7 @@ async function makeManualWithInfoDenom(fields: AdditionalField[]) {
  * manual-SKU order takes (settlePaidOrder.test.ts covers that path itself —
  * this just reuses it as a fixture builder). Returns the order id. */
 async function makeProcessingOrder(productId: number, quantity = 1, customerData?: string) {
-  const order = await createOrderDirect(prisma, {
+  const order = await createOrderDirect(prisma, { channel: "bot",
     user: { id: sample.user.id, role: sample.user.role },
     productId,
     quantity,
@@ -784,7 +784,7 @@ describe("customer handlers", () => {
     "viewOrder routes a BYBIT_BSC order at %s through the live tracking screen, not the generic order.detail",
     async (status) => {
       const order = (await prisma.$transaction((tx) =>
-        createBybitBscOrder(tx, { user: { id: sample.user.id, role: sample.user.role }, productId: sample.product.id, quantity: 1, rate: 1 }),
+        createBybitBscOrder(tx, { channel: "bot", user: { id: sample.user.id, role: sample.user.role }, productId: sample.product.id, quantity: 1, rate: 1 }),
       ))!;
       await prisma.order.update({
         where: { id: order.id },
@@ -2103,6 +2103,39 @@ describe("group/category browsing handlers", () => {
     expect(scratch.group).toBe(CategoryGroup.PREMIUM_APPS);
     await setSetting(prisma, "service_game_topup_enabled", "true"); // restore — DB is shared across this file's tests
     void cat;
+  });
+
+  it("browseGroups hides Game Top-Up when it is disabled for the bot", async () => {
+    await setSetting(prisma, "service_game_topup_enabled_bot", "false");
+    await createCategory(prisma, { name: `Bot Off Premium ${Math.random()}`, group: CategoryGroup.PREMIUM_APPS });
+    const { ctx, sink } = customerCtx({ session: { ...userSession(), scratch: {} } });
+    await customer.browseGroups(ctx);
+    // Only Premium Apps is left, so the picker is skipped straight to it.
+    expect(sentIncludes(sink, "What are you shopping for")).toBe(false);
+    expect((ctx.session.scratch as { group?: string }).group).toBe(CategoryGroup.PREMIUM_APPS);
+  });
+
+  it("browseGroups ignores the website-only flag: Game Top-Up off for web leaves the bot picker intact", async () => {
+    await setSetting(prisma, "service_game_topup_enabled_web", "false");
+    const { ctx, sink } = customerCtx({ session: { ...userSession(), scratch: {} } });
+    await customer.browseGroups(ctx);
+    expect(sentIncludes(sink, "What are you shopping for")).toBe(true);
+  });
+
+  it("browseCategoriesInGroup shows no Game Top-Up categories when disabled for the bot, but still does when only the web flag is off", async () => {
+    const cat = await createCategory(prisma, { name: "Per Channel Legends", group: CategoryGroup.GAME_TOPUP });
+    await createCategory(prisma, { name: "Per Channel Rift", group: CategoryGroup.GAME_TOPUP });
+
+    await setSetting(prisma, "service_game_topup_enabled_web", "false");
+    const webOff = customerCtx();
+    await customer.browseCategoriesInGroup(webOff.ctx, CategoryGroup.GAME_TOPUP);
+    expect(sentIncludes(webOff.sink, cat.name)).toBe(true);
+
+    await setSetting(prisma, "service_game_topup_enabled_web", "true");
+    await setSetting(prisma, "service_game_topup_enabled_bot", "false");
+    const botOff = customerCtx();
+    await customer.browseCategoriesInGroup(botOff.ctx, CategoryGroup.GAME_TOPUP);
+    expect(sentIncludes(botOff.sink, cat.name)).toBe(false);
   });
 
   it("browseCategoriesInGroup lists active categories in that group and records the group in scratch", async () => {
@@ -3797,7 +3830,7 @@ describe("product detail: sold count + refresh", () => {
   /** Create + deliver an order for sample.product at `quantity` (Task 2's pattern). */
   async function deliverOrder(quantity: number) {
     return prisma.$transaction(async (tx) => {
-      const created = await createOrderDirect(tx, {
+      const created = await createOrderDirect(tx, { channel: "bot",
         user: { id: sample.user.id, role: sample.user.role },
         productId: sample.product.id,
         quantity,
@@ -3950,6 +3983,19 @@ describe("checkout handlers", () => {
     expect(JSON.stringify(sink)).not.toContain("conversation.enter");
   });
 
+  it("checkout guard rejects a service disabled for the bot with error.service_unavailable, and ignores the website flag", async () => {
+    await setSetting(prisma, "service_premium_apps_enabled_web", "false");
+    const webOff = customerCtx({ callbackData: `v1:buy:${sample.product.id}:1` });
+    await checkout.renderOrderConfirmation(webOff.ctx, sample.product.id, 1);
+    expect(sentIncludes(webOff.sink, t(webOff.ctx, "error.service_unavailable"))).toBe(false);
+
+    await setSetting(prisma, "service_premium_apps_enabled_web", "true");
+    await setSetting(prisma, "service_premium_apps_enabled_bot", "false");
+    const botOff = customerCtx({ callbackData: `v1:buy:${sample.product.id}:1` });
+    await checkout.renderOrderConfirmation(botOff.ctx, sample.product.id, 1);
+    expect(sentIncludes(botOff.sink, t(botOff.ctx, "error.service_unavailable"))).toBe(true);
+  });
+
   it("blocks stale confirmation re-renders and payment submenus after a service is disabled", async () => {
     await setSetting(prisma, "service_premium_apps_enabled", "false");
     const rerender = customerCtx();
@@ -3999,7 +4045,7 @@ describe("checkout handlers", () => {
       await checkout.renderOrderConfirmation(ctx, sample.product.id, 3);
 
       const order = await prisma.$transaction((tx) =>
-        createOrderDirect(tx, {
+        createOrderDirect(tx, { channel: "bot",
           user: { id: sample.user.id, role: sample.user.role },
           productId: sample.product.id,
           quantity: 3,
@@ -4248,7 +4294,7 @@ describe("checkout handlers", () => {
     await bulkAddStock(prisma, other.id, ["other-intent@x.com:pw"]);
     const checkoutIntentId = "11111111-1111-1111-1111-111111111111";
     await prisma.$transaction((tx) =>
-      createOrderDirect(tx, {
+      createOrderDirect(tx, { channel: "bot",
         user: { id: sample.user.id, role: sample.user.role },
         productId: other.id,
         quantity: 1,
@@ -4296,7 +4342,7 @@ describe("checkout handlers", () => {
     await bulkAddStock(prisma, other.id, ["other-intent-internal@x.com:pw"]);
     const checkoutIntentId = "22222222-2222-2222-2222-222222222222";
     await prisma.$transaction((tx) =>
-      createOrderDirect(tx, {
+      createOrderDirect(tx, { channel: "bot",
         user: { id: sample.user.id, role: sample.user.role },
         productId: other.id,
         quantity: 1,
@@ -4334,7 +4380,7 @@ describe("checkout handlers", () => {
     await bulkAddStock(prisma, other.id, ["other-intent-bybit@x.com:pw"]);
     const checkoutIntentId = "33333333-3333-3333-3333-333333333333";
     await prisma.$transaction((tx) =>
-      createOrderDirect(tx, {
+      createOrderDirect(tx, { channel: "bot",
         user: { id: sample.user.id, role: sample.user.role },
         productId: other.id,
         quantity: 1,
@@ -4372,7 +4418,7 @@ describe("checkout handlers", () => {
     await bulkAddStock(prisma, other.id, ["other-intent-bybitbsc@x.com:pw"]);
     const checkoutIntentId = "44444444-4444-4444-4444-444444444444";
     await prisma.$transaction((tx) =>
-      createOrderDirect(tx, {
+      createOrderDirect(tx, { channel: "bot",
         user: { id: sample.user.id, role: sample.user.role },
         productId: other.id,
         quantity: 1,
@@ -4416,7 +4462,7 @@ describe("checkout handlers", () => {
     await bulkAddStock(prisma, other.id, ["other-intent-wallet@x.com:pw"]);
     const checkoutIntentId = "55555555-5555-5555-5555-555555555555";
     await prisma.$transaction((tx) =>
-      createOrderDirect(tx, {
+      createOrderDirect(tx, { channel: "bot",
         user: { id: sample.user.id, role: sample.user.role },
         productId: other.id,
         quantity: 1,
@@ -4977,7 +5023,7 @@ describe("Refresh Status button (§7)", () => {
   // --- refreshPaymentStatus ownership/state guards ---------------------------
   async function makeTokopayPendingOrder() {
     return prisma.$transaction(async (tx) => {
-      const created = await createOrderDirect(tx, {
+      const created = await createOrderDirect(tx, { channel: "bot",
         user: { id: sample.user.id, role: sample.user.role },
         productId: sample.product.id,
         quantity: 1,
@@ -5323,7 +5369,7 @@ describe("Refresh Status button (§7)", () => {
 
   async function makeBybitBscOrderAt(status: string) {
     const order = (await prisma.$transaction((tx) =>
-      createBybitBscOrder(tx, { user: { id: sample.user.id, role: sample.user.role }, productId: sample.product.id, quantity: 1, rate: 1 }),
+      createBybitBscOrder(tx, { channel: "bot", user: { id: sample.user.id, role: sample.user.role }, productId: sample.product.id, quantity: 1, rate: 1 }),
     ))!;
     await prisma.order.update({ where: { id: order.id }, data: { status } });
     return order;

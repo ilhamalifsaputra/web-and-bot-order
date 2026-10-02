@@ -427,7 +427,7 @@ describe("prices follow the buyer's language on every screen", () => {
 describe("screens that must not follow the display currency", () => {
   async function makeIdrOrder() {
     return prisma.$transaction(async (tx) => {
-      const created = await createOrderDirect(tx, {
+      const created = await createOrderDirect(tx, { channel: "bot",
         user: { id: sample.user.id, role: sample.user.role },
         productId: sample.product.id,
         quantity: 1,

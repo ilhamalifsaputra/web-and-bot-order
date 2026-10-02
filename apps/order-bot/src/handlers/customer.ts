@@ -266,7 +266,7 @@ async function handleBackButton(ctx: MyContext): Promise<void> {
       // Recomputed fresh, not trusted from a stored "was it skipped" flag
       // (mirrors enterGameRegion's own products.length===1 recheck) — stays
       // correct even if an admin adds/removes a category between screens.
-      const categories = await listActiveCategoriesByGroup(prisma, sc(ctx).group!);
+      const categories = await listActiveCategoriesByGroup(prisma, sc(ctx).group!, "bot");
       if (categories.length <= 1) {
         await browseGroups(ctx);
       } else {
@@ -394,7 +394,7 @@ export async function browseGroups(ctx: MyContext): Promise<void> {
   // on this screen would resolve against an emptied picker snapshot instead
   // of falling through to the product-list default.
   delete sc(ctx).activeNumberedScreen;
-  const enabledGroups = await activeServiceGroups(prisma);
+  const enabledGroups = await activeServiceGroups(prisma, "bot");
   const enabledServices = CUSTOMER_SERVICES.filter((service) => enabledGroups.has(service.group));
   if (enabledServices.length === 1) {
     // Mirrors browseCategoriesInGroup's own single-category skip: a lone
@@ -452,7 +452,7 @@ export async function browseCategoriesInGroup(ctx: MyContext, group: string): Pr
     return;
   }
 
-  const categories = await listActiveCategoriesByGroup(prisma, group);
+  const categories = await listActiveCategoriesByGroup(prisma, group, "bot");
   const groupLabel = t(ctx, service.translationKey);
   if (!categories.length) {
     await smartEdit(ctx, t(ctx, "browse.category_picker_empty"), ckb.categoryPickerKb([], lang));
@@ -486,7 +486,7 @@ export async function browseCategoriesInGroup(ctx: MyContext, group: string): Pr
 export async function browseCategoryEntry(ctx: MyContext, categoryId: number, backTarget?: string): Promise<void> {
   sc(ctx).categoryId = categoryId;
   const category = await getCategory(prisma, categoryId);
-  if (!category || !category.isActive || !(await isServiceActive(prisma, category.group as CategoryGroup | null))) {
+  if (!category || !category.isActive || !(await isServiceActive(prisma, category.group as CategoryGroup | null, "bot"))) {
     await browseGroups(ctx);
     return;
   }
@@ -529,7 +529,7 @@ export async function browseCategoryEntry(ctx: MyContext, categoryId: number, ba
   // originally got us here, recheck reality.
   let effectiveBackTarget = backTarget;
   if (effectiveBackTarget == null) {
-    const groupCategories = await listActiveCategoriesByGroup(prisma, group);
+    const groupCategories = await listActiveCategoriesByGroup(prisma, group, "bot");
     effectiveBackTarget = groupCategories.length <= 1 ? ckb.cb("browse", "grps") : ckb.cb("browse", "grp", group);
   }
   const [variants, unvariantedCount] = await Promise.all([
@@ -706,7 +706,7 @@ async function enterGameRegion(
   // paths) funnels through before falling through to browseProductsFlat, so
   // syncing it here (once) covers every caller.
   sc(ctx).categoryId = categoryId;
-  const products = await listCatalogProducts(prisma, categoryId, { gameVariant, gameRegion });
+  const products = await listCatalogProducts(prisma, "bot", categoryId, { gameVariant, gameRegion });
   if (products.length === 1) {
     await browseProduct(ctx, products[0]!.id);
     return;
@@ -784,8 +784,8 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
   const previousActiveScreen = sc(ctx).activeNumberedScreen;
   const products =
     categoryId == null && sc(ctx).group === CategoryGroup.PREMIUM_APPS
-      ? await listCatalogProductsByGroup(prisma, CategoryGroup.PREMIUM_APPS)
-      : await listCatalogProducts(prisma, categoryId, filter);
+      ? await listCatalogProductsByGroup(prisma, CategoryGroup.PREMIUM_APPS, "bot")
+      : await listCatalogProducts(prisma, "bot", categoryId, filter);
   if (!products.length) {
     // Finding I2 (final-review): a picker's activeNumberedScreen must not
     // survive into this empty-list screen either — an empty gameVariant/
@@ -901,7 +901,7 @@ export async function browsePopular(ctx: MyContext): Promise<void> {
   const lang = ctx.session.lang;
   ctx.session.state = BotState.PRODUCT_LIST;
 
-  const rows = await soldCountsByProduct(prisma, 10);
+  const rows = await soldCountsByProduct(prisma, "bot", 10);
   if (!rows.length) {
     await smartEdit(ctx, t(ctx, "browse.popular_empty"), ckb.backToMain(lang));
     return;
@@ -1012,7 +1012,7 @@ export async function handleProductNumber(ctx: MyContext): Promise<void> {
   // is a mid-tier Product id.
   let entries = sc(ctx).browseEntries;
   if (entries == null) {
-    const all = await listCatalogProducts(prisma);
+    const all = await listCatalogProducts(prisma, "bot");
     const page = sc(ctx).page ?? 0;
     const startIdx = page * PAGE_SIZE;
     entries = all.slice(startIdx, startIdx + PAGE_SIZE).map((p) => p.id);
@@ -1061,7 +1061,7 @@ export async function browseProduct(ctx: MyContext, productId: number, requested
   const lang = ctx.session.lang;
   const product = await getCatalogProductWithDenominations(prisma, productId);
   const active = (product?.denominations ?? []).filter((d) => d.isActive);
-  if (!product || !product.isActive || product.isArchived || !product.category.isActive || active.length === 0 || !(await isServiceActive(prisma, product.category.group as CategoryGroup | null))) {
+  if (!product || !product.isActive || product.isArchived || !product.category.isActive || active.length === 0 || !(await isServiceActive(prisma, product.category.group as CategoryGroup | null, "bot"))) {
     await smartEdit(ctx, t(ctx, "browse.no_products"), ckb.backToMain(lang));
     return;
   }
@@ -1169,7 +1169,7 @@ export async function browseDenomination(
   let bulkRule: Awaited<ReturnType<typeof getBulkPricingForDenomination>>;
   try {
     d = await getDenominationWithProduct(prisma, denominationId);
-    if (d === null || !d.isActive || !d.product.isActive || d.product.isArchived || !d.product.category.isActive || !(await isServiceActive(prisma, d.product.category.group as CategoryGroup | null))) {
+    if (d === null || !d.isActive || !d.product.isActive || d.product.isArchived || !d.product.category.isActive || !(await isServiceActive(prisma, d.product.category.group as CategoryGroup | null, "bot"))) {
       logger.warn(`Denomination ${denominationId} not found — likely deleted/deactivated between render and tap, showing a try-again screen instead of a crash`);
       // Expected-but-rare (denomination deleted/deactivated between render and
       // tap) — transient copy, no ref. Forward action so it isn't a dead end.
@@ -1755,7 +1755,7 @@ export async function subscribeRestock(ctx: MyContext, denominationId: number): 
   const info = requireUser(ctx);
   const lang = ctx.session.lang;
   const denomination = await getDenominationWithProduct(prisma, denominationId);
-  if (!denomination || !(await isServiceActive(prisma, denomination.product.category.group as CategoryGroup | null))) {
+  if (!denomination || !(await isServiceActive(prisma, denomination.product.category.group as CategoryGroup | null, "bot"))) {
     const msg = t(ctx, denomination ? "error.service_unavailable" : "error.try_again");
     if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: msg, show_alert: true });
     await smartEdit(ctx, msg, ckb.backToMain(lang));
@@ -1885,7 +1885,7 @@ export async function searchCommand(ctx: MyContext): Promise<void> {
     await smartEdit(ctx, t(ctx, "search.no_query"), ckb.backToMain(lang));
     return;
   }
-  const products = await searchCatalog(prisma, query);
+  const products = await searchCatalog(prisma, query, "bot");
   if (!products.length) {
     await smartEdit(ctx, t(ctx, "search.no_results", { query: esc(query) }), ckb.backToMain(lang));
     return;

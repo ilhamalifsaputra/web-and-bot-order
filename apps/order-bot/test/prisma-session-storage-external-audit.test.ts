@@ -113,7 +113,7 @@ describe("conversation.external() return-value audit — durable, not one-time",
       warrantyDays: 30,
       deliveryType: DeliveryType.MANUAL_WITH_INFO,
     });
-    await createOrderDirect(prisma, {
+    await createOrderDirect(prisma, { channel: "bot",
       user: { id: user.id, role: user.role },
       productId: denom.id,
       quantity: 1,

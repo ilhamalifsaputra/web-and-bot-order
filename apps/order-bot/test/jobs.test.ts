@@ -143,7 +143,7 @@ const noTextToEdit = () => telegramError(400, "Bad Request: there is no text in 
 /** A PENDING_PAYMENT order whose window already expired (picked up by the job). */
 async function makeExpiredOrder() {
   const created = await prisma.$transaction(async (tx) => {
-    const o = await createOrderDirect(tx, {
+    const o = await createOrderDirect(tx, { channel: "bot",
       user: { id: sample.user.id, role: sample.user.role },
       productId: sample.product.id,
       quantity: 1,

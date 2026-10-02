@@ -128,7 +128,7 @@ async function makeAnchoredTokopayOrder(kind: string) {
           }),
         )
       : await prisma.$transaction(async (tx) => {
-          const created = await createOrderDirect(tx, {
+          const created = await createOrderDirect(tx, { channel: "bot",
             user: { id: sample.user.id, role: sample.user.role },
             productId: sample.product.id,
             quantity: 1,

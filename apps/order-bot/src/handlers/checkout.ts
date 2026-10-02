@@ -349,7 +349,7 @@ async function availableCheckoutDenomination(ctx: MyContext, productId: number):
   let key: "error.try_again" | "error.service_unavailable";
   if (!product || !product.isActive || !product.product.isActive || product.product.isArchived || !product.product.category.isActive) {
     key = "error.try_again";
-  } else if (!(await isServiceActive(prisma, product.product.category.group as CategoryGroup | null))) {
+  } else if (!(await isServiceActive(prisma, product.product.category.group as CategoryGroup | null, "bot"))) {
     key = "error.service_unavailable";
   } else {
     return product;
@@ -838,6 +838,7 @@ export async function buyNowInternal(ctx: MyContext, productId: number, quantity
   try {
     order = await prisma.$transaction((tx) =>
       createInternalOrder(tx, {
+        channel: "bot",
         user: { id: user.id, role: user.role },
         productId,
         quantity,
@@ -960,6 +961,7 @@ export async function buyNowBybit(ctx: MyContext, productId: number, quantity: n
   try {
     order = await prisma.$transaction((tx) =>
       createBybitOrder(tx, {
+        channel: "bot",
         user: { id: user.id, role: user.role },
         productId,
         quantity,
@@ -1077,6 +1079,7 @@ export async function buyNowBybitBsc(ctx: MyContext, productId: number, quantity
   try {
     order = await prisma.$transaction((tx) =>
       createBybitBscOrder(tx, {
+        channel: "bot",
         user: { id: user.id, role: user.role },
         productId,
         quantity,
@@ -1204,7 +1207,7 @@ export async function buyNowNowpayments(ctx: MyContext, productId: number, quant
   let order: Awaited<ReturnType<typeof createOrderDirect>>;
   try {
     order = await prisma.$transaction(async (tx) => {
-      const created = await createOrderDirect(tx, { user: { id: user.id, role: user.role }, productId, quantity, voucherCode, customerData, checkoutIntentId });
+      const created = await createOrderDirect(tx, { user: { id: user.id, role: user.role }, channel: "bot", productId, quantity, voucherCode, customerData, checkoutIntentId });
       if (!created) return created;
       const finalized = await finalizeOrderPayment(tx, created.id, {
         currency: OrderCurrency.USDT,
@@ -1379,6 +1382,7 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
   try {
     order = await prisma.$transaction(async (tx) => {
       const created = await createOrderDirect(tx, {
+        channel: "bot",
         user: { id: user.id, role: user.role, walletBalance: user.walletBalance },
         productId,
         quantity,
@@ -1573,6 +1577,7 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
   try {
     order = await prisma.$transaction(async (tx) => {
       const created = await createOrderDirect(tx, {
+        channel: "bot",
         user: { id: user.id, role: user.role, walletBalance: user.walletBalance },
         productId,
         quantity,
@@ -1750,6 +1755,7 @@ async function settleDiscountCoveredOrder(
   },
 ): Promise<Awaited<ReturnType<typeof completeOrderWithWalletCredit>>> {
   const created = await createOrderDirect(tx, {
+    channel: "bot",
     user: args.user,
     productId: args.productId,
     quantity: args.quantity,
@@ -1812,6 +1818,7 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
     result = await prisma.$transaction(async (tx) => {
       const r = useWalletCredit
         ? await completeOrderWithWalletCredit(tx, {
+          channel: "bot",
             user: {
               id: user.id,
               role: user.role,

@@ -50,7 +50,7 @@ afterAll(async () => {
 
 const makeTrackedOrder = async (txId: string) => {
   const order = (await prisma.$transaction((tx) =>
-    createBybitBscOrder(tx, { user: { id: sample.user.id, role: sample.user.role }, productId: sample.product.id, quantity: 1, rate: 1 }),
+    createBybitBscOrder(tx, { channel: "bot", user: { id: sample.user.id, role: sample.user.role }, productId: sample.product.id, quantity: 1, rate: 1 }),
   ))!;
   await prisma.order.update({
     where: { id: order.id },

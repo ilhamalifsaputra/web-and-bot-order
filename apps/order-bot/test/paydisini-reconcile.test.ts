@@ -88,7 +88,7 @@ function stubStatus(data: Record<string, unknown>) {
 
 async function makePaydisiniOrder() {
   return prisma.$transaction(async (tx) => {
-    const o = await createOrderDirect(tx, {
+    const o = await createOrderDirect(tx, { channel: "bot",
       user: { id: sample.user.id, role: sample.user.role },
       productId: sample.product.id,
       quantity: 1,

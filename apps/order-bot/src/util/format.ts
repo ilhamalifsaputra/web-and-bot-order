@@ -159,9 +159,12 @@ export function payAlongsidePriceLine(
 
 /**
  * A ValidationError's format args with any IDR-canonical money converted for
- * display. Only `error.voucher_min_purchase` carries one today (the voucher's
- * minPurchase, a raw IDR decimal string); every other key's args are returned
- * as-is (same object).
+ * display. `error.voucher_min_purchase` carries a canonical IDR amount (the
+ * voucher's minPurchase) shown in the buyer's display currency;
+ * `error.amount_below_rail_minimum` carries what an IDR payment rail charges
+ * in Rupiah, so it stays Rupiah (never converted) but takes the buyer's
+ * language's separators. Every other key's args (a USDT minimum included) are
+ * returned as-is (same object).
  */
 export function displayValidationArgs(
   key: string,
@@ -170,6 +173,9 @@ export function displayValidationArgs(
 ): Record<string, unknown> {
   if (key === "error.voucher_min_purchase" && args.min != null) {
     return { ...args, min: fmt.price(String(args.min)) };
+  }
+  if (key === "error.amount_below_rail_minimum" && args.currency === "IDR" && args.min != null) {
+    return { ...args, min: fmt.lang === undefined ? formatIdr(String(args.min)) : formatIdrFor(String(args.min), fmt.lang) };
   }
   return args;
 }

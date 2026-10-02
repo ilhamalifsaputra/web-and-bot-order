@@ -210,4 +210,13 @@ describe("displayValidationArgs", () => {
     const args = { min: "5", currency: "USDT" };
     expect(displayValidationArgs("error.amount_below_rail_minimum", args, usd)).toBe(args);
   });
+
+  it("writes an IDR rail minimum as Rupiah in the buyer's language, never converted to the display currency", () => {
+    const args = { min: "10000", currency: "IDR" };
+    // The minimum is what the rail charges in Rupiah, so a USD-display buyer still reads Rupiah.
+    expect(displayValidationArgs("error.amount_below_rail_minimum", args, userPriceFormatter(DisplayCurrency.USD, RATE, "id"))).toEqual({ min: "Rp10.000", currency: "IDR" });
+    expect(displayValidationArgs("error.amount_below_rail_minimum", args, userPriceFormatter(DisplayCurrency.IDR, RATE, "en"))).toEqual({ min: "Rp10,000", currency: "IDR" });
+    // Without a language, the long-standing Indonesian spelling.
+    expect(displayValidationArgs("error.amount_below_rail_minimum", args, userPriceFormatter(DisplayCurrency.IDR, RATE))).toEqual({ min: "Rp10.000", currency: "IDR" });
+  });
 });

@@ -1978,7 +1978,7 @@ export async function cancelPendingOrder(ctx: MyContext, orderId: number): Promi
     });
   } catch (e) {
     if (e instanceof ValidationError) {
-      if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, e.key, e.formatArgs), show_alert: true });
+      if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: await validationText(ctx, e), show_alert: true });
       return;
     }
     throw e;
@@ -2154,7 +2154,7 @@ export async function changePaymentRail(
     });
   } catch (e) {
     if (e instanceof ValidationError) {
-      if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, e.key, e.formatArgs), show_alert: true });
+      if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: await validationText(ctx, e), show_alert: true });
       return;
     }
     throw e;

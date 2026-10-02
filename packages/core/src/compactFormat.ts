@@ -1,5 +1,6 @@
 import { Decimal } from "./money";
 import { formatIdr } from "./formatters";
+import { formatCompactIdrFor } from "./moneyFormat";
 
 function trimDecimal(value: Decimal): string {
   return value.toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toFixed(2).replace(/\.?0+$/, "");
@@ -17,15 +18,14 @@ export function formatCompactQty(n: number): string {
 }
 
 /**
- * Compact IDR price abbreviation: <1000 via formatIdr; ≥1000 and
- * <1,000,000 rounded to the NEAREST WHOLE K (no decimals); ≥1,000,000
- * ÷1,000,000 (up to 2dp, trimmed) + "M".
+ * Compact IDR price abbreviation without a reader language (the long-standing
+ * output, byte-identical): <1000 via formatIdr; ≥1000 and <1,000,000 rounded
+ * to the NEAREST WHOLE K (no decimals); ≥1,000,000 ÷1,000,000 (up to 2dp,
+ * trimmed, "." decimal) + "M". Screens that know the buyer's language use
+ * `formatCompactIdrFor(amount, lang)` from `./moneyFormat`.
  */
 export function formatCompactPrice(amount: Decimal.Value): string {
   const dec = new Decimal(amount);
   if (dec.lessThan(1000)) return formatIdr(dec);
-  if (dec.lessThan(1_000_000)) {
-    return `Rp${dec.div(1000).toDecimalPlaces(0, Decimal.ROUND_HALF_UP).toFixed(0)}K`;
-  }
-  return `Rp${trimDecimal(dec.div(1_000_000))}M`;
+  return formatCompactIdrFor(dec, "en");
 }

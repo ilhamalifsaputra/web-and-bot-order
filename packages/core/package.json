@@ -15,6 +15,7 @@
     "./i18n": "./src/i18n.ts",
     "./formatters": "./src/formatters.ts",
     "./compactFormat": "./src/compactFormat.ts",
+    "./moneyFormat": "./src/moneyFormat.ts",
     "./customEmoji": "./src/customEmoji.ts",
     "./errors": "./src/errors.ts",
     "./errorBody": "./src/errorBody.ts",

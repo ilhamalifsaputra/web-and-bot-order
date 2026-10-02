@@ -49,7 +49,7 @@ async function stockRow(credentials: string) {
 }
 
 async function orderWith(deliveredContent: string | null) {
-  const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+  const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1, channel: "bot" }))!;
   await prisma.order.update({ where: { id: order.id }, data: { deliveredContent } });
   return order.id;
 }

@@ -51,7 +51,7 @@ import type { MyContext } from "../context";
 import { smartEdit, menuAnchor, consumeInput } from "../util/chat";
 import { anchorPaymentMessage } from "../util/paymentAnchor";
 import { t } from "../util/i18n";
-import { esc, formatIdr, formatUsdtAmount } from "../util/format";
+import { esc, formatIdrFor, formatUsdtAmount } from "../util/format";
 import { currentUsdtRate } from "../util/rate";
 import * as ckb from "../keyboards/customer";
 
@@ -78,9 +78,9 @@ function requireUser(ctx: MyContext) {
   return u;
 }
 
-/** Format a bound per the currency it belongs to. */
-function fmtBound(v: Decimal, currency: "IDR" | "USDT"): string {
-  return currency === "IDR" ? formatIdr(v) : formatUsdtAmount(v);
+/** Format a bound per the currency it belongs to; Rupiah in the buyer's language, USDT as is. */
+function fmtBound(v: Decimal, currency: "IDR" | "USDT", lang: string): string {
+  return currency === "IDR" ? formatIdrFor(v, lang) : formatUsdtAmount(v);
 }
 
 /**
@@ -104,9 +104,10 @@ function topupRangeLine(
   min: Decimal | null,
 ): string {
   const max = currency === "IDR" ? limits.maxIdr : limits.maxUsdt;
-  if (min && max) return "\n\n" + t(ctx, "wallet.topup_range_hint", { min: fmtBound(min, currency), max: fmtBound(max, currency) });
-  if (min) return "\n\n" + t(ctx, "wallet.topup_min_hint", { min: fmtBound(min, currency) });
-  if (max) return "\n\n" + t(ctx, "wallet.topup_max_hint", { max: fmtBound(max, currency) });
+  const lang = ctx.session.lang;
+  if (min && max) return "\n\n" + t(ctx, "wallet.topup_range_hint", { min: fmtBound(min, currency, lang), max: fmtBound(max, currency, lang) });
+  if (min) return "\n\n" + t(ctx, "wallet.topup_min_hint", { min: fmtBound(min, currency, lang) });
+  if (max) return "\n\n" + t(ctx, "wallet.topup_max_hint", { max: fmtBound(max, currency, lang) });
   return "";
 }
 
@@ -280,7 +281,7 @@ async function showTopupMethods(ctx: MyContext, currency: "IDR" | "USDT", amount
   }
 
   const offers = (method: WalletTopupMethod) => methods.includes(method);
-  const amountText = currency === "IDR" ? formatIdr(amount) : formatUsdtAmount(amount);
+  const amountText = currency === "IDR" ? formatIdrFor(amount, ctx.session.lang) : formatUsdtAmount(amount);
   await smartEdit(
     ctx,
     t(ctx, "wallet.topup_choose_method", { currency, amount: amountText }),
@@ -371,7 +372,7 @@ export async function payTopupInternal(ctx: MyContext): Promise<void> {
   delete sc(ctx).topupAmount;
 
   const fxRate = order.fxRate != null ? new Decimal(order.fxRate) : rate;
-  const idrLine = ` (≈ ${formatIdr(new Decimal(order.totalAmount).times(fxRate))})`;
+  const idrLine = ` (≈ ${formatIdrFor(new Decimal(order.totalAmount).times(fxRate), ctx.session.lang)})`;
   const expiry = order.expiresAt
     ? `${localize(order.expiresAt, "yyyy-LL-dd HH:mm")} WIB`
     : `${config.INTERNAL_PAYMENT_WINDOW_MINUTES}m`;
@@ -440,7 +441,7 @@ export async function payTopupBybit(ctx: MyContext): Promise<void> {
   delete sc(ctx).topupAmount;
 
   const fxRate = order.fxRate != null ? new Decimal(order.fxRate) : rate;
-  const idrLine = ` (≈ ${formatIdr(new Decimal(order.totalAmount).times(fxRate))})`;
+  const idrLine = ` (≈ ${formatIdrFor(new Decimal(order.totalAmount).times(fxRate), ctx.session.lang)})`;
   const expiry = order.expiresAt
     ? `${localize(order.expiresAt, "yyyy-LL-dd HH:mm")} WIB`
     : `${config.BYBIT_PAYMENT_WINDOW_MINUTES}m`;
@@ -504,7 +505,7 @@ export async function payTopupBybitBsc(ctx: MyContext): Promise<void> {
   delete sc(ctx).topupAmount;
 
   const fxRate = order.fxRate != null ? new Decimal(order.fxRate) : rate;
-  const idrLine = ` (≈ ${formatIdr(new Decimal(order.totalAmount).times(fxRate))})`;
+  const idrLine = ` (≈ ${formatIdrFor(new Decimal(order.totalAmount).times(fxRate), ctx.session.lang)})`;
   const expiry = order.expiresAt
     ? `${localize(order.expiresAt, "yyyy-LL-dd HH:mm")} WIB`
     : `${config.BYBIT_BSC_PAYMENT_WINDOW_MINUTES}m`;
@@ -692,9 +693,9 @@ export async function payTopupTokopay(ctx: MyContext): Promise<void> {
     : `${config.PAYMENT_WINDOW_MINUTES}m`;
   const caption = t(ctx, "checkout.qris_instructions", {
     code: order.orderCode,
-    subtotal: formatIdr(order.subtotalAmount),
-    fee: formatIdr(adminFee),
-    amount: formatIdr(chargeAmount),
+    subtotal: formatIdrFor(order.subtotalAmount, ctx.session.lang),
+    fee: formatIdrFor(adminFee, ctx.session.lang),
+    amount: formatIdrFor(chargeAmount, ctx.session.lang),
     expiry,
   });
 
@@ -786,7 +787,7 @@ export async function payTopupPaydisini(ctx: MyContext): Promise<void> {
     : `${config.PAYMENT_WINDOW_MINUTES}m`;
   const caption = t(ctx, "checkout.paydisini_instructions", {
     code: order.orderCode,
-    amount: formatIdr(order.totalAmount),
+    amount: formatIdrFor(order.totalAmount, ctx.session.lang),
     expiry,
   });
 

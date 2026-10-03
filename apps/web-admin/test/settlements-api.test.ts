@@ -248,6 +248,36 @@ describe("POST /api/settlements", () => {
     await expectNothingRecorded();
   });
 
+  // Typed money is read by its shape (CLAUDE.md): `1.000.000` is a million
+  // rupiah, `23.500` twenty-three thousand five hundred — not 1 and 23.5.
+  it("reads grouped rupiah amounts by shape, lines included", async () => {
+    const res = await post("/api/settlements", {
+      ...batchBody,
+      grossAmount: "1.000.000",
+      feeAmount: "23.500",
+      netAmount: "976.500",
+      lines: [{ amount: "1.000.000" }],
+    });
+    expect(res.statusCode).toBe(200);
+    const settlement = await prisma.settlement.findUniqueOrThrow({ where: { id: (res.json() as { settlementId: number }).settlementId } });
+    expect(settlement.grossAmount.toString()).toBe("1000000");
+    expect(settlement.feeAmount.toString()).toBe("23500");
+    expect(settlement.netAmount.toString()).toBe("976500");
+  });
+
+  it("400s an amount whose shape cannot be read without guessing, naming the field", async () => {
+    for (const [field, bad] of [["grossAmount", "1.2.3"], ["netAmount", "10.000,5.5"]] as const) {
+      const res = await post("/api/settlements", { ...batchBody, [field]: bad });
+      expect(res.statusCode).toBe(400);
+      expect((res.json() as { error: string }).error).toMatch(/amount/i);
+    }
+    const usdt = await post("/api/settlements", { ...batchBody, currency: "USDT", grossAmount: "1.000", feeAmount: "0", netAmount: "1.000" });
+    expect(usdt.statusCode).toBe(400);
+    const line = await post("/api/settlements", { ...batchBody, lines: [{ amount: "1.2.3" }] });
+    expect(line.statusCode).toBe(400);
+    await expectNothingRecorded();
+  });
+
   it("422s a provider this shop does not use", async () => {
     const res = await post("/api/settlements", { ...batchBody, provider: "A_MAN_WITH_A_BRIEFCASE" });
 

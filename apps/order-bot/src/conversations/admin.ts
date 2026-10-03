@@ -14,7 +14,7 @@ import { InputMediaBuilder } from "grammy";
 import type { MessageEntity } from "grammy/types";
 import { botToken, isAdmin } from "@app/core/runtime";
 import { Decimal } from "@app/core/money";
-import { parseMoneyInput } from "@app/core/moneyFormat";
+import { parseMoneyInput, parsePercentInput } from "@app/core/moneyFormat";
 import { ProductType, SenderType, VoucherType } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
@@ -59,14 +59,6 @@ import { startCommand } from "../handlers/customer";
 
 // Catalog prices and voucher amounts are Rupiah (the same figure the buyer sees as `Rp79.000`), never USDT.
 const price = (v: Decimal.Value) => formatIdr(v);
-
-/** A typed percent: digits with an optional `.`/`,` decimal part of 1-2 digits
- *  (`10`, `10.5`, `10,5`). Anything else — `10.000`, `1e1`, signs — is null. */
-function parsePercentInput(raw: string): Decimal | null {
-  const text = raw.trim();
-  if (!/^\d+([.,]\d{1,2})?$/.test(text)) return null;
-  return new Decimal(text.replace(",", "."));
-}
 
 function isCmd(ctx: MyContext, cmd: string): boolean {
   const text = ctx.message?.text ?? "";

@@ -36,6 +36,7 @@ import {
   isDigiflazzPriceOverridden,
 } from "@app/db";
 import { Decimal } from "@app/core/money";
+import { readMoneyField, readPercentField, moneyFieldError, percentFieldError } from "../../lib/moneyField";
 import { isFlashActive } from "@app/core/flash";
 import { ProductType, DeliveryType, CategoryGroup } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
@@ -59,14 +60,12 @@ function storefrontDetailFields(body: Record<string, unknown>) {
   };
 }
 
-/** Parse a possibly-blank string into a Decimal, or null if blank/invalid. */
-function parseDecimal(value: unknown): Decimal | null {
-  if (typeof value !== "string" || value.trim() === "") return null;
-  try {
-    return new Decimal(value.trim());
-  } catch {
-    return null;
-  }
+/**
+ * A rupiah price field read by its shape (`10.000` is ten thousand), or null
+ * when blank or unreadable. Never `new Decimal(text)`, which reads `10.000` as ten.
+ */
+function parsePrice(value: unknown): Decimal | null {
+  return readMoneyField(value, "IDR");
 }
 
 /**
@@ -348,16 +347,16 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     const durationLabel = (typeof body.durationLabel === "string" ? body.durationLabel : "").trim();
     if (!durationLabel) return reply.code(400).send({ error: "Duration is required." });
 
-    const price = parseDecimal(body.price);
-    if (price === null) return reply.code(400).send({ error: "A valid price is required." });
+    const price = parsePrice(body.price);
+    if (price === null) return reply.code(400).send({ error: moneyFieldError("Price") });
 
-    const costPrice = body.costPrice != null ? parseDecimal(body.costPrice) : null;
+    const costPrice = body.costPrice != null ? parsePrice(body.costPrice) : null;
     if (body.costPrice != null && costPrice === null) {
-      return reply.code(400).send({ error: "Cost price must be a valid number." });
+      return reply.code(400).send({ error: moneyFieldError("Cost price") });
     }
-    const resellerPrice = body.resellerPrice != null ? parseDecimal(body.resellerPrice) : null;
+    const resellerPrice = body.resellerPrice != null ? parsePrice(body.resellerPrice) : null;
     if (body.resellerPrice != null && resellerPrice === null) {
-      return reply.code(400).send({ error: "Reseller price must be a valid number." });
+      return reply.code(400).send({ error: moneyFieldError("Reseller price") });
     }
 
     let warrantyDays: number | null = null;
@@ -693,16 +692,16 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     const durationLabel = (typeof body.durationLabel === "string" ? body.durationLabel : "").trim();
     if (!durationLabel) return reply.code(400).send({ error: "Duration is required." });
 
-    const price = parseDecimal(body.price);
-    if (price === null) return reply.code(400).send({ error: "A valid price is required." });
+    const price = parsePrice(body.price);
+    if (price === null) return reply.code(400).send({ error: moneyFieldError("Price") });
 
-    const costPrice = body.costPrice != null ? parseDecimal(body.costPrice) : null;
+    const costPrice = body.costPrice != null ? parsePrice(body.costPrice) : null;
     if (body.costPrice != null && costPrice === null) {
-      return reply.code(400).send({ error: "Cost price must be a valid number." });
+      return reply.code(400).send({ error: moneyFieldError("Cost price") });
     }
-    const resellerPrice = body.resellerPrice != null ? parseDecimal(body.resellerPrice) : null;
+    const resellerPrice = body.resellerPrice != null ? parsePrice(body.resellerPrice) : null;
     if (body.resellerPrice != null && resellerPrice === null) {
-      return reply.code(400).send({ error: "Reseller price must be a valid number." });
+      return reply.code(400).send({ error: moneyFieldError("Reseller price") });
     }
 
     // warrantyDays is a required (non-nullable) column — only touch it when
@@ -900,8 +899,8 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     if (!Number.isInteger(minQuantity) || minQuantity < 1) {
       return reply.code(400).send({ error: "Min quantity must be a whole number of at least 1." });
     }
-    const discountPercent = parseDecimal(body.discountPercent);
-    if (discountPercent === null) return reply.code(400).send({ error: "A valid discount percent is required." });
+    const discountPercent = readPercentField(body.discountPercent);
+    if (discountPercent === null) return reply.code(400).send({ error: percentFieldError("Discount percent") });
 
     try {
       await upsertBulkPricing(prisma, { denominationId: id, minQuantity, discountPercent });

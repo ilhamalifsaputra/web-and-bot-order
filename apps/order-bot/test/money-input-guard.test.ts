@@ -10,6 +10,8 @@
  *     Rupiah form), `toLocaleString`, `Intl.NumberFormat`, or an `Rp` literal. Buyer screens use formatIdrFor /
  *     ctxPriceFormatter / orderAmount (packages/core/src/moneyFormat.ts, apps/order-bot/src/util/format.ts).
  *  C. The storefront top-up form judges its amount with `Number(amount)` instead of the shared reader.
+ *  D. An admin-panel API route builds a Decimal straight from its request body instead of reading it by shape
+ *     through apps/web-admin/src/lib/moneyField.ts.
  *
  * Admin-facing bot screens deliberately keep the Indonesian `formatIdr` (see ADMIN_FACING). If this fails, use the
  * shared helper; add to an allowlist only for a value that is NOT typed money (a percent, an id) and say why.
@@ -113,6 +115,26 @@ export function storefrontAmountViolations(fileName: string, code: string): stri
   return found;
 }
 
+/**
+ * Rule D: an admin-panel route never builds a Decimal straight from its request body
+ * (`new Decimal(body.price)`, `new Decimal(String(body.value).trim())`) — typed amounts go
+ * through apps/web-admin/src/lib/moneyField.ts (readMoneyField / readPercentField), which read by shape.
+ */
+export function adminBodyDecimalViolations(fileName: string, code: string): string[] {
+  const source = ts.createSourceFile(fileName, code, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const found: string[] = [];
+  const mentionsBody = (node: ts.Node): boolean =>
+    (ts.isIdentifier(node) && node.text === "body") || ts.forEachChild(node, mentionsBody) === true;
+  const visit = (node: ts.Node) => {
+    if (ts.isNewExpression(node) && node.expression.getText() === "Decimal" && node.arguments?.length && mentionsBody(node.arguments[0]!)) {
+      found.push(`${fileName}:${source.getLineAndCharacterOfPosition(node.getStart()).line + 1}: new Decimal(<request body>) — use readMoneyField / readPercentField`);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return found;
+}
+
 const tsFiles = (...dir: string[]) =>
   readdirSync(join(...dir)).filter((file) => file.endsWith(".ts") && !file.endsWith(".test.ts")).map((file) => join(...dir, file));
 const rel = (file: string) => file.slice(ROOT.length + 1).replaceAll("\\", "/");
@@ -138,6 +160,17 @@ describe("money input and display guard", () => {
     expect(storefrontAmountViolations("x.tsx", "const n = Number(amount);")).not.toEqual([]);
     expect(storefrontAmountViolations("x.tsx", '<Input id="topup_amount" type="number" />')).not.toEqual([]);
     expect(storefrontAmountViolations("x.tsx", '<Input id="topup_amount" type="text" /> /* Number(parsed) */')).toEqual([]);
+    for (const code of ["new Decimal(body.price);", 'new Decimal(String(body.value).trim());', 'new Decimal((body.delta ?? "").trim());']) {
+      expect(adminBodyDecimalViolations("x.ts", code), code).not.toEqual([]);
+    }
+    expect(adminBodyDecimalViolations("x.ts", "new Decimal(0); new Decimal(row.revenue_idr); readMoneyField(body.price);")).toEqual([]);
+  });
+
+  it("D: admin-panel routes never build a Decimal straight from the request body", () => {
+    const files = tsFiles(ROOT, "apps", "web-admin", "src", "routes", "api");
+    expect(files.length).toBeGreaterThan(10);
+    const hits = scan(files, adminBodyDecimalViolations);
+    expect(hits, `Typed money in admin routes goes through readMoneyField / readPercentField:\n${hits.join("\n")}`).toEqual([]);
   });
 
   it("A: no admin or buyer conversation, handler, or the catalog import reads typed text as an amount by hand", () => {

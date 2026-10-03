@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { parsePositiveId } from "../../lib/params";
+import { readMoneyField, readPercentField, moneyFieldError, percentFieldError } from "../../lib/moneyField";
 import { VoucherType, VoucherScope } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { errorBody } from "@app/core/errorBody";
@@ -30,6 +31,20 @@ const VOUCHER_TYPES = Object.values(VoucherType) as string[];
 const VOUCHER_SCOPES = Object.values(VoucherScope) as string[];
 const PAGE_SIZE = 50;
 const VOUCHER_STATUSES: readonly VoucherStatus[] = ["active", "expired", "usedUp", "disabled", "scheduled"];
+
+/** Absent, null or whitespace-only: the form left the optional field empty. */
+function isBlank(value: unknown): boolean {
+  return value === undefined || value === null || (typeof value === "string" && value.trim() === "");
+}
+
+/** A voucher's value is a percent for PERCENT vouchers and a rupiah amount for FIXED ones. */
+function readVoucherValue(value: unknown, type: string): Decimal | null {
+  return type === VoucherType.PERCENT ? readPercentField(value) : readMoneyField(value);
+}
+
+function voucherValueError(type: string): string {
+  return type === VoucherType.PERCENT ? percentFieldError("Value") : moneyFieldError("Value");
+}
 
 export default async function vouchersApiRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/vouchers", { preHandler: currentAdmin }, async (req, reply) => {
@@ -82,21 +97,13 @@ export default async function vouchersApiRoutes(app: FastifyInstance): Promise<v
       return reply.code(400).send({ error: "Invalid voucher type." });
     }
 
-    let valueDec: Decimal;
-    let minDec: Decimal;
-    try {
-      valueDec = new Decimal((body.value ?? "").trim());
-      minDec = new Decimal((body.min_purchase ?? "").trim() || "0");
-    } catch {
-      return reply.code(400).send({ error: "Value and min purchase must be numbers." });
-    }
-    // `new Decimal("NaN")`/`new Decimal("Infinity")` construct successfully
-    // (they don't throw), so a non-finite value would otherwise sail past
-    // the try/catch above and persist a NaN/Infinity amount (M-3, backend
-    // audit 2026-07-31) — same rejection as an unparsable value.
-    if (!valueDec.isFinite() || !minDec.isFinite()) {
-      return reply.code(400).send({ error: "Value and min purchase must be numbers." });
-    }
+    // Typed amounts are read by shape (`10.000` is ten thousand rupiah), and
+    // the shared readers never return NaN/Infinity (M-3, backend audit
+    // 2026-07-31) — an unreadable shape is a 400 naming the field.
+    const valueDec = readVoucherValue(body.value, typeUpper);
+    if (valueDec === null) return reply.code(400).send({ error: voucherValueError(typeUpper) });
+    const minDec = isBlank(body.min_purchase) ? new Decimal(0) : readMoneyField(body.min_purchase);
+    if (minDec === null) return reply.code(400).send({ error: moneyFieldError("Min purchase") });
 
     let limit: number | null = null;
     if ((body.usage_limit ?? "").trim()) {
@@ -119,17 +126,9 @@ export default async function vouchersApiRoutes(app: FastifyInstance): Promise<v
     // `voucherRequestBody` helper, which both the create and update mutations
     // now build their body from.
     let maxDiscountDec: Decimal | null = null;
-    const maxDiscountRaw = (body.max_discount ?? "").trim();
-    if (maxDiscountRaw !== "") {
-      try {
-        maxDiscountDec = new Decimal(maxDiscountRaw);
-      } catch {
-        return reply.code(400).send({ error: "Max discount must be a number." });
-      }
-      // NaN/Infinity construct successfully — reject explicitly (M-3).
-      if (!maxDiscountDec.isFinite()) {
-        return reply.code(400).send({ error: "Max discount must be a number." });
-      }
+    if (!isBlank(body.max_discount)) {
+      maxDiscountDec = readMoneyField(body.max_discount);
+      if (maxDiscountDec === null) return reply.code(400).send({ error: moneyFieldError("Max discount") });
     }
 
     let startAt: Date | null = null;
@@ -222,44 +221,29 @@ export default async function vouchersApiRoutes(app: FastifyInstance): Promise<v
       args.type = typeUpper as VoucherType;
     }
 
+    // Amounts are read by shape (`10.000` is ten thousand rupiah); the shared
+    // readers never return NaN/Infinity (M-3). The value is a percent or an
+    // amount depending on the type this update leaves the voucher with.
     if (body.value !== undefined) {
-      try {
-        args.value = new Decimal(String(body.value).trim());
-      } catch {
-        return reply.code(400).send({ error: "Value must be a number." });
-      }
-      // NaN/Infinity construct successfully — reject explicitly (M-3).
-      if (!args.value.isFinite()) {
-        return reply.code(400).send({ error: "Value must be a number." });
-      }
+      const effectiveType = args.type ?? existing.type;
+      const value = readVoucherValue(body.value, effectiveType);
+      if (value === null) return reply.code(400).send({ error: voucherValueError(effectiveType) });
+      args.value = value;
     }
 
     if (body.min_purchase !== undefined) {
-      try {
-        args.minPurchase = new Decimal(String(body.min_purchase).trim() || "0");
-      } catch {
-        return reply.code(400).send({ error: "Min purchase must be a number." });
-      }
-      // NaN/Infinity construct successfully — reject explicitly (M-3).
-      if (!args.minPurchase.isFinite()) {
-        return reply.code(400).send({ error: "Min purchase must be a number." });
-      }
+      const minPurchase = isBlank(body.min_purchase) ? new Decimal(0) : readMoneyField(body.min_purchase);
+      if (minPurchase === null) return reply.code(400).send({ error: moneyFieldError("Min purchase") });
+      args.minPurchase = minPurchase;
     }
 
     if (body.max_discount !== undefined) {
-      const raw = String(body.max_discount ?? "").trim();
-      if (raw === "") {
+      if (isBlank(body.max_discount)) {
         args.maxDiscount = null;
       } else {
-        try {
-          args.maxDiscount = new Decimal(raw);
-        } catch {
-          return reply.code(400).send({ error: "Max discount must be a number." });
-        }
-        // NaN/Infinity construct successfully — reject explicitly (M-3).
-        if (!args.maxDiscount.isFinite()) {
-          return reply.code(400).send({ error: "Max discount must be a number." });
-        }
+        const maxDiscount = readMoneyField(body.max_discount);
+        if (maxDiscount === null) return reply.code(400).send({ error: moneyFieldError("Max discount") });
+        args.maxDiscount = maxDiscount;
       }
     }
 

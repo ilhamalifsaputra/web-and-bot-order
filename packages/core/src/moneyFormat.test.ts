@@ -8,6 +8,7 @@ import {
   formatUsdFor,
   formatCompactIdrFor,
   parseMoneyInput,
+  parsePercentInput,
 } from "./moneyFormat";
 import { formatDisplayMoneyResult } from "./formatters";
 import { DisplayCurrency } from "./enums";
@@ -282,5 +283,21 @@ describe("parseMoneyInput", () => {
   it("allows exactly 20 characters", () => {
     expect(parseMoneyInput("12345678901234567890", "IDR")?.toFixed()).toBe("12345678901234567890");
     expect(parseMoneyInput("12345678901234567890", "USDT")?.toFixed()).toBe("12345678901234567890");
+  });
+});
+
+describe("parsePercentInput", () => {
+  it.each([
+    ["10", "10"],
+    ["10.5", "10.5"],
+    ["10,5", "10.5"],
+    [" 12,25 ", "12.25"],
+    ["0", "0"],
+  ])("reads %j as %s", (raw, want) => {
+    expect(parsePercentInput(raw)?.toString()).toBe(want);
+  });
+
+  it.each(["10.000", "1e1", "-5", "+5", "abc", "", "10.", ".5", "NaN", "Infinity", "10.123"])("refuses %j", (raw) => {
+    expect(parsePercentInput(raw)).toBeNull();
   });
 });

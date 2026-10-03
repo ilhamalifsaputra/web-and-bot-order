@@ -17,21 +17,12 @@ import {
   logAdminAction,
 } from "@app/db";
 import { Decimal } from "@app/core/money";
+import { readPercentField, percentFieldError } from "../../lib/moneyField";
 import { localize, parseShopLocal } from "@app/core/datetime";
 import { isFlashActive } from "@app/core/flash";
 import { quantizeMoney } from "@app/core/formatters";
 import { DeliveryType } from "@app/core/enums";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
-
-/** Parse a possibly-blank string into a Decimal, or null if blank/invalid. */
-function parseDecimal(value: unknown): Decimal | null {
-  if (typeof value !== "string" || value.trim() === "") return null;
-  try {
-    return new Decimal(value.trim());
-  } catch {
-    return null;
-  }
-}
 
 /** A body array of denomination ids, deduped, or null if empty/malformed. */
 function parseDenominationIds(value: unknown): number[] | null {
@@ -124,8 +115,9 @@ export default async function flashSalesApiRoutes(app: FastifyInstance): Promise
     const denominationIds = parseDenominationIds(body.denominationIds);
     if (denominationIds === null) return reply.code(400).send({ error: "Select at least one SKU." });
 
-    const discountPercent = parseDecimal(body.discountPercent);
-    if (discountPercent === null) return reply.code(400).send({ error: "A valid discount percent is required." });
+    // Read by shape: `12,5` is 12.5 percent, `10.000` is refused, never NaN.
+    const discountPercent = readPercentField(body.discountPercent);
+    if (discountPercent === null) return reply.code(400).send({ error: percentFieldError("Discount percent") });
 
     // Same bare wall-clock convention as the single-SKU flash-sale route: the
     // form submits <input type="datetime-local"> strings in the shop's timezone.

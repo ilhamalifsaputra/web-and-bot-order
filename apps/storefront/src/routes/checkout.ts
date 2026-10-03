@@ -76,6 +76,7 @@ import {
   MAX_CART_ORDER_UNITS,
   getDigiflazzCreds,
   fulfillDigiflazzOrder,
+  claimDigiflazzWebhookRecheck,
   recordDigiflazzOutcome,
   resolveSingleDigiflazzItem,
   buildDigiflazzCustomerNo,
@@ -1572,14 +1573,27 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
 
     const customerNo = buildDigiflazzCustomerNo(resolution.product, order.customerData);
 
-    // By the time a genuine Digiflazz webhook can exist for this refId,
-    // this shop must already have called createTransaction for it at least
-    // once (either the dispatch poller or an earlier webhook call) — so
-    // digiflazzDispatchedAt should always be set here. The `?? new Date()`
-    // fallback is defensive only (should never actually trigger) — see
-    // dispatchPendingDigiflazzOrders' own identical pattern for a fresh
-    // dispatch, which this mirrors.
-    const dispatchedAt = order.digiflazzDispatchedAt ?? new Date();
+    // Task B3d (backend audit): a genuine callback can only exist after the
+    // dispatch poller placed the purchase, and is only worth a re-check while
+    // the order is still pending at Digiflazz. Anything else — never
+    // dispatched, or already failed terminally — must not reach
+    // createTransaction: from here that call could be a first or a second
+    // purchase rather than a status check (its ref_id dedup is unverified).
+    const dispatchedAt = order.digiflazzDispatchedAt;
+    if (!dispatchedAt || order.digiflazzStatus !== "pending_at_supplier") {
+      logger.warn(
+        `Ignored a signed Digiflazz callback for order ${order.orderCode} without a live re-check, because the order is not waiting on Digiflazz (${dispatchedAt ? `its dispatch status is "${order.digiflazzStatus ?? "none"}"` : "it has not been dispatched yet"}) — re-posting the transaction from here could place a purchase instead of checking one`,
+      );
+      return reply.send({ status: "unmatched" });
+    }
+    // At most one /transaction call per order at a time, across replays,
+    // concurrent callbacks and the dispatch poller.
+    if (!(await claimDigiflazzWebhookRecheck(prisma, order.id))) {
+      logger.info(
+        `Skipped the live re-check for a Digiflazz callback on order ${order.orderCode} because another check of that order is already in flight or due within minutes — that check records the outcome, so nothing is lost`,
+      );
+      return reply.send({ status: "ok" });
+    }
 
     let result: DigiflazzTransactionResult;
     try {

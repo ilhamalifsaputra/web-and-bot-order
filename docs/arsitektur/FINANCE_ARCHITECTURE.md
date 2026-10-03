@@ -657,14 +657,25 @@ Two boundaries of that behaviour, both deliberate:
   balance. An unaffordable request is `applyUsdtWalletToOrder`'s
   `error.insufficient_wallet` to raise; pre-empting it here with
   "that total is too small" would name the wrong problem.
-- A credit that covers the whole converted total **exempts** the order, like a
-  zero total: there is no rail amount left to floor. An order that is zero for
-  any other reason still meets the `nothing_to_collect` backstop.
+- A credit that covers the whole converted total is **refused** on every gateway
+  rail (A3, money audit 2026-10). It used to be exempt, but
+  `applyUsdtWalletToOrder` leaves the unique cents payable, so the exemption
+  debited the balance and left the order PENDING_PAYMENT asking for 0.0x USDT.
+  A fully covered order belongs on the WALLET rail (which the guard exempts by
+  method and which carries no unique cents); `applyUsdtWalletToOrder` refuses the
+  same case before debiting, as a backstop for a caller that does not pass the
+  credit to `finalizeOrderPayment`. This matches the IDR branch, which already
+  refused a Rupiah credit covering the whole order.
 
 The two checkout rail lists do not need the same treatment, and each for its own
 reason. The bot's `offerableRails` is already handed the subtotal *after* credit
 (the bot's credit is all-or-nothing, so that figure is either the full subtotal
-or exactly zero, and zero is never filtered). The storefront never combines
+or exactly zero, and zero is never filtered), and the bot's gateway handlers
+never spend credit: a bubble carrying gateway buttons was always rendered
+without it, so a gateway tap made while a wallet flag is set is checked by
+`refuseGatewayTapOverWalletCredit` (refused with the current Complete Order
+screen when the credit still covers the order, otherwise the dead flag is
+dropped and the order proceeds at full price). The storefront never combines
 credit with a gateway at all — `performCheckout`/`performDirectCheckout` pass no
 `walletAmount`, and the SPA offers credit only as an all-or-nothing method that
 settles without a gateway.

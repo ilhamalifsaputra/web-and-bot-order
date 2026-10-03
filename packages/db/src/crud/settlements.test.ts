@@ -102,6 +102,7 @@ async function expectNothingWritten() {
 async function makePayableOrder(providerTransactionId: string) {
   const buyer = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
   const order = await createOrderDirect(prisma, {
+   channel: "bot",
     user: { id: buyer.id, role: buyer.role, walletBalance: buyer.walletBalance },
     productId: sample.product.id,
     quantity: 1,

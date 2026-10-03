@@ -102,7 +102,7 @@ function msg(sink: SentCall[], o: { text?: string; photo?: Array<{ file_id: stri
 
 async function pendingVerificationOrder() {
   const order = await prisma.$transaction((tx) =>
-    createOrderDirect(tx, { user: { id: sample.user.id, role: sample.user.role }, productId: sample.product.id, quantity: 1 }),
+    createOrderDirect(tx, { channel: "bot", user: { id: sample.user.id, role: sample.user.role }, productId: sample.product.id, quantity: 1 }),
   );
   await attachPaymentProof(prisma, order!.id, { fileId: "pf", txid: "TX1234567890" });
   return order!;
@@ -540,7 +540,7 @@ describe("support + reject conversations", () => {
   it("reject: a non-pending order ends on a screen with a back action (never strands)", async () => {
     // PENDING_PAYMENT (not PENDING_VERIFICATION) → rejectOrder throws a ValidationError.
     const order = await prisma.$transaction((tx) =>
-      createOrderDirect(tx, { user: { id: sample.user.id, role: sample.user.role }, productId: sample.product.id, quantity: 1 }),
+      createOrderDirect(tx, { channel: "bot", user: { id: sample.user.id, role: sample.user.role }, productId: sample.product.id, quantity: 1 }),
     );
     const sink: SentCall[] = [];
     const entry = entryAdmin(sink, `v1:adm:verif:reject:${order!.id}`);

@@ -26,7 +26,7 @@ import {
   setEncryptedSetting,
   listServiceStates,
 } from "@app/db";
-import { CUSTOMER_SERVICES } from "@app/core/services";
+import { CUSTOMER_SERVICES, SERVICE_CHANNELS, type ServiceChannel } from "@app/core/services";
 import { CredentialKeyConfigError } from "@app/core/credentialCrypto";
 import { verifySmtp } from "@app/core/mailer";
 import {
@@ -512,17 +512,19 @@ export default async function settingsApiRoutes(app: FastifyInstance): Promise<v
   });
 
   app.post("/api/settings/services/toggle", { preHandler: csrfProtect }, async (req, reply) => {
-    const body = (req.body ?? {}) as { service?: unknown; enabled?: unknown };
+    const body = (req.body ?? {}) as { service?: unknown; channel?: unknown; enabled?: unknown };
     const service = CUSTOMER_SERVICES.find((entry) => entry.id === body.service);
     if (!service) return reply.code(400).send({ error: "Unknown service." });
+    const channel = SERVICE_CHANNELS.find((entry) => entry === body.channel) as ServiceChannel | undefined;
+    if (!channel) return reply.code(400).send({ error: "Unknown channel." });
     if (typeof body.enabled !== "boolean") return reply.code(400).send({ error: "enabled must be a boolean." });
 
-    await setSetting(prisma, service.settingKey, String(body.enabled));
+    await setSetting(prisma, service.settingKeys[channel], String(body.enabled));
     await logAdminAction(prisma, {
       adminId: req.admin!.userId,
       action: "setting_set",
       targetType: "setting",
-      details: `Changed setting "${service.settingKey}" to "${body.enabled}".`,
+      details: `${body.enabled ? "Enabled" : "Disabled"} ${service.label} for ${channel === "bot" ? "the Telegram bot" : "the website"}.`,
     });
     return reply.send({ ok: true });
   });

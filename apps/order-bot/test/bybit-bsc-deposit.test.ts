@@ -51,11 +51,11 @@ const DEPOSIT_ADDRESS = "0xMERCHANTADDR";
 // price ("5.00"), so the amount-matching assertions below stay exact.
 const makeBybitBscOrder = (qty = 1) =>
   prisma.$transaction((tx) =>
-    createBybitBscOrder(tx, { user: { id: sample.user.id, role: sample.user.role }, productId: sample.product.id, quantity: qty, rate: 1 }),
+    createBybitBscOrder(tx, { channel: "bot", user: { id: sample.user.id, role: sample.user.role }, productId: sample.product.id, quantity: qty, rate: 1 }),
   );
 const makeBybitOrder = (qty = 1) =>
   prisma.$transaction((tx) =>
-    createBybitOrder(tx, { user: { id: sample.user.id, role: sample.user.role }, productId: sample.product.id, quantity: qty, rate: 1 }),
+    createBybitOrder(tx, { channel: "bot", user: { id: sample.user.id, role: sample.user.role }, productId: sample.product.id, quantity: qty, rate: 1 }),
   );
 
 // ===========================================================================
@@ -163,7 +163,7 @@ describe("createBybitBscOrder", () => {
   it("forwards customerData verbatim onto the created order", async () => {
     const customerData = JSON.stringify([{ game_id: "GID-789" }]);
     const order = await prisma.$transaction((tx) =>
-      createBybitBscOrder(tx, {
+      createBybitBscOrder(tx, { channel: "bot",
         user: { id: sample.user.id, role: sample.user.role },
         productId: sample.product.id,
         quantity: 1,

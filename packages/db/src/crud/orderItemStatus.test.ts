@@ -117,7 +117,7 @@ async function makeManualDenom(
 }
 
 async function makePendingVerificationOrder(productId: number, quantity = 1) {
-  const order = await createOrderDirect(prisma, { user: sample.user, productId, quantity });
+  const order = await createOrderDirect(prisma, { channel: "bot", user: sample.user, productId, quantity });
   await attachPaymentProof(prisma, order!.id, { fileId: "file123", txid: "TX-1" });
   return order!;
 }
@@ -156,7 +156,7 @@ async function expectShadowIsConsistent(orderId: number, expectedItemStatus: str
 
 describe("OrderItem.status at creation", () => {
   it("createOrderDirect starts every item PENDING", async () => {
-    const order = await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 3 });
+    const order = await createOrderDirect(prisma, { channel: "bot", user: sample.user, productId: sample.product.id, quantity: 3 });
     const statuses = await itemStatuses(order!.id);
     expect(statuses).toEqual([OrderItemStatus.PENDING, OrderItemStatus.PENDING, OrderItemStatus.PENDING]);
   });
@@ -166,6 +166,7 @@ describe("OrderItem.status at creation", () => {
     await addToCart(prisma, sample.user.id, sample.product.id, 2);
     await addToCart(prisma, sample.user.id, second.id, 1);
     const order = await createOrderFromCart(prisma, {
+     channel: "bot",
       user: { id: sample.user.id, role: sample.user.role, walletBalance: "0" },
     });
     const statuses = await itemStatuses(order!.id);
@@ -201,6 +202,7 @@ describe("settlePaidOrder — the per-item shadow, per order shape", () => {
     await addToCart(prisma, sample.user.id, sample.product.id, 2);
     await addToCart(prisma, sample.user.id, second.id, 2);
     const created = await createOrderFromCart(prisma, {
+     channel: "bot",
       user: { id: sample.user.id, role: sample.user.role, walletBalance: "0" },
     });
     await attachPaymentProof(prisma, created!.id, { fileId: "f", txid: "TX-multi" });
@@ -402,6 +404,7 @@ describe("PARTIALLY_DELIVERED is unreachable through any current code path", () 
     await addToCart(prisma, sample.user.id, sample.product.id, 2);
     await addToCart(prisma, sample.user.id, second.id, 1);
     const cartOrder = await createOrderFromCart(prisma, {
+     channel: "bot",
       user: { id: sample.user.id, role: sample.user.role, walletBalance: "0" },
     });
     await attachPaymentProof(prisma, cartOrder!.id, { fileId: "f", txid: "TX-a" });

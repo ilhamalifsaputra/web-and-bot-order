@@ -47,7 +47,7 @@ beforeEach(async () => {
 });
 
 async function makeOrder() {
-  const order = await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 });
+  const order = await createOrderDirect(prisma, { channel: "bot", user: sample.user, productId: sample.product.id, quantity: 1 });
   return order!;
 }
 

@@ -337,7 +337,7 @@ describe("deliverPaidBybitOrder — processing branch (manual SKU)", () => {
 
   /** Create a PENDING_PAYMENT order stamped as a Bybit deposit payment. */
   async function makePendingBybitOrderFor(productId: number) {
-    const order = (await createOrderDirect(prisma, { user: sample.user, productId, quantity: 1 }))!;
+    const order = (await createOrderDirect(prisma, { channel: "bot", user: sample.user, productId, quantity: 1 }))!;
     await prisma.order.update({ where: { id: order.id }, data: { paymentMethod: PaymentMethod.BYBIT } });
     return order;
   }
@@ -497,7 +497,7 @@ describe("deliverPaidBybitOrder — re-claiming a bybitTxId across non-deliverin
   });
 
   async function makePendingBybitOrder() {
-    const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    const order = (await createOrderDirect(prisma, { channel: "bot", user: sample.user, productId: sample.product.id, quantity: 1 }))!;
     await prisma.order.update({ where: { id: order.id }, data: { paymentMethod: PaymentMethod.BYBIT } });
     return order;
   }
@@ -736,7 +736,7 @@ describe("deliverPaidBybitOrder — Payment ledger confirmation (Task A2b)", () 
   });
 
   async function makePendingBybitOrder() {
-    const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    const order = (await createOrderDirect(prisma, { channel: "bot", user: sample.user, productId: sample.product.id, quantity: 1 }))!;
     await prisma.order.update({ where: { id: order.id }, data: { paymentMethod: PaymentMethod.BYBIT } });
     return order;
   }
@@ -889,6 +889,7 @@ describe("deliverPaidBybitOrder — WALLET_TOPUP routing", () => {
 
   it("a CANCELLED PRODUCT order paid late is still stale — the top-up relaxation does not leak", async () => {
     const productOrder = (await createOrderDirect(prisma, {
+     channel: "bot",
       user: sample.user,
       productId: sample.product.id,
       quantity: 1,
@@ -971,7 +972,7 @@ describe("deliverPaidBybitOrder — delivery transaction timeout", () => {
   });
 
   async function makePendingBybitOrder() {
-    const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    const order = (await createOrderDirect(prisma, { channel: "bot", user: sample.user, productId: sample.product.id, quantity: 1 }))!;
     await prisma.order.update({ where: { id: order.id }, data: { paymentMethod: PaymentMethod.BYBIT } });
     return order;
   }

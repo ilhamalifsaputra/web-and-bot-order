@@ -68,7 +68,7 @@ describe("createOrderDirect under true Postgres concurrency — checkoutIntentId
     const checkoutIntentId = randomUUID();
 
     const results = await Promise.allSettled(
-      buyers.map((user) => createOrderDirect(prisma, { user, productId: product.id, quantity: 1, checkoutIntentId })),
+      buyers.map((user) => createOrderDirect(prisma, { channel: "bot", user, productId: product.id, quantity: 1, checkoutIntentId })),
     );
 
     const fulfilled = results.filter(
@@ -99,8 +99,8 @@ describe("createOrderDirect under true Postgres concurrency — checkoutIntentId
     const intentB = randomUUID();
 
     const results = await Promise.allSettled([
-      createOrderDirect(prisma, { user: buyers[0]!, productId: product.id, quantity: 1, checkoutIntentId: intentA }),
-      createOrderDirect(prisma, { user: buyers[1]!, productId: product.id, quantity: 1, checkoutIntentId: intentB }),
+      createOrderDirect(prisma, { channel: "bot", user: buyers[0]!, productId: product.id, quantity: 1, checkoutIntentId: intentA }),
+      createOrderDirect(prisma, { channel: "bot", user: buyers[1]!, productId: product.id, quantity: 1, checkoutIntentId: intentB }),
     ]);
 
     expect(results.every((r) => r.status === "fulfilled")).toBe(true);
@@ -113,7 +113,7 @@ describe("createOrderDirect under true Postgres concurrency — checkoutIntentId
     const buyers = await makeBuyers(2);
 
     const results = await Promise.allSettled(
-      buyers.map((user) => createOrderDirect(prisma, { user, productId: product.id, quantity: 1 })),
+      buyers.map((user) => createOrderDirect(prisma, { channel: "bot", user, productId: product.id, quantity: 1 })),
     );
 
     expect(results.every((r) => r.status === "fulfilled")).toBe(true);
@@ -128,17 +128,17 @@ describe("createOrderDirect under true Postgres concurrency — checkoutIntentId
     const [buyerA, buyerB] = await makeBuyers(2);
     const checkoutIntentId = randomUUID();
 
-    const first = await createOrderDirect(prisma, { user: buyerA!, productId: product.id, quantity: 1, checkoutIntentId });
+    const first = await createOrderDirect(prisma, { channel: "bot", user: buyerA!, productId: product.id, quantity: 1, checkoutIntentId });
     expect(first).not.toBeNull();
 
     await expect(
-      createOrderDirect(prisma, { user: buyerB!, productId: product.id, quantity: 1, checkoutIntentId }),
+      createOrderDirect(prisma, { channel: "bot", user: buyerB!, productId: product.id, quantity: 1, checkoutIntentId }),
     ).rejects.toBeInstanceOf(DuplicateCheckoutIntentError);
 
     // buyerB mints a new attempt (mirrors checkout.ts's notifyDuplicateCheckout
     // path — the bot never reuses the same checkoutIntentId after a collision).
     const retryIntentId = randomUUID();
-    const retry = await createOrderDirect(prisma, { user: buyerB!, productId: product.id, quantity: 1, checkoutIntentId: retryIntentId });
+    const retry = await createOrderDirect(prisma, { channel: "bot", user: buyerB!, productId: product.id, quantity: 1, checkoutIntentId: retryIntentId });
     expect(retry).not.toBeNull();
     expect(await prisma.order.count({ where: { userId: buyerB!.id } })).toBe(1);
   });
@@ -154,7 +154,7 @@ describe("createOrderFromCart under true Postgres concurrency — checkoutIntent
     const checkoutIntentId = randomUUID();
 
     const results = await Promise.allSettled(
-      buyers.map((user) => createOrderFromCart(prisma, { user, checkoutIntentId })),
+      buyers.map((user) => createOrderFromCart(prisma, { channel: "bot", user, checkoutIntentId })),
     );
 
     const fulfilled = results.filter(
@@ -194,7 +194,7 @@ describe("createInternalOrder (Binance Internal wrapper) under true Postgres con
 
     const results = await Promise.allSettled(
       buyers.map((user) =>
-        createInternalOrder(prisma, { user, productId: product.id, quantity: 1, rate: "16000", checkoutIntentId }),
+        createInternalOrder(prisma, { channel: "bot", user, productId: product.id, quantity: 1, rate: "16000", checkoutIntentId }),
       ),
     );
 
@@ -248,6 +248,7 @@ describe("completeOrderWithWalletCredit (wallet-credit rail) under true Postgres
       prisma.$transaction(
         (tx) =>
           completeOrderWithWalletCredit(tx, {
+            channel: "bot",
             user: { id: buyer.id, role: buyer.role, walletBalance: buyer.walletBalance },
             productId: product.id,
             quantity: 1,

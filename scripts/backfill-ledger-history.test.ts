@@ -135,6 +135,7 @@ async function orderAwaitingVerification(args: {
     productId: args.productId,
     quantity: 1,
     walletAmount: args.walletAmount,
+    channel: "bot",
   });
   await attachPaymentProof(prisma, created!.id, { fileId: "proof", txid: `TX-${created!.id}` });
   return (await getOrder(prisma, created!.id))!;

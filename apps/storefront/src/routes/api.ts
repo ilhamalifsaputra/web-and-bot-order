@@ -397,32 +397,32 @@ export async function sendGuestOrderCodeEmail(req: FastifyRequest, to: string, o
 const apiRoutes: FastifyPluginAsync = async (app) => {
   // ---- 1. GET /categories ----
   app.get("/categories", async (_req, reply) => {
-    const categories = await listActiveCategories(prisma);
+    const categories = await listActiveCategories(prisma, "web");
     return reply.send({ categories: categories.map(categoryJson) });
   });
 
   // ---- 2. GET /categories/:slug/products ----
   app.get<{ Params: { slug: string } }>("/categories/:slug/products", async (req, reply) => {
     const { display, isReseller } = await catalogDisplay(req, reply);
-    const category = await getCategoryBySlug(prisma, req.params.slug);
+    const category = await getCategoryBySlug(prisma, req.params.slug, "web");
     if (!category || !category.isActive) {
       return reply.code(404).send({ error: "not_found" });
     }
-    const products = await listCatalogProducts(prisma, category.id);
+    const products = await listCatalogProducts(prisma, "web", category.id);
     return reply.send({ products: await Promise.all(products.map((p) => productJson(p, display, isReseller))) });
   });
 
   // ---- 3. GET /products ----
   app.get("/products", async (req, reply) => {
     const { display, isReseller } = await catalogDisplay(req, reply);
-    const products = await listCatalogProducts(prisma);
+    const products = await listCatalogProducts(prisma, "web");
     return reply.send({ products: await Promise.all(products.map((p) => productJson(p, display, isReseller))) });
   });
 
   // ---- 4. GET /products/:slug ----
   app.get<{ Params: { slug: string } }>("/products/:slug", async (req, reply) => {
     const { display, isReseller } = await catalogDisplay(req, reply);
-    const product = await getCatalogProductBySlugWithDenominations(prisma, req.params.slug);
+    const product = await getCatalogProductBySlugWithDenominations(prisma, req.params.slug, "web");
     if (!product || !product.isActive || product.isArchived || product.denominations.length === 0) {
       return reply.code(404).send({ error: "not_found" });
     }
@@ -432,7 +432,7 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
   // ---- 5. GET /products/:slug/denominations ----
   app.get<{ Params: { slug: string } }>("/products/:slug/denominations", async (req, reply) => {
     const { display, isReseller } = await catalogDisplay(req, reply);
-    const product = await getCatalogProductBySlugWithDenominations(prisma, req.params.slug);
+    const product = await getCatalogProductBySlugWithDenominations(prisma, req.params.slug, "web");
     if (!product || !product.isActive || product.isArchived || product.denominations.length === 0) {
       return reply.code(404).send({ error: "not_found" });
     }
@@ -454,7 +454,7 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(400).send({ error: "invalid_request" });
     }
     const denom = await getDenominationWithProduct(prisma, denominationId);
-    if (!denom || !denom.isActive || !(await isServiceActive(prisma, denom.product.category.group as CategoryGroup | null))) {
+    if (!denom || !denom.isActive || !(await isServiceActive(prisma, denom.product.category.group as CategoryGroup | null, "web"))) {
       return reply.code(400).send({ error: "invalid_request" });
     }
     const qty = clampJsonQty(req.body?.qty);

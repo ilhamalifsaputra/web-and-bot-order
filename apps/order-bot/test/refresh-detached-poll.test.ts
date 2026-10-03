@@ -65,7 +65,7 @@ function customerCtx(callbackData: string) {
 /** A PENDING_PAYMENT TokoPay order — the state the Refresh button polls from. */
 async function makeTokopayPendingOrder() {
   const order = await prisma.$transaction(async (tx) => {
-    const created = await createOrderDirect(tx, {
+    const created = await createOrderDirect(tx, { channel: "bot",
       user: { id: sample.user.id, role: sample.user.role },
       productId: sample.product.id,
       quantity: 1,

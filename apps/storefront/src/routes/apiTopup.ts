@@ -117,7 +117,7 @@ async function resolveTopupDenomination(rawId: unknown) {
   const denominationId = Number(rawId);
   if (!Number.isInteger(denominationId) || denominationId <= 0) return null;
   const denom = await getDenominationWithProduct(prisma, denominationId);
-  if (!denom || !denom.isActive || !(await isServiceActive(prisma, denom.product.category.group as CategoryGroup | null))) return null;
+  if (!denom || !denom.isActive || !(await isServiceActive(prisma, denom.product.category.group as CategoryGroup | null, "web"))) return null;
   return denom;
 }
 
@@ -460,7 +460,7 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
       }
 
       const denomination = await getDenominationWithProduct(prisma, denominationId);
-      if (!denomination || !(await isServiceActive(prisma, denomination.product.category.group as CategoryGroup | null))) {
+      if (!denomination || !(await isServiceActive(prisma, denomination.product.category.group as CategoryGroup | null, "web"))) {
         return reply.send(NOT_AVAILABLE);
       }
       // Shared prerequisite: a `gameCode` must resolve (admin override or

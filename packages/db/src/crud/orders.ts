@@ -43,6 +43,7 @@ import {
 import type { Prisma } from "@prisma/client";
 import type { Db } from "./_types";
 import { assertServiceActive } from "./serviceAvailability";
+import type { ServiceChannel } from "@app/core/services";
 import { isUniqueViolation } from "./_types";
 import { getBulkPricingForDenomination } from "./catalog";
 import {
@@ -651,6 +652,9 @@ export async function createOrderFromCart(
   db: Db,
   args: {
     user: { id: number; role: string; walletBalance: Decimal.Value };
+    /** Where the buyer is checking out (Telegram bot or website). A service
+     * switched off for this channel is refused before anything is written. */
+    channel: ServiceChannel;
     voucherCode?: string | null;
     walletAmount?: Decimal.Value;
     /** Stringified JSON of the buyer's manual_with_info answers (validated by
@@ -678,7 +682,7 @@ export async function createOrderFromCart(
   const cart = rawCart.filter((ci) => ci.product.isActive);
   if (cart.length === 0) throw new ValidationError("error.cart_empty");
   for (const line of cart) {
-    await assertServiceActive(db, line.product.product.category.group as CategoryGroup | null);
+    await assertServiceActive(db, line.product.product.category.group as CategoryGroup | null, args.channel);
   }
   // Total-units cap (M-7 fix) — checked first, before any per-line validation
   // or the order shell is even inserted, so an over-cap cart is rejected as
@@ -965,6 +969,9 @@ export async function createOrderDirect(
   db: Db,
   args: {
     user: { id: number; role: string; walletBalance?: Decimal.Value };
+    /** Where the buyer is checking out (Telegram bot or website). A service
+     * switched off for this channel is refused before anything is written. */
+    channel: ServiceChannel;
     productId: number;
     quantity: number;
     voucherCode?: string | null;
@@ -988,7 +995,7 @@ export async function createOrderDirect(
     include: { product: { include: { category: true } } },
   });
   if (!product) throw new ValidationError("error.out_of_stock", { product: "(unknown)" });
-  await assertServiceActive(db, product.product.category.group as CategoryGroup | null);
+  await assertServiceActive(db, product.product.category.group as CategoryGroup | null, args.channel);
   // Quantity can arrive from a crafted callback (v1:payq:<pid>:<qty>), not
   // just the UI's clamped stepper — validate it server-side (Checkout-5 fix,
   // security audit 2026-06-23).

@@ -46,7 +46,7 @@ const apiPagesRoutes: FastifyPluginAsync = async (app) => {
       getSetting(prisma, "web_logo_url"),
       resolveBotUsername(),
       getSetting(prisma, "web_analytics_id"),
-      hasActiveFlashSale(prisma),
+      hasActiveFlashSale(prisma, "web"),
       // Footer's WhatsApp link — same setting HomePage's own contact
       // section already reads (see pageData.ts's homePageData), surfaced
       // here too since the footer renders on every page, not just Home.

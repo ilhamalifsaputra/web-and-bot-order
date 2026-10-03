@@ -35,7 +35,7 @@ beforeEach(async () => {
   await resetDb(prisma);
   sample = await buildSampleData(prisma);
   await addToCart(prisma, sample.user.id, sample.product.id, 1);
-  const order = await createOrderFromCart(prisma, { user: sample.user });
+  const order = await createOrderFromCart(prisma, { channel: "bot", user: sample.user });
   orderId = order!.id;
 });
 

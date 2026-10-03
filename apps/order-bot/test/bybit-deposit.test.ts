@@ -47,7 +47,7 @@ afterAll(async () => {
 // price ("5.00"), so the amount-matching assertions below stay exact.
 const makeBybitOrder = (qty = 1) =>
   prisma.$transaction((tx) =>
-    createBybitOrder(tx, { user: { id: sample.user.id, role: sample.user.role }, productId: sample.product.id, quantity: qty, rate: 1 }),
+    createBybitOrder(tx, { channel: "bot", user: { id: sample.user.id, role: sample.user.role }, productId: sample.product.id, quantity: qty, rate: 1 }),
   );
 
 // ===========================================================================
@@ -136,7 +136,7 @@ describe("createBybitOrder", () => {
   it("forwards customerData verbatim onto the created order", async () => {
     const customerData = JSON.stringify([{ game_id: "GID-456" }]);
     const order = await prisma.$transaction((tx) =>
-      createBybitOrder(tx, {
+      createBybitOrder(tx, { channel: "bot",
         user: { id: sample.user.id, role: sample.user.role },
         productId: sample.product.id,
         quantity: 1,

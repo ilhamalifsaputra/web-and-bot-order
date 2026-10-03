@@ -68,7 +68,7 @@ const balances = (userId: number) =>
 async function usdtOrder() {
   const { user, product } = sample;
   const created = await prisma.$transaction((tx) =>
-    createInternalOrder(tx, { user: { id: user.id, role: user.role }, productId: product.id, quantity: 1, rate: 1 }),
+    createInternalOrder(tx, { channel: "bot", user: { id: user.id, role: user.role }, productId: product.id, quantity: 1, rate: 1 }),
   );
   const order = (await getOrder(prisma, created!.id))!;
   expect(order.currency).toBe("USDT");
@@ -79,6 +79,7 @@ describe("creditOrderToBalance", () => {
   it("credits the IDR balance with the paid amount and marks the order CANCELLED", async () => {
     const { user, product } = sample;
     const order = (await createOrderDirect(prisma, {
+     channel: "bot",
       user: { id: user.id, role: user.role },
       productId: product.id,
       quantity: 1,
@@ -112,6 +113,7 @@ describe("creditOrderToBalance", () => {
     const { user, product } = sample;
     const created = await prisma.$transaction((tx) =>
       createInternalOrder(tx, {
+        channel: "bot",
         user: { id: user.id, role: user.role },
         productId: product.id,
         quantity: 1,
@@ -141,6 +143,7 @@ describe("creditOrderToBalance", () => {
   it("credits an explicit amount when provided", async () => {
     const { user, product } = sample;
     const order = (await createOrderDirect(prisma, {
+     channel: "bot",
       user: { id: user.id, role: user.role },
       productId: product.id,
       quantity: 1,
@@ -154,6 +157,7 @@ describe("creditOrderToBalance", () => {
   it("is idempotent — a retry does not double-credit", async () => {
     const { user, product } = sample;
     const order = (await createOrderDirect(prisma, {
+     channel: "bot",
       user: { id: user.id, role: user.role },
       productId: product.id,
       quantity: 1,
@@ -252,6 +256,7 @@ describe("creditOrderToBalance with a binanceTxId on an open order", () => {
   it("refuses a non-USDT order with error.payment_currency_mismatch, leaving the transfer untouched", async () => {
     const { user, product } = sample;
     const order = (await createOrderDirect(prisma, {
+     channel: "bot",
       user: { id: user.id, role: user.role },
       productId: product.id,
       quantity: 1,
@@ -335,6 +340,7 @@ describe("creditOrderToBalance on an already-CANCELLED order", () => {
     const { user, product } = sample;
     const fresh = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
     const order = (await createOrderDirect(prisma, {
+     channel: "bot",
       user: { id: user.id, role: user.role, walletBalance: fresh.walletBalance },
       productId: product.id,
       quantity: 1,
@@ -551,7 +557,7 @@ describe("creditOrderToBalance on an already-CANCELLED order", () => {
     ];
     for (const flag of flaggers) {
       const created = await prisma.$transaction((tx) =>
-        createInternalOrder(tx, { user: { id: user.id, role: user.role }, productId: product.id, quantity: 1, rate: 1 }),
+        createInternalOrder(tx, { channel: "bot", user: { id: user.id, role: user.role }, productId: product.id, quantity: 1, rate: 1 }),
       );
       expect(await flag(created!.id)).toBe(true);
       expect((await getOrder(prisma, created!.id))!.status).toBe("UNDERPAID");
@@ -625,6 +631,7 @@ describe("creditOrderToBalance on an already-CANCELLED order", () => {
   it("still refuses a DELIVERED order with error.order_terminal", async () => {
     const { user, product } = sample;
     const order = (await createOrderDirect(prisma, {
+     channel: "bot",
       user: { id: user.id, role: user.role },
       productId: product.id,
       quantity: 1,

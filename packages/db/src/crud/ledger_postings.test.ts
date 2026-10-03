@@ -197,6 +197,7 @@ async function makeOrderAwaitingVerification(args: {
 }) {
   const buyer = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
   const order = await createOrderDirect(prisma, {
+   channel: "bot",
     // `createOrderDirect` checks the affordability of `walletAmount` against the
     // balance it is HANDED, not against the row — so it has to be passed in.
     user: { id: buyer.id, role: buyer.role, walletBalance: buyer.walletBalance },

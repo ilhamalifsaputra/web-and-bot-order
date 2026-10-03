@@ -76,6 +76,7 @@ beforeEach(async () => {
 async function makeDeliveredOrder(quantity = 1) {
   const buyer = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
   const created = await createOrderDirect(prisma, {
+    channel: "web",
     user: { id: buyer.id, role: buyer.role, walletBalance: buyer.walletBalance },
     productId: sample.product.id,
     quantity,
@@ -288,6 +289,7 @@ describe("POST /api/orders/:orderId/items/:orderItemId/replace", () => {
     // An order that was never delivered — `replaceStockItem`'s first guard.
     const buyer = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
     const created = await createOrderDirect(prisma, {
+      channel: "web",
       user: { id: buyer.id, role: buyer.role, walletBalance: buyer.walletBalance },
       productId: sample.product.id,
       quantity: 1,

@@ -368,6 +368,7 @@ describe("createWalletTopupOrder — an IDR top-up gets top-up wording from the 
 
   it("leaves a PRODUCT order's wording alone — it still has a cart to add to", async () => {
     const order = await createOrderDirect(prisma, {
+     channel: "bot",
       user: await freshUser(),
       productId: sample.product.id,
       quantity: 1,
@@ -1514,7 +1515,7 @@ describe("creditUnderpaidTopupAnyway", () => {
   });
 
   it("refuses a PRODUCT order even when it is UNDERPAID, and changes nothing", async () => {
-    const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    const order = (await createOrderDirect(prisma, { channel: "bot", user: sample.user, productId: sample.product.id, quantity: 1 }))!;
     expect(
       await markUnderpaid(prisma, { orderId: order.id, binanceTxId: "bin-product-underpaid-1", amount: "3" }),
     ).toBe(true);

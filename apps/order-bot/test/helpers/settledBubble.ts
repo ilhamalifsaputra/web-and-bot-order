@@ -88,7 +88,7 @@ export async function makeSettledAnchoredOrder(
           // for every rail so this helper keeps producing a finalizable order;
           // no caller of it asserts on the amount.
           await tx.denomination.update({ where: { id: opts.productId }, data: { price: "80000" } });
-          const created = await createOrderDirect(tx, {
+          const created = await createOrderDirect(tx, { channel: "bot",
             user: opts.buyer,
             productId: opts.productId,
             quantity: 1,

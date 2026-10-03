@@ -100,6 +100,7 @@ beforeEach(async () => {
  *  for it, which is the second branch of the revenue-was-recognised rule. */
 async function makeUnsettledOrder() {
   const order = await createOrderDirect(prisma, {
+   channel: "bot",
     user: sample.user,
     productId: sample.product.id,
     quantity: 1,

@@ -58,7 +58,7 @@ async function makeDeliveredOrder(): Promise<void> {
   });
   await bulkAddStock(prisma, denom.id, ["acct1@example.com:pwd1"]);
   const user = await upsertUser(prisma, { telegramId: 42, username: "buyer", fullName: "Buyer" });
-  await createOrderDirect(prisma, { user, productId: denom.id, quantity: 1 });
+  await createOrderDirect(prisma, { channel: "web", user, productId: denom.id, quantity: 1 });
 }
 
 describe("GET /api/reports", () => {

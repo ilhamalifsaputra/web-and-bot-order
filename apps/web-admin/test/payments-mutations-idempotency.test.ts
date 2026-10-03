@@ -48,7 +48,7 @@ beforeEach(async () => {
  * underpaid (markUnderpaid), same as a real Binance-internal-transfer
  * shortfall would. deliverUnderpaidOrder/cancelOrder exercise it here. */
 async function makeUnderpaidOrder(txId: string) {
-  const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+  const order = (await createOrderDirect(prisma, { channel: "web", user: sample.user, productId: sample.product.id, quantity: 1 }))!;
   const flagged = await markUnderpaid(prisma, { orderId: order.id, binanceTxId: txId, amount: "1.00" });
   expect(flagged).toBe(true);
   return order;
@@ -57,14 +57,14 @@ async function makeUnderpaidOrder(txId: string) {
 /** A PENDING_PAYMENT order paired with an UNMATCHED ProcessedBinanceTx row —
  * the fixture manualMatchTx/creditOrderToBalance both need. */
 async function makePendingOrder() {
-  return (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+  return (await createOrderDirect(prisma, { channel: "web", user: sample.user, productId: sample.product.id, quantity: 1 }))!;
 }
 
 /** A PENDING_PAYMENT USDT order — credit-to-balance only accepts a Binance
  * transfer (always USDT) onto a USDT order. */
 async function makePendingUsdtOrder() {
   return (await prisma.$transaction((tx) =>
-    createInternalOrder(tx, { user: sample.user, productId: sample.product.id, quantity: 1, rate: 1 }),
+    createInternalOrder(tx, { channel: "web", user: sample.user, productId: sample.product.id, quantity: 1, rate: 1 }),
   ))!;
 }
 

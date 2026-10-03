@@ -298,7 +298,7 @@ describe("deliverPaidBybitBscOrder — processing branch (manual SKU)", () => {
 
   /** Create a PENDING_PAYMENT order stamped as a Bybit BSC deposit payment. */
   async function makePendingBybitBscOrderFor(productId: number) {
-    const order = (await createOrderDirect(prisma, { user: sample.user, productId, quantity: 1 }))!;
+    const order = (await createOrderDirect(prisma, { channel: "bot", user: sample.user, productId, quantity: 1 }))!;
     await prisma.order.update({ where: { id: order.id }, data: { paymentMethod: PaymentMethod.BYBIT_BSC } });
     return order;
   }
@@ -454,7 +454,7 @@ describe("deliverPaidBybitBscOrder — re-claiming a bybitTxId across non-delive
   });
 
   async function makePendingBybitBscOrder() {
-    const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    const order = (await createOrderDirect(prisma, { channel: "bot", user: sample.user, productId: sample.product.id, quantity: 1 }))!;
     await prisma.order.update({ where: { id: order.id }, data: { paymentMethod: PaymentMethod.BYBIT_BSC } });
     return order;
   }
@@ -710,7 +710,7 @@ describe("deliverPaidBybitBscOrder — provider transaction id capture (Financia
   });
 
   async function makePendingBybitBscOrder() {
-    const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    const order = (await createOrderDirect(prisma, { channel: "bot", user: sample.user, productId: sample.product.id, quantity: 1 }))!;
     await prisma.order.update({ where: { id: order.id }, data: { paymentMethod: PaymentMethod.BYBIT_BSC } });
     return order;
   }
@@ -859,6 +859,7 @@ describe("deliverPaidBybitBscOrder — WALLET_TOPUP routing", () => {
 
   it("a CANCELLED PRODUCT order paid late is still stale — the top-up relaxation does not leak", async () => {
     const productOrder = (await createOrderDirect(prisma, {
+     channel: "bot",
       user: sample.user,
       productId: sample.product.id,
       quantity: 1,
@@ -957,7 +958,7 @@ describe("deliverPaidBybitBscOrder — delivery transaction timeout", () => {
   });
 
   async function makePendingBybitBscOrder() {
-    const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    const order = (await createOrderDirect(prisma, { channel: "bot", user: sample.user, productId: sample.product.id, quantity: 1 }))!;
     await prisma.order.update({ where: { id: order.id }, data: { paymentMethod: PaymentMethod.BYBIT_BSC } });
     return order;
   }

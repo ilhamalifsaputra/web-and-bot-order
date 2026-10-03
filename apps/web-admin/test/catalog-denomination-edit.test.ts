@@ -617,7 +617,7 @@ describe("DELETE /api/catalog/denominations/:id", () => {
     const id = await seedDenomination();
     await bulkAddStock(prisma, id, ["cred1"]);
     const buyer = await upsertUser(prisma, { telegramId: 12345, username: "buyer", fullName: "Buyer" });
-    await createOrderDirect(prisma, { user: buyer, productId: id, quantity: 1 });
+    await createOrderDirect(prisma, { channel: "web", user: buyer, productId: id, quantity: 1 });
     const res = await del(`/api/catalog/denominations/${id}`, cookie, csrf);
     expect(res.statusCode).toBe(409);
     expect(await prisma.denomination.findUnique({ where: { id } })).not.toBeNull();

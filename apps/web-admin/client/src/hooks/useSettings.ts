@@ -20,7 +20,8 @@ export interface PayMethodState {
 export interface ServiceState {
   id: string;
   label: string;
-  enabled: boolean;
+  enabledBot: boolean;
+  enabledWeb: boolean;
 }
 
 export interface SettingsData {

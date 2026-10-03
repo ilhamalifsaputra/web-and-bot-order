@@ -59,7 +59,7 @@ beforeEach(async () => {
 /** Create a PENDING_PAYMENT order stamped as a TokoPay payment. */
 async function makePendingTokopayOrder() {
   const { user, product } = sample;
-  const order = (await createOrderDirect(prisma, { user, productId: product.id, quantity: 1 }))!;
+  const order = (await createOrderDirect(prisma, { channel: "bot", user, productId: product.id, quantity: 1 }))!;
   await prisma.order.update({
     where: { id: order.id },
     data: { paymentMethod: PaymentMethod.TOKOPAY },
@@ -246,6 +246,7 @@ describe("deliverPaidTokopayOrder", () => {
   // wrong formula this test would have failed under).
   it("delivers a voucher-discounted order paid at exactly totalAmount + fee(totalAmount)", async () => {
     const order = (await createOrderDirect(prisma, {
+     channel: "bot",
       user: sample.user,
       productId: sample.product.id,
       quantity: 1,

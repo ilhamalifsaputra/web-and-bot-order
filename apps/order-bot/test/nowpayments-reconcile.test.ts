@@ -83,7 +83,7 @@ async function makeNowpaymentsOrder(invoiceId = "INV-1") {
     // amount this file asserts on is derived from the order's own totalAmount,
     // never from a hard-coded figure.
     await tx.denomination.update({ where: { id: sample.product.id }, data: { price: "80000" } });
-    const o = await createOrderDirect(tx, {
+    const o = await createOrderDirect(tx, { channel: "bot",
       user: { id: sample.user.id, role: sample.user.role },
       productId: sample.product.id,
       quantity: 1,
@@ -111,7 +111,7 @@ async function makeNowpaymentsOrderWithoutInvoice() {
   const created = await prisma.$transaction(async (tx) => {
     // Same M11 fixture pricing as makeNowpaymentsOrder above — see its comment.
     await tx.denomination.update({ where: { id: sample.product.id }, data: { price: "80000" } });
-    const o = await createOrderDirect(tx, {
+    const o = await createOrderDirect(tx, { channel: "bot",
       user: { id: sample.user.id, role: sample.user.role },
       productId: sample.product.id,
       quantity: 1,

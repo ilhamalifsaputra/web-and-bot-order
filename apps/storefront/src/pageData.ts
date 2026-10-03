@@ -52,8 +52,8 @@ function reviewerName(user: { fullName: string | null; loginUsername: string | n
 export async function homePageData() {
   const [categories, products, stock, ratings, bulk, reviews, waNumber, heroUrl] =
     await Promise.all([
-      listActiveCategories(prisma),
-      listNewestCatalogProducts(prisma, 12),
+      listActiveCategories(prisma, "web"),
+      listNewestCatalogProducts(prisma, "web", 12),
       stockStatusCounts(prisma),
       productRatingSummaries(prisma),
       activeBulkPricingByDenomination(prisma),
@@ -98,11 +98,11 @@ export async function homePageData() {
 /** Category page data, or null for the 404 branch (GET /api/v1/pages/category/:slug). */
 export async function categoryPageData(rawSlug: string, sort: SortKey = "default") {
   const slug = (rawSlug ?? "").trim();
-  const category = slug ? await getCategoryBySlug(prisma, slug) : null;
+  const category = slug ? await getCategoryBySlug(prisma, slug, "web") : null;
   if (!category || !category.isActive) return null;
   const [categories, products, stock, ratings, bulk] = await Promise.all([
-    listActiveCategories(prisma),
-    listCatalogProducts(prisma, category.id),
+    listActiveCategories(prisma, "web"),
+    listCatalogProducts(prisma, "web", category.id),
     stockStatusCounts(prisma),
     productRatingSummaries(prisma),
     activeBulkPricingByDenomination(prisma),
@@ -132,7 +132,7 @@ export async function categoryPageData(rawSlug: string, sort: SortKey = "default
  */
 export async function productPageData(rawSlug: string, isReseller = false, display: { preferredCurrency?: "IDR" | "USD"; locale?: string } = {}) {
   const slug = (rawSlug ?? "").trim();
-  const product = slug ? await getCatalogProductBySlugWithDenominations(prisma, slug) : null;
+  const product = slug ? await getCatalogProductBySlugWithDenominations(prisma, slug, "web") : null;
   if (!product || !product.isActive || product.isArchived || product.denominations.length === 0) return null;
 
   // Per-denomination stock + bulk-pricing badge (price-asc order preserved).
@@ -144,7 +144,7 @@ export async function productPageData(rawSlug: string, isReseller = false, displ
     // the cheapest, or reviews left on other plans silently disappear.
     listReviews(prisma, { productId: product.denominations.map((d) => d.id), hidden: false, limit: 10 }),
     // STO-011 "You might also like" — same category, current product excluded below.
-    listCatalogProducts(prisma, product.categoryId),
+    listCatalogProducts(prisma, "web", product.categoryId),
     productRatingSummaries(prisma),
     getCanonicalRateContext(prisma),
   ]);
@@ -264,7 +264,7 @@ export async function productPageData(rawSlug: string, isReseller = false, displ
 export async function searchPageData(rawQ: string, sort: SortKey = "default") {
   const q = (rawQ ?? "").trim();
   const [products, stock, ratings, bulk] = await Promise.all([
-    q ? searchCatalog(prisma, q, 24) : Promise.resolve([] as CatalogProduct[]),
+    q ? searchCatalog(prisma, q, "web", 24) : Promise.resolve([] as CatalogProduct[]),
     stockStatusCounts(prisma),
     productRatingSummaries(prisma),
     activeBulkPricingByDenomination(prisma),
@@ -299,7 +299,7 @@ async function shelfFrom(products: CatalogProduct[], sort: SortKey) {
 
 /** Every purchasable product — the "Browse products" shelf (GET /api/v1/pages/products). */
 export async function allProductsPageData(sort: SortKey = "default") {
-  return shelfFrom(await listCatalogProducts(prisma), sort);
+  return shelfFrom(await listCatalogProducts(prisma, "web"), sort);
 }
 
 /**
@@ -314,19 +314,19 @@ export async function allProductsPageData(sort: SortKey = "default") {
  */
 const SUGGESTED_PRODUCTS_LIMIT = 4;
 export async function suggestionsPageData() {
-  return shelfFrom(await listNewestCatalogProducts(prisma, SUGGESTED_PRODUCTS_LIMIT), "default");
+  return shelfFrom(await listNewestCatalogProducts(prisma, "web", SUGGESTED_PRODUCTS_LIMIT), "default");
 }
 
 /** Products with a flash sale running right now (GET /api/v1/pages/flash). An
  * empty list is a normal state — no sale is on — not an error. */
 export async function flashPageData(sort: SortKey = "default") {
-  return shelfFrom(await listFlashSaleProducts(prisma), sort);
+  return shelfFrom(await listFlashSaleProducts(prisma, "web"), sort);
 }
 
 /** The category index (GET /api/v1/pages/categories). No stock-photo fallback
  * for `image` anymore (Fase 12) — same raw (always-null-today) Category.image
  * column the homepage tiles now pass through. */
 export async function categoriesPageData() {
-  const categories = await listActiveCategories(prisma);
+  const categories = await listActiveCategories(prisma, "web");
   return { categories };
 }

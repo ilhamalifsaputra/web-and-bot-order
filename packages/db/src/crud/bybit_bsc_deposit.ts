@@ -26,6 +26,7 @@ import { logger } from "@app/core/logger";
 import { PaymentLogEvent } from "@app/core/payments/logEvents";
 import type { ProcessedBybitTx } from "@prisma/client";
 import type { PrismaClient, Tx } from "../client";
+import type { ServiceChannel } from "@app/core/services";
 import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
 import { getOrder, createOrderDirect, settlePaidOrder, applyUsdtWalletToOrder } from "./orders";
@@ -151,6 +152,8 @@ export async function createBybitBscOrder(
   db: Db,
   args: {
     user: { id: number; role: string };
+    /** Bot or website — forwarded to createOrderDirect's service guard. */
+    channel: ServiceChannel;
     productId: number;
     quantity: number;
     voucherCode?: string | null;

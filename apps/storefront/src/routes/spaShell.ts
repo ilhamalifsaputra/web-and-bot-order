@@ -226,8 +226,8 @@ async function headInfo(
 ): Promise<HeadInfo> {
   if (path === "/") {
     const [categories, newest] = await Promise.all([
-      listActiveCategories(prisma),
-      listNewestCatalogProducts(prisma, 12),
+      listActiveCategories(prisma, "web"),
+      listNewestCatalogProducts(prisma, "web", 12),
     ]);
     const tagline = t("web.hero_title", lang);
     // The hero subtitle is page copy and free to grow past what a search
@@ -291,7 +291,7 @@ async function headInfo(
   }
   const productSlug = /^\/p\/([^/]+)$/.exec(path)?.[1];
   if (productSlug) {
-    const product = await getCatalogProductBySlugWithDenominations(prisma, decodeURIComponent(productSlug));
+    const product = await getCatalogProductBySlugWithDenominations(prisma, decodeURIComponent(productSlug), "web");
     if (!product || !product.isActive || product.isArchived || product.denominations.length === 0) {
       return { title: `404 — ${shopName}`, meta: "", body: "", status: 404 };
     }
@@ -310,7 +310,7 @@ async function headInfo(
     const [stock, ratings, related] = await Promise.all([
       stockStatusCounts(prisma),
       productRatingSummaries(prisma),
-      listCatalogProducts(prisma, product.categoryId).then((all) =>
+      listCatalogProducts(prisma, "web", product.categoryId).then((all) =>
         all.filter((p) => p.id !== product.id).slice(0, 4),
       ),
     ]);
@@ -435,11 +435,11 @@ async function headInfo(
   }
   const categorySlug = /^\/c\/([^/]+)$/.exec(path)?.[1];
   if (categorySlug) {
-    const category = await getCategoryBySlug(prisma, decodeURIComponent(categorySlug));
+    const category = await getCategoryBySlug(prisma, decodeURIComponent(categorySlug), "web");
     if (!category || !category.isActive) {
       return { title: `404 — ${shopName}`, meta: "", body: "", status: 404 };
     }
-    const inCategory = await listCatalogProducts(prisma, category.id);
+    const inCategory = await listCatalogProducts(prisma, "web", category.id);
     // Prefer the admin's own category blurb; otherwise say something true and
     // specific rather than leaving the description empty.
     const catDesc = (category.description ?? "").trim()
@@ -503,8 +503,8 @@ async function headInfo(
     );
     const links =
       path === "/categories"
-        ? (await listActiveCategories(prisma)).map((c) => ({ href: `/c/${c.slug}`, label: c.name }))
-        : (await (path === "/flash" ? listFlashSaleProducts(prisma) : listCatalogProducts(prisma))).map((p) => ({
+        ? (await listActiveCategories(prisma, "web")).map((c) => ({ href: `/c/${c.slug}`, label: c.name }))
+        : (await (path === "/flash" ? listFlashSaleProducts(prisma, "web") : listCatalogProducts(prisma, "web"))).map((p) => ({
             href: `/p/${p.slug}`,
             label: p.name,
           }));

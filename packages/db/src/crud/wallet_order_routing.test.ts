@@ -54,6 +54,7 @@ describe("IDR order spends + refunds the IDR credit balance", () => {
     await addToCart(prisma, user.id, product.id, 1); // 5.00 IDR product
     const fresh = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
     const created = await createOrderFromCart(prisma, {
+     channel: "bot",
       user: { id: fresh.id, role: fresh.role, walletBalance: fresh.walletBalance },
       walletAmount: "4",
     });
@@ -97,6 +98,7 @@ describe("USDT order spends + refunds the USDT credit balance", () => {
     // rate 1 keeps the USDT total numerically equal to the 5.00 central price.
     const created = await prisma.$transaction((tx) =>
       createInternalOrder(tx, {
+        channel: "bot",
         user: { id: user.id, role: user.role },
         productId: product.id,
         quantity: 1,
@@ -138,6 +140,7 @@ describe("USDT order spends + refunds the USDT credit balance", () => {
     await expect(
       prisma.$transaction((tx) =>
         createInternalOrder(tx, {
+          channel: "bot",
           user: { id: user.id, role: user.role },
           productId: product.id,
           quantity: 1,
@@ -154,6 +157,7 @@ describe("USDT order spends + refunds the USDT credit balance", () => {
 
     const created = await prisma.$transaction((tx) =>
       createInternalOrder(tx, {
+        channel: "bot",
         user: { id: user.id, role: user.role },
         productId: product.id,
         quantity: 1,

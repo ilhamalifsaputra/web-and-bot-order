@@ -56,6 +56,14 @@ import { HEALTH_DOT } from "@/lib/healthDot";
 import { UrgencyDot } from "@/components/shared/UrgencyDot";
 import type { HealthEntry } from "@/api/types";
 
+// Per-channel service switches: the same service can be on for the Telegram
+// bot and off for the website (or vice versa).
+const SERVICE_CHANNEL_ROWS = [
+  { channel: "bot", name: "Telegram bot" },
+  { channel: "web", name: "Website" },
+] as const;
+const CHANNEL_PHRASE = { bot: "the Telegram bot", web: "the website" } as const;
+
 // Field groupings — must match the server-side EDITABLE keys exactly.
 const BRANDING_KEYS = new Set([
   "shop_name",
@@ -791,7 +799,7 @@ export function SettingsPage() {
     { methodKey: string; label: string; nextEnabled: boolean } | null
   >(null);
   const [pendingService, setPendingService] = useState<
-    { id: string; label: string; nextEnabled: boolean } | null
+    { id: string; label: string; channel: "bot" | "web"; nextEnabled: boolean } | null
   >(null);
 
   // Connection tests
@@ -879,8 +887,8 @@ export function SettingsPage() {
     onSuccess: () => { invalidate(); markSaved(); },
   });
   const toggleService = useMutation({
-    mutationFn: ({ service, enabled }: { service: string; enabled: boolean }) =>
-      apiPost("/api/settings/services/toggle", { service, enabled }),
+    mutationFn: ({ service, channel, enabled }: { service: string; channel: "bot" | "web"; enabled: boolean }) =>
+      apiPost("/api/settings/services/toggle", { service, channel, enabled }),
     onSuccess: () => { invalidate(); markSaved(); },
   });
 
@@ -1102,22 +1110,29 @@ export function SettingsPage() {
             <Card id="settings-services">
               <CardHeader>
                 <CardTitle as="h2">Services</CardTitle>
-                <p className="text-sm text-ink-soft">Control which service groups customers can browse and purchase.</p>
+                <p className="text-sm text-ink-soft">Control which service groups customers can browse and purchase, separately for the Telegram bot and the website.</p>
               </CardHeader>
               <CardContent className="divide-y divide-line">
                 {data.serviceStates
                   .filter((service) => !query || matchesQuery("Services", query) || matchesQuery(service.label, query))
                   .map((service) => (
-                    <div key={service.id} className="flex items-center justify-between gap-4 py-4 first:pt-0 last:pb-0">
-                      <div>
-                        <p className="font-medium text-ink">{highlightMatch(service.label, query)}</p>
-                        <p className="text-sm text-ink-soft">{service.enabled ? "Available to customers" : "Hidden and unavailable for new orders"}</p>
+                    <div key={service.id} className="py-4 first:pt-0 last:pb-0">
+                      <p className="font-medium text-ink">{highlightMatch(service.label, query)}</p>
+                      <div className="mt-2 flex flex-wrap gap-x-6 gap-y-2">
+                        {SERVICE_CHANNEL_ROWS.map(({ channel, name }) => {
+                          const enabled = channel === "bot" ? service.enabledBot : service.enabledWeb;
+                          return (
+                            <label key={channel} className="flex items-center gap-2 text-sm text-ink-soft">
+                              <Switch
+                                aria-label={`${service.label} on ${CHANNEL_PHRASE[channel]}`}
+                                checked={enabled}
+                                onCheckedChange={(nextEnabled) => setPendingService({ id: service.id, label: service.label, channel, nextEnabled })}
+                              />
+                              <span>{name}: {enabled ? "available" : "hidden, no new orders"}</span>
+                            </label>
+                          );
+                        })}
                       </div>
-                      <Switch
-                        aria-label={service.label}
-                        checked={service.enabled}
-                        onCheckedChange={(nextEnabled) => setPendingService({ id: service.id, label: service.label, nextEnabled })}
-                      />
                     </div>
                   ))}
               </CardContent>
@@ -1298,16 +1313,16 @@ export function SettingsPage() {
           <SaveConfirmDialog
             open={pendingService !== null}
             onOpenChange={(open) => { if (!open) setPendingService(null); }}
-            title={pendingService ? `${pendingService.nextEnabled ? "Enable" : "Disable"} ${pendingService.label}?` : ""}
-            description={pendingService?.nextEnabled
-              ? "Customers can browse and place new orders for this service immediately."
-              : "This hides the service and blocks new orders. Existing orders continue processing."}
+            title={pendingService ? `${pendingService.nextEnabled ? "Enable" : "Disable"} ${pendingService.label} for ${CHANNEL_PHRASE[pendingService.channel]}?` : ""}
+            description={!pendingService ? "" : pendingService.nextEnabled
+              ? `Customers can browse and place new orders for this service on ${CHANNEL_PHRASE[pendingService.channel]} immediately.`
+              : `This hides the service and blocks new orders on ${CHANNEL_PHRASE[pendingService.channel]}. Existing orders continue processing.`}
             confirmLabel={pendingService?.nextEnabled ? "Enable" : "Disable"}
             variant={pendingService?.nextEnabled ? "default" : "destructive"}
             successMessage="Service availability updated"
             onConfirm={async () => {
               if (!pendingService) return;
-              await toggleService.mutateAsync({ service: pendingService.id, enabled: pendingService.nextEnabled });
+              await toggleService.mutateAsync({ service: pendingService.id, channel: pendingService.channel, enabled: pendingService.nextEnabled });
             }}
           />
 

@@ -61,7 +61,7 @@ describe("stock deduction", () => {
     expect(await count(product.id, "RESERVED")).toBe(0);
 
     await addToCart(prisma, user.id, product.id, 2);
-    const created = await createOrderFromCart(prisma, { user });
+    const created = await createOrderFromCart(prisma, { channel: "bot", user });
 
     expect(await count(product.id, "AVAILABLE")).toBe(3);
     expect(await count(product.id, "RESERVED")).toBe(2);
@@ -96,7 +96,7 @@ describe("stock deduction", () => {
   it("checkout fails fast with error.out_of_stock when demand exceeds supply (no partial reservation left behind)", async () => {
     const { user, product } = sample;
     await addToCart(prisma, user.id, product.id, 10); // only 5 in stock
-    await expect(createOrderFromCart(prisma, { user })).rejects.toMatchObject({ key: "error.out_of_stock" });
+    await expect(createOrderFromCart(prisma, { channel: "bot", user })).rejects.toMatchObject({ key: "error.out_of_stock" });
 
     // The whole transaction rolled back — no stock left dangling RESERVED.
     expect(await count(product.id, "AVAILABLE")).toBe(5);
@@ -106,7 +106,7 @@ describe("stock deduction", () => {
   it("approve flips the ALREADY-reserved rows to SOLD (no new allocation) and returns credentials", async () => {
     const { user, product } = sample;
     await addToCart(prisma, user.id, product.id, 2);
-    const created = await createOrderFromCart(prisma, { user });
+    const created = await createOrderFromCart(prisma, { channel: "bot", user });
     await attachPaymentProof(prisma, created!.id, { fileId: "dummy_file_id", txid: "ABC123XYZ" });
 
     expect(await count(product.id, "AVAILABLE")).toBe(3);
@@ -174,7 +174,7 @@ describe("stock deduction", () => {
   it("a second approveOrder on an already-DELIVERED order is rejected by the atomic claim, not double-applied", async () => {
     const { user, product } = sample;
     await addToCart(prisma, user.id, product.id, 1);
-    const created = await createOrderFromCart(prisma, { user });
+    const created = await createOrderFromCart(prisma, { channel: "bot", user });
     await attachPaymentProof(prisma, created!.id, { fileId: "dummy", txid: "ABC123XYZ" });
 
     const { credentials: first } = await approveOrder(prisma, created!.id, { adminId: user.id });
@@ -194,7 +194,7 @@ describe("stock deduction", () => {
   it("cancel releases the reservation back to AVAILABLE", async () => {
     const { user, product } = sample;
     await addToCart(prisma, user.id, product.id, 3);
-    const created = await createOrderFromCart(prisma, { user });
+    const created = await createOrderFromCart(prisma, { channel: "bot", user });
 
     expect(await count(product.id, "AVAILABLE")).toBe(2);
     expect(await count(product.id, "RESERVED")).toBe(3);
@@ -234,7 +234,7 @@ describe("stock deduction", () => {
   it("reject releases the reservation back to AVAILABLE", async () => {
     const { user, product } = sample;
     await addToCart(prisma, user.id, product.id, 2);
-    const created = await createOrderFromCart(prisma, { user });
+    const created = await createOrderFromCart(prisma, { channel: "bot", user });
     await attachPaymentProof(prisma, created!.id, { fileId: "dummy", txid: "ABC123XYZ" });
 
     expect(await count(product.id, "AVAILABLE")).toBe(3);
@@ -275,6 +275,7 @@ describe("stock deduction", () => {
 
     await addToCart(prisma, user.id, product.id, 2); // 10.00
     const created = await createOrderFromCart(prisma, {
+     channel: "bot",
       user,
       voucherCode: "SAVE10",
       walletAmount: "2.00",
@@ -302,7 +303,7 @@ describe("stock deduction", () => {
   it("approve skips the ORDER_DELIVERED testimonial row when no PUBLIC_CHANNEL_ID is configured", async () => {
     const { user, product } = sample;
     await addToCart(prisma, user.id, product.id, 1);
-    const created = await createOrderFromCart(prisma, { user });
+    const created = await createOrderFromCart(prisma, { channel: "bot", user });
     await attachPaymentProof(prisma, created!.id, { fileId: "dummy", txid: "ABC123XYZ" });
 
     await approveOrder(prisma, created!.id, { adminId: user.id });
@@ -317,7 +318,7 @@ describe("stock deduction", () => {
     setBotIdentity({ publicChannelId: -100123456789 });
     const { user, product } = sample;
     await addToCart(prisma, user.id, product.id, 1);
-    const created = await createOrderFromCart(prisma, { user });
+    const created = await createOrderFromCart(prisma, { channel: "bot", user });
     await attachPaymentProof(prisma, created!.id, { fileId: "dummy", txid: "ABC123XYZ" });
 
     await approveOrder(prisma, created!.id, { adminId: user.id });
@@ -334,7 +335,7 @@ describe("bulk purchase broadcast", () => {
     setBotIdentity({ publicChannelId: -100123456789 });
     const { user, product } = sample;
     await addToCart(prisma, user.id, product.id, 2);
-    const created = await createOrderFromCart(prisma, { user });
+    const created = await createOrderFromCart(prisma, { channel: "bot", user });
     await attachPaymentProof(prisma, created!.id, { fileId: "dummy", txid: "ABC123XYZ" });
 
     await approveOrder(prisma, created!.id, { adminId: user.id });
@@ -351,7 +352,7 @@ describe("bulk purchase broadcast", () => {
     await setSetting(prisma, "bulk_purchase_broadcast_threshold", "3");
     const { user, product } = sample;
     await addToCart(prisma, user.id, product.id, 2); // below the threshold of 3
-    const created = await createOrderFromCart(prisma, { user });
+    const created = await createOrderFromCart(prisma, { channel: "bot", user });
     await attachPaymentProof(prisma, created!.id, { fileId: "dummy", txid: "ABC123XYZ" });
 
     await approveOrder(prisma, created!.id, { adminId: user.id });
@@ -367,7 +368,7 @@ describe("bulk purchase broadcast", () => {
     await setSetting(prisma, "bulk_purchase_broadcast_threshold", "2");
     const { user, product } = sample;
     await addToCart(prisma, user.id, product.id, 2);
-    const created = await createOrderFromCart(prisma, { user });
+    const created = await createOrderFromCart(prisma, { channel: "bot", user });
     await attachPaymentProof(prisma, created!.id, { fileId: "dummy", txid: "ABC123XYZ" });
 
     await approveOrder(prisma, created!.id, { adminId: user.id });
@@ -384,7 +385,7 @@ describe("bulk purchase broadcast", () => {
     await setSetting(prisma, "bulk_purchase_broadcast_threshold", "2");
     const { user, product, parentProduct } = sample;
     await addToCart(prisma, user.id, product.id, 2);
-    const created = await createOrderFromCart(prisma, { user });
+    const created = await createOrderFromCart(prisma, { channel: "bot", user });
     await attachPaymentProof(prisma, created!.id, { fileId: "dummy", txid: "ABC123XYZ" });
 
     await approveOrder(prisma, created!.id, { adminId: user.id });
@@ -407,7 +408,7 @@ describe("bulk purchase broadcast", () => {
     await setSetting(prisma, "bulk_purchase_broadcast_threshold", "2");
     const { user, product } = sample;
     await addToCart(prisma, user.id, product.id, 2);
-    const created = await createOrderFromCart(prisma, { user });
+    const created = await createOrderFromCart(prisma, { channel: "bot", user });
     await attachPaymentProof(prisma, created!.id, { fileId: "dummy", txid: "ABC123XYZ" });
 
     await approveOrder(prisma, created!.id, { adminId: user.id });
@@ -426,7 +427,7 @@ describe("bulk purchase broadcast", () => {
     await setSetting(prisma, "bulk_purchase_broadcast_template", "🔥 x{qty} {product} - {denomination} just sold!");
     const { user, product } = sample;
     await addToCart(prisma, user.id, product.id, 2);
-    const created = await createOrderFromCart(prisma, { user });
+    const created = await createOrderFromCart(prisma, { channel: "bot", user });
     await attachPaymentProof(prisma, created!.id, { fileId: "dummy", txid: "ABC123XYZ" });
 
     await approveOrder(prisma, created!.id, { adminId: user.id });
@@ -447,7 +448,7 @@ describe("cancelOrder — anti-abuse guard (user_cancelled vs. payment-in-flight
   it("rejects user_cancelled while PENDING_VERIFICATION (proof under review) — the original guard, previously untested", async () => {
     const { user, product } = sample;
     await addToCart(prisma, user.id, product.id, 1);
-    const created = await createOrderFromCart(prisma, { user });
+    const created = await createOrderFromCart(prisma, { channel: "bot", user });
     await attachPaymentProof(prisma, created!.id, { fileId: "dummy", txid: "ABC123XYZ" });
 
     await expect(
@@ -466,7 +467,7 @@ describe("cancelOrder — anti-abuse guard (user_cancelled vs. payment-in-flight
     async (status) => {
       const { user, product } = sample;
       await addToCart(prisma, user.id, product.id, 1);
-      const created = await createOrderFromCart(prisma, { user });
+      const created = await createOrderFromCart(prisma, { channel: "bot", user });
       await prisma.order.update({ where: { id: created!.id }, data: { status } });
 
       await expect(
@@ -484,7 +485,7 @@ describe("cancelOrder — anti-abuse guard (user_cancelled vs. payment-in-flight
   it("an admin-initiated cancel (different reason) still succeeds from PAYMENT_DETECTED", async () => {
     const { user, product } = sample;
     await addToCart(prisma, user.id, product.id, 1);
-    const created = await createOrderFromCart(prisma, { user });
+    const created = await createOrderFromCart(prisma, { channel: "bot", user });
     await prisma.order.update({ where: { id: created!.id }, data: { status: OrderStatus.PAYMENT_DETECTED } });
 
     await cancelOrder(prisma, created!.id, "underpaid_cancelled by admin_id=1", {

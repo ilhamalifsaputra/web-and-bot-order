@@ -276,7 +276,7 @@ describe("drainBatch routes ADMIN_STALE_PAYMENT as an admin DM, never a public p
     setBotIdentity({ publicChannelId: -1009876543210 });
     const buyer = await upsertUser(prisma, { telegramId: 500_101, username: "buyer500101", fullName: "Stale Buyer 1" });
     const denom = await makeManualDenom();
-    const order = await createOrderDirect(prisma, { user: buyer, productId: denom.id, quantity: 1 });
+    const order = await createOrderDirect(prisma, { user: buyer, channel: "bot", productId: denom.id, quantity: 1 });
     await enqueueAdminStalePayment(prisma, {
       orderId: order!.id,
       orderCode: order!.orderCode,
@@ -303,7 +303,7 @@ describe("drainBatch routes ADMIN_STALE_PAYMENT as an admin DM, never a public p
     await addAdminIdToDb(prisma, 900_100_002);
     const buyer = await upsertUser(prisma, { telegramId: 500_102, username: "buyer500102", fullName: "Stale Buyer 2" });
     const denom = await makeManualDenom();
-    const order = await createOrderDirect(prisma, { user: buyer, productId: denom.id, quantity: 1 });
+    const order = await createOrderDirect(prisma, { user: buyer, channel: "bot", productId: denom.id, quantity: 1 });
     await enqueueAdminStalePayment(prisma, {
       orderId: order!.id,
       orderCode: order!.orderCode,
@@ -424,6 +424,7 @@ describe("drainBatch delivers a delivered order's credentials as a document", ()
 
     const { order } = await prisma.$transaction((tx) =>
       completeOrderWithWalletCredit(tx, {
+        channel: "bot",
         user: { id: user.id, role: user.role, walletBalance: user.walletBalance },
         productId: sample.product.id,
         quantity: 1,
@@ -496,6 +497,7 @@ describe("drainBatch flushes the payment bubble before a settlement DM (Task E3)
     const funded = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
     const { order } = await prisma.$transaction((tx) =>
       completeOrderWithWalletCredit(tx, {
+        channel: "bot",
         user: { id: funded.id, role: funded.role, walletBalance: funded.walletBalance },
         productId: denom.id,
         quantity: 1,
@@ -572,7 +574,7 @@ describe("drainBatch flushes the payment bubble before a settlement DM (Task E3)
       price: "10.00",
     });
     await updateDenomination(prisma, denom.id, { deliveryType: DeliveryType.MANUAL });
-    const order = await createOrderDirect(prisma, { user: buyer, productId: denom.id, quantity: 1 });
+    const order = await createOrderDirect(prisma, { user: buyer, channel: "bot", productId: denom.id, quantity: 1 });
     await attachPaymentProof(prisma, order!.id, { fileId: "file123", txid: "TX-E3" });
 
     // settlePaidOrder enqueues ORDER_PROCESSING_DM — drain it FIRST, with no
@@ -739,7 +741,7 @@ describe("drainBatch delivers the per-SKU manual delivery-flow DMs", () => {
     const buyer = await makeBuyer(500_001);
     const admin = await makeAdmin(900_000_001);
     const denom = await makeManualDenom();
-    const order = await createOrderDirect(prisma, { user: buyer, productId: denom.id, quantity: 1 });
+    const order = await createOrderDirect(prisma, { user: buyer, channel: "bot", productId: denom.id, quantity: 1 });
     await attachPaymentProof(prisma, order!.id, { fileId: "file123", txid: "TX-1" });
 
     const result = await settlePaidOrder(prisma, order!.id, { adminId: admin.id });
@@ -768,7 +770,7 @@ describe("drainBatch delivers the per-SKU manual delivery-flow DMs", () => {
     const admin = await makeAdmin(900_000_005);
     await addAdminIdToDb(prisma, 900_000_005);
     const denom = await makeManualDenom();
-    const order = await createOrderDirect(prisma, { user: buyer, productId: denom.id, quantity: 1 });
+    const order = await createOrderDirect(prisma, { user: buyer, channel: "bot", productId: denom.id, quantity: 1 });
     await attachPaymentProof(prisma, order!.id, { fileId: "file123", txid: "TX-1" });
 
     const result = await settlePaidOrder(prisma, order!.id, { adminId: admin.id });
@@ -792,7 +794,7 @@ describe("drainBatch delivers the per-SKU manual delivery-flow DMs", () => {
     const buyer = await makeBuyer(500_002);
     const admin = await makeAdmin(900_000_002);
     const denom = await makeManualDenom();
-    const order = await createOrderDirect(prisma, { user: buyer, productId: denom.id, quantity: 1 });
+    const order = await createOrderDirect(prisma, { user: buyer, channel: "bot", productId: denom.id, quantity: 1 });
     await attachPaymentProof(prisma, order!.id, { fileId: "file123", txid: "TX-1" });
     await settlePaidOrder(prisma, order!.id, { adminId: admin.id });
 
@@ -826,7 +828,7 @@ describe("drainBatch delivers the per-SKU manual delivery-flow DMs", () => {
     const buyer = await makeBuyer(500_003);
     const admin = await makeAdmin(900_000_003);
     const denom = await makeManualDenom();
-    const order = await createOrderDirect(prisma, { user: buyer, productId: denom.id, quantity: 1 });
+    const order = await createOrderDirect(prisma, { user: buyer, channel: "bot", productId: denom.id, quantity: 1 });
     await attachPaymentProof(prisma, order!.id, { fileId: "file123", txid: "TX-1" });
     await settlePaidOrder(prisma, order!.id, { adminId: admin.id });
     await fulfillManualOrder(prisma, order!.id, { adminId: admin.id, content: "<script>alert(1)</script>" });
@@ -845,7 +847,7 @@ describe("drainBatch delivers the per-SKU manual delivery-flow DMs", () => {
     const buyer = await makeBuyer(500_004);
     const admin = await makeAdmin(900_000_004);
     const denom = await makeManualDenom();
-    const order = await createOrderDirect(prisma, { user: buyer, productId: denom.id, quantity: 1 });
+    const order = await createOrderDirect(prisma, { user: buyer, channel: "bot", productId: denom.id, quantity: 1 });
     await attachPaymentProof(prisma, order!.id, { fileId: "file123", txid: "TX-1" });
     await settlePaidOrder(prisma, order!.id, { adminId: admin.id });
     const longContent = Array.from({ length: 400 }, (_, i) => `line ${i}: some account credential text`).join("\n");
@@ -877,7 +879,7 @@ describe("drainBatch delivers the per-SKU manual delivery-flow DMs", () => {
     const buyer = await makeBuyer(500_006);
     const admin = await makeAdmin(900_000_006);
     const denom = await makeManualDenom();
-    const order = await createOrderDirect(prisma, { user: buyer, productId: denom.id, quantity: 1 });
+    const order = await createOrderDirect(prisma, { user: buyer, channel: "bot", productId: denom.id, quantity: 1 });
     await attachPaymentProof(prisma, order!.id, { fileId: "file123", txid: "TX-1" });
     await settlePaidOrder(prisma, order!.id, { adminId: admin.id });
     await fulfillManualOrder(prisma, order!.id, { adminId: admin.id, content: "user: enc@example.com / pass: Hunter6" });
@@ -894,7 +896,7 @@ describe("drainBatch delivers the per-SKU manual delivery-flow DMs", () => {
     const buyer = await makeBuyer(500_007);
     const admin = await makeAdmin(900_000_007);
     const denom = await makeManualDenom();
-    const order = await createOrderDirect(prisma, { user: buyer, productId: denom.id, quantity: 1 });
+    const order = await createOrderDirect(prisma, { user: buyer, channel: "bot", productId: denom.id, quantity: 1 });
     await attachPaymentProof(prisma, order!.id, { fileId: "file123", txid: "TX-1" });
     await settlePaidOrder(prisma, order!.id, { adminId: admin.id });
     // Rows 1 and 3 of the batch bracket the bad one, so "the rest of the batch
@@ -948,7 +950,7 @@ describe("drainBatch delivers the per-SKU manual delivery-flow DMs", () => {
       price: "10.00",
     });
     await bulkAddStock(prisma, denom.id, ["unreadable-doc@example.com:pw"]);
-    const order = (await createOrderDirect(prisma, { user: buyer, productId: denom.id, quantity: 1 }))!;
+    const order = (await createOrderDirect(prisma, { user: buyer, channel: "bot", productId: denom.id, quantity: 1 }))!;
     const stockItemId = order.items[0]!.stockItemId!;
     const good = await prisma.stockItem.findUniqueOrThrow({ where: { id: stockItemId } });
     const tampered = { ...(JSON.parse(good.credentials) as Record<string, unknown>), authTag: Buffer.alloc(16).toString("base64") };

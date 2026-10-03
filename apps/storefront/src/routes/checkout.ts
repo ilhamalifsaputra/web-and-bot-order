@@ -744,6 +744,7 @@ export async function performCheckout(
     }
 
     const created = await createOrderFromCart(tx, {
+      channel: "web",
       user: {
         id: customer.userId,
         role: customer.user.role,
@@ -786,6 +787,7 @@ export async function performWalletCheckout(
       throw new ValidationError("error.too_many_pending");
     }
     return completeCartOrderWithWalletCredit(tx, {
+      channel: "web",
       user: {
         id: customer.userId,
         role: customer.user.role,
@@ -865,6 +867,7 @@ export async function performDirectCheckout(
     if (!denom || !denom.isActive) throw new ValidationError("error.generic");
 
     const created = await createOrderDirect(tx, {
+      channel: "web",
       user: { id: customer.userId, role: customer.user.role },
       productId: line.denominationId,
       quantity: line.quantity,
@@ -912,6 +915,7 @@ export async function performDirectWalletCheckout(
     if (!denom || !denom.isActive) throw new ValidationError("error.generic");
 
     return completeOrderWithWalletCredit(tx, {
+      channel: "web",
       user: {
         id: customer.userId,
         role: customer.user.role,

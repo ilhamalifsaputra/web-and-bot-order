@@ -26,6 +26,7 @@ import { ValidationError } from "@app/core/errors";
 import { startOfDayUtc } from "@app/core/datetime";
 import type { Prisma, ProcessedBinanceTx } from "@prisma/client";
 import type { PrismaClient, Tx } from "../client";
+import type { ServiceChannel } from "@app/core/services";
 import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
 import {
@@ -133,6 +134,8 @@ export async function createInternalOrder(
   db: Db,
   args: {
     user: { id: number; role: string };
+    /** Bot or website — forwarded to createOrderDirect's service guard. */
+    channel: ServiceChannel;
     productId: number;
     quantity: number;
     voucherCode?: string | null;

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { createOrderDirect } from "./orders";
@@ -30,6 +30,9 @@ import {
   listActiveCategories,
   listActiveCategoriesByGroup,
   listCatalogProducts,
+  listCatalogProductsByGroup,
+  getCategoryBySlug,
+  getCatalogProductBySlugWithDenominations,
   listCategoryGameVariants,
   countCategoryProductsWithoutGameVariant,
   listCategoryGameRegions,
@@ -50,6 +53,8 @@ import {
 } from "./catalog";
 import { ValidationError } from "@app/core/errors";
 import { Decimal } from "@app/core/money";
+import type { ServiceChannel } from "@app/core/services";
+import { setSetting } from "./settings";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -275,7 +280,7 @@ describe("deleteDenomination", () => {
       username: null,
       fullName: null,
     });
-    await createOrderDirect(prisma, { user, productId: d.id, quantity: 1 });
+    await createOrderDirect(prisma, { channel: "bot", user, productId: d.id, quantity: 1 });
     await expect(deleteDenomination(prisma, d.id)).rejects.toThrow(/order history/);
     expect(await prisma.denomination.findUnique({ where: { id: d.id } })).not.toBeNull();
   });
@@ -579,7 +584,7 @@ describe("listCatalogProducts", () => {
     // a product with no denominations must NOT appear
     await makeProduct(cat.id, "Hidden Empty");
 
-    const list = await listCatalogProducts(prisma, cat.id);
+    const list = await listCatalogProducts(prisma, "bot", cat.id);
     const shown = list.find((x) => x.id === p.id);
     expect(shown).toBeTruthy();
     expect(shown!.denominations.map((d) => d.price.toString())).toEqual(["10", "30"]);
@@ -591,7 +596,7 @@ describe("listCatalogProducts", () => {
     const p = await makeProduct(cat.id, "OnlyInactive");
     const d = await makeDenom(p.id, "1 Month", "5");
     await prisma.denomination.update({ where: { id: d.id }, data: { isActive: false } });
-    const list = await listCatalogProducts(prisma, cat.id);
+    const list = await listCatalogProducts(prisma, "bot", cat.id);
     expect(list.some((x) => x.id === p.id)).toBe(false);
   });
 
@@ -600,7 +605,7 @@ describe("listCatalogProducts", () => {
     const p = await makeProduct(cat.id, "Archived");
     await makeDenom(p.id, "1 Month", "5");
     await setCatalogProductArchived(prisma, p.id, true);
-    const list = await listCatalogProducts(prisma, cat.id);
+    const list = await listCatalogProducts(prisma, "bot", cat.id);
     expect(list.some((x) => x.id === p.id)).toBe(false);
   });
 
@@ -616,7 +621,7 @@ describe("listCatalogProducts", () => {
     await makeDenom(c.id, "1 Month", "10");
     await prisma.product.update({ where: { id: c.id }, data: { gameVariant: "Z", gameRegion: null } });
 
-    const list = await listCatalogProducts(prisma, cat.id, { gameVariant: "X", gameRegion: null });
+    const list = await listCatalogProducts(prisma, "bot", cat.id, { gameVariant: "X", gameRegion: null });
     const ids = list.map((x) => x.id);
     expect(ids).toContain(a.id);
     expect(ids).not.toContain(b.id);
@@ -633,7 +638,7 @@ describe("listCatalogProducts", () => {
     await prisma.product.update({ where: { id: b.id }, data: { gameVariant: "X", gameRegion: "Z" } });
 
     // only gameVariant is present in the filter — gameRegion should be untouched
-    const list = await listCatalogProducts(prisma, cat.id, { gameVariant: "X" });
+    const list = await listCatalogProducts(prisma, "bot", cat.id, { gameVariant: "X" });
     const ids = list.map((x) => x.id);
     expect(ids).toContain(a.id);
     expect(ids).toContain(b.id);
@@ -644,7 +649,7 @@ describe("listCatalogProducts", () => {
     const p = await makeProduct(cat.id, "Unaffected");
     await makeDenom(p.id, "1 Month", "10");
     await prisma.product.update({ where: { id: p.id }, data: { gameVariant: "X", gameRegion: "Y" } });
-    const list = await listCatalogProducts(prisma, cat.id);
+    const list = await listCatalogProducts(prisma, "bot", cat.id);
     expect(list.some((x) => x.id === p.id)).toBe(true);
   });
 });
@@ -791,11 +796,11 @@ describe("searchCatalog", () => {
     const cat = await makeCategory();
     const p = await makeProduct(cat.id, "ZorroBrand Studio");
     await makeDenom(p.id, "Basic Plan", "10");
-    const hits = await searchCatalog(prisma, "ZorroBrand", 24);
+    const hits = await searchCatalog(prisma, "ZorroBrand", "bot", 24);
     expect(hits.some((x) => x.id === p.id)).toBe(true);
     // a query that only matches the denomination name should NOT surface the product
-    expect((await searchCatalog(prisma, "Basic Plan", 24)).some((x) => x.id === p.id)).toBe(false);
-    expect(await searchCatalog(prisma, "   ", 24)).toEqual([]);
+    expect((await searchCatalog(prisma, "Basic Plan", "bot", 24)).some((x) => x.id === p.id)).toBe(false);
+    expect(await searchCatalog(prisma, "   ", "bot", 24)).toEqual([]);
   });
 });
 
@@ -1284,7 +1289,7 @@ describe("listNewestCatalogProducts", () => {
     const cat = await makeCategory();
     const p = await makeProduct(cat.id, "Newest");
     await makeDenom(p.id, "1 Month", "5");
-    const list = await listNewestCatalogProducts(prisma, 1);
+    const list = await listNewestCatalogProducts(prisma, "bot", 1);
     expect(list).toHaveLength(1);
     expect(list[0]!.denominations.length).toBeGreaterThanOrEqual(1);
   });
@@ -1327,12 +1332,12 @@ describe("flash-sale shelves", () => {
     const plain = await makeProduct(cat.id, "Shelf Plain");
     await makeDenom(plain.id, "1 Month", "10000");
 
-    const slugs = (await listFlashSaleProducts(prisma)).map((p) => p.slug);
+    const slugs = (await listFlashSaleProducts(prisma, "bot")).map((p) => p.slug);
     expect(slugs).toContain(onSale.slug);
     expect(slugs).not.toContain(upcoming.slug);
     expect(slugs).not.toContain(past.slug);
     expect(slugs).not.toContain(plain.slug);
-    expect(await hasActiveFlashSale(prisma)).toBe(true);
+    expect(await hasActiveFlashSale(prisma, "bot")).toBe(true);
   });
 
   it("ignores a percent outside (0,100], the same rule pricing applies", async () => {
@@ -1345,7 +1350,7 @@ describe("flash-sale shelves", () => {
       where: { id: d.id },
       data: { flashDiscountPercent: "0", flashStartsAt: inHours(-1), flashEndsAt: inHours(1) },
     });
-    const slugs = (await listFlashSaleProducts(prisma)).map((x) => x.slug);
+    const slugs = (await listFlashSaleProducts(prisma, "bot")).map((x) => x.slug);
     expect(slugs).not.toContain(p.slug);
   });
 
@@ -1360,8 +1365,8 @@ describe("flash-sale shelves", () => {
       endsAt: inHours(1),
     });
     // Ask as of a moment after the last window ends, rather than mutating rows.
-    expect(await hasActiveFlashSale(prisma, inHours(48))).toBe(false);
-    expect(await listFlashSaleProducts(prisma, inHours(48))).toEqual([]);
+    expect(await hasActiveFlashSale(prisma, "bot", inHours(48))).toBe(false);
+    expect(await listFlashSaleProducts(prisma, "bot", inHours(48))).toEqual([]);
   });
 });
 
@@ -1384,7 +1389,7 @@ describe("listActiveCategoriesByGroup", () => {
     });
 
     // Test listing GAME_TOPUP categories
-    const gameTopupList = await listActiveCategoriesByGroup(prisma, "GAME_TOPUP");
+    const gameTopupList = await listActiveCategoriesByGroup(prisma, "GAME_TOPUP", "bot");
     expect(gameTopupList).toHaveLength(2);
     expect(gameTopupList.map((c) => c.id)).toEqual([gameTopup2.id, gameTopup1.id]); // sorted by sortOrder (1, 2)
     expect(gameTopupList.map((c) => c.name)).toEqual(["Game B", "Game A"]);
@@ -1402,7 +1407,7 @@ describe("listActiveCategoriesByGroup", () => {
     // `makeCategory` helper, no group) have already populated the shared test
     // DB with plenty of those — a fixed-length assertion here would be
     // asserting an accident of test order, not this function's contract.
-    const premiumAppsList = await listActiveCategoriesByGroup(prisma, "PREMIUM_APPS");
+    const premiumAppsList = await listActiveCategoriesByGroup(prisma, "PREMIUM_APPS", "bot");
     const premiumIds = premiumAppsList.map((c) => c.id);
     expect(premiumIds).toContain(premiumApps1.id);
     expect(premiumAppsList.find((c) => c.id === premiumApps1.id)!.name).toBe("Premium A");
@@ -1422,7 +1427,7 @@ describe("listActiveCategoriesByGroup", () => {
     const explicitPremiumCat = await createCategory(prisma, { name: `Explicit Premium ${Math.random()}`, group: "PREMIUM_APPS" });
     const gameTopupCat = await createCategory(prisma, { name: `Game Only ${Math.random()}`, group: "GAME_TOPUP" });
 
-    const premiumAppsList = await listActiveCategoriesByGroup(prisma, "PREMIUM_APPS");
+    const premiumAppsList = await listActiveCategoriesByGroup(prisma, "PREMIUM_APPS", "bot");
     const premiumIds = premiumAppsList.map((c) => c.id);
     // Null-group category appears under PREMIUM_APPS...
     expect(premiumIds).toContain(nullGroupCat.id);
@@ -1435,7 +1440,7 @@ describe("listActiveCategoriesByGroup", () => {
 
     // The null-group category must NOT appear under GAME_TOPUP — that bucket
     // stays an exact match (Game Top Up is the new, opt-in bucket).
-    const gameTopupList = await listActiveCategoriesByGroup(prisma, "GAME_TOPUP");
+    const gameTopupList = await listActiveCategoriesByGroup(prisma, "GAME_TOPUP", "bot");
     const gameTopupIds = gameTopupList.map((c) => c.id);
     expect(gameTopupIds).toContain(gameTopupCat.id);
     expect(gameTopupIds).not.toContain(nullGroupCat.id);
@@ -1454,7 +1459,7 @@ describe("listActiveCategoriesByGroup", () => {
       },
     });
 
-    const result = await listActiveCategoriesByGroup(prisma, uniqueGroup);
+    const result = await listActiveCategoriesByGroup(prisma, uniqueGroup, "bot");
     expect(result).toEqual([]);
   });
 });
@@ -1496,5 +1501,76 @@ describe("createCategory with group", () => {
     expect(cat.emoji).toBe("🎮");
     expect(cat.description).toBe("Game top-ups");
     expect(cat.sortOrder).toBe(5);
+  });
+});
+
+describe("per-channel service availability in the catalog", () => {
+  const SERVICE_KEYS = [
+    "service_game_topup_enabled_bot",
+    "service_game_topup_enabled_web",
+    "service_premium_apps_enabled_bot",
+    "service_premium_apps_enabled_web",
+  ];
+  const inHours = (h: number) => new Date(Date.now() + h * 3600_000);
+
+  afterEach(async () => {
+    await prisma.setting.deleteMany({ where: { key: { in: SERVICE_KEYS } } });
+  });
+
+  async function gameFixture() {
+    const tag = `Chan${Math.random().toString(36).slice(2, 8)}`;
+    const cat = await createCategory(prisma, { name: `${tag} Cat`, group: "GAME_TOPUP" });
+    const product = await makeProduct(cat.id, `${tag} Diamonds`);
+    const denom = await makeDenom(product.id, "86 Diamonds", "10000");
+    await setFlashSale(prisma, {
+      denominationId: denom.id,
+      discountPercent: "10",
+      startsAt: inHours(-1),
+      endsAt: inHours(1),
+    });
+    return { tag, cat, product };
+  }
+
+  const pairs: Array<[ServiceChannel, ServiceChannel]> = [["bot", "web"], ["web", "bot"]];
+
+  it.each(pairs)("hides Game Top Up on %s only, while %s still lists it", async (off, on) => {
+    const { tag, cat, product } = await gameFixture();
+    await setSetting(prisma, `service_game_topup_enabled_${off}`, "false");
+
+    expect((await listActiveCategories(prisma, off)).map((c) => c.id)).not.toContain(cat.id);
+    expect((await listActiveCategories(prisma, on)).map((c) => c.id)).toContain(cat.id);
+
+    expect(await listActiveCategoriesByGroup(prisma, "GAME_TOPUP", off)).toEqual([]);
+    expect((await listActiveCategoriesByGroup(prisma, "GAME_TOPUP", on)).map((c) => c.id)).toContain(cat.id);
+
+    expect(await getCategoryBySlug(prisma, cat.slug, off)).toBeNull();
+    expect((await getCategoryBySlug(prisma, cat.slug, on))?.id).toBe(cat.id);
+
+    expect(await getCatalogProductBySlugWithDenominations(prisma, product.slug, off)).toBeNull();
+    expect((await getCatalogProductBySlugWithDenominations(prisma, product.slug, on))?.id).toBe(product.id);
+
+    expect(await listCatalogProducts(prisma, off, cat.id)).toEqual([]);
+    expect((await listCatalogProducts(prisma, on, cat.id)).map((p) => p.id)).toEqual([product.id]);
+
+    expect((await listCatalogProductsByGroup(prisma, "GAME_TOPUP", off)).map((p) => p.id)).not.toContain(product.id);
+    expect((await listCatalogProductsByGroup(prisma, "GAME_TOPUP", on)).map((p) => p.id)).toContain(product.id);
+
+    expect(await searchCatalog(prisma, tag, off)).toEqual([]);
+    expect((await searchCatalog(prisma, tag, on)).map((p) => p.id)).toEqual([product.id]);
+
+    expect((await listNewestCatalogProducts(prisma, off, 1000)).map((p) => p.id)).not.toContain(product.id);
+    expect((await listNewestCatalogProducts(prisma, on, 1000)).map((p) => p.id)).toContain(product.id);
+
+    expect((await listFlashSaleProducts(prisma, off)).map((p) => p.id)).not.toContain(product.id);
+    expect((await listFlashSaleProducts(prisma, on)).map((p) => p.id)).toContain(product.id);
+  });
+
+  it.each(pairs)("reports no live flash sale on %s when every service is off there, but %s still sees one", async (off, on) => {
+    await gameFixture();
+    await setSetting(prisma, `service_game_topup_enabled_${off}`, "false");
+    await setSetting(prisma, `service_premium_apps_enabled_${off}`, "false");
+
+    expect(await hasActiveFlashSale(prisma, off)).toBe(false);
+    expect(await hasActiveFlashSale(prisma, on)).toBe(true);
   });
 });

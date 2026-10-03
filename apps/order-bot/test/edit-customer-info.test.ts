@@ -89,7 +89,7 @@ async function makeManualWithInfoDenom(fields: AdditionalField[]) {
  * createOrderDirect -> attachPaymentProof -> settlePaidOrder path every real
  * manual_with_info order takes (see settlePaidOrder.test.ts). */
 async function makeProcessingOrder(productId: number, quantity: number, customerData: string) {
-  const order = await createOrderDirect(prisma, {
+  const order = await createOrderDirect(prisma, { channel: "bot",
     user: { id: sample.user.id, role: sample.user.role },
     productId,
     quantity,

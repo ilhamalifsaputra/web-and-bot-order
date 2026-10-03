@@ -17,6 +17,7 @@
 import { Decimal } from "@app/core/money";
 import { OrderCurrency, OrderStatus, PaymentMethod } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
+import type { ServiceChannel } from "@app/core/services";
 import type { Db } from "./_types";
 import {
   createOrderDirect,
@@ -47,6 +48,8 @@ export async function completeOrderWithWalletCredit(
   db: Db,
   args: {
     user: { id: number; role: string; walletBalance?: Decimal.Value; walletBalanceUsdt?: Decimal.Value };
+    /** Bot or website — forwarded to createOrderDirect's service guard. */
+    channel: ServiceChannel;
     productId: number;
     quantity: number;
     voucherCode?: string | null;
@@ -71,6 +74,7 @@ export async function completeOrderWithWalletCredit(
 ): Promise<WalletCheckoutResult> {
   const created = await createOrderDirect(db, {
     user: { id: args.user.id, role: args.user.role, walletBalance: args.user.walletBalance },
+    channel: args.channel,
     productId: args.productId,
     quantity: args.quantity,
     voucherCode: args.voucherCode,
@@ -211,6 +215,8 @@ export async function completeCartOrderWithWalletCredit(
   db: Db,
   args: {
     user: { id: number; role: string; walletBalance: Decimal.Value; walletBalanceUsdt?: Decimal.Value };
+    /** Bot or website — forwarded to createOrderFromCart's service guard. */
+    channel: ServiceChannel;
     voucherCode?: string | null;
     currency: typeof OrderCurrency.IDR | typeof OrderCurrency.USDT;
     /** Rupiah per 1 USDT — required when currency is USDT. */
@@ -232,6 +238,7 @@ export async function completeCartOrderWithWalletCredit(
 
   const created = await createOrderFromCart(db, {
     user: { id: args.user.id, role: args.user.role, walletBalance: args.user.walletBalance },
+    channel: args.channel,
     voucherCode: args.voucherCode,
     // Only the IDR track spends IDR credit during creation — the USDT track
     // leaves this order's walletAmount unset and applies USDT credit below,

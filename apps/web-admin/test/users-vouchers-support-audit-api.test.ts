@@ -911,6 +911,7 @@ describe("GET /api/users", () => {
     // Create an order for customerId
     const customer = await prisma.user.findUniqueOrThrow({ where: { id: customerId } });
     await createOrderDirect(prisma, {
+      channel: "web",
       user: { id: customer.id, role: customer.role },
       productId: denomination.id,
       quantity: 1,

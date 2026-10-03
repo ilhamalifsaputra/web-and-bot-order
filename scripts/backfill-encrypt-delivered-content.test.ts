@@ -34,7 +34,7 @@ beforeEach(async () => {
 });
 
 async function orderWithStored(stored: string | null): Promise<number> {
-  const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+  const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1, channel: "bot" }))!;
   await prisma.order.update({ where: { id: order.id }, data: { deliveredContent: stored } });
   return order.id;
 }

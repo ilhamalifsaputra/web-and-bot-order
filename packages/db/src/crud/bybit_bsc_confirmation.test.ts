@@ -34,7 +34,7 @@ beforeEach(async () => {
   await resetDb(prisma);
   sample = await buildSampleData(prisma);
   const order = await prisma.$transaction((tx) =>
-    createBybitBscOrder(tx, { user: { id: sample.user.id, role: sample.user.role }, productId: sample.product.id, quantity: 1, rate: 1 }),
+    createBybitBscOrder(tx, { channel: "bot", user: { id: sample.user.id, role: sample.user.role }, productId: sample.product.id, quantity: 1, rate: 1 }),
   );
   orderId = order!.id;
   await prisma.order.update({

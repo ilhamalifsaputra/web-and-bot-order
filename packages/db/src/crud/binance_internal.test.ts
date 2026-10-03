@@ -65,7 +65,7 @@ beforeEach(async () => {
 /** Create a PENDING_PAYMENT order stamped as a Binance Internal Transfer payment. */
 async function makePendingInternalOrder() {
   const { user, product } = sample;
-  const order = (await createOrderDirect(prisma, { user, productId: product.id, quantity: 1 }))!;
+  const order = (await createOrderDirect(prisma, { channel: "bot", user, productId: product.id, quantity: 1 }))!;
   await prisma.order.update({
     where: { id: order.id },
     data: { paymentMethod: PaymentMethod.BINANCE_INTERNAL },
@@ -77,7 +77,7 @@ async function makePendingInternalOrder() {
  * (used to route through a manual-delivery SKU instead of sample.product). */
 async function makePendingInternalOrderFor(productId: number) {
   const { user } = sample;
-  const order = (await createOrderDirect(prisma, { user, productId, quantity: 1 }))!;
+  const order = (await createOrderDirect(prisma, { channel: "bot", user, productId, quantity: 1 }))!;
   await prisma.order.update({
     where: { id: order.id },
     data: { paymentMethod: PaymentMethod.BINANCE_INTERNAL },
@@ -824,7 +824,7 @@ describe("refundUnderpaidOrder — reads the received amount from whichever rail
   // The regression test: before the fix this credited 0 because the lookup
   // never looked at processedBybitTx.
   it("credits the amount from processedBybitTx for a Bybit-flagged order instead of refunding 0", async () => {
-    const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    const order = (await createOrderDirect(prisma, { channel: "bot", user: sample.user, productId: sample.product.id, quantity: 1 }))!;
     await prisma.order.update({ where: { id: order.id }, data: { paymentMethod: PaymentMethod.BYBIT } });
     expect(await markUnderpaidBybit(prisma, { orderId: order.id, bybitTxId: "tx-refund-bybit-1", amount: "3.75" })).toBe(true);
     expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.UNDERPAID);
@@ -848,7 +848,7 @@ describe("refundUnderpaidOrder — reads the received amount from whichever rail
   // Bybit BSC shares processedBybitTx with Bybit — one table, no sub-rail
   // column — so the same lookup already covers it; this pins that.
   it("credits the amount from processedBybitTx for a Bybit-BSC-flagged order too (both sub-rails share the table)", async () => {
-    const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    const order = (await createOrderDirect(prisma, { channel: "bot", user: sample.user, productId: sample.product.id, quantity: 1 }))!;
     await prisma.order.update({ where: { id: order.id }, data: { paymentMethod: PaymentMethod.BYBIT_BSC } });
     expect(await markUnderpaidBybitBsc(prisma, { orderId: order.id, bybitTxId: "0xdeadbeef-refund-1", amount: "2.5" })).toBe(true);
 
@@ -888,7 +888,7 @@ describe("refundUnderpaidOrder — reads the received amount from whichever rail
   // therefore drives the exact newly-reachable path: a USDT order flagged via
   // `markOrderUnderpaid`.
   it("credits a USDT order's refund to walletBalanceUsdt, leaving the rupiah balance untouched", async () => {
-    const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    const order = (await createOrderDirect(prisma, { channel: "bot", user: sample.user, productId: sample.product.id, quantity: 1 }))!;
     await prisma.order.update({
       where: { id: order.id },
       data: { paymentMethod: PaymentMethod.NOWPAYMENTS, currency: "USDT", fxRate: "16000" },
@@ -943,7 +943,7 @@ describe("listSettledOrdersAwaitingBubbleEdit", () => {
     paymentMsgId?: number | null;
     createdAt?: Date;
   }) {
-    const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    const order = (await createOrderDirect(prisma, { channel: "bot", user: sample.user, productId: sample.product.id, quantity: 1 }))!;
     await prisma.order.update({
       where: { id: order.id },
       data: {
@@ -1063,7 +1063,7 @@ describe("listSettledOrdersAwaitingBubbleEdit", () => {
 describe("getSettledBubbleOrder", () => {
   /** Create + stamp one order with the given status/anchor. */
   async function makeOrder(opts: { status: string; anchored: boolean }) {
-    const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    const order = (await createOrderDirect(prisma, { channel: "bot", user: sample.user, productId: sample.product.id, quantity: 1 }))!;
     await prisma.order.update({
       where: { id: order.id },
       data: {
@@ -1121,7 +1121,7 @@ describe("payment-message anchor reuse", () => {
   async function makeAnchoredOrder(
     opts: { status?: string; chatId?: number; messageId?: number } = {},
   ) {
-    const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    const order = (await createOrderDirect(prisma, { channel: "bot", user: sample.user, productId: sample.product.id, quantity: 1 }))!;
     await prisma.order.update({
       where: { id: order.id },
       data: {
@@ -1136,7 +1136,7 @@ describe("payment-message anchor reuse", () => {
 
   /** A bare order with no anchor yet — the "next checkout" in these tests. */
   async function makeUnanchoredOrder() {
-    return (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!.id;
+    return (await createOrderDirect(prisma, { channel: "bot", user: sample.user, productId: sample.product.id, quantity: 1 }))!.id;
   }
 
   /** The (chatId, messageId) an order currently points at. */

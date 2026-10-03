@@ -160,6 +160,7 @@ async function makeOrderAwaitingVerification(args: {
 } = {}) {
   const buyer = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
   const created = await createOrderDirect(prisma, {
+   channel: "bot",
     user: { id: buyer.id, role: buyer.role, walletBalance: buyer.walletBalance },
     productId: args.productId ?? sample.product.id,
     quantity: 1,
@@ -215,6 +216,7 @@ async function makeIdrPricedDenomination(price: string) {
  *  `finalizeOrderPayment` stamps (currency + fxRate snapshot + rail). */
 async function makeSettledUsdtOrder(productId?: number) {
   const created = await createOrderDirect(prisma, {
+   channel: "bot",
     user: sample.user,
     productId: productId ?? sample.product.id,
     quantity: 1,
@@ -471,6 +473,7 @@ describe("scenario 2 — the same settlement arriving twice (a redelivered webho
     // The TokoPay rail is the honest shape of this failure: a gateway
     // re-POSTs the same callback, and the SAME trxId arrives twice.
     const created = await createOrderDirect(prisma, {
+     channel: "bot",
       user: sample.user,
       productId: sample.product.id,
       quantity: 1,
@@ -924,6 +927,7 @@ describe("scenario 9 — a TokoPay order, the only rail with any fee figure", ()
   it("captures fee and net receipt as data and posts no FEE transaction anywhere", async () => {
     const since = todayWindowStart();
     const created = await createOrderDirect(prisma, {
+     channel: "bot",
       user: sample.user,
       productId: sample.product.id,
       quantity: 1,
@@ -1017,6 +1021,7 @@ describe("scenario 10 — an order cancelled before it ever settled, with credit
     const walletSpend = new Decimal("2");
     const buyer = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
     const created = await createOrderDirect(prisma, {
+     channel: "bot",
       user: { id: buyer.id, role: buyer.role, walletBalance: buyer.walletBalance },
       productId: sample.product.id,
       quantity: 1,
@@ -1089,6 +1094,7 @@ describe("scenario 11 — a payment attempt that expires before settlement", () 
     // A MANUAL SKU, so nothing can auto-deliver this one behind the test's back.
     const manual = await makeManualDenomination();
     const created = await createOrderDirect(prisma, {
+     channel: "bot",
       user: sample.user,
       productId: manual.id,
       quantity: 1,

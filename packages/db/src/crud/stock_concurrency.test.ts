@@ -117,7 +117,7 @@ describe("createOrderDirect under true Postgres concurrency", () => {
 
     const buyers = await makeBuyers(5);
     const results = await Promise.allSettled(
-      buyers.map((user) => createOrderDirect(prisma, { user, productId: product.id, quantity: 1 })),
+      buyers.map((user) => createOrderDirect(prisma, { channel: "bot", user, productId: product.id, quantity: 1 })),
     );
 
     const fulfilled = results.filter(
@@ -149,7 +149,7 @@ describe("createOrderDirect under true Postgres concurrency", () => {
     const { product, user } = sample;
     await reduceStockTo(product.id, 1);
 
-    const order = await createOrderDirect(prisma, { user, productId: product.id, quantity: 1 });
+    const order = await createOrderDirect(prisma, { channel: "bot", user, productId: product.id, quantity: 1 });
     expect(order).not.toBeNull();
 
     const reserved = await prisma.stockItem.findMany({ where: { productId: product.id, status: "RESERVED" } });
@@ -163,7 +163,7 @@ describe("createOrderDirect under true Postgres concurrency", () => {
 
     const buyers = await makeBuyers(5);
     const results = await Promise.allSettled(
-      buyers.map((user) => createOrderDirect(prisma, { user, productId: product.id, quantity: 1 })),
+      buyers.map((user) => createOrderDirect(prisma, { channel: "bot", user, productId: product.id, quantity: 1 })),
     );
 
     const fulfilled = results.filter(
@@ -192,7 +192,7 @@ describe("createOrderDirect under true Postgres concurrency", () => {
 
     const buyers = await makeBuyers(5);
     const results = await Promise.allSettled(
-      buyers.map((user) => createOrderDirect(prisma, { user, productId: product.id, quantity: 2 })),
+      buyers.map((user) => createOrderDirect(prisma, { channel: "bot", user, productId: product.id, quantity: 2 })),
     );
 
     expect(results.every((r) => r.status === "rejected")).toBe(true);
@@ -216,7 +216,7 @@ describe("createOrderDirect under true Postgres concurrency", () => {
       where: { productId: product.id, status: "AVAILABLE" },
     }));
 
-    const first = await createOrderDirect(prisma, { user, productId: product.id, quantity: 1 });
+    const first = await createOrderDirect(prisma, { channel: "bot", user, productId: product.id, quantity: 1 });
     await cancelOrder(prisma, first!.id, "user_cancelled", {
       type: StockActorType.CUSTOMER,
       customerId: user.id,
@@ -224,7 +224,7 @@ describe("createOrderDirect under true Postgres concurrency", () => {
     expect(await countAvailableStock(prisma, product.id)).toBe(1);
 
     const [second] = await makeBuyers(1);
-    const reReserved = await createOrderDirect(prisma, { user: second!, productId: product.id, quantity: 1 });
+    const reReserved = await createOrderDirect(prisma, { channel: "bot", user: second!, productId: product.id, quantity: 1 });
     expect(reReserved).not.toBeNull();
 
     // The same row, now held by exactly one order line.

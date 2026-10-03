@@ -110,6 +110,7 @@ async function makePendingVerificationOrder(
   customerData?: string | null,
 ) {
   const order = await createOrderDirect(prisma, {
+   channel: "bot",
     user: sample.user,
     productId,
     quantity,
@@ -318,6 +319,7 @@ describe("settlePaidOrder — owner-email triggers", () => {
   it("AUTO settlement with a voucher applied: the payload's voucher_code and discount reflect it", async () => {
     await configureOwnerEmail("paid_order");
     const order = await createOrderDirect(prisma, {
+     channel: "bot",
       user: sample.user,
       productId: sample.product.id,
       quantity: 1,
@@ -674,6 +676,7 @@ describe("BUYER_EMAIL_ORDER_READY (guest buyer's order-ready email)", () => {
     const discountIdr = opts.discountIdr ?? "0";
     const denom = await makeManualDenom(DeliveryType.MANUAL, priceIdr);
     const created = await createOrderDirect(prisma, {
+     channel: "bot",
       user: sample.user,
       productId: denom.id,
       quantity: 1,
@@ -770,6 +773,7 @@ describe("BUYER_EMAIL_ORDER_READY (guest buyer's order-ready email)", () => {
     await makeSampleUserAGuest();
     const denom = await makeManualDenom(DeliveryType.MANUAL, PRICE_IDR);
     const created = await createOrderDirect(prisma, {
+     channel: "bot",
       user: sample.user,
       productId: denom.id,
       quantity: 1,
@@ -812,7 +816,7 @@ describe("BUYER_EMAIL_ORDER_READY (guest buyer's order-ready email)", () => {
     const bulkIdr = opts.bulkIdr ?? "0";
     const voucherIdr = opts.voucherIdr ?? "0";
     const denom = await makeManualDenom(DeliveryType.MANUAL, priceIdr);
-    const created = await createOrderDirect(prisma, { user: sample.user, productId: denom.id, quantity: 1 });
+    const created = await createOrderDirect(prisma, { channel: "bot", user: sample.user, productId: denom.id, quantity: 1 });
     await prisma.order.update({
       where: { id: created!.id },
       data: {
@@ -1077,6 +1081,7 @@ describe("createOrderDirect — manual denomination", () => {
     const customerData = JSON.stringify([{ game_id: "12345" }]);
 
     const order = await createOrderDirect(prisma, {
+     channel: "bot",
       user: sample.user,
       productId: manualDenom.id,
       quantity: 1,
@@ -1116,6 +1121,7 @@ describe("createOrderDirect — manual denomination", () => {
     let caught: unknown;
     try {
       await createOrderDirect(prisma, {
+       channel: "bot",
         user: sample.user,
         productId: manualDenom.id,
         quantity: 2,
@@ -1325,6 +1331,7 @@ describe("wallet top-ups cannot be settled through the product-delivery path", (
 
   it("still settles an ordinary PRODUCT order — the guard reads kind, not shape", async () => {
     const order = await createOrderDirect(prisma, {
+     channel: "bot",
       user: sample.user,
       productId: sample.product.id,
       quantity: 1,

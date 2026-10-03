@@ -141,6 +141,7 @@ async function makeProcessingDigiflazzOrder(supplierSku = "ml100") {
     },
   });
   const order = (await createOrderDirect(prisma, {
+   channel: "bot",
     user: sample.user,
     productId: sample.product.id,
     quantity: 1,
@@ -187,6 +188,7 @@ async function makeProcessingDigiflazzOrderForDiagnostic(opts: {
     },
   });
   const order = (await createOrderDirect(prisma, {
+   channel: "bot",
     user: sample.user,
     productId: sample.product.id,
     quantity: 1,
@@ -261,6 +263,7 @@ describe("terminalFailDigiflazzOrder — reactive account/region diagnostic (Tas
       },
     });
     const order = (await createOrderDirect(prisma, {
+     channel: "bot",
       user: sample.user,
       productId: sample.product.id,
       quantity: 1,
@@ -402,6 +405,7 @@ describe("terminalFailDigiflazzOrder — reactive account/region diagnostic (Tas
       },
     });
     const order = (await createOrderDirect(prisma, {
+     channel: "bot",
       user: sample.user,
       productId: sample.product.id,
       quantity: 1,
@@ -702,6 +706,7 @@ describe("dispatchPendingDigiflazzOrders", () => {
     await addToCart(prisma, sample.user.id, digiDenom.id, 1);
 
     const order = (await createOrderFromCart(prisma, {
+     channel: "bot",
       user: sample.user,
       customerData: JSON.stringify([{ user_id: "987654321" }]),
     }))!;
@@ -790,6 +795,7 @@ describe("dispatchPendingDigiflazzOrders", () => {
     await addToCart(prisma, sample.user.id, sample.product.id, 1);
     await addToCart(prisma, sample.user.id, digiDenom2.id, 1);
     const order = (await createOrderFromCart(prisma, {
+     channel: "bot",
       user: sample.user,
       customerData: JSON.stringify([{ user_id: "111" }]),
     }))!;
@@ -1116,6 +1122,7 @@ describe("fulfillDigiflazzOrder", () => {
   // function in the first place.
   it("throws and leaves the order untouched when the order's item isn't Digiflazz-routed", async () => {
     const order = (await createOrderDirect(prisma, {
+     channel: "bot",
       user: sample.user,
       productId: sample.product.id,
       quantity: 1,

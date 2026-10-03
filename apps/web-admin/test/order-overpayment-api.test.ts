@@ -102,6 +102,7 @@ function get(url: string) {
  */
 async function overpaidOrder(excess: Decimal.Value = "3") {
   const order = (await createOrderDirect(prisma, {
+    channel: "web",
     user: sample.user,
     productId: sample.product.id,
     quantity: 1,
@@ -122,6 +123,7 @@ async function overpaidOrder(excess: Decimal.Value = "3") {
 /** An order nothing flagged — delivered for exactly what it asked for. */
 async function exactlyPaidOrder() {
   const order = (await createOrderDirect(prisma, {
+    channel: "web",
     user: sample.user,
     productId: sample.product.id,
     quantity: 1,

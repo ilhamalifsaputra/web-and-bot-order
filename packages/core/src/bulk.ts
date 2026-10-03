@@ -12,7 +12,7 @@
  *
  * 1. **Validate on read, not just on write.** `upsertBulkPricing` (@app/db
  *    crud/catalog) already rejects a percent outside (0,100], but a row written
- *    before that guard existed — or by hand against the shared SQLite file —
+ *    before that guard existed — or by hand against the shared database —
  *    would otherwise be trusted at checkout and could zero out a price. Same
  *    reasoning as `activeFlashPercent`, applied to the same class of row.
  *

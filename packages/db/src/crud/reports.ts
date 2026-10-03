@@ -696,7 +696,7 @@ export interface CombinedLedgerPage {
  * multiply the linear cost described above by the page size. Note that its
  * `id IN (...)` list is unbounded for the same reason the merge is: it holds
  * every distinct order referenced anywhere in the whole ledger, not just the
- * requested page. So it grows with the ledger too, and on SQLite it does not
+ * requested page. So it grows with the ledger too, and it does not
  * merely get slower — past the bind-variable ceiling (~32k) the query throws
  * outright. That ceiling, not the sort cost, is the real deadline for the
  * properly paginated cross-table query mentioned above.

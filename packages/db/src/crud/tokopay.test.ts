@@ -132,7 +132,7 @@ describe("deliverPaidTokopayOrder", () => {
   // already_processed, silently losing the buyer's payment. Wiping all stock
   // for the product forces approveOrder's out-of-stock guard to throw INSIDE
   // the delivery $transaction, rolling it back (the real-world equivalent of
-  // a SQLITE_BUSY collision or a transient failure mid-delivery).
+  // a deadlock or a transient failure mid-delivery).
   it("a claim whose delivery failed is retryable — a later call with the same trx id succeeds instead of already_processed", async () => {
     const order = await makePendingTokopayOrder();
 
@@ -585,8 +585,8 @@ describe("deliverPaidTokopayOrder — WALLET_TOPUP routing", () => {
 // the `trx_id` UNIQUE constraint). Every "duplicate trx" test elsewhere in
 // this file — and in payment-idempotency-matrix.test.ts's "10 refreshes + 5
 // webhook retries..." acceptance suite — calls deliverPaidTokopayOrder
-// sequentially, one `await` at a time. SQLite's single-writer serialization
-// made that indistinguishable from "the claim is race-safe" — there was never
+// sequentially, one `await` at a time. That is indistinguishable from
+// "the claim is race-safe" — there was never
 // more than one writer to actually race. This fires 3 concurrent calls with
 // the IDENTICAL trxId/amount/orderId via Promise.allSettled against the real
 // dev Postgres and asserts the guard still allows exactly one winner. A
@@ -891,7 +891,7 @@ describe("listPendingTokopayOrders — the query-level cap returns the oldest ro
     for (let i = 0; i < 53; i++) {
       const order = await makePendingTokopayOrder();
       // Stagger createdAt explicitly — a tight creation loop can tie at
-      // whatever resolution SQLite/JS Date store, which would make "the 50
+      // whatever resolution the database/JS Date store, which would make "the 50
       // oldest" ambiguous and the assertion below vacuous.
       const createdAt = new Date(Date.now() - (53 - i) * 1000);
       await prisma.order.update({ where: { id: order.id }, data: { createdAt } });

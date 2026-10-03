@@ -113,7 +113,7 @@ describe("ImageUploadField", () => {
   it("flips to a distinct processing state once the upload finishes but the response is still pending", async () => {
     // This is the exact reported bug: bytes finish leaving the browser (100%)
     // long before the server (sniffing, a DB read, file unlinks, a
-    // writeFile, and sequential SQLite writes) actually responds. Without the
+    // writeFile, and sequential database writes) actually responds. Without the
     // phase split, the button would still read "Saving… 100%" here — visually
     // identical to a genuine hang.
     renderField();

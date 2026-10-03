@@ -10,7 +10,7 @@
  * (provider API keys/secrets; bot_token/notif_bot_token are out of scope,
  * see packages/db/src/crud/settings.ts's ENCRYPTED_SETTING_KEYS doc-comment).
  *
- * Run it on the box that holds the SQLite DB, with `CREDENTIAL_ENCRYPTION_KEY`
+ * Run it on the box that holds the database, with `CREDENTIAL_ENCRYPTION_KEY`
  * set in the environment (same value the app will use), ideally with the app
  * stopped or at least no concurrent settings edit in flight:
  *

@@ -1,7 +1,7 @@
 /**
  * CRUD for the TokoPay (IDR / QRIS / VA) payment path — plan.md §15.5.
  *
- * Mirrors crud/binance_internal.ts: SQLite has no row locks, so the
+ * Mirrors crud/binance_internal.ts: no row lock is needed, so the
  * `processed_tokopay_tx.trx_id` UNIQUE constraint is the idempotency gate.
  * TokoPay retries callbacks; claiming the trx id is an atomic insert and a
  * duplicate insert means "already handled" — an order can never double-deliver.
@@ -104,8 +104,9 @@ export async function deliverPaidTokopayOrder(
   //    order — see QRIS_RECLAIMABLE_OUTCOMES's doc-comment in
   //    binance_internal.ts for why that is NOT true on the amount-matched
   //    crypto rails, which use a narrower set). Re-claiming is a single
-  //    atomic UPDATE gated on that outcome set — SQLite serializes writers,
-  //    so if two retries race, exactly one `updateMany` sees count=1 and
+  //    atomic UPDATE gated on that outcome set — the database applies the
+  //    two updates one after the other, so if two retries race, exactly one
+  //    `updateMany` sees count=1 and
   //    proceeds; the other sees count=0 and correctly reports
   //    already_processed.
   try {
@@ -153,8 +154,8 @@ export async function deliverPaidTokopayOrder(
       ) {
         // Correct the audit row: the trx matched an order that's no longer payable.
         // Use `tx` (not the outer `db`) — we're still inside db.$transaction, and a
-        // second connection writing the same row here would block on SQLite's
-        // single-writer lock until the surrounding transaction itself times out.
+        // second connection writing the same row here would wait on the row lock
+        // the surrounding transaction already holds until it times out.
         await tx.processedTokopayTx
           .update({ where: { trxId: args.trxId }, data: { outcome: "stale" } })
           .catch(() => undefined);

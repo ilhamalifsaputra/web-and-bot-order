@@ -112,9 +112,9 @@ export async function categoryNameMap(db: Db): Promise<Map<string, number>> {
 /**
  * Find-or-create the mid-tier Product by name within a category (CSV import).
  * Takes the active `db` handle explicitly so callers running inside a
- * `prisma.$transaction(...)` pass the `tx` — SQLite is single-writer, so a
- * call against the outer `prisma` client here would block on its own open
- * transaction until it expires.
+ * `prisma.$transaction(...)` pass the `tx` — a call against the outer
+ * `prisma` client here would not see the transaction's uncommitted rows and
+ * could hold a second connection while it waits.
  */
 export async function resolveOrCreateProduct(db: Db, categoryId: number, name: string) {
   const existing = await db.product.findFirst({ where: { categoryId, name } });

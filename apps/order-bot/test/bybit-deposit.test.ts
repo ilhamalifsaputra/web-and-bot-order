@@ -211,8 +211,8 @@ describe("deliverPaidBybitOrder (idempotency + delivery)", () => {
   // bybit_tx_id UNIQUE constraint and was turned away as already_processed,
   // silently losing the buyer's payment. Wiping all stock for the product
   // forces settlePaidOrder's out-of-stock guard to throw INSIDE the delivery
-  // $transaction, rolling it back (the real-world equivalent of a SQLITE_BUSY
-  // collision or a transient failure mid-delivery).
+  // $transaction, rolling it back (the real-world equivalent of a deadlock
+  // or a transient failure mid-delivery).
   it("a claim whose delivery failed is retryable — a later call with the same tx id succeeds instead of already_processed", async () => {
     const order = await makeBybitOrder();
 

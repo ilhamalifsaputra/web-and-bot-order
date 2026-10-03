@@ -57,8 +57,8 @@
  * unset. There's no email analogue of Telegram flood control, so the EMAIL
  * lane never bails out of the tick early.
  *
- * Each pending row is sent independently; status is updated in short writes to
- * keep the SQLite write lock held only briefly. Telegram flood control
+ * Each pending row is sent independently; status is updated in short writes.
+ * Telegram flood control
  * (429/RetryAfter) backs off and bails out of the tick; Forbidden (403) fails
  * the row at once.
  */

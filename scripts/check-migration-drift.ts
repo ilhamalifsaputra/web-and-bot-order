@@ -4,9 +4,8 @@
  * di CI") that supplies the `--shadow-database-url` PostgreSQL requires for a
  * `--from-migrations` comparison.
  *
- * SQLite never needed this flag — Prisma shadows a `--from-migrations` diff with
- * a throwaway temp file automatically for that provider. PostgreSQL's CLI has no
- * such auto-provisioning for `migrate diff` specifically (unlike `migrate dev`,
+ * PostgreSQL's CLI has no shadow-database auto-provisioning for `migrate diff`
+ * specifically (unlike `migrate dev`,
  * which *can* auto-create/drop a shadow database given CREATEDB privilege): it
  * refuses outright with "You must pass the --shadow-database-url if you want to
  * diff a migrations directory" (verified empirically switching this repo to

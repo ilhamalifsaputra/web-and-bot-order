@@ -41,12 +41,12 @@ interface GrandfatheredCollision {
  *
  * Empty as of the PostgreSQL engine-swap (Task 4, 2026-08-27): the one
  * grandfathered pair this used to carry (`20260725000000_add_support_ticket_priority`
- * / `20260725000000_add_ticket_priority_category_resolved`, H-9) was archived out
- * of this directory to `prisma/migrations-sqlite-archive/` along with the rest of
- * the SQLite-era history — this script only scans `prisma/migrations/*`, so a
+ * / `20260725000000_add_ticket_priority_category_resolved`, H-9) was removed from
+ * this directory along with the rest of the earlier migration history — this
+ * script only scans `prisma/migrations/*`, so a
  * folder that no longer lives there needs no allowlist entry. The H-9 evidence
  * (both orderings produce an identical schema) is unchanged and still documented
- * in docs/MIGRATIONS.md and in the archived folders themselves; re-add an entry
+ * in docs/MIGRATIONS.md; re-add an entry
  * here only if those two folders (or an equivalent colliding pair) ever return to
  * this active directory.
  */

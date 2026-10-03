@@ -97,8 +97,8 @@ export async function findIdempotentResponse(
  * replaying it re-runs nothing.
  *
  * A duplicate insert (two requests racing the same brand-new key at once) is
- * swallowed silently rather than erroring or overwriting: SQLite serializes
- * the two writes, exactly one insert wins, and the loser's own caller still
+ * swallowed silently rather than erroring or overwriting: the unique key lets
+ * exactly one insert win, and the loser's own caller still
  * got the response its own mutation produced — nothing is lost by not
  * overwriting the winner's row with a second, redundant copy of the same
  * requestHash's outcome.

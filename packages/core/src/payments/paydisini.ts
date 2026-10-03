@@ -177,15 +177,32 @@ export async function checkTransaction(
   }
   const d = body.data;
   const statusStr = String(d.status ?? "").toLowerCase();
-  const amountRaw = d.amount ?? d.nominal ?? args.amountIdr;
-  let amount: Decimal;
-  try {
-    amount = new Decimal(String(amountRaw));
-  } catch {
-    amount = new Decimal(args.amountIdr);
-  }
   const trxId = (typeof d.unique_code === "string" && d.unique_code) || (typeof d.trx_id === "string" && d.trx_id) || null;
-  return { paid: isProviderPaid(StatusProvider.PAYDISINI, statusStr), amount, trxId };
+  const paid = isProviderPaid(StatusProvider.PAYDISINI, statusStr);
+  // Task B3b (backend audit): the amount must come from PayDisini. This used
+  // to fall back to `args.amountIdr` — the amount we asked about — which made
+  // every caller's short-payment check pass by construction. A paid status
+  // without a usable amount is therefore reported as NOT paid: nothing is
+  // delivered on it, and the reconcile poller simply asks again next tick.
+  const amountRaw = d.amount ?? d.nominal;
+  let amount: Decimal | null = null;
+  if (amountRaw !== undefined && amountRaw !== null && amountRaw !== "") {
+    try {
+      const parsed = new Decimal(String(amountRaw));
+      if (parsed.isFinite()) amount = parsed;
+    } catch {
+      amount = null;
+    }
+  }
+  if (amount === null) {
+    if (paid) {
+      logger.warn(
+        `PayDisini reported order ${args.refId} as paid but its status response carried no usable amount, so the payment is treated as unverified and nothing is delivered on it — the reconcile poller will ask again, and if this persists an admin should check the transaction in the PayDisini dashboard`,
+      );
+    }
+    return { paid: false, amount: new Decimal(0), trxId };
+  }
+  return { paid, amount, trxId };
 }
 
 export interface PaydisiniCallback {

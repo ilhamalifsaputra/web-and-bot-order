@@ -230,14 +230,105 @@ const trackLookupHits = new Map<string, number[]>();
 export const TRACK_LOOKUP_RATE_LIMIT_WINDOW_SECONDS = 600; // 10 minutes
 export const TRACK_LOOKUP_RATE_LIMIT_MAX = 10;
 
-/** True if `ip` has exceeded its order-lookup quota within the window. */
+/**
+ * The key a per-client throttle should count `ip` under. An IPv6 client is
+ * normally handed a whole /64 (2^64 addresses), so keying by the full address
+ * would let one client rotate through a fresh quota on every request — the
+ * /64 is the smallest unit that actually identifies one subscriber. An
+ * IPv4-mapped IPv6 address (`::ffff:1.2.3.4`) is folded back to plain IPv4.
+ * Anything unparseable is returned unchanged.
+ */
+export function rateLimitClientKey(ip: string): string {
+  const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(ip);
+  if (mapped) return mapped[1]!;
+  if (!ip.includes(":")) return ip;
+  const addr = ip.split("%", 1)[0]!.toLowerCase(); // drop a zone id (fe80::1%eth0)
+  const halves = addr.split("::");
+  if (halves.length > 2) return ip;
+  const head = halves[0] ? halves[0].split(":") : [];
+  const tail = halves.length === 2 && halves[1] ? halves[1].split(":") : [];
+  // An embedded dotted-quad tail counts as two hextets; only the first four
+  // hextets matter here, so its exact value is irrelevant.
+  const tailLen = tail.reduce((n, h) => n + (h.includes(".") ? 2 : 1), 0);
+  const fill = halves.length === 2 ? 8 - head.length - tailLen : 0;
+  if (fill < 0) return ip;
+  const groups = [...head, ...Array<string>(fill).fill("0"), ...tail];
+  const first4 = groups.slice(0, 4).map((h) => (/^[0-9a-f]{1,4}$/.test(h) ? parseInt(h, 16).toString(16) : null));
+  if (first4.length < 4 || first4.some((h) => h === null)) return ip;
+  return `${first4.join(":")}::/64`;
+}
+
+/** True if `ip` (counted per /64 for IPv6) has exceeded its order-lookup quota within the window. */
 export function trackLookupRateLimited(ip: string): boolean {
   return slidingWindowLimited(
     trackLookupHits,
-    ip,
+    rateLimitClientKey(ip),
     TRACK_LOOKUP_RATE_LIMIT_WINDOW_SECONDS,
     TRACK_LOOKUP_RATE_LIMIT_MAX,
   );
+}
+
+// ---------------------------------------------------------------------------
+// Order-tracking FAILED-guess caps, independent of source IP — backend audit
+// Task C1. The per-IP limiter above is defeated by anyone with many
+// addresses (a botnet, a cloud pool), and the order code is short: every
+// code is `ORD-YYYYMMDD-XXXX` with a 4-char suffix from 36 symbols, so one
+// day holds only ~1.7M possible codes. Two caps count MISSES only (a real
+// buyer's correct code never spends them):
+//  - per target: the code's date prefix (`ORD-YYYYMMDD`). Guessing one day's
+//    orders is the natural attack, so that day's bucket fills no matter how
+//    many IPs the guesses come from.
+//  - global: every format-valid miss, whatever its date — stops an attacker
+//    simply spreading guesses across many past dates.
+// A code that doesn't have the order-code shape can never match a real order
+// (generateOrderCode is the only writer), so it can't be a successful guess
+// and is not counted here — only the per-IP limiter applies to it.
+//
+// The trade-off is deliberate: when a cap trips, legitimate recovery for
+// that day (or, for the global cap, for everyone) answers 429 until the
+// window slides. /track is only the lost-cookie recovery path — a buyer's
+// own checkout session and the order-code email are unaffected — and a
+// bounded outage beats an unbounded credential oracle.
+// ---------------------------------------------------------------------------
+
+export const TRACK_FAILURE_WINDOW_SECONDS = 600; // 10 minutes
+export const TRACK_TARGET_FAILURE_MAX = 30;
+export const TRACK_GLOBAL_FAILURE_MAX = 300;
+const ORDER_CODE_SHAPE = /^(ORD-\d{8})-[A-Z0-9]{4}$/;
+const GLOBAL_TRACK_KEY = "*";
+const trackTargetFailures = new Map<string, number[]>();
+const trackGlobalFailures = new Map<string, number[]>();
+
+function prunedCount(store: Map<string, number[]>, key: string, now: number): number[] {
+  const dq = store.get(key) ?? [];
+  while (dq.length && now - dq[0]! > TRACK_FAILURE_WINDOW_SECONDS) dq.shift();
+  store.set(key, dq);
+  return dq;
+}
+
+/** The per-target bucket for an (already normalized) order code, or null if it isn't order-code shaped. */
+function trackTargetKey(orderCode: string): string | null {
+  return ORDER_CODE_SHAPE.exec(orderCode)?.[1] ?? null;
+}
+
+/** True if guesses at `orderCode`'s target (or the endpoint as a whole) are currently capped. */
+export function trackTargetLockedOut(orderCode: string): boolean {
+  const target = trackTargetKey(orderCode);
+  if (!target) return false;
+  const now = Date.now() / 1000;
+  return (
+    prunedCount(trackTargetFailures, target, now).length >= TRACK_TARGET_FAILURE_MAX ||
+    prunedCount(trackGlobalFailures, GLOBAL_TRACK_KEY, now).length >= TRACK_GLOBAL_FAILURE_MAX
+  );
+}
+
+/** Record one failed lookup of `orderCode` against its target and the global cap. */
+export function recordTrackFailure(orderCode: string): void {
+  const target = trackTargetKey(orderCode);
+  if (!target) return;
+  const now = Date.now() / 1000;
+  prunedCount(trackTargetFailures, target, now).push(now);
+  prunedCount(trackGlobalFailures, GLOBAL_TRACK_KEY, now).push(now);
 }
 
 // ---------------------------------------------------------------------------

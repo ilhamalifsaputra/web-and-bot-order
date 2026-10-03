@@ -791,6 +791,9 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
         email: customer.user.email ?? "",
       },
       has_password: Boolean(customer.user.passwordHash),
+      // A guest row must confirm its order contact email to set credentials
+      // (see the credentials route below) — the client shows that field.
+      is_guest: customer.user.isGuest === true,
       tg_linked: customer.user.telegramId != null,
       tg_name:
         customer.user.username ??
@@ -800,7 +803,13 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
   });
 
   app.post<{
-    Body: { username?: string; email?: string; current_password?: string; new_password?: string };
+    Body: {
+      username?: string;
+      email?: string;
+      current_password?: string;
+      new_password?: string;
+      guest_email?: string;
+    };
   }>("/account/settings/credentials", async (req, reply) => {
     const customer = await requireCustomer(req, reply);
     if (!customer) return;
@@ -824,6 +833,21 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
     // email, or password) — same Storefront-3 guard as the HTML route.
     // Skipped only when the account has no password yet (Telegram-login-only).
     const changingCredentials = Boolean(changes.loginUsername || changes.email || newPassword);
+    // Guest rows (backend audit Task C1): a guest session can be minted from
+    // the order code alone (POST /api/v1/track), and the code is short enough
+    // to guess. Without this, whoever guessed it could set a password — or
+    // just an email, then use forgot-password — and keep the row for good.
+    // So ANY credential change on a guest row also needs the contact email
+    // the buyer typed at checkout (`guestEmail`), which the guest knows and a
+    // code-guesser does not. Compared after the same trim/lowercase
+    // createGuestUser applied when storing it.
+    if (changingCredentials && customer.user.isGuest) {
+      const proof = typeof req.body?.guest_email === "string" ? req.body.guest_email.trim().toLowerCase() : "";
+      const expected = customer.user.guestEmail ?? "";
+      if (!proof || !expected || !constantTimeEqual(proof, expected)) {
+        return reply.code(400).send({ error: "web.settings_guest_email_mismatch" });
+      }
+    }
     if (changingCredentials && customer.user.passwordHash) {
       if (!verifyPassword(req.body?.current_password ?? "", customer.user.passwordHash)) {
         return reply.code(400).send({ error: "web.settings_wrong_password" });

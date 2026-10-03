@@ -61,18 +61,19 @@ function currencySetCookie(h: string | string[] | undefined): string | undefined
 }
 
 /** A guest (isGuest) row with a live session — what guest checkout mints. */
-async function guestSession(): Promise<{ userId: number; cookie: string; csrf: string }> {
+async function guestSession(): Promise<{ userId: number; cookie: string; csrf: string; guestEmail: string }> {
+  const guestEmail = `guest${Math.random().toString(36).slice(2, 8)}@g.test`;
   const u = await prisma.user.create({
     data: {
       isGuest: true,
-      guestEmail: `guest${Math.random().toString(36).slice(2, 8)}@g.test`,
+      guestEmail,
       referralCode: `GCU${Math.random().toString(36).slice(2, 10)}`,
     },
   });
   const jti = newJti();
   await setSetting(prisma, shopSessionJtiKey(u.id), jti);
   const { raw, data } = makeCustomerSession(u.id, null, jti);
-  return { userId: u.id, cookie: `${SHOP_COOKIE_NAME}=${encodeURIComponent(raw)}`, csrf: data.csrf };
+  return { userId: u.id, cookie: `${SHOP_COOKIE_NAME}=${encodeURIComponent(raw)}`, csrf: data.csrf, guestEmail };
 }
 
 beforeAll(async () => {
@@ -332,7 +333,12 @@ describe("sign-in adopts the shop_currency cookie once", () => {
     const res = await app.inject({
       method: "POST",
       url: "/api/v1/account/settings/credentials",
-      payload: { username: "curconvert", email: "curconvert@u.test", new_password: "curconvert-pw-1" },
+      payload: {
+        guest_email: g.guestEmail,
+        username: "curconvert",
+        email: "curconvert@u.test",
+        new_password: "curconvert-pw-1",
+      },
       headers: { cookie: `${g.cookie}; shop_currency=USD`, "x-csrf-token": g.csrf },
     });
     expect(res.statusCode).toBe(200);

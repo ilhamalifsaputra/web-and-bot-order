@@ -79,6 +79,20 @@ export function originOk(req: FastifyRequest): boolean {
   }
 }
 
+/** Cross-site guard for the PRE-session routes that mint a session (order-code
+ * recovery, password login, registration) — backend audit Task C1. These
+ * carry no CSRF token (there is no session yet to bind one to), so without
+ * this a page on another site could silently log a visitor into a session of
+ * the attacker's choosing (login CSRF). Refuses a browser-declared
+ * `Sec-Fetch-Site: cross-site` and anything `originOk` refuses; a request
+ * carrying neither header (curl, server-to-server, older browsers) still
+ * passes, same as `originOk`. `same-site` is allowed: the storefront and its
+ * admin/API hosts can legitimately share a registrable domain. */
+export function sessionMintOriginOk(req: FastifyRequest): boolean {
+  if (req.headers["sec-fetch-site"] === "cross-site") return false;
+  return originOk(req);
+}
+
 export interface CartLineView {
   canonical?: CanonicalProduct;
   key: number; // cartItemId (signed in) or denomination id (guest)

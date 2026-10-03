@@ -53,6 +53,8 @@ interface CredentialsVars {
   email: string;
   current_password: string;
   new_password: string;
+  /** Only sent for a guest row (see the `is_guest` field below). */
+  guest_email?: string;
 }
 
 export default function SettingsPage() {
@@ -99,6 +101,7 @@ export default function SettingsPage() {
       email,
       current_password: String(formData.get("current_password") ?? ""),
       new_password: String(formData.get("new_password") ?? ""),
+      ...(page?.is_guest ? { guest_email: String(formData.get("guest_email") ?? "") } : {}),
     });
   }
 
@@ -188,6 +191,29 @@ export default function SettingsPage() {
                 spellCheck={false}
               />
             </FormField>
+            {/* A guest row proves it owns the order with the contact email
+                typed at checkout — the server refuses a credentials change
+                on a guest row without it (backend audit Task C1). */}
+            {page.is_guest && (
+              <div>
+                <FormField label={t("web.settings_guest_email")} htmlFor="guest_email">
+                  <Input
+                    type="email"
+                    id="guest_email"
+                    name="guest_email"
+                    inputMode="email"
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    autoComplete="email"
+                    aria-describedby="guest_email_help"
+                  />
+                </FormField>
+                <p id="guest_email_help" className="text-xs text-ink-faint mt-1.5">
+                  {t("web.settings_guest_email_help")}
+                </p>
+              </div>
+            )}
             {page.has_password && (
               <FormField label={t("web.settings_current_password")} htmlFor="current_password">
                 <PasswordInput

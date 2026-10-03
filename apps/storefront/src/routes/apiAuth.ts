@@ -3,7 +3,9 @@
  * logout / forgot / reset — for the React SPA. Same semantics the HTML forms
  * used to have (routes/auth.ts + the deleted routes/forgot.ts): no CSRF on
  * any of them (pre-session, exactly like those HTML forms; logout matches
- * the HTML POST /logout which carried no csrfProtect), the same rate
+ * the HTML POST /logout which carried no csrfProtect — login and register,
+ * which mint a session, do refuse cross-site requests by their
+ * Origin/Sec-Fetch-Site headers via sessionMintOriginOk), the same rate
  * limiters in the same order, the same generic non-enumerating errors.
  * Errors return i18n KEYS — the client renders them through its own t().
  *
@@ -46,6 +48,7 @@ import {
 } from "../rateLimit";
 import { publicBase, resolveBotId, resolveBotUsername } from "../shop";
 import { establishSession, safeNext } from "./auth";
+import { sessionMintOriginOk } from "./cart";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -69,6 +72,9 @@ const apiAuthRoutes: FastifyPluginAsync = async (app) => {
   app.post<{ Body: { identifier?: string; password?: string; next?: string } }>(
     "/auth/login",
     async (req, reply) => {
+      // Login CSRF guard (backend audit Task C1): no session yet means no
+      // token to check, so a cross-site page is refused by its headers.
+      if (!sessionMintOriginOk(req)) return reply.code(403).send({ error: "csrf_failed" });
       const ip = clientIp(req);
       const identifier = (req.body?.identifier ?? "").trim();
       const idKey = identifier.toLowerCase();
@@ -117,6 +123,7 @@ const apiAuthRoutes: FastifyPluginAsync = async (app) => {
     // single-writer SQLite — a burst of concurrent POSTs can stall checkout
     // and the bot. Same per-IP throttle as /auth/login (M-17, backend audit
     // 2026-07-31).
+    if (!sessionMintOriginOk(req)) return reply.code(403).send({ error: "csrf_failed" });
     if (loginRateLimited(clientIp(req))) {
       return reply.code(429).send({ error: "error.rate_limited" });
     }

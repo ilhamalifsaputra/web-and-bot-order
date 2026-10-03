@@ -9,9 +9,16 @@
  * The order code IS the credential here — by product decision there is no
  * second factor (no email, no password) standing behind it. Anyone who has
  * the code can open the order and its session. What stops that from being
- * "anyone who has ever seen the code" is only the per-IP rate limit below
- * plus the `isGuest` gate further down: the limiter caps how many codes a
- * single IP can try, and the gate refuses anything but a guest-owned order.
+ * "anyone who has ever guessed the code" is the throttling below plus the
+ * `isGuest` gate further down: a per-client limiter (per IP, per /64 for
+ * IPv6), an IP-independent cap on failed guesses per date prefix and
+ * overall (backend audit Task C1), and the gate refusing anything but a
+ * guest-owned order. A cross-site request is refused outright (login CSRF).
+ *
+ * What a tracked session can NOT do is claim the row: setting login
+ * credentials on a guest row also requires the order's contact email
+ * (`POST /api/v1/account/settings/credentials`), so a guessed code exposes
+ * that one guest's orders but cannot be turned into a permanent account.
  *
  * The React `/track` page that calls this is a SEPARATE task — this file is
  * server-side only.
@@ -19,10 +26,18 @@
 import type { FastifyPluginAsync } from "fastify";
 import { prisma, getOrderByCode } from "@app/db";
 import { establishSession } from "./auth";
-import { clientIp, trackLookupRateLimited } from "../rateLimit";
+import { clientIp, recordTrackFailure, trackLookupRateLimited, trackTargetLockedOut } from "../rateLimit";
+import { sessionMintOriginOk } from "./cart";
 
 const apiTrackRoutes: FastifyPluginAsync = async (app) => {
   app.post<{ Body: { order_code?: string } }>("/track", async (req, reply) => {
+    // A cross-site page must not be able to mint a session in the visitor's
+    // browser (login CSRF) — checked before anything else, and before any
+    // quota is spent, since such a request never reaches a lookup at all.
+    if (!sessionMintOriginOk(req)) {
+      return reply.code(403).send({ error: "csrf_failed" });
+    }
+
     // Rate limit BEFORE any query — the order code is now the endpoint's
     // only input and its only credential, so this limiter is the entire
     // defense against brute-forcing it. The quota must be spent even by
@@ -49,8 +64,19 @@ const apiTrackRoutes: FastifyPluginAsync = async (app) => {
       typeof req.body?.order_code === "string" ? req.body.order_code.trim().toUpperCase() : "";
     if (!orderCode) return reject();
 
+    // IP-independent cap on FAILED guesses (per date prefix, and overall) —
+    // the per-IP limiter alone falls to anyone with many addresses. Same
+    // generic 429 as the per-IP limiter, and checked before the lookup, so it
+    // says nothing about whether this particular code exists.
+    if (trackTargetLockedOut(orderCode)) {
+      return reply.code(429).send({ error: "error.rate_limited" });
+    }
+
     const order = await getOrderByCode(prisma, orderCode);
-    if (!order) return reject();
+    if (!order) {
+      recordTrackFailure(orderCode);
+      return reject();
+    }
 
     // isGuest gate is mandatory and is now the ONLY thing standing between
     // an order code and a session: an order owned by a REGISTERED account
@@ -65,7 +91,10 @@ const apiTrackRoutes: FastifyPluginAsync = async (app) => {
     // nulls `guestEmail` in the same `update`. So `isGuest === true` already
     // implies `guestEmail !== null` on every reachable row; this gate alone
     // carries the whole guarantee.
-    if (order.user.isGuest !== true) return reject();
+    if (order.user.isGuest !== true) {
+      recordTrackFailure(orderCode);
+      return reject();
+    }
 
     // establishSession rotates the session jti, so a guest session already
     // live on another device/browser is invalidated by this call. That's

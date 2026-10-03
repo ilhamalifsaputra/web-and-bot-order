@@ -17,6 +17,7 @@ const settingsData: SettingsData = {
   bot_id: "123",
   values: { username: "alice", email: "alice@example.com" },
   has_password: true,
+  is_guest: false,
   tg_linked: false,
   tg_name: "",
 };
@@ -120,6 +121,34 @@ describe("SettingsPage", () => {
       }),
     );
     await waitFor(() => expect(assign).toHaveBeenCalledWith("/account/settings?saved=1"));
+  });
+
+  it("a guest row gets the order-email field and sends it as guest_email (Task C1)", async () => {
+    const assign = vi.fn();
+    Object.defineProperty(window, "location", { configurable: true, writable: true, value: { assign } });
+    renderSettings("/account/settings", {
+      ...settingsData,
+      values: { username: "", email: "" },
+      has_password: false,
+      is_guest: true,
+    });
+    const field = await screen.findByLabelText("Order email");
+    expect(screen.queryByLabelText("Current password")).not.toBeInTheDocument();
+    fireEvent.change(field, { target: { value: "buyer@example.com" } });
+    (apiPost as Mock).mockResolvedValue({ ok: true, password_changed: true });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(apiPost).toHaveBeenCalledWith(
+        "/api/v1/account/settings/credentials",
+        expect.objectContaining({ guest_email: "buyer@example.com" }),
+      ),
+    );
+  });
+
+  it("a non-guest row shows no order-email field", async () => {
+    renderSettings();
+    await screen.findByLabelText("Username");
+    expect(screen.queryByLabelText("Order email")).not.toBeInTheDocument();
   });
 
   it("renders the Continue with Telegram button when !tg_linked && bot_id", async () => {

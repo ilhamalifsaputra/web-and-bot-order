@@ -732,6 +732,8 @@ export interface SettingsData {
   bot_id: string;
   values: { username: string; email: string };
   has_password: boolean;
+  /** Guest-checkout row: setting credentials also needs the order contact email. */
+  is_guest: boolean;
   tg_linked: boolean;
   tg_name: string;
 }

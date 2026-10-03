@@ -24,7 +24,30 @@ import {
   resetAccountFailures,
   webhookRateLimited,
   WEBHOOK_RATE_LIMIT_MAX,
+  rateLimitClientKey,
 } from "../src/rateLimit";
+
+describe("rateLimitClientKey (Task C1)", () => {
+  it("keeps IPv4 as-is and folds IPv4-mapped IPv6 back to IPv4", () => {
+    expect(rateLimitClientKey("198.51.100.7")).toBe("198.51.100.7");
+    expect(rateLimitClientKey("::ffff:198.51.100.7")).toBe("198.51.100.7");
+  });
+
+  it("collapses every IPv6 address in one /64 to the same key", () => {
+    const key = rateLimitClientKey("2001:db8:aaaa:1::1");
+    expect(key).toBe("2001:db8:aaaa:1::/64");
+    expect(rateLimitClientKey("2001:0DB8:AAAA:0001:ffff:ffff:ffff:ffff")).toBe(key);
+    expect(rateLimitClientKey("2001:db8:aaaa:2::1")).not.toBe(key);
+    expect(rateLimitClientKey("2001:db8::1")).toBe("2001:db8:0:0::/64");
+    expect(rateLimitClientKey("::1")).toBe("0:0:0:0::/64");
+    expect(rateLimitClientKey("fe80::1%eth0")).toBe("fe80:0:0:0::/64");
+  });
+
+  it("returns unparseable input unchanged", () => {
+    expect(rateLimitClientKey("unknown")).toBe("unknown");
+    expect(rateLimitClientKey("1::2::3")).toBe("1::2::3");
+  });
+});
 
 let app: FastifyInstance;
 let ipCounter = 0;

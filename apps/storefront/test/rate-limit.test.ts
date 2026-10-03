@@ -245,7 +245,7 @@ describe("POST /api/v1/auth/forgot rate limiting", () => {
 
 // M-17 (backend audit, 2026-07-31): registration is the most expensive
 // unauthenticated endpoint in the app (cost-12 bcrypt + a DB write) on a
-// single-process server backed by single-writer SQLite — unlike /auth/login
+// single-process server — unlike /auth/login
 // and /auth/forgot, it previously had no rate limiting at all.
 describe("POST /api/v1/auth/register rate limiting", () => {
   it("returns 429 after WEB_LOGIN_RATE_LIMIT_MAX submissions from one IP", async () => {

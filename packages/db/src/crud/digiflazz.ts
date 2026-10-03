@@ -571,8 +571,8 @@ async function terminalFailDigiflazzOrder(
  * configured — never claims orders it can't actually dispatch.
  *
  * Each candidate is claimed and dispatched one at a time (not batched inside
- * one transaction): SQLite has one writer, and a supplier HTTP round-trip
- * inside a long-held transaction would starve every other writer, so the
+ * one transaction): a supplier HTTP round-trip
+ * inside a long-held transaction would hold a connection and its locks, so the
  * atomic claim is its own short write and the HTTP call happens outside it —
  * same reasoning as enqueueFlashSaleBroadcast's chunking.
  *
@@ -1132,7 +1132,7 @@ export async function groupDigiflazzPriceListByBrand(
  * out of computeDigiflazzMarkupPrice (I3 fix) so a caller processing many
  * rows/denominations in one run (resyncDigiflazzCatalog's loop, the sync
  * preview route's per-SKU computation) reads Settings ONCE per run instead
- * of twice per row against this repo's single-writer SQLite. */
+ * of twice per row. */
 export async function getDigiflazzMarkupSettings(db: Db): Promise<{ type: string | null; value: string | null }> {
   const [type, value] = await Promise.all([
     getSetting(db, DIGIFLAZZ_MARKUP_TYPE_KEY),
@@ -1822,7 +1822,7 @@ export async function detectMixedDigiflazzProducts(db: Db): Promise<DigiflazzMix
  *
  * One `db.$transaction` per mixed Product, not one catalog-wide transaction:
  * a bad brand can't block every other brand's split, and this doesn't hold
- * SQLite's single-writer lock across a full-catalog scan.
+ * locks across a full-catalog scan.
  *
  * Deliberately does NOT copy webImageUrl/description/whatYouGet/terms/
  * warrantyNote onto the newly-created region Products — that copy was

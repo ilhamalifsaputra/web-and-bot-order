@@ -21,16 +21,11 @@ valid sebagai mitigasi cepat sebelum revert resmi disiapkan.
 
 **Database tidak punya "undo" granular** (tidak ada migration history
 formal — lihat [MIGRATIONS.md](MIGRATIONS.md)). Satu-satunya jalur rollback
-DB adalah **restore dari backup**, lewat skrip yang sama untuk kedua engine
-— `restore.sh` mendeteksi jalur otomatis dari ekstensi file backup yang
-diberikan (`.db`/`.db.gz` = SQLite, `.dump` = Postgres; detail penuh di
+DB adalah **restore dari backup** lewat `restore.sh`, yang menerima file
+`.dump` hasil `backup.sh` (detail penuh di
 [deploy/backup/README.md](../deploy/backup/README.md)):
 
 ```bash
-# Jalur SQLite (pre-cutover)
-deploy/backup/restore.sh data/backups/bot-<stamp-sebelum-masalah>.db
-
-# Jalur Postgres (pasca-cutover)
 deploy/backup/restore.sh data/backups/pg-<stamp-sebelum-masalah>.dump
 ```
 
@@ -58,8 +53,8 @@ salah satu dari:
 
 ## Rollback skrip migrasi data sekali-jalan
 
-Skrip seperti `migrate-catalog-rename.ts` **tidak idempotent dan tidak punya
-mode undo**. Rollback satu-satunya: `restore.sh` ke backup yang diambil
+Skrip migrasi data sekali-jalan (bila sebuah rilis membawanya) **tidak
+idempotent dan tidak punya mode undo**. Rollback satu-satunya: `restore.sh` ke backup yang diambil
 **sebelum** skrip dijalankan (lihat instruksi wajib-backup di header skrip
 itu sendiri dan di [UPDATE_GUIDE.md](UPDATE_GUIDE.md)).
 
@@ -69,17 +64,13 @@ itu sendiri dan di [UPDATE_GUIDE.md](UPDATE_GUIDE.md)).
 deploy/backup/restore.sh <path-backup>
 ```
 
-Jalur dipilih otomatis dari ekstensi file (`.db`/`.db.gz` = SQLite, `.dump` =
-Postgres — sama seperti bagian "Rollback database" di atas). Otomatis di
-kedua jalur: verifikasi backup (`integrity_check`/`pg_restore --list`) →
-stop writer → simpan DB saat ini sebagai salinan pengaman pra-restore
-(`bot.db.pre-restore-<stamp>` / `pg-pre-restore-<stamp>.dump`, restore
-sendiri reversibel) → terapkan backup ke DB live (SQLite: swap file + hapus
-`-wal`/`-shm` basi; Postgres: `pg_restore --clean --if-exists
---single-transaction`, atomik — gagal ⇒ DB kembali ke keadaan sebelum
-restore) →
-integrity-check hasil (SQLite) → start → smoke-test `/healthz`. Detail
-penuh: [BACKUP_AND_RESTORE.md](BACKUP_AND_RESTORE.md).
+Otomatis: verifikasi backup (`pg_restore --list`) → stop writer → simpan DB
+saat ini sebagai salinan pengaman pra-restore (`pg-pre-restore-<stamp>.dump`,
+restore sendiri reversibel) → terapkan backup ke DB live (`pg_restore --clean
+--if-exists --single-transaction`, atomik — gagal ⇒ DB kembali ke keadaan
+sebelum restore) → tulis sentinel `data/SKIP_AUTO_MIGRATE` → start →
+smoke-test `/healthz`. Detail penuh:
+[BACKUP_AND_RESTORE.md](BACKUP_AND_RESTORE.md).
 
 ## Recovery dari deployment yang gagal
 

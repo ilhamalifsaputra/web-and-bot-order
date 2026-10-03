@@ -9,7 +9,7 @@
  * underpaid to one pending order is "unmatched" and left for manual review
  * (M-14, backend audit 2026-07-31 — see markUnderpaidBybit).
  *
- * Idempotency on SQLite: the `processed_bybit_tx.bybit_tx_id` UNIQUE constraint
+ * Idempotency without row locks: the `processed_bybit_tx.bybit_tx_id` UNIQUE constraint
  * is the concurrency gate — claiming the internal-deposit txID is an atomic
  * insert; a duplicate insert throws and is treated as "already processed", so
  * repeated poll cycles never double-deliver.
@@ -196,9 +196,8 @@ export async function deliverPaidBybitOrder(
   //
   //    An interactive $transaction would be worse here, not better — see
   //    deliverPaidInternalOrder (binance_internal.ts) step 1 for the full
-  //    reasoning (WAL + Prisma's deferred-BEGIN interactive transactions make
-  //    two racing reclaims collide with SQLITE_BUSY_SNAPSHOT instead of
-  //    degrading gracefully).
+  //    reasoning (a read-then-write inside one lets two racing reclaims both
+  //    pass the check instead of degrading gracefully).
   //
   //    `reclaimedFrom` remembers exactly what the reclaim overwrote
   //    (outcome/orderId/amount) so step 2 can put it back if this turns out

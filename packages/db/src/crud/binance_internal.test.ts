@@ -1057,7 +1057,7 @@ describe("listSettledOrdersAwaitingBubbleEdit", () => {
 // (`flushSettledOrderBubble`, apps/order-bot/src/jobs/index.ts) reads through
 // once per settlement DM. It exists because that hook used to call `getOrder`,
 // whose `fullInclude` drags the buyer's items, stockItem CREDENTIALS, product
-// and voucher into memory to read six scalars — on single-writer SQLite, on
+// and voucher into memory to read six scalars, on
 // every settled order. These tests pin both halves of "same projection as the
 // sweep query, minus the sweep's where clause".
 describe("getSettledBubbleOrder", () => {

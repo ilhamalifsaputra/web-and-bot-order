@@ -1,7 +1,7 @@
 /**
  * Notification outbox CRUD — port of the four functions in Python crud.py
  * (enqueue_notification / fetch_pending_notifications / mark_notification_sent
- * / mark_notification_failed). Same semantics; see migrate.md §5.5.
+ * / mark_notification_failed). Same semantics as the Python original.
  *
  * Every function takes a Prisma client or transaction client as its first
  * argument (mirrors the SQLAlchemy `session` parameter). enqueue() does NOT
@@ -54,7 +54,7 @@ type Db = PrismaClient | Tx;
  *    NOT one per order, because that event fans out a row per admin; see
  *    `enqueueAdminUnconfirmablePayment`.
  *
- * Every other event leaves it null, and NULLs are distinct in a SQLite UNIQUE
+ * Every other event leaves it null, and NULLs are distinct in a Postgres UNIQUE
  * index, so those rows may repeat freely. `ORDER_DELIVERED_DM` in particular
  * must NOT get a key even though it looks once-per-order: an admin can
  * legitimately re-send a buyer's credentials (`POST /api/orders/:orderId/resend`
@@ -1345,9 +1345,9 @@ export async function afterStockAdded(
 
 /**
  * Cap on how many outbox rows a single `createMany` call inside
- * `enqueueFlashSaleBroadcast` writes at once. SQLite has one writer for the
- * whole shared `data/bot.db`, so even a single `createMany` call briefly holds
- * that writer lock for however long it takes to insert all of its rows —
+ * `enqueueFlashSaleBroadcast` writes at once. Even a single `createMany` call
+ * holds its transaction open for however long it takes to insert all of its
+ * rows —
  * chunking keeps each individual write short (a few hundred rows) regardless
  * of how large the customer base grows, instead of one insert scaling with it.
  */
@@ -1361,9 +1361,10 @@ export const FLASH_SALE_BROADCAST_CHUNK_SIZE = 500;
  * `flashAnnouncedAt` in its own short transaction and only then calls this
  * function outside that transaction (H-7 fix, backend audit 2026-07-31): the
  * claim and the fan-out no longer share one transaction, because holding
- * SQLite's single writer lock for the whole customer-base enumeration +
- * insert would starve every other concurrent writer (checkout, settlement,
- * cancellation, the outbox dispatcher's own claim) past their busy_timeout.
+ * a transaction open for the whole customer-base enumeration + insert would
+ * hold locks and a connection that every other concurrent writer (checkout,
+ * settlement, cancellation, the outbox dispatcher's own claim) may need,
+ * risking timeouts.
  * The customer `findMany` runs unguarded (a plain read), and the outbox rows
  * are written in `FLASH_SALE_BROADCAST_CHUNK_SIZE`-row chunks — each
  * `createMany` call is its own short, self-contained write — rather than one
@@ -1407,8 +1408,8 @@ export const FLASH_SALE_BROADCAST_CHUNK_SIZE = 500;
  * customers; this is only what the admin sees in the History table.
  *
  * Both terminal status writes (the SENT-flip on success, the FAILED-flip in
- * the `catch`) are themselves ordinary SQLite writes that can fail under the
- * exact writer contention this whole function exists to relieve — so neither
+ * the `catch`) are themselves ordinary database writes that can fail under the
+ * exact write contention this whole function exists to relieve —
  * is allowed to leave the row silently stuck (H-7 follow-up fix #2, backend
  * audit 2026-07-31/08-01):
  * - The row is created with `claimedAt` set, the same "atomically claimed"

@@ -1134,8 +1134,8 @@ function buildTicketConditions(
           { user: { username: { contains: term, mode: "insensitive" } } },
         ],
       },
-      // ILIKE, not LIKE — Postgres's LIKE is case-sensitive (unlike SQLite's
-      // default), so this has to match the Prisma side's `mode: "insensitive"`.
+      // ILIKE, not LIKE — Postgres's LIKE is case-sensitive, so this has to
+      // match the Prisma side's `mode: "insensitive"`.
       raw: Prisma.sql`(message ILIKE ${likeTerm} OR user_id IN (SELECT id FROM users WHERE full_name ILIKE ${likeTerm} OR username ILIKE ${likeTerm}))`,
     });
   }
@@ -1157,7 +1157,7 @@ function ticketWhere(f: TicketFilter, cutoff: Date): Prisma.SupportTicketWhereIn
 /** Same predicate as `ticketWhere`, as a parameterized raw-SQL `WHERE` clause
  * (no leading `WHERE` keyword) — used only by `sort: "priority"` below, which
  * needs a real `ORDER BY` across every matching row, not just the current
- * page (Prisma/SQLite can't express a custom enum-rank `orderBy` directly, so
+ * page (Prisma can't express a custom enum-rank `orderBy` directly, so
  * there's no way to do this through the query builder alone). Derived from
  * `buildTicketConditions`, same as `ticketWhere` — see its doc comment. */
 function ticketWhereRaw(f: TicketFilter, cutoff: Date): Prisma.Sql {

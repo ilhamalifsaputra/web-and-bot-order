@@ -353,10 +353,13 @@ export async function transitionRefundStatus(
  * pattern) because there is no single row to gate the claim on — the
  * invariant is a cross-row aggregate over sibling RefundItem rows. Callers
  * that need this to be airtight under concurrent writers should call this
- * inside one `$transaction`: this database is single-writer SQLite, so a
- * conflicting concurrent write is serialized (or, in the rare interactive-
- * transaction race, thrown as a busy/snapshot error) rather than silently
- * violating the invariant — it fails closed, never open.
+ * inside one `$transaction` — but note that at Postgres's default isolation
+ * level two concurrent transactions can still both pass the sum check, so a
+ * caller that needs a hard guarantee must also serialize on a row shared by
+ * every Refund of the same OrderItem — lock the OrderItem (or its Order) row,
+ * for example with `SELECT ... FOR UPDATE`. Locking only one Refund row (or an
+ * unrelated row such as `stock_replacements`) does not help: the invariant
+ * spans sibling Refunds, which a lock on a single Refund does not exclude.
  *
  * Rejects attaching a new item to a Refund that is already terminal
  * (`TERMINAL_REFUND_STATUSES` — COMPLETED, FAILED, or CANCELLED): a COMPLETED

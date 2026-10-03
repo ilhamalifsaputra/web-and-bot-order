@@ -947,7 +947,7 @@ describe("deliverPaidBybitOrder — WALLET_TOPUP routing", () => {
 // object at all, so it ran on Prisma's 5-second default while the other five
 // gateway crud files (tokopay.ts, paydisini.ts, nowpayments.ts,
 // binance_internal.ts, and this rail's sibling bybit_bsc_deposit.ts) all pass
-// { timeout: 15000 }. On a single-writer SQLite database shared by three
+// { timeout: 15000 }. On a database shared by three
 // processes, 5 seconds is tight under contention for a transaction doing real
 // work (status transition, stock allocation, outbox enqueue) on a path that
 // has already claimed the buyer's payment. Reproducing a real 5-second

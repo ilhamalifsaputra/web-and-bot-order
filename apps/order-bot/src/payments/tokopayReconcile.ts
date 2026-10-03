@@ -427,8 +427,8 @@ export function startPolling(api: Api): void {
     logger.info(`TokoPay reconcile poller active (every ${config.POLL_INTERVAL_SECONDS}s)`);
   }).catch((err) =>
     // Mandatory, not defensive tidiness: nothing awaits this promise, so
-    // without a handler a failed settings read here (a locked SQLite file
-    // during a busy boot is the realistic one) becomes an unhandled rejection,
+    // without a handler a failed settings read here (a lock timeout or
+    // dropped connection during a busy boot is the realistic one) becomes an unhandled rejection,
     // and Node's default since v15 is to crash the process — losing all six
     // pollers over one cosmetic log line.
     logger.warn({ err }, "Could not read the TokoPay credentials for the startup log, so this boot has no line saying whether the TokoPay reconcile poller is on or idle — the poller itself is unaffected, since it re-reads the credentials at the top of every cycle"),

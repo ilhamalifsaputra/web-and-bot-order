@@ -15,13 +15,9 @@ istilah-istilah generik sering diasumsikan ada padahal tidak:
 - **Tidak ada WebSocket.** Update status pembayaran live di storefront
   memakai **polling `fetch` dari React** (`GET /api/v1/orders/:code/status`
   setiap ~5 detik), bukan koneksi persisten.
-- **Server database terpisah — tergantung status cutover toko:** instance
-  yang masih di engine lama tidak punya server DB terpisah (SQLite satu file
-  `data/bot.db`, mode WAL, diakses langsung dalam proses). Instance yang
-  sudah cutover ke **PostgreSQL** (target skema `datasource` sejak
-  engine-swap 2026-08-27) menjalankan Postgres sebagai proses/container
-  server sendiri — lihat [`POSTGRES_MIGRATION.md`](../POSTGRES_MIGRATION.md)
-  untuk status cutover per toko.
+- **Database adalah server terpisah:** **PostgreSQL** berjalan sebagai
+  proses/container sendiri (service `postgres` di Docker Compose), diakses
+  `apps/server` lewat satu `PrismaClient`.
 - **Tidak ada API publik (REST/GraphQL)** untuk pihak ketiga — admin &
   storefront adalah React SPA yang dilayani JSON API internal (bukan
   kontrak stabil untuk klien luar), lihat [API_REFERENCE.md](../API_REFERENCE.md).
@@ -48,9 +44,8 @@ status).
 
 `apps/server/src/index.ts` adalah **composition root** — satu proses Node
 yang:
-1. `initDb()` — no-op di skema Postgres saat ini (Postgres tidak butuh setup
-   per-koneksi); dulu mengaktifkan PRAGMA SQLite (WAL + `busy_timeout`),
-   dipertahankan sebagai fungsi kosong supaya caller lama tidak perlu diubah.
+1. `initDb()` — no-op di PostgreSQL (tidak butuh setup per-koneksi);
+   dipertahankan sebagai fungsi kosong supaya semua caller boot tetap seragam.
 2. Resolve token bot/admin ids/cookie secret (DB menang atas `.env` — lihat
    [CONFIGURATION.md](../CONFIGURATION.md)).
 3. Boot instance Fastify untuk admin + storefront.
@@ -69,7 +64,7 @@ graph TD
         Pollers[Payment pollers<br/>Binance/Bybit/TokoPay/PayDisini/NOWPayments]
         Cron[Cron jobs<br/>croner — auto-cancel, auto-close, FX refresh]
     end
-    DB[(PostgreSQL - target skema<br/>satu PrismaClient; instance pre-cutover: SQLite data/bot.db)]
+    DB[(PostgreSQL<br/>satu PrismaClient)]
     TG[Telegram Bot API]
     GW[Payment Gateway APIs]
 
@@ -110,11 +105,8 @@ sendiri (mis. tick lambat bertemu tick berikutnya) — mencegah double-send.
 
 ## Database
 
-**PostgreSQL** — target skema `datasource` sejak engine-swap 2026-08-27 —
-satu `PrismaClient` singleton dibagi semua komponen di atas. Instance toko
-yang belum menjalankan runbook
-[`POSTGRES_MIGRATION.md`](../POSTGRES_MIGRATION.md) masih di SQLite satu file,
-mode WAL. Detail model/relasi: [DATABASE.md](DATABASE.md).
+**PostgreSQL** — satu `PrismaClient` singleton dibagi semua komponen di atas.
+Detail model/relasi: [DATABASE.md](DATABASE.md).
 
 ## Sistem antrian (bukan queue eksternal)
 
@@ -188,14 +180,8 @@ Tidak ada socket persisten. Dua mekanisme live-update:
 - **Rate-limit in-memory** — reset saat restart, tidak terbagi antar proses
   (tapi hanya ada satu proses, jadi ini bukan masalah horizontal-scaling
   hari ini).
-- **Single-writer SQLite (instance pre-cutover saja)** — skema Prisma sudah
-  postgres-only sejak engine-swap 2026-08-27, jadi ini bukan lagi constraint
-  arsitektur yang berlaku untuk skema itu sendiri. Constraint-nya masih
-  berlaku untuk toko yang **belum** menjalankan runbook
-  [`POSTGRES_MIGRATION.md`](../POSTGRES_MIGRATION.md): `apps/server` SATU
-  proses adalah jaminan keamanan-nya di sana, jadi jangan jalankan dua
-  instance menulis ke `bot.db` yang sama. Setelah cutover ke Postgres,
-  concurrent writer ditangani native oleh database — unifikasi proses
-  `apps/server` tetap dipertahankan untuk alasan lain (routing by-hostname),
-  bukan lagi syarat korektnes tulis-data (lihat catatan lintas-domain di
-  `docs/archive/audit-security-2026-06-23.md`).
+- **Concurrent writer ditangani database** — PostgreSQL menangani penulis
+  bersamaan secara native, jadi unifikasi proses `apps/server` dipertahankan
+  untuk alasan lain (routing by-hostname), bukan sebagai syarat korektnes
+  tulis-data. Invarian uang tetap dijaga di level query (`updateMany` atomik,
+  row lock) — lihat skill `money-and-data-integrity`.

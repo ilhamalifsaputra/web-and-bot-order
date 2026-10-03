@@ -623,10 +623,10 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
   // with an action discriminator (not three routes) since deliver/resend/
   // cancel all share the same loop-over-ids/aggregate-result shape. Runs one
   // short $transaction per order SEQUENTIALLY (never Promise.all, never one
-  // transaction spanning all ids) — SQLite is single-writer (CLAUDE.md), and
-  // an unbounded concurrent batch would stall other writers (bot, storefront
-  // checkout) for the request's duration; the 50-id cap below bounds how
-  // long that serialization can run.
+  // transaction spanning all ids) — an unbounded concurrent batch would
+  // hold connections and locks that other writers (bot, storefront
+  // checkout) need for the request's duration; the 50-id cap below bounds how
+  // long that can run.
   app.post("/api/orders/bulk-action", { preHandler: csrfProtect }, async (req, reply) => {
     const body = (req.body ?? {}) as { ids?: unknown; action?: unknown; reason?: unknown };
     const ids = Array.isArray(body.ids)

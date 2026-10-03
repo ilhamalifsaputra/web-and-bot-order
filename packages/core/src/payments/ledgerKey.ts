@@ -7,7 +7,7 @@
  * the bot's reconcile poller (`apps/order-bot/src/payments/*Reconcile.ts`) —
  * and both write the result into a ledger table whose `trxId` column is
  * UNIQUE (`ProcessedTokopayTx`, `ProcessedPaydisiniTx`). That UNIQUE
- * constraint is the PRIMARY idempotency gate: SQLite has no row locks, so a
+ * constraint is the PRIMARY idempotency gate: no row lock is needed, because a
  * duplicate insert failing is what stops one payment from being delivered
  * twice.
  *

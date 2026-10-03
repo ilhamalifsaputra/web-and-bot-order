@@ -1,6 +1,6 @@
 # Sistem Antrian (`notification_outbox`)
 
-**Bukan Redis, bukan BullMQ/Sidekiq.** Antrian adalah satu tabel SQLite
+**Bukan Redis, bukan BullMQ/Sidekiq.** Antrian adalah satu tabel PostgreSQL
 (`NotificationOutbox` / `notification_outbox`), diisi oleh request
 handler/poller mana pun yang perlu mengirim Telegram, dikonsumsi oleh satu
 loop polling in-process (`packages/outbox-dispatcher`). Pola ini dipilih

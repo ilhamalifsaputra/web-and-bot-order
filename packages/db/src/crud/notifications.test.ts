@@ -673,8 +673,7 @@ describe("enqueueAdminDigiflazzResyncAborted", () => {
 
     const rows = await prisma.notificationOutbox.findMany({
       where: { event: NotificationEvent.ADMIN_DIGIFLAZZ_RESYNC_ABORTED },
-      // Postgres doesn't guarantee row order without ORDER BY (unlike SQLite's
-      // old single-writer setup, which happened to preserve insertion order) —
+      // Postgres doesn't guarantee row order without ORDER BY —
       // without this, .slice(-4) below can pick up the sharp_change test's
       // rows instead of this test's own.
       orderBy: { id: "asc" },
@@ -910,10 +909,9 @@ describe("enqueueNotification dedupeKey", () => {
     ).rejects.toThrow();
   });
 
-  // PG-migration landmine (see enqueueNotification's doc comment): under
-  // SQLite, a caught UNIQUE violation mid-transaction didn't poison the rest
-  // of the transaction, so catch-and-continue was safe even when the caller
-  // passed `tx`. Under Postgres, ANY constraint violation aborts the whole
+  // Postgres landmine (see enqueueNotification's doc comment): catch-and-continue
+  // is not safe when the caller passed `tx`, because ANY constraint violation
+  // aborts the whole
   // transaction (25P02) — every later statement on that `tx` fails, even one
   // that has nothing to do with the collision. This is reachable on the real
   // settlement path: enqueueWalletTopupCreditedDm is called from
@@ -1213,7 +1211,7 @@ describe("enqueueFlashSaleBroadcast", () => {
   // H-7 fix (backend audit 2026-07-31): the outbox insert is now chunked
   // (FLASH_SALE_BROADCAST_CHUNK_SIZE rows per createMany) instead of one
   // insert sized to the whole customer base, so no single write holds
-  // SQLite's writer lock for long regardless of how large the base is. This
+  // transaction for long regardless of how large the base is. This
   // customer count (1,200) is chosen to be more than double the internal
   // 500-row chunk size, so the test only passes if multiple chunks actually
   // ran and every one of them landed — not just the first.
@@ -1318,7 +1316,7 @@ describe("enqueueFlashSaleBroadcast", () => {
   // H-7 follow-up fix #2 (backend audit 2026-07-31/08-01): a second review
   // pass found that the terminal SENT-flip written after the chunk loop was a
   // bare, unguarded `db.broadcast.update(...)` — if THAT write itself failed
-  // (plausible under the same SQLite writer contention this whole task exists
+  // (plausible under the same write contention this whole task exists
   // to relieve), the row was left stuck in SENDING forever, because the row
   // was created without `claimedAt`, making it invisible to
   // reapStaleBroadcasts's `claimedAt: { lt: staleCutoff }` filter (NULL never

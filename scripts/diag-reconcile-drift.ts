@@ -5,7 +5,7 @@
  * (orders/vouchers/negative wallets). The actual drifted rows are computed by
  * reconcileFinances() but never persisted anywhere — this script re-runs that
  * same check and prints the specific rows so the drift can actually be
- * diagnosed. Run it on the box holding the live SQLite DB (the VPS):
+ * diagnosed. Run it on the box holding the live database (the VPS):
  *
  *   pnpm tsx scripts/diag-reconcile-drift.ts
  *

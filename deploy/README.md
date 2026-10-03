@@ -9,7 +9,7 @@ rollback.
 ```
 Internet ──TLS──▶ nginx (443) ──http──▶ 127.0.0.1:8000  web-admin   (admin.example.com)
                                   └────▶ 127.0.0.1:8100  storefront  (shop.example.com)
-docker-compose: server (combined: admin + storefront + bot + workers)  (one image, one ./data/bot.db)
+docker-compose: server (combined: admin + storefront + bot + workers)  (one image; ./data holds logs, uploads and backups)
 ```
 
 Apps stay bound to **127.0.0.1** (never exposed directly). nginx terminates TLS.
@@ -64,7 +64,7 @@ A release deploys with one command:
 
 ```bash
 COMPOSE="docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml"
-DATABASE_URL_PRISMA=postgresql://engine-marker deploy/backup/backup.sh   # see "Take a dump first"
+deploy/backup/backup.sh   # see "Take a dump first"
 $COMPOSE up -d --build
 $COMPOSE logs --since 10m server | grep entrypoint                       # READ these lines
 ```

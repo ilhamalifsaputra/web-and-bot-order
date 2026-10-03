@@ -21,8 +21,8 @@ breaking bagi **operator yang mengelola instance sendiri**, bukan bagi
 konsumen API eksternal:
 
 - **MAJOR** — perubahan yang butuh tindakan manual operator di luar
-  `db push` rutin: migrasi data sekali-jalan non-idempotent (pola
-  `migrate-catalog-rename.ts`), perubahan default yang mengubah perilaku
+  `db push` rutin: migrasi data sekali-jalan non-idempotent,
+  perubahan default yang mengubah perilaku
   keamanan (mis. `DEFAULT_WEB_ROLE`), atau penghapusan fitur/env var.
 - **MINOR** — fitur baru yang backward-compatible: gateway pembayaran baru,
   halaman admin baru, kolom DB baru (additive). Mayoritas histori commit

@@ -9,8 +9,8 @@ import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
 
 /** Same OR-contains search shape as crud/users.ts's `likeContains`, incl.
- * the Postgres `mode: "insensitive"` (SQLite's `contains` was
- * case-insensitive by default pre-migration; Postgres needs it explicit). */
+ * the Postgres `mode: "insensitive"` (Postgres's `contains` is
+ * case-sensitive unless it is explicit). */
 const likeContains = (q: string) => ({ contains: q, mode: "insensitive" as const });
 
 /** Reviewer projection for the `user` join on `featuredReviews`/`listReviews`

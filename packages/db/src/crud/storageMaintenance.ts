@@ -5,9 +5,8 @@
  * reset tokens, and abandoned cart lines. Deliberately leaves the
  * ProcessedXxxTx idempotency ledgers alone (webhook-retry duplicate-payment
  * risk outweighs the disk savings). No manual VACUUM/checkpoint step —
- * Postgres autovacuums and checkpoints itself; the SQLite-era WAL checkpoint
- * this used to end with (`checkpointWal`) had no Postgres equivalent an app
- * needs to trigger, so it was removed rather than kept as a no-op.
+ * Postgres autovacuums and checkpoints itself, so the job has nothing to
+ * trigger.
  *
  * `runStorageCleanup` is the one entry point both the order-bot cron job and
  * the web-admin "Run cleanup now" button call, so the two paths can never

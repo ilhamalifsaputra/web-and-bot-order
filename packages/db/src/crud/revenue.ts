@@ -576,8 +576,8 @@ export async function topProducts(db: Db, since: Date, limit = 10): Promise<TopP
     by: ["productId"],
     where: { order: { status: OrderStatus.DELIVERED, deliveredAt: { gte: since } } },
     _sum: { quantity: true },
-    // Secondary key on productId gives deterministic tie-breaking — SQLite
-    // does not guarantee a stable order for rows tied on _sum.quantity.
+    // Secondary key on productId gives deterministic tie-breaking — the
+    // database does not guarantee a stable order for rows tied on _sum.quantity.
     orderBy: [{ _sum: { quantity: "desc" } }, { productId: "asc" }],
     take: limit,
   });

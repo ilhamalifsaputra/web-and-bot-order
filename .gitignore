@@ -9,13 +9,8 @@ node_modules/
 # --- local MCP server config (token via ${HOSTINGER_API_TOKEN} env var) ---
 .mcp.json
 
-# --- runtime data: DB (+ WAL/SHM/backups), logs (any nesting) ---
+# --- runtime data: uploads, backups, logs (any nesting) ---
 data/
-*.db
-*.db-wal
-*.db-shm
-*.db-journal
-*.db.bak-*
 *.log
 .tmp/
 tmp/

@@ -5,10 +5,8 @@
  * top-ups).
  *
  * `adjustWallet` reads the current balance, computes the new one in
- * application code, and writes it back. Under SQLite — whose connection pool
- * was pinned to 1, serializing every writer in the process — that sequence was
- * accidentally race-free: there was never a second writer to interleave with.
- * Postgres has genuine concurrent writers, so two simultaneous calls for the
+ * application code, and writes it back. Because Postgres has genuinely
+ * concurrent writers, two simultaneous calls for the
  * same user could both read the same pre-mutation balance, both pass their own
  * insufficient-funds check, and the one that commits its UPDATE last would
  * silently overwrite the other's movement — a lost update, i.e. a double-spend

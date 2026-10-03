@@ -535,9 +535,9 @@ export async function availableStockCountsByDenomination(
  * Grab one AVAILABLE row, flip to RESERVED, link to the order, and record the
  * RESERVED event. Returns the reserved row or null if none available.
  *
- * SQLite serializes writers, so within a transaction this is race-free; we add
- * an optimistic guard (updateMany where status=AVAILABLE) and retry to be safe
- * under the interactive-transaction model. (migrate.md §5.4)
+ * Concurrent callers are guarded with an optimistic claim (updateMany where
+ * status=AVAILABLE) and a retry, so the reservation stays race-free under the
+ * interactive-transaction model.
  *
  * The event is written only for the attempt that actually WON the conditional
  * update, so a row a caller lost the race for never gets a reservation it

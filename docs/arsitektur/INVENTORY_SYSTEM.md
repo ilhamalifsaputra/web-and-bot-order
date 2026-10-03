@@ -43,10 +43,10 @@ for (let attempt = 0; attempt < 5; attempt++) {
 }
 ```
 
-SQLite menyerialkan writer dalam satu `$transaction` sehingga ini race-free
-hari ini; guard `updateMany WHERE status=AVAILABLE` + retry tetap dipasang
-agar tidak diam-diam bergantung pada detail isolasi SQLite (penting jika
-suatu saat migrasi ke Postgres — lihat catatan lintas-domain di
+Di PostgreSQL dua transaksi bisa mencoba mengklaim baris yang sama secara
+bersamaan; guard `updateMany WHERE status=AVAILABLE` membuat klaim itu atomik
+(hanya satu yang menghasilkan `count === 1`), dan retry ke baris berikutnya
+menangani yang kalah (lihat catatan lintas-domain di
 `docs/archive/audit-security-2026-06-23.md`).
 
 Sebelum loop reservasi, `countAvailableStock` dicek per baris cart sebagai

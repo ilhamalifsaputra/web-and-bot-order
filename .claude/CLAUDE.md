@@ -111,8 +111,8 @@ A fresh worktree is a fresh checkout — the ignored files do not come with it:
 - **Change `WEB_PORT` and `STOREFRONT_PORT` in the worktree's `.env`.** The
   defaults (8109/8110) are identical in every worktree, so two sessions running
   dev servers collide. Give each session its own port pair.
-- **SQLite-per-worktree no longer applies** — the schema is Postgres-only
-  post engine-swap. A worktree that needs a database brings up its own dev
+- **Each worktree needs its own database** — the schema is Postgres-only.
+  A worktree that needs a database brings up its own dev
   Postgres with `docker compose -f docker-compose.postgres.yml up -d` and
   points `DATABASE_URL_PRISMA` at it (see README.md's "Untuk Developer"
   section for the exact commands/env). That compose file publishes a fixed
@@ -235,11 +235,9 @@ checklist for the task list.
   and cover them with Vitest (`*.test.ts` colocated in `crud/`).
 - **UTC in DB, `TIMEZONE` on display** (web `localdt` filter; bot `localize`).
 - **Audit every state change** with the acting admin id (`logAdminAction`).
-- **The database is PostgreSQL** (engine-swap, merged 2026-08-27) — the old
-  "shared SQLite is single-writer" constraint no longer applies; Postgres
-  handles concurrent writers itself (`packages/db/src/client.ts`'s own header
-  comment). Still keep each `$transaction` short — that's just good practice
-  under any engine, not a SQLite-specific workaround anymore.
+- **The database is PostgreSQL** — it handles concurrent writers itself
+  (`packages/db/src/client.ts`'s own header comment). Still keep each
+  `$transaction` short — that's just good practice under any engine.
 - **Schema change on deploy**: migrate the live DB (`pnpm prisma db push` or apply
   the migration) and restart order-bot **before** new code runs, or you get
   `P2022 column … does not exist`.

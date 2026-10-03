@@ -7,7 +7,7 @@
  * retrying up to 5 times if it loses a race. Every existing test that
  * exercises this — including order_creation.test.ts's "out-of-stock request
  * throws and leaks no RESERVED rows" — calls it sequentially, one `await` at
- * a time. SQLite's single-writer serialization made that indistinguishable
+ * a time. That is indistinguishable
  * from "the guard holds under concurrency" — there was never more than one
  * writer to race in the first place. These tests fire multiple
  * `createOrderDirect` calls at the SAME instant via `Promise.allSettled`

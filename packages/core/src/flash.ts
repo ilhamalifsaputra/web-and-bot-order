@@ -69,7 +69,7 @@ function wholeRupiah(price: Decimal.Value): Decimal {
  * Rejects a percent outside (0,100] rather than trusting the row: the same
  * "one misconfigured rule away from a free order" guard bulk pricing has at
  * write time (Pricing-4), repeated here so a row written before that guard
- * existed — or by hand against the shared SQLite file — still can't zero out a
+ * existed — or by hand against the shared database — still can't zero out a
  * price.
  */
 export function activeFlashPercent(d: FlashFields, now: Date = new Date()): Decimal | null {

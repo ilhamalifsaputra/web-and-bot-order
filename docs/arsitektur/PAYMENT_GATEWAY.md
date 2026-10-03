@@ -59,9 +59,9 @@ Bybit BSC berbagi ledger `ProcessedBybitTx` yang sama dengan Bybit Internal
 Transfer (lihat §Bybit BSC di bawah untuk alasan mengapa ini aman) — jadi 6
 metode di atas tetap hanya memakai 5 tabel ledger. Semua 5 idempotency ledger
 memakai pola yang sama: **insert-first-on-unique**
-— SQLite tidak punya row lock, jadi klaim ID transaksi gateway via
-`create()` yang gagal pada UNIQUE constraint berarti "sudah pernah
-diproses" (`isUniqueViolation`).
+— klaim ID transaksi gateway via `create()` yang gagal pada UNIQUE
+constraint berarti "sudah pernah diproses" (`isUniqueViolation`); pola ini
+tidak bergantung pada serialisasi transaksi.
 
 ## TokoPay (QRIS, IDR)
 

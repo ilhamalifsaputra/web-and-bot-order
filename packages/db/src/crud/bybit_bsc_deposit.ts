@@ -274,10 +274,9 @@ export async function recordBybitBscPaymentDetected(
  * `createRotatingCursor()` indexes into this array by position across
  * successive `pollOnce` calls, assuming the same order each time so its
  * rotating window covers every tracked order over ceil(n / MAX_ORDERS_PER_CYCLE)
- * cycles instead of re-visiting (or skipping) rows. SQLite's default
- * unindexed scan order happened to match insertion order, which made this
- * work without an explicit `orderBy` pre-migration; Postgres gives no such
- * guarantee, so it must be explicit here. */
+ * cycles instead of re-visiting (or skipping) rows. Postgres gives no
+ * guarantee about the default unindexed scan order, so it must be explicit
+ * here. */
 export function listTrackedBybitBscOrders(db: Db) {
   return db.order.findMany({
     where: {
@@ -440,9 +439,8 @@ export async function deliverPaidBybitBscOrder(
   //
   //    An interactive $transaction would be worse here, not better — see
   //    deliverPaidInternalOrder (binance_internal.ts) step 1 for the full
-  //    reasoning (WAL + Prisma's deferred-BEGIN interactive transactions make
-  //    two racing reclaims collide with SQLITE_BUSY_SNAPSHOT instead of
-  //    degrading gracefully).
+  //    reasoning (a read-then-write inside one lets two racing reclaims both
+  //    pass the check instead of degrading gracefully).
   //
   //    `reclaimedFrom` remembers exactly what the reclaim overwrote
   //    (outcome/orderId/amount) so step 2 can put it back if this turns out

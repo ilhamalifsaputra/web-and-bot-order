@@ -7,8 +7,8 @@
  *     route on the SAME Fastify (managed hosting like Hostinger Business);
  *   - the in-process workers: notifier outbox drain, Binance poller, croner jobs.
  *
- * A single process is the safe topology for the shared single-writer SQLite DB
- * (one PrismaClient, WAL) and means each worker runs exactly once with no
+ * A single process is the safe topology for the shared database
+ * (one PrismaClient) and means each worker runs exactly once with no
  * double-run risk. Transport is chosen by `BOT_MODE` (polling | webhook).
  *
  * `buildServer()` is pure construction (app + bot + routes, no network/timers)

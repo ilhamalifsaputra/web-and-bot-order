@@ -33,8 +33,8 @@ langkah opsional setelahnya.
   valid & sudah dibayar, tapi pembeli tidak menerima kredensial otomatis.
 - **Cause:** Commit `c4778c8` (2026-06-23, paket fix audit keamanan)
   menambahkan kolom `claimed_at`/`next_retry_at` ke `NotificationOutbox` di
-  `schema.prisma` + dua file migrasi SQL (`20260623082258_add_notification_claimed_at/`,
-  `20260623174936_add_notification_next_retry_at/`) DAN mengubah
+  `schema.prisma` + dua file migrasi SQL (kini terlipat ke `postgresql_baseline`;
+  riwayatnya ada di git) DAN mengubah
   `packages/db/src/crud/notifications.ts` untuk memakai kolom itu di setiap
   `create()`/`update()`. Tapi `pnpm exec prisma db push` tidak dijalankan
   ulang ke database Postgres yang sungguhan sebelum kode baru jalan — *schema

@@ -33,7 +33,7 @@ import {
 import { RECONCILE_CYCLE_TIMEOUT_MS as NOWPAYMENTS_CYCLE_TIMEOUT_MS } from "../src/payments/nowpaymentsReconcile";
 /**
  * Lets a single test make the drainer's mid-flight progress flush fail — the
- * SQLITE_BUSY-past-busy_timeout case — without disturbing any other DB write.
+ * lock-timeout case — without disturbing any other DB write.
  * Everything else in `@app/db` is the real implementation; `vi.hoisted` is
  * needed because `vi.mock` factories run before ordinary module-level `let`s
  * are initialised.
@@ -1073,7 +1073,7 @@ describe("drainBroadcasts", () => {
   });
 
   // The flush is cosmetic, but its `await` sits outside every try/catch in the
-  // send loop. A SQLITE_BUSY past the client's busy_timeout used to escape
+  // send loop. A lock timeout on that write used to escape
   // drainBroadcasts entirely: the row stayed SENDING, finishBroadcast never
   // ran, and 15 minutes later the reaper marked it FAILED with "the sender
   // process restarted" — a reason that is simply untrue, on a broadcast that
@@ -1081,7 +1081,7 @@ describe("drainBroadcasts", () => {
   it("keeps sending when a mid-flight progress flush fails, rather than aborting the whole broadcast", async () => {
     for (let i = 0; i < 30; i++) await addRecipient(5300 + i);
     const bc = await createBroadcast(prisma, { message: "busy db", segment: "ALL", scheduledAt: null, createdById: null, total: 0 });
-    dbMockState.progressFlushError = new Error("SQLITE_BUSY: database is locked");
+    dbMockState.progressFlushError = new Error("lock timeout: could not obtain lock on row");
     const sendMessage = vi.fn().mockResolvedValue(undefined);
     const warn = vi.spyOn(logger, "warn");
 
@@ -1367,7 +1367,7 @@ describe("drainBroadcasts", () => {
       const bc = await createBroadcast(prisma, { message: "throttled, busy db", segment: "ALL", scheduledAt: null, createdById: null, total: 8 });
       // Cut short at recipient 2, well before the 25-recipient in-loop flush,
       // so the only flush this test can trip is the cut-short one.
-      dbMockState.progressFlushError = new Error("SQLITE_BUSY: database is locked");
+      dbMockState.progressFlushError = new Error("lock timeout: could not obtain lock on row");
       const sendMessage = vi.fn().mockRejectedValue(floodError(600));
       const sleeps = captureSleeps();
       const warn = vi.spyOn(logger, "warn");
@@ -1442,7 +1442,7 @@ describe("drainBroadcasts", () => {
     it("logs a non-Telegram failure with its error object, unlike an ordinary blocked user", async () => {
       await addRecipient(7300);
       await createBroadcast(prisma, { message: "db trouble", segment: "ALL", scheduledAt: null, createdById: null, total: 0 });
-      const cause = new Error("SQLITE_BUSY: database is locked");
+      const cause = new Error("lock timeout: could not obtain lock on row");
       const warn = vi.spyOn(logger, "warn");
 
       await drainBroadcasts(fakeApi({ sendMessage: vi.fn().mockRejectedValue(cause) }));
@@ -1570,8 +1570,8 @@ describe("announceStartedFlashSales", () => {
   });
 
   // H-7 fix (backend audit 2026-07-31): the `flashAnnouncedAt` claim and the
-  // customer fan-out used to share one `$transaction`, holding SQLite's
-  // single writer lock for however long the whole-customer-base enqueue
+  // customer fan-out used to share one `$transaction`, holding
+  // its locks open for however long the whole-customer-base enqueue
   // took. They're now two phases — a short claim transaction, then a
   // chunked enqueue outside any transaction — and this test's job is to
   // prove that split still delivers to a customer base large enough to need
@@ -1667,7 +1667,7 @@ describe("scheduleJobs cron registration (Bot-5 fix)", () => {
       expect(crons[6]!.options.protect).toBe(true);
       // The three QRIS/IDR watchdogs (Task 12) — each on its own second
       // (:15/:17/:19) of every even minute, so none of them shares a
-      // SQLite write-lock instant with the crypto three above (implicitly
+      // lock instant with the crypto three above (implicitly
       // second 0) or with each other.
       expect(crons[7]!.getPattern()).toBe("15 */2 * * * *"); // tokopayPollWatchdog
       expect(crons[7]!.options.protect).toBe(true);
@@ -1679,7 +1679,7 @@ describe("scheduleJobs cron registration (Bot-5 fix)", () => {
       // within ~15s instead of up to a full minute, on seconds that dodge both
       // second 0 (autoCancelExpiredOrders and the hourly/6-hourly jobs) and
       // second 40 (announceStartedFlashSales) so they never contend for
-      // SQLite's single write-lock in the same instant; still protected.
+      // the same write locks in the same instant; still protected.
       // "*/15" is deliberately NOT used — it would put a tick back on second 0.
       expect(crons[10]!.getPattern()).toBe("5,20,35,50 * * * * *");
       expect(crons[10]!.options.protect).toBe(true);

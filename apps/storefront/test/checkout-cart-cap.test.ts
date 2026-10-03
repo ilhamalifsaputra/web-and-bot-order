@@ -4,7 +4,7 @@
 // single unit in the cart, with no cap on the total across all lines — only
 // a 99-per-line clamp. A large multi-line cart could turn into thousands of
 // queries inside one $transaction (Prisma's default 5s timeout), holding
-// SQLite's single writer long enough to starve every other writer (the bot,
+// locks and a connection long enough to starve every other writer (the bot,
 // webhooks, delivery transactions) before likely timing out and rolling
 // back — so the buyer could never complete that cart at all.
 //

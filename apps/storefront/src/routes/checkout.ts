@@ -99,6 +99,7 @@ import {
 import {
   createInvoice as createNowpaymentsInvoice,
   verifyIpn,
+  checkNowpaymentsAmount,
   type NowpaymentsInvoice,
 } from "@app/core/payments/nowpayments";
 import {
@@ -1441,10 +1442,13 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         );
         return reply.send({ status: "unmatched" });
       }
-      // Amount sanity: never deliver on a short/partial payment.
-      if (cb.amount.lessThan(order.totalAmount)) {
+      // Amount sanity: never deliver on a short/partial payment. Judged in the
+      // invoice's price currency (usd), never by comparing the pay-currency
+      // `actually_paid` to the USDT total — see checkNowpaymentsAmount (Task B3a).
+      const valueCheck = checkNowpaymentsAmount(cb, order.totalAmount);
+      if (!valueCheck.ok) {
         logger.warn(
-          `NOWPayments callback for order ${order.orderCode} is short-paid — got ${cb.amount.toString()}, expected ${order.totalAmount.toString()} — recording it as unmatched instead of delivering`,
+          `NOWPayments reported a finished payment for order ${order.orderCode}, but it could not be confirmed as covering the order because ${valueCheck.reason} — recording it as unmatched for an admin to review instead of delivering`,
         );
         await recordUnmatchedNowpaymentsTx(prisma, { trxId: cb.trxId, amount: cb.amount });
         return reply.send({ status: "amount mismatch" });
@@ -1454,7 +1458,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         const r = await deliverPaidNowpaymentsOrder(prisma, {
           orderId: order.id,
           trxId: cb.trxId,
-          amount: cb.amount,
+          amount: valueCheck.amount,
           shopUrl: shopPublicUrl(),
         });
         if (r.status === "delivered") nudgeOutboxDispatcher();

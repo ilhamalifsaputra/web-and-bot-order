@@ -74,6 +74,7 @@ import { constantTimeEqual } from "../auth";
 import { errorBody } from "@app/core/errorBody";
 import { originOk } from "./cart";
 import { startTelegramLinkIntent } from "../telegramLinkIntent";
+import { guestClaimLockedOut, recordGuestClaimFailure } from "../rateLimit";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -856,9 +857,15 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
     // code-guesser does not. Compared after the same trim/lowercase
     // createGuestUser applied when storing it.
     if (changingCredentials && customer.user.isGuest) {
+      // Capped per guest row (GUEST_CLAIM_FAILURE_MAX misses / 15 min), so
+      // the session holder can't keep guessing the contact email.
+      if (guestClaimLockedOut(customer.userId)) {
+        return reply.code(429).send({ error: "web.settings_guest_email_locked" });
+      }
       const proof = typeof req.body?.guest_email === "string" ? req.body.guest_email.trim().toLowerCase() : "";
       const expected = customer.user.guestEmail ?? "";
       if (!proof || !expected || !constantTimeEqual(proof, expected)) {
+        recordGuestClaimFailure(customer.userId);
         return reply.code(400).send({ error: "web.settings_guest_email_mismatch" });
       }
     }

@@ -299,19 +299,29 @@ const GLOBAL_TRACK_KEY = "*";
 const trackTargetFailures = new Map<string, number[]>();
 const trackGlobalFailures = new Map<string, number[]>();
 
-/** `key`'s unexpired failures. A bucket that empties is deleted (and a missing
- * one is never created), so date prefixes nobody is guessing at any more don't
- * stay in memory forever. */
-function prunedCount(store: Map<string, number[]>, key: string, now: number): number[] {
+/** `key`'s failures inside `windowSeconds`. A bucket that empties is deleted
+ * (and a missing one is never created), so keys nobody is failing on any more
+ * don't stay in memory forever. */
+function prunedCount(
+  store: Map<string, number[]>,
+  key: string,
+  now: number,
+  windowSeconds = TRACK_FAILURE_WINDOW_SECONDS,
+): number[] {
   const dq = store.get(key);
   if (!dq) return [];
-  while (dq.length && now - dq[0]! > TRACK_FAILURE_WINDOW_SECONDS) dq.shift();
+  while (dq.length && now - dq[0]! > windowSeconds) dq.shift();
   if (dq.length === 0) store.delete(key);
   return dq;
 }
 
-function pushFailure(store: Map<string, number[]>, key: string, now: number): void {
-  const dq = prunedCount(store, key, now);
+function pushFailure(
+  store: Map<string, number[]>,
+  key: string,
+  now: number,
+  windowSeconds = TRACK_FAILURE_WINDOW_SECONDS,
+): void {
+  const dq = prunedCount(store, key, now, windowSeconds);
   dq.push(now);
   store.set(key, dq);
 }
@@ -344,6 +354,30 @@ export function recordTrackFailure(orderCode: string): void {
   const now = Date.now() / 1000;
   pushFailure(trackTargetFailures, target, now);
   pushFailure(trackGlobalFailures, GLOBAL_TRACK_KEY, now);
+}
+
+// ---------------------------------------------------------------------------
+// Guest-claim email guesses (per guest user id, in-process) — backend audit
+// Task C fix round. Claiming a guest row (credentials on an isGuest row)
+// needs the order's contact email; a code-guesser holding the session must
+// not get unlimited tries at it. Counts MISSES only, per guest row, whatever
+// the source IP. A locked row refuses even the right email until the window
+// slides — the real buyer can still use the order (their session is fine).
+// ---------------------------------------------------------------------------
+
+export const GUEST_CLAIM_FAILURE_WINDOW_SECONDS = 900; // 15 minutes
+export const GUEST_CLAIM_FAILURE_MAX = 5;
+const guestClaimFailures = new Map<string, number[]>();
+
+/** True if guest row `userId` has used up its guest-email guesses this window. */
+export function guestClaimLockedOut(userId: number): boolean {
+  const now = Date.now() / 1000;
+  return prunedCount(guestClaimFailures, String(userId), now, GUEST_CLAIM_FAILURE_WINDOW_SECONDS).length >= GUEST_CLAIM_FAILURE_MAX;
+}
+
+/** Record one wrong guest-email guess against guest row `userId`. */
+export function recordGuestClaimFailure(userId: number): void {
+  pushFailure(guestClaimFailures, String(userId), Date.now() / 1000, GUEST_CLAIM_FAILURE_WINDOW_SECONDS);
 }
 
 // ---------------------------------------------------------------------------

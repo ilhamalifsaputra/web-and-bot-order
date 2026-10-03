@@ -18,7 +18,7 @@ import { hashPassword } from "@app/core/password";
 import { buildApp } from "../src/server";
 import { CART_COOKIE, CART_COOKIE_VERSION } from "../src/shop";
 import { SHOP_COOKIE_NAME } from "../src/auth";
-import { TRACK_LOOKUP_RATE_LIMIT_MAX, TRACK_TARGET_FAILURE_MAX } from "../src/rateLimit";
+import { TRACK_LOOKUP_RATE_LIMIT_MAX, TRACK_TARGET_FAILURE_MAX, GUEST_CLAIM_FAILURE_MAX } from "../src/rateLimit";
 
 let app: FastifyInstance;
 let denomId: number;
@@ -635,6 +635,30 @@ describe("guest account claim needs the order's contact email (Task C1)", () => 
     const u = (await prisma.user.findUnique({ where: { id: s.userId } }))!;
     expect(u.telegramId).toBeNull();
     expect(u.isGuest).toBe(true);
+  });
+
+  // Fix round: without a cap, a code-guesser holding the session could try
+  // contact emails without limit.
+  it("locks guest-email guesses after GUEST_CLAIM_FAILURE_MAX misses — even the right email is refused then", async () => {
+    const s = await trackedSession("claim.cap@example.com");
+    const attempt = (guestEmail: string) =>
+      app.inject({
+        method: "POST",
+        url: "/api/v1/account/settings/credentials",
+        headers: { cookie: s.cookie, "x-csrf-token": s.csrf },
+        payload: { guest_email: guestEmail, username: "capthief1", new_password: "cap-password-1" },
+      });
+    for (let i = 0; i < GUEST_CLAIM_FAILURE_MAX; i++) {
+      const res = await attempt(`guess${i}@example.com`);
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toEqual({ error: "web.settings_guest_email_mismatch" });
+    }
+    const locked = await attempt("claim.cap@example.com");
+    expect(locked.statusCode).toBe(429);
+    expect(locked.json()).toEqual({ error: "web.settings_guest_email_locked" });
+    const u = (await prisma.user.findUnique({ where: { id: s.userId } }))!;
+    expect(u.isGuest).toBe(true);
+    expect(u.passwordHash).toBeNull();
   });
 
   it("accepts the right guest email (case/whitespace-insensitive) and upgrades the row", async () => {

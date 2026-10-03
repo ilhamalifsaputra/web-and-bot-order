@@ -564,6 +564,7 @@
   "web.settings_wrong_password": "Current password is wrong.",
   "web.settings_guest_email": "Order email",
   "web.settings_guest_email_help": "The email you entered at checkout. We ask for it to confirm this order is yours.",
+  "web.settings_guest_email_locked": "Too many wrong emails. Please wait 15 minutes and try again.",
   "web.settings_guest_email_mismatch": "That is not the email used for this order.",
   "web.signed_in_as": "Signed in as",
   "web.skip_to_content": "Skip to content",

@@ -564,6 +564,7 @@
   "web.settings_wrong_password": "Kata sandi sekarang salah.",
   "web.settings_guest_email": "Email pesanan",
   "web.settings_guest_email_help": "Email yang kamu isi saat checkout. Kami memintanya untuk memastikan pesanan ini milikmu.",
+  "web.settings_guest_email_locked": "Terlalu banyak email yang salah. Tunggu 15 menit lalu coba lagi.",
   "web.settings_guest_email_mismatch": "Email itu bukan email yang dipakai untuk pesanan ini.",
   "web.signed_in_as": "Masuk sebagai",
   "web.skip_to_content": "Langsung ke konten",

@@ -14,6 +14,7 @@ import {
   enqueueOrderPipelineFailed,
   enqueueManualOrderAdminAlert,
   enqueueAdminStalePayment,
+  enqueueAdminUnconfirmablePayment,
   enqueueAdminDigiflazzResyncAborted,
   enqueueAdminPasswordReset,
   enqueueAdminNewTicketDm,
@@ -563,9 +564,8 @@ describe("outbox writes are guarded by claim ownership (Task B1.2)", () => {
   }
 
   it("markNotificationSent with a lost claim is a no-op and reports false", async () => {
-    const { id, secondClaim } = await claimedTwice();
-    const firstClaimStale = new Date(secondClaim.getTime() - STALE_CLAIM_MS - 60_000);
-    expect(await markNotificationSent(prisma, id, firstClaimStale)).toBe(false);
+    const { id, firstClaim, secondClaim } = await claimedTwice();
+    expect(await markNotificationSent(prisma, id, firstClaim)).toBe(false);
     const r = await prisma.notificationOutbox.findUnique({ where: { id } });
     expect(r!.status).toBe("SENDING");
     expect(r!.claimedAt!.getTime()).toBe(secondClaim.getTime());
@@ -719,6 +719,27 @@ describe("enqueueAdminStalePayment", () => {
     expect(payload.order_code).toBe("ORD-STALETEST");
     expect(payload.gateway).toBe("TokoPay");
     expect(payload.trx_id).toBe("TRX-STALE-1");
+  });
+});
+
+// Task B fix round: the missing-amount reason reuses ADMIN_UNCONFIRMABLE_PAYMENT
+// with its own dedupe key, so repeated calls tell each admin once and neither
+// reason's alert can swallow the other's for the same order.
+describe("enqueueAdminUnconfirmablePayment reasons", () => {
+  it("dedupes per (order, admin, reason) and keeps the no-trx-id alert separate from the missing-amount one", async () => {
+    const orderId = await seedOrder();
+    const args = { orderId, orderCode: "ORD-UNCONF", gateway: "PayDisini", reason: "missing_amount" as const };
+    await enqueueAdminUnconfirmablePayment(prisma, args);
+    await enqueueAdminUnconfirmablePayment(prisma, args);
+    const where = { event: NotificationEvent.ADMIN_UNCONFIRMABLE_PAYMENT, orderId };
+    const rows = await prisma.notificationOutbox.findMany({ where });
+    expect(rows.map((r) => (JSON.parse(r.payloadJson) as { chat_id: number }).chat_id).sort((a, b) => a - b)).toEqual([4001, 4002, 4501, 4502]);
+    expect((JSON.parse(rows[0]!.payloadJson) as { reason?: string }).reason).toBe("missing_amount");
+
+    await enqueueAdminUnconfirmablePayment(prisma, { orderId, orderCode: "ORD-UNCONF", gateway: "PayDisini" });
+    const all = await prisma.notificationOutbox.findMany({ where });
+    expect(all).toHaveLength(8);
+    expect(all.filter((r) => (JSON.parse(r.payloadJson) as { reason?: string }).reason === undefined)).toHaveLength(4);
   });
 });
 

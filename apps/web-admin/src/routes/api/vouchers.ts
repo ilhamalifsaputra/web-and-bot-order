@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { parsePositiveId } from "../../lib/params";
 import { VoucherType, VoucherScope } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { errorBody } from "@app/core/errorBody";
@@ -187,7 +188,8 @@ export default async function vouchersApiRoutes(app: FastifyInstance): Promise<v
   });
 
   app.post("/api/vouchers/:voucherId/update", { preHandler: csrfProtect }, async (req, reply) => {
-    const voucherId = Number((req.params as { voucherId: string }).voucherId);
+    const voucherId = parsePositiveId((req.params as { voucherId: string }).voucherId);
+    if (voucherId === null) return reply.code(400).send({ error: "Invalid voucher id." });
     const existing = await getVoucher(prisma, voucherId);
     if (existing === null) {
       return reply.code(404).send({ error: "Voucher not found." });
@@ -341,7 +343,8 @@ export default async function vouchersApiRoutes(app: FastifyInstance): Promise<v
   });
 
   app.post("/api/vouchers/:voucherId/toggle", { preHandler: csrfProtect }, async (req, reply) => {
-    const voucherId = Number((req.params as { voucherId: string }).voucherId);
+    const voucherId = parsePositiveId((req.params as { voucherId: string }).voucherId);
+    if (voucherId === null) return reply.code(400).send({ error: "Invalid voucher id." });
     const isActive = (req.body as Record<string, string>).is_active;
     const active = ["1", "true", "on", "yes"].includes((isActive ?? "").toLowerCase());
     if ((await getVoucher(prisma, voucherId)) === null) {
@@ -359,7 +362,8 @@ export default async function vouchersApiRoutes(app: FastifyInstance): Promise<v
   });
 
   app.post("/api/vouchers/:voucherId/delete", { preHandler: csrfProtect }, async (req, reply) => {
-    const voucherId = Number((req.params as { voucherId: string }).voucherId);
+    const voucherId = parsePositiveId((req.params as { voucherId: string }).voucherId);
+    if (voucherId === null) return reply.code(400).send({ error: "Invalid voucher id." });
     const existing = await getVoucher(prisma, voucherId);
     if (existing === null) {
       return reply.code(404).send({ error: "Voucher not found." });

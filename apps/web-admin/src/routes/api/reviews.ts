@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { parsePositiveId } from "../../lib/params";
 import { ReviewStatus, ReviewSentiment, ReviewSource } from "@app/core/enums";
 import {
   prisma,
@@ -69,7 +70,8 @@ export default async function reviewsApiRoutes(app: FastifyInstance): Promise<vo
   // (routes/reviews.ts) — see api/outbox.ts's retry route for why a parallel
   // JSON route exists instead of reusing the legacy 303-redirect one.
   app.post("/api/reviews/:reviewId/hide", { preHandler: csrfProtect }, async (req, reply) => {
-    const reviewId = Number((req.params as { reviewId: string }).reviewId);
+    const reviewId = parsePositiveId((req.params as { reviewId: string }).reviewId);
+    if (reviewId === null) return reply.code(400).send({ error: "Invalid review id." });
     const body = (req.body ?? {}) as Record<string, unknown>;
     if (typeof body.hidden !== "boolean") return reply.code(400).send({ error: "hidden must be a boolean." });
     const hide = body.hidden;
@@ -89,7 +91,8 @@ export default async function reviewsApiRoutes(app: FastifyInstance): Promise<vo
 
   // Save (or overwrite) the admin's reply — flips the review to REPLIED.
   app.post("/api/reviews/:reviewId/reply", { preHandler: csrfProtect }, async (req, reply) => {
-    const reviewId = Number((req.params as { reviewId: string }).reviewId);
+    const reviewId = parsePositiveId((req.params as { reviewId: string }).reviewId);
+    if (reviewId === null) return reply.code(400).send({ error: "Invalid review id." });
     const replyText = ((req.body as Record<string, unknown>)?.reply as string | undefined)?.trim() ?? "";
     if (!replyText) return reply.code(400).send({ error: "Reply cannot be empty." });
     const existing = await getReviewById(prisma, reviewId);
@@ -109,7 +112,8 @@ export default async function reviewsApiRoutes(app: FastifyInstance): Promise<vo
 
   // Clears a review's reply and reverts it to PENDING_REPLY.
   app.delete("/api/reviews/:reviewId/reply", { preHandler: csrfProtect }, async (req, reply) => {
-    const reviewId = Number((req.params as { reviewId: string }).reviewId);
+    const reviewId = parsePositiveId((req.params as { reviewId: string }).reviewId);
+    if (reviewId === null) return reply.code(400).send({ error: "Invalid review id." });
     const existing = await getReviewById(prisma, reviewId);
     if (!existing || existing.adminReply == null) return reply.code(404).send({ error: "Review not found or has no reply." });
     const product = await getDenomination(prisma, existing.productId);
@@ -128,7 +132,8 @@ export default async function reviewsApiRoutes(app: FastifyInstance): Promise<vo
   // the /reply route above, so it's rejected here even though setReviewStatus
   // itself doesn't guard against it.
   app.post("/api/reviews/:reviewId/status", { preHandler: csrfProtect }, async (req, reply) => {
-    const reviewId = Number((req.params as { reviewId: string }).reviewId);
+    const reviewId = parsePositiveId((req.params as { reviewId: string }).reviewId);
+    if (reviewId === null) return reply.code(400).send({ error: "Invalid review id." });
     const status = (req.body as Record<string, unknown>)?.status as string | undefined;
     if (!status || !MANUAL_STATUS_VALUES.includes(status)) {
       return reply.code(400).send({ error: 'status must be "CLOSED" or "PENDING_REPLY".' });
@@ -149,7 +154,8 @@ export default async function reviewsApiRoutes(app: FastifyInstance): Promise<vo
 
   // Hard delete — no soft-delete/undo, matches the brief.
   app.delete("/api/reviews/:reviewId", { preHandler: csrfProtect }, async (req, reply) => {
-    const reviewId = Number((req.params as { reviewId: string }).reviewId);
+    const reviewId = parsePositiveId((req.params as { reviewId: string }).reviewId);
+    if (reviewId === null) return reply.code(400).send({ error: "Invalid review id." });
     const existing = await getReviewById(prisma, reviewId);
     if (!existing) return reply.code(404).send({ error: "Review not found." });
     const product = await getDenomination(prisma, existing.productId);

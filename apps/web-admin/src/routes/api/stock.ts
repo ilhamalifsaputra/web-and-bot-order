@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { parsePositiveId } from "../../lib/params";
 import { logger } from "@app/core/logger";
 import { config } from "@app/core/config";
 import { CredentialKeyConfigError } from "@app/core/credentialCrypto";
@@ -170,7 +171,8 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
   // three tabs regardless of mode, so the tab bar's counts never depend on
   // which tab happens to be open.
   app.get("/api/stock/:productId", { preHandler: blockReadonlyReads }, async (req, reply) => {
-    const productId = Number((req.params as { productId: string }).productId);
+    const productId = parsePositiveId((req.params as { productId: string }).productId);
+    if (productId === null) return reply.code(400).send({ error: "Invalid product id." });
     const product = await getDenominationWithProduct(prisma, productId);
     if (!product) return reply.code(404).send({ error: "Product not found." });
 
@@ -236,7 +238,8 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
   });
 
   app.post("/api/stock/:productId/bulk-add", { preHandler: csrfProtect }, async (req, reply) => {
-    const productId = Number((req.params as { productId: string }).productId);
+    const productId = parsePositiveId((req.params as { productId: string }).productId);
+    if (productId === null) return reply.code(400).send({ error: "Invalid product id." });
     const body = (req.body ?? {}) as Record<string, string>;
     const raw = body.credentials ?? "";
     const creds = raw
@@ -311,7 +314,8 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
   // product (default off). Separate small endpoint, same shape as the
   // isActive toggle at POST /api/catalog/denominations/:id/active.
   app.post("/api/stock/:productId/broadcast", { preHandler: csrfProtect }, async (req, reply) => {
-    const productId = Number((req.params as { productId: string }).productId);
+    const productId = parsePositiveId((req.params as { productId: string }).productId);
+    if (productId === null) return reply.code(400).send({ error: "Invalid product id." });
     const body = (req.body ?? {}) as Record<string, unknown>;
     if (typeof body.enabled !== "boolean") {
       return reply.code(400).send({ error: "enabled must be a boolean." });
@@ -333,7 +337,8 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
   // Bulk mark selected stock items dead (one writer, audited once). The audit row
   // carries only the count — never the credentials or the admin-typed note.
   app.post("/api/stock/:productId/bulk-dead", { preHandler: csrfProtect }, async (req, reply) => {
-    const productId = Number((req.params as { productId: string }).productId);
+    const productId = parsePositiveId((req.params as { productId: string }).productId);
+    if (productId === null) return reply.code(400).send({ error: "Invalid product id." });
     const body = (req.body ?? {}) as Record<string, unknown>;
     const ids = Array.isArray(body.ids) ? body.ids.filter((n): n is number => Number.isInteger(n) && n > 0) : [];
     if (!ids.length) return reply.code(400).send({ error: "Select at least one stock item." });
@@ -362,7 +367,8 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
   // refuses SOLD rows and anything tied to an order item, so the count returned
   // may be < the number selected.
   app.post("/api/stock/:productId/bulk-delete", { preHandler: csrfProtect }, async (req, reply) => {
-    const productId = Number((req.params as { productId: string }).productId);
+    const productId = parsePositiveId((req.params as { productId: string }).productId);
+    if (productId === null) return reply.code(400).send({ error: "Invalid product id." });
     const body = (req.body ?? {}) as Record<string, unknown>;
     const ids = Array.isArray(body.ids) ? body.ids.filter((n): n is number => Number.isInteger(n) && n > 0) : [];
     if (!ids.length) return reply.code(400).send({ error: "Select at least one stock item." });
@@ -384,7 +390,8 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
   });
 
   app.post("/api/stock/item/:stockId/dead", { preHandler: csrfProtect }, async (req, reply) => {
-    const stockId = Number((req.params as { stockId: string }).stockId);
+    const stockId = parsePositiveId((req.params as { stockId: string }).stockId);
+    if (stockId === null) return reply.code(400).send({ error: "Invalid stock item id." });
     const body = (req.body ?? {}) as Record<string, unknown>;
     const note = (typeof body.note === "string" ? body.note.trim() : "");
     const reason = parseDeadReason(body.reason);
@@ -422,7 +429,8 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
   // same framing as those, not a request-shape validation failure (422's use
   // elsewhere in this file, e.g. bulk-add's missing-credentials case).
   app.post("/api/stock/item/:stockId/delete", { preHandler: csrfProtect }, async (req, reply) => {
-    const stockId = Number((req.params as { stockId: string }).stockId);
+    const stockId = parsePositiveId((req.params as { stockId: string }).stockId);
+    if (stockId === null) return reply.code(400).send({ error: "Invalid stock item id." });
     const item = await getStockItem(prisma, stockId);
     if (!item) return reply.code(404).send({ error: "Stock item not found." });
 
@@ -445,7 +453,8 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
   });
 
   app.post("/api/stock/item/:stockId/note", { preHandler: csrfProtect }, async (req, reply) => {
-    const stockId = Number((req.params as { stockId: string }).stockId);
+    const stockId = parsePositiveId((req.params as { stockId: string }).stockId);
+    if (stockId === null) return reply.code(400).send({ error: "Invalid stock item id." });
     const body = (req.body ?? {}) as Record<string, unknown>;
     const note = (typeof body.note === "string" ? body.note.trim() : "");
     const item = await getStockItem(prisma, stockId);
@@ -468,8 +477,9 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
   // meta), so any admin may read it and no audit row is written. A soft-deleted
   // item still has its history; only an id that never existed is a 404.
   app.get("/api/stock/item/:stockId/history", { preHandler: currentAdmin }, async (req, reply) => {
-    const stockId = Number((req.params as { stockId: string }).stockId);
-    const events = Number.isInteger(stockId) ? await listStockItemEvents(prisma, stockId) : null;
+    const stockId = parsePositiveId((req.params as { stockId: string }).stockId);
+    if (stockId === null) return reply.code(400).send({ error: "Invalid stock item id." });
+    const events = await listStockItemEvents(prisma, stockId);
     if (events === null) return reply.code(404).send({ error: "Stock item not found." });
     return reply.send({
       events: events.map((e) => ({ ...e, occurredAt: undefined, occurredAtDisplay: displayDate(e.occurredAt) })),
@@ -490,7 +500,8 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
   // (revealStockCredentials) covers both the existence check and the read —
   // its null return doubles as "no such stock item".
   app.post("/api/stock/item/:stockId/reveal", { preHandler: csrfProtect }, async (req, reply) => {
-    const stockId = Number((req.params as { stockId: string }).stockId);
+    const stockId = parsePositiveId((req.params as { stockId: string }).stockId);
+    if (stockId === null) return reply.code(400).send({ error: "Invalid stock item id." });
     const adminId = req.admin!.userId;
     let credentials: string | null;
     try {
@@ -525,7 +536,8 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
   // credentials themselves are never logged. Gated to non-readonly roles
   // (C-1, security audit 2026-08-21) since this dumps plaintext credentials.
   app.get("/api/stock/:productId/download", { preHandler: blockReadonlyReads }, async (req, reply) => {
-    const productId = Number((req.params as { productId: string }).productId);
+    const productId = parsePositiveId((req.params as { productId: string }).productId);
+    if (productId === null) return reply.code(400).send({ error: "Invalid product id." });
     const product = await getDenominationWithProduct(prisma, productId);
     if (!product) return reply.code(404).send({ error: "Product not found." });
 

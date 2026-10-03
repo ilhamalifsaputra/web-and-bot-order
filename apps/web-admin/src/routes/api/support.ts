@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { parsePositiveId } from "../../lib/params";
 import { SenderType, TicketStatus, TicketPriority, TicketCategory } from "@app/core/enums";
 import { logger } from "@app/core/logger";
 import {
@@ -227,8 +228,8 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
   });
 
   app.get("/api/support/:ticketId", { preHandler: currentAdmin }, async (req, reply) => {
-    const ticketId = Number((req.params as { ticketId: string }).ticketId);
-    if (!Number.isInteger(ticketId)) return reply.code(400).send({ error: "Invalid ticket id." });
+    const ticketId = parsePositiveId((req.params as { ticketId: string }).ticketId);
+    if (ticketId === null) return reply.code(400).send({ error: "Invalid ticket id." });
     const ticket = await getTicketWithOrder(prisma, ticketId);
     if (!ticket) return reply.code(404).send({ error: "Ticket not found." });
     const cutoff = overdueCutoff();
@@ -311,7 +312,8 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
   });
 
   app.post("/api/support/:ticketId/reply", { preHandler: csrfProtect }, async (req, reply) => {
-    const ticketId = Number((req.params as { ticketId: string }).ticketId);
+    const ticketId = parsePositiveId((req.params as { ticketId: string }).ticketId);
+    if (ticketId === null) return reply.code(400).send({ error: "Invalid ticket id." });
     const body = (req.body ?? {}) as Record<string, unknown>;
     const content = (typeof body.content === "string" ? body.content : "").trim();
     // Task 3: admin-only internal note toggle. Defaults to false so every
@@ -345,7 +347,8 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
   });
 
   app.post("/api/support/:ticketId/close", { preHandler: csrfProtect }, async (req, reply) => {
-    const ticketId = Number((req.params as { ticketId: string }).ticketId);
+    const ticketId = parsePositiveId((req.params as { ticketId: string }).ticketId);
+    if (ticketId === null) return reply.code(400).send({ error: "Invalid ticket id." });
     const result = await closeTicket(prisma, ticketId);
     if (result === null) return reply.code(404).send({ error: "Ticket not found." });
     await logAdminAction(prisma, {
@@ -359,8 +362,8 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
   });
 
   app.post("/api/support/:ticketId/assign", { preHandler: csrfProtect }, async (req, reply) => {
-    const ticketId = Number((req.params as { ticketId: string }).ticketId);
-    if (!Number.isInteger(ticketId)) return reply.code(400).send({ error: "Invalid ticket id." });
+    const ticketId = parsePositiveId((req.params as { ticketId: string }).ticketId);
+    if (ticketId === null) return reply.code(400).send({ error: "Invalid ticket id." });
     const body = (req.body ?? {}) as Record<string, unknown>;
     if (body.adminId !== null && typeof body.adminId !== "number") {
       return reply.code(400).send({ error: "adminId must be a number or null." });
@@ -388,8 +391,8 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
   });
 
   app.post("/api/support/:ticketId/priority", { preHandler: csrfProtect }, async (req, reply) => {
-    const ticketId = Number((req.params as { ticketId: string }).ticketId);
-    if (!Number.isInteger(ticketId)) return reply.code(400).send({ error: "Invalid ticket id." });
+    const ticketId = parsePositiveId((req.params as { ticketId: string }).ticketId);
+    if (ticketId === null) return reply.code(400).send({ error: "Invalid ticket id." });
     const priority = ((req.body as Record<string, string>).priority ?? "").toUpperCase();
     if (!PRIORITY_VALUES.includes(priority)) return reply.code(400).send({ error: "Invalid priority." });
     if (!(await getTicket(prisma, ticketId))) return reply.code(404).send({ error: "Ticket not found." });
@@ -405,7 +408,8 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
   });
 
   app.post("/api/support/:ticketId/resolve", { preHandler: csrfProtect }, async (req, reply) => {
-    const ticketId = Number((req.params as { ticketId: string }).ticketId);
+    const ticketId = parsePositiveId((req.params as { ticketId: string }).ticketId);
+    if (ticketId === null) return reply.code(400).send({ error: "Invalid ticket id." });
     if (!(await getTicket(prisma, ticketId))) return reply.code(404).send({ error: "Ticket not found." });
     const resolved = await resolveTicket(prisma, ticketId);
     if (!resolved) return reply.code(422).send({ error: "Ticket is already resolved or closed." });
@@ -423,7 +427,8 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
   // Admin-only transition back to OPEN — the bot only ever reopens implicitly
   // via a new customer message; there's no bot-side equivalent to this route.
   app.post("/api/support/:ticketId/reopen", { preHandler: csrfProtect }, async (req, reply) => {
-    const ticketId = Number((req.params as { ticketId: string }).ticketId);
+    const ticketId = parsePositiveId((req.params as { ticketId: string }).ticketId);
+    if (ticketId === null) return reply.code(400).send({ error: "Invalid ticket id." });
     if (!(await getTicket(prisma, ticketId))) return reply.code(404).send({ error: "Ticket not found." });
     const reopened = await reopenTicketAdmin(prisma, ticketId);
     if (!reopened) return reply.code(422).send({ error: "Only a closed ticket can be reopened." });
@@ -441,7 +446,8 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
   // Admin triage: priority and/or category, independent of status. Fields
   // are optional and independently applied — omitting one leaves it as-is.
   app.post("/api/support/:ticketId/classify", { preHandler: csrfProtect }, async (req, reply) => {
-    const ticketId = Number((req.params as { ticketId: string }).ticketId);
+    const ticketId = parsePositiveId((req.params as { ticketId: string }).ticketId);
+    if (ticketId === null) return reply.code(400).send({ error: "Invalid ticket id." });
     const body = (req.body ?? {}) as Record<string, unknown>;
     if (body.priority !== undefined && !PRIORITY_VALUES.includes(body.priority as string)) {
       return reply.code(400).send({ error: "Invalid priority." });

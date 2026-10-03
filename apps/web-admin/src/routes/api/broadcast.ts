@@ -1,4 +1,5 @@
 import { stat } from "node:fs/promises";
+import { parsePositiveId } from "../../lib/params";
 import { join } from "node:path";
 import type { FastifyInstance } from "fastify";
 import {
@@ -121,7 +122,8 @@ export default async function broadcastApiRoutes(app: FastifyInstance): Promise<
   });
 
   app.post("/api/broadcast/:id/cancel", { preHandler: csrfProtect }, async (req, reply) => {
-    const id = Number((req.params as { id: string }).id);
+    const id = parsePositiveId((req.params as { id: string }).id);
+    if (id === null) return reply.code(400).send({ error: "Invalid broadcast id." });
     const existing = await getBroadcast(prisma, id);
     const ok = await cancelBroadcast(prisma, id);
     if (!ok) return reply.code(409).send({ error: "Only a pending broadcast can be cancelled." });
@@ -136,7 +138,8 @@ export default async function broadcastApiRoutes(app: FastifyInstance): Promise<
   });
 
   app.post("/api/broadcast/:id/queue", { preHandler: csrfProtect }, async (req, reply) => {
-    const id = Number((req.params as { id: string }).id);
+    const id = parsePositiveId((req.params as { id: string }).id);
+    if (id === null) return reply.code(400).send({ error: "Invalid broadcast id." });
     const existing = await getBroadcast(prisma, id);
     const ok = await queueDraftBroadcast(prisma, id);
     if (!ok) return reply.code(409).send({ error: "Only a draft can be queued to send." });
@@ -151,7 +154,8 @@ export default async function broadcastApiRoutes(app: FastifyInstance): Promise<
   });
 
   app.post("/api/broadcast/:id/delete", { preHandler: csrfProtect }, async (req, reply) => {
-    const id = Number((req.params as { id: string }).id);
+    const id = parsePositiveId((req.params as { id: string }).id);
+    if (id === null) return reply.code(400).send({ error: "Invalid broadcast id." });
     const existing = await getBroadcast(prisma, id);
     const ok = await deleteBroadcast(prisma, id);
     if (!ok) return reply.code(409).send({ error: "Only a draft can be deleted." });

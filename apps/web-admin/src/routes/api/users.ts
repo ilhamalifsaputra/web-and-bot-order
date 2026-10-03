@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { parsePositiveId } from "../../lib/params";
 import { UserRole } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { ValidationError } from "@app/core/errors";
@@ -220,7 +221,8 @@ export default async function usersApiRoutes(app: FastifyInstance): Promise<void
   });
 
   app.get("/api/users/:userId", { preHandler: currentAdmin }, async (req, reply) => {
-    const userId = Number((req.params as { userId: string }).userId);
+    const userId = parsePositiveId((req.params as { userId: string }).userId);
+    if (userId === null) return reply.code(400).send({ error: "Invalid user id." });
     const user = await getUser(prisma, userId);
     if (!user) return reply.code(404).send({ error: "User not found." });
     const [totalSpent, orders, ordersTotal, tickets, ticketsTotal, ledger, ledgerTotal] = await Promise.all([
@@ -253,7 +255,8 @@ export default async function usersApiRoutes(app: FastifyInstance): Promise<void
   });
 
   app.post("/api/users/:userId/role", { preHandler: csrfProtect }, async (req, reply) => {
-    const userId = Number((req.params as { userId: string }).userId);
+    const userId = parsePositiveId((req.params as { userId: string }).userId);
+    if (userId === null) return reply.code(400).send({ error: "Invalid user id." });
     const roleUpper = ((req.body as Record<string, string>).role ?? "").toUpperCase();
     if (roleUpper === UserRole.ADMIN) {
       return reply.code(403).send({ error: "Admin status is managed from the Admins page, not here." });
@@ -272,7 +275,8 @@ export default async function usersApiRoutes(app: FastifyInstance): Promise<void
   });
 
   app.post("/api/users/:userId/ban", { preHandler: csrfProtect }, async (req, reply) => {
-    const userId = Number((req.params as { userId: string }).userId);
+    const userId = parsePositiveId((req.params as { userId: string }).userId);
+    if (userId === null) return reply.code(400).send({ error: "Invalid user id." });
     const body = (req.body ?? {}) as Record<string, string>;
     const doBan = truthy(body.banned);
     if (!(await getUser(prisma, userId))) return reply.code(404).send({ error: "User not found." });
@@ -288,7 +292,8 @@ export default async function usersApiRoutes(app: FastifyInstance): Promise<void
   });
 
   app.post("/api/users/:userId/wallet", { preHandler: csrfProtect }, async (req, reply) => {
-    const userId = Number((req.params as { userId: string }).userId);
+    const userId = parsePositiveId((req.params as { userId: string }).userId);
+    if (userId === null) return reply.code(400).send({ error: "Invalid user id." });
     const body = (req.body ?? {}) as Record<string, string>;
     const note = (body.note ?? "").trim();
     if (!note) return reply.code(400).send({ error: "A reason is required for every wallet move." });

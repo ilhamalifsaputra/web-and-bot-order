@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { parsePositiveId } from "../../lib/params";
 import { NotificationStatus } from "@app/core/enums";
 import { prisma, listNotifications, countNotifications, outboxStatusCounts, retryNotification, getNotification, logAdminAction } from "@app/db";
 import { logger } from "@app/core/logger";
@@ -35,7 +36,8 @@ export default async function outboxApiRoutes(app: FastifyInstance): Promise<voi
   // panel's React page calls this one; the legacy route is left in place
   // (still covered by test/web.test.ts) since nothing requires removing it.
   app.post("/api/outbox/:id/retry", { preHandler: csrfProtect }, async (req, reply) => {
-    const id = Number((req.params as { id: string }).id);
+    const id = parsePositiveId((req.params as { id: string }).id);
+    if (id === null) return reply.code(400).send({ error: "Invalid notification id." });
     const existing = await getNotification(prisma, id);
     const ok = await retryNotification(prisma, id);
     if (!ok) return reply.code(404).send({ error: "That notification no longer exists." });

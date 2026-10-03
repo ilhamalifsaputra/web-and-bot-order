@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { parsePositiveId } from "../../lib/params";
 import { OrderStatus, OrderKind, StockActorType } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { errorBody } from "@app/core/errorBody";
@@ -160,7 +161,8 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
       return reply.code(429).send({ error: "error.rate_limited" });
     }
 
-    const orderId = Number((req.params as { orderId: string }).orderId);
+    const orderId = parsePositiveId((req.params as { orderId: string }).orderId);
+    if (orderId === null) return reply.code(400).send({ error: "Invalid order id." });
 
     const idempotencyKeyHeader = normalizeIdempotencyKey(req.headers["idempotency-key"]);
     const idem = idempotencyKeyHeader ? { key: idempotencyKeyHeader, requestHash: hashIdempotentRequest({ orderId }) } : null;
@@ -219,7 +221,8 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
       return reply.code(429).send({ error: "error.rate_limited" });
     }
 
-    const orderId = Number((req.params as { orderId: string }).orderId);
+    const orderId = parsePositiveId((req.params as { orderId: string }).orderId);
+    if (orderId === null) return reply.code(400).send({ error: "Invalid order id." });
 
     // Idempotency (Task 1): a double-clicked "Refund" button (or a retried
     // request after the admin's browser never saw the first response) would
@@ -308,7 +311,8 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
       return reply.code(429).send({ error: "error.rate_limited" });
     }
 
-    const orderId = Number((req.params as { orderId: string }).orderId);
+    const orderId = parsePositiveId((req.params as { orderId: string }).orderId);
+    if (orderId === null) return reply.code(400).send({ error: "Invalid order id." });
 
     const idempotencyKeyHeader = normalizeIdempotencyKey(req.headers["idempotency-key"]);
     const idem = idempotencyKeyHeader ? { key: idempotencyKeyHeader, requestHash: hashIdempotentRequest({ orderId }) } : null;
@@ -377,7 +381,8 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
       return reply.code(429).send({ error: "error.rate_limited" });
     }
 
-    const orderId = Number((req.params as { orderId: string }).orderId);
+    const orderId = parsePositiveId((req.params as { orderId: string }).orderId);
+    if (orderId === null) return reply.code(400).send({ error: "Invalid order id." });
 
     const idempotencyKeyHeader = normalizeIdempotencyKey(req.headers["idempotency-key"]);
     const idem = idempotencyKeyHeader ? { key: idempotencyKeyHeader, requestHash: hashIdempotentRequest({ orderId }) } : null;

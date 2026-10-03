@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { parsePositiveId } from "../../lib/params";
 import { OrderStatus, OrderKind, DeliveryType, StockActorType } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { errorBody } from "@app/core/errorBody";
@@ -239,7 +240,8 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
   });
 
   app.get("/api/orders/:orderId", { preHandler: blockReadonlyReads }, async (req, reply) => {
-    const orderId = Number((req.params as { orderId: string }).orderId);
+    const orderId = parsePositiveId((req.params as { orderId: string }).orderId);
+    if (orderId === null) return reply.code(400).send({ error: "Invalid order id." });
     const order = await getOrder(prisma, orderId);
     if (!order) return reply.code(404).send({ error: "Order not found." });
     // The buyer's manual_with_info answers, pre-labeled against the SKU's
@@ -327,7 +329,8 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
   // it still belongs to this order — a released row re-sold to another buyer
   // must never leak through a stale OrderItem.stockItemId.
   app.post("/api/orders/:orderId/reveal", { preHandler: csrfProtect }, async (req, reply) => {
-    const orderId = Number((req.params as { orderId: string }).orderId);
+    const orderId = parsePositiveId((req.params as { orderId: string }).orderId);
+    if (orderId === null) return reply.code(400).send({ error: "Invalid order id." });
     let order: Awaited<ReturnType<typeof getOrder>>;
     try {
       order = await getOrder(prisma, orderId);
@@ -364,7 +367,8 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
   });
 
   app.post("/api/orders/:orderId/approve", { preHandler: csrfProtect }, async (req, reply) => {
-    const orderId = Number((req.params as { orderId: string }).orderId);
+    const orderId = parsePositiveId((req.params as { orderId: string }).orderId);
+    if (orderId === null) return reply.code(400).send({ error: "Invalid order id." });
     let settled: "delivered" | "processing" = "delivered";
     try {
       await prisma.$transaction(async (tx) => {
@@ -413,7 +417,8 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
   // works once the order is actually DELIVERED, and only for buyers with a
   // Telegram id — web-only buyers see their order on the storefront instead.
   app.post("/api/orders/:orderId/resend", { preHandler: csrfProtect }, async (req, reply) => {
-    const orderId = Number((req.params as { orderId: string }).orderId);
+    const orderId = parsePositiveId((req.params as { orderId: string }).orderId);
+    if (orderId === null) return reply.code(400).send({ error: "Invalid order id." });
     const order = await getOrder(prisma, orderId);
     if (!order) return reply.code(404).send({ error: "Order not found." });
     if (order.status !== OrderStatus.DELIVERED) {
@@ -469,7 +474,8 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
   });
 
   app.post("/api/orders/:orderId/reject", { preHandler: csrfProtect }, async (req, reply) => {
-    const orderId = Number((req.params as { orderId: string }).orderId);
+    const orderId = parsePositiveId((req.params as { orderId: string }).orderId);
+    if (orderId === null) return reply.code(400).send({ error: "Invalid order id." });
     const reason = ((req.body as Record<string, string>).reason ?? "").trim();
     if (!reason) {
       return reply.code(400).send({ error: "A rejection reason is required." });
@@ -499,7 +505,8 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
     "/api/orders/:orderId/credit-balance",
     { preHandler: csrfProtect },
     async (req, reply) => {
-      const orderId = Number((req.params as { orderId: string }).orderId);
+      const orderId = parsePositiveId((req.params as { orderId: string }).orderId);
+      if (orderId === null) return reply.code(400).send({ error: "Invalid order id." });
       try {
         await prisma.$transaction(async (tx) => {
           const { credited, currency, wasAlreadyCancelled, evidenceRowsConsumed } = await creditOrderToBalance(tx, {
@@ -541,7 +548,8 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
   // auto-caller path, every caller here is a real admin — so this route does
   // NOT write a second audit row (would double-log).
   app.post("/api/orders/:orderId/fulfill", { preHandler: csrfProtect }, async (req, reply) => {
-    const orderId = Number((req.params as { orderId: string }).orderId);
+    const orderId = parsePositiveId((req.params as { orderId: string }).orderId);
+    if (orderId === null) return reply.code(400).send({ error: "Invalid order id." });
     const body = req.body as Record<string, unknown>;
     const content = typeof body.content === "string" ? body.content.trim() : "";
     if (!content) {
@@ -590,7 +598,8 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
   // refund API). Modeled on /reject: a reason is required, ValidationError
   // (e.g. an already-DELIVERED order) maps to 422.
   app.post("/api/orders/:orderId/cancel", { preHandler: csrfProtect }, async (req, reply) => {
-    const orderId = Number((req.params as { orderId: string }).orderId);
+    const orderId = parsePositiveId((req.params as { orderId: string }).orderId);
+    if (orderId === null) return reply.code(400).send({ error: "Invalid order id." });
     const reason = ((req.body as Record<string, string>).reason ?? "").trim();
     if (!reason) {
       return reply.code(400).send({ error: "A cancellation reason is required." });

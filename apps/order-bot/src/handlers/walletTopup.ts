@@ -304,9 +304,10 @@ async function showTopupMethods(ctx: MyContext, currency: "IDR" | "USDT", amount
  *  return to the currency choice rather than crashing. */
 function readTopupScratch(ctx: MyContext): { currency: "IDR" | "USDT"; amount: Decimal } | null {
   const currency = sc(ctx).topupCurrency;
-  const raw = sc(ctx).topupAmount;
-  if (!currency || !raw) return null;
-  const amount = new Decimal(raw);
+  // The canonical string handleTopupAmountInput stored (already read by parseMoneyInput), not typed text.
+  const stored = sc(ctx).topupAmount;
+  if (!currency || !stored) return null;
+  const amount = new Decimal(stored);
   if (!amount.isFinite() || amount.lessThanOrEqualTo(0)) return null;
   return { currency, amount };
 }

@@ -1060,16 +1060,14 @@ export async function bulkPricingConversation(conversation: MyConversation, ctx:
       await answerStaleTap(u);
       continue;
     }
-    const raw = u.message.text.trim().replace(",", ".");
     await consumeInput(u);
-    try {
-      const p = new Decimal(raw);
-      if (p.lessThan(1) || p.greaterThan(99)) throw new Error();
-      pct = p;
-      break;
-    } catch {
+    const p = parsePercentInput(u.message.text);
+    if (p === null || p.lessThan(1) || p.greaterThan(99)) {
       await adminAnchor(u, t(u, "admin.bulk_err_pct"), akb.cancelInputKb());
+      continue;
     }
+    pct = p;
+    break;
   }
 
   const adminTg = ctx.from!.id;

@@ -220,6 +220,16 @@ checklist for the task list.
   `ctxPriceFormatter`, `formatIdrFor`, `orderAmount(o, d, lang)`) — never
   hand-format or hard-code separators in handlers. Crypto payables
   (`formatUsdt`, `formatPrice(..., "USDT")`) are the documented exception.
+- **Typed money is read by its shape, never with `new Decimal(text)`.** A person
+  typing `10.000` means ten thousand rupiah. Bot conversations/handlers, the
+  catalog CSV import and the storefront top-up form read typed amounts with
+  `parseMoneyInput` / `normalizeMoneyInput` (`packages/core/src/moneyFormat.ts`,
+  `moneyInput.ts`; the storefront client holds a test-enforced byte-identical
+  copy); an ambiguous shape is refused, not guessed. A typed percent uses
+  `parsePercentInput`. `apps/order-bot/test/money-input-guard.test.ts` fails on
+  `new Decimal(<typed text>)`, `parseFloat`, `.replace(",", ".")`, `formatIdr(`
+  or an `Rp` literal in buyer-facing bot files, and `Number(amount)` on the
+  top-up form. Admin-facing bot screens keep the Indonesian `formatIdr`.
 - **No raw SQL in routes/handlers** — add helpers to `packages/db/src/crud/*`
   (per-domain split, e.g. `orders.ts`, `stock.ts`, `pricing.ts`, `vouchers.ts`)
   and cover them with Vitest (`*.test.ts` colocated in `crud/`).

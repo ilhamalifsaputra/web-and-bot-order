@@ -585,8 +585,9 @@ describe("deliverPaidTokopayOrder — WALLET_TOPUP routing", () => {
 // the `trx_id` UNIQUE constraint). Every "duplicate trx" test elsewhere in
 // this file — and in payment-idempotency-matrix.test.ts's "10 refreshes + 5
 // webhook retries..." acceptance suite — calls deliverPaidTokopayOrder
-// sequentially, one `await` at a time. That is indistinguishable from
-// "the claim is race-safe" — there was never
+// sequentially, one `await` at a time. That proves nothing about race
+// safety: a sequential duplicate always sees the first call's committed
+// row, so it passes whether or not the claim is atomic — there was never
 // more than one writer to actually race. This fires 3 concurrent calls with
 // the IDENTICAL trxId/amount/orderId via Promise.allSettled against the real
 // dev Postgres and asserts the guard still allows exactly one winner. A

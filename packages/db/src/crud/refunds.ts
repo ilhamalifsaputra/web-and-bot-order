@@ -355,8 +355,11 @@ export async function transitionRefundStatus(
  * that need this to be airtight under concurrent writers should call this
  * inside one `$transaction` — but note that at Postgres's default isolation
  * level two concurrent transactions can still both pass the sum check, so a
- * caller that needs a hard guarantee must also serialize on the Refund row
- * (for example with `SELECT ... FOR UPDATE`).
+ * caller that needs a hard guarantee must also serialize on a row shared by
+ * every Refund of the same OrderItem — lock the OrderItem (or its Order) row,
+ * for example with `SELECT ... FOR UPDATE`. Locking only one Refund row (or an
+ * unrelated row such as `stock_replacements`) does not help: the invariant
+ * spans sibling Refunds, which a lock on a single Refund does not exclude.
  *
  * Rejects attaching a new item to a Refund that is already terminal
  * (`TERMINAL_REFUND_STATUSES` — COMPLETED, FAILED, or CANCELLED): a COMPLETED

@@ -291,7 +291,7 @@ di [`DOCS.md`](DOCS.md).
 git pull
 
 # Docker — satu perintah; ambil dump dulu (lihat catatan di bawah):
-DATABASE_URL_PRISMA=postgresql://engine-marker deploy/backup/backup.sh
+deploy/backup/backup.sh
 docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml up -d --build
 docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml logs --since 10m server | grep entrypoint
 
@@ -339,7 +339,7 @@ pm2 restart bot-order
 > [`deploy/backup/README.md`](deploy/backup/README.md).
 
 ```bash
-DATABASE_URL_PRISMA=postgresql://engine-marker deploy/backup/backup.sh   # pg_dump -Fc + verifikasi + retensi
+deploy/backup/backup.sh   # pg_dump -Fc + verifikasi + retensi
 deploy/backup/restore.sh data/backups/pg-<stamp>.dump
 ```
 

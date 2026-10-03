@@ -347,8 +347,8 @@ menambah tabel baru seperti `order_status_history`).
 hanya query `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name = ANY($1)`, tidak pernah
 memeriksa kolom per tabel. Jadi migrasi column-only (mis.
 `orders.network`/`confirmations`/`required_confirmations`/`first_detected_at`/
-`confirmed_at` dari `20260624160712_add_order_status_history`, atau
-`broadcasts.web_image_url`/`image_file_id` dari `20260706120000_broadcast_image`)
+`confirmed_at`, atau `broadcasts.web_image_url`/`image_file_id` — keduanya
+dulu datang lewat migrasi tersendiri, kini sudah terlipat ke `postgresql_baseline`)
 tidak memicu peringatan apa pun saat boot kalau operator lupa `db push` —
 gejala baru muncul sebagai `P2022` pertama kali kode menulis ke kolom yang
 belum ada bukan sebagai log error saat startup. Ini keterbatasan yang disengaja: menambah

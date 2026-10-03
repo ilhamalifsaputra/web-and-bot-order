@@ -44,9 +44,9 @@ interface GrandfatheredCollision {
  * / `20260725000000_add_ticket_priority_category_resolved`, H-9) was removed from
  * this directory along with the rest of the earlier migration history — this
  * script only scans `prisma/migrations/*`, so a
- * folder that no longer lives there needs no allowlist entry. The H-9 evidence
- * (both orderings produce an identical schema) is unchanged and still documented
- * in docs/MIGRATIONS.md; re-add an entry
+ * folder that no longer lives there needs no allowlist entry. The H-9 finding
+ * (both orderings produced an identical schema) lives on only in git history;
+ * re-add an entry
  * here only if those two folders (or an equivalent colliding pair) ever return to
  * this active directory.
  */

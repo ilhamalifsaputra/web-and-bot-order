@@ -4,9 +4,8 @@
  * (Task 2, Trustance Master Architecture Phase 1). Idempotent — a row that
  * already holds a valid encrypted envelope is left untouched, so it's safe
  * to run more than once (e.g. re-run after a partial run was interrupted).
- * Mirrors this repo's existing one-time-backfill precedent
- * (scripts/backfill-catalog-slugs.ts): same "idempotent, safe to re-run,
- * reports a per-run count" shape.
+ * Follows the same one-time-backfill shape as this repo's other backfill
+ * scripts: idempotent, safe to re-run, reports a per-run count.
  *
  * Run it against the production Postgres database, with `DATABASE_URL_PRISMA`
  * and `CREDENTIAL_ENCRYPTION_KEY` set in the environment (same values the app

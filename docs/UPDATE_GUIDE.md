@@ -27,7 +27,7 @@ dan tersimpan sebelum menarik kode baru (lihat
 [panduan backup](../deploy/backup/README.md)).
 
 ```bash
-DATABASE_URL_PRISMA=postgresql://engine-marker deploy/backup/backup.sh
+deploy/backup/backup.sh
 git pull
 docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml up -d --build
 docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml logs --since 10m server | grep entrypoint

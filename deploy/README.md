@@ -64,7 +64,7 @@ A release deploys with one command:
 
 ```bash
 COMPOSE="docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml"
-DATABASE_URL_PRISMA=postgresql://engine-marker deploy/backup/backup.sh   # see "Take a dump first"
+deploy/backup/backup.sh   # see "Take a dump first"
 $COMPOSE up -d --build
 $COMPOSE logs --since 10m server | grep entrypoint                       # READ these lines
 ```

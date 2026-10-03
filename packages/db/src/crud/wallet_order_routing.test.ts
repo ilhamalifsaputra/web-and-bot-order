@@ -136,7 +136,10 @@ describe("USDT order spends + refunds the USDT credit balance", () => {
     const { user, product } = sample;
     await adjustWallet(prisma, user.id, "2", { currency: "USDT", reason: "admin_adjust" });
 
-    // Request 100 USDT credit but the balance is only 2 → insufficient.
+    // Request 4 USDT credit (part of the 5 USDT order) but the balance is only
+    // 2 → insufficient. A request covering the WHOLE order is a different
+    // refusal on a gateway rail (nothing left to collect — see
+    // usdt_wallet_full_credit.test.ts), so this stays a partial credit.
     await expect(
       prisma.$transaction((tx) =>
         createInternalOrder(tx, {
@@ -145,7 +148,7 @@ describe("USDT order spends + refunds the USDT credit balance", () => {
           productId: product.id,
           quantity: 1,
           rate: 1,
-          walletAmount: "100",
+          walletAmount: "4",
         }),
       ),
     ).rejects.toMatchObject({ key: "error.insufficient_wallet" });

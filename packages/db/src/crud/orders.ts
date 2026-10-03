@@ -14,6 +14,8 @@ import {
   StockActorType,
   UserRole,
   DeliveryType,
+  OrderCurrency,
+  PaymentMethod,
   langCode,
   type CategoryGroup,
 } from "@app/core/enums";
@@ -1244,6 +1246,17 @@ export async function applyUsdtWalletToOrder(
   const payable = Decimal.max(ZERO, new Decimal(order.totalAmount).minus(order.uniqueCents));
   const walletUsed = q4(Decimal.min(requested, payable));
   if (walletUsed.lessThanOrEqualTo(0)) return;
+
+  // A credit that covers everything but the unique cents would leave a gateway
+  // order asking the buyer to send nothing but matching noise (A3, money audit
+  // P1). A fully covered order is settled on the WALLET rail, which carries no
+  // cents; on any other rail it is refused before the debit below, with the
+  // same "nothing left to collect" refusal `finalizeOrderPayment` gives it when
+  // the caller passes the credit there too (every current caller does — this is
+  // the backstop for one that forgets).
+  if (order.paymentMethod !== PaymentMethod.WALLET && walletUsed.greaterThanOrEqualTo(payable)) {
+    throw new ValidationError("error.amount_too_small_for_rail", { currency: OrderCurrency.USDT });
+  }
 
   const balance = new Decimal(user.walletBalanceUsdt);
   if (walletUsed.greaterThan(balance)) {

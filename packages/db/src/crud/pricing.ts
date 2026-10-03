@@ -896,6 +896,10 @@ export type PaymentChoice =
        * `error.insufficient_wallet` to raise, and pre-empting it here with a
        * "that total is too small" error would name the wrong problem.
        *
+       * One exception (A3, money audit P1): a request that covers the WHOLE
+       * converted total on a gateway rail is refused here as nothing left to
+       * collect, affordable or not — such an order belongs on the WALLET rail.
+       *
        * Omitted/null/zero = no credit, and then every figure below is exactly
        * what it was before this existed.
        */
@@ -1083,24 +1087,26 @@ export async function finalizeOrderPayment(db: Db, orderId: number, choice: Paym
   const railIdr = credit.greaterThan(0)
     ? Decimal.max(new Decimal(0), baseIdr.minus(credit.times(rate)))
     : baseIdr;
-  // A credit that covers the whole converted total leaves the rail nothing to
-  // clear, so there is no floor to test — the same exemption the checkout rail
-  // lists and `settleFullyDiscountedOrder` already make for a total of zero.
-  // Deliberately narrow: an order that is zero for any OTHER reason still meets
-  // the `nothing_to_collect` backstop, exactly as before.
-  if (!(credit.greaterThan(0) && !railUsdt.greaterThan(0))) {
-    await assertOrderTotalClearsRailMinimum(db, {
-      method,
-      currency: OrderCurrency.USDT,
-      idrAmount: railIdr,
-      railAmount: railUsdt,
-      // No USDT top-up reaches here (`createWalletTopupOrder` sends those to
-      // `finalizeWalletTopupPayment`, which runs this same guard itself — see
-      // F3 there), but the purpose is derived from the row, so the day one does
-      // it gets the right sentence instead of the cart's.
-      purpose: minimumPurpose,
-    });
-  }
+  // A credit that covers the whole converted total is NOT exempt on a gateway
+  // rail (A3, money audit P1). It used to be, on the theory that a fully covered
+  // order needs no rail — but `applyUsdtWalletToOrder` leaves the unique cents
+  // payable, so the exemption produced a debited balance and an order sitting
+  // PENDING_PAYMENT asking the buyer to send 0.0x USDT of matching noise. A
+  // fully covered order belongs on the WALLET rail (`completeOrderWithWalletCredit`),
+  // which the guard exempts by method; on any other rail it is refused here, before
+  // anything is written or debited — the same refusal the IDR branch above gives
+  // a Rupiah credit that covers the whole order.
+  await assertOrderTotalClearsRailMinimum(db, {
+    method,
+    currency: OrderCurrency.USDT,
+    idrAmount: railIdr,
+    railAmount: railUsdt,
+    // No USDT top-up reaches here (`createWalletTopupOrder` sends those to
+    // `finalizeWalletTopupPayment`, which runs this same guard itself — see
+    // F3 there), but the purpose is derived from the row, so the day one does
+    // it gets the right sentence instead of the cart's.
+    purpose: minimumPurpose,
+  });
   // WALLET orders are pure ledger entries — there is no on-chain/gateway
   // transfer to disambiguate, so unique cents (which would otherwise leave a
   // nonzero remainder even when wallet credit fully covers the order) never

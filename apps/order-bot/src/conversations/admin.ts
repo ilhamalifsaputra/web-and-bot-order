@@ -15,6 +15,7 @@ import type { MessageEntity } from "grammy/types";
 import { config } from "@app/core/config";
 import { botToken, isAdmin } from "@app/core/runtime";
 import { Decimal } from "@app/core/money";
+import { parseMoneyInput } from "@app/core/moneyFormat";
 import { ProductType, SenderType, VoucherType } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
@@ -58,6 +59,14 @@ import { adminCommand, renderUserCard } from "../handlers/admin";
 import { startCommand } from "../handlers/customer";
 
 const price = (v: Decimal.Value, decimals = 2) => formatPrice(v, config.CURRENCY, decimals);
+
+/** A typed percent: digits with an optional `.`/`,` decimal part of 1-2 digits
+ *  (`10`, `10.5`, `10,5`). Anything else — `10.000`, `1e1`, signs — is null. */
+function parsePercentInput(raw: string): Decimal | null {
+  const text = raw.trim();
+  if (!/^\d+([.,]\d{1,2})?$/.test(text)) return null;
+  return new Decimal(text.replace(",", "."));
+}
 
 function isCmd(ctx: MyContext, cmd: string): boolean {
   const text = ctx.message?.text ?? "";
@@ -255,14 +264,11 @@ export async function voucherCreateConversation(conversation: MyConversation, ct
       await adminAnchor(u, t(u, "admin.voucher_err_format"), akb.cancelInputKb());
       continue;
     }
-    let val: Decimal;
-    try {
-      val = new Decimal(valStr!);
-    } catch {
-      await adminAnchor(u, t(u, "admin.voucher_err_value"), akb.cancelInputKb());
-      continue;
-    }
-    if (val.lessThanOrEqualTo(0)) {
+    // A fixed value is rupiah, read by its shape (`10.000` is ten thousand);
+    // a percent is a plain number with an optional 1-2 digit decimal part
+    // (`10,5` or `10.5`), so a thousands-shaped `10.000` is never read as 10.
+    const val = typeStr === "fixed" ? parseMoneyInput(valStr!, "IDR") : parsePercentInput(valStr!);
+    if (val === null || val.lessThanOrEqualTo(0)) {
       await adminAnchor(u, t(u, "admin.voucher_err_value"), akb.cancelInputKb());
       continue;
     }
@@ -824,16 +830,15 @@ export async function productCreateConversation(conversation: MyConversation, ct
         await answerStaleTap(u);
         continue;
       }
-      const raw = u.message.text.trim().replace(",", ".");
+      const raw = u.message.text.trim();
       await consumeInput(u);
-      try {
-        const p = new Decimal(raw);
-        if (p.lessThanOrEqualTo(0)) throw new Error();
-        priceVal = p;
-        break;
-      } catch {
+      const p = parseMoneyInput(raw, "IDR");
+      if (p === null || p.lessThanOrEqualTo(0)) {
         await adminAnchor(u, t(u, "admin.prod_err_price"), akb.cancelInputKb());
+        continue;
       }
+      priceVal = p;
+      break;
     }
   }
   saveDraft({ step: 5, name: name!, type: ptype!, typeLabel, duration: duration!, price: priceVal!.toString() });
@@ -851,17 +856,16 @@ export async function productCreateConversation(conversation: MyConversation, ct
         await answerStaleTap(u);
         continue;
       }
-      const raw = u.message.text.trim().replace(",", ".");
+      const raw = u.message.text.trim();
       await consumeInput(u);
       if (raw === "-") { resellerVal = null; break; }
-      try {
-        const p = new Decimal(raw);
-        if (p.lessThanOrEqualTo(0)) throw new Error();
-        resellerVal = p;
-        break;
-      } catch {
+      const p = parseMoneyInput(raw, "IDR");
+      if (p === null || p.lessThanOrEqualTo(0)) {
         await adminAnchor(u, t(u, "admin.prod_err_reseller"), akb.cancelInputKb());
+        continue;
       }
+      resellerVal = p;
+      break;
     }
   }
   saveDraft({ step: 6, name: name!, type: ptype!, typeLabel, duration: duration!, price: priceVal!.toString(), resellerPrice: resellerVal ? resellerVal.toString() : null });
@@ -977,11 +981,8 @@ export async function productEditConversation(conversation: MyConversation, ctx:
     }
 
     if (field === "price") {
-      let p: Decimal;
-      try {
-        p = new Decimal(raw.replace(",", "."));
-        if (p.lessThanOrEqualTo(0)) throw new Error();
-      } catch {
+      const p = parseMoneyInput(raw, "IDR");
+      if (p === null || p.lessThanOrEqualTo(0)) {
         await adminAnchor(u, t(u, "admin.prod_err_price"), akb.cancelInputKb());
         continue;
       }

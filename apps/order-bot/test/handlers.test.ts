@@ -5832,6 +5832,53 @@ describe("admin handlers", () => {
     expect(after.walletBalanceUsdt.toString()).toBe(before.walletBalanceUsdt.toString());
   });
 
+  // The bot now shows Rupiah as "Rp10.000", so an admin copies that shape back
+  // into /wallet. `new Decimal("10.000")` read it as ten rupiah, and "10,000"
+  // was rejected outright — the amount is now read by its shape (the same
+  // parseMoneyInput the buyer's top-up uses), with one optional leading sign
+  // kept on top because /wallet also deducts.
+  describe("/wallet amount is read by its shape, keeping the sign", () => {
+    const accepted: Array<[string, "IDR" | "USDT", string]> = [
+      ["10.000", "IDR", "10000"],
+      ["1.000.000", "IDR", "1000000"],
+      ["10,000", "IDR", "10000"],
+      ["-10.000", "IDR", "-10000"],
+      ["+10.000", "IDR", "10000"],
+      ["10000.50", "IDR", "10000.5"],
+      ["5,5 USDT", "USDT", "5.5"],
+    ];
+    for (const [typed, currency, delta] of accepted) {
+      it(`/wallet <uid> ${typed} adjusts the ${currency} wallet by ${delta}`, async () => {
+        const before = (await getUser(prisma, sample.user.id))!;
+        const { ctx, sink } = adminCtx({ match: `${sample.user.id} ${typed}` });
+        await adminWalletCommand(ctx);
+        const after = (await getUser(prisma, sample.user.id))!;
+        expect(sentIncludes(sink, "Bad arguments")).toBe(false);
+        const field = currency === "USDT" ? "walletBalanceUsdt" : "walletBalance";
+        const other = currency === "USDT" ? "walletBalance" : "walletBalanceUsdt";
+        expect(new Decimal(after[field]).minus(before[field]).toString()).toBe(delta);
+        expect(after[other].toString()).toBe(before[other].toString());
+      });
+    }
+
+    const rejected = ["1.000 USDT", "--5", "+-5", "-", "+", "1e3", "0x10", "Infinity", "-Infinity", "NaN", "10.000.0", "Rp10.000"];
+    for (const typed of rejected) {
+      it(`/wallet <uid> ${typed} is rejected as bad args and writes nothing`, async () => {
+        const before = (await getUser(prisma, sample.user.id))!;
+        const auditBefore = await prisma.auditLog.count({ where: { action: "wallet_adjust" } });
+        const movesBefore = await prisma.walletTransaction.count({ where: { reason: "admin_adjust" } });
+        const { ctx, sink } = adminCtx({ match: `${sample.user.id} ${typed}` });
+        await adminWalletCommand(ctx);
+        const after = (await getUser(prisma, sample.user.id))!;
+        expect(sentIncludes(sink, "Bad arguments")).toBe(true);
+        expect(after.walletBalance.toString()).toBe(before.walletBalance.toString());
+        expect(after.walletBalanceUsdt.toString()).toBe(before.walletBalanceUsdt.toString());
+        expect(await prisma.auditLog.count({ where: { action: "wallet_adjust" } })).toBe(auditBefore);
+        expect(await prisma.walletTransaction.count({ where: { reason: "admin_adjust" } })).toBe(movesBefore);
+      });
+    }
+  });
+
   it("/emojiid explains itself when the command arrives bare", async () => {
     const { ctx, sink } = adminCtx({ text: "/emojiid" });
     await adminEmojiIdCommand(ctx);

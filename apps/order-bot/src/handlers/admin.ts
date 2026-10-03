@@ -11,6 +11,7 @@ import { InputFile } from "grammy";
 import { config } from "@app/core/config";
 import { isAdmin } from "@app/core/runtime";
 import { Decimal } from "@app/core/money";
+import { parseMoneyInput } from "@app/core/moneyFormat";
 import { ensureUtc } from "@app/core/datetime";
 import { UserRole, DeadReason, langCode, OrderKind } from "@app/core/enums";
 import { logger } from "@app/core/logger";
@@ -231,17 +232,27 @@ export async function adminWalletCommand(ctx: MyContext): Promise<void> {
   let currency: "IDR" | "USDT" = "IDR";
   try {
     uid = parseInt(args[0]!, 10);
-    amt = new Decimal(args[1]!);
-    // `new Decimal("NaN")`/`new Decimal("Infinity")` construct successfully
-    // (they don't throw), so a non-finite amount would otherwise reach
-    // adjustWallet and poison the wallet balance (M-3, backend audit
-    // 2026-07-31) — reject it the same way a bad uid already is, below.
-    if (Number.isNaN(uid) || !amt.isFinite()) throw new Error("bad uid");
+    if (Number.isNaN(uid)) throw new Error("bad uid");
+    // Currency first: how the amount is read depends on it (USDT `1.000` is
+    // ambiguous, IDR `1.000` is one thousand rupiah).
     if (args[2] !== undefined) {
       const requested = args[2].toUpperCase();
       if (requested !== "IDR" && requested !== "USDT") throw new Error("bad currency");
       currency = requested;
     }
+    // The amount is read by its shape, the way the bot displays it
+    // (`10.000` is Rp10.000, not Rp10), with ONE optional leading sign on
+    // top because /wallet also deducts. parseMoneyInput accepts only digits
+    // and `.`/`,`, so `NaN`, `Infinity`, `1e3` and `0x10` never reach
+    // Decimal — `new Decimal("NaN")`/`new Decimal("Infinity")` construct
+    // without throwing, and a non-finite amount reaching adjustWallet would
+    // poison the wallet balance (M-3, backend audit 2026-07-31).
+    const typed = args[1]!;
+    const negative = typed.startsWith("-");
+    const unsigned = negative || typed.startsWith("+") ? typed.slice(1) : typed;
+    const magnitude = parseMoneyInput(unsigned, currency);
+    if (magnitude === null || !magnitude.isFinite()) throw new Error("bad amount");
+    amt = negative ? magnitude.negated() : magnitude;
   } catch {
     await adminEdit(ctx, t(ctx, "admin.wallet_bad_args"), akb.backToAdminKb(lang));
     return;

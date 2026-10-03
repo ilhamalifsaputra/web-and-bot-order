@@ -126,6 +126,10 @@ export default async function vouchersApiRoutes(app: FastifyInstance): Promise<v
       } catch {
         return reply.code(400).send({ error: "Max discount must be a number." });
       }
+      // NaN/Infinity construct successfully — reject explicitly (M-3).
+      if (!maxDiscountDec.isFinite()) {
+        return reply.code(400).send({ error: "Max discount must be a number." });
+      }
     }
 
     let startAt: Date | null = null;
@@ -234,6 +238,10 @@ export default async function vouchersApiRoutes(app: FastifyInstance): Promise<v
       try {
         args.minPurchase = new Decimal(String(body.min_purchase).trim() || "0");
       } catch {
+        return reply.code(400).send({ error: "Min purchase must be a number." });
+      }
+      // NaN/Infinity construct successfully — reject explicitly (M-3).
+      if (!args.minPurchase.isFinite()) {
         return reply.code(400).send({ error: "Min purchase must be a number." });
       }
     }

@@ -376,6 +376,27 @@ describe("POST /api/vouchers/:voucherId/update", () => {
     const fresh = await prisma.voucher.findUniqueOrThrow({ where: { id: voucher.id } });
     expect(fresh.maxDiscount).toBeNull();
   });
+
+  // Backend audit 2026-10 E1: the update path's min_purchase had no finite
+  // check (the create path and the other update fields already did), so
+  // "Infinity"/"NaN" reached updateVoucher.
+  it.each(["NaN", "Infinity", "-Infinity"])("rejects a %s min_purchase with 400, leaving it untouched", async (bad) => {
+    const create = await postJson("/api/vouchers", cookie, csrf, { code: "SAVE10", type: "percent", value: "10", min_purchase: "5000" });
+    const { voucher } = create.json() as { voucher: { id: number } };
+
+    const res = await postJson(`/api/vouchers/${voucher.id}/update`, cookie, csrf, { min_purchase: bad });
+    expect(res.statusCode).toBe(400);
+    const fresh = await prisma.voucher.findUniqueOrThrow({ where: { id: voucher.id } });
+    expect(fresh.minPurchase.toString()).toBe("5000");
+  });
+});
+
+describe("POST /api/vouchers max_discount", () => {
+  it.each(["NaN", "Infinity"])("rejects a %s max_discount on create with 400", async (bad) => {
+    const res = await postJson("/api/vouchers", cookie, csrf, { code: "MAXBAD", type: "percent", value: "10", max_discount: bad });
+    expect(res.statusCode).toBe(400);
+    expect(await prisma.voucher.findUnique({ where: { code: "MAXBAD" } })).toBeNull();
+  });
 });
 
 describe("POST /api/support/:ticketId/reply + /close", () => {

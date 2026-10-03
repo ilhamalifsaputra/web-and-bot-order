@@ -37,6 +37,7 @@
  * second payout.
  */
 import type { FastifyInstance } from "fastify";
+import { parsePositiveId } from "../../lib/params";
 import { RefundExecutionMethod } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { errorBody } from "@app/core/errorBody";
@@ -55,11 +56,8 @@ import { csrfProtect } from "../../plugins/auth";
 
 const REFUND_METHODS = Object.values(RefundExecutionMethod) as string[];
 
-/** A positive integer route param, or null when it isn't one. */
-function idParam(raw: string | undefined): number | null {
-  const n = Number(raw);
-  return Number.isInteger(n) && n > 0 ? n : null;
-}
+/** A positive integer route param (plain digits, within the DB id range), or null when it isn't one. */
+const idParam = (raw: string | undefined): number | null => parsePositiveId(raw);
 
 /** Trimmed string body field, or null when absent/blank — an admin's optional
  *  free text should never be stored as `""` or as the string "undefined". */

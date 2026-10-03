@@ -93,9 +93,16 @@ const ROUTES: [Method, string][] = [
   ["POST", "/api/admins/:id/role"],
   ["POST", "/api/admins/:id/logout"],
   ["POST", "/api/outbox/:id/retry"],
+  ["POST", "/api/orders/:id/credit-overpayment"],
+  ["POST", "/api/orders/:id/items/1/replace"],
+  ["POST", "/api/orders/1/items/:id/replace"],
+  ["POST", "/api/orders/:id/replacements/1/retry"],
+  ["POST", "/api/orders/1/replacements/:id/retry"],
+  ["POST", "/api/orders/:id/replacements/1/refund"],
+  ["POST", "/api/orders/1/replacements/:id/refund"],
 ];
 
-const BAD_IDS = ["abc", "1.5", "-1", "0", "99999999999"];
+const BAD_IDS = ["abc", "1.5", "-1", "0", "1e3", "99999999999"];
 
 describe("admin routes reject malformed path ids with 400", () => {
   for (const [method, pattern] of ROUTES) {

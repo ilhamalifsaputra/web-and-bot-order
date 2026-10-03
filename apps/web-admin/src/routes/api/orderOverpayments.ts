@@ -42,17 +42,15 @@
  * is a redundant message, never a second credit.
  */
 import type { FastifyInstance } from "fastify";
+import { parsePositiveId } from "../../lib/params";
 import { ValidationError } from "@app/core/errors";
 import { errorBody } from "@app/core/errorBody";
 import { logger } from "@app/core/logger";
 import { prisma, creditOverpaymentToBalance } from "@app/db";
 import { csrfProtect } from "../../plugins/auth";
 
-/** A positive integer route param, or null when it isn't one. */
-function idParam(raw: string | undefined): number | null {
-  const n = Number(raw);
-  return Number.isInteger(n) && n > 0 ? n : null;
-}
+/** A positive integer route param (plain digits, within the DB id range), or null when it isn't one. */
+const idParam = (raw: string | undefined): number | null => parsePositiveId(raw);
 
 export default async function orderOverpaymentsApiRoutes(app: FastifyInstance): Promise<void> {
   app.post(

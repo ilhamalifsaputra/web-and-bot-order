@@ -409,7 +409,7 @@ describe("prices follow the buyer's language on every screen", () => {
   it.each(["id", "en"] as const)("%s: the order message shows the Rupiah snapshot and total in the same spelling", async (lang) => {
     await useRate();
     const order = await prisma.$transaction(async (tx) => {
-      const created = await createOrderDirect(tx, { user: { id: sample.user.id, role: sample.user.role }, productId: sample.product.id, quantity: 1 });
+      const created = await createOrderDirect(tx, { user: { id: sample.user.id, role: sample.user.role }, channel: "bot", productId: sample.product.id, quantity: 1 });
       return finalizeOrderPayment(tx, created!.id, { currency: OrderCurrency.IDR });
     });
     const view = ctxFor(lang, DisplayCurrency.IDR);

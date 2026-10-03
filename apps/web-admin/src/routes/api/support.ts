@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { csvRow } from "../../lib/csv";
 import { parsePositiveId } from "../../lib/params";
 import { SenderType, TicketStatus, TicketPriority, TicketCategory } from "@app/core/enums";
 import { logger } from "@app/core/logger";
@@ -114,25 +115,6 @@ function deriveSubject(message: string): string {
   const lastSpace = slice.lastIndexOf(" ");
   const cut = (lastSpace > 0 ? slice.slice(0, lastSpace) : slice).trimEnd();
   return `${cut}…`;
-}
-
-/** Quotes a CSV field per RFC 4180: wrap in double quotes if it contains a
- * comma, quote, or newline, doubling any embedded quotes. Also neutralizes
- * CSV formula injection (see users.ts's csvField): a leading `=`, `+`, `-`,
- * or `@` is interpreted by Excel/Google Sheets as the start of a formula,
- * and a ticket's `message` is attacker-controlled free text from the public,
- * unauthenticated storefront/bot — prefixing with a single quote forces the
- * cell to render as literal text instead of evaluating. */
-function csvField(value: string): string {
-  const escaped = /^[=+\-@]/.test(value) ? `'${value}` : value;
-  if (/[",\r\n]/.test(escaped)) {
-    return `"${escaped.replace(/"/g, '""')}"`;
-  }
-  return escaped;
-}
-
-function csvRow(fields: string[]): string {
-  return fields.map(csvField).join(",") + "\r\n";
 }
 
 /** "HIGH" -> "High", "PAYMENT" -> "Payment" — for natural-language audit details. */

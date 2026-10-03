@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { csvRow } from "../../lib/csv";
 import { parsePositiveId } from "../../lib/params";
 import { OrderStatus, OrderKind, DeliveryType, StockActorType } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
@@ -100,26 +101,6 @@ function parseDate(value: string | undefined): Date | null {
   if (!value) return null;
   const d = new Date(`${value}T00:00:00Z`);
   return Number.isNaN(d.getTime()) ? null : d;
-}
-
-/** Quotes a CSV field per RFC 4180: wrap in double quotes if it contains a
- * comma, quote, or newline, doubling any embedded quotes. Also neutralizes
- * CSV formula injection (see users.ts's csvField, which this mirrors): a
- * leading `=`, `+`, `-`, or `@` is interpreted by Excel/Google Sheets as the
- * start of a formula, and this row now carries a guest's self-reported
- * `guestEmail` — attacker-controlled free text from the public,
- * unauthenticated checkout form — so prefixing with a single quote forces
- * the cell to render as literal text instead of evaluating. */
-function csvField(value: string): string {
-  const escaped = /^[=+\-@]/.test(value) ? `'${value}` : value;
-  if (/[",\r\n]/.test(escaped)) {
-    return `"${escaped.replace(/"/g, '""')}"`;
-  }
-  return escaped;
-}
-
-function csvRow(fields: string[]): string {
-  return fields.map(csvField).join(",") + "\r\n";
 }
 
 function serializeMoneyView(mv: ReturnType<typeof orderMoneyView>) {

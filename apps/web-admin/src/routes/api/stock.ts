@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { csvRow } from "../../lib/csv";
 import { parsePositiveId } from "../../lib/params";
 import { logger } from "@app/core/logger";
 import { config } from "@app/core/config";
@@ -37,21 +38,6 @@ import {
 } from "@app/db";
 import { currentAdmin, csrfProtect, blockReadonlyReads } from "../../plugins/auth";
 import { displayDate } from "../../dateDisplay";
-
-/** Quotes a CSV field per RFC 4180: wrap in double quotes if it contains a
- * comma, quote, or newline, doubling any embedded quotes. Mirrors
- * apps/web-admin/src/routes/api/orders.ts's identical helper — not shared,
- * per that file's own per-route-file convention. */
-function csvField(value: string): string {
-  if (/[",\r\n]/.test(value)) {
-    return `"${value.replace(/"/g, '""')}"`;
-  }
-  return value;
-}
-
-function csvRow(fields: string[]): string {
-  return fields.map(csvField).join(",") + "\r\n";
-}
 
 /** Constant placeholder shown for every credential in the list/detail
  * payload — StockItem.credentials is encrypted at rest (Task 2) and this

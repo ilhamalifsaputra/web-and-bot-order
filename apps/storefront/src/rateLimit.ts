@@ -299,11 +299,21 @@ const GLOBAL_TRACK_KEY = "*";
 const trackTargetFailures = new Map<string, number[]>();
 const trackGlobalFailures = new Map<string, number[]>();
 
+/** `key`'s unexpired failures. A bucket that empties is deleted (and a missing
+ * one is never created), so date prefixes nobody is guessing at any more don't
+ * stay in memory forever. */
 function prunedCount(store: Map<string, number[]>, key: string, now: number): number[] {
-  const dq = store.get(key) ?? [];
+  const dq = store.get(key);
+  if (!dq) return [];
   while (dq.length && now - dq[0]! > TRACK_FAILURE_WINDOW_SECONDS) dq.shift();
-  store.set(key, dq);
+  if (dq.length === 0) store.delete(key);
   return dq;
+}
+
+function pushFailure(store: Map<string, number[]>, key: string, now: number): void {
+  const dq = prunedCount(store, key, now);
+  dq.push(now);
+  store.set(key, dq);
 }
 
 /** The per-target bucket for an (already normalized) order code, or null if it isn't order-code shaped. */
@@ -322,13 +332,18 @@ export function trackTargetLockedOut(orderCode: string): boolean {
   );
 }
 
+/** Test probe: how many failure buckets (per-target + global) are held in memory. */
+export function trackFailureBucketCount(): number {
+  return trackTargetFailures.size + trackGlobalFailures.size;
+}
+
 /** Record one failed lookup of `orderCode` against its target and the global cap. */
 export function recordTrackFailure(orderCode: string): void {
   const target = trackTargetKey(orderCode);
   if (!target) return;
   const now = Date.now() / 1000;
-  prunedCount(trackTargetFailures, target, now).push(now);
-  prunedCount(trackGlobalFailures, GLOBAL_TRACK_KEY, now).push(now);
+  pushFailure(trackTargetFailures, target, now);
+  pushFailure(trackGlobalFailures, GLOBAL_TRACK_KEY, now);
 }
 
 // ---------------------------------------------------------------------------

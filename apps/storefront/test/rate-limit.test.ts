@@ -7,7 +7,7 @@
 // app instance + own IPs via x-forwarded-for) so these tests never share a
 // rate-limit bucket with the password-login tests in storefront.test.ts.
 import "./setup-env"; // FIRST import — sets env before @app/* load
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@app/core/mailer", () => ({
   sendMail: vi.fn().mockResolvedValue(undefined),
 }));
@@ -25,6 +25,10 @@ import {
   webhookRateLimited,
   WEBHOOK_RATE_LIMIT_MAX,
   rateLimitClientKey,
+  trackTargetLockedOut,
+  recordTrackFailure,
+  trackFailureBucketCount,
+  TRACK_FAILURE_WINDOW_SECONDS,
 } from "../src/rateLimit";
 
 describe("rateLimitClientKey (Task C1)", () => {
@@ -122,6 +126,30 @@ describe("rateLimit module (unit)", () => {
     expect(webhookRateLimited("tokopay", ip)).toBe(true);
     // A different route from the SAME ip has its own, unexhausted bucket.
     expect(webhookRateLimited("paydisini", ip)).toBe(false);
+  });
+});
+
+// Fix round: the /track failure caps kept one Map entry per date prefix
+// forever, even after every failure in it had expired — and a lockout CHECK
+// on a never-failed prefix created an empty entry too.
+describe("track failure buckets are dropped once empty", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("a lockout check never creates a bucket, and an expired bucket is deleted", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2031-01-01T00:00:00Z"));
+    const before = trackFailureBucketCount();
+    expect(trackTargetLockedOut("ORD-20310101-ZZZ1")).toBe(false);
+    expect(trackFailureBucketCount()).toBe(before);
+
+    recordTrackFailure("ORD-20310101-ZZZ1");
+    expect(trackFailureBucketCount()).toBeGreaterThan(before);
+
+    vi.setSystemTime(new Date(Date.now() + (TRACK_FAILURE_WINDOW_SECONDS + 1) * 1000));
+    expect(trackTargetLockedOut("ORD-20310101-ZZZ1")).toBe(false);
+    expect(trackFailureBucketCount()).toBe(0);
   });
 });
 

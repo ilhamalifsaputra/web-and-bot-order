@@ -15,6 +15,7 @@ import {
   TX_OUTCOMES,
   deliverUnderpaidOrder,
   refundUnderpaidOrderTx,
+  logUnderpaidRefundCommitted,
   creditUnderpaidTopupAnyway,
   manualMatchTx,
   dismissUnmatchedTx,
@@ -264,7 +265,7 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
       return reply.code(statusCode).send(body);
     };
 
-    let result: { refunded: Decimal; refundId: number | null; currency: string };
+    let result: { refunded: Decimal; refundId: number | null; currency: string; orderCode: string };
     try {
       // One transaction for the refund AND its audit line (backend audit Task
       // C3): previously the audit was written after the refund had already
@@ -294,6 +295,8 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
       if (e instanceof ValidationError) return respond(422, errorBody(e));
       throw e;
     }
+    // Committed — only now is it true that money moved.
+    logUnderpaidRefundCommitted(result, req.admin!.userId);
     // `refunded`/`currency` go back to the browser so the admin panel can tell
     // the admin whether money actually moved, instead of showing the same green
     // "refunded" toast for an order that was marked REFUNDED with no payout.

@@ -983,8 +983,10 @@ export async function deliverUnderpaidOrder(
 export async function refundUnderpaidOrder(
   db: PrismaClient,
   args: { orderId: number; adminId: number },
-): Promise<{ refunded: Decimal; refundId: number | null; currency: string }> {
-  return db.$transaction((tx: Tx) => refundUnderpaidOrderTx(tx, args));
+): Promise<{ refunded: Decimal; refundId: number | null; currency: string; orderCode: string }> {
+  const result = await db.$transaction((tx: Tx) => refundUnderpaidOrderTx(tx, args));
+  logUnderpaidRefundCommitted(result, args.adminId);
+  return result;
 }
 
 /**
@@ -997,7 +999,7 @@ export async function refundUnderpaidOrder(
 export async function refundUnderpaidOrderTx(
   tx: Tx,
   args: { orderId: number; adminId: number },
-): Promise<{ refunded: Decimal; refundId: number | null; currency: string }> {
+): Promise<{ refunded: Decimal; refundId: number | null; currency: string; orderCode: string }> {
   const order = await getOrder(tx, args.orderId);
   if (!order) throw new ValidationError("error.order_not_found");
   if (order.status !== OrderStatus.UNDERPAID) {
@@ -1057,13 +1059,24 @@ export async function refundUnderpaidOrderTx(
     to: OrderStatus.REFUNDED,
     meta: `refund ${received.toString()} by admin_id=${args.adminId}`,
   });
-  logger.info(
-    `Refunded underpaid order ${order.orderCode} (${received.toString()} ${order.currency}) to wallet by admin ${args.adminId}`,
-  );
+  // No log line here: this runs inside the caller's transaction, and a later
+  // rollback (e.g. its audit insert failing) would leave a log claiming money
+  // moved. Callers log via logUnderpaidRefundCommitted once committed.
   // `currency` travels back with the amount so the caller's audit line can
   // say which money was returned — a bare amount is ambiguous now that the
   // refund lands in the order's own currency rather than always IDR.
-  return { refunded: received, refundId: refund?.id ?? null, currency: order.currency };
+  return { refunded: received, refundId: refund?.id ?? null, currency: order.currency, orderCode: order.orderCode };
+}
+
+/** The ops log line for a refundUnderpaidOrderTx result — call it only AFTER
+ * the surrounding transaction has committed. */
+export function logUnderpaidRefundCommitted(
+  result: { refunded: Decimal; currency: string; orderCode: string },
+  adminId: number,
+): void {
+  logger.info(
+    `Refunded underpaid order ${result.orderCode} (${result.refunded.toString()} ${result.currency}) to wallet by admin ${adminId}`,
+  );
 }
 
 /**

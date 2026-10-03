@@ -231,16 +231,17 @@ const FIELD_DESCRIPTIONS: Record<string, string> = {
   support_contact: "Displayed on customer support buttons.",
   support_whatsapp: "WhatsApp number shown as a support option on the website.",
   web_analytics_id: "Google Analytics measurement ID, used to track storefront visits.",
-  usd_idr_rate: "Rupiah per 1 USDT, used to price USDT gateways in IDR.",
+  usd_idr_rate:
+    "Rupiah per 1 USDT, used to price USDT gateways in IDR. Typed like any rupiah amount: 16.000 and 16,000 both mean sixteen thousand. It must sit inside the sanity floor and ceiling below.",
   usd_idr_rate_auto: "Automatically refresh the rate from the market instead of setting it by hand.",
   usd_idr_rate_rounding: "Rounds the auto-fetched rate to the nearest step (e.g. 100).",
   coingecko_api_key: "Optional CoinGecko demo API key used when refreshing the USDT/IDR market rate.",
   usdt_spread_bps:
-    "Shaves the auto-fetched rate down so buyers send slightly more USDT — 100 = 1%. It is applied only to the automatic refresh; a rate you type in by hand is saved exactly as typed. It does not count towards the maximum move below, so any size is safe there, but the floor and ceiling above still judge the rate after it is applied.",
+    "Shaves the auto-fetched rate down so buyers send slightly more USDT — 100 = 1%. It is applied only to the automatic refresh; a rate you type in by hand gets no spread (it is read like a rupiah amount, so 16.000 means 16000, and must sit inside the floor and ceiling below). It does not count towards the maximum move below, so any size is safe there, but the floor and ceiling above still judge the rate after it is applied.",
   usdt_rounding_ceil_since:
     "When this shop started rounding USDT amounts up to the cent instead of to the nearest 0.1. It does not affect prices at all — the six-hourly finance check uses it to tell an older order priced the old way apart from one that is genuinely wrong. It is filled in for you at upgrade time; only change it if that date is wrong. Empty means the check assumes every order was priced the current way.",
-  fx_rate_min: "Refuses an auto-fetched rate below this — catches a rate source that starts answering in the wrong unit. Blank turns the check off.",
-  fx_rate_max: "Refuses an auto-fetched rate above this — catches a rate source returning a placeholder. Blank turns the check off.",
+  fx_rate_min: "Refuses a rate below this, whether auto-fetched or typed by hand — catches a rate source that starts answering in the wrong unit, or a typo. Blank turns the check off.",
+  fx_rate_max: "Refuses a rate above this, whether auto-fetched or typed by hand — catches a rate source returning a placeholder, or a typo. Blank turns the check off.",
   fx_rate_max_delta_pct:
     "How far the market rate may move between two accepted refreshes. It is measured market-to-market, so the spread above never counts as part of the move — a refresh is only refused when the market itself jumped this far, which usually means the rate source is misbehaving.",
   fx_quote_ttl_minutes:
@@ -941,12 +942,19 @@ export function SettingsPage() {
 
   async function runImport() {
     if (!importPreview) return "Nothing to import.";
-    const result = await apiPost<{ ok: boolean; applied: number; skipped: number }>("/api/settings/import", {
+    const result = await apiPost<{
+      ok: boolean;
+      applied: number;
+      skipped: number;
+      skippedKeys?: { key: string; reason: string }[];
+    }>("/api/settings/import", {
       fields: importPreview.fields,
     });
     invalidate();
     markSaved();
-    return `Imported ${result.applied} setting${result.applied === 1 ? "" : "s"}; skipped ${result.skipped}.`;
+    const summary = `Imported ${result.applied} setting${result.applied === 1 ? "" : "s"}; skipped ${result.skipped}.`;
+    const reasons = (result.skippedKeys ?? []).map((s) => `${s.key}: ${s.reason}`).join(" ");
+    return reasons ? `${summary} ${reasons}` : summary;
   }
 
   async function handleRefreshConnections() {

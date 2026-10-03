@@ -362,10 +362,16 @@ basis of both checks below. `usd_idr_rate_updated_at` is not in web-admin's
 `EDITABLE` allowlist (`settings.ts:48`), so an admin cannot hand-edit the stamp
 itself.
 
-`setUsdIdrRate` deliberately does **not** validate its input: web-admin's rate
-field is free text, and parsing there would turn a typo into a 500 instead of
-the saved-as-typed behaviour every caller has today. Value validation is the
-sanity band's job, at refresh time.
+`setUsdIdrRate` does **not** validate its input itself; every caller judges the
+figure first. `refreshUsdIdrRate` runs the sanity band (Guard 1). Web-admin's
+rate field reads the typed text by its shape with `parseMoneyInput(…, "IDR")`
+(`16.000` and `16,000` are both 16000; an ambiguous or non-numeric value is a
+400), then runs `validateUsdIdrRate` against `fxRateBounds` with no last-known
+rate (floor and ceiling apply, the deviation cap does not), and stores the
+canonical decimal string. A settings import applies `fx_rate_min`/`fx_rate_max`
+before `usd_idr_rate`, so a file's rate is judged against the file's own band,
+and every skipped key is named with its reason in the reply and the audit
+entry. `scripts/convert-prices-to-idr.ts` reads its rate argument the same way.
 
 ### Guard 3a — `fx_quote_ttl_minutes`: stop offering USDT (default 180 **minutes**)
 

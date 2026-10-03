@@ -310,6 +310,7 @@ function readMoneySetting(key: string, value: string, exact: boolean, markupType
 function typedRateRejectionMessage(reason: FxRateRejection, rate: Decimal): string {
   switch (reason.reason) {
     case "not_a_number":
+      return "That isn't a usable number for the rate. Type the rupiah price of 1 USDT, like 16200 or 16.200.";
     case "not_positive":
       return "The rate must be more than zero. Type the rupiah price of 1 USDT, like 16200 or 16.200.";
     case "below_min":
@@ -328,6 +329,17 @@ function typedRateRejectionMessage(reason: FxRateRejection, rate: Decimal): stri
       return `Rp${rate.toString()} per USDT moved further from the last market rate than one update is allowed to.`;
   }
 }
+
+/**
+ * Settings an import must apply before the rest, because another field's
+ * validation reads them: the typed `usd_idr_rate` is judged against
+ * `fx_rate_min`/`fx_rate_max`. Everything else keeps the file's order.
+ */
+const IMPORT_FIRST = ["fx_rate_min", "fx_rate_max"];
+const importRank = (key: string): number => {
+  const i = IMPORT_FIRST.indexOf(key);
+  return i === -1 ? IMPORT_FIRST.length : i;
+};
 
 /** Thrown by `applyFieldEdit` for any rejection — carries the HTTP status the
  * route should reply with, so both `/edit` and `/import` translate it the
@@ -699,11 +711,24 @@ export default async function settingsApiRoutes(app: FastifyInstance): Promise<v
   app.post("/api/settings/import", { preHandler: csrfProtect }, async (req, reply) => {
     const body = (req.body ?? {}) as { fields?: Record<string, string> };
     const incoming = body.fields ?? {};
+    // The file's own sanity band must be in place before its rate is judged
+    // (money audit A1): export lists keys in EDITABLE order, which puts
+    // usd_idr_rate first, so a file from a shop with a wider band would have
+    // its rate refused against THIS shop's old band and the shop left with no
+    // rate at all. Ordering here makes the result independent of key order.
+    const entries = Object.entries(incoming).sort(
+      ([a], [b]) => importRank(a) - importRank(b),
+    );
     let applied = 0;
-    let skipped = 0;
-    for (const [key, value] of Object.entries(incoming)) {
-      if (!(key in EDITABLE) || isSecret(key)) {
-        skipped++;
+    const skippedKeys: { key: string; reason: string }[] = [];
+    for (const [key, value] of entries) {
+      if (!(key in EDITABLE)) {
+        // Clipped: an unknown key is arbitrary text from the uploaded file.
+        skippedKeys.push({ key: key.slice(0, 64), reason: "Not a setting that can be edited here." });
+        continue;
+      }
+      if (isSecret(key)) {
+        skippedKeys.push({ key, reason: "Secret settings are never imported from a file." });
         continue;
       }
       try {
@@ -711,17 +736,27 @@ export default async function settingsApiRoutes(app: FastifyInstance): Promise<v
         // decimals), so money settings are read exactly, not by shape.
         await applyFieldEdit(req.admin!, key, String(value ?? ""), true);
         applied++;
-      } catch {
-        skipped++;
+      } catch (err) {
+        if (err instanceof FieldEditError) {
+          skippedKeys.push({ key, reason: err.message });
+        } else {
+          logger.warn({ err, key }, "Settings import could not save one setting because of an unexpected error; the rest of the file was still applied.");
+          skippedKeys.push({ key, reason: "It could not be saved because of a server error." });
+        }
       }
     }
+    const skipped = skippedKeys.length;
+    const skippedSentence =
+      skipped === 0
+        ? "skipped nothing."
+        : `skipped ${skipped}: ${skippedKeys.map((s) => `"${s.key}" (${s.reason})`).join("; ")}`;
     await logAdminAction(prisma, {
       adminId: req.admin!.userId,
       action: "settings_import",
       targetType: "setting",
-      details: `Imported ${applied} setting${applied === 1 ? "" : "s"} from a configuration file; skipped ${skipped} invalid or restricted key${skipped === 1 ? "" : "s"}.`,
+      details: `Imported ${applied} setting${applied === 1 ? "" : "s"} from a configuration file; ${skippedSentence}`,
     });
-    return reply.send({ ok: true, applied, skipped });
+    return reply.send({ ok: true, applied, skipped, skippedKeys });
   });
 
   // Connection test — one gateway per call, reusing the currently-saved

@@ -14,8 +14,9 @@
  * re-claimable, so `deliverPaidInternalOrder` re-claims it with a
  * compare-and-swap — a read followed by an `updateMany` gated on the values
  * that read returned. Both halves stay single statements on purpose; see the
- * comment there for why an interactive transaction would be less safe under
- * WAL, not more. See that constant's own doc-comment below for why this
+ * comment there for why wrapping them in an interactive transaction would add
+ * nothing under Postgres READ COMMITTED: the gated write is what decides the
+ * race either way. See that constant's own doc-comment below for why this
  * rail's reclaimable set is narrower than the QRIS rails'
  * (QRIS_RECLAIMABLE_OUTCOMES) — the two are NOT meant to be identical.
  */
@@ -227,15 +228,17 @@ const ONCHAIN_TRACKED_STATUSES = [
  *   anchored on one bubble, with the Bybit BSC confirmation tracker editing it
  *   every cycle straight over the second order's unpaid deposit address.
  *
- * `paymentMsgChatId`/`paymentMsgId` are unindexed, so this is a full scan of
- * `Order` holding the SQLite write lock for its duration — and
+ * `paymentMsgChatId`/`paymentMsgId` are unindexed, so this is a sequential scan
+ * of `Order`, and the rows it updates stay row-locked until the surrounding
+ * transaction commits — and
  * `setOrderPaymentMessage` runs it on every single checkout, not only when an
  * anchor is known to exist. That is accepted today because the table is small
  * and a comparable scan already runs every minute from
  * `listSettledOrdersAwaitingBubbleEdit` (same unindexed columns), so this adds
  * no new class of load. Revisit — index or narrow the scan — if `Order` grows
- * past a few hundred thousand rows, if checkout rate makes this a hot path, or
- * if this shop ever moves off single-writer SQLite. The render path is
+ * past a few hundred thousand rows, or if checkout rate makes this a hot path
+ * (Postgres runs concurrent checkouts in parallel, so a slow scan now costs
+ * CPU and I/O per checkout rather than queueing them). The render path is
  * separately protected: it only reaches here behind a session-level gate
  * (see util/paymentAnchor.ts) so a mere button tap never pays for a scan.
  */
@@ -351,8 +354,8 @@ export function listSettledOrdersAwaitingBubbleEdit(db: Db, limit?: number) {
 /** Single-row counterpart to `listSettledOrdersAwaitingBubbleEdit` above, for
  * the one caller that already knows the order id and just needs this order's
  * bubble-flip fields: `flushSettledOrderBubble` (apps/order-bot/src/jobs/
- * index.ts), the payment-bubble flush hook that runs once per settlement DM
- * on single-writer SQLite. That hot path used to call `getOrder`, whose
+ * index.ts), the payment-bubble flush hook that runs once per settlement DM.
+ * That hot path used to call `getOrder`, whose
  * `fullInclude` pulls in items, `stockItem` credentials, product and voucher
  * to extract six scalars and `user.language` — needlessly materialising the
  * buyer's credentials into memory on every settlement DM. This reuses the
@@ -419,16 +422,17 @@ export async function deliverPaidInternalOrder(
   //    trustworthy; `count === 0` means a racer got there first and
   //    already_processed is the right answer.
   //
-  //    An interactive $transaction would be worse here, not better. This
-  //    database runs in WAL mode (see client.ts) and Prisma opens interactive
-  //    transactions with a deferred BEGIN, so two racing reclaims would both
-  //    read the same snapshot, both pass the outcome check, and the loser's
-  //    write would fail with SQLITE_BUSY_SNAPSHOT — the one busy case
-  //    busy_timeout cannot rescue, since waiting can never make a stale read
-  //    snapshot valid. That turns a graceful already_processed into a thrown
-  //    error, on a path that races across processes (the poller reclaims while
-  //    an admin clicks manual-match in web-admin). A single conditional
-  //    statement degrades gracefully instead (Task 15 re-review).
+  //    An interactive $transaction would add nothing here. Under Postgres
+  //    READ COMMITTED (the default) a plain read takes no lock, so two racing
+  //    reclaims, in a transaction or not, both read the same row and both pass
+  //    the outcome check; only the gated write can tell them apart. It does:
+  //    the second `updateMany` blocks on the first one's row lock, then
+  //    re-checks its WHERE against the newly committed row, matches nothing,
+  //    and returns count 0, a graceful already_processed rather than a thrown
+  //    error. That matters on a path that races across processes (the poller
+  //    reclaims while an admin clicks manual-match in web-admin). Keeping both
+  //    halves as single statements also means no row lock is held across the
+  //    gap between them (Task 15 re-review).
   //
   //    `reclaimedFrom` remembers exactly what the reclaim overwrote
   //    (outcome/orderId/amount) so step 2 can put it back if this turns out to
@@ -667,11 +671,13 @@ export async function deliverPaidInternalOrder(
  * torn state — e.g. a ledger row claiming the transfer was handled while the
  * order never actually moved to UNDERPAID (Task 18). The ledger claim itself
  * stays a single atomic `create` inside the transaction (not preceded by a
- * read): this database is WAL and Prisma opens interactive transactions with
- * a deferred BEGIN, so a read-then-write here would let two racing claims
- * both read the same snapshot and have the loser fail with
- * SQLITE_BUSY_SNAPSHOT instead of gracefully returning false (see
- * deliverPaidInternalOrder's comment above for the full reasoning).
+ * read): the unique constraint on `binanceTxId` IS the claim. Under Postgres
+ * READ COMMITTED a "does a row exist?" read would let two racing claims both
+ * see nothing; with a bare `create`, the loser waits for the winner to commit
+ * and then fails with a unique violation, which is caught and turned into a
+ * graceful `false`. Returning at that point leaves the transaction aborted,
+ * so its commit becomes a rollback and nothing else is written (see
+ * deliverPaidInternalOrder's comment above for the same unique-claim idea).
  */
 export async function markUnderpaid(
   db: PrismaClient,

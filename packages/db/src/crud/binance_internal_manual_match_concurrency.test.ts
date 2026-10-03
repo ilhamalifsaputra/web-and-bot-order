@@ -7,7 +7,7 @@
  * application code, then `update` it by its unique key with no guard on the
  * outcome. Under Postgres READ COMMITTED two admins acting at the same instant
  * both read "unmatched", the second UPDATE simply waits for the first to
- * commit and then overwrites it â€” so one transfer could settle TWO orders
+ * commit and then overwrites it — so one transfer could settle TWO orders
  * (money delivered twice for one payment), or a dismiss could silently erase a
  * match that had just delivered goods.
  *

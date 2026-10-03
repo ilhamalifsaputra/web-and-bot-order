@@ -197,6 +197,23 @@ describe("notifier templates.render", () => {
     expect(out).toMatch(/tidak lagi menunggu pembayaran/i); // Indonesian line
   });
 
+  it("renders the unverified_amount ADMIN_STALE_PAYMENT variant (paid status without an amount) without claiming the order left pending", () => {
+    const out = render("ADMIN_STALE_PAYMENT", {
+      order_code: "ORD-UNV-1",
+      gateway: "PayDisini",
+      trx_id: "TRX-UNV-1",
+      reason: "unverified_amount",
+    });
+    expect(out).toContain("<code>ORD-UNV-1</code>");
+    expect(out).toContain("<code>TRX-UNV-1</code>");
+    expect(out).toMatch(/without an amount/i);
+    expect(out).toMatch(/tanpa nominal/i);
+    expect(out).not.toMatch(/no longer pending/i);
+    const escaped = render("ADMIN_STALE_PAYMENT", { order_code: "<b>X</b>", gateway: "<script>", trx_id: "t", reason: "unverified_amount" });
+    expect(escaped).not.toContain("<script>");
+    expect(escaped).not.toContain("<b>X</b>");
+  });
+
   it("HTML-escapes ADMIN_STALE_PAYMENT interpolated values", () => {
     const out = render("ADMIN_STALE_PAYMENT", {
       order_code: "<b>ORD</b>",

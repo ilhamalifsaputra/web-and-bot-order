@@ -424,4 +424,49 @@ describe("POST /pay/paydisini/callback", () => {
     expect(alert.gateway).toBe("PayDisini");
     expect(alert.trx_id).toBe("TRX-PDSTALE-1");
   });
+
+  // Fix round for Task B: a PAID status that carries no amount used to be
+  // answered "not confirmed live" with nothing recorded, so a buyer whose money
+  // had arrived was invisible to admins and the order could auto-cancel. It is
+  // now parked in the unmatched manual-review queue (amount 0, no order link —
+  // an unverified status is not proof of payment) and admins get one alert.
+  // Nothing is delivered on it.
+  it("parks a paid-but-amountless live status for manual review and alerts admins once, without delivering", async () => {
+    const order = await createPendingPaydisiniOrder("ORD-PDUNV", "50000");
+    mockCheckTransaction.mockResolvedValue({ paid: false, amount: new Decimal(0), trxId: "TRX-PDUNV-1", unverified: true });
+    const payload = signedPayload({ refId: order.orderCode, amount: "50000", trxId: "TRX-PDUNV-1" });
+
+    const res = await app.inject({ method: "POST", url: "/pay/paydisini/callback", payload });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ status: "unverified" });
+
+    const updated = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(updated!.status).toBe("PENDING_PAYMENT"); // never delivered
+    const ledger = await prisma.processedPaydisiniTx.findUnique({ where: { trxId: "TRX-PDUNV-1" } });
+    expect(ledger!.outcome).toBe("unmatched");
+    expect(ledger!.amount!.toFixed(0)).toBe("0");
+    expect(ledger!.orderId).toBeNull();
+
+    const alerts = await prisma.notificationOutbox.findMany({ where: { event: "ADMIN_STALE_PAYMENT", orderId: order.id } });
+    expect(alerts.length).toBeGreaterThan(0);
+    const alert = JSON.parse(alerts[0]!.payloadJson) as { order_code: string; gateway: string; trx_id: string; reason?: string };
+    expect(alert.order_code).toBe("ORD-PDUNV");
+    expect(alert.gateway).toBe("PayDisini");
+    expect(alert.trx_id).toBe("TRX-PDUNV-1");
+    expect(alert.reason).toBe("unverified_amount");
+
+    // A retried callback with the same unverified status alerts nobody again.
+    const again = await app.inject({ method: "POST", url: "/pay/paydisini/callback", payload });
+    expect(again.json()).toEqual({ status: "unverified" });
+    const alertsAfter = await prisma.notificationOutbox.count({ where: { event: "ADMIN_STALE_PAYMENT", orderId: order.id } });
+    expect(alertsAfter).toBe(alerts.length);
+
+    // Once the gateway does report the amount, the parked row is reclaimed and
+    // the order is delivered normally.
+    mockCheckTransaction.mockResolvedValue({ paid: true, amount: new Decimal("50000"), trxId: "TRX-PDUNV-1", unverified: false });
+    const later = await app.inject({ method: "POST", url: "/pay/paydisini/callback", payload });
+    expect(later.json()).toEqual({ status: "delivered" });
+    const reclaimed = await prisma.processedPaydisiniTx.findUnique({ where: { trxId: "TRX-PDUNV-1" } });
+    expect(reclaimed!.outcome).toBe("matched");
+  });
 });

@@ -37,6 +37,8 @@ import {
   deliverPaidPaydisiniOrder,
   markOrderUnderpaid,
   recordPollHealth,
+  recordUnmatchedPaydisiniTx,
+  enqueueAdminStalePayment,
 } from "@app/db";
 import { esc } from "../util/format";
 import { flipSettledOrderBubble } from "../jobs";
@@ -191,6 +193,26 @@ export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof 
       logger.warn({ err }, `Failed to check PayDisini status for order ${order.orderCode} — will retry on the next reconcile cycle`);
     }
     return "gateway_error";
+  }
+  if (status.unverified) {
+    // PayDisini says PAID but its status carried no amount (Task B fix round). Never
+    // deliver on it, but money may have arrived, so park it in the unmatched
+    // manual-review queue and alert the admins once — the UNIQUE ledger key
+    // (shared with the webhook) dedupes every later cycle. The row stays
+    // reclaimable, so a later status that does carry the amount still delivers.
+    const trxId = gatewayLedgerTrxId(status.trxId, order.orderCode);
+    if (await recordUnmatchedPaydisiniTx(prisma, { trxId, amount: 0 })) {
+      await enqueueAdminStalePayment(prisma, {
+        orderId: order.id,
+        orderCode: order.orderCode,
+        gateway: "PayDisini",
+        trxId,
+        reason: "unverified_amount",
+      });
+      logger.warn(`PayDisini reports order ${order.orderCode} as paid but without an amount, so the payment could not be verified — nothing was delivered; it is parked in the unmatched queue and the admins were alerted to check it in the PayDisini dashboard`);
+      nudgeOutboxDispatcher();
+    }
+    return "ok";
   }
   if (!status.paid) return "ok";
 

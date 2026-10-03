@@ -36,6 +36,8 @@ import {
   deliverPaidTokopayOrder,
   markOrderUnderpaid,
   recordPollHealth,
+  recordUnmatchedTokopayTx,
+  enqueueAdminStalePayment,
 } from "@app/db";
 import { esc } from "../util/format";
 import { flipSettledOrderBubble } from "../jobs";
@@ -193,6 +195,26 @@ export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof 
       logger.warn({ err }, `Failed to check TokoPay status for order ${order.orderCode} — will retry on the next reconcile cycle`);
     }
     return "gateway_error";
+  }
+  if (status.unverified) {
+    // TokoPay says PAID but its status carried no amount (Task B fix round). Never
+    // deliver on it, but money may have arrived, so park it in the unmatched
+    // manual-review queue and alert the admins once — the UNIQUE ledger key
+    // (shared with the webhook) dedupes every later cycle. The row stays
+    // reclaimable, so a later status that does carry the amount still delivers.
+    const trxId = gatewayLedgerTrxId(status.trxId, order.orderCode);
+    if (await recordUnmatchedTokopayTx(prisma, { trxId, amount: 0 })) {
+      await enqueueAdminStalePayment(prisma, {
+        orderId: order.id,
+        orderCode: order.orderCode,
+        gateway: "TokoPay",
+        trxId,
+        reason: "unverified_amount",
+      });
+      logger.warn(`TokoPay reports order ${order.orderCode} as paid but without an amount, so the payment could not be verified — nothing was delivered; it is parked in the unmatched queue and the admins were alerted to check it in the TokoPay dashboard`);
+      nudgeOutboxDispatcher();
+    }
+    return "ok";
   }
   if (!status.paid) return "ok";
 

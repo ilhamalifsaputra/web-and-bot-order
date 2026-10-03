@@ -1216,6 +1216,27 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
       logger.error({ err }, `Failed to check TokoPay's live transaction status for order ${order.orderCode} — the callback will be ignored until a retry confirms payment`);
       return reply.send({ status: "status check failed" });
     }
+    if (live.unverified) {
+      // TokoPay says PAID but gave no amount: never deliver on it, but money may
+      // have arrived, so park it in the unmatched manual-review queue and alert
+      // the admins once (the UNIQUE ledger key dedupes retries and the poller).
+      // The row is reclaimable, so a later status that does carry the amount
+      // still delivers normally.
+      const unverifiedTrxId = gatewayLedgerTrxId(live.trxId, order.orderCode);
+      if (await recordUnmatchedTokopayTx(prisma, { trxId: unverifiedTrxId, amount: 0 })) {
+        await enqueueAdminStalePayment(prisma, {
+          orderId: order.id,
+          orderCode: order.orderCode,
+          gateway: "TokoPay",
+          trxId: unverifiedTrxId,
+          reason: "unverified_amount",
+        });
+      }
+      logger.warn(
+        `TokoPay's live status reports order ${order.orderCode} as paid but carries no amount, so the payment could not be verified — nothing was delivered; it is parked in the unmatched queue and the admins were alerted to check it in the TokoPay dashboard`,
+      );
+      return reply.send({ status: "unverified" });
+    }
     if (!live.paid) {
       logger.warn(
         `TokoPay callback claimed paid but live status check disagrees for ${order.orderCode} — trusting the live check over the callback body, so this delivery is skipped for now; the reconcile poller will retry and deliver once TokoPay's own status catches up`,
@@ -1317,6 +1338,24 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
     } catch (err) {
       logger.error({ err }, `Failed to check PayDisini's live transaction status for order ${order.orderCode} — the callback will be ignored until a retry confirms payment`);
       return reply.send({ status: "status check failed" });
+    }
+    if (live.unverified) {
+      // Same as the TokoPay callback above: paid status, no amount — parked for
+      // manual review with one admin alert, never delivered.
+      const unverifiedTrxId = gatewayLedgerTrxId(live.trxId, order.orderCode);
+      if (await recordUnmatchedPaydisiniTx(prisma, { trxId: unverifiedTrxId, amount: 0 })) {
+        await enqueueAdminStalePayment(prisma, {
+          orderId: order.id,
+          orderCode: order.orderCode,
+          gateway: "PayDisini",
+          trxId: unverifiedTrxId,
+          reason: "unverified_amount",
+        });
+      }
+      logger.warn(
+        `PayDisini's live status reports order ${order.orderCode} as paid but carries no amount, so the payment could not be verified — nothing was delivered; it is parked in the unmatched queue and the admins were alerted to check it in the PayDisini dashboard`,
+      );
+      return reply.send({ status: "unverified" });
     }
     if (!live.paid) {
       logger.warn(

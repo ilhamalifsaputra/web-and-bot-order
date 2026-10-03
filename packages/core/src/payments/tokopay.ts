@@ -163,6 +163,11 @@ export interface TokopayStatus {
   paid: boolean;
   amount: Decimal;
   trxId: string | null;
+  /** True only when TokoPay says the order is PAID but its status response
+   *  carried no usable amount. `paid` is then false (nothing may be delivered
+   *  on an unverified amount), but money may well have arrived, so callers
+   *  must park it for manual review instead of treating it as "not paid yet". */
+  unverified: boolean;
 }
 
 // Which status strings count as "paid/settled" is decided by
@@ -233,12 +238,12 @@ export async function checkTransaction(
   if (amount === null) {
     if (paid) {
       logger.warn(
-        `TokoPay reported order ${args.refId} as paid but its status response carried no usable amount, so the payment is treated as unverified and nothing is delivered on it — the reconcile poller will ask again, and if this persists an admin should check the transaction in the TokoPay dashboard`,
+        `TokoPay reported order ${args.refId} as paid but its status response carried no usable amount, so the payment is treated as unverified and nothing is delivered on it — it is parked for manual review and the admins are alerted, so an admin should check the transaction in the TokoPay dashboard`,
       );
     }
-    return { paid: false, amount: new Decimal(0), trxId };
+    return { paid: false, amount: new Decimal(0), trxId, unverified: paid };
   }
-  return { paid, amount, trxId };
+  return { paid, amount, trxId, unverified: false };
 }
 
 export interface TokopayCallback {

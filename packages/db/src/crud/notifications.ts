@@ -265,7 +265,18 @@ export async function enqueueManualOrderAdminAlert(
  */
 export async function enqueueAdminStalePayment(
   db: Db,
-  args: { orderId: number; orderCode: string; gateway: string; trxId: string },
+  args: {
+    orderId: number;
+    orderCode: string;
+    gateway: string;
+    trxId: string;
+    /** `"unverified_amount"` (Task B fix round): the gateway's live status said
+     *  PAID but carried no usable amount, so nothing was delivered and the
+     *  order may still be pending. Different message, same action — a human
+     *  checks the gateway dashboard. Omitted = the original "order was no
+     *  longer pending" case. */
+    reason?: "unverified_amount";
+  },
 ): Promise<void> {
   for (const adminId of await resolveAdminIds(db)) {
     await db.notificationOutbox.create({
@@ -277,6 +288,7 @@ export async function enqueueAdminStalePayment(
           order_code: args.orderCode,
           gateway: args.gateway,
           trx_id: args.trxId.slice(0, 300),
+          ...(args.reason ? { reason: args.reason } : {}),
         }),
       },
     });

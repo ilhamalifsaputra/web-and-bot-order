@@ -84,6 +84,7 @@ describe("checkTransaction", () => {
     stubFetchJson({ status: 200, data: { status: "Unpaid", unique_code: "TRX-2" } });
     const r = await checkTransaction(FULL_CREDS, { refId: "ORD-2", amountIdr: 50000 });
     expect(r.paid).toBe(false);
+    expect(r.unverified).toBe(false);
     expect(r.trxId).toBe("TRX-2");
   });
 
@@ -95,7 +96,8 @@ describe("checkTransaction", () => {
     stubFetchJson({ success: true, data: { status: "berhasil" } });
     const r = await checkTransaction(FULL_CREDS, { refId: "ORD-3", amountIdr: 12345 });
     expect(r.paid).toBe(false);
-    expect(r.amount.toFixed(0)).not.toBe("12345");
+    expect(r.amount.toFixed(0)).toBe("0");
+    expect(r.unverified).toBe(true);
     expect(r.trxId).toBeNull();
   });
 
@@ -103,7 +105,8 @@ describe("checkTransaction", () => {
     stubFetchJson({ success: true, data: { status: "berhasil", amount: "lots" } });
     const r = await checkTransaction(FULL_CREDS, { refId: "ORD-3b", amountIdr: 12345 });
     expect(r.paid).toBe(false);
-    expect(r.amount.toFixed(0)).not.toBe("12345");
+    expect(r.amount.toFixed(0)).toBe("0");
+    expect(r.unverified).toBe(true);
   });
 
   it("throws when the gateway rejects the request", async () => {

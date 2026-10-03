@@ -433,6 +433,19 @@ export function render(
     const code = escape(String(payload.order_code ?? ""));
     const gateway = escape(String(payload.gateway ?? ""));
     const trxId = escape(String(payload.trx_id ?? ""));
+    if (payload.reason === "unverified_amount") {
+      // The gateway's live status said PAID but carried no amount, so the
+      // payment could not be verified and nothing was delivered. It is parked
+      // in the Payments page's Unmatched queue; the order may still auto-cancel.
+      return (
+        `⚠️ <b>${gateway} reports order <code>${code}</code> as paid, but without an amount</b>\n` +
+        `Transaction: <code>${trxId}</code>\n` +
+        `The payment could not be verified, so nothing was delivered and it was parked under Unmatched on the Payments page. Please check the transaction in the ${gateway} dashboard and deliver manually if the buyer paid in full.\n\n` +
+        `⚠️ <b>${gateway} menyatakan pesanan <code>${code}</code> sudah dibayar, tapi tanpa nominal</b>\n` +
+        `Transaksi: <code>${trxId}</code>\n` +
+        `Pembayaran ini tidak bisa diverifikasi, jadi tidak ada yang dikirim dan transaksinya dicatat di antrean Unmatched pada halaman Payments. Mohon periksa transaksi ini di dashboard ${gateway} dan kirim manual jika pelanggan sudah membayar penuh.`
+      );
+    }
     return (
       `⚠️ <b>${gateway} confirmed payment for order <code>${code}</code>, but it was no longer pending</b>\n` +
       `Transaction: <code>${trxId}</code>\n` +

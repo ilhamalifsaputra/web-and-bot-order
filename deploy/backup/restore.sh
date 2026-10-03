@@ -2,26 +2,17 @@
 #
 # Restore the shop database from a backup (execution/06, M-5). This is also
 # the rollback path for a bad migration/deploy: restore the last good backup.
-# Engine-aware: detected from the backup file's extension, so this ONE
-# script/operator command keeps working across the SQLite -> Postgres
-# cutover (docs/POSTGRES_MIGRATION.md) — no manual script swap needed.
+# The database is PostgreSQL; the backup is a `pg_dump -Fc` .dump file.
 #
-# SQLite (.db / .db.gz) procedure (WAL-safe): stop every writer, pause the
-# container's automatic schema update (otherwise it migrates the restored DB
-# forward again and undoes the rollback), swap the file, DELETE the stale
-# -wal/-shm (they belong to the OLD db — keeping them corrupts the restore),
-# fix ownership, integrity-check, restart, smoke /healthz.
-#
-# Postgres (.dump) procedure: verify the dump, stop the app (`server`), take
+# Procedure: verify the dump, stop the app (`server`), take
 # a pg_dump safety copy of the CURRENT live database (so a bad restore is
 # itself reversible — postgres itself keeps running, only `server` is
 # stopped), `pg_restore --clean --if-exists --single-transaction` into the
 # target DB, pause automatic migrations with SKIP_AUTO_MIGRATE, restart
-# `server`, smoke /healthz. The entrypoint honors this sentinel for both
-# engines, preserving the restored schema until matching code is deployed.
+# `server`, smoke /healthz. The entrypoint honors this sentinel, preserving the restored schema until matching code is deployed.
 #
-# Run on the HOST. Requires docker compose; sqlite3 for the SQLite path. The
-# Postgres path needs NO host-side postgresql-client: both the dump
+# Run on the HOST. Requires docker compose. It needs NO host-side
+# postgresql-client: both the dump
 # verification and the restore itself run inside the `postgres` container, so
 # the client always matches the server version. Stops ALL services that touch
 # the DB (order-bot, notifier, web-admin, storefront — currently one combined
@@ -30,22 +21,20 @@
 # against the directory you invoked it from, before that `cd`.
 #
 # Usage:
-#   deploy/backup/restore.sh ./data/backups/bot-2026-06-18-1200.db
-#   deploy/backup/restore.sh ./data/backups/bot-2026-06-18-1200.db.gz   # gz ok
-#   deploy/backup/restore.sh ./data/backups/pg-2026-06-18-1200.dump     # Postgres
+#   deploy/backup/restore.sh ./data/backups/pg-2026-06-18-1200.dump
 set -euo pipefail
 
 SRC="${1:-}"
-DB="${DB:-./data/bot.db}"
+DATA_DIR="${DATA_DIR:-./data}"
 WEB_PORT="${WEB_PORT:-8000}"
 SERVICES="${SERVICES:-server}"
-# Honoured by docker-entrypoint.sh for both engines, which otherwise updates
-# the schema on every start and could immediately undo a rollback. The data
-# directory is bind-mounted into the server container for both engines.
-SENTINEL="$(dirname "$DB")/SKIP_AUTO_MIGRATE"
+# Honoured by docker-entrypoint.sh, which otherwise updates the schema on every
+# start and could immediately undo a rollback. The data directory is
+# bind-mounted into the server container.
+SENTINEL="$DATA_DIR/SKIP_AUTO_MIGRATE"
 
 if [ -z "$SRC" ] || [ ! -f "$SRC" ]; then
-  echo "Usage: $0 <backup.db|backup.db.gz|backup.dump>   (file must exist)" >&2
+  echo "Usage: $0 <backup.dump>   (file must exist)" >&2
   exit 1
 fi
 
@@ -58,27 +47,25 @@ case "$SRC" in
 esac
 
 # Make the script self-locating, for the same reason backup.sh is: the
-# Postgres path runs `docker compose -f docker-compose.yml -f
+# script runs `docker compose -f docker-compose.yml -f
 # docker-compose.postgres.prod.yml ...` with RELATIVE compose-file paths,
 # which only resolve from the repo root — so without this, invoking
 # restore.sh from anywhere else fails with "no configuration file provided".
-# deploy/backup/ -> ../.. is the repo root. Harmless for the SQLite path: its
-# relative DB default (./data/bot.db) is meant to be repo-root relative
-# anyway. NOTE: as a result, a relative DB= override is interpreted relative
-# to the repo root (the backup path argument is not — see above).
+# deploy/backup/ -> ../.. is the repo root. NOTE: as a result, a relative
+# DATA_DIR= override is interpreted relative to the repo root (the backup path
+# argument is not — see above).
 cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../.." || {
   echo "ERROR: could not cd to the repo root from $(dirname "${BASH_SOURCE[0]:-$0}")" >&2
   exit 1
 }
 
-# Which code path to run: inspect the backup file's extension.
-detect_engine() {
-  case "$SRC" in
-    *.db | *.db.gz) echo "sqlite" ;;
-    *.dump) echo "postgres" ;;
-    *) echo "unknown" ;;
-  esac
-}
+case "$SRC" in
+  *.dump) ;;
+  *)
+    echo "ERROR: unrecognized backup file extension: $SRC (expected .dump)" >&2
+    exit 1
+    ;;
+esac
 
 pause_auto_migrate() {
   local restart_command="$1"
@@ -97,71 +84,9 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# SQLite path — logic unchanged from the pre-engine-aware script (only its
-# surrounding structure, now a function, changed).
-# ---------------------------------------------------------------------------
-restore_sqlite() {
-  if ! command -v sqlite3 >/dev/null 2>&1; then
-    echo "ERROR: sqlite3 not found. Install it: sudo apt-get install -y sqlite3" >&2
-    exit 1
-  fi
-
-  # If gzipped, decompress to a temp .db first.
-  TMP=""
-  if [[ "$SRC" == *.gz ]]; then
-    TMP="$(mktemp --suffix=.db)"
-    gunzip -c "$SRC" > "$TMP"
-    SRC="$TMP"
-  fi
-  cleanup() { [ -n "$TMP" ] && rm -f "$TMP"; }
-  trap cleanup EXIT
-
-  # Verify the BACKUP before we destroy the live DB — never restore garbage.
-  CHECK="$(sqlite3 "$SRC" 'PRAGMA integrity_check;')"
-  if [ "$CHECK" != "ok" ]; then
-    echo "ERROR: backup failed integrity_check: $CHECK — aborting." >&2
-    exit 1
-  fi
-
-  echo "==> Stopping writers: $SERVICES"
-  docker compose stop $SERVICES
-
-  # Pause automatic schema updates BEFORE the swap: the backup we are about to
-  # restore may predate a schema change, and the container would otherwise apply
-  # that change again the moment it starts — silently undoing the rollback. Also
-  # guards any `docker compose run --rm server ...` issued while we work, since
-  # those go through the entrypoint too.
-  pause_auto_migrate "docker compose restart $SERVICES"
-
-  # Keep a safety copy of the current DB so a wrong restore is itself reversible.
-  if [ -f "$DB" ]; then
-    PREV="${DB}.pre-restore-$(date +%F-%H%M%S)"
-    cp -p "$DB" "$PREV"
-    echo "==> Saved current DB to $PREV"
-  fi
-
-  echo "==> Replacing $DB and clearing stale WAL/SHM"
-  cp -p "$SRC" "$DB"
-  rm -f "${DB}-wal" "${DB}-shm"      # stale sidecars of the OLD db — must go
-
-  # Match the container runtime user (Dockerfile: app:app, uid/gid from -r). The
-  # entrypoint also chowns ./data, but set it here so a host-side start is clean.
-  if id app >/dev/null 2>&1; then
-    chown app:app "$DB" || true
-  fi
-
-  echo "==> Verifying restored DB"
-  CHECK2="$(sqlite3 "$DB" 'PRAGMA integrity_check;')"
-  [ "$CHECK2" = "ok" ] || { echo "ERROR: restored DB integrity_check: $CHECK2" >&2; exit 1; }
-
-  echo "==> Starting services"
-  docker compose start $SERVICES
-}
-
-# ---------------------------------------------------------------------------
-# Postgres path — mirrors the SQLite path's safety properties: verify the
-# backup before touching anything live, a pre-restore safety copy of the
-# current DB, pause migrations, restart, smoke /healthz.
+# Safety properties: verify the backup before touching anything live, a
+# pre-restore safety copy of the current DB, pause migrations, restart, smoke
+# /healthz.
 # ---------------------------------------------------------------------------
 restore_postgres() {
   POSTGRES_USER="${POSTGRES_USER:-bot_order}"
@@ -231,22 +156,11 @@ restore_postgres() {
   docker compose start $SERVICES
 }
 
-ENGINE="$(detect_engine)"
-case "$ENGINE" in
-  sqlite) restore_sqlite ;;
-  postgres) restore_postgres ;;
-  *)
-    echo "ERROR: unrecognized backup file extension: $SRC (expected .db, .db.gz, or .dump)" >&2
-    exit 1
-    ;;
-esac
+restore_postgres
 
-# A forgotten sentinel keeps future schema updates paused for either engine.
+# A forgotten sentinel keeps future schema updates paused.
 remind_sentinel() {
-  local restart_command="docker compose restart $SERVICES"
-  if [ "$ENGINE" = "postgres" ]; then
-    restart_command="docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml restart $SERVICES"
-  fi
+  local restart_command="docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml restart $SERVICES"
   echo
   echo "NOTE: automatic schema updates are PAUSED by $SENTINEL"
   echo "      Remove it once the deployed code matches this schema:"

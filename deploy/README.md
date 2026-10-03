@@ -9,7 +9,7 @@ rollback.
 ```
 Internet ──TLS──▶ nginx (443) ──http──▶ 127.0.0.1:8000  web-admin   (admin.example.com)
                                   └────▶ 127.0.0.1:8100  storefront  (shop.example.com)
-docker-compose: server (combined: admin + storefront + bot + workers)  (one image, one ./data/bot.db)
+docker-compose: server (combined: admin + storefront + bot + workers)  (one image; ./data holds logs, uploads and backups)
 ```
 
 Apps stay bound to **127.0.0.1** (never exposed directly). nginx terminates TLS.

@@ -213,19 +213,16 @@ case_missing_url_refuses() {
   return $rc
 }
 
-# --- Case 7: the SQLite branch is untouched --------------------------------
-# A `file:` URL with no database file yet is the SQLite fresh-install path: one
-# push, no snapshot (nothing to back up), and none of the Postgres-only steps.
-case_sqlite_fresh_install_unchanged() {
+# --- Case 7: a non-postgresql URL refuses to start -------------------------
+case_non_postgres_url_refuses() {
   make_app_root
   rc=0
-  if DATABASE_URL_PRISMA="file:../data/bot.db" run_auto_migrate; then
-    expect_steps "push" || rc=1
-    expect_output "fresh install" || rc=1
-  else
-    echo "  the SQLite fresh-install path must succeed" >&2
-    sed 's/^/  | /' "$TMP_ROOT/out.log" >&2
+  if DATABASE_URL_PRISMA="mysql://u:p@db:3306/x" run_auto_migrate; then
+    echo "  auto_migrate succeeded with a non-postgresql URL, but must refuse" >&2
     rc=1
+  else
+    expect_steps "" || rc=1
+    expect_output "not a postgresql:// URL" || rc=1
   fi
   rm -rf "$TMP_ROOT"
   return $rc
@@ -256,7 +253,7 @@ case_seed_failure_warns_and_continues && pass "non-zero seed warns and continues
 case_auto_migrate_off_skips_everything && pass "AUTO_MIGRATE=0 skips everything" || fail "AUTO_MIGRATE=0 skips everything"
 case_sentinel_skips_everything && pass "SKIP_AUTO_MIGRATE sentinel skips everything" || fail "SKIP_AUTO_MIGRATE sentinel skips everything"
 case_missing_url_refuses && pass "missing DATABASE_URL_PRISMA refuses to start" || fail "missing DATABASE_URL_PRISMA refuses to start"
-case_sqlite_fresh_install_unchanged && pass "SQLite fresh install unchanged" || fail "SQLite fresh install unchanged"
+case_non_postgres_url_refuses && pass "non-postgresql URL refuses to start" || fail "non-postgresql URL refuses to start"
 case_listed_data_migrations_exist && pass "every listed data migration exists" || fail "every listed data migration exists"
 
 if [ "$FAILURES" -gt 0 ]; then

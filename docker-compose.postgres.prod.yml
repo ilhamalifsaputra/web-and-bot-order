@@ -1,11 +1,9 @@
 # Production Postgres, layered onto docker-compose.yml (NOT a replacement for
 # it — docker-compose.yml still defines the `server` service and its base
 # config; this file only adds the `postgres` service and a `depends_on` onto
-# `server`). NOTE: docker-compose.yml alone is NOT a usable SQLite-only
-# stack any more — prisma/schema.prisma's provider is `postgresql`
-# unconditionally as of the engine-swap migration, so `server` needs a
-# reachable Postgres regardless of whether this overlay is applied; running
-# docker-compose.yml by itself against a plain SQLite `.env` will not start.
+# `server`). NOTE: docker-compose.yml alone does not include a database —
+# prisma/schema.prisma's provider is `postgresql`, so `server` needs a
+# reachable Postgres regardless of whether this overlay is applied.
 # Apply both together:
 #
 #   docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml up -d

@@ -9,15 +9,10 @@
 # Before that command runs, docker-entrypoint.sh brings the database up to date,
 # so a deploy cannot leave new code running against an old schema: on Postgres it
 # pushes the schema, seeds the ledger chart of accounts and applies the release's
-# data-only migrations; on a legacy SQLite URL it takes a verified snapshot first
-# and then pushes. See docs/MIGRATIONS.md.
+# data-only migrations. See docs/MIGRATIONS.md.
 
 # ---- Stage 1: builder ----
-# node:sqlite (used by scripts/migrate-sqlite-to-postgres.ts,
-# scripts/reconcile-sqlite-postgres.ts, and the pre-existing
-# scripts/migrate-catalog-rename.ts / scripts/backfill-catalog-slugs.ts) needs
-# Node >=22.13 — it does not exist at all on Node 20. 24 is the current Active
-# LTS line (see package.json's engines.node).
+# 24 is the current Active LTS line (see package.json's engines.node).
 FROM node:24-slim AS builder
 
 ENV PNPM_HOME=/pnpm \
@@ -59,11 +54,8 @@ ENV NODE_ENV=production \
 WORKDIR /app
 
 # gosu drops privileges from root → app in the entrypoint (after it has fixed
-# ownership of the bind-mounted data dir). sqlite3 is what deploy/backup/backup.sh
-# uses for its WAL-safe ".backup" snapshot, which the entrypoint takes before it
-# applies a schema change — without it that snapshot, and therefore the whole
-# automatic schema update, refuses to run.
-RUN apt-get update && apt-get install -y --no-install-recommends openssl tini gosu sqlite3 \
+# ownership of the bind-mounted data dir).
+RUN apt-get update && apt-get install -y --no-install-recommends openssl tini gosu \
     && rm -rf /var/lib/apt/lists/* \
     && corepack enable && corepack prepare pnpm@9.15.9 --activate \
     && groupadd -r app && useradd -r -g app -m -d /home/app app
@@ -80,7 +72,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends openssl tini go
 # calls both binaries, but only a real build can catch them being pruned away.
 COPY --from=builder --chown=app:app /app /app
 
-# Data dir is a mount point (SQLite DB + logs). Owned by the runtime user.
+# Data dir is a mount point (logs, uploads, credential key). Owned by the runtime user.
 RUN mkdir -p /app/data/logs && chown -R app:app /app/data
 
 # Copy the entrypoint explicitly and set the execute bit here — a Windows git
@@ -88,8 +80,8 @@ RUN mkdir -p /app/data/logs && chown -R app:app /app/data
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
-# Same +x caveat for the backup/restore scripts, which the entrypoint calls for
-# the pre-migration snapshot and an operator may run via `docker compose exec`.
+# Same +x caveat for the backup/restore scripts, which an operator may run via
+# `docker compose exec`.
 RUN chmod +x /app/deploy/backup/*.sh
 
 # NOTE: we deliberately stay root here. The entrypoint chowns the bind-mounted

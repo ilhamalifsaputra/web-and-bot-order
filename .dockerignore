@@ -6,9 +6,6 @@ node_modules
 
 # Runtime data is a mounted volume — never bake the dev DB / logs into the image.
 data/
-**/*.db
-**/*.db-wal
-**/*.db-shm
 .tmp/
 
 # VCS / tooling / local secrets.

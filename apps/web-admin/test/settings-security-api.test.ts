@@ -24,6 +24,7 @@ import {
   currentTotp,
 } from "../src/auth";
 import { buildApp } from "../src/server";
+import { isSecretSettingKey } from "../src/routes/api/settings";
 
 const COOKIE = config.WEB_COOKIE_NAME;
 const ADMIN_TG = 999;
@@ -569,6 +570,49 @@ describe("POST /api/settings/2fa/disable", () => {
   });
 });
 
+describe("semi-secret gateway identifiers are treated as secrets (Task C4)", () => {
+  const SEMI = { paydisini_userkey: "PD-USERKEY-123", tokopay_merchant_id: "M-77881", bybit_uid: "987654321" };
+
+  it("GET /api/settings masks them but still reports that a value is set", async () => {
+    for (const [k, v] of Object.entries(SEMI)) await setSetting(prisma, k, v);
+    const res = await getJson("/api/settings", cookie);
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { fields: Array<{ key: string; secret: boolean; hasValue: boolean; value: string }> };
+    for (const [k, v] of Object.entries(SEMI)) {
+      const f = body.fields.find((x) => x.key === k)!;
+      expect(f.secret).toBe(true);
+      expect(f.hasValue).toBe(true);
+      expect(f.value).toBe("");
+    }
+    for (const v of Object.values(SEMI)) expect(res.body).not.toContain(v);
+  });
+
+  it("export leaves them out", async () => {
+    for (const [k, v] of Object.entries(SEMI)) await setSetting(prisma, k, v);
+    const res = await getJson("/api/settings/export", cookie);
+    const body = res.json() as { fields: Record<string, string> };
+    for (const k of Object.keys(SEMI)) expect(body.fields).not.toHaveProperty(k);
+  });
+
+  it("an edit audits '(updated)', never the value, and a blank edit keeps the stored value", async () => {
+    const res = await postJson("/api/settings/edit", cookie, csrf, { key: "bybit_uid", value: "112233445" });
+    expect(res.statusCode).toBe(200);
+    expect(await getSetting(prisma, "bybit_uid")).toBe("112233445");
+    const audit = await prisma.auditLog.findFirst({ where: { action: "setting_set" }, orderBy: { id: "desc" } });
+    expect(audit!.details).toBe('Changed setting "bybit_uid" to "(updated)".');
+
+    const blank = await postJson("/api/settings/edit", cookie, csrf, { key: "bybit_uid", value: "" });
+    expect(blank.statusCode).toBe(200);
+    expect(await getSetting(prisma, "bybit_uid")).toBe("112233445");
+  });
+
+  it("the storefront session-jti prefix is recognized as secret (it used to name a key that never exists)", () => {
+    expect(isSecretSettingKey("shop_session_jti_user:42")).toBe(true);
+    expect(isSecretSettingKey("web_session_jti:999")).toBe(true);
+    expect(isSecretSettingKey("shop_name")).toBe(false);
+  });
+});
+
 describe("GET /api/settings/export", () => {
   it("includes non-secret values, excludes every secret key, and audits", async () => {
     await setSetting(prisma, "shop_name", "Demo Shop");
@@ -578,7 +622,8 @@ describe("GET /api/settings/export", () => {
     expect(res.statusCode).toBe(200);
     const body = res.json() as { exportedAt: string; fields: Record<string, string> };
     expect(body.fields.shop_name).toBe("Demo Shop");
-    expect(body.fields.tokopay_merchant_id).toBe("M123");
+    // Semi-secret since Task C4: a merchant id is half of a gateway credential.
+    expect(body.fields).not.toHaveProperty("tokopay_merchant_id");
     expect(body.fields).not.toHaveProperty("tokopay_secret");
     expect(body.fields).not.toHaveProperty("bot_token");
     const audit = await prisma.auditLog.findFirst({ where: { action: "settings_export" } });

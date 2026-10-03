@@ -6205,15 +6205,19 @@ describe("settings", () => {
     expect(entry!.details).not.toContain("BINSECRETVALUE");
   });
 
-  it("accepts paydisini_userkey (not a secret — exposed via the API)", async () => {
+  it("accepts paydisini_userkey but never echoes it back (semi-secret since backend audit Task C4)", async () => {
     const res = await post("/api/settings/edit", seed.cookie, {
       csrf_token: seed.csrf, key: "paydisini_userkey", value: "userkey123",
     });
     expect(res.statusCode).toBe(200);
     expect(await getSetting(prisma, "paydisini_userkey")).toBe("userkey123");
     const page = await get("/api/settings", seed.cookie);
-    const apiData = JSON.parse(page.body) as { fields: Array<{ key: string; value: string }> };
-    expect(apiData.fields.find((f) => f.key === "paydisini_userkey")?.value).toBe("userkey123");
+    const apiData = JSON.parse(page.body) as { fields: Array<{ key: string; value: string; secret: boolean; hasValue: boolean }> };
+    const field = apiData.fields.find((f) => f.key === "paydisini_userkey")!;
+    expect(field.value).toBe("");
+    expect(field.secret).toBe(true);
+    expect(field.hasValue).toBe(true);
+    expect(page.body).not.toContain("userkey123");
   });
 
   it("paydisini_apikey is write-only (blank keeps value, never echoed)", async () => {

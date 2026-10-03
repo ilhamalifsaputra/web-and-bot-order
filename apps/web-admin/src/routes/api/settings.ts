@@ -148,15 +148,33 @@ const EDITABLE: Record<string, string> = {
   kokinpay_api_key: "KokinPay API key",
 };
 
-const SECRET_KEYS = new Set(["tokopay_secret", "paydisini_apikey", "bot_token", "notif_bot_token", "bybit_api_key", "bybit_api_secret", "binance_api_key", "binance_api_secret", "nowpayments_api_key", "nowpayments_ipn_secret", "bscscan_api_key", "smtp_pass", "digiflazz_api_key", "kokinpay_api_key", "coingecko_api_key"]);
+// Masked on GET, left out of export, refused by import, and audited as
+// "(updated)". The last three (backend audit Task C4) are not secrets on their
+// own but are half of a gateway credential pair — a merchant id / user key /
+// account UID next to its secret is what a forged callback or a phishing
+// "support" message needs — so they get the same treatment. They are NOT in
+// ENCRYPTED_SETTING_KEYS: their readers use plain getSetting.
+const SECRET_KEYS = new Set([
+  "tokopay_secret", "paydisini_apikey", "bot_token", "notif_bot_token", "bybit_api_key", "bybit_api_secret",
+  "binance_api_key", "binance_api_secret", "nowpayments_api_key", "nowpayments_ipn_secret", "bscscan_api_key",
+  "smtp_pass", "digiflazz_api_key", "kokinpay_api_key", "coingecko_api_key",
+  "paydisini_userkey", "tokopay_merchant_id", "bybit_uid",
+]);
 const TOKEN_KEYS = new Set(["bot_token", "notif_bot_token"]);
 // Fields whose /telegram/test check reuses the getChat-based "is this chat
 // reachable" flow — the original public_channel_id plus the two join-gate
 // chats added on top of it.
 const CHANNEL_LIKE_KEYS = new Set(["public_channel_id", "join_gate_channel_id", "join_gate_group_id"]);
 const BOT_TOKEN_FIELD_KEYS = new Set(["bot_token", "bot_username", "notif_bot_token", "public_channel_id"]);
-const SECRET_PREFIXES = ["web_admin_password_hash:", "web_session_jti:", "web_2fa_secret:", "web_2fa_pending:", "shop_session_jti:"];
-const isSecret = (key: string) => SECRET_KEYS.has(key) || SECRET_PREFIXES.some(p => key.startsWith(p));
+// Per-account secrets stored as Settings rows. `shop_session_jti_user:` is the
+// storefront's real session-jti prefix (apps/storefront/src/auth.ts
+// shopSessionJtiKey); the list used to say `shop_session_jti:`, a key that is
+// never written, so that entry protected nothing (backend audit Task C4).
+const SECRET_PREFIXES = ["web_admin_password_hash:", "web_session_jti:", "web_2fa_secret:", "web_2fa_pending:", "shop_session_jti_user:"];
+/** True for every setting key whose value must never be shown, exported, imported or audited verbatim. */
+export const isSecretSettingKey = (key: string): boolean =>
+  SECRET_KEYS.has(key) || SECRET_PREFIXES.some((p) => key.startsWith(p));
+const isSecret = isSecretSettingKey;
 
 // Accepts a plain email, or Nodemailer's "Display Name <email>" form.
 const SMTP_FROM_RE = /^([^\s@]+@[^\s@]+\.[^\s@]+|.+<[^\s@]+@[^\s@]+\.[^\s@]+>)$/;
@@ -264,7 +282,7 @@ async function applyFieldEdit(
 ): Promise<{ ok: true; unchanged?: boolean; cleared?: boolean; needsRestart?: boolean }> {
   if (!(key in EDITABLE)) throw new FieldEditError(400, "That setting is not editable here.");
   const value = rawValue.trim();
-  if (SECRET_KEYS.has(key) && value === "") return { ok: true, unchanged: true };
+  if (isSecret(key) && value === "") return { ok: true, unchanged: true };
 
   if (TOKEN_KEYS.has(key)) {
     if (admin.role !== "super") throw new FieldEditError(403, "Only the owner can change bot tokens.");
@@ -402,7 +420,7 @@ async function applyFieldEdit(
     if (!valid) throw new FieldEditError(400, "Markup value must be a non-negative number, or blank to disable.");
   }
 
-  const displayValue = SECRET_KEYS.has(key) ? "(updated)" : value.slice(0, 80);
+  const displayValue = isSecret(key) ? "(updated)" : value.slice(0, 80);
   if (ENCRYPTED_SETTING_KEYS.has(key)) {
     try {
       await setEncryptedSetting(prisma, key, value);
@@ -453,9 +471,9 @@ export default async function settingsApiRoutes(app: FastifyInstance): Promise<v
     const fields = Object.entries(EDITABLE).map(([key, label]) => ({
       key,
       label,
-      secret: SECRET_KEYS.has(key),
+      secret: isSecret(key),
       hasValue: Boolean(currentValues[key]),
-      value: SECRET_KEYS.has(key) ? "" : (currentValues[key] ?? ""),
+      value: isSecret(key) ? "" : (currentValues[key] ?? ""),
       needsRestart: BOT_TOKEN_FIELD_KEYS.has(key),
     }));
 
@@ -543,7 +561,7 @@ export default async function settingsApiRoutes(app: FastifyInstance): Promise<v
     for (const r of rows) currentValues[r.key] = r.value;
     const fields: Record<string, string> = {};
     for (const key of Object.keys(EDITABLE)) {
-      if (SECRET_KEYS.has(key)) continue;
+      if (isSecret(key)) continue;
       const v = currentValues[key];
       if (v !== undefined) fields[key] = v;
     }
@@ -562,7 +580,7 @@ export default async function settingsApiRoutes(app: FastifyInstance): Promise<v
     let applied = 0;
     let skipped = 0;
     for (const [key, value] of Object.entries(incoming)) {
-      if (!(key in EDITABLE) || SECRET_KEYS.has(key)) {
+      if (!(key in EDITABLE) || isSecret(key)) {
         skipped++;
         continue;
       }

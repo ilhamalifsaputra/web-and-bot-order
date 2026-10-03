@@ -7,7 +7,7 @@ description: Use when touching money/price code, writing DB access from a route 
 
 ## Overview
 
-This repo has one shared SQLite database written from three processes (bot, web-admin, storefront). Money must never be a float, database writes must never be raw SQL sitting in a route/handler, and every state change an admin makes must be auditable in plain language. These rules exist because a single silent violation (a float rounding error, an untracked write, an unexplained audit entry) is invisible until it corrupts money or blocks a support investigation.
+This repo has one shared PostgreSQL database written from three processes (bot, web-admin, storefront). Money must never be a float, database writes must never be raw SQL sitting in a route/handler, and every state change an admin makes must be auditable in plain language. These rules exist because a single silent violation (a float rounding error, an untracked write, an unexplained audit entry) is invisible until it corrupts money or blocks a support investigation.
 
 ## When to Use
 
@@ -62,10 +62,10 @@ adding an exception.
 
 Credentials, payment-proof `file_id`, password hashes, and full DB URLs must never appear in any log, audit entry, or error message.
 
-## SQLite is single-writer
+## PostgreSQL handles concurrent writers
 
-- The shared `data/bot.db` (WAL) has one writer at a time across all three processes — keep every `$transaction` block as short as possible; don't do network calls, file I/O, or unrelated queries inside one.
-- The trigger to migrate to Postgres is ≥2 concurrent writers becoming a real bottleneck — don't preemptively add transaction workarounds for that; just keep transactions short.
+- The shared PostgreSQL database is written concurrently by all three processes, and Postgres handles that itself. Still keep every `$transaction` block short as good practice: no network calls, file I/O, or unrelated queries inside one.
+- Concurrency safety for money comes from the query, not from the engine serializing writers: use an atomic conditional `updateMany` (e.g. `WHERE status = ...`, a guarded counter increment) or a row lock inside the transaction — never a separate read-then-write that two concurrent callers could both pass.
 
 ## Schema changes on deploy
 

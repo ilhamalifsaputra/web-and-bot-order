@@ -13,6 +13,7 @@ import { botUsername } from "@app/core/runtime";
 import { Decimal } from "@app/core/money";
 import { canonicalProduct } from "@app/core/canonicalProduct";
 import { presentCanonicalCatalog, boundedCanonicalName } from "../util/canonicalPresenter";
+import { noteUnknownUnits } from "../util/unknownUnits";
 import { gameTopUpDenomLabel } from "../util/denominationLabel";
 import { ensureUtc, localize, addDays } from "@app/core/datetime";
 import { UserRole, OrderStatus, OrderKind, PaymentMethod, TicketStatus, SenderType, DeliveryType, CategoryGroup, customerStatusLabel, parseDisplayCurrency } from "@app/core/enums";
@@ -1132,6 +1133,7 @@ export async function browseProduct(ctx: MyContext, productId: number, requested
     denomination: { ...d, createdAt: d.createdAt.toISOString() }, product, category: product.category,
     stockAvailable: d.deliveryType !== DeliveryType.AUTO || (gameStocks.get(d.id) ?? 0) > 0,
   }, { ...rateContext, effectivePriceIDR: effectiveUnitPrice(d, info.role === UserRole.RESELLER).toString(), preferredCurrency: parseDisplayCurrency(ctx.session.dbUser?.preferredCurrency) ?? "IDR", locale: lang }));
+  noteUnknownUnits(products);
   const hint = await gameInputHint(ctx, active.map((d) => ({ ...d, product })));
   const title = t(ctx, "browse.choose_denomination_game", {
     name: "__CANONICAL_NAME__", sold: t(ctx, "browse.sold_count", { count: sold }), info: "", plans: "",

@@ -47,6 +47,11 @@ export function displayUnit(unit: string, ctx?: UnitDisplayContext): string {
   return overrideFor(unit, entry, ctx) ?? entry?.icon ?? entry?.shortAlias ?? unit;
 }
 
+/** True when the unit (or an alias, any case) is in the dictionary; false means catalog buttons will spell it out as typed. */
+export function isKnownUnit(unit: string): boolean {
+  return findEntry(unit) !== null;
+}
+
 /** The registered icon for a unit, or null (no icon, unmapped, or a package-like name). */
 export function unitIcon(unit: string): string | null {
   return findEntry(unit)?.icon ?? null;

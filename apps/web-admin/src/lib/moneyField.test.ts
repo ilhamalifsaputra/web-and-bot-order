@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { readMoneyField, readPercentField, moneyFieldError } from "./moneyField";
+import { readMoneyField, readPercentField, moneyFieldError, exactFields } from "./moneyField";
 
 describe("readMoneyField (IDR)", () => {
   it.each([
@@ -68,6 +68,38 @@ describe("readPercentField", () => {
 
   it.each(["10.000", "abc", "", "-5", "NaN"])("refuses %j", (raw) => {
     expect(readPercentField(raw)).toBeNull();
+  });
+});
+
+describe("exact (machine-formatted) fields", () => {
+  it("reads a plain dot-decimal exactly, never as thousands grouping", () => {
+    expect(readMoneyField("100.123", "IDR", { exact: true })?.toFixed()).toBe("100.123");
+    expect(readMoneyField("1.234", "USDT", { exact: true })?.toFixed()).toBe("1.234");
+    expect(readMoneyField("15000", "IDR", { exact: true })?.toFixed()).toBe("15000");
+    expect(readPercentField("12.345", { exact: true })?.toFixed()).toBe("12.345");
+  });
+
+  it("refuses anything that is not a plain dot-decimal", () => {
+    for (const bad of ["10,5", "1.000.000", "abc", "", "1e3", "-5", "NaN", ".5", "5."]) {
+      expect(readMoneyField(bad, "IDR", { exact: true }), bad).toBeNull();
+      expect(readPercentField(bad, { exact: true }), bad).toBeNull();
+    }
+  });
+
+  it("allows a sign only for signed fields", () => {
+    expect(readMoneyField("-2.5", "IDR", { exact: true, signed: true })?.toFixed()).toBe("-2.5");
+    expect(readMoneyField("-2.5", "IDR", { exact: true })).toBeNull();
+  });
+
+  it("the same text without exact is read by shape (typed by a person)", () => {
+    expect(readMoneyField("100.123", "IDR")?.toFixed()).toBe("100123");
+  });
+
+  it("exactFields reads the body's exact_fields list and ignores anything malformed", () => {
+    expect([...exactFields({ exact_fields: ["price", "costPrice", 3] })]).toEqual(["price", "costPrice"]);
+    expect(exactFields({ exact_fields: "price" }).size).toBe(0);
+    expect(exactFields({}).size).toBe(0);
+    expect(exactFields(null).size).toBe(0);
   });
 });
 

@@ -192,6 +192,90 @@ describe("catalog prices read by shape", () => {
   });
 });
 
+/**
+ * The edit forms pre-fill money fields with the server's own Decimal strings
+ * (`100.123`, `1.234`). Re-saving such a field unchanged must store the same
+ * value — not re-read it by shape as thousands grouping (100123). The client
+ * names the untouched pre-filled fields in `exact_fields`, which the server
+ * reads as plain dot-decimals; everything else is still read as typed text.
+ */
+describe("edit + re-save round-trips stored values exactly", () => {
+  it("voucher: a stored 100.123 min purchase / 1.234 max discount survives re-save; the same text typed is read by shape", async () => {
+    const create = await send("POST", "/api/vouchers", { code: "ODD", type: "fixed", value: "5000" });
+    const { voucher } = create.json() as { voucher: { id: number } };
+    await prisma.voucher.update({ where: { id: voucher.id }, data: { minPurchase: "100.123", maxDiscount: "1.234", value: "2500.125" } });
+
+    // What the edit form pre-fills: the list endpoint's strings.
+    const list = await app.inject({ method: "GET", url: "/api/vouchers", cookies: { [COOKIE]: cookie } });
+    const row = (list.json().vouchers as { id: number; value: string; minPurchase: string; maxDiscount: string | null }[]).find((v) => v.id === voucher.id)!;
+    expect([row.value, row.minPurchase, row.maxDiscount]).toEqual(["2500.125", "100.123", "1.234"]);
+
+    const resave = await send("POST", `/api/vouchers/${voucher.id}/update`, {
+      code: "ODD",
+      type: "FIXED",
+      value: row.value,
+      min_purchase: row.minPurchase,
+      max_discount: row.maxDiscount,
+      exact_fields: ["value", "min_purchase", "max_discount"],
+    });
+    expect(resave.statusCode).toBe(200);
+    const after = await prisma.voucher.findUniqueOrThrow({ where: { id: voucher.id } });
+    expect([after.value.toString(), after.minPurchase.toString(), after.maxDiscount?.toString()]).toEqual(["2500.125", "100.123", "1.234"]);
+
+    // A person who TYPES 100.123 into the field means one hundred thousand one hundred twenty-three.
+    const typed = await send("POST", `/api/vouchers/${voucher.id}/update`, { min_purchase: "100.123" });
+    expect(typed.statusCode).toBe(200);
+    expect((await prisma.voucher.findUniqueOrThrow({ where: { id: voucher.id } })).minPurchase.toString()).toBe("100123");
+
+    // An exact field still refuses anything that is not a plain dot-decimal.
+    const bad = await send("POST", `/api/vouchers/${voucher.id}/update`, { min_purchase: "10.000,5", exact_fields: ["min_purchase"] });
+    expect(bad.statusCode).toBe(400);
+  });
+
+  it("voucher: a PERCENT value pre-filled as 12.345 survives re-save", async () => {
+    const create = await send("POST", "/api/vouchers", { code: "PCT3", type: "percent", value: "10" });
+    const { voucher } = create.json() as { voucher: { id: number } };
+    await prisma.voucher.update({ where: { id: voucher.id }, data: { value: "12.345" } });
+    const res = await send("POST", `/api/vouchers/${voucher.id}/update`, { value: "12.345", exact_fields: ["value"] });
+    expect(res.statusCode).toBe(200);
+    expect((await prisma.voucher.findUniqueOrThrow({ where: { id: voucher.id } })).value.toString()).toBe("12.345");
+  });
+
+  it("denomination: stored 100.123 price, cost and reseller survive an unrelated edit (name change)", async () => {
+    const { denomId, productId } = await seedDenomination();
+    await prisma.denomination.update({ where: { id: denomId }, data: { price: "100.123", costPrice: "90.5", resellerPrice: "95.125" } });
+    const detail = await app.inject({ method: "GET", url: `/api/catalog/${productId}`, cookies: { [COOKIE]: cookie } });
+    const d = (detail.json().product.denominations as { id: number; price: string; costPrice: string; resellerPrice: string }[]).find((x) => x.id === denomId)!;
+
+    const res = await send("PATCH", `/api/catalog/denominations/${denomId}`, {
+      name: "Renamed",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: d.price,
+      costPrice: d.costPrice,
+      resellerPrice: d.resellerPrice,
+      exact_fields: ["price", "costPrice", "resellerPrice"],
+    });
+    expect(res.statusCode).toBe(200);
+    const row = await prisma.denomination.findUniqueOrThrow({ where: { id: denomId } });
+    expect([row.name, row.price.toString(), row.costPrice?.toString(), row.resellerPrice?.toString()]).toEqual(["Renamed", "100.123", "90.5", "95.125"]);
+  });
+
+  it("bulk pricing: the pre-filled percent survives re-save (the crud stores percents at 2 decimals)", async () => {
+    const { denomId, productId } = await seedDenomination();
+    const first = await send("POST", `/api/catalog/denominations/${denomId}/bulk-pricing`, { minQuantity: 3, discountPercent: "12,35" });
+    expect(first.statusCode).toBe(200);
+    const detail = await app.inject({ method: "GET", url: `/api/catalog/${productId}`, cookies: { [COOKIE]: cookie } });
+    const prefill = (detail.json().statsByDenom as Record<string, { rule: { discountPercent: string } | null }>)[String(denomId)]!.rule!.discountPercent;
+    expect(prefill).toBe("12.35");
+    for (const exact_fields of [["discountPercent"], []]) {
+      const res = await send("POST", `/api/catalog/denominations/${denomId}/bulk-pricing`, { minQuantity: 3, discountPercent: prefill, exact_fields });
+      expect(res.statusCode).toBe(200);
+      expect((await prisma.bulkPricing.findFirstOrThrow({ where: { productId: denomId } })).discountPercent.toString()).toBe("12.35");
+    }
+  });
+});
+
 describe("flash sale bulk-apply reads the percent by shape", () => {
   it("12,5 is 12.5 percent; 10.000 and abc are refused", async () => {
     const { denomId } = await seedDenomination();

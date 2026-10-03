@@ -7,31 +7,62 @@
  * read without guessing (`abc`, `1.2.3`, USDT `1.000`) comes back null so the
  * route answers 400 with {@link moneyFieldError}.
  *
- * A JSON number is not typed text: the JSON parser already fixed its value,
- * so it is taken as-is (finite only). Re-reading its digits by shape would
- * turn `1.234` into one thousand two hundred thirty-four.
+ * Machine-formatted values are NOT typed text and are never shape-read:
+ *  - A JSON number: the JSON parser already fixed its value, so it is taken
+ *    as-is (finite only). Re-reading its digits by shape would turn `1.234`
+ *    into one thousand two hundred thirty-four.
+ *  - A field the client lists in `exact_fields` ({@link exactFields}): the
+ *    edit forms pre-fill money inputs with the server's own Decimal strings
+ *    (`100.123`), and a field still holding that untouched value is sent with
+ *    its name in `exact_fields`. Such a field is read as a plain dot-decimal
+ *    (`exact: true`) so an edit + re-save stores the same value; anything that
+ *    is not a plain dot-decimal is refused. A field the admin retyped is left
+ *    out of the list and read by shape as usual.
  */
 import { Decimal } from "@app/core/money";
 import { parseMoneyInput, parsePercentInput } from "@app/core/moneyFormat";
 
 export type MoneyFieldCurrency = "IDR" | "USDT";
 
+/** A plain dot-decimal as Decimal's own toString prints it: digits, optionally "." and digits. */
+const PLAIN_DECIMAL = /^\d{1,30}(\.\d{1,30})?$/;
+
 /**
- * Read a body field as an amount. Strings are read by shape; finite JSON
- * numbers are taken at their value. With `signed`, one leading `+`, `-` or
- * `−` (U+2212) is allowed before the amount (wallet adjustments); otherwise a
- * negative amount is refused. Returns null for anything else.
+ * The names a request body lists in `exact_fields` — the fields whose value is
+ * a machine-formatted plain dot-decimal (pre-filled from the server and left
+ * untouched), not text a person typed. Anything malformed yields an empty set,
+ * so every field falls back to being read by shape.
+ */
+export function exactFields(body: unknown): ReadonlySet<string> {
+  const list = body && typeof body === "object" ? (body as Record<string, unknown>).exact_fields : undefined;
+  return new Set(Array.isArray(list) ? list.filter((f): f is string => typeof f === "string") : []);
+}
+
+/**
+ * Read a body field as an amount. Strings are read by shape, or as a plain
+ * dot-decimal with `exact` (see the module doc); finite JSON numbers are taken
+ * at their value. With `signed`, one leading `+`, `-` or `−` (U+2212) is
+ * allowed before the amount (wallet adjustments); otherwise a negative amount
+ * is refused. Returns null for anything else.
  */
 export function readMoneyField(
   value: unknown,
   currency: MoneyFieldCurrency = "IDR",
-  opts: { signed?: boolean } = {},
+  opts: { signed?: boolean; exact?: boolean } = {},
 ): Decimal | null {
   if (typeof value === "number") {
     if (!Number.isFinite(value) || (!opts.signed && value < 0)) return null;
     return new Decimal(value);
   }
   if (typeof value !== "string") return null;
+  if (opts.exact) {
+    const text = value.trim();
+    const negative = opts.signed === true && text.startsWith("-");
+    const digits = negative ? text.slice(1) : text;
+    if (!PLAIN_DECIMAL.test(digits)) return null;
+    const amount = new Decimal(digits);
+    return negative ? amount.negated() : amount;
+  }
   let text = value.trim();
   let negative = false;
   if (opts.signed && /^[+\-−]/.test(text)) {
@@ -43,10 +74,18 @@ export function readMoneyField(
   return negative ? amount.negated() : amount;
 }
 
-/** Read a body field as a percent (`10`, `10.5`, `10,5`); finite non-negative JSON numbers are taken as-is. */
-export function readPercentField(value: unknown): Decimal | null {
+/**
+ * Read a body field as a percent (`10`, `10.5`, `10,5`), or as a plain
+ * dot-decimal of any precision with `exact`; finite non-negative JSON numbers
+ * are taken as-is.
+ */
+export function readPercentField(value: unknown, opts: { exact?: boolean } = {}): Decimal | null {
   if (typeof value === "number") return Number.isFinite(value) && value >= 0 ? new Decimal(value) : null;
   if (typeof value !== "string") return null;
+  if (opts.exact) {
+    const text = value.trim();
+    return PLAIN_DECIMAL.test(text) ? new Decimal(text) : null;
+  }
   return parsePercentInput(value);
 }
 

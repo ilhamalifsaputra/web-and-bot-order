@@ -465,6 +465,55 @@ describe("VouchersPage", () => {
     await waitFor(() => expect(postSpy).toHaveBeenCalledTimes(2));
   });
 
+  // A stored amount like 100.123 is pre-filled as the server's own plain
+  // decimal; re-saving it untouched must say so (`exact_fields`), or the
+  // server would read it by shape as 100123. A retyped field is left out.
+  it("edit: names the untouched pre-filled amounts in exact_fields, never a retyped one or a blank one", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const odd = { ...VOUCHER, type: "FIXED", value: "2500.125", minPurchase: "100.123", maxDiscount: null };
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(listResponse([odd]));
+    render(<VouchersPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("SAVE10")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "Actions for SAVE10" }));
+    await user.click(await screen.findByRole("menuitem", { name: /^edit$/i }));
+    expect(await screen.findByLabelText(/^min purchase/i)).toHaveValue("100.123");
+
+    // The admin retypes the value; min purchase stays as pre-filled.
+    await user.clear(screen.getByLabelText(/^value/i));
+    await user.type(screen.getByLabelText(/^value/i), "3.000");
+
+    const postSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(jsonResponse({ voucher: { ...odd } }));
+    postSpy.mockResolvedValueOnce(listResponse([odd]));
+    await user.click(screen.getByRole("button", { name: "Save Changes" }));
+
+    await waitFor(() => expect(postSpy).toHaveBeenCalledWith("/api/vouchers/1/update", expect.objectContaining({ method: "POST" })));
+    const call = postSpy.mock.calls.find((c) => c[0] === "/api/vouchers/1/update")!;
+    const body = JSON.parse((call[1] as RequestInit).body as string) as Record<string, unknown>;
+    expect(body).toMatchObject({ value: "3.000", min_purchase: "100.123", exact_fields: ["min_purchase"] });
+    await waitFor(() => expect(postSpy).toHaveBeenCalledTimes(2));
+  });
+
+  it("a blank create form sends no exact_fields", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(listResponse([]));
+    render(<VouchersPage />, { wrapper: Wrapper });
+    await user.click(await screen.findByRole("button", { name: /new voucher/i }));
+    await user.type(screen.getByLabelText(/^code/i), "NEW");
+    await user.type(screen.getByLabelText(/^value/i), "10.000");
+
+    const postSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(jsonResponse({ voucher: { id: 5, code: "NEW" } }));
+    postSpy.mockResolvedValueOnce(listResponse([]));
+    await user.click(screen.getByRole("button", { name: "Create" }));
+
+    await waitFor(() => expect(postSpy).toHaveBeenCalledWith("/api/vouchers", expect.objectContaining({ method: "POST" })));
+    const call = postSpy.mock.calls.find((c) => c[0] === "/api/vouchers")!;
+    const body = JSON.parse((call[1] as RequestInit).body as string) as Record<string, unknown>;
+    expect(body.exact_fields).toEqual([]);
+    expect(body.value).toBe("10.000");
+    await waitFor(() => expect(postSpy).toHaveBeenCalledTimes(2));
+  });
+
   it("duplicates a voucher: pre-fills the form with a blank code and posts to the create endpoint", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(listResponse([VOUCHER]));

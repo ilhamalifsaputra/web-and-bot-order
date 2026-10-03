@@ -10,8 +10,8 @@
  *     Rupiah form), `toLocaleString`, `Intl.NumberFormat`, or an `Rp` literal. Buyer screens use formatIdrFor /
  *     ctxPriceFormatter / orderAmount (packages/core/src/moneyFormat.ts, apps/order-bot/src/util/format.ts).
  *  C. The storefront top-up form judges its amount with `Number(amount)` instead of the shared reader.
- *  D. An admin-panel API route builds a Decimal straight from its request body instead of reading it by shape
- *     through apps/web-admin/src/lib/moneyField.ts.
+ *  D. An admin-panel API route builds a Decimal straight from its request body instead of going through
+ *     apps/web-admin/src/lib/moneyField.ts (by shape for typed text; exact dot-decimal for `exact_fields` pre-fills).
  *
  * Admin-facing bot screens deliberately keep the Indonesian `formatIdr` (see ADMIN_FACING). If this fails, use the
  * shared helper; add to an allowlist only for a value that is NOT typed money (a percent, an id) and say why.
@@ -118,7 +118,9 @@ export function storefrontAmountViolations(fileName: string, code: string): stri
 /**
  * Rule D: an admin-panel route never builds a Decimal straight from its request body
  * (`new Decimal(body.price)`, `new Decimal(String(body.value).trim())`) — typed amounts go
- * through apps/web-admin/src/lib/moneyField.ts (readMoneyField / readPercentField), which read by shape.
+ * through apps/web-admin/src/lib/moneyField.ts (readMoneyField / readPercentField), which read by shape — or, for a
+ * machine-formatted value the client lists in `exact_fields` (an untouched pre-fill of the server's own decimal), as a
+ * plain dot-decimal via their `exact` option. Both paths live in that helper, so this rule never blocks either.
  */
 export function adminBodyDecimalViolations(fileName: string, code: string): string[] {
   const source = ts.createSourceFile(fileName, code, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
@@ -164,6 +166,9 @@ describe("money input and display guard", () => {
       expect(adminBodyDecimalViolations("x.ts", code), code).not.toEqual([]);
     }
     expect(adminBodyDecimalViolations("x.ts", "new Decimal(0); new Decimal(row.revenue_idr); readMoneyField(body.price);")).toEqual([]);
+    // The machine path — a pre-filled value the client lists in `exact_fields` — is read as a plain dot-decimal
+    // through the same helper, never by a route's own `new Decimal`.
+    expect(adminBodyDecimalViolations("x.ts", 'readMoneyField(body.price, "IDR", { exact: exactFields(body).has("price") });')).toEqual([]);
   });
 
   it("D: admin-panel routes never build a Decimal straight from the request body", () => {

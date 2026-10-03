@@ -165,6 +165,9 @@ describe("DenominationEditPage", () => {
         durationLabel: "1 Month",
         price: "15000",
         costPrice: "10000",
+        // Both prices are untouched pre-fills: the server reads them as plain
+        // decimals instead of by shape (lib/exactFields.ts).
+        exact_fields: ["price", "costPrice"],
         warrantyDays: 30,
         description: "Shared profile",
         sortOrder: 5,
@@ -181,6 +184,34 @@ describe("DenominationEditPage", () => {
       }),
     );
     await waitFor(() => expect(screen.getByText("product-detail-page")).toBeInTheDocument());
+  });
+
+  // A stored 100.123 is pre-filled as the server's own plain decimal; saving
+  // an unrelated change must mark it exact so the server doesn't read it as
+  // 100123. A retyped price is left out and read by shape.
+  it("marks untouched pre-filled prices exact and leaves a retyped one out", async () => {
+    vi.mocked(apiGet).mockResolvedValue({
+      product: {
+        id: 42,
+        name: "Netflix Premium",
+        denominations: [{ ...PRODUCT_DETAIL.product.denominations[0], price: "100.123", costPrice: "90.5", resellerPrice: "95.125" }],
+      },
+    });
+    vi.mocked(apiPatch).mockResolvedValueOnce({ id: 10, name: "Netflix 1 Month" });
+    render(<DenominationEditPage />, { wrapper: Wrapper });
+
+    await waitFor(() => expect(screen.getByDisplayValue("100.123")).toBeInTheDocument());
+    fireEvent.change(screen.getByDisplayValue("90.5"), { target: { value: "90.000" } });
+    const btn = screen.getByRole("button", { name: /save changes/i });
+    await waitFor(() => expect(btn).not.toBeDisabled());
+    fireEvent.click(btn);
+
+    await waitFor(() =>
+      expect(apiPatch).toHaveBeenCalledWith(
+        "/api/catalog/denominations/10",
+        expect.objectContaining({ price: "100.123", costPrice: "90.000", resellerPrice: "95.125", exact_fields: ["price", "resellerPrice"] }),
+      ),
+    );
   });
 
   // Task 14: qtyValue/qtyUnit round-trip through prefill and submit.

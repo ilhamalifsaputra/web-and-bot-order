@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { parsePositiveId } from "../../lib/params";
-import { readMoneyField, readPercentField, moneyFieldError, percentFieldError } from "../../lib/moneyField";
+import { readMoneyField, readPercentField, moneyFieldError, percentFieldError, exactFields } from "../../lib/moneyField";
 import { VoucherType, VoucherScope } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { errorBody } from "@app/core/errorBody";
@@ -39,8 +39,8 @@ function isBlank(value: unknown): boolean {
 }
 
 /** A voucher's value is a percent for PERCENT vouchers and a rupiah amount for FIXED ones. */
-function readVoucherValue(value: unknown, type: string): Decimal | null {
-  return type === VoucherType.PERCENT ? readPercentField(value) : readMoneyField(value);
+function readVoucherValue(value: unknown, type: string, exact: boolean): Decimal | null {
+  return type === VoucherType.PERCENT ? readPercentField(value, { exact }) : readMoneyField(value, "IDR", { exact });
 }
 
 function voucherValueError(type: string): string {
@@ -100,10 +100,15 @@ export default async function vouchersApiRoutes(app: FastifyInstance): Promise<v
 
     // Typed amounts are read by shape (`10.000` is ten thousand rupiah), and
     // the shared readers never return NaN/Infinity (M-3, backend audit
-    // 2026-07-31) — an unreadable shape is a 400 naming the field.
-    const valueDec = readVoucherValue(body.value, typeUpper);
+    // 2026-07-31) — an unreadable shape is a 400 naming the field. Fields in
+    // `exact_fields` (the Duplicate form's untouched pre-filled values) are
+    // plain dot-decimals, read exactly.
+    const exact = exactFields(req.body);
+    const valueDec = readVoucherValue(body.value, typeUpper, exact.has("value"));
     if (valueDec === null) return reply.code(400).send({ error: voucherValueError(typeUpper) });
-    const minDec = isBlank(body.min_purchase) ? new Decimal(0) : readMoneyField(body.min_purchase);
+    const minDec = isBlank(body.min_purchase)
+      ? new Decimal(0)
+      : readMoneyField(body.min_purchase, "IDR", { exact: exact.has("min_purchase") });
     if (minDec === null) return reply.code(400).send({ error: moneyFieldError("Min purchase") });
 
     let limit: number | null = null;
@@ -128,7 +133,7 @@ export default async function vouchersApiRoutes(app: FastifyInstance): Promise<v
     // now build their body from.
     let maxDiscountDec: Decimal | null = null;
     if (!isBlank(body.max_discount)) {
-      maxDiscountDec = readMoneyField(body.max_discount);
+      maxDiscountDec = readMoneyField(body.max_discount, "IDR", { exact: exact.has("max_discount") });
       if (maxDiscountDec === null) return reply.code(400).send({ error: moneyFieldError("Max discount") });
     }
 
@@ -224,16 +229,21 @@ export default async function vouchersApiRoutes(app: FastifyInstance): Promise<v
 
     // Amounts are read by shape (`10.000` is ten thousand rupiah); the shared
     // readers never return NaN/Infinity (M-3). The value is a percent or an
-    // amount depending on the type this update leaves the voucher with.
+    // amount depending on the type this update leaves the voucher with. Fields
+    // in `exact_fields` are the edit form's untouched pre-filled values: plain
+    // dot-decimals read exactly, so a re-save stores the same amount.
+    const exact = exactFields(req.body);
     if (body.value !== undefined) {
       const effectiveType = args.type ?? existing.type;
-      const value = readVoucherValue(body.value, effectiveType);
+      const value = readVoucherValue(body.value, effectiveType, exact.has("value"));
       if (value === null) return reply.code(400).send({ error: voucherValueError(effectiveType) });
       args.value = value;
     }
 
     if (body.min_purchase !== undefined) {
-      const minPurchase = isBlank(body.min_purchase) ? new Decimal(0) : readMoneyField(body.min_purchase);
+      const minPurchase = isBlank(body.min_purchase)
+        ? new Decimal(0)
+        : readMoneyField(body.min_purchase, "IDR", { exact: exact.has("min_purchase") });
       if (minPurchase === null) return reply.code(400).send({ error: moneyFieldError("Min purchase") });
       args.minPurchase = minPurchase;
     }
@@ -242,7 +252,7 @@ export default async function vouchersApiRoutes(app: FastifyInstance): Promise<v
       if (isBlank(body.max_discount)) {
         args.maxDiscount = null;
       } else {
-        const maxDiscount = readMoneyField(body.max_discount);
+        const maxDiscount = readMoneyField(body.max_discount, "IDR", { exact: exact.has("max_discount") });
         if (maxDiscount === null) return reply.code(400).send({ error: moneyFieldError("Max discount") });
         args.maxDiscount = maxDiscount;
       }

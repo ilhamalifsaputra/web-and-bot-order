@@ -36,7 +36,7 @@ import {
   isDigiflazzPriceOverridden,
 } from "@app/db";
 import { Decimal } from "@app/core/money";
-import { readMoneyField, readPercentField, moneyFieldError, percentFieldError } from "../../lib/moneyField";
+import { readMoneyField, readPercentField, moneyFieldError, percentFieldError, exactFields } from "../../lib/moneyField";
 import { isFlashActive } from "@app/core/flash";
 import { ProductType, DeliveryType, CategoryGroup } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
@@ -61,11 +61,14 @@ function storefrontDetailFields(body: Record<string, unknown>) {
 }
 
 /**
- * A rupiah price field read by its shape (`10.000` is ten thousand), or null
- * when blank or unreadable. Never `new Decimal(text)`, which reads `10.000` as ten.
+ * A rupiah price field `body[key]` read by its shape (`10.000` is ten
+ * thousand), or null when blank or unreadable. Never `new Decimal(text)`,
+ * which reads `10.000` as ten. A field the body lists in `exact_fields` (the
+ * edit form's untouched pre-filled value) is read as a plain dot-decimal, so a
+ * re-save keeps a stored `100.123` instead of turning it into 100123.
  */
-function parsePrice(value: unknown): Decimal | null {
-  return readMoneyField(value, "IDR");
+function parsePrice(body: Record<string, unknown>, key: string): Decimal | null {
+  return readMoneyField(body[key], "IDR", { exact: exactFields(body).has(key) });
 }
 
 /**
@@ -347,14 +350,14 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     const durationLabel = (typeof body.durationLabel === "string" ? body.durationLabel : "").trim();
     if (!durationLabel) return reply.code(400).send({ error: "Duration is required." });
 
-    const price = parsePrice(body.price);
+    const price = parsePrice(body, "price");
     if (price === null) return reply.code(400).send({ error: moneyFieldError("Price") });
 
-    const costPrice = body.costPrice != null ? parsePrice(body.costPrice) : null;
+    const costPrice = body.costPrice != null ? parsePrice(body, "costPrice") : null;
     if (body.costPrice != null && costPrice === null) {
       return reply.code(400).send({ error: moneyFieldError("Cost price") });
     }
-    const resellerPrice = body.resellerPrice != null ? parsePrice(body.resellerPrice) : null;
+    const resellerPrice = body.resellerPrice != null ? parsePrice(body, "resellerPrice") : null;
     if (body.resellerPrice != null && resellerPrice === null) {
       return reply.code(400).send({ error: moneyFieldError("Reseller price") });
     }
@@ -692,14 +695,14 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     const durationLabel = (typeof body.durationLabel === "string" ? body.durationLabel : "").trim();
     if (!durationLabel) return reply.code(400).send({ error: "Duration is required." });
 
-    const price = parsePrice(body.price);
+    const price = parsePrice(body, "price");
     if (price === null) return reply.code(400).send({ error: moneyFieldError("Price") });
 
-    const costPrice = body.costPrice != null ? parsePrice(body.costPrice) : null;
+    const costPrice = body.costPrice != null ? parsePrice(body, "costPrice") : null;
     if (body.costPrice != null && costPrice === null) {
       return reply.code(400).send({ error: moneyFieldError("Cost price") });
     }
-    const resellerPrice = body.resellerPrice != null ? parsePrice(body.resellerPrice) : null;
+    const resellerPrice = body.resellerPrice != null ? parsePrice(body, "resellerPrice") : null;
     if (body.resellerPrice != null && resellerPrice === null) {
       return reply.code(400).send({ error: moneyFieldError("Reseller price") });
     }
@@ -899,7 +902,8 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     if (!Number.isInteger(minQuantity) || minQuantity < 1) {
       return reply.code(400).send({ error: "Min quantity must be a whole number of at least 1." });
     }
-    const discountPercent = readPercentField(body.discountPercent);
+    // `exact_fields` marks the edit form's untouched pre-filled percent (read as a plain dot-decimal).
+    const discountPercent = readPercentField(body.discountPercent, { exact: exactFields(body).has("discountPercent") });
     if (discountPercent === null) return reply.code(400).send({ error: percentFieldError("Discount percent") });
 
     try {

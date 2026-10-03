@@ -4976,6 +4976,84 @@ describe("wallet-credit checkout (walletm:*/walletpay:*)", () => {
 });
 
 // ===========================================================================
+// A3 / money audit: a gateway button tapped while a wallet-credit flag is set.
+// Credit is all-or-nothing in the bot — a bubble that carries gateway buttons
+// was always rendered with NO credit applied (a covering credit collapses the
+// keyboard to Complete Order) — so a gateway tap with a flag set is a tap on an
+// older bubble, and must never spend credit the tapped bubble did not show.
+// ===========================================================================
+
+describe("gateway rail tapped with a stale wallet-credit flag", () => {
+  async function enableBinanceInternal() {
+    await setSetting(prisma, BINANCE_UID_KEY, "UID123");
+    await setSetting(prisma, BINANCE_API_KEY_KEY, "key");
+    await setSetting(prisma, BINANCE_API_SECRET_KEY, "secret");
+    await setSetting(prisma, "usd_idr_rate", "16000");
+    await priceFixtureForUsdtRail(); // Rp80.000 = 5 USDT at Rp16.000
+  }
+  const usdtBalanceOf = async () => new Decimal((await getUser(prisma, sample.user.id))!.walletBalanceUsdt).toString();
+  const idrBalanceOf = async () => new Decimal((await getUser(prisma, sample.user.id))!.walletBalance).toString();
+
+  it("USDT credit that covers the order (older bubble's Binance button): no order, no debit, current Complete Order screen re-rendered", async () => {
+    await enableBinanceInternal();
+    await adjustWallet(prisma, sample.user.id, "10", { currency: "USDT", reason: "admin_adjust" });
+    const { ctx, sink } = customerCtx({
+      callbackData: `v1:payx:${sample.product.id}:1`,
+      session: { ...userSession(), scratch: { useWalletUsdt: true } },
+    });
+
+    await checkout.buyNowInternal(ctx, sample.product.id, 1);
+
+    expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(0);
+    expect(await usdtBalanceOf()).toBe("10");
+    expect(sentIncludes(sink, t(ctx, "error.stale_screen"))).toBe(true);
+    // The re-rendered screen is the one the credit actually produces today.
+    const flat = (lastMarkup(sink)?.inline_keyboard ?? []).flat() as Array<{ callback_data?: string }>;
+    expect(flat.some((b) => b.callback_data === `v1:walletpay:${sample.product.id}:1`)).toBe(true);
+    // The buyer's choice to pay with credit is kept for that Complete Order tap.
+    expect(ctx.session.scratch.useWalletUsdt).toBe(true);
+  });
+
+  it("USDT credit that no longer covers the order: the Binance order is created at full price, no partial debit", async () => {
+    await enableBinanceInternal();
+    await adjustWallet(prisma, sample.user.id, "2", { currency: "USDT", reason: "admin_adjust" });
+    const { ctx } = customerCtx({
+      callbackData: `v1:payx:${sample.product.id}:1`,
+      session: { ...userSession(), scratch: { useWalletUsdt: true } },
+    });
+
+    await checkout.buyNowInternal(ctx, sample.product.id, 1);
+
+    const order = await prisma.order.findFirstOrThrow({ where: { userId: sample.user.id } });
+    expect(order.paymentMethod).toBe(PaymentMethod.BINANCE_INTERNAL);
+    expect(new Decimal(order.walletUsed).isZero()).toBe(true);
+    expect(new Decimal(order.totalAmount).minus(order.uniqueCents).toString()).toBe("5");
+    expect(await usdtBalanceOf()).toBe("2");
+    expect(ctx.session.scratch.useWalletUsdt).toBeUndefined();
+  });
+
+  it("IDR credit that no longer covers the order (e.g. voucher removed): the TokoPay order is created at full price, no partial debit", async () => {
+    await setSetting(prisma, "tokopay_merchant_id", "M1");
+    await setSetting(prisma, "tokopay_secret", "S1");
+    await prisma.denomination.update({ where: { id: sample.product.id }, data: { price: "80000" } });
+    await adjustWallet(prisma, sample.user.id, "50000", { currency: "IDR", reason: "admin_adjust" });
+    const { ctx } = customerCtx({
+      callbackData: `v1:payq:${sample.product.id}:1`,
+      session: { ...userSession(), scratch: { useWalletIdr: true } },
+    });
+
+    await checkout.buyNowTokopay(ctx, sample.product.id, 1);
+
+    const order = await prisma.order.findFirstOrThrow({ where: { userId: sample.user.id } });
+    expect(order.paymentMethod).toBe(PaymentMethod.TOKOPAY);
+    expect(new Decimal(order.walletUsed).isZero()).toBe(true);
+    expect(new Decimal(order.totalAmount).toString()).toBe("80000");
+    expect(await idrBalanceOf()).toBe("50000");
+    expect(ctx.session.scratch.useWalletIdr).toBeUndefined();
+  });
+});
+
+// ===========================================================================
 // Refresh Status (§7 — on-demand reconcile on auto-confirm wait screens)
 // ===========================================================================
 

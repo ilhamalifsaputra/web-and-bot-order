@@ -1111,3 +1111,134 @@ describe("admin conversations", () => {
     expect(rows.some((r) => (JSON.parse(r.payloadJson) as { chat_id: number }).chat_id === 42)).toBe(true); // customer DM queued
   });
 });
+
+// ===========================================================================
+// Admin-typed prices are read by their shape (Rp10.000 is ten thousand)
+// ===========================================================================
+
+describe("admin wizards read typed prices by their shape", () => {
+  /** How many screens carried `needle` as their text (an error reply each). */
+  function countSent(sink: SentCall[], needle: string): number {
+    return sink.filter((c) => c.args.some((a) => typeof a === "string" && a.includes(needle))).length;
+  }
+
+  /** Drive productCreate past name/type/duration, then feed `inputs` from step 4 on. */
+  async function createProduct(name: string, inputs: string[]) {
+    const sink: SentCall[] = [];
+    const entry = entryAdmin(sink, "v1:adm:prod:new");
+    const conv = new FakeConversation([
+      msg(sink, { text: name }),
+      msg(sink, { callbackData: "v1:adm:prod:type:shared" }),
+      msg(sink, { text: "1 Month" }),
+      ...inputs.map((text) => msg(sink, { text })),
+    ]);
+    await productCreateConversation(conv.asMyConversation(), entry);
+    const row = await prisma.denomination.findFirst({ where: { name } });
+    return { sink, entry, row };
+  }
+
+  it.each([
+    ["79.000", "79000"],
+    ["1.000.000", "1000000"],
+    ["79,000", "79000"],
+    ["4480,50", "4480.5"],
+  ])("productCreate: a typed price of %s is stored as %s", async (typed, stored) => {
+    const { row } = await createProduct("Shape Price Plan", [typed, "-", "-"]);
+    expect(row).toBeTruthy();
+    expect(row!.price.toString()).toBe(stored);
+  });
+
+  it.each(["abc", "0", "-5", "79.000.0", "1e3"])(
+    "productCreate: a typed price of %s gets the price error, re-prompts, and creates no row",
+    async (typed) => {
+      const { sink, entry, row } = await createProduct("Shape Bad Price", [typed, "/cancel"]);
+      expect(countSent(sink, t(entry, "admin.prod_err_price"))).toBe(1);
+      expect(row).toBeNull();
+    },
+  );
+
+  it("productCreate: a rejected price is followed by a re-prompt that accepts a valid one", async () => {
+    const { sink, entry, row } = await createProduct("Shape Retry Plan", ["1e3", "79.000", "-", "-"]);
+    expect(countSent(sink, t(entry, "admin.prod_err_price"))).toBe(1);
+    expect(row!.price.toString()).toBe("79000");
+  });
+
+  it("productCreate: the price prompts ask for Rupiah and echo the price as Rupiah, never USDT", async () => {
+    const { sink, entry } = await createProduct("Shape Rupiah Copy", ["79.000", "-", "-"]);
+    expect(countSent(sink, "in Rupiah")).toBeGreaterThanOrEqual(2); // step 4 and step 5 prompts
+    expect(countSent(sink, "Rp79,000") + countSent(sink, "Rp79.000")).toBeGreaterThanOrEqual(1); // step 5 echoes the price
+    expect(countSent(sink, "in USDT")).toBe(0);
+    expect(t(entry, "admin.prod_step4", { name: "n", type: "t", duration: "d" })).not.toContain("USDT");
+  });
+
+  it("productCreate: reseller price '-' still means no reseller price", async () => {
+    const { row } = await createProduct("Shape No Reseller", ["79.000", "-", "-"]);
+    expect(row!.resellerPrice).toBeNull();
+  });
+
+  it("productCreate: a typed reseller price of 10.000 is stored as 10000", async () => {
+    const { row } = await createProduct("Shape Reseller Plan", ["79.000", "10.000", "-"]);
+    expect(row!.resellerPrice!.toString()).toBe("10000");
+  });
+
+  it("productCreate: an ambiguous reseller price gets the reseller error and creates no row", async () => {
+    const { sink, entry, row } = await createProduct("Shape Bad Reseller", ["79.000", "1e3", "/cancel"]);
+    expect(countSent(sink, t(entry, "admin.prod_err_reseller"))).toBe(1);
+    expect(row).toBeNull();
+  });
+
+  it("productEdit: a typed price of 10.000 is stored as 10000", async () => {
+    const sink: SentCall[] = [];
+    const entry = entryAdmin(sink, `v1:adm:prod:price:${sample.product.id}`);
+    const conv = new FakeConversation([msg(sink, { text: "10.000" })]);
+    await productEditConversation(conv.asMyConversation(), entry);
+    const p = await prisma.denomination.findUnique({ where: { id: sample.product.id } });
+    expect(p!.price.toString()).toBe("10000");
+  });
+
+  it.each(["1e3", "79.000.0", "abc", "0"])("productEdit: a typed price of %s gets the price error and leaves the price unchanged", async (typed) => {
+    const before = await prisma.denomination.findUnique({ where: { id: sample.product.id } });
+    const sink: SentCall[] = [];
+    const entry = entryAdmin(sink, `v1:adm:prod:price:${sample.product.id}`);
+    const conv = new FakeConversation([msg(sink, { text: typed }), msg(sink, { text: "/cancel" })]);
+    await productEditConversation(conv.asMyConversation(), entry);
+    const after = await prisma.denomination.findUnique({ where: { id: sample.product.id } });
+    expect(countSent(sink, t(entry, "admin.prod_err_price"))).toBe(1);
+    expect(after!.price.toString()).toBe(before!.price.toString());
+    expect(await prisma.auditLog.count({ where: { action: "product_price" } })).toBe(0);
+  });
+
+  /** Drive voucherCreate with `code`, then `typeAndValue`, then whatever follows. */
+  async function createVoucherVia(code: string, inputs: string[]) {
+    const sink: SentCall[] = [];
+    const entry = entryAdmin(sink, "v1:adm:vouch:new");
+    const conv = new FakeConversation([msg(sink, { text: code }), ...inputs.map((text) => msg(sink, { text }))]);
+    await voucherCreateConversation(conv.asMyConversation(), entry);
+    const row = await prisma.voucher.findFirst({ where: { code } });
+    return { sink, entry, row };
+  }
+
+  it("voucherCreate: 'fixed 10.000' stores a value of 10000", async () => {
+    const { row } = await createVoucherVia("SHAPEFX", ["fixed 10.000", "0"]);
+    expect(row!.type).toBe(VoucherType.FIXED);
+    expect(row!.value.toString()).toBe("10000");
+  });
+
+  it.each(["fixed abc", "fixed 1e3", "fixed 10.000.0"])("voucherCreate: '%s' gets the value error and creates no voucher", async (typed) => {
+    const { sink, entry, row } = await createVoucherVia("SHAPEBADFX", [typed, "/cancel"]);
+    expect(countSent(sink, t(entry, "admin.voucher_err_value"))).toBe(1);
+    expect(row).toBeNull();
+  });
+
+  it("voucherCreate: 'percent 10,5' stores a value of 10.5", async () => {
+    const { row } = await createVoucherVia("SHAPEPCT", ["percent 10,5", "0"]);
+    expect(row!.type).toBe(VoucherType.PERCENT);
+    expect(row!.value.toString()).toBe("10.5");
+  });
+
+  it.each(["percent 10.000", "percent 1e1", "percent abc", "percent 1,2,3"])("voucherCreate: '%s' gets the value error and creates no voucher", async (typed) => {
+    const { sink, entry, row } = await createVoucherVia("SHAPEBADPCT", [typed, "/cancel"]);
+    expect(countSent(sink, t(entry, "admin.voucher_err_value"))).toBe(1);
+    expect(row).toBeNull();
+  });
+});

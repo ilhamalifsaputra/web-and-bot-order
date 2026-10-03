@@ -33,6 +33,11 @@ describe("redactPath", () => {
     expect(redactPath("/")).toBe("/");
   });
 
+  it("redacts a Telegram webhook secret path (/tg/:secret) too — one shared list (Task C2)", () => {
+    expect(redactPath("/tg/s3cr3t-webhook_value")).toBe("/tg/[redacted]");
+    expect(redactPath("/tgx/not-secret")).toBe("/tgx/not-secret");
+  });
+
   it("does not touch an unrelated path merely containing the word 'reset'", () => {
     expect(redactPath("/api/v1/resetting-something")).toBe("/api/v1/resetting-something");
   });

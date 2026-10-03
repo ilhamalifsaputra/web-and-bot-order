@@ -14,6 +14,7 @@ import multipart from "@fastify/multipart";
 import { config } from "@app/core/config";
 import { assertCredentialKeyConfigured } from "@app/core/credentialCrypto";
 import { logger } from "@app/core/logger";
+import { redactSecretPath } from "@app/core/redactPath";
 import authPlugin from "./plugins/auth";
 import setupGatePlugin from "./plugins/setupGate";
 import authRoutes from "./routes/auth";
@@ -64,14 +65,14 @@ const STATIC_DIR = process.env.STATIC_DIR ?? join(HERE, "..", "static");
 export { UPLOADS_DIR } from "./paths";
 import { UPLOADS_DIR } from "./paths";
 
-// Scrubs a live, single-use password-reset code out of a request path before
-// it's logged (CLAUDE.md: "Never log secrets"). No admin route embeds the
-// reset code in a URL today (it travels via Telegram DM + POST body), but the
-// storefront had the identical bug in its error handler until this same
-// pattern was added there (security audit 2026-06-23) — kept in sync here so
-// a future route can't silently reintroduce it.
+// Scrubs secret path segments out of a request path before it's logged
+// (CLAUDE.md: "Never log secrets"). The list lives in @app/core/redactPath and
+// is shared with the storefront: the password-reset token (`/reset/:code`)
+// and — the one that actually reaches this app — the Telegram webhook route
+// `/tg/<WEBHOOK_SECRET>` that apps/server mounts here in webhook mode, which
+// used to be written in full into every access-log line (backend audit C2).
 export function redactPath(path: string): string {
-  return path.replace(/\/reset\/[^/]+/g, "/reset/[redacted]");
+  return redactSecretPath(path);
 }
 
 export async function buildApp(): Promise<FastifyInstance> {

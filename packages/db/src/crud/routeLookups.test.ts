@@ -36,6 +36,7 @@ describe("getOrderDigiflazzSnapshot", () => {
     const d = await createDenomination(prisma, { productId: p.id, name: "1 Month", type: "SHARED", durationLabel: "1 Month", price: "5" });
     await bulkAddStock(prisma, d.id, ["cred"]);
     const order = await createOrderDirect(prisma, { channel: "bot", user: await newUser(), productId: d.id, quantity: 1 });
+    if (!order) throw new Error("test setup: order was not created");
 
     const snap = await getOrderDigiflazzSnapshot(prisma, order.id);
     expect(snap).toEqual({

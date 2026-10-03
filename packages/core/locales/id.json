@@ -867,6 +867,7 @@
   "web.wallet_topup_range_hint": "Antara {min} dan {max}.",
   "web.wallet_topup_min_hint": "Minimum {min}.",
   "web.wallet_topup_max_hint": "Maksimum {max}.",
+  "web.wallet_topup_amount_unreadable": "Tulis nominal dengan angka, mis. 50000 atau 50.000. Untuk USDT, satu pemisah yang diikuti tepat tiga angka itu ambigu — tulis 1000 untuk seribu, atau 1,00 untuk satu.",
   "web.wallet_topup_retry": "Coba lagi",
   "web.wallet_topup_view_wallet": "Lihat saldo",
   "web.reset_invalid": "Tautan reset ini tidak valid atau kedaluwarsa — minta yang baru.",

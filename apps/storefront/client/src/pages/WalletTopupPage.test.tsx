@@ -294,6 +294,108 @@ describe("WalletTopupPage", () => {
     });
   });
 
+  // A buyer types the amount the way they write money: "10.000" in Indonesian
+  // style used to read as 10 (Number("10.000")) and "10,000" as NaN. The field
+  // now reads the amount by its shape (normalizeMoneyInput, the same table the
+  // bot uses) and posts the CANONICAL figure, never the raw typed text.
+  describe("amounts typed with separators", () => {
+    const UNREADABLE =
+      "Enter the amount as digits, e.g. 50000 or 50.000. For USDT, a single separator followed by exactly three digits is ambiguous — write 1000 for a thousand, or 1.00 for one.";
+
+    it("reads an Indonesian-style 10.000 as ten thousand rupiah and posts the canonical 10000", async () => {
+      renderTopup(() => ({ ...baseData, min_idr: "10000", effective_min_idr: "10000" }));
+      await screen.findByRole("heading", { name: "Top up wallet" });
+      fireEvent.change(screen.getByLabelText("Amount"), { target: { value: "10.000" } });
+      const submit = screen.getByRole("button", { name: "Top up now" });
+      expect(submit).not.toBeDisabled();
+
+      (apiPost as Mock).mockResolvedValue({ orderCode: "TOPUP3" } satisfies WalletTopupCreateResponse);
+      fireEvent.click(submit);
+      await waitFor(() =>
+        expect(apiPost).toHaveBeenCalledWith("/api/v1/wallet/topup", {
+          currency: "IDR",
+          amount: "10000",
+          method: "qris",
+        }),
+      );
+    });
+
+    it("reads a decimal-comma 5,5 USDT as 5.5 and posts the canonical 5.5", async () => {
+      renderTopup(() => baseData);
+      await screen.findByRole("heading", { name: "Top up wallet" });
+      fireEvent.click(screen.getByRole("button", { name: "USDT" }));
+      await screen.findByText("BINANCE");
+      fireEvent.change(screen.getByLabelText("Amount"), { target: { value: "5,5" } });
+      const submit = screen.getByRole("button", { name: "Top up now" });
+      expect(submit).not.toBeDisabled();
+
+      (apiPost as Mock).mockResolvedValue({ orderCode: "TOPUP4" } satisfies WalletTopupCreateResponse);
+      fireEvent.click(submit);
+      await waitFor(() =>
+        expect(apiPost).toHaveBeenCalledWith("/api/v1/wallet/topup", {
+          currency: "USDT",
+          amount: "5.5",
+          method: "binance",
+        }),
+      );
+    });
+
+    it("refuses an ambiguous 1.000 USDT with an inline error, keeps submit disabled and posts nothing", async () => {
+      renderTopup(() => baseData);
+      await screen.findByRole("heading", { name: "Top up wallet" });
+      fireEvent.click(screen.getByRole("button", { name: "USDT" }));
+      await screen.findByText("BINANCE");
+      const amountInput = screen.getByLabelText("Amount");
+      fireEvent.change(amountInput, { target: { value: "1.000" } });
+
+      expect(screen.getByText(UNREADABLE)).toBeInTheDocument();
+      expect(amountInput).toHaveAttribute("aria-invalid", "true");
+      const submit = screen.getByRole("button", { name: "Top up now" });
+      expect(submit).toBeDisabled();
+      fireEvent.click(submit);
+      expect(apiPost).not.toHaveBeenCalled();
+
+      // Writing it unambiguously clears the error.
+      fireEvent.change(amountInput, { target: { value: "10" } });
+      expect(screen.queryByText(UNREADABLE)).not.toBeInTheDocument();
+      expect(submit).not.toBeDisabled();
+    });
+
+    it("shows no format error for a blank field", async () => {
+      renderTopup(() => baseData);
+      await screen.findByRole("heading", { name: "Top up wallet" });
+      expect(screen.queryByText(UNREADABLE)).not.toBeInTheDocument();
+      fireEvent.change(screen.getByLabelText("Amount"), { target: { value: "  " } });
+      expect(screen.queryByText(UNREADABLE)).not.toBeInTheDocument();
+    });
+
+    it("still blocks a separator-typed amount that is below the minimum once read (1.000 IDR < 50000)", async () => {
+      renderTopup(() => baseData);
+      await screen.findByRole("heading", { name: "Top up wallet" });
+      fireEvent.change(screen.getByLabelText("Amount"), { target: { value: "1.000" } });
+      expect(screen.getByRole("button", { name: "Top up now" })).toBeDisabled();
+      // Readable, just too small: the format error is not the reason.
+      expect(screen.queryByText(UNREADABLE)).not.toBeInTheDocument();
+    });
+
+    it("filters rails by the parsed figure: 50.000 drops the same rails 50000 does", async () => {
+      const rails: WalletTopupData = {
+        ...baseData,
+        paydisini_enabled: true,
+        rail_min: { ...baseData.rail_min, qris: "1000", paydisini: "60000" },
+      };
+      for (const typed of ["50.000", "50000"]) {
+        const { unmount } = renderTopup(() => rails);
+        await screen.findByRole("heading", { name: "Top up wallet" });
+        fireEvent.change(screen.getByLabelText("Amount"), { target: { value: typed } });
+        expect(screen.getByText("QRIS"), typed).toBeInTheDocument();
+        expect(screen.queryByText("QRIS / E-Wallet"), typed).not.toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Top up now" }), typed).not.toBeDisabled();
+        unmount();
+      }
+    });
+  });
+
   it("apologises in plain language when the failure carries no i18n key", async () => {
     renderTopup(() => baseData);
     await screen.findByRole("heading", { name: "Top up wallet" });

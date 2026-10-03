@@ -12,6 +12,7 @@ import {
   getVoucherStats,
   getVoucherPerformance,
   getVoucherProductNames,
+  getVoucherProductIds,
   getVoucherByCode,
   getVoucher,
   createVoucher,
@@ -319,7 +320,7 @@ export default async function vouchersApiRoutes(app: FastifyInstance): Promise<v
       summaryParts.push(`value ${updated.value.toString()}${updated.type === VoucherType.PERCENT ? "%" : ""}`);
     }
     if (updated && (args.scope !== undefined || args.productIds !== undefined)) {
-      const productCount = await prisma.voucherProduct.count({ where: { voucherId } });
+      const productCount = (await getVoucherProductIds(prisma, voucherId)).length;
       summaryParts.push(updated.scope === VoucherScope.SELECTED ? `scope: ${productCount} products` : "scope: all products");
     }
     const details = `Updated voucher "${updated?.code}"${summaryParts.length > 0 ? ` (${summaryParts.join(", ")})` : ""}.`;

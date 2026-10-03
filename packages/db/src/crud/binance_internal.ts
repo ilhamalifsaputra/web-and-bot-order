@@ -1130,6 +1130,11 @@ export async function manualMatchTx(
   });
 }
 
+/** One Binance transfer's ledger row by its transfer id, or null when unknown. */
+export function getProcessedBinanceTx(db: Db, binanceTxId: string) {
+  return db.processedBinanceTx.findUnique({ where: { binanceTxId } });
+}
+
 /**
  * Acknowledge an UNMATCHED transfer that belongs to no order (e.g. a test
  * deposit, or money sent with no order behind it): flip its ledger row

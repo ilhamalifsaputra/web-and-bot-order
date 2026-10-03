@@ -59,6 +59,8 @@ import {
   LOGIN_USERNAME_RE,
   getReferralSummary,
   isServiceActive,
+  listActiveProductOptions,
+  getCatalogProduct,
 } from "@app/db";
 import type { SupportTicketListSort, SupportTicketStatusFilter } from "@app/db";
 import {
@@ -516,11 +518,7 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
   app.get("/account/support/new", async (req, reply) => {
     const customer = await requireCustomer(req, reply);
     if (!customer) return;
-    const products = await prisma.product.findMany({
-      where: { isActive: true, isArchived: false },
-      orderBy: { name: "asc" },
-      select: { id: true, name: true },
-    });
+    const products = await listActiveProductOptions(prisma);
     return reply.send({ products });
   });
 
@@ -599,10 +597,7 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
     // "Does this product id exist at all" — active-or-not (a ticket about a
     // since-archived product is still valid). `isActive`/`isArchived` are
     // deliberately NOT checked here.
-    const product = await prisma.product.findUnique({
-      where: { id: productId },
-      select: { id: true },
-    });
+    const product = await getCatalogProduct(prisma, productId);
     if (!product) {
       return reply.code(400).send({ error: "web.support_product_invalid" });
     }

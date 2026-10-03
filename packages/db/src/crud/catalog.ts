@@ -272,6 +272,20 @@ export function getCatalogProduct(db: Db, productId: number) {
   return db.product.findUnique({ where: { id: productId } });
 }
 
+/** A product by exact name within one category, or null (the CSV import's find-or-create). */
+export function findCatalogProductByName(db: Db, categoryId: number, name: string) {
+  return db.product.findFirst({ where: { categoryId, name } });
+}
+
+/** Active, unarchived products as `{ id, name }`, by name — the storefront help form's Product dropdown. */
+export function listActiveProductOptions(db: Db) {
+  return db.product.findMany({
+    where: { isActive: true, isArchived: false },
+    orderBy: { name: "asc" },
+    select: { id: true, name: true },
+  });
+}
+
 export function getCatalogProductBySlug(db: Db, slug: string) {
   return db.product.findUnique({ where: { slug } });
 }

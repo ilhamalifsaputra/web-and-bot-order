@@ -538,6 +538,25 @@ function withDecryptedStockCredentials<
   } as T;
 }
 
+/**
+ * The order status plus its Digiflazz dispatch fields — what the admin and
+ * buyer realtime streams push (the buyer stream maps it to a buyer-safe shape
+ * before sending). Null when the order does not exist.
+ */
+export function getOrderDigiflazzSnapshot(db: Db, orderId: number) {
+  return db.order.findUnique({
+    where: { id: orderId },
+    select: {
+      status: true,
+      digiflazzStatus: true,
+      digiflazzAttempts: true,
+      digiflazzNextRecheckAt: true,
+      digiflazzFailureDetail: true,
+      accountDiagnosticNote: true,
+    },
+  });
+}
+
 export async function getOrder(db: Db, orderId: number) {
   const order = await db.order.findUnique({ where: { id: orderId }, include: fullInclude });
   return order ? withDecryptedStockCredentials(order) : order;

@@ -837,6 +837,11 @@ export function countUserTickets(db: Db, userId: number): Promise<number> {
   return db.supportTicket.count({ where: { userId } });
 }
 
+/** How many of one buyer's tickets are not closed (the ticket detail page's "other open tickets" figure). */
+export function countOpenUserTickets(db: Db, userId: number): Promise<number> {
+  return db.supportTicket.count({ where: { userId, status: { not: TicketStatus.CLOSED } } });
+}
+
 /**
  * Task 10: the storefront /help page's own status-filter vocabulary — a
  * customer-facing grouping distinct from the admin queue's raw

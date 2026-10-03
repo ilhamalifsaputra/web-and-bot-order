@@ -21,7 +21,7 @@
  *    fully-dead, when it's often just an automatic retry in progress).
  */
 import type { FastifyPluginAsync } from "fastify";
-import { prisma, getOrderByCode } from "@app/db";
+import { prisma, getOrderByCode, getOrderDigiflazzSnapshot } from "@app/db";
 import { OrderKind } from "@app/core/enums";
 import { onDigiflazzOrderStatusChanged } from "@app/core/realtime/digiflazzEvents";
 import { streamSse } from "@app/core/realtime/sseRoute";
@@ -44,10 +44,7 @@ interface BuyerOrderDigiflazzSnapshot {
 }
 
 async function readBuyerSnapshot(orderId: number): Promise<BuyerOrderDigiflazzSnapshot | null> {
-  const order = await prisma.order.findUnique({
-    where: { id: orderId },
-    select: { status: true, digiflazzStatus: true },
-  });
+  const order = await getOrderDigiflazzSnapshot(prisma, orderId);
   if (!order) return null;
   return { orderStatus: order.status, digiflazzStatus: toBuyerStatus(order.digiflazzStatus) };
 }

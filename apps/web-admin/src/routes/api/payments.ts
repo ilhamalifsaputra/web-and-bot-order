@@ -20,6 +20,7 @@ import {
   creditUnderpaidTopupAnyway,
   manualMatchTx,
   dismissUnmatchedTx,
+  getProcessedBinanceTx,
   creditOrderToBalance,
   listOrders,
   listPendingInternalOrders,
@@ -572,7 +573,7 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
         // Whether the transfer may still be used (actionable outcome, not
         // linked to another order, USDT order) is decided — and the row
         // consumed atomically — by creditOrderToBalance itself.
-        const ledger = await tx.processedBinanceTx.findUnique({ where: { binanceTxId } });
+        const ledger = await getProcessedBinanceTx(tx, binanceTxId);
         if (!ledger) throw new NotFoundError("Transfer not found.");
         const { credited, currency } = await creditOrderToBalance(tx, {
           orderId: target.id,

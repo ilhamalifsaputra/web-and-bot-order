@@ -1,5 +1,5 @@
 import type { FastifyPluginAsync } from "fastify";
-import { prisma } from "@app/db";
+import { prisma, getOrderDigiflazzSnapshot } from "@app/db";
 import { onDigiflazzOrderStatusChanged } from "@app/core/realtime/digiflazzEvents";
 import { streamSse } from "@app/core/realtime/sseRoute";
 import { requireSseAdmin } from "../../plugins/sseAuth";
@@ -14,17 +14,7 @@ interface OrderDigiflazzSnapshot {
 }
 
 async function readOrderDigiflazzSnapshot(orderId: number): Promise<OrderDigiflazzSnapshot | null> {
-  const order = await prisma.order.findUnique({
-    where: { id: orderId },
-    select: {
-      status: true,
-      digiflazzStatus: true,
-      digiflazzAttempts: true,
-      digiflazzNextRecheckAt: true,
-      digiflazzFailureDetail: true,
-      accountDiagnosticNote: true,
-    },
-  });
+  const order = await getOrderDigiflazzSnapshot(prisma, orderId);
   if (!order) return null;
   return {
     orderStatus: order.status,

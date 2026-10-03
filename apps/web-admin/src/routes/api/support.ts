@@ -29,6 +29,7 @@ import {
   countUserOrders,
   listUserOrders,
   listAuditLogs,
+  countOpenUserTickets,
   resolveBotCredentials,
   logAdminAction,
   type TicketFilter,
@@ -228,7 +229,7 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
       userTotalSpent(prisma, ticket.userId),
       countUserOrders(prisma, ticket.userId),
       listUserOrders(prisma, ticket.userId, 5),
-      prisma.supportTicket.count({ where: { userId: ticket.userId, status: { not: TicketStatus.CLOSED } } }),
+      countOpenUserTickets(prisma, ticket.userId),
     ]);
 
     // Two arrays, not merged — keeps this route a thin data source and lets

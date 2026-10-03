@@ -8,6 +8,7 @@
  * commit on its own — pass the same `tx` used by the triggering business
  * transaction so the outbox row lands atomically with the state change.
  */
+import type { Prisma } from "@prisma/client";
 import type { PrismaClient, Tx } from "../client";
 import { config } from "@app/core/config";
 import { logger } from "@app/core/logger";
@@ -975,28 +976,80 @@ export async function claimNotification(db: Db, notifId: number, now: Date = new
 }
 
 /**
+ * Where-clause fragment that scopes a post-send write to the caller's own
+ * claim (backend audit, Task B1.2). A send that outlives STALE_CLAIM_MS has
+ * lost its claim: another dispatcher may have reclaimed the row (stamping a
+ * new `claimedAt`), and the slow sender's late SENT/FAILED/release write must
+ * not overwrite that new claimer's state. Passing the `claimedAt` the caller
+ * claimed with (the `now` it handed to `claimNotification`) makes the write a
+ * no-op once the claim is no longer the caller's. Omitting it keeps the old
+ * unguarded behavior for callers that never claimed the row (admin tooling,
+ * tests).
+ */
+function claimGuard(claimedAt: Date | undefined) {
+  return claimedAt === undefined ? {} : { status: NotificationStatus.SENDING, claimedAt };
+}
+
+/**
  * Release a claimed row back to PENDING without counting it as a failed
  * attempt — used for transient conditions that aren't the row's fault (e.g.
  * Telegram flood-control), so it's immediately retryable on the next tick
  * instead of waiting out the full STALE_CLAIM_MS window. No-op if the row was
- * already claimed by someone else or moved on (SENT/FAILED).
+ * already claimed by someone else (when `claimedAt` is passed) or moved on
+ * (SENT/FAILED).
  */
-export async function releaseNotificationClaim(db: Db, notifId: number): Promise<void> {
+export async function releaseNotificationClaim(db: Db, notifId: number, claimedAt?: Date): Promise<void> {
   await db.notificationOutbox.updateMany({
-    where: { id: notifId, status: NotificationStatus.SENDING },
+    where: { id: notifId, status: NotificationStatus.SENDING, ...claimGuard(claimedAt) },
     data: { status: NotificationStatus.PENDING, claimedAt: null },
   });
 }
 
-/** Mark a row SENT with the current timestamp. */
+/**
+ * Mark a row SENT with the current timestamp. Returns false when nothing was
+ * written: the row is gone, or (with `claimedAt`) the caller's claim was lost
+ * to another dispatcher, which then owns the row's outcome.
+ */
 export async function markNotificationSent(
   db: Db,
   notifId: number,
-): Promise<void> {
-  await db.notificationOutbox.update({
-    where: { id: notifId },
+  claimedAt?: Date,
+): Promise<boolean> {
+  const res = await db.notificationOutbox.updateMany({
+    where: { id: notifId, ...claimGuard(claimedAt) },
     data: { status: NotificationStatus.SENT, sentAt: new Date(), claimedAt: null },
   });
+  return res.count === 1;
+}
+
+/**
+ * Count one attempt atomically and return the new count, or null when no row
+ * matched `where` (row gone, already moved on, or the caller's claim lost).
+ *
+ * A single `attempts = attempts + 1` UPDATE (backend audit, Task B1.2): the
+ * old read-then-write lost a count whenever two writers raced, so a row
+ * could retry past its attempt ceiling. Under READ COMMITTED a concurrent
+ * UPDATE on the same row waits for this one, then increments the committed
+ * value. Status is left untouched, so a claimed row stays SENDING under the
+ * caller's claim until the caller's follow-up write settles it.
+ */
+async function countAttempt(
+  db: Db,
+  where: Prisma.NotificationOutboxWhereUniqueInput,
+  extra: { lastError?: string } = {},
+): Promise<number | null> {
+  try {
+    const row = await db.notificationOutbox.update({
+      where,
+      data: { attempts: { increment: 1 }, ...extra },
+      select: { attempts: true },
+    });
+    return row.attempts;
+  } catch (e) {
+    // P2025: no row matched the where clause.
+    if ((e as { code?: string }).code === "P2025") return null;
+    throw e;
+  }
 }
 
 // Exponential backoff for a row markNotificationFailed sends back to PENDING
@@ -1016,7 +1069,9 @@ export function notificationBackoffMs(attempts: number): number {
  * Increment attempts and record the error (truncated to 500 chars). Once
  * attempts >= maxAttempts the row goes terminal (nextRetryAt cleared);
  * otherwise it goes back to PENDING with an exponential-backoff
- * `nextRetryAt`, for a later retry. No-op if the row is gone.
+ * `nextRetryAt`, for a later retry. No-op if the row is gone, or — when
+ * `claimedAt` is passed — if the caller's claim was lost to another
+ * dispatcher (that dispatcher records the row's outcome, not this caller).
  *
  * The terminal status depends on whether the row was ever actually eligible
  * for retry:
@@ -1043,17 +1098,22 @@ export async function markNotificationFailed(
   error: string,
   maxAttempts = 5,
   now: Date = new Date(),
+  claimedAt?: Date,
 ): Promise<void> {
-  const row = await db.notificationOutbox.findUnique({ where: { id: notifId } });
-  if (!row) return;
-  const attempts = row.attempts + 1;
+  const attempts = await countAttempt(
+    db,
+    { id: notifId, ...claimGuard(claimedAt) },
+    { lastError: error.slice(0, 500) },
+  );
+  if (attempts === null) return;
   const terminal = attempts >= maxAttempts;
   const terminalStatus = maxAttempts > 1 ? NotificationStatus.DEAD_LETTER : NotificationStatus.FAILED;
-  await db.notificationOutbox.update({
-    where: { id: notifId },
+  // Guarded on the count just written: if another failure was counted in
+  // between, that writer settles the row from its newer count and this
+  // stale settle is dropped rather than undoing it.
+  await db.notificationOutbox.updateMany({
+    where: { id: notifId, attempts, ...claimGuard(claimedAt) },
     data: {
-      attempts,
-      lastError: error.slice(0, 500),
       claimedAt: null,
       status: terminal ? terminalStatus : NotificationStatus.PENDING,
       nextRetryAt: terminal ? null : new Date(now.getTime() + notificationBackoffMs(attempts)),
@@ -1071,21 +1131,24 @@ export async function markNotificationFailed(
  * at any time, so no attempt count is ever terminal for this path — unlike
  * `releaseNotificationClaim` (used for transient conditions like Telegram
  * flood control), this backs off so the row stops re-claiming a batch slot
- * every single tick. No-op if the row was already claimed by someone else or
- * moved on (SENT/FAILED).
+ * every single tick. No-op if the row was already claimed by someone else
+ * (when `claimedAt` is passed) or moved on (SENT/FAILED).
  */
 export async function releaseNotificationClaimWithBackoff(
   db: Db,
   notifId: number,
   now: Date = new Date(),
+  claimedAt?: Date,
 ): Promise<void> {
-  const row = await db.notificationOutbox.findUnique({ where: { id: notifId } });
-  if (!row) return;
-  const attempts = row.attempts + 1;
+  const attempts = await countAttempt(db, {
+    id: notifId,
+    status: NotificationStatus.SENDING,
+    ...claimGuard(claimedAt),
+  });
+  if (attempts === null) return;
   await db.notificationOutbox.updateMany({
-    where: { id: notifId, status: NotificationStatus.SENDING },
+    where: { id: notifId, status: NotificationStatus.SENDING, attempts, ...claimGuard(claimedAt) },
     data: {
-      attempts,
       claimedAt: null,
       status: NotificationStatus.PENDING,
       nextRetryAt: new Date(now.getTime() + notificationBackoffMs(attempts)),

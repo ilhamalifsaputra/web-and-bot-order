@@ -544,6 +544,82 @@ describe("claimNotification / releaseNotificationClaim (crash-window double-send
   });
 });
 
+// Backend audit (Task B1.2): a dispatcher whose send outlived STALE_CLAIM_MS
+// has lost its claim — a second dispatcher may have reclaimed the row. The
+// slow one's late SENT/FAILED/release write must not clobber the new
+// claimer's state, so every post-send write can be guarded by the claim
+// timestamp the caller claimed with.
+describe("outbox writes are guarded by claim ownership (Task B1.2)", () => {
+  async function claimedTwice() {
+    const orderId = await seedOrder();
+    await enqueueNotification(prisma, NotificationEvent.ORDER_DELIVERED, orderId, {});
+    const [row] = await fetchPendingNotifications(prisma, 1);
+    const firstClaim = new Date(Date.now() - STALE_CLAIM_MS - 60_000);
+    expect(await claimNotification(prisma, row!.id, firstClaim)).toBe(true);
+    // The first claim went stale; a second dispatcher reclaims the row.
+    const secondClaim = new Date();
+    expect(await claimNotification(prisma, row!.id, secondClaim)).toBe(true);
+    return { id: row!.id, firstClaim, secondClaim };
+  }
+
+  it("markNotificationSent with a lost claim is a no-op and reports false", async () => {
+    const { id, secondClaim } = await claimedTwice();
+    const firstClaimStale = new Date(secondClaim.getTime() - STALE_CLAIM_MS - 60_000);
+    expect(await markNotificationSent(prisma, id, firstClaimStale)).toBe(false);
+    const r = await prisma.notificationOutbox.findUnique({ where: { id } });
+    expect(r!.status).toBe("SENDING");
+    expect(r!.claimedAt!.getTime()).toBe(secondClaim.getTime());
+  });
+
+  it("markNotificationSent with the current claim marks the row SENT and reports true", async () => {
+    const { id, secondClaim } = await claimedTwice();
+    expect(await markNotificationSent(prisma, id, secondClaim)).toBe(true);
+    const r = await prisma.notificationOutbox.findUnique({ where: { id } });
+    expect(r!.status).toBe("SENT");
+  });
+
+  it("markNotificationFailed with a lost claim neither counts an attempt nor releases the new claimer's row", async () => {
+    const { id, firstClaim, secondClaim } = await claimedTwice();
+    await markNotificationFailed(prisma, id, "late failure", 5, new Date(), firstClaim);
+    const r = await prisma.notificationOutbox.findUnique({ where: { id } });
+    expect(r!.status).toBe("SENDING");
+    expect(r!.attempts).toBe(0);
+    expect(r!.claimedAt!.getTime()).toBe(secondClaim.getTime());
+  });
+
+  it("releaseNotificationClaim with a lost claim leaves the new claimer's row alone", async () => {
+    const { id, firstClaim, secondClaim } = await claimedTwice();
+    await releaseNotificationClaim(prisma, id, firstClaim);
+    const r = await prisma.notificationOutbox.findUnique({ where: { id } });
+    expect(r!.status).toBe("SENDING");
+    expect(r!.claimedAt!.getTime()).toBe(secondClaim.getTime());
+  });
+
+  it("releaseNotificationClaimWithBackoff with a lost claim leaves the new claimer's row alone", async () => {
+    const { id, firstClaim, secondClaim } = await claimedTwice();
+    await releaseNotificationClaimWithBackoff(prisma, id, new Date(), firstClaim);
+    const r = await prisma.notificationOutbox.findUnique({ where: { id } });
+    expect(r!.status).toBe("SENDING");
+    expect(r!.attempts).toBe(0);
+    expect(r!.claimedAt!.getTime()).toBe(secondClaim.getTime());
+  });
+
+  it("markNotificationFailed counts concurrent failures atomically (no lost update)", async () => {
+    const ids: number[] = [];
+    for (let i = 0; i < 5; i++) {
+      const n = await prisma.notificationOutbox.create({
+        data: { event: NotificationEvent.ORDER_DELIVERED, orderId: null, payloadJson: "{}" },
+      });
+      ids.push(n.id);
+    }
+    await Promise.all(
+      ids.flatMap((id) => Array.from({ length: 4 }, (_, k) => markNotificationFailed(prisma, id, `parallel ${k}`, 100))),
+    );
+    const rows = await prisma.notificationOutbox.findMany({ where: { id: { in: ids } } });
+    expect(rows.map((r) => r.attempts)).toEqual([4, 4, 4, 4, 4]);
+  });
+});
+
 describe("enqueueOrderPipelineFailed", () => {
   // Runs before the "two admins" test below — addAdminIdToDb persists into
   // the shared `admin_ids` Setting for the rest of this file's run, so the

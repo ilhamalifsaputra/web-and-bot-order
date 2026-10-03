@@ -29,11 +29,38 @@ vi.mock("@app/core/mailer", () => ({
 const dbMockState = vi.hoisted(() => ({
   fetchPendingError: null as Error | null,
   recordPollHealthError: null as Error | null,
+  /** Task B1.1: how many upcoming markNotificationSent calls throw. */
+  markSentFailuresLeft: 0,
+  /** Task B1.3: forces getSmtpCreds to reject. */
+  smtpCredsError: null as Error | null,
+  /** Task B1.3: forces renderEmail to reject. */
+  renderEmailError: null as Error | null,
 }));
+vi.mock("./emailTemplates", async () => {
+  const actual = await vi.importActual<typeof import("./emailTemplates")>("./emailTemplates");
+  return {
+    ...actual,
+    renderEmail: async (...args: Parameters<typeof actual.renderEmail>) => {
+      if (dbMockState.renderEmailError) throw dbMockState.renderEmailError;
+      return actual.renderEmail(...args);
+    },
+  };
+});
 vi.mock("@app/db", async () => {
   const actual = await vi.importActual<typeof import("@app/db")>("@app/db");
   return {
     ...actual,
+    markNotificationSent: async (...args: Parameters<typeof actual.markNotificationSent>) => {
+      if (dbMockState.markSentFailuresLeft > 0) {
+        dbMockState.markSentFailuresLeft--;
+        throw new Error("simulated database outage while recording SENT");
+      }
+      return actual.markNotificationSent(...args);
+    },
+    getSmtpCreds: async (...args: Parameters<typeof actual.getSmtpCreds>) => {
+      if (dbMockState.smtpCredsError) throw dbMockState.smtpCredsError;
+      return actual.getSmtpCreds(...args);
+    },
     fetchPendingNotifications: async (...args: Parameters<typeof actual.fetchPendingNotifications>) => {
       if (dbMockState.fetchPendingError) throw dbMockState.fetchPendingError;
       return actual.fetchPendingNotifications(...args);
@@ -57,6 +84,7 @@ import { cleanupTestDb } from "./dispatcher.test-setup";
  */
 import { describe, it, expect, afterAll, afterEach, vi } from "vitest";
 import type { Bot, InlineKeyboard } from "grammy";
+import { GrammyError } from "grammy";
 import {
   prisma,
   enqueueAdminPasswordReset,
@@ -1675,4 +1703,156 @@ describe("runDispatcher records an outbox heartbeat (Task 15 / I-3)", () => {
     controller.abort();
     await expect(done).resolves.toBeUndefined(); // the loop itself must not throw
   });
+});
+
+/**
+ * Task B1.1 (backend audit): the Telegram/SMTP send and the SENT write used
+ * to share one try block, so a send that went out followed by a failed SENT
+ * write fell into the catch, was recorded as a failed attempt and returned to
+ * PENDING — and the next retry sent it again. For ORDER_DELIVERED_DM that is
+ * the buyer's credentials delivered twice. Once a send has succeeded the row
+ * must never be retried; recording SENT is retried on its own instead.
+ */
+describe("a send that succeeded is never repeated when recording SENT fails (Task B1.1)", () => {
+  afterEach(() => {
+    dbMockState.markSentFailuresLeft = 0;
+    vi.useRealTimers();
+    vi.mocked(sendMail).mockReset().mockResolvedValue(undefined);
+  });
+
+  it("Telegram: sends exactly once and records SENT on a later tick once the database recovers", async () => {
+    await enqueueAdminPasswordReset(prisma, { telegramId: 710_001, code: "B11SEND", ttlMinutes: 10 });
+    const row = await prisma.notificationOutbox.findFirst({ where: { payloadJson: { contains: "710001" } } });
+    const { bot, sendMessage } = fakeBot();
+
+    dbMockState.markSentFailuresLeft = 1;
+    await drainBatch(bot);
+    const afterFirst = await prisma.notificationOutbox.findUnique({ where: { id: row!.id } });
+    expect(afterFirst!.attempts).toBe(0); // the successful send is not a failed attempt
+
+    // Even with any backoff window elapsed, the next tick must not re-send.
+    await prisma.notificationOutbox.update({ where: { id: row!.id }, data: { nextRetryAt: null } });
+    await drainBatch(bot);
+
+    expect(sendMessage.mock.calls.filter((c) => c[0] === 710_001)).toHaveLength(1);
+    const after = await prisma.notificationOutbox.findUnique({ where: { id: row!.id } });
+    expect(after!.status).toBe("SENT");
+  });
+
+  it("Telegram: does not re-send even after its claim goes stale while the SENT write keeps failing", async () => {
+    await enqueueAdminPasswordReset(prisma, { telegramId: 710_002, code: "B11STALE", ttlMinutes: 10 });
+    const row = await prisma.notificationOutbox.findFirst({ where: { payloadJson: { contains: "710002" } } });
+    const { bot, sendMessage } = fakeBot();
+
+    dbMockState.markSentFailuresLeft = 1_000;
+    await drainBatch(bot);
+    // Ten minutes later the SENDING claim is past STALE_CLAIM_MS.
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.now() + 10 * 60_000 });
+    await drainBatch(bot);
+    expect(sendMessage.mock.calls.filter((c) => c[0] === 710_002)).toHaveLength(1);
+
+    dbMockState.markSentFailuresLeft = 0;
+    await drainBatch(bot);
+    expect(sendMessage.mock.calls.filter((c) => c[0] === 710_002)).toHaveLength(1);
+    const after = await prisma.notificationOutbox.findUnique({ where: { id: row!.id } });
+    expect(after!.status).toBe("SENT");
+  });
+
+  it("email: sends exactly once and records SENT on a later tick once the database recovers", async () => {
+    await setSetting(prisma, SMTP_HOST_KEY, "smtp.test.invalid");
+    await setSetting(prisma, SMTP_FROM_KEY, "Shop <shop@test.invalid>");
+    const row = await prisma.notificationOutbox.create({
+      data: {
+        event: NotificationEvent.OWNER_EMAIL_NEW_TICKET,
+        channel: NotificationChannel.EMAIL,
+        orderId: null,
+        payloadJson: JSON.stringify({ to: "b11-once@example.com", ticket_id: 7101, message: "Send me once" }),
+      },
+    });
+    const { bot } = fakeBot();
+
+    dbMockState.markSentFailuresLeft = 1;
+    await drainBatch(bot);
+    await prisma.notificationOutbox.update({ where: { id: row.id }, data: { nextRetryAt: null } });
+    await drainBatch(bot);
+
+    const calls = vi.mocked(sendMail).mock.calls.filter((c) => c[1].to === "b11-once@example.com");
+    expect(calls).toHaveLength(1);
+    const after = await prisma.notificationOutbox.findUnique({ where: { id: row.id } });
+    expect(after!.status).toBe("SENT");
+    expect(after!.attempts).toBe(0);
+  });
+});
+
+/**
+ * Task B1.3 (backend audit): renderEmail and getSmtpCreds ran outside any
+ * try, so a throw escaped drainBatch — the rest of the batch was skipped and
+ * the claimed row sat SENDING until the stale window, retried every 5 minutes
+ * without ever counting an attempt. Same pattern readOrderForDelivery fixed.
+ */
+describe("drainBatch isolates an email render or SMTP-settings failure (Task B1.3)", () => {
+  afterEach(() => {
+    dbMockState.smtpCredsError = null;
+    dbMockState.renderEmailError = null;
+    vi.mocked(sendMail).mockReset().mockResolvedValue(undefined);
+  });
+
+  for (const which of ["renderEmail", "getSmtpCreds"] as const) {
+    it(`records a failed attempt on the row when ${which} throws, and keeps draining the batch`, async () => {
+      await setSetting(prisma, SMTP_HOST_KEY, "smtp.test.invalid");
+      await setSetting(prisma, SMTP_FROM_KEY, "Shop <shop@test.invalid>");
+      const tag = which === "renderEmail" ? 7301 : 7302;
+      const row = await prisma.notificationOutbox.create({
+        data: {
+          event: NotificationEvent.OWNER_EMAIL_NEW_TICKET,
+          channel: NotificationChannel.EMAIL,
+          orderId: null,
+          payloadJson: JSON.stringify({ to: `b13-${tag}@example.com`, ticket_id: tag, message: "x" }),
+        },
+      });
+      await enqueueAdminPasswordReset(prisma, { telegramId: 730_000 + tag, code: `B13${tag}`, ttlMinutes: 10 });
+      if (which === "renderEmail") dbMockState.renderEmailError = new Error("simulated settings read failure");
+      else dbMockState.smtpCredsError = new Error("simulated SMTP password decrypt failure");
+
+      const { bot, sendMessage } = fakeBot();
+      await expect(drainBatch(bot)).resolves.toBeGreaterThan(0);
+
+      const after = await prisma.notificationOutbox.findUnique({ where: { id: row.id } });
+      expect(after!.status).toBe("PENDING");
+      expect(after!.attempts).toBe(1);
+      expect(after!.nextRetryAt).not.toBeNull();
+      expect(sendMail).not.toHaveBeenCalled();
+      expect(sendMessage.mock.calls.some((c) => c[0] === 730_000 + tag)).toBe(true);
+    });
+  }
+});
+
+/**
+ * Task B1.4 (backend audit): the flood-control sleep ignored the abort
+ * signal, so a SIGTERM during a long retry_after held shutdown that long.
+ */
+describe("flood-control sleep honours the abort signal (Task B1.4)", () => {
+  it("returns promptly when aborted mid-sleep and releases the row", async () => {
+    await enqueueAdminPasswordReset(prisma, { telegramId: 740_001, code: "B14ABORT", ttlMinutes: 10 });
+    const row = await prisma.notificationOutbox.findFirst({ where: { payloadJson: { contains: "740001" } } });
+    const sendMessage = vi.fn().mockRejectedValue(
+      new GrammyError(
+        "Too Many Requests",
+        { ok: false, error_code: 429, description: "Too Many Requests: retry after 30", parameters: { retry_after: 30 } },
+        "sendMessage",
+        {},
+      ),
+    );
+    const bot = { api: { sendMessage } } as unknown as Bot;
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 200);
+
+    const started = Date.now();
+    await drainBatch(bot, controller.signal);
+    expect(Date.now() - started).toBeLessThan(5_000);
+
+    const after = await prisma.notificationOutbox.findUnique({ where: { id: row!.id } });
+    expect(after!.status).toBe("PENDING");
+    expect(after!.attempts).toBe(0);
+  }, 15_000);
 });

@@ -174,9 +174,10 @@ export function readCustomerSession(raw: string | undefined): CustomerSession | 
   }
 }
 
+/** Compares fixed-size sha256 digests, so neither the result nor the timing
+ * reveals whether the lengths differed (no early return on length). */
 export function constantTimeEqual(a: string, b: string): boolean {
-  const ab = Buffer.from(a);
-  const bb = Buffer.from(b);
-  if (ab.length !== bb.length) return false;
-  return timingSafeEqual(ab, bb);
+  const ad = createHash("sha256").update(a).digest();
+  const bd = createHash("sha256").update(b).digest();
+  return timingSafeEqual(ad, bd);
 }

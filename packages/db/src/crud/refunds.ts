@@ -348,15 +348,14 @@ export async function transitionRefundStatus(
  * without that, this invariant check would still run, but the row would
  * (silently, wrongly) attribute another order's item to this refund.
  *
- * NOTE on concurrency: the sum-then-insert here is not wrapped in its own
- * atomic claim (unlike transitionRefundStatus's updateMany-with-guard
- * pattern) because there is no single row to gate the claim on — the
- * invariant is a cross-row aggregate over sibling RefundItem rows. Callers
- * that need this to be airtight under concurrent writers should call this
- * inside one `$transaction`: this database is single-writer SQLite, so a
- * conflicting concurrent write is serialized (or, in the rare interactive-
- * transaction race, thrown as a busy/snapshot error) rather than silently
- * violating the invariant — it fails closed, never open.
+ * NOTE on concurrency: both budgets are cross-row aggregates over sibling
+ * RefundItem rows, and Postgres READ COMMITTED lets two concurrent callers
+ * read the same pre-insert sum and both insert. So the sum-then-insert runs
+ * inside a transaction (its own, or the caller's when handed a `Tx`) that
+ * first takes `SELECT ... FOR UPDATE` on the parent ORDER row — every RefundItem
+ * of this refund and of this order item belongs to that one order, so the
+ * lock serializes all writers of both sums. Lock order is order-first, the
+ * same as `executeRefund`.
  *
  * Rejects attaching a new item to a Refund that is already terminal
  * (`TERMINAL_REFUND_STATUSES` — COMPLETED, FAILED, or CANCELLED): a COMPLETED
@@ -383,6 +382,34 @@ export async function createRefundItem(
     adminId: number;
   },
 ): Promise<RefundItem> {
+  // A `Tx` has no `$transaction`, so its presence means the bare client and
+  // this function opens its own transaction; otherwise it joins the caller's
+  // (e.g. stockReplacement's) so the lock below lives until that one commits.
+  const ownsTransaction = "$transaction" in db && typeof db.$transaction === "function";
+  return ownsTransaction
+    ? db.$transaction((tx: Db) => createRefundItemLocked(tx, args))
+    : createRefundItemLocked(db, args);
+}
+
+async function createRefundItemLocked(
+  db: Db,
+  args: {
+    refundId: number;
+    orderItemId: number;
+    amount: Decimal.Value;
+    reason?: string | null;
+    adminId: number;
+  },
+): Promise<RefundItem> {
+  const target = await db.refund.findUnique({ where: { id: args.refundId }, select: { orderId: true } });
+  if (!target) throw new ValidationError("error.refund_not_found");
+  // Hold the ORDER row before reading either budget sum below. Both sums are
+  // aggregates over RefundItem rows of this one order, so the order row is the
+  // single row that serializes every writer of them; without it two
+  // concurrent calls read the same pre-insert sum and both insert. Same lock
+  // (and order-first lock order) as `executeRefund`.
+  await db.$queryRaw`SELECT id FROM orders WHERE id = ${target.orderId} FOR UPDATE`;
+  // Re-read under the lock so the status check sees the committed state.
   const refund = await db.refund.findUnique({ where: { id: args.refundId } });
   if (!refund) throw new ValidationError("error.refund_not_found");
   if (TERMINAL_REFUND_STATUSES.includes(refund.status)) {

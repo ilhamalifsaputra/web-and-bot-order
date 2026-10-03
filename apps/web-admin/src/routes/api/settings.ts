@@ -159,6 +159,10 @@ const SECRET_KEYS = new Set([
   "binance_api_key", "binance_api_secret", "nowpayments_api_key", "nowpayments_ipn_secret", "bscscan_api_key",
   "smtp_pass", "digiflazz_api_key", "kokinpay_api_key", "coingecko_api_key",
   "paydisini_userkey", "tokopay_merchant_id", "bybit_uid",
+  // The /metrics scrape token (routes/metrics.ts). Not in EDITABLE today (it
+  // is set via METRICS_TOKEN or a direct settings row); listed here so it
+  // stays masked/unexported the moment anyone makes it editable.
+  "metrics_token",
 ]);
 const TOKEN_KEYS = new Set(["bot_token", "notif_bot_token"]);
 // Fields whose /telegram/test check reuses the getChat-based "is this chat

@@ -28,7 +28,9 @@ import { NotificationStatus } from "@app/core/enums";
 import { constantTimeEqual } from "../auth";
 import { optionalAdmin } from "../plugins/auth";
 
-/** Setting key holding the scraper's bearer token (masked as a secret in Settings). */
+/** Setting key holding the scraper's bearer token. Not editable in the
+ * Settings page (configure METRICS_TOKEN in the env); it is listed in
+ * settings.ts's SECRET_KEYS so it would stay masked if it ever became editable. */
 export const METRICS_TOKEN_KEY = "metrics_token";
 
 // Module-level singleton registry/gauges (prom-client's own recommended

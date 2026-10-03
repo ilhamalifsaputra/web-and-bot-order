@@ -611,6 +611,10 @@ describe("semi-secret gateway identifiers are treated as secrets (Task C4)", () 
     expect(isSecretSettingKey("web_session_jti:999")).toBe(true);
     expect(isSecretSettingKey("shop_name")).toBe(false);
   });
+
+  it("metrics_token is a secret key, defensively (it is not editable today)", () => {
+    expect(isSecretSettingKey("metrics_token")).toBe(true);
+  });
 });
 
 describe("GET /api/settings/export", () => {

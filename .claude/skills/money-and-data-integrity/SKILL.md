@@ -25,6 +25,16 @@ This repo has one shared SQLite database written from three processes (bot, web-
   - admin: the `CurrencyAmount` component
   - bot: `formatPrice`
 
+## Typed money is read by shape, shown in the buyer's language
+
+A person typing `10.000` means ten thousand rupiah, and `new Decimal("10.000")` is ten. Read every typed or
+imported amount with `parseMoneyInput(raw, "IDR" | "USDT")` (Decimal) or `normalizeMoneyInput` (canonical string,
+also the byte-identical copy in `apps/storefront/client/src/lib/moneyInput.ts`); a shape that is ambiguous (USDT
+`1.000`) returns null and the caller re-prompts instead of guessing. A typed percent uses `parsePercentInput`.
+Show money to buyers only through `formatIdrFor` / `ctxPriceFormatter` / `orderAmount`. These rules are enforced by
+`apps/order-bot/test/money-input-guard.test.ts` (AST scan with a reasoned allowlist); read its header before
+adding an exception.
+
 ## No raw SQL in routes or handlers
 
 - Route files (`apps/web-admin/src/routes/*`, `apps/storefront/src/routes/*`) and bot handler files (`apps/order-bot/src/handlers/*`) must not contain raw SQL or ad-hoc Prisma queries.

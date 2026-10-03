@@ -1089,6 +1089,24 @@ describe("admin conversations", () => {
     expect(await prisma.auditLog.count({ where: { action: "bulk_pricing_set" } })).toBe(1);
   });
 
+  it.each([["12,5", "12.5"], ["12.5", "12.5"], ["99", "99"]])("bulkPricing: a typed percent of %s is stored as %s", async (typed, stored) => {
+    const sink: SentCall[] = [];
+    const entry = entryAdmin(sink, `v1:adm:bulk:new:${sample.product.id}`);
+    const conv = new FakeConversation([msg(sink, { text: "5" }), msg(sink, { text: typed })]);
+    await bulkPricingConversation(conv.asMyConversation(), entry);
+    const rule = await prisma.bulkPricing.findUnique({ where: { productId: sample.product.id } });
+    expect(rule!.discountPercent.toString()).toBe(stored);
+  });
+
+  it.each(["1e1", "10.000", "0", "100", "abc", "1,2,3", "-5"])("bulkPricing: a typed percent of %s gets the percent error and creates no rule", async (typed) => {
+    const sink: SentCall[] = [];
+    const entry = entryAdmin(sink, `v1:adm:bulk:new:${sample.product.id}`);
+    const conv = new FakeConversation([msg(sink, { text: "5" }), msg(sink, { text: typed }), msg(sink, { text: "/cancel" })]);
+    await bulkPricingConversation(conv.asMyConversation(), entry);
+    expect(sink.filter((c) => c.args.some((a) => typeof a === "string" && a.includes(t(entry, "admin.bulk_err_pct")))).length).toBe(1);
+    expect(await prisma.bulkPricing.findUnique({ where: { productId: sample.product.id } })).toBeNull();
+  });
+
   it("ticketReply: saves an ADMIN reply, flips status, DMs the customer", async () => {
     const ticket = await prisma.supportTicket.create({ data: { userId: sample.user.id, message: "help me", status: TicketStatus.OPEN } });
     const sink: SentCall[] = [];

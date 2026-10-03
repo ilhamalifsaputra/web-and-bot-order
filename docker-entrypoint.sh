@@ -5,10 +5,9 @@
 #
 # Why the chown: ./data is bind-mounted from the host (docker-compose.yml). A
 # bind mount keeps the host's ownership, so after `git clone` the dir is
-# root-owned and the non-root runtime user (UID 999) cannot write the SQLite DB
-# — the web-admin upsert then fails with "attempt to write a readonly database"
-# (HTTP 500). Starting as root lets us chown it, so a fresh clone just works
-# with no manual `chown` on the host.
+# root-owned and the non-root runtime user (UID 999) cannot write the logs,
+# uploads or the auto-generated credential key. Starting as root lets us chown
+# it, so a fresh clone just works with no manual `chown` on the host.
 #
 # Why the schema step lives here: CLAUDE.md requires the schema to be applied
 # BEFORE the new code runs, or every query touching a new column dies with
@@ -19,14 +18,11 @@
 # `docker compose restart server` would silently skip it). Full background,
 # including the manual equivalent, is in docs/MIGRATIONS.md.
 #
-# Both database engines are handled, on different terms:
-#   - postgresql:// (production since the engine-swap) — `prisma db push`, then
-#     the ledger chart-of-accounts seed, then the data-only migrations listed in
-#     $DATA_MIGRATIONS. No snapshot is taken: the Postgres dump runs on the host,
-#     not in this container (see postgres_migrate's own comment). A deploy is
-#     therefore just `docker compose ... up -d --build`.
-#   - file: (SQLite, pre-cutover checkouts) — unchanged: compare, snapshot with
-#     deploy/backup/backup.sh, then push.
+# The database is PostgreSQL (postgresql:// in DATABASE_URL_PRISMA): `prisma db
+# push`, then the ledger chart-of-accounts seed, then the data-only migrations
+# listed in $DATA_MIGRATIONS. No snapshot is taken: the Postgres dump runs on the
+# host, not in this container (see postgres_migrate's own comment). A deploy is
+# therefore just `docker compose ... up -d --build`.
 set -e
 
 # Where the app is installed. Always /app in this image (Dockerfile WORKDIR);
@@ -37,7 +33,6 @@ SKIP_SENTINEL="$DATA_DIR/SKIP_AUTO_MIGRATE"
 PRISMA="$APP_ROOT/node_modules/.bin/prisma"
 TSX="$APP_ROOT/node_modules/.bin/tsx"
 SCHEMA="$APP_ROOT/prisma/schema.prisma"
-BACKUP="$APP_ROOT/deploy/backup/backup.sh"
 CREDENTIAL_KEY_FILE="$DATA_DIR/credential_encryption.key"
 LEDGER_SEED="$APP_ROOT/scripts/seed-chart-of-accounts.ts"
 
@@ -69,23 +64,6 @@ DB_WAIT_SECONDS="${DB_WAIT_SECONDS:-2}"
 RUN_AS=""
 
 log() { echo "entrypoint: $*"; }
-
-# Absolute path of the SQLite file behind DATABASE_URL_PRISMA. A relative
-# `file:` URL resolves against the SCHEMA's directory (Prisma's rule), not the
-# CWD, so the `file:../data/bot.db` default means /app/data/bot.db.
-resolve_db_path() {
-  _url="${DATABASE_URL_PRISMA:-file:../data/bot.db}"
-  case "$_url" in
-    file:*) _path="${_url#file:}" ;;
-    *) return 1 ;; # not a SQLite file URL — no snapshot path exists
-  esac
-  _path="${_path%%\?*}" # drop any ?connection_limit=... query string
-  case "$_path" in
-    /*) ;;
-    *) _path="$APP_ROOT/prisma/$_path" ;;
-  esac
-  printf '%s\n' "$_path"
-}
 
 # `prisma db push` syncs schema.prisma → DB. Deliberately WITHOUT
 # --accept-data-loss: if a change would drop data, the push must fail and
@@ -189,9 +167,9 @@ apply_data_migrations() {
 
 # The whole Postgres deploy sequence: schema, then the row-level steps a schema
 # push cannot carry. Automating it here is what lets a release deploy with a
-# plain `docker compose ... up -d --build`, with the same guarantee the SQLite
-# path has always had — the schema is current BEFORE any application code runs,
-# on every start path including `restart` and the automatic restart after a crash.
+# plain `docker compose ... up -d --build`, with the guarantee that the schema is
+# current BEFORE any application code runs, on every start path including
+# `restart` and the automatic restart after a crash.
 postgres_migrate() {
   log "DATABASE_URL_PRISMA points at PostgreSQL — bringing the schema up to date, then applying this release's row-level steps."
   # No pre-push snapshot exists on this path, deliberately. deploy/backup/backup.sh's
@@ -231,21 +209,17 @@ auto_migrate() {
     return 0
   fi
 
-  # schema.prisma's datasource provider is "postgresql" (engine-swap) — there
-  # is no SQLite fallback to default to any more. Fail loud and immediately
-  # instead of silently substituting the old file: URL, which used to produce
-  # a confusing SQLite-flavored `prisma db push` failure instead of a clear
-  # "you forgot to set this" error.
+  # schema.prisma's datasource provider is "postgresql", so there is no default
+  # to fall back to. Fail loud and immediately with a clear "you forgot to set
+  # this" error instead of a confusing `prisma db push` failure.
   if [ -z "${DATABASE_URL_PRISMA:-}" ]; then
-    log "ERROR: DATABASE_URL_PRISMA is not set. schema.prisma requires a postgresql:// connection string — set DATABASE_URL_PRISMA=postgresql://<user>:<password>@postgres:5432/<db> in .env (see .env.example and docs/POSTGRES_MIGRATION.md). Refusing to start." >&2
+    log "ERROR: DATABASE_URL_PRISMA is not set. schema.prisma requires a postgresql:// connection string — set DATABASE_URL_PRISMA=postgresql://<user>:<password>@postgres:5432/<db> in .env (see .env.example). Refusing to start." >&2
     exit 1
   fi
 
-  # The production engine. Handled in full — schema push, ledger chart-of-accounts
-  # seed, data-only migrations — so a release deploys with nothing but
-  # `docker compose ... up -d --build`. Checked before resolve_db_path() because a
-  # postgresql:// URL has no local file to snapshot and must not fall into the
-  # SQLite branch's backup machinery.
+  # Handled in full (schema push, ledger chart-of-accounts seed, data-only
+  # migrations), so a release deploys with nothing but
+  # `docker compose ... up -d --build`.
   case "$DATABASE_URL_PRISMA" in
     postgres://* | postgresql://*)
       postgres_migrate
@@ -253,72 +227,8 @@ auto_migrate() {
       ;;
   esac
 
-  if ! db_path="$(resolve_db_path)"; then
-    log "DATABASE_URL_PRISMA is neither a postgresql:// URL nor a SQLite 'file:' URL, so the entrypoint does not know how to bring this database up to date, and there is no file to snapshot either. Skipping the automatic schema update; apply it yourself (docs/MIGRATIONS.md)."
-    return 0
-  fi
-
-  if [ ! -f "$db_path" ]; then
-    # Fresh install: `migrate diff` cannot read a database that does not exist
-    # (it fails with P1003), and an absent file has nothing worth backing up,
-    # so go straight to creating the schema.
-    log "No database file at $db_path yet, so this is a fresh install — creating the schema from scratch."
-    db_push
-    log "Schema created."
-    return 0
-  fi
-
-  # --exit-code: 0 = database already matches, 2 = it differs, 1 = the
-  # comparison itself failed. Verified against this repo's own DB.
-  set +e
-  # shellcheck disable=SC2086 # RUN_AS is an intentional word-split prefix
-  $RUN_AS "$PRISMA" migrate diff \
-    --from-schema-datasource "$SCHEMA" \
-    --to-schema-datamodel "$SCHEMA" \
-    --exit-code >/dev/null 2>&1
-  _rc=$?
-  set -e
-
-  case "$_rc" in
-    0)
-      log "Database schema already matches schema.prisma — nothing to apply."
-      return 0
-      ;;
-    2)
-      log "Database schema differs from schema.prisma — taking a snapshot, then applying the change."
-      ;;
-    *)
-      log "ERROR: could not compare $db_path with schema.prisma (prisma migrate diff exited $_rc). Refusing to start, because guessing here risks either an unmigrated database that fails every order query with P2022, or an unnecessary schema rewrite. Investigate with: docker compose run --rm server pnpm exec prisma migrate diff --from-schema-datasource prisma/schema.prisma --to-schema-datamodel prisma/schema.prisma" >&2
-      exit 1
-      ;;
-  esac
-
-  # A snapshot is mandatory before the schema is touched, so every prerequisite
-  # for taking one is a hard failure rather than something to skip past.
-  if [ ! -f "$BACKUP" ]; then
-    log "ERROR: no backup script at $BACKUP, so the required pre-migration snapshot cannot be taken. Refusing to change the schema. Restore the script, or set AUTO_MIGRATE=0 and migrate manually after your own backup." >&2
-    exit 1
-  fi
-  if ! command -v sqlite3 >/dev/null 2>&1; then
-    log "ERROR: sqlite3 is missing from this image, so the required pre-migration snapshot cannot be taken (backup.sh needs it for a WAL-safe .backup). Refusing to change the schema. Rebuild the image (docker compose build), which installs sqlite3." >&2
-    exit 1
-  fi
-
-  # backup.sh uses the SQLite online-backup API, so the snapshot folds in the
-  # un-checkpointed -wal contents and is verified with PRAGMA integrity_check.
-  #
-  # Invoked through `bash` rather than executed directly: a Windows git checkout
-  # does not preserve the +x bit (the same reason the Dockerfile chmods the
-  # entrypoint), and the script is bash-specific anyway — it uses mapfile.
-  # shellcheck disable=SC2086 # RUN_AS is an intentional word-split prefix
-  if ! DB="$db_path" DEST="$DATA_DIR/backups" RETENTION="${BACKUP_RETENTION:-28}" \
-    $RUN_AS bash "$BACKUP"; then
-    log "ERROR: the pre-migration snapshot failed, so the schema was left untouched — a schema change without a usable backup has no rollback path. Fix the backup failure above and start again." >&2
-    exit 1
-  fi
-
-  db_push
-  log "Schema updated. The snapshot taken just before the change is in $DATA_DIR/backups (roll back with deploy/backup/restore.sh)."
+  log "ERROR: DATABASE_URL_PRISMA is not a postgresql:// URL, and PostgreSQL is the only supported database. Refusing to start. Set DATABASE_URL_PRISMA=postgresql://<user>:<password>@postgres:5432/<db> in .env (see .env.example)." >&2
+  exit 1
 }
 
 # Auto-generates CREDENTIAL_ENCRYPTION_KEY on first boot so a production
@@ -372,8 +282,8 @@ main() {
     # gosu does not reset HOME; point it at app's home so pnpm/corepack caches are
     # writable (PNPM_HOME is already /pnpm via ENV).
     export HOME=/home/app
-    # Run the schema work as `app` too, so the SQLite sidecars (-wal/-shm) and the
-    # backup files it creates are owned by the user that later runs the app.
+    # Run the schema work as `app` too, so any file it creates is owned by the
+    # user that later runs the app.
     RUN_AS="gosu app"
   fi
 

@@ -1685,7 +1685,7 @@ describe("runDispatcher records an outbox heartbeat (Task 15 / I-3)", () => {
   /**
    * Final whole-branch review, Important #1: before this fix, both
    * `recordPollHealth` calls in `runDispatcher` were unguarded — if the
-   * heartbeat write itself threw (e.g. the shared SQLite DB is busy/locked,
+   * heartbeat write itself threw (e.g. the shared database is briefly unreachable,
    * plausibly correlated with why the tick just failed), the exception
    * escaped `runDispatcher` entirely. `startNotifier`
    * (apps/server/src/index.ts) treats that outer throw as fatal and stops

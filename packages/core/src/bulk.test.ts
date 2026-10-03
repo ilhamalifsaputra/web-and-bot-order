@@ -3,7 +3,7 @@
  * price with (mirrors flash.test.ts, which pins the same contract for flash
  * sales). upsertBulkPricing rejects a bad rule at write time; these tests pin
  * what happens when a bad rule is already in the table anyway (written before
- * that guard existed, or by hand against the shared SQLite file).
+ * that guard existed, or by hand against the shared database).
  */
 import { describe, it, expect } from "vitest";
 import { activeBulkPercent, isBulkActive, bulkDiscountFor } from "./bulk";

@@ -15,7 +15,7 @@
  * both stay untouched (plan.md §15.1).
  *
  * Usage (STOP the bot/server first; this must be the only writer):
- *   1. Back up data/bot.db (+ -wal/-shm).
+ *   1. Back up the database (pg_dump).
  *   2. pnpm tsx scripts/convert-prices-to-idr.ts 16000
  *   3. Deploy the IDR-basis code and restart.
  * Refuses to run twice: an existing usd_idr_rate marks the DB as converted.

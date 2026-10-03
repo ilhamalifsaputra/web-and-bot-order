@@ -16,8 +16,7 @@
 | Docker | Engine terbaru, untuk Jalur A | Opsional |
 | OS | Linux (VPS) untuk produksi; Windows/macOS untuk dev lokal | — |
 
-`engines.node` di `package.json` mensyaratkan `>=22.13` (`node:sqlite`, dipakai
-skrip migrasi Postgres, butuh minimal versi ini). Versi `prisma`/
+`engines.node` di `package.json` mensyaratkan `>=22.13`. Versi `prisma`/
 `@prisma/client` terkunci ke `5.22.0`; `typescript` ke `^5.6.3`; `vitest` ke
 `^2.1.5` — lihat [Root `package.json`](#scripts-root-packagejson) di bawah.
 
@@ -148,8 +147,6 @@ sudah diisi). Checklist verifikasi penuh ada di `deploy/README.md` bagian
 "build": "pnpm -r build",
 "build:bundle": "tsx scripts/build-bundle.ts",
 "reset-admin-password": "tsx scripts/reset-admin-password.ts",
-"migrate-catalog-rename": "tsx scripts/migrate-catalog-rename.ts",
-"backfill-catalog-slugs": "tsx scripts/backfill-catalog-slugs.ts",
 "bybit-probe": "tsx scripts/bybit-internal-probe.ts",
 "start": "tsx apps/server/src/index.ts",
 "typecheck": "pnpm -r typecheck && tsc -p tsconfig.test.json",
@@ -172,8 +169,6 @@ sudah diisi). Checklist verifikasi penuh ada di `deploy/README.md` bagian
 | `scripts/reset-admin-password.ts` | Reset password admin via Telegram ID, tanpa lewat bot/web (darurat lupa password) |
 | `scripts/bybit-internal-probe.ts` | Probe read-only API Bybit — cek koneksi sebelum mengaktifkan auto-confirm |
 | `scripts/binance-probe.ts` | Probe read-only API Binance — cek transfer masuk punya field note |
-| `scripts/migrate-catalog-rename.ts` | Migrasi data SEKALI-JALAN (rename tabel lama → Category/Product/Denomination) — **tidak idempotent**, lihat README.md §7 sebelum jalankan ulang di produksi |
-| `scripts/backfill-catalog-slugs.ts` | Backfill kolom `slug` untuk baris katalog lama |
 | `scripts/convert-prices-to-idr.ts` | Migrasi data SEKALI-JALAN era konversi USDT→IDR (legacy, kemungkinan tidak relevan untuk instalasi baru) |
 | `scripts/build-bundle.ts` | Bundler esbuild kustom (opsional, di luar jalur `tsx` default) |
 

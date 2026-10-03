@@ -37,8 +37,8 @@ printf '200'
 EOF
 chmod +x "$TMP_ROOT/bin/docker" "$TMP_ROOT/bin/curl"
 
+export DATA_DIR="$TMP_ROOT/data"
 export PATH="$TMP_ROOT/bin:$PATH"
-export DB="$TMP_ROOT/data/bot.db"
 export DB_SENTINEL_TEST_PATH="$TMP_ROOT/data/SKIP_AUTO_MIGRATE"
 if ! output="$(bash "$SCRIPT_DIR/restore.sh" "$TMP_ROOT/backups/test.dump" 2>&1)"; then
   printf '%s\n' "$output" >&2

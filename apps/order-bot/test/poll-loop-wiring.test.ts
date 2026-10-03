@@ -586,7 +586,7 @@ describe("Bybit deposit rails' cycle timeouts stay well clear of their own payme
  * once at boot, purely so it can write an accurate "poller active" / "poller
  * idle" line. That read is fire-and-forget — nothing waits on it and nothing
  * needs to — which is exactly what makes a rejection from it dangerous: Node
- * ≥15 defaults to `--unhandled-rejections=throw`, so a SQLITE_BUSY on that one
+ * ≥15 defaults to `--unhandled-rejections=throw`, so a lock timeout on that one
  * settings query would take the whole bot process down at startup, killing six
  * healthy pollers over a cosmetic log line.
  *
@@ -615,7 +615,7 @@ describe("a failed boot-time configuration read never takes the bot process down
     async ({ mod, hangFn, bootWarnFragment }) => {
       const bootRead = vi.mocked(dbMock[hangFn] as unknown as (...a: unknown[]) => Promise<unknown>);
       bootRead.mockReset();
-      bootRead.mockRejectedValue(new Error("SQLITE_BUSY: database is locked"));
+      bootRead.mockRejectedValue(new Error("lock timeout: could not obtain lock on row"));
       const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined as never);
 
       const unhandled: unknown[] = [];

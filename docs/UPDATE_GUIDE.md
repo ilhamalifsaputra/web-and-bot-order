@@ -7,8 +7,7 @@ jalan (produksi atau staging). Untuk konsep versi/rilis, lihat
 ## Mengapa urutannya kaku
 
 Aplikasi saat ini **satu proses** (`apps/server`) dengan database PostgreSQL
-(lihat [DATABASE.md](arsitektur/DATABASE.md) dan
-[POSTGRES_MIGRATION.md](POSTGRES_MIGRATION.md)).
+(lihat [DATABASE.md](arsitektur/DATABASE.md)).
 Tidak ada rolling-update multi-instance, tidak ada load balancer di depan
 beberapa replica — jadi "zero-downtime" di sini berarti **downtime
 seminimal mungkin** (~detik, bukan nol mutlak) lewat urutan yang benar, bukan
@@ -28,7 +27,7 @@ dan tersimpan sebelum menarik kode baru (lihat
 [panduan backup](../deploy/backup/README.md)).
 
 ```bash
-DATABASE_URL_PRISMA=postgresql://engine-marker deploy/backup/backup.sh
+deploy/backup/backup.sh
 git pull
 docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml up -d --build
 docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml logs --since 10m server | grep entrypoint
@@ -95,14 +94,6 @@ jangan jalankan skrip migrasi historis yang tidak tercantum secara otomatis.
 | Setting baru (DB) | Tidak perlu apa-apa — terbaca live | Tidak (untuk Setting yang "langsung berlaku" — lihat tabel di [`../DOCS.md` §6](../DOCS.md#6-settings-vs-env)) |
 | Ganti `bot_token`/`web_cookie_secret` via Settings | — | Ya (proses yang relevan, lihat §6) |
 | Dependency baru (`package.json`) | `pnpm install` / `docker compose ... up -d --build` sebelum proses baru berjalan | Ya |
-
-### Legacy SQLite, hanya checkout pra-cutover
-
-Pada checkout lama yang masih memakai `data/bot.db`, skrip historis seperti
-`migrate-catalog-rename.ts` dapat membutuhkan langkah manual sekali jalan.
-Ikuti header skrip dan panduan backup SQLite pada versi kode itu; simpan
-backup WAL-safe sebelum menjalankannya. Pembahasan rebuild tabel SQLite dan
-file `bot.db` ini **bukan** prosedur update PostgreSQL saat ini.
 
 ## Cache & "Redis"
 

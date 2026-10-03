@@ -28,7 +28,7 @@ const SESSION_EXPIRED_UPLOAD_MESSAGE = "Your session may have expired. Reload th
 /** The two phases a Save actually goes through: bytes leaving the browser
  * (`sending`, driven by real upload progress), then the server doing its own
  * work — sniffing, a DB read, file unlinks, a `writeFile`, and a couple of
- * sequential writes against the shared single-writer SQLite (`processing`,
+ * sequential database writes (`processing`,
  * which has no progress signal at all). Collapsing both into one "uploading"
  * boolean is what made a frozen `Saving… 100%` indistinguishable from a
  * genuine hang. */

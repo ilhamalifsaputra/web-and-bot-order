@@ -2,8 +2,7 @@
 
 Satu skema Prisma (`prisma/schema.prisma`), dipakai bersama oleh
 `apps/order-bot`, `apps/web-admin`, `apps/storefront`, dan `apps/server`.
-**28 model** (termasuk `OrderStatusHistory`, migrasi
-`20260624160712_add_order_status_history`).
+**28 model** (termasuk `OrderStatusHistory`).
 
 **Engine: PostgreSQL.** Sejak engine-swap, `datasource` block di
 `schema.prisma` sudah Postgres-only:
@@ -15,17 +14,10 @@ datasource db {
 }
 ```
 
-Ini bukan lagi hipotesis/opsi — provider `postgresql` menolak keras `url`
-bertipe `file:...`, jadi kode di repo ini tidak lagi bisa jalan di atas
-SQLite. **Yang bisa berbeda per toko adalah status cutover instance
-produksinya**: toko yang belum menjalankan proses migrasi masih menjalankan
-database live-nya di SQLite lama (`data/bot.db`, mode **WAL**) sampai
-operatornya menjalankan runbook
-[`POSTGRES_MIGRATION.md`](../POSTGRES_MIGRATION.md). Sebelum cutover itu
-selesai untuk toko tersebut, jangan campur "skema di repo" (selalu
-Postgres-only sejak commit engine-swap) dengan "database yang sedang jalan
-di produksi toko itu" (bisa saja masih SQLite). Backup/restore untuk kedua
-kondisi ini dijelaskan di [`BACKUP_AND_RESTORE.md`](../BACKUP_AND_RESTORE.md).
+Provider `postgresql` menolak keras `url` bertipe `file:...`, dan
+`docker-entrypoint.sh` menolak start bila `DATABASE_URL_PRISMA` bukan
+`postgresql://`/`postgres://`. Backup/restore dijelaskan di
+[`BACKUP_AND_RESTORE.md`](../BACKUP_AND_RESTORE.md).
 
 > ⚠️ **Jangan ubah nama kolom/tabel** tanpa migrasi — setiap `@map`/`@@map`
 > mempertahankan nama kolom apa adanya dari skema lama (lihat komentar header
@@ -126,8 +118,8 @@ erDiagram
 
 | Model | Tabel | Catatan kunci |
 |---|---|---|
-| `Order` | `orders` | `status` (lihat [ORDER_STATE_MACHINE.md](ORDER_STATE_MACHINE.md)), snapshot `currency`/`fxRate` saat bayar, `uniqueCents` (disambiguator Bybit/Binance amount-match). Index gabungan `(status, createdAt)` untuk query antrian. Kolom `network`/`confirmations`/`requiredConfirmations`/`firstDetectedAt`/`confirmedAt` (migrasi `20260624160712_add_order_status_history`) diisi HANYA oleh Bybit BSC confirmation tracker — tetap `null` untuk metode bayar lain yang tidak punya konsep block-depth; `confirmedAt` adalah milestone display-grade, terpisah dari `paidAt`/`deliveredAt` yang tetap digerbang status Bybit sendiri. |
-| `OrderStatusHistory` | `order_status_history` | Audit trail append-only tiap transisi `Order.status` (migrasi `20260624160712_add_order_status_history`) — tabel terpisah, bukan kolom JSON di `Order`, karena SQLite tidak bisa index isi array JSON. Kolom: `orderId` FK, `status`, `occurredAt` (default `now()`), `meta` (nullable, JSON bebas). Index `(orderId, occurredAt)` untuk render timeline live-tracking. `onDelete: Restrict` ke `Order` (kebijakan sama dengan Review/Referral — audit tidak boleh hilang diam-diam). |
+| `Order` | `orders` | `status` (lihat [ORDER_STATE_MACHINE.md](ORDER_STATE_MACHINE.md)), snapshot `currency`/`fxRate` saat bayar, `uniqueCents` (disambiguator Bybit/Binance amount-match). Index gabungan `(status, createdAt)` untuk query antrian. Kolom `network`/`confirmations`/`requiredConfirmations`/`firstDetectedAt`/`confirmedAt` (sudah ada di `postgresql_baseline`) diisi HANYA oleh Bybit BSC confirmation tracker — tetap `null` untuk metode bayar lain yang tidak punya konsep block-depth; `confirmedAt` adalah milestone display-grade, terpisah dari `paidAt`/`deliveredAt` yang tetap digerbang status Bybit sendiri. |
+| `OrderStatusHistory` | `order_status_history` | Audit trail append-only tiap transisi `Order.status` — tabel terpisah, bukan kolom JSON di `Order`, supaya tiap transisi bisa di-index dan di-query sendiri. Kolom: `orderId` FK, `status`, `occurredAt` (default `now()`), `meta` (nullable, JSON bebas). Index `(orderId, occurredAt)` untuk render timeline live-tracking. `onDelete: Restrict` ke `Order` (kebijakan sama dengan Review/Referral — audit tidak boleh hilang diam-diam). |
 | `OrderItem` | `order_items` | `onDelete: Restrict` ke `Order` (baris finansial tidak boleh hilang diam-diam). |
 | `StockItem` | `stock_items` | `status`: `AVAILABLE`/`RESERVED`/`SOLD`/`DEAD`. Index `(productId, status)` untuk alokasi cepat. Lihat [INVENTORY_SYSTEM.md](INVENTORY_SYSTEM.md). |
 | `BulkPricing` | `bulk_pricing` | Satu baris per Denomination (`@unique`), diskon tier kuantitas. |
@@ -154,7 +146,7 @@ erDiagram
 | Model | Tabel | Catatan kunci |
 |---|---|---|
 | `NotificationOutbox` | `notification_outbox` | Antrian — lihat [QUEUE_SYSTEM.md](QUEUE_SYSTEM.md) untuk `claimedAt`/`nextRetryAt`. |
-| `Broadcast` | `broadcasts` | Diisi web, dikonsumsi bot (`drainBroadcasts`) — web tidak pernah kirim Telegram langsung. Kolom `webImageUrl`/`imageFileId` (migrasi `20260706120000_broadcast_image`) — pasangan yang sama dengan produk/denominasi: `webImageUrl` path upload disk, `imageFileId` cache Telegram `file_id` yang di-resolve saat `sendPhoto` pertama. Kalau ada image, `drainBroadcasts` kirim via `sendPhoto` (caption maks 1024 char), bukan `sendMessage`. |
+| `Broadcast` | `broadcasts` | Diisi web, dikonsumsi bot (`drainBroadcasts`) — web tidak pernah kirim Telegram langsung. Kolom `webImageUrl`/`imageFileId` — pasangan yang sama dengan produk/denominasi: `webImageUrl` path upload disk, `imageFileId` cache Telegram `file_id` yang di-resolve saat `sendPhoto` pertama. Kalau ada image, `drainBroadcasts` kirim via `sendPhoto` (caption maks 1024 char), bukan `sendMessage`. |
 | `AuditLog` | `audit_logs` | `adminId` nullable (`null` = aksi sistem/auto). Index `createdAt`. |
 | `Setting` | `settings` | Key-value generik — kredensial, flag, JTI sesi, semua bercampur di satu tabel (lihat catatan desain di [SECURITY.md](../SECURITY.md)). |
 
@@ -162,9 +154,9 @@ erDiagram
 
 5 tabel identik secara struktur, satu per gateway — `UNIQUE` pada id
 transaksi gateway adalah satu-satunya kunci anti-double-delivery:
-insert-first-on-unique sebagai gerbang konkurensi (pola ini awalnya dipilih
-karena SQLite tidak punya row lock, tapi tetap dipertahankan apa adanya
-setelah engine-swap ke PostgreSQL — polanya valid di kedua engine):
+insert-first-on-unique sebagai gerbang konkurensi (pola ini tidak bergantung
+pada serialisasi transaksi, jadi tetap valid di PostgreSQL dengan banyak
+penulis bersamaan):
 
 | Model | Tabel | Kolom unik | outcome yang mungkin |
 |---|---|---|---|

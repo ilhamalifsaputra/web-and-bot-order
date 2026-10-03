@@ -2,7 +2,7 @@
 
 Arsitektur, fitur, dan setup environment proyek. Panduan instalasi (VPS) ada
 di [`README.md`](README.md), tutorial migrasi database di
-[`migrate.md`](migrate.md), indeks seluruh dokumentasi di
+[`docs/MIGRATIONS.md`](docs/MIGRATIONS.md), indeks seluruh dokumentasi di
 [`docs/README.md`](docs/README.md), dan konvensi koding di
 [`.claude/CLAUDE.md`](.claude/CLAUDE.md).
 
@@ -30,8 +30,8 @@ di [`README.md`](README.md), tutorial migrasi database di
 ## 1. Arsitektur
 
 Monorepo pnpm: empat workspace `apps/*` + tiga `packages/*`, berbagi **satu
-database PostgreSQL** (schema `public`; lihat `docs/POSTGRES_MIGRATION.md`
-untuk runbook deploy produksi).
+database PostgreSQL** (schema `public`; lihat `docs/MIGRATIONS.md` dan
+`deploy/backup/README.md` untuk deploy produksi).
 
 Bagian ini adalah peta singkat. Diagram proses, boundary, alur order, dan
 referensi arsitektur terperinci ada di
@@ -56,9 +56,8 @@ referensi per-domain ada di [`docs/README.md`](docs/README.md).
 - **Decimal untuk semua uang** (`@app/core/money`), tidak pernah `float`.
 - **Web tak pernah kirim Telegram** — enqueue ke `notification_outbox`, dispatcher
   outbox (`@app/outbox-dispatcher`, in-process di `apps/server`) yang mengirim.
-- **PostgreSQL menangani konkurensi sendiri** (bukan lagi single-writer
-  seperti SQLite era sebelumnya) — tiap `$transaction` tetap dijaga pendek
-  sebagai praktik baik, bukan lagi workaround khusus SQLite.
+- **PostgreSQL menangani konkurensi sendiri** — tiap `$transaction` tetap
+  dijaga pendek sebagai praktik baik.
 - **Katalog 3-tier: Category → Product → Denomination.** `Product` (mis.
   "Netflix") adalah satu-satunya kartu di grid (home, kategori `/c/:slug`,
   search) — TIDAK punya harga/stok sendiri. Tiap Product punya satu/lebih
@@ -703,7 +702,7 @@ BOT_MODE=polling                           # default; tidak butuh domain untuk b
 POSTGRES_DB=shopa                          # ← beda (DB Postgres terpisah per toko)
 POSTGRES_USER=shopa
 POSTGRES_PASSWORD=<acak-kuat-per-toko>     # ← beda
-DATABASE_URL_PRISMA=postgresql://shopa:<password>@postgres:5432/shopa  # host tetap `postgres` (lihat §8a POSTGRES_MIGRATION.md)
+DATABASE_URL_PRISMA=postgresql://shopa:<password>@postgres:5432/shopa  # host tetap `postgres` (nama service Compose)
 ```
 
 > Tidak perlu `POSTGRES_PORT` terpisah per toko: `docker-compose.postgres.prod.yml`
@@ -745,15 +744,14 @@ nginx -t && systemctl reload nginx
 
 ### Backup & batas
 
-- **Backup per instance**: satu `pg_dump` per toko (lihat bagian 8a
-  `docs/POSTGRES_MIGRATION.md`) — tiap direktori repo/instance punya container
+- **Backup per instance**: satu `pg_dump` per toko (lihat
+  `deploy/backup/README.md`) — tiap direktori repo/instance punya container
   `postgres` dan volume data sendiri (`docker-compose.postgres.prod.yml`'s own
   header comment: Compose otomatis prefix nama volume dengan
   `COMPOSE_PROJECT_NAME`, jadi dua toko independen tidak berbagi data
   Postgres apa pun).
 - **Tiap instance punya database Postgres sendiri** (bukan beberapa writer ke
-  satu DB yang sama), jadi isolasi antar-toko tetap terjaga sama seperti era
-  SQLite sebelumnya.
+  satu DB yang sama), jadi isolasi antar-toko terjaga.
 - **Batas praktis**: N toko = 2×N container (`server` + `postgres` per toko);
   yang membatasi adalah RAM/CPU VPS (kira-kira ~1 GB per toko), bukan
   arsitektur DB.

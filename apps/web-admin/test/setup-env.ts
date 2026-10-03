@@ -7,8 +7,7 @@
  * effects) before any `@app` module is loaded.
  *
  * The provisioned schema is dropped automatically in a self-registered
- * `afterAll` — no per-test-file cleanup call needed (mirrors the previous
- * SQLite behaviour of a self-contained temp dir, but a Postgres schema has
+ * `afterAll` — no per-test-file cleanup call needed (a Postgres schema has
  * to be dropped explicitly or it lingers in the shared dev database).
  *
  * Mirrors telegram-stock-web/tests/conftest.py's env preamble.

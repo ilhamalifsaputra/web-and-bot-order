@@ -3,9 +3,9 @@
 # (engine-swap migration) — this file alone does not include a `postgres`
 # service, so `server` needs a reachable Postgres from elsewhere (either
 # docker-compose.postgres.prod.yml layered on top for a real deploy, or an
-# externally-reachable Postgres referenced by DATABASE_URL_PRISMA). See
-# docs/POSTGRES_MIGRATION.md. `./data` is still bind-mounted below for
-# logs and legacy SQLite backup tooling (deploy/backup/), not for a live DB.
+# externally-reachable Postgres referenced by DATABASE_URL_PRISMA).
+# `./data` is bind-mounted below for logs, uploads, the credential key and
+# backups (deploy/backup/), not for a live DB.
 #
 # ONE combined process. `pnpm start` (apps/server) is the composition root: it
 # boots the web-admin, the storefront, the order-bot (polling/webhook), AND the
@@ -20,14 +20,14 @@
 #   docker compose up -d            # bring the whole stack up
 #   docker compose logs -f server   # tail logs
 #
-# IMPORTANT (migrate.md §14.12): never run the Python order-bot and the Node
+# IMPORTANT: never run the Python order-bot and the Node
 # order-bot against the same DB simultaneously — two order-flow writers corrupt
 # state.
 #
 # MULTI-INSTANCE: container names are NOT hardcoded — Compose derives them from
 # COMPOSE_PROJECT_NAME (set per .env), so two independent shops can run on one
 # host from two repo directories (e.g. /opt/trustance + /opt/trustoriax) with
-# their own .env, ./data DB, ports, and bot tokens. Published ports bind to
+# their own .env, ./data, ports, and bot tokens. Published ports bind to
 # 127.0.0.1 only; nginx is the sole public surface (deploy/README.md).
 
 services:
@@ -47,8 +47,7 @@ services:
     # published ports reach the app.
     environment:
       WEB_HOST: "0.0.0.0"
-      # The entrypoint applies pending schema changes (after a verified backup)
-      # before the app starts, so a deploy can never run new code against an old
+      # The entrypoint applies pending schema changes before the app starts, so a deploy can never run new code against an old
       # schema. Set AUTO_MIGRATE=0 in .env to take that over manually — see
       # docs/MIGRATIONS.md. deploy/backup/restore.sh pauses it via a sentinel
       # file instead, so a rollback is not migrated forward again.

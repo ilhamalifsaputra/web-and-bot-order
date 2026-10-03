@@ -105,7 +105,7 @@ export async function cancelBroadcast(db: Db, id: number): Promise<boolean> {
 /**
  * Atomically claim the next due PENDING broadcast (scheduledAt null or past),
  * flipping it to SENDING so a second drainer tick can't re-send it. Returns the
- * claimed row or null. (SQLite single-writer + the status guard = no double-claim.)
+ * claimed row or null. (The conditional status guard = no double-claim.)
  */
 export async function claimNextDueBroadcast(db: Db, now: Date) {
   const next = await db.broadcast.findFirst({
@@ -129,7 +129,7 @@ export async function claimNextDueBroadcast(db: Db, now: Date) {
  * the `status: SENDING` guard means a flush that races `reapStaleBroadcasts`
  * (or any other transition off SENDING) quietly no-ops rather than writing
  * counters onto a row that has already moved on. Called every N recipients,
- * not every recipient — SQLite is single-writer and shared across processes.
+ * not every recipient, to keep write volume low across processes.
  *
  * `total` is optional but the drainer always passes it: `totalCount` is written
  * at enqueue time from a segment count taken then, while the recipient list is

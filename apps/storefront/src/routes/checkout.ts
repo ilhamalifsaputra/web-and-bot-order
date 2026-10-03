@@ -689,7 +689,7 @@ export async function performCheckout(
   // below (M-7 fix, backend audit 2026-07-31) — createOrderFromCart does
   // per-unit stock allocation + an OrderItem insert for every unit in the
   // cart, and doing that for thousands of units inside one $transaction would
-  // hold SQLite's single writer long enough to starve every other writer (the
+  // hold locks and a connection long enough to starve every other writer (the
   // bot, webhooks, delivery transactions) before likely timing out. This is a
   // read against `prisma` directly, outside any transaction, so an over-cap
   // cart never causes a transaction to even start; createOrderFromCart

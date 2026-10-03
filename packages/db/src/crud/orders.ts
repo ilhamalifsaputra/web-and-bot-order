@@ -135,8 +135,8 @@ const MAX_QTY_PER_ORDER = 99;
 // createOrderFromCart's per-unit loop (allocateOneAvailableStock + an
 // OrderItem row for every unit, with no cross-line cap — only the 99-per-line
 // clamp above) could turn a large multi-line cart into thousands of queries
-// inside one $transaction with Prisma's default 5s timeout, holding SQLite's
-// single writer long enough to starve every other writer (the bot, webhooks,
+// inside one $transaction with Prisma's default 5s timeout, holding locks
+// and a connection long enough to starve every other writer (the bot, webhooks,
 // delivery transactions) before likely timing out and rolling back the whole
 // order. 300 comfortably covers a real bulk-reseller checkout (several lines
 // each up to the existing 99-per-line cap) while keeping the per-order unit
@@ -162,8 +162,8 @@ function assertValidQuantity(quantity: number, productName: string): void {
  * Atomically bump a voucher's global usedCount, conditional on it not having
  * already hit usageLimit — a single updateMany's row-level atomicity makes
  * this safe under any DB isolation level, unlike a separate read-check then
- * increment (which only stayed safe so far because SQLite's BEGIN IMMEDIATE
- * serializes concurrent transactions). Pricing-2 fix, security audit
+ * increment (which is only safe if concurrent transactions happen to
+ * serialize). Pricing-2 fix, security audit
  * 2026-06-23. Throws error.voucher_used_up if the limit was already hit.
  */
 async function bumpVoucherUsage(db: Db, voucher: { id: number; usageLimit: number | null }): Promise<void> {
@@ -1974,10 +1974,9 @@ export async function approveOrder(
   // Atomic conditional claim: only ONE caller can flip PENDING_VERIFICATION ->
   // DELIVERED for this order, regardless of DB isolation level — a single
   // UPDATE's row-level atomicity holds even under Read Committed, unlike the
-  // read-then-throw check this replaces (which only stayed safe so far
-  // because SQLite's BEGIN IMMEDIATE happens to serialize concurrent
-  // transactions). Making the guard explicit removes that implicit
-  // dependency ahead of a possible Postgres migration (Bot-2 fix, security
+  // read-then-throw check this replaces (which was only safe if concurrent
+  // transactions happened to serialize). Making the guard explicit removes that
+  // implicit dependency (Bot-2 fix, security
   // audit 2026-06-23). If the rest of this function throws (e.g. out of
   // stock below), the whole $transaction the caller wraps this in rolls back
   // — including this claim — so behavior on failure is unchanged.
@@ -3029,8 +3028,8 @@ function orderWhere(f: OrderFilter): Prisma.OrderWhereInput {
       // guestEmail — and Task 7 now shows that address in the Customer
       // column, so pasting it back into this search box has to find the
       // order. Same `contains` shape as the other identity fields above,
-      // explicit `mode: "insensitive"` for Postgres (SQLite's `contains`
-      // was case-insensitive by default; Postgres needs it spelled out).
+      // explicit `mode: "insensitive"` (Postgres's `contains` is case-sensitive
+      // unless it is spelled out).
       { user: { guestEmail: { contains: term, mode: "insensitive" } } },
       { items: { some: { product: { name: { contains: term, mode: "insensitive" } } } } },
     ];
@@ -3075,7 +3074,7 @@ export function countOrders(db: Db, opts: OrderFilter = {}) {
  * id (same convention as `StockItem.productId`) — see `lowStockDenominations`
  * in `catalog.ts` for the analogous in-memory grouping pattern.
  *
- * Prisma 5.22 + SQLite accepts a relation filter (`order: { status }`) inside
+ * Prisma 5.22 accepts a relation filter (`order: { status }`) inside
  * `groupBy`'s `where`, so the single-query groupBy below is used directly
  * (verified by this file's test suite exercising it against a real DB).
  */

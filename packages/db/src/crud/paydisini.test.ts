@@ -331,7 +331,7 @@ describe("deliverPaidPaydisiniOrder", () => {
   // already_processed, silently losing the buyer's payment. Wiping all stock
   // for the product forces approveOrder's out-of-stock guard to throw INSIDE
   // the delivery $transaction, rolling it back (the real-world equivalent of
-  // a SQLITE_BUSY collision or a transient failure mid-delivery).
+  // a deadlock or a transient failure mid-delivery).
   it("a claim whose delivery failed is retryable — a later call with the same trx id succeeds instead of already_processed", async () => {
     const order = await makePendingPaydisiniOrder();
 
@@ -773,7 +773,7 @@ describe("listPendingPaydisiniOrders — the query-level cap returns the oldest 
     for (let i = 0; i < 53; i++) {
       const order = await makePendingPaydisiniOrder();
       // Stagger createdAt explicitly — a tight creation loop can tie at
-      // whatever resolution SQLite/JS Date store, which would make "the 50
+      // whatever resolution the database/JS Date store, which would make "the 50
       // oldest" ambiguous and the assertion below vacuous.
       const createdAt = new Date(Date.now() - (53 - i) * 1000);
       await prisma.order.update({ where: { id: order.id }, data: { createdAt } });

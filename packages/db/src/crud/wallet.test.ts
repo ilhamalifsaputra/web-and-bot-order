@@ -201,7 +201,7 @@ describe("wallet_transactions one-movement-per-order-per-reason constraint", () 
   });
 
   it("leaves order-less movements completely unconstrained", async () => {
-    // NULLs are distinct in a SQLite UNIQUE index. An admin must stay free to
+    // NULLs are distinct in a Postgres UNIQUE index. An admin must stay free to
     // adjust a customer's balance as many times as they need — those movements
     // belong to no order, and this is what would break if the constraint were
     // ever written to treat NULL as a value.

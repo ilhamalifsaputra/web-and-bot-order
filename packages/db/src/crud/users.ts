@@ -17,8 +17,7 @@ import { invalidateWarmUser } from "./warmUserCache";
 import { walletSpendByCurrency, walletSpendByUser } from "./revenue";
 
 // `mode: "insensitive"` is a Postgres-only Prisma feature (uses ILIKE under
-// the hood); SQLite's `contains` was always case-insensitive by default so
-// this had no explicit equivalent pre-migration.
+// the hood); without it `contains` is case-sensitive on Postgres.
 const likeContains = (q: string) => ({ contains: q, mode: "insensitive" as const });
 
 /** Admins are managed on the separate Admins page — the Customers page's list,
@@ -291,10 +290,8 @@ export interface WalletAdjustResult {
  * can genuinely run it at the same instant: both would read the same
  * pre-movement balance, both would pass their own overdraw check, and
  * whichever committed last would silently overwrite the other's movement — a
- * double-spend on debits, a lost credit on top-ups. (Under the old SQLite
- * deployment the single-writer connection pool serialized every writer in the
- * process, so the cycle was accidentally race-free and needed no lock. That
- * protection is gone.) So the cycle runs with the user row held under
+ * double-spend on debits, a lost credit on top-ups. So the cycle runs with
+ * the user row held under
  * `SELECT ... FOR UPDATE`, which makes concurrent callers for the same user
  * queue behind each other and each read the previous one's committed result.
  * See wallet_concurrency.test.ts.
@@ -903,7 +900,7 @@ async function rankedPageBySpend(
  * them, then slice" shape this replaced (which pulled every filtered user id
  * — unbounded on a large customer base — before ranking a single page and
  * discarding the rest, and made `groupBy` chunk its `userId IN (...)` list
- * around SQLite's parameter-count limit). Instead:
+ * around the database's parameter-count limit). Instead:
  *   1. Count how many matched users have >=1 DELIVERED IDR order at all
  *      (`rankedCount`) — an indexed EXISTS-style count, not a row pull.
  *   2. If the requested page overlaps the ranked (real-spend) side, take that
@@ -1084,7 +1081,7 @@ export async function orderStatsByUserIds(db: Db, userIds: number[]): Promise<Ma
 
 /** In-memory throttle for touchLastSeen — same TTL/pattern as
  * warmUserCache.ts's cache, so a busy storefront session doesn't take a
- * lastSeenAt write on every single page view (SQLite is single-writer). */
+ * lastSeenAt write on every single page view. */
 const LAST_SEEN_TOUCH_TTL_MS = 5 * 60 * 1000;
 const lastSeenTouchedAt = new Map<number, number>();
 

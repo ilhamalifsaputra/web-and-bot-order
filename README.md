@@ -296,7 +296,7 @@ di [`DOCS.md`](DOCS.md).
 git pull
 
 # Docker — satu perintah; ambil dump dulu (lihat catatan di bawah):
-DATABASE_URL_PRISMA=postgresql://engine-marker deploy/backup/backup.sh
+deploy/backup/backup.sh
 docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml up -d --build
 docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml logs --since 10m server | grep entrypoint
 
@@ -337,15 +337,14 @@ pm2 restart bot-order
 
 **Backup database PostgreSQL** (rutin):
 
-> `deploy/backup/backup.sh` memilih PostgreSQL dari prefix
-> `DATABASE_URL_PRISMA`; `restore.sh` memilihnya dari ekstensi `.dump`.
-> Pastikan cron produksi memanggil `backup.sh` dengan prefix `postgresql://`
-> (lihat **bagian 8a** [`docs/POSTGRES_MIGRATION.md`](docs/POSTGRES_MIGRATION.md)).
+> `deploy/backup/backup.sh` menjalankan `pg_dump` di dalam container
+> `postgres`; `restore.sh` menerima file `.dump`. Cron produksi tidak perlu
+> connection string apa pun.
 > Prosedur backup dan restore lengkap ada di
 > [`deploy/backup/README.md`](deploy/backup/README.md).
 
 ```bash
-DATABASE_URL_PRISMA=postgresql://engine-marker deploy/backup/backup.sh   # pg_dump -Fc + verifikasi + retensi
+deploy/backup/backup.sh   # pg_dump -Fc + verifikasi + retensi
 deploy/backup/restore.sh data/backups/pg-<stamp>.dump
 ```
 
@@ -429,10 +428,6 @@ pnpm test           # seluruh tes (Vitest)
 | `pnpm diag-reconcile-drift` | Tampilkan detail drift rekonsiliasi finansial (lihat `reconcileFinances`) |
 | `pnpm reset-admin-password <id> [--set <password>]` | Reset password admin darurat tanpa lewat bot/wizard (lihat [bagian 5](#5-buat-admin-pertama)) |
 
-Migrasi data sekali-jalan (`scripts/migrate-*.ts`, mis. `migrate-catalog-rename`)
-punya aturan pakai sendiri — lihat peringatan di [bagian 7](#7-update-backup-perawatan)
-sebelum menjalankannya di produksi.
-
 **Struktur:**
 
 ```
@@ -450,7 +445,7 @@ data/                  Log & snapshot backup lokal (di-gitignore)
 ```
 
 **Dokumen lain:** [`DOCS.md`](DOCS.md) (referensi teknis arsitektur, fitur, dan env) ·
-[`migrate.md`](migrate.md) (panduan migrasi database) ·
+[`docs/MIGRATIONS.md`](docs/MIGRATIONS.md) (panduan migrasi database) ·
 [`docs/README.md`](docs/README.md) (indeks seluruh dokumentasi) ·
 [`docs/arsitektur/ARCHITECTURE.md`](docs/arsitektur/ARCHITECTURE.md) (arsitektur detail) ·
 [`.claude/CLAUDE.md`](.claude/CLAUDE.md) (konvensi koding) ·

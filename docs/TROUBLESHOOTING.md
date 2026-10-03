@@ -48,34 +48,9 @@ auto-retry** — cek panel `/outbox` untuk baris stuck/`FAILED` setelah fix.
 
 ### `P2021: table does not exist`
 
-Sama akar masalah dengan P2022 tapi untuk tabel yang baru di-rename — lihat
-catatan migrasi data sekali-jalan (`migrate-catalog-rename.ts`) di
+Sama akar masalah dengan P2022 tapi untuk tabel yang baru ditambahkan atau
+di-rename — jalankan `db push` lalu restart; lihat
 [MIGRATIONS.md](MIGRATIONS.md).
-
-### Legacy SQLite pra-cutover: `readonly database` / HTTP 500
-
-**Diagnosis:** Permission file `data/` salah (biasanya setelah clone fresh
-di host baru — direktori jadi milik root, bukan UID container).
-
-**Fix:**
-```bash
-sudo chown -R 999:999 data
-docker compose restart server
-```
-
-### Legacy SQLite pra-cutover: `database is locked` / write timeout
-
-**Diagnosis:** SQLite single-writer — kemungkinan ada **dua proses**
-menulis ke `bot.db` yang sama (mis. order-bot Python lama masih jalan
-bersamaan dengan stack Node, atau dua instance Docker tanpa
-`COMPOSE_PROJECT_NAME` unik berbagi `./data` yang sama secara tidak
-sengaja). `busy_timeout` (di-set saat `initDb()`) memberi toleransi singkat,
-bukan solusi permanen.
-
-**Fix:** Pastikan **hanya satu proses** (`apps/server`) yang menulis ke file
-DB itu. Cek `docker compose ps` di semua direktori instance toko —
-[`../DOCS.md` §11](../DOCS.md#11-banyak-toko-dalam-satu-vps) untuk aturan
-multi-toko (tiap toko = direktori+`.env`+`./data` sendiri).
 
 ## Bot Telegram
 
@@ -232,7 +207,7 @@ itu).
 
 ## Migrasi data sekali-jalan
 
-### Skrip `migrate-*.ts` dijalankan dua kali, data jadi aneh
+### Skrip migrasi data sekali-jalan dijalankan dua kali, data jadi aneh
 
 **Diagnosis:** Skrip ini **tidak idempotent** — menjalankannya ulang di DB
 yang sudah pernah diproses bisa korup data.

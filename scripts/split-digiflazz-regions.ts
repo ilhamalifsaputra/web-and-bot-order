@@ -6,7 +6,7 @@
  * regions' pricing together (Indonesia/Filipina/Russia/Brazil, ...) under one
  * brand. Every write it makes is a normal Prisma write through
  * splitMixedDigiflazzProducts, so it's safe to run against a live DB without
- * stopping services — but take a fresh backup of data/bot.db (+ -wal/-shm)
+ * stopping services — but take a fresh database backup (pg_dump)
  * before running with --apply, same as any DB-mutating script.
  *
  * ⚠ RUN ORDER MATTERS (Finding 2, final whole-branch review): run this script
@@ -49,7 +49,7 @@ Options:
   --apply       Actually perform the split (default: dry run only).
   --help, -h    Show this help.
 
-Take a fresh backup of data/bot.db (+ -wal/-shm) before running with --apply.
+Take a fresh database backup (pg_dump) before running with --apply.
 
 Run this BEFORE using the Digiflazz sync wizard on this code — importing a
 region group first creates duplicate SKUs and blocks the split for that

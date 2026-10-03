@@ -182,7 +182,7 @@ export default async function setupRoutes(app: FastifyInstance): Promise<void> {
       previousOwnerTg !== null && previousOwnerTg !== telegramId && !config.ADMIN_IDS.includes(previousOwnerTg);
 
     // Make the id an admin in the runtime FIRST so upsertUser resolves role=ADMIN,
-    // then persist everything in one short transaction (CLAUDE.md: single-writer).
+    // then persist everything in one short transaction.
     addAdminId(telegramId); // runtime first so upsertUser resolves role=ADMIN
     try {
       await prisma.$transaction(async (tx) => {

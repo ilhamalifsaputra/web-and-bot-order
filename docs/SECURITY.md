@@ -84,14 +84,15 @@ mematahkan boot aplikasi.
 ## Idempotensi & konkurensi pembayaran
 
 Setiap gateway punya idempotency ledger dengan UNIQUE constraint pada ID
-transaksi gateway — pola insert-first-on-unique (SQLite tidak punya row
-lock). Detail per gateway: [PAYMENT_GATEWAY.md](arsitektur/PAYMENT_GATEWAY.md).
-**Catatan arsitektural:** beberapa invarian (klaim atomik `approveOrder`,
-increment `usedCount` voucher) aman HARI INI karena `BEGIN IMMEDIATE`
-SQLite menyerialkan transaksi — begitu migrasi ke Postgres (trigger resmi:
-≥2 *concurrent writer*), pola read-then-write yang sama bisa jadi race
-eksploitable. Lihat catatan lintas-domain di audit penuh sebelum migrasi DB
-dilakukan.
+transaksi gateway — pola insert-first-on-unique, yang tidak bergantung pada
+serialisasi transaksi. Detail per gateway:
+[PAYMENT_GATEWAY.md](arsitektur/PAYMENT_GATEWAY.md).
+**Catatan arsitektural:** PostgreSQL menjalankan transaksi dari banyak
+penulis secara bersamaan, jadi invarian seperti klaim atomik `approveOrder`
+dan increment `usedCount` voucher harus dijaga di level query (`updateMany`
+bersyarat atau row lock), bukan dengan pola read-then-write — pola
+read-then-write bisa menjadi race yang eksploitable. Lihat catatan
+lintas-domain di audit penuh.
 
 ## Network/transport
 

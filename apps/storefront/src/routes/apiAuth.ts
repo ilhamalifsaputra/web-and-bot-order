@@ -119,8 +119,8 @@ const apiAuthRoutes: FastifyPluginAsync = async (app) => {
     };
   }>("/auth/register", async (req, reply) => {
     // Registration is the most expensive unauthenticated endpoint in the app
-    // (cost-12 bcrypt + a DB write) on a single-process server backed by
-    // single-writer SQLite — a burst of concurrent POSTs can stall checkout
+    // (cost-12 bcrypt + a DB write) on a single-process server — a
+    // burst of concurrent POSTs can stall checkout
     // and the bot. Same per-IP throttle as /auth/login (M-17, backend audit
     // 2026-07-31).
     if (!sessionMintOriginOk(req)) return reply.code(403).send({ error: "csrf_failed" });

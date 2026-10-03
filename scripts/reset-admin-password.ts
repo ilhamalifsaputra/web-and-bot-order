@@ -1,7 +1,7 @@
 /**
  * Break-glass admin password / 2FA reset — the recovery path that depends on
  * NOTHING (no running bot, no notifier, no working login). Run it on the box
- * that holds the SQLite DB (e.g. over SSH on Hostinger):
+ * that holds the database (e.g. over SSH on Hostinger):
  *
  *   pnpm reset-admin-password <telegram_id>              # clear pw + 2FA
  *   pnpm reset-admin-password <telegram_id> --set <pw>   # set a new password

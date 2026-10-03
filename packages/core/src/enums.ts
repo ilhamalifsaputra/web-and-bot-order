@@ -16,7 +16,7 @@
  *   notif status      -> PENDING | SENT | FAILED
  *
  * The string values below MUST equal those stored names byte-for-byte. This
- * corrects migrate.md §5.3, which wrongly assumed lowercase `.value`s.
+ * (They are uppercase names, not lowercase `.value`s.)
  * Each enum gets a zod schema for validating input at the service boundary.
  */
 import { z } from "zod";

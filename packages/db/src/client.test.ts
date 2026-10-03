@@ -1,7 +1,4 @@
-// `withConnectionLimit` was SQLite-only (pinned Prisma's connection pool to 1
-// so its per-connection PRAGMAs applied to every connection) and was removed
-// once the datasource moved to Postgres, which has no such constraint. What
-// remains worth a smoke test is `initDb()`, now a no-op kept only so its many
+// What is worth a smoke test here is `initDb()`, a no-op kept only so its many
 // existing `await initDb()` call sites across apps/scripts/tests keep working
 // unchanged — this asserts that no-op stays a harmless, resolving no-op.
 import { describe, it, expect } from "vitest";

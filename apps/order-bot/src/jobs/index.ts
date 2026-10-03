@@ -1105,7 +1105,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /** Flush the running sent/failed counters to the broadcast row every this many
  *  recipients, so the admin's History table shows real progress instead of a
  *  frozen 0. For 1,000 recipients that is 40 tiny scattered writes — cheap even
- *  for a single-writer SQLite file. */
+ *  for a busy shared database. */
 const BROADCAST_PROGRESS_FLUSH_EVERY = 25;
 
 /**
@@ -1238,8 +1238,8 @@ export async function drainBroadcasts(api: Api): Promise<void> {
           // the bot or deleted their account — already summarised by the failed
           // count in the finish log, so it does not earn a line per recipient.
           // Anything else is NOT expected, and the most plausible candidate is
-          // the image file_id cache write inside `deliver` failing on SQLite
-          // write contention AFTER an otherwise successful sendPhoto, which
+          // the image file_id cache write inside `deliver` failing on a
+          // transient database error AFTER an otherwise successful sendPhoto, which
           // miscounts a delivered message as a failure. That is rare enough to
           // always be worth a line, and undiagnosable without one.
           if (e instanceof GrammyError) {
@@ -1301,8 +1301,8 @@ export async function drainBroadcasts(api: Api): Promise<void> {
     // creeps up; finishBroadcast still writes the authoritative final numbers.
     // No-ops (by its SENDING guard) if the row was reaped or cancelled under us.
     // Purely cosmetic, so it must NEVER abort a send that is already under way:
-    // this `await` sits outside the per-recipient try/catch, and a SQLITE_BUSY
-    // past the client's busy_timeout would otherwise escape all the way out of
+    // this `await` sits outside the per-recipient try/catch, and a transient
+    // database error (such as a lock timeout) would otherwise escape all the way out of
     // drainBroadcasts, leaving the row stuck on SENDING until the reaper flips
     // it to FAILED 15 minutes later with a restart message that isn't true.
     // A lost flush costs nothing — the next one (or finishBroadcast) writes the
@@ -1377,10 +1377,10 @@ export async function drainBroadcasts(api: Api): Promise<void> {
  * Two phases, deliberately NOT one transaction (H-7 fix, backend audit
  * 2026-07-31 — this used to wrap the claim AND the whole-customer-base
  * `enqueueFlashSaleBroadcast` fan-out in a single `$transaction` with an
- * explicit 15s timeout, which held SQLite's single writer lock for however
+ * explicit 15s timeout, which held a transaction (and its locks) open for however
  * long that fan-out took, starving every other concurrent writer — checkout,
  * settlement, cancellation, the outbox dispatcher's own claim — past their
- * busy_timeout):
+ * lock timeouts):
  *
  * 1. Claim: a short transaction does the conditional `updateMany` on
  *    `flashAnnouncedAt` still being null. A second worker — or an overlapping
@@ -1432,7 +1432,7 @@ export async function announceStartedFlashSales(): Promise<void> {
     const endsAt = denom.flashEndsAt;
     if (discounted === null || percent == null || endsAt == null) {
       // activeFlashPercent rejected the row (a percent outside (0,100] written
-      // before the write-time guard existed, or straight into the SQLite file
+      // before the write-time guard existed, or straight into the database
       // by hand). Announcing a sale we would not actually honour at checkout is
       // worse than staying quiet, so skip it and leave it for an admin to fix.
       logger.warn(`Flash sale on denomination ${denom.id} has an unusable discount percent — skipping its announcement; an admin should re-save the sale`);
@@ -1502,7 +1502,7 @@ const UPLOADS_DIR = process.env.UPLOADS_DIR ?? join(HERE, "..", "..", "..", ".."
 /**
  * Daily storage-efficiency sweep: delete broadcast images/ticket evidence
  * past their retention window, prune terminal outbox rows / dead reset
- * tokens / abandoned carts, and checkpoint the WAL. Same `runStorageCleanup`
+ * tokens / abandoned carts. Same `runStorageCleanup`
  * the web-admin Storage page's "Run cleanup now" button calls, so the
  * scheduled and manual paths can never drift apart.
  */
@@ -1723,7 +1723,7 @@ export function scheduleDigiflazzDispatch(): Cron {
  *
  * Every 2 minutes on second :21 — its own offset, clear of the six existing
  * watchdogs' seconds (implicit 0 for the crypto three; :15/:17/:19 for the
- * QRIS three below) so none of them contend for SQLite's single write-lock in
+ * QRIS three below) so none of them contend for the same write locks in
  * the same instant (see the QRIS three's own comment in scheduleJobs for the
  * P1008/P2028 production history behind this rule), and `{ protect: true }`
  * like every other watchdog cron per this file's own M-26 comment.
@@ -1766,8 +1766,8 @@ export function scheduleJobs(api: Api): Cron[] {
     // The three QRIS/IDR watchdogs (Task 12) are offset onto their own
     // seconds (:15/:17/:19 of every even minute) rather than sharing the
     // crypto three's implicit second 0 — six watchdogs all reading settings
-    // (and, on a transition, writing them) in the same SQLite write-lock
-    // instant is exactly the kind of collision that caused P1008/P2028 in
+    // (and, on a transition, writing them) at the same instant is exactly the
+    // kind of lock collision that caused P1008/P2028 in
     // production (2026-07-20; see the seconds-collision comment below). Each
     // gets its OWN second (not all three sharing one) so no two of these six
     // watchdogs — nor any other second-resolution job in this list — can
@@ -1776,10 +1776,10 @@ export function scheduleJobs(api: Api): Cron[] {
     new Cron("17 */2 * * * *", { protect: true }, wrap("paydisiniPollWatchdog", paydisiniPollWatchdog)),
     new Cron("19 */2 * * * *", { protect: true }, wrap("nowpaymentsPollWatchdog", nowpaymentsPollWatchdog)),
     // Both offset off second 0 (croner's optional leading seconds field) so
-    // neither fires in the same SQLite write-lock instant as
+    // neither fires at the same instant as
     // autoCancelExpiredOrders and the hourly/6-hourly jobs above — they all
-    // land on second 0 otherwise, and one of them ends up waiting out the 5s
-    // busy_timeout (P1008/P2028 in production, 2026-07-20).
+    // land on second 0 otherwise, and one of them ends up waiting out a lock
+    // timeout (P1008/P2028 in production, 2026-07-20).
     //
     // drainBroadcasts ticks four times a minute rather than once: a broadcast
     // queued by the web admin used to wait up to a full minute before the bot
@@ -1810,7 +1810,7 @@ export function scheduleJobs(api: Api): Cron[] {
     // writes up to MAX_ORDERS_PER_CYCLE anchor-clearing updates back to back
     // every tick — precisely the profile behind the P1008/P2028 write-lock
     // pile-up above, where several jobs landing on second 0 queued behind each
-    // other on SQLite's single writer until one blew past the 5s busy_timeout.
+    // other on the same write locks until one blew past its lock timeout.
     // :25 is at least 5 seconds clear of every second already in use here:
     // 0 (autoCancelExpiredOrders + the hourly/6-hourly jobs), 5/20/35/50
     // (drainBroadcasts), 40 (announceStartedFlashSales), 15/17/19 (the QRIS

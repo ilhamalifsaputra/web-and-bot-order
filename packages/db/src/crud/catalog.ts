@@ -69,7 +69,7 @@ export async function listActiveCategories(db: Db, channel: ServiceChannel) {
  */
 export async function listActiveCategoriesByGroup(db: Db, group: string, channel: ServiceChannel) {
   if (!(await isServiceActive(db, group as CategoryGroup, channel))) return [];
-  // Prisma/SQLite rejects `null` inside a String field's `in` filter, so the
+  // Prisma rejects `null` inside a String field's `in` filter, so the
   // PREMIUM_APPS fallback is expressed as an OR of two exact matches instead.
   return db.category.findMany({
     where:

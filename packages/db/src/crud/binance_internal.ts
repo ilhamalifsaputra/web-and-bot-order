@@ -1,11 +1,13 @@
 /**
  * CRUD for the Binance Internal Transfer (UID-based) payment method.
  *
- * Idempotency on SQLite: there is no `SELECT ... FOR UPDATE`. Instead, the
+ * Idempotency on Postgres (READ COMMITTED, genuinely concurrent writers): the
  * `processed_binance_tx.binance_tx_id` UNIQUE constraint is the concurrency
  * gate — claiming a tx id is an atomic insert; a duplicate insert throws and is
- * treated as "already processed". Combined with SQLite's single-writer
- * serialization + busy_timeout, this prevents double-delivery without locks.
+ * treated as "already processed". A read-then-write on an existing ledger row
+ * is NOT safe on its own (two writers both read the old value), so every
+ * transition of an existing row is a conditional `updateMany` gated on the
+ * outcome it expects, and a zero count means another writer got there first.
  *
  * A duplicate is not always terminal: an id stamped with an outcome from
  * AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES delivered nothing and must stay
@@ -1046,10 +1048,17 @@ export async function manualMatchTx(
       throw new ValidationError("error.order_not_pending");
     }
 
-    await tx.processedBinanceTx.update({
-      where: { binanceTxId: args.binanceTxId },
+    // Claim the row atomically: the outcome check above is only a read, and
+    // under Postgres READ COMMITTED a second admin matching the same transfer
+    // (to another order) or dismissing it reads "unmatched" too. Gating the
+    // UPDATE on `outcome: "unmatched"` makes the loser's statement wait for the
+    // winner's commit, re-check the row, and match zero rows — so one transfer
+    // can never settle two orders.
+    const claimed = await tx.processedBinanceTx.updateMany({
+      where: { binanceTxId: args.binanceTxId, outcome: "unmatched" },
       data: { orderId: args.orderId, outcome: "matched" },
     });
+    if (claimed.count === 0) throw new ValidationError("error.tx_not_unmatched");
     await tx.order.update({
       where: { id: args.orderId },
       data: {
@@ -1080,10 +1089,13 @@ export async function dismissUnmatchedTx(db: Db, binanceTxId: string): Promise<v
   const ledger = await db.processedBinanceTx.findUnique({ where: { binanceTxId } });
   if (!ledger) throw new ValidationError("error.tx_not_found");
   if (ledger.outcome !== "unmatched") throw new ValidationError("error.tx_not_unmatched");
-  await db.processedBinanceTx.update({
-    where: { binanceTxId },
+  // Gated on the outcome for the same reason as manualMatchTx: a concurrent
+  // match must not be overwritten by a dismiss that read "unmatched" first.
+  const claimed = await db.processedBinanceTx.updateMany({
+    where: { binanceTxId, outcome: "unmatched" },
     data: { outcome: "dismissed" },
   });
+  if (claimed.count === 0) throw new ValidationError("error.tx_not_unmatched");
 }
 
 // ---- Poller heartbeat (written by the order-bot poller, read by the web) ----

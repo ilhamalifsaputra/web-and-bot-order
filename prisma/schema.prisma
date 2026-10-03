@@ -1757,6 +1757,10 @@ model ProcessedBinanceTx {
   // matched | underpaid | unmatched
   outcome     String
   createdAt   DateTime @default(now()) @map("created_at")
+  /// Bumped on every write. A "matched" claim untouched for
+  /// STALE_MATCHED_CLAIM_MS whose order is still unpaid is a crashed
+  /// delivery and is reclaimable (crud/_staleClaim.ts).
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
 
   @@index([orderId], map: "ix_processed_binance_tx_order_id")
   @@map("processed_binance_tx")
@@ -1774,6 +1778,8 @@ model ProcessedBybitTx {
   amount    Decimal?
   outcome   String
   createdAt DateTime @default(now()) @map("created_at")
+  /// See ProcessedBinanceTx.updatedAt.
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
 
   @@index([orderId], map: "ix_processed_bybit_tx_order_id")
   @@map("processed_bybit_tx")
@@ -1791,6 +1797,8 @@ model ProcessedTokopayTx {
   // matched | unmatched | delivery_failed
   outcome   String
   createdAt DateTime @default(now()) @map("created_at")
+  /// See ProcessedBinanceTx.updatedAt.
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
 
   @@index([orderId], map: "ix_processed_tokopay_tx_order_id")
   @@map("processed_tokopay_tx")
@@ -1806,6 +1814,8 @@ model ProcessedPaydisiniTx {
   // matched | unmatched | delivery_failed | stale
   outcome   String
   createdAt DateTime @default(now()) @map("created_at")
+  /// See ProcessedBinanceTx.updatedAt.
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
 
   @@index([orderId], map: "ix_processed_paydisini_tx_order_id")
   @@map("processed_paydisini_tx")
@@ -1821,6 +1831,8 @@ model ProcessedNowpaymentsTx {
   // matched | unmatched | delivery_failed | stale
   outcome   String
   createdAt DateTime @default(now()) @map("created_at")
+  /// See ProcessedBinanceTx.updatedAt.
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
 
   @@index([orderId], map: "ix_processed_nowpayments_tx_order_id")
   @@map("processed_nowpayments_tx")

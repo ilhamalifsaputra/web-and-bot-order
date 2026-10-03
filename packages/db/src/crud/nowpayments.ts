@@ -31,6 +31,7 @@ import { parseMinAmount, NOWPAYMENTS_MIN_AMOUNT_KEY } from "./_minAmount";
 import { settleWalletTopup, isLateSettleableWalletTopup } from "./wallet_topup";
 import { getPendingPaymentAttempt, confirmPaymentAttempt } from "./payments";
 import { QRIS_RECLAIMABLE_OUTCOMES } from "./binance_internal";
+import { reclaimStaleMatchedClaim } from "./_staleClaim";
 
 // Declared in ./_minAmount (the leaf module that also parses it) so
 // orderMinimums.ts can read all six rails' keys without importing this
@@ -81,6 +82,20 @@ export type NowpaymentsDeliverResult =
   | { status: "already_processed" }
   | { status: "stale" };
 
+/** Reclaim a crash-stuck "matched" NOWPayments claim for `orderId` (Task B2). */
+async function recoverStaleNowpaymentsClaim(db: PrismaClient, trxId: string, orderId: number, amount: Decimal): Promise<boolean> {
+  const prior = await db.processedNowpaymentsTx.findUnique({ where: { trxId } });
+  if (!prior) return false;
+  return reclaimStaleMatchedClaim(db, {
+    rail: "NOWPayments",
+    txId: trxId,
+    prior,
+    forOrderId: orderId,
+    cas: (guard) =>
+      db.processedNowpaymentsTx.updateMany({ where: { trxId, ...guard }, data: { amount, outcome: "matched", updatedAt: new Date() } }),
+  });
+}
+
 /**
  * Idempotently confirm + deliver a NOWPayments-paid order. Claims the IPN's
  * trx id (UNIQUE gate — NOWPayments' `payment_id`), then runs the normal
@@ -118,7 +133,12 @@ export async function deliverPaidNowpaymentsOrder(
       where: { trxId: args.trxId, outcome: { in: [...QRIS_RECLAIMABLE_OUTCOMES] } },
       data: { orderId: args.orderId, amount: new Decimal(args.amount), outcome: "matched" },
     });
-    if (reclaimed.count === 0) {
+    // Task B2: a "matched" row whose delivery crashed before finishing is
+    // recoverable too — see crud/_staleClaim.ts for exactly when.
+    const recovered =
+      reclaimed.count === 1 ||
+      (await recoverStaleNowpaymentsClaim(db, args.trxId, args.orderId, new Decimal(args.amount)));
+    if (!recovered) {
       // The idempotency gate working, not a fault: this payment was already
       // settled by whichever of the webhook or the reconcile poller got here
       // first. Logged at info for exactly that reason — see PaymentLogEvent

@@ -53,6 +53,7 @@ import { enqueueAdminOverpaid } from "./notifications";
 import { settleWalletTopup, isLateSettleableWalletTopup } from "./wallet_topup";
 import { POLL_HEALTH_KEYS, getPollHealth, recordPollHealth, type PollHealth } from "./poll_health";
 import { getPendingPaymentAttempt, confirmPaymentAttempt } from "./payments";
+import { reclaimStaleMatchedClaim } from "./_staleClaim";
 
 // ---------------------------------------------------------------------------
 // Resolved config (web-admin Settings win; .env is the bootstrap/recovery
@@ -448,7 +449,26 @@ export async function deliverPaidInternalOrder(
   } catch (e) {
     if (!isUniqueViolation(e)) throw e;
     const prior = await db.processedBinanceTx.findUnique({ where: { binanceTxId: args.binanceTxId } });
-    if (!prior || !(AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES as readonly string[]).includes(prior.outcome)) {
+    // Task B2: a "matched" row whose delivery crashed before finishing is
+    // recoverable for its own order — see crud/_staleClaim.ts for exactly
+    // when. `reclaimedFrom` then holds "matched", so a stale outcome in step 2
+    // puts the row back exactly as it was.
+    const recovered =
+      prior != null &&
+      (await reclaimStaleMatchedClaim(db, {
+        rail: "Binance internal-transfer",
+        txId: args.binanceTxId,
+        prior,
+        forOrderId: args.orderId,
+        cas: (guard) =>
+          db.processedBinanceTx.updateMany({
+            where: { binanceTxId: args.binanceTxId, ...guard },
+            data: { amount: new Decimal(args.amount), outcome: "matched", updatedAt: new Date() },
+          }),
+      }));
+    if (recovered) {
+      reclaimedFrom = { outcome: prior.outcome, orderId: prior.orderId, amount: prior.amount };
+    } else if (!prior || !(AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES as readonly string[]).includes(prior.outcome)) {
       logger.info(
         {
           event: PaymentLogEvent.PAYMENT_ALREADY_CONFIRMED,
@@ -460,25 +480,26 @@ export async function deliverPaidInternalOrder(
         `Skipped settling Binance transaction ${args.binanceTxId} for order ${args.orderId} because it had already been processed — its ledger row is in a terminal outcome that may not be reclaimed, so nothing was delivered or credited twice`,
       );
       return { status: "already_processed" };
+    } else {
+      const reclaimed = await db.processedBinanceTx.updateMany({
+        where: { binanceTxId: args.binanceTxId, outcome: prior.outcome, orderId: prior.orderId },
+        data: { orderId: args.orderId, amount: new Decimal(args.amount), outcome: "matched" },
+      });
+      if (reclaimed.count === 0) {
+        logger.info(
+          {
+            event: PaymentLogEvent.PAYMENT_ALREADY_CONFIRMED,
+            orderId: args.orderId,
+            provider: PaymentMethod.BINANCE_INTERNAL,
+            providerPaymentId: args.binanceTxId,
+            status: "already_processed",
+          },
+          `Skipped settling Binance transaction ${args.binanceTxId} for order ${args.orderId} because it had already been processed — another path won the race to reclaim its ledger row, so nothing was delivered or credited twice`,
+        );
+        return { status: "already_processed" };
+      }
+      reclaimedFrom = { outcome: prior.outcome, orderId: prior.orderId, amount: prior.amount };
     }
-    const reclaimed = await db.processedBinanceTx.updateMany({
-      where: { binanceTxId: args.binanceTxId, outcome: prior.outcome, orderId: prior.orderId },
-      data: { orderId: args.orderId, amount: new Decimal(args.amount), outcome: "matched" },
-    });
-    if (reclaimed.count === 0) {
-      logger.info(
-        {
-          event: PaymentLogEvent.PAYMENT_ALREADY_CONFIRMED,
-          orderId: args.orderId,
-          provider: PaymentMethod.BINANCE_INTERNAL,
-          providerPaymentId: args.binanceTxId,
-          status: "already_processed",
-        },
-        `Skipped settling Binance transaction ${args.binanceTxId} for order ${args.orderId} because it had already been processed — another path won the race to reclaim its ledger row, so nothing was delivered or credited twice`,
-      );
-      return { status: "already_processed" };
-    }
-    reclaimedFrom = { outcome: prior.outcome, orderId: prior.orderId, amount: prior.amount };
   }
 
   // 2. Deliver. On failure, flag the ledger row so we don't silently retry

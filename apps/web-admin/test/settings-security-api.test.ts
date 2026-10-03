@@ -487,6 +487,20 @@ describe("POST /api/settings/2fa/begin + /enable + /cancel", () => {
     expect(await getSetting(prisma, twoFaPendingKey(ADMIN_TG))).toBeNull();
   });
 
+  it("begin and cancel are both audited, in plain sentences that never carry the secret (Task C3)", async () => {
+    const begin = await postJson("/api/settings/2fa/begin", cookie, csrf);
+    const { secret } = begin.json() as { secret: string };
+    const began = await prisma.auditLog.findFirst({ where: { action: "web_2fa_begin" } });
+    expect(began).toBeTruthy();
+    expect(began!.details).toMatch(/^Started setting up two-factor authentication/);
+    expect(began!.details).not.toContain(secret);
+
+    await postJson("/api/settings/2fa/cancel", cookie, csrf);
+    const cancelled = await prisma.auditLog.findFirst({ where: { action: "web_2fa_cancel" } });
+    expect(cancelled).toBeTruthy();
+    expect(cancelled!.details).toMatch(/^Cancelled setting up two-factor authentication/);
+  });
+
   it("begin requires auth (anon → 401)", async () => {
     const res = await postJson("/api/settings/2fa/begin", null, csrf);
     expect(res.statusCode).toBe(401);

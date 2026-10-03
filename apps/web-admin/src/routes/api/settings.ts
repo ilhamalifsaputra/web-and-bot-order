@@ -684,14 +684,10 @@ export default async function settingsApiRoutes(app: FastifyInstance): Promise<v
     return reply.send(result);
   });
 
-  // Owner-gated, session-authenticated restart trigger for post-setup use —
-  // deliberately a SEPARATE route from /setup/restart (apps/web-admin/src/routes/setup.ts),
-  // which is intentionally unauthenticated because it runs before any admin
-  // session exists during the first-run wizard. Reusing that route directly
-  // from this authenticated Settings button would mean either leaving it
-  // permanently unauthenticated (already the case, but not something a
-  // prominent in-app button should rely on) or breaking the wizard's own
-  // pre-auth use of it — a new, gated route avoids both.
+  // Owner-gated, session-authenticated restart trigger for post-setup use. Its
+  // setup-wizard twin, /setup/restart (apps/web-admin/src/routes/setup.ts),
+  // now carries the same guard — csrfProtect, owner-only, audited (backend
+  // audit Task C3) — keep the two in step.
   app.post("/api/settings/restart", { preHandler: csrfProtect }, async (req, reply) => {
     if (req.admin!.role !== "super") return reply.code(403).send({ error: "Only the owner can restart the bot." });
     const target = process.env.RESTART_TRIGGER_FILE ?? join(process.cwd(), "tmp", "restart.txt");
@@ -805,11 +801,24 @@ export default async function settingsApiRoutes(app: FastifyInstance): Promise<v
     if ((await getSetting(prisma, twoFaSecretKey(tg))) !== null) return reply.code(409).send({ error: "2FA is already enabled." });
     const secret = generateTotpSecret();
     await setSetting(prisma, twoFaPendingKey(tg), secret);
+    // Audited (backend audit Task C3) — never with the secret itself.
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "web_2fa_begin",
+      targetType: "setting",
+      details: "Started setting up two-factor authentication (2FA) for their web-admin login.",
+    });
     return reply.send({ ok: true, secret, uri: otpauthUri(secret, String(tg)) });
   });
 
   app.post("/api/settings/2fa/cancel", { preHandler: csrfProtect }, async (req, reply) => {
     await deleteSetting(prisma, twoFaPendingKey(req.admin!.telegramId));
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "web_2fa_cancel",
+      targetType: "setting",
+      details: "Cancelled setting up two-factor authentication (2FA) before turning it on.",
+    });
     return reply.send({ ok: true });
   });
 

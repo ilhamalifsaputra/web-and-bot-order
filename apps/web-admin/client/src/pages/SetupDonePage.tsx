@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { PartyPopper } from "lucide-react";
-import { publicPost } from "../api/client";
+import { apiPost } from "../api/client";
 import { Button } from "@/components/ui/button";
 
 interface RestartResult {
@@ -26,7 +26,9 @@ export function SetupDonePage() {
     setRestartError(null);
     setLoading(true);
     try {
-      const result = await publicPost<RestartResult>("/setup/restart", {});
+      // apiPost, not publicPost: the owner is logged in by now and the route
+      // is CSRF-protected and owner-only (backend audit Task C3).
+      const result = await apiPost<RestartResult>("/setup/restart", {});
       if (result.restarted) {
         setRestarted(true);
       } else {

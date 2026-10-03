@@ -66,6 +66,25 @@ function refund(orderId: number, headers: Record<string, string> = {}) {
   });
 }
 
+describe("POST /api/payments/order/:orderId/refund — audit is atomic with the refund (Task C3)", () => {
+  it("a failed audit insert rolls the whole refund back: no wallet credit, order stays UNDERPAID", async () => {
+    const order = await makeUnderpaidOrder("tx-audit-atomic");
+    // Force the audit insert to fail: audit_logs.admin_id references users,
+    // so once the acting admin's row is gone the insert is an FK violation
+    // (same technique as web.test.ts's dismiss-atomicity test). Nothing else
+    // in the refund references the admin row, so only the audit write fails.
+    const admin = await prisma.user.findFirstOrThrow({ where: { telegramId: ADMIN_TG } });
+    await prisma.user.delete({ where: { id: admin.id } });
+
+    const res = await refund(order.id);
+    expect(res.statusCode).toBe(500);
+
+    expect(await prisma.walletTransaction.findMany({ where: { orderId: order.id, reason: "underpaid_refund" } })).toHaveLength(0);
+    expect(await prisma.refund.findMany({ where: { orderId: order.id } })).toHaveLength(0);
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe("UNDERPAID");
+  });
+});
+
 describe("POST /api/payments/order/:orderId/refund — Idempotency-Key", () => {
   it("with no header: two refund attempts on the same order behave as before (first succeeds, second 422s)", async () => {
     const order = await makeUnderpaidOrder("tx-no-header");

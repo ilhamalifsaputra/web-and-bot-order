@@ -14,7 +14,7 @@ import {
   getBinancePollHealth,
   TX_OUTCOMES,
   deliverUnderpaidOrder,
-  refundUnderpaidOrder,
+  refundUnderpaidOrderTx,
   creditUnderpaidTopupAnyway,
   manualMatchTx,
   dismissUnmatchedTx,
@@ -266,22 +266,29 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
 
     let result: { refunded: Decimal; refundId: number | null; currency: string };
     try {
-      result = await refundUnderpaidOrder(prisma, { orderId, adminId: req.admin!.userId });
-      await logAdminAction(prisma, {
-        adminId: req.admin!.userId,
-        action: "underpaid_refund",
-        targetType: "order",
-        targetId: orderId,
-        // Two shapes, same reasoning as the credit-anyway route below:
-        // "refunded 0" is not a smaller version of the success case — it means
-        // the order was marked REFUNDED and the buyer got nothing back, the one
-        // outcome a shop admin has to act on by hand. The currency is spelled
-        // out because the refund lands in the order's own currency (it used to
-        // always default to IDR), so a bare number here would leave the shop
-        // admin guessing whether "18500" means rupiah or USDT.
-        details: result.refunded.greaterThan(0)
-          ? `Refunded ${result.refunded.toString()} ${result.currency} to the buyer's wallet for an underpaid order.`
-          : "Marked an underpaid order refunded, but returned nothing to the buyer's wallet because no payment record shows how much they actually sent. Refund them by hand if they really did pay.",
+      // One transaction for the refund AND its audit line (backend audit Task
+      // C3): previously the audit was written after the refund had already
+      // committed, so a failed audit insert left money moved with no record of
+      // which admin moved it. Now a failed audit rolls the refund back too.
+      result = await prisma.$transaction(async (tx) => {
+        const refunded = await refundUnderpaidOrderTx(tx, { orderId, adminId: req.admin!.userId });
+        await logAdminAction(tx, {
+          adminId: req.admin!.userId,
+          action: "underpaid_refund",
+          targetType: "order",
+          targetId: orderId,
+          // Two shapes, same reasoning as the credit-anyway route below:
+          // "refunded 0" is not a smaller version of the success case — it means
+          // the order was marked REFUNDED and the buyer got nothing back, the one
+          // outcome a shop admin has to act on by hand. The currency is spelled
+          // out because the refund lands in the order's own currency (it used to
+          // always default to IDR), so a bare number here would leave the shop
+          // admin guessing whether "18500" means rupiah or USDT.
+          details: refunded.refunded.greaterThan(0)
+            ? `Refunded ${refunded.refunded.toString()} ${refunded.currency} to the buyer's wallet for an underpaid order.`
+            : "Marked an underpaid order refunded, but returned nothing to the buyer's wallet because no payment record shows how much they actually sent. Refund them by hand if they really did pay.",
+        });
+        return refunded;
       });
     } catch (e) {
       if (e instanceof ValidationError) return respond(422, errorBody(e));

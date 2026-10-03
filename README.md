@@ -84,6 +84,11 @@ PostgreSQL yang Anda siapkan di langkah Jalur B.
 > ini sama sekali; baris env yang sepadan (`BOT_TOKEN`, `BINANCE_RECEIVE_UID`,
 > `BYBIT_UID`, dst.) hanya jalur recovery darurat kalau terkunci dari panel.
 
+> 📈 **Monitoring (`/metrics`)** — endpoint Prometheus di host admin tertutup
+> secara default (403). Untuk scrape, isi `METRICS_TOKEN` di `.env` (atau
+> Setting `metrics_token`) lalu kirim header `Authorization: Bearer <token>`.
+> Pemilik (admin super) yang sedang login tetap bisa membukanya tanpa token.
+
 Pengaturan pembayaran **tidak wajib** sekarang — bisa diisi belakangan dari panel
 admin ([bagian 6](#6-pembayaran--branding)). Daftar lengkap variabel ada di
 **`.env.example`** dan [`DOCS.md`](DOCS.md).

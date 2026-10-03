@@ -8253,11 +8253,23 @@ describe("setup wizard — restart trigger", () => {
     const ownerCookie = decodeURIComponent(raw.split(";")[0]!.split("=").slice(1).join("="));
 
     await setSetting(prisma, "bot_token", "123:test-token");
+    // The Done screen's shell now carries this session's CSRF token, which
+    // the SPA sends back with the restart POST (Task C3).
+    const done = await get("/setup/done", ownerCookie);
+    const csrf = /name="csrf-token" content="([^"]*)"/.exec(done.body)?.[1] ?? "";
+    expect(csrf).not.toBe("");
     const target = join(tmpdir(), `restart-${Date.now()}.txt`);
     process.env.RESTART_TRIGGER_FILE = target;
     try {
-      const res = await post("/setup/restart", ownerCookie, {});
+      const noToken = await post("/setup/restart", ownerCookie, {});
+      expect(noToken.statusCode).toBe(403);
+      expect(existsSync(target)).toBe(false);
+
+      const res = await post("/setup/restart", ownerCookie, { csrf_token: csrf });
       expect(res.statusCode).toBe(200);
+      const audit = await prisma.auditLog.findMany({ where: { action: "bot_restart" } });
+      expect(audit).toHaveLength(1);
+      expect(audit[0]!.details).toMatch(/^Restarted the app from the setup wizard/);
       expect(existsSync(target)).toBe(true);
       const data = JSON.parse(res.body) as { ok: boolean; restarted: boolean; bot_configured: boolean };
       expect(data.ok).toBe(true);
@@ -8267,6 +8279,23 @@ describe("setup wizard — restart trigger", () => {
       if (existsSync(target)) rmSync(target);
       delete process.env.RESTART_TRIGGER_FILE;
       await setSetting(prisma, "setup_completed", "true"); // restore suite default
+    }
+  });
+});
+
+describe("setup wizard — restart trigger is owner-only (Task C3)", () => {
+  it("refuses a support admin with a valid session and CSRF token, and writes nothing", async () => {
+    await setSetting(prisma, webRoleKey(ADMIN_TG), "support");
+    const target = join(tmpdir(), `restart-support-${Date.now()}.txt`);
+    process.env.RESTART_TRIGGER_FILE = target;
+    try {
+      const res = await post("/setup/restart", seed.cookie, { csrf_token: seed.csrf });
+      expect(res.statusCode).toBe(403);
+      expect(existsSync(target)).toBe(false);
+      expect(await prisma.auditLog.count({ where: { action: "bot_restart" } })).toBe(0);
+    } finally {
+      if (existsSync(target)) rmSync(target);
+      delete process.env.RESTART_TRIGGER_FILE;
     }
   });
 });

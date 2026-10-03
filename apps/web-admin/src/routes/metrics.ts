@@ -1,10 +1,15 @@
 /**
  * GET /metrics — Prometheus exposition-format scrape endpoint for the
- * notification outbox (packages/db/src/crud/notifications.ts). Unauthenticated
- * (no `preHandler`), the same tier as `/healthz` (routes/auth.ts): a
- * Prometheus scraper has no session cookie to present, and these four
- * gauges expose only aggregate counts/ages — no PII or secrets, consistent
- * with `/healthz`'s existing exposure level.
+ * notification outbox (packages/db/src/crud/notifications.ts).
+ *
+ * Access (backend audit Task C3): this used to be open to anyone on the
+ * admin host. The gauges hold no PII, but they leak business volume and
+ * delivery health to the public internet, so the route now needs either
+ *  - `Authorization: Bearer <token>` matching the `metrics_token` Setting
+ *    (falling back to the `METRICS_TOKEN` env var) — what a scraper sends, or
+ *  - an owner (super) admin session — for eyeballing it from a browser.
+ * With no token configured and no owner session it is closed (403); a
+ * configured token that is missing or wrong gets 401.
  *
  * Each gauge is computed fresh from a live query on every scrape
  * (`oldestUnsentNotificationAge` / `countNotifications`) rather than on a
@@ -15,10 +20,16 @@
  * findFirst each), so computing it fresh at scrape time is simpler than a
  * background poller and avoids a stale-value window between polls.
  */
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { Registry, Gauge } from "prom-client";
-import { prisma, countNotifications, oldestUnsentNotificationAge } from "@app/db";
+import { prisma, countNotifications, getSetting, oldestUnsentNotificationAge } from "@app/db";
+import { config } from "@app/core/config";
 import { NotificationStatus } from "@app/core/enums";
+import { constantTimeEqual } from "../auth";
+import { optionalAdmin } from "../plugins/auth";
+
+/** Setting key holding the scraper's bearer token (masked as a secret in Settings). */
+export const METRICS_TOKEN_KEY = "metrics_token";
 
 // Module-level singleton registry/gauges (prom-client's own recommended
 // pattern — see its README's "how to use" example) so buildApp() can be
@@ -53,8 +64,33 @@ const failedCountGauge = new Gauge({
   registers: [registry],
 });
 
+/** The configured scrape token: the `metrics_token` Setting, else the env var. Blank counts as unset. */
+async function configuredMetricsToken(): Promise<string | null> {
+  const fromSetting = ((await getSetting(prisma, METRICS_TOKEN_KEY)) ?? "").trim();
+  if (fromSetting) return fromSetting;
+  const fromEnv = (config.METRICS_TOKEN ?? "").trim();
+  return fromEnv || null;
+}
+
+/** Decide whether this request may read /metrics; sends the refusal itself and returns false if not. */
+async function metricsAccessOk(req: FastifyRequest, reply: FastifyReply): Promise<boolean> {
+  const header = req.headers.authorization;
+  const presented = typeof header === "string" && /^Bearer\s+/i.test(header) ? header.replace(/^Bearer\s+/i, "").trim() : "";
+  const token = await configuredMetricsToken();
+  if (token && presented && constantTimeEqual(presented, token)) return true;
+  const admin = await optionalAdmin(req);
+  if (admin?.role === "super") return true;
+  if (!token) {
+    void reply.code(403).send({ error: "Metrics are disabled until a metrics token is configured." });
+  } else {
+    void reply.code(401).header("WWW-Authenticate", "Bearer").send({ error: "A valid metrics bearer token is required." });
+  }
+  return false;
+}
+
 export default async function metricsRoutes(app: FastifyInstance): Promise<void> {
-  app.get("/metrics", async (_req, reply) => {
+  app.get("/metrics", async (req, reply) => {
+    if (!(await metricsAccessOk(req, reply))) return reply;
     const [oldestUnsentAge, backlogSize, deadLetterCount, failedCount] = await Promise.all([
       oldestUnsentNotificationAge(prisma),
       countNotifications(prisma, { status: NotificationStatus.PENDING }),

@@ -44,7 +44,7 @@ import {
 } from "@app/db";
 import { hashPassword, makeSession, newJti, passwordHashKey, sessionJtiKey } from "../auth";
 import { setTokenValidator, getTokenValidator } from "../lib/telegramCheck";
-import { currentAdmin } from "../plugins/auth";
+import { csrfProtect } from "../plugins/auth";
 
 // Re-exported for tests that import setTokenValidator from this module.
 export { setTokenValidator };
@@ -279,10 +279,16 @@ export default async function setupRoutes(app: FastifyInstance): Promise<void> {
   // runs. Gate on a real admin session instead (H-5): an anonymous caller can
   // no longer loop this to reboot the process, while the legitimate
   // post-setup "Restart server" click (which always carries a valid session
-  // cookie by the time it fires) keeps working. No csrfProtect here — the
-  // pre-auth SPA client (publicPost) doesn't attach a CSRF token; adding it
-  // would need a client-side change too, tracked as a follow-up, not this fix.
-  app.post("/setup/restart", { preHandler: currentAdmin }, async (_req, reply) => {
+  // cookie by the time it fires) keeps working.
+  //
+  // Same guard as its post-setup twin `/api/settings/restart` (backend audit
+  // Task C3): csrfProtect (session + CSRF token + role gate) and owner-only,
+  // with an audit line. Previously any logged-in admin — support or readonly
+  // included — could reboot the process, from any site, unaudited. The Done
+  // screen's shell now carries the owner's CSRF token (setupShell.ts) and the
+  // SPA sends it back (SetupDonePage.tsx).
+  app.post("/setup/restart", { preHandler: csrfProtect }, async (req, reply) => {
+    if (req.admin!.role !== "super") return reply.code(403).send({ error: "Only the owner can restart the bot." });
     const target = process.env.RESTART_TRIGGER_FILE ?? join(process.cwd(), "tmp", "restart.txt");
     let ok = true;
     try {
@@ -293,6 +299,14 @@ export default async function setupRoutes(app: FastifyInstance): Promise<void> {
       ok = false;
       logger.warn({ err }, "Setup wizard: failed to write Passenger restart trigger file — app needs a manual restart from the hosting panel");
     }
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "bot_restart",
+      targetType: "setting",
+      details: ok
+        ? "Restarted the app from the setup wizard to apply the new bot token and owner."
+        : "Tried to restart the app from the setup wizard, but it could not be restarted automatically. Restart it from the hosting panel.",
+    });
     const botConfigured = (await getSetting(prisma, "bot_token")) !== null;
     return reply.send({ ok: true, restarted: ok, bot_configured: botConfigured });
   });

@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import type { FastifyInstance } from "fastify";
 import { prisma, getSetting } from "@app/db";
 import { checkSetupLock } from "./setup";
+import { optionalAdmin } from "../plugins/auth";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const STATIC_DIR = process.env.STATIC_DIR ?? join(HERE, "..", "..", "static");
@@ -55,18 +56,23 @@ export default async function setupShellRoutes(app: FastifyInstance): Promise<vo
   // /setup/done: no lock check (shown after setup completes)
   // Remove the Nunjucks GET handler from setup.ts and serve SPA here instead.
   // Inject meta tag telling React whether bot token was configured.
-  app.get("/setup/done", async (_req, reply) => {
+  app.get("/setup/done", async (req, reply) => {
     const favicon = await getSetting(prisma, "web_favicon_url").then((v) => v || "/static/favicon.svg");
     const faviconTag = `<link rel="icon" href="${esc(favicon)}">`;
     const botConfigured = (await getSetting(prisma, "bot_token")) !== null;
+    // The owner is already logged in here (the finish step auto-logs them
+    // in), and the Done screen's "Restart server" button POSTs to the
+    // CSRF-protected /setup/restart — so bake this session's token in, same
+    // as the authenticated spaShell does. Empty for an anonymous visitor.
+    const csrf = esc((await optionalAdmin(req))?.csrf ?? "");
     const raw = loadSpaIndexHtml();
     const html = raw.includes('<link rel="icon"')
       ? raw
           .replace(/<link rel="icon"[^>]*>/, faviconTag)
-          .replace("__CSRF_TOKEN__", "")
+          .replace("__CSRF_TOKEN__", csrf)
           .replace("</head>", `<meta name="setup-bot-configured" content="${botConfigured}"></head>`)
       : raw
-          .replace("__CSRF_TOKEN__", "")
+          .replace("__CSRF_TOKEN__", csrf)
           .replace("</head>", `${faviconTag}<meta name="setup-bot-configured" content="${botConfigured}"></head>`);
     return reply.type("text/html").send(html);
   });

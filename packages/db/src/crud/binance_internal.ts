@@ -984,74 +984,86 @@ export async function refundUnderpaidOrder(
   db: PrismaClient,
   args: { orderId: number; adminId: number },
 ): Promise<{ refunded: Decimal; refundId: number | null; currency: string }> {
-  return db.$transaction(async (tx: Tx) => {
-    const order = await getOrder(tx, args.orderId);
-    if (!order) throw new ValidationError("error.order_not_found");
-    if (order.status !== OrderStatus.UNDERPAID) {
-      throw new ValidationError("error.order_not_underpaid");
-    }
-    const received = (await findUnderpaidReceived(tx, args.orderId)) ?? new Decimal(0);
-    if (received.greaterThan(0)) {
-      const { transactionId } = await adjustWallet(tx, order.userId, received, {
-        reason: "underpaid_refund",
-        currency: order.currency as "IDR" | "USDT",
-        orderId: order.id,
-        adminId: args.adminId,
-      });
-      // An UNDERPAID order never settled, so no ORDER_PAYMENT was posted for it
-      // and there is no revenue to reverse: the on-chain transfer the buyer
-      // really sent is being recognised here for the first time, as wallet
-      // credit. `postOrderWalletCreditPosting` checks that rather than assuming
-      // it, so this stays correct if a future path reaches it on a settled order.
-      await postOrderWalletCreditPosting(tx, {
-        walletTransactionId: transactionId,
-        orderId: order.id,
-        orderCode: order.orderCode,
-        occurredAt: new Date(),
-      });
-    }
-    if (order.voucherId) {
-      const v = await tx.voucher.findUnique({ where: { id: order.voucherId } });
-      if (v && v.usedCount > 0) {
-        await tx.voucher.update({ where: { id: v.id }, data: { usedCount: { decrement: 1 } } });
-      }
-    }
-    await tx.order.update({
-      where: { id: args.orderId },
-      data: {
-        adminNote: `${order.adminNote ?? ""}\n[refund] ${received.toString()} ${order.currency} to wallet by admin_id=${args.adminId}`,
-      },
+  return db.$transaction((tx: Tx) => refundUnderpaidOrderTx(tx, args));
+}
+
+/**
+ * {@link refundUnderpaidOrder}'s body, run inside the CALLER's transaction —
+ * so the web admin's refund route can write its `logAdminAction` audit line
+ * in the same transaction (backend audit Task C3): if the audit insert fails,
+ * the wallet credit, Refund row and status change roll back with it, and a
+ * refund can never happen without its audit line.
+ */
+export async function refundUnderpaidOrderTx(
+  tx: Tx,
+  args: { orderId: number; adminId: number },
+): Promise<{ refunded: Decimal; refundId: number | null; currency: string }> {
+  const order = await getOrder(tx, args.orderId);
+  if (!order) throw new ValidationError("error.order_not_found");
+  if (order.status !== OrderStatus.UNDERPAID) {
+    throw new ValidationError("error.order_not_underpaid");
+  }
+  const received = (await findUnderpaidReceived(tx, args.orderId)) ?? new Decimal(0);
+  if (received.greaterThan(0)) {
+    const { transactionId } = await adjustWallet(tx, order.userId, received, {
+      reason: "underpaid_refund",
+      currency: order.currency as "IDR" | "USDT",
+      orderId: order.id,
+      adminId: args.adminId,
     });
-    // Only write a Refund record when money actually moved (`received > 0`,
-    // guarding the wallet credit above too) — an UNDERPAID order with a zero
-    // received amount would otherwise leave a misleading COMPLETED Refund of
-    // 0.00 in refund history, implying a payout that never happened.
-    const refund = received.greaterThan(0)
-      ? await tx.refund.create({
-          data: {
-            orderId: order.id,
-            amount: received,
-            currency: order.currency,
-            reason: `Underpaid order refunded to buyer's wallet balance by admin_id=${args.adminId}.`,
-            status: RefundStatus.COMPLETED,
-            processedAt: new Date(),
-          },
-        })
-      : null;
-    await transitionOrderStatus(tx, {
-      orderId: args.orderId,
-      from: OrderStatus.UNDERPAID,
-      to: OrderStatus.REFUNDED,
-      meta: `refund ${received.toString()} by admin_id=${args.adminId}`,
+    // An UNDERPAID order never settled, so no ORDER_PAYMENT was posted for it
+    // and there is no revenue to reverse: the on-chain transfer the buyer
+    // really sent is being recognised here for the first time, as wallet
+    // credit. `postOrderWalletCreditPosting` checks that rather than assuming
+    // it, so this stays correct if a future path reaches it on a settled order.
+    await postOrderWalletCreditPosting(tx, {
+      walletTransactionId: transactionId,
+      orderId: order.id,
+      orderCode: order.orderCode,
+      occurredAt: new Date(),
     });
-    logger.info(
-      `Refunded underpaid order ${order.orderCode} (${received.toString()} ${order.currency}) to wallet by admin ${args.adminId}`,
-    );
-    // `currency` travels back with the amount so the caller's audit line can
-    // say which money was returned — a bare amount is ambiguous now that the
-    // refund lands in the order's own currency rather than always IDR.
-    return { refunded: received, refundId: refund?.id ?? null, currency: order.currency };
+  }
+  if (order.voucherId) {
+    const v = await tx.voucher.findUnique({ where: { id: order.voucherId } });
+    if (v && v.usedCount > 0) {
+      await tx.voucher.update({ where: { id: v.id }, data: { usedCount: { decrement: 1 } } });
+    }
+  }
+  await tx.order.update({
+    where: { id: args.orderId },
+    data: {
+      adminNote: `${order.adminNote ?? ""}\n[refund] ${received.toString()} ${order.currency} to wallet by admin_id=${args.adminId}`,
+    },
   });
+  // Only write a Refund record when money actually moved (`received > 0`,
+  // guarding the wallet credit above too) — an UNDERPAID order with a zero
+  // received amount would otherwise leave a misleading COMPLETED Refund of
+  // 0.00 in refund history, implying a payout that never happened.
+  const refund = received.greaterThan(0)
+    ? await tx.refund.create({
+        data: {
+          orderId: order.id,
+          amount: received,
+          currency: order.currency,
+          reason: `Underpaid order refunded to buyer's wallet balance by admin_id=${args.adminId}.`,
+          status: RefundStatus.COMPLETED,
+          processedAt: new Date(),
+        },
+      })
+    : null;
+  await transitionOrderStatus(tx, {
+    orderId: args.orderId,
+    from: OrderStatus.UNDERPAID,
+    to: OrderStatus.REFUNDED,
+    meta: `refund ${received.toString()} by admin_id=${args.adminId}`,
+  });
+  logger.info(
+    `Refunded underpaid order ${order.orderCode} (${received.toString()} ${order.currency}) to wallet by admin ${args.adminId}`,
+  );
+  // `currency` travels back with the amount so the caller's audit line can
+  // say which money was returned — a bare amount is ambiguous now that the
+  // refund lands in the order's own currency rather than always IDR.
+  return { refunded: received, refundId: refund?.id ?? null, currency: order.currency };
 }
 
 /**

@@ -30,6 +30,7 @@ import type { WalletTopupCreateResponse, WalletTopupData } from "../api/types";
 import { t } from "../lib/i18n";
 import { humanError } from "../lib/errors";
 import { formatIdr, formatNativeUsdt } from "../lib/format";
+import { normalizeMoneyInput } from "../lib/moneyInput";
 import EmptyState from "../components/shop/EmptyState";
 import Skeleton from "../components/shop/Skeleton";
 import Spinner from "../components/shop/Spinner";
@@ -94,7 +95,9 @@ function configuredMethodsFor(data: WalletTopupData, currency: Currency): Method
  * (`data.rail_min`, already in the currency being typed) rather than being
  * re-derived here — see the field's own comment in api/types.ts.
  *
- * An amount that is blank or not a positive number filters NOTHING: there is no
+ * `parsed` is the typed amount read by its shape (`normalizeMoneyInput`, so
+ * "50.000" is fifty thousand, not fifty), or null when it is blank or cannot be
+ * read. An amount that is null or not positive filters NOTHING: there is no
  * figure to judge yet, and emptying the input must not make the whole picker
  * vanish. Same reason `railsClearingTheTotal` (routes/checkout.ts) exempts a zero
  * total. A rail with a null floor has nothing to clear and always survives.
@@ -102,10 +105,13 @@ function configuredMethodsFor(data: WalletTopupData, currency: Currency): Method
  * Client-side UX only, like every other check on this form: the create call
  * re-runs the real guard.
  */
-function offeredMethodsFor(data: WalletTopupData, currency: Currency, amount: string): MethodOption[] {
+function offeredMethodsFor(data: WalletTopupData, currency: Currency, parsed: string | null): MethodOption[] {
   const configured = configuredMethodsFor(data, currency);
-  const typed = Number(amount);
-  if (!amount.trim() || !Number.isFinite(typed) || typed <= 0) return configured;
+  if (parsed === null) return configured;
+  // Number() of a canonical plain decimal is exact enough here: top-up amounts
+  // sit far below 2^53, and the create call re-checks with Decimal.
+  const typed = Number(parsed);
+  if (!Number.isFinite(typed) || typed <= 0) return configured;
   return configured.filter((m) => {
     const floor = data.rail_min?.[m.value];
     return !floor || typed >= Number(floor);
@@ -137,10 +143,11 @@ function limitsHint(data: WalletTopupData, currency: Currency): string | null {
 /** UX convenience only — createWalletTopupOrder (server) is the real gate.
  * Judges the amount by the same EFFECTIVE minimum the hint above advertises, so
  * the sentence the buyer reads and the button's enabled state can never disagree
- * (F4b). */
-function amountValid(data: WalletTopupData, currency: Currency, amount: string): boolean {
-  const n = Number(amount);
-  if (!amount.trim() || Number.isNaN(n) || n <= 0) return false;
+ * (F4b). `parsed` is the shape-read amount (null = blank or unreadable). */
+function amountValid(data: WalletTopupData, currency: Currency, parsed: string | null): boolean {
+  if (parsed === null) return false;
+  const n = Number(parsed);
+  if (Number.isNaN(n) || n <= 0) return false;
   const min = effectiveMin(data, currency);
   const max = currency === "IDR" ? data.max_idr : data.max_usdt;
   if (min && n < Number(min)) return false;
@@ -209,6 +216,13 @@ export default function WalletTopupPage() {
   const [amount, setAmount] = useState("");
   const [method, setMethod] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<unknown>(null);
+  // The amount as typed is only ever shown back in the field. Everything that
+  // judges or sends it reads this instead: the figure read by its shape
+  // ("10.000" IDR = 10000, "5,5" USDT = 5.5) as a canonical plain decimal, or
+  // null when the field is blank or the shape is malformed/ambiguous. The
+  // server accepts only that canonical form.
+  const parsed = normalizeMoneyInput(amount, currency);
+  const amountUnreadable = amount.trim() !== "" && parsed === null;
 
   // Re-pick the default method whenever the currency, the enabled-gateway
   // payload, or the amount changes, mirroring CheckoutPage's defaultMethod
@@ -221,15 +235,17 @@ export default function WalletTopupPage() {
   // QRIS as the buyer finished typing.
   useEffect(() => {
     if (!data) return;
-    const options = offeredMethodsFor(data, currency, amount);
+    const options = offeredMethodsFor(data, currency, parsed);
     setMethod((current) =>
       current && options.some((m) => m.value === current) ? current : (options[0]?.value ?? null),
     );
-  }, [data, currency, amount]);
+  }, [data, currency, parsed]);
 
   const submitMutation = useMutation({
     mutationFn: () =>
-      apiPost<WalletTopupCreateResponse>("/api/v1/wallet/topup", { currency, amount, method }),
+      // The canonical figure, never the raw text: the submit button is disabled
+      // while `parsed` is null, so this always sends digits[.digits].
+      apiPost<WalletTopupCreateResponse>("/api/v1/wallet/topup", { currency, amount: parsed, method }),
     onSuccess: (resp) => navigate(`/wallet/topup/${resp.orderCode}/pay`),
     onError: (err) => setSubmitError(err),
   });
@@ -262,7 +278,7 @@ export default function WalletTopupPage() {
     );
   }
 
-  const options = offeredMethodsFor(data, currency, amount);
+  const options = offeredMethodsFor(data, currency, parsed);
   // The shop HAS a working gateway for this currency and the amount is simply
   // under every one of their floors. Two causes look identical in an empty
   // picker and need opposite messages — the same distinction
@@ -271,7 +287,7 @@ export default function WalletTopupPage() {
   // that will never change, when all they have to do is type a larger amount.
   const belowEveryRailMinimum = options.length === 0 && configuredMethodsFor(data, currency).length > 0;
   const hint = limitsHint(data, currency);
-  const valid = amountValid(data, currency, amount);
+  const valid = amountValid(data, currency, parsed);
   const submitBlocked = !valid || !method;
   const submitDisabled = submitBlocked || submitMutation.isPending;
 
@@ -304,13 +320,18 @@ export default function WalletTopupPage() {
           </div>
 
           {/* Amount */}
-          <FormField label={t("web.wallet_topup_amount_label")} htmlFor="topup_amount" hint={hint ?? undefined}>
+          {/* type="text", not "number": a number input throws away "50.000" or
+              "5,5" before the shape reader ever sees it. */}
+          <FormField
+            label={t("web.wallet_topup_amount_label")}
+            htmlFor="topup_amount"
+            hint={hint ?? undefined}
+            error={amountUnreadable ? t("web.wallet_topup_amount_unreadable") : undefined}
+          >
             <Input
               id="topup_amount"
-              type="number"
+              type="text"
               inputMode="decimal"
-              min="0"
-              step="any"
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
               placeholder={currency === "IDR" ? "50000" : "10"}

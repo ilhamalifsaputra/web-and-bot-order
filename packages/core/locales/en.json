@@ -867,6 +867,7 @@
   "web.wallet_topup_range_hint": "Between {min} and {max}.",
   "web.wallet_topup_min_hint": "Minimum {min}.",
   "web.wallet_topup_max_hint": "Maximum {max}.",
+  "web.wallet_topup_amount_unreadable": "Enter the amount as digits, e.g. 50000 or 50.000. For USDT, a single separator followed by exactly three digits is ambiguous — write 1000 for a thousand, or 1.00 for one.",
   "web.wallet_topup_retry": "Try again",
   "web.wallet_topup_view_wallet": "View wallet balance",
   "web.reset_invalid": "This reset link is invalid or has expired — request a new one.",

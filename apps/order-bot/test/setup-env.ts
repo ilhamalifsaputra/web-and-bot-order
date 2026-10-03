@@ -7,7 +7,7 @@
  * The wiring test never touches the DB (buildBot constructs only), so a dummy
  * DATABASE_URL_PRISMA is enough — no `prisma db push` needed.
  */
-process.env.DATABASE_URL_PRISMA ??= "file:./.tmp/order-bot-test.db";
+process.env.DATABASE_URL_PRISMA ??= "postgresql://bot_order:unused@localhost:5432/order_bot_wiring_test";
 process.env.BOT_TOKEN ??= "123:ABCDEFGHIJKLMNOPQRSTUVWXYZ-test";
 process.env.BOT_USERNAME ??= "TestBot";
 process.env.BINANCE_PAY_ID ??= "111222333";

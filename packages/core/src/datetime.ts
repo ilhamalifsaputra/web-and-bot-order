@@ -1,7 +1,7 @@
 /**
  * Datetime helpers — luxon replacement for Python pytz/zoneinfo.
  * Store UTC, localize to config.TIMEZONE (Asia/Jakarta) only on display.
- * SQLite stores naive datetimes; treat values read back as UTC.
+ * Postgres `timestamp` columns are read back as UTC instants by Prisma.
  */
 import { DateTime } from "luxon";
 import { config } from "./config";
@@ -9,7 +9,7 @@ import { config } from "./config";
 /** Now, in UTC. */
 export const utcNow = (): Date => new Date();
 
-/** Treat a JS Date as UTC (SQLite strips tzinfo). */
+/** Wrap a JS Date (an absolute instant) as a luxon DateTime in UTC. */
 export const ensureUtc = (d: Date): DateTime =>
   DateTime.fromJSDate(d, { zone: "utc" });
 

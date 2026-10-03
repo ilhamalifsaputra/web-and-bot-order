@@ -19,8 +19,8 @@ export interface TestDb {
 }
 
 // Builds a schema-scoped connection URL, preserving any query params already
-// on the base URL (same care the removed `withConnectionLimit` helper took
-// for SQLite's `?connection_limit=`) rather than naively string-concatenating.
+// on the base URL (such as `?connection_limit=`) rather than naively
+// string-concatenating.
 function withSchema(baseUrl: string, schema: string): string {
   const url = new URL(baseUrl);
   url.searchParams.set("schema", schema);

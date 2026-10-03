@@ -5,9 +5,10 @@ import { config } from "@app/core/config";
 import { logger } from "@app/core/logger";
 import { Decimal } from "@app/core/money";
 import { evaluatePollHealth, type PollHealthEvaluation } from "@app/core/payments/pollHealth";
-import type { FxRateRejection } from "@app/core/fx";
+import { validateUsdIdrRate, type FxRateRejection } from "@app/core/fx";
 import {
   prisma,
+  fxRateBounds,
   listAllSettings,
   getSetting,
   setSetting,
@@ -300,6 +301,34 @@ function readMoneySetting(key: string, value: string, exact: boolean, markupType
   return amount && amount.isFinite() ? amount.toFixed() : null;
 }
 
+/**
+ * The sentence shown to an admin whose hand-typed USDT rate was refused. Unlike
+ * `fxRejectionMessage` above, the figure here is the one they typed, read the
+ * way it was saved would have been (`16.000` is quoted back as 16000), so they
+ * can see how their input was understood.
+ */
+function typedRateRejectionMessage(reason: FxRateRejection, rate: Decimal): string {
+  switch (reason.reason) {
+    case "not_a_number":
+    case "not_positive":
+      return "The rate must be more than zero. Type the rupiah price of 1 USDT, like 16200 or 16.200.";
+    case "below_min":
+      return (
+        `Rp${rate.toString()} per USDT is below the Rp${reason.min.toString()} sanity floor, so it was not saved. ` +
+        `Check the figure, or lower "USDT rate sanity floor" if this really is the rate now.`
+      );
+    case "above_max":
+      return (
+        `Rp${rate.toString()} per USDT is above the Rp${reason.max.toString()} sanity ceiling, so it was not saved. ` +
+        `Check the figure, or raise "USDT rate sanity ceiling" if this really is the rate now.`
+      );
+    case "delta_too_large":
+      // Unreachable: the typed-rate check passes no last-known rate, so the
+      // deviation cap never runs. Kept so the switch stays exhaustive.
+      return `Rp${rate.toString()} per USDT moved further from the last market rate than one update is allowed to.`;
+  }
+}
+
 /** Thrown by `applyFieldEdit` for any rejection — carries the HTTP status the
  * route should reply with, so both `/edit` and `/import` translate it the
  * same way without duplicating the status-code decisions below. */
@@ -479,7 +508,38 @@ async function applyFieldEdit(
     value = amount;
   }
 
-  const displayValue = isSecret(key) ? "(updated)" : value.slice(0, 80);
+  // Money audit A1. The rate is an IDR amount per 1 USDT, so it is read with
+  // the IDR shape rules like every other typed rupiah figure: a separator
+  // followed by exactly three digits is thousands grouping, so `16.000` and
+  // `16,000` are both 16000 — the only sensible reading of a rupiah-per-USDT
+  // rate, and what an Indonesian admin means by it. Before this, the raw text
+  // was saved and `getUsdIdrRate` read "16.000" as 16, pricing every USDT
+  // order ~1000x too high, while "16,000" could not be read at all and
+  // silently hid the USDT rail. An ambiguous or non-numeric shape is refused,
+  // never guessed. The figure then has to clear the same floor and ceiling
+  // the market refresh uses (`fxRateBounds`). `lastKnown` is null on purpose:
+  // the deviation cap is skipped, because typing the rate in is the
+  // documented remedy for a refresh the cap keeps refusing.
+  //
+  // `exact` (lib/moneyField.ts): an untouched pre-fill of the stored rate, or
+  // an export file being imported, is the server's own plain dot-decimal
+  // (`16123.456`), so it is read exactly; read by shape it would become
+  // 16,123,456. Only text the admin retyped is read by shape.
+  let usdIdrRate: string | null = null;
+  if (key === USD_IDR_RATE_KEY && value !== "") {
+    const rate = readMoneyField(value, "IDR", { exact });
+    if (rate === null) {
+      throw new FieldEditError(
+        400,
+        "That doesn't look like a rate. Type the rupiah price of 1 USDT as a plain number, like 16200 or 16.200 — or leave it blank to turn USDT payments off.",
+      );
+    }
+    const rejection = validateUsdIdrRate(rate, null, await fxRateBounds(prisma));
+    if (rejection) throw new FieldEditError(400, typedRateRejectionMessage(rejection, rate));
+    usdIdrRate = rate.toFixed();
+  }
+
+  const displayValue = isSecret(key) ? "(updated)" : (usdIdrRate ?? value).slice(0, 80);
   if (ENCRYPTED_SETTING_KEYS.has(key)) {
     try {
       await setEncryptedSetting(prisma, key, value);
@@ -490,7 +550,7 @@ async function applyFieldEdit(
       }
       throw e;
     }
-  } else if (key === USD_IDR_RATE_KEY && value !== "") {
+  } else if (usdIdrRate !== null) {
     // M12 / audit P0-2: typing a rate by hand is a re-confirmation of it, so it
     // must stamp `usd_idr_rate_updated_at` exactly like a market refresh does,
     // or a shop that sets its rate manually would have every USDT order refused
@@ -507,10 +567,10 @@ async function applyFieldEdit(
     // displayValue, the `setting_set` audit entry, the reply — stays shared, so
     // this field's audit trail cannot drift from every other field's.
     //
-    // Deliberately NO value validation here: web-admin's rate field stays free
-    // text exactly as it was. Sanity bounds are M13's job
-    // (`fx_rate_min`/`fx_rate_max`/`fx_rate_max_delta_pct`).
-    await setUsdIdrRate(prisma, value);
+    // The value was already read by its shape and judged by the sanity band
+    // above (money audit A1); what is stored is the canonical decimal string
+    // the reader returned, never the raw typed text.
+    await setUsdIdrRate(prisma, usdIdrRate);
   } else {
     await setSetting(prisma, key, value);
   }

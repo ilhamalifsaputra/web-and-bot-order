@@ -34,6 +34,7 @@ import {
   usdIdrQuoteIsFresh,
   alertIfUsdIdrRateStale,
   alertIfFxRateRejected,
+  fxRateBounds,
 } from "./pricing";
 import { NotificationEvent } from "@app/core/enums";
 import { enqueueAdminFxRateRejected } from "./notifications";
@@ -106,6 +107,32 @@ describe("refreshUsdIdrRate (market rate + rounding — plan.md §15.8)", () => 
 });
 
 // ---- M13 / audit P0-3: the sanity band, the failure counter, the spread -----
+
+describe("fxRateBounds (shared by the market refresh and the hand-typed rate)", () => {
+  it("falls back to the documented defaults when nothing is configured", async () => {
+    const b = await fxRateBounds(prisma);
+    expect(b.min?.toString()).toBe("8000");
+    expect(b.max?.toString()).toBe("40000");
+    expect(b.maxDeltaPct?.toString()).toBe("5");
+  });
+
+  it("reads the configured values", async () => {
+    await setSetting(prisma, FX_RATE_MIN_KEY, "9000");
+    await setSetting(prisma, FX_RATE_MAX_KEY, "30000");
+    await setSetting(prisma, FX_RATE_MAX_DELTA_PCT_KEY, "8");
+    const b = await fxRateBounds(prisma);
+    expect(b.min?.toString()).toBe("9000");
+    expect(b.max?.toString()).toBe("30000");
+    expect(b.maxDeltaPct?.toString()).toBe("8");
+  });
+
+  it("treats a blank, unparseable or non-positive value as 'check off' (null)", async () => {
+    await setSetting(prisma, FX_RATE_MIN_KEY, "");
+    await setSetting(prisma, FX_RATE_MAX_KEY, "abc");
+    await setSetting(prisma, FX_RATE_MAX_DELTA_PCT_KEY, "-1");
+    expect(await fxRateBounds(prisma)).toEqual({ min: null, max: null, maxDeltaPct: null });
+  });
+});
 
 describe("refreshUsdIdrRate — refuses a rate outside the sanity band", () => {
   /** Every piece of state a rejected refresh must leave exactly as it was. */

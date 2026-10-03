@@ -243,6 +243,15 @@ rate landing exactly on `min` or `max` is inside the range an admin typed.
 band still applies, which is what catches a source returning the wrong unit on
 day one.
 
+A rate typed by hand in web-admin Settings goes through the same band. The route
+first reads the text by its shape (`readMoneyField(…, "IDR")`, which uses
+`parseMoneyInput`, so `16.000` and `16,000` are both sixteen thousand and an
+ambiguous or non-numeric value is refused; an untouched pre-fill or an imported
+export file is read as the exact plain decimal it already is), then calls `validateUsdIdrRate` with `lastKnown = null`: the floor and
+ceiling apply, the deviation cap does not, because typing the rate in is the
+documented remedy for a refresh the cap keeps refusing. A refused value answers
+400 and the saved rate is untouched.
+
 The `min`/`max` are **sanity** bounds, not a market range: they exist to catch a
 source that starts answering in the wrong unit or returns a placeholder.
 `fx_rate_max_delta_pct` is the check that second-guesses a real market move.
@@ -275,7 +284,7 @@ A blank, zero, negative or unparseable value is a no-op, and so is a value of
 
 **It applies to the automatic refresh only.** `applyUsdtSpread` is reached from
 `refreshUsdIdrRate` and nowhere else, so a rate an admin types into web-admin is
-saved exactly as typed. A shop that sets its rate by hand is not quietly getting a
+saved with no spread and no rounding. A shop that sets its rate by hand is not quietly getting a
 spread on top — it is getting none, and has to build its margin into the figure it
 types.
 

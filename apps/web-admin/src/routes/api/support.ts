@@ -30,6 +30,7 @@ import {
   listUserOrders,
   listAuditLogs,
   countOpenUserTickets,
+  isTicketAttachmentFileId,
   resolveBotCredentials,
   logAdminAction,
   type TicketFilter,
@@ -37,6 +38,31 @@ import {
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
 import { getFileResolver } from "../../lib/telegramCheck";
 import { displayDate, displayDateTime } from "../../dateDisplay";
+
+/** Telegram file ids are URL-safe base64-ish tokens; anything else is not one. */
+const TELEGRAM_FILE_ID_RE = /^[A-Za-z0-9_-]{1,256}$/;
+
+/** Image types the photo proxy may serve, keyed by file extension. */
+const PHOTO_TYPES_BY_EXTENSION: Record<string, string> = {
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  webp: "image/webp",
+  gif: "image/gif",
+};
+const PHOTO_TYPES = new Set(Object.values(PHOTO_TYPES_BY_EXTENSION));
+
+/**
+ * The content type to serve a ticket photo as: Telegram's own type when it is
+ * an allowlisted image, else the one the file's extension implies, else null
+ * (not an image — refuse rather than pass an arbitrary type through).
+ */
+function photoContentType(upstreamType: string | null, filePath: string): string | null {
+  const declared = (upstreamType ?? "").split(";")[0]!.trim().toLowerCase();
+  if (PHOTO_TYPES.has(declared)) return declared;
+  const extension = filePath.split(".").pop()?.toLowerCase() ?? "";
+  return PHOTO_TYPES_BY_EXTENSION[extension] ?? null;
+}
 
 const STATUS_VALUES = Object.values(TicketStatus) as string[];
 const PRIORITY_VALUES = Object.values(TicketPriority) as string[];
@@ -611,8 +637,18 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
   // not leak it to any admin who can merely view a ticket. Admin-gated (GET,
   // no CSRF needed) since a ticket's photoFileIds could otherwise be used to
   // fish for Telegram file_ids.
+  //
+  // Only a file id attached to a support ticket or ticket message is served:
+  // the bot can see every file anyone ever sent it (payment proofs included),
+  // and this route is open to every admin role. The bytes go out as an image
+  // type from a fixed allowlist with nosniff, never Telegram's own
+  // content-type, so a non-image upload can't render as HTML in the panel's
+  // origin.
   app.get("/api/support/photo/:fileId", { preHandler: currentAdmin }, async (req, reply) => {
     const fileId = (req.params as { fileId: string }).fileId;
+    if (!TELEGRAM_FILE_ID_RE.test(fileId) || !(await isTicketAttachmentFileId(prisma, fileId))) {
+      return reply.code(404).send({ error: "Photo not found." });
+    }
     const creds = await resolveBotCredentials(prisma);
     if (!creds.botToken) {
       return reply.code(503).send({ error: "The bot token is not configured." });
@@ -631,7 +667,12 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
     if (!upstream.ok) {
       return reply.code(502).send({ error: "Could not retrieve the photo from Telegram." });
     }
-    reply.header("content-type", upstream.headers.get("content-type") ?? "image/jpeg");
+    const contentType = photoContentType(upstream.headers.get("content-type"), result.filePath);
+    if (contentType === null) {
+      return reply.code(415).send({ error: "This attachment is not an image." });
+    }
+    reply.header("content-type", contentType);
+    reply.header("x-content-type-options", "nosniff");
     return reply.send(Buffer.from(await upstream.arrayBuffer()));
   });
 }

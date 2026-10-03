@@ -13,7 +13,8 @@ import { createCategory, createCatalogProduct, createDenomination, findCatalogPr
 import { bulkAddStock } from "./stock";
 import { createOrderDirect, getOrderDigiflazzSnapshot } from "./orders";
 import { getProcessedBinanceTx } from "./binance_internal";
-import { createTicket, closeTicket, countOpenUserTickets } from "./support";
+import { createTicket, closeTicket, countOpenUserTickets, addTicketMessage, isTicketAttachmentFileId } from "./support";
+import { SenderType } from "@app/core/enums";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -67,6 +68,25 @@ describe("countOpenUserTickets", () => {
     await closeTicket(prisma, closed.id);
     await createTicket(prisma, other.id, "three");
     expect(await countOpenUserTickets(prisma, user.id)).toBe(1);
+  });
+});
+
+describe("isTicketAttachmentFileId", () => {
+  it("is true only for a file id attached to a ticket or one of its messages, matched exactly", async () => {
+    const user = await newUser();
+    const ticket = await createTicket(prisma, user.id, "see photo", "E1_TICKET_A,E1_TICKET_B");
+    await addTicketMessage(prisma, { ticketId: ticket.id, senderType: SenderType.USER, senderId: user.id, content: "more", photoFileIds: "E1_MSG_C" });
+
+    expect(await isTicketAttachmentFileId(prisma, "E1_TICKET_A")).toBe(true);
+    expect(await isTicketAttachmentFileId(prisma, "E1_TICKET_B")).toBe(true);
+    expect(await isTicketAttachmentFileId(prisma, "E1_MSG_C")).toBe(true);
+    // A payment proof (or any other file the bot can see) is not an attachment.
+    expect(await isTicketAttachmentFileId(prisma, "E1_PAYMENT_PROOF")).toBe(false);
+    // Substrings and LIKE wildcards never match.
+    expect(await isTicketAttachmentFileId(prisma, "E1_TICKET")).toBe(false);
+    expect(await isTicketAttachmentFileId(prisma, "E1_TICKET_%")).toBe(false);
+    expect(await isTicketAttachmentFileId(prisma, "E1_TICKET__")).toBe(false);
+    expect(await isTicketAttachmentFileId(prisma, "")).toBe(false);
   });
 });
 

@@ -909,6 +909,83 @@ export type PaymentChoice =
         | typeof PaymentMethod.WALLET;
     };
 
+/** Namespace half of the two-key advisory lock that serializes Bybit unique-amount picks per rail. */
+const UNIQUE_AMOUNT_LOCK_NAMESPACE = 0x55435431; // "UCT1"
+/** How many distinct cents buckets `computeUniqueCents` can produce (1..49). */
+const UNIQUE_CENTS_BUCKETS = 49;
+
+/** The memo-less rails whose deposits are matched by amount alone. */
+export type UniqueAmountRail = typeof PaymentMethod.BYBIT | typeof PaymentMethod.BYBIT_BSC;
+
+/**
+ * Pick a payable amount (`usdt` + unique cents) that no other live pending
+ * order on `method` already holds, then hand it to `write`, both inside one
+ * transaction under a per-rail advisory lock. This is the ONE place that
+ * happens, for product orders (`finalizeOrderPayment`) and USDT wallet top-ups
+ * (`finalizeWalletTopupPayment`) alike: the Bybit poller matches a deposit by
+ * amount with no `kind` filter, so both kinds share one pool and must
+ * serialize on the same lock key.
+ *
+ * Neither Bybit rail has a memo, so the amount is the only disambiguator. The
+ * search reads the SAME pool the matcher reads (listPendingBybitOrders /
+ * listPendingBybitBscOrders: PENDING_PAYMENT, this method, not yet expired),
+ * scoped to `paymentMethod: method` so BYBIT and BYBIT_BSC never collide with
+ * each other's pool (Checkout-4 fix, security audit 2026-06-23). The seed is
+ * bumped by +1 per retry, which cycles through all 49 buckets before
+ * repeating.
+ *
+ * The search is a read-then-write, and under Postgres READ COMMITTED two
+ * finalizations at once would otherwise both see "no clash" and both take the
+ * same amount, leaving one deposit ambiguous between two orders. The lock key
+ * is the rail alone, not the base amount, because two DIFFERENT base amounts
+ * can still land on the same total once their cents are added. A bare client
+ * gets its own short transaction; a caller's transaction (a `Tx` has no
+ * `$transaction`) is joined, so the lock then lasts until the caller commits.
+ *
+ * When every bucket is taken it throws `error.unique_amount_exhausted` and
+ * `write` is never called.
+ */
+export async function writeWithUniqueRailAmount(
+  db: Db,
+  args: { orderId: number; orderCode: string; method: UniqueAmountRail; usdt: Decimal },
+  write: (tx: Db, pick: { cents: Decimal; totalAmount: Decimal }) => Promise<void>,
+): Promise<void> {
+  const { orderId, orderCode, method, usdt } = args;
+  const run = async (tx: Db) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(${UNIQUE_AMOUNT_LOCK_NAMESPACE}::int, hashtext(${method}))`;
+    let cents = computeUniqueCents(orderId);
+    let totalAmount = usdt.plus(cents);
+    for (let attempt = 1; attempt <= UNIQUE_CENTS_BUCKETS; attempt++) {
+      const clash = await tx.order.findFirst({
+        where: {
+          id: { not: orderId },
+          paymentMethod: method,
+          status: OrderStatus.PENDING_PAYMENT,
+          expiresAt: { gt: new Date() },
+          totalAmount,
+        },
+        select: { id: true },
+      });
+      if (!clash) {
+        await write(tx, { cents, totalAmount });
+        return;
+      }
+      cents = computeUniqueCents(orderId + attempt);
+      totalAmount = usdt.plus(cents);
+    }
+    logger.warn(
+      { orderId, method },
+      `Refused to finalize order ${orderCode} for ${method}, because every one of the ${UNIQUE_CENTS_BUCKETS} unique-cents amounts for ${usdt.toString()} USDT is already taken by another pending order or wallet top-up on this rail. Without a memo the amount is the only way to match the deposit, so a shared amount would make it ambiguous; the buyer can retry once one of those orders is paid or expires, or choose another payment method.`,
+    );
+    throw new ValidationError("error.unique_amount_exhausted");
+  };
+  if ("$transaction" in db && typeof db.$transaction === "function") {
+    await db.$transaction((tx: Db) => run(tx));
+  } else {
+    await run(db);
+  }
+}
+
 /**
  * Stamp a freshly created PENDING order with the buyer's payment choice
  * (plan.md §15.4). Orders are created with central-IDR totals; this converts
@@ -921,11 +998,6 @@ export type PaymentChoice =
  *           for the auto-confirm path.
  * Run inside the same $transaction as the order creation.
  */
-/** Namespace half of the two-key advisory lock that serializes Bybit unique-amount picks per rail. */
-const UNIQUE_AMOUNT_LOCK_NAMESPACE = 0x55435431; // "UCT1"
-/** How many distinct cents buckets `computeUniqueCents` can produce (1..49). */
-const UNIQUE_CENTS_BUCKETS = 49;
-
 export async function finalizeOrderPayment(db: Db, orderId: number, choice: PaymentChoice) {
   const order = await db.order.findUnique({ where: { id: orderId } });
   if (!order) throw new ValidationError("error.order_not_found");
@@ -1025,11 +1097,11 @@ export async function finalizeOrderPayment(db: Db, orderId: number, choice: Paym
   // transfer to disambiguate, so unique cents (which would otherwise leave a
   // nonzero remainder even when wallet credit fully covers the order) never
   // apply here.
-  let cents =
+  const cents =
     config.USE_UNIQUE_CENTS && method !== PaymentMethod.WALLET
       ? computeUniqueCents(order.id)
       : new Decimal(0);
-  let totalAmount = usdt.plus(cents);
+  const totalAmount = usdt.plus(cents);
 
   // Auto-confirm paths get a bounded payment window. Binance Internal also gets
   // a unique transfer note (paymentRef); neither Bybit rail (Internal
@@ -1061,9 +1133,8 @@ export async function finalizeOrderPayment(db: Db, orderId: number, choice: Paym
     // fix, security audit 2026-06-23). `paymentMethod: method` scopes this to
     // the order's own method, so BYBIT and BYBIT_BSC orders never collide
     // with each other's pool — each is matched against its own independent
-    // poller. Bumping the seed by +1 each retry cycles through all 49 buckets
-    // before repeating. The search and the write run under a per-rail
-    // advisory lock below (see `UNIQUE_AMOUNT_LOCK_NAMESPACE`).
+    // poller. The search and the write run under a per-rail advisory lock
+    // shared with USDT wallet top-ups (see `writeWithUniqueRailAmount`).
     needsUniqueAmount = config.USE_UNIQUE_CENTS;
   } else if (method === PaymentMethod.NOWPAYMENTS) {
     expiresAt = addMinutes(new Date(), config.NOWPAYMENTS_PAYMENT_WINDOW_MINUTES);
@@ -1072,63 +1143,25 @@ export async function finalizeOrderPayment(db: Db, orderId: number, choice: Paym
     // sama seperti TokoPay/PayDisini melakukannya untuk paymentRef JSON cache.
   }
 
-  const writeFinal = async (tx: Db) => {
-    if (needsUniqueAmount) {
-      // Serialize every Bybit finalization on this rail: the clash search below
-      // is a read-then-write, and under Postgres READ COMMITTED two checkouts
-      // finalizing at once would otherwise both see "no clash" and both take
-      // the same amount, leaving one deposit ambiguous between two orders. The
-      // key is the rail alone, not the base amount, because two DIFFERENT base
-      // amounts can still land on the same total once their cents are added.
-      // Held only for this short search-and-write; released at commit.
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${UNIQUE_AMOUNT_LOCK_NAMESPACE}::int, hashtext(${method}))`;
-      let free = false;
-      for (let attempt = 1; attempt <= UNIQUE_CENTS_BUCKETS; attempt++) {
-        const clash = await tx.order.findFirst({
-          where: {
-            id: { not: orderId },
-            paymentMethod: method,
-            status: OrderStatus.PENDING_PAYMENT,
-            expiresAt: { gt: new Date() },
-            totalAmount,
-          },
-          select: { id: true },
-        });
-        if (!clash) {
-          free = true;
-          break;
-        }
-        cents = computeUniqueCents(order.id + attempt);
-        totalAmount = usdt.plus(cents);
-      }
-      if (!free) {
-        logger.warn(
-          { orderId, method },
-          `Refused to finalize order ${order.orderCode} for ${method}, because every one of the ${UNIQUE_CENTS_BUCKETS} unique-cents amounts for ${usdt.toString()} USDT is already taken by another pending order on this rail. Without a memo the amount is the only way to match the deposit, so a shared amount would make it ambiguous; the buyer can retry once one of those orders is paid or expires, or choose another payment method.`,
-        );
-        throw new ValidationError("error.unique_amount_exhausted");
-      }
-    }
-    await tx.order.update({
-      where: { id: orderId },
-      data: {
-        currency: OrderCurrency.USDT,
-        fxRate: rate,
-        paymentMethod: method,
-        uniqueCents: cents,
-        totalAmount,
-        ...(paymentRef ? { paymentRef } : {}),
-        ...(expiresAt ? { expiresAt } : {}),
+  const finalData = (pick: { cents: Decimal; totalAmount: Decimal }) => ({
+    currency: OrderCurrency.USDT,
+    fxRate: rate,
+    paymentMethod: method,
+    uniqueCents: pick.cents,
+    totalAmount: pick.totalAmount,
+    ...(paymentRef ? { paymentRef } : {}),
+    ...(expiresAt ? { expiresAt } : {}),
+  });
+  if (needsUniqueAmount) {
+    await writeWithUniqueRailAmount(
+      db,
+      { orderId, orderCode: order.orderCode, method: method as UniqueAmountRail, usdt },
+      async (tx, pick) => {
+        await tx.order.update({ where: { id: orderId }, data: finalData(pick) });
       },
-    });
-  };
-  // A `Tx` has no `$transaction`, so its presence means a bare client: open a
-  // transaction for the advisory lock to live in. A caller's own transaction is
-  // joined instead. Only the Bybit unique-amount path needs one at all.
-  if (needsUniqueAmount && "$transaction" in db && typeof db.$transaction === "function") {
-    await db.$transaction((tx: Db) => writeFinal(tx));
+    );
   } else {
-    await writeFinal(db);
+    await db.order.update({ where: { id: orderId }, data: finalData({ cents, totalAmount }) });
   }
   logger.info(
     `Order ${order.orderCode} finalized as USDT (${usdt.toString()} @ ${rate.toString()}, via ${method})`,

@@ -5,6 +5,7 @@
  * duplicating it.
  */
 import { ProductType } from "@app/core/enums";
+import { parseMoneyInput } from "@app/core/moneyFormat";
 import type { Db } from "@app/db";
 import { listAllCategories, createCatalogProduct } from "@app/db";
 
@@ -30,7 +31,12 @@ export interface ImportRow {
   };
 }
 
-const isNum = (s: string) => /^\d+(\.\d+)?$/.test(s);
+/**
+ * A typed Rupiah amount read by its shape ("79.000" and "79,000" are seventy-nine
+ * thousand, "4480.50" has a decimal), as the canonical plain-decimal string that
+ * gets stored; null when it is malformed or ambiguous.
+ */
+const rupiah = (s: string): string | null => parseMoneyInput(s, "IDR")?.toString() ?? null;
 
 /**
  * Parse pipe-delimited denomination rows (one per line):
@@ -61,16 +67,17 @@ export function parseDenominationCsv(text: string, catByName: Map<string, number
       const typeUpper = (type ?? "").toUpperCase();
       if (typeUpper !== "SHARED" && typeUpper !== "PRIVATE") return fail("type must be shared or private");
       if (!durationLabel) return fail("duration label is required");
-      if (!price || !isNum(price) || Number(price) <= 0) return fail("price must be a positive number");
+      const priceValue = price ? rupiah(price) : null;
+      if (priceValue === null || Number(priceValue) <= 0) return fail("price must be a positive number (Rupiah, e.g. 79000 or 79.000)");
       let cost: string | null = null;
       if (costPrice) {
-        if (!isNum(costPrice)) return fail("cost price must be a number");
-        cost = costPrice;
+        cost = rupiah(costPrice);
+        if (cost === null) return fail("cost price must be a number (Rupiah, e.g. 40000 or 40.000)");
       }
       let reseller: string | null = null;
       if (resellerPrice) {
-        if (!isNum(resellerPrice)) return fail("reseller price must be a number");
-        reseller = resellerPrice;
+        reseller = rupiah(resellerPrice);
+        if (reseller === null) return fail("reseller price must be a number (Rupiah, e.g. 70000 or 70.000)");
       }
       let warranty: number | null = null;
       if (warrantyDays) {
@@ -86,7 +93,7 @@ export function parseDenominationCsv(text: string, catByName: Map<string, number
           denominationName: denomination,
           type: typeUpper as ProductType,
           durationLabel,
-          price,
+          price: priceValue,
           costPrice: cost,
           resellerPrice: reseller,
           warrantyDays: warranty,

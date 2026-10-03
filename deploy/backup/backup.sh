@@ -20,9 +20,11 @@
 # Usage:
 #   deploy/backup/backup.sh                 # uses defaults below
 #   DEST=/srv/backups RETENTION=28 deploy/backup/backup.sh
-#   # POSTGRES_USER/POSTGRES_DB come from .env (docker compose
-#   # reads it automatically for variable interpolation); DEST/RETENTION are
-#   # optional overrides.
+#   # POSTGRES_USER/POSTGRES_DB: taken from the environment when set there,
+#   # otherwise read from the repo's .env (the same file docker compose uses to
+#   # create the postgres container), otherwise bot_order. .env is parsed as
+#   # KEY=VALUE text, never sourced (deploy/backup/lib-env.sh).
+#   # DEST/RETENTION are optional overrides.
 #
 # Cron (every 6h, log to file) — `crontab -e`:
 #   0 */6 * * * DEST=/srv/backups /srv/app/deploy/backup/backup.sh >> /var/log/bot-backup.log 2>&1
@@ -39,6 +41,10 @@ cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../.." || {
   echo "ERROR: could not cd to the repo root from $(dirname "${BASH_SOURCE[0]:-$0}")" >&2
   exit 1
 }
+
+# shellcheck source=deploy/backup/lib-env.sh
+. deploy/backup/lib-env.sh
+load_env_defaults POSTGRES_USER POSTGRES_DB
 
 DEST="${DEST:-./data/backups}"
 RETENTION="${RETENTION:-28}"          # how many timestamped backups to keep
@@ -60,14 +66,15 @@ esac
 # never touching credentials.
 # ---------------------------------------------------------------------------
 backup_postgres() {
-  # Read directly from env — never parsed out of DATABASE_URL_PRISMA, and
-  # POSTGRES_PASSWORD is never read/echoed here at all. Defaults match
-  # docker-compose.postgres.prod.yml's own fallback (${POSTGRES_USER:-bot_order}
-  # etc.), so a .env that only sets DATABASE_URL_PRISMA still works.
+  # From the environment or .env (load_env_defaults above) — never parsed out
+  # of DATABASE_URL_PRISMA, and POSTGRES_PASSWORD is never read/echoed here at
+  # all. The `:-` fallbacks match docker-compose.postgres.prod.yml's own
+  # (${POSTGRES_USER:-bot_order} etc.), including treating an empty value as
+  # unset, so the script and the container always agree on the database.
   POSTGRES_USER="${POSTGRES_USER:-bot_order}"
   POSTGRES_DB="${POSTGRES_DB:-bot_order}"
   OUT="${DEST}/pg-${STAMP}.dump"
-  COMPOSE=(docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml)
+  COMPOSE=("${BACKUP_COMPOSE[@]}")
 
   if ! command -v docker >/dev/null 2>&1; then
     echo "ERROR: docker not found. This script must run on the host with docker compose available." >&2
@@ -115,7 +122,7 @@ backup_postgres() {
   fi
 
   SIZE="$(du -h "$OUT" | cut -f1)"
-  echo "OK  backup=$OUT (${SIZE}, pg_restore --list=ok)"
+  echo "OK  backup=$OUT (database ${POSTGRES_DB}, ${SIZE}, pg_restore --list=ok)"
 
   # Retention: keep the newest $RETENTION *.dump; prune the rest. Glob is
   # anchored to pg-<digits>... (real backup filenames start with the year,

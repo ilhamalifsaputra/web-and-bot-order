@@ -116,7 +116,7 @@ lengkap, termasuk sentinel `SKIP_AUTO_MIGRATE`, ada di
 
 1. Verifikasi file backup dulu (`pg_restore --list`) — abort sebelum
    menyentuh DB live bila ternyata rusak.
-2. `docker compose stop server` (hentikan satu-satunya proses penulis DB;
+2. `docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml stop server` (hentikan satu-satunya proses penulis DB;
    container `postgres` sendiri tetap jalan, hanya `server` yang dihentikan).
 3. Simpan DB saat ini ke salinan pengaman `pg-pre-restore-<stamp>.dump` —
    restore sendiri tetap reversibel.
@@ -126,7 +126,7 @@ lengkap, termasuk sentinel `SKIP_AUTO_MIGRATE`, ada di
    tanpa itu restore yang setengah jadi tetap dilaporkan sukses).
 5. Tulis sentinel `data/SKIP_AUTO_MIGRATE` supaya entrypoint tidak langsung
    menjalankan `prisma db push` pada database yang baru direstore.
-6. `docker compose start ...` dan smoke-test `GET /healthz` sampai 200.
+6. `docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml start ...` dan smoke-test `GET /healthz` (di `WEB_PORT` dari `.env`) sampai 200.
 
 Setelah restore, biarkan sentinel tetap ada sampai kode yang berjalan cocok
 dengan skema database hasil restore, lalu hapus (`rm ./data/SKIP_AUTO_MIGRATE`)

@@ -87,7 +87,13 @@ export function nowpaymentsInvoicePrice(orderTotal: Decimal.Value): Decimal {
 export function checkNowpaymentsAmount(
   ipn: Pick<NowpaymentsIpn, "actuallyPaid" | "payAmount" | "priceAmount" | "priceCurrency">,
   orderTotal: Decimal.Value,
-): { ok: true; amount: Decimal } | { ok: false; reason: string } {
+):
+  | { ok: true; amount: Decimal }
+  /** `receivedValue` is set only when the value is known and simply short
+   *  (`actually_paid` below `pay_amount` on an otherwise valid usd invoice):
+   *  what did arrive, in the ORDER's currency, at the invoice's own rate.
+   *  Absent = the payment could not be valued at all (unverified). */
+  | { ok: false; reason: string; receivedValue?: Decimal } {
   if ((ipn.priceCurrency ?? "").toLowerCase() !== "usd") {
     return { ok: false, reason: `the invoice is priced in "${ipn.priceCurrency ?? "nothing"}" rather than usd` };
   }
@@ -98,14 +104,16 @@ export function checkNowpaymentsAmount(
   if (ipn.priceAmount.lessThan(invoicePrice)) {
     return { ok: false, reason: `the invoice price ${ipn.priceAmount.toString()} usd is below the order's ${invoicePrice.toString()}` };
   }
+  const paidValue = ipn.priceAmount.times(ipn.actuallyPaid).dividedBy(ipn.payAmount);
+  const valueInOrderCurrency = new Decimal(orderTotal).plus(paidValue.minus(invoicePrice));
   if (ipn.actuallyPaid.lessThan(ipn.payAmount)) {
     return {
       ok: false,
       reason: `only ${ipn.actuallyPaid.toString()} of the quoted ${ipn.payAmount.toString()} was paid in the pay currency`,
+      receivedValue: Decimal.max(valueInOrderCurrency, 0),
     };
   }
-  const paidValue = ipn.priceAmount.times(ipn.actuallyPaid).dividedBy(ipn.payAmount);
-  return { ok: true, amount: new Decimal(orderTotal).plus(paidValue.minus(invoicePrice)) };
+  return { ok: true, amount: valueInOrderCurrency };
 }
 
 /**
@@ -190,9 +198,18 @@ export class RateLimitedError extends Error {}
 
 export interface NowpaymentsStatus {
   paid: boolean;
+  /** `actually_paid` (falling back to `pay_amount`), in the PAY currency — not
+   * comparable to an order total; judge it with `checkNowpaymentsAmount`. */
   amount: Decimal;
   trxId: string | null;
   status: string;
+  /** The raw value fields `checkNowpaymentsAmount` judges (same as on
+   * `NowpaymentsIpn`); null = absent or unparseable. */
+  actuallyPaid: Decimal | null;
+  payAmount: Decimal | null;
+  payCurrency: string | null;
+  priceAmount: Decimal | null;
+  priceCurrency: string | null;
 }
 
 /**
@@ -248,7 +265,17 @@ export async function getPaymentStatus(
     (typeof body.payment_id === "string" && body.payment_id) ||
     (typeof body.payment_id === "number" && String(body.payment_id)) ||
     null;
-  return { paid: isProviderPaid(StatusProvider.NOWPAYMENTS, statusStr), amount, trxId, status: statusStr };
+  return {
+    paid: isProviderPaid(StatusProvider.NOWPAYMENTS, statusStr),
+    amount,
+    trxId,
+    status: statusStr,
+    actuallyPaid: optionalDecimal(body.actually_paid),
+    payAmount: optionalDecimal(body.pay_amount),
+    payCurrency: optionalString(body.pay_currency),
+    priceAmount: optionalDecimal(body.price_amount),
+    priceCurrency: optionalString(body.price_currency),
+  };
 }
 
 export interface NowpaymentsIpn {

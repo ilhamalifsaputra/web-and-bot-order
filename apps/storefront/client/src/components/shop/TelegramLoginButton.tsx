@@ -20,9 +20,12 @@ export interface TelegramLoginButtonProps {
   /** Relative path Telegram 303s back to (e.g. widget.auth_url, or the
    *  fixed /account/settings/link-telegram route). */
   authUrl: string;
+  /** Awaited before leaving for Telegram (SettingsPage arms the one-time link
+   *  intent here). If it rejects, the button re-enables and stays put. */
+  beforeNavigate?: () => Promise<unknown>;
 }
 
-export default function TelegramLoginButton({ botId, authUrl }: TelegramLoginButtonProps) {
+export default function TelegramLoginButton({ botId, authUrl, beforeNavigate }: TelegramLoginButtonProps) {
   const [connecting, setConnecting] = useState(false);
 
   // Clicking navigates away to oauth.telegram.org, so `connecting` is set
@@ -45,7 +48,14 @@ export default function TelegramLoginButton({ botId, authUrl }: TelegramLoginBut
 
   function handleClick() {
     setConnecting(true);
-    window.location.assign(buildTelegramOAuthUrl(resolvedBotId, authUrl));
+    if (!beforeNavigate) {
+      window.location.assign(buildTelegramOAuthUrl(resolvedBotId, authUrl));
+      return;
+    }
+    beforeNavigate().then(
+      () => window.location.assign(buildTelegramOAuthUrl(resolvedBotId, authUrl)),
+      () => setConnecting(false),
+    );
   }
 
   return (

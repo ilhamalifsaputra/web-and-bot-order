@@ -604,6 +604,39 @@ describe("guest account claim needs the order's contact email (Task C1)", () => 
     expect(u.email).toBeNull();
   });
 
+  // Fix round: Telegram linking was a second, unguarded way to keep a guest
+  // row — link the attacker's Telegram, then sign in via /auth/telegram.
+  it("refuses to start a Telegram link on a guest row", async () => {
+    const s = await trackedSession("claim.tgstart@example.com");
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/account/settings/link-telegram/start",
+      headers: { cookie: s.cookie, "x-csrf-token": s.csrf },
+      payload: {},
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ error: "web.settings_tg_guest" });
+  });
+
+  it("refuses the Telegram link callback on a guest row; telegramId stays null", async () => {
+    const s = await trackedSession("claim.tglink@example.com");
+    const { createHash, createHmac } = await import("node:crypto");
+    const fields: Record<string, string> = { id: "818181", auth_date: String(Math.floor(Date.now() / 1000)) };
+    const checkString = Object.keys(fields).sort().map((k) => `${k}=${fields[k]}`).join("\n");
+    const secretKey = createHash("sha256").update(process.env.BOT_TOKEN!).digest();
+    const hash = createHmac("sha256", secretKey).update(checkString).digest("hex");
+    const res = await app.inject({
+      method: "GET",
+      url: `/account/settings/link-telegram?${new URLSearchParams({ ...fields, hash })}`,
+      headers: { cookie: s.cookie },
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/account/settings?err=tg_guest");
+    const u = (await prisma.user.findUnique({ where: { id: s.userId } }))!;
+    expect(u.telegramId).toBeNull();
+    expect(u.isGuest).toBe(true);
+  });
+
   it("accepts the right guest email (case/whitespace-insensitive) and upgrades the row", async () => {
     const s = await trackedSession("claim.ok@example.com");
     const res = await app.inject({

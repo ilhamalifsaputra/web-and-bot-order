@@ -987,6 +987,81 @@ describe("account settings — link-telegram (survives the cutover)", () => {
     cookie = await loginAs("settingsuser", "original-pw");
   });
 
+  /** The SPA's "Link Telegram" click: a CSRF-checked POST that arms one link
+   * for this account before the browser leaves for oauth.telegram.org. */
+  async function startLink(c: string): Promise<void> {
+    const shell = await app.inject({ method: "GET", url: "/spa-shell-probe", headers: { cookie: c } });
+    const csrf = /name="csrf-token" content="([^"]*)"/.exec(shell.body)![1]!;
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/account/settings/link-telegram/start",
+      headers: { cookie: c, "x-csrf-token": csrf },
+      payload: {},
+    });
+    expect(res.statusCode).toBe(200);
+  }
+
+  async function signedLinkParams(telegramId: number): Promise<URLSearchParams> {
+    const { createHash, createHmac } = await import("node:crypto");
+    const fields: Record<string, string> = {
+      id: String(telegramId),
+      auth_date: String(Math.floor(Date.now() / 1000)),
+    };
+    const checkString = Object.keys(fields).sort().map((k) => `${k}=${fields[k]}`).join("\n");
+    const secretKey = createHash("sha256").update(process.env.BOT_TOKEN!).digest();
+    const hash = createHmac("sha256", secretKey).update(checkString).digest("hex");
+    return new URLSearchParams({ ...fields, hash });
+  }
+
+  // Backend audit Task C fix round: the link GET is cookie-authenticated and
+  // reachable by a cross-site top-level navigation, so without a one-time
+  // intent an attacker could make a signed-in victim's browser link the
+  // ATTACKER's Telegram (then sign in as the victim via /auth/telegram).
+  it("refuses a link that was never started from the settings page (no intent)", async () => {
+    const { hashPassword } = await import("@app/core/password");
+    await prisma.user.create({
+      data: { loginUsername: "nointent", email: "nointent@u.test", passwordHash: hashPassword("nointent-pw-1"), referralCode: "NOINT1" },
+    });
+    const c = await loginAs("nointent", "nointent-pw-1");
+    const res = await app.inject({
+      method: "GET",
+      url: `/account/settings/link-telegram?${await signedLinkParams(646464)}`,
+      headers: { cookie: c },
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/account/settings?err=tg_invalid");
+    expect((await prisma.user.findFirst({ where: { loginUsername: "nointent" } }))!.telegramId).toBeNull();
+  });
+
+  it("an intent is one-time: a second link with the same intent is refused", async () => {
+    const { hashPassword } = await import("@app/core/password");
+    await prisma.user.create({
+      data: { loginUsername: "onceintent", email: "onceintent@u.test", passwordHash: hashPassword("onceintent-pw"), referralCode: "ONCE01" },
+    });
+    const c = await loginAs("onceintent", "onceintent-pw");
+    await startLink(c);
+    const first = await app.inject({ method: "GET", url: `/account/settings/link-telegram?${await signedLinkParams(656565)}`, headers: { cookie: c } });
+    expect(first.headers.location).toBe("/account/settings?linked=1");
+    const second = await app.inject({ method: "GET", url: `/account/settings/link-telegram?${await signedLinkParams(656565)}`, headers: { cookie: c } });
+    expect(second.headers.location).toBe("/account/settings?err=tg_invalid");
+  });
+
+  it("refuses to swap an already-linked account to a different Telegram id", async () => {
+    const { hashPassword } = await import("@app/core/password");
+    await prisma.user.create({
+      data: { loginUsername: "nooverwrite", email: "nooverwrite@u.test", passwordHash: hashPassword("nooverwrite-pw"), referralCode: "NOOVR1" },
+    });
+    const c = await loginAs("nooverwrite", "nooverwrite-pw");
+    await startLink(c);
+    const first = await app.inject({ method: "GET", url: `/account/settings/link-telegram?${await signedLinkParams(666001)}`, headers: { cookie: c } });
+    expect(first.headers.location).toBe("/account/settings?linked=1");
+    await startLink(c);
+    const swap = await app.inject({ method: "GET", url: `/account/settings/link-telegram?${await signedLinkParams(666002)}`, headers: { cookie: c } });
+    expect(swap.statusCode).toBe(303);
+    expect(swap.headers.location).toBe("/account/settings?err=tg_already_linked");
+    expect((await prisma.user.findFirst({ where: { loginUsername: "nooverwrite" } }))!.telegramId).toBe(666001n);
+  });
+
   it("links a Telegram account via signed widget params", async () => {
     const { createHash, createHmac } = await import("node:crypto");
     const fields: Record<string, string> = {
@@ -1000,6 +1075,7 @@ describe("account settings — link-telegram (survives the cutover)", () => {
     const hash = createHmac("sha256", secretKey).update(checkString).digest("hex");
     const params = new URLSearchParams({ ...fields, hash });
 
+    await startLink(cookie);
     const res = await app.inject({
       method: "GET",
       url: `/account/settings/link-telegram?${params}`,
@@ -1032,6 +1108,7 @@ describe("account settings — link-telegram (survives the cutover)", () => {
     const secretKey = createHash("sha256").update(process.env.BOT_TOKEN!).digest();
     const hash = createHmac("sha256", secretKey).update(checkString).digest("hex");
     const params = new URLSearchParams({ ...fields, hash });
+    await startLink(cookie);
     const res = await app.inject({
       method: "GET",
       url: `/account/settings/link-telegram?${params}`,
@@ -1081,18 +1158,21 @@ describe("account settings — link-telegram (survives the cutover)", () => {
     }
 
     for (let i = 0; i < LINK_TELEGRAM_RATE_LIMIT_MAX; i++) {
-      // A distinct telegramId per attempt: linkTelegram happily re-links the
-      // same customer to a new id, so every one of these succeeds and each
-      // still counts a hit against the rate limit.
+      // The SAME telegramId every attempt: re-linking an already-linked id
+      // only refreshes it, so every one of these succeeds (a different id is
+      // now refused as already_linked) and each still counts a hit against
+      // the rate limit.
+      await startLink(rateCookie);
       const res = await app.inject({
         method: "GET",
-        url: `/account/settings/link-telegram?${sign(900_000 + i)}`,
+        url: `/account/settings/link-telegram?${sign(900_000)}`,
         headers: { cookie: rateCookie },
       });
       expect(res.statusCode).toBe(303);
       expect(res.headers.location).toBe("/account/settings?linked=1");
     }
 
+    await startLink(rateCookie);
     const capped = await app.inject({
       method: "GET",
       url: `/account/settings/link-telegram?${sign(999_999)}`,
@@ -1101,7 +1181,7 @@ describe("account settings — link-telegram (survives the cutover)", () => {
     expect(capped.statusCode).toBe(303);
     expect(capped.headers.location).toBe("/account/settings?err=tg_invalid");
     const row = (await prisma.user.findFirst({ where: { loginUsername: "linkratecust" } }))!;
-    expect(row.telegramId).toBe(900_000n + BigInt(LINK_TELEGRAM_RATE_LIMIT_MAX - 1)); // last successful link, not the capped attempt
+    expect(row.telegramId).toBe(900_000n); // the capped attempt's id (999_999) was never written
   });
 });
 

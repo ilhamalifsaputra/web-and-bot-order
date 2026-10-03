@@ -73,6 +73,7 @@ import { resolveBotId, resolveBotUsername, requestCurrency } from "../shop";
 import { constantTimeEqual } from "../auth";
 import { errorBody } from "@app/core/errorBody";
 import { originOk } from "./cart";
+import { startTelegramLinkIntent } from "../telegramLinkIntent";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -800,6 +801,19 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
         customer.user.fullName ??
         String(customer.user.telegramId ?? ""),
     });
+  });
+
+  // Arms ONE Telegram link for this account (telegramLinkIntent.ts): the SPA
+  // calls this right before sending the browser to oauth.telegram.org, so the
+  // cookie-authenticated GET /account/settings/link-telegram callback can't
+  // be driven by a cross-site navigation. Guest rows can't link at all.
+  app.post("/account/settings/link-telegram/start", async (req, reply) => {
+    const customer = await requireCustomer(req, reply);
+    if (!customer) return;
+    if (!csrfHeaderOk(req, customer)) return reply.code(403).send({ error: "csrf_failed" });
+    if (customer.user.isGuest) return reply.code(400).send({ error: "web.settings_tg_guest" });
+    startTelegramLinkIntent(customer.userId);
+    return reply.send({ ok: true });
   });
 
   app.post<{

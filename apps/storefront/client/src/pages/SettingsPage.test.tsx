@@ -162,6 +162,38 @@ describe("SettingsPage", () => {
     expect(screen.queryByRole("button", { name: "Continue with Telegram" })).not.toBeInTheDocument();
   });
 
+  // Backend audit Task C fix round: the link callback only accepts a link the
+  // account armed via a CSRF-checked POST first.
+  it("arms the link (POST .../link-telegram/start) before leaving for Telegram", async () => {
+    const assign = vi.fn();
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      writable: true,
+      value: { assign, origin: "https://shop.local" },
+    });
+    (apiPost as Mock).mockResolvedValue({ ok: true });
+    renderSettings("/account/settings", { ...settingsData, tg_linked: false, bot_id: "123" });
+    fireEvent.click(await screen.findByRole("button", { name: "Continue with Telegram" }));
+    await waitFor(() => expect(assign).toHaveBeenCalledTimes(1));
+    expect(apiPost).toHaveBeenCalledWith("/api/v1/account/settings/link-telegram/start", {});
+    expect(String(assign.mock.calls[0]![0])).toContain("https://oauth.telegram.org/auth?");
+  });
+
+  it("a guest row gets no Telegram button, just the claim-first hint", async () => {
+    renderSettings("/account/settings", { ...settingsData, is_guest: true, has_password: false, bot_id: "123" });
+    expect(
+      await screen.findByText("Save a username and password for this account first, then you can link Telegram."),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Continue with Telegram" })).not.toBeInTheDocument();
+  });
+
+  it("shows the guest and already-linked errors from the link redirect", async () => {
+    renderSettings("/account/settings?err=tg_already_linked");
+    expect(
+      await screen.findByText("This account is already linked to a different Telegram account."),
+    ).toBeInTheDocument();
+  });
+
   it("omits the button when no bot_id is configured", async () => {
     renderSettings("/account/settings", { ...settingsData, tg_linked: false, bot_id: "" });
     expect(await screen.findByText("Telegram sign-in isn't set up yet.")).toBeInTheDocument();

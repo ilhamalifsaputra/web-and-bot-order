@@ -120,6 +120,26 @@ describe("TelegramLoginButton", () => {
     expect(calledUrl).toContain("embed=0");
   });
 
+  it("runs beforeNavigate first and only then navigates", async () => {
+    let release!: () => void;
+    const beforeNavigate = vi.fn(() => new Promise<void>((r) => { release = r; }));
+    render(<TelegramLoginButton botId="123456789" authUrl="/x" beforeNavigate={beforeNavigate} />);
+    fireEvent.click(screen.getByRole("button"));
+    expect(beforeNavigate).toHaveBeenCalledTimes(1);
+    expect(assignMock).not.toHaveBeenCalled();
+    await act(async () => { release(); });
+    expect(assignMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not navigate and re-enables the button when beforeNavigate fails", async () => {
+    const beforeNavigate = vi.fn(() => Promise.reject(new Error("nope")));
+    render(<TelegramLoginButton botId="123456789" authUrl="/x" beforeNavigate={beforeNavigate} />);
+    const button = screen.getByRole("button");
+    await act(async () => { fireEvent.click(button); });
+    expect(assignMock).not.toHaveBeenCalled();
+    expect(button).not.toBeDisabled();
+  });
+
   it("re-enables the button when the page is restored from bfcache (pageshow, persisted)", () => {
     render(<TelegramLoginButton botId="123456789" authUrl="/auth/telegram" />);
 

@@ -14,6 +14,7 @@ import { verifyTelegramLogin } from "../auth";
 import { currentCustomer } from "../plugins/auth";
 import { resolveBotToken } from "../shop";
 import { linkTelegramRateLimited } from "../rateLimit";
+import { consumeTelegramLinkIntent } from "../telegramLinkIntent";
 
 const settingsRoutes: FastifyPluginAsync = async (app) => {
   // ---- GET /account/settings/link-telegram ----------------------------------
@@ -30,8 +31,20 @@ const settingsRoutes: FastifyPluginAsync = async (app) => {
       if (linkTelegramRateLimited(customer.userId)) {
         return reply.code(303).redirect("/account/settings?err=tg_invalid");
       }
+      // A guest row's session can be minted from the order code alone
+      // (POST /api/v1/track), so linking Telegram here would let whoever
+      // guessed the code keep the row via /auth/telegram. The guest must
+      // first claim it through the credentials form, which needs the order's
+      // contact email (backend audit Task C fix round). linkTelegram refuses
+      // too; this early exit just keeps the guest's link intent untouched.
+      if (customer.user.isGuest) return reply.code(303).redirect("/account/settings?err=tg_guest");
       const auth = verifyTelegramLogin(req.query, await resolveBotToken());
       if (!auth) return reply.code(303).redirect("/account/settings?err=tg_invalid");
+      // Only a link this account armed from its own settings page (CSRF-checked
+      // POST .../link-telegram/start) — see telegramLinkIntent.ts.
+      if (!consumeTelegramLinkIntent(customer.userId)) {
+        return reply.code(303).redirect("/account/settings?err=tg_invalid");
+      }
       const fullName =
         [auth.first_name, auth.last_name].filter(Boolean).join(" ") || null;
       const res = await linkTelegram(
@@ -41,7 +54,10 @@ const settingsRoutes: FastifyPluginAsync = async (app) => {
         auth.username ?? null,
         fullName,
       );
-      if (!res.ok) return reply.code(303).redirect("/account/settings?err=tg_taken");
+      if (!res.ok) {
+        const err = res.reason === "guest" ? "tg_guest" : res.reason === "already_linked" ? "tg_already_linked" : "tg_taken";
+        return reply.code(303).redirect(`/account/settings?err=${err}`);
+      }
       // Phase H customer-audit trail. This route is the one account-linking
       // entry point (see the file header comment) and it lives on the
       // storefront web app, not apps/order-bot — there is no Telegram Update

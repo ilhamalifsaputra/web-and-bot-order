@@ -1,5 +1,5 @@
 /**
- * formatUserPrice / userPriceFormatter — the bot's single render-edge entry
+ * userPriceFormatter — the bot's single render-edge entry
  * point for catalog prices in the user's display currency. Canonical amounts
  * are IDR; USD is derived once (usdtFromIdr, ceil 0.01) and a missing rate
  * falls back to an explicit "Rp…" string, never a bare number or an invented
@@ -9,7 +9,6 @@ import { describe, it, expect } from "vitest";
 import { Decimal } from "@app/core/money";
 import { DisplayCurrency } from "@app/core/enums";
 import {
-  formatUserPrice,
   userPriceFormatter,
   ctxPriceFormatter,
   payAlongsidePriceLine,
@@ -22,50 +21,44 @@ import { coreT } from "../src/util/i18n";
 
 const RATE = new Decimal(16000);
 
-describe("formatUserPrice", () => {
+describe("userPriceFormatter().price (rounding, fallback and single conversion)", () => {
   it("renders a USD user's IDR price as $ with 2dp", () => {
-    expect(formatUserPrice(DisplayCurrency.USD, 79000, RATE)).toEqual({
-      text: "$4.94",
-      currency: DisplayCurrency.USD,
-      fellBack: false,
-    });
+    expect(userPriceFormatter(DisplayCurrency.USD, RATE).price(79000)).toBe("$4.94");
   });
 
   it("renders an IDR user's price as Rp only — no ≈ $ hint", () => {
-    const r = formatUserPrice(DisplayCurrency.IDR, 79000, RATE);
-    expect(r.text).toBe("Rp79.000");
-    expect(r.text).not.toContain("$");
-    expect(r.fellBack).toBe(false);
+    const text = userPriceFormatter(DisplayCurrency.IDR, RATE).price(79000);
+    expect(text).toBe("Rp79.000");
+    expect(text).not.toContain("$");
   });
 
   it("treats a NULL preference as IDR-labelled, never USD", () => {
-    expect(formatUserPrice(null, 79000, RATE).text).toBe("Rp79.000");
-    expect(formatUserPrice(undefined, 79000, RATE).text).toBe("Rp79.000");
+    expect(userPriceFormatter(null, RATE).price(79000)).toBe("Rp79.000");
+    expect(userPriceFormatter(undefined, RATE).price(79000)).toBe("Rp79.000");
   });
 
   it("rounds USD up to the next cent (ceil), matching what the USDT rails charge", () => {
-    expect(formatUserPrice(DisplayCurrency.USD, 15999, RATE).text).toBe("$1.00");
-    expect(formatUserPrice(DisplayCurrency.USD, 16001, RATE).text).toBe("$1.01");
+    const f = userPriceFormatter(DisplayCurrency.USD, RATE);
+    expect(f.price(15999)).toBe("$1.00");
+    expect(f.price(16001)).toBe("$1.01");
   });
 
   it("falls back to an explicit Rp string with fellBack when the rate is unavailable", () => {
-    expect(formatUserPrice(DisplayCurrency.USD, 79000, null)).toEqual({
-      text: "Rp79.000",
-      currency: DisplayCurrency.IDR,
-      fellBack: true,
-    });
+    const f = userPriceFormatter(DisplayCurrency.USD, null);
+    expect(f.price(79000)).toBe("Rp79.000");
+    expect(f.fellBack).toBe(true);
   });
 
   it("groups large USD amounts with commas", () => {
-    expect(formatUserPrice(DisplayCurrency.USD, 20_000_000, RATE).text).toBe("$1,250.00");
+    expect(userPriceFormatter(DisplayCurrency.USD, RATE).price(20_000_000)).toBe("$1,250.00");
   });
 
   it("converts exactly once: the IDR path never rescales, the USD path divides a single time", () => {
     // An already-converted figure must only ever go through the explicit
     // IDR path (which leaves the number alone), never through USD again.
-    expect(formatUserPrice(DisplayCurrency.IDR, "4.94", RATE).text).toBe("Rp5");
-    // 16000 IDR → $1.00; a second conversion would give $0.01.
-    expect(formatUserPrice(DisplayCurrency.USD, 16000, RATE).text).toBe("$1.00");
+    expect(userPriceFormatter(DisplayCurrency.IDR, RATE).price("4.94")).toBe("Rp5");
+    // 16000 IDR -> $1.00; a second conversion would give $0.01.
+    expect(userPriceFormatter(DisplayCurrency.USD, RATE).price(16000)).toBe("$1.00");
   });
 });
 
@@ -106,15 +99,18 @@ describe("userPriceFormatter", () => {
 });
 
 describe("prices follow the buyer's language", () => {
-  it("formatUserPrice uses the language's separators for both currencies", () => {
-    expect(formatUserPrice(DisplayCurrency.IDR, 4480, RATE, "id").text).toBe("Rp4.480");
-    expect(formatUserPrice(DisplayCurrency.IDR, 4480, RATE, "en").text).toBe("Rp4,480");
-    expect(formatUserPrice(DisplayCurrency.USD, 4480, RATE, "id").text).toBe("$0,28");
-    expect(formatUserPrice(DisplayCurrency.USD, 4480, RATE, "en").text).toBe("$0.28");
-    expect(formatUserPrice(DisplayCurrency.USD, 19_752_000, RATE, "id").text).toBe("$1.234,50");
-    expect(formatUserPrice(DisplayCurrency.USD, 19_752_000, RATE, "en").text).toBe("$1,234.50");
+  it("price() uses the language's separators for both currencies", () => {
+    const price = (currency: DisplayCurrency, idr: number, lang: string, rate: Decimal | null = RATE) => userPriceFormatter(currency, rate, lang).price(idr);
+    expect(price(DisplayCurrency.IDR, 4480, "id")).toBe("Rp4.480");
+    expect(price(DisplayCurrency.IDR, 4480, "en")).toBe("Rp4,480");
+    expect(price(DisplayCurrency.USD, 4480, "id")).toBe("$0,28");
+    expect(price(DisplayCurrency.USD, 4480, "en")).toBe("$0.28");
+    expect(price(DisplayCurrency.USD, 19_752_000, "id")).toBe("$1.234,50");
+    expect(price(DisplayCurrency.USD, 19_752_000, "en")).toBe("$1,234.50");
     // A USD buyer without a rate gets the explicit Rupiah in their own language.
-    expect(formatUserPrice(DisplayCurrency.USD, 79000, null, "en")).toEqual({ text: "Rp79,000", currency: DisplayCurrency.IDR, fellBack: true });
+    const noRate = userPriceFormatter(DisplayCurrency.USD, null, "en");
+    expect(noRate.price(79000)).toBe("Rp79,000");
+    expect(noRate.fellBack).toBe(true);
   });
 
   it("price() and compact() agree with the language, the USD compact being the full price", () => {

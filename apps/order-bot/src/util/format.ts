@@ -40,7 +40,7 @@ export { formatIdrFor, formatUsdFor, formatCompactIdrFor } from "@app/core/money
  * total is a USDT payable, always written with a decimal point, passes "en" so
  * the hint does not switch to the buyer's decimal comma beside it.
  * Catalog/detail/confirmation screens no longer use it — they go through
- * {@link formatUserPrice}/{@link userPriceFormatter}. It remains only for the
+ * {@link userPriceFormatter}. It remains only for the
  * order-detail item lines (an order snapshot, which must read the same
  * whatever display currency the buyer picks later).
  *
@@ -58,28 +58,6 @@ export function priceIdr(v: Decimal.Value, rate: Decimal | null, lang?: string, 
 // ---------------------------------------------------------------------------
 // Display-currency price rendering (the single render-edge entry point)
 // ---------------------------------------------------------------------------
-
-/**
- * Catalog price in the user's display currency. `idr` MUST be a canonical
- * IDR amount (catalog price, flash price, cart/confirmation subtotal,
- * voucher value, minimum purchase): it is converted exactly once here —
- * never pass an amount that is already USDT/rail currency.
- *
- * - USD → "$4.94" (usdtFromIdr, ceil 0.01 — the figure the USDT rails charge).
- * - IDR → "Rp79.000" only (no "≈ $" hint).
- * - NULL/unknown preference → IDR-labelled, never USD.
- * - USD with no usable rate → explicit "Rp…" and `fellBack: true`.
- * - `lang` (the buyer's language) picks the separators: id "Rp79.000" /
- *   "$4,94", en "Rp79,000" / "$4.94". Omitted → the long-standing output.
- */
-export function formatUserPrice(
-  currency: DisplayCurrency | null | undefined,
-  idr: Decimal.Value,
-  rate: Decimal | null,
-  lang?: string,
-): DisplayMoneyText {
-  return formatDisplayMoneyResult(idr, parseDisplayCurrency(currency) ?? DisplayCurrency.IDR, rate, lang);
-}
 
 /** One screen's price renderer, bound to a display currency and the rate
  * fetched once for that screen (currentUsdtRate). Never cache its output in

@@ -197,20 +197,20 @@ describe("notifier templates.render", () => {
     expect(out).toMatch(/tidak lagi menunggu pembayaran/i); // Indonesian line
   });
 
-  it("renders ADMIN_UNCONFIRMABLE_PAYMENT's missing_amount variant as a paid-without-amount alert, escaped", () => {
+  it("renders ADMIN_UNCONFIRMABLE_PAYMENT's unverified_amount variant as a paid-without-amount alert, escaped", () => {
     const out = render("ADMIN_UNCONFIRMABLE_PAYMENT", {
       order_code: "ORD-UNV-1",
       gateway: "PayDisini",
-      reason: "missing_amount",
+      reason: "unverified_amount",
     });
     expect(out).toContain("<code>ORD-UNV-1</code>");
     expect(out).toContain("PayDisini");
-    expect(out).toMatch(/sent no amount/i);
-    expect(out).toMatch(/tidak mengirim nominal/i);
+    expect(out).toMatch(/amount could not be verified/i);
+    expect(out).toMatch(/nominalnya tidak bisa diverifikasi/i);
     expect(out).not.toMatch(/no transaction id/i);
     const plain = render("ADMIN_UNCONFIRMABLE_PAYMENT", { order_code: "ORD-X", gateway: "NOWPayments" });
     expect(plain).toMatch(/no transaction id/i); // original case unchanged
-    const escaped = render("ADMIN_UNCONFIRMABLE_PAYMENT", { order_code: "<b>X</b>", gateway: "<script>", reason: "missing_amount" });
+    const escaped = render("ADMIN_UNCONFIRMABLE_PAYMENT", { order_code: "<b>X</b>", gateway: "<script>", reason: "unverified_amount" });
     expect(escaped).not.toContain("<script>");
     expect(escaped).not.toContain("<b>X</b>");
   });

@@ -170,7 +170,7 @@ describe("reconcileOrder (PayDisini poller safety net)", () => {
     const alerts = await prisma.notificationOutbox.findMany({ where: { event: "ADMIN_UNCONFIRMABLE_PAYMENT", orderId: created!.id } });
     expect(alerts.length).toBeGreaterThan(0);
     const payload = JSON.parse(alerts[0]!.payloadJson) as { gateway: string; reason?: string; order_code: string };
-    expect(payload).toMatchObject({ gateway: "PayDisini", reason: "missing_amount", order_code: created!.orderCode });
+    expect(payload).toMatchObject({ gateway: "PayDisini", reason: "unverified_amount", order_code: created!.orderCode });
 
     // The next cycle sees the same status: still parked, no second alert.
     await reconcileOrder(api, CREDS, pending!);

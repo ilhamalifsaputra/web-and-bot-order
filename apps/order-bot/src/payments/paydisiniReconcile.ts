@@ -210,7 +210,7 @@ export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof 
         orderId: order.id,
         orderCode: order.orderCode,
         gateway: "PayDisini",
-        reason: "missing_amount",
+        reason: "unverified_amount",
       });
       if (newlyParked) {
         logger.warn(`PayDisini reports order ${order.orderCode} as paid but without an amount, so the payment could not be verified — nothing was delivered; it is parked in the unmatched queue and the admins were alerted to check it in the PayDisini dashboard`);

@@ -728,13 +728,13 @@ describe("enqueueAdminStalePayment", () => {
 describe("enqueueAdminUnconfirmablePayment reasons", () => {
   it("dedupes per (order, admin, reason) and keeps the no-trx-id alert separate from the missing-amount one", async () => {
     const orderId = await seedOrder();
-    const args = { orderId, orderCode: "ORD-UNCONF", gateway: "PayDisini", reason: "missing_amount" as const };
+    const args = { orderId, orderCode: "ORD-UNCONF", gateway: "PayDisini", reason: "unverified_amount" as const };
     await enqueueAdminUnconfirmablePayment(prisma, args);
     await enqueueAdminUnconfirmablePayment(prisma, args);
     const where = { event: NotificationEvent.ADMIN_UNCONFIRMABLE_PAYMENT, orderId };
     const rows = await prisma.notificationOutbox.findMany({ where });
     expect(rows.map((r) => (JSON.parse(r.payloadJson) as { chat_id: number }).chat_id).sort((a, b) => a - b)).toEqual([4001, 4002, 4501, 4502]);
-    expect((JSON.parse(rows[0]!.payloadJson) as { reason?: string }).reason).toBe("missing_amount");
+    expect((JSON.parse(rows[0]!.payloadJson) as { reason?: string }).reason).toBe("unverified_amount");
 
     await enqueueAdminUnconfirmablePayment(prisma, { orderId, orderCode: "ORD-UNCONF", gateway: "PayDisini" });
     const all = await prisma.notificationOutbox.findMany({ where });

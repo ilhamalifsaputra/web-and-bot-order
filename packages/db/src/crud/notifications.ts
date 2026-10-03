@@ -473,11 +473,12 @@ export async function enqueueAdminUnconfirmablePayment(
     orderCode: string;
     gateway: string;
     /** Why the payment cannot be confirmed. Omitted = the original case (no
-     *  transaction id). `"missing_amount"` (Task B fix round): the TokoPay /
-     *  PayDisini live status says PAID but carries no usable amount, so it is
-     *  never delivered on — the template words it accordingly. Each reason
+     *  transaction id). `"unverified_amount"` (Task B fix round): the gateway
+     *  says PAID but its status carries no usable amount (TokoPay/PayDisini)
+     *  or no usd price to value it by (NOWPayments), so it is never delivered
+     *  on — the template words it accordingly. Each reason
      *  has its own dedupe key, so one never swallows the other's alert. */
-    reason?: "missing_amount";
+    reason?: "unverified_amount";
   },
 ): Promise<void> {
   const keyPrefix = args.reason ? `unconfirmable-payment:${args.reason}` : "unconfirmable-payment";

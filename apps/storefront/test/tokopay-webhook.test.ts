@@ -469,7 +469,7 @@ describe("POST /pay/tokopay/callback", () => {
     const alert = JSON.parse(alerts[0]!.payloadJson) as { order_code: string; gateway: string; reason?: string };
     expect(alert.order_code).toBe("ORD-TPUNV");
     expect(alert.gateway).toBe("TokoPay");
-    expect(alert.reason).toBe("missing_amount");
+    expect(alert.reason).toBe("unverified_amount");
 
     // A retried callback with the same unverified status alerts nobody again.
     const again = await app.inject({ method: "POST", url: "/pay/tokopay/callback", payload });

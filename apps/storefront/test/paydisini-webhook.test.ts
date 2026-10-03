@@ -447,18 +447,17 @@ describe("POST /pay/paydisini/callback", () => {
     expect(ledger!.amount!.toFixed(0)).toBe("0");
     expect(ledger!.orderId).toBeNull();
 
-    const alerts = await prisma.notificationOutbox.findMany({ where: { event: "ADMIN_STALE_PAYMENT", orderId: order.id } });
+    const alerts = await prisma.notificationOutbox.findMany({ where: { event: "ADMIN_UNCONFIRMABLE_PAYMENT", orderId: order.id } });
     expect(alerts.length).toBeGreaterThan(0);
-    const alert = JSON.parse(alerts[0]!.payloadJson) as { order_code: string; gateway: string; trx_id: string; reason?: string };
+    const alert = JSON.parse(alerts[0]!.payloadJson) as { order_code: string; gateway: string; reason?: string };
     expect(alert.order_code).toBe("ORD-PDUNV");
     expect(alert.gateway).toBe("PayDisini");
-    expect(alert.trx_id).toBe("TRX-PDUNV-1");
-    expect(alert.reason).toBe("unverified_amount");
+    expect(alert.reason).toBe("missing_amount");
 
     // A retried callback with the same unverified status alerts nobody again.
     const again = await app.inject({ method: "POST", url: "/pay/paydisini/callback", payload });
     expect(again.json()).toEqual({ status: "unverified" });
-    const alertsAfter = await prisma.notificationOutbox.count({ where: { event: "ADMIN_STALE_PAYMENT", orderId: order.id } });
+    const alertsAfter = await prisma.notificationOutbox.count({ where: { event: "ADMIN_UNCONFIRMABLE_PAYMENT", orderId: order.id } });
     expect(alertsAfter).toBe(alerts.length);
 
     // Once the gateway does report the amount, the parked row is reclaimed and

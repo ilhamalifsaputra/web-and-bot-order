@@ -70,6 +70,7 @@ import {
   deliverPaidNowpaymentsOrder,
   recordUnmatchedNowpaymentsTx,
   enqueueAdminStalePayment,
+  enqueueAdminUnconfirmablePayment,
   claimGatewaySlot,
   commitGatewayResult,
   releaseGatewaySlot,
@@ -1223,15 +1224,15 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
       // The row is reclaimable, so a later status that does carry the amount
       // still delivers normally.
       const unverifiedTrxId = gatewayLedgerTrxId(live.trxId, order.orderCode);
-      if (await recordUnmatchedTokopayTx(prisma, { trxId: unverifiedTrxId, amount: 0 })) {
-        await enqueueAdminStalePayment(prisma, {
-          orderId: order.id,
-          orderCode: order.orderCode,
-          gateway: "TokoPay",
-          trxId: unverifiedTrxId,
-          reason: "unverified_amount",
-        });
-      }
+      await recordUnmatchedTokopayTx(prisma, { trxId: unverifiedTrxId, amount: 0 });
+      // Deduped per (order, admin, reason) inside the helper, so every retry
+      // and poller cycle can call it and each admin is told exactly once.
+      await enqueueAdminUnconfirmablePayment(prisma, {
+        orderId: order.id,
+        orderCode: order.orderCode,
+        gateway: "TokoPay",
+        reason: "missing_amount",
+      });
       logger.warn(
         `TokoPay's live status reports order ${order.orderCode} as paid but carries no amount, so the payment could not be verified — nothing was delivered; it is parked in the unmatched queue and the admins were alerted to check it in the TokoPay dashboard`,
       );
@@ -1343,15 +1344,15 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
       // Same as the TokoPay callback above: paid status, no amount — parked for
       // manual review with one admin alert, never delivered.
       const unverifiedTrxId = gatewayLedgerTrxId(live.trxId, order.orderCode);
-      if (await recordUnmatchedPaydisiniTx(prisma, { trxId: unverifiedTrxId, amount: 0 })) {
-        await enqueueAdminStalePayment(prisma, {
-          orderId: order.id,
-          orderCode: order.orderCode,
-          gateway: "PayDisini",
-          trxId: unverifiedTrxId,
-          reason: "unverified_amount",
-        });
-      }
+      await recordUnmatchedPaydisiniTx(prisma, { trxId: unverifiedTrxId, amount: 0 });
+      // Deduped per (order, admin, reason) inside the helper, so every retry
+      // and poller cycle can call it and each admin is told exactly once.
+      await enqueueAdminUnconfirmablePayment(prisma, {
+        orderId: order.id,
+        orderCode: order.orderCode,
+        gateway: "PayDisini",
+        reason: "missing_amount",
+      });
       logger.warn(
         `PayDisini's live status reports order ${order.orderCode} as paid but carries no amount, so the payment could not be verified — nothing was delivered; it is parked in the unmatched queue and the admins were alerted to check it in the PayDisini dashboard`,
       );

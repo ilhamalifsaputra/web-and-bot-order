@@ -12,7 +12,6 @@
 import { buttonNameBudget, PLAN_LABEL_MAX_CHARS } from "@app/core/buttonLimits";
 import { InputMediaBuilder } from "grammy";
 import type { MessageEntity } from "grammy/types";
-import { config } from "@app/core/config";
 import { botToken, isAdmin } from "@app/core/runtime";
 import { Decimal } from "@app/core/money";
 import { parseMoneyInput } from "@app/core/moneyFormat";
@@ -51,14 +50,15 @@ import type { MyContext, MyConversation } from "../context";
 import { adminEdit, adminAnchor, consumeInput } from "../util/chat";
 import { BANNER_FILEID_KEY } from "../util/banner";
 import { t } from "../util/i18n";
-import { esc, formatPrice } from "../util/format";
+import { esc, formatIdr } from "../util/format";
 import { validateText, validateVoucherCode, parseStockUpload } from "../util/validators";
 import { requireAdminId } from "../util/adminAudit";
 import * as akb from "../keyboards/admin";
 import { adminCommand, renderUserCard } from "../handlers/admin";
 import { startCommand } from "../handlers/customer";
 
-const price = (v: Decimal.Value, decimals = 2) => formatPrice(v, config.CURRENCY, decimals);
+// Catalog prices and voucher amounts are Rupiah (the same figure the buyer sees as `Rp79.000`), never USDT.
+const price = (v: Decimal.Value) => formatIdr(v);
 
 /** A typed percent: digits with an optional `.`/`,` decimal part of 1-2 digits
  *  (`10`, `10.5`, `10,5`). Anything else — `10.000`, `1e1`, signs — is null. */
@@ -276,7 +276,7 @@ export async function voucherCreateConversation(conversation: MyConversation, ct
     value = val;
     break;
   }
-  const discount = vtype === VoucherType.PERCENT ? `${value}%` : `${value} USDT`;
+  const discount = vtype === VoucherType.PERCENT ? `${value}%` : formatIdr(value);
   await adminEdit(ctx, t(ctx, "admin.voucher_step3", { code, discount }), akb.cancelInputKb());
 
   // Step 3: limit

@@ -1163,6 +1163,14 @@ describe("admin wizards read typed prices by their shape", () => {
     expect(row!.price.toString()).toBe("79000");
   });
 
+  it("productCreate: the price prompts ask for Rupiah and echo the price as Rupiah, never USDT", async () => {
+    const { sink, entry } = await createProduct("Shape Rupiah Copy", ["79.000", "-", "-"]);
+    expect(countSent(sink, "in Rupiah")).toBeGreaterThanOrEqual(2); // step 4 and step 5 prompts
+    expect(countSent(sink, "Rp79,000") + countSent(sink, "Rp79.000")).toBeGreaterThanOrEqual(1); // step 5 echoes the price
+    expect(countSent(sink, "in USDT")).toBe(0);
+    expect(t(entry, "admin.prod_step4", { name: "n", type: "t", duration: "d" })).not.toContain("USDT");
+  });
+
   it("productCreate: reseller price '-' still means no reseller price", async () => {
     const { row } = await createProduct("Shape No Reseller", ["79.000", "-", "-"]);
     expect(row!.resellerPrice).toBeNull();

@@ -25,7 +25,7 @@
  * reports 2 (a genuine diff) through this path, not just 0 unconditionally.
  *
  * Run standalone: `pnpm run check-migration-drift`. Also runs as part of
- * `pretest`, next to the timestamp and rebuild-quoting checks.
+ * `pretest`, next to the timestamp check.
  */
 import { config as loadEnv } from "dotenv";
 import { spawnSync } from "node:child_process";

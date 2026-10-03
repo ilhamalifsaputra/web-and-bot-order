@@ -10,7 +10,6 @@
     "packages/**/*.test.ts",
     "apps/**/*.test.ts",
     "scripts/lib/**/*.ts",
-    "scripts/check-migration-rebuild-quoting.ts",
     "scripts/check-frontend-boundaries.ts",
     "scripts/check-detection-engine-purity.ts",
     "scripts/check-detection-engine-purity.test.ts",

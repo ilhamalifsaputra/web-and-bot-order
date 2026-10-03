@@ -445,7 +445,7 @@ data/                  Log & snapshot backup lokal (di-gitignore)
 ```
 
 **Dokumen lain:** [`DOCS.md`](DOCS.md) (referensi teknis arsitektur, fitur, dan env) ·
-[`migrate.md`](migrate.md) (panduan migrasi database) ·
+[`docs/MIGRATIONS.md`](docs/MIGRATIONS.md) (panduan migrasi database) ·
 [`docs/README.md`](docs/README.md) (indeks seluruh dokumentasi) ·
 [`docs/arsitektur/ARCHITECTURE.md`](docs/arsitektur/ARCHITECTURE.md) (arsitektur detail) ·
 [`.claude/CLAUDE.md`](.claude/CLAUDE.md) (konvensi koding) ·

@@ -2,7 +2,7 @@
 
 Arsitektur, fitur, dan setup environment proyek. Panduan instalasi (VPS) ada
 di [`README.md`](README.md), tutorial migrasi database di
-[`migrate.md`](migrate.md), indeks seluruh dokumentasi di
+[`docs/MIGRATIONS.md`](docs/MIGRATIONS.md), indeks seluruh dokumentasi di
 [`docs/README.md`](docs/README.md), dan konvensi koding di
 [`.claude/CLAUDE.md`](.claude/CLAUDE.md).
 

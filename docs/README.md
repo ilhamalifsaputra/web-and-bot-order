@@ -2,7 +2,7 @@
 
 Dokumen ini adalah indeks untuk seluruh isi `docs/`. Untuk pemasangan awal di
 VPS, mulai dari [`../README.md`](../README.md); untuk migrasi/upgrade versi,
-lihat [`../migrate.md`](../migrate.md); untuk arsitektur & fitur lengkap,
+lihat [`MIGRATIONS.md`](MIGRATIONS.md); untuk arsitektur & fitur lengkap,
 lihat [`../DOCS.md`](../DOCS.md); untuk konvensi koding, lihat
 [`../.claude/CLAUDE.md`](../.claude/CLAUDE.md) — **bukan** `../CLAUDE.md`,
 file itu tidak ada lagi di root repo. Dokumen di bawah ini **melengkapi**,
@@ -36,7 +36,6 @@ struktur direktori aktual.
 | [CONFIGURATION.md](CONFIGURATION.md) | Sumber konfigurasi (`.env` vs Settings DB), profil dev/prod |
 | [ENVIRONMENT_VARIABLES.md](ENVIRONMENT_VARIABLES.md) | Referensi lengkap tiap variabel di `packages/core/src/config.ts` |
 | [MIGRATIONS.md](MIGRATIONS.md) | Cara migrasi (`db push` vs `migrate deploy`), rollback, kegagalan umum |
-| [POSTGRES_MIGRATION.md](POSTGRES_MIGRATION.md) | Runbook cutover produksi: migrasi toko live dari stack SQLite (`docker-compose.yml`) ke layer Postgres produksi (`docker-compose.postgres.prod.yml`), langkah demi langkah |
 | [REACT_STOREFRONT_MIGRATION.md](REACT_STOREFRONT_MIGRATION.md) | Dokumen tracking migrasi `apps/storefront` dari Nunjucks+HTMX ke React SPA (pixel-identical, behavior identik) — titik resume lintas sesi |
 | [UPDATE_GUIDE.md](UPDATE_GUIDE.md) | Prosedur update versi baru (urutan restart, migrasi dulu) |
 | [PATCH_GUIDE.md](PATCH_GUIDE.md) | Template + contoh dokumentasi bugfix |

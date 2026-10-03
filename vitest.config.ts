@@ -65,9 +65,6 @@ export default defineConfig({
     // test file already imports describe/it/expect explicitly from
     // "vitest", so this changes nothing for them.
     globals: true,
-    // `node:sqlite` is a recent built-in not yet in Vite's auto-externalised
-    // builtins list — externalise it so vite-node leaves the import alone.
-    server: { deps: { external: [/^node:sqlite$/] } },
     // No coverage tooling existed in this repo before the detection engine
     // (docs/arsitektur/DETECTION_ENGINE.md "Baseline"). Global coverage is recorded for
     // visibility but NOT enforced — retrofitting a threshold onto a decade of

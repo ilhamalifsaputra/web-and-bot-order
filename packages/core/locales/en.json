@@ -239,6 +239,7 @@
   "error.order_paid_needs_credit": "This order was already paid — credit it to the buyer's balance instead of rejecting/cancelling it, so the payment isn't lost.",
   "error.order_terminal": "This order is already closed and can't be credited.",
   "error.order_not_pending": "This order can no longer be paid.",
+  "error.unique_amount_exhausted": "Too many payments of this amount are waiting right now. Please try again in a few minutes or choose another payment method.",
   "error.ticket_not_found": "Ticket not found.",
   "error.ticket_already_closed": "This ticket is already closed.",
   "error.ticket_not_closed": "This ticket isn't closed.",

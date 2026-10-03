@@ -239,6 +239,7 @@
   "error.order_paid_needs_credit": "Pesanan ini sudah dibayar — kreditkan ke saldo pembeli, bukan ditolak/dibatalkan, supaya pembayarannya tidak hilang.",
   "error.order_terminal": "Pesanan ini sudah ditutup dan tidak bisa dikreditkan.",
   "error.order_not_pending": "Pesanan ini tidak dapat dibayar lagi.",
+  "error.unique_amount_exhausted": "Terlalu banyak pembayaran dengan nominal ini yang sedang menunggu. Silakan coba lagi beberapa menit lagi atau pilih metode pembayaran lain.",
   "error.ticket_not_found": "Tiket tidak ditemukan.",
   "error.ticket_already_closed": "Tiket ini sudah ditutup.",
   "error.ticket_not_closed": "Tiket ini belum ditutup.",

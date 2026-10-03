@@ -921,6 +921,11 @@ export type PaymentChoice =
  *           for the auto-confirm path.
  * Run inside the same $transaction as the order creation.
  */
+/** Namespace half of the two-key advisory lock that serializes Bybit unique-amount picks per rail. */
+const UNIQUE_AMOUNT_LOCK_NAMESPACE = 0x55435431; // "UCT1"
+/** How many distinct cents buckets `computeUniqueCents` can produce (1..49). */
+const UNIQUE_CENTS_BUCKETS = 49;
+
 export async function finalizeOrderPayment(db: Db, orderId: number, choice: PaymentChoice) {
   const order = await db.order.findUnique({ where: { id: orderId } });
   if (!order) throw new ValidationError("error.order_not_found");
@@ -1032,6 +1037,7 @@ export async function finalizeOrderPayment(db: Db, orderId: number, choice: Paym
   // amount alone for matching — no paymentRef.
   let paymentRef: string | null = null;
   let expiresAt: Date | null = null;
+  let needsUniqueAmount = false;
   if (method === PaymentMethod.BINANCE_INTERNAL) {
     paymentRef = generatePaymentRef();
     for (let i = 0; i < 5; i++) {
@@ -1056,23 +1062,9 @@ export async function finalizeOrderPayment(db: Db, orderId: number, choice: Paym
     // the order's own method, so BYBIT and BYBIT_BSC orders never collide
     // with each other's pool — each is matched against its own independent
     // poller. Bumping the seed by +1 each retry cycles through all 49 buckets
-    // before repeating.
-    if (config.USE_UNIQUE_CENTS) {
-      for (let attempt = 1; attempt <= 49; attempt++) {
-        const clash = await db.order.findFirst({
-          where: {
-            id: { not: orderId },
-            paymentMethod: method,
-            status: OrderStatus.PENDING_PAYMENT,
-            expiresAt: { gt: new Date() },
-            totalAmount,
-          },
-        });
-        if (!clash) break;
-        cents = computeUniqueCents(order.id + attempt);
-        totalAmount = usdt.plus(cents);
-      }
-    }
+    // before repeating. The search and the write run under a per-rail
+    // advisory lock below (see `UNIQUE_AMOUNT_LOCK_NAMESPACE`).
+    needsUniqueAmount = config.USE_UNIQUE_CENTS;
   } else if (method === PaymentMethod.NOWPAYMENTS) {
     expiresAt = addMinutes(new Date(), config.NOWPAYMENTS_PAYMENT_WINDOW_MINUTES);
     // tidak ada paymentRef di sini — NOWPayments invoice id dibuat & dicache di
@@ -1080,18 +1072,64 @@ export async function finalizeOrderPayment(db: Db, orderId: number, choice: Paym
     // sama seperti TokoPay/PayDisini melakukannya untuk paymentRef JSON cache.
   }
 
-  await db.order.update({
-    where: { id: orderId },
-    data: {
-      currency: OrderCurrency.USDT,
-      fxRate: rate,
-      paymentMethod: method,
-      uniqueCents: cents,
-      totalAmount,
-      ...(paymentRef ? { paymentRef } : {}),
-      ...(expiresAt ? { expiresAt } : {}),
-    },
-  });
+  const writeFinal = async (tx: Db) => {
+    if (needsUniqueAmount) {
+      // Serialize every Bybit finalization on this rail: the clash search below
+      // is a read-then-write, and under Postgres READ COMMITTED two checkouts
+      // finalizing at once would otherwise both see "no clash" and both take
+      // the same amount, leaving one deposit ambiguous between two orders. The
+      // key is the rail alone, not the base amount, because two DIFFERENT base
+      // amounts can still land on the same total once their cents are added.
+      // Held only for this short search-and-write; released at commit.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${UNIQUE_AMOUNT_LOCK_NAMESPACE}::int, hashtext(${method}))`;
+      let free = false;
+      for (let attempt = 1; attempt <= UNIQUE_CENTS_BUCKETS; attempt++) {
+        const clash = await tx.order.findFirst({
+          where: {
+            id: { not: orderId },
+            paymentMethod: method,
+            status: OrderStatus.PENDING_PAYMENT,
+            expiresAt: { gt: new Date() },
+            totalAmount,
+          },
+          select: { id: true },
+        });
+        if (!clash) {
+          free = true;
+          break;
+        }
+        cents = computeUniqueCents(order.id + attempt);
+        totalAmount = usdt.plus(cents);
+      }
+      if (!free) {
+        logger.warn(
+          { orderId, method },
+          `Refused to finalize order ${order.orderCode} for ${method}, because every one of the ${UNIQUE_CENTS_BUCKETS} unique-cents amounts for ${usdt.toString()} USDT is already taken by another pending order on this rail. Without a memo the amount is the only way to match the deposit, so a shared amount would make it ambiguous; the buyer can retry once one of those orders is paid or expires, or choose another payment method.`,
+        );
+        throw new ValidationError("error.unique_amount_exhausted");
+      }
+    }
+    await tx.order.update({
+      where: { id: orderId },
+      data: {
+        currency: OrderCurrency.USDT,
+        fxRate: rate,
+        paymentMethod: method,
+        uniqueCents: cents,
+        totalAmount,
+        ...(paymentRef ? { paymentRef } : {}),
+        ...(expiresAt ? { expiresAt } : {}),
+      },
+    });
+  };
+  // A `Tx` has no `$transaction`, so its presence means a bare client: open a
+  // transaction for the advisory lock to live in. A caller's own transaction is
+  // joined instead. Only the Bybit unique-amount path needs one at all.
+  if (needsUniqueAmount && "$transaction" in db && typeof db.$transaction === "function") {
+    await db.$transaction((tx: Db) => writeFinal(tx));
+  } else {
+    await writeFinal(db);
+  }
   logger.info(
     `Order ${order.orderCode} finalized as USDT (${usdt.toString()} @ ${rate.toString()}, via ${method})`,
   );

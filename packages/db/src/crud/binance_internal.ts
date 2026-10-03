@@ -51,7 +51,7 @@ import { getSetting, getDecryptedSetting, setSetting } from "./settings";
 import { finalizeOrderPayment } from "./pricing";
 import { parseMinAmount, BINANCE_INTERNAL_MIN_AMOUNT_KEY } from "./_minAmount";
 import { enqueueAdminOverpaid } from "./notifications";
-import { settleWalletTopup, isLateSettleableWalletTopup } from "./wallet_topup";
+import { settleWalletTopup, isLateSettleableWalletTopup, flagWalletTopupOverpayment } from "./wallet_topup";
 import { POLL_HEALTH_KEYS, getPollHealth, recordPollHealth, type PollHealth } from "./poll_health";
 import { getPendingPaymentAttempt, confirmPaymentAttempt } from "./payments";
 import { reclaimStaleMatchedClaim } from "./_staleClaim";
@@ -561,7 +561,18 @@ export async function deliverPaidInternalOrder(
         return null;
       });
       if (order.kind === OrderKind.WALLET_TOPUP) {
-        const { order: settled } = await settleWalletTopup(tx, args.orderId, { amount: args.amount });
+        const { order: settled, credited } = await settleWalletTopup(tx, args.orderId, { amount: args.amount });
+        // Overpayment: same flag + admin alert the product branch below raises,
+        // without changing what was credited (see flagWalletTopupOverpayment).
+        await flagWalletTopupOverpayment(tx, {
+          order: settled,
+          credited,
+          paid: args.amount,
+          expected: order.totalAmount,
+          rail: "Binance Internal",
+          markLedgerOverpaid: () =>
+            tx.processedBinanceTx.update({ where: { binanceTxId: args.binanceTxId }, data: { outcome: "overpaid" } }),
+        });
         if (pendingPayment) {
           // Best-effort: swallows the benign race where a concurrent
           // poller/webhook already confirmed this same Payment row

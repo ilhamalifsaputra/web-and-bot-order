@@ -28,7 +28,7 @@ import { transitionOrderStatus } from "./orderStatus";
 import { enqueueNotification, enqueueAdminOverpaid } from "./notifications";
 import { getSetting, getDecryptedSetting } from "./settings";
 import { parseMinAmount, NOWPAYMENTS_MIN_AMOUNT_KEY } from "./_minAmount";
-import { settleWalletTopup, isLateSettleableWalletTopup } from "./wallet_topup";
+import { settleWalletTopup, isLateSettleableWalletTopup, flagWalletTopupOverpayment } from "./wallet_topup";
 import { getPendingPaymentAttempt, confirmPaymentAttempt } from "./payments";
 import { QRIS_RECLAIMABLE_OUTCOMES } from "./binance_internal";
 import { reclaimStaleMatchedClaim } from "./_staleClaim";
@@ -207,7 +207,18 @@ export async function deliverPaidNowpaymentsOrder(
         // (running in the web process, which must never send Telegram
         // itself) must not enqueue it again here, or the buyer would be
         // notified twice.
-        const { order: settled } = await settleWalletTopup(tx, args.orderId, { amount: args.amount });
+        const { order: settled, credited } = await settleWalletTopup(tx, args.orderId, { amount: args.amount });
+        // Overpayment: same flag + admin alert the product branch below raises,
+        // without changing what was credited (see flagWalletTopupOverpayment).
+        await flagWalletTopupOverpayment(tx, {
+          order: settled,
+          credited,
+          paid: args.amount,
+          expected: order.totalAmount,
+          rail: "NOWPayments",
+          markLedgerOverpaid: () =>
+            tx.processedNowpaymentsTx.update({ where: { trxId: args.trxId }, data: { outcome: "overpaid" } }),
+        });
         if (pendingPayment) {
           // Best-effort: swallows the benign race where a concurrent
           // poller/webhook already confirmed this same Payment row

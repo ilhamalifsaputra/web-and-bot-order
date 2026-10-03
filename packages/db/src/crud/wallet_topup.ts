@@ -49,7 +49,7 @@ import { getOrder, uniqueOrderCode, customerLabel, cancelOrder, findUnderpaidRec
 import { adjustWallet } from "./users";
 import { postUnderpaidTopupCreditPosting, postWalletTopupPosting } from "./ledgerPostings";
 import { finalizeOrderPayment, writeWithUniqueRailAmount, type UniqueAmountRail } from "./pricing";
-import { enqueueOwnerWalletTopupEmail, enqueueWalletTopupCreditedDm } from "./notifications";
+import { enqueueAdminOverpaid, enqueueOwnerWalletTopupEmail, enqueueWalletTopupCreditedDm } from "./notifications";
 
 const ZERO = new Decimal(0);
 
@@ -684,6 +684,78 @@ export async function settleWalletTopup(
 
   const refreshed = await getOrder(db, orderId);
   return { order: refreshed!, credited, newBalance };
+}
+
+/**
+ * Make an overpaid wallet top-up visible, exactly the way every rail already
+ * makes an overpaid PRODUCT order visible: stamp `outcome: "overpaid"` on the
+ * rail's own processed-transaction row and enqueue one `ADMIN_OVERPAID` DM per
+ * admin (via `notification_outbox` — the webhook rails run in the web process,
+ * which never sends Telegram itself).
+ *
+ * Each rail's deliver function used to return from its `WALLET_TOPUP` branch
+ * before reaching the overpayment check its product branch runs, and
+ * `settleWalletTopup` credits `order.totalAmount` whatever arrived — so the
+ * excess of an overpaid top-up was recorded nowhere: no ledger flag, no alert,
+ * and therefore no Overpayment card on the admin order page, whose
+ * `findOverpaidExcess` (crud/overpayments.ts) reads exactly that ledger outcome.
+ * With the flag in place an admin can hand the excess back through
+ * `creditOverpaymentToBalance` like any other overpayment; that function and its
+ * ledger posting are order-kind agnostic.
+ *
+ * Deliberately does NOT change what was credited: crediting the excess
+ * automatically is a business decision that has not been taken, so the buyer
+ * still receives the order total and the excess waits for an admin.
+ *
+ * The rule is the product branch's own: any excess above zero over what the
+ * rail BILLED (`qrisChargeAmount(total)` on TokoPay, the bare total elsewhere).
+ * A payment the amount matcher accepted slightly BELOW the total is not an
+ * overpayment.
+ *
+ * Runs inside the caller's delivery transaction, after `settleWalletTopup`, so
+ * the credit, the flag and the alert commit or roll back together. It is a
+ * no-op when that settlement credited nothing (another path won the top-up's
+ * atomic claim first): the flag and alert belong to the call that actually
+ * settled, so a second transaction reaching an already-credited top-up can
+ * never alert a second time. A re-delivery of the SAME transaction never gets
+ * this far — every rail's ledger claim answers it `already_processed`.
+ *
+ * Returns the excess it flagged, or null when nothing was flagged.
+ */
+export async function flagWalletTopupOverpayment(
+  db: Db,
+  args: {
+    order: { id: number; orderCode: string; currency: string };
+    /** What `settleWalletTopup` returned as `credited` for this call. */
+    credited: Decimal;
+    paid: Decimal.Value;
+    /** What the rail billed the buyer for this order. */
+    expected: Decimal.Value;
+    /** The rail's display name, for the developer log line. */
+    rail: string;
+    /** Stamps `outcome: "overpaid"` on this rail's processed-transaction row. */
+    markLedgerOverpaid: () => Promise<unknown>;
+  },
+): Promise<Decimal | null> {
+  if (!args.credited.greaterThan(0)) return null;
+  const paid = new Decimal(args.paid);
+  const expected = new Decimal(args.expected);
+  const excess = paid.minus(expected);
+  if (!excess.greaterThan(0)) return null;
+
+  await args.markLedgerOverpaid();
+  await enqueueAdminOverpaid(db, {
+    orderId: args.order.id,
+    orderCode: args.order.orderCode,
+    paid,
+    expected,
+    excess,
+    currency: args.order.currency,
+  });
+  logger.warn(
+    `${args.rail} wallet top-up order ${args.order.orderCode} was overpaid — got ${paid.toString()}, expected ${expected.toString()} (excess ${excess.toString()} ${args.order.currency}). The buyer's balance was credited the order total only; the ledger row is flagged overpaid and an admin alert was enqueued so the excess can be returned from the order page.`,
+  );
+  return excess;
 }
 
 /**

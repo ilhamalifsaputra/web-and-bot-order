@@ -36,7 +36,7 @@ import { getSetting, getDecryptedSetting, setSetting } from "./settings";
 import { finalizeOrderPayment } from "./pricing";
 import { BYBIT_API_KEY_KEY, BYBIT_API_SECRET_KEY } from "./bybit_deposit";
 import { parseMinAmount, BYBIT_BSC_MIN_AMOUNT_KEY } from "./_minAmount";
-import { settleWalletTopup, isLateSettleableWalletTopup } from "./wallet_topup";
+import { settleWalletTopup, isLateSettleableWalletTopup, flagWalletTopupOverpayment } from "./wallet_topup";
 import { POLL_HEALTH_KEYS, getPollHealth, recordPollHealth, type PollHealth } from "./poll_health";
 import { AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES } from "./binance_internal";
 import { reclaimStaleMatchedClaim } from "./_staleClaim";
@@ -588,7 +588,18 @@ export async function deliverPaidBybitBscOrder(
         if (order.status !== OrderStatus.PENDING_PAYMENT && PRE_DELIVERY_STATUSES.includes(order.status)) {
           await tx.order.update({ where: { id: args.orderId }, data: { status: OrderStatus.PENDING_PAYMENT } });
         }
-        const { order: settled } = await settleWalletTopup(tx, args.orderId, { amount: args.amount });
+        const { order: settled, credited } = await settleWalletTopup(tx, args.orderId, { amount: args.amount });
+        // Overpayment: same flag + admin alert the product branch below raises,
+        // without changing what was credited (see flagWalletTopupOverpayment).
+        await flagWalletTopupOverpayment(tx, {
+          order: settled,
+          credited,
+          paid: args.amount,
+          expected: order.totalAmount,
+          rail: "Bybit BSC",
+          markLedgerOverpaid: () =>
+            tx.processedBybitTx.update({ where: { bybitTxId: args.bybitTxId }, data: { outcome: "overpaid" } }),
+        });
         if (pendingPayment) {
           // Best-effort: swallows the benign race where a concurrent
           // poller/webhook already confirmed this same Payment row

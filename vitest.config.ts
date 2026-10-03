@@ -35,7 +35,7 @@ export default defineConfig({
     // never use this value outside tests.
     env: { BCRYPT_COST: "4", CREDENTIAL_ENCRYPTION_KEY: "00".repeat(32) },
     // Vitest's 5s default is a unit-test budget, but most of this suite is
-    // real-SQLite integration tests: tests/helpers/testdb.ts gives every test
+    // real-Postgres integration tests: tests/helpers/testdb.ts gives every test
     // file its own temp DB (so there is no cross-file lock contention to
     // hide here) and each one pays a synchronous `prisma db push` plus real
     // fsync-bound writes. The heavy ones therefore cost seconds of honest

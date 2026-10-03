@@ -16,8 +16,7 @@
 | Docker | Engine terbaru, untuk Jalur A | Opsional |
 | OS | Linux (VPS) untuk produksi; Windows/macOS untuk dev lokal | — |
 
-`engines.node` di `package.json` mensyaratkan `>=22.13` (`node:sqlite`, dipakai
-skrip migrasi Postgres, butuh minimal versi ini). Versi `prisma`/
+`engines.node` di `package.json` mensyaratkan `>=22.13`. Versi `prisma`/
 `@prisma/client` terkunci ke `5.22.0`; `typescript` ke `^5.6.3`; `vitest` ke
 `^2.1.5` — lihat [Root `package.json`](#scripts-root-packagejson) di bawah.
 

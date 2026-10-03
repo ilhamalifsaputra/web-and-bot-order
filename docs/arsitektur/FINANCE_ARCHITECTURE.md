@@ -860,9 +860,8 @@ write-back are one read-modify-write cycle; under Postgres two callers for the
 same user can genuinely run it at the same instant, and without the lock both
 would read the same pre-movement balance, both would pass their own overdraw
 check, and whichever committed last would silently overwrite the other — a
-double-spend on debits, a lost credit on top-ups. (Under the old SQLite
-deployment the single-writer pool serialised this accidentally. That protection
-is gone; this lock replaces it.)
+double-spend on debits, a lost credit on top-ups. The lock is what makes the
+cycle safe.
 
 A row lock only lasts as long as its transaction, so `adjustWallet` opens one
 when handed the bare client and reuses the caller's `tx` when given one.
@@ -922,8 +921,8 @@ if (bumped.count === 0) throw new ValidationError("error.voucher_used_up");
 ```
 
 One statement's row-level atomicity makes this safe under any isolation level —
-unlike a separate read-check-then-increment, which only stayed safe under SQLite
-because `BEGIN IMMEDIATE` serialised concurrent transactions. Called from both
+unlike a separate read-check-then-increment, which two concurrent transactions
+could both pass. Called from both
 order-creation paths (`orders.ts:826`, `:1010`).
 
 Per-user capping is enforced at the schema level: `VoucherRedemption` carries

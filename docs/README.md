@@ -41,7 +41,7 @@ struktur direktori aktual.
 | [PATCH_GUIDE.md](PATCH_GUIDE.md) | Template + contoh dokumentasi bugfix |
 | [CHANGELOG.md](CHANGELOG.md) | Riwayat versi (semantic versioning) |
 | [RELEASE_NOTES.md](RELEASE_NOTES.md) | Catatan rilis per versi |
-| [BACKUP_AND_RESTORE.md](BACKUP_AND_RESTORE.md) | Backup/restore database (SQLite WAL lama atau PostgreSQL, tergantung status cutover toko — lihat [DATABASE.md](arsitektur/DATABASE.md)) + `data/uploads/`, disaster recovery |
+| [BACKUP_AND_RESTORE.md](BACKUP_AND_RESTORE.md) | Backup/restore database PostgreSQL (`pg_dump`/`pg_restore`, lihat [DATABASE.md](arsitektur/DATABASE.md)) + `data/uploads/`, disaster recovery |
 | [sales-metrics-contract.md](sales-metrics-contract.md) | Definisi semantik otoritatif tiap angka sales/revenue/order-count/profit/refund yang ditampilkan sistem — satu baris per metrik: makna, query, status order yang dihitung, penanganan currency/refund/diskon/timezone |
 | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) | Gejala umum → diagnosis → fix |
 | [LOGGING.md](LOGGING.md) | Konvensi penulisan log: audit log (kalimat untuk admin toko) vs Pino (pesan untuk developer/ops) |
@@ -101,6 +101,5 @@ praktik "dokumentasi adalah bagian dari fitur" di
 
 Stack nyata project ini **tidak memakai Redis, websocket, atau job-queue
 terpisah** — jangan tertipu istilah generik. Antrian notifikasi adalah satu
-tabel **PostgreSQL** (`notification_outbox`, engine-swap dari SQLite merged
-2026-08-27) yang di-poll in-process oleh `packages/outbox-dispatcher` (lihat
+tabel **PostgreSQL** (`notification_outbox`) yang di-poll in-process oleh `packages/outbox-dispatcher` (lihat
 [QUEUE_SYSTEM.md](arsitektur/QUEUE_SYSTEM.md)).

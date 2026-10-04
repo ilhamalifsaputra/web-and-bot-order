@@ -144,6 +144,22 @@ describe("a pre-filled stored value survives a re-save (exact_fields)", () => {
     expect(await getSetting(prisma, "digiflazz_markup_value")).toBe("1500");
   });
 
+  // The hand-typed USDT rate (money audit A1) is read by shape like the
+  // minimums; an untouched pre-fill must re-save exactly, or a stored
+  // 16123.456 would be read as 16,123,456.
+  it("an untouched USD/IDR rate 16123.456 is kept as 16123.456", async () => {
+    await setSetting(prisma, "usd_idr_rate", "16123.456");
+    const res = await edit("usd_idr_rate", "16123.456", true);
+    expect(res.statusCode, res.body).toBe(200);
+    expect(await getSetting(prisma, "usd_idr_rate")).toBe("16123.456");
+  });
+
+  it("the exact path refuses a USD/IDR rate that is not a plain dot-decimal", async () => {
+    await setSetting(prisma, "usd_idr_rate", "16200");
+    expect((await edit("usd_idr_rate", "16.123,4", true)).statusCode).toBe(400);
+    expect(await getSetting(prisma, "usd_idr_rate")).toBe("16200");
+  });
+
   it("the exact path still refuses text that is not a plain dot-decimal", async () => {
     await setSetting(prisma, "tokopay_min_amount", "7");
     for (const text of ["10.000,5", "abc", "Infinity"]) {

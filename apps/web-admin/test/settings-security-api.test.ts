@@ -702,6 +702,18 @@ describe("POST /api/settings/import", () => {
     expect(await getSetting(prisma, "usd_idr_rate")).toBe("45000");
   });
 
+  // An export file holds the stored rate verbatim — a plain dot-decimal — so
+  // the import reads it exactly, as it does every money setting. Read by shape,
+  // `16123.456` would be 16,123,456 and refused by the ceiling.
+  it("reads an exported rate with three decimals exactly, not by shape", async () => {
+    const res = await postJson("/api/settings/import", cookie, csrf, {
+      fields: { usd_idr_rate: "16123.456" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ ok: true, applied: 1, skipped: 0, skippedKeys: [] });
+    expect(await getSetting(prisma, "usd_idr_rate")).toBe("16123.456");
+  });
+
   it("names each skipped key and why, in the reply and the audit entry", async () => {
     const res = await postJson("/api/settings/import", cookie, csrf, {
       fields: { usd_idr_rate: "45000", shop_name: "Kept" },

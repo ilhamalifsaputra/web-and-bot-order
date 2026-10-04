@@ -343,6 +343,61 @@ describe("SettingsPage", () => {
     expect(await screen.findByText("Saved successfully")).toBeInTheDocument();
   });
 
+  // I-3: money settings are read by shape on the server, so the form must say
+  // which values are the untouched stored pre-fill (read exactly) and must not
+  // block a value typed 10.000 / 1.500,50 that the server reads correctly.
+  describe("money settings and exact_fields", () => {
+    const USDT_MIN = { key: "wallet_topup_min_amount_usdt", label: "Wallet top-up min amount (USDT)", value: "1.234" };
+    const DIGIFLAZZ_MARKUP = { key: "digiflazz_markup_value", label: "Digiflazz markup value", value: "1500" };
+
+    async function saveMoneyField(
+      field: { key: string; label: string; value: string },
+      retype: string | null,
+    ): Promise<Record<string, unknown>> {
+      const MONEY_DATA = { ...SETTINGS_DATA, fields: [{ ...field, secret: false, hasValue: true, needsRestart: false }] };
+      const fetchSpy = vi.spyOn(globalThis, "fetch");
+      const json = (data: unknown) => new Response(JSON.stringify(data), { status: 200, headers: { "Content-Type": "application/json" } });
+      fetchSpy.mockResolvedValueOnce(json(MONEY_DATA));
+      render(<SettingsPage />, { wrapper: Wrapper });
+      await waitFor(() => expect(screen.getByText(field.label)).toBeInTheDocument());
+
+      const user = userEvent.setup();
+      await user.click(screen.getAllByRole("button", { name: "Edit" })[0]);
+      const input = screen.getByDisplayValue(field.value);
+      if (retype !== null) {
+        await user.clear(input);
+        await user.type(input, retype);
+      }
+      const save = screen.getByRole("button", { name: "Save" });
+      expect(save).not.toBeDisabled();
+      await user.click(save);
+      const dialog = await screen.findByRole("dialog");
+      fetchSpy.mockResolvedValueOnce(json({ ok: true }));
+      fetchSpy.mockResolvedValueOnce(json(MONEY_DATA));
+      await user.click(within(dialog).getByRole("button", { name: "Save" }));
+      await waitFor(() => expect(fetchSpy.mock.calls.some(([url]) => url === "/api/settings/edit")).toBe(true));
+      const call = fetchSpy.mock.calls.find(([url]) => url === "/api/settings/edit")!;
+      return JSON.parse(String((call[1] as RequestInit).body)) as Record<string, unknown>;
+    }
+
+    it("an untouched pre-filled amount is sent with exact_fields so the server keeps it exactly", async () => {
+      const body = await saveMoneyField(USDT_MIN, null);
+      expect(body).toMatchObject({ key: "wallet_topup_min_amount_usdt", value: "1.234", exact_fields: ["value"] });
+    });
+
+    it("a retyped amount is sent without exact_fields, so the server reads it by shape", async () => {
+      const body = await saveMoneyField(USDT_MIN, "2,5");
+      expect(body).toMatchObject({ key: "wallet_topup_min_amount_usdt", value: "2,5" });
+      expect(body.exact_fields ?? []).toEqual([]);
+    });
+
+    it("does not block an amount typed in the Indonesian shape (1.500,50) that the server reads correctly", async () => {
+      const body = await saveMoneyField(DIGIFLAZZ_MARKUP, "1.500,50");
+      expect(body).toMatchObject({ key: "digiflazz_markup_value", value: "1.500,50" });
+      expect(body.exact_fields ?? []).toEqual([]);
+    });
+  });
+
   it("wraps the FieldRow editing block in its own <form>, with Copy/Save/Cancel as explicit type=\"button\" (F-Chrome-autofill)", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       new Response(JSON.stringify(SETTINGS_DATA), {

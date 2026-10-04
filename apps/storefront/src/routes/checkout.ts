@@ -70,12 +70,14 @@ import {
   deliverPaidNowpaymentsOrder,
   recordUnmatchedNowpaymentsTx,
   enqueueAdminStalePayment,
+  enqueueAdminUnconfirmablePayment,
   claimGatewaySlot,
   commitGatewayResult,
   releaseGatewaySlot,
   MAX_CART_ORDER_UNITS,
   getDigiflazzCreds,
   fulfillDigiflazzOrder,
+  claimDigiflazzWebhookRecheck,
   recordDigiflazzOutcome,
   resolveSingleDigiflazzItem,
   buildDigiflazzCustomerNo,
@@ -99,6 +101,7 @@ import {
 import {
   createInvoice as createNowpaymentsInvoice,
   verifyIpn,
+  checkNowpaymentsAmount,
   type NowpaymentsInvoice,
 } from "@app/core/payments/nowpayments";
 import {
@@ -1214,6 +1217,27 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
       logger.error({ err }, `Failed to check TokoPay's live transaction status for order ${order.orderCode} — the callback will be ignored until a retry confirms payment`);
       return reply.send({ status: "status check failed" });
     }
+    if (live.unverified) {
+      // TokoPay says PAID but gave no amount: never deliver on it, but money may
+      // have arrived, so park it in the unmatched manual-review queue and alert
+      // the admins once (the UNIQUE ledger key dedupes retries and the poller).
+      // The row is reclaimable, so a later status that does carry the amount
+      // still delivers normally.
+      const unverifiedTrxId = gatewayLedgerTrxId(live.trxId, order.orderCode);
+      await recordUnmatchedTokopayTx(prisma, { trxId: unverifiedTrxId, amount: 0 });
+      // Deduped per (order, admin, reason) inside the helper, so every retry
+      // and poller cycle can call it and each admin is told exactly once.
+      await enqueueAdminUnconfirmablePayment(prisma, {
+        orderId: order.id,
+        orderCode: order.orderCode,
+        gateway: "TokoPay",
+        reason: "unverified_amount",
+      });
+      logger.warn(
+        `TokoPay's live status reports order ${order.orderCode} as paid but carries no amount, so the payment could not be verified — nothing was delivered; it is parked in the unmatched queue and the admins were alerted to check it in the TokoPay dashboard`,
+      );
+      return reply.send({ status: "unverified" });
+    }
     if (!live.paid) {
       logger.warn(
         `TokoPay callback claimed paid but live status check disagrees for ${order.orderCode} — trusting the live check over the callback body, so this delivery is skipped for now; the reconcile poller will retry and deliver once TokoPay's own status catches up`,
@@ -1315,6 +1339,24 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
     } catch (err) {
       logger.error({ err }, `Failed to check PayDisini's live transaction status for order ${order.orderCode} — the callback will be ignored until a retry confirms payment`);
       return reply.send({ status: "status check failed" });
+    }
+    if (live.unverified) {
+      // Same as the TokoPay callback above: paid status, no amount — parked for
+      // manual review with one admin alert, never delivered.
+      const unverifiedTrxId = gatewayLedgerTrxId(live.trxId, order.orderCode);
+      await recordUnmatchedPaydisiniTx(prisma, { trxId: unverifiedTrxId, amount: 0 });
+      // Deduped per (order, admin, reason) inside the helper, so every retry
+      // and poller cycle can call it and each admin is told exactly once.
+      await enqueueAdminUnconfirmablePayment(prisma, {
+        orderId: order.id,
+        orderCode: order.orderCode,
+        gateway: "PayDisini",
+        reason: "unverified_amount",
+      });
+      logger.warn(
+        `PayDisini's live status reports order ${order.orderCode} as paid but carries no amount, so the payment could not be verified — nothing was delivered; it is parked in the unmatched queue and the admins were alerted to check it in the PayDisini dashboard`,
+      );
+      return reply.send({ status: "unverified" });
     }
     if (!live.paid) {
       logger.warn(
@@ -1441,10 +1483,13 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         );
         return reply.send({ status: "unmatched" });
       }
-      // Amount sanity: never deliver on a short/partial payment.
-      if (cb.amount.lessThan(order.totalAmount)) {
+      // Amount sanity: never deliver on a short/partial payment. Judged in the
+      // invoice's price currency (usd), never by comparing the pay-currency
+      // `actually_paid` to the USDT total — see checkNowpaymentsAmount (Task B3a).
+      const valueCheck = checkNowpaymentsAmount(cb, order.totalAmount);
+      if (!valueCheck.ok) {
         logger.warn(
-          `NOWPayments callback for order ${order.orderCode} is short-paid — got ${cb.amount.toString()}, expected ${order.totalAmount.toString()} — recording it as unmatched instead of delivering`,
+          `NOWPayments reported a finished payment for order ${order.orderCode}, but it could not be confirmed as covering the order because ${valueCheck.reason} — recording it as unmatched for an admin to review instead of delivering`,
         );
         await recordUnmatchedNowpaymentsTx(prisma, { trxId: cb.trxId, amount: cb.amount });
         return reply.send({ status: "amount mismatch" });
@@ -1454,7 +1499,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         const r = await deliverPaidNowpaymentsOrder(prisma, {
           orderId: order.id,
           trxId: cb.trxId,
-          amount: cb.amount,
+          amount: valueCheck.amount,
           shopUrl: shopPublicUrl(),
         });
         if (r.status === "delivered") nudgeOutboxDispatcher();
@@ -1568,14 +1613,27 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
 
     const customerNo = buildDigiflazzCustomerNo(resolution.product, order.customerData);
 
-    // By the time a genuine Digiflazz webhook can exist for this refId,
-    // this shop must already have called createTransaction for it at least
-    // once (either the dispatch poller or an earlier webhook call) — so
-    // digiflazzDispatchedAt should always be set here. The `?? new Date()`
-    // fallback is defensive only (should never actually trigger) — see
-    // dispatchPendingDigiflazzOrders' own identical pattern for a fresh
-    // dispatch, which this mirrors.
-    const dispatchedAt = order.digiflazzDispatchedAt ?? new Date();
+    // Task B3d (backend audit): a genuine callback can only exist after the
+    // dispatch poller placed the purchase, and is only worth a re-check while
+    // the order is still pending at Digiflazz. Anything else — never
+    // dispatched, or already failed terminally — must not reach
+    // createTransaction: from here that call could be a first or a second
+    // purchase rather than a status check (its ref_id dedup is unverified).
+    const dispatchedAt = order.digiflazzDispatchedAt;
+    if (!dispatchedAt || order.digiflazzStatus !== "pending_at_supplier") {
+      logger.warn(
+        `Ignored a signed Digiflazz callback for order ${order.orderCode} without a live re-check, because the order is not waiting on Digiflazz (${dispatchedAt ? `its dispatch status is "${order.digiflazzStatus ?? "none"}"` : "it has not been dispatched yet"}) — re-posting the transaction from here could place a purchase instead of checking one`,
+      );
+      return reply.send({ status: "unmatched" });
+    }
+    // At most one /transaction call per order at a time, across replays,
+    // concurrent callbacks and the dispatch poller.
+    if (!(await claimDigiflazzWebhookRecheck(prisma, order.id))) {
+      logger.info(
+        `Skipped the live re-check for a Digiflazz callback on order ${order.orderCode} because another check of that order is already in flight or due within minutes — that check records the outcome, so nothing is lost`,
+      );
+      return reply.send({ status: "ok" });
+    }
 
     let result: DigiflazzTransactionResult;
     try {

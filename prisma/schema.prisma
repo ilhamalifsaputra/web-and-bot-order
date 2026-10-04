@@ -1683,6 +1683,10 @@ model ProcessedBinanceTx {
   // matched | underpaid | unmatched
   outcome     String
   createdAt   DateTime @default(now()) @map("created_at")
+  /// Bumped on every write. A "matched" claim untouched for
+  /// STALE_MATCHED_CLAIM_MS whose order is still unpaid is a crashed
+  /// delivery and is reclaimable (crud/_staleClaim.ts).
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
 
   @@index([orderId], map: "ix_processed_binance_tx_order_id")
   @@map("processed_binance_tx")
@@ -1700,6 +1704,8 @@ model ProcessedBybitTx {
   amount    Decimal?
   outcome   String
   createdAt DateTime @default(now()) @map("created_at")
+  /// See ProcessedBinanceTx.updatedAt.
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
 
   @@index([orderId], map: "ix_processed_bybit_tx_order_id")
   @@map("processed_bybit_tx")
@@ -1717,6 +1723,8 @@ model ProcessedTokopayTx {
   // matched | unmatched | delivery_failed
   outcome   String
   createdAt DateTime @default(now()) @map("created_at")
+  /// See ProcessedBinanceTx.updatedAt.
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
 
   @@index([orderId], map: "ix_processed_tokopay_tx_order_id")
   @@map("processed_tokopay_tx")
@@ -1732,6 +1740,8 @@ model ProcessedPaydisiniTx {
   // matched | unmatched | delivery_failed | stale
   outcome   String
   createdAt DateTime @default(now()) @map("created_at")
+  /// See ProcessedBinanceTx.updatedAt.
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
 
   @@index([orderId], map: "ix_processed_paydisini_tx_order_id")
   @@map("processed_paydisini_tx")
@@ -1747,6 +1757,8 @@ model ProcessedNowpaymentsTx {
   // matched | unmatched | delivery_failed | stale
   outcome   String
   createdAt DateTime @default(now()) @map("created_at")
+  /// See ProcessedBinanceTx.updatedAt.
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
 
   @@index([orderId], map: "ix_processed_nowpayments_tx_order_id")
   @@map("processed_nowpayments_tx")
@@ -1812,6 +1824,14 @@ model IdempotencyRecord {
   responseBody String   @map("response_body")
   statusCode   Int      @map("status_code")
   createdAt    DateTime @default(now()) @map("created_at")
+  /// Set while the request that claimed this key is still running (backend
+  /// audit E2): the row is inserted as a reservation BEFORE the mutation runs,
+  /// so a concurrent duplicate waits for it instead of running it a second
+  /// time. Null once the response is saved — and null on every row written
+  /// before this column existed, which were all completed responses. A claim
+  /// older than IDEMPOTENCY_CLAIM_EXPIRY_MS (crud/idempotency.ts) is treated
+  /// as crashed and can be taken over by a retry.
+  pendingSince DateTime? @map("pending_since")
 
   @@unique([key, endpoint], map: "ix_idempotency_record_key_endpoint")
   @@map("idempotency_records")

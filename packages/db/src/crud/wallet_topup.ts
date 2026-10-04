@@ -48,7 +48,7 @@ import {
 import { getOrder, uniqueOrderCode, customerLabel, cancelOrder, findUnderpaidReceived } from "./orders";
 import { adjustWallet } from "./users";
 import { postUnderpaidTopupCreditPosting, postWalletTopupPosting } from "./ledgerPostings";
-import { finalizeOrderPayment } from "./pricing";
+import { finalizeOrderPayment, writeWithUniqueRailAmount, type UniqueAmountRail } from "./pricing";
 import { enqueueOwnerWalletTopupEmail, enqueueWalletTopupCreditedDm } from "./notifications";
 
 const ZERO = new Decimal(0);
@@ -279,11 +279,12 @@ export async function resolveWalletTopupEffectiveMin(
  * rail-minimum guard below needs it to express the typed USDT figure in the
  * Rupiah the shop-wide floor is denominated in.
  *
- * Duplicated rather than extracted out of `finalizeOrderPayment`: pulling the
- * ~30-line disambiguation block into a shared helper risked destabilizing
- * that function's behavior for live PRODUCT orders for the sake of avoiding
- * one block of duplication — not a trade worth making in payment-finalization
- * code (see this file's top doc-comment and the task brief).
+ * The rest of the branch is still duplicated from `finalizeOrderPayment`, with
+ * one exception: the Bybit unique-amount search-and-write is shared through
+ * `writeWithUniqueRailAmount` (./pricing.ts). Product orders and top-ups draw
+ * from one pending-amount pool per rail, so they must take the same advisory
+ * lock; two private copies of that loop could never serialize against each
+ * other.
  */
 async function finalizeWalletTopupPayment(
   db: Db,
@@ -334,11 +335,12 @@ async function finalizeWalletTopupPayment(
     purpose: order.kind === OrderKind.WALLET_TOPUP ? "wallet_topup" : "order",
   });
 
-  let cents = config.USE_UNIQUE_CENTS ? computeUniqueCents(order.id) : new Decimal(0);
-  let totalAmount = usdt.plus(cents);
+  const cents = config.USE_UNIQUE_CENTS ? computeUniqueCents(order.id) : new Decimal(0);
+  const totalAmount = usdt.plus(cents);
 
   let paymentRef: string | null = null;
   let expiresAt: Date | null = null;
+  let needsUniqueAmount = false;
   if (method === PaymentMethod.BINANCE_INTERNAL) {
     paymentRef = generatePaymentRef();
     for (let i = 0; i < 5; i++) {
@@ -358,39 +360,36 @@ async function finalizeWalletTopupPayment(
     // so BYBIT and BYBIT_BSC orders never collide with each other's pool —
     // including against a live PRODUCT order under the same method/amount,
     // since this query has no `kind` filter (intentional: both kinds share
-    // one pending-amount pool per gateway).
-    if (config.USE_UNIQUE_CENTS) {
-      for (let attempt = 1; attempt <= 49; attempt++) {
-        const clash = await db.order.findFirst({
-          where: {
-            id: { not: orderId },
-            paymentMethod: method,
-            status: OrderStatus.PENDING_PAYMENT,
-            expiresAt: { gt: new Date() },
-            totalAmount,
-          },
-        });
-        if (!clash) break;
-        cents = computeUniqueCents(order.id + attempt);
-        totalAmount = usdt.plus(cents);
-      }
-    }
+    // one pending-amount pool per gateway). The search and the write go
+    // through `writeWithUniqueRailAmount`, the same helper and the same
+    // per-rail advisory lock product checkouts use, so a top-up and a product
+    // order finalizing at once serialize instead of both taking one amount,
+    // and a full cents space is refused instead of silently reused.
+    needsUniqueAmount = config.USE_UNIQUE_CENTS;
   } else if (method === PaymentMethod.NOWPAYMENTS) {
     expiresAt = addMinutes(new Date(), config.NOWPAYMENTS_PAYMENT_WINDOW_MINUTES);
   }
 
-  await db.order.update({
-    where: { id: orderId },
-    data: {
-      currency: OrderCurrency.USDT,
-      fxRate: rate,
-      paymentMethod: method,
-      uniqueCents: cents,
-      totalAmount,
-      ...(paymentRef ? { paymentRef } : {}),
-      ...(expiresAt ? { expiresAt } : {}),
-    },
+  const finalData = (pick: { cents: Decimal; totalAmount: Decimal }) => ({
+    currency: OrderCurrency.USDT,
+    fxRate: rate,
+    paymentMethod: method,
+    uniqueCents: pick.cents,
+    totalAmount: pick.totalAmount,
+    ...(paymentRef ? { paymentRef } : {}),
+    ...(expiresAt ? { expiresAt } : {}),
   });
+  if (needsUniqueAmount) {
+    await writeWithUniqueRailAmount(
+      db,
+      { orderId, orderCode: order.orderCode, method: method as UniqueAmountRail, usdt },
+      async (tx, pick) => {
+        await tx.order.update({ where: { id: orderId }, data: finalData(pick) });
+      },
+    );
+  } else {
+    await db.order.update({ where: { id: orderId }, data: finalData({ cents, totalAmount }) });
+  }
   logger.info(
     `Wallet top-up order ${order.orderCode} finalized as USDT (${usdt.toString()} via ${method}, no FX conversion applied).`,
   );

@@ -1,19 +1,22 @@
 /**
  * CRUD for the Binance Internal Transfer (UID-based) payment method.
  *
- * Idempotency without row locks: there is no `SELECT ... FOR UPDATE`. Instead,
- * the `processed_binance_tx.binance_tx_id` UNIQUE constraint is the
- * concurrency gate — claiming a tx id is an atomic insert; a duplicate insert
- * throws and is treated as "already processed". That claim is what prevents
- * double-delivery, without locks.
+ * Idempotency on Postgres (READ COMMITTED, genuinely concurrent writers): the
+ * `processed_binance_tx.binance_tx_id` UNIQUE constraint is the concurrency
+ * gate — claiming a tx id is an atomic insert; a duplicate insert throws and is
+ * treated as "already processed". A read-then-write on an existing ledger row
+ * is NOT safe on its own (two writers both read the old value), so every
+ * transition of an existing row is a conditional `updateMany` gated on the
+ * outcome it expects, and a zero count means another writer got there first.
  *
  * A duplicate is not always terminal: an id stamped with an outcome from
  * AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES delivered nothing and must stay
  * re-claimable, so `deliverPaidInternalOrder` re-claims it with a
  * compare-and-swap — a read followed by an `updateMany` gated on the values
  * that read returned. Both halves stay single statements on purpose; see the
- * comment there for why an interactive transaction would be less safe, not
- * more. See that constant's own doc-comment below for why this
+ * comment there for why wrapping them in an interactive transaction would add
+ * nothing under Postgres READ COMMITTED: the gated write is what decides the
+ * race either way. See that constant's own doc-comment below for why this
  * rail's reclaimable set is narrower than the QRIS rails'
  * (QRIS_RECLAIMABLE_OUTCOMES) — the two are NOT meant to be identical.
  */
@@ -42,6 +45,7 @@ import {
 } from "./orders";
 import { transitionOrderStatus } from "./orderStatus";
 import { adjustWallet } from "./users";
+import { releaseVoucherUse } from "./vouchers";
 import { postOrderWalletCreditPosting } from "./ledgerPostings";
 import { getSetting, getDecryptedSetting, setSetting } from "./settings";
 import { finalizeOrderPayment } from "./pricing";
@@ -50,6 +54,7 @@ import { enqueueAdminOverpaid } from "./notifications";
 import { settleWalletTopup, isLateSettleableWalletTopup } from "./wallet_topup";
 import { POLL_HEALTH_KEYS, getPollHealth, recordPollHealth, type PollHealth } from "./poll_health";
 import { getPendingPaymentAttempt, confirmPaymentAttempt } from "./payments";
+import { reclaimStaleMatchedClaim } from "./_staleClaim";
 
 // ---------------------------------------------------------------------------
 // Resolved config (web-admin Settings win; .env is the bootstrap/recovery
@@ -225,15 +230,17 @@ const ONCHAIN_TRACKED_STATUSES = [
  *   anchored on one bubble, with the Bybit BSC confirmation tracker editing it
  *   every cycle straight over the second order's unpaid deposit address.
  *
- * `paymentMsgChatId`/`paymentMsgId` are unindexed, so this is a full scan of
- * `Order` for the duration of the query — and
+ * `paymentMsgChatId`/`paymentMsgId` are unindexed, so this is a sequential scan
+ * of `Order`, and the rows it updates stay row-locked until the surrounding
+ * transaction commits — and
  * `setOrderPaymentMessage` runs it on every single checkout, not only when an
  * anchor is known to exist. That is accepted today because the table is small
  * and a comparable scan already runs every minute from
  * `listSettledOrdersAwaitingBubbleEdit` (same unindexed columns), so this adds
  * no new class of load. Revisit — index or narrow the scan — if `Order` grows
- * past a few hundred thousand rows or if checkout rate makes this a hot path.
- * The render path is
+ * past a few hundred thousand rows, or if checkout rate makes this a hot path
+ * (Postgres runs concurrent checkouts in parallel, so a slow scan now costs
+ * CPU and I/O per checkout rather than queueing them). The render path is
  * separately protected: it only reaches here behind a session-level gate
  * (see util/paymentAnchor.ts) so a mere button tap never pays for a scan.
  */
@@ -349,8 +356,8 @@ export function listSettledOrdersAwaitingBubbleEdit(db: Db, limit?: number) {
 /** Single-row counterpart to `listSettledOrdersAwaitingBubbleEdit` above, for
  * the one caller that already knows the order id and just needs this order's
  * bubble-flip fields: `flushSettledOrderBubble` (apps/order-bot/src/jobs/
- * index.ts), the payment-bubble flush hook that runs once per settlement DM
- * (a hot path). That path used to call `getOrder`, whose
+ * index.ts), the payment-bubble flush hook that runs once per settlement DM.
+ * That hot path used to call `getOrder`, whose
  * `fullInclude` pulls in items, `stockItem` credentials, product and voucher
  * to extract six scalars and `user.language` — needlessly materialising the
  * buyer's credentials into memory on every settlement DM. This reuses the
@@ -417,14 +424,17 @@ export async function deliverPaidInternalOrder(
   //    trustworthy; `count === 0` means a racer got there first and
   //    already_processed is the right answer.
   //
-  //    An interactive $transaction would be worse here, not better. A
-  //    read-then-write inside one lets two racing reclaims both read the same
-  //    pre-write state and both pass the outcome check, so the loser would
-  //    overwrite the winner (or fail on a conflict) instead of cleanly
-  //    reporting already_processed, on a path that races across processes (the
-  //    poller reclaims while an admin clicks manual-match in web-admin). A
-  //    single conditional statement degrades gracefully instead (Task 15
-  //    re-review).
+  //    An interactive $transaction would add nothing here. Under Postgres
+  //    READ COMMITTED (the default) a plain read takes no lock, so two racing
+  //    reclaims, in a transaction or not, both read the same row and both pass
+  //    the outcome check; only the gated write can tell them apart. It does:
+  //    the second `updateMany` blocks on the first one's row lock, then
+  //    re-checks its WHERE against the newly committed row, matches nothing,
+  //    and returns count 0, a graceful already_processed rather than a thrown
+  //    error. That matters on a path that races across processes (the poller
+  //    reclaims while an admin clicks manual-match in web-admin). Keeping both
+  //    halves as single statements also means no row lock is held across the
+  //    gap between them (Task 15 re-review).
   //
   //    `reclaimedFrom` remembers exactly what the reclaim overwrote
   //    (outcome/orderId/amount) so step 2 can put it back if this turns out to
@@ -440,7 +450,26 @@ export async function deliverPaidInternalOrder(
   } catch (e) {
     if (!isUniqueViolation(e)) throw e;
     const prior = await db.processedBinanceTx.findUnique({ where: { binanceTxId: args.binanceTxId } });
-    if (!prior || !(AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES as readonly string[]).includes(prior.outcome)) {
+    // Task B2: a "matched" row whose delivery crashed before finishing is
+    // recoverable for its own order — see crud/_staleClaim.ts for exactly
+    // when. `reclaimedFrom` then holds "matched", so a stale outcome in step 2
+    // puts the row back exactly as it was.
+    const recovered =
+      prior != null &&
+      (await reclaimStaleMatchedClaim(db, {
+        rail: "Binance internal-transfer",
+        txId: args.binanceTxId,
+        prior,
+        forOrderId: args.orderId,
+        cas: (guard) =>
+          db.processedBinanceTx.updateMany({
+            where: { binanceTxId: args.binanceTxId, ...guard },
+            data: { amount: new Decimal(args.amount), outcome: "matched", updatedAt: new Date() },
+          }),
+      }));
+    if (recovered) {
+      reclaimedFrom = { outcome: prior.outcome, orderId: prior.orderId, amount: prior.amount };
+    } else if (!prior || !(AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES as readonly string[]).includes(prior.outcome)) {
       logger.info(
         {
           event: PaymentLogEvent.PAYMENT_ALREADY_CONFIRMED,
@@ -452,25 +481,26 @@ export async function deliverPaidInternalOrder(
         `Skipped settling Binance transaction ${args.binanceTxId} for order ${args.orderId} because it had already been processed — its ledger row is in a terminal outcome that may not be reclaimed, so nothing was delivered or credited twice`,
       );
       return { status: "already_processed" };
+    } else {
+      const reclaimed = await db.processedBinanceTx.updateMany({
+        where: { binanceTxId: args.binanceTxId, outcome: prior.outcome, orderId: prior.orderId },
+        data: { orderId: args.orderId, amount: new Decimal(args.amount), outcome: "matched" },
+      });
+      if (reclaimed.count === 0) {
+        logger.info(
+          {
+            event: PaymentLogEvent.PAYMENT_ALREADY_CONFIRMED,
+            orderId: args.orderId,
+            provider: PaymentMethod.BINANCE_INTERNAL,
+            providerPaymentId: args.binanceTxId,
+            status: "already_processed",
+          },
+          `Skipped settling Binance transaction ${args.binanceTxId} for order ${args.orderId} because it had already been processed — another path won the race to reclaim its ledger row, so nothing was delivered or credited twice`,
+        );
+        return { status: "already_processed" };
+      }
+      reclaimedFrom = { outcome: prior.outcome, orderId: prior.orderId, amount: prior.amount };
     }
-    const reclaimed = await db.processedBinanceTx.updateMany({
-      where: { binanceTxId: args.binanceTxId, outcome: prior.outcome, orderId: prior.orderId },
-      data: { orderId: args.orderId, amount: new Decimal(args.amount), outcome: "matched" },
-    });
-    if (reclaimed.count === 0) {
-      logger.info(
-        {
-          event: PaymentLogEvent.PAYMENT_ALREADY_CONFIRMED,
-          orderId: args.orderId,
-          provider: PaymentMethod.BINANCE_INTERNAL,
-          providerPaymentId: args.binanceTxId,
-          status: "already_processed",
-        },
-        `Skipped settling Binance transaction ${args.binanceTxId} for order ${args.orderId} because it had already been processed — another path won the race to reclaim its ledger row, so nothing was delivered or credited twice`,
-      );
-      return { status: "already_processed" };
-    }
-    reclaimedFrom = { outcome: prior.outcome, orderId: prior.orderId, amount: prior.amount };
   }
 
   // 2. Deliver. On failure, flag the ledger row so we don't silently retry
@@ -663,10 +693,13 @@ export async function deliverPaidInternalOrder(
  * torn state — e.g. a ledger row claiming the transfer was handled while the
  * order never actually moved to UNDERPAID (Task 18). The ledger claim itself
  * stays a single atomic `create` inside the transaction (not preceded by a
- * read): a read-then-write here would let two racing claims both pass the
- * read and have the loser fail on the unique constraint instead of
- * gracefully returning false (see deliverPaidInternalOrder's comment above
- * for the full reasoning).
+ * read): the unique constraint on `binanceTxId` IS the claim. Under Postgres
+ * READ COMMITTED a "does a row exist?" read would let two racing claims both
+ * see nothing; with a bare `create`, the loser waits for the winner to commit
+ * and then fails with a unique violation, which is caught and turned into a
+ * graceful `false`. Returning at that point leaves the transaction aborted,
+ * so its commit becomes a rollback and nothing else is written (see
+ * deliverPaidInternalOrder's comment above for the same unique-claim idea).
  */
 export async function markUnderpaid(
   db: PrismaClient,
@@ -951,75 +984,98 @@ export async function deliverUnderpaidOrder(
 export async function refundUnderpaidOrder(
   db: PrismaClient,
   args: { orderId: number; adminId: number },
-): Promise<{ refunded: Decimal; refundId: number | null; currency: string }> {
-  return db.$transaction(async (tx: Tx) => {
-    const order = await getOrder(tx, args.orderId);
-    if (!order) throw new ValidationError("error.order_not_found");
-    if (order.status !== OrderStatus.UNDERPAID) {
-      throw new ValidationError("error.order_not_underpaid");
-    }
-    const received = (await findUnderpaidReceived(tx, args.orderId)) ?? new Decimal(0);
-    if (received.greaterThan(0)) {
-      const { transactionId } = await adjustWallet(tx, order.userId, received, {
-        reason: "underpaid_refund",
-        currency: order.currency as "IDR" | "USDT",
-        orderId: order.id,
-        adminId: args.adminId,
-      });
-      // An UNDERPAID order never settled, so no ORDER_PAYMENT was posted for it
-      // and there is no revenue to reverse: the on-chain transfer the buyer
-      // really sent is being recognised here for the first time, as wallet
-      // credit. `postOrderWalletCreditPosting` checks that rather than assuming
-      // it, so this stays correct if a future path reaches it on a settled order.
-      await postOrderWalletCreditPosting(tx, {
-        walletTransactionId: transactionId,
-        orderId: order.id,
-        orderCode: order.orderCode,
-        occurredAt: new Date(),
-      });
-    }
-    if (order.voucherId) {
-      const v = await tx.voucher.findUnique({ where: { id: order.voucherId } });
-      if (v && v.usedCount > 0) {
-        await tx.voucher.update({ where: { id: v.id }, data: { usedCount: { decrement: 1 } } });
-      }
-    }
-    await tx.order.update({
-      where: { id: args.orderId },
-      data: {
-        adminNote: `${order.adminNote ?? ""}\n[refund] ${received.toString()} ${order.currency} to wallet by admin_id=${args.adminId}`,
-      },
+): Promise<{ refunded: Decimal; refundId: number | null; currency: string; orderCode: string }> {
+  const result = await db.$transaction((tx: Tx) => refundUnderpaidOrderTx(tx, args));
+  logUnderpaidRefundCommitted(result, args.adminId);
+  return result;
+}
+
+/**
+ * {@link refundUnderpaidOrder}'s body, run inside the CALLER's transaction —
+ * so the web admin's refund route can write its `logAdminAction` audit line
+ * in the same transaction (backend audit Task C3): if the audit insert fails,
+ * the wallet credit, Refund row and status change roll back with it, and a
+ * refund can never happen without its audit line.
+ */
+export async function refundUnderpaidOrderTx(
+  tx: Tx,
+  args: { orderId: number; adminId: number },
+): Promise<{ refunded: Decimal; refundId: number | null; currency: string; orderCode: string }> {
+  const order = await getOrder(tx, args.orderId);
+  if (!order) throw new ValidationError("error.order_not_found");
+  if (order.status !== OrderStatus.UNDERPAID) {
+    throw new ValidationError("error.order_not_underpaid");
+  }
+  const received = (await findUnderpaidReceived(tx, args.orderId)) ?? new Decimal(0);
+  if (received.greaterThan(0)) {
+    const { transactionId } = await adjustWallet(tx, order.userId, received, {
+      reason: "underpaid_refund",
+      currency: order.currency as "IDR" | "USDT",
+      orderId: order.id,
+      adminId: args.adminId,
     });
-    // Only write a Refund record when money actually moved (`received > 0`,
-    // guarding the wallet credit above too) — an UNDERPAID order with a zero
-    // received amount would otherwise leave a misleading COMPLETED Refund of
-    // 0.00 in refund history, implying a payout that never happened.
-    const refund = received.greaterThan(0)
-      ? await tx.refund.create({
-          data: {
-            orderId: order.id,
-            amount: received,
-            currency: order.currency,
-            reason: `Underpaid order refunded to buyer's wallet balance by admin_id=${args.adminId}.`,
-            status: RefundStatus.COMPLETED,
-            processedAt: new Date(),
-          },
-        })
-      : null;
-    await transitionOrderStatus(tx, {
-      orderId: args.orderId,
-      from: OrderStatus.UNDERPAID,
-      to: OrderStatus.REFUNDED,
-      meta: `refund ${received.toString()} by admin_id=${args.adminId}`,
+    // An UNDERPAID order never settled, so no ORDER_PAYMENT was posted for it
+    // and there is no revenue to reverse: the on-chain transfer the buyer
+    // really sent is being recognised here for the first time, as wallet
+    // credit. `postOrderWalletCreditPosting` checks that rather than assuming
+    // it, so this stays correct if a future path reaches it on a settled order.
+    await postOrderWalletCreditPosting(tx, {
+      walletTransactionId: transactionId,
+      orderId: order.id,
+      orderCode: order.orderCode,
+      occurredAt: new Date(),
     });
-    logger.info(
-      `Refunded underpaid order ${order.orderCode} (${received.toString()} ${order.currency}) to wallet by admin ${args.adminId}`,
-    );
-    // `currency` travels back with the amount so the caller's audit line can
-    // say which money was returned — a bare amount is ambiguous now that the
-    // refund lands in the order's own currency rather than always IDR.
-    return { refunded: received, refundId: refund?.id ?? null, currency: order.currency };
+  }
+  if (order.voucherId) {
+    // One guarded decrement; never below zero even when two releases race.
+    await releaseVoucherUse(tx, order.voucherId);
+  }
+  await tx.order.update({
+    where: { id: args.orderId },
+    data: {
+      adminNote: `${order.adminNote ?? ""}\n[refund] ${received.toString()} ${order.currency} to wallet by admin_id=${args.adminId}`,
+    },
   });
+  // Only write a Refund record when money actually moved (`received > 0`,
+  // guarding the wallet credit above too) — an UNDERPAID order with a zero
+  // received amount would otherwise leave a misleading COMPLETED Refund of
+  // 0.00 in refund history, implying a payout that never happened.
+  const refund = received.greaterThan(0)
+    ? await tx.refund.create({
+        data: {
+          orderId: order.id,
+          amount: received,
+          currency: order.currency,
+          reason: `Underpaid order refunded to buyer's wallet balance by admin_id=${args.adminId}.`,
+          status: RefundStatus.COMPLETED,
+          processedAt: new Date(),
+        },
+      })
+    : null;
+  await transitionOrderStatus(tx, {
+    orderId: args.orderId,
+    from: OrderStatus.UNDERPAID,
+    to: OrderStatus.REFUNDED,
+    meta: `refund ${received.toString()} by admin_id=${args.adminId}`,
+  });
+  // No log line here: this runs inside the caller's transaction, and a later
+  // rollback (e.g. its audit insert failing) would leave a log claiming money
+  // moved. Callers log via logUnderpaidRefundCommitted once committed.
+  // `currency` travels back with the amount so the caller's audit line can
+  // say which money was returned — a bare amount is ambiguous now that the
+  // refund lands in the order's own currency rather than always IDR.
+  return { refunded: received, refundId: refund?.id ?? null, currency: order.currency, orderCode: order.orderCode };
+}
+
+/** The ops log line for a refundUnderpaidOrderTx result — call it only AFTER
+ * the surrounding transaction has committed. */
+export function logUnderpaidRefundCommitted(
+  result: { refunded: Decimal; currency: string; orderCode: string },
+  adminId: number,
+): void {
+  logger.info(
+    `Refunded underpaid order ${result.orderCode} (${result.refunded.toString()} ${result.currency}) to wallet by admin ${adminId}`,
+  );
 }
 
 /**
@@ -1043,10 +1099,17 @@ export async function manualMatchTx(
       throw new ValidationError("error.order_not_pending");
     }
 
-    await tx.processedBinanceTx.update({
-      where: { binanceTxId: args.binanceTxId },
+    // Claim the row atomically: the outcome check above is only a read, and
+    // under Postgres READ COMMITTED a second admin matching the same transfer
+    // (to another order) or dismissing it reads "unmatched" too. Gating the
+    // UPDATE on `outcome: "unmatched"` makes the loser's statement wait for the
+    // winner's commit, re-check the row, and match zero rows — so one transfer
+    // can never settle two orders.
+    const claimed = await tx.processedBinanceTx.updateMany({
+      where: { binanceTxId: args.binanceTxId, outcome: "unmatched" },
       data: { orderId: args.orderId, outcome: "matched" },
     });
+    if (claimed.count === 0) throw new ValidationError("error.tx_not_unmatched");
     await tx.order.update({
       where: { id: args.orderId },
       data: {
@@ -1066,6 +1129,11 @@ export async function manualMatchTx(
   });
 }
 
+/** One Binance transfer's ledger row by its transfer id, or null when unknown. */
+export function getProcessedBinanceTx(db: Db, binanceTxId: string) {
+  return db.processedBinanceTx.findUnique({ where: { binanceTxId } });
+}
+
 /**
  * Acknowledge an UNMATCHED transfer that belongs to no order (e.g. a test
  * deposit, or money sent with no order behind it): flip its ledger row
@@ -1077,10 +1145,13 @@ export async function dismissUnmatchedTx(db: Db, binanceTxId: string): Promise<v
   const ledger = await db.processedBinanceTx.findUnique({ where: { binanceTxId } });
   if (!ledger) throw new ValidationError("error.tx_not_found");
   if (ledger.outcome !== "unmatched") throw new ValidationError("error.tx_not_unmatched");
-  await db.processedBinanceTx.update({
-    where: { binanceTxId },
+  // Gated on the outcome for the same reason as manualMatchTx: a concurrent
+  // match must not be overwritten by a dismiss that read "unmatched" first.
+  const claimed = await db.processedBinanceTx.updateMany({
+    where: { binanceTxId, outcome: "unmatched" },
     data: { outcome: "dismissed" },
   });
+  if (claimed.count === 0) throw new ValidationError("error.tx_not_unmatched");
 }
 
 // ---- Poller heartbeat (written by the order-bot poller, read by the web) ----

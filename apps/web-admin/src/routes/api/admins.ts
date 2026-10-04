@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { parsePositiveId } from "../../lib/params";
 import { config } from "@app/core/config";
 import {
   prisma,
@@ -38,7 +39,8 @@ export default async function adminsApiRoutes(app: FastifyInstance): Promise<voi
   });
 
   app.post("/api/admins/:tgId/role", { preHandler: csrfProtect }, async (req, reply) => {
-    const tgId = Number((req.params as { tgId: string }).tgId);
+    const tgId = parsePositiveId((req.params as { tgId: string }).tgId, { max: Number.MAX_SAFE_INTEGER });
+    if (tgId === null) return reply.code(400).send({ error: "Invalid admin Telegram id." });
     const role = ((req.body as Record<string, string>).role ?? "").toLowerCase();
     if (!adminIds().includes(tgId)) return reply.code(404).send({ error: "Not a registered admin." });
     if (!isWebRole(role)) return reply.code(400).send({ error: "Invalid role." });
@@ -89,7 +91,8 @@ export default async function adminsApiRoutes(app: FastifyInstance): Promise<voi
   });
 
   app.post("/api/admins/:tgId/logout", { preHandler: csrfProtect }, async (req, reply) => {
-    const tgId = Number((req.params as { tgId: string }).tgId);
+    const tgId = parsePositiveId((req.params as { tgId: string }).tgId, { max: Number.MAX_SAFE_INTEGER });
+    if (tgId === null) return reply.code(400).send({ error: "Invalid admin Telegram id." });
     if (!adminIds().includes(tgId)) return reply.code(404).send({ error: "Not a registered admin." });
     if (tgId === req.admin!.telegramId) return reply.code(403).send({ error: "Use the Logout button to end your own session." });
     await setSetting(prisma, sessionJtiKey(tgId), newJti());

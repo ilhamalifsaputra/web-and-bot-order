@@ -53,6 +53,70 @@ export interface NowpaymentsInvoice {
 }
 
 /**
+ * The `price_amount` an invoice for `orderTotal` is created with: the total
+ * rounded to cents, half-up. `checkNowpaymentsAmount` compares an IPN's price
+ * against this same figure, so the two can never drift apart.
+ */
+export function nowpaymentsInvoicePrice(orderTotal: Decimal.Value): Decimal {
+  return new Decimal(orderTotal).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+}
+
+/**
+ * Decide whether a finished NOWPayments payment covers an order, and how much
+ * it is worth in the ORDER's currency (backend audit, Task B3a).
+ *
+ * `actually_paid` and `pay_amount` are in the PAY currency — whatever coin the
+ * buyer paid with — while the order total is USDT and the invoice was priced
+ * in USD (`price_amount`/`price_currency`, see `createInvoice`). Comparing
+ * `actually_paid` to the order total directly was a unit error: a coin worth
+ * less than a dollar passed the short-payment check while paying a fraction of
+ * the price. The value is therefore judged in the price currency:
+ *   - `price_currency` must be "usd" (createInvoice always sends that);
+ *   - `price_amount` must be at least `nowpaymentsInvoicePrice(orderTotal)` —
+ *     the exact cents figure the invoice was created with, so rounding that
+ *     went down by under half a cent is not mistaken for a short invoice;
+ *   - `actually_paid` must be at least `pay_amount` (both pay currency): the
+ *     buyer sent the full amount NOWPayments quoted for that price.
+ * Any field missing or unparseable means the payment is not verified.
+ *
+ * On success `amount` is the order total plus whatever was paid beyond the
+ * quote, converted at the invoice's own rate (price_amount / pay_amount) — so
+ * cents rounding never reads as an overpayment, and a real overpayment is
+ * reported in the order's currency.
+ */
+export function checkNowpaymentsAmount(
+  ipn: Pick<NowpaymentsIpn, "actuallyPaid" | "payAmount" | "priceAmount" | "priceCurrency">,
+  orderTotal: Decimal.Value,
+):
+  | { ok: true; amount: Decimal }
+  /** `receivedValue` is set only when the value is known and simply short
+   *  (`actually_paid` below `pay_amount` on an otherwise valid usd invoice):
+   *  what did arrive, in the ORDER's currency, at the invoice's own rate.
+   *  Absent = the payment could not be valued at all (unverified). */
+  | { ok: false; reason: string; receivedValue?: Decimal } {
+  if ((ipn.priceCurrency ?? "").toLowerCase() !== "usd") {
+    return { ok: false, reason: `the invoice is priced in "${ipn.priceCurrency ?? "nothing"}" rather than usd` };
+  }
+  if (!ipn.priceAmount || !ipn.payAmount || !ipn.actuallyPaid || ipn.payAmount.lessThanOrEqualTo(0)) {
+    return { ok: false, reason: "the callback is missing price_amount, pay_amount or actually_paid, so the paid value cannot be verified" };
+  }
+  const invoicePrice = nowpaymentsInvoicePrice(orderTotal);
+  if (ipn.priceAmount.lessThan(invoicePrice)) {
+    return { ok: false, reason: `the invoice price ${ipn.priceAmount.toString()} usd is below the order's ${invoicePrice.toString()}` };
+  }
+  const paidValue = ipn.priceAmount.times(ipn.actuallyPaid).dividedBy(ipn.payAmount);
+  const valueInOrderCurrency = new Decimal(orderTotal).plus(paidValue.minus(invoicePrice));
+  if (ipn.actuallyPaid.lessThan(ipn.payAmount)) {
+    return {
+      ok: false,
+      reason: `only ${ipn.actuallyPaid.toString()} of the quoted ${ipn.payAmount.toString()} was paid in the pay currency`,
+      receivedValue: Decimal.max(valueInOrderCurrency, 0),
+    };
+  }
+  return { ok: true, amount: valueInOrderCurrency };
+}
+
+/**
  * Create a hosted invoice for an order. Never log the request body or the
  * api-key header. `fetch()` goes through `fetchWithTimeoutSafe`
  * (`@app/core/http`), not a bare call, because Node's fetch sometimes
@@ -84,7 +148,7 @@ export async function createInvoice(
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        price_amount: new Decimal(args.amountUsd).toFixed(2),
+        price_amount: nowpaymentsInvoicePrice(args.amountUsd).toFixed(2),
         price_currency: "usd",
         pay_currency: creds.payCurrency,
         order_id: args.orderId,
@@ -134,9 +198,18 @@ export class RateLimitedError extends Error {}
 
 export interface NowpaymentsStatus {
   paid: boolean;
+  /** `actually_paid` (falling back to `pay_amount`), in the PAY currency — not
+   * comparable to an order total; judge it with `checkNowpaymentsAmount`. */
   amount: Decimal;
   trxId: string | null;
   status: string;
+  /** The raw value fields `checkNowpaymentsAmount` judges (same as on
+   * `NowpaymentsIpn`); null = absent or unparseable. */
+  actuallyPaid: Decimal | null;
+  payAmount: Decimal | null;
+  payCurrency: string | null;
+  priceAmount: Decimal | null;
+  priceCurrency: string | null;
 }
 
 /**
@@ -192,15 +265,47 @@ export async function getPaymentStatus(
     (typeof body.payment_id === "string" && body.payment_id) ||
     (typeof body.payment_id === "number" && String(body.payment_id)) ||
     null;
-  return { paid: isProviderPaid(StatusProvider.NOWPAYMENTS, statusStr), amount, trxId, status: statusStr };
+  return {
+    paid: isProviderPaid(StatusProvider.NOWPAYMENTS, statusStr),
+    amount,
+    trxId,
+    status: statusStr,
+    actuallyPaid: optionalDecimal(body.actually_paid),
+    payAmount: optionalDecimal(body.pay_amount),
+    payCurrency: optionalString(body.pay_currency),
+    priceAmount: optionalDecimal(body.price_amount),
+    priceCurrency: optionalString(body.price_currency),
+  };
 }
 
 export interface NowpaymentsIpn {
   orderId: string;
   trxId: string;
+  /** `actually_paid` (falling back to `pay_amount`), in the PAY currency — not
+   * comparable to an order total; see `checkNowpaymentsAmount`. */
   amount: Decimal;
   paid: boolean;
   status: string;
+  /** The raw value fields `checkNowpaymentsAmount` judges; null = absent or unparseable. */
+  actuallyPaid: Decimal | null;
+  payAmount: Decimal | null;
+  payCurrency: string | null;
+  priceAmount: Decimal | null;
+  priceCurrency: string | null;
+}
+
+function optionalDecimal(v: unknown): Decimal | null {
+  if (v === undefined || v === null || v === "") return null;
+  try {
+    const d = new Decimal(String(v));
+    return d.isFinite() ? d : null;
+  } catch {
+    return null;
+  }
+}
+
+function optionalString(v: unknown): string | null {
+  return typeof v === "string" && v ? v : null;
 }
 
 /**
@@ -324,6 +429,11 @@ export function verifyIpn(
     amount,
     paid: status === "finished",
     status,
+    actuallyPaid: optionalDecimal(body.actually_paid),
+    payAmount: optionalDecimal(body.pay_amount),
+    payCurrency: optionalString(body.pay_currency),
+    priceAmount: optionalDecimal(body.price_amount),
+    priceCurrency: optionalString(body.price_currency),
   };
 }
 

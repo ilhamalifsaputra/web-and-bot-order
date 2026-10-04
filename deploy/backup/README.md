@@ -13,7 +13,9 @@ log/skrip.
 ## Validasi input
 
 - **`backup.sh`** membaca `DATABASE_URL_PRISMA` dari environment prosesnya
-  (tidak memuat `.env` sendiri) hanya sebagai pagar pengaman:
+  (kunci ini sengaja tidak dibaca dari `.env`; dari `.env` skrip hanya
+  mengambil `POSTGRES_USER`/`POSTGRES_DB`, lihat di bawah) hanya sebagai pagar
+  pengaman:
   - kosong/unset, atau berawalan `postgres://` / `postgresql://` → lanjut
   - nilai lain → error keras (exit non-zero), karena aplikasi sendiri menolak
     start dengan URL seperti itu
@@ -108,10 +110,16 @@ DEST=/srv/backups RETENTION=28 deploy/backup/backup.sh
 - **Tidak pernah membaca `POSTGRES_PASSWORD`** — autentikasi terjadi lewat
   socket lokal di dalam container via `docker compose exec`, bukan kredensial
   yang harus diketikkan ke skrip/env.
-- **`POSTGRES_USER`/`POSTGRES_DB`** — dibaca dari env, default ke `bot_order`/
-  `bot_order` masing-masing (sama seperti fallback bawaan
-  `docker-compose.postgres.prod.yml`), jadi kalau produksi belum mengubah
-  nilai default ini, tidak perlu di-override sama sekali. **Jangan pernah
+- **`POSTGRES_USER`/`POSTGRES_DB`** — urutan sumbernya: environment proses
+  (kalau diset di sana), lalu `.env` di root repo (file yang sama yang dipakai
+  `docker compose` untuk membuat container `postgres`), lalu default
+  `bot_order`/`bot_order` (sama seperti fallback bawaan
+  `docker-compose.postgres.prod.yml`). Jadi toko yang `.env`-nya memakai user/DB
+  non-default otomatis ter-dump dari database yang benar, termasuk dari cron.
+  `.env` **tidak di-`source`**: `deploy/backup/lib-env.sh` membacanya sebagai
+  teks `KEY=VALUE` (mendukung `export `, kutip, komentar ` # ...`, CRLF), jadi
+  isi seperti `$(...)` tidak pernah dieksekusi, dan hanya kunci yang dibutuhkan
+  yang dibaca — `POSTGRES_PASSWORD` tidak pernah. **Jangan pernah
   menuliskan connection string Postgres lengkap dengan kredensial di
   dalamnya** di skrip cron atau dokumen mana pun — hanya `POSTGRES_USER`/
   `POSTGRES_DB` yang perlu diset sebagai env var operator, tidak pernah
@@ -143,8 +151,9 @@ menemukan file `docker-compose*.yml` walau cron menjalankannya dari `$HOME`.
 0 */6 * * * DEST=/srv/backups /srv/app/deploy/backup/backup.sh >> /var/log/bot-backup.log 2>&1
 ```
 
-`POSTGRES_USER`/`POSTGRES_DB` hanya perlu ditambahkan di depan kalau nilai
-produksi berbeda dari default `bot_order`.
+`POSTGRES_USER`/`POSTGRES_DB` tidak perlu ditambahkan di depan: skrip
+membacanya sendiri dari `.env` repo. Set di depan hanya kalau sengaja ingin
+mengalahkan nilai `.env`.
 
 ## Off-box (aturan 3-2-1)
 
@@ -168,7 +177,7 @@ Langkah (otomatis di skrip):
    `postgres` (dump dikirim lewat stdin), bukan dengan binary host, alasan
    versinya ada di Prasyarat di atas. Abort sebelum menyentuh DB live bila
    dump-nya rusak, dan pesan error asli `pg_restore` ikut dicetak.
-2. `docker compose stop server` (hentikan proses penulis DB; container
+2. `docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml stop server` (hentikan proses penulis DB; container
    `postgres` sendiri **tetap jalan**, hanya `server` yang dihentikan).
 3. Simpan DB Postgres saat ini ke salinan pengaman `pg-pre-restore-<stamp>.dump`
    (lewat `pg_dump -Fc` sungguhan terhadap DB live yang masih aktif) —
@@ -177,7 +186,7 @@ Langkah (otomatis di skrip):
    glob retensi `backup.sh`** — lihat catatan pola nama di bagian Backup di
    atas. Kalau dump pengaman ini gagal, file parsialnya dihapus dan skrip
    **abort sebelum me-restore apa pun** (DB live masih utuh; start ulang
-   service dengan `docker compose start server`) — restore tanpa titik balik
+   service dengan `docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml start server`) — restore tanpa titik balik
    bukan operasi yang reversibel.
 4. `pg_restore --clean --if-exists --single-transaction -U "$POSTGRES_USER"
    -d "$POSTGRES_DB"` — dijalankan di dalam container `postgres` lewat
@@ -195,8 +204,16 @@ Langkah (otomatis di skrip):
    jeda, entrypoint langsung menjalankan `prisma db push` → seed chart of
    accounts → migrasi data-only pada database yang baru direstore dan dapat
    membatalkan rollback.
-6. `docker compose start …` lalu smoke `GET /healthz` sampai 200. Skrip
+6. `docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml start …` lalu smoke `GET /healthz` di `WEB_PORT` sampai 200. Skrip
    mencetak pengingat pelepasan sentinel, baik smoke berhasil maupun gagal.
+
+Semua panggilan `docker compose` di `restore.sh` (exec, stop, start) dan semua
+perintah yang dicetaknya untuk operator memakai **kedua** file Compose.
+`POSTGRES_USER`, `POSTGRES_DB`, `WEB_PORT`, dan `DATA_DIR` dibaca dengan urutan
+yang sama seperti `backup.sh` (environment → `.env` repo → default), jadi smoke
+test mengetes port toko ini sendiri di host multi-toko. `DATA_DIR` harus tetap
+direktori yang di-bind-mount sebagai `/app/data` (default `./data`), karena di
+situlah entrypoint mencari sentinel.
 
 ### Setelah restore: cocokkan kode, lalu lepas jedanya
 
@@ -239,8 +256,10 @@ diuji bukan backup.
 > Tidak dijalankan dari mesin dev Windows: butuh Docker Linux dan stack
 > Postgres (`docker-compose.postgres.prod.yml`) yang sudah jalan. Tidak perlu
 > `postgresql-client` di host — lihat Prasyarat. Sintaks skrip divalidasi
-> dengan `bash -n`, dan `deploy/backup/test-restore-postgres.sh` menjalankan
-> jalur restore dengan Docker dan probe HTTP yang di-stub. Jalankan ini di
+> dengan `bash -n`; `deploy/backup/test-restore-postgres.sh` dan
+> `deploy/backup/test-backup-postgres.sh` menjalankan kedua skrip dengan Docker
+> dan probe HTTP yang di-stub (termasuk pembacaan `.env` dan pemilihan file
+> Compose). Jalankan ini di
 > staging VPS:
 
 ```bash

@@ -268,6 +268,48 @@ const ZERO_SUMMARY: DigiflazzDispatchSummary = { claimed: 0, delivered: 0, pendi
 export const DIGIFLAZZ_RECHECK_CLAIM_LEASE_MS = 3 * 60_000;
 
 /**
+ * Atomically claim the right for a Digiflazz callback to run one live
+ * re-check (`createTransaction` with the order's refId) — backend audit,
+ * Task B3d. The callback's signature, md5(refId:apiKey), is a fixed token
+ * that replays forever, and that re-POST is only a harmless status check if
+ * Digiflazz really dedups by ref_id (an unverified assumption, see
+ * createTransaction in @app/core/suppliers/digiflazz). So a callback may
+ * re-check only an order that:
+ *   - is PROCESSING and has already been dispatched by the poller
+ *     (digiflazzDispatchedAt set) — a callback must never place the FIRST
+ *     purchase;
+ *   - is still "pending_at_supplier" — never one whose dispatch already
+ *     failed terminally and is waiting for a human;
+ *   - has no /transaction call in flight. Every in-flight call (poller fresh
+ *     dispatch, poller recheck, a previous callback) holds a lease by setting
+ *     digiflazzNextRecheckAt to at most now + DIGIFLAZZ_RECHECK_CLAIM_LEASE_MS,
+ *     so a recheck time inside that window is treated as leased. A scheduled
+ *     backoff that happens to fall inside the window is refused too — the
+ *     poller rechecks that order within the window anyway, so a refused
+ *     genuine callback delays delivery by at most the lease, never loses it.
+ * Winning the claim takes the lease itself; recordDigiflazzOutcome /
+ * fulfillDigiflazzOrder then overwrite or clear it as usual.
+ */
+export async function claimDigiflazzWebhookRecheck(db: Db, orderId: number, now: Date = new Date()): Promise<boolean> {
+  const leaseUntil = new Date(now.getTime() + DIGIFLAZZ_RECHECK_CLAIM_LEASE_MS);
+  const claim = await db.order.updateMany({
+    where: {
+      id: orderId,
+      status: OrderStatus.PROCESSING,
+      digiflazzDispatchedAt: { not: null },
+      digiflazzStatus: "pending_at_supplier",
+      OR: [
+        { digiflazzNextRecheckAt: null },
+        { digiflazzNextRecheckAt: { lte: now } },
+        { digiflazzNextRecheckAt: { gt: leaseUntil } },
+      ],
+    },
+    data: { digiflazzNextRecheckAt: leaseUntil },
+  });
+  return claim.count === 1;
+}
+
+/**
  * Enqueue the "needs a human" admin alert for an order this poller could not
  * auto-fulfil via Digiflazz (SKU missing supplierSku, Digiflazz reported
  * "Gagal", or the HTTP call itself threw) — same channel/shape
@@ -633,10 +675,22 @@ export async function dispatchPendingDigiflazzOrders(db: PrismaClient): Promise<
     // before, now with a second shape covering the recheck branch (claims by
     // digiflazzStatus/digiflazzNextRecheckAt instead of digiflazzDispatchedAt
     // being null).
+    //
+    // The fresh-dispatch claim also takes the in-flight lease on
+    // digiflazzNextRecheckAt (Task B3d), exactly like the recheck claim: it
+    // tells claimDigiflazzWebhookRecheck that a /transaction call is in
+    // flight, so a callback arriving mid-dispatch cannot fire a concurrent
+    // one; and if this process dies before recording an outcome, the
+    // recheck arm picks the order up once the lease lapses instead of it
+    // sitting with a null recheck time forever.
     const claim = isFreshDispatch
       ? await db.order.updateMany({
           where: { id: order.id, status: OrderStatus.PROCESSING, digiflazzDispatchedAt: null },
-          data: { digiflazzDispatchedAt: claimNow, digiflazzStatus: "pending_at_supplier" },
+          data: {
+            digiflazzDispatchedAt: claimNow,
+            digiflazzStatus: "pending_at_supplier",
+            digiflazzNextRecheckAt: new Date(claimNow.getTime() + DIGIFLAZZ_RECHECK_CLAIM_LEASE_MS),
+          },
         })
       : await db.order.updateMany({
           where: {

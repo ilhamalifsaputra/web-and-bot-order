@@ -40,9 +40,15 @@ import {
 } from "../auth";
 import { readGuestCart, writeGuestCart, resolveBotToken, requestCurrency } from "../shop";
 
-/** Only ever redirect to a local path (open-redirect guard). */
+/** Only ever redirect to a local path (open-redirect guard). Browsers read a
+ * backslash as a forward slash and silently drop tab/CR/LF (and other control
+ * characters), so `/\evil.com` or `/<TAB>/evil.com` would still land on
+ * `//evil.com` — off-site. Refusing any backslash or control character
+ * outright closes every such variant (backend audit Task C4); a real local
+ * path never needs one. */
 export const safeNext = (raw: unknown): string => {
   const s = typeof raw === "string" ? raw : "";
+  if (/[\\\u0000-\u001f\u007f]/.test(s)) return "/";
   return s.startsWith("/") && !s.startsWith("//") ? s : "/";
 };
 

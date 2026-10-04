@@ -120,7 +120,8 @@ pembayaran, dan webhook Telegram — detail lengkap di
 | GET | `/account/orders`, `/account/orders/:code` | `currentCustomer` | Riwayat order + kredensial (jika DELIVERED) |
 | GET/POST | `/account/settings` | `currentCustomer`/`csrfProtect` | Identitas dasar |
 | POST | `/account/settings/credentials` | `csrfProtect` | Ganti username/email/password (wajib `current_password`) |
-| POST | `/account/settings/link-telegram` | `currentCustomer` | Tautkan akun Telegram |
+| POST | `/api/v1/account/settings/link-telegram/start` | `x-csrf-token` | Siapkan satu kali tautan Telegram (10 menit); ditolak untuk akun guest |
+| GET | `/account/settings/link-telegram` | `currentCustomer` + intent dari `/start` | Callback Telegram: tautkan akun (ditolak untuk guest, atau bila sudah tertaut ke Telegram lain) |
 | GET | `/account/referral` | `currentCustomer` | Kode & statistik referral |
 | GET/POST | `/account/reviews` | `currentCustomer`/`csrfProtect` | Lihat/tulis review |
 | GET/POST | `/account/support`, `/account/support/:id`, `/account/support/:id/reply` | `currentCustomer`/`csrfProtect` | Tiket dukungan |

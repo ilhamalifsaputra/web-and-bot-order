@@ -11,9 +11,10 @@
  * money moves (see the second describe at the bottom).
  */
 import "./setup-env";
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { config } from "@app/core/config";
+import { logger } from "@app/core/logger";
 import { prisma, initDb, setSetting, markUnderpaid, createOrderDirect } from "@app/db";
 import { resetDb, buildSampleData, type SampleData } from "../../../tests/helpers/sampleData";
 import { buildApp } from "../src/server";
@@ -65,6 +66,54 @@ function refund(orderId: number, headers: Record<string, string> = {}) {
     cookies: { [COOKIE]: cookie },
   });
 }
+
+describe("POST /api/payments/order/:orderId/refund — audit is atomic with the refund (Task C3)", () => {
+  it("a failed audit insert rolls the whole refund back: no wallet credit, order stays UNDERPAID", async () => {
+    const order = await makeUnderpaidOrder("tx-audit-atomic");
+    // Force the audit insert to fail: audit_logs.admin_id references users,
+    // so once the acting admin's row is gone the insert is an FK violation
+    // (same technique as web.test.ts's dismiss-atomicity test). Nothing else
+    // in the refund references the admin row, so only the audit write fails.
+    const admin = await prisma.user.findFirstOrThrow({ where: { telegramId: ADMIN_TG } });
+    await prisma.user.delete({ where: { id: admin.id } });
+
+    const res = await refund(order.id);
+    expect(res.statusCode).toBe(500);
+
+    expect(await prisma.walletTransaction.findMany({ where: { orderId: order.id, reason: "underpaid_refund" } })).toHaveLength(0);
+    expect(await prisma.refund.findMany({ where: { orderId: order.id } })).toHaveLength(0);
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe("UNDERPAID");
+  });
+
+  // Fix round: the "Refunded underpaid order …" line used to be written
+  // inside the transaction, so a rolled-back refund still left a log claiming
+  // the money moved. It is now written by the caller after commit.
+  it("a rolled-back refund leaves no 'Refunded underpaid order' log line", async () => {
+    const info = vi.spyOn(logger, "info");
+    try {
+      const failed = await makeUnderpaidOrder("tx-audit-log-rollback");
+      const admin = await prisma.user.findFirstOrThrow({ where: { telegramId: ADMIN_TG } });
+      await prisma.user.delete({ where: { id: admin.id } });
+      expect((await refund(failed.id)).statusCode).toBe(500);
+      const claims = () => info.mock.calls.filter((c) => c.some((a) => typeof a === "string" && a.startsWith("Refunded underpaid order")));
+      expect(claims()).toHaveLength(0);
+    } finally {
+      info.mockRestore();
+    }
+  });
+
+  it("logs the refund once it has committed", async () => {
+    const info = vi.spyOn(logger, "info");
+    try {
+      const order = await makeUnderpaidOrder("tx-audit-log-commit");
+      expect((await refund(order.id)).statusCode).toBe(200);
+      const claims = info.mock.calls.filter((c) => c.some((a) => typeof a === "string" && a.startsWith("Refunded underpaid order")));
+      expect(claims).toHaveLength(1);
+    } finally {
+      info.mockRestore();
+    }
+  });
+});
 
 describe("POST /api/payments/order/:orderId/refund — Idempotency-Key", () => {
   it("with no header: two refund attempts on the same order behave as before (first succeeds, second 422s)", async () => {

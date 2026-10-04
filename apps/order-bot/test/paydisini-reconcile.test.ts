@@ -149,6 +149,35 @@ describe("reconcileOrder (PayDisini poller safety net)", () => {
     expect(await prisma.processedPaydisiniTx.count()).toBe(1);
   });
 
+  // Fix round for Task B: a PAID status without an amount is not proof of
+  // payment, so it is never delivered — but it used to vanish entirely (no
+  // record, no alert) while the order quietly auto-cancelled. It is now parked
+  // in the unmatched manual-review queue and alerts the admins exactly once.
+  it("parks a paid status without an amount for manual review, alerts admins once, and never delivers", async () => {
+    const created = await makePaydisiniOrder();
+    const [pending] = await listPendingPaydisiniOrders(prisma, new Date());
+    stubStatus({ status: "Paid", unique_code: "TRX-PD-UNV" }); // no amount at all
+    const api = fakeApi();
+
+    await expect(reconcileOrder(api, CREDS, pending!)).resolves.toBe("ok");
+
+    const after = await prisma.order.findUnique({ where: { id: created!.id } });
+    expect(after?.status).toBe(OrderStatus.PENDING_PAYMENT);
+    const row = await prisma.processedPaydisiniTx.findUnique({ where: { trxId: "TRX-PD-UNV" } });
+    expect(row?.outcome).toBe("unmatched");
+    expect(row?.amount?.toFixed(0)).toBe("0");
+    expect(row?.orderId).toBeNull();
+    const alerts = await prisma.notificationOutbox.findMany({ where: { event: "ADMIN_UNCONFIRMABLE_PAYMENT", orderId: created!.id } });
+    expect(alerts.length).toBeGreaterThan(0);
+    const payload = JSON.parse(alerts[0]!.payloadJson) as { gateway: string; reason?: string; order_code: string };
+    expect(payload).toMatchObject({ gateway: "PayDisini", reason: "unverified_amount", order_code: created!.orderCode });
+
+    // The next cycle sees the same status: still parked, no second alert.
+    await reconcileOrder(api, CREDS, pending!);
+    expect(await prisma.notificationOutbox.count({ where: { event: "ADMIN_UNCONFIRMABLE_PAYMENT", orderId: created!.id } })).toBe(alerts.length);
+    expect(await prisma.processedPaydisiniTx.count()).toBe(1);
+  });
+
   it("leaves the order pending when the gateway reports unpaid", async () => {
     await makePaydisiniOrder();
     const [pending] = await listPendingPaydisiniOrders(prisma, new Date());

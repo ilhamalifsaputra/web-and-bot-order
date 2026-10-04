@@ -591,6 +591,22 @@ export function render(
     // per order and there is no second reminder.
     const code = escape(String(payload.order_code ?? ""));
     const gateway = escape(String(payload.gateway ?? ""));
+    if (payload.reason === "unverified_amount") {
+      // Task B fix round: the gateway says PAID but its status carries no
+      // usable amount (TokoPay/PayDisini) or no usd price to value it by
+      // (NOWPayments), so the payment cannot be verified and nothing is
+      // delivered on it.
+      return (
+        `⚠️ <b>${gateway} reports order <code>${code}</code> as paid, but the amount could not be verified</b>\n` +
+        `The gateway's status carried no usable amount, so nothing has been delivered automatically. ` +
+        `Check this order in the ${gateway} dashboard and either approve or cancel it by hand — ` +
+        `if it is left alone, the payment window will close and the order will auto-cancel even though the buyer may have paid.\n\n` +
+        `⚠️ <b>${gateway} melaporkan pesanan <code>${code}</code> sudah dibayar, tapi nominalnya tidak bisa diverifikasi</b>\n` +
+        `Status dari gateway tidak memuat nominal yang bisa dipakai, jadi belum ada yang dikirim otomatis. ` +
+        `Periksa pesanan ini di dashboard ${gateway} lalu setujui atau batalkan secara manual — ` +
+        `kalau dibiarkan, jendela pembayaran akan tutup dan pesanan otomatis dibatalkan padahal pelanggan mungkin sudah membayar.`
+      );
+    }
     return (
       `⚠️ <b>${gateway} reports order <code>${code}</code> as paid, but sent no transaction id</b>\n` +
       `Without that id the payment cannot be confirmed automatically, so nothing has been delivered. ` +

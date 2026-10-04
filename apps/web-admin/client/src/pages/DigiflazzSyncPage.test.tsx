@@ -206,6 +206,30 @@ describe("DigiflazzSyncPage", () => {
     expect(screen.queryByText(/fix the highlighted price/i)).not.toBeInTheDocument();
   });
 
+  // I-3: the server reads a retyped price by shape and an untouched suggested
+  // price exactly, so each row says which one it is.
+  it("marks an untouched suggested price exact and sends a retyped price (16.500,50) for the server to read by shape", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    await syncWizard(user);
+    await selectCategory(user);
+    vi.mocked(apiPost).mockResolvedValueOnce({ ok: true, brandsImported: 2, denominationsImported: 2 });
+
+    await user.click(screen.getByRole("button", { name: /mobile legends/i }));
+    fireEvent.change(screen.getByDisplayValue("16500"), { target: { value: "16.500,50" } });
+    const importButton = screen.getByRole("button", { name: /impor terpilih/i });
+    expect(importButton).not.toBeDisabled();
+    await user.click(importButton);
+
+    await waitFor(() => expect(findApplyCall()).toBeTruthy());
+    const [, body] = findApplyCall()!;
+    const rows = (body as { brands: Array<{ brand: string; rows: Array<Record<string, unknown>> }> }).brands.flatMap((b) => b.rows);
+    const ml = rows.find((r) => r.buyerSkuCode === "ml100")!;
+    const ff = rows.find((r) => r.buyerSkuCode === "ff100")!;
+    expect(ml).toMatchObject({ price: "16.500,50", costPrice: "15000" });
+    expect(ml.exact_fields ?? []).toEqual([]);
+    expect(ff).toMatchObject({ price: "13000", exact_fields: ["price"] });
+  });
+
   it("I10: unchecking the invalid row also re-enables Import", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     await syncWizard(user);

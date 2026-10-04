@@ -49,23 +49,28 @@ export function getCartWithDenominationProduct(db: Db, userId: number) {
   });
 }
 
-/** Upsert: increment quantity (capped 99) if the product is already in cart. */
+/**
+ * Upsert: increment quantity (capped 99) if the product is already in cart.
+ *
+ * One atomic INSERT ... ON CONFLICT DO UPDATE (backend audit E2 item 6). The
+ * old find-then-create/update let two concurrent first adds both insert (the
+ * loser threw a raw unique violation) and two concurrent increments both read
+ * the same quantity (one add was lost). A brand-new line keeps the requested
+ * quantity unclamped, exactly as before; createOrderFromCart re-validates it.
+ */
 export async function addToCart(
   db: Db,
   userId: number,
   productId: number,
   quantity = 1,
 ) {
-  const existing = await db.cartItem.findUnique({
-    where: { userId_productId: { userId, productId } },
-  });
-  if (existing) {
-    return db.cartItem.update({
-      where: { id: existing.id },
-      data: { quantity: Math.min(existing.quantity + quantity, 99) },
-    });
-  }
-  return db.cartItem.create({ data: { userId, productId, quantity } });
+  const rows = await db.$queryRaw<Array<{ id: number }>>`
+    INSERT INTO cart_items (user_id, product_id, quantity)
+    VALUES (${userId}, ${productId}, ${quantity})
+    ON CONFLICT (user_id, product_id)
+    DO UPDATE SET quantity = LEAST(cart_items.quantity + EXCLUDED.quantity, 99)
+    RETURNING id`;
+  return db.cartItem.findUniqueOrThrow({ where: { id: rows[0]!.id } });
 }
 
 export async function updateCartItemQty(
@@ -111,6 +116,20 @@ export async function hasCartItem(db: Db, userId: number, productId: number): Pr
 
 export async function removeFromCart(db: Db, userId: number, cartItemId: number) {
   await db.cartItem.deleteMany({ where: { id: cartItemId, userId } });
+}
+
+/**
+ * Lock the buyer's cart lines for the rest of the caller's transaction, so one
+ * cart can become only one order (backend audit E2 item 2). Order creation
+ * reads the cart and only clears it at the end; without this, a double-tapped
+ * checkout ran two transactions that both read the same cart and both created
+ * an order from it. A second transaction now waits here until the first
+ * commits, and under READ COMMITTED its next read of the cart sees the lines
+ * the first one deleted as gone. Must be the first thing the checkout
+ * transaction does, and needs a transaction to mean anything.
+ */
+export async function lockCartForCheckout(db: Db, userId: number): Promise<void> {
+  await db.$queryRaw`SELECT id FROM cart_items WHERE user_id = ${userId} FOR UPDATE`;
 }
 
 export async function clearCart(db: Db, userId: number) {

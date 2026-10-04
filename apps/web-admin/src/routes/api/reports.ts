@@ -1,21 +1,9 @@
 import type { FastifyInstance } from "fastify";
+import { csvRow } from "../../lib/csv";
 import { Decimal } from "@app/core/money";
 import { addDays } from "@app/core/datetime";
 import { prisma, revenueByDay, topProducts, ordersByStatus, voucherUsage } from "@app/db";
 import { currentAdmin } from "../../plugins/auth";
-
-/** Quotes a CSV field per RFC 4180: wrap in double quotes if it contains a
- * comma, quote, or newline, doubling any embedded quotes. */
-function csvField(value: string): string {
-  if (/[",\r\n]/.test(value)) {
-    return `"${value.replace(/"/g, '""')}"`;
-  }
-  return value;
-}
-
-function csvRow(fields: string[]): string {
-  return fields.map(csvField).join(",") + "\r\n";
-}
 
 /** `?days` clamped to 7-90, defaulting to 30 when missing or not a number. */
 function parseDays(raw: string | undefined): number {

@@ -1,4 +1,7 @@
 import type { FastifyInstance } from "fastify";
+import { csvRow } from "../../lib/csv";
+import { parsePositiveId } from "../../lib/params";
+import { readMoneyField, moneyFieldError } from "../../lib/moneyField";
 import { UserRole } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { ValidationError } from "@app/core/errors";
@@ -85,25 +88,6 @@ function buildUserFilter(q: Record<string, string | undefined>): UserFilter {
     lastSeenSince: parseDate(q.lastSeenSince),
     lastSeenUntil: parseDate(q.lastSeenUntil),
   };
-}
-
-/** Quotes a CSV field per RFC 4180: wrap in double quotes if it contains a
- * comma, quote, or newline, doubling any embedded quotes. Also neutralizes
- * CSV formula injection: a leading `=`, `+`, `-`, or `@` is interpreted by
- * Excel/Google Sheets as the start of a formula, so this field can carry
- * attacker-controlled free text (e.g. the storefront's public, unauthenticated
- * registration `fullName`) — prefixing with a single quote forces the cell to
- * render as literal text instead of evaluating. */
-function csvField(value: string): string {
-  const escaped = /^[=+\-@]/.test(value) ? `'${value}` : value;
-  if (/[",\r\n]/.test(escaped)) {
-    return `"${escaped.replace(/"/g, '""')}"`;
-  }
-  return escaped;
-}
-
-function csvRow(fields: string[]): string {
-  return fields.map(csvField).join(",") + "\r\n";
 }
 
 export default async function usersApiRoutes(app: FastifyInstance): Promise<void> {
@@ -220,7 +204,8 @@ export default async function usersApiRoutes(app: FastifyInstance): Promise<void
   });
 
   app.get("/api/users/:userId", { preHandler: currentAdmin }, async (req, reply) => {
-    const userId = Number((req.params as { userId: string }).userId);
+    const userId = parsePositiveId((req.params as { userId: string }).userId);
+    if (userId === null) return reply.code(400).send({ error: "Invalid user id." });
     const user = await getUser(prisma, userId);
     if (!user) return reply.code(404).send({ error: "User not found." });
     const [totalSpent, orders, ordersTotal, tickets, ticketsTotal, ledger, ledgerTotal] = await Promise.all([
@@ -253,7 +238,8 @@ export default async function usersApiRoutes(app: FastifyInstance): Promise<void
   });
 
   app.post("/api/users/:userId/role", { preHandler: csrfProtect }, async (req, reply) => {
-    const userId = Number((req.params as { userId: string }).userId);
+    const userId = parsePositiveId((req.params as { userId: string }).userId);
+    if (userId === null) return reply.code(400).send({ error: "Invalid user id." });
     const roleUpper = ((req.body as Record<string, string>).role ?? "").toUpperCase();
     if (roleUpper === UserRole.ADMIN) {
       return reply.code(403).send({ error: "Admin status is managed from the Admins page, not here." });
@@ -272,7 +258,8 @@ export default async function usersApiRoutes(app: FastifyInstance): Promise<void
   });
 
   app.post("/api/users/:userId/ban", { preHandler: csrfProtect }, async (req, reply) => {
-    const userId = Number((req.params as { userId: string }).userId);
+    const userId = parsePositiveId((req.params as { userId: string }).userId);
+    if (userId === null) return reply.code(400).send({ error: "Invalid user id." });
     const body = (req.body ?? {}) as Record<string, string>;
     const doBan = truthy(body.banned);
     if (!(await getUser(prisma, userId))) return reply.code(404).send({ error: "User not found." });
@@ -288,27 +275,23 @@ export default async function usersApiRoutes(app: FastifyInstance): Promise<void
   });
 
   app.post("/api/users/:userId/wallet", { preHandler: csrfProtect }, async (req, reply) => {
-    const userId = Number((req.params as { userId: string }).userId);
+    const userId = parsePositiveId((req.params as { userId: string }).userId);
+    if (userId === null) return reply.code(400).send({ error: "Invalid user id." });
     const body = (req.body ?? {}) as Record<string, string>;
     const note = (body.note ?? "").trim();
     if (!note) return reply.code(400).send({ error: "A reason is required for every wallet move." });
-    let deltaDec: Decimal;
-    try {
-      deltaDec = new Decimal((body.delta ?? "").trim());
-    } catch {
-      return reply.code(400).send({ error: "Amount must be a number." });
-    }
-    // `new Decimal("NaN")`/`new Decimal("Infinity")` construct successfully
-    // (they don't throw) — reject explicitly, same error as an unparsable
-    // amount, so a NaN delta can never poison the wallet balance (M-3,
-    // backend audit 2026-07-31).
-    if (!deltaDec.isFinite()) return reply.code(400).send({ error: "Amount must be a number." });
-    if (deltaDec.isZero()) return reply.code(400).send({ error: "Amount cannot be zero." });
     const currencyRaw = (body.currency ?? "IDR").toUpperCase();
     if (currencyRaw !== "IDR" && currencyRaw !== "USDT") {
       return reply.code(400).send({ error: "Currency must be IDR or USDT." });
     }
     const currency = currencyRaw as "IDR" | "USDT";
+    // Read by shape in the wallet's currency (`10.000` is ten thousand
+    // rupiah; USDT `1.000` is ambiguous and refused), with an optional sign
+    // for debits. The shared reader never returns NaN/Infinity, so a NaN
+    // delta can never poison the wallet balance (M-3, backend audit 2026-07-31).
+    const deltaDec = readMoneyField(body.delta, currency, { signed: true });
+    if (deltaDec === null) return reply.code(400).send({ error: moneyFieldError("The adjustment", currency) });
+    if (deltaDec.isZero()) return reply.code(400).send({ error: "Amount cannot be zero." });
     if (!(await getUser(prisma, userId))) return reply.code(404).send({ error: "User not found." });
     let newBalance: Decimal;
     try {

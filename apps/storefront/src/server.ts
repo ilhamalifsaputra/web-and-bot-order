@@ -16,6 +16,7 @@ import { config } from "@app/core/config";
 import { assertCredentialKeyConfigured } from "@app/core/credentialCrypto";
 import { t } from "@app/core/i18n";
 import { logger } from "@app/core/logger";
+import { redactSecretPath } from "@app/core/redactPath";
 import authPlugin from "./plugins/auth";
 import setupGatePlugin from "./plugins/setupGate";
 import homeRoutes from "./routes/home";
@@ -45,9 +46,10 @@ import { renderSpecialShell, esc } from "./lib/spaFallback";
 // JSON route `POST /api/v1/auth/reset/:token` — so this matches `/reset/...`
 // ANYWHERE in the path, not just at the start, to cover both without needing
 // another edit if the route moves again. Exported standalone (no Fastify
-// dependency) so it's unit-testable directly.
+// dependency) so it's unit-testable directly. The segment list itself is the
+// shared one in @app/core/redactPath (also covers `/tg/<webhook secret>`).
 export function redactPath(path: string): string {
-  return path.replace(/\/reset\/[^/]+/g, "/reset/[redacted]");
+  return redactSecretPath(path);
 }
 
 /**

@@ -56,7 +56,7 @@ in-process workers:
 The Dockerfile default `CMD` is also `pnpm start`, so `docker run` without a
 compose `command` runs the same combined server. Verify after deploy:
 `docker compose config` (service resolves) and `docker compose ps` (`server`
-healthcheck green on `/login`).
+healthcheck green on `/healthz`, which includes a database read).
 
 ## Releasing — the database steps are automatic
 

@@ -9,13 +9,23 @@
  *
  * Usage at a route: the caller supplies an `Idempotency-Key` header (opaque,
  * client-generated, e.g. a UUID minted once per checkout/refund attempt).
- *   1. `findIdempotentResponse` — same key+endpoint+hash seen before ⇒
- *      replay the stored response verbatim, without re-running the mutation.
- *      A different hash under the same key+endpoint throws
- *      `IdempotencyKeyReuseError` — the caller should answer 409.
- *   2. Run the mutation as normal when there is no prior record.
+ *   1. `claimIdempotentRequest` — atomically reserves key+endpoint by
+ *      inserting a pending row. Same key+endpoint+hash already completed ⇒
+ *      replay the stored response verbatim, without re-running the mutation;
+ *      still running in another request ⇒ wait for it, then replay (or throw
+ *      `IdempotencyRequestInProgressError` after the wait budget). A
+ *      different hash under the same key+endpoint throws
+ *      `IdempotencyKeyReuseError`. Both errors ⇒ the caller answers 409.
+ *   2. Run the mutation as normal when the claim is ours (null returned).
  *   3. `saveIdempotentResponse` — persist the response that was just sent, so
- *      a retry with the same key replays it next time.
+ *      a retry with the same key replays it next time. A mutation that throws
+ *      instead releases its claim (`releaseIdempotentClaim`); one that never
+ *      does either (a crashed process) expires after
+ *      IDEMPOTENCY_CLAIM_EXPIRY_MS. Routes use `IdempotencyClaimTracker` to
+ *      wire all three.
+ *
+ * Before backend audit E2 step 1 was a plain read, so two requests with the
+ * same key in flight at once both read "nothing yet" and both ran.
  *
  * No key header ⇒ opt out entirely; every existing caller that never sends
  * one keeps today's exactly-once-per-request behavior unchanged.
@@ -67,26 +77,106 @@ export function hashIdempotentRequest(payload: unknown): string {
 }
 
 /**
- * Look up a stored response for this key+endpoint.
- * - Returns null: no record yet — the caller should run the mutation and
- *   then call `saveIdempotentResponse`.
- * - Returns the stored { statusCode, responseBody }: an exact replay (same
- *   key, same requestHash) — send this back as-is, do not re-run anything.
- * - Throws IdempotencyKeyReuseError: same key+endpoint, different
- *   requestHash — the caller should answer 409, not run the mutation.
+ * Thrown by `claimIdempotentRequest` when another request holding the same
+ * key+endpoint is still running and did not finish within the wait budget.
+ * Nothing ran for this caller; it should answer 409 and let the client retry
+ * with the same key, which will then replay the first request's response.
  */
-export async function findIdempotentResponse(
-  db: Db,
-  args: { key: string; endpoint: string; requestHash: string },
-): Promise<IdempotentReplay | null> {
-  const existing = await db.idempotencyRecord.findUnique({
-    where: { key_endpoint: { key: args.key, endpoint: args.endpoint } },
-  });
-  if (!existing) return null;
-  if (existing.requestHash !== args.requestHash) {
-    throw new IdempotencyKeyReuseError(args.key, args.endpoint);
+export class IdempotencyRequestInProgressError extends Error {
+  constructor(
+    public readonly key: string,
+    public readonly endpoint: string,
+  ) {
+    super(`A request with Idempotency-Key "${key}" for "${endpoint}" is still being processed`);
   }
-  return { statusCode: existing.statusCode, responseBody: existing.responseBody };
+}
+
+/**
+ * How long a claim may stay unfinished before it is treated as crashed (the
+ * process died, or the connection dropped, between running the mutation and
+ * saving its response) and a retry may take it over. Every claimed mutation is
+ * one short database transaction, capped at 10 s by the client's
+ * `transactionOptions.timeout` (packages/db/src/client.ts), so a minute is far
+ * past any request that is genuinely still running. A takeover re-runs the
+ * mutation, which is exactly what a key-less retry did before this mechanism
+ * existed; the mutations' own state guards still apply.
+ */
+export const IDEMPOTENCY_CLAIM_EXPIRY_MS = 60_000;
+
+/** How long a duplicate waits for the first request to finish by default. */
+const DEFAULT_CLAIM_WAIT_MS = 8_000;
+const CLAIM_POLL_INTERVAL_MS = 100;
+
+/**
+ * Reserve this key+endpoint for the caller, or hand back the response another
+ * request already produced for it. Replaces the old read-only lookup, which let
+ * two concurrent requests with the same key both read "nothing yet" and both
+ * run the mutation (backend audit E2 item 1).
+ *
+ * The reservation is an INSERT of a pending row under the (key, endpoint)
+ * unique index, so exactly one concurrent caller can win it.
+ * - Returns null: this caller owns the claim — run the mutation, then call
+ *   `saveIdempotentResponse` (or `releaseIdempotentClaim` if it throws).
+ * - Returns { statusCode, responseBody }: a completed response for the same
+ *   key and requestHash — send it back as-is, re-run nothing. When another
+ *   request is still running, this waits up to `waitMs` for it to finish.
+ * - Throws IdempotencyKeyReuseError: same key+endpoint, different requestHash
+ *   — answer 409, run nothing.
+ * - Throws IdempotencyRequestInProgressError: the other request is still
+ *   running after `waitMs` — answer 409, run nothing.
+ *
+ * A claim left pending for longer than IDEMPOTENCY_CLAIM_EXPIRY_MS is taken
+ * over by a compare-and-swap on `pendingSince`, so two retries racing for a
+ * crashed claim cannot both win it.
+ */
+export async function claimIdempotentRequest(
+  db: Db,
+  args: { key: string; endpoint: string; requestHash: string; waitMs?: number; now?: Date },
+): Promise<IdempotentReplay | null> {
+  const where = { key_endpoint: { key: args.key, endpoint: args.endpoint } };
+  const waitMs = args.waitMs ?? DEFAULT_CLAIM_WAIT_MS;
+  const startedAt = Date.now();
+
+  for (;;) {
+    const now = args.now ?? new Date();
+    try {
+      await db.idempotencyRecord.create({
+        data: {
+          key: args.key,
+          endpoint: args.endpoint,
+          requestHash: args.requestHash,
+          statusCode: 0,
+          responseBody: "",
+          pendingSince: now,
+        },
+      });
+      return null;
+    } catch (e) {
+      if (!isUniqueViolation(e)) throw e;
+    }
+
+    const existing = await db.idempotencyRecord.findUnique({ where });
+    // Released between our insert and this read: try to claim it again.
+    if (!existing) continue;
+    if (existing.requestHash !== args.requestHash) {
+      throw new IdempotencyKeyReuseError(args.key, args.endpoint);
+    }
+    if (existing.pendingSince === null) {
+      return { statusCode: existing.statusCode, responseBody: existing.responseBody };
+    }
+    if (now.getTime() - existing.pendingSince.getTime() > IDEMPOTENCY_CLAIM_EXPIRY_MS) {
+      const takeover = await db.idempotencyRecord.updateMany({
+        where: { id: existing.id, requestHash: args.requestHash, pendingSince: existing.pendingSince },
+        data: { pendingSince: now },
+      });
+      if (takeover.count === 1) return null;
+      // Another retry took it over first; it is now a fresh claim to wait on.
+    }
+    if (Date.now() - startedAt >= waitMs) {
+      throw new IdempotencyRequestInProgressError(args.key, args.endpoint);
+    }
+    await new Promise((resolve) => setTimeout(resolve, CLAIM_POLL_INTERVAL_MS));
+  }
 }
 
 /**
@@ -96,17 +186,25 @@ export async function findIdempotentResponse(
  * just as safe (and just as worth caching) to replay as a success, since
  * replaying it re-runs nothing.
  *
- * A duplicate insert (two requests racing the same brand-new key at once) is
- * swallowed silently rather than erroring or overwriting: the unique key lets
- * exactly one insert win, and the loser's own caller still
- * got the response its own mutation produced — nothing is lost by not
- * overwriting the winner's row with a second, redundant copy of the same
- * requestHash's outcome.
+ * Completes the caller's pending claim. A completed row is never overwritten:
+ * the first saved response is the one every later retry replays. A caller that
+ * never claimed (no pending row) still gets a row inserted, and a duplicate
+ * insert racing it is swallowed rather than erroring or overwriting.
  */
 export async function saveIdempotentResponse(
   db: Db,
   args: { key: string; endpoint: string; requestHash: string; statusCode: number; responseBody: string },
 ): Promise<void> {
+  const completed = await db.idempotencyRecord.updateMany({
+    where: {
+      key: args.key,
+      endpoint: args.endpoint,
+      requestHash: args.requestHash,
+      pendingSince: { not: null },
+    },
+    data: { statusCode: args.statusCode, responseBody: args.responseBody, pendingSince: null },
+  });
+  if (completed.count > 0) return;
   try {
     await db.idempotencyRecord.create({
       data: {
@@ -120,4 +218,72 @@ export async function saveIdempotentResponse(
   } catch (e) {
     if (!isUniqueViolation(e)) throw e;
   }
+}
+
+/** The identity of one claimed request. */
+export interface IdempotencyClaim {
+  key: string;
+  endpoint: string;
+  requestHash: string;
+}
+
+/**
+ * Per-route-module bookkeeping that ties a claim to the HTTP request that made
+ * it, so a claim the handler never completed — it threw (a 500), or it
+ * returned through an early exit that deliberately stores nothing — is
+ * released when the response goes out instead of blocking retries until it
+ * expires. Keyed by the request object in a WeakMap, so nothing leaks.
+ *
+ * Route usage: `claims.claim(...)` where the handler used to look the key up,
+ * `claims.save(...)` where it stores the response, and one hook per route
+ * module: `app.addHook("onResponse", (req) => claims.releaseUnsettled(prisma, req))`.
+ */
+export class IdempotencyClaimTracker {
+  private readonly unsettled = new WeakMap<object, IdempotencyClaim>();
+
+  /** `claimIdempotentRequest`, remembering the claim when this request owns it. */
+  async claim(db: Db, request: object, args: IdempotencyClaim & { waitMs?: number }): Promise<IdempotentReplay | null> {
+    const replay = await claimIdempotentRequest(db, args);
+    if (replay === null) {
+      this.unsettled.set(request, { key: args.key, endpoint: args.endpoint, requestHash: args.requestHash });
+    }
+    return replay;
+  }
+
+  /** `saveIdempotentResponse`, then forget the claim — it is completed. */
+  async save(
+    db: Db,
+    request: object,
+    args: IdempotencyClaim & { statusCode: number; responseBody: string },
+  ): Promise<void> {
+    await saveIdempotentResponse(db, args);
+    this.unsettled.delete(request);
+  }
+
+  /** Release this request's claim if it was never saved. Safe to call for any request. */
+  async releaseUnsettled(db: Db, request: object): Promise<void> {
+    const claim = this.unsettled.get(request);
+    if (!claim) return;
+    this.unsettled.delete(request);
+    await releaseIdempotentClaim(db, claim);
+  }
+}
+
+/**
+ * Drop the caller's still-pending claim after its mutation threw, so a retry
+ * with the same key can run again right away instead of waiting out
+ * IDEMPOTENCY_CLAIM_EXPIRY_MS. Never touches a completed response.
+ */
+export async function releaseIdempotentClaim(
+  db: Db,
+  args: { key: string; endpoint: string; requestHash: string },
+): Promise<void> {
+  await db.idempotencyRecord.deleteMany({
+    where: {
+      key: args.key,
+      endpoint: args.endpoint,
+      requestHash: args.requestHash,
+      pendingSince: { not: null },
+    },
+  });
 }

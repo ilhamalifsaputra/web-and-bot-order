@@ -256,6 +256,10 @@ export const Env = z.object({
   // Secret path segment + Telegram secret_token header for the webhook route.
   // Required in webhook mode; keep it long and random. Never log it.
   WEBHOOK_SECRET: z.string().optional(),
+  // Bearer token a Prometheus scraper presents to the web admin's GET
+  // /metrics. A `metrics_token` Setting wins over this. With neither set (and
+  // no owner session on the request) /metrics answers 403 — closed by default.
+  METRICS_TOKEN: z.string().optional(),
 
   // ---- notifier ----
   NOTIF_BOT_TOKEN: z.string().optional(),

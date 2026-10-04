@@ -202,6 +202,46 @@ describe("POST /api/catalog/digiflazz/sync/apply", () => {
     expect(res.json()).toEqual({ error: 'Invalid price for "X".' });
   });
 
+  // I-3: a price the admin retyped is read by shape (16.500 is sixteen and a
+  // half thousand rupiah); an untouched suggested price arrives in the row's
+  // `exact_fields` and the machine-written cost price is always read exactly.
+  it("reads a retyped price by shape and an untouched suggested price exactly", async () => {
+    const category = await createCategory(prisma, "Top Up Game");
+    const res = await postJson("/api/catalog/digiflazz/sync/apply", {
+      categoryId: category.id,
+      brands: [
+        {
+          brand: "Mobile Legends",
+          rows: [
+            { buyerSkuCode: "ml100", productName: "ML 100", price: "16.500", costPrice: "15000" },
+            { buyerSkuCode: "ml200", productName: "ML 200", price: "16500.125", costPrice: "15000.1", exact_fields: ["price"] },
+          ],
+        },
+      ],
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    const typed = await prisma.denomination.findFirstOrThrow({ where: { supplierSku: "ml100" } });
+    expect(typed.price.toString()).toBe("16500");
+    const exact = await prisma.denomination.findFirstOrThrow({ where: { supplierSku: "ml200" } });
+    expect(exact.price.toString()).toBe("16500.125");
+    expect(exact.costPrice?.toString()).toBe("15000.1");
+  });
+
+  it.each([
+    ["price", "Infinity", 'Invalid price for "X".'],
+    ["price", "1.2.3,4,5", 'Invalid price for "X".'],
+    ["costPrice", "Infinity", 'Invalid cost price for "X".'],
+  ])("refuses %s %s with 400", async (field, text, error) => {
+    const category = await createCategory(prisma, "Top Up Game");
+    const row = { buyerSkuCode: "ml100", productName: "X", price: "16500", costPrice: "15000", [field]: text };
+    const res = await postJson("/api/catalog/digiflazz/sync/apply", {
+      categoryId: category.id,
+      brands: [{ brand: "Mobile Legends", rows: [row] }],
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ error });
+  });
+
   it("I11: rejects an invalid cost price with 400 instead of crashing", async () => {
     const category = await createCategory(prisma, "Top Up Game");
     const res = await postJson("/api/catalog/digiflazz/sync/apply", {

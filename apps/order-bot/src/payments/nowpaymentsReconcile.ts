@@ -41,7 +41,7 @@ import { adminIds } from "@app/core/runtime";
 import { logger } from "@app/core/logger";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import { Decimal } from "@app/core/money";
-import { getPaymentStatus, RateLimitedError } from "@app/core/payments/nowpayments";
+import { getPaymentStatus, checkNowpaymentsAmount, RateLimitedError } from "@app/core/payments/nowpayments";
 import {
   MAX_ORDERS_PER_CYCLE,
   RECONCILE_TELEGRAM_TIMEOUT_MS,
@@ -230,20 +230,53 @@ export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof 
   // error condition worth alerting on.
   if (!status.paid) return "ok";
 
-  // Paid but short — never deliver on an underpayment; flag UNDERPAID and
-  // alert admins instead of leaving it silently PENDING (I-5). The order's
-  // own status is the idempotency guard — a second cycle re-checking an
-  // already-UNDERPAID order is a no-op (markOrderUnderpaid returns false).
-  if (status.amount.lessThan(new Decimal(order.totalAmount))) {
-    if (await markOrderUnderpaid(prisma, { orderId: order.id, gateway: "NOWPayments", receivedAmount: status.amount, expectedAmount: order.totalAmount })) {
-      logger.warn(`Order ${order.orderCode} underpaid — NOWPayments reports ${status.amount}, expected ${order.totalAmount}, left PENDING for manual review`);
-      const alertOutcome = await withTimeout(
-        alertAdmins(api, `⚠️ Underpaid order <code>${order.orderCode}</code>\nReceived <b>${status.amount.toString()}</b>, expected <b>${new Decimal(order.totalAmount).toString()}</b> (NOWPayments).`),
-        RECONCILE_TELEGRAM_TIMEOUT_MS,
-      );
-      if (alertOutcome === "timeout") {
-        logger.warn(`NOWPayments reconcile gave up waiting on the underpaid-order admin alert for order ${order.orderCode} after ${RECONCILE_TELEGRAM_TIMEOUT_MS}ms — some admins may not have been notified`);
+  // Value check (Task B fix round): `actually_paid` is in the PAY currency
+  // (whatever coin the buyer chose), so comparing it to the USDT order total
+  // was a unit error — a coin worth more than a dollar made every full payment
+  // look short, one worth less let a short payment through. Judged instead in
+  // the invoice's usd price by the same `checkNowpaymentsAmount` the IPN
+  // webhook uses (Task B3a).
+  const valueCheck = checkNowpaymentsAmount(status, order.totalAmount);
+  if (!valueCheck.ok) {
+    if (valueCheck.receivedValue) {
+      // Paid but short — never deliver on an underpayment; flag UNDERPAID and
+      // alert admins instead of leaving it silently PENDING (I-5). The order's
+      // own status is the idempotency guard — a second cycle re-checking an
+      // already-UNDERPAID order is a no-op (markOrderUnderpaid returns false).
+      // The received figure is in the order's currency, at the invoice's rate.
+      const received = valueCheck.receivedValue;
+      if (await markOrderUnderpaid(prisma, { orderId: order.id, gateway: "NOWPayments", receivedAmount: received, expectedAmount: order.totalAmount })) {
+        logger.warn(`Order ${order.orderCode} underpaid — NOWPayments reports ${valueCheck.reason}, worth ${received} against the expected ${order.totalAmount}, left for manual review`);
+        const alertOutcome = await withTimeout(
+          alertAdmins(api, `⚠️ Underpaid order <code>${order.orderCode}</code>\nReceived <b>${received.toString()}</b>, expected <b>${new Decimal(order.totalAmount).toString()}</b> (NOWPayments).`),
+          RECONCILE_TELEGRAM_TIMEOUT_MS,
+        );
+        if (alertOutcome === "timeout") {
+          logger.warn(`NOWPayments reconcile gave up waiting on the underpaid-order admin alert for order ${order.orderCode} after ${RECONCILE_TELEGRAM_TIMEOUT_MS}ms — some admins may not have been notified`);
+        }
       }
+      return "ok";
+    }
+    // The value could not be judged at all (no usd price, missing fields):
+    // neither deliver nor claim an underpayment. Leave the order pending for
+    // the IPN webhook and alert the admins once (deduped per order and admin
+    // inside the helper), so it cannot auto-cancel unnoticed.
+    logger.warn(
+      `NOWPayments reports order ${order.orderCode} finished, but the payment could not be valued because ${valueCheck.reason} — nothing was delivered or flagged; the order stays pending for the IPN webhook and the admins have been alerted to check it by hand`,
+    );
+    try {
+      await enqueueAdminUnconfirmablePayment(prisma, {
+        orderId: order.id,
+        orderCode: order.orderCode,
+        gateway: "NOWPayments",
+        reason: "unverified_amount",
+      });
+      nudgeOutboxDispatcher();
+    } catch (err) {
+      logger.error(
+        { err, orderId: order.id },
+        `Could not queue the admin alert for order ${order.orderCode}, whose NOWPayments payment is reported finished but could not be valued — the next cycle will try again; if none succeeds, this order will auto-cancel with nobody told`,
+      );
     }
     return "ok";
   }
@@ -304,7 +337,8 @@ export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof 
     const r = await deliverPaidNowpaymentsOrder(prisma, {
       orderId: order.id,
       trxId: status.trxId,
-      amount: status.amount,
+      // In the order's currency (Task B fix round), never pay-currency coins.
+      amount: valueCheck.amount,
       shopUrl: null,
     });
     if (r.status === "delivered") {

@@ -36,6 +36,8 @@ import {
   deliverPaidTokopayOrder,
   markOrderUnderpaid,
   recordPollHealth,
+  recordUnmatchedTokopayTx,
+  enqueueAdminUnconfirmablePayment,
 } from "@app/db";
 import { esc } from "../util/format";
 import { flipSettledOrderBubble } from "../jobs";
@@ -193,6 +195,36 @@ export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof 
       logger.warn({ err }, `Failed to check TokoPay status for order ${order.orderCode} — will retry on the next reconcile cycle`);
     }
     return "gateway_error";
+  }
+  if (status.unverified) {
+    // TokoPay says PAID but its status carried no amount (Task B fix round). Never
+    // deliver on it, but money may have arrived, so park it in the unmatched
+    // manual-review queue (the UNIQUE ledger key, shared with the webhook,
+    // keeps it one row) and alert the admins. The row stays
+    // reclaimable, so a later status that does carry the amount still delivers.
+    const trxId = gatewayLedgerTrxId(status.trxId, order.orderCode);
+    try {
+      const newlyParked = await recordUnmatchedTokopayTx(prisma, { trxId, amount: 0 });
+      // Deduped per (order, admin, reason) inside the helper, so calling it
+      // every cycle still tells each admin exactly once — and a cycle that
+      // parked the row but failed to queue the alert is repaired by the next.
+      await enqueueAdminUnconfirmablePayment(prisma, {
+        orderId: order.id,
+        orderCode: order.orderCode,
+        gateway: "TokoPay",
+        reason: "unverified_amount",
+      });
+      if (newlyParked) {
+        logger.warn(`TokoPay reports order ${order.orderCode} as paid but without an amount, so the payment could not be verified — nothing was delivered; it is parked in the unmatched queue and the admins were alerted to check it in the TokoPay dashboard`);
+        nudgeOutboxDispatcher();
+      }
+    } catch (err) {
+      logger.error(
+        { err, orderId: order.id },
+        `Could not park or alert on order ${order.orderCode}, which TokoPay reports as paid but without an amount — nothing was delivered, and the next reconcile cycle will try to record it again; if every cycle fails, the order will auto-cancel with nobody told`,
+      );
+    }
+    return "ok";
   }
   if (!status.paid) return "ok";
 

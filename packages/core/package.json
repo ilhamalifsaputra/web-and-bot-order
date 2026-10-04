@@ -31,6 +31,7 @@
     "./media": "./src/media.ts",
     "./bulk": "./src/bulk.ts",
     "./http": "./src/http.ts",
+    "./redactPath": "./src/redactPath.ts",
     "./password": "./src/password.ts",
     "./credentialCrypto": "./src/credentialCrypto.ts",
     "./mailer": "./src/mailer.ts",

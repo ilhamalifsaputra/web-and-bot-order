@@ -226,4 +226,35 @@ describe("useIdempotentPost", () => {
 
     expect(keyOfCall(1)).toBe(keyOfCall(0));
   });
+  // I-1: the server's "first attempt still running" 409 stores nothing and
+  // answers nothing — the first attempt may still create the order/payout.
+  // Dropping the key here means: second tap gets this 409, the first
+  // attempt's response is lost, and the next click mints a fresh key and
+  // runs the mutation twice. A byte-identical retry cannot hit key_reused.
+  it("holds the key when the response was the request-in-progress 409", async () => {
+    vi.mocked(apiPost).mockImplementation(respondedWith(409, "idempotency_request_in_progress"));
+    const { result } = renderHook(() => useIdempotentPost());
+
+    const body = { method: "binance", voucher_code: "" };
+    await expect(result.current("/api/payments/order/501/refund", body)).rejects.toThrow("idempotency_request_in_progress");
+    vi.mocked(apiPost).mockImplementation(neverAnswered());
+    await expect(result.current("/api/payments/order/501/refund", body)).rejects.toThrow();
+    await expect(result.current("/api/payments/order/501/refund", body)).rejects.toThrow();
+
+    expect(keyOfCall(1)).toBe(keyOfCall(0));
+    expect(keyOfCall(2)).toBe(keyOfCall(0));
+  });
+
+  // Every OTHER 409 is a real, stored answer (key reused, a code already
+  // taken, ...) and still drops the key as before.
+  it.each(["idempotency_key_reused", "voucher_code_taken"])("still mints a new key after a %s 409", async (message) => {
+    vi.mocked(apiPost).mockImplementation(respondedWith(409, message));
+    const { result } = renderHook(() => useIdempotentPost());
+
+    const body = { method: "binance", voucher_code: "" };
+    await expect(result.current("/api/payments/order/501/refund", body)).rejects.toThrow(message);
+    await expect(result.current("/api/payments/order/501/refund", body)).rejects.toThrow(message);
+
+    expect(keyOfCall(1)).not.toBe(keyOfCall(0));
+  });
 });

@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/select";
 import { Save, Trash2 } from "lucide-react";
 import { apiGet, apiPatch, apiPost, apiDelete } from "../api/client";
+import { exactFieldsOf } from "../lib/exactFields";
 import { draftsToFields, fieldToDraft, fieldsAreValid } from "../lib/additionalFields";
 import type { AdditionalField, AdditionalFieldDraft } from "../api/types";
 
@@ -88,6 +89,13 @@ interface CatalogListData {
   products: SiblingProduct[];
 }
 
+interface PriceFields {
+  price: string;
+  costPrice: string;
+  resellerPrice: string;
+}
+const PRICE_FIELDS = ["price", "costPrice", "resellerPrice"] as const;
+
 function isValidPrice(value: string): boolean {
   if (value.trim() === "") return false;
   return !Number.isNaN(Number(value.trim()));
@@ -138,6 +146,11 @@ export function DenominationEditPage() {
 
   const [bulkMinQuantity, setBulkMinQuantity] = useState("");
   const [bulkDiscountPercent, setBulkDiscountPercent] = useState("");
+  // The server's own decimal strings this form was pre-filled with, so a save
+  // can name the untouched ones in `exact_fields` (lib/exactFields.ts) and a
+  // stored 100.123 is never re-read by shape as 100123.
+  const [pricePrefill, setPricePrefill] = useState<PriceFields | null>(null);
+  const [bulkPrefill, setBulkPrefill] = useState<{ discountPercent: string } | null>(null);
   const [bulkError, setBulkError] = useState<string | null>(null);
   const existingRule = data?.statsByDenom?.[Number(denomId)]?.rule ?? null;
 
@@ -149,6 +162,11 @@ export function DenominationEditPage() {
     setPrice(denomination.price);
     setCostPrice(denomination.costPrice ?? "");
     setResellerPrice(denomination.resellerPrice ?? "");
+    setPricePrefill({
+      price: denomination.price,
+      costPrice: denomination.costPrice ?? "",
+      resellerPrice: denomination.resellerPrice ?? "",
+    });
     setWarrantyDays(denomination.warrantyDays ? String(denomination.warrantyDays) : "");
     setDescription(denomination.description ?? "");
     setSortOrder(String(denomination.sortOrder ?? 0));
@@ -163,6 +181,7 @@ export function DenominationEditPage() {
     if (existingRule) {
       setBulkMinQuantity(String(existingRule.minQuantity));
       setBulkDiscountPercent(existingRule.discountPercent);
+      setBulkPrefill({ discountPercent: existingRule.discountPercent });
     }
     setLoaded(true);
   }, [denomination, loaded, existingRule]);
@@ -176,6 +195,11 @@ export function DenominationEditPage() {
         price: price.trim(),
         ...(costPrice.trim() ? { costPrice: costPrice.trim() } : {}),
         ...(resellerPrice.trim() ? { resellerPrice: resellerPrice.trim() } : {}),
+        exact_fields: exactFieldsOf(
+          { price: price.trim(), costPrice: costPrice.trim(), resellerPrice: resellerPrice.trim() },
+          pricePrefill,
+          PRICE_FIELDS,
+        ),
         ...(warrantyDays.trim() ? { warrantyDays: Number(warrantyDays.trim()) } : {}),
         ...(description.trim() ? { description: description.trim() } : {}),
         ...(sortOrder.trim() ? { sortOrder: Number(sortOrder.trim()) } : {}),
@@ -205,6 +229,7 @@ export function DenominationEditPage() {
       apiPost(`/api/catalog/denominations/${denomId}/bulk-pricing`, {
         minQuantity: Number(bulkMinQuantity.trim()),
         discountPercent: bulkDiscountPercent.trim(),
+        exact_fields: exactFieldsOf({ discountPercent: bulkDiscountPercent.trim() }, bulkPrefill, ["discountPercent"]),
       }),
     onMutate: () => setBulkError(null),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["catalog", productId] }),

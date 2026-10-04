@@ -51,14 +51,32 @@ async function disableNowpayments() {
  * + a REAL HMAC-SHA512-over-the-raw-bytes signature for it (Task 2a fix —
  * the webhook now hashes the exact request body, not a re-serialization).
  */
-function signedIpn(args: { orderId: string; amount: string; trxId?: string; status?: string }) {
-  const body = {
+function signedIpn(args: {
+  orderId: string;
+  amount: string;
+  trxId?: string;
+  status?: string;
+  /** Defaults to `amount` (a USDT pay currency quoted 1:1). `null` omits it. */
+  payAmount?: string | null;
+  /** Defaults to `amount`. `null` omits the field. */
+  priceAmount?: string | null;
+  /** Defaults to "usd" (what createInvoice always sends). `null` omits it. */
+  priceCurrency?: string | null;
+  payCurrency?: string;
+}) {
+  const body: Record<string, unknown> = {
     order_id: args.orderId,
     payment_id: args.trxId ?? `PID-${args.orderId}`,
     payment_status: args.status ?? "finished",
     actually_paid: args.amount,
-    pay_amount: args.amount,
+    pay_currency: args.payCurrency ?? "usdttrc20",
   };
+  const payAmount = args.payAmount === undefined ? args.amount : args.payAmount;
+  if (payAmount !== null) body.pay_amount = payAmount;
+  const priceAmount = args.priceAmount === undefined ? args.amount : args.priceAmount;
+  if (priceAmount !== null) body.price_amount = priceAmount;
+  const priceCurrency = args.priceCurrency === undefined ? "usd" : args.priceCurrency;
+  if (priceCurrency !== null) body.price_currency = priceCurrency;
   const raw = JSON.stringify(body);
   const signature = createHmac("sha512", IPN_SECRET).update(raw).digest("hex");
   return { body, raw, signature };
@@ -85,7 +103,7 @@ beforeAll(async () => {
   });
   denomId = denom.id;
   await prisma.stockItem.createMany({
-    data: Array.from({ length: 5 }, () => ({
+    data: Array.from({ length: 15 }, () => ({
       productId: denom.id,
       credentials: "user@mail.com:pass",
       status: "AVAILABLE",
@@ -190,6 +208,91 @@ describe("POST /pay/nowpayments/callback", () => {
     const ledger = await prisma.processedNowpaymentsTx.findUnique({ where: { trxId: "PID-HAPPY-1" } });
     expect(ledger).not.toBeNull();
     expect(ledger!.outcome).toBe("matched");
+  });
+
+  // Task B3a (backend audit): actually_paid/pay_amount are in the PAY
+  // currency (whatever coin the buyer chose), while the order total is USDT.
+  // Comparing them directly let a coin with a smaller unit value pass the
+  // short-payment check while paying a fraction of the price. The value
+  // check now runs in the invoice's own price currency.
+  describe("amount is verified in the invoice's price currency (Task B3a)", () => {
+    async function post(raw: string, signature: string) {
+      return app.inject({
+        method: "POST",
+        url: "/pay/nowpayments/callback",
+        headers: { "content-type": "application/json", "x-nowpayments-sig": signature },
+        payload: raw,
+      });
+    }
+
+    it("refuses a pay-currency amount that is numerically above the USD total but short of the quoted pay_amount", async () => {
+      const order = await createPendingNowpaymentsOrder("ORD-NP-B3A-UNITS", "50");
+      // 200 TRX looks like more than 50 — but the quote for $50 was 500 TRX.
+      const { raw, signature } = signedIpn({
+        orderId: order.orderCode,
+        amount: "200",
+        payAmount: "500",
+        priceAmount: "50",
+        payCurrency: "trx",
+        trxId: "PID-B3A-UNITS",
+      });
+      const res = await post(raw, signature);
+      expect(res.json()).toEqual({ status: "amount mismatch" });
+      expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe("PENDING_PAYMENT");
+    });
+
+    it("refuses an invoice priced in a currency other than usd", async () => {
+      const order = await createPendingNowpaymentsOrder("ORD-NP-B3A-EUR", "50");
+      const { raw, signature } = signedIpn({ orderId: order.orderCode, amount: "50", priceCurrency: "eur", trxId: "PID-B3A-EUR" });
+      expect((await post(raw, signature)).json()).toEqual({ status: "amount mismatch" });
+      expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe("PENDING_PAYMENT");
+    });
+
+    it("refuses an IPN with no price_amount — the value cannot be verified", async () => {
+      const order = await createPendingNowpaymentsOrder("ORD-NP-B3A-NOPRICE", "50");
+      const { raw, signature } = signedIpn({ orderId: order.orderCode, amount: "50", priceAmount: null, trxId: "PID-B3A-NOPRICE" });
+      expect((await post(raw, signature)).json()).toEqual({ status: "amount mismatch" });
+      expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe("PENDING_PAYMENT");
+    });
+
+    it("refuses an invoice priced below the order total", async () => {
+      const order = await createPendingNowpaymentsOrder("ORD-NP-B3A-CHEAP", "50");
+      const { raw, signature } = signedIpn({ orderId: order.orderCode, amount: "60", payAmount: "60", priceAmount: "5", trxId: "PID-B3A-CHEAP" });
+      expect((await post(raw, signature)).json()).toEqual({ status: "amount mismatch" });
+    });
+
+    it("delivers when the invoice price is the total rounded down to cents (createInvoice's toFixed(2)), without flagging an overpayment", async () => {
+      const order = await createPendingNowpaymentsOrder("ORD-NP-B3A-ROUND", "10.004");
+      const { raw, signature } = signedIpn({ orderId: order.orderCode, amount: "10.00", trxId: "PID-B3A-ROUND" });
+      expect((await post(raw, signature)).json()).toEqual({ status: "delivered" });
+      const ledger = await prisma.processedNowpaymentsTx.findUnique({ where: { trxId: "PID-B3A-ROUND" } });
+      expect(ledger!.outcome).toBe("matched");
+    });
+
+    it("delivers when the invoice price is the total rounded up to cents, without flagging an overpayment", async () => {
+      const order = await createPendingNowpaymentsOrder("ORD-NP-B3A-ROUNDUP", "10.005");
+      const { raw, signature } = signedIpn({ orderId: order.orderCode, amount: "10.01", trxId: "PID-B3A-ROUNDUP" });
+      expect((await post(raw, signature)).json()).toEqual({ status: "delivered" });
+      const ledger = await prisma.processedNowpaymentsTx.findUnique({ where: { trxId: "PID-B3A-ROUNDUP" } });
+      expect(ledger!.outcome).toBe("matched");
+    });
+
+    it("flags an overpayment measured in the price currency", async () => {
+      const order = await createPendingNowpaymentsOrder("ORD-NP-B3A-OVER", "50");
+      // Quote: 500 TRX for $50; buyer sent 550 TRX = $55.
+      const { raw, signature } = signedIpn({
+        orderId: order.orderCode,
+        amount: "550",
+        payAmount: "500",
+        priceAmount: "50",
+        payCurrency: "trx",
+        trxId: "PID-B3A-OVER",
+      });
+      expect((await post(raw, signature)).json()).toEqual({ status: "delivered" });
+      const ledger = await prisma.processedNowpaymentsTx.findUnique({ where: { trxId: "PID-B3A-OVER" } });
+      expect(ledger!.outcome).toBe("overpaid");
+      expect(ledger!.amount!.toString()).toBe("55");
+    });
   });
 
   it("is idempotent: replaying the same payment_id after delivery is a no-op (already_processed)", async () => {

@@ -1,4 +1,6 @@
 import type { FastifyInstance } from "fastify";
+import { csvRow } from "../../lib/csv";
+import { parsePositiveId } from "../../lib/params";
 import { OrderStatus, OrderKind, DeliveryType, StockActorType } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { errorBody } from "@app/core/errorBody";
@@ -99,26 +101,6 @@ function parseDate(value: string | undefined): Date | null {
   if (!value) return null;
   const d = new Date(`${value}T00:00:00Z`);
   return Number.isNaN(d.getTime()) ? null : d;
-}
-
-/** Quotes a CSV field per RFC 4180: wrap in double quotes if it contains a
- * comma, quote, or newline, doubling any embedded quotes. Also neutralizes
- * CSV formula injection (see users.ts's csvField, which this mirrors): a
- * leading `=`, `+`, `-`, or `@` is interpreted by Excel/Google Sheets as the
- * start of a formula, and this row now carries a guest's self-reported
- * `guestEmail` — attacker-controlled free text from the public,
- * unauthenticated checkout form — so prefixing with a single quote forces
- * the cell to render as literal text instead of evaluating. */
-function csvField(value: string): string {
-  const escaped = /^[=+\-@]/.test(value) ? `'${value}` : value;
-  if (/[",\r\n]/.test(escaped)) {
-    return `"${escaped.replace(/"/g, '""')}"`;
-  }
-  return escaped;
-}
-
-function csvRow(fields: string[]): string {
-  return fields.map(csvField).join(",") + "\r\n";
 }
 
 function serializeMoneyView(mv: ReturnType<typeof orderMoneyView>) {
@@ -239,7 +221,8 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
   });
 
   app.get("/api/orders/:orderId", { preHandler: blockReadonlyReads }, async (req, reply) => {
-    const orderId = Number((req.params as { orderId: string }).orderId);
+    const orderId = parsePositiveId((req.params as { orderId: string }).orderId);
+    if (orderId === null) return reply.code(400).send({ error: "Invalid order id." });
     const order = await getOrder(prisma, orderId);
     if (!order) return reply.code(404).send({ error: "Order not found." });
     // The buyer's manual_with_info answers, pre-labeled against the SKU's
@@ -327,7 +310,8 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
   // it still belongs to this order — a released row re-sold to another buyer
   // must never leak through a stale OrderItem.stockItemId.
   app.post("/api/orders/:orderId/reveal", { preHandler: csrfProtect }, async (req, reply) => {
-    const orderId = Number((req.params as { orderId: string }).orderId);
+    const orderId = parsePositiveId((req.params as { orderId: string }).orderId);
+    if (orderId === null) return reply.code(400).send({ error: "Invalid order id." });
     let order: Awaited<ReturnType<typeof getOrder>>;
     try {
       order = await getOrder(prisma, orderId);
@@ -364,7 +348,8 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
   });
 
   app.post("/api/orders/:orderId/approve", { preHandler: csrfProtect }, async (req, reply) => {
-    const orderId = Number((req.params as { orderId: string }).orderId);
+    const orderId = parsePositiveId((req.params as { orderId: string }).orderId);
+    if (orderId === null) return reply.code(400).send({ error: "Invalid order id." });
     let settled: "delivered" | "processing" = "delivered";
     try {
       await prisma.$transaction(async (tx) => {
@@ -413,7 +398,8 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
   // works once the order is actually DELIVERED, and only for buyers with a
   // Telegram id — web-only buyers see their order on the storefront instead.
   app.post("/api/orders/:orderId/resend", { preHandler: csrfProtect }, async (req, reply) => {
-    const orderId = Number((req.params as { orderId: string }).orderId);
+    const orderId = parsePositiveId((req.params as { orderId: string }).orderId);
+    if (orderId === null) return reply.code(400).send({ error: "Invalid order id." });
     const order = await getOrder(prisma, orderId);
     if (!order) return reply.code(404).send({ error: "Order not found." });
     if (order.status !== OrderStatus.DELIVERED) {
@@ -469,7 +455,8 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
   });
 
   app.post("/api/orders/:orderId/reject", { preHandler: csrfProtect }, async (req, reply) => {
-    const orderId = Number((req.params as { orderId: string }).orderId);
+    const orderId = parsePositiveId((req.params as { orderId: string }).orderId);
+    if (orderId === null) return reply.code(400).send({ error: "Invalid order id." });
     const reason = ((req.body as Record<string, string>).reason ?? "").trim();
     if (!reason) {
       return reply.code(400).send({ error: "A rejection reason is required." });
@@ -499,7 +486,8 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
     "/api/orders/:orderId/credit-balance",
     { preHandler: csrfProtect },
     async (req, reply) => {
-      const orderId = Number((req.params as { orderId: string }).orderId);
+      const orderId = parsePositiveId((req.params as { orderId: string }).orderId);
+      if (orderId === null) return reply.code(400).send({ error: "Invalid order id." });
       try {
         await prisma.$transaction(async (tx) => {
           const { credited, currency, wasAlreadyCancelled, evidenceRowsConsumed } = await creditOrderToBalance(tx, {
@@ -541,7 +529,8 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
   // auto-caller path, every caller here is a real admin — so this route does
   // NOT write a second audit row (would double-log).
   app.post("/api/orders/:orderId/fulfill", { preHandler: csrfProtect }, async (req, reply) => {
-    const orderId = Number((req.params as { orderId: string }).orderId);
+    const orderId = parsePositiveId((req.params as { orderId: string }).orderId);
+    if (orderId === null) return reply.code(400).send({ error: "Invalid order id." });
     const body = req.body as Record<string, unknown>;
     const content = typeof body.content === "string" ? body.content.trim() : "";
     if (!content) {
@@ -590,7 +579,8 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
   // refund API). Modeled on /reject: a reason is required, ValidationError
   // (e.g. an already-DELIVERED order) maps to 422.
   app.post("/api/orders/:orderId/cancel", { preHandler: csrfProtect }, async (req, reply) => {
-    const orderId = Number((req.params as { orderId: string }).orderId);
+    const orderId = parsePositiveId((req.params as { orderId: string }).orderId);
+    if (orderId === null) return reply.code(400).send({ error: "Invalid order id." });
     const reason = ((req.body as Record<string, string>).reason ?? "").trim();
     if (!reason) {
       return reply.code(400).send({ error: "A cancellation reason is required." });

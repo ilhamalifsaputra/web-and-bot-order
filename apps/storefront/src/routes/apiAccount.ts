@@ -59,6 +59,8 @@ import {
   LOGIN_USERNAME_RE,
   getReferralSummary,
   isServiceActive,
+  listActiveProductOptions,
+  getCatalogProduct,
 } from "@app/db";
 import type { SupportTicketListSort, SupportTicketStatusFilter } from "@app/db";
 import {
@@ -73,6 +75,8 @@ import { resolveBotId, resolveBotUsername, requestCurrency } from "../shop";
 import { constantTimeEqual } from "../auth";
 import { errorBody } from "@app/core/errorBody";
 import { originOk } from "./cart";
+import { startTelegramLinkIntent } from "../telegramLinkIntent";
+import { guestClaimLockedOut, recordGuestClaimFailure } from "../rateLimit";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -514,11 +518,7 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
   app.get("/account/support/new", async (req, reply) => {
     const customer = await requireCustomer(req, reply);
     if (!customer) return;
-    const products = await prisma.product.findMany({
-      where: { isActive: true, isArchived: false },
-      orderBy: { name: "asc" },
-      select: { id: true, name: true },
-    });
+    const products = await listActiveProductOptions(prisma);
     return reply.send({ products });
   });
 
@@ -597,10 +597,7 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
     // "Does this product id exist at all" — active-or-not (a ticket about a
     // since-archived product is still valid). `isActive`/`isArchived` are
     // deliberately NOT checked here.
-    const product = await prisma.product.findUnique({
-      where: { id: productId },
-      select: { id: true },
-    });
+    const product = await getCatalogProduct(prisma, productId);
     if (!product) {
       return reply.code(400).send({ error: "web.support_product_invalid" });
     }
@@ -791,6 +788,9 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
         email: customer.user.email ?? "",
       },
       has_password: Boolean(customer.user.passwordHash),
+      // A guest row must confirm its order contact email to set credentials
+      // (see the credentials route below) — the client shows that field.
+      is_guest: customer.user.isGuest === true,
       tg_linked: customer.user.telegramId != null,
       tg_name:
         customer.user.username ??
@@ -799,8 +799,27 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
     });
   });
 
+  // Arms ONE Telegram link for this account (telegramLinkIntent.ts): the SPA
+  // calls this right before sending the browser to oauth.telegram.org, so the
+  // cookie-authenticated GET /account/settings/link-telegram callback can't
+  // be driven by a cross-site navigation. Guest rows can't link at all.
+  app.post("/account/settings/link-telegram/start", async (req, reply) => {
+    const customer = await requireCustomer(req, reply);
+    if (!customer) return;
+    if (!csrfHeaderOk(req, customer)) return reply.code(403).send({ error: "csrf_failed" });
+    if (customer.user.isGuest) return reply.code(400).send({ error: "web.settings_tg_guest" });
+    startTelegramLinkIntent(customer.userId);
+    return reply.send({ ok: true });
+  });
+
   app.post<{
-    Body: { username?: string; email?: string; current_password?: string; new_password?: string };
+    Body: {
+      username?: string;
+      email?: string;
+      current_password?: string;
+      new_password?: string;
+      guest_email?: string;
+    };
   }>("/account/settings/credentials", async (req, reply) => {
     const customer = await requireCustomer(req, reply);
     if (!customer) return;
@@ -824,6 +843,27 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
     // email, or password) — same Storefront-3 guard as the HTML route.
     // Skipped only when the account has no password yet (Telegram-login-only).
     const changingCredentials = Boolean(changes.loginUsername || changes.email || newPassword);
+    // Guest rows (backend audit Task C1): a guest session can be minted from
+    // the order code alone (POST /api/v1/track), and the code is short enough
+    // to guess. Without this, whoever guessed it could set a password — or
+    // just an email, then use forgot-password — and keep the row for good.
+    // So ANY credential change on a guest row also needs the contact email
+    // the buyer typed at checkout (`guestEmail`), which the guest knows and a
+    // code-guesser does not. Compared after the same trim/lowercase
+    // createGuestUser applied when storing it.
+    if (changingCredentials && customer.user.isGuest) {
+      // Capped per guest row (GUEST_CLAIM_FAILURE_MAX misses / 15 min), so
+      // the session holder can't keep guessing the contact email.
+      if (guestClaimLockedOut(customer.userId)) {
+        return reply.code(429).send({ error: "web.settings_guest_email_locked" });
+      }
+      const proof = typeof req.body?.guest_email === "string" ? req.body.guest_email.trim().toLowerCase() : "";
+      const expected = customer.user.guestEmail ?? "";
+      if (!proof || !expected || !constantTimeEqual(proof, expected)) {
+        recordGuestClaimFailure(customer.userId);
+        return reply.code(400).send({ error: "web.settings_guest_email_mismatch" });
+      }
+    }
     if (changingCredentials && customer.user.passwordHash) {
       if (!verifyPassword(req.body?.current_password ?? "", customer.user.passwordHash)) {
         return reply.code(400).send({ error: "web.settings_wrong_password" });

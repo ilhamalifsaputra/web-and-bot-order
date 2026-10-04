@@ -838,6 +838,30 @@ export function countUserTickets(db: Db, userId: number): Promise<number> {
 }
 
 /**
+ * Whether a Telegram file id is a photo attached to some support ticket or
+ * ticket message — the admin photo proxy serves only these, never any other
+ * file the bot can see (a payment proof, say). `photoFileIds` is a
+ * comma-joined list, so candidates found with `contains` are confirmed by an
+ * exact match on the split list: a substring, or a `_`/`%` LIKE wildcard in
+ * the id, can never match.
+ */
+export async function isTicketAttachmentFileId(db: Db, fileId: string): Promise<boolean> {
+  if (!fileId || fileId.includes(",")) return false;
+  // Trimmed like the admin panel's own parsePhotoIds, so every id it renders resolves.
+  const holds = (list: string | null) => (list ?? "").split(",").some((id) => id.trim() === fileId);
+  const [tickets, messages] = await Promise.all([
+    db.supportTicket.findMany({ where: { photoFileIds: { contains: fileId } }, select: { photoFileIds: true } }),
+    db.ticketMessage.findMany({ where: { photoFileIds: { contains: fileId } }, select: { photoFileIds: true } }),
+  ]);
+  return tickets.some((t) => holds(t.photoFileIds)) || messages.some((m) => holds(m.photoFileIds));
+}
+
+/** How many of one buyer's tickets are not closed (the ticket detail page's "other open tickets" figure). */
+export function countOpenUserTickets(db: Db, userId: number): Promise<number> {
+  return db.supportTicket.count({ where: { userId, status: { not: TicketStatus.CLOSED } } });
+}
+
+/**
  * Task 10: the storefront /help page's own status-filter vocabulary — a
  * customer-facing grouping distinct from the admin queue's raw
  * `TicketStatus` values (see `TICKET_LEGAL_TRANSITIONS`'s doc comment for

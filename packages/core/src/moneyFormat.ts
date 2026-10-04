@@ -13,8 +13,9 @@
  * Not for crypto payables (`formatUsdt`, `formatUsdtAmount`, `formatPrice`):
  * those are copied into exchanges and stay "5.07 USDT" in every language.
  *
- * The one input-side helper, {@link parseMoneyInput}, reads an amount a buyer
- * typed back from either style by its shape.
+ * The input-side helpers: {@link parseMoneyInput} reads an amount a buyer
+ * typed back from either style by its shape, and {@link parsePercentInput}
+ * reads a typed percent.
  */
 import { Decimal } from "./money";
 import { normalizeMoneyInput } from "./moneyInput";
@@ -96,4 +97,16 @@ export function formatCompactIdrFor(amount: Decimal.Value, lang: string | null |
 export function parseMoneyInput(raw: string, currency: "IDR" | "USDT"): Decimal | null {
   const s = normalizeMoneyInput(raw, currency);
   return s === null ? null : new Decimal(s);
+}
+
+/**
+ * A typed percent: digits with an optional `.`/`,` decimal part of 1-2 digits
+ * (`10`, `10.5`, `10,5`). Anything else — `10.000`, `1e1`, signs, NaN — is null,
+ * so the caller re-prompts instead of guessing. Range checks stay with the caller.
+ * Shared by the order bot's admin conversations and the admin panel's routes.
+ */
+export function parsePercentInput(raw: string): Decimal | null {
+  const text = raw.trim();
+  if (!/^\d+([.,]\d{1,2})?$/.test(text)) return null;
+  return new Decimal(text.replace(",", "."));
 }

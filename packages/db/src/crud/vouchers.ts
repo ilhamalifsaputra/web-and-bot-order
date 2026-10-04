@@ -8,6 +8,7 @@ import { Decimal } from "@app/core/money";
 import { ValidationError } from "@app/core/errors";
 import type { PrismaClient } from "../client";
 import type { Db } from "./_types";
+import { isUniqueViolationOn } from "./_types";
 
 const q4 = (v: Decimal.Value) => quantizeMoney(v, 4);
 
@@ -87,6 +88,27 @@ export async function createVoucher(
   return voucher;
 }
 
+/** Thrown by updateVoucher when the new code already belongs to another voucher. */
+export class VoucherCodeTakenError extends Error {
+  constructor(public readonly code: string) {
+    super(`Voucher '${code}' already exists.`);
+    this.name = "VoucherCodeTakenError";
+  }
+}
+
+/**
+ * Give back one use of a voucher (an order that used it was cancelled,
+ * rejected, expired or refunded). One guarded statement, so it can never take
+ * usedCount below zero: the old read-then-decrement let two releases that both
+ * read 1 drive it to -1 (backend audit E2 item 7).
+ */
+export async function releaseVoucherUse(db: Db, voucherId: number): Promise<void> {
+  await db.voucher.updateMany({
+    where: { id: voucherId, usedCount: { gt: 0 } },
+    data: { usedCount: { decrement: 1 } },
+  });
+}
+
 /**
  * Editable fields for an existing voucher (admin Vouchers page's Edit
  * action). `code` is refused once `usedCount > 0` — mirrors deleteVoucher's
@@ -133,7 +155,8 @@ export async function updateVoucher(
   if (!existing) throw new Error("voucher not found");
 
   const nextCode = args.code !== undefined ? args.code.toUpperCase() : existing.code;
-  if (nextCode !== existing.code && existing.usedCount > 0) {
+  const codeChanges = nextCode !== existing.code;
+  if (codeChanges && existing.usedCount > 0) {
     throw new Error("cannot change the code of a voucher that has been used");
   }
 
@@ -182,18 +205,36 @@ export async function updateVoucher(
   // (Critical fix, code review round 1: a bare `updateVoucher(db, id,
   // { value: "25" })` on a SELECTED-scope voucher was silently wiping its
   // entire product set, since deleteMany ran unconditionally on every call).
-  const ops =
-    args.productIds !== undefined
-      ? [
-          db.voucher.update({ where: { id: voucherId }, data }),
-          db.voucherProduct.deleteMany({ where: { voucherId } }),
-          ...(finalScope === VoucherScope.SELECTED && args.productIds.length > 0
-            ? [db.voucherProduct.createMany({ data: args.productIds.map((productId) => ({ voucherId, productId })) })]
-            : []),
-        ]
-      : [db.voucher.update({ where: { id: voucherId }, data })];
-
-  await db.$transaction(ops);
+  //
+  // A code change is written only while usedCount is still 0, in the same
+  // statement (backend audit E2 item 7): the check above read usedCount
+  // earlier, and a checkout redeeming the voucher in between would otherwise
+  // let the rename land on a used voucher. The conditional UPDATE waits for
+  // that checkout and re-checks usedCount once it commits.
+  const productIds = args.productIds;
+  try {
+    await db.$transaction(async (tx) => {
+      const written = await tx.voucher.updateMany({
+        where: { id: voucherId, ...(codeChanges ? { usedCount: 0 } : {}) },
+        data,
+      });
+      if (written.count === 0) {
+        if (codeChanges && (await tx.voucher.findUnique({ where: { id: voucherId } }))) {
+          throw new Error("cannot change the code of a voucher that has been used");
+        }
+        throw new Error("voucher not found");
+      }
+      if (productIds !== undefined) {
+        await tx.voucherProduct.deleteMany({ where: { voucherId } });
+        if (finalScope === VoucherScope.SELECTED && productIds.length > 0) {
+          await tx.voucherProduct.createMany({ data: productIds.map((productId) => ({ voucherId, productId })) });
+        }
+      }
+    });
+  } catch (e) {
+    if (codeChanges && isUniqueViolationOn(e, "code")) throw new VoucherCodeTakenError(nextCode);
+    throw e;
+  }
 
   return db.voucher.findUnique({ where: { id: voucherId } });
 }
@@ -202,13 +243,19 @@ export async function setVoucherActive(db: Db, voucherId: number, isActive: bool
   await db.voucher.update({ where: { id: voucherId }, data: { isActive } });
 }
 
-/** Refuses once a code has been used at least once — deactivate it instead. */
+/**
+ * Refuses once a code has been used at least once — deactivate it instead.
+ * The delete itself carries the `usedCount = 0` condition (backend audit E2
+ * item 7), so a checkout redeeming the voucher at the same moment makes the
+ * delete wait, re-check and refuse, instead of deleting a used voucher.
+ */
 export async function deleteVoucher(db: Db, voucherId: number): Promise<void> {
-  const voucher = await db.voucher.findUnique({ where: { id: voucherId } });
-  if (voucher && voucher.usedCount > 0) {
+  const deleted = await db.voucher.deleteMany({ where: { id: voucherId, usedCount: 0 } });
+  if (deleted.count === 1) return;
+  if (await db.voucher.findUnique({ where: { id: voucherId } })) {
     throw new Error("cannot delete a voucher that has been used");
   }
-  await db.voucher.delete({ where: { id: voucherId } });
+  throw new Error("voucher not found");
 }
 
 /** Shape of the fields applyVoucherToSubtotal reads (Prisma Voucher subset). */
@@ -574,7 +621,13 @@ export async function bulkDeleteVouchers(
       failed.push({ id, error: "cannot delete a voucher that has been used" });
       continue;
     }
-    await db.voucher.delete({ where: { id } });
+    // Same guarded delete as deleteVoucher: a redemption landing after the
+    // check above makes this a no-op instead of deleting a used voucher.
+    const deleted = await db.voucher.deleteMany({ where: { id, usedCount: 0 } });
+    if (deleted.count === 0) {
+      failed.push({ id, error: "cannot delete a voucher that has been used" });
+      continue;
+    }
     succeeded.push(id);
   }
   return { succeeded, failed };

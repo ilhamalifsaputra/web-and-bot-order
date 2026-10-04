@@ -14,6 +14,7 @@ import {
   enqueueOrderPipelineFailed,
   enqueueManualOrderAdminAlert,
   enqueueAdminStalePayment,
+  enqueueAdminUnconfirmablePayment,
   enqueueAdminDigiflazzResyncAborted,
   enqueueAdminPasswordReset,
   enqueueAdminNewTicketDm,
@@ -544,6 +545,81 @@ describe("claimNotification / releaseNotificationClaim (crash-window double-send
   });
 });
 
+// Backend audit (Task B1.2): a dispatcher whose send outlived STALE_CLAIM_MS
+// has lost its claim — a second dispatcher may have reclaimed the row. The
+// slow one's late SENT/FAILED/release write must not clobber the new
+// claimer's state, so every post-send write can be guarded by the claim
+// timestamp the caller claimed with.
+describe("outbox writes are guarded by claim ownership (Task B1.2)", () => {
+  async function claimedTwice() {
+    const orderId = await seedOrder();
+    await enqueueNotification(prisma, NotificationEvent.ORDER_DELIVERED, orderId, {});
+    const [row] = await fetchPendingNotifications(prisma, 1);
+    const firstClaim = new Date(Date.now() - STALE_CLAIM_MS - 60_000);
+    expect(await claimNotification(prisma, row!.id, firstClaim)).toBe(true);
+    // The first claim went stale; a second dispatcher reclaims the row.
+    const secondClaim = new Date();
+    expect(await claimNotification(prisma, row!.id, secondClaim)).toBe(true);
+    return { id: row!.id, firstClaim, secondClaim };
+  }
+
+  it("markNotificationSent with a lost claim is a no-op and reports false", async () => {
+    const { id, firstClaim, secondClaim } = await claimedTwice();
+    expect(await markNotificationSent(prisma, id, firstClaim)).toBe(false);
+    const r = await prisma.notificationOutbox.findUnique({ where: { id } });
+    expect(r!.status).toBe("SENDING");
+    expect(r!.claimedAt!.getTime()).toBe(secondClaim.getTime());
+  });
+
+  it("markNotificationSent with the current claim marks the row SENT and reports true", async () => {
+    const { id, secondClaim } = await claimedTwice();
+    expect(await markNotificationSent(prisma, id, secondClaim)).toBe(true);
+    const r = await prisma.notificationOutbox.findUnique({ where: { id } });
+    expect(r!.status).toBe("SENT");
+  });
+
+  it("markNotificationFailed with a lost claim neither counts an attempt nor releases the new claimer's row", async () => {
+    const { id, firstClaim, secondClaim } = await claimedTwice();
+    await markNotificationFailed(prisma, id, "late failure", 5, new Date(), firstClaim);
+    const r = await prisma.notificationOutbox.findUnique({ where: { id } });
+    expect(r!.status).toBe("SENDING");
+    expect(r!.attempts).toBe(0);
+    expect(r!.claimedAt!.getTime()).toBe(secondClaim.getTime());
+  });
+
+  it("releaseNotificationClaim with a lost claim leaves the new claimer's row alone", async () => {
+    const { id, firstClaim, secondClaim } = await claimedTwice();
+    await releaseNotificationClaim(prisma, id, firstClaim);
+    const r = await prisma.notificationOutbox.findUnique({ where: { id } });
+    expect(r!.status).toBe("SENDING");
+    expect(r!.claimedAt!.getTime()).toBe(secondClaim.getTime());
+  });
+
+  it("releaseNotificationClaimWithBackoff with a lost claim leaves the new claimer's row alone", async () => {
+    const { id, firstClaim, secondClaim } = await claimedTwice();
+    await releaseNotificationClaimWithBackoff(prisma, id, new Date(), firstClaim);
+    const r = await prisma.notificationOutbox.findUnique({ where: { id } });
+    expect(r!.status).toBe("SENDING");
+    expect(r!.attempts).toBe(0);
+    expect(r!.claimedAt!.getTime()).toBe(secondClaim.getTime());
+  });
+
+  it("markNotificationFailed counts concurrent failures atomically (no lost update)", async () => {
+    const ids: number[] = [];
+    for (let i = 0; i < 5; i++) {
+      const n = await prisma.notificationOutbox.create({
+        data: { event: NotificationEvent.ORDER_DELIVERED, orderId: null, payloadJson: "{}" },
+      });
+      ids.push(n.id);
+    }
+    await Promise.all(
+      ids.flatMap((id) => Array.from({ length: 4 }, (_, k) => markNotificationFailed(prisma, id, `parallel ${k}`, 100))),
+    );
+    const rows = await prisma.notificationOutbox.findMany({ where: { id: { in: ids } } });
+    expect(rows.map((r) => r.attempts)).toEqual([4, 4, 4, 4, 4]);
+  });
+});
+
 describe("enqueueOrderPipelineFailed", () => {
   // Runs before the "two admins" test below — addAdminIdToDb persists into
   // the shared `admin_ids` Setting for the rest of this file's run, so the
@@ -643,6 +719,27 @@ describe("enqueueAdminStalePayment", () => {
     expect(payload.order_code).toBe("ORD-STALETEST");
     expect(payload.gateway).toBe("TokoPay");
     expect(payload.trx_id).toBe("TRX-STALE-1");
+  });
+});
+
+// Task B fix round: the missing-amount reason reuses ADMIN_UNCONFIRMABLE_PAYMENT
+// with its own dedupe key, so repeated calls tell each admin once and neither
+// reason's alert can swallow the other's for the same order.
+describe("enqueueAdminUnconfirmablePayment reasons", () => {
+  it("dedupes per (order, admin, reason) and keeps the no-trx-id alert separate from the missing-amount one", async () => {
+    const orderId = await seedOrder();
+    const args = { orderId, orderCode: "ORD-UNCONF", gateway: "PayDisini", reason: "unverified_amount" as const };
+    await enqueueAdminUnconfirmablePayment(prisma, args);
+    await enqueueAdminUnconfirmablePayment(prisma, args);
+    const where = { event: NotificationEvent.ADMIN_UNCONFIRMABLE_PAYMENT, orderId };
+    const rows = await prisma.notificationOutbox.findMany({ where });
+    expect(rows.map((r) => (JSON.parse(r.payloadJson) as { chat_id: number }).chat_id).sort((a, b) => a - b)).toEqual([4001, 4002, 4501, 4502]);
+    expect((JSON.parse(rows[0]!.payloadJson) as { reason?: string }).reason).toBe("unverified_amount");
+
+    await enqueueAdminUnconfirmablePayment(prisma, { orderId, orderCode: "ORD-UNCONF", gateway: "PayDisini" });
+    const all = await prisma.notificationOutbox.findMany({ where });
+    expect(all).toHaveLength(8);
+    expect(all.filter((r) => (JSON.parse(r.payloadJson) as { reason?: string }).reason === undefined)).toHaveLength(4);
   });
 });
 

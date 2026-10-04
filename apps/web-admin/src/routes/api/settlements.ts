@@ -39,9 +39,11 @@ import type { FastifyInstance } from "fastify";
 import { ValidationError } from "@app/core/errors";
 import { errorBody } from "@app/core/errorBody";
 import { logger } from "@app/core/logger";
+import { parseMoneyInput } from "@app/core/moneyFormat";
 import { prisma, listSettlements, recordSettlement, type SettlementLineInput } from "@app/db";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
 import { displayDate, displayDateTime } from "../../dateDisplay";
+import { moneyFieldError } from "../../lib/moneyField";
 
 const PAGE_SIZE_OPTIONS = [20, 50, 100];
 const DEFAULT_PAGE_SIZE = 20;
@@ -52,36 +54,48 @@ function optionalText(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+/** Thrown by {@link amountField} for a typed amount whose shape cannot be read without guessing. */
+class AmountShapeError extends Error {}
+
 /**
- * A money field exactly as the admin typed it, as a STRING for the service to
- * parse with `Decimal`.
+ * A money field as a canonical decimal STRING for the service to parse.
  *
- * Never `Number(value)`: a float round-trip is how an amount silently loses its
- * last digits, and this repo's rule is Decimal end to end. A numeric JSON value
- * is accepted (a client may send one) but is stringified rather than arithmetic'd
- * — `recordSettlement`'s own `money()` is what decides whether it is finite and
- * parsable, so a bad value produces its named error key instead of a route-level
- * guess.
+ * Typed text is read BY ITS SHAPE in the batch's currency (`1.000.000` is a
+ * million rupiah, never 1 — CLAUDE.md "Typed money is read by its shape"); a
+ * shape that cannot be read without guessing (`1.2.3`, USDT `1.000`) throws
+ * {@link AmountShapeError} so the route answers 400 naming the field.
+ *
+ * Two things still pass through for `recordSettlement`'s own `money()` to judge,
+ * so they keep their named error key: blank (the service's "missing" case) and
+ * text that is no number at all — letters, NaN, Infinity — which `money()`
+ * refuses as `error.settlement_amount_not_a_number`. A numeric JSON value is
+ * stringified, never re-read by shape (its value is already fixed) and never
+ * arithmetic'd as a float.
  */
-function amountField(value: unknown): string {
-  if (typeof value === "string") return value.trim();
+function amountField(value: unknown, currency: string, label: string): string {
   if (typeof value === "number") return String(value);
-  return "";
+  if (typeof value !== "string") return "";
+  const text = value.trim();
+  if (text === "" || !/^[\d.,]+$/.test(text)) return text;
+  const shapeCurrency = currency.toUpperCase() === "IDR" ? "IDR" : "USDT";
+  const amount = parseMoneyInput(text, shapeCurrency);
+  if (amount === null) throw new AmountShapeError(moneyFieldError(label, shapeCurrency));
+  return amount.toFixed();
 }
 
 /**
  * The statement lines an admin entered, shaped for the service. A missing or
  * non-array `lines` means "no breakdown", which is a normal batch, not an error.
- * Line amounts and references are passed through verbatim; the service refuses a
- * line that is not a positive amount and resolves (or fails to resolve) the
- * match itself.
+ * Line amounts are read by shape like the batch totals; references pass through
+ * verbatim. The service refuses a line that is not a positive amount and
+ * resolves (or fails to resolve) the match itself.
  */
-function parseLines(raw: unknown): SettlementLineInput[] {
+function parseLines(raw: unknown, currency: string): SettlementLineInput[] {
   if (!Array.isArray(raw)) return [];
-  return raw.map((entry) => {
+  return raw.map((entry, i) => {
     const line = (entry ?? {}) as Record<string, unknown>;
     return {
-      amount: amountField(line.amount),
+      amount: amountField(line.amount, currency, `Line ${i + 1}'s amount`),
       providerTransactionId: optionalText(line.providerTransactionId),
     };
   });
@@ -159,17 +173,27 @@ export default async function settlementsApiRoutes(app: FastifyInstance): Promis
       return reply.code(400).send({ error: "That settlement date is not a real date." });
     }
 
+    let amounts: { grossAmount: string; feeAmount: string; netAmount: string; lines: SettlementLineInput[] };
+    try {
+      amounts = {
+        grossAmount: amountField(body.grossAmount, currency, "Gross amount"),
+        feeAmount: amountField(body.feeAmount ?? "0", currency, "Fee amount"),
+        netAmount: amountField(body.netAmount, currency, "Net amount"),
+        lines: parseLines(body.lines, currency),
+      };
+    } catch (e) {
+      if (e instanceof AmountShapeError) return reply.code(400).send({ error: e.message });
+      throw e;
+    }
+
     try {
       const { settlement, posting } = await recordSettlement(prisma, {
         provider,
         batchReference: optionalText(body.batchReference),
         settlementDate,
         currency,
-        grossAmount: amountField(body.grossAmount),
-        feeAmount: amountField(body.feeAmount ?? "0"),
-        netAmount: amountField(body.netAmount),
+        ...amounts,
         adminId: req.admin!.userId,
-        lines: parseLines(body.lines),
       });
       logger.info(
         `Admin ${req.admin!.userId} recorded ${settlement.provider} settlement batch ${settlement.id} via the web panel, worth ${settlement.grossAmount.toString()} ${settlement.currency} gross`,

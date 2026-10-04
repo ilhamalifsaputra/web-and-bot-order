@@ -338,7 +338,11 @@ export function verifyCallback(secretKey: string, body: Record<string, unknown>)
 
   const expected = createHash("md5").update(`${refId}:${secretKey}`).digest("hex");
   if (!constantTimeEqual(expected, signature.toLowerCase())) {
-    logger.warn(`Digiflazz callback signature mismatch for reference ${refId} — rejecting the callback as unverified`);
+    // The reference is NOT logged (Task B3e): with the signature failed it is
+    // attacker-controlled bytes — newlines could forge log lines.
+    logger.warn(
+      `Rejected a Digiflazz callback whose signature did not match its ${refId.length}-character reference — the reference is not logged because it is unverified input`,
+    );
     return null;
   }
 

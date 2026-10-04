@@ -7,7 +7,7 @@
 import { ProductType } from "@app/core/enums";
 import { parseMoneyInput } from "@app/core/moneyFormat";
 import type { Db } from "@app/db";
-import { listAllCategories, createCatalogProduct } from "@app/db";
+import { listAllCategories, createCatalogProduct, findCatalogProductByName } from "@app/db";
 
 export interface ImportRow {
   line: number;
@@ -117,7 +117,7 @@ export async function categoryNameMap(db: Db): Promise<Map<string, number>> {
  * could hold a second connection while it waits.
  */
 export async function resolveOrCreateProduct(db: Db, categoryId: number, name: string) {
-  const existing = await db.product.findFirst({ where: { categoryId, name } });
+  const existing = await findCatalogProductByName(db, categoryId, name);
   if (existing) return existing;
   return createCatalogProduct(db, { categoryId, name });
 }

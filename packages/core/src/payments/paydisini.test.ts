@@ -84,15 +84,29 @@ describe("checkTransaction", () => {
     stubFetchJson({ status: 200, data: { status: "Unpaid", unique_code: "TRX-2" } });
     const r = await checkTransaction(FULL_CREDS, { refId: "ORD-2", amountIdr: 50000 });
     expect(r.paid).toBe(false);
+    expect(r.unverified).toBe(false);
     expect(r.trxId).toBe("TRX-2");
   });
 
-  it("falls back to the requested amount when the gateway omits one", async () => {
+  // Task B3b (backend audit): falling back to the REQUESTED amount made every
+  // short-payment check downstream pass by construction — the amount being
+  // checked was the one we asked about. No amount from the gateway means the
+  // payment is not verified: report it unpaid so nothing is delivered on it.
+  it("reports NOT paid (unverified) when the gateway omits the amount, instead of echoing the requested one", async () => {
     stubFetchJson({ success: true, data: { status: "berhasil" } });
     const r = await checkTransaction(FULL_CREDS, { refId: "ORD-3", amountIdr: 12345 });
-    expect(r.paid).toBe(true);
-    expect(r.amount.toFixed(0)).toBe("12345");
+    expect(r.paid).toBe(false);
+    expect(r.amount.toFixed(0)).toBe("0");
+    expect(r.unverified).toBe(true);
     expect(r.trxId).toBeNull();
+  });
+
+  it("reports NOT paid (unverified) when the gateway's amount does not parse", async () => {
+    stubFetchJson({ success: true, data: { status: "berhasil", amount: "lots" } });
+    const r = await checkTransaction(FULL_CREDS, { refId: "ORD-3b", amountIdr: 12345 });
+    expect(r.paid).toBe(false);
+    expect(r.amount.toFixed(0)).toBe("0");
+    expect(r.unverified).toBe(true);
   });
 
   it("throws when the gateway rejects the request", async () => {

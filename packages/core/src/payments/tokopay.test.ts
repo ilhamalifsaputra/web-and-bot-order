@@ -138,15 +138,37 @@ describe("checkTransaction", () => {
     stubFetchJson({ status: 200, data: { status: "Unpaid", trx_id: "TRX-2" } });
     const r = await checkTransaction(FULL_CREDS, { refId: "ORD-2", amountIdr: 50000 });
     expect(r.paid).toBe(false);
+    expect(r.unverified).toBe(false);
     expect(r.trxId).toBe("TRX-2");
   });
 
-  it("falls back to the requested amount when the gateway omits one", async () => {
+  // Task B3c (backend audit): the old fallback echoed the REQUESTED amount —
+  // the bare order total — which is below the fee-inclusive charge the buyer
+  // actually pays, so a genuine payment was then flagged short-paid and parked
+  // as unmatched. No amount from TokoPay now means "not verified": reported
+  // unpaid, nothing delivered, and the poller asks again.
+  it("reports NOT paid (unverified) when the gateway omits the amount, instead of echoing the requested one", async () => {
     stubFetchJson({ status: "success", data: { status: "berhasil" } });
     const r = await checkTransaction(FULL_CREDS, { refId: "ORD-3", amountIdr: 12345 });
-    expect(r.paid).toBe(true);
-    expect(r.amount.toFixed(0)).toBe("12345");
+    expect(r.paid).toBe(false);
+    expect(r.amount.toFixed(0)).toBe("0");
+    expect(r.unverified).toBe(true);
     expect(r.trxId).toBeNull();
+  });
+
+  it("reports NOT paid (unverified) when the gateway's amount does not parse", async () => {
+    stubFetchJson({ status: "success", data: { status: "berhasil", total_bayar: "banyak" } });
+    const r = await checkTransaction(FULL_CREDS, { refId: "ORD-3b", amountIdr: 12345 });
+    expect(r.paid).toBe(false);
+    expect(r.amount.toFixed(0)).toBe("0");
+    expect(r.unverified).toBe(true);
+  });
+
+  it("reads the fee-inclusive total_bayar ahead of the bare nominal", async () => {
+    stubFetchJson({ status: "success", data: { status: "Paid", trx_id: "TRX-3c", nominal: "100000", total_bayar: "100800" } });
+    const r = await checkTransaction(FULL_CREDS, { refId: "ORD-3c", amountIdr: 100000 });
+    expect(r.paid).toBe(true);
+    expect(r.amount.toFixed(0)).toBe("100800");
   });
 
   it("throws when the gateway rejects the request", async () => {

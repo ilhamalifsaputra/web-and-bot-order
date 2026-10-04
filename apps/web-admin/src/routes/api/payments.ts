@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { parsePositiveId } from "../../lib/params";
 import { OrderStatus, OrderKind, StockActorType } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { errorBody } from "@app/core/errorBody";
@@ -14,10 +15,12 @@ import {
   getBinancePollHealth,
   TX_OUTCOMES,
   deliverUnderpaidOrder,
-  refundUnderpaidOrder,
+  refundUnderpaidOrderTx,
+  logUnderpaidRefundCommitted,
   creditUnderpaidTopupAnyway,
   manualMatchTx,
   dismissUnmatchedTx,
+  getProcessedBinanceTx,
   creditOrderToBalance,
   listOrders,
   listPendingInternalOrders,
@@ -25,10 +28,10 @@ import {
   cancelOrder,
   logAdminAction,
   listCombinedLedger,
-  findIdempotentResponse,
-  saveIdempotentResponse,
+  IdempotencyClaimTracker,
   hashIdempotentRequest,
   IdempotencyKeyReuseError,
+  IdempotencyRequestInProgressError,
   type IdempotentReplay,
 } from "@app/db";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
@@ -67,6 +70,22 @@ function normalizeIdempotencyKey(header: string | string[] | undefined): string 
 }
 
 export default async function paymentsApiRoutes(app: FastifyInstance): Promise<void> {
+  // Idempotency keys are claimed before each mutation runs (backend audit E2),
+  // so a concurrent duplicate waits for the first instead of running twice.
+  // A claim whose handler threw is released once the response is out, so the
+  // admin's retry with the same key can run again right away.
+  const idempotencyClaims = new IdempotencyClaimTracker();
+  app.addHook("onResponse", async (req) => {
+    try {
+      await idempotencyClaims.releaseUnsettled(prisma, req);
+    } catch (err) {
+      logger.warn(
+        { err },
+        "Could not release an unfinished idempotency claim after a payments request failed; a retry with the same key will wait until the claim expires.",
+      );
+    }
+  });
+
   app.get("/api/payments", { preHandler: currentAdmin }, async (req, reply) => {
     const q = req.query as Record<string, string | undefined>;
     const outcome = q.outcome && (TX_OUTCOMES as readonly string[]).includes(q.outcome) ? q.outcome : null;
@@ -159,7 +178,8 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
       return reply.code(429).send({ error: "error.rate_limited" });
     }
 
-    const orderId = Number((req.params as { orderId: string }).orderId);
+    const orderId = parsePositiveId((req.params as { orderId: string }).orderId);
+    if (orderId === null) return reply.code(400).send({ error: "Invalid order id." });
 
     const idempotencyKeyHeader = normalizeIdempotencyKey(req.headers["idempotency-key"]);
     const idem = idempotencyKeyHeader ? { key: idempotencyKeyHeader, requestHash: hashIdempotentRequest({ orderId }) } : null;
@@ -167,7 +187,7 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
     if (idem) {
       let replay: IdempotentReplay | null;
       try {
-        replay = await findIdempotentResponse(prisma, {
+        replay = await idempotencyClaims.claim(prisma, req, {
           key: idem.key,
           endpoint: DELIVER_IDEMPOTENCY_ENDPOINT,
           requestHash: idem.requestHash,
@@ -175,6 +195,9 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
       } catch (e) {
         if (e instanceof IdempotencyKeyReuseError) {
           return reply.code(409).send({ error: "idempotency_key_reused" });
+        }
+        if (e instanceof IdempotencyRequestInProgressError) {
+          return reply.code(409).send({ error: "idempotency_request_in_progress" });
         }
         throw e;
       }
@@ -185,7 +208,7 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
 
     const respond = async (statusCode: number, body: unknown) => {
       if (idem) {
-        await saveIdempotentResponse(prisma, {
+        await idempotencyClaims.save(prisma, req, {
           key: idem.key,
           endpoint: DELIVER_IDEMPOTENCY_ENDPOINT,
           requestHash: idem.requestHash,
@@ -218,7 +241,8 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
       return reply.code(429).send({ error: "error.rate_limited" });
     }
 
-    const orderId = Number((req.params as { orderId: string }).orderId);
+    const orderId = parsePositiveId((req.params as { orderId: string }).orderId);
+    if (orderId === null) return reply.code(400).send({ error: "Invalid order id." });
 
     // Idempotency (Task 1): a double-clicked "Refund" button (or a retried
     // request after the admin's browser never saw the first response) would
@@ -235,7 +259,7 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
     if (idem) {
       let replay: IdempotentReplay | null;
       try {
-        replay = await findIdempotentResponse(prisma, {
+        replay = await idempotencyClaims.claim(prisma, req, {
           key: idem.key,
           endpoint: REFUND_IDEMPOTENCY_ENDPOINT,
           requestHash: idem.requestHash,
@@ -243,6 +267,9 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
       } catch (e) {
         if (e instanceof IdempotencyKeyReuseError) {
           return reply.code(409).send({ error: "idempotency_key_reused" });
+        }
+        if (e instanceof IdempotencyRequestInProgressError) {
+          return reply.code(409).send({ error: "idempotency_request_in_progress" });
         }
         throw e;
       }
@@ -253,7 +280,7 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
 
     const respond = async (statusCode: number, body: unknown) => {
       if (idem) {
-        await saveIdempotentResponse(prisma, {
+        await idempotencyClaims.save(prisma, req, {
           key: idem.key,
           endpoint: REFUND_IDEMPOTENCY_ENDPOINT,
           requestHash: idem.requestHash,
@@ -264,29 +291,38 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
       return reply.code(statusCode).send(body);
     };
 
-    let result: { refunded: Decimal; refundId: number | null; currency: string };
+    let result: { refunded: Decimal; refundId: number | null; currency: string; orderCode: string };
     try {
-      result = await refundUnderpaidOrder(prisma, { orderId, adminId: req.admin!.userId });
-      await logAdminAction(prisma, {
-        adminId: req.admin!.userId,
-        action: "underpaid_refund",
-        targetType: "order",
-        targetId: orderId,
-        // Two shapes, same reasoning as the credit-anyway route below:
-        // "refunded 0" is not a smaller version of the success case — it means
-        // the order was marked REFUNDED and the buyer got nothing back, the one
-        // outcome a shop admin has to act on by hand. The currency is spelled
-        // out because the refund lands in the order's own currency (it used to
-        // always default to IDR), so a bare number here would leave the shop
-        // admin guessing whether "18500" means rupiah or USDT.
-        details: result.refunded.greaterThan(0)
-          ? `Refunded ${result.refunded.toString()} ${result.currency} to the buyer's wallet for an underpaid order.`
-          : "Marked an underpaid order refunded, but returned nothing to the buyer's wallet because no payment record shows how much they actually sent. Refund them by hand if they really did pay.",
+      // One transaction for the refund AND its audit line (backend audit Task
+      // C3): previously the audit was written after the refund had already
+      // committed, so a failed audit insert left money moved with no record of
+      // which admin moved it. Now a failed audit rolls the refund back too.
+      result = await prisma.$transaction(async (tx) => {
+        const refunded = await refundUnderpaidOrderTx(tx, { orderId, adminId: req.admin!.userId });
+        await logAdminAction(tx, {
+          adminId: req.admin!.userId,
+          action: "underpaid_refund",
+          targetType: "order",
+          targetId: orderId,
+          // Two shapes, same reasoning as the credit-anyway route below:
+          // "refunded 0" is not a smaller version of the success case — it means
+          // the order was marked REFUNDED and the buyer got nothing back, the one
+          // outcome a shop admin has to act on by hand. The currency is spelled
+          // out because the refund lands in the order's own currency (it used to
+          // always default to IDR), so a bare number here would leave the shop
+          // admin guessing whether "18500" means rupiah or USDT.
+          details: refunded.refunded.greaterThan(0)
+            ? `Refunded ${refunded.refunded.toString()} ${refunded.currency} to the buyer's wallet for an underpaid order.`
+            : "Marked an underpaid order refunded, but returned nothing to the buyer's wallet because no payment record shows how much they actually sent. Refund them by hand if they really did pay.",
+        });
+        return refunded;
       });
     } catch (e) {
       if (e instanceof ValidationError) return respond(422, errorBody(e));
       throw e;
     }
+    // Committed — only now is it true that money moved.
+    logUnderpaidRefundCommitted(result, req.admin!.userId);
     // `refunded`/`currency` go back to the browser so the admin panel can tell
     // the admin whether money actually moved, instead of showing the same green
     // "refunded" toast for an order that was marked REFUNDED with no payout.
@@ -298,7 +334,8 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
       return reply.code(429).send({ error: "error.rate_limited" });
     }
 
-    const orderId = Number((req.params as { orderId: string }).orderId);
+    const orderId = parsePositiveId((req.params as { orderId: string }).orderId);
+    if (orderId === null) return reply.code(400).send({ error: "Invalid order id." });
 
     const idempotencyKeyHeader = normalizeIdempotencyKey(req.headers["idempotency-key"]);
     const idem = idempotencyKeyHeader ? { key: idempotencyKeyHeader, requestHash: hashIdempotentRequest({ orderId }) } : null;
@@ -306,7 +343,7 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
     if (idem) {
       let replay: IdempotentReplay | null;
       try {
-        replay = await findIdempotentResponse(prisma, {
+        replay = await idempotencyClaims.claim(prisma, req, {
           key: idem.key,
           endpoint: CREDIT_ANYWAY_IDEMPOTENCY_ENDPOINT,
           requestHash: idem.requestHash,
@@ -314,6 +351,9 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
       } catch (e) {
         if (e instanceof IdempotencyKeyReuseError) {
           return reply.code(409).send({ error: "idempotency_key_reused" });
+        }
+        if (e instanceof IdempotencyRequestInProgressError) {
+          return reply.code(409).send({ error: "idempotency_request_in_progress" });
         }
         throw e;
       }
@@ -324,7 +364,7 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
 
     const respond = async (statusCode: number, body: unknown) => {
       if (idem) {
-        await saveIdempotentResponse(prisma, {
+        await idempotencyClaims.save(prisma, req, {
           key: idem.key,
           endpoint: CREDIT_ANYWAY_IDEMPOTENCY_ENDPOINT,
           requestHash: idem.requestHash,
@@ -367,7 +407,8 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
       return reply.code(429).send({ error: "error.rate_limited" });
     }
 
-    const orderId = Number((req.params as { orderId: string }).orderId);
+    const orderId = parsePositiveId((req.params as { orderId: string }).orderId);
+    if (orderId === null) return reply.code(400).send({ error: "Invalid order id." });
 
     const idempotencyKeyHeader = normalizeIdempotencyKey(req.headers["idempotency-key"]);
     const idem = idempotencyKeyHeader ? { key: idempotencyKeyHeader, requestHash: hashIdempotentRequest({ orderId }) } : null;
@@ -375,7 +416,7 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
     if (idem) {
       let replay: IdempotentReplay | null;
       try {
-        replay = await findIdempotentResponse(prisma, {
+        replay = await idempotencyClaims.claim(prisma, req, {
           key: idem.key,
           endpoint: CANCEL_IDEMPOTENCY_ENDPOINT,
           requestHash: idem.requestHash,
@@ -383,6 +424,9 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
       } catch (e) {
         if (e instanceof IdempotencyKeyReuseError) {
           return reply.code(409).send({ error: "idempotency_key_reused" });
+        }
+        if (e instanceof IdempotencyRequestInProgressError) {
+          return reply.code(409).send({ error: "idempotency_request_in_progress" });
         }
         throw e;
       }
@@ -393,7 +437,7 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
 
     const respond = async (statusCode: number, body: unknown) => {
       if (idem) {
-        await saveIdempotentResponse(prisma, {
+        await idempotencyClaims.save(prisma, req, {
           key: idem.key,
           endpoint: CANCEL_IDEMPOTENCY_ENDPOINT,
           requestHash: idem.requestHash,
@@ -442,7 +486,7 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
     if (idem) {
       let replay: IdempotentReplay | null;
       try {
-        replay = await findIdempotentResponse(prisma, {
+        replay = await idempotencyClaims.claim(prisma, req, {
           key: idem.key,
           endpoint: MATCH_IDEMPOTENCY_ENDPOINT,
           requestHash: idem.requestHash,
@@ -450,6 +494,9 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
       } catch (e) {
         if (e instanceof IdempotencyKeyReuseError) {
           return reply.code(409).send({ error: "idempotency_key_reused" });
+        }
+        if (e instanceof IdempotencyRequestInProgressError) {
+          return reply.code(409).send({ error: "idempotency_request_in_progress" });
         }
         throw e;
       }
@@ -460,7 +507,7 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
 
     const respond = async (statusCode: number, body: unknown) => {
       if (idem) {
-        await saveIdempotentResponse(prisma, {
+        await idempotencyClaims.save(prisma, req, {
           key: idem.key,
           endpoint: MATCH_IDEMPOTENCY_ENDPOINT,
           requestHash: idem.requestHash,
@@ -517,7 +564,7 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
     if (idem) {
       let replay: IdempotentReplay | null;
       try {
-        replay = await findIdempotentResponse(prisma, {
+        replay = await idempotencyClaims.claim(prisma, req, {
           key: idem.key,
           endpoint: CREDIT_IDEMPOTENCY_ENDPOINT,
           requestHash: idem.requestHash,
@@ -525,6 +572,9 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
       } catch (e) {
         if (e instanceof IdempotencyKeyReuseError) {
           return reply.code(409).send({ error: "idempotency_key_reused" });
+        }
+        if (e instanceof IdempotencyRequestInProgressError) {
+          return reply.code(409).send({ error: "idempotency_request_in_progress" });
         }
         throw e;
       }
@@ -535,7 +585,7 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
 
     const respond = async (statusCode: number, body: unknown) => {
       if (idem) {
-        await saveIdempotentResponse(prisma, {
+        await idempotencyClaims.save(prisma, req, {
           key: idem.key,
           endpoint: CREDIT_IDEMPOTENCY_ENDPOINT,
           requestHash: idem.requestHash,
@@ -557,7 +607,7 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
         // Whether the transfer may still be used (actionable outcome, not
         // linked to another order, USDT order) is decided — and the row
         // consumed atomically — by creditOrderToBalance itself.
-        const ledger = await tx.processedBinanceTx.findUnique({ where: { binanceTxId } });
+        const ledger = await getProcessedBinanceTx(tx, binanceTxId);
         if (!ledger) throw new NotFoundError("Transfer not found.");
         const { credited, currency } = await creditOrderToBalance(tx, {
           orderId: target.id,
@@ -598,7 +648,7 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
     if (idem) {
       let replay: IdempotentReplay | null;
       try {
-        replay = await findIdempotentResponse(prisma, {
+        replay = await idempotencyClaims.claim(prisma, req, {
           key: idem.key,
           endpoint: DISMISS_IDEMPOTENCY_ENDPOINT,
           requestHash: idem.requestHash,
@@ -606,6 +656,9 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
       } catch (e) {
         if (e instanceof IdempotencyKeyReuseError) {
           return reply.code(409).send({ error: "idempotency_key_reused" });
+        }
+        if (e instanceof IdempotencyRequestInProgressError) {
+          return reply.code(409).send({ error: "idempotency_request_in_progress" });
         }
         throw e;
       }
@@ -616,7 +669,7 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
 
     const respond = async (statusCode: number, body: unknown) => {
       if (idem) {
-        await saveIdempotentResponse(prisma, {
+        await idempotencyClaims.save(prisma, req, {
           key: idem.key,
           endpoint: DISMISS_IDEMPOTENCY_ENDPOINT,
           requestHash: idem.requestHash,

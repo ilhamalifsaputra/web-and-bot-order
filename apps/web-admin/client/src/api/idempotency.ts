@@ -67,13 +67,18 @@
  * block too, but both drive a full page reload in this codebase, which takes
  * the whole ref map with it regardless of what this decided.
  *
- * KNOWN LIMIT — this makes a SEQUENTIAL retry safe, which is what it is for.
- * It does not fully dedupe two requests genuinely in flight at once (a
- * double-tapped confirm that outruns the button's disabled state):
- * `findIdempotentResponse` only reads a row that `saveIdempotentResponse`
- * writes at response time, so there is no in-flight reservation — both can
- * read null, both can run, and the loser's insert is swallowed as a unique
- * violation. Closing that would need a reservation row written on the way in.
+ * TWO REQUESTS IN FLIGHT AT ONCE (a double-tapped confirm that outruns the
+ * button's disabled state) are deduped too: the server reserves the key on the
+ * way in (`claimIdempotentRequest`), so the second waits for the first and
+ * replays its response. Only if the first is still running after the server's
+ * wait budget does the second get HTTP 409 `idempotency_request_in_progress`
+ * — which stores nothing and answers nothing (the first attempt may still
+ * complete), so this hook HOLDS the key on it exactly like a 5xx or 429. Were
+ * the key dropped, a lost first response would leave the next click with a
+ * fresh key and the mutation would run twice; a byte-identical retry cannot
+ * hit `key_reused`. Only that one 409 is held — it is told apart from every
+ * other 409 (`key_reused`, a code already taken, ...) by the server's error
+ * code, and those still drop the key as answered.
  *
  * The held keys live in a `useRef`, so they survive re-renders and any number
  * of retries within one visit to the page, and are gone when the page unmounts
@@ -103,6 +108,10 @@ function newIdempotencyKey(): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
+/** The server's error code for "the first attempt with this key is still
+ * running" — the one 409 that leaves the outcome unknown. */
+const REQUEST_IN_PROGRESS = "idempotency_request_in_progress";
+
 /** `apiPost`, with the `Idempotency-Key` lifecycle above applied. */
 export type IdempotentPost = <T>(path: string, body: unknown) => Promise<T>;
 
@@ -118,15 +127,22 @@ export function useIdempotentPost(): IdempotentPost {
     const key = unanswered.get(scope) ?? newIdempotencyKey();
     unanswered.set(scope, key);
     let answered = false;
+    let status: number | undefined;
     try {
       return await apiPost<T>(path, body, {
         idempotencyKey: key,
         // 5xx and 429 are responses that arrived without answering the
         // question — see the header comment.
-        onResponse: (status) => {
-          answered = status < 500 && status !== 429;
+        onResponse: (s) => {
+          status = s;
+          answered = s < 500 && s !== 429;
         },
       });
+    } catch (err) {
+      // The in-progress 409 is unanswered too, but only its error code (read
+      // off the thrown error, after the body) tells it from other 409s.
+      if (status === 409 && err instanceof Error && err.message === REQUEST_IN_PROGRESS) answered = false;
+      throw err;
     } finally {
       if (answered) unanswered.delete(scope);
     }

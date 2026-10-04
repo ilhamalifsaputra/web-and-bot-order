@@ -16,7 +16,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { logger } from "@app/core/logger";
 import { prisma, initDb, setSetting } from "@app/db";
-import { buildApp } from "../src/server";
+import { buildApp, redactPath } from "../src/server";
 
 let app: FastifyInstance;
 
@@ -43,6 +43,14 @@ beforeAll(async () => {
 afterAll(async () => {
   await app.close();
   await prisma.$disconnect();
+});
+
+describe("web-admin redactPath (Task C2)", () => {
+  it("redacts the Telegram webhook secret segment and the reset code from one shared list", () => {
+    expect(redactPath("/tg/s3cr3t-webhook_value")).toBe("/tg/[redacted]");
+    expect(redactPath("/reset/abc")).toBe("/reset/[redacted]");
+    expect(redactPath("/tgx/keep")).toBe("/tgx/keep");
+  });
 });
 
 describe("web-admin setErrorHandler", () => {

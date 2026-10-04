@@ -206,18 +206,31 @@ export async function linkTelegram(
   telegramId: number | bigint,
   tgUsername: string | null,
   fullName: string | null,
-): Promise<{ ok: true } | { ok: false; reason: "taken" }> {
+): Promise<{ ok: true } | { ok: false; reason: "taken" | "guest" | "already_linked" }> {
   const tid = BigInt(telegramId);
   const holder = await db.user.findUnique({ where: { telegramId: tid } });
   if (holder && holder.id !== userId) return { ok: false, reason: "taken" };
+  // Backend audit Task C fix round. Two refusals, enforced in the UPDATE's own
+  // WHERE so a concurrent link can't slip between a read and the write:
+  //  - a guest row: its session can be minted from the order code alone, so a
+  //    Telegram link there would let whoever guessed the code sign in as that
+  //    row forever. The guest claims the row (credentials + guest-email proof)
+  //    first.
+  //  - a row already linked to a DIFFERENT Telegram account: linking is never
+  //    a silent swap. Re-linking the same id only refreshes the name fields.
+  let updated: number;
   try {
-    await db.user.update({
-      where: { id: userId },
+    ({ count: updated } = await db.user.updateMany({
+      where: { id: userId, isGuest: false, OR: [{ telegramId: null }, { telegramId: tid }] },
       data: { telegramId: tid, username: tgUsername, fullName },
-    });
+    }));
   } catch (e) {
     if (isUniqueViolation(e)) return { ok: false, reason: "taken" };
     throw e;
+  }
+  if (updated === 0) {
+    const row = await db.user.findUnique({ where: { id: userId }, select: { isGuest: true } });
+    return { ok: false, reason: row?.isGuest ? "guest" : "already_linked" };
   }
   return { ok: true };
 }

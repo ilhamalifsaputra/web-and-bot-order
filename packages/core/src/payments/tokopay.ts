@@ -163,6 +163,11 @@ export interface TokopayStatus {
   paid: boolean;
   amount: Decimal;
   trxId: string | null;
+  /** True only when TokoPay says the order is PAID but its status response
+   *  carried no usable amount. `paid` is then false (nothing may be delivered
+   *  on an unverified amount), but money may well have arrived, so callers
+   *  must park it for manual review instead of treating it as "not paid yet". */
+  unverified: boolean;
 }
 
 // Which status strings count as "paid/settled" is decided by
@@ -211,15 +216,34 @@ export async function checkTransaction(
   }
   const d = body.data;
   const statusStr = String(d.status ?? "").toLowerCase();
-  const amountRaw = d.total_bayar ?? d.nominal ?? d.amount ?? args.amountIdr;
-  let amount: Decimal;
-  try {
-    amount = new Decimal(String(amountRaw));
-  } catch {
-    amount = new Decimal(args.amountIdr);
-  }
   const trxId = (typeof d.trx_id === "string" && d.trx_id) || (typeof d.reference === "string" && d.reference) || null;
-  return { paid: isProviderPaid(StatusProvider.TOKOPAY, statusStr), amount, trxId };
+  const paid = isProviderPaid(StatusProvider.TOKOPAY, statusStr);
+  // Task B3c (backend audit): the amount must come from TokoPay, and the
+  // fee-inclusive `total_bayar` (what the buyer actually paid) is read first.
+  // This used to fall back to `args.amountIdr` — the bare order total we asked
+  // about, which is BELOW the fee-inclusive charge callers compare against —
+  // so a genuine payment was flagged short-paid and parked as unmatched. A
+  // paid status without a usable amount is reported as NOT paid instead:
+  // nothing is delivered on it and the reconcile poller asks again.
+  const amountRaw = d.total_bayar ?? d.nominal ?? d.amount;
+  let amount: Decimal | null = null;
+  if (amountRaw !== undefined && amountRaw !== null && amountRaw !== "") {
+    try {
+      const parsed = new Decimal(String(amountRaw));
+      if (parsed.isFinite()) amount = parsed;
+    } catch {
+      amount = null;
+    }
+  }
+  if (amount === null) {
+    if (paid) {
+      logger.warn(
+        `TokoPay reported order ${args.refId} as paid but its status response carried no usable amount, so the payment is treated as unverified and nothing is delivered on it — it is parked for manual review and the admins are alerted, so an admin should check the transaction in the TokoPay dashboard`,
+      );
+    }
+    return { paid: false, amount: new Decimal(0), trxId, unverified: paid };
+  }
+  return { paid, amount, trxId, unverified: false };
 }
 
 export interface TokopayCallback {
@@ -264,7 +288,11 @@ export function verifyCallback(
     .update(`${creds.merchantId}:${creds.secret}:${refId}`)
     .digest("hex");
   if (!constantTimeEqual(expected, signature.toLowerCase())) {
-    logger.warn(`TokoPay callback signature mismatch for reference ${refId} — rejecting the callback as unverified`);
+    // The reference is NOT logged (Task B3e): with the signature failed it is
+    // attacker-controlled bytes — newlines could forge log lines.
+    logger.warn(
+      `Rejected a TokoPay callback whose signature did not match its ${refId.length}-character reference — the reference is not logged because it is unverified input`,
+    );
     return null;
   }
 

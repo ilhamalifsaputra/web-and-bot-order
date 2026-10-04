@@ -2,7 +2,7 @@
  * TSX port of apps/storefront/views/settings.njk. Two independent flash
  * sources feed the ONE `error` spot the template renders: the query params
  * the old server route redirected back with (?saved=1, ?linked=1,
- * ?err=tg_taken|tg_invalid — the Telegram-link redirect flow, GET
+ * ?err=tg_taken|tg_already_linked|tg_guest|tg_invalid — the Telegram-link redirect flow, GET
  * /account/settings/link-telegram, stays server-side per the brief) and a
  * failed credentials POST, which — like checkout's voucher preview — never
  * navigates, so the query params can't be showing at the same time as a POST
@@ -53,6 +53,8 @@ interface CredentialsVars {
   email: string;
   current_password: string;
   new_password: string;
+  /** Only sent for a guest row (see the `is_guest` field below). */
+  guest_email?: string;
 }
 
 export default function SettingsPage() {
@@ -99,17 +101,23 @@ export default function SettingsPage() {
       email,
       current_password: String(formData.get("current_password") ?? ""),
       new_password: String(formData.get("new_password") ?? ""),
+      ...(page?.is_guest ? { guest_email: String(formData.get("guest_email") ?? "") } : {}),
     });
   }
 
   if (!page) return null;
 
+  const tgErr = params.get("err");
   const queryErrorText =
-    params.get("err") === "tg_taken"
+    tgErr === "tg_taken"
       ? t("web.settings_tg_taken")
-      : params.get("err") === "tg_invalid"
-        ? t("web.error_message")
-        : null;
+      : tgErr === "tg_already_linked"
+        ? t("web.settings_tg_already_linked")
+        : tgErr === "tg_guest"
+          ? t("web.settings_tg_guest")
+          : tgErr === "tg_invalid"
+            ? t("web.error_message")
+            : null;
   // A failed credentials POST is about the form, so it renders inside the
   // form; only the redirect-flow (?err=…) messages, which belong to the
   // Telegram link round-trip, stay at page level. The two can never be
@@ -188,6 +196,29 @@ export default function SettingsPage() {
                 spellCheck={false}
               />
             </FormField>
+            {/* A guest row proves it owns the order with the contact email
+                typed at checkout — the server refuses a credentials change
+                on a guest row without it (backend audit Task C1). */}
+            {page.is_guest && (
+              <div>
+                <FormField label={t("web.settings_guest_email")} htmlFor="guest_email">
+                  <Input
+                    type="email"
+                    id="guest_email"
+                    name="guest_email"
+                    inputMode="email"
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    autoComplete="email"
+                    aria-describedby="guest_email_help"
+                  />
+                </FormField>
+                <p id="guest_email_help" className="text-xs text-ink-faint mt-1.5">
+                  {t("web.settings_guest_email_help")}
+                </p>
+              </div>
+            )}
             {page.has_password && (
               <FormField label={t("web.settings_current_password")} htmlFor="current_password">
                 <PasswordInput
@@ -252,11 +283,21 @@ export default function SettingsPage() {
             <Alert variant="banner" tone="success">
               {t("web.settings_tg_linked", { name: page.tg_name })}
             </Alert>
+          ) : page.is_guest ? (
+            // A guest row can't link Telegram until it is claimed with the
+            // order email (the server refuses too) — backend audit Task C.
+            <p className="text-sm text-ink-soft">{t("web.settings_tg_guest")}</p>
           ) : (
             <>
               <p className="text-sm text-ink-soft mb-4">{t("web.settings_tg_hint")}</p>
               {page.bot_id ? (
-                <TelegramLoginButton botId={page.bot_id} authUrl="/account/settings/link-telegram" />
+                <TelegramLoginButton
+                  botId={page.bot_id}
+                  authUrl="/account/settings/link-telegram"
+                  // Arms the server's one-time link intent; the callback
+                  // refuses a link that wasn't started here.
+                  beforeNavigate={() => apiPost("/api/v1/account/settings/link-telegram/start", {})}
+                />
               ) : (
                 <p className="text-sm text-ink-faint">{t("web.settings_tg_unconfigured")}</p>
               )}

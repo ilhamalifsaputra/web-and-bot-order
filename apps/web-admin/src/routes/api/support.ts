@@ -1,4 +1,6 @@
 import type { FastifyInstance } from "fastify";
+import { csvRow } from "../../lib/csv";
+import { parsePositiveId } from "../../lib/params";
 import { SenderType, TicketStatus, TicketPriority, TicketCategory } from "@app/core/enums";
 import { logger } from "@app/core/logger";
 import {
@@ -27,6 +29,8 @@ import {
   countUserOrders,
   listUserOrders,
   listAuditLogs,
+  countOpenUserTickets,
+  isTicketAttachmentFileId,
   resolveBotCredentials,
   logAdminAction,
   type TicketFilter,
@@ -34,6 +38,31 @@ import {
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
 import { getFileResolver } from "../../lib/telegramCheck";
 import { displayDate, displayDateTime } from "../../dateDisplay";
+
+/** Telegram file ids are URL-safe base64-ish tokens; anything else is not one. */
+const TELEGRAM_FILE_ID_RE = /^[A-Za-z0-9_-]{1,256}$/;
+
+/** Image types the photo proxy may serve, keyed by file extension. */
+const PHOTO_TYPES_BY_EXTENSION: Record<string, string> = {
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  webp: "image/webp",
+  gif: "image/gif",
+};
+const PHOTO_TYPES = new Set(Object.values(PHOTO_TYPES_BY_EXTENSION));
+
+/**
+ * The content type to serve a ticket photo as: Telegram's own type when it is
+ * an allowlisted image, else the one the file's extension implies, else null
+ * (not an image — refuse rather than pass an arbitrary type through).
+ */
+function photoContentType(upstreamType: string | null, filePath: string): string | null {
+  const declared = (upstreamType ?? "").split(";")[0]!.trim().toLowerCase();
+  if (PHOTO_TYPES.has(declared)) return declared;
+  const extension = filePath.split(".").pop()?.toLowerCase() ?? "";
+  return PHOTO_TYPES_BY_EXTENSION[extension] ?? null;
+}
 
 const STATUS_VALUES = Object.values(TicketStatus) as string[];
 const PRIORITY_VALUES = Object.values(TicketPriority) as string[];
@@ -113,25 +142,6 @@ function deriveSubject(message: string): string {
   const lastSpace = slice.lastIndexOf(" ");
   const cut = (lastSpace > 0 ? slice.slice(0, lastSpace) : slice).trimEnd();
   return `${cut}…`;
-}
-
-/** Quotes a CSV field per RFC 4180: wrap in double quotes if it contains a
- * comma, quote, or newline, doubling any embedded quotes. Also neutralizes
- * CSV formula injection (see users.ts's csvField): a leading `=`, `+`, `-`,
- * or `@` is interpreted by Excel/Google Sheets as the start of a formula,
- * and a ticket's `message` is attacker-controlled free text from the public,
- * unauthenticated storefront/bot — prefixing with a single quote forces the
- * cell to render as literal text instead of evaluating. */
-function csvField(value: string): string {
-  const escaped = /^[=+\-@]/.test(value) ? `'${value}` : value;
-  if (/[",\r\n]/.test(escaped)) {
-    return `"${escaped.replace(/"/g, '""')}"`;
-  }
-  return escaped;
-}
-
-function csvRow(fields: string[]): string {
-  return fields.map(csvField).join(",") + "\r\n";
 }
 
 /** "HIGH" -> "High", "PAYMENT" -> "Payment" — for natural-language audit details. */
@@ -227,8 +237,8 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
   });
 
   app.get("/api/support/:ticketId", { preHandler: currentAdmin }, async (req, reply) => {
-    const ticketId = Number((req.params as { ticketId: string }).ticketId);
-    if (!Number.isInteger(ticketId)) return reply.code(400).send({ error: "Invalid ticket id." });
+    const ticketId = parsePositiveId((req.params as { ticketId: string }).ticketId);
+    if (ticketId === null) return reply.code(400).send({ error: "Invalid ticket id." });
     const ticket = await getTicketWithOrder(prisma, ticketId);
     if (!ticket) return reply.code(404).send({ error: "Ticket not found." });
     const cutoff = overdueCutoff();
@@ -245,7 +255,7 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
       userTotalSpent(prisma, ticket.userId),
       countUserOrders(prisma, ticket.userId),
       listUserOrders(prisma, ticket.userId, 5),
-      prisma.supportTicket.count({ where: { userId: ticket.userId, status: { not: TicketStatus.CLOSED } } }),
+      countOpenUserTickets(prisma, ticket.userId),
     ]);
 
     // Two arrays, not merged — keeps this route a thin data source and lets
@@ -311,7 +321,8 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
   });
 
   app.post("/api/support/:ticketId/reply", { preHandler: csrfProtect }, async (req, reply) => {
-    const ticketId = Number((req.params as { ticketId: string }).ticketId);
+    const ticketId = parsePositiveId((req.params as { ticketId: string }).ticketId);
+    if (ticketId === null) return reply.code(400).send({ error: "Invalid ticket id." });
     const body = (req.body ?? {}) as Record<string, unknown>;
     const content = (typeof body.content === "string" ? body.content : "").trim();
     // Task 3: admin-only internal note toggle. Defaults to false so every
@@ -345,7 +356,8 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
   });
 
   app.post("/api/support/:ticketId/close", { preHandler: csrfProtect }, async (req, reply) => {
-    const ticketId = Number((req.params as { ticketId: string }).ticketId);
+    const ticketId = parsePositiveId((req.params as { ticketId: string }).ticketId);
+    if (ticketId === null) return reply.code(400).send({ error: "Invalid ticket id." });
     const result = await closeTicket(prisma, ticketId);
     if (result === null) return reply.code(404).send({ error: "Ticket not found." });
     await logAdminAction(prisma, {
@@ -359,8 +371,8 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
   });
 
   app.post("/api/support/:ticketId/assign", { preHandler: csrfProtect }, async (req, reply) => {
-    const ticketId = Number((req.params as { ticketId: string }).ticketId);
-    if (!Number.isInteger(ticketId)) return reply.code(400).send({ error: "Invalid ticket id." });
+    const ticketId = parsePositiveId((req.params as { ticketId: string }).ticketId);
+    if (ticketId === null) return reply.code(400).send({ error: "Invalid ticket id." });
     const body = (req.body ?? {}) as Record<string, unknown>;
     if (body.adminId !== null && typeof body.adminId !== "number") {
       return reply.code(400).send({ error: "adminId must be a number or null." });
@@ -388,8 +400,8 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
   });
 
   app.post("/api/support/:ticketId/priority", { preHandler: csrfProtect }, async (req, reply) => {
-    const ticketId = Number((req.params as { ticketId: string }).ticketId);
-    if (!Number.isInteger(ticketId)) return reply.code(400).send({ error: "Invalid ticket id." });
+    const ticketId = parsePositiveId((req.params as { ticketId: string }).ticketId);
+    if (ticketId === null) return reply.code(400).send({ error: "Invalid ticket id." });
     const priority = ((req.body as Record<string, string>).priority ?? "").toUpperCase();
     if (!PRIORITY_VALUES.includes(priority)) return reply.code(400).send({ error: "Invalid priority." });
     if (!(await getTicket(prisma, ticketId))) return reply.code(404).send({ error: "Ticket not found." });
@@ -405,7 +417,8 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
   });
 
   app.post("/api/support/:ticketId/resolve", { preHandler: csrfProtect }, async (req, reply) => {
-    const ticketId = Number((req.params as { ticketId: string }).ticketId);
+    const ticketId = parsePositiveId((req.params as { ticketId: string }).ticketId);
+    if (ticketId === null) return reply.code(400).send({ error: "Invalid ticket id." });
     if (!(await getTicket(prisma, ticketId))) return reply.code(404).send({ error: "Ticket not found." });
     const resolved = await resolveTicket(prisma, ticketId);
     if (!resolved) return reply.code(422).send({ error: "Ticket is already resolved or closed." });
@@ -423,7 +436,8 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
   // Admin-only transition back to OPEN — the bot only ever reopens implicitly
   // via a new customer message; there's no bot-side equivalent to this route.
   app.post("/api/support/:ticketId/reopen", { preHandler: csrfProtect }, async (req, reply) => {
-    const ticketId = Number((req.params as { ticketId: string }).ticketId);
+    const ticketId = parsePositiveId((req.params as { ticketId: string }).ticketId);
+    if (ticketId === null) return reply.code(400).send({ error: "Invalid ticket id." });
     if (!(await getTicket(prisma, ticketId))) return reply.code(404).send({ error: "Ticket not found." });
     const reopened = await reopenTicketAdmin(prisma, ticketId);
     if (!reopened) return reply.code(422).send({ error: "Only a closed ticket can be reopened." });
@@ -441,7 +455,8 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
   // Admin triage: priority and/or category, independent of status. Fields
   // are optional and independently applied — omitting one leaves it as-is.
   app.post("/api/support/:ticketId/classify", { preHandler: csrfProtect }, async (req, reply) => {
-    const ticketId = Number((req.params as { ticketId: string }).ticketId);
+    const ticketId = parsePositiveId((req.params as { ticketId: string }).ticketId);
+    if (ticketId === null) return reply.code(400).send({ error: "Invalid ticket id." });
     const body = (req.body ?? {}) as Record<string, unknown>;
     if (body.priority !== undefined && !PRIORITY_VALUES.includes(body.priority as string)) {
       return reply.code(400).send({ error: "Invalid priority." });
@@ -622,8 +637,18 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
   // not leak it to any admin who can merely view a ticket. Admin-gated (GET,
   // no CSRF needed) since a ticket's photoFileIds could otherwise be used to
   // fish for Telegram file_ids.
+  //
+  // Only a file id attached to a support ticket or ticket message is served:
+  // the bot can see every file anyone ever sent it (payment proofs included),
+  // and this route is open to every admin role. The bytes go out as an image
+  // type from a fixed allowlist with nosniff, never Telegram's own
+  // content-type, so a non-image upload can't render as HTML in the panel's
+  // origin.
   app.get("/api/support/photo/:fileId", { preHandler: currentAdmin }, async (req, reply) => {
     const fileId = (req.params as { fileId: string }).fileId;
+    if (!TELEGRAM_FILE_ID_RE.test(fileId) || !(await isTicketAttachmentFileId(prisma, fileId))) {
+      return reply.code(404).send({ error: "Photo not found." });
+    }
     const creds = await resolveBotCredentials(prisma);
     if (!creds.botToken) {
       return reply.code(503).send({ error: "The bot token is not configured." });
@@ -642,7 +667,12 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
     if (!upstream.ok) {
       return reply.code(502).send({ error: "Could not retrieve the photo from Telegram." });
     }
-    reply.header("content-type", upstream.headers.get("content-type") ?? "image/jpeg");
+    const contentType = photoContentType(upstream.headers.get("content-type"), result.filePath);
+    if (contentType === null) {
+      return reply.code(415).send({ error: "This attachment is not an image." });
+    }
+    reply.header("content-type", contentType);
+    reply.header("x-content-type-options", "nosniff");
     return reply.send(Buffer.from(await upstream.arrayBuffer()));
   });
 }

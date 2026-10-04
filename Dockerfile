@@ -80,9 +80,11 @@ RUN mkdir -p /app/data/logs && chown -R app:app /app/data
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
-# Same +x caveat for the backup/restore scripts, which an operator may run via
-# `docker compose exec`.
-RUN chmod +x /app/deploy/backup/*.sh
+# deploy/backup/*.sh are in the image only because the whole repo is copied;
+# they are NOT runnable from inside this container. They drive
+# `docker compose exec/stop/start` on the host (pg_dump/pg_restore run inside
+# the `postgres` container, and restore.sh stops and restarts this one), which
+# needs the host's Docker — run them on the host, see deploy/backup/README.md.
 
 # NOTE: we deliberately stay root here. The entrypoint chowns the bind-mounted
 # /app/data (root-owned on a fresh host clone) and then drops to `app` via gosu.

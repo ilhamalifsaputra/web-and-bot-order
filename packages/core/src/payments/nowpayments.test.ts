@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto";
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { verifyIpn, getPaymentStatus, createInvoice, NOWPAYMENTS_IPN_MAX_AGE_MS, RateLimitedError } from "./nowpayments";
+import { verifyIpn, getPaymentStatus, checkNowpaymentsAmount, createInvoice, NOWPAYMENTS_IPN_MAX_AGE_MS, RateLimitedError } from "./nowpayments";
 
 const CREDS = { apiKey: "API-KEY", ipnSecret: "ipn-s3cr3t" };
 const FULL_CREDS = { apiKey: "API-KEY", ipnSecret: "ipn-s3cr3t", payCurrency: "usdttrc20" };
@@ -356,6 +356,32 @@ describe("getPaymentStatus", () => {
     expect(r.trxId).toBe("PID-1");
     expect(r.amount.toFixed(0)).toBe("10");
     expect(r.status).toBe("finished");
+  });
+
+  // Task B fix round: the reconcile poller judges value through
+  // checkNowpaymentsAmount, so the status must carry the same raw fields the IPN does.
+  it("exposes the price and pay-currency fields checkNowpaymentsAmount needs, and a short payment's value in the order's currency", async () => {
+    stubFetchJson({
+      payment_status: "finished",
+      payment_id: "PID-V",
+      price_amount: "50.00",
+      price_currency: "usd",
+      pay_amount: "500",
+      actually_paid: "200",
+      pay_currency: "trx",
+    });
+    const r = await getPaymentStatus(FULL_CREDS, { invoiceId: "INV-V" });
+    expect(r.priceAmount?.toString()).toBe("50");
+    expect(r.priceCurrency).toBe("usd");
+    expect(r.payAmount?.toString()).toBe("500");
+    expect(r.actuallyPaid?.toString()).toBe("200");
+    expect(r.payCurrency).toBe("trx");
+    const check = checkNowpaymentsAmount(r, "50");
+    expect(check.ok).toBe(false);
+    expect(!check.ok && check.receivedValue?.toString()).toBe("20");
+    // No usd price at all: not valued, so no receivedValue to claim an underpayment with.
+    const unpriced = checkNowpaymentsAmount({ ...r, priceAmount: null }, "50");
+    expect(!unpriced.ok && unpriced.receivedValue).toBeUndefined();
   });
 
   it("reports not paid for a waiting payment status", async () => {

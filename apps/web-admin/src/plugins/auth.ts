@@ -147,12 +147,12 @@ function isBrowserNavigation(req: FastifyRequest): boolean {
  *
  * Non-`/api` paths always keep the 303 here, whether or not the caller is a
  * real navigation: the SPA shell's `GET /*` catch-all (spaShell.ts) genuinely
- * is one, while `/setup/restart` (called via `publicPost`, client.ts) and the
+ * is one, while `/setup/restart` (called via `apiPost`, client.ts) and the
  * branding/broadcast/catalog-photo upload endpoints (XHRs from
  * ImageUploadField.tsx's `uploadWithProgress`) are fetch/XHR calls that
  * happen to hit non-`/api` routes — those are guarded against this same
  * expired-session bug a different way instead (`parseJsonOrThrow` in
- * `publicPost`, and the JSON.parse guard in ImageUploadField.tsx's
+ * `apiPost`, and the JSON.parse guard in ImageUploadField.tsx's
  * `confirmUpload`), since a 303 from here would just get silently followed
  * either way.
  */

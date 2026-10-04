@@ -35,10 +35,10 @@ import {
   addToCart,
   countAvailableStock,
   createGuestUser,
-  findIdempotentResponse,
-  saveIdempotentResponse,
+  IdempotencyClaimTracker,
   hashIdempotentRequest,
   IdempotencyKeyReuseError,
+  IdempotencyRequestInProgressError,
   type IdempotentReplay,
   type CatalogProduct,
 } from "@app/db";
@@ -395,6 +395,23 @@ export async function sendGuestOrderCodeEmail(req: FastifyRequest, to: string, o
 }
 
 const apiRoutes: FastifyPluginAsync = async (app) => {
+  // Checkout idempotency keys are claimed before the order is created (backend
+  // audit E2), so a double-tapped Place Order waits for the first request and
+  // replays it. A claim the handler never saved — it threw, or left through
+  // one of the raw guest early exits that deliberately store nothing — is
+  // released once the response is out, so a retry with the key runs cleanly.
+  const idempotencyClaims = new IdempotencyClaimTracker();
+  app.addHook("onResponse", async (req) => {
+    try {
+      await idempotencyClaims.releaseUnsettled(prisma, req);
+    } catch (err) {
+      logger.warn(
+        { err },
+        "Could not release an unfinished checkout idempotency claim; a retry with the same key will wait until the claim expires.",
+      );
+    }
+  });
+
   // ---- 1. GET /categories ----
   app.get("/categories", async (_req, reply) => {
     const categories = await listActiveCategories(prisma, "web");
@@ -621,7 +638,7 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
     if (idem) {
       let replay: IdempotentReplay | null;
       try {
-        replay = await findIdempotentResponse(prisma, {
+        replay = await idempotencyClaims.claim(prisma, req, {
           key: idem.key,
           endpoint: CHECKOUT_IDEMPOTENCY_ENDPOINT,
           requestHash: idem.requestHash,
@@ -629,6 +646,9 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
       } catch (e) {
         if (e instanceof IdempotencyKeyReuseError) {
           return reply.code(409).send({ error: "error.idempotency_key_reused" });
+        }
+        if (e instanceof IdempotencyRequestInProgressError) {
+          return reply.code(409).send({ error: "error.idempotency_request_in_progress" });
         }
         throw e;
       }
@@ -644,7 +664,7 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
     // as safe and just as worth replaying as a success.
     const respond = async (statusCode: number, body: unknown) => {
       if (idem) {
-        await saveIdempotentResponse(prisma, {
+        await idempotencyClaims.save(prisma, req, {
           key: idem.key,
           endpoint: CHECKOUT_IDEMPOTENCY_ENDPOINT,
           requestHash: idem.requestHash,

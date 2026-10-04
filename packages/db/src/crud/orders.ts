@@ -44,20 +44,21 @@ import type { Prisma } from "@prisma/client";
 import type { Db } from "./_types";
 import { assertServiceActive } from "./serviceAvailability";
 import type { ServiceChannel } from "@app/core/services";
-import { isUniqueViolation } from "./_types";
+import { isUniqueViolation, isUniqueViolationOn } from "./_types";
 import { getBulkPricingForDenomination } from "./catalog";
 import {
   getVoucherByCode,
   applyVoucherToSubtotal,
   assertVoucherNotRedeemedByUser,
   computeEligibleAmounts,
+  releaseVoucherUse,
   type EligibilityLine,
 } from "./vouchers";
 import { countAvailableStock, allocateOneAvailableStock } from "./stock";
 import { recordStockEvent, type StockEventActor } from "./stockEvents";
 import { adjustWallet, getUser } from "./users";
 import { ACTIONABLE_LEDGER_OUTCOMES, cancelledOrderIdsWithMoneyReturned, consumeIncomingLedgerPayment } from "./reports";
-import { clearCart, getCart } from "./cart";
+import { clearCart, getCart, lockCartForCheckout } from "./cart";
 import { getSetting } from "./settings";
 import { maybePayReferralCommission } from "./referrals";
 import {
@@ -538,6 +539,25 @@ function withDecryptedStockCredentials<
   } as T;
 }
 
+/**
+ * The order status plus its Digiflazz dispatch fields — what the admin and
+ * buyer realtime streams push (the buyer stream maps it to a buyer-safe shape
+ * before sending). Null when the order does not exist.
+ */
+export function getOrderDigiflazzSnapshot(db: Db, orderId: number) {
+  return db.order.findUnique({
+    where: { id: orderId },
+    select: {
+      status: true,
+      digiflazzStatus: true,
+      digiflazzAttempts: true,
+      digiflazzNextRecheckAt: true,
+      digiflazzFailureDetail: true,
+      accountDiagnosticNote: true,
+    },
+  });
+}
+
 export async function getOrder(db: Db, orderId: number) {
   const order = await db.order.findUnique({ where: { id: orderId }, include: fullInclude });
   return order ? withDecryptedStockCredentials(order) : order;
@@ -678,6 +698,10 @@ export async function createOrderFromCart(
   // isActive) would see an empty cart and skip both checks, while this
   // function's own unfiltered read would still create the order from the
   // now-inactive line (Finding #5, per-sku-delivery-flows audit 2026-07-13).
+  //
+  // Lock the cart first: a concurrent checkout of the same cart waits here and
+  // then finds it empty, instead of creating a second order from it.
+  await lockCartForCheckout(db, args.user.id);
   const rawCart = (await getCart(db, args.user.id)) as unknown as CartLine[];
   const cart = rawCart.filter((ci) => ci.product.isActive);
   if (cart.length === 0) throw new ValidationError("error.cart_empty");
@@ -821,10 +845,12 @@ export async function createOrderFromCart(
     });
   } catch (e) {
     // See DuplicateCheckoutIntentError's doc comment: only ever raised for a
-    // genuine checkoutIntentId collision (nothing else this INSERT can violate
-    // is caller-suppliable at this point — orderCode was just freshly minted
-    // as unique above), and only when the caller opted into the guard.
-    if (args.checkoutIntentId && isUniqueViolation(e)) {
+    // genuine checkoutIntentId collision, and only when the caller opted into
+    // the guard. The INSERT can also violate order_code: uniqueOrderCode only
+    // checked the code was free, and a concurrent order can take it before
+    // this INSERT lands. That is not a duplicate checkout, so it is told apart
+    // by the violated column and rethrown as-is (backend audit E2 item 6).
+    if (args.checkoutIntentId && isUniqueViolationOn(e, "checkout_intent_id")) {
       throw new DuplicateCheckoutIntentError(args.checkoutIntentId);
     }
     throw e;
@@ -1104,10 +1130,12 @@ export async function createOrderDirect(
     });
   } catch (e) {
     // See DuplicateCheckoutIntentError's doc comment: only ever raised for a
-    // genuine checkoutIntentId collision (nothing else this INSERT can violate
-    // is caller-suppliable at this point — orderCode was just freshly minted
-    // as unique above), and only when the caller opted into the guard.
-    if (args.checkoutIntentId && isUniqueViolation(e)) {
+    // genuine checkoutIntentId collision, and only when the caller opted into
+    // the guard. The INSERT can also violate order_code: uniqueOrderCode only
+    // checked the code was free, and a concurrent order can take it before
+    // this INSERT lands. That is not a duplicate checkout, so it is told apart
+    // by the violated column and rethrown as-is (backend audit E2 item 6).
+    if (args.checkoutIntentId && isUniqueViolationOn(e, "checkout_intent_id")) {
       throw new DuplicateCheckoutIntentError(args.checkoutIntentId);
     }
     throw e;
@@ -1557,13 +1585,8 @@ async function releaseOrderHolds(
     });
   }
   if (order.voucherId) {
-    const v = await db.voucher.findUnique({ where: { id: order.voucherId } });
-    if (v && v.usedCount > 0) {
-      await db.voucher.update({
-        where: { id: v.id },
-        data: { usedCount: { decrement: 1 } },
-      });
-    }
+    // One guarded decrement; never below zero even when two releases race.
+    await releaseVoucherUse(db, order.voucherId);
     // M-2 (backend audit, 2026-07-31): also clear the (voucherId, userId)
     // redemption row so a cancelled/rejected/expired order doesn't
     // permanently lock this buyer out of a one-per-user voucher —

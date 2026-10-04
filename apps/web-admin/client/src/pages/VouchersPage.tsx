@@ -27,6 +27,7 @@ import { StatCard } from "../components/shared/StatCard";
 import { Pagination } from "../components/shared/Pagination";
 import { ProgressBar } from "../components/shared/ProgressBar";
 import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount";
+import { exactFieldsOf } from "../lib/exactFields";
 import { Button } from "@/components/ui/button";
 import { DateInput } from "../components/shared/DateInput";
 import { Input } from "@/components/ui/input";
@@ -112,6 +113,9 @@ interface VoucherFormState {
   product_ids: number[];
 }
 
+/** The form fields that carry an amount or percent the server reads as typed money. */
+const VOUCHER_AMOUNT_FIELDS = ["value", "min_purchase", "max_discount"] as const;
+
 const EMPTY_FORM: VoucherFormState = {
   code: "",
   type: "PERCENT",
@@ -177,8 +181,11 @@ function expirationCell(v: Voucher, now: Date): { text: string; muted: boolean }
  *  why an *omitted* `product_ids` (not the same as an empty array) is
  *  reserved for "leave the existing product set untouched", which never
  *  applies to a full-form submission like this one. */
-function voucherRequestBody(form: VoucherFormState): Record<string, unknown> {
+function voucherRequestBody(form: VoucherFormState, prefill: Partial<VoucherFormState> | null): Record<string, unknown> {
   return {
+    // Untouched pre-filled amounts (Edit / Duplicate) are the server's own
+    // plain decimals — see lib/exactFields.ts.
+    exact_fields: exactFieldsOf(form, prefill, VOUCHER_AMOUNT_FIELDS),
     code: form.code,
     type: form.type,
     value: form.value,
@@ -322,6 +329,9 @@ export function VouchersPage() {
   const [mode, setMode] = useState<"create" | "edit">("create");
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<VoucherFormState>(EMPTY_FORM);
+  // The form as Edit/Duplicate pre-filled it from the server (null for a blank
+  // create form) — what `exact_fields` compares against.
+  const [prefill, setPrefill] = useState<VoucherFormState | null>(null);
   const [copiedId, setCopiedId] = useState<number | null>(null);
   const [qDraft, setQDraft] = useState("");
   const [q, setQ] = useState("");
@@ -377,19 +387,27 @@ export function VouchersPage() {
     setMode("create");
     setEditingId(null);
     setForm(EMPTY_FORM);
+    setPrefill(null);
   }
 
   function openCreateForm() {
     setMode("create");
     setEditingId(null);
     setForm(EMPTY_FORM);
+    setPrefill(null);
     setShowForm(true);
+  }
+
+  /** Fill the form from the server's own values and remember them as the pre-fill. */
+  function prefillForm(next: VoucherFormState) {
+    setForm(next);
+    setPrefill(next);
   }
 
   function openEditForm(v: Voucher) {
     setMode("edit");
     setEditingId(v.id);
-    setForm({
+    prefillForm({
       code: v.code,
       type: v.type,
       value: v.value,
@@ -407,7 +425,7 @@ export function VouchersPage() {
   function openDuplicateForm(v: Voucher) {
     setMode("create");
     setEditingId(null);
-    setForm({
+    prefillForm({
       code: "",
       type: v.type,
       value: v.value,
@@ -423,7 +441,7 @@ export function VouchersPage() {
   }
 
   const create = useMutation({
-    mutationFn: (body: VoucherFormState) => apiPost("/api/vouchers", voucherRequestBody(body)),
+    mutationFn: (body: VoucherFormState) => apiPost("/api/vouchers", voucherRequestBody(body, prefill)),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["vouchers"] });
       closeForm();
@@ -433,7 +451,7 @@ export function VouchersPage() {
 
   const update = useMutation({
     mutationFn: ({ id, form: f }: { id: number; form: VoucherFormState }) =>
-      apiPost(`/api/vouchers/${id}/update`, voucherRequestBody(f)),
+      apiPost(`/api/vouchers/${id}/update`, voucherRequestBody(f, prefill)),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["vouchers"] });
       closeForm();

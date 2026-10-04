@@ -532,12 +532,33 @@ export async function availableStockCountsByDenomination(
 }
 
 /**
+ * The lowest-id AVAILABLE, not-deleted stock row of `productId` that no other
+ * transaction currently holds, row-locked for the caller's transaction; null
+ * when there is none. Rows another allocator is reserving right now are
+ * skipped rather than waited on.
+ */
+async function lockOneAvailableStockId(db: Db, productId: number): Promise<number | null> {
+  const rows = await db.$queryRaw<Array<{ id: number }>>`
+    SELECT id FROM stock_items
+    WHERE product_id = ${productId} AND deleted_at IS NULL AND status = ${StockStatus.AVAILABLE}
+    ORDER BY id
+    LIMIT 1
+    FOR UPDATE SKIP LOCKED`;
+  return rows[0]?.id ?? null;
+}
+
+/**
  * Grab one AVAILABLE row, flip to RESERVED, link to the order, and record the
  * RESERVED event. Returns the reserved row or null if none available.
  *
- * Concurrent callers are guarded with an optimistic claim (updateMany where
- * status=AVAILABLE) and a retry, so the reservation stays race-free under the
- * interactive-transaction model.
+ * The candidate is picked with `FOR UPDATE SKIP LOCKED` (see
+ * lockOneAvailableStockId), so concurrent allocators each take a different
+ * row instead of all queueing on the lowest id. Previously every allocator
+ * aimed at the lowest AVAILABLE id, waited for whoever held it, lost, and
+ * moved on to the next — after 5 such losses it reported out of stock while
+ * stock was still free (backend audit E2 item 4). The conditional updateMany
+ * (status=AVAILABLE) stays as the guard; the retry now only matters for a
+ * caller with no transaction, whose row lock ends with the SELECT.
  *
  * The event is written only for the attempt that actually WON the conditional
  * update, so a row a caller lost the race for never gets a reservation it
@@ -554,11 +575,9 @@ export async function allocateOneAvailableStock(
   orderItemId?: number | null,
 ) {
   for (let attempt = 0; attempt < 5; attempt++) {
-    const candidate = await db.stockItem.findFirst({
-      where: { productId, deletedAt: null, status: StockStatus.AVAILABLE },
-      orderBy: { id: "asc" },
-    });
-    if (!candidate) return null;
+    const candidateId = await lockOneAvailableStockId(db, productId);
+    if (candidateId === null) return null;
+    const candidate = { id: candidateId };
 
     const res = await db.stockItem.updateMany({
       where: { id: candidate.id, deletedAt: null, status: StockStatus.AVAILABLE },

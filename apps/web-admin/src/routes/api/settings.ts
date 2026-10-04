@@ -46,6 +46,7 @@ import { CUSTOM_EMOJI_MAP_SETTING, setCustomEmojiMap } from "@app/core/customEmo
 import { currentAdmin, csrfProtect, blockReadonlyReads } from "../../plugins/auth";
 import { getTokenValidator, getChannelValidator, getBotAdminValidator, getJoinUrlResolver, matchesExpectedType } from "../../lib/telegramCheck";
 import { CONNECTION_TESTS } from "../../lib/connectionTest";
+import { exactFields, readMoneyField, readPercentField, moneyFieldError, percentFieldError, type MoneyFieldCurrency } from "../../lib/moneyField";
 
 const EDITABLE: Record<string, string> = {
   support_contact: "Support contact handle/text",
@@ -148,15 +149,37 @@ const EDITABLE: Record<string, string> = {
   kokinpay_api_key: "KokinPay API key",
 };
 
-const SECRET_KEYS = new Set(["tokopay_secret", "paydisini_apikey", "bot_token", "notif_bot_token", "bybit_api_key", "bybit_api_secret", "binance_api_key", "binance_api_secret", "nowpayments_api_key", "nowpayments_ipn_secret", "bscscan_api_key", "smtp_pass", "digiflazz_api_key", "kokinpay_api_key", "coingecko_api_key"]);
+// Masked on GET, left out of export, refused by import, and audited as
+// "(updated)". The last three (backend audit Task C4) are not secrets on their
+// own but are half of a gateway credential pair — a merchant id / user key /
+// account UID next to its secret is what a forged callback or a phishing
+// "support" message needs — so they get the same treatment. They are NOT in
+// ENCRYPTED_SETTING_KEYS: their readers use plain getSetting.
+const SECRET_KEYS = new Set([
+  "tokopay_secret", "paydisini_apikey", "bot_token", "notif_bot_token", "bybit_api_key", "bybit_api_secret",
+  "binance_api_key", "binance_api_secret", "nowpayments_api_key", "nowpayments_ipn_secret", "bscscan_api_key",
+  "smtp_pass", "digiflazz_api_key", "kokinpay_api_key", "coingecko_api_key",
+  "paydisini_userkey", "tokopay_merchant_id", "bybit_uid",
+  // The /metrics scrape token (routes/metrics.ts). Not in EDITABLE today (it
+  // is set via METRICS_TOKEN or a direct settings row); listed here so it
+  // stays masked/unexported the moment anyone makes it editable.
+  "metrics_token",
+]);
 const TOKEN_KEYS = new Set(["bot_token", "notif_bot_token"]);
 // Fields whose /telegram/test check reuses the getChat-based "is this chat
 // reachable" flow — the original public_channel_id plus the two join-gate
 // chats added on top of it.
 const CHANNEL_LIKE_KEYS = new Set(["public_channel_id", "join_gate_channel_id", "join_gate_group_id"]);
 const BOT_TOKEN_FIELD_KEYS = new Set(["bot_token", "bot_username", "notif_bot_token", "public_channel_id"]);
-const SECRET_PREFIXES = ["web_admin_password_hash:", "web_session_jti:", "web_2fa_secret:", "web_2fa_pending:", "shop_session_jti:"];
-const isSecret = (key: string) => SECRET_KEYS.has(key) || SECRET_PREFIXES.some(p => key.startsWith(p));
+// Per-account secrets stored as Settings rows. `shop_session_jti_user:` is the
+// storefront's real session-jti prefix (apps/storefront/src/auth.ts
+// shopSessionJtiKey); the list used to say `shop_session_jti:`, a key that is
+// never written, so that entry protected nothing (backend audit Task C4).
+const SECRET_PREFIXES = ["web_admin_password_hash:", "web_session_jti:", "web_2fa_secret:", "web_2fa_pending:", "shop_session_jti_user:"];
+/** True for every setting key whose value must never be shown, exported, imported or audited verbatim. */
+export const isSecretSettingKey = (key: string): boolean =>
+  SECRET_KEYS.has(key) || SECRET_PREFIXES.some((p) => key.startsWith(p));
+const isSecret = isSecretSettingKey;
 
 // Accepts a plain email, or Nodemailer's "Display Name <email>" form.
 const SMTP_FROM_RE = /^([^\s@]+@[^\s@]+\.[^\s@]+|.+<[^\s@]+@[^\s@]+\.[^\s@]+>)$/;
@@ -238,6 +261,45 @@ function fxRejectionMessage(reason: FxRateRejection, market: Decimal): string {
   }
 }
 
+/**
+ * The money settings an admin types, and the currency each is read in. Read
+ * BY SHAPE (lib/moneyField.ts): a minimum typed `10.000` is ten thousand
+ * rupiah, never Rp10 as `new Decimal(text)` read it. The per-rail minimums are
+ * in the rail's settlement currency (orderMinimums.ts): Rupiah for TokoPay and
+ * PayDisini, USDT for the crypto rails. `digiflazz_markup_value` is handled
+ * separately — it is a percent or a Rupiah amount depending on the type.
+ */
+const MONEY_SETTING_CURRENCY: Record<string, MoneyFieldCurrency> = {
+  min_order_amount_idr: "IDR",
+  tokopay_min_amount: "IDR",
+  paydisini_min_amount: "IDR",
+  nowpayments_min_amount: "USDT",
+  bybit_min_amount: "USDT",
+  bybit_bsc_min_amount: "USDT",
+  binance_internal_min_amount: "USDT",
+  wallet_topup_min_amount_idr: "IDR",
+  wallet_topup_max_amount_idr: "IDR",
+  wallet_topup_min_amount_usdt: "USDT",
+  wallet_topup_max_amount_usdt: "USDT",
+};
+
+/**
+ * A money setting's value as the canonical plain decimal to store, read by
+ * shape — or, with `exact`, as the plain dot-decimal the settings form
+ * pre-filled from the stored value and the admin left untouched (and the
+ * values of an export file), so a re-save never turns `1.234` USDT into 1234.
+ * Every reader of these settings does `new Decimal(stored)`, so the stored
+ * text must be the plain decimal, never the admin's typed shape. Returns null
+ * for anything unreadable, ambiguous, non-finite or negative.
+ */
+function readMoneySetting(key: string, value: string, exact: boolean, markupType: string | null): string | null {
+  const amount =
+    key === "digiflazz_markup_value" && markupType === "percent"
+      ? readPercentField(value, { exact })
+      : readMoneyField(value, MONEY_SETTING_CURRENCY[key] ?? "IDR", { exact });
+  return amount && amount.isFinite() ? amount.toFixed() : null;
+}
+
 /** Thrown by `applyFieldEdit` for any rejection — carries the HTTP status the
  * route should reply with, so both `/edit` and `/import` translate it the
  * same way without duplicating the status-code decisions below. */
@@ -261,10 +323,14 @@ async function applyFieldEdit(
   admin: { userId: number; telegramId: number; role: string },
   key: string,
   rawValue: string,
+  /** The value is machine-formatted (an untouched pre-fill of the stored
+   * value, or an export file) — money settings read it as a plain dot-decimal
+   * instead of by shape. */
+  exact = false,
 ): Promise<{ ok: true; unchanged?: boolean; cleared?: boolean; needsRestart?: boolean }> {
   if (!(key in EDITABLE)) throw new FieldEditError(400, "That setting is not editable here.");
-  const value = rawValue.trim();
-  if (SECRET_KEYS.has(key) && value === "") return { ok: true, unchanged: true };
+  let value = rawValue.trim();
+  if (isSecret(key) && value === "") return { ok: true, unchanged: true };
 
   if (TOKEN_KEYS.has(key)) {
     if (admin.role !== "super") throw new FieldEditError(403, "Only the owner can change bot tokens.");
@@ -331,16 +397,19 @@ async function applyFieldEdit(
     return { ok: true };
   }
 
-  if (key.endsWith("_min_amount") && value !== "") {
-    let valid = false;
-    try { const d = new Decimal(value); valid = d.isFinite() && d.greaterThan(0); } catch { valid = false; }
-    if (!valid) throw new FieldEditError(400, "Minimum amount must be a positive number, or blank to disable.");
-  }
-
-  if (key.startsWith("wallet_topup_") && (key.endsWith("_amount_idr") || key.endsWith("_amount_usdt")) && value !== "") {
-    let valid = false;
-    try { const d = new Decimal(value); valid = d.isFinite() && d.greaterThan(0); } catch { valid = false; }
-    if (!valid) throw new FieldEditError(400, "Amount must be a positive number, or blank to disable.");
+  if (key in MONEY_SETTING_CURRENCY && value !== "") {
+    const currency = MONEY_SETTING_CURRENCY[key]!;
+    const amount = readMoneySetting(key, value, exact, null);
+    // The shop-wide minimum may be 0 (= no shop-wide minimum); every other
+    // minimum/maximum must be more than zero, or blank.
+    const allowZero = key === "min_order_amount_idr";
+    if (amount === null || (!allowZero && !/[1-9]/.test(amount))) {
+      throw new FieldEditError(
+        400,
+        `${moneyFieldError(EDITABLE[key]!, currency)} ${allowZero ? "Use 0 or blank to disable it." : "It must be more than zero, or blank to disable it."}`,
+      );
+    }
+    value = amount;
   }
 
   // This value is interpolated into a <script> tag on every storefront page
@@ -397,12 +466,20 @@ async function applyFieldEdit(
   }
 
   if (key === "digiflazz_markup_value" && value !== "") {
-    let valid = false;
-    try { const d = new Decimal(value); valid = d.isFinite() && d.greaterThanOrEqualTo(0); } catch { valid = false; }
-    if (!valid) throw new FieldEditError(400, "Markup value must be a non-negative number, or blank to disable.");
+    // A percent markup is read as a percent; a flat one (or one set before
+    // the type) as a Rupiah amount, so a flat 1.500 is Rp1.500, not Rp1,5.
+    const markupType = await getSetting(prisma, "digiflazz_markup_type");
+    const amount = readMoneySetting(key, value, exact, markupType);
+    if (amount === null) {
+      throw new FieldEditError(
+        400,
+        `${markupType === "percent" ? percentFieldError(EDITABLE[key]!) : moneyFieldError(EDITABLE[key]!, "IDR")} Use 0 or blank for no markup.`,
+      );
+    }
+    value = amount;
   }
 
-  const displayValue = SECRET_KEYS.has(key) ? "(updated)" : value.slice(0, 80);
+  const displayValue = isSecret(key) ? "(updated)" : value.slice(0, 80);
   if (ENCRYPTED_SETTING_KEYS.has(key)) {
     try {
       await setEncryptedSetting(prisma, key, value);
@@ -453,9 +530,9 @@ export default async function settingsApiRoutes(app: FastifyInstance): Promise<v
     const fields = Object.entries(EDITABLE).map(([key, label]) => ({
       key,
       label,
-      secret: SECRET_KEYS.has(key),
+      secret: isSecret(key),
       hasValue: Boolean(currentValues[key]),
-      value: SECRET_KEYS.has(key) ? "" : (currentValues[key] ?? ""),
+      value: isSecret(key) ? "" : (currentValues[key] ?? ""),
       needsRestart: BOT_TOKEN_FIELD_KEYS.has(key),
     }));
 
@@ -503,7 +580,10 @@ export default async function settingsApiRoutes(app: FastifyInstance): Promise<v
   app.post("/api/settings/edit", { preHandler: csrfProtect }, async (req, reply) => {
     const body = (req.body ?? {}) as Record<string, string>;
     try {
-      const result = await applyFieldEdit(req.admin!, body.key ?? "", body.value ?? "");
+      // The settings form pre-fills each field with its stored value; an
+      // untouched pre-fill is sent with "value" in `exact_fields` so a money
+      // setting is read exactly rather than by shape (lib/moneyField.ts).
+      const result = await applyFieldEdit(req.admin!, body.key ?? "", body.value ?? "", exactFields(req.body).has("value"));
       return reply.send(result);
     } catch (err) {
       if (err instanceof FieldEditError) return reply.code(err.status).send({ error: err.message });
@@ -543,7 +623,7 @@ export default async function settingsApiRoutes(app: FastifyInstance): Promise<v
     for (const r of rows) currentValues[r.key] = r.value;
     const fields: Record<string, string> = {};
     for (const key of Object.keys(EDITABLE)) {
-      if (SECRET_KEYS.has(key)) continue;
+      if (isSecret(key)) continue;
       const v = currentValues[key];
       if (v !== undefined) fields[key] = v;
     }
@@ -562,12 +642,14 @@ export default async function settingsApiRoutes(app: FastifyInstance): Promise<v
     let applied = 0;
     let skipped = 0;
     for (const [key, value] of Object.entries(incoming)) {
-      if (!(key in EDITABLE) || SECRET_KEYS.has(key)) {
+      if (!(key in EDITABLE) || isSecret(key)) {
         skipped++;
         continue;
       }
       try {
-        await applyFieldEdit(req.admin!, key, String(value ?? ""));
+        // An export file holds stored values verbatim (machine-formatted plain
+        // decimals), so money settings are read exactly, not by shape.
+        await applyFieldEdit(req.admin!, key, String(value ?? ""), true);
         applied++;
       } catch {
         skipped++;
@@ -684,14 +766,10 @@ export default async function settingsApiRoutes(app: FastifyInstance): Promise<v
     return reply.send(result);
   });
 
-  // Owner-gated, session-authenticated restart trigger for post-setup use —
-  // deliberately a SEPARATE route from /setup/restart (apps/web-admin/src/routes/setup.ts),
-  // which is intentionally unauthenticated because it runs before any admin
-  // session exists during the first-run wizard. Reusing that route directly
-  // from this authenticated Settings button would mean either leaving it
-  // permanently unauthenticated (already the case, but not something a
-  // prominent in-app button should rely on) or breaking the wizard's own
-  // pre-auth use of it — a new, gated route avoids both.
+  // Owner-gated, session-authenticated restart trigger for post-setup use. Its
+  // setup-wizard twin, /setup/restart (apps/web-admin/src/routes/setup.ts),
+  // now carries the same guard — csrfProtect, owner-only, audited (backend
+  // audit Task C3) — keep the two in step.
   app.post("/api/settings/restart", { preHandler: csrfProtect }, async (req, reply) => {
     if (req.admin!.role !== "super") return reply.code(403).send({ error: "Only the owner can restart the bot." });
     const target = process.env.RESTART_TRIGGER_FILE ?? join(process.cwd(), "tmp", "restart.txt");
@@ -805,11 +883,24 @@ export default async function settingsApiRoutes(app: FastifyInstance): Promise<v
     if ((await getSetting(prisma, twoFaSecretKey(tg))) !== null) return reply.code(409).send({ error: "2FA is already enabled." });
     const secret = generateTotpSecret();
     await setSetting(prisma, twoFaPendingKey(tg), secret);
+    // Audited (backend audit Task C3) — never with the secret itself.
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "web_2fa_begin",
+      targetType: "setting",
+      details: "Started setting up two-factor authentication (2FA) for their web-admin login.",
+    });
     return reply.send({ ok: true, secret, uri: otpauthUri(secret, String(tg)) });
   });
 
   app.post("/api/settings/2fa/cancel", { preHandler: csrfProtect }, async (req, reply) => {
     await deleteSetting(prisma, twoFaPendingKey(req.admin!.telegramId));
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "web_2fa_cancel",
+      targetType: "setting",
+      details: "Cancelled setting up two-factor authentication (2FA) before turning it on.",
+    });
     return reply.send({ ok: true });
   });
 

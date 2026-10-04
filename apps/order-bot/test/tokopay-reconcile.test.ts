@@ -167,6 +167,35 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
     expect(await prisma.processedTokopayTx.count()).toBe(1);
   });
 
+  // Fix round for Task B: a PAID status without an amount is not proof of
+  // payment, so it is never delivered — but it used to vanish entirely (no
+  // record, no alert) while the order quietly auto-cancelled. It is now parked
+  // in the unmatched manual-review queue and alerts the admins exactly once.
+  it("parks a paid status without an amount for manual review, alerts admins once, and never delivers", async () => {
+    const created = await makeTokopayOrder();
+    const [pending] = await listPendingTokopayOrders(prisma, new Date());
+    stubStatus({ status: "Paid", trx_id: "TRX-TP-UNV" }); // no amount at all
+    const api = fakeApi();
+
+    await expect(reconcileOrder(api, CREDS, pending!)).resolves.toBe("ok");
+
+    const after = await prisma.order.findUnique({ where: { id: created!.id } });
+    expect(after?.status).toBe(OrderStatus.PENDING_PAYMENT);
+    const row = await prisma.processedTokopayTx.findUnique({ where: { trxId: "TRX-TP-UNV" } });
+    expect(row?.outcome).toBe("unmatched");
+    expect(row?.amount?.toFixed(0)).toBe("0");
+    expect(row?.orderId).toBeNull();
+    const alerts = await prisma.notificationOutbox.findMany({ where: { event: "ADMIN_UNCONFIRMABLE_PAYMENT", orderId: created!.id } });
+    expect(alerts.length).toBeGreaterThan(0);
+    const payload = JSON.parse(alerts[0]!.payloadJson) as { gateway: string; reason?: string; order_code: string };
+    expect(payload).toMatchObject({ gateway: "TokoPay", reason: "unverified_amount", order_code: created!.orderCode });
+
+    // The next cycle sees the same status: still parked, no second alert.
+    await reconcileOrder(api, CREDS, pending!);
+    expect(await prisma.notificationOutbox.count({ where: { event: "ADMIN_UNCONFIRMABLE_PAYMENT", orderId: created!.id } })).toBe(alerts.length);
+    expect(await prisma.processedTokopayTx.count()).toBe(1);
+  });
+
   it("leaves the order pending when the gateway reports unpaid", async () => {
     await makeTokopayOrder();
     const [pending] = await listPendingTokopayOrders(prisma, new Date());

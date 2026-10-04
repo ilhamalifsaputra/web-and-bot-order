@@ -14,6 +14,7 @@ import { apiPost, apiGet } from "../api/client";
 import { describeError } from "../lib/errorMessages";
 import { useDigiflazzSyncStatus } from "../hooks/useDigiflazzSyncStatus";
 import { formatRelativeTime } from "../lib/relativeTime";
+import { exactFieldsOf } from "../lib/exactFields";
 
 interface SkuRow {
   buyerSkuCode: string;
@@ -309,10 +310,13 @@ export function DigiflazzSyncPage() {
     return priceEdits[key] ?? suggested;
   }
 
+  // The server reads a retyped price BY SHAPE (16.500 = sixteen and a half
+  // thousand, 16.500,50 adds fifty sen) — `Number(raw)` would misjudge both,
+  // so only the characters and a non-zero digit are checked here; the server
+  // reads the amount and refuses an ambiguous shape.
   function priceIsInvalid(key: string, suggested: string): boolean {
-    const raw = priceFor(key, suggested);
-    const n = Number(raw);
-    return !raw || !Number.isFinite(n) || n <= 0;
+    const raw = priceFor(key, suggested).trim();
+    return !/^\d[\d.,]*$/.test(raw) || !/[1-9]/.test(raw);
   }
 
   // Filter-aware "new" (not yet imported) and "existing" brand-group lists —
@@ -350,6 +354,13 @@ export function DigiflazzSyncPage() {
             buyerSkuCode: s.buyerSkuCode,
             productName: s.productName,
             price: priceFor(`${g.brand}::${s.buyerSkuCode}`, s.suggestedPrice),
+            // An untouched suggestion is the server's own plain decimal, read
+            // exactly; a retyped price is read by shape (lib/exactFields.ts).
+            exact_fields: exactFieldsOf(
+              { price: priceFor(`${g.brand}::${s.buyerSkuCode}`, s.suggestedPrice) },
+              { price: s.suggestedPrice },
+              ["price"],
+            ),
             // I11 fix: forward the cost price the preview already computed —
             // without this, a freshly-imported denomination had no costPrice
             // at all until the first resync tick filled it in.

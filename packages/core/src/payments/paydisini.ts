@@ -133,6 +133,11 @@ export interface PaydisiniStatus {
   paid: boolean;
   amount: Decimal;
   trxId: string | null;
+  /** True only when PayDisini says the order is PAID but its status response
+   *  carried no usable amount. `paid` is then false (nothing may be delivered
+   *  on an unverified amount), but money may well have arrived, so callers
+   *  must park it for manual review instead of treating it as "not paid yet". */
+  unverified: boolean;
 }
 
 // Which status strings count as "paid/settled" lives in
@@ -177,15 +182,32 @@ export async function checkTransaction(
   }
   const d = body.data;
   const statusStr = String(d.status ?? "").toLowerCase();
-  const amountRaw = d.amount ?? d.nominal ?? args.amountIdr;
-  let amount: Decimal;
-  try {
-    amount = new Decimal(String(amountRaw));
-  } catch {
-    amount = new Decimal(args.amountIdr);
-  }
   const trxId = (typeof d.unique_code === "string" && d.unique_code) || (typeof d.trx_id === "string" && d.trx_id) || null;
-  return { paid: isProviderPaid(StatusProvider.PAYDISINI, statusStr), amount, trxId };
+  const paid = isProviderPaid(StatusProvider.PAYDISINI, statusStr);
+  // Task B3b (backend audit): the amount must come from PayDisini. This used
+  // to fall back to `args.amountIdr` — the amount we asked about — which made
+  // every caller's short-payment check pass by construction. A paid status
+  // without a usable amount is therefore reported as NOT paid: nothing is
+  // delivered on it, and the reconcile poller simply asks again next tick.
+  const amountRaw = d.amount ?? d.nominal;
+  let amount: Decimal | null = null;
+  if (amountRaw !== undefined && amountRaw !== null && amountRaw !== "") {
+    try {
+      const parsed = new Decimal(String(amountRaw));
+      if (parsed.isFinite()) amount = parsed;
+    } catch {
+      amount = null;
+    }
+  }
+  if (amount === null) {
+    if (paid) {
+      logger.warn(
+        `PayDisini reported order ${args.refId} as paid but its status response carried no usable amount, so the payment is treated as unverified and nothing is delivered on it — it is parked for manual review and the admins are alerted, so an admin should check the transaction in the PayDisini dashboard`,
+      );
+    }
+    return { paid: false, amount: new Decimal(0), trxId, unverified: paid };
+  }
+  return { paid, amount, trxId, unverified: false };
 }
 
 export interface PaydisiniCallback {
@@ -234,7 +256,11 @@ export function verifyCallback(
     .update(`${creds.apiKey}:${creds.userKey}:${refId}:${amountRaw}`)
     .digest("hex");
   if (!constantTimeEqual(expected, signature.toLowerCase())) {
-    logger.warn(`PayDisini callback signature mismatch for reference ${refId} — rejecting the callback as unverified`);
+    // The reference is NOT logged (Task B3e): with the signature failed it is
+    // attacker-controlled bytes — newlines could forge log lines.
+    logger.warn(
+      `Rejected a PayDisini callback whose signature did not match its ${refId.length}-character reference — the reference is not logged because it is unverified input`,
+    );
     return null;
   }
 

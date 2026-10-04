@@ -99,6 +99,49 @@ bertabrakan. Jangan me-rename folder migrasi yang sudah pernah diterapkan:
 itu merusak pelacakan `_prisma_migrations` di DB mana pun yang sudah
 menjalankannya dengan nama lama.
 
+## Catatan per migrasi: `20261003000000_rename_legacy_unique_index_names`
+
+Migrasi ini mengganti nama lima unique index warisan SQLite
+(`sqlite_autoindex_categories_1`, `..._reviews_1`, `..._referrals_1`,
+`..._restock_subscriptions_1`, `..._cart_items_1`) ke nama default Prisma
+(`categories_name_key`, dst.), bersamaan dengan dihapusnya `map:
+"sqlite_autoindex_*"` dari `schema.prisma`. Hanya **nama** index yang berubah:
+kolom, isi, dan aturan keunikannya sama persis, dan tidak ada kode aplikasi
+yang menyebut nama index ini.
+
+**Produksi tidak perlu menjalankan file ini secara manual.** `db push` dari
+`schema.prisma` yang baru menghasilkan sendiri kelima `ALTER INDEX ... RENAME`
+yang sama. Diverifikasi 2026-10-04 di database scratch berisi data: skema lama
+(dengan `map: sqlite_autoindex_*`) di-push, lalu `prisma migrate diff` ke skema
+baru hanya berisi 5 `RenameIndex`, dan `prisma db push` (tanpa
+`--accept-data-loss`) selesai tanpa peringatan data loss dengan baris tetap utuh.
+
+- **Kapan terjadi:** saat container image baru start. Entrypoint menjalankan
+  `db push` **sebelum** kode baru jalan, jadi rename terjadi di langkah deploy
+  biasa (`$COMPOSE up -d --build`). Jalur non-Docker: `pnpm exec prisma db push`
+  sebelum restart proses, seperti perubahan skema lainnya.
+- **Sebelum deploy:** tidak perlu, dan tidak berguna. Kalau dijalankan saat
+  image lama masih hidup, restart image lama berikutnya akan me-rename balik
+  lewat `db push`-nya sendiri (tidak berbahaya, tapi sia-sia).
+- **Sesudah deploy:** aman tapi no-op. File SQL-nya sekarang idempoten: setiap
+  rename hanya jalan kalau index lama ada **dan** nama baru belum dipakai, jadi
+  file ini juga tidak lagi gagal (`relation "sqlite_autoindex_categories_1"
+  does not exist`) di instalasi baru atau di DB yang sudah di-rename `db push`.
+  Kalau tetap ingin menjalankannya:
+  `$COMPOSE run --rm server pnpm exec prisma db execute --schema prisma/schema.prisma --file prisma/migrations/20261003000000_rename_legacy_unique_index_names/migration.sql`.
+- **Kenapa tidak di `$DATA_MIGRATIONS`:** daftar itu dijalankan **sesudah**
+  `db push`, yang sudah melakukan rename, jadi file ini akan selalu no-op di
+  sana. Isinya juga perubahan struktur, bukan baris — persis yang memang
+  ditangani `db push`.
+- **Rollback ke image sebelumnya:** `db push` milik image lama (skemanya masih
+  punya `map: sqlite_autoindex_*`) me-rename index kembali ke nama lama, juga
+  tanpa data loss (diverifikasi di DB scratch yang sama). Kalau start dicegat
+  `data/SKIP_AUTO_MIGRATE` (dibuat `restore.sh`) atau `AUTO_MIGRATE=0`, nama
+  index dibiarkan seperti yang ada di DB/dump — kedua versi kode tetap jalan
+  dengan nama mana pun, karena tidak ada yang bergantung pada nama itu. Restore
+  dump pra-deploy mengembalikan nama lama; deploy image baru berikutnya
+  me-rename lagi.
+
 ## Cara membuat migrasi (sebagai dokumentasi SQL, opsional)
 
 Jika Anda menambah kolom/tabel di `schema.prisma` dan ingin menyimpan SQL-nya
@@ -256,6 +299,14 @@ tersebut; setelah cocok, hapus sentinel dan restart dengan kedua file Compose.
 Langkah lengkap ada di [panduan backup/restore](../deploy/backup/README.md),
 [BACKUP_AND_RESTORE.md](BACKUP_AND_RESTORE.md), dan
 [ROLLBACK.md](ROLLBACK.md).
+
+**Jangan rollback ke image lama tanpa restore dump (rilis backend-audit-fixes).**
+Rilis ini menambah lima kolom `updated_at` dan `idempotency_records.pending_since`.
+Kalau image lama dijalankan di atas database yang sudah di-push skema baru,
+`db push` milik image lama ingin men-drop keenam kolom itu (kehilangan data), jadi
+ia menolak tanpa `--accept-data-loss` — entrypoint gagal dan container tidak mau
+start. Rollback yang didokumentasikan untuk rilis ini adalah restore dari dump
+pra-deploy seperti di atas, bukan sekadar mengganti image.
 
 ## Contoh per environment
 

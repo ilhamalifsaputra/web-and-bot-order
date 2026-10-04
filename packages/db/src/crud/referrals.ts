@@ -100,15 +100,25 @@ export async function maybePayReferralCommission(
   );
   if (commission.lessThanOrEqualTo(0)) return;
 
-  await db.referral.create({
-    data: {
-      referrerId: user.referredById,
-      refereeId: user.id,
-      orderId: order.id,
-      commission,
-      paid: true,
-    },
+  // The check above is only a fast path: two deliveries for the same referee
+  // at once both pass it. The unique refereeId decides the winner, and the
+  // loser must be a quiet no-op — a plain create raised P2002, which aborted
+  // the loser's whole delivery transaction (backend audit E2 item 5).
+  // skipDuplicates makes the insert ON CONFLICT DO NOTHING; it waits for the
+  // other insert to commit and then reports whether this one landed.
+  const inserted = await db.referral.createMany({
+    data: [
+      {
+        referrerId: user.referredById,
+        refereeId: user.id,
+        orderId: order.id,
+        commission,
+        paid: true,
+      },
+    ],
+    skipDuplicates: true,
   });
+  if (inserted.count === 0) return;
   const { transactionId } = await adjustWallet(db, user.referredById, commission, {
     reason: "referral",
     orderId: order.id,

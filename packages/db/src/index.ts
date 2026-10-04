@@ -23,6 +23,7 @@ export * from "./crud/revenue";
 export * from "./crud/notifications";
 export * from "./crud/poll_health";
 export * from "./crud/binance_internal";
+export * from "./crud/_staleClaim";
 export * from "./crud/bybit_deposit";
 export * from "./crud/bybit_bsc_deposit";
 export * from "./crud/broadcasts";

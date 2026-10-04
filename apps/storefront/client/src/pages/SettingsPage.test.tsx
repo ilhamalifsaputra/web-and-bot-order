@@ -17,6 +17,7 @@ const settingsData: SettingsData = {
   bot_id: "123",
   values: { username: "alice", email: "alice@example.com" },
   has_password: true,
+  is_guest: false,
   tg_linked: false,
   tg_name: "",
 };
@@ -122,6 +123,34 @@ describe("SettingsPage", () => {
     await waitFor(() => expect(assign).toHaveBeenCalledWith("/account/settings?saved=1"));
   });
 
+  it("a guest row gets the order-email field and sends it as guest_email (Task C1)", async () => {
+    const assign = vi.fn();
+    Object.defineProperty(window, "location", { configurable: true, writable: true, value: { assign } });
+    renderSettings("/account/settings", {
+      ...settingsData,
+      values: { username: "", email: "" },
+      has_password: false,
+      is_guest: true,
+    });
+    const field = await screen.findByLabelText("Order email");
+    expect(screen.queryByLabelText("Current password")).not.toBeInTheDocument();
+    fireEvent.change(field, { target: { value: "buyer@example.com" } });
+    (apiPost as Mock).mockResolvedValue({ ok: true, password_changed: true });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(apiPost).toHaveBeenCalledWith(
+        "/api/v1/account/settings/credentials",
+        expect.objectContaining({ guest_email: "buyer@example.com" }),
+      ),
+    );
+  });
+
+  it("a non-guest row shows no order-email field", async () => {
+    renderSettings();
+    await screen.findByLabelText("Username");
+    expect(screen.queryByLabelText("Order email")).not.toBeInTheDocument();
+  });
+
   it("renders the Continue with Telegram button when !tg_linked && bot_id", async () => {
     renderSettings("/account/settings", { ...settingsData, tg_linked: false, bot_id: "123" });
     expect(await screen.findByRole("button", { name: "Continue with Telegram" })).toBeInTheDocument();
@@ -131,6 +160,38 @@ describe("SettingsPage", () => {
     renderSettings("/account/settings", { ...settingsData, tg_linked: true, tg_name: "Alice T" });
     expect(await screen.findByText("Linked to Telegram as Alice T.")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Continue with Telegram" })).not.toBeInTheDocument();
+  });
+
+  // Backend audit Task C fix round: the link callback only accepts a link the
+  // account armed via a CSRF-checked POST first.
+  it("arms the link (POST .../link-telegram/start) before leaving for Telegram", async () => {
+    const assign = vi.fn();
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      writable: true,
+      value: { assign, origin: "https://shop.local" },
+    });
+    (apiPost as Mock).mockResolvedValue({ ok: true });
+    renderSettings("/account/settings", { ...settingsData, tg_linked: false, bot_id: "123" });
+    fireEvent.click(await screen.findByRole("button", { name: "Continue with Telegram" }));
+    await waitFor(() => expect(assign).toHaveBeenCalledTimes(1));
+    expect(apiPost).toHaveBeenCalledWith("/api/v1/account/settings/link-telegram/start", {});
+    expect(String(assign.mock.calls[0]![0])).toContain("https://oauth.telegram.org/auth?");
+  });
+
+  it("a guest row gets no Telegram button, just the claim-first hint", async () => {
+    renderSettings("/account/settings", { ...settingsData, is_guest: true, has_password: false, bot_id: "123" });
+    expect(
+      await screen.findByText("Save a username and password for this account first, then you can link Telegram."),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Continue with Telegram" })).not.toBeInTheDocument();
+  });
+
+  it("shows the guest and already-linked errors from the link redirect", async () => {
+    renderSettings("/account/settings?err=tg_already_linked");
+    expect(
+      await screen.findByText("This account is already linked to a different Telegram account."),
+    ).toBeInTheDocument();
   });
 
   it("omits the button when no bot_id is configured", async () => {

@@ -7,7 +7,7 @@
 // app instance + own IPs via x-forwarded-for) so these tests never share a
 // rate-limit bucket with the password-login tests in storefront.test.ts.
 import "./setup-env"; // FIRST import — sets env before @app/* load
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@app/core/mailer", () => ({
   sendMail: vi.fn().mockResolvedValue(undefined),
 }));
@@ -24,7 +24,34 @@ import {
   resetAccountFailures,
   webhookRateLimited,
   WEBHOOK_RATE_LIMIT_MAX,
+  rateLimitClientKey,
+  trackTargetLockedOut,
+  recordTrackFailure,
+  trackFailureBucketCount,
+  TRACK_FAILURE_WINDOW_SECONDS,
 } from "../src/rateLimit";
+
+describe("rateLimitClientKey (Task C1)", () => {
+  it("keeps IPv4 as-is and folds IPv4-mapped IPv6 back to IPv4", () => {
+    expect(rateLimitClientKey("198.51.100.7")).toBe("198.51.100.7");
+    expect(rateLimitClientKey("::ffff:198.51.100.7")).toBe("198.51.100.7");
+  });
+
+  it("collapses every IPv6 address in one /64 to the same key", () => {
+    const key = rateLimitClientKey("2001:db8:aaaa:1::1");
+    expect(key).toBe("2001:db8:aaaa:1::/64");
+    expect(rateLimitClientKey("2001:0DB8:AAAA:0001:ffff:ffff:ffff:ffff")).toBe(key);
+    expect(rateLimitClientKey("2001:db8:aaaa:2::1")).not.toBe(key);
+    expect(rateLimitClientKey("2001:db8::1")).toBe("2001:db8:0:0::/64");
+    expect(rateLimitClientKey("::1")).toBe("0:0:0:0::/64");
+    expect(rateLimitClientKey("fe80::1%eth0")).toBe("fe80:0:0:0::/64");
+  });
+
+  it("returns unparseable input unchanged", () => {
+    expect(rateLimitClientKey("unknown")).toBe("unknown");
+    expect(rateLimitClientKey("1::2::3")).toBe("1::2::3");
+  });
+});
 
 let app: FastifyInstance;
 let ipCounter = 0;
@@ -99,6 +126,30 @@ describe("rateLimit module (unit)", () => {
     expect(webhookRateLimited("tokopay", ip)).toBe(true);
     // A different route from the SAME ip has its own, unexhausted bucket.
     expect(webhookRateLimited("paydisini", ip)).toBe(false);
+  });
+});
+
+// Fix round: the /track failure caps kept one Map entry per date prefix
+// forever, even after every failure in it had expired — and a lockout CHECK
+// on a never-failed prefix created an empty entry too.
+describe("track failure buckets are dropped once empty", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("a lockout check never creates a bucket, and an expired bucket is deleted", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2031-01-01T00:00:00Z"));
+    const before = trackFailureBucketCount();
+    expect(trackTargetLockedOut("ORD-20310101-ZZZ1")).toBe(false);
+    expect(trackFailureBucketCount()).toBe(before);
+
+    recordTrackFailure("ORD-20310101-ZZZ1");
+    expect(trackFailureBucketCount()).toBeGreaterThan(before);
+
+    vi.setSystemTime(new Date(Date.now() + (TRACK_FAILURE_WINDOW_SECONDS + 1) * 1000));
+    expect(trackTargetLockedOut("ORD-20310101-ZZZ1")).toBe(false);
+    expect(trackFailureBucketCount()).toBe(0);
   });
 });
 

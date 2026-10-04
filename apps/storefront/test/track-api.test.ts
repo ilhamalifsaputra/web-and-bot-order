@@ -18,7 +18,7 @@ import { hashPassword } from "@app/core/password";
 import { buildApp } from "../src/server";
 import { CART_COOKIE, CART_COOKIE_VERSION } from "../src/shop";
 import { SHOP_COOKIE_NAME } from "../src/auth";
-import { TRACK_LOOKUP_RATE_LIMIT_MAX } from "../src/rateLimit";
+import { TRACK_LOOKUP_RATE_LIMIT_MAX, TRACK_TARGET_FAILURE_MAX, GUEST_CLAIM_FAILURE_MAX } from "../src/rateLimit";
 
 let app: FastifyInstance;
 let denomId: number;
@@ -265,6 +265,9 @@ describe("POST /api/v1/track — rejections are byte-identical (Task 5)", () => 
       url: "/api/v1/account/settings/credentials",
       headers: { cookie, "x-csrf-token": csrf },
       payload: {
+        // The guest proves they own the row with the contact email they typed
+        // at checkout — required for any credential change on a guest row.
+        guest_email: guestEmail,
         username: "attackupgrade",
         email: "attack.upgrade.real@example.com",
         new_password: "a-real-password-1",
@@ -417,5 +420,258 @@ describe("POST /api/v1/track — rate limiting (Task 5)", () => {
       payload: { method: "bybit", guest_email: "sep-checkout@example.com" },
     });
     expect(checkout.statusCode).toBe(201); // guest-checkout quota is untouched
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Backend audit Task C1 — guest order takeover. The order code is a short
+// (~1.7M per day) bearer credential, so the endpoint now (a) also caps
+// FAILED guesses per target (the order code's date prefix), not just per IP,
+// and treats a whole IPv6 /64 as one client; (b) refuses cross-site requests
+// that would mint a session; and (c) a guest row can only have its login
+// credentials set by someone who also knows the order's contact email.
+// ---------------------------------------------------------------------------
+
+describe("POST /api/v1/track — IPv6 clients are limited per /64 (Task C1)", () => {
+  it("rotating addresses inside one /64 shares one quota; a different /64 does not", async () => {
+    for (let i = 1; i <= TRACK_LOOKUP_RATE_LIMIT_MAX; i++) {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/track",
+        headers: { "x-forwarded-for": `2001:db8:aaaa:1::${i.toString(16)}` },
+        payload: { order_code: "NOSUCHORDER" },
+      });
+      expect(res.statusCode).toBe(404);
+    }
+    const rotated = await app.inject({
+      method: "POST",
+      url: "/api/v1/track",
+      headers: { "x-forwarded-for": "2001:db8:aaaa:1:ffff:ffff:ffff:ffff" },
+      payload: { order_code: "NOSUCHORDER" },
+    });
+    expect(rotated.statusCode).toBe(429);
+
+    const otherNet = await app.inject({
+      method: "POST",
+      url: "/api/v1/track",
+      headers: { "x-forwarded-for": "2001:db8:aaaa:2::1" },
+      payload: { order_code: "NOSUCHORDER" },
+    });
+    expect(otherNet.statusCode).toBe(404);
+  });
+});
+
+describe("POST /api/v1/track — failed guesses are capped per target, across IPs (Task C1)", () => {
+  it("after TRACK_TARGET_FAILURE_MAX misses on one date prefix, even a fresh IP gets 429 for that prefix only", async () => {
+    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    for (let i = 0; i < TRACK_TARGET_FAILURE_MAX; i++) {
+      const suffix = `Z${alphabet[i % 36]}${alphabet[Math.floor(i / 36) % 36]}Q`;
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/track",
+        headers: { "x-forwarded-for": freshIp() },
+        payload: { order_code: `ORD-20200101-${suffix}` },
+      });
+      expect(res.statusCode).toBe(404);
+    }
+    const capped = await app.inject({
+      method: "POST",
+      url: "/api/v1/track",
+      headers: { "x-forwarded-for": freshIp() },
+      payload: { order_code: "ORD-20200101-ABCD" },
+    });
+    expect(capped.statusCode).toBe(429);
+    expect(capped.json()).toEqual({ error: "error.rate_limited" });
+    expect(capped.headers["set-cookie"]).toBeUndefined();
+
+    const otherDay = await app.inject({
+      method: "POST",
+      url: "/api/v1/track",
+      headers: { "x-forwarded-for": freshIp() },
+      payload: { order_code: "ORD-20200102-ABCD" },
+    });
+    expect(otherDay.statusCode).toBe(404);
+  });
+});
+
+describe("POST /api/v1/track — cross-site requests cannot mint a session (Task C1)", () => {
+  it("403s a mismatched Origin and sets no cookie", async () => {
+    const orderCode = await makeGuestOrder("track.xorigin@example.com");
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/track",
+      headers: { "x-forwarded-for": freshIp(), origin: "https://evil.example" },
+      payload: { order_code: orderCode },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json()).toEqual({ error: "csrf_failed" });
+    expect(res.headers["set-cookie"]).toBeUndefined();
+  });
+
+  it("403s Sec-Fetch-Site: cross-site even without an Origin header", async () => {
+    const orderCode = await makeGuestOrder("track.xsite@example.com");
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/track",
+      headers: { "x-forwarded-for": freshIp(), "sec-fetch-site": "cross-site" },
+      payload: { order_code: orderCode },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.headers["set-cookie"]).toBeUndefined();
+  });
+
+  it("still 200s for the storefront's own same-origin request", async () => {
+    const orderCode = await makeGuestOrder("track.sameorigin@example.com");
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/track",
+      headers: {
+        "x-forwarded-for": freshIp(),
+        origin: "https://shop.test.invalid",
+        "sec-fetch-site": "same-origin",
+      },
+      payload: { order_code: orderCode },
+    });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("login refuses a cross-site request before checking credentials", async () => {
+    await makeUser("trackxlogin", "trackxlogin-pw-1", "TRKXL1");
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/login",
+      headers: { "x-forwarded-for": freshIp(), "sec-fetch-site": "cross-site" },
+      payload: { identifier: "trackxlogin", password: "trackxlogin-pw-1" },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json()).toEqual({ error: "csrf_failed" });
+    expect(res.headers["set-cookie"]).toBeUndefined();
+  });
+});
+
+describe("guest account claim needs the order's contact email (Task C1)", () => {
+  /** A session obtained the way an attacker would: the order code alone, via /track. */
+  async function trackedSession(email: string): Promise<{ userId: number; cookie: string; csrf: string }> {
+    const orderCode = await makeGuestOrder(email);
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/track",
+      headers: { "x-forwarded-for": freshIp() },
+      payload: { order_code: orderCode },
+    });
+    expect(res.statusCode).toBe(200);
+    const setCookies = res.headers["set-cookie"];
+    const cookies = Array.isArray(setCookies) ? setCookies : [String(setCookies)];
+    const cookie = cookies.find((c) => c.startsWith(`${SHOP_COOKIE_NAME}=`))!.split(";")[0]!;
+    const order = (await prisma.order.findFirst({ where: { orderCode } }))!;
+    return { userId: order.userId, cookie, csrf: res.json().csrf_token };
+  }
+
+  it("GET /account/settings tells the client the row is a guest", async () => {
+    const s = await trackedSession("claim.flag@example.com");
+    const res = await app.inject({ method: "GET", url: "/api/v1/account/settings", headers: { cookie: s.cookie } });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().is_guest).toBe(true);
+  });
+
+  it("refuses to set a password without the guest email, and changes nothing", async () => {
+    const s = await trackedSession("claim.nopw@example.com");
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/account/settings/credentials",
+      headers: { cookie: s.cookie, "x-csrf-token": s.csrf },
+      payload: { username: "claimthief1", new_password: "thief-password-1" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ error: "web.settings_guest_email_mismatch" });
+    const u = (await prisma.user.findUnique({ where: { id: s.userId } }))!;
+    expect(u.passwordHash).toBeNull();
+    expect(u.loginUsername).toBeNull();
+    expect(u.isGuest).toBe(true);
+  });
+
+  it("refuses an email-only change too (it would let forgot-password take the row over)", async () => {
+    const s = await trackedSession("claim.emailonly@example.com");
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/account/settings/credentials",
+      headers: { cookie: s.cookie, "x-csrf-token": s.csrf },
+      payload: { email: "attacker@evil.test", guest_email: "wrong@example.com" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ error: "web.settings_guest_email_mismatch" });
+    const u = (await prisma.user.findUnique({ where: { id: s.userId } }))!;
+    expect(u.email).toBeNull();
+  });
+
+  // Fix round: Telegram linking was a second, unguarded way to keep a guest
+  // row — link the attacker's Telegram, then sign in via /auth/telegram.
+  it("refuses to start a Telegram link on a guest row", async () => {
+    const s = await trackedSession("claim.tgstart@example.com");
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/account/settings/link-telegram/start",
+      headers: { cookie: s.cookie, "x-csrf-token": s.csrf },
+      payload: {},
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ error: "web.settings_tg_guest" });
+  });
+
+  it("refuses the Telegram link callback on a guest row; telegramId stays null", async () => {
+    const s = await trackedSession("claim.tglink@example.com");
+    const { createHash, createHmac } = await import("node:crypto");
+    const fields: Record<string, string> = { id: "818181", auth_date: String(Math.floor(Date.now() / 1000)) };
+    const checkString = Object.keys(fields).sort().map((k) => `${k}=${fields[k]}`).join("\n");
+    const secretKey = createHash("sha256").update(process.env.BOT_TOKEN!).digest();
+    const hash = createHmac("sha256", secretKey).update(checkString).digest("hex");
+    const res = await app.inject({
+      method: "GET",
+      url: `/account/settings/link-telegram?${new URLSearchParams({ ...fields, hash })}`,
+      headers: { cookie: s.cookie },
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/account/settings?err=tg_guest");
+    const u = (await prisma.user.findUnique({ where: { id: s.userId } }))!;
+    expect(u.telegramId).toBeNull();
+    expect(u.isGuest).toBe(true);
+  });
+
+  // Fix round: without a cap, a code-guesser holding the session could try
+  // contact emails without limit.
+  it("locks guest-email guesses after GUEST_CLAIM_FAILURE_MAX misses — even the right email is refused then", async () => {
+    const s = await trackedSession("claim.cap@example.com");
+    const attempt = (guestEmail: string) =>
+      app.inject({
+        method: "POST",
+        url: "/api/v1/account/settings/credentials",
+        headers: { cookie: s.cookie, "x-csrf-token": s.csrf },
+        payload: { guest_email: guestEmail, username: "capthief1", new_password: "cap-password-1" },
+      });
+    for (let i = 0; i < GUEST_CLAIM_FAILURE_MAX; i++) {
+      const res = await attempt(`guess${i}@example.com`);
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toEqual({ error: "web.settings_guest_email_mismatch" });
+    }
+    const locked = await attempt("claim.cap@example.com");
+    expect(locked.statusCode).toBe(429);
+    expect(locked.json()).toEqual({ error: "web.settings_guest_email_locked" });
+    const u = (await prisma.user.findUnique({ where: { id: s.userId } }))!;
+    expect(u.isGuest).toBe(true);
+    expect(u.passwordHash).toBeNull();
+  });
+
+  it("accepts the right guest email (case/whitespace-insensitive) and upgrades the row", async () => {
+    const s = await trackedSession("claim.ok@example.com");
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/account/settings/credentials",
+      headers: { cookie: s.cookie, "x-csrf-token": s.csrf },
+      payload: { guest_email: "  Claim.OK@Example.com ", username: "claimowner1", new_password: "owner-password-1" },
+    });
+    expect(res.statusCode).toBe(200);
+    const u = (await prisma.user.findUnique({ where: { id: s.userId } }))!;
+    expect(u.isGuest).toBe(false);
+    expect(u.loginUsername).toBe("claimowner1");
   });
 });

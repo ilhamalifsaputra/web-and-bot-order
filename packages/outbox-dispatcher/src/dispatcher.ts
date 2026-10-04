@@ -117,7 +117,67 @@ const TELEGRAM_MESSAGE_MAX_LEN = 4096;
 
 type PendingRow = Awaited<ReturnType<typeof fetchPendingNotifications>>[number];
 
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+/**
+ * A row this dispatcher has claimed, carrying the exact `claimedAt` it claimed
+ * with. Every write that settles the row (SENT, failed attempt, release) is
+ * guarded by that timestamp (Task B1.2), so a send that outlived
+ * STALE_CLAIM_MS — and lost the row to another dispatcher — can't overwrite
+ * the new claimer's state. `signal` is the dispatcher's shutdown signal,
+ * carried along so `trySend`'s flood-control sleep can wake on it (Task B1.4)
+ * without threading another parameter through every deliver* branch.
+ */
+type ClaimedRow = PendingRow & { claimedAt: Date; signal?: AbortSignal };
+
+/** Record a failed attempt on a claimed row, guarded by its claim. */
+function failRow(row: ClaimedRow, error: string, maxAttempts: number): Promise<void> {
+  return markNotificationFailed(prisma, row.id, error, maxAttempts, new Date(), row.claimedAt);
+}
+
+/**
+ * Rows whose send already succeeded but whose SENT write failed (Task B1.1),
+ * keyed by id, holding the claim timestamp they were sent under. Such a row
+ * must never be sent again: it is skipped by every later tick of this process
+ * and its SENT write is retried at the start of each tick until it lands (or
+ * the row turns out to belong to someone else now). In-memory only — see the
+ * residual-risk note on `recordSent`.
+ */
+const unrecordedSends = new Map<number, Date>();
+
+/** Retry the SENT write for every send this process could not record yet. */
+async function flushUnrecordedSends(): Promise<void> {
+  for (const [id, claimedAt] of unrecordedSends) {
+    try {
+      const recorded = await markNotificationSent(prisma, id, claimedAt);
+      unrecordedSends.delete(id);
+      if (recorded) {
+        logger.info(`Recorded notification ${id} as SENT on a later tick — it had been sent earlier but the first SENT write failed`);
+      } else {
+        logger.warn(`Gave up recording notification ${id} as SENT: it was sent earlier, but the row has since been reclaimed or changed by someone else, who now owns its outcome`);
+      }
+    } catch (err) {
+      logger.warn({ err, notificationId: id }, `Still could not record notification ${id} as SENT — it was already sent and will not be sent again by this process; retrying the write next tick`);
+    }
+  }
+}
+
+/**
+ * Sleep for `ms`, waking early if `signal` aborts (Task B1.4) — so a shutdown
+ * during a long Telegram flood-control `retry_after` isn't held up by it.
+ */
+function sleepAbortable(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve) => {
+    if (signal?.aborted) return resolve();
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
 
 /** Race `promise` against `timeoutMs`; resolves `"timeout"` if the deadline
  * wins. The underlying promise isn't cancelled when this loses the race — it
@@ -219,7 +279,7 @@ function sleepOrNudge(ms: number, signal?: AbortSignal): Promise<void> {
 export async function runDispatcher(bot: Bot, signal?: AbortSignal): Promise<void> {
   while (!signal?.aborted) {
     try {
-      const seen = await drainBatch(bot);
+      const seen = await drainBatch(bot, signal);
       await recordPollHealth(prisma, "outbox", { lastTxCount: seen, success: true }).catch(() => undefined);
     } catch (e) {
       logger.error({ err: e }, "Outbox dispatcher tick failed — will retry on the next poll interval");
@@ -237,26 +297,33 @@ export async function runDispatcher(bot: Bot, signal?: AbortSignal): Promise<voi
  * the number of rows it saw this cycle (`pending.length`), regardless of how
  * many were actually claimed/sent/failed/rate-limit-bailed — `runDispatcher`
  * above records this as `lastTxCount` on the outbox heartbeat (Task 15 / I-3). */
-export async function drainBatch(bot: Bot): Promise<number> {
+export async function drainBatch(bot: Bot, signal?: AbortSignal): Promise<number> {
+  await flushUnrecordedSends();
   const pending = await fetchPendingNotifications(prisma, 50);
   if (pending.length === 0) return 0;
 
   logger.debug(`Draining ${pending.length} pending notification(s)`);
 
-  for (const row of pending) {
+  for (const fetched of pending) {
+    // Already sent by this process, only the SENT write is outstanding — even
+    // once its claim goes stale it must not be claimed and sent again.
+    if (unrecordedSends.has(fetched.id)) continue;
+
     // Atomic claim right before processing — closes the crash-window
     // double-send gap (Infra-2 fix): if this dispatcher dies between sending
     // and recording SENT, the row stays SENDING (not PENDING) and only
     // becomes claimable again once stale, instead of being re-sent on every
     // tick in the meantime. Also guards against an accidental second
     // dispatcher instance racing this one.
-    if (!(await claimNotification(prisma, row.id))) continue;
+    const claimedAt = new Date();
+    if (!(await claimNotification(prisma, fetched.id, claimedAt))) continue;
+    const row: ClaimedRow = { ...fetched, claimedAt, signal };
 
     let payload: Record<string, unknown>;
     try {
       payload = JSON.parse(row.payloadJson);
     } catch (e) {
-      await markNotificationFailed(prisma, row.id, `bad payload json: ${e}`, 1);
+      await failRow(row, `bad payload json: ${e}`, 1);
       continue;
     }
 
@@ -336,12 +403,12 @@ export async function drainBatch(bot: Bot): Promise<number> {
         { err: e, notificationId: row.id, event: row.event, orderId: row.orderId },
         `Could not render notification ${row.id} from its stored payload, so it has been failed permanently and the recipient will never receive it — a malformed payload cannot become valid on a retry. Check the notification_outbox row's payload against what the enqueueing code should have written for this event.`,
       );
-      await markNotificationFailed(prisma, row.id, `template render failed: ${e}`, 1);
+      await failRow(row, `template render failed: ${e}`, 1);
       continue;
     }
     if (!text) {
       // Unknown event type — drop so we don't loop forever.
-      await markNotificationFailed(prisma, row.id, `no template for event ${row.event}`, 1);
+      await failRow(row, `no template for event ${row.event}`, 1);
       continue;
     }
 
@@ -352,12 +419,12 @@ export async function drainBatch(bot: Bot): Promise<number> {
     // re-claiming a batch slot on every single tick forever (Outbox-1 fix,
     // backend audit).
     if (!isDm && publicChannelId() === undefined) {
-      await releaseNotificationClaimWithBackoff(prisma, row.id);
+      await releaseNotificationClaimWithBackoff(prisma, row.id, new Date(), row.claimedAt);
       continue;
     }
     const chatId = isDm ? Number(payload.chat_id) : Number(publicChannelId());
     if (!Number.isFinite(chatId)) {
-      await markNotificationFailed(prisma, row.id, isDm ? "missing chat_id" : "no PUBLIC_CHANNEL_ID", 1);
+      await failRow(row, isDm ? "missing chat_id" : "no PUBLIC_CHANNEL_ID", 1);
       continue;
     }
 
@@ -400,7 +467,7 @@ export async function drainBatch(bot: Bot): Promise<number> {
  * placeholder. The error names the order and the reason class, never content.
  */
 async function readOrderForDelivery(
-  row: PendingRow,
+  row: ClaimedRow,
   code: string,
 ): Promise<Awaited<ReturnType<typeof getOrderByCodeFull>> | "unreadable"> {
   try {
@@ -410,9 +477,8 @@ async function readOrderForDelivery(
       { err: e, notificationId: row.id, orderCode: code },
       `Could not read the delivered credentials for order ${code}, so notification ${row.id} was not sent — recording a failed attempt; it retries with backoff and dead-letters at the attempt limit`,
     );
-    await markNotificationFailed(
-      prisma,
-      row.id,
+    await failRow(
+      row,
       `could not decrypt the delivered credentials for order ${code}: ${e instanceof Error ? e.name : "error"}`,
       config.NOTIF_MAX_ATTEMPTS,
     );
@@ -427,19 +493,19 @@ async function readOrderForDelivery(
  */
 async function deliverAccountDm(
   bot: Bot,
-  row: PendingRow,
+  row: ClaimedRow,
   payload: Record<string, unknown>,
 ): Promise<"ok" | "ratelimited"> {
   const chatId = Number(payload.chat_id);
   if (!Number.isFinite(chatId)) {
-    await markNotificationFailed(prisma, row.id, "missing chat_id", 1);
+    await failRow(row, "missing chat_id", 1);
     return "ok";
   }
   const code = typeof payload.order_code === "string" ? payload.order_code : "";
   const order = code ? await readOrderForDelivery(row, code) : null;
   if (order === "unreadable") return "ok";
   if (!order) {
-    await markNotificationFailed(prisma, row.id, `order not found for code ${code}`, 1);
+    await failRow(row, `order not found for code ${code}`, 1);
     return "ok";
   }
 
@@ -493,19 +559,19 @@ function chunkText(text: string, maxLen = TELEGRAM_MESSAGE_MAX_LEN): string[] {
  */
 async function deliverManualContentDm(
   bot: Bot,
-  row: PendingRow,
+  row: ClaimedRow,
   payload: Record<string, unknown>,
 ): Promise<"ok" | "ratelimited"> {
   const chatId = Number(payload.chat_id);
   if (!Number.isFinite(chatId)) {
-    await markNotificationFailed(prisma, row.id, "missing chat_id", 1);
+    await failRow(row, "missing chat_id", 1);
     return "ok";
   }
   const code = typeof payload.order_code === "string" ? payload.order_code : "";
   const order = code ? await readOrderForDelivery(row, code) : null;
   if (order === "unreadable") return "ok";
   if (!order) {
-    await markNotificationFailed(prisma, row.id, `order not found for code ${code}`, 1);
+    await failRow(row, `order not found for code ${code}`, 1);
     return "ok";
   }
   if (!order.deliveredContent) {
@@ -513,7 +579,7 @@ async function deliverManualContentDm(
     // before enqueueing this DM — but the dispatcher must not assume the DB
     // can't have surprised it (e.g. a bug elsewhere, or the row processed out
     // of order).
-    await markNotificationFailed(prisma, row.id, "order has no deliveredContent", 1);
+    await failRow(row, "order has no deliveredContent", 1);
     return "ok";
   }
 
@@ -562,12 +628,12 @@ async function deliverManualContentDm(
  */
 async function deliverAdminNewTicketDm(
   bot: Bot,
-  row: PendingRow,
+  row: ClaimedRow,
   payload: Record<string, unknown>,
 ): Promise<"ok" | "ratelimited"> {
   const chatId = Number(payload.chat_id);
   if (!Number.isFinite(chatId)) {
-    await markNotificationFailed(prisma, row.id, "missing chat_id", 1);
+    await failRow(row, "missing chat_id", 1);
     return "ok";
   }
   const ticketId = Number(payload.ticket_id);
@@ -610,12 +676,12 @@ async function deliverAdminNewTicketDm(
  */
 async function deliverTicketReplyDm(
   bot: Bot,
-  row: PendingRow,
+  row: ClaimedRow,
   payload: Record<string, unknown>,
 ): Promise<"ok" | "ratelimited"> {
   const chatId = Number(payload.chat_id);
   if (!Number.isFinite(chatId)) {
-    await markNotificationFailed(prisma, row.id, "missing chat_id", 1);
+    await failRow(row, "missing chat_id", 1);
     return "ok";
   }
   const ticketId = Number(payload.ticket_id);
@@ -633,31 +699,67 @@ async function deliverTicketReplyDm(
  * Run one Telegram send and update the outbox row. Returns "ratelimited" when
  * Telegram flood-controlled us (caller should bail the tick); "ok" otherwise
  * (sent, or failed-and-recorded).
+ *
+ * Only a failed SEND is ever recorded as a failed attempt. Once the send has
+ * succeeded the row is finished from the buyer's side, whatever happens to
+ * the SENT write afterwards (Task B1.1) — see `recordSent`.
  */
-async function trySend(bot: Bot, row: PendingRow, send: () => Promise<unknown>): Promise<"ok" | "ratelimited"> {
+async function trySend(bot: Bot, row: ClaimedRow, send: () => Promise<unknown>): Promise<"ok" | "ratelimited"> {
   try {
     await send();
-    await markNotificationSent(prisma, row.id);
-    logger.info(`Sent notification ${row.id} (${row.event}) to Telegram`);
-    return "ok";
   } catch (e) {
     if (e instanceof GrammyError && e.parameters?.retry_after) {
-      logger.warn(`Telegram rate-limited the dispatcher — sleeping ${e.parameters.retry_after}s before retrying`);
-      await sleep((e.parameters.retry_after + 1) * 1000);
+      logger.warn(`Telegram rate-limited the dispatcher — sleeping ${e.parameters.retry_after}s before retrying, or less if the dispatcher is shutting down`);
+      await sleepAbortable((e.parameters.retry_after + 1) * 1000, row.signal);
       // Release the claim (not a failed attempt) so the row is immediately
       // retryable next tick instead of waiting out the full stale-claim
       // window — flood control is transient, not the row's fault.
-      await releaseNotificationClaim(prisma, row.id);
+      await releaseNotificationClaim(prisma, row.id, row.claimedAt);
       return "ratelimited";
     }
     if (e instanceof GrammyError && e.error_code === 403) {
       logger.error(`Telegram forbade sending notification ${row.id} — the bot is blocked or not in the target channel, marking it failed`);
-      await markNotificationFailed(prisma, row.id, "Forbidden: bot blocked, or not in channel / lacks post permission", 1);
+      await failRow(row, "Forbidden: bot blocked, or not in channel / lacks post permission", 1);
       return "ok";
     }
     logger.error({ err: e }, `Failed to send notification ${row.id} — recording the attempt, it will retry until it hits the max attempt limit`);
-    await markNotificationFailed(prisma, row.id, String(e), config.NOTIF_MAX_ATTEMPTS);
+    await failRow(row, String(e), config.NOTIF_MAX_ATTEMPTS);
     return "ok";
+  }
+  await recordSent(row, "Telegram");
+  return "ok";
+}
+
+/**
+ * Record a successfully sent row as SENT. Never throws, and never sends the
+ * row back to PENDING or counts a failed attempt (Task B1.1): the message is
+ * already out, and a retry would deliver it twice — for ORDER_DELIVERED_DM,
+ * the buyer's credentials. If the write fails, the row is parked in
+ * `unrecordedSends` so this process never sends it again and retries only the
+ * write on each later tick.
+ *
+ * Residual risk, accepted: the parking is in memory, so if the SENT write
+ * keeps failing AND this process restarts before it lands, the row is still
+ * SENDING with an old claim and a fresh process reclaims and re-sends it once
+ * STALE_CLAIM_MS has passed. Closing that needs a durable "sent" record the
+ * failing database could not take either.
+ */
+async function recordSent(row: ClaimedRow, via: "Telegram" | "email"): Promise<void> {
+  try {
+    const recorded = await markNotificationSent(prisma, row.id, row.claimedAt);
+    if (recorded) {
+      logger.info(`Sent notification ${row.id} (${row.event}) by ${via}`);
+    } else {
+      logger.warn(
+        `Sent notification ${row.id} (${row.event}) by ${via}, but the send outlasted this dispatcher's claim and another instance had already reclaimed the row, so this one did not record SENT — that instance may deliver it a second time`,
+      );
+    }
+  } catch (err) {
+    unrecordedSends.set(row.id, row.claimedAt);
+    logger.error(
+      { err, notificationId: row.id },
+      `Sent notification ${row.id} (${row.event}) by ${via}, but could not record it as SENT — this process will not send it again and retries recording SENT at the start of every tick`,
+    );
   }
 }
 
@@ -677,28 +779,57 @@ async function trySend(bot: Bot, row: PendingRow, send: () => Promise<unknown>):
  * PENDING when PUBLIC_CHANNEL_ID is unset. Never returns a rate-limit signal
  * — there's no email analogue of Telegram flood control.
  */
-async function deliverEmail(row: PendingRow, payload: Record<string, unknown>): Promise<void> {
+async function deliverEmail(row: ClaimedRow, payload: Record<string, unknown>): Promise<void> {
   // renderEmail is async (the OWNER_EMAIL_ORDER_PAID, OWNER_EMAIL_WALLET_TOPUP
   // and BUYER_EMAIL_ORDER_READY branches resolve brand — and for ORDER_PAID,
   // copy — from Settings via Prisma) — see emailTemplates.ts's header comment.
-  const rendered = await renderEmail(row.event, payload);
+  //
+  // It and getSmtpCreds below can throw (a settings read failing, a stored
+  // SMTP password that no longer decrypts). Thrown out of drainBatch that
+  // aborted the rest of the batch and left this row SENDING to be reclaimed
+  // every STALE_CLAIM_MS without ever counting an attempt (Task B1.3) — the
+  // same trap `readOrderForDelivery` documents. Record a failed attempt on
+  // this row only, so it backs off and dead-letters like any failed send.
+  let rendered: Awaited<ReturnType<typeof renderEmail>>;
+  try {
+    rendered = await renderEmail(row.event, payload);
+  } catch (e) {
+    logger.error(
+      { err: e, notificationId: row.id, event: row.event },
+      `Could not render email notification ${row.id} (${row.event}), so it was not sent — recording a failed attempt; it retries with backoff and dead-letters at the attempt limit`,
+    );
+    await failRow(row, `email render failed: ${e instanceof Error ? e.name : "error"}`, config.NOTIF_MAX_ATTEMPTS);
+    return;
+  }
   if (!rendered) {
-    await markNotificationFailed(prisma, row.id, `no email template for event ${row.event}`, 1);
+    await failRow(row, `no email template for event ${row.event}`, 1);
     return;
   }
 
   const to = payload.to;
   if (typeof to !== "string" || !to) {
-    await markNotificationFailed(prisma, row.id, "missing to address", 1);
+    await failRow(row, "missing to address", 1);
     return;
   }
 
-  const creds = await getSmtpCreds(prisma);
+  let creds: Awaited<ReturnType<typeof getSmtpCreds>>;
+  try {
+    creds = await getSmtpCreds(prisma);
+  } catch (e) {
+    // The error class only — never the message, which could echo SMTP
+    // settings content.
+    logger.error(
+      { notificationId: row.id, errorName: e instanceof Error ? e.name : "error" },
+      `Could not read the SMTP settings for email notification ${row.id}, so it was not sent — recording a failed attempt; it retries with backoff and dead-letters at the attempt limit`,
+    );
+    await failRow(row, `could not read SMTP settings: ${e instanceof Error ? e.name : "error"}`, config.NOTIF_MAX_ATTEMPTS);
+    return;
+  }
   if (!creds) {
     // SMTP unconfigured — the shop's configuration, not this row's fault.
     // Back off and retry forever instead of failing away; the mail goes out
     // once the owner fills in SMTP.
-    await releaseNotificationClaimWithBackoff(prisma, row.id);
+    await releaseNotificationClaimWithBackoff(prisma, row.id, new Date(), row.claimedAt);
     return;
   }
 
@@ -718,13 +849,13 @@ async function deliverEmail(row: PendingRow, payload: Record<string, unknown>): 
  * forbidden-recipient concept to special-case, so a failure always just
  * records the attempt for the standard backoff/retry cycle.
  */
-async function trySendEmail(row: PendingRow, send: () => Promise<void>): Promise<void> {
+async function trySendEmail(row: ClaimedRow, send: () => Promise<void>): Promise<void> {
   try {
     await send();
-    await markNotificationSent(prisma, row.id);
-    logger.info(`Sent notification ${row.id} (${row.event}) by email`);
   } catch (e) {
     logger.error({ err: e }, `Failed to send notification ${row.id} — recording the attempt, it will retry until it hits the max attempt limit`);
-    await markNotificationFailed(prisma, row.id, String(e), config.NOTIF_MAX_ATTEMPTS);
+    await failRow(row, String(e), config.NOTIF_MAX_ATTEMPTS);
+    return;
   }
+  await recordSent(row, "email");
 }

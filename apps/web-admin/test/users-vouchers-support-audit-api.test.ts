@@ -3,7 +3,8 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import type { FastifyInstance } from "fastify";
 import { config } from "@app/core/config";
 import { addMinutes } from "@app/core/datetime";
-import { prisma, initDb, upsertUser, setSetting, createTicket, assignTicket, createCategory, createCatalogProduct, createDenomination, bulkAddStock, createOrderDirect, setUserPreferredCurrency } from "@app/db";
+import { SenderType } from "@app/core/enums";
+import { prisma, initDb, upsertUser, setSetting, createTicket, addTicketMessage, assignTicket, createCategory, createCatalogProduct, createDenomination, bulkAddStock, createOrderDirect, setUserPreferredCurrency } from "@app/db";
 import { resetDb } from "../../../tests/helpers/sampleData";
 import { makeSession, sessionJtiKey, newJti } from "../src/auth";
 import { buildApp } from "../src/server";
@@ -375,6 +376,27 @@ describe("POST /api/vouchers/:voucherId/update", () => {
     expect(res.statusCode).toBe(400);
     const fresh = await prisma.voucher.findUniqueOrThrow({ where: { id: voucher.id } });
     expect(fresh.maxDiscount).toBeNull();
+  });
+
+  // Backend audit 2026-10 E1: the update path's min_purchase had no finite
+  // check (the create path and the other update fields already did), so
+  // "Infinity"/"NaN" reached updateVoucher.
+  it.each(["NaN", "Infinity", "-Infinity"])("rejects a %s min_purchase with 400, leaving it untouched", async (bad) => {
+    const create = await postJson("/api/vouchers", cookie, csrf, { code: "SAVE10", type: "percent", value: "10", min_purchase: "5000" });
+    const { voucher } = create.json() as { voucher: { id: number } };
+
+    const res = await postJson(`/api/vouchers/${voucher.id}/update`, cookie, csrf, { min_purchase: bad });
+    expect(res.statusCode).toBe(400);
+    const fresh = await prisma.voucher.findUniqueOrThrow({ where: { id: voucher.id } });
+    expect(fresh.minPurchase.toString()).toBe("5000");
+  });
+});
+
+describe("POST /api/vouchers max_discount", () => {
+  it.each(["NaN", "Infinity"])("rejects a %s max_discount on create with 400", async (bad) => {
+    const res = await postJson("/api/vouchers", cookie, csrf, { code: "MAXBAD", type: "percent", value: "10", max_discount: bad });
+    expect(res.statusCode).toBe(400);
+    expect(await prisma.voucher.findUnique({ where: { code: "MAXBAD" } })).toBeNull();
   });
 });
 
@@ -824,6 +846,80 @@ describe("GET /api/support/photo/:fileId", () => {
   const realResolver = getFileResolver();
   afterEach(() => {
     setFileResolver(realResolver);
+  });
+  // The proxy serves only photos attached to a ticket (or a ticket message);
+  // FAKE_FILE_ID is attached to one here so the transport tests below reach
+  // Telegram, and the access tests use ids that are not.
+  beforeEach(async () => {
+    await createTicket(prisma, customerId, "see attached", "OTHER_PHOTO,FAKE_FILE_ID");
+  });
+
+  /** Stub Telegram: the resolver returns `filePath`, the file fetch answers with `contentType`. */
+  function stubTelegram(filePath: string, contentType: string | null) {
+    const originalFetch = global.fetch;
+    const bytes = Buffer.from("fake-bytes");
+    setFileResolver(async () => ({ ok: true, filePath }));
+    global.fetch = (async () => ({
+      ok: true,
+      headers: new Map(contentType ? [["content-type", contentType]] : []) as unknown as Headers,
+      arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+    })) as unknown as typeof fetch;
+    return () => {
+      global.fetch = originalFetch;
+    };
+  }
+
+  it("refuses (404) a file id that is not a ticket attachment — e.g. a payment proof — without asking Telegram", async () => {
+    let asked = false;
+    setFileResolver(async () => {
+      asked = true;
+      return { ok: true, filePath: "photos/proof.jpg" };
+    });
+    for (const id of ["PAYMENT_PROOF_ID", "FAKE_FILE", "FAKE_FILE_I_", "FAKE%"]) {
+      const res = await get(`/api/support/photo/${encodeURIComponent(id)}`, cookie);
+      expect(res.statusCode).toBe(404);
+    }
+    expect(asked).toBe(false);
+  });
+
+  it("serves a photo attached to a ticket message, not only the ticket itself", async () => {
+    const ticket = await createTicket(prisma, customerId, "thread");
+    await addTicketMessage(prisma, { ticketId: ticket.id, senderType: SenderType.USER, senderId: customerId, content: "pic", photoFileIds: "MSG_PHOTO" });
+    const restore = stubTelegram("photos/m.jpg", "image/jpeg");
+    try {
+      const res = await get("/api/support/photo/MSG_PHOTO", cookie);
+      expect(res.statusCode).toBe(200);
+    } finally {
+      restore();
+    }
+  });
+
+  it("sends nosniff and only an image content type: Telegram's text/html never passes through", async () => {
+    let restore = stubTelegram("photos/a.jpg", "text/html");
+    try {
+      const res = await get("/api/support/photo/FAKE_FILE_ID", cookie);
+      expect(res.statusCode).toBe(200);
+      expect(res.headers["x-content-type-options"]).toBe("nosniff");
+      expect(res.headers["content-type"]).toBe("image/jpeg");
+    } finally {
+      restore();
+    }
+
+    restore = stubTelegram("photos/b.png", "application/octet-stream");
+    try {
+      const res = await get("/api/support/photo/FAKE_FILE_ID", cookie);
+      expect(res.headers["content-type"]).toBe("image/png");
+    } finally {
+      restore();
+    }
+
+    restore = stubTelegram("documents/page.html", "text/html");
+    try {
+      const res = await get("/api/support/photo/FAKE_FILE_ID", cookie);
+      expect(res.statusCode).toBe(415);
+    } finally {
+      restore();
+    }
   });
 
   it("happy path: proxies the photo bytes (never redirects the browser to a URL containing the bot token)", async () => {

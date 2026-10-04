@@ -22,19 +22,21 @@ import { ValidationError } from "@app/core/errors";
 import { errorBody } from "@app/core/errorBody";
 import { logger } from "@app/core/logger";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
+import { exactFields, readMoneyField } from "../../lib/moneyField";
 
 /**
- * Parse a price string into a Decimal, or null if it isn't a valid number
- * (mirrors routes/api/catalog.ts's parseDecimal — new Decimal(...) throws
- * synchronously on a non-numeric string, so this must be try/catch'd rather
- * than trusted like the rest of this row's fields).
+ * Read an import row's Rupiah price, or null if it isn't a finite amount.
+ *
+ * The sell price is pre-filled with the preview's suggested price and may be
+ * retyped by the admin: a retyped price is read BY SHAPE (`16.500` is sixteen
+ * and a half thousand rupiah, never 16,5 as `new Decimal(text)` read it), and
+ * an untouched suggestion — the server's own plain decimal, listed in the
+ * row's `exact_fields` — is read exactly. The cost price is never typed: it is
+ * the preview's own value, always read exactly. See lib/moneyField.ts.
  */
-function parsePrice(value: string): Decimal | null {
-  try {
-    return new Decimal(value);
-  } catch {
-    return null;
-  }
+function parsePrice(value: unknown, exact: boolean): Decimal | null {
+  const amount = readMoneyField(value, "IDR", { exact });
+  return amount && amount.isFinite() ? amount : null;
 }
 
 // N5: cap the total row count across every brand in a single /sync/apply
@@ -106,7 +108,7 @@ export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Prom
         categoryId?: number;
         brands?: Array<{
           brand: string;
-          rows: Array<{ buyerSkuCode: string; productName: string; price: string; costPrice: string }>;
+          rows: Array<{ buyerSkuCode: string; productName: string; price: unknown; costPrice: unknown; exact_fields?: unknown }>;
           gameVariant?: unknown;
         }>;
       };
@@ -127,9 +129,14 @@ export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Prom
       // value rejects the whole request before any import runs, same as the
       // price/costPrice checks below.
       const gameVariants: Array<string | null> = [];
+      // The rows as the import writes them: prices already read (by shape or
+      // exactly, see parsePrice), aligned by index with `brands`.
+      const parsedRows: Array<Array<{ buyerSkuCode: string; productName: string; price: Decimal; costPrice: Decimal }>> = [];
       for (const b of brands) {
+        const rows: Array<{ buyerSkuCode: string; productName: string; price: Decimal; costPrice: Decimal }> = [];
+        parsedRows.push(rows);
         for (const row of b.rows) {
-          const price = row.price ? parsePrice(row.price) : null;
+          const price = row.price ? parsePrice(row.price, exactFields(row).has("price")) : null;
           if (!row.buyerSkuCode || !row.productName || !price || price.lessThanOrEqualTo(0)) {
             return reply.code(400).send({ error: `Invalid price for "${row.productName || row.buyerSkuCode}".` });
           }
@@ -137,10 +144,11 @@ export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Prom
           // imported denomination has a correct costPrice immediately,
           // instead of null until the first resync tick fills it in. Same
           // validation shape as price above.
-          const costPrice = row.costPrice ? parsePrice(row.costPrice) : null;
+          const costPrice = row.costPrice ? parsePrice(row.costPrice, true) : null;
           if (!costPrice || costPrice.lessThanOrEqualTo(0)) {
             return reply.code(400).send({ error: `Invalid cost price for "${row.productName || row.buyerSkuCode}".` });
           }
+          rows.push({ buyerSkuCode: row.buyerSkuCode, productName: row.productName, price, costPrice });
         }
 
         const rawVariant = b.gameVariant;
@@ -166,7 +174,7 @@ export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Prom
         const result = await importDigiflazzBrand(prisma, {
           brand: b.brand,
           categoryId,
-          rows: b.rows,
+          rows: parsedRows[i] ?? [],
           gameVariant: gameVariants[i] ?? null,
         });
         brandsImported++;

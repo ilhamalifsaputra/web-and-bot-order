@@ -50,6 +50,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { apiPost, apiGet } from "../api/client";
+import { exactFieldsOf } from "../lib/exactFields";
 import { useSettings, type SettingsField, type PayMethodState } from "@/hooks/useSettings";
 import { describeError } from "@/lib/errorMessages";
 import { HEALTH_DOT } from "@/lib/healthDot";
@@ -312,6 +313,12 @@ const FIELD_DESCRIPTIONS: Record<string, string> = {
  * purely for immediate feedback while typing. Returns null when `value`
  * passes (or is empty — emptiness is handled separately by the required/
  * optional status badge, not this function). */
+/** Amounts the server reads BY SHAPE (10.000 = ten thousand, 1.500,50 = one
+ * thousand five hundred and a half) — `Number(value)` would misjudge both, so
+ * the client only checks the characters and leaves reading the amount (and
+ * refusing an ambiguous shape) to the server. */
+const AMOUNT_TEXT = /^\d[\d.,]*$/;
+
 function validateField(key: string, value: string): string | null {
   if (value === "") return null;
   if (key === "support_whatsapp" && !/^\+?[0-9()\-\s]{6,20}$/.test(value)) {
@@ -320,9 +327,8 @@ function validateField(key: string, value: string): string | null {
   if (key === "web_analytics_id" && !/^G-[A-Z0-9]{4,20}$/i.test(value)) {
     return "Expected a Google Analytics measurement ID like G-ABC1234XYZ.";
   }
-  if (key.endsWith("_min_amount")) {
-    const n = Number(value);
-    if (!Number.isFinite(n) || n <= 0) return "Must be a positive number.";
+  if (key.endsWith("_min_amount") || /^wallet_topup_m(in|ax)_amount_/.test(key) || key === "min_order_amount_idr") {
+    if (!AMOUNT_TEXT.test(value)) return "Must be an amount, like 10000, 10.000 or 10000,50.";
   }
   if (key === "bybit_bsc_required_confirmations") {
     const n = Number(value);
@@ -342,8 +348,7 @@ function validateField(key: string, value: string): string | null {
     return 'Must be "percent" or "flat".';
   }
   if (key === "digiflazz_markup_value") {
-    const n = Number(value);
-    if (!Number.isFinite(n) || n < 0) return "Must be zero or a positive number.";
+    if (!AMOUNT_TEXT.test(value)) return "Must be zero or an amount, like 8, 8,5 or 1.500.";
   }
   if (key === "smtp_port") {
     const n = Number(value);
@@ -446,7 +451,15 @@ function FieldRow({ field, query, onSaved, onStatusChange, onNeedsRestart, selec
   async function save() {
     onStatusChange(field.key, "saving");
     try {
-      await apiPost("/api/settings/edit", { key: field.key, value });
+      // An untouched pre-fill is the server's own stored value (a plain
+      // dot-decimal such as 1.234), so it is listed in `exact_fields` and read
+      // exactly; anything the admin retyped is read by its shape
+      // (lib/exactFields.ts, apps/web-admin/src/lib/moneyField.ts).
+      await apiPost("/api/settings/edit", {
+        key: field.key,
+        value,
+        exact_fields: exactFieldsOf({ value }, { value: field.value }, ["value"]),
+      });
       setEditing(false);
       onStatusChange(field.key, null);
       if (field.needsRestart) onNeedsRestart?.();

@@ -11,7 +11,8 @@
  * plus an auth_date freshness window to stop replays (plan.md §17.2 #6).
  *
  * Session invalidation mirrors the admin: the cookie carries a `jti` that must
- * match `shop_session_jti:<telegramId>` in settings; logout rotates the jti.
+ * match `shop_session_jti_user:<userId>` in settings (shopSessionJtiKey);
+ * logout rotates the jti.
  */
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { botToken as botToken_, webCookieSecret } from "@app/core/runtime";
@@ -173,9 +174,10 @@ export function readCustomerSession(raw: string | undefined): CustomerSession | 
   }
 }
 
+/** Compares fixed-size sha256 digests, so neither the result nor the timing
+ * reveals whether the lengths differed (no early return on length). */
 export function constantTimeEqual(a: string, b: string): boolean {
-  const ab = Buffer.from(a);
-  const bb = Buffer.from(b);
-  if (ab.length !== bb.length) return false;
-  return timingSafeEqual(ab, bb);
+  const ad = createHash("sha256").update(a).digest();
+  const bd = createHash("sha256").update(b).digest();
+  return timingSafeEqual(ad, bd);
 }

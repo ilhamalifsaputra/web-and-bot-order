@@ -5,6 +5,7 @@ import type { AddressInfo } from "node:net";
 import { EventEmitter } from "node:events";
 import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { prisma, setSetting } from "@app/db";
+import { logger } from "@app/core/logger";
 import { buildServer, dispatchByHost, registerCrashHandlers } from "../src/index";
 
 /** Fastify instance type without a direct `fastify` dependency. */
@@ -67,6 +68,27 @@ describe("combined server bootstrap", () => {
         payload: { update_id: 1 },
       });
       expect(res.statusCode).toBe(401);
+    });
+
+    it("never writes the webhook secret path segment into the access log (Task C2)", async () => {
+      const infoSpy = vi.spyOn(logger, "info");
+      try {
+        const res = await app.inject({
+          method: "POST",
+          url: `/tg/${SECRET}?x=1`,
+          headers: { "x-telegram-bot-api-secret-token": "WRONG" },
+          payload: { update_id: 2 },
+        });
+        expect(res.statusCode).toBe(401);
+        const accessLog = infoSpy.mock.calls.find(
+          (c) => c[1] === "Handled web admin request" && (c[0] as { path?: string }).path?.startsWith("/tg/"),
+        );
+        expect(accessLog).toBeDefined();
+        expect((accessLog![0] as { path: string }).path).toBe("/tg/[redacted]");
+        expect(JSON.stringify(infoSpy.mock.calls)).not.toContain(SECRET);
+      } finally {
+        infoSpy.mockRestore();
+      }
     });
   });
 

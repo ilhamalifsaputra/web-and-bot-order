@@ -60,12 +60,20 @@ services:
     ports:
       - "127.0.0.1:${WEB_PORT:-8000}:${WEB_PORT:-8000}"
       - "127.0.0.1:${STOREFRONT_PORT:-8100}:${STOREFRONT_PORT:-8100}"
+    # Probes /healthz, which reads one row from the settings table, so
+    # "healthy" means the app can actually reach PostgreSQL — not just that
+    # Fastify answers (the previous /login probe stayed green with the database
+    # down). /healthz is public: no session, and the first-run setup gate skips
+    # it (apps/web-admin/src/plugins/setupGate.ts). Its lookup goes through the
+    # 30-second settings cache, so a database outage shows up within one probe
+    # interval rather than instantly. A 127.0.0.1 Host header always reaches the
+    # admin app, also in the single-port SHOP_PUBLIC_URL mode.
     healthcheck:
       test:
         - CMD
         - node
         - -e
-        - "fetch('http://127.0.0.1:'+(process.env.WEB_PORT||8000)+'/login').then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))"
+        - "fetch('http://127.0.0.1:'+(process.env.WEB_PORT||8000)+'/healthz').then(r=>process.exit(r.status===200?0:1)).catch(()=>process.exit(1))"
       interval: 30s
       timeout: 5s
       retries: 3

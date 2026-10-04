@@ -22,7 +22,7 @@ import { registerOutboxNudge } from "@app/core/nudge";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { telegramError } from "./helpers/ctx";
 import { reconcileOrder, pollOnce, MAX_ORDERS_PER_CYCLE } from "../src/payments/nowpaymentsReconcile";
-import { NOWPAYMENTS_API_KEY_KEY, NOWPAYMENTS_IPN_SECRET_KEY } from "@app/core/payments/nowpayments";
+import { NOWPAYMENTS_API_KEY_KEY, NOWPAYMENTS_IPN_SECRET_KEY, nowpaymentsInvoicePrice } from "@app/core/payments/nowpayments";
 
 let sample: SampleData;
 
@@ -69,6 +69,23 @@ function stubStatus(body: Record<string, unknown>) {
     "fetch",
     vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => body }),
   );
+}
+
+/** A "finished" status body for `total` paid in a NON-USDT coin. Task B fix
+ *  round: actually_paid/pay_amount are in the PAY currency (here BNB, worth
+ *  far more than a dollar, so the coin figure is numerically far below the
+ *  USDT total), and the value is judged through price_amount/price_currency
+ *  — the invoice's own usd price, exactly what createInvoice sends. */
+function finishedStatus(total: Decimal.Value, extra: Record<string, unknown> = {}) {
+  return {
+    payment_status: "finished",
+    price_amount: nowpaymentsInvoicePrice(total).toFixed(2),
+    price_currency: "usd",
+    pay_amount: "0.0125",
+    actually_paid: "0.0125",
+    pay_currency: "bnbbsc",
+    ...extra,
+  };
 }
 
 /** Create a pending NOWPAYMENTS order with a cached invoice id in paymentRef
@@ -130,7 +147,7 @@ describe("reconcileOrder (NOWPayments poller safety net)", () => {
     const created = await makeNowpaymentsOrder();
     const [pending] = await listPendingNowpaymentsOrders(prisma, new Date());
     expect(pending).toBeDefined();
-    stubStatus({ payment_status: "finished", payment_id: "TRX-RC", actually_paid: pending!.totalAmount.toString() });
+    stubStatus(finishedStatus(pending!.totalAmount, { payment_id: "TRX-RC" }));
 
     await reconcileOrder(fakeApi(), CREDS, pending!);
 
@@ -151,7 +168,7 @@ describe("reconcileOrder (NOWPayments poller safety net)", () => {
   it('refuses to deliver a "finished" payment the gateway reports without a payment_id, instead of inventing a ledger key', async () => {
     const created = await makeNowpaymentsOrder();
     const [pending] = await listPendingNowpaymentsOrders(prisma, new Date());
-    stubStatus({ payment_status: "finished", actually_paid: pending!.totalAmount.toString() }); // no payment_id
+    stubStatus(finishedStatus(pending!.totalAmount)); // no payment_id
 
     const outcome = await reconcileOrder(fakeApi(), CREDS, pending!);
 
@@ -171,7 +188,7 @@ describe("reconcileOrder (NOWPayments poller safety net)", () => {
   it("alerts every admin once when it refuses, so a human can settle the order before it auto-cancels", async () => {
     const created = await makeNowpaymentsOrder();
     const [pending] = await listPendingNowpaymentsOrders(prisma, new Date());
-    stubStatus({ payment_status: "finished", actually_paid: pending!.totalAmount.toString() }); // no payment_id
+    stubStatus(finishedStatus(pending!.totalAmount)); // no payment_id
 
     await reconcileOrder(fakeApi(), CREDS, pending!);
 
@@ -190,7 +207,7 @@ describe("reconcileOrder (NOWPayments poller safety net)", () => {
   it("does not re-alert on later cycles, however many times it re-enters that branch", async () => {
     const created = await makeNowpaymentsOrder();
     const [pending] = await listPendingNowpaymentsOrders(prisma, new Date());
-    stubStatus({ payment_status: "finished", actually_paid: pending!.totalAmount.toString() });
+    stubStatus(finishedStatus(pending!.totalAmount));
 
     await reconcileOrder(fakeApi(), CREDS, pending!);
     const afterFirst = await prisma.notificationOutbox.count({
@@ -239,7 +256,7 @@ describe("reconcileOrder (NOWPayments poller safety net)", () => {
   it("never delivers on an underpayment (finished but short), flags the order UNDERPAID, and alerts admins", async () => {
     const created = await makeNowpaymentsOrder();
     const [pending] = await listPendingNowpaymentsOrders(prisma, new Date());
-    stubStatus({ payment_status: "finished", payment_id: "TRX-SHORT", actually_paid: pending!.totalAmount.minus(1).toString() });
+    stubStatus(finishedStatus(pending!.totalAmount, { payment_id: "TRX-SHORT", actually_paid: "0.01" })); // 0.01 of the quoted 0.0125 BNB
     const api = fakeApi();
 
     await reconcileOrder(api, CREDS, pending!);
@@ -261,7 +278,7 @@ describe("reconcileOrder (NOWPayments poller safety net)", () => {
   it("does not alert a second time when an already-UNDERPAID order is reconciled again", async () => {
     await makeNowpaymentsOrder();
     const [pending] = await listPendingNowpaymentsOrders(prisma, new Date());
-    stubStatus({ payment_status: "finished", payment_id: "TRX-SHORT-2", actually_paid: pending!.totalAmount.minus(1).toString() });
+    stubStatus(finishedStatus(pending!.totalAmount, { payment_id: "TRX-SHORT-2", actually_paid: "0.01" }));
     const api = fakeApi();
 
     await reconcileOrder(api, CREDS, pending!);
@@ -269,6 +286,63 @@ describe("reconcileOrder (NOWPayments poller safety net)", () => {
 
     await expect(reconcileOrder(api, CREDS, pending!)).resolves.toBe("ok");
     expect(api.sendMessage).toHaveBeenCalledTimes(2); // no additional alert on the second cycle
+  });
+  // Task B fix round: the poller compared actually_paid (PAY-currency coins)
+  // with the USDT order total, the same unit error B3a fixed in the IPN
+  // webhook. A coin worth more than a dollar made every full payment look
+  // short (marked UNDERPAID); one worth less than a dollar let a short payment
+  // through. Both now go through checkNowpaymentsAmount.
+  it("delivers a full payment made in a coin worth more than a dollar (actually_paid numerically below the USDT total)", async () => {
+    const created = await makeNowpaymentsOrder();
+    const [pending] = await listPendingNowpaymentsOrders(prisma, new Date());
+    expect(new Decimal("0.0125").lessThan(pending!.totalAmount)).toBe(true); // the old comparison's trap
+    stubStatus(finishedStatus(pending!.totalAmount, { payment_id: "TRX-BNB" }));
+
+    await reconcileOrder(fakeApi(), CREDS, pending!);
+
+    const after = await prisma.order.findUnique({ where: { id: created.id } });
+    expect(after?.status).toBe(OrderStatus.DELIVERED);
+    const tx = await prisma.processedNowpaymentsTx.findFirst({ where: { orderId: created.id } });
+    expect(tx?.outcome).toBe("matched");
+    // Recorded in the order's own currency, not as 0.0125 coins.
+    expect(tx?.amount?.toString()).toBe(new Decimal(pending!.totalAmount).toString());
+  });
+
+  it("flags UNDERPAID (in USDT) a short payment in a coin worth less than a dollar, which the old comparison delivered", async () => {
+    const created = await makeNowpaymentsOrder();
+    const [pending] = await listPendingNowpaymentsOrders(prisma, new Date());
+    const total = new Decimal(pending!.totalAmount);
+    const quote = total.times(10); // 10 coins per dollar
+    const paid = quote.times("0.4"); // 40% of the quote, still numerically above the USDT total
+    expect(paid.greaterThan(total)).toBe(true);
+    stubStatus(finishedStatus(total, { payment_id: "TRX-TRX", pay_currency: "trx", pay_amount: quote.toString(), actually_paid: paid.toString() }));
+
+    await reconcileOrder(fakeApi(), CREDS, pending!);
+
+    const after = await prisma.order.findUnique({ where: { id: created.id } });
+    expect(after?.status).toBe(OrderStatus.UNDERPAID);
+    const underpaid = await prisma.qrisUnderpaidTx.findFirst({ where: { orderId: created.id } });
+    expect(underpaid?.receivedAmount.toString()).toBe(total.times("0.4").toString());
+    expect(await prisma.processedNowpaymentsTx.count()).toBe(0);
+  });
+
+  it("never delivers or flags UNDERPAID when the status carries no usd price to judge the value by, and alerts admins once instead", async () => {
+    const created = await makeNowpaymentsOrder();
+    const [pending] = await listPendingNowpaymentsOrders(prisma, new Date());
+    stubStatus({ payment_status: "finished", payment_id: "TRX-NOPRICE", actually_paid: "999", pay_amount: "999" });
+
+    await reconcileOrder(fakeApi(), CREDS, pending!);
+    await reconcileOrder(fakeApi(), CREDS, pending!);
+
+    const after = await prisma.order.findUnique({ where: { id: created.id } });
+    expect(after?.status).toBe(OrderStatus.PENDING_PAYMENT);
+    expect(await prisma.processedNowpaymentsTx.count()).toBe(0);
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.ADMIN_UNCONFIRMABLE_PAYMENT, orderId: created.id },
+    });
+    expect(rows.length).toBeGreaterThan(0);
+    expect(new Set(rows.map((r) => r.dedupeKey)).size).toBe(rows.length); // once per admin, across both cycles
+    expect((JSON.parse(rows[0]!.payloadJson) as { reason?: string }).reason).toBe("unverified_amount");
   });
 });
 
@@ -288,7 +362,7 @@ describe("reconcileOrder flips the settled payment bubble (Task E3)", () => {
     const created = await makeNowpaymentsOrder();
     await setOrderPaymentMessage(prisma, created.id, 555, 777);
     const [pending] = await listPendingNowpaymentsOrders(prisma, new Date());
-    stubStatus({ payment_status: "finished", payment_id: trxId, actually_paid: pending!.totalAmount.toString() });
+    stubStatus(finishedStatus(pending!.totalAmount, { payment_id: trxId }));
 
     await reconcileOrder(api, CREDS, pending!);
 
@@ -408,7 +482,7 @@ describe("reconcileOrder flips the settled payment bubble (Task E3)", () => {
     await setOrderPaymentMessage(prisma, topup.id, 555, 888);
     const api = fakeApi({ editMessageText: vi.fn().mockRejectedValue(noTextToEdit()) });
     const [pending] = await listPendingNowpaymentsOrders(prisma, new Date());
-    stubStatus({ payment_status: "finished", payment_id: "TRX-E3-TOPUP", actually_paid: pending!.totalAmount.toString() });
+    stubStatus(finishedStatus(pending!.totalAmount, { payment_id: "TRX-E3-TOPUP" }));
 
     await reconcileOrder(api, CREDS, pending!);
 

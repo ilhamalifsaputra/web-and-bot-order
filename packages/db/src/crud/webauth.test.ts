@@ -222,6 +222,35 @@ describe("linkTelegram", () => {
     expect(res).toEqual({ ok: false, reason: "taken" });
     expect((await prisma.user.findUnique({ where: { id: u.id } }))!.telegramId).toBeNull();
   });
+
+  // Backend audit Task C fix round: a guest row's session can be minted from
+  // the order code alone, so linking Telegram there would hand the row to
+  // whoever guessed the code. The guest must claim the row first.
+  it("refuses to link a guest row", async () => {
+    const g = await createGuestUser(prisma, { email: "guest.link@example.com" });
+    const res = await linkTelegram(prisma, g.id, 4242, "attacker", "Attacker");
+    expect(res).toEqual({ ok: false, reason: "guest" });
+    expect((await prisma.user.findUnique({ where: { id: g.id } }))!.telegramId).toBeNull();
+  });
+
+  it("refuses to overwrite a different, already-linked telegramId", async () => {
+    const u = await createWebUser(prisma, { loginUsername: "linked1", email: "k@k.k", passwordHash: "x", fullName: "Linked One" });
+    expect((await linkTelegram(prisma, u.id, 1000, "owner", "Owner")).ok).toBe(true);
+    const res = await linkTelegram(prisma, u.id, 1001, "attacker", "Attacker");
+    expect(res).toEqual({ ok: false, reason: "already_linked" });
+    const row = (await prisma.user.findUnique({ where: { id: u.id } }))!;
+    expect(row.telegramId).toBe(1000n);
+    expect(row.username).toBe("owner");
+  });
+
+  it("re-linking the same telegramId just refreshes the identity fields", async () => {
+    const u = await createWebUser(prisma, { loginUsername: "relink", email: "re@re.re", passwordHash: "x", fullName: "Re Link" });
+    await linkTelegram(prisma, u.id, 2000, "old", "Old Name");
+    expect(await linkTelegram(prisma, u.id, 2000, "new", "New Name")).toEqual({ ok: true });
+    const row = (await prisma.user.findUnique({ where: { id: u.id } }))!;
+    expect(row.telegramId).toBe(2000n);
+    expect(row.username).toBe("new");
+  });
 });
 
 describe("password reset tokens", () => {

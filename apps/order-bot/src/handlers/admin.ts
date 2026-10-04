@@ -257,6 +257,14 @@ export async function adminWalletCommand(ctx: MyContext): Promise<void> {
     await adminEdit(ctx, t(ctx, "admin.wallet_bad_args"), akb.backToAdminKb(lang));
     return;
   }
+  // Money an admin typed is refused, never rounded: a zero (or -0) amount
+  // would write a no-op ledger row; IDR reads `10,5` as Rp10,5, and a wallet
+  // holds whole rupiah; USDT beyond the 4 decimals a wallet keeps would be
+  // silently truncated by adjustWallet. Negative amounts stay allowed (debits).
+  if (amt.isZero() || (currency === "IDR" ? !amt.isInteger() : amt.decimalPlaces() > 4)) {
+    await adminEdit(ctx, t(ctx, "admin.wallet_bad_amount"), akb.backToAdminKb(lang));
+    return;
+  }
 
   const adminTg = ctx.from!.id;
   let newBal: Decimal;

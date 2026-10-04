@@ -60,6 +60,7 @@
   "admin.hdr_vouchers": "🎟 <b>Vouchers</b>",
   "admin.wallet_adjusted": "✅ New balance for user {uid} ({currency}): <b>{balance}</b>",
   "admin.wallet_bad_args": "Bad arguments.",
+  "admin.wallet_bad_amount": "The amount must not be zero. An IDR amount must be whole rupiah (e.g. 10.000 or -2.500); a USDT amount may have at most 4 decimals.",
   "admin.wallet_failed": "Adjustment failed (user not found?).",
   "admin.wallet_usage": "Usage: /wallet &lt;user_db_id&gt; &lt;amount&gt; [IDR|USDT] (defaults to IDR)",
   "admin.wallet_usage_hint": "Use /wallet {uid} <amount> [IDR|USDT] to adjust (negative to deduct; defaults to IDR).",

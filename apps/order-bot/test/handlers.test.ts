@@ -5771,6 +5771,41 @@ describe("admin handlers", () => {
     expect((await getUser(prisma, sample.user.id))!.walletBalance.toString()).toBe(before.toString());
   });
 
+  // Money audit C12: 0 / -0 wrote a no-op ledger row, IDR "10,5" credited
+  // fractional rupiah, and USDT beyond 4 decimals was silently truncated by
+  // adjustWallet. All are refused (never rounded), the balance untouched and
+  // no wallet transaction written.
+  it.each([
+    ["0", ""],
+    ["-0", ""],
+    ["+0", " USDT"],
+    ["10,5", ""],
+    ["-12.34", " IDR"],
+    ["10000.50", ""],
+    ["1,12345", " USDT"],
+  ])("adminWalletCommand refuses the amount %j%s and changes nothing", async (amount, currency) => {
+    const { ctx, sink } = adminCtx({ match: `${sample.user.id} ${amount}${currency}` });
+    const before = await getUser(prisma, sample.user.id);
+    await adminWalletCommand(ctx);
+    expect(sentIncludes(sink, "must not be zero")).toBe(true);
+    expect(offersForwardAction(sink)).toBe(true);
+    const after = await getUser(prisma, sample.user.id);
+    expect(after!.walletBalance.toString()).toBe(before!.walletBalance.toString());
+    expect(after!.walletBalanceUsdt.toString()).toBe(before!.walletBalanceUsdt.toString());
+    expect(await prisma.walletTransaction.count({ where: { userId: sample.user.id } })).toBe(0);
+  });
+
+  it("adminWalletCommand still accepts a whole-rupiah debit and a 4-decimal USDT credit", async () => {
+    await adjustWallet(prisma, sample.user.id, "5000", { reason: "test_seed" });
+    const debit = adminCtx({ match: `${sample.user.id} -1.500` });
+    await adminWalletCommand(debit.ctx);
+    expect((await getUser(prisma, sample.user.id))!.walletBalance.toString()).toBe("3500");
+
+    const credit = adminCtx({ match: `${sample.user.id} 1,1234 USDT` });
+    await adminWalletCommand(credit.ctx);
+    expect((await getUser(prisma, sample.user.id))!.walletBalanceUsdt.toString()).toBe("1.1234");
+  });
+
   it("adminWalletCommand credits the wallet, localizes the result, and offers a back action", async () => {
     // An Indonesian-speaking admin must see the result in Indonesian (not a
     // hardcoded English line) — proves the success screen goes through i18n.
@@ -5942,7 +5977,9 @@ describe("admin handlers", () => {
       ["10,000", "IDR", "10000"],
       ["-10.000", "IDR", "-10000"],
       ["+10.000", "IDR", "10000"],
-      ["10000.50", "IDR", "10000.5"],
+      // A decimal spelling of a whole rupiah amount is fine; a fractional one
+      // (10000.50) is refused since money audit C12, see "refuses the amount".
+      ["10000.00", "IDR", "10000"],
       ["5,5 USDT", "USDT", "5.5"],
     ];
     for (const [typed, currency, delta] of accepted) {

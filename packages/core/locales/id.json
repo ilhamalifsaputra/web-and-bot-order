@@ -60,6 +60,7 @@
   "admin.hdr_vouchers": "🎟 <b>Voucher</b>",
   "admin.wallet_adjusted": "✅ Saldo baru user {uid} ({currency}): <b>{balance}</b>",
   "admin.wallet_bad_args": "Argumen salah.",
+  "admin.wallet_bad_amount": "Jumlah tidak boleh nol. Jumlah IDR harus rupiah bulat (mis. 10.000 atau -2.500); jumlah USDT paling banyak 4 angka desimal.",
   "admin.wallet_failed": "Penyesuaian gagal (user tidak ditemukan?).",
   "admin.wallet_usage": "Cara pakai: /wallet &lt;user_db_id&gt; &lt;jumlah&gt; [IDR|USDT] (default IDR)",
   "admin.wallet_usage_hint": "Gunakan /wallet {uid} <jumlah> [IDR|USDT] untuk menyesuaikan (negatif untuk mengurangi; default IDR).",

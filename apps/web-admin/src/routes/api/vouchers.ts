@@ -17,6 +17,7 @@ import {
   getVoucher,
   createVoucher,
   updateVoucher,
+  VoucherCodeTakenError,
   setVoucherActive,
   deleteVoucher,
   bulkSetVouchersActive,
@@ -321,6 +322,9 @@ export default async function vouchersApiRoutes(app: FastifyInstance): Promise<v
       }
       if (err instanceof Error && err.message === "cannot change the code of a voucher that has been used") {
         return reply.code(409).send({ error: "Cannot change code: this voucher has already been used." });
+      }
+      if (err instanceof VoucherCodeTakenError) {
+        return reply.code(409).send({ error: err.message });
       }
       throw err;
     }

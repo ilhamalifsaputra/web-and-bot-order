@@ -45,6 +45,7 @@ import {
 } from "./orders";
 import { transitionOrderStatus } from "./orderStatus";
 import { adjustWallet } from "./users";
+import { releaseVoucherUse } from "./vouchers";
 import { postOrderWalletCreditPosting } from "./ledgerPostings";
 import { getSetting, getDecryptedSetting, setSetting } from "./settings";
 import { finalizeOrderPayment } from "./pricing";
@@ -1026,10 +1027,8 @@ export async function refundUnderpaidOrderTx(
     });
   }
   if (order.voucherId) {
-    const v = await tx.voucher.findUnique({ where: { id: order.voucherId } });
-    if (v && v.usedCount > 0) {
-      await tx.voucher.update({ where: { id: v.id }, data: { usedCount: { decrement: 1 } } });
-    }
+    // One guarded decrement; never below zero even when two releases race.
+    await releaseVoucherUse(tx, order.voucherId);
   }
   await tx.order.update({
     where: { id: args.orderId },

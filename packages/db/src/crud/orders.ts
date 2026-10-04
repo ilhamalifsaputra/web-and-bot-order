@@ -51,6 +51,7 @@ import {
   applyVoucherToSubtotal,
   assertVoucherNotRedeemedByUser,
   computeEligibleAmounts,
+  releaseVoucherUse,
   type EligibilityLine,
 } from "./vouchers";
 import { countAvailableStock, allocateOneAvailableStock } from "./stock";
@@ -1584,13 +1585,8 @@ async function releaseOrderHolds(
     });
   }
   if (order.voucherId) {
-    const v = await db.voucher.findUnique({ where: { id: order.voucherId } });
-    if (v && v.usedCount > 0) {
-      await db.voucher.update({
-        where: { id: v.id },
-        data: { usedCount: { decrement: 1 } },
-      });
-    }
+    // One guarded decrement; never below zero even when two releases race.
+    await releaseVoucherUse(db, order.voucherId);
     // M-2 (backend audit, 2026-07-31): also clear the (voucherId, userId)
     // redemption row so a cancelled/rejected/expired order doesn't
     // permanently lock this buyer out of a one-per-user voucher —

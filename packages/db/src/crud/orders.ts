@@ -57,7 +57,7 @@ import { countAvailableStock, allocateOneAvailableStock } from "./stock";
 import { recordStockEvent, type StockEventActor } from "./stockEvents";
 import { adjustWallet, getUser } from "./users";
 import { ACTIONABLE_LEDGER_OUTCOMES, cancelledOrderIdsWithMoneyReturned, consumeIncomingLedgerPayment } from "./reports";
-import { clearCart, getCart } from "./cart";
+import { clearCart, getCart, lockCartForCheckout } from "./cart";
 import { getSetting } from "./settings";
 import { maybePayReferralCommission } from "./referrals";
 import {
@@ -697,6 +697,10 @@ export async function createOrderFromCart(
   // isActive) would see an empty cart and skip both checks, while this
   // function's own unfiltered read would still create the order from the
   // now-inactive line (Finding #5, per-sku-delivery-flows audit 2026-07-13).
+  //
+  // Lock the cart first: a concurrent checkout of the same cart waits here and
+  // then finds it empty, instead of creating a second order from it.
+  await lockCartForCheckout(db, args.user.id);
   const rawCart = (await getCart(db, args.user.id)) as unknown as CartLine[];
   const cart = rawCart.filter((ci) => ci.product.isActive);
   if (cart.length === 0) throw new ValidationError("error.cart_empty");

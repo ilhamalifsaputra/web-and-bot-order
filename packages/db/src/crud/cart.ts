@@ -113,6 +113,20 @@ export async function removeFromCart(db: Db, userId: number, cartItemId: number)
   await db.cartItem.deleteMany({ where: { id: cartItemId, userId } });
 }
 
+/**
+ * Lock the buyer's cart lines for the rest of the caller's transaction, so one
+ * cart can become only one order (backend audit E2 item 2). Order creation
+ * reads the cart and only clears it at the end; without this, a double-tapped
+ * checkout ran two transactions that both read the same cart and both created
+ * an order from it. A second transaction now waits here until the first
+ * commits, and under READ COMMITTED its next read of the cart sees the lines
+ * the first one deleted as gone. Must be the first thing the checkout
+ * transaction does, and needs a transaction to mean anything.
+ */
+export async function lockCartForCheckout(db: Db, userId: number): Promise<void> {
+  await db.$queryRaw`SELECT id FROM cart_items WHERE user_id = ${userId} FOR UPDATE`;
+}
+
 export async function clearCart(db: Db, userId: number) {
   await db.cartItem.deleteMany({ where: { userId } });
 }

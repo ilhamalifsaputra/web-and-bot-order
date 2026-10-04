@@ -7,7 +7,14 @@
  * both debit the wallet when the balance covered two).
  *
  * Real Postgres concurrency via Promise.allSettled — a sequential pair could
- * never show the race.
+ * never show the race. The pool is sized and opened up front (`warmPool`):
+ * Prisma opens connections lazily and opening one can take seconds, which
+ * would quietly serialize the "concurrent" submits and make both tests pass
+ * with the cart lock removed. Each test also holds a row the submits need
+ * AFTER reading the cart, so every submit has read it before any can commit.
+ * Mutation-checked: with `lockCartForCheckout`'s call in createOrderFromCart
+ * removed, both tests fail: the gateway case creates three orders, and in the
+ * wallet case the extra submits fail with a database error, not `cart_empty`.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
@@ -23,9 +30,25 @@ let prisma: PrismaClient;
 let sample: SampleData;
 
 beforeAll(async () => {
-  db = await makeTestDb();
+  // Three submits plus one holder transaction, with headroom.
+  db = await makeTestDb({ connectionLimit: 10 });
   prisma = db.prisma;
 });
+
+/** Open `n` pooled connections up front so the submits below really overlap. */
+async function warmPool(n: number) {
+  await Promise.all(
+    Array.from({ length: n }, () =>
+      prisma.$transaction(
+        async (tx) => {
+          await tx.$queryRaw`SELECT 1`;
+          await new Promise((r) => setTimeout(r, 300));
+        },
+        { maxWait: 30_000, timeout: 30_000 },
+      ),
+    ),
+  );
+}
 afterAll(async () => {
   await db.cleanup();
 });
@@ -49,6 +72,8 @@ describe("completeCartOrderWithWalletCredit under true Postgres concurrency", ()
           currency: OrderCurrency.IDR,
         }),
       );
+
+    await warmPool(6);
 
     // Widen the race window deterministically: hold the buyer's user row (the
     // lock adjustWallet takes for the debit) for a moment, so every submit has
@@ -96,7 +121,30 @@ describe("completeCartOrderWithWalletCredit under true Postgres concurrency", ()
         }),
       );
 
-    const results = await Promise.allSettled([submit(), submit(), submit()]);
+    await warmPool(6);
+
+    // Widen the race window deterministically: hold the cart rows from a
+    // separate transaction. Without the cart lock every submit reads the cart
+    // (a plain read is not blocked), reserves stock and creates its order,
+    // then waits here only at the final clearCart delete — so all three have
+    // read the same cart before any commits. With the lock they queue at
+    // lockCartForCheckout and the later two find the cart already empty.
+    let releaseHold!: () => void;
+    const holdReleased = new Promise<void>((resolve) => (releaseHold = resolve));
+    const hold = prisma.$transaction(
+      async (tx) => {
+        await tx.$queryRaw`SELECT id FROM cart_items WHERE user_id = ${user.id} FOR UPDATE`;
+        await holdReleased;
+      },
+      { timeout: 15_000 },
+    );
+    await new Promise((r) => setTimeout(r, 200)); // the hold is in place
+
+    const pending = Promise.allSettled([submit(), submit(), submit()]);
+    await new Promise((r) => setTimeout(r, 1500)); // every submit is now in flight
+    releaseHold();
+    await hold;
+    const results = await pending;
     expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
     for (const r of results.filter((r): r is PromiseRejectedResult => r.status === "rejected")) {
       expect(r.reason).toMatchObject({ key: "error.cart_empty" });

@@ -39,6 +39,35 @@ describe("parseDenominationCsv prices", () => {
     expect(row("79.000", "40.000", "1.2.3").error).toMatch(/reseller price/i);
   });
 
+  it.each(["0.5", "0,5"])("rejects a sub-rupiah price of %j", (typed) => {
+    const r = row(typed);
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/price must be at least/i);
+  });
+
+  it("rejects a zero reseller price and one above the retail price, per row", () => {
+    expect(row("79.000", "", "0").error).toMatch(/reseller price must be at least/i);
+    expect(row("79.000", "", "80.000").error).toMatch(/reseller price must not be higher/i);
+  });
+
+  it("accepts a zero cost price and a reseller price equal to the price", () => {
+    const r = row("79.000", "0", "79.000");
+    expect(r.ok).toBe(true);
+    expect(r.data!.costPrice).toBe("0");
+  });
+
+  it("a bad row does not stop the other rows from parsing", () => {
+    const rows = parseDenominationCsv(
+      [
+        "Games | P | A | shared | 1 Month | 79.000 | | 80.000",
+        "Games | P | B | shared | 1 Month | 79.000 | 40.000 | 70.000",
+      ].join("\n"),
+      cats,
+    );
+    expect(rows.map((r) => r.ok)).toEqual([false, true]);
+    expect(rows[1]!.data!.resellerPrice).toBe("70000");
+  });
+
   it("leaves a blank cost and reseller price empty", () => {
     const r = row("79.000", "", "");
     expect(r.ok).toBe(true);

@@ -7593,7 +7593,7 @@ describe("bulk operations", () => {
     const csv =
       `${cat.name} | Imported Product A | 1 Month | shared | 1 Month | 9.99\n` +
       `NoSuchCat | Bad Product | 1 Month | shared | 1 Month | 5\n` +
-      `${cat.name} | Imported Product B | 12 Months | private | 12 Months | 19 | 15 | 60 | 30 | nice`;
+      `${cat.name} | Imported Product B | 12 Months | private | 12 Months | 79 | 15 | 60 | 30 | nice`; // reseller (60) at or below the price (79)
     const beforeProducts = await prisma.product.count();
     const beforeDenoms = await prisma.denomination.count();
 

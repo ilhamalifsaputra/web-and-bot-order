@@ -22,3 +22,20 @@ export function parsePositiveId(raw: unknown, opts: { max?: number } = {}): numb
   const max = opts.max ?? MAX_DB_ID;
   return Number.isSafeInteger(n) && n <= max ? n : null;
 }
+
+/**
+ * Read an optional whole-number query parameter. Absent or empty is
+ * `fallback`; plain decimal digits (no sign, exponent, hex or fraction) are
+ * clamped into `[min, max]`, so an oversized window stays bounded instead of
+ * loading the whole table; anything else is `null`, which the route answers
+ * with a 400 — `Number("abc")` would otherwise reach a query as NaN or an
+ * Invalid Date and end as a Prisma 500.
+ */
+export function parseQueryInt(
+  raw: unknown,
+  opts: { fallback: number; min: number; max: number },
+): number | null {
+  if (raw === undefined || raw === "") return opts.fallback;
+  if (typeof raw !== "string" || !/^\d{1,15}$/.test(raw)) return null;
+  return Math.min(opts.max, Math.max(opts.min, Number(raw)));
+}

@@ -78,15 +78,19 @@ export async function voucherConversation(conversation: MyConversation, ctx: MyC
       continue;
     }
     try {
-      // Sanity-check validity with a large subtotal so min_purchase doesn't
-      // trip — and the same large value for eligibleSubtotal, so a
-      // SELECTED-scope voucher's not-applicable check doesn't trip here
-      // either. This is a coarse "is the code fundamentally live" gate only;
-      // the authoritative per-product scope check happens moments later in
-      // renderOrderConfirmation -> computeConfirmation, which knows the real
-      // product and will surface error.voucher_not_applicable there if it
-      // doesn't match.
-      applyVoucherToSubtotal(voucher, new Decimal("999999"), new Decimal("999999"));
+      // A coarse "is the code fundamentally live" gate only (active, started,
+      // not expired, not used up). It passes a subtotal taken from the
+      // voucher itself — its own minimum purchase, at least 1 — so the
+      // min_purchase check can never trip here whatever that minimum is (a
+      // fixed sentinel such as Rp999.999 refused every voucher with a higher
+      // minimum, money audit C15), and the same positive value as the
+      // eligible subtotal so a SELECTED-scope voucher's not-applicable check
+      // doesn't trip either. The authoritative checks against the real order
+      // — minimum purchase and per-product scope — happen moments later in
+      // renderOrderConfirmation -> computeConfirmation, which surfaces
+      // error.voucher_min_purchase / error.voucher_not_applicable there.
+      const coarseSubtotal = Decimal.max(new Decimal(voucher.minPurchase), 1);
+      applyVoucherToSubtotal(voucher, coarseSubtotal, coarseSubtotal);
     } catch (e) {
       if (e instanceof ValidationError) {
         // A minimum purchase is IDR-canonical — show it in the buyer's display

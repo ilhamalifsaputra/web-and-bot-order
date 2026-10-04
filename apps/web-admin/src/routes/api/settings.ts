@@ -282,7 +282,40 @@ const MONEY_SETTING_CURRENCY: Record<string, MoneyFieldCurrency> = {
   wallet_topup_max_amount_idr: "IDR",
   wallet_topup_min_amount_usdt: "USDT",
   wallet_topup_max_amount_usdt: "USDT",
+  // The USDT rate sanity band is Rupiah per 1 USDT, read by shape like the
+  // rate it judges (money audit A1): a ceiling typed `20.000` is Rp20.000,
+  // never Rp20 (which refused every rate), and `20,000` no longer makes the
+  // reader throw and silently turn the check off.
+  fx_rate_min: "IDR",
+  fx_rate_max: "IDR",
 };
+
+/** The two ends of the USDT rate sanity band, each judged against the other. */
+const FX_BAND_PARTNER: Record<string, { other: string; otherLabel: string; isMin: boolean }> = {
+  fx_rate_min: { other: "fx_rate_max", otherLabel: "USDT rate sanity ceiling", isMin: true },
+  fx_rate_max: { other: "fx_rate_min", otherLabel: "USDT rate sanity floor", isMin: false },
+};
+
+/**
+ * The other end of the band a new `fx_rate_min`/`fx_rate_max` must not cross.
+ * An import passes the file's own value for it (`bandOverride`) — the file's
+ * pair is judged together, so a file whose whole band sits above this shop's
+ * old ceiling still applies. Otherwise the configured bound is read the way
+ * the rate check reads it (`fxRateBounds`, defaults included). Null = that end
+ * is off, so there is nothing to cross.
+ */
+async function otherBandEnd(key: string, bandOverride: Readonly<Record<string, string>> | undefined): Promise<Decimal | null> {
+  const partner = FX_BAND_PARTNER[key]!;
+  const fromFile = bandOverride?.[partner.other];
+  if (fromFile !== undefined) {
+    const text = String(fromFile).trim();
+    if (text === "") return null;
+    const amount = readMoneyField(text, "IDR", { exact: true });
+    return amount && amount.greaterThan(0) ? amount : null;
+  }
+  const bounds = await fxRateBounds(prisma);
+  return partner.isMin ? bounds.max : bounds.min;
+}
 
 /**
  * A money setting's value as the canonical plain decimal to store, read by
@@ -368,6 +401,9 @@ async function applyFieldEdit(
    * value, or an export file) — money settings read it as a plain dot-decimal
    * instead of by shape. */
   exact = false,
+  /** Import only: the file's own `fx_rate_min`/`fx_rate_max`, so each end of
+   * the band is judged against the file's other end, not this shop's. */
+  bandOverride?: Readonly<Record<string, string>>,
 ): Promise<{ ok: true; unchanged?: boolean; cleared?: boolean; needsRestart?: boolean }> {
   if (!(key in EDITABLE)) throw new FieldEditError(400, "That setting is not editable here.");
   let value = rawValue.trim();
@@ -449,6 +485,22 @@ async function applyFieldEdit(
         400,
         `${moneyFieldError(EDITABLE[key]!, currency)} ${allowZero ? "Use 0 or blank to disable it." : "It must be more than zero, or blank to disable it."}`,
       );
+    }
+    // A crossed band (floor above ceiling) refuses every rate, typed or
+    // fetched, and so hides the USDT rail; refuse it here instead. Equal ends
+    // are allowed: that pins the rate to one figure, which is odd but sane.
+    const partner = FX_BAND_PARTNER[key];
+    if (partner) {
+      const other = await otherBandEnd(key, bandOverride);
+      const mine = new Decimal(amount);
+      if (other && (partner.isMin ? mine.greaterThan(other) : mine.lessThan(other))) {
+        throw new FieldEditError(
+          400,
+          partner.isMin
+            ? `Rp${mine.toString()} is above the Rp${other.toString()} "${partner.otherLabel}", so every USDT rate would be refused. Raise the ceiling first, or type a lower floor.`
+            : `Rp${mine.toString()} is below the Rp${other.toString()} "${partner.otherLabel}", so every USDT rate would be refused. Lower the floor first, or type a higher ceiling.`,
+        );
+      }
     }
     value = amount;
   }
@@ -719,6 +771,12 @@ export default async function settingsApiRoutes(app: FastifyInstance): Promise<v
     const entries = Object.entries(incoming).sort(
       ([a], [b]) => importRank(a) - importRank(b),
     );
+    // Each end of the file's band is judged against the file's other end, so
+    // the result does not depend on which end is applied first.
+    const bandOverride: Record<string, string> = {};
+    for (const bandKey of IMPORT_FIRST) {
+      if (Object.prototype.hasOwnProperty.call(incoming, bandKey)) bandOverride[bandKey] = String(incoming[bandKey] ?? "");
+    }
     let applied = 0;
     const skippedKeys: { key: string; reason: string }[] = [];
     for (const [key, value] of entries) {
@@ -734,7 +792,7 @@ export default async function settingsApiRoutes(app: FastifyInstance): Promise<v
       try {
         // An export file holds stored values verbatim (machine-formatted plain
         // decimals), so money settings are read exactly, not by shape.
-        await applyFieldEdit(req.admin!, key, String(value ?? ""), true);
+        await applyFieldEdit(req.admin!, key, String(value ?? ""), true, bandOverride);
         applied++;
       } catch (err) {
         if (err instanceof FieldEditError) {

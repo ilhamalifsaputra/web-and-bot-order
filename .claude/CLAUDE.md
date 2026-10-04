@@ -230,6 +230,10 @@ checklist for the task list.
   `new Decimal(<typed text>)`, `parseFloat`, `.replace(",", ".")`, `formatIdr(`
   or an `Rp` literal in buyer-facing bot files, and `Number(amount)` on the
   top-up form. Admin-facing bot screens keep the Indonesian `formatIdr`.
+  Admin routes read amounts via `apps/web-admin/src/lib/moneyField.ts`; admin
+  forms that pre-fill stored amounts send `exact_fields` (an untouched pre-fill
+  is read exactly, a retyped value still by shape — `lib/exactFields.ts`), so
+  the admin client must ship together with the server.
 - **No raw SQL in routes/handlers** — add helpers to `packages/db/src/crud/*`
   (per-domain split, e.g. `orders.ts`, `stock.ts`, `pricing.ts`, `vouchers.ts`)
   and cover them with Vitest (`*.test.ts` colocated in `crud/`).

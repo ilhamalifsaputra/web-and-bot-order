@@ -44,6 +44,24 @@ function readVoucherValue(value: unknown, type: string, exact: boolean): Decimal
   return type === VoucherType.PERCENT ? readPercentField(value, { exact }) : readMoneyField(value, "IDR", { exact });
 }
 
+/**
+ * A usage limit: blank means unlimited (null); otherwise a whole number of at
+ * least 1, written as plain digits (a JSON integer is taken as-is). 0 or a
+ * negative limit would make the voucher "used up" the moment it is saved, and
+ * `Number("1e3")` would quietly read 1000. Returns undefined when refused.
+ */
+function readUsageLimit(value: unknown): number | null | undefined {
+  if (isBlank(value)) return null;
+  let n: number;
+  if (typeof value === "number") n = value;
+  else if (typeof value === "string" && /^\d{1,9}$/.test(value.trim())) n = Number(value.trim());
+  else return undefined;
+  return Number.isSafeInteger(n) && n >= 1 ? n : undefined;
+}
+
+const USAGE_LIMIT_ERROR = "Usage limit must be a whole number of at least 1, or empty for unlimited.";
+const MAX_DISCOUNT_ERROR = "Max discount must be more than zero, or empty for no cap.";
+
 function voucherValueError(type: string): string {
   return type === VoucherType.PERCENT ? percentFieldError("Value") : moneyFieldError("Value");
 }
@@ -112,12 +130,8 @@ export default async function vouchersApiRoutes(app: FastifyInstance): Promise<v
       : readMoneyField(body.min_purchase, "IDR", { exact: exact.has("min_purchase") });
     if (minDec === null) return reply.code(400).send({ error: moneyFieldError("Min purchase") });
 
-    let limit: number | null = null;
-    if ((body.usage_limit ?? "").trim()) {
-      const n = Number(body.usage_limit);
-      if (!Number.isInteger(n)) return reply.code(400).send({ error: "Usage limit must be a number." });
-      limit = n;
-    }
+    const limit = readUsageLimit(body.usage_limit);
+    if (limit === undefined) return reply.code(400).send({ error: USAGE_LIMIT_ERROR });
 
     let expiry: Date | null = null;
     const expiresRaw = (body.expires_at ?? "").trim();
@@ -136,6 +150,7 @@ export default async function vouchersApiRoutes(app: FastifyInstance): Promise<v
     if (!isBlank(body.max_discount)) {
       maxDiscountDec = readMoneyField(body.max_discount, "IDR", { exact: exact.has("max_discount") });
       if (maxDiscountDec === null) return reply.code(400).send({ error: moneyFieldError("Max discount") });
+      if (!maxDiscountDec.greaterThan(0)) return reply.code(400).send({ error: MAX_DISCOUNT_ERROR });
     }
 
     let startAt: Date | null = null;
@@ -255,19 +270,15 @@ export default async function vouchersApiRoutes(app: FastifyInstance): Promise<v
       } else {
         const maxDiscount = readMoneyField(body.max_discount, "IDR", { exact: exact.has("max_discount") });
         if (maxDiscount === null) return reply.code(400).send({ error: moneyFieldError("Max discount") });
+        if (!maxDiscount.greaterThan(0)) return reply.code(400).send({ error: MAX_DISCOUNT_ERROR });
         args.maxDiscount = maxDiscount;
       }
     }
 
     if (body.usage_limit !== undefined) {
-      const raw = String(body.usage_limit ?? "").trim();
-      if (raw === "") {
-        args.usageLimit = null;
-      } else {
-        const n = Number(raw);
-        if (!Number.isInteger(n)) return reply.code(400).send({ error: "Usage limit must be a number." });
-        args.usageLimit = n;
-      }
+      const usageLimit = readUsageLimit(body.usage_limit);
+      if (usageLimit === undefined) return reply.code(400).send({ error: USAGE_LIMIT_ERROR });
+      args.usageLimit = usageLimit;
     }
 
     if (body.expires_at !== undefined) {

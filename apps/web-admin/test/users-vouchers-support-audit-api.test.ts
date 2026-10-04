@@ -400,6 +400,61 @@ describe("POST /api/vouchers max_discount", () => {
   });
 });
 
+// Money audit C10: a usage limit of 0 or below made a voucher instantly "used
+// up", "1e3" was read as 1000, and a zero max discount silently zeroed every
+// discount. Usage limit is blank (unlimited) or a whole number of at least 1;
+// max discount is blank (no cap) or more than zero; min purchase zero or more.
+describe("voucher limits are validated on create and update", () => {
+  it.each(["0", "-1", "1.5", "1e3", "abc", " 2 3"])("create refuses usage_limit %j", async (bad) => {
+    const res = await postJson("/api/vouchers", cookie, csrf, { code: "LIM", type: "percent", value: "10", usage_limit: bad });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/Usage limit/);
+    expect(await prisma.voucher.findUnique({ where: { code: "LIM" } })).toBeNull();
+  });
+
+  it.each(["0", "-5", "0,00"])("create refuses max_discount %j", async (bad) => {
+    const res = await postJson("/api/vouchers", cookie, csrf, { code: "MAX0", type: "percent", value: "10", max_discount: bad });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/Max discount/);
+    expect(await prisma.voucher.findUnique({ where: { code: "MAX0" } })).toBeNull();
+  });
+
+  it("create refuses a negative min_purchase", async () => {
+    const res = await postJson("/api/vouchers", cookie, csrf, { code: "MINNEG", type: "percent", value: "10", min_purchase: "-1000" });
+    expect(res.statusCode).toBe(400);
+    expect(await prisma.voucher.findUnique({ where: { code: "MINNEG" } })).toBeNull();
+  });
+
+  it("create accepts usage_limit 1 and 25, blank for unlimited, and a positive max discount", async () => {
+    for (const [code, limit, expected] of [["ONE", "1", 1], ["MANY", " 25 ", 25], ["UNL", "", null]] as const) {
+      const res = await postJson("/api/vouchers", cookie, csrf, { code, type: "percent", value: "10", usage_limit: limit, max_discount: "5.000" });
+      expect(res.statusCode).toBe(201);
+      const v = await prisma.voucher.findUniqueOrThrow({ where: { code } });
+      expect(v.usageLimit).toBe(expected);
+      expect(v.maxDiscount?.toString()).toBe("5000");
+    }
+  });
+
+  it("update refuses usage_limit 0/-1 and max_discount 0, leaving the voucher untouched", async () => {
+    const create = await postJson("/api/vouchers", cookie, csrf, { code: "UPDLIM", type: "percent", value: "10", usage_limit: "5", max_discount: "5000" });
+    const { voucher } = create.json() as { voucher: { id: number } };
+    for (const body of [{ usage_limit: "0" }, { usage_limit: "-1" }, { usage_limit: "2e1" }, { max_discount: "0" }, { min_purchase: "-1" }]) {
+      const res = await postJson(`/api/vouchers/${voucher.id}/update`, cookie, csrf, body);
+      expect(res.statusCode).toBe(400);
+    }
+    const fresh = await prisma.voucher.findUniqueOrThrow({ where: { id: voucher.id } });
+    expect(fresh.usageLimit).toBe(5);
+    expect(fresh.maxDiscount?.toString()).toBe("5000");
+    expect(fresh.minPurchase.toString()).toBe("0");
+
+    const ok = await postJson(`/api/vouchers/${voucher.id}/update`, cookie, csrf, { usage_limit: "", max_discount: "" });
+    expect(ok.statusCode).toBe(200);
+    const cleared = await prisma.voucher.findUniqueOrThrow({ where: { id: voucher.id } });
+    expect(cleared.usageLimit).toBeNull();
+    expect(cleared.maxDiscount).toBeNull();
+  });
+});
+
 describe("POST /api/support/:ticketId/reply + /close", () => {
   it("reply happy path: records a message (never sent to Telegram) and audits", async () => {
     const ticket = await createTicket(prisma, customerId, "Help please");

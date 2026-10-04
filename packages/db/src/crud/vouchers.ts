@@ -3,7 +3,7 @@
  * applyVoucherToSubtotal is a pure function (no DB, no mutation).
  */
 import { VoucherType, VoucherScope, OrderStatus } from "@app/core/enums";
-import { quantizeMoney } from "@app/core/formatters";
+import { quantizeMoney, wholeRupiah } from "@app/core/formatters";
 import { Decimal } from "@app/core/money";
 import { ValidationError } from "@app/core/errors";
 import type { PrismaClient } from "../client";
@@ -359,7 +359,21 @@ export function applyVoucherToSubtotal(
   // otherwise sail through both caps above and poison orders.ts's totals
   // (M-3, backend audit 2026-07-31).
   if (!discount.isFinite() || discount.isNegative()) discount = new Decimal(0);
-  return quantizeMoney(discount, 4);
+  // Whole rupiah, half-up — the same rule as the bulk discount (`wholeRupiah`,
+  // B5 money audit): the voucher discounts a central-IDR subtotal, and a
+  // fractional discount made the preview rows and the charge disagree by a
+  // rupiah and left wallet dust. Rounding up must never break a cap, so a
+  // rounded figure above one (a fractional maxDiscount or eligible slice, which
+  // whole-rupiah prices never produce) falls back to that cap rounded down.
+  const rounded = wholeRupiah(discount);
+  let cap = eligibleSub;
+  if (voucher.maxDiscount != null && new Decimal(voucher.maxDiscount).lessThan(cap)) {
+    cap = new Decimal(voucher.maxDiscount);
+  }
+  if (rounded.greaterThan(cap)) {
+    return Decimal.max(new Decimal(0), cap.toDecimalPlaces(0, Decimal.ROUND_FLOOR));
+  }
+  return rounded;
 }
 
 /**

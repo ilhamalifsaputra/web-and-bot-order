@@ -1359,7 +1359,8 @@ describe("createOrderFromCart / createOrderDirect — flash sale pricing", () =>
 
     expect(new Decimal(order!.subtotalAmount).equals("12.0000")).toBe(true);
     expect(new Decimal(order!.bulkDiscountAmount).equals("6.0000")).toBe(true); // 50% of 12.00
-    expect(new Decimal(order!.discountAmount).equals("0.6000")).toBe(true); // 10% of the net 6.00
+    // 10% of the net 6.00 is 0.60, rounded half-up to whole rupiah (B5, money audit).
+    expect(new Decimal(order!.discountAmount).equals("1")).toBe(true);
   });
 });
 
@@ -1402,8 +1403,9 @@ describe("createOrderFromCart / createOrderDirect — voucher scope (SELECTED)",
     const order = await createOrderFromCart(prisma, { channel: "bot", user, voucherCode: "SCOPED1" });
 
     expect(new Decimal(order!.subtotalAmount).equals("15.0000")).toBe(true);
-    // 10% of the scoped 5.00 line only, not the full 15.00 subtotal.
-    expect(new Decimal(order!.discountAmount).equals("0.5000")).toBe(true);
+    // 10% of the scoped 5.00 line only (0.50 -> whole rupiah, half-up: 1),
+    // not the full 15.00 subtotal (1.50 -> 2).
+    expect(new Decimal(order!.discountAmount).equals("1")).toBe(true);
   });
 
   it("a SELECTED-scope voucher with no matching cart lines rejects with error.voucher_not_applicable", async () => {
@@ -1454,7 +1456,7 @@ describe("createOrderFromCart / createOrderDirect — voucher scope (SELECTED)",
     });
 
     const order = await createOrderDirect(prisma, { channel: "bot", user, productId: product.id, quantity: 1, voucherCode: "SCOPEDDIRECTOK" });
-    expect(new Decimal(order!.discountAmount).equals("0.5000")).toBe(true); // 10% of 5.00
+    expect(new Decimal(order!.discountAmount).equals("1")).toBe(true); // 10% of 5.00 = 0.50, whole rupiah half-up (B5)
   });
 
   it("a scheduled voucher (startAt in the future) rejects before its start date and succeeds after", async () => {
@@ -1479,7 +1481,7 @@ describe("createOrderFromCart / createOrderDirect — voucher scope (SELECTED)",
     await prisma.voucher.update({ where: { id: v!.id }, data: { startAt: new Date(Date.now() - 60_000) } });
 
     const order = await createOrderFromCart(prisma, { channel: "bot", user, voucherCode: "SCHEDVOUCH" });
-    expect(new Decimal(order!.discountAmount).equals("0.5000")).toBe(true); // 10% of 5.00
+    expect(new Decimal(order!.discountAmount).equals("1")).toBe(true); // 10% of 5.00 = 0.50, whole rupiah half-up (B5)
   });
 });
 

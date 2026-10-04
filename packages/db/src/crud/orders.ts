@@ -451,6 +451,16 @@ type CartLine = {
 type BulkRule = { minQuantity: number; discountPercent: Decimal.Value };
 
 /**
+ * The IDR credit a buyer asked to spend on a new order, as whole rupiah
+ * (floored, so never more than asked; negative/absent is zero). The order's
+ * net is whole rupiah (discounts are rounded where computed — B5, money
+ * audit), so a whole-rupiah credit keeps the gateway remainder whole too.
+ */
+function idrWalletRequest(requested: Decimal.Value | undefined): Decimal {
+  return Decimal.max(ZERO, new Decimal(requested ?? 0)).toDecimalPlaces(0, Decimal.ROUND_FLOOR);
+}
+
+/**
  * What one unit costs this buyer, flash sale included (@app/core/flash owns the
  * rule; this is just the orders-domain entry point).
  *
@@ -789,8 +799,11 @@ export async function createOrderFromCart(
 
   const afterDiscount = Decimal.max(ZERO, subtotal.minus(bulkDiscount).minus(discount));
 
-  // 4. Wallet debit
-  const walletAmount = q4(Decimal.max(ZERO, new Decimal(args.walletAmount ?? 0)));
+  // 4. Wallet debit. Whole rupiah only (floored — never more than asked): the
+  // discounts above are whole rupiah (B5, money audit), so `afterDiscount` is
+  // too, and spending a fractional balance would leave a fractional remainder
+  // for the gateway to round. Any sub-rupiah dust simply stays in the balance.
+  const walletAmount = idrWalletRequest(args.walletAmount);
   const walletUsed = Decimal.min(walletAmount, afterDiscount);
   if (walletUsed.greaterThan(args.user.walletBalance)) {
     throw new ValidationError("error.insufficient_wallet");
@@ -1187,7 +1200,7 @@ export async function createOrderDirect(
   const afterDiscount = Decimal.max(ZERO, subtotal.minus(bulkDiscount).minus(voucherDiscount));
 
   // IDR wallet credit — mirrors createOrderFromCart's deduction logic.
-  const walletAmountReq = q4(Decimal.max(ZERO, new Decimal(args.walletAmount ?? 0)));
+  const walletAmountReq = idrWalletRequest(args.walletAmount);
   const walletUsed = q4(Decimal.min(walletAmountReq, afterDiscount));
   if (walletUsed.greaterThan(ZERO)) {
     const balance = new Decimal(args.user.walletBalance ?? 0);

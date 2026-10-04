@@ -48,9 +48,11 @@ describe("activeBulkPercent", () => {
 });
 
 describe("bulkDiscountFor", () => {
-  it("returns the amount to subtract, quantized to 4dp", () => {
+  it("returns the amount to subtract, in whole rupiah (half-up) so preview rows and the charge agree", () => {
     expect(bulkDiscountFor("80000", rule({ discountPercent: "25" }), 5).toString()).toBe("20000");
-    expect(bulkDiscountFor("10001", rule({ discountPercent: "33" }), 5).toString()).toBe("3300.33");
+    // 3300.33 -> 3300, and an exact half rounds up (B5, money audit).
+    expect(bulkDiscountFor("10001", rule({ discountPercent: "33" }), 5).toString()).toBe("3300");
+    expect(bulkDiscountFor("46500", rule({ discountPercent: "12.5" }), 5).toString()).toBe("5813");
   });
 
   it("is zero whenever the rule doesn't apply", () => {

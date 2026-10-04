@@ -312,6 +312,7 @@
   "error.too_many_pending": "You already have {limit} pending orders. Please complete or cancel them first.",
   "error.wallet_topup_below_min": "That amount is below the minimum for a wallet top-up.",
   "error.wallet_topup_above_max": "That amount is above the maximum for a wallet top-up.",
+  "error.wallet_topup_amount_invalid": "That isn't a valid top-up amount. Enter a number above zero, e.g. 50000 — a USDT amount may have at most 4 decimals.",
   "error.wallet_topup_invalid_method": "That payment method isn't available for a wallet top-up — pick another one.",
   "error.wallet_topup_below_rail_minimum": "That amount is below the minimum this payment method accepts. Please top up a larger amount, or choose a different payment method.",
   "error.wallet_topup_nothing_to_collect": "That amount is too small for this payment method to charge. Please top up a larger amount.",

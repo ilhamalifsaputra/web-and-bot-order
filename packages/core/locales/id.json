@@ -312,6 +312,7 @@
   "error.too_many_pending": "Kamu sudah memiliki {limit} pesanan tertunda. Selesaikan atau batalkan terlebih dahulu.",
   "error.wallet_topup_below_min": "Jumlah itu di bawah minimum untuk top up saldo.",
   "error.wallet_topup_above_max": "Jumlah itu melebihi maksimum untuk top up saldo.",
+  "error.wallet_topup_amount_invalid": "Jumlah top up tidak valid. Masukkan angka di atas nol, mis. 50000 — jumlah USDT paling banyak 4 angka desimal.",
   "error.wallet_topup_invalid_method": "Metode bayar itu tidak tersedia untuk top up saldo — pilih yang lain ya.",
   "error.wallet_topup_below_rail_minimum": "Jumlah itu di bawah minimum yang diterima metode pembayaran ini. Silakan top up dengan jumlah lebih besar, atau pilih metode pembayaran lain.",
   "error.wallet_topup_nothing_to_collect": "Jumlah itu terlalu kecil untuk ditagih lewat metode pembayaran ini. Silakan top up dengan jumlah lebih besar.",

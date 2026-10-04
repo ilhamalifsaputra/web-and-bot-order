@@ -100,6 +100,23 @@ export function parseMoneyInput(raw: string, currency: "IDR" | "USDT"): Decimal 
 }
 
 /**
+ * Read an amount a CLIENT already normalized — the canonical plain decimal
+ * {@link normalizeMoneyInput} emits (`79000`, `5.5`, `12.123`): digits with no
+ * leading zeros, optionally `.` and digits not ending in 0, at most 20
+ * characters. This is the wire format of a form that reads the typed text by
+ * shape in the browser and sends the result (the storefront top-up form), so
+ * it is read exactly, never by shape again: re-reading the canonical USDT
+ * `12.123` by shape would call it ambiguous. Anything else — typed spellings
+ * (`10.000`, `1,5`), exponents (`1e3`), signs, spaces, non-strings — is null.
+ * Range checks stay with the caller.
+ */
+export function readCanonicalMoney(value: unknown): Decimal | null {
+  if (typeof value !== "string" || value.length > 20) return null;
+  if (!/^(0|[1-9]\d*)(\.\d*[1-9])?$/.test(value)) return null;
+  return new Decimal(value);
+}
+
+/**
  * A typed percent: digits with an optional `.`/`,` decimal part of 1-2 digits
  * (`10`, `10.5`, `10,5`). Anything else — `10.000`, `1e1`, signs, NaN — is null,
  * so the caller re-prompts instead of guessing. Range checks stay with the caller.

@@ -36,6 +36,7 @@ import {
   type WalletTopupMethod,
 } from "@app/db";
 import { Decimal } from "@app/core/money";
+import { readCanonicalMoney } from "@app/core/moneyFormat";
 import { optionalCustomer, type Customer } from "../plugins/auth";
 import { constantTimeEqual } from "../auth";
 import { errorBody } from "@app/core/errorBody";
@@ -273,11 +274,20 @@ const apiWalletTopupRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(400).send({ error: "web.pay_method_unavailable" });
     }
 
+    // The form reads the typed text by shape in the browser
+    // (normalizeMoneyInput) and sends the canonical plain decimal it produced,
+    // so the wire value is read exactly as that format and nothing else:
+    // unreadable text, `1e3`, signs or a typed spelling like `10.000` are a
+    // 400, never a DecimalError 500 or a silent misread. Precision and the
+    // hard ceiling are judged by createWalletTopupOrder (walletTopupAmountError).
+    const amount = readCanonicalMoney((req.body as { amount?: unknown } | undefined)?.amount);
+    if (amount === null) return reply.code(400).send({ error: "error.wallet_topup_amount_invalid" });
+
     try {
       const order = await prisma.$transaction((tx) =>
         createWalletTopupOrder(tx, {
           userId: customer.userId,
-          amount: req.body?.amount ?? "0",
+          amount,
           currency: choice.currency,
           method: choice.method,
           ...(choice.currency === "USDT" ? { rate: choice.rate } : {}),

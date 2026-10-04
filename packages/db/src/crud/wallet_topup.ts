@@ -61,6 +61,36 @@ export const WALLET_TOPUP_MAX_AMOUNT_IDR_KEY = "wallet_topup_max_amount_idr";
 export const WALLET_TOPUP_MIN_AMOUNT_USDT_KEY = "wallet_topup_min_amount_usdt";
 export const WALLET_TOPUP_MAX_AMOUNT_USDT_KEY = "wallet_topup_max_amount_usdt";
 
+/**
+ * Hard ceilings on a single wallet top-up, applied on top of (never instead
+ * of) the configurable maximum above, so a shop that left the maximum blank
+ * still refuses a 20-digit amount. Rp100.000.000 and 10,000 USDT are far above
+ * any real top-up of this shop yet small enough that a typo or a hostile
+ * request cannot create an absurd pending order. A configured maximum can
+ * only lower them.
+ */
+export const WALLET_TOPUP_HARD_MAX_IDR = new Decimal("100000000");
+export const WALLET_TOPUP_HARD_MAX_USDT = new Decimal("10000");
+/** The precision a USDT wallet credit is kept at (adjustWallet quantizes to it). */
+const USDT_WALLET_DECIMALS = 4;
+
+/**
+ * Why `amount` can never be a wallet top-up in `currency`, as an i18n key, or
+ * null when it can (the configurable min/max are judged separately). Not a
+ * positive finite number, or a USDT amount finer than the 4 decimals a wallet
+ * credit keeps (stored raw on the order but credited rounded, the order and the
+ * credit would disagree): `error.wallet_topup_amount_invalid`. Above the hard
+ * ceiling: `error.wallet_topup_above_max`. Shared by createWalletTopupOrder and
+ * the bot's amount prompt so the two cannot disagree.
+ */
+export function walletTopupAmountError(amount: Decimal, currency: "IDR" | "USDT"): string | null {
+  if (!amount.isFinite() || amount.lessThanOrEqualTo(0)) return "error.wallet_topup_amount_invalid";
+  if (currency === "USDT" && amount.decimalPlaces() > USDT_WALLET_DECIMALS) return "error.wallet_topup_amount_invalid";
+  const hardMax = currency === "IDR" ? WALLET_TOPUP_HARD_MAX_IDR : WALLET_TOPUP_HARD_MAX_USDT;
+  if (amount.greaterThan(hardMax)) return "error.wallet_topup_above_max";
+  return null;
+}
+
 export interface WalletTopupLimits {
   minIdr: Decimal | null;
   maxIdr: Decimal | null;
@@ -417,10 +447,15 @@ export async function createWalletTopupOrder(
     rate?: Decimal.Value;
   },
 ): Promise<NonNullable<Awaited<ReturnType<typeof getOrder>>>> {
-  const amount = new Decimal(args.amount);
-  if (!amount.isFinite() || amount.lessThanOrEqualTo(0)) {
-    throw new ValidationError("error.generic");
+  let amount: Decimal;
+  try {
+    amount = new Decimal(args.amount);
+  } catch {
+    // Unreadable text ("abc") — a buyer-facing refusal, not a DecimalError 500.
+    throw new ValidationError("error.wallet_topup_amount_invalid");
   }
+  const amountError = walletTopupAmountError(amount, args.currency);
+  if (amountError) throw new ValidationError(amountError);
 
   const limits = await resolveWalletTopupLimits(db);
   const [min, max] = args.currency === "IDR" ? [limits.minIdr, limits.maxIdr] : [limits.minUsdt, limits.maxUsdt];

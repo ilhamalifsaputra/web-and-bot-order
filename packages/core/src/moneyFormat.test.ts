@@ -9,7 +9,9 @@ import {
   formatCompactIdrFor,
   parseMoneyInput,
   parsePercentInput,
+  readCanonicalMoney,
 } from "./moneyFormat";
+import { normalizeMoneyInput } from "./moneyInput";
 import { formatDisplayMoneyResult } from "./formatters";
 import { DisplayCurrency } from "./enums";
 import { canonicalProduct, type CanonicalProductInput } from "./canonicalProduct";
@@ -299,5 +301,29 @@ describe("parsePercentInput", () => {
 
   it.each(["10.000", "1e1", "-5", "+5", "abc", "", "10.", ".5", "NaN", "Infinity", "10.123"])("refuses %j", (raw) => {
     expect(parsePercentInput(raw)).toBeNull();
+  });
+});
+
+describe("readCanonicalMoney", () => {
+  it.each(["0", "79000", "5.5", "12.123", "10000.5", "1.00000001"])("reads the canonical %j exactly", (v) => {
+    expect(readCanonicalMoney(v)?.toString()).toBe(new Decimal(v).toString());
+  });
+
+  it.each(["abc", "", "1e3", "-5", "+5", " 5", "5 ", "10.000", "1,5", "0079", "5.", ".5", "1.2.3", "Infinity", "NaN", "123456789012345678901"])(
+    "refuses %j",
+    (v) => {
+      expect(readCanonicalMoney(v)).toBeNull();
+    },
+  );
+
+  it.each([50000, null, undefined, {}, ["5"]])("refuses the non-string %j", (v) => {
+    expect(readCanonicalMoney(v)).toBeNull();
+  });
+
+  it("accepts everything normalizeMoneyInput emits", () => {
+    for (const [typed, currency] of [["10.000", "IDR"], ["1.000.000,50", "IDR"], ["5,5", "USDT"], ["12,1230", "USDT"], ["1,000,000.25", "USDT"], ["0079000", "IDR"]] as const) {
+      const canonical = normalizeMoneyInput(typed, currency)!;
+      expect(readCanonicalMoney(canonical)?.toString()).toBe(new Decimal(canonical).toString());
+    }
   });
 });

@@ -28,6 +28,7 @@ import {
   resolveWalletTopupLimits,
   resolveWalletTopupEffectiveMin,
   walletTopupClearsRailMinimum,
+  walletTopupAmountError,
   hasPendingWalletTopupOrder,
   resolveBinanceInternalConfig,
   resolveBybitConfig,
@@ -205,9 +206,12 @@ export async function handleTopupAmountInput(ctx: MyContext, currency: "IDR" | "
   // accept is refused here — on the screen the buyer can retype into — instead of
   // being carried into a gateway picker that would have nothing in it.
   const max = currency === "IDR" ? limits.maxIdr : limits.maxUsdt;
+  // walletTopupAmountError is the same judgement createWalletTopupOrder makes
+  // (positive, USDT at most 4 decimals, under the hard ceiling), so the prompt
+  // re-asks instead of carrying an amount the order step would refuse.
   const valid =
     amount !== null &&
-    amount.greaterThan(0) &&
+    walletTopupAmountError(amount, currency) === null &&
     (!min || amount.greaterThanOrEqualTo(min)) &&
     (!max || amount.lessThanOrEqualTo(max));
 

@@ -4,7 +4,7 @@
  * is its only remaining production caller.
  */
 import { Decimal } from "@app/core/money";
-import { usdtFromIdr } from "@app/core/formatters";
+import { reconciledOrderMoneyRows } from "@app/core/orderMoneyRows";
 
 /** The Order fields `orderMoneyView` needs — a narrow shape so it stays a
  * plain unit-testable function rather than depending on the full Prisma
@@ -42,32 +42,28 @@ function hideIfZero(value: Decimal): Decimal | null {
  * Shape an order's money fields for display, each expressed in the order's
  * OWN settlement currency (`order.currency`) instead of assuming IDR.
  *
- * `subtotalAmount`/`bulkDiscountAmount`/`discountAmount` are always computed
- * at checkout time from the central-IDR catalog (see `createOrderFromCart` /
- * `createOrderDirect` in packages/db/src/crud/orders.ts) and need converting
- * via the order's locked `fxRate` snapshot when the order settled in a
- * different currency. `walletUsed`/`uniqueCents`/`totalAmount` are already
- * stamped in the order's settlement currency by `finalizeOrderPayment` /
- * `applyUsdtWalletToOrder` — converting them again would double-convert.
+ * The rows come from `reconciledOrderMoneyRows` (@app/core/orderMoneyRows):
+ * for a converted order the discounts are each converted once with the
+ * charge's own rule, the already-settled total/wallet/marker are taken as
+ * stored, and the items total absorbs the rounding remainder — so the rows
+ * the admin reads always add up to the total (B6, money audit; converting
+ * every IDR row independently with a ceiling did not: 2.91 - 0.37 beside a
+ * 2.55 total).
  */
 export function orderMoneyView(order: OrderMoneyInput): OrderMoneyView {
   const { currency, fxRate } = order;
-  const toOrderCurrency = (value: Decimal.Value): Decimal => {
-    const v = new Decimal(value);
-    return currency === "IDR" || !fxRate ? v : usdtFromIdr(v, fxRate);
-  };
-
-  const totalToPay = new Decimal(order.totalAmount);
+  const rows = reconciledOrderMoneyRows(order);
+  const totalToPay = rows.total;
   const equivalentIdr =
     currency !== "IDR" && fxRate ? totalToPay.times(fxRate) : null;
 
   return {
     currency,
-    itemsTotal: toOrderCurrency(order.subtotalAmount),
-    bulkDiscount: hideIfZero(toOrderCurrency(order.bulkDiscountAmount)),
-    discount: hideIfZero(toOrderCurrency(order.discountAmount)),
-    walletCredit: hideIfZero(new Decimal(order.walletUsed)),
-    amountMarker: hideIfZero(new Decimal(order.uniqueCents)),
+    itemsTotal: rows.itemsTotal,
+    bulkDiscount: hideIfZero(rows.bulkDiscount),
+    discount: hideIfZero(rows.discount),
+    walletCredit: hideIfZero(rows.walletCredit),
+    amountMarker: hideIfZero(rows.uniqueCents),
     totalToPay,
     equivalentIdr,
   };

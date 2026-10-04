@@ -28,6 +28,7 @@
     "./runtime": "./src/runtime.ts",
     "./fx": "./src/fx.ts",
     "./flash": "./src/flash.ts",
+    "./orderMoneyRows": "./src/orderMoneyRows.ts",
     "./media": "./src/media.ts",
     "./bulk": "./src/bulk.ts",
     "./http": "./src/http.ts",

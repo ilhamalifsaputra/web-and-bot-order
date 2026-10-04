@@ -2317,9 +2317,13 @@ export function customerLabel(
  * The owner-facing OWNER_EMAIL_ORDER_PAID call site below still converts
  * subtotal and discount independently, and its figures can still disagree by
  * ~0.01 USDT — an accepted tradeoff there, where the reader is the shop admin
- * and the reconciled view they act on is the admin ledger. The wider L-1
- * class (line totals summing to the subtotal, orderMoneyView.ts, etc.) is
- * deliberately still open; do not try to solve it here.
+ * and the reconciled view they act on is the admin order page. That page
+ * (apps/web-admin/src/routes/orderMoneyView.ts) no longer converts per
+ * component: it reads `reconciledOrderMoneyRows` (@app/core/orderMoneyRows,
+ * B6 money audit), which keeps the settled total exact and lets the items row
+ * absorb the remainder. Any NEW display whose rows a reader adds up should use
+ * that helper, not this converter. (The owner email cannot add up by rounding
+ * alone: its template has no bulk-discount or wallet row.)
  */
 function orderCurrencyConverter(order: { currency: string; fxRate: Decimal | null }) {
   return (value: Decimal.Value): Decimal =>

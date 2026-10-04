@@ -300,6 +300,14 @@ Langkah lengkap ada di [panduan backup/restore](../deploy/backup/README.md),
 [BACKUP_AND_RESTORE.md](BACKUP_AND_RESTORE.md), dan
 [ROLLBACK.md](ROLLBACK.md).
 
+**Jangan rollback ke image lama tanpa restore dump (rilis backend-audit-fixes).**
+Rilis ini menambah lima kolom `updated_at` dan `idempotency_records.pending_since`.
+Kalau image lama dijalankan di atas database yang sudah di-push skema baru,
+`db push` milik image lama ingin men-drop keenam kolom itu (kehilangan data), jadi
+ia menolak tanpa `--accept-data-loss` — entrypoint gagal dan container tidak mau
+start. Rollback yang didokumentasikan untuk rilis ini adalah restore dari dump
+pra-deploy seperti di atas, bukan sekadar mengganti image.
+
 ## Contoh per environment
 
 ### Development (lokal)

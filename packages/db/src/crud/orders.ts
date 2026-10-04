@@ -44,7 +44,7 @@ import type { Prisma } from "@prisma/client";
 import type { Db } from "./_types";
 import { assertServiceActive } from "./serviceAvailability";
 import type { ServiceChannel } from "@app/core/services";
-import { isUniqueViolation } from "./_types";
+import { isUniqueViolation, isUniqueViolationOn } from "./_types";
 import { getBulkPricingForDenomination } from "./catalog";
 import {
   getVoucherByCode,
@@ -844,10 +844,12 @@ export async function createOrderFromCart(
     });
   } catch (e) {
     // See DuplicateCheckoutIntentError's doc comment: only ever raised for a
-    // genuine checkoutIntentId collision (nothing else this INSERT can violate
-    // is caller-suppliable at this point — orderCode was just freshly minted
-    // as unique above), and only when the caller opted into the guard.
-    if (args.checkoutIntentId && isUniqueViolation(e)) {
+    // genuine checkoutIntentId collision, and only when the caller opted into
+    // the guard. The INSERT can also violate order_code: uniqueOrderCode only
+    // checked the code was free, and a concurrent order can take it before
+    // this INSERT lands. That is not a duplicate checkout, so it is told apart
+    // by the violated column and rethrown as-is (backend audit E2 item 6).
+    if (args.checkoutIntentId && isUniqueViolationOn(e, "checkout_intent_id")) {
       throw new DuplicateCheckoutIntentError(args.checkoutIntentId);
     }
     throw e;
@@ -1127,10 +1129,12 @@ export async function createOrderDirect(
     });
   } catch (e) {
     // See DuplicateCheckoutIntentError's doc comment: only ever raised for a
-    // genuine checkoutIntentId collision (nothing else this INSERT can violate
-    // is caller-suppliable at this point — orderCode was just freshly minted
-    // as unique above), and only when the caller opted into the guard.
-    if (args.checkoutIntentId && isUniqueViolation(e)) {
+    // genuine checkoutIntentId collision, and only when the caller opted into
+    // the guard. The INSERT can also violate order_code: uniqueOrderCode only
+    // checked the code was free, and a concurrent order can take it before
+    // this INSERT lands. That is not a duplicate checkout, so it is told apart
+    // by the violated column and rethrown as-is (backend audit E2 item 6).
+    if (args.checkoutIntentId && isUniqueViolationOn(e, "checkout_intent_id")) {
       throw new DuplicateCheckoutIntentError(args.checkoutIntentId);
     }
     throw e;

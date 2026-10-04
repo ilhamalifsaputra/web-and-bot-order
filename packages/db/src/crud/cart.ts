@@ -49,23 +49,28 @@ export function getCartWithDenominationProduct(db: Db, userId: number) {
   });
 }
 
-/** Upsert: increment quantity (capped 99) if the product is already in cart. */
+/**
+ * Upsert: increment quantity (capped 99) if the product is already in cart.
+ *
+ * One atomic INSERT ... ON CONFLICT DO UPDATE (backend audit E2 item 6). The
+ * old find-then-create/update let two concurrent first adds both insert (the
+ * loser threw a raw unique violation) and two concurrent increments both read
+ * the same quantity (one add was lost). A brand-new line keeps the requested
+ * quantity unclamped, exactly as before; createOrderFromCart re-validates it.
+ */
 export async function addToCart(
   db: Db,
   userId: number,
   productId: number,
   quantity = 1,
 ) {
-  const existing = await db.cartItem.findUnique({
-    where: { userId_productId: { userId, productId } },
-  });
-  if (existing) {
-    return db.cartItem.update({
-      where: { id: existing.id },
-      data: { quantity: Math.min(existing.quantity + quantity, 99) },
-    });
-  }
-  return db.cartItem.create({ data: { userId, productId, quantity } });
+  const rows = await db.$queryRaw<Array<{ id: number }>>`
+    INSERT INTO cart_items (user_id, product_id, quantity)
+    VALUES (${userId}, ${productId}, ${quantity})
+    ON CONFLICT (user_id, product_id)
+    DO UPDATE SET quantity = LEAST(cart_items.quantity + EXCLUDED.quantity, 99)
+    RETURNING id`;
+  return db.cartItem.findUniqueOrThrow({ where: { id: rows[0]!.id } });
 }
 
 export async function updateCartItemQty(

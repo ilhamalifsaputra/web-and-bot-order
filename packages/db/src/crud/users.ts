@@ -12,7 +12,7 @@ import { logger } from "@app/core/logger";
 import { startOfDayUtc } from "@app/core/datetime";
 import type { Prisma } from "@prisma/client";
 import type { Db } from "./_types";
-import { isUniqueViolation } from "./_types";
+import { isUniqueViolationOn } from "./_types";
 import { invalidateWarmUser } from "./warmUserCache";
 import { walletSpendByCurrency, walletSpendByUser } from "./revenue";
 
@@ -131,17 +131,19 @@ export async function upsertUser(
   const existing = await db.user.findUnique({ where: { telegramId } });
   const now = new Date();
 
-  if (existing) {
+  const refresh = (found: { id: number; role: string }) => {
     const data: Record<string, unknown> = {
       username: args.username,
       fullName: args.fullName,
       lastSeenAt: now,
     };
-    if (isAdmin(telegramId) && existing.role !== UserRole.ADMIN) {
+    if (isAdmin(telegramId) && found.role !== UserRole.ADMIN) {
       data.role = UserRole.ADMIN;
     }
-    return db.user.update({ where: { id: existing.id }, data });
-  }
+    return db.user.update({ where: { id: found.id }, data });
+  };
+
+  if (existing) return refresh(existing);
 
   // Resolve referrer (by code), excluding self-referral.
   let referredById: number | null = null;
@@ -157,7 +159,13 @@ export async function upsertUser(
   const role = isAdmin(telegramId) ? UserRole.ADMIN : UserRole.CUSTOMER;
   const language = config.DEFAULT_LANGUAGE.toUpperCase() as Language;
 
-  // Retry on the (extremely unlikely) referral code collision.
+  // Retry on the (extremely unlikely) referral code collision. A collision on
+  // telegram_id instead means a concurrent first contact from the same account
+  // (two updates at once) created the user first — that is not a referral-code
+  // problem, so read that user back rather than retrying (backend audit E2
+  // item 6). The re-read needs a usable connection: inside a caller's
+  // transaction the failed INSERT has already aborted it, so the caller's
+  // transaction fails either way and only a bare-client caller recovers.
   for (let i = 0; i < 5; i++) {
     try {
       const user = await db.user.create({
@@ -176,7 +184,12 @@ export async function upsertUser(
       logger.info(`Registered new user with Telegram id ${telegramId}`);
       return user;
     } catch (e) {
-      if (isUniqueViolation(e)) continue;
+      if (isUniqueViolationOn(e, "telegram_id")) {
+        const winner = await db.user.findUnique({ where: { telegramId } });
+        if (winner) return refresh(winner);
+        throw e;
+      }
+      if (isUniqueViolationOn(e, "referral_code")) continue;
       throw e;
     }
   }

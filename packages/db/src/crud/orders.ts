@@ -2493,6 +2493,28 @@ export async function enqueueBuyerOrderReadyEmailIfGuest(
 }
 
 /**
+ * The "Total" a public channel post shows for a delivered order: what the
+ * order was worth in its own currency (B8, money audit). `totalAmount` alone
+ * is what was left to COLLECT — 0 for a wallet-paid order, net of any partial
+ * credit — and on a USDT order it also carries the unique-cents matching noise
+ * (0.4766 for a 0.97 USDT order with 0.5 paid from credit). So: total plus the
+ * wallet credit (stored in the same settlement currency), minus the unique
+ * cents, printed in whole rupiah for IDR and 2 decimals for USDT.
+ */
+function publicPostTotal(order: {
+  currency: string;
+  totalAmount: Decimal.Value;
+  walletUsed: Decimal.Value;
+  uniqueCents: Decimal.Value;
+}): string {
+  const gross = Decimal.max(
+    ZERO,
+    new Decimal(order.totalAmount).plus(order.walletUsed).minus(order.uniqueCents),
+  );
+  return order.currency === OrderCurrency.IDR ? quantizeMoney(gross, 0).toFixed(0) : quantizeMoney(gross, 2).toFixed(2);
+}
+
+/**
  * Post-delivery side effects shared by the AUTO path (approveOrder) and the
  * MANUAL path (fulfillManualOrder): pay the referee's referral commission and
  * enqueue the public-channel testimonial. Runs AFTER the atomic DELIVERED claim
@@ -2538,7 +2560,7 @@ export async function finalizeDeliverySideEffects(
       order_code: order.orderCode,
       masked_buyer_id: maskedBuyerId,
       items: itemsSummary,
-      total: String(order.totalAmount),
+      total: publicPostTotal(order),
       // The order's own transaction currency (IDR via TokoPay / USDT via
       // Binance), not the legacy global CURRENCY env.
       currency: order.currency,

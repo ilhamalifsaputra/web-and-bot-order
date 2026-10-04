@@ -39,6 +39,7 @@ import {
 import { OrderStatus, OrderKind, PaymentMethod, NotificationEvent, StockStatus, DeliveryType, StockActorType } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { encryptCredentials, settingValueAad } from "@app/core/credentialCrypto";
+import { checkNowpaymentsAmount, nowpaymentsInvoicePrice } from "@app/core/payments/nowpayments";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -235,6 +236,61 @@ describe("deliverPaidNowpaymentsOrder", () => {
     expect(payload.expected).toBe(expectedTotal.toString());
     expect(payload.excess).toBe("1.25");
     expect(payload.currency).toBe(result.order.currency);
+  });
+
+  // The invoice asks for the 3dp unique-cents total rounded to the cent
+  // (nowpaymentsInvoicePrice), and callers hand this function the value
+  // checkNowpaymentsAmount derives from the IPN/status, in the ORDER's
+  // currency. Paying exactly the invoice must therefore come out as exactly the
+  // total, never as an overpayment by the cents rounding.
+  const exactInvoiceIpn = (total: Decimal.Value, extraPaid: Decimal.Value = 0) => {
+    const price = nowpaymentsInvoicePrice(total);
+    return {
+      priceAmount: price,
+      priceCurrency: "usd",
+      payAmount: price,
+      actuallyPaid: price.plus(extraPaid),
+    };
+  };
+
+  it("paying exactly the invoiced amount is NOT flagged overpaid", async () => {
+    const order = await makePendingNowpaymentsOrder();
+    const check = checkNowpaymentsAmount(exactInvoiceIpn(order.totalAmount), order.totalAmount);
+    if (!check.ok) throw new Error(check.reason);
+    expect(check.amount.equals(order.totalAmount)).toBe(true);
+
+    const result = await deliverPaidNowpaymentsOrder(prisma, { orderId: order.id, trxId: "trx-invoice-exact", amount: check.amount });
+    expect(result.status).toBe("delivered");
+
+    const ledgerRow = await prisma.processedNowpaymentsTx.findUnique({ where: { trxId: "trx-invoice-exact" } });
+    expect(ledgerRow?.outcome).toBe("matched");
+    expect(
+      await prisma.notificationOutbox.count({ where: { orderId: order.id, event: NotificationEvent.ADMIN_OVERPAID } }),
+    ).toBe(0);
+  });
+
+  it("paying one cent above the invoice is flagged once, measured against the order total", async () => {
+    const order = await makePendingNowpaymentsOrder();
+    const check = checkNowpaymentsAmount(exactInvoiceIpn(order.totalAmount, "0.01"), order.totalAmount);
+    if (!check.ok) throw new Error(check.reason);
+    const paid = check.amount;
+    const total = new Decimal(order.totalAmount);
+
+    const result = await deliverPaidNowpaymentsOrder(prisma, { orderId: order.id, trxId: "trx-invoice-cent", amount: paid });
+    expect(result.status).toBe("delivered");
+    const again = await deliverPaidNowpaymentsOrder(prisma, { orderId: order.id, trxId: "trx-invoice-cent", amount: paid });
+    expect(again.status).toBe("already_processed");
+
+    const ledgerRow = await prisma.processedNowpaymentsTx.findUnique({ where: { trxId: "trx-invoice-cent" } });
+    expect(ledgerRow?.outcome).toBe("overpaid");
+    const adminRows = await prisma.notificationOutbox.findMany({
+      where: { orderId: order.id, event: NotificationEvent.ADMIN_OVERPAID },
+    });
+    expect(adminRows.length).toBe(1);
+    const payload = JSON.parse(adminRows[0]!.payloadJson) as Record<string, unknown>;
+    expect(new Decimal(payload.expected as string).equals(total)).toBe(true);
+    expect(new Decimal(payload.excess as string).equals("0.01")).toBe(true);
+    expect(payload.wallet_topup).toBeUndefined(); // product wording stays "delivered"
   });
 
   // H-3 (backend audit 2026-07-31): the ledger claim used to survive a failed

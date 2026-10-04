@@ -210,6 +210,9 @@ export async function deliverPaidNowpaymentsOrder(
         const { order: settled, credited } = await settleWalletTopup(tx, args.orderId, { amount: args.amount });
         // Overpayment: same flag + admin alert the product branch below raises,
         // without changing what was credited (see flagWalletTopupOverpayment).
+        // Measured against the order total, as the product branch is: callers
+        // pass `checkNowpaymentsAmount(...).amount`, already in the order's
+        // currency, where paying exactly the invoice is exactly the total.
         await flagWalletTopupOverpayment(tx, {
           order: settled,
           credited,

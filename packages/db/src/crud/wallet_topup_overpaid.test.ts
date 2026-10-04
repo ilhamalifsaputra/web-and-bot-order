@@ -45,11 +45,13 @@ import {
   deliverPaidPaydisiniOrder,
   findOverpaidExcess,
   creditOverpaymentToBalance,
+  flagWalletTopupOverpayment,
   OVERPAID_CREDIT_REASON,
 } from "@app/db";
 import { NotificationEvent, OrderKind, OrderStatus, PaymentMethod } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { qrisChargeAmount } from "@app/core/payments/tokopay";
+import { checkNowpaymentsAmount, nowpaymentsInvoicePrice } from "@app/core/payments/nowpayments";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -115,6 +117,8 @@ const rails: Rail[] = [
     method: PaymentMethod.NOWPAYMENTS,
     currency: "USDT",
     topupAmount: "50",
+    // The amount handed to the rail is checkNowpaymentsAmount's value in the
+    // order's currency, so paying exactly as asked arrives as the bare total.
     billed: (o) => new Decimal(o.totalAmount),
     deliver: (orderId, trxId, amount) => deliverPaidNowpaymentsOrder(prisma, { orderId, trxId, amount }),
     ledgerOutcome: async (id) => (await prisma.processedNowpaymentsTx.findUnique({ where: { trxId: id } }))?.outcome,
@@ -198,6 +202,7 @@ describe.each(rails)("$name wallet top-up overpayment", (rail) => {
     rail.currency === "USDT"
       ? [
           { label: "the matcher's tolerance (0.001)", excess: (_o: Order) => new Decimal("0.001") },
+          { label: "one cent", excess: (_o: Order) => new Decimal("0.01") },
           { label: "the matcher's overpayment cap max(2, 20%)", excess: (o: Order) => overpaymentCap(new Decimal(o.totalAmount)) },
         ]
       : [
@@ -230,6 +235,8 @@ describe.each(rails)("$name wallet top-up overpayment", (rail) => {
     expect(new Decimal(payload.expected as string).equals(billed)).toBe(true);
     expect(new Decimal(payload.excess as string).equals(excess)).toBe(true);
     expect(payload.currency).toBe(rail.currency);
+    // Tells the admin DM to say "credited" rather than "delivered".
+    expect(payload.wallet_topup).toBe(true);
 
     // Re-delivering the same transaction (a re-sent webhook, the next poller
     // tick) must neither alert again nor credit again.
@@ -243,6 +250,51 @@ describe.each(rails)("$name wallet top-up overpayment", (rail) => {
     expect(found).not.toBeNull();
     expect(found!.excess.equals(excess)).toBe(true);
     expect(found!.creditedWalletTransactionId).toBeNull();
+  });
+});
+
+describe("NOWPayments wallet top-up paid exactly as invoiced", () => {
+  // A 3dp unique-cents total (e.g. 50.046) is invoiced rounded to the cent
+  // (nowpaymentsInvoicePrice). Paying that invoice exactly is paying exactly
+  // as asked: checkNowpaymentsAmount values it at the bare total, so the
+  // cents rounding never reads as an overpayment.
+  it("paying the invoice exactly is NOT flagged overpaid", async () => {
+    const order = await makeTopup(rails.find((r) => r.method === PaymentMethod.NOWPAYMENTS)!);
+    const invoicePrice = nowpaymentsInvoicePrice(order.totalAmount);
+    expect(invoicePrice.equals(order.totalAmount)).toBe(false); // the case under test: a sub-cent total
+    const check = checkNowpaymentsAmount(
+      { priceAmount: invoicePrice, priceCurrency: "usd", payAmount: invoicePrice, actuallyPaid: invoicePrice },
+      order.totalAmount,
+    );
+    if (!check.ok) throw new Error(check.reason);
+
+    const result = await deliverPaidNowpaymentsOrder(prisma, { orderId: order.id, trxId: "np-invoice-exact", amount: check.amount });
+
+    expect(result.status).toBe("delivered");
+    expect((await prisma.processedNowpaymentsTx.findUnique({ where: { trxId: "np-invoice-exact" } }))?.outcome).toBe("matched");
+    expect(await overpaidAlerts(order.id)).toHaveLength(0);
+  });
+});
+
+describe("flagWalletTopupOverpayment", () => {
+  it("does nothing when the settlement credited nothing (another path already settled the top-up)", async () => {
+    const order = await makeTopup(rails[0]!);
+    const markLedgerOverpaid = vi.fn(async () => undefined);
+
+    const flagged = await prisma.$transaction((tx) =>
+      flagWalletTopupOverpayment(tx, {
+        order,
+        credited: new Decimal(0),
+        paid: new Decimal(order.totalAmount).plus("8"),
+        expected: order.totalAmount,
+        rail: "Binance Internal",
+        markLedgerOverpaid,
+      }),
+    );
+
+    expect(flagged).toBeNull();
+    expect(markLedgerOverpaid).not.toHaveBeenCalled();
+    expect(await overpaidAlerts(order.id)).toHaveLength(0);
   });
 });
 

@@ -163,6 +163,10 @@ export async function enqueueAdminOverpaid(
     expected: Decimal;
     excess: Decimal;
     currency: string;
+    /** A wallet top-up: the DM says the balance was credited, not that the
+     *  order was delivered. Omitted (not `false`) on product orders, so their
+     *  payload is unchanged. */
+    walletTopup?: boolean;
   },
 ): Promise<void> {
   for (const adminId of await resolveAdminIds(db)) {
@@ -177,6 +181,7 @@ export async function enqueueAdminOverpaid(
           expected: args.expected.toString(),
           excess: args.excess.toString(),
           currency: args.currency,
+          ...(args.walletTopup ? { wallet_topup: true } : {}),
         }),
       },
     });

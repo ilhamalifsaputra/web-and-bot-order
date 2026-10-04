@@ -212,6 +212,11 @@ export async function deliverPaidTokopayOrder(
         // without changing what was credited (see flagWalletTopupOverpayment).
         // TokoPay bills the QRIS surcharge on top of the total, so — exactly
         // like the product branch — the comparison is against that charge.
+        // `qrisChargeAmount` is our LOCAL estimate of the fee; if TokoPay's own
+        // fee rounding lands even Rp1 above it, the top-up is flagged overpaid
+        // by that rupiah, just as a product order already is. No tolerance is
+        // added here, to stay consistent with the product branch; the admin
+        // alert shows the excess, so a Rp1 rounding case is recognisable.
         await flagWalletTopupOverpayment(tx, {
           order: settled,
           credited,

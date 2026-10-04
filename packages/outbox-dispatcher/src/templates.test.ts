@@ -150,6 +150,18 @@ describe("notifier templates.render", () => {
     expect(out).toMatch(/kelebihan|bayar lebih/i); // Indonesian line
   });
 
+  it("ADMIN_OVERPAID says a product order was delivered, and a wallet top-up was credited", () => {
+    const base = { order_code: "ORD-1", paid: "58", expected: "50.046", excess: "7.954", currency: "USDT" };
+    const product = render("ADMIN_OVERPAID", base);
+    expect(product).toContain("The order was delivered as usual");
+    expect(product).toContain("Pesanan tetap terkirim seperti biasa");
+
+    const topup = render("ADMIN_OVERPAID", { ...base, wallet_topup: true });
+    expect(topup).not.toMatch(/delivered|terkirim/i);
+    expect(topup).toMatch(/credited the order total/i);
+    expect(topup).toMatch(/dikreditkan/i);
+  });
+
   it("HTML-escapes ADMIN_OVERPAID interpolated values", () => {
     const out = render("ADMIN_OVERPAID", {
       order_code: "<b>ORD</b>",

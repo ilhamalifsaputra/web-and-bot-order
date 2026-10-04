@@ -751,6 +751,7 @@ export async function flagWalletTopupOverpayment(
     expected,
     excess,
     currency: args.order.currency,
+    walletTopup: true,
   });
   logger.warn(
     `${args.rail} wallet top-up order ${args.order.orderCode} was overpaid — got ${paid.toString()}, expected ${expected.toString()} (excess ${excess.toString()} ${args.order.currency}). The buyer's balance was credited the order total only; the ledger row is flagged overpaid and an admin alert was enqueued so the excess can be returned from the order page.`,

@@ -42,6 +42,7 @@
 import { OrderStatus, ProductType, DeliveryType } from "@app/core/enums";
 import { Decimal, moneyEq } from "@app/core/money";
 import { quantizeMoney } from "@app/core/formatters";
+import { parseMoneyInput, parsePercentInput } from "@app/core/moneyFormat";
 import { logger } from "@app/core/logger";
 import { encryptDeliveredContent } from "@app/core/credentialCrypto";
 import { ValidationError } from "@app/core/errors";
@@ -1195,10 +1196,37 @@ export async function getDigiflazzMarkupSettings(db: Db): Promise<{ type: string
   return { type, value };
 }
 
+/**
+ * The markup amount a stored setting holds (a percent for type "percent", a
+ * rupiah amount otherwise), or null when the stored value cannot be read as a
+ * non-negative number. Blank or unset is a zero markup. The settings route
+ * stores the plain decimal (`10`, `12.345`, `1500`), read exactly; anything
+ * else (a legacy hand-typed value) is read by its shape — parsePercentInput
+ * for a percent (`1,5`), parseMoneyInput for rupiah (`1,500`). `10%`, signs,
+ * `NaN` and exponents are null: never thrown, never a negative markup.
+ */
+export function readDigiflazzMarkup(settings: { type: string | null; value: string | null }): Decimal | null {
+  const raw = (settings.value ?? "").trim();
+  if (raw === "") return new Decimal(0);
+  if (/^\d{1,30}(\.\d{1,30})?$/.test(raw)) return new Decimal(raw);
+  return settings.type === "percent" ? parsePercentInput(raw) : parseMoneyInput(raw, "IDR");
+}
+
+/** Thrown by {@link applyDigiflazzMarkup} when the stored markup is unreadable
+ * (see {@link readDigiflazzMarkup}); the message is fit to show an admin. */
+export class InvalidDigiflazzMarkupError extends Error {
+  constructor() {
+    super("The Digiflazz markup value in Settings cannot be read as a number of zero or more, so no sell price can be suggested from it. Fix it in Settings (use 0 or blank for no markup).");
+    this.name = "InvalidDigiflazzMarkupError";
+  }
+}
+
 /** Pure price computation from an already-read markup setting — no DB
- * access, safe to call per-row inside a loop. */
+ * access, safe to call per-row inside a loop. Throws
+ * InvalidDigiflazzMarkupError when the stored markup is unreadable. */
 export function applyDigiflazzMarkup(cost: Decimal, settings: { type: string | null; value: string | null }): Decimal {
-  const amount = settings.value ? new Decimal(settings.value) : new Decimal(0);
+  const amount = readDigiflazzMarkup(settings);
+  if (amount === null) throw new InvalidDigiflazzMarkupError();
   if (settings.type === "percent") return cost.plus(cost.times(amount).dividedBy(100));
   if (settings.type === "flat") return cost.plus(amount);
   return cost;
@@ -1246,7 +1274,11 @@ export async function isDigiflazzPriceOverridden(
   costPrice: Decimal | null,
 ): Promise<boolean> {
   if (costPrice == null) return true;
-  return !moneyEq(price, await computeDigiflazzMarkupPrice(db, costPrice));
+  const settings = await getDigiflazzMarkupSettings(db);
+  // An unreadable markup cannot confirm the price matches a suggestion, so
+  // the price is protected, same as having no cost to compare against.
+  if (readDigiflazzMarkup(settings) === null) return true;
+  return !moneyEq(price, applyDigiflazzMarkup(costPrice, settings));
 }
 
 export interface DigiflazzImportRow {
@@ -1400,8 +1432,11 @@ export async function importDigiflazzBrand(
     for (const row of rows) {
       const price = quantizeMoney(row.price, 4);
       const costPrice = quantizeMoney(row.costPrice, 4);
-      const suggestedPrice = quantizeMoney(applyDigiflazzMarkup(costPrice, markupSettings), 4);
-      const priceOverridden = !price.equals(suggestedPrice);
+      // An unreadable stored markup suggests nothing, so every imported price
+      // is protected as overridden (same rule as isDigiflazzPriceOverridden).
+      const priceOverridden =
+        readDigiflazzMarkup(markupSettings) === null ||
+        !price.equals(quantizeMoney(applyDigiflazzMarkup(costPrice, markupSettings), 4));
 
       // The Product itself is already region-scoped (args.brand is the
       // composite display name, e.g. "Mobile Legends (Indonesia)") once
@@ -1526,7 +1561,17 @@ export async function resyncDigiflazzCatalog(
   // Minor 2 (final whole-branch review): the breaker's comparison loop below
   // and the write loop further down both need "this item's cost, marked up"
   // — extracted once so the two computations can't silently drift apart.
-  const newSellPriceFor = (item: DigiflazzPriceListItem) => quantizeMoney(applyDigiflazzMarkup(item.price, markupSettings), 4);
+  //
+  // Money audit C13: an unreadable stored markup (a legacy "10%", "1,5,0", a
+  // negative) used to throw here and abort the whole run. Now the run goes on
+  // without repricing: each row keeps its current price, except that a price
+  // the new cost has overtaken is lifted to the cost (never sold below cost).
+  // Cost, raw name and deactivations still update; admins are told below.
+  const markupReadable = readDigiflazzMarkup(markupSettings) !== null;
+  const newSellPriceFor = (item: DigiflazzPriceListItem, currentPrice: Decimal) =>
+    markupReadable
+      ? quantizeMoney(applyDigiflazzMarkup(item.price, markupSettings), 4)
+      : Decimal.max(currentPrice, quantizeMoney(item.price, 4));
 
   // Task 10 (backend audit 2026-08-21 C-1, second half) blast-radius circuit
   // breaker. Task 9 already rejects an individually invalid/non-finite/
@@ -1547,7 +1592,7 @@ export async function resyncDigiflazzCatalog(
     const item = bySku.get(denom.supplierSku!);
     if (!item) continue;
     consideredRows++;
-    const newPrice = newSellPriceFor(item);
+    const newPrice = newSellPriceFor(item, denom.price);
     const oldPrice = denom.price;
     // oldPrice.isZero() guards the ratio check below from dividing by zero:
     // any nonzero new price on a zero old price counts as a sharp change on
@@ -1657,7 +1702,7 @@ export async function resyncDigiflazzCatalog(
       supplierRawName: item.productName,
     };
     if (!denom.priceOverridden) {
-      data.price = newSellPriceFor(item);
+      data.price = newSellPriceFor(item, denom.price);
       result.updated++;
     }
     if (denom.isActive && !item.buyerProductStatus) {
@@ -1667,7 +1712,20 @@ export async function resyncDigiflazzCatalog(
     await updateDenomination(db, denom.id, data);
   }
 
-  if (result.updated > 0 || result.deactivated > 0) {
+  if (!markupReadable) {
+    logger.error(
+      { setting: DIGIFLAZZ_MARKUP_VALUE_KEY, markupType: markupSettings.type },
+      `The hourly Digiflazz catalog resync could not read the stored markup setting "${DIGIFLAZZ_MARKUP_VALUE_KEY}" as a number of zero or more, so it kept every current sell price instead of repricing (only lifting a price the new supplier cost had overtaken up to that cost); costs and availability were still updated. Prices will keep drifting from the intended margin until an admin fixes the setting.`,
+    );
+    await logAdminAction(db, {
+      adminId: null,
+      action: "digiflazz_markup_unreadable",
+      targetType: "product",
+      targetId: null,
+      details:
+        "The hourly Digiflazz sync could not read the markup value in Settings, so it kept the current sell prices instead of repricing them (a price below the new supplier cost was raised to that cost). Please fix the Digiflazz markup value in Settings; use 0 or leave it blank for no markup.",
+    });
+  } else if (result.updated > 0 || result.deactivated > 0) {
     await logAdminAction(db, {
       adminId: null,
       action: "digiflazz_catalog_resync",
@@ -1684,9 +1742,12 @@ export async function resyncDigiflazzCatalog(
     abortReason: null,
     finishedAt: new Date().toISOString(),
   });
+  // An unreadable markup is reported as an unhealthy run on the poll-health
+  // surface (the admin panel's sync-problem indicator) until it is fixed.
   await recordPollHealth(db, "digiflazzCatalogSync", {
     lastTxCount: result.updated + result.deactivated,
-    success: true,
+    success: markupReadable,
+    ...(markupReadable ? {} : { error: "Digiflazz markup setting is unreadable; prices were not repriced" }),
   });
   emitDigiflazzCatalogSyncChanged();
   return result;

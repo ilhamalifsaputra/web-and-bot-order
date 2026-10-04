@@ -69,6 +69,7 @@ import { drainBroadcasts } from "../src/jobs";
 import { OrderStatus, OrderCurrency, OrderKind, PaymentMethod, PaymentStatus, PaymentExpiryReason, StockStatus, UserRole, TicketStatus, DeliveryType, CategoryGroup, NotificationEvent, FinancialTransactionType, LedgerDirection, StockEventType, StockActorType } from "@app/core/enums";
 import { AdditionalFieldType, type AdditionalField } from "@app/core/deliveryFields";
 import { Decimal } from "@app/core/money";
+import { formatIdrFor } from "@app/core/moneyFormat";
 import { formatIdr } from "@app/core/formatters";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { makeCtx, calls, sentIncludes, offersForwardAction, lastMarkup, telegramError, type SentCall } from "./helpers/ctx";
@@ -4186,6 +4187,25 @@ describe("checkout handlers", () => {
     const cached = JSON.parse(orders[0]!.paymentRef!) as { gateway?: string; trxId?: string };
     expect(cached.gateway).toBe("tokopay");
     expect(cached.trxId).toBe("STOREFRONT-WON-RACE");
+  });
+
+  it("buyNowTokopay shows the voucher on the QRIS screen so subtotal - discount + fee = total to pay (B7)", async () => {
+    await setSetting(prisma, "tokopay_merchant_id", "M1");
+    await setSetting(prisma, "tokopay_secret", "S1");
+    const { ctx, sink } = customerCtx({
+      session: { ...userSession(), scratch: { appliedVoucherCode: "SAVE10" } },
+    });
+    await checkout.buyNowTokopay(ctx, sample.product.id, 2); // 10.00, SAVE10 = 10% -> 1
+    const order = (await prisma.order.findFirst({ where: { userId: sample.user.id }, orderBy: { id: "desc" } }))!;
+    expect(new Decimal(order.discountAmount).toString()).toBe("1");
+    const caption = (calls(sink, "replyWithPhoto")[0]!.args[1] as { caption: string }).caption;
+    const { computeQrisAdminFee } = await import("@app/core/payments/tokopay");
+    const fee = computeQrisAdminFee(order.totalAmount);
+    // The voucher row is printed, and every printed row adds up to the payable.
+    expect(caption).toContain(`Voucher: −${formatIdrFor("1", "en")}`);
+    expect(caption).toContain(`Subtotal: ${formatIdrFor("10", "en")}`);
+    expect(caption).toContain(formatIdrFor(new Decimal(10).minus(1).plus(fee), "en"));
+    expect(new Decimal(order.totalAmount).toString()).toBe("9");
   });
 
   it("buyNowTokopay keeps the voucher applied in session when order creation fails, so a retry can reuse it (Pricing-3 fix)", async () => {

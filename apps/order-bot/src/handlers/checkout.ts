@@ -78,6 +78,7 @@ import {
   isServiceActive,
 } from "@app/db";
 import { createTransaction, computeQrisAdminFee } from "@app/core/payments/tokopay";
+import { qrisCaptionAmounts } from "../util/qrisCaption";
 import { createTransaction as createPaydisiniTransaction } from "@app/core/payments/paydisini";
 import { createInvoice as createNowpaymentsInvoice } from "@app/core/payments/nowpayments";
 import { pollOnce as tokopayPoll } from "../payments/tokopayReconcile";
@@ -1516,10 +1517,14 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
   // USD-display buyer additionally sees the order's $ price beside it
   // (derived once from the canonical IDR total, never from the payable).
   const payText = formatIdrFor(chargeAmount, lang);
+  // Rows that add up (B7): the discounts between the gross subtotal and the
+  // gateway nominal get their own lines — see util/qrisCaption.ts.
+  const rows = qrisCaptionAmounts(order, lang);
   const caption = t(ctx, "checkout.qris_instructions", {
     code: order.orderCode,
-    subtotal: formatIdrFor(order.subtotalAmount, lang),
-    fee: formatIdrFor(adminFee, lang),
+    subtotal: rows.subtotal,
+    discount_lines: rows.discount_lines,
+    fee: rows.fee,
     amount: payText,
     expiry,
   }) +

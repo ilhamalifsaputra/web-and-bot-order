@@ -46,6 +46,7 @@ import { CUSTOM_EMOJI_MAP_SETTING, setCustomEmojiMap } from "@app/core/customEmo
 import { currentAdmin, csrfProtect, blockReadonlyReads } from "../../plugins/auth";
 import { getTokenValidator, getChannelValidator, getBotAdminValidator, getJoinUrlResolver, matchesExpectedType } from "../../lib/telegramCheck";
 import { CONNECTION_TESTS } from "../../lib/connectionTest";
+import { exactFields, readMoneyField, readPercentField, moneyFieldError, percentFieldError, type MoneyFieldCurrency } from "../../lib/moneyField";
 
 const EDITABLE: Record<string, string> = {
   support_contact: "Support contact handle/text",
@@ -260,6 +261,45 @@ function fxRejectionMessage(reason: FxRateRejection, market: Decimal): string {
   }
 }
 
+/**
+ * The money settings an admin types, and the currency each is read in. Read
+ * BY SHAPE (lib/moneyField.ts): a minimum typed `10.000` is ten thousand
+ * rupiah, never Rp10 as `new Decimal(text)` read it. The per-rail minimums are
+ * in the rail's settlement currency (orderMinimums.ts): Rupiah for TokoPay and
+ * PayDisini, USDT for the crypto rails. `digiflazz_markup_value` is handled
+ * separately — it is a percent or a Rupiah amount depending on the type.
+ */
+const MONEY_SETTING_CURRENCY: Record<string, MoneyFieldCurrency> = {
+  min_order_amount_idr: "IDR",
+  tokopay_min_amount: "IDR",
+  paydisini_min_amount: "IDR",
+  nowpayments_min_amount: "USDT",
+  bybit_min_amount: "USDT",
+  bybit_bsc_min_amount: "USDT",
+  binance_internal_min_amount: "USDT",
+  wallet_topup_min_amount_idr: "IDR",
+  wallet_topup_max_amount_idr: "IDR",
+  wallet_topup_min_amount_usdt: "USDT",
+  wallet_topup_max_amount_usdt: "USDT",
+};
+
+/**
+ * A money setting's value as the canonical plain decimal to store, read by
+ * shape — or, with `exact`, as the plain dot-decimal the settings form
+ * pre-filled from the stored value and the admin left untouched (and the
+ * values of an export file), so a re-save never turns `1.234` USDT into 1234.
+ * Every reader of these settings does `new Decimal(stored)`, so the stored
+ * text must be the plain decimal, never the admin's typed shape. Returns null
+ * for anything unreadable, ambiguous, non-finite or negative.
+ */
+function readMoneySetting(key: string, value: string, exact: boolean, markupType: string | null): string | null {
+  const amount =
+    key === "digiflazz_markup_value" && markupType === "percent"
+      ? readPercentField(value, { exact })
+      : readMoneyField(value, MONEY_SETTING_CURRENCY[key] ?? "IDR", { exact });
+  return amount && amount.isFinite() ? amount.toFixed() : null;
+}
+
 /** Thrown by `applyFieldEdit` for any rejection — carries the HTTP status the
  * route should reply with, so both `/edit` and `/import` translate it the
  * same way without duplicating the status-code decisions below. */
@@ -283,9 +323,13 @@ async function applyFieldEdit(
   admin: { userId: number; telegramId: number; role: string },
   key: string,
   rawValue: string,
+  /** The value is machine-formatted (an untouched pre-fill of the stored
+   * value, or an export file) — money settings read it as a plain dot-decimal
+   * instead of by shape. */
+  exact = false,
 ): Promise<{ ok: true; unchanged?: boolean; cleared?: boolean; needsRestart?: boolean }> {
   if (!(key in EDITABLE)) throw new FieldEditError(400, "That setting is not editable here.");
-  const value = rawValue.trim();
+  let value = rawValue.trim();
   if (isSecret(key) && value === "") return { ok: true, unchanged: true };
 
   if (TOKEN_KEYS.has(key)) {
@@ -353,16 +397,19 @@ async function applyFieldEdit(
     return { ok: true };
   }
 
-  if (key.endsWith("_min_amount") && value !== "") {
-    let valid = false;
-    try { const d = new Decimal(value); valid = d.isFinite() && d.greaterThan(0); } catch { valid = false; }
-    if (!valid) throw new FieldEditError(400, "Minimum amount must be a positive number, or blank to disable.");
-  }
-
-  if (key.startsWith("wallet_topup_") && (key.endsWith("_amount_idr") || key.endsWith("_amount_usdt")) && value !== "") {
-    let valid = false;
-    try { const d = new Decimal(value); valid = d.isFinite() && d.greaterThan(0); } catch { valid = false; }
-    if (!valid) throw new FieldEditError(400, "Amount must be a positive number, or blank to disable.");
+  if (key in MONEY_SETTING_CURRENCY && value !== "") {
+    const currency = MONEY_SETTING_CURRENCY[key]!;
+    const amount = readMoneySetting(key, value, exact, null);
+    // The shop-wide minimum may be 0 (= no shop-wide minimum); every other
+    // minimum/maximum must be more than zero, or blank.
+    const allowZero = key === "min_order_amount_idr";
+    if (amount === null || (!allowZero && !/[1-9]/.test(amount))) {
+      throw new FieldEditError(
+        400,
+        `${moneyFieldError(EDITABLE[key]!, currency)} ${allowZero ? "Use 0 or blank to disable it." : "It must be more than zero, or blank to disable it."}`,
+      );
+    }
+    value = amount;
   }
 
   // This value is interpolated into a <script> tag on every storefront page
@@ -419,9 +466,17 @@ async function applyFieldEdit(
   }
 
   if (key === "digiflazz_markup_value" && value !== "") {
-    let valid = false;
-    try { const d = new Decimal(value); valid = d.isFinite() && d.greaterThanOrEqualTo(0); } catch { valid = false; }
-    if (!valid) throw new FieldEditError(400, "Markup value must be a non-negative number, or blank to disable.");
+    // A percent markup is read as a percent; a flat one (or one set before
+    // the type) as a Rupiah amount, so a flat 1.500 is Rp1.500, not Rp1,5.
+    const markupType = await getSetting(prisma, "digiflazz_markup_type");
+    const amount = readMoneySetting(key, value, exact, markupType);
+    if (amount === null) {
+      throw new FieldEditError(
+        400,
+        `${markupType === "percent" ? percentFieldError(EDITABLE[key]!) : moneyFieldError(EDITABLE[key]!, "IDR")} Use 0 or blank for no markup.`,
+      );
+    }
+    value = amount;
   }
 
   const displayValue = isSecret(key) ? "(updated)" : value.slice(0, 80);
@@ -525,7 +580,10 @@ export default async function settingsApiRoutes(app: FastifyInstance): Promise<v
   app.post("/api/settings/edit", { preHandler: csrfProtect }, async (req, reply) => {
     const body = (req.body ?? {}) as Record<string, string>;
     try {
-      const result = await applyFieldEdit(req.admin!, body.key ?? "", body.value ?? "");
+      // The settings form pre-fills each field with its stored value; an
+      // untouched pre-fill is sent with "value" in `exact_fields` so a money
+      // setting is read exactly rather than by shape (lib/moneyField.ts).
+      const result = await applyFieldEdit(req.admin!, body.key ?? "", body.value ?? "", exactFields(req.body).has("value"));
       return reply.send(result);
     } catch (err) {
       if (err instanceof FieldEditError) return reply.code(err.status).send({ error: err.message });
@@ -589,7 +647,9 @@ export default async function settingsApiRoutes(app: FastifyInstance): Promise<v
         continue;
       }
       try {
-        await applyFieldEdit(req.admin!, key, String(value ?? ""));
+        // An export file holds stored values verbatim (machine-formatted plain
+        // decimals), so money settings are read exactly, not by shape.
+        await applyFieldEdit(req.admin!, key, String(value ?? ""), true);
         applied++;
       } catch {
         skipped++;

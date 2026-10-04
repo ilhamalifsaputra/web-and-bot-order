@@ -10,7 +10,8 @@
  *     Rupiah form), `toLocaleString`, `Intl.NumberFormat`, or an `Rp` literal. Buyer screens use formatIdrFor /
  *     ctxPriceFormatter / orderAmount (packages/core/src/moneyFormat.ts, apps/order-bot/src/util/format.ts).
  *  C. The storefront top-up form judges its amount with `Number(amount)` instead of the shared reader.
- *  D. An admin-panel API route builds a Decimal straight from its request body instead of going through
+ *  D. An admin-panel API route builds a Decimal straight from its request body, or from a bare typed-text name such as
+ *     `value` / `price` (a settings value, an import row's price), instead of going through
  *     apps/web-admin/src/lib/moneyField.ts (by shape for typed text; exact dot-decimal for `exact_fields` pre-fills).
  *
  * Admin-facing bot screens deliberately keep the Indonesian `formatIdr` (see ADMIN_FACING). If this fails, use the
@@ -121,15 +122,22 @@ export function storefrontAmountViolations(fileName: string, code: string): stri
  * through apps/web-admin/src/lib/moneyField.ts (readMoneyField / readPercentField), which read by shape — or, for a
  * machine-formatted value the client lists in `exact_fields` (an untouched pre-fill of the server's own decimal), as a
  * plain dot-decimal via their `exact` option. Both paths live in that helper, so this rule never blocks either.
+ * A bare `value` / typed name is flagged too: the settings route reads `body.value` into `value` before checking it
+ * (`new Decimal(value)` stored a flat Digiflazz markup typed 1.500 as Rp1,5), and the Digiflazz import's `parsePrice`
+ * took the row price the same way.
  */
+const ADMIN_TYPED_NAMES = new Set([...TYPED_NAMES, "value"]);
 export function adminBodyDecimalViolations(fileName: string, code: string): string[] {
   const source = ts.createSourceFile(fileName, code, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
   const found: string[] = [];
   const mentionsBody = (node: ts.Node): boolean =>
     (ts.isIdentifier(node) && node.text === "body") || ts.forEachChild(node, mentionsBody) === true;
   const visit = (node: ts.Node) => {
-    if (ts.isNewExpression(node) && node.expression.getText() === "Decimal" && node.arguments?.length && mentionsBody(node.arguments[0]!)) {
-      found.push(`${fileName}:${source.getLineAndCharacterOfPosition(node.getStart()).line + 1}: new Decimal(<request body>) — use readMoneyField / readPercentField`);
+    if (ts.isNewExpression(node) && node.expression.getText() === "Decimal" && node.arguments?.length) {
+      const arg = node.arguments[0]!;
+      const at = `${fileName}:${source.getLineAndCharacterOfPosition(node.getStart()).line + 1}`;
+      if (mentionsBody(arg)) found.push(`${at}: new Decimal(<request body>) — use readMoneyField / readPercentField`);
+      else if (ts.isIdentifier(arg) && ADMIN_TYPED_NAMES.has(arg.text)) found.push(`${at}: new Decimal(${arg.text}) on typed text — use readMoneyField / readPercentField`);
     }
     ts.forEachChild(node, visit);
   };
@@ -162,7 +170,7 @@ describe("money input and display guard", () => {
     expect(storefrontAmountViolations("x.tsx", "const n = Number(amount);")).not.toEqual([]);
     expect(storefrontAmountViolations("x.tsx", '<Input id="topup_amount" type="number" />')).not.toEqual([]);
     expect(storefrontAmountViolations("x.tsx", '<Input id="topup_amount" type="text" /> /* Number(parsed) */')).toEqual([]);
-    for (const code of ["new Decimal(body.price);", 'new Decimal(String(body.value).trim());', 'new Decimal((body.delta ?? "").trim());']) {
+    for (const code of ["new Decimal(body.price);", 'new Decimal(String(body.value).trim());', 'new Decimal((body.delta ?? "").trim());', "new Decimal(value);", "new Decimal(price);"]) {
       expect(adminBodyDecimalViolations("x.ts", code), code).not.toEqual([]);
     }
     expect(adminBodyDecimalViolations("x.ts", "new Decimal(0); new Decimal(row.revenue_idr); readMoneyField(body.price);")).toEqual([]);

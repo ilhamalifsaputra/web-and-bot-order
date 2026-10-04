@@ -73,7 +73,13 @@
  * (`claimIdempotentRequest`), so the second waits for the first and replays
  * its response. Only if the first is still running after the server's wait
  * budget does the second get HTTP 409 `error.idempotency_request_in_progress`
- * — which this hook treats like any other answered 4xx and drops the key.
+ * — which stores nothing and answers nothing (the first attempt may still
+ * complete), so this hook HOLDS the key on it exactly like a 5xx or 429. Were
+ * the key dropped, a lost first response would leave the next click with a
+ * fresh key and the mutation would run twice; a byte-identical retry cannot
+ * hit `key_reused`. Only that one 409 is held — it is told apart from every
+ * other 409 (`key_reused`, a code already taken, ...) by the server's error
+ * code, and those still drop the key as answered.
  *
  * The held keys live in a `useRef`, so they survive re-renders and any number
  * of retries within one visit to the page, and are gone when the page unmounts
@@ -103,6 +109,10 @@ function newIdempotencyKey(): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
+/** The server's error code for "the first attempt with this key is still
+ * running" — the one 409 that leaves the outcome unknown. */
+const REQUEST_IN_PROGRESS = "error.idempotency_request_in_progress";
+
 /** `apiPost`, with the `Idempotency-Key` lifecycle above applied. */
 export type IdempotentPost = <T>(path: string, body: unknown) => Promise<T>;
 
@@ -118,15 +128,22 @@ export function useIdempotentPost(): IdempotentPost {
     const key = unanswered.get(scope) ?? newIdempotencyKey();
     unanswered.set(scope, key);
     let answered = false;
+    let status: number | undefined;
     try {
       return await apiPost<T>(path, body, {
         idempotencyKey: key,
         // 5xx and 429 are responses that arrived without answering the
         // question — see the header comment.
-        onResponse: (status) => {
-          answered = status < 500 && status !== 429;
+        onResponse: (s) => {
+          status = s;
+          answered = s < 500 && s !== 429;
         },
       });
+    } catch (err) {
+      // The in-progress 409 is unanswered too, but only its error code (read
+      // off the thrown error, after the body) tells it from other 409s.
+      if (status === 409 && err instanceof Error && err.message === REQUEST_IN_PROGRESS) answered = false;
+      throw err;
     } finally {
       if (answered) unanswered.delete(scope);
     }

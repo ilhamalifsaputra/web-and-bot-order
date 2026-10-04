@@ -54,10 +54,10 @@ import {
   isServiceActive,
   buildNicknameProviderEntries,
   resolveNicknameGate,
-  findIdempotentResponse,
-  saveIdempotentResponse,
+  IdempotencyClaimTracker,
   hashIdempotentRequest,
   IdempotencyKeyReuseError,
+  IdempotencyRequestInProgressError,
   type IdempotentReplay,
 } from "@app/db";
 import { NicknameService } from "@app/core/nickname/service";
@@ -198,6 +198,21 @@ async function establishGuestTopupCustomer(req: FastifyRequest, reply: FastifyRe
 }
 
 const apiTopupRoutes: FastifyPluginAsync = async (app) => {
+  // Same claim bookkeeping as routes/api.ts's checkout (backend audit E2): a
+  // claim this module's handler never saved is released once the response is
+  // out, so a retry with the same key does not wait for it to expire.
+  const idempotencyClaims = new IdempotencyClaimTracker();
+  app.addHook("onResponse", async (req) => {
+    try {
+      await idempotencyClaims.releaseUnsettled(prisma, req);
+    } catch (err) {
+      logger.warn(
+        { err },
+        "Could not release an unfinished top-up idempotency claim; a retry with the same key will wait until the claim expires.",
+      );
+    }
+  });
+
   // ---- POST /topup/preview — live totals for ONE denomination, no cart ----
   //
   // The exact JSON `GET /api/v1/checkout` returns (same `CheckoutData` type,
@@ -339,7 +354,7 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
     if (idem) {
       let replay: IdempotentReplay | null;
       try {
-        replay = await findIdempotentResponse(prisma, {
+        replay = await idempotencyClaims.claim(prisma, req, {
           key: idem.key,
           endpoint: TOPUP_ORDER_IDEMPOTENCY_ENDPOINT,
           requestHash: idem.requestHash,
@@ -347,6 +362,9 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
       } catch (e) {
         if (e instanceof IdempotencyKeyReuseError) {
           return reply.code(409).send({ error: "error.idempotency_key_reused" });
+        }
+        if (e instanceof IdempotencyRequestInProgressError) {
+          return reply.code(409).send({ error: "error.idempotency_request_in_progress" });
         }
         throw e;
       }
@@ -362,7 +380,7 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
     // worth replaying as a success, since replaying it re-runs nothing.
     const respond = async (statusCode: number, body: unknown) => {
       if (idem) {
-        await saveIdempotentResponse(prisma, {
+        await idempotencyClaims.save(prisma, req, {
           key: idem.key,
           endpoint: TOPUP_ORDER_IDEMPOTENCY_ENDPOINT,
           requestHash: idem.requestHash,

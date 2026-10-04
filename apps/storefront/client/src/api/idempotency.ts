@@ -68,13 +68,12 @@
  * block too, but both drive a full page reload in this codebase, which takes
  * the whole ref map with it regardless of what this decided.
  *
- * KNOWN LIMIT — this makes a SEQUENTIAL retry safe, which is what it is for.
- * It does not fully dedupe two requests genuinely in flight at once (a
- * double-tap that outruns the button's disabled state):
- * `findIdempotentResponse` only reads a row that `saveIdempotentResponse`
- * writes at response time, so there is no in-flight reservation — both can
- * read null, both can run, and the loser's insert is swallowed as a unique
- * violation. Closing that would need a reservation row written on the way in.
+ * TWO REQUESTS IN FLIGHT AT ONCE (a double-tap that outruns the button's
+ * disabled state) are deduped too: the server reserves the key on the way in
+ * (`claimIdempotentRequest`), so the second waits for the first and replays
+ * its response. Only if the first is still running after the server's wait
+ * budget does the second get HTTP 409 `error.idempotency_request_in_progress`
+ * — which this hook treats like any other answered 4xx and drops the key.
  *
  * The held keys live in a `useRef`, so they survive re-renders and any number
  * of retries within one visit to the page, and are gone when the page unmounts

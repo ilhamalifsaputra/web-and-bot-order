@@ -27,14 +27,28 @@ function withSchema(baseUrl: string, schema: string): string {
   return url.toString();
 }
 
-export async function makeTestDb(): Promise<TestDb> {
+/**
+ * `connectionLimit` widens the client's connection pool for a concurrency test
+ * that needs more transactions open at once than Prisma's default pool
+ * (derived from the machine's core count, which can be as small as 5) allows —
+ * otherwise the extra transactions just queue for a connection and the race
+ * under test never happens.
+ */
+export async function makeTestDb(opts: { connectionLimit?: number } = {}): Promise<TestDb> {
   const baseUrl = process.env.DATABASE_URL_PRISMA;
   if (!baseUrl) {
     throw new Error("DATABASE_URL_PRISMA must be set to a Postgres connection string for tests.");
   }
 
   const schema = `test_${randomBytes(6).toString("hex")}`;
-  const url = withSchema(baseUrl, schema);
+  const schemaUrl = withSchema(baseUrl, schema);
+  const url = opts.connectionLimit
+    ? (() => {
+        const withLimit = new URL(schemaUrl);
+        withLimit.searchParams.set("connection_limit", String(opts.connectionLimit));
+        return withLimit.toString();
+      })()
+    : schemaUrl;
   // Same `transactionOptions` the real client is built with (packages/db/src/
   // client.ts). Left at Prisma's own defaults (maxWait 2000 / timeout 5000)
   // this harness gave every test a NARROWER concurrency envelope than

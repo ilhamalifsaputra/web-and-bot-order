@@ -364,14 +364,17 @@ itself.
 
 `setUsdIdrRate` does **not** validate its input itself; every caller judges the
 figure first. `refreshUsdIdrRate` runs the sanity band (Guard 1). Web-admin's
-rate field reads the typed text by its shape with `parseMoneyInput(…, "IDR")`
+rate field reads the typed text by its shape with `readMoneyField(…, "IDR")`
 (`16.000` and `16,000` are both 16000; an ambiguous or non-numeric value is a
-400), then runs `validateUsdIdrRate` against `fxRateBounds` with no last-known
-rate (floor and ceiling apply, the deviation cap does not), and stores the
-canonical decimal string. A settings import applies `fx_rate_min`/`fx_rate_max`
-before `usd_idr_rate`, so a file's rate is judged against the file's own band,
-and every skipped key is named with its reason in the reply and the audit
-entry. `scripts/convert-prices-to-idr.ts` reads its rate argument the same way.
+400; an untouched pre-fill or an export file is read exactly), then runs
+`validateUsdIdrRate` against `fxRateBounds` with no last-known rate (floor and
+ceiling apply, the deviation cap does not), and stores the canonical decimal
+string. `fx_rate_min`/`fx_rate_max` are read the same way (a ceiling typed
+`20.000` is Rp20.000), and a floor above the ceiling is refused, since it would
+refuse every rate. A settings import applies `fx_rate_min`/`fx_rate_max`
+before `usd_idr_rate`, so a file's rate is judged against the file's own band
+(and each end of the band against the file's other end), and every skipped key
+is named with its reason in the reply and the audit entry. `scripts/convert-prices-to-idr.ts` reads its rate argument the same way.
 
 ### Guard 3a — `fx_quote_ttl_minutes`: stop offering USDT (default 180 **minutes**)
 

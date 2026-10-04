@@ -240,3 +240,44 @@ describe("getReferralSummary", () => {
     expect(summary.earnedUsdt.equals(new Decimal(after.walletBalanceUsdt))).toBe(true);
   });
 });
+
+describe("maybePayReferralCommission under true Postgres concurrency (backend audit E2 item 5)", () => {
+  it("two deliveries for the same referee at once: both delivery transactions commit, the commission is paid once", async () => {
+    const { referrer, referee } = await makeReferrerAndReferee();
+    const orderA = await makeDeliveredOrder({ userId: referee.id, orderCode: "ORD-A", totalAmount: "10", currency: OrderCurrency.USDT });
+    const orderB = await makeDeliveredOrder({ userId: referee.id, orderCode: "ORD-B", totalAmount: "10", currency: OrderCurrency.USDT });
+
+    // Each delivery transaction pays the commission and then carries on with
+    // the rest of the delivery, so the two overlap: B checks "already paid?"
+    // while A's commission is written but not yet committed.
+    const deliver = (order: typeof orderA, holdMs: number) =>
+      prisma.$transaction(
+        async (tx) => {
+          await maybePayReferralCommission(tx, order);
+          await new Promise((r) => setTimeout(r, holdMs));
+          await tx.order.update({ where: { id: order.id }, data: { adminNote: "delivered" } });
+        },
+        { timeout: 15_000 },
+      );
+    // Open the pooled connections first: opening one lazily can take seconds,
+    // long enough for the first delivery to commit before the second starts.
+    await Promise.all(
+      [0, 1, 2, 3].map(() =>
+        prisma.$transaction(async (tx) => {
+          await tx.$queryRaw`SELECT 1`;
+          await new Promise((r) => setTimeout(r, 300));
+        }),
+      ),
+    );
+    const first = deliver(orderA, 1000);
+    await new Promise((r) => setTimeout(r, 300));
+    const second = deliver(orderB, 0);
+    const results = await Promise.allSettled([first, second]);
+
+    expect(results.map((r) => r.status)).toEqual(["fulfilled", "fulfilled"]);
+    expect(await prisma.referral.count({ where: { refereeId: referee.id } })).toBe(1);
+    expect(await prisma.order.count({ where: { userId: referee.id, adminNote: "delivered" } })).toBe(2);
+    const referralCredits = await prisma.walletTransaction.count({ where: { userId: referrer.id, reason: "referral" } });
+    expect(referralCredits).toBe(1);
+  });
+});

@@ -740,7 +740,12 @@ export async function flagWalletTopupOverpayment(
   if (!args.credited.greaterThan(0)) return null;
   const paid = new Decimal(args.paid);
   const expected = new Decimal(args.expected);
-  const excess = paid.minus(expected);
+  // Quantized exactly as `findOverpaidExcess` (overpayments.ts) quantizes the
+  // excess an admin can credit back: 4dp, half-up, on the received amount and
+  // on the difference. Dust below that (e.g. a NOWPayments value derived by
+  // division) would otherwise raise an alert for an excess of 0 that the
+  // order page then refuses to credit.
+  const excess = quantizeMoney(quantizeMoney(paid, 4).minus(expected), 4);
   if (!excess.greaterThan(0)) return null;
 
   await args.markLedgerOverpaid();

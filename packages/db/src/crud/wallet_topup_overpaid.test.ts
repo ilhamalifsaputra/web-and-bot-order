@@ -196,6 +196,37 @@ describe.each(rails)("$name wallet top-up overpayment", (rail) => {
       expect(await rail.ledgerOutcome(txId)).toBe("matched");
       expect(await overpaidAlerts(order.id)).toHaveLength(0);
     });
+
+    // The flag uses the same 4dp quantization findOverpaidExcess applies to
+    // what an admin can credit back, so dust never alerts for an excess the
+    // order page would refuse as zero.
+    it("an excess of 0.00001 (below 4dp) is NOT flagged", async () => {
+      const order = await makeTopup(rail);
+      const txId = `${rail.method}-dust`;
+
+      const result = await rail.deliver(order.id, txId, rail.billed(order).plus("0.00001"));
+
+      expect(result.status).toBe("delivered");
+      expect(await rail.ledgerOutcome(txId)).toBe("matched");
+      expect(await overpaidAlerts(order.id)).toHaveLength(0);
+      expect(await findOverpaidExcess(prisma, order.id)).toBeNull();
+    });
+
+    it("an excess of 0.0001 is flagged once, and is exactly what can be credited back", async () => {
+      const order = await makeTopup(rail);
+      const txId = `${rail.method}-smallest-excess`;
+
+      const result = await rail.deliver(order.id, txId, rail.billed(order).plus("0.0001"));
+      expect(result.status).toBe("delivered");
+      expect((await rail.deliver(order.id, txId, rail.billed(order).plus("0.0001"))).status).toBe("already_processed");
+
+      expect(await rail.ledgerOutcome(txId)).toBe("overpaid");
+      const alerts = await overpaidAlerts(order.id);
+      expect(alerts).toHaveLength(1);
+      const payload = JSON.parse(alerts[0]!.payloadJson) as Record<string, unknown>;
+      expect(new Decimal(payload.excess as string).equals("0.0001")).toBe(true);
+      expect((await findOverpaidExcess(prisma, order.id))!.excess.equals("0.0001")).toBe(true);
+    });
   }
 
   const overpayments =

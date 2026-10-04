@@ -18,6 +18,7 @@ import {
 } from "@app/core/payments/nowpayments";
 import { OrderStatus, OrderKind, PaymentMethod, NotificationEvent, langCode } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
+import { quantizeMoney } from "@app/core/formatters";
 import { logger } from "@app/core/logger";
 import { PaymentLogEvent } from "@app/core/payments/logEvents";
 import type { PrismaClient, Tx } from "../client";
@@ -297,8 +298,14 @@ export async function deliverPaidNowpaymentsOrder(
       // (handled above) but flag the ledger row and alert admins so the
       // excess can be refunded/credited manually — never auto-refunded. This
       // stays unconditional — a buyer can overpay regardless of delivery type.
+      //
+      // The paid value comes from checkNowpaymentsAmount, which converts at the
+      // invoice's own rate by division, so it can carry sub-4dp dust. The excess
+      // is quantized exactly as `findOverpaidExcess` quantizes what an admin can
+      // credit back (4dp, half-up), so dust never raises an alert for an excess
+      // the order page would then refuse as zero.
       const paidAmount = new Decimal(args.amount);
-      const excess = paidAmount.minus(order.totalAmount);
+      const excess = quantizeMoney(quantizeMoney(paidAmount, 4).minus(order.totalAmount), 4);
       if (excess.greaterThan(0)) {
         await tx.processedNowpaymentsTx.update({ where: { trxId: args.trxId }, data: { outcome: "overpaid" } });
         await enqueueAdminOverpaid(tx, {

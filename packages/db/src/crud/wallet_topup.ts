@@ -34,6 +34,7 @@ import { Decimal } from "@app/core/money";
 import { addMinutes } from "@app/core/datetime";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
+import { computeQrisAdminFee } from "@app/core/payments/tokopay";
 import { PaymentLogEvent } from "@app/core/payments/logEvents";
 import type { PrismaClient, Tx } from "../client";
 import type { Db } from "./_types";
@@ -916,7 +917,15 @@ export async function creditUnderpaidTopupAnyway(
       throw new ValidationError("error.order_not_underpaid");
     }
 
-    const received = (await findUnderpaidReceived(tx, args.orderId)) ?? ZERO;
+    const recordedReceived = await findUnderpaidReceived(tx, args.orderId);
+    let received = recordedReceived ?? ZERO;
+    // Only TokoPay adds a buyer-paid QRIS fee. PayDisini compares
+    // received principal against the bare total, so its fee is zero here.
+    if (order.paymentMethod === PaymentMethod.TOKOPAY || order.paymentMethod === PaymentMethod.PAYDISINI) {
+      const fee = order.paymentMethod === PaymentMethod.TOKOPAY ? computeQrisAdminFee(order.totalAmount) : ZERO;
+      if (recordedReceived !== null && fee.gt(0) && received.lte(fee)) throw new ValidationError("error.underpaid_topup_fee_not_covered");
+      received = Decimal.max(ZERO, Decimal.min(received.minus(fee), order.totalAmount));
+    }
     const anythingReceived = received.greaterThan(0);
     if (anythingReceived) {
       const { transactionId } = await adjustWallet(tx, order.userId, received, {
@@ -924,7 +933,7 @@ export async function creditUnderpaidTopupAnyway(
         currency: order.currency as "IDR" | "USDT",
         orderId: order.id,
         adminId: args.adminId,
-        note: `Underpaid top-up order ${order.orderCode}: credited the amount actually received.`,
+        note: `Underpaid top-up order ${order.orderCode}: credited the received principal after any buyer-paid fee.`,
       });
       // Posted as gateway cash becoming wallet credit (`Dr provider_clearing /
       // Cr wallet_liability`), NOT as the equity-funded manual adjustment the
@@ -951,7 +960,7 @@ export async function creditUnderpaidTopupAnyway(
       logger.info(
         `Resolved underpaid wallet top-up order ${order.orderCode} by cancelling it and crediting the buyer ` +
           `${received.toString()} ${order.currency} as a manual adjustment by admin ${args.adminId} — the amount ` +
-          `they actually sent, rather than the ${new Decimal(order.totalAmount).toString()} the order asked for. ` +
+          `available after any buyer-paid fee, capped at the ${new Decimal(order.totalAmount).toString()} the order asked for. ` +
           `The shortfall is not credited because it never arrived.`,
       );
     } else {

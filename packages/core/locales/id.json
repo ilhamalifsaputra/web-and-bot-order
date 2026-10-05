@@ -296,6 +296,7 @@
   "error.refund_not_processing": "Hanya refund yang sedang diproses yang bisa dibayarkan — status refund ini {status}.",
   "error.refund_execution_method_invalid": "\"{method}\" bukan cara pembayaran refund yang didukung toko ini.",
   "error.refund_execution_proof_required": "Transfer manual butuh bukti transfer sebelum bisa dicatat sebagai sudah dibayar.",
+  "error.underpaid_topup_fee_not_covered": "Pembayaran yang diterima tidak mencukupi biaya pembayaran. Saldo belum dikreditkan; periksa pembayaran secara manual.",
   "error.refund_exchange_rate_missing": "Refund ini memerlukan kurs asli pesanan. Tidak ada uang yang dikembalikan; periksa pesanan sebelum mencoba lagi.",
   "error.refund_exceeds_refundable_amount": "Pembayaran ini akan merefund lebih besar dari nilai pesanannya — sisa yang bisa direfund {refundable} {currency} ({alreadyPaidOut} sudah dikembalikan), sedangkan yang dicoba {attempted}.",
   "error.stock_replacement_order_not_delivered": "Hanya akun dari pesanan yang sudah delivered yang bisa diganti — status pesanan ini {status}.",

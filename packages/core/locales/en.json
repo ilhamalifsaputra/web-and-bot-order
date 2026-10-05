@@ -296,6 +296,7 @@
   "error.refund_not_processing": "Only a refund that is being processed can be paid out — this one is {status}.",
   "error.refund_execution_method_invalid": "\"{method}\" is not a way this shop can pay a refund out.",
   "error.refund_execution_proof_required": "A manual transfer needs proof of the transfer before it can be recorded as paid.",
+  "error.refund_exchange_rate_missing": "This refund needs the original exchange rate. No money was refunded; review the order before retrying.",
   "error.refund_exceeds_refundable_amount": "This payout would refund more than the order is worth — {refundable} {currency} is still refundable ({alreadyPaidOut} already paid back), and {attempted} was attempted.",
   "error.stock_replacement_order_not_delivered": "Only a delivered order's account can be replaced — this order is {status}.",
   "error.stock_replacement_item_not_sold": "This order line has no delivered account to replace.",

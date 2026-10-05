@@ -31,7 +31,7 @@ import {
   RefundStatus,
 } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
-import { quantizeMoney } from "@app/core/formatters";
+import { quantizeMoney, usdtFromIdr } from "@app/core/formatters";
 import { logger } from "@app/core/logger";
 import { Decimal } from "@app/core/money";
 import type { Prisma, Refund, RefundExecution, RefundItem } from "@prisma/client";
@@ -130,9 +130,17 @@ export async function createRefund(
     adminId: number;
   },
 ): Promise<Refund> {
+  const ownsTransaction = "$transaction" in db && typeof db.$transaction === "function";
+  return ownsTransaction
+    ? db.$transaction((tx: Db) => createRefundLocked(tx, args))
+    : createRefundLocked(db, args);
+}
+
+async function createRefundLocked(db: Db, args: Parameters<typeof createRefund>[1]): Promise<Refund> {
+  await db.$queryRaw`SELECT id FROM orders WHERE id = ${args.orderId} FOR UPDATE`;
   const order = await db.order.findUnique({
     where: { id: args.orderId },
-    select: { id: true, currency: true, orderCode: true },
+    select: { id: true, currency: true, orderCode: true, totalAmount: true, fxRate: true },
   });
   if (!order) throw new ValidationError("error.order_not_found");
   if (args.currency !== order.currency) {
@@ -142,6 +150,22 @@ export async function createRefund(
     });
   }
   const amount = parseRefundAmount(args.amount);
+  const orderTotal = await orderRefundCeiling(db, order);
+  const [reserved, credits] = await Promise.all([
+    db.refund.aggregate({
+      where: { orderId: order.id, status: { notIn: [...REFUND_STATUSES_THAT_DID_NOT_CONSUME_BUDGET] } },
+      _sum: { amount: true },
+    }),
+    db.walletTransaction.aggregate({ where: { orderId: order.id, reason: "unfulfilled_credit", currency: order.currency }, _sum: { delta: true } }),
+  ]);
+  const alreadyReserved = new Decimal(reserved._sum.amount ?? 0).plus(Decimal.max(0, credits._sum.delta ?? 0));
+  const refundable = orderTotal.minus(alreadyReserved);
+  if (amount.greaterThan(refundable)) {
+    throw new ValidationError("error.refund_exceeds_refundable_amount", {
+      refundable: refundable.toString(), currency: order.currency,
+      alreadyPaidOut: alreadyReserved.toString(), attempted: amount.toString(),
+    });
+  }
 
   const refund = await db.refund.create({
     data: {
@@ -423,7 +447,9 @@ async function createRefundItemLocked(
   }
 
   const amount = parseRefundAmount(args.amount);
-  const subtotal = new Decimal(orderItem.unitPrice).times(orderItem.quantity);
+  const order = await db.order.findUniqueOrThrow({ where: { id: refund.orderId } });
+  if (order.currency !== refund.currency) throw new ValidationError("error.refund_currency_mismatch", { refundCurrency: refund.currency, orderCurrency: order.currency });
+  const subtotal = refundCurrencyAmount(new Decimal(orderItem.unitPrice).times(orderItem.quantity), "IDR", order);
 
   const existing = await db.refundItem.aggregate({
     where: {
@@ -498,6 +524,30 @@ const REFUND_EXECUTION_METHODS: readonly string[] = [
 ];
 
 /** What an order has already given back, broken out by the path that did it. */
+type RefundOrderMoney = { id: number; currency: string; totalAmount: Decimal; fxRate: Decimal | null };
+
+function refundCurrencyAmount(amount: Decimal, currency: string, order: Pick<RefundOrderMoney, "currency" | "fxRate">): Decimal {
+  if (currency === order.currency) return amount;
+  const rate = order.fxRate;
+  if (!rate || !rate.isFinite() || rate.lte(0)) throw new ValidationError("error.refund_exchange_rate_missing");
+  return order.currency === "USDT" ? usdtFromIdr(amount, rate) : amount.times(rate).toDecimalPlaces(0, Decimal.ROUND_DOWN);
+}
+
+/** Read the actual wallet ledger, not walletUsed, whose currency changed historically. */
+async function orderRefundCeiling(db: Db, order: RefundOrderMoney): Promise<Decimal> {
+  const movements = await db.walletTransaction.findMany({
+    where: { orderId: order.id, reason: { in: ["order_payment", "order_refund"] } },
+    select: { currency: true, delta: true, reason: true },
+  });
+  let total = new Decimal(order.totalAmount);
+  for (const movement of movements) {
+    const delta = new Decimal(movement.delta);
+    if (movement.reason === "order_payment" && delta.lt(0)) total = total.plus(refundCurrencyAmount(delta.negated(), movement.currency, order));
+    if (movement.reason === "order_refund" && delta.gt(0)) total = total.minus(refundCurrencyAmount(delta, movement.currency, order));
+  }
+  return quantizeMoney(total, 4);
+}
+
 interface RefundableAmountForOrder {
   /** `orderTotal` minus `alreadyPaidOut`; can be zero, never assumed positive. */
   refundable: Decimal;
@@ -563,13 +613,9 @@ interface RefundableAmountForOrder {
  * are unconvertible here, so summing across them would produce a meaningless
  * deduction rather than a conservative one.
  *
- * Known limitation, deliberate for this milestone: `Order.totalAmount` is what
- * the buyer owed EXTERNALLY and is already net of `Order.walletUsed`, so an
- * order partly paid with wallet credit has a refundable ceiling below what the
- * buyer really handed over. That fails CLOSED (it refuses too much, never pays
- * too much), which is the right direction for a payout guard to err in, and the
- * wallet-paid portion is released by `releaseOrderHolds` on the paths that undo
- * such an order rather than by a refund.
+ * The ceiling includes actual wallet debits less released holds, converted
+ * using the order's snapshotted rate. It never trusts walletUsed's historical
+ * currency, which differs between legacy and current checkout paths.
  */
 async function refundableAmountForOrder(
   db: Db,
@@ -755,7 +801,7 @@ export async function executeRefund(
     await tx.$queryRaw`SELECT id FROM orders WHERE id = ${refund.orderId} FOR UPDATE`;
     const order = await tx.order.findUnique({
       where: { id: refund.orderId },
-      select: { id: true, orderCode: true, currency: true, totalAmount: true, status: true, userId: true },
+      select: { id: true, orderCode: true, currency: true, totalAmount: true, fxRate: true, status: true, userId: true },
     });
     // Unreachable in practice — `Refund.order` is a required FK with
     // onDelete: Restrict — but a payout must never proceed on an order it could
@@ -772,7 +818,7 @@ export async function executeRefund(
       });
     }
 
-    const orderTotal = quantizeMoney(new Decimal(order.totalAmount), 4);
+    const orderTotal = await orderRefundCeiling(tx, order);
     const budget = await refundableAmountForOrder(tx, order.id, orderTotal, order.currency);
     const { refundable, alreadyPaidOut } = budget;
     if (amount.greaterThan(refundable)) {

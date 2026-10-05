@@ -42,8 +42,8 @@ beforeEach(async () => {
   adminId = admin.id;
 });
 
-async function makeOrderWithItem() {
-  const order = (await createOrderDirect(prisma, { channel: "bot", user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+async function makeOrderWithItem(quantity = 1) {
+  const order = (await createOrderDirect(prisma, { channel: "bot", user: sample.user, productId: sample.product.id, quantity }))!;
   const item = await prisma.orderItem.findFirstOrThrow({ where: { orderId: order.id } });
   const subtotal = new Decimal(item.unitPrice.toString()).times(item.quantity);
   return { order, item, subtotal };
@@ -51,7 +51,7 @@ async function makeOrderWithItem() {
 
 describe("createRefundItem under true Postgres concurrency", () => {
   it("two items on two refunds that together exceed the order item's subtotal: only one is inserted", async () => {
-    const { order, item, subtotal } = await makeOrderWithItem();
+    const { order, item, subtotal } = await makeOrderWithItem(2);
     // Each alone fits (60% of the subtotal); together they are 120%.
     const part = subtotal.times("0.6").toDecimalPlaces(2);
     const refundA = await createRefund(prisma, { orderId: order.id, amount: part, currency: order.currency, adminId });

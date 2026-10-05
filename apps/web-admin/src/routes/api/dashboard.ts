@@ -408,15 +408,14 @@ export default async function dashboardApiRoutes(app: FastifyInstance): Promise<
     if (metric === "profit") {
       // There is no combined-PROFIT figure anywhere: only revenue has a
       // currency blend (`combinedRevenueByDay`/`PeriodRevenue.revenueIdrEquiv`,
-      // both built on `Order.totalAmount`, which genuinely follows the order's
-      // currency). Profit is derived from catalog-central IDR unitPrice/
+      // both based on recorded canonical IDR prices before payment rounding). Profit is derived from catalog-central IDR unitPrice/
       // costPrice per line, so a "combined profit" would have to be invented.
       // Falling back to the IDR series reports a real number under a slightly
       // narrower label instead; the card also hides the Combined option while
       // Profit is selected, so this is a backstop for a hand-written query
       // string, not the path a user clicks.
       const rows = granularity ? await profitByPeriod(prisma, granularity) : await profitByDay(prisma, days);
-      return rows.map((r) => ({ day: r.day, value: currency === "usdt" ? r.profit_usdt : r.profit_idr }));
+      return rows.map((r) => ({ day: r.day, value: currency === "usdt" ? r.profit_usdt : r.profit_idr, ...(currency === "usdt" && r.excludedFxItemsUsdt ? { excludedFxItemCount: r.excludedFxItemsUsdt } : {}) }));
     }
     if (metric === "orders") {
       const rows = granularity ? await ordersByPeriod(prisma, granularity) : await ordersByDay(prisma, days);
@@ -433,11 +432,12 @@ export default async function dashboardApiRoutes(app: FastifyInstance): Promise<
       return rows.map((r) => ({
         day: r.day,
         value: currency === "combined" ? r.revenueIdrEquiv : currency === "usdt" ? r.revenue_usdt : r.revenue_idr,
+        ...(currency === "combined" ? { excludedFxOrders: r.excludedFxOrders } : {}),
       }));
     }
     if (currency === "combined") {
       const rows = await combinedRevenueByDay(prisma, days);
-      return rows.map((r) => ({ day: r.day, value: r.revenueIdrEquiv }));
+      return rows.map((r) => ({ day: r.day, value: r.revenueIdrEquiv, excludedFxOrders: r.excludedFxOrders }));
     }
     const rows = await revenueByDay(prisma, days);
     return rows.map((r) => ({ day: r.day, value: currency === "usdt" ? r.revenue_usdt : r.revenue_idr }));

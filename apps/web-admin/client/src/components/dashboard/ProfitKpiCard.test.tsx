@@ -26,6 +26,11 @@ function renderWithKpis(profit: unknown) {
 }
 
 describe("ProfitKpiCard", () => {
+  it("distinguishes unknown historical FX from unknown cost", async () => {
+    renderWithKpis({ idr: null, usdt: { netProfit: "0", marginPct: null, excludedItemCount: 1, excludedFxItemCount: 1 } });
+    expect(await screen.findByText(/1 items with unknown FX/)).toBeInTheDocument();
+    expect(screen.queryByText(/without a cost price/)).toBeNull();
+  });
   it("shows net profit and margin% per currency, never blended", async () => {
     renderWithKpis({
       idr: { netProfit: "8000", marginPct: "40", excludedItemCount: 0 },

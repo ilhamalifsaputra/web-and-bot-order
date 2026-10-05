@@ -403,21 +403,31 @@ hiding it behind a zero-revenue check.
 means "no sales at all" or "sales, but every cost is unknown". The chart cannot
 currently distinguish them. Recorded, not fixed.
 
-### Combined revenue — the one deliberate currency blend
+### Combined sales value: recorded IDR price basis
 
-`combinedRevenueByDay` (Day path) and `PeriodRevenue.revenueIdrEquiv`
-(Week/Month/Year path). Reached via `currency=combined` on
-`GET /api/dashboard/analytics`.
+`combinedRevenueByDay` and `PeriodRevenue.revenueIdrEquiv` serve the opt-in
+combined chart. A finalized USDT product sale uses recorded canonical IDR
+`subtotalAmount - bulkDiscountAmount - discountAmount`, including wallet-funded
+value once, before conversion ceiling and unique payment markers. Historical
+prices and FX snapshots are used; never live rates.
 
-| | |
-|---|---|
-| **Business definition** | Both currencies expressed as one IDR-equivalent total, for an operator who explicitly opts in to a single line. |
-| **Rule** | IDR orders pass through unconverted. USDT orders convert via **that order's own `fxRate` snapshot**, stored on the `Order` row at payment time. Each wallet leg blends by **its own** currency through that same snapshot — an IDR leg on a USDT order passes through unconverted, so the two halves of one sale are never blended by two different rules. |
-| **Why this is safe** | The rate is a **per-order snapshot, never a live rate**, so a past day's or past period's combined total never moves when today's exchange rate changes. A report you printed last month still says the same thing today. Summing raw currency amounts (or re-converting historical orders at today's rate) would produce a number that silently changes under the reader. |
-| **Why it is legitimate here specifically** | It operates on `Order.totalAmount`, which genuinely follows `Order.currency`. The same multiplication applied to `OrderItem.unitPrice` would be a bug — `unitPrice` is *always* catalog-central IDR regardless of settlement currency, and a past bug that multiplied it by `fxRate` inflated USDT-paid orders' reported revenue by roughly the exchange rate. That is why every `OrderItem`-derived figure routes through `orderItemRevenueIdr`. |
-| **Opt-in only** | Every other revenue figure in this system is per-currency. This is the single exception and it exists behind a filter the user clicks. |
-| **fxRate-less USDT order** | Counted **unconverted** (its raw USDT total lands in the IDR-equivalent sum) rather than dropped. This is a pre-existing wart, now reachable at more granularities than before; `revenueByPeriod` replicates the Day path's behavior verbatim precisely so the two series can never disagree. Recorded, not fixed. |
-| **There is no combined PROFIT** | Only revenue has a blend. Profit is derived from catalog-central IDR `unitPrice`/`costPrice` per line, so a "combined profit" would have to be invented. `metric=profit&currency=combined` falls back to the **IDR** series — a real number under a slightly narrower label. The card hides the Combined option while Profit is selected, so this is a backstop for a hand-written query string, not a path a user clicks. |
+Native revenue (`revenueSummary`, `revenueByDay`, and per-currency fields of
+`revenueByPeriod`) remains collected gateway plus `order_payment` wallet funding,
+with each wallet transaction's own currency. These financial totals match ledger
+postings and include actual conversion rounding/payment markers. The combined
+price series deliberately uses a different sales-price basis, labelled accordingly.
+
+When a USDT historical conversion snapshot is missing/non-positive, the combined
+figure includes only independently known IDR funding and returns
+`excludedFxOrders`; the dashboard labels that incomplete figure. Never add raw
+USDT as rupiah. An IDR order's USDT wallet leg converts only with a positive
+stored historical rate, otherwise it is excluded and counted.
+
+USDT profit without a positive historical FX snapshot excludes the affected line
+from both revenue and cost. `excludedFxItemCount` is included in the summary's
+`excludedItemCount`, with distinct dashboard text; chart buckets carry
+`excludedFxItemsUsdt` and all-unknown profit stays null (a gap). IDR product margin
+uses recorded IDR prices and snapshotted cost, so needs no conversion.
 
 ### Known quirk: `metric=orders&currency=combined` returns the IDR count
 

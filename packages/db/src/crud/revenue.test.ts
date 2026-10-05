@@ -453,10 +453,34 @@ describe("ordersByDay", () => {
 });
 
 describe("combinedRevenueByDay", () => {
+  it("uses recorded IDR price without USDT ceiling or unique marker while retaining native receipts", async () => {
+    const order = await prisma.order.create({ data: { orderCode: "E22-ROUNDING", userId, subtotalAmount: "79001", bulkDiscountAmount: "1000", discountAmount: "2000", totalAmount: "3.538", uniqueCents: "0.028", walletUsed: "1.25", currency: "USDT", fxRate: "16000", status: "DELIVERED", deliveredAt: new Date() } });
+    await prisma.walletTransaction.create({ data: { userId, orderId: order.id, reason: "order_payment", delta: "-1.25", balanceAfter: "0", currency: "USDT" } });
+    expect((await combinedRevenueByDay(prisma, 1))[0]).toMatchObject({ revenueIdrEquiv: "76001", excludedFxOrders: 0 });
+    expect((await revenueByPeriod(prisma, "month", 1))[0]).toMatchObject({ revenueIdrEquiv: "76001", revenue_usdt: "4.788", revenue_idr: "0", excludedFxOrders: 0 });
+  });
+
+  it("skips unknown USDT conversion, counts the order and preserves its recorded IDR wallet leg", async () => {
+    const order = await prisma.order.create({ data: { orderCode: "E22-NO-FX", userId, subtotalAmount: "79000", totalAmount: "5", currency: "USDT", fxRate: null, status: "DELIVERED", deliveredAt: new Date() } });
+    await prisma.walletTransaction.create({ data: { userId, orderId: order.id, reason: "order_payment", delta: "-1000", balanceAfter: "0", currency: "IDR" } });
+    expect((await combinedRevenueByDay(prisma, 1))[0]).toMatchObject({ revenueIdrEquiv: "1000", excludedFxOrders: 1 });
+    expect((await revenueByPeriod(prisma, "month", 1))[0]).toMatchObject({ revenueIdrEquiv: "1000", excludedFxOrders: 1, revenue_idr: "1000", revenue_usdt: "5" });
+  });
+
+  it("does not mislabel IDR profit as USDT when its historical FX snapshot is missing", async () => {
+    const product = await createDenomination(prisma, { productId: parentProductId, name: "Unknown FX", type: "SHARED", durationLabel: "1M", price: "79000", costPrice: "30000" });
+    const order = await prisma.order.create({ data: { orderCode: "E22-PROFIT", userId, subtotalAmount: "79000", totalAmount: "5", currency: "USDT", fxRate: null, status: "DELIVERED", deliveredAt: new Date() } });
+    await prisma.orderItem.create({ data: { orderId: order.id, productId: product.id, unitPrice: "79000", quantity: 1, warrantyDaysSnapshot: 0, costSnapshot: "30000" } });
+    expect((await profitSummarySince(prisma, new Date(0))).usdt).toEqual({ netProfit: "0", marginPct: null, excludedItemCount: 1, excludedFxItemCount: 1 });
+    expect((await profitByDay(prisma, 1))[0]!.profit_usdt).toBeNull();
+    expect((await profitByDay(prisma, 1))[0]!.excludedFxItemsUsdt).toBe(1);
+    expect((await profitByPeriod(prisma, "month", 1))[0]!.profit_usdt).toBeNull();
+    expect((await profitByPeriod(prisma, "month", 1))[0]!.excludedFxItemsUsdt).toBe(1);
+  });
   it("converts a USDT order's total to IDR-equivalent via its own fxRate, and leaves IDR orders unconverted", async () => {
     const now = new Date();
     await prisma.order.create({ data: { orderCode: `ORD-idr-${Math.random()}`, userId, subtotalAmount: "1", totalAmount: "54000", currency: "IDR", status: "DELIVERED", deliveredAt: now } });
-    await prisma.order.create({ data: { orderCode: `ORD-usdt-${Math.random()}`, userId, subtotalAmount: "1", totalAmount: "3.43", currency: "USDT", fxRate: "16000", status: "DELIVERED", deliveredAt: now } });
+    await prisma.order.create({ data: { orderCode: `ORD-usdt-${Math.random()}`, userId, subtotalAmount: "54880", totalAmount: "3.43", currency: "USDT", fxRate: "16000", status: "DELIVERED", deliveredAt: now } });
 
     const days = await combinedRevenueByDay(prisma, 1);
     expect(days).toHaveLength(1);
@@ -931,7 +955,7 @@ describe("period-bucketed analytics (Task 6c)", () => {
         orderCode: `ORD-period-${Math.random()}`,
         userId,
         kind: opts.kind ?? OrderKind.PRODUCT,
-        subtotalAmount: amount,
+        subtotalAmount: currency === "USDT" ? new Decimal(amount).times(16000).toString() : amount,
         totalAmount: amount,
         currency,
         ...(currency === "USDT" ? { fxRate: "16000" } : {}),
@@ -1330,7 +1354,7 @@ describe("wallet-spent credit counts as revenue (Financial Ledger M8.5)", () => 
         orderCode: `ORD-wallet-${Math.random()}`,
         userId: owner,
         kind: args.kind ?? OrderKind.PRODUCT,
-        subtotalAmount: args.gateway,
+        subtotalAmount: new Decimal(args.gateway).times(currency === "USDT" ? (args.fxRate ?? "16000") : 1).plus(new Decimal(args.walletSpend).times((args.legCurrency ?? currency) === "USDT" ? (args.fxRate ?? "16000") : 1)).toString(),
         totalAmount: args.gateway,
         walletUsed: args.walletSpend,
         currency,
@@ -1557,16 +1581,10 @@ describe("wallet-spent credit counts as revenue (Financial Ledger M8.5)", () => 
       expect(days[0]!.revenueIdrEquiv).toBe("85000");
     });
 
-    it("combinedRevenueByDay blends a wallet leg by the ORDER's currency, so an IDR order carrying an fxRate converts nothing", async () => {
+    it("converts a USDT wallet leg by its own currency even on an IDR order", async () => {
       const now = new Date();
-      // An IDR-settled order that nonetheless carries an fxRate. Today
-      // `finalizeOrderPayment` (crud/pricing.ts) only ever stamps one on a USDT
-      // order, so this shape cannot be reached through the app — it is injected
-      // here precisely to prove the GUARD, not just to document the intent.
-      // The gateway leg passes through unconverted because the order is IDR;
-      // the wallet leg must be held to the identical condition, or a future
-      // change that stamps an fxRate on an IDR order would silently blend this
-      // sale's two halves by two different rules.
+      // A stored positive historical rate converts a USDT debit independently
+      // of external payment currency; never add raw USDT to rupiah.
       await makeWalletPaidSale({
         deliveredAt: now,
         gateway: "1000",
@@ -1577,11 +1595,11 @@ describe("wallet-spent credit counts as revenue (Financial Ledger M8.5)", () => 
       });
 
       const days = await combinedRevenueByDay(prisma, 1);
-      // 1,000 + 3, not 1,000 + 3 x 16,000.
-      expect(days[0]!.revenueIdrEquiv).toBe("1003");
+      // 1,000 IDR + 3 USDT times the stored 16,000 IDR rate.
+      expect(days[0]!.revenueIdrEquiv).toBe("49000");
     });
 
-    it("revenueByPeriod holds its blended figure to that same guard", async () => {
+    it("revenueByPeriod applies the same wallet-currency conversion", async () => {
       const thisMonth = DateTime.utc().startOf("month").plus({ hours: 6 });
       await makeWalletPaidSale({
         deliveredAt: thisMonth.toJSDate(),
@@ -1596,7 +1614,7 @@ describe("wallet-spent credit counts as revenue (Financial Ledger M8.5)", () => 
       expect(rows[0]).toMatchObject({
         revenue_idr: "1000",
         revenue_usdt: "3",
-        revenueIdrEquiv: "1003",
+        revenueIdrEquiv: "49000",
       });
     });
 

@@ -805,10 +805,19 @@ describe("GET /api/dashboard/analytics", () => {
 
   it("switches to the IDR-equivalent combined series when currency=combined", async () => {
     const buyer = await upsertUser(prisma, { telegramId: 42, username: "buyer", fullName: "Buyer" });
-    await prisma.order.create({ data: { orderCode: "ORD-1", userId: buyer.id, subtotalAmount: "1", totalAmount: "3", currency: "USDT", fxRate: "16000", status: "DELIVERED", deliveredAt: new Date() } });
+    await prisma.order.create({ data: { orderCode: "ORD-1", userId: buyer.id, subtotalAmount: "48000", totalAmount: "3", currency: "USDT", fxRate: "16000", status: "DELIVERED", deliveredAt: new Date() } });
 
     const res = await get("/api/dashboard/analytics?currency=combined", cookie);
     expect(res.json()[6].value).toBe("48000");
+  });
+
+  it("surfaces missing historical FX in combined analytics at every granularity", async () => {
+    const buyer = await upsertUser(prisma, { telegramId: 42, username: "buyer", fullName: "Buyer" });
+    await prisma.order.create({ data: { orderCode: "ORD-NO-FX", userId: buyer.id, subtotalAmount: "48000", totalAmount: "3", currency: "USDT", fxRate: null, status: "DELIVERED", deliveredAt: new Date() } });
+    for (const range of ["7d", "month"]) {
+      const rows = (await get(`/api/dashboard/analytics?currency=combined&range=${range}`, cookie)).json();
+      expect(rows.at(-1)).toMatchObject({ value: "0", excludedFxOrders: 1 });
+    }
   });
 
   it("accepts range=30d", async () => {
@@ -865,7 +874,7 @@ describe("GET /api/dashboard/analytics", () => {
 
     it("blends currencies for a calendar range when currency=combined", async () => {
       const buyer = await upsertUser(prisma, { telegramId: 42, username: "buyer", fullName: "Buyer" });
-      await prisma.order.create({ data: { orderCode: "ORD-1", userId: buyer.id, subtotalAmount: "1", totalAmount: "3", currency: "USDT", fxRate: "16000", status: "DELIVERED", deliveredAt: new Date() } });
+      await prisma.order.create({ data: { orderCode: "ORD-1", userId: buyer.id, subtotalAmount: "48000", totalAmount: "3", currency: "USDT", fxRate: "16000", status: "DELIVERED", deliveredAt: new Date() } });
 
       const body = (await get("/api/dashboard/analytics?range=month&currency=combined", cookie)).json();
       expect(body[11].value).toBe("48000");

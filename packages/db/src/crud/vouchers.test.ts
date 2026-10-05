@@ -722,6 +722,13 @@ describe("getVoucherStats", () => {
 });
 
 describe("getVoucherPerformance", () => {
+  it("reports the recorded IDR sale price before USDT rounding and payment markers", async () => {
+    const voucher = await createVoucher(prisma, { code: "PERFROUNDING", type: VoucherType.PERCENT, value: "10" });
+    const { user, order } = await makeUserAndOrder({ telegramId: 3304, referralCode: "P3304", voucherId: voucher.id, totalAmount: "3.538", currency: "USDT", fxRate: "16000" });
+    await prisma.order.update({ where: { id: order.id }, data: { subtotalAmount: "79001", bulkDiscountAmount: "1000", discountAmount: "2000", uniqueCents: "0.028", walletUsed: "1.25" } });
+    await prisma.walletTransaction.create({ data: { userId: user.id, orderId: order.id, reason: "order_payment", delta: "-1.25", balanceAfter: "0", currency: "USDT" } });
+    expect((await getVoucherPerformance(prisma, [voucher.id])).get(voucher.id)!.revenue.toString()).toBe("76001");
+  });
   beforeEach(async () => {
     await resetDb(prisma);
   });
@@ -740,7 +747,7 @@ describe("getVoucherPerformance", () => {
       data: {
         orderCode: `ORD-PERF-${opts.telegramId}`,
         userId: user.id,
-        subtotalAmount: opts.totalAmount,
+        subtotalAmount: opts.currency === "USDT" && opts.fxRate ? new Decimal(opts.totalAmount).times(opts.fxRate).toString() : opts.totalAmount,
         totalAmount: opts.totalAmount,
         voucherId: opts.voucherId,
         currency: opts.currency ?? "IDR",
@@ -812,8 +819,10 @@ describe("getVoucherPerformance", () => {
     const voucher = await createVoucher(prisma, { code: "PERFWALLET", type: VoucherType.PERCENT, value: "10" });
     const { user, order } = await makeUserAndOrder({ telegramId: 3302, referralCode: "P3302", voucherId: voucher.id, totalAmount: "0", currency: "USDT", fxRate: "16000" });
     await prisma.walletTransaction.create({ data: { userId: user.id, orderId: order.id, reason: "order_payment", delta: "-100000", balanceAfter: "0", currency: "IDR" } });
+    await prisma.order.update({ where: { id: order.id }, data: { subtotalAmount: "100000" } });
     const other = await makeUserAndOrder({ telegramId: 3303, referralCode: "P3303", voucherId: voucher.id, totalAmount: "0", currency: "USDT", fxRate: "16000" });
     await prisma.walletTransaction.create({ data: { userId: other.user.id, orderId: other.order.id, reason: "order_payment", delta: "-2.5", balanceAfter: "0", currency: "USDT" } });
+    await prisma.order.update({ where: { id: other.order.id }, data: { subtotalAmount: "40000" } });
     expect((await getVoucherPerformance(prisma, [voucher.id])).get(voucher.id)!.revenue.toString()).toBe("140000");
   });
 

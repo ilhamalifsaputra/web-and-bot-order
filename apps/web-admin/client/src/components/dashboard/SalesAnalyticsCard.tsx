@@ -68,8 +68,8 @@ function seriesLabel(metric: AnalyticsMetric, currency: AnalyticsCurrency): stri
     // IDR rather than promise a blend that does not exist.
     return currency === "usdt" ? "Net profit (USDT)" : "Net profit (IDR)";
   }
-  if (currency === "combined") return "Delivered revenue (IDR equivalent)";
-  return `Delivered revenue (${ccy})`;
+  if (currency === "combined") return "Delivered sales value (IDR, excludes payment rounding)";
+  return `Delivered collected revenue (${ccy})`;
 }
 
 /** What one point on the x-axis covers. Every bucketed series is cut on UTC
@@ -88,8 +88,9 @@ export function SalesAnalyticsCard() {
   const [metric, setMetric] = useState<AnalyticsMetric>("revenue");
   const { data, isLoading, isError } = useAnalytics(range, currency, metric);
 
-  // Only revenue has a currency blend (built on Order.totalAmount, which
-  // follows the order's own currency). Profit is derived from catalog-central
+  // Combined sales value uses recorded IDR prices before payment rounding.
+  // Native revenue keeps gateway and wallet funding in their own currencies.
+  // Profit is derived from catalog-central
   // IDR prices and costs, so there is no honest combined-profit figure —
   // Combined is dropped from the options entirely while Profit is selected, and
   // an already-selected Combined falls back to IDR on the way in, so the chart
@@ -114,6 +115,8 @@ export function SalesAnalyticsCard() {
   const hasPlottableValue = chartData.some((p) => p.value !== null);
   const yLabel = seriesLabel(metric, currency);
   const yUnit = axisUnit(metric, currency);
+  const excludedFxOrders = (data ?? []).reduce((sum, p) => sum + (p.excludedFxOrders ?? 0), 0);
+  const excludedFxItems = (data ?? []).reduce((sum, p) => sum + (p.excludedFxItemCount ?? 0), 0);
 
   return (
     <Card>
@@ -127,6 +130,8 @@ export function SalesAnalyticsCard() {
         </div>
       </CardHeader>
       <CardContent>
+        {excludedFxOrders > 0 && <p className="text-xs text-ink-soft">{excludedFxOrders} orders have unknown FX; combined revenue is incomplete.</p>}
+        {excludedFxItems > 0 && <p className="text-xs text-ink-soft">{excludedFxItems} items have unknown FX; profit is incomplete.</p>}
         {isLoading && <p className="text-sm text-ink-soft">Loading…</p>}
         {isError && <p className="text-sm text-rust">Couldn't load analytics.</p>}
         {data && !hasPlottableValue && <EmptyState title="No data for this range." />}

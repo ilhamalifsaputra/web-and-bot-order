@@ -9,7 +9,7 @@ import { ValidationError } from "@app/core/errors";
 import type { PrismaClient } from "../client";
 import type { Db } from "./_types";
 import { isUniqueViolationOn } from "./_types";
-import { walletSpendByOrder } from "./revenue";
+import { orderSalesValueIdr, walletSpendByOrder } from "./revenue";
 
 const q4 = (v: Decimal.Value) => quantizeMoney(v, 4);
 
@@ -543,11 +543,10 @@ export async function getVoucherStats(
  * customers, aggregated in one query and reduced in JS. DELIVERED-only
  * (mirrors revenue.ts's salesRevenueByCurrency — only a completed,
  * fulfilled order counts as "earned" performance). Revenue is a single
- * IDR-equivalent Decimal per voucher: IDR orders pass through unconverted,
- * USDT orders convert via THAT order's own fxRate snapshot (never a live
- * rate) before summing — the same blend-to-IDR convention revenue.ts's
- * combinedRevenueByDay uses for its one intentionally-blended figure, so a
- * voucher's reported revenue is never a mix of raw IDR and raw USDT amounts.
+ * IDR sales-value Decimal per voucher, using orderSalesValueIdr: finalized
+ * USDT sales retain their original IDR price before conversion rounding and
+ * payment markers. Wallet funding counts once, using recorded leg currencies.
+ * Unknown USDT conversion is excluded and reported via excludedFxOrders.
  * Returns an empty Map immediately for an empty `voucherIds` input, without
  * querying.
  */
@@ -559,7 +558,7 @@ export async function getVoucherPerformance(
 
   const orders = await db.order.findMany({
     where: { voucherId: { in: voucherIds }, status: OrderStatus.DELIVERED },
-    select: { id: true, voucherId: true, userId: true, totalAmount: true, currency: true, fxRate: true },
+    select: { id: true, voucherId: true, userId: true, totalAmount: true, currency: true, fxRate: true, subtotalAmount: true, bulkDiscountAmount: true, discountAmount: true },
   });
   const walletSpend = await walletSpendByOrder(db, {}, orders.map((o) => o.id));
 
@@ -568,12 +567,9 @@ export async function getVoucherPerformance(
     if (o.voucherId == null) continue;
     const bucket = acc.get(o.voucherId) ?? { ordersCount: 0, revenue: new Decimal(0), customerIds: new Set<number>(), excludedFxOrders: 0 };
     bucket.ordersCount += 1;
-    const wallet = walletSpend.get(o.id);
-    const idr = (wallet?.idr ?? new Decimal(0)).plus(o.currency === "USDT" ? 0 : o.totalAmount);
-    const usdt = (wallet?.usdt ?? new Decimal(0)).plus(o.currency === "USDT" ? o.totalAmount : 0);
-    bucket.revenue = bucket.revenue.plus(idr);
-    if (o.fxRate != null && new Decimal(o.fxRate).greaterThan(0)) bucket.revenue = bucket.revenue.plus(usdt.times(o.fxRate));
-    else if (!usdt.isZero()) bucket.excludedFxOrders += 1;
+    const value = orderSalesValueIdr(o, walletSpend.get(o.id));
+    bucket.revenue = bucket.revenue.plus(value.amount);
+    bucket.excludedFxOrders += value.excludedFxOrders;
     bucket.customerIds.add(o.userId);
     acc.set(o.voucherId, bucket);
   }

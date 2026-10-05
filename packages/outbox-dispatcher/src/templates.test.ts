@@ -12,6 +12,15 @@ const payload = {
 };
 
 describe("notifier templates.render", () => {
+  it("renders a bilingual below-cost catalog alert with counts and review guidance", () => {
+    const out = render("ADMIN_DIGIFLAZZ_BELOW_COST", { below_cost_count: 12, newly_below_cost_count: 3 });
+    expect(out).toContain("12");
+    expect(out).toContain("3");
+    expect(out).toMatch(/below cost/i);
+    expect(out).toMatch(/di bawah modal/i);
+    expect(out).toMatch(/catalog/i);
+  });
+
   it("renders ORDER_DELIVERED (stored enum name) in English", () => {
     const out = render("ORDER_DELIVERED", payload);
     expect(out).toContain("📢 <b>TESTIMONIAL</b>");

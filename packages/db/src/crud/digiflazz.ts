@@ -63,7 +63,8 @@ import type { Db } from "./_types";
 import { getSetting, getDecryptedSetting } from "./settings";
 import { getOrder, finalizeDeliverySideEffects } from "./orders";
 import { resolveNicknameGate, buildNicknameProviderEntries } from "./nickname";
-import { enqueueManualOrderAdminAlert, enqueueManualDeliveredDm, enqueueAdminDigiflazzResyncAborted } from "./notifications";
+import { isDenominationBelowCost } from "@app/core/denominationPrices";
+import { enqueueAdminDigiflazzBelowCost, enqueueManualOrderAdminAlert, enqueueManualDeliveredDm, enqueueAdminDigiflazzResyncAborted } from "./notifications";
 import { logAdminAction } from "./audit";
 import {
   createCatalogProduct,
@@ -1711,6 +1712,26 @@ export async function resyncDigiflazzCatalog(
     }
     await updateDenomination(db, denom.id, data);
   }
+
+  // Persist the alerted set atomically with its outbox rows. A recovered SKU
+  // leaves the set, so a later loss alerts again; unchanged hourly syncs do not.
+  await db.$transaction(async (tx) => {
+    const key = "digiflazz_below_cost_alerted_ids";
+    await tx.setting.upsert({ where: { key }, create: { key, value: "[]" }, update: {} });
+    await tx.$queryRaw`SELECT key FROM settings WHERE key = ${key} FOR UPDATE`;
+    const previous = await tx.setting.findUniqueOrThrow({ where: { key } });
+    let previousIds: number[] = [];
+    try {
+      const parsed: unknown = JSON.parse(previous.value);
+      if (Array.isArray(parsed)) previousIds = parsed.filter((id): id is number => typeof id === "number");
+    } catch { /* A malformed previous marker must not hide a real margin warning. */ }
+    const rows = await tx.denomination.findMany({ where: { supplierSku: { not: null } }, select: { id: true, price: true, resellerPrice: true, costPrice: true } });
+    const belowCost = rows.filter(isDenominationBelowCost).map(row => row.id).sort((a, b) => a - b);
+    const previousSet = new Set(previousIds);
+    const newlyBelowCost = belowCost.filter(id => !previousSet.has(id)).length;
+    if (newlyBelowCost > 0) await enqueueAdminDigiflazzBelowCost(tx, { count: belowCost.length, newlyBelowCost });
+    await tx.setting.update({ where: { key }, data: { value: JSON.stringify(belowCost) } });
+  });
 
   if (!markupReadable) {
     logger.error(

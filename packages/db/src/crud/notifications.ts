@@ -336,6 +336,19 @@ export async function enqueueAdminDigiflazzResyncAborted(
   }
 }
 
+/** One count-only margin warning per resolved admin; prices remain admin-owned. */
+export async function enqueueAdminDigiflazzBelowCost(db: Db, args: { count: number; newlyBelowCost: number }): Promise<void> {
+  for (const adminId of await resolveAdminIds(db)) {
+    await db.notificationOutbox.create({
+      data: {
+        event: NotificationEvent.ADMIN_DIGIFLAZZ_BELOW_COST,
+        orderId: null,
+        payloadJson: JSON.stringify({ chat_id: adminId, below_cost_count: args.count, newly_below_cost_count: args.newlyBelowCost }),
+      },
+    });
+  }
+}
+
 /**
  * Enqueue one admin DM per resolved admin alerting that the hourly market-rate
  * refresh fetched a USD→IDR rate that failed `validateUsdIdrRate`'s sanity

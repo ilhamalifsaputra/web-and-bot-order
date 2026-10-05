@@ -741,3 +741,20 @@ describe("PATCH /api/catalog/denominations/:id — re-parenting and sortOrder", 
     expect(ids.indexOf(other.id)).toBeLessThan(ids.indexOf(denomId));
   });
 });
+
+
+describe("catalog below-cost flag", () => {
+  it.each([
+    ["11000", null, "10000", false],
+    ["9500", null, "10000", true],
+    ["11000", "9500", "10000", true],
+    ["10000", "10000", "10000", false],
+    ["11000", "9500", null, false],
+  ])("marks price %s reseller %s against cost %s", async (price, resellerPrice, costPrice, belowCost) => {
+    const { denomId, productId } = await seedDenominationWithContext();
+    await prisma.denomination.update({ where: { id: denomId }, data: { price, resellerPrice, costPrice } });
+    const response = await app.inject({ method: "GET", url: `/api/catalog/${productId}`, cookies: { [COOKIE]: cookie } });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().statsByDenom[String(denomId)].belowCost).toBe(belowCost);
+  });
+});

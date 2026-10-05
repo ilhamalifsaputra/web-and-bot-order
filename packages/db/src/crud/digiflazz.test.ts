@@ -1933,6 +1933,34 @@ describe("Digiflazz markup setting read safely", () => {
 });
 
 describe("resyncDigiflazzCatalog", () => {
+  it("alerts once for newly below-cost retail/reseller prices without changing protected prices", async () => {
+    await setSetting(prisma, ADMIN_IDS_KEY, "777");
+    const category = await prisma.category.findFirstOrThrow();
+    const { productId } = await importDigiflazzBrand(prisma, { brand: "Margin", categoryId: category.id, rows: [
+      { buyerSkuCode: "margin-reseller", productName: "Reseller", price: "10000", costPrice: "9000" },
+      { buyerSkuCode: "margin-retail", productName: "Retail", price: "9500", costPrice: "9000" },
+    ] });
+    await prisma.denomination.updateMany({ where: { productId }, data: { priceOverridden: true } });
+    await prisma.denomination.updateMany({ where: { supplierSku: "margin-reseller" }, data: { resellerPrice: "9500" } });
+    const response = (cost: string) => ["margin-reseller", "margin-retail"].map(buyerSkuCode => priceListItem({ buyerSkuCode, price: new Decimal(cost) }));
+    digiflazzMock.getPriceList.mockResolvedValue(response("9800"));
+    await resyncDigiflazzCatalog(prisma);
+    const alerts = () => prisma.notificationOutbox.findMany({ where: { event: "ADMIN_DIGIFLAZZ_BELOW_COST" } });
+    expect(await alerts()).toHaveLength(1);
+    expect(JSON.parse((await alerts())[0]!.payloadJson)).toMatchObject({ below_cost_count: 2, newly_below_cost_count: 2 });
+    const reseller = await prisma.denomination.findFirstOrThrow({ where: { supplierSku: "margin-reseller" } });
+    expect(reseller.resellerPrice!.toString()).toBe("9500");
+    expect(reseller.price.toString()).toBe("10000");
+    await resyncDigiflazzCatalog(prisma);
+    expect(await alerts()).toHaveLength(1);
+    // Recovery clears the remembered set; a later loss warrants a fresh alert.
+    digiflazzMock.getPriceList.mockResolvedValue(response("9000"));
+    await resyncDigiflazzCatalog(prisma);
+    digiflazzMock.getPriceList.mockResolvedValue(response("9800"));
+    await resyncDigiflazzCatalog(prisma);
+    expect(await alerts()).toHaveLength(2);
+  });
+
   it("updates costPrice/price from a fresh price list and leaves priceOverridden rows untouched", async () => {
     await setSetting(prisma, DIGIFLAZZ_MARKUP_TYPE_KEY, "percent");
     await setSetting(prisma, DIGIFLAZZ_MARKUP_VALUE_KEY, "10");

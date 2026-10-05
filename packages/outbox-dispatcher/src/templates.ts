@@ -199,6 +199,11 @@ interface AdminDigiflazzResyncAbortedPayload {
   considered_rows?: unknown;
 }
 
+interface AdminDigiflazzBelowCostPayload {
+  below_cost_count?: unknown;
+  newly_below_cost_count?: unknown;
+}
+
 interface RestockSubscriberPayload {
   product_name?: unknown;
   buyer_language?: unknown;
@@ -254,6 +259,7 @@ export function render(
     AdminStalePaymentPayload &
     WalletTopupCreditedPayload &
     AdminDigiflazzResyncAbortedPayload &
+    AdminDigiflazzBelowCostPayload &
     AdminFxRateRejectedPayload &
     AdminFxRateStalePayload &
     TicketClosedPayload &
@@ -443,6 +449,12 @@ export function render(
       `Transaksi: <code>${trxId}</code>\n` +
       `Pesanan kemungkinan sudah dibatalkan otomatis sebelum pembayaran ini bisa dicocokkan — mohon periksa apakah pelanggan sudah membayar dan kirim manual jika perlu.`
     );
+  }
+  if (event === NotificationEvent.ADMIN_DIGIFLAZZ_BELOW_COST) {
+    const count = escape(String(payload.below_cost_count ?? "0"));
+    const newly = escape(String(payload.newly_below_cost_count ?? "0"));
+    return `<b>Digiflazz prices below cost</b>\n${count} denominations have a retail or reseller price below supplier cost (${newly} newly flagged). Review the Below Cost badges in the catalog and adjust prices as needed.\n\n` +
+      `<b>Harga Digiflazz di bawah modal</b>\n${count} denominasi memiliki harga retail atau reseller di bawah modal supplier (${newly} baru terdeteksi). Periksa tanda Below Cost pada katalog dan sesuaikan harga jika diperlukan.`;
   }
   if (event === NotificationEvent.ADMIN_DIGIFLAZZ_RESYNC_ABORTED) {
     // Admin DM: resyncDigiflazzCatalog's own blast-radius circuit breaker

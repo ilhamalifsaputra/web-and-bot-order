@@ -1,4 +1,5 @@
 {
+  "catalog.below_cost": "Di Bawah Modal",
   "admin.approve": "✅ Approve",
   "admin.approved": "Order {code} di-approve dan dikirim.",
   "admin.approved_bubble": "✅ Order <code>{code}</code> disetujui.",

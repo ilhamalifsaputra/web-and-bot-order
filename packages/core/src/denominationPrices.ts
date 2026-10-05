@@ -43,3 +43,8 @@ export function denominationPriceError(p: DenominationPrices): string | null {
   }
   return null;
 }
+
+/** Catalog warning only: administrators decide whether to change either price. */
+export function isDenominationBelowCost(p: DenominationPrices): boolean {
+  return p.costPrice != null && (p.price.lt(p.costPrice) || (p.resellerPrice != null && p.resellerPrice.lt(p.costPrice)));
+}

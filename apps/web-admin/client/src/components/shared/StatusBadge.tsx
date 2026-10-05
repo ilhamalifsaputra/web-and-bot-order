@@ -13,6 +13,7 @@ const TONE: Record<string, Tone> = {
   PENDING_VERIFICATION: "warning",
   UNDERPAID: "warning",
   LOW_STOCK: "warning",
+  BELOW_COST: "warning",
   IN_STOCK: "success",
   EXPIRING_SOON: "warning",
   UNMATCHED: "warning",

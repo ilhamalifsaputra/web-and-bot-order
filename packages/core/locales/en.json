@@ -1,4 +1,5 @@
 {
+  "catalog.below_cost": "Below Cost",
   "admin.approve": "✅ Approve",
   "admin.approved": "Order {code} approved and delivered.",
   "admin.approved_bubble": "✅ Order <code>{code}</code> approved.",

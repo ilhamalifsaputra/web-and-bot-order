@@ -36,7 +36,7 @@ import {
   isDigiflazzPriceOverridden,
 } from "@app/db";
 import { Decimal } from "@app/core/money";
-import { denominationPriceError } from "@app/core/denominationPrices";
+import { denominationPriceError, isDenominationBelowCost } from "@app/core/denominationPrices";
 import { readMoneyField, readPercentField, moneyFieldError, percentFieldError, exactFields } from "../../lib/moneyField";
 import { isFlashActive } from "@app/core/flash";
 import { ProductType, DeliveryType, CategoryGroup } from "@app/core/enums";
@@ -956,6 +956,7 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     const denomStats = await Promise.all(
       product.denominations.map(async (d) => ({
         id: d.id,
+        belowCost: isDenominationBelowCost(d),
         available: await countAvailableStock(prisma, d.id),
         waiting: await countRestockSubscribers(prisma, d.id),
         rule: await getBulkPricingForDenomination(prisma, d.id),

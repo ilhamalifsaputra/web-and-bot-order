@@ -89,7 +89,7 @@ describe("PayPage", () => {
     renderPay(respondFor(pay));
     expect(await screen.findByRole("heading", { name: "Payment" })).toBeInTheDocument();
     expect(screen.getByAltText("QRIS")).toHaveAttribute("src", "https://img.example/qr.png");
-    expect(screen.getByText("Rp158.000")).toBeInTheDocument();
+    expect(screen.getByText("Rp158,000")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Open payment page/ })).toHaveAttribute("href", "https://pay.example/trx1");
   });
 
@@ -121,10 +121,10 @@ describe("PayPage", () => {
     };
     renderPay(respondFor(pay));
     await screen.findByRole("heading", { name: "Payment" });
-    expect(screen.getByText("Rp158.000")).toBeInTheDocument(); // subtotal line
+    expect(screen.getByText("Rp158,000")).toBeInTheDocument(); // subtotal line
     expect(screen.getByText("QRIS admin fee")).toBeInTheDocument();
-    expect(screen.getByText("Rp1.206")).toBeInTheDocument();
-    expect(screen.getByText("Rp159.206")).toBeInTheDocument(); // grand total
+    expect(screen.getByText("Rp1,206")).toBeInTheDocument();
+    expect(screen.getByText("Rp159,206")).toBeInTheDocument(); // grand total
   });
 
   it("renders the Bybit waiting branch with the UID and the send amount", async () => {
@@ -343,35 +343,35 @@ describe("PayPage", () => {
 
     it("QRIS + USD: adds the line and keeps the native Rp breakdown and payable unchanged", async () => {
       renderPay(respondWithCtx(qrisWithFee, ctxFor("USD")));
-      expect(await screen.findByText("Price $9.88 · Pay Rp159.206")).toBeInTheDocument();
+      expect(await screen.findByText("Price $9.88 · Pay Rp159,206")).toBeInTheDocument();
       // Task 5's regression guard: the payable is still the order's own figure.
-      expect(screen.getByText("Rp158.000")).toBeInTheDocument();
-      expect(screen.getByText("Rp1.206")).toBeInTheDocument();
-      expect(screen.getByText("Rp159.206")).toBeInTheDocument();
+      expect(screen.getByText("Rp158,000")).toBeInTheDocument();
+      expect(screen.getByText("Rp1,206")).toBeInTheDocument();
+      expect(screen.getByText("Rp159,206")).toBeInTheDocument();
     });
 
     it("QRIS without a fee breakdown + USD: Pay is order.total", async () => {
       renderPay(respondWithCtx({ ...basePay, state: "waiting", is_qris: true }, ctxFor("USD")));
-      expect(await screen.findByText("Price $9.88 · Pay Rp158.000")).toBeInTheDocument();
-      expect(screen.getByText("Rp158.000")).toBeInTheDocument();
+      expect(await screen.findByText("Price $9.88 · Pay Rp158,000")).toBeInTheDocument();
+      expect(screen.getByText("Rp158,000")).toBeInTheDocument();
     });
 
     it("QRIS + USD in Indonesian uses the shared checkout.price_and_pay wording", async () => {
       document.documentElement.lang = "id";
       renderPay(respondWithCtx(qrisWithFee, ctxFor("USD")));
-      expect(await screen.findByText("Harga $9.88 · Bayar Rp159.206")).toBeInTheDocument();
+      expect(await screen.findByText("Harga $9,88 · Bayar Rp159.206")).toBeInTheDocument();
     });
 
     it("PayDisini + USD: adds the line beside the unchanged Rp payable", async () => {
       renderPay(respondWithCtx(paydisini, ctxFor("USD")));
-      expect(await screen.findByText("Price $9.88 · Pay Rp158.000")).toBeInTheDocument();
-      expect(screen.getByText("Rp158.000")).toBeInTheDocument();
+      expect(await screen.findByText("Price $9.88 · Pay Rp158,000")).toBeInTheDocument();
+      expect(screen.getByText("Rp158,000")).toBeInTheDocument();
     });
 
     it("IDR / no-preference / no-rate viewers: unchanged, no line", async () => {
       for (const ctx of [ctxFor("IDR"), ctxFor(null), ctxFor("USD", null)]) {
         const view = renderPay(respondWithCtx(qrisWithFee, ctx));
-        await screen.findByText("Rp159.206");
+        await screen.findByText("Rp159,206");
         await waitFor(() => expect(apiGet).toHaveBeenCalledWith("/api/v1/pages/context"));
         expect(screen.queryByText(/Pay Rp/)).not.toBeInTheDocument();
         view.unmount();

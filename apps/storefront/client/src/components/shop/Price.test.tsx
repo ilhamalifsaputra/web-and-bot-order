@@ -43,7 +43,7 @@ function renderPrice(
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   // Seed the ["context"] cache directly (same key Layout.tsx's useShopContext
   // uses) so the very first render already has `ctx`, instead of racing the
-  // mocked apiGet's async resolution — findByText("Rp79.000") would otherwise
+  // mocked apiGet's async resolution — findByText("Rp79,000") would otherwise
   // pass trivially on the pre-load default (currency undefined → null-like
   // behavior), masking a currency-specific assertion made right after it.
   queryClient.setQueryData(["context"], ctx);
@@ -55,6 +55,28 @@ function renderPrice(
 }
 
 describe("Price", () => {
+  it("renders USD in the shell language on first render and after a language change", () => {
+    document.documentElement.lang = "id";
+    const ctx = { ...baseContext, currency: "USD" as const };
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(["context"], ctx);
+    const view = () => <QueryClientProvider client={queryClient}><Price value="40000" fx="16000" /></QueryClientProvider>;
+    const { rerender } = render(view());
+    expect(screen.getByText("$2,50")).toBeInTheDocument();
+    document.documentElement.lang = "en";
+    rerender(view());
+    expect(screen.getByText("$2.50")).toBeInTheDocument();
+  });
+
+  it.each(["id", "en"])("uses the actual %s page language for IDR, USD and hints", async (lang) => {
+    document.documentElement.lang = lang;
+    try {
+      renderPrice({ currency: null, fx: "16000" }, { value: "40000" });
+      expect(await screen.findByText(lang === "id" ? "Rp40.000" : "Rp40,000")).toBeInTheDocument();
+      expect(screen.getByText(lang === "id" ? "\u2248 $2,50" : "\u2248 $2.50")).toBeInTheDocument();
+    } finally { document.documentElement.lang = ""; }
+  });
+
   beforeEach(() => {
     document.documentElement.lang = "en";
     vi.clearAllMocks();
@@ -62,25 +84,25 @@ describe("Price", () => {
 
   it("currency null + fx set: renders the IDR figure and the derived USDT hint (today's default)", async () => {
     renderPrice({ currency: null, fx: "16000" });
-    expect(await screen.findByText("Rp79.000")).toBeInTheDocument();
+    expect(await screen.findByText("Rp79,000")).toBeInTheDocument();
     expect(screen.getByText("≈ $4.94")).toBeInTheDocument();
   });
 
   it("currency null + fx null: hides the USDT hint", async () => {
     renderPrice({ currency: null, fx: null });
-    expect(await screen.findByText("Rp79.000")).toBeInTheDocument();
+    expect(await screen.findByText("Rp79,000")).toBeInTheDocument();
     expect(screen.queryByText(/≈ \$/)).not.toBeInTheDocument();
   });
 
   it('currency "IDR" + fx set: Rp figure only, no ≈ hint (IDR user → Rp only)', async () => {
     renderPrice({ currency: "IDR", fx: "16000" });
-    expect(await screen.findByText("Rp79.000")).toBeInTheDocument();
+    expect(await screen.findByText("Rp79,000")).toBeInTheDocument();
     expect(screen.queryByText(/≈ \$/)).not.toBeInTheDocument();
   });
 
   it('currency "IDR" + fx null: still just Rp, no hint', async () => {
     renderPrice({ currency: "IDR", fx: null });
-    expect(await screen.findByText("Rp79.000")).toBeInTheDocument();
+    expect(await screen.findByText("Rp79,000")).toBeInTheDocument();
     expect(screen.queryByText(/≈ \$/)).not.toBeInTheDocument();
   });
 
@@ -88,12 +110,12 @@ describe("Price", () => {
     renderPrice({ currency: "USD", fx: "16000" });
     expect(await screen.findByText("$4.94")).toBeInTheDocument();
     expect(screen.queryByText(/≈ \$/)).not.toBeInTheDocument();
-    expect(screen.queryByText("Rp79.000")).not.toBeInTheDocument();
+    expect(screen.queryByText("Rp79,000")).not.toBeInTheDocument();
   });
 
   it('currency "USD" + fx null: falls back to the IDR string — never a bare/invented $', async () => {
     renderPrice({ currency: "USD", fx: null });
-    expect(await screen.findByText("Rp79.000")).toBeInTheDocument();
+    expect(await screen.findByText("Rp79,000")).toBeInTheDocument();
     expect(screen.queryByText(/\$/)).not.toBeInTheDocument();
   });
 
@@ -107,7 +129,7 @@ describe("Price", () => {
         <Price value="79000" fx="16000" />
       </QueryClientProvider>,
     );
-    expect(await screen.findByText("Rp79.000")).toHaveClass("text-pine");
+    expect(await screen.findByText("Rp79,000")).toHaveClass("text-pine");
     expect(screen.getByText("≈ $4.94")).toHaveClass("text-ink-faint");
 
     rerender(
@@ -115,8 +137,8 @@ describe("Price", () => {
         <Price value="79000" fx="16000" tone="light" />
       </QueryClientProvider>,
     );
-    expect(await screen.findByText("Rp79.000")).toHaveClass("text-white");
-    expect(screen.getByText("Rp79.000")).not.toHaveClass("text-pine");
+    expect(await screen.findByText("Rp79,000")).toHaveClass("text-white");
+    expect(screen.getByText("Rp79,000")).not.toHaveClass("text-pine");
     expect(screen.getByText("≈ $4.94")).toHaveClass("text-white/70");
   });
 });

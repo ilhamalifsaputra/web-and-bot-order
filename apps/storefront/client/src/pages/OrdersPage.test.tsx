@@ -78,7 +78,7 @@ describe("OrdersPage", () => {
     expect(await screen.findByRole("heading", { name: "My orders" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "ORD1" })).toHaveAttribute("href", "/account/orders/ORD1");
     expect(screen.getByText("Netflix 1 month")).toBeInTheDocument();
-    expect(screen.getByText("Rp158.000")).toBeInTheDocument();
+    expect(screen.getByText("Rp158,000")).toBeInTheDocument();
     expect(screen.getByText("2026-07-01 10:00")).toBeInTheDocument();
     expect(screen.getByText("Delivered")).toBeInTheDocument();
   });
@@ -103,7 +103,7 @@ describe("OrdersPage", () => {
       async (currency) => {
         renderOrders(() => MIXED, { ...context, currency });
         expect(await screen.findByText("9.88 USDT")).toBeInTheDocument();
-        expect(screen.getByText("Rp158.000")).toBeInTheDocument();
+        expect(screen.getByText("Rp158,000")).toBeInTheDocument();
         expect(screen.queryByText(/\$/)).not.toBeInTheDocument();
       },
     );
@@ -120,7 +120,7 @@ describe("OrdersPage", () => {
         renderOrders(() => MIXED, { ...context, currency });
         expect(await screen.findByRole("table")).toBeInTheDocument();
         expect(screen.getByText("9.88 USDT")).toBeInTheDocument();
-        expect(screen.getByText("Rp158.000")).toBeInTheDocument();
+        expect(screen.getByText("Rp158,000")).toBeInTheDocument();
         expect(screen.queryByText(/\$/)).not.toBeInTheDocument();
       },
     );

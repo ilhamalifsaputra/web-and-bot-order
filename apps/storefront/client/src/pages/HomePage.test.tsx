@@ -386,8 +386,8 @@ describe("HomePage", () => {
     );
     await screen.findByRole("heading", { name: "Netflix Premium" });
     expect(screen.getByText(/Flash sale/)).toHaveTextContent("20%");
-    expect(screen.getByText("Rp98.750")).toBeInTheDocument();
-    expect(screen.getByText("Was Rp98.750")).toBeInTheDocument();
+    expect(screen.getByText("Rp98,750")).toBeInTheDocument();
+    expect(screen.getByText("Was Rp98,750")).toBeInTheDocument();
   });
 
   // The struck-through figure is a factual claim about what this plan used to

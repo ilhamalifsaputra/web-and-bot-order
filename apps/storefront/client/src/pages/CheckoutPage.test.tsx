@@ -99,7 +99,7 @@ describe("CheckoutPage", () => {
     renderCheckout(() => checkoutData);
     expect(await screen.findByRole("heading", { name: "Checkout" })).toBeInTheDocument();
     expect(screen.getByText("Summary")).toBeInTheDocument();
-    expect(screen.getAllByText("Rp158.000").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Rp158,000").length).toBeGreaterThan(0);
   });
 
   it("identifies two different parent products with the same canonical plan name", async () => {
@@ -143,14 +143,14 @@ describe("CheckoutPage", () => {
     const qrisRadio = screen.getByRole("radio", { name: /QRIS/ }) as HTMLInputElement;
     expect(qrisRadio.checked).toBe(true);
     expect(screen.getAllByText("QRIS admin fee").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Rp1.206").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Rp1,206").length).toBeGreaterThan(0);
     // Order total row now shows the fee-inclusive grand total, not the bare total.
-    expect(screen.getAllByText("Rp159.206").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Rp159,206").length).toBeGreaterThan(0);
 
     // Switching to another method drops the fee line and reverts the total.
     fireEvent.click(screen.getByRole("radio", { name: /BINANCE/ }));
     expect(screen.queryByText("QRIS admin fee")).not.toBeInTheDocument();
-    expect(screen.getAllByText("Rp158.000").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Rp158,000").length).toBeGreaterThan(0);
   });
 
   // Touch ergonomics: the whole method row is the tap target, not just the
@@ -185,7 +185,7 @@ describe("CheckoutPage", () => {
       expect(apiPost).toHaveBeenCalledWith("/api/v1/checkout/voucher/preview", { voucher_code: "save10" }),
     );
     expect(await screen.findByText("Voucher")).toBeInTheDocument();
-    expect(screen.getAllByText("Rp142.200").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Rp142,200").length).toBeGreaterThan(0);
     // The method radio area is untouched by the preview response.
     expect((screen.getByRole("radio", { name: /BINANCE/ }) as HTMLInputElement).checked).toBe(true);
     // The input's own live value is untouched by the response either.
@@ -501,7 +501,7 @@ describe("CheckoutPage", () => {
       const bar = document.querySelector(".fixed.bottom-0")!;
       expect(bar).toBeInTheDocument();
       expect(bar).toHaveTextContent("Total");
-      expect(bar).toHaveTextContent("Rp158.000");
+      expect(bar).toHaveTextContent("Rp158,000");
       // One submit control at a time — the in-card button is desktop-only.
       expect(screen.getAllByRole("button", { name: /Place order/ })).toHaveLength(1);
       expect(bar.contains(screen.getByRole("button", { name: /Place order/ }))).toBe(true);
@@ -513,7 +513,7 @@ describe("CheckoutPage", () => {
       fireEvent.change(screen.getByPlaceholderText("Code"), { target: { value: "save10" } });
       (apiPost as Mock).mockResolvedValue({ ...checkoutData, voucher_discount: "15800", total: "142200" });
       fireEvent.click(screen.getByRole("button", { name: "Apply" }));
-      await waitFor(() => expect(document.querySelector(".fixed.bottom-0")).toHaveTextContent("Rp142.200"));
+      await waitFor(() => expect(document.querySelector(".fixed.bottom-0")).toHaveTextContent("Rp142,200"));
     });
 
     it("submits through the same handler and gating as the summary button", async () => {
@@ -560,14 +560,14 @@ describe("CheckoutPage", () => {
       it("QRIS: shows the $ total and the Rp payable the rail will charge", async () => {
         renderCheckout(() => ({ ...checkoutData, idr_enabled: true }), usdContext);
         await screen.findByRole("heading", { name: "Checkout" });
-        await waitFor(() => expect(bar()).toHaveTextContent("Price $9.88 · Pay Rp159.206"));
+        await waitFor(() => expect(bar()).toHaveTextContent("Price $9.88 · Pay Rp159,206"));
         expect(bar()).toHaveTextContent("$9.96");
       });
 
       it("PayDisini: the Rp payable is the fee-free total", async () => {
         renderCheckout(() => ({ ...checkoutData, paydisini_enabled: true }), usdContext);
         await screen.findByRole("heading", { name: "Checkout" });
-        await waitFor(() => expect(bar()).toHaveTextContent("Price $9.88 · Pay Rp158.000"));
+        await waitFor(() => expect(bar()).toHaveTextContent("Price $9.88 · Pay Rp158,000"));
       });
 
       it("USDT rail (binance default): no dual line", async () => {
@@ -580,7 +580,7 @@ describe("CheckoutPage", () => {
       it("QRIS for an IDR / no-preference viewer: unchanged, Rp only", async () => {
         renderCheckout(() => ({ ...checkoutData, idr_enabled: true }), { ...context, currency: "IDR" });
         await screen.findByRole("heading", { name: "Checkout" });
-        await waitFor(() => expect(bar()).toHaveTextContent("Rp159.206"));
+        await waitFor(() => expect(bar()).toHaveTextContent("Rp159,206"));
         expect(bar()).not.toHaveTextContent("Pay Rp");
         expect(bar()).not.toHaveTextContent("$");
       });
@@ -588,7 +588,7 @@ describe("CheckoutPage", () => {
       it("QRIS for a null-preference viewer: unchanged, no dual line", async () => {
         renderCheckout(() => ({ ...checkoutData, idr_enabled: true }));
         await screen.findByRole("heading", { name: "Checkout" });
-        await waitFor(() => expect(bar()).toHaveTextContent("Rp159.206"));
+        await waitFor(() => expect(bar()).toHaveTextContent("Rp159,206"));
         expect(bar()).not.toHaveTextContent("Pay Rp");
       });
     });

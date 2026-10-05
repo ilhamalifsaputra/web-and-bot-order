@@ -88,7 +88,7 @@ describe("CartPage", () => {
     renderCart(() => cartData);
     expect(await screen.findByRole("heading", { name: "Cart (4)" })).toBeInTheDocument();
     expect(screen.getByText("Netflix Premium - 1 Month")).toBeInTheDocument();
-    expect(screen.getAllByText("Rp158.000").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Rp158,000").length).toBeGreaterThan(0);
   });
 
   it("identifies two different parent products with the same canonical plan name", async () => {
@@ -120,7 +120,7 @@ describe("CartPage", () => {
     // The context query (which carries `currency`) may land after the cart.
     expect((await screen.findAllByText("$9.88")).length).toBeGreaterThan(0);
     expect(screen.getAllByText("$4.94").length).toBeGreaterThan(0);
-    expect(screen.queryByText("Rp158.000")).not.toBeInTheDocument();
+    expect(screen.queryByText("Rp158,000")).not.toBeInTheDocument();
     expect(screen.queryByText(/≈/)).not.toBeInTheDocument();
   });
 
@@ -141,7 +141,7 @@ describe("CartPage", () => {
 
     fireEvent.click(within(row).getByRole("button", { name: "Update" }));
     await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/v1/cart/update", { key: 10, qty: 3 }));
-    expect(await screen.findAllByText("Rp237.000")).not.toHaveLength(0);
+    expect(await screen.findAllByText("Rp237,000")).not.toHaveLength(0);
   });
 
   // Removal now takes two taps: the trash icon only opens an inline
@@ -314,8 +314,8 @@ describe("CartPage", () => {
     renderCart(() => onSale);
     await screen.findByRole("heading", { name: "Cart (4)" });
     expect(screen.getByText(/Flash sale/)).toHaveTextContent("20%");
-    expect(screen.getByText("Was Rp79.000")).toBeInTheDocument();
-    expect(screen.getAllByText("Rp63.200").length).toBeGreaterThan(0);
+    expect(screen.getByText("Was Rp79,000")).toBeInTheDocument();
+    expect(screen.getAllByText("Rp63,200").length).toBeGreaterThan(0);
   });
 
   it("shows no flash badge or struck-through price on a line with no sale", async () => {

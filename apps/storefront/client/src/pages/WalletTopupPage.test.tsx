@@ -165,7 +165,7 @@ describe("WalletTopupPage", () => {
       ...baseData,
       paydisini_enabled: true,
       // PayDisini's own floor is far above QRIS's here, so one rail accepts a
-      // Rp100.000 top-up and the other does not.
+      // Rp100,000 top-up and the other does not.
       rail_min: { ...baseData.rail_min, qris: "1000", paydisini: "200000" },
     };
 
@@ -267,7 +267,7 @@ describe("WalletTopupPage", () => {
     it("shows the effective minimum, not the raw top-up bound", async () => {
       renderTopup(() => railFloorOnly);
       await screen.findByRole("heading", { name: "Top up wallet" });
-      expect(screen.getByText("Minimum Rp10.000.")).toBeInTheDocument();
+      expect(screen.getByText("Minimum Rp10,000.")).toBeInTheDocument();
     });
 
     it("blocks an amount under the effective minimum even though no top-up bound is set", async () => {
@@ -284,7 +284,7 @@ describe("WalletTopupPage", () => {
     it("renders the range hint from the effective minimum and the configured maximum", async () => {
       renderTopup(() => ({ ...railFloorOnly, max_idr: "5000000" }));
       await screen.findByRole("heading", { name: "Top up wallet" });
-      expect(screen.getByText("Between Rp10.000 and Rp5.000.000.")).toBeInTheDocument();
+      expect(screen.getByText("Between Rp10,000 and Rp5,000,000.")).toBeInTheDocument();
     });
 
     it("shows no minimum at all when neither bound exists", async () => {

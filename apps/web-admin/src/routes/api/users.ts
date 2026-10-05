@@ -3,7 +3,7 @@ import { csvRow } from "../../lib/csv";
 import { parsePositiveId } from "../../lib/params";
 import { readMoneyField, moneyFieldError } from "../../lib/moneyField";
 import { UserRole } from "@app/core/enums";
-import { Decimal } from "@app/core/money";
+import { Decimal, isValidWalletAdjustment } from "@app/core/money";
 import { ValidationError } from "@app/core/errors";
 import { errorBody } from "@app/core/errorBody";
 import {
@@ -292,6 +292,11 @@ export default async function usersApiRoutes(app: FastifyInstance): Promise<void
     const deltaDec = readMoneyField(body.delta, currency, { signed: true });
     if (deltaDec === null) return reply.code(400).send({ error: moneyFieldError("The adjustment", currency) });
     if (deltaDec.isZero()) return reply.code(400).send({ error: "Amount cannot be zero." });
+    if (!isValidWalletAdjustment(deltaDec, currency)) {
+      return reply.code(400).send({ error: currency === "IDR"
+        ? "IDR adjustments must be whole rupiah."
+        : "USDT adjustments must have at most 4 decimal places." });
+    }
     if (!(await getUser(prisma, userId))) return reply.code(404).send({ error: "User not found." });
     let newBalance: Decimal;
     try {

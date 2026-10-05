@@ -126,6 +126,24 @@ describe("POST /api/users/:userId/ban", () => {
 });
 
 describe("POST /api/users/:userId/wallet", () => {
+  it.each([
+    ["IDR", "0"], ["IDR", "-0"], ["IDR", "10,5"], ["IDR", "-10,5"],
+    ["USDT", "1.23456"], ["USDT", "-1.23456"],
+  ])("refuses an unrepresentable %s wallet adjustment %s without writes", async (currency, delta) => {
+    const before = { wallet: await prisma.walletTransaction.count(), audit: await prisma.auditLog.count(), ledger: await prisma.financialTransaction.count() };
+    const res = await postJson(`/api/users/${customerId}/wallet`, cookie, csrf, { delta, currency, note: "Precision check" });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/zero|whole rupiah|4 decimal/);
+    expect({ wallet: await prisma.walletTransaction.count(), audit: await prisma.auditLog.count(), ledger: await prisma.financialTransaction.count() }).toEqual(before);
+  });
+  it("preserves valid debit support in both wallet currencies", async () => {
+    await prisma.user.update({ where: { id: customerId }, data: { walletBalance: "10000", walletBalanceUsdt: "10" } });
+    for (const [currency, delta, expected] of [["IDR", "-1000", "9000"], ["USDT", "-1.2345", "8.7655"]]) {
+      const res = await postJson(`/api/users/${customerId}/wallet`, cookie, csrf, { delta, currency, note: "Valid debit" });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().newBalance).toBe(expected);
+    }
+  });
   it("happy path: credits a customer's wallet and audits", async () => {
     const res = await postJson(`/api/users/${customerId}/wallet`, cookie, csrf, {
       delta: "50000",

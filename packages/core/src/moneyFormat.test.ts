@@ -55,6 +55,9 @@ describe("groupDecimalDigits", () => {
 });
 
 describe("formatIdrFor", () => {
+  it("does not show a negative sign when rounding to zero", () => {
+    for (const lang of ["id", "en"]) expect(formatIdrFor("-0.4", lang)).toBe("Rp0");
+  });
   it("renders the decided examples", () => {
     expect(formatIdrFor(4480, "id")).toBe("Rp4.480");
     expect(formatIdrFor(4480, "en")).toBe("Rp4,480");
@@ -83,6 +86,10 @@ describe("formatIdrFor", () => {
 });
 
 describe("formatUsdFor", () => {
+  it("does not show a negative sign when rounding to zero", () => {
+    expect(formatUsdFor("-0.001", "en")).toBe("$0.00");
+    expect(formatUsdFor("-0.001", "id")).toBe("$0,00");
+  });
   it("renders the decided examples", () => {
     expect(formatUsdFor("0.28", "id")).toBe("$0,28");
     expect(formatUsdFor("0.28", "en")).toBe("$0.28");
@@ -103,6 +110,13 @@ describe("formatUsdFor", () => {
 });
 
 describe("formatCompactIdrFor", () => {
+  it("promotes rounded values at thousand, million and billion boundaries", () => {
+    expect(formatCompactIdrFor("999499", "id")).toBe("Rp999K");
+    expect(formatCompactIdrFor("999500", "id")).toBe("Rp1jt");
+    expect(formatCompactIdrFor("999500", "en")).toBe("Rp1M");
+    expect(formatCompactIdrFor("999999999", "id")).toBe("Rp1M");
+    expect(formatCompactIdrFor("999999999", "en")).toBe("Rp1B");
+  });
   it("renders the decided examples", () => {
     expect(formatCompactIdrFor(1640000, "id")).toBe("Rp1,64jt");
     expect(formatCompactIdrFor(1640000, "en")).toBe("Rp1.64M");
@@ -128,7 +142,20 @@ describe("formatCompactIdrFor", () => {
 
   it.each(IDR_AMOUNTS)("differs between languages only in separators for %s", (a) => {
     // Indonesian writes millions "jt" where English writes "M"; everything else differs only in separators.
-    expect(swapSeparators(formatCompactIdrFor(a, "id").replace(/jt$/, "M"))).toBe(formatCompactIdrFor(a, "en"));
+    expect(swapSeparators(formatCompactIdrFor(a, "id").replace(/M$/, "B").replace(/jt$/, "M"))).toBe(formatCompactIdrFor(a, "en"));
+  });
+});
+
+describe("display to typed-input round trip", () => {
+  it("either refuses displayed money or reads its exact rounded value in both languages", () => {
+    for (const lang of ["id", "en"]) for (const raw of [...IDR_AMOUNTS, ...USD_AMOUNTS, "-0.4", "-2.5", "1.005", "999500"]) {
+      for (const [currency, text, dp] of [["IDR", formatIdrFor(raw, lang), 0], ["USDT", formatUsdFor(raw, lang), 2]] as const) {
+        for (const input of [text, text.replace(/Rp|\$/g, "")]) {
+          const parsed = normalizeMoneyInput(input, currency);
+          if (parsed !== null) expect(new Decimal(parsed).equals(new Decimal(raw).toDecimalPlaces(dp, Decimal.ROUND_HALF_UP))).toBe(true);
+        }
+      }
+    }
   });
 });
 

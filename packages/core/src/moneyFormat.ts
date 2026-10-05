@@ -54,12 +54,12 @@ export function groupDecimalDigits(plain: string, lang: string | null | undefine
 /** Rupiah in whole rupiah (half-up): id "Rp4.480", en "Rp4,480"; negative "-Rp…". */
 export function formatIdrFor(amount: Decimal.Value, lang: string | null | undefined): string {
   const whole = new Decimal(amount).toDecimalPlaces(0, Decimal.ROUND_HALF_UP);
-  return `${whole.isNegative() ? "-" : ""}Rp${groupDecimalDigits(whole.abs().toFixed(0), lang)}`;
+  return `${whole.isNegative() && !whole.isZero() ? "-" : ""}Rp${groupDecimalDigits(whole.abs().toFixed(0), lang)}`;
 }
 
 /** US dollars with 2 decimals (half-up): id "$1.234,50", en "$1,234.50"; negative "-$…". */
 export function formatUsdFor(amount: Decimal.Value, lang: string | null | undefined): string {
-  const value = new Decimal(amount);
+  const value = new Decimal(amount).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
   const sign = value.isNegative() && !value.isZero() ? "-" : "";
   return `${sign}$${groupDecimalDigits(value.abs().toFixed(2, Decimal.ROUND_HALF_UP), lang)}`;
 }
@@ -74,13 +74,17 @@ function trimTwoDecimals(value: Decimal): string {
  * below a million the nearest whole thousand ("Rp4K"); from a million up the
  * millions with up to 2 decimals in the language's decimal separator
  * (id "Rp1,64jt", en "Rp1.64M"). The K/M/jt count is never grouped. Indonesian
- * writes millions "jt" because a bare "M" reads as miliar (billion) there.
+ * writes millions "jt" because "M" reads as miliar (billion) there. Rounded
+ * boundaries promote units; billions use "M" (id) / "B" (en).
  */
 export function formatCompactIdrFor(amount: Decimal.Value, lang: string | null | undefined): string {
   const value = new Decimal(amount);
   if (value.lessThan(1000)) return formatIdrFor(value, lang);
-  if (value.lessThan(1_000_000)) return `Rp${value.div(1000).toDecimalPlaces(0, Decimal.ROUND_HALF_UP).toFixed(0)}K`;
-  return `Rp${trimTwoDecimals(value.div(1_000_000)).replace(".", moneySeparators(lang).decimal)}${isIndonesianLanguage(lang) ? "jt" : "M"}`;
+  const thousands = value.div(1000).toDecimalPlaces(0, Decimal.ROUND_HALF_UP);
+  if (thousands.lessThan(1000)) return `Rp${thousands.toFixed(0)}K`;
+  const millions = value.div(1_000_000).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+  if (millions.lessThan(1000)) return `Rp${trimTwoDecimals(millions).replace(".", moneySeparators(lang).decimal)}${isIndonesianLanguage(lang) ? "jt" : "M"}`;
+  return `Rp${trimTwoDecimals(value.div(1_000_000_000)).replace(".", moneySeparators(lang).decimal)}${isIndonesianLanguage(lang) ? "M" : "B"}`;
 }
 
 /**

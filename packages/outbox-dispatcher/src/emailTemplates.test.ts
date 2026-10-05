@@ -44,6 +44,22 @@ describe("emailTemplates.renderEmail", () => {
     config.PUBLIC_URL = undefined;
   });
   describe("OWNER_EMAIL_ORDER_PAID", () => {
+    it("E28 renders signed bulk, voucher, wallet and marker adjustments in both bodies", async () => {
+      const result = await renderEmail("OWNER_EMAIL_ORDER_PAID", {
+        currency: "USDT", subtotal: "2.92", bulk_discount: "0.37", discount: "0.13",
+        wallet_credit: "0.5", unique_cents: "0.03", total: "1.95", items: [],
+      });
+      for (const body of [result!.text, result!.html!]) {
+        expect(body).toContain("Bulk Discount");
+        expect(body).toContain("-0.37 USDT");
+        expect(body).toContain("-0.13 USDT");
+        expect(body).toContain("Wallet Credit");
+        expect(body).toContain("-0.5 USDT");
+        expect(body).toContain("Unique Amount");
+        expect(body).toContain("+0.03 USDT");
+        expect(body).toContain("1.95 USDT");
+      }
+    });
     const payload = {
       to: "owner@example.com",
       order_code: DISTINCTIVE_ORDER_CODE,
@@ -130,7 +146,7 @@ describe("emailTemplates.renderEmail", () => {
       expect(result!.subject).toBe("New Paid Order - " + DISTINCTIVE_ORDER_CODE);
     });
 
-    it("formats non-IDR money via formatPrice (2dp + currency suffix), not formatIdr", async () => {
+    it("formats USDT money with its native precision and currency suffix", async () => {
       const usdtPayload = {
         ...payload,
         currency: "USDT",
@@ -141,8 +157,8 @@ describe("emailTemplates.renderEmail", () => {
       };
       const result = await renderEmail("OWNER_EMAIL_ORDER_PAID", usdtPayload);
       expect(result).not.toBeNull();
-      expect(result!.html).toContain("10.50 USDT");
-      expect(result!.text).toContain("10.50 USDT");
+      expect(result!.html).toContain("10.5 USDT");
+      expect(result!.text).toContain("10.5 USDT");
     });
 
     it("hides the Discount row/line entirely end-to-end when the payload's discount is \"0\"", async () => {
@@ -210,7 +226,7 @@ describe("emailTemplates.renderEmail", () => {
       });
     });
 
-    it("formats non-IDR money via formatPrice (2dp + currency suffix), not formatIdr", async () => {
+    it("formats USDT money with its native precision and currency suffix", async () => {
       const usdtPayload = {
         ...payload,
         currency: "USDT",
@@ -221,8 +237,8 @@ describe("emailTemplates.renderEmail", () => {
       };
       const result = await renderEmail("OWNER_EMAIL_ORDER_PAID", usdtPayload);
       expect(result).not.toBeNull();
-      expect(result!.html).toContain("10.50 USDT");
-      expect(result!.text).toContain("10.50 USDT");
+      expect(result!.html).toContain("10.5 USDT");
+      expect(result!.text).toContain("10.5 USDT");
     });
 
     it("hides the Discount row/line entirely end-to-end when the payload's discount is \"0\"", async () => {

@@ -1247,3 +1247,7 @@ check is off"**, never "reject everything".
 
 Key/default constants live in `packages/db/src/crud/pricing.ts` (FX) and
 `packages/db/src/crud/orderMinimums.ts` + `_minAmount.ts` (minimums).
+
+### Paid-order email reconciliation
+
+Owner paid-order email summaries use the shared reconciledOrderMoneyRows helper: subtotal - bulk discount - voucher discount - wallet credit + unique amount = stored payable. Converted USDT subtotals absorb discount rounding; wallet and unique-amount rows retain native stored precision. Both email bodies display all nonzero adjustments and native USDT amounts to four decimals. Per-unit prices are indicative. Buyer receipt behavior is unchanged. See docs/sales-metrics-contract.md for the reporting and receipt bases.

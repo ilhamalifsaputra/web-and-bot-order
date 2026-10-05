@@ -21,6 +21,7 @@ import {
   type CategoryGroup,
 } from "@app/core/enums";
 import { deriveOrderStatusFromItems } from "@app/core/orderItemStatus";
+import { reconciledOrderMoneyRows } from "@app/core/orderMoneyRows";
 import { parseAdditionalFields, validateCustomerData } from "@app/core/deliveryFields";
 import {
   quantizeMoney,
@@ -2316,16 +2317,12 @@ export function customerLabel(
  * in the settlement currency, which is what enqueueBuyerOrderReadyEmailIfGuest
  * does for the buyer's receipt.
  *
- * The owner-facing OWNER_EMAIL_ORDER_PAID call site below still converts
- * subtotal and discount independently, and its figures can still disagree by
- * ~0.01 USDT — an accepted tradeoff there, where the reader is the shop admin
- * and the reconciled view they act on is the admin order page. That page
- * (apps/web-admin/src/routes/orderMoneyView.ts) no longer converts per
- * component: it reads `reconciledOrderMoneyRows` (@app/core/orderMoneyRows,
- * B6 money audit), which keeps the settled total exact and lets the items row
- * absorb the remainder. Any NEW display whose rows a reader adds up should use
- * that helper, not this converter. (The owner email cannot add up by rounding
- * alone: its template has no bulk-discount or wallet row.)
+ * The owner paid email and admin order page use `reconciledOrderMoneyRows`
+ * for their additive summaries: all bulk/voucher/wallet/marker rows reconcile
+ * with the exact settled total. This converter is retained only for an item's
+ * indicative unit price and the buyer receipt's existing derivation. A unit
+ * price rounded for display is not the additive subtotal; quantity must not
+ * multiply its conversion error into the summary.
  */
 function orderCurrencyConverter(order: { currency: string; fxRate: Decimal | null }) {
   return (value: Decimal.Value): Decimal =>
@@ -2772,15 +2769,15 @@ export async function settlePaidOrder(
     // bybitTxid is set, in that order — these are gateway-specific and never
     // more than one is populated for a given order today, but the preference
     // order keeps this deterministic if that ever changes.
-    // Converts subtotal/discount/unitPrice out of central-IDR into the
-    // order's settlement currency — see `orderCurrencyConverter`'s own doc
-    // comment for why that's needed and for its known rounding caveat.
+    // Unit prices are indicative. The additive summary uses the same
+    // reconciled rows as the admin order page, including every adjustment.
     const toOrderCurrency = orderCurrencyConverter(order);
+    const moneyRows = reconciledOrderMoneyRows(order);
 
     await enqueueOwnerOrderPaidEmail(db, {
       orderId,
       orderCode: order.orderCode,
-      total: order.totalAmount,
+      total: moneyRows.total,
       currency: order.currency,
       itemCount: order.items.length,
       customerLabel: customerLabel(order.user),
@@ -2790,8 +2787,11 @@ export async function settlePaidOrder(
         quantity: item.quantity,
         unitPrice: toOrderCurrency(item.unitPrice),
       })),
-      subtotal: toOrderCurrency(order.subtotalAmount),
-      discount: toOrderCurrency(order.discountAmount),
+      subtotal: moneyRows.itemsTotal,
+      bulkDiscount: moneyRows.bulkDiscount,
+      discount: moneyRows.discount,
+      walletCredit: moneyRows.walletCredit,
+      uniqueCents: moneyRows.uniqueCents,
       paymentMethod: order.paymentMethod,
       transactionId: order.paymentRef ?? order.binanceTxid ?? order.bybitTxid ?? null,
       voucherCode: order.voucher?.code ?? null,

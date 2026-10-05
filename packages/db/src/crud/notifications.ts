@@ -661,7 +661,10 @@ async function enqueueOwnerEmail(
  * Carries the full order-summary detail the HTML "New Paid Order" template
  * (packages/core/src/email/templates/orderPaid.ts, rendered by
  * packages/outbox-dispatcher/src/emailTemplates.ts) needs to show a real
- * order summary instead of just a total — every optional field (`items`
+ * order summary instead of just a total. Its subtotal, bulk/voucher discounts,
+ * wallet credit, marker and total are reconciled settlement-currency rows from
+ * the caller, serialized as decimal strings; zero adjustments remain explicit.
+ * Every optional field (`items`
  * money, `subtotal`, `discount`, `transactionId`, `voucherCode`, `orderUrl`)
  * is written into the payload as an explicit JSON `null` when the caller has
  * none, never omitted as a missing key and never the string `"null"` — the
@@ -683,7 +686,10 @@ export async function enqueueOwnerOrderPaidEmail(
     customerLabel: string;
     items: { name: string; variant: string | null; quantity: number; unitPrice: Decimal }[];
     subtotal: Decimal;
+    bulkDiscount: Decimal;
     discount: Decimal;
+    walletCredit: Decimal;
+    uniqueCents: Decimal;
     paymentMethod: string;
     transactionId: string | null;
     voucherCode: string | null;
@@ -704,7 +710,10 @@ export async function enqueueOwnerOrderPaidEmail(
       unitPrice: item.unitPrice.toString(),
     })),
     subtotal: args.subtotal.toString(),
+    bulk_discount: args.bulkDiscount.toString(),
     discount: args.discount.toString(),
+    wallet_credit: args.walletCredit.toString(),
+    unique_cents: args.uniqueCents.toString(),
     payment_method: args.paymentMethod,
     transaction_id: args.transactionId,
     voucher_code: args.voucherCode,

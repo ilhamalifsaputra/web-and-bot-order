@@ -1026,3 +1026,9 @@ the wallet-spend correction (`5d755c5c`, `cd34f9ab`), and again by that
 correction's own review pass — which bounded the window-scoped wallet reads,
 recorded the lifetime ones' scaling ceiling (open item 13) and pinned the
 combined blend's fxRate guard.*
+
+## Owner paid-order receipt
+
+The owner ORDER_PAID email uses `reconciledOrderMoneyRows`, the same additive summary as the admin order page. Subtotal minus bulk discount minus voucher discount minus wallet credit plus unique amount equals the stored payable total. USDT subtotal absorbs the ceiling remainder after each discount is converted using the historical order FX snapshot. Native wallet credit, marker and payable retain their saved precision; the email renders USDT to up to four decimals instead of rounding these rows to cents. IDR rows retain whole-rupiah display. Item prices are labeled per unit and are indicative, rather than multiplied to rebuild the reconciled subtotal.
+
+Both HTML and plain text show every nonzero adjustment. Old queued payloads without the added adjustment fields still render with those rows omitted. Buyer receipts keep their existing behavior.

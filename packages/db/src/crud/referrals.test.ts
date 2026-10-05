@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { Decimal } from "@app/core/money";
+import { config } from "@app/core/config";
 import { OrderCurrency } from "@app/core/enums";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
@@ -61,6 +62,18 @@ async function makeDeliveredOrder(args: {
 }
 
 describe("maybePayReferralCommission", () => {
+  it.each(["IDR", "USDT"])("characterizes external-only referral basis for a %s wallet-funded sale", async (currency) => {
+    const { referrer, referee } = await makeReferrerAndReferee();
+    const total = currency === "IDR" ? "0" : "5.028";
+    const order = await makeDeliveredOrder({ userId: referee.id, orderCode: "REF-BASIS", totalAmount: total, currency, fxRate: "16000" });
+    const snapshot = await prisma.order.update({ where: { id: order.id }, data: { subtotalAmount: "112000", walletUsed: currency === "IDR" ? "112000" : "2", uniqueCents: currency === "IDR" ? "0" : "0.028" } });
+    await maybePayReferralCommission(prisma, snapshot);
+    const expected = new Decimal(total).times(config.REFERRAL_COMMISSION_PERCENT).div(100).toDecimalPlaces(4);
+    const referral = await prisma.referral.findUnique({ where: { refereeId: referee.id } });
+    expect(referral?.commission.toString() ?? "0").toBe(expected.toString());
+    expect((await freshUser(referrer.id)).walletBalanceUsdt.toString()).toBe(expected.toString());
+    if (currency === "IDR") expect(referral).toBeNull();
+  });
   it("no referrer: no-op, no Referral row, no wallet change", async () => {
     const user = await upsertUser(prisma, { telegramId: 503, username: "lone", fullName: "Lone" });
     const order = await makeDeliveredOrder({

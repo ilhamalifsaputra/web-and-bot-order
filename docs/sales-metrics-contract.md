@@ -403,6 +403,17 @@ hiding it behind a zero-revenue check.
 means "no sales at all" or "sales, but every cost is unknown". The chart cannot
 currently distinguish them. Recorded, not fixed.
 
+### Referral commission basis (existing business policy)
+
+Referral commission uses the first commission-earning delivered order's externally
+payable `Order.totalAmount`, net of wallet credit. It includes any USDT conversion
+rounding and unique payment marker. A fully wallet-funded order pays no commission
+and creates no Referral row, leaving a later positive external payment eligible.
+An IDR amount converts to the USDT commission wallet through its stored FX or the
+existing configured-rate fallback. This differs from collected sales revenue,
+which counts wallet funding too. The audit documents and characterizes this policy;
+changing its basis requires a business decision.
+
 ### Combined sales value: recorded IDR price basis
 
 `combinedRevenueByDay` and `PeriodRevenue.revenueIdrEquiv` serve the opt-in

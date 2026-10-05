@@ -217,6 +217,9 @@ export const OrderStatus = {
 export type OrderStatus = (typeof OrderStatus)[keyof typeof OrderStatus];
 export const zOrderStatus = z.nativeEnum(OrderStatus);
 
+/** Terminal transitions that release stock, wallet and voucher holds. Expiry uses CANCELLED. */
+export const ORDER_HOLD_RELEASED_STATUSES: readonly OrderStatus[] = [OrderStatus.CANCELLED, OrderStatus.REJECTED];
+
 /**
  * Per-line fulfilment state — stored on `order_items.status` (Trustance
  * Phase 1, Task 3). String enum, uppercase member names, matching every other

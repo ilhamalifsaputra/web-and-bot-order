@@ -8,6 +8,7 @@ import { config } from "@app/core/config";
 import {
   OrderKind,
   OrderStatus,
+  ORDER_HOLD_RELEASED_STATUSES,
   OrderItemStatus,
   StockStatus,
   StockEventType,
@@ -1669,8 +1670,7 @@ export async function cancelOrder(db: Db, orderId: number, reason: string, actor
   const order = await getOrderRaw(db, orderId);
   if (!order) throw new ValidationError("error.order_not_found");
   if (
-    order.status === OrderStatus.CANCELLED ||
-    order.status === OrderStatus.REJECTED ||
+    ORDER_HOLD_RELEASED_STATUSES.includes(order.status as OrderStatus) ||
     order.status === OrderStatus.REFUNDED
   ) {
     return order;

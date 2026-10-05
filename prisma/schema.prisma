@@ -812,6 +812,10 @@ model OrderItem {
   stockItemId          Int?    @map("stock_item_id")
   quantity             Int     @default(1)
   unitPrice            Decimal @map("unit_price")
+  /// Per-unit denomination cost in IDR frozen at order creation. Nullable,
+  /// without a default or backfill: legacy rows and unknown costs fall back
+  /// to the live denomination cost when profit is reported.
+  costSnapshot         Decimal? @map("cost_snapshot")
   warrantyDaysSnapshot Int     @map("warranty_days_snapshot")
   /// Denomination.deliveryType frozen at order-creation time. settlePaidOrder
   /// reads THIS, not the live denomination row, so editing a SKU's

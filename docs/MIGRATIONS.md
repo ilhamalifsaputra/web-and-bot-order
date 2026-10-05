@@ -99,6 +99,24 @@ bertabrakan. Jangan me-rename folder migrasi yang sudah pernah diterapkan:
 itu merusak pelacakan `_prisma_migrations` di DB mana pun yang sudah
 menjalankannya dengan nama lama.
 
+## Catatan per migrasi: `20261005100000_add_order_item_cost_snapshot`
+
+Migrasi ini menambahkan `order_items.cost_snapshot` sebagai Decimal nullable
+tanpa default atau backfill. Pesanan baru menyimpan modal per unit dalam IDR
+dari denominasi saat item dibuat, termasuk checkout wallet dan produk manual.
+Laporan profit menggunakan snapshot ini agar perubahan modal supplier setelah
+penjualan tidak mengubah profit historis. Baris lama dan item yang modalnya
+belum diketahui tetap memakai fallback `denominations.cost_price` saat laporan
+dibaca; modal nol disimpan sebagai nol, bukan dianggap tidak diketahui.
+
+**Urutan deploy wajib:** terapkan skema dengan `pnpm exec prisma db push` atau
+migrasi SQL ini, jalankan `pnpm run prisma:generate`, dan restart order-bot
+sebelum kode baru berjalan. Semua proses yang memakai Prisma client baru
+(web-admin, storefront, order-bot, dan worker) perlu memakai skema yang sudah
+diperbarui; jika kolom belum ada, pembacaan OrderItem dapat gagal `P2022`.
+Entrypoint Docker yang menjalankan `db push` sebelum aplikasi start memenuhi
+urutan perubahan skema ini; jangan menjalankan kode baru pada database lama.
+
 ## Catatan per migrasi: `20261003000000_rename_legacy_unique_index_names`
 
 Migrasi ini mengganti nama lima unique index warisan SQLite

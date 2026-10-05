@@ -714,7 +714,7 @@ export async function createOrderFromCart(
   // Lock the cart first: a concurrent checkout of the same cart waits here and
   // then finds it empty, instead of creating a second order from it.
   await lockCartForCheckout(db, args.user.id);
-  const rawCart = (await getCart(db, args.user.id)) as unknown as CartLine[];
+  const rawCart = await getCart(db, args.user.id);
   const cart = rawCart.filter((ci) => ci.product.isActive);
   if (cart.length === 0) throw new ValidationError("error.cart_empty");
   for (const line of cart) {
@@ -920,6 +920,7 @@ export async function createOrderFromCart(
         stockItemId: null,
         quantity: 1,
         unitPrice: unit,
+        costSnapshot: ci.product.costPrice,
         warrantyDaysSnapshot: warrantyDays,
         deliveryTypeSnapshot: ci.product.deliveryType,
         // Every new line starts PENDING (unpaid). Written explicitly rather
@@ -1166,6 +1167,7 @@ export async function createOrderDirect(
       stockItemId: null,
       quantity: 1,
       unitPrice: q4(unit),
+      costSnapshot: product.costPrice,
       warrantyDaysSnapshot: product.warrantyDays,
       deliveryTypeSnapshot: product.deliveryType,
       // Same as createOrderFromCart's loop — explicit PENDING, never a

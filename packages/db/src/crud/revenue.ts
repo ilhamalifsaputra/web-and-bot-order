@@ -626,7 +626,7 @@ export interface TopProductMargin {
 
 /**
  * Best-selling products since `since`, ranked by units sold, with revenue and
- * profit in IDR — `OrderItem.unitPrice` and `Denomination.costPrice` are both
+ * profit in IDR — `OrderItem.unitPrice` and its per-unit cost snapshot are both
  * always catalog-central IDR already (see orderItemRevenueIdr), so neither
  * needs fxRate conversion regardless of the order's settlement currency. Any
  * cost-unknown unit nulls that product's profit (rather than silently
@@ -642,6 +642,7 @@ export async function topProductsByMargin(db: Db, since: Date, limit = 5): Promi
       productId: true,
       quantity: true,
       unitPrice: true,
+      costSnapshot: true,
       product: { select: { name: true, costPrice: true, product: { select: { name: true } } } },
       order: { select: { subtotalAmount: true, bulkDiscountAmount: true, discountAmount: true } },
     },
@@ -658,10 +659,11 @@ export async function topProductsByMargin(db: Db, since: Date, limit = 5): Promi
     };
     a.units += item.quantity;
     a.revenue = a.revenue.plus(orderItemRevenueIdr(item));
-    if (item.product.costPrice == null) {
+    const unitCost = item.costSnapshot ?? item.product.costPrice;
+    if (unitCost == null) {
       a.costUnknownUnits += item.quantity;
     } else {
-      a.cost = a.cost.plus(new Decimal(item.product.costPrice).times(item.quantity));
+      a.cost = a.cost.plus(new Decimal(unitCost).times(item.quantity));
     }
     acc.set(item.productId, a);
   }
@@ -694,11 +696,12 @@ export interface ProfitSummary {
  * Net profit + margin for delivered OrderItems since `since`, split by the
  * order's currency — never blended (the "Rp137 + 20.25 USDT" bug this
  * dashboard exists to fix). Both `OrderItem.unitPrice` and
- * `Denomination.costPrice` are always catalog-central IDR; a USDT-currency
+ * `OrderItem.costSnapshot` (or the live denomination cost for legacy rows)
+ * are always catalog-central IDR; a USDT-currency
  * line converts BOTH to USDT-equivalent via THAT order's own `fxRate`
  * snapshot (never a live rate) through the shared `idrToBucketCurrency`
  * helper, so revenue and cost can never end up in mismatched units within
- * the same bucket. Items whose Denomination has no costPrice are excluded
+ * the same bucket. Items with neither a snapshot nor live cost are excluded
  * from both the profit sum and the margin% denominator (counting them at
  * cost=0 would read as a fabricated 100% margin) and counted in
  * `excludedItemCount` instead.
@@ -709,6 +712,7 @@ export async function profitSummarySince(db: Db, since: Date): Promise<ProfitSum
     select: {
       quantity: true,
       unitPrice: true,
+      costSnapshot: true,
       product: { select: { costPrice: true } },
       order: { select: { currency: true, fxRate: true, subtotalAmount: true, bulkDiscountAmount: true, discountAmount: true } },
     },
@@ -722,12 +726,13 @@ export async function profitSummarySince(db: Db, since: Date): Promise<ProfitSum
   for (const item of items) {
     const isUsdt = item.order.currency === "USDT";
     const bucket = isUsdt ? byCurrency.USDT : byCurrency.IDR;
-    if (item.product.costPrice == null) {
+    const unitCost = item.costSnapshot ?? item.product.costPrice;
+    if (unitCost == null) {
       bucket.excluded += 1;
       continue;
     }
     const lineRevenueIdr = orderItemRevenueIdr(item);
-    const lineCostIdr = new Decimal(item.product.costPrice).times(item.quantity);
+    const lineCostIdr = new Decimal(unitCost).times(item.quantity);
     bucket.revenue = bucket.revenue.plus(idrToBucketCurrency(lineRevenueIdr, isUsdt, item.order.fxRate));
     bucket.cost = bucket.cost.plus(idrToBucketCurrency(lineCostIdr, isUsdt, item.order.fxRate));
   }
@@ -986,7 +991,8 @@ export type PeriodGranularity = "week" | "month" | "year";
  * the whole window, so a 5-year-old shop's "year" view pulls every matching
  * `Order`/`OrderItem` row from that whole span into Node memory in one
  * request — `profitByPeriod` is the most expensive of the three, since its
- * rows carry a joined `product.costPrice` select. This is markedly wider
+ * rows carry both `costSnapshot` and a legacy `product.costPrice` fallback.
+ * This is markedly wider
  * than anything else in this file (`revenueByDay`'s widest production window
  * is 30 days; `profitSummarySince`'s only production caller passes a 1-day
  * window), and `useAnalytics.ts`'s `refetchInterval: 30_000` re-issues it
@@ -1199,6 +1205,7 @@ export async function ordersByPeriod(
 const PROFIT_ITEM_SELECT = {
   quantity: true,
   unitPrice: true,
+  costSnapshot: true,
   product: { select: { costPrice: true } },
   order: {
     select: {
@@ -1236,7 +1243,8 @@ const emptyProfitBucket = (): ProfitBucket => ({
 /**
  * Adds one delivered line to its bucket's own currency accumulator, with
  * `profitSummarySince`'s arithmetic verbatim: discount-prorated line revenue
- * via `orderItemRevenueIdr`, cost as catalog-central IDR × quantity, and BOTH
+ * via `orderItemRevenueIdr`, snapshotted per-unit cost (live cost for legacy
+ * rows) as catalog-central IDR × quantity, and BOTH
  * brought into the bucket's currency through `idrToBucketCurrency` (that
  * order's own `fxRate` snapshot) so revenue and cost can never end up in
  * mismatched units.
@@ -1251,6 +1259,7 @@ function accumulateLineProfit(
   item: {
     quantity: number;
     unitPrice: Decimal.Value;
+    costSnapshot: Decimal.Value | null;
     product: { costPrice: Decimal.Value | null };
     order: {
       currency: string;
@@ -1261,11 +1270,12 @@ function accumulateLineProfit(
     };
   },
 ): void {
-  if (item.product.costPrice == null) return;
+  const unitCost = item.costSnapshot ?? item.product.costPrice;
+  if (unitCost == null) return;
   const isUsdt = item.order.currency === "USDT";
   const acc = isUsdt ? bucket.usdt : bucket.idr;
   const lineRevenueIdr = orderItemRevenueIdr(item);
-  const lineCostIdr = new Decimal(item.product.costPrice).times(item.quantity);
+  const lineCostIdr = new Decimal(unitCost).times(item.quantity);
   acc.revenue = acc.revenue.plus(idrToBucketCurrency(lineRevenueIdr, isUsdt, item.order.fxRate));
   acc.cost = acc.cost.plus(idrToBucketCurrency(lineCostIdr, isUsdt, item.order.fxRate));
   acc.costKnownItems += 1;

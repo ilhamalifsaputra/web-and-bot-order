@@ -120,6 +120,22 @@ afterAll(async () => {
 
 // --------------------------------------------------------------- reads (4b)
 describe("GET /api/v1/checkout — open to anonymous visitors (Task 4b)", () => {
+  it("refuses a previously redeemed voucher in logged-in preview without writing, while guests may preview it", async () => {
+    const uid = await makeUser("previewredeemed", "previewredeemed-pw-1", "PREVIEW-REDEEMED");
+    const { cookie, csrf } = await loginAs("previewredeemed", "previewredeemed-pw-1");
+    await addToCart(prisma, uid, denomId, 1);
+    const voucher = await prisma.voucher.create({ data: { code: "PREVIEW-ONCE", type: "FIXED", value: "5000", usedCount: 1 } });
+    const order = await prisma.order.create({ data: { orderCode: "PREVIEW-PRIOR", userId: uid, subtotalAmount: "40000", totalAmount: "35000", discountAmount: "5000", voucherId: voucher.id, status: "DELIVERED" } });
+    await prisma.voucherRedemption.create({ data: { voucherId: voucher.id, userId: uid, orderId: order.id } });
+    const before = { orders: await prisma.order.count(), redemptions: await prisma.voucherRedemption.count(), wallet: await prisma.walletTransaction.count() };
+    const preview = await app.inject({ method: "POST", url: "/api/v1/checkout/voucher/preview", headers: { cookie, "x-csrf-token": csrf }, payload: { voucher_code: voucher.code } });
+    expect(preview.statusCode).toBe(200);
+    expect(preview.json()).toMatchObject({ error_key: "error.voucher_already_redeemed", voucher_discount: "0", total: "40000" });
+    expect({ orders: await prisma.order.count(), redemptions: await prisma.voucherRedemption.count(), wallet: await prisma.walletTransaction.count() }).toEqual(before);
+    expect((await prisma.voucher.findUniqueOrThrow({ where: { id: voucher.id } })).usedCount).toBe(1);
+    const guest = await app.inject({ method: "POST", url: "/api/v1/checkout/voucher/preview", headers: { cookie: cartCookie([{ p: denomId, q: 1 }]), "x-forwarded-for": freshIp() }, payload: { voucher_code: voucher.code } });
+    expect(guest.json()).toMatchObject({ error_key: null, voucher_discount: "5000", total: "35000" });
+  });
   it("200s for an anonymous visitor with is_guest true and both wallet methods off", async () => {
     const res = await app.inject({
       method: "GET",

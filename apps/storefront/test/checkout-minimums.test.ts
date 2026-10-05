@@ -100,6 +100,8 @@ beforeAll(async () => {
   await createVoucher(prisma, { code: "FREE100B", type: VoucherType.PERCENT, value: "100", usageLimit: 100 });
   await createVoucher(prisma, { code: "FREE100C", type: VoucherType.PERCENT, value: "100", usageLimit: 100 });
   await createVoucher(prisma, { code: "FREE100D", type: VoucherType.PERCENT, value: "100", usageLimit: 100 });
+  // Preview requires an unused per-user voucher; earlier checkout tests redeem FREE100.
+  await createVoucher(prisma, { code: "FREEPREVIEW", type: VoucherType.PERCENT, value: "100", usageLimit: 100 });
 
   // A hand-fulfilled SKU: its paid orders stop at PROCESSING until an admin
   // types and sends the account, which is the state the pay page used to render
@@ -381,7 +383,7 @@ describe("GET /api/v1/checkout — payment methods the total cannot clear are no
       method: "POST",
       url: "/api/v1/checkout/voucher/preview",
       headers: { cookie, "x-csrf-token": csrf },
-      payload: { voucher_code: "FREE100" },
+      payload: { voucher_code: "FREEPREVIEW" },
     });
     expect(res.json().below_all_minimums).toBe(false);
   });
@@ -394,7 +396,7 @@ describe("GET /api/v1/checkout — payment methods the total cannot clear are no
       method: "POST",
       url: "/api/v1/checkout/voucher/preview",
       headers: { cookie, "x-csrf-token": csrf },
-      payload: { voucher_code: "FREE100" },
+      payload: { voucher_code: "FREEPREVIEW" },
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();
@@ -461,7 +463,7 @@ describe("GET /api/v1/checkout — USDT methods are hidden once the rate's quote
       method: "POST",
       url: "/api/v1/checkout/voucher/preview",
       headers: { cookie, "x-csrf-token": csrf },
-      payload: { voucher_code: "FREE100" },
+      payload: { voucher_code: "FREEPREVIEW" },
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();

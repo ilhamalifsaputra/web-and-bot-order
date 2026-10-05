@@ -37,6 +37,7 @@ import {
   getDenomination,
   getBulkPricingForDenomination,
   getVoucherByCode,
+  assertVoucherNotRedeemedByUser,
   applyVoucherToSubtotal,
   computeEligibleAmounts,
   type EligibilityLine,
@@ -235,6 +236,7 @@ async function computeTotals(
       voucherError = "error.voucher_not_found";
     } else {
       try {
+        if (customer) await assertVoucherNotRedeemedByUser(prisma, voucher.id, customer.userId);
         // Mirrors createOrderFromCart's own scope-eligibility computation
         // (packages/db/src/crud/orders.ts) — a SELECTED-scope voucher must
         // quote the SAME discount here as checkout will actually charge, or

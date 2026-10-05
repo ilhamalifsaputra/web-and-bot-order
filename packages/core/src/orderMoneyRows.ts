@@ -24,11 +24,13 @@
  * discount. Same "convert one figure, derive the rest" technique as the guest
  * receipt (`enqueueBuyerOrderReadyEmailIfGuest`).
  *
- * An IDR order (or one without an fx snapshot) converts nothing and is returned
- * verbatim.
+ * IDR rows use whole-rupiah display rounding, including old fractional stored
+ * adjustments. The displayed payable is the anchor; itemsTotal absorbs the
+ * display residual. This is a pure presentation view, never a financial write.
+ * An unconvertible USDT order without an fx snapshot retains its legacy values.
  */
 import { Decimal } from "./money";
-import { usdtFromIdr } from "./formatters";
+import { usdtFromIdr, wholeRupiah } from "./formatters";
 
 export interface OrderMoneyRowsInput {
   currency: string;
@@ -55,7 +57,22 @@ export function reconciledOrderMoneyRows(order: OrderMoneyRowsInput): OrderMoney
   const total = new Decimal(order.totalAmount);
   const walletCredit = new Decimal(order.walletUsed);
   const uniqueCents = new Decimal(order.uniqueCents);
-  if (order.currency === "IDR" || order.fxRate == null) {
+  if (order.currency === "IDR") {
+    const displayedTotal = wholeRupiah(total);
+    const displayedWallet = wholeRupiah(walletCredit);
+    const displayedMarker = wholeRupiah(uniqueCents);
+    const bulkDiscount = wholeRupiah(order.bulkDiscountAmount);
+    const discount = wholeRupiah(order.discountAmount);
+    return {
+      itemsTotal: displayedTotal.plus(displayedWallet).minus(displayedMarker).plus(bulkDiscount).plus(discount),
+      bulkDiscount,
+      discount,
+      walletCredit: displayedWallet,
+      uniqueCents: displayedMarker,
+      total: displayedTotal,
+    };
+  }
+  if (order.fxRate == null) {
     return {
       itemsTotal: new Decimal(order.subtotalAmount),
       bulkDiscount: new Decimal(order.bulkDiscountAmount),

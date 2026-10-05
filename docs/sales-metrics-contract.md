@@ -884,10 +884,17 @@ rather than correcting an existing figure:
 | `c7fd5563` | `feat(dashboard): add Week/Month/Year ranges and a Profit metric to Sales Analytics` |
 | `7e20b1eb` | `docs(db): record the year-window unbounded-fetch tradeoff` |
 
-An auditor can reproduce the delta for any window by running the current query
-with and without its `kind: OrderKind.PRODUCT` clause; the difference is
-exactly the settled `WALLET_TOPUP` volume in that window. M8's parity report
-does this systematically, with real numbers.
+M8's parity report independently reproduces the historical collected-money
+query with and without `kind: OrderKind.PRODUCT`. Since E22, combined IDR rows
+also report a `basis adjustment`: historical PRODUCT collected-equivalent
+minus independently calculated current recorded sales price. Therefore
+`pre-fix - post-fix = attributed top-up funding + basis adjustment`; residual
+and independent PRODUCT drift must both be exactly zero. Top-ups retain their
+native funding basis, never PRODUCT catalog-price semantics. Native-currency
+and count rows have zero basis adjustment. Current and independently counted
+unknown-FX exclusions must also agree. The replica does not import production
+money helpers, so marker, wallet, conversion and kind-filter errors remain
+detectable rather than cancelling out on both sides.
 
 ### M8.5: and the other direction — credit SPENT is revenue
 
@@ -971,8 +978,9 @@ M8.5 revision above documents a fix made in code, it does not make one here.
    knife edge — a genuinely negative net is non-zero and renders in full.
 4. **A `null` profit bucket is ambiguous on the chart** — "no sales" and
    "sales, all costs unknown" draw the same gap.
-5. **fxRate-less USDT orders are counted unconverted** in the combined blend
-   rather than dropped. Pre-existing; now reachable at more granularities.
+5. **Resolved by E22: fxRate-less USDT orders used to be counted unconverted**
+   in the combined blend. Unknown USDT legs now contribute no invented IDR;
+   independently known IDR funding remains included and exclusions are counted.
 6. **`rankUserIdsBySpend` ranks on IDR-only spend** (gateway plus IDR wallet
    legs since M8.5), so a USDT-only buyer sorts as a zero-spender despite a
    correct non-zero "Total Spent" cell. This is
@@ -1029,6 +1037,6 @@ combined blend's fxRate guard.*
 
 ## Owner paid-order receipt
 
-The owner ORDER_PAID email uses `reconciledOrderMoneyRows`, the same additive summary as the admin order page. Subtotal minus bulk discount minus voucher discount minus wallet credit plus unique amount equals the stored payable total. USDT subtotal absorbs the ceiling remainder after each discount is converted using the historical order FX snapshot. Native wallet credit, marker and payable retain their saved precision; the email renders USDT to up to four decimals instead of rounding these rows to cents. IDR rows retain whole-rupiah display. Item prices are labeled per unit and are indicative, rather than multiplied to rebuild the reconciled subtotal.
+The owner ORDER_PAID email uses `reconciledOrderMoneyRows`, the same additive summary as the admin order page. Subtotal minus bulk discount minus voucher discount minus wallet credit plus unique amount equals the displayed payable total. USDT subtotal absorbs the ceiling remainder after each discount is converted using the historical order FX snapshot. Native USDT wallet credit, marker and payable retain their saved precision; the email renders them to up to four decimals instead of rounding to cents. IDR rows round half-up to whole rupiah, anchored to the rounded stored payable. For historical fractional discounts or wallet credit, the displayed subtotal absorbs the rounding residual (for example, stored subtotal `10010`, discount `1501.5` and payable `8509` display `10011 - 1502 = 8509`). No order, ledger or refund amount is rewritten. New whole-rupiah orders retain their rows. Item prices are labeled per unit and are indicative, rather than multiplied to rebuild the reconciled subtotal.
 
 Both HTML and plain text show every nonzero adjustment. Old queued payloads without the added adjustment fields still render with those rows omitted. Buyer receipts keep their existing behavior.

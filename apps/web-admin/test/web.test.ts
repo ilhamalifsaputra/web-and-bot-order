@@ -7398,7 +7398,8 @@ describe("wallet ledger", () => {
   });
 
   it("ledger lists a prior adjustment with its reason", async () => {
-    await post(`/api/users/${seed.customerId}/wallet`, seed.cookie, { csrf_token: seed.csrf, delta: "7.50", note: "promo credit" });
+    const adjustment = await post(`/api/users/${seed.customerId}/wallet`, seed.cookie, { csrf_token: seed.csrf, delta: "7", note: "promo credit" });
+    expect(adjustment.statusCode, adjustment.body).toBe(200);
     const res = await get(`/api/users/${seed.customerId}`, seed.cookie);
     expect(res.statusCode).toBe(200);
     const data = JSON.parse(res.body) as { ledger: Array<{ note: string }> };

@@ -23,6 +23,22 @@ const adds = (r: ReturnType<typeof reconciledOrderMoneyRows>) =>
   r.itemsTotal.minus(r.bulkDiscount).minus(r.discount).minus(r.walletCredit).plus(r.uniqueCents);
 
 describe("reconciledOrderMoneyRows", () => {
+  it.each([
+    { discount: "1501.5", wallet: "0", total: "8509", roundedDiscount: "1502", roundedWallet: "0" },
+    { discount: "0", wallet: "1000.5", total: "9010", roundedDiscount: "0", roundedWallet: "1001" },
+  ])("final review: legacy IDR display absorbs fractional $discount discount/$wallet wallet without changing source", (example) => {
+    const order = Object.freeze({ currency: "IDR", fxRate: null, subtotalAmount: "10010", bulkDiscountAmount: "0",
+      discountAmount: example.discount, walletUsed: example.wallet, uniqueCents: "0", totalAmount: example.total });
+    const rows = reconciledOrderMoneyRows(order);
+    expect(rows.itemsTotal.toString()).toBe("10011");
+    expect(rows.discount.toString()).toBe(example.roundedDiscount);
+    expect(rows.walletCredit.toString()).toBe(example.roundedWallet);
+    expect(rows.total.toString()).toBe(example.total);
+    expect(adds(rows).toString()).toBe(rows.total.toString());
+    expect(order.discountAmount).toBe(example.discount);
+    expect(order.walletUsed).toBe(example.wallet);
+  });
+
   it("the audit example: 46.500 with a 5.812,5 bulk discount at 16.000 adds up to the charged total", () => {
     const rows = reconciledOrderMoneyRows(usdtOrder("46500", "5812.5", "0", "16000"));
     expect(rows.bulkDiscount.toString()).toBe("0.37");
@@ -50,7 +66,7 @@ describe("reconciledOrderMoneyRows", () => {
     }
   });
 
-  it("an IDR order is returned verbatim", () => {
+  it("a reconciled whole-rupiah IDR order keeps its original rows", () => {
     const rows = reconciledOrderMoneyRows({
       currency: "IDR",
       fxRate: null,

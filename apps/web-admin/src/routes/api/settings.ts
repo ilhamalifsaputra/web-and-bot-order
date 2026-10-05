@@ -311,7 +311,9 @@ async function otherBandEnd(key: string, bandOverride: Readonly<Record<string, s
     const text = String(fromFile).trim();
     if (text === "") return null;
     const amount = readMoneyField(text, "IDR", { exact: true });
-    return amount && amount.greaterThan(0) ? amount : null;
+    if (amount && amount.greaterThan(0)) return amount;
+    // An invalid imported partner will be skipped, retaining its saved/default
+    // bound. Only an explicitly blank partner disables the check.
   }
   const bounds = await fxRateBounds(prisma);
   return partner.isMin ? bounds.max : bounds.min;

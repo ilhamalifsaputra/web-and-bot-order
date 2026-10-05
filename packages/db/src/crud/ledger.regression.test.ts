@@ -879,12 +879,15 @@ describe("scenarios 7 and 8 — a USDT order and an IDR order, side by side", ()
     expect(day.orders).toBe(2);
 
     // ── the one deliberate blend, and it uses the order's OWN fxRate ──
-    // `currency=combined` is opt-in and converts through the per-order snapshot,
-    // never a live rate, so a past day's total never moves under the reader.
+    // Combined sales price uses the recorded canonical IDR subtotal/discounts
+    // for finalized USDT orders, excluding conversion rounding/markers. Native
+    // collected figures above continue matching the ledger exactly.
     const combined = bucketFor(await combinedRevenueByDay(prisma), idrOrder.deliveredAt!);
     expect(combined.revenueIdrEquiv).toBe(
-      idrTotal.plus(usdtTotal.times(USDT_RATE)).toString(),
+      idrTotal.plus(usdtOrder.subtotalAmount).minus(usdtOrder.bulkDiscountAmount).minus(usdtOrder.discountAmount).toString(),
     );
+
+    expect(combined.excludedFxOrders).toBe(0);
 
     // ── refunds stay in their own currency too ──
     const usdtRefund = usdtTotal.dividedBy(2).toDecimalPlaces(4);

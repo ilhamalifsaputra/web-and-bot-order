@@ -283,6 +283,38 @@ describe("settlePaidOrder", () => {
 // support.test.ts's owner-email suite — these tests assert absolute counts
 // rather than before/after deltas.
 describe("settlePaidOrder — owner-email triggers", () => {
+  it.each([
+    { discount: "1501.5", wallet: "0", total: "8509" },
+    { discount: "0", wallet: "1000.5", total: "9010" },
+  ])("final review: legacy IDR owner receipt reconciles displayed fractional discount/wallet $discount/$wallet", async (example) => {
+    await configureOwnerEmail("paid_order");
+    const order = await makePendingVerificationOrder(sample.product.id);
+    await prisma.order.update({ where: { id: order.id }, data: { currency: "IDR", fxRate: null,
+      subtotalAmount: "10010", discountAmount: example.discount, bulkDiscountAmount: "0",
+      walletUsed: example.wallet, uniqueCents: "0", totalAmount: example.total } });
+    await settlePaidOrder(prisma, order.id, { adminId });
+    const row = await prisma.notificationOutbox.findFirst({ where: { orderId: order.id, event: NotificationEvent.OWNER_EMAIL_ORDER_PAID } });
+    const email = await renderEmail(NotificationEvent.OWNER_EMAIL_ORDER_PAID, JSON.parse(row!.payloadJson));
+    for (const body of [email!.text, email!.html!]) expect(body).toContain("Rp10.011");
+    const displayed = (label: string) => new Decimal(
+      email!.text.match(new RegExp(`^${label}: (.+)$`, "m"))?.[1]?.replace("Rp", "").replaceAll(".", "") ?? "0");
+    expect(displayed("Subtotal").plus(displayed("Discount")).plus(displayed("Wallet Credit")).toString())
+      .toBe(displayed("Total").toString());
+    const htmlAmount = (label: string) => {
+      const value = email!.html!.match(new RegExp(`>${label}</td><td[^>]*>([^<]+)</td>`))?.[1];
+      expect(value, `HTML ${label} row`).toBeDefined();
+      return new Decimal(value!.replace("Rp", "").replaceAll(".", ""));
+    };
+    expect(htmlAmount("Subtotal")
+      .plus(example.discount === "0" ? 0 : htmlAmount("Discount"))
+      .plus(example.wallet === "0" ? 0 : htmlAmount("Wallet Credit")).toString())
+      .toBe(htmlAmount("Total").toString());
+    const saved = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(saved.discountAmount.toString()).toBe(example.discount);
+    expect(saved.walletUsed.toString()).toBe(example.wallet);
+    expect(saved.totalAmount.toString()).toBe(example.total);
+  });
+
   async function configureOwnerEmail(event: "paid_order" | "manual_queue") {
     await setSetting(prisma, "owner_email_enabled", "true");
     await setSetting(prisma, "owner_email", "owner@example.com");
@@ -346,7 +378,9 @@ describe("settlePaidOrder — owner-email triggers", () => {
     expect(payload).toEqual({
       to: "owner@example.com",
       order_code: order.orderCode,
-      total: order.totalAmount.toString(),
+      // This legacy default-IDR fixture carries sub-rupiah marker dust. The
+      // receipt displays whole rupiah; settlement must retain the stored money.
+      total: "5",
       currency: order.currency,
       item_count: 1,
       customer_label: "Test User",
@@ -354,7 +388,7 @@ describe("settlePaidOrder — owner-email triggers", () => {
       subtotal: order.subtotalAmount.toString(),
       bulk_discount: "0",
       wallet_credit: "0",
-      unique_cents: order.uniqueCents.toString(),
+      unique_cents: "0",
       discount: "0", // no voucher applied
       payment_method: "BINANCE_PAY", // Order.paymentMethod's schema default — createOrderDirect never overrides it
       transaction_id: "TX-1", // makePendingVerificationOrder's attachPaymentProof call sets binanceTxid
@@ -364,6 +398,11 @@ describe("settlePaidOrder — owner-email triggers", () => {
     });
     // ISO-parseable, not a placeholder string.
     expect(new Date(payload.paid_at as string).toString()).not.toBe("Invalid Date");
+    const saved = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(saved.currency).toBe("IDR");
+    expect(saved.uniqueCents.greaterThan(0)).toBe(true);
+    expect(saved.uniqueCents.toString()).toBe(order.uniqueCents.toString());
+    expect(saved.totalAmount.toString()).toBe(order.totalAmount.toString());
 
     const manualQueueRows = await prisma.notificationOutbox.count({
       where: { orderId: order.id, event: NotificationEvent.OWNER_EMAIL_MANUAL_ORDER_QUEUED },

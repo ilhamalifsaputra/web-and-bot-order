@@ -187,6 +187,24 @@ describe("a pre-filled stored value survives a re-save (exact_fields)", () => {
 // check off.
 describe("the USDT rate sanity band is read by shape", () => {
   it.each([
+    ["fx_rate_min", "50000", "fx_rate_max", false],
+    ["fx_rate_min", "50000", "fx_rate_max", true],
+    ["fx_rate_max", "7000", "fx_rate_min", false],
+    ["fx_rate_max", "7000", "fx_rate_min", true],
+  ])("final review: invalid partner cannot cross persisted %s=%s with invalid %s (reverse=%s)", async (key, value, partner, reverse) => {
+    await setSetting(prisma, "fx_rate_min", "8000");
+    await setSetting(prisma, "fx_rate_max", "40000");
+    const pair = [[key as string, value], [partner as string, "abc"]];
+    const fields = Object.fromEntries(reverse ? pair.reverse() : pair);
+    const res = await post("/api/settings/import", { fields: { ...fields, shop_name: "Valid imported name" } });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ applied: 1, skipped: 2 });
+    expect(await getSetting(prisma, "fx_rate_min")).toBe("8000");
+    expect(await getSetting(prisma, "fx_rate_max")).toBe("40000");
+    expect(await getSetting(prisma, "shop_name")).toBe("Valid imported name");
+  });
+
+  it.each([
     ["fx_rate_max", "20.000", "20000"],
     ["fx_rate_max", "20,000", "20000"],
     ["fx_rate_max", "20000", "20000"],

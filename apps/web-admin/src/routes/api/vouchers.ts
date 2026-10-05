@@ -93,6 +93,7 @@ export default async function vouchersApiRoutes(app: FastifyInstance): Promise<v
         status: deriveVoucherStatus(v, now),
         ordersCount: perf?.ordersCount ?? 0,
         revenue: perf?.revenue.toString() ?? "0",
+        excludedFxOrders: perf?.excludedFxOrders ?? 0,
         customers: perf?.customers ?? 0,
       };
     });

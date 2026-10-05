@@ -9,6 +9,7 @@ import { ValidationError } from "@app/core/errors";
 import type { PrismaClient } from "../client";
 import type { Db } from "./_types";
 import { isUniqueViolationOn } from "./_types";
+import { walletSpendByOrder } from "./revenue";
 
 const q4 = (v: Decimal.Value) => quantizeMoney(v, 4);
 
@@ -553,31 +554,33 @@ export async function getVoucherStats(
 export async function getVoucherPerformance(
   db: Db,
   voucherIds: number[],
-): Promise<Map<number, { ordersCount: number; revenue: Decimal; customers: number }>> {
+): Promise<Map<number, { ordersCount: number; revenue: Decimal; customers: number; excludedFxOrders: number }>> {
   if (voucherIds.length === 0) return new Map();
 
   const orders = await db.order.findMany({
     where: { voucherId: { in: voucherIds }, status: OrderStatus.DELIVERED },
-    select: { voucherId: true, userId: true, totalAmount: true, currency: true, fxRate: true },
+    select: { id: true, voucherId: true, userId: true, totalAmount: true, currency: true, fxRate: true },
   });
+  const walletSpend = await walletSpendByOrder(db, {}, orders.map((o) => o.id));
 
-  const acc = new Map<number, { ordersCount: number; revenue: Decimal; customerIds: Set<number> }>();
+  const acc = new Map<number, { ordersCount: number; revenue: Decimal; customerIds: Set<number>; excludedFxOrders: number }>();
   for (const o of orders) {
     if (o.voucherId == null) continue;
-    const bucket = acc.get(o.voucherId) ?? { ordersCount: 0, revenue: new Decimal(0), customerIds: new Set<number>() };
+    const bucket = acc.get(o.voucherId) ?? { ordersCount: 0, revenue: new Decimal(0), customerIds: new Set<number>(), excludedFxOrders: 0 };
     bucket.ordersCount += 1;
-    const amountIdr =
-      o.currency === "USDT" && o.fxRate != null
-        ? new Decimal(o.totalAmount).times(o.fxRate)
-        : new Decimal(o.totalAmount);
-    bucket.revenue = bucket.revenue.plus(amountIdr);
+    const wallet = walletSpend.get(o.id);
+    const idr = (wallet?.idr ?? new Decimal(0)).plus(o.currency === "USDT" ? 0 : o.totalAmount);
+    const usdt = (wallet?.usdt ?? new Decimal(0)).plus(o.currency === "USDT" ? o.totalAmount : 0);
+    bucket.revenue = bucket.revenue.plus(idr);
+    if (o.fxRate != null && new Decimal(o.fxRate).greaterThan(0)) bucket.revenue = bucket.revenue.plus(usdt.times(o.fxRate));
+    else if (!usdt.isZero()) bucket.excludedFxOrders += 1;
     bucket.customerIds.add(o.userId);
     acc.set(o.voucherId, bucket);
   }
 
-  const result = new Map<number, { ordersCount: number; revenue: Decimal; customers: number }>();
+  const result = new Map<number, { ordersCount: number; revenue: Decimal; customers: number; excludedFxOrders: number }>();
   for (const [voucherId, b] of acc) {
-    result.set(voucherId, { ordersCount: b.ordersCount, revenue: q4(b.revenue), customers: b.customerIds.size });
+    result.set(voucherId, { ordersCount: b.ordersCount, revenue: q4(b.revenue), customers: b.customerIds.size, excludedFxOrders: b.excludedFxOrders });
   }
   return result;
 }

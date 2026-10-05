@@ -764,7 +764,7 @@ describe("getVoucherPerformance", () => {
     await makeUserAndOrder({ telegramId: 3003, referralCode: "P3003", voucherId: v2.id, totalAmount: "200" });
 
     const result = await getVoucherPerformance(prisma, [v1.id, v2.id]);
-    expect(result.get(v1.id)).toEqual({ ordersCount: 2, revenue: expect.any(Decimal), customers: 2 });
+    expect(result.get(v1.id)).toEqual({ ordersCount: 2, revenue: expect.any(Decimal), customers: 2, excludedFxOrders: 0 });
     expect(result.get(v1.id)!.revenue.equals("150.0000")).toBe(true);
     expect(result.get(v2.id)!.revenue.equals("200.0000")).toBe(true);
     expect(result.get(v2.id)!.customers).toBe(1);
@@ -791,13 +791,8 @@ describe("getVoucherPerformance", () => {
     expect(result.get(v.id)!.revenue.equals("160100.0000")).toBe(true);
   });
 
-  // Test gap flagged by pre-merge review: getVoucherPerformance's own ternary
-  // (`o.currency === "USDT" && o.fxRate != null ? times(fxRate) : raw`) was
-  // never exercised with fxRate === null. revenue.ts's combinedRevenueByDay
-  // uses the identical ternary (packages/db/src/crud/revenue.ts:377-379) and
-  // falls back to the raw totalAmount unconverted when fxRate is missing —
-  // this pins getVoucherPerformance to that same convention.
-  it("a DELIVERED USDT order with fxRate: null falls back to counting its raw totalAmount unconverted", async () => {
+  // Unknown USDT conversion must never be labelled as rupiah.
+  it("excludes and counts a USDT order whose FX snapshot is unknown", async () => {
     const v = await createVoucher(prisma, { code: "PERFUSDTNULL", type: VoucherType.PERCENT, value: "10" });
     await makeUserAndOrder({
       telegramId: 3301,
@@ -809,7 +804,17 @@ describe("getVoucherPerformance", () => {
     });
 
     const result = await getVoucherPerformance(prisma, [v.id]);
-    expect(result.get(v.id)!.revenue.equals("50.0000")).toBe(true);
+    expect(result.get(v.id)!.revenue.equals("0")).toBe(true);
+    expect(result.get(v.id)!.excludedFxOrders).toBe(1);
+  });
+
+  it("includes wallet payments in their recorded currencies, including a legacy IDR leg on a USDT order", async () => {
+    const voucher = await createVoucher(prisma, { code: "PERFWALLET", type: VoucherType.PERCENT, value: "10" });
+    const { user, order } = await makeUserAndOrder({ telegramId: 3302, referralCode: "P3302", voucherId: voucher.id, totalAmount: "0", currency: "USDT", fxRate: "16000" });
+    await prisma.walletTransaction.create({ data: { userId: user.id, orderId: order.id, reason: "order_payment", delta: "-100000", balanceAfter: "0", currency: "IDR" } });
+    const other = await makeUserAndOrder({ telegramId: 3303, referralCode: "P3303", voucherId: voucher.id, totalAmount: "0", currency: "USDT", fxRate: "16000" });
+    await prisma.walletTransaction.create({ data: { userId: other.user.id, orderId: other.order.id, reason: "order_payment", delta: "-2.5", balanceAfter: "0", currency: "USDT" } });
+    expect((await getVoucherPerformance(prisma, [voucher.id])).get(voucher.id)!.revenue.toString()).toBe("140000");
   });
 
   it("a voucher id with zero delivered orders is simply absent from the returned Map", async () => {

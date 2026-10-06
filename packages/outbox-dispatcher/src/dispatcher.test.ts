@@ -778,6 +778,17 @@ async function makeManualDenom(deliveryType: string = DeliveryType.MANUAL) {
  * hand-crafted outbox rows.
  */
 describe("drainBatch delivers the per-SKU manual delivery-flow DMs", () => {
+  it("suppresses legacy manual notifications already queued for a Digiflazz order", async () => {
+    const buyer = await upsertUser(prisma, { telegramId: 500_999, username: "auto-buyer", fullName: "Buyer" });
+    const denom = await makeManualDenom();
+    const order = await createOrderDirect(prisma, { user: buyer, channel: "bot", productId: denom.id, quantity: 1 });
+    await prisma.order.update({ where: { id: order!.id }, data: { fulfillmentProvider: "DIGIFLAZZ", fulfillmentSku: "ML5", status: "PROCESSING", paidAt: new Date() } });
+    await enqueueNotification(prisma, NotificationEvent.ORDER_PROCESSING_DM, order!.id, { chat_id: 500_999, order_code: order!.orderCode });
+    const { bot, sendMessage } = fakeBot();
+    await drainBatch(bot);
+    expect(sendMessage.mock.calls.filter(call => call[0] === 500_999)).toHaveLength(0);
+    expect((await prisma.notificationOutbox.findFirstOrThrow({ where: { orderId: order!.id, event: NotificationEvent.ORDER_PROCESSING_DM } })).status).toBe("SENT");
+  });
   /** Each test creates its own buyer (unique telegramId — this file runs many
    * tests against one shared temp DB with no per-test reset, so ids/names
    * across tests/describe-blocks must never collide) and admin. */

@@ -684,9 +684,8 @@ describe("POST /api/v1/cart — top-up lines under the composition rule", () => 
     });
 
     // A shape the catalog sync never produces on its own, but an admin can:
-    // Digiflazz-sourced, hand-edited to auto delivery (e.g. a SKU migrated off
-    // the supplier rail onto local stock). It is the only top-up shape the
-    // homogeneity rule does NOT catch, and it must stay allowed.
+    // Digiflazz-sourced, hand-edited to AUTO delivery. Explicit supplier
+    // metadata still makes it a single-line purchase.
     const { members: members2 } = await seedProduct(categoryId, "Kind Misconfigured Game", [
       { name: "Misconfigured", price: "21000" },
     ]);
@@ -703,9 +702,7 @@ describe("POST /api/v1/cart — top-up lines under the composition rule", () => 
       .map((c) => String(c).split(";")[0])
       .join("; ");
 
-  // THE no-op proof at the route level: a real top-up mixing with a premium
-  // line is still refused under the OLD error key. A buyer sees exactly the
-  // message they saw before this task.
+  // Keep the existing buyer-facing error key for incompatible cart lines.
   it("a real top-up joining a premium cart is still rejected as error.cart_mixed_delivery", async () => {
     const add = await app.inject({ method: "POST", url: "/api/v1/cart", payload: { denomination_id: denomId, qty: 1 } });
     const res = await app.inject({
@@ -734,15 +731,8 @@ describe("POST /api/v1/cart — top-up lines under the composition rule", () => 
     expect(res.json()).toEqual({ error: "error.cart_mixed_delivery" });
   });
 
-  // REGRESSION PIN. An earlier revision of Task 3 rejected this add with a new
-  // `error.cart_kind_conflict`, believing the resulting order would reach
-  // dispatchPendingDigiflazzOrders and have one supplier top-up delivered for
-  // two paid lines. That was wrong (Task 3 review): the poller selects only
-  // `status: PROCESSING` orders, and an all-AUTO order goes
-  // PENDING_VERIFICATION -> DELIVERED through approveOrder without ever being
-  // PROCESSING. Rejecting it broke a working admin configuration for no gain,
-  // so the check was reverted. This test exists so it is not reintroduced.
-  it("an AUTO-typed Digiflazz SKU may join an all-AUTO cart, exactly as before Task 3", async () => {
+  // Supplier routing now takes precedence over AUTO stock delivery.
+  it("rejects an AUTO-typed Digiflazz SKU joining a stock cart", async () => {
     const add = await app.inject({ method: "POST", url: "/api/v1/cart", payload: { denomination_id: denomId, qty: 1 } });
     const res = await app.inject({
       method: "POST",
@@ -750,8 +740,8 @@ describe("POST /api/v1/cart — top-up lines under the composition rule", () => 
       headers: { cookie: cookieOf(add) },
       payload: { denomination_id: autoTypedTopupId, qty: 1 },
     });
-    expect(res.statusCode).toBe(200);
-    expect(res.json().items).toHaveLength(2);
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ error: "error.cart_mixed_delivery" });
   });
 
   it("an AUTO-typed top-up is also fine as the cart's only line", async () => {

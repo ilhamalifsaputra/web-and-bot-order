@@ -58,7 +58,7 @@ function OrderCard({ order }: { order: AccountOrderSummary }) {
     >
       <div className="flex items-center justify-between gap-3">
         <span className="font-mono text-xs font-semibold text-pine">{order.code}</span>
-        <StatusBadge value={order.status} />
+        <StatusBadge value={order.status} fulfillment={order.fulfillment} />
       </div>
       <p className="mt-2 line-clamp-2 text-sm text-ink">{order.items}</p>
       <div className="mt-3 flex items-center justify-between gap-3 border-t border-line pt-3">
@@ -212,7 +212,7 @@ export default function OrdersPage() {
                     <OrderTotal order={o} />
                   </td>
                   <td>
-                    <StatusBadge value={o.status} />
+                    <StatusBadge value={o.status} fulfillment={o.fulfillment} />
                   </td>
                   <td className="text-ink-soft text-xs">{o.created_at_display}</td>
                 </tr>

@@ -1675,9 +1675,8 @@ export function scheduleDigiflazzCatalogSync(): Cron {
  * and places the top-up order with the supplier (packages/db/src/crud/digiflazz.ts
  * dispatchPendingDigiflazzOrders). No `Api` needed, so this runs even on a
  * web-only boot, same as scheduleFxRefresh/scheduleDigiflazzCatalogSync above.
- * Every 2 minutes — same cadence as binancePollWatchdog's own independent job
- * instance below; several jobs already share this cron expression without
- * colliding with each other.
+ * A five-second durable queue scan keeps paid orders moving without a browser
+ * refresh. The provider's separate recheck schedule still controls retries.
  */
 export function scheduleDigiflazzDispatch(): Cron {
   const run = () =>
@@ -1688,7 +1687,7 @@ export function scheduleDigiflazzDispatch(): Cron {
         }
       })
       .catch((err) => logger.error({ err }, "Digiflazz dispatch poller failed — will retry on the next tick"));
-  return new Cron("*/2 * * * *", { protect: true }, run);
+  return new Cron("*/5 * * * * *", { protect: true }, run);
 }
 
 /**

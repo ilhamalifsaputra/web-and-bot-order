@@ -20,7 +20,9 @@ import { CategoryGroup, SenderType, OrderStatus, OrderKind, TicketStatus, zTicke
 import { ValidationError } from "@app/core/errors";
 import { hashPassword, verifyPassword } from "@app/core/password";
 import { Decimal } from "@app/core/money";
-import { parseAdditionalFields, parseCustomerData } from "@app/core/deliveryFields";
+import { parseCustomerData } from "@app/core/deliveryFields";
+import { orderInputConfig, parseInputFields } from "@app/core/playerInput";
+import { getOrderFulfillment, toBuyerDigiflazzStatus } from "@app/core/orderFulfillment";
 import { buyerOrderSummary } from "./buyerOrderSummary";
 import {
   parseTicketMultipart,
@@ -79,22 +81,6 @@ import { startTelegramLinkIntent } from "../telegramLinkIntent";
 import { guestClaimLockedOut, recordGuestClaimFailure } from "../rateLimit";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-/** Buyer-safe mapping of the internal digiflazzStatus values — duplicated
- * from apiOrderDigiflazzStream.ts's own `toBuyerStatus` (Task 11) rather
- * than shared, per this repo's precedent for small cross-file duplication
- * with a "keep in sync" comment instead of a premature shared-module
- * extraction. KEEP THIS IDENTICAL to apiOrderDigiflazzStream.ts's mapping —
- * the wire shape must never leak an internal value (e.g. "failed") even if
- * one side is edited without the other. Final whole-branch review I-2: this
- * is what lets GET /account/orders/:code's own response carry a
- * buyer-safe digiflazz_status directly, instead of the SSE push being the
- * only source for it (see this route's digiflazz_status field below). */
-function toBuyerStatus(internal: string | null): "pending" | "reviewing" | null {
-  if (internal === "pending_at_supplier") return "pending";
-  if (internal === "failed") return "reviewing";
-  return null;
-}
 
 /** Stored-UTC → shop-timezone display, byte-identical to the localdt filter. */
 const dt = (d: Date, fmt = "yyyy-LL-dd HH:mm"): string => localize(d, fmt);
@@ -228,6 +214,7 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
       orders: orders.map((o) => ({
         code: o.orderCode,
         status: o.status,
+        fulfillment: getOrderFulfillment(o),
         // Task 5 fix pass: `total` is denominated in the order's OWN
         // settlement currency ("IDR" | "USDT"), not always IDR — the client
         // formats it natively (formatOrderAmount), never display-converts it.
@@ -253,11 +240,14 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(404).send({ error: "not_found" });
     }
     const delivered = order.status === OrderStatus.DELIVERED;
-    // Parsed manual_with_info field spec + the buyer's current answers — same
-    // single-denomination assumption updateOrderCustomerData and the admin
-    // order route already make (Tasks 2/8). [] for auto/manual orders (no
-    // manual_with_info fields), so the client renders nothing extra for them.
-    const customerDataFields = parseAdditionalFields(order.items[0]?.product.additionalFields ?? null);
+    // Purchased input fields are authoritative; legacy orders without a
+    // snapshot use their denomination's configuration, as the edit path does.
+    const denomination = order.items[0]?.product;
+    const inputConfig = orderInputConfig({
+      additionalFields: denomination?.additionalFields ?? null,
+      providerInputMapping: denomination?.providerInputMapping ?? null,
+    }, order.inputConfigSnapshot);
+    const customerDataFields = parseInputFields(inputConfig.additionalFields);
     const customerData = parseCustomerData(order.customerData);
     const money = buyerOrderSummary(order);
     return reply.send({
@@ -278,7 +268,8 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
         customer_data_fields: customerDataFields,
         customer_data: customerData,
         delivered_content: order.deliveredContent,
-        digiflazz_status: toBuyerStatus(order.digiflazzStatus), // keep in sync with apiOrderDigiflazzStream.ts's own mapping
+        digiflazz_status: toBuyerDigiflazzStatus(order.digiflazzStatus),
+        fulfillment: getOrderFulfillment(order),
         items: order.items.map((i) => ({
           name: i.product.name,
           duration: i.product.durationLabel,

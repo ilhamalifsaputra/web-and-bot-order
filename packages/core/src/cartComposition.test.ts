@@ -110,13 +110,7 @@ describe("cartAdditionError — today's add-to-cart behavior, unchanged", () => 
   });
 });
 
-describe("cartAdditionError — a top-up is governed entirely by the homogeneity rule", () => {
-  // THE PROOF this task hangs on. A Digiflazz top-up as the catalog sync
-  // actually creates it is deliveryType MANUAL_WITH_INFO, i.e. non-AUTO — so
-  // the pre-existing homogeneity rule already forbids it sharing a cart with
-  // anything. There is nothing left for a separate "one kind per cart" check to
-  // reject, which is why this module does not have one. The error key a buyer
-  // sees is byte-identical to today's.
+describe("cartAdditionError — supplier purchases require a single line", () => {
   it("a real top-up mixing with premium is rejected as error.cart_mixed_delivery", () => {
     expect(cartAdditionError([auto(1)], topup(2))).toBe(CART_MIXED_DELIVERY);
     expect(cartAdditionError([topup(1)], auto(2))).toBe(CART_MIXED_DELIVERY);
@@ -128,22 +122,15 @@ describe("cartAdditionError — a top-up is governed entirely by the homogeneity
     expect(cartAdditionError([topup(1)], topup(2))).toBe(CART_MIXED_DELIVERY);
   });
 
-  // The one shape homogeneity does NOT catch: a Digiflazz-sourced SKU an admin
-  // hand-edited to `auto` (e.g. migrated off the supplier rail onto local
-  // stock). A previous revision rejected this as a kind conflict on a premise
-  // that turned out to be false — the Digiflazz poller only ever looks at
-  // PROCESSING orders and an all-AUTO order never reaches PROCESSING. Pinned
-  // as ALLOWED so the check is not reintroduced by reflex; see
-  // cartComposition.ts's doc comment for the full trace.
-  it("an AUTO-typed Digiflazz SKU is allowed to share an all-AUTO cart (no kind gate)", () => {
+  // Explicit supplier metadata determines routing even for AUTO products.
+  it("an AUTO-typed Digiflazz SKU cannot share a stock cart", () => {
     const autoTypedTopup: CartCompositionLine = {
       denominationId: 2,
       deliveryType: DeliveryType.AUTO,
       autoDeliverySource: "digiflazz",
     };
-    expect(cartAdditionError([auto(1)], autoTypedTopup)).toBeNull();
-    expect(cartAdditionError([autoTypedTopup], auto(1))).toBeNull();
-    // ...and it is still classified as a TOPUP, for the future plan's benefit.
+    expect(cartAdditionError([auto(1)], autoTypedTopup)).toBe(CART_MIXED_DELIVERY);
+    expect(cartAdditionError([autoTypedTopup], auto(1))).toBe(CART_MIXED_DELIVERY);
     expect(cartKindOf(autoTypedTopup)).toBe(CartKind.TOPUP);
   });
 
@@ -158,7 +145,7 @@ describe("cartAdditionError — a top-up is governed entirely by the homogeneity
   });
 });
 
-describe("cartCompositionError — the checkout re-assertion, unchanged", () => {
+describe("cartCompositionError — checkout re-assertion", () => {
   it("(today's behavior) accepts an empty cart and a single line of any kind", () => {
     expect(cartCompositionError([])).toBeNull();
     expect(cartCompositionError([auto(1)])).toBeNull();
@@ -184,15 +171,13 @@ describe("cartCompositionError — the checkout re-assertion, unchanged", () => 
     expect(cartCompositionError([topup(1), auto(2)])).toBe(CART_MIXED_DELIVERY);
   });
 
-  // The pay-button counterpart of the add-path case above. This mattered more
-  // than the add path did: rejecting here would have failed an ALREADY BUILT
-  // cart at the pay button, with an error key the buyer had never seen.
-  it("an all-AUTO cart containing an AUTO-typed Digiflazz SKU passes (no kind gate)", () => {
+  // Checkout also rejects a cart assembled before the supplier guards existed.
+  it("rejects an all-AUTO cart containing a Digiflazz SKU before payment", () => {
     const autoTypedTopup: CartCompositionLine = {
       denominationId: 2,
       deliveryType: DeliveryType.AUTO,
       autoDeliverySource: "digiflazz",
     };
-    expect(cartCompositionError([auto(1), autoTypedTopup])).toBeNull();
+    expect(cartCompositionError([auto(1), autoTypedTopup])).toBe(CART_MIXED_DELIVERY);
   });
 });

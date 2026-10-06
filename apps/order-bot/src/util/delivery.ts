@@ -22,6 +22,7 @@
  */
 import { InputFile, type Api, type InlineKeyboard } from "grammy";
 import { OrderKind, OrderStatus, langCode } from "@app/core/enums";
+import { fulfillmentProviderFor, type FulfillmentOrder } from "@app/core/orderFulfillment";
 import {
   buildAccountFileContent,
   buildDeliveryCaption,
@@ -53,6 +54,8 @@ export interface SettledBubbleOrder {
   orderCode: string;
   kind: string;
   status: string;
+  fulfillmentProvider?: string | null;
+  items?: FulfillmentOrder["items"];
   user: { language: string };
 }
 
@@ -128,6 +131,9 @@ export function settledPaymentBubble(order: SettledBubbleOrder): { text: string;
   const lang = langCode(order.user.language);
   if (order.kind === OrderKind.WALLET_TOPUP) {
     return { text: coreT("checkout.topup_payment_received", lang), markup: settledPaymentKb(order.kind, lang) };
+  }
+  if (fulfillmentProviderFor({ ...order, items: order.items ?? [] }) === "DIGIFLAZZ") {
+    return { text: `${coreT("order.fulfillment_header", lang, { code: order.orderCode })}\n\n${coreT("checkout.payment_received_auto", lang)}`, markup: settledPaymentKb(order.kind, lang) };
   }
   const key = order.status === OrderStatus.PROCESSING ? "checkout.payment_received_processing" : "checkout.payment_received";
   return { text: coreT(key, lang, { code: order.orderCode }), markup: settledPaymentKb(order.kind, lang) };

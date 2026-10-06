@@ -23,6 +23,7 @@
   "dependencies": {
     "@app/core": "workspace:*",
     "@app/db": "workspace:*",
+    "@app/outbox-dispatcher": "workspace:*",
     "@grammyjs/conversations": "^1.2.0",
     "@grammyjs/runner": "^2.0.3",
     "croner": "^8.1.2",

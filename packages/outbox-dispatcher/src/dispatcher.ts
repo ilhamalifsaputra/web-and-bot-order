@@ -80,6 +80,7 @@ import { registerOutboxNudge, flushPaymentBubble } from "@app/core/nudge";
 import { publicChannelId } from "@app/core/runtime";
 import { logger } from "@app/core/logger";
 import { NotificationEvent, NotificationChannel, langCode } from "@app/core/enums";
+import { fulfillmentProviderFor } from "@app/core/orderFulfillment";
 import { sendMail } from "@app/core/mailer";
 import {
   buildAccountFileContent,
@@ -333,6 +334,20 @@ export async function drainBatch(bot: Bot, signal?: AbortSignal): Promise<number
     // Telegram-only special cases below). Owner- and buyer-addressed rows both
     // come through here; see deliverEmail's own doc comment below. No
     // rate-limit concept for email, so just move on to the next row either way.
+    // Upgrade compatibility: old settlement rows must not describe an automatic
+    // order as manual or create a second buyer message next to its tracked one.
+    if (row.orderId != null && [
+      NotificationEvent.ORDER_PROCESSING_DM,
+      NotificationEvent.ADMIN_MANUAL_ORDER_QUEUED,
+      NotificationEvent.OWNER_EMAIL_MANUAL_ORDER_QUEUED,
+      NotificationEvent.OWNER_EMAIL_ORDER_PAID,
+    ].includes(row.event as never)) {
+      const order = await prisma.order.findUnique({ where: { id: row.orderId }, include: { items: { include: { product: true } } } });
+      if (order && fulfillmentProviderFor(order) === "DIGIFLAZZ") {
+        await recordSent(row, row.channel === NotificationChannel.EMAIL ? "email" : "Telegram");
+        continue;
+      }
+    }
     if (row.channel === NotificationChannel.EMAIL) {
       await deliverEmail(row, payload);
       continue;

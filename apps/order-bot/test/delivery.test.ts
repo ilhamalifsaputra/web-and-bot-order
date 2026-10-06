@@ -127,6 +127,11 @@ describe("settledPaymentBubble — PRODUCT (regression: must not be reworded by 
 });
 
 describe("settledPaymentKb", () => {
+  it("does not describe a paid automatic top-up as hand delivery", () => {
+    const { text } = settledPaymentBubble({ orderCode: "AUTO-1", kind: "PRODUCT", status: "PROCESSING", fulfillmentProvider: "DIGIFLAZZ", user: walletUser() });
+    expect(text).toContain("automatic processing");
+    expect(text).not.toContain("manually");
+  });
   it("picks the wallet keyboard for WALLET_TOPUP and the product keyboard for PRODUCT", () => {
     const walletFlat = flatCallbacks(settledPaymentKb(OrderKind.WALLET_TOPUP, "en"));
     const productFlat = flatCallbacks(settledPaymentKb(OrderKind.PRODUCT, "en"));

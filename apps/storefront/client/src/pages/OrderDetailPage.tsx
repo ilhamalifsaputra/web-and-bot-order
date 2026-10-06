@@ -1,42 +1,6 @@
-/**
- * TSX port of apps/storefront/views/order_detail.njk. The summary's
- * "Subtotal"/"Bulk"/"Voucher" labels were literal English in the NJK and were
- * ported that way to stay 1:1; they now go through `t()` against the
- * `web.subtotal` / `web.bulk_discount` / `web.voucher_discount` keys the
- * checkout summary was already using, so an Indonesian visitor no longer meets
- * three stray English words in the middle of a localized page.
- * Copy-to-clipboard for a credential reads straight
- * from the item's own value instead of round-tripping through the DOM (the
- * NJK used `getElementById` only because it had no other handle on the
- * string). Markup/classes copied verbatim apart from the mechanical
- * Tailwind v3→v4 renames (docs/REACT_STOREFRONT_MIGRATION.md): `!text-2xl`
- * → `text-2xl!`, `!text-sm` → `text-sm!`.
- *
- * Task 10 additions (the storefront twin of the bot's
- * editCustomerInfoConversation, Task 9):
- *  - Polls every 5s ONLY while the order is PROCESSING (function-form
- *    refetchInterval, PayPage's polling precedent) + a manual Refresh button
- *    — belt-and-suspenders, matching the bot's automatic-and-on-demand UX.
- *  - A PROCESSING reassurance card (payment received, being hand-prepared,
- *    deliberately no SLA/ETA number — matches Task 4's DM and Task 9's bot
- *    screen).
- *  - For a manual_with_info order, the buyer's submitted answers are shown
- *    read-only, with an Edit control enabled only while PROCESSING (locked
- *    once DELIVERED). The edit form reuses DeliveryFieldInput (shared with
- *    CheckoutPage's info-collection step) and lib/deliveryFields.ts's
- *    client-side validation. The server (updateOrderCustomerData) is the
- *    final authority — a ValidationError response (including the mid-edit
- *    race, error.order_not_processing, if the order left PROCESSING while
- *    the buyer was editing) shows the translated error and refetches so the
- *    buyer sees the server's real current state; the race case additionally
- *    exits edit mode since editing is now locked. The buyer's in-progress
- *    typing is never silently discarded — `answers` is local state, seeded
- *    only when Edit is first tapped, so a refetch never clobbers it.
- *  - For a manually-fulfilled DELIVERED order, `delivered_content` renders in
- *    its own titled, copyable block (same copy-to-clipboard shape as the
- *    credentials block below it, but visually and textually distinct so it
- *    doesn't read as stock credentials).
- */
+/** Order detail uses canonical backend fulfillment, full-detail SSE refetches
+ * and five-second polling while payment or delivery is outstanding.
+ * Historical amounts preserve their settlement and central-IDR bases. */
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
@@ -48,9 +12,11 @@ import { tError } from "../lib/errors";
 import { formatIdr, formatOrderAmount } from "../lib/format";
 import { allFieldsValid } from "../lib/deliveryFields";
 import { useIsDesktop } from "../lib/useMediaQuery";
-import { useSse } from "../hooks/useSse";
+import { isOrderLive } from "../lib/orderFulfillment";
+import { useOrderStatusStream } from "../hooks/useOrderStatusStream";
 import Skeleton from "../components/shop/Skeleton";
 import StatusBadge from "../components/shop/StatusBadge";
+import OrderProgress from "../components/shop/OrderProgress";
 import DeliveryFieldInput from "../components/shop/DeliveryFieldInput";
 import ErrorPage from "./ErrorPage";
 import Spinner from "../components/shop/Spinner";
@@ -65,42 +31,21 @@ export default function OrderDetailPage() {
     queryKey: ["account-order", code],
     queryFn: () => apiGet<OrderDetailData>(`/api/v1/account/orders/${code}`),
     retry: false,
-    // Poll only while awaiting hand fulfilment — off for every other status
-    // (PayPage's 5s-poll precedent, function-form so it re-evaluates the
-    // LATEST fetched status on every tick instead of freezing at mount time).
-    refetchInterval: (query) => (query.state.data?.order.status === "PROCESSING" ? 5000 : false),
+    refetchInterval: (query) => (isOrderLive(query.state.data) ? 5000 : false),
   });
 
-  // Layered on top of, not replacing, the poll above — this only lowers the
-  // latency of the digiflazz_status sub-status line. The merge deliberately
-  // does NOT touch order.status (unlike the admin app's equivalent): this
-  // page's `processing`/`delivered` booleans are computed server-side and
-  // are their own source of truth, so a partial SSE push must never let them
-  // drift out of sync with order.status — only the poll's full refetch (which
-  // always brings status and the derived booleans together) may change them.
-  // Connecting only while `data?.processing` is true also means the
-  // connection self-closes the moment the poll's own refetch reports the
-  // order left PROCESSING — no separate teardown logic needed.
-  useSse<OrderDetailData>(
-    data?.processing ? `/api/v1/account/orders/${code}/digiflazz/stream` : null,
-    ["account-order", code],
-    (prev, next) => {
-      // No base order loaded yet — nothing to merge into. `merge`'s declared
-      // return type is T, but this repo's strict TS config rejects casting
-      // `undefined` straight to OrderDetailData, so route it through
-      // `unknown` — the runtime value is still `undefined`, which
-      // setQueryData leaves as-is (there's nothing cached to overwrite).
-      if (!prev) return prev as unknown as OrderDetailData;
-      const snapshot = next as { orderStatus: string; digiflazzStatus: "pending" | "reviewing" | null };
-      return { ...prev, order: { ...prev.order, digiflazz_status: snapshot.digiflazzStatus } };
-    },
-  );
+  useOrderStatusStream(code, isOrderLive(data));
 
   const [editMode, setEditMode] = useState(false);
   const [answers, setAnswers] = useState<Array<Record<string, string>>>([]);
   // The rejection itself: a field error like `error.text_too_long` quotes the
   // limit it was judged by, and that figure rides on the Error (F4a).
   const [infoError, setInfoError] = useState<unknown>(null);
+  const canEdit = data?.order.fulfillment?.can_edit_customer_data ?? Boolean(data?.processing);
+
+  useEffect(() => {
+    if (!canEdit) setEditMode(false);
+  }, [canEdit]);
 
   const infoMutation = useMutation({
     mutationFn: (customerData: Array<Record<string, string>>) =>
@@ -187,262 +132,270 @@ export default function OrderDetailPage() {
 
   const infoValid = allFieldsValid(fields, answers, qty);
   const lang = currentLang();
+  const liveUpdates = isOrderLive(data) ? (
+    <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-ink-faint">
+      <span>{t("web.order_updates_automatic")}</span>
+      <Button variant="ghost" className="min-h-11" disabled={isFetching} onClick={() => void refetch()}>
+        <RefreshCw className={`w-3.5 h-3.5 ${isFetching ? "animate-spin" : ""}`} /> {t("web.order_refresh")}
+      </Button>
+    </div>
+  ) : null;
 
   return (
-    <>
-      <div className="mb-6 flex items-center justify-between gap-3 flex-wrap">
-        <div>
-          <div className="text-xs text-ink-faint mb-1">
+    <div className="min-w-0">
+      <div className="mb-5 flex items-start justify-between gap-3 flex-wrap">
+        <div className="min-w-0 flex-1">
+          <div className="text-xs text-ink-faint mb-1 break-words">
             <Link to="/account/orders" className="hover:text-pine">
               {t("web.account_orders")}
             </Link>
             <span className="mx-1">/</span> <span className="font-mono">{order.code}</span>
           </div>
-          <h1 className="page-title">
-            {t("web.order_code")} <span className="font-mono">{order.code}</span>
+          <h1 className="page-title block! break-words">
+            {t("web.order_code")} <span className="font-mono break-all">{order.code}</span>
           </h1>
+          <p className="mt-1 text-xs text-ink-faint">{order.created_at_display}</p>
         </div>
-        <StatusBadge value={order.status} />
+        <StatusBadge value={order.status} fulfillment={order.fulfillment} />
       </div>
 
-      {pendingPayment && (
-        <Card className="mb-5 flex items-center justify-between gap-3 flex-wrap bg-pine-tint/40">
-          <div className="text-sm text-ink-soft">
-            {t("web.order_status")}: <StatusBadge value={order.status} />
-          </div>
-          <Link to={`/checkout/${order.code}/pay`} className="btn btn-primary">
-            <Wallet className="w-4 h-4" /> {t("web.pay_now")}
-          </Link>
-        </Card>
-      )}
-
-      {processing && (
-        <Card className="mb-5 flex items-center justify-between gap-3 flex-wrap bg-pine-tint/40">
-          <div className="flex items-start gap-3">
-            <Clock className="w-5 h-5 text-pine mt-0.5 shrink-0" />
-            <div>
-              <div className="text-sm font-semibold text-ink">{t("web.order_processing_title")}</div>
-              <div className="text-xs text-ink-soft mt-0.5">{t("web.order_processing_body")}</div>
-              {order.digiflazz_status === "pending" && (
-                <div className="text-xs text-ink-soft mt-1">{t("web.digiflazz_pending_body")}</div>
-              )}
-              {order.digiflazz_status === "reviewing" && (
-                <div className="text-xs text-ink-soft mt-1">{t("web.digiflazz_failed_body")}</div>
-              )}
-            </div>
-          </div>
-          <Button variant="soft" size="sm" disabled={isFetching} onClick={() => void refetch()}>
-            <RefreshCw className={`w-3.5 h-3.5 ${isFetching ? "animate-spin" : ""}`} /> {t("web.order_refresh")}
-          </Button>
-        </Card>
-      )}
-
-      {/* Item lines: stacked on a phone, the three-column table from md up.
-          Only one of the two is ever in the DOM (lib/useMediaQuery.ts). */}
-      {isDesktop ? (
-        <Card padded={false} className="mb-5">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>{t("web.order_items")}</th>
-                <th>{t("web.order_total")}</th>
-                <th>{t("web.warranty")}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {order.items.map((i, idx) => (
-                <tr key={idx}>
-                  <td>
-                    <div className="font-semibold text-sm">{i.name}</div>
-                    <div className="text-xs text-ink-faint">{i.duration}</div>
-                  </td>
-                  <td>
-                    <span className="font-semibold text-pine text-sm whitespace-nowrap">{formatIdr(i.unit_price)}</span>
-                  </td>
-                  <td className="text-xs text-ink-soft">{t("web.warranty_days", { days: i.warranty_days })}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </Card>
-      ) : (
-        <ul className="card mb-5 divide-y divide-line">
-          {order.items.map((i, idx) => (
-            <li key={idx} className="p-4">
-              <div className="text-sm font-semibold text-ink">{i.name}</div>
-              {i.duration && <div className="text-xs text-ink-faint">{i.duration}</div>}
-              <div className="mt-2 flex items-center justify-between gap-3">
-                <span className="font-semibold text-pine text-sm whitespace-nowrap">{formatIdr(i.unit_price)}</span>
-                <span className="text-xs text-ink-soft">{t("web.warranty_days", { days: i.warranty_days })}</span>
+      <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-[minmax(0,1fr)_20rem]">
+        <div className="min-w-0 space-y-5">
+          {order.fulfillment && <OrderProgress fulfillment={order.fulfillment}>{liveUpdates}</OrderProgress>}
+          {pendingPayment && (
+            <Card className="flex items-center justify-between gap-3 flex-wrap bg-pine-tint/40">
+              <div className="text-sm text-ink-soft">
+                {t("web.order_status")}: <StatusBadge value={order.status} fulfillment={order.fulfillment} />
               </div>
-            </li>
-          ))}
-        </ul>
-      )}
-
-      {/* Every figure on this card and the item lines above describes ONE
-          settled order, so none of them follow the viewer's display-currency
-          preference (<Price/> is for live catalog/cart prices). The subtotal,
-          discounts and unit prices are central-IDR for every order; `total` is
-          in the order's own settlement currency (`order.currency`) — see
-          apps/storefront/src/routes/buyerOrderSummary.ts. */}
-      <Card className="mb-5 max-w-md ml-auto text-sm">
-        <div className="flex justify-between py-1">
-          <span className="text-ink-soft">{t("web.subtotal")}</span> <span>{formatIdr(order.subtotal)}</span>
-        </div>
-        {showBulk && (
-          <div className="flex justify-between py-1 text-grass-dark">
-            <span>{t("web.bulk_discount")}</span> <span>−{formatIdr(order.bulk_discount)}</span>
-          </div>
-        )}
-        {showVoucher && (
-          <div className="flex justify-between py-1 text-grass-dark">
-            <span>{t("web.voucher_discount")}</span> <span>−{formatIdr(order.discount)}</span>
-          </div>
-        )}
-        {showWallet && (
-          <div className="flex justify-between py-1 text-grass-dark">
-            <span>{t("web.wallet_credit_row")}</span> <span>−{formatIdr(order.wallet_credit)}</span>
-          </div>
-        )}
-        <div className="flex justify-between py-2 border-t border-line mt-1 font-semibold">
-          <span>{t("web.order_total")}</span> <span className="font-semibold text-pine text-base whitespace-nowrap">
-            {formatOrderAmount(order.total, order.currency)}
-          </span>
-        </div>
-      </Card>
-
-      {fields.length > 0 && (
-        <section className="card card-pad mb-5">
-          <div className="flex items-center justify-between gap-3 flex-wrap mb-1">
-            <h2 className="section-title">{t("web.order_info_title")}</h2>
-            {processing && !editMode && (
-              <Button variant="soft" size="sm" onClick={startEdit}>
-                <Pencil className="w-3.5 h-3.5" /> {t("web.order_info_edit_btn")}
-              </Button>
-            )}
-          </div>
-
-          {infoError !== null && (
-            <Alert variant="banner" tone="error" className="mt-3">
-              {tError(infoError)}
-            </Alert>
+              <Link to={`/checkout/${order.code}/pay`} className="btn btn-primary min-h-11">
+                <Wallet className="w-4 h-4" /> {t("web.pay_now")}
+              </Link>
+            </Card>
           )}
 
-          {editMode ? (
-            <>
-              <div className="space-y-5 mt-3">
-                {Array.from({ length: qty }, (_, unitIdx) => (
-                  <div key={unitIdx} className={qty > 1 ? "border border-line rounded-xl p-3" : ""}>
-                    {qty > 1 && (
-                      <div className="text-xs font-semibold text-ink-soft mb-2">
-                        {t("web.checkout_info_unit", { unit: unitIdx + 1, total: qty })}
-                      </div>
-                    )}
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      {fields.map((field) => (
-                        <DeliveryFieldInput
-                          key={field.key}
-                          field={field}
-                          inputId={`edit-info-${unitIdx}-${field.key}`}
-                          value={answers[unitIdx]?.[field.key] ?? ""}
-                          onChange={(value) => setAnswer(unitIdx, field.key, value)}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
-              <div className="flex gap-2 mt-4">
-                <Button
-                  variant="primary"
-                  size="sm"
-                  disabled={!infoValid || infoMutation.isPending}
-                  onClick={() => infoMutation.mutate(answers)}
-                >
-                  {infoMutation.isPending && <Spinner />}
-                  {t("web.order_info_save_btn")}
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  disabled={infoMutation.isPending}
-                  onClick={cancelEdit}
-                >
-                  {t("web.order_info_cancel_btn")}
-                </Button>
-              </div>
-            </>
-          ) : (
-            <div className="mt-3 space-y-3 text-sm">
-              {order.customer_data.map((unitAnswers, unitIdx) => (
-                <div key={unitIdx}>
-                  {qty > 1 && (
-                    <div className="text-xs font-semibold text-ink-soft mb-1">
-                      {t("web.checkout_info_unit", { unit: unitIdx + 1, total: qty })}
-                    </div>
+          {processing && !order.fulfillment && (
+            <Card className="flex items-center justify-between gap-3 flex-wrap bg-pine-tint/40">
+              <div className="flex items-start gap-3">
+                <Clock className="w-5 h-5 text-pine mt-0.5 shrink-0" />
+                <div>
+                  <div className="text-sm font-semibold text-ink">{t("web.order_processing_title")}</div>
+                  <div className="text-xs text-ink-soft mt-0.5">{t("web.order_processing_body")}</div>
+                  {order.digiflazz_status === "pending" && (
+                    <div className="text-xs text-ink-soft mt-1">{t("web.digiflazz_pending_body")}</div>
                   )}
-                  <dl className="space-y-1">
-                    {fields.map((field) => (
-                      <div key={field.key} className="flex justify-between gap-3">
-                        <dt className="text-ink-soft">{lang === "id" ? field.label.id : field.label.en}</dt>
-                        <dd className="font-medium text-right">{unitAnswers[field.key] ?? ""}</dd>
+                  {order.digiflazz_status === "reviewing" && (
+                    <div className="text-xs text-ink-soft mt-1">{t("web.digiflazz_failed_body")}</div>
+                  )}
+                </div>
+              </div>
+            </Card>
+          )}
+          {!order.fulfillment && liveUpdates}
+
+          {/* Item lines: stacked on a phone, the three-column table from md up.
+              Only one of the two is ever in the DOM (lib/useMediaQuery.ts). */}
+          {isDesktop ? (
+            <Card padded={false} className="min-w-0 overflow-x-auto">
+              <table className="data-table w-full">
+                <thead>
+                  <tr>
+                    <th>{t("web.order_items")}</th>
+                    <th>{t("web.order_total")}</th>
+                    <th>{t("web.warranty")}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {order.items.map((i, idx) => (
+                    <tr key={idx}>
+                      <td>
+                        <div className="font-semibold text-sm break-words">{i.name}</div>
+                        <div className="text-xs text-ink-faint">{i.duration}</div>
+                      </td>
+                      <td>
+                        <span className="font-semibold text-pine text-sm whitespace-nowrap">{formatIdr(i.unit_price)}</span>
+                      </td>
+                      <td className="text-xs text-ink-soft">{t("web.warranty_days", { days: i.warranty_days })}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </Card>
+          ) : (
+            <ul className="card min-w-0 divide-y divide-line">
+              {order.items.map((i, idx) => (
+                <li key={idx} className="p-4">
+                  <div className="text-sm font-semibold text-ink break-words">{i.name}</div>
+                  {i.duration && <div className="text-xs text-ink-faint">{i.duration}</div>}
+                  <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
+                    <span className="font-semibold text-pine text-sm whitespace-nowrap">{formatIdr(i.unit_price)}</span>
+                    <span className="text-xs text-ink-soft">{t("web.warranty_days", { days: i.warranty_days })}</span>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {fields.length > 0 && (
+            <section className="card card-pad min-w-0">
+              <div className="flex items-center justify-between gap-3 flex-wrap mb-1">
+                <h2 className="section-title">{t("web.order_info_title")}</h2>
+                {canEdit && !editMode && (
+                  <Button variant="soft" className="min-h-11" onClick={startEdit}>
+                    <Pencil className="w-3.5 h-3.5" /> {t("web.order_info_edit_btn")}
+                  </Button>
+                )}
+              </div>
+
+              {infoError !== null && (
+                <Alert variant="banner" tone="error" className="mt-3">
+                  {tError(infoError)}
+                </Alert>
+              )}
+
+              {editMode && canEdit ? (
+                <>
+                  <div className="space-y-5 mt-3">
+                    {Array.from({ length: qty }, (_, unitIdx) => (
+                      <div key={unitIdx} className={qty > 1 ? "border border-line rounded-xl p-3" : ""}>
+                        {qty > 1 && (
+                          <div className="text-xs font-semibold text-ink-soft mb-2">
+                            {t("web.checkout_info_unit", { unit: unitIdx + 1, total: qty })}
+                          </div>
+                        )}
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          {fields.map((field) => (
+                            <DeliveryFieldInput
+                              key={field.key}
+                              field={field}
+                              inputId={`edit-info-${unitIdx}-${field.key}`}
+                              value={answers[unitIdx]?.[field.key] ?? ""}
+                              onChange={(value) => setAnswer(unitIdx, field.key, value)}
+                            />
+                          ))}
+                        </div>
                       </div>
                     ))}
-                  </dl>
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
-      )}
-
-      {delivered && (
-        <section id="credentials" className="card card-pad border-grass/40 mb-5">
-          <h2 className="section-title flex items-center gap-2">
-            <BadgeCheck className="w-5 h-5 text-grass" /> {t("web.credentials")}
-          </h2>
-          <p className="text-xs text-ink-faint mt-1">{t("web.credentials_hint")}</p>
-          <div className="mt-3 space-y-2">
-            {order.items.map(
-              (i, idx) =>
-                i.credentials && (
-                  <div key={idx} className="flex items-center gap-2">
-                    <code className="codeish flex-1 text-sm! break-all select-all">{i.credentials}</code>
+                  </div>
+                  <div className="flex flex-wrap gap-2 mt-4">
                     <Button
-                      variant="soft"
-                      size="sm"
-                      onClick={() => navigator.clipboard.writeText(i.credentials ?? "")}
+                      variant="primary"
+                      className="min-h-11"
+                      disabled={!canEdit || !infoValid || infoMutation.isPending}
+                      onClick={() => infoMutation.mutate(answers)}
                     >
-                      <Copy className="w-3.5 h-3.5" /> {t("web.copy")}
+                      {infoMutation.isPending && <Spinner />}
+                      {t("web.order_info_save_btn")}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      className="min-h-11"
+                      disabled={infoMutation.isPending}
+                      onClick={cancelEdit}
+                    >
+                      {t("web.order_info_cancel_btn")}
                     </Button>
                   </div>
-                ),
-            )}
-          </div>
-        </section>
-      )}
+                </>
+              ) : (
+                <div className="mt-3 space-y-3 text-sm">
+                  {order.customer_data.map((unitAnswers, unitIdx) => (
+                    <div key={unitIdx}>
+                      {qty > 1 && (
+                        <div className="text-xs font-semibold text-ink-soft mb-1">
+                          {t("web.checkout_info_unit", { unit: unitIdx + 1, total: qty })}
+                        </div>
+                      )}
+                      <dl className="space-y-1">
+                        {fields.map((field) => (
+                          <div key={field.key} className="grid grid-cols-2 gap-3">
+                            <dt className="text-ink-soft break-words">{lang === "id" ? field.label.id : field.label.en}</dt>
+                            <dd className="font-medium text-right break-all">{unitAnswers[field.key] ?? ""}</dd>
+                          </div>
+                        ))}
+                      </dl>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+          )}
 
-      {delivered && order.delivered_content && (
-        <section className="card card-pad border-grass/40">
-          <h2 className="section-title flex items-center gap-2">
-            <BadgeCheck className="w-5 h-5 text-grass" /> {t("web.delivered_content_title")}
-          </h2>
-          <p className="text-xs text-ink-faint mt-1">{t("web.delivered_content_hint")}</p>
-          <div className="mt-3 flex items-center gap-2">
-            <code className="codeish flex-1 text-sm! break-all whitespace-pre-wrap select-all">
-              {order.delivered_content}
-            </code>
-            <Button
-              variant="soft"
-              size="sm"
-              onClick={() => navigator.clipboard.writeText(order.delivered_content ?? "")}
-            >
-              <Copy className="w-3.5 h-3.5" /> {t("web.copy")}
-            </Button>
+          {delivered && order.items.some((item) => item.credentials) && (
+            <section id="credentials" className="card card-pad border-grass/40 mb-5">
+              <h2 className="section-title flex items-center gap-2">
+                <BadgeCheck className="w-5 h-5 text-grass" /> {t("web.credentials")}
+              </h2>
+              <p className="text-xs text-ink-faint mt-1">{t("web.credentials_hint")}</p>
+              <div className="mt-3 space-y-2">
+                {order.items.map(
+                  (i, idx) =>
+                    i.credentials && (
+                      <div key={idx} className="flex flex-wrap items-center gap-2">
+                        <code className="codeish min-w-0 flex-1 text-sm! break-all select-all">{i.credentials}</code>
+                        <Button
+                          variant="soft"
+                          className="min-h-11"
+                          onClick={() => navigator.clipboard.writeText(i.credentials ?? "")}
+                        >
+                          <Copy className="w-3.5 h-3.5" /> {t("web.copy")}
+                        </Button>
+                      </div>
+                    ),
+                )}
+              </div>
+            </section>
+          )}
+
+          {delivered && order.delivered_content && (
+            <section className="card card-pad border-grass/40">
+              <h2 className="section-title flex items-center gap-2">
+                <BadgeCheck className="w-5 h-5 text-grass" /> {t("web.delivered_content_title")}
+              </h2>
+              <p className="text-xs text-ink-faint mt-1">{t("web.delivered_content_hint")}</p>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <code className="codeish min-w-0 flex-1 text-sm! break-all whitespace-pre-wrap select-all">
+                  {order.delivered_content}
+                </code>
+                <Button
+                  variant="soft"
+                  className="min-h-11"
+                  onClick={() => navigator.clipboard.writeText(order.delivered_content ?? "")}
+                >
+                  <Copy className="w-3.5 h-3.5" /> {t("web.copy")}
+                </Button>
+              </div>
+            </section>
+          )}
+        </div>
+        {/* Historical prices and reductions stay in IDR; the total uses the
+            order's settlement currency, independent of viewer preference. */}
+        <Card className="min-w-0 text-sm">
+          <h2 className="section-title mb-3">{t("web.order_summary_title")}</h2>
+          <div className="flex flex-wrap justify-between gap-x-3 py-1">
+            <span className="text-ink-soft">{t("web.subtotal")}</span> <span>{formatIdr(order.subtotal)}</span>
           </div>
-        </section>
-      )}
-    </>
+          {showBulk && (
+            <div className="flex flex-wrap justify-between gap-x-3 py-1 text-grass-dark">
+              <span>{t("web.bulk_discount")}</span> <span>−{formatIdr(order.bulk_discount)}</span>
+            </div>
+          )}
+          {showVoucher && (
+            <div className="flex flex-wrap justify-between gap-x-3 py-1 text-grass-dark">
+              <span>{t("web.voucher_discount")}</span> <span>−{formatIdr(order.discount)}</span>
+            </div>
+          )}
+          {showWallet && (
+            <div className="flex flex-wrap justify-between gap-x-3 py-1 text-grass-dark">
+              <span>{t("web.wallet_credit_row")}</span> <span>−{formatIdr(order.wallet_credit)}</span>
+            </div>
+          )}
+          <div className="flex flex-wrap justify-between gap-x-3 py-2 border-t border-line mt-2 font-semibold">
+            <span>{t("web.order_total")}</span> <span className="font-semibold text-pine text-lg whitespace-nowrap">
+              {formatOrderAmount(order.total, order.currency)}
+            </span>
+          </div>
+        </Card>
+      </div>
+    </div>
   );
 }

@@ -320,6 +320,8 @@ const SETTLED_BUBBLE_ORDER_SELECT = {
   orderCode: true,
   kind: true,
   status: true,
+  fulfillmentProvider: true,
+  items: { select: { deliveryTypeSnapshot: true, product: { select: { autoDeliverySource: true, deliveryType: true } } } },
   paymentMsgChatId: true,
   paymentMsgId: true,
   user: { select: { language: true } },

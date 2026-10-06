@@ -6,6 +6,7 @@
  * prefix lets us evolve the schema later without breaking in-flight buttons.
  */
 import { InlineKeyboard, Keyboard } from "grammy";
+import { getOrderFulfillment } from "@app/core/orderFulfillment";
 import type { Decimal } from "@app/core/money";
 import { ensureUtc } from "@app/core/datetime";
 import { CategoryGroup, DeliveryType, OrderStatus, PaymentMethod, StockStatus, TicketStatus } from "@app/core/enums";
@@ -68,9 +69,12 @@ interface OrderLike {
   status: string;
   paymentMethod: string;
   totalAmount: Decimal.Value;
+  fulfillmentProvider?: string | null;
+  digiflazzDispatchedAt?: Date | null;
+  digiflazzStatus?: string | null;
   /** Only present on the full getOrder()/listUserOrders() include shape — used
    * by orderDetailKb to gate the Edit-Info button to manual_with_info SKUs. */
-  items?: Array<{ product: { deliveryType: string } }>;
+  items?: Array<{ deliveryTypeSnapshot?: string | null; product: { deliveryType: string; autoDeliverySource?: string | null } }>;
 }
 interface TicketLike {
   id: number;
@@ -613,7 +617,7 @@ export function orderDetailKb(order: OrderLike, lang: string): InlineKeyboard {
     rows.push([
       { text: coreT("checkout.refresh_status_btn", lang), data: cb("order", "refresh", order.id) },
     ]);
-    if (order.items?.[0]?.product.deliveryType === DeliveryType.MANUAL_WITH_INFO) {
+    if (getOrderFulfillment({ ...order, items: order.items ?? [] }).can_edit_customer_data && (order.items?.[0]?.deliveryTypeSnapshot ?? order.items?.[0]?.product.deliveryType) === DeliveryType.MANUAL_WITH_INFO) {
       rows.push([
         { text: coreT("order.edit_info_btn", lang), data: cb("order", "editinfo", order.id) },
       ]);

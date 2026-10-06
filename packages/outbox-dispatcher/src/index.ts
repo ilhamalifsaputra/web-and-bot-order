@@ -4,3 +4,4 @@
  * Consumed in-process by the composition root (`apps/server`).
  */
 export { runDispatcher } from "./dispatcher";
+export { runFulfillmentMessages, FulfillmentMessageWorker } from "./fulfillmentMessages";

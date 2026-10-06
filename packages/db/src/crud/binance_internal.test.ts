@@ -1084,11 +1084,13 @@ describe("getSettledBubbleOrder", () => {
 
     expect(row).not.toBeNull();
     expect(Object.keys(row!).sort()).toEqual(
-      ["id", "kind", "orderCode", "paymentMsgChatId", "paymentMsgId", "status", "user"].sort(),
+      ["id", "kind", "orderCode", "paymentMsgChatId", "paymentMsgId", "status", "fulfillmentProvider", "items", "user"].sort(),
     );
     expect(row!.user).not.toHaveProperty("passwordHash");
     expect(row!.user).not.toHaveProperty("email");
     expect(Object.keys(row!.user!)).toEqual(["language"]);
+    expect(Object.keys(row!.items[0]!).sort()).toEqual(["deliveryTypeSnapshot", "product"]);
+    expect(Object.keys(row!.items[0]!.product).sort()).toEqual(["autoDeliverySource", "deliveryType"]);
   });
 
   it("still returns an order the sweep query would filter out, so the caller can classify it itself", async () => {

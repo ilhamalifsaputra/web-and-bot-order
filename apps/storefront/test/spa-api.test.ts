@@ -3001,6 +3001,45 @@ describe("GET/PATCH /api/v1/account/orders/:code (Task 10: PROCESSING info edit 
     expect(body.order.delivered_content).toBeNull();
   });
 
+  it("GET exposes automatic fulfillment transitions and locks target edits after dispatch", async () => {
+    const orderCode = await makeProcessingOrder([{ game_id: "player1" }]);
+    await prisma.order.update({ where: { orderCode }, data: { status: OrderStatus.PENDING_PAYMENT, fulfillmentProvider: "DIGIFLAZZ" } });
+    const detail = async () => (await app.inject({ method: "GET", url: `/api/v1/account/orders/${orderCode}`, headers: { cookie } })).json();
+    expect((await detail()).order.fulfillment).toEqual({
+      mode: "AUTO", provider: "DIGIFLAZZ", status: "NOT_STARTED", payment_status: "PENDING", can_edit_customer_data: false,
+    });
+    await prisma.order.update({ where: { orderCode }, data: { status: OrderStatus.PROCESSING, paidAt: new Date() } });
+    expect((await detail()).order.fulfillment).toEqual({
+      mode: "AUTO", provider: "DIGIFLAZZ", status: "QUEUED", payment_status: "PAID", can_edit_customer_data: true,
+    });
+    await prisma.order.update({ where: { orderCode }, data: { digiflazzDispatchedAt: new Date() } });
+    expect((await detail()).order.fulfillment).toMatchObject({ status: "SUBMITTING", can_edit_customer_data: false });
+    await prisma.order.update({ where: { orderCode }, data: { digiflazzAttempts: 1, digiflazzStatus: "pending_at_supplier" } });
+    expect((await detail()).order).toMatchObject({ digiflazz_status: "pending", fulfillment: { status: "PROCESSING", can_edit_customer_data: false } });
+    await prisma.order.update({ where: { orderCode }, data: { digiflazzStatus: "failed" } });
+    expect((await detail()).order).toMatchObject({ digiflazz_status: "reviewing", fulfillment: { status: "NEEDS_REVIEW", can_edit_customer_data: false } });
+    await prisma.order.update({ where: { orderCode }, data: { status: OrderStatus.DELIVERED, deliveredContent: "serial: 123" } });
+    expect(await detail()).toMatchObject({ delivered: true, processing: false, order: { delivered_content: "serial: 123", fulfillment: { status: "SUCCESS", payment_status: "PAID", can_edit_customer_data: false } } });
+  });
+
+  it("GET keeps the purchased input field snapshot after catalog fields change", async () => {
+    const orderCode = await makeProcessingOrder([{ game_id: "player1" }]);
+    const purchasedFields: AdditionalField[] = [{ ...fields[0]!, key: "purchased_id", label: { en: "Purchased ID", id: "ID Pesanan" } }];
+    await prisma.order.update({ where: { orderCode }, data: { inputConfigSnapshot: JSON.stringify({ fields: purchasedFields, providerInputMapping: null }) } });
+    const res = await app.inject({ method: "GET", url: `/api/v1/account/orders/${orderCode}`, headers: { cookie } });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().order.customer_data_fields).toEqual(purchasedFields);
+  });
+
+  it("GET order list exposes canonical automatic fulfillment for matching list badges", async () => {
+    const orderCode = await makeProcessingOrder([{ game_id: "player1" }]);
+    await prisma.order.update({ where: { orderCode }, data: { fulfillmentProvider: "DIGIFLAZZ", digiflazzStatus: "failed" } });
+    const res = await app.inject({ method: "GET", url: "/api/v1/account/orders", headers: { cookie } });
+    expect(res.statusCode).toBe(200);
+    const row = res.json().orders.find((order: { code: string }) => order.code === orderCode);
+    expect(row.fulfillment).toEqual({ mode: "AUTO", provider: "DIGIFLAZZ", status: "NEEDS_REVIEW", payment_status: "PAID", can_edit_customer_data: false });
+  });
+
   it("GET returns delivered_content once DELIVERED (manual fulfilment)", async () => {
     const orderCode = await makeProcessingOrder([{ game_id: "player1" }]);
     await prisma.order.update({

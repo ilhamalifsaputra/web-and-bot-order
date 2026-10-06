@@ -39,7 +39,7 @@
  * Digiflazz account (same hedge checkout.ts's webhook doc comment already
  * carries for this same call).
  */
-import { OrderStatus, ProductType, DeliveryType } from "@app/core/enums";
+import { OrderStatus, OrderItemStatus, ProductType, DeliveryType } from "@app/core/enums";
 import { Decimal, moneyEq } from "@app/core/money";
 import { quantizeMoney } from "@app/core/formatters";
 import { parseMoneyInput, parsePercentInput } from "@app/core/moneyFormat";
@@ -61,10 +61,10 @@ import { NicknameService } from "@app/core/nickname/service";
 import type { PrismaClient } from "../client";
 import type { Db } from "./_types";
 import { getSetting, getDecryptedSetting } from "./settings";
-import { getOrder, finalizeDeliverySideEffects } from "./orders";
+import { getOrder, finalizeDeliverySideEffects, enqueueBuyerOrderReadyEmailIfGuest } from "./orders";
 import { resolveNicknameGate, buildNicknameProviderEntries } from "./nickname";
 import { isDenominationBelowCost } from "@app/core/denominationPrices";
-import { enqueueAdminDigiflazzBelowCost, enqueueManualOrderAdminAlert, enqueueManualDeliveredDm, enqueueAdminDigiflazzResyncAborted } from "./notifications";
+import { enqueueAdminDigiflazzBelowCost, enqueueDigiflazzReviewAlert, enqueueAdminDigiflazzResyncAborted } from "./notifications";
 import { logAdminAction } from "./audit";
 import {
   createCatalogProduct,
@@ -155,15 +155,19 @@ export type DigiflazzItemResolution =
  * quantity 1.
  */
 export function resolveSingleDigiflazzItem(order: {
+  fulfillmentProvider?: string | null;
+  fulfillmentSku?: string | null;
   items: {
     quantity: number;
     product: { supplierSku: string | null; additionalFields: string | null; providerInputMapping?: string | null; autoDeliverySource: string | null };
   }[];
 }): DigiflazzItemResolution {
-  // I6 fix: don't assume the Digiflazz-routed item is order.items[0] — an
-  // order can carry other, non-Digiflazz lines alongside it (or none at all,
-  // for an order that isn't Digiflazz-routed in the first place).
-  const digiflazzItems = order.items.filter((i) => i.product.autoDeliverySource === "digiflazz");
+  // Fulfillment completes the whole order; a mixed legacy order must require
+  // review rather than marking unrelated items delivered after one top-up.
+  if (order.items.length !== 1) return { ok: false, reason: "automatic supplier fulfillment requires exactly one order item" };
+  const digiflazzItems = order.fulfillmentProvider != null
+    ? (order.fulfillmentProvider === "DIGIFLAZZ" ? order.items : [])
+    : order.items.filter((i) => i.product.autoDeliverySource === "digiflazz");
   const item = digiflazzItems[0];
   if (!item) {
     // Hit by a plain (non-Digiflazz) order, e.g. the storefront webhook
@@ -172,7 +176,7 @@ export function resolveSingleDigiflazzItem(order: {
     // doesn't imply a Digiflazz item exists when there simply isn't one.
     return { ok: false, reason: "this order has no Digiflazz-routed item" };
   }
-  const supplierSku = item.product.supplierSku;
+  const supplierSku = order.fulfillmentProvider === "DIGIFLAZZ" ? order.fulfillmentSku : item.product.supplierSku;
   if (!supplierSku) {
     return { ok: false, reason: "the SKU has no supplierSku configured" };
   }
@@ -196,6 +200,8 @@ export function resolveSingleDigiflazzItem(order: {
  * a narrower include than orders.ts's full getOrder, since the poller only
  * needs enough to place the supplier order and, on failure, alert admins. */
 type DigiflazzCandidateOrder = {
+  fulfillmentProvider?: string | null;
+  fulfillmentSku?: string | null;
   id: number;
   orderCode: string;
   customerData: string | null;
@@ -259,7 +265,6 @@ export interface DigiflazzDispatchSummary {
   failed: number;
 }
 
-const ZERO_SUMMARY: DigiflazzDispatchSummary = { claimed: 0, delivered: 0, pending: 0, failed: 0 };
 
 /** How long a recheck claim's lease lasts before the order becomes
  * eligible for re-claiming again — self-heals a crashed/killed attempt
@@ -344,12 +349,10 @@ export async function alertDigiflazzDispatchFailed(
    * reason, or this alert came from a non-diagnostic caller). */
   accountDiagnosticNote?: string | null,
 ): Promise<void> {
-  await enqueueManualOrderAdminAlert(db, {
+  await enqueueDigiflazzReviewAlert(db, {
     orderId: order.id,
     orderCode: order.orderCode,
-    items: order.items.map((item) => ({ name: item.product.name, qty: item.quantity })),
-    total: order.totalAmount,
-    currency: order.currency,
+    reason,
   });
   const details = accountDiagnosticNote
     ? `Digiflazz gagal — perlu ditangani manual. Order ${order.orderCode}: ${reason}. ${accountDiagnosticNote}`
@@ -362,7 +365,7 @@ export async function alertDigiflazzDispatchFailed(
     details,
   });
   logger.warn(
-    `Digiflazz dispatch failed for order ${order.orderCode} (${reason}) — queued for manual fulfilment and alerted admins`,
+    `Digiflazz dispatch failed for order ${order.orderCode} (${reason}) — requires review; alerted admins`,
   );
 }
 
@@ -451,7 +454,7 @@ export async function recordDigiflazzOutcome(
     const nextRecheckAt = nextDigiflazzRecheckAt(dispatchedAt, attempt);
     if (nextRecheckAt) {
       const claim = await db.order.updateMany({
-        where: { id: order.id, status: OrderStatus.PROCESSING },
+        where: { id: order.id, status: OrderStatus.PROCESSING, OR: [{ digiflazzStatus: null }, { digiflazzStatus: { not: "failed" } }] },
         data: {
           digiflazzStatus: "pending_at_supplier",
           digiflazzAttempts: attempt,
@@ -573,6 +576,13 @@ async function computeAccountDiagnosticNote(
  * fallback KokinPay lookup — see this file's module doc comment for why
  * "reason is non-empty" isn't a usable trigger on its own (every call site
  * already folds a fallback string in even when Digiflazz gave nothing). */
+async function ensureFulfillmentMessage(db: Db, orderId: number): Promise<void> {
+  const order = await db.order.findUnique({ where: { id: orderId }, select: { user: { select: { telegramId: true } } } });
+  if (order?.user.telegramId != null) {
+    await db.fulfillmentMessage.upsert({ where: { orderId }, create: { orderId, chatId: order.user.telegramId }, update: {} });
+  }
+}
+
 async function terminalFailDigiflazzOrder(
   db: PrismaClient,
   order: DigiflazzCandidateOrder,
@@ -581,21 +591,23 @@ async function terminalFailDigiflazzOrder(
 ): Promise<"failed"> {
   const accountDiagnosticNote = supplierGaveReason ? null : await computeAccountDiagnosticNote(db, order);
 
-  const claim = await db.order.updateMany({
-    where: { id: order.id, status: OrderStatus.PROCESSING },
-    data: {
-      digiflazzStatus: "failed",
-      digiflazzNextRecheckAt: null,
-      digiflazzFailureDetail: reason,
-      // Never overwrite a previous note with null when this particular call
-      // didn't produce one.
-      ...(accountDiagnosticNote ? { accountDiagnosticNote } : {}),
-    },
+  const applied = await db.$transaction(async (tx) => {
+    const claim = await tx.order.updateMany({
+      where: { id: order.id, status: OrderStatus.PROCESSING, OR: [{ digiflazzStatus: null }, { digiflazzStatus: { not: "failed" } }] },
+      data: {
+        digiflazzStatus: "failed",
+        digiflazzNextRecheckAt: null,
+        digiflazzFailureDetail: reason,
+        ...(accountDiagnosticNote ? { accountDiagnosticNote } : {}),
+      },
+    });
+    if (claim.count === 1) {
+      await ensureFulfillmentMessage(tx, order.id);
+      await alertDigiflazzDispatchFailed(tx, order, reason, accountDiagnosticNote);
+    }
+    return claim.count === 1;
   });
-  if (claim.count === 1) {
-    await alertDigiflazzDispatchFailed(db, order, reason, accountDiagnosticNote);
-    emitDigiflazzOrderStatusChanged(order.id);
-  }
+  if (applied) emitDigiflazzOrderStatusChanged(order.id);
   return "failed";
 }
 
@@ -613,8 +625,8 @@ async function terminalFailDigiflazzOrder(
  * Order.digiflazzDispatchedAt's doc comment in schema.prisma), and places the
  * top-up order with Digiflazz.
  *
- * No-op (returns the zero summary, touches nothing) if Digiflazz isn't
- * configured — never claims orders it can't actually dispatch.
+ * A paid order with missing provider credentials is marked for review and
+ * alerts admins once; it must not silently remain queued forever.
  *
  * Each candidate is claimed and dispatched one at a time (not batched inside
  * one transaction): a supplier HTTP round-trip
@@ -637,15 +649,17 @@ async function terminalFailDigiflazzOrder(
  */
 export async function dispatchPendingDigiflazzOrders(db: PrismaClient): Promise<DigiflazzDispatchSummary> {
   const creds = await getDigiflazzCreds(db);
-  if (!creds) return ZERO_SUMMARY;
 
   const now = new Date();
-  const candidates: DigiflazzCandidateOrder[] = await db.order.findMany({
+  const candidates = await db.order.findMany({
     where: {
       status: OrderStatus.PROCESSING,
-      items: { some: { product: { autoDeliverySource: "digiflazz" } } },
+      AND: [{ OR: [
+        { fulfillmentProvider: "DIGIFLAZZ" },
+        { fulfillmentProvider: null, items: { some: { product: { autoDeliverySource: "digiflazz" } } } },
+      ] }],
       OR: [
-        { digiflazzDispatchedAt: null },
+        { digiflazzDispatchedAt: null, OR: [{ digiflazzStatus: null }, { digiflazzStatus: { not: "failed" } }] },
         { digiflazzStatus: "pending_at_supplier", digiflazzNextRecheckAt: { lte: now } },
       ],
     },
@@ -671,6 +685,13 @@ export async function dispatchPendingDigiflazzOrders(db: PrismaClient): Promise<
   const summary: DigiflazzDispatchSummary = { claimed: 0, delivered: 0, pending: 0, failed: 0 };
 
   for (const order of candidates) {
+    // Recover the durable status message for paid orders created before this feature.
+    await ensureFulfillmentMessage(db, order.id);
+    if (!creds) {
+      await terminalFailDigiflazzOrder(db, order, "Payment received but Digiflazz credentials are not configured; restore the provider connection and review this order", true);
+      summary.failed++;
+      continue;
+    }
     const isFreshDispatch = order.digiflazzDispatchedAt === null;
     const claimNow = new Date();
     // Atomic claim: only proceed to call Digiflazz if THIS call wins the
@@ -690,7 +711,7 @@ export async function dispatchPendingDigiflazzOrders(db: PrismaClient): Promise<
     // sitting with a null recheck time forever.
     const claim = isFreshDispatch
       ? await db.order.updateMany({
-          where: { id: order.id, status: OrderStatus.PROCESSING, digiflazzDispatchedAt: null },
+          where: { id: order.id, status: OrderStatus.PROCESSING, digiflazzDispatchedAt: null, OR: [{ digiflazzStatus: null }, { digiflazzStatus: { not: "failed" } }] },
           data: {
             digiflazzDispatchedAt: claimNow,
             digiflazzStatus: "pending_at_supplier",
@@ -708,6 +729,7 @@ export async function dispatchPendingDigiflazzOrders(db: PrismaClient): Promise<
         });
     if (claim.count !== 1) continue;
     summary.claimed++;
+    emitDigiflazzOrderStatusChanged(order.id);
 
     // dispatchedAt anchors the 24h backoff window: for a fresh dispatch
     // this is the claimNow just written above (this in-memory `order` row
@@ -739,7 +761,10 @@ export async function dispatchPendingDigiflazzOrders(db: PrismaClient): Promise<
     const { supplierSku } = resolution;
 
     let customerNo: string;
-    try { customerNo = buildDigiflazzCustomerNo(resolution.product, order.customerData, order.inputConfigSnapshot); }
+    // An edit that won the row lock before this claim must be the target submitted.
+    // Edits after the claim are rejected by updateOrderCustomerData's WHERE guard.
+    const submittedInput = await db.order.findUniqueOrThrow({ where: { id: order.id }, select: { customerData: true, inputConfigSnapshot: true } });
+    try { customerNo = buildDigiflazzCustomerNo(resolution.product, submittedInput.customerData, submittedInput.inputConfigSnapshot); }
     catch {
       await recordDigiflazzOutcome(db, order, { kind: "terminal", reason: "Invalid player input configuration or answers; needs manual review", supplierGaveReason: true }, dispatchedAt);
       summary.failed++;
@@ -863,39 +888,34 @@ export async function fulfillDigiflazzOrder(
   }
 
   const now = new Date();
-  const claim = await db.order.updateMany({
-    where: { id: orderId, status: OrderStatus.PROCESSING },
-    data: {
-      status: OrderStatus.DELIVERED,
-      deliveredContent: encryptDeliveredContent(args.sn, orderId),
-      deliveredAt: now,
-      // Final whole-branch review I-1 (+ deferred #1/#2): this order is no
-      // longer "in flight at the supplier" once it's DELIVERED — clear the
-      // three digiflazz* fields the dispatch/recheck path set so they read
-      // null once terminal (see this field's own doc comment in
-      // schema.prisma), instead of permanently showing a stale
-      // "pending_at_supplier" badge on every successfully auto-delivered
-      // order. digiflazzAttempts/digiflazzDispatchedAt are left untouched —
-      // those are historical facts about how the order got here, not
-      // current in-flight state, and nothing renders them as if they were.
-      digiflazzStatus: null,
-      digiflazzNextRecheckAt: null,
-      digiflazzFailureDetail: null,
-    },
-  });
-  if (claim.count !== 1) throw new ValidationError("error.order_not_processing");
-  await db.orderStatusHistory.create({
-    data: { orderId, status: OrderStatus.DELIVERED, meta: "digiflazz_fulfill" },
-  });
+  const complete = async (tx: Db) => {
+    const claim = await tx.order.updateMany({
+      where: { id: orderId, status: OrderStatus.PROCESSING },
+      data: {
+        status: OrderStatus.DELIVERED,
+        deliveredContent: encryptDeliveredContent(args.sn, orderId),
+        deliveredAt: now,
+        // Clear in-flight state; attempts and dispatch time remain audit facts.
+        digiflazzStatus: null,
+        digiflazzNextRecheckAt: null,
+        digiflazzFailureDetail: null,
+      },
+    });
+    if (claim.count !== 1) throw new ValidationError("error.order_not_processing");
+    await ensureFulfillmentMessage(tx, orderId);
+    await tx.orderItem.updateMany({ where: { orderId }, data: { status: OrderItemStatus.DELIVERED } });
+    await tx.orderStatusHistory.create({
+      data: { orderId, status: OrderStatus.DELIVERED, meta: "digiflazz_fulfill" },
+    });
+  };
+  // Commit the receipt, items and message anchor together. A database failure
+  // leaves PROCESSING retryable with the original supplier reference.
+  if ("$transaction" in db) await db.$transaction(complete);
+  else await complete(db);
 
   await finalizeDeliverySideEffects(db, order, now);
 
-  await enqueueManualDeliveredDm(db, {
-    orderId,
-    orderCode: order.orderCode,
-    telegramId: order.user.telegramId,
-    language: order.user.language,
-  });
+  await enqueueBuyerOrderReadyEmailIfGuest(db, order);
 
   await logAdminAction(db, {
     adminId: null,

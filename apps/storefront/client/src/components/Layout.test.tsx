@@ -76,6 +76,12 @@ describe("Layout", () => {
     document.documentElement.lang = "en";
   });
 
+  it("lets the constrained desktop container use the available width", async () => {
+    renderLayout();
+    await screen.findByText("home content");
+    expect(screen.getByRole("main")).toHaveClass("w-full", "max-w-6xl");
+  });
+
   it("shows the post-registration welcome toast when the URL carries ?welcome=1, then strips the param (T5)", async () => {
     renderLayout({}, "/?welcome=1");
     await waitFor(() => expect(apiGet).toHaveBeenCalled());

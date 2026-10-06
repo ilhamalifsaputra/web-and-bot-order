@@ -4,6 +4,11 @@ import { render, screen } from "@testing-library/react";
 import StatusBadge from "./StatusBadge";
 
 describe("StatusBadge", () => {
+  it("preserves the wallet-credit outcome with canonical fulfillment present", () => {
+    document.documentElement.lang = "en";
+    render(<StatusBadge value="CREDITED_TO_BALANCE" fulfillment={{ mode: "AUTO", provider: "DIGIFLAZZ", status: "CANCELLED", payment_status: "PAID", can_edit_customer_data: false }} />);
+    expect(screen.getByText("Added to credit balance")).toBeInTheDocument();
+  });
   afterEach(() => {
     document.documentElement.lang = "";
   });

@@ -15,7 +15,7 @@
  *    comment for the repo-wide convention this follows).
  * 2. No internal vocabulary on the wire: the internal `digiflazzStatus`
  *    values (`pending_at_supplier`, `failed`, ...) are never sent as-is.
- *    `toBuyerStatus` maps them to a buyer-safe subset before this route ever
+ *    `toBuyerDigiflazzStatus` maps them to a buyer-safe subset before this route ever
  *    touches the wire, so a future UI change that forgets to re-translate
  *    still can't leak the word "failed" (which would read to a buyer as
  *    fully-dead, when it's often just an automatic retry in progress).
@@ -25,6 +25,7 @@ import { prisma, getOrderByCode, getOrderDigiflazzSnapshot } from "@app/db";
 import { OrderKind } from "@app/core/enums";
 import { onDigiflazzOrderStatusChanged } from "@app/core/realtime/digiflazzEvents";
 import { streamSse } from "@app/core/realtime/sseRoute";
+import { getOrderFulfillment, toBuyerDigiflazzStatus, type OrderFulfillment } from "@app/core/orderFulfillment";
 import { optionalCustomer } from "../plugins/auth";
 
 /** Buyer-safe mapping of the internal digiflazzStatus values — the wire
@@ -32,21 +33,20 @@ import { optionalCustomer } from "../plugins/auth";
  * value) even if a later UI change forgets to re-translate it. */
 type BuyerDigiflazzStatus = "pending" | "reviewing" | null;
 
-function toBuyerStatus(internal: string | null): BuyerDigiflazzStatus {
-  if (internal === "pending_at_supplier") return "pending";
-  if (internal === "failed") return "reviewing";
-  return null;
-}
-
 interface BuyerOrderDigiflazzSnapshot {
   orderStatus: string;
   digiflazzStatus: BuyerDigiflazzStatus;
+  fulfillment: OrderFulfillment;
 }
 
 async function readBuyerSnapshot(orderId: number): Promise<BuyerOrderDigiflazzSnapshot | null> {
   const order = await getOrderDigiflazzSnapshot(prisma, orderId);
   if (!order) return null;
-  return { orderStatus: order.status, digiflazzStatus: toBuyerStatus(order.digiflazzStatus) };
+  return {
+    orderStatus: order.status,
+    digiflazzStatus: toBuyerDigiflazzStatus(order.digiflazzStatus),
+    fulfillment: getOrderFulfillment(order),
+  };
 }
 
 const apiOrderDigiflazzStreamRoutes: FastifyPluginAsync = async (app) => {
@@ -79,6 +79,7 @@ const apiOrderDigiflazzStreamRoutes: FastifyPluginAsync = async (app) => {
           if (changedOrderId === order.id) onChange();
         }),
       changed: (prev, next) => JSON.stringify(prev) !== JSON.stringify(next),
+      pollIntervalMs: 5_000,
     });
   });
 };

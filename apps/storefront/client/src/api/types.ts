@@ -484,6 +484,7 @@ export interface AccountData {
 export interface AccountOrderSummary {
   code: string;
   status: string;
+  fulfillment?: OrderFulfillment;
   /** This order's OWN settlement currency ("IDR" | "USDT") — `total` below is
    * denominated in THIS. Format with `formatOrderAmount(total, currency)`,
    * never `<Price/>` (which applies the viewer's display-currency conversion
@@ -510,17 +511,22 @@ export interface OrderDetailItem {
   credentials: string | null;
 }
 
-/** GET /api/v1/account/orders/:code — order_detail.njk, extended (Task 10)
- * with the manual_with_info field spec + the buyer's current answers, and
- * `delivered_content` for a manually-fulfilled order's typed-in account.
- * `customer_data_fields`/`delivered_content` follow the same
- * single-denomination assumption the checkout info step and the admin order
- * route already make — [] / null for auto/manual orders (no manual_with_info
- * fields), so the client renders nothing extra for them. */
+/** Canonical buyer state derived by the backend from payment and fulfillment. */
+export interface OrderFulfillment {
+  mode: "AUTO" | "MANUAL";
+  provider: "DIGIFLAZZ" | "MANUAL" | "STOCK";
+  status: "NOT_STARTED" | "QUEUED" | "SUBMITTING" | "PROCESSING" | "SUCCESS" | "FAILED" | "NEEDS_REVIEW" | "CANCELLED";
+  payment_status: "PENDING" | "PAID" | "FAILED" | "EXPIRED" | "REFUNDED";
+  can_edit_customer_data: boolean;
+}
+
+/** GET /api/v1/account/orders/:code — complete buyer-owned order detail. */
 export interface OrderDetailData {
   order: {
     code: string;
     status: string;
+    /** Backend-derived fulfillment; omitted by older API responses. */
+    fulfillment?: OrderFulfillment;
     subtotal: string;
     discount: string;
     bulk_discount: string;
@@ -539,7 +545,7 @@ export interface OrderDetailData {
     currency: string;
     total: string;
     created_at_display: string;
-    /** Parsed manual_with_info field spec — [] for auto/manual orders. */
+    /** Frozen customer field specification — [] when no input is required. */
     customer_data_fields: AdditionalField[];
     /** One answer-map per unit, matching `items.length` — [] when
      * customer_data_fields is []. */
@@ -570,8 +576,8 @@ export interface OrderDetailData {
   };
   delivered: boolean;
   pending_payment: boolean;
-  /** True while the order awaits hand fulfilment — gates the reassurance
-   * card, the polling interval, and whether the info-edit form is enabled. */
+  /** Coarse backend processing flag, also used by older API responses.
+   * Canonical fulfillment determines copy and whether editing is allowed. */
   processing: boolean;
 }
 

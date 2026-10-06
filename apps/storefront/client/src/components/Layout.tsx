@@ -98,7 +98,7 @@ export default function Layout() {
 
       {/* tabIndex=-1: RouteEffects.tsx moves focus here on every client-side
           navigation (T15); id is also the skip link's target (T14). */}
-      <main id="main-content" className="mx-auto max-w-6xl flex-1 px-4 py-8 lg:px-6" tabIndex={-1}>
+      <main id="main-content" className="mx-auto w-full max-w-6xl flex-1 px-4 py-8 lg:px-6" tabIndex={-1}>
         <PageTransition>
           <Outlet />
         </PageTransition>

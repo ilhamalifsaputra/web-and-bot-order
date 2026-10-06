@@ -38,7 +38,7 @@ import { startPolling as startPaydisiniPolling, stopPolling as stopPaydisiniPoll
 import { startPolling as startNowpaymentsPolling, stopPolling as stopNowpaymentsPolling } from "@app/order-bot/payments/nowpaymentsReconcile";
 import { buildApp } from "@app/web-admin/server";
 import { buildApp as buildShopApp } from "@app/storefront/server";
-import { runDispatcher } from "@app/outbox-dispatcher";
+import { runDispatcher, runFulfillmentMessages } from "@app/outbox-dispatcher";
 
 /** Update types we subscribe to — identical in polling and webhook mode. */
 const ALLOWED_UPDATES = ["message", "edited_message", "callback_query", "my_chat_member"] as const;
@@ -315,6 +315,9 @@ export async function start(): Promise<void> {
   jobs = [...jobs, scheduleFxRefresh(), scheduleDigiflazzCatalogSync(), scheduleDigiflazzDispatch()];
   const notifierAbort = new AbortController();
   const notifierDone = startNotifier(bot, notifierAbort.signal);
+  // Status messages belong to the customer-facing main bot, even when the
+  // general notification outbox uses a dedicated bot token.
+  const fulfillmentDone = bot ? runFulfillmentMessages(bot.api, notifierAbort.signal) : Promise.resolve();
 
   const host = process.env.WEB_HOST ?? (mode === "webhook" ? "0.0.0.0" : config.WEB_HOST);
   const port = Number(process.env.PORT ?? config.WEB_PORT);
@@ -409,6 +412,7 @@ export async function start(): Promise<void> {
       stopNowpaymentsPolling();
       notifierAbort.abort();
       await notifierDone; // let the drain loop unwind
+      await fulfillmentDone;
       if (runner?.isRunning()) await runner.stop();
       if (mode === "webhook" && bot) {
         try {

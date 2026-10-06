@@ -8,6 +8,7 @@
  * live in `context.user_data` now lives on `ctx.session` (scratch + fields).
  */
 import { InputFile } from "grammy";
+import { getOrderFulfillment } from "@app/core/orderFulfillment";
 import { config } from "@app/core/config";
 import { botUsername } from "@app/core/runtime";
 import { Decimal } from "@app/core/money";
@@ -1527,7 +1528,9 @@ export async function viewOrder(ctx: MyContext, orderId: number): Promise<void> 
       created: ensureUtc(order.createdAt).toFormat("yyyy-LL-dd HH:mm 'UTC'"),
       lines: itemLines.join("\n"),
     });
-    text += `\n\n${t(ctx, "order.processing_reassurance")}`;
+    const fulfillment = getOrderFulfillment(order);
+    const automaticKey = fulfillment.status === "NEEDS_REVIEW" ? "order.fulfillment_review" : fulfillment.status === "QUEUED" ? "order.fulfillment_queued" : fulfillment.status === "SUBMITTING" ? "order.fulfillment_submitting" : "order.fulfillment_processing";
+    text += `\n\n${t(ctx, fulfillment.provider === "DIGIFLAZZ" ? automaticKey : "order.processing_reassurance")}`;
 
     if (order.items[0]?.product.deliveryType === DeliveryType.MANUAL_WITH_INFO) {
       const fields = parseAdditionalFields(order.items[0]?.product.additionalFields ?? null);

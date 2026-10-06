@@ -720,6 +720,9 @@ model Order {
   /// the moment this order is dispatched to Digiflazz, so a poller crash/retry
   /// can never place the same top-up order twice. Null = not yet dispatched.
   digiflazzDispatchedAt  DateTime? @map("digiflazz_dispatched_at")
+  /// Explicit route frozen at checkout; null only for legacy orders.
+  fulfillmentProvider String? @map("fulfillment_provider")
+  fulfillmentSku      String? @map("fulfillment_sku")
   /// Digiflazz supplier-dispatch sub-status — separate from Order.status
   /// (which stays PROCESSING for every one of these until DELIVERED) because
   /// Order.status already carries broader lifecycle meaning (PROCESSING/
@@ -774,6 +777,7 @@ model Order {
   refunds            Refund[]
   adminTasks         AdminTask[]
   payments           Payment[]
+  fulfillmentMessage FulfillmentMessage?
 
   @@index([userId], map: "ix_orders_user_id")
   @@index([status], map: "ix_orders_status")
@@ -783,7 +787,24 @@ model Order {
   @@index([status, deliveredAt], map: "ix_orders_status_delivered")
   @@index([kind], map: "ix_orders_kind")
   @@index([digiflazzStatus, digiflazzNextRecheckAt], map: "ix_orders_digiflazz_recheck")
+  @@index([fulfillmentProvider, status], map: "ix_orders_fulfillment_provider_status")
   @@map("orders")
+}
+
+/// Durable single-message progress tracking; provider state remains on Order.
+model FulfillmentMessage {
+  orderId      Int       @id @map("order_id")
+  chatId       BigInt    @map("chat_id")
+  messageId    Int?      @map("message_id")
+  state        String   @default("READY")
+  claimedAt    DateTime? @map("claimed_at")
+  nextUpdateAt DateTime  @default(now()) @map("next_update_at")
+  lastText     String?  @map("last_text")
+  finishedAt   DateTime? @map("finished_at")
+  order        Order    @relation(fields: [orderId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([state, nextUpdateAt], map: "ix_fulfillment_messages_due")
+  @@map("fulfillment_messages")
 }
 
 /// Append-only audit trail of every Order.status transition. A dedicated

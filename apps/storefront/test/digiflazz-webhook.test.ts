@@ -317,7 +317,10 @@ describe("POST /pay/digiflazz/callback", () => {
     const dmRows = await prisma.notificationOutbox.findMany({
       where: { orderId: order.id, event: "ORDER_MANUAL_DELIVERED_DM" },
     });
-    expect(dmRows.length).toBeGreaterThan(0);
+    expect(dmRows).toHaveLength(0);
+    const buyer = await prisma.user.findUniqueOrThrow({ where: { id: order.userId } });
+    expect(await prisma.fulfillmentMessage.findUnique({ where: { orderId: order.id } })).toMatchObject({ chatId: buyer.telegramId });
+    expect(await prisma.orderItem.findMany({ where: { orderId: order.id } })).toEqual([expect.objectContaining({ status: "DELIVERED" })]);
 
     expect(digiflazzSupplierMock.createTransaction).toHaveBeenCalledWith(
       expect.anything(),

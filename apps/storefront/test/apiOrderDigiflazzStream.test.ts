@@ -10,11 +10,12 @@
 // always 404 on a mismatch, never 401/403 — and (2) the wire shape never
 // leaks an internal digiflazzStatus value or diagnostic field.
 import "./setup-env"; // FIRST import — sets env before @app/* load
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { cleanupTestDb } from "./setup-env";
 import { prisma, initDb, setSetting, createCatalogProduct, createDenomination } from "@app/db";
 import { OrderStatus } from "@app/core/enums";
+import { emitDigiflazzOrderStatusChanged } from "@app/core/realtime/digiflazzEvents";
 import { newJti, shopSessionJtiKey, makeCustomerSession, SHOP_COOKIE_NAME } from "../src/auth";
 import { buildApp } from "../src/server";
 
@@ -75,6 +76,7 @@ async function makeProductOrder(
   overrides: {
     status?: string;
     digiflazzStatus?: string | null;
+    digiflazzDispatchedAt?: Date | null;
     digiflazzAttempts?: number;
     digiflazzNextRecheckAt?: Date | null;
     digiflazzFailureDetail?: string | null;
@@ -91,6 +93,7 @@ async function makeProductOrder(
       paymentMethod: "TOKOPAY",
       kind: "PRODUCT",
       digiflazzStatus: overrides.digiflazzStatus ?? null,
+      digiflazzDispatchedAt: overrides.digiflazzDispatchedAt ?? null,
       digiflazzAttempts: overrides.digiflazzAttempts ?? 0,
       digiflazzNextRecheckAt: overrides.digiflazzNextRecheckAt ?? null,
       digiflazzFailureDetail: overrides.digiflazzFailureDetail ?? null,
@@ -176,6 +179,49 @@ function freshOrderCode(prefix: string): string {
 }
 
 describe("GET /api/v1/account/orders/:code/digiflazz/stream", () => {
+  it("streams canonical fulfillment from payment through dispatch and delivery", async () => {
+    const { userId, cookie } = await makeCustomer();
+    const order = await makeProductOrder(userId, freshOrderCode("ORD-FULFILLMENT"), { status: OrderStatus.PENDING_PAYMENT });
+    const res = await injectStream(`/api/v1/account/orders/${order.orderCode}/digiflazz/stream`, cookie);
+    const stream = res.stream();
+    try {
+      expect(parseSseData(await readOneChunk(stream))).toMatchObject({ fulfillment: {
+        mode: "AUTO", provider: "DIGIFLAZZ", status: "NOT_STARTED", payment_status: "PENDING", can_edit_customer_data: false,
+      } });
+      const changes = [
+        { data: { status: OrderStatus.PROCESSING, paidAt: new Date() }, status: "QUEUED", editable: true },
+        { data: { digiflazzDispatchedAt: new Date() }, status: "SUBMITTING", editable: false },
+        { data: { digiflazzAttempts: 1, digiflazzStatus: "pending_at_supplier" }, status: "PROCESSING", editable: false },
+        { data: { status: OrderStatus.DELIVERED }, status: "SUCCESS", editable: false },
+      ];
+      for (const change of changes) {
+        await prisma.order.update({ where: { id: order.id }, data: change.data });
+        const next = readOneChunk(stream);
+        emitDigiflazzOrderStatusChanged(order.id);
+        expect(parseSseData(await next)).toMatchObject({ fulfillment: { status: change.status, payment_status: "PAID", can_edit_customer_data: change.editable } });
+      }
+    } finally {
+      await closeSseConnection(res);
+    }
+  });
+
+  it("refreshes fulfillment within five seconds when payment changes without an in-process event", async () => {
+    const { userId, cookie } = await makeCustomer();
+    const order = await makeProductOrder(userId, freshOrderCode("ORD-POLL"), { status: OrderStatus.PENDING_PAYMENT });
+    const res = await injectStream(`/api/v1/account/orders/${order.orderCode}/digiflazz/stream`, cookie);
+    const stream = res.stream();
+    try {
+      await readOneChunk(stream);
+      await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.PROCESSING, paidAt: new Date() } });
+      const next = readOneChunk(stream);
+      const withinFallback = await Promise.race([next, new Promise<null>((resolve) => setTimeout(() => resolve(null), 6_000))]);
+      expect(withinFallback).not.toBeNull();
+      expect(parseSseData(withinFallback!)).toMatchObject({ orderStatus: OrderStatus.PROCESSING, fulfillment: { status: "QUEUED", payment_status: "PAID" } });
+    } finally {
+      await closeSseConnection(res);
+    }
+  });
+
   // These four cases all short-circuit BEFORE streamSse's reply.hijack()
   // runs, so a plain app.inject() (no payloadAsStream) is used here — it
   // gives back a normal buffered JSON body to assert on, unlike the 200
@@ -231,6 +277,7 @@ describe("GET /api/v1/account/orders/:code/digiflazz/stream", () => {
     const { userId, cookie } = await makeCustomer();
     const order = await makeProductOrder(userId, freshOrderCode("ORD-PENDING"), {
       digiflazzStatus: "pending_at_supplier",
+      digiflazzDispatchedAt: new Date(),
       digiflazzAttempts: 1,
       digiflazzNextRecheckAt: new Date("2026-08-23T12:00:00.000Z"),
     });
@@ -242,6 +289,7 @@ describe("GET /api/v1/account/orders/:code/digiflazz/stream", () => {
     expect(parseSseData(chunk)).toEqual({
       orderStatus: OrderStatus.PROCESSING,
       digiflazzStatus: "pending",
+      fulfillment: { mode: "AUTO", provider: "DIGIFLAZZ", status: "PROCESSING", payment_status: "PAID", can_edit_customer_data: false },
     });
     await closeSseConnection(res);
   });
@@ -261,6 +309,7 @@ describe("GET /api/v1/account/orders/:code/digiflazz/stream", () => {
     expect(parseSseData(chunk)).toEqual({
       orderStatus: OrderStatus.PROCESSING,
       digiflazzStatus: "reviewing",
+      fulfillment: { mode: "AUTO", provider: "DIGIFLAZZ", status: "NEEDS_REVIEW", payment_status: "PAID", can_edit_customer_data: false },
     });
     // Belt-and-suspenders against the exact leak this design prevents: the
     // raw internal word must not appear anywhere in the captured frame text,
@@ -282,6 +331,7 @@ describe("GET /api/v1/account/orders/:code/digiflazz/stream", () => {
     expect(parseSseData(chunk)).toEqual({
       orderStatus: OrderStatus.PENDING_PAYMENT,
       digiflazzStatus: null,
+      fulfillment: { mode: "AUTO", provider: "DIGIFLAZZ", status: "NOT_STARTED", payment_status: "PENDING", can_edit_customer_data: false },
     });
     await closeSseConnection(res);
   });
@@ -299,7 +349,7 @@ describe("GET /api/v1/account/orders/:code/digiflazz/stream", () => {
     expect(res.statusCode).toBe(200);
     const chunk = await readOneChunk(res.stream());
     const parsed = parseSseData(chunk) as Record<string, unknown>;
-    expect(Object.keys(parsed).sort()).toEqual(["digiflazzStatus", "orderStatus"]);
+    expect(Object.keys(parsed).sort()).toEqual(["digiflazzStatus", "fulfillment", "orderStatus"]);
     await closeSseConnection(res);
   });
 });

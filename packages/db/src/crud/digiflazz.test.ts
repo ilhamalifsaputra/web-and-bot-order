@@ -37,14 +37,14 @@ vi.mock("@app/core/suppliers/kokinpay", async (importOriginal) => ({
 // implementation (set below once importOriginal resolves) so every other
 // test in this file keeps exercising the genuine notification-enqueue path.
 const notificationsMock = vi.hoisted(() => ({
-  enqueueManualDeliveredDm: vi.fn(),
+  enqueueBuyerOrderReadyEmail: vi.fn(),
 }));
 vi.mock("./notifications", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./notifications")>();
-  notificationsMock.enqueueManualDeliveredDm.mockImplementation(actual.enqueueManualDeliveredDm);
+  notificationsMock.enqueueBuyerOrderReadyEmail.mockImplementation(actual.enqueueBuyerOrderReadyEmail);
   return {
     ...actual,
-    enqueueManualDeliveredDm: notificationsMock.enqueueManualDeliveredDm,
+    enqueueBuyerOrderReadyEmail: notificationsMock.enqueueBuyerOrderReadyEmail,
   };
 });
 
@@ -555,6 +555,11 @@ describe("buildDigiflazzCustomerNo", () => {
 });
 
 describe("resolveSingleDigiflazzItem", () => {
+  it("refuses a supplier item mixed with another delivery line", () => {
+    const items = [line({ autoDeliverySource: null }), line()];
+    expect(resolveSingleDigiflazzItem({ items }).ok).toBe(false);
+    expect(resolveSingleDigiflazzItem({ items, fulfillmentProvider: "DIGIFLAZZ", fulfillmentSku: "ml100" }).ok).toBe(false);
+  });
   function line(overrides: {
     quantity?: number;
     supplierSku?: string | null;
@@ -677,26 +682,17 @@ describe("dispatchPendingDigiflazzOrders", () => {
     expect(refreshed!.digiflazzFailureDetail).toContain("Saldo tidak cukup");
   });
 
-  it("is a no-op when Digiflazz isn't configured", async () => {
+  it("marks paid orders for review when Digiflazz isn't configured", async () => {
     await deleteSetting(prisma, DIGIFLAZZ_API_KEY_KEY);
     await makeProcessingDigiflazzOrder();
     const summary = await dispatchPendingDigiflazzOrders(prisma);
-    expect(summary).toEqual({ claimed: 0, delivered: 0, pending: 0, failed: 0 });
+    expect(summary).toEqual({ claimed: 0, delivered: 0, pending: 0, failed: 1 });
     expect(digiflazzMock.createTransaction).not.toHaveBeenCalled();
   });
 
-  // I6 regression (final-review batch 1): the candidate query is a
-  // `some`-filter — it never guaranteed the Digiflazz-routed item is
-  // order.items[0]. Build an order whose Digiflazz line is SECOND (a plain,
-  // non-Digiflazz auto line is added to the cart first) and confirm the
-  // poller still finds and dispatches the right one.
-  it("dispatches correctly when the Digiflazz item is not order.items[0]", async () => {
-    // Decoy line — sample.product, untouched (still plain AUTO, no
-    // autoDeliverySource) — added to the cart FIRST.
-    await addToCart(prisma, sample.user.id, sample.product.id, 1);
-
-    // The actual Digiflazz-routed denomination — a separate product, added
-    // to the cart SECOND.
+  // Historical mixed orders must require review before any supplier call;
+  // otherwise one top-up receipt could mark unrelated stock as delivered.
+  it("routes a legacy mixed order to review instead of partially delivering it", async () => {
     const category = await prisma.category.findFirstOrThrow();
     const digiProduct = await createCatalogProduct(prisma, { categoryId: category.id, name: "Mobile Legends" });
     const digiDenom = await createDenomination(prisma, {
@@ -712,18 +708,16 @@ describe("dispatchPendingDigiflazzOrders", () => {
         { key: "user_id", label: { id: "Game ID", en: "Game ID" }, type: "text", required: true, options: [], placeholder: "" },
       ]),
     });
-    await addToCart(prisma, sample.user.id, digiDenom.id, 1);
+    const order = await prisma.order.create({ data: {
+      orderCode: "ORD-I6-MIXED", userId: sample.user.id, status: OrderStatus.PROCESSING,
+      subtotalAmount: "16505", totalAmount: "16505", customerData: JSON.stringify([{ user_id: "987654321" }]),
+      items: { create: [
+        { productId: sample.product.id, quantity: 1, unitPrice: "5", warrantyDaysSnapshot: 0 },
+        { productId: digiDenom.id, quantity: 1, unitPrice: "16500", warrantyDaysSnapshot: 0 },
+      ] },
+    } });
 
-    const order = (await createOrderFromCart(prisma, {
-     channel: "bot",
-      user: sample.user,
-      customerData: JSON.stringify([{ user_id: "987654321" }]),
-    }))!;
-    await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.PROCESSING } });
-
-    // Confirm the fixture actually reproduces "Digiflazz item is not
-    // items[0]" before trusting the dispatch result below — otherwise this
-    // test would pass for the wrong reason if cart ordering ever changes.
+    // Keep the supplier item second to exercise the legacy candidate filter.
     const beforeDispatch = await getOrder(prisma, order.id);
     expect(beforeDispatch!.items[0]!.productId).toBe(sample.product.id);
     expect(beforeDispatch!.items[1]!.productId).toBe(digiDenom.id);
@@ -733,16 +727,13 @@ describe("dispatchPendingDigiflazzOrders", () => {
     });
 
     const summary = await dispatchPendingDigiflazzOrders(prisma);
-    expect(summary).toEqual({ claimed: 1, delivered: 1, pending: 0, failed: 0 });
-    expect(digiflazzMock.createTransaction).toHaveBeenCalledTimes(1);
-    expect(digiflazzMock.createTransaction).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({ buyerSkuCode: "ml100" }),
-    );
+    expect(summary).toEqual({ claimed: 1, delivered: 0, pending: 0, failed: 1 });
+    expect(digiflazzMock.createTransaction).not.toHaveBeenCalled();
 
     const refreshed = await getOrder(prisma, order.id);
-    expect(refreshed!.status).toBe(OrderStatus.DELIVERED);
-    expect(refreshed!.deliveredContent).toBe("SN-I6");
+    expect(refreshed!.status).toBe(OrderStatus.PROCESSING);
+    expect(refreshed!.deliveredContent).toBeNull();
+    expect(refreshed!.items.every(item => item.status !== "DELIVERED")).toBe(true);
   });
 
   // N1 defense-in-depth (final-review batch 1): the front-door cart guards
@@ -1006,11 +997,12 @@ describe("dispatchPendingDigiflazzOrders", () => {
   it("a failure inside fulfillDigiflazzOrder after Sukses alerts admins instead of being silently retried", async () => {
     await setSetting(prisma, ADMIN_IDS_KEY, "555");
     const order = await makeProcessingDigiflazzOrder();
+    await prisma.user.update({ where: { id: sample.user.id }, data: { isGuest: true, guestEmail: "guest@example.com" } });
 
     digiflazzMock.createTransaction.mockResolvedValue({
       refId: order.orderCode, status: "Sukses", sn: "SN-POST-FAIL", message: "ok", price: null,
     });
-    notificationsMock.enqueueManualDeliveredDm.mockRejectedValueOnce(new Error("outbox write failed"));
+    notificationsMock.enqueueBuyerOrderReadyEmail.mockRejectedValueOnce(new Error("outbox write failed"));
 
     const summary = await dispatchPendingDigiflazzOrders(prisma);
     expect(summary).toEqual({ claimed: 1, delivered: 0, pending: 0, failed: 1 });
@@ -1045,7 +1037,7 @@ describe("dispatchPendingDigiflazzOrders", () => {
     // testimonial-post notification finalizeDeliverySideEffects also
     // enqueues for the same delivered order.
     const alertRow = await prisma.notificationOutbox.findFirst({
-      where: { orderId: order.id, event: NotificationEvent.ADMIN_MANUAL_ORDER_QUEUED },
+      where: { orderId: order.id, event: NotificationEvent.ORDER_PIPELINE_FAILED },
     });
     expect(alertRow).not.toBeNull();
     // Deferred finding #3 fix (describeFulfillFailure): the natural-language

@@ -1,4 +1,6 @@
 import { t } from "../../lib/i18n";
+import type { OrderFulfillment } from "../../api/types";
+import { fulfillmentPresentation } from "../../lib/orderFulfillment";
 
 /**
  * TSX port of `status_badge(value)` in packages/web-ui/views/_macros.njk —
@@ -52,9 +54,13 @@ const STATUS_LABEL_KEY: Record<string, string> = {
   failed: "status.label.failed",
   unmatched: "web.status_chip_unmatched",
   credited_to_balance: "web.status_chip_credited_to_balance",
+  completed: "web.fulfillment_badge_completed",
+  under_review: "web.fulfillment_badge_review",
+  waiting_payment: "web.fulfillment_badge_waiting_payment",
+  automatic_processing: "web.fulfillment_badge_processing",
 };
 
-const GRASS = new Set(["delivered", "paid", "available", "active", "closed", "sent", "matched", "credited_to_balance"]);
+const GRASS = new Set(["delivered", "paid", "available", "active", "closed", "sent", "matched", "credited_to_balance", "completed"]);
 const AMBER = new Set([
   "pending_verification",
   "reserved",
@@ -66,8 +72,10 @@ const AMBER = new Set([
   "underpaid",
   "processing",
   "partially_delivered",
+  "under_review",
+  "automatic_processing",
 ]);
-const PINE = new Set(["pending_payment"]);
+const PINE = new Set(["pending_payment", "waiting_payment"]);
 const RUST = new Set(["cancelled", "rejected", "refunded", "dead", "failed", "unmatched"]);
 
 function titleCase(value: string): string {
@@ -91,9 +99,14 @@ export function statusLabel(value: string): string {
 
 export interface StatusBadgeProps {
   value: string;
+  fulfillment?: OrderFulfillment;
 }
 
-export default function StatusBadge({ value }: StatusBadgeProps) {
+export default function StatusBadge({ value, fulfillment }: StatusBadgeProps) {
+  if (fulfillment && !["credited_to_balance", "underpaid", "pending_verification", "partially_delivered"].includes(value.toLowerCase())) {
+    const badge = fulfillmentPresentation(fulfillment).badge;
+    value = badge === "processing" && fulfillment.mode === "AUTO" ? "automatic_processing" : badge;
+  }
   const v = String(value).toLowerCase();
   const toneClass = GRASS.has(v)
     ? "bg-grass-tint text-grass-dark"

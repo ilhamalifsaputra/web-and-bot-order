@@ -60,6 +60,9 @@ importers:
       '@app/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@app/outbox-dispatcher':
+        specifier: workspace:*
+        version: link:../../packages/outbox-dispatcher
       '@grammyjs/conversations':
         specifier: ^1.2.0
         version: 1.2.0(grammy@1.43.0)

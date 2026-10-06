@@ -41,6 +41,10 @@ describe("getOrderDigiflazzSnapshot", () => {
     const snap = await getOrderDigiflazzSnapshot(prisma, order.id);
     expect(snap).toEqual({
       status: order.status,
+      paidAt: null,
+      fulfillmentProvider: "STOCK",
+      digiflazzDispatchedAt: null,
+      items: [{ deliveryTypeSnapshot: "auto", product: { autoDeliverySource: null, deliveryType: "auto" } }],
       digiflazzStatus: null,
       digiflazzAttempts: 0,
       digiflazzNextRecheckAt: null,

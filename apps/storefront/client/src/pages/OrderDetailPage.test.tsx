@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import OrderDetailPage from "./OrderDetailPage";
@@ -428,9 +428,11 @@ describe("OrderDetailPage — realtime digiflazz sub-status (Task 14)", () => {
   });
 
   it("shows the digiflazz_pending_body text once the SSE stream pushes digiflazzStatus: pending", async () => {
-    renderDetail(() => processingData());
+    let current = processingData();
+    renderDetail(() => current);
     await screen.findAllByText("Being prepared");
 
+    current = processingData({ order: { ...baseOrder, status: "PROCESSING", digiflazz_status: "pending" } });
     MockEventSource.instances[0]!.emit({ orderStatus: "PROCESSING", digiflazzStatus: "pending" });
 
     expect(
@@ -439,9 +441,11 @@ describe("OrderDetailPage — realtime digiflazz sub-status (Task 14)", () => {
   });
 
   it("shows the digiflazz_failed_body text once the SSE stream pushes digiflazzStatus: reviewing, and never the word 'failed'", async () => {
-    renderDetail(() => processingData());
+    let current = processingData();
+    renderDetail(() => current);
     await screen.findAllByText("Being prepared");
 
+    current = processingData({ order: { ...baseOrder, status: "PROCESSING", digiflazz_status: "reviewing" } });
     MockEventSource.instances[0]!.emit({ orderStatus: "PROCESSING", digiflazzStatus: "reviewing" });
 
     expect(
@@ -461,31 +465,128 @@ describe("OrderDetailPage — realtime digiflazz sub-status (Task 14)", () => {
     expect(MockEventSource.instances).toHaveLength(0);
   });
 
-  it("ignores orderStatus from the SSE push — the page still shows the processing card, not a delivered view", async () => {
-    renderDetail(() => processingData());
+  it("refetches full detail on an SSE transition so status and delivered content update together", async () => {
+    let current = processingData();
+    renderDetail(() => current);
     await screen.findAllByText("Being prepared");
 
+    current = {
+      order: { ...baseOrder, status: "DELIVERED", items: [{ ...baseOrder.items[0]!, credentials: "delivered:secret" }] },
+      delivered: true, pending_payment: false, processing: false,
+    };
     MockEventSource.instances[0]!.emit({ orderStatus: "DELIVERED", digiflazzStatus: "pending" });
+    expect(await screen.findByText("delivered:secret")).toBeInTheDocument();
+    expect(screen.getByText("Delivered")).toBeInTheDocument();
+    expect(screen.queryByText("Being prepared")).not.toBeInTheDocument();
+    expect(MockEventSource.instances[0]!.closed).toBe(true);
+  });
+});
 
-    await waitFor(() =>
-      expect(
-        screen.getByText("We're finalizing your top-up with our supplier. This usually only takes a moment."),
-      ).toBeInTheDocument(),
-    );
-    // Still the processing reassurance card, not the delivered-order view —
-    // proving the merge did NOT overwrite order.status/processing/delivered
-    // from the SSE push's orderStatus field. Asserting the exact count (2:
-    // the StatusBadge chip + the card title, same as the other "still
-    // processing" tests in this file) rather than just >0 matters here: a
-    // regression that merged order.status into the cache WITHOUT also
-    // touching the top-level processing/delivered booleans (the narrower,
-    // more likely mistake than corrupting all three) would still leave the
-    // processing card and "Your credentials" section exactly as they are —
-    // the only thing that would change is StatusBadge switching from
-    // "Being prepared" to "Delivered" for its one occurrence, dropping the
-    // count from 2 to 1. A bare >0 check can't see that; this can.
-    expect(screen.getAllByText("Being prepared")).toHaveLength(2);
-    expect(screen.queryByText("Delivered")).not.toBeInTheDocument();
-    expect(screen.queryByText("Your credentials")).not.toBeInTheDocument();
+describe("OrderDetailPage — canonical automatic fulfillment", () => {
+  beforeEach(() => {
+    document.documentElement.lang = "en";
+    vi.clearAllMocks();
+    vi.stubGlobal("EventSource", MockEventSource);
+    MockEventSource.instances = [];
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  function automaticData(status = "PROCESSING", editable = false) {
+    const completed = status === "SUCCESS";
+    const pending = status === "NOT_STARTED";
+    return {
+      order: {
+        ...baseOrder, status: completed ? "DELIVERED" : pending ? "PENDING_PAYMENT" : "PROCESSING",
+        customer_data_fields: infoFields, customer_data: [{ game_id: "player1" }],
+        fulfillment: {
+          mode: "AUTO", provider: "DIGIFLAZZ", status,
+          payment_status: pending ? "PENDING" : "PAID", can_edit_customer_data: editable,
+        },
+      },
+      delivered: completed, pending_payment: pending, processing: !completed && !pending,
+    };
+  }
+
+  it.each([
+    ["QUEUED", "Starting top-up"], ["SUBMITTING", "Sending order"], ["PROCESSING", "Processing top-up"],
+    ["SUCCESS", "Top-up completed"], ["FAILED", "Top-up failed"], ["NEEDS_REVIEW", "We're checking your order"],
+  ])("renders backend %s copy without manual wording", async (status, title) => {
+    renderDetail(() => automaticData(status));
+    expect(await screen.findByRole("heading", { name: title })).toBeInTheDocument();
+    expect(screen.queryByText(/by hand|Being prepared/)).not.toBeInTheDocument();
+    const progress = screen.getByRole("list", { name: "Order progress" });
+    expect(within(progress).getAllByRole("listitem")).toHaveLength(3);
+    if (["QUEUED", "SUBMITTING", "PROCESSING"].includes(status)) {
+      expect(progress.querySelector('[aria-current="step"]')).toBeInTheDocument();
+    } else {
+      expect(progress.querySelector('[aria-current="step"]')).not.toBeInTheDocument();
+      expect(progress.querySelector(".animate-spin")).not.toBeInTheDocument();
+    }
+    expect(screen.queryByRole("button", { name: /Edit/ })).not.toBeInTheDocument();
+  });
+
+  it("uses Indonesian fulfillment copy", async () => {
+    document.documentElement.lang = "id";
+    renderDetail(() => automaticData());
+    expect(await screen.findByRole("heading", { name: "Memproses top-up" })).toBeInTheDocument();
+    expect(screen.queryByText(/by hand|Being prepared/)).not.toBeInTheDocument();
+  });
+
+  it("keeps manual preparation copy for a canonical MANUAL queued order", async () => {
+    const current = automaticData("QUEUED", true);
+    current.order.fulfillment.mode = "MANUAL";
+    current.order.fulfillment.provider = "MANUAL";
+    renderDetail(() => current);
+    expect(await screen.findByRole("heading", { name: "Being prepared" })).toBeInTheDocument();
+    expect(screen.getByText(/preparing your order by hand/)).toBeInTheDocument();
+    expect(screen.queryByText(/automatic processing/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Edit/ })).toBeInTheDocument();
+  });
+
+  it("renders mobile items once, with the summary after submitted information and wrapping controls", async () => {
+    const { container } = renderDetail(() => automaticData());
+    await screen.findByRole("heading", { name: "Processing top-up" });
+    expect(screen.getAllByText("Netflix")).toHaveLength(1);
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+    const info = screen.getByText("Your submitted information");
+    const summary = screen.getByRole("heading", { name: "Order summary" });
+    expect(info.compareDocumentPosition(summary) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(container.querySelector(".grid-cols-1")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Refresh/ })).toHaveClass("min-h-11");
+    expect(screen.getByRole("button", { name: /Refresh/ }).closest(".card")).toContainElement(screen.getByRole("list", { name: "Order progress" }));
+  });
+
+  it("locks an open edit form when SSE announces dispatch, after fetching the authoritative detail", async () => {
+    let current = automaticData("QUEUED", true);
+    renderDetail(() => current);
+    await screen.findByRole("heading", { name: "Starting top-up" });
+    fireEvent.click(screen.getByRole("button", { name: /Edit/ }));
+    expect(await screen.findByLabelText("Game ID")).toHaveValue("player1");
+    current = automaticData("SUBMITTING", false);
+    MockEventSource.instances[0]!.emit({ orderStatus: "PROCESSING", digiflazzStatus: null, fulfillment: current.order.fulfillment });
+    await screen.findByRole("heading", { name: "Sending order" });
+    expect(screen.queryByRole("button", { name: /Save changes/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Edit/ })).not.toBeInTheDocument();
+    expect(apiPatch).not.toHaveBeenCalled();
+  });
+
+  it("subscribes before payment and refetches payment, fulfillment, and flags together", async () => {
+    let current = automaticData("NOT_STARTED", true);
+    renderDetail(() => current);
+    await screen.findByRole("link", { name: /Pay now/ });
+    expect(MockEventSource.instances).toHaveLength(1);
+    current = automaticData("QUEUED");
+    MockEventSource.instances[0]!.emit({ orderStatus: "PROCESSING", digiflazzStatus: null, fulfillment: current.order.fulfillment });
+    expect(await screen.findByRole("heading", { name: "Starting top-up" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Pay now/ })).not.toBeInTheDocument();
+  });
+
+  it("polls pending payment as a backup even without any SSE messages", async () => {
+    let current = automaticData("NOT_STARTED", true);
+    renderDetail(() => current);
+    await screen.findByRole("link", { name: /Pay now/ });
+    current = automaticData("SUCCESS");
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Top-up completed" })).toBeInTheDocument(), { timeout: 6500 });
+    expect(screen.queryByRole("link", { name: /Pay now/ })).not.toBeInTheDocument();
   });
 });

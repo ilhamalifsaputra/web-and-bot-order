@@ -21,6 +21,9 @@ import {
   type CategoryGroup,
 } from "@app/core/enums";
 import { deriveOrderStatusFromItems } from "@app/core/orderItemStatus";
+import { fulfillmentProviderFor, getOrderFulfillment } from "@app/core/orderFulfillment";
+import { cartCompositionError } from "@app/core/cartComposition";
+import { emitDigiflazzOrderStatusChanged } from "@app/core/realtime/digiflazzEvents";
 import { reconciledOrderMoneyRows } from "@app/core/orderMoneyRows";
 import { parseAdditionalFields, validateCustomerData } from "@app/core/deliveryFields";
 import { parseInputFields, inputConfigSnapshot, orderInputConfig } from "@app/core/playerInput";
@@ -63,7 +66,7 @@ import { countAvailableStock, allocateOneAvailableStock } from "./stock";
 import { recordStockEvent, type StockEventActor } from "./stockEvents";
 import { adjustWallet, getUser } from "./users";
 import { ACTIONABLE_LEDGER_OUTCOMES, cancelledOrderIdsWithMoneyReturned, consumeIncomingLedgerPayment } from "./reports";
-import { clearCart, getCart, lockCartForCheckout } from "./cart";
+import { clearCart, getCart, lockCartForCheckout, cartCompositionLineOfCartItem } from "./cart";
 import { getSetting } from "./settings";
 import { maybePayReferralCommission } from "./referrals";
 import {
@@ -565,6 +568,10 @@ export function getOrderDigiflazzSnapshot(db: Db, orderId: number) {
     select: {
       status: true,
       digiflazzStatus: true,
+      paidAt: true,
+      fulfillmentProvider: true,
+      digiflazzDispatchedAt: true,
+      items: { select: { deliveryTypeSnapshot: true, product: { select: { autoDeliverySource: true, deliveryType: true } } } },
       digiflazzAttempts: true,
       digiflazzNextRecheckAt: true,
       digiflazzFailureDetail: true,
@@ -736,6 +743,12 @@ export async function createOrderFromCart(
   // as the final server-side boundary (Checkout-5 fix, security audit
   // 2026-06-23).
   for (const ci of cart) assertValidQuantity(ci.quantity, ci.product.name);
+  // Provider completion is order-wide, so a supplier order must be the cart's
+  // only line. Recheck here even if a caller bypassed the add/checkout guard.
+  if (cart.some(ci => ci.product.autoDeliverySource === "digiflazz")) {
+    const compositionError = cartCompositionError(cart.map(cartCompositionLineOfCartItem));
+    if (compositionError) throw new ValidationError(compositionError);
+  }
 
   const isReseller = args.user.role === UserRole.RESELLER;
   // One instant for the whole order — see unitPrice's note on why a flash sale
@@ -860,6 +873,8 @@ export async function createOrderFromCart(
         status: OrderStatus.PENDING_PAYMENT,
         customerData: customerDataToStore,
         inputConfigSnapshot: infoLine ? inputConfigSnapshot(infoLine.product) : null,
+        fulfillmentProvider: fulfillmentProviderFor({ items: cart.map(ci => ({ product: ci.product })) }),
+        fulfillmentSku: cart.find(ci => ci.product.autoDeliverySource === "digiflazz")?.product.supplierSku ?? null,
         expiresAt: addMinutes(new Date(), config.PAYMENT_WINDOW_MINUTES),
         checkoutIntentId: args.checkoutIntentId ?? null,
       },
@@ -896,7 +911,7 @@ export async function createOrderFromCart(
   // practice the storefront blocks mixing delivery types in one cart, so a cart
   // is either all-auto or all-manual, but this handles either line-by-line.)
   for (const ci of cart) {
-    if (ci.product.deliveryType !== DeliveryType.AUTO) continue;
+    if (ci.product.deliveryType !== DeliveryType.AUTO || ci.product.autoDeliverySource === "digiflazz") continue;
     const available = await countAvailableStock(db, ci.productId);
     if (available < ci.quantity) {
       throw new ValidationError("error.out_of_stock", { product: ci.product.name });
@@ -963,7 +978,7 @@ export async function createOrderFromCart(
   // that can't be batched without changing which stock item lands on which
   // line).
   for (const ci of cart) {
-    if (ci.product.deliveryType !== DeliveryType.AUTO) continue;
+    if (ci.product.deliveryType !== DeliveryType.AUTO || ci.product.autoDeliverySource === "digiflazz") continue;
     const lineItemIds = unpairedItemIds.get(ci.productId) ?? [];
     for (let k = 0; k < ci.quantity; k++) {
       const orderItemId = lineItemIds.shift();
@@ -1099,7 +1114,7 @@ export async function createOrderDirect(
   // availability pre-check and the per-unit reservation below, and create the
   // OrderItem rows with stockItemId=null (fulfilled by hand via
   // settlePaidOrder → fulfillManualOrder). Auto SKUs behave exactly as before.
-  const isManual = product.deliveryType !== DeliveryType.AUTO;
+  const isManual = product.deliveryType !== DeliveryType.AUTO || product.autoDeliverySource === "digiflazz";
 
   // Pre-check before reserving anything (fast-fail on the common "ordered too
   // much" case) — see createOrderFromCart's matching guard for the rationale.
@@ -1152,6 +1167,8 @@ export async function createOrderDirect(
         status: OrderStatus.PENDING_PAYMENT,
         customerData: customerDataToStore,
         inputConfigSnapshot: product.additionalFields ? inputConfigSnapshot(product) : null,
+        fulfillmentProvider: fulfillmentProviderFor({ items: [{ product }] }),
+        fulfillmentSku: product.autoDeliverySource === "digiflazz" ? product.supplierSku : null,
         expiresAt: addMinutes(new Date(), config.PAYMENT_WINDOW_MINUTES),
         checkoutIntentId: args.checkoutIntentId ?? null,
       },
@@ -2757,9 +2774,9 @@ export async function settlePaidOrder(
   // column (this repo's deploy convention is `prisma db push`, which adds the
   // column but never backfills it — see the migration's own comment), which
   // is exactly the pre-existing live-read behavior for those rows.
-  const isManual = order.items.some(
-    (it) => (it.deliveryTypeSnapshot ?? it.product.deliveryType) !== DeliveryType.AUTO,
-  );
+  const provider = fulfillmentProviderFor(order);
+  const isDigiflazz = provider === "DIGIFLAZZ";
+  const isManual = provider !== "STOCK";
 
   // ── AUTO branch (unchanged behavior) ────────────────────────────────────
   // NOTE: this `if (!isManual) { ... return ... }` early-return is what makes
@@ -2830,7 +2847,7 @@ export async function settlePaidOrder(
     orderId,
     from: OrderStatus.PENDING_VERIFICATION,
     to: OrderStatus.PROCESSING,
-    meta: `awaiting manual fulfilment (admin_id=${args.adminId})`,
+    meta: isDigiflazz ? "automatic fulfillment queued (provider=DIGIFLAZZ)" : `awaiting manual fulfilment (admin_id=${args.adminId})`,
   });
   // Per-item shadow of the PROCESSING transition above (Trustance Phase 1,
   // Task 3): the order is paid and now sitting in the hand-fulfilment queue, so
@@ -2853,6 +2870,19 @@ export async function settlePaidOrder(
   // revenue would be recognised twice; the shared idempotency key
   // `order:{id}:payment` is the backstop for that).
   await postOrderPaymentPosting(db, order, now);
+  if (isDigiflazz) {
+    if (order.user.telegramId != null) {
+      await db.fulfillmentMessage.upsert({
+        where: { orderId },
+        create: { orderId, chatId: order.user.telegramId },
+        update: {},
+      });
+    }
+    logger.info({ orderId, provider: "DIGIFLAZZ", fulfillmentStatus: "QUEUED" }, `Order ${order.orderCode} payment confirmed; automatic fulfillment queued.`);
+    const refreshed = await getOrder(db, orderId);
+    emitDigiflazzOrderStatusChanged(orderId);
+    return { kind: "processing", order: refreshed!, credentials: [] };
+  }
   await enqueueOrderProcessingDm(db, {
     orderId,
     orderCode: order.orderCode,
@@ -2910,7 +2940,7 @@ export async function fulfillManualOrder(
   // Atomic claim PROCESSING → DELIVERED, writing the content + deliveredAt in the
   // same UPDATE so a double-tap can't fulfil twice (count!==1 on a lost race).
   const claim = await db.order.updateMany({
-    where: { id: orderId, status: OrderStatus.PROCESSING },
+    where: { id: orderId, status: OrderStatus.PROCESSING, ...(fulfillmentProviderFor(order) === "DIGIFLAZZ" ? { digiflazzStatus: "failed" } : {}) },
     data: { status: OrderStatus.DELIVERED, deliveredContent: encryptDeliveredContent(content, orderId), deliveredAt: now },
   });
   if (claim.count !== 1) throw new ValidationError("error.order_not_processing");
@@ -2928,7 +2958,7 @@ export async function fulfillManualOrder(
 
   await finalizeDeliverySideEffects(db, order, now);
 
-  await enqueueManualDeliveredDm(db, {
+  if (fulfillmentProviderFor(order) !== "DIGIFLAZZ") await enqueueManualDeliveredDm(db, {
     orderId,
     orderCode: order.orderCode,
     telegramId: order.user.telegramId,
@@ -2975,7 +3005,7 @@ export async function updateOrderCustomerData(
   // Raw reads: editing the buyer's answers needs no secret (see getOrderRaw).
   const order = await getOrderRaw(db, orderId);
   if (!order) throw new ValidationError("error.order_not_found");
-  if (order.status !== OrderStatus.PROCESSING) {
+  if (!getOrderFulfillment(order).can_edit_customer_data) {
     throw new ValidationError("error.order_not_processing");
   }
   const denom = order.items[0]?.product as { additionalFields?: string | null; providerInputMapping?: string | null } | undefined;
@@ -2985,10 +3015,11 @@ export async function updateOrderCustomerData(
   const fields = parseInputFields(effective.additionalFields);
   // One answer-map per unit (item), matching how they were collected at checkout.
   const normalized = validateCustomerData(fields, answers, order.items.length);
-  await db.order.update({
-    where: { id: orderId },
+  const claim = await db.order.updateMany({
+    where: { id: orderId, status: OrderStatus.PROCESSING, ...(fulfillmentProviderFor(order) === "DIGIFLAZZ" ? { digiflazzDispatchedAt: null, OR: [{ digiflazzStatus: null }, { digiflazzStatus: { not: "failed" } }] } : {}) },
     data: { customerData: JSON.stringify(normalized) },
   });
+  if (claim.count !== 1) throw new ValidationError("error.order_not_processing");
   const refreshed = await getOrderRaw(db, orderId);
   return refreshed!;
 }

@@ -221,6 +221,18 @@ export async function enqueueOrderPipelineFailed(
   }
 }
 
+/** One actionable Digiflazz incident per order/admin, including ambiguous Telegram sends. */
+export async function enqueueDigiflazzReviewAlert(
+  db: Db,
+  args: { orderId: number; orderCode: string; reason: string; incident?: string },
+): Promise<void> {
+  for (const adminId of await resolveAdminIds(db)) {
+    await enqueueNotification(db, NotificationEvent.ORDER_PIPELINE_FAILED, args.orderId, {
+      chat_id: adminId, order_code: args.orderCode, reason: args.reason.slice(0, 300),
+    }, `order:${args.orderId}:${args.incident ?? "needs_review"}:${adminId}`);
+  }
+}
+
 /**
  * Enqueue one admin DM per resolved admin alerting that a paid order routed
  * to the hand-fulfilment queue (settlePaidOrder's MANUAL branch — a

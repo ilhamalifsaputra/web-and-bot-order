@@ -18,6 +18,7 @@
  */
 import { pathToFileURL } from "node:url";
 import { Bot, session } from "grammy";
+import { runFulfillmentMessages } from "@app/outbox-dispatcher";
 import { conversations, createConversation } from "@grammyjs/conversations";
 import { run, sequentialize } from "@grammyjs/runner";
 import { config } from "@app/core/config";
@@ -336,6 +337,8 @@ export async function start(): Promise<void> {
   startTokopayPolling(bot.api); // TokoPay / QRIS reconcile (webhook safety net)
   startPaydisiniPolling(bot.api); // PayDisini / QRIS reconcile (webhook safety net)
   startNowpaymentsPolling(bot.api); // NOWPayments / USDT invoice reconcile (webhook safety net)
+  const fulfillmentAbort = new AbortController();
+  const fulfillmentDone = runFulfillmentMessages(bot.api, fulfillmentAbort.signal);
 
   const stop = async () => {
     logger.info("Received shutdown signal — stopping payment pollers and the Telegram polling runner");
@@ -346,6 +349,8 @@ export async function start(): Promise<void> {
     stopTokopayPolling();
     stopPaydisiniPolling();
     stopNowpaymentsPolling();
+    fulfillmentAbort.abort();
+    await fulfillmentDone;
     if (runner.isRunning()) await runner.stop();
   };
   process.once("SIGINT", stop);

@@ -124,6 +124,21 @@ describe("ProductCard", () => {
   // task-24: a fully manual-delivery product (all_non_auto) delivers nothing
   // instantly, so the solid-green "Instant delivery" pill would be false
   // advertising — it must not render for those.
+  it("uses tighter body padding on phones and lets the body shrink", () => {
+    const { container } = renderCard(<ProductCard p={base} fx="16000" lowThreshold={5} />);
+    const body = container.querySelector("h3")?.parentElement;
+    expect(body).toHaveClass("p-3", "sm:p-4", "min-w-0");
+  });
+
+  it("keeps the instant chip off the top-left badge column so they cannot overlap", () => {
+    renderCard(
+      <ProductCard p={{ ...base, bulk_discount: "10", bulk_min_qty: 5, flash_discount: "20" }} fx="16000" lowThreshold={5} />,
+    );
+    const chip = screen.getByText("Instant delivery");
+    expect(chip).toHaveClass("bottom-2", "right-2");
+    expect(chip).not.toHaveClass("top-3");
+  });
+
   it("shows the instant chip for an auto-delivery product (all_non_auto false)", () => {
     renderCard(
       <ProductCard p={base} fx="16000" lowThreshold={5} />,

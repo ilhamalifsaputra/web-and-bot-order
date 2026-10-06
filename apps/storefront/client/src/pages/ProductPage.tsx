@@ -233,7 +233,7 @@ export default function ProductPage() {
       <div aria-busy="true" aria-label={t("web.loading")}>
         <Skeleton className="mb-6 h-4 w-48" />
         <div className="grid gap-8 lg:grid-cols-2">
-          <Skeleton className="aspect-square w-full" />
+          <Skeleton className="h-48 w-full sm:h-56 lg:h-64 xl:h-72" />
           <div className="space-y-4">
             <Skeleton className="h-8 w-3/4" />
             <Skeleton className="h-4 w-1/2" />
@@ -280,7 +280,7 @@ export default function ProductPage() {
         ]}
       />
 
-      <div className="grid md:grid-cols-2 gap-6 lg:gap-10">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 lg:gap-10">
         {/* The product name spans both columns so it stays the first thing
             read on mobile (where the grid collapses to image → description →
             picker beneath it) while still heading the whole block on
@@ -295,10 +295,10 @@ export default function ProductPage() {
             its old spot beneath the <h1>. */}
         <div className="self-start">
           <div className="card overflow-hidden">
-            <div className="aspect-[4/3] bg-sand">
-              {/* 4:3 to match the wrapper's aspect-[4/3] — see ProductCard for why
-                  the intrinsic size is declared even under object-cover, and why
-                  <picture> needs to be block. */}
+            <div className="flex h-48 items-center justify-center bg-sand sm:h-56 lg:h-64 xl:h-72">
+              {/* Bounded height (h-48..xl:h-72) with object-contain so the photo is
+                  never cropped or stretched; see ProductCard for why the intrinsic
+                  size is declared and why <picture> needs to be block. */}
               {product.image ? (
                 <picture className="block w-full h-full">
                   {product.image_srcset && (
@@ -324,7 +324,7 @@ export default function ProductPage() {
                     decoding="async"
                     width={800}
                     height={600}
-                    className="w-full h-full object-cover"
+                    className="w-full h-full object-contain"
                   />
                 </picture>
               ) : (
@@ -346,13 +346,13 @@ export default function ProductPage() {
         </div>
 
         {/* Facts + denomination picker + actions */}
-        <div id="product-detail">
+        <div id="product-detail" className="min-w-0">
           {/* Denomination cards — pick a plan (never a dropdown). The cheapest
               active denomination is preselected; selecting another updates the
               live price / stock / warranty and the checkout payload below. */}
           <div className="mt-6">
             <h2 className="section-title mb-3">{t("web.choose_plan")}</h2>
-            <div id="denom-list" className="grid gap-3">
+            <div id="denom-list" className="grid grid-cols-1 gap-3">
               {denominations.map((d) => (
                 <DenominationCard
                   key={d.id}

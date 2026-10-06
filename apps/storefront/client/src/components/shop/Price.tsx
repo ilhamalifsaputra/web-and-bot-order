@@ -41,9 +41,9 @@ export default function Price({ value, fx, size = "text-sm", tone = "default" }:
   const figureColor = tone === "light" ? "text-white" : "text-pine";
   const hintColor = tone === "light" ? "text-white/70" : "text-ink-faint";
   return (
-    <span className="inline-flex items-baseline gap-1.5 whitespace-nowrap">
-      <span className={`font-semibold ${figureColor} ${size}`}>{figure}</span>
-      {hint && <span className={`${hintColor} text-xs`}>{hint}</span>}
+    <span className="inline-flex flex-wrap items-baseline gap-x-1.5">
+      <span className={`font-semibold whitespace-nowrap ${figureColor} ${size}`}>{figure}</span>
+      {hint && <span className={`${hintColor} text-xs whitespace-nowrap`}>{hint}</span>}
     </span>
   );
 }

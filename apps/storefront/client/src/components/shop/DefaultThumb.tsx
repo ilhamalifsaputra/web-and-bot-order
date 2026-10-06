@@ -37,7 +37,7 @@ export default function DefaultThumb({ kind, name, className }: DefaultThumbProp
     <div
       className={`flex h-full w-full flex-col items-center justify-center gap-2 bg-pine-tint ${className ?? ""}`}
     >
-      <Icon className="h-10 w-10 text-pine" aria-hidden="true" />
+      <Icon className="h-8 w-8 shrink-0 text-pine md:h-10 md:w-10" aria-hidden="true" />
       {name && (
         <span className="line-clamp-2 px-3 text-center text-xs font-medium text-ink-soft">{name}</span>
       )}

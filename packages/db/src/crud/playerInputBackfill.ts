@@ -1,7 +1,10 @@
 /** One-time migration helper. Name matching lives here only, never in checkout. */
 import { GAME_CATALOG, matchGameKey } from "@app/core/nickname/gameCatalog";
 import { parseInputFields, nicknameInputKeys } from "@app/core/playerInput";
+import { OrderStatus } from "@app/core/enums";
 import type { Db } from "./_types";
+
+const TERMINAL_ORDER_STATUSES = [OrderStatus.DELIVERED, OrderStatus.CANCELLED, OrderStatus.REJECTED, OrderStatus.REFUNDED, OrderStatus.FAILED];
 
 export async function backfillPlayerInputConfiguration(db: Db, opts: { apply?: boolean; productIds?: number[] } = {}) {
   const denoms = await db.denomination.findMany({ where: { ...(opts.productIds ? { productId: { in: opts.productIds } } : {}), OR: [{ autoDeliverySource: "digiflazz" }, { nicknameCheckGameCode: { not: null } }] }, select: { id: true, productId: true, additionalFields: true, providerInputMapping: true, nicknameCheckGameCode: true, autoDeliverySource: true, product: { select: { name: true, digiflazzBrand: true } } } });
@@ -27,7 +30,9 @@ export async function backfillPlayerInputConfiguration(db: Db, opts: { apply?: b
     changes.push({ denominationId: denom.id, productId: denom.productId, product: denom.product.name, before: denom.additionalFields, after, gameCode });
     if (opts.apply) {
       // Keep already-created pending targets stable while changing catalog config.
-      await db.order.updateMany({ where: { inputConfigSnapshot: null, status: { in: ["PENDING_PAYMENT", "PENDING_VERIFICATION", "PAYMENT_DETECTED", "CONFIRMING", "CONFIRMED", "PROCESSING"] }, items: { some: { productId: denom.id } } }, data: { inputConfigSnapshot: JSON.stringify({ fields, providerInputMapping: denom.providerInputMapping }) } });
+      // Every non-terminal status (PAID and UNDERPAID included) can still be
+      // dispatched, so freeze all of them rather than listing the live ones.
+      await db.order.updateMany({ where: { inputConfigSnapshot: null, status: { notIn: TERMINAL_ORDER_STATUSES }, items: { some: { productId: denom.id } } }, data: { inputConfigSnapshot: JSON.stringify({ fields, providerInputMapping: denom.providerInputMapping }) } });
       await db.denomination.updateMany({ where: { id: denom.id, additionalFields: denom.additionalFields, nicknameCheckGameCode: denom.nicknameCheckGameCode, providerInputMapping: denom.providerInputMapping }, data: { additionalFields: after, nicknameCheckGameCode: gameCode, providerInputMapping: mapping } });
     }
   }

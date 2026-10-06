@@ -357,6 +357,14 @@ describe("nicknameCheckConversation — configured fields", () => {
     expect(JSON.parse(result.session.scratch.customerData as string)).toEqual([{ target: "target" }]);
     expect(sentIncludes(result.sink, "Confirm Order")).toBe(true);
   });
+  it("an unexpected lookup error (bad provider mapping) still proceeds instead of stranding the buyer", async () => {
+    const { denom } = await makeConfiguredDenom({ withCreds: true });
+    await prisma.denomination.update({ where: { id: denom.id }, data: { providerInputMapping: JSON.stringify({ nickname: { targetKey: "no_such_field" } }) } });
+    const result = await run(denom.id, ["target"]);
+    expect(kokinpayMock.checkGameNickname).not.toHaveBeenCalled();
+    expect(JSON.parse(result.session.scratch.customerData as string)).toEqual([{ target: "target" }]);
+    expect(sentIncludes(result.sink, "Confirm Order")).toBe(true);
+  });
   it.each(["/cancel", "/start", "v1:buy:1:1"])("%s clears incomplete state and exits to the menu", async (escape) => {
     const { denom } = await makeConfiguredDenom({ withCreds: true });
     const result = await run(denom.id, [escape]);

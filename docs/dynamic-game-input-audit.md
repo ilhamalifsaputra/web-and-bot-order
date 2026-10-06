@@ -50,3 +50,14 @@ Source of truth remains Denomination.additionalFields. Extend field constraints 
 Enforce configured fields on all delivery types before order creation and lookup. Preserve identifiers as trimmed strings. Reuse the generic bot collector for nickname-enabled products so every field, including select/optional, is collected before lookup. Tie scratch answers to SKU/quantity/config. Web sends the complete configured answer map for lookup and resets on configuration changes. Persist an additive order snapshot containing field schema and provider mapping; dispatch uses this snapshot for new orders and current metadata for historical orders. No provider mapping enters public DTOs. Add migration/config documentation and meaningful unit, API, bot and component regressions.
 
 User authorization: execute the supplied specification end to end. No deployment or live provider transaction is requested. Existing unrelated icon deletions and `.audit-data/` are left untouched.
+
+## Spec v2 reconciliation (`...-enhanced-v2.md`)
+
+v2 adds provider findings and three test cases; it does not change the architecture.
+
+- **Digiflazz publishes no input schema.** Its price list has no `requires_zone_id` or `input_fields`, and `desc` is free text. This repository's price-list type (`DigiflazzPriceListItem`) does not ingest `desc` at all, so no runtime path can depend on it. Name text may only drive the one-time, dry-run-first backfill (`playerInputBackfill.ts`), which writes explicit configuration.
+- **Scope.** Input configuration already lives on the sellable SKU (`Denomination`), the finest grain. Two variants of one game therefore never inherit from each other (v2 §42.1, Case 17).
+- **Unmapped new products (Case 15).** A newly imported SKU lands inactive with one neutral `Game ID` field and no mapping, so an admin must configure and activate it. A Digiflazz SKU with no input field at all is refused at checkout.
+- **Provider text changes (Case 16).** A re-sync rewrites price, cost, name and status only; an admin-configured profile is never touched.
+- **Provenance (§8.3)** is optional in v2 and is not stored. The backfill's dry-run report is the review record.
+- **Residual risk.** The backfill decides "needs a zone" for generic Mobile Legends-style SKUs by catalog brand match. v2 warns a brand can hold variants with different requirements, so the dry-run output must be reviewed before `--apply` on any real database.

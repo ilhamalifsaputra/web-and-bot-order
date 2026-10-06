@@ -1,5 +1,6 @@
 /** Collect canonical fields first; nickname checking is advisory. */
 import { NicknameService } from "@app/core/nickname/service";
+import { logger } from "@app/core/logger";
 import { validateCustomerData, type AdditionalField } from "@app/core/deliveryFields";
 import { buildPlayerNicknameRequest, parseInputFields } from "@app/core/playerInput";
 import { prisma, getDenominationWithProduct, resolveNicknameGate, buildNicknameProviderEntries } from "@app/db";
@@ -30,9 +31,16 @@ export async function confirmCustomerInputs(conversation: MyConversation, ctx: M
     const currentFields = parseInputFields(denom.additionalFields);
     if (JSON.stringify(currentFields) !== JSON.stringify(fields)) return null;
     const normalized = validateCustomerData(currentFields, answers, quantity);
-    const gate = resolveNicknameGate(denom);
-    const entries = await buildNicknameProviderEntries(prisma, gate.gameCode);
-    const result = entries.length > 0 ? await new NicknameService(entries).checkNickname(buildPlayerNicknameRequest(currentFields, denom.providerInputMapping, normalized[0])) : null;
+    // The lookup is advisory: any failure here (provider, credentials, a bad
+    // mapping) proceeds to confirmation instead of stranding the buyer.
+    let result: Awaited<ReturnType<NicknameService["checkNickname"]>> | null = null;
+    try {
+      const gate = resolveNicknameGate(denom);
+      const entries = await buildNicknameProviderEntries(prisma, gate.gameCode);
+      if (entries.length > 0) result = await new NicknameService(entries).checkNickname(buildPlayerNicknameRequest(currentFields, denom.providerInputMapping, normalized[0]));
+    } catch (err) {
+      logger.warn({ err, denominationId: productId }, "The bot's nickname lookup failed unexpectedly, so the buyer continues to order confirmation without a verified nickname.");
+    }
     return { normalized, result, owner: JSON.stringify([productId, quantity, denom.additionalFields, denom.providerInputMapping, denom.nicknameCheckGameCode]) };
   });
   if (!checked) { clearPlayerInputScratch(ctx); await startCommand(ctx); return; }

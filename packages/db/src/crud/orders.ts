@@ -23,7 +23,7 @@ import {
 import { deriveOrderStatusFromItems } from "@app/core/orderItemStatus";
 import { reconciledOrderMoneyRows } from "@app/core/orderMoneyRows";
 import { parseAdditionalFields, validateCustomerData } from "@app/core/deliveryFields";
-import { parseInputFields, inputConfigSnapshot } from "@app/core/playerInput";
+import { parseInputFields, inputConfigSnapshot, orderInputConfig } from "@app/core/playerInput";
 import {
   quantizeMoney,
   generateOrderCode,
@@ -1043,7 +1043,11 @@ export async function createOrderDirect(
     include: { product: { include: { category: true } } },
   });
   if (!product || !product.isActive || !product.product.isActive || product.product.isArchived || !product.product.category.isActive) throw new ValidationError("error.out_of_stock", { product: "(unknown)" });
-  if (product.autoDeliverySource === "digiflazz" && (!product.supplierSku || args.quantity !== 1 || parseInputFields(product.additionalFields).length === 0)) throw new ValidationError("error.customer_data_incomplete");
+  // A top-up SKU with no input fields could only ever dispatch an empty
+  // customer number, so refuse it before any money moves. A missing
+  // supplierSku or quantity > 1 is deliberately NOT refused here: the
+  // dispatcher already routes those to manual review (resolveSingleDigiflazzItem).
+  if (product.autoDeliverySource === "digiflazz" && parseInputFields(product.additionalFields).length === 0) throw new ValidationError("error.customer_data_incomplete");
   await assertServiceActive(db, product.product.category.group as CategoryGroup | null, args.channel);
   // Quantity can arrive from a crafted callback (v1:payq:<pid>:<qty>), not
   // just the UI's clamped stepper — validate it server-side (Checkout-5 fix,
@@ -2974,8 +2978,11 @@ export async function updateOrderCustomerData(
   if (order.status !== OrderStatus.PROCESSING) {
     throw new ValidationError("error.order_not_processing");
   }
-  const denom = order.items[0]?.product as { additionalFields?: string | null } | undefined;
-  const fields = parseAdditionalFields(denom?.additionalFields ?? null);
+  const denom = order.items[0]?.product as { additionalFields?: string | null; providerInputMapping?: string | null } | undefined;
+  // Validate against the fields this order will be dispatched with (its
+  // snapshot), not whatever the SKU was edited to after purchase.
+  const effective = orderInputConfig({ additionalFields: denom?.additionalFields ?? null, providerInputMapping: denom?.providerInputMapping ?? null }, order.inputConfigSnapshot);
+  const fields = parseInputFields(effective.additionalFields);
   // One answer-map per unit (item), matching how they were collected at checkout.
   const normalized = validateCustomerData(fields, answers, order.items.length);
   await db.order.update({

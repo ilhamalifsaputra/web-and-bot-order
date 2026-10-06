@@ -7,6 +7,7 @@ import { errorBody } from "@app/core/errorBody";
 import { logger } from "@app/core/logger";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import { parseAdditionalFields, parseCustomerData } from "@app/core/deliveryFields";
+import { orderInputConfig } from "@app/core/playerInput";
 import { startOfDayUtc } from "@app/core/datetime";
 import { Decimal } from "@app/core/money";
 import { CredentialKeyConfigError } from "@app/core/credentialCrypto";
@@ -229,7 +230,13 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
     // field spec so the client doesn't need its own JSON-parsing/label-lookup
     // logic — empty arrays for auto orders and manual orders with no custom
     // fields (customerDataFields.length === 0 ⇒ nothing to render).
-    const customerDataFields = parseAdditionalFields(order.items[0]?.product.additionalFields ?? null);
+    // Labeled against the order's snapshot when it has one, so the admin sees
+    // the same fields the supplier dispatch will use; a malformed snapshot
+    // falls back to the current spec for display only.
+    const product = order.items[0]?.product;
+    let fieldSpec = product?.additionalFields ?? null;
+    try { fieldSpec = orderInputConfig({ additionalFields: fieldSpec, providerInputMapping: product?.providerInputMapping ?? null }, order.inputConfigSnapshot).additionalFields; } catch { /* display-only fallback */ }
+    const customerDataFields = parseAdditionalFields(fieldSpec);
     const customerData = parseCustomerData(order.customerData);
     // getOrder decrypts stock credentials for the delivery paths; this page
     // load must not leak them (or the hand-typed deliveredContent) — the

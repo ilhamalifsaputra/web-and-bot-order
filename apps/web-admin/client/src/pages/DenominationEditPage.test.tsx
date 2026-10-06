@@ -177,6 +177,9 @@ describe("DenominationEditPage", () => {
         // admin can clear a previously-set value by blanking the field, not
         // just set one. This fixture never touched the field, so it's null.
         nicknameCheckGameCode: null,
+        // providerInputMapping follows the same convention: always sent on an
+        // edit so an admin can clear it. Untouched here, so it is null.
+        providerInputMapping: null,
         // Task 14: qtyValue/qtyUnit follow the same always-sent-on-edit
         // convention — this fixture never touched them, so both are null.
         qtyValue: null,
@@ -303,7 +306,7 @@ describe("DenominationEditPage", () => {
     expect(screen.getByDisplayValue("mlbb86")).toBeInTheDocument();
 
     await user.click(screen.getByRole("radio", { name: /^automatic delivery/i }));
-    // Step 4 (and Steps 2/3) are gone now that deliveryType is back to "auto".
+    // Step 4 (and Step 2) are gone now that deliveryType is back to "auto".
     expect(screen.queryByRole("radio", { name: /^digiflazz/i })).not.toBeInTheDocument();
 
     const btn = screen.getByRole("button", { name: /save changes/i });
@@ -314,7 +317,10 @@ describe("DenominationEditPage", () => {
     const [, sentBody] = vi.mocked(apiPatch).mock.calls[0] as [string, Record<string, unknown>];
     expect(sentBody).not.toHaveProperty("autoDeliverySource");
     expect(sentBody).not.toHaveProperty("supplierSku");
-    expect(sentBody).not.toHaveProperty("additionalFields");
+    // The field editor stays visible on Automatic, so what the admin sees is
+    // what is saved; the provider mapping was reset with the method.
+    expect(sentBody).toHaveProperty("additionalFields");
+    expect(sentBody.providerInputMapping).toBeNull();
     expect(sentBody.deliveryType).toBe("auto");
   });
 

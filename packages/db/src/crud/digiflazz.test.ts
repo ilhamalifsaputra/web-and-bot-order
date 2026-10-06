@@ -263,6 +263,11 @@ describe("terminalFailDigiflazzOrder — reactive account/region diagnostic (Tas
         supplierSku: null,
         deliveryType: DeliveryType.MANUAL_WITH_INFO,
         nicknameCheckGameCode: "mobile-legends",
+        // createOrderDirect refuses a top-up SKU with no input fields, so the
+        // order must declare its target field to reach the dispatcher at all.
+        additionalFields: JSON.stringify([
+          { key: "target", label: { id: "Target", en: "Target" }, type: "text", required: true, options: [], placeholder: "" },
+        ]),
       },
     });
     const order = (await createOrderDirect(prisma, {
@@ -1998,6 +2003,48 @@ describe("resyncDigiflazzCatalog", () => {
     expect(ml250After.price.toString()).toBe("50000"); // untouched
     expect(ml250After.supplierRawName).toBe("Mobile Legends 250 Diamond Fresh (Indonesia)");
     expect(ml250After.isActive).toBe(false); // status still mirrors buyerProductStatus
+  });
+
+  // Digiflazz publishes no structured input schema, so the import must not
+  // guess one from the brand or product name: every new SKU lands inactive
+  // with the single neutral target field and waits for an admin to configure.
+  it("imports a game-named SKU inactive with only the neutral Game ID field — no zone guessed from the name", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    const { productId } = await importDigiflazzBrand(prisma, {
+      brand: "Mobile Legends", categoryId: category.id,
+      rows: [{ buyerSkuCode: "ml-new", productName: "Mobile Legends 86 Diamond", price: "20000", costPrice: "18000" }],
+    });
+    const created = await prisma.denomination.findFirstOrThrow({ where: { productId, supplierSku: "ml-new" } });
+    expect(created.isActive).toBe(false);
+    expect(parseAdditionalFields(created.additionalFields).map((f) => f.key)).toEqual(["user_id"]);
+    expect(created.providerInputMapping).toBeNull();
+    expect(created.nicknameCheckGameCode).toBeNull();
+  });
+
+  it("a re-sync that changes the provider's name text never rewrites an admin-configured input profile", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    const { productId } = await importDigiflazzBrand(prisma, {
+      brand: "Mobile Legends", categoryId: category.id,
+      rows: [{ buyerSkuCode: "ml-cfg", productName: "Mobile Legends 86 Diamond", price: "20000", costPrice: "18000" }],
+    });
+    const configured = {
+      additionalFields: JSON.stringify([
+        { key: "user_id", label: { id: "User ID", en: "User ID" }, type: "number", required: true, options: [], placeholder: "" },
+        { key: "zone_id", label: { id: "Zone ID", en: "Zone ID" }, type: "number", required: true, options: [], placeholder: "" },
+      ]),
+      providerInputMapping: JSON.stringify({ digiflazz: { keys: ["user_id", "zone_id"], separator: "" } }),
+      nicknameCheckGameCode: "mobile-legends",
+    };
+    await prisma.denomination.updateMany({ where: { productId, supplierSku: "ml-cfg" }, data: configured });
+    // The provider now describes the SKU as single-ID. Free text must not win.
+    digiflazzMock.getPriceList.mockResolvedValue([
+      priceListItem({ buyerSkuCode: "ml-cfg", productName: "Mobile Legends 86 Diamond (cukup User ID, tanpa zone)", price: new Decimal(18000) }),
+    ]);
+    await resyncDigiflazzCatalog(prisma);
+    const after = await prisma.denomination.findFirstOrThrow({ where: { productId, supplierSku: "ml-cfg" } });
+    expect(after.additionalFields).toBe(configured.additionalFields);
+    expect(after.providerInputMapping).toBe(configured.providerInputMapping);
+    expect(after.nicknameCheckGameCode).toBe("mobile-legends");
   });
 
   it("is a no-op when Digiflazz isn't configured", async () => {

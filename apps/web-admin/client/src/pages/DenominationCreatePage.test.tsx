@@ -91,10 +91,11 @@ describe("DenominationCreatePage", () => {
     render(<DenominationCreatePage />, { wrapper: Wrapper });
     expect(screen.getByRole("radio", { name: /^automatic delivery/i })).toBeChecked();
     expect(screen.getByRole("radio", { name: /^manual delivery/i })).not.toBeChecked();
-    // Steps 2/3 (Buyer Information / Buyer Information Fields) only appear
-    // once Manual Delivery is chosen — progressive disclosure.
+    // The buyer-info choice (Step 2) only appears once Manual Delivery is
+    // chosen, but the field editor is available on Automatic too: any SKU
+    // may declare the input it needs (e.g. a top-up's Player ID).
     expect(screen.queryByRole("radio", { name: /^require buyer information/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /add field/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /add field/i })).toBeInTheDocument();
   });
 
   it("submit button is disabled until name, type, duration, and a valid price are set", async () => {
@@ -168,7 +169,7 @@ describe("DenominationCreatePage", () => {
     expect(btn).not.toBeDisabled();
   });
 
-  it("switching back to Automatic Delivery hides Buyer Information and the field editor entirely", async () => {
+  it("switching back to Automatic Delivery hides the Buyer Information choice but keeps the field editor", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     render(<DenominationCreatePage />, { wrapper: Wrapper });
     await fillBaseFields(user);
@@ -179,7 +180,7 @@ describe("DenominationCreatePage", () => {
 
     await user.click(screen.getByRole("radio", { name: /^automatic delivery/i }));
     expect(screen.queryByRole("radio", { name: /^require buyer information/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /add field/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /add field/i })).toBeInTheDocument();
 
     // Submit is unblocked again — Automatic Delivery never needs fields.
     const btn = screen.getByRole("button", { name: /create denomination/i });

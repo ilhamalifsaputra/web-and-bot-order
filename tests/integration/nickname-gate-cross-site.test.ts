@@ -128,7 +128,7 @@ afterAll(async () => {
  * crud/nickname.test.ts's own fixture matrix one level up the stack (the
  * real DB rows those unit-test fixtures stand in for).
  */
-async function makeFixtureDenom(opts: { digiflazzBrand?: string | null; nicknameCheckGameCode?: string | null }) {
+async function makeFixtureDenom(opts: { digiflazzBrand?: string | null; nicknameCheckGameCode?: string | null; withPlayerIdField?: boolean }) {
   fixtureCounter += 1;
   const product = await createCatalogProduct(prisma, {
     categoryId,
@@ -142,6 +142,11 @@ async function makeFixtureDenom(opts: { digiflazzBrand?: string | null; nickname
     durationLabel: "N/A",
     price: "10.00",
     nicknameCheckGameCode: opts.nicknameCheckGameCode ?? undefined,
+    // A lookup is built from the SKU's own input fields, so a SKU that is
+    // meant to trigger the check must declare the field the buyer fills in.
+    additionalFields: opts.withPlayerIdField
+      ? JSON.stringify([{ key: "user_id", label: { id: "Player ID", en: "Player ID" }, type: "text", required: true, options: [], placeholder: "" }])
+      : undefined,
   });
   await bulkAddStock(prisma, denom.id, [`stock-${fixtureCounter}`]);
   return denom.id;
@@ -201,7 +206,12 @@ async function expectGateOutcomeAgrees(denominationId: number, triggers: boolean
   const conv = new FakeConversation([cancelMsg]);
   await nicknameCheckConversation(conv.asMyConversation(), entry);
   if (triggers) {
-    expect(calls(sink2, "conversation.enter").some((c) => c.args[0] === "nicknameCheck")).toBe(true);
+    // The buyer was asked for the configured input (so /cancel was consumed
+    // inside the wizard) and /cancel abandoned the attempt: no confirmation
+    // screen, and no half-collected answers left in the session.
+    expect(sentIncludes(sink2, "Player ID")).toBe(true);
+    expect(sentIncludes(sink2, "Confirm Order")).toBe(false);
+    expect(entry.session.scratch.customerData).toBeUndefined();
   } else {
     expect(calls(sink2, "conversation.enter").length).toBe(0);
     expect(sentIncludes(sink2, "Confirm Order")).toBe(true);
@@ -210,13 +220,13 @@ async function expectGateOutcomeAgrees(denominationId: number, triggers: boolean
 
 describe("nickname-check gate — storefront, showOrderConfirmation, and nicknameCheck agree on the same fixture matrix", () => {
   it("nicknameCheckGameCode override set (with KokinPay credentials set): all 3 sites trigger the check", async () => {
-    const denominationId = await makeFixtureDenom({ nicknameCheckGameCode: "cross-site-legacy-code" });
+    const denominationId = await makeFixtureDenom({ nicknameCheckGameCode: "cross-site-legacy-code", withPlayerIdField: true });
     await expectGateOutcomeAgrees(denominationId, true);
   });
 
-  it("no override, but digiflazzBrand auto-detects a catalog game: all 3 sites trigger the check", async () => {
+  it("a catalog-looking digiflazzBrand with no override never triggers the check: the gate is configuration, not name matching", async () => {
     const denominationId = await makeFixtureDenom({ digiflazzBrand: "Mobile Legends" });
-    await expectGateOutcomeAgrees(denominationId, true);
+    await expectGateOutcomeAgrees(denominationId, false);
   });
 
   it("no override and no catalog match: all 3 sites skip the check (the overwhelming common case)", async () => {
@@ -228,6 +238,7 @@ describe("nickname-check gate — storefront, showOrderConfirmation, and nicknam
     const denominationId = await makeFixtureDenom({
       digiflazzBrand: "Some Unrelated Voucher",
       nicknameCheckGameCode: "cross-site-override-code",
+      withPlayerIdField: true,
     });
     await expectGateOutcomeAgrees(denominationId, true);
   });

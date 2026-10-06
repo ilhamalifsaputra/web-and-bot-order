@@ -71,11 +71,6 @@ import OrderSummaryCard, { idrRailPriceAndPay } from "../components/shop/OrderSu
 import { GuestContactCard } from "./CheckoutPage";
 import ErrorPage from "./ErrorPage";
 
-// Code review: the minimum length below a live nickname-check lookup is
-// pointless to fire — too short to be any real game account id, so the only
-// effect of checking it would be an extra KokinPay call and a flash of a
-// misleading "not found" hint while the buyer is still typing.
-
 const revealProps = {
   variants: fadeUp,
   initial: "initial" as const,

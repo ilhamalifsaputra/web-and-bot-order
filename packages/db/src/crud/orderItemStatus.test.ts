@@ -111,13 +111,24 @@ async function makeManualDenom(
   });
   await updateDenomination(prisma, denom.id, { deliveryType });
   if (autoDeliverySource) {
-    await prisma.denomination.update({ where: { id: denom.id }, data: { autoDeliverySource } });
+    // A supplier top-up always carries its target field: checkout refuses a
+    // Digiflazz SKU with no input fields, since it could only dispatch an
+    // empty customer number.
+    await prisma.denomination.update({
+      where: { id: denom.id },
+      data: {
+        autoDeliverySource,
+        additionalFields: JSON.stringify([{ key: "user_id", label: { id: "Player ID", en: "Player ID" }, type: "text", required: true, options: [], placeholder: "" }]),
+      },
+    });
   }
   return denom;
 }
 
 async function makePendingVerificationOrder(productId: number, quantity = 1) {
-  const order = await createOrderDirect(prisma, { channel: "bot", user: sample.user, productId, quantity });
+  const denom = await prisma.denomination.findUniqueOrThrow({ where: { id: productId } });
+  const customerData = denom.additionalFields ? JSON.stringify(Array.from({ length: quantity }, () => ({ user_id: "12345" }))) : undefined;
+  const order = await createOrderDirect(prisma, { channel: "bot", user: sample.user, productId, quantity, customerData });
   await attachPaymentProof(prisma, order!.id, { fileId: "file123", txid: "TX-1" });
   return order!;
 }

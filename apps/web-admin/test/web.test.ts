@@ -2392,21 +2392,36 @@ describe("catalog JSON API — create denomination", () => {
     expect(row!.additionalFields).toBeNull();
   });
 
-  it("ignores a stray additionalFields payload when deliveryType is not manual_with_info", async () => {
+  const IGN_FIELD = { key: "ign", label: { id: "IGN", en: "IGN" }, type: "text", required: true, options: [], placeholder: "" };
+
+  it("ignores a stray additionalFields payload when deliveryType is plain manual", async () => {
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+      deliveryType: "manual",
+      additionalFields: [IGN_FIELD],
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { id: number };
+    const row = await getDenomination(prisma, body.id);
+    expect(row!.additionalFields).toBeNull();
+  });
+
+  it("keeps explicitly configured additionalFields on an auto SKU (buyer input is no longer tied to manual_with_info)", async () => {
     const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
       name: "1 Month",
       type: "SHARED",
       durationLabel: "1 Month",
       price: "15000",
       deliveryType: "auto",
-      additionalFields: [
-        { key: "ign", label: { id: "IGN", en: "IGN" }, type: "text", required: true, options: [], placeholder: "" },
-      ],
+      additionalFields: [IGN_FIELD],
     });
     expect(res.statusCode).toBe(201);
     const body = JSON.parse(res.body) as { id: number };
     const row = await getDenomination(prisma, body.id);
-    expect(row!.additionalFields).toBeNull();
+    expect(JSON.parse(row!.additionalFields!).map((f: { key: string }) => f.key)).toEqual(["ign"]);
   });
 
   const DIGIFLAZZ_FIELDS = [

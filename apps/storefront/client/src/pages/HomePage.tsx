@@ -446,7 +446,7 @@ export default function HomePage() {
           // the row empty, reading as broken rather than a deliberate
           // one-item shelf — clamp to one column with a capped width instead
           // of stretching an isolated card across the full row.
-          <div className={`mt-5 grid gap-5 ${products.length === 1 ? "max-w-sm" : "sm:grid-cols-2 lg:grid-cols-3"}`}>
+          <div className={`mt-5 grid gap-5 ${products.length === 1 ? "max-w-sm" : "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3"}`}>
             {products.map((p) => (
               <ProductCard key={p.slug} p={p} fx={fx} lowThreshold={low_threshold} />
             ))}

@@ -29,6 +29,11 @@ describe("DefaultThumb", () => {
     },
   );
 
+  it("sizes the icon explicitly (32px, 40px from md) so it never scales with the well", () => {
+    const { container } = render(<DefaultThumb kind="game" />);
+    expect(container.querySelector("svg")).toHaveClass("h-8", "w-8", "md:h-10", "md:w-10");
+  });
+
   it("shows the product name under the icon when given one", () => {
     render(<DefaultThumb kind="generic" name="Netflix Premium" />);
     expect(screen.getByText("Netflix Premium")).toBeInTheDocument();

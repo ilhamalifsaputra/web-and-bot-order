@@ -107,7 +107,7 @@ export default function ProductCard({ p, fx, lowThreshold }: ProductCardProps) {
             both be live on the same product, and two absolutely-positioned
             badges at top-3 left-3 would sit on top of each other. */}
         {(p.flash_discount || p.bulk_discount) && (
-          <div className="absolute top-3 left-3 flex flex-col items-start gap-1.5">
+          <div className="absolute top-2 left-2 sm:top-3 sm:left-3 flex max-w-2/3 flex-col items-start gap-1.5">
             {p.flash_discount && (
               <FlashBadge percent={p.flash_discount} endsAt={p.flash_ends_at ?? null} tone="solid" />
             )}
@@ -131,13 +131,13 @@ export default function ProductCard({ p, fx, lowThreshold }: ProductCardProps) {
             mislead the buyer. (Only auto denominations ever hold stock rows, so
             `available > 0` also proves an auto plan is in stock on a mixed product.) */}
         {!p.all_non_auto && p.available > 0 && (
-          <span className="absolute right-3 top-3 inline-flex items-center gap-1 rounded-full bg-grass-dark px-2.5 py-1 text-xs font-medium text-white">
+          <span className="absolute right-2 bottom-2 sm:right-3 sm:bottom-3 inline-flex items-center gap-1 rounded-full bg-grass-dark px-2.5 py-1 text-xs font-medium text-white">
             <Zap className="w-3 h-3" /> {t("web.badge_instant")}
           </span>
         )}
       </div>
-      <div className="p-4 flex flex-col flex-1">
-        <h3 className="font-semibold text-ink line-clamp-1">{p.name}</h3>
+      <div className="p-3 sm:p-4 flex flex-col flex-1 min-w-0">
+        <h3 className="font-semibold text-ink line-clamp-1 break-words">{p.name}</h3>
         <p className="text-sm text-ink-faint">
           {p.category_name}
           {p.variant_count > 1 && (
@@ -157,7 +157,7 @@ export default function ProductCard({ p, fx, lowThreshold }: ProductCardProps) {
         )}
 
         <div className="mt-auto pt-3 flex items-center justify-between gap-2 flex-wrap">
-          <p className="text-sm text-ink-soft inline-flex items-baseline gap-1 flex-wrap">
+          <p className="min-w-0 text-sm text-ink-soft inline-flex items-baseline gap-1 flex-wrap">
             {t("web.from_price")}
             <Price value={p.from_price} fx={fx} size="text-sm" />
             {/* The card payload carries no base price (cards.ts), so the

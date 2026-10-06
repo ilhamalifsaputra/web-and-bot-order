@@ -577,17 +577,16 @@ export function payState(order: OrderRow) {
     order.expiresAt != null &&
     ensureUtc(order.expiresAt).toMillis() <= Date.now();
   if (order.status === OrderStatus.DELIVERED) return "delivered";
+  // PROCESSING is already paid and waiting on fulfillment: an automatic
+  // top-up being sent (Digiflazz), or a MANUAL / MANUAL_WITH_INFO SKU waiting
+  // for an admin to hand-type and send the account. It used to fall into the
+  // "closed" catch-all, and then into "confirming", whose copy talks about
+  // blockchain confirmation — which made a buyer believe their payment was
+  // stuck. It has its own state so the page can say what is really happening.
+  if (order.status === OrderStatus.PROCESSING) return "processing";
   if (
     order.status === OrderStatus.PENDING_VERIFICATION ||
     order.status === OrderStatus.PAID ||
-    // A MANUAL / MANUAL_WITH_INFO SKU's paid order waits here for an admin to
-    // hand-type and send the account (PAID → PROCESSING → DELIVERED). It is the
-    // most alive an order gets, and it used to fall into the "closed" catch-all
-    // below — so a buyer who had just paid for a hand-fulfilled SKU, or whose
-    // voucher covered one entirely, was shown "This order is closed." The
-    // "Payment received — finishing up your order…" copy this state renders is
-    // exactly what is happening.
-    order.status === OrderStatus.PROCESSING ||
     // Bybit BSC in-flight states (deposit seen / confirming on-chain / fully
     // confirmed) — without these, a live Bybit BSC order would fall into the
     // "closed" catch-all below and render as dead the moment a deposit is

@@ -94,6 +94,13 @@ function StatusStrip({ state }: { state: PayState }) {
       </Badge>
     );
   }
+  if (state === "processing") {
+    return (
+      <Badge variant="info" icon={<Loader className="w-3.5 h-3.5 animate-spin" />}>
+        {t("web.status_processing")}
+      </Badge>
+    );
+  }
   if (state === "delivered") {
     return (
       <Badge variant="success" icon={<BadgeCheck className="w-3.5 h-3.5" />}>
@@ -577,6 +584,19 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
           <Loader className="w-10 h-10 text-pine mx-auto mb-3 animate-spin" />
           <p className="text-sm font-medium text-ink">{t("web.pay_confirming")}</p>
           <p className="text-xs text-ink-soft mt-2">{t("web.pay_confirming_sub")}</p>
+        </Card>
+      )}
+
+      {state === "processing" && (
+        <Card className="text-center py-10">
+          <Loader className="w-10 h-10 text-pine mx-auto mb-3 animate-spin" />
+          <p className="text-sm font-medium text-ink">{t("web.pay_processing")}</p>
+          <p className="text-xs text-ink-soft mt-2">{t("web.pay_processing_sub")}</p>
+          {!isTopup && (
+            <Link to={deliveredHref} className="btn btn-soft mt-4">
+              {t("web.pay_processing_view_order")} <ChevronRight className="w-4 h-4" />
+            </Link>
+          )}
         </Card>
       )}
 

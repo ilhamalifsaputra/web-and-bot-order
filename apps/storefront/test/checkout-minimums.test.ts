@@ -218,7 +218,7 @@ describe("POST /api/v1/checkout — a cart a discount alone reduced to Rp0", () 
   // pay page told a buyer whose voucher had just bought them a manual SKU that
   // "This order is closed." It is the most alive an order gets: paid, waiting
   // for an admin to type and send the account.
-  it("a settled MANUAL SKU order polls as a live 'confirming', never as 'closed'", async () => {
+  it("a settled MANUAL SKU order polls as a live 'processing', never as 'closed'", async () => {
     await addToCart(prisma, userId, manualDenomId, 1);
 
     const res = await app.inject({
@@ -238,7 +238,7 @@ describe("POST /api/v1/checkout — a cart a discount alone reduced to Rp0", () 
       headers: { cookie },
     });
     expect(poll.statusCode).toBe(200);
-    expect(poll.json().state).toBe("confirming");
+    expect(poll.json().state).toBe("processing");
   });
 
   it("does the same for an IDR rail (the routing is per-total, not per-method)", async () => {

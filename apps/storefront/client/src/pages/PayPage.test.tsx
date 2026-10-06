@@ -163,6 +163,29 @@ describe("PayPage", () => {
     expect(await screen.findByText("credentials-page-stub")).toBeInTheDocument();
   });
 
+  it("renders honest processing copy (no blockchain sentence) while a paid order awaits fulfillment", async () => {
+    const pay: PayData = {
+      ...basePay,
+      state: "processing",
+      order: { ...basePay.order, status: "PROCESSING" },
+    };
+    renderPay(respondFor(pay));
+    expect(await screen.findByText("Payment received — your order is being processed")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Your top-up is being sent automatically. This page updates by itself; you can also follow it from your order page.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/blockchain/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /View order/ })).toHaveAttribute("href", "/account/orders/ORD1");
+  });
+
+  it("keeps polling while processing and redirects once the poll reports delivered", async () => {
+    const pay: PayData = { ...basePay, state: "processing", order: { ...basePay.order, status: "PROCESSING" } };
+    renderPay(respondFor(pay, { state: "delivered", redirect: "/account/orders/ORD1" }));
+    expect(await screen.findByText("credentials-page-stub")).toBeInTheDocument();
+  });
+
   it("renders a live countdown from expires_at_iso, and 0:00 once past", async () => {
     vi.spyOn(Date, "now").mockReturnValue(new Date("2026-07-04T12:00:00.000Z").getTime());
     const pay: PayData = {

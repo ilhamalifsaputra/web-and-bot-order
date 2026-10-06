@@ -78,6 +78,7 @@ import {
   releaseGatewaySlot,
   MAX_CART_ORDER_UNITS,
   getDigiflazzCreds,
+  getDigiflazzWebhookSecret,
   fulfillDigiflazzOrder,
   claimDigiflazzWebhookRecheck,
   recordDigiflazzOutcome,
@@ -107,7 +108,7 @@ import {
   type NowpaymentsInvoice,
 } from "@app/core/payments/nowpayments";
 import {
-  verifyCallback as verifyDigiflazzCallback,
+  verifyWebhook as verifyDigiflazzWebhook,
   createTransaction as createDigiflazzTransaction,
   type DigiflazzTransactionResult,
 } from "@app/core/suppliers/digiflazz";
@@ -1428,9 +1429,10 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
   // `addContentTypeParser` below is scoped ONLY to this one route (Fastify
   // encapsulates content-type parsers to the plugin context they're declared
   // in — see Fastify's ContentTypeParser reference) and never touches the
-  // TokoPay/PayDisini/Digiflazz webhooks that share this file's outer
-  // registration, none of which need the raw body (their signature schemes
-  // hash specific fields, not the whole body — see tokopay.ts/paydisini.ts).
+  // TokoPay/PayDisini webhooks that share this file's outer registration,
+  // neither of which needs the raw body (their signature schemes hash
+  // specific fields, not the whole body — see tokopay.ts/paydisini.ts). The
+  // Digiflazz webhook below does hash the raw body and has its own scope.
   await app.register(async (scoped) => {
     scoped.addContentTypeParser("application/json", { parseAs: "string" }, (req, rawBody: string, done) => {
       (req as FastifyRequest & { rawBody?: string }).rawBody = rawBody;
@@ -1529,14 +1531,21 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
 
   // ---- Digiflazz webhook (public; signature is the auth) ----
   //
-  // Task 12 fix (backend audit 2026-08-21, I-1/I-4): verifyDigiflazzCallback's
-  // signature (@app/core/suppliers/digiflazz) does NOT bind `status` —
-  // md5(refId + ":" + secretKey) is a function of refId alone — so a captured
-  // callback (logging proxy, TLS-inspecting appliance, leaked access log) is
-  // a forgeable, non-expiring token: replaying it with status: "Sukses" and
-  // any sn would previously have auto-delivered the order. `cb` is now used
-  // ONLY to authenticate that some signed request named this refId and to
-  // look up the order — never again to decide what to actually do. What
+  // Signature: Digiflazz's documented scheme — `X-Hub-Signature: sha1=<hex>`,
+  // HMAC-SHA1 of the RAW request body keyed by the webhook secret the shop
+  // set in the Digiflazz dashboard (Settings key `digiflazz_webhook_secret`,
+  // getDigiflazzWebhookSecret). See verifyWebhook in
+  // @app/core/suppliers/digiflazz. It replaced an invented md5(ref_id:apiKey)
+  // body field that Digiflazz never sends, which had made every real delivery
+  // fail with 403 and left paid orders waiting on the poller. Like the
+  // NOWPayments IPN above, the route lives in its own nested `app.register`
+  // so its raw-body content-type parser is scoped to this one route.
+  //
+  // Task 12 fix (backend audit 2026-08-21, I-1/I-4): a signed delivery has no
+  // timestamp or nonce, so a captured one (logging proxy, TLS-inspecting
+  // appliance, leaked access log) can be replayed indefinitely. `cb` is used
+  // ONLY to authenticate that a signed request named this refId and to
+  // look up the order — never to decide what to actually do. What
   // actually happens is decided by a FRESH createTransaction(refId) call:
   // this client's own createTransaction is documented as idempotent by refId
   // (a repeat call with the same refId returns the existing transaction
@@ -1550,171 +1559,194 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
   // (packages/db/src/crud/digiflazz.ts): a replayed callback for an order the
   // dispatch poller (or an earlier callback) already delivered throws there,
   // caught below as an expected race rather than a real failure.
-  app.post("/pay/digiflazz/callback", async (req, reply) => {
-    // Payment-3-style hardening — see the TokoPay callback above.
-    if (webhookRateLimited("digiflazz", clientIp(req))) return reply.code(429).send({ status: "rate limited" });
-
-    const creds = await getDigiflazzCreds(prisma);
-    if (!creds) return reply.code(403).send({ status: "disabled" });
-
-    const body = (req.body ?? {}) as Record<string, unknown>;
-    // DigiflazzCreds carries only { username, apiKey } (no separate webhook
-    // secret field exists yet) — apiKey doubles as the signing secret here,
-    // matching verifyCallback's own doc comment in @app/core/suppliers/digiflazz.
-    const cb = verifyDigiflazzCallback(creds.apiKey, body);
-    if (!cb) {
-      // Same reasoning as the TokoPay/PayDisini/NOWPayments callbacks above:
-      // neither the signature nor the body is logged (CLAUDE.md, "Never log
-      // secrets"), and the pre-existing `webhookRateLimited` check above already
-      // bounds how many of these one source can produce. This route's signing
-      // secret is Digiflazz's own API key rather than a separate webhook
-      // secret, so a sudden run of these usually means that key was rotated in
-      // Settings without updating it here.
-      logger.warn(
-        `Rejected a Digiflazz delivery callback because its signature did not verify — no order was looked up and nothing was delivered. A steady stream against valid order codes is someone probing the callback; a sudden start after a deploy usually means the Digiflazz API key in Settings no longer matches the one Digiflazz is signing with.`,
-      );
-      return reply.code(403).send({ status: "bad signature" });
-    }
-
-    const order = await getOrderByCode(prisma, cb.refId);
-    if (!order) {
-      logger.warn(`Digiflazz callback for unknown order ref ${cb.refId} — ignoring`);
-      return reply.send({ status: "unmatched" });
-    }
-
-    // Review fix (Important, post-Task-12): only an order still PROCESSING
-    // can legitimately need a live re-check — a legitimate callback for an
-    // in-flight order always finds it PROCESSING (fulfillDigiflazzOrder's own
-    // atomic claim downstream requires exactly that). Refusing here for any
-    // other status (DELIVERED, CANCELLED, REFUNDED, ...) is a pure narrowing
-    // with no behavior change for the legitimate path, and closes off an
-    // otherwise-valid replayed callback from turning into a real
-    // POST /transaction to Digiflazz for an order that's already settled —
-    // defense-in-depth on top of createTransaction's documented (but
-    // unverified — see its ⚠ ASSUMPTION note, @app/core/suppliers/digiflazz)
-    // refId-dedup behavior, not a replacement for it.
-    if (order.status !== OrderStatus.PROCESSING) {
-      logger.warn(
-        `Digiflazz callback for order ${order.orderCode} but it is no longer PROCESSING (status: ${order.status}) — ignoring without a live re-check`,
-      );
-      return reply.send({ status: "unmatched" });
-    }
-
-    // I-4: confirm this order is actually a single-item Digiflazz-routed
-    // order before doing anything else — a callback naming a manually-
-    // fulfilled (or otherwise non-Digiflazz) order that happens to be
-    // PROCESSING must never reach fulfillDigiflazzOrder. This branch means
-    // the callback itself is suspect/mismatched, not that a legitimate
-    // dispatch failed, so no alert is raised here.
-    const resolution = resolveSingleDigiflazzItem(order);
-    if (!resolution.ok) {
-      logger.warn(
-        `Digiflazz callback for order ${order.orderCode} but it isn't a single-item Digiflazz order (${resolution.reason}) — ignoring`,
-      );
-      return reply.send({ status: "unmatched" });
-    }
-
-    let customerNo: string;
-    try { customerNo = buildDigiflazzCustomerNo(resolution.product, order.customerData, order.inputConfigSnapshot); }
-    catch { return reply.send({ status: "unmatched" }); }
-
-    // Task B3d (backend audit): a genuine callback can only exist after the
-    // dispatch poller placed the purchase, and is only worth a re-check while
-    // the order is still pending at Digiflazz. Anything else — never
-    // dispatched, or already failed terminally — must not reach
-    // createTransaction: from here that call could be a first or a second
-    // purchase rather than a status check (its ref_id dedup is unverified).
-    const dispatchedAt = order.digiflazzDispatchedAt;
-    if (!dispatchedAt || order.digiflazzStatus !== "pending_at_supplier") {
-      logger.warn(
-        `Ignored a signed Digiflazz callback for order ${order.orderCode} without a live re-check, because the order is not waiting on Digiflazz (${dispatchedAt ? `its dispatch status is "${order.digiflazzStatus ?? "none"}"` : "it has not been dispatched yet"}) — re-posting the transaction from here could place a purchase instead of checking one`,
-      );
-      return reply.send({ status: "unmatched" });
-    }
-    // At most one /transaction call per order at a time, across replays,
-    // concurrent callbacks and the dispatch poller.
-    if (!(await claimDigiflazzWebhookRecheck(prisma, order.id))) {
-      logger.info(
-        `Skipped the live re-check for a Digiflazz callback on order ${order.orderCode} because another check of that order is already in flight or due within minutes — that check records the outcome, so nothing is lost`,
-      );
-      return reply.send({ status: "ok" });
-    }
-
-    let result: DigiflazzTransactionResult;
-    try {
-      result = await createDigiflazzTransaction(creds, {
-        refId: cb.refId,
-        buyerSkuCode: resolution.supplierSku,
-        customerNo,
-      });
-    } catch (err) {
-      // The live re-check's HTTP call itself failed (network error, timeout,
-      // malformed response — same failure modes dispatchPendingDigiflazzOrders's
-      // own try/catch already handles). err's message is already
-      // credential-free (fetchDigiflazzJson's own guarantee) — never log err
-      // itself. Take no delivery action; leave the order PROCESSING for a
-      // future callback or the next poller tick, matching this client's
-      // "unrecognised status treated as Pending" philosophy elsewhere.
-      const message = err instanceof Error ? err.message : String(err);
-      logger.warn(`Digiflazz live re-check failed for order ${order.orderCode} (${message}) — leaving it PROCESSING`);
-      try {
-        await recordDigiflazzOutcome(prisma, order, { kind: "transient_error", message }, dispatchedAt);
-      } catch (recordErr) {
-        // Same guarantee as the Gagal/Pending branches below: a failure
-        // writing this outcome (e.g. the DB update itself) must not surface
-        // as an HTTP 500, or Digiflazz will retry-storm this endpoint.
-        logger.warn({ err: recordErr }, `Digiflazz callback failed to record a transient re-check failure for order ${order.orderCode} — the live re-check's own failure was still logged above`);
+  await app.register(async (scoped) => {
+    scoped.addContentTypeParser("application/json", { parseAs: "buffer" }, (req, rawBody: Buffer, done) => {
+      (req as FastifyRequest & { rawBody?: Buffer }).rawBody = rawBody;
+      if (rawBody.length === 0) {
+        // Mirrors Fastify's own default-parser rejection of an empty JSON body.
+        const err = new Error("Body cannot be empty when content-type is set to 'application/json'") as Error & {
+          statusCode?: number;
+        };
+        err.statusCode = 400;
+        done(err, undefined);
+        return;
       }
-      return reply.send({ status: "ok" });
-    }
-
-    // Branch on the FRESH result.status from the live re-check — NOT
-    // cb.status — this is the actual trust-model fix.
-    if (result.status === "Sukses") {
       try {
-        await fulfillDigiflazzOrder(prisma, order.id, { sn: result.sn ?? "" });
-        nudgeOutboxDispatcher(); // same as the other gateways — buyer DM was just enqueued
+        done(null, JSON.parse(rawBody.toString("utf8")));
       } catch (err) {
-        // fulfillDigiflazzOrder throws if the order isn't PROCESSING anymore
-        // (already delivered by the dispatch poller, or otherwise moved on)
-        // — an expected race, not a real failure; log and 200 either way so
-        // Digiflazz stops retrying.
-        logger.warn({ err }, `Digiflazz callback fulfil race for order ${order.orderCode} — likely already delivered`);
+        (err as Error & { statusCode?: number }).statusCode = 400;
+        done(err as Error, undefined);
       }
-    } else if (result.status === "Gagal") {
-      try {
-        await recordDigiflazzOutcome(
-          prisma,
-          order,
-          {
-            kind: "terminal",
-            reason: `Digiflazz live re-check reported Gagal${result.message ? ` (${result.message})` : ""}`,
-            // Same rule as dispatchPendingDigiflazzOrders' own Gagal branch
-            // (crud/digiflazz.ts) — only a bare "Gagal" with no message
-            // triggers the reactive account/region diagnostic.
-            supplierGaveReason: Boolean(result.message),
-          },
-          dispatchedAt,
+    });
+
+    scoped.post("/pay/digiflazz/callback", async (req, reply) => {
+      // Payment-3-style hardening — see the TokoPay callback above.
+      if (webhookRateLimited("digiflazz", clientIp(req))) return reply.code(429).send({ status: "rate limited" });
+
+      const creds = await getDigiflazzCreds(prisma);
+      if (!creds) return reply.code(403).send({ status: "disabled" });
+      const webhookSecret = await getDigiflazzWebhookSecret(prisma);
+      if (!webhookSecret) {
+        logger.warn(
+          "Refused a Digiflazz webhook because no Digiflazz webhook secret is set in Settings, so its signature cannot be checked — paid top-ups will only be confirmed by the slower status poller until an admin sets the secret that is configured in the Digiflazz dashboard",
         );
-      } catch (err) {
-        // Same guarantee as the Sukses branch above: a transient failure
-        // here (e.g. the admin-alert/audit-log write inside
-        // recordDigiflazzOutcome) must not surface as an HTTP 500, or
-        // Digiflazz will retry-storm this endpoint.
-        logger.warn({ err }, `Digiflazz callback failed to record Gagal for order ${order.orderCode} — Gagal status was still reported by the supplier`);
+        return reply.code(403).send({ status: "disabled" });
       }
-    } else if (result.status === "Pending") {
-      // Unlike before this task, a webhook-reported Pending now advances
-      // the same backoff schedule the poller uses (recordDigiflazzOutcome),
-      // instead of being invisible to the realtime status feature.
-      try {
-        await recordDigiflazzOutcome(prisma, order, { kind: "pending" }, dispatchedAt);
-      } catch (err) {
-        logger.warn({ err }, `Digiflazz callback failed to record Pending for order ${order.orderCode} — supplier still reports Pending`);
-      }
-    }
 
-    return reply.send({ status: "ok" });
+      const rawBody = (req as FastifyRequest & { rawBody?: Buffer }).rawBody ?? Buffer.alloc(0);
+      const sigHeader = req.headers["x-hub-signature"];
+      const cb = verifyDigiflazzWebhook(webhookSecret, rawBody, typeof sigHeader === "string" ? sigHeader : undefined);
+      if (!cb) {
+        // Same reasoning as the TokoPay/PayDisini/NOWPayments callbacks above:
+        // neither the signature nor the body is logged (CLAUDE.md, "Never log
+        // secrets"), and the pre-existing `webhookRateLimited` check above already
+        // bounds how many of these one source can produce.
+        logger.warn(
+          `Rejected a Digiflazz webhook because its X-Hub-Signature header was missing or did not match its body — no order was looked up and nothing was delivered. A steady stream against valid order codes is someone probing the callback; a sudden start usually means the webhook secret in Settings no longer matches the one set in the Digiflazz dashboard.`,
+        );
+        return reply.code(403).send({ status: "bad signature" });
+      }
+
+      const order = await getOrderByCode(prisma, cb.refId);
+      if (!order) {
+        logger.warn(`Digiflazz callback for unknown order ref ${cb.refId} — ignoring`);
+        return reply.send({ status: "unmatched" });
+      }
+
+      // Review fix (Important, post-Task-12): only an order still PROCESSING
+      // can legitimately need a live re-check — a legitimate callback for an
+      // in-flight order always finds it PROCESSING (fulfillDigiflazzOrder's own
+      // atomic claim downstream requires exactly that). Refusing here for any
+      // other status (DELIVERED, CANCELLED, REFUNDED, ...) is a pure narrowing
+      // with no behavior change for the legitimate path, and closes off an
+      // otherwise-valid replayed callback from turning into a real
+      // POST /transaction to Digiflazz for an order that's already settled —
+      // defense-in-depth on top of createTransaction's documented (but
+      // unverified — see its ⚠ ASSUMPTION note, @app/core/suppliers/digiflazz)
+      // refId-dedup behavior, not a replacement for it.
+      if (order.status !== OrderStatus.PROCESSING) {
+        logger.warn(
+          `Digiflazz callback for order ${order.orderCode} but it is no longer PROCESSING (status: ${order.status}) — ignoring without a live re-check`,
+        );
+        return reply.send({ status: "unmatched" });
+      }
+
+      // I-4: confirm this order is actually a single-item Digiflazz-routed
+      // order before doing anything else — a callback naming a manually-
+      // fulfilled (or otherwise non-Digiflazz) order that happens to be
+      // PROCESSING must never reach fulfillDigiflazzOrder. This branch means
+      // the callback itself is suspect/mismatched, not that a legitimate
+      // dispatch failed, so no alert is raised here.
+      const resolution = resolveSingleDigiflazzItem(order);
+      if (!resolution.ok) {
+        logger.warn(
+          `Digiflazz callback for order ${order.orderCode} but it isn't a single-item Digiflazz order (${resolution.reason}) — ignoring`,
+        );
+        return reply.send({ status: "unmatched" });
+      }
+
+      let customerNo: string;
+      try { customerNo = buildDigiflazzCustomerNo(resolution.product, order.customerData, order.inputConfigSnapshot); }
+      catch { return reply.send({ status: "unmatched" }); }
+
+      // Task B3d (backend audit): a genuine callback can only exist after the
+      // dispatch poller placed the purchase, and is only worth a re-check while
+      // the order is still pending at Digiflazz. Anything else — never
+      // dispatched, or already failed terminally — must not reach
+      // createTransaction: from here that call could be a first or a second
+      // purchase rather than a status check (its ref_id dedup is unverified).
+      const dispatchedAt = order.digiflazzDispatchedAt;
+      if (!dispatchedAt || order.digiflazzStatus !== "pending_at_supplier") {
+        logger.warn(
+          `Ignored a signed Digiflazz callback for order ${order.orderCode} without a live re-check, because the order is not waiting on Digiflazz (${dispatchedAt ? `its dispatch status is "${order.digiflazzStatus ?? "none"}"` : "it has not been dispatched yet"}) — re-posting the transaction from here could place a purchase instead of checking one`,
+        );
+        return reply.send({ status: "unmatched" });
+      }
+      // At most one /transaction call per order at a time, across replays,
+      // concurrent callbacks and the dispatch poller.
+      if (!(await claimDigiflazzWebhookRecheck(prisma, order.id))) {
+        logger.info(
+          `Skipped the live re-check for a Digiflazz callback on order ${order.orderCode} because another check of that order is already in flight or due within minutes — that check records the outcome, so nothing is lost`,
+        );
+        return reply.send({ status: "ok" });
+      }
+
+      let result: DigiflazzTransactionResult;
+      try {
+        result = await createDigiflazzTransaction(creds, {
+          refId: cb.refId,
+          buyerSkuCode: resolution.supplierSku,
+          customerNo,
+        });
+      } catch (err) {
+        // The live re-check's HTTP call itself failed (network error, timeout,
+        // malformed response — same failure modes dispatchPendingDigiflazzOrders's
+        // own try/catch already handles). err's message is already
+        // credential-free (fetchDigiflazzJson's own guarantee) — never log err
+        // itself. Take no delivery action; leave the order PROCESSING for a
+        // future callback or the next poller tick, matching this client's
+        // "unrecognised status treated as Pending" philosophy elsewhere.
+        const message = err instanceof Error ? err.message : String(err);
+        logger.warn(`Digiflazz live re-check failed for order ${order.orderCode} (${message}) — leaving it PROCESSING`);
+        try {
+          await recordDigiflazzOutcome(prisma, order, { kind: "transient_error", message }, dispatchedAt);
+        } catch (recordErr) {
+          // Same guarantee as the Gagal/Pending branches below: a failure
+          // writing this outcome (e.g. the DB update itself) must not surface
+          // as an HTTP 500, or Digiflazz will retry-storm this endpoint.
+          logger.warn({ err: recordErr }, `Digiflazz callback failed to record a transient re-check failure for order ${order.orderCode} — the live re-check's own failure was still logged above`);
+        }
+        return reply.send({ status: "ok" });
+      }
+
+      // Branch on the FRESH result.status from the live re-check — NOT
+      // cb.status — this is the actual trust-model fix.
+      if (result.status === "Sukses") {
+        try {
+          await fulfillDigiflazzOrder(prisma, order.id, { sn: result.sn ?? "" });
+          nudgeOutboxDispatcher(); // same as the other gateways — buyer DM was just enqueued
+        } catch (err) {
+          // fulfillDigiflazzOrder throws if the order isn't PROCESSING anymore
+          // (already delivered by the dispatch poller, or otherwise moved on)
+          // — an expected race, not a real failure; log and 200 either way so
+          // Digiflazz stops retrying.
+          logger.warn({ err }, `Digiflazz callback fulfil race for order ${order.orderCode} — likely already delivered`);
+        }
+      } else if (result.status === "Gagal") {
+        try {
+          await recordDigiflazzOutcome(
+            prisma,
+            order,
+            {
+              kind: "terminal",
+              reason: `Digiflazz live re-check reported Gagal${result.message ? ` (${result.message})` : ""}`,
+              // Same rule as dispatchPendingDigiflazzOrders' own Gagal branch
+              // (crud/digiflazz.ts) — only a bare "Gagal" with no message
+              // triggers the reactive account/region diagnostic.
+              supplierGaveReason: Boolean(result.message),
+            },
+            dispatchedAt,
+          );
+        } catch (err) {
+          // Same guarantee as the Sukses branch above: a transient failure
+          // here (e.g. the admin-alert/audit-log write inside
+          // recordDigiflazzOutcome) must not surface as an HTTP 500, or
+          // Digiflazz will retry-storm this endpoint.
+          logger.warn({ err }, `Digiflazz callback failed to record Gagal for order ${order.orderCode} — Gagal status was still reported by the supplier`);
+        }
+      } else if (result.status === "Pending") {
+        // Unlike before this task, a webhook-reported Pending now advances
+        // the same backoff schedule the poller uses (recordDigiflazzOutcome),
+        // instead of being invisible to the realtime status feature.
+        try {
+          await recordDigiflazzOutcome(prisma, order, { kind: "pending" }, dispatchedAt);
+        } catch (err) {
+          logger.warn({ err }, `Digiflazz callback failed to record Pending for order ${order.orderCode} — supplier still reports Pending`);
+        }
+      }
+
+      return reply.send({ status: "ok" });
+    });
   });
 };
 

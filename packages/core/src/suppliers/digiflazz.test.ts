@@ -1,9 +1,9 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   getPriceList,
   createTransaction,
-  verifyCallback,
+  verifyWebhook,
   parseProductRegion,
   stripRegionSuffix,
   digiflazzGroupKey,
@@ -24,8 +24,28 @@ function stubFetchJson(payload: unknown, opts: { ok?: boolean; status?: number }
   );
 }
 
-function makeCallbackSignature(refId: string) {
-  return createHash("md5").update(`${refId}:${WEBHOOK_SECRET}`).digest("hex");
+/** Digiflazz's real scheme: `X-Hub-Signature: sha1=<hex>`, HMAC-SHA1 of the
+ * RAW request body keyed by the dashboard-configured webhook secret. */
+function hubSignature(rawBody: string | Buffer, secret = WEBHOOK_SECRET) {
+  return `sha1=${createHmac("sha1", secret).update(rawBody).digest("hex")}`;
+}
+
+/** The real prepaid webhook payload shape (developer.digiflazz.com/api/buyer/webhook). */
+function webhookBody(data: Record<string, unknown> = {}) {
+  return JSON.stringify({
+    data: {
+      ref_id: "ORD-100",
+      customer_no: "123456789",
+      buyer_sku_code: "ml100",
+      message: "Sukses",
+      status: "Sukses",
+      rc: "00",
+      buyer_last_saldo: 0,
+      sn: "SN-XYZ",
+      price: 199800,
+      ...data,
+    },
+  });
 }
 
 describe("createTransaction", () => {
@@ -266,47 +286,95 @@ describe("getPriceList", () => {
   });
 });
 
-describe("verifyCallback", () => {
-  it("returns a normalized payload on a valid signature", () => {
-    const refId = "ORD-100";
-    const body = {
-      ref_id: refId,
-      signature: makeCallbackSignature(refId),
-      status: "Sukses",
-      sn: "SN-XYZ",
-      message: "Transaksi Sukses",
-      price: "15000",
-    };
-    const result = verifyCallback(WEBHOOK_SECRET, body);
+describe("verifyWebhook", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("returns a normalized payload for a correctly signed Sukses delivery", () => {
+    const raw = webhookBody();
+    const result = verifyWebhook(WEBHOOK_SECRET, raw, hubSignature(raw));
     expect(result).not.toBeNull();
-    expect(result?.refId).toBe(refId);
+    expect(result?.refId).toBe("ORD-100");
     expect(result?.status).toBe("Sukses");
     expect(result?.sn).toBe("SN-XYZ");
-    expect(result?.price?.toFixed(0)).toBe("15000");
+    expect(result?.message).toBe("Sukses");
+    expect(result?.price?.toFixed(0)).toBe("199800");
   });
 
-  it("returns null when the signature is wrong", () => {
-    const body = { ref_id: "ORD-101", signature: "not-the-right-signature", status: "Sukses" };
-    expect(verifyCallback(WEBHOOK_SECRET, body)).toBeNull();
+  it("accepts the raw body as a Buffer and an upper-case hex digest", () => {
+    const raw = Buffer.from(webhookBody({ status: "Pending", sn: "" }));
+    const hex = hubSignature(raw).slice("sha1=".length).toUpperCase();
+    const result = verifyWebhook(WEBHOOK_SECRET, raw, `sha1=${hex}`);
+    expect(result?.refId).toBe("ORD-100");
+    expect(result?.status).toBe("Pending");
+    expect(result?.sn).toBeNull();
   });
 
-  it("returns null when ref_id or signature is missing", () => {
-    expect(verifyCallback(WEBHOOK_SECRET, { signature: makeCallbackSignature("x") })).toBeNull();
-    expect(verifyCallback(WEBHOOK_SECRET, { ref_id: "x" })).toBeNull();
-  });
-
-  it("normalizes a Gagal callback with its failure reason", () => {
-    const refId = "ORD-102";
-    const body = {
-      ref_id: refId,
-      signature: makeCallbackSignature(refId),
-      status: "Gagal",
-      message: "Stok kosong",
-    };
-    const result = verifyCallback(WEBHOOK_SECRET, body);
+  it("normalizes a Gagal delivery with its failure reason", () => {
+    const raw = webhookBody({ ref_id: "ORD-102", status: "Gagal", message: "Stok kosong", sn: "" });
+    const result = verifyWebhook(WEBHOOK_SECRET, raw, hubSignature(raw));
     expect(result?.status).toBe("Gagal");
     expect(result?.message).toBe("Stok kosong");
     expect(result?.sn).toBeNull();
+  });
+
+  it("rejects a body signed with a different secret", () => {
+    const raw = webhookBody();
+    expect(verifyWebhook(WEBHOOK_SECRET, raw, hubSignature(raw, "someone-elses-secret"))).toBeNull();
+  });
+
+  it("rejects a body changed after signing (the signature covers the raw bytes, not the parsed JSON)", () => {
+    const raw = webhookBody({ status: "Pending" });
+    const header = hubSignature(raw);
+    expect(verifyWebhook(WEBHOOK_SECRET, raw.replace("Pending", "Sukses"), header)).toBeNull();
+    // A whitespace-only re-serialization is a different byte string too.
+    expect(verifyWebhook(WEBHOOK_SECRET, JSON.stringify(JSON.parse(raw), null, 2), header)).toBeNull();
+  });
+
+  it("rejects a missing, empty or garbage signature header", () => {
+    const raw = webhookBody();
+    expect(verifyWebhook(WEBHOOK_SECRET, raw, undefined)).toBeNull();
+    expect(verifyWebhook(WEBHOOK_SECRET, raw, "")).toBeNull();
+    expect(verifyWebhook(WEBHOOK_SECRET, raw, "sha1=")).toBeNull();
+    expect(verifyWebhook(WEBHOOK_SECRET, raw, "sha1=not-hex-at-all")).toBeNull();
+    expect(verifyWebhook(WEBHOOK_SECRET, raw, `${hubSignature(raw)}00`)).toBeNull();
+    expect(verifyWebhook(WEBHOOK_SECRET, raw, hubSignature(raw).slice(0, -2))).toBeNull();
+  });
+
+  it("rejects a correct digest that is not prefixed with sha1=", () => {
+    const raw = webhookBody();
+    const hex = hubSignature(raw).slice("sha1=".length);
+    expect(verifyWebhook(WEBHOOK_SECRET, raw, hex)).toBeNull();
+    expect(verifyWebhook(WEBHOOK_SECRET, raw, `sha256=${hex}`)).toBeNull();
+  });
+
+  it("rejects everything when no webhook secret is configured, even a body signed with an empty key", () => {
+    const raw = webhookBody();
+    expect(verifyWebhook("", raw, hubSignature(raw, ""))).toBeNull();
+  });
+
+  it("rejects a correctly signed body that has no data.ref_id or is not JSON", () => {
+    const noRef = JSON.stringify({ data: { status: "Sukses" } });
+    expect(verifyWebhook(WEBHOOK_SECRET, noRef, hubSignature(noRef))).toBeNull();
+    // The old invented flat shape, with no `data` wrapper.
+    const flat = JSON.stringify({ ref_id: "ORD-1", status: "Sukses" });
+    expect(verifyWebhook(WEBHOOK_SECRET, flat, hubSignature(flat))).toBeNull();
+    const notJson = "ref_id=ORD-1";
+    expect(verifyWebhook(WEBHOOK_SECRET, notJson, hubSignature(notJson))).toBeNull();
+  });
+
+  it("never logs the secret, the signature or the body when it rejects", () => {
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    const raw = webhookBody({ ref_id: "ORD-SECRETIVE" });
+    const badHeader = hubSignature(raw, "wrong");
+    verifyWebhook(WEBHOOK_SECRET, raw, badHeader);
+    verifyWebhook(WEBHOOK_SECRET, raw, undefined);
+    expect(warn).toHaveBeenCalledTimes(2);
+    const logged = JSON.stringify(warn.mock.calls);
+    expect(logged).not.toContain(WEBHOOK_SECRET);
+    expect(logged).not.toContain(badHeader.slice("sha1=".length));
+    expect(logged).not.toContain("ORD-SECRETIVE");
   });
 });
 

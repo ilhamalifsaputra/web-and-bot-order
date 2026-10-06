@@ -198,6 +198,7 @@ const PAY_CRED_KEYS = new Set([
 const DIGIFLAZZ_KEYS = new Set([
   "digiflazz_username",
   "digiflazz_api_key",
+  "digiflazz_webhook_secret",
   "digiflazz_enabled",
   "digiflazz_markup_type",
   "digiflazz_markup_value",
@@ -303,6 +304,8 @@ const FIELD_DESCRIPTIONS: Record<string, string> = {
   bulk_purchase_broadcast_template: "Message template — supports {qty}, {product}, {denomination}.",
   digiflazz_username: "Your Digiflazz account username.",
   digiflazz_api_key: "Authenticates requests to Digiflazz — never shown once saved.",
+  digiflazz_webhook_secret:
+    "Verifies that delivery updates really came from Digiflazz. Type the same secret you set in the Digiflazz dashboard's webhook settings — never shown once saved. Until it is set, webhooks are refused and top-ups are only confirmed by the slower status check.",
   digiflazz_enabled: 'Type "true" or "false" — turns Digiflazz auto-fulfilment off without clearing the saved credentials.',
   digiflazz_markup_type: "How the markup below is applied when pricing Digiflazz SKUs.",
   digiflazz_markup_value: "Percent (e.g. 8 for 8%) or a flat IDR amount, depending on the type above.",
@@ -1480,6 +1483,23 @@ export function SettingsPage() {
                     selectOptions={field.key === "digiflazz_markup_type" ? DIGIFLAZZ_MARKUP_TYPE_OPTIONS : undefined}
                   />
                 ))}
+              </CardContent>
+              <CardContent className="space-y-1 pt-0">
+                <p className="text-sm font-medium text-ink">Webhook URL</p>
+                {data.digiflazzWebhookUrl ? (
+                  <>
+                    <code className="block rounded bg-sand px-2 py-1 text-sm font-mono break-all text-ink select-all">
+                      {data.digiflazzWebhookUrl}
+                    </code>
+                    <p className="text-xs text-ink-soft">
+                      Paste this into the Digiflazz dashboard as the webhook URL, with the same secret as the webhook secret above.
+                    </p>
+                  </>
+                ) : (
+                  <p className="text-xs text-ink-soft">
+                    No public storefront address is configured. Set SHOP_PUBLIC_URL (or PUBLIC_URL) on the server to get the webhook URL for the Digiflazz dashboard.
+                  </p>
+                )}
               </CardContent>
               <CardContent className="flex flex-wrap items-center gap-3 pt-0">
                 <Button

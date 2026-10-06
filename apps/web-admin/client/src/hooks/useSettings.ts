@@ -37,6 +37,11 @@ export interface SettingsData {
    * heartbeat fields. */
   bybitHealth: HealthEntry;
   bybitBscHealth: HealthEntry;
+  /** Where Digiflazz must send webhooks — the storefront's public origin plus
+   * `/pay/digiflazz/callback`, for the admin to paste into the Digiflazz
+   * dashboard. Null when no public storefront URL is configured. Optional so
+   * a client served by an older server still renders. */
+  digiflazzWebhookUrl?: string | null;
   isOwner: boolean;
   twoFaEnabled: boolean;
   twoFaPending: { secret: string; uri: string } | null;

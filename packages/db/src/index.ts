@@ -32,6 +32,7 @@ export * from "./crud/pricing";
 export * from "./crud/tokopay";
 export * from "./crud/digiflazz";
 export * from "./crud/digiflazzSyncStatus";
+export * from "./crud/digiflazzWebhook";
 export * from "./crud/kokinpay";
 export * from "./crud/paydisini";
 export * from "./crud/nowpayments";

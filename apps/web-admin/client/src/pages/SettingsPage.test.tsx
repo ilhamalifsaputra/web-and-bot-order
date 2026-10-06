@@ -101,6 +101,47 @@ describe("SettingsPage", () => {
     expect(screen.getByText("Order Bot token")).toBeInTheDocument();
   });
 
+  it("groups the Digiflazz webhook secret with Digiflazz and shows the webhook URL to paste into the Digiflazz dashboard", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({
+        ...SETTINGS_DATA,
+        fields: [
+          ...SETTINGS_DATA.fields,
+          { key: "digiflazz_api_key", label: "Digiflazz API key", secret: true, hasValue: true, value: "", needsRestart: false },
+          { key: "digiflazz_webhook_secret", label: "Digiflazz webhook secret", secret: true, hasValue: false, value: "", needsRestart: false },
+        ],
+        digiflazzWebhookUrl: "https://shop.example.com/pay/digiflazz/callback",
+      }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+
+    render(<SettingsPage />, { wrapper: Wrapper });
+
+    const heading = await screen.findByRole("heading", { name: "Digiflazz (Top Up Game)" });
+    const card = heading.closest('[data-slot="card"]') as HTMLElement;
+    expect(within(card).getByText("Digiflazz webhook secret")).toBeInTheDocument();
+    expect(within(card).getByText("https://shop.example.com/pay/digiflazz/callback")).toBeInTheDocument();
+    expect(document.getElementById("settings-other")).toBeNull();
+  });
+
+  it("explains how to get a webhook URL when no public storefront URL is configured", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({
+        ...SETTINGS_DATA,
+        fields: [
+          ...SETTINGS_DATA.fields,
+          { key: "digiflazz_webhook_secret", label: "Digiflazz webhook secret", secret: true, hasValue: false, value: "", needsRestart: false },
+        ],
+        digiflazzWebhookUrl: null,
+      }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+
+    render(<SettingsPage />, { wrapper: Wrapper });
+
+    const heading = await screen.findByRole("heading", { name: "Digiflazz (Top Up Game)" });
+    const card = heading.closest('[data-slot="card"]') as HTMLElement;
+    expect(within(card).getByText(/SHOP_PUBLIC_URL/)).toBeInTheDocument();
+  });
+
   it("groups the CoinGecko API key with Exchange Rates instead of Other Settings", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       new Response(JSON.stringify({

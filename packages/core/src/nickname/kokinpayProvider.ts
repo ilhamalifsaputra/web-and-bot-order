@@ -6,7 +6,7 @@ export function createKokinpayNicknameProvider(creds: KokinpayCreds): NicknamePr
     id: "kokinpay",
     async checkNickname(req): Promise<NicknameLookupOutcome> {
       try {
-        const result = await checkGameNickname(creds, { gameCode: req.gameCode, id: req.target, server: req.server });
+        const result = await checkGameNickname(creds, { gameCode: req.gameCode, id: req.target, server: req.server ?? req.zone });
         // KokinPay's client folds "not found" and "invalid game_code" into
         // the same {valid:false} shape per its own docs (see
         // suppliers/kokinpay.ts) — this adapter conservatively maps both to

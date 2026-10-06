@@ -75,7 +75,6 @@ import ErrorPage from "./ErrorPage";
 // pointless to fire — too short to be any real game account id, so the only
 // effect of checking it would be an extra KokinPay call and a flash of a
 // misleading "not found" hint while the buyer is still typing.
-const MIN_ACCOUNT_ID_LENGTH = 4;
 
 const revealProps = {
   variants: fadeUp,
@@ -149,7 +148,8 @@ export default function InstantBuyPage() {
   const denominations = data?.denominations ?? [];
   const fallback = denominations.find((d) => d.in_stock) ?? denominations[0];
   const selected = denominations.find((d) => d.id === selectedId) ?? fallback;
-  const needsInfo = selected?.delivery_type === "manual_with_info" && selected.additional_fields.length > 0;
+  const needsInfo = (selected?.additional_fields.length ?? 0) > 0;
+  const fieldConfigKey = JSON.stringify(selected?.additional_fields ?? []);
 
   // Live totals for the SELECTED denomination — an ad-hoc line priced by the
   // server, with no cart anywhere in the loop. Keyed on the denomination id, so
@@ -214,7 +214,7 @@ export default function InstantBuyPage() {
   // customer_data payload that no longer matches the fields being shown.
   useEffect(() => {
     setAnswers({});
-  }, [selected?.id]);
+  }, [selected?.id, fieldConfigKey]);
 
   // Task 7: live KokinPay nickname-check lookup on the account field(s),
   // debounced ~800ms and cancelled on every keystroke via AbortController so
@@ -232,8 +232,7 @@ export default function InstantBuyPage() {
     notFound: boolean;
   }>({ pending: false, nickname: null, notFound: false });
 
-  const accountId = (answers.user_id ?? "").trim();
-  const accountServer = (answers.server_id ?? "").trim();
+  const activeInputsJson = JSON.stringify(Object.fromEntries((selected?.additional_fields ?? []).map((field) => [field.key, (answers[field.key] ?? "").trim()])));
 
   useEffect(() => {
     // Any change to the account field(s) (including a denomination switch,
@@ -252,9 +251,8 @@ export default function InstantBuyPage() {
     // the server-field check below only applies when this denomination's
     // own field template actually has a `server_id` field (some games have
     // no server/zone concept at all, and must not be gated on one).
-    if (accountId.length < MIN_ACCOUNT_ID_LENGTH) return;
-    const requiresServer = selected.additional_fields.some((field) => field.key === "server_id");
-    if (requiresServer && !accountServer) return;
+    const playerInputs = JSON.parse(activeInputsJson) as Record<string, string>;
+    if (!allFieldsValid(selected.additional_fields, [playerInputs], 1)) return;
 
     const controller = new AbortController();
     let cancelled = false;
@@ -262,7 +260,7 @@ export default function InstantBuyPage() {
       setNicknameCheck((prev) => ({ ...prev, pending: true }));
       apiPost<{ available: boolean; valid?: boolean; nickname?: string | null }>(
         "/api/v1/topup/check-account",
-        { denomination_id: selected.id, id: accountId, server: accountServer || undefined },
+        { denomination_id: selected.id, player_inputs: playerInputs },
         { signal: controller.signal },
       )
         .then((res) => {
@@ -291,7 +289,7 @@ export default function InstantBuyPage() {
       controller.abort();
       clearTimeout(timer);
     };
-  }, [needsInfo, selected?.id, accountId, accountServer]);
+  }, [needsInfo, selected, activeInputsJson]);
 
   // Applying a voucher re-prices the SAME ad-hoc line the query above prices,
   // through the SAME endpoint — one pricing implementation, so a voucher can

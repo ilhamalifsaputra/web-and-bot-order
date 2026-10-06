@@ -23,6 +23,10 @@ export function fieldToDraft(field: AdditionalField): AdditionalFieldDraft {
     required: field.required,
     optionsText: field.options.join(", "),
     placeholder: field.placeholder,
+    ...(field.helpText !== undefined ? { helpText: field.helpText } : {}),
+    ...(field.minLength !== undefined ? { minLength: field.minLength } : {}),
+    ...(field.maxLength !== undefined ? { maxLength: field.maxLength } : {}),
+    ...(field.pattern !== undefined ? { pattern: field.pattern } : {}),
   };
 }
 
@@ -89,6 +93,10 @@ export function draftsToFields(drafts: AdditionalFieldDraft[]): AdditionalField[
               .filter((o) => o !== "")
           : [],
       placeholder: d.placeholder.trim(),
+      ...(d.helpText !== undefined ? { helpText: d.helpText } : {}),
+      ...(d.minLength !== undefined ? { minLength: d.minLength } : {}),
+      ...(d.maxLength !== undefined ? { maxLength: d.maxLength } : {}),
+      ...(d.pattern !== undefined ? { pattern: d.pattern } : {}),
     };
   });
 }

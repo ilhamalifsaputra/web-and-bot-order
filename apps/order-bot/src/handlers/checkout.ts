@@ -524,6 +524,13 @@ export async function showOrderConfirmation(
 
   const product = await availableCheckoutDenomination(ctx, productId);
   if (!product) return;
+  const inputOwner = JSON.stringify([productId, quantity, product.additionalFields, product.providerInputMapping, product.nicknameCheckGameCode]);
+  if (ctx.session.scratch.customerData && ctx.session.scratch.customerInputOwner !== inputOwner) {
+    delete ctx.session.scratch.customerData;
+    delete ctx.session.scratch.customerInputOwner;
+    delete ctx.session.scratch.prefilledCustomerDataUnit;
+    delete ctx.session.scratch.checkoutIntentId;
+  }
   // Stock rows only ever exist for AUTO SKUs (Task 2 skips reservation
   // entirely for manual/manual_with_info) — running this check for a
   // non-auto product would always see 0 available and falsely reject every
@@ -588,7 +595,7 @@ export async function showOrderConfirmation(
   // this branch doesn't fire again for the same checkout attempt. A buyer who
   // backs out of quantity/product and re-taps Buy re-triggers this gate,
   // which is correct (customerData was never set for the abandoned attempt).
-  if (product.deliveryType === DeliveryType.MANUAL_WITH_INFO && !ctx.session.scratch.customerData) {
+  if ((product.deliveryType === DeliveryType.MANUAL_WITH_INFO || product.additionalFields) && !ctx.session.scratch.customerData) {
     ctx.session.scratch.pendingInfoProductId = productId;
     ctx.session.scratch.pendingInfoQuantity = quantity;
     await ctx.conversation.enter("customerInfo");

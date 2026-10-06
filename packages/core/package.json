@@ -26,6 +26,7 @@
     "./cartComposition": "./src/cartComposition.ts",
     "./orderItemStatus": "./src/orderItemStatus.ts",
     "./deliveryFields": "./src/deliveryFields.ts",
+    "./playerInput": "./src/playerInput.ts",
     "./runtime": "./src/runtime.ts",
     "./fx": "./src/fx.ts",
     "./flash": "./src/flash.ts",

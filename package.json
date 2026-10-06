@@ -19,6 +19,7 @@
     "backfill-encrypt-delivered-content": "tsx scripts/backfill-encrypt-delivered-content.ts",
     "reencrypt-credentials-v2": "tsx scripts/reencrypt-credentials-v2.ts",
     "backfill-stock-traceability": "tsx scripts/backfill-stock-traceability.ts",
+    "backfill-player-input-configuration": "tsx scripts/backfill-player-input-configuration.ts",
     "audit-stock-integrity": "tsx scripts/audit-stock-integrity.ts",
     "backfill-encrypt-settings-secrets": "tsx scripts/backfill-encrypt-settings-secrets.ts",
     "backfill-ledger-history": "tsx scripts/backfill-ledger-history.ts",

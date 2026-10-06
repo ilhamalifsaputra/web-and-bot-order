@@ -20,6 +20,7 @@ import { config } from "@app/core/config";
 import { logger } from "@app/core/logger";
 import { sendMail } from "@app/core/mailer";
 import { ValidationError } from "@app/core/errors";
+import { parseAdditionalFields, type AdditionalField } from "@app/core/deliveryFields";
 import { CategoryGroup, OrderCurrency, UserRole } from "@app/core/enums";
 import {
   prisma,
@@ -78,6 +79,7 @@ interface DenominationJson {
   price: string;
   stock: number;
   status: "in_stock" | "low_stock" | "out_of_stock";
+  additional_fields: AdditionalField[];
 }
 
 interface ProductJson {
@@ -112,6 +114,7 @@ async function denominationJson(d: Denomination, product: CatalogProduct, displa
     price: new Decimal(d.price).toString(),
     stock,
     status,
+    additional_fields: parseAdditionalFields(d.additionalFields),
   };
 }
 

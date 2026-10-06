@@ -23,6 +23,7 @@ import {
 import { deriveOrderStatusFromItems } from "@app/core/orderItemStatus";
 import { reconciledOrderMoneyRows } from "@app/core/orderMoneyRows";
 import { parseAdditionalFields, validateCustomerData } from "@app/core/deliveryFields";
+import { parseInputFields, inputConfigSnapshot } from "@app/core/playerInput";
 import {
   quantizeMoney,
   generateOrderCode,
@@ -826,9 +827,11 @@ export async function createOrderFromCart(
   // Re-validating data performCheckout already validated is a safe no-op —
   // valid data stays valid.
   let customerDataToStore = args.customerData ?? null;
-  const infoLine = cart.find((ci) => ci.product.deliveryType === DeliveryType.MANUAL_WITH_INFO);
+  const infoLines = cart.filter((ci) => ci.product.deliveryType === DeliveryType.MANUAL_WITH_INFO || !!ci.product.additionalFields);
+  if (infoLines.length > 1) throw new ValidationError("error.customer_data_incomplete");
+  const infoLine = infoLines[0];
   if (infoLine) {
-    const fields = parseAdditionalFields(infoLine.product.additionalFields);
+    const fields = parseInputFields(infoLine.product.additionalFields);
     let parsedAnswers: unknown = null;
     if (args.customerData) {
       try {
@@ -856,6 +859,7 @@ export async function createOrderFromCart(
         voucherId: voucher ? voucher.id : null,
         status: OrderStatus.PENDING_PAYMENT,
         customerData: customerDataToStore,
+        inputConfigSnapshot: infoLine ? inputConfigSnapshot(infoLine.product) : null,
         expiresAt: addMinutes(new Date(), config.PAYMENT_WINDOW_MINUTES),
         checkoutIntentId: args.checkoutIntentId ?? null,
       },
@@ -1038,7 +1042,8 @@ export async function createOrderDirect(
     where: { id: args.productId },
     include: { product: { include: { category: true } } },
   });
-  if (!product) throw new ValidationError("error.out_of_stock", { product: "(unknown)" });
+  if (!product || !product.isActive || !product.product.isActive || product.product.isArchived || !product.product.category.isActive) throw new ValidationError("error.out_of_stock", { product: "(unknown)" });
+  if (product.autoDeliverySource === "digiflazz" && (!product.supplierSku || args.quantity !== 1 || parseInputFields(product.additionalFields).length === 0)) throw new ValidationError("error.customer_data_incomplete");
   await assertServiceActive(db, product.product.category.group as CategoryGroup | null, args.channel);
   // Quantity can arrive from a crafted callback (v1:payq:<pid>:<qty>), not
   // just the UI's clamped stepper — validate it server-side (Checkout-5 fix,
@@ -1114,8 +1119,8 @@ export async function createOrderDirect(
   // before calling createOrderFromCart (Finding #4, per-sku-delivery-flows
   // audit 2026-07-13). Re-validating already-valid data is a safe no-op.
   let customerDataToStore = args.customerData ?? null;
-  if (product.deliveryType === DeliveryType.MANUAL_WITH_INFO) {
-    const fields = parseAdditionalFields(product.additionalFields);
+  if (product.deliveryType === DeliveryType.MANUAL_WITH_INFO || product.additionalFields) {
+    const fields = parseInputFields(product.additionalFields);
     let parsedAnswers: unknown = null;
     if (args.customerData) {
       try {
@@ -1142,6 +1147,7 @@ export async function createOrderDirect(
         totalAmount: ZERO,
         status: OrderStatus.PENDING_PAYMENT,
         customerData: customerDataToStore,
+        inputConfigSnapshot: product.additionalFields ? inputConfigSnapshot(product) : null,
         expiresAt: addMinutes(new Date(), config.PAYMENT_WINDOW_MINUTES),
         checkoutIntentId: args.checkoutIntentId ?? null,
       },

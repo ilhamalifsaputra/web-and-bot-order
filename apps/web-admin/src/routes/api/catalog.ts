@@ -43,6 +43,7 @@ import { ProductType, DeliveryType, CategoryGroup } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { errorBody } from "@app/core/errorBody";
 import { zAdditionalFields } from "@app/core/deliveryFields";
+import { parseInputFields, parseProviderInputMapping } from "@app/core/playerInput";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
 import { parseDenominationCsv, categoryNameMap, resolveOrCreateProduct } from "../../lib/catalogImport";
 
@@ -378,12 +379,19 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     }
 
     let additionalFields: string | null = null;
-    if (deliveryType === DeliveryType.MANUAL_WITH_INFO) {
+    if (deliveryType === DeliveryType.MANUAL_WITH_INFO || (deliveryType === DeliveryType.AUTO && body.additionalFields != null)) {
       const parsed = zAdditionalFields.safeParse(body.additionalFields);
       if (!parsed.success || parsed.data.length === 0) {
         return reply.code(400).send({ error: "At least one custom field is required for Manual + Info delivery." });
       }
       additionalFields = JSON.stringify(parsed.data);
+    }
+    let providerInputMapping: string | null = null;
+    if (body.providerInputMapping != null && body.providerInputMapping !== "") {
+      try {
+        const raw = typeof body.providerInputMapping === "string" ? body.providerInputMapping : JSON.stringify(body.providerInputMapping);
+        providerInputMapping = JSON.stringify(parseProviderInputMapping(raw, parseInputFields(additionalFields)));
+      } catch (e) { return reply.code(400).send(e instanceof ValidationError ? errorBody(e) : { error: "error.input_config_invalid" }); }
     }
     // deliveryType !== MANUAL_WITH_INFO: additionalFields stays null even if the
     // client sent something (e.g. leftover state from switching away from
@@ -448,6 +456,7 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
       autoDeliverySource,
       supplierSku,
       nicknameCheckGameCode,
+      providerInputMapping,
       qtyValue,
       qtyUnit,
     });
@@ -742,7 +751,7 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
       }
       deliveryType = dt as DeliveryType;
 
-      if (deliveryType === DeliveryType.MANUAL_WITH_INFO) {
+      if (deliveryType === DeliveryType.MANUAL_WITH_INFO || (deliveryType === DeliveryType.AUTO && body.additionalFields != null)) {
         const parsed = zAdditionalFields.safeParse(body.additionalFields);
         if (!parsed.success || parsed.data.length === 0) {
           return reply.code(400).send({ error: "At least one custom field is required for Manual + Info delivery." });
@@ -772,6 +781,16 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     let autoDeliverySource: string | null = null;
     let supplierSku: string | null = null;
     const effectiveDeliveryType = deliveryType ?? existing.deliveryType;
+    let providerInputMapping: string | null | undefined;
+    if ("providerInputMapping" in body) {
+      try {
+        const raw = typeof body.providerInputMapping === "string" ? body.providerInputMapping : body.providerInputMapping ? JSON.stringify(body.providerInputMapping) : null;
+        providerInputMapping = raw ? JSON.stringify(parseProviderInputMapping(raw, parseInputFields(additionalFields === undefined ? existing.additionalFields : additionalFields))) : null;
+      } catch (e) { return reply.code(400).send(e instanceof ValidationError ? errorBody(e) : { error: "error.input_config_invalid" }); }
+    } else if (existing.providerInputMapping && additionalFields !== undefined) {
+      try { parseProviderInputMapping(existing.providerInputMapping, parseInputFields(additionalFields)); }
+      catch (e) { return reply.code(400).send(e instanceof ValidationError ? errorBody(e) : { error: "error.input_config_invalid" }); }
+    }
     if (effectiveDeliveryType === DeliveryType.MANUAL_WITH_INFO) {
       autoDeliverySource =
         typeof body.autoDeliverySource === "string" && body.autoDeliverySource.trim() !== ""
@@ -855,6 +874,7 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
       description: typeof body.description === "string" ? body.description.trim() || null : null,
       ...(deliveryType !== undefined ? { deliveryType } : {}),
       ...(additionalFields !== undefined ? { additionalFields } : {}),
+      ...(providerInputMapping !== undefined ? { providerInputMapping } : {}),
       autoDeliverySource,
       supplierSku,
       nicknameCheckGameCode,

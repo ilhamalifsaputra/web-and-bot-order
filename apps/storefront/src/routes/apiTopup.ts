@@ -79,6 +79,8 @@ import { normalizeGuestEmail, normalizeIdempotencyKey, sendGuestOrderCodeEmail, 
 import { establishSession } from "./auth";
 import { constantTimeEqual } from "../auth";
 import { errorBody } from "@app/core/errorBody";
+import { parseInputFields, buildPlayerNicknameRequest, nicknameInputKeys } from "@app/core/playerInput";
+import { validateCustomerData } from "@app/core/deliveryFields";
 
 interface CheckAccountResponse {
   available: boolean;
@@ -117,7 +119,7 @@ async function resolveTopupDenomination(rawId: unknown) {
   const denominationId = Number(rawId);
   if (!Number.isInteger(denominationId) || denominationId <= 0) return null;
   const denom = await getDenominationWithProduct(prisma, denominationId);
-  if (!denom || !denom.isActive || !(await isServiceActive(prisma, denom.product.category.group as CategoryGroup | null, "web"))) return null;
+  if (!denom || !denom.isActive || !denom.product.isActive || denom.product.isArchived || !denom.product.category.isActive || !(await isServiceActive(prisma, denom.product.category.group as CategoryGroup | null, "web"))) return null;
   return denom;
 }
 
@@ -300,6 +302,12 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
     const quantity = resolveTopupQuantity(req.body?.qty, denom);
     if (quantity === null) return reply.code(400).send({ error: "invalid_request" });
     const line = { denominationId: denom.id, quantity };
+    try {
+      if (denom.additionalFields) validateCustomerData(parseInputFields(denom.additionalFields), req.body?.customer_data, quantity);
+    } catch (e) {
+      if (e instanceof ValidationError) return reply.code(400).send(errorBody(e));
+      throw e;
+    }
 
     const method = (req.body?.method ?? "").toLowerCase();
     const voucherCode = (req.body?.voucher_code ?? "").trim().toUpperCase() || null;
@@ -459,7 +467,7 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
-  app.post<{ Body: { denomination_id?: number; id?: string; server?: string } }>(
+  app.post<{ Body: { denomination_id?: number; id?: string; server?: string; player_inputs?: unknown } }>(
     "/topup/check-account",
     async (req, reply) => {
       // Spent even by requests that go on to degrade below — this is a
@@ -471,14 +479,14 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
 
       const denominationId = Number(req.body?.denomination_id);
       const accountId = typeof req.body?.id === "string" ? req.body.id.trim() : "";
-      if (!Number.isInteger(denominationId) || denominationId <= 0 || !accountId) {
+      if (!Number.isInteger(denominationId) || denominationId <= 0 || (!accountId && req.body?.player_inputs === undefined)) {
         // Malformed input degrades the same as "no check configured" — this
         // endpoint has no error shape for the buyer to see.
         return reply.send(NOT_AVAILABLE);
       }
 
       const denomination = await getDenominationWithProduct(prisma, denominationId);
-      if (!denomination || !(await isServiceActive(prisma, denomination.product.category.group as CategoryGroup | null, "web"))) {
+      if (!denomination || !denomination.isActive || !denomination.product.isActive || denomination.product.isArchived || !denomination.product.category.isActive || !(await isServiceActive(prisma, denomination.product.category.group as CategoryGroup | null, "web"))) {
         return reply.send(NOT_AVAILABLE);
       }
       // Shared prerequisite: a `gameCode` must resolve (admin override or
@@ -490,16 +498,17 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
       // resolveNicknameGate (packages/db/src/crud/nickname.ts) so this
       // route, checkout.ts's gate, and nicknameCheck.ts's own defensive
       // re-check can never drift apart.
-      const { gameCode } = resolveNicknameGate(denomination);
-      if (!gameCode) return reply.send(NOT_AVAILABLE);
-
-      const server = typeof req.body?.server === "string" ? req.body.server.trim() || undefined : undefined;
-
       const response: CheckAccountResponse = { available: false };
 
       try {
+        const { gameCode } = resolveNicknameGate(denomination);
+        if (!gameCode) return reply.send(NOT_AVAILABLE);
+        const fields = parseInputFields(denomination.additionalFields);
+        const keys = nicknameInputKeys(fields, denomination.providerInputMapping);
+        const legacy = { [keys.targetKey]: accountId, ...(keys.serverKey && req.body?.server ? { [keys.serverKey]: req.body.server } : {}), ...(keys.zoneKey && req.body?.server ? { [keys.zoneKey]: req.body.server } : {}) };
+        const input = buildPlayerNicknameRequest(fields, denomination.providerInputMapping, req.body?.player_inputs ?? legacy);
         const entries = await buildNicknameProviderEntries(prisma, gameCode);
-        const result = await new NicknameService(entries).checkNickname({ target: accountId, server });
+        const result = await new NicknameService(entries).checkNickname(input);
         if (result.status === "found") {
           response.available = true;
           response.valid = true;
@@ -521,6 +530,7 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
           );
         }
       } catch (err) {
+        if (err instanceof ValidationError && req.body?.player_inputs !== undefined) return reply.code(400).send(errorBody(err));
         // Widened to also cover getKokinpayCreds above (not just
         // checkNickname) — an unexpected DB-layer error must degrade
         // silently too, the same "never throw to the buyer" contract as

@@ -160,7 +160,7 @@ describe("showOrderConfirmation — manual_with_info info-collection gate", () =
     expect(await prisma.order.count()).toBe(0);
   });
 
-  it("skips the gate and renders the confirmation normally once customerData is already set (e.g. after a quantity change and re-Buy)", async () => {
+  it("skips the gate and renders the confirmation normally once customerData belongs to this SKU, quantity and configuration", async () => {
     const denom = await makeManualWithInfoDenom([GAME_ID_FIELD]);
     const existing = JSON.stringify([{ game_id: "12345" }]);
     const { ctx, sink } = customerCtx({
@@ -168,6 +168,8 @@ describe("showOrderConfirmation — manual_with_info info-collection gate", () =
       session: { ...userSession(), scratch: { customerData: existing } },
     });
 
+    const current = await prisma.denomination.findUniqueOrThrow({ where: { id: denom.id } });
+    ctx.session.scratch.customerInputOwner = JSON.stringify([denom.id, 1, current.additionalFields, current.providerInputMapping, current.nicknameCheckGameCode]);
     await checkout.showOrderConfirmation(ctx, denom.id, 1);
 
     expect(calls(sink, "conversation.enter").length).toBe(0);
@@ -250,7 +252,7 @@ describe("customerInfoConversation", () => {
     expect(JSON.parse(goodAnswer.session.scratch.customerData as string)).toEqual([{ email: "buyer@example.com" }]);
   });
 
-  it("/cancel abandons info-collection and re-enters showOrderConfirmation's gate (customerData stays unset — no infinite loop, a fresh Buy tap re-triggers the wizard)", async () => {
+  it("/cancel abandons info-collection and clears state and returns to the main menu", async () => {
     const denom = await makeManualWithInfoDenom([GAME_ID_FIELD]);
     const sink: SentCall[] = [];
     const entry = makeCtx({
@@ -265,11 +267,11 @@ describe("customerInfoConversation", () => {
     await customerInfoConversation(conv.asMyConversation(), entry);
 
     expect(cancelMsg.session.scratch.customerData).toBeUndefined();
-    expect(calls(sink, "conversation.enter").some((c) => c.args[0] === "customerInfo")).toBe(true);
+    expect(calls(sink, "conversation.enter")).toHaveLength(0);
     expect(await prisma.order.count()).toBe(0);
   });
 
-  it("tapping the keyboard's Cancel button (routes to v1:buy:) has the same abandon-and-regate effect as /cancel", async () => {
+  it("tapping the keyboard's Cancel button (routes to v1:buy:) has the same clean cancellation effect as /cancel", async () => {
     const denom = await makeManualWithInfoDenom([GAME_ID_FIELD]);
     const sink: SentCall[] = [];
     const entry = makeCtx({
@@ -289,7 +291,7 @@ describe("customerInfoConversation", () => {
     await customerInfoConversation(conv.asMyConversation(), entry);
 
     expect(cancelTap.session.scratch.customerData).toBeUndefined();
-    expect(calls(sink, "conversation.enter").some((c) => c.args[0] === "customerInfo")).toBe(true);
+    expect(calls(sink, "conversation.enter")).toHaveLength(0);
   });
 
   it("an unrecognized tap during the wait answers error.stale_screen and the conversation keeps waiting (M-22 fix)", async () => {

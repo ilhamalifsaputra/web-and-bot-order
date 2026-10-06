@@ -288,7 +288,7 @@ export default function CheckoutPage() {
       setTotals(data);
       setVoucherInput(data.voucher_code ?? "");
       setMethod(defaultMethod(data));
-      const infoItem = data.items.find((i) => i.delivery_type === "manual_with_info");
+      const infoItem = data.items.find((i) => i.additional_fields.length > 0);
       if (infoItem) setAnswers(Array.from({ length: infoItem.qty }, () => ({})));
     }
   }, [data, page]);
@@ -296,6 +296,13 @@ export default function CheckoutPage() {
   useEffect(() => {
     if (data) setPage((previous) => previous ? { ...previous, items: data.items } : previous);
   }, [data]);
+  const inputConfigKey = JSON.stringify(data?.items.map((item) => [item.denomination_id, item.qty, item.additional_fields]) ?? []);
+  useEffect(() => {
+    const item = data?.items.find((line) => line.additional_fields.length > 0);
+    setAnswers(item ? Array.from({ length: item.qty }, () => ({})) : []);
+    // Reset only when schema/selection changes; a price refetch preserves inputs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inputConfigKey]);
 
   // Fetched only once the cart is known to be empty at checkout — never
   // delays the empty-cart card itself, which paints from `page` alone. Not
@@ -342,7 +349,7 @@ export default function CheckoutPage() {
       idempotentPost<PlaceOrderResponse>("/api/v1/checkout", {
         method,
         voucher_code: voucherInput,
-        customer_data: page?.items.some((i) => i.delivery_type === "manual_with_info") ? answers : undefined,
+        customer_data: page?.items.some((i) => i.additional_fields.length > 0) ? answers : undefined,
         // Sent only in guest mode. The server treats it as the guest account's
         // contact address and ignores it entirely for a signed-in buyer.
         guest_email: page?.is_guest ? guestEmail.trim() : undefined,
@@ -471,7 +478,7 @@ export default function CheckoutPage() {
   const anyMethod = anyMethodEnabled(totals) || idrWalletSufficient || usdtWalletSufficient;
   // Info step (Task 6): the single-SKU-per-non-auto-cart guard means there's
   // ever at most one manual_with_info line.
-  const infoItem = page.items.find((i) => i.delivery_type === "manual_with_info") ?? null;
+  const infoItem = page.items.find((i) => i.additional_fields.length > 0) ?? null;
   const infoValid = !infoItem || allFieldsValid(infoItem.additional_fields, answers, infoItem.qty);
   // Both submit controls share one set of gates so neither can offer an order
   // the other refuses: `blocked` is the permanent "not payable yet" state the

@@ -6,14 +6,7 @@
  * client dependency (@app/web-admin-client's package.json does not depend on
  * @app/core — same "mirror don't cross-import" reasoning the storefront
  * client's api/types.ts already documents for its own AdditionalField). */
-export interface AdditionalField {
-  key: string;
-  label: { id: string; en: string };
-  type: "text" | "email" | "number" | "url" | "select";
-  required: boolean;
-  options: string[];
-  placeholder: string;
-}
+export type AdditionalField = import("@app/core/deliveryFields").AdditionalField;
 
 /** In-progress draft of an AdditionalField as edited in the admin form —
  * `key`/`label.id`/`label.en`/`options` are free-typed text the admin may
@@ -29,6 +22,10 @@ export interface AdditionalFieldDraft {
   required: boolean;
   optionsText: string;
   placeholder: string;
+  helpText?: string;
+  minLength?: number;
+  maxLength?: number;
+  pattern?: AdditionalField["pattern"];
 }
 
 export interface CurrencyProfit {

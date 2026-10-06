@@ -190,6 +190,12 @@ function renderInstantBuy(
 }
 
 describe("InstantBuyPage", () => {
+  it("renders Delta Player ID only and collects configured fields on AUTO", async () => {
+    const delta = { ...productData, product: { ...productData.product, name: "Delta Force", slug: "delta-force" }, denominations: [{ ...productData.denominations[0]!, delivery_type: "auto", in_stock: true, additional_fields: [{ key: "player_id", label: { id: "Player ID", en: "Player ID" }, type: "number" as const, required: true, options: [], placeholder: "" }] }] };
+    renderInstantBuy({ product: delta });
+    expect(await screen.findByLabelText(/Player ID/)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/Zone ID|Server/)).not.toBeInTheDocument();
+  });
   beforeEach(() => {
     document.documentElement.lang = "en";
     vi.clearAllMocks();
@@ -542,7 +548,7 @@ describe("InstantBuyPage", () => {
   // vi.advanceTimersByTime + vi.waitFor, which polls with real time so
   // pending microtasks from the mocked apiPost still resolve).
   describe("live nickname check (Task 7)", () => {
-    it("fires the debounced check-account lookup ~800ms after the account field stops changing, mapping user_id -> id", async () => {
+    it("fires the debounced check-account lookup ~800ms after the account field stops changing, sending all configured fields", async () => {
       vi.useFakeTimers();
       try {
         renderInstantBuy();
@@ -555,6 +561,7 @@ describe("InstantBuyPage", () => {
         await vi.waitFor(() => expect(screen.getByRole("heading", { name: "Mobile Legends Diamonds" })).toBeInTheDocument());
         await vi.waitFor(() => expect(screen.getByText("Summary")).toBeInTheDocument());
 
+        fireEvent.change(screen.getByLabelText("Zone ID"), { target: { value: "1234" } });
         fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "1234567" } });
         // Not fired yet — still inside the debounce window.
         expect((apiPost as Mock).mock.calls.some((c) => c[0] === "/api/v1/topup/check-account")).toBe(false);
@@ -563,7 +570,7 @@ describe("InstantBuyPage", () => {
         await vi.waitFor(() =>
           expect(apiPost).toHaveBeenCalledWith(
             "/api/v1/topup/check-account",
-            { denomination_id: 1, id: "1234567", server: undefined },
+            { denomination_id: 1, player_inputs: { user_id: "1234567", zone_id: "1234" } },
             expect.objectContaining({ signal: expect.any(AbortSignal) }),
           ),
         );
@@ -589,23 +596,25 @@ describe("InstantBuyPage", () => {
         await vi.waitFor(() => expect(screen.getByRole("heading", { name: "Mobile Legends Diamonds" })).toBeInTheDocument());
         await vi.waitFor(() => expect(screen.getByText("Summary")).toBeInTheDocument());
 
+        fireEvent.change(screen.getByLabelText("Zone ID"), { target: { value: "1234" } });
         fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "1111" } });
         vi.advanceTimersByTime(800);
         await vi.waitFor(() =>
           expect(apiPost).toHaveBeenCalledWith(
             "/api/v1/topup/check-account",
-            { denomination_id: 1, id: "1111", server: undefined },
+            { denomination_id: 1, player_inputs: { user_id: "1111", zone_id: "1234" } },
             expect.objectContaining({ signal: expect.any(AbortSignal) }),
           ),
         );
         const firstCall = (apiPost as Mock).mock.calls.find(
-          (c) => c[0] === "/api/v1/topup/check-account" && (c[1] as Record<string, unknown>).id === "1111",
+          (c) => c[0] === "/api/v1/topup/check-account" && ((c[1] as { player_inputs: Record<string, string> }).player_inputs).user_id === "1111",
         )!;
         const firstSignal = (firstCall[2] as { signal: AbortSignal }).signal;
         expect(firstSignal.aborted).toBe(false);
 
         // The field changes again before the first lookup resolves — its
         // request must be cancelled (not just superseded).
+        fireEvent.change(screen.getByLabelText("Zone ID"), { target: { value: "1234" } });
         fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "2222" } });
         expect(firstSignal.aborted).toBe(true);
 
@@ -613,7 +622,7 @@ describe("InstantBuyPage", () => {
         await vi.waitFor(() =>
           expect(apiPost).toHaveBeenCalledWith(
             "/api/v1/topup/check-account",
-            { denomination_id: 1, id: "2222", server: undefined },
+            { denomination_id: 1, player_inputs: { user_id: "2222", zone_id: "1234" } },
             expect.objectContaining({ signal: expect.any(AbortSignal) }),
           ),
         );
@@ -635,6 +644,7 @@ describe("InstantBuyPage", () => {
         await vi.waitFor(() => expect(screen.getByRole("heading", { name: "Mobile Legends Diamonds" })).toBeInTheDocument());
         await vi.waitFor(() => expect(screen.getByText("Summary")).toBeInTheDocument());
 
+        fireEvent.change(screen.getByLabelText("Zone ID"), { target: { value: "1234" } });
         fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "1234567" } });
         vi.advanceTimersByTime(800);
 
@@ -658,7 +668,7 @@ describe("InstantBuyPage", () => {
               ...productData.denominations[0]!,
               additional_fields: [
                 { key: "user_id", label: { id: "ID Pengguna", en: "User ID" }, type: "text", required: true, options: [], placeholder: "123456789" },
-                { key: "server_id", label: { id: "Server", en: "Server" }, type: "text", required: false, options: [], placeholder: "1234" },
+                { key: "server_id", label: { id: "Server", en: "Server" }, type: "text", required: true, options: [], placeholder: "1234" },
               ],
             },
           ],
@@ -686,7 +696,7 @@ describe("InstantBuyPage", () => {
         await vi.waitFor(() =>
           expect(apiPost).toHaveBeenCalledWith(
             "/api/v1/topup/check-account",
-            { denomination_id: 1, id: "1234567", server: "1111" },
+            { denomination_id: 1, player_inputs: { user_id: "1234567", server_id: "1111" } },
             expect.objectContaining({ signal: expect.any(AbortSignal) }),
           ),
         );
@@ -708,12 +718,13 @@ describe("InstantBuyPage", () => {
         await vi.waitFor(() => expect(screen.getByRole("heading", { name: "Mobile Legends Diamonds" })).toBeInTheDocument());
         await vi.waitFor(() => expect(screen.getByText("Summary")).toBeInTheDocument());
 
+        fireEvent.change(screen.getByLabelText("Zone ID"), { target: { value: "1234" } });
         fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "1234567" } });
         vi.advanceTimersByTime(800);
         await vi.waitFor(() =>
           expect(apiPost).toHaveBeenCalledWith(
             "/api/v1/topup/check-account",
-            { denomination_id: 1, id: "1234567", server: undefined },
+            { denomination_id: 1, player_inputs: { user_id: "1234567", zone_id: "1234" } },
             expect.objectContaining({ signal: expect.any(AbortSignal) }),
           ),
         );

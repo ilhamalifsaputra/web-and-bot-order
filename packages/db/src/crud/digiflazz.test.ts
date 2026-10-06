@@ -353,10 +353,11 @@ describe("terminalFailDigiflazzOrder — reactive account/region diagnostic (Tas
   // catalog auto-detect through the nested `product: { digiflazzBrand,
   // name }` select dispatchPendingDigiflazzOrders's query joins. This one
   // does: no override at all, only the parent Product's digiflazzBrand.
-  it("supplierGaveReason:false, no nicknameCheckGameCode override, but the parent Product's digiflazzBrand auto-detects a catalog game -> accountDiagnosticNote is set from the lookup", async () => {
+  it("supplierGaveReason:false, an explicitly backfilled game code -> accountDiagnosticNote is set from the lookup", async () => {
     await setSetting(prisma, KOKINPAY_API_KEY_KEY, "kp-key");
     await prisma.product.update({ where: { id: sample.parentProduct.id }, data: { digiflazzBrand: "Mobile Legends" } });
     const order = await makeProcessingDigiflazzOrderForDiagnostic({
+      nicknameCheckGameCode: "mobile-legends",
       customerDataUnit: { target: "123456789", server: "2001" },
     });
     kokinpayHttpMock.checkGameNickname.mockResolvedValueOnce({ valid: true, nickname: "AutoDetectedPlayer" });
@@ -533,7 +534,7 @@ describe("buildDigiflazzCustomerNo", () => {
     expect(customerNo).toBe("GAMER-999888777 SRV-42");
   });
 
-  it("[MONEY-CRITICAL] the OLD hardcoded {target,zone,server} shape (pre-fix behavior) produces an EMPTY customerNo — proves this is a real regression risk, not a hypothetical one", () => {
+  it("[MONEY-CRITICAL] historical target/server aliases remain fulfillable through configured keys", () => {
     const product = {
       additionalFields: JSON.stringify([
         { key: "user_id", label: { id: "User ID", en: "User ID" }, type: "text", required: true, options: [], placeholder: "" },
@@ -544,7 +545,7 @@ describe("buildDigiflazzCustomerNo", () => {
     // SKU's actual additionalFields ("user_id"/"server_id"), so every value
     // filters out of buildDigiflazzCustomerNo's field.map(f => unit[f.key]).
     const legacyUnit = JSON.stringify([{ target: "GAMER-999888777", server: "SRV-42" }]);
-    expect(buildDigiflazzCustomerNo(product, legacyUnit)).toBe("");
+    expect(buildDigiflazzCustomerNo(product, legacyUnit)).toBe("GAMER-999888777 SRV-42");
   });
 });
 
@@ -795,13 +796,13 @@ describe("dispatchPendingDigiflazzOrders", () => {
       deliveryType: DeliveryType.MANUAL_WITH_INFO,
       additionalFields: fields,
     });
-    await addToCart(prisma, sample.user.id, sample.product.id, 1);
-    await addToCart(prisma, sample.user.id, digiDenom2.id, 1);
-    const order = (await createOrderFromCart(prisma, {
-     channel: "bot",
-      user: sample.user,
+    const order = (await createOrderDirect(prisma, {
+      channel: "bot", user: sample.user, productId: sample.product.id, quantity: 1,
       customerData: JSON.stringify([{ user_id: "111" }]),
     }))!;
+    const item = await prisma.orderItem.findFirstOrThrow({ where: { orderId: order.id } });
+    const { id: _id, ...itemData } = item;
+    await prisma.orderItem.create({ data: { ...itemData, productId: digiDenom2.id } });
     await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.PROCESSING } });
 
     const summary = await dispatchPendingDigiflazzOrders(prisma);
@@ -1615,7 +1616,6 @@ describe("importDigiflazzBrand", () => {
     expect(denom.deliveryType).toBe("manual_with_info");
     expect(JSON.parse(denom.additionalFields!)).toEqual([
       { key: "user_id", label: { id: "Game ID", en: "Game ID" }, type: "text", required: true, options: [], placeholder: "" },
-      { key: "server_id", label: { id: "Server / Zone", en: "Server / Zone" }, type: "text", required: false, options: [], placeholder: "" },
     ]);
   });
 

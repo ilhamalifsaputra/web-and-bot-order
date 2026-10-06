@@ -43,7 +43,14 @@ export const zAdditionalField = z
     required: z.boolean().default(true),
     options: z.array(z.string().min(1)).default([]),
     placeholder: z.string().max(200).default(""),
+    helpText: z.string().max(500).optional(),
+    minLength: z.number().int().min(0).max(4096).optional(),
+    maxLength: z.number().int().min(1).max(4096).optional(),
+    // Deliberately allow only audited linear patterns; no executable rules.
+    pattern: z.enum(["^[0-9]+$", "^[a-zA-Z0-9_]+$"]).optional(),
   })
+  .refine((f) => !["__proto__", "constructor", "prototype"].includes(f.key), { message: "Reserved field key." })
+  .refine((f) => f.minLength === undefined || f.maxLength === undefined || f.minLength <= f.maxLength, { message: "Invalid length range." })
   .refine((f) => f.type !== AdditionalFieldType.SELECT || f.options.length > 0, {
     message: "A select field needs at least one option.",
   });
@@ -100,6 +107,12 @@ export function validateFieldAnswer(field: AdditionalField, rawValue: unknown): 
     if (field.required) throw new ValidationError("error.field_required", { key: field.key });
     return "";
   }
+  if (value.length > (field.maxLength ?? 4096) || value.length < (field.minLength ?? 0)) {
+    throw new ValidationError("error.field_invalid_length", { key: field.key, min: field.minLength ?? 0, max: field.maxLength ?? 4096 });
+  }
+  if (field.pattern && !new RegExp(field.pattern).test(value)) {
+    throw new ValidationError("error.field_invalid_pattern", { key: field.key });
+  }
   switch (field.type) {
     case AdditionalFieldType.EMAIL:
       if (!EMAIL_RE.test(value)) {
@@ -146,7 +159,13 @@ export function validateCustomerData(
     throw new ValidationError("error.customer_data_incomplete");
   }
   return answers.map((unit) => {
-    const map = unit && typeof unit === "object" ? (unit as Record<string, unknown>) : {};
+    if (!unit || typeof unit !== "object" || Array.isArray(unit)) throw new ValidationError("error.customer_data_incomplete");
+    const map = unit as Record<string, unknown>;
+    const keys = new Set(fields.map((f) => f.key));
+    for (const key of Object.keys(map)) {
+      // Old bot orders included this display-only value. Never forward it.
+      if (!keys.has(key) && key !== "nickname") throw new ValidationError("error.field_unknown", { key });
+    }
     const out: Record<string, string> = {};
     for (const field of fields) {
       out[field.key] = validateFieldAnswer(field, map[field.key]);

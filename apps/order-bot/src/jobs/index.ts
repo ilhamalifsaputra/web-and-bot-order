@@ -1680,6 +1680,11 @@ export function scheduleDigiflazzCatalogSync(): Cron {
  * front-loaded recheck schedule in digiflazzBackoff.ts (+10s, +30s, +1m, ...)
  * with seconds-level accuracy; the webhook is the primary path and this is the
  * safety net. `protect: true` prevents overlapping runs if one tick is slow.
+ * Paid orders are normally placed right after payment by the instant path
+ * (triggerDigiflazzDispatch -> dispatchDigiflazzOrderNow, same atomic claim),
+ * so this tick is recovery: a failed or crashed instant dispatch (re-claimed
+ * once its 45-second lease lapses), due rechecks, and legacy orders. Inside a
+ * tick, candidates run oldest-paidAt first, up to 4 at a time.
  */
 export function scheduleDigiflazzDispatch(): Cron {
   const run = () =>

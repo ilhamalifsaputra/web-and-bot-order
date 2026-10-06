@@ -27,6 +27,22 @@ function cacheFor(db: Db): SettingsCache {
   return c;
 }
 
+/** Called with the written key after setSetting/deleteSetting, or with null
+ * when every cached setting is dropped (__clearSettingsCacheForTests). Lets a
+ * derived in-memory cache (getDigiflazzCreds's decrypted credentials) drop its
+ * entry the moment one of its source settings changes in this process,
+ * without this module having to know about it. */
+export type SettingWriteListener = (key: string | null) => void;
+const settingWriteListeners = new Set<SettingWriteListener>();
+
+export function onSettingWrite(listener: SettingWriteListener): void {
+  settingWriteListeners.add(listener);
+}
+
+function notifySettingWrite(key: string | null): void {
+  for (const listener of settingWriteListeners) listener(key);
+}
+
 export async function getSetting(db: Db, key: string): Promise<string | null> {
   const cache = cacheFor(db);
   const cached = cache.get(key);
@@ -44,6 +60,7 @@ export async function setSetting(db: Db, key: string, value: string) {
     update: { value },
   });
   cacheFor(db).set(key, { value, expiresAt: Date.now() + TTL_MS });
+  notifySettingWrite(key);
 }
 
 export function listAllSettings(db: Db) {
@@ -54,6 +71,7 @@ export function listAllSettings(db: Db) {
 export async function deleteSetting(db: Db, key: string): Promise<void> {
   await db.setting.deleteMany({ where: { key } });
   cacheFor(db).delete(key);
+  notifySettingWrite(key);
 }
 
 /**
@@ -65,6 +83,7 @@ export async function deleteSetting(db: Db, key: string): Promise<void> {
  */
 export function __clearSettingsCacheForTests(db: Db): void {
   caches.delete(db as object);
+  notifySettingWrite(null);
 }
 
 /** Setting keys whose value is encrypted at rest (AES-256-GCM, the same

@@ -438,7 +438,7 @@ describe("Digiflazz callback replay cannot place a second purchase (Task B3d)", 
 
   it("does not re-check while the poller holds its in-flight claim lease on the order", async () => {
     const order = await createProcessingDigiflazzOrder("ORD-DF-B3D-LEASED", "15000", {
-      digiflazzNextRecheckAt: new Date(Date.now() + 60_000), // inside the poller's claim lease
+      digiflazzNextRecheckAt: new Date(Date.now() + 30_000), // inside the poller's 45-second claim lease
     });
     const res = await app.inject(signedPayload({ refId: order.orderCode }));
     expect(res.statusCode).toBe(200);

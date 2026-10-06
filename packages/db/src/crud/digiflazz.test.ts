@@ -88,7 +88,10 @@ import {
   DIGIFLAZZ_MARKUP_VALUE_KEY,
   getDigiflazzSyncStatus,
   DIGIFLAZZ_RECHECK_CLAIM_LEASE_MS,
+  dispatchDigiflazzOrderNow,
+  triggerDigiflazzDispatch,
 } from "@app/db";
+import { logger } from "@app/core/logger";
 import { OrderStatus, DeliveryType, NotificationEvent } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { buildCustomerDataUnit } from "@app/core/nickname/fieldMapping";
@@ -1052,6 +1055,351 @@ describe("dispatchPendingDigiflazzOrders", () => {
     });
     expect(auditRow).not.toBeNull();
     expect(auditRow!.details).not.toContain("error.");
+  });
+});
+
+/** A promise whose settlement the test controls — used to hold one fake
+ * createTransaction "in flight" while asserting what happens to the others. */
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => { resolve = r; });
+  return { promise, resolve };
+}
+
+describe("dispatchDigiflazzOrderNow — direct per-order dispatch (instant dispatch Task 1)", () => {
+  it("places exactly one createTransaction with refId === orderCode and delivers on Sukses", async () => {
+    const order = await makeProcessingDigiflazzOrder();
+    digiflazzMock.createTransaction.mockResolvedValue({ refId: order.orderCode, status: "Sukses", sn: "SN-NOW", message: "ok", price: null });
+
+    const summary = await dispatchDigiflazzOrderNow(prisma, order.id);
+
+    expect(summary).toEqual({ claimed: 1, delivered: 1, pending: 0, failed: 0 });
+    expect(digiflazzMock.createTransaction).toHaveBeenCalledTimes(1);
+    expect(digiflazzMock.createTransaction).toHaveBeenCalledWith(
+      { username: "shopuser", apiKey: "shopkey" },
+      { refId: order.orderCode, buyerSkuCode: "ml100", customerNo: "123456789" },
+    );
+    const refreshed = await getOrder(prisma, order.id);
+    expect(refreshed!.status).toBe(OrderStatus.DELIVERED);
+    expect(refreshed!.deliveredContent).toBe("SN-NOW");
+  });
+
+  it("Pending leaves the order pending_at_supplier with a recheck scheduled", async () => {
+    const order = await makeProcessingDigiflazzOrder();
+    digiflazzMock.createTransaction.mockResolvedValue({ refId: order.orderCode, status: "Pending", sn: null, message: null, price: null });
+
+    const summary = await dispatchDigiflazzOrderNow(prisma, order.id);
+
+    expect(summary).toEqual({ claimed: 1, delivered: 0, pending: 1, failed: 0 });
+    const refreshed = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(refreshed.status).toBe(OrderStatus.PROCESSING);
+    expect(refreshed.digiflazzStatus).toBe("pending_at_supplier");
+    expect(refreshed.digiflazzAttempts).toBe(1);
+    expect(refreshed.digiflazzNextRecheckAt!.getTime()).toBeGreaterThan(refreshed.digiflazzDispatchedAt!.getTime());
+  });
+
+  it("Gagal is terminal: digiflazzStatus failed, no recheck, admins alerted", async () => {
+    await setSetting(prisma, ADMIN_IDS_KEY, "555");
+    const order = await makeProcessingDigiflazzOrder();
+    digiflazzMock.createTransaction.mockResolvedValue({ refId: order.orderCode, status: "Gagal", sn: null, message: "Saldo tidak cukup", price: null });
+
+    const summary = await dispatchDigiflazzOrderNow(prisma, order.id);
+
+    expect(summary).toEqual({ claimed: 1, delivered: 0, pending: 0, failed: 1 });
+    const refreshed = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(refreshed.digiflazzStatus).toBe("failed");
+    expect(refreshed.digiflazzNextRecheckAt).toBeNull();
+    expect(await prisma.notificationOutbox.count({ where: { orderId: order.id, event: NotificationEvent.ORDER_PIPELINE_FAILED } })).toBe(1);
+  });
+
+  it("does not upsert the fulfillment message on the hot path (settlement already did; the cron still does for legacy orders)", async () => {
+    const order = await makeProcessingDigiflazzOrder();
+    digiflazzMock.createTransaction.mockResolvedValue({ refId: order.orderCode, status: "Pending", sn: null, message: null, price: null });
+    await dispatchDigiflazzOrderNow(prisma, order.id);
+    expect(await prisma.fulfillmentMessage.count({ where: { orderId: order.id } })).toBe(0);
+
+    await prisma.order.update({ where: { id: order.id }, data: { digiflazzNextRecheckAt: new Date(Date.now() - 1_000) } });
+    await dispatchPendingDigiflazzOrders(prisma);
+    expect(await prisma.fulfillmentMessage.count({ where: { orderId: order.id } })).toBe(1);
+  });
+
+  it("3 concurrent direct dispatches plus a cron tick on the same order place exactly ONE createTransaction", async () => {
+    const order = await makeProcessingDigiflazzOrder();
+    digiflazzMock.createTransaction.mockResolvedValue({ refId: order.orderCode, status: "Pending", sn: null, message: null, price: null });
+
+    const results = await Promise.all([
+      dispatchDigiflazzOrderNow(prisma, order.id),
+      dispatchDigiflazzOrderNow(prisma, order.id),
+      dispatchDigiflazzOrderNow(prisma, order.id),
+      dispatchPendingDigiflazzOrders(prisma),
+    ]);
+
+    expect(digiflazzMock.createTransaction).toHaveBeenCalledTimes(1);
+    expect(results.reduce((n, r) => n + r.claimed, 0)).toBe(1);
+    const refreshed = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(refreshed.digiflazzAttempts).toBe(1);
+  });
+
+  it("ignores ineligible orders: missing, not PROCESSING, not Digiflazz-routed, dispatched and not due, failed", async () => {
+    const zero = { claimed: 0, delivered: 0, pending: 0, failed: 0 };
+    digiflazzMock.createTransaction.mockResolvedValue({ refId: "x", status: "Sukses", sn: "SN", message: "ok", price: null });
+
+    expect(await dispatchDigiflazzOrderNow(prisma, 999_999)).toEqual(zero);
+
+    const order = await makeProcessingDigiflazzOrder();
+    await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.PENDING_PAYMENT } });
+    expect(await dispatchDigiflazzOrderNow(prisma, order.id)).toEqual(zero);
+
+    await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.PROCESSING, fulfillmentProvider: "MANUAL" } });
+    expect(await dispatchDigiflazzOrderNow(prisma, order.id)).toEqual(zero);
+
+    await prisma.order.update({ where: { id: order.id }, data: {
+      fulfillmentProvider: "DIGIFLAZZ",
+      digiflazzDispatchedAt: new Date(), digiflazzStatus: "pending_at_supplier", digiflazzNextRecheckAt: new Date(Date.now() + 60_000),
+    } });
+    expect(await dispatchDigiflazzOrderNow(prisma, order.id)).toEqual(zero);
+
+    await prisma.order.update({ where: { id: order.id }, data: { digiflazzStatus: "failed", digiflazzNextRecheckAt: null } });
+    expect(await dispatchDigiflazzOrderNow(prisma, order.id)).toEqual(zero);
+    // A terminal failure that was never dispatched (e.g. missing credentials) stays out too.
+    await prisma.order.update({ where: { id: order.id }, data: { digiflazzDispatchedAt: null } });
+    expect(await dispatchDigiflazzOrderNow(prisma, order.id)).toEqual(zero);
+
+    expect(digiflazzMock.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it("picks up a due recheck through the same recheck claim", async () => {
+    const order = await makeProcessingDigiflazzOrder();
+    digiflazzMock.createTransaction.mockResolvedValue({ refId: order.orderCode, status: "Pending", sn: null, message: null, price: null });
+    await dispatchDigiflazzOrderNow(prisma, order.id);
+    await prisma.order.update({ where: { id: order.id }, data: { digiflazzNextRecheckAt: new Date(Date.now() - 1_000) } });
+    digiflazzMock.createTransaction.mockResolvedValue({ refId: order.orderCode, status: "Sukses", sn: "SN-RE", message: "ok", price: null });
+
+    expect(await dispatchDigiflazzOrderNow(prisma, order.id)).toEqual({ claimed: 1, delivered: 1, pending: 0, failed: 0 });
+    expect(digiflazzMock.createTransaction).toHaveBeenCalledTimes(2);
+    expect(digiflazzMock.createTransaction.mock.calls.every((c) => (c[1] as { refId: string }).refId === order.orderCode)).toBe(true);
+  });
+
+  it("crash recovery: a claim whose process dies is re-submitted with the SAME ref id once the 45s lease lapses, not before", async () => {
+    expect(DIGIFLAZZ_RECHECK_CLAIM_LEASE_MS).toBe(45_000);
+    const order = await makeProcessingDigiflazzOrder();
+    // The first request never comes back — the process "dies" mid-flight
+    // after its claim committed (no outcome is ever recorded).
+    const neverAnswered = deferred<never>();
+    digiflazzMock.createTransaction.mockReturnValueOnce(neverAnswered.promise);
+    void dispatchDigiflazzOrderNow(prisma, order.id);
+    await vi.waitFor(() => expect(digiflazzMock.createTransaction).toHaveBeenCalledTimes(1));
+    const claimed = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    const claimedAt = claimed.digiflazzDispatchedAt!.getTime();
+    expect(claimed.digiflazzNextRecheckAt!.getTime()).toBe(claimedAt + 45_000);
+
+    digiflazzMock.createTransaction.mockResolvedValue({ refId: order.orderCode, status: "Sukses", sn: "SN-HEALED", message: "ok", price: null });
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(claimedAt + 44_000);
+      expect(await dispatchPendingDigiflazzOrders(prisma)).toEqual({ claimed: 0, delivered: 0, pending: 0, failed: 0 });
+      expect(await dispatchDigiflazzOrderNow(prisma, order.id)).toEqual({ claimed: 0, delivered: 0, pending: 0, failed: 0 });
+
+      vi.setSystemTime(claimedAt + 46_000);
+      expect(await dispatchPendingDigiflazzOrders(prisma)).toEqual({ claimed: 1, delivered: 1, pending: 0, failed: 0 });
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(digiflazzMock.createTransaction).toHaveBeenCalledTimes(2);
+    expect((digiflazzMock.createTransaction.mock.calls[1]![1] as { refId: string }).refId).toBe(order.orderCode);
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.DELIVERED);
+  });
+});
+
+describe("triggerDigiflazzDispatch — fire-and-forget wrapper", () => {
+  it("never throws or leaves an unhandled rejection when Digiflazz throws, and the cron later recovers the order", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const order = await makeProcessingDigiflazzOrder();
+      digiflazzMock.createTransaction.mockRejectedValueOnce(new Error("connect ECONNRESET"));
+      expect(() => triggerDigiflazzDispatch(order.id, prisma)).not.toThrow();
+      await vi.waitFor(async () => {
+        expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).digiflazzAttempts).toBe(1);
+      });
+
+      await prisma.order.update({ where: { id: order.id }, data: { digiflazzNextRecheckAt: new Date(Date.now() - 1_000) } });
+      digiflazzMock.createTransaction.mockResolvedValue({ refId: order.orderCode, status: "Sukses", sn: "SN-RECOVERED", message: "ok", price: null });
+      expect(await dispatchPendingDigiflazzOrders(prisma)).toEqual({ claimed: 1, delivered: 1, pending: 0, failed: 0 });
+      await new Promise((r) => setTimeout(r, 20));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
+  it("never throws or leaves an unhandled rejection when the database throws; logs at error level; the cron recovers the order", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+    process.on("unhandledRejection", onUnhandled);
+    const errorSpy = vi.spyOn(logger, "error").mockImplementation(() => undefined as never);
+    try {
+      const order = await makeProcessingDigiflazzOrder();
+      const brokenDb = {
+        order: { findFirst: () => Promise.reject(new Error("database connection lost")) },
+        setting: { findUnique: () => Promise.reject(new Error("database connection lost")) },
+      } as unknown as PrismaClient;
+      expect(() => triggerDigiflazzDispatch(order.id, brokenDb)).not.toThrow();
+      await vi.waitFor(() => expect(errorSpy).toHaveBeenCalled());
+      const message = String(errorSpy.mock.calls[0]![1]);
+      expect(message).toMatch(/recovery/i);
+      expect(message).toMatch(/5-second/);
+      expect(digiflazzMock.createTransaction).not.toHaveBeenCalled();
+
+      digiflazzMock.createTransaction.mockResolvedValue({ refId: order.orderCode, status: "Sukses", sn: "SN-CRON", message: "ok", price: null });
+      expect(await dispatchPendingDigiflazzOrders(prisma)).toEqual({ claimed: 1, delivered: 1, pending: 0, failed: 0 });
+      await new Promise((r) => setTimeout(r, 20));
+      expect(unhandled).toEqual([]);
+    } finally {
+      errorSpy.mockRestore();
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
+  it("names the order code in the error log when the failure happens after the order loaded", async () => {
+    const errorSpy = vi.spyOn(logger, "error").mockImplementation(() => undefined as never);
+    try {
+      const order = await makeProcessingDigiflazzOrder();
+      const realFindUniqueOrThrow = prisma.order.findUniqueOrThrow.bind(prisma.order);
+      const flakyDb = new Proxy(prisma, {
+        get(target, prop, receiver) {
+          if (prop === "order") {
+            return new Proxy(target.order, {
+              get(orderTarget, orderProp) {
+                if (orderProp === "updateMany") return () => Promise.reject(new Error("database connection lost"));
+                if (orderProp === "findUniqueOrThrow") return realFindUniqueOrThrow;
+                const value = Reflect.get(orderTarget, orderProp);
+                return typeof value === "function" ? value.bind(orderTarget) : value;
+              },
+            });
+          }
+          return Reflect.get(target, prop, receiver);
+        },
+      });
+      triggerDigiflazzDispatch(order.id, flakyDb);
+      await vi.waitFor(() => expect(errorSpy).toHaveBeenCalled());
+      expect(String(errorSpy.mock.calls[0]![1])).toContain(order.orderCode);
+      expect(digiflazzMock.createTransaction).not.toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+});
+
+describe("getDigiflazzCreds cache (instant dispatch Task 1)", () => {
+  it("a second dispatch within the TTL does not re-read settings", async () => {
+    const first = await makeProcessingDigiflazzOrder();
+    digiflazzMock.createTransaction.mockResolvedValue({ refId: "x", status: "Pending", sn: null, message: null, price: null });
+    await dispatchDigiflazzOrderNow(prisma, first.id);
+
+    const getSettingSpy = vi.spyOn(settingsModule, "getSetting");
+    const getDecryptedSpy = vi.spyOn(settingsModule, "getDecryptedSetting");
+    try {
+      const second = (await createOrderDirect(prisma, { channel: "bot", user: sample.user, productId: sample.product.id, quantity: 1, customerData: JSON.stringify([{ user_id: "222" }]) }))!;
+      await prisma.order.update({ where: { id: second.id }, data: { status: OrderStatus.PROCESSING } });
+      getSettingSpy.mockClear();
+      getDecryptedSpy.mockClear();
+      expect((await dispatchDigiflazzOrderNow(prisma, second.id)).claimed).toBe(1);
+      expect(getSettingSpy.mock.calls.filter((c) => String(c[1]).startsWith("digiflazz_"))).toEqual([]);
+      expect(getDecryptedSpy).not.toHaveBeenCalled();
+    } finally {
+      getSettingSpy.mockRestore();
+      getDecryptedSpy.mockRestore();
+    }
+  });
+
+  it("invalidates when a Digiflazz credential setting is written", async () => {
+    expect(await getDigiflazzCreds(prisma)).toEqual({ username: "shopuser", apiKey: "shopkey" });
+    await setSetting(prisma, DIGIFLAZZ_API_KEY_KEY, "rotated-key");
+    expect(await getDigiflazzCreds(prisma)).toEqual({ username: "shopuser", apiKey: "rotated-key" });
+    await setSetting(prisma, DIGIFLAZZ_ENABLED_KEY, "false");
+    expect(await getDigiflazzCreds(prisma)).toBeNull();
+    await deleteSetting(prisma, DIGIFLAZZ_ENABLED_KEY);
+    expect(await getDigiflazzCreds(prisma)).toEqual({ username: "shopuser", apiKey: "rotated-key" });
+    await deleteSetting(prisma, DIGIFLAZZ_USERNAME_KEY);
+    expect(await getDigiflazzCreds(prisma)).toBeNull();
+  });
+
+  it("does not cache missing credentials, so adding them takes effect immediately", async () => {
+    await deleteSetting(prisma, DIGIFLAZZ_API_KEY_KEY);
+    expect(await getDigiflazzCreds(prisma)).toBeNull();
+    // A null result is never served from the creds cache: the next call reads
+    // the settings again (so creds added by any route show up at once).
+    const getSettingSpy = vi.spyOn(settingsModule, "getSetting");
+    try {
+      expect(await getDigiflazzCreds(prisma)).toBeNull();
+      expect(getSettingSpy.mock.calls.some((c) => c[1] === DIGIFLAZZ_USERNAME_KEY)).toBe(true);
+    } finally {
+      getSettingSpy.mockRestore();
+    }
+    await setSetting(prisma, DIGIFLAZZ_API_KEY_KEY, "fresh-key");
+    expect(await getDigiflazzCreds(prisma)).toEqual({ username: "shopuser", apiKey: "fresh-key" });
+  });
+});
+
+describe("dispatchPendingDigiflazzOrders — bounded concurrency and paidAt order (instant dispatch Task 1)", () => {
+  async function extraProcessingOrder(userId: string, paidAt: Date | null) {
+    const o = (await createOrderDirect(prisma, { channel: "bot", user: sample.user, productId: sample.product.id, quantity: 1, customerData: JSON.stringify([{ user_id: userId }]) }))!;
+    await prisma.order.update({ where: { id: o.id }, data: { status: OrderStatus.PROCESSING, paidAt } });
+    return o;
+  }
+
+  it("a slow first order does not delay the second", async () => {
+    const slow = await makeProcessingDigiflazzOrder();
+    await prisma.order.update({ where: { id: slow.id }, data: { paidAt: new Date(Date.now() - 60_000) } });
+    const fast = await extraProcessingOrder("222", new Date(Date.now() - 30_000));
+    const slowAnswer = deferred<{ refId: string; status: string; sn: string | null; message: string | null; price: null }>();
+    digiflazzMock.createTransaction.mockImplementation(async (_c: unknown, args: { refId: string }) =>
+      args.refId === slow.orderCode ? slowAnswer.promise : { refId: args.refId, status: "Sukses", sn: "SN-FAST", message: "ok", price: null });
+
+    const tick = dispatchPendingDigiflazzOrders(prisma);
+    await vi.waitFor(async () => {
+      expect((await prisma.order.findUniqueOrThrow({ where: { id: fast.id } })).status).toBe(OrderStatus.DELIVERED);
+    });
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: slow.id } })).status).toBe(OrderStatus.PROCESSING);
+
+    slowAnswer.resolve({ refId: slow.orderCode, status: "Pending", sn: null, message: null, price: null });
+    expect(await tick).toEqual({ claimed: 2, delivered: 1, pending: 1, failed: 0 });
+  });
+
+  it("runs at most 4 at a time, oldest paidAt first, unpaid-timestamp orders last", async () => {
+    const base = Date.now() - 600_000;
+    const noPaidAt = await makeProcessingDigiflazzOrder(); // lowest id, but paidAt null
+    const paid = [];
+    for (let i = 4; i >= 0; i--) paid.push(await extraProcessingOrder(`10${i}`, new Date(base + i * 1_000)));
+    // paid[] was created newest-paidAt first, so id order disagrees with paidAt order.
+    const byPaidAt = [...paid].reverse();
+
+    const gates = new Map<string, ReturnType<typeof deferred<{ refId: string; status: string; sn: null; message: null; price: null }>>>();
+    digiflazzMock.createTransaction.mockImplementation((_c: unknown, args: { refId: string }) => {
+      const gate = deferred<{ refId: string; status: string; sn: null; message: null; price: null }>();
+      gates.set(args.refId, gate);
+      return gate.promise;
+    });
+
+    const tick = dispatchPendingDigiflazzOrders(prisma);
+    await vi.waitFor(() => expect(digiflazzMock.createTransaction).toHaveBeenCalledTimes(4));
+    await new Promise((r) => setTimeout(r, 200));
+    expect(digiflazzMock.createTransaction).toHaveBeenCalledTimes(4);
+    const firstFour = digiflazzMock.createTransaction.mock.calls.map((c) => (c[1] as { refId: string }).refId).sort();
+    expect(firstFour).toEqual(byPaidAt.slice(0, 4).map((o) => o.orderCode).sort());
+
+    gates.get(byPaidAt[0]!.orderCode)!.resolve({ refId: byPaidAt[0]!.orderCode, status: "Pending", sn: null, message: null, price: null });
+    await vi.waitFor(() => expect(digiflazzMock.createTransaction).toHaveBeenCalledTimes(5));
+    expect((digiflazzMock.createTransaction.mock.calls[4]![1] as { refId: string }).refId).toBe(byPaidAt[4]!.orderCode);
+
+    gates.get(byPaidAt[4]!.orderCode)!.resolve({ refId: "", status: "Pending", sn: null, message: null, price: null });
+    await vi.waitFor(() => expect(digiflazzMock.createTransaction).toHaveBeenCalledTimes(6));
+    expect((digiflazzMock.createTransaction.mock.calls[5]![1] as { refId: string }).refId).toBe(noPaidAt.orderCode);
+
+    for (const gate of gates.values()) gate.resolve({ refId: "", status: "Pending", sn: null, message: null, price: null });
+    expect(await tick).toEqual({ claimed: 6, delivered: 0, pending: 6, failed: 0 });
   });
 });
 
@@ -2164,11 +2512,14 @@ describe("resyncDigiflazzCatalog", () => {
       });
     }
 
+    // Count only the markup keys: the Digiflazz credentials are now cached
+    // (getDigiflazzCreds), so the second run legitimately reads them fewer times.
+    const isMarkupRead = (call: unknown[]) => call[1] === DIGIFLAZZ_MARKUP_TYPE_KEY || call[1] === DIGIFLAZZ_MARKUP_VALUE_KEY;
     await makeDigiflazzDenom("ml100", "15000");
     digiflazzMock.getPriceList.mockResolvedValue([priceListItem({ buyerSkuCode: "ml100", price: new Decimal(15500) })]);
     const spyOneRow = vi.spyOn(settingsModule, "getSetting");
     await resyncDigiflazzCatalog(prisma);
-    const callsForOneRow = spyOneRow.mock.calls.length;
+    const callsForOneRow = spyOneRow.mock.calls.filter(isMarkupRead).length;
     spyOneRow.mockRestore();
     expect(callsForOneRow).toBeGreaterThan(0);
 
@@ -2181,7 +2532,7 @@ describe("resyncDigiflazzCatalog", () => {
     ]);
     const spyThreeRows = vi.spyOn(settingsModule, "getSetting");
     await resyncDigiflazzCatalog(prisma);
-    const callsForThreeRows = spyThreeRows.mock.calls.length;
+    const callsForThreeRows = spyThreeRows.mock.calls.filter(isMarkupRead).length;
     spyThreeRows.mockRestore();
 
     expect(callsForThreeRows).toBe(callsForOneRow);

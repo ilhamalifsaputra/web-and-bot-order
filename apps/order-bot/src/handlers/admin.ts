@@ -10,7 +10,7 @@
 import { InputFile } from "grammy";
 import { config } from "@app/core/config";
 import { isAdmin } from "@app/core/runtime";
-import { Decimal } from "@app/core/money";
+import { Decimal, isValidWalletAdjustment } from "@app/core/money";
 import { parseMoneyInput } from "@app/core/moneyFormat";
 import { ensureUtc } from "@app/core/datetime";
 import { UserRole, DeadReason, langCode, OrderKind } from "@app/core/enums";
@@ -255,6 +255,14 @@ export async function adminWalletCommand(ctx: MyContext): Promise<void> {
     amt = negative ? magnitude.negated() : magnitude;
   } catch {
     await adminEdit(ctx, t(ctx, "admin.wallet_bad_args"), akb.backToAdminKb(lang));
+    return;
+  }
+  // Money an admin typed is refused, never rounded: a zero (or -0) amount
+  // would write a no-op ledger row; IDR reads `10,5` as Rp10,5, and a wallet
+  // holds whole rupiah; USDT beyond the 4 decimals a wallet keeps would be
+  // silently truncated by adjustWallet. Negative amounts stay allowed (debits).
+  if (!isValidWalletAdjustment(amt, currency)) {
+    await adminEdit(ctx, t(ctx, "admin.wallet_bad_amount"), akb.backToAdminKb(lang));
     return;
   }
 

@@ -14,6 +14,23 @@ export function quantizeMoney(amount: Decimal.Value, decimals = 2): Decimal {
   return new Decimal(amount).toDecimalPlaces(decimals, Decimal.ROUND_HALF_UP);
 }
 
+/**
+ * The one rounding rule for an IDR discount: whole rupiah, half-up.
+ *
+ * Unit prices are already whole rupiah (`effectiveUnitPrice`), but a percent
+ * off them is not (12.5% of Rp46.500 is Rp5.812,5). A fractional discount made
+ * the rows on screen (46.500 - 5.813) disagree with the charge (the total is
+ * rounded at pay time, 40.688), and a wallet-covered order debited half a
+ * rupiah of dust. Rounding each DISCOUNT where it is computed (`bulkDiscountFor`,
+ * `applyVoucherToSubtotal`) and taking `net = subtotal - discounts` keeps every
+ * downstream figure (preview, QRIS fee base, wallet debit, charge, receipt rows)
+ * whole and adding up. Central-IDR only: USDT amounts are derived from the
+ * whole-rupiah total later and keep their own 0.01 ceiling rule.
+ */
+export function wholeRupiah(amount: Decimal.Value): Decimal {
+  return quantizeMoney(amount, 0);
+}
+
 /** e.g. "5.07 USDT" */
 export function formatPrice(
   amount: Decimal.Value,

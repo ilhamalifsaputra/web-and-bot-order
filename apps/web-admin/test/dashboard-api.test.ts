@@ -719,6 +719,51 @@ describe("GET /api/dashboard/top-products", () => {
   });
 });
 
+// Money audit C14: Number("abc") was NaN -> Invalid Date -> a Prisma 500, and
+// days=36500 loaded every delivered item ever into memory. Garbage is a 400;
+// whole numbers outside the range are clamped into it.
+describe("dashboard query parameters are validated", () => {
+  it.each([
+    "/api/dashboard/inventory?threshold=abc",
+    "/api/dashboard/inventory?threshold=1.5",
+    "/api/dashboard/expirations?withinDays=abc",
+    "/api/dashboard/expirations?withinDays=1e3",
+    "/api/dashboard/orders/recent?limit=-",
+    "/api/dashboard/orders/recent?limit=0x10",
+    "/api/dashboard/top-products?days=abc",
+    "/api/dashboard/top-products?limit=NaN",
+    "/api/dashboard/top-products?days=Infinity",
+  ])("%s is a 400, not a 500", async (url) => {
+    const res = await get(url, cookie);
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBeTruthy();
+  });
+
+  it("clamps an inventory threshold above the maximum", async () => {
+    const res = await get("/api/dashboard/inventory?threshold=99999999", cookie);
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("clamps top-products days to 365, so a sale older than that is not counted", async () => {
+    const buyer = await upsertUser(prisma, { telegramId: 42, username: "buyer", fullName: "Buyer" });
+    const category = await createCategory(prisma, "Cat");
+    const parent = await createCatalogProduct(prisma, { categoryId: category.id, name: "Parent", description: "x" });
+    const denom = await createDenomination(prisma, { productId: parent.id, name: "Old item", type: "SHARED", durationLabel: "1 Month", price: "10000", costPrice: "5000" });
+    const longAgo = new Date(Date.now() - 400 * 86_400_000);
+    const order = await prisma.order.create({ data: { orderCode: "ORD-old", userId: buyer.id, subtotalAmount: "10000", totalAmount: "10000", currency: "IDR", status: "DELIVERED", deliveredAt: longAgo, createdAt: longAgo } });
+    await prisma.orderItem.create({ data: { orderId: order.id, productId: denom.id, quantity: 1, unitPrice: "10000", warrantyDaysSnapshot: 30 } });
+
+    const res = await get("/api/dashboard/top-products?days=36500&limit=500", cookie);
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual([]);
+  });
+
+  it("clamps expirations withinDays and recent-orders limit instead of failing", async () => {
+    expect((await get("/api/dashboard/expirations?withinDays=100000000", cookie)).statusCode).toBe(200);
+    expect((await get("/api/dashboard/orders/recent?limit=100000", cookie)).statusCode).toBe(200);
+  });
+});
+
 describe("GET /api/dashboard/analytics", () => {
   it("anon gets a JSON 401", async () => {
     const res = await get("/api/dashboard/analytics", null);
@@ -760,10 +805,19 @@ describe("GET /api/dashboard/analytics", () => {
 
   it("switches to the IDR-equivalent combined series when currency=combined", async () => {
     const buyer = await upsertUser(prisma, { telegramId: 42, username: "buyer", fullName: "Buyer" });
-    await prisma.order.create({ data: { orderCode: "ORD-1", userId: buyer.id, subtotalAmount: "1", totalAmount: "3", currency: "USDT", fxRate: "16000", status: "DELIVERED", deliveredAt: new Date() } });
+    await prisma.order.create({ data: { orderCode: "ORD-1", userId: buyer.id, subtotalAmount: "48000", totalAmount: "3", currency: "USDT", fxRate: "16000", status: "DELIVERED", deliveredAt: new Date() } });
 
     const res = await get("/api/dashboard/analytics?currency=combined", cookie);
     expect(res.json()[6].value).toBe("48000");
+  });
+
+  it("surfaces missing historical FX in combined analytics at every granularity", async () => {
+    const buyer = await upsertUser(prisma, { telegramId: 42, username: "buyer", fullName: "Buyer" });
+    await prisma.order.create({ data: { orderCode: "ORD-NO-FX", userId: buyer.id, subtotalAmount: "48000", totalAmount: "3", currency: "USDT", fxRate: null, status: "DELIVERED", deliveredAt: new Date() } });
+    for (const range of ["7d", "month"]) {
+      const rows = (await get(`/api/dashboard/analytics?currency=combined&range=${range}`, cookie)).json();
+      expect(rows.at(-1)).toMatchObject({ value: "0", excludedFxOrders: 1 });
+    }
   });
 
   it("accepts range=30d", async () => {
@@ -820,7 +874,7 @@ describe("GET /api/dashboard/analytics", () => {
 
     it("blends currencies for a calendar range when currency=combined", async () => {
       const buyer = await upsertUser(prisma, { telegramId: 42, username: "buyer", fullName: "Buyer" });
-      await prisma.order.create({ data: { orderCode: "ORD-1", userId: buyer.id, subtotalAmount: "1", totalAmount: "3", currency: "USDT", fxRate: "16000", status: "DELIVERED", deliveredAt: new Date() } });
+      await prisma.order.create({ data: { orderCode: "ORD-1", userId: buyer.id, subtotalAmount: "48000", totalAmount: "3", currency: "USDT", fxRate: "16000", status: "DELIVERED", deliveredAt: new Date() } });
 
       const body = (await get("/api/dashboard/analytics?range=month&currency=combined", cookie)).json();
       expect(body[11].value).toBe("48000");

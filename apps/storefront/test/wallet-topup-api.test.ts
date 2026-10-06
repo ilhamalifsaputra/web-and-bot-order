@@ -357,6 +357,34 @@ describe("POST /api/v1/wallet/topup — validation matrix", () => {
     }
   });
 
+  // Money audit C11: the amount on the wire is the canonical plain decimal the
+  // form's normalizeMoneyInput produces. Anything else (unreadable text,
+  // exponent notation, a sign, a non-canonical spelling, a non-string) was a
+  // DecimalError 500 or silently read ("1e3" as 1000); now it is a 400.
+  it.each([
+    ["IDR", "qris", "abc"],
+    ["IDR", "qris", "1e3"],
+    ["IDR", "qris", "-5000"],
+    ["IDR", "qris", "10.000"],
+    ["IDR", "qris", " 50000"],
+    ["IDR", "qris", 50000],
+    ["IDR", "qris", null],
+    ["USDT", "bybit", "10.12345"],
+    ["USDT", "bybit", "0"],
+  ])("refuses a %s top-up via %s with an amount of %j: clean 400, no order", async (currency, method, amount) => {
+    const before = await prisma.order.count();
+    const res = await post({ currency, amount, method });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ error: "error.wallet_topup_amount_invalid" });
+    expect(await prisma.order.count()).toBe(before);
+  });
+
+  it("refuses an amount above the hard ceiling when no maximum is configured", async () => {
+    const res = await post({ currency: "IDR", amount: "99999999999999999999", method: "qris" });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ error: "error.wallet_topup_above_max" });
+  });
+
   // Whole-branch review F3 (part 2). `finalizeWalletTopupPayment` now refuses a
   // USDT top-up below the chosen rail's own floor, and the route has to hand that
   // refusal to the buyer as the top-up-specific i18n key — not as a 500, and not

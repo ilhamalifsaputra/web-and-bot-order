@@ -88,6 +88,20 @@ describe("POST /api/catalog/digiflazz/sync/preview", () => {
     expect(body.groups[0].region).toBeNull();
   });
 
+  // Money audit C13: an unreadable stored markup threw a DecimalError (500).
+  it("answers 400 naming the markup setting when the stored markup is unreadable", async () => {
+    await setSetting(prisma, "digiflazz_username", "u");
+    await setSetting(prisma, "digiflazz_api_key", "k");
+    await setSetting(prisma, "digiflazz_markup_type", "percent");
+    await setSetting(prisma, "digiflazz_markup_value", "10%");
+    digiflazzMock.getPriceList.mockResolvedValue([
+      { buyerSkuCode: "ml100", productName: "ML 100", category: "Game", brand: "Mobile Legends", type: "Umum", price: new Decimal(15000), buyerProductStatus: true, sellerProductStatus: true, stock: null },
+    ]);
+    const res = await postJson("/api/catalog/digiflazz/sync/preview", {});
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/markup/i);
+  });
+
   it("splits a region-suffixed brand into its own group with rawBrand/region set", async () => {
     await setSetting(prisma, "digiflazz_username", "u");
     await setSetting(prisma, "digiflazz_api_key", "k");

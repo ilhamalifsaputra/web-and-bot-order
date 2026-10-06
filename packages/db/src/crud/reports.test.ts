@@ -3,7 +3,7 @@ import type { PrismaClient } from "@prisma/client";
 import { OrderKind, StockActorType } from "@app/core/enums";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { createCategory, createCatalogProduct, createDenomination } from "./catalog";
-import { cancelOrder } from "./orders";
+import { cancelOrder, rejectOrder } from "./orders";
 import {
   ordersByStatus,
   ordersByStatusSince,
@@ -43,6 +43,7 @@ beforeEach(async () => {
   await prisma.orderStatusHistory.deleteMany();
   await prisma.orderItem.deleteMany();
   await prisma.order.deleteMany();
+  await prisma.voucher.deleteMany();
   // StockItemEvent -> StockItem is onDelete:Restrict, so clear events and stock first.
   await prisma.stockItemEvent.deleteMany();
   await prisma.stockItem.deleteMany();
@@ -73,6 +74,13 @@ beforeEach(async () => {
 });
 
 describe("ordersByStatusSince", () => {
+  it("does not report voucher drift after rejection releases its use", async () => {
+    const voucher = await prisma.voucher.create({ data: { code: "REJECTED", type: "PERCENT", value: "10", usedCount: 1 } });
+    const order = await prisma.order.create({ data: { orderCode: "REJECTED-VOUCHER", userId, subtotalAmount: "100", totalAmount: "90", discountAmount: "10", voucherId: voucher.id, status: "PENDING_VERIFICATION" } });
+    await prisma.$transaction((tx) => rejectOrder(tx, order.id, { adminId: userId, reason: "Invalid proof" }));
+    expect((await prisma.voucher.findUniqueOrThrow({ where: { id: voucher.id } })).usedCount).toBe(0);
+    expect((await reconcileFinances(prisma)).voucher_drift).toEqual([]);
+  });
   it("only counts orders created since the cutoff", async () => {
     const now = new Date();
     const old = new Date(now.getTime() - 86_400_000 * 2);

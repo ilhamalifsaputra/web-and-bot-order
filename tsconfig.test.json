@@ -3,7 +3,10 @@
   "compilerOptions": {
     "noEmit": true,
     "types": ["node"],
-    "jsx": "react-jsx"
+    "jsx": "react-jsx",
+    "paths": {
+      "@/*": ["./apps/web-admin/client/src/*"]
+    }
   },
   "include": [
     "tests/**/*.ts",

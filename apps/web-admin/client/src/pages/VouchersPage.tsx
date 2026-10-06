@@ -81,6 +81,7 @@ interface Voucher {
   status: VoucherStatus;
   ordersCount: number;
   revenue: string;
+  excludedFxOrders: number;
   customers: number;
 }
 
@@ -850,6 +851,7 @@ export function VouchersPage() {
                     <span className="text-sm">{v.ordersCount} orders</span>
                     <span className="text-xs text-ink-soft">
                       {formatCurrencyDisplay(v.revenue, "IDR")} · {v.customers} customers
+                      {v.excludedFxOrders > 0 && <span> · {v.excludedFxOrders} orders missing FX</span>}
                     </span>
                   </div>
                 ),
@@ -956,6 +958,7 @@ export function VouchersPage() {
                   <div className="font-medium text-ink">{viewing.ordersCount} orders</div>
                   <div className="text-xs text-ink-soft">
                     {formatCurrencyDisplay(viewing.revenue, "IDR")} · {viewing.customers} customers
+                    {viewing.excludedFxOrders > 0 && <span> · {viewing.excludedFxOrders} orders missing FX</span>}
                   </div>
                 </div>
               </div>

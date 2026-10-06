@@ -39,6 +39,7 @@ import {
 import { OrderStatus, OrderKind, PaymentMethod, NotificationEvent, StockStatus, DeliveryType, StockActorType } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { encryptCredentials, settingValueAad } from "@app/core/credentialCrypto";
+import { checkNowpaymentsAmount, nowpaymentsInvoicePrice } from "@app/core/payments/nowpayments";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -235,6 +236,113 @@ describe("deliverPaidNowpaymentsOrder", () => {
     expect(payload.expected).toBe(expectedTotal.toString());
     expect(payload.excess).toBe("1.25");
     expect(payload.currency).toBe(result.order.currency);
+  });
+
+  // The invoice asks for the 3dp unique-cents total rounded to the cent
+  // (nowpaymentsInvoicePrice), and callers hand this function the value
+  // checkNowpaymentsAmount derives from the IPN/status, in the ORDER's
+  // currency. Paying exactly the invoice must therefore come out as exactly the
+  // total, never as an overpayment by the cents rounding.
+  const exactInvoiceIpn = (total: Decimal.Value, extraPaid: Decimal.Value = 0) => {
+    const price = nowpaymentsInvoicePrice(total);
+    return {
+      priceAmount: price,
+      priceCurrency: "usd",
+      payAmount: price,
+      actuallyPaid: price.plus(extraPaid),
+    };
+  };
+
+  /** A pending NOWPayments order whose total carries sub-cent (3dp) digits,
+   * like a unique-cents total, so its invoice price differs from the total. */
+  async function makeSubCentNowpaymentsOrder(total: string) {
+    const order = await makePendingNowpaymentsOrder();
+    return prisma.order.update({ where: { id: order.id }, data: { totalAmount: new Decimal(total) } });
+  }
+
+  // 10.004 is invoiced 10.00 (rounded down), 10.006 is invoiced 10.01 (up).
+  it.each(["10.004", "10.006"])("paying exactly the invoice of a %s total is NOT flagged overpaid", async (total) => {
+    const order = await makeSubCentNowpaymentsOrder(total);
+    expect(nowpaymentsInvoicePrice(order.totalAmount).equals(order.totalAmount)).toBe(false); // the case under test
+    const check = checkNowpaymentsAmount(exactInvoiceIpn(order.totalAmount), order.totalAmount);
+    if (!check.ok) throw new Error(check.reason);
+    expect(check.amount.equals(order.totalAmount)).toBe(true);
+
+    const trxId = `trx-invoice-exact-${total}`;
+    const result = await deliverPaidNowpaymentsOrder(prisma, { orderId: order.id, trxId, amount: check.amount });
+    expect(result.status).toBe("delivered");
+
+    const ledgerRow = await prisma.processedNowpaymentsTx.findUnique({ where: { trxId } });
+    expect(ledgerRow?.outcome).toBe("matched");
+    expect(
+      await prisma.notificationOutbox.count({ where: { orderId: order.id, event: NotificationEvent.ADMIN_OVERPAID } }),
+    ).toBe(0);
+  });
+
+  it("paying one cent above the invoice is flagged once, measured against the order total", async () => {
+    const order = await makePendingNowpaymentsOrder();
+    const check = checkNowpaymentsAmount(exactInvoiceIpn(order.totalAmount, "0.01"), order.totalAmount);
+    if (!check.ok) throw new Error(check.reason);
+    const paid = check.amount;
+    const total = new Decimal(order.totalAmount);
+
+    const result = await deliverPaidNowpaymentsOrder(prisma, { orderId: order.id, trxId: "trx-invoice-cent", amount: paid });
+    expect(result.status).toBe("delivered");
+    const again = await deliverPaidNowpaymentsOrder(prisma, { orderId: order.id, trxId: "trx-invoice-cent", amount: paid });
+    expect(again.status).toBe("already_processed");
+
+    const ledgerRow = await prisma.processedNowpaymentsTx.findUnique({ where: { trxId: "trx-invoice-cent" } });
+    expect(ledgerRow?.outcome).toBe("overpaid");
+    const adminRows = await prisma.notificationOutbox.findMany({
+      where: { orderId: order.id, event: NotificationEvent.ADMIN_OVERPAID },
+    });
+    expect(adminRows.length).toBe(1);
+    const payload = JSON.parse(adminRows[0]!.payloadJson) as Record<string, unknown>;
+    expect(new Decimal(payload.expected as string).equals(total)).toBe(true);
+    expect(new Decimal(payload.excess as string).equals("0.01")).toBe(true);
+    expect(payload.wallet_topup).toBeUndefined(); // product wording stays "delivered"
+  });
+
+  // The paid value is converted at the invoice's own rate by division, so it
+  // can carry dust below 4dp. The flag quantizes the excess exactly as
+  // findOverpaidExcess does (4dp), so dust never alerts for an excess an admin
+  // could not credit back.
+  const ipnAtRate = (actuallyPaid: string) => ({
+    priceAmount: new Decimal("10.00"),
+    priceCurrency: "usd",
+    payAmount: new Decimal("3"),
+    actuallyPaid: new Decimal(actuallyPaid),
+  });
+
+  it("an excess below 4dp from the invoice-rate conversion is NOT flagged", async () => {
+    const order = await makeSubCentNowpaymentsOrder("10.004");
+    const check = checkNowpaymentsAmount(ipnAtRate("3.000003"), order.totalAmount); // worth 10.00001 usd
+    if (!check.ok) throw new Error(check.reason);
+    expect(check.amount.greaterThan(order.totalAmount)).toBe(true); // there IS dust
+
+    const result = await deliverPaidNowpaymentsOrder(prisma, { orderId: order.id, trxId: "trx-dust", amount: check.amount });
+    expect(result.status).toBe("delivered");
+    expect((await prisma.processedNowpaymentsTx.findUnique({ where: { trxId: "trx-dust" } }))?.outcome).toBe("matched");
+    expect(
+      await prisma.notificationOutbox.count({ where: { orderId: order.id, event: NotificationEvent.ADMIN_OVERPAID } }),
+    ).toBe(0);
+  });
+
+  it("an excess of 0.0001 is flagged once, with exactly that excess", async () => {
+    const order = await makeSubCentNowpaymentsOrder("10.004");
+    const check = checkNowpaymentsAmount(ipnAtRate("3.00003"), order.totalAmount); // worth 10.0001 usd
+    if (!check.ok) throw new Error(check.reason);
+
+    expect((await deliverPaidNowpaymentsOrder(prisma, { orderId: order.id, trxId: "trx-0.0001", amount: check.amount })).status).toBe("delivered");
+    expect((await deliverPaidNowpaymentsOrder(prisma, { orderId: order.id, trxId: "trx-0.0001", amount: check.amount })).status).toBe("already_processed");
+
+    expect((await prisma.processedNowpaymentsTx.findUnique({ where: { trxId: "trx-0.0001" } }))?.outcome).toBe("overpaid");
+    const adminRows = await prisma.notificationOutbox.findMany({
+      where: { orderId: order.id, event: NotificationEvent.ADMIN_OVERPAID },
+    });
+    expect(adminRows.length).toBe(1);
+    const payload = JSON.parse(adminRows[0]!.payloadJson) as Record<string, unknown>;
+    expect(new Decimal(payload.excess as string).equals("0.0001")).toBe(true);
   });
 
   // H-3 (backend audit 2026-07-31): the ledger claim used to survive a failed

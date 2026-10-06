@@ -69,6 +69,7 @@ import { drainBroadcasts } from "../src/jobs";
 import { OrderStatus, OrderCurrency, OrderKind, PaymentMethod, PaymentStatus, PaymentExpiryReason, StockStatus, UserRole, TicketStatus, DeliveryType, CategoryGroup, NotificationEvent, FinancialTransactionType, LedgerDirection, StockEventType, StockActorType } from "@app/core/enums";
 import { AdditionalFieldType, type AdditionalField } from "@app/core/deliveryFields";
 import { Decimal } from "@app/core/money";
+import { formatIdrFor } from "@app/core/moneyFormat";
 import { formatIdr } from "@app/core/formatters";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { makeCtx, calls, sentIncludes, offersForwardAction, lastMarkup, telegramError, type SentCall } from "./helpers/ctx";
@@ -4188,6 +4189,25 @@ describe("checkout handlers", () => {
     expect(cached.trxId).toBe("STOREFRONT-WON-RACE");
   });
 
+  it("buyNowTokopay shows the voucher on the QRIS screen so subtotal - discount + fee = total to pay (B7)", async () => {
+    await setSetting(prisma, "tokopay_merchant_id", "M1");
+    await setSetting(prisma, "tokopay_secret", "S1");
+    const { ctx, sink } = customerCtx({
+      session: { ...userSession(), scratch: { appliedVoucherCode: "SAVE10" } },
+    });
+    await checkout.buyNowTokopay(ctx, sample.product.id, 2); // 10.00, SAVE10 = 10% -> 1
+    const order = (await prisma.order.findFirst({ where: { userId: sample.user.id }, orderBy: { id: "desc" } }))!;
+    expect(new Decimal(order.discountAmount).toString()).toBe("1");
+    const caption = (calls(sink, "replyWithPhoto")[0]!.args[1] as { caption: string }).caption;
+    const { computeQrisAdminFee } = await import("@app/core/payments/tokopay");
+    const fee = computeQrisAdminFee(order.totalAmount);
+    // The voucher row is printed, and every printed row adds up to the payable.
+    expect(caption).toContain(`Voucher: −${formatIdrFor("1", "en")}`);
+    expect(caption).toContain(`Subtotal: ${formatIdrFor("10", "en")}`);
+    expect(caption).toContain(formatIdrFor(new Decimal(10).minus(1).plus(fee), "en"));
+    expect(new Decimal(order.totalAmount).toString()).toBe("9");
+  });
+
   it("buyNowTokopay keeps the voucher applied in session when order creation fails, so a retry can reuse it (Pricing-3 fix)", async () => {
     await setSetting(prisma, "tokopay_merchant_id", "M1");
     await setSetting(prisma, "tokopay_secret", "S1");
@@ -4976,6 +4996,84 @@ describe("wallet-credit checkout (walletm:*/walletpay:*)", () => {
 });
 
 // ===========================================================================
+// A3 / money audit: a gateway button tapped while a wallet-credit flag is set.
+// Credit is all-or-nothing in the bot — a bubble that carries gateway buttons
+// was always rendered with NO credit applied (a covering credit collapses the
+// keyboard to Complete Order) — so a gateway tap with a flag set is a tap on an
+// older bubble, and must never spend credit the tapped bubble did not show.
+// ===========================================================================
+
+describe("gateway rail tapped with a stale wallet-credit flag", () => {
+  async function enableBinanceInternal() {
+    await setSetting(prisma, BINANCE_UID_KEY, "UID123");
+    await setSetting(prisma, BINANCE_API_KEY_KEY, "key");
+    await setSetting(prisma, BINANCE_API_SECRET_KEY, "secret");
+    await setSetting(prisma, "usd_idr_rate", "16000");
+    await priceFixtureForUsdtRail(); // Rp80.000 = 5 USDT at Rp16.000
+  }
+  const usdtBalanceOf = async () => new Decimal((await getUser(prisma, sample.user.id))!.walletBalanceUsdt).toString();
+  const idrBalanceOf = async () => new Decimal((await getUser(prisma, sample.user.id))!.walletBalance).toString();
+
+  it("USDT credit that covers the order (older bubble's Binance button): no order, no debit, current Complete Order screen re-rendered", async () => {
+    await enableBinanceInternal();
+    await adjustWallet(prisma, sample.user.id, "10", { currency: "USDT", reason: "admin_adjust" });
+    const { ctx, sink } = customerCtx({
+      callbackData: `v1:payx:${sample.product.id}:1`,
+      session: { ...userSession(), scratch: { useWalletUsdt: true } },
+    });
+
+    await checkout.buyNowInternal(ctx, sample.product.id, 1);
+
+    expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(0);
+    expect(await usdtBalanceOf()).toBe("10");
+    expect(sentIncludes(sink, t(ctx, "error.stale_screen"))).toBe(true);
+    // The re-rendered screen is the one the credit actually produces today.
+    const flat = (lastMarkup(sink)?.inline_keyboard ?? []).flat() as Array<{ callback_data?: string }>;
+    expect(flat.some((b) => b.callback_data === `v1:walletpay:${sample.product.id}:1`)).toBe(true);
+    // The buyer's choice to pay with credit is kept for that Complete Order tap.
+    expect(ctx.session.scratch.useWalletUsdt).toBe(true);
+  });
+
+  it("USDT credit that no longer covers the order: the Binance order is created at full price, no partial debit", async () => {
+    await enableBinanceInternal();
+    await adjustWallet(prisma, sample.user.id, "2", { currency: "USDT", reason: "admin_adjust" });
+    const { ctx } = customerCtx({
+      callbackData: `v1:payx:${sample.product.id}:1`,
+      session: { ...userSession(), scratch: { useWalletUsdt: true } },
+    });
+
+    await checkout.buyNowInternal(ctx, sample.product.id, 1);
+
+    const order = await prisma.order.findFirstOrThrow({ where: { userId: sample.user.id } });
+    expect(order.paymentMethod).toBe(PaymentMethod.BINANCE_INTERNAL);
+    expect(new Decimal(order.walletUsed).isZero()).toBe(true);
+    expect(new Decimal(order.totalAmount).minus(order.uniqueCents).toString()).toBe("5");
+    expect(await usdtBalanceOf()).toBe("2");
+    expect(ctx.session.scratch.useWalletUsdt).toBeUndefined();
+  });
+
+  it("IDR credit that no longer covers the order (e.g. voucher removed): the TokoPay order is created at full price, no partial debit", async () => {
+    await setSetting(prisma, "tokopay_merchant_id", "M1");
+    await setSetting(prisma, "tokopay_secret", "S1");
+    await prisma.denomination.update({ where: { id: sample.product.id }, data: { price: "80000" } });
+    await adjustWallet(prisma, sample.user.id, "50000", { currency: "IDR", reason: "admin_adjust" });
+    const { ctx } = customerCtx({
+      callbackData: `v1:payq:${sample.product.id}:1`,
+      session: { ...userSession(), scratch: { useWalletIdr: true } },
+    });
+
+    await checkout.buyNowTokopay(ctx, sample.product.id, 1);
+
+    const order = await prisma.order.findFirstOrThrow({ where: { userId: sample.user.id } });
+    expect(order.paymentMethod).toBe(PaymentMethod.TOKOPAY);
+    expect(new Decimal(order.walletUsed).isZero()).toBe(true);
+    expect(new Decimal(order.totalAmount).toString()).toBe("80000");
+    expect(await idrBalanceOf()).toBe("50000");
+    expect(ctx.session.scratch.useWalletIdr).toBeUndefined();
+  });
+});
+
+// ===========================================================================
 // Refresh Status (§7 — on-demand reconcile on auto-confirm wait screens)
 // ===========================================================================
 
@@ -5673,6 +5771,41 @@ describe("admin handlers", () => {
     expect((await getUser(prisma, sample.user.id))!.walletBalance.toString()).toBe(before.toString());
   });
 
+  // Money audit C12: 0 / -0 wrote a no-op ledger row, IDR "10,5" credited
+  // fractional rupiah, and USDT beyond 4 decimals was silently truncated by
+  // adjustWallet. All are refused (never rounded), the balance untouched and
+  // no wallet transaction written.
+  it.each([
+    ["0", ""],
+    ["-0", ""],
+    ["+0", " USDT"],
+    ["10,5", ""],
+    ["-12.34", " IDR"],
+    ["10000.50", ""],
+    ["1,12345", " USDT"],
+  ])("adminWalletCommand refuses the amount %j%s and changes nothing", async (amount, currency) => {
+    const { ctx, sink } = adminCtx({ match: `${sample.user.id} ${amount}${currency}` });
+    const before = await getUser(prisma, sample.user.id);
+    await adminWalletCommand(ctx);
+    expect(sentIncludes(sink, "must not be zero")).toBe(true);
+    expect(offersForwardAction(sink)).toBe(true);
+    const after = await getUser(prisma, sample.user.id);
+    expect(after!.walletBalance.toString()).toBe(before!.walletBalance.toString());
+    expect(after!.walletBalanceUsdt.toString()).toBe(before!.walletBalanceUsdt.toString());
+    expect(await prisma.walletTransaction.count({ where: { userId: sample.user.id } })).toBe(0);
+  });
+
+  it("adminWalletCommand still accepts a whole-rupiah debit and a 4-decimal USDT credit", async () => {
+    await adjustWallet(prisma, sample.user.id, "5000", { reason: "test_seed" });
+    const debit = adminCtx({ match: `${sample.user.id} -1.500` });
+    await adminWalletCommand(debit.ctx);
+    expect((await getUser(prisma, sample.user.id))!.walletBalance.toString()).toBe("3500");
+
+    const credit = adminCtx({ match: `${sample.user.id} 1,1234 USDT` });
+    await adminWalletCommand(credit.ctx);
+    expect((await getUser(prisma, sample.user.id))!.walletBalanceUsdt.toString()).toBe("1.1234");
+  });
+
   it("adminWalletCommand credits the wallet, localizes the result, and offers a back action", async () => {
     // An Indonesian-speaking admin must see the result in Indonesian (not a
     // hardcoded English line) — proves the success screen goes through i18n.
@@ -5844,7 +5977,9 @@ describe("admin handlers", () => {
       ["10,000", "IDR", "10000"],
       ["-10.000", "IDR", "-10000"],
       ["+10.000", "IDR", "10000"],
-      ["10000.50", "IDR", "10000.5"],
+      // A decimal spelling of a whole rupiah amount is fine; a fractional one
+      // (10000.50) is refused since money audit C12, see "refuses the amount".
+      ["10000.00", "IDR", "10000"],
       ["5,5 USDT", "USDT", "5.5"],
     ];
     for (const [typed, currency, delta] of accepted) {

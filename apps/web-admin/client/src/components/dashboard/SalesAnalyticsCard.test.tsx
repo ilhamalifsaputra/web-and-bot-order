@@ -38,6 +38,11 @@ function renderCard() {
 }
 
 describe("SalesAnalyticsCard", () => {
+  it("shows the number of orders excluded from combined revenue for missing historical FX", async () => {
+    fetchMock.mockResolvedValueOnce({ ok: true, json: async () => [{ day: "2026-10-05", value: "0", excludedFxOrders: 2 }] });
+    renderCard();
+    expect(await screen.findByText("2 orders have unknown FX; combined revenue is incomplete.")).toBeInTheDocument();
+  });
   it("requests the default 7d / idr / revenue series on first render", async () => {
     renderCard();
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
@@ -132,10 +137,10 @@ describe("SalesAnalyticsCard", () => {
 
   it("labels the series so the y-axis is never a bare number: currency for revenue, order scope for orders", async () => {
     renderCard();
-    await waitFor(() => expect(screen.getByText("Delivered revenue (IDR) · per delivery day (UTC)")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("Delivered collected revenue (IDR) · per delivery day (UTC)")).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: "Combined" }));
     await waitFor(() =>
-      expect(screen.getByText("Delivered revenue (IDR equivalent) · per delivery day (UTC)")).toBeInTheDocument(),
+      expect(screen.getByText("Delivered sales value (IDR, excludes payment rounding) · per delivery day (UTC)")).toBeInTheDocument(),
     );
     fireEvent.click(screen.getByRole("button", { name: "Orders" }));
     // Orders + Combined is the sum over both currencies (the server does the summing).
@@ -154,18 +159,18 @@ describe("SalesAnalyticsCard", () => {
 
   it("says what a bucket covers for each calendar range (and that it is cut in UTC), instead of claiming 'per delivery day' for a monthly rollup", async () => {
     renderCard();
-    await waitFor(() => expect(screen.getByText("Delivered revenue (IDR) · per delivery day (UTC)")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("Delivered collected revenue (IDR) · per delivery day (UTC)")).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: "Week" }));
     await waitFor(() =>
-      expect(screen.getByText("Delivered revenue (IDR) · per ISO week (Monday start, UTC)")).toBeInTheDocument(),
+      expect(screen.getByText("Delivered collected revenue (IDR) · per ISO week (Monday start, UTC)")).toBeInTheDocument(),
     );
     fireEvent.click(screen.getByRole("button", { name: "Month" }));
     await waitFor(() =>
-      expect(screen.getByText("Delivered revenue (IDR) · per calendar month (UTC)")).toBeInTheDocument(),
+      expect(screen.getByText("Delivered collected revenue (IDR) · per calendar month (UTC)")).toBeInTheDocument(),
     );
     fireEvent.click(screen.getByRole("button", { name: "Year" }));
     await waitFor(() =>
-      expect(screen.getByText("Delivered revenue (IDR) · per calendar year (UTC)")).toBeInTheDocument(),
+      expect(screen.getByText("Delivered collected revenue (IDR) · per calendar year (UTC)")).toBeInTheDocument(),
     );
   });
 

@@ -79,10 +79,13 @@ describe("reconcileFinances", () => {
       data: { subtotalAmount: "28000", totalAmount: "28000" },
     });
     const rate = new Decimal("18000");
+    // WALLET, not a gateway: a credit covering the whole order is only allowed
+    // on the WALLET rail (a gateway would be left asking for the unique cents —
+    // A3, money audit P1), which is how such an order is really paid.
     await finalizeOrderPayment(prisma, created.id, {
       currency: OrderCurrency.USDT,
       rate,
-      method: PaymentMethod.NOWPAYMENTS,
+      method: PaymentMethod.WALLET,
     });
     const afterFinalize = await prisma.order.findUniqueOrThrow({ where: { id: created.id } });
 

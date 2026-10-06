@@ -5,9 +5,10 @@ import { config } from "@app/core/config";
 import { logger } from "@app/core/logger";
 import { Decimal } from "@app/core/money";
 import { evaluatePollHealth, type PollHealthEvaluation } from "@app/core/payments/pollHealth";
-import type { FxRateRejection } from "@app/core/fx";
+import { validateUsdIdrRate, type FxRateRejection } from "@app/core/fx";
 import {
   prisma,
+  fxRateBounds,
   listAllSettings,
   getSetting,
   setSetting,
@@ -281,7 +282,42 @@ const MONEY_SETTING_CURRENCY: Record<string, MoneyFieldCurrency> = {
   wallet_topup_max_amount_idr: "IDR",
   wallet_topup_min_amount_usdt: "USDT",
   wallet_topup_max_amount_usdt: "USDT",
+  // The USDT rate sanity band is Rupiah per 1 USDT, read by shape like the
+  // rate it judges (money audit A1): a ceiling typed `20.000` is Rp20.000,
+  // never Rp20 (which refused every rate), and `20,000` no longer makes the
+  // reader throw and silently turn the check off.
+  fx_rate_min: "IDR",
+  fx_rate_max: "IDR",
 };
+
+/** The two ends of the USDT rate sanity band, each judged against the other. */
+const FX_BAND_PARTNER: Record<string, { other: string; otherLabel: string; isMin: boolean }> = {
+  fx_rate_min: { other: "fx_rate_max", otherLabel: "USDT rate sanity ceiling", isMin: true },
+  fx_rate_max: { other: "fx_rate_min", otherLabel: "USDT rate sanity floor", isMin: false },
+};
+
+/**
+ * The other end of the band a new `fx_rate_min`/`fx_rate_max` must not cross.
+ * An import passes the file's own value for it (`bandOverride`) — the file's
+ * pair is judged together, so a file whose whole band sits above this shop's
+ * old ceiling still applies. Otherwise the configured bound is read the way
+ * the rate check reads it (`fxRateBounds`, defaults included). Null = that end
+ * is off, so there is nothing to cross.
+ */
+async function otherBandEnd(key: string, bandOverride: Readonly<Record<string, string>> | undefined): Promise<Decimal | null> {
+  const partner = FX_BAND_PARTNER[key]!;
+  const fromFile = bandOverride?.[partner.other];
+  if (fromFile !== undefined) {
+    const text = String(fromFile).trim();
+    if (text === "") return null;
+    const amount = readMoneyField(text, "IDR", { exact: true });
+    if (amount && amount.greaterThan(0)) return amount;
+    // An invalid imported partner will be skipped, retaining its saved/default
+    // bound. Only an explicitly blank partner disables the check.
+  }
+  const bounds = await fxRateBounds(prisma);
+  return partner.isMin ? bounds.max : bounds.min;
+}
 
 /**
  * A money setting's value as the canonical plain decimal to store, read by
@@ -299,6 +335,46 @@ function readMoneySetting(key: string, value: string, exact: boolean, markupType
       : readMoneyField(value, MONEY_SETTING_CURRENCY[key] ?? "IDR", { exact });
   return amount && amount.isFinite() ? amount.toFixed() : null;
 }
+
+/**
+ * The sentence shown to an admin whose hand-typed USDT rate was refused. Unlike
+ * `fxRejectionMessage` above, the figure here is the one they typed, read the
+ * way it was saved would have been (`16.000` is quoted back as 16000), so they
+ * can see how their input was understood.
+ */
+function typedRateRejectionMessage(reason: FxRateRejection, rate: Decimal): string {
+  switch (reason.reason) {
+    case "not_a_number":
+      return "That isn't a usable number for the rate. Type the rupiah price of 1 USDT, like 16200 or 16.200.";
+    case "not_positive":
+      return "The rate must be more than zero. Type the rupiah price of 1 USDT, like 16200 or 16.200.";
+    case "below_min":
+      return (
+        `Rp${rate.toString()} per USDT is below the Rp${reason.min.toString()} sanity floor, so it was not saved. ` +
+        `Check the figure, or lower "USDT rate sanity floor" if this really is the rate now.`
+      );
+    case "above_max":
+      return (
+        `Rp${rate.toString()} per USDT is above the Rp${reason.max.toString()} sanity ceiling, so it was not saved. ` +
+        `Check the figure, or raise "USDT rate sanity ceiling" if this really is the rate now.`
+      );
+    case "delta_too_large":
+      // Unreachable: the typed-rate check passes no last-known rate, so the
+      // deviation cap never runs. Kept so the switch stays exhaustive.
+      return `Rp${rate.toString()} per USDT moved further from the last market rate than one update is allowed to.`;
+  }
+}
+
+/**
+ * Settings an import must apply before the rest, because another field's
+ * validation reads them: the typed `usd_idr_rate` is judged against
+ * `fx_rate_min`/`fx_rate_max`. Everything else keeps the file's order.
+ */
+const IMPORT_FIRST = ["fx_rate_min", "fx_rate_max"];
+const importRank = (key: string): number => {
+  const i = IMPORT_FIRST.indexOf(key);
+  return i === -1 ? IMPORT_FIRST.length : i;
+};
 
 /** Thrown by `applyFieldEdit` for any rejection — carries the HTTP status the
  * route should reply with, so both `/edit` and `/import` translate it the
@@ -327,6 +403,9 @@ async function applyFieldEdit(
    * value, or an export file) — money settings read it as a plain dot-decimal
    * instead of by shape. */
   exact = false,
+  /** Import only: the file's own `fx_rate_min`/`fx_rate_max`, so each end of
+   * the band is judged against the file's other end, not this shop's. */
+  bandOverride?: Readonly<Record<string, string>>,
 ): Promise<{ ok: true; unchanged?: boolean; cleared?: boolean; needsRestart?: boolean }> {
   if (!(key in EDITABLE)) throw new FieldEditError(400, "That setting is not editable here.");
   let value = rawValue.trim();
@@ -409,6 +488,22 @@ async function applyFieldEdit(
         `${moneyFieldError(EDITABLE[key]!, currency)} ${allowZero ? "Use 0 or blank to disable it." : "It must be more than zero, or blank to disable it."}`,
       );
     }
+    // A crossed band (floor above ceiling) refuses every rate, typed or
+    // fetched, and so hides the USDT rail; refuse it here instead. Equal ends
+    // are allowed: that pins the rate to one figure, which is odd but sane.
+    const partner = FX_BAND_PARTNER[key];
+    if (partner) {
+      const other = await otherBandEnd(key, bandOverride);
+      const mine = new Decimal(amount);
+      if (other && (partner.isMin ? mine.greaterThan(other) : mine.lessThan(other))) {
+        throw new FieldEditError(
+          400,
+          partner.isMin
+            ? `Rp${mine.toString()} is above the Rp${other.toString()} "${partner.otherLabel}", so every USDT rate would be refused. Raise the ceiling first, or type a lower floor.`
+            : `Rp${mine.toString()} is below the Rp${other.toString()} "${partner.otherLabel}", so every USDT rate would be refused. Lower the floor first, or type a higher ceiling.`,
+        );
+      }
+    }
     value = amount;
   }
 
@@ -479,7 +574,38 @@ async function applyFieldEdit(
     value = amount;
   }
 
-  const displayValue = isSecret(key) ? "(updated)" : value.slice(0, 80);
+  // Money audit A1. The rate is an IDR amount per 1 USDT, so it is read with
+  // the IDR shape rules like every other typed rupiah figure: a separator
+  // followed by exactly three digits is thousands grouping, so `16.000` and
+  // `16,000` are both 16000 — the only sensible reading of a rupiah-per-USDT
+  // rate, and what an Indonesian admin means by it. Before this, the raw text
+  // was saved and `getUsdIdrRate` read "16.000" as 16, pricing every USDT
+  // order ~1000x too high, while "16,000" could not be read at all and
+  // silently hid the USDT rail. An ambiguous or non-numeric shape is refused,
+  // never guessed. The figure then has to clear the same floor and ceiling
+  // the market refresh uses (`fxRateBounds`). `lastKnown` is null on purpose:
+  // the deviation cap is skipped, because typing the rate in is the
+  // documented remedy for a refresh the cap keeps refusing.
+  //
+  // `exact` (lib/moneyField.ts): an untouched pre-fill of the stored rate, or
+  // an export file being imported, is the server's own plain dot-decimal
+  // (`16123.456`), so it is read exactly; read by shape it would become
+  // 16,123,456. Only text the admin retyped is read by shape.
+  let usdIdrRate: string | null = null;
+  if (key === USD_IDR_RATE_KEY && value !== "") {
+    const rate = readMoneyField(value, "IDR", { exact });
+    if (rate === null) {
+      throw new FieldEditError(
+        400,
+        "That doesn't look like a rate. Type the rupiah price of 1 USDT as a plain number, like 16200 or 16.200 — or leave it blank to turn USDT payments off.",
+      );
+    }
+    const rejection = validateUsdIdrRate(rate, null, await fxRateBounds(prisma));
+    if (rejection) throw new FieldEditError(400, typedRateRejectionMessage(rejection, rate));
+    usdIdrRate = rate.toFixed();
+  }
+
+  const displayValue = isSecret(key) ? "(updated)" : (usdIdrRate ?? value).slice(0, 80);
   if (ENCRYPTED_SETTING_KEYS.has(key)) {
     try {
       await setEncryptedSetting(prisma, key, value);
@@ -490,7 +616,7 @@ async function applyFieldEdit(
       }
       throw e;
     }
-  } else if (key === USD_IDR_RATE_KEY && value !== "") {
+  } else if (usdIdrRate !== null) {
     // M12 / audit P0-2: typing a rate by hand is a re-confirmation of it, so it
     // must stamp `usd_idr_rate_updated_at` exactly like a market refresh does,
     // or a shop that sets its rate manually would have every USDT order refused
@@ -507,10 +633,10 @@ async function applyFieldEdit(
     // displayValue, the `setting_set` audit entry, the reply — stays shared, so
     // this field's audit trail cannot drift from every other field's.
     //
-    // Deliberately NO value validation here: web-admin's rate field stays free
-    // text exactly as it was. Sanity bounds are M13's job
-    // (`fx_rate_min`/`fx_rate_max`/`fx_rate_max_delta_pct`).
-    await setUsdIdrRate(prisma, value);
+    // The value was already read by its shape and judged by the sanity band
+    // above (money audit A1); what is stored is the canonical decimal string
+    // the reader returned, never the raw typed text.
+    await setUsdIdrRate(prisma, usdIdrRate);
   } else {
     await setSetting(prisma, key, value);
   }
@@ -639,29 +765,58 @@ export default async function settingsApiRoutes(app: FastifyInstance): Promise<v
   app.post("/api/settings/import", { preHandler: csrfProtect }, async (req, reply) => {
     const body = (req.body ?? {}) as { fields?: Record<string, string> };
     const incoming = body.fields ?? {};
+    // The file's own sanity band must be in place before its rate is judged
+    // (money audit A1): export lists keys in EDITABLE order, which puts
+    // usd_idr_rate first, so a file from a shop with a wider band would have
+    // its rate refused against THIS shop's old band and the shop left with no
+    // rate at all. Ordering here makes the result independent of key order.
+    const entries = Object.entries(incoming).sort(
+      ([a], [b]) => importRank(a) - importRank(b),
+    );
+    // Each end of the file's band is judged against the file's other end, so
+    // the result does not depend on which end is applied first.
+    const bandOverride: Record<string, string> = {};
+    for (const bandKey of IMPORT_FIRST) {
+      if (Object.prototype.hasOwnProperty.call(incoming, bandKey)) bandOverride[bandKey] = String(incoming[bandKey] ?? "");
+    }
     let applied = 0;
-    let skipped = 0;
-    for (const [key, value] of Object.entries(incoming)) {
-      if (!(key in EDITABLE) || isSecret(key)) {
-        skipped++;
+    const skippedKeys: { key: string; reason: string }[] = [];
+    for (const [key, value] of entries) {
+      if (!(key in EDITABLE)) {
+        // Clipped: an unknown key is arbitrary text from the uploaded file.
+        skippedKeys.push({ key: key.slice(0, 64), reason: "Not a setting that can be edited here." });
+        continue;
+      }
+      if (isSecret(key)) {
+        skippedKeys.push({ key, reason: "Secret settings are never imported from a file." });
         continue;
       }
       try {
         // An export file holds stored values verbatim (machine-formatted plain
         // decimals), so money settings are read exactly, not by shape.
-        await applyFieldEdit(req.admin!, key, String(value ?? ""), true);
+        await applyFieldEdit(req.admin!, key, String(value ?? ""), true, bandOverride);
         applied++;
-      } catch {
-        skipped++;
+      } catch (err) {
+        if (err instanceof FieldEditError) {
+          skippedKeys.push({ key, reason: err.message });
+        } else {
+          logger.warn({ err, key }, "Settings import could not save one setting because of an unexpected error; the rest of the file was still applied.");
+          skippedKeys.push({ key, reason: "It could not be saved because of a server error." });
+        }
       }
     }
+    const skipped = skippedKeys.length;
+    const skippedSentence =
+      skipped === 0
+        ? "skipped nothing."
+        : `skipped ${skipped}: ${skippedKeys.map((s) => `"${s.key}" (${s.reason})`).join("; ")}`;
     await logAdminAction(prisma, {
       adminId: req.admin!.userId,
       action: "settings_import",
       targetType: "setting",
-      details: `Imported ${applied} setting${applied === 1 ? "" : "s"} from a configuration file; skipped ${skipped} invalid or restricted key${skipped === 1 ? "" : "s"}.`,
+      details: `Imported ${applied} setting${applied === 1 ? "" : "s"} from a configuration file; ${skippedSentence}`,
     });
-    return reply.send({ ok: true, applied, skipped });
+    return reply.send({ ok: true, applied, skipped, skippedKeys });
   });
 
   // Connection test — one gateway per call, reusing the currently-saved

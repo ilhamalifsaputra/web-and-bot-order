@@ -78,7 +78,7 @@ describe("AccountPage", () => {
     // used to restate these values were removed, so each now renders exactly
     // once (in the summary grid) — getByText throws on more than one match.
     expect(screen.getByText("ALICE01")).toBeInTheDocument();
-    expect(screen.getByText("Rp50.000")).toBeInTheDocument();
+    expect(screen.getByText("Rp50,000")).toBeInTheDocument();
     expect(screen.getByText("1.5 USDT")).toBeInTheDocument();
   });
 
@@ -260,7 +260,7 @@ describe("AccountPage", () => {
           </QueryClientProvider>,
         );
         expect(await screen.findByText("9.88 USDT")).toBeInTheDocument();
-        expect(screen.getByText("Rp158.000")).toBeInTheDocument();
+        expect(screen.getByText("Rp158,000")).toBeInTheDocument();
         expect(screen.queryByText("$0.01")).not.toBeInTheDocument();
         expect(screen.queryByText("$9.88")).not.toBeInTheDocument();
         expect(screen.queryByText(/≈ \$/)).not.toBeInTheDocument();

@@ -1,6 +1,4 @@
-function trimTrailingZeros(fixed: string): string {
-  return fixed.includes(".") ? fixed.replace(/0+$/, "").replace(/\.$/, "") : fixed;
-}
+import Decimal from "decimal.js";
 
 /**
  * Native USDT amount: up to 4dp, half-up, trailing zeros stripped, whole
@@ -9,28 +7,24 @@ function trimTrailingZeros(fixed: string): string {
  * byte-for-byte.
  */
 export function formatUsdtAmount(value: string | number): string {
-  const n = Number(value);
-  const factor = 10 ** 4;
-  const sign = n < 0 ? -1 : 1;
-  const rounded = (sign * Math.round(Math.abs(n) * factor)) / factor;
-  return trimTrailingZeros(rounded.toFixed(4));
+  return new Decimal(value).toDecimalPlaces(4, Decimal.ROUND_HALF_UP).toString();
 }
 
 /**
  * Pure display formatting only — the backend (packages/db/src/crud) already
  * did every Decimal-precision money computation; these values are final.
  * Mirrors packages/core/src/formatters.ts's formatIdr/formatPrice/formatUsdt
- * OUTPUT SHAPE exactly, without re-doing any of their arithmetic.
+ * OUTPUT SHAPE exactly, using Decimal for display rounding rather than binary floating-point.
  */
 export function formatCurrencyDisplay(value: string, currency: "IDR" | "USDT" | "USD"): string {
-  const n = Number(value);
+  const amount = new Decimal(value);
   if (currency === "IDR") {
-    const whole = Math.round(n);
-    const grouped = Math.abs(whole).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".");
-    return `${whole < 0 ? "-" : ""}Rp${grouped}`;
+    const whole = amount.toDecimalPlaces(0, Decimal.ROUND_HALF_UP);
+    const grouped = whole.abs().toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+    return `${whole.isNegative() && !whole.isZero() ? "-" : ""}Rp${grouped}`;
   }
-  if (currency === "USDT") return `${formatUsdtAmount(n)} ${currency}`;
-  return `${n.toFixed(2)} ${currency}`;
+  if (currency === "USDT") return `${formatUsdtAmount(value)} ${currency}`;
+  return `${amount.toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toFixed(2)} ${currency}`;
 }
 
 export interface CurrencyAmount {
@@ -51,7 +45,7 @@ export function formatCurrencyParts(
 ): { amount: string; suffix: string } {
   if (currency === "IDR") return { amount: formatCurrencyDisplay(value, currency), suffix: "" };
   if (currency === "USDT") return { amount: formatUsdtAmount(value), suffix: "USDT" };
-  return { amount: Number(value).toFixed(2), suffix: "USD" };
+  return { amount: new Decimal(value).toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toFixed(2), suffix: "USD" };
 }
 
 /**

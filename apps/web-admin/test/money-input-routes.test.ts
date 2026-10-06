@@ -152,21 +152,23 @@ describe("wallet adjustment reads the amount by shape", () => {
 });
 
 describe("catalog prices read by shape", () => {
-  it("create denomination: price 10.000 is ten thousand, cost 10,5, reseller 1.000.000", async () => {
+  // (The reseller price stays at or below the price: a reseller price above
+  // retail is refused, see the refusal cases below.)
+  it("create denomination: price 1.000.000 is a million, cost 10,5, reseller 10.000", async () => {
     const { productId } = await seedDenomination();
     const res = await send("POST", `/api/catalog/products/${productId}/denominations`, {
       name: "3 Months",
       type: "SHARED",
       durationLabel: "3 Months",
-      price: "10.000",
+      price: "1.000.000",
       costPrice: "10,5",
-      resellerPrice: "1.000.000",
+      resellerPrice: "10.000",
     });
     expect(res.statusCode).toBeLessThan(300);
     const row = await prisma.denomination.findFirstOrThrow({ where: { name: "3 Months" } });
-    expect(row.price.toString()).toBe("10000");
+    expect(row.price.toString()).toBe("1000000");
     expect(row.costPrice?.toString()).toBe("10.5");
-    expect(row.resellerPrice?.toString()).toBe("1000000");
+    expect(row.resellerPrice?.toString()).toBe("10000");
   });
 
   it("update denomination: price 25.000 is twenty-five thousand; abc is refused", async () => {
@@ -178,6 +180,52 @@ describe("catalog prices read by shape", () => {
     const bad = await send("PATCH", `/api/catalog/denominations/${denomId}`, { name: "1 Month", type: "SHARED", durationLabel: "1 Month", price: "abc" });
     expect(bad.statusCode).toBe(400);
     expect((await prisma.denomination.findUniqueOrThrow({ where: { id: denomId } })).price.toString()).toBe("25000");
+  });
+
+  it.each([
+    [{ price: "0" }, /Price must be at least/],
+    [{ price: 0 }, /Price must be at least/],
+    [{ price: "0,5" }, /Price must be at least/],
+    [{ price: "10000", resellerPrice: "0" }, /Reseller price must be at least/],
+    [{ price: "10000", resellerPrice: "12.000" }, /Reseller price must not be higher/],
+    [{ price: -5 }, /Price/],
+  ])("create denomination: refuses %j with a 400 and creates nothing", async (prices, message) => {
+    const { productId } = await seedDenomination();
+    const res = await send("POST", `/api/catalog/products/${productId}/denominations`, {
+      name: "Bad",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      ...prices,
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(message);
+    expect(await prisma.denomination.findFirst({ where: { name: "Bad" } })).toBeNull();
+  });
+
+  it("create denomination: a zero cost price is allowed", async () => {
+    const { productId } = await seedDenomination();
+    const res = await send("POST", `/api/catalog/products/${productId}/denominations`, {
+      name: "Free cost",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10.000",
+      costPrice: "0",
+      resellerPrice: "10.000",
+    });
+    expect(res.statusCode).toBe(201);
+  });
+
+  it.each([
+    [{ price: "0" }, /Price must be at least/],
+    [{ price: "10000", resellerPrice: "0" }, /Reseller price must be at least/],
+    [{ price: "10000", resellerPrice: "10.001" }, /Reseller price must not be higher/],
+    [{ price: "10000", costPrice: -1 }, /Cost price/],
+  ])("update denomination: refuses %j and keeps the stored price", async (prices, message) => {
+    const { denomId } = await seedDenomination();
+    const res = await send("PATCH", `/api/catalog/denominations/${denomId}`, { name: "1 Month", type: "SHARED", durationLabel: "1 Month", ...prices });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(message);
+    expect((await prisma.denomination.findUniqueOrThrow({ where: { id: denomId } })).price.toString()).toBe("10000");
   });
 
   it("bulk pricing: discount percent 12,5 is 12.5; 10.000 is refused", async () => {

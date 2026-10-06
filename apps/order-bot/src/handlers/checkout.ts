@@ -53,7 +53,6 @@ import {
   createInternalOrder,
   createBybitOrder,
   createBybitBscOrder,
-  applyUsdtWalletToOrder,
   resolveBybitConfig,
   resolveBybitBscConfig,
   resolveBinanceInternalConfig,
@@ -79,6 +78,7 @@ import {
   isServiceActive,
 } from "@app/db";
 import { createTransaction, computeQrisAdminFee } from "@app/core/payments/tokopay";
+import { qrisCaptionAmounts } from "../util/qrisCaption";
 import { createTransaction as createPaydisiniTransaction } from "@app/core/payments/paydisini";
 import { createInvoice as createNowpaymentsInvoice } from "@app/core/payments/nowpayments";
 import { pollOnce as tokopayPoll } from "../payments/tokopayReconcile";
@@ -185,10 +185,10 @@ interface OfferableRails {
  * to collect, not the total before the credit. The bot's credit is
  * all-or-nothing — `toggleWalletCredit` refuses a balance that does not cover
  * the whole order — so `total` here is either the full subtotal or exactly zero,
- * and zero is the case this function never filters anyway. The narrow gap that
- * remains is a confirmation bubble rendered before the balance moved, and it is
- * closed at the other end: `finalizeOrderPayment` now runs the minimum against
- * the post-credit remainder (see `PaymentChoice.walletAmount`, crud/pricing.ts).
+ * and zero is the case this function never filters anyway. The gateway
+ * handlers never spend credit at all (a bubble with gateway buttons was always
+ * rendered without it — see `refuseGatewayTapOverWalletCredit`), so the total
+ * these rails are judged on is the total the gateway is asked for.
  */
 async function offerableRails(total: Decimal, rate: Decimal | null): Promise<OfferableRails> {
   const [binanceCfg, bybitCfg, bybitBscCfg, tokopay, paydisini, nowpayments] = await Promise.all([
@@ -803,6 +803,44 @@ export async function toggleWalletCredit(
 }
 
 /**
+ * Settle a gateway tap made while a wallet-credit flag is still set (A3, money
+ * audit). Returns true when the tap was refused and the screen replaced; the
+ * caller must then stop.
+ *
+ * Wallet credit in the bot is all-or-nothing, and a credit that applies brings
+ * the total to zero, which collapses the confirmation keyboard to Complete
+ * Order (`orderConfirmKb`). So every bubble that carries a gateway button was
+ * rendered with NO credit applied, and the gateway handlers never spend credit
+ * — they used to pass the whole balance whenever a flag was set, which on a
+ * tap from an older bubble either debited the full order and left only the
+ * unique cents payable, or debited the balance partially once the total had
+ * grown past it. With a flag set, the same `computeConfirmation` that drew the
+ * current screen decides which of two things happened:
+ *  - the credit still covers the order: the tap came from a bubble older than
+ *    the buyer's own choice to pay with credit, so refuse it and show the
+ *    current Complete Order screen rather than guess which they meant;
+ *  - the credit no longer covers it (voucher removed, balance moved): the
+ *    current screen already shows the full price with no credit, which is
+ *    what the buyer tapped, so drop the dead flag and let the order proceed.
+ */
+async function refuseGatewayTapOverWalletCredit(ctx: MyContext, productId: number, quantity: number): Promise<boolean> {
+  const scratch = ctx.session.scratch;
+  if (!scratch.useWalletIdr && !scratch.useWalletUsdt) return false;
+  const priced = await computeConfirmation(ctx, productId, quantity, await currentUsdtRate());
+  // Null means the denomination is no longer buyable, and that helper has
+  // already replaced the screen saying so.
+  if (priced === null) return true;
+  if (priced.walletDeduction) {
+    if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
+    await showOrderConfirmation(ctx, productId, quantity);
+    return true;
+  }
+  delete scratch.useWalletIdr;
+  delete scratch.useWalletUsdt;
+  return false;
+}
+
+/**
  * Binance Internal Transfer: create the order, show UID + note instructions
  * (edited in place), and store the message anchor so the poller can edit it to
  * a success message once the transfer is auto-confirmed.
@@ -830,8 +868,8 @@ export async function buyNowInternal(ctx: MyContext, productId: number, quantity
     return;
   }
   if (await refuseDuplicateCheckout(ctx, user.id, productId, PaymentMethod.BINANCE_INTERNAL)) return;
+  if (await refuseGatewayTapOverWalletCredit(ctx, productId, quantity)) return;
 
-  const useWalletUsdt = Boolean(ctx.session.scratch.useWalletUsdt);
   const checkoutIntentId =
     typeof ctx.session.scratch.checkoutIntentId === "string" ? ctx.session.scratch.checkoutIntentId : undefined;
   let order: Awaited<ReturnType<typeof createInternalOrder>>;
@@ -844,7 +882,6 @@ export async function buyNowInternal(ctx: MyContext, productId: number, quantity
         quantity,
         voucherCode,
         rate,
-        walletAmount: useWalletUsdt ? user.walletBalanceUsdt : undefined,
         customerData,
         checkoutIntentId,
       }),
@@ -953,8 +990,8 @@ export async function buyNowBybit(ctx: MyContext, productId: number, quantity: n
     return;
   }
   if (await refuseDuplicateCheckout(ctx, user.id, productId, PaymentMethod.BYBIT)) return;
+  if (await refuseGatewayTapOverWalletCredit(ctx, productId, quantity)) return;
 
-  const useWalletUsdt = Boolean(ctx.session.scratch.useWalletUsdt);
   const checkoutIntentId =
     typeof ctx.session.scratch.checkoutIntentId === "string" ? ctx.session.scratch.checkoutIntentId : undefined;
   let order: Awaited<ReturnType<typeof createBybitOrder>>;
@@ -967,7 +1004,6 @@ export async function buyNowBybit(ctx: MyContext, productId: number, quantity: n
         quantity,
         voucherCode,
         rate,
-        walletAmount: useWalletUsdt ? user.walletBalanceUsdt : undefined,
         customerData,
         checkoutIntentId,
       }),
@@ -1071,8 +1107,8 @@ export async function buyNowBybitBsc(ctx: MyContext, productId: number, quantity
     return;
   }
   if (await refuseDuplicateCheckout(ctx, user.id, productId, PaymentMethod.BYBIT_BSC)) return;
+  if (await refuseGatewayTapOverWalletCredit(ctx, productId, quantity)) return;
 
-  const useWalletUsdt = Boolean(ctx.session.scratch.useWalletUsdt);
   const checkoutIntentId =
     typeof ctx.session.scratch.checkoutIntentId === "string" ? ctx.session.scratch.checkoutIntentId : undefined;
   let order: Awaited<ReturnType<typeof createBybitBscOrder>>;
@@ -1085,7 +1121,6 @@ export async function buyNowBybitBsc(ctx: MyContext, productId: number, quantity
         quantity,
         voucherCode,
         rate,
-        walletAmount: useWalletUsdt ? user.walletBalanceUsdt : undefined,
         customerData,
         checkoutIntentId,
       }),
@@ -1200,8 +1235,8 @@ export async function buyNowNowpayments(ctx: MyContext, productId: number, quant
     return;
   }
   if (await refuseDuplicateCheckout(ctx, user.id, productId, PaymentMethod.NOWPAYMENTS)) return;
+  if (await refuseGatewayTapOverWalletCredit(ctx, productId, quantity)) return;
 
-  const useWalletUsdt = Boolean(ctx.session.scratch.useWalletUsdt);
   const checkoutIntentId =
     typeof ctx.session.scratch.checkoutIntentId === "string" ? ctx.session.scratch.checkoutIntentId : undefined;
   let order: Awaited<ReturnType<typeof createOrderDirect>>;
@@ -1209,17 +1244,11 @@ export async function buyNowNowpayments(ctx: MyContext, productId: number, quant
     order = await prisma.$transaction(async (tx) => {
       const created = await createOrderDirect(tx, { user: { id: user.id, role: user.role }, channel: "bot", productId, quantity, voucherCode, customerData, checkoutIntentId });
       if (!created) return created;
-      const finalized = await finalizeOrderPayment(tx, created.id, {
+      return finalizeOrderPayment(tx, created.id, {
         currency: OrderCurrency.USDT,
         rate,
         method: PaymentMethod.NOWPAYMENTS,
-        // The credit the next line is about to spend, so the rail-minimum guard
-        // inside judges what NOWPayments will really be invoiced for rather than
-        // the total before the credit (whole-branch review D6).
-        ...(useWalletUsdt ? { walletAmount: user.walletBalanceUsdt } : {}),
       });
-      if (useWalletUsdt) await applyUsdtWalletToOrder(tx, created.id, user.walletBalanceUsdt);
-      return useWalletUsdt ? getOrder(tx, created.id) : finalized;
     });
   } catch (e) {
     if (e instanceof DuplicateCheckoutIntentError) {
@@ -1374,8 +1403,8 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
     return;
   }
   if (await refuseDuplicateCheckout(ctx, user.id, productId, PaymentMethod.TOKOPAY)) return;
+  if (await refuseGatewayTapOverWalletCredit(ctx, productId, quantity)) return;
 
-  const useWalletIdr = Boolean(ctx.session.scratch.useWalletIdr);
   const checkoutIntentId =
     typeof ctx.session.scratch.checkoutIntentId === "string" ? ctx.session.scratch.checkoutIntentId : undefined;
   let order: Awaited<ReturnType<typeof createOrderDirect>>;
@@ -1387,7 +1416,6 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
         productId,
         quantity,
         voucherCode,
-        walletAmount: useWalletIdr ? user.walletBalance : undefined,
         customerData,
         checkoutIntentId,
       });
@@ -1489,10 +1517,14 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
   // USD-display buyer additionally sees the order's $ price beside it
   // (derived once from the canonical IDR total, never from the payable).
   const payText = formatIdrFor(chargeAmount, lang);
+  // Rows that add up (B7): the discounts between the gross subtotal and the
+  // gateway nominal get their own lines — see util/qrisCaption.ts.
+  const rows = qrisCaptionAmounts(order, lang);
   const caption = t(ctx, "checkout.qris_instructions", {
     code: order.orderCode,
-    subtotal: formatIdrFor(order.subtotalAmount, lang),
-    fee: formatIdrFor(adminFee, lang),
+    subtotal: rows.subtotal,
+    discount_lines: rows.discount_lines,
+    fee: rows.fee,
     amount: payText,
     expiry,
   }) +
@@ -1569,8 +1601,8 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
     return;
   }
   if (await refuseDuplicateCheckout(ctx, user.id, productId, PaymentMethod.PAYDISINI)) return;
+  if (await refuseGatewayTapOverWalletCredit(ctx, productId, quantity)) return;
 
-  const useWalletIdr = Boolean(ctx.session.scratch.useWalletIdr);
   const checkoutIntentId =
     typeof ctx.session.scratch.checkoutIntentId === "string" ? ctx.session.scratch.checkoutIntentId : undefined;
   let order: Awaited<ReturnType<typeof createOrderDirect>>;
@@ -1582,7 +1614,6 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
         productId,
         quantity,
         voucherCode,
-        walletAmount: useWalletIdr ? user.walletBalance : undefined,
         customerData,
         checkoutIntentId,
       });

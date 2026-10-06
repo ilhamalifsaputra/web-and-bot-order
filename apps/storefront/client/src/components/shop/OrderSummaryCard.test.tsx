@@ -95,39 +95,39 @@ describe("OrderSummaryCard — Price · Pay on IDR rails for a USD viewer", () =
   it("QRIS + USD: shows the $ fee and total AND the native Rp figures the rail will charge", () => {
     const summary = renderCard("USD", "qris");
     expect(summary).toHaveTextContent("$0.08");
-    expect(summary).toHaveTextContent("Rp1.206");
+    expect(summary).toHaveTextContent("Rp1,206");
     expect(summary).toHaveTextContent("$9.96");
-    expect(summary).toHaveTextContent("Price $9.88 · Pay Rp159.206");
+    expect(summary).toHaveTextContent("Price $9.88 · Pay Rp159,206");
   });
 
   it("QRIS + USD in Indonesian uses the shared checkout.price_and_pay wording", () => {
     document.documentElement.lang = "id";
     const summary = renderCard("USD", "qris");
-    expect(summary).toHaveTextContent("Harga $9.88 · Bayar Rp159.206");
+    expect(summary).toHaveTextContent("Harga $9,88 · Bayar Rp159.206");
   });
 
   it("PayDisini + USD: shows the Rp payable (no QRIS fee) alongside the $ total", () => {
     const summary = renderCard("USD", "paydisini");
-    expect(summary).toHaveTextContent("Price $9.88 · Pay Rp158.000");
+    expect(summary).toHaveTextContent("Price $9.88 · Pay Rp158,000");
   });
 
   it("QRIS + IDR: unchanged — Rp only, no Price · Pay line", () => {
     const summary = renderCard("IDR", "qris");
-    expect(summary).toHaveTextContent("Rp1.206");
-    expect(summary).toHaveTextContent("Rp159.206");
+    expect(summary).toHaveTextContent("Rp1,206");
+    expect(summary).toHaveTextContent("Rp159,206");
     expect(summary).not.toHaveTextContent("Pay Rp");
     expect(summary).not.toHaveTextContent("$0.08");
   });
 
   it("QRIS + no preference (null): unchanged — no Price · Pay line", () => {
     const summary = renderCard(null, "qris");
-    expect(summary).toHaveTextContent("Rp159.206");
+    expect(summary).toHaveTextContent("Rp159,206");
     expect(summary).not.toHaveTextContent("Pay Rp");
   });
 
   it("QRIS + USD but no usable rate: formatPriceFor already falls back to Rp, so no dual line", () => {
     const summary = renderCard("USD", "qris", null);
-    expect(summary).toHaveTextContent("Rp159.206");
+    expect(summary).toHaveTextContent("Rp159,206");
     expect(summary).not.toHaveTextContent("Pay Rp");
   });
 
@@ -135,12 +135,12 @@ describe("OrderSummaryCard — Price · Pay on IDR rails for a USD viewer", () =
   // IDR-settled debit, so a USD viewer gets the same Rp anchor (no fee).
   it("wallet_idr + USD: shows the Rp debit (no fee) alongside the $ total", () => {
     const summary = renderCard("USD", "wallet_idr");
-    expect(summary).toHaveTextContent("Price $9.88 · Pay Rp158.000");
+    expect(summary).toHaveTextContent("Price $9.88 · Pay Rp158,000");
   });
 
   it.each([["IDR"], [null]] as const)("wallet_idr + %s: unchanged — no Price · Pay line", (currency) => {
     const summary = renderCard(currency, "wallet_idr");
-    expect(summary).toHaveTextContent("Rp158.000");
+    expect(summary).toHaveTextContent("Rp158,000");
     expect(summary).not.toHaveTextContent("Pay Rp");
   });
 
@@ -153,6 +153,6 @@ describe("OrderSummaryCard — Price · Pay on IDR rails for a USD viewer", () =
     const summary = renderCard("USD", "binance");
     expect(summary).toHaveTextContent("$9.88");
     expect(summary).not.toHaveTextContent("Pay Rp");
-    expect(summary).not.toHaveTextContent("Rp158.000");
+    expect(summary).not.toHaveTextContent("Rp158,000");
   });
 });

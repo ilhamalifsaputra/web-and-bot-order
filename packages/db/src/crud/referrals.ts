@@ -72,7 +72,12 @@ export async function maybePayReferralCommission(
   });
   if (existing) return;
 
-  // Commission base in USDT (the wallet currency).
+  // Current business basis: the externally payable totalAmount only, net of
+  // walletUsed and including any USDT conversion rounding/unique marker.
+  // This deliberately differs from collected sales revenue (which also counts
+  // wallet funding). A fully wallet-funded order earns no commission and does
+  // not consume eligibility; changing this basis requires a product decision.
+  // Commission is credited in USDT (the referral wallet currency).
   let baseUsdt = new Decimal(order.totalAmount);
   if ((order.currency ?? OrderCurrency.USDT) === OrderCurrency.IDR) {
     // `allowStale`: this is not a quote — the order is already settled and the

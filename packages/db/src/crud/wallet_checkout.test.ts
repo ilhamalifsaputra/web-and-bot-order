@@ -110,8 +110,9 @@ describe("completeOrderWithWalletCredit — IDR track", () => {
   });
 
   it("voucher discount + IDR credit combine to reach zero", async () => {
-    // SAVE10 = 10% off, minPurchase 3 — product is 5.00, discount 0.50, net 4.50.
-    await adjustWallet(prisma, sample.user.id, "4.50", { currency: "IDR", reason: "admin_adjust" });
+    // SAVE10 = 10% off, minPurchase 3 — product is 5.00, discount 0.50 rounded
+    // half-up to whole rupiah (B5, money audit) = 1, net 4.
+    await adjustWallet(prisma, sample.user.id, "4", { currency: "IDR", reason: "admin_adjust" });
     const user = await freshUser();
 
     const result = await prisma.$transaction((tx) =>
@@ -126,7 +127,7 @@ describe("completeOrderWithWalletCredit — IDR track", () => {
     );
     expect(result.order.status).toBe(OrderStatus.DELIVERED);
     expect(new Decimal(result.order.totalAmount).equals(0)).toBe(true);
-    expect(new Decimal(result.order.discountAmount).equals("0.50")).toBe(true);
+    expect(new Decimal(result.order.discountAmount).equals("1")).toBe(true);
   });
 });
 
@@ -300,8 +301,9 @@ describe("completeCartOrderWithWalletCredit — IDR track", () => {
   });
 
   it("voucher discount + IDR credit combine to reach zero", async () => {
-    // SAVE10 = 10% off, minPurchase 3 — product is 5.00, discount 0.50, net 4.50.
-    await adjustWallet(prisma, sample.user.id, "4.50", { currency: "IDR", reason: "admin_adjust" });
+    // SAVE10 = 10% off, minPurchase 3 — product is 5.00, discount 0.50 rounded
+    // half-up to whole rupiah (B5, money audit) = 1, net 4.
+    await adjustWallet(prisma, sample.user.id, "4", { currency: "IDR", reason: "admin_adjust" });
     await addToCart(prisma, sample.user.id, sample.product.id, 1);
     const user = await freshUser();
 
@@ -315,7 +317,7 @@ describe("completeCartOrderWithWalletCredit — IDR track", () => {
     );
     expect(result.order.status).toBe(OrderStatus.DELIVERED);
     expect(new Decimal(result.order.totalAmount).equals(0)).toBe(true);
-    expect(new Decimal(result.order.discountAmount).equals("0.50")).toBe(true);
+    expect(new Decimal(result.order.discountAmount).equals("1")).toBe(true);
   });
 
   it("forwards and validates customerData for a manual_with_info cart", async () => {

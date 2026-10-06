@@ -6,8 +6,10 @@ import type { CurrencyProfit } from "../../api/types";
 function marginLine(label: string, p: CurrencyProfit) {
   const parts: string[] = [];
   if (p.marginPct !== null) parts.push(`${p.marginPct}% margin`);
-  if (p.excludedItemCount > 0)
-    parts.push(`${p.excludedItemCount} item${p.excludedItemCount === 1 ? "" : "s"} without a cost price`);
+  const missingCost = p.excludedItemCount - (p.excludedFxItemCount ?? 0);
+  if (missingCost > 0)
+    parts.push(`${missingCost} item${missingCost === 1 ? "" : "s"} without a cost price`);
+  if (p.excludedFxItemCount) parts.push(`${p.excludedFxItemCount} items with unknown FX`);
   return parts.length ? `${label}: ${parts.join(" · ")}` : null;
 }
 

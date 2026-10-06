@@ -11,6 +11,7 @@ import {
   roundRateToStep,
   validateUsdIdrRate,
   applyUsdtSpread,
+  type FxRateBounds,
   type FxRateRejection,
 } from "@app/core/fx";
 import { OrderCurrency, PaymentMethod, OrderStatus, OrderKind } from "@app/core/enums";
@@ -161,7 +162,8 @@ export const DEFAULT_FX_RATE_MAX_AGE_HOURS = "48";
  * Two things this spread is NOT (whole-branch review A4):
  *  - It applies ONLY to the automatic market refresh, which is the only path
  *    that runs {@link applyUsdtSpread}. A rate an admin types into web-admin is
- *    saved exactly as typed ({@link setUsdIdrRate} does not touch it), so a shop
+ *    read by its shape and judged by the sanity band, then saved with no spread
+ *    and no rounding ({@link setUsdIdrRate} does not touch it), so a shop
  *    that sets its rate by hand is not quietly getting a spread on top — it is
  *    getting none at all, and has to build its margin into the figure it types.
  *  - It is not free of the sanity band. The spread moves the figure that gets
@@ -264,12 +266,14 @@ export function setFxRateFetcher(fn: (apiKey?: string) => Promise<Decimal>): voi
  * can never drift apart, which is the whole basis of the TTL check in
  * {@link finalizeOrderPayment}.
  *
- * Deliberately does NOT validate `rate`: web-admin's rate field is free text
- * today and this function must not change what an admin is allowed to type
- * (value validation is M13's `fx_rate_min`/`fx_rate_max` job). `String(rate)`
- * rather than `new Decimal(rate).toString()` for exactly that reason — parsing
- * here would turn a typo into a 500 instead of the saved-as-typed behaviour
- * every caller has today.
+ * Does NOT validate `rate` itself: every caller judges the figure before it
+ * gets here. {@link refreshUsdIdrRate} runs it through
+ * {@link validateUsdIdrRate} against {@link fxRateBounds}; web-admin's
+ * hand-typed rate field (apps/web-admin/src/routes/api/settings.ts) first reads
+ * the typed text by its shape with `readMoneyField(…, "IDR")` — so `16.000`
+ * is sixteen thousand, not sixteen — and then applies the same band. Callers
+ * pass a Decimal or a canonical decimal string; `String(rate)` stores exactly
+ * that, so a parse here would only duplicate the caller's work.
  */
 export async function setUsdIdrRate(db: Db, rate: Decimal.Value): Promise<void> {
   await setSetting(db, USD_IDR_RATE_KEY, String(rate));
@@ -340,8 +344,12 @@ async function numericSetting(db: Db, key: string, fallback: string): Promise<De
   return value.isFinite() && value.greaterThan(0) ? value : null;
 }
 
-/** The configured sanity band for {@link validateUsdIdrRate}. */
-async function fxRateBounds(db: Db) {
+/**
+ * The configured sanity band for {@link validateUsdIdrRate}. Shared by the
+ * market refresh ({@link refreshUsdIdrRate}) and web-admin's hand-typed rate
+ * field, so both paths judge a rate against the same floor and ceiling.
+ */
+export async function fxRateBounds(db: Db): Promise<FxRateBounds> {
   return {
     min: await numericSetting(db, FX_RATE_MIN_KEY, DEFAULT_FX_RATE_MIN),
     max: await numericSetting(db, FX_RATE_MAX_KEY, DEFAULT_FX_RATE_MAX),
@@ -888,6 +896,10 @@ export type PaymentChoice =
        * `error.insufficient_wallet` to raise, and pre-empting it here with a
        * "that total is too small" error would name the wrong problem.
        *
+       * One exception (A3, money audit P1): a request that covers the WHOLE
+       * converted total on a gateway rail is refused here as nothing left to
+       * collect, affordable or not — such an order belongs on the WALLET rail.
+       *
        * Omitted/null/zero = no credit, and then every figure below is exactly
        * what it was before this existed.
        */
@@ -1075,24 +1087,26 @@ export async function finalizeOrderPayment(db: Db, orderId: number, choice: Paym
   const railIdr = credit.greaterThan(0)
     ? Decimal.max(new Decimal(0), baseIdr.minus(credit.times(rate)))
     : baseIdr;
-  // A credit that covers the whole converted total leaves the rail nothing to
-  // clear, so there is no floor to test — the same exemption the checkout rail
-  // lists and `settleFullyDiscountedOrder` already make for a total of zero.
-  // Deliberately narrow: an order that is zero for any OTHER reason still meets
-  // the `nothing_to_collect` backstop, exactly as before.
-  if (!(credit.greaterThan(0) && !railUsdt.greaterThan(0))) {
-    await assertOrderTotalClearsRailMinimum(db, {
-      method,
-      currency: OrderCurrency.USDT,
-      idrAmount: railIdr,
-      railAmount: railUsdt,
-      // No USDT top-up reaches here (`createWalletTopupOrder` sends those to
-      // `finalizeWalletTopupPayment`, which runs this same guard itself — see
-      // F3 there), but the purpose is derived from the row, so the day one does
-      // it gets the right sentence instead of the cart's.
-      purpose: minimumPurpose,
-    });
-  }
+  // A credit that covers the whole converted total is NOT exempt on a gateway
+  // rail (A3, money audit P1). It used to be, on the theory that a fully covered
+  // order needs no rail — but `applyUsdtWalletToOrder` leaves the unique cents
+  // payable, so the exemption produced a debited balance and an order sitting
+  // PENDING_PAYMENT asking the buyer to send 0.0x USDT of matching noise. A
+  // fully covered order belongs on the WALLET rail (`completeOrderWithWalletCredit`),
+  // which the guard exempts by method; on any other rail it is refused here, before
+  // anything is written or debited — the same refusal the IDR branch above gives
+  // a Rupiah credit that covers the whole order.
+  await assertOrderTotalClearsRailMinimum(db, {
+    method,
+    currency: OrderCurrency.USDT,
+    idrAmount: railIdr,
+    railAmount: railUsdt,
+    // No USDT top-up reaches here (`createWalletTopupOrder` sends those to
+    // `finalizeWalletTopupPayment`, which runs this same guard itself — see
+    // F3 there), but the purpose is derived from the row, so the day one does
+    // it gets the right sentence instead of the cart's.
+    purpose: minimumPurpose,
+  });
   // WALLET orders are pure ledger entries — there is no on-chain/gateway
   // transfer to disambiguate, so unique cents (which would otherwise leave a
   // nonzero remainder even when wallet credit fully covers the order) never

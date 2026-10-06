@@ -79,6 +79,7 @@ interface ProductDetail {
 }
 
 interface DenomStat {
+  belowCost?: boolean;
   id: number;
   available: number;
   waiting: number;
@@ -594,6 +595,9 @@ export function ProductDetailPage() {
                       <span className="truncate" title={d.name}>
                         {d.name}
                       </span>
+                      {statsByDenom[String(d.id)]?.belowCost && (
+                        <span className="ml-1.5 shrink-0"><StatusBadge status="BELOW_COST" /></span>
+                      )}
                       {flash?.active && (
                         <span
                           className="ml-1.5 inline-flex shrink-0 items-center align-middle"

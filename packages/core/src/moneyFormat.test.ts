@@ -9,7 +9,9 @@ import {
   formatCompactIdrFor,
   parseMoneyInput,
   parsePercentInput,
+  readCanonicalMoney,
 } from "./moneyFormat";
+import { normalizeMoneyInput } from "./moneyInput";
 import { formatDisplayMoneyResult } from "./formatters";
 import { DisplayCurrency } from "./enums";
 import { canonicalProduct, type CanonicalProductInput } from "./canonicalProduct";
@@ -53,6 +55,9 @@ describe("groupDecimalDigits", () => {
 });
 
 describe("formatIdrFor", () => {
+  it("does not show a negative sign when rounding to zero", () => {
+    for (const lang of ["id", "en"]) expect(formatIdrFor("-0.4", lang)).toBe("Rp0");
+  });
   it("renders the decided examples", () => {
     expect(formatIdrFor(4480, "id")).toBe("Rp4.480");
     expect(formatIdrFor(4480, "en")).toBe("Rp4,480");
@@ -81,6 +86,10 @@ describe("formatIdrFor", () => {
 });
 
 describe("formatUsdFor", () => {
+  it("does not show a negative sign when rounding to zero", () => {
+    expect(formatUsdFor("-0.001", "en")).toBe("$0.00");
+    expect(formatUsdFor("-0.001", "id")).toBe("$0,00");
+  });
   it("renders the decided examples", () => {
     expect(formatUsdFor("0.28", "id")).toBe("$0,28");
     expect(formatUsdFor("0.28", "en")).toBe("$0.28");
@@ -101,6 +110,13 @@ describe("formatUsdFor", () => {
 });
 
 describe("formatCompactIdrFor", () => {
+  it("promotes rounded values at thousand, million and billion boundaries", () => {
+    expect(formatCompactIdrFor("999499", "id")).toBe("Rp999K");
+    expect(formatCompactIdrFor("999500", "id")).toBe("Rp1jt");
+    expect(formatCompactIdrFor("999500", "en")).toBe("Rp1M");
+    expect(formatCompactIdrFor("999999999", "id")).toBe("Rp1M");
+    expect(formatCompactIdrFor("999999999", "en")).toBe("Rp1B");
+  });
   it("renders the decided examples", () => {
     expect(formatCompactIdrFor(1640000, "id")).toBe("Rp1,64jt");
     expect(formatCompactIdrFor(1640000, "en")).toBe("Rp1.64M");
@@ -126,7 +142,20 @@ describe("formatCompactIdrFor", () => {
 
   it.each(IDR_AMOUNTS)("differs between languages only in separators for %s", (a) => {
     // Indonesian writes millions "jt" where English writes "M"; everything else differs only in separators.
-    expect(swapSeparators(formatCompactIdrFor(a, "id").replace(/jt$/, "M"))).toBe(formatCompactIdrFor(a, "en"));
+    expect(swapSeparators(formatCompactIdrFor(a, "id").replace(/M$/, "B").replace(/jt$/, "M"))).toBe(formatCompactIdrFor(a, "en"));
+  });
+});
+
+describe("display to typed-input round trip", () => {
+  it("either refuses displayed money or reads its exact rounded value in both languages", () => {
+    for (const lang of ["id", "en"]) for (const raw of [...IDR_AMOUNTS, ...USD_AMOUNTS, "-0.4", "-2.5", "1.005", "999500"]) {
+      for (const [currency, text, dp] of [["IDR", formatIdrFor(raw, lang), 0], ["USDT", formatUsdFor(raw, lang), 2]] as const) {
+        for (const input of [text, text.replace(/Rp|\$/g, "")]) {
+          const parsed = normalizeMoneyInput(input, currency);
+          if (parsed !== null) expect(new Decimal(parsed).equals(new Decimal(raw).toDecimalPlaces(dp, Decimal.ROUND_HALF_UP))).toBe(true);
+        }
+      }
+    }
   });
 });
 
@@ -299,5 +328,29 @@ describe("parsePercentInput", () => {
 
   it.each(["10.000", "1e1", "-5", "+5", "abc", "", "10.", ".5", "NaN", "Infinity", "10.123"])("refuses %j", (raw) => {
     expect(parsePercentInput(raw)).toBeNull();
+  });
+});
+
+describe("readCanonicalMoney", () => {
+  it.each(["0", "79000", "5.5", "12.123", "10000.5", "1.00000001"])("reads the canonical %j exactly", (v) => {
+    expect(readCanonicalMoney(v)?.toString()).toBe(new Decimal(v).toString());
+  });
+
+  it.each(["abc", "", "1e3", "-5", "+5", " 5", "5 ", "10.000", "1,5", "0079", "5.", ".5", "1.2.3", "Infinity", "NaN", "123456789012345678901"])(
+    "refuses %j",
+    (v) => {
+      expect(readCanonicalMoney(v)).toBeNull();
+    },
+  );
+
+  it.each([50000, null, undefined, {}, ["5"]])("refuses the non-string %j", (v) => {
+    expect(readCanonicalMoney(v)).toBeNull();
+  });
+
+  it("accepts everything normalizeMoneyInput emits", () => {
+    for (const [typed, currency] of [["10.000", "IDR"], ["1.000.000,50", "IDR"], ["5,5", "USDT"], ["12,1230", "USDT"], ["1,000,000.25", "USDT"], ["0079000", "IDR"]] as const) {
+      const canonical = normalizeMoneyInput(typed, currency)!;
+      expect(readCanonicalMoney(canonical)?.toString()).toBe(new Decimal(canonical).toString());
+    }
   });
 });

@@ -12,6 +12,15 @@ const payload = {
 };
 
 describe("notifier templates.render", () => {
+  it("renders a bilingual below-cost catalog alert with counts and review guidance", () => {
+    const out = render("ADMIN_DIGIFLAZZ_BELOW_COST", { below_cost_count: 12, newly_below_cost_count: 3 });
+    expect(out).toContain("12");
+    expect(out).toContain("3");
+    expect(out).toMatch(/below cost/i);
+    expect(out).toMatch(/di bawah modal/i);
+    expect(out).toMatch(/catalog/i);
+  });
+
   it("renders ORDER_DELIVERED (stored enum name) in English", () => {
     const out = render("ORDER_DELIVERED", payload);
     expect(out).toContain("📢 <b>TESTIMONIAL</b>");
@@ -148,6 +157,18 @@ describe("notifier templates.render", () => {
     expect(out).toContain("IDR");
     expect(out).toMatch(/overpa(id|yment)/i);
     expect(out).toMatch(/kelebihan|bayar lebih/i); // Indonesian line
+  });
+
+  it("ADMIN_OVERPAID says a product order was delivered, and a wallet top-up was credited", () => {
+    const base = { order_code: "ORD-1", paid: "58", expected: "50.046", excess: "7.954", currency: "USDT" };
+    const product = render("ADMIN_OVERPAID", base);
+    expect(product).toContain("The order was delivered as usual");
+    expect(product).toContain("Pesanan tetap terkirim seperti biasa");
+
+    const topup = render("ADMIN_OVERPAID", { ...base, wallet_topup: true });
+    expect(topup).not.toMatch(/delivered|terkirim/i);
+    expect(topup).toMatch(/credited the order total/i);
+    expect(topup).toMatch(/dikreditkan/i);
   });
 
   it("HTML-escapes ADMIN_OVERPAID interpolated values", () => {

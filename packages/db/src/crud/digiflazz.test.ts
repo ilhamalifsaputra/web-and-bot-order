@@ -74,6 +74,9 @@ import {
   collapseToCheapestSeller,
   groupDigiflazzPriceListByBrand,
   computeDigiflazzMarkupPrice,
+  readDigiflazzMarkup,
+  applyDigiflazzMarkup,
+  InvalidDigiflazzMarkupError,
   isDigiflazzPriceOverridden,
   importDigiflazzBrand,
   resyncDigiflazzCatalog,
@@ -1850,7 +1853,114 @@ describe("importDigiflazzBrand", () => {
   });
 });
 
+// Money audit C13: the markup setting was read with new Decimal(value), so a
+// stored "10%" or "1,5" threw and aborted the whole hourly resync, and a
+// negative value priced below cost.
+describe("Digiflazz markup setting read safely", () => {
+  it.each([
+    [{ type: "percent", value: "10" }, "10"],
+    [{ type: "percent", value: "12.345" }, "12.345"],
+    [{ type: "percent", value: "1,5" }, "1.5"],
+    [{ type: "flat", value: "1500" }, "1500"],
+    [{ type: "flat", value: "1,500" }, "1500"],
+    [{ type: null, value: null }, "0"],
+    [{ type: "percent", value: "" }, "0"],
+  ])("reads %j as %s", (settings, expected) => {
+    expect(readDigiflazzMarkup(settings)?.toString()).toBe(expected);
+  });
+
+  it.each(["10%", "-5", "abc", "NaN", "Infinity", "1e3"])("refuses a stored %j", (value) => {
+    expect(readDigiflazzMarkup({ type: "percent", value })).toBeNull();
+    expect(() => applyDigiflazzMarkup(new Decimal(100), { type: "percent", value })).toThrow(InvalidDigiflazzMarkupError);
+  });
+
+  it("isDigiflazzPriceOverridden protects the price when the markup is unreadable", async () => {
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_TYPE_KEY, "percent");
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_VALUE_KEY, "10%");
+    expect(await isDigiflazzPriceOverridden(prisma, new Decimal(11000), new Decimal(10000))).toBe(true);
+  });
+
+  it("importDigiflazzBrand still imports with an unreadable markup, marking every row overridden", async () => {
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_TYPE_KEY, "percent");
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_VALUE_KEY, "10%");
+    const category = await prisma.category.findFirstOrThrow();
+    const { productId } = await importDigiflazzBrand(prisma, {
+      brand: "Mobile Legends", categoryId: category.id,
+      rows: [{ buyerSkuCode: "ml100", productName: "Mobile Legends 100 Diamond", price: "16500", costPrice: "15000" }],
+    });
+    const row = await prisma.denomination.findFirstOrThrow({ where: { productId, supplierSku: "ml100" } });
+    expect(row.price.toString()).toBe("16500");
+    expect(row.priceOverridden).toBe(true);
+  });
+
+  it.each(["10%", "1,5,0", "-5"])(
+    "resync with a stored markup of %j does not abort: keeps current prices, lifts one below the new cost to the cost, still updates cost and status, and tells admins",
+    async (bad) => {
+      await setSetting(prisma, DIGIFLAZZ_MARKUP_TYPE_KEY, "percent");
+      await setSetting(prisma, DIGIFLAZZ_MARKUP_VALUE_KEY, "10");
+      const category = await prisma.category.findFirstOrThrow();
+      const { productId } = await importDigiflazzBrand(prisma, {
+        brand: "Mobile Legends", categoryId: category.id,
+        rows: [
+          { buyerSkuCode: "ml100", productName: "Mobile Legends 100 Diamond", price: "16500", costPrice: "15000" },
+          { buyerSkuCode: "ml250", productName: "Mobile Legends 250 Diamond", price: "41800", costPrice: "38000" },
+        ],
+      });
+      const ml250 = await prisma.denomination.findFirstOrThrow({ where: { productId, supplierSku: "ml250" } });
+      await prisma.denomination.update({ where: { id: ml250.id }, data: { isActive: true } });
+      // The stored value goes bad after the import (legacy / hand-edited row).
+      await setSetting(prisma, DIGIFLAZZ_MARKUP_VALUE_KEY, bad);
+
+      digiflazzMock.getPriceList.mockResolvedValue([
+        priceListItem({ buyerSkuCode: "ml100", price: new Decimal(16000), buyerProductStatus: true }),
+        priceListItem({ buyerSkuCode: "ml250", price: new Decimal(43000), buyerProductStatus: false }),
+      ]);
+
+      await expect(resyncDigiflazzCatalog(prisma)).resolves.toMatchObject({ deactivated: 1 });
+
+      const ml100 = await prisma.denomination.findFirstOrThrow({ where: { productId, supplierSku: "ml100" } });
+      expect(ml100.costPrice!.toString()).toBe("16000");
+      expect(ml100.price.toString()).toBe("16500"); // kept: still above the new cost
+      const ml250After = await prisma.denomination.findFirstOrThrow({ where: { id: ml250.id } });
+      expect(ml250After.costPrice!.toString()).toBe("43000");
+      expect(ml250After.price.toString()).toBe("43000"); // lifted to the cost, never left below it
+      expect(ml250After.isActive).toBe(false);
+
+      const audit = await prisma.auditLog.findFirst({ where: { action: "digiflazz_markup_unreadable" } });
+      expect(audit?.details).toMatch(/markup/i);
+    },
+  );
+});
+
 describe("resyncDigiflazzCatalog", () => {
+  it("alerts once for newly below-cost retail/reseller prices without changing protected prices", async () => {
+    await setSetting(prisma, ADMIN_IDS_KEY, "777");
+    const category = await prisma.category.findFirstOrThrow();
+    const { productId } = await importDigiflazzBrand(prisma, { brand: "Margin", categoryId: category.id, rows: [
+      { buyerSkuCode: "margin-reseller", productName: "Reseller", price: "10000", costPrice: "9000" },
+      { buyerSkuCode: "margin-retail", productName: "Retail", price: "9500", costPrice: "9000" },
+    ] });
+    await prisma.denomination.updateMany({ where: { productId }, data: { priceOverridden: true } });
+    await prisma.denomination.updateMany({ where: { supplierSku: "margin-reseller" }, data: { resellerPrice: "9500" } });
+    const response = (cost: string) => ["margin-reseller", "margin-retail"].map(buyerSkuCode => priceListItem({ buyerSkuCode, price: new Decimal(cost) }));
+    digiflazzMock.getPriceList.mockResolvedValue(response("9800"));
+    await resyncDigiflazzCatalog(prisma);
+    const alerts = () => prisma.notificationOutbox.findMany({ where: { event: "ADMIN_DIGIFLAZZ_BELOW_COST" } });
+    expect(await alerts()).toHaveLength(1);
+    expect(JSON.parse((await alerts())[0]!.payloadJson)).toMatchObject({ below_cost_count: 2, newly_below_cost_count: 2 });
+    const reseller = await prisma.denomination.findFirstOrThrow({ where: { supplierSku: "margin-reseller" } });
+    expect(reseller.resellerPrice!.toString()).toBe("9500");
+    expect(reseller.price.toString()).toBe("10000");
+    await resyncDigiflazzCatalog(prisma);
+    expect(await alerts()).toHaveLength(1);
+    // Recovery clears the remembered set; a later loss warrants a fresh alert.
+    digiflazzMock.getPriceList.mockResolvedValue(response("9000"));
+    await resyncDigiflazzCatalog(prisma);
+    digiflazzMock.getPriceList.mockResolvedValue(response("9800"));
+    await resyncDigiflazzCatalog(prisma);
+    expect(await alerts()).toHaveLength(2);
+  });
+
   it("updates costPrice/price from a fresh price list and leaves priceOverridden rows untouched", async () => {
     await setSetting(prisma, DIGIFLAZZ_MARKUP_TYPE_KEY, "percent");
     await setSetting(prisma, DIGIFLAZZ_MARKUP_VALUE_KEY, "10");

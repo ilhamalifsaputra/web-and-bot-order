@@ -3,12 +3,13 @@
  * applyVoucherToSubtotal is a pure function (no DB, no mutation).
  */
 import { VoucherType, VoucherScope, OrderStatus } from "@app/core/enums";
-import { quantizeMoney } from "@app/core/formatters";
+import { quantizeMoney, wholeRupiah } from "@app/core/formatters";
 import { Decimal } from "@app/core/money";
 import { ValidationError } from "@app/core/errors";
 import type { PrismaClient } from "../client";
 import type { Db } from "./_types";
 import { isUniqueViolationOn } from "./_types";
+import { orderSalesValueIdr, walletSpendByOrder } from "./revenue";
 
 const q4 = (v: Decimal.Value) => quantizeMoney(v, 4);
 
@@ -359,7 +360,21 @@ export function applyVoucherToSubtotal(
   // otherwise sail through both caps above and poison orders.ts's totals
   // (M-3, backend audit 2026-07-31).
   if (!discount.isFinite() || discount.isNegative()) discount = new Decimal(0);
-  return quantizeMoney(discount, 4);
+  // Whole rupiah, half-up — the same rule as the bulk discount (`wholeRupiah`,
+  // B5 money audit): the voucher discounts a central-IDR subtotal, and a
+  // fractional discount made the preview rows and the charge disagree by a
+  // rupiah and left wallet dust. Rounding up must never break a cap, so a
+  // rounded figure above one (a fractional maxDiscount or eligible slice, which
+  // whole-rupiah prices never produce) falls back to that cap rounded down.
+  const rounded = wholeRupiah(discount);
+  let cap = eligibleSub;
+  if (voucher.maxDiscount != null && new Decimal(voucher.maxDiscount).lessThan(cap)) {
+    cap = new Decimal(voucher.maxDiscount);
+  }
+  if (rounded.greaterThan(cap)) {
+    return Decimal.max(new Decimal(0), cap.toDecimalPlaces(0, Decimal.ROUND_FLOOR));
+  }
+  return rounded;
 }
 
 /**
@@ -528,42 +543,40 @@ export async function getVoucherStats(
  * customers, aggregated in one query and reduced in JS. DELIVERED-only
  * (mirrors revenue.ts's salesRevenueByCurrency — only a completed,
  * fulfilled order counts as "earned" performance). Revenue is a single
- * IDR-equivalent Decimal per voucher: IDR orders pass through unconverted,
- * USDT orders convert via THAT order's own fxRate snapshot (never a live
- * rate) before summing — the same blend-to-IDR convention revenue.ts's
- * combinedRevenueByDay uses for its one intentionally-blended figure, so a
- * voucher's reported revenue is never a mix of raw IDR and raw USDT amounts.
+ * IDR sales-value Decimal per voucher, using orderSalesValueIdr: finalized
+ * USDT sales retain their original IDR price before conversion rounding and
+ * payment markers. Wallet funding counts once, using recorded leg currencies.
+ * Unknown USDT conversion is excluded and reported via excludedFxOrders.
  * Returns an empty Map immediately for an empty `voucherIds` input, without
  * querying.
  */
 export async function getVoucherPerformance(
   db: Db,
   voucherIds: number[],
-): Promise<Map<number, { ordersCount: number; revenue: Decimal; customers: number }>> {
+): Promise<Map<number, { ordersCount: number; revenue: Decimal; customers: number; excludedFxOrders: number }>> {
   if (voucherIds.length === 0) return new Map();
 
   const orders = await db.order.findMany({
     where: { voucherId: { in: voucherIds }, status: OrderStatus.DELIVERED },
-    select: { voucherId: true, userId: true, totalAmount: true, currency: true, fxRate: true },
+    select: { id: true, voucherId: true, userId: true, totalAmount: true, currency: true, fxRate: true, subtotalAmount: true, bulkDiscountAmount: true, discountAmount: true },
   });
+  const walletSpend = await walletSpendByOrder(db, {}, orders.map((o) => o.id));
 
-  const acc = new Map<number, { ordersCount: number; revenue: Decimal; customerIds: Set<number> }>();
+  const acc = new Map<number, { ordersCount: number; revenue: Decimal; customerIds: Set<number>; excludedFxOrders: number }>();
   for (const o of orders) {
     if (o.voucherId == null) continue;
-    const bucket = acc.get(o.voucherId) ?? { ordersCount: 0, revenue: new Decimal(0), customerIds: new Set<number>() };
+    const bucket = acc.get(o.voucherId) ?? { ordersCount: 0, revenue: new Decimal(0), customerIds: new Set<number>(), excludedFxOrders: 0 };
     bucket.ordersCount += 1;
-    const amountIdr =
-      o.currency === "USDT" && o.fxRate != null
-        ? new Decimal(o.totalAmount).times(o.fxRate)
-        : new Decimal(o.totalAmount);
-    bucket.revenue = bucket.revenue.plus(amountIdr);
+    const value = orderSalesValueIdr(o, walletSpend.get(o.id));
+    bucket.revenue = bucket.revenue.plus(value.amount);
+    bucket.excludedFxOrders += value.excludedFxOrders;
     bucket.customerIds.add(o.userId);
     acc.set(o.voucherId, bucket);
   }
 
-  const result = new Map<number, { ordersCount: number; revenue: Decimal; customers: number }>();
+  const result = new Map<number, { ordersCount: number; revenue: Decimal; customers: number; excludedFxOrders: number }>();
   for (const [voucherId, b] of acc) {
-    result.set(voucherId, { ordersCount: b.ordersCount, revenue: q4(b.revenue), customers: b.customerIds.size });
+    result.set(voucherId, { ordersCount: b.ordersCount, revenue: q4(b.revenue), customers: b.customerIds.size, excludedFxOrders: b.excludedFxOrders });
   }
   return result;
 }

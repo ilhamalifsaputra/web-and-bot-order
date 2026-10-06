@@ -18,6 +18,7 @@ import {
 } from "@app/core/payments/nowpayments";
 import { OrderStatus, OrderKind, PaymentMethod, NotificationEvent, langCode } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
+import { quantizeMoney } from "@app/core/formatters";
 import { logger } from "@app/core/logger";
 import { PaymentLogEvent } from "@app/core/payments/logEvents";
 import type { PrismaClient, Tx } from "../client";
@@ -28,7 +29,7 @@ import { transitionOrderStatus } from "./orderStatus";
 import { enqueueNotification, enqueueAdminOverpaid } from "./notifications";
 import { getSetting, getDecryptedSetting } from "./settings";
 import { parseMinAmount, NOWPAYMENTS_MIN_AMOUNT_KEY } from "./_minAmount";
-import { settleWalletTopup, isLateSettleableWalletTopup } from "./wallet_topup";
+import { settleWalletTopup, isLateSettleableWalletTopup, flagWalletTopupOverpayment } from "./wallet_topup";
 import { getPendingPaymentAttempt, confirmPaymentAttempt } from "./payments";
 import { QRIS_RECLAIMABLE_OUTCOMES } from "./binance_internal";
 import { reclaimStaleMatchedClaim } from "./_staleClaim";
@@ -207,7 +208,21 @@ export async function deliverPaidNowpaymentsOrder(
         // (running in the web process, which must never send Telegram
         // itself) must not enqueue it again here, or the buyer would be
         // notified twice.
-        const { order: settled } = await settleWalletTopup(tx, args.orderId, { amount: args.amount });
+        const { order: settled, credited } = await settleWalletTopup(tx, args.orderId, { amount: args.amount });
+        // Overpayment: same flag + admin alert the product branch below raises,
+        // without changing what was credited (see flagWalletTopupOverpayment).
+        // Measured against the order total, as the product branch is: callers
+        // pass `checkNowpaymentsAmount(...).amount`, already in the order's
+        // currency, where paying exactly the invoice is exactly the total.
+        await flagWalletTopupOverpayment(tx, {
+          order: settled,
+          credited,
+          paid: args.amount,
+          expected: order.totalAmount,
+          rail: "NOWPayments",
+          markLedgerOverpaid: () =>
+            tx.processedNowpaymentsTx.update({ where: { trxId: args.trxId }, data: { outcome: "overpaid" } }),
+        });
         if (pendingPayment) {
           // Best-effort: swallows the benign race where a concurrent
           // poller/webhook already confirmed this same Payment row
@@ -283,8 +298,14 @@ export async function deliverPaidNowpaymentsOrder(
       // (handled above) but flag the ledger row and alert admins so the
       // excess can be refunded/credited manually — never auto-refunded. This
       // stays unconditional — a buyer can overpay regardless of delivery type.
+      //
+      // The paid value comes from checkNowpaymentsAmount, which converts at the
+      // invoice's own rate by division, so it can carry sub-4dp dust. The excess
+      // is quantized exactly as `findOverpaidExcess` quantizes what an admin can
+      // credit back (4dp, half-up), so dust never raises an alert for an excess
+      // the order page would then refuse as zero.
       const paidAmount = new Decimal(args.amount);
-      const excess = paidAmount.minus(order.totalAmount);
+      const excess = quantizeMoney(quantizeMoney(paidAmount, 4).minus(order.totalAmount), 4);
       if (excess.greaterThan(0)) {
         await tx.processedNowpaymentsTx.update({ where: { trxId: args.trxId }, data: { outcome: "overpaid" } });
         await enqueueAdminOverpaid(tx, {

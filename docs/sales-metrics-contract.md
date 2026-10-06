@@ -403,21 +403,42 @@ hiding it behind a zero-revenue check.
 means "no sales at all" or "sales, but every cost is unknown". The chart cannot
 currently distinguish them. Recorded, not fixed.
 
-### Combined revenue — the one deliberate currency blend
+### Referral commission basis (existing business policy)
 
-`combinedRevenueByDay` (Day path) and `PeriodRevenue.revenueIdrEquiv`
-(Week/Month/Year path). Reached via `currency=combined` on
-`GET /api/dashboard/analytics`.
+Referral commission uses the first commission-earning delivered order's externally
+payable `Order.totalAmount`, net of wallet credit. It includes any USDT conversion
+rounding and unique payment marker. A fully wallet-funded order pays no commission
+and creates no Referral row, leaving a later positive external payment eligible.
+An IDR amount converts to the USDT commission wallet through its stored FX or the
+existing configured-rate fallback. This differs from collected sales revenue,
+which counts wallet funding too. The audit documents and characterizes this policy;
+changing its basis requires a business decision.
 
-| | |
-|---|---|
-| **Business definition** | Both currencies expressed as one IDR-equivalent total, for an operator who explicitly opts in to a single line. |
-| **Rule** | IDR orders pass through unconverted. USDT orders convert via **that order's own `fxRate` snapshot**, stored on the `Order` row at payment time. Each wallet leg blends by **its own** currency through that same snapshot — an IDR leg on a USDT order passes through unconverted, so the two halves of one sale are never blended by two different rules. |
-| **Why this is safe** | The rate is a **per-order snapshot, never a live rate**, so a past day's or past period's combined total never moves when today's exchange rate changes. A report you printed last month still says the same thing today. Summing raw currency amounts (or re-converting historical orders at today's rate) would produce a number that silently changes under the reader. |
-| **Why it is legitimate here specifically** | It operates on `Order.totalAmount`, which genuinely follows `Order.currency`. The same multiplication applied to `OrderItem.unitPrice` would be a bug — `unitPrice` is *always* catalog-central IDR regardless of settlement currency, and a past bug that multiplied it by `fxRate` inflated USDT-paid orders' reported revenue by roughly the exchange rate. That is why every `OrderItem`-derived figure routes through `orderItemRevenueIdr`. |
-| **Opt-in only** | Every other revenue figure in this system is per-currency. This is the single exception and it exists behind a filter the user clicks. |
-| **fxRate-less USDT order** | Counted **unconverted** (its raw USDT total lands in the IDR-equivalent sum) rather than dropped. This is a pre-existing wart, now reachable at more granularities than before; `revenueByPeriod` replicates the Day path's behavior verbatim precisely so the two series can never disagree. Recorded, not fixed. |
-| **There is no combined PROFIT** | Only revenue has a blend. Profit is derived from catalog-central IDR `unitPrice`/`costPrice` per line, so a "combined profit" would have to be invented. `metric=profit&currency=combined` falls back to the **IDR** series — a real number under a slightly narrower label. The card hides the Combined option while Profit is selected, so this is a backstop for a hand-written query string, not a path a user clicks. |
+### Combined sales value: recorded IDR price basis
+
+`combinedRevenueByDay` and `PeriodRevenue.revenueIdrEquiv` serve the opt-in
+combined chart. A finalized USDT product sale uses recorded canonical IDR
+`subtotalAmount - bulkDiscountAmount - discountAmount`, including wallet-funded
+value once, before conversion ceiling and unique payment markers. Historical
+prices and FX snapshots are used; never live rates.
+
+Native revenue (`revenueSummary`, `revenueByDay`, and per-currency fields of
+`revenueByPeriod`) remains collected gateway plus `order_payment` wallet funding,
+with each wallet transaction's own currency. These financial totals match ledger
+postings and include actual conversion rounding/payment markers. The combined
+price series deliberately uses a different sales-price basis, labelled accordingly.
+
+When a USDT historical conversion snapshot is missing/non-positive, the combined
+figure includes only independently known IDR funding and returns
+`excludedFxOrders`; the dashboard labels that incomplete figure. Never add raw
+USDT as rupiah. An IDR order's USDT wallet leg converts only with a positive
+stored historical rate, otherwise it is excluded and counted.
+
+USDT profit without a positive historical FX snapshot excludes the affected line
+from both revenue and cost. `excludedFxItemCount` is included in the summary's
+`excludedItemCount`, with distinct dashboard text; chart buckets carry
+`excludedFxItemsUsdt` and all-unknown profit stays null (a gap). IDR product margin
+uses recorded IDR prices and snapshotted cost, so needs no conversion.
 
 ### Known quirk: `metric=orders&currency=combined` returns the IDR count
 
@@ -863,10 +884,17 @@ rather than correcting an existing figure:
 | `c7fd5563` | `feat(dashboard): add Week/Month/Year ranges and a Profit metric to Sales Analytics` |
 | `7e20b1eb` | `docs(db): record the year-window unbounded-fetch tradeoff` |
 
-An auditor can reproduce the delta for any window by running the current query
-with and without its `kind: OrderKind.PRODUCT` clause; the difference is
-exactly the settled `WALLET_TOPUP` volume in that window. M8's parity report
-does this systematically, with real numbers.
+M8's parity report independently reproduces the historical collected-money
+query with and without `kind: OrderKind.PRODUCT`. Since E22, combined IDR rows
+also report a `basis adjustment`: historical PRODUCT collected-equivalent
+minus independently calculated current recorded sales price. Therefore
+`pre-fix - post-fix = attributed top-up funding + basis adjustment`; residual
+and independent PRODUCT drift must both be exactly zero. Top-ups retain their
+native funding basis, never PRODUCT catalog-price semantics. Native-currency
+and count rows have zero basis adjustment. Current and independently counted
+unknown-FX exclusions must also agree. The replica does not import production
+money helpers, so marker, wallet, conversion and kind-filter errors remain
+detectable rather than cancelling out on both sides.
 
 ### M8.5: and the other direction — credit SPENT is revenue
 
@@ -950,8 +978,9 @@ M8.5 revision above documents a fix made in code, it does not make one here.
    knife edge — a genuinely negative net is non-zero and renders in full.
 4. **A `null` profit bucket is ambiguous on the chart** — "no sales" and
    "sales, all costs unknown" draw the same gap.
-5. **fxRate-less USDT orders are counted unconverted** in the combined blend
-   rather than dropped. Pre-existing; now reachable at more granularities.
+5. **Resolved by E22: fxRate-less USDT orders used to be counted unconverted**
+   in the combined blend. Unknown USDT legs now contribute no invented IDR;
+   independently known IDR funding remains included and exclusions are counted.
 6. **`rankUserIdsBySpend` ranks on IDR-only spend** (gateway plus IDR wallet
    legs since M8.5), so a USDT-only buyer sorts as a zero-spender despite a
    correct non-zero "Total Spent" cell. This is
@@ -1005,3 +1034,9 @@ the wallet-spend correction (`5d755c5c`, `cd34f9ab`), and again by that
 correction's own review pass — which bounded the window-scoped wallet reads,
 recorded the lifetime ones' scaling ceiling (open item 13) and pinned the
 combined blend's fxRate guard.*
+
+## Owner paid-order receipt
+
+The owner ORDER_PAID email uses `reconciledOrderMoneyRows`, the same additive summary as the admin order page. Subtotal minus bulk discount minus voucher discount minus wallet credit plus unique amount equals the displayed payable total. USDT subtotal absorbs the ceiling remainder after each discount is converted using the historical order FX snapshot. Native USDT wallet credit, marker and payable retain their saved precision; the email renders them to up to four decimals instead of rounding to cents. IDR rows round half-up to whole rupiah, anchored to the rounded stored payable. For historical fractional discounts or wallet credit, the displayed subtotal absorbs the rounding residual (for example, stored subtotal `10010`, discount `1501.5` and payable `8509` display `10011 - 1502 = 8509`). No order, ledger or refund amount is rewritten. New whole-rupiah orders retain their rows. Item prices are labeled per unit and are indicative, rather than multiplied to rebuild the reconciled subtotal.
+
+Both HTML and plain text show every nonzero adjustment. Old queued payloads without the added adjustment fields still render with those rows omitted. Buyer receipts keep their existing behavior.

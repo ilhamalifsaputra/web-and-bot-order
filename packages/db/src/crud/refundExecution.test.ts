@@ -125,7 +125,8 @@ async function makeDeliveredOrder() {
 
 /** A Refund sitting in PROCESSING — the only state `executeRefund` accepts. */
 async function makeProcessingRefund(orderId: number, amount: Decimal.Value, currency = "IDR") {
-  const refund = await createRefund(prisma, { orderId, amount, currency, adminId: ADMIN_ID });
+  // Legacy drafts may predate the creation cap; keep testing the payout backstop.
+  const refund = await prisma.refund.create({ data: { orderId, amount: new Decimal(amount), currency } });
   await transitionRefundStatus(prisma, {
     refundId: refund.id,
     from: RefundStatus.PENDING,

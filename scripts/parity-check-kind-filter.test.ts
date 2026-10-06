@@ -1,7 +1,7 @@
 /**
  * Tests for `scripts/parity-check-kind-filter.ts` — the tool that proves Task
- * 6a's `kind: OrderKind.PRODUCT` fix changed exactly the wallet-top-up volume
- * and nothing else.
+ * 6a's `kind: OrderKind.PRODUCT` fix accounts for wallet-top-up volume, with
+ * the later recorded-price correction explicitly attributed separately.
  *
  * A verification tool needs verifying, and this one has a specific failure mode
  * worth defending against: it could pass because everything reconciles, or it
@@ -25,12 +25,12 @@
  * check, so the importable core can be driven against a seeded test schema
  * with no database connection or `process.exit` as a side effect.
  */
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { Decimal } from "@app/core/money";
 import { OrderKind, OrderStatus } from "@app/core/enums";
 import { makeTestDb, type TestDb } from "../tests/helpers/testdb";
-import { createCategory, createCatalogProduct, createDenomination, revenueSummary } from "@app/db";
+import { createCategory, createCatalogProduct, createDenomination, revenueSummary, combinedRevenueByDay } from "@app/db";
 import {
   formatParityReport,
   runParityCheck,
@@ -38,6 +38,13 @@ import {
   type ParityReport,
   type ParityRow,
 } from "./parity-check-kind-filter";
+
+// Keep the independent replica real; inject a deliberately broken current
+// aggregator result only in negative tests so the diagnostic proves it can fail.
+vi.mock("@app/db", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@app/db")>();
+  return { ...actual, combinedRevenueByDay: vi.fn(actual.combinedRevenueByDay) };
+});
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -117,6 +124,11 @@ async function makeDeliveredOrder(args: {
   deliveredAt?: Date;
   status?: string;
   fxRate?: string | null;
+  /** Canonical IDR catalog snapshot, required when conversion is unknown. */
+  subtotalIdr?: string;
+  bulkDiscountIdr?: string;
+  discountIdr?: string;
+  uniqueCents?: string;
   owner?: number;
   withItem?: boolean;
   /** Wallet credit spent on this order, as a positive magnitude — written as
@@ -129,12 +141,28 @@ async function makeDeliveredOrder(args: {
 }) {
   const at = args.deliveredAt ?? IN_WINDOW;
   const owner = args.owner ?? userId;
+  // PRODUCT subtotal/unitPrice are canonical IDR and include wallet funding.
+  // Top-up subtotal remains native principal. Unknown-FX tests set their
+  // price explicitly when needed; the diagnostic never invents a missing rate.
+  const rate = args.fxRate != null && new Decimal(args.fxRate).greaterThan(0) ? new Decimal(args.fxRate) : null;
+  const idrLeg = (value: string, currency: string) => {
+    if (currency !== "USDT") return new Decimal(value);
+    if (!rate) throw new Error("An unknown-FX PRODUCT fixture needs an explicit subtotalIdr.");
+    return new Decimal(value).times(rate);
+  };
+  const subtotal = (args.kind ?? OrderKind.PRODUCT) === OrderKind.PRODUCT
+    ? args.subtotalIdr != null ? new Decimal(args.subtotalIdr)
+      : idrLeg(args.total, args.currency ?? "IDR").plus(idrLeg(args.walletSpend ?? "0", args.walletCurrency ?? args.currency ?? "IDR"))
+    : new Decimal(args.total);
   const order = await prisma.order.create({
     data: {
       orderCode: `PAR-${Math.random()}`,
       userId: owner,
       kind: args.kind ?? OrderKind.PRODUCT,
-      subtotalAmount: args.total,
+      subtotalAmount: subtotal,
+      bulkDiscountAmount: args.bulkDiscountIdr ?? "0",
+      discountAmount: args.discountIdr ?? "0",
+      uniqueCents: args.uniqueCents ?? "0",
       totalAmount: args.total,
       walletUsed: args.walletSpend ?? "0",
       currency: args.currency ?? "IDR",
@@ -168,7 +196,7 @@ async function makeDeliveredOrder(args: {
         orderId: order.id,
         productId: denominationId,
         quantity: 1,
-        unitPrice: args.total,
+        unitPrice: subtotal,
         warrantyDaysSnapshot: 30,
       },
     });
@@ -241,6 +269,68 @@ const run = () => runParityCheck(prisma, { since: SINCE, until: UNTIL });
 // ── 1. The tool reconciles, and is demonstrably not inert ──────────────────
 
 describe("runParityCheck — against real top-up history", () => {
+  it("final review: attributes marker/ceil uplift separately from top-up principal", async () => {
+    const now = new Date();
+    await makeDeliveredOrder({ total: "2.078", walletSpend: "0.5", currency: "USDT", fxRate: "16000", deliveredAt: now,
+      subtotalIdr: "46500", bulkDiscountIdr: "5813", uniqueCents: "0.028" });
+    await makeDeliveredOrder({ kind: OrderKind.WALLET_TOPUP, total: "20", currency: "USDT", fxRate: "15000", deliveredAt: now });
+    const report = await run();
+    const combined = row(report, "combinedRevenueByDay.revenueIdrEquiv (series total)");
+    expect(combined.postFix).toBe("40687");
+    expect(combined.attributed).toBe("300000");
+    expect(combined).toMatchObject({ basisAdjustment: "561", residual: "0", drift: "0" });
+    expect(row(report, "revenueByDay.revenue_usdt (series total)").postFix).toBe("2.578");
+    expect(report.failures).toEqual([]);
+    expect(formatParityReport(report)).toContain("basis adjustment");
+  });
+
+  it.each([
+    { fxRate: null, basisAdjustment: "-31993" },
+    { fxRate: "0", basisAdjustment: "-31998" },
+    { fxRate: "-16000", basisAdjustment: "-111998" },
+  ])("final review: independent conversion counts unknown FX $fxRate and uses each wallet currency", async ({ fxRate, basisAdjustment }) => {
+    const now = new Date();
+    await makeDeliveredOrder({ total: "5", currency: "USDT", fxRate, subtotalIdr: "90000", walletSpend: "10000", walletCurrency: "IDR", deliveredAt: now });
+    await makeDeliveredOrder({ total: "3000", walletSpend: "2", walletCurrency: "USDT", fxRate: "16000", deliveredAt: now });
+    await makeDeliveredOrder({ kind: OrderKind.WALLET_TOPUP, total: "600000", deliveredAt: now });
+    const report = await run();
+    const combined = row(report, "combinedRevenueByDay.revenueIdrEquiv (series total)");
+    expect(combined.postFix).toBe("45000");
+    expect(combined).toMatchObject({ excludedFxOrders: 1, expectedExcludedFxOrders: 1, fxExclusionDrift: 0, basisAdjustment, residual: "0", drift: "0" });
+    expect(report.failures).toEqual([]);
+  });
+
+  it.each([32, 8000])("final review: detects an extra %s IDR marker/wallet amount in the current combined result", async (extra) => {
+    const now = new Date();
+    await makeDeliveredOrder({ total: "10.002", currency: "USDT", fxRate: "16000", deliveredAt: now,
+      subtotalIdr: "160000", uniqueCents: "0.002" });
+    await makeDeliveredOrder({ kind: OrderKind.WALLET_TOPUP, total: "10000", deliveredAt: now });
+    const actual = await vi.importActual<typeof import("@app/db")>("@app/db");
+    vi.mocked(combinedRevenueByDay).mockImplementationOnce(async (...args) => {
+      const rows = await actual.combinedRevenueByDay(...args);
+      return rows.map((r, i) => i === 0 ? { ...r, revenueIdrEquiv: new Decimal(r.revenueIdrEquiv).plus(extra).toString() } : r);
+    });
+    const report = await run();
+    const combined = row(report, "combinedRevenueByDay.revenueIdrEquiv (series total)");
+    expect(combined.drift).toBe(new Decimal(extra).negated().toString());
+    expect(combined.residual).toBe(new Decimal(extra).negated().toString());
+    expect(report.failures).toContainEqual(combined);
+  });
+
+  it("detects an omitted unknown-FX count even when the current amount is correct", async () => {
+    const now = new Date();
+    await makeDeliveredOrder({ total: "5", currency: "USDT", subtotalIdr: "80000", deliveredAt: now });
+    await makeDeliveredOrder({ kind: OrderKind.WALLET_TOPUP, total: "10000", deliveredAt: now });
+    const actual = await vi.importActual<typeof import("@app/db")>("@app/db");
+    vi.mocked(combinedRevenueByDay).mockImplementationOnce(async (...args) =>
+      (await actual.combinedRevenueByDay(...args)).map((r) => ({ ...r, excludedFxOrders: 0 })));
+    const report = await run();
+    const combined = row(report, "combinedRevenueByDay.revenueIdrEquiv (series total)");
+    expect(combined).toMatchObject({ postFix: "0", residual: "0", drift: "0",
+      excludedFxOrders: 0, expectedExcludedFxOrders: 1, fxExclusionDrift: 1 });
+    expect(report.failures).toContainEqual(combined);
+  });
+
   it("reconciles every metric exactly, with no residual and no drift", async () => {
     await seedMixedHistory();
 

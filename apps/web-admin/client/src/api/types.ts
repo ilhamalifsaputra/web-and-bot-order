@@ -35,6 +35,7 @@ export interface CurrencyProfit {
   netProfit: string;
   marginPct: string | null;
   excludedItemCount: number;
+  excludedFxItemCount?: number;
 }
 
 export interface DashboardKpis {
@@ -156,6 +157,8 @@ export type AnalyticsCurrency = "idr" | "usdt" | "combined";
 export type AnalyticsMetric = "revenue" | "orders" | "profit";
 
 export interface AnalyticsPoint {
+  excludedFxOrders?: number;
+  excludedFxItemCount?: number;
   /** The bucket label: `2026-06-25` for a daily series, `2026-W38` / `2026-09` /
    *  `2026` for the calendar ranges. One field for every granularity, so the
    *  chart's `dataKey="day"` needs no per-range branching. */

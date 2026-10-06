@@ -243,6 +243,15 @@ rate landing exactly on `min` or `max` is inside the range an admin typed.
 band still applies, which is what catches a source returning the wrong unit on
 day one.
 
+A rate typed by hand in web-admin Settings goes through the same band. The route
+first reads the text by its shape (`readMoneyField(…, "IDR")`, which uses
+`parseMoneyInput`, so `16.000` and `16,000` are both sixteen thousand and an
+ambiguous or non-numeric value is refused; an untouched pre-fill or an imported
+export file is read as the exact plain decimal it already is), then calls `validateUsdIdrRate` with `lastKnown = null`: the floor and
+ceiling apply, the deviation cap does not, because typing the rate in is the
+documented remedy for a refresh the cap keeps refusing. A refused value answers
+400 and the saved rate is untouched.
+
 The `min`/`max` are **sanity** bounds, not a market range: they exist to catch a
 source that starts answering in the wrong unit or returns a placeholder.
 `fx_rate_max_delta_pct` is the check that second-guesses a real market move.
@@ -275,7 +284,7 @@ A blank, zero, negative or unparseable value is a no-op, and so is a value of
 
 **It applies to the automatic refresh only.** `applyUsdtSpread` is reached from
 `refreshUsdIdrRate` and nowhere else, so a rate an admin types into web-admin is
-saved exactly as typed. A shop that sets its rate by hand is not quietly getting a
+saved with no spread and no rounding. A shop that sets its rate by hand is not quietly getting a
 spread on top — it is getting none, and has to build its margin into the figure it
 types.
 
@@ -353,10 +362,19 @@ basis of both checks below. `usd_idr_rate_updated_at` is not in web-admin's
 `EDITABLE` allowlist (`settings.ts:48`), so an admin cannot hand-edit the stamp
 itself.
 
-`setUsdIdrRate` deliberately does **not** validate its input: web-admin's rate
-field is free text, and parsing there would turn a typo into a 500 instead of
-the saved-as-typed behaviour every caller has today. Value validation is the
-sanity band's job, at refresh time.
+`setUsdIdrRate` does **not** validate its input itself; every caller judges the
+figure first. `refreshUsdIdrRate` runs the sanity band (Guard 1). Web-admin's
+rate field reads the typed text by its shape with `readMoneyField(…, "IDR")`
+(`16.000` and `16,000` are both 16000; an ambiguous or non-numeric value is a
+400; an untouched pre-fill or an export file is read exactly), then runs
+`validateUsdIdrRate` against `fxRateBounds` with no last-known rate (floor and
+ceiling apply, the deviation cap does not), and stores the canonical decimal
+string. `fx_rate_min`/`fx_rate_max` are read the same way (a ceiling typed
+`20.000` is Rp20.000), and a floor above the ceiling is refused, since it would
+refuse every rate. A settings import applies `fx_rate_min`/`fx_rate_max`
+before `usd_idr_rate`, so a file's rate is judged against the file's own band
+(and each end of the band against the file's other end), and every skipped key
+is named with its reason in the reply and the audit entry. `scripts/convert-prices-to-idr.ts` reads its rate argument the same way.
 
 ### Guard 3a — `fx_quote_ttl_minutes`: stop offering USDT (default 180 **minutes**)
 
@@ -642,14 +660,25 @@ Two boundaries of that behaviour, both deliberate:
   balance. An unaffordable request is `applyUsdtWalletToOrder`'s
   `error.insufficient_wallet` to raise; pre-empting it here with
   "that total is too small" would name the wrong problem.
-- A credit that covers the whole converted total **exempts** the order, like a
-  zero total: there is no rail amount left to floor. An order that is zero for
-  any other reason still meets the `nothing_to_collect` backstop.
+- A credit that covers the whole converted total is **refused** on every gateway
+  rail (A3, money audit 2026-10). It used to be exempt, but
+  `applyUsdtWalletToOrder` leaves the unique cents payable, so the exemption
+  debited the balance and left the order PENDING_PAYMENT asking for 0.0x USDT.
+  A fully covered order belongs on the WALLET rail (which the guard exempts by
+  method and which carries no unique cents); `applyUsdtWalletToOrder` refuses the
+  same case before debiting, as a backstop for a caller that does not pass the
+  credit to `finalizeOrderPayment`. This matches the IDR branch, which already
+  refused a Rupiah credit covering the whole order.
 
 The two checkout rail lists do not need the same treatment, and each for its own
 reason. The bot's `offerableRails` is already handed the subtotal *after* credit
 (the bot's credit is all-or-nothing, so that figure is either the full subtotal
-or exactly zero, and zero is never filtered). The storefront never combines
+or exactly zero, and zero is never filtered), and the bot's gateway handlers
+never spend credit: a bubble carrying gateway buttons was always rendered
+without it, so a gateway tap made while a wallet flag is set is checked by
+`refuseGatewayTapOverWalletCredit` (refused with the current Complete Order
+screen when the credit still covers the order, otherwise the dead flag is
+dropped and the order proceeds at full price). The storefront never combines
 credit with a gateway at all — `performCheckout`/`performDirectCheckout` pass no
 `walletAmount`, and the SPA offers credit only as an all-or-nothing method that
 settles without a gateway.
@@ -1218,3 +1247,7 @@ check is off"**, never "reject everything".
 
 Key/default constants live in `packages/db/src/crud/pricing.ts` (FX) and
 `packages/db/src/crud/orderMinimums.ts` + `_minAmount.ts` (minimums).
+
+### Paid-order email reconciliation
+
+Owner paid-order email summaries use the shared reconciledOrderMoneyRows helper: subtotal - bulk discount - voucher discount - wallet credit + unique amount = stored payable. Converted USDT subtotals absorb discount rounding; wallet and unique-amount rows retain native stored precision. Both email bodies display all nonzero adjustments and native USDT amounts to four decimals. Per-unit prices are indicative. Buyer receipt behavior is unchanged. See docs/sales-metrics-contract.md for the reporting and receipt bases.

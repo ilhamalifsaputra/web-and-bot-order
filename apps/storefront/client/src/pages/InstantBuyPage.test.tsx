@@ -741,13 +741,13 @@ describe("InstantBuyPage", () => {
     it("QRIS: shows the $ total and the Rp payable the rail will charge", async () => {
       renderInstantBuy({ checkout: { ...checkoutData, idr_enabled: true }, ctx: usdContext });
       await screen.findByText("Summary");
-      await waitFor(() => expect(bar()).toHaveTextContent("Price $1.25 · Pay Rp20.240"));
+      await waitFor(() => expect(bar()).toHaveTextContent("Price $1.25 · Pay Rp20,240"));
     });
 
     it("PayDisini: the Rp payable is the fee-free total", async () => {
       renderInstantBuy({ checkout: { ...checkoutData, paydisini_enabled: true }, ctx: usdContext });
       await screen.findByText("Summary");
-      await waitFor(() => expect(bar()).toHaveTextContent("Price $1.25 · Pay Rp20.000"));
+      await waitFor(() => expect(bar()).toHaveTextContent("Price $1.25 · Pay Rp20,000"));
     });
 
     it("USDT rail (binance default): no dual line", async () => {
@@ -760,7 +760,7 @@ describe("InstantBuyPage", () => {
     it("QRIS for an IDR viewer: unchanged, Rp only", async () => {
       renderInstantBuy({ checkout: { ...checkoutData, idr_enabled: true }, ctx: { ...context, currency: "IDR" } });
       await screen.findByText("Summary");
-      await waitFor(() => expect(bar()).toHaveTextContent("Rp20.240"));
+      await waitFor(() => expect(bar()).toHaveTextContent("Rp20,240"));
       expect(bar()).not.toHaveTextContent("Pay Rp");
       expect(bar()).not.toHaveTextContent("$");
     });
@@ -768,7 +768,7 @@ describe("InstantBuyPage", () => {
     it("QRIS for a null-preference viewer: unchanged, no dual line", async () => {
       renderInstantBuy({ checkout: { ...checkoutData, idr_enabled: true } });
       await screen.findByText("Summary");
-      await waitFor(() => expect(bar()).toHaveTextContent("Rp20.240"));
+      await waitFor(() => expect(bar()).toHaveTextContent("Rp20,240"));
       expect(bar()).not.toHaveTextContent("Pay Rp");
     });
   });

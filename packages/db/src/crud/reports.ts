@@ -3,7 +3,7 @@
  * sections of crud.py. reconcile_finances detects drift WITHOUT mutating rows.
  * Revenue/profit/analytics-by-day computations live in ./revenue.ts.
  */
-import { OrderStatus, OrderKind, RefundStatus } from "@app/core/enums";
+import { OrderStatus, ORDER_HOLD_RELEASED_STATUSES, OrderKind, RefundStatus } from "@app/core/enums";
 import { quantizeMoney, usdtFromIdr } from "@app/core/formatters";
 import { Decimal } from "@app/core/money";
 import { addDays, startOfDayUtc } from "@app/core/datetime";
@@ -207,7 +207,7 @@ export async function reconcileFinances(db: Db): Promise<ReconcileFindings> {
   const vouchers = await db.voucher.findMany();
   const voucherOrderCounts = await db.order.groupBy({
     by: ["voucherId"],
-    where: { voucherId: { in: vouchers.map((v) => v.id) }, status: { not: OrderStatus.CANCELLED } },
+    where: { voucherId: { in: vouchers.map((v) => v.id) }, status: { notIn: [...ORDER_HOLD_RELEASED_STATUSES] } },
     _count: { _all: true },
   });
   const actualByVoucherId = new Map(voucherOrderCounts.map((g) => [g.voucherId, g._count._all]));

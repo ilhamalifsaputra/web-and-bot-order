@@ -56,6 +56,25 @@ import {
   getDigiflazzCreds,
 } from "@app/db";
 import { currentAdmin } from "../../plugins/auth";
+import { parseQueryInt } from "../../lib/params";
+
+/**
+ * Bounds for the dashboard widgets' whole-number query parameters (money
+ * audit C14). A value outside its range is clamped into it; a value that is
+ * not plain digits is a 400. Day windows stop at a year so one request can
+ * never load every delivered item ever (topProductsByMargin reads its whole
+ * window into memory); list sizes stop at 100 rows; the low-stock threshold
+ * stops at 10,000 units.
+ */
+const QUERY_RANGES = {
+  days: { min: 1, max: 365 },
+  limit: { min: 1, max: 100 },
+  threshold: { min: 0, max: 10_000 },
+} as const;
+
+function queryIntError(name: string, range: { min: number; max: number }): string {
+  return `${name} must be a whole number from ${range.min} to ${range.max}.`;
+}
 
 /**
  * Staleness threshold for the digiflazzCatalogSync Business Health rail —
@@ -244,9 +263,10 @@ export default async function dashboardApiRoutes(app: FastifyInstance): Promise<
     };
   });
 
-  app.get("/api/dashboard/inventory", { preHandler: currentAdmin }, async (req) => {
+  app.get("/api/dashboard/inventory", { preHandler: currentAdmin }, async (req, reply) => {
     const q = req.query as Record<string, string | undefined>;
-    const threshold = q.threshold ? Number(q.threshold) : config.LOW_STOCK_THRESHOLD;
+    const threshold = parseQueryInt(q.threshold, { fallback: config.LOW_STOCK_THRESHOLD, ...QUERY_RANGES.threshold });
+    if (threshold === null) return reply.code(400).send({ error: queryIntError("threshold", QUERY_RANGES.threshold) });
     const rows = await lowStockDenominations(prisma, threshold);
     return rows.map((r) => ({
       denominationId: r.denomination.id,
@@ -256,9 +276,10 @@ export default async function dashboardApiRoutes(app: FastifyInstance): Promise<
     }));
   });
 
-  app.get("/api/dashboard/expirations", { preHandler: currentAdmin }, async (req) => {
+  app.get("/api/dashboard/expirations", { preHandler: currentAdmin }, async (req, reply) => {
     const q = req.query as Record<string, string | undefined>;
-    const withinDays = q.withinDays ? Number(q.withinDays) : 7;
+    const withinDays = parseQueryInt(q.withinDays, { fallback: 7, ...QUERY_RANGES.days });
+    if (withinDays === null) return reply.code(400).send({ error: queryIntError("withinDays", QUERY_RANGES.days) });
     const now = new Date();
     const rows = await listOrderItemsExpiringWarranty(prisma, now, addDays(now, withinDays));
     return rows.map((item) => ({
@@ -273,9 +294,10 @@ export default async function dashboardApiRoutes(app: FastifyInstance): Promise<
     }));
   });
 
-  app.get("/api/dashboard/orders/recent", { preHandler: currentAdmin }, async (req) => {
+  app.get("/api/dashboard/orders/recent", { preHandler: currentAdmin }, async (req, reply) => {
     const q = req.query as Record<string, string | undefined>;
-    const limit = q.limit ? Number(q.limit) : 10;
+    const limit = parseQueryInt(q.limit, { fallback: 10, ...QUERY_RANGES.limit });
+    if (limit === null) return reply.code(400).send({ error: queryIntError("limit", QUERY_RANGES.limit) });
     const rows = await recentOrders(prisma, limit);
     return rows.map((r) => ({ ...r, createdAtDisplay: displayDateTime(new Date(r.createdAt)) }));
   });
@@ -364,10 +386,12 @@ export default async function dashboardApiRoutes(app: FastifyInstance): Promise<
     };
   });
 
-  app.get("/api/dashboard/top-products", { preHandler: currentAdmin }, async (req) => {
+  app.get("/api/dashboard/top-products", { preHandler: currentAdmin }, async (req, reply) => {
     const q = req.query as Record<string, string | undefined>;
-    const days = q.days ? Number(q.days) : 30;
-    const limit = q.limit ? Number(q.limit) : 5;
+    const days = parseQueryInt(q.days, { fallback: 30, ...QUERY_RANGES.days });
+    if (days === null) return reply.code(400).send({ error: queryIntError("days", QUERY_RANGES.days) });
+    const limit = parseQueryInt(q.limit, { fallback: 5, ...QUERY_RANGES.limit });
+    if (limit === null) return reply.code(400).send({ error: queryIntError("limit", QUERY_RANGES.limit) });
     return topProductsByMargin(prisma, addDays(new Date(), -days), limit);
   });
 
@@ -384,15 +408,14 @@ export default async function dashboardApiRoutes(app: FastifyInstance): Promise<
     if (metric === "profit") {
       // There is no combined-PROFIT figure anywhere: only revenue has a
       // currency blend (`combinedRevenueByDay`/`PeriodRevenue.revenueIdrEquiv`,
-      // both built on `Order.totalAmount`, which genuinely follows the order's
-      // currency). Profit is derived from catalog-central IDR unitPrice/
+      // both based on recorded canonical IDR prices before payment rounding). Profit is derived from catalog-central IDR unitPrice/
       // costPrice per line, so a "combined profit" would have to be invented.
       // Falling back to the IDR series reports a real number under a slightly
       // narrower label instead; the card also hides the Combined option while
       // Profit is selected, so this is a backstop for a hand-written query
       // string, not the path a user clicks.
       const rows = granularity ? await profitByPeriod(prisma, granularity) : await profitByDay(prisma, days);
-      return rows.map((r) => ({ day: r.day, value: currency === "usdt" ? r.profit_usdt : r.profit_idr }));
+      return rows.map((r) => ({ day: r.day, value: currency === "usdt" ? r.profit_usdt : r.profit_idr, ...(currency === "usdt" && r.excludedFxItemsUsdt ? { excludedFxItemCount: r.excludedFxItemsUsdt } : {}) }));
     }
     if (metric === "orders") {
       const rows = granularity ? await ordersByPeriod(prisma, granularity) : await ordersByDay(prisma, days);
@@ -409,11 +432,12 @@ export default async function dashboardApiRoutes(app: FastifyInstance): Promise<
       return rows.map((r) => ({
         day: r.day,
         value: currency === "combined" ? r.revenueIdrEquiv : currency === "usdt" ? r.revenue_usdt : r.revenue_idr,
+        ...(currency === "combined" ? { excludedFxOrders: r.excludedFxOrders } : {}),
       }));
     }
     if (currency === "combined") {
       const rows = await combinedRevenueByDay(prisma, days);
-      return rows.map((r) => ({ day: r.day, value: r.revenueIdrEquiv }));
+      return rows.map((r) => ({ day: r.day, value: r.revenueIdrEquiv, excludedFxOrders: r.excludedFxOrders }));
     }
     const rows = await revenueByDay(prisma, days);
     return rows.map((r) => ({ day: r.day, value: currency === "usdt" ? r.revenue_usdt : r.revenue_idr }));

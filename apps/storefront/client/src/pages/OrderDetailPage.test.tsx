@@ -136,7 +136,7 @@ describe("OrderDetailPage", () => {
     };
     renderDetail(() => data);
     expect(await screen.findByText("Wallet credit")).toBeInTheDocument();
-    expect(screen.getByText("−Rp28.000")).toBeInTheDocument();
+    expect(screen.getByText("−Rp28,000")).toBeInTheDocument();
   });
 
   it("omits the wallet-credit row when no balance was spent", async () => {
@@ -169,7 +169,7 @@ describe("OrderDetailPage", () => {
         expect(screen.queryByText(/\$/)).not.toBeInTheDocument();
         expect(screen.queryByText("Rp10")).not.toBeInTheDocument();
         // The item line + subtotal stay the central-IDR figures they are.
-        expect(screen.getAllByText("Rp158.000")).toHaveLength(2);
+        expect(screen.getAllByText("Rp158,000")).toHaveLength(2);
       },
     );
 
@@ -183,10 +183,10 @@ describe("OrderDetailPage", () => {
           processing: false,
         };
         renderDetail(() => data, "ORD1", { ...context, fx: "16000", currency });
-        expect(await screen.findByText("Rp108.000")).toBeInTheDocument();
-        expect(screen.getAllByText("Rp158.000")).toHaveLength(2); // item line + subtotal
-        expect(screen.getByText("−Rp20.000")).toBeInTheDocument();
-        expect(screen.getByText("−Rp30.000")).toBeInTheDocument();
+        expect(await screen.findByText("Rp108,000")).toBeInTheDocument();
+        expect(screen.getAllByText("Rp158,000")).toHaveLength(2); // item line + subtotal
+        expect(screen.getByText("−Rp20,000")).toBeInTheDocument();
+        expect(screen.getByText("−Rp30,000")).toBeInTheDocument();
         // One basis for the whole card: nothing on it is display-converted.
         expect(screen.queryByText(/\$/)).not.toBeInTheDocument();
       },

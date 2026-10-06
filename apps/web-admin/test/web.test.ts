@@ -6537,6 +6537,85 @@ describe("settings: USDT rate from the market", () => {
     expect(await getSetting(prisma, "fx_stale_alerted_for")).toBe("");
   });
 
+  // Money audit A1. The hand-typed rate used to be saved as raw text: an
+  // Indonesian admin typing "16.000" (sixteen thousand) stored "16.000", which
+  // every reader parses as 16 — a ~1000x USDT overcharge — and "16,000" stored
+  // text no reader could parse, silently hiding the USDT rail. The field is now
+  // read by its shape (IDR rules) and judged against fx_rate_min/fx_rate_max.
+  describe("hand-typed rate is read by shape and judged by the sanity band", () => {
+    const editRate = (value: string) =>
+      post("/api/settings/edit", seed.cookie, { csrf_token: seed.csrf, key: "usd_idr_rate", value });
+
+    it.each([
+      ["16.000", "16000"],
+      ["16,000", "16000"],
+      ["16000", "16000"],
+      ["16.250,50", "16250.5"],
+    ])("%s is stored as the canonical %s", async (typed, stored) => {
+      const res = await editRate(typed);
+      expect(res.statusCode).toBe(200);
+      expect(await getSetting(prisma, "usd_idr_rate")).toBe(stored);
+    });
+
+    it("the audit entry names the rate that was actually saved", async () => {
+      const res = await editRate("16.000");
+      expect(res.statusCode).toBe(200);
+      const logs = await listAuditLogs(prisma, { limit: 10 });
+      const entry = logs.find((l) => l.action === "setting_set" && (l.details ?? "").includes("usd_idr_rate"));
+      expect(entry!.details).toBe('Changed setting "usd_idr_rate" to "16000".');
+    });
+
+    it.each(["abc", "-5", "0", "1.2.3", "16 000", "Rp16000"])(
+      "%s is refused with 400 and the saved rate stands",
+      async (typed) => {
+        await setSetting(prisma, "usd_idr_rate", "16200");
+        const res = await editRate(typed);
+        expect(res.statusCode).toBe(400);
+        expect((JSON.parse(res.body) as { error: string }).error).toMatch(/rate/i);
+        expect(await getSetting(prisma, "usd_idr_rate")).toBe("16200");
+      },
+    );
+
+    it("a rate below fx_rate_min is refused, naming the floor", async () => {
+      await setSetting(prisma, "usd_idr_rate", "16200");
+      await setSetting(prisma, "fx_rate_min", "9000");
+      const res = await editRate("8.500");
+      expect(res.statusCode).toBe(400);
+      expect((JSON.parse(res.body) as { error: string }).error).toContain("9000");
+      expect(await getSetting(prisma, "usd_idr_rate")).toBe("16200");
+    });
+
+    it("the default floor applies when fx_rate_min was never set: 16 is refused", async () => {
+      const res = await editRate("16");
+      expect(res.statusCode).toBe(400);
+      expect((JSON.parse(res.body) as { error: string }).error).toContain("8000");
+    });
+
+    it("a rate above fx_rate_max is refused, naming the ceiling", async () => {
+      await setSetting(prisma, "usd_idr_rate", "16200");
+      await setSetting(prisma, "fx_rate_max", "30000");
+      const res = await editRate("31.000");
+      expect(res.statusCode).toBe(400);
+      expect((JSON.parse(res.body) as { error: string }).error).toContain("30000");
+      expect(await getSetting(prisma, "usd_idr_rate")).toBe("16200");
+    });
+
+    it("the deviation cap does not apply to a typed rate (typing it is the remedy for a refused refresh)", async () => {
+      await setSetting(prisma, "usd_idr_rate", "16000");
+      await setSetting(prisma, "usd_idr_market_rate", "16000");
+      const res = await editRate("17.500"); // +9.4%, past the 5% default cap
+      expect(res.statusCode).toBe(200);
+      expect(await getSetting(prisma, "usd_idr_rate")).toBe("17500");
+    });
+
+    it("an empty value still clears the rate", async () => {
+      await setSetting(prisma, "usd_idr_rate", "16200");
+      const res = await editRate("");
+      expect(res.statusCode).toBe(200);
+      expect(await getSetting(prisma, "usd_idr_rate")).toBe("");
+    });
+  });
+
   it("the sanity-band fields are editable from the settings page", async () => {
     for (const [key, value] of [
       ["fx_rate_min", "9000"],
@@ -7319,7 +7398,8 @@ describe("wallet ledger", () => {
   });
 
   it("ledger lists a prior adjustment with its reason", async () => {
-    await post(`/api/users/${seed.customerId}/wallet`, seed.cookie, { csrf_token: seed.csrf, delta: "7.50", note: "promo credit" });
+    const adjustment = await post(`/api/users/${seed.customerId}/wallet`, seed.cookie, { csrf_token: seed.csrf, delta: "7", note: "promo credit" });
+    expect(adjustment.statusCode, adjustment.body).toBe(200);
     const res = await get(`/api/users/${seed.customerId}`, seed.cookie);
     expect(res.statusCode).toBe(200);
     const data = JSON.parse(res.body) as { ledger: Array<{ note: string }> };
@@ -7514,7 +7594,7 @@ describe("bulk operations", () => {
     const csv =
       `${cat.name} | Imported Product A | 1 Month | shared | 1 Month | 9.99\n` +
       `NoSuchCat | Bad Product | 1 Month | shared | 1 Month | 5\n` +
-      `${cat.name} | Imported Product B | 12 Months | private | 12 Months | 19 | 15 | 60 | 30 | nice`;
+      `${cat.name} | Imported Product B | 12 Months | private | 12 Months | 79 | 15 | 60 | 30 | nice`; // reseller (60) at or below the price (79)
     const beforeProducts = await prisma.product.count();
     const beforeDenoms = await prisma.denomination.count();
 

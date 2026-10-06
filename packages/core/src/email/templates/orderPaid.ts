@@ -32,6 +32,11 @@ export interface OrderPaidInput {
    * `""` for a zero discount — an empty string hides the Discount row/line
    * entirely, same as `transactionId`/`voucherCode` being null. */
   discount: string;
+  /** Signed, display-formatted adjustments; empty/missing hides a zero row.
+   * Optional for emails queued before these rows were introduced. */
+  bulkDiscount?: string;
+  walletCredit?: string;
+  uniqueCents?: string;
   /** Already display-formatted by the caller (e.g. via `formatMoney`) —
    * this template renders it verbatim, same convention as `paidAt` below. */
   total: string;
@@ -46,10 +51,10 @@ export interface OrderPaidInput {
   orderUrl: string | null;
 }
 
-/** Render each item as its own compact line: "2x Netflix Premium (1 Month) — 50000". */
+/** Item unit prices are indicative; the reconciled subtotal is the additive row. */
 function formatItemLine(item: OrderPaidItem): string {
   const variantPart = item.variant ? ` (${item.variant})` : "";
-  return `${item.quantity}x ${item.name}${variantPart} — ${item.unitPrice}`;
+  return `${item.quantity}x ${item.name}${variantPart} — ${item.unitPrice} each`;
 }
 
 function buildItemsHtml(items: OrderPaidItem[]): string {
@@ -71,7 +76,10 @@ export function renderOrderPaidEmail(
     { label: "Order", value: input.orderCode },
     { label: "Customer", value: input.customerLabel },
     { label: "Subtotal", value: input.subtotal },
+    { label: "Bulk Discount", value: input.bulkDiscount ?? "" },
     { label: "Discount", value: input.discount },
+    { label: "Wallet Credit", value: input.walletCredit ?? "" },
+    { label: "Unique Amount", value: input.uniqueCents ?? "" },
     { label: "Total", value: input.total },
     { label: "Payment Method", value: input.paymentMethod },
     { label: "Transaction ID", value: input.transactionId ?? "" },
@@ -111,7 +119,10 @@ export function renderOrderPaidEmail(
     ptKeyValue("Customer", input.customerLabel),
     itemLines,
     ptKeyValue("Subtotal", input.subtotal),
+    ...(input.bulkDiscount ? [ptKeyValue("Bulk Discount", input.bulkDiscount)] : []),
     ...(input.discount !== "" ? [ptKeyValue("Discount", input.discount)] : []),
+    ...(input.walletCredit ? [ptKeyValue("Wallet Credit", input.walletCredit)] : []),
+    ...(input.uniqueCents ? [ptKeyValue("Unique Amount", input.uniqueCents)] : []),
     ptKeyValue("Total", input.total),
     ptKeyValue("Payment Method", input.paymentMethod),
     ...(input.transactionId ? [ptKeyValue("Transaction ID", input.transactionId)] : []),

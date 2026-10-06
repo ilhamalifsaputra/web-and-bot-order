@@ -34,6 +34,9 @@ import {
   walletTopupClearsRailMinimum,
   resolveWalletTopupRailFloor,
   resolveWalletTopupEffectiveMin,
+  walletTopupAmountError,
+  WALLET_TOPUP_HARD_MAX_IDR,
+  WALLET_TOPUP_HARD_MAX_USDT,
   type WalletTopupUsdtMethod,
 } from "./wallet_topup";
 
@@ -246,6 +249,83 @@ describe("hasPendingWalletTopupOrder", () => {
       sinceMs: 30_000,
     });
     expect(dupe).toBe(false);
+  });
+});
+
+// Money audit C11: the amount must be a readable positive number, a USDT
+// amount must fit the 4-decimal precision the wallet credits (so the stored
+// order total is exactly what gets credited), and a hard ceiling applies even
+// when the shop configured no maximum.
+describe("createWalletTopupOrder — amount sanity", () => {
+  it.each(["abc", "", "NaN", "Infinity", "-5", "0"])("refuses %j with a ValidationError, not a crash, and creates no order", async (amount) => {
+    await expect(
+      prisma.$transaction((tx) =>
+        createWalletTopupOrder(tx, { userId: sample.user.id, amount, currency: "IDR", method: PaymentMethod.TOKOPAY }),
+      ),
+    ).rejects.toMatchObject({ key: "error.wallet_topup_amount_invalid" });
+    expect(await prisma.order.count()).toBe(0);
+  });
+
+  it("refuses a USDT amount with more than 4 decimals instead of storing it raw and crediting it rounded", async () => {
+    await expect(
+      prisma.$transaction((tx) =>
+        createWalletTopupOrder(tx, {
+          userId: sample.user.id,
+          amount: "10.12345",
+          currency: "USDT",
+          method: PaymentMethod.NOWPAYMENTS,
+          rate: "16000",
+        }),
+      ),
+    ).rejects.toMatchObject({ key: "error.wallet_topup_amount_invalid" });
+    expect(await prisma.order.count()).toBe(0);
+  });
+
+  it("accepts a USDT amount with exactly 4 decimals", async () => {
+    const order = await prisma.$transaction((tx) =>
+      createWalletTopupOrder(tx, {
+        userId: sample.user.id,
+        amount: "10.1234",
+        currency: "USDT",
+        method: PaymentMethod.NOWPAYMENTS,
+        rate: "16000",
+      }),
+    );
+    expect(new Decimal(order.totalAmount).minus(order.uniqueCents).equals("10.1234")).toBe(true);
+  });
+
+  it("refuses an amount above the hard ceiling even with no configured maximum", async () => {
+    await expect(
+      prisma.$transaction((tx) =>
+        createWalletTopupOrder(tx, {
+          userId: sample.user.id,
+          amount: WALLET_TOPUP_HARD_MAX_IDR.plus(1).toString(),
+          currency: "IDR",
+          method: PaymentMethod.TOKOPAY,
+        }),
+      ),
+    ).rejects.toMatchObject({ key: "error.wallet_topup_above_max" });
+    await expect(
+      prisma.$transaction((tx) =>
+        createWalletTopupOrder(tx, {
+          userId: sample.user.id,
+          amount: "123456789012345678901234",
+          currency: "USDT",
+          method: PaymentMethod.NOWPAYMENTS,
+          rate: "16000",
+        }),
+      ),
+    ).rejects.toMatchObject({ key: "error.wallet_topup_above_max" });
+    expect(await prisma.order.count()).toBe(0);
+  });
+
+  it("walletTopupAmountError: the shared judgement the bot prompt and the crud both use", () => {
+    expect(walletTopupAmountError(new Decimal("50000"), "IDR")).toBeNull();
+    expect(walletTopupAmountError(WALLET_TOPUP_HARD_MAX_IDR, "IDR")).toBeNull();
+    expect(walletTopupAmountError(WALLET_TOPUP_HARD_MAX_USDT, "USDT")).toBeNull();
+    expect(walletTopupAmountError(WALLET_TOPUP_HARD_MAX_USDT.plus("0.0001"), "USDT")).toBe("error.wallet_topup_above_max");
+    expect(walletTopupAmountError(new Decimal("0"), "USDT")).toBe("error.wallet_topup_amount_invalid");
+    expect(walletTopupAmountError(new Decimal("1.00001"), "USDT")).toBe("error.wallet_topup_amount_invalid");
   });
 });
 
@@ -1497,12 +1577,12 @@ describe("creditUnderpaidTopupAnyway", () => {
 
     const { credited, currency } = await creditUnderpaidTopupAnyway(prisma, { orderId: order.id, adminId: ADMIN_ID });
 
-    expect(credited.toString()).toBe("18500");
+    expect(credited.toString()).toBe("18260");
     // An IDR rail returns IDR — the counterpart to the USDT case above, and
     // the reason a bare amount in the audit log is ambiguous at all.
     expect(currency).toBe("IDR");
     const buyer = await freshUser();
-    expect(new Decimal(buyer.walletBalance).toString()).toBe("18500");
+    expect(new Decimal(buyer.walletBalance).toString()).toBe("18260");
     // Currency isolation: an IDR top-up must never touch the USDT balance.
     expect(new Decimal(buyer.walletBalanceUsdt).equals(0)).toBe(true);
     expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.CANCELLED);
@@ -1511,7 +1591,30 @@ describe("creditUnderpaidTopupAnyway", () => {
     expect(ledger).toHaveLength(1);
     expect(ledger[0]!.reason).toBe("admin_adjust");
     expect(ledger[0]!.currency).toBe("IDR");
-    expect(new Decimal(ledger[0]!.delta).toString()).toBe("18500");
+    expect(new Decimal(ledger[0]!.delta).toString()).toBe("18260");
+  });
+
+  it.each([
+    [PaymentMethod.TOKOPAY, "50300", "49850"],
+    [PaymentMethod.TOKOPAY, "51000", "50000"],
+    [PaymentMethod.PAYDISINI, "49800", "49800"],
+    [PaymentMethod.PAYDISINI, "51000", "50000"],
+  ] as const)("credits net principal on %s for received %s", async (method, received, expected) => {
+    const order = await prisma.$transaction(tx => createWalletTopupOrder(tx, { userId: sample.user.id, amount: "50000", currency: "IDR", method }));
+    await markOrderUnderpaid(prisma, { orderId: order.id, gateway: method, receivedAmount: received, expectedAmount: method === PaymentMethod.TOKOPAY ? "50450" : "50000" });
+    const result = await creditUnderpaidTopupAnyway(prisma, { orderId: order.id, adminId: ADMIN_ID });
+    expect(result.credited.toString()).toBe(expected);
+    expect((await freshUser()).walletBalance.toString()).toBe(expected);
+    await expect(creditUnderpaidTopupAnyway(prisma, { orderId: order.id, adminId: ADMIN_ID })).rejects.toMatchObject({ key: "error.order_not_underpaid" });
+    expect((await freshUser()).walletBalance.toString()).toBe(expected);
+  });
+
+  it.each(["0", "449", "450"])("refuses TokoPay credit when received %s does not cover the fee", async (received) => {
+    const order = await prisma.$transaction(tx => createWalletTopupOrder(tx, { userId: sample.user.id, amount: "50000", currency: "IDR", method: PaymentMethod.TOKOPAY }));
+    await markOrderUnderpaid(prisma, { orderId: order.id, gateway: "TokoPay", receivedAmount: received, expectedAmount: "50450" });
+    await expect(creditUnderpaidTopupAnyway(prisma, { orderId: order.id, adminId: ADMIN_ID })).rejects.toMatchObject({ key: "error.underpaid_topup_fee_not_covered" });
+    expect((await freshUser()).walletBalance.toString()).toBe("0");
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.UNDERPAID);
   });
 
   it("refuses a PRODUCT order even when it is UNDERPAID, and changes nothing", async () => {

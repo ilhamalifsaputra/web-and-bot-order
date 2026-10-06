@@ -19,4 +19,10 @@ export const moneyEq = (a: Decimal.Value, b: Decimal.Value): boolean =>
 
 export const ZERO = new Decimal(0);
 
+/** Admin wallet moves are refused before persistence, never silently rounded.
+ * Signed debits remain valid; IDR holds whole rupiah and USDT holds 4 decimals. */
+export const isValidWalletAdjustment = (amount: Decimal, currency: "IDR" | "USDT"): boolean =>
+  amount.isFinite() && !amount.isZero() &&
+  (currency === "IDR" ? amount.isInteger() : amount.decimalPlaces() <= 4);
+
 export { Decimal };

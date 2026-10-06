@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { Decimal } from "@app/core/money";
+import { usdtFromIdr } from "@app/core/formatters";
 import { orderMoneyView } from "./orderMoneyView";
 
 const base = {
@@ -52,7 +53,11 @@ describe("orderMoneyView", () => {
       discountAmount: "0",
       walletUsed: "0",
       uniqueCents: "0.026",
-      totalAmount: "3.426",
+      // 3.38 (54.000 / 16.000, ceil 0.01 — what finalizeOrderPayment stamps)
+      // + the marker. Was 3.426, a pre-M13 0.1-step figure the current
+      // conversion can never produce; B6 derives the items row from the
+      // total, so the fixture has to be one finalizeOrderPayment could write.
+      totalAmount: "3.406",
     });
     expect(view.currency).toBe("USDT");
     // Items total converts via the catalog fx snapshot — never "Rp3".
@@ -60,14 +65,42 @@ describe("orderMoneyView", () => {
     // old 0.1-half-up step).
     expect(view.itemsTotal.toString()).toBe("3.38");
     // totalAmount/uniqueCents are already USDT-native — must NOT be re-converted.
-    expect(view.totalToPay.toString()).toBe("3.426");
+    expect(view.totalToPay.toString()).toBe("3.406");
     expect(view.amountMarker?.toString()).toBe("0.026");
     // The IDR-equivalent line for admins reconciling against the catalog price.
-    expect(view.equivalentIdr?.toString()).toBe("54816");
+    expect(view.equivalentIdr?.toString()).toBe("54496");
   });
 
   it("omits the IDR-equivalent line when there is no fx snapshot", () => {
     const view = orderMoneyView({ ...base, currency: "USDT", fxRate: null, totalAmount: "3.4" });
     expect(view.equivalentIdr).toBeNull();
+  });
+
+  it("B6: a USDT order's rows add up to the total it was charged, at several rates", () => {
+    for (const rate of ["15000", "16000", "16321", "17000.5"]) {
+      for (const [sub, bulk, voucher] of [
+        ["46500", "5812.5", "0"],
+        ["46500", "5813", "6103"],
+        ["32080", "0", "16016"],
+      ]) {
+        const usdt = usdtFromIdr(new Decimal(sub!).minus(bulk!).minus(voucher!), rate);
+        const view = orderMoneyView({
+          currency: "USDT",
+          fxRate: rate,
+          subtotalAmount: sub!,
+          bulkDiscountAmount: bulk!,
+          discountAmount: voucher!,
+          walletUsed: "0",
+          uniqueCents: "0.03",
+          totalAmount: usdt.plus("0.03").toString(),
+        });
+        const sum = view.itemsTotal
+          .minus(view.bulkDiscount ?? 0)
+          .minus(view.discount ?? 0)
+          .minus(view.walletCredit ?? 0)
+          .plus(view.amountMarker ?? 0);
+        expect(sum.toString()).toBe(view.totalToPay.toString());
+      }
+    }
   });
 });

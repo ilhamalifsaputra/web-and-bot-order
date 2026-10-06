@@ -447,7 +447,7 @@ describe("createRefundItem — sum invariant", () => {
   });
 
   it("rejects a single RefundItem amount that alone exceeds the OrderItem's subtotal", async () => {
-    const { order, item } = await makeOrderWithItem(1); // subtotal 5.00
+    const { order, item } = await makeOrderWithItem(2); // subtotal 5.00
     const admin = await makeAdmin();
     const refund = await createRefund(prisma, { orderId: order.id, amount: "10.00", currency: "IDR", adminId: admin.id });
 
@@ -457,7 +457,7 @@ describe("createRefundItem — sum invariant", () => {
   });
 
   it("rejects a RefundItem that would push the cross-refund sum over the subtotal", async () => {
-    const { order, item } = await makeOrderWithItem(1); // subtotal 5.00
+    const { order, item } = await makeOrderWithItem(2); // subtotal 5.00
     const admin = await makeAdmin();
     const refundA = await createRefund(prisma, { orderId: order.id, amount: "3.00", currency: "IDR", adminId: admin.id });
     const refundB = await createRefund(prisma, { orderId: order.id, amount: "3.00", currency: "IDR", adminId: admin.id });
@@ -556,7 +556,7 @@ describe("createRefundItem — sum invariant", () => {
   });
 
   it("still counts a COMPLETED refund's RefundItem amount against the budget (does not release it)", async () => {
-    const { order, item } = await makeOrderWithItem(1); // subtotal 5.00
+    const { order, item } = await makeOrderWithItem(2); // subtotal 5.00
     const admin = await makeAdmin();
     const refundA = await createRefund(prisma, { orderId: order.id, amount: "5.00", currency: "IDR", adminId: admin.id });
     await createRefundItem(prisma, { refundId: refundA.id, orderItemId: item.id, amount: "5.00", adminId: admin.id });
@@ -722,7 +722,8 @@ describe("createRefundItem — rejects attaching to a terminal Refund", () => {
 describe("executeRefund — the refundable ceiling counts every way money went back", () => {
   /** A PROCESSING refund — the only state `executeRefund` accepts. */
   async function makeProcessingRefund(orderId: number, amount: Decimal.Value, adminId: number) {
-    const refund = await createRefund(prisma, { orderId, amount, currency: "IDR", adminId });
+    // Legacy drafts bypass creation caps so these tests still exercise the payout backstop.
+    const refund = await prisma.refund.create({ data: { orderId, amount: new Decimal(amount), currency: "IDR" } });
     await transitionRefundStatus(prisma, {
       refundId: refund.id,
       from: RefundStatus.PENDING,

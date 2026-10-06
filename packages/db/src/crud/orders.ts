@@ -8,16 +8,20 @@ import { config } from "@app/core/config";
 import {
   OrderKind,
   OrderStatus,
+  ORDER_HOLD_RELEASED_STATUSES,
   OrderItemStatus,
   StockStatus,
   StockEventType,
   StockActorType,
   UserRole,
   DeliveryType,
+  OrderCurrency,
+  PaymentMethod,
   langCode,
   type CategoryGroup,
 } from "@app/core/enums";
 import { deriveOrderStatusFromItems } from "@app/core/orderItemStatus";
+import { reconciledOrderMoneyRows } from "@app/core/orderMoneyRows";
 import { parseAdditionalFields, validateCustomerData } from "@app/core/deliveryFields";
 import {
   quantizeMoney,
@@ -449,6 +453,16 @@ type CartLine = {
 type BulkRule = { minQuantity: number; discountPercent: Decimal.Value };
 
 /**
+ * The IDR credit a buyer asked to spend on a new order, as whole rupiah
+ * (floored, so never more than asked; negative/absent is zero). The order's
+ * net is whole rupiah (discounts are rounded where computed — B5, money
+ * audit), so a whole-rupiah credit keeps the gateway remainder whole too.
+ */
+function idrWalletRequest(requested: Decimal.Value | undefined): Decimal {
+  return Decimal.max(ZERO, new Decimal(requested ?? 0)).toDecimalPlaces(0, Decimal.ROUND_FLOOR);
+}
+
+/**
  * What one unit costs this buyer, flash sale included (@app/core/flash owns the
  * rule; this is just the orders-domain entry point).
  *
@@ -702,7 +716,7 @@ export async function createOrderFromCart(
   // Lock the cart first: a concurrent checkout of the same cart waits here and
   // then finds it empty, instead of creating a second order from it.
   await lockCartForCheckout(db, args.user.id);
-  const rawCart = (await getCart(db, args.user.id)) as unknown as CartLine[];
+  const rawCart = await getCart(db, args.user.id);
   const cart = rawCart.filter((ci) => ci.product.isActive);
   if (cart.length === 0) throw new ValidationError("error.cart_empty");
   for (const line of cart) {
@@ -787,8 +801,11 @@ export async function createOrderFromCart(
 
   const afterDiscount = Decimal.max(ZERO, subtotal.minus(bulkDiscount).minus(discount));
 
-  // 4. Wallet debit
-  const walletAmount = q4(Decimal.max(ZERO, new Decimal(args.walletAmount ?? 0)));
+  // 4. Wallet debit. Whole rupiah only (floored — never more than asked): the
+  // discounts above are whole rupiah (B5, money audit), so `afterDiscount` is
+  // too, and spending a fractional balance would leave a fractional remainder
+  // for the gateway to round. Any sub-rupiah dust simply stays in the balance.
+  const walletAmount = idrWalletRequest(args.walletAmount);
   const walletUsed = Decimal.min(walletAmount, afterDiscount);
   if (walletUsed.greaterThan(args.user.walletBalance)) {
     throw new ValidationError("error.insufficient_wallet");
@@ -905,6 +922,7 @@ export async function createOrderFromCart(
         stockItemId: null,
         quantity: 1,
         unitPrice: unit,
+        costSnapshot: ci.product.costPrice,
         warrantyDaysSnapshot: warrantyDays,
         deliveryTypeSnapshot: ci.product.deliveryType,
         // Every new line starts PENDING (unpaid). Written explicitly rather
@@ -1151,6 +1169,7 @@ export async function createOrderDirect(
       stockItemId: null,
       quantity: 1,
       unitPrice: q4(unit),
+      costSnapshot: product.costPrice,
       warrantyDaysSnapshot: product.warrantyDays,
       deliveryTypeSnapshot: product.deliveryType,
       // Same as createOrderFromCart's loop — explicit PENDING, never a
@@ -1185,7 +1204,7 @@ export async function createOrderDirect(
   const afterDiscount = Decimal.max(ZERO, subtotal.minus(bulkDiscount).minus(voucherDiscount));
 
   // IDR wallet credit — mirrors createOrderFromCart's deduction logic.
-  const walletAmountReq = q4(Decimal.max(ZERO, new Decimal(args.walletAmount ?? 0)));
+  const walletAmountReq = idrWalletRequest(args.walletAmount);
   const walletUsed = q4(Decimal.min(walletAmountReq, afterDiscount));
   if (walletUsed.greaterThan(ZERO)) {
     const balance = new Decimal(args.user.walletBalance ?? 0);
@@ -1244,6 +1263,17 @@ export async function applyUsdtWalletToOrder(
   const payable = Decimal.max(ZERO, new Decimal(order.totalAmount).minus(order.uniqueCents));
   const walletUsed = q4(Decimal.min(requested, payable));
   if (walletUsed.lessThanOrEqualTo(0)) return;
+
+  // A credit that covers everything but the unique cents would leave a gateway
+  // order asking the buyer to send nothing but matching noise (A3, money audit
+  // P1). A fully covered order is settled on the WALLET rail, which carries no
+  // cents; on any other rail it is refused before the debit below, with the
+  // same "nothing left to collect" refusal `finalizeOrderPayment` gives it when
+  // the caller passes the credit there too (every current caller does — this is
+  // the backstop for one that forgets).
+  if (order.paymentMethod !== PaymentMethod.WALLET && walletUsed.greaterThanOrEqualTo(payable)) {
+    throw new ValidationError("error.amount_too_small_for_rail", { currency: OrderCurrency.USDT });
+  }
 
   const balance = new Decimal(user.walletBalanceUsdt);
   if (walletUsed.greaterThan(balance)) {
@@ -1641,8 +1671,7 @@ export async function cancelOrder(db: Db, orderId: number, reason: string, actor
   const order = await getOrderRaw(db, orderId);
   if (!order) throw new ValidationError("error.order_not_found");
   if (
-    order.status === OrderStatus.CANCELLED ||
-    order.status === OrderStatus.REJECTED ||
+    ORDER_HOLD_RELEASED_STATUSES.includes(order.status as OrderStatus) ||
     order.status === OrderStatus.REFUNDED
   ) {
     return order;
@@ -2288,12 +2317,12 @@ export function customerLabel(
  * in the settlement currency, which is what enqueueBuyerOrderReadyEmailIfGuest
  * does for the buyer's receipt.
  *
- * The owner-facing OWNER_EMAIL_ORDER_PAID call site below still converts
- * subtotal and discount independently, and its figures can still disagree by
- * ~0.01 USDT — an accepted tradeoff there, where the reader is the shop admin
- * and the reconciled view they act on is the admin ledger. The wider L-1
- * class (line totals summing to the subtotal, orderMoneyView.ts, etc.) is
- * deliberately still open; do not try to solve it here.
+ * The owner paid email and admin order page use `reconciledOrderMoneyRows`
+ * for their additive summaries: all bulk/voucher/wallet/marker rows reconcile
+ * with the exact settled total. This converter is retained only for an item's
+ * indicative unit price and the buyer receipt's existing derivation. A unit
+ * price rounded for display is not the additive subtotal; quantity must not
+ * multiply its conversion error into the summary.
  */
 function orderCurrencyConverter(order: { currency: string; fxRate: Decimal | null }) {
   return (value: Decimal.Value): Decimal =>
@@ -2463,6 +2492,28 @@ export async function enqueueBuyerOrderReadyEmailIfGuest(
 }
 
 /**
+ * The "Total" a public channel post shows for a delivered order: what the
+ * order was worth in its own currency (B8, money audit). `totalAmount` alone
+ * is what was left to COLLECT — 0 for a wallet-paid order, net of any partial
+ * credit — and on a USDT order it also carries the unique-cents matching noise
+ * (0.4766 for a 0.97 USDT order with 0.5 paid from credit). So: total plus the
+ * wallet credit (stored in the same settlement currency), minus the unique
+ * cents, printed in whole rupiah for IDR and 2 decimals for USDT.
+ */
+function publicPostTotal(order: {
+  currency: string;
+  totalAmount: Decimal.Value;
+  walletUsed: Decimal.Value;
+  uniqueCents: Decimal.Value;
+}): string {
+  const gross = Decimal.max(
+    ZERO,
+    new Decimal(order.totalAmount).plus(order.walletUsed).minus(order.uniqueCents),
+  );
+  return order.currency === OrderCurrency.IDR ? quantizeMoney(gross, 0).toFixed(0) : quantizeMoney(gross, 2).toFixed(2);
+}
+
+/**
  * Post-delivery side effects shared by the AUTO path (approveOrder) and the
  * MANUAL path (fulfillManualOrder): pay the referee's referral commission and
  * enqueue the public-channel testimonial. Runs AFTER the atomic DELIVERED claim
@@ -2508,7 +2559,7 @@ export async function finalizeDeliverySideEffects(
       order_code: order.orderCode,
       masked_buyer_id: maskedBuyerId,
       items: itemsSummary,
-      total: String(order.totalAmount),
+      total: publicPostTotal(order),
       // The order's own transaction currency (IDR via TokoPay / USDT via
       // Binance), not the legacy global CURRENCY env.
       currency: order.currency,
@@ -2718,15 +2769,15 @@ export async function settlePaidOrder(
     // bybitTxid is set, in that order — these are gateway-specific and never
     // more than one is populated for a given order today, but the preference
     // order keeps this deterministic if that ever changes.
-    // Converts subtotal/discount/unitPrice out of central-IDR into the
-    // order's settlement currency — see `orderCurrencyConverter`'s own doc
-    // comment for why that's needed and for its known rounding caveat.
+    // Unit prices are indicative. The additive summary uses the same
+    // reconciled rows as the admin order page, including every adjustment.
     const toOrderCurrency = orderCurrencyConverter(order);
+    const moneyRows = reconciledOrderMoneyRows(order);
 
     await enqueueOwnerOrderPaidEmail(db, {
       orderId,
       orderCode: order.orderCode,
-      total: order.totalAmount,
+      total: moneyRows.total,
       currency: order.currency,
       itemCount: order.items.length,
       customerLabel: customerLabel(order.user),
@@ -2736,8 +2787,11 @@ export async function settlePaidOrder(
         quantity: item.quantity,
         unitPrice: toOrderCurrency(item.unitPrice),
       })),
-      subtotal: toOrderCurrency(order.subtotalAmount),
-      discount: toOrderCurrency(order.discountAmount),
+      subtotal: moneyRows.itemsTotal,
+      bulkDiscount: moneyRows.bulkDiscount,
+      discount: moneyRows.discount,
+      walletCredit: moneyRows.walletCredit,
+      uniqueCents: moneyRows.uniqueCents,
       paymentMethod: order.paymentMethod,
       transactionId: order.paymentRef ?? order.binanceTxid ?? order.bybitTxid ?? null,
       voucherCode: order.voucher?.code ?? null,

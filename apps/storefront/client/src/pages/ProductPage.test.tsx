@@ -194,7 +194,7 @@ describe("ProductPage", () => {
     const radio3mo = screen.getByRole("radio", { name: /3 Months/ });
     expect(radio3mo).toBeChecked();
     const selectedPrice = document.querySelector(".font-display.font-semibold.text-pine.text-2xl");
-    expect(selectedPrice).toHaveTextContent("Rp219.000");
+    expect(selectedPrice).toHaveTextContent("Rp219,000");
     // In-stock plan selected -> buy form shown, not the restock CTA.
     expect(screen.getByRole("button", { name: /Add to cart/ })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Notify me when ready/ })).not.toBeInTheDocument();
@@ -213,7 +213,7 @@ describe("ProductPage", () => {
     const radio6mo = screen.getByRole("radio", { name: /6 Months/ });
     fireEvent.click(radio6mo);
     const selectedPrice = document.querySelector(".font-display.font-semibold.text-pine.text-2xl");
-    await waitFor(() => expect(selectedPrice).toHaveTextContent("Rp399.000"));
+    await waitFor(() => expect(selectedPrice).toHaveTextContent("Rp399,000"));
     const qtyInput = screen.getByLabelText("Quantity") as HTMLInputElement;
     expect(qtyInput.max).toBe("20");
     // 6 Months has available=20 > low_threshold=5 -> "Available" / grass badge.
@@ -541,11 +541,11 @@ describe("ProductPage", () => {
     renderProduct("netflix-premium", () => onSale);
     await screen.findByRole("heading", { name: "Netflix Premium" });
     const selectedPrice = document.querySelector(".font-display.font-semibold.text-pine.text-2xl");
-    expect(selectedPrice).toHaveTextContent("Rp175.200");
+    expect(selectedPrice).toHaveTextContent("Rp175,200");
     // One badge on the plan card, one in the live summary.
     expect(screen.getAllByText(/Flash sale/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Flash sale/)[0]).toHaveTextContent("20%");
-    expect(screen.getAllByText("Was Rp219.000").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Was Rp219,000").length).toBeGreaterThan(0);
     // 26h left -> days/hours wording, never a mm:ss clock.
     expect(screen.getByText(/Ends in/)).toHaveTextContent("1d 2h");
   });
@@ -639,9 +639,9 @@ describe("ProductPage sticky purchase bar", () => {
     setBuyAreaOnScreen(false);
     const bar = stickyBar();
     expect(bar).toBeInTheDocument();
-    // Preselected plan is the first in-stock one, 3 Months at Rp219.000.
+    // Preselected plan is the first in-stock one, 3 Months at Rp219,000.
     expect(within(bar!).getByText("3 Months")).toBeInTheDocument();
-    expect(within(bar!).getByText("Rp219.000")).toBeInTheDocument();
+    expect(within(bar!).getByText("Rp219,000")).toBeInTheDocument();
     expect(within(bar!).getByRole("button", { name: /Buy now/ })).toBeInTheDocument();
     // Scrolling back to the buy card retires it again.
     setBuyAreaOnScreen(true);
@@ -655,7 +655,7 @@ describe("ProductPage sticky purchase bar", () => {
     setBuyAreaOnScreen(false);
     const bar = stickyBar();
     expect(within(bar!).getByText("6 Months")).toBeInTheDocument();
-    expect(within(bar!).getByText("Rp399.000")).toBeInTheDocument();
+    expect(within(bar!).getByText("Rp399,000")).toBeInTheDocument();
   });
 
   it("buys through the same mutation as the in-page button, with the current qty", async () => {

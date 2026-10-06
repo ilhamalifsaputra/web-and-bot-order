@@ -6,11 +6,11 @@
  * only, because a settled `WALLET_TOPUP` reaches `DELIVERED` exactly like a
  * sale and was being counted as revenue. That LOWERED historical revenue,
  * order-count and customer-spend figures for any shop with top-up history.
- * This script exists to prove the change did exactly that and nothing else:
+ * This script attributes that correction and the later sales-price correction:
  *
  *   for every affected metric, `pre_fix - post_fix` must equal the settled
- *   WALLET_TOPUP volume in that metric's own window, per currency, EXACTLY —
- *   with no unexplained residual.
+ *   WALLET_TOPUP volume plus the explicitly reported sales-basis adjustment
+ *   in that metric's own window, per currency, with no unexplained residual.
  *
  * ## How the pre-fix figure is obtained
  *
@@ -20,7 +20,7 @@
  * REAL rows by a real query. Nothing is estimated, interpolated, or asserted
  * without computation.
  *
- * ## The one other correction, and why it is held constant here
+ * ## Wallet funding and the later sales-price basis
  *
  * Financial Ledger M8.5 made every money metric below count the WALLET leg of
  * a sale as well as the gateway leg (`Order.totalAmount` is only what the buyer
@@ -37,6 +37,15 @@
  * positive equal to the wallet-spend volume, since the current functions add it
  * and a totalAmount-only replica would not.
  *
+ * E22 then changed combined IDR charts from converted collections to recorded
+ * PRODUCT price (subtotal minus discounts). The independent current-price
+ * replica below reads those snapshots and actual wallet currencies, requires
+ * positive historical FX for conversion, and counts excluded unknown-FX orders.
+ * `basisAdjustment = legacyProductCollected - independentProductSales` exposes
+ * that change separately. Top-ups keep their historical native funding basis;
+ * they never acquire PRODUCT subtotal semantics. Native-currency metrics and
+ * the separate M8.5 wallet reconciliation keep both funding legs unchanged.
+ *
  * ## Why the reconciliation is exact rather than plausible
  *
  * `Order.kind` has exactly two values, so for any additive aggregate:
@@ -47,12 +56,12 @@
  * unfiltered, PRODUCT-only, TOPUP-only — alongside the current function's own
  * answer, and two independent residuals are required to be zero:
  *
- *  - `residual = (preFix - postFix) - topupOnly` — proves the whole delta is
- *    top-up volume and not something else that also moved.
- *  - `drift = productOnly - postFix` — proves the current function really is
- *    the old query PLUS the filter (plus the wallet leg both sides now carry,
- *    per the section below). A metric whose body changed in some other way
- *    fails here even when its delta happens to look right.
+ *  - `residual = (preFix - postFix) - topupOnly - basisAdjustment` proves
+ *    the whole delta is explained by top-up funding and the recorded-price rule.
+ *  - `drift = independentProductSales - postFix` checks current arithmetic
+ *    without importing its money helpers. Native/count rows retain the old
+ *    PRODUCT-only query and zero basis adjustment. Combined rows additionally
+ *    require the actual and independently counted FX exclusions to agree.
  *
  * A non-additive aggregate cannot use that identity, and one metric here is
  * non-additive: `shopFulfilmentStats.customers` is a COUNT(DISTINCT userId), a
@@ -155,14 +164,21 @@ export interface ParityRow {
   postFix: string;
   /** `preFix - postFix`. */
   delta: string;
-  /** The old clause restricted to `WALLET_TOPUP`: what the delta should be. */
+  /** The old clause restricted to `WALLET_TOPUP`: the funding contribution. */
   attributed: string;
   /** How `attributed` was derived: `additive` for every SUM/COUNT(*) metric,
    *  `set-difference` for the one COUNT(DISTINCT) that cannot use the identity. */
   attributionBasis: "additive" | "set-difference";
-  /** `delta - attributed`. Must be zero. */
+  /** Legacy PRODUCT collected-equivalent minus independent current sales
+   * price. Only combined-price rows need this explained E22 adjustment. */
+  basisAdjustment?: string;
+  /** Explicit missing-FX completeness checks for combined-price rows. */
+  excludedFxOrders?: number;
+  expectedExcludedFxOrders?: number;
+  fxExclusionDrift?: number;
+  /** `delta - attributed - basisAdjustment`. Must be zero. */
   residual: string;
-  /** `old(kind=PRODUCT) - postFix`. Must be zero. */
+  /** Independent current PRODUCT basis minus postFix. Must be zero. */
   drift: string;
 }
 
@@ -178,7 +194,7 @@ export interface ParityReport {
    *  every `OrderItem`-rooted metric structurally immune rather than untested. */
   topupsWithOrderItems: Array<{ orderId: number; orderCode: string; items: number }>;
   rows: ParityRow[];
-  /** Rows with a non-zero `residual` or `drift`. Empty means exact parity. */
+  /** Rows with nonzero residual, arithmetic drift or FX-exclusion drift. */
   failures: ParityRow[];
   /** True when no settled top-up exists at all, so every delta is trivially
    *  zero and the run demonstrates nothing. */
@@ -189,14 +205,13 @@ const ZERO = new Decimal(0);
 const isZero = (v: Decimal.Value) => new Decimal(v).isZero();
 
 /**
- * The rows that do not reconcile: a non-zero `residual` (the delta is not
- * top-up volume) or a non-zero `drift` (the current function is no longer the
- * old query plus the filter). Exported and pure so the pass/fail rule can be
+ * The rows that do not reconcile: unexplained residual, independent arithmetic
+ * drift, or disagreement on missing-FX exclusions. Exported and pure so the rule can be
  * tested directly — neither condition is reachable by seeding data, since
  * producing one means breaking a production function.
  */
 export function unreconciledRows(rows: readonly ParityRow[]): ParityRow[] {
-  return rows.filter((row) => !isZero(row.residual) || !isZero(row.drift));
+  return rows.filter((row) => !isZero(row.residual) || !isZero(row.drift) || (row.fxExclusionDrift ?? 0) !== 0);
 }
 
 /** A `kind` clause, or nothing at all — which is exactly what the pre-fix
@@ -299,9 +314,9 @@ async function countsByCurrency(db: Db, where: Record<string, unknown>) {
 /**
  * IDR-equivalent money over one old-shaped clause: IDR passes through, USDT
  * converts through THAT order's own `fxRate` snapshot, and an fxRate-less USDT
- * order is counted unconverted. Replicated verbatim from
- * `combinedRevenueByDay`/`revenueByPeriod`, including the unconverted wart —
- * this has to mirror the code under comparison, not improve on it.
+ * order is counted unconverted. This is the historical collected-money
+ * baseline from before E22, including its raw-currency fallback. Its difference
+ * from the independently computed current PRODUCT price is explicitly reported.
  *
  * The wallet leg blends by ITS OWN currency through the same rate (M8.5): an
  * IDR leg on a USDT order passes through unconverted, a USDT leg converts at
@@ -323,14 +338,9 @@ async function idrEquivalent(db: Db, where: Record<string, unknown>) {
         : total.plus(amount);
     const spend = walletSpend.get(row.id);
     if (spend) {
-      // The conversion condition is the gateway leg's above VERBATIM, including
-      // its `row.currency === "USDT"` half. This replica used to test
-      // `row.fxRate != null` alone, which is a different rule: the day anything
-      // stamps an fxRate on an IDR order, production would count that order's
-      // USDT wallet leg unconverted while this script multiplied it by the rate,
-      // and the parity table would report a difference that exists only in the
-      // script. A replica that "improves on" the code under comparison cannot
-      // check it. See `combinedRevenueByDay`'s own comment on this exact line.
+      // Preserve the historical guard in this baseline. The current independent
+      // calculation below converts by wallet currency even on an IDR order;
+      // that correction appears in basisAdjustment, never unexplained drift.
       total = total
         .plus(spend.idr)
         .plus(
@@ -341,6 +351,43 @@ async function idrEquivalent(db: Db, where: Record<string, unknown>) {
     }
   }
   return total;
+}
+
+/** Independent E22 PRODUCT sales-price calculation. Do not import production
+ * money helpers: arithmetic/FX/wallet bugs must remain visible as drift. Legacy
+ * collected-equivalent above remains the historical baseline and top-up basis. */
+async function productSalesEquivalent(
+  db: Db,
+  where: Record<string, unknown>,
+  bucket: (at: Date) => string,
+): Promise<{ amount: Decimal; excludedFxOrders: number }> {
+  const walletSpend = await walletSpendByOrder(db, where);
+  const orders = await db.order.findMany({ where, select: {
+    id: true, currency: true, fxRate: true, deliveredAt: true,
+    totalAmount: true, subtotalAmount: true, bulkDiscountAmount: true, discountAmount: true,
+  } });
+  const amounts = new Map<string, Decimal>();
+  let excludedFxOrders = 0;
+  for (const order of orders) {
+    if (!order.deliveredAt) continue;
+    const hasFx = order.fxRate != null && new Decimal(order.fxRate).greaterThan(0);
+    const spend = walletSpend.get(order.id);
+    let amount: Decimal;
+    if (order.currency === "USDT" && hasFx) {
+      amount = Decimal.max(0, new Decimal(order.subtotalAmount).minus(order.bulkDiscountAmount).minus(order.discountAmount));
+    } else {
+      const idr = new Decimal(order.currency === "USDT" ? 0 : order.totalAmount).plus(spend?.idr ?? 0);
+      const usdt = new Decimal(order.currency === "USDT" ? order.totalAmount : 0).plus(spend?.usdt ?? 0);
+      amount = hasFx ? idr.plus(usdt.times(order.fxRate!)) : idr;
+      if (!hasFx && !usdt.isZero()) excludedFxOrders += 1;
+    }
+    const key = bucket(order.deliveredAt);
+    amounts.set(key, (amounts.get(key) ?? ZERO).plus(amount));
+  }
+  // The API quantizes each daily/period bucket, then the report sums them.
+  let amount = ZERO;
+  for (const value of amounts.values()) amount = amount.plus(value.toDecimalPlaces(4, Decimal.ROUND_HALF_UP));
+  return { amount, excludedFxOrders };
 }
 
 /** Distinct buyers with a delivered order under one old-shaped clause. */
@@ -410,12 +457,17 @@ async function buildRow(args: {
   window: string;
   postFix: Decimal.Value;
   oldShaped: (kind: KindScope) => Promise<Decimal.Value>;
+  independentCurrent?: () => Promise<{ amount: Decimal; excludedFxOrders: number }>;
+  excludedFxOrders?: number;
 }): Promise<ParityRow> {
   const preFix = new Decimal(await args.oldShaped(undefined));
   const productOnly = new Decimal(await args.oldShaped(OrderKind.PRODUCT));
   const topupOnly = new Decimal(await args.oldShaped(OrderKind.WALLET_TOPUP));
   const postFix = new Decimal(args.postFix);
   const delta = preFix.minus(postFix);
+  const current = args.independentCurrent ? await args.independentCurrent() : null;
+  const expected = current?.amount ?? productOnly;
+  const basisAdjustment = productOnly.minus(expected);
   return {
     metric: args.metric,
     unit: args.unit,
@@ -425,8 +477,14 @@ async function buildRow(args: {
     delta: delta.toString(),
     attributed: topupOnly.toString(),
     attributionBasis: "additive",
-    residual: delta.minus(topupOnly).toString(),
-    drift: productOnly.minus(postFix).toString(),
+    ...(current ? {
+      basisAdjustment: basisAdjustment.toString(),
+      excludedFxOrders: args.excludedFxOrders ?? 0,
+      expectedExcludedFxOrders: current.excludedFxOrders,
+      fxExclusionDrift: current.excludedFxOrders - (args.excludedFxOrders ?? 0),
+    } : {}),
+    residual: delta.minus(topupOnly).minus(basisAdjustment).toString(),
+    drift: expected.minus(postFix).toString(),
   };
 }
 
@@ -683,6 +741,8 @@ export async function runParityCheck(
       window: dayLabel,
       postFix: sumSeries(dailyCombined, (row) => row.revenueIdrEquiv),
       oldShaped: (kind) => idrEquivalent(db, dayWhere(kind)),
+      independentCurrent: () => productSalesEquivalent(db, dayWhere(OrderKind.PRODUCT), (at) => at.toISOString().slice(0, 10)),
+      excludedFxOrders: dailyCombined.reduce((count, row) => count + row.excludedFxOrders, 0),
     }),
   );
 
@@ -723,6 +783,9 @@ export async function runParityCheck(
         window: label,
         postFix: sumSeries(periodRevenue, (row) => row.revenueIdrEquiv),
         oldShaped: (kind) => idrEquivalent(db, periodWhere(kind)),
+        independentCurrent: () => productSalesEquivalent(db, periodWhere(OrderKind.PRODUCT), (at) =>
+          DateTime.fromJSDate(at, { zone: "utc" }).startOf(granularity).toISO()!),
+        excludedFxOrders: periodRevenue.reduce((count, row) => count + row.excludedFxOrders, 0),
       }),
       await buildRow({
         metric: `revenueByPeriod(${granularity}).orders (series total)`,
@@ -822,7 +885,11 @@ export function formatParityReport(report: ParityReport): string {
   );
   lines.push("");
 
-  const header = ["metric", "unit", "pre-fix", "post-fix", "delta", "attributed", "residual", "drift"];
+  lines.push("Pre-fix: historical collected-money basis without the kind filter. Post-fix: current PRODUCT metrics.");
+  lines.push("Combined IDR basis adjustment: historical PRODUCT collections minus independent recorded sales price.");
+  lines.push("Attributed: top-up funding (or distinct-customer set difference); other rows have zero basis adjustment.");
+  lines.push("");
+  const header = ["metric", "unit", "pre-fix", "post-fix", "delta", "attributed", "basis adjustment", "residual", "drift", "FX excluded actual/expected"];
   const table = report.rows.map((row) => [
     row.metric,
     row.unit,
@@ -830,8 +897,10 @@ export function formatParityReport(report: ParityReport): string {
     row.postFix,
     row.delta,
     row.attributionBasis === "set-difference" ? `${row.attributed} (set diff)` : row.attributed,
+    row.basisAdjustment ?? "0",
     row.residual,
     row.drift,
+    row.excludedFxOrders == null ? "-" : `${row.excludedFxOrders}/${row.expectedExcludedFxOrders}`,
   ]);
   const widths = header.map((cell, column) =>
     Math.max(cell.length, ...table.map((line) => line[column]!.length)),
@@ -860,15 +929,16 @@ export function formatParityReport(report: ParityReport): string {
     for (const row of report.failures) {
       lines.push(
         `  ${row.metric} [${row.unit}]: residual ${row.residual}, drift ${row.drift} ` +
-          `(pre-fix ${row.preFix}, post-fix ${row.postFix}, attributed ${row.attributed})`,
+          `(pre-fix ${row.preFix}, post-fix ${row.postFix}, attributed ${row.attributed}, ` +
+          `basis adjustment ${row.basisAdjustment ?? "0"}, FX exclusion drift ${row.fxExclusionDrift ?? 0})`,
       );
     }
     lines.push("");
     lines.push(
       "A non-zero residual means the delta between the old and new figures is NOT " +
-        "explained by wallet top-up volume alone. A non-zero drift means the current " +
-        "function is not the old query plus the kind filter — something else in it " +
-        "changed. Either way the difference is real and needs explaining, not rounding away.",
+        "explained by wallet top-up funding plus the reported sales-basis adjustment. " +
+        "A non-zero drift means current arithmetic differs from the independent PRODUCT " +
+        "calculation; FX exclusion drift means completeness counts disagree. These differences need explaining.",
     );
   } else if (report.inconclusive) {
     lines.push(
@@ -879,9 +949,8 @@ export function formatParityReport(report: ParityReport): string {
   } else {
     lines.push(
       `PASSED: all ${report.rows.length} metric(s) reconcile exactly — every pre-fix/post-fix ` +
-        "delta equals the settled wallet top-up volume in that metric's own window, per " +
-        "currency, with no residual, and every current function still matches its old " +
-        "query plus the kind filter.",
+        "delta equals settled wallet top-up funding plus the reported sales-basis " +
+        "adjustment in that metric's own window, with zero residual/drift and matching FX exclusions.",
     );
   }
   return lines.join("\n");

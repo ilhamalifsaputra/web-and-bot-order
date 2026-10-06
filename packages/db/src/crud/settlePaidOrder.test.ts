@@ -7,7 +7,7 @@
  *
  * See .superpowers/sdd/dlv-task-2-brief.md for the plan this covers.
  */
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
@@ -53,6 +53,16 @@ import { usdtFromIdr } from "@app/core/formatters";
 import { Decimal } from "@app/core/money";
 import { OrderCurrency, PaymentMethod } from "@app/core/enums";
 import { config } from "@app/core/config";
+import { renderEmail } from "../../../outbox-dispatcher/src/emailTemplates";
+
+// Render the real dispatcher/template with settings from this test's isolated
+// schema, rather than the dispatcher's process-global Prisma connection.
+vi.mock("@app/db", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@app/db")>(),
+  prisma: {},
+  getSetting: async (_db: unknown, key: string) =>
+    (await prisma.setting.findUnique({ where: { key } }))?.value ?? null,
+}));
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -273,11 +283,85 @@ describe("settlePaidOrder", () => {
 // support.test.ts's owner-email suite — these tests assert absolute counts
 // rather than before/after deltas.
 describe("settlePaidOrder — owner-email triggers", () => {
+  it.each([
+    { discount: "1501.5", wallet: "0", total: "8509" },
+    { discount: "0", wallet: "1000.5", total: "9010" },
+  ])("final review: legacy IDR owner receipt reconciles displayed fractional discount/wallet $discount/$wallet", async (example) => {
+    await configureOwnerEmail("paid_order");
+    const order = await makePendingVerificationOrder(sample.product.id);
+    await prisma.order.update({ where: { id: order.id }, data: { currency: "IDR", fxRate: null,
+      subtotalAmount: "10010", discountAmount: example.discount, bulkDiscountAmount: "0",
+      walletUsed: example.wallet, uniqueCents: "0", totalAmount: example.total } });
+    await settlePaidOrder(prisma, order.id, { adminId });
+    const row = await prisma.notificationOutbox.findFirst({ where: { orderId: order.id, event: NotificationEvent.OWNER_EMAIL_ORDER_PAID } });
+    const email = await renderEmail(NotificationEvent.OWNER_EMAIL_ORDER_PAID, JSON.parse(row!.payloadJson));
+    for (const body of [email!.text, email!.html!]) expect(body).toContain("Rp10.011");
+    const displayed = (label: string) => new Decimal(
+      email!.text.match(new RegExp(`^${label}: (.+)$`, "m"))?.[1]?.replace("Rp", "").replaceAll(".", "") ?? "0");
+    expect(displayed("Subtotal").plus(displayed("Discount")).plus(displayed("Wallet Credit")).toString())
+      .toBe(displayed("Total").toString());
+    const htmlAmount = (label: string) => {
+      const value = email!.html!.match(new RegExp(`>${label}</td><td[^>]*>([^<]+)</td>`))?.[1];
+      expect(value, `HTML ${label} row`).toBeDefined();
+      return new Decimal(value!.replace("Rp", "").replaceAll(".", ""));
+    };
+    expect(htmlAmount("Subtotal")
+      .plus(example.discount === "0" ? 0 : htmlAmount("Discount"))
+      .plus(example.wallet === "0" ? 0 : htmlAmount("Wallet Credit")).toString())
+      .toBe(htmlAmount("Total").toString());
+    const saved = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(saved.discountAmount.toString()).toBe(example.discount);
+    expect(saved.walletUsed.toString()).toBe(example.wallet);
+    expect(saved.totalAmount.toString()).toBe(example.total);
+  });
+
   async function configureOwnerEmail(event: "paid_order" | "manual_queue") {
     await setSetting(prisma, "owner_email_enabled", "true");
     await setSetting(prisma, "owner_email", "owner@example.com");
     await setSetting(prisma, `owner_email_on_${event}`, "true");
   }
+
+  it.each([
+    { currency: "IDR", subtotal: "46500", bulk: "5813", discount: "2000", wallet: "10000", marker: "0", total: "28687", displayedSubtotal: "Rp46.500", displayedTotal: "Rp28.687" },
+    { currency: "USDT", subtotal: "46500", bulk: "5812.5", discount: "2000", wallet: "0.5", marker: "0.028", total: "1.948", displayedSubtotal: "2.92 USDT", displayedTotal: "1.948 USDT" },
+  ])("E28 owner paid $currency email reconciles the actual enqueued rows and renders every adjustment", async (example) => {
+    await configureOwnerEmail("paid_order");
+    const order = await makePendingVerificationOrder(sample.product.id);
+    await prisma.order.update({ where: { id: order.id }, data: {
+      currency: example.currency, fxRate: example.currency === "USDT" ? "16000" : null,
+      subtotalAmount: example.subtotal, bulkDiscountAmount: example.bulk,
+      discountAmount: example.discount, walletUsed: example.wallet,
+      uniqueCents: example.marker, totalAmount: example.total,
+    } });
+    await prisma.orderItem.updateMany({ where: { orderId: order.id }, data: { unitPrice: example.subtotal } });
+    await settlePaidOrder(prisma, order.id, { adminId });
+    const rows = await prisma.notificationOutbox.findMany({ where: { orderId: order.id, event: NotificationEvent.OWNER_EMAIL_ORDER_PAID } });
+    expect(rows).toHaveLength(1);
+    const payload = JSON.parse(rows[0]!.payloadJson);
+    expect(payload.bulk_discount).toBe(example.currency === "USDT" ? "0.37" : example.bulk);
+    expect(payload.wallet_credit).toBe(example.wallet);
+    expect(payload.unique_cents).toBe(example.marker);
+    expect(new Decimal(payload.subtotal).minus(payload.bulk_discount).minus(payload.discount)
+      .minus(payload.wallet_credit).plus(payload.unique_cents).toString()).toBe(payload.total);
+    const email = await renderEmail(NotificationEvent.OWNER_EMAIL_ORDER_PAID, payload);
+    for (const body of [email!.text, email!.html!]) {
+      expect(body).toContain(example.displayedSubtotal);
+      expect(body).toContain(example.displayedTotal);
+      expect(body).toContain("Bulk Discount");
+      expect(body).toContain("Wallet Credit");
+      if (example.currency === "USDT") expect(body).toContain("Unique Amount");
+    }
+    const displayed = (label: string): Decimal => {
+      const value = email!.text.match(new RegExp(`^${label}: (.+)$`, "m"))?.[1];
+      if (!value) return new Decimal(0);
+      return new Decimal(example.currency === "IDR"
+        ? value.replace("Rp", "").replaceAll(".", "")
+        : value.replace(" USDT", ""));
+    };
+    expect(displayed("Subtotal").plus(displayed("Bulk Discount")).plus(displayed("Discount"))
+      .plus(displayed("Wallet Credit")).plus(displayed("Unique Amount")).toString())
+      .toBe(displayed("Total").toString());
+  });
 
   it("AUTO settlement: enqueues exactly one OWNER_EMAIL_ORDER_PAID row with the full expanded payload (no voucher, transaction id from the attached payment proof), and no OWNER_EMAIL_MANUAL_ORDER_QUEUED row", async () => {
     await configureOwnerEmail("paid_order");
@@ -294,12 +378,17 @@ describe("settlePaidOrder — owner-email triggers", () => {
     expect(payload).toEqual({
       to: "owner@example.com",
       order_code: order.orderCode,
-      total: order.totalAmount.toString(),
+      // This legacy default-IDR fixture carries sub-rupiah marker dust. The
+      // receipt displays whole rupiah; settlement must retain the stored money.
+      total: "5",
       currency: order.currency,
       item_count: 1,
       customer_label: "Test User",
       items: [{ name: "Netflix Premium 1M", variant: "1 Month", quantity: 1, unitPrice: order.subtotalAmount.toString() }],
       subtotal: order.subtotalAmount.toString(),
+      bulk_discount: "0",
+      wallet_credit: "0",
+      unique_cents: "0",
       discount: "0", // no voucher applied
       payment_method: "BINANCE_PAY", // Order.paymentMethod's schema default — createOrderDirect never overrides it
       transaction_id: "TX-1", // makePendingVerificationOrder's attachPaymentProof call sets binanceTxid
@@ -309,6 +398,11 @@ describe("settlePaidOrder — owner-email triggers", () => {
     });
     // ISO-parseable, not a placeholder string.
     expect(new Date(payload.paid_at as string).toString()).not.toBe("Invalid Date");
+    const saved = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(saved.currency).toBe("IDR");
+    expect(saved.uniqueCents.greaterThan(0)).toBe(true);
+    expect(saved.uniqueCents.toString()).toBe(order.uniqueCents.toString());
+    expect(saved.totalAmount.toString()).toBe(order.totalAmount.toString());
 
     const manualQueueRows = await prisma.notificationOutbox.count({
       where: { orderId: order.id, event: NotificationEvent.OWNER_EMAIL_MANUAL_ORDER_QUEUED },
@@ -375,7 +469,7 @@ describe("settlePaidOrder — owner-email triggers", () => {
     const rate = "16000"; // 16,000 IDR per USDT, a plausible rate
     await prisma.order.update({
       where: { id: order.id },
-      data: { currency: "USDT", fxRate: rate },
+      data: { currency: "USDT", fxRate: rate, totalAmount: usdtFromIdr(order.subtotalAmount, rate).plus(order.uniqueCents) },
     });
 
     await settlePaidOrder(prisma, order.id, { adminId });
@@ -386,7 +480,7 @@ describe("settlePaidOrder — owner-email triggers", () => {
     expect(paidRows).toHaveLength(1);
     const payload = JSON.parse(paidRows[0]!.payloadJson) as Record<string, unknown>;
 
-    // usdtFromIdr rounds to the nearest 0.1 — compute the expected value the
+    // usdtFromIdr rounds up to the nearest 0.01 — compute the expected value the
     // same way the fix does, then assert against it (don't hardcode a magic
     // number that could silently drift from sample.product's actual price).
     const freshOrder = await prisma.order.findUnique({ where: { id: order.id } });

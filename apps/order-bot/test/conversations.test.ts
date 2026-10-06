@@ -162,10 +162,35 @@ describe("checkout conversations", () => {
     expect(sentIncludes(sink, "SAVE10")).toBe(true); // confirm_voucher_line shows the code
   });
 
+  // Money audit C15: the code-entry gate used a fixed Rp999.999 subtotal, so a
+  // voucher whose minimum purchase was above that could never be applied in
+  // the bot, whatever the order's real subtotal.
+  it("voucher: a minPurchase of Rp1.500.000 applies to a Rp2.000.000 order", async () => {
+    await prisma.denomination.update({ where: { id: sample.product.id }, data: { price: "1000000" } });
+    await createVoucher(prisma, { code: "BIGMIN", type: VoucherType.FIXED, value: "50000", usageLimit: 10, minPurchase: "1500000" });
+    const sink: SentCall[] = [];
+    const entry = entryCust(sink, `v1:voucher:start:${sample.product.id}:2`);
+    const conv = new FakeConversation([msg(sink, { text: "bigmin" })]);
+    await voucherConversation(conv.asMyConversation(), entry);
+    expect(sentIncludes(sink, "BIGMIN")).toBe(true); // confirm_voucher_line shows the applied code
+    expect(sentIncludes(sink, "This voucher requires a minimum purchase of")).toBe(false);
+  });
+
+  it("voucher: the same voucher on a Rp1.000.000 order (below its minimum) is still refused", async () => {
+    await prisma.denomination.update({ where: { id: sample.product.id }, data: { price: "1000000" } });
+    await createVoucher(prisma, { code: "BIGMIN", type: VoucherType.FIXED, value: "50000", usageLimit: 10, minPurchase: "1500000" });
+    const sink: SentCall[] = [];
+    const entry = entryCust(sink, `v1:voucher:start:${sample.product.id}:1`);
+    const conv = new FakeConversation([msg(sink, { text: "bigmin" })]);
+    await voucherConversation(conv.asMyConversation(), entry);
+    expect(sentIncludes(sink, "This voucher requires a minimum purchase of")).toBe(true);
+    expect(entry.session.scratch.appliedVoucherCode).toBeUndefined();
+  });
+
   it("voucher: a minimum-purchase rejection shows the IDR minimum in the buyer's display currency", async () => {
     await setSetting(prisma, "usd_idr_rate", "16000");
     invalidateRateCache();
-    // Above the conversation's 999999 sanity subtotal, so its gate trips.
+    // Far above this order's real subtotal, so the voucher is refused.
     await createVoucher(prisma, { code: "HUGEMIN", type: VoucherType.PERCENT, value: "10", usageLimit: 10, minPurchase: "1600000" });
     const usdSession = (): Partial<SessionData> => ({
       ...custSession(),

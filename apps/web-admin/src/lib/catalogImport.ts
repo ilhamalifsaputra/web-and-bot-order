@@ -6,6 +6,8 @@
  */
 import { ProductType } from "@app/core/enums";
 import { parseMoneyInput } from "@app/core/moneyFormat";
+import { denominationPriceError } from "@app/core/denominationPrices";
+import { Decimal } from "@app/core/money";
 import type { Db } from "@app/db";
 import { listAllCategories, createCatalogProduct, findCatalogProductByName } from "@app/db";
 
@@ -68,7 +70,7 @@ export function parseDenominationCsv(text: string, catByName: Map<string, number
       if (typeUpper !== "SHARED" && typeUpper !== "PRIVATE") return fail("type must be shared or private");
       if (!durationLabel) return fail("duration label is required");
       const priceValue = price ? rupiah(price) : null;
-      if (priceValue === null || Number(priceValue) <= 0) return fail("price must be a positive number (Rupiah, e.g. 79000 or 79.000)");
+      if (priceValue === null) return fail("price must be a positive number (Rupiah, e.g. 79000 or 79.000)");
       let cost: string | null = null;
       if (costPrice) {
         cost = rupiah(costPrice);
@@ -79,6 +81,14 @@ export function parseDenominationCsv(text: string, catByName: Map<string, number
         reseller = rupiah(resellerPrice);
         if (reseller === null) return fail("reseller price must be a number (Rupiah, e.g. 70000 or 70.000)");
       }
+      // The same price rules as the admin catalog API (shared helper): sale
+      // prices at least Rp1, cost zero or more, reseller not above retail.
+      const priceError = denominationPriceError({
+        price: new Decimal(priceValue),
+        costPrice: cost === null ? null : new Decimal(cost),
+        resellerPrice: reseller === null ? null : new Decimal(reseller),
+      });
+      if (priceError) return fail(priceError);
       let warranty: number | null = null;
       if (warrantyDays) {
         if (!/^\d+$/.test(warrantyDays)) return fail("warranty days must be a whole number");

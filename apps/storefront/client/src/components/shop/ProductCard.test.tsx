@@ -54,7 +54,7 @@ describe("ProductCard", () => {
     );
     expect(screen.getByRole("heading", { name: "Netflix Premium" })).toBeInTheDocument();
     expect(screen.getByText("Streaming")).toBeInTheDocument();
-    expect(screen.getByText("Rp79.000")).toBeInTheDocument();
+    expect(screen.getByText("Rp79,000")).toBeInTheDocument();
     expect(screen.getByText("· 12 reviews")).toBeInTheDocument();
     expect(screen.getByText("Available")).toBeInTheDocument();
   });

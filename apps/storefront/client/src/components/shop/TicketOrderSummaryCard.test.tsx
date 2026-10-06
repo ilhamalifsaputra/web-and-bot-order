@@ -30,7 +30,7 @@ describe("TicketOrderSummaryCard", () => {
     render(<TicketOrderSummaryCard order={order} />, { wrapper: MemoryRouter });
     expect(screen.getByText("ORD-TICK-1")).toBeInTheDocument();
     expect(screen.getByText(/Netflix/)).toBeInTheDocument();
-    expect(screen.getByText("Rp158.000")).toBeInTheDocument();
+    expect(screen.getByText("Rp158,000")).toBeInTheDocument();
   });
 
   it("shows the active-warranty state with its expiry date", () => {
@@ -94,6 +94,6 @@ describe("TicketOrderSummaryCard", () => {
 
   it("renders an IDR-currency order's total as Rp — unaffected by the fix", () => {
     render(<TicketOrderSummaryCard order={order} />, { wrapper: MemoryRouter });
-    expect(screen.getByText("Rp158.000")).toBeInTheDocument();
+    expect(screen.getByText("Rp158,000")).toBeInTheDocument();
   });
 });

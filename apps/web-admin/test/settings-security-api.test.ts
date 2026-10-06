@@ -651,12 +651,24 @@ describe("POST /api/settings/import", () => {
       },
     });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ ok: true, applied: 1, skipped: 2 });
+    expect(res.json()).toEqual({
+      ok: true,
+      applied: 1,
+      skipped: 2,
+      skippedKeys: [
+        { key: "not_a_real_key", reason: "Not a setting that can be edited here." },
+        { key: "tokopay_secret", reason: "Secret settings are never imported from a file." },
+      ],
+    });
     expect(await getSetting(prisma, "shop_name")).toBe("Imported Shop");
     expect(await getSetting(prisma, "not_a_real_key")).toBeNull();
     expect(await getSetting(prisma, "tokopay_secret")).toBeNull();
     const audit = await prisma.auditLog.findFirst({ where: { action: "settings_import" } });
-    expect(audit?.details).toBe("Imported 1 setting from a configuration file; skipped 2 invalid or restricted keys.");
+    expect(audit?.details).toBe(
+      'Imported 1 setting from a configuration file; skipped 2: "not_a_real_key" (Not a setting that can be edited here.); ' +
+        '"tokopay_secret" (Secret settings are never imported from a file.)',
+    );
+    expect(audit?.details).not.toContain("should-never-be-written");
   });
 
   it("skips a field that fails its own validation without aborting the rest", async () => {
@@ -664,9 +676,59 @@ describe("POST /api/settings/import", () => {
       fields: { shop_name: "Still Applied", bulk_purchase_broadcast_threshold: "1" },
     });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ ok: true, applied: 1, skipped: 1 });
+    expect(res.json()).toEqual({
+      ok: true,
+      applied: 1,
+      skipped: 1,
+      skippedKeys: [{ key: "bulk_purchase_broadcast_threshold", reason: "Threshold must be a whole number of 2 or more." }],
+    });
     expect(await getSetting(prisma, "shop_name")).toBe("Still Applied");
     expect(await getSetting(prisma, "bulk_purchase_broadcast_threshold")).toBeNull();
+  });
+
+  // Money audit A1 fix round. Export lists keys in EDITABLE order, which puts
+  // usd_idr_rate before fx_rate_min/fx_rate_max. A file from a shop with a
+  // wider band (ceiling 50000, rate 45000) imported into a shop with the
+  // default 40000 ceiling used to judge the rate against the TARGET's old band,
+  // refuse it, and only then apply the file's ceiling — leaving the shop with
+  // no rate (USDT off) and an audit line that only said "skipped 1".
+  it("applies the file's own sanity band before judging its rate, whatever the key order", async () => {
+    const res = await postJson("/api/settings/import", cookie, csrf, {
+      fields: { usd_idr_rate: "45000", fx_rate_min: "9000", fx_rate_max: "50000" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ ok: true, applied: 3, skipped: 0, skippedKeys: [] });
+    expect(await getSetting(prisma, "fx_rate_max")).toBe("50000");
+    expect(await getSetting(prisma, "usd_idr_rate")).toBe("45000");
+  });
+
+  // An export file holds the stored rate verbatim — a plain dot-decimal — so
+  // the import reads it exactly, as it does every money setting. Read by shape,
+  // `16123.456` would be 16,123,456 and refused by the ceiling.
+  it("reads an exported rate with three decimals exactly, not by shape", async () => {
+    const res = await postJson("/api/settings/import", cookie, csrf, {
+      fields: { usd_idr_rate: "16123.456" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ ok: true, applied: 1, skipped: 0, skippedKeys: [] });
+    expect(await getSetting(prisma, "usd_idr_rate")).toBe("16123.456");
+  });
+
+  it("names each skipped key and why, in the reply and the audit entry", async () => {
+    const res = await postJson("/api/settings/import", cookie, csrf, {
+      fields: { usd_idr_rate: "45000", shop_name: "Kept" },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { applied: number; skipped: number; skippedKeys: { key: string; reason: string }[] };
+    expect(body.applied).toBe(1);
+    expect(body.skipped).toBe(1);
+    expect(body.skippedKeys).toHaveLength(1);
+    expect(body.skippedKeys[0]!.key).toBe("usd_idr_rate");
+    expect(body.skippedKeys[0]!.reason).toContain("40000");
+    expect(await getSetting(prisma, "usd_idr_rate")).toBeNull();
+    const audit = await prisma.auditLog.findFirst({ where: { action: "settings_import" } });
+    expect(audit?.details).toContain('"usd_idr_rate"');
+    expect(audit?.details).toContain("40000");
   });
 
   it("requires auth (anon → 401)", async () => {

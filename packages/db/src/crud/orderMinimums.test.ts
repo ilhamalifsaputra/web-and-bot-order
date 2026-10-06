@@ -364,12 +364,31 @@ describe("finalizeOrderPayment — the USDT minimum is judged after the buyer's 
     expect(new Decimal(order!.walletUsed).isZero()).toBe(true);
   });
 
-  it("exempts an order the credit covers entirely — there is no rail amount to floor", async () => {
-    // Deliberately a floor nothing could clear: a fully covered order needs no
-    // rail, the same exemption a zero total already gets.
+  it("refuses a gateway rail for an order the credit covers entirely — nothing would be left but the unique cents", async () => {
+    // A3 / money audit P1: this used to be exempt, and the credit then left the
+    // order asking the buyer to send only its unique cents. A fully covered
+    // order belongs on the WALLET rail; on a gateway it is refused untouched.
+    await setSetting(prisma, MIN_ORDER_AMOUNT_IDR_KEY, "0");
+    const before = await paymentFieldsOf(orderId);
+    await expect(finalizeUsdt("10")).rejects.toMatchObject({
+      key: "error.amount_too_small_for_rail",
+      formatArgs: { currency: OrderCurrency.USDT },
+    });
+    expect(await paymentFieldsOf(orderId)).toEqual(before);
+  });
+
+  it("still lets the WALLET rail take an order the credit covers entirely, whatever the floor", async () => {
+    // Deliberately a floor nothing could clear: WALLET collects nothing through
+    // a gateway, so no rail minimum applies to it.
     await setSetting(prisma, MIN_ORDER_AMOUNT_IDR_KEY, "1000000");
-    const order = await finalizeUsdt("10");
+    const order = await finalizeOrderPayment(prisma, orderId, {
+      currency: OrderCurrency.USDT,
+      rate: "16000",
+      method: PaymentMethod.WALLET,
+      walletAmount: "10",
+    });
     expect(order!.currency).toBe(OrderCurrency.USDT);
+    expect(new Decimal(order!.uniqueCents).isZero()).toBe(true);
   });
 
   it("never lets a credit weaken the IDR rail's own floor", async () => {

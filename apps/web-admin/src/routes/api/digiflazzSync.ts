@@ -5,6 +5,8 @@ import {
   groupDigiflazzPriceListByBrand,
   getDigiflazzMarkupSettings,
   applyDigiflazzMarkup,
+  readDigiflazzMarkup,
+  InvalidDigiflazzMarkupError,
   importDigiflazzBrand,
   listAllCategories,
   logAdminAction,
@@ -83,6 +85,11 @@ export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Prom
     // issue thousands of concurrent Settings reads against the database on
     // one preview click.
     const markupSettings = await getDigiflazzMarkupSettings(prisma);
+    // An unreadable stored markup cannot suggest any price: say so (400)
+    // instead of failing with a DecimalError deep in the mapping below.
+    if (readDigiflazzMarkup(markupSettings) === null) {
+      return reply.code(400).send({ error: new InvalidDigiflazzMarkupError().message });
+    }
     const withPrices = groups.map((g) => ({
       brand: g.brand,
       rawBrand: g.rawBrand,

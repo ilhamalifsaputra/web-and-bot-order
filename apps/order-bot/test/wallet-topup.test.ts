@@ -452,4 +452,22 @@ describe("the typed top-up amount is parsed by its shape", () => {
     expect(ctx.session.awaitingTopupCurrency).toBe("USDT");
     expect((ctx.session.scratch as Record<string, unknown>).topupAmount).toBeUndefined();
   });
+
+  // Money audit C11: the same amount judgement as createWalletTopupOrder, so
+  // the prompt re-asks instead of carrying an amount the order step refuses.
+  it.each([
+    ["USDT", "5,12345"],
+    ["IDR", "999999999999"],
+    ["IDR", "0"],
+  ] as const)("%s: %j is refused at the prompt and capture stays on", async (currency, typed) => {
+    await enableTokopay();
+    await enableBinanceInternal();
+
+    const { ctx, sink } = customerCtx();
+    await walletTopup.handleTopupAmountInput(ctx, currency, typed);
+
+    expect(JSON.stringify(sink)).toContain("valid amount");
+    expect(ctx.session.awaitingTopupCurrency).toBe(currency);
+    expect((ctx.session.scratch as Record<string, unknown>).topupAmount).toBeUndefined();
+  });
 });

@@ -90,6 +90,7 @@ import {
   enqueueAdminPasswordReset,
   enqueueAdminStalePayment,
   enqueueAdminDigiflazzResyncAborted,
+  enqueueAdminDigiflazzBelowCost,
   enqueueAdminFxRateRejected,
   enqueueAdminFxRateStale,
   completeOrderWithWalletCredit,
@@ -351,6 +352,30 @@ describe("drainBatch routes ADMIN_STALE_PAYMENT as an admin DM, never a public p
       where: { orderId: order!.id, event: NotificationEvent.ADMIN_STALE_PAYMENT },
     });
     expect(row!.status).toBe("SENT");
+  });
+});
+
+/** The margin warning must reach its admin recipient regardless of channel setup. */
+describe("drainBatch routes below-cost alerts to admins", () => {
+  afterEach(() => resetBotIdentity());
+
+  it.each([undefined, -1009876543999])("delivers to the admin with public channel %s", async publicChannelId => {
+    await prisma.notificationOutbox.deleteMany({ where: { event: NotificationEvent.ADMIN_DIGIFLAZZ_BELOW_COST } });
+    await addAdminIdToDb(prisma, 900_200_019);
+    if (publicChannelId != null) setBotIdentity({ publicChannelId });
+    else resetBotIdentity();
+    await enqueueAdminDigiflazzBelowCost(prisma, { count: 12, newlyBelowCost: 3 });
+    const { bot, sendMessage } = fakeBot();
+
+    await drainBatch(bot);
+
+    const call = sendMessage.mock.calls.find(c => c[0] === 900_200_019);
+    expect(call).toBeDefined();
+    expect(call![1]).toContain("below cost");
+    expect(sendMessage.mock.calls.some(c => c[0] === -1009876543999)).toBe(false);
+    const rows = await prisma.notificationOutbox.findMany({ where: { event: NotificationEvent.ADMIN_DIGIFLAZZ_BELOW_COST } });
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every(row => row.status === "SENT")).toBe(true);
   });
 });
 

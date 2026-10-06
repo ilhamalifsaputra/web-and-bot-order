@@ -217,6 +217,9 @@ export const OrderStatus = {
 export type OrderStatus = (typeof OrderStatus)[keyof typeof OrderStatus];
 export const zOrderStatus = z.nativeEnum(OrderStatus);
 
+/** Terminal transitions that release stock, wallet and voucher holds. Expiry uses CANCELLED. */
+export const ORDER_HOLD_RELEASED_STATUSES: readonly OrderStatus[] = [OrderStatus.CANCELLED, OrderStatus.REJECTED];
+
 /**
  * Per-line fulfilment state — stored on `order_items.status` (Trustance
  * Phase 1, Task 3). String enum, uppercase member names, matching every other
@@ -730,6 +733,9 @@ export const NotificationEvent = {
   // sharp_changes/considered_rows (plain counts only, never a SKU/price
   // dump), same fan-out-per-admin shape as ADMIN_STALE_PAYMENT above.
   ADMIN_DIGIFLAZZ_RESYNC_ABORTED: "ADMIN_DIGIFLAZZ_RESYNC_ABORTED",
+  // Admin DM: retail or reseller prices fell below the supplier cost during
+  // a catalog resync. Count-only payload; the catalog shows affected rows.
+  ADMIN_DIGIFLAZZ_BELOW_COST: "ADMIN_DIGIFLAZZ_BELOW_COST",
   // Admin DM (not a channel post): the hourly market-rate refresh
   // (`refreshUsdIdrRate`, scheduled by `scheduleFxRefresh`) fetched a
   // USD→IDR rate that failed `validateUsdIdrRate`'s sanity band — outside

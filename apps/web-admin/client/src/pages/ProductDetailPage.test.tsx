@@ -53,6 +53,13 @@ beforeEach(() => {
 });
 
 describe("ProductDetailPage", () => {
+  it("marks a denomination below cost so the admin can review its price", async () => {
+    const data = { ...PRODUCT_DETAIL, statsByDenom: { "10": { ...PRODUCT_DETAIL.statsByDenom["10"], belowCost: true } } };
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(JSON.stringify(data), { status: 200, headers: { "Content-Type": "application/json" } }));
+    render(<ProductDetailPage />, { wrapper: Wrapper });
+    expect(await screen.findByText("Below Cost")).toBeInTheDocument();
+  });
+
   it("shows product detail", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       new Response(JSON.stringify(PRODUCT_DETAIL), {

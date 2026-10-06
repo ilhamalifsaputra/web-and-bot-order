@@ -16,14 +16,14 @@
  *    would otherwise be trusted at checkout and could zero out a price. Same
  *    reasoning as `activeFlashPercent`, applied to the same class of row.
  *
- * 2. **One formula.** The discount is `subtotal × percent / 100`, quantized
- *    once, and the caller subtracts it. Computing the reduced price directly
+ * 2. **One formula.** The discount is `subtotal × percent / 100`, rounded
+ *    once to whole rupiah, and the caller subtracts it. Computing the reduced price directly
  *    (`subtotal × (1 − percent/100)`) is algebraically identical but rounds
  *    differently, and having both spellings in the codebase is how a preview
  *    screen starts quoting a figure the order won't charge.
  */
 import { Decimal } from "./money";
-import { quantizeMoney } from "./formatters";
+import { wholeRupiah } from "./formatters";
 
 /** The two columns that define a bulk rule, as stored on BulkPricing. */
 export type BulkRuleFields = {
@@ -66,7 +66,10 @@ export function isBulkActive(rule: BulkRuleFields | null | undefined, quantity: 
 /**
  * How much `rule` takes off a line whose subtotal is `lineSubtotal` — a
  * positive amount the caller subtracts, or zero when the rule doesn't apply.
- * Quantized to 4dp, matching the Numeric(12,4) money columns.
+ * Whole rupiah, half-up ({@link wholeRupiah}): the line subtotal is central
+ * IDR, and a fractional discount made the preview rows and the charge disagree
+ * (B5, money audit). Per line, so a cart's bulk discount is the sum of what
+ * each line shows.
  */
 export function bulkDiscountFor(
   lineSubtotal: Decimal.Value,
@@ -75,5 +78,5 @@ export function bulkDiscountFor(
 ): Decimal {
   const percent = activeBulkPercent(rule, quantity);
   if (percent === null) return new Decimal(0);
-  return quantizeMoney(new Decimal(lineSubtotal).times(percent).div(100), 4);
+  return wholeRupiah(new Decimal(lineSubtotal).times(percent).div(100));
 }

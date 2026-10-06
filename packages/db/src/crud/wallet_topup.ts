@@ -34,6 +34,7 @@ import { Decimal } from "@app/core/money";
 import { addMinutes } from "@app/core/datetime";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
+import { computeQrisAdminFee } from "@app/core/payments/tokopay";
 import { PaymentLogEvent } from "@app/core/payments/logEvents";
 import type { PrismaClient, Tx } from "../client";
 import type { Db } from "./_types";
@@ -49,7 +50,7 @@ import { getOrder, uniqueOrderCode, customerLabel, cancelOrder, findUnderpaidRec
 import { adjustWallet } from "./users";
 import { postUnderpaidTopupCreditPosting, postWalletTopupPosting } from "./ledgerPostings";
 import { finalizeOrderPayment, writeWithUniqueRailAmount, type UniqueAmountRail } from "./pricing";
-import { enqueueOwnerWalletTopupEmail, enqueueWalletTopupCreditedDm } from "./notifications";
+import { enqueueAdminOverpaid, enqueueOwnerWalletTopupEmail, enqueueWalletTopupCreditedDm } from "./notifications";
 
 const ZERO = new Decimal(0);
 
@@ -60,6 +61,36 @@ export const WALLET_TOPUP_MIN_AMOUNT_IDR_KEY = "wallet_topup_min_amount_idr";
 export const WALLET_TOPUP_MAX_AMOUNT_IDR_KEY = "wallet_topup_max_amount_idr";
 export const WALLET_TOPUP_MIN_AMOUNT_USDT_KEY = "wallet_topup_min_amount_usdt";
 export const WALLET_TOPUP_MAX_AMOUNT_USDT_KEY = "wallet_topup_max_amount_usdt";
+
+/**
+ * Hard ceilings on a single wallet top-up, applied on top of (never instead
+ * of) the configurable maximum above, so a shop that left the maximum blank
+ * still refuses a 20-digit amount. Rp100.000.000 and 10,000 USDT are far above
+ * any real top-up of this shop yet small enough that a typo or a hostile
+ * request cannot create an absurd pending order. A configured maximum can
+ * only lower them.
+ */
+export const WALLET_TOPUP_HARD_MAX_IDR = new Decimal("100000000");
+export const WALLET_TOPUP_HARD_MAX_USDT = new Decimal("10000");
+/** The precision a USDT wallet credit is kept at (adjustWallet quantizes to it). */
+const USDT_WALLET_DECIMALS = 4;
+
+/**
+ * Why `amount` can never be a wallet top-up in `currency`, as an i18n key, or
+ * null when it can (the configurable min/max are judged separately). Not a
+ * positive finite number, or a USDT amount finer than the 4 decimals a wallet
+ * credit keeps (stored raw on the order but credited rounded, the order and the
+ * credit would disagree): `error.wallet_topup_amount_invalid`. Above the hard
+ * ceiling: `error.wallet_topup_above_max`. Shared by createWalletTopupOrder and
+ * the bot's amount prompt so the two cannot disagree.
+ */
+export function walletTopupAmountError(amount: Decimal, currency: "IDR" | "USDT"): string | null {
+  if (!amount.isFinite() || amount.lessThanOrEqualTo(0)) return "error.wallet_topup_amount_invalid";
+  if (currency === "USDT" && amount.decimalPlaces() > USDT_WALLET_DECIMALS) return "error.wallet_topup_amount_invalid";
+  const hardMax = currency === "IDR" ? WALLET_TOPUP_HARD_MAX_IDR : WALLET_TOPUP_HARD_MAX_USDT;
+  if (amount.greaterThan(hardMax)) return "error.wallet_topup_above_max";
+  return null;
+}
 
 export interface WalletTopupLimits {
   minIdr: Decimal | null;
@@ -417,10 +448,15 @@ export async function createWalletTopupOrder(
     rate?: Decimal.Value;
   },
 ): Promise<NonNullable<Awaited<ReturnType<typeof getOrder>>>> {
-  const amount = new Decimal(args.amount);
-  if (!amount.isFinite() || amount.lessThanOrEqualTo(0)) {
-    throw new ValidationError("error.generic");
+  let amount: Decimal;
+  try {
+    amount = new Decimal(args.amount);
+  } catch {
+    // Unreadable text ("abc") — a buyer-facing refusal, not a DecimalError 500.
+    throw new ValidationError("error.wallet_topup_amount_invalid");
   }
+  const amountError = walletTopupAmountError(amount, args.currency);
+  if (amountError) throw new ValidationError(amountError);
 
   const limits = await resolveWalletTopupLimits(db);
   const [min, max] = args.currency === "IDR" ? [limits.minIdr, limits.maxIdr] : [limits.minUsdt, limits.maxUsdt];
@@ -687,6 +723,84 @@ export async function settleWalletTopup(
 }
 
 /**
+ * Make an overpaid wallet top-up visible, exactly the way every rail already
+ * makes an overpaid PRODUCT order visible: stamp `outcome: "overpaid"` on the
+ * rail's own processed-transaction row and enqueue one `ADMIN_OVERPAID` DM per
+ * admin (via `notification_outbox` — the webhook rails run in the web process,
+ * which never sends Telegram itself).
+ *
+ * Each rail's deliver function used to return from its `WALLET_TOPUP` branch
+ * before reaching the overpayment check its product branch runs, and
+ * `settleWalletTopup` credits `order.totalAmount` whatever arrived — so the
+ * excess of an overpaid top-up was recorded nowhere: no ledger flag, no alert,
+ * and therefore no Overpayment card on the admin order page, whose
+ * `findOverpaidExcess` (crud/overpayments.ts) reads exactly that ledger outcome.
+ * With the flag in place an admin can hand the excess back through
+ * `creditOverpaymentToBalance` like any other overpayment; that function and its
+ * ledger posting are order-kind agnostic.
+ *
+ * Deliberately does NOT change what was credited: crediting the excess
+ * automatically is a business decision that has not been taken, so the buyer
+ * still receives the order total and the excess waits for an admin.
+ *
+ * The rule is the product branch's own: any excess above zero over what the
+ * rail BILLED (`qrisChargeAmount(total)` on TokoPay, the bare total elsewhere).
+ * A payment the amount matcher accepted slightly BELOW the total is not an
+ * overpayment.
+ *
+ * Runs inside the caller's delivery transaction, after `settleWalletTopup`, so
+ * the credit, the flag and the alert commit or roll back together. It is a
+ * no-op when that settlement credited nothing (another path won the top-up's
+ * atomic claim first): the flag and alert belong to the call that actually
+ * settled, so a second transaction reaching an already-credited top-up can
+ * never alert a second time. A re-delivery of the SAME transaction never gets
+ * this far — every rail's ledger claim answers it `already_processed`.
+ *
+ * Returns the excess it flagged, or null when nothing was flagged.
+ */
+export async function flagWalletTopupOverpayment(
+  db: Db,
+  args: {
+    order: { id: number; orderCode: string; currency: string };
+    /** What `settleWalletTopup` returned as `credited` for this call. */
+    credited: Decimal;
+    paid: Decimal.Value;
+    /** What the rail billed the buyer for this order. */
+    expected: Decimal.Value;
+    /** The rail's display name, for the developer log line. */
+    rail: string;
+    /** Stamps `outcome: "overpaid"` on this rail's processed-transaction row. */
+    markLedgerOverpaid: () => Promise<unknown>;
+  },
+): Promise<Decimal | null> {
+  if (!args.credited.greaterThan(0)) return null;
+  const paid = new Decimal(args.paid);
+  const expected = new Decimal(args.expected);
+  // Quantized exactly as `findOverpaidExcess` (overpayments.ts) quantizes the
+  // excess an admin can credit back: 4dp, half-up, on the received amount and
+  // on the difference. Dust below that (e.g. a NOWPayments value derived by
+  // division) would otherwise raise an alert for an excess of 0 that the
+  // order page then refuses to credit.
+  const excess = quantizeMoney(quantizeMoney(paid, 4).minus(expected), 4);
+  if (!excess.greaterThan(0)) return null;
+
+  await args.markLedgerOverpaid();
+  await enqueueAdminOverpaid(db, {
+    orderId: args.order.id,
+    orderCode: args.order.orderCode,
+    paid,
+    expected,
+    excess,
+    currency: args.order.currency,
+    walletTopup: true,
+  });
+  logger.warn(
+    `${args.rail} wallet top-up order ${args.order.orderCode} was overpaid — got ${paid.toString()}, expected ${expected.toString()} (excess ${excess.toString()} ${args.order.currency}). The buyer's balance was credited the order total only; the ledger row is flagged overpaid and an admin alert was enqueued so the excess can be returned from the order page.`,
+  );
+  return excess;
+}
+
+/**
  * True for a wallet top-up whose order was already cancelled — in practice
  * always by `autoCancelExpiredOrders` once the payment window lapsed — but
  * whose money has now genuinely arrived at the gateway. Every rail's
@@ -803,7 +917,15 @@ export async function creditUnderpaidTopupAnyway(
       throw new ValidationError("error.order_not_underpaid");
     }
 
-    const received = (await findUnderpaidReceived(tx, args.orderId)) ?? ZERO;
+    const recordedReceived = await findUnderpaidReceived(tx, args.orderId);
+    let received = recordedReceived ?? ZERO;
+    // Only TokoPay adds a buyer-paid QRIS fee. PayDisini compares
+    // received principal against the bare total, so its fee is zero here.
+    if (order.paymentMethod === PaymentMethod.TOKOPAY || order.paymentMethod === PaymentMethod.PAYDISINI) {
+      const fee = order.paymentMethod === PaymentMethod.TOKOPAY ? computeQrisAdminFee(order.totalAmount) : ZERO;
+      if (recordedReceived !== null && fee.gt(0) && received.lte(fee)) throw new ValidationError("error.underpaid_topup_fee_not_covered");
+      received = Decimal.max(ZERO, Decimal.min(received.minus(fee), order.totalAmount));
+    }
     const anythingReceived = received.greaterThan(0);
     if (anythingReceived) {
       const { transactionId } = await adjustWallet(tx, order.userId, received, {
@@ -811,7 +933,7 @@ export async function creditUnderpaidTopupAnyway(
         currency: order.currency as "IDR" | "USDT",
         orderId: order.id,
         adminId: args.adminId,
-        note: `Underpaid top-up order ${order.orderCode}: credited the amount actually received.`,
+        note: `Underpaid top-up order ${order.orderCode}: credited the received principal after any buyer-paid fee.`,
       });
       // Posted as gateway cash becoming wallet credit (`Dr provider_clearing /
       // Cr wallet_liability`), NOT as the equity-funded manual adjustment the
@@ -838,7 +960,7 @@ export async function creditUnderpaidTopupAnyway(
       logger.info(
         `Resolved underpaid wallet top-up order ${order.orderCode} by cancelling it and crediting the buyer ` +
           `${received.toString()} ${order.currency} as a manual adjustment by admin ${args.adminId} — the amount ` +
-          `they actually sent, rather than the ${new Decimal(order.totalAmount).toString()} the order asked for. ` +
+          `available after any buyer-paid fee, capped at the ${new Decimal(order.totalAmount).toString()} the order asked for. ` +
           `The shortfall is not credited because it never arrived.`,
       );
     } else {

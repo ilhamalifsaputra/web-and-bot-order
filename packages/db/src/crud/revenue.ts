@@ -98,8 +98,29 @@ function orderItemRevenueIdr(item: {
  * for IDR, divided by THAT order's own fxRate snapshot for USDT (never a
  * live rate). Used to bring both revenue and cost into the same currency
  * bucket with the identical rule, so they can't drift apart. */
-function idrToBucketCurrency(idrAmount: Decimal, isUsdt: boolean, fxRate: Decimal.Value | null): Decimal {
-  return isUsdt && fxRate != null ? idrAmount.div(fxRate) : idrAmount;
+function idrToBucketCurrency(idrAmount: Decimal, isUsdt: boolean, fxRate: Decimal.Value | null): Decimal | null {
+  if (!isUsdt) return idrAmount;
+  return fxRate != null && new Decimal(fxRate).greaterThan(0) ? idrAmount.div(fxRate) : null;
+}
+
+/** Combined sales value in IDR. Finalized USDT product orders retain their
+ * canonical IDR subtotal/discount snapshots, before conversion ceiling and
+ * payment-identification cents. That price already includes wallet funding;
+ * adding wallet rows again would count it twice. Missing historical FX cannot
+ * prove conversion, so only independently recorded IDR funding is included and
+ * an unknown USDT leg is explicitly counted. Native receipt totals remain in
+ * their own currencies, matching gateway/wallet ledger postings. */
+export function orderSalesValueIdr(
+  order: { currency: string; fxRate: Decimal.Value | null; totalAmount: Decimal.Value; subtotalAmount: Decimal.Value; bulkDiscountAmount: Decimal.Value; discountAmount: Decimal.Value },
+  wallet?: WalletSpend,
+): { amount: Decimal; excludedFxOrders: number } {
+  const hasFx = order.fxRate != null && new Decimal(order.fxRate).greaterThan(0);
+  if (order.currency === "USDT" && hasFx) {
+    return { amount: Decimal.max(0, new Decimal(order.subtotalAmount).minus(order.bulkDiscountAmount).minus(order.discountAmount)), excludedFxOrders: 0 };
+  }
+  const idr = (wallet?.idr ?? new Decimal(0)).plus(order.currency === "USDT" ? 0 : order.totalAmount);
+  const usdt = (wallet?.usdt ?? new Decimal(0)).plus(order.currency === "USDT" ? order.totalAmount : 0);
+  return { amount: hasFx ? idr.plus(usdt.times(order.fxRate!)) : idr, excludedFxOrders: !hasFx && !usdt.isZero() ? 1 : 0 };
 }
 
 /**
@@ -626,7 +647,7 @@ export interface TopProductMargin {
 
 /**
  * Best-selling products since `since`, ranked by units sold, with revenue and
- * profit in IDR — `OrderItem.unitPrice` and `Denomination.costPrice` are both
+ * profit in IDR — `OrderItem.unitPrice` and its per-unit cost snapshot are both
  * always catalog-central IDR already (see orderItemRevenueIdr), so neither
  * needs fxRate conversion regardless of the order's settlement currency. Any
  * cost-unknown unit nulls that product's profit (rather than silently
@@ -642,6 +663,7 @@ export async function topProductsByMargin(db: Db, since: Date, limit = 5): Promi
       productId: true,
       quantity: true,
       unitPrice: true,
+      costSnapshot: true,
       product: { select: { name: true, costPrice: true, product: { select: { name: true } } } },
       order: { select: { subtotalAmount: true, bulkDiscountAmount: true, discountAmount: true } },
     },
@@ -658,10 +680,11 @@ export async function topProductsByMargin(db: Db, since: Date, limit = 5): Promi
     };
     a.units += item.quantity;
     a.revenue = a.revenue.plus(orderItemRevenueIdr(item));
-    if (item.product.costPrice == null) {
+    const unitCost = item.costSnapshot ?? item.product.costPrice;
+    if (unitCost == null) {
       a.costUnknownUnits += item.quantity;
     } else {
-      a.cost = a.cost.plus(new Decimal(item.product.costPrice).times(item.quantity));
+      a.cost = a.cost.plus(new Decimal(unitCost).times(item.quantity));
     }
     acc.set(item.productId, a);
   }
@@ -683,6 +706,8 @@ export interface CurrencyProfit {
   netProfit: string;
   marginPct: string | null;
   excludedItemCount: number;
+  /** Included in excludedItemCount; separately named so missing FX is visible. */
+  excludedFxItemCount?: number;
 }
 
 export interface ProfitSummary {
@@ -694,11 +719,12 @@ export interface ProfitSummary {
  * Net profit + margin for delivered OrderItems since `since`, split by the
  * order's currency — never blended (the "Rp137 + 20.25 USDT" bug this
  * dashboard exists to fix). Both `OrderItem.unitPrice` and
- * `Denomination.costPrice` are always catalog-central IDR; a USDT-currency
+ * `OrderItem.costSnapshot` (or the live denomination cost for legacy rows)
+ * are always catalog-central IDR; a USDT-currency
  * line converts BOTH to USDT-equivalent via THAT order's own `fxRate`
  * snapshot (never a live rate) through the shared `idrToBucketCurrency`
  * helper, so revenue and cost can never end up in mismatched units within
- * the same bucket. Items whose Denomination has no costPrice are excluded
+ * the same bucket. Items with neither a snapshot nor live cost are excluded
  * from both the profit sum and the margin% denominator (counting them at
  * cost=0 would read as a fabricated 100% margin) and counted in
  * `excludedItemCount` instead.
@@ -709,34 +735,39 @@ export async function profitSummarySince(db: Db, since: Date): Promise<ProfitSum
     select: {
       quantity: true,
       unitPrice: true,
+      costSnapshot: true,
       product: { select: { costPrice: true } },
       order: { select: { currency: true, fxRate: true, subtotalAmount: true, bulkDiscountAmount: true, discountAmount: true } },
     },
   });
 
-  const byCurrency: Record<"IDR" | "USDT", { revenue: Decimal; cost: Decimal; excluded: number }> = {
-    IDR: { revenue: new Decimal(0), cost: new Decimal(0), excluded: 0 },
-    USDT: { revenue: new Decimal(0), cost: new Decimal(0), excluded: 0 },
+  const byCurrency: Record<"IDR" | "USDT", { revenue: Decimal; cost: Decimal; excluded: number; excludedFx: number }> = {
+    IDR: { revenue: new Decimal(0), cost: new Decimal(0), excluded: 0, excludedFx: 0 },
+    USDT: { revenue: new Decimal(0), cost: new Decimal(0), excluded: 0, excludedFx: 0 },
   };
 
   for (const item of items) {
     const isUsdt = item.order.currency === "USDT";
     const bucket = isUsdt ? byCurrency.USDT : byCurrency.IDR;
-    if (item.product.costPrice == null) {
+    const unitCost = item.costSnapshot ?? item.product.costPrice;
+    if (unitCost == null) {
       bucket.excluded += 1;
       continue;
     }
     const lineRevenueIdr = orderItemRevenueIdr(item);
-    const lineCostIdr = new Decimal(item.product.costPrice).times(item.quantity);
-    bucket.revenue = bucket.revenue.plus(idrToBucketCurrency(lineRevenueIdr, isUsdt, item.order.fxRate));
-    bucket.cost = bucket.cost.plus(idrToBucketCurrency(lineCostIdr, isUsdt, item.order.fxRate));
+    const lineCostIdr = new Decimal(unitCost).times(item.quantity);
+    const revenue = idrToBucketCurrency(lineRevenueIdr, isUsdt, item.order.fxRate);
+    const cost = idrToBucketCurrency(lineCostIdr, isUsdt, item.order.fxRate);
+    if (revenue == null || cost == null) { bucket.excluded += 1; bucket.excludedFx += 1; continue; }
+    bucket.revenue = bucket.revenue.plus(revenue);
+    bucket.cost = bucket.cost.plus(cost);
   }
 
-  const shape = (b: { revenue: Decimal; cost: Decimal; excluded: number }): CurrencyProfit | null => {
+  const shape = (b: { revenue: Decimal; cost: Decimal; excluded: number; excludedFx: number }): CurrencyProfit | null => {
     if (b.revenue.isZero() && b.excluded === 0) return null;
     const profit = b.revenue.minus(b.cost);
     const marginPct = b.revenue.isZero() ? null : profit.div(b.revenue).times(100).toDecimalPlaces(2).toString();
-    return { netProfit: q4(profit).toString(), marginPct, excludedItemCount: b.excluded };
+    return { netProfit: q4(profit).toString(), marginPct, excludedItemCount: b.excluded, ...(b.excludedFx > 0 ? { excludedFxItemCount: b.excludedFx } : {}) };
   };
 
   return { idr: shape(byCurrency.IDR), usdt: shape(byCurrency.USDT) };
@@ -779,19 +810,13 @@ export async function ordersByDay(db: Db, days = 30): Promise<DayOrderCounts[]> 
 export interface DayCombinedRevenue {
   day: string;
   revenueIdrEquiv: string;
+  excludedFxOrders: number;
 }
 
-/**
- * Daily delivered revenue for the last `days` days, oldest→newest, normalized
- * to IDR-equivalent: IDR orders pass through unconverted, USDT orders
- * convert via THEIR OWN fxRate snapshot — never a live rate, so a past day's
- * combined total never moves when today's fx rate changes. This operates on
- * `Order.totalAmount` (which genuinely follows `Order.currency`, unlike
- * `OrderItem.unitPrice` — see orderItemRevenueIdr), so multiplying by fxRate
- * here is correct. This is the one place this function intentionally blends
- * currencies — the "Combined" filter the user explicitly opts into, as
- * opposed to revenueByDay's per-currency split.
- */
+/** Daily delivered sales value in canonical IDR before USDT conversion ceiling
+ * and unique payment markers. Uses orderSalesValueIdr, including its explicit
+ * missing-FX exclusion count; native collected revenue remains per currency in
+ * revenueByDay. Historical prices/rates are snapshots, never live quotes. */
 export async function combinedRevenueByDay(db: Db, days = 30): Promise<DayCombinedRevenue[]> {
   const now = new Date();
   const since = addDays(now, -(days - 1));
@@ -800,43 +825,25 @@ export async function combinedRevenueByDay(db: Db, days = 30): Promise<DayCombin
   const where = { status: OrderStatus.DELIVERED, ...ORDER_KIND_SALES_FILTER, deliveredAt: { gte: since } };
   const orders = await db.order.findMany({
     where,
-    select: { id: true, deliveredAt: true, totalAmount: true, currency: true, fxRate: true },
+    select: { id: true, deliveredAt: true, totalAmount: true, currency: true, fxRate: true, subtotalAmount: true, bulkDiscountAmount: true, discountAmount: true },
   });
   // Bounded to the window's own orders — see revenueByDay for why.
   const walletSpend = await walletSpendByOrder(db, where, orders.map((o) => o.id));
 
-  const buckets = new Map<string, Decimal>();
+  const buckets = new Map<string, { amount: Decimal; excludedFxOrders: number }>();
   for (let i = 0; i < days; i++) {
-    buckets.set(addDays(since, i).toISOString().slice(0, 10), new Decimal(0));
+    buckets.set(addDays(since, i).toISOString().slice(0, 10), { amount: new Decimal(0), excludedFxOrders: 0 });
   }
   for (const o of orders) {
     if (!o.deliveredAt) continue;
     const key = o.deliveredAt.toISOString().slice(0, 10);
     const current = buckets.get(key);
     if (!current) continue;
-    const idrEquiv = o.currency === "USDT" && o.fxRate != null
-      ? new Decimal(o.totalAmount).times(o.fxRate)
-      : new Decimal(o.totalAmount);
-    // The wallet leg blends by ITS OWN currency, not the order's: an IDR leg on
-    // a USDT order passes through unconverted, a USDT leg converts through that
-    // order's own fxRate snapshot — and an fxRate-less USDT leg is counted
-    // unconverted, the same pre-existing wart the gateway leg above carries, so
-    // the two halves of one sale can never be blended by two different rules.
-    // The conversion condition is the gateway leg's verbatim, `o.currency ===
-    // "USDT"` half included: today only a USDT order is ever stamped with an
-    // fxRate (`finalizeOrderPayment`, crud/pricing.ts), so the two agree — but
-    // testing `o.fxRate != null` alone would make that sentence above a promise
-    // the code no longer keeps the day anything stamps an fxRate on an IDR
-    // order, and would multiply this leg into the Rupiah blend by that rate.
-    const wallet = walletSpend.get(o.id);
-    const walletIdrEquiv = wallet
-      ? wallet.idr.plus(
-          o.currency === "USDT" && o.fxRate != null ? wallet.usdt.times(o.fxRate) : wallet.usdt,
-        )
-      : new Decimal(0);
-    buckets.set(key, current.plus(idrEquiv).plus(walletIdrEquiv));
+    const value = orderSalesValueIdr(o, walletSpend.get(o.id));
+    current.amount = current.amount.plus(value.amount);
+    current.excludedFxOrders += value.excludedFxOrders;
   }
-  return [...buckets.entries()].map(([day, total]) => ({ day, revenueIdrEquiv: q4(total).toString() }));
+  return [...buckets.entries()].map(([day, total]) => ({ day, revenueIdrEquiv: q4(total.amount).toString(), excludedFxOrders: total.excludedFxOrders }));
 }
 
 /**
@@ -986,7 +993,8 @@ export type PeriodGranularity = "week" | "month" | "year";
  * the whole window, so a 5-year-old shop's "year" view pulls every matching
  * `Order`/`OrderItem` row from that whole span into Node memory in one
  * request — `profitByPeriod` is the most expensive of the three, since its
- * rows carry a joined `product.costPrice` select. This is markedly wider
+ * rows carry both `costSnapshot` and a legacy `product.costPrice` fallback.
+ * This is markedly wider
  * than anything else in this file (`revenueByDay`'s widest production window
  * is 30 days; `profitSummarySince`'s only production caller passes a 1-day
  * window), and `useAnalytics.ts`'s `refetchInterval: 30_000` re-issues it
@@ -1077,6 +1085,7 @@ export interface PeriodRevenue {
    * path keeps its own separate function, untouched.
    */
   revenueIdrEquiv: string;
+  excludedFxOrders: number;
   orders: number;
 }
 
@@ -1101,7 +1110,7 @@ export async function revenueByPeriod(
   const where = { status: OrderStatus.DELIVERED, ...ORDER_KIND_SALES_FILTER, deliveredAt: { gte: since } };
   const orders = await db.order.findMany({
     where,
-    select: { id: true, deliveredAt: true, totalAmount: true, currency: true, fxRate: true },
+    select: { id: true, deliveredAt: true, totalAmount: true, currency: true, fxRate: true, subtotalAmount: true, bulkDiscountAmount: true, discountAmount: true },
   });
   // Bounded to the window's own orders — see revenueByDay for why.
   const walletSpend = await walletSpendByOrder(db, where, orders.map((o) => o.id));
@@ -1110,6 +1119,7 @@ export async function revenueByPeriod(
     idr: new Decimal(0),
     usdt: new Decimal(0),
     idrEquiv: new Decimal(0),
+    excludedFxOrders: 0,
     orders: 0,
   }));
   for (const o of orders) {
@@ -1119,27 +1129,19 @@ export async function revenueByPeriod(
     const total = new Decimal(o.totalAmount);
     if (o.currency === "IDR") {
       b.idr = b.idr.plus(total);
-      b.idrEquiv = b.idrEquiv.plus(total);
     } else {
       b.usdt = b.usdt.plus(total);
-      // Same rule as combinedRevenueByDay, including its treatment of an
-      // fxRate-less USDT order (counted unconverted rather than dropped), so
-      // the Day and period-granularity combined series can never disagree.
-      b.idrEquiv = b.idrEquiv.plus(o.fxRate != null ? total.times(o.fxRate) : total);
     }
-    // The order's wallet leg, bucketed by the SAME deliveredAt and split by the
-    // wallet row's own currency — combinedRevenueByDay's rule verbatim (M8.5),
-    // down to the `o.currency === "USDT" && o.fxRate != null` conversion guard
-    // the gateway leg above uses, so the two series and the two halves of one
-    // sale all blend by the same single rule.
+    // Native collected revenue follows each wallet transaction's own currency.
+    // The combined IDR sales basis is calculated separately below.
     const wallet = walletSpend.get(o.id);
     if (wallet) {
       b.idr = b.idr.plus(wallet.idr);
       b.usdt = b.usdt.plus(wallet.usdt);
-      b.idrEquiv = b.idrEquiv
-        .plus(wallet.idr)
-        .plus(o.currency === "USDT" && o.fxRate != null ? wallet.usdt.times(o.fxRate) : wallet.usdt);
     }
+    const value = orderSalesValueIdr(o, wallet);
+    b.idrEquiv = b.idrEquiv.plus(value.amount);
+    b.excludedFxOrders += value.excludedFxOrders;
     b.orders += 1;
   }
 
@@ -1148,6 +1150,7 @@ export async function revenueByPeriod(
     revenue_idr: q4(b.idr).toString(),
     revenue_usdt: q4(b.usdt).toString(),
     revenueIdrEquiv: q4(b.idrEquiv).toString(),
+    excludedFxOrders: b.excludedFxOrders,
     orders: b.orders,
   }));
 }
@@ -1199,6 +1202,7 @@ export async function ordersByPeriod(
 const PROFIT_ITEM_SELECT = {
   quantity: true,
   unitPrice: true,
+  costSnapshot: true,
   product: { select: { costPrice: true } },
   order: {
     select: {
@@ -1219,6 +1223,7 @@ interface ProfitAccumulator {
    *  what makes a bucket `null` rather than a fabricated 0 — see
    *  `shapeBucketProfit`. */
   costKnownItems: number;
+  excludedFxItems: number;
 }
 
 /** One bucket's two currency accumulators — never blended, same rule as
@@ -1229,14 +1234,15 @@ interface ProfitBucket {
 }
 
 const emptyProfitBucket = (): ProfitBucket => ({
-  idr: { revenue: new Decimal(0), cost: new Decimal(0), costKnownItems: 0 },
-  usdt: { revenue: new Decimal(0), cost: new Decimal(0), costKnownItems: 0 },
+  idr: { revenue: new Decimal(0), cost: new Decimal(0), costKnownItems: 0, excludedFxItems: 0 },
+  usdt: { revenue: new Decimal(0), cost: new Decimal(0), costKnownItems: 0, excludedFxItems: 0 },
 });
 
 /**
  * Adds one delivered line to its bucket's own currency accumulator, with
  * `profitSummarySince`'s arithmetic verbatim: discount-prorated line revenue
- * via `orderItemRevenueIdr`, cost as catalog-central IDR × quantity, and BOTH
+ * via `orderItemRevenueIdr`, snapshotted per-unit cost (live cost for legacy
+ * rows) as catalog-central IDR × quantity, and BOTH
  * brought into the bucket's currency through `idrToBucketCurrency` (that
  * order's own `fxRate` snapshot) so revenue and cost can never end up in
  * mismatched units.
@@ -1251,6 +1257,7 @@ function accumulateLineProfit(
   item: {
     quantity: number;
     unitPrice: Decimal.Value;
+    costSnapshot: Decimal.Value | null;
     product: { costPrice: Decimal.Value | null };
     order: {
       currency: string;
@@ -1261,13 +1268,17 @@ function accumulateLineProfit(
     };
   },
 ): void {
-  if (item.product.costPrice == null) return;
+  const unitCost = item.costSnapshot ?? item.product.costPrice;
+  if (unitCost == null) return;
   const isUsdt = item.order.currency === "USDT";
   const acc = isUsdt ? bucket.usdt : bucket.idr;
   const lineRevenueIdr = orderItemRevenueIdr(item);
-  const lineCostIdr = new Decimal(item.product.costPrice).times(item.quantity);
-  acc.revenue = acc.revenue.plus(idrToBucketCurrency(lineRevenueIdr, isUsdt, item.order.fxRate));
-  acc.cost = acc.cost.plus(idrToBucketCurrency(lineCostIdr, isUsdt, item.order.fxRate));
+  const lineCostIdr = new Decimal(unitCost).times(item.quantity);
+  const revenue = idrToBucketCurrency(lineRevenueIdr, isUsdt, item.order.fxRate);
+  const cost = idrToBucketCurrency(lineCostIdr, isUsdt, item.order.fxRate);
+  if (revenue == null || cost == null) { acc.excludedFxItems += 1; return; }
+  acc.revenue = acc.revenue.plus(revenue);
+  acc.cost = acc.cost.plus(cost);
   acc.costKnownItems += 1;
 }
 
@@ -1297,6 +1308,7 @@ export interface DayProfit {
   day: string; // YYYY-MM-DD (UTC), matching revenueByDay's convention exactly
   profit_idr: string | null;
   profit_usdt: string | null;
+  excludedFxItemsUsdt?: number;
 }
 
 /**
@@ -1334,6 +1346,7 @@ export async function profitByDay(db: Db, days = 30): Promise<DayProfit[]> {
     day,
     profit_idr: shapeBucketProfit(b.idr),
     profit_usdt: shapeBucketProfit(b.usdt),
+    ...(b.usdt.excludedFxItems > 0 ? { excludedFxItemsUsdt: b.usdt.excludedFxItems } : {}),
   }));
 }
 
@@ -1341,6 +1354,7 @@ export interface PeriodProfit {
   day: string; // bucket label — see PeriodRevenue.day
   profit_idr: string | null;
   profit_usdt: string | null;
+  excludedFxItemsUsdt?: number;
 }
 
 /** Net profit per calendar week/month/year, oldest→newest, split per currency —
@@ -1372,5 +1386,6 @@ export async function profitByPeriod(
     day,
     profit_idr: shapeBucketProfit(b.idr),
     profit_usdt: shapeBucketProfit(b.usdt),
+    ...(b.usdt.excludedFxItems > 0 ? { excludedFxItemsUsdt: b.usdt.excludedFxItems } : {}),
   }));
 }

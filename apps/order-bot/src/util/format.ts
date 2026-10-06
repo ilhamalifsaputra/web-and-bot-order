@@ -17,7 +17,7 @@ import {
 } from "@app/core/formatters";
 import { esc } from "@app/core/formatters";
 import { formatCompactPrice } from "@app/core/compactFormat";
-import { formatIdrFor, formatCompactIdrFor, groupDecimalDigits } from "@app/core/moneyFormat";
+import { formatIdrFor, formatUsdFor, formatCompactIdrFor } from "@app/core/moneyFormat";
 import { OrderStatus, DisplayCurrency, parseDisplayCurrency } from "@app/core/enums";
 import { coreT } from "./i18n";
 export {
@@ -45,14 +45,14 @@ export { formatIdrFor, formatUsdFor, formatCompactIdrFor } from "@app/core/money
  * whatever display currency the buyer picks later).
  *
  * With the buyer's `lang` both figures use that language's separators
- * ("Rp79,000 (≈ $4.94)" / "Rp79.000 (≈ $4,94)"); the "$" hint keeps exactly
- * the digits it always had. Without it the output is the original one.
+ * ("Rp79,000 (≈ $4.94)" / "Rp79.000 (≈ $4,94)"); the "$" hint always keeps
+ * two decimals, including trailing zeros.
  */
 export function priceIdr(v: Decimal.Value, rate: Decimal | null, lang?: string, hintLang: string | undefined = lang): string {
   const idr = lang === undefined ? formatIdr(v) : formatIdrFor(v, lang);
   if (!rate) return idr;
   const usd = usdtFromIdr(v, rate);
-  return `${idr} (≈ $${hintLang === undefined ? usd.toString() : groupDecimalDigits(usd.toFixed(), hintLang)})`;
+  return `${idr} (≈ ${formatUsdFor(usd, hintLang)})`;
 }
 
 // ---------------------------------------------------------------------------

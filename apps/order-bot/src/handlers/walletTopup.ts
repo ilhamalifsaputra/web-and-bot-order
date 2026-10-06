@@ -28,6 +28,7 @@ import {
   resolveWalletTopupLimits,
   resolveWalletTopupEffectiveMin,
   walletTopupClearsRailMinimum,
+  walletTopupAmountError,
   hasPendingWalletTopupOrder,
   resolveBinanceInternalConfig,
   resolveBybitConfig,
@@ -54,6 +55,7 @@ import { anchorPaymentMessage } from "../util/paymentAnchor";
 import { t } from "../util/i18n";
 import { esc, formatIdrFor, formatUsdtAmount } from "../util/format";
 import { currentUsdtRate } from "../util/rate";
+import { qrisCaptionAmounts } from "../util/qrisCaption";
 import * as ckb from "../keyboards/customer";
 
 const MAX_PENDING_ORDERS = 10;
@@ -204,9 +206,12 @@ export async function handleTopupAmountInput(ctx: MyContext, currency: "IDR" | "
   // accept is refused here — on the screen the buyer can retype into — instead of
   // being carried into a gateway picker that would have nothing in it.
   const max = currency === "IDR" ? limits.maxIdr : limits.maxUsdt;
+  // walletTopupAmountError is the same judgement createWalletTopupOrder makes
+  // (positive, USDT at most 4 decimals, under the hard ceiling), so the prompt
+  // re-asks instead of carrying an amount the order step would refuse.
   const valid =
     amount !== null &&
-    amount.greaterThan(0) &&
+    walletTopupAmountError(amount, currency) === null &&
     (!min || amount.greaterThanOrEqualTo(min)) &&
     (!max || amount.lessThanOrEqualTo(max));
 
@@ -693,10 +698,14 @@ export async function payTopupTokopay(ctx: MyContext): Promise<void> {
   const expiry = order.expiresAt
     ? `${localize(order.expiresAt, "yyyy-LL-dd HH:mm")} WIB`
     : `${config.PAYMENT_WINDOW_MINUTES}m`;
+  // Same rows-that-add-up helper as the order checkout (B7): a top-up has no
+  // discount, so this is normally just subtotal + fee = total to pay.
+  const rows = qrisCaptionAmounts(order, ctx.session.lang);
   const caption = t(ctx, "checkout.qris_instructions", {
     code: order.orderCode,
-    subtotal: formatIdrFor(order.subtotalAmount, ctx.session.lang),
-    fee: formatIdrFor(adminFee, ctx.session.lang),
+    subtotal: rows.subtotal,
+    discount_lines: rows.discount_lines,
+    fee: rows.fee,
     amount: formatIdrFor(chargeAmount, ctx.session.lang),
     expiry,
   });

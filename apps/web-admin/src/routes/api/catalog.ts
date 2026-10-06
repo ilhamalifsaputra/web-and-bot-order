@@ -36,6 +36,7 @@ import {
   isDigiflazzPriceOverridden,
 } from "@app/db";
 import { Decimal } from "@app/core/money";
+import { denominationPriceError, isDenominationBelowCost } from "@app/core/denominationPrices";
 import { readMoneyField, readPercentField, moneyFieldError, percentFieldError, exactFields } from "../../lib/moneyField";
 import { isFlashActive } from "@app/core/flash";
 import { ProductType, DeliveryType, CategoryGroup } from "@app/core/enums";
@@ -361,6 +362,8 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     if (body.resellerPrice != null && resellerPrice === null) {
       return reply.code(400).send({ error: moneyFieldError("Reseller price") });
     }
+    const priceError = denominationPriceError({ price, costPrice, resellerPrice });
+    if (priceError) return reply.code(400).send({ error: priceError });
 
     let warrantyDays: number | null = null;
     if (body.warrantyDays != null && body.warrantyDays !== "") {
@@ -706,6 +709,8 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     if (body.resellerPrice != null && resellerPrice === null) {
       return reply.code(400).send({ error: moneyFieldError("Reseller price") });
     }
+    const priceError = denominationPriceError({ price, costPrice, resellerPrice });
+    if (priceError) return reply.code(400).send({ error: priceError });
 
     // warrantyDays is a required (non-nullable) column — only touch it when
     // the request actually provided a value, otherwise leave the existing
@@ -951,6 +956,7 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     const denomStats = await Promise.all(
       product.denominations.map(async (d) => ({
         id: d.id,
+        belowCost: isDenominationBelowCost(d),
         available: await countAvailableStock(prisma, d.id),
         waiting: await countRestockSubscribers(prisma, d.id),
         rule: await getBulkPricingForDenomination(prisma, d.id),

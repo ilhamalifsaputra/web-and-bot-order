@@ -138,6 +138,8 @@ interface AdminOverpaidPayload {
   expected?: unknown;
   excess?: unknown;
   currency?: unknown;
+  /** `true` on a wallet top-up (credited, not delivered); absent on a product order. */
+  wallet_topup?: unknown;
 }
 
 interface OrderPipelineFailedPayload {
@@ -197,6 +199,11 @@ interface AdminDigiflazzResyncAbortedPayload {
   considered_rows?: unknown;
 }
 
+interface AdminDigiflazzBelowCostPayload {
+  below_cost_count?: unknown;
+  newly_below_cost_count?: unknown;
+}
+
 interface RestockSubscriberPayload {
   product_name?: unknown;
   buyer_language?: unknown;
@@ -252,6 +259,7 @@ export function render(
     AdminStalePaymentPayload &
     WalletTopupCreditedPayload &
     AdminDigiflazzResyncAbortedPayload &
+    AdminDigiflazzBelowCostPayload &
     AdminFxRateRejectedPayload &
     AdminFxRateStalePayload &
     TicketClosedPayload &
@@ -442,6 +450,12 @@ export function render(
       `Pesanan kemungkinan sudah dibatalkan otomatis sebelum pembayaran ini bisa dicocokkan — mohon periksa apakah pelanggan sudah membayar dan kirim manual jika perlu.`
     );
   }
+  if (event === NotificationEvent.ADMIN_DIGIFLAZZ_BELOW_COST) {
+    const count = escape(String(payload.below_cost_count ?? "0"));
+    const newly = escape(String(payload.newly_below_cost_count ?? "0"));
+    return `<b>Digiflazz prices below cost</b>\n${count} denominations have a retail or reseller price below supplier cost (${newly} newly flagged). Review the Below Cost badges in the catalog and adjust prices as needed.\n\n` +
+      `<b>Harga Digiflazz di bawah modal</b>\n${count} denominasi memiliki harga retail atau reseller di bawah modal supplier (${newly} baru terdeteksi). Periksa tanda Below Cost pada katalog dan sesuaikan harga jika diperlukan.`;
+  }
   if (event === NotificationEvent.ADMIN_DIGIFLAZZ_RESYNC_ABORTED) {
     // Admin DM: resyncDigiflazzCatalog's own blast-radius circuit breaker
     // tripped and wrote nothing. Two distinct trip reasons (digiflazz.ts's
@@ -627,17 +641,26 @@ export function render(
     const expected = escape(String(payload.expected ?? "0"));
     const excess = escape(String(payload.excess ?? "0"));
     const currency = escape(String(payload.currency ?? ""));
+    // A wallet top-up is credited, not delivered — and only its order total is
+    // credited; the excess waits for an admin (flagWalletTopupOverpayment).
+    const isTopup = payload.wallet_topup === true;
+    const outcomeEn = isTopup
+      ? `The buyer's balance was credited the order total only — please review the excess for a refund/credit.`
+      : `The order was delivered as usual — please review the excess for a refund/credit.`;
+    const outcomeId = isTopup
+      ? `Saldo pembeli hanya dikreditkan sebesar total pesanan — tolong tinjau kelebihan bayar ini untuk refund/kredit.`
+      : `Pesanan tetap terkirim seperti biasa — tolong tinjau kelebihan bayar ini untuk refund/kredit.`;
     return (
       `⚠️ <b>Overpayment on order <code>${code}</code></b>\n` +
       `Paid: <b>${paid} ${currency}</b>\n` +
       `Expected: <b>${expected} ${currency}</b>\n` +
       `Excess: <b>${excess} ${currency}</b>\n` +
-      `The order was delivered as usual — please review the excess for a refund/credit.\n\n` +
+      `${outcomeEn}\n\n` +
       `⚠️ <b>Kelebihan bayar pada pesanan <code>${code}</code></b>\n` +
       `Dibayar: <b>${paid} ${currency}</b>\n` +
       `Seharusnya: <b>${expected} ${currency}</b>\n` +
       `Kelebihan: <b>${excess} ${currency}</b>\n` +
-      `Pesanan tetap terkirim seperti biasa — tolong tinjau kelebihan bayar ini untuk refund/kredit.`
+      outcomeId
     );
   }
   if (event === NotificationEvent.ADMIN_PW_RESET) {

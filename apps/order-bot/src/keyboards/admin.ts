@@ -9,7 +9,21 @@ import type { Decimal } from "@app/core/money";
 import { StockStatus } from "@app/core/enums";
 import { t as coreT } from "@app/core/i18n";
 import { cb } from "./customer";
-import { formatPrice, truncLabel } from "../util/format";
+import { truncLabel } from "../util/format";
+import { formatIdrFor } from "@app/core/moneyFormat";
+import { formatUsdt } from "@app/core/formatters";
+import { visualWidth, MAX_LABEL_WIDTH } from "@app/core/buttonLimits";
+
+function moneyLabel(name: string, suffix: string): string {
+  const budget = MAX_LABEL_WIDTH - visualWidth(suffix);
+  if (visualWidth(name) <= budget) return `${name}${suffix}`;
+  let shortened = "";
+  for (const { segment } of new Intl.Segmenter("en", { granularity: "grapheme" }).segment(name)) {
+    if (visualWidth(`${shortened}${segment}…`) > budget) break;
+    shortened += segment;
+  }
+  return `${shortened}…${suffix}`;
+}
 
 interface Btn {
   text: string;
@@ -30,6 +44,7 @@ interface OrderLike {
   id: number;
   orderCode: string;
   totalAmount: Decimal.Value;
+  currency?: string;
 }
 interface StockItemLike {
   id: number;
@@ -97,7 +112,7 @@ export function approvedResendKb(orderId: number, lang: string): InlineKeyboard 
 
 export function verificationQueueKb(orders: OrderLike[], lang: string): InlineKeyboard {
   const rows: Btn[][] = orders.map((o) => [
-    { text: `🔎 ${o.orderCode} — ${formatPrice(o.totalAmount)}`, data: cb("adm", "verif", "view", o.id) },
+    { text: moneyLabel(`🔎 ${o.orderCode}`, ` — ${o.currency === "IDR" ? formatIdrFor(o.totalAmount, lang) : formatUsdt(o.totalAmount)}`), data: cb("adm", "verif", "view", o.id) },
   ]);
   rows.push([{ text: coreT("menu.back", lang), data: cb("adm", "menu") }]);
   return ik(rows);
@@ -132,10 +147,10 @@ export function stockProductsKb(products: ProductLike[], lang: string): InlineKe
 export function productsAdminKb(products: ProductLike[], lang: string): InlineKeyboard {
   const rows: Btn[][] = [[{ text: "➕ New product", data: cb("adm", "prod", "new") }]];
   for (const p of products) {
-    const priceStr = formatPrice(p.price);
-    // Keep total label ≤ 32 chars: reserve space for " (Rp…)" suffix (~12 chars).
+    const priceStr = formatIdrFor(p.price, lang);
+    // Preserve the exact money suffix within the shared visual-width budget.
     rows.push([
-      { text: `${truncLabel(p.name, 20)} (${priceStr})`, data: cb("adm", "prod", "edit", p.id) },
+      { text: moneyLabel(p.name, ` (${priceStr})`), data: cb("adm", "prod", "edit", p.id) },
     ]);
   }
   rows.push([{ text: coreT("menu.back", lang), data: cb("adm", "menu") }]);

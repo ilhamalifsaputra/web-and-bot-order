@@ -26,6 +26,7 @@ import {
   ENCRYPTED_SETTING_KEYS,
   setEncryptedSetting,
   listServiceStates,
+  DIGIFLAZZ_WEBHOOK_SECRET_KEY,
 } from "@app/db";
 import { CUSTOMER_SERVICES, SERVICE_CHANNELS, type ServiceChannel } from "@app/core/services";
 import { CredentialKeyConfigError } from "@app/core/credentialCrypto";
@@ -144,6 +145,7 @@ const EDITABLE: Record<string, string> = {
   wallet_topup_max_amount_usdt: "Wallet top-up max amount (USDT)",
   digiflazz_username: "Digiflazz username",
   digiflazz_api_key: "Digiflazz API key",
+  [DIGIFLAZZ_WEBHOOK_SECRET_KEY]: "Digiflazz webhook secret",
   digiflazz_enabled: "Digiflazz enabled",
   digiflazz_markup_type: "Digiflazz markup type (percent or flat)",
   digiflazz_markup_value: "Digiflazz markup value",
@@ -159,7 +161,7 @@ const EDITABLE: Record<string, string> = {
 const SECRET_KEYS = new Set([
   "tokopay_secret", "paydisini_apikey", "bot_token", "notif_bot_token", "bybit_api_key", "bybit_api_secret",
   "binance_api_key", "binance_api_secret", "nowpayments_api_key", "nowpayments_ipn_secret", "bscscan_api_key",
-  "smtp_pass", "digiflazz_api_key", "kokinpay_api_key", "coingecko_api_key",
+  "smtp_pass", "digiflazz_api_key", DIGIFLAZZ_WEBHOOK_SECRET_KEY, "kokinpay_api_key", "coingecko_api_key",
   "paydisini_userkey", "tokopay_merchant_id", "bybit_uid",
   // The /metrics scrape token (routes/metrics.ts). Not in EDITABLE today (it
   // is set via METRICS_TOKEN or a direct settings row); listed here so it
@@ -643,8 +645,27 @@ async function applyFieldEdit(
   // Single process (apps/server): re-stamp so the bot's send layer picks the
   // new icons up immediately instead of at the next restart.
   if (key === CUSTOM_EMOJI_MAP_SETTING) setCustomEmojiMap(value);
-  await logAdminAction(prisma, { adminId: admin.userId, action: "setting_set", targetType: "setting", details: `Changed setting "${key}" to "${displayValue}".` });
+  // The webhook secret gets its own sentence so a shop admin reading the
+  // audit log sees what changed and why it matters; the value is never in it.
+  const details =
+    key === DIGIFLAZZ_WEBHOOK_SECRET_KEY
+      ? "Set a new Digiflazz webhook secret. Digiflazz webhooks are only accepted once the same secret is saved in the Digiflazz dashboard."
+      : `Changed setting "${key}" to "${displayValue}".`;
+  await logAdminAction(prisma, { adminId: admin.userId, action: "setting_set", targetType: "setting", details });
   return { ok: true };
+}
+
+/**
+ * The URL the admin pastes into the Digiflazz dashboard as the webhook
+ * address: the storefront's public origin (`SHOP_PUBLIC_URL`, falling back to
+ * `PUBLIC_URL` — the same origin every other buyer-facing link and gateway
+ * callback uses) plus the storefront route `POST /pay/digiflazz/callback`.
+ * Null when neither is configured, so the page can say so instead of showing
+ * a localhost address Digiflazz could never reach.
+ */
+function digiflazzWebhookUrl(): string | null {
+  const base = config.SHOP_PUBLIC_URL ?? config.PUBLIC_URL;
+  return base ? `${base.replace(/\/+$/, "")}/pay/digiflazz/callback` : null;
 }
 
 export default async function settingsApiRoutes(app: FastifyInstance): Promise<void> {
@@ -697,6 +718,7 @@ export default async function settingsApiRoutes(app: FastifyInstance): Promise<v
       serviceStates: await listServiceStates(prisma),
       bybitHealth,
       bybitBscHealth,
+      digiflazzWebhookUrl: digiflazzWebhookUrl(),
       isOwner: req.admin!.role === "super",
       twoFaEnabled,
       twoFaPending: pendingSecret ? { secret: pendingSecret, uri: otpauthUri(pendingSecret, String(tg)) } : null,

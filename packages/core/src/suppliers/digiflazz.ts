@@ -9,8 +9,10 @@
  *   names, and MD5 signature formulas below are modeled on Digiflazz's
  *   publicly documented API shape but have not been verified against a live
  *   account. Verify against the real Digiflazz dashboard/docs before go-live.
+ *   Exception: the webhook verifier (`verifyWebhook`) follows Digiflazz's
+ *   published webhook spec (HMAC-SHA1 `X-Hub-Signature` over the raw body).
  */
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { Decimal } from "../money";
 import { logger } from "../logger";
 import { fetchWithTimeoutSafe, HTTP_TIMEOUT_MS } from "../http";
@@ -319,53 +321,87 @@ export interface DigiflazzCallback {
   price: Decimal | null;
 }
 
-/**
- * Verify a webhook callback's signature + normalize. Returns null on
- * bad/missing signature, mirroring `../payments/tokopay.ts`'s
- * `verifyCallback` — same MD5 + constant-time-compare style, just against the
- * single dashboard-configured webhook secret rather than a merchant id pair.
- *
- * ⚠ ASSUMPTION (flagged, same as the rest of this client): the callback body
- *   shape (`ref_id`/`signature` alongside the transaction fields) and the
- *   `expected = md5(refId + ":" + secretKey)` formula are a plausible model
- *   for this pilot, not verified against a live Digiflazz webhook delivery.
- *   Verify against the live dashboard before go-live.
- */
-export function verifyCallback(secretKey: string, body: Record<string, unknown>): DigiflazzCallback | null {
-  const refId = firstString(body.ref_id, body.trx_id, body.reference);
-  const signature = firstString(body.signature, body.sign);
-  if (!refId || !signature) return null;
+/** `sha1=` followed by exactly 40 hex digits (a SHA-1 digest), any case. */
+const HUB_SIGNATURE_RE = /^sha1=([0-9a-f]{40})$/i;
 
-  const expected = createHash("md5").update(`${refId}:${secretKey}`).digest("hex");
-  if (!constantTimeEqual(expected, signature.toLowerCase())) {
-    // The reference is NOT logged (Task B3e): with the signature failed it is
-    // attacker-controlled bytes — newlines could forge log lines.
+/**
+ * Verify a Digiflazz webhook delivery and normalize it. Returns null on any
+ * failure; never throws.
+ *
+ * This is Digiflazz's documented scheme (developer.digiflazz.com/api/buyer/
+ * webhook): the request carries `X-Hub-Signature: sha1=<hex>`, the HMAC-SHA1
+ * of the RAW request body keyed by the webhook secret configured in the
+ * Digiflazz dashboard, and the transaction sits under a top-level `data`
+ * object (`data.ref_id`, `data.status`, `data.sn`, `data.message`,
+ * `data.price`). It replaces an invented `md5(refId + ":" + apiKey)` body
+ * field that Digiflazz never sends, which made every real webhook fail.
+ *
+ * The HMAC is computed over the exact bytes received, never over re-serialized
+ * JSON (a `1.50` vs `1.5` or whitespace difference would change the digest),
+ * so callers must hand over the raw body. The comparison is constant-time on
+ * the decoded 20-byte digests. There is no unsigned path: a missing secret, a
+ * missing header, or a header without the `sha1=` prefix is a rejection.
+ * The body is only parsed AFTER the signature checks out, so nothing from an
+ * unverified request — in particular its reference — is ever read or logged
+ * (Task B3e: those are attacker-controlled bytes that could forge log lines).
+ */
+export function verifyWebhook(
+  webhookSecret: string,
+  rawBody: Buffer | string,
+  signatureHeader: string | undefined,
+): DigiflazzCallback | null {
+  if (!webhookSecret) {
+    logger.warn("Rejected a Digiflazz webhook because no webhook secret is configured, so its signature cannot be checked");
+    return null;
+  }
+  const match = HUB_SIGNATURE_RE.exec((signatureHeader ?? "").trim());
+  if (!match) {
     logger.warn(
-      `Rejected a Digiflazz callback whose signature did not match its ${refId.length}-character reference — the reference is not logged because it is unverified input`,
+      "Rejected a Digiflazz webhook because its X-Hub-Signature header was missing or not in the sha1=<hex> form — the request body was not read",
     );
+    return null;
+  }
+  const received = Buffer.from(match[1]!, "hex");
+  const expected = createHmac("sha1", webhookSecret).update(rawBody).digest();
+  if (received.length !== expected.length || !timingSafeEqual(received, expected)) {
+    logger.warn(
+      "Rejected a Digiflazz webhook whose signature did not match its body — the body and its reference are not logged because they are unverified input",
+    );
+    return null;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(typeof rawBody === "string" ? rawBody : rawBody.toString("utf8"));
+  } catch {
+    logger.warn("Rejected a correctly signed Digiflazz webhook because its body is not valid JSON");
+    return null;
+  }
+  const data =
+    parsed && typeof parsed === "object" ? (parsed as { data?: unknown }).data : undefined;
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    logger.warn("Rejected a correctly signed Digiflazz webhook because its body has no data object");
+    return null;
+  }
+  const d = data as Record<string, unknown>;
+  const refId = str(d.ref_id);
+  if (!refId) {
+    logger.warn("Rejected a correctly signed Digiflazz webhook because its data object has no ref_id");
     return null;
   }
 
   return {
     refId,
-    status: normalizeStatus(firstString(body.status)),
-    sn: firstString(body.sn),
-    message: firstString(body.message),
-    price: body.price != null ? toDecimalOrNull(body.price) : null,
+    status: normalizeStatus(str(d.status)),
+    sn: str(d.sn),
+    message: str(d.message),
+    price: d.price != null ? toDecimalOrNull(d.price) : null,
   };
 }
 
 function str(v: unknown): string | null {
   if (typeof v === "string" && v.trim()) return v.trim();
   if (typeof v === "number" && Number.isFinite(v)) return String(v);
-  return null;
-}
-
-function firstString(...vals: unknown[]): string | null {
-  for (const v of vals) {
-    const s = str(v);
-    if (s !== null) return s;
-  }
   return null;
 }
 
@@ -379,7 +415,7 @@ function firstString(...vals: unknown[]): string | null {
  * Minor 1 (final whole-branch review, 2026-08-21): this non-positive
  * rejection was added (Task 9) for the price-list parsing path (toPriceListItem
  * above) but this is one shared helper used by all three call sites —
- * `createTransaction`'s and `verifyCallback`'s `.price` fields are parsed
+ * `createTransaction`'s and `verifyWebhook`'s `.price` fields are parsed
  * through it too, so they now silently reject a zero/negative price the same
  * way. Harmless today: no consumer currently reads `.price` off either of
  * those two results — but be aware this helper's behavior is shared, not
@@ -393,11 +429,4 @@ function toDecimalOrNull(v: unknown): Decimal | null {
   } catch {
     return null;
   }
-}
-
-function constantTimeEqual(a: string, b: string): boolean {
-  const ab = Buffer.from(a);
-  const bb = Buffer.from(b);
-  if (ab.length !== bb.length) return false;
-  return timingSafeEqual(ab, bb);
 }

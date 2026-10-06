@@ -40,6 +40,7 @@ import {
   MIN_ORDER_AMOUNT_IDR_KEY,
   getSetting,
   getDecryptedSetting,
+  getDigiflazzWebhookSecret,
   deleteSetting,
   getVoucherByCode,
   countAvailableStock,
@@ -6339,6 +6340,67 @@ describe("settings", () => {
     const entry = logs.find((l) => l.action === "setting_set" && (l.details ?? "").includes("nowpayments_ipn_secret"));
     expect(entry).toBeTruthy();
     expect(entry!.details).not.toContain("NOWIPNSECRETVALUE");
+  });
+
+  // Digiflazz fast-status patch: the webhook secret Digiflazz signs every
+  // delivery with (X-Hub-Signature HMAC-SHA1) gets the same write-only,
+  // encrypted-at-rest, never-echoed treatment as every other gateway secret.
+  it("digiflazz_webhook_secret is write-only, encrypted at rest, never echoed, exported or audited verbatim", async () => {
+    const res = await post("/api/settings/edit", seed.cookie, {
+      csrf_token: seed.csrf, key: "digiflazz_webhook_secret", value: "DFWEBHOOKSECRETVALUE",
+    });
+    expect(res.statusCode).toBe(200);
+    expect(await getDigiflazzWebhookSecret(prisma)).toBe("DFWEBHOOKSECRETVALUE");
+    const raw = await getSetting(prisma, "digiflazz_webhook_secret");
+    expect(isEncryptedCredentialEnvelope(raw!)).toBe(true);
+
+    // Rotating it replaces the stored value; a blank submit keeps it.
+    await post("/api/settings/edit", seed.cookie, {
+      csrf_token: seed.csrf, key: "digiflazz_webhook_secret", value: "DFROTATEDSECRET",
+    });
+    expect(await getDigiflazzWebhookSecret(prisma)).toBe("DFROTATEDSECRET");
+    const blank = await post("/api/settings/edit", seed.cookie, {
+      csrf_token: seed.csrf, key: "digiflazz_webhook_secret", value: "",
+    });
+    expect(JSON.parse(blank.body)).toEqual({ ok: true, unchanged: true });
+    expect(await getDigiflazzWebhookSecret(prisma)).toBe("DFROTATEDSECRET");
+
+    const page = await get("/api/settings", seed.cookie);
+    expect(page.statusCode).toBe(200);
+    expect(page.body).not.toContain("DFWEBHOOKSECRETVALUE");
+    expect(page.body).not.toContain("DFROTATEDSECRET");
+    const field = (JSON.parse(page.body) as { fields: Array<{ key: string; secret: boolean; hasValue: boolean; value: string }> })
+      .fields.find((f) => f.key === "digiflazz_webhook_secret");
+    expect(field).toMatchObject({ secret: true, hasValue: true, value: "" });
+
+    const exported = await get("/api/settings/export", seed.cookie);
+    expect(exported.body).not.toContain("digiflazz_webhook_secret");
+
+    const logs = await listAuditLogs(prisma, { limit: 20 });
+    const entries = logs.filter((l) => (l.details ?? "").includes("Digiflazz webhook secret"));
+    expect(entries.length).toBeGreaterThanOrEqual(2);
+    for (const e of entries) {
+      expect(e.details).not.toContain("DFWEBHOOKSECRETVALUE");
+      expect(e.details).not.toContain("DFROTATEDSECRET");
+    }
+  });
+
+  it("GET /api/settings gives the Digiflazz webhook URL to paste into the Digiflazz dashboard", async () => {
+    const previousShop = config.SHOP_PUBLIC_URL;
+    const previousPublic = config.PUBLIC_URL;
+    try {
+      config.SHOP_PUBLIC_URL = "https://shop.example.com/";
+      let data = JSON.parse((await get("/api/settings", seed.cookie)).body) as { digiflazzWebhookUrl: string | null };
+      expect(data.digiflazzWebhookUrl).toBe("https://shop.example.com/pay/digiflazz/callback");
+
+      config.SHOP_PUBLIC_URL = undefined;
+      config.PUBLIC_URL = undefined;
+      data = JSON.parse((await get("/api/settings", seed.cookie)).body) as { digiflazzWebhookUrl: string | null };
+      expect(data.digiflazzWebhookUrl).toBeNull();
+    } finally {
+      config.SHOP_PUBLIC_URL = previousShop;
+      config.PUBLIC_URL = previousPublic;
+    }
   });
 
   it("accepts bybit_bsc_deposit_address (not a secret — exposed via the API)", async () => {

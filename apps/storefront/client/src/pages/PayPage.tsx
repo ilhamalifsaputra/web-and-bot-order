@@ -5,9 +5,13 @@
  *    TanStack's default refetch-on-window-focus — harmless, since the gateway
  *    payload is cached server-side on order.paymentRef, the same as an NJK
  *    page refresh would re-read it. It drives the big payment-instructions
- *    card below and is never refreshed by the poll itself.
+ *    card below and is never refetched by the poll itself. The card's stage
+ *    only moves FORWARD when the poll reports a later in-flight stage
+ *    (waiting -> confirming -> processing; advanceCardState), so a buyer who
+ *    opened the page early is not left on stale copy.
  *  - GET /api/v1/orders/:code/status (`poll`) refetches every 5s and drives
- *    ONLY the small #pay-status strip (_pay_status.njk) — until the first
+ *    the small #pay-status strip (_pay_status.njk), the delivered redirect,
+ *    and that forward-only card advance — until the first
  *    poll response lands, the strip shows `data.state` (the same value the
  *    NJK's server-rendered include used before HTMX's first poll tick).
  * pay.njk's inline countdown script computes mm:ss (never negative — clamped
@@ -94,6 +98,13 @@ function StatusStrip({ state }: { state: PayState }) {
       </Badge>
     );
   }
+  if (state === "processing") {
+    return (
+      <Badge variant="info" icon={<Loader className="w-3.5 h-3.5 animate-spin" />}>
+        {t("web.status_processing")}
+      </Badge>
+    );
+  }
   if (state === "delivered") {
     return (
       <Badge variant="success" icon={<BadgeCheck className="w-3.5 h-3.5" />}>
@@ -109,6 +120,18 @@ function StatusStrip({ state }: { state: PayState }) {
     );
   }
   return <Badge variant="neutral">{t("web.status_closed")}</Badge>;
+}
+
+const IN_FLIGHT_RANK: Partial<Record<PayState, number>> = { waiting: 0, confirming: 1, processing: 2 };
+
+/** Which state the big card shows: the polled one only when it is a LATER
+ * in-flight stage than the one the card already shows (waiting < confirming <
+ * processing). Never moves backwards, and terminal states (delivered/expired/
+ * closed) are left to the redirect / existing handling. */
+export function advanceCardState(current: PayState, polled: PayState | undefined): PayState {
+  const from = IN_FLIGHT_RANK[current];
+  const to = polled ? IN_FLIGHT_RANK[polled] : undefined;
+  return from !== undefined && to !== undefined && to > from ? (polled as PayState) : current;
 }
 
 /** Contact fallback shown when a gateway is down — shared by the TokoPay/
@@ -217,8 +240,9 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
     }
   }, [error, code, loginNextBase]);
 
-  // Polls every 5s (the HTMX twin); only drives the small strip + the
-  // delivered-redirect, never the big card below (see file header).
+  // Polls every 5s (the HTMX twin); drives the small strip, the
+  // delivered-redirect, and advances the big card to a later in-flight stage
+  // (see advanceCardState and the file header).
   const { data: poll } = useQuery({
     queryKey: ["pay-status", apiBase, code],
     queryFn: () => apiGet<PayStatusData>(`/api/v1${apiBase}/${code}/status`),
@@ -271,7 +295,8 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
     );
   }
 
-  const { order, state } = data;
+  const { order } = data;
+  const state = advanceCardState(data.state, poll?.state);
   const stripState = poll?.state ?? state;
 
   // Final-review fix — the web twin of the bot's payAlongsidePriceLine
@@ -577,6 +602,19 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
           <Loader className="w-10 h-10 text-pine mx-auto mb-3 animate-spin" />
           <p className="text-sm font-medium text-ink">{t("web.pay_confirming")}</p>
           <p className="text-xs text-ink-soft mt-2">{t("web.pay_confirming_sub")}</p>
+        </Card>
+      )}
+
+      {state === "processing" && (
+        <Card className="text-center py-10">
+          <Loader className="w-10 h-10 text-pine mx-auto mb-3 animate-spin" />
+          <p className="text-sm font-medium text-ink">{t("web.pay_processing")}</p>
+          <p className="text-xs text-ink-soft mt-2">{t("web.pay_processing_sub")}</p>
+          {!isTopup && (
+            <Link to={deliveredHref} className="btn btn-soft mt-4">
+              {t("web.pay_processing_view_order")} <ChevronRight className="w-4 h-4" />
+            </Link>
+          )}
         </Card>
       )}
 

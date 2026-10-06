@@ -334,7 +334,7 @@ export interface NowpaymentsGateway {
 }
 
 /** payState() result — drives which pay.njk branch renders. */
-export type PayState = "waiting" | "confirming" | "delivered" | "expired" | "closed";
+export type PayState = "waiting" | "confirming" | "processing" | "delivered" | "expired" | "closed";
 
 /** GET /api/v1/orders/:code/pay — the payView() JSON (server: apps/storefront/src/routes/checkout.ts). */
 export interface PayData {

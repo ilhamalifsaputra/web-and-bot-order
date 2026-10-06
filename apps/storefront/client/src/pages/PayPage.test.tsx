@@ -163,6 +163,72 @@ describe("PayPage", () => {
     expect(await screen.findByText("credentials-page-stub")).toBeInTheDocument();
   });
 
+  it("renders honest processing copy (no blockchain sentence) while a paid order awaits fulfillment", async () => {
+    const pay: PayData = {
+      ...basePay,
+      state: "processing",
+      order: { ...basePay.order, status: "PROCESSING" },
+    };
+    renderPay(respondFor(pay));
+    expect(await screen.findByText("Payment received — your order is being processed")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Your order is being prepared. This page updates by itself; you can also follow it from your order page.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/blockchain/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /View order/ })).toHaveAttribute("href", "/account/orders/ORD1");
+  });
+
+  it("keeps polling while processing and redirects once the poll reports delivered", async () => {
+    const pay: PayData = { ...basePay, state: "processing", order: { ...basePay.order, status: "PROCESSING" } };
+    renderPay(respondFor(pay, { state: "delivered", redirect: "/account/orders/ORD1" }));
+    expect(await screen.findByText("credentials-page-stub")).toBeInTheDocument();
+  });
+
+  describe("the big card follows a later polled stage", () => {
+    const PROCESSING = "Payment received — your order is being processed";
+
+    it("confirming -> processing: swaps the blockchain copy for the processing copy", async () => {
+      const pay: PayData = { ...basePay, state: "confirming", order: { ...basePay.order, status: "PAYMENT_DETECTED" } };
+      renderPay(respondFor(pay, { state: "processing", redirect: null }));
+      expect(await screen.findByText(PROCESSING)).toBeInTheDocument();
+      expect(screen.queryByText(/blockchain/i)).not.toBeInTheDocument();
+    });
+
+    it("waiting -> confirming: drops the QR/pay-now block and shows the confirming card", async () => {
+      const pay: PayData = {
+        ...basePay,
+        state: "waiting",
+        is_qris: true,
+        gateway: { trxId: "TRX1", payUrl: "https://pay.example/trx1", qrLink: "https://img.example/qr.png", qrString: null, totalBayar: "158000" },
+      };
+      renderPay(respondFor(pay, { state: "confirming", redirect: null }));
+      expect(await screen.findByText(/blockchain/i)).toBeInTheDocument();
+      expect(screen.queryByAltText("QRIS")).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Cancel this order" })).not.toBeInTheDocument();
+    });
+
+    it("never regresses: a stale earlier poll leaves a processing card alone", async () => {
+      const pay: PayData = { ...basePay, state: "processing", order: { ...basePay.order, status: "PROCESSING" } };
+      renderPay(respondFor(pay, { state: "confirming", redirect: null }));
+      expect(await screen.findByText(PROCESSING)).toBeInTheDocument();
+      await waitFor(() => expect(apiGet).toHaveBeenCalledWith("/api/v1/orders/ORD1/status"));
+      await new Promise((r) => setTimeout(r, 20));
+      expect(screen.getByText(PROCESSING)).toBeInTheDocument();
+      expect(screen.queryByText(/blockchain/i)).not.toBeInTheDocument();
+    });
+
+    it("a terminal poll (expired) does not replace the card; only delivered redirects", async () => {
+      const pay: PayData = { ...basePay, state: "waiting", is_qris: true };
+      renderPay(respondFor(pay, { state: "expired", redirect: null }));
+      await screen.findByRole("heading", { name: "Payment" });
+      await waitFor(() => expect(apiGet).toHaveBeenCalledWith("/api/v1/orders/ORD1/status"));
+      await new Promise((r) => setTimeout(r, 20));
+      expect(screen.getByRole("button", { name: "Cancel this order" })).toBeInTheDocument();
+    });
+  });
+
   it("renders a live countdown from expires_at_iso, and 0:00 once past", async () => {
     vi.spyOn(Date, "now").mockReturnValue(new Date("2026-07-04T12:00:00.000Z").getTime());
     const pay: PayData = {

@@ -8,7 +8,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { logger } from "../logger";
 import { verifyCallback as verifyTokopay } from "./tokopay";
 import { verifyCallback as verifyPaydisini } from "./paydisini";
-import { verifyCallback as verifyDigiflazz } from "../suppliers/digiflazz";
+import { verifyWebhook as verifyDigiflazz } from "../suppliers/digiflazz";
 
 const EVIL_REF = `ORD-1\n{"level":30,"msg":"INJECTED fake log line"}\u001b[31m${"x".repeat(2000)}`;
 
@@ -19,7 +19,7 @@ afterEach(() => {
 const cases: Array<[string, () => unknown]> = [
   ["TokoPay", () => verifyTokopay({ ref_id: EVIL_REF, signature: "deadbeef" }, { merchantId: "M", secret: "S" })],
   ["PayDisini", () => verifyPaydisini({ ref_id: EVIL_REF, amount: "1000", signature: "deadbeef" }, { userKey: "U", apiKey: "A" })],
-  ["Digiflazz", () => verifyDigiflazz("secret", { ref_id: EVIL_REF, signature: "deadbeef" })],
+  ["Digiflazz", () => verifyDigiflazz("secret", JSON.stringify({ data: { ref_id: EVIL_REF } }), `sha1=${"de".repeat(20)}`)],
 ];
 
 describe.each(cases)("%s verifyCallback with a bad signature (Task B3e)", (_name, run) => {

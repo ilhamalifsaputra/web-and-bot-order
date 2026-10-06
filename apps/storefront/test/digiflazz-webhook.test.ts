@@ -1,8 +1,9 @@
 // Digiflazz webhook (POST /pay/digiflazz/callback) — Task 3 (original pilot
-// plan), hardened by Task 12 (backend audit 2026-08-21, I-1/I-4): the
-// callback's signature (verifyCallback, @app/core/suppliers/digiflazz) only
-// authenticates that SOME signed request named this refId — it does NOT bind
-// `status`, so it is no longer trusted to decide what happens. Every callback
+// plan), hardened by Task 12 (backend audit 2026-08-21, I-1/I-4). The
+// signature (verifyWebhook, @app/core/suppliers/digiflazz: Digiflazz's real
+// X-Hub-Signature HMAC-SHA1 over the raw body) authenticates the delivery,
+// but a signed delivery can still be replayed, so its own `status` is never
+// trusted to decide what happens. Every callback
 // that names a single-item Digiflazz order triggers a fresh
 // createTransaction(refId) call (idempotent by refId per this client's own
 // doc comment) and the handler acts on THAT live result, never on cb.status.
@@ -11,7 +12,7 @@
 // (packages/db/src/crud/digiflazz.ts). Pattern:
 // apps/storefront/test/tokopay-webhook.test.ts.
 import "./setup-env"; // FIRST import — sets env before @app/* load
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@app/core/mailer", () => ({
   sendMail: vi.fn().mockResolvedValue(undefined),
@@ -32,7 +33,7 @@ vi.mock("@app/db", async (orig) => {
 // Task 12: the webhook now calls createTransaction as a live re-verification
 // step — mock it (this file never makes a real HTTP call), same
 // vi.hoisted + importOriginal pattern packages/db/src/crud/digiflazz.test.ts
-// already uses, so verifyCallback/parseProductRegion/etc. stay real and only
+// already uses, so verifyWebhook/parseProductRegion/etc. stay real and only
 // createTransaction is stubbed.
 const digiflazzSupplierMock = vi.hoisted(() => ({
   createTransaction: vi.fn(),
@@ -45,6 +46,7 @@ vi.mock("@app/core/suppliers/digiflazz", async (importOriginal) => ({
 import type { FastifyInstance } from "fastify";
 import { cleanupTestDb } from "./setup-env";
 import { decryptDeliveredContent, encryptDeliveredContent } from "@app/core/credentialCrypto";
+import { logger } from "@app/core/logger";
 import {
   prisma,
   initDb,
@@ -53,38 +55,87 @@ import {
   createCatalogProduct,
   createDenomination,
   recordDigiflazzOutcome,
+  DIGIFLAZZ_RECHECK_SCHEDULE_SECONDS,
   dispatchPendingDigiflazzOrders,
   DIGIFLAZZ_USERNAME_KEY,
   DIGIFLAZZ_API_KEY_KEY,
+  DIGIFLAZZ_WEBHOOK_SECRET_KEY,
+  setEncryptedSetting,
   ADMIN_IDS_KEY,
 } from "@app/db";
 import { buildApp } from "../src/server";
 
 const USERNAME = "shop-test-digiflazz";
 const API_KEY = "key-test-digiflazz";
+const WEBHOOK_SECRET = "whsec-test-digiflazz";
+const CALLBACK_URL = "/pay/digiflazz/callback";
 
 async function enableDigiflazz() {
   await setSetting(prisma, DIGIFLAZZ_USERNAME_KEY, USERNAME);
   await setSetting(prisma, DIGIFLAZZ_API_KEY_KEY, API_KEY);
+  await setEncryptedSetting(prisma, DIGIFLAZZ_WEBHOOK_SECRET_KEY, WEBHOOK_SECRET);
 }
 async function disableDigiflazz() {
   await deleteSetting(prisma, DIGIFLAZZ_USERNAME_KEY);
   await deleteSetting(prisma, DIGIFLAZZ_API_KEY_KEY);
 }
 
-/** Build a callback payload + a REAL signature
- * (md5(refId + ":" + secretKey), per packages/core/src/suppliers/digiflazz.ts
- * verifyCallback — the secret is the same Digiflazz apiKey Settings holds,
- * there being no separate webhook-secret field yet). */
-function signedPayload(args: { refId: string; status?: string; sn?: string; message?: string }) {
-  const signature = createHash("md5").update(`${args.refId}:${API_KEY}`).digest("hex");
-  return {
-    ref_id: args.refId,
-    status: args.status ?? "Sukses",
-    sn: args.sn,
-    message: args.message,
-    signature,
+function hubSignature(rawBody: string, secret = WEBHOOK_SECRET) {
+  return `sha1=${createHmac("sha1", secret).update(rawBody).digest("hex")}`;
+}
+
+/** Raw body of a real Digiflazz prepaid webhook
+ * (developer.digiflazz.com/api/buyer/webhook): the transaction sits under
+ * `data`, and there is no signature field in the body at all. */
+function webhookBody(args: { refId: string; status?: string; sn?: string; message?: string }) {
+  const status = args.status ?? "Sukses";
+  return JSON.stringify({
+    data: {
+      ref_id: args.refId,
+      customer_no: "123456789",
+      buyer_sku_code: "ml100",
+      message: args.message ?? (status === "Sukses" ? "Transaksi Sukses" : status),
+      status,
+      rc: status === "Sukses" ? "00" : status === "Pending" ? "03" : "40",
+      buyer_last_saldo: 0,
+      sn: args.sn ?? "",
+      price: 15000,
+    },
+  });
+}
+
+/** `app.inject` options for a delivery exactly as Digiflazz sends it:
+ * `X-Hub-Signature: sha1=<HMAC-SHA1 of the raw body>` keyed by the webhook
+ * secret, plus the event and user-agent headers. */
+function signedPayload(args: {
+  refId: string;
+  status?: string;
+  sn?: string;
+  message?: string;
+  event?: "create" | "update";
+  secret?: string;
+}) {
+  const raw = webhookBody(args);
+  return delivery(raw, hubSignature(raw, args.secret), args.event);
+}
+
+// Each test sends from its own simulated client IP (TRUST_PROXY trusts the
+// loopback hop, see setup-env.ts) so this file's ~40 deliveries never trip
+// the per-IP webhook rate limit (webhookRateLimited) meant for real abuse.
+let deliveryIp = 0;
+beforeEach(() => {
+  deliveryIp++;
+});
+
+function delivery(raw: string, signature: string | undefined, event: "create" | "update" = "update") {
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+    "x-digiflazz-event": event,
+    "user-agent": "Digiflazz-Hookshot",
+    "x-forwarded-for": `198.51.100.${deliveryIp % 250}`,
   };
+  if (signature !== undefined) headers["x-hub-signature"] = signature;
+  return { method: "POST" as const, url: CALLBACK_URL, payload: raw, headers };
 }
 
 let app: FastifyInstance;
@@ -204,8 +255,135 @@ async function createProcessingPlainOrder(orderCode: string, totalAmount = "5000
 }
 
 /**
- * Task B3d (backend audit): the callback signature is md5(refId:apiKey) — a
- * fixed, replayable token — and every accepted callback re-POSTs
+ * Digiflazz's real webhook scheme: `X-Hub-Signature: sha1=<hex>`, HMAC-SHA1
+ * of the RAW body keyed by the dashboard-configured webhook secret. Before
+ * this, the route checked an invented md5(ref_id:apiKey) body field Digiflazz
+ * never sends, so every real delivery was refused with 403 and paid orders
+ * waited on the slow poller.
+ */
+describe("Digiflazz webhook signature (X-Hub-Signature, HMAC-SHA1 over the raw body)", () => {
+  const live = (refId: string, status: "Sukses" | "Pending", sn: string | null = null) => ({
+    refId,
+    status,
+    sn,
+    message: null,
+    price: null,
+  });
+
+  it("accepts a correctly signed `create` delivery and delivers on a live Sukses", async () => {
+    const order = await createProcessingDigiflazzOrder("ORD-DF-SIG-CREATE");
+    digiflazzSupplierMock.createTransaction.mockResolvedValue(live(order.orderCode, "Sukses", "SN-CREATE"));
+    const res = await app.inject(signedPayload({ refId: order.orderCode, status: "Sukses", sn: "SN-CREATE", event: "create" }));
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ status: "ok" });
+    const updated = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(updated!.status).toBe("DELIVERED");
+    expect(decryptDeliveredContent(updated!.deliveredContent, order.id)).toBe("SN-CREATE");
+  });
+
+  it("accepts a correctly signed `update` delivery reporting Pending and keeps the order PROCESSING", async () => {
+    const order = await createProcessingDigiflazzOrder("ORD-DF-SIG-UPDATE", "15000", {
+      digiflazzNextRecheckAt: new Date(Date.now() - 1_000),
+    });
+    digiflazzSupplierMock.createTransaction.mockResolvedValue(live(order.orderCode, "Pending"));
+    const res = await app.inject(signedPayload({ refId: order.orderCode, status: "Pending", event: "update" }));
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ status: "ok" });
+    expect(digiflazzSupplierMock.createTransaction).toHaveBeenCalledTimes(1);
+    const updated = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(updated!.status).toBe("PROCESSING");
+  });
+
+  it("403s a delivery signed with a different secret, without looking the order up", async () => {
+    const order = await createProcessingDigiflazzOrder("ORD-DF-SIG-WRONGKEY");
+    const res = await app.inject(signedPayload({ refId: order.orderCode, secret: "not-the-shop-secret" }));
+    expect(res.statusCode).toBe(403);
+    expect(res.json()).toEqual({ status: "bad signature" });
+    expect(digiflazzSupplierMock.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it("403s a body that was changed after it was signed", async () => {
+    const order = await createProcessingDigiflazzOrder("ORD-DF-SIG-TAMPER");
+    const raw = webhookBody({ refId: order.orderCode, status: "Gagal", message: "Gagal" });
+    const signature = hubSignature(raw);
+    const tampered = raw.replace('"status":"Gagal"', '"status":"Sukses"');
+    expect(tampered).not.toBe(raw);
+    const res = await app.inject(delivery(tampered, signature));
+    expect(res.statusCode).toBe(403);
+    expect(res.json()).toEqual({ status: "bad signature" });
+    expect(digiflazzSupplierMock.createTransaction).not.toHaveBeenCalled();
+    const updated = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(updated!.status).toBe("PROCESSING");
+  });
+
+  it("verifies the exact bytes received, not a re-serialization of the parsed JSON", async () => {
+    const order = await createProcessingDigiflazzOrder("ORD-DF-SIG-BYTES");
+    digiflazzSupplierMock.createTransaction.mockResolvedValue(live(order.orderCode, "Sukses", "SN-BYTES"));
+    // Pretty-printed with a trailing newline: JSON.stringify(req.body) would
+    // produce different bytes, so this only passes if the raw body is hashed.
+    const raw = `${JSON.stringify(JSON.parse(webhookBody({ refId: order.orderCode, sn: "SN-BYTES" })), null, 2)}\n`;
+    const res = await app.inject(delivery(raw, hubSignature(raw)));
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ status: "ok" });
+  });
+
+  it.each([
+    ["missing", undefined],
+    ["empty", ""],
+    ["garbage", "sha1=zzzz"],
+    ["truncated", "sha1=abc123"],
+  ])("403s a delivery whose X-Hub-Signature header is %s", async (_label, header) => {
+    const raw = webhookBody({ refId: "ORD-DF-SIG-HEADER" });
+    const res = await app.inject(delivery(raw, header));
+    expect(res.statusCode).toBe(403);
+    expect(res.json()).toEqual({ status: "bad signature" });
+    expect(digiflazzSupplierMock.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it("403s a correct digest sent without the sha1= prefix", async () => {
+    const raw = webhookBody({ refId: "ORD-DF-SIG-NOPREFIX" });
+    const res = await app.inject(delivery(raw, hubSignature(raw).slice("sha1=".length)));
+    expect(res.statusCode).toBe(403);
+    expect(res.json()).toEqual({ status: "bad signature" });
+  });
+
+  it("403s the old invented md5 body-field scheme (no fallback)", async () => {
+    const order = await createProcessingDigiflazzOrder("ORD-DF-SIG-OLDMD5");
+    const res = await app.inject({
+      method: "POST",
+      url: CALLBACK_URL,
+      payload: {
+        ref_id: order.orderCode,
+        status: "Sukses",
+        sn: "SN-OLD",
+        signature: createHash("md5").update(`${order.orderCode}:${API_KEY}`).digest("hex"),
+      },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(digiflazzSupplierMock.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it("never logs the webhook secret, the signature or the body of a rejected delivery", async () => {
+    const warn = vi.spyOn(logger, "warn");
+    const raw = webhookBody({ refId: "ORD-DF-SIG-NOLEAK" });
+    const badSignature = hubSignature(raw, "attacker-key");
+    try {
+      const res = await app.inject(delivery(raw, badSignature));
+      expect(res.statusCode).toBe(403);
+      const logged = JSON.stringify(warn.mock.calls);
+      expect(warn).toHaveBeenCalled();
+      expect(logged).not.toContain(WEBHOOK_SECRET);
+      expect(logged).not.toContain(badSignature.slice("sha1=".length));
+      expect(logged).not.toContain("ORD-DF-SIG-NOLEAK");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+/**
+ * Task B3d (backend audit): a signed delivery is replayable — the HMAC binds
+ * the body but carries no timestamp or nonce — and every accepted callback re-POSTs
  * /transaction for the order. That re-POST is only a status check if
  * Digiflazz really dedups by ref_id (unverified, see createTransaction's
  * ASSUMPTION note). So the webhook must never be the one to place a FIRST
@@ -216,15 +394,19 @@ describe("Digiflazz callback replay cannot place a second purchase (Task B3d)", 
   const pending = (refId: string) => ({ refId, status: "Pending", sn: null, message: null, price: null });
 
   it("two concurrent replays of one callback run only one live re-check", async () => {
-    const order = await createProcessingDigiflazzOrder("ORD-DF-B3D-RACE");
+    // Dispatched just now, so the Pending outcome schedules the first recheck
+    // (+10s) inside the claim lease: a replay landing after the first re-check
+    // finished is still refused. A stale dispatch time would make that recheck
+    // already due (new front-loaded schedule), which is legitimately claimable.
+    const order = await createProcessingDigiflazzOrder("ORD-DF-B3D-RACE","15000", { digiflazzDispatchedAt: new Date() });
     digiflazzSupplierMock.createTransaction.mockImplementation(
       () => new Promise((r) => setTimeout(() => r(pending(order.orderCode)), 150)),
     );
     const payload = signedPayload({ refId: order.orderCode, status: "Sukses", sn: "SN-X" });
 
     const [a, b] = await Promise.all([
-      app.inject({ method: "POST", url: "/pay/digiflazz/callback", payload }),
-      app.inject({ method: "POST", url: "/pay/digiflazz/callback", payload }),
+      app.inject(payload),
+      app.inject(payload),
     ]);
 
     expect(a.statusCode).toBe(200);
@@ -238,7 +420,7 @@ describe("Digiflazz callback replay cannot place a second purchase (Task B3d)", 
       digiflazzStatus: null,
       digiflazzNextRecheckAt: null,
     });
-    const res = await app.inject({ method: "POST", url: "/pay/digiflazz/callback", payload: signedPayload({ refId: order.orderCode }) });
+    const res = await app.inject(signedPayload({ refId: order.orderCode }));
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ status: "unmatched" });
     expect(digiflazzSupplierMock.createTransaction).not.toHaveBeenCalled();
@@ -249,7 +431,7 @@ describe("Digiflazz callback replay cannot place a second purchase (Task B3d)", 
       digiflazzStatus: "failed",
       digiflazzNextRecheckAt: null,
     });
-    const res = await app.inject({ method: "POST", url: "/pay/digiflazz/callback", payload: signedPayload({ refId: order.orderCode }) });
+    const res = await app.inject(signedPayload({ refId: order.orderCode }));
     expect(res.json()).toEqual({ status: "unmatched" });
     expect(digiflazzSupplierMock.createTransaction).not.toHaveBeenCalled();
   });
@@ -258,7 +440,7 @@ describe("Digiflazz callback replay cannot place a second purchase (Task B3d)", 
     const order = await createProcessingDigiflazzOrder("ORD-DF-B3D-LEASED", "15000", {
       digiflazzNextRecheckAt: new Date(Date.now() + 60_000), // inside the poller's claim lease
     });
-    const res = await app.inject({ method: "POST", url: "/pay/digiflazz/callback", payload: signedPayload({ refId: order.orderCode }) });
+    const res = await app.inject(signedPayload({ refId: order.orderCode }));
     expect(res.statusCode).toBe(200);
     expect(digiflazzSupplierMock.createTransaction).not.toHaveBeenCalled();
   });
@@ -268,24 +450,24 @@ describe("POST /pay/digiflazz/callback", () => {
   it("403s when Digiflazz is disabled (no creds configured)", async () => {
     await disableDigiflazz();
     const payload = signedPayload({ refId: "ORD-DISABLED" });
-    const res = await app.inject({ method: "POST", url: "/pay/digiflazz/callback", payload });
+    const res = await app.inject(payload);
     expect(res.statusCode).toBe(403);
     expect(res.json()).toEqual({ status: "disabled" });
   });
 
-  it("403s on a bad signature", async () => {
-    const res = await app.inject({
-      method: "POST",
-      url: "/pay/digiflazz/callback",
-      payload: { ref_id: "ORD-BADSIG", status: "Sukses", sn: "SN-1", signature: "0000000000000000000000000000000" },
-    });
+  it("403s as disabled when the Digiflazz credentials are set but no webhook secret is configured", async () => {
+    await deleteSetting(prisma, DIGIFLAZZ_WEBHOOK_SECRET_KEY);
+    const order = await createProcessingDigiflazzOrder("ORD-DF-NOSECRET");
+    // Even a delivery "signed" with an empty key must not get through.
+    const res = await app.inject(signedPayload({ refId: order.orderCode, secret: "" }));
     expect(res.statusCode).toBe(403);
-    expect(res.json()).toEqual({ status: "bad signature" });
+    expect(res.json()).toEqual({ status: "disabled" });
+    expect(digiflazzSupplierMock.createTransaction).not.toHaveBeenCalled();
   });
 
   it("returns unmatched when no order matches the ref_id", async () => {
     const payload = signedPayload({ refId: "ORD-NO-SUCH-ORDER" });
-    const res = await app.inject({ method: "POST", url: "/pay/digiflazz/callback", payload });
+    const res = await app.inject(payload);
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ status: "unmatched" });
   });
@@ -306,7 +488,7 @@ describe("POST /pay/digiflazz/callback", () => {
     });
     const payload = signedPayload({ refId: order.orderCode, status: "Sukses", sn: "SN-STALE" });
 
-    const res = await app.inject({ method: "POST", url: "/pay/digiflazz/callback", payload });
+    const res = await app.inject(payload);
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ status: "ok" });
 
@@ -339,7 +521,7 @@ describe("POST /pay/digiflazz/callback", () => {
     });
     const payload = signedPayload({ refId: order.orderCode, status: "Sukses", sn: "SN-1" });
 
-    const first = await app.inject({ method: "POST", url: "/pay/digiflazz/callback", payload });
+    const first = await app.inject(payload);
     expect(first.json()).toEqual({ status: "ok" });
 
     // The order is DELIVERED after the first call, so the second replay is
@@ -347,7 +529,7 @@ describe("POST /pay/digiflazz/callback", () => {
     // reaches the live re-check (review fix, post-Task-12) — a strictly
     // better outcome than the previous "call createTransaction again, then
     // rely on fulfillDigiflazzOrder's atomic claim to catch the race".
-    const second = await app.inject({ method: "POST", url: "/pay/digiflazz/callback", payload });
+    const second = await app.inject(payload);
     expect(second.statusCode).toBe(200);
     expect(second.json()).toEqual({ status: "unmatched" });
     expect(digiflazzSupplierMock.createTransaction).toHaveBeenCalledTimes(1); // not called again on replay
@@ -372,7 +554,7 @@ describe("POST /pay/digiflazz/callback", () => {
     });
     const payload = signedPayload({ refId: order.orderCode, status: "Sukses", sn: "SN-FORGED" });
 
-    const res = await app.inject({ method: "POST", url: "/pay/digiflazz/callback", payload });
+    const res = await app.inject(payload);
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ status: "ok" });
 
@@ -400,7 +582,7 @@ describe("POST /pay/digiflazz/callback", () => {
     });
     const payload = signedPayload({ refId: order.orderCode, status: "Sukses", sn: "SN-FORGED" });
 
-    const res = await app.inject({ method: "POST", url: "/pay/digiflazz/callback", payload });
+    const res = await app.inject(payload);
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ status: "ok" });
 
@@ -424,7 +606,7 @@ describe("POST /pay/digiflazz/callback", () => {
     });
     const payload = signedPayload({ refId: order.orderCode, status: "Gagal", message: "Saldo tidak cukup" });
 
-    const res = await app.inject({ method: "POST", url: "/pay/digiflazz/callback", payload });
+    const res = await app.inject(payload);
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ status: "ok" });
 
@@ -463,7 +645,7 @@ describe("POST /pay/digiflazz/callback", () => {
       throw new Error("transient DB write failure");
     });
 
-    const res = await app.inject({ method: "POST", url: "/pay/digiflazz/callback", payload });
+    const res = await app.inject(payload);
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ status: "ok" });
 
@@ -489,7 +671,7 @@ describe("POST /pay/digiflazz/callback", () => {
     });
     const payload = signedPayload({ refId: order.orderCode, status: "Pending" });
 
-    const res = await app.inject({ method: "POST", url: "/pay/digiflazz/callback", payload });
+    const res = await app.inject(payload);
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ status: "ok" });
 
@@ -498,12 +680,14 @@ describe("POST /pay/digiflazz/callback", () => {
     expect(updated!.digiflazzStatus).toBe("pending_at_supplier");
     expect(updated!.digiflazzAttempts).toBe(1);
     expect(updated!.digiflazzNextRecheckAt).not.toBeNull();
-    // ~2 minutes ahead per DIGIFLAZZ_RECHECK_SCHEDULE_MINUTES[0]
-    // (digiflazzBackoff.ts) — same delta-check pattern as digiflazz.test.ts's
+    // DIGIFLAZZ_RECHECK_SCHEDULE_SECONDS[0] ahead (digiflazzBackoff.ts) — same delta-check pattern as digiflazz.test.ts's
     // D2 case ("leaves a Pending order PROCESSING with the claim set").
     const deltaMs = updated!.digiflazzNextRecheckAt!.getTime() - before.getTime();
-    expect(deltaMs).toBeGreaterThan(60_000);
-    expect(deltaMs).toBeLessThanOrEqual(3 * 60_000);
+    // First recheck is due DIGIFLAZZ_RECHECK_SCHEDULE_SECONDS[0] after dispatch
+    // (digiflazzBackoff.ts); a slow test run may only push it later (never
+    // scheduled in the past), and it must stay far below the second step.
+    expect(deltaMs).toBeGreaterThanOrEqual(DIGIFLAZZ_RECHECK_SCHEDULE_SECONDS[0] * 1000);
+    expect(deltaMs).toBeLessThan(DIGIFLAZZ_RECHECK_SCHEDULE_SECONDS[2] * 1000);
   });
 
   // Review fix (Important, post-Task-12): a validly-signed replay for an
@@ -522,7 +706,7 @@ describe("POST /pay/digiflazz/callback", () => {
     });
     const payload = signedPayload({ refId: order.orderCode, status: "Sukses", sn: "SN-REPLAY" });
 
-    const res = await app.inject({ method: "POST", url: "/pay/digiflazz/callback", payload });
+    const res = await app.inject(payload);
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ status: "unmatched" });
 
@@ -540,7 +724,7 @@ describe("POST /pay/digiflazz/callback", () => {
     const order = await createProcessingPlainOrder("ORD-DFNOTDIGI");
     const payload = signedPayload({ refId: order.orderCode, status: "Sukses", sn: "SN-1" });
 
-    const res = await app.inject({ method: "POST", url: "/pay/digiflazz/callback", payload });
+    const res = await app.inject(payload);
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ status: "unmatched" });
 
@@ -565,7 +749,7 @@ describe("POST /pay/digiflazz/callback", () => {
     digiflazzSupplierMock.createTransaction.mockRejectedValue(new Error("Digiflazz transaction failed: request timed out"));
     const payload = signedPayload({ refId: order.orderCode, status: "Sukses", sn: "SN-1" });
 
-    const res = await app.inject({ method: "POST", url: "/pay/digiflazz/callback", payload });
+    const res = await app.inject(payload);
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ status: "ok" });
 
@@ -576,8 +760,11 @@ describe("POST /pay/digiflazz/callback", () => {
     expect(updated!.digiflazzAttempts).toBe(1);
     expect(updated!.digiflazzNextRecheckAt).not.toBeNull();
     const deltaMs = updated!.digiflazzNextRecheckAt!.getTime() - before.getTime();
-    expect(deltaMs).toBeGreaterThan(60_000);
-    expect(deltaMs).toBeLessThanOrEqual(3 * 60_000);
+    // First recheck is due DIGIFLAZZ_RECHECK_SCHEDULE_SECONDS[0] after dispatch
+    // (digiflazzBackoff.ts); a slow test run may only push it later (never
+    // scheduled in the past), and it must stay far below the second step.
+    expect(deltaMs).toBeGreaterThanOrEqual(DIGIFLAZZ_RECHECK_SCHEDULE_SECONDS[0] * 1000);
+    expect(deltaMs).toBeLessThan(DIGIFLAZZ_RECHECK_SCHEDULE_SECONDS[2] * 1000);
     expect(updated!.digiflazzFailureDetail).toContain("Digiflazz transaction failed: request timed out");
   });
 
@@ -597,7 +784,7 @@ describe("POST /pay/digiflazz/callback", () => {
       throw new Error("transient DB write failure");
     });
 
-    const res = await app.inject({ method: "POST", url: "/pay/digiflazz/callback", payload });
+    const res = await app.inject(payload);
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ status: "ok" });
 
@@ -649,7 +836,7 @@ describe("POST /pay/digiflazz/callback", () => {
     // backoff schedule the poller started (1 -> 2), not restart a second
     // independent one.
     const payload = signedPayload({ refId: order.orderCode, status: "Pending" });
-    const res = await app.inject({ method: "POST", url: "/pay/digiflazz/callback", payload });
+    const res = await app.inject(payload);
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ status: "ok" });
 

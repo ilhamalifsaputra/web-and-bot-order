@@ -432,6 +432,7 @@ export async function createDenomination(
      * the storefront's live nickname-check UX. Independent of supplierSku/
      * autoDeliverySource above. */
     nicknameCheckGameCode?: string | null;
+    providerInputMapping?: string | null;
     /** True when `price` was set by a human rather than the Digiflazz markup
      * suggestion (C2 fix) — protects it from being silently overwritten by
      * the next resyncDigiflazzCatalog tick. Defaults to false (computed by
@@ -473,6 +474,7 @@ export async function createDenomination(
       supplierSku: args.supplierSku ?? null,
       supplierRawName: args.supplierRawName ?? null,
       nicknameCheckGameCode: args.nicknameCheckGameCode ?? null,
+      providerInputMapping: args.providerInputMapping ?? null,
       priceOverridden: args.priceOverridden ?? false,
       qtyValue: args.qtyValue ?? null,
       qtyUnit: args.qtyUnit ?? null,

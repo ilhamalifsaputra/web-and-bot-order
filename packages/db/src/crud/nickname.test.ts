@@ -66,9 +66,10 @@ describe("buildNicknameProviderEntries", () => {
 describe("resolveNicknameGate", () => {
   type Fixture = Parameters<typeof resolveNicknameGate>[0];
 
-  it("override present: uses nicknameCheckGameCode verbatim, with requiresZone/requiresServer from a matching catalog entry", () => {
+  it("override present: uses nicknameCheckGameCode verbatim, with requirements from configured fields", () => {
     const denomination = {
       nicknameCheckGameCode: "mobile-legends",
+      additionalFields: JSON.stringify([{ key: "user_id", label: { id: "ID", en: "ID" }, type: "text", required: true }, { key: "server_id", label: { id: "Server", en: "Server" }, type: "text", required: true }]),
       product: { digiflazzBrand: null, name: "Unrelated Product Name" },
     } as unknown as Fixture;
 
@@ -93,20 +94,20 @@ describe("resolveNicknameGate", () => {
     });
   });
 
-  it("override absent, brand matches a catalog entry: auto-detects from digiflazzBrand", () => {
+  it("override absent, brand matches a catalog entry: does not infer requirements from the brand", () => {
     const denomination = {
       nicknameCheckGameCode: null,
       product: { digiflazzBrand: "Mobile Legends (Indonesia)", name: "ML 86 Diamonds" },
     } as unknown as Fixture;
 
     expect(resolveNicknameGate(denomination)).toEqual({
-      gameCode: "mobile-legends",
+      gameCode: null,
       requiresZone: false,
-      requiresServer: true,
+      requiresServer: false,
     });
   });
 
-  it("override absent, digiflazzBrand null, name matches a catalog entry, product is Digiflazz-sourced: falls back to name", () => {
+  it("override absent, digiflazzBrand null, name matches a catalog entry, product is Digiflazz-sourced: does not infer requirements from the name", () => {
     const denomination = {
       nicknameCheckGameCode: null,
       autoDeliverySource: "digiflazz",
@@ -114,7 +115,7 @@ describe("resolveNicknameGate", () => {
     } as unknown as Fixture;
 
     expect(resolveNicknameGate(denomination)).toEqual({
-      gameCode: "free-fire",
+      gameCode: null,
       requiresZone: false,
       requiresServer: false,
     });

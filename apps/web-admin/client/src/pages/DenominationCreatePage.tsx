@@ -85,6 +85,7 @@ export function DenominationCreatePage() {
   const [autoDeliverySource, setAutoDeliverySource] = useState<string | null>(null);
   const [supplierSku, setSupplierSku] = useState("");
   const [nicknameCheckGameCode, setNicknameCheckGameCode] = useState("");
+  const [providerInputMapping, setProviderInputMapping] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   const create = useMutation({
@@ -101,13 +102,14 @@ export function DenominationCreatePage() {
           ...(warrantyDays.trim() ? { warrantyDays: Number(warrantyDays.trim()) } : {}),
           ...(description.trim() ? { description: description.trim() } : {}),
           deliveryType,
-          ...(deliveryType === "manual_with_info"
+          ...(deliveryType === "manual_with_info" || (deliveryType === "auto" && additionalFields.length > 0)
             ? { additionalFields: draftsToFields(additionalFields) }
             : {}),
           ...(deliveryType === "manual_with_info" && autoDeliverySource
             ? { autoDeliverySource, supplierSku: supplierSku.trim() }
             : {}),
           ...(nicknameCheckGameCode.trim() ? { nicknameCheckGameCode: nicknameCheckGameCode.trim() } : {}),
+          ...(providerInputMapping.trim() ? { providerInputMapping: providerInputMapping.trim() } : {}),
           ...(qtyValue.trim() ? { qtyValue: Number(qtyValue.trim()) } : {}),
           ...(qtyUnit.trim() ? { qtyUnit: qtyUnit.trim() } : {}),
         },
@@ -125,7 +127,7 @@ export function DenominationCreatePage() {
     type !== null &&
     durationLabel.trim().length > 0 &&
     isValidPrice(price) &&
-    (deliveryType !== "manual_with_info" || fieldsAreValid(additionalFields)) &&
+    ((deliveryType !== "manual_with_info" && additionalFields.length === 0) || fieldsAreValid(additionalFields)) &&
     (autoDeliverySource !== "digiflazz" || supplierSku.trim().length > 0);
 
   return (
@@ -258,6 +260,8 @@ export function DenominationCreatePage() {
           supplierSku={supplierSku}
           onSupplierSkuChange={setSupplierSku}
           nicknameCheckGameCode={nicknameCheckGameCode}
+          providerInputMapping={providerInputMapping}
+          onProviderInputMappingChange={setProviderInputMapping}
           onNicknameCheckGameCodeChange={setNicknameCheckGameCode}
         />
 

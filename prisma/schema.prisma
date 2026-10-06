@@ -340,6 +340,8 @@ model Denomination {
   /// enhancement, not a fulfilment link, so it applies to any manual_with_info
   /// product regardless of who (if anyone) auto-fulfils it.
   nicknameCheckGameCode String?   @map("nickname_check_game_code")
+  /// Server-only JSON mapping: nickname parameter keys and supplier target format.
+  providerInputMapping String?   @map("provider_input_mapping")
   /// True once an admin has manually edited this SKU's price after import.
   /// The Digiflazz re-sync job (packages/db/src/crud/digiflazz.ts,
   /// resyncDigiflazzCatalog) skips price recomputation for any row where this
@@ -677,6 +679,8 @@ model Order {
   /// answers (keyed by field `key`), collected at checkout before payment. Null
   /// for auto/manual orders. TEXT per the JSON-in-string convention.
   customerData           String?   @map("customer_data")
+  /// Field and provider mapping snapshot used when this order was created.
+  inputConfigSnapshot    String?   @map("input_config_snapshot")
   /// For manual / manual_with_info orders: the exact text the admin sent when
   /// fulfilling the order by hand (audit trail). Null for auto orders.
   deliveredContent       String?   @map("delivered_content")

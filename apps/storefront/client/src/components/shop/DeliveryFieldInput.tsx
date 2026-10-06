@@ -46,9 +46,9 @@ export default function DeliveryFieldInput({
   const err = value.trim() ? fieldError(field, value) : null;
   const errorText = err ? t(err) : undefined;
   return (
-    <FormField label={label} htmlFor={inputId} error={errorText}>
+    <FormField label={label} htmlFor={inputId} error={errorText} hint={field.helpText}>
       {field.type === "select" ? (
-        <Select value={value} onChange={(e) => onChange(e.target.value)}>
+        <Select id={inputId} value={value} onChange={(e) => onChange(e.target.value)} required={field.required}>
           <option value="">{t("web.checkout_info_select_placeholder")}</option>
           {field.options.map((opt) => (
             <option key={opt} value={opt}>
@@ -58,8 +58,9 @@ export default function DeliveryFieldInput({
         </Select>
       ) : (
         <Input
+          id={inputId}
           type={
-            field.type === "email" ? "email" : field.type === "url" ? "url" : field.type === "number" ? "number" : "text"
+            field.type === "email" ? "email" : field.type === "url" ? "url" : "text"
           }
           // `type` alone gets the right keyboard on iOS Safari but not
           // reliably on Android, whose keyboards key off inputMode — so both
@@ -72,6 +73,9 @@ export default function DeliveryFieldInput({
           // without this they retype an address the browser already knows.
           autoComplete={field.type === "email" ? "email" : undefined}
           value={value}
+          required={field.required}
+          minLength={field.minLength}
+          maxLength={field.maxLength ?? 4096}
           placeholder={field.placeholder || undefined}
           onChange={(e) => onChange(e.target.value)}
         />

@@ -21,7 +21,7 @@
  */
 import type { NicknameServiceProviderEntry } from "@app/core/nickname/service";
 import { createKokinpayNicknameProvider } from "@app/core/nickname/kokinpayProvider";
-import { GAME_CATALOG, matchGameKey, findCatalogEntryByCode } from "@app/core/nickname/gameCatalog";
+import { nicknameInputKeys, parseInputFields } from "@app/core/playerInput";
 import type { Db } from "./_types";
 import { getKokinpayCreds } from "./kokinpay";
 
@@ -50,6 +50,8 @@ export async function buildNicknameProviderEntries(
  * function's behavior is unchanged. */
 type DenominationForNicknameGate = {
   nicknameCheckGameCode: string | null;
+  additionalFields?: string | null;
+  providerInputMapping?: string | null;
   /** The Denomination's OWN autoDeliverySource (not a Product field) —
    * passed through to matchGameKey alongside product.digiflazzBrand/name so
    * it can restrict its product.name fallback to Digiflazz-sourced products
@@ -81,15 +83,9 @@ type DenominationForNicknameGate = {
 export function resolveNicknameGate(
   denomination: DenominationForNicknameGate | null | undefined,
 ): { gameCode: string | null; requiresZone: boolean; requiresServer: boolean } {
-  const override = denomination?.nicknameCheckGameCode;
-  if (override) {
-    const known = findCatalogEntryByCode(override);
-    return { gameCode: override, requiresZone: known?.requiresZone ?? false, requiresServer: known?.requiresServer ?? false };
-  }
-  const product = denomination?.product;
-  const key = product ? matchGameKey({ ...product, autoDeliverySource: denomination?.autoDeliverySource }) : null;
-  const entry = key ? GAME_CATALOG[key] : null;
-  return entry
-    ? { gameCode: entry.code, requiresZone: entry.requiresZone, requiresServer: entry.requiresServer }
-    : { gameCode: null, requiresZone: false, requiresServer: false };
+  const gameCode = denomination?.nicknameCheckGameCode ?? null;
+  if (!gameCode) return { gameCode: null, requiresZone: false, requiresServer: false };
+  const fields = parseInputFields(denomination?.additionalFields);
+  const keys = nicknameInputKeys(fields, denomination?.providerInputMapping);
+  return { gameCode, requiresZone: fields.some((f) => f.key === keys.zoneKey && f.required), requiresServer: fields.some((f) => f.key === keys.serverKey && f.required) };
 }

@@ -177,6 +177,9 @@ describe("DenominationEditPage", () => {
         // admin can clear a previously-set value by blanking the field, not
         // just set one. This fixture never touched the field, so it's null.
         nicknameCheckGameCode: null,
+        // providerInputMapping follows the same convention: always sent on an
+        // edit so an admin can clear it. Untouched here, so it is null.
+        providerInputMapping: null,
         // Task 14: qtyValue/qtyUnit follow the same always-sent-on-edit
         // convention — this fixture never touched them, so both are null.
         qtyValue: null,
@@ -271,6 +274,22 @@ describe("DenominationEditPage", () => {
     );
   });
 
+  it("clears buyer-info fields when switching to Automatic and restores them when returning to buyer info required", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.mocked(apiGet).mockResolvedValue(MANUAL_WITH_INFO_PRODUCT_DETAIL);
+    render(<DenominationEditPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByDisplayValue("Netflix 1 Month")).toBeInTheDocument());
+    expect(screen.getAllByDisplayValue("IGN")).toHaveLength(2);
+
+    await user.click(screen.getByRole("radio", { name: /^automatic delivery/i }));
+    expect(screen.queryAllByDisplayValue("IGN")).toHaveLength(0);
+
+    // A slip of the mouse is recoverable: the draft comes back untouched.
+    await user.click(screen.getByRole("radio", { name: /^manual delivery/i }));
+    await user.click(screen.getByRole("radio", { name: /^require buyer information/i }));
+    expect(screen.getAllByDisplayValue("IGN")).toHaveLength(2);
+  });
+
   it("switching Delivery Type away from 'Manual + buyer info required' drops autoDeliverySource/supplierSku from the submitted payload", async () => {
     // Regression coverage for the client half of the fix in 024fec6: the
     // backend routes independently re-derive/strip autoDeliverySource and
@@ -303,7 +322,7 @@ describe("DenominationEditPage", () => {
     expect(screen.getByDisplayValue("mlbb86")).toBeInTheDocument();
 
     await user.click(screen.getByRole("radio", { name: /^automatic delivery/i }));
-    // Step 4 (and Steps 2/3) are gone now that deliveryType is back to "auto".
+    // Step 4 (and Step 2) are gone now that deliveryType is back to "auto".
     expect(screen.queryByRole("radio", { name: /^digiflazz/i })).not.toBeInTheDocument();
 
     const btn = screen.getByRole("button", { name: /save changes/i });
@@ -314,7 +333,11 @@ describe("DenominationEditPage", () => {
     const [, sentBody] = vi.mocked(apiPatch).mock.calls[0] as [string, Record<string, unknown>];
     expect(sentBody).not.toHaveProperty("autoDeliverySource");
     expect(sentBody).not.toHaveProperty("supplierSku");
+    // Leaving Manual + buyer info clears the fields from the form, so a
+    // stock-delivered SKU never silently asks buyers for input; the provider
+    // mapping is reset with the method as well.
     expect(sentBody).not.toHaveProperty("additionalFields");
+    expect(sentBody.providerInputMapping).toBeNull();
     expect(sentBody.deliveryType).toBe("auto");
   });
 

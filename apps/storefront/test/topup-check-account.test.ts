@@ -101,6 +101,17 @@ beforeEach(() => {
 });
 
 describe("POST /api/v1/topup/check-account", () => {
+  it("rejects unknown dynamic keys before calling KokinPay", async () => {
+    await setSetting(prisma, KOKINPAY_API_KEY_KEY, "kp-key");
+    const res = await postCheckAccount({ denomination_id: denomWithCheckId, player_inputs: { user_id: "123456", callback_url: "https://example.test" } }, "198.51.100.21");
+    expect(res.statusCode).toBe(400);
+    expect(kokinpayMock.checkGameNickname).not.toHaveBeenCalled();
+  });
+  it("rejects a missing required field despite fake client rules", async () => {
+    const res = await postCheckAccount({ denomination_id: denomWithCheckId, player_inputs: {}, requires_zone_id: false, input_config: { required: false } }, "198.51.100.22");
+    expect(res.statusCode).toBe(400);
+    expect(kokinpayMock.checkGameNickname).not.toHaveBeenCalled();
+  });
   it("does not call the nickname provider for a disabled service", async () => {
     await setSetting(prisma, KOKINPAY_API_KEY_KEY, "kp-key");
     await setSetting(prisma, "service_premium_apps_enabled", "false");
@@ -133,12 +144,12 @@ describe("POST /api/v1/topup/check-account", () => {
   it("returns available:true with the resolved nickname on a successful lookup (override game code)", async () => {
     await setSetting(prisma, KOKINPAY_API_KEY_KEY, "kp-key");
     kokinpayMock.checkGameNickname.mockResolvedValueOnce({ valid: true, nickname: "ProPlayer123" });
-    const res = await postCheckAccount({ denomination_id: denomWithCheckId, id: "123456789", server: "1234" });
+    const res = await postCheckAccount({ denomination_id: denomWithCheckId, player_inputs: { user_id: "123456789" } });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ available: true, valid: true, nickname: "ProPlayer123" });
     expect(kokinpayMock.checkGameNickname).toHaveBeenCalledWith(
       { apiKey: "kp-key" },
-      { gameCode: "mobile-legends", id: "123456789", server: "1234" },
+      { gameCode: "mobile-legends", id: "123456789", server: undefined },
     );
   });
 
@@ -179,17 +190,14 @@ describe("POST /api/v1/topup/check-account", () => {
 // ProviderGameMapping tables): no nicknameCheckGameCode override needed —
 // the game is detected from the product's digiflazzBrand against the static
 // catalog (packages/core/src/nickname/gameCatalog.ts).
-describe("POST /api/v1/topup/check-account — catalog auto-detect", () => {
-  it("auto-detects the game from the product's digiflazzBrand and runs the KokinPay lookup with the catalog's code", async () => {
+describe("POST /api/v1/topup/check-account — unconfigured catalog metadata", () => {
+  it("does not infer a nickname service from the display name", async () => {
     await setSetting(prisma, KOKINPAY_API_KEY_KEY, "kp-key");
     kokinpayMock.checkGameNickname.mockResolvedValueOnce({ valid: true, nickname: "AutoDetectedPlayer" });
 
     const res = await postCheckAccount({ denomination_id: denomAutoDetectId, id: "222333444" });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ available: true, valid: true, nickname: "AutoDetectedPlayer" });
-    expect(kokinpayMock.checkGameNickname).toHaveBeenCalledWith(
-      { apiKey: "kp-key" },
-      { gameCode: "free-fire", id: "222333444", server: undefined },
-    );
+    expect(res.json()).toEqual({ available: false });
+    expect(kokinpayMock.checkGameNickname).not.toHaveBeenCalled();
   });
 });

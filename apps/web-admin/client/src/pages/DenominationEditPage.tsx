@@ -42,6 +42,7 @@ interface EditableDenomination {
   autoDeliverySource: string | null;
   supplierSku: string | null;
   nicknameCheckGameCode: string | null;
+  providerInputMapping?: string | null;
   /** Compact-button quantity (Task 8/14), e.g. 86 "Diamonds" — null until set. */
   qtyValue: number | null;
   qtyUnit: string | null;
@@ -138,6 +139,7 @@ export function DenominationEditPage() {
   const [autoDeliverySource, setAutoDeliverySource] = useState<string | null>(null);
   const [supplierSku, setSupplierSku] = useState("");
   const [nicknameCheckGameCode, setNicknameCheckGameCode] = useState("");
+  const [providerInputMapping, setProviderInputMapping] = useState("");
   // Compact-button quantity (Task 8/14), e.g. 86 "Diamonds" — independent of
   // every other field on this form.
   const [qtyValue, setQtyValue] = useState("");
@@ -176,6 +178,7 @@ export function DenominationEditPage() {
     setAutoDeliverySource(denomination.autoDeliverySource ?? null);
     setSupplierSku(denomination.supplierSku ?? "");
     setNicknameCheckGameCode(denomination.nicknameCheckGameCode ?? "");
+    setProviderInputMapping(denomination.providerInputMapping ?? "");
     setQtyValue(denomination.qtyValue != null ? String(denomination.qtyValue) : "");
     setQtyUnit(denomination.qtyUnit ?? "");
     if (existingRule) {
@@ -205,13 +208,14 @@ export function DenominationEditPage() {
         ...(sortOrder.trim() ? { sortOrder: Number(sortOrder.trim()) } : {}),
         ...(moveToProductId && moveToProductId !== productId ? { productId: Number(moveToProductId) } : {}),
         deliveryType,
-        ...(deliveryType === "manual_with_info"
+        ...(deliveryType === "manual_with_info" || (deliveryType === "auto" && additionalFields.length > 0)
           ? { additionalFields: draftsToFields(additionalFields) }
           : {}),
         ...(deliveryType === "manual_with_info" && autoDeliverySource
           ? { autoDeliverySource, supplierSku: supplierSku.trim() }
           : {}),
         nicknameCheckGameCode: nicknameCheckGameCode.trim() || null,
+        providerInputMapping: providerInputMapping.trim() || null,
         qtyValue: qtyValue.trim() ? Number(qtyValue.trim()) : null,
         qtyUnit: qtyUnit.trim() || null,
       }),
@@ -258,7 +262,7 @@ export function DenominationEditPage() {
     type !== null &&
     durationLabel.trim().length > 0 &&
     isValidPrice(price) &&
-    (deliveryType !== "manual_with_info" || fieldsAreValid(additionalFields)) &&
+    ((deliveryType !== "manual_with_info" && additionalFields.length === 0) || fieldsAreValid(additionalFields)) &&
     (autoDeliverySource !== "digiflazz" || supplierSku.trim().length > 0);
 
   if (isError) return <PageLayout title="Edit Denomination"><p className="text-sm text-rust">Failed to load denomination.</p></PageLayout>;
@@ -379,6 +383,8 @@ export function DenominationEditPage() {
           supplierSku={supplierSku}
           onSupplierSkuChange={setSupplierSku}
           nicknameCheckGameCode={nicknameCheckGameCode}
+          providerInputMapping={providerInputMapping}
+          onProviderInputMappingChange={setProviderInputMapping}
           onNicknameCheckGameCodeChange={setNicknameCheckGameCode}
         />
 

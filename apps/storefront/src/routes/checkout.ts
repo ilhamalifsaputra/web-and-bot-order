@@ -22,6 +22,7 @@ import { config } from "@app/core/config";
 import { DeliveryType, OrderCurrency, OrderStatus, PaymentMethod } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { parseAdditionalFields, validateCustomerData } from "@app/core/deliveryFields";
+import { parseInputFields } from "@app/core/playerInput";
 import { logger } from "@app/core/logger";
 import { Decimal } from "@app/core/money";
 import { canonicalProduct } from "@app/core/canonicalProduct";
@@ -742,9 +743,9 @@ export async function performCheckout(
     // missing/invalid answer. auto/manual carts pass customerData: null
     // through unchanged.
     let customerDataJson: string | null = null;
-    if (activeCartLines.length === 1 && activeCartLines[0]!.product.deliveryType === DeliveryType.MANUAL_WITH_INFO) {
+    if (activeCartLines.length === 1 && (activeCartLines[0]!.product.deliveryType === DeliveryType.MANUAL_WITH_INFO || activeCartLines[0]!.product.additionalFields)) {
       const line = activeCartLines[0]!;
-      const fields = parseAdditionalFields(line.product.additionalFields);
+      const fields = parseInputFields(line.product.additionalFields);
       customerDataJson = JSON.stringify(validateCustomerData(fields, customerData, line.quantity));
     }
 
@@ -826,8 +827,8 @@ function directCustomerDataJson(
   quantity: number,
   customerData: unknown,
 ): string | null {
-  if (denom.deliveryType !== DeliveryType.MANUAL_WITH_INFO) return null;
-  const fields = parseAdditionalFields(denom.additionalFields);
+  if (denom.deliveryType !== DeliveryType.MANUAL_WITH_INFO && !denom.additionalFields) return null;
+  const fields = parseInputFields(denom.additionalFields);
   return JSON.stringify(validateCustomerData(fields, customerData, quantity));
 }
 
@@ -1613,7 +1614,9 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
       return reply.send({ status: "unmatched" });
     }
 
-    const customerNo = buildDigiflazzCustomerNo(resolution.product, order.customerData);
+    let customerNo: string;
+    try { customerNo = buildDigiflazzCustomerNo(resolution.product, order.customerData, order.inputConfigSnapshot); }
+    catch { return reply.send({ status: "unmatched" }); }
 
     // Task B3d (backend audit): a genuine callback can only exist after the
     // dispatch poller placed the purchase, and is only worth a re-check while

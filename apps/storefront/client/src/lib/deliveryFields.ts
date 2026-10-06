@@ -38,6 +38,8 @@ export function isValidEmail(raw: string): boolean {
 export function fieldError(field: AdditionalField, rawValue: string): string | null {
   const value = (rawValue ?? "").trim();
   if (!value) return field.required ? "error.field_required" : null;
+  if (value.length > (field.maxLength ?? 4096) || value.length < (field.minLength ?? 0)) return "error.field_invalid_length";
+  if (field.pattern && !new RegExp(field.pattern).test(value)) return "error.field_invalid_pattern";
   switch (field.type) {
     case "email":
       return EMAIL_RE.test(value) ? null : "error.field_invalid_email";

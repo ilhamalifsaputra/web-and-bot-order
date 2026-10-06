@@ -43,7 +43,7 @@ import {
 import type { SessionData } from "../src/context";
 import { invalidateRateCache } from "../src/util/rate";
 import { t } from "../src/util/i18n";
-import { logger } from "@app/core/logger";
+
 import * as checkout from "../src/handlers/checkout";
 import { nicknameCheckConversation } from "../src/conversations/nicknameCheck";
 import * as ckb from "../src/keyboards/customer";
@@ -105,6 +105,10 @@ async function makeConfiguredDenom(opts: { gameCode?: string; withCreds?: boolea
     durationLabel: "N/A",
     price: "10.00",
     nicknameCheckGameCode: opts.gameCode ?? "free-fire",
+    additionalFields: JSON.stringify([
+      { key: "target", label: { id: "Player ID", en: "Player ID" }, type: "text", required: true },
+      ...(opts.gameCode === "mobile-legends" ? [{ key: "server", label: { id: "Zone ID", en: "Zone ID" }, type: "number", required: true }] : []),
+    ]),
   });
   // 5 units — headroom for tests that check quantity > 1 (the stock check
   // runs BEFORE this gate and must never be what's under test here).
@@ -178,8 +182,8 @@ describe("showOrderConfirmation — nickname-check gate: unconfigured products a
 
     await checkout.showOrderConfirmation(ctx, denom.id, 1);
 
-    expect(calls(sink, "conversation.enter").length).toBe(0);
-    expect(sentIncludes(sink, "Confirm Order")).toBe(true);
+    expect(calls(sink, "conversation.enter").map((c) => c.args[0])).toEqual(["customerInfo"]);
+    expect(sentIncludes(sink, "Confirm Order")).toBe(false);
   });
 
   it("an unconfigured MANUAL_WITH_INFO SKU is untouched by this gate and still goes through customerInfo (I-6: the nickname gate no longer assumes AUTO, but an unconfigured product's behavior per deliveryType is unchanged)", async () => {
@@ -283,6 +287,8 @@ describe("showOrderConfirmation — nickname-check gate: configured products div
       session: { ...userSession(), scratch: { customerData: existing } },
     });
 
+    const current = await prisma.denomination.findUniqueOrThrow({ where: { id: denom.id } });
+    ctx.session.scratch.customerInputOwner = JSON.stringify([denom.id, 1, current.additionalFields, current.providerInputMapping, current.nicknameCheckGameCode]);
     await checkout.showOrderConfirmation(ctx, denom.id, 1);
 
     expect(calls(sink, "conversation.enter").length).toBe(0);
@@ -294,521 +300,133 @@ describe("showOrderConfirmation — nickname-check gate: configured products div
 // nicknameCheckConversation
 // ===========================================================================
 
-describe("nicknameCheckConversation", () => {
-  it("no zone/server required: found account + Confirm tap stores {target, nickname} on customerData and hands off to confirmation", async () => {
-    const { denom } = await makeConfiguredDenom({ withCreds: true });
-    kokinpayMock.checkGameNickname.mockResolvedValueOnce({ valid: true, nickname: "ProPlayer123" });
+describe("nicknameCheckConversation — configured fields", () => {
+  async function run(denomId: number, steps: string[], quantity = 1) {
     const sink: SentCall[] = [];
-    const entry = makeCtx({
-      sink,
-      from: { id: 42, username: "tester" },
-      session: { ...userSession(), scratch: { pendingNicknameProductId: denom.id, pendingNicknameQuantity: 1 } },
-      callbackData: `v1:buy:${denom.id}:1`,
-    }).ctx;
-    const targetMsg = makeCtx({ sink, from: { id: 42, username: "tester" }, session: userSession(), text: "12345678" }).ctx;
-    const confirmTap = makeCtx({
-      sink,
-      from: { id: 42, username: "tester" },
-      session: userSession(),
-      callbackData: ckb.cb("nick", "confirm"),
-    }).ctx;
-    const conv = new FakeConversation([targetMsg, confirmTap]);
+    const session = { ...userSession(), scratch: { pendingNicknameProductId: denomId, pendingNicknameQuantity: quantity } } as SessionData;
+    const entry = makeCtx({ sink, sharedSession: session, from: { id: 42 }, callbackData: `v1:buy:${denomId}:${quantity}` }).ctx;
+    const queued = steps.map((value) => makeCtx({ sink, sharedSession: session, from: { id: 42 }, ...(value.startsWith("v1:") ? { callbackData: value } : { text: value }) }).ctx);
+    const fake = new FakeConversation(queued);
+    const captured = captureExternalResults(fake);
+    await nicknameCheckConversation(captured.conversation, entry);
+    return { sink, session, results: captured.results, entry };
+  }
 
-    await nicknameCheckConversation(conv.asMyConversation(), entry);
-
-    expect(kokinpayMock.checkGameNickname).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({ id: "12345678" }),
-    );
-    expect(JSON.parse(confirmTap.session.scratch.customerData as string)).toEqual([
-      { target: "12345678", nickname: "ProPlayer123" },
-    ]);
-    expect(confirmTap.session.scratch.pendingNicknameProductId).toBeUndefined();
-    expect(confirmTap.session.scratch.pendingNicknameQuantity).toBeUndefined();
-    expect(sentIncludes(sink, "Confirm Order")).toBe(true);
+  it("a found single-ID account shows the nickname and stores canonical answers", async () => {
+    const { denom } = await makeConfiguredDenom({ withCreds: true });
+    kokinpayMock.checkGameNickname.mockResolvedValue({ valid: true, nickname: "Player" });
+    const result = await run(denom.id, ["000123", ckb.cb("nick", "confirm")]);
+    expect(JSON.parse(result.session.scratch.customerData as string)).toEqual([{ target: "000123" }]);
+    expect(sentIncludes(result.sink, "Player")).toBe(true);
+    expect(sentIncludes(result.sink, "Confirm Order")).toBe(true);
   });
-
-  // No static-catalog entry currently has requiresZone:true (see
-  // gameCatalog.ts and makeConfiguredDenom's own doc comment) — only
-  // requiresServer is exercisable against real catalog data, so this
-  // replaces the old requiresZone/requiresZone+requiresServer cases.
-  it("requiresServer: prompts target then server, and both end up on customerData", async () => {
+  it("collects a required zone after Player ID, validating before lookup", async () => {
     const { denom } = await makeConfiguredDenom({ gameCode: "mobile-legends", withCreds: true });
-    kokinpayMock.checkGameNickname.mockResolvedValueOnce({ valid: true, nickname: "ServerPlayer" });
-    const sink: SentCall[] = [];
-    const entry = makeCtx({
-      sink,
-      from: { id: 42, username: "tester" },
-      session: { ...userSession(), scratch: { pendingNicknameProductId: denom.id, pendingNicknameQuantity: 1 } },
-      callbackData: `v1:buy:${denom.id}:1`,
-    }).ctx;
-    const targetMsg = makeCtx({ sink, from: { id: 42, username: "tester" }, session: userSession(), text: "111" }).ctx;
-    const serverMsg = makeCtx({ sink, from: { id: 42, username: "tester" }, session: userSession(), text: "SRV-1" }).ctx;
-    const confirmTap = makeCtx({
-      sink,
-      from: { id: 42, username: "tester" },
-      session: userSession(),
-      callbackData: ckb.cb("nick", "confirm"),
-    }).ctx;
-    const conv = new FakeConversation([targetMsg, serverMsg, confirmTap]);
-
-    await nicknameCheckConversation(conv.asMyConversation(), entry);
-
-    expect(sentIncludes(sink, "Server")).toBe(true);
-    expect(JSON.parse(confirmTap.session.scratch.customerData as string)).toEqual([
-      { target: "111", server: "SRV-1", nickname: "ServerPlayer" },
-    ]);
+    kokinpayMock.checkGameNickname.mockResolvedValue({ valid: true, nickname: "Player" });
+    const result = await run(denom.id, ["000123", "invalid", "004", ckb.cb("nick", "confirm")]);
+    expect(sentIncludes(result.sink, "Zone ID")).toBe(true);
+    expect(sentIncludes(result.sink, "Please enter numbers only")).toBe(true);
+    expect(kokinpayMock.checkGameNickname).toHaveBeenCalledTimes(1);
+    expect(kokinpayMock.checkGameNickname).toHaveBeenCalledWith({ apiKey: "kp-key" }, { gameCode: "mobile-legends", id: "000123", server: "004" });
+    expect(JSON.parse(result.session.scratch.customerData as string)).toEqual([{ target: "000123", server: "004" }]);
   });
-
-  it("a definitive not-found answer re-prompts the target step, then proceeds once the retry resolves", async () => {
+  it("does not ask Zone ID for a one-field Delta configuration", async () => {
+    const denom = await makeConfiguredManualWithInfoDenomWithFields([{ key: "player_id" }]);
+    const result = await run(denom.id, ["000123"]);
+    expect(JSON.parse(result.session.scratch.customerData as string)).toEqual([{ player_id: "000123" }]);
+    expect(sentIncludes(result.sink, "Zone ID")).toBe(false);
+    expect(kokinpayMock.checkGameNickname).not.toHaveBeenCalled();
+  });
+  it("retries a definitive not-found lookup from fresh fields", async () => {
     const { denom } = await makeConfiguredDenom({ withCreds: true });
-    kokinpayMock.checkGameNickname
-      .mockResolvedValueOnce({ valid: false, nickname: null }) // -> not_found, definitive: true
-      .mockResolvedValueOnce({ valid: true, nickname: "SecondTryPlayer" });
-    const sink: SentCall[] = [];
-    const entry = makeCtx({
-      sink,
-      from: { id: 42, username: "tester" },
-      session: { ...userSession(), scratch: { pendingNicknameProductId: denom.id, pendingNicknameQuantity: 1 } },
-      callbackData: `v1:buy:${denom.id}:1`,
-    }).ctx;
-    const badTarget = makeCtx({ sink, from: { id: 42, username: "tester" }, session: userSession(), text: "wrong-id" }).ctx;
-    const goodTarget = makeCtx({ sink, from: { id: 42, username: "tester" }, session: userSession(), text: "right-id" }).ctx;
-    const confirmTap = makeCtx({
-      sink,
-      from: { id: 42, username: "tester" },
-      session: userSession(),
-      callbackData: ckb.cb("nick", "confirm"),
-    }).ctx;
-    const conv = new FakeConversation([badTarget, goodTarget, confirmTap]);
-
-    await nicknameCheckConversation(conv.asMyConversation(), entry);
-
-    expect(sentIncludes(sink, "Account not found")).toBe(true);
+    kokinpayMock.checkGameNickname.mockResolvedValueOnce({ valid: false, nickname: null }).mockResolvedValueOnce({ valid: true, nickname: "Corrected" });
+    const result = await run(denom.id, ["wrong", ckb.cb("nick", "retry"), "correct", ckb.cb("nick", "confirm")]);
     expect(kokinpayMock.checkGameNickname).toHaveBeenCalledTimes(2);
-    expect(JSON.parse(confirmTap.session.scratch.customerData as string)).toEqual([
-      { target: "right-id", nickname: "SecondTryPlayer" },
-    ]);
+    expect(JSON.parse(result.session.scratch.customerData as string)).toEqual([{ target: "correct" }]);
   });
-
-  it("the Retry button after a found result resets the wizard back to the target prompt", async () => {
+  it("Retry after a found result discards prior input", async () => {
     const { denom } = await makeConfiguredDenom({ withCreds: true });
-    kokinpayMock.checkGameNickname
-      .mockResolvedValueOnce({ valid: true, nickname: "FirstPlayer" })
-      .mockResolvedValueOnce({ valid: true, nickname: "SecondPlayer" });
-    const sink: SentCall[] = [];
-    const entry = makeCtx({
-      sink,
-      from: { id: 42, username: "tester" },
-      session: { ...userSession(), scratch: { pendingNicknameProductId: denom.id, pendingNicknameQuantity: 1 } },
-      callbackData: `v1:buy:${denom.id}:1`,
-    }).ctx;
-    const firstTarget = makeCtx({ sink, from: { id: 42, username: "tester" }, session: userSession(), text: "first-id" }).ctx;
-    const retryTap = makeCtx({
-      sink,
-      from: { id: 42, username: "tester" },
-      session: userSession(),
-      callbackData: ckb.cb("nick", "retry"),
-    }).ctx;
-    const secondTarget = makeCtx({ sink, from: { id: 42, username: "tester" }, session: userSession(), text: "second-id" }).ctx;
-    const confirmTap = makeCtx({
-      sink,
-      from: { id: 42, username: "tester" },
-      session: userSession(),
-      callbackData: ckb.cb("nick", "confirm"),
-    }).ctx;
-    const conv = new FakeConversation([firstTarget, retryTap, secondTarget, confirmTap]);
-
-    await nicknameCheckConversation(conv.asMyConversation(), entry);
-
-    expect(JSON.parse(confirmTap.session.scratch.customerData as string)).toEqual([
-      { target: "second-id", nickname: "SecondPlayer" },
-    ]);
+    kokinpayMock.checkGameNickname.mockResolvedValue({ valid: true, nickname: "Player" });
+    const result = await run(denom.id, ["first", ckb.cb("nick", "retry"), "second", ckb.cb("nick", "confirm")]);
+    expect(JSON.parse(result.session.scratch.customerData as string)).toEqual([{ target: "second" }]);
   });
-
-  it("a non-definitive failure (every configured provider errored) degrades to confirmation without a confirmed nickname — never strands the buyer", async () => {
+  it("transient failure proceeds with validated input", async () => {
     const { denom } = await makeConfiguredDenom({ withCreds: true });
-    kokinpayMock.checkGameNickname.mockRejectedValueOnce(new Error("KokinPay network error"));
-    const sink: SentCall[] = [];
-    const entry = makeCtx({
-      sink,
-      from: { id: 42, username: "tester" },
-      session: { ...userSession(), scratch: { pendingNicknameProductId: denom.id, pendingNicknameQuantity: 1 } },
-      callbackData: `v1:buy:${denom.id}:1`,
-    }).ctx;
-    const targetMsg = makeCtx({ sink, from: { id: 42, username: "tester" }, session: userSession(), text: "some-id" }).ctx;
-    const conv = new FakeConversation([targetMsg]);
-
-    await nicknameCheckConversation(conv.asMyConversation(), entry);
-
-    expect(JSON.parse(targetMsg.session.scratch.customerData as string)).toEqual([{ target: "some-id" }]);
-    expect(targetMsg.session.scratch.pendingNicknameProductId).toBeUndefined();
-    expect(sentIncludes(sink, "Confirm Order")).toBe(true);
+    kokinpayMock.checkGameNickname.mockRejectedValue(new Error("timeout"));
+    const result = await run(denom.id, ["target"]);
+    expect(JSON.parse(result.session.scratch.customerData as string)).toEqual([{ target: "target" }]);
+    expect(sentIncludes(result.sink, "Confirm Order")).toBe(true);
   });
-
-  it("/cancel abandons the check and re-enters showOrderConfirmation's gate (customerData stays unset)", async () => {
+  it("an unexpected lookup error (bad provider mapping) still proceeds instead of stranding the buyer", async () => {
     const { denom } = await makeConfiguredDenom({ withCreds: true });
-    const sink: SentCall[] = [];
-    const entry = makeCtx({
-      sink,
-      from: { id: 42, username: "tester" },
-      session: { ...userSession(), scratch: { pendingNicknameProductId: denom.id, pendingNicknameQuantity: 1 } },
-      callbackData: `v1:buy:${denom.id}:1`,
-    }).ctx;
-    const cancelMsg = makeCtx({ sink, from: { id: 42, username: "tester" }, session: userSession(), text: "/cancel" }).ctx;
-    const conv = new FakeConversation([cancelMsg]);
-
-    await nicknameCheckConversation(conv.asMyConversation(), entry);
-
-    expect(cancelMsg.session.scratch.customerData).toBeUndefined();
-    // Re-entering showOrderConfirmation with customerData unset and the game
-    // still configured re-triggers this same gate — proven by a fresh
-    // conversation.enter("nicknameCheck") call.
-    expect(calls(sink, "conversation.enter").some((c) => c.args[0] === "nicknameCheck")).toBe(true);
+    await prisma.denomination.update({ where: { id: denom.id }, data: { providerInputMapping: JSON.stringify({ nickname: { targetKey: "no_such_field" } }) } });
+    const result = await run(denom.id, ["target"]);
+    expect(kokinpayMock.checkGameNickname).not.toHaveBeenCalled();
+    expect(JSON.parse(result.session.scratch.customerData as string)).toEqual([{ target: "target" }]);
+    expect(sentIncludes(result.sink, "Confirm Order")).toBe(true);
+  });
+  it.each(["/cancel", "/start", "v1:buy:1:1"])("%s clears incomplete state and exits to the menu", async (escape) => {
+    const { denom } = await makeConfiguredDenom({ withCreds: true });
+    const result = await run(denom.id, [escape]);
+    expect(result.session.scratch.customerData).toBeUndefined();
+    expect(result.session.scratch.pendingInfoProductId).toBeUndefined();
     expect(await prisma.order.count()).toBe(0);
   });
-
-  it("tapping the keyboard's Cancel button (routes to v1:buy:) has the same abandon-and-regate effect as /cancel", async () => {
+  it("stale confirmation taps are answered and keep waiting", async () => {
     const { denom } = await makeConfiguredDenom({ withCreds: true });
-    const sink: SentCall[] = [];
-    const entry = makeCtx({
-      sink,
-      from: { id: 42, username: "tester" },
-      session: { ...userSession(), scratch: { pendingNicknameProductId: denom.id, pendingNicknameQuantity: 1 } },
-      callbackData: `v1:buy:${denom.id}:1`,
-    }).ctx;
-    const cancelTap = makeCtx({
-      sink,
-      from: { id: 42, username: "tester" },
-      session: userSession(),
-      callbackData: `v1:buy:${denom.id}:1`,
-    }).ctx;
-    const conv = new FakeConversation([cancelTap]);
-
-    await nicknameCheckConversation(conv.asMyConversation(), entry);
-
-    expect(cancelTap.session.scratch.customerData).toBeUndefined();
-    expect(calls(sink, "conversation.enter").some((c) => c.args[0] === "nicknameCheck")).toBe(true);
+    kokinpayMock.checkGameNickname.mockResolvedValue({ valid: true, nickname: "Player" });
+    const result = await run(denom.id, ["target", "v1:unknown", ckb.cb("nick", "confirm")]);
+    expect(calls(result.sink, "answerCallbackQuery").some((call) => (call.args[0] as { text?: string } | undefined)?.text === t(result.entry, "error.stale_screen"))).toBe(true);
+    expect(result.session.scratch.customerData).toBeDefined();
   });
-
-  it("an unrecognized tap on the found/confirm screen answers error.stale_screen and the conversation keeps waiting", async () => {
+  it("Continue anyway preserves validated input after a definitive not-found", async () => {
     const { denom } = await makeConfiguredDenom({ withCreds: true });
-    kokinpayMock.checkGameNickname.mockResolvedValueOnce({ valid: true, nickname: "StaleTestPlayer" });
-    const sink: SentCall[] = [];
-    const entry = makeCtx({
-      sink,
-      from: { id: 42, username: "tester" },
-      session: { ...userSession(), scratch: { pendingNicknameProductId: denom.id, pendingNicknameQuantity: 1 } },
-      callbackData: `v1:buy:${denom.id}:1`,
-    }).ctx;
-    const targetMsg = makeCtx({ sink, from: { id: 42, username: "tester" }, session: userSession(), text: "id-1" }).ctx;
-    const staleTap = makeCtx({ sink, from: { id: 42, username: "tester" }, session: userSession(), callbackData: "v1:menu:main" }).ctx;
-    const confirmTap = makeCtx({
-      sink,
-      from: { id: 42, username: "tester" },
-      session: userSession(),
-      callbackData: ckb.cb("nick", "confirm"),
-    }).ctx;
-    const conv = new FakeConversation([targetMsg, staleTap, confirmTap]);
-
-    await nicknameCheckConversation(conv.asMyConversation(), entry);
-
-    const answers = calls(sink, "answerCallbackQuery");
-    expect(answers.some((c) => (c.args[0] as { text?: string } | undefined)?.text === t(entry, "error.stale_screen"))).toBe(true);
-    // The wizard was unaffected — it kept waiting and completed normally.
-    expect(JSON.parse(confirmTap.session.scratch.customerData as string)).toEqual([{ target: "id-1", nickname: "StaleTestPlayer" }]);
+    kokinpayMock.checkGameNickname.mockResolvedValue({ valid: false, nickname: null });
+    const result = await run(denom.id, ["target", ckb.cb("nick", "continue")]);
+    expect(JSON.parse(result.session.scratch.customerData as string)).toEqual([{ target: "target" }]);
+    expect(sentIncludes(result.sink, "Confirm Order")).toBe(true);
   });
-
-  it("a definitive not-found offers 'Continue anyway', which stores the typed target unverified, reaches confirmation, and emits a diagnostic log (final-review Important #2)", async () => {
+  it("all external results are JSON serializable with no function properties", async () => {
     const { denom } = await makeConfiguredDenom({ withCreds: true });
-    kokinpayMock.checkGameNickname.mockResolvedValueOnce({ valid: false, nickname: null }); // -> not_found, definitive: true
-    const sink: SentCall[] = [];
-    const entry = makeCtx({
-      sink,
-      from: { id: 42, username: "tester" },
-      session: { ...userSession(), scratch: { pendingNicknameProductId: denom.id, pendingNicknameQuantity: 1 } },
-      callbackData: `v1:buy:${denom.id}:1`,
-    }).ctx;
-    const badTarget = makeCtx({ sink, from: { id: 42, username: "tester" }, session: userSession(), text: "typo-id" }).ctx;
-    const continueTap = makeCtx({
-      sink,
-      from: { id: 42, username: "tester" },
-      session: userSession(),
-      callbackData: ckb.cb("nick", "continue"),
-    }).ctx;
-    const conv = new FakeConversation([badTarget, continueTap]);
-    const infoSpy = vi.spyOn(logger, "info");
-
-    await nicknameCheckConversation(conv.asMyConversation(), entry);
-
-    // Reaches the confirm/pay screen with the last-typed target stored,
-    // unverified (no `nickname` field) — never re-loops or dead-ends.
-    expect(JSON.parse(continueTap.session.scratch.customerData as string)).toEqual([{ target: "typo-id" }]);
-    expect(continueTap.session.scratch.pendingNicknameProductId).toBeUndefined();
-    expect(continueTap.session.scratch.pendingNicknameQuantity).toBeUndefined();
-    expect(sentIncludes(sink, "Confirm Order")).toBe(true);
-    // Diagnostic log so an admin can spot a misconfigured providerGameCode —
-    // mirrors apiTopup.ts:572-579's logger.info shape.
-    expect(
-      infoSpy.mock.calls.some(
-        ([meta, msg]) =>
-          typeof msg === "string" &&
-          msg.toLowerCase().includes("not-found") &&
-          (meta as Record<string, unknown>)?.productId === denom.id,
-      ),
-    ).toBe(true);
-    infoSpy.mockRestore();
+    kokinpayMock.checkGameNickname.mockResolvedValue({ valid: true, nickname: "Player" });
+    const result = await run(denom.id, ["target", ckb.cb("nick", "confirm")]);
+    expect(result.results.length).toBeGreaterThan(0);
+    result.results.forEach((value) => { assertNoFunctionProps(value); expect(() => JSON.stringify(value)).not.toThrow(); });
   });
-
-  it("every conversation.external() call returns only JSON-serializable POJOs with no function-typed properties (final-review Important #3)", async () => {
-    const { denom } = await makeConfiguredDenom({ withCreds: true });
-    kokinpayMock.checkGameNickname.mockResolvedValueOnce({ valid: true, nickname: "PojoPlayer" });
-    const sink: SentCall[] = [];
-    const entry = makeCtx({
-      sink,
-      from: { id: 42, username: "tester" },
-      session: { ...userSession(), scratch: { pendingNicknameProductId: denom.id, pendingNicknameQuantity: 1 } },
-      callbackData: `v1:buy:${denom.id}:1`,
-    }).ctx;
-    const targetMsg = makeCtx({ sink, from: { id: 42, username: "tester" }, session: userSession(), text: "pojo-id" }).ctx;
-    const confirmTap = makeCtx({
-      sink,
-      from: { id: 42, username: "tester" },
-      session: userSession(),
-      callbackData: ckb.cb("nick", "confirm"),
-    }).ctx;
-    const fake = new FakeConversation([targetMsg, confirmTap]);
-    const { conversation, results } = captureExternalResults(fake);
-
-    await nicknameCheckConversation(conversation, entry);
-
-    // Three external() calls in this run: the config resolve, the
-    // providersConfigured pre-check, and the checkNickname lookup — every one
-    // of them must be a plain value (no NicknameServiceProviderEntry[]
-    // closures, no raw Prisma Decimal/Date-carrying rows).
-    expect(results.length).toBe(3);
-    for (const result of results) {
-      assertNoFunctionProps(result);
-      expect(() => JSON.parse(JSON.stringify(result))).not.toThrow();
-    }
+  it("collects every custom required field before checking an account", async () => {
+    const denom = await makeConfiguredManualWithInfoDenomWithFields([{ key: "account" }, { key: "realm" }], { withCreds: true });
+    kokinpayMock.checkGameNickname.mockResolvedValue({ valid: true, nickname: "Player" });
+    const result = await run(denom.id, ["account-id", "realm-value", ckb.cb("nick", "confirm")]);
+    expect(JSON.parse(result.session.scratch.customerData as string)).toEqual([{ account: "account-id", realm: "realm-value" }]);
   });
-});
-
-// ===========================================================================
-// Final-review round 2 (money-critical): the write side must key the
-// collected answer through the SKU's OWN additionalFields, positionally —
-// not the old hardcoded {target,zone,server} shape, which
-// buildDigiflazzCustomerNo/computeAccountDiagnosticNote never read (see
-// packages/db/src/crud/digiflazz.test.ts for the round-trip proof).
-// ===========================================================================
-
-describe("nicknameCheckConversation — keys customerData through the SKU's own additionalFields (final-review round 2)", () => {
-  it("a MANUAL_WITH_INFO SKU with 2 additionalFields (requiresServer) maps target/server into the ACTUAL field keys, not {target,server}", async () => {
-    const denom = await makeConfiguredManualWithInfoDenomWithFields([{ key: "user_id" }, { key: "server_id" }], {
-      gameCode: "mobile-legends",
-      withCreds: true,
-    });
-    kokinpayMock.checkGameNickname.mockResolvedValueOnce({ valid: true, nickname: "MappedPlayer" });
-    const sink: SentCall[] = [];
-    const entry = makeCtx({
-      sink,
-      from: { id: 42, username: "tester" },
-      session: { ...userSession(), scratch: { pendingNicknameProductId: denom.id, pendingNicknameQuantity: 1 } },
-      callbackData: `v1:buy:${denom.id}:1`,
-    }).ctx;
-    const targetMsg = makeCtx({ sink, from: { id: 42, username: "tester" }, session: userSession(), text: "111222333" }).ctx;
-    const serverMsg = makeCtx({ sink, from: { id: 42, username: "tester" }, session: userSession(), text: "SRV-7" }).ctx;
-    const confirmTap = makeCtx({
-      sink,
-      from: { id: 42, username: "tester" },
-      session: userSession(),
-      callbackData: ckb.cb("nick", "confirm"),
-    }).ctx;
-    const conv = new FakeConversation([targetMsg, serverMsg, confirmTap]);
-
-    await nicknameCheckConversation(conv.asMyConversation(), entry);
-
-    // Keyed through the SKU's own additionalFields (user_id/server_id) —
-    // NOT the old {target, server} shape.
-    expect(JSON.parse(confirmTap.session.scratch.customerData as string)).toEqual([
-      { user_id: "111222333", server_id: "SRV-7", nickname: "MappedPlayer" },
-    ]);
+  it.each([1, 2])("collects under-covered schemas fully for quantity %s", async (quantity) => {
+    const denom = await makeConfiguredManualWithInfoDenomWithFields([{ key: "user_id" }, { key: "zone_id" }], { withCreds: true });
+    kokinpayMock.checkGameNickname.mockResolvedValue({ valid: true, nickname: "Player" });
+    const steps = Array.from({ length: quantity }, (_, i) => [`user-${i}`, `zone-${i}`]).flat();
+    const result = await run(denom.id, [...steps, ckb.cb("nick", "confirm")], quantity);
+    expect(JSON.parse(result.session.scratch.customerData as string)).toEqual(Array.from({ length: quantity }, (_, i) => ({ user_id: `user-${i}`, zone_id: `zone-${i}` })));
+    expect(result.session.scratch.prefilledCustomerDataUnit).toBeUndefined();
   });
-
-  it("quantity > 1 on a MANUAL_WITH_INFO SKU whose additionalFields are NOT fully covered by the mapping hands off to customerInfo WITHOUT a prefilled unit (final-review round 3: field-coverage gate, not quantity, decides the handoff)", async () => {
-    const denom = await makeConfiguredManualWithInfoDenomWithFields([{ key: "user_id" }, { key: "server_id" }], {
-      withCreds: true, // "free-fire" default game code — requiresZone/requiresServer both false, so only 1 of these 2 fields ever gets mapped
-    });
-    kokinpayMock.checkGameNickname.mockResolvedValueOnce({ valid: true, nickname: "HandoffPlayer" });
-    const sink: SentCall[] = [];
-    const entry = makeCtx({
-      sink,
-      from: { id: 42, username: "tester" },
-      session: { ...userSession(), scratch: { pendingNicknameProductId: denom.id, pendingNicknameQuantity: 2 } },
-      callbackData: `v1:buy:${denom.id}:2`,
-    }).ctx;
-    const targetMsg = makeCtx({ sink, from: { id: 42, username: "tester" }, session: userSession(), text: "unit-one-id" }).ctx;
-    const confirmTap = makeCtx({
-      sink,
-      from: { id: 42, username: "tester" },
-      session: userSession(),
-      callbackData: ckb.cb("nick", "confirm"),
-    }).ctx;
-    const conv = new FakeConversation([targetMsg, confirmTap]);
-
-    await nicknameCheckConversation(conv.asMyConversation(), entry);
-
-    // Does NOT finalize customerData directly, and — since coverage is
-    // incomplete — the mapped unit is discarded entirely rather than
-    // prefilled: customerInfo re-collects EVERY field from a clean slate.
-    expect(confirmTap.session.scratch.customerData).toBeUndefined();
-    expect(confirmTap.session.scratch.pendingNicknameProductId).toBeUndefined();
-    expect(confirmTap.session.scratch.pendingNicknameQuantity).toBeUndefined();
-    expect(confirmTap.session.scratch.pendingInfoProductId).toBe(denom.id);
-    expect(confirmTap.session.scratch.pendingInfoQuantity).toBe(2);
-    expect(confirmTap.session.scratch.prefilledCustomerDataUnit).toBeUndefined();
-    expect(calls(sink, "conversation.enter").some((c) => c.args[0] === "customerInfo")).toBe(true);
+  it("skips optional fields without sending an incomplete unit", async () => {
+    const denom = await makeConfiguredManualWithInfoDenomWithFields([{ key: "user_id" }, { key: "zone_id", required: false }], { withCreds: true });
+    kokinpayMock.checkGameNickname.mockResolvedValue({ valid: true, nickname: "Player" });
+    const result = await run(denom.id, ["user", ckb.cb("input", "skip", 1), ckb.cb("nick", "confirm")]);
+    expect(JSON.parse(result.session.scratch.customerData as string)).toEqual([{ user_id: "user", zone_id: "" }]);
   });
-
-  it("quantity === 1 on the SAME under-covered MANUAL_WITH_INFO SKU ALSO hands off to customerInfo instead of finalizing with an incomplete unit (final-review round 3 Critical fix — round 2's `quantity > 1` gate used to let this finalize and permanently strand the buyer at order-creation validation)", async () => {
+  it.each([1, 2])("collects all units in a fully configured schema, quantity %s", async (quantity) => {
     const denom = await makeConfiguredManualWithInfoDenomWithFields([{ key: "user_id" }, { key: "server_id" }], { withCreds: true });
-    kokinpayMock.checkGameNickname.mockResolvedValueOnce({ valid: true, nickname: "SingleUnitPlayer" });
-    const sink: SentCall[] = [];
-    const entry = makeCtx({
-      sink,
-      from: { id: 42, username: "tester" },
-      session: { ...userSession(), scratch: { pendingNicknameProductId: denom.id, pendingNicknameQuantity: 1 } },
-      callbackData: `v1:buy:${denom.id}:1`,
-    }).ctx;
-    const targetMsg = makeCtx({ sink, from: { id: 42, username: "tester" }, session: userSession(), text: "single-unit-id" }).ctx;
-    const confirmTap = makeCtx({
-      sink,
-      from: { id: 42, username: "tester" },
-      session: userSession(),
-      callbackData: ckb.cb("nick", "confirm"),
-    }).ctx;
-    const conv = new FakeConversation([targetMsg, confirmTap]);
-
-    await nicknameCheckConversation(conv.asMyConversation(), entry);
-
-    expect(confirmTap.session.scratch.customerData).toBeUndefined();
-    expect(confirmTap.session.scratch.prefilledCustomerDataUnit).toBeUndefined();
-    expect(confirmTap.session.scratch.pendingInfoProductId).toBe(denom.id);
-    expect(confirmTap.session.scratch.pendingInfoQuantity).toBe(1);
-    expect(calls(sink, "conversation.enter").some((c) => c.args[0] === "customerInfo")).toBe(true);
+    kokinpayMock.checkGameNickname.mockResolvedValue({ valid: true, nickname: "Player" });
+    const result = await run(denom.id, [...Array.from({ length: quantity }, () => ["user", "server"]).flat(), ckb.cb("nick", "confirm")], quantity);
+    expect(JSON.parse(result.session.scratch.customerData as string)).toHaveLength(quantity);
+    expect(result.session.scratch.prefilledCustomerDataUnit).toBeUndefined();
   });
-
-  it("quantity === 1 on a MANUAL_WITH_INFO SKU whose ONLY uncovered field is OPTIONAL still finalizes directly (final-review round 4: coverage counts REQUIRED fields only — validateCustomerData tolerates a blank optional field, so this shape was never actually broken and must not be routed through customerInfo)", async () => {
-    const denom = await makeConfiguredManualWithInfoDenomWithFields(
-      [
-        { key: "user_id", required: true },
-        { key: "server_id", required: false },
-      ],
-      { withCreds: true }, // "free-fire" default game code — requiresZone/requiresServer both false, so server_id is never mapped, but it's optional
-    );
-    kokinpayMock.checkGameNickname.mockResolvedValueOnce({ valid: true, nickname: "OptionalGapPlayer" });
-    const sink: SentCall[] = [];
-    const entry = makeCtx({
-      sink,
-      from: { id: 42, username: "tester" },
-      session: { ...userSession(), scratch: { pendingNicknameProductId: denom.id, pendingNicknameQuantity: 1 } },
-      callbackData: `v1:buy:${denom.id}:1`,
-    }).ctx;
-    const targetMsg = makeCtx({ sink, from: { id: 42, username: "tester" }, session: userSession(), text: "optional-gap-id" }).ctx;
-    const confirmTap = makeCtx({
-      sink,
-      from: { id: 42, username: "tester" },
-      session: userSession(),
-      callbackData: ckb.cb("nick", "confirm"),
-    }).ctx;
-    const conv = new FakeConversation([targetMsg, confirmTap]);
-
-    await nicknameCheckConversation(conv.asMyConversation(), entry);
-
-    expect(JSON.parse(confirmTap.session.scratch.customerData as string)).toEqual([
-      { user_id: "optional-gap-id", nickname: "OptionalGapPlayer" },
-    ]);
-    expect(confirmTap.session.scratch.prefilledCustomerDataUnit).toBeUndefined();
-    expect(calls(sink, "conversation.enter").some((c) => c.args[0] === "customerInfo")).toBe(false);
-  });
-
-  it("quantity === 1 on a MANUAL_WITH_INFO SKU whose additionalFields ARE fully covered by the mapping still finalizes directly (proves the coverage fix didn't overcorrect into always routing through customerInfo)", async () => {
-    const denom = await makeConfiguredManualWithInfoDenomWithFields([{ key: "user_id" }, { key: "server_id" }], {
-      gameCode: "mobile-legends", // requiresZone:false, requiresServer:true -> both fields get mapped
-      withCreds: true,
-    });
-    kokinpayMock.checkGameNickname.mockResolvedValueOnce({ valid: true, nickname: "FullyCoveredPlayer" });
-    const sink: SentCall[] = [];
-    const entry = makeCtx({
-      sink,
-      from: { id: 42, username: "tester" },
-      session: { ...userSession(), scratch: { pendingNicknameProductId: denom.id, pendingNicknameQuantity: 1 } },
-      callbackData: `v1:buy:${denom.id}:1`,
-    }).ctx;
-    const targetMsg = makeCtx({ sink, from: { id: 42, username: "tester" }, session: userSession(), text: "full-cov-id" }).ctx;
-    const serverMsg = makeCtx({ sink, from: { id: 42, username: "tester" }, session: userSession(), text: "SRV-9" }).ctx;
-    const confirmTap = makeCtx({
-      sink,
-      from: { id: 42, username: "tester" },
-      session: userSession(),
-      callbackData: ckb.cb("nick", "confirm"),
-    }).ctx;
-    const conv = new FakeConversation([targetMsg, serverMsg, confirmTap]);
-
-    await nicknameCheckConversation(conv.asMyConversation(), entry);
-
-    expect(JSON.parse(confirmTap.session.scratch.customerData as string)).toEqual([
-      { user_id: "full-cov-id", server_id: "SRV-9", nickname: "FullyCoveredPlayer" },
-    ]);
-    expect(confirmTap.session.scratch.prefilledCustomerDataUnit).toBeUndefined();
-    expect(calls(sink, "conversation.enter").some((c) => c.args[0] === "customerInfo")).toBe(false);
-  });
-
-  it("quantity > 1 on a MANUAL_WITH_INFO SKU whose additionalFields ARE fully covered by the mapping still hands off to customerInfo WITH the mapped unit prefilled (round 2's original behavior, unchanged by the round 3 coverage gate)", async () => {
-    const denom = await makeConfiguredManualWithInfoDenomWithFields([{ key: "user_id" }, { key: "server_id" }], {
-      gameCode: "mobile-legends", // requiresZone:false, requiresServer:true -> both fields get mapped
-      withCreds: true,
-    });
-    kokinpayMock.checkGameNickname.mockResolvedValueOnce({ valid: true, nickname: "FullyCoveredMultiPlayer" });
-    const sink: SentCall[] = [];
-    const entry = makeCtx({
-      sink,
-      from: { id: 42, username: "tester" },
-      session: { ...userSession(), scratch: { pendingNicknameProductId: denom.id, pendingNicknameQuantity: 3 } },
-      callbackData: `v1:buy:${denom.id}:3`,
-    }).ctx;
-    const targetMsg = makeCtx({ sink, from: { id: 42, username: "tester" }, session: userSession(), text: "full-cov-multi-id" }).ctx;
-    const serverMsg = makeCtx({ sink, from: { id: 42, username: "tester" }, session: userSession(), text: "SRV-3" }).ctx;
-    const confirmTap = makeCtx({
-      sink,
-      from: { id: 42, username: "tester" },
-      session: userSession(),
-      callbackData: ckb.cb("nick", "confirm"),
-    }).ctx;
-    const conv = new FakeConversation([targetMsg, serverMsg, confirmTap]);
-
-    await nicknameCheckConversation(conv.asMyConversation(), entry);
-
-    // Full coverage + quantity > 1: hands off to customerInfo, but — unlike the
-    // under-coverage case above — WITH the collected unit prefilled, since it's
-    // a complete, valid unit that customerInfo can safely reuse as unit 1.
-    expect(confirmTap.session.scratch.customerData).toBeUndefined();
-    expect(confirmTap.session.scratch.pendingInfoProductId).toBe(denom.id);
-    expect(confirmTap.session.scratch.pendingInfoQuantity).toBe(3);
-    expect(JSON.parse(confirmTap.session.scratch.prefilledCustomerDataUnit as string)).toEqual({
-      user_id: "full-cov-multi-id",
-      server_id: "SRV-3",
-      nickname: "FullyCoveredMultiPlayer",
-    });
-    expect(calls(sink, "conversation.enter").some((c) => c.args[0] === "customerInfo")).toBe(true);
+  it("Back clears later field values and recollects them", async () => {
+    const { denom } = await makeConfiguredDenom({ gameCode: "mobile-legends", withCreds: true });
+    kokinpayMock.checkGameNickname.mockResolvedValue({ valid: true, nickname: "Player" });
+    const result = await run(denom.id, ["old", ckb.cb("input", "back"), "new", "004", ckb.cb("nick", "confirm")]);
+    expect(JSON.parse(result.session.scratch.customerData as string)).toEqual([{ target: "new", server: "004" }]);
   });
 });
-
-// ===========================================================================
-// End-to-end: the confirmed nickname threads into Order.customerData exactly
-// like customerInfo.ts's manual_with_info answers do (buyNowTokopay is the
-// same representative call site customer-info.test.ts uses).
-// ===========================================================================
 
 describe("buyNowTokopay — nickname customerData threading", () => {
   it("persists scratch.customerData (target + confirmed nickname) onto the created order", async () => {
@@ -822,7 +440,7 @@ describe("buyNowTokopay — nickname customerData threading", () => {
 
     const orders = await prisma.order.findMany({ where: { userId: sample.user.id } });
     expect(orders.length).toBe(1);
-    expect(orders[0]!.customerData).toBe(customerData);
+    expect(orders[0]!.customerData).toBe(JSON.stringify([{ target: "GID-999" }]));
     expect(orders[0]!.status).toBe(OrderStatus.PENDING_PAYMENT);
     expect(ctx.session.scratch.customerData).toBeUndefined();
   });

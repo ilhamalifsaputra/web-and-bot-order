@@ -1599,6 +1599,19 @@ describe("denomination picker", () => {
       productId: product.id, name: "172 Diamonds", type: "SHARED", durationLabel: "172 Diamonds", price: "30000",
     });
     await prisma.denomination.update({ where: { id: d1.id }, data: { qtyValue: 86, qtyUnit: "Diamonds" } });
+    // The nickname-check gate (and so the "data needed" hint) now comes from
+    // each SKU's own configuration, never from the brand name. A brand-less
+    // product models a game nobody configured: no gate, no hint.
+    if (opts.brand !== null) {
+      const configured = {
+        nicknameCheckGameCode: "mobile-legends",
+        additionalFields: JSON.stringify([
+          { key: "user_id", label: { id: "User ID", en: "User ID" }, type: "number", required: true, options: [], placeholder: "" },
+          { key: "server_id", label: { id: "Server ID", en: "Server ID" }, type: "number", required: true, options: [], placeholder: "" },
+        ]),
+      };
+      await prisma.denomination.updateMany({ where: { id: { in: [d1.id, d2.id] } }, data: configured });
+    }
     if (opts.qtyOnAll !== false) {
       await prisma.denomination.update({ where: { id: d2.id }, data: { qtyValue: 172, qtyUnit: "Diamonds" } });
     }

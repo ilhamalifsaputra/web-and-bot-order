@@ -100,14 +100,7 @@ export interface CategoriesPageData {
  * elsewhere too (e.g. lib/format.ts mirrors packages/core/formatters), so
  * this follows that established convention instead of taking @app/core as a
  * runtime client dependency. */
-export interface AdditionalField {
-  key: string;
-  label: { id: string; en: string };
-  type: "text" | "email" | "number" | "url" | "select";
-  required: boolean;
-  options: string[];
-  placeholder: string;
-}
+export type AdditionalField = import("@app/core/deliveryFields").AdditionalField;
 
 /** A single denomination (plan/variant) on the product detail page — JSON twin
  * of the `denominations` entries productPageData() builds (apps/storefront/src/pageData.ts). */

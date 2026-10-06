@@ -47,6 +47,7 @@ import { logger } from "@app/core/logger";
 import { encryptDeliveredContent } from "@app/core/credentialCrypto";
 import { ValidationError } from "@app/core/errors";
 import { parseAdditionalFields, parseCustomerData } from "@app/core/deliveryFields";
+import { parseInputFields, orderInputConfig, buildPlayerTarget, buildPlayerNicknameRequest, nicknameInputKeys } from "@app/core/playerInput";
 import {
   createTransaction,
   getPriceList,
@@ -57,7 +58,6 @@ import {
   type DigiflazzPriceListItem,
 } from "@app/core/suppliers/digiflazz";
 import { NicknameService } from "@app/core/nickname/service";
-import { nicknameFieldMapping } from "@app/core/nickname/fieldMapping";
 import type { PrismaClient } from "../client";
 import type { Db } from "./_types";
 import { getSetting, getDecryptedSetting } from "./settings";
@@ -126,20 +126,24 @@ export async function getDigiflazzCreds(db: Db): Promise<DigiflazzCreds | null> 
  * the same caveat on the wire format itself).
  */
 export function buildDigiflazzCustomerNo(
-  product: { additionalFields: string | null },
+  product: { additionalFields: string | null; providerInputMapping?: string | null },
   customerDataJson: string | null,
+  snapshot?: string | null,
 ): string {
-  const fields = parseAdditionalFields(product.additionalFields);
-  const unit = parseCustomerData(customerDataJson)[0] ?? {};
-  return fields
-    .map((field) => unit[field.key])
-    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-    .map((value) => value.trim())
-    .join(" ");
+  const config = orderInputConfig(product, snapshot);
+  const fields = parseInputFields(config.additionalFields);
+  const stored = parseCustomerData(customerDataJson)[0] ?? {};
+  if (snapshot) return buildPlayerTarget(fields, config.providerInputMapping, stored);
+  // Historical orders may contain the pre-schema wizard's target/zone/server
+  // keys. Translate those known aliases and strip all other unconfigured keys.
+  const keys = nicknameInputKeys(fields, config.providerInputMapping);
+  const aliases: Record<string, string | undefined> = { [keys.targetKey]: stored.target, ...(keys.zoneKey ? { [keys.zoneKey]: stored.zone } : {}), ...(keys.serverKey ? { [keys.serverKey]: stored.server } : {}) };
+  const unit = Object.fromEntries(fields.map((f) => [f.key, stored[f.key] ?? aliases[f.key] ?? ""]));
+  return buildPlayerTarget(fields, config.providerInputMapping, unit);
 }
 
 export type DigiflazzItemResolution =
-  | { ok: true; supplierSku: string; product: { additionalFields: string | null } }
+  | { ok: true; supplierSku: string; product: { additionalFields: string | null; providerInputMapping?: string | null } }
   | { ok: false; reason: string };
 
 /**
@@ -153,7 +157,7 @@ export type DigiflazzItemResolution =
 export function resolveSingleDigiflazzItem(order: {
   items: {
     quantity: number;
-    product: { supplierSku: string | null; additionalFields: string | null; autoDeliverySource: string | null };
+    product: { supplierSku: string | null; additionalFields: string | null; providerInputMapping?: string | null; autoDeliverySource: string | null };
   }[];
 }): DigiflazzItemResolution {
   // I6 fix: don't assume the Digiflazz-routed item is order.items[0] — an
@@ -185,7 +189,7 @@ export function resolveSingleDigiflazzItem(order: {
     return { ok: false, reason };
   }
 
-  return { ok: true, supplierSku, product: { additionalFields: item.product.additionalFields } };
+  return { ok: true, supplierSku, product: { additionalFields: item.product.additionalFields, ...(item.product.providerInputMapping ? { providerInputMapping: item.product.providerInputMapping } : {}) } };
 }
 
 /** Minimal shape dispatchPendingDigiflazzOrders needs per candidate order —
@@ -195,6 +199,7 @@ type DigiflazzCandidateOrder = {
   id: number;
   orderCode: string;
   customerData: string | null;
+  inputConfigSnapshot?: string | null;
   totalAmount: Decimal;
   currency: string;
   digiflazzDispatchedAt: Date | null;
@@ -205,6 +210,7 @@ type DigiflazzCandidateOrder = {
       name: string;
       supplierSku: string | null;
       additionalFields: string | null;
+      providerInputMapping?: string | null;
       autoDeliverySource: string | null;
       /** The Denomination's own nickname-check fields (confusingly, this
        * `product` relation on OrderItem actually points at a Denomination
@@ -510,7 +516,7 @@ async function computeAccountDiagnosticNote(
     // (yes, again) is the ACTUAL Product row, which has digiflazzBrand/name.
     if (!denomination) return null;
 
-    const { gameCode, requiresZone, requiresServer } = resolveNicknameGate(denomination);
+    const { gameCode } = resolveNicknameGate(denomination);
     if (!gameCode) return null;
 
     const entries = await buildNicknameProviderEntries(db, gameCode);
@@ -526,14 +532,10 @@ async function computeAccountDiagnosticNote(
     // at deploy time whose customerData was written by the pre-fix
     // nicknameCheck.ts.
     const unit = parseCustomerData(order.customerData)[0] ?? {};
-    const fields = parseAdditionalFields(denomination.additionalFields);
-    const mapping = nicknameFieldMapping(fields, requiresZone, requiresServer);
-    const target = (mapping ? unit[mapping.targetKey] : undefined) || unit.target;
-    if (!target) return null;
-    const zone = (mapping?.zoneKey ? unit[mapping.zoneKey] : undefined) || unit.zone;
-    const server = (mapping?.serverKey ? unit[mapping.serverKey] : undefined) || unit.server;
-
-    const result = await new NicknameService(entries).checkNickname({ target, zone, server });
+    const inputConfig = orderInputConfig(denomination, order.inputConfigSnapshot);
+    const fields = parseInputFields(inputConfig.additionalFields);
+    const input = buildPlayerNicknameRequest(fields, inputConfig.providerInputMapping, unit);
+    const result = await new NicknameService(entries).checkNickname(input);
     if (result.status === "found") {
       return `KokinPay: akun ditemukan (nickname "${result.nickname}") — kemungkinan bukan masalah ID/region.`;
     }
@@ -655,6 +657,7 @@ export async function dispatchPendingDigiflazzOrders(db: PrismaClient): Promise<
               name: true,
               supplierSku: true,
               additionalFields: true,
+              providerInputMapping: true,
               autoDeliverySource: true,
               nicknameCheckGameCode: true,
               product: { select: { digiflazzBrand: true, name: true } },
@@ -735,7 +738,13 @@ export async function dispatchPendingDigiflazzOrders(db: PrismaClient): Promise<
     }
     const { supplierSku } = resolution;
 
-    const customerNo = buildDigiflazzCustomerNo(resolution.product, order.customerData);
+    let customerNo: string;
+    try { customerNo = buildDigiflazzCustomerNo(resolution.product, order.customerData, order.inputConfigSnapshot); }
+    catch {
+      await recordDigiflazzOutcome(db, order, { kind: "terminal", reason: "Invalid player input configuration or answers; needs manual review", supplierGaveReason: true }, dispatchedAt);
+      summary.failed++;
+      continue;
+    }
 
     try {
       const result = await createTransaction(creds, {
@@ -913,7 +922,6 @@ export const DIGIFLAZZ_MARKUP_VALUE_KEY = "digiflazz_markup_value";
  * edit or delete a field afterward through the existing field-builder UI. */
 const DEFAULT_DIGIFLAZZ_FIELDS = [
   { key: "user_id", label: { id: "Game ID", en: "Game ID" }, type: "text", required: true, options: [], placeholder: "" },
-  { key: "server_id", label: { id: "Server / Zone", en: "Server / Zone" }, type: "text", required: false, options: [], placeholder: "" },
 ];
 
 /**

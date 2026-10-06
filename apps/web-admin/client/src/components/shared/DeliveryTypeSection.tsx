@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Input } from "@/components/ui/input";
 import { AdditionalFieldsEditor } from "./AdditionalFieldsEditor";
@@ -18,7 +19,6 @@ function methodOf(deliveryType: string): DeliveryMethod {
  * so it never clobbers fields an admin already customized. */
 const AUTO_DELIVERY_FIELDS_TEMPLATE: AdditionalFieldDraft[] = [
   { key: "user_id", labelId: "Game ID", labelEn: "Game ID", type: "text", required: true, optionsText: "", placeholder: "" },
-  { key: "server_id", labelId: "Server / Zone", labelEn: "Server / Zone", type: "text", required: false, optionsText: "", placeholder: "" },
 ];
 
 function RadioOptionCard({
@@ -79,6 +79,8 @@ export function DeliveryTypeSection({
   onSupplierSkuChange,
   nicknameCheckGameCode,
   onNicknameCheckGameCodeChange,
+  providerInputMapping = "",
+  onProviderInputMappingChange,
 }: {
   deliveryType: string;
   onDeliveryTypeChange: (next: string) => void;
@@ -97,9 +99,31 @@ export function DeliveryTypeSection({
    * game, or to force a check for a product the catalog can't auto-detect. */
   nicknameCheckGameCode: string;
   onNicknameCheckGameCodeChange: (next: string) => void;
+  providerInputMapping?: string;
+  onProviderInputMappingChange?: (next: string) => void;
 }) {
   const method = methodOf(deliveryType);
   const requiresInfo = deliveryType === "manual_with_info";
+
+  // Buyer-info fields follow the delivery type: leaving a type clears them
+  // from the form (so a stock-delivered SKU never silently asks buyers for
+  // input), but the cleared fields are kept here as an in-memory draft and
+  // restored if the admin returns to the type they came from. The draft is
+  // never submitted. It lives in this component, which stays mounted while
+  // the method switches.
+  const fieldsDraft = useRef<{ from: string; fields: AdditionalFieldDraft[] } | null>(null);
+
+  function switchType(next: string) {
+    if (next === deliveryType) return;
+    if (additionalFields.length > 0) {
+      fieldsDraft.current = { from: deliveryType, fields: additionalFields };
+      onAdditionalFieldsChange([]);
+    } else if (fieldsDraft.current?.from === next) {
+      onAdditionalFieldsChange(fieldsDraft.current.fields);
+      fieldsDraft.current = null;
+    }
+    onDeliveryTypeChange(next);
+  }
 
   // Selecting Digiflazz pre-fills the buyer-info fields with the template
   // ONLY when the admin hasn't already added any — never overwrite fields
@@ -127,21 +151,23 @@ export function DeliveryTypeSection({
   // unseen in the parent's state and could resurface silently if the admin
   // flips back to buyer info required later.
   function selectMethod(next: DeliveryMethod) {
-    onDeliveryTypeChange(next === "auto" ? "auto" : "manual");
+    switchType(next === "auto" ? "auto" : "manual");
     onAutoDeliverySourceChange(null);
     onSupplierSkuChange("");
     onNicknameCheckGameCodeChange("");
+    onProviderInputMappingChange?.("");
   }
 
   // Same "no hidden memory" reset as selectMethod above, for the other path
   // that can turn requiresInfo from true back to false: un-checking "Require
   // buyer information" in Step 2 without changing the Step 1 method.
   function selectBuyerInfo(next: "required" | "none") {
-    onDeliveryTypeChange(next === "required" ? "manual_with_info" : "manual");
+    switchType(next === "required" ? "manual_with_info" : "manual");
     if (next === "none") {
       onAutoDeliverySourceChange(null);
       onSupplierSkuChange("");
       onNicknameCheckGameCodeChange("");
+      onProviderInputMappingChange?.("");
     }
   }
 
@@ -200,11 +226,13 @@ export function DeliveryTypeSection({
       )}
 
       {/* Step 3 — the fields themselves, only relevant once buyer info is required. */}
-      {requiresInfo && (
+      {(requiresInfo || method === "auto") && (
         <div>
           <label className="text-sm font-medium text-ink">Buyer Information Fields</label>
           <p className="mt-1 mb-2 text-xs text-ink-soft">
-            The buyer fills these in before paying. At least one field is required.
+            {method === "auto"
+              ? "Optional. Add fields only if this SKU needs input from the buyer (for example a Player ID); buyers fill them before paying."
+              : "The buyer fills these in before paying. At least one field is required."}
           </p>
           <AdditionalFieldsEditor value={additionalFields} onChange={onAdditionalFieldsChange} />
         </div>
@@ -278,11 +306,17 @@ export function DeliveryTypeSection({
             onChange={(e) => onNicknameCheckGameCodeChange(e.target.value)}
           />
           <p className="mt-1 text-xs text-ink-soft">
-            e.g. <code>mobile-legends</code> — auto-detected from this product&apos;s Digiflazz brand by
-            default. Fill this in only to override the detected game, or to force a check for a
-            product the catalog can&apos;t auto-detect.
+            e.g. <code>mobile-legends</code>. Leave blank to disable nickname checking.
           </p>
         </div>
+      )}
+      {onProviderInputMappingChange && (requiresInfo || method === "auto") && (
+        <details>
+          <summary className="cursor-pointer text-sm font-medium text-ink">Advanced provider input mapping</summary>
+          <label htmlFor="provider-input-mapping" className="mt-2 block text-sm text-ink-soft">Server mapping (JSON)</label>
+          <textarea id="provider-input-mapping" className="mt-1 w-full rounded-lg border border-line bg-white p-3 font-mono text-sm" value={providerInputMapping} onChange={(e) => onProviderInputMappingChange(e.target.value)} rows={4} />
+          <p className="mt-1 text-xs text-ink-soft">Optional. Map nickname target/zone/server keys and Digiflazz key order/separator. Referenced keys must exist in the buyer fields. Blank preserves the existing field order and space separator.</p>
+        </details>
       )}
     </div>
   );

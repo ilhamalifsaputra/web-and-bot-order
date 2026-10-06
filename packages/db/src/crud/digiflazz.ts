@@ -43,6 +43,7 @@ import { OrderStatus, OrderItemStatus, ProductType, DeliveryType } from "@app/co
 import { Decimal, moneyEq } from "@app/core/money";
 import { quantizeMoney } from "@app/core/formatters";
 import { parseMoneyInput, parsePercentInput } from "@app/core/moneyFormat";
+import { randomUUID } from "node:crypto";
 import { logger } from "@app/core/logger";
 import { encryptDeliveredContent } from "@app/core/credentialCrypto";
 import { ValidationError } from "@app/core/errors";
@@ -1895,6 +1896,8 @@ export async function resyncDigiflazzCatalog(
       status: "aborted",
       updated: 0,
       deactivated: 0,
+      added: 0,
+      reactivated: 0,
       abortReason: abortReason.kind,
       finishedAt: new Date().toISOString(),
     });
@@ -2022,19 +2025,23 @@ export async function resyncDigiflazzCatalog(
       targetId: null,
       details: `Digiflazz sync: ${parts.join(", ")}.`,
     });
-    if (result.added + result.reactivated + result.deactivated > 0) {
-      await enqueueAdminDigiflazzSkusChanged(db, {
-        added: result.added,
-        reactivated: result.reactivated,
-        deactivated: result.deactivated,
-      });
-    }
+  }
+  // Independent of the markup: an unreadable markup still deactivates SKUs
+  // Digiflazz reports down, and admins must hear about those too.
+  if (result.added + result.reactivated + result.deactivated > 0) {
+    await enqueueAdminDigiflazzSkusChanged(db, {
+      added: result.added,
+      reactivated: result.reactivated,
+      deactivated: result.deactivated,
+    });
   }
 
   await recordDigiflazzSyncStatus(db, {
     status: "success",
     updated: result.updated,
     deactivated: result.deactivated,
+    added: result.added,
+    reactivated: result.reactivated,
     abortReason: null,
     finishedAt: new Date().toISOString(),
   });
@@ -2047,6 +2054,78 @@ export async function resyncDigiflazzCatalog(
   });
   emitDigiflazzCatalogSyncChanged();
   return result;
+}
+
+// ---- One catalog sync at a time (hourly cron + the admin's manual Sync) ----
+
+/** Settings key holding the catalog-sync lease: "" when free, otherwise the
+ * holder's random token, with the row's updatedAt as the moment it was taken. */
+export const DIGIFLAZZ_CATALOG_SYNC_LEASE_KEY = "digiflazz_catalog_sync_lease";
+
+/** How long a taken lease blocks another sync. Long enough for a slow
+ * price-list fetch plus the writes of a large catalog; short enough that a run
+ * killed mid-way (process restart, crash before `finally`) frees the sync
+ * again on the next hourly tick instead of blocking it forever. */
+export const DIGIFLAZZ_CATALOG_SYNC_LEASE_MS = 10 * 60_000;
+
+/**
+ * Take the catalog-sync lease, or return null when another sync holds an
+ * unexpired one. Same lease idea as claimDigiflazzWebhookRecheck, on a single
+ * Settings row: one conditional UPDATE, so of two concurrent claimants
+ * Postgres lets exactly one match (the loser re-reads the winner's row and its
+ * condition no longer holds). Not a session-level advisory lock, which a
+ * pooled connection can silently drop or leak. The expiry is compared on the
+ * row's updatedAt timestamp, never on text, so collation plays no part.
+ */
+export async function claimDigiflazzCatalogSyncLease(db: Db, now: Date = new Date()): Promise<string | null> {
+  const key = DIGIFLAZZ_CATALOG_SYNC_LEASE_KEY;
+  // A brand-new row starts free and long expired.
+  await db.setting.upsert({ where: { key }, create: { key, value: "", updatedAt: new Date(0) }, update: {} });
+  const token = randomUUID();
+  const claim = await db.setting.updateMany({
+    where: {
+      key,
+      OR: [{ value: "" }, { updatedAt: { lte: new Date(now.getTime() - DIGIFLAZZ_CATALOG_SYNC_LEASE_MS) } }],
+    },
+    data: { value: token, updatedAt: now },
+  });
+  return claim.count === 1 ? token : null;
+}
+
+/** Give the lease back — only if `token` still holds it, so a run that
+ * outlived its lease never frees one a newer sync has since taken. */
+export async function releaseDigiflazzCatalogSyncLease(db: Db, token: string): Promise<void> {
+  await db.setting.updateMany({ where: { key: DIGIFLAZZ_CATALOG_SYNC_LEASE_KEY, value: token }, data: { value: "" } });
+}
+
+/**
+ * Run resyncDigiflazzCatalog under the catalog-sync lease, so the hourly cron
+ * and an admin's manual Sync never run at the same time. Returns
+ * `{ status: "busy" }` without touching anything when another sync holds the
+ * lease. The lease is released after the run whether it succeeded or threw;
+ * a resync error is passed on to the caller unchanged.
+ */
+export async function runDigiflazzCatalogSync(
+  db: PrismaClient,
+  now: Date = new Date(),
+): Promise<
+  | { status: "busy" }
+  | { status: "done"; result: { updated: number; deactivated: number; added: number; reactivated: number } }
+> {
+  const token = await claimDigiflazzCatalogSyncLease(db, now);
+  if (!token) return { status: "busy" };
+  try {
+    return { status: "done", result: await resyncDigiflazzCatalog(db) };
+  } finally {
+    try {
+      await releaseDigiflazzCatalogSyncLease(db, token);
+    } catch (err) {
+      logger.error(
+        { err },
+        "Could not release the Digiflazz catalog sync lease after a run; further syncs (hourly and manual) will be refused until the lease expires on its own, at most ten minutes from when it was taken.",
+      );
+    }
+  }
 }
 
 // ---- One-time migration: split already-mixed-region Digiflazz products ----

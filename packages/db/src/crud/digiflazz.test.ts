@@ -90,6 +90,11 @@ import {
   getDigiflazzSyncStatus,
   DIGIFLAZZ_RECHECK_CLAIM_LEASE_MS,
   isDigiflazzGameItem,
+  runDigiflazzCatalogSync,
+  claimDigiflazzCatalogSyncLease,
+  releaseDigiflazzCatalogSyncLease,
+  DIGIFLAZZ_CATALOG_SYNC_LEASE_MS,
+  DIGIFLAZZ_CATALOG_SYNC_LEASE_KEY,
   type DigiflazzImportRow,
 } from "@app/db";
 import { OrderStatus, DeliveryType, NotificationEvent } from "@app/core/enums";
@@ -2851,6 +2856,83 @@ describe("resyncDigiflazzCatalog — auto-add new SKUs and reactivate sync-deact
     expect(result.reactivated).toBe(0);
     expect((await prisma.denomination.findUniqueOrThrow({ where: { id: ml100.id } })).isActive).toBe(true);
     expect(await readMarker()).toEqual([]);
+  });
+
+  it("enqueues the SKU-change admin alert for a deactivation even when the stored markup is unreadable", async () => {
+    await setSetting(prisma, ADMIN_IDS_KEY, "710");
+    await importMobileLegends();
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_VALUE_KEY, "10%");
+    digiflazzMock.getPriceList.mockResolvedValue([priceListItem({ buyerSkuCode: "ml100", buyerProductStatus: false })]);
+
+    const result = await resyncDigiflazzCatalog(prisma);
+    expect(result.deactivated).toBe(1);
+    const rows = await prisma.notificationOutbox.findMany({ where: { event: NotificationEvent.ADMIN_DIGIFLAZZ_SKUS_CHANGED } });
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0]!.payloadJson)).toEqual({ chat_id: 710, added_count: 0, reactivated_count: 0, deactivated_count: 1 });
+  });
+
+  it("records the added and reactivated counts in the sync status", async () => {
+    await importMobileLegends();
+    digiflazzMock.getPriceList.mockResolvedValue([priceListItem({ buyerSkuCode: "ml100", price: new Decimal(15000) }), ...newSkus(2)]);
+
+    await resyncDigiflazzCatalog(prisma);
+    expect(await getDigiflazzSyncStatus(prisma)).toMatchObject({ status: "success", added: 2, reactivated: 0, deactivated: 0 });
+  });
+});
+
+describe("runDigiflazzCatalogSync — one sync at a time", () => {
+  async function leaseValue(): Promise<string | null> {
+    return (await prisma.setting.findUnique({ where: { key: DIGIFLAZZ_CATALOG_SYNC_LEASE_KEY } }))?.value ?? null;
+  }
+
+  it("runs the resync and reports its counts when no other sync holds the lease", async () => {
+    digiflazzMock.getPriceList.mockResolvedValue([]);
+    const outcome = await runDigiflazzCatalogSync(prisma);
+    expect(outcome).toEqual({ status: "done", result: { updated: 0, deactivated: 0, added: 0, reactivated: 0 } });
+  });
+
+  it("answers busy without fetching the price list while another sync holds the lease", async () => {
+    expect(await claimDigiflazzCatalogSyncLease(prisma)).not.toBeNull();
+    digiflazzMock.getPriceList.mockResolvedValue([]);
+
+    expect(await runDigiflazzCatalogSync(prisma)).toEqual({ status: "busy" });
+    expect(await claimDigiflazzCatalogSyncLease(prisma)).toBeNull();
+    expect(digiflazzMock.getPriceList).not.toHaveBeenCalled();
+  });
+
+  it("lets a sync take over a lease that has expired (a crashed run heals itself)", async () => {
+    const now = new Date();
+    expect(await claimDigiflazzCatalogSyncLease(prisma, now)).not.toBeNull();
+    const later = new Date(now.getTime() + DIGIFLAZZ_CATALOG_SYNC_LEASE_MS + 1);
+    digiflazzMock.getPriceList.mockResolvedValue([]);
+
+    expect((await runDigiflazzCatalogSync(prisma, later)).status).toBe("done");
+  });
+
+  it("releases the lease after a successful run, so the next run is not refused", async () => {
+    digiflazzMock.getPriceList.mockResolvedValue([]);
+    expect((await runDigiflazzCatalogSync(prisma)).status).toBe("done");
+    expect(await leaseValue()).toBe("");
+    expect((await runDigiflazzCatalogSync(prisma)).status).toBe("done");
+  });
+
+  it("releases the lease when the resync throws, and passes the error on", async () => {
+    digiflazzMock.getPriceList.mockRejectedValueOnce(new Error("Digiflazz is down"));
+    await expect(runDigiflazzCatalogSync(prisma)).rejects.toThrow("Digiflazz is down");
+    expect(await leaseValue()).toBe("");
+    digiflazzMock.getPriceList.mockResolvedValue([]);
+    expect((await runDigiflazzCatalogSync(prisma)).status).toBe("done");
+  });
+
+  it("never releases a lease another sync has since taken over", async () => {
+    const now = new Date();
+    const stale = await claimDigiflazzCatalogSyncLease(prisma, now);
+    const fresh = await claimDigiflazzCatalogSyncLease(prisma, new Date(now.getTime() + DIGIFLAZZ_CATALOG_SYNC_LEASE_MS + 1));
+    expect(stale).not.toBeNull();
+    expect(fresh).not.toBeNull();
+
+    await releaseDigiflazzCatalogSyncLease(prisma, stale!);
+    expect(await leaseValue()).toBe(fresh);
   });
 });
 

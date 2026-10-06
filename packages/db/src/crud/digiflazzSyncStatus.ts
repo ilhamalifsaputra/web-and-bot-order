@@ -19,6 +19,10 @@ export interface DigiflazzSyncStatus {
   status: "success" | "aborted" | "error";
   updated: number;
   deactivated: number;
+  /** New SKUs the run added to already-imported brands. */
+  added: number;
+  /** SKUs the sync had switched off earlier and turned back on in this run. */
+  reactivated: number;
   abortReason: "sharp_change" | "no_usable_rows" | null;
   finishedAt: string; // ISO 8601
 }
@@ -28,7 +32,9 @@ export interface DigiflazzSyncStatus {
  * or the parsed blob is missing a required field — a corrupt/incomplete
  * blob degrades to "never run" rather than throwing or inventing per-field
  * defaults (unlike `poll_health.ts`'s all-nullable shape, every field here
- * is required whenever `status` is present). */
+ * is required whenever `status` is present). The one exception is
+ * `added`/`reactivated`: they arrived after blobs were already being stored,
+ * so a blob without them reads as 0 — but one that has them must hold numbers. */
 export async function getDigiflazzSyncStatus(db: Db): Promise<DigiflazzSyncStatus | null> {
   const raw = await getSetting(db, DIGIFLAZZ_SYNC_STATUS_KEY);
   if (!raw) return null;
@@ -37,12 +43,17 @@ export async function getDigiflazzSyncStatus(db: Db): Promise<DigiflazzSyncStatu
     if (p.status !== "success" && p.status !== "aborted" && p.status !== "error") return null;
     if (typeof p.updated !== "number") return null;
     if (typeof p.deactivated !== "number") return null;
+    const added = p.added === undefined ? 0 : p.added;
+    const reactivated = p.reactivated === undefined ? 0 : p.reactivated;
+    if (typeof added !== "number" || typeof reactivated !== "number") return null;
     if (p.abortReason !== "sharp_change" && p.abortReason !== "no_usable_rows" && p.abortReason !== null) return null;
     if (typeof p.finishedAt !== "string") return null;
     return {
       status: p.status,
       updated: p.updated,
       deactivated: p.deactivated,
+      added,
+      reactivated,
       abortReason: p.abortReason,
       finishedAt: p.finishedAt,
     };
@@ -51,8 +62,8 @@ export async function getDigiflazzSyncStatus(db: Db): Promise<DigiflazzSyncStatu
   }
 }
 
-/** Record one hourly catalog re-sync's outcome — called once per cron tick
- * from `resyncDigiflazzCatalog` (a later task), at every return point (both
+/** Record one catalog re-sync's outcome — called once per run (hourly cron
+ * tick or the admin's manual Sync) from `resyncDigiflazzCatalog`, at every return point (both
  * abort branches and normal completion, including a no-op tick that changed
  * nothing). Overwrites the previous status entirely — no merge, since this
  * store only ever needs to know about the MOST RECENT run. */

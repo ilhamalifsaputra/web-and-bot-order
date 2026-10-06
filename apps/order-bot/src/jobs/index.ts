@@ -54,7 +54,7 @@ import {
   runStorageCleanup,
   listSettledOrdersAwaitingBubbleEdit,
   clearOrderPaymentMessage,
-  resyncDigiflazzCatalog,
+  runDigiflazzCatalogSync,
   dispatchPendingDigiflazzOrders,
   bumpCatalogRevision,
   runDetectionForCatalog,
@@ -1640,6 +1640,10 @@ export async function runFxRefreshTick(): Promise<void> {
  * this tick's writes. No `Api` needed, so this runs even on a web-only boot,
  * same as scheduleFxRefresh.
  *
+ * The run goes through runDigiflazzCatalogSync's lease, so it never overlaps
+ * an admin's manual Sync from the web panel: when that lease is held, the
+ * tick logs it and skips both the re-sync and the detection pass.
+ *
  * Exported so the tick can be exercised directly in tests without a live
  * cron. The detection pass is best-effort and fully isolated: a failure in
  * it is logged and swallowed, so a successful resync is never undone by a
@@ -1648,7 +1652,14 @@ export async function runFxRefreshTick(): Promise<void> {
  */
 export async function runDigiflazzCatalogSyncTick(): Promise<void> {
   try {
-    const r = await resyncDigiflazzCatalog(prisma);
+    const outcome = await runDigiflazzCatalogSync(prisma);
+    if (outcome.status === "busy") {
+      logger.info(
+        "Skipped this hourly Digiflazz catalog re-sync because another catalog sync (an admin's manual Sync or a previous tick) is already running; the next hourly tick will try again.",
+      );
+      return;
+    }
+    const r = outcome.result;
     if (r.updated || r.deactivated || r.added || r.reactivated) {
       logger.info(
         `The hourly Digiflazz catalog re-sync updated ${r.updated} price(s), added ${r.added} new SKU(s), reactivated ${r.reactivated} SKU(s) it had switched off earlier, and deactivated ${r.deactivated} SKU(s) Digiflazz reports unavailable.`,

@@ -1,7 +1,7 @@
 import type { Bot } from "grammy";
 import type { Prisma } from "@prisma/client";
 import { prisma, enqueueDigiflazzReviewAlert, type PrismaClient } from "@app/db";
-import { getOrderFulfillment } from "@app/core/orderFulfillment";
+import { customerProgressPhase, type CustomerProgress } from "@app/core/orderFulfillment";
 import { t } from "@app/core/i18n";
 import { langCode } from "@app/core/enums";
 import { logger } from "@app/core/logger";
@@ -13,7 +13,30 @@ type MessageRow = Prisma.FulfillmentMessageGetPayload<{ include: typeof include 
 const INTERVAL_MS = 2000;
 const LEASE_MS = 60_000;
 const REVIEW_INTERVAL_MS = 30_000;
-const FRAMES = ["◐", "◓", "◑", "◒"];
+/** A manual order's static "waiting to be prepared" line is only re-read this
+ * often, so the message can still flip to the final outcome without spinning. */
+const WAITING_INTERVAL_MS = 60_000;
+const FRAMES = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"];
+/** Row states the worker polls; WAITING is a static manual-order wait. */
+const POLLED_STATES = ["READY", "ACTIVE", "REVIEW", "WAITING"];
+const TERMINAL_PHASES: ReadonlySet<string> = new Set(["SUCCESS", "FAILED", "CANCELLED"]);
+
+/** Title + body locale keys per phase; the order status decides, never a timer. */
+function progressKeys({ phase, topUp }: CustomerProgress): { title: string; body: string } {
+  switch (phase) {
+    case "PAYMENT_DETECTED": return { title: "title_detected", body: "detected" };
+    case "AUTO_QUEUED": return { title: "title_confirmed", body: "auto_queued" };
+    case "AUTO_SUBMITTING": return { title: "title_confirmed", body: "auto_submitting" };
+    case "AUTO_PROCESSING": return { title: "title_confirmed", body: "auto_processing" };
+    case "PREPARING": return { title: "title_confirmed", body: "preparing" };
+    case "MANUAL_ENQUEUING": return { title: "title_confirmed", body: "manual_enqueuing" };
+    case "MANUAL_WAITING": return { title: "title_waiting", body: "manual_waiting" };
+    case "SUCCESS": return topUp ? { title: "title_topup_success", body: "topup_success" } : { title: "title_success", body: "success" };
+    case "FAILED": return { title: topUp ? "title_topup_failed" : "title_failed", body: "failed" };
+    case "REVIEW": return { title: "title_review", body: "review" };
+    default: return { title: "title_cancelled", body: "cancelled" };
+  }
+}
 
 /** One persisted message per order. An initial send without an acknowledgement
  * cannot safely be retried: Telegram has no idempotent send API. */
@@ -32,7 +55,7 @@ export class FulfillmentMessageWorker {
     const stale = new Date(now.getTime() - LEASE_MS);
     const rows = await this.db.fulfillmentMessage.findMany({
       where: { nextUpdateAt: { lte: now }, OR: [
-        { state: { in: ["READY", "ACTIVE", "REVIEW"] }, claimedAt: null },
+        { state: { in: POLLED_STATES }, claimedAt: null },
         { state: { in: ["SENDING", "EDITING"] }, claimedAt: { lte: stale } },
       ] }, include, take: 10, orderBy: [{ nextUpdateAt: "asc" }, { orderId: "asc" }],
     });
@@ -71,11 +94,20 @@ export class FulfillmentMessageWorker {
   private async deliver(row: MessageRow): Promise<boolean> {
     // Re-read after acquiring the claim so a final callback wins over a stale frame.
     const order = await this.db.order.findUniqueOrThrow({ where: { id: row.orderId }, include: include.order.include });
-    const fulfillment = getOrderFulfillment(order);
-    const status = fulfillment.status;
-    const terminal = ["SUCCESS", "FAILED", "NEEDS_REVIEW", "CANCELLED"].includes(status);
+    const progress = customerProgressPhase(order, { messageSent: row.messageId !== null });
+    const where = { orderId: row.orderId, state: row.state, claimedAt: row.claimedAt };
+    if (row.messageId === null && (progress.phase === "NONE" || progress.phase === "CANCELLED")) {
+      // Nothing to tell yet (payment never seen), or the order ended before
+      // the buyer heard anything: release the claim without sending.
+      const finished = progress.phase === "CANCELLED";
+      await this.db.fulfillmentMessage.updateMany({ where, data: {
+        state: finished ? "FINISHED" : "READY", claimedAt: null, finishedAt: finished ? this.now() : null,
+        nextUpdateAt: new Date(this.now().getTime() + INTERVAL_MS),
+      } });
+      return false;
+    }
     const lang = langCode(order.user.language);
-    const key = status === "SUCCESS" ? "success" : status === "FAILED" ? "failed" : status === "NEEDS_REVIEW" ? "review" : status === "CANCELLED" ? "cancelled" : status === "SUBMITTING" ? "submitting" : status === "PROCESSING" ? "processing" : "queued";
+    const keys = progressKeys(progress);
     const frame = FRAMES[Math.floor(this.now().getTime() / INTERVAL_MS) % FRAMES.length];
     const grouped = new Map<number, { name: string; quantity: number }>();
     for (const item of order.items) {
@@ -87,11 +119,15 @@ export class FulfillmentMessageWorker {
     // character limit. Customer targets and delivered credentials stay private.
     const items = [...grouped.values()].slice(0, 6).map(item => `${escape(item.name.slice(0, 80))}${item.name.length > 80 ? "…" : ""} × ${item.quantity}`).join("\n");
     const summary = items ? `\n\n${items}${grouped.size > 6 ? "\n…" : ""}` : "";
-    const text = `${t("order.fulfillment_header", lang, { code: escape(order.orderCode) })}${summary}\n\n${terminal ? (status === "SUCCESS" ? "✅" : status === "NEEDS_REVIEW" ? "⚠️" : "✕") : frame} ${t(`order.fulfillment_${key}`, lang)}`;
-    const state = status === "NEEDS_REVIEW" ? "REVIEW" : terminal ? "FINISHED" : "ACTIVE";
+    const body = t(`order.progress_${keys.body}`, lang);
+    const title = t(`order.progress_${keys.title}`, lang);
+    const orderLine = t("order.progress_order_line", lang, { code: escape(order.orderCode) });
+    const text = `${title}\n${orderLine}${summary}\n\n${progress.spinner ? `${frame} ${body}` : body}`;
+    const terminal = TERMINAL_PHASES.has(progress.phase);
+    const state = progress.phase === "REVIEW" ? "REVIEW" : progress.phase === "MANUAL_WAITING" ? "WAITING" : terminal ? "FINISHED" : "ACTIVE";
+    const interval = state === "REVIEW" ? REVIEW_INTERVAL_MS : state === "WAITING" ? WAITING_INTERVAL_MS : INTERVAL_MS;
     const data = { state, claimedAt: null, lastText: text, finishedAt: terminal ? this.now() : null,
-      nextUpdateAt: new Date(this.now().getTime() + (state === "REVIEW" ? REVIEW_INTERVAL_MS : INTERVAL_MS)) };
-    const where = { orderId: row.orderId, state: row.state, claimedAt: row.claimedAt };
+      nextUpdateAt: new Date(this.now().getTime() + interval) };
     const controller = new AbortController();
     const abort = () => controller.abort();
     this.signal?.addEventListener("abort", abort, { once: true });
@@ -115,7 +151,7 @@ export class FulfillmentMessageWorker {
         const nextUpdateAt = new Date(this.now().getTime() + Math.max(1, e.parameters?.retry_after ?? 30) * 1000);
         await this.db.fulfillmentMessage.updateMany({ where, data: { state: row.messageId === null ? "READY" : "ACTIVE", claimedAt: null, nextUpdateAt } });
         // Durable global backoff also prevents another process draining ready rows.
-        await this.db.fulfillmentMessage.updateMany({ where: { state: { in: ["READY", "ACTIVE", "REVIEW"] }, nextUpdateAt: { lt: nextUpdateAt } }, data: { nextUpdateAt } });
+        await this.db.fulfillmentMessage.updateMany({ where: { state: { in: POLLED_STATES }, nextUpdateAt: { lt: nextUpdateAt } }, data: { nextUpdateAt } });
         return true;
       }
       if (row.messageId !== null && e.error_code === 400 && e.description?.includes("message is not modified")) {

@@ -41,6 +41,7 @@ import { POLL_HEALTH_KEYS, getPollHealth, recordPollHealth, type PollHealth } fr
 import { AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES } from "./binance_internal";
 import { reclaimStaleMatchedClaim } from "./_staleClaim";
 import { getPendingPaymentAttempt, confirmPaymentAttempt } from "./payments";
+import { ensureFulfillmentMessage } from "./fulfillmentMessages";
 
 // ---------------------------------------------------------------------------
 // Resolved config (web-admin Settings win; .env is the bootstrap/recovery
@@ -259,12 +260,16 @@ export async function recordBybitBscPaymentDetected(
       firstDetectedAt: order.firstDetectedAt ?? new Date(),
     },
   });
-  return tryTransitionOrderStatus(db, {
+  const moved = await tryTransitionOrderStatus(db, {
     orderId: args.orderId,
     from: OrderStatus.PENDING_PAYMENT,
     to: OrderStatus.PAYMENT_DETECTED,
     meta: `bybitTxId=${args.bybitTxId}`,
   });
+  // A real "payment seen, not final" signal: start the buyer's progress
+  // message in its detected phase. Only on the applied transition.
+  if (moved) await ensureFulfillmentMessage(db, args.orderId);
+  return moved;
 }
 
 /** Orders the confirmation tracker should poll: a Bybit BSC deposit already

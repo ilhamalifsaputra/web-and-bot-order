@@ -47,3 +47,45 @@ export function getOrderFulfillment(order: FulfillmentOrder): OrderFulfillment {
     can_edit_customer_data: orderStatus === "PROCESSING" && (provider !== "DIGIFLAZZ" || (!order.digiflazzDispatchedAt && status !== "NEEDS_REVIEW")),
   };
 }
+
+/** What the buyer's single Telegram progress message shows. */
+export type CustomerProgressPhase =
+  | "NONE" | "PAYMENT_DETECTED"
+  | "AUTO_QUEUED" | "AUTO_SUBMITTING" | "AUTO_PROCESSING" | "PREPARING"
+  | "MANUAL_ENQUEUING" | "MANUAL_WAITING"
+  | "SUCCESS" | "FAILED" | "REVIEW" | "CANCELLED";
+export interface CustomerProgress {
+  phase: CustomerProgressPhase;
+  /** Whether the line animates; static phases are never re-edited for a frame. */
+  spinner: boolean;
+  /** Provider top-up wording (Digiflazz) instead of generic product wording. */
+  topUp: boolean;
+}
+
+/** Payment observed (on-chain deposit, attached proof) but not final yet. */
+const PAYMENT_SEEN = ["PAYMENT_DETECTED", "CONFIRMING", "CONFIRMED", "PENDING_VERIFICATION", "UNDERPAID"];
+
+/**
+ * Pure projection of durable order state onto the buyer's progress message.
+ * The order status decides first, so a payment that is only detected is never
+ * rendered as paid even when `paidAt` is already stamped. `messageSent` is the
+ * persisted message id's presence: a manual order shows its queue spinner on
+ * the first send only, then settles on a static waiting line.
+ */
+export function customerProgressPhase(order: FulfillmentOrder, opts: { messageSent?: boolean } = {}): CustomerProgress {
+  const provider = fulfillmentProviderFor(order);
+  const topUp = provider === "DIGIFLAZZ";
+  const status = order.status.toUpperCase();
+  const of = (phase: CustomerProgressPhase, spinner: boolean): CustomerProgress => ({ phase, spinner, topUp });
+  if (status === "DELIVERED") return of("SUCCESS", false);
+  if (["CANCELLED", "EXPIRED", "REFUNDED", "CREDITED_TO_BALANCE"].includes(status)) return of("CANCELLED", false);
+  if (["FAILED", "REJECTED"].includes(status)) return of("FAILED", false);
+  if (status === "PARTIALLY_DELIVERED") return of("REVIEW", false);
+  if (PAYMENT_SEEN.includes(status)) return of("PAYMENT_DETECTED", true);
+  if (status !== "PROCESSING" && status !== "PAID") return of("NONE", false);
+  if (provider === "MANUAL") return opts.messageSent ? of("MANUAL_WAITING", false) : of("MANUAL_ENQUEUING", true);
+  if (provider === "STOCK") return of("PREPARING", true);
+  const fulfillment = getOrderFulfillment(order).status;
+  if (fulfillment === "NEEDS_REVIEW") return of("REVIEW", false);
+  return of(fulfillment === "SUBMITTING" ? "AUTO_SUBMITTING" : fulfillment === "PROCESSING" ? "AUTO_PROCESSING" : "AUTO_QUEUED", true);
+}

@@ -2297,6 +2297,7 @@ describe("resyncDigiflazzCatalog", () => {
         where: { event: NotificationEvent.ADMIN_DIGIFLAZZ_RESYNC_ABORTED },
       });
       expect(alertRows).toHaveLength(2); // one per configured admin (700, 701)
+      expect(await prisma.notificationOutbox.count({ where: { event: NotificationEvent.ADMIN_DIGIFLAZZ_SKUS_CHANGED } })).toBe(0);
       const chatIds = alertRows
         .map((r) => (JSON.parse(r.payloadJson) as { chat_id: number }).chat_id)
         .sort((a, b) => a - b);
@@ -2393,6 +2394,7 @@ describe("resyncDigiflazzCatalog", () => {
         where: { event: NotificationEvent.ADMIN_DIGIFLAZZ_RESYNC_ABORTED },
       });
       expect(alertRows).toHaveLength(2); // one per configured admin (700, 701)
+      expect(await prisma.notificationOutbox.count({ where: { event: NotificationEvent.ADMIN_DIGIFLAZZ_SKUS_CHANGED } })).toBe(0);
       const chatIds = alertRows
         .map((r) => (JSON.parse(r.payloadJson) as { chat_id: number }).chat_id)
         .sort((a, b) => a - b);
@@ -2603,6 +2605,21 @@ describe("resyncDigiflazzCatalog — auto-add new SKUs and reactivate sync-deact
     expect(audit).toHaveLength(1);
     expect(audit[0]!.adminId).toBeNull();
     expect(audit[0]!.details).toContain("added 13 new SKU(s)");
+  });
+
+  it("enqueues exactly one SKU-change admin alert for a run that adds SKUs, and none for an idempotent second run", async () => {
+    await setSetting(prisma, ADMIN_IDS_KEY, "710");
+    await importMobileLegends();
+    digiflazzMock.getPriceList.mockResolvedValue([priceListItem({ buyerSkuCode: "ml100", price: new Decimal(15000) }), ...newSkus(2)]);
+    const where = { event: NotificationEvent.ADMIN_DIGIFLAZZ_SKUS_CHANGED };
+
+    await resyncDigiflazzCatalog(prisma);
+    const rows = await prisma.notificationOutbox.findMany({ where });
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0]!.payloadJson)).toEqual({ chat_id: 710, added_count: 2, reactivated_count: 0, deactivated_count: 0 });
+
+    await resyncDigiflazzCatalog(prisma);
+    expect(await prisma.notificationOutbox.count({ where })).toBe(1);
   });
 
   it("is idempotent: a second run with the same price list adds nothing and creates no duplicate", async () => {

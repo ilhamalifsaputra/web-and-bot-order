@@ -64,7 +64,7 @@ import { getSetting, getDecryptedSetting } from "./settings";
 import { getOrder, finalizeDeliverySideEffects, enqueueBuyerOrderReadyEmailIfGuest } from "./orders";
 import { resolveNicknameGate, buildNicknameProviderEntries } from "./nickname";
 import { isDenominationBelowCost } from "@app/core/denominationPrices";
-import { enqueueAdminDigiflazzBelowCost, enqueueDigiflazzReviewAlert, enqueueAdminDigiflazzResyncAborted } from "./notifications";
+import { enqueueAdminDigiflazzBelowCost, enqueueDigiflazzReviewAlert, enqueueAdminDigiflazzResyncAborted, enqueueAdminDigiflazzSkusChanged } from "./notifications";
 import { logAdminAction } from "./audit";
 import {
   createCatalogProduct,
@@ -2022,6 +2022,13 @@ export async function resyncDigiflazzCatalog(
       targetId: null,
       details: `Digiflazz sync: ${parts.join(", ")}.`,
     });
+    if (result.added + result.reactivated + result.deactivated > 0) {
+      await enqueueAdminDigiflazzSkusChanged(db, {
+        added: result.added,
+        reactivated: result.reactivated,
+        deactivated: result.deactivated,
+      });
+    }
   }
 
   await recordDigiflazzSyncStatus(db, {

@@ -361,6 +361,28 @@ export async function enqueueAdminDigiflazzBelowCost(db: Db, args: { count: numb
   }
 }
 
+/** One count-only DM per resolved admin when a sync added, reactivated or deactivated SKUs. No-op when all counts are 0. */
+export async function enqueueAdminDigiflazzSkusChanged(
+  db: Db,
+  args: { added: number; reactivated: number; deactivated: number },
+): Promise<void> {
+  if (args.added + args.reactivated + args.deactivated <= 0) return;
+  for (const adminId of await resolveAdminIds(db)) {
+    await db.notificationOutbox.create({
+      data: {
+        event: NotificationEvent.ADMIN_DIGIFLAZZ_SKUS_CHANGED,
+        orderId: null,
+        payloadJson: JSON.stringify({
+          chat_id: adminId,
+          added_count: args.added,
+          reactivated_count: args.reactivated,
+          deactivated_count: args.deactivated,
+        }),
+      },
+    });
+  }
+}
+
 /**
  * Enqueue one admin DM per resolved admin alerting that the hourly market-rate
  * refresh fetched a USD→IDR rate that failed `validateUsdIdrRate`'s sanity

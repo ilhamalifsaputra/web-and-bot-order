@@ -16,6 +16,7 @@ import {
   enqueueAdminStalePayment,
   enqueueAdminUnconfirmablePayment,
   enqueueAdminDigiflazzResyncAborted,
+  enqueueAdminDigiflazzSkusChanged,
   enqueueAdminPasswordReset,
   enqueueAdminNewTicketDm,
   enqueueTicketReplyDm,
@@ -784,6 +785,32 @@ describe("enqueueAdminDigiflazzResyncAborted", () => {
       expect(payload.sharp_changes).toBeUndefined();
       expect(payload.considered_rows).toBeUndefined();
     }
+  });
+});
+
+describe("enqueueAdminDigiflazzSkusChanged", () => {
+  const where = { event: NotificationEvent.ADMIN_DIGIFLAZZ_SKUS_CHANGED };
+
+  it("enqueues one count-only DM per resolved admin with orderId null", async () => {
+    await prisma.notificationOutbox.deleteMany({ where });
+    await enqueueAdminDigiflazzSkusChanged(prisma, { added: 5, reactivated: 2, deactivated: 1 });
+
+    const rows = await prisma.notificationOutbox.findMany({ where });
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every((r) => r.orderId === null)).toBe(true);
+    const chatIds = rows.map((r) => (JSON.parse(r.payloadJson) as { chat_id: number }).chat_id).sort((a, b) => a - b);
+    expect(chatIds).toEqual([4001, 4002, 4501, 4502]);
+    const payload = JSON.parse(rows[0]!.payloadJson) as Record<string, number>;
+    expect(Object.keys(payload).sort()).toEqual(["added_count", "chat_id", "deactivated_count", "reactivated_count"]);
+    expect(payload.added_count).toBe(5);
+    expect(payload.reactivated_count).toBe(2);
+    expect(payload.deactivated_count).toBe(1);
+  });
+
+  it("is a no-op when all three counts are zero", async () => {
+    await prisma.notificationOutbox.deleteMany({ where });
+    await enqueueAdminDigiflazzSkusChanged(prisma, { added: 0, reactivated: 0, deactivated: 0 });
+    expect(await prisma.notificationOutbox.count({ where })).toBe(0);
   });
 });
 

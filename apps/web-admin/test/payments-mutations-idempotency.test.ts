@@ -8,10 +8,18 @@
  * and hitting its own state guard on the second attempt.
  */
 import "./setup-env";
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { config } from "@app/core/config";
-import { prisma, initDb, setSetting, markUnderpaid, createOrderDirect, createInternalOrder, recordUnmatchedTx } from "@app/db";
+import { prisma, initDb, setSetting, markUnderpaid, createOrderDirect, createInternalOrder, recordUnmatchedTx, triggerDigiflazzDispatch } from "@app/db";
+import { routeOrderToDigiflazz } from "../../../tests/helpers/digiflazzRouting";
+
+// The instant Digiflazz dispatch is observed, not run: the manual-match test
+// checks that it is started for a PROCESSING settlement, not what Digiflazz answers.
+vi.mock("@app/db", async (orig) => ({
+  ...(await orig<typeof import("@app/db")>()),
+  triggerDigiflazzDispatch: vi.fn(),
+}));
 import { resetDb, buildSampleData, type SampleData } from "../../../tests/helpers/sampleData";
 import { buildApp } from "../src/server";
 import { makeSession, sessionJtiKey, newJti } from "../src/auth";
@@ -42,6 +50,7 @@ beforeEach(async () => {
   cookie = raw;
   csrf = data.csrf;
   await setSetting(prisma, "setup_completed", "true");
+  vi.mocked(triggerDigiflazzDispatch).mockReset();
 });
 
 /** An UNDERPAID order — a PENDING_PAYMENT order (createOrderDirect) flagged
@@ -248,6 +257,21 @@ describe("POST /api/payments/match — Idempotency-Key", () => {
 
     const second = await match("mtx-no-header", order.orderCode);
     expect(second.statusCode).toBe(422);
+    // Delivered from stock: nothing for Digiflazz to do.
+    expect(triggerDigiflazzDispatch).not.toHaveBeenCalled();
+  });
+
+  it("starts the instant Digiflazz dispatch exactly once when a match settles a Digiflazz order into PROCESSING", async () => {
+    const order = await makePendingOrder();
+    await routeOrderToDigiflazz(prisma, order.id);
+    await recordUnmatchedTx(prisma, { binanceTxId: "mtx-digiflazz", amount: "1.00" });
+
+    const res = await match("mtx-digiflazz", order.orderCode);
+    expect(res.statusCode).toBe(200);
+
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe("PROCESSING");
+    expect(triggerDigiflazzDispatch).toHaveBeenCalledTimes(1);
+    expect(triggerDigiflazzDispatch).toHaveBeenCalledWith(order.id);
   });
 
   it("replays the exact success response for a repeated request with the same key, matching only once", async () => {

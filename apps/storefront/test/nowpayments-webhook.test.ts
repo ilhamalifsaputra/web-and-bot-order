@@ -29,7 +29,16 @@ import {
   deleteSetting,
   createCatalogProduct,
   createDenomination,
+  triggerDigiflazzDispatch,
 } from "@app/db";
+import { routeOrderToDigiflazz } from "../../../tests/helpers/digiflazzRouting";
+
+// The instant Digiflazz dispatch is observed, not run: the webhook tests check
+// that it is started for a PROCESSING settlement, not what Digiflazz answers.
+vi.mock("@app/db", async (orig) => ({
+  ...(await orig<typeof import("@app/db")>()),
+  triggerDigiflazzDispatch: vi.fn(),
+}));
 import { buildApp } from "../src/server";
 
 const API_KEY = "ak-test-nowpayments";
@@ -126,6 +135,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await enableNowpayments();
+  vi.mocked(triggerDigiflazzDispatch).mockReset();
 });
 
 /** Create a PENDING_PAYMENT NOWPAYMENTS/USDT order directly (bypassing checkout/cart) for webhook-only tests. */
@@ -208,6 +218,27 @@ describe("POST /pay/nowpayments/callback", () => {
     const ledger = await prisma.processedNowpaymentsTx.findUnique({ where: { trxId: "PID-HAPPY-1" } });
     expect(ledger).not.toBeNull();
     expect(ledger!.outcome).toBe("matched");
+    // Delivered from stock: nothing for Digiflazz to do.
+    expect(triggerDigiflazzDispatch).not.toHaveBeenCalled();
+  });
+
+  it("starts the instant Digiflazz dispatch exactly once when the payment settles a Digiflazz order into PROCESSING", async () => {
+    const order = await createPendingNowpaymentsOrder("ORD-NPDIGIFLAZZ", "50");
+    await routeOrderToDigiflazz(prisma, order.id);
+    const { raw, signature } = signedIpn({ orderId: order.orderCode, amount: "50", trxId: "PID-DIGIFLAZZ-1" });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/pay/nowpayments/callback",
+      headers: { "content-type": "application/json", "x-nowpayments-sig": signature },
+      payload: raw,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ status: "processing" });
+
+    expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe("PROCESSING");
+    expect(triggerDigiflazzDispatch).toHaveBeenCalledTimes(1);
+    expect(triggerDigiflazzDispatch).toHaveBeenCalledWith(order.id);
   });
 
   // Task B3a (backend audit): actually_paid/pay_amount are in the PAY

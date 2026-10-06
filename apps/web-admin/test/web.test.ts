@@ -3,13 +3,23 @@ import "./setup-env"; // MUST be first: sets env + builds the temp DB schema.
 import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
+import { routeOrderToDigiflazz } from "../../../tests/helpers/digiflazzRouting";
+
+// The instant Digiflazz dispatch is observed, not run: the approve and bulk
+// deliver tests check that it is started for a PROCESSING settlement, not what
+// Digiflazz answers.
+vi.mock("@app/db", async (orig) => ({
+  ...(await orig<typeof import("@app/db")>()),
+  triggerDigiflazzDispatch: vi.fn(),
+}));
 import type { FastifyInstance } from "fastify";
 import { config } from "@app/core/config";
 import { localize } from "@app/core/datetime";
 import { ProductType, UserRole, DeliveryType, OrderStatus, PaymentMethod, NotificationEvent, StockActorType, StockEventType } from "@app/core/enums";
 import {
   prisma,
+  triggerDigiflazzDispatch,
   countUnderpaid,
   initDb,
   upsertUser,
@@ -1239,6 +1249,23 @@ describe("orders API — approve/resend enqueue the buyer's account DM", () => {
     expect(dm).toBeNull();
   });
 
+  it("approve starts the instant Digiflazz dispatch exactly once for a Digiflazz order it settles into PROCESSING, and none for a stock order", async () => {
+    const trigger = vi.mocked(triggerDigiflazzDispatch);
+    trigger.mockReset();
+    const stockOrderId = await makePendingOrder();
+    expect((await postJson(`/api/orders/${stockOrderId}/approve`, seed.cookie, seed.csrf)).statusCode).toBe(200);
+    expect((await getOrder(prisma, stockOrderId))!.status).toBe("DELIVERED");
+    expect(trigger).not.toHaveBeenCalled();
+
+    const orderId = await makePendingOrder();
+    await routeOrderToDigiflazz(prisma, orderId);
+    const res = await postJson(`/api/orders/${orderId}/approve`, seed.cookie, seed.csrf);
+    expect(res.statusCode).toBe(200);
+    expect((await getOrder(prisma, orderId))!.status).toBe("PROCESSING");
+    expect(trigger).toHaveBeenCalledTimes(1);
+    expect(trigger).toHaveBeenCalledWith(orderId);
+  });
+
   it("resend re-enqueues the DM for an already-delivered order", async () => {
     const orderId = await makePendingOrder();
     await postJson(`/api/orders/${orderId}/approve`, seed.cookie, seed.csrf);
@@ -1728,6 +1755,26 @@ describe("POST /api/orders/bulk-action", () => {
     const audit = await prisma.auditLog.findMany({ where: { action: "order_bulk_deliver" } });
     expect(audit.length).toBe(1);
     expect(audit[0]!.details).toBe("Bulk deliver: 2 succeeded, 1 failed (of 3 selected).");
+  });
+
+  it("bulk deliver starts the instant Digiflazz dispatch once per Digiflazz order it settles into PROCESSING, and none for stock orders", async () => {
+    const trigger = vi.mocked(triggerDigiflazzDispatch);
+    trigger.mockReset();
+    const stockOrder = await makePendingOrder();
+    const digiflazzOrder = await makePendingOrder();
+    await routeOrderToDigiflazz(prisma, digiflazzOrder);
+
+    const res = await postJsonOrders("/api/orders/bulk-action", seed.cookie, seed.csrf, {
+      ids: [stockOrder, digiflazzOrder],
+      action: "deliver",
+    });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({ failed: [] });
+
+    expect((await getOrder(prisma, stockOrder))!.status).toBe("DELIVERED");
+    expect((await getOrder(prisma, digiflazzOrder))!.status).toBe("PROCESSING");
+    expect(trigger).toHaveBeenCalledTimes(1);
+    expect(trigger).toHaveBeenCalledWith(digiflazzOrder);
   });
 
   it("bulk resend: only an already-DELIVERED order with a Telegram buyer succeeds", async () => {

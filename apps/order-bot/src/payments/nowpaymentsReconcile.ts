@@ -55,6 +55,7 @@ import {
   enqueueAdminUnconfirmablePayment,
   markOrderUnderpaid,
   recordPollHealth,
+  triggerDigiflazzDispatch,
 } from "@app/db";
 import { esc } from "../util/format";
 import { flipSettledOrderBubble } from "../jobs";
@@ -341,6 +342,10 @@ export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof 
       amount: valueCheck.amount,
       shopUrl: null,
     });
+    // The settlement has committed. Start a Digiflazz-routed order's supplier
+    // request now, before the Telegram work below; it is fire-and-forget,
+    // ignores non-Digiflazz orders and never throws.
+    if (r.status === "processing") triggerDigiflazzDispatch(r.order.id);
     if (r.status === "delivered") {
       logger.info(`NOWPayments reconcile delivered order ${order.orderCode} — flipping its payment bubble, then nudging the notifier to DM the account file immediately`);
       // Flip BEFORE nudging (Task E3): the buyer's chat must show "Payment

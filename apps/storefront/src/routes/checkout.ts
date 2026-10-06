@@ -84,6 +84,7 @@ import {
   recordDigiflazzOutcome,
   resolveSingleDigiflazzItem,
   buildDigiflazzCustomerNo,
+  triggerDigiflazzDispatch,
 } from "@app/db";
 import { type Customer } from "../plugins/auth";
 import { clientIp, webhookRateLimited } from "../rateLimit";
@@ -765,10 +766,14 @@ export async function performCheckout(
     // books instead of opening a gateway payment for Rp0 — the buyer still
     // gets a paid, delivered order, which is what they are owed.
     if (orderHasNothingLeftToCollect(created)) {
-      return { order: (await settleFullyDiscountedOrder(tx, created.id)).order, settled: true };
+      const settled = await settleFullyDiscountedOrder(tx, created.id);
+      return { order: settled.order, settled: true, processing: settled.kind === "processing" };
     }
-    return { order: await finalizeOrderPayment(tx, created.id, choice), settled: false };
+    return { order: await finalizeOrderPayment(tx, created.id, choice), settled: false, processing: false };
   });
+  // The settlement has committed: start a Digiflazz-routed order's supplier
+  // request now (fire-and-forget, ignores non-Digiflazz orders, never throws).
+  if (order.processing) triggerDigiflazzDispatch(order.order!.id);
   return { orderCode: order.order!.orderCode, settledWithoutGateway: order.settled };
 }
 
@@ -806,6 +811,9 @@ export async function performWalletCheckout(
       customerData,
     });
   });
+  // The settlement has committed: start a Digiflazz-routed order's supplier
+  // request now (fire-and-forget, ignores non-Digiflazz orders, never throws).
+  if (result.kind === "processing") triggerDigiflazzDispatch(result.order.id);
   return { orderCode: result.order.orderCode };
 }
 
@@ -884,10 +892,14 @@ export async function performDirectCheckout(
     // Same zero-total routing as performCheckout above — see its comment,
     // including why the caller is told which branch ran.
     if (orderHasNothingLeftToCollect(created)) {
-      return { order: (await settleFullyDiscountedOrder(tx, created.id)).order, settled: true };
+      const settled = await settleFullyDiscountedOrder(tx, created.id);
+      return { order: settled.order, settled: true, processing: settled.kind === "processing" };
     }
-    return { order: await finalizeOrderPayment(tx, created.id, choice), settled: false };
+    return { order: await finalizeOrderPayment(tx, created.id, choice), settled: false, processing: false };
   });
+  // The settlement has committed: start a Digiflazz-routed order's supplier
+  // request now (fire-and-forget, ignores non-Digiflazz orders, never throws).
+  if (order.processing) triggerDigiflazzDispatch(order.order!.id);
   return { orderCode: order.order!.orderCode, settledWithoutGateway: order.settled };
 }
 
@@ -939,6 +951,9 @@ export async function performDirectWalletCheckout(
       customerData: directCustomerDataJson(denom, line.quantity, customerData),
     });
   });
+  // The settlement has committed: start a Digiflazz-routed order's supplier
+  // request now (fire-and-forget, ignores non-Digiflazz orders, never throws).
+  if (result.kind === "processing") triggerDigiflazzDispatch(result.order.id);
   return { orderCode: result.order.orderCode };
 }
 
@@ -1271,6 +1286,9 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         amount: live.amount,
         shopUrl: shopPublicUrl(),
       });
+      // The settlement has committed: start a Digiflazz-routed order's supplier
+      // request now (fire-and-forget, ignores non-Digiflazz orders, never throws).
+      if (r.status === "processing") triggerDigiflazzDispatch(r.order.id);
       if (r.status === "delivered") nudgeOutboxDispatcher();
       if (r.status === "stale") {
         logger.warn(
@@ -1389,6 +1407,9 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         amount: live.amount,
         shopUrl: shopPublicUrl(),
       });
+      // The settlement has committed: start a Digiflazz-routed order's supplier
+      // request now (fire-and-forget, ignores non-Digiflazz orders, never throws).
+      if (r.status === "processing") triggerDigiflazzDispatch(r.order.id);
       if (r.status === "delivered") nudgeOutboxDispatcher();
       if (r.status === "stale") {
         logger.warn(
@@ -1506,6 +1527,9 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
           amount: valueCheck.amount,
           shopUrl: shopPublicUrl(),
         });
+        // The settlement has committed: start a Digiflazz-routed order's supplier
+        // request now (fire-and-forget, ignores non-Digiflazz orders, never throws).
+        if (r.status === "processing") triggerDigiflazzDispatch(r.order.id);
         if (r.status === "delivered") nudgeOutboxDispatcher();
         if (r.status === "stale") {
           logger.warn(

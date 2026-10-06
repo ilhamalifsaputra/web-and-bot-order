@@ -30,8 +30,17 @@ import {
   deleteSetting,
   createCatalogProduct,
   createDenomination,
+  triggerDigiflazzDispatch,
 } from "@app/db";
+import { routeOrderToDigiflazz } from "../../../tests/helpers/digiflazzRouting";
 import { Decimal } from "@app/core/money";
+
+// The instant Digiflazz dispatch is observed, not run: the webhook tests check
+// that it is started for a PROCESSING settlement, not what Digiflazz answers.
+vi.mock("@app/db", async (orig) => ({
+  ...(await orig<typeof import("@app/db")>()),
+  triggerDigiflazzDispatch: vi.fn(),
+}));
 import { qrisChargeAmount, computeQrisAdminFee } from "@app/core/payments/tokopay";
 import { buildApp } from "../src/server";
 
@@ -115,6 +124,7 @@ afterAll(async () => {
 beforeEach(async () => {
   await enableTokopay();
   mockCheckTransaction = vi.fn();
+  vi.mocked(triggerDigiflazzDispatch).mockReset();
 });
 
 /** Create a PENDING_PAYMENT TOKOPAY order directly (bypassing checkout/cart) for webhook-only tests.
@@ -180,6 +190,24 @@ describe("POST /pay/tokopay/callback", () => {
     const ledger = await prisma.processedTokopayTx.findUnique({ where: { trxId: "TRX-HAPPY-1" } });
     expect(ledger).not.toBeNull();
     expect(ledger!.outcome).toBe("matched");
+    // Delivered from stock: nothing for Digiflazz to do.
+    expect(triggerDigiflazzDispatch).not.toHaveBeenCalled();
+  });
+
+  it("starts the instant Digiflazz dispatch exactly once when the payment settles a Digiflazz order into PROCESSING", async () => {
+    const order = await createPendingTokopayOrder("ORD-TPDIGIFLAZZ", "50000");
+    await routeOrderToDigiflazz(prisma, order.id);
+    const charge = qrisChargeAmount(order.totalAmount).toString();
+    mockCheckTransaction.mockResolvedValue(liveAgrees({ amount: charge, trxId: "TRX-DIGIFLAZZ-1" }));
+    const payload = signedPayload({ refId: order.orderCode, amount: charge, trxId: "TRX-DIGIFLAZZ-1" });
+
+    const res = await app.inject({ method: "POST", url: "/pay/tokopay/callback", payload });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ status: "processing" });
+
+    expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe("PROCESSING");
+    expect(triggerDigiflazzDispatch).toHaveBeenCalledTimes(1);
+    expect(triggerDigiflazzDispatch).toHaveBeenCalledWith(order.id);
   });
 
   // H-1 (backend audit 2026-07-31): TokoPay's createTransaction sends

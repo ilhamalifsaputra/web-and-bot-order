@@ -13,7 +13,16 @@ import {
   setSetting,
   bulkAddStock,
   getPollHealth,
+  triggerDigiflazzDispatch,
 } from "@app/db";
+import { routeOrderToDigiflazz } from "../../../tests/helpers/digiflazzRouting";
+
+// The instant Digiflazz dispatch is observed, not run: these tests check that the
+// poller starts it for a PROCESSING settlement, not what Digiflazz answers.
+vi.mock("@app/db", async (orig) => ({
+  ...(await orig<typeof import("@app/db")>()),
+  triggerDigiflazzDispatch: vi.fn(),
+}));
 import type { Api } from "grammy";
 import { OrderStatus, OrderCurrency, PaymentMethod, DeliveryType, NotificationEvent } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
@@ -30,6 +39,7 @@ beforeEach(async () => {
   await resetDb(prisma);
   await prisma.processedNowpaymentsTx.deleteMany(); // new table, not covered by resetDb
   sample = await buildSampleData(prisma);
+  vi.mocked(triggerDigiflazzDispatch).mockReset();
 });
 
 afterEach(() => {
@@ -493,6 +503,33 @@ describe("reconcileOrder flips the settled payment bubble (Task E3)", () => {
     expect(after?.paymentMsgId).toBeNull();
     const user = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
     expect(new Decimal(user.walletBalanceUsdt).toString()).toBe("15");
+  });
+
+  it("starts the instant Digiflazz dispatch exactly once for a Digiflazz order it settles into PROCESSING, before the bubble edit", async () => {
+    const created = await makeNowpaymentsOrder();
+    await routeOrderToDigiflazz(prisma, created.id);
+    await setOrderPaymentMessage(prisma, created.id, 555, 777);
+    const [pending] = await listPendingNowpaymentsOrders(prisma, new Date());
+    stubStatus(finishedStatus(pending!.totalAmount, { payment_id: "TRX-DIGIFLAZZ" }));
+    const api = fakeApi();
+
+    await reconcileOrder(api, CREDS, pending!);
+
+    const after = await prisma.order.findUnique({ where: { id: created.id } });
+    expect(after?.status).toBe(OrderStatus.PROCESSING);
+    const trigger = vi.mocked(triggerDigiflazzDispatch);
+    expect(trigger).toHaveBeenCalledTimes(1);
+    expect(trigger).toHaveBeenCalledWith(created.id);
+    const edit = vi.mocked(api.editMessageText as unknown as ReturnType<typeof vi.fn>);
+    expect(edit).toHaveBeenCalled();
+    expect(trigger.mock.invocationCallOrder[0]!).toBeLessThan(edit.mock.invocationCallOrder[0]!);
+  });
+
+  it("does not start a Digiflazz dispatch for an order delivered from stock", async () => {
+    const after = await deliverAnchored(fakeApi(), "TRX-STOCK");
+
+    expect(after?.status).toBe(OrderStatus.DELIVERED);
+    expect(triggerDigiflazzDispatch).not.toHaveBeenCalled();
   });
 });
 

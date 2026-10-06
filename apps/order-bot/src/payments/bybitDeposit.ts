@@ -47,6 +47,7 @@ import {
   clearOrderPaymentMessage,
   type BybitConfig,
   type BybitDeliverResult,
+  triggerDigiflazzDispatch,
 } from "@app/db";
 import { coreT } from "../util/i18n";
 import { esc } from "../util/format";
@@ -514,6 +515,10 @@ export async function processDeposits(api: Api, deposits: BybitDeposit[], orders
 
     try {
       const r = await deliverPaidBybitOrder(prisma, { orderId: order.id, bybitTxId: dep.txId, amount: dep.amount });
+      // The settlement has committed. Start a Digiflazz-routed order's supplier
+      // request now, before the Telegram work below; it is fire-and-forget,
+      // ignores non-Digiflazz orders and never throws.
+      if (r.status === "processing") triggerDigiflazzDispatch(r.order.id);
       if (r.status === "delivered") {
         logger.info(`Matched by amount — delivered Bybit order ${order.orderCode} (deposit ${dep.txId})`);
         await onDelivered(api, r.order);

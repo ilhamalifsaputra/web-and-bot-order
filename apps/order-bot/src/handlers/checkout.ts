@@ -76,6 +76,7 @@ import {
   getPendingPaymentAttempt,
   type Db,
   isServiceActive,
+  triggerDigiflazzDispatch,
 } from "@app/db";
 import { createTransaction, computeQrisAdminFee } from "@app/core/payments/tokopay";
 import { qrisCaptionAmounts } from "../util/qrisCaption";
@@ -1916,6 +1917,11 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
     // and gets the friendly toast instead.
     throw e;
   }
+
+  // The order is created and paid (the transaction above has committed). Start
+  // a Digiflazz-routed order's supplier request now, before any Telegram edit
+  // below; it is fire-and-forget, ignores non-Digiflazz orders and never throws.
+  if (result.kind === "processing") triggerDigiflazzDispatch(result.order.id);
 
   // Consume the voucher, wallet toggle, and collected info now that an order
   // actually exists — same convention as every other buyNow* rail.

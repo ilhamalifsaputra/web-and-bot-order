@@ -20,7 +20,16 @@ import {
   BINANCE_API_KEY_KEY,
   BINANCE_API_SECRET_KEY,
   type BinanceInternalConfig,
+  triggerDigiflazzDispatch,
 } from "@app/db";
+import { routeOrderToDigiflazz } from "../../../tests/helpers/digiflazzRouting";
+
+// The instant Digiflazz dispatch is observed, not run: these tests check that the
+// poller starts it for a PROCESSING settlement, not what Digiflazz answers.
+vi.mock("@app/db", async (orig) => ({
+  ...(await orig<typeof import("@app/db")>()),
+  triggerDigiflazzDispatch: vi.fn(),
+}));
 import type { Api } from "grammy";
 import { telegramError } from "./helpers/ctx";
 import { config } from "@app/core/config";
@@ -50,6 +59,7 @@ beforeEach(async () => {
   await resetDb(prisma);
   await prisma.processedBinanceTx.deleteMany(); // new table, not covered by resetDb
   sample = await buildSampleData(prisma);
+  vi.mocked(triggerDigiflazzDispatch).mockReset();
 });
 
 afterAll(async () => {
@@ -608,6 +618,34 @@ describe("processTransfers (poll-loop wiring)", () => {
     expect(updated!.status).toBe(OrderStatus.DELIVERED);
     expect(updated!.paymentMsgChatId).not.toBeNull();
     expect(updated!.paymentMsgId).not.toBeNull();
+  });
+
+  it("starts the instant Digiflazz dispatch exactly once for a Digiflazz order it settles into PROCESSING, before the bubble edit", async () => {
+    const order = (await makeInternalOrder())!;
+    await routeOrderToDigiflazz(prisma, order.id);
+    await setOrderPaymentMessage(prisma, order.id, 555, 777);
+    const { api, edits } = fakeApi();
+    const trigger = vi.mocked(triggerDigiflazzDispatch);
+    let editsAtTrigger = -1;
+    trigger.mockImplementationOnce(() => {
+      editsAtTrigger = edits.length;
+    });
+
+    await processTransfers(api, [txFor({ txId: "T-DIGIFLAZZ", note: order.paymentRef!, amount: order.totalAmount })], await pending());
+
+    expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.PROCESSING);
+    expect(trigger).toHaveBeenCalledTimes(1);
+    expect(trigger).toHaveBeenCalledWith(order.id);
+    expect(edits.length).toBeGreaterThan(0);
+    expect(editsAtTrigger).toBe(0);
+  });
+
+  it("does not start a Digiflazz dispatch for an order delivered from stock", async () => {
+    const order = (await makeInternalOrder())!;
+    const { api } = fakeApi();
+    await processTransfers(api, [txFor({ txId: "T-STOCK", note: order.paymentRef!, amount: order.totalAmount })], await pending());
+    expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.DELIVERED);
+    expect(triggerDigiflazzDispatch).not.toHaveBeenCalled();
   });
 
   it("delivers on a note match", async () => {

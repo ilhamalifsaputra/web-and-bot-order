@@ -14,7 +14,16 @@ import {
   getPollHealth,
   updateDenomination,
   deliverPaidTokopayOrder,
+  triggerDigiflazzDispatch,
 } from "@app/db";
+import { routeOrderToDigiflazz } from "../../../tests/helpers/digiflazzRouting";
+
+// The instant Digiflazz dispatch is observed, not run: these tests check that the
+// poller starts it for a PROCESSING settlement, not what Digiflazz answers.
+vi.mock("@app/db", async (orig) => ({
+  ...(await orig<typeof import("@app/db")>()),
+  triggerDigiflazzDispatch: vi.fn(),
+}));
 import { gatewayLedgerTrxId } from "@app/core/payments/ledgerKey";
 import type { Api } from "grammy";
 import { DeliveryType, OrderStatus, OrderCurrency, PaymentMethod } from "@app/core/enums";
@@ -34,6 +43,7 @@ beforeEach(async () => {
   await resetDb(prisma);
   await prisma.processedTokopayTx.deleteMany(); // new table, not covered by resetDb
   sample = await buildSampleData(prisma);
+  vi.mocked(triggerDigiflazzDispatch).mockReset();
 });
 
 afterEach(() => {
@@ -520,6 +530,35 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
       expect(edit.text).toContain("being prepared for delivery manually");
       expect(edit.buttons).toContain("v1:order:list");
       expect(edit.buttons).not.toContain("v1:topup:open");
+    });
+  });
+
+  describe("instant Digiflazz dispatch", () => {
+    it("starts the dispatch exactly once for a Digiflazz order it settles into PROCESSING, before the bubble edit", async () => {
+      const created = await makeTokopayOrder();
+      await routeOrderToDigiflazz(prisma, created!.id);
+      const [pending] = await listPendingTokopayOrders(prisma, new Date());
+      await setOrderPaymentMessage(prisma, created!.id, 555, 777);
+      stubStatus({ status: "Paid", trx_id: "TRX-DIGIFLAZZ", total_bayar: qrisChargeAmount(pending!.totalAmount).toString() });
+      const api = fakeApi();
+
+      await reconcileOrder(api, CREDS, pending!);
+
+      const after = await prisma.order.findUnique({ where: { id: created!.id } });
+      expect(after?.status).toBe(OrderStatus.PROCESSING);
+      const trigger = vi.mocked(triggerDigiflazzDispatch);
+      expect(trigger).toHaveBeenCalledTimes(1);
+      expect(trigger).toHaveBeenCalledWith(after!.id);
+      const edit = vi.mocked(api.editMessageText as unknown as ReturnType<typeof vi.fn>);
+      expect(edit).toHaveBeenCalled();
+      expect(trigger.mock.invocationCallOrder[0]!).toBeLessThan(edit.mock.invocationCallOrder[0]!);
+    });
+
+    it("does not start a dispatch for an order delivered from stock", async () => {
+      const after = await deliverAnchored(fakeApi(), "TRX-STOCK");
+
+      expect(after?.status).toBe(OrderStatus.DELIVERED);
+      expect(triggerDigiflazzDispatch).not.toHaveBeenCalled();
     });
   });
 });

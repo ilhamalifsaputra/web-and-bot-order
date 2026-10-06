@@ -38,6 +38,7 @@ import {
   findOverpaidExcess,
   type OrderFilter,
   type StockReplacementWithRefund,
+  triggerDigiflazzDispatch,
 } from "@app/db";
 import { currentAdmin, csrfProtect, blockReadonlyReads } from "../../plugins/auth";
 import { orderMoneyView } from "../orderMoneyView";
@@ -357,11 +358,10 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
   app.post("/api/orders/:orderId/approve", { preHandler: csrfProtect }, async (req, reply) => {
     const orderId = parsePositiveId((req.params as { orderId: string }).orderId);
     if (orderId === null) return reply.code(400).send({ error: "Invalid order id." });
-    let settled: "delivered" | "processing" = "delivered";
+    let settled: "delivered" | "processing";
     try {
-      await prisma.$transaction(async (tx) => {
+      settled = await prisma.$transaction(async (tx) => {
         const result = await settlePaidOrder(tx, orderId, { adminId: req.admin!.userId });
-        settled = result.kind;
         const { order } = result;
         if (result.kind === "delivered") {
           await enqueueOrderDeliveredDm(tx, {
@@ -381,6 +381,7 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
               ? `Approved order ${order.orderCode}.`
               : `Approved payment for order ${order.orderCode}; queued for manual fulfilment.`,
         });
+        return result.kind;
       });
     } catch (e) {
       if (e instanceof ValidationError) {
@@ -388,6 +389,9 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
       }
       throw e;
     }
+    // The approval has committed: start a Digiflazz-routed order's supplier
+    // request now (fire-and-forget, ignores non-Digiflazz orders, never throws).
+    if (settled === "processing") triggerDigiflazzDispatch(orderId);
     nudgeOutboxDispatcher();
     logger.info(
       settled === "delivered"
@@ -666,7 +670,7 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
             failed.push({ id: orderId, error: "error.not_eligible" });
             continue;
           }
-          await prisma.$transaction(async (tx) => {
+          const settledKind = await prisma.$transaction(async (tx) => {
             const result = await settlePaidOrder(tx, orderId, { adminId: req.admin!.userId });
             if (result.kind === "delivered") {
               await enqueueOrderDeliveredDm(tx, {
@@ -676,7 +680,11 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
                 language: result.order.user.language,
               });
             }
+            return result.kind;
           });
+          // This order's settlement has committed: start a Digiflazz-routed
+          // order's supplier request now (fire-and-forget, never throws).
+          if (settledKind === "processing") triggerDigiflazzDispatch(orderId);
         } else if (action === "resend") {
           if (!eligibility.canResend) {
             failed.push({ id: orderId, error: "error.not_eligible" });

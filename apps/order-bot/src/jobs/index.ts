@@ -1628,10 +1628,13 @@ export async function runFxRefreshTick(): Promise<void> {
 }
 
 /**
- * One hourly Digiflazz catalog re-sync tick — refreshes costPrice/price/
- * isActive on every already-imported denomination (never creates/renames
- * anything; new SKUs only ever enter the catalog via the admin's Import
- * Wizard), then (Task 10, shadow mode) invalidates the Detection Engine's
+ * One hourly Digiflazz catalog re-sync tick — refreshes costPrice/price on
+ * every already-imported denomination, deactivates SKUs Digiflazz reports
+ * unavailable and reactivates the ones this sync itself deactivated once they
+ * recover, and adds (active) the new SKUs Digiflazz lists under an
+ * already-imported brand; brand-new brands still enter only through the
+ * admin's Import Wizard. It never renames anything. Then (Task 10, shadow
+ * mode) it invalidates the Detection Engine's
  * catalog index and re-runs detection over the whole catalog so its review
  * queue and run-status blob (packages/db/src/crud/detectionRun.ts) reflect
  * this tick's writes. No `Api` needed, so this runs even on a web-only boot,
@@ -1646,8 +1649,10 @@ export async function runFxRefreshTick(): Promise<void> {
 export async function runDigiflazzCatalogSyncTick(): Promise<void> {
   try {
     const r = await resyncDigiflazzCatalog(prisma);
-    if (r.updated || r.deactivated) {
-      logger.info(`Digiflazz catalog re-sync: ${r.updated} price update(s), ${r.deactivated} deactivated.`);
+    if (r.updated || r.deactivated || r.added || r.reactivated) {
+      logger.info(
+        `The hourly Digiflazz catalog re-sync updated ${r.updated} price(s), added ${r.added} new SKU(s), reactivated ${r.reactivated} SKU(s) it had switched off earlier, and deactivated ${r.deactivated} SKU(s) Digiflazz reports unavailable.`,
+      );
     }
   } catch (err) {
     logger.error({ err }, "Digiflazz catalog re-sync failed — will retry on the next hourly tick");

@@ -77,6 +77,10 @@ import {
 import { nextDigiflazzRecheckAt } from "./digiflazzBackoff";
 import { emitDigiflazzOrderStatusChanged, emitDigiflazzCatalogSyncChanged } from "@app/core/realtime/digiflazzEvents";
 import { recordDigiflazzSyncStatus } from "./digiflazzSyncStatus";
+import {
+  getDigiflazzAutoDeactivatedIds,
+  updateDigiflazzAutoDeactivatedIds,
+} from "./digiflazzAutoDeactivated";
 import { recordPollHealth } from "./poll_health";
 import {
   detect,
@@ -1490,6 +1494,10 @@ export async function importDigiflazzBrand(
         isActive: false,
       });
     }
+    // Same product-row lock the resync's auto-add takes (createMissingSkusForBrand),
+    // so a wizard import and an hourly auto-add of one brand cannot both create
+    // the same SKU.
+    await tx.$queryRaw`SELECT id FROM products WHERE id = ${product.id} FOR UPDATE`;
     const markupSettings = await getDigiflazzMarkupSettings(tx);
     // Threaded out to the post-commit Task 10 shadow-detection pass below —
     // {id, name} of every denomination this call created/updated, so that
@@ -1604,22 +1612,6 @@ export async function importDigiflazzBrand(
  * supplier dumping thousands of new rows at once can't flood the catalog or
  * hold a run open for minutes. */
 export const DIGIFLAZZ_AUTO_ADD_CAP_PER_RUN = 100;
-
-/** Setting key holding the JSON number[] of denomination ids that
- * resyncDigiflazzCatalog itself deactivated (Digiflazz reported them
- * unavailable). Only ids in this list are ever turned back on automatically —
- * a denomination an admin switched off, or a fresh wizard import, never is. */
-export const DIGIFLAZZ_AUTO_DEACTIVATED_IDS_KEY = "digiflazz_auto_deactivated_ids";
-
-function parseIdList(raw: string | null | undefined): number[] {
-  if (!raw) return [];
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed.filter((id): id is number => Number.isInteger(id)) : [];
-  } catch {
-    return [];
-  }
-}
 
 /**
  * Add the SKUs Digiflazz newly lists under a brand that already has a Product
@@ -1921,9 +1913,7 @@ export async function resyncDigiflazzCatalog(
   const result = { ...zero };
   // Ids this job deactivated on earlier runs. Read straight from the table, not
   // through getSetting's cache, so a run never acts on a stale list.
-  const remembered = new Set(
-    parseIdList((await db.setting.findUnique({ where: { key: DIGIFLAZZ_AUTO_DEACTIVATED_IDS_KEY } }))?.value),
-  );
+  const remembered = new Set(await getDigiflazzAutoDeactivatedIds(db));
   const newlyDeactivated: number[] = [];
   const forget = new Set<number>();
   const mappedIds = new Set(mapped.map((d) => d.id));
@@ -1967,22 +1957,22 @@ export async function resyncDigiflazzCatalog(
 
   // Merge this run's changes into the remembered list under a row lock, so a
   // concurrent run's additions are kept rather than overwritten.
-  if (newlyDeactivated.length > 0 || forget.size > 0) {
-    await db.$transaction(async (tx) => {
-      const key = DIGIFLAZZ_AUTO_DEACTIVATED_IDS_KEY;
-      await tx.setting.upsert({ where: { key }, create: { key, value: "[]" }, update: {} });
-      await tx.$queryRaw`SELECT key FROM settings WHERE key = ${key} FOR UPDATE`;
-      const current = parseIdList((await tx.setting.findUniqueOrThrow({ where: { key } })).value);
-      const next = new Set(current.filter((id) => !forget.has(id)));
-      for (const id of newlyDeactivated) next.add(id);
-      await tx.setting.update({ where: { key }, data: { value: JSON.stringify([...next].sort((a, b) => a - b)) } });
-    });
-  }
+  // (Forget first, then add: an id in both stays remembered.)
+  await updateDigiflazzAutoDeactivatedIds(db, { add: newlyDeactivated, remove: forget });
 
   // New SKUs on already-imported brands. Needs a readable markup to price them;
-  // the unreadable case is reported below.
+  // the unreadable case is reported below. A failure here must not cost the
+  // rest of the run (below-cost check, audit, sync status), since the price
+  // and availability updates above are already committed.
   if (markupReadable) {
-    result.added = await addNewDigiflazzSkusToImportedBrands(db, rawPriceList, markupSettings);
+    try {
+      result.added = await addNewDigiflazzSkusToImportedBrands(db, rawPriceList, markupSettings);
+    } catch (err) {
+      logger.error(
+        { err },
+        "The Digiflazz catalog sync could not look up which new SKUs to add for already-imported brands, so it added none this run; the price, cost and availability updates it already made still stand, and the new SKUs will be tried again on the next run.",
+      );
+    }
   }
 
   // Persist the alerted set atomically with its outbox rows. A recovered SKU

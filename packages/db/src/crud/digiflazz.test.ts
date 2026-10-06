@@ -56,6 +56,7 @@ import {
   addToCart,
   createCatalogProduct,
   createDenomination,
+  bulkSetDenominationsActive,
   setSetting,
   deleteSetting,
   getOrder,
@@ -2067,7 +2068,7 @@ describe("resyncDigiflazzCatalog", () => {
   // I1: sync only reactivates what it deactivated itself — a manually
   // deactivated SKU (including a freshly-imported, deliberately-unreviewed
   // one) must stay off even when Digiflazz reports it as available again.
-  it("I1: does not reactivate a manually-deactivated denomination even when buyerProductStatus is true", async () => {
+  it("I1: does not reactivate a denomination the sync did not deactivate (manual or fresh import) even when buyerProductStatus is true", async () => {
     const category = await prisma.category.findFirstOrThrow();
     const { productId } = await importDigiflazzBrand(prisma, {
       brand: "Mobile Legends", categoryId: category.id,
@@ -2084,7 +2085,7 @@ describe("resyncDigiflazzCatalog", () => {
     await resyncDigiflazzCatalog(prisma);
 
     const after = await prisma.denomination.findFirstOrThrow({ where: { id: denom.id } });
-    expect(after.isActive).toBe(false); // stays off — resync never flips isActive back to true
+    expect(after.isActive).toBe(false); // stays off — resync only reactivates SKUs it deactivated itself
   });
 
   it("I1: still correctly deactivates an active denomination whose SKU goes buyerProductStatus false", async () => {
@@ -2484,7 +2485,7 @@ describe("resyncDigiflazzCatalog", () => {
 
   // Task 10 sentinel: the shadow-wiring must not change resyncDigiflazzCatalog's
   // return shape or its price/status/breaker behavior. Mirrors the return-shape
-  // assertions the tests above already make ({ updated, deactivated } and
+  // assertions the tests above already make ({ updated, deactivated, added, reactivated } and
   // nothing else), kept as an explicit guard for a future Task 10 change (e.g.
   // wiring in runDetectionForCatalog) that must stay behind this contract.
   it("Task 10 sentinel: return shape is exactly { updated, deactivated, added, reactivated } after a real run", async () => {
@@ -2737,6 +2738,89 @@ describe("resyncDigiflazzCatalog — auto-add new SKUs and reactivate sync-deact
     const result = await resyncDigiflazzCatalog(prisma);
     expect(result.reactivated).toBe(0);
     expect((await prisma.denomination.findUniqueOrThrow({ where: { id: ml250.id } })).isActive).toBe(false);
+  });
+
+  it("keeps a remembered SKU off (and remembered) while the markup is unreadable, even when Digiflazz reports it available", async () => {
+    const productId = await importMobileLegends();
+    const ml100 = await prisma.denomination.findFirstOrThrow({ where: { productId, supplierSku: "ml100" } });
+    digiflazzMock.getPriceList.mockResolvedValue([priceListItem({ buyerSkuCode: "ml100", buyerProductStatus: false })]);
+    await resyncDigiflazzCatalog(prisma);
+    expect(await readMarker()).toEqual([ml100.id]);
+
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_VALUE_KEY, "10%");
+    digiflazzMock.getPriceList.mockResolvedValue([priceListItem({ buyerSkuCode: "ml100", buyerProductStatus: true })]);
+    const result = await resyncDigiflazzCatalog(prisma);
+    expect(result.reactivated).toBe(0);
+    expect((await prisma.denomination.findUniqueOrThrow({ where: { id: ml100.id } })).isActive).toBe(false);
+    expect(await readMarker()).toEqual([ml100.id]);
+  });
+
+  it("keeps remembering a SKU an admin re-enabled by hand when Digiflazz takes it down again in the same run", async () => {
+    const productId = await importMobileLegends();
+    const ml100 = await prisma.denomination.findFirstOrThrow({ where: { productId, supplierSku: "ml100" } });
+    // Stale entry: active although remembered (re-enabled outside the admin toggle helpers).
+    await setSetting(prisma, MARKER_KEY, JSON.stringify([ml100.id]));
+    digiflazzMock.getPriceList.mockResolvedValue([priceListItem({ buyerSkuCode: "ml100", buyerProductStatus: false })]);
+
+    const result = await resyncDigiflazzCatalog(prisma);
+    expect(result.deactivated).toBe(1);
+    expect((await prisma.denomination.findUniqueOrThrow({ where: { id: ml100.id } })).isActive).toBe(false);
+    expect(await readMarker()).toEqual([ml100.id]);
+  });
+
+  it.each([
+    ["the bare client", false],
+    ["a caller's transaction", true],
+  ])("an admin toggle through bulkSetDenominationsActive (%s) forgets the id, so a recovery never turns it back on", async (_label, inTx) => {
+    const productId = await importMobileLegends();
+    const ml100 = await prisma.denomination.findFirstOrThrow({ where: { productId, supplierSku: "ml100" } });
+    digiflazzMock.getPriceList.mockResolvedValue([priceListItem({ buyerSkuCode: "ml100", buyerProductStatus: false })]);
+    await resyncDigiflazzCatalog(prisma);
+    expect(await readMarker()).toEqual([ml100.id]);
+
+    // The admin decides to keep it off (re-enabling and then disabling it again).
+    if (inTx) {
+      await prisma.$transaction(async (tx) => {
+        await bulkSetDenominationsActive(tx, [ml100.id], true);
+        await bulkSetDenominationsActive(tx, [ml100.id], false);
+      });
+    } else {
+      await bulkSetDenominationsActive(prisma, [ml100.id], true);
+      await bulkSetDenominationsActive(prisma, [ml100.id], false);
+    }
+    expect(await readMarker()).toEqual([]);
+
+    digiflazzMock.getPriceList.mockResolvedValue([priceListItem({ buyerSkuCode: "ml100", buyerProductStatus: true })]);
+    const result = await resyncDigiflazzCatalog(prisma);
+    expect(result.reactivated).toBe(0);
+    expect((await prisma.denomination.findUniqueOrThrow({ where: { id: ml100.id } })).isActive).toBe(false);
+  });
+
+  it("finishes the run (audit, below-cost check, sync status) when looking up new SKUs fails", async () => {
+    await importMobileLegends();
+    digiflazzMock.getPriceList.mockResolvedValue([
+      priceListItem({ buyerSkuCode: "ml100", price: new Decimal(16000) }),
+      ...newSkus(2),
+    ]);
+    // The brand lookup inside the auto-add step is the only product.findMany this
+    // run makes; a client view whose product.findMany rejects forces it to fail.
+    const failingProduct = new Proxy(prisma.product, {
+      get: (target, prop) =>
+        prop === "findMany" ? () => Promise.reject(new Error("lookup failed")) : Reflect.get(target, prop),
+    });
+    const failingDb = new Proxy(prisma, {
+      get: (target, prop) => {
+        if (prop === "product") return failingProduct;
+        const value = Reflect.get(target, prop);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const result = await resyncDigiflazzCatalog(failingDb);
+    expect(result).toMatchObject({ updated: 1, added: 0 });
+    expect(await prisma.denomination.count({ where: { supplierSku: { startsWith: "mlnew" } } })).toBe(0);
+    expect(await prisma.auditLog.count({ where: { action: "digiflazz_catalog_resync" } })).toBe(1);
+    expect(await prisma.setting.findUnique({ where: { key: "digiflazz_below_cost_alerted_ids" } })).not.toBeNull();
+    expect((await getDigiflazzSyncStatus(prisma))?.status).toBe("success");
   });
 
   it("drops a remembered id whose SKU an admin already turned back on, or that no longer exists, without touching anything", async () => {

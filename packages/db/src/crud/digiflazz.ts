@@ -1408,7 +1408,7 @@ async function writeShadowDetectionForImport(
  * Create one Digiflazz-backed denomination with the defaults every Digiflazz
  * import path shares — the wizard (importDigiflazzBrand, `isActive: false`)
  * and the hourly auto-add of new SKUs on an already-imported brand
- * (resyncDigiflazzCatalog, `isActive: true`). One helper so the two paths can
+ * (resyncDigiflazzCatalog, active while the game is on sale). One helper so the two paths can
  * never drift apart on delivery type or naming. Input fields default to the
  * generic one-field config; the auto-add passes `inputConfig` copied from the
  * product's existing SKUs (pickDigiflazzInputTemplate) because its SKUs go
@@ -1531,7 +1531,7 @@ export function pickDigiflazzInputTemplate(
  * one Denomination per row, all inside one transaction. Imported inactive —
  * "review before it goes live" per the design: the import itself is
  * automatic, publishing is a separate explicit step. (SKUs Digiflazz adds
- * later to a brand imported here are added active by resyncDigiflazzCatalog.)
+ * later to a brand imported here are added by resyncDigiflazzCatalog, active while the game is on sale.)
  *
  * Idempotent by (product, supplierSku) (I4 fix): re-running the wizard for a
  * brand/SKU that's already imported UPDATES the existing denomination
@@ -1691,7 +1691,7 @@ export const DIGIFLAZZ_AUTO_ADD_CAP_PER_RUN = 100;
 
 /**
  * Add the SKUs Digiflazz newly lists under a brand that already has a Product
- * (groupDigiflazzPriceListByBrand's existingProductId), live straight away and
+ * (groupDigiflazzPriceListByBrand's existingProductId), active while the game is on sale (else inactive) and
  * priced by the markup rule. Brand-new brands are left to the import wizard.
  * Skips a SKU that any denomination already carries (supplierSku has no unique
  * constraint, so this is checked here), a SKU Digiflazz reports unavailable,
@@ -1755,7 +1755,7 @@ async function addNewDigiflazzSkusToImportedBrands(
     } catch (err) {
       logger.warn(
         { err },
-        `Shadow-mode detection wiring failed while the hourly sync added new SKUs to the Digiflazz brand "${group.brand}" — the new SKUs are committed; their detection columns were left unset for this run.`,
+        `Shadow-mode detection wiring failed while the Digiflazz catalog sync added new SKUs to the Digiflazz brand "${group.brand}" — the new SKUs are committed; their detection columns were left unset for this run.`,
       );
     }
   }
@@ -1785,7 +1785,7 @@ async function createMissingSkusForBrand(
       select: { supplierSku: true },
     });
     const racedSkus = new Set(raced.map((d) => d.supplierSku));
-    // New SKUs go live at once, so they ask buyers for the same inputs as the
+    // New SKUs can go live without a review, so they ask buyers for the same inputs as the
     // product's existing Digiflazz SKUs (read once per brand).
     const siblings = await tx.denomination.findMany({
       where: {
@@ -1796,6 +1796,14 @@ async function createMissingSkusForBrand(
       select: { id: true, additionalFields: true, providerInputMapping: true, nicknameCheckGameCode: true },
     });
     const inputConfig = pickDigiflazzInputTemplate(siblings);
+    // Live only while the game is on sale: the product is active and at least
+    // one of its SKUs is. A game the admin switched off still gets its new
+    // SKUs (the catalog stays complete), but inactive, to go on with the rest.
+    const [product, activeSibling] = await Promise.all([
+      tx.product.findUnique({ where: { id: productId }, select: { isActive: true } }),
+      tx.denomination.findFirst({ where: { productId, isActive: true }, select: { id: true } }),
+    ]);
+    const onSale = product?.isActive === true && activeSibling !== null;
     const rows: { id: number; name: string }[] = [];
     for (const item of candidates) {
       if (racedSkus.has(item.buyerSkuCode)) continue;
@@ -1807,7 +1815,7 @@ async function createMissingSkusForBrand(
           price: quantizeMoney(applyDigiflazzMarkup(item.price, markupSettings), 4),
           costPrice: quantizeMoney(item.price, 4),
           priceOverridden: false,
-          isActive: true,
+          isActive: onSale,
           inputConfig,
         }),
       );
@@ -1832,7 +1840,7 @@ async function createMissingSkusForBrand(
  * already re-enabled, or that no longer exists, is simply forgotten.
  *
  * It also adds new SKUs Digiflazz lists under a brand that already has a
- * Product (addNewDigiflazzSkusToImportedBrands — active, markup-priced, capped
+ * Product (addNewDigiflazzSkusToImportedBrands — active while the game is on sale, markup-priced, capped
  * per run); a brand-new brand still only enters through the import wizard.
  * Neither adding nor reactivating happens when the stored markup is
  * unreadable or the circuit breaker below aborts the run. Never renames an
@@ -1851,12 +1859,29 @@ async function createMissingSkusForBrand(
  * row, which getPriceList itself already rejects) silently repricing a large
  * swath of the catalog.
  */
-export async function resyncDigiflazzCatalog(
+export async function resyncDigiflazzCatalog(db: PrismaClient): Promise<DigiflazzResyncCounts> {
+  return (await resyncDigiflazzCatalogWithOutcome(db)).counts;
+}
+
+/** What one catalog sync changed. */
+export interface DigiflazzResyncCounts {
+  updated: number;
+  deactivated: number;
+  added: number;
+  reactivated: number;
+}
+
+/** Why the circuit breaker stopped a run before it wrote anything. */
+export type DigiflazzResyncAbortReason = "sharp_change" | "no_usable_rows";
+
+/** resyncDigiflazzCatalog plus whether the circuit breaker aborted the run, so
+ * a manual run can tell the admin "aborted" instead of "nothing changed". */
+async function resyncDigiflazzCatalogWithOutcome(
   db: PrismaClient,
-): Promise<{ updated: number; deactivated: number; added: number; reactivated: number }> {
+): Promise<{ counts: DigiflazzResyncCounts; abortReason: DigiflazzResyncAbortReason | null }> {
   const zero = { updated: 0, deactivated: 0, added: 0, reactivated: 0 };
   const creds = await getDigiflazzCreds(db);
-  if (!creds) return zero;
+  if (!creds) return { counts: zero, abortReason: null };
 
   const [rawPriceList, mapped, markupSettings] = await Promise.all([
     getPriceList(creds),
@@ -1950,19 +1975,19 @@ export async function resyncDigiflazzCatalog(
     if (abortReason.kind === "sharp_change") {
       logger.error(
         { sharpChanges: abortReason.sharpChanges, consideredRows: abortReason.consideredRows },
-        "Aborted the hourly Digiflazz catalog resync because too many denominations' prices would have moved by more than 50% in this run — that usually means the supplier's price-list response is malformed (a field rename, a partial outage, the wrong endpoint) rather than a genuine market-wide price change, so nothing was written.",
+        "Aborted the Digiflazz catalog sync because too many denominations' prices would have moved by more than 50% in this run — that usually means the supplier's price-list response is malformed (a field rename, a partial outage, the wrong endpoint) rather than a genuine market-wide price change, so nothing was written.",
       );
       await logAdminAction(db, {
         adminId: null,
         action: "digiflazz_catalog_resync_aborted",
         targetType: "product",
         targetId: null,
-        details: `Aborted the hourly Digiflazz catalog sync: ${abortReason.sharpChanges} of ${abortReason.consideredRows} prices would have moved by more than 50%, which usually means the supplier's response is malformed rather than a real price change. Nothing was updated — please check the Digiflazz connection before the next run.`,
+        details: `Aborted the Digiflazz catalog sync: ${abortReason.sharpChanges} of ${abortReason.consideredRows} prices would have moved by more than 50%, which usually means the supplier's response is malformed rather than a real price change. Nothing was updated — please check the Digiflazz connection before the next run.`,
       });
     } else {
       logger.error(
         { mappedCount: mapped.length },
-        "Aborted the hourly Digiflazz catalog resync because the supplier's price-list fetch returned no usable rows at all, even though this shop has Digiflazz-routed denominations to check against it — that usually means a field rename, a partial outage, or the wrong endpoint, not the supplier legitimately having nothing to report, so nothing was written.",
+        "Aborted the Digiflazz catalog sync because the supplier's price-list fetch returned no usable rows at all, even though this shop has Digiflazz-routed denominations to check against it — that usually means a field rename, a partial outage, or the wrong endpoint, not the supplier legitimately having nothing to report, so nothing was written.",
       );
       await logAdminAction(db, {
         adminId: null,
@@ -1970,7 +1995,7 @@ export async function resyncDigiflazzCatalog(
         targetType: "product",
         targetId: null,
         details:
-          "Aborted the hourly Digiflazz catalog sync: the supplier returned no usable price data at all, even though this shop has Digiflazz-routed denominations to check. This usually means a field rename, a partial outage, or the wrong endpoint. Nothing was updated — please check the Digiflazz connection before the next run.",
+          "Aborted the Digiflazz catalog sync: the supplier returned no usable price data at all, even though this shop has Digiflazz-routed denominations to check. This usually means a field rename, a partial outage, or the wrong endpoint. Nothing was updated — please check the Digiflazz connection before the next run.",
       });
     }
     await enqueueAdminDigiflazzResyncAborted(
@@ -1997,7 +2022,7 @@ export async function resyncDigiflazzCatalog(
           : "supplier returned no usable rows",
     });
     emitDigiflazzCatalogSyncChanged();
-    return zero;
+    return { counts: zero, abortReason: abortReason.kind };
   }
 
   const result = { ...zero };
@@ -2028,8 +2053,11 @@ export async function resyncDigiflazzCatalog(
       supplierRawName: item.productName,
     };
     if (!denom.priceOverridden) {
-      data.price = newSellPriceFor(item, denom.price);
-      result.updated++;
+      const newPrice = newSellPriceFor(item, denom.price);
+      data.price = newPrice;
+      // Counted only when the sell price really moves, so an unchanged run
+      // reports (and audits) nothing.
+      if (!moneyEq(newPrice, denom.price)) result.updated++;
     }
     if (denom.isActive && !item.buyerProductStatus) {
       data.isActive = false;
@@ -2088,7 +2116,7 @@ export async function resyncDigiflazzCatalog(
   if (!markupReadable) {
     logger.error(
       { setting: DIGIFLAZZ_MARKUP_VALUE_KEY, markupType: markupSettings.type },
-      `The hourly Digiflazz catalog resync could not read the stored markup setting "${DIGIFLAZZ_MARKUP_VALUE_KEY}" as a number of zero or more, so it kept every current sell price instead of repricing (only lifting a price the new supplier cost had overtaken up to that cost); costs and availability were still updated. Prices will keep drifting from the intended margin until an admin fixes the setting.`,
+      `The Digiflazz catalog sync could not read the stored markup setting "${DIGIFLAZZ_MARKUP_VALUE_KEY}" as a number of zero or more, so it kept every current sell price instead of repricing (only lifting a price the new supplier cost had overtaken up to that cost); costs and availability were still updated. Prices will keep drifting from the intended margin until an admin fixes the setting.`,
     );
     await logAdminAction(db, {
       adminId: null,
@@ -2096,7 +2124,7 @@ export async function resyncDigiflazzCatalog(
       targetType: "product",
       targetId: null,
       details:
-        "The hourly Digiflazz sync could not read the markup value in Settings, so it kept the current sell prices instead of repricing them (a price below the new supplier cost was raised to that cost). Please fix the Digiflazz markup value in Settings; use 0 or leave it blank for no markup.",
+        "The Digiflazz catalog sync could not read the markup value in Settings, so it kept the current sell prices instead of repricing them (a price below the new supplier cost was raised to that cost). Please fix the Digiflazz markup value in Settings; use 0 or leave it blank for no markup.",
     });
   } else if (result.updated > 0 || result.deactivated > 0 || result.added > 0 || result.reactivated > 0) {
     const parts = [
@@ -2140,7 +2168,7 @@ export async function resyncDigiflazzCatalog(
     ...(markupReadable ? {} : { error: "Digiflazz markup setting is unreadable; prices were not repriced" }),
   });
   emitDigiflazzCatalogSyncChanged();
-  return result;
+  return { counts: result, abortReason: null };
 }
 
 // ---- One catalog sync at a time (hourly cron + the admin's manual Sync) ----
@@ -2197,12 +2225,17 @@ export async function runDigiflazzCatalogSync(
   now: Date = new Date(),
 ): Promise<
   | { status: "busy" }
-  | { status: "done"; result: { updated: number; deactivated: number; added: number; reactivated: number } }
+  | { status: "aborted"; abortReason: DigiflazzResyncAbortReason }
+  | { status: "done"; result: DigiflazzResyncCounts }
 > {
   const token = await claimDigiflazzCatalogSyncLease(db, now);
   if (!token) return { status: "busy" };
   try {
-    return { status: "done", result: await resyncDigiflazzCatalog(db) };
+    const { counts, abortReason } = await resyncDigiflazzCatalogWithOutcome(db);
+    // The circuit breaker wrote nothing (and already alerted the admins); say
+    // so instead of passing it off as a run that found no changes.
+    if (abortReason) return { status: "aborted", abortReason };
+    return { status: "done", result: counts };
   } finally {
     try {
       await releaseDigiflazzCatalogSyncLease(db, token);

@@ -347,8 +347,25 @@ describe("DigiflazzSyncPage — Sync runs the full sync before the preview", () 
     await waitFor(() => screen.getByText(/mobile legends/i));
     expect(postedUrls()).toEqual(["/api/catalog/digiflazz/sync/run", "/api/catalog/digiflazz/sync/preview"]);
     const summary = screen.getByText(/sku baru ditambahkan/i);
-    expect(summary).toHaveTextContent("13 SKU baru ditambahkan (aktif), 1 dinonaktifkan, 5 harga diperbarui");
+    expect(summary).toHaveTextContent("13 SKU baru ditambahkan, 1 dinonaktifkan, 5 harga diperbarui");
     expect(summary).not.toHaveTextContent(/diaktifkan lagi/i);
+  });
+
+  it("says the sync was aborted (not 'no change') when the server reports an aborted run", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.mocked(apiPost)
+      .mockResolvedValueOnce({ ...RUN_OK, aborted: true, abortReason: "sharp_change" })
+      .mockResolvedValueOnce(PREVIEW_RESPONSE);
+    render(<DigiflazzSyncPage />, { wrapper: Wrapper });
+    await user.click(screen.getByRole("button", { name: /sync dari digiflazz/i }));
+
+    await waitFor(() => screen.getByText(/mobile legends/i));
+    expect(
+      screen.getByText(
+        "Sync dibatalkan karena respons Digiflazz tidak wajar; tidak ada yang diubah. Cek koneksi Digiflazz.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/tidak ada perubahan/i)).not.toBeInTheDocument();
   });
 
   it("says there was no change when every count is zero", async () => {

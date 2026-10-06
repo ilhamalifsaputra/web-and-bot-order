@@ -21,7 +21,7 @@ import {
   DETECTION_REVIEW_RESOLVED,
   DETECTION_REVIEW_IGNORED,
 } from "@app/db";
-import { getPriceList } from "@app/core/suppliers/digiflazz";
+import { getPriceList, DigiflazzSupplierError } from "@app/core/suppliers/digiflazz";
 import { Decimal } from "@app/core/money";
 import { ValidationError } from "@app/core/errors";
 import { errorBody } from "@app/core/errorBody";
@@ -114,7 +114,7 @@ export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Prom
   });
 
   // The full catalog sync on demand — the same run the hourly cron makes
-  // (prices, new SKUs on already-imported brands added active, sync-deactivated
+  // (prices, new SKUs on already-imported brands added (active while the game is on sale), sync-deactivated
   // SKUs reactivated, unavailable SKUs deactivated). It goes through the same
   // lease as the cron, so the two never overlap: a held lease answers 409.
   // csrfProtect for the same reason as /sync/preview (a real outbound call to
@@ -128,17 +128,48 @@ export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Prom
     try {
       outcome = await runDigiflazzCatalogSync(prisma);
     } catch (err) {
+      if (err instanceof DigiflazzSupplierError) {
+        logger.error(
+          { err },
+          "An admin's manual Digiflazz catalog sync failed because Digiflazz could not be reached or refused the price-list request; nothing was changed, and the hourly sync or the next manual press will retry it.",
+        );
+        // The message is credential-free by construction (DigiflazzSupplierError).
+        return reply.code(502).send({
+          error: `The Digiflazz sync could not finish because Digiflazz could not be reached or refused the request: ${err.message}. Please try again in a moment.`,
+        });
+      }
       logger.error(
         { err },
-        "An admin's manual Digiflazz catalog sync failed part-way (usually the price-list fetch from Digiflazz); whatever it had already written stands, and the hourly sync or the next manual press will retry it.",
+        "An admin's manual Digiflazz catalog sync failed part-way with an internal error (not a Digiflazz problem); whatever it had already written stands, and the hourly sync or the next manual press will retry it.",
       );
-      return reply.code(502).send({
-        error: "The Digiflazz sync could not finish, usually because Digiflazz could not be reached. Please try again in a moment.",
+      return reply.code(500).send({
+        error: "The Digiflazz sync failed because of an internal error. Please try again; if it keeps failing, check the server logs.",
       });
     }
     if (outcome.status === "busy") {
       return reply.code(409).send({
         error: "A Digiflazz sync is already running (the hourly sync or another admin's). Please wait a few minutes and try again.",
+      });
+    }
+    if (outcome.status === "aborted") {
+      // The circuit breaker already audited the abort (system actor) and alerted
+      // every admin; record that this admin's press ended that way.
+      await logAdminAction(prisma, {
+        adminId: req.admin!.userId,
+        action: "digiflazz_catalog_sync_manual",
+        targetType: "product",
+        targetId: null,
+        details:
+          "Started a manual Digiflazz sync; it was aborted because the Digiflazz price list looked malformed, so nothing was changed.",
+      });
+      return reply.send({
+        ok: true,
+        aborted: true,
+        abortReason: outcome.abortReason,
+        updated: 0,
+        deactivated: 0,
+        added: 0,
+        reactivated: 0,
       });
     }
     const { updated, deactivated, added, reactivated } = outcome.result;

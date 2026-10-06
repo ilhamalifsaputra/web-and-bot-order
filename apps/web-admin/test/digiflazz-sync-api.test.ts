@@ -14,6 +14,7 @@ import { resetDb } from "../../../tests/helpers/sampleData";
 import { makeSession, sessionJtiKey, newJti } from "../src/auth";
 import { buildApp } from "../src/server";
 import { Decimal } from "@app/core/money";
+import { DigiflazzSupplierError } from "@app/core/suppliers/digiflazz";
 
 const COOKIE = config.WEB_COOKIE_NAME;
 const ADMIN_TG = 999;
@@ -411,11 +412,17 @@ describe("POST /api/catalog/digiflazz/sync/run", () => {
     const { productId } = await importDigiflazzBrand(prisma, {
       brand: "Mobile Legends",
       categoryId: category.id,
-      rows: [{ buyerSkuCode: "ml100", productName: "Mobile Legends 100 Diamond", price: "16500", costPrice: "15000" }],
+      rows: [
+        { buyerSkuCode: "ml100", productName: "Mobile Legends 100 Diamond", price: "16500", costPrice: "15000" },
+        { buyerSkuCode: "ml050", productName: "Mobile Legends 50 Diamond", price: "8800", costPrice: "8000" },
+      ],
     });
+    // The game is on sale, so the new SKU goes live.
+    await prisma.product.update({ where: { id: productId }, data: { isActive: true } });
     await prisma.denomination.updateMany({ where: { productId }, data: { isActive: true } });
     digiflazzMock.getPriceList.mockResolvedValue([
-      item("ml100", "Mobile Legends 100 Diamond", 15000, false),
+      item("ml100", "Mobile Legends 100 Diamond", 16000, false), // price moves, SKU goes down
+      item("ml050", "Mobile Legends 50 Diamond", 8000), // unchanged, stays live
       item("ml250", "Mobile Legends 250 Diamond", 38000),
     ]);
 
@@ -442,14 +449,46 @@ describe("POST /api/catalog/digiflazz/sync/run", () => {
     expect(digiflazzMock.getPriceList).not.toHaveBeenCalled();
   });
 
-  it("answers 502 when Digiflazz cannot be reached, and frees the sync for the next attempt", async () => {
+  it("answers 502 with the supplier's message when Digiflazz refuses or cannot be reached, and frees the sync for the next attempt", async () => {
     await configureCreds();
-    digiflazzMock.getPriceList.mockRejectedValueOnce(new Error("Digiflazz is down"));
+    digiflazzMock.getPriceList.mockRejectedValueOnce(
+      new DigiflazzSupplierError("Digiflazz refused the price-list request: Limitasi request (rc 83)"),
+    );
     const res = await postJson(RUN, {});
     expect(res.statusCode).toBe(502);
-    expect(res.json().error).toBeTruthy();
+    expect(res.json().error).toContain("Limitasi request (rc 83)");
 
     digiflazzMock.getPriceList.mockResolvedValue([]);
     expect((await postJson(RUN, {})).statusCode).toBe(200);
+  });
+
+  it("answers a generic 500, not 'Digiflazz could not be reached', for an error that is not the supplier's", async () => {
+    await configureCreds();
+    digiflazzMock.getPriceList.mockRejectedValueOnce(new Error("database connection lost"));
+    const res = await postJson(RUN, {});
+    expect(res.statusCode).toBe(500);
+    expect(res.json().error).not.toMatch(/could not be reached/i);
+    expect(res.json().error).not.toContain("database connection lost");
+  });
+
+  it("reports an aborted run (circuit breaker) instead of 'no changes', and audits it as aborted", async () => {
+    await configureCreds();
+    const category = await createCategory(prisma, "Top Up Game");
+    await importDigiflazzBrand(prisma, {
+      brand: "Mobile Legends",
+      categoryId: category.id,
+      rows: [{ buyerSkuCode: "ml100", productName: "Mobile Legends 100 Diamond", price: "15000", costPrice: "15000" }],
+    });
+    digiflazzMock.getPriceList.mockResolvedValue([]); // no usable rows while a SKU is mapped
+
+    const res = await postJson(RUN, {});
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({
+      ok: true, aborted: true, abortReason: "no_usable_rows", updated: 0, deactivated: 0, added: 0, reactivated: 0,
+    });
+    const audit = await prisma.auditLog.findMany({ where: { action: "digiflazz_catalog_sync_manual" } });
+    expect(audit).toHaveLength(1);
+    expect(audit[0]!.details).toMatch(/aborted/i);
+    expect(audit[0]!.details).toMatch(/nothing was changed/i);
   });
 });

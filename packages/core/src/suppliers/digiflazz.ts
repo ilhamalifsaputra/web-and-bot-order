@@ -54,15 +54,35 @@ function normalizeStatus(raw: string | null): DigiflazzStatus {
  * a malformed body. The existing `!res.ok` branch keeps its own static-message
  * throw. Both `getPriceList` and `createTransaction` share this one guarantee.
  */
+/**
+ * Digiflazz could not be reached, answered with an HTTP error or an unreadable
+ * body, or refused the request (its own `rc`/`message`). The message is built
+ * only from static text plus what the supplier itself said — never the
+ * request, which carries the API key — so it is safe to log and to show an
+ * admin. Callers use the class to tell a supplier problem from their own.
+ */
+export class DigiflazzSupplierError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DigiflazzSupplierError";
+  }
+}
+
 async function fetchDigiflazzJson(
   url: string,
   init: Omit<RequestInit, "signal">,
   errorPrefix: string,
   timeoutMs: number,
 ): Promise<Record<string, unknown>> {
-  const res = await fetchWithTimeoutSafe(url, { ...init, timeoutMs }, errorPrefix); // never log init.body — it carries the API key
+  let res: Response;
+  try {
+    res = await fetchWithTimeoutSafe(url, { ...init, timeoutMs }, errorPrefix); // never log init.body — it carries the API key
+  } catch (err) {
+    // fetchWithTimeoutSafe's message is already static and credential-free.
+    throw new DigiflazzSupplierError(err instanceof Error ? err.message : `${errorPrefix} network error`);
+  }
   if (!res.ok) {
-    throw new Error(`${errorPrefix} HTTP ${res.status}`); // never log init.body — it carries the API key
+    throw new DigiflazzSupplierError(`${errorPrefix} HTTP ${res.status}`); // never log init.body — it carries the API key
   }
   try {
     return (await res.json()) as Record<string, unknown>;
@@ -73,9 +93,9 @@ async function fetchDigiflazzJson(
     // from a genuinely malformed body so the caller isn't told the supplier
     // sent garbage when it actually just hung.
     if (err instanceof Error && err.name === "TimeoutError") {
-      throw new Error(`${errorPrefix} response body read timed out`); // never log init.body — it carries the API key
+      throw new DigiflazzSupplierError(`${errorPrefix} response body read timed out`); // never log init.body — it carries the API key
     }
-    throw new Error(`${errorPrefix} returned an unparseable response`); // never log init.body — it carries the API key
+    throw new DigiflazzSupplierError(`${errorPrefix} returned an unparseable response`); // never log init.body — it carries the API key
   }
 }
 
@@ -116,6 +136,16 @@ export async function getPriceList(creds: DigiflazzCreds): Promise<DigiflazzPric
     "Digiflazz price list",
     HTTP_TIMEOUT_MS.gatewayRead, // catalog sync poll — the next tick retries if this is slow
   )) as { data?: unknown };
+  // Digiflazz answers a refused request (rate limit, bad signature, IP not
+  // whitelisted, ...) with an object `data` carrying `rc` and `message`
+  // instead of the array. Treating that as "no rows" would look like an empty
+  // catalog; report it as the failure it is, in the supplier's own words.
+  if (body.data != null && typeof body.data === "object" && !Array.isArray(body.data)) {
+    const d = body.data as Record<string, unknown>;
+    const message = str(d.message) ?? "no message";
+    const rc = str(d.rc);
+    throw new DigiflazzSupplierError(`Digiflazz refused the price-list request: ${message}${rc ? ` (rc ${rc})` : ""}`);
+  }
   const rows = Array.isArray(body.data) ? body.data : [];
   const items: DigiflazzPriceListItem[] = [];
   let skipped = 0;

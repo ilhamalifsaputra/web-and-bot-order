@@ -1659,8 +1659,10 @@ export async function runDigiflazzCatalogSyncTick(): Promise<void> {
       );
       return;
     }
-    const r = outcome.result;
-    if (r.updated || r.deactivated || r.added || r.reactivated) {
+    // An aborted run has already logged, audited and alerted the admins inside
+    // the resync; the tick carries on to the detection pass as it always has.
+    const r = outcome.status === "done" ? outcome.result : null;
+    if (r && (r.updated || r.deactivated || r.added || r.reactivated)) {
       logger.info(
         `The hourly Digiflazz catalog re-sync updated ${r.updated} price(s), added ${r.added} new SKU(s), reactivated ${r.reactivated} SKU(s) it had switched off earlier, and deactivated ${r.deactivated} SKU(s) Digiflazz reports unavailable.`,
       );

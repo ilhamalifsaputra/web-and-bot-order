@@ -475,8 +475,8 @@ export function render(
     const partsEn: string[] = [];
     const partsId: string[] = [];
     if (added > 0) {
-      partsEn.push(`${added} new SKU(s) added (live)`);
-      partsId.push(`${added} SKU baru ditambahkan (aktif)`);
+      partsEn.push(`${added} new SKU(s) added`);
+      partsId.push(`${added} SKU baru ditambahkan`);
     }
     if (reactivated > 0) {
       partsEn.push(`${reactivated} SKU(s) reactivated`);
@@ -486,8 +486,10 @@ export function render(
       partsEn.push(`${deactivated} SKU(s) deactivated because Digiflazz no longer offers them`);
       partsId.push(`${deactivated} SKU dinonaktifkan karena tidak tersedia di Digiflazz`);
     }
-    return `<b>Digiflazz sync</b>\n${partsEn.join(", ")}. New SKUs are already live — review them in the Catalog.\n\n` +
-      `<b>Sinkronisasi Digiflazz</b>\n${partsId.join(", ")}. SKU baru sudah aktif — tinjau di Katalog.`;
+    const reviewEn = added > 0 ? " Review new SKUs in the Catalog." : "";
+    const reviewId = added > 0 ? " Tinjau SKU baru di Katalog." : "";
+    return `<b>Digiflazz sync</b>\n${partsEn.join(", ")}.${reviewEn}\n\n` +
+      `<b>Sinkronisasi Digiflazz</b>\n${partsId.join(", ")}.${reviewId}`;
   }
   if (event === NotificationEvent.ADMIN_DIGIFLAZZ_RESYNC_ABORTED) {
     // Admin DM: resyncDigiflazzCatalog's own blast-radius circuit breaker

@@ -151,8 +151,9 @@ non-null `supplierSku`:
   off or a fresh wizard import. Never affects `Product`/Category-level active
   state.
 - Never renames. **Updated 2026-10-06:** it now also creates the new SKUs
-  Digiflazz lists under a brand that already has a Product — active and
-  priced by the markup, at most 100 per run, never when the markup is
+  Digiflazz lists under a brand that already has a Product — active when the
+  game is on sale (active product with at least one active SKU), otherwise
+  inactive, copying the siblings' input configuration, and priced by the markup, at most 100 per run, never when the markup is
   unreadable or the circuit breaker aborts. Brand-new brands still enter only
   through the wizard, with the admin reviewing first.
 - The same run happens hourly (cron) and on demand when an admin presses

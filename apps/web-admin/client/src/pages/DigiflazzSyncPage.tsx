@@ -47,17 +47,25 @@ interface SyncRunResponse {
   deactivated: number;
   added: number;
   reactivated: number;
+  /** True when the circuit breaker stopped the run before it wrote anything. */
+  aborted?: boolean;
+  abortReason?: "sharp_change" | "no_usable_rows";
 }
+
+/** Shown when the server reports the run as aborted by the circuit breaker. */
+const SYNC_ABORTED_MESSAGE =
+  "Sync dibatalkan karena respons Digiflazz tidak wajar; tidak ada yang diubah. Cek koneksi Digiflazz.";
 
 /** The server's exact /sync/run (and /sync/preview) answer when Digiflazz has
  * no credentials — the preview would only repeat it, so it is skipped. */
 const NO_CREDENTIALS_ERROR = "Digiflazz credentials are not configured. Set them in Settings first.";
 
-/** "13 SKU baru ditambahkan (aktif), 1 dinonaktifkan, 5 harga diperbarui" —
- * zero parts left out; "Tidak ada perubahan" when nothing changed. */
+/** "13 SKU baru ditambahkan, 1 dinonaktifkan, 5 harga diperbarui" — zero
+ * parts left out; "Tidak ada perubahan" when nothing changed. New SKUs are
+ * live only when their game is on sale, so no "(aktif)" claim here. */
 function describeSyncRun(r: SyncRunResponse): string {
   const parts = [
-    r.added > 0 ? `${r.added} SKU baru ditambahkan (aktif)` : null,
+    r.added > 0 ? `${r.added} SKU baru ditambahkan` : null,
     r.reactivated > 0 ? `${r.reactivated} diaktifkan lagi` : null,
     r.deactivated > 0 ? `${r.deactivated} dinonaktifkan` : null,
     r.updated > 0 ? `${r.updated} harga diperbarui` : null,
@@ -315,8 +323,12 @@ export function DigiflazzSyncPage() {
     try {
       try {
         const run = await apiPost<SyncRunResponse>("/api/catalog/digiflazz/sync/run", {});
-        setRunSummary(describeSyncRun(run));
-        void queryClient.invalidateQueries({ queryKey: ["catalog"] });
+        if (run.aborted) {
+          setRunError(SYNC_ABORTED_MESSAGE);
+        } else {
+          setRunSummary(describeSyncRun(run));
+          void queryClient.invalidateQueries({ queryKey: ["catalog"] });
+        }
       } catch (err) {
         const message = describeError(err, "Sync dari Digiflazz gagal.");
         setRunError(message);
@@ -580,7 +592,7 @@ export function DigiflazzSyncPage() {
               <CardContent>
                 <p className="text-sm text-ink-soft">
                   Game ini sudah diimpor dan diperbarui otomatis setiap jam dan saat Anda menekan Sync: harga
-                  ikut diperbarui, SKU baru langsung ditambahkan (aktif), dan SKU yang tidak tersedia dinonaktifkan.
+                  ikut diperbarui, SKU baru langsung ditambahkan (aktif bila game sedang dijual), dan SKU yang tidak tersedia dinonaktifkan.
                 </p>
                 <ul className="mt-2 text-sm">
                   {existingGroups.map((g) => (

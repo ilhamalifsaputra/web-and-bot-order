@@ -45,6 +45,17 @@ describe("notifier templates.render", () => {
     expect(reactivatedDeactivated).not.toContain("baru ditambahkan");
   });
 
+  it("asks to review new SKUs only when some were added, in both languages", () => {
+    const added = render("ADMIN_DIGIFLAZZ_SKUS_CHANGED", { added_count: 2, reactivated_count: 0, deactivated_count: 0 });
+    expect(added).toContain("Review new SKUs in the Catalog.");
+    expect(added).toContain("Tinjau SKU baru di Katalog.");
+    expect(added).not.toMatch(/already live|sudah aktif|\(live\)|\(aktif\)/);
+    const noneAdded = render("ADMIN_DIGIFLAZZ_SKUS_CHANGED", { added_count: 0, reactivated_count: 1, deactivated_count: 2 });
+    expect(noneAdded).not.toContain("Review new SKUs");
+    expect(noneAdded).not.toContain("Tinjau SKU baru");
+    expect(noneAdded).not.toMatch(/already live|sudah aktif/);
+  });
+
   it("renders nothing for an all-zero SKU-change payload", () => {
     expect(render("ADMIN_DIGIFLAZZ_SKUS_CHANGED", { added_count: 0, reactivated_count: 0, deactivated_count: 0 })).toBe("");
   });

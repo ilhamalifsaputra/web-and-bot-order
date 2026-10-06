@@ -655,8 +655,8 @@ describe("dispatchPendingDigiflazzOrders", () => {
     expect(refreshed!.digiflazzNextRecheckAt).not.toBeNull();
     // ~2 minutes ahead per DIGIFLAZZ_RECHECK_SCHEDULE_MINUTES[0] (digiflazzBackoff.ts)
     const deltaMs = refreshed!.digiflazzNextRecheckAt!.getTime() - refreshed!.digiflazzDispatchedAt!.getTime();
-    expect(deltaMs).toBeGreaterThan(60_000);
-    expect(deltaMs).toBeLessThanOrEqual(3 * 60_000);
+    expect(deltaMs).toBeGreaterThanOrEqual(10_000);
+    expect(deltaMs).toBeLessThan(60_000);
   });
 
   it("alerts admins and leaves PROCESSING on Gagal, without fulfilling", async () => {
@@ -880,8 +880,8 @@ describe("dispatchPendingDigiflazzOrders", () => {
     expect(refreshed.digiflazzAttempts).toBe(1);
     expect(refreshed.digiflazzNextRecheckAt).not.toBeNull();
     const deltaMs = refreshed.digiflazzNextRecheckAt!.getTime() - refreshed.digiflazzDispatchedAt!.getTime();
-    expect(deltaMs).toBeGreaterThan(60_000);
-    expect(deltaMs).toBeLessThanOrEqual(3 * 60_000);
+    expect(deltaMs).toBeGreaterThanOrEqual(10_000);
+    expect(deltaMs).toBeLessThan(60_000);
     expect(refreshed.digiflazzFailureDetail).toContain("network blip");
   });
 

@@ -15,6 +15,8 @@ import {
   resolveDetectionIssue,
   dismissDetectionIssue,
   getLatestDetectionRunStatus,
+  runDigiflazzCatalogSync,
+  bumpCatalogRevision,
   DETECTION_REVIEW_OPEN,
   DETECTION_REVIEW_RESOLVED,
   DETECTION_REVIEW_IGNORED,
@@ -50,6 +52,10 @@ function parsePrice(value: unknown, exact: boolean): Decimal | null {
 // session while keeping that sequence bounded.
 const MAX_APPLY_ROWS = 500;
 
+/** Shared by /sync/preview and /sync/run; the wizard page compares against
+ * this exact text to skip the preview when a run already reported it. */
+const NO_CREDENTIALS_ERROR = "Digiflazz credentials are not configured. Set them in Settings first.";
+
 export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Promise<void> {
   // Step 1: fetch + group (dry run, no write) — same "preview then apply"
   // shape as /api/catalog/products/import, just sourced from Digiflazz's
@@ -60,7 +66,7 @@ export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Prom
   app.post("/api/catalog/digiflazz/sync/preview", { preHandler: csrfProtect }, async (_req, reply) => {
     const creds = await getDigiflazzCreds(prisma);
     if (!creds) {
-      return reply.code(400).send({ error: "Digiflazz credentials are not configured. Set them in Settings first." });
+      return reply.code(400).send({ error: NO_CREDENTIALS_ERROR });
     }
     let items;
     try {
@@ -105,6 +111,53 @@ export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Prom
       })),
     }));
     return reply.send({ groups: withPrices });
+  });
+
+  // The full catalog sync on demand — the same run the hourly cron makes
+  // (prices, new SKUs on already-imported brands added active, sync-deactivated
+  // SKUs reactivated, unavailable SKUs deactivated). It goes through the same
+  // lease as the cron, so the two never overlap: a held lease answers 409.
+  // csrfProtect for the same reason as /sync/preview (a real outbound call to
+  // Digiflazz, plus catalog writes); `/api/catalog` is super-only.
+  app.post("/api/catalog/digiflazz/sync/run", { preHandler: csrfProtect }, async (req, reply) => {
+    // resyncDigiflazzCatalog silently does nothing without credentials; say so.
+    if (!(await getDigiflazzCreds(prisma))) {
+      return reply.code(400).send({ error: NO_CREDENTIALS_ERROR });
+    }
+    let outcome;
+    try {
+      outcome = await runDigiflazzCatalogSync(prisma);
+    } catch (err) {
+      logger.error(
+        { err },
+        "An admin's manual Digiflazz catalog sync failed part-way (usually the price-list fetch from Digiflazz); whatever it had already written stands, and the hourly sync or the next manual press will retry it.",
+      );
+      return reply.code(502).send({
+        error: "The Digiflazz sync could not finish, usually because Digiflazz could not be reached. Please try again in a moment.",
+      });
+    }
+    if (outcome.status === "busy") {
+      return reply.code(409).send({
+        error: "A Digiflazz sync is already running (the hourly sync or another admin's). Please wait a few minutes and try again.",
+      });
+    }
+    const { updated, deactivated, added, reactivated } = outcome.result;
+    try {
+      await bumpCatalogRevision(prisma);
+    } catch (err) {
+      logger.warn(
+        { err },
+        "Could not bump the catalog revision after a manual Digiflazz sync; the sync's changes stand, and the detection catalog index will pick them up on its next rebuild.",
+      );
+    }
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "digiflazz_catalog_sync_manual",
+      targetType: "product",
+      targetId: null,
+      details: `Started a manual Digiflazz sync; it updated ${updated} price(s), added ${added} new SKU(s), reactivated ${reactivated} and deactivated ${deactivated}.`,
+    });
+    return reply.send({ ok: true, updated, deactivated, added, reactivated });
   });
 
   // Step 2: commit selected brands/rows in one transaction per brand.

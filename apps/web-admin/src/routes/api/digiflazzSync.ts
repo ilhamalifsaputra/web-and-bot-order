@@ -3,6 +3,7 @@ import {
   prisma,
   getDigiflazzCreds,
   groupDigiflazzPriceListByBrand,
+  isDigiflazzGameItem,
   getDigiflazzMarkupSettings,
   applyDigiflazzMarkup,
   readDigiflazzMarkup,
@@ -72,7 +73,7 @@ export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Prom
     // "Games", while the original filter only matched the exact string
     // "Game". A mismatch here used to silently produce an empty preview with
     // no diagnostic, indistinguishable from "nothing new to import".
-    const gameItems = items.filter((i) => (i.category ?? "").toLowerCase().startsWith("game"));
+    const gameItems = items.filter(isDigiflazzGameItem);
     if (gameItems.length === 0 && items.length > 0) {
       const categoriesSeen = [...new Set(items.map((i) => i.category ?? "(none)"))];
       logger.warn(

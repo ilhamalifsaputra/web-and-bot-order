@@ -88,6 +88,8 @@ import {
   DIGIFLAZZ_MARKUP_VALUE_KEY,
   getDigiflazzSyncStatus,
   DIGIFLAZZ_RECHECK_CLAIM_LEASE_MS,
+  isDigiflazzGameItem,
+  type DigiflazzImportRow,
 } from "@app/db";
 import { OrderStatus, DeliveryType, NotificationEvent } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
@@ -2042,7 +2044,7 @@ describe("resyncDigiflazzCatalog", () => {
   it("is a no-op when Digiflazz isn't configured", async () => {
     await deleteSetting(prisma, DIGIFLAZZ_API_KEY_KEY);
     const result = await resyncDigiflazzCatalog(prisma);
-    expect(result).toEqual({ updated: 0, deactivated: 0 });
+    expect(result).toEqual({ updated: 0, deactivated: 0, added: 0, reactivated: 0 });
   });
 
   it("uses the cheapest seller's price when the fresh list has a duplicate buyerSkuCode", async () => {
@@ -2062,7 +2064,7 @@ describe("resyncDigiflazzCatalog", () => {
     expect(ml100.costPrice!.toString()).toBe("19500");
   });
 
-  // I1: sync can only ever deactivate, never reactivate — a manually
+  // I1: sync only reactivates what it deactivated itself — a manually
   // deactivated SKU (including a freshly-imported, deliberately-unreviewed
   // one) must stay off even when Digiflazz reports it as available again.
   it("I1: does not reactivate a manually-deactivated denomination even when buyerProductStatus is true", async () => {
@@ -2218,7 +2220,7 @@ describe("resyncDigiflazzCatalog", () => {
       // never runs, nothing changes.
       digiflazzMock.getPriceList.mockResolvedValue([]);
       const result = await resyncDigiflazzCatalog(prisma);
-      expect(result).toEqual({ updated: 0, deactivated: 0 });
+      expect(result).toEqual({ updated: 0, deactivated: 0, added: 0, reactivated: 0 });
 
       const entries = await prisma.auditLog.findMany({ where: { action: "digiflazz_catalog_resync" } });
       expect(entries).toHaveLength(0);
@@ -2274,7 +2276,7 @@ describe("resyncDigiflazzCatalog", () => {
       );
 
       const result = await resyncDigiflazzCatalog(prisma);
-      expect(result).toEqual({ updated: 0, deactivated: 0 });
+      expect(result).toEqual({ updated: 0, deactivated: 0, added: 0, reactivated: 0 });
 
       // No Denomination.price/costPrice/isActive write happened for any row.
       for (const d of denoms) {
@@ -2315,7 +2317,7 @@ describe("resyncDigiflazzCatalog", () => {
       );
 
       const result = await resyncDigiflazzCatalog(prisma);
-      expect(result).toEqual({ updated: 3, deactivated: 0 }); // proceeds exactly as before the breaker existed
+      expect(result).toEqual({ updated: 3, deactivated: 0, added: 0, reactivated: 0 }); // proceeds exactly as before the breaker existed
 
       for (const d of denoms) {
         const after = await prisma.denomination.findUniqueOrThrow({ where: { id: d.id } });
@@ -2337,7 +2339,7 @@ describe("resyncDigiflazzCatalog", () => {
       );
 
       const result = await resyncDigiflazzCatalog(prisma);
-      expect(result).toEqual({ updated: 0, deactivated: 0 }); // every row skipped — priceOverridden protects it
+      expect(result).toEqual({ updated: 0, deactivated: 0, added: 0, reactivated: 0 }); // every row skipped — priceOverridden protects it
 
       for (const d of denoms) {
         const after = await prisma.denomination.findUniqueOrThrow({ where: { id: d.id } });
@@ -2369,7 +2371,7 @@ describe("resyncDigiflazzCatalog", () => {
       digiflazzMock.getPriceList.mockResolvedValue([]);
 
       const result = await resyncDigiflazzCatalog(prisma);
-      expect(result).toEqual({ updated: 0, deactivated: 0 });
+      expect(result).toEqual({ updated: 0, deactivated: 0, added: 0, reactivated: 0 });
 
       // No Denomination.price/costPrice/isActive write happened for any row.
       for (const d of denoms) {
@@ -2418,7 +2420,7 @@ describe("resyncDigiflazzCatalog", () => {
       );
 
       const result = await resyncDigiflazzCatalog(prisma);
-      expect(result).toEqual({ updated: 0, deactivated: 0 }); // nothing matched, nothing to update — not an abort
+      expect(result).toEqual({ updated: 0, deactivated: 0, added: 0, reactivated: 0 }); // nothing matched, nothing to update — not an abort
 
       for (const d of denoms) {
         const after = await prisma.denomination.findUniqueOrThrow({ where: { id: d.id } });
@@ -2485,7 +2487,7 @@ describe("resyncDigiflazzCatalog", () => {
   // assertions the tests above already make ({ updated, deactivated } and
   // nothing else), kept as an explicit guard for a future Task 10 change (e.g.
   // wiring in runDetectionForCatalog) that must stay behind this contract.
-  it("Task 10 sentinel: return shape is exactly { updated, deactivated } after a real run", async () => {
+  it("Task 10 sentinel: return shape is exactly { updated, deactivated, added, reactivated } after a real run", async () => {
     const category = await prisma.category.findFirstOrThrow();
     await importDigiflazzBrand(prisma, {
       brand: "Mobile Legends",
@@ -2498,17 +2500,256 @@ describe("resyncDigiflazzCatalog", () => {
 
     const result = await resyncDigiflazzCatalog(prisma);
 
-    expect(Object.keys(result).sort()).toEqual(["deactivated", "updated"]);
+    expect(Object.keys(result).sort()).toEqual(["added", "deactivated", "reactivated", "updated"]);
     expect(typeof result.updated).toBe("number");
     expect(typeof result.deactivated).toBe("number");
+    expect(typeof result.added).toBe("number");
+    expect(typeof result.reactivated).toBe("number");
   });
 
   // Also mirror the "no-op when Digiflazz isn't configured" return-shape
   // assertion verbatim as a second sentinel on the early-return path.
-  it("Task 10 sentinel: still returns { updated: 0, deactivated: 0 } when Digiflazz isn't configured", async () => {
+  it("Task 10 sentinel: still returns all-zero counts when Digiflazz isn't configured", async () => {
     await deleteSetting(prisma, DIGIFLAZZ_API_KEY_KEY);
     const result = await resyncDigiflazzCatalog(prisma);
-    expect(result).toEqual({ updated: 0, deactivated: 0 });
+    expect(result).toEqual({ updated: 0, deactivated: 0, added: 0, reactivated: 0 });
+  });
+});
+
+describe("isDigiflazzGameItem", () => {
+  it.each([
+    ["Game", true],
+    ["Games", true],
+    ["game voucher", true],
+    ["Pulsa", false],
+    ["", false],
+    [null, false],
+  ])("category %j -> %s", (category, expected) => {
+    expect(isDigiflazzGameItem({ category } as { category: string | null })).toBe(expected);
+  });
+});
+
+// The hourly resync also adds SKUs Digiflazz has started listing under a brand
+// that is already imported (live straight away, priced by the markup rule), and
+// turns back on SKUs that this sync itself switched off once Digiflazz reports
+// them available again. Brand-new brands still only enter through the wizard.
+describe("resyncDigiflazzCatalog — auto-add new SKUs and reactivate sync-deactivated SKUs", () => {
+  const MARKER_KEY = "digiflazz_auto_deactivated_ids";
+
+  async function readMarker(): Promise<number[]> {
+    const row = await prisma.setting.findUnique({ where: { key: MARKER_KEY } });
+    return row ? (JSON.parse(row.value) as number[]) : [];
+  }
+
+  /** Import "Mobile Legends" with ml100 (cost 15000, sell 16500 at a 10% markup)
+   * and publish it — the brand-already-imported starting point. */
+  async function importMobileLegends(extraRows: DigiflazzImportRow[] = []) {
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_TYPE_KEY, "percent");
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_VALUE_KEY, "10");
+    const category = await prisma.category.findFirstOrThrow();
+    const { productId } = await importDigiflazzBrand(prisma, {
+      brand: "Mobile Legends", categoryId: category.id,
+      rows: [
+        { buyerSkuCode: "ml100", productName: "Mobile Legends 100 Diamond", price: "16500", costPrice: "15000" },
+        ...extraRows,
+      ],
+    });
+    await prisma.denomination.updateMany({ where: { productId, supplierSku: "ml100" }, data: { isActive: true } });
+    return productId;
+  }
+
+  function newSkus(count: number, prefix = "mlnew"): DigiflazzPriceListItem[] {
+    return Array.from({ length: count }, (_, i) =>
+      priceListItem({
+        buyerSkuCode: `${prefix}${i}`,
+        productName: `Mobile Legends ${1000 + i} Diamond`,
+        price: new Decimal(10000 + i * 100),
+      }),
+    );
+  }
+
+  it("creates the new SKUs of an already-imported brand ACTIVE, priced by the markup, not overridden", async () => {
+    const productId = await importMobileLegends();
+    digiflazzMock.getPriceList.mockResolvedValue([
+      priceListItem({ buyerSkuCode: "ml100", price: new Decimal(15000) }),
+      ...newSkus(13),
+    ]);
+
+    const result = await resyncDigiflazzCatalog(prisma);
+    expect(result.added).toBe(13);
+    expect(result.reactivated).toBe(0);
+
+    const created = await prisma.denomination.findMany({
+      where: { supplierSku: { startsWith: "mlnew" } },
+      orderBy: { id: "asc" },
+    });
+    expect(created).toHaveLength(13);
+    for (const d of created) {
+      const i = Number(d.supplierSku!.slice("mlnew".length));
+      expect(d.productId).toBe(productId);
+      expect(d.isActive).toBe(true);
+      expect(d.priceOverridden).toBe(false);
+      expect(d.costPrice!.toString()).toBe(new Decimal(10000 + i * 100).toString());
+      expect(d.price.toString()).toBe(new Decimal(10000 + i * 100).times(1.1).toString());
+      expect(d.autoDeliverySource).toBe("digiflazz");
+      expect(d.deliveryType).toBe(DeliveryType.MANUAL_WITH_INFO);
+      expect(d.supplierRawName).toBe(`Mobile Legends ${1000 + i} Diamond`);
+      expect(d.name).toBe(`Mobile Legends ${1000 + i} Diamond`);
+      expect(parseAdditionalFields(d.additionalFields).map((f) => f.key)).toEqual(["user_id"]);
+    }
+
+    const audit = await prisma.auditLog.findMany({ where: { action: "digiflazz_catalog_resync" } });
+    expect(audit).toHaveLength(1);
+    expect(audit[0]!.adminId).toBeNull();
+    expect(audit[0]!.details).toContain("added 13 new SKU(s)");
+  });
+
+  it("is idempotent: a second run with the same price list adds nothing and creates no duplicate", async () => {
+    await importMobileLegends();
+    digiflazzMock.getPriceList.mockResolvedValue([priceListItem({ buyerSkuCode: "ml100" }), ...newSkus(3)]);
+
+    expect((await resyncDigiflazzCatalog(prisma)).added).toBe(3);
+    const second = await resyncDigiflazzCatalog(prisma);
+    expect(second.added).toBe(0);
+    expect(await prisma.denomination.count({ where: { supplierSku: { startsWith: "mlnew" } } })).toBe(3);
+  });
+
+  it("leaves a brand that is not imported alone and skips SKUs that exist elsewhere, are unavailable, or are not games", async () => {
+    await importMobileLegends();
+    const category = await prisma.category.findFirstOrThrow();
+    const other = await createCatalogProduct(prisma, { categoryId: category.id, name: "Hand made" });
+    await createDenomination(prisma, {
+      productId: other.id, name: "Elsewhere", type: "SHARED", durationLabel: "Elsewhere",
+      price: "5000", costPrice: "4000", autoDeliverySource: "digiflazz", supplierSku: "elsewhere",
+      deliveryType: DeliveryType.MANUAL_WITH_INFO, isActive: true,
+    });
+    const productsBefore = await prisma.product.count();
+
+    digiflazzMock.getPriceList.mockResolvedValue([
+      priceListItem({ buyerSkuCode: "ml100" }),
+      priceListItem({ buyerSkuCode: "elsewhere", productName: "Mobile Legends 5 Diamond", price: new Decimal(4000) }),
+      priceListItem({ buyerSkuCode: "ml-off", productName: "Mobile Legends 7 Diamond", buyerProductStatus: false }),
+      priceListItem({ buyerSkuCode: "ml-pulsa", productName: "Mobile Legends Pulsa", category: "Pulsa" }),
+      priceListItem({ buyerSkuCode: "ff100", brand: "Free Fire", productName: "Free Fire 100 Diamond" }),
+    ]);
+
+    const result = await resyncDigiflazzCatalog(prisma);
+    expect(result.added).toBe(0);
+    expect(await prisma.product.count()).toBe(productsBefore);
+    expect(await prisma.denomination.count({ where: { supplierSku: "elsewhere" } })).toBe(1);
+    expect(await prisma.denomination.count({ where: { supplierSku: { in: ["ml-off", "ml-pulsa", "ff100"] } } })).toBe(0);
+  });
+
+  it("adds nothing when the stored markup is unreadable", async () => {
+    await importMobileLegends();
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_VALUE_KEY, "10%");
+    digiflazzMock.getPriceList.mockResolvedValue([priceListItem({ buyerSkuCode: "ml100" }), ...newSkus(2)]);
+
+    const result = await resyncDigiflazzCatalog(prisma);
+    expect(result.added).toBe(0);
+    expect(await prisma.denomination.count({ where: { supplierSku: { startsWith: "mlnew" } } })).toBe(0);
+  });
+
+  it("adds and reactivates nothing when the circuit breaker aborts the run", async () => {
+    // Six un-overridden rows (price === cost, zero markup) so the breaker counts them.
+    const category = await prisma.category.findFirstOrThrow();
+    const { productId } = await importDigiflazzBrand(prisma, {
+      brand: "Mobile Legends", categoryId: category.id,
+      rows: Array.from({ length: 6 }, (_, i) => ({
+        buyerSkuCode: `bt${i}`, productName: `Mobile Legends ${i} Diamond`, price: "15000", costPrice: "15000",
+      })),
+    });
+    const bt0 = await prisma.denomination.findFirstOrThrow({ where: { productId, supplierSku: "bt0" } });
+    await setSetting(prisma, MARKER_KEY, JSON.stringify([bt0.id]));
+    digiflazzMock.getPriceList.mockResolvedValue([
+      ...Array.from({ length: 6 }, (_, i) => priceListItem({
+        buyerSkuCode: `bt${i}`, productName: `Mobile Legends ${i} Diamond`, price: new Decimal(10),
+      })),
+      ...newSkus(2),
+    ]);
+
+    const result = await resyncDigiflazzCatalog(prisma);
+    expect(result).toEqual({ updated: 0, deactivated: 0, added: 0, reactivated: 0 });
+    expect(await prisma.denomination.count({ where: { supplierSku: { startsWith: "mlnew" } } })).toBe(0);
+    expect((await prisma.denomination.findUniqueOrThrow({ where: { id: bt0.id } })).isActive).toBe(false);
+    expect(await readMarker()).toEqual([bt0.id]);
+  });
+
+  it("adds at most 100 new SKUs per run, defers the rest, and never changes the existing denominations", async () => {
+    const productId = await importMobileLegends();
+    const ml100 = await prisma.denomination.findFirstOrThrow({ where: { productId, supplierSku: "ml100" } });
+    await prisma.denomination.update({ where: { id: ml100.id }, data: { price: "50000", priceOverridden: true } });
+    digiflazzMock.getPriceList.mockResolvedValue([
+      priceListItem({ buyerSkuCode: "ml100", productName: "Mobile Legends 100 Diamond Renamed", price: new Decimal(15000) }),
+      ...newSkus(105),
+    ]);
+
+    const first = await resyncDigiflazzCatalog(prisma);
+    expect(first.added).toBe(100);
+    expect(await prisma.denomination.count({ where: { supplierSku: { startsWith: "mlnew" } } })).toBe(100);
+
+    const second = await resyncDigiflazzCatalog(prisma);
+    expect(second.added).toBe(5);
+    expect(await prisma.denomination.count({ where: { supplierSku: { startsWith: "mlnew" } } })).toBe(105);
+
+    const after = await prisma.denomination.findUniqueOrThrow({ where: { id: ml100.id } });
+    expect(after.name).toBe(ml100.name);
+    expect(after.price.toString()).toBe("50000");
+    expect(after.priceOverridden).toBe(true);
+  }, 60_000);
+
+  it("remembers a SKU it deactivated and turns it back on (forgetting it) once Digiflazz reports it available again", async () => {
+    const productId = await importMobileLegends();
+    const ml100 = await prisma.denomination.findFirstOrThrow({ where: { productId, supplierSku: "ml100" } });
+
+    digiflazzMock.getPriceList.mockResolvedValue([priceListItem({ buyerSkuCode: "ml100", buyerProductStatus: false })]);
+    const down = await resyncDigiflazzCatalog(prisma);
+    expect(down.deactivated).toBe(1);
+    expect((await prisma.denomination.findUniqueOrThrow({ where: { id: ml100.id } })).isActive).toBe(false);
+    expect(await readMarker()).toEqual([ml100.id]);
+
+    // Still down on the next run: stays off and stays remembered.
+    const stillDown = await resyncDigiflazzCatalog(prisma);
+    expect(stillDown.reactivated).toBe(0);
+    expect(await readMarker()).toEqual([ml100.id]);
+
+    digiflazzMock.getPriceList.mockResolvedValue([priceListItem({ buyerSkuCode: "ml100", buyerProductStatus: true })]);
+    const up = await resyncDigiflazzCatalog(prisma);
+    expect(up.reactivated).toBe(1);
+    expect((await prisma.denomination.findUniqueOrThrow({ where: { id: ml100.id } })).isActive).toBe(true);
+    expect(await readMarker()).toEqual([]);
+
+    const audit = await prisma.auditLog.findMany({ where: { action: "digiflazz_catalog_resync" }, orderBy: { id: "asc" } });
+    expect(audit.at(-1)!.details).toContain("reactivated 1");
+  });
+
+  it("never turns on a SKU that is inactive but was not switched off by the sync (manual or fresh wizard import)", async () => {
+    const productId = await importMobileLegends([
+      { buyerSkuCode: "ml250", productName: "Mobile Legends 250 Diamond", price: "41800", costPrice: "38000" },
+    ]);
+    const ml250 = await prisma.denomination.findFirstOrThrow({ where: { productId, supplierSku: "ml250" } });
+    expect(ml250.isActive).toBe(false);
+    digiflazzMock.getPriceList.mockResolvedValue([
+      priceListItem({ buyerSkuCode: "ml100" }),
+      priceListItem({ buyerSkuCode: "ml250", price: new Decimal(38000), buyerProductStatus: true }),
+    ]);
+
+    const result = await resyncDigiflazzCatalog(prisma);
+    expect(result.reactivated).toBe(0);
+    expect((await prisma.denomination.findUniqueOrThrow({ where: { id: ml250.id } })).isActive).toBe(false);
+  });
+
+  it("drops a remembered id whose SKU an admin already turned back on, or that no longer exists, without touching anything", async () => {
+    const productId = await importMobileLegends();
+    const ml100 = await prisma.denomination.findFirstOrThrow({ where: { productId, supplierSku: "ml100" } });
+    // ml100 is active (an admin re-enabled it by hand) yet still remembered; 999999 is gone.
+    await setSetting(prisma, MARKER_KEY, JSON.stringify([ml100.id, 999999]));
+    digiflazzMock.getPriceList.mockResolvedValue([priceListItem({ buyerSkuCode: "ml100", price: new Decimal(15000) })]);
+
+    const result = await resyncDigiflazzCatalog(prisma);
+    expect(result.reactivated).toBe(0);
+    expect((await prisma.denomination.findUniqueOrThrow({ where: { id: ml100.id } })).isActive).toBe(true);
+    expect(await readMarker()).toEqual([]);
   });
 });
 

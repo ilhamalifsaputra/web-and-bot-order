@@ -336,6 +336,8 @@ export async function drainBatch(bot: Bot, signal?: AbortSignal): Promise<number
     // rate-limit concept for email, so just move on to the next row either way.
     // Upgrade compatibility: old settlement rows must not describe an automatic
     // order as manual or create a second buyer message next to its tracked one.
+    // ORDER_PROCESSING_DM is also dropped for any order (manual included) that
+    // already has a progress message row, which carries that same news.
     if (row.orderId != null && [
       NotificationEvent.ORDER_PROCESSING_DM,
       NotificationEvent.ADMIN_MANUAL_ORDER_QUEUED,
@@ -343,7 +345,10 @@ export async function drainBatch(bot: Bot, signal?: AbortSignal): Promise<number
       NotificationEvent.OWNER_EMAIL_ORDER_PAID,
     ].includes(row.event as never)) {
       const order = await prisma.order.findUnique({ where: { id: row.orderId }, include: { items: { include: { product: true } } } });
-      if (order && fulfillmentProviderFor(order) === "DIGIFLAZZ") {
+      const tracked = order && (fulfillmentProviderFor(order) === "DIGIFLAZZ"
+        || row.event === NotificationEvent.ORDER_PROCESSING_DM
+          && (await prisma.fulfillmentMessage.count({ where: { orderId: row.orderId } })) > 0);
+      if (tracked) {
         await recordSent(row, row.channel === NotificationChannel.EMAIL ? "email" : "Telegram");
         continue;
       }

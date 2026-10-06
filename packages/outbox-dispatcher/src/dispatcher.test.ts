@@ -789,6 +789,18 @@ describe("drainBatch delivers the per-SKU manual delivery-flow DMs", () => {
     expect(sendMessage.mock.calls.filter(call => call[0] === 500_999)).toHaveLength(0);
     expect((await prisma.notificationOutbox.findFirstOrThrow({ where: { orderId: order!.id, event: NotificationEvent.ORDER_PROCESSING_DM } })).status).toBe("SENT");
   });
+  it("suppresses ORDER_PROCESSING_DM for a manual order that already has a tracked progress message", async () => {
+    const buyer = await upsertUser(prisma, { telegramId: 500_998, username: "manual-tracked", fullName: "Buyer" });
+    const denom = await makeManualDenom();
+    const order = await createOrderDirect(prisma, { user: buyer, channel: "bot", productId: denom.id, quantity: 1 });
+    await prisma.order.update({ where: { id: order!.id }, data: { status: "PROCESSING", paidAt: new Date() } });
+    await prisma.fulfillmentMessage.create({ data: { orderId: order!.id, chatId: 500_998n } });
+    await enqueueNotification(prisma, NotificationEvent.ORDER_PROCESSING_DM, order!.id, { chat_id: 500_998, order_code: order!.orderCode });
+    const { bot, sendMessage } = fakeBot();
+    await drainBatch(bot);
+    expect(sendMessage.mock.calls.filter(call => call[0] === 500_998)).toHaveLength(0);
+    expect((await prisma.notificationOutbox.findFirstOrThrow({ where: { orderId: order!.id, event: NotificationEvent.ORDER_PROCESSING_DM } })).status).toBe("SENT");
+  });
   /** Each test creates its own buyer (unique telegramId — this file runs many
    * tests against one shared temp DB with no per-test reset, so ids/names
    * across tests/describe-blocks must never collide) and admin. */
@@ -801,7 +813,7 @@ describe("drainBatch delivers the per-SKU manual delivery-flow DMs", () => {
     });
   }
 
-  it("turns an ORDER_PROCESSING_DM row (payment confirmed, queued for hand-fulfilment) into a sendMessage and marks it SENT", async () => {
+  it("marks the ORDER_PROCESSING_DM row SENT without a second buyer message, since settlement already registered the progress message", async () => {
     const buyer = await makeBuyer(500_001);
     const admin = await makeAdmin(900_000_001);
     const denom = await makeManualDenom();
@@ -814,14 +826,9 @@ describe("drainBatch delivers the per-SKU manual delivery-flow DMs", () => {
     const { bot, sendMessage } = fakeBot();
     await drainBatch(bot);
 
-    // settlePaidOrder also enqueues an ADMIN_MANUAL_ORDER_QUEUED alert
-    // (asserted separately below), so this buyer's chat id may not be the
-    // only call — find the buyer's specifically, same pattern the later
-    // tests in this block use to isolate one call among several.
-    const buyerCall = sendMessage.mock.calls.find((call) => call[0] === 500_001);
-    expect(buyerCall).toBeDefined();
-    const [, text] = buyerCall! as [number, string];
-    expect(text).toContain(order!.orderCode);
+    // The tracked progress message (sent by its own worker) carries this news.
+    expect(sendMessage.mock.calls.find((call) => call[0] === 500_001)).toBeUndefined();
+    expect(await prisma.fulfillmentMessage.count({ where: { orderId: order!.id } })).toBe(1);
 
     const row = await prisma.notificationOutbox.findFirst({
       where: { orderId: order!.id, event: NotificationEvent.ORDER_PROCESSING_DM },

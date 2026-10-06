@@ -80,11 +80,23 @@ describe("progress message creation points", () => {
     expect(await rows(order.id)).toHaveLength(1);
   });
 
-  it("settling a stock order creates the message too (all products, not only Digiflazz)", async () => {
+  it("settling a stock order that is delivered synchronously creates no message (the credentials DM is the notice)", async () => {
     const order = await pendingOrder(sample.product.id);
     await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.PENDING_VERIFICATION } });
-    await settlePaidOrder(prisma, order.id, { adminId: 0 });
-    expect(await rows(order.id)).toHaveLength(1);
+    const result = await settlePaidOrder(prisma, order.id, { adminId: 0 });
+    expect(result.kind).toBe("delivered");
+    expect(await rows(order.id)).toHaveLength(0);
+  });
+
+  it("settling a stock order keeps the message already created in the detected phase so it gets finalized", async () => {
+    const order = await pendingOrder(sample.product.id);
+    await attachPaymentProof(prisma, order.id, { fileId: "proof", txid: "TX-PROOF-STOCK" });
+    await prisma.fulfillmentMessage.update({ where: { orderId: order.id }, data: { messageId: 303, state: "ACTIVE" } });
+    const result = await settlePaidOrder(prisma, order.id, { adminId: 0 });
+    expect(result.kind).toBe("delivered");
+    const saved = await rows(order.id);
+    expect(saved).toHaveLength(1);
+    expect(saved[0]!.messageId).toBe(303);
   });
 
   it("settling a manual order creates the message", async () => {

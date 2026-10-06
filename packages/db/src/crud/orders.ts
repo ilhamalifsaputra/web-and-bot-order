@@ -2794,7 +2794,11 @@ export async function settlePaidOrder(
     const result = await approveOrder(db, orderId, args);
     // Every paid order gets the buyer's single progress message, whatever its
     // provider; the worker renders the delivered outcome from canonical state.
-    await ensureFulfillmentMessage(db, orderId);
+    // Exception: a stock order already DELIVERED synchronously gets its
+    // credentials DM, so a brand-new "Order completed" message beside it would
+    // be noise. A row created earlier (payment-detected phase) is left in
+    // place and the worker finalizes it.
+    if (result.order?.status !== OrderStatus.DELIVERED) await ensureFulfillmentMessage(db, orderId);
     // Sourced from the already-fetched `order` (this function's own getOrder
     // call above, which eager-loads items.product/user/voucher — no new
     // query) EXCEPT `paidAt`: approveOrder only stamps that column during its

@@ -90,6 +90,7 @@ import {
   getDigiflazzSyncStatus,
   DIGIFLAZZ_RECHECK_CLAIM_LEASE_MS,
   isDigiflazzGameItem,
+  pickDigiflazzInputTemplate,
   runDigiflazzCatalogSync,
   claimDigiflazzCatalogSyncLease,
   releaseDigiflazzCatalogSyncLease,
@@ -2524,6 +2525,34 @@ describe("resyncDigiflazzCatalog", () => {
   });
 });
 
+describe("pickDigiflazzInputTemplate", () => {
+  const generic = JSON.stringify([
+    { key: "user_id", label: { id: "Game ID", en: "Game ID" }, type: "text", required: true, options: [], placeholder: "" },
+  ]);
+  const a = { additionalFields: '[{"key":"a"}]', providerInputMapping: '{"x":1}', nicknameCheckGameCode: "g" };
+  const b = { additionalFields: '[{"key":"b"}]', providerInputMapping: null, nicknameCheckGameCode: null };
+
+  it("returns null when there is no sibling, or only generic or field-less ones", () => {
+    expect(pickDigiflazzInputTemplate([])).toBeNull();
+    expect(
+      pickDigiflazzInputTemplate([
+        { id: 1, additionalFields: generic, providerInputMapping: null, nicknameCheckGameCode: null },
+        { id: 2, additionalFields: null, providerInputMapping: '{"x":1}', nicknameCheckGameCode: "g" },
+      ]),
+    ).toBeNull();
+  });
+
+  it("treats a reformatted generic config as generic", () => {
+    const spaced = JSON.stringify(JSON.parse(generic), null, 2);
+    expect(pickDigiflazzInputTemplate([{ id: 1, additionalFields: spaced, providerInputMapping: null, nicknameCheckGameCode: null }])).toBeNull();
+  });
+
+  it("picks the most common configured triple, ties by lowest id", () => {
+    expect(pickDigiflazzInputTemplate([{ id: 5, ...b }, { id: 3, ...a }, { id: 9, ...a }])).toEqual(a);
+    expect(pickDigiflazzInputTemplate([{ id: 7, ...a }, { id: 4, ...b }])).toEqual(b);
+  });
+});
+
 describe("isDigiflazzGameItem", () => {
   it.each([
     ["Game", true],
@@ -2843,6 +2872,97 @@ describe("resyncDigiflazzCatalog — auto-add new SKUs and reactivate sync-deact
     expect(await prisma.auditLog.count({ where: { action: "digiflazz_catalog_resync" } })).toBe(1);
     expect(await prisma.setting.findUnique({ where: { key: "digiflazz_below_cost_alerted_ids" } })).not.toBeNull();
     expect((await getDigiflazzSyncStatus(prisma))?.status).toBe("success");
+  });
+
+  // An auto-added SKU goes live at once, so it must ask buyers for the same
+  // inputs as the product's existing SKUs, not the generic one-field default.
+  describe("input configuration of auto-added SKUs", () => {
+    const TWO_FIELDS = JSON.stringify([
+      { key: "user_id", label: { id: "User ID", en: "User ID" }, type: "number", required: true, options: [], placeholder: "" },
+      { key: "zone_id", label: { id: "Zone ID", en: "Zone ID" }, type: "number", required: true, options: [], placeholder: "" },
+    ]);
+    const TWO_MAPPING = JSON.stringify({ digiflazz: { keys: ["user_id", "zone_id"], separator: "" } });
+    const SERVER_FIELDS = JSON.stringify([
+      { key: "user_id", label: { id: "User ID", en: "User ID" }, type: "text", required: true, options: [], placeholder: "" },
+      { key: "server_id", label: { id: "Server", en: "Server" }, type: "text", required: true, options: [], placeholder: "" },
+    ]);
+    const SERVER_MAPPING = JSON.stringify({ digiflazz: { keys: ["user_id", "server_id"], separator: "|" } });
+    const twoZone = { additionalFields: TWO_FIELDS, providerInputMapping: TWO_MAPPING, nicknameCheckGameCode: "mobile-legends" };
+    const server = { additionalFields: SERVER_FIELDS, providerInputMapping: SERVER_MAPPING, nicknameCheckGameCode: null };
+
+    /** Import Mobile Legends with ml100/ml250/ml500 and give each the config listed (undefined = keep the default). */
+    async function siblings(configs: (typeof twoZone | typeof server | undefined)[]) {
+      const productId = await importMobileLegends([
+        { buyerSkuCode: "ml250", productName: "Mobile Legends 250 Diamond", price: "41800", costPrice: "38000" },
+        { buyerSkuCode: "ml500", productName: "Mobile Legends 500 Diamond", price: "82500", costPrice: "75000" },
+      ]);
+      const skus = ["ml100", "ml250", "ml500"];
+      for (const [i, config] of configs.entries()) {
+        if (config) await prisma.denomination.updateMany({ where: { productId, supplierSku: skus[i] }, data: config });
+      }
+      return productId;
+    }
+
+    async function addOneSku() {
+      digiflazzMock.getPriceList.mockResolvedValue([
+        priceListItem({ buyerSkuCode: "ml100" }),
+        priceListItem({ buyerSkuCode: "ml250", productName: "Mobile Legends 250 Diamond", price: new Decimal(38000) }),
+        priceListItem({ buyerSkuCode: "ml500", productName: "Mobile Legends 500 Diamond", price: new Decimal(75000) }),
+        ...newSkus(1),
+      ]);
+      expect((await resyncDigiflazzCatalog(prisma)).added).toBe(1);
+      return prisma.denomination.findFirstOrThrow({ where: { supplierSku: "mlnew0" } });
+    }
+
+    it("copies the siblings' fields, provider mapping and nickname game code", async () => {
+      await siblings([twoZone, twoZone, twoZone]);
+      const added = await addOneSku();
+      expect(added).toMatchObject({ ...twoZone, isActive: true });
+    });
+
+    it("prefers a configured sibling over generic ones", async () => {
+      await siblings([undefined, twoZone, undefined]);
+      expect(await addOneSku()).toMatchObject(twoZone);
+    });
+
+    it("picks the most common configuration among configured siblings", async () => {
+      await siblings([server, twoZone, twoZone]);
+      expect(await addOneSku()).toMatchObject(twoZone);
+    });
+
+    it("breaks a tie between configurations by the lowest sibling id", async () => {
+      await siblings([server, twoZone, undefined]);
+      expect(await addOneSku()).toMatchObject(server);
+    });
+
+    it("keeps the generic default when every sibling only has the default", async () => {
+      await siblings([undefined, undefined, undefined]);
+      const added = await addOneSku();
+      expect(parseAdditionalFields(added.additionalFields).map((f) => f.key)).toEqual(["user_id"]);
+      expect(added.providerInputMapping).toBeNull();
+      expect(added.nicknameCheckGameCode).toBeNull();
+    });
+
+    it("uses an inactive configured sibling as the template", async () => {
+      const productId = await siblings([undefined, twoZone, undefined]);
+      const ml250 = await prisma.denomination.findFirstOrThrow({ where: { productId, supplierSku: "ml250" } });
+      expect(ml250.isActive).toBe(false); // wizard imports land inactive
+      expect(await addOneSku()).toMatchObject(twoZone);
+    });
+
+    it("leaves the wizard unchanged: a new SKU it imports is inactive with the generic default", async () => {
+      const productId = await siblings([twoZone, twoZone, twoZone]);
+      const category = await prisma.category.findFirstOrThrow();
+      await importDigiflazzBrand(prisma, {
+        brand: "Mobile Legends", categoryId: category.id,
+        rows: [{ buyerSkuCode: "ml-wiz", productName: "Mobile Legends 9 Diamond", price: "1100", costPrice: "1000" }],
+      });
+      const created = await prisma.denomination.findFirstOrThrow({ where: { productId, supplierSku: "ml-wiz" } });
+      expect(created.isActive).toBe(false);
+      expect(parseAdditionalFields(created.additionalFields).map((f) => f.key)).toEqual(["user_id"]);
+      expect(created.providerInputMapping).toBeNull();
+      expect(created.nicknameCheckGameCode).toBeNull();
+    });
   });
 
   it("drops a remembered id whose SKU an admin already turned back on, or that no longer exists, without touching anything", async () => {

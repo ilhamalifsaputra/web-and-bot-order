@@ -1409,7 +1409,10 @@ async function writeShadowDetectionForImport(
  * import path shares — the wizard (importDigiflazzBrand, `isActive: false`)
  * and the hourly auto-add of new SKUs on an already-imported brand
  * (resyncDigiflazzCatalog, `isActive: true`). One helper so the two paths can
- * never drift apart on delivery type, input fields or naming.
+ * never drift apart on delivery type or naming. Input fields default to the
+ * generic one-field config; the auto-add passes `inputConfig` copied from the
+ * product's existing SKUs (pickDigiflazzInputTemplate) because its SKUs go
+ * live without an admin review.
  *
  * The Product is already region-scoped once groupDigiflazzPriceListByBrand
  * has split by region, so the region suffix is stripped from the denomination
@@ -1427,6 +1430,10 @@ async function createDigiflazzDenomination(
     costPrice: Decimal;
     priceOverridden: boolean;
     isActive: boolean;
+    /** Player-input configuration to use instead of the generic one-field
+     * default (auto-add copies it from the product's existing SKUs; the
+     * wizard passes none). */
+    inputConfig?: DigiflazzInputConfig | null;
   },
 ): Promise<{ id: number; name: string }> {
   const denomName = stripRegionSuffix(args.productName);
@@ -1445,10 +1452,78 @@ async function createDigiflazzDenomination(
     supplierSku: args.buyerSkuCode,
     supplierRawName: args.productName,
     deliveryType: DeliveryType.MANUAL_WITH_INFO,
-    additionalFields: JSON.stringify(DEFAULT_DIGIFLAZZ_FIELDS),
+    additionalFields: args.inputConfig ? args.inputConfig.additionalFields : JSON.stringify(DEFAULT_DIGIFLAZZ_FIELDS),
+    ...(args.inputConfig
+      ? {
+          providerInputMapping: args.inputConfig.providerInputMapping,
+          nicknameCheckGameCode: args.inputConfig.nicknameCheckGameCode,
+        }
+      : {}),
     isActive: args.isActive,
   });
   return { id: created.id, name: denomName };
+}
+
+/** A denomination's player-input configuration: what the buyer is asked for,
+ * how the answers are sent to the provider, and the nickname-check game. */
+export interface DigiflazzInputConfig {
+  additionalFields: string;
+  providerInputMapping: string | null;
+  nicknameCheckGameCode: string | null;
+}
+
+/** True for the bare generic config every Digiflazz import starts with (the
+ * one-field DEFAULT_DIGIFLAZZ_FIELDS, no mapping, no nickname game), compared
+ * after parsing so a reformatted copy still counts as generic. */
+function isGenericDigiflazzInputConfig(config: DigiflazzInputConfig): boolean {
+  if (config.providerInputMapping != null || config.nicknameCheckGameCode != null) return false;
+  try {
+    return JSON.stringify(JSON.parse(config.additionalFields)) === JSON.stringify(DEFAULT_DIGIFLAZZ_FIELDS);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Choose the input configuration a SKU auto-added to a product should copy
+ * from that product's existing SKUs (`siblings`, active or not). Siblings with
+ * no additionalFields and siblings still on the generic default are ignored;
+ * among the rest, the most common (additionalFields, providerInputMapping,
+ * nicknameCheckGameCode) triple wins, a tie going to the triple held by the
+ * lowest sibling id. Null when no sibling is configured, meaning "keep the
+ * generic default", which then matches the siblings anyway.
+ */
+export function pickDigiflazzInputTemplate(
+  siblings: {
+    id: number;
+    additionalFields: string | null;
+    providerInputMapping: string | null;
+    nicknameCheckGameCode: string | null;
+  }[],
+): DigiflazzInputConfig | null {
+  const groups = new Map<string, { config: DigiflazzInputConfig; count: number; minId: number }>();
+  for (const s of siblings) {
+    if (!s.additionalFields) continue;
+    const config: DigiflazzInputConfig = {
+      additionalFields: s.additionalFields,
+      providerInputMapping: s.providerInputMapping,
+      nicknameCheckGameCode: s.nicknameCheckGameCode,
+    };
+    if (isGenericDigiflazzInputConfig(config)) continue;
+    const key = JSON.stringify([config.additionalFields, config.providerInputMapping, config.nicknameCheckGameCode]);
+    const group = groups.get(key);
+    if (group) {
+      group.count++;
+      group.minId = Math.min(group.minId, s.id);
+    } else {
+      groups.set(key, { config, count: 1, minId: s.id });
+    }
+  }
+  let best: { config: DigiflazzInputConfig; count: number; minId: number } | null = null;
+  for (const g of groups.values()) {
+    if (!best || g.count > best.count || (g.count === best.count && g.minId < best.minId)) best = g;
+  }
+  return best ? best.config : null;
 }
 
 /**
@@ -1710,6 +1785,17 @@ async function createMissingSkusForBrand(
       select: { supplierSku: true },
     });
     const racedSkus = new Set(raced.map((d) => d.supplierSku));
+    // New SKUs go live at once, so they ask buyers for the same inputs as the
+    // product's existing Digiflazz SKUs (read once per brand).
+    const siblings = await tx.denomination.findMany({
+      where: {
+        productId,
+        additionalFields: { not: null },
+        OR: [{ autoDeliverySource: "digiflazz" }, { supplierSku: { not: null } }],
+      },
+      select: { id: true, additionalFields: true, providerInputMapping: true, nicknameCheckGameCode: true },
+    });
+    const inputConfig = pickDigiflazzInputTemplate(siblings);
     const rows: { id: number; name: string }[] = [];
     for (const item of candidates) {
       if (racedSkus.has(item.buyerSkuCode)) continue;
@@ -1722,6 +1808,7 @@ async function createMissingSkusForBrand(
           costPrice: quantizeMoney(item.price, 4),
           priceOverridden: false,
           isActive: true,
+          inputConfig,
         }),
       );
     }

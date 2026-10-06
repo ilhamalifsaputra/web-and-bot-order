@@ -1,79 +1,52 @@
 import { describe, it, expect } from "vitest";
 import {
   nextDigiflazzRecheckAt,
+  DIGIFLAZZ_RECHECK_SCHEDULE_SECONDS,
   DIGIFLAZZ_RECHECK_SCHEDULE_MINUTES,
   DIGIFLAZZ_RECHECK_STEADY_INTERVAL_MINUTES,
   DIGIFLAZZ_RECHECK_WINDOW_HOURS,
 } from "./digiflazzBackoff";
 
+const T0 = new Date("2026-08-22T10:00:00.000Z");
+const at = (seconds: number) => new Date(T0.getTime() + seconds * 1000);
+
 describe("Digiflazz backoff schedule", () => {
-  it("attempt 1 returns dispatchedAt + 2 minutes", () => {
-    const dispatchedAt = new Date("2026-08-22T10:00:00.000Z");
-    const now = new Date("2026-08-22T10:00:00.000Z");
-    const result = nextDigiflazzRecheckAt(dispatchedAt, 1, now);
-    expect(result).toEqual(new Date("2026-08-22T10:02:00.000Z"));
+  it("front-loaded steps are +10s, +30s, +1m, +2m, +5m, +15m, +30m, +60m", () => {
+    const expected = [10, 30, 60, 120, 300, 900, 1800, 3600];
+    expected.forEach((seconds, i) => {
+      expect(nextDigiflazzRecheckAt(T0, i + 1, T0)).toEqual(at(seconds));
+    });
   });
 
-  it("attempt 5 returns dispatchedAt + 60 minutes (last front-loaded step)", () => {
-    const dispatchedAt = new Date("2026-08-22T10:00:00.000Z");
-    const now = new Date("2026-08-22T10:00:00.000Z");
-    const result = nextDigiflazzRecheckAt(dispatchedAt, 5, now);
-    expect(result).toEqual(new Date("2026-08-22T11:00:00.000Z"));
+  it("attempt 9 is the first steady-cadence step (+60m + 120m)", () => {
+    expect(nextDigiflazzRecheckAt(T0, 9, T0)).toEqual(at(3 * 3600));
   });
 
-  it("attempt 6 returns dispatchedAt + 180 minutes (first steady-cadence step)", () => {
-    const dispatchedAt = new Date("2026-08-22T10:00:00.000Z");
-    const now = new Date("2026-08-22T10:00:00.000Z");
-    const result = nextDigiflazzRecheckAt(dispatchedAt, 6, now);
-    expect(result).toEqual(new Date("2026-08-22T13:00:00.000Z"));
+  it("attempt 10 is the second steady-cadence step (+60m + 240m)", () => {
+    expect(nextDigiflazzRecheckAt(T0, 10, T0)).toEqual(at(5 * 3600));
   });
 
-  it("attempt 7 returns dispatchedAt + 300 minutes (second steady-cadence step)", () => {
-    const dispatchedAt = new Date("2026-08-22T10:00:00.000Z");
-    const now = new Date("2026-08-22T10:00:00.000Z");
-    const result = nextDigiflazzRecheckAt(dispatchedAt, 7, now);
-    expect(result).toEqual(new Date("2026-08-22T15:00:00.000Z"));
-  });
-
-  it("returns null when candidate would exceed the 24h window", () => {
-    const dispatchedAt = new Date("2026-08-22T10:00:00.000Z");
-    const now = new Date("2026-08-22T10:00:00.000Z");
-    // Calculate which attempt first exceeds 24h (1440 minutes)
-    // Front-loaded: [2, 5, 15, 30, 60] (5 total)
-    // Steady intervals: +120 min each
-    // Attempt 16: 60 + 11*120 = 1380 min (within window)
-    // Attempt 17: 60 + 12*120 = 1500 min (exceeds 1440 min window)
-    const result = nextDigiflazzRecheckAt(dispatchedAt, 17, now);
-    expect(result).toBeNull();
-  });
-
-  it("returns a valid date for the last attempt within the 24h window", () => {
-    const dispatchedAt = new Date("2026-08-22T10:00:00.000Z");
-    const now = new Date("2026-08-22T10:00:00.000Z");
-    // Attempt 16 should be exactly 1380 minutes = 23 hours
-    const result = nextDigiflazzRecheckAt(dispatchedAt, 16, now);
-    const expectedTime = new Date(dispatchedAt.getTime() + 1380 * 60_000);
-    expect(result).toEqual(expectedTime);
+  it("last attempt inside the 24h window is attempt 19 (+23h) and attempt 20 returns null", () => {
+    // 60m + 11 * 120m = 1380m = 23h; 60m + 12 * 120m = 1500m > 1440m.
+    expect(nextDigiflazzRecheckAt(T0, 19, T0)).toEqual(at(23 * 3600));
+    expect(nextDigiflazzRecheckAt(T0, 20, T0)).toBeNull();
   });
 
   it("clamps to now when candidate is in the past", () => {
-    const dispatchedAt = new Date("2026-08-22T10:00:00.000Z");
     const now = new Date("2026-08-22T10:15:00.000Z");
-    // Attempt 1 would be 10:02:00, but now is 10:15:00, so should return now
-    const result = nextDigiflazzRecheckAt(dispatchedAt, 1, now);
-    expect(result).toEqual(now);
+    expect(nextDigiflazzRecheckAt(T0, 1, now)).toEqual(now);
   });
 
   it("returns candidate exactly when now equals candidate (not clamped past)", () => {
-    const dispatchedAt = new Date("2026-08-22T10:00:00.000Z");
-    const candidate = new Date("2026-08-22T10:02:00.000Z");
-    // Attempt 1 would be 10:02:00, and now is exactly 10:02:00
-    const result = nextDigiflazzRecheckAt(dispatchedAt, 1, candidate);
-    expect(result).toEqual(candidate);
+    expect(nextDigiflazzRecheckAt(T0, 1, at(10))).toEqual(at(10));
   });
 
-  it("respects DIGIFLAZZ_RECHECK_SCHEDULE_MINUTES constant", () => {
-    expect(DIGIFLAZZ_RECHECK_SCHEDULE_MINUTES).toEqual([2, 5, 15, 30, 60]);
+  it("exposes the schedule in seconds", () => {
+    expect(DIGIFLAZZ_RECHECK_SCHEDULE_SECONDS).toEqual([10, 30, 60, 120, 300, 900, 1800, 3600]);
+  });
+
+  it("keeps the legacy minutes export derived from the seconds schedule", () => {
+    expect(DIGIFLAZZ_RECHECK_SCHEDULE_MINUTES).toEqual(DIGIFLAZZ_RECHECK_SCHEDULE_SECONDS.map((s) => s / 60));
   });
 
   it("respects DIGIFLAZZ_RECHECK_STEADY_INTERVAL_MINUTES constant", () => {

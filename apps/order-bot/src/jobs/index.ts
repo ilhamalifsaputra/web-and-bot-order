@@ -1676,7 +1676,10 @@ export function scheduleDigiflazzCatalogSync(): Cron {
  * dispatchPendingDigiflazzOrders). No `Api` needed, so this runs even on a
  * web-only boot, same as scheduleFxRefresh/scheduleDigiflazzCatalogSync above.
  * A five-second durable queue scan keeps paid orders moving without a browser
- * refresh. The provider's separate recheck schedule still controls retries.
+ * refresh. Every 5 seconds (croner six-field syntax) also honours the
+ * front-loaded recheck schedule in digiflazzBackoff.ts (+10s, +30s, +1m, ...)
+ * with seconds-level accuracy; the webhook is the primary path and this is the
+ * safety net. `protect: true` prevents overlapping runs if one tick is slow.
  */
 export function scheduleDigiflazzDispatch(): Cron {
   const run = () =>

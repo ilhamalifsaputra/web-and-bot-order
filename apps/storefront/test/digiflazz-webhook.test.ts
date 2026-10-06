@@ -55,6 +55,7 @@ import {
   createCatalogProduct,
   createDenomination,
   recordDigiflazzOutcome,
+  DIGIFLAZZ_RECHECK_SCHEDULE_SECONDS,
   dispatchPendingDigiflazzOrders,
   DIGIFLAZZ_USERNAME_KEY,
   DIGIFLAZZ_API_KEY_KEY,
@@ -393,7 +394,11 @@ describe("Digiflazz callback replay cannot place a second purchase (Task B3d)", 
   const pending = (refId: string) => ({ refId, status: "Pending", sn: null, message: null, price: null });
 
   it("two concurrent replays of one callback run only one live re-check", async () => {
-    const order = await createProcessingDigiflazzOrder("ORD-DF-B3D-RACE");
+    // Dispatched just now, so the Pending outcome schedules the first recheck
+    // (+10s) inside the claim lease: a replay landing after the first re-check
+    // finished is still refused. A stale dispatch time would make that recheck
+    // already due (new front-loaded schedule), which is legitimately claimable.
+    const order = await createProcessingDigiflazzOrder("ORD-DF-B3D-RACE","15000", { digiflazzDispatchedAt: new Date() });
     digiflazzSupplierMock.createTransaction.mockImplementation(
       () => new Promise((r) => setTimeout(() => r(pending(order.orderCode)), 150)),
     );
@@ -675,12 +680,14 @@ describe("POST /pay/digiflazz/callback", () => {
     expect(updated!.digiflazzStatus).toBe("pending_at_supplier");
     expect(updated!.digiflazzAttempts).toBe(1);
     expect(updated!.digiflazzNextRecheckAt).not.toBeNull();
-    // ~2 minutes ahead per DIGIFLAZZ_RECHECK_SCHEDULE_MINUTES[0]
-    // (digiflazzBackoff.ts) — same delta-check pattern as digiflazz.test.ts's
+    // DIGIFLAZZ_RECHECK_SCHEDULE_SECONDS[0] ahead (digiflazzBackoff.ts) — same delta-check pattern as digiflazz.test.ts's
     // D2 case ("leaves a Pending order PROCESSING with the claim set").
     const deltaMs = updated!.digiflazzNextRecheckAt!.getTime() - before.getTime();
-    expect(deltaMs).toBeGreaterThan(60_000);
-    expect(deltaMs).toBeLessThanOrEqual(3 * 60_000);
+    // First recheck is due DIGIFLAZZ_RECHECK_SCHEDULE_SECONDS[0] after dispatch
+    // (digiflazzBackoff.ts); a slow test run may only push it later (never
+    // scheduled in the past), and it must stay far below the second step.
+    expect(deltaMs).toBeGreaterThanOrEqual(DIGIFLAZZ_RECHECK_SCHEDULE_SECONDS[0] * 1000);
+    expect(deltaMs).toBeLessThan(DIGIFLAZZ_RECHECK_SCHEDULE_SECONDS[2] * 1000);
   });
 
   // Review fix (Important, post-Task-12): a validly-signed replay for an
@@ -753,8 +760,11 @@ describe("POST /pay/digiflazz/callback", () => {
     expect(updated!.digiflazzAttempts).toBe(1);
     expect(updated!.digiflazzNextRecheckAt).not.toBeNull();
     const deltaMs = updated!.digiflazzNextRecheckAt!.getTime() - before.getTime();
-    expect(deltaMs).toBeGreaterThan(60_000);
-    expect(deltaMs).toBeLessThanOrEqual(3 * 60_000);
+    // First recheck is due DIGIFLAZZ_RECHECK_SCHEDULE_SECONDS[0] after dispatch
+    // (digiflazzBackoff.ts); a slow test run may only push it later (never
+    // scheduled in the past), and it must stay far below the second step.
+    expect(deltaMs).toBeGreaterThanOrEqual(DIGIFLAZZ_RECHECK_SCHEDULE_SECONDS[0] * 1000);
+    expect(deltaMs).toBeLessThan(DIGIFLAZZ_RECHECK_SCHEDULE_SECONDS[2] * 1000);
     expect(updated!.digiflazzFailureDetail).toContain("Digiflazz transaction failed: request timed out");
   });
 

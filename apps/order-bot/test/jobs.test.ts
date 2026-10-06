@@ -89,6 +89,7 @@ import {
   nowpaymentsPollWatchdog,
   outboxDispatcherPollWatchdog,
   scheduleOutboxDispatcherWatchdog,
+  scheduleDigiflazzDispatch,
   runDigiflazzCatalogSyncTick,
   runFxRefreshTick,
   reconcileLedgerJob,
@@ -2536,5 +2537,17 @@ describe("runFxRefreshTick (M13 FX sanity band + staleness kill-switch)", () => 
       error.mockRestore();
     }
     expect((await rejectedDms()).length).toBe(4);
+  });
+});
+
+describe("scheduleDigiflazzDispatch", () => {
+  it("polls every 5 seconds (six-field croner pattern) and never overlaps runs", () => {
+    const cron = scheduleDigiflazzDispatch();
+    try {
+      expect(cron.getPattern()).toBe("*/5 * * * * *");
+      expect(cron.options.protect).toBe(true);
+    } finally {
+      cron.stop();
+    }
   });
 });

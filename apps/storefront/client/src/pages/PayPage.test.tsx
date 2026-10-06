@@ -173,7 +173,7 @@ describe("PayPage", () => {
     expect(await screen.findByText("Payment received — your order is being processed")).toBeInTheDocument();
     expect(
       screen.getByText(
-        "Your top-up is being sent automatically. This page updates by itself; you can also follow it from your order page.",
+        "Your order is being prepared. This page updates by itself; you can also follow it from your order page.",
       ),
     ).toBeInTheDocument();
     expect(screen.queryByText(/blockchain/i)).not.toBeInTheDocument();

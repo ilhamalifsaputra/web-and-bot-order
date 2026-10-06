@@ -1038,7 +1038,7 @@
   "web.status_paid": "Lunas — pesanan terkirim",
   "web.status_processing": "Pesananmu sedang diproses…",
   "web.pay_processing": "Pembayaran diterima — pesananmu sedang diproses",
-  "web.pay_processing_sub": "Top-up kamu sedang dikirim otomatis. Halaman ini diperbarui sendiri; kamu juga bisa memantaunya dari halaman pesanan.",
+  "web.pay_processing_sub": "Pesananmu sedang disiapkan. Halaman ini diperbarui sendiri; kamu juga bisa memantaunya dari halaman pesanan.",
   "web.pay_processing_view_order": "Lihat pesanan",
   "web.status_expired": "Waktu bayar habis",
   "web.status_closed": "Pesanan ditutup",

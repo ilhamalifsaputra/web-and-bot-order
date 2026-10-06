@@ -1038,7 +1038,7 @@
   "web.status_paid": "Paid — order delivered",
   "web.status_processing": "Processing your order…",
   "web.pay_processing": "Payment received — your order is being processed",
-  "web.pay_processing_sub": "Your top-up is being sent automatically. This page updates by itself; you can also follow it from your order page.",
+  "web.pay_processing_sub": "Your order is being prepared. This page updates by itself; you can also follow it from your order page.",
   "web.pay_processing_view_order": "View order",
   "web.status_expired": "Payment window expired",
   "web.status_closed": "Order closed",

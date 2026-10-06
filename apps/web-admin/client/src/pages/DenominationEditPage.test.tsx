@@ -274,6 +274,22 @@ describe("DenominationEditPage", () => {
     );
   });
 
+  it("clears buyer-info fields when switching to Automatic and restores them when returning to buyer info required", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.mocked(apiGet).mockResolvedValue(MANUAL_WITH_INFO_PRODUCT_DETAIL);
+    render(<DenominationEditPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByDisplayValue("Netflix 1 Month")).toBeInTheDocument());
+    expect(screen.getAllByDisplayValue("IGN")).toHaveLength(2);
+
+    await user.click(screen.getByRole("radio", { name: /^automatic delivery/i }));
+    expect(screen.queryAllByDisplayValue("IGN")).toHaveLength(0);
+
+    // A slip of the mouse is recoverable: the draft comes back untouched.
+    await user.click(screen.getByRole("radio", { name: /^manual delivery/i }));
+    await user.click(screen.getByRole("radio", { name: /^require buyer information/i }));
+    expect(screen.getAllByDisplayValue("IGN")).toHaveLength(2);
+  });
+
   it("switching Delivery Type away from 'Manual + buyer info required' drops autoDeliverySource/supplierSku from the submitted payload", async () => {
     // Regression coverage for the client half of the fix in 024fec6: the
     // backend routes independently re-derive/strip autoDeliverySource and
@@ -317,9 +333,10 @@ describe("DenominationEditPage", () => {
     const [, sentBody] = vi.mocked(apiPatch).mock.calls[0] as [string, Record<string, unknown>];
     expect(sentBody).not.toHaveProperty("autoDeliverySource");
     expect(sentBody).not.toHaveProperty("supplierSku");
-    // The field editor stays visible on Automatic, so what the admin sees is
-    // what is saved; the provider mapping was reset with the method.
-    expect(sentBody).toHaveProperty("additionalFields");
+    // Leaving Manual + buyer info clears the fields from the form, so a
+    // stock-delivered SKU never silently asks buyers for input; the provider
+    // mapping is reset with the method as well.
+    expect(sentBody).not.toHaveProperty("additionalFields");
     expect(sentBody.providerInputMapping).toBeNull();
     expect(sentBody.deliveryType).toBe("auto");
   });

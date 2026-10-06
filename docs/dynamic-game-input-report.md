@@ -51,4 +51,4 @@ The first full run found 13 failures, all traced and fixed (see above) before th
 - No real KokinPay or Digiflazz call was made. Provider requests are verified against mocks.
 - The local database holds test data; the backfill has not been run on any production database.
 - Spec §8.3 provenance (`input_config_source`) is optional and not stored.
-- Open decision: switching a SKU from Manual+Info to Automatic keeps its fields, since the editor is visible. Clearing them automatically is a small change if preferred.
+- Switching a SKU's delivery type clears its buyer-info fields from the form so a stock-delivered SKU never silently asks for input; the cleared fields are kept as an unsent in-memory draft and restored if the admin returns to the type they came from.

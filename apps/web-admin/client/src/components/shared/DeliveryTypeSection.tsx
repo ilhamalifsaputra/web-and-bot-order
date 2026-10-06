@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Input } from "@/components/ui/input";
 import { AdditionalFieldsEditor } from "./AdditionalFieldsEditor";
@@ -104,6 +105,26 @@ export function DeliveryTypeSection({
   const method = methodOf(deliveryType);
   const requiresInfo = deliveryType === "manual_with_info";
 
+  // Buyer-info fields follow the delivery type: leaving a type clears them
+  // from the form (so a stock-delivered SKU never silently asks buyers for
+  // input), but the cleared fields are kept here as an in-memory draft and
+  // restored if the admin returns to the type they came from. The draft is
+  // never submitted. It lives in this component, which stays mounted while
+  // the method switches.
+  const fieldsDraft = useRef<{ from: string; fields: AdditionalFieldDraft[] } | null>(null);
+
+  function switchType(next: string) {
+    if (next === deliveryType) return;
+    if (additionalFields.length > 0) {
+      fieldsDraft.current = { from: deliveryType, fields: additionalFields };
+      onAdditionalFieldsChange([]);
+    } else if (fieldsDraft.current?.from === next) {
+      onAdditionalFieldsChange(fieldsDraft.current.fields);
+      fieldsDraft.current = null;
+    }
+    onDeliveryTypeChange(next);
+  }
+
   // Selecting Digiflazz pre-fills the buyer-info fields with the template
   // ONLY when the admin hasn't already added any — never overwrite fields
   // they've customized. Picking "None" just clears the source; any
@@ -130,7 +151,7 @@ export function DeliveryTypeSection({
   // unseen in the parent's state and could resurface silently if the admin
   // flips back to buyer info required later.
   function selectMethod(next: DeliveryMethod) {
-    onDeliveryTypeChange(next === "auto" ? "auto" : "manual");
+    switchType(next === "auto" ? "auto" : "manual");
     onAutoDeliverySourceChange(null);
     onSupplierSkuChange("");
     onNicknameCheckGameCodeChange("");
@@ -141,7 +162,7 @@ export function DeliveryTypeSection({
   // that can turn requiresInfo from true back to false: un-checking "Require
   // buyer information" in Step 2 without changing the Step 1 method.
   function selectBuyerInfo(next: "required" | "none") {
-    onDeliveryTypeChange(next === "required" ? "manual_with_info" : "manual");
+    switchType(next === "required" ? "manual_with_info" : "manual");
     if (next === "none") {
       onAutoDeliverySourceChange(null);
       onSupplierSkuChange("");
@@ -209,7 +230,9 @@ export function DeliveryTypeSection({
         <div>
           <label className="text-sm font-medium text-ink">Buyer Information Fields</label>
           <p className="mt-1 mb-2 text-xs text-ink-soft">
-            The buyer fills configured fields before paying. Add only fields this SKU needs.
+            {method === "auto"
+              ? "Optional. Add fields only if this SKU needs input from the buyer (for example a Player ID); buyers fill them before paying."
+              : "The buyer fills these in before paying. At least one field is required."}
           </p>
           <AdditionalFieldsEditor value={additionalFields} onChange={onAdditionalFieldsChange} />
         </div>

@@ -142,6 +142,10 @@ export interface DigiflazzSyncStatus {
   status: "success" | "aborted" | "error";
   updated: number;
   deactivated: number;
+  /** New SKUs added to already-imported games (0 on an older stored status). */
+  added: number;
+  /** SKUs the sync had switched off earlier and turned back on. */
+  reactivated: number;
   abortReason: "sharp_change" | "no_usable_rows" | null;
   finishedAt: string;
 }

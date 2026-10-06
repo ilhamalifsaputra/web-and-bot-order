@@ -145,17 +145,23 @@ non-null `supplierSku`:
 - `price` recomputes from `costPrice + digiflazz_markup_*` **unless**
   `priceOverridden` is `true` on that row, in which case price is left
   untouched.
-- `Denomination.isActive` mirrors `buyer_product_status` — flips off if
-  Digiflazz deactivates the SKU, flips back on if it reactivates. Never
-  affects `Product`/Category-level active state.
-- Never renames, never creates a new Denomination, never touches anything
-  Digiflazz doesn't already know about (a SKU with no matching
-  `supplierSku` in our DB is untouched by this job — it's the wizard's job
-  to bring in genuinely new SKUs, with the admin reviewing first).
-- Idempotent by construction (matches on `supplierSku`), so it's safe if
-  this job and a wizard import happen to overlap — whichever writes last
-  wins on the same row, no duplicate rows are possible since creation only
-  ever happens through the wizard's transaction.
+- `Denomination.isActive` flips off when Digiflazz deactivates the SKU. It
+  flips back on only for a SKU this job itself switched off (remembered under
+  the `digiflazz_auto_deactivated_ids` setting) — never one an admin turned
+  off or a fresh wizard import. Never affects `Product`/Category-level active
+  state.
+- Never renames. **Updated 2026-10-06:** it now also creates the new SKUs
+  Digiflazz lists under a brand that already has a Product — active when the
+  game is on sale (active product with at least one active SKU), otherwise
+  inactive, copying the siblings' input configuration, and priced by the markup, at most 100 per run, never when the markup is
+  unreadable or the circuit breaker aborts. Brand-new brands still enter only
+  through the wizard, with the admin reviewing first.
+- The same run happens hourly (cron) and on demand when an admin presses
+  the wizard's Sync button (`POST /api/catalog/digiflazz/sync/run`); a
+  short-lived lease (`digiflazz_catalog_sync_lease`, 10 minutes) keeps the
+  two from running at the same time.
+- Idempotent by construction (matches on `supplierSku`, and auto-add skips a
+  SKU already present on any denomination), so a re-run never duplicates rows.
 
 ## Error handling
 

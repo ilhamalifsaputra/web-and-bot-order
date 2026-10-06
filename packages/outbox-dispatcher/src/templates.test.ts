@@ -21,6 +21,45 @@ describe("notifier templates.render", () => {
     expect(out).toMatch(/catalog/i);
   });
 
+  it("renders the SKU-change alert with every part, bilingual", () => {
+    const out = render("ADMIN_DIGIFLAZZ_SKUS_CHANGED", { added_count: 4, reactivated_count: 2, deactivated_count: 1 });
+    expect(out).toContain("4 SKU baru ditambahkan");
+    expect(out).toContain("2 SKU diaktifkan lagi");
+    expect(out).toContain("1 SKU dinonaktifkan");
+    expect(out).toContain("4 new SKU(s) added");
+    expect(out).toMatch(/Katalog/);
+  });
+
+  it("omits zero-count parts of the SKU-change alert", () => {
+    const onlyAdded = render("ADMIN_DIGIFLAZZ_SKUS_CHANGED", { added_count: 3, reactivated_count: 0, deactivated_count: 0 });
+    expect(onlyAdded).toContain("3 SKU baru");
+    expect(onlyAdded).not.toContain("diaktifkan lagi");
+    expect(onlyAdded).not.toContain("dinonaktifkan");
+    const onlyDeactivated = render("ADMIN_DIGIFLAZZ_SKUS_CHANGED", { added_count: 0, reactivated_count: 0, deactivated_count: 2 });
+    expect(onlyDeactivated).toContain("2 SKU dinonaktifkan");
+    expect(onlyDeactivated).not.toContain("baru ditambahkan");
+    expect(onlyDeactivated).not.toContain("diaktifkan lagi");
+    const reactivatedDeactivated = render("ADMIN_DIGIFLAZZ_SKUS_CHANGED", { reactivated_count: 1, deactivated_count: 1 });
+    expect(reactivatedDeactivated).toContain("1 SKU diaktifkan lagi");
+    expect(reactivatedDeactivated).toContain("1 SKU dinonaktifkan");
+    expect(reactivatedDeactivated).not.toContain("baru ditambahkan");
+  });
+
+  it("asks to review new SKUs only when some were added, in both languages", () => {
+    const added = render("ADMIN_DIGIFLAZZ_SKUS_CHANGED", { added_count: 2, reactivated_count: 0, deactivated_count: 0 });
+    expect(added).toContain("Review new SKUs in the Catalog.");
+    expect(added).toContain("Tinjau SKU baru di Katalog.");
+    expect(added).not.toMatch(/already live|sudah aktif|\(live\)|\(aktif\)/);
+    const noneAdded = render("ADMIN_DIGIFLAZZ_SKUS_CHANGED", { added_count: 0, reactivated_count: 1, deactivated_count: 2 });
+    expect(noneAdded).not.toContain("Review new SKUs");
+    expect(noneAdded).not.toContain("Tinjau SKU baru");
+    expect(noneAdded).not.toMatch(/already live|sudah aktif/);
+  });
+
+  it("renders nothing for an all-zero SKU-change payload", () => {
+    expect(render("ADMIN_DIGIFLAZZ_SKUS_CHANGED", { added_count: 0, reactivated_count: 0, deactivated_count: 0 })).toBe("");
+  });
+
   it("renders ORDER_DELIVERED (stored enum name) in English", () => {
     const out = render("ORDER_DELIVERED", payload);
     expect(out).toContain("📢 <b>TESTIMONIAL</b>");

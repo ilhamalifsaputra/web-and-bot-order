@@ -9,15 +9,17 @@ vi.mock("@app/core/suppliers/digiflazz", async (importOriginal) => ({
 }));
 
 import { config } from "@app/core/config";
-import { prisma, initDb, upsertUser, setSetting, createCategory } from "@app/db";
+import { prisma, initDb, upsertUser, setSetting, createCategory, importDigiflazzBrand, claimDigiflazzCatalogSyncLease } from "@app/db";
 import { resetDb } from "../../../tests/helpers/sampleData";
 import { makeSession, sessionJtiKey, newJti } from "../src/auth";
 import { buildApp } from "../src/server";
 import { Decimal } from "@app/core/money";
+import { DigiflazzSupplierError } from "@app/core/suppliers/digiflazz";
 
 const COOKIE = config.WEB_COOKIE_NAME;
 const ADMIN_TG = 999;
 let app: FastifyInstance;
+let adminId: number;
 let cookie: string;
 let csrf: string;
 
@@ -33,6 +35,7 @@ afterAll(async () => {
 beforeEach(async () => {
   await resetDb(prisma);
   const admin = await upsertUser(prisma, { telegramId: ADMIN_TG, username: "admin", fullName: "Admin" });
+  adminId = admin.id;
   const jti = newJti();
   await setSetting(prisma, sessionJtiKey(ADMIN_TG), jti);
   const { raw, data } = makeSession(admin.id, ADMIN_TG, jti);
@@ -354,5 +357,138 @@ describe("POST /api/catalog/digiflazz/sync/apply", () => {
     });
     expect(res.statusCode).toBe(400);
     expect(res.json()).toEqual({ error: 'gameVariant is too long for "Mobile Legends".' });
+  });
+});
+
+describe("POST /api/catalog/digiflazz/sync/run", () => {
+  const RUN = "/api/catalog/digiflazz/sync/run";
+  const item = (buyerSkuCode: string, productName: string, price: number, buyerProductStatus = true) => ({
+    buyerSkuCode, productName, category: "Game", brand: "Mobile Legends", type: "Umum",
+    price: new Decimal(price), buyerProductStatus, sellerProductStatus: true, stock: null,
+  });
+
+  async function configureCreds() {
+    await setSetting(prisma, "digiflazz_username", "u");
+    await setSetting(prisma, "digiflazz_api_key", "k");
+  }
+
+  it("requires a session (anon -> 401) and never fetches the price list", async () => {
+    await configureCreds();
+    const res = await app.inject({
+      method: "POST",
+      url: RUN,
+      headers: { "content-type": "application/json", "x-csrf-token": csrf },
+      payload: JSON.stringify({}),
+    });
+    expect(res.statusCode).toBe(401);
+    expect(digiflazzMock.getPriceList).not.toHaveBeenCalled();
+  });
+
+  it("rejects a request without a valid CSRF token (403) and never fetches the price list", async () => {
+    await configureCreds();
+    const res = await app.inject({
+      method: "POST",
+      url: RUN,
+      headers: { "content-type": "application/json", "x-csrf-token": "bad" },
+      cookies: { [COOKIE]: cookie },
+      payload: JSON.stringify({}),
+    });
+    expect(res.statusCode).toBe(403);
+    expect(digiflazzMock.getPriceList).not.toHaveBeenCalled();
+  });
+
+  it("answers 400 when Digiflazz credentials are not configured", async () => {
+    const res = await postJson(RUN, {});
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/credentials/i);
+    expect(digiflazzMock.getPriceList).not.toHaveBeenCalled();
+  });
+
+  it("runs the full sync, returns its counts and audits it with the admin's id", async () => {
+    await configureCreds();
+    await setSetting(prisma, "digiflazz_markup_type", "percent");
+    await setSetting(prisma, "digiflazz_markup_value", "10");
+    const category = await createCategory(prisma, "Top Up Game");
+    const { productId } = await importDigiflazzBrand(prisma, {
+      brand: "Mobile Legends",
+      categoryId: category.id,
+      rows: [
+        { buyerSkuCode: "ml100", productName: "Mobile Legends 100 Diamond", price: "16500", costPrice: "15000" },
+        { buyerSkuCode: "ml050", productName: "Mobile Legends 50 Diamond", price: "8800", costPrice: "8000" },
+      ],
+    });
+    // The game is on sale, so the new SKU goes live.
+    await prisma.product.update({ where: { id: productId }, data: { isActive: true } });
+    await prisma.denomination.updateMany({ where: { productId }, data: { isActive: true } });
+    digiflazzMock.getPriceList.mockResolvedValue([
+      item("ml100", "Mobile Legends 100 Diamond", 16000, false), // price moves, SKU goes down
+      item("ml050", "Mobile Legends 50 Diamond", 8000), // unchanged, stays live
+      item("ml250", "Mobile Legends 250 Diamond", 38000),
+    ]);
+
+    const res = await postJson(RUN, {});
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ ok: true, updated: 1, deactivated: 1, added: 1, reactivated: 0 });
+    const added = await prisma.denomination.findFirstOrThrow({ where: { supplierSku: "ml250" } });
+    expect(added.isActive).toBe(true);
+
+    const audit = await prisma.auditLog.findMany({ where: { action: "digiflazz_catalog_sync_manual" } });
+    expect(audit).toHaveLength(1);
+    expect(audit[0]!.adminId).toBe(adminId);
+    expect(audit[0]!.details).toBe("Started a manual Digiflazz sync; it updated 1 price(s), added 1 new SKU(s), reactivated 0 and deactivated 1.");
+  });
+
+  it("answers 409 without running when another catalog sync is already running", async () => {
+    await configureCreds();
+    expect(await claimDigiflazzCatalogSyncLease(prisma)).not.toBeNull();
+    digiflazzMock.getPriceList.mockResolvedValue([]);
+
+    const res = await postJson(RUN, {});
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toMatch(/already running/i);
+    expect(digiflazzMock.getPriceList).not.toHaveBeenCalled();
+  });
+
+  it("answers 502 with the supplier's message when Digiflazz refuses or cannot be reached, and frees the sync for the next attempt", async () => {
+    await configureCreds();
+    digiflazzMock.getPriceList.mockRejectedValueOnce(
+      new DigiflazzSupplierError("Digiflazz refused the price-list request: Limitasi request (rc 83)"),
+    );
+    const res = await postJson(RUN, {});
+    expect(res.statusCode).toBe(502);
+    expect(res.json().error).toContain("Limitasi request (rc 83)");
+
+    digiflazzMock.getPriceList.mockResolvedValue([]);
+    expect((await postJson(RUN, {})).statusCode).toBe(200);
+  });
+
+  it("answers a generic 500, not 'Digiflazz could not be reached', for an error that is not the supplier's", async () => {
+    await configureCreds();
+    digiflazzMock.getPriceList.mockRejectedValueOnce(new Error("database connection lost"));
+    const res = await postJson(RUN, {});
+    expect(res.statusCode).toBe(500);
+    expect(res.json().error).not.toMatch(/could not be reached/i);
+    expect(res.json().error).not.toContain("database connection lost");
+  });
+
+  it("reports an aborted run (circuit breaker) instead of 'no changes', and audits it as aborted", async () => {
+    await configureCreds();
+    const category = await createCategory(prisma, "Top Up Game");
+    await importDigiflazzBrand(prisma, {
+      brand: "Mobile Legends",
+      categoryId: category.id,
+      rows: [{ buyerSkuCode: "ml100", productName: "Mobile Legends 100 Diamond", price: "15000", costPrice: "15000" }],
+    });
+    digiflazzMock.getPriceList.mockResolvedValue([]); // no usable rows while a SKU is mapped
+
+    const res = await postJson(RUN, {});
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({
+      ok: true, aborted: true, abortReason: "no_usable_rows", updated: 0, deactivated: 0, added: 0, reactivated: 0,
+    });
+    const audit = await prisma.auditLog.findMany({ where: { action: "digiflazz_catalog_sync_manual" } });
+    expect(audit).toHaveLength(1);
+    expect(audit[0]!.details).toMatch(/aborted/i);
+    expect(audit[0]!.details).toMatch(/nothing was changed/i);
   });
 });

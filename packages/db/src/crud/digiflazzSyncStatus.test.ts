@@ -31,6 +31,8 @@ describe("Digiflazz catalog sync status store", () => {
       status: "success" as const,
       updated: 42,
       deactivated: 3,
+      added: 13,
+      reactivated: 2,
       abortReason: null,
       finishedAt: "2026-08-22T01:00:00.000Z",
     };
@@ -44,6 +46,8 @@ describe("Digiflazz catalog sync status store", () => {
       status: "success",
       updated: 10,
       deactivated: 1,
+      added: 4,
+      reactivated: 1,
       abortReason: null,
       finishedAt: "2026-08-22T00:00:00.000Z",
     });
@@ -51,6 +55,8 @@ describe("Digiflazz catalog sync status store", () => {
       status: "aborted" as const,
       updated: 0,
       deactivated: 0,
+      added: 0,
+      reactivated: 0,
       abortReason: "sharp_change" as const,
       finishedAt: "2026-08-22T01:00:00.000Z",
     };
@@ -76,6 +82,34 @@ describe("Digiflazz catalog sync status store", () => {
         abortReason: null,
         finishedAt: "2026-08-22T01:00:00.000Z",
       }),
+    );
+    expect(await getDigiflazzSyncStatus(db)).toBeNull();
+  });
+
+  it("reads a blob stored before added/reactivated existed with both counts at 0", async () => {
+    const db = mutableStubDb();
+    await setSetting(
+      db,
+      DIGIFLAZZ_SYNC_STATUS_KEY,
+      JSON.stringify({ status: "success", updated: 5, deactivated: 1, abortReason: null, finishedAt: "2026-08-22T01:00:00.000Z" }),
+    );
+    expect(await getDigiflazzSyncStatus(db)).toEqual({
+      status: "success",
+      updated: 5,
+      deactivated: 1,
+      added: 0,
+      reactivated: 0,
+      abortReason: null,
+      finishedAt: "2026-08-22T01:00:00.000Z",
+    });
+  });
+
+  it("treats a non-number added or reactivated count as a corrupt blob (null)", async () => {
+    const db = mutableStubDb();
+    await setSetting(
+      db,
+      DIGIFLAZZ_SYNC_STATUS_KEY,
+      JSON.stringify({ status: "success", updated: 5, deactivated: 1, added: "13", abortReason: null, finishedAt: "2026-08-22T01:00:00.000Z" }),
     );
     expect(await getDigiflazzSyncStatus(db)).toBeNull();
   });

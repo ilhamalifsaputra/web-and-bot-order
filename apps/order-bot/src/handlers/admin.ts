@@ -31,7 +31,7 @@ import {
   getSetting,
   setSetting,
   deleteSetting,
-  updateDenomination,
+  bulkSetDenominationsActive,
   listStockItemsForProduct,
   markStockDead,
   getBulkPricingForDenomination,
@@ -474,7 +474,8 @@ async function toggleProduct(ctx: MyContext, denominationId: number): Promise<vo
   }
   const newState = !p.isActive;
   await prisma.$transaction(async (tx) => {
-    await updateDenomination(tx, denominationId, { isActive: newState });
+    // The shared admin toggle: also takes the id off the Digiflazz sync's auto-reactivation list.
+    await bulkSetDenominationsActive(tx, [denominationId], newState);
     const admin = await getUserByTelegramId(tx, adminTg);
     await logAdminAction(tx, {
       adminId: requireAdminId(admin),

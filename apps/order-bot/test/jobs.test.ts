@@ -42,8 +42,10 @@ const dbMockState = vi.hoisted(() => ({
   progressFlushError: null as Error | null,
   // Task 10: per-test overrides for the two calls runDigiflazzCatalogSyncTick
   // makes. null => use the real implementation.
-  resyncDigiflazzCatalog: null as null | (() => Promise<{ updated: number; deactivated: number }>),
+  resyncDigiflazzCatalog: null as null | (() => Promise<{ updated: number; deactivated: number; added?: number; reactivated?: number }>),
   runDetectionForCatalog: null as null | (() => Promise<unknown>),
+  // When true, runDigiflazzCatalogSync answers as if another sync held the lease.
+  catalogSyncBusy: false,
 }));
 vi.mock("@app/db", async () => {
   const actual = await vi.importActual<typeof import("@app/db")>("@app/db");
@@ -57,6 +59,14 @@ vi.mock("@app/db", async () => {
       dbMockState.resyncDigiflazzCatalog
         ? dbMockState.resyncDigiflazzCatalog()
         : actual.resyncDigiflazzCatalog(...args),
+    // The tick goes through the lease wrapper; route its inner resync to the
+    // override above (the real wrapper would call the real resync directly).
+    runDigiflazzCatalogSync: async (...args: Parameters<typeof actual.runDigiflazzCatalogSync>) => {
+      if (dbMockState.catalogSyncBusy) return { status: "busy" as const };
+      if (!dbMockState.resyncDigiflazzCatalog) return actual.runDigiflazzCatalogSync(...args);
+      const r = await dbMockState.resyncDigiflazzCatalog();
+      return { status: "done" as const, result: { added: 0, reactivated: 0, ...r } };
+    },
     runDetectionForCatalog: (...args: Parameters<typeof actual.runDetectionForCatalog>) =>
       dbMockState.runDetectionForCatalog
         ? dbMockState.runDetectionForCatalog()
@@ -105,6 +115,7 @@ beforeEach(async () => {
   dbMockState.progressFlushError = null;
   dbMockState.resyncDigiflazzCatalog = null;
   dbMockState.runDetectionForCatalog = null;
+  dbMockState.catalogSyncBusy = false;
   await resetDb(prisma);
   sample = await buildSampleData(prisma);
 });
@@ -2340,6 +2351,28 @@ describe("runDigiflazzCatalogSyncTick (Task 10 shadow-mode detection pass)", () 
       expect(error.mock.calls.some((c) => String(c[1]).includes("Digiflazz catalog re-sync failed"))).toBe(true);
     } finally {
       error.mockRestore();
+    }
+  });
+
+  it("skips the run and the detection pass, logging one info line, when another catalog sync is already running", async () => {
+    const calls: string[] = [];
+    dbMockState.catalogSyncBusy = true;
+    dbMockState.resyncDigiflazzCatalog = async () => {
+      calls.push("resync");
+      return { updated: 1, deactivated: 0 };
+    };
+    dbMockState.runDetectionForCatalog = async () => {
+      calls.push("detect");
+      return {};
+    };
+    const info = vi.spyOn(logger, "info").mockImplementation(() => undefined as never);
+    try {
+      await expect(runDigiflazzCatalogSyncTick()).resolves.toBeUndefined();
+      expect(calls).toEqual([]);
+      const busyLines = info.mock.calls.filter((c) => String(c[0]).includes("already running"));
+      expect(busyLines).toHaveLength(1);
+    } finally {
+      info.mockRestore();
     }
   });
 });

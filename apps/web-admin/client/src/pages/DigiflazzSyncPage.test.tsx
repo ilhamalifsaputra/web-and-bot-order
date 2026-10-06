@@ -132,8 +132,13 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+// The Sync button first runs the full sync (POST .../sync/run), then fetches
+// the preview — so every preview mock below is preceded by this run answer.
+const RUN_OK = { ok: true, updated: 0, deactivated: 0, added: 0, reactivated: 0 };
+const NO_CREDENTIALS_ERROR = "Digiflazz credentials are not configured. Set them in Settings first.";
+
 async function syncWizard(user: ReturnType<typeof userEvent.setup>) {
-  vi.mocked(apiPost).mockResolvedValueOnce(PREVIEW_RESPONSE);
+  vi.mocked(apiPost).mockResolvedValueOnce(RUN_OK).mockResolvedValueOnce(PREVIEW_RESPONSE);
   const utils = render(<DigiflazzSyncPage />, { wrapper: Wrapper });
   await user.click(screen.getByRole("button", { name: /sync dari digiflazz/i }));
   await waitFor(() => screen.getByText(/mobile legends/i));
@@ -292,7 +297,7 @@ describe("DigiflazzSyncPage", () => {
 
   it("Task 4: shows the region distinctly on the importable-groups card title when present", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
-    vi.mocked(apiPost).mockResolvedValueOnce(REGION_PREVIEW_RESPONSE);
+    vi.mocked(apiPost).mockResolvedValueOnce(RUN_OK).mockResolvedValueOnce(REGION_PREVIEW_RESPONSE);
     render(<DigiflazzSyncPage />, { wrapper: Wrapper });
     await user.click(screen.getByRole("button", { name: /sync dari digiflazz/i }));
 
@@ -302,7 +307,7 @@ describe("DigiflazzSyncPage", () => {
 
   it("Task 4: shows the region distinctly on the existing-groups (\"Sudah ada\") list when present", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
-    vi.mocked(apiPost).mockResolvedValueOnce(REGION_PREVIEW_RESPONSE);
+    vi.mocked(apiPost).mockResolvedValueOnce(RUN_OK).mockResolvedValueOnce(REGION_PREVIEW_RESPONSE);
     render(<DigiflazzSyncPage />, { wrapper: Wrapper });
     await user.click(screen.getByRole("button", { name: /sync dari digiflazz/i }));
 
@@ -315,7 +320,7 @@ describe("DigiflazzSyncPage", () => {
 
   it("Task 4: renders exactly as before (no region badge) when an existing group has no region", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
-    vi.mocked(apiPost).mockResolvedValueOnce(EXISTING_NO_REGION_RESPONSE);
+    vi.mocked(apiPost).mockResolvedValueOnce(RUN_OK).mockResolvedValueOnce(EXISTING_NO_REGION_RESPONSE);
     render(<DigiflazzSyncPage />, { wrapper: Wrapper });
     await user.click(screen.getByRole("button", { name: /sync dari digiflazz/i }));
 
@@ -325,6 +330,82 @@ describe("DigiflazzSyncPage", () => {
     const item = screen.getByText((_, el) => el?.tagName === "LI" && /mobile legends/i.test(el.textContent ?? ""));
     expect(item).toHaveTextContent("Mobile Legends — 1 SKU(s)");
     expect(item).not.toHaveTextContent(/mobile legends\s*\(/i);
+  });
+});
+
+describe("DigiflazzSyncPage — Sync runs the full sync before the preview", () => {
+  const postedUrls = () => vi.mocked(apiPost).mock.calls.map(([url]) => url);
+
+  it("runs the sync first, then fetches the preview, and shows the run summary without zero parts", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.mocked(apiPost)
+      .mockResolvedValueOnce({ ok: true, updated: 5, deactivated: 1, added: 13, reactivated: 0 })
+      .mockResolvedValueOnce(PREVIEW_RESPONSE);
+    render(<DigiflazzSyncPage />, { wrapper: Wrapper });
+    await user.click(screen.getByRole("button", { name: /sync dari digiflazz/i }));
+
+    await waitFor(() => screen.getByText(/mobile legends/i));
+    expect(postedUrls()).toEqual(["/api/catalog/digiflazz/sync/run", "/api/catalog/digiflazz/sync/preview"]);
+    const summary = screen.getByText(/sku baru ditambahkan/i);
+    expect(summary).toHaveTextContent("13 SKU baru ditambahkan, 1 dinonaktifkan, 5 harga diperbarui");
+    expect(summary).not.toHaveTextContent(/diaktifkan lagi/i);
+  });
+
+  it("says the sync was aborted (not 'no change') when the server reports an aborted run", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.mocked(apiPost)
+      .mockResolvedValueOnce({ ...RUN_OK, aborted: true, abortReason: "sharp_change" })
+      .mockResolvedValueOnce(PREVIEW_RESPONSE);
+    render(<DigiflazzSyncPage />, { wrapper: Wrapper });
+    await user.click(screen.getByRole("button", { name: /sync dari digiflazz/i }));
+
+    await waitFor(() => screen.getByText(/mobile legends/i));
+    expect(
+      screen.getByText(
+        "Sync dibatalkan karena respons Digiflazz tidak wajar; tidak ada yang diubah. Cek koneksi Digiflazz.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/tidak ada perubahan/i)).not.toBeInTheDocument();
+  });
+
+  it("says there was no change when every count is zero", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    await syncWizard(user);
+    expect(screen.getByText(/tidak ada perubahan/i)).toBeInTheDocument();
+  });
+
+  it("shows a busy error from the run but still loads the preview", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.mocked(apiPost)
+      .mockRejectedValueOnce(new Error("A Digiflazz sync is already running (the hourly sync or another admin's). Please wait a few minutes and try again."))
+      .mockResolvedValueOnce(PREVIEW_RESPONSE);
+    render(<DigiflazzSyncPage />, { wrapper: Wrapper });
+    await user.click(screen.getByRole("button", { name: /sync dari digiflazz/i }));
+
+    await waitFor(() => screen.getByText(/mobile legends/i));
+    expect(screen.getByText(/already running/i)).toBeInTheDocument();
+    expect(postedUrls()).toEqual(["/api/catalog/digiflazz/sync/run", "/api/catalog/digiflazz/sync/preview"]);
+  });
+
+  it("skips the preview when the run reports missing Digiflazz credentials", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.mocked(apiPost).mockRejectedValueOnce(new Error(NO_CREDENTIALS_ERROR));
+    render(<DigiflazzSyncPage />, { wrapper: Wrapper });
+    await user.click(screen.getByRole("button", { name: /sync dari digiflazz/i }));
+
+    await waitFor(() => expect(screen.getByText(/credentials are not configured/i)).toBeInTheDocument());
+    expect(screen.getAllByText(/credentials are not configured/i)).toHaveLength(1);
+    expect(postedUrls()).toEqual(["/api/catalog/digiflazz/sync/run"]);
+  });
+
+  it("explains on the \"Sudah ada\" card that existing games are kept up to date automatically", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.mocked(apiPost).mockResolvedValueOnce(RUN_OK).mockResolvedValueOnce(EXISTING_NO_REGION_RESPONSE);
+    render(<DigiflazzSyncPage />, { wrapper: Wrapper });
+    await user.click(screen.getByRole("button", { name: /sync dari digiflazz/i }));
+
+    await waitFor(() => screen.getByText(/sudah ada/i));
+    expect(screen.getByText(/setiap jam dan saat anda menekan sync/i)).toBeInTheDocument();
   });
 });
 
@@ -346,6 +427,8 @@ describe("DigiflazzSyncPage — hourly sync status card", () => {
       status: "success",
       updated: 5,
       deactivated: 2,
+      added: 0,
+      reactivated: 0,
       abortReason: null,
       finishedAt: new Date().toISOString(),
     });
@@ -356,12 +439,31 @@ describe("DigiflazzSyncPage — hourly sync status card", () => {
     expect(message).toHaveTextContent(/just now/i);
   });
 
+  it("includes the added and reactivated counts in the success message", async () => {
+    render(<DigiflazzSyncPage />, { wrapper: Wrapper });
+    MockEventSource.instances[0].emit({
+      status: "success",
+      updated: 5,
+      deactivated: 2,
+      added: 13,
+      reactivated: 3,
+      abortReason: null,
+      finishedAt: new Date().toISOString(),
+    });
+    await waitFor(() => expect(screen.getByText(/last synced/i)).toBeInTheDocument());
+    const message = screen.getByText(/last synced/i);
+    expect(message).toHaveTextContent("13 new SKU(s) added");
+    expect(message).toHaveTextContent("3 reactivated");
+  });
+
   it("renders the sharp_change-specific abort message", async () => {
     render(<DigiflazzSyncPage />, { wrapper: Wrapper });
     MockEventSource.instances[0].emit({
       status: "aborted",
       updated: 0,
       deactivated: 0,
+      added: 0,
+      reactivated: 0,
       abortReason: "sharp_change",
       finishedAt: new Date().toISOString(),
     });
@@ -376,6 +478,8 @@ describe("DigiflazzSyncPage — hourly sync status card", () => {
       status: "aborted",
       updated: 0,
       deactivated: 0,
+      added: 0,
+      reactivated: 0,
       abortReason: "no_usable_rows",
       finishedAt: new Date().toISOString(),
     });
@@ -426,12 +530,14 @@ describe("DigiflazzSyncPage — preview persistence and elapsed-time counter", (
     vi.useFakeTimers();
     try {
       let resolvePreview: (value: typeof PREVIEW_RESPONSE) => void = () => {};
-      vi.mocked(apiPost).mockImplementationOnce(
-        () =>
-          new Promise((resolve) => {
-            resolvePreview = resolve;
-          }),
-      );
+      vi.mocked(apiPost)
+        .mockResolvedValueOnce(RUN_OK)
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              resolvePreview = resolve;
+            }),
+        );
       render(<DigiflazzSyncPage />, { wrapper: Wrapper });
 
       fireEvent.click(screen.getByRole("button", { name: /sync dari digiflazz/i }));

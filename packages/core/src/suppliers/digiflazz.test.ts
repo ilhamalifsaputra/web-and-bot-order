@@ -7,6 +7,7 @@ import {
   parseProductRegion,
   stripRegionSuffix,
   digiflazzGroupKey,
+  DigiflazzSupplierError,
 } from "./digiflazz";
 import { logger } from "../logger";
 
@@ -208,6 +209,33 @@ describe("getPriceList", () => {
     stubFetchJson({ data: null });
     const list = await getPriceList(CREDS);
     expect(list).toEqual([]);
+  });
+
+  it("throws the supplier's own message when Digiflazz answers with an error instead of a price list", async () => {
+    stubFetchJson({ data: { rc: "83", message: "Limitasi request, coba beberapa saat lagi" } });
+    const err = await getPriceList(CREDS).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(DigiflazzSupplierError);
+    expect((err as Error).message).toContain("Limitasi request, coba beberapa saat lagi");
+    expect((err as Error).message).toContain("83");
+    expect((err as Error).message).not.toContain(CREDS.apiKey);
+  });
+
+  it("still returns an empty list for a genuinely empty price list", async () => {
+    stubFetchJson({ data: [] });
+    expect(await getPriceList(CREDS)).toEqual([]);
+  });
+
+  it("reports a network failure as a supplier error, without the API key", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error(`boom ${CREDS.apiKey}`)));
+    const err = await getPriceList(CREDS).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(DigiflazzSupplierError);
+    expect((err as Error).message).toMatch(/network error/);
+    expect((err as Error).message).not.toContain(CREDS.apiKey);
+  });
+
+  it("reports a non-2xx response as a supplier error", async () => {
+    stubFetchJson({}, { ok: false, status: 503 });
+    await expect(getPriceList(CREDS)).rejects.toBeInstanceOf(DigiflazzSupplierError);
   });
 
   it("signs the price-list request with the fixed 'pricelist' command signature", async () => {

@@ -247,9 +247,8 @@ export default function CheckoutPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { data: ctx } = useShopContext();
-  // Tailwind's lg breakpoint (1024px) — the point where the grid actually goes
-  // two-column (methods + summary), so the summary stays in view while scrolling.
-  // Decides which of the two submit controls exists — see the sticky bar below.
+  // Tailwind's lg breakpoint (1024px) switches between the in-card desktop
+  // submit button and the mobile sticky bar below.
   const isDesktop = useIsWideDesktop();
   const { data, error } = useQuery({
     queryKey: ["checkout", ctx?.currency ?? null, ctx?.lang, ctx?.pricing_context],
@@ -404,8 +403,8 @@ export default function CheckoutPage() {
       return (
         <div aria-busy="true" aria-label={t("web.loading")}>
           <Skeleton className="mb-5 h-8 w-48" />
-          <div className="grid items-start gap-6 lg:grid-cols-3">
-            <div className="space-y-6 lg:col-span-2">
+          <div className="grid items-start gap-6">
+            <div className="space-y-6">
               <Card className="space-y-3">
                 <Skeleton className="h-5 w-40" />
                 {[0, 1, 2].map((i) => (
@@ -518,9 +517,9 @@ export default function CheckoutPage() {
         // height at the end of the page instead. StickyPurchaseBar already
         // pads its own bottom for the iOS safe area, so this only needs a
         // plain utility, not a re-derived env()/calc() of its own.
-        className={cn("grid lg:grid-cols-3 gap-6 items-start", !isDesktop && "pb-28")}
+        className={cn("grid gap-6 items-start", !isDesktop && "pb-28")}
       >
-        <div className="lg:col-span-2 space-y-6">
+        <div className="space-y-6">
           {page.items.some((item) => item.canonical) && (
             <div className="card card-pad space-y-3">
               {page.items.map((item) => item.canonical && <div key={item.denomination_id} className="break-words [overflow-wrap:anywhere]">
@@ -544,7 +543,12 @@ export default function CheckoutPage() {
           )}
         </div>
 
-        <div className="lg:sticky lg:top-4">
+        {/* Use live totals so voucher discounts update wallet eligibility. */}
+        <div>
+          <PaymentMethodSelector data={totals} method={method} onSelect={setMethod} />
+        </div>
+
+        <div className="min-w-0">
           <OrderSummaryCard
             totals={totals}
             method={method}
@@ -563,20 +567,6 @@ export default function CheckoutPage() {
             backTo={{ label: t("web.back_to_cart"), to: "/cart" }}
           />
         </div>
-
-        {/* Payment method — full-width row below both columns (Task 5): see
-            InstantBuyPage.tsx's matching call site for the grid-auto-placement
-            reasoning on why this must stay in DOM order AFTER OrderSummaryCard.
-            `totals`, not `page` — `page` is seeded once from the initial GET
-            and never updated, so gating the wallet-credit rows on it would use
-            a stale, pre-voucher total; `totals` is the live payload (re-set on
-            every voucher-preview response) and shares every other field
-            (gateway flags, wallet balances) with `page` — only
-            `total`/`total_usdt` differ, which is exactly what needs to be live
-            for wallet-sufficiency to track the applied voucher. */}
-        <div className="lg:col-span-3">
-          <PaymentMethodSelector data={totals} method={method} onSelect={setMethod} />
-        </div>
       </form>
 
       {/* Sticky mobile total: on a phone the summary card stacks *below* the method
@@ -587,8 +577,7 @@ export default function CheckoutPage() {
           after any voucher preview) next to the only submit control mobile
           has, reusing the summary button's mutation and gating verbatim: no
           second request path, no second notion of "ready to pay". Desktop
-          keeps the in-card button — there the summary sits beside the methods
-          and is already in view. The IDR figure only, matching the previous
+          keeps the in-card button below the methods. The IDR figure only, matching the previous
           hand-rolled bar: the USDT hint stays in the summary card, where
           there is room for it without crowding the button off a 320px row. */}
       {!isDesktop && (

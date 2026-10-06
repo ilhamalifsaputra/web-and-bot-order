@@ -156,10 +156,7 @@ export default function OrderSummaryCard({
   const priceAndPay = idrRailPriceAndPay(method, totals, currency, fx);
 
   return (
-    // A single grid child (space-y-6 stacks the two cards) rather than a bare
-    // Fragment: CheckoutPage.tsx renders this as the third item of its
-    // `grid lg:grid-cols-3` form, and a Fragment would hand the grid two
-    // separate top-level children instead of one, breaking the column split.
+    // Keep the coupon and summary together in normal flow after payment.
     <div className="space-y-6">
       <Card>
         <Label htmlFor="voucher_code">{t("web.voucher_label")}</Label>
@@ -169,7 +166,7 @@ export default function OrderSummaryCard({
             value={voucherInput}
             onChange={(e) => onVoucherInputChange(e.target.value)}
             onKeyDown={onVoucherKeyDown}
-            className="uppercase"
+            className="min-w-0 uppercase"
             placeholder={t("web.voucher_placeholder")}
             maxLength={32}
             invalid={totals.error_key ? true : undefined}

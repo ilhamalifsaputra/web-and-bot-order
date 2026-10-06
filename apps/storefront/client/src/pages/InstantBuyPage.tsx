@@ -113,8 +113,8 @@ export default function InstantBuyPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { data: ctx } = useShopContext();
-  // Tailwind's lg breakpoint (1024px) — the point where the grid actually goes
-  // two-column (content + summary), so the summary stays in view while scrolling.
+  // Tailwind's lg breakpoint (1024px) switches between the in-card desktop
+  // submit button and the mobile sticky bar; form sections stay in normal flow.
   const isDesktop = useIsWideDesktop();
 
   // Same query key ProductPage.tsx's own useQuery uses for this endpoint —
@@ -423,8 +423,8 @@ export default function InstantBuyPage() {
         </Alert>
       )}
 
-      <form onSubmit={(e) => e.preventDefault()} className="grid lg:grid-cols-3 gap-6 items-start">
-        <div className="lg:col-span-2 space-y-6">
+      <form onSubmit={(e) => e.preventDefault()} className="grid gap-6 items-start">
+        <div className="space-y-6">
           {/* 1. Product header — image/title/description, ProductPage.tsx's
               own JSX pattern, folded into one card so it stacks with the rest
               of this page's sections. */}
@@ -537,9 +537,24 @@ export default function InstantBuyPage() {
 
         </div>
 
+        {/* 5. Payment method — before the coupon and summary, using live
+            totals so voucher discounts update wallet eligibility. */}
+        <div>
+          {page && totals ? (
+            <PaymentMethodSelector data={totals} method={method} onSelect={setMethod} />
+          ) : (
+            <div className="card card-pad space-y-3" aria-busy="true" aria-label={t("web.loading")}>
+              <Skeleton className="h-5 w-40" />
+              {[0, 1, 2].map((i) => (
+                <Skeleton key={i} className="h-14 w-full rounded-xl" />
+              ))}
+            </div>
+          )}
+        </div>
+
         {/* 6. Order summary — voucher + live totals + the single submit
             button (desktop inline here; mobile via the sticky bar below). */}
-        <div className="lg:sticky lg:top-4">
+        <div className="min-w-0">
           {page && totals ? (
             <OrderSummaryCard
               totals={totals}
@@ -564,29 +579,6 @@ export default function InstantBuyPage() {
               <Skeleton className="h-4 w-full" />
               <Skeleton className="h-4 w-2/3" />
               <Skeleton className="h-10 w-full" />
-            </div>
-          )}
-        </div>
-
-        {/* 5. Payment method — full-width row below both columns (Task 5):
-            with grid-cols-3 and the left column (col-span-2) plus
-            OrderSummaryCard (1 implicit column) already filling row 1, a
-            col-span-3 item can't fit there and auto-placement wraps it to
-            its own full-width row 2. Must stay in DOM order AFTER
-            OrderSummaryCard — placed before it would instead push
-            OrderSummaryCard itself down to row 2. `totals`, not `page` —
-            see CheckoutPage.tsx's matching call site for why: `page`
-            doesn't track a voucher preview response, and wallet-credit
-            sufficiency has to be gated on the live, post-voucher total. */}
-        <div className="lg:col-span-3">
-          {page && totals ? (
-            <PaymentMethodSelector data={totals} method={method} onSelect={setMethod} />
-          ) : (
-            <div className="card card-pad space-y-3" aria-busy="true" aria-label={t("web.loading")}>
-              <Skeleton className="h-5 w-40" />
-              {[0, 1, 2].map((i) => (
-                <Skeleton key={i} className="h-14 w-full rounded-xl" />
-              ))}
             </div>
           )}
         </div>

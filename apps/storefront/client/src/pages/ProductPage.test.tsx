@@ -768,6 +768,14 @@ describe("ProductPage sharing and image formats", () => {
     expect(h1.parentElement).toHaveClass("grid-cols-1", "md:grid-cols-2");
   });
 
+  it("lets the plan column shrink so a long unbroken plan name wraps instead of overflowing", async () => {
+    renderProduct("netflix-premium", () => productData);
+    const h1 = await screen.findByRole("heading", { name: "Netflix Premium" });
+    const picker = h1.parentElement?.querySelector("#product-detail");
+    expect(picker).toHaveClass("min-w-0");
+    expect(picker?.querySelector("#denom-list")).toHaveClass("grid-cols-1");
+  });
+
   it("asks phones for the numeric keypad on the qty field", async () => {
     renderProduct("netflix-premium", () => productData);
     await screen.findByRole("heading", { name: "Netflix Premium" });

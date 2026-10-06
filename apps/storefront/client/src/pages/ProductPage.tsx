@@ -346,13 +346,13 @@ export default function ProductPage() {
         </div>
 
         {/* Facts + denomination picker + actions */}
-        <div id="product-detail">
+        <div id="product-detail" className="min-w-0">
           {/* Denomination cards — pick a plan (never a dropdown). The cheapest
               active denomination is preselected; selecting another updates the
               live price / stock / warranty and the checkout payload below. */}
           <div className="mt-6">
             <h2 className="section-title mb-3">{t("web.choose_plan")}</h2>
-            <div id="denom-list" className="grid gap-3">
+            <div id="denom-list" className="grid grid-cols-1 gap-3">
               {denominations.map((d) => (
                 <DenominationCard
                   key={d.id}

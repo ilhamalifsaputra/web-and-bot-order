@@ -29,7 +29,10 @@
  * terminal, bounded by the 24h backoff window in digiflazzBackoff.ts. An
  * explicit "Gagal" is never retried — the same input would just fail
  * identically again — and goes straight to a terminal, admin-alerted
- * failure instead.
+ * failure instead. The same holds for a permanent request error
+ * (DigiflazzRequestError with retryable: false — a non-429 4xx or a reply
+ * without transaction data); only retryable request errors (timeout,
+ * network, 5xx, 429, unparseable body) take the transient retry path.
  *
  * This whole argument rests on createTransaction's refId-dedup behavior
  * (@app/core/suppliers/digiflazz) actually working as documented — that
@@ -54,9 +57,12 @@ import {
   parseProductRegion,
   digiflazzGroupKey,
   stripRegionSuffix,
+  DigiflazzRequestError,
   type DigiflazzCreds,
   type DigiflazzPriceListItem,
+  type DigiflazzStatus,
 } from "@app/core/suppliers/digiflazz";
+import { DigiflazzTimingEvent, elapsedMs, logDigiflazzTimingEvent } from "@app/core/suppliers/digiflazzTiming";
 import { NicknameService } from "@app/core/nickname/service";
 import type { Prisma } from "@prisma/client";
 import { prisma as sharedPrisma, type PrismaClient } from "../client";
@@ -240,6 +246,9 @@ type DigiflazzCandidateOrder = {
   currency: string;
   digiflazzDispatchedAt: Date | null;
   digiflazzAttempts: number;
+  /** Only read for the timing log events; optional so a caller that never
+   * loaded it simply gets the payment-relative durations omitted. */
+  paidAt?: Date | null;
   items: {
     quantity: number;
     product: {
@@ -468,8 +477,8 @@ export type DigiflazzOutcome =
  *   terminal. If the 24h window is exhausted, falls through to the same
  *   terminal handling "terminal" gets below (same remedy either way: a
  *   human must finish the order).
- * - "terminal" (explicit "Gagal", or a structural resolution failure like
- *   a missing supplierSku) never retries — the same input would fail
+ * - "terminal" (explicit "Gagal", a permanent DigiflazzRequestError, or a
+ *   structural resolution failure like a missing supplierSku) never retries — the same input would fail
  *   identically again — and immediately alerts admins via
  *   alertDigiflazzDispatchFailed, same as today's Gagal handling.
  *
@@ -700,7 +709,7 @@ export async function dispatchPendingDigiflazzOrders(db: PrismaClient): Promise<
   await forEachWithConcurrency(candidates, DIGIFLAZZ_DISPATCH_CONCURRENCY, (order) =>
     // Recover the durable status message for paid orders created before this
     // feature (the direct path skips it — settlement already upserts it).
-    processDigiflazzOrder(db, creds, order, summary, { ensureFulfillmentMessage: true }),
+    processDigiflazzOrder(db, creds, order, summary, { ensureFulfillmentMessage: true, trigger: "cron" }),
   );
   return summary;
 }
@@ -808,7 +817,7 @@ async function dispatchOneDigiflazzOrder(
   if (!order) return summary;
   context.orderCode = order.orderCode;
   const creds = await getDigiflazzCreds(db);
-  await processDigiflazzOrder(db, creds, order, summary, { ensureFulfillmentMessage: false });
+  await processDigiflazzOrder(db, creds, order, summary, { ensureFulfillmentMessage: false, trigger: "direct" });
   return summary;
 }
 
@@ -859,7 +868,7 @@ async function processDigiflazzOrder(
   creds: DigiflazzCreds | null,
   order: DigiflazzCandidateOrder,
   summary: DigiflazzDispatchSummary,
-  options: { ensureFulfillmentMessage: boolean },
+  options: { ensureFulfillmentMessage: boolean; trigger: "direct" | "cron" },
 ): Promise<void> {
   if (options.ensureFulfillmentMessage) await ensureFulfillmentMessage(db, order.id);
   if (!creds) {
@@ -912,6 +921,19 @@ async function processDigiflazzOrder(
   // still its pre-claim null here); for a recheck it's the already-set
   // original dispatch time, unchanged by this claim.
   const dispatchedAt = order.digiflazzDispatchedAt ?? claimNow;
+  const attempt = order.digiflazzAttempts + 1;
+  logDigiflazzTimingEvent(
+    {
+      event: DigiflazzTimingEvent.FULFILLMENT_CLAIMED,
+      orderId: order.id,
+      orderCode: order.orderCode,
+      trigger: options.trigger,
+      claimKind: isFreshDispatch ? "fresh" : "recheck",
+      attempt,
+      delayFromPaymentMs: elapsedMs(order.paidAt, claimNow),
+    },
+    `The ${options.trigger === "direct" ? "instant dispatch" : "5-second recovery cron"} claimed order ${order.orderCode} for ${isFreshDispatch ? "its first Digiflazz request" : `Digiflazz recheck attempt ${attempt}`}.`,
+  );
 
   // I6/N1 fixes: resolveSingleDigiflazzItem is the single shared rule for
   // "find the order's Digiflazz-routed item(s) and refuse unless there is
@@ -946,16 +968,36 @@ async function processDigiflazzOrder(
     return;
   }
 
-  try {
-    const result = await createTransaction(creds, {
+  logDigiflazzTimingEvent(
+    {
+      event: DigiflazzTimingEvent.DIGIFLAZZ_REQUEST,
+      orderId: order.id,
+      orderCode: order.orderCode,
       refId: order.orderCode,
-      buyerSkuCode: supplierSku,
-      customerNo,
-    });
+      skuCode: supplierSku,
+      attempt,
+    },
+    `Sending Digiflazz request attempt ${attempt} for order ${order.orderCode} (buyer SKU code ${supplierSku}).`,
+  );
+  const requestStartedAt = Date.now();
+  try {
+    let result: Awaited<ReturnType<typeof createTransaction>>;
+    try {
+      result = await createTransaction(creds, {
+        refId: order.orderCode,
+        buyerSkuCode: supplierSku,
+        customerNo,
+      });
+    } catch (requestErr) {
+      logDigiflazzResponse(order, { status: "error", durationMs: Date.now() - requestStartedAt, error: requestErr });
+      throw requestErr;
+    }
+    const apiDurationMs = Date.now() - requestStartedAt;
+    logDigiflazzResponse(order, { status: result.status, durationMs: apiDurationMs });
 
     if (result.status === "Sukses") {
       try {
-        await fulfillDigiflazzOrder(db, order.id, { sn: result.sn ?? "" });
+        await fulfillDigiflazzOrder(db, order.id, { sn: result.sn ?? "", digiflazzApiDurationMs: apiDurationMs });
         summary.delivered++;
         logger.info(`Digiflazz auto-delivered order ${order.orderCode} (buyerSkuCode ${supplierSku})`);
       } catch (fulfillErr) {
@@ -992,6 +1034,7 @@ async function processDigiflazzOrder(
         );
       } else {
         summary.failed++;
+        logDigiflazzOrderCompleted(order, "Gagal", dispatchedAt, new Date(), apiDurationMs);
       }
     } else {
       const outcome = await recordDigiflazzOutcome(
@@ -1010,20 +1053,103 @@ async function processDigiflazzOrder(
       );
       summary.failed++;
       void outcome; // always "failed" for kind:"terminal" — see recordDigiflazzOutcome
+      logDigiflazzOrderCompleted(order, "Gagal", dispatchedAt, new Date(), apiDurationMs);
     }
   } catch (err) {
     // The HTTP call itself failed (network error, timeout, malformed
-    // response — see @app/core/suppliers/digiflazz's fetchDigiflazzJson).
-    // err's message is already credential-free (the client's own
-    // guarantee); never log err.cause or the request body. Unlike
-    // before this task, this is now RETRIED (recordDigiflazzOutcome's
-    // "transient_error" branch) rather than immediately terminal — see
-    // this file's module doc comment for why that's safe.
+    // response, refusal — see @app/core/suppliers/digiflazz's
+    // fetchDigiflazzJson). err's message is already credential-free (the
+    // client's own guarantee); never log err.cause or the request body.
+    //
+    // A permanent DigiflazzRequestError (a non-429 4xx, or a 2xx without
+    // transaction data) fails the same way on every retry, so it goes
+    // straight to the terminal admin-review outcome instead of 24 hours of
+    // retries. supplierGaveReason is true because the reason below already
+    // explains the failure; the account/region diagnostic would add nothing.
+    if (err instanceof DigiflazzRequestError && !err.retryable) {
+      await recordDigiflazzOutcome(
+        db,
+        order,
+        { kind: "terminal", reason: describePermanentDigiflazzRequestError(err), supplierGaveReason: true },
+        dispatchedAt,
+      );
+      summary.failed++;
+      logDigiflazzOrderCompleted(order, "Gagal", dispatchedAt, new Date(), undefined);
+      return;
+    }
+    // Everything else (timeout, network, 5xx, 429, unparseable body, or an
+    // untyped error) is RETRIED with the same ref id (recordDigiflazzOutcome's
+    // "transient_error" branch) — see this file's module doc comment for why
+    // that's safe.
     const message = err instanceof Error ? err.message : String(err);
     const outcome = await recordDigiflazzOutcome(db, order, { kind: "transient_error", message }, dispatchedAt);
     if (outcome === "pending") summary.pending++;
-    else summary.failed++;
+    else {
+      summary.failed++;
+      logDigiflazzOrderCompleted(order, "Gagal", dispatchedAt, new Date(), undefined);
+    }
   }
+}
+
+/** The admin-facing reason (digiflazzFailureDetail, alert, audit log) for a
+ * request Digiflazz refused permanently. Built only from the error's kind and
+ * HTTP status — never from a response body or the request. */
+function describePermanentDigiflazzRequestError(err: DigiflazzRequestError): string {
+  if (err.kind === "rejected") {
+    return "Digiflazz answered without any transaction data, so the request was treated as refused and not retried — check this order in the Digiflazz dashboard before finishing it by hand";
+  }
+  return `Digiflazz refused the request with HTTP ${err.httpStatus ?? "4xx"}, so it was not retried — check the Digiflazz credentials, the product code and the player details, then finish this order by hand`;
+}
+
+function logDigiflazzResponse(
+  order: DigiflazzCandidateOrder,
+  response: { status: DigiflazzStatus | "error"; durationMs: number; error?: unknown },
+): void {
+  const typed = response.error instanceof DigiflazzRequestError ? response.error : null;
+  const errorKind = response.status === "error" ? (typed?.kind ?? "unknown") : undefined;
+  const retryable = response.status === "error" ? (typed ? typed.retryable : true) : undefined;
+  logDigiflazzTimingEvent(
+    {
+      event: DigiflazzTimingEvent.DIGIFLAZZ_RESPONSE,
+      orderId: order.id,
+      orderCode: order.orderCode,
+      refId: order.orderCode,
+      status: response.status,
+      durationMs: response.durationMs,
+      errorKind,
+      retryable,
+    },
+    response.status === "error"
+      ? `The Digiflazz request for order ${order.orderCode} failed after ${response.durationMs} ms (${errorKind}); ${retryable ? "the same ref id will be tried again" : "it will not be retried"}.`
+      : `Digiflazz answered ${response.status} for order ${order.orderCode} in ${response.durationMs} ms.`,
+  );
+}
+
+/** order.completed for a terminal outcome reached in this module. A Sukses
+ * completion is logged by fulfillDigiflazzOrder itself, after its commit. */
+function logDigiflazzOrderCompleted(
+  order: { id: number; orderCode: string; paidAt?: Date | null },
+  outcome: "Sukses" | "Gagal",
+  firstDispatchedAt: Date | null | undefined,
+  completedAt: Date,
+  digiflazzApiDurationMs: number | undefined,
+): void {
+  const paymentToCompletionMs = elapsedMs(order.paidAt, completedAt);
+  logDigiflazzTimingEvent(
+    {
+      event: DigiflazzTimingEvent.ORDER_COMPLETED,
+      orderId: order.id,
+      orderCode: order.orderCode,
+      outcome,
+      paymentToFulfillmentMs: elapsedMs(order.paidAt, firstDispatchedAt),
+      digiflazzApiDurationMs,
+      digiflazzPendingDurationMs: elapsedMs(firstDispatchedAt, completedAt),
+      paymentToCompletionMs,
+    },
+    outcome === "Sukses"
+      ? `Order ${order.orderCode} was delivered by Digiflazz${paymentToCompletionMs !== undefined ? ` ${paymentToCompletionMs} ms after payment` : ""}.`
+      : `Order ${order.orderCode} failed at Digiflazz${paymentToCompletionMs !== undefined ? ` ${paymentToCompletionMs} ms after payment` : ""} and is waiting for an admin.`,
+  );
 }
 
 /**
@@ -1044,7 +1170,12 @@ async function processDigiflazzOrder(
 export async function fulfillDigiflazzOrder(
   db: Db,
   orderId: number,
-  args: { sn: string },
+  args: {
+    sn: string;
+    /** Duration of the createTransaction call that reported Sukses, for the
+     * order.completed timing event; omitted when the caller did not time it. */
+    digiflazzApiDurationMs?: number;
+  },
 ) {
   const order = await getOrder(db, orderId);
   if (!order) throw new ValidationError("error.order_not_found");
@@ -1084,6 +1215,9 @@ export async function fulfillDigiflazzOrder(
   // leaves PROCESSING retryable with the original supplier reference.
   if ("$transaction" in db) await db.$transaction(complete);
   else await complete(db);
+  // Logged right after the DELIVERED commit (the moment the buyer's order is
+  // done), before the side effects below, which have their own failure path.
+  logDigiflazzOrderCompleted(order, "Sukses", order.digiflazzDispatchedAt, now, args.digiflazzApiDurationMs);
 
   await finalizeDeliverySideEffects(db, order, now);
 

@@ -90,8 +90,10 @@ import {
   DIGIFLAZZ_RECHECK_CLAIM_LEASE_MS,
   dispatchDigiflazzOrderNow,
   triggerDigiflazzDispatch,
+  settlePaidOrder,
 } from "@app/db";
 import { logger } from "@app/core/logger";
+import { DigiflazzRequestError } from "@app/core/suppliers/digiflazz";
 import { OrderStatus, DeliveryType, NotificationEvent } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { buildCustomerDataUnit } from "@app/core/nickname/fieldMapping";
@@ -1400,6 +1402,308 @@ describe("dispatchPendingDigiflazzOrders — bounded concurrency and paidAt orde
 
     for (const gate of gates.values()) gate.resolve({ refId: "", status: "Pending", sn: null, message: null, price: null });
     expect(await tick).toEqual({ claimed: 6, delivered: 0, pending: 6, failed: 0 });
+  });
+});
+
+describe("typed Digiflazz request errors in the dispatch outcome (instant dispatch Task 3)", () => {
+  it("a permanent HTTP 4xx is a terminal outcome right away, alerts admins, skips the diagnostic, and is never retried", async () => {
+    await setSetting(prisma, ADMIN_IDS_KEY, "555");
+    const order = await makeProcessingDigiflazzOrder();
+    digiflazzMock.createTransaction.mockRejectedValue(
+      new DigiflazzRequestError("Digiflazz transaction HTTP 401", "http_4xx", 401),
+    );
+
+    expect(await dispatchDigiflazzOrderNow(prisma, order.id)).toEqual({ claimed: 1, delivered: 0, pending: 0, failed: 1 });
+    const refreshed = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(refreshed.status).toBe(OrderStatus.PROCESSING);
+    expect(refreshed.digiflazzStatus).toBe("failed");
+    expect(refreshed.digiflazzNextRecheckAt).toBeNull();
+    expect(refreshed.digiflazzAttempts).toBe(0);
+    expect(refreshed.digiflazzFailureDetail).toMatch(/HTTP 401/);
+    expect(refreshed.digiflazzFailureDetail).toMatch(/not retried/i);
+    expect(refreshed.digiflazzFailureDetail).not.toContain("shopkey");
+    expect(kokinpayHttpMock.checkGameNickname).not.toHaveBeenCalled();
+    expect(
+      await prisma.notificationOutbox.findFirst({ where: { orderId: order.id, event: NotificationEvent.ORDER_PIPELINE_FAILED } }),
+    ).not.toBeNull();
+
+    // Neither the cron nor another direct dispatch tries again.
+    expect(await dispatchPendingDigiflazzOrders(prisma)).toEqual({ claimed: 0, delivered: 0, pending: 0, failed: 0 });
+    expect(await dispatchDigiflazzOrderNow(prisma, order.id)).toEqual({ claimed: 0, delivered: 0, pending: 0, failed: 0 });
+    expect(digiflazzMock.createTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("a response with no transaction data is terminal too, and tells the admin to check the Digiflazz dashboard", async () => {
+    const order = await makeProcessingDigiflazzOrder();
+    digiflazzMock.createTransaction.mockRejectedValue(
+      new DigiflazzRequestError("Digiflazz transaction rejected: missing data in response", "rejected"),
+    );
+    expect(await dispatchPendingDigiflazzOrders(prisma)).toEqual({ claimed: 1, delivered: 0, pending: 0, failed: 1 });
+    const refreshed = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(refreshed.digiflazzStatus).toBe("failed");
+    expect(refreshed.digiflazzFailureDetail).toMatch(/dashboard/i);
+  });
+
+  it.each([
+    ["http_5xx", 502],
+    ["http_429", 429],
+    ["network", null],
+    ["unparseable", null],
+  ] as const)("a retryable %s error keeps the transient retry path", async (kind, status) => {
+    const order = await makeProcessingDigiflazzOrder();
+    digiflazzMock.createTransaction.mockRejectedValue(new DigiflazzRequestError("Digiflazz transaction failed", kind, status));
+    expect(await dispatchDigiflazzOrderNow(prisma, order.id)).toEqual({ claimed: 1, delivered: 0, pending: 1, failed: 0 });
+    const refreshed = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(refreshed.digiflazzStatus).toBe("pending_at_supplier");
+    expect(refreshed.digiflazzAttempts).toBe(1);
+    expect(refreshed.digiflazzNextRecheckAt).not.toBeNull();
+  });
+
+  it("a timeout is transient_error, then the recheck re-submits the identical refId and the order is purchased exactly once", async () => {
+    const order = await makeProcessingDigiflazzOrder();
+    digiflazzMock.createTransaction.mockRejectedValueOnce(
+      new DigiflazzRequestError("Digiflazz transaction timed out", "timeout"),
+    );
+
+    expect(await dispatchDigiflazzOrderNow(prisma, order.id)).toEqual({ claimed: 1, delivered: 0, pending: 1, failed: 0 });
+    const afterTimeout = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(afterTimeout.digiflazzStatus).toBe("pending_at_supplier");
+    expect(afterTimeout.digiflazzAttempts).toBe(1);
+    expect(afterTimeout.digiflazzFailureDetail).toBe("Digiflazz transaction timed out");
+    // Nothing re-submits before the scheduled recheck.
+    expect(await dispatchPendingDigiflazzOrders(prisma)).toEqual({ claimed: 0, delivered: 0, pending: 0, failed: 0 });
+
+    await prisma.order.update({ where: { id: order.id }, data: { digiflazzNextRecheckAt: new Date(Date.now() - 1_000) } });
+    digiflazzMock.createTransaction.mockResolvedValue({ refId: order.orderCode, status: "Sukses", sn: "SN-AFTER-TIMEOUT", message: "ok", price: null });
+    expect(await dispatchPendingDigiflazzOrders(prisma)).toEqual({ claimed: 1, delivered: 1, pending: 0, failed: 0 });
+
+    const refIds = digiflazzMock.createTransaction.mock.calls.map((c) => (c[1] as { refId: string }).refId);
+    expect(refIds).toEqual([order.orderCode, order.orderCode]);
+    const delivered = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(delivered.status).toBe(OrderStatus.DELIVERED);
+    expect(delivered.digiflazzDispatchedAt).toEqual(afterTimeout.digiflazzDispatchedAt);
+    expect(await prisma.auditLog.count({ where: { action: "order.auto_fulfill_digiflazz", targetId: order.id } })).toBe(1);
+    // Another tick finds nothing left to buy.
+    expect(await dispatchPendingDigiflazzOrders(prisma)).toEqual({ claimed: 0, delivered: 0, pending: 0, failed: 0 });
+    expect(digiflazzMock.createTransaction).toHaveBeenCalledTimes(2);
+  });
+
+  it("a plain Error (not a typed request error) still takes the transient path", async () => {
+    const order = await makeProcessingDigiflazzOrder();
+    digiflazzMock.createTransaction.mockRejectedValue(new Error("something unexpected"));
+    expect(await dispatchDigiflazzOrderNow(prisma, order.id)).toEqual({ claimed: 1, delivered: 0, pending: 1, failed: 0 });
+  });
+});
+
+describe("Digiflazz timing events (instant dispatch Task 3)", () => {
+  type Logged = { fields: Record<string, unknown>; message: string };
+
+  /** Captures every logger.info call that carries an `event` field, and
+   *  every logger call of any level as raw text for the secret scan. */
+  function captureLogs() {
+    const events: Logged[] = [];
+    const raw: string[] = [];
+    const record = (level: "info" | "warn" | "error") =>
+      vi.spyOn(logger, level).mockImplementation(((first: unknown, second?: unknown) => {
+        raw.push(JSON.stringify([first, second ?? null]));
+        if (level === "info" && first && typeof first === "object" && "event" in first) {
+          events.push({ fields: first as Record<string, unknown>, message: String(second) });
+        }
+      }) as never);
+    const spies = [record("info"), record("warn"), record("error")];
+    return {
+      events,
+      raw,
+      byEvent: (name: string) => events.filter((e) => e.fields.event === name),
+      restore: () => spies.forEach((s) => s.mockRestore()),
+    };
+  }
+
+  function expectNoSecrets(raw: string[]) {
+    const all = raw.join("\n");
+    expect(all).not.toContain("shopkey"); // the Digiflazz API key set in beforeEach
+    expect(all).not.toMatch(/"sign"/);
+    expect(all).not.toMatch(/x-hub-signature/i);
+  }
+
+  it("a direct Sukses dispatch emits claimed, request, response and completed with the documented fields", async () => {
+    const order = await makeProcessingDigiflazzOrder();
+    const paidAt = new Date(Date.now() - 2_000);
+    await prisma.order.update({ where: { id: order.id }, data: { paidAt } });
+    digiflazzMock.createTransaction.mockResolvedValue({ refId: order.orderCode, status: "Sukses", sn: "SN-TIMED", message: "ok", price: null });
+
+    const logs = captureLogs();
+    try {
+      await dispatchDigiflazzOrderNow(prisma, order.id);
+    } finally {
+      logs.restore();
+    }
+
+    const [claimed] = logs.byEvent("fulfillment.claimed");
+    expect(claimed!.fields).toEqual({
+      event: "fulfillment.claimed",
+      orderId: order.id,
+      orderCode: order.orderCode,
+      trigger: "direct",
+      claimKind: "fresh",
+      attempt: 1,
+      delayFromPaymentMs: expect.any(Number),
+    });
+    expect(claimed!.fields.delayFromPaymentMs as number).toBeGreaterThanOrEqual(2_000);
+
+    expect(logs.byEvent("digiflazz.request").map((e) => e.fields)).toEqual([
+      { event: "digiflazz.request", orderId: order.id, orderCode: order.orderCode, refId: order.orderCode, skuCode: "ml100", attempt: 1 },
+    ]);
+    expect(logs.byEvent("digiflazz.response").map((e) => e.fields)).toEqual([
+      { event: "digiflazz.response", orderId: order.id, orderCode: order.orderCode, refId: order.orderCode, status: "Sukses", durationMs: expect.any(Number) },
+    ]);
+
+    const completed = logs.byEvent("order.completed");
+    expect(completed).toHaveLength(1);
+    expect(completed[0]!.fields).toEqual({
+      event: "order.completed",
+      orderId: order.id,
+      orderCode: order.orderCode,
+      outcome: "Sukses",
+      paymentToFulfillmentMs: expect.any(Number),
+      digiflazzApiDurationMs: expect.any(Number),
+      digiflazzPendingDurationMs: expect.any(Number),
+      paymentToCompletionMs: expect.any(Number),
+    });
+    const c = completed[0]!.fields as Record<string, number>;
+    expect(c.paymentToCompletionMs).toBeGreaterThanOrEqual(c.paymentToFulfillmentMs!);
+    expect(c.paymentToCompletionMs).toBe(c.paymentToFulfillmentMs! + c.digiflazzPendingDurationMs!);
+
+    for (const e of logs.events) {
+      expect(e.message).toMatch(/^[A-Z].*\.$/); // a full English sentence
+      expect(e.message).toContain(order.orderCode);
+    }
+    expectNoSecrets(logs.raw);
+  });
+
+  it("a cron recheck reports trigger cron and claimKind recheck with the next attempt number", async () => {
+    const order = await makeProcessingDigiflazzOrder();
+    digiflazzMock.createTransaction.mockResolvedValueOnce({ refId: order.orderCode, status: "Pending", sn: null, message: null, price: null });
+    await dispatchDigiflazzOrderNow(prisma, order.id);
+    await prisma.order.update({ where: { id: order.id }, data: { digiflazzNextRecheckAt: new Date(Date.now() - 1_000) } });
+    digiflazzMock.createTransaction.mockResolvedValue({ refId: order.orderCode, status: "Pending", sn: null, message: null, price: null });
+
+    const logs = captureLogs();
+    try {
+      await dispatchPendingDigiflazzOrders(prisma);
+    } finally {
+      logs.restore();
+    }
+    expect(logs.byEvent("fulfillment.claimed")[0]!.fields).toMatchObject({ trigger: "cron", claimKind: "recheck", attempt: 2 });
+    expect(logs.byEvent("digiflazz.request")[0]!.fields).toMatchObject({ attempt: 2, refId: order.orderCode });
+    expect(logs.byEvent("digiflazz.response")[0]!.fields).toMatchObject({ status: "Pending" });
+    expect(logs.byEvent("order.completed")).toEqual([]);
+  });
+
+  it("a Gagal and a permanent request error both end with order.completed outcome Gagal", async () => {
+    const gagal = await makeProcessingDigiflazzOrder();
+    digiflazzMock.createTransaction.mockResolvedValueOnce({ refId: gagal.orderCode, status: "Gagal", sn: null, message: "Nomor salah", price: null });
+    const logs = captureLogs();
+    try {
+      await dispatchDigiflazzOrderNow(prisma, gagal.id);
+      const refused = (await createOrderDirect(prisma, { channel: "bot", user: sample.user, productId: sample.product.id, quantity: 1, customerData: JSON.stringify([{ user_id: "333" }]) }))!;
+      await prisma.order.update({ where: { id: refused.id }, data: { status: OrderStatus.PROCESSING } });
+      digiflazzMock.createTransaction.mockRejectedValueOnce(new DigiflazzRequestError("Digiflazz transaction HTTP 403", "http_4xx", 403));
+      await dispatchDigiflazzOrderNow(prisma, refused.id);
+
+      const responses = logs.byEvent("digiflazz.response").map((e) => e.fields);
+      expect(responses[0]).toMatchObject({ orderCode: gagal.orderCode, status: "Gagal" });
+      expect(responses[1]).toMatchObject({ orderCode: refused.orderCode, status: "error", errorKind: "http_4xx", retryable: false });
+      const completed = logs.byEvent("order.completed").map((e) => e.fields);
+      expect(completed).toEqual([
+        expect.objectContaining({ orderCode: gagal.orderCode, outcome: "Gagal" }),
+        expect.objectContaining({ orderCode: refused.orderCode, outcome: "Gagal" }),
+      ]);
+    } finally {
+      logs.restore();
+    }
+    expectNoSecrets(logs.raw);
+  });
+
+  it("a timeout's response event carries the error kind without a status from the supplier", async () => {
+    const order = await makeProcessingDigiflazzOrder();
+    digiflazzMock.createTransaction.mockRejectedValueOnce(new DigiflazzRequestError("Digiflazz transaction timed out", "timeout"));
+    const logs = captureLogs();
+    try {
+      await dispatchDigiflazzOrderNow(prisma, order.id);
+    } finally {
+      logs.restore();
+    }
+    expect(logs.byEvent("digiflazz.response")[0]!.fields).toEqual({
+      event: "digiflazz.response",
+      orderId: order.id,
+      orderCode: order.orderCode,
+      refId: order.orderCode,
+      status: "error",
+      errorKind: "timeout",
+      retryable: true,
+      durationMs: expect.any(Number),
+    });
+    expect(logs.byEvent("order.completed")).toEqual([]);
+  });
+
+  it("a null paidAt omits the payment-relative fields instead of breaking the dispatch", async () => {
+    const order = await makeProcessingDigiflazzOrder();
+    await prisma.order.update({ where: { id: order.id }, data: { paidAt: null } });
+    digiflazzMock.createTransaction.mockResolvedValue({ refId: order.orderCode, status: "Sukses", sn: "SN-NOPAID", message: "ok", price: null });
+    const logs = captureLogs();
+    try {
+      expect(await dispatchDigiflazzOrderNow(prisma, order.id)).toEqual({ claimed: 1, delivered: 1, pending: 0, failed: 0 });
+    } finally {
+      logs.restore();
+    }
+    expect(logs.byEvent("fulfillment.claimed")[0]!.fields).not.toHaveProperty("delayFromPaymentMs");
+    const completed = logs.byEvent("order.completed")[0]!.fields;
+    expect(completed).not.toHaveProperty("paymentToFulfillmentMs");
+    expect(completed).not.toHaveProperty("paymentToCompletionMs");
+    expect(completed).toHaveProperty("digiflazzPendingDurationMs");
+  });
+
+  it("a logger that throws on timing events never affects the dispatch", async () => {
+    const order = await makeProcessingDigiflazzOrder();
+    await prisma.order.update({ where: { id: order.id }, data: { paidAt: new Date() } });
+    digiflazzMock.createTransaction.mockResolvedValue({ refId: order.orderCode, status: "Sukses", sn: "SN-LOGFAIL", message: "ok", price: null });
+    const realInfo = logger.info.bind(logger);
+    const spy = vi.spyOn(logger, "info").mockImplementation(((first: unknown, ...rest: unknown[]) => {
+      if (first && typeof first === "object" && "event" in first) throw new Error("log transport down");
+      return (realInfo as (...args: unknown[]) => void)(first, ...rest);
+    }) as never);
+    try {
+      expect(await dispatchDigiflazzOrderNow(prisma, order.id)).toEqual({ claimed: 1, delivered: 1, pending: 0, failed: 0 });
+    } finally {
+      spy.mockRestore();
+    }
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.DELIVERED);
+  });
+
+  it("settling a Digiflazz order emits payment.confirmed with the order code, method, currency and paidAt", async () => {
+    const order = await makeProcessingDigiflazzOrder();
+    await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.PENDING_VERIFICATION, paidAt: null } });
+    const logs = captureLogs();
+    try {
+      const result = await settlePaidOrder(prisma, order.id, { adminId: 0 });
+      expect(result.kind).toBe("processing");
+    } finally {
+      logs.restore();
+    }
+    const refreshed = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(logs.byEvent("payment.confirmed").map((e) => e.fields)).toEqual([
+      {
+        event: "payment.confirmed",
+        orderId: order.id,
+        orderCode: order.orderCode,
+        paymentMethod: refreshed.paymentMethod,
+        currency: refreshed.currency,
+        paidAt: refreshed.paidAt!.toISOString(),
+        fulfillmentProvider: "DIGIFLAZZ",
+      },
+    ]);
+    expectNoSecrets(logs.raw);
   });
 });
 

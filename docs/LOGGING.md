@@ -108,6 +108,69 @@ penting.
 - `apps/order-bot/src/payments/binanceInternal.ts` — `` `Binance rate-limited (hit #${hitCount}) — backing off ${delayMs}ms` ``
 - `apps/order-bot/src/payments/bybitDeposit.ts` — `"Bybit deposit auto-confirm is enabled but USE_UNIQUE_CENTS is OFF — refusing to match deposits by amount this cycle. Set USE_UNIQUE_CENTS=1."`
 
+## Digiflazz timing events
+
+Satu order Digiflazz yang sudah dibayar meninggalkan jejak log Pino
+terstruktur dari pembayaran sampai selesai. Setiap baris adalah
+`logger.info({ event, ... }, "<kalimat Inggris lengkap>")`, jadi bisa
+di-grep per event (`"event":"order.completed"`) atau per order
+(`"orderCode":"ORD-..."`). Kontrak nama field ada di satu tempat:
+`packages/core/src/suppliers/digiflazzTiming.ts` (`DigiflazzTimingEvent`,
+tipe `*Fields`, `elapsedMs`, `logDigiflazzTimingEvent`). Semua event juga
+membawa `orderId` dan `orderCode`.
+
+| Event | Dari mana | Field tambahan |
+|---|---|---|
+| `payment.confirmed` | `settlePaidOrder` (orders.ts), cabang Digiflazz → PROCESSING | `paymentMethod`, `currency`, `paidAt` (ISO UTC), `fulfillmentProvider` |
+| `fulfillment.claimed` | `processDigiflazzOrder` setelah menang klaim atomik | `trigger` (`direct` = instant dispatch setelah bayar, `cron` = recovery cron 5 detik), `claimKind` (`fresh`/`recheck`), `attempt`, `delayFromPaymentMs` = waktu klaim − `paidAt` |
+| `digiflazz.request` | tepat sebelum `createTransaction` | `refId` (= order code), `skuCode`, `attempt` |
+| `digiflazz.response` | tepat sesudah `createTransaction` | `refId`, `status` (`Sukses`/`Pending`/`Gagal`/`error`), `durationMs`; untuk `error`: `errorKind` (`timeout`, `network`, `http_5xx`, `http_429`, `http_4xx`, `unparseable`, `rejected`, atau `unknown`) dan `retryable` |
+| `digiflazz.webhook_received` | webhook storefront, **hanya setelah signature valid** dan ref cocok dengan order | `refId` (yang sudah terverifikasi), `callbackStatus`, `msSinceDispatch` = waktu terima − `digiflazzDispatchedAt` |
+| `order.completed` | `fulfillDigiflazzOrder` setelah commit DELIVERED (Sukses), atau dispatcher saat order gagal final (Gagal) | `outcome`, `paymentToFulfillmentMs`, `digiflazzApiDurationMs`, `digiflazzPendingDurationMs`, `paymentToCompletionMs` |
+
+Durasi `order.completed`, semuanya dari kolom yang sudah ada (tanpa
+perubahan skema):
+- `paymentToFulfillmentMs` = `digiflazzDispatchedAt` (dispatch pertama) − `paidAt`
+- `digiflazzApiDurationMs` = lama panggilan `createTransaction` yang
+  menghasilkan outcome ini (tidak ada kalau Sukses datang lewat webhook)
+- `digiflazzPendingDurationMs` = waktu selesai (`deliveredAt`) − dispatch pertama
+- `paymentToCompletionMs` = waktu selesai − `paidAt`
+  (= `paymentToFulfillmentMs` + `digiflazzPendingDurationMs`)
+
+Field yang titik awalnya tidak ada (order lama tanpa `paidAt`) **dihilangkan**,
+bukan ditulis 0. `logDigiflazzTimingEvent` tidak pernah melempar error —
+logger yang rusak tidak boleh mengganggu dispatch atau pembayaran. Jangan
+pernah menambahkan API key, signature, webhook secret, body request/webhook,
+atau data pemain ke field ini.
+
+**Contoh: order yang Sukses di request pertama.**
+
+```
+payment.confirmed    paidAt 10:00:00.000
+fulfillment.claimed  trigger direct, claimKind fresh, attempt 1, delayFromPaymentMs 180
+digiflazz.request    refId ORD-AB12CD, skuCode ml86, attempt 1
+digiflazz.response   status Sukses, durationMs 1240
+order.completed      outcome Sukses, paymentToFulfillmentMs 180, digiflazzApiDurationMs 1240,
+                     digiflazzPendingDurationMs 1275, paymentToCompletionMs 1455
+```
+
+Dibaca sebagai:
+
+| Tahap | Waktu | Sumber |
+|---|---|---|
+| Payment confirmation | 0 ms | `paidAt` (titik nol) |
+| Fulfillment dispatch | 180 ms | `paymentToFulfillmentMs` |
+| Digiflazz API | 1.240 ms | `digiflazzApiDurationMs` |
+| Provider processing | 35 ms | `digiflazzPendingDurationMs` − `digiflazzApiDurationMs` (di sini cuma tulis DB setelah jawaban) |
+| **Total** | **1.455 ms** | `paymentToCompletionMs` |
+
+Kalau Digiflazz menjawab `Pending` dulu, `digiflazzPendingDurationMs` memuat
+seluruh waktu tunggu di supplier (mis. 41.300 ms sampai webhook/recheck
+melaporkan Sukses), dan `digiflazz.webhook_received` menunjukkan kapan
+callback-nya datang (`msSinceDispatch`). Fulfillment dispatch yang besar
+(detik, bukan ratusan ms) dengan `trigger: "cron"` berarti instant dispatch
+tidak jalan dan order diambil oleh recovery cron.
+
 ## 3. Checklist singkat sebelum commit
 
 - [ ] Apakah ini `logAdminAction` (admin toko) atau `logger.*` (Pino)? Pakai

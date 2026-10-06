@@ -24,6 +24,7 @@ import { deriveOrderStatusFromItems } from "@app/core/orderItemStatus";
 import { fulfillmentProviderFor, getOrderFulfillment } from "@app/core/orderFulfillment";
 import { cartCompositionError } from "@app/core/cartComposition";
 import { emitDigiflazzOrderStatusChanged } from "@app/core/realtime/digiflazzEvents";
+import { DigiflazzTimingEvent, logDigiflazzTimingEvent } from "@app/core/suppliers/digiflazzTiming";
 import { reconciledOrderMoneyRows } from "@app/core/orderMoneyRows";
 import { parseAdditionalFields, validateCustomerData } from "@app/core/deliveryFields";
 import { parseInputFields, inputConfigSnapshot, orderInputConfig } from "@app/core/playerInput";
@@ -2881,7 +2882,22 @@ export async function settlePaidOrder(
   // first detected, so detected -> confirmed edits one Telegram message.
   await ensureFulfillmentMessage(db, orderId);
   if (isDigiflazz) {
-    logger.info({ orderId, provider: "DIGIFLAZZ", fulfillmentStatus: "QUEUED" }, `Order ${order.orderCode} payment confirmed; automatic fulfillment queued.`);
+    // Timing anchor for the Digiflazz events (docs/LOGGING.md, "Digiflazz
+    // timing events"). This runs inside the caller's settlement transaction,
+    // so in the rare rollback case the line describes a write that did not
+    // commit; the later events only follow a committed order.
+    logDigiflazzTimingEvent(
+      {
+        event: DigiflazzTimingEvent.PAYMENT_CONFIRMED,
+        orderId,
+        orderCode: order.orderCode,
+        paymentMethod: order.paymentMethod,
+        currency: order.currency,
+        paidAt: now.toISOString(),
+        fulfillmentProvider: "DIGIFLAZZ",
+      },
+      `Order ${order.orderCode} payment confirmed; automatic Digiflazz fulfillment queued.`,
+    );
     const refreshed = await getOrder(db, orderId);
     emitDigiflazzOrderStatusChanged(orderId);
     return { kind: "processing", order: refreshed!, credentials: [] };

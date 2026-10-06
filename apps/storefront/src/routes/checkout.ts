@@ -113,6 +113,7 @@ import {
   createTransaction as createDigiflazzTransaction,
   type DigiflazzTransactionResult,
 } from "@app/core/suppliers/digiflazz";
+import { DigiflazzTimingEvent, elapsedMs, logDigiflazzTimingEvent } from "@app/core/suppliers/digiflazzTiming";
 import { gatewayLedgerTrxId } from "@app/core/payments/ledgerKey";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import { usdtFromIdr } from "../pricing";
@@ -1635,6 +1636,22 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         logger.warn(`Digiflazz callback for unknown order ref ${cb.refId} — ignoring`);
         return reply.send({ status: "unmatched" });
       }
+      // Timing event (docs/LOGGING.md, "Digiflazz timing events"): only ever
+      // reached after the signature verified and the ref matched an order.
+      // Carries the verified ref and the callback's status — never the body,
+      // the signature or the secret.
+      const msSinceDispatch = elapsedMs(order.digiflazzDispatchedAt, new Date());
+      logDigiflazzTimingEvent(
+        {
+          event: DigiflazzTimingEvent.DIGIFLAZZ_WEBHOOK_RECEIVED,
+          orderId: order.id,
+          orderCode: order.orderCode,
+          refId: cb.refId,
+          callbackStatus: cb.status,
+          msSinceDispatch,
+        },
+        `Received a verified Digiflazz webhook reporting ${cb.status} for order ${order.orderCode}${msSinceDispatch !== undefined ? ` ${msSinceDispatch} ms after it was dispatched` : ""}.`,
+      );
 
       // Review fix (Important, post-Task-12): only an order still PROCESSING
       // can legitimately need a live re-check — a legitimate callback for an

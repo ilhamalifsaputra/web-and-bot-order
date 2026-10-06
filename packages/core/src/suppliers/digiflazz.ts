@@ -41,6 +41,59 @@ function normalizeStatus(raw: string | null): DigiflazzStatus {
 }
 
 /**
+ * What went wrong with one Digiflazz HTTP request, so the dispatcher can tell
+ * "try again with the same ref id" from "stop and ask a human":
+ *  - retryable: `timeout` (the deadline elapsed, before or during the body
+ *    read), `network` (fetch itself rejected: DNS, refused, reset, TLS),
+ *    `http_5xx`, `http_429` (rate limited), `unparseable` (a body that is not
+ *    JSON — typically a proxy error page).
+ *  - permanent: `http_4xx` (any other 4xx — bad credentials, unknown route,
+ *    malformed request; the same request fails the same way again) and
+ *    `rejected` (Digiflazz answered 2xx without any transaction data).
+ */
+export type DigiflazzRequestErrorKind =
+  | "timeout"
+  | "network"
+  | "http_5xx"
+  | "http_429"
+  | "http_4xx"
+  | "unparseable"
+  | "rejected";
+
+export function isRetryableDigiflazzErrorKind(kind: DigiflazzRequestErrorKind): boolean {
+  return kind !== "http_4xx" && kind !== "rejected";
+}
+
+/** Maps a non-2xx HTTP status to its error kind (see DigiflazzRequestErrorKind). */
+export function classifyDigiflazzHttpStatus(status: number): DigiflazzRequestErrorKind {
+  if (status === 429) return "http_429";
+  if (status >= 400 && status < 500) return "http_4xx";
+  return "http_5xx";
+}
+
+/**
+ * The error `getPriceList`/`createTransaction` throw for every request
+ * failure. Still a plain `Error` with the same static, credential-free
+ * message as before (callers that only read `.message` see no change), plus
+ * a `kind`, whether retrying with the same ref id can help, and the HTTP
+ * status when there was one. It never carries the original error or a
+ * `cause` — that is where Node's fetch attaches the API-key-bearing request.
+ */
+export class DigiflazzRequestError extends Error {
+  readonly kind: DigiflazzRequestErrorKind;
+  readonly retryable: boolean;
+  readonly httpStatus: number | null;
+
+  constructor(message: string, kind: DigiflazzRequestErrorKind, httpStatus: number | null = null) {
+    super(message);
+    this.name = "DigiflazzRequestError";
+    this.kind = kind;
+    this.retryable = isRetryableDigiflazzErrorKind(kind);
+    this.httpStatus = httpStatus;
+  }
+}
+
+/**
  * POST a Digiflazz endpoint whose JSON body carries the username/API key, and
  * return its parsed JSON body. Every failure mode of the raw `fetch()` call is
  * caught HERE, inside this single choke point, via `fetchWithTimeoutSafe`
@@ -53,6 +106,8 @@ function normalizeStatus(raw: string | null): DigiflazzStatus {
  * elapsed first. `res.json()` gets the same static-message treatment below on
  * a malformed body. The existing `!res.ok` branch keeps its own static-message
  * throw. Both `getPriceList` and `createTransaction` share this one guarantee.
+ * Every throw is a DigiflazzRequestError carrying its kind; the messages are
+ * the same static strings as before.
  */
 async function fetchDigiflazzJson(
   url: string,
@@ -60,9 +115,21 @@ async function fetchDigiflazzJson(
   errorPrefix: string,
   timeoutMs: number,
 ): Promise<Record<string, unknown>> {
-  const res = await fetchWithTimeoutSafe(url, { ...init, timeoutMs }, errorPrefix); // never log init.body — it carries the API key
+  let res: Response;
+  try {
+    res = await fetchWithTimeoutSafe(url, { ...init, timeoutMs }, errorPrefix); // never log init.body — it carries the API key
+  } catch (err) {
+    // fetchWithTimeoutSafe already replaced the original error with one of two
+    // static messages; rebuild it as a typed error from that message alone.
+    const timedOut = err instanceof Error && err.message === `${errorPrefix} timed out`;
+    throw new DigiflazzRequestError(
+      `${errorPrefix} ${timedOut ? "timed out" : "network error"}`,
+      timedOut ? "timeout" : "network",
+    );
+  }
   if (!res.ok) {
-    throw new Error(`${errorPrefix} HTTP ${res.status}`); // never log init.body — it carries the API key
+    // never log init.body — it carries the API key
+    throw new DigiflazzRequestError(`${errorPrefix} HTTP ${res.status}`, classifyDigiflazzHttpStatus(res.status), res.status);
   }
   try {
     return (await res.json()) as Record<string, unknown>;
@@ -73,9 +140,9 @@ async function fetchDigiflazzJson(
     // from a genuinely malformed body so the caller isn't told the supplier
     // sent garbage when it actually just hung.
     if (err instanceof Error && err.name === "TimeoutError") {
-      throw new Error(`${errorPrefix} response body read timed out`); // never log init.body — it carries the API key
+      throw new DigiflazzRequestError(`${errorPrefix} response body read timed out`, "timeout"); // never log init.body — it carries the API key
     }
-    throw new Error(`${errorPrefix} returned an unparseable response`); // never log init.body — it carries the API key
+    throw new DigiflazzRequestError(`${errorPrefix} returned an unparseable response`, "unparseable"); // never log init.body — it carries the API key
   }
 }
 
@@ -302,7 +369,9 @@ export async function createTransaction(
   )) as { data?: Record<string, unknown> };
   const d = body.data;
   if (!d) {
-    throw new Error("Digiflazz transaction rejected: missing data in response");
+    // Digiflazz answers every transaction it processed with a `data` object
+    // (even a Gagal); a 2xx without one is treated as a refusal, not retried.
+    throw new DigiflazzRequestError("Digiflazz transaction rejected: missing data in response", "rejected");
   }
   return {
     refId: str(d.ref_id) ?? args.refId,

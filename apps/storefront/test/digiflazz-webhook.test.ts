@@ -379,6 +379,53 @@ describe("Digiflazz webhook signature (X-Hub-Signature, HMAC-SHA1 over the raw b
       warn.mockRestore();
     }
   });
+
+  it("logs digiflazz.webhook_received for a verified delivery with the ref, status and time since dispatch, and nothing secret", async () => {
+    const order = await createProcessingDigiflazzOrder("ORD-DF-TIMING-OK", "15000", {
+      digiflazzDispatchedAt: new Date(Date.now() - 5_000),
+    });
+    digiflazzSupplierMock.createTransaction.mockResolvedValue(live(order.orderCode, "Sukses", "SN-TIMING"));
+    const info = vi.spyOn(logger, "info");
+    const raw = webhookBody({ refId: order.orderCode, status: "Sukses", sn: "SN-TIMING" });
+    const signature = hubSignature(raw);
+    try {
+      const res = await app.inject(delivery(raw, signature));
+      expect(res.statusCode).toBe(200);
+      const received = info.mock.calls.filter(
+        (c) => c[0] && typeof c[0] === "object" && (c[0] as { event?: string }).event === "digiflazz.webhook_received",
+      );
+      expect(received).toHaveLength(1);
+      expect(received[0]![0]).toEqual({
+        event: "digiflazz.webhook_received",
+        orderId: order.id,
+        orderCode: order.orderCode,
+        refId: order.orderCode,
+        callbackStatus: "Sukses",
+        msSinceDispatch: expect.any(Number),
+      });
+      expect((received[0]![0] as { msSinceDispatch: number }).msSinceDispatch).toBeGreaterThanOrEqual(5_000);
+      expect(String(received[0]![1])).toContain(order.orderCode);
+      const logged = JSON.stringify(info.mock.calls);
+      expect(logged).not.toContain(WEBHOOK_SECRET);
+      expect(logged).not.toContain(signature.slice("sha1=".length));
+      expect(logged).not.toContain(API_KEY);
+      expect(logged).not.toContain("123456789"); // the body's customer_no
+    } finally {
+      info.mockRestore();
+    }
+  });
+
+  it("does not log digiflazz.webhook_received for a delivery whose signature fails", async () => {
+    const order = await createProcessingDigiflazzOrder("ORD-DF-TIMING-BAD");
+    const info = vi.spyOn(logger, "info");
+    try {
+      const res = await app.inject(signedPayload({ refId: order.orderCode, secret: "not-the-shop-secret" }));
+      expect(res.statusCode).toBe(403);
+      expect(JSON.stringify(info.mock.calls)).not.toContain("digiflazz.webhook_received");
+    } finally {
+      info.mockRestore();
+    }
+  });
 });
 
 /**

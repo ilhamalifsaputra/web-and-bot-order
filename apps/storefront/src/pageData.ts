@@ -9,7 +9,7 @@ import { config } from "@app/core/config";
 import { canonicalProduct, type CanonicalProductContext } from "@app/core/canonicalProduct";
 import { Decimal } from "@app/core/money";
 import { activeFlashPercent, effectiveUnitPrice, flashPrice } from "@app/core/flash";
-import { parseAdditionalFields } from "@app/core/deliveryFields";
+import { checkoutInputConfiguration } from "./inputConfiguration";
 import {
   prisma,
   getSetting,
@@ -186,7 +186,7 @@ export async function productPageData(rawSlug: string, isReseller = false, displ
       // (see ProductPage.tsx's `purchasable`). additional_fields is the
       // parsed manual_with_info field spec ([] for auto/manual).
       delivery_type: d.deliveryType,
-      additional_fields: parseAdditionalFields(d.additionalFields),
+      ...checkoutInputConfiguration(d),
     };
   });
   // Default restock-form target (Task 10 fix): "first in-stock denomination,

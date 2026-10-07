@@ -409,6 +409,8 @@ describe("CheckoutPage", () => {
       fireEvent.change(emailInputs[1]!, { target: { value: "unit2@mail.com" } });
       // unit1's email is still invalid -> still disabled.
       expect(placeOrderBtn).toBeDisabled();
+      expect(screen.queryByText("Please enter a valid email address.")).not.toBeInTheDocument();
+      fireEvent.blur(emailInputs[0]!);
       expect(screen.getByText("Please enter a valid email address.")).toBeInTheDocument();
 
       fireEvent.change(emailInputs[0]!, { target: { value: "unit1@mail.com" } });

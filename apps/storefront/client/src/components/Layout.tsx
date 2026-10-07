@@ -105,6 +105,7 @@ export default function Layout() {
       </main>
 
       <Footer ctx={ctx} clearBottomNav={!tabBarHidden} />
+      <div id="purchase-bar-clearance" aria-hidden="true" />
 
       <MobileTabBar cartCount={ctx?.cart_count ?? 0} isSignedIn={Boolean(ctx?.customer)} />
     </SearchOverlayProvider>

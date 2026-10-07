@@ -114,3 +114,6 @@ capture-storefront/
 
 # --- graphify knowledge graph: kept locally for queries, never on origin/master ---
 graphify-out/
+
+# Reproducible checkout UI harness evidence stays local.
+/.audit-data/checkout-dynamic-sticky/

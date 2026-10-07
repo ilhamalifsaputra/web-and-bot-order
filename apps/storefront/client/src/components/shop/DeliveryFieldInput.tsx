@@ -20,6 +20,7 @@
  * the server re-validates from scratch (validateCustomerData) before
  * persisting either at checkout or via the PATCH info route.
  */
+import { useState } from "react";
 import type { AdditionalField } from "../../api/types";
 import { fieldError } from "../../lib/deliveryFields";
 import { t, currentLang } from "../../lib/i18n";
@@ -32,23 +33,28 @@ export default function DeliveryFieldInput({
   value,
   onChange,
   inputId,
+  showError,
+  onBlur,
 }: {
   field: AdditionalField;
   value: string;
   onChange: (value: string) => void;
   inputId: string;
+  showError?: boolean;
+  onBlur?: () => void;
 }) {
   const lang = currentLang();
-  const label = lang === "id" ? field.label.id : field.label.en;
-  // Only surface a validation error once the buyer has typed something — a
-  // blank required field silently keeps the caller's submit disabled instead
-  // of greeting them with red text.
-  const err = value.trim() ? fieldError(field, value) : null;
-  const errorText = err ? t(err) : undefined;
+  const [touched, setTouched] = useState(false);
+  const fieldLabel = lang === "id" ? field.label.id : field.label.en;
+  const label = field.required ? fieldLabel : `${fieldLabel} (${t("web.field_optional")})`;
+  const err = (showError ?? touched) ? fieldError(field, value) : null;
+  const errorText = err ? t(err, { key: fieldLabel, min: field.minLength ?? 0, max: field.maxLength ?? 4096 }) : undefined;
+  const hint = field.helpText || (field.required ? t("web.field_required_hint", { field: fieldLabel }) : undefined);
+  function blur() { setTouched(true); onBlur?.(); }
   return (
-    <FormField label={label} htmlFor={inputId} error={errorText} hint={field.helpText}>
+    <FormField label={label} htmlFor={inputId} error={errorText} hint={hint}>
       {field.type === "select" ? (
-        <Select id={inputId} value={value} onChange={(e) => onChange(e.target.value)} required={field.required}>
+        <Select id={inputId} value={value} onChange={(e) => onChange(e.target.value)} onBlur={blur} required={field.required}>
           <option value="">{t("web.checkout_info_select_placeholder")}</option>
           {field.options.map((opt) => (
             <option key={opt} value={opt}>
@@ -78,6 +84,7 @@ export default function DeliveryFieldInput({
           maxLength={field.maxLength ?? 4096}
           placeholder={field.placeholder || undefined}
           onChange={(e) => onChange(e.target.value)}
+          onBlur={blur}
         />
       )}
     </FormField>

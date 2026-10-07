@@ -27,7 +27,7 @@
  * is a single-page buy with no separate cart/checkout screens, so it supplies
  * its own label/icon and omits `backTo` entirely.
  */
-import type { KeyboardEvent, ReactNode } from "react";
+import type { KeyboardEvent, ReactNode, Ref } from "react";
 import { Link } from "react-router-dom";
 import { AlertTriangle, ChevronRight } from "lucide-react";
 import type { CheckoutData } from "../../api/types";
@@ -106,10 +106,8 @@ export interface OrderSummaryCardProps {
   onVoucherApply: () => void;
   onVoucherKeyDown: (event: KeyboardEvent<HTMLInputElement>) => void;
   voucherPending: boolean;
-  /** Desktop only: on a phone the caller renders its own sticky bottom bar
-   * with the same total + submit control instead (see CheckoutPage.tsx /
-   * InstantBuyPage.tsx) — rendering it here too would put two
-   * identically-labelled submits on the page. */
+  /** Render the in-flow submit. CheckoutPage uses it on desktop;
+   * InstantBuyPage keeps it on every viewport and observes its visibility. */
   showDesktopSubmit: boolean;
   submitLabel: string;
   /** Defaults to the chevron CheckoutPage has always used. */
@@ -126,6 +124,10 @@ export interface OrderSummaryCardProps {
   /** CheckoutPage's "Back to cart" link — omitted entirely by InstantBuyPage,
    * which has no separate cart screen in this flow. */
   backTo?: { label: string; to: string };
+  submitRef?: Ref<HTMLButtonElement>;
+  submitId?: string;
+  submitPrice?: string;
+  accountSummary?: { plan: string; fields: Array<{ key: string; label: string; value: string }> };
 }
 
 export default function OrderSummaryCard({
@@ -145,6 +147,10 @@ export default function OrderSummaryCard({
   onSubmit,
   submitPending,
   backTo,
+  submitRef,
+  submitId,
+  submitPrice,
+  accountSummary,
 }: OrderSummaryCardProps) {
   const flashSummary = cartFlashSummary(totals);
   const { data: ctx } = useShopContext();
@@ -191,11 +197,25 @@ export default function OrderSummaryCard({
             <AlertTriangle className="w-4 h-4 shrink-0" /> {t(totals.error_key)}
           </p>
         )}
+        {!totals.error_key && totals.voucher_code && <p className="mt-2 text-sm text-grass-dark">{t("web.voucher_applied", { code: totals.voucher_code })}</p>}
       </Card>
 
       <div id="checkout-summary">
         <Card>
           <h2 className="section-title mb-3">{t("web.summary")}</h2>
+          {accountSummary && (
+            <div className="mb-3 text-sm">
+              <p className="font-semibold text-ink break-words">{accountSummary.plan}</p>
+              <dl className="mt-2 space-y-1">
+                {accountSummary.fields.map((field) => (
+                  <div key={field.key} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-3">
+                    <dt className="text-ink-soft">{field.label}</dt>
+                    <dd className="text-right break-words [overflow-wrap:anywhere]">{field.value}</dd>
+                  </div>
+                ))}
+              </dl>
+            </div>
+          )}
           <div className="text-sm divide-y divide-line">
             <div className="flex justify-between py-2">
               <span className="text-ink-soft">{t("web.subtotal")}</span>
@@ -239,12 +259,12 @@ export default function OrderSummaryCard({
           </div>
           {priceAndPay && <p className="mb-2 text-right text-sm text-ink-soft">{priceAndPay}</p>}
           {fx && <p className="text-xs text-ink-faint">{t("web.usdt_note")}</p>}
-          {/* Desktop only: on a phone this button lives in the sticky bar
-              below instead. Rendering it in both places would put two
-              identically-labelled submits in the page for assistive tech to
-              disambiguate, so only one exists at a time. */}
+          {/* The caller decides whether this in-flow CTA is offered;
+              instant checkout observes this actual button for its mobile bar. */}
           {showDesktopSubmit && (
             <Button
+              ref={submitRef}
+              id={submitId}
               variant="primary"
               fullWidth
               className={cn("mt-4", submitBlocked && "opacity-50")}
@@ -252,7 +272,9 @@ export default function OrderSummaryCard({
               onClick={onSubmit}
             >
               {submitPending && <Spinner />}
-              {submitLabel} {submitIcon ?? <ChevronRight className="w-4 h-4" />}
+              {submitPending ? t("web.checkout_processing") : submitLabel}
+              {!submitPending && submitPrice && <> · {submitPrice}</>}
+              {!submitPending && (submitIcon ?? <ChevronRight className="w-4 h-4" />)}
             </Button>
           )}
           {backTo && (

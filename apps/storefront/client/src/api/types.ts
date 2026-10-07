@@ -125,6 +125,8 @@ export interface ProductDenomination {
   delivery_type: string;
   /** Parsed manual_with_info field spec — [] for auto/manual. */
   additional_fields: AdditionalField[];
+  /** Additive backend flag; invalid metadata must not become an input-free SKU. */
+  input_configuration_valid?: boolean;
 }
 
 /** A masked-author review on the product detail page — `created_at_display`

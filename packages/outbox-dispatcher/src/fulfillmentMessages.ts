@@ -16,6 +16,12 @@ const REVIEW_INTERVAL_MS = 30_000;
 /** A sent message whose order has nothing to show (payment fell back to
  * awaiting) keeps its last text and is only re-read this often. */
 const IDLE_INTERVAL_MS = 30_000;
+/** A payment can sit in the detected phase for a long time (an admin has not
+ * checked the proof yet, or settlement keeps rolling back). After this long in
+ * that one phase the spinner stops and the message is re-read only every
+ * DETECTED_SLOW_INTERVAL_MS, until the order's state moves it to another phase. */
+export const DETECTED_SLOW_AFTER_MS = 10 * 60_000;
+const DETECTED_SLOW_INTERVAL_MS = 60_000;
 const FRAMES = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"];
 /** Row states the worker polls. WAITING (a manual order's static wait) is not
  * one of them: `wakeFulfillmentMessage` moves it on when the order ends. */
@@ -124,6 +130,10 @@ export class FulfillmentMessageWorker {
     const progress = customerProgressPhase(order, { messageSent: row.messageId !== null, credited });
     const where = { orderId: row.orderId, state: row.state, claimedAt: row.claimedAt };
     const provider = fulfillmentProviderFor(order);
+    // When the message entered the phase it now shows. A change of phase, in
+    // either direction, starts the clock again.
+    const phaseStartedAt = row.phase === progress.phase && row.phaseStartedAt ? row.phaseStartedAt : this.now();
+    const phaseFields = { phase: progress.phase, phaseStartedAt };
     if (row.messageId === null && (progress.phase === "NONE" || progress.phase === "CANCELLED"
       || (progress.phase === "SUCCESS" && provider === "STOCK"))) {
       // Nothing to tell yet (payment never seen), the order ended before the
@@ -131,7 +141,7 @@ export class FulfillmentMessageWorker {
       // credentials DM is the message): release the claim without sending.
       const finished = progress.phase !== "NONE";
       await this.db.fulfillmentMessage.updateMany({ where, data: {
-        state: finished ? "FINISHED" : "READY", claimedAt: null, finishedAt: finished ? this.now() : null,
+        ...phaseFields, state: finished ? "FINISHED" : "READY", claimedAt: null, finishedAt: finished ? this.now() : null,
         nextUpdateAt: new Date(this.now().getTime() + INTERVAL_MS),
       } });
       return false;
@@ -140,7 +150,7 @@ export class FulfillmentMessageWorker {
       // A sent message whose order fell back to awaiting payment (a detected
       // deposit was withdrawn): keep the last text rather than guess.
       await this.db.fulfillmentMessage.updateMany({ where, data: {
-        state: "ACTIVE", claimedAt: null, nextUpdateAt: new Date(this.now().getTime() + IDLE_INTERVAL_MS),
+        ...phaseFields, state: "ACTIVE", claimedAt: null, nextUpdateAt: new Date(this.now().getTime() + IDLE_INTERVAL_MS),
       } });
       return false;
     }
@@ -157,14 +167,17 @@ export class FulfillmentMessageWorker {
     // character limit. Customer targets and delivered credentials stay private.
     const items = [...grouped.values()].slice(0, 6).map(item => `${escape(item.name.slice(0, 80))}${item.name.length > 80 ? "…" : ""} × ${item.quantity}`).join("\n");
     const summary = items ? `\n\n${items}${grouped.size > 6 ? "\n…" : ""}` : "";
-    const body = t(`order.progress_${keys.body}`, lang);
+    // Detected for too long: a static "still verifying" line on a slow re-read.
+    // The order's state still decides; this only stops the animation.
+    const slow = progress.phase === "PAYMENT_DETECTED" && this.now().getTime() - phaseStartedAt.getTime() >= DETECTED_SLOW_AFTER_MS;
+    const body = t(`order.progress_${slow ? "detected_slow" : keys.body}`, lang);
     const title = t(`order.progress_${keys.title}`, lang);
     const orderLine = t("order.progress_order_line", lang, { code: escape(order.orderCode) });
-    const text = `${title}\n${orderLine}${summary}\n\n${progress.spinner ? `${frame} ${body}` : body}`;
+    const text = `${title}\n${orderLine}${summary}\n\n${progress.spinner && !slow ? `${frame} ${body}` : body}`;
     const terminal = TERMINAL_PHASES.has(progress.phase);
     const state = progress.phase === "REVIEW" ? "REVIEW" : progress.phase === "MANUAL_WAITING" ? "WAITING" : terminal ? "FINISHED" : "ACTIVE";
-    const interval = state === "REVIEW" ? REVIEW_INTERVAL_MS : INTERVAL_MS;
-    const data = { state, claimedAt: null, lastText: text, finishedAt: terminal ? this.now() : null,
+    const interval = state === "REVIEW" ? REVIEW_INTERVAL_MS : slow ? DETECTED_SLOW_INTERVAL_MS : INTERVAL_MS;
+    const data = { ...phaseFields, state, claimedAt: null, lastText: text, finishedAt: terminal ? this.now() : null,
       nextUpdateAt: new Date(this.now().getTime() + interval) };
     const controller = new AbortController();
     const abort = () => controller.abort();

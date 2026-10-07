@@ -51,6 +51,7 @@
   "order.progress_title_cancelled": "✕ <b>Order cancelled</b>",
   "order.progress_title_credited": "💰 <b>Credited to your balance</b>",
   "order.progress_detected": "Verifying your payment...",
+  "order.progress_detected_slow": "Still verifying your payment…",
   "order.progress_auto_queued": "Starting your top-up...",
   "order.progress_auto_submitting": "Sending your order to the provider...",
   "order.progress_auto_processing": "Processing your top-up...",

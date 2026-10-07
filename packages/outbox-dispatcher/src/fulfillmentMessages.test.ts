@@ -229,6 +229,54 @@ describe("customer progress phases in one Telegram message", () => {
     expect((await db.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } })).state).toBe("ACTIVE");
   });
 
+  it.each([
+    ["en", "Still verifying your payment…"],
+    ["id", "Masih memverifikasi pembayaran…"],
+  ])("slows a detected payment to a static line after ten minutes in that phase (%s)", async (lang, still) => {
+    const order = await seed(lang, { status: "PENDING_VERIFICATION", paid: false });
+    const tg = telegram(); const w = worker(tg.api);
+    await w.tick();
+    advance(9 * 60_000 + 58_000); await w.tick();
+    expect(frameOf(tg.edits.at(-1)!.text)).toBeDefined();
+    let row = await db.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } });
+    expect(row.nextUpdateAt.getTime()).toBe(now.getTime() + 2000);
+
+    advance(); await w.tick(); // ten minutes since the payment was first shown
+    const slow = tg.edits.at(-1)!.text;
+    expect(slow).toContain(still);
+    expect(frameOf(slow)).toBeUndefined();
+    row = await db.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } });
+    expect(row.state).toBe("ACTIVE");
+    expect(row.nextUpdateAt.getTime()).toBe(now.getTime() + 60_000);
+    const edits = tg.edits.length;
+    advance(59_000); await w.tick();
+    expect(tg.edits).toHaveLength(edits);
+    advance(1000); await w.tick(); // due again, same static text: no Telegram edit
+    expect(tg.edits).toHaveLength(edits);
+
+    // The backend moves on: the next due tick shows the new phase with its spinner.
+    await db.order.update({ where: { id: order.id }, data: { status: "PROCESSING", paidAt: now } });
+    advance(60_000); await w.tick();
+    expect(tg.edits.at(-1)!.text).not.toContain(still);
+    expect(frameOf(tg.edits.at(-1)!.text)).toBeDefined();
+    expect((await db.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } })).nextUpdateAt.getTime()).toBe(now.getTime() + 2000);
+    expect(tg.sent).toHaveLength(1);
+  });
+
+  it("restarts the ten-minute budget when the detected phase is left and entered again", async () => {
+    const order = await seed("en", { status: "PAYMENT_DETECTED", paid: false });
+    const tg = telegram(); const w = worker(tg.api);
+    await w.tick();
+    advance(8 * 60_000); await w.tick();
+    await db.order.update({ where: { id: order.id }, data: { status: "PENDING_PAYMENT" } });
+    advance(); await w.tick(); // payment withdrawn: idle, keeps the last text
+    await db.order.update({ where: { id: order.id }, data: { status: "PAYMENT_DETECTED" } });
+    advance(30_000); await w.tick(); // detected again: a fresh phase
+    advance(5 * 60_000); await w.tick();
+    expect(frameOf(tg.edits.at(-1)!.text)).toBeDefined();
+    expect(tg.edits.at(-1)!.text).not.toContain("Still verifying");
+  });
+
   it("moves the same message from detected to the fulfillment spinner once paid, then stops on success", async () => {
     const order = await seed("en", { status: "PAYMENT_DETECTED", paid: false });
     const tg = telegram(); const w = worker(tg.api);

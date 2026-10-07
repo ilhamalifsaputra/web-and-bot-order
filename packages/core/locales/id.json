@@ -51,6 +51,7 @@
   "order.progress_title_cancelled": "✕ <b>Pesanan dibatalkan</b>",
   "order.progress_title_credited": "💰 <b>Masuk ke saldo</b>",
   "order.progress_detected": "Sedang memverifikasi pembayaran...",
+  "order.progress_detected_slow": "Masih memverifikasi pembayaran…",
   "order.progress_auto_queued": "Memulai top-up Anda...",
   "order.progress_auto_submitting": "Mengirim pesanan Anda ke penyedia...",
   "order.progress_auto_processing": "Memproses top-up Anda...",

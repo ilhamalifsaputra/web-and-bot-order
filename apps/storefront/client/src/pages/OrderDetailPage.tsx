@@ -34,14 +34,18 @@ export default function OrderDetailPage() {
     refetchInterval: (query) => (isOrderLive(query.state.data) ? 5000 : false),
   });
 
-  useOrderStatusStream(code, isOrderLive(data));
+  const stream = useOrderStatusStream(code, isOrderLive(data));
 
   const [editMode, setEditMode] = useState(false);
   const [answers, setAnswers] = useState<Array<Record<string, string>>>([]);
   // The rejection itself: a field error like `error.text_too_long` quotes the
   // limit it was judged by, and that figure rides on the Error (F4a).
   const [infoError, setInfoError] = useState<unknown>(null);
-  const canEdit = data?.order.fulfillment?.can_edit_customer_data ?? Boolean(data?.processing);
+  // The server is authoritative, but once the order has been handed to a
+  // provider (or finished) the buyer must never be offered an editor, even for
+  // the instant before a stale flag refreshes.
+  const dispatched = ["SUBMITTING", "PROCESSING", "SUCCESS"].includes(data?.order.fulfillment?.status ?? "");
+  const canEdit = !dispatched && (data?.order.fulfillment?.can_edit_customer_data ?? Boolean(data?.processing));
 
   useEffect(() => {
     if (!canEdit) setEditMode(false);
@@ -133,19 +137,37 @@ export default function OrderDetailPage() {
   const infoValid = allFieldsValid(fields, answers, qty);
   const lang = currentLang();
   const liveUpdates = isOrderLive(data) ? (
-    <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-ink-faint">
-      <span>{t("web.order_updates_automatic")}</span>
-      <Button variant="ghost" className="min-h-11" disabled={isFetching} onClick={() => void refetch()}>
-        <RefreshCw className={`w-3.5 h-3.5 ${isFetching ? "animate-spin" : ""}`} /> {t("web.order_refresh")}
-      </Button>
+    <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-xs text-ink-faint">
+      <span className="min-w-0 break-words">
+        {stream.disconnected ? (
+          <>
+            {t("web.order_live_disconnected")}{" "}
+            <button type="button" className="min-h-11 px-2 font-semibold text-pine hover:underline" onClick={stream.retry}>
+              {t("web.order_live_retry")}
+            </button>
+          </>
+        ) : (
+          t("web.order_updates_automatic")
+        )}
+      </span>
+      <button
+        type="button"
+        aria-label={t("web.order_refresh")}
+        title={t("web.order_refresh")}
+        disabled={isFetching}
+        onClick={() => void refetch()}
+        className="grid min-h-11 min-w-11 place-items-center rounded-lg text-ink-faint hover:bg-sand hover:text-ink disabled:opacity-60"
+      >
+        <RefreshCw aria-hidden="true" className={`h-4 w-4 ${isFetching ? "animate-spin motion-reduce:animate-none" : ""}`} />
+      </button>
     </div>
   ) : null;
 
   return (
     <div className="min-w-0">
-      <div className="mb-5 flex items-start justify-between gap-3 flex-wrap">
+      <div className="mb-6 flex items-center justify-between gap-3 flex-wrap">
         <div className="min-w-0 flex-1">
-          <div className="text-xs text-ink-faint mb-1 break-words">
+          <div className="text-xs text-ink-faint mb-2 break-words">
             <Link to="/account/orders" className="hover:text-pine">
               {t("web.account_orders")}
             </Link>
@@ -154,13 +176,12 @@ export default function OrderDetailPage() {
           <h1 className="page-title block! break-words">
             {t("web.order_code")} <span className="font-mono break-all">{order.code}</span>
           </h1>
-          <p className="mt-1 text-xs text-ink-faint">{order.created_at_display}</p>
         </div>
         <StatusBadge value={order.status} fulfillment={order.fulfillment} />
       </div>
 
-      <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-[minmax(0,1fr)_20rem]">
-        <div className="min-w-0 space-y-5">
+      <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[minmax(0,1fr)_22rem]">
+        <div className="min-w-0 space-y-6">
           {order.fulfillment && <OrderProgress fulfillment={order.fulfillment}>{liveUpdates}</OrderProgress>}
           {pendingPayment && (
             <Card className="flex items-center justify-between gap-3 flex-wrap bg-pine-tint/40">
@@ -369,7 +390,7 @@ export default function OrderDetailPage() {
         </div>
         {/* Historical prices and reductions stay in IDR; the total uses the
             order's settlement currency, independent of viewer preference. */}
-        <Card className="min-w-0 text-sm">
+        <Card className="min-w-0 text-sm lg:sticky lg:top-20">
           <h2 className="section-title mb-3">{t("web.order_summary_title")}</h2>
           <div className="flex flex-wrap justify-between gap-x-3 py-1">
             <span className="text-ink-soft">{t("web.subtotal")}</span> <span>{formatIdr(order.subtotal)}</span>
@@ -390,10 +411,11 @@ export default function OrderDetailPage() {
             </div>
           )}
           <div className="flex flex-wrap justify-between gap-x-3 py-2 border-t border-line mt-2 font-semibold">
-            <span>{t("web.order_total")}</span> <span className="font-semibold text-pine text-lg whitespace-nowrap">
+            <span className="text-base">{t("web.order_total")}</span> <span className="font-bold text-pine text-xl whitespace-nowrap">
               {formatOrderAmount(order.total, order.currency)}
             </span>
           </div>
+          <p className="mt-3 border-t border-line pt-3 text-xs text-ink-faint">{order.created_at_display}</p>
         </Card>
       </div>
     </div>

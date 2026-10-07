@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from "vitest";
-import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within, act } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import OrderDetailPage from "./OrderDetailPage";
@@ -237,15 +237,17 @@ describe("OrderDetailPage", () => {
       processing: true,
     };
     renderDetail(() => data);
-    // "Being prepared" appears twice — once in the StatusBadge chip, once as
+    // "Waiting to be prepared" appears twice — once in the StatusBadge chip, once as
     // the reassurance card's heading.
-    expect(await screen.findAllByText("Being prepared")).toHaveLength(2);
-    expect(screen.getByText(/preparing your order by hand/)).toBeInTheDocument();
+    expect(await screen.findAllByText("Waiting to be prepared")).toHaveLength(2);
+    expect(screen.getByText(/Payment received — your order is waiting to be prepared/)).toBeInTheDocument();
     // No manual_with_info fields on this fixture -> no info section at all.
     expect(screen.queryByText("Your submitted information")).not.toBeInTheDocument();
 
     (apiGet as Mock).mockClear();
-    fireEvent.click(screen.getByRole("button", { name: /Refresh/ }));
+    const refresh = screen.getByRole("button", { name: "Refresh" });
+    expect(refresh).toHaveTextContent("");
+    fireEvent.click(refresh);
     await waitFor(() => expect(apiGet).toHaveBeenCalledWith(`/api/v1/account/orders/ORD1`));
   });
 
@@ -258,7 +260,7 @@ describe("OrderDetailPage", () => {
     };
     renderDetail(() => data);
     await screen.findByText("Your credentials");
-    expect(screen.queryByText("Being prepared")).not.toBeInTheDocument();
+    expect(screen.queryByText("Waiting to be prepared")).not.toBeInTheDocument();
     expect(screen.queryByText("Your submitted information")).not.toBeInTheDocument();
     expect(screen.queryByText("Delivered content")).not.toBeInTheDocument();
   });
@@ -405,7 +407,7 @@ describe("OrderDetailPage — realtime digiflazz sub-status (Task 14)", () => {
 
   it("renders the reassurance card without any digiflazz sub-status line before any SSE push arrives", async () => {
     renderDetail(() => processingData());
-    expect(await screen.findAllByText("Being prepared")).toHaveLength(2);
+    expect(await screen.findAllByText("Waiting to be prepared")).toHaveLength(2);
     expect(screen.queryByText("We're finalizing your top-up with our supplier. This usually only takes a moment.")).not.toBeInTheDocument();
     expect(screen.queryByText("Our team is reviewing your order and will finish it shortly.")).not.toBeInTheDocument();
     expect(screen.queryByText(/undefined/i)).not.toBeInTheDocument();
@@ -418,7 +420,7 @@ describe("OrderDetailPage — realtime digiflazz sub-status (Task 14)", () => {
   // already present on the INITIAL fetch and NO SSE push at all.
   it("shows the digiflazz_pending_body text from the initial fetch alone, with no SSE push at all", async () => {
     renderDetail(() => processingData({ order: { ...baseOrder, status: "PROCESSING", digiflazz_status: "pending" } }));
-    await screen.findAllByText("Being prepared");
+    await screen.findAllByText("Waiting to be prepared");
 
     expect(
       await screen.findByText("We're finalizing your top-up with our supplier. This usually only takes a moment."),
@@ -430,7 +432,7 @@ describe("OrderDetailPage — realtime digiflazz sub-status (Task 14)", () => {
   it("shows the digiflazz_pending_body text once the SSE stream pushes digiflazzStatus: pending", async () => {
     let current = processingData();
     renderDetail(() => current);
-    await screen.findAllByText("Being prepared");
+    await screen.findAllByText("Waiting to be prepared");
 
     current = processingData({ order: { ...baseOrder, status: "PROCESSING", digiflazz_status: "pending" } });
     MockEventSource.instances[0]!.emit({ orderStatus: "PROCESSING", digiflazzStatus: "pending" });
@@ -443,7 +445,7 @@ describe("OrderDetailPage — realtime digiflazz sub-status (Task 14)", () => {
   it("shows the digiflazz_failed_body text once the SSE stream pushes digiflazzStatus: reviewing, and never the word 'failed'", async () => {
     let current = processingData();
     renderDetail(() => current);
-    await screen.findAllByText("Being prepared");
+    await screen.findAllByText("Waiting to be prepared");
 
     current = processingData({ order: { ...baseOrder, status: "PROCESSING", digiflazz_status: "reviewing" } });
     MockEventSource.instances[0]!.emit({ orderStatus: "PROCESSING", digiflazzStatus: "reviewing" });
@@ -468,7 +470,7 @@ describe("OrderDetailPage — realtime digiflazz sub-status (Task 14)", () => {
   it("refetches full detail on an SSE transition so status and delivered content update together", async () => {
     let current = processingData();
     renderDetail(() => current);
-    await screen.findAllByText("Being prepared");
+    await screen.findAllByText("Waiting to be prepared");
 
     current = {
       order: { ...baseOrder, status: "DELIVERED", items: [{ ...baseOrder.items[0]!, credentials: "delivered:secret" }] },
@@ -477,7 +479,7 @@ describe("OrderDetailPage — realtime digiflazz sub-status (Task 14)", () => {
     MockEventSource.instances[0]!.emit({ orderStatus: "DELIVERED", digiflazzStatus: "pending" });
     expect(await screen.findByText("delivered:secret")).toBeInTheDocument();
     expect(screen.getByText("Delivered")).toBeInTheDocument();
-    expect(screen.queryByText("Being prepared")).not.toBeInTheDocument();
+    expect(screen.queryByText("Waiting to be prepared")).not.toBeInTheDocument();
     expect(MockEventSource.instances[0]!.closed).toBe(true);
   });
 });
@@ -513,7 +515,7 @@ describe("OrderDetailPage — canonical automatic fulfillment", () => {
   ])("renders backend %s copy without manual wording", async (status, title) => {
     renderDetail(() => automaticData(status));
     expect(await screen.findByRole("heading", { name: title })).toBeInTheDocument();
-    expect(screen.queryByText(/by hand|Being prepared/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/by hand|manual|Waiting to be prepared/)).not.toBeInTheDocument();
     const progress = screen.getByRole("list", { name: "Order progress" });
     expect(within(progress).getAllByRole("listitem")).toHaveLength(3);
     if (["QUEUED", "SUBMITTING", "PROCESSING"].includes(status)) {
@@ -529,7 +531,7 @@ describe("OrderDetailPage — canonical automatic fulfillment", () => {
     document.documentElement.lang = "id";
     renderDetail(() => automaticData());
     expect(await screen.findByRole("heading", { name: "Memproses top-up" })).toBeInTheDocument();
-    expect(screen.queryByText(/by hand|Being prepared/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/by hand|manual|Waiting to be prepared/)).not.toBeInTheDocument();
   });
 
   it("keeps manual preparation copy for a canonical MANUAL queued order", async () => {
@@ -537,8 +539,8 @@ describe("OrderDetailPage — canonical automatic fulfillment", () => {
     current.order.fulfillment.mode = "MANUAL";
     current.order.fulfillment.provider = "MANUAL";
     renderDetail(() => current);
-    expect(await screen.findByRole("heading", { name: "Being prepared" })).toBeInTheDocument();
-    expect(screen.getByText(/preparing your order by hand/)).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Waiting to be prepared" })).toBeInTheDocument();
+    expect(screen.getByText(/Payment received — your order is waiting to be prepared/)).toBeInTheDocument();
     expect(screen.queryByText(/automatic processing/)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Edit/ })).toBeInTheDocument();
   });
@@ -552,8 +554,8 @@ describe("OrderDetailPage — canonical automatic fulfillment", () => {
     const summary = screen.getByRole("heading", { name: "Order summary" });
     expect(info.compareDocumentPosition(summary) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(container.querySelector(".grid-cols-1")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Refresh/ })).toHaveClass("min-h-11");
-    expect(screen.getByRole("button", { name: /Refresh/ }).closest(".card")).toContainElement(screen.getByRole("list", { name: "Order progress" }));
+    expect(screen.getByRole("button", { name: "Refresh" })).toHaveClass("min-h-11", "min-w-11");
+    expect(screen.getByRole("button", { name: "Refresh" }).closest(".card")).toContainElement(screen.getByRole("list", { name: "Order progress" }));
   });
 
   it("locks an open edit form when SSE announces dispatch, after fetching the authoritative detail", async () => {
@@ -588,5 +590,102 @@ describe("OrderDetailPage — canonical automatic fulfillment", () => {
     current = automaticData("SUCCESS");
     await waitFor(() => expect(screen.getByRole("heading", { name: "Top-up completed" })).toBeInTheDocument(), { timeout: 6500 });
     expect(screen.queryByRole("link", { name: /Pay now/ })).not.toBeInTheDocument();
+  });
+});
+
+describe("OrderDetailPage — status card, layout and refresh demotion", () => {
+  beforeEach(() => {
+    document.documentElement.lang = "en";
+    vi.clearAllMocks();
+    vi.stubGlobal("EventSource", MockEventSource);
+    MockEventSource.instances = [];
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  function data(status: string, over: Record<string, unknown> = {}, mode: "AUTO" | "MANUAL" = "AUTO") {
+    const done = status === "SUCCESS";
+    return {
+      order: {
+        ...baseOrder, status: done ? "DELIVERED" : "PROCESSING",
+        customer_data_fields: infoFields, customer_data: [{ game_id: "player1" }],
+        fulfillment: { mode, provider: mode === "AUTO" ? "DIGIFLAZZ" : "MANUAL", status, payment_status: "PAID", can_edit_customer_data: true },
+        ...over,
+      },
+      delivered: done, pending_payment: false, processing: !done,
+    };
+  }
+
+  it("renders a loading skeleton before data arrives", () => {
+    renderDetail(() => new Promise(() => {}));
+    expect(screen.getByLabelText("Loading…")).toHaveAttribute("aria-busy", "true");
+  });
+
+  it("shows a spinner while processing and no spinner or Refresh once completed", async () => {
+    const { container, unmount } = renderDetail(() => data("PROCESSING"));
+    await screen.findByRole("heading", { name: "Processing top-up" });
+    expect(container.querySelector(".animate-spin")).toBeInTheDocument();
+    unmount();
+    const second = renderDetail(() => data("SUCCESS"));
+    await screen.findByRole("heading", { name: "Top-up completed" });
+    expect(second.container.querySelector(".animate-spin")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Refresh" })).not.toBeInTheDocument();
+  });
+
+  it("renders failed and needs-review states", async () => {
+    const failed = renderDetail(() => data("FAILED"));
+    expect(await screen.findByRole("heading", { name: "Top-up failed" })).toBeInTheDocument();
+    failed.unmount();
+    renderDetail(() => data("NEEDS_REVIEW"));
+    expect(await screen.findByRole("heading", { name: "We're checking your order" })).toBeInTheDocument();
+  });
+
+  it("uses the new manual waiting copy and never says 'by hand'", async () => {
+    renderDetail(() => data("QUEUED", {}, "MANUAL"));
+    expect(await screen.findByRole("heading", { name: "Waiting to be prepared" })).toBeInTheDocument();
+    expect(screen.getByText(/waiting to be prepared\. We'll notify you/)).toBeInTheDocument();
+    expect(screen.queryByText(/by hand|manually/i)).not.toBeInTheDocument();
+  });
+
+  it("uses Indonesian manual waiting copy", async () => {
+    document.documentElement.lang = "id";
+    renderDetail(() => data("QUEUED", {}, "MANUAL"));
+    expect(await screen.findByRole("heading", { name: "Menunggu disiapkan" })).toBeInTheDocument();
+    expect(screen.queryByText(/manual/i)).not.toBeInTheDocument();
+  });
+
+  it.each(["SUBMITTING", "PROCESSING", "SUCCESS"])("hides Edit once fulfillment is %s even if the flag is stale", async (status) => {
+    renderDetail(() => data(status));
+    await screen.findByText("Your submitted information");
+    expect(screen.queryByRole("button", { name: /Edit/ })).not.toBeInTheDocument();
+  });
+
+  it("demotes Refresh and shows Retry only after the stream disconnects", async () => {
+    renderDetail(() => data("PROCESSING"));
+    await screen.findByRole("heading", { name: "Processing top-up" });
+    expect(screen.queryByText(/Live updates disconnected/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    const source = MockEventSource.instances[0]!;
+    act(() => (source as unknown as { onerror: () => void }).onerror());
+    expect(await screen.findByText(/Live updates disconnected/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(source.closed).toBe(true);
+    expect(MockEventSource.instances).toHaveLength(2);
+    act(() => (MockEventSource.instances[1] as unknown as { onopen: () => void }).onopen());
+    await waitFor(() => expect(screen.queryByText(/Live updates disconnected/)).not.toBeInTheDocument());
+  });
+
+  it("keeps subtotal and wallet credit visible when the wallet paid everything", async () => {
+    renderDetail(() => data("SUCCESS", { subtotal: "158000", wallet_credit: "158000", total: "0" }));
+    await screen.findByRole("heading", { name: "Order summary" });
+    expect(screen.getByText("Subtotal")).toBeInTheDocument();
+    expect(screen.getAllByText(/158[.,]000/).length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("uses a responsive two-column layout with wrapping headings", async () => {
+    const { container } = renderDetail(() => data("PROCESSING"));
+    await screen.findByRole("heading", { name: "Processing top-up" });
+    expect(container.querySelector(".grid-cols-1")!.className).toContain("lg:grid-cols-[minmax(0,1fr)_22rem]");
+    expect(screen.getByRole("heading", { level: 1 }).querySelector(".break-all")).toHaveTextContent("ORD1");
+    expect(container.firstElementChild).toHaveClass("min-w-0");
   });
 });

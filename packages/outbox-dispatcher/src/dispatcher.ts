@@ -108,6 +108,7 @@ const ADMIN_DM_EVENTS = new Set<string>([
   NotificationEvent.ADMIN_UNCONFIRMABLE_PAYMENT, // admin DM (gateway says paid but sent no transaction id — needs a human before the order auto-cancels)
   NotificationEvent.ADMIN_DIGIFLAZZ_RESYNC_ABORTED, // admin DM (hourly Digiflazz catalog resync tripped its own blast-radius circuit breaker and wrote nothing — needs a human to check the supplier connection)
   NotificationEvent.ADMIN_DIGIFLAZZ_BELOW_COST, // admin DM (catalog prices need review after supplier cost changes)
+  NotificationEvent.ADMIN_DIGIFLAZZ_SKUS_CHANGED, // admin DM (a catalog sync added, reactivated or deactivated SKUs)
   NotificationEvent.ADMIN_FX_RATE_REJECTED, // admin DM (the hourly market-rate refresh fetched a USD/IDR rate outside the sanity band — the saved rate stands, but the source needs checking)
   NotificationEvent.ADMIN_FX_RATE_STALE, // admin DM (the saved USD/IDR rate stopped being confirmed: past fx_quote_ttl_minutes no USDT rail is offered, past fx_rate_max_age_hours USDT is hidden shop-wide)
   NotificationEvent.WALLET_TOPUP_CREDITED_DM, // buyer DM (any rail's top-up settled, wallet credited — enqueued once by settleWalletTopup)

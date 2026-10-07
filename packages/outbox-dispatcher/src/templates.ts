@@ -215,6 +215,12 @@ interface AdminDigiflazzBelowCostPayload {
   newly_below_cost_count?: unknown;
 }
 
+interface AdminDigiflazzSkusChangedPayload {
+  added_count?: unknown;
+  reactivated_count?: unknown;
+  deactivated_count?: unknown;
+}
+
 interface RestockSubscriberPayload {
   product_name?: unknown;
   buyer_language?: unknown;
@@ -271,6 +277,7 @@ export function render(
     WalletTopupCreditedPayload &
     AdminDigiflazzResyncAbortedPayload &
     AdminDigiflazzBelowCostPayload &
+    AdminDigiflazzSkusChangedPayload &
     AdminFxRateRejectedPayload &
     AdminFxRateStalePayload &
     TicketClosedPayload &
@@ -476,6 +483,34 @@ export function render(
     const newly = escape(String(payload.newly_below_cost_count ?? "0"));
     return `<b>Digiflazz prices below cost</b>\n${count} denominations have a retail or reseller price below supplier cost (${newly} newly flagged). Review the Below Cost badges in the catalog and adjust prices as needed.\n\n` +
       `<b>Harga Digiflazz di bawah modal</b>\n${count} denominasi memiliki harga retail atau reseller di bawah modal supplier (${newly} baru terdeteksi). Periksa tanda Below Cost pada katalog dan sesuaikan harga jika diperlukan.`;
+  }
+  if (event === NotificationEvent.ADMIN_DIGIFLAZZ_SKUS_CHANGED) {
+    const toCount = (v: unknown): number => {
+      const n = Number(v ?? 0);
+      return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+    };
+    const added = toCount(payload.added_count);
+    const reactivated = toCount(payload.reactivated_count);
+    const deactivated = toCount(payload.deactivated_count);
+    if (added + reactivated + deactivated === 0) return "";
+    const partsEn: string[] = [];
+    const partsId: string[] = [];
+    if (added > 0) {
+      partsEn.push(`${added} new SKU(s) added`);
+      partsId.push(`${added} SKU baru ditambahkan`);
+    }
+    if (reactivated > 0) {
+      partsEn.push(`${reactivated} SKU(s) reactivated`);
+      partsId.push(`${reactivated} SKU diaktifkan lagi`);
+    }
+    if (deactivated > 0) {
+      partsEn.push(`${deactivated} SKU(s) deactivated because Digiflazz no longer offers them`);
+      partsId.push(`${deactivated} SKU dinonaktifkan karena tidak tersedia di Digiflazz`);
+    }
+    const reviewEn = added > 0 ? " Review new SKUs in the Catalog." : "";
+    const reviewId = added > 0 ? " Tinjau SKU baru di Katalog." : "";
+    return `<b>Digiflazz sync</b>\n${partsEn.join(", ")}.${reviewEn}\n\n` +
+      `<b>Sinkronisasi Digiflazz</b>\n${partsId.join(", ")}.${reviewId}`;
   }
   if (event === NotificationEvent.ADMIN_DIGIFLAZZ_RESYNC_ABORTED) {
     // Admin DM: resyncDigiflazzCatalog's own blast-radius circuit breaker

@@ -736,6 +736,9 @@ export const NotificationEvent = {
   // Admin DM: retail or reseller prices fell below the supplier cost during
   // a catalog resync. Count-only payload; the catalog shows affected rows.
   ADMIN_DIGIFLAZZ_BELOW_COST: "ADMIN_DIGIFLAZZ_BELOW_COST",
+  // Admin DM: a catalog resync added new SKUs, reactivated sync-deactivated
+  // ones, or deactivated SKUs Digiflazz no longer offers. Count-only payload.
+  ADMIN_DIGIFLAZZ_SKUS_CHANGED: "ADMIN_DIGIFLAZZ_SKUS_CHANGED",
   // Admin DM (not a channel post): the hourly market-rate refresh
   // (`refreshUsdIdrRate`, scheduled by `scheduleFxRefresh`) fetched a
   // USD→IDR rate that failed `validateUsdIdrRate`'s sanity band — outside

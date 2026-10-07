@@ -126,6 +126,8 @@ describe("GET /api/dashboard/digiflazz-sync/stream", () => {
       status: "success",
       updated: 12,
       deactivated: 3,
+      added: 4,
+      reactivated: 1,
       abortReason: null,
       finishedAt: "2026-08-22T10:00:00.000Z",
     });
@@ -137,6 +139,8 @@ describe("GET /api/dashboard/digiflazz-sync/stream", () => {
       status: "success",
       updated: 12,
       deactivated: 3,
+      added: 4,
+      reactivated: 1,
       abortReason: null,
       finishedAt: "2026-08-22T10:00:00.000Z",
     });
@@ -150,6 +154,8 @@ describe("GET /api/dashboard/digiflazz-sync/stream", () => {
       status: "success",
       updated: 12,
       deactivated: 3,
+      added: 4,
+      reactivated: 1,
       abortReason: null,
       finishedAt: "2026-08-22T10:00:00.000Z",
     });

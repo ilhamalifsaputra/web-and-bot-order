@@ -91,6 +91,7 @@ import {
   enqueueAdminStalePayment,
   enqueueAdminDigiflazzResyncAborted,
   enqueueAdminDigiflazzBelowCost,
+  enqueueAdminDigiflazzSkusChanged,
   enqueueAdminFxRateRejected,
   enqueueAdminFxRateStale,
   completeOrderWithWalletCredit,
@@ -374,6 +375,29 @@ describe("drainBatch routes below-cost alerts to admins", () => {
     expect(call![1]).toContain("below cost");
     expect(sendMessage.mock.calls.some(c => c[0] === -1009876543999)).toBe(false);
     const rows = await prisma.notificationOutbox.findMany({ where: { event: NotificationEvent.ADMIN_DIGIFLAZZ_BELOW_COST } });
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every(row => row.status === "SENT")).toBe(true);
+  });
+});
+
+describe("drainBatch routes SKU-change alerts to admins", () => {
+  afterEach(() => resetBotIdentity());
+
+  it.each([undefined, -1009876543999])("delivers to the admin with public channel %s", async publicChannelId => {
+    await prisma.notificationOutbox.deleteMany({ where: { event: NotificationEvent.ADMIN_DIGIFLAZZ_SKUS_CHANGED } });
+    await addAdminIdToDb(prisma, 900_200_029);
+    if (publicChannelId != null) setBotIdentity({ publicChannelId });
+    else resetBotIdentity();
+    await enqueueAdminDigiflazzSkusChanged(prisma, { added: 4, reactivated: 0, deactivated: 1 });
+    const { bot, sendMessage } = fakeBot();
+
+    await drainBatch(bot);
+
+    const call = sendMessage.mock.calls.find(c => c[0] === 900_200_029);
+    expect(call).toBeDefined();
+    expect(call![1]).toContain("4 SKU baru ditambahkan");
+    expect(sendMessage.mock.calls.some(c => c[0] === -1009876543999)).toBe(false);
+    const rows = await prisma.notificationOutbox.findMany({ where: { event: NotificationEvent.ADMIN_DIGIFLAZZ_SKUS_CHANGED } });
     expect(rows.length).toBeGreaterThan(0);
     expect(rows.every(row => row.status === "SENT")).toBe(true);
   });

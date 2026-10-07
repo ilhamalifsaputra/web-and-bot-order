@@ -20,9 +20,10 @@ import { isFlashActive } from "@app/core/flash";
 import { Decimal } from "@app/core/money";
 import { ValidationError } from "@app/core/errors";
 import type { Category, Denomination, Prisma, Product } from "@prisma/client";
-import type { PrismaClient } from "../client";
+import type { PrismaClient, Tx } from "../client";
 import type { Db } from "./_types";
 import { slugify } from "../migrate/slug";
+import { forgetDigiflazzAutoDeactivatedIds } from "./digiflazzAutoDeactivated";
 import { activeServiceGroups, isServiceActive } from "./serviceAvailability";
 import type { ServiceChannel } from "@app/core/services";
 
@@ -537,11 +538,23 @@ export function searchDenominations(db: Db, query: string, limit = 20) {
   });
 }
 
-/** Bulk activate/deactivate denominations in one writer. Returns count updated. */
+/**
+ * Bulk activate/deactivate denominations in one writer — the admin toggle
+ * (web-admin single and bulk routes, the order-bot product toggle). Returns
+ * count updated. Because an admin has now decided about these denominations
+ * by hand, they are also dropped from the Digiflazz sync's auto-deactivated
+ * list, so the hourly resync never switches them back on. The hourly resync
+ * itself must not use this helper.
+ */
 export async function bulkSetDenominationsActive(db: Db, ids: number[], isActive: boolean): Promise<number> {
   if (!ids.length) return 0;
-  const res = await db.denomination.updateMany({ where: { id: { in: ids } }, data: { isActive } });
-  return res.count;
+  const run = async (tx: Db) => {
+    await forgetDigiflazzAutoDeactivatedIds(tx, ids);
+    const res = await tx.denomination.updateMany({ where: { id: { in: ids } }, data: { isActive } });
+    return res.count;
+  };
+  const ownsTransaction = "$transaction" in db && typeof db.$transaction === "function";
+  return ownsTransaction ? db.$transaction((tx: Tx) => run(tx)) : run(db);
 }
 
 /**

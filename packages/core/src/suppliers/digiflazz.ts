@@ -81,6 +81,20 @@ export function classifyDigiflazzHttpStatus(status: number): DigiflazzRequestErr
 }
 
 /**
+ * Digiflazz could not be reached, answered with an HTTP error or an unreadable
+ * body, or refused the request (its own `rc`/`message`). The message is built
+ * only from static text plus what the supplier itself said — never the
+ * request, which carries the API key — so it is safe to log and to show an
+ * admin. Callers use the class to tell a supplier problem from their own.
+ */
+export class DigiflazzSupplierError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DigiflazzSupplierError";
+  }
+}
+
+/**
  * The error `getPriceList`/`createTransaction` throw for every request
  * failure. Still a plain `Error` with the same static, credential-free
  * message as before (callers that only read `.message` see no change), plus
@@ -88,7 +102,7 @@ export function classifyDigiflazzHttpStatus(status: number): DigiflazzRequestErr
  * status when there was one. It never carries the original error or a
  * `cause` — that is where Node's fetch attaches the API-key-bearing request.
  */
-export class DigiflazzRequestError extends Error {
+export class DigiflazzRequestError extends DigiflazzSupplierError {
   readonly kind: DigiflazzRequestErrorKind;
   readonly retryable: boolean;
   readonly httpStatus: number | null;
@@ -192,6 +206,16 @@ export async function getPriceList(creds: DigiflazzCreds): Promise<DigiflazzPric
     "Digiflazz price list",
     HTTP_TIMEOUT_MS.gatewayRead, // catalog sync poll — the next tick retries if this is slow
   )) as { data?: unknown };
+  // Digiflazz answers a refused request (rate limit, bad signature, IP not
+  // whitelisted, ...) with an object `data` carrying `rc` and `message`
+  // instead of the array. Treating that as "no rows" would look like an empty
+  // catalog; report it as the failure it is, in the supplier's own words.
+  if (body.data != null && typeof body.data === "object" && !Array.isArray(body.data)) {
+    const d = body.data as Record<string, unknown>;
+    const message = str(d.message) ?? "no message";
+    const rc = str(d.rc);
+    throw new DigiflazzSupplierError(`Digiflazz refused the price-list request: ${message}${rc ? ` (rc ${rc})` : ""}`);
+  }
   const rows = Array.isArray(body.data) ? body.data : [];
   const items: DigiflazzPriceListItem[] = [];
   let skipped = 0;

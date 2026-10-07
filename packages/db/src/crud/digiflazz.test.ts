@@ -93,6 +93,8 @@ import {
   DIGIFLAZZ_DIRECT_DISPATCH_CONCURRENCY,
   DIGIFLAZZ_DIRECT_DISPATCH_QUEUE_LIMIT,
   __digiflazzDirectDispatchLoadForTests,
+  claimDigiflazzWebhookRecheck,
+  recordDigiflazzOutcome,
   settlePaidOrder,
 } from "@app/db";
 import { logger } from "@app/core/logger";
@@ -1216,6 +1218,104 @@ describe("dispatchDigiflazzOrderNow — direct per-order dispatch (instant dispa
   });
 });
 
+describe("webhook recheck claim and restore are compare-and-set (instant dispatch Task 4 fix)", () => {
+  type WebhookOrder = Parameters<typeof recordDigiflazzOutcome>[1];
+  const PENDING = { refId: "", status: "Pending", sn: null, message: null, price: null };
+
+  async function pendingAtSupplier(nextRecheckAt: Date | null, dispatchedAt = new Date(Date.now() - 5_000)) {
+    const order = await makeProcessingDigiflazzOrder();
+    await prisma.order.update({
+      where: { id: order.id },
+      data: { digiflazzDispatchedAt: dispatchedAt, digiflazzStatus: "pending_at_supplier", digiflazzAttempts: 1, digiflazzNextRecheckAt: nextRecheckAt },
+    });
+    const row = await prisma.order.findUniqueOrThrow({ where: { id: order.id }, include: { items: { include: { product: { include: { product: true } } } } } });
+    return row as unknown as WebhookOrder & { digiflazzDispatchedAt: Date };
+  }
+
+  it("returns the exact lease it wrote and the value it replaced, and nothing while another check holds the lease", async () => {
+    const scheduled = new Date(Date.now() + 20 * 60_000);
+    const order = await pendingAtSupplier(scheduled);
+    const now = new Date();
+    const claim = await claimDigiflazzWebhookRecheck(prisma, order.id, now);
+    expect(claim).toEqual({ leaseUntil: new Date(now.getTime() + DIGIFLAZZ_RECHECK_CLAIM_LEASE_MS), scheduledRecheckAt: scheduled });
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).digiflazzNextRecheckAt).toEqual(claim!.leaseUntil);
+    expect(await claimDigiflazzWebhookRecheck(prisma, order.id)).toBeNull();
+  });
+
+  it("the normal single-webhook path puts the scheduled recheck back exactly and keeps the attempt count", async () => {
+    const scheduled = new Date(Date.now() + 20 * 60_000);
+    const order = await pendingAtSupplier(scheduled);
+    const claim = (await claimDigiflazzWebhookRecheck(prisma, order.id))!;
+    await recordDigiflazzOutcome(prisma, order, { kind: "pending" }, order.digiflazzDispatchedAt, { source: "webhook", ...claim });
+    const row = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(row.digiflazzNextRecheckAt).toEqual(scheduled);
+    expect(row.digiflazzAttempts).toBe(1);
+  });
+
+  it("a webhook check that outlived its lease does not overwrite what the cron recorded after taking over", async () => {
+    const t0 = Date.now();
+    const order = await pendingAtSupplier(new Date(t0 - 1_000));
+    const infoSpy = vi.spyOn(logger, "info");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(t0);
+      const claim = (await claimDigiflazzWebhookRecheck(prisma, order.id))!;
+      expect(claim.scheduledRecheckAt).toEqual(new Date(t0 - 1_000));
+
+      // The webhook's live check hangs past its lease; the cron takes over.
+      vi.setSystemTime(t0 + DIGIFLAZZ_RECHECK_CLAIM_LEASE_MS + 1_000);
+      digiflazzMock.createTransaction.mockResolvedValue({ ...PENDING, refId: order.orderCode });
+      expect(await dispatchPendingDigiflazzOrders(prisma)).toEqual({ claimed: 1, delivered: 0, pending: 1, failed: 0 });
+      const cronRow = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+      expect(cronRow.digiflazzAttempts).toBe(2);
+
+      // Now the webhook's own Pending answer finally arrives.
+      await recordDigiflazzOutcome(prisma, order, { kind: "pending" }, order.digiflazzDispatchedAt, { source: "webhook", ...claim });
+      const after = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+      expect(after.digiflazzAttempts).toBe(2);
+      expect(after.digiflazzNextRecheckAt).toEqual(cronRow.digiflazzNextRecheckAt);
+      expect(after.digiflazzFailureDetail).toEqual(cronRow.digiflazzFailureDetail);
+      const messages = infoSpy.mock.calls.map((c) => String(typeof c[0] === "string" ? c[0] : c[1]));
+      expect(messages.some((m) => m.includes(order.orderCode) && /another check took over/i.test(m))).toBe(true);
+    } finally {
+      vi.useRealTimers();
+      infoSpy.mockRestore();
+    }
+  });
+
+  it("a late webhook outcome never replaces the cron's in-flight lease, so two requests for one ref id cannot overlap", async () => {
+    const t0 = Date.now();
+    const order = await pendingAtSupplier(new Date(t0 - 1_000));
+    const answer = deferred<typeof PENDING>();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(t0);
+      const claim = (await claimDigiflazzWebhookRecheck(prisma, order.id))!;
+      vi.setSystemTime(t0 + DIGIFLAZZ_RECHECK_CLAIM_LEASE_MS + 1_000);
+      digiflazzMock.createTransaction.mockImplementation(() => answer.promise);
+      const tick = dispatchPendingDigiflazzOrders(prisma);
+      await vi.waitFor(() => expect(digiflazzMock.createTransaction).toHaveBeenCalledTimes(1), { timeout: 10_000 });
+      const leased = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+      // The cron's own lease (claimed at about t0 + lease + 1 s), not the webhook's.
+      expect(leased.digiflazzNextRecheckAt!.getTime()).toBeGreaterThanOrEqual(t0 + 2 * DIGIFLAZZ_RECHECK_CLAIM_LEASE_MS + 1_000);
+      expect(leased.digiflazzNextRecheckAt!.getTime()).not.toBe(claim.leaseUntil.getTime());
+
+      await recordDigiflazzOutcome(prisma, order, { kind: "transient_error", message: "Digiflazz transaction timed out" }, order.digiflazzDispatchedAt, { source: "webhook", ...claim });
+      const during = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+      expect(during.digiflazzNextRecheckAt).toEqual(leased.digiflazzNextRecheckAt);
+      expect(during.digiflazzFailureDetail).toBeNull();
+      // Still leased: neither the cron nor a direct dispatch can start a second request.
+      expect(await dispatchDigiflazzOrderNow(prisma, order.id)).toEqual({ claimed: 0, delivered: 0, pending: 0, failed: 0 });
+
+      answer.resolve({ ...PENDING, refId: order.orderCode });
+      await tick;
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(digiflazzMock.createTransaction).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("triggerDigiflazzDispatch — fire-and-forget wrapper", () => {
   it("never throws or leaves an unhandled rejection when Digiflazz throws, and the cron later recovers the order", async () => {
     const unhandled: unknown[] = [];
@@ -1607,7 +1707,18 @@ describe("typed Digiflazz request errors in the dispatch outcome (instant dispat
     });
     digiflazzMock.createTransaction.mockRejectedValueOnce(makeError());
 
-    expect(await dispatchDigiflazzOrderNow(prisma, order.id)).toEqual({ claimed: 1, delivered: 0, pending: 1, failed: 0 });
+    const infoSpy = vi.spyOn(logger, "info");
+    try {
+      expect(await dispatchDigiflazzOrderNow(prisma, order.id)).toEqual({ claimed: 1, delivered: 0, pending: 1, failed: 0 });
+      // The logged response says the same ref id will be tried again.
+      const responses = infoSpy.mock.calls
+        .map((c) => c[0] as unknown)
+        .filter((f): f is { event: string } => !!f && typeof f === "object" && (f as { event?: string }).event === "digiflazz.response");
+      expect(responses).toHaveLength(1);
+      expect(responses[0]).toMatchObject({ retryable: true, errorKind: makeError().kind });
+    } finally {
+      infoSpy.mockRestore();
+    }
     const refreshed = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
     expect(refreshed.digiflazzStatus).toBe("pending_at_supplier");
     expect(refreshed.digiflazzAttempts).toBe(2);
@@ -1621,6 +1732,7 @@ describe("typed Digiflazz request errors in the dispatch outcome (instant dispat
   it.each([
     ["http_5xx", 502],
     ["http_429", 429],
+    ["timeout", 408],
     ["network", null],
     ["unparseable", null],
   ] as const)("a retryable %s error keeps the transient retry path", async (kind, status) => {

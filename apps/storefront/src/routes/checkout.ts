@@ -1722,20 +1722,21 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         );
         return reply.send({ status: "unmatched" });
       }
-      // The recheck time the poller scheduled, read before the claim below
-      // overwrites it with the in-flight lease. A Pending/transient result
-      // from this webhook puts it back (recordDigiflazzOutcome, source
-      // "webhook"): a replayable callback must never consume a backoff
-      // attempt or move the schedule.
-      const webhookOutcomeOptions = { source: "webhook" as const, scheduledRecheckAt: order.digiflazzNextRecheckAt };
       // At most one /transaction call per order at a time, across replays,
       // concurrent callbacks and the dispatch poller.
-      if (!(await claimDigiflazzWebhookRecheck(prisma, order.id))) {
+      const recheckClaim = await claimDigiflazzWebhookRecheck(prisma, order.id);
+      if (!recheckClaim) {
         logger.info(
           `Skipped the live re-check for a Digiflazz callback on order ${order.orderCode} because another check of that order is already in flight or due within minutes — that check records the outcome, so nothing is lost`,
         );
         return reply.send({ status: "ok" });
       }
+      // A Pending/transient result from this webhook puts back the recheck
+      // time the claim replaced (recordDigiflazzOutcome, source "webhook"): a
+      // replayable callback must never consume a backoff attempt or move the
+      // schedule. That write only applies while this claim's lease is still
+      // in place, so it can never undo a newer check's lease or outcome.
+      const webhookOutcomeOptions = { source: "webhook" as const, ...recheckClaim };
 
       let result: DigiflazzTransactionResult;
       try {

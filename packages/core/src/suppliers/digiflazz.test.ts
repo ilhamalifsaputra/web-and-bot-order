@@ -209,6 +209,9 @@ describe("createTransaction error classification (DigiflazzRequestError)", () =>
     [403, "http_4xx", false],
     [404, "http_4xx", false],
     [422, "http_4xx", false],
+    // A proxy-generated 408 may come after the request already reached
+    // Digiflazz, so it is retried with the same ref id like any timeout.
+    [408, "timeout", true],
     [429, "http_429", true],
     [500, "http_5xx", true],
     [502, "http_5xx", true],
@@ -287,6 +290,7 @@ describe("createTransaction error classification (DigiflazzRequestError)", () =>
 describe("classifyDigiflazzHttpStatus / isRetryableDigiflazzErrorKind", () => {
   it("maps statuses and kinds the same way createTransaction does", () => {
     expect(classifyDigiflazzHttpStatus(429)).toBe("http_429");
+    expect(classifyDigiflazzHttpStatus(408)).toBe("timeout");
     expect(classifyDigiflazzHttpStatus(500)).toBe("http_5xx");
     expect(classifyDigiflazzHttpStatus(599)).toBe("http_5xx");
     expect(classifyDigiflazzHttpStatus(400)).toBe("http_4xx");

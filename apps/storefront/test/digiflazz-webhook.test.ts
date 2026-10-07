@@ -1005,6 +1005,47 @@ describe("POST /pay/digiflazz/callback", () => {
     expect(await prisma.auditLog.count({ where: { action: "order.digiflazz_dispatch_failed", targetId: order.id } })).toBe(0);
   });
 
+  // Task 4 review fix (I-1): the webhook's restore is a compare-and-set on
+  // the lease it took. If another check took the recheck slot while the live
+  // check was running (lease ran out, the cron claimed and recorded), the
+  // webhook's Pending answer must not overwrite what that check wrote.
+  it("a Pending answer that arrives after another check took over the recheck slot leaves that check's values alone", async () => {
+    const order = await createProcessingDigiflazzOrder("ORD-DF-CAS-PENDING", "15000", {
+      digiflazzNextRecheckAt: new Date(Date.now() + 20 * 60_000),
+    });
+    const cronNextRecheck = new Date(Date.now() + 90_000);
+    digiflazzSupplierMock.createTransaction.mockImplementation(async () => {
+      // Simulates the lease running out mid-call and the cron claiming and
+      // recording its own attempt in the meantime.
+      await prisma.order.update({ where: { id: order.id }, data: { digiflazzAttempts: 4, digiflazzNextRecheckAt: cronNextRecheck } });
+      return { refId: order.orderCode, status: "Pending", sn: null, message: null, price: null };
+    });
+    const info = vi.spyOn(logger, "info");
+    try {
+      const res = await app.inject(signedPayload({ refId: order.orderCode, status: "Pending" }));
+      expect(res.statusCode).toBe(200);
+      const updated = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+      expect(updated.digiflazzAttempts).toBe(4);
+      expect(updated.digiflazzNextRecheckAt).toEqual(cronNextRecheck);
+      const messages = info.mock.calls.map((c) => String(typeof c[0] === "string" ? c[0] : c[1]));
+      expect(messages.some((m) => m.includes(order.orderCode) && /another check took over/i.test(m))).toBe(true);
+    } finally {
+      info.mockRestore();
+    }
+  });
+
+  it("a Sukses answer still delivers even if another check took over the recheck slot meanwhile", async () => {
+    const order = await createProcessingDigiflazzOrder("ORD-DF-CAS-SUKSES");
+    digiflazzSupplierMock.createTransaction.mockImplementation(async () => {
+      await prisma.order.update({ where: { id: order.id }, data: { digiflazzAttempts: 4, digiflazzNextRecheckAt: new Date(Date.now() + 90_000) } });
+      return { refId: order.orderCode, status: "Sukses", sn: "SN-CAS", message: "ok", price: null };
+    });
+    expect((await app.inject(signedPayload({ refId: order.orderCode, status: "Sukses" }))).statusCode).toBe(200);
+    const updated = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(updated.status).toBe("DELIVERED");
+    expect(decryptDeliveredContent(updated.deliveredContent, order.id)).toBe("SN-CAS");
+  });
+
   it("a webhook Gagal is still terminal, exactly as before", async () => {
     await setSetting(prisma, ADMIN_IDS_KEY, "555");
     const order = await createProcessingDigiflazzOrder("ORD-DF-WEBHOOK-GAGAL-T4");

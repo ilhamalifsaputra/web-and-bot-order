@@ -82,7 +82,10 @@ export interface DigiflazzResponseFields extends OrderRef {
   durationMs: number;
   /** Only for status "error": the request error's kind ("unknown" for an untyped error). */
   errorKind?: DigiflazzRequestErrorKind | "unknown";
-  /** Only for status "error": whether the same ref id will be tried again. */
+  /** Only for status "error": whether the error is eligible for another try
+   * with the same ref id. A recheck error always is, within the 24h backoff
+   * window (past it the order goes to an admin); on a fresh dispatch only a
+   * permanent http_4xx is not. */
   retryable?: boolean;
 }
 

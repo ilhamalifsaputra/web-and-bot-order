@@ -348,24 +348,49 @@ export const DIGIFLAZZ_RECHECK_CLAIM_LEASE_MS = 45_000;
  * Winning the claim takes the lease itself; recordDigiflazzOutcome (with
  * source "webhook", which puts the poller's scheduled recheck back on a
  * Pending/transient result) / fulfillDigiflazzOrder then overwrite or clear it.
+ *
+ * Returns null when the claim was not won, otherwise the exact lease value it
+ * wrote (`leaseUntil`) and the value that lease replaced
+ * (`scheduledRecheckAt`). The claim is a read followed by a compare-and-set
+ * update whose WHERE also requires digiflazzNextRecheckAt to still equal the
+ * value read, so `scheduledRecheckAt` is exactly what this claim replaced. The
+ * webhook's later restore write is guarded on `leaseUntil` in the same way
+ * (recordDigiflazzOutcome), so it cannot overwrite a newer check's lease or
+ * outcome if this one outlived its lease.
  */
-export async function claimDigiflazzWebhookRecheck(db: Db, orderId: number, now: Date = new Date()): Promise<boolean> {
+export async function claimDigiflazzWebhookRecheck(
+  db: Db,
+  orderId: number,
+  now: Date = new Date(),
+): Promise<DigiflazzWebhookRecheckClaim | null> {
   const leaseUntil = new Date(now.getTime() + DIGIFLAZZ_RECHECK_CLAIM_LEASE_MS);
+  const current = await db.order.findUnique({ where: { id: orderId }, select: { digiflazzNextRecheckAt: true } });
+  if (!current) return null;
+  const scheduledRecheckAt = current.digiflazzNextRecheckAt;
+  // The same eligibility rule as before (no recheck time, a due one, or one
+  // beyond the lease window), checked on the value read...
+  const eligible =
+    scheduledRecheckAt === null || scheduledRecheckAt <= now || scheduledRecheckAt > leaseUntil;
+  if (!eligible) return null;
+  // ...and the UPDATE only applies if that value is still the one stored.
   const claim = await db.order.updateMany({
     where: {
       id: orderId,
       status: OrderStatus.PROCESSING,
       digiflazzDispatchedAt: { not: null },
       digiflazzStatus: "pending_at_supplier",
-      OR: [
-        { digiflazzNextRecheckAt: null },
-        { digiflazzNextRecheckAt: { lte: now } },
-        { digiflazzNextRecheckAt: { gt: leaseUntil } },
-      ],
+      digiflazzNextRecheckAt: scheduledRecheckAt,
     },
     data: { digiflazzNextRecheckAt: leaseUntil },
   });
-  return claim.count === 1;
+  return claim.count === 1 ? { leaseUntil, scheduledRecheckAt } : null;
+}
+
+/** What a won claimDigiflazzWebhookRecheck took: the lease it wrote and the
+ * recheck time that lease replaced. */
+export interface DigiflazzWebhookRecheckClaim {
+  leaseUntil: Date;
+  scheduledRecheckAt: Date | null;
 }
 
 /**
@@ -508,7 +533,7 @@ export async function recordDigiflazzOutcome(
   options: DigiflazzOutcomeOptions = {},
 ): Promise<"pending" | "failed"> {
   if (outcome.kind !== "terminal" && options.source === "webhook") {
-    return recordWebhookNonTerminalOutcome(db, order, outcome, dispatchedAt, options.scheduledRecheckAt ?? null);
+    return recordWebhookNonTerminalOutcome(db, order, outcome, dispatchedAt, options);
   }
   if (outcome.kind !== "terminal") {
     const attempt = order.digiflazzAttempts + 1;
@@ -538,41 +563,59 @@ export async function recordDigiflazzOutcome(
   return terminalFailDigiflazzOrder(db, order, outcome.reason, outcome.supplierGaveReason);
 }
 
-export interface DigiflazzOutcomeOptions {
-  /** Who produced the outcome. "dispatch" (the default) is the poller or the
-   * direct dispatch, whose attempt counts against the backoff schedule;
-   * "webhook" is the callback's live re-check, which never does. */
-  source?: "dispatch" | "webhook";
-  /** source "webhook" only: digiflazzNextRecheckAt as it was before the
-   * webhook took its in-flight lease. */
-  scheduledRecheckAt?: Date | null;
-}
+/** Who produced an outcome. The default ("dispatch", or no options) is the
+ * poller or the direct dispatch, whose attempt counts against the backoff
+ * schedule. "webhook" is the callback's live re-check, which never does; it
+ * must hand over the claim it won (claimDigiflazzWebhookRecheck) so its write
+ * can be made conditional on still holding that lease. */
+export type DigiflazzOutcomeOptions =
+  | { source?: "dispatch" }
+  | ({ source: "webhook" } & DigiflazzWebhookRecheckClaim);
 
 /** recordDigiflazzOutcome's "webhook" branch for a Pending/transient result:
  * same status and failure-detail write as the poller's, but the attempt
- * counter is untouched and the recheck time goes back to the poller's
- * schedule. If the order had no scheduled recheck (should not happen for a
+ * counter is untouched and the recheck time goes back to the value the
+ * webhook's claim replaced. If that was null (should not happen for a
  * pending_at_supplier order), it gets the time the next attempt would have
  * had, or "now" when the 24h window is already over, so the poller — never
- * the webhook — decides about the window. */
+ * the webhook — decides about the window.
+ *
+ * Compare-and-set: the write only applies while digiflazzNextRecheckAt still
+ * holds this webhook's own lease. If the live check outlived the lease and
+ * another check (the cron, a direct dispatch, another callback) claimed the
+ * order meanwhile, that check's lease or recorded outcome stands and this
+ * outcome is dropped with an info log — otherwise this write could reopen an
+ * order whose request is in flight, letting a second request for the same ref
+ * id overlap it, or put an older schedule step back. */
 async function recordWebhookNonTerminalOutcome(
   db: PrismaClient,
   order: DigiflazzCandidateOrder,
   outcome: Extract<DigiflazzOutcome, { kind: "pending" | "transient_error" }>,
   dispatchedAt: Date,
-  scheduledRecheckAt: Date | null,
+  claim: DigiflazzWebhookRecheckClaim,
 ): Promise<"pending"> {
   const nextRecheckAt =
-    scheduledRecheckAt ?? nextDigiflazzRecheckAt(dispatchedAt, order.digiflazzAttempts + 1) ?? new Date();
+    claim.scheduledRecheckAt ?? nextDigiflazzRecheckAt(dispatchedAt, order.digiflazzAttempts + 1) ?? new Date();
   const write = await db.order.updateMany({
-    where: { id: order.id, status: OrderStatus.PROCESSING, OR: [{ digiflazzStatus: null }, { digiflazzStatus: { not: "failed" } }] },
-    data: {
+    where: {
+      id: order.id,
+      status: OrderStatus.PROCESSING,
       digiflazzStatus: "pending_at_supplier",
+      digiflazzNextRecheckAt: claim.leaseUntil,
+    },
+    data: {
       digiflazzNextRecheckAt: nextRecheckAt,
       digiflazzFailureDetail: outcome.kind === "transient_error" ? outcome.message : null,
     },
   });
-  if (write.count === 1) emitDigiflazzOrderStatusChanged(order.id);
+  if (write.count === 1) {
+    emitDigiflazzOrderStatusChanged(order.id);
+  } else {
+    logger.info(
+      { orderId: order.id },
+      `Did not record the Digiflazz webhook's ${outcome.kind === "pending" ? "Pending" : "failed"} live check for order ${order.orderCode}, because another check took over this order's recheck slot while the webhook's live check was running, so that check's outcome stands.`,
+    );
+  }
   return "pending";
 }
 
@@ -1229,8 +1272,9 @@ function logDigiflazzResponse(
 ): void {
   const typed = response.error instanceof DigiflazzRequestError ? response.error : null;
   const errorKind = response.status === "error" ? (typed?.kind ?? "unknown") : undefined;
-  // Whether the same ref id will be tried again — always on a recheck (see
-  // processDigiflazzOrder's catch), otherwise per the error's own kind.
+  // Whether the error is eligible for another try with the same ref id: on a
+  // recheck every error is (within the 24h backoff window — see
+  // processDigiflazzOrder's catch), on a fresh dispatch per the error's kind.
   const retryable = response.status === "error" ? (response.isRecheck || !typed || typed.retryable) : undefined;
   logDigiflazzTimingEvent(
     {

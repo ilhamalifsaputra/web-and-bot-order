@@ -73,6 +73,7 @@ import { resolveNicknameGate, buildNicknameProviderEntries } from "./nickname";
 import { isDenominationBelowCost } from "@app/core/denominationPrices";
 import { enqueueAdminDigiflazzBelowCost, enqueueDigiflazzReviewAlert, enqueueAdminDigiflazzResyncAborted } from "./notifications";
 import { logAdminAction } from "./audit";
+import { ensureFulfillmentMessage } from "./fulfillmentMessages";
 import {
   createCatalogProduct,
   createDenomination,
@@ -718,13 +719,6 @@ async function computeAccountDiagnosticNote(
  * fallback KokinPay lookup — see this file's module doc comment for why
  * "reason is non-empty" isn't a usable trigger on its own (every call site
  * already folds a fallback string in even when Digiflazz gave nothing). */
-async function ensureFulfillmentMessage(db: Db, orderId: number): Promise<void> {
-  const order = await db.order.findUnique({ where: { id: orderId }, select: { user: { select: { telegramId: true } } } });
-  if (order?.user.telegramId != null) {
-    await db.fulfillmentMessage.upsert({ where: { orderId }, create: { orderId, chatId: order.user.telegramId }, update: {} });
-  }
-}
-
 async function terminalFailDigiflazzOrder(
   db: PrismaClient,
   order: DigiflazzCandidateOrder,

@@ -549,6 +549,8 @@ export function searchDenominations(db: Db, query: string, limit = 20) {
 export async function bulkSetDenominationsActive(db: Db, ids: number[], isActive: boolean): Promise<number> {
   if (!ids.length) return 0;
   const run = async (tx: Db) => {
+    // Same marker→denomination lock order as catalog sync, even when these
+    // ids are not remembered yet: sync may be concurrently switching them off.
     await forgetDigiflazzAutoDeactivatedIds(tx, ids);
     const res = await tx.denomination.updateMany({ where: { id: { in: ids } }, data: { isActive } });
     return res.count;

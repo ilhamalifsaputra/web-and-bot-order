@@ -2,7 +2,7 @@ import { beforeAll, afterAll, beforeEach, describe, expect, it } from "vitest";
 import { PrismaClient } from "@prisma/client";
 import {
   addAdminIdToDb, createCategory, createCatalogProduct, createDenomination, createOrderDirect, deliverPaidBybitBscOrder, fulfillManualOrder,
-  recordBybitBscConfirmationProgress, recordBybitBscPaymentDetected, wakeFulfillmentMessage,
+  recordBybitBscConfirmationProgress, recordBybitBscPaymentDetected, wakeFulfillmentMessage, creditOrderToBalance, transitionOrderStatus,
 } from "@app/db";
 import { provisionPgTestSchema } from "../../../tests/helpers/pgTestSchema";
 import { FulfillmentMessageWorker, type FulfillmentTelegramApi } from "./fulfillmentMessages";
@@ -429,6 +429,87 @@ describe("customer progress phases in one Telegram message", () => {
     advance(); await w.tick();
     expect(tg.edits.at(-1)!.text).toContain(phrase);
     expect(tg.edits.at(-1)!.text).not.toMatch(/cancelled|dibatalkan/i);
+    const completed = await db.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } });
+    expect(completed).toMatchObject({ state: "FINISHED", phase: "CREDITED", messageId: tg.sent[0]!.id });
+    expect(completed.finishedAt).not.toBeNull();
+    const edits = tg.edits.length;
+    advance(120_000); await worker(tg.api).tick();
+    expect(tg.edits).toHaveLength(edits);
+  });
+});
+
+describe("durable progress outcome corrections", () => {
+  async function cancelledPaymentEvidence(orderId: number) {
+    await db.processedBinanceTx.create({ data: { binanceTxId: crypto.randomUUID(), orderId, amount: 1000, outcome: "delivery_failed" } });
+  }
+
+  it.each(["FAILED", "CANCELLED"])("edits the saved %s result when a later credit commits", async status => {
+    now = new Date();
+    const order = await seed("en", { provider: "MANUAL" });
+    const tg = telegram(); await worker(tg.api).tick();
+    await db.$transaction(async tx => {
+      await transitionOrderStatus(tx, { orderId: order.id, from: "PROCESSING", to: status });
+    });
+    advance(); await worker(tg.api).tick();
+    const finished = await db.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } });
+    expect(finished.state).toBe("FINISHED");
+    if (status === "CANCELLED") await cancelledPaymentEvidence(order.id);
+    await creditOrderToBalance(db, { orderId: order.id, adminId: order.userId });
+    const due = await db.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } });
+    expect(due).toMatchObject({ state: "ACTIVE", messageId: finished.messageId, finishedAt: null });
+    advance(); await worker(tg.api).tick();
+    const corrected = await db.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } });
+    expect(corrected).toMatchObject({ state: "FINISHED", phase: "CREDITED", messageId: finished.messageId });
+    expect(corrected.lastText).toContain("credited to your wallet balance");
+    expect(tg.edits.at(-1)!.id).toBe(finished.messageId);
+    expect(tg.sent).toHaveLength(1);
+  });
+
+  it("keeps delivery recoverable if the worker stops after saving a stale waiting edit", async () => {
+    now = new Date();
+    const order = await seed("en", { provider: "MANUAL" });
+    const tg = telegram(); await worker(tg.api).tick();
+    const api = { ...tg.api, editMessageText: async (...args: Parameters<FulfillmentTelegramApi["editMessageText"]>) => {
+      await db.$transaction(tx => transitionOrderStatus(tx, { orderId: order.id, from: "PROCESSING", to: "DELIVERED" }));
+      return tg.api.editMessageText(...args);
+    } } as FulfillmentTelegramApi;
+    // Interruption at the old post-save recheck: no second read can repair a durable WAITING row.
+    const interruptedDb = db.$extends({ query: { order: { async findUnique({ args, query }) {
+      if (args.select?.status) throw new Error("worker interrupted after save");
+      return query(args);
+    } } } }) as unknown as PrismaClient;
+    advance(); await new FulfillmentMessageWorker(api, { db: interruptedDb, now: () => now }).tick();
+    const saved = await db.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } });
+    expect(saved).toMatchObject({ state: "ACTIVE", finishedAt: null, messageId: 100 });
+    expect(saved.nextUpdateAt.getTime()).toBeLessThanOrEqual(now.getTime());
+    await worker(tg.api).tick();
+    expect(tg.edits.at(-1)!.text).toContain("Order completed");
+    expect((await db.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } })).state).toBe("FINISHED");
+    expect(tg.sent).toHaveLength(1);
+  });
+
+  it.each([false, true])("keeps credit recoverable when it commits during a cancellation edit (not modified=%s)", async notModified => {
+    now = new Date();
+    const order = await seed("en", { provider: "MANUAL" });
+    const tg = telegram(); await worker(tg.api).tick();
+    await db.$transaction(tx => transitionOrderStatus(tx, { orderId: order.id, from: "PROCESSING", to: "CANCELLED" }));
+    await cancelledPaymentEvidence(order.id);
+    const api = { ...tg.api, editMessageText: async (...args: Parameters<FulfillmentTelegramApi["editMessageText"]>) => {
+      await creditOrderToBalance(db, { orderId: order.id, adminId: order.userId });
+      if (notModified) throw apiError(400, "Bad Request: message is not modified");
+      return tg.api.editMessageText(...args);
+    } } as FulfillmentTelegramApi;
+    advance(); await worker(api).tick();
+    const saved = await db.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } });
+    expect(saved).toMatchObject({ state: "ACTIVE", finishedAt: null, messageId: 100 });
+    expect(saved.nextUpdateAt.getTime()).toBeLessThanOrEqual(now.getTime());
+    // Discard the old worker immediately after its save; a fresh worker must find the correction.
+    await worker(tg.api).tick();
+    const corrected = await db.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } });
+    expect(corrected).toMatchObject({ state: "FINISHED", phase: "CREDITED", messageId: 100 });
+    expect(corrected.lastText).toContain("credited to your wallet balance");
+    expect(tg.edits.at(-1)!.id).toBe(100);
+    expect(tg.sent).toHaveLength(1);
   });
 });
 

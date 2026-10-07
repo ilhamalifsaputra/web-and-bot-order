@@ -32,12 +32,15 @@ export async function ensureFulfillmentMessage(db: Db, orderId: number): Promise
  * hours), so this is the only thing that moves it on: it becomes due as an
  * ACTIVE row and the worker edits it to the final text. REVIEW rows are
  * brought forward too. A row the worker holds right now (EDITING) only gets
- * its due time touched: that write takes the row lock, so the worker's own
- * save waits for this transaction and then re-reads the order (see the
- * worker's WAITING re-check). Rows that never got a message, finished rows
- * and flood-control backoffs are left alone.
+ * its due time touched. The worker saves under the order lock and compares
+ * the current phase, so a concurrent transition cannot disappear behind a
+ * static or final save. A credit correction may also reopen a finished
+ * failure/cancellation when it has a known message id. Flood-control backoffs
+ * and stopped/uncertain sends are left alone.
  */
-export async function wakeFulfillmentMessage(db: Db, orderId: number, now: Date = new Date()): Promise<void> {
+export async function wakeFulfillmentMessage(
+  db: Db, orderId: number, now: Date = new Date(), opts: { correctFinishedOutcome?: boolean } = {},
+): Promise<void> {
   await db.fulfillmentMessage.updateMany({
     where: { orderId, state: "WAITING" },
     data: { state: "ACTIVE", nextUpdateAt: now },
@@ -46,4 +49,10 @@ export async function wakeFulfillmentMessage(db: Db, orderId: number, now: Date 
     where: { orderId, state: { in: ["REVIEW", "EDITING"] } },
     data: { nextUpdateAt: now },
   });
+  if (opts.correctFinishedOutcome) {
+    await db.fulfillmentMessage.updateMany({
+      where: { orderId, state: "FINISHED", messageId: { not: null }, phase: { in: ["FAILED", "CANCELLED"] } },
+      data: { state: "ACTIVE", claimedAt: null, finishedAt: null, nextUpdateAt: now },
+    });
+  }
 }

@@ -68,7 +68,7 @@ import { NicknameService } from "@app/core/nickname/service";
 import type { Prisma } from "@prisma/client";
 import { prisma as sharedPrisma, type PrismaClient } from "../client";
 import type { Db } from "./_types";
-import { getSetting, getDecryptedSetting, onSettingWrite } from "./settings";
+import { getSetting, getDecryptedSetting, getSettingCacheExpiresAt, onSettingWrite } from "./settings";
 import { getOrder, finalizeDeliverySideEffects, enqueueBuyerOrderReadyEmailIfGuest } from "./orders";
 import { resolveNicknameGate, buildNicknameProviderEntries } from "./nickname";
 import { isDenominationBelowCost } from "@app/core/denominationPrices";
@@ -87,7 +87,7 @@ import { nextDigiflazzRecheckAt } from "./digiflazzBackoff";
 import { emitDigiflazzOrderStatusChanged, emitDigiflazzCatalogSyncChanged } from "@app/core/realtime/digiflazzEvents";
 import { recordDigiflazzSyncStatus } from "./digiflazzSyncStatus";
 import {
-  getDigiflazzAutoDeactivatedIds,
+  lockDigiflazzAutoDeactivatedIds,
   updateDigiflazzAutoDeactivatedIds,
 } from "./digiflazzAutoDeactivated";
 import { recordPollHealth } from "./poll_health";
@@ -112,7 +112,8 @@ export const DIGIFLAZZ_ENABLED_KEY = "digiflazz_enabled";
 
 /** How long getDigiflazzCreds reuses a resolved (decrypted) credential pair
  * before reading the settings again. Same 30s bound as the per-key settings
- * cache underneath it (./settings), so it adds no new cross-process staleness:
+ * cache underneath it (./settings), bounded by the oldest source expiry so it
+ * adds no new cross-process staleness:
  * another process's credential edit is picked up within the same window it
  * already was. */
 export const DIGIFLAZZ_CREDS_CACHE_TTL_MS = 30_000;
@@ -148,7 +149,9 @@ export async function getDigiflazzCreds(db: Db): Promise<DigiflazzCreds | null> 
   // Skip storing if a credential write invalidated the cache while this read
   // was in flight — the values just read may predate that write.
   if (cacheAtRead === digiflazzCredsCache) {
-    digiflazzCredsCache.set(db as object, { creds, expiresAt: Date.now() + DIGIFLAZZ_CREDS_CACHE_TTL_MS });
+    const expiresAt = Math.min(Date.now() + DIGIFLAZZ_CREDS_CACHE_TTL_MS,
+      ...[...DIGIFLAZZ_CREDS_SETTING_KEYS].map(key => getSettingCacheExpiresAt(db, key) ?? Date.now()));
+    digiflazzCredsCache.set(db as object, { creds, expiresAt });
   }
   return { ...creds };
 }
@@ -2494,57 +2497,60 @@ async function resyncDigiflazzCatalogWithOutcome(
   }
 
   const result = { ...zero };
-  // Ids this job deactivated on earlier runs. Read straight from the table, not
-  // through getSetting's cache, so a run never acts on a stale list.
-  const remembered = new Set(await getDigiflazzAutoDeactivatedIds(db));
-  const newlyDeactivated: number[] = [];
-  const forget = new Set<number>();
-  const mappedIds = new Set(mapped.map((d) => d.id));
-  // A remembered denomination that is gone (or no longer Digiflazz-mapped) has
-  // nothing left to reactivate.
-  for (const id of remembered) if (!mappedIds.has(id)) forget.add(id);
-
-  for (const denom of mapped) {
-    // Active again although remembered: an admin re-enabled it by hand, so the
-    // id is stale. (If Digiflazz reports it down now, it is re-added below.)
-    if (remembered.has(denom.id) && denom.isActive) forget.add(denom.id);
-
-    const item = bySku.get(denom.supplierSku!);
-    if (!item) continue; // Digiflazz no longer lists this SKU — leave it as-is, not this job's concern.
-
-    // I5 fix: quantize to the same 4-decimal precision createDenomination
-    // already uses, so a percentage markup can't drift the stored price
-    // away from import-time precision.
-    const data: Record<string, unknown> = {
-      costPrice: quantizeMoney(item.price, 4),
-      // Raw identity updates even when a manual price override is protected.
-      supplierRawName: item.productName,
-    };
-    if (!denom.priceOverridden) {
-      const newPrice = newSellPriceFor(item, denom.price);
-      data.price = newPrice;
-      // Counted only when the sell price really moves, so an unchanged run
-      // reports (and audits) nothing.
-      if (!moneyEq(newPrice, denom.price)) result.updated++;
-    }
-    if (denom.isActive && !item.buyerProductStatus) {
-      data.isActive = false;
-      result.deactivated++;
-      newlyDeactivated.push(denom.id);
-    } else if (!denom.isActive && item.buyerProductStatus && remembered.has(denom.id) && markupReadable) {
-      // Only a SKU this job switched off comes back on; with an unreadable
-      // markup it waits (still remembered) until the setting is fixed.
-      data.isActive = true;
-      result.reactivated++;
-      forget.add(denom.id);
-    }
-    await updateDenomination(db, denom.id, data);
+  for (const snapshot of mapped) {
+    // Availability and its provenance commit together per SKU. Admin toggles
+    // take the same marker→denomination locks, including an initially absent
+    // marker, so neither writer can act on the other's stale membership.
+    const counts = await db.$transaction(async tx => {
+      const remembered = new Set(await lockDigiflazzAutoDeactivatedIds(tx));
+      await tx.$queryRaw`SELECT id FROM products WHERE id = ${snapshot.id} FOR UPDATE`;
+      const denom = await tx.denomination.findUnique({ where: { id: snapshot.id } });
+      if (!denom || denom.supplierSku !== snapshot.supplierSku) return zero;
+      const item = bySku.get(denom.supplierSku!);
+      const forget = remembered.has(denom.id) && denom.isActive ? [denom.id] : [];
+      if (!item) {
+        await updateDigiflazzAutoDeactivatedIds(tx, { remove: forget });
+        return zero;
+      }
+      const counts = { ...zero };
+      const data: Record<string, unknown> = {
+        costPrice: quantizeMoney(item.price, 4), supplierRawName: item.productName,
+      };
+      if (!denom.priceOverridden) {
+        const newPrice = newSellPriceFor(item, denom.price);
+        data.price = newPrice;
+        if (!moneyEq(newPrice, denom.price)) counts.updated++;
+      }
+      const add: number[] = [];
+      if (denom.isActive && !item.buyerProductStatus) {
+        data.isActive = false;
+        counts.deactivated++;
+        add.push(denom.id);
+      } else if (!denom.isActive && item.buyerProductStatus && remembered.has(denom.id) && markupReadable) {
+        // An unreadable markup keeps a sync-deactivated SKU remembered and off.
+        data.isActive = true;
+        counts.reactivated++;
+        forget.push(denom.id);
+      }
+      await updateDenomination(tx, denom.id, data);
+      await updateDigiflazzAutoDeactivatedIds(tx, { add, remove: forget });
+      return counts;
+    });
+    result.updated += counts.updated;
+    result.deactivated += counts.deactivated;
+    result.reactivated += counts.reactivated;
   }
 
-  // Merge this run's changes into the remembered list under a row lock, so a
-  // concurrent run's additions are kept rather than overwritten.
-  // (Forget first, then add: an id in both stays remembered.)
-  await updateDigiflazzAutoDeactivatedIds(db, { add: newlyDeactivated, remove: forget });
+  // Clean up against current rows while holding the same marker lock; an
+  // initial catalog snapshot must not erase a concurrent sync's new decision.
+  await db.$transaction(async tx => {
+    const remembered = await lockDigiflazzAutoDeactivatedIds(tx);
+    if (!remembered.length) return;
+    const retained = new Set((await tx.denomination.findMany({
+      where: { id: { in: remembered }, supplierSku: { not: null }, isActive: false }, select: { id: true },
+    })).map(d => d.id));
+    await updateDigiflazzAutoDeactivatedIds(tx, { remove: remembered.filter(id => !retained.has(id)) });
+  });
 
   // New SKUs on already-imported brands. Needs a readable markup to price them;
   // the unreadable case is reported below. A failure here must not cost the

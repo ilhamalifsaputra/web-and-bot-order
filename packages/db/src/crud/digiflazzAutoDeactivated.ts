@@ -35,6 +35,18 @@ export async function getDigiflazzAutoDeactivatedIds(db: Db): Promise<number[]> 
   return parseDigiflazzIdList(row?.value);
 }
 
+/** Transaction-only lock protocol shared by sync and admin availability
+ * changes: marker first, denomination second, even if no marker existed. */
+export async function lockDigiflazzAutoDeactivatedIds(tx: Db): Promise<number[]> {
+  const key = DIGIFLAZZ_AUTO_DEACTIVATED_IDS_KEY;
+  // Prisma's empty-update upsert does a read then insert, which can fail its
+  // unique constraint when two writers initialize this marker concurrently.
+  await tx.$executeRaw`INSERT INTO settings (key, value, updated_at)
+    VALUES (${key}, '[]', NOW()) ON CONFLICT (key) DO NOTHING`;
+  await tx.$queryRaw`SELECT key FROM settings WHERE key = ${key} FOR UPDATE`;
+  return parseDigiflazzIdList((await tx.setting.findUniqueOrThrow({ where: { key } })).value);
+}
+
 /**
  * Apply a change to the remembered list under a row lock: first drop `remove`,
  * then add `add` (so an id in both ends up remembered). Opens its own
@@ -49,9 +61,7 @@ export async function updateDigiflazzAutoDeactivatedIds(
   if (add.length === 0 && remove.size === 0) return;
   const run = async (tx: Db) => {
     const key = DIGIFLAZZ_AUTO_DEACTIVATED_IDS_KEY;
-    await tx.setting.upsert({ where: { key }, create: { key, value: "[]" }, update: {} });
-    await tx.$queryRaw`SELECT key FROM settings WHERE key = ${key} FOR UPDATE`;
-    const current = parseDigiflazzIdList((await tx.setting.findUniqueOrThrow({ where: { key } })).value);
+    const current = await lockDigiflazzAutoDeactivatedIds(tx);
     const next = new Set(current.filter((id) => !remove.has(id)));
     for (const id of add) next.add(id);
     await tx.setting.update({ where: { key }, data: { value: JSON.stringify([...next].sort((a, b) => a - b)) } });
@@ -63,12 +73,10 @@ export async function updateDigiflazzAutoDeactivatedIds(
 
 /**
  * Forget these ids — called when an admin sets a denomination's active state
- * by hand. Skips the lock entirely when none of them is remembered, which is
- * the normal case for every non-Digiflazz toggle.
+ * by hand. Always takes the marker lock before the caller updates availability:
+ * a concurrent sync may be about to remember one of these ids.
  */
 export async function forgetDigiflazzAutoDeactivatedIds(db: Db, ids: number[]): Promise<void> {
   if (ids.length === 0) return;
-  const remembered = new Set(await getDigiflazzAutoDeactivatedIds(db));
-  if (!ids.some((id) => remembered.has(id))) return;
   await updateDigiflazzAutoDeactivatedIds(db, { remove: ids });
 }

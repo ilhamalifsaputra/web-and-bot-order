@@ -53,6 +53,12 @@ export async function getSetting(db: Db, key: string): Promise<string | null> {
   return value;
 }
 
+/** Freshness metadata for derived caches; never returns a setting's value or
+ * performs a database read. Call after getSetting has populated the entry. */
+export function getSettingCacheExpiresAt(db: Db, key: string): number | undefined {
+  return caches.get(db as object)?.get(key)?.expiresAt;
+}
+
 export async function setSetting(db: Db, key: string, value: string) {
   await db.setting.upsert({
     where: { key },

@@ -7,7 +7,9 @@ import type { Db } from "./_types";
  * that same message from the order's canonical state.
  *
  * Call only at a canonical moment: a real "payment seen" transition or a
- * settled payment. Idempotent (`update: {}`), so a replayed webhook or a later
+ * settled payment. Not at a Bybit BSC deposit's detection: that rail's
+ * payment bubble already shows the live confirmation count, so the message
+ * starts at settlement there. Idempotent (`update: {}`), so a replayed webhook or a later
  * phase reuses the existing row and therefore the existing message. Returns
  * false for buyers without a Telegram chat (web-only shoppers) and for
  * wallet top-ups.

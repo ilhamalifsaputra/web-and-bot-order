@@ -1,6 +1,9 @@
 import { beforeAll, afterAll, beforeEach, describe, expect, it } from "vitest";
 import { PrismaClient } from "@prisma/client";
-import { addAdminIdToDb, createCategory, createCatalogProduct, createDenomination, wakeFulfillmentMessage } from "@app/db";
+import {
+  addAdminIdToDb, createCategory, createCatalogProduct, createDenomination, createOrderDirect, deliverPaidBybitBscOrder, fulfillManualOrder,
+  recordBybitBscConfirmationProgress, recordBybitBscPaymentDetected, wakeFulfillmentMessage,
+} from "@app/db";
 import { provisionPgTestSchema } from "../../../tests/helpers/pgTestSchema";
 import { FulfillmentMessageWorker, type FulfillmentTelegramApi } from "./fulfillmentMessages";
 
@@ -378,6 +381,42 @@ describe("customer progress phases in one Telegram message", () => {
     advance(); await w.tick();
     expect(tg.edits.at(-1)!.text).toContain(phrase);
     expect(tg.edits.at(-1)!.text).not.toMatch(/cancelled|dibatalkan/i);
+  });
+});
+
+describe("a Bybit BSC order gets one buyer-visible progress message", () => {
+  it("sends nothing while the payment bubble tracks confirmations, then one message from payment to delivery", async () => {
+    // The crud helpers stamp rows with the real clock; run the worker on it too.
+    now = new Date();
+    const user = await db.user.create({ data: { referralCode: crypto.randomUUID(), telegramId: BigInt(Math.floor(Math.random() * 1e9)), language: "en" } });
+    const category = await createCategory(db, crypto.randomUUID());
+    const product = await createCatalogProduct(db, { categoryId: category.id, name: "Manual BSC" });
+    const denomination = await createDenomination(db, {
+      productId: product.id, name: "Manual", type: "SHARED", durationLabel: "1 Month", price: "10.00", deliveryType: "manual",
+    });
+    const order = (await createOrderDirect(db, { channel: "bot", user, productId: denomination.id, quantity: 1 }))!;
+    await db.order.update({ where: { id: order.id }, data: { paymentMethod: "BYBIT_BSC" } });
+    const tg = telegram(); const w = worker(tg.api);
+    const txId = "0x" + "c".repeat(64);
+
+    await recordBybitBscPaymentDetected(db, { orderId: order.id, bybitTxId: txId, network: "BSC" });
+    advance(); await w.tick();
+    await recordBybitBscConfirmationProgress(db, { orderId: order.id, confirmations: 1, requiredConfirmations: 2 });
+    advance(); await w.tick();
+    await recordBybitBscConfirmationProgress(db, { orderId: order.id, confirmations: 2, requiredConfirmations: 2 });
+    advance(); await w.tick();
+    expect(tg.sent).toHaveLength(0);
+
+    expect((await deliverPaidBybitBscOrder(db, { orderId: order.id, bybitTxId: txId, amount: order.totalAmount })).status).toBe("processing");
+    advance(); await w.tick(); advance(); await w.tick();
+    expect(tg.sent).toHaveLength(1);
+    expect(tg.sent[0]!.text).not.toContain("Payment detected");
+
+    await db.$transaction(tx => fulfillManualOrder(tx, order.id, { adminId: user.id, content: "code-bsc" }));
+    advance(); await w.tick();
+    expect(tg.sent).toHaveLength(1);
+    expect(tg.edits.at(-1)!.text).toContain("✅ <b>Order completed</b>");
+    expect(new Set(tg.edits.map(e => e.id))).toEqual(new Set([tg.sent[0]!.id]));
   });
 });
 

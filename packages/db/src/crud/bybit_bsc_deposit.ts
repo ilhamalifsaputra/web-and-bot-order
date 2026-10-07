@@ -41,7 +41,6 @@ import { POLL_HEALTH_KEYS, getPollHealth, recordPollHealth, type PollHealth } fr
 import { AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES } from "./binance_internal";
 import { reclaimStaleMatchedClaim } from "./_staleClaim";
 import { getPendingPaymentAttempt, confirmPaymentAttempt } from "./payments";
-import { ensureFulfillmentMessage } from "./fulfillmentMessages";
 
 // ---------------------------------------------------------------------------
 // Resolved config (web-admin Settings win; .env is the bootstrap/recovery
@@ -266,9 +265,12 @@ export async function recordBybitBscPaymentDetected(
     to: OrderStatus.PAYMENT_DETECTED,
     meta: `bybitTxId=${args.bybitTxId}`,
   });
-  // A real "payment seen, not final" signal: start the buyer's progress
-  // message in its detected phase. Only on the applied transition.
-  if (moved) await ensureFulfillmentMessage(db, args.orderId);
+  // No progress message here on purpose. The buyer's payment bubble already
+  // turns into the live tracking screen (onPaymentDetected, then the
+  // confirmation tracker), and a second message saying "Payment detected"
+  // beside it would be a duplicate. settlePaidOrder registers the progress
+  // message once the deposit settles, so the order still ends up with one live
+  // message at a time.
   return moved;
 }
 

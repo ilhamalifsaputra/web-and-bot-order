@@ -1,15 +1,17 @@
 /**
  * Which orders get the buyer's single Telegram progress message, and when.
  * The row is created only from canonical order state: a real "payment seen"
- * transition (Bybit BSC deposit detected, payment proof attached) or a
- * settled payment — for every fulfillment provider, never by category.
+ * transition (payment proof attached) or a settled payment — for every
+ * fulfillment provider, never by category. A Bybit BSC deposit's detection is
+ * not one of them: the payment bubble's live tracking screen shows that phase,
+ * so the order still ends up with a single live message.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
 import { attachPaymentProof, createOrderDirect, creditOrderToBalance, fulfillManualOrder, settlePaidOrder } from "./orders";
-import { recordBybitBscPaymentDetected } from "./bybit_bsc_deposit";
+import { deliverPaidBybitBscOrder, recordBybitBscConfirmationProgress, recordBybitBscPaymentDetected } from "./bybit_bsc_deposit";
 import { createCategory, createCatalogProduct, createDenomination } from "./catalog";
 import { createWalletTopupOrder } from "./wallet_topup";
 import { ensureFulfillmentMessage, wakeFulfillmentMessage } from "./fulfillmentMessages";
@@ -67,12 +69,30 @@ describe("progress message creation points", () => {
     expect(await rows(order.id)).toHaveLength(0);
   });
 
-  it("creates the message when a Bybit BSC deposit is detected (payment seen, not final)", async () => {
+  it("does not create the message when a Bybit BSC deposit is detected: the payment bubble's live tracking screen owns that phase", async () => {
     const order = await pendingOrder(sample.product.id);
     await prisma.order.update({ where: { id: order.id }, data: { paymentMethod: PaymentMethod.BYBIT_BSC } });
     expect(await recordBybitBscPaymentDetected(prisma, { orderId: order.id, bybitTxId: "0x" + "a".repeat(64), network: "BSC" })).toBe(true);
     expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.PAYMENT_DETECTED);
+    expect(await rows(order.id)).toHaveLength(0);
+  });
+
+  it("creates exactly one message for a Bybit BSC order, at settlement, across detection -> confirmed -> paid -> delivered", async () => {
+    const order = await pendingOrder((await manualDenom()).id);
+    await prisma.order.update({ where: { id: order.id }, data: { paymentMethod: PaymentMethod.BYBIT_BSC } });
+    const txId = "0x" + "b".repeat(64);
+    await recordBybitBscPaymentDetected(prisma, { orderId: order.id, bybitTxId: txId, network: "BSC" });
+    expect(await recordBybitBscConfirmationProgress(prisma, { orderId: order.id, confirmations: 1, requiredConfirmations: 3 })).toBe(OrderStatus.CONFIRMING);
+    expect(await recordBybitBscConfirmationProgress(prisma, { orderId: order.id, confirmations: 3, requiredConfirmations: 3 })).toBe(OrderStatus.CONFIRMED);
+    expect(await rows(order.id)).toHaveLength(0);
+    const paid = await deliverPaidBybitBscOrder(prisma, { orderId: order.id, bybitTxId: txId, amount: order.totalAmount });
+    expect(paid.status).toBe("processing");
     expect(await rows(order.id)).toHaveLength(1);
+    await prisma.fulfillmentMessage.update({ where: { orderId: order.id }, data: { messageId: 610, state: "WAITING" } });
+    await prisma.$transaction(tx => fulfillManualOrder(tx, order.id, { adminId: sample.user.id, content: "code-bsc" }));
+    const saved = await rows(order.id);
+    expect(saved).toHaveLength(1);
+    expect(saved[0]!.messageId).toBe(610);
   });
 
   it("creates the message when payment proof moves the order to pending verification", async () => {

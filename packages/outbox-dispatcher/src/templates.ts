@@ -10,6 +10,19 @@
 import { NotificationEvent } from "@app/core/enums";
 import { formatUsdt } from "@app/core/formatters";
 import { formatIdrFor } from "@app/core/moneyFormat";
+import { manualQueueMoneyLines, type ManualQueueMoneyKey, type ManualQueueMoneyPayload } from "./manualQueueMoney";
+
+/** Bilingual labels for ADMIN_MANUAL_ORDER_QUEUED's money lines. */
+const MANUAL_QUEUE_MONEY_LABELS: Record<ManualQueueMoneyKey, { en: string; id: string }> = {
+  items_total: { en: "Items total", id: "Total item" },
+  bulk_discount: { en: "Bulk discount", id: "Diskon grosir" },
+  voucher_discount: { en: "Voucher discount", id: "Diskon voucher" },
+  order_value: { en: "Order value", id: "Nilai pesanan" },
+  wallet_credit: { en: "Wallet credit", id: "Saldo dompet" },
+  amount_due: { en: "Amount due", id: "Sisa tagihan" },
+  amount_paid: { en: "Amount paid", id: "Jumlah dibayar" },
+  total: { en: "Total", id: "Total" },
+};
 
 interface Strings {
   title: string;
@@ -166,11 +179,9 @@ interface FlashSaleBroadcastPayload {
   ends_at?: unknown;
 }
 
-interface ManualOrderQueuedPayload {
+interface ManualOrderQueuedPayload extends ManualQueueMoneyPayload {
   order_code?: unknown;
   items?: Item[];
-  total?: unknown;
-  currency?: unknown;
 }
 
 interface BulkPurchaseBroadcastPayload {
@@ -417,19 +428,29 @@ export function render(
   if (event === NotificationEvent.ADMIN_MANUAL_ORDER_QUEUED) {
     // Admin DM (not a channel post): a paid order routed to the hand-fulfilment
     // queue (settlePaidOrder's MANUAL branch) and needs an admin to fulfil it
-    // by hand. items/total mirror the ORDER_DELIVERED testimonial shape.
+    // by hand. items mirror the ORDER_DELIVERED testimonial shape. The money
+    // lines lead with the order's VALUE in its own currency, not the
+    // post-wallet amount due (0 for a wallet-paid order) — manualQueueMoney.ts.
     const code = escape(String(payload.order_code ?? ""));
     const itemsText = fmtItems(payload.items ?? [], MAX_INTERPOLATION_LEN);
-    const total = truncateEscaped(escape(String(payload.total ?? "0")), MAX_INTERPOLATION_LEN);
-    const currency = escape(String(payload.currency ?? ""));
+    const moneyLines = manualQueueMoneyLines(payload);
+    const moneyText = (lang: "en" | "id") =>
+      moneyLines
+        .map((line) => {
+          const amount = truncateEscaped(escape(line.amount), MAX_INTERPOLATION_LEN);
+          const label = MANUAL_QUEUE_MONEY_LABELS[line.key][lang];
+          const headline = line.key === "order_value" || line.key === "total";
+          return headline ? `💳 ${label}: <b>${amount}</b>` : `${label}: ${amount}`;
+        })
+        .join("\n");
     return (
       `📦 <b>Order <code>${code}</code> needs manual fulfilment</b>\n` +
       `${itemsText}\n` +
-      `💳 Total: <b>${total} ${currency}</b>\n` +
+      `${moneyText("en")}\n` +
       `Payment confirmed — please fulfil this order by hand in the admin panel.\n\n` +
       `📦 <b>Pesanan <code>${code}</code> perlu difulfil manual</b>\n` +
       `${itemsText}\n` +
-      `💳 Total: <b>${total} ${currency}</b>\n` +
+      `${moneyText("id")}\n` +
       `Pembayaran sudah dikonfirmasi — tolong fulfil pesanan ini secara manual di panel admin.`
     );
   }

@@ -270,9 +270,53 @@ describe("emailTemplates.renderEmail", () => {
       expect(result!.text).toContain("x2");
       expect(result!.text).toContain("Spotify Family");
       expect(result!.text).toContain("x1");
-      expect(result!.text).toContain("75000.00");
-      expect(result!.text).toContain("IDR");
+      // A legacy row (enqueued before order_value existed) still renders
+      // through the currency formatter, never as a raw "75000.00 IDR".
+      expect(result!.text).toContain("Total: Rp75.000");
+      expect(result!.text).not.toContain("75000.00");
       expect(result!.text.toLowerCase()).toContain("fulfilled by hand");
+    });
+
+    it("a wallet-paid IDR order shows its real order value in IDR plus wallet credit/amount due — never 'Total: 0' or USDT", async () => {
+      const result = await renderEmail("OWNER_EMAIL_MANUAL_ORDER_QUEUED", {
+        order_code: DISTINCTIVE_ORDER_CODE,
+        items: [{ name: "Netflix Premium", qty: 1 }],
+        currency: "IDR",
+        order_value: "50000",
+        subtotal: "50000",
+        bulk_discount: "0",
+        discount: "0",
+        wallet_credit: "50000",
+        unique_cents: "0",
+        total: "0",
+      });
+      expect(result!.text).toContain("Order value: Rp50.000");
+      expect(result!.text).toContain("Wallet credit: -Rp50.000");
+      expect(result!.text).toContain("Amount due: Rp0");
+      expect(result!.text).not.toContain("USDT");
+      expect(result!.text).not.toMatch(/^Total:/m);
+      expect(result!.text).not.toContain("Discount");
+    });
+
+    it("shows items total and discounts when the order had them, and the amount paid when it differs from the order value", async () => {
+      const result = await renderEmail("OWNER_EMAIL_MANUAL_ORDER_QUEUED", {
+        order_code: DISTINCTIVE_ORDER_CODE,
+        items: [{ name: "Netflix Premium", qty: 1 }],
+        currency: "USDT",
+        order_value: "2.53",
+        subtotal: "2.92",
+        bulk_discount: "0.37",
+        discount: "0.02",
+        wallet_credit: "0",
+        unique_cents: "0.028",
+        total: "2.558",
+      });
+      expect(result!.text).toContain("Items total: 2.92 USDT");
+      expect(result!.text).toContain("Bulk discount: -0.37 USDT");
+      expect(result!.text).toContain("Voucher discount: -0.02 USDT");
+      expect(result!.text).toContain("Order value: 2.53 USDT");
+      expect(result!.text).toContain("Amount paid: 2.558 USDT");
+      expect(result!.text).not.toContain("Wallet credit");
     });
 
     it("never puts the order code in the subject (regression guard)", async () => {

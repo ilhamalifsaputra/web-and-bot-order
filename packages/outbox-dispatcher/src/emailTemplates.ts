@@ -54,6 +54,7 @@ import { config } from "@app/core/config";
 import { Decimal } from "@app/core/money";
 import { formatMoney, formatUsdt } from "@app/core/formatters";
 import { prisma, getSetting } from "@app/db";
+import { manualQueueMoneyLines, type ManualQueueMoneyKey, type ManualQueueMoneyPayload } from "./manualQueueMoney";
 import {
   renderOrderPaidEmail,
   renderOrderReadyEmail,
@@ -114,12 +115,22 @@ interface OrderPaidPayload {
   order_url?: unknown;
 }
 
-interface ManualQueuedPayload {
+interface ManualQueuedPayload extends ManualQueueMoneyPayload {
   order_code?: unknown;
   items?: Item[];
-  total?: unknown;
-  currency?: unknown;
 }
+
+/** English labels for the manual-queue email's money lines (manualQueueMoney.ts). */
+const MANUAL_QUEUE_MONEY_LABELS: Record<ManualQueueMoneyKey, string> = {
+  items_total: "Items total",
+  bulk_discount: "Bulk discount",
+  voucher_discount: "Voucher discount",
+  order_value: "Order value",
+  wallet_credit: "Wallet credit",
+  amount_due: "Amount due",
+  amount_paid: "Amount paid",
+  total: "Total",
+};
 
 interface NewTicketPayload {
   ticket_id?: unknown;
@@ -427,14 +438,17 @@ export async function renderEmail(
   if (event === NotificationEvent.OWNER_EMAIL_MANUAL_ORDER_QUEUED) {
     const code = String(payload.order_code ?? "unknown");
     const itemsText = fmtItemLines(payload.items ?? []);
-    const total = String(payload.total ?? "0");
-    const currency = String(payload.currency ?? "");
+    // The order's value in its own currency, never the post-wallet amount due
+    // as if it were the price — see manualQueueMoney.ts.
+    const moneyText = manualQueueMoneyLines(payload)
+      .map((line) => `${MANUAL_QUEUE_MONEY_LABELS[line.key]}: ${line.amount}`)
+      .join("\n");
     return {
       subject: "Order queued for manual fulfilment",
       text:
         `Order ${code} was paid and needs manual fulfilment.\n\n` +
         `${itemsText}\n\n` +
-        `Total: ${total} ${currency}\n\n` +
+        `${moneyText}\n\n` +
         `This order needs to be fulfilled by hand. Check the Orders page in the admin panel for details.`,
     };
   }

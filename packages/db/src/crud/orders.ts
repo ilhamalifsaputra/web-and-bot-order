@@ -2916,19 +2916,24 @@ export async function settlePaidOrder(
   // only ever runs on the MANUAL side of the `if (!isManual)` split, so it
   // can never fire alongside enqueueOwnerOrderPaidEmail for the same order.
   const manualItems = order.items.map((item) => ({ name: item.product.name, qty: item.quantity }));
+  // Same value source as the AUTO branch's owner email: reconciled rows in the
+  // order's own settlement currency. Never `order.totalAmount` alone — that is
+  // the amount still due after wallet credit, so a wallet-paid order would be
+  // reported as worth 0.
+  const manualMoney = reconciledOrderMoneyRows(order);
   await enqueueManualOrderAdminAlert(db, {
     orderId,
     orderCode: order.orderCode,
     items: manualItems,
-    total: order.totalAmount,
     currency: order.currency,
+    money: manualMoney,
   });
   await enqueueOwnerManualQueueEmail(db, {
     orderId,
     orderCode: order.orderCode,
     items: manualItems,
-    total: order.totalAmount,
     currency: order.currency,
+    money: manualMoney,
   });
   logger.info(
     `Order ${order.orderCode} payment confirmed; queued for manual fulfilment (admin ${args.adminId}).`,

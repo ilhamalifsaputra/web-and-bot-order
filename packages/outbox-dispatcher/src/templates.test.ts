@@ -632,6 +632,29 @@ describe("notifier templates.render", () => {
     expect(out).toContain("perlu difulfil manual");
   });
 
+  it("renders ADMIN_MANUAL_ORDER_QUEUED for a wallet-paid IDR order with its real value in IDR, never 0 or USDT, bilingually", () => {
+    const out = render("ADMIN_MANUAL_ORDER_QUEUED", {
+      order_code: "ORD-WALLET",
+      items: [{ name: "Netflix Premium", qty: 1 }],
+      currency: "IDR",
+      order_value: "50000",
+      subtotal: "50000",
+      bulk_discount: "0",
+      discount: "0",
+      wallet_credit: "50000",
+      unique_cents: "0",
+      total: "0",
+    });
+    expect(out).toContain("Order value: <b>Rp50.000</b>");
+    expect(out).toContain("Wallet credit: -Rp50.000");
+    expect(out).toContain("Amount due: Rp0");
+    expect(out).toContain("Nilai pesanan: <b>Rp50.000</b>");
+    expect(out).toContain("Saldo dompet: -Rp50.000");
+    expect(out).toContain("Sisa tagihan: Rp0");
+    expect(out).not.toContain("USDT");
+    expect(out).not.toContain("Total:");
+  });
+
   it("HTML-escapes ADMIN_MANUAL_ORDER_QUEUED's item names", () => {
     const out = render("ADMIN_MANUAL_ORDER_QUEUED", {
       order_code: "ORD-1",

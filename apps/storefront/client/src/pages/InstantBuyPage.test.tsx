@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, beforeEach, vi, type Mock } from "vitest";
 import { render, screen, fireEvent, waitFor, act, within } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { Link, MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider, focusManager } from "@tanstack/react-query";
 import InstantBuyPage from "./InstantBuyPage";
 import ProductPage from "./ProductPage";
@@ -201,6 +201,33 @@ function renderInstantBuy(
 }
 
 describe("InstantBuyPage", () => {
+  it.each([false, true])("preserves account answers when choosing a different diamond amount (product route: %s)", async (throughProductPage) => {
+    renderInstantBuy({ throughProductPage });
+    await screen.findByText("Summary");
+    fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "4531475056881819915" } });
+    fireEvent.change(screen.getByLabelText("Zone ID"), { target: { value: "0012" } });
+
+    let releasePreview!: (data: CheckoutData) => void;
+    (apiPost as Mock).mockImplementation((path: string) => {
+      if (path === "/api/v1/topup/preview") return new Promise<CheckoutData>((resolve) => { releasePreview = resolve; });
+      return new Promise(() => {});
+    });
+    fireEvent.click(screen.getByRole("radio", { name: /172 Diamonds/ }));
+    await waitFor(() => expect(releasePreview).toBeDefined());
+    expect(screen.getByLabelText("User ID")).toHaveValue("4531475056881819915");
+    expect(screen.getByLabelText("Zone ID")).toHaveValue("0012");
+    expect(screen.getByRole("button", { name: /Buy now/ })).toBeDisabled();
+
+    await act(async () => { releasePreview({ ...checkoutData, total: "38000", total_usdt: "2.375" }); });
+    await waitFor(() => expect(screen.getByRole("button", { name: /Buy now/ })).toBeEnabled());
+    expect(within(document.getElementById("checkout-summary")!).getByText("172 Diamonds")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Buy now/ }));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/v1/topup/order", expect.objectContaining({
+      denomination_id: 2,
+      customer_data: [{ user_id: "4531475056881819915", zone_id: "0012" }],
+    }), expect.anything()));
+  });
+
   it.each([false, true])("preserves account answers and selected plan during a currency refetch (product route: %s)", async (throughProductPage) => {
     const { queryClient } = renderInstantBuy({ throughProductPage });
     await screen.findByText("Summary");
@@ -234,6 +261,52 @@ describe("InstantBuyPage", () => {
       denomination_id: 2,
       customer_data: [{ user_id: "4531475056881819915", zone_id: "0012" }],
     }), expect.anything()));
+  });
+
+  it("clears account answers when a denomination requires a different field schema", async () => {
+    const fields = [{ ...productData.denominations[0]!.additional_fields[0]!, type: "number" as const }];
+    renderInstantBuy({ product: { ...productData, denominations: [productData.denominations[0]!, { ...productData.denominations[1]!, additional_fields: fields }] } });
+    await screen.findByText("Summary");
+    fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "old-account" } });
+    fireEvent.change(screen.getByLabelText("Zone ID"), { target: { value: "0012" } });
+    fireEvent.click(screen.getByRole("radio", { name: /172 Diamonds/ }));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/v1/topup/preview", { denomination_id: 2, qty: 1 }));
+    expect(screen.getByLabelText("User ID")).toHaveValue("");
+    expect(screen.queryByLabelText("Zone ID")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Buy now/ })).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "1234567" } });
+    await waitFor(() => expect(screen.getByRole("button", { name: /Buy now/ })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: /Buy now/ }));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/v1/topup/order", expect.objectContaining({
+      denomination_id: 2, customer_data: [{ user_id: "1234567" }],
+    }), expect.anything()));
+  });
+
+  it("clears account answers on navigation to a cached different game with the same fields", async () => {
+    const otherProduct = { ...productData, product: { ...productData.product, slug: "another-game", name: "Another Game" } };
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    queryClient.setQueryData(["context"], context);
+    for (const product of [productData, otherProduct]) {
+      queryClient.setQueryData(["product", product.product.slug, null, "en", undefined], product);
+    }
+    (apiPost as Mock).mockResolvedValue(checkoutData);
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={[`/p/${productData.product.slug}`]}>
+          <Link to="/p/another-game">Another game</Link>
+          <Routes><Route path="/p/:slug" element={<ProductPage />} /></Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    await screen.findByText("Summary");
+    fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "4531475056881819915" } });
+    fireEvent.change(screen.getByLabelText("Zone ID"), { target: { value: "0012" } });
+    fireEvent.click(screen.getByRole("link", { name: "Another game" }));
+    await screen.findByRole("heading", { name: "Another Game" });
+    expect(screen.getByLabelText("User ID")).toHaveValue("");
+    expect(screen.getByLabelText("Zone ID")).toHaveValue("");
+    expect(screen.getByRole("button", { name: /Buy now/ })).toBeDisabled();
   });
 
   it("renders Delta Player ID only and collects configured fields on AUTO", async () => {
@@ -282,7 +355,7 @@ describe("InstantBuyPage", () => {
     expect((apiPost as Mock).mock.calls.some((c) => c[0] === "/api/v1/topup/order")).toBe(false);
   });
 
-  it("shows required errors on blur or attempted submit and resets them with a new plan", async () => {
+  it("keeps field validation visible when selecting another plan with the same fields", async () => {
     renderInstantBuy();
     await screen.findByText("Summary");
     const userId = screen.getByLabelText("User ID");
@@ -293,8 +366,8 @@ describe("InstantBuyPage", () => {
     expect(screen.getByLabelText("Zone ID")).toHaveAttribute("aria-invalid", "true");
     fireEvent.click(screen.getByRole("radio", { name: /172 Diamonds/ }));
     await screen.findByText("Summary");
-    expect(screen.getByLabelText("User ID")).not.toHaveAttribute("aria-invalid", "true");
-    expect(screen.getByLabelText("Zone ID")).not.toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByLabelText("User ID")).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByLabelText("Zone ID")).toHaveAttribute("aria-invalid", "true");
     expect((apiPost as Mock).mock.calls.some((c) => c[0] === "/api/v1/topup/order")).toBe(false);
   });
 
@@ -595,10 +668,8 @@ describe("InstantBuyPage", () => {
       fireEvent.click(screen.getByRole("radio", { name: /172 Diamonds/ }));
 
       expect(await screen.findByText("Something went wrong. Please try again.")).toBeInTheDocument();
-      // Re-fill the (reset) info fields for the newly-selected denomination —
-      // isolates the assertion below to the failed-preview gate, not the info step.
-      fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "1234567" } });
-      fireEvent.change(screen.getByLabelText("Zone ID"), { target: { value: "1111" } });
+      expect(screen.getByLabelText("User ID")).toHaveValue("1234567");
+      expect(screen.getByLabelText("Zone ID")).toHaveValue("1111");
       expect(screen.getAllByRole("button", { name: /Buy now/ })[0]).toBeDisabled();
     });
 
@@ -645,7 +716,7 @@ describe("InstantBuyPage", () => {
       const methodRadios = screen.getAllByRole("radio").filter((r) => (r as HTMLInputElement).name === "method") as HTMLInputElement[];
       expect(methodRadios.some((r) => r.checked)).toBe(false);
 
-      // Fill the (reset) info fields for the new denomination, so the only
+      // Fill the info fields for the new denomination, so the only
       // remaining blocker is the missing method — proving the submit button
       // is NOT left "enabled" with the stale wallet_idr selection.
       fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "1234567" } });
@@ -724,6 +795,40 @@ describe("InstantBuyPage", () => {
   // vi.advanceTimersByTime + vi.waitFor, which polls with real time so
   // pending microtasks from the mocked apiPost still resolve).
   describe("live nickname check (Task 7)", () => {
+    it("cancels the previous denomination lookup and rechecks preserved account answers", async () => {
+      try {
+        renderInstantBuy();
+        await screen.findByText("Summary");
+        const baseApiPost = (apiPost as Mock).getMockImplementation()!;
+        let releaseOld!: (result: { available: boolean; valid: boolean; nickname: string }) => void;
+        (apiPost as Mock).mockImplementation((path: string, body: Record<string, unknown>) => {
+          if (path === "/api/v1/topup/check-account") {
+            if (body.denomination_id === 1) return new Promise((resolve) => { releaseOld = resolve; });
+            return Promise.resolve({ available: true, valid: true, nickname: "CurrentAccount" });
+          }
+          return baseApiPost(path, body);
+        });
+        vi.useFakeTimers();
+        fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "1234567" } });
+        fireEvent.change(screen.getByLabelText("Zone ID"), { target: { value: "0012" } });
+        await act(async () => { await vi.advanceTimersByTimeAsync(800); });
+        const firstLookup = (apiPost as Mock).mock.calls.find((call) => call[0] === "/api/v1/topup/check-account")!;
+        const firstSignal = (firstLookup[2] as { signal: AbortSignal }).signal;
+
+        fireEvent.click(screen.getByRole("radio", { name: /172 Diamonds/ }));
+        expect(firstSignal.aborted).toBe(true);
+        await act(async () => { await vi.advanceTimersByTimeAsync(800); });
+        expect(apiPost).toHaveBeenCalledWith("/api/v1/topup/check-account", {
+          denomination_id: 2, player_inputs: { user_id: "1234567", zone_id: "0012" },
+        }, expect.objectContaining({ signal: expect.any(AbortSignal) }));
+        await act(async () => { releaseOld({ available: true, valid: true, nickname: "StaleAccount" }); });
+        expect(screen.getByTestId("nickname-check-found")).toHaveTextContent("CurrentAccount");
+        expect(screen.queryByText(/StaleAccount/)).not.toBeInTheDocument();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("fires the debounced check-account lookup ~800ms after the account field stops changing, sending all configured fields", async () => {
       try {
         renderInstantBuy();

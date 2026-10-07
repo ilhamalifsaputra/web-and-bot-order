@@ -240,14 +240,14 @@ export default function InstantBuyPage() {
     setVoucherInput("");
   }, [previewContext]);
 
-  // A different denomination has a different (possibly empty) field set —
-  // stale answers from the last selection would otherwise ride along into a
-  // customer_data payload that no longer matches the fields being shown.
+  // Account details belong to the game and its input schema. Picking another
+  // diamond amount with the same fields must keep the answers entered above.
+  // A different game or field set must start fresh to avoid reusing stale IDs.
   useEffect(() => {
     setAnswers({});
     setTouched({});
     setCheckoutAttempted(false);
-  }, [selected?.id, fieldConfigKey]);
+  }, [slug, fieldConfigKey]);
 
   // Task 7: live KokinPay nickname-check lookup on the account field(s),
   // debounced ~800ms and cancelled on every keystroke via AbortController so
@@ -268,10 +268,8 @@ export default function InstantBuyPage() {
   const activeInputsJson = JSON.stringify(Object.fromEntries((selected?.additional_fields ?? []).map((field) => [field.key, (answers[field.key] ?? "").trim()])));
 
   useEffect(() => {
-    // Any change to the account field(s) (including a denomination switch,
-    // which resets `answers` above) invalidates whatever the last check
-    // showed — clear immediately rather than let a stale nickname linger
-    // next to a since-edited id.
+    // Recheck account details for each denomination, including switches that
+    // keep the same answers. An old nickname must not outlive its lookup.
     setNicknameCheck({ pending: false, nickname: null, notFound: false });
     if (!needsInfo || !selected || !configValid) return;
     // Code review: firing on every non-empty id, with no minimum length and
@@ -527,7 +525,7 @@ export default function InstantBuyPage() {
               <div className="grid gap-3 sm:grid-cols-2">
                 {selected.additional_fields.map((field) => (
                   <DeliveryFieldInput
-                    key={`${selected.id}-${fieldConfigKey}-${field.key}`}
+                    key={`${slug}-${fieldConfigKey}-${field.key}`}
                     field={field}
                     inputId={`instant-${field.key}`}
                     value={answers[field.key] ?? ""}

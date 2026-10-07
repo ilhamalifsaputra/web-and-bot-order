@@ -12,7 +12,7 @@ The current checkout already rendered `Denomination.additionalFields` through pu
 
 - Account details → Choose a plan → Discount → Summary → Buy now stays in that relative order; existing guest contact and payment selection remain present.
 - Only configured fields render. Existing bilingual labels, scalar metadata helpers/placeholders/options, supported input types, lengths and patterns are reused. Optional labels and neutral required hints are localized in English and Indonesian.
-- Errors appear on blur/touched or attempted form submission, with `aria-invalid` and hint/error `aria-describedby`. Empty optional answers are valid; filled optional answers still obey their configured constraints. Plan/config changes reset answers, touched state and attempted-submit state.
+- Errors appear on blur/touched or attempted form submission, with `aria-invalid` and hint/error `aria-describedby`. Empty optional answers are valid; filled optional answers still obey their configured constraints. Selecting another top-up amount with the same field schema preserves answers and validation state. Changing the product or field schema resets them.
 - Inputs remain strings, including large IDs and leading zeroes. Only configured trimmed answers are sent; the summary shows the selected plan and nonempty configured answers. No synthetic Server/Zone row or `-` account placeholder is created.
 - Plan cards use a fixed price grid column, nonbreaking prices, names clamped to two lines, and constant selected/resting border width. Their native radio group now belongs to the actual `buy-form`, enabling arrow-key selection.
 - Inline localized reasons cover invalid configuration, unavailable plans, loading/failed prices, invalid account/contact data and unavailable/unselected payment methods. Normal form validation produces no toast.
@@ -43,6 +43,14 @@ Below the existing `lg` breakpoint (1024px), sticky appears only when the primar
 The bar remains portaled outside transformed page content. Its actual height, including existing safe-area padding, is measured with `ResizeObserver` and a resize fallback. A React-owned portal reserves that height in `purchase-bar-clearance` after the site footer, only while sticky is mounted. No persistent body styles or pre-footer spacer remain. At the footer, if primary is still in view the bar is correctly hidden; otherwise measured clearance keeps footer content above it.
 
 ## Verification evidence
+
+2026-10-08 denomination-selection regression fix:
+
+- Reproduced the reported sequence: enter the game ID/zone, then choose another diamond amount. Both direct-page and product-route tests failed with an empty ID before the fix. The reset effect incorrectly treated every denomination ID change as a new account form.
+- Account state and field identity now use the product slug and field schema. Price/voucher/payment revalidation still follows the selected denomination, and nickname lookup cancels the previous request and rechecks the retained inputs.
+- Focused Vitest run passed all 154 tests across `InstantBuyPage`, `ProductPage`, `CheckoutPage`, `DeliveryFieldInput` and currency switching. Coverage includes delayed repricing, the selected denomination and retained string IDs in the order payload, incompatible schemas, navigation to a cached different game, validation state and stale nickname responses.
+- Chromium passed all eight responsive cases and the existing ID-only/duplicate-submit case. The new pointer-click regression passed separately after correcting its optional-field label locator: ID and selected Region persist, and the order request contains the newly selected amount. These browser checks use the current production bundle with mocked API responses.
+- Storefront client typecheck, lint and build passed. The wider `tsconfig.test.json` check remains blocked by unrelated concurrent transaction/fulfillment changes (missing exports, fulfillment progress/return typing and ledger reason arguments); it reported no errors in the changed files.
 
 Own final focused run:
 

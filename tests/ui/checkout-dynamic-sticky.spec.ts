@@ -53,8 +53,8 @@ for (const width of [320, 360, 375, 390, 412, 430, 768, 1280]) {
     await page.getByRole("radio").first().focus();
     await page.keyboard.press("ArrowDown");
     await expect(page.getByRole("radio").nth(1)).toBeChecked();
-    await expect(page.getByLabel("Player ID", { exact: true })).toHaveValue("");
-    await page.getByLabel("Player ID", { exact: true }).fill("4531475056881819915");
+    await expect(page.getByLabel("Player ID", { exact: true })).toHaveValue("4531475056881819915");
+    await expect(primary).toBeEnabled();
     await expect(primary).toContainText("Rp7,541");
     const layout = await page.locator(".denom-card").evaluateAll((cards) => cards.map((card) => {
       const price = card.lastElementChild! as HTMLElement;
@@ -101,6 +101,29 @@ for (const width of [320, 360, 375, 390, 412, 430, 768, 1280]) {
     expect(errors).toEqual([]);
   });
 }
+
+test("choosing a top-up amount retains account details and submits them with the selected amount", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 900 });
+  const unexpected = await mockApi(page);
+  await page.goto("/p/configured-game");
+  await page.getByLabel("Player ID", { exact: true }).fill("4531475056881819915");
+  await page.getByLabel("Region (Optional)", { exact: true }).selectOption("Europe");
+  await page.locator('.denom-card[data-denom-id="2"]').click();
+  await expect(page.getByLabel("Player ID", { exact: true })).toHaveValue("4531475056881819915");
+  await expect(page.getByLabel("Region (Optional)", { exact: true })).toHaveValue("Europe");
+  const primary = page.locator("#instant-buy-submit");
+  await expect(primary).toContainText("Rp7,541");
+  await expect(primary).toBeEnabled();
+  const orders: Array<Record<string, unknown>> = [];
+  await page.route("**/api/v1/topup/order", async (route) => {
+    orders.push(route.request().postDataJSON());
+    await route.fulfill({ status: 400, json: { error: "web.pay_method_unavailable" } });
+  });
+  await primary.click();
+  await expect.poll(() => orders.length).toBe(1);
+  expect(orders[0]).toMatchObject({ denomination_id: 2, customer_data: [{ player_id: "4531475056881819915", region: "Europe" }] });
+  expect(unexpected).toEqual([]);
+});
 
 test("ID-only metadata, blur constraints, trimmed payload, and synchronous duplicate guard", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 900 });

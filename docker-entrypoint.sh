@@ -69,6 +69,12 @@ log() { echo "entrypoint: $*"; }
 # --accept-data-loss: if a change would drop data, the push must fail and
 # crash-loop the container (loud, visible) rather than quietly delete rows.
 # Resolve those by hand — docs/MIGRATIONS.md has the procedure.
+db_migrate() {
+  # shellcheck disable=SC2086 # RUN_AS is an intentional word-split prefix
+  log "Applying pending SQL migrations via 'prisma migrate deploy'..."
+  $RUN_AS "$PRISMA" migrate deploy --schema "$SCHEMA" || true
+}
+
 db_push() {
   # shellcheck disable=SC2086 # RUN_AS is an intentional word-split prefix
   if ! $RUN_AS "$PRISMA" db push --schema "$SCHEMA" --skip-generate; then
@@ -181,6 +187,7 @@ postgres_migrate() {
   # any change that would drop rows fails the push and stops the container.
   log "No pre-deploy snapshot is taken on the Postgres path (the dump runs on the host, not in this container). 'prisma db push' below still refuses any change that would drop data. Recommended before every deploy: take a dump yourself — see 'Backup — Postgres' in deploy/backup/README.md."
   wait_for_database
+  db_migrate
   db_push
   log "Schema is in sync with schema.prisma."
   seed_ledger_accounts

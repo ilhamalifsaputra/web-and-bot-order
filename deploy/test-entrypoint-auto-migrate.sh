@@ -47,6 +47,7 @@ make_app_root() {
 printf 'prisma %s\n' "$*" >> "$STUB_LOG"
 case " $* " in
   *" --stdin "*) cat >/dev/null; exit "${STUB_PROBE_RC:-0}" ;;
+  *" migrate deploy "*) exit "${STUB_MIGRATE_RC:-0}" ;;
   *" db push "*) exit "${STUB_PUSH_RC:-0}" ;;
   *" --file "*) exit "${STUB_EXECUTE_RC:-0}" ;;
 esac
@@ -65,12 +66,13 @@ STUB
 }
 
 # The recorded commands reduced to one word each, in order, so a case can assert
-# the whole sequence as a single string: probe push seed data.
+# the whole sequence as a single string: probe migrate push seed data.
 steps() {
   _out=""
   while IFS= read -r _line; do
     case "$_line" in
       *--stdin*) _out="$_out probe" ;;
+      *"migrate deploy"*) _out="$_out migrate" ;;
       *"db push"*) _out="$_out push" ;;
       tsx*seed-chart-of-accounts.ts) _out="$_out seed" ;;
       *--file*) _out="$_out data" ;;
@@ -115,7 +117,7 @@ expect_output() {
 # --- Case 1: the full Postgres sequence, in order ---------------------------
 case_postgres_runs_push_then_seed_then_data() {
   make_app_root
-  _want="probe push seed"
+  _want="probe migrate push seed"
   for _name in $DATA_MIGRATIONS_LIST; do _want="$_want data"; done
 
   rc=0
@@ -141,7 +143,7 @@ case_push_failure_exits_and_skips_rest() {
     # Nothing after the push may run: seeding or backfilling rows against a
     # schema that was not applied is exactly the P2022 order the entrypoint exists
     # to prevent.
-    expect_steps "probe push" || rc=1
+    expect_steps "probe migrate push" || rc=1
     expect_output "will not start" || rc=1
   fi
   rm -rf "$TMP_ROOT"
@@ -151,7 +153,7 @@ case_push_failure_exits_and_skips_rest() {
 # --- Case 3: a non-zero seed warns and start-up continues -------------------
 case_seed_failure_warns_and_continues() {
   make_app_root
-  _want="probe push seed"
+  _want="probe migrate push seed"
   for _name in $DATA_MIGRATIONS_LIST; do _want="$_want data"; done
 
   rc=0

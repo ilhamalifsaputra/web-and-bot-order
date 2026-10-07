@@ -109,6 +109,33 @@ function sessionCookieFrom(setCookie: string | string[] | undefined): string {
 
 const countUsers = () => prisma.user.count();
 
+describe("checkout configuration guard", () => {
+  it.each([
+    { additionalFields: "not json", providerInputMapping: null, autoDeliverySource: null },
+    { additionalFields: '[{"key":"bad"}]', providerInputMapping: null, autoDeliverySource: null },
+    { additionalFields: null, providerInputMapping: null, autoDeliverySource: "digiflazz" },
+    { additionalFields: '[{"key":"player_id","label":{"id":"ID","en":"ID"},"type":"text","required":true}]', providerInputMapping: '{"digiflazz":{"keys":["missing"]}}', autoDeliverySource: "digiflazz" },
+  ])("rejects malformed configuration before guest/order writes: %j", async (configuration) => {
+    const denom = await prisma.denomination.findUniqueOrThrow({ where: { id: infoDenomId } });
+    const usersBefore = await countUsers();
+    const ordersBefore = await prisma.order.count();
+    await prisma.denomination.update({ where: { id: infoDenomId }, data: configuration });
+    try {
+      const page = await app.inject({ method: "GET", url: `/api/v1/pages/product/${(await prisma.product.findUniqueOrThrow({ where: { id: denom.productId } })).slug}` });
+      expect(page.json().denominations.find((d: { id: number }) => d.id === infoDenomId)).toMatchObject({ additional_fields: [], input_configuration_valid: false });
+      for (const endpoint of ["preview", "order"]) {
+        const result = await app.inject({ method: "POST", url: `/api/v1/topup/${endpoint}`, remoteAddress: freshIp(), payload: { denomination_id: infoDenomId, qty: 1, method: "bybit", guest_email: "config@example.test", customer_data: [{ player_id: "123456" }] } });
+        expect(result.statusCode).toBe(400);
+        expect(result.json()).toMatchObject({ error: "error.input_config_invalid" });
+      }
+      expect(await countUsers()).toBe(usersBefore);
+      expect(await prisma.order.count()).toBe(ordersBefore);
+    } finally {
+      await prisma.denomination.update({ where: { id: infoDenomId }, data: { additionalFields: denom.additionalFields, providerInputMapping: denom.providerInputMapping, autoDeliverySource: denom.autoDeliverySource } });
+    }
+  });
+});
+
 beforeAll(async () => {
   await initDb();
   app = await buildApp();
@@ -167,6 +194,7 @@ beforeAll(async () => {
     durationLabel: "-",
     price: DENOM_PRICE,
     autoDeliverySource: "digiflazz",
+    additionalFields: JSON.stringify([{ key: "game_id", label: { id: "ID Game", en: "Game ID" }, type: "text", required: true }]),
   });
   digiflazzDenomId = digi.id;
 

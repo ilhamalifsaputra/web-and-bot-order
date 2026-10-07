@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, beforeEach, vi, type Mock } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider, focusManager } from "@tanstack/react-query";
 import InstantBuyPage from "./InstantBuyPage";
@@ -16,7 +16,15 @@ vi.mock("../api/client", () => ({
 // Framer Motion's `whileInView`, which throws in jsdom without an
 // IntersectionObserver — same no-op stub ProductPage.test.tsx uses.
 class NoOpIntersectionObserver {
-  observe() {}
+  static primaryCallback: IntersectionObserverCallback | null = null;
+  static primary: Element | null = null;
+  constructor(private callback: IntersectionObserverCallback) {}
+  observe(element: Element) {
+    if (element.id === "instant-buy-submit") {
+      NoOpIntersectionObserver.primaryCallback = this.callback;
+      NoOpIntersectionObserver.primary = element;
+    }
+  }
   unobserve() {}
   disconnect() {}
   takeRecords() {
@@ -176,7 +184,7 @@ function renderInstantBuy(
   });
 
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  const result = render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[`/p/${slug}`]}>
         <Routes>
@@ -187,6 +195,7 @@ function renderInstantBuy(
       </MemoryRouter>
     </QueryClientProvider>,
   );
+  return { ...result, queryClient };
 }
 
 describe("InstantBuyPage", () => {
@@ -199,6 +208,135 @@ describe("InstantBuyPage", () => {
   beforeEach(() => {
     document.documentElement.lang = "en";
     vi.clearAllMocks();
+    NoOpIntersectionObserver.primaryCallback = null;
+    NoOpIntersectionObserver.primary = null;
+  });
+
+  it("keeps a primary CTA in flow, observes its late mount, and toggles the mobile bar", async () => {
+    renderInstantBuy();
+    await screen.findByText("Summary");
+    const primary = await screen.findByRole("button", { name: /Buy now/ });
+    expect(primary.closest("#checkout-summary")).not.toBeNull();
+    await waitFor(() => expect(NoOpIntersectionObserver.primary).toBe(primary));
+    const intersect = (isIntersecting: boolean) => act(() => NoOpIntersectionObserver.primaryCallback?.([{ isIntersecting } as IntersectionObserverEntry], {} as IntersectionObserver));
+    expect(screen.queryByRole("region", { name: "Purchase" })).not.toBeInTheDocument();
+    intersect(false);
+    expect(screen.getByRole("region", { name: "Purchase" })).toBeInTheDocument();
+    intersect(true);
+    expect(screen.queryByRole("region", { name: "Purchase" })).not.toBeInTheDocument();
+  });
+
+  it("shows only nonempty configured account answers in the summary, preserving long IDs", async () => {
+    const product = { ...productData, denominations: [{ ...productData.denominations[0]!, additional_fields: [productData.denominations[0]!.additional_fields[0]!, { ...productData.denominations[0]!.additional_fields[1]!, required: false }] }] };
+    renderInstantBuy({ product });
+    await screen.findByText("Summary");
+    fireEvent.change(screen.getByLabelText("User ID"), { target: { value: " 4531475056881819915 " } });
+    const summary = within(document.getElementById("checkout-summary")!);
+    expect(summary.getByText("86 Diamonds")).toBeInTheDocument();
+    expect(summary.getByText("4531475056881819915")).toBeInTheDocument();
+    expect(summary.queryByText("Zone ID")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Buy now/ })).not.toBeDisabled();
+    expect(screen.getByRole("radio", { name: /86 Diamonds/ })).toHaveProperty("form", document.getElementById("buy-form"));
+  });
+
+  it("blocks an invalid metadata SKU with an inline configuration reason", async () => {
+    renderInstantBuy({ product: { ...productData, denominations: [{ ...productData.denominations[0]!, additional_fields: [], input_configuration_valid: false }] } });
+    expect(await screen.findByText(/input configuration/i)).toBeInTheDocument();
+    expect((apiPost as Mock).mock.calls.some((c) => c[0] === "/api/v1/topup/order")).toBe(false);
+  });
+
+  it("shows required errors on blur or attempted submit and resets them with a new plan", async () => {
+    renderInstantBuy();
+    await screen.findByText("Summary");
+    const userId = screen.getByLabelText("User ID");
+    expect(userId).not.toHaveAttribute("aria-invalid", "true");
+    fireEvent.blur(userId);
+    expect(userId).toHaveAttribute("aria-invalid", "true");
+    fireEvent.submit(document.getElementById("buy-form")!);
+    expect(screen.getByLabelText("Zone ID")).toHaveAttribute("aria-invalid", "true");
+    fireEvent.click(screen.getByRole("radio", { name: /172 Diamonds/ }));
+    await screen.findByText("Summary");
+    expect(screen.getByLabelText("User ID")).not.toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByLabelText("Zone ID")).not.toHaveAttribute("aria-invalid", "true");
+    expect((apiPost as Mock).mock.calls.some((c) => c[0] === "/api/v1/topup/order")).toBe(false);
+  });
+
+  it("keeps the newest voucher price when two applies resolve out of order and preserves applied code while editing", async () => {
+    renderInstantBuy();
+    await screen.findByText("Summary");
+    const base = (apiPost as Mock).getMockImplementation()!;
+    const releases: Record<string, (data: CheckoutData) => void> = {};
+    (apiPost as Mock).mockImplementation((path: string, body: Record<string, unknown>) => {
+      if (path === "/api/v1/topup/preview" && body.voucher_code) return new Promise((resolve) => { releases[String(body.voucher_code)] = resolve; });
+      if (path === "/api/v1/topup/order") return new Promise(() => {});
+      return base(path, body);
+    });
+    const input = screen.getByPlaceholderText("Code");
+    fireEvent.change(input, { target: { value: "OLD" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(releases.OLD).toBeDefined());
+    fireEvent.change(input, { target: { value: "NEW" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(releases.NEW).toBeDefined());
+    await act(async () => { releases.NEW!({ ...checkoutData, total: "17000", voucher_discount: "3000", voucher_code: "NEW" }); });
+    await act(async () => { releases.OLD!({ ...checkoutData, total: "19000", voucher_discount: "1000", voucher_code: "OLD" }); });
+    const summary = within(document.getElementById("checkout-summary")!);
+    expect(summary.queryByText("Rp19,000")).not.toBeInTheDocument();
+    expect(summary.getByText("Rp17,000")).toBeInTheDocument();
+    fireEvent.change(input, { target: { value: "EDITED" } });
+    fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "1234567" } });
+    fireEvent.change(screen.getByLabelText("Zone ID"), { target: { value: "1234" } });
+    fireEvent.click(screen.getByRole("button", { name: /Buy now/ }));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/v1/topup/order", expect.objectContaining({ voucher_code: "NEW" }), expect.anything()));
+  });
+
+  it("ignores voucher results from a previous currency/pricing context", async () => {
+    const { queryClient } = renderInstantBuy();
+    await screen.findByText("Summary");
+    const base = (apiPost as Mock).getMockImplementation()!;
+    let release!: (data: CheckoutData) => void;
+    (apiPost as Mock).mockImplementation((path: string, body: Record<string, unknown>) => {
+      if (path === "/api/v1/topup/preview" && body.voucher_code) return new Promise((resolve) => { release = resolve; });
+      return base(path, body);
+    });
+    fireEvent.change(screen.getByPlaceholderText("Code"), { target: { value: "OLD" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    await waitFor(() => expect(release).toBeDefined());
+    await act(async () => { queryClient.setQueryData(["context"], { ...context, currency: "USD", pricing_context: "new-session" }); });
+    await waitFor(() => expect(screen.getByRole("button", { name: /Buy now/ })).toHaveTextContent("$1.25"));
+    await act(async () => { release({ ...checkoutData, total: "16000", voucher_code: "OLD" }); });
+    expect(screen.getByRole("button", { name: /Buy now/ })).toHaveTextContent("$1.25");
+    expect(screen.queryByText("Applied: OLD")).not.toBeInTheDocument();
+  });
+
+  it("blocks voucher repricing, ignores an abandoned SKU response, and submits only the applied code", async () => {
+    renderInstantBuy();
+    await screen.findByText("Summary");
+    const base = (apiPost as Mock).getMockImplementation()!;
+    let resolveVoucher!: (data: CheckoutData) => void;
+    (apiPost as Mock).mockImplementation((path: string, body: Record<string, unknown>) => {
+      if (path === "/api/v1/topup/preview" && body.voucher_code === "OLD") return new Promise((resolve) => { resolveVoucher = resolve; });
+      if (path === "/api/v1/topup/order") return new Promise(() => {});
+      return base(path, body);
+    });
+    fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "1234567" } });
+    fireEvent.change(screen.getByLabelText("Zone ID"), { target: { value: "1234" } });
+    fireEvent.change(screen.getByPlaceholderText("Code"), { target: { value: "OLD" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /Buy now/ })).toBeDisabled());
+    fireEvent.click(screen.getByRole("radio", { name: /172 Diamonds/ }));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/v1/topup/preview", { denomination_id: 2, qty: 1 }));
+    await act(async () => { resolveVoucher({ ...checkoutData, total: "1", qris_grand_total: "1", voucher_code: "OLD" }); });
+    expect(within(document.getElementById("checkout-summary")!).queryByText("Rp1")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("User ID"), { target: { value: " 4531475056881819915 " } });
+    fireEvent.change(screen.getByLabelText("Zone ID"), { target: { value: " 0012 " } });
+    fireEvent.change(screen.getByPlaceholderText("Code"), { target: { value: "UNAPPLIED" } });
+    await waitFor(() => expect(screen.getByRole("button", { name: /Buy now/ })).not.toBeDisabled());
+    const button = screen.getByRole("button", { name: /Buy now/ });
+    act(() => { button.click(); button.click(); });
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/v1/topup/order", expect.objectContaining({ denomination_id: 2, voucher_code: "", customer_data: [{ user_id: "4531475056881819915", zone_id: "0012" }] }), expect.anything()));
+    expect((apiPost as Mock).mock.calls.filter((c) => c[0] === "/api/v1/topup/order")).toHaveLength(1);
+    expect(screen.getByRole("button", { name: /Processing/ })).toBeDisabled();
   });
 
   it("renders the account field(s) for the selected (default) denomination", async () => {
@@ -247,6 +385,7 @@ describe("InstantBuyPage", () => {
     expect(cartCalls()).toEqual([]);
 
     // Voucher apply.
+    await screen.findByPlaceholderText("Code");
     fireEvent.change(screen.getByPlaceholderText("Code"), { target: { value: "SAVE10" } });
     fireEvent.click(screen.getByRole("button", { name: "Apply" }));
     await waitFor(() =>
@@ -549,7 +688,6 @@ describe("InstantBuyPage", () => {
   // pending microtasks from the mocked apiPost still resolve).
   describe("live nickname check (Task 7)", () => {
     it("fires the debounced check-account lookup ~800ms after the account field stops changing, sending all configured fields", async () => {
-      vi.useFakeTimers();
       try {
         renderInstantBuy();
         const baseApiPost = (apiPost as Mock).getMockImplementation()!;
@@ -558,15 +696,16 @@ describe("InstantBuyPage", () => {
           return baseApiPost(path, body, signal);
         });
 
-        await vi.waitFor(() => expect(screen.getByRole("heading", { name: "Mobile Legends Diamonds" })).toBeInTheDocument());
-        await vi.waitFor(() => expect(screen.getByText("Summary")).toBeInTheDocument());
+        await screen.findByRole("heading", { name: "Mobile Legends Diamonds" });
+        await screen.findByText("Summary");
+        vi.useFakeTimers();
 
         fireEvent.change(screen.getByLabelText("Zone ID"), { target: { value: "1234" } });
         fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "1234567" } });
         // Not fired yet — still inside the debounce window.
         expect((apiPost as Mock).mock.calls.some((c) => c[0] === "/api/v1/topup/check-account")).toBe(false);
 
-        vi.advanceTimersByTime(800);
+        await act(async () => { await vi.advanceTimersByTimeAsync(800); });
         await vi.waitFor(() =>
           expect(apiPost).toHaveBeenCalledWith(
             "/api/v1/topup/check-account",
@@ -580,7 +719,6 @@ describe("InstantBuyPage", () => {
     });
 
     it("cancels the in-flight lookup via AbortController when the account field changes again before it resolves", async () => {
-      vi.useFakeTimers();
       try {
         renderInstantBuy();
         const baseApiPost = (apiPost as Mock).getMockImplementation()!;
@@ -593,12 +731,13 @@ describe("InstantBuyPage", () => {
           return baseApiPost(path, body, signal);
         });
 
-        await vi.waitFor(() => expect(screen.getByRole("heading", { name: "Mobile Legends Diamonds" })).toBeInTheDocument());
-        await vi.waitFor(() => expect(screen.getByText("Summary")).toBeInTheDocument());
+        await screen.findByRole("heading", { name: "Mobile Legends Diamonds" });
+        await screen.findByText("Summary");
+        vi.useFakeTimers();
 
         fireEvent.change(screen.getByLabelText("Zone ID"), { target: { value: "1234" } });
         fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "1111" } });
-        vi.advanceTimersByTime(800);
+        await act(async () => { await vi.advanceTimersByTimeAsync(800); });
         await vi.waitFor(() =>
           expect(apiPost).toHaveBeenCalledWith(
             "/api/v1/topup/check-account",
@@ -618,7 +757,7 @@ describe("InstantBuyPage", () => {
         fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "2222" } });
         expect(firstSignal.aborted).toBe(true);
 
-        vi.advanceTimersByTime(800);
+        await act(async () => { await vi.advanceTimersByTimeAsync(800); });
         await vi.waitFor(() =>
           expect(apiPost).toHaveBeenCalledWith(
             "/api/v1/topup/check-account",
@@ -632,7 +771,6 @@ describe("InstantBuyPage", () => {
     });
 
     it("renders the resolved nickname once the debounced lookup resolves with a match", async () => {
-      vi.useFakeTimers();
       try {
         renderInstantBuy();
         const baseApiPost = (apiPost as Mock).getMockImplementation()!;
@@ -641,12 +779,13 @@ describe("InstantBuyPage", () => {
           return baseApiPost(path, body, signal);
         });
 
-        await vi.waitFor(() => expect(screen.getByRole("heading", { name: "Mobile Legends Diamonds" })).toBeInTheDocument());
-        await vi.waitFor(() => expect(screen.getByText("Summary")).toBeInTheDocument());
+        await screen.findByRole("heading", { name: "Mobile Legends Diamonds" });
+        await screen.findByText("Summary");
+        vi.useFakeTimers();
 
         fireEvent.change(screen.getByLabelText("Zone ID"), { target: { value: "1234" } });
         fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "1234567" } });
-        vi.advanceTimersByTime(800);
+        await act(async () => { await vi.advanceTimersByTimeAsync(800); });
 
         await vi.waitFor(() => expect(screen.getByText("✓ ProGamer99")).toBeInTheDocument());
       } finally {
@@ -659,7 +798,6 @@ describe("InstantBuyPage", () => {
     // requires, produced a premature "not found" hint on a CORRECT id (e.g.
     // Mobile Legends) while the buyer had merely not yet typed the zone.
     it("does not fire the lookup when the account id is filled but a server_id field from this denomination's own template is still empty", async () => {
-      vi.useFakeTimers();
       try {
         const product: ProductPageData = {
           ...productData,
@@ -680,19 +818,20 @@ describe("InstantBuyPage", () => {
           return baseApiPost(path, body, signal);
         });
 
-        await vi.waitFor(() => expect(screen.getByRole("heading", { name: "Mobile Legends Diamonds" })).toBeInTheDocument());
-        await vi.waitFor(() => expect(screen.getByText("Summary")).toBeInTheDocument());
+        await screen.findByRole("heading", { name: "Mobile Legends Diamonds" });
+        await screen.findByText("Summary");
+        vi.useFakeTimers();
 
         // Account id only — the server/zone field is left empty.
         fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "1234567" } });
-        vi.advanceTimersByTime(800);
-        vi.advanceTimersByTime(800);
+        await act(async () => { await vi.advanceTimersByTimeAsync(800); });
+        await act(async () => { await vi.advanceTimersByTimeAsync(800); });
 
         expect((apiPost as Mock).mock.calls.some((c) => c[0] === "/api/v1/topup/check-account")).toBe(false);
 
         // Filling the server field too now lets the (debounced) lookup fire.
         fireEvent.change(screen.getByLabelText("Server"), { target: { value: "1111" } });
-        vi.advanceTimersByTime(800);
+        await act(async () => { await vi.advanceTimersByTimeAsync(800); });
         await vi.waitFor(() =>
           expect(apiPost).toHaveBeenCalledWith(
             "/api/v1/topup/check-account",
@@ -706,7 +845,6 @@ describe("InstantBuyPage", () => {
     });
 
     it("shows nothing at all when the endpoint degrades to available:false — the field behaves exactly as it does today", async () => {
-      vi.useFakeTimers();
       try {
         renderInstantBuy();
         const baseApiPost = (apiPost as Mock).getMockImplementation()!;
@@ -715,12 +853,13 @@ describe("InstantBuyPage", () => {
           return baseApiPost(path, body, signal);
         });
 
-        await vi.waitFor(() => expect(screen.getByRole("heading", { name: "Mobile Legends Diamonds" })).toBeInTheDocument());
-        await vi.waitFor(() => expect(screen.getByText("Summary")).toBeInTheDocument());
+        await screen.findByRole("heading", { name: "Mobile Legends Diamonds" });
+        await screen.findByText("Summary");
+        vi.useFakeTimers();
 
         fireEvent.change(screen.getByLabelText("Zone ID"), { target: { value: "1234" } });
         fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "1234567" } });
-        vi.advanceTimersByTime(800);
+        await act(async () => { await vi.advanceTimersByTimeAsync(800); });
         await vi.waitFor(() =>
           expect(apiPost).toHaveBeenCalledWith(
             "/api/v1/topup/check-account",
@@ -747,7 +886,10 @@ describe("InstantBuyPage", () => {
   // 20240 → $1.27, total 20000 → $1.25.
   describe("sticky bar Price · Pay line for a USD viewer", () => {
     const usdContext: ShopContext = { ...context, currency: "USD" };
-    const bar = () => document.querySelector(".fixed.bottom-0");
+    const bar = () => {
+      act(() => NoOpIntersectionObserver.primaryCallback?.([{ isIntersecting: false } as IntersectionObserverEntry], {} as IntersectionObserver));
+      return document.querySelector(".fixed.bottom-0");
+    };
 
     it("QRIS: shows the $ total and the Rp payable the rail will charge", async () => {
       renderInstantBuy({ checkout: { ...checkoutData, idr_enabled: true }, ctx: usdContext });

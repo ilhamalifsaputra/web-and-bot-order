@@ -81,13 +81,13 @@ export default function DenominationCard({ d, fx, lowThreshold, checked, onChang
   const Icon = iconKind ? ICON_KIND_ICONS[iconKind] : null;
   return (
     <label
-      className={`denom-card cursor-pointer flex flex-wrap items-center justify-between gap-3 rounded-lg border-2 border-line bg-card p-4 shadow-soft transition-all duration-150 hover:shadow-lift has-[:checked]:border-pine has-[:checked]:ring-2 has-[:checked]:ring-pine/35 ${!buyable ? "opacity-60" : ""}`}
+      className={`denom-card cursor-pointer grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-lg border-2 border-line bg-card p-3 sm:p-4 shadow-soft transition-all duration-150 hover:shadow-lift has-[:checked]:border-pine has-[:checked]:ring-2 has-[:checked]:ring-pine/35 ${!buyable ? "opacity-60" : ""}`}
       data-denom-id={d.id}
       data-price={d.price}
       data-available={d.available}
       data-label={d.name}
     >
-      <div className="flex items-center gap-3 min-w-0">
+      <div className="flex items-center gap-2 min-w-0">
         <input
           type="radio"
           name="denomination_id"
@@ -107,7 +107,7 @@ export default function DenominationCard({ d, fx, lowThreshold, checked, onChang
           </span>
         )}
         <div className="min-w-0">
-          <div className="font-display text-sm font-semibold text-ink leading-snug break-words [overflow-wrap:anywhere]">
+          <div className="font-display text-sm font-semibold text-ink leading-snug break-words line-clamp-2 [overflow-wrap:anywhere]">
             {d.canonical?.displayName || d.duration_label || d.name}
           </div>
           {!!d.canonical?.qualifiers.length && <div className="text-xs text-ink-soft break-words">{d.canonical.qualifiers.join(" · ")}</div>}
@@ -126,8 +126,8 @@ export default function DenominationCard({ d, fx, lowThreshold, checked, onChang
           </div>
         </div>
       </div>
-      <div className="text-right shrink-0">
-        {d.canonical ? <span className="font-semibold text-pine text-sm break-words">{d.canonical.formattedPrice}</span> : <Price value={d.price} fx={fx} size="text-sm" />}
+      <div className="text-right whitespace-nowrap">
+        {d.canonical ? <span className="font-semibold text-pine text-sm whitespace-nowrap">{d.canonical.formattedPrice}</span> : <Price value={d.price} fx={fx} size="text-sm" />}
         {/* `price` is already the sale price — this is the pre-sale figure. */}
         {d.flash && (
           <div>

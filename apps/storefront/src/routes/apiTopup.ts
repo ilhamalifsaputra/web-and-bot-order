@@ -81,6 +81,7 @@ import { constantTimeEqual } from "../auth";
 import { errorBody } from "@app/core/errorBody";
 import { parseInputFields, buildPlayerNicknameRequest, nicknameInputKeys } from "@app/core/playerInput";
 import { validateCustomerData } from "@app/core/deliveryFields";
+import { checkoutInputConfiguration } from "../inputConfiguration";
 
 interface CheckAccountResponse {
   available: boolean;
@@ -247,6 +248,9 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
     const quantity = resolveTopupQuantity(req.body?.qty, denom);
     if (quantity === null) return reply.code(400).send({ error: "invalid_request" });
 
+    if (!checkoutInputConfiguration(denom).input_configuration_valid) {
+      return reply.code(400).send({ error: "error.input_config_invalid" });
+    }
     const voucherCode = (req.body?.voucher_code ?? "").trim().toUpperCase() || null;
     return reply.send(
       await checkoutView(req, customer, voucherCode, null, { denominationId: denom.id, quantity }),
@@ -302,8 +306,12 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
     const quantity = resolveTopupQuantity(req.body?.qty, denom);
     if (quantity === null) return reply.code(400).send({ error: "invalid_request" });
     const line = { denominationId: denom.id, quantity };
+    const inputConfig = checkoutInputConfiguration(denom);
+    if (!inputConfig.input_configuration_valid) {
+      return reply.code(400).send({ error: "error.input_config_invalid" });
+    }
     try {
-      if (denom.additionalFields) validateCustomerData(parseInputFields(denom.additionalFields), req.body?.customer_data, quantity);
+      validateCustomerData(inputConfig.additional_fields, req.body?.customer_data, quantity);
     } catch (e) {
       if (e instanceof ValidationError) return reply.code(400).send(errorBody(e));
       throw e;

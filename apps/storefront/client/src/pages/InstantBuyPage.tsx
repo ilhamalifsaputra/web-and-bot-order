@@ -35,7 +35,7 @@
  * order — but the voucher input and the chosen payment method, once the buyer
  * has touched them, are never clobbered by a later re-price.
  */
-import { useEffect, useState, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
@@ -45,7 +45,7 @@ import { useIdempotentPost } from "../api/idempotency";
 import type { CheckoutData, PlaceOrderResponse, ProductPageData } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import { useDocumentTitle } from "../lib/useDocumentTitle";
-import { t } from "../lib/i18n";
+import { currentLang, t } from "../lib/i18n";
 import { humanError } from "../lib/errors";
 import { formatPriceFor } from "../lib/format";
 import { fadeUp } from "../lib/motion";
@@ -70,6 +70,7 @@ import PaymentMethodSelector, {
 import OrderSummaryCard, { idrRailPriceAndPay } from "../components/shop/OrderSummaryCard";
 import { GuestContactCard } from "./CheckoutPage";
 import ErrorPage from "./ErrorPage";
+import Button from "../components/ui/Button";
 
 const revealProps = {
   variants: fadeUp,
@@ -107,8 +108,8 @@ export default function InstantBuyPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { data: ctx } = useShopContext();
-  // Tailwind's lg breakpoint (1024px) switches between the in-card desktop
-  // submit button and the mobile sticky bar; form sections stay in normal flow.
+  // Tailwind's lg breakpoint (1024px) limits the hybrid bar to mobile.
+  // The primary submit stays in normal flow at every viewport.
   const isDesktop = useIsWideDesktop();
 
   // Same query key ProductPage.tsx's own useQuery uses for this endpoint —
@@ -125,6 +126,8 @@ export default function InstantBuyPage() {
 
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [touched, setTouched] = useState<Record<string, boolean>>({});
+  const [checkoutAttempted, setCheckoutAttempted] = useState(false);
   const [guestEmail, setGuestEmail] = useState("");
   const [voucherInput, setVoucherInput] = useState("");
   const [method, setMethod] = useState<string | null>(null);
@@ -134,7 +137,21 @@ export default function InstantBuyPage() {
   const [placeOrderError, setPlaceOrderError] = useState<unknown>(null);
   const placeOrderErrorKey = placeOrderError instanceof Error ? placeOrderError.message : null;
   const [page, setPage] = useState<CheckoutData | null>(null);
-  const [totals, setTotals] = useState<CheckoutData | null>(null);
+  const [storedTotals, setTotals] = useState<CheckoutData | null>(null);
+  const [pricedContext, setPricedContext] = useState("");
+  const [voucherBusyContext, setVoucherBusyContext] = useState<string | null>(null);
+  const [appliedVoucher, setAppliedVoucher] = useState("");
+  const submitLock = useRef(false);
+  const voucherRequest = useRef(0);
+  const [primaryElement, setPrimaryElement] = useState<HTMLButtonElement | null>(null);
+  const [primaryVisible, setPrimaryVisible] = useState(true);
+
+  useEffect(() => {
+    if (!primaryElement || isDesktop || typeof IntersectionObserver === "undefined") return;
+    const observer = new IntersectionObserver(([entry]) => setPrimaryVisible(entry?.isIntersecting ?? true), { threshold: 0 });
+    observer.observe(primaryElement);
+    return () => observer.disconnect();
+  }, [primaryElement, isDesktop]);
 
   useEffect(() => {
     setSelectedId(null);
@@ -145,6 +162,13 @@ export default function InstantBuyPage() {
   const selected = denominations.find((d) => d.id === selectedId) ?? fallback;
   const needsInfo = (selected?.additional_fields.length ?? 0) > 0;
   const fieldConfigKey = JSON.stringify(selected?.additional_fields ?? []);
+  const configValid = selected?.input_configuration_valid !== false;
+  const previewContext = JSON.stringify([slug, selected?.id, ctx?.currency, ctx?.pricing_context, ctx?.lang]);
+  // Updated during render so responses cannot slip through before reset effects.
+  const currentPreviewContext = useRef(previewContext);
+  currentPreviewContext.current = previewContext;
+  const totals = pricedContext === previewContext ? storedTotals : null;
+  const voucherPending = voucherBusyContext === previewContext;
 
   // Live totals for the SELECTED denomination — an ad-hoc line priced by the
   // server, with no cart anywhere in the loop. Keyed on the denomination id, so
@@ -153,10 +177,10 @@ export default function InstantBuyPage() {
   // Query only ever surfaces the response belonging to the current key — a
   // slow answer for an abandoned selection can't overwrite a newer one.
   const previewQuery = useQuery({
-    queryKey: ["topup-preview", selected?.id],
+    queryKey: ["topup-preview", selected?.id, ctx?.currency, ctx?.pricing_context, ctx?.lang],
     queryFn: () =>
       apiPost<CheckoutData>("/api/v1/topup/preview", { denomination_id: selected!.id, qty: 1 }),
-    enabled: selected != null,
+    enabled: selected != null && configValid,
     retry: false,
     // Batch 2 review finding: this query's request body never carries the
     // applied voucher code (that re-price goes through previewMutation
@@ -186,6 +210,8 @@ export default function InstantBuyPage() {
     const firstLoad = page === null;
     setPage(checkoutData);
     setTotals(checkoutData);
+    setPricedContext(previewContext);
+    setAppliedVoucher(checkoutData.voucher_code ?? "");
     if (firstLoad) {
       setVoucherInput(checkoutData.voucher_code ?? "");
       setMethod(defaultMethod(checkoutData));
@@ -202,13 +228,22 @@ export default function InstantBuyPage() {
       setMethod((prev) => revalidatedMethod(checkoutData, prev));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [checkoutData]);
+  }, [checkoutData, previewContext]);
+
+  useEffect(() => {
+    voucherRequest.current += 1;
+    setVoucherBusyContext(null);
+    setAppliedVoucher("");
+    setVoucherInput("");
+  }, [previewContext]);
 
   // A different denomination has a different (possibly empty) field set —
   // stale answers from the last selection would otherwise ride along into a
   // customer_data payload that no longer matches the fields being shown.
   useEffect(() => {
     setAnswers({});
+    setTouched({});
+    setCheckoutAttempted(false);
   }, [selected?.id, fieldConfigKey]);
 
   // Task 7: live KokinPay nickname-check lookup on the account field(s),
@@ -235,7 +270,7 @@ export default function InstantBuyPage() {
     // showed — clear immediately rather than let a stale nickname linger
     // next to a since-edited id.
     setNicknameCheck({ pending: false, nickname: null, notFound: false });
-    if (!needsInfo || !selected) return;
+    if (!needsInfo || !selected || !configValid) return;
     // Code review: firing on every non-empty id, with no minimum length and
     // no regard for a not-yet-filled server/zone field, produced a
     // premature "not found" hint on a CORRECT id for games (e.g. Mobile
@@ -284,20 +319,23 @@ export default function InstantBuyPage() {
       controller.abort();
       clearTimeout(timer);
     };
-  }, [needsInfo, selected, activeInputsJson]);
+  }, [needsInfo, selected, activeInputsJson, configValid]);
 
   // Applying a voucher re-prices the SAME ad-hoc line the query above prices,
   // through the SAME endpoint — one pricing implementation, so a voucher can
   // never be quoted against something other than the plan on screen.
   const previewMutation = useMutation({
-    mutationFn: (voucherCode: string) =>
+    mutationFn: (request: { code: string; denominationId: number; context: string; sequence: number }) =>
       apiPost<CheckoutData>("/api/v1/topup/preview", {
-        denomination_id: selected!.id,
+        denomination_id: request.denominationId,
         qty: 1,
-        voucher_code: voucherCode,
+        voucher_code: request.code,
       }),
-    onSuccess: (resp) => {
+    onSuccess: (resp, request) => {
+      if (request.context !== currentPreviewContext.current || request.sequence !== voucherRequest.current) return;
       setTotals(resp);
+      setPricedContext(request.context);
+      setAppliedVoucher(resp.error_key ? "" : resp.voucher_code ?? request.code);
       // I-3, widened: a voucher application re-prices `totals` directly
       // (never touching `checkoutData`, which is what the effect above
       // keys on), so that effect alone can't catch a re-price triggered
@@ -306,10 +344,16 @@ export default function InstantBuyPage() {
       // check, same clear, just fired from this trigger too.
       setMethod((prev) => revalidatedMethod(resp, prev));
     },
+    onSettled: (_resp, _error, request) => {
+      if (request.context === currentPreviewContext.current && request.sequence === voucherRequest.current) setVoucherBusyContext(null);
+    },
   });
 
   function applyVoucher(): void {
-    previewMutation.mutate(voucherInput);
+    if (!selected || !totals || !configValid || submitLock.current) return;
+    const sequence = ++voucherRequest.current;
+    setVoucherBusyContext(previewContext);
+    previewMutation.mutate({ code: voucherInput.trim().toUpperCase(), denominationId: selected.id, context: previewContext, sequence });
   }
 
   function onVoucherKeyDown(event: KeyboardEvent<HTMLInputElement>): void {
@@ -335,8 +379,8 @@ export default function InstantBuyPage() {
         denomination_id: selected!.id,
         qty: 1,
         method,
-        voucher_code: voucherInput,
-        customer_data: needsInfo ? [answers] : undefined,
+        voucher_code: appliedVoucher,
+        customer_data: needsInfo ? [JSON.parse(activeInputsJson) as Record<string, string>] : undefined,
         guest_email: page?.is_guest ? guestEmail.trim() : undefined,
       }),
     onSuccess: (resp) => {
@@ -348,6 +392,7 @@ export default function InstantBuyPage() {
       setPlaceOrderError(err);
       if (page?.is_guest) void queryClient.invalidateQueries({ queryKey: ["context"] });
     },
+    onSettled: () => { submitLock.current = false; },
   });
 
   if (error) {
@@ -375,7 +420,7 @@ export default function InstantBuyPage() {
   // A live preview still in flight means the totals on screen may not be the
   // ones the order would be charged at — same "don't submit against a price
   // we're not sure of" guard the old cart-sync pending flag provided.
-  const readyToPay = Boolean(page && totals) && !previewQuery.isFetching;
+  const readyToPay = Boolean(page && totals) && !previewQuery.isFetching && !voucherPending;
   const infoValid = !needsInfo || allFieldsValid(selected.additional_fields, [answers], 1);
   const guestEmailValid = !page?.is_guest || isValidEmail(guestEmail);
   const anyMethod = totals
@@ -388,8 +433,22 @@ export default function InstantBuyPage() {
   // `anyMethod`, so gate on the actual selection too, not just on whether
   // *some* method is offered.
   const submitBlocked =
-    !readyToPay || !purchasable(selected) || !infoValid || !guestEmailValid || !anyMethod || !method || previewErrorKey !== null;
+    !readyToPay || !configValid || !purchasable(selected) || !infoValid || !guestEmailValid || !anyMethod || !method || previewErrorKey !== null;
   const submitDisabled = submitBlocked || placeOrderMutation.isPending;
+  function submitOrder(): void {
+    setCheckoutAttempted(true);
+    if (submitBlocked || submitLock.current || placeOrderMutation.isPending) return;
+    submitLock.current = true;
+    placeOrderMutation.mutate();
+  }
+  const checkoutHint = !configValid ? t("error.input_config_invalid")
+    : !purchasable(selected) ? t("web.checkout_product_unavailable")
+    : previewErrorKey ? t("web.checkout_price_unavailable")
+    : !readyToPay ? t("web.checkout_price_loading")
+    : !infoValid ? t("web.checkout_account_hint")
+    : !guestEmailValid ? t("web.checkout_contact_hint")
+    : !anyMethod || !method ? t("web.checkout_payment_hint") : null;
+  const purchasePrice = totals ? formatPriceFor(method === "qris" ? totals.qris_grand_total : totals.total, ctx?.currency ?? null, fx) : "";
   // Final-review fix: the sticky bar's "Price $X · Pay RpY" line for a USD
   // viewer on QRIS/PayDisini — same helper (and so the same rule and figures)
   // as the summary card; null everywhere else, which leaves the bar unchanged.
@@ -416,7 +475,7 @@ export default function InstantBuyPage() {
         </Alert>
       )}
 
-      <form onSubmit={(e) => e.preventDefault()} className="grid gap-6 items-start">
+      <form id="buy-form" noValidate onSubmit={(e) => { e.preventDefault(); submitOrder(); }} className="grid gap-6 items-start">
         <div className="space-y-6">
           {/* 1. Product header — image/title/description, ProductPage.tsx's
               own JSX pattern, folded into one card so it stacks with the rest
@@ -457,18 +516,21 @@ export default function InstantBuyPage() {
           {/* 2. Account field(s) — the selected denomination's own
               additional_fields, single-unit (no qty stepper, no per-unit
               loop, no "copy to all units": this page always buys qty 1). */}
-          {needsInfo && (
+          {!configValid && <Alert variant="banner" tone="error">{t("error.input_config_invalid")}</Alert>}
+          {needsInfo && configValid && (
             <div className="card card-pad">
               <h2 className="section-title mb-1">{t("web.checkout_info_title")}</h2>
               <p className="text-xs text-ink-soft mb-3">{t("web.checkout_info_intro")}</p>
               <div className="grid gap-3 sm:grid-cols-2">
                 {selected.additional_fields.map((field) => (
                   <DeliveryFieldInput
-                    key={field.key}
+                    key={`${selected.id}-${fieldConfigKey}-${field.key}`}
                     field={field}
                     inputId={`instant-${field.key}`}
                     value={answers[field.key] ?? ""}
                     onChange={(value) => setAnswers((prev) => ({ ...prev, [field.key]: value }))}
+                    onBlur={() => setTouched((prev) => ({ ...prev, [field.key]: true }))}
+                    showError={Boolean(touched[field.key] || checkoutAttempted)}
                   />
                 ))}
               </div>
@@ -545,8 +607,8 @@ export default function InstantBuyPage() {
           )}
         </div>
 
-        {/* 6. Order summary — voucher + live totals + the single submit
-            button (desktop inline here; mobile via the sticky bar below). */}
+        {/* 6. Discount, summary and primary submit remain in document flow.
+            Mobile also offers the same submit while the primary is offscreen. */}
         <div className="min-w-0">
           {page && totals ? (
             <OrderSummaryCard
@@ -557,24 +619,35 @@ export default function InstantBuyPage() {
               onVoucherInputChange={setVoucherInput}
               onVoucherApply={applyVoucher}
               onVoucherKeyDown={onVoucherKeyDown}
-              voucherPending={previewMutation.isPending}
-              showDesktopSubmit={isDesktop}
+              voucherPending={voucherPending || placeOrderMutation.isPending}
+              showDesktopSubmit
+              submitRef={setPrimaryElement}
+              submitId="instant-buy-submit"
+              submitPrice={purchasePrice}
+              accountSummary={{
+                plan: selected.canonical?.displayName || selected.duration_label || selected.name,
+                fields: selected.additional_fields.map((field) => ({ key: field.key, label: currentLang() === "id" ? field.label.id : field.label.en, value: (answers[field.key] ?? "").trim() })).filter((field) => field.value !== ""),
+              }}
               submitLabel={t("web.buy_now")}
               submitIcon={<Zap className="w-4 h-4" />}
               submitDisabled={submitDisabled}
               submitBlocked={submitBlocked}
-              onSubmit={() => placeOrderMutation.mutate()}
+              onSubmit={submitOrder}
               submitPending={placeOrderMutation.isPending}
             />
           ) : (
-            <div className="card card-pad space-y-3" aria-busy="true" aria-label={t("web.loading")}>
-              <Skeleton className="h-5 w-28" />
-              <Skeleton className="h-4 w-full" />
-              <Skeleton className="h-4 w-2/3" />
-              <Skeleton className="h-10 w-full" />
-            </div>
+            <>
+              <div className="card card-pad space-y-3" aria-busy={!previewErrorKey && configValid} aria-label={t("web.loading")}>
+                <Skeleton className="h-5 w-28" />
+                <Skeleton className="h-4 w-full" />
+                <Skeleton className="h-4 w-2/3" />
+              </div>
+              <Button ref={setPrimaryElement} id="instant-buy-submit" variant="primary" fullWidth className="mt-4" disabled onClick={submitOrder}>{t("web.buy_now")}</Button>
+            </>
           )}
         </div>
+        {configValid && checkoutHint && <p className="text-sm text-ink-soft" role="status">{checkoutHint}</p>}
+        {previewMutation.error && !voucherPending && previewMutation.variables?.context === previewContext && <Alert variant="banner" tone="error">{humanError(previewMutation.error)}</Alert>}
       </form>
 
       {/* Description/trust section — ProductPage.tsx's own three optional
@@ -599,26 +672,22 @@ export default function InstantBuyPage() {
         </motion.section>
       )}
 
-      {/* Reserved runway for the sticky mobile bar, ProductPage.tsx's own
-          spacer-div technique (this page has content after the form, unlike
-          CheckoutPage.tsx, so padding-on-form alone wouldn't cover it). */}
-      {!isDesktop && <div aria-hidden="true" style={{ height: "calc(4.75rem + env(safe-area-inset-bottom))" }} />}
-
       {/* Sticky mobile total + submit — the shared <StickyPurchaseBar>
           (components.md "Sticky purchase bar"), reusing the same
           placeOrderMutation and the same submitDisabled/submitBlocked gating
-          as the desktop submit button in OrderSummaryCard above: one purchase
+          as the primary submit button in OrderSummaryCard above: one purchase
           path. `submitBlocked` mutes the button ("can't proceed yet"),
           `submitDisabled` (blocked OR pending) actually disables it. */}
-      {!isDesktop && page && totals && (
+      {!isDesktop && !primaryVisible && page && totals && (
         <StickyPurchaseBar
+          reserveFooterSpace
           ariaLabel={t("web.purchase_bar")}
           priceLabel={t("web.order_total")}
-          price={formatPriceFor(method === "qris" ? totals.qris_grand_total : totals.total, ctx?.currency ?? null, fx)}
+          price={purchasePrice}
           secondaryChip={barPriceAndPay && <span className="text-xs text-ink-soft">{barPriceAndPay}</span>}
           primaryAction={{
-            label: t("web.buy_now"),
-            onClick: () => placeOrderMutation.mutate(),
+            label: placeOrderMutation.isPending ? t("web.checkout_processing") : t("web.buy_now"),
+            onClick: submitOrder,
             pending: placeOrderMutation.isPending,
             disabled: submitDisabled,
             blocked: submitBlocked,

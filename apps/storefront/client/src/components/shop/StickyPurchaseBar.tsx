@@ -28,7 +28,7 @@
  *
  * Business-agnostic: all copy, prices, handlers and pending flags are props.
  */
-import type { ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import Spinner from "./Spinner";
 import Button, { type ButtonVariant } from "../ui/Button";
@@ -71,6 +71,8 @@ export interface StickyPurchaseBarProps {
   /** When set, the strip is exposed as a labelled `region` landmark. */
   ariaLabel?: string;
   className?: string;
+  /** Instant checkout reserves the measured bar height after the site footer. */
+  reserveFooterSpace?: boolean;
 }
 
 function ActionButton({ action }: { action: StickyPurchaseAction }) {
@@ -98,9 +100,25 @@ export default function StickyPurchaseBar({
   secondaryAction,
   ariaLabel,
   className,
+  reserveFooterSpace = false,
 }: StickyPurchaseBarProps) {
+  const barRef = useRef<HTMLDivElement>(null);
+  const [height, setHeight] = useState(0);
+  const [clearanceHost, setClearanceHost] = useState<HTMLElement | null>(null);
+  useEffect(() => {
+    if (!reserveFooterSpace || !barRef.current) return;
+    setClearanceHost(document.getElementById("purchase-bar-clearance") ?? document.body);
+    const element = barRef.current;
+    const measure = () => setHeight(element.getBoundingClientRect().height);
+    measure();
+    const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null;
+    observer?.observe(element);
+    window.addEventListener("resize", measure);
+    return () => { observer?.disconnect(); window.removeEventListener("resize", measure); };
+  }, [reserveFooterSpace]);
   const bar = (
     <div
+      ref={barRef}
       role={ariaLabel ? "region" : undefined}
       aria-label={ariaLabel}
       className={cn(
@@ -136,5 +154,8 @@ export default function StickyPurchaseBar({
   );
 
   // SSR / non-DOM guard — render inline if there is no document to portal into.
-  return typeof document === "undefined" ? bar : createPortal(bar, document.body);
+  return typeof document === "undefined" ? bar : <>
+    {createPortal(bar, document.body)}
+    {reserveFooterSpace && clearanceHost && createPortal(<div data-testid="purchase-bar-spacer" aria-hidden="true" style={{ height }} />, clearanceHost)}
+  </>;
 }

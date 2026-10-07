@@ -8,11 +8,12 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
-import { attachPaymentProof, createOrderDirect, settlePaidOrder } from "./orders";
+import { attachPaymentProof, createOrderDirect, creditOrderToBalance, fulfillManualOrder, settlePaidOrder } from "./orders";
 import { recordBybitBscPaymentDetected } from "./bybit_bsc_deposit";
 import { createCategory, createCatalogProduct, createDenomination } from "./catalog";
 import { createWalletTopupOrder } from "./wallet_topup";
-import { ensureFulfillmentMessage } from "./fulfillmentMessages";
+import { ensureFulfillmentMessage, wakeFulfillmentMessage } from "./fulfillmentMessages";
+import { transitionOrderStatus } from "./orderStatus";
 import { DeliveryType, OrderStatus, PaymentMethod } from "@app/core/enums";
 
 let db: TestDb;
@@ -118,5 +119,69 @@ describe("progress message creation points", () => {
     const saved = await rows(order.id);
     expect(saved).toHaveLength(1);
     expect(saved[0]!.messageId).toBe(501);
+  });
+});
+
+describe("a manual order's waiting message is woken by the final transition", () => {
+  const FAR = new Date("2099-01-01T00:00:00.000Z");
+  async function waitingManualOrder() {
+    const order = await pendingOrder((await manualDenom()).id);
+    await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.PENDING_VERIFICATION } });
+    expect((await settlePaidOrder(prisma, order.id, { adminId: 0 })).kind).toBe("processing");
+    await prisma.fulfillmentMessage.update({ where: { orderId: order.id }, data: { messageId: 900, state: "WAITING", nextUpdateAt: FAR } });
+    return order;
+  }
+  async function expectWoken(orderId: number, before: Date) {
+    const row = await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId } });
+    expect(row.state).toBe("ACTIVE");
+    expect(row.nextUpdateAt.getTime()).toBeLessThanOrEqual(Date.now());
+    expect(row.nextUpdateAt.getTime()).toBeGreaterThanOrEqual(before.getTime() - 1000);
+    expect(row.messageId).toBe(900);
+  }
+
+  it("when an admin fulfils it", async () => {
+    const order = await waitingManualOrder(); const before = new Date();
+    await prisma.$transaction(tx => fulfillManualOrder(tx, order.id, { adminId: sample.user.id, content: "code-123" }));
+    await expectWoken(order.id, before);
+  });
+
+  it("when an admin credits it to the buyer's balance (the order is cancelled)", async () => {
+    const order = await waitingManualOrder(); const before = new Date();
+    await creditOrderToBalance(prisma, { orderId: order.id, adminId: sample.user.id });
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.CANCELLED);
+    await expectWoken(order.id, before);
+  });
+
+  it.each([OrderStatus.REJECTED, OrderStatus.CANCELLED, OrderStatus.FAILED])("on any status transition out of PROCESSING to %s", async (to) => {
+    const order = await waitingManualOrder(); const before = new Date();
+    await transitionOrderStatus(prisma, { orderId: order.id, from: OrderStatus.PROCESSING, to });
+    await expectWoken(order.id, before);
+  });
+
+  it("but a non-final transition leaves it waiting", async () => {
+    const order = await pendingOrder(sample.product.id);
+    await prisma.fulfillmentMessage.create({ data: { orderId: order.id, chatId: 42n, messageId: 1, state: "WAITING", nextUpdateAt: FAR } });
+    await transitionOrderStatus(prisma, { orderId: order.id, from: OrderStatus.PENDING_PAYMENT, to: OrderStatus.PENDING_VERIFICATION });
+    expect((await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } })).state).toBe("WAITING");
+  });
+});
+
+describe("wakeFulfillmentMessage", () => {
+  const FAR = new Date("2099-01-01T00:00:00.000Z");
+  const now = new Date("2026-10-07T00:00:00.000Z");
+  it.each([
+    ["WAITING", "ACTIVE", now],
+    ["REVIEW", "REVIEW", now],
+    ["EDITING", "EDITING", now],
+    ["ACTIVE", "ACTIVE", FAR], // e.g. a flood-control backoff
+    ["FINISHED", "FINISHED", FAR],
+    ["STOPPED", "STOPPED", FAR],
+  ] as const)("moves a %s row to %s", async (state, expected, due) => {
+    const order = await pendingOrder(sample.product.id);
+    await prisma.fulfillmentMessage.create({ data: { orderId: order.id, chatId: 42n, messageId: 1, state, nextUpdateAt: FAR } });
+    await wakeFulfillmentMessage(prisma, order.id, now);
+    const row = await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } });
+    expect(row.state).toBe(expected);
+    expect(row.nextUpdateAt.getTime()).toBe(due.getTime());
   });
 });

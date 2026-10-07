@@ -665,6 +665,9 @@ describe("OrderDetailPage — status card, layout and refresh demotion", () => {
     expect(screen.queryByText(/Live updates disconnected/)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
     const source = MockEventSource.instances[0]!;
+    // The browser gave up reconnecting (readyState CLOSED); a transient retry
+    // is not reported (useOrderStatusStream.test.ts).
+    Object.assign(source, { readyState: 2 });
     act(() => (source as unknown as { onerror: () => void }).onerror());
     expect(await screen.findByText(/Live updates disconnected/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));

@@ -11,6 +11,10 @@ interface OrderSnapshot {
 /** Fulfillment statuses after which the order cannot change any more — the
  * same set the server's stream closes on (apiOrderDigiflazzStream.ts). */
 const FINAL_FULFILLMENT_STATUSES: ReadonlySet<string> = new Set(["SUCCESS", "CANCELLED", "FAILED"]);
+/** EventSource.CLOSED: the browser stopped retrying. */
+const CLOSED = 2;
+/** How long an automatic reconnect may keep failing before the page says so. */
+const DISCONNECT_GRACE_MS = 5000;
 
 /** SSE invalidates full detail so status, answers, credentials and flags agree. */
 export function useOrderStatusStream(code: string, live: boolean): { disconnected: boolean; retry: () => void } {
@@ -25,15 +29,30 @@ export function useOrderStatusStream(code: string, live: boolean): { disconnecte
     }
     const queryKey = ["account-order", code];
     const source = new EventSource(`/api/v1/account/orders/${code}/digiflazz/stream`, { withCredentials: true });
-    // EventSource reconnects by itself; onerror only means "currently not
-    // connected", so the next open/message clears the flag again.
+    // EventSource reconnects by itself; onerror while it is CONNECTING only
+    // means a retry is under way. Report a disconnect when the browser gave up
+    // (CLOSED) or the retries keep failing past a short grace period; the next
+    // open/message clears it again.
     let finished = false;
-    source.onopen = () => setDisconnected(false);
+    let grace: ReturnType<typeof setTimeout> | undefined;
+    const connected = () => {
+      clearTimeout(grace);
+      grace = undefined;
+      setDisconnected(false);
+    };
+    source.onopen = connected;
     source.onerror = () => {
-      if (!finished) setDisconnected(true);
+      if (finished) return;
+      if (source.readyState === CLOSED) {
+        clearTimeout(grace);
+        grace = undefined;
+        setDisconnected(true);
+      } else if (grace === undefined) {
+        grace = setTimeout(() => setDisconnected(true), DISCONNECT_GRACE_MS);
+      }
     };
     source.onmessage = (event) => {
-      setDisconnected(false);
+      connected();
       let snapshot: OrderSnapshot;
       try {
         snapshot = JSON.parse(event.data) as OrderSnapshot;
@@ -52,10 +71,13 @@ export function useOrderStatusStream(code: string, live: boolean): { disconnecte
       if (snapshot.fulfillment && FINAL_FULFILLMENT_STATUSES.has(snapshot.fulfillment.status)) {
         finished = true;
         source.close();
-        setDisconnected(false);
+        connected();
       }
     };
-    return () => source.close();
+    return () => {
+      clearTimeout(grace);
+      source.close();
+    };
   }, [client, code, live, attempt]);
   return { disconnected, retry };
 }

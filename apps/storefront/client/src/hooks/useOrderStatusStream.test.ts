@@ -11,6 +11,7 @@ class MockEventSource {
   onerror: (() => void) | null = null;
   onopen: (() => void) | null = null;
   closed = false;
+  readyState = 1;
   url: string;
   constructor(url: string, _opts?: { withCredentials?: boolean }) {
     this.url = url;
@@ -69,7 +70,48 @@ describe("useOrderStatusStream", () => {
     const source = MockEventSource.instances[0]!;
     act(() => source.emit({ orderStatus: "PROCESSING", digiflazzStatus: "pending", fulfillment: fulfillment(status) }));
     expect(source.closed).toBe(false);
+    source.readyState = 2; // the browser gave up: CLOSED
     act(() => source.onerror?.());
     expect(result.current.disconnected).toBe(true);
+  });
+
+  describe("automatic reconnects", () => {
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+
+    it("does not report a disconnect while the browser is reconnecting by itself", () => {
+      const { result } = renderHook(() => useOrderStatusStream("ORD1", true), { wrapper: wrapper(new QueryClient()) });
+      const source = MockEventSource.instances[0]!;
+      source.readyState = 0; // CONNECTING: EventSource is retrying
+      act(() => source.onerror?.());
+      expect(result.current.disconnected).toBe(false);
+      act(() => vi.advanceTimersByTime(3000));
+      expect(result.current.disconnected).toBe(false);
+      source.readyState = 1;
+      act(() => source.onopen?.());
+      act(() => vi.advanceTimersByTime(10_000));
+      expect(result.current.disconnected).toBe(false);
+    });
+
+    it("reports a disconnect after five seconds of continuous error", () => {
+      const { result } = renderHook(() => useOrderStatusStream("ORD1", true), { wrapper: wrapper(new QueryClient()) });
+      const source = MockEventSource.instances[0]!;
+      source.readyState = 0;
+      act(() => source.onerror?.());
+      act(() => vi.advanceTimersByTime(2000));
+      act(() => source.onerror?.()); // a further failed retry does not restart the grace period
+      act(() => vi.advanceTimersByTime(2999));
+      expect(result.current.disconnected).toBe(false);
+      act(() => vi.advanceTimersByTime(1));
+      expect(result.current.disconnected).toBe(true);
+    });
+
+    it("reports a disconnect at once when the EventSource is closed for good", () => {
+      const { result } = renderHook(() => useOrderStatusStream("ORD1", true), { wrapper: wrapper(new QueryClient()) });
+      const source = MockEventSource.instances[0]!;
+      source.readyState = 2;
+      act(() => source.onerror?.());
+      expect(result.current.disconnected).toBe(true);
+    });
   });
 });

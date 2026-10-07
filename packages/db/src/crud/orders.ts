@@ -85,7 +85,7 @@ import {
   enqueueBuyerOrderReadyEmail,
 } from "./notifications";
 import { logAdminAction } from "./audit";
-import { ensureFulfillmentMessage } from "./fulfillmentMessages";
+import { ensureFulfillmentMessage, wakeFulfillmentMessage } from "./fulfillmentMessages";
 import { transitionOrderStatus, tryTransitionOrderStatus } from "./orderStatus";
 
 /**
@@ -2975,6 +2975,9 @@ export async function fulfillManualOrder(
   await db.orderStatusHistory.create({
     data: { orderId, status: OrderStatus.DELIVERED, meta: `manual_fulfill by admin_id=${args.adminId}` },
   });
+  // Same transaction as the claim: the buyer's waiting progress message is not
+  // polled, so the final edit is triggered here.
+  await wakeFulfillmentMessage(db, orderId, now);
   // Per-item shadow of the claim above (Trustance Phase 1, Task 3): the admin
   // hand-delivered the order, so every line moves QUEUED -> DELIVERED. Behind
   // the atomic claim, so a lost double-tap race (claim.count !== 1 throws

@@ -22,3 +22,16 @@ describe("manual-only copy keys", () => {
     expect(p.titleKey).toBe("web.order_processing_title");
   });
 });
+
+describe("manual orders never spin", () => {
+  it.each(["NOT_STARTED", "QUEUED", "SUBMITTING", "PROCESSING"] as const)("a paid MANUAL order %s is a static wait, not an active spinner", (status) => {
+    const p = fulfillmentPresentation({ mode: "MANUAL", provider: "MANUAL", status, payment_status: "PAID", can_edit_customer_data: true });
+    expect(p.active).toBe(false);
+    expect(p.waiting).toBe(true);
+  });
+  it("an automatic order in flight still spins", () => {
+    const p = fulfillmentPresentation({ mode: "AUTO", provider: "DIGIFLAZZ", status: "PROCESSING", payment_status: "PAID", can_edit_customer_data: false });
+    expect(p.active).toBe(true);
+    expect(p.waiting).toBe(false);
+  });
+});

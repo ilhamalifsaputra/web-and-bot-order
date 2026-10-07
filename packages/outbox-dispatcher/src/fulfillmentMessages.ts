@@ -1,7 +1,7 @@
 import type { Bot } from "grammy";
 import type { Prisma } from "@prisma/client";
-import { prisma, enqueueDigiflazzReviewAlert, type PrismaClient } from "@app/db";
-import { customerProgressPhase, type CustomerProgress } from "@app/core/orderFulfillment";
+import { prisma, enqueueDigiflazzReviewAlert, wakeFulfillmentMessage, type PrismaClient } from "@app/db";
+import { customerProgressPhase, fulfillmentProviderFor, type CustomerProgress, type CustomerProgressPhase } from "@app/core/orderFulfillment";
 import { t } from "@app/core/i18n";
 import { langCode } from "@app/core/enums";
 import { logger } from "@app/core/logger";
@@ -13,16 +13,20 @@ type MessageRow = Prisma.FulfillmentMessageGetPayload<{ include: typeof include 
 const INTERVAL_MS = 2000;
 const LEASE_MS = 60_000;
 const REVIEW_INTERVAL_MS = 30_000;
-/** A manual order's static "waiting to be prepared" line is only re-read this
- * often, so the message can still flip to the final outcome without spinning. */
-const WAITING_INTERVAL_MS = 60_000;
+/** A sent message whose order has nothing to show (payment fell back to
+ * awaiting) keeps its last text and is only re-read this often. */
+const IDLE_INTERVAL_MS = 30_000;
 const FRAMES = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"];
-/** Row states the worker polls; WAITING is a static manual-order wait. */
-const POLLED_STATES = ["READY", "ACTIVE", "REVIEW", "WAITING"];
+/** Row states the worker polls. WAITING (a manual order's static wait) is not
+ * one of them: `wakeFulfillmentMessage` moves it on when the order ends. */
+const POLLED_STATES = ["READY", "ACTIVE", "REVIEW"];
+/** Order statuses in which a manual order may legitimately still be waiting. */
+const STILL_WAITING_STATUSES: ReadonlySet<string> = new Set(["PROCESSING", "PAID"]);
 const TERMINAL_PHASES: ReadonlySet<string> = new Set(["SUCCESS", "FAILED", "CANCELLED"]);
 
-/** Title + body locale keys per phase; the order status decides, never a timer. */
-function progressKeys({ phase, topUp }: CustomerProgress): { title: string; body: string } {
+/** Title + body locale keys per phase; the order status decides, never a timer.
+ * NONE has no text: the caller keeps whatever the message already says. */
+function progressKeys({ phase, topUp }: CustomerProgress & { phase: Exclude<CustomerProgressPhase, "NONE"> }): { title: string; body: string } {
   switch (phase) {
     case "PAYMENT_DETECTED": return { title: "title_detected", body: "detected" };
     case "AUTO_QUEUED": return { title: "title_confirmed", body: "auto_queued" };
@@ -34,7 +38,8 @@ function progressKeys({ phase, topUp }: CustomerProgress): { title: string; body
     case "SUCCESS": return topUp ? { title: "title_topup_success", body: "topup_success" } : { title: "title_success", body: "success" };
     case "FAILED": return { title: topUp ? "title_topup_failed" : "title_failed", body: "failed" };
     case "REVIEW": return { title: "title_review", body: "review" };
-    default: return { title: "title_cancelled", body: "cancelled" };
+    case "CREDITED": return { title: "title_credited", body: "credited" };
+    case "CANCELLED": return { title: "title_cancelled", body: "cancelled" };
   }
 }
 
@@ -78,36 +83,69 @@ export class FulfillmentMessageWorker {
     }
   }
 
+  /** Stop a message that can no longer be sent or edited safely. Only a
+   * Digiflazz order pages the admins (its review alert); for manual and stock
+   * orders the admin flow and the delivery DM are unaffected, so a blocked or
+   * deleted chat is only logged. */
   private async stopAndAlert(row: MessageRow, state: "UNCERTAIN" | "STOPPED", reason: string): Promise<void> {
+    const provider = fulfillmentProviderFor(row.order);
     await this.db.$transaction(async tx => {
       const updated = await tx.fulfillmentMessage.updateMany({
         where: { orderId: row.orderId, state: row.state, claimedAt: row.claimedAt },
         data: { state, claimedAt: null, finishedAt: this.now() },
       });
-      if (updated.count) await enqueueDigiflazzReviewAlert(tx, {
+      if (updated.count && provider === "DIGIFLAZZ") await enqueueDigiflazzReviewAlert(tx, {
         orderId: row.orderId, orderCode: row.order.orderCode, reason, incident: "telegram_message",
       });
     });
-    logger.warn({ orderId: row.orderId, state }, reason);
+    logger.warn(
+      { orderId: row.orderId, state, provider },
+      provider === "DIGIFLAZZ"
+        ? `${reason} Order ${row.order.orderCode} was flagged for admin review.`
+        : `${reason} Order ${row.order.orderCode} is a ${provider.toLowerCase()} order, so no admin alert was raised; its fulfilment continues without the progress message.`,
+    );
+  }
+
+  /** WAITING is not polled, so a final transition that committed after this
+   * worker read the order (its wake found the row still claimed) must not be
+   * lost: re-read the order once the WAITING save is durable. */
+  private async recheckWaiting(orderId: number): Promise<void> {
+    const order = await this.db.order.findUnique({ where: { id: orderId }, select: { status: true } });
+    if (order && !STILL_WAITING_STATUSES.has(order.status.toUpperCase())) {
+      await wakeFulfillmentMessage(this.db, orderId, this.now());
+    }
   }
 
   private async deliver(row: MessageRow): Promise<boolean> {
     // Re-read after acquiring the claim so a final callback wins over a stale frame.
     const order = await this.db.order.findUniqueOrThrow({ where: { id: row.orderId }, include: include.order.include });
-    const progress = customerProgressPhase(order, { messageSent: row.messageId !== null });
+    const credited = order.status.toUpperCase() === "CANCELLED"
+      && !!(await this.db.walletTransaction.findFirst({ where: { orderId: order.id, reason: "unfulfilled_credit" }, select: { id: true } }));
+    const progress = customerProgressPhase(order, { messageSent: row.messageId !== null, credited });
     const where = { orderId: row.orderId, state: row.state, claimedAt: row.claimedAt };
-    if (row.messageId === null && (progress.phase === "NONE" || progress.phase === "CANCELLED")) {
-      // Nothing to tell yet (payment never seen), or the order ended before
-      // the buyer heard anything: release the claim without sending.
-      const finished = progress.phase === "CANCELLED";
+    const provider = fulfillmentProviderFor(order);
+    if (row.messageId === null && (progress.phase === "NONE" || progress.phase === "CANCELLED"
+      || (progress.phase === "SUCCESS" && provider === "STOCK"))) {
+      // Nothing to tell yet (payment never seen), the order ended before the
+      // buyer heard anything, or a stock order was delivered instantly (its
+      // credentials DM is the message): release the claim without sending.
+      const finished = progress.phase !== "NONE";
       await this.db.fulfillmentMessage.updateMany({ where, data: {
         state: finished ? "FINISHED" : "READY", claimedAt: null, finishedAt: finished ? this.now() : null,
         nextUpdateAt: new Date(this.now().getTime() + INTERVAL_MS),
       } });
       return false;
     }
+    if (progress.phase === "NONE") {
+      // A sent message whose order fell back to awaiting payment (a detected
+      // deposit was withdrawn): keep the last text rather than guess.
+      await this.db.fulfillmentMessage.updateMany({ where, data: {
+        state: "ACTIVE", claimedAt: null, nextUpdateAt: new Date(this.now().getTime() + IDLE_INTERVAL_MS),
+      } });
+      return false;
+    }
     const lang = langCode(order.user.language);
-    const keys = progressKeys(progress);
+    const keys = progressKeys({ ...progress, phase: progress.phase });
     const frame = FRAMES[Math.floor(this.now().getTime() / INTERVAL_MS) % FRAMES.length];
     const grouped = new Map<number, { name: string; quantity: number }>();
     for (const item of order.items) {
@@ -125,7 +163,7 @@ export class FulfillmentMessageWorker {
     const text = `${title}\n${orderLine}${summary}\n\n${progress.spinner ? `${frame} ${body}` : body}`;
     const terminal = TERMINAL_PHASES.has(progress.phase);
     const state = progress.phase === "REVIEW" ? "REVIEW" : progress.phase === "MANUAL_WAITING" ? "WAITING" : terminal ? "FINISHED" : "ACTIVE";
-    const interval = state === "REVIEW" ? REVIEW_INTERVAL_MS : state === "WAITING" ? WAITING_INTERVAL_MS : INTERVAL_MS;
+    const interval = state === "REVIEW" ? REVIEW_INTERVAL_MS : INTERVAL_MS;
     const data = { state, claimedAt: null, lastText: text, finishedAt: terminal ? this.now() : null,
       nextUpdateAt: new Date(this.now().getTime() + interval) };
     const controller = new AbortController();
@@ -144,6 +182,7 @@ export class FulfillmentMessageWorker {
         if (row.lastText !== text) await this.api.editMessageText(String(row.chatId), row.messageId, text, { parse_mode: "HTML" }, apiSignal);
         await this.db.fulfillmentMessage.updateMany({ where, data });
       }
+      if (state === "WAITING") await this.recheckWaiting(row.orderId);
       return false;
     } catch (error) {
       const e = error as { error_code?: number; description?: string; parameters?: { retry_after?: number } };
@@ -156,6 +195,7 @@ export class FulfillmentMessageWorker {
       }
       if (row.messageId !== null && e.error_code === 400 && e.description?.includes("message is not modified")) {
         await this.db.fulfillmentMessage.updateMany({ where, data });
+        if (state === "WAITING") await this.recheckWaiting(row.orderId);
       } else if (e.error_code === 403 || e.error_code === 400) {
         await this.stopAndAlert(row, "STOPPED", "Telegram status message is unavailable; automatic replacement is disabled.");
       } else if (row.messageId === null) {

@@ -55,6 +55,14 @@ describe("customerProgressPhase (Telegram progress message)", () => {
   it("reports failed and cancelled outcomes without a spinner", () => {
     expect(customerProgressPhase({ ...manual, status: "REJECTED" })).toMatchObject({ phase: "FAILED", spinner: false });
     expect(customerProgressPhase({ ...manual, status: "EXPIRED" })).toMatchObject({ phase: "CANCELLED", spinner: false });
-    expect(customerProgressPhase({ ...manual, status: "CREDITED_TO_BALANCE" })).toMatchObject({ phase: "CANCELLED", spinner: false });
+  });
+  it("says a credited order went to the wallet balance, not that it was simply cancelled", () => {
+    expect(customerProgressPhase({ ...manual, status: "CREDITED_TO_BALANCE" })).toMatchObject({ phase: "CREDITED", spinner: false });
+    // creditOrderToBalance ends the order CANCELLED; the caller knows a credit row exists.
+    expect(customerProgressPhase({ ...manual, status: "CANCELLED" }, { credited: true })).toMatchObject({ phase: "CREDITED", spinner: false });
+    expect(customerProgressPhase({ ...manual, status: "CANCELLED" })).toMatchObject({ phase: "CANCELLED", spinner: false });
+  });
+  it("never shows an underpaid order as a payment still being verified", () => {
+    expect(customerProgressPhase({ ...order, status: "UNDERPAID", paidAt: null })).toEqual({ phase: "REVIEW", spinner: false, topUp: true });
   });
 });

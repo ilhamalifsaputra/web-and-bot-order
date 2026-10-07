@@ -52,6 +52,12 @@ describe("OrderProgress", () => {
     expect(list().querySelector('[aria-current="step"]')).toHaveTextContent("Payment");
   });
 
+  it("shows a MANUAL order waiting on a static clock with Processing still current, never a spinner", () => {
+    const { container } = render(<OrderProgress fulfillment={f({ mode: "MANUAL", provider: "MANUAL", status: "QUEUED" })} />);
+    expect(container.querySelector(".animate-spin")).not.toBeInTheDocument();
+    expect(list().querySelector('[aria-current="step"]')).toHaveTextContent("Processing");
+  });
+
   it("uses neutral manual waiting copy without 'by hand' for a MANUAL order", () => {
     render(<OrderProgress fulfillment={f({ mode: "MANUAL", provider: "MANUAL", status: "QUEUED" })} />);
     expect(screen.getByRole("heading", { name: "Waiting to be prepared" })).toBeInTheDocument();

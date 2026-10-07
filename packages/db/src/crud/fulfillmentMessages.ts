@@ -20,3 +20,28 @@ export async function ensureFulfillmentMessage(db: Db, orderId: number): Promise
   await db.fulfillmentMessage.upsert({ where: { orderId }, create: { orderId, chatId }, update: {} });
   return true;
 }
+
+/**
+ * Bring an order's progress message forward when the order reaches a final
+ * state, so the buyer sees the outcome promptly. Call it in the same
+ * transaction as the status write.
+ *
+ * A manual order's static WAITING line is never polled (it would wait for
+ * hours), so this is the only thing that moves it on: it becomes due as an
+ * ACTIVE row and the worker edits it to the final text. REVIEW rows are
+ * brought forward too. A row the worker holds right now (EDITING) only gets
+ * its due time touched: that write takes the row lock, so the worker's own
+ * save waits for this transaction and then re-reads the order (see the
+ * worker's WAITING re-check). Rows that never got a message, finished rows
+ * and flood-control backoffs are left alone.
+ */
+export async function wakeFulfillmentMessage(db: Db, orderId: number, now: Date = new Date()): Promise<void> {
+  await db.fulfillmentMessage.updateMany({
+    where: { orderId, state: "WAITING" },
+    data: { state: "ACTIVE", nextUpdateAt: now },
+  });
+  await db.fulfillmentMessage.updateMany({
+    where: { orderId, state: { in: ["REVIEW", "EDITING"] } },
+    data: { nextUpdateAt: now },
+  });
+}

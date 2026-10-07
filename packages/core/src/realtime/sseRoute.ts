@@ -38,6 +38,11 @@ export interface StreamSseOptions<T> {
    * connection never goes silent long enough for an idle-timing proxy to
    * drop it). Default 12000ms. */
   pollIntervalMs?: number;
+  /** Optional: true when `value` is final (nothing about it can change any
+   * more). After pushing such a value the server ends the response, so an
+   * idle connection and its poll timer do not linger. A throwing predicate is
+   * logged and treated as "not final". */
+  isTerminal?: (value: T) => boolean;
 }
 
 /**
@@ -131,6 +136,17 @@ export function streamSse<T>(
       lastPushed = value;
     };
 
+    /** True when the caller says `value` is final — see opts.isTerminal. */
+    const isFinal = (value: T): boolean => {
+      if (!opts.isTerminal) return false;
+      try {
+        return opts.isTerminal(value);
+      } catch (err) {
+        logger.warn({ err }, "SSE isTerminal() threw while checking a pushed value; keeping the connection open");
+        return false;
+      }
+    };
+
     const writeKeepAlive = () => {
       if (connectionGone()) return;
       reply.raw.write(": keep-alive\n\n");
@@ -201,6 +217,7 @@ export function streamSse<T>(
       }
       if (isChanged) {
         writeData(next);
+        if (!closed && isFinal(next)) cleanup();
       } else {
         writeKeepAlive();
       }
@@ -233,6 +250,12 @@ export function streamSse<T>(
       // below would register a listener and a timer against an already-torn
       // -down connection that nothing will ever clear.
       if (closed) return;
+
+      // Already final at connect time: one frame is all there is to say.
+      if (isFinal(initialValue)) {
+        cleanup();
+        return;
+      }
 
       try {
         unsubscribe = opts.subscribe(() => {

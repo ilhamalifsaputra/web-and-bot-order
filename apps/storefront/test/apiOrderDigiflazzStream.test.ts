@@ -205,6 +205,71 @@ describe("GET /api/v1/account/orders/:code/digiflazz/stream", () => {
     }
   });
 
+  // Instant dispatch Task 4, item 3: once the order is final there is nothing
+  // left to stream, so the server ends the response after the terminal frame
+  // instead of holding an idle connection (and its 5-second poll) open.
+  describe("closes the stream after a terminal snapshot", () => {
+    /** Collects every chunk until the server ends the response; null if it is
+     * still open after `ms`. */
+    function readUntilEnd(stream: NodeJS.ReadableStream, ms = 3_000): Promise<string[] | null> {
+      return new Promise((resolve) => {
+        const chunks: string[] = [];
+        const timer = setTimeout(() => resolve(null), ms);
+        stream.on("data", (chunk: Buffer) => chunks.push(chunk.toString("utf8")));
+        stream.on("end", () => {
+          clearTimeout(timer);
+          resolve(chunks);
+        });
+      });
+    }
+
+    it.each([
+      [OrderStatus.DELIVERED, "SUCCESS"],
+      [OrderStatus.CANCELLED, "CANCELLED"],
+      [OrderStatus.REFUNDED, "CANCELLED"],
+      [OrderStatus.FAILED, "FAILED"],
+    ])("an order that is already %s gets one frame and the response ends", async (status, fulfillmentStatus) => {
+      const { userId, cookie } = await makeCustomer();
+      const order = await makeProductOrder(userId, freshOrderCode(`ORD-END-${status}`), { status });
+      const res = await injectStream(`/api/v1/account/orders/${order.orderCode}/digiflazz/stream`, cookie);
+      const chunks = await readUntilEnd(res.stream());
+      expect(chunks).not.toBeNull();
+      const frames = chunks!.join("").split("\n\n").filter((f) => f.startsWith("data: "));
+      expect(frames).toHaveLength(1);
+      expect(parseSseData(frames[0]!)).toMatchObject({ orderStatus: status, fulfillment: { status: fulfillmentStatus } });
+    });
+
+    it("a live order that an admin cancels gets the CANCELLED frame, then the response ends", async () => {
+      const { userId, cookie } = await makeCustomer();
+      const order = await makeProductOrder(userId, freshOrderCode("ORD-END-LIVE"), {
+        digiflazzStatus: "pending_at_supplier",
+        digiflazzDispatchedAt: new Date(),
+        digiflazzAttempts: 1,
+      });
+      const res = await injectStream(`/api/v1/account/orders/${order.orderCode}/digiflazz/stream`, cookie);
+      const stream = res.stream();
+      expect(parseSseData(await readOneChunk(stream))).toMatchObject({ fulfillment: { status: "PROCESSING" } });
+      const ended = readUntilEnd(stream);
+      await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.CANCELLED } });
+      emitDigiflazzOrderStatusChanged(order.id);
+      const chunks = await ended;
+      expect(chunks).not.toBeNull();
+      expect(parseSseData(chunks!.join(""))).toMatchObject({ orderStatus: OrderStatus.CANCELLED, fulfillment: { status: "CANCELLED" } });
+    });
+
+    it("keeps streaming an order that needs review (an admin can still finish it)", async () => {
+      const { userId, cookie } = await makeCustomer();
+      const order = await makeProductOrder(userId, freshOrderCode("ORD-OPEN-REVIEW"), { digiflazzStatus: "failed" });
+      const res = await injectStream(`/api/v1/account/orders/${order.orderCode}/digiflazz/stream`, cookie);
+      try {
+        const chunks = await readUntilEnd(res.stream(), 500);
+        expect(chunks).toBeNull();
+      } finally {
+        await closeSseConnection(res);
+      }
+    });
+  });
+
   it("refreshes fulfillment within five seconds when payment changes without an in-process event", async () => {
     const { userId, cookie } = await makeCustomer();
     const order = await makeProductOrder(userId, freshOrderCode("ORD-POLL"), { status: OrderStatus.PENDING_PAYMENT });

@@ -136,6 +136,9 @@ export default function ProductPage() {
   const { data, error } = useQuery({
     queryKey: ["product", slug, ctx?.currency ?? null, ctx?.lang, ctx?.pricing_context],
     queryFn: () => apiGet<ProductPageData>(`/api/v1/pages/product/${slug}`),
+    // Keep the instant checkout mounted while preferences reprice this product.
+    // A different product must still start with its own loading state.
+    placeholderData: (previous, query) => query?.queryKey[1] === slug ? previous : undefined,
     retry: false,
   });
 

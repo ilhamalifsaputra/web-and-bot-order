@@ -48,7 +48,7 @@
  */
 import { useEffect, useState, type KeyboardEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, ShoppingCart } from "lucide-react";
 import { apiGet, apiPost } from "../api/client";
 import { canonicalPurchaseName } from "../api/canonical";
@@ -253,6 +253,9 @@ export default function CheckoutPage() {
   const { data, error } = useQuery({
     queryKey: ["checkout", ctx?.currency ?? null, ctx?.lang, ctx?.pricing_context],
     queryFn: () => apiGet<CheckoutData>("/api/v1/checkout"),
+    // Preserve the field schema during a preference refetch so the info step
+    // only resets when the returned cart selection/schema actually changes.
+    placeholderData: keepPreviousData,
     retry: false,
   });
 

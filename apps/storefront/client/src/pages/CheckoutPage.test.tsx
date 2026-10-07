@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, afterEach, beforeEach, vi, type Mock } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import CheckoutPage from "./CheckoutPage";
@@ -75,7 +75,7 @@ function renderCheckout(respond: (path: string) => unknown, ctx: ShopContext = c
     return respond(path);
   });
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  const result = render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={["/checkout"]}>
         <Routes>
@@ -87,6 +87,7 @@ function renderCheckout(respond: (path: string) => unknown, ctx: ShopContext = c
       </MemoryRouter>
     </QueryClientProvider>,
   );
+  return { ...result, queryClient };
 }
 
 describe("CheckoutPage", () => {
@@ -393,6 +394,32 @@ describe("CheckoutPage", () => {
       expect(screen.getByText("Unit 2 of 2")).toBeInTheDocument();
       expect(screen.getAllByLabelText("Game ID")).toHaveLength(2);
       expect(screen.getAllByLabelText("Email")).toHaveLength(2);
+    });
+
+    it("preserves every unit's answers while currency data is loading and after it resolves", async () => {
+      const { queryClient } = renderCheckout(() => infoCheckoutData);
+      await screen.findByText("Order details");
+      for (const [unit, input] of screen.getAllByLabelText("Game ID").entries()) {
+        fireEvent.change(input, { target: { value: `unit${unit + 1}game` } });
+      }
+      for (const [unit, input] of screen.getAllByLabelText("Email").entries()) {
+        fireEvent.change(input, { target: { value: `unit${unit + 1}@mail.com` } });
+      }
+      let release!: (data: CheckoutData) => void;
+      (apiGet as Mock).mockImplementation(() => new Promise<CheckoutData>((resolve) => { release = resolve; }));
+      await act(async () => { queryClient.setQueryData(["context"], { ...context, currency: "USD" }); });
+      await waitFor(() => expect(release).toBeDefined());
+      expect(screen.getAllByLabelText("Game ID")[0]).toHaveValue("unit1game");
+      expect(screen.getAllByLabelText("Game ID")[1]).toHaveValue("unit2game");
+      await act(async () => { release({ ...infoCheckoutData, subtotal: "160000", total: "160000" }); });
+      await waitFor(() => expect(queryClient.getQueryState(["checkout", "USD", "en", undefined])?.status).toBe("success"));
+      expect(screen.getAllByLabelText("Game ID")[0]).toHaveValue("unit1game");
+      expect(screen.getAllByLabelText("Game ID")[1]).toHaveValue("unit2game");
+      (apiPost as Mock).mockResolvedValue({ order_code: "ORD456", pay_url: "/checkout/ORD456/pay" });
+      fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
+      await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/v1/checkout", expect.objectContaining({
+        customer_data: [{ game_id: "unit1game", email: "unit1@mail.com" }, { game_id: "unit2game", email: "unit2@mail.com" }],
+      }), expect.anything()));
     });
 
     it("disables Place Order until every unit's required fields are filled and valid", async () => {

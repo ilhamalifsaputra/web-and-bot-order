@@ -119,6 +119,9 @@ export default function InstantBuyPage() {
   const { data, error } = useQuery({
     queryKey: ["product", slug, ctx?.currency ?? null, ctx?.lang, ctx?.pricing_context],
     queryFn: () => apiGet<ProductPageData>(`/api/v1/pages/product/${slug}`),
+    // Preference changes must not turn the selected plan/schema into an empty
+    // selection and reset account answers while the new prices are loading.
+    placeholderData: (previous, query) => query?.queryKey[1] === slug ? previous : undefined,
     retry: false,
   });
 

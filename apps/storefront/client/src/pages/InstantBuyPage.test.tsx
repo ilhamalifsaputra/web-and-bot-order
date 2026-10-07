@@ -4,6 +4,7 @@ import { render, screen, fireEvent, waitFor, act, within } from "@testing-librar
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider, focusManager } from "@tanstack/react-query";
 import InstantBuyPage from "./InstantBuyPage";
+import ProductPage from "./ProductPage";
 import { apiGet, apiPost } from "../api/client";
 import type { CartPageData, CheckoutData, ProductPageData, ShopContext } from "../api/types";
 
@@ -161,6 +162,7 @@ function renderInstantBuy(
     slug?: string;
     preview?: (body: Record<string, unknown>) => CheckoutData;
     ctx?: ShopContext;
+    throughProductPage?: boolean;
   } = {},
 ) {
   const ctx = options.ctx ?? context;
@@ -188,7 +190,7 @@ function renderInstantBuy(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[`/p/${slug}`]}>
         <Routes>
-          <Route path="/p/:slug" element={<InstantBuyPage />} />
+          <Route path="/p/:slug" element={options.throughProductPage ? <ProductPage /> : <InstantBuyPage />} />
           <Route path="/checkout/:code/pay" element={<div>pay-page-stub</div>} />
           <Route path="/login" element={<div>login-page-stub</div>} />
         </Routes>
@@ -199,6 +201,41 @@ function renderInstantBuy(
 }
 
 describe("InstantBuyPage", () => {
+  it.each([false, true])("preserves account answers and selected plan during a currency refetch (product route: %s)", async (throughProductPage) => {
+    const { queryClient } = renderInstantBuy({ throughProductPage });
+    await screen.findByText("Summary");
+    fireEvent.click(screen.getByRole("radio", { name: /172 Diamonds/ }));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/v1/topup/preview", { denomination_id: 2, qty: 1 }));
+    fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "4531475056881819915" } });
+    fireEvent.change(screen.getByLabelText("Zone ID"), { target: { value: "0012" } });
+
+    let releaseProduct!: (data: ProductPageData) => void;
+    let releasePreview!: (data: CheckoutData) => void;
+    (apiGet as Mock).mockImplementation(() => new Promise<ProductPageData>((resolve) => { releaseProduct = resolve; }));
+    (apiPost as Mock).mockImplementation((path: string) => {
+      if (path === "/api/v1/topup/preview") return new Promise<CheckoutData>((resolve) => { releasePreview = resolve; });
+      return new Promise(() => {});
+    });
+    await act(async () => { queryClient.setQueryData(["context"], { ...context, currency: "USD" }); });
+    await waitFor(() => expect(releaseProduct).toBeDefined());
+    expect(screen.getByLabelText("User ID")).toHaveValue("4531475056881819915");
+    expect(screen.getByLabelText("Zone ID")).toHaveValue("0012");
+    expect(screen.getByRole("radio", { name: /172 Diamonds/ })).toBeChecked();
+    expect(screen.getByRole("button", { name: /Buy now/ })).toBeDisabled();
+
+    await act(async () => { releaseProduct({ ...productData, denominations: productData.denominations.map((d) => ({ ...d, price: "40000" })) }); });
+    await waitFor(() => expect(releasePreview).toBeDefined());
+    await act(async () => { releasePreview({ ...checkoutData, total: "40000", total_usdt: "2.50" }); });
+    await waitFor(() => expect(screen.getByRole("button", { name: /Buy now/ })).toHaveTextContent("$2.50"));
+    expect(screen.getByLabelText("User ID")).toHaveValue("4531475056881819915");
+    expect(screen.getByLabelText("Zone ID")).toHaveValue("0012");
+    fireEvent.click(screen.getByRole("button", { name: /Buy now/ }));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/v1/topup/order", expect.objectContaining({
+      denomination_id: 2,
+      customer_data: [{ user_id: "4531475056881819915", zone_id: "0012" }],
+    }), expect.anything()));
+  });
+
   it("renders Delta Player ID only and collects configured fields on AUTO", async () => {
     const delta = { ...productData, product: { ...productData.product, name: "Delta Force", slug: "delta-force" }, denominations: [{ ...productData.denominations[0]!, delivery_type: "auto", in_stock: true, additional_fields: [{ key: "player_id", label: { id: "Player ID", en: "Player ID" }, type: "number" as const, required: true, options: [], placeholder: "" }] }] };
     renderInstantBuy({ product: delta });

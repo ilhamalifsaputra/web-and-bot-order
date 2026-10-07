@@ -4,6 +4,7 @@ import {
   getPriceList,
   createTransaction,
   verifyWebhook,
+  inspectWebhook,
   parseProductRegion,
   stripRegionSuffix,
   digiflazzGroupKey,
@@ -498,6 +499,50 @@ describe("verifyWebhook", () => {
     expect(logged).not.toContain(WEBHOOK_SECRET);
     expect(logged).not.toContain(badHeader.slice("sha1=".length));
     expect(logged).not.toContain("ORD-SECRETIVE");
+  });
+});
+
+describe("inspectWebhook (instant dispatch Task 4)", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("returns the callback for a valid delivery", () => {
+    const raw = webhookBody({ status: "Pending" });
+    expect(inspectWebhook(WEBHOOK_SECRET, raw, hubSignature(raw))).toEqual({
+      ok: true,
+      callback: expect.objectContaining({ refId: "ORD-100", status: "Pending" }),
+    });
+  });
+
+  it.each([
+    ["no_secret", "", (raw: string) => hubSignature(raw, "")],
+    ["bad_signature", WEBHOOK_SECRET, () => undefined],
+    ["bad_signature", WEBHOOK_SECRET, (raw: string) => hubSignature(raw, "wrong")],
+  ] as const)("rejects with %s", (reason, secret, header) => {
+    vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    const raw = webhookBody();
+    expect(inspectWebhook(secret, raw, header(raw))).toEqual({ ok: false, reason });
+  });
+
+  it("tells a correctly signed body without a reference (ping/test event) apart, without logging a warning", () => {
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    const noRef = JSON.stringify({ data: { status: "Sukses" } });
+    expect(inspectWebhook(WEBHOOK_SECRET, noRef, hubSignature(noRef))).toEqual({ ok: false, reason: "no_reference" });
+    const noData = JSON.stringify({ event: "ping" });
+    expect(inspectWebhook(WEBHOOK_SECRET, noData, hubSignature(noData))).toEqual({ ok: false, reason: "no_reference" });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("a correctly signed body that is not JSON is invalid_body", () => {
+    vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    const notJson = "ref_id=ORD-1";
+    expect(inspectWebhook(WEBHOOK_SECRET, notJson, hubSignature(notJson))).toEqual({ ok: false, reason: "invalid_body" });
+  });
+
+  it("verifyWebhook still logs a warning and returns null for a signed body without a reference", () => {
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    const noRef = JSON.stringify({ data: { status: "Sukses" } });
+    expect(verifyWebhook(WEBHOOK_SECRET, noRef, hubSignature(noRef))).toBeNull();
+    expect(warn).toHaveBeenCalledTimes(1);
   });
 });
 

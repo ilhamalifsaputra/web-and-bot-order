@@ -109,7 +109,7 @@ import {
   type NowpaymentsInvoice,
 } from "@app/core/payments/nowpayments";
 import {
-  verifyWebhook as verifyDigiflazzWebhook,
+  inspectWebhook as inspectDigiflazzWebhook,
   createTransaction as createDigiflazzTransaction,
   type DigiflazzTransactionResult,
 } from "@app/core/suppliers/digiflazz";
@@ -1617,9 +1617,29 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         return reply.code(403).send({ status: "disabled" });
       }
 
-      const rawBody = (req as FastifyRequest & { rawBody?: Buffer }).rawBody ?? Buffer.alloc(0);
+      // Only the application/json parser above keeps the raw bytes. Any other
+      // content type was parsed by Fastify's own parsers (or not at all), so
+      // there is nothing the HMAC can be checked against — say exactly that
+      // instead of reporting a signature mismatch that never happened.
+      const rawBody = (req as FastifyRequest & { rawBody?: Buffer }).rawBody;
+      if (!rawBody) {
+        logger.warn(
+          "Refused a Digiflazz webhook because its body was not sent as JSON, so the raw bytes were not kept and its signature could not be checked — no order was looked up. Digiflazz itself always sends application/json; a steady stream of these is a misconfigured proxy or someone probing the callback.",
+        );
+        return reply.code(403).send({ status: "unsupported content type" });
+      }
       const sigHeader = req.headers["x-hub-signature"];
-      const cb = verifyDigiflazzWebhook(webhookSecret, rawBody, typeof sigHeader === "string" ? sigHeader : undefined);
+      const inspection = inspectDigiflazzWebhook(webhookSecret, rawBody, typeof sigHeader === "string" ? sigHeader : undefined);
+      if (!inspection.ok && inspection.reason === "no_reference") {
+        // Signature verified, but there is no transaction in the body: a
+        // Digiflazz test/ping delivery. Answer 200 so Digiflazz does not keep
+        // retrying it; nothing is looked up or changed.
+        logger.info(
+          "Ignored a correctly signed Digiflazz webhook that carries no transaction reference (data.ref_id), which is what Digiflazz test and ping deliveries look like — no order was looked up.",
+        );
+        return reply.send({ status: "ignored" });
+      }
+      const cb = inspection.ok ? inspection.callback : null;
       if (!cb) {
         // Same reasoning as the TokoPay/PayDisini/NOWPayments callbacks above:
         // neither the signature nor the body is logged (CLAUDE.md, "Never log
@@ -1702,6 +1722,12 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         );
         return reply.send({ status: "unmatched" });
       }
+      // The recheck time the poller scheduled, read before the claim below
+      // overwrites it with the in-flight lease. A Pending/transient result
+      // from this webhook puts it back (recordDigiflazzOutcome, source
+      // "webhook"): a replayable callback must never consume a backoff
+      // attempt or move the schedule.
+      const webhookOutcomeOptions = { source: "webhook" as const, scheduledRecheckAt: order.digiflazzNextRecheckAt };
       // At most one /transaction call per order at a time, across replays,
       // concurrent callbacks and the dispatch poller.
       if (!(await claimDigiflazzWebhookRecheck(prisma, order.id))) {
@@ -1729,7 +1755,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         const message = err instanceof Error ? err.message : String(err);
         logger.warn(`Digiflazz live re-check failed for order ${order.orderCode} (${message}) — leaving it PROCESSING`);
         try {
-          await recordDigiflazzOutcome(prisma, order, { kind: "transient_error", message }, dispatchedAt);
+          await recordDigiflazzOutcome(prisma, order, { kind: "transient_error", message }, dispatchedAt, webhookOutcomeOptions);
         } catch (recordErr) {
           // Same guarantee as the Gagal/Pending branches below: a failure
           // writing this outcome (e.g. the DB update itself) must not surface
@@ -1775,11 +1801,11 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
           logger.warn({ err }, `Digiflazz callback failed to record Gagal for order ${order.orderCode} — Gagal status was still reported by the supplier`);
         }
       } else if (result.status === "Pending") {
-        // Unlike before this task, a webhook-reported Pending now advances
-        // the same backoff schedule the poller uses (recordDigiflazzOutcome),
-        // instead of being invisible to the realtime status feature.
+        // Recorded through the same recordDigiflazzOutcome the poller uses (so
+        // the realtime status feature sees it), but as a webhook outcome: the
+        // attempt counter and the poller's scheduled recheck stay as they were.
         try {
-          await recordDigiflazzOutcome(prisma, order, { kind: "pending" }, dispatchedAt);
+          await recordDigiflazzOutcome(prisma, order, { kind: "pending" }, dispatchedAt, webhookOutcomeOptions);
         } catch (err) {
           logger.warn({ err }, `Digiflazz callback failed to record Pending for order ${order.orderCode} — supplier still reports Pending`);
         }

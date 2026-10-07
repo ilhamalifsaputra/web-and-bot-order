@@ -5,7 +5,7 @@
  * buildSampleData shape; mocks @app/core/suppliers/digiflazz's
  * createTransaction since this file never makes a real HTTP call.
  */
-import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 
 const digiflazzMock = vi.hoisted(() => ({
@@ -90,6 +90,9 @@ import {
   DIGIFLAZZ_RECHECK_CLAIM_LEASE_MS,
   dispatchDigiflazzOrderNow,
   triggerDigiflazzDispatch,
+  DIGIFLAZZ_DIRECT_DISPATCH_CONCURRENCY,
+  DIGIFLAZZ_DIRECT_DISPATCH_QUEUE_LIMIT,
+  __digiflazzDirectDispatchLoadForTests,
   settlePaidOrder,
 } from "@app/db";
 import { logger } from "@app/core/logger";
@@ -622,8 +625,8 @@ describe("dispatchPendingDigiflazzOrders", () => {
     expect(digiflazzMock.createTransaction).toHaveBeenCalledTimes(1);
   });
 
-  // A Pending order's next recheck is scheduled a couple of minutes out
-  // (see nextDigiflazzRecheckAt/DIGIFLAZZ_RECHECK_SCHEDULE_MINUTES[0] in
+  // A Pending order's next recheck is scheduled 10 seconds after dispatch
+  // (see nextDigiflazzRecheckAt/DIGIFLAZZ_RECHECK_SCHEDULE_SECONDS[0] in
   // digiflazzBackoff.ts), so calling the poller again immediately after
   // still finds nothing due — the claim query's recheck branch
   // (digiflazzNextRecheckAt <= now) doesn't match yet. This is no longer
@@ -658,7 +661,7 @@ describe("dispatchPendingDigiflazzOrders", () => {
     expect(refreshed!.digiflazzStatus).toBe("pending_at_supplier");
     expect(refreshed!.digiflazzAttempts).toBe(1);
     expect(refreshed!.digiflazzNextRecheckAt).not.toBeNull();
-    // ~2 minutes ahead per DIGIFLAZZ_RECHECK_SCHEDULE_MINUTES[0] (digiflazzBackoff.ts)
+    // 10 seconds after dispatch per DIGIFLAZZ_RECHECK_SCHEDULE_SECONDS[0] (digiflazzBackoff.ts)
     const deltaMs = refreshed!.digiflazzNextRecheckAt!.getTime() - refreshed!.digiflazzDispatchedAt!.getTime();
     expect(deltaMs).toBeGreaterThanOrEqual(10_000);
     expect(deltaMs).toBeLessThan(60_000);
@@ -1288,6 +1291,140 @@ describe("triggerDigiflazzDispatch — fire-and-forget wrapper", () => {
       await vi.waitFor(() => expect(errorSpy).toHaveBeenCalled());
       expect(String(errorSpy.mock.calls[0]![1])).toContain(order.orderCode);
       expect(digiflazzMock.createTransaction).not.toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+});
+
+describe("triggerDigiflazzDispatch — bounded direct-dispatch concurrency (instant dispatch Task 4)", () => {
+  type Answer = { refId: string; status: string; sn: string | null; message: string | null; price: null };
+
+  async function moreProcessingOrders(count: number) {
+    const orders = [await makeProcessingDigiflazzOrder()];
+    for (let i = 1; i < count; i++) {
+      const o = (await createOrderDirect(prisma, { channel: "bot", user: sample.user, productId: sample.product.id, quantity: 1, customerData: JSON.stringify([{ user_id: `77${i}` }]) }))!;
+      await prisma.order.update({ where: { id: o.id }, data: { status: OrderStatus.PROCESSING } });
+      orders.push(o);
+    }
+    return orders;
+  }
+
+  async function waitUntilIdle() {
+    await vi.waitFor(() => expect(__digiflazzDirectDispatchLoadForTests()).toEqual({ active: 0, queued: 0 }), { timeout: 20_000 });
+  }
+
+  // The limiter is module state: a test that fails while requests are held
+  // open must not leave its slots taken for the next test.
+  const openGates: { refId: string; gate: ReturnType<typeof deferred<Answer>> }[] = [];
+  function gatedCreateTransaction(onCall?: () => void, onSettle?: () => void) {
+    return (_c: unknown, args: { refId: string }) => {
+      onCall?.();
+      const gate = deferred<Answer>();
+      openGates.push({ refId: args.refId, gate });
+      return onSettle ? gate.promise.finally(onSettle) : gate.promise;
+    };
+  }
+  afterEach(async () => {
+    for (const { refId, gate } of openGates.splice(0)) gate.resolve({ refId, status: "Pending", sn: null, message: null, price: null });
+    await waitUntilIdle();
+  });
+
+  const LONG = { timeout: 15_000 };
+
+  it("uses the documented limits", () => {
+    expect(DIGIFLAZZ_DIRECT_DISPATCH_CONCURRENCY).toBe(8);
+    expect(DIGIFLAZZ_DIRECT_DISPATCH_QUEUE_LIMIT).toBe(200);
+  });
+
+  it("30 triggers run at most 8 createTransaction calls at once, and every order runs exactly once", async () => {
+    const orders = await moreProcessingOrders(30);
+    let inFlight = 0;
+    let maxInFlight = 0;
+    digiflazzMock.createTransaction.mockImplementation(gatedCreateTransaction(
+      () => { inFlight++; maxInFlight = Math.max(maxInFlight, inFlight); },
+      () => { inFlight--; },
+    ));
+
+    for (const order of orders) expect(() => triggerDigiflazzDispatch(order.id, prisma)).not.toThrow();
+    expect(__digiflazzDirectDispatchLoadForTests()).toEqual({ active: 8, queued: 22 });
+    await vi.waitFor(() => expect(digiflazzMock.createTransaction).toHaveBeenCalledTimes(8), LONG);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(digiflazzMock.createTransaction).toHaveBeenCalledTimes(8);
+    expect(__digiflazzDirectDispatchLoadForTests()).toEqual({ active: 8, queued: 22 });
+
+    // Release one request at a time; a queued trigger takes each freed slot.
+    for (let released = 0; released < orders.length; released++) {
+      await vi.waitFor(() => expect(openGates.length).toBeGreaterThan(released), LONG);
+      const { refId, gate } = openGates[released]!;
+      gate.resolve({ refId, status: "Sukses", sn: `SN-${refId}`, message: "ok", price: null });
+    }
+    await waitUntilIdle();
+
+    expect(maxInFlight).toBe(8);
+    const refIds = digiflazzMock.createTransaction.mock.calls.map((c) => (c[1] as { refId: string }).refId);
+    expect(refIds).toHaveLength(30);
+    expect([...refIds].sort()).toEqual(orders.map((o) => o.orderCode).sort());
+    const delivered = await prisma.order.count({ where: { id: { in: orders.map((o) => o.id) }, status: OrderStatus.DELIVERED } });
+    expect(delivered).toBe(30);
+  });
+
+  it("drops a trigger beyond the queue bound with a warning, and the recovery cron dispatches that order later", async () => {
+    const warnSpy = vi.spyOn(logger, "warn");
+    try {
+      const orders = await moreProcessingOrders(9);
+      const busy = orders.slice(0, 8);
+      const dropped = orders[8]!;
+      digiflazzMock.createTransaction.mockImplementation(gatedCreateTransaction());
+
+      for (const order of busy) triggerDigiflazzDispatch(order.id, prisma);
+      await vi.waitFor(() => expect(digiflazzMock.createTransaction).toHaveBeenCalledTimes(8), LONG);
+      // Fill the waiting line with triggers for ids that do not exist (each
+      // is a cheap zero-summary lookup once it runs).
+      for (let i = 0; i < DIGIFLAZZ_DIRECT_DISPATCH_QUEUE_LIMIT; i++) triggerDigiflazzDispatch(900_000_000 + i, prisma);
+      expect(__digiflazzDirectDispatchLoadForTests()).toEqual({ active: 8, queued: 200 });
+
+      expect(() => triggerDigiflazzDispatch(dropped.id, prisma)).not.toThrow();
+      expect(__digiflazzDirectDispatchLoadForTests()).toEqual({ active: 8, queued: 200 });
+      const dropWarnings = warnSpy.mock.calls.filter((c) => /recovery cron/i.test(String(typeof c[0] === "string" ? c[0] : c[1])));
+      expect(dropWarnings).toHaveLength(1);
+      const message = String(typeof dropWarnings[0]![0] === "string" ? dropWarnings[0]![0] : dropWarnings[0]![1]);
+      expect(message).toContain(String(dropped.id));
+      expect(message).toMatch(/^[A-Z].*\.$/);
+
+      for (const { refId, gate } of openGates.splice(0)) gate.resolve({ refId, status: "Pending", sn: null, message: null, price: null });
+      await waitUntilIdle();
+      const refIds = digiflazzMock.createTransaction.mock.calls.map((c) => (c[1] as { refId: string }).refId);
+      expect(refIds).not.toContain(dropped.orderCode);
+      expect((await prisma.order.findUniqueOrThrow({ where: { id: dropped.id } })).digiflazzDispatchedAt).toBeNull();
+
+      digiflazzMock.createTransaction.mockReset();
+      digiflazzMock.createTransaction.mockResolvedValue({ refId: dropped.orderCode, status: "Sukses", sn: "SN-RECOVERED", message: "ok", price: null });
+      expect(await dispatchPendingDigiflazzOrders(prisma)).toEqual({ claimed: 1, delivered: 1, pending: 0, failed: 0 });
+      expect((await prisma.order.findUniqueOrThrow({ where: { id: dropped.id } })).status).toBe(OrderStatus.DELIVERED);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("frees its slots when dispatches fail, so later triggers still run", async () => {
+    const errorSpy = vi.spyOn(logger, "error").mockImplementation(() => undefined as never);
+    try {
+      const brokenDb = {
+        order: { findFirst: () => Promise.reject(new Error("database connection lost")) },
+        setting: { findUnique: () => Promise.reject(new Error("database connection lost")) },
+      } as unknown as PrismaClient;
+      for (let i = 0; i < 20; i++) expect(() => triggerDigiflazzDispatch(i + 1, brokenDb)).not.toThrow();
+      await waitUntilIdle();
+      expect(errorSpy).toHaveBeenCalledTimes(20);
+
+      const order = await makeProcessingDigiflazzOrder();
+      digiflazzMock.createTransaction.mockResolvedValue({ refId: order.orderCode, status: "Sukses", sn: "SN-AFTER", message: "ok", price: null });
+      triggerDigiflazzDispatch(order.id, prisma);
+      await vi.waitFor(async () => {
+        expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.DELIVERED);
+      }, LONG);
+      await waitUntilIdle();
     } finally {
       errorSpy.mockRestore();
     }

@@ -425,16 +425,48 @@ export function verifyWebhook(
   rawBody: Buffer | string,
   signatureHeader: string | undefined,
 ): DigiflazzCallback | null {
+  const result = inspectWebhook(webhookSecret, rawBody, signatureHeader);
+  if (result.ok) return result.callback;
+  if (result.reason === "no_reference") {
+    // inspectWebhook leaves this case unlogged so a caller can treat it as a
+    // signed ping; this null-returning wrapper still reports it as a rejection.
+    logger.warn("Rejected a correctly signed Digiflazz webhook because its body has no data.ref_id");
+  }
+  return null;
+}
+
+/** Why inspectWebhook did not return a callback. `no_reference` is the only
+ * reason that comes from a request whose signature DID verify and whose body
+ * is JSON — Digiflazz test/ping deliveries carry no transaction — so a caller
+ * may answer it with a plain 200 instead of a 403. */
+export type DigiflazzWebhookRejection = "no_secret" | "bad_signature" | "invalid_body" | "no_reference";
+
+export type DigiflazzWebhookInspection =
+  | { ok: true; callback: DigiflazzCallback }
+  | { ok: false; reason: DigiflazzWebhookRejection };
+
+/**
+ * verifyWebhook with the reason for a rejection (same checks, same order, same
+ * constant-time comparison; the body is still only parsed after the signature
+ * verified). Logs a warning for every rejection except `no_reference`, which
+ * is left to the caller: a correctly signed body without `data.ref_id` is a
+ * test/ping event, not an attack, and deserves an info line, not a warning.
+ */
+export function inspectWebhook(
+  webhookSecret: string,
+  rawBody: Buffer | string,
+  signatureHeader: string | undefined,
+): DigiflazzWebhookInspection {
   if (!webhookSecret) {
     logger.warn("Rejected a Digiflazz webhook because no webhook secret is configured, so its signature cannot be checked");
-    return null;
+    return { ok: false, reason: "no_secret" };
   }
   const match = HUB_SIGNATURE_RE.exec((signatureHeader ?? "").trim());
   if (!match) {
     logger.warn(
       "Rejected a Digiflazz webhook because its X-Hub-Signature header was missing or not in the sha1=<hex> form — the request body was not read",
     );
-    return null;
+    return { ok: false, reason: "bad_signature" };
   }
   const received = Buffer.from(match[1]!, "hex");
   const expected = createHmac("sha1", webhookSecret).update(rawBody).digest();
@@ -442,7 +474,7 @@ export function verifyWebhook(
     logger.warn(
       "Rejected a Digiflazz webhook whose signature did not match its body — the body and its reference are not logged because they are unverified input",
     );
-    return null;
+    return { ok: false, reason: "bad_signature" };
   }
 
   let parsed: unknown;
@@ -450,27 +482,24 @@ export function verifyWebhook(
     parsed = JSON.parse(typeof rawBody === "string" ? rawBody : rawBody.toString("utf8"));
   } catch {
     logger.warn("Rejected a correctly signed Digiflazz webhook because its body is not valid JSON");
-    return null;
+    return { ok: false, reason: "invalid_body" };
   }
   const data =
     parsed && typeof parsed === "object" ? (parsed as { data?: unknown }).data : undefined;
-  if (!data || typeof data !== "object" || Array.isArray(data)) {
-    logger.warn("Rejected a correctly signed Digiflazz webhook because its body has no data object");
-    return null;
-  }
+  if (!data || typeof data !== "object" || Array.isArray(data)) return { ok: false, reason: "no_reference" };
   const d = data as Record<string, unknown>;
   const refId = str(d.ref_id);
-  if (!refId) {
-    logger.warn("Rejected a correctly signed Digiflazz webhook because its data object has no ref_id");
-    return null;
-  }
+  if (!refId) return { ok: false, reason: "no_reference" };
 
   return {
-    refId,
-    status: normalizeStatus(str(d.status)),
-    sn: str(d.sn),
-    message: str(d.message),
-    price: d.price != null ? toDecimalOrNull(d.price) : null,
+    ok: true,
+    callback: {
+      refId,
+      status: normalizeStatus(str(d.status)),
+      sn: str(d.sn),
+      message: str(d.message),
+      price: d.price != null ? toDecimalOrNull(d.price) : null,
+    },
   };
 }
 

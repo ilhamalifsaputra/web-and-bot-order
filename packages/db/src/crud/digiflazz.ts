@@ -325,8 +325,11 @@ export const DIGIFLAZZ_RECHECK_CLAIM_LEASE_MS = 45_000;
 /**
  * Atomically claim the right for a Digiflazz callback to run one live
  * re-check (`createTransaction` with the order's refId) — backend audit,
- * Task B3d. The callback's signature, md5(refId:apiKey), is a fixed token
- * that replays forever, and that re-POST is only a harmless status check if
+ * Task B3d. The callback's signature (X-Hub-Signature, an HMAC-SHA1 of the
+ * raw body keyed by the webhook secret — verifyWebhook in
+ * @app/core/suppliers/digiflazz) binds the body but carries no timestamp or
+ * nonce, so a captured delivery replays forever, and that re-POST is only a
+ * harmless status check if
  * Digiflazz really dedups by ref_id (an unverified assumption, see
  * createTransaction in @app/core/suppliers/digiflazz). So a callback may
  * re-check only an order that:
@@ -342,8 +345,9 @@ export const DIGIFLAZZ_RECHECK_CLAIM_LEASE_MS = 45_000;
  *     backoff that happens to fall inside the window is refused too — the
  *     poller rechecks that order within the window anyway, so a refused
  *     genuine callback delays delivery by at most the lease, never loses it.
- * Winning the claim takes the lease itself; recordDigiflazzOutcome /
- * fulfillDigiflazzOrder then overwrite or clear it as usual.
+ * Winning the claim takes the lease itself; recordDigiflazzOutcome (with
+ * source "webhook", which puts the poller's scheduled recheck back on a
+ * Pending/transient result) / fulfillDigiflazzOrder then overwrite or clear it.
  */
 export async function claimDigiflazzWebhookRecheck(db: Db, orderId: number, now: Date = new Date()): Promise<boolean> {
   const leaseUntil = new Date(now.getTime() + DIGIFLAZZ_RECHECK_CLAIM_LEASE_MS);
@@ -485,13 +489,27 @@ export type DigiflazzOutcome =
  *
  * Returns "pending" or "failed" so the caller can tally its own summary
  * counters without re-deriving this same branch logic.
+ *
+ * `options.source: "webhook"` (the storefront callback's live re-check): a
+ * signed callback carries no nonce and can be replayed, so its "pending" /
+ * "transient_error" result must not spend the backoff budget. It leaves
+ * digiflazzAttempts unchanged and puts digiflazzNextRecheckAt back to
+ * `options.scheduledRecheckAt` — the value the poller had scheduled before
+ * claimDigiflazzWebhookRecheck replaced it with the in-flight lease — and it
+ * never terminal-fails the order on an exhausted 24h window (the poller's own
+ * next recheck makes that call). "terminal" is handled exactly as for the
+ * poller.
  */
 export async function recordDigiflazzOutcome(
   db: PrismaClient,
   order: DigiflazzCandidateOrder,
   outcome: DigiflazzOutcome,
   dispatchedAt: Date,
+  options: DigiflazzOutcomeOptions = {},
 ): Promise<"pending" | "failed"> {
+  if (outcome.kind !== "terminal" && options.source === "webhook") {
+    return recordWebhookNonTerminalOutcome(db, order, outcome, dispatchedAt, options.scheduledRecheckAt ?? null);
+  }
   if (outcome.kind !== "terminal") {
     const attempt = order.digiflazzAttempts + 1;
     const nextRecheckAt = nextDigiflazzRecheckAt(dispatchedAt, attempt);
@@ -518,6 +536,44 @@ export async function recordDigiflazzOutcome(
     return terminalFailDigiflazzOrder(db, order, reason, true);
   }
   return terminalFailDigiflazzOrder(db, order, outcome.reason, outcome.supplierGaveReason);
+}
+
+export interface DigiflazzOutcomeOptions {
+  /** Who produced the outcome. "dispatch" (the default) is the poller or the
+   * direct dispatch, whose attempt counts against the backoff schedule;
+   * "webhook" is the callback's live re-check, which never does. */
+  source?: "dispatch" | "webhook";
+  /** source "webhook" only: digiflazzNextRecheckAt as it was before the
+   * webhook took its in-flight lease. */
+  scheduledRecheckAt?: Date | null;
+}
+
+/** recordDigiflazzOutcome's "webhook" branch for a Pending/transient result:
+ * same status and failure-detail write as the poller's, but the attempt
+ * counter is untouched and the recheck time goes back to the poller's
+ * schedule. If the order had no scheduled recheck (should not happen for a
+ * pending_at_supplier order), it gets the time the next attempt would have
+ * had, or "now" when the 24h window is already over, so the poller — never
+ * the webhook — decides about the window. */
+async function recordWebhookNonTerminalOutcome(
+  db: PrismaClient,
+  order: DigiflazzCandidateOrder,
+  outcome: Extract<DigiflazzOutcome, { kind: "pending" | "transient_error" }>,
+  dispatchedAt: Date,
+  scheduledRecheckAt: Date | null,
+): Promise<"pending"> {
+  const nextRecheckAt =
+    scheduledRecheckAt ?? nextDigiflazzRecheckAt(dispatchedAt, order.digiflazzAttempts + 1) ?? new Date();
+  const write = await db.order.updateMany({
+    where: { id: order.id, status: OrderStatus.PROCESSING, OR: [{ digiflazzStatus: null }, { digiflazzStatus: { not: "failed" } }] },
+    data: {
+      digiflazzStatus: "pending_at_supplier",
+      digiflazzNextRecheckAt: nextRecheckAt,
+      digiflazzFailureDetail: outcome.kind === "transient_error" ? outcome.message : null,
+    },
+  });
+  if (write.count === 1) emitDigiflazzOrderStatusChanged(order.id);
+  return "pending";
 }
 
 /**
@@ -822,6 +878,42 @@ async function dispatchOneDigiflazzOrder(
   return summary;
 }
 
+/** How many instant (direct) dispatches one process runs at the same time.
+ * A bulk action — e.g. an admin delivering 50 orders at once — would
+ * otherwise fire 50 simultaneous supplier requests. */
+export const DIGIFLAZZ_DIRECT_DISPATCH_CONCURRENCY = 8;
+/** How many further instant dispatches may wait for a free slot. Beyond this
+ * a trigger is dropped with a warning; the order is still PROCESSING and
+ * undispatched, so the 5-second recovery cron picks it up. */
+export const DIGIFLAZZ_DIRECT_DISPATCH_QUEUE_LIMIT = 200;
+
+// In-process limiter state. Memory only: a restart forgets the waiting line,
+// which is safe because every waiting order is still in the durable queue the
+// recovery cron reads.
+let directDispatchActive = 0;
+const directDispatchWaiting: Array<() => Promise<void>> = [];
+
+/** Test-only view of the limiter: running and waiting instant dispatches. */
+export function __digiflazzDirectDispatchLoadForTests(): { active: number; queued: number } {
+  return { active: directDispatchActive, queued: directDispatchWaiting.length };
+}
+
+/** Runs one job in a limiter slot, then hands the slot to the next waiting
+ * job. The job itself never rejects (see triggerDigiflazzDispatch), and the
+ * slot is released in `finally` whatever happens. */
+async function runDirectDispatchSlot(job: () => Promise<void>): Promise<void> {
+  directDispatchActive++;
+  try {
+    await job();
+  } catch {
+    // The job already logs its own failure; a slot must never leak.
+  } finally {
+    directDispatchActive--;
+    const next = directDispatchWaiting.shift();
+    if (next) void runDirectDispatchSlot(next);
+  }
+}
+
 /**
  * Fire-and-forget wrapper around dispatchDigiflazzOrderNow for payment rails:
  * call it only AFTER the payment transaction has committed. It returns
@@ -829,18 +921,45 @@ async function dispatchOneDigiflazzOrder(
  * failure is logged at error level and the order stays in the durable queue,
  * where the 5-second recovery cron (dispatchPendingDigiflazzOrders) picks it
  * up. `db` defaults to the shared Prisma client; tests pass their own.
+ *
+ * Runs behind an in-process limiter: at most
+ * DIGIFLAZZ_DIRECT_DISPATCH_CONCURRENCY at once, up to
+ * DIGIFLAZZ_DIRECT_DISPATCH_QUEUE_LIMIT more waiting in arrival order, and a
+ * trigger beyond that is dropped with a warning (the cron recovers it). No
+ * timers: a finished dispatch starts the next waiting one.
  */
 export function triggerDigiflazzDispatch(orderId: number, db: PrismaClient = sharedPrisma): void {
-  const context: { orderCode?: string } = {};
   try {
-    dispatchOneDigiflazzOrder(db, orderId, context).catch((err: unknown) => {
-      logDirectDispatchFailure(err, orderId, context.orderCode);
-    });
+    const job = async () => {
+      const context: { orderCode?: string } = {};
+      try {
+        await dispatchOneDigiflazzOrder(db, orderId, context);
+      } catch (err) {
+        logDirectDispatchFailure(err, orderId, context.orderCode);
+      }
+    };
+    if (directDispatchActive < DIGIFLAZZ_DIRECT_DISPATCH_CONCURRENCY) {
+      void runDirectDispatchSlot(job);
+    } else if (directDispatchWaiting.length < DIGIFLAZZ_DIRECT_DISPATCH_QUEUE_LIMIT) {
+      directDispatchWaiting.push(job);
+    } else {
+      logDirectDispatchDropped(orderId);
+    }
   } catch (err) {
-    // dispatchOneDigiflazzOrder is async, so this only guards a synchronous
-    // throw before its first await — kept so the promise above is the only
-    // way a failure can surface.
-    logDirectDispatchFailure(err, orderId, context.orderCode);
+    // Nothing above should throw synchronously; kept so a trigger can never
+    // throw into a payment rail.
+    logDirectDispatchFailure(err, orderId, undefined);
+  }
+}
+
+function logDirectDispatchDropped(orderId: number): void {
+  try {
+    logger.warn(
+      { orderId },
+      `Skipped the instant Digiflazz dispatch for order id ${orderId} because ${DIGIFLAZZ_DIRECT_DISPATCH_CONCURRENCY} instant dispatches are already running and ${DIGIFLAZZ_DIRECT_DISPATCH_QUEUE_LIMIT} more are waiting; the order stays queued and the 5-second recovery cron will dispatch it.`,
+    );
+  } catch {
+    // Logging must never turn a handled overload into a thrown error.
   }
 }
 

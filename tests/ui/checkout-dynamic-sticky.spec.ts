@@ -102,7 +102,7 @@ for (const width of [320, 360, 375, 390, 412, 430, 768, 1280]) {
   });
 }
 
-test("ID-only metadata, inline validation, optional select constraints, and synchronous duplicate guard", async ({ page }) => {
+test("ID-only metadata, blur constraints, trimmed payload, and synchronous duplicate guard", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 900 });
   const data = { ...product, denominations: [{ ...product.denominations[0]!, additional_fields: [player] }] };
   await mockApi(page, data);

@@ -56,6 +56,7 @@ import {
   addToCart,
   createCatalogProduct,
   createDenomination,
+  updateDenomination,
   bulkSetDenominationsActive,
   setSetting,
   deleteSetting,
@@ -1541,6 +1542,28 @@ describe("triggerDigiflazzDispatch — bounded direct-dispatch concurrency (inst
 });
 
 describe("getDigiflazzCreds cache (instant dispatch Task 1)", () => {
+  it.each([
+    [DIGIFLAZZ_USERNAME_KEY, "otheruser", { username: "otheruser", apiKey: "shopkey" }],
+    [DIGIFLAZZ_API_KEY_KEY, "otherkey", { username: "shopuser", apiKey: "otherkey" }],
+    [DIGIFLAZZ_ENABLED_KEY, "false", null],
+  ])("does not extend an aged source setting's freshness for %s", async (key, value, expected) => {
+    const start = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(start);
+    try {
+      await setSetting(prisma, DIGIFLAZZ_USERNAME_KEY, "shopuser");
+      await setSetting(prisma, DIGIFLAZZ_API_KEY_KEY, "shopkey");
+      await setSetting(prisma, DIGIFLAZZ_ENABLED_KEY, "true");
+      // Another process writes directly; the source cache still has its old value.
+      await prisma.setting.update({ where: { key }, data: { value } });
+      clock.mockReturnValue(start + 29_000);
+      expect(await getDigiflazzCreds(prisma)).toEqual({ username: "shopuser", apiKey: "shopkey" });
+      clock.mockReturnValue(start + 31_000);
+      expect(await getDigiflazzCreds(prisma)).toEqual(expected);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it("a second dispatch within the TTL does not re-read settings", async () => {
     const first = await makeProcessingDigiflazzOrder();
     digiflazzMock.createTransaction.mockResolvedValue({ refId: "x", status: "Pending", sn: null, message: null, price: null });
@@ -3596,6 +3619,132 @@ describe("resyncDigiflazzCatalog — auto-add new SKUs and reactivate sync-deact
       }),
     );
   }
+
+  it("preserves an admin deactivation after the sync reads its remembered snapshot", async () => {
+    const productId = await importMobileLegends();
+    const denom = await prisma.denomination.findFirstOrThrow({ where: { productId, supplierSku: "ml100" } });
+    await prisma.denomination.update({ where: { id: denom.id }, data: { isActive: false } });
+    await setSetting(prisma, MARKER_KEY, JSON.stringify([denom.id]));
+    digiflazzMock.getPriceList.mockResolvedValue([priceListItem({ buyerSkuCode: "ml100", price: new Decimal(15000) })]);
+    let adminChanged = false;
+    const adminToggle = async () => {
+      if (adminChanged) return;
+      adminChanged = true;
+      await bulkSetDenominationsActive(prisma, [denom.id], false);
+    };
+    const setting = new Proxy(prisma.setting, { get(target, prop) {
+      if (prop === "findUnique") return async (args: Parameters<typeof prisma.setting.findUnique>[0]) => {
+        const snapshot = await target.findUnique(args);
+        if (args.where.key === MARKER_KEY) await adminToggle();
+        return snapshot;
+      };
+      return Reflect.get(target, prop);
+    } });
+    const racingDb = new Proxy(prisma, { get(target, prop) {
+      if (prop === "setting") return setting;
+      // With locked reads, the same admin decision lands before the write transaction.
+      if (prop === "$transaction") return async (...args: unknown[]) => {
+        await adminToggle();
+        return Reflect.apply(target.$transaction, target, args);
+      };
+      const value = Reflect.get(target, prop);
+      return typeof value === "function" ? value.bind(target) : value;
+    } });
+    await resyncDigiflazzCatalog(racingDb);
+    expect(adminChanged).toBe(true);
+    expect((await prisma.denomination.findUniqueOrThrow({ where: { id: denom.id } })).isActive).toBe(false);
+    expect(await readMarker()).not.toContain(denom.id);
+  });
+
+  it("serializes concurrent admin decisions when the provenance marker is initially absent", async () => {
+    const productId = await importMobileLegends();
+    const denom = await prisma.denomination.findFirstOrThrow({ where: { productId, supplierSku: "ml100" } });
+    await prisma.setting.deleteMany({ where: { key: MARKER_KEY } });
+    const locked = deferred<void>();
+    const release = deferred<void>();
+    const first = prisma.$transaction(async tx => {
+      await bulkSetDenominationsActive(tx, [denom.id], false);
+      locked.resolve();
+      await release.promise; // Marker insert is still invisible to the second transaction.
+    });
+    await locked.promise;
+    const second = bulkSetDenominationsActive(prisma, [denom.id], true).then(() => "committed", error => error);
+    try {
+      // Wait for the real second writer to queue on the uncommitted marker,
+      // rather than rely on scheduling or an arbitrary sleep.
+      await vi.waitFor(async () => {
+        const waiting = await prisma.$queryRaw<Array<{ waiting: boolean }>>`
+          SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+            WHERE datname = current_database() AND wait_event_type = 'Lock'
+              AND query LIKE '%settings%') AS waiting`;
+        expect(waiting[0]!.waiting).toBe(true);
+      }, { timeout: 3000 });
+    } finally {
+      release.resolve();
+      await first;
+    }
+    expect(await second).toBe("committed");
+    expect((await prisma.denomination.findUniqueOrThrow({ where: { id: denom.id } })).isActive).toBe(true);
+    expect(await readMarker()).toEqual([]);
+  });
+
+  it("preserves an ordinary admin price override that commits while sync waits for the denomination", async () => {
+    const productId = await importMobileLegends();
+    const denom = await prisma.denomination.findFirstOrThrow({ where: { productId, supplierSku: "ml100" } });
+    digiflazzMock.getPriceList.mockResolvedValue([priceListItem({ buyerSkuCode: "ml100", price: new Decimal(15000) })]);
+    const overridden = deferred<void>();
+    const release = deferred<void>();
+    const admin = prisma.$transaction(async tx => {
+      // The regular denomination editor does not touch the availability marker.
+      await updateDenomination(tx, denom.id, { price: new Decimal(25000), priceOverridden: true });
+      overridden.resolve();
+      await release.promise;
+    });
+    await overridden.promise;
+    // Initial catalog reads see the previous price until the admin commits.
+    const sync = resyncDigiflazzCatalog(prisma).then(result => result, error => error);
+    try {
+      await vi.waitFor(async () => {
+        const waiting = await prisma.$queryRaw<Array<{ waiting: boolean }>>`
+          SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+            WHERE datname = current_database() AND wait_event_type = 'Lock'
+              AND query LIKE '%denominations%') AS waiting`;
+        expect(waiting[0]!.waiting).toBe(true);
+      }, { timeout: 3000 });
+    } finally {
+      release.resolve();
+      await admin;
+    }
+    expect(await sync).toMatchObject({ updated: 0 });
+    const current = await prisma.denomination.findUniqueOrThrow({ where: { id: denom.id } });
+    expect(current.priceOverridden).toBe(true);
+    expect(current.price.toString()).toBe("25000");
+    expect(current.costPrice!.toString()).toBe("15000");
+  });
+
+  it("commits each availability transition with its provenance before a later SKU fails", async () => {
+    const productId = await importMobileLegends([
+      { buyerSkuCode: "ml200", productName: "Mobile Legends 200 Diamond", price: "22000", costPrice: "20000" },
+    ]);
+    await prisma.denomination.updateMany({ where: { productId }, data: { isActive: true } });
+    const rows = await prisma.denomination.findMany({ where: { productId }, orderBy: { id: "asc" } });
+    digiflazzMock.getPriceList.mockResolvedValue(rows.map(row => priceListItem({
+      buyerSkuCode: row.supplierSku!, price: row.costPrice!, buyerProductStatus: false,
+    })));
+    let writes = 0;
+    const failingDb = prisma.$extends({ query: { denomination: { async update({ args, query }) {
+      if (++writes === 2) throw new Error("later SKU write failed");
+      return query(args);
+    } } } }) as unknown as PrismaClient;
+    await expect(resyncDigiflazzCatalog(failingDb)).rejects.toThrow("later SKU write failed");
+    const inactive = await prisma.denomination.findMany({ where: { productId, isActive: false } });
+    expect(inactive).toHaveLength(1);
+    expect(await readMarker()).toEqual([inactive[0]!.id]);
+    // A new run can recover exactly the committed SKU.
+    digiflazzMock.getPriceList.mockResolvedValue(rows.map(row => priceListItem({ buyerSkuCode: row.supplierSku!, price: row.costPrice! })));
+    expect((await resyncDigiflazzCatalog(prisma)).reactivated).toBe(1);
+    expect(await prisma.denomination.count({ where: { productId, isActive: true } })).toBe(2);
+  });
 
   it("creates the new SKUs of an already-imported brand ACTIVE, priced by the markup, not overridden", async () => {
     const productId = await importMobileLegends();

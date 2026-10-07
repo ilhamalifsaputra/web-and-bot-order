@@ -1,6 +1,6 @@
 import type { Bot } from "grammy";
 import type { Prisma } from "@prisma/client";
-import { prisma, enqueueDigiflazzReviewAlert, wakeFulfillmentMessage, type PrismaClient } from "@app/db";
+import { prisma, enqueueDigiflazzReviewAlert, type PrismaClient } from "@app/db";
 import { customerProgressPhase, fulfillmentProviderFor, type CustomerProgress, type CustomerProgressPhase } from "@app/core/orderFulfillment";
 import { t } from "@app/core/i18n";
 import { langCode } from "@app/core/enums";
@@ -26,9 +26,7 @@ const FRAMES = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"];
 /** Row states the worker polls. WAITING (a manual order's static wait) is not
  * one of them: `wakeFulfillmentMessage` moves it on when the order ends. */
 const POLLED_STATES = ["READY", "ACTIVE", "REVIEW"];
-/** Order statuses in which a manual order may legitimately still be waiting. */
-const STILL_WAITING_STATUSES: ReadonlySet<string> = new Set(["PROCESSING", "PAID"]);
-const TERMINAL_PHASES: ReadonlySet<string> = new Set(["SUCCESS", "FAILED", "CANCELLED"]);
+const TERMINAL_PHASES: ReadonlySet<string> = new Set(["SUCCESS", "FAILED", "CANCELLED", "CREDITED"]);
 
 /** Title + body locale keys per phase; the order status decides, never a timer.
  * NONE has no text: the caller keeps whatever the message already says. */
@@ -112,14 +110,26 @@ export class FulfillmentMessageWorker {
     );
   }
 
-  /** WAITING is not polled, so a final transition that committed after this
-   * worker read the order (its wake found the row still claimed) must not be
-   * lost: re-read the order once the WAITING save is durable. */
-  private async recheckWaiting(orderId: number): Promise<void> {
-    const order = await this.db.order.findUnique({ where: { id: orderId }, select: { status: true } });
-    if (order && !STILL_WAITING_STATUSES.has(order.status.toUpperCase())) {
-      await wakeFulfillmentMessage(this.db, orderId, this.now());
-    }
+  /** Lock order matches status/credit writers: order, then message. No network
+   * calls inside the transaction. If Telegram rendered a stale phase, persist
+   * an immediately due correction together with its acknowledged message id;
+   * a crash after commit needs no follow-up reread to make it recoverable. */
+  private async saveProgress(row: MessageRow, data: Prisma.FulfillmentMessageUpdateManyMutationInput): Promise<void> {
+    await this.db.$transaction(async tx => {
+      await tx.$queryRaw`SELECT id FROM orders WHERE id = ${row.orderId} FOR UPDATE`;
+      const order = await tx.order.findUniqueOrThrow({ where: { id: row.orderId }, include: include.order.include });
+      const credited = order.status.toUpperCase() === "CANCELLED"
+        && !!(await tx.walletTransaction.findFirst({ where: { orderId: order.id, reason: "unfulfilled_credit" }, select: { id: true } }));
+      const messageSent = row.messageId !== null || typeof data.messageId === "number";
+      const current = customerProgressPhase(order, { messageSent, credited });
+      const correction = current.phase !== data.phase;
+      await tx.fulfillmentMessage.updateMany({
+        where: { orderId: row.orderId, state: row.state, claimedAt: row.claimedAt },
+        data: { ...data, ...(correction ? {
+          state: messageSent ? "ACTIVE" : "READY", finishedAt: null, nextUpdateAt: this.now(),
+        } : {}) },
+      });
+    });
   }
 
   private async deliver(row: MessageRow): Promise<boolean> {
@@ -140,18 +150,18 @@ export class FulfillmentMessageWorker {
       // buyer heard anything, or a stock order was delivered instantly (its
       // credentials DM is the message): release the claim without sending.
       const finished = progress.phase !== "NONE";
-      await this.db.fulfillmentMessage.updateMany({ where, data: {
+      await this.saveProgress(row, {
         ...phaseFields, state: finished ? "FINISHED" : "READY", claimedAt: null, finishedAt: finished ? this.now() : null,
         nextUpdateAt: new Date(this.now().getTime() + INTERVAL_MS),
-      } });
+      });
       return false;
     }
     if (progress.phase === "NONE") {
       // A sent message whose order fell back to awaiting payment (a detected
       // deposit was withdrawn): keep the last text rather than guess.
-      await this.db.fulfillmentMessage.updateMany({ where, data: {
+      await this.saveProgress(row, {
         ...phaseFields, state: "ACTIVE", claimedAt: null, nextUpdateAt: new Date(this.now().getTime() + IDLE_INTERVAL_MS),
-      } });
+      });
       return false;
     }
     const lang = langCode(order.user.language);
@@ -190,12 +200,11 @@ export class FulfillmentMessageWorker {
     try {
       if (row.messageId === null) {
         const sent = await this.api.sendMessage(String(row.chatId), text, { parse_mode: "HTML" }, apiSignal);
-        await this.db.fulfillmentMessage.updateMany({ where, data: { ...data, messageId: sent.message_id } });
+        await this.saveProgress(row, { ...data, messageId: sent.message_id });
       } else {
         if (row.lastText !== text) await this.api.editMessageText(String(row.chatId), row.messageId, text, { parse_mode: "HTML" }, apiSignal);
-        await this.db.fulfillmentMessage.updateMany({ where, data });
+        await this.saveProgress(row, data);
       }
-      if (state === "WAITING") await this.recheckWaiting(row.orderId);
       return false;
     } catch (error) {
       const e = error as { error_code?: number; description?: string; parameters?: { retry_after?: number } };
@@ -207,8 +216,7 @@ export class FulfillmentMessageWorker {
         return true;
       }
       if (row.messageId !== null && e.error_code === 400 && e.description?.includes("message is not modified")) {
-        await this.db.fulfillmentMessage.updateMany({ where, data });
-        if (state === "WAITING") await this.recheckWaiting(row.orderId);
+        await this.saveProgress(row, data);
       } else if (e.error_code === 403 || e.error_code === 400) {
         await this.stopAndAlert(row, "STOPPED", "Telegram status message is unavailable; automatic replacement is disabled.");
       } else if (row.messageId === null) {

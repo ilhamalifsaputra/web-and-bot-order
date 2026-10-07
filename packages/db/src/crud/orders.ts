@@ -1974,6 +1974,9 @@ async function creditOrderToBalanceLocked(
       meta: `credit_to_balance by admin_id=${args.adminId}`,
     });
   }
+  // Credit can change the buyer-visible outcome even without a status change
+  // (already-cancelled recovery), or after a failure message was finalized.
+  await wakeFulfillmentMessage(db, order.id, now, { correctFinishedOutcome: true });
 
   logger.info(
     `Credited order ${order.orderCode} (${amount.toString()} ${currency}) to buyer's credit balance — approved by admin ${args.adminId}`,

@@ -2803,7 +2803,7 @@ describe("browseCategoryEntry — Game Top Up variant/region navigation + AUTO s
     ];
     const made: Array<{ id: number }> = [];
     for (const [name, n] of plans) {
-      const d = await createDenomination(prisma, { productId: p.id, name, type: "SHARED", durationLabel: name, price: "4480" });
+      const d = await createDenomination(prisma, { productId: p.id, name, type: "SHARED", durationLabel: name, price: "4480", sortOrder: made.length });
       if (n > 0) await bulkAddStock(prisma, d.id, Array.from({ length: n }, (_, i) => `cc${i}@example.com:pw${i}`));
       made.push(d);
     }

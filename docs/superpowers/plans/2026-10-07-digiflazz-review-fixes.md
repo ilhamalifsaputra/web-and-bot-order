@@ -22,7 +22,7 @@
 - Reuse the saved Telegram message ID; uncertain or stopped sends remain stopped.
 - A credited order is terminal; a later credit must correct a previously finalized failure/cancellation message.
 - Final and waiting message completion must remain recoverable across concurrent transitions and worker crashes.
-- Test with the dedicated local database only, and use one Vitest worker to limit memory.
+- Test with the dedicated local database only; use at most two Vitest workers with bounded heap for full-suite verification, and one worker for targeted tests.
 
 ## Review focus
 
@@ -55,4 +55,4 @@
 
 ## Integration verification
 
-The coordinator runs all workspace typechecks, test-source typechecking, production builds, migration drift/timestamp checks, frontend-boundary checks, storefront lint, detection-engine purity, and the complete Vitest suite with a single worker. An independent reviewer checks the whole fix diff before integration. Fetch before merging; merge and push to `origin/master` only after verification passes.
+The coordinator runs all workspace typechecks, test-source typechecking, production builds, migration drift/timestamp checks, frontend-boundary checks, storefront lint, detection-engine purity, and the complete Vitest suite with at most two workers. An independent reviewer checks the whole fix diff before integration. Fetch before merging; merge and push to `origin/master` only after verification passes.

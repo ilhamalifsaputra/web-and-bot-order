@@ -34,7 +34,16 @@ import {
   deleteSetting,
   createCatalogProduct,
   createDenomination,
+  triggerDigiflazzDispatch,
 } from "@app/db";
+import { routeOrderToDigiflazz } from "../../../tests/helpers/digiflazzRouting";
+
+// The instant Digiflazz dispatch is observed, not run: the webhook tests check
+// that it is started for a PROCESSING settlement, not what Digiflazz answers.
+vi.mock("@app/db", async (orig) => ({
+  ...(await orig<typeof import("@app/db")>()),
+  triggerDigiflazzDispatch: vi.fn(),
+}));
 import { Decimal } from "@app/core/money";
 import { buildApp } from "../src/server";
 
@@ -120,6 +129,7 @@ afterAll(async () => {
 beforeEach(async () => {
   await enablePaydisini();
   mockCheckTransaction = vi.fn();
+  vi.mocked(triggerDigiflazzDispatch).mockReset();
 });
 
 /** Create a PENDING_PAYMENT PAYDISINI order directly (bypassing checkout/cart) for webhook-only tests. */
@@ -182,6 +192,23 @@ describe("POST /pay/paydisini/callback", () => {
     const ledger = await prisma.processedPaydisiniTx.findUnique({ where: { trxId: "TRX-HAPPY-1" } });
     expect(ledger).not.toBeNull();
     expect(ledger!.outcome).toBe("matched");
+    // Delivered from stock: nothing for Digiflazz to do.
+    expect(triggerDigiflazzDispatch).not.toHaveBeenCalled();
+  });
+
+  it("starts the instant Digiflazz dispatch exactly once when the payment settles a Digiflazz order into PROCESSING", async () => {
+    const order = await createPendingPaydisiniOrder("ORD-PDDIGIFLAZZ", "50000");
+    await routeOrderToDigiflazz(prisma, order.id);
+    mockCheckTransaction.mockResolvedValue(liveAgrees({ amount: "50000", trxId: "TRX-DIGIFLAZZ-1" }));
+    const payload = signedPayload({ refId: order.orderCode, amount: "50000", trxId: "TRX-DIGIFLAZZ-1" });
+
+    const res = await app.inject({ method: "POST", url: "/pay/paydisini/callback", payload });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ status: "processing" });
+
+    expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe("PROCESSING");
+    expect(triggerDigiflazzDispatch).toHaveBeenCalledTimes(1);
+    expect(triggerDigiflazzDispatch).toHaveBeenCalledWith(order.id);
   });
 
   it("is idempotent: replaying the same trx id after delivery is a no-op (already_processed)", async () => {

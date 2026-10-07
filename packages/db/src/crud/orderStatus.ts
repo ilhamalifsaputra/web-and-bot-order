@@ -19,6 +19,17 @@ import { ValidationError } from "@app/core/errors";
 import { Decimal } from "@app/core/money";
 import type { PrismaClient, Tx } from "../client";
 import type { Db } from "./_types";
+import { wakeFulfillmentMessage } from "./fulfillmentMessages";
+
+/** Statuses after which the buyer's Telegram progress message shows its last text. */
+const FINAL_ORDER_STATUSES: ReadonlySet<string> = new Set([
+  OrderStatus.DELIVERED,
+  OrderStatus.PARTIALLY_DELIVERED,
+  OrderStatus.CANCELLED,
+  OrderStatus.REJECTED,
+  OrderStatus.REFUNDED,
+  OrderStatus.FAILED,
+]);
 
 export const LEGAL_TRANSITIONS: Record<string, readonly string[]> = {
   [OrderStatus.PENDING_PAYMENT]: [
@@ -145,6 +156,9 @@ export async function transitionOrderStatus(
   await db.orderStatusHistory.create({
     data: { orderId, status: to, meta: meta ?? null },
   });
+  // A final status ends the buyer's progress message promptly; a manual
+  // order's static WAITING line is not polled, so this is what moves it on.
+  if (FINAL_ORDER_STATUSES.has(to)) await wakeFulfillmentMessage(db, orderId);
 }
 
 /**

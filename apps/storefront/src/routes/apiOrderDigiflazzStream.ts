@@ -39,6 +39,9 @@ interface BuyerOrderDigiflazzSnapshot {
   fulfillment: OrderFulfillment;
 }
 
+/** getOrderFulfillment statuses after which the order can no longer change. */
+const TERMINAL_FULFILLMENT_STATUSES: ReadonlySet<OrderFulfillment["status"]> = new Set(["SUCCESS", "CANCELLED", "FAILED"]);
+
 async function readBuyerSnapshot(orderId: number): Promise<BuyerOrderDigiflazzSnapshot | null> {
   const order = await getOrderDigiflazzSnapshot(prisma, orderId);
   if (!order) return null;
@@ -80,6 +83,10 @@ const apiOrderDigiflazzStreamRoutes: FastifyPluginAsync = async (app) => {
         }),
       changed: (prev, next) => JSON.stringify(prev) !== JSON.stringify(next),
       pollIntervalMs: 5_000,
+      // Delivered, cancelled/expired/refunded or failed: nothing left to
+      // stream, so the server ends the response after that frame. NEEDS_REVIEW
+      // is not final — an admin can still finish the order.
+      isTerminal: (snapshot) => TERMINAL_FULFILLMENT_STATUSES.has(snapshot.fulfillment.status),
     });
   });
 };

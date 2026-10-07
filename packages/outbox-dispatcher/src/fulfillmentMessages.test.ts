@@ -1,6 +1,9 @@
 import { beforeAll, afterAll, beforeEach, describe, expect, it } from "vitest";
 import { PrismaClient } from "@prisma/client";
-import { addAdminIdToDb, createCategory, createCatalogProduct, createDenomination } from "@app/db";
+import {
+  addAdminIdToDb, createCategory, createCatalogProduct, createDenomination, createOrderDirect, deliverPaidBybitBscOrder, fulfillManualOrder,
+  recordBybitBscConfirmationProgress, recordBybitBscPaymentDetected, wakeFulfillmentMessage,
+} from "@app/db";
 import { provisionPgTestSchema } from "../../../tests/helpers/pgTestSchema";
 import { FulfillmentMessageWorker, type FulfillmentTelegramApi } from "./fulfillmentMessages";
 
@@ -18,11 +21,12 @@ beforeEach(async () => {
   now = new Date("2026-10-06T00:00:00.000Z");
 });
 
-async function seed(language = "en") {
+async function seed(language = "en", opts: { status?: string; provider?: string; paid?: boolean } = {}) {
   const user = await db.user.create({ data: { referralCode: crypto.randomUUID(), telegramId: BigInt(Math.floor(Math.random() * 1e9)), language } });
   const order = await db.order.create({ data: {
     orderCode: `ORD-${crypto.randomUUID()}`, userId: user.id, subtotalAmount: 1000,
-    totalAmount: 1000, status: "PROCESSING", paidAt: now, fulfillmentProvider: "DIGIFLAZZ", fulfillmentSku: "ML5",
+    totalAmount: 1000, status: opts.status ?? "PROCESSING", paidAt: opts.paid === false ? null : now,
+    fulfillmentProvider: opts.provider ?? "DIGIFLAZZ", fulfillmentSku: "ML5",
   } });
   await db.fulfillmentMessage.create({ data: { orderId: order.id, chatId: user.telegramId!, nextUpdateAt: now } });
   return order;
@@ -186,5 +190,314 @@ describe("persisted Telegram fulfillment status", () => {
     tg.failEdit(apiError(400, "Bad Request: message is not modified"));
     advance(); await worker(tg.api).tick();
     expect((await db.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } })).state).toBe("FINISHED");
+  });
+});
+
+const BRAILLE = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"];
+const frameOf = (text: string) => BRAILLE.find(f => text.includes(f));
+
+describe("customer progress phases in one Telegram message", () => {
+  it("shows a detected payment with a braille spinner and never as paid", async () => {
+    await seed("en", { status: "PAYMENT_DETECTED", paid: false });
+    const tg = telegram(); await worker(tg.api).tick();
+    expect(tg.sent).toHaveLength(1);
+    const text = tg.sent[0]!.text;
+    expect(text).toContain("💳 <b>Payment detected</b>");
+    expect(text).toContain("Verifying your payment...");
+    expect(frameOf(text)).toBeDefined();
+    expect(text).not.toMatch(/confirmed|completed|paid/i);
+  });
+
+  it("uses the Indonesian copy for the detected phase", async () => {
+    await seed("id", { status: "PENDING_VERIFICATION", paid: false });
+    const tg = telegram(); await worker(tg.api).tick();
+    expect(tg.sent[0]!.text).toContain("💳 <b>Pembayaran terdeteksi</b>");
+    expect(tg.sent[0]!.text).toContain("Sedang memverifikasi pembayaran...");
+  });
+
+  it("rotates spinner frames by editing the same message and skips identical text", async () => {
+    const order = await seed("en", { status: "PAYMENT_DETECTED", paid: false });
+    const tg = telegram(); const w = worker(tg.api);
+    await w.tick();
+    advance(); await w.tick();
+    expect(tg.edits).toHaveLength(1);
+    expect(tg.edits[0]!.id).toBe(tg.sent[0]!.id);
+    expect(frameOf(tg.edits[0]!.text)).not.toBe(frameOf(tg.sent[0]!.text));
+    // A full 8-frame cycle later the text is identical: no Telegram edit.
+    advance(16_000); await w.tick();
+    expect(tg.edits).toHaveLength(1);
+    expect((await db.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } })).state).toBe("ACTIVE");
+  });
+
+  it.each([
+    ["en", "Still verifying your payment…"],
+    ["id", "Masih memverifikasi pembayaran…"],
+  ])("slows a detected payment to a static line after ten minutes in that phase (%s)", async (lang, still) => {
+    const order = await seed(lang, { status: "PENDING_VERIFICATION", paid: false });
+    const tg = telegram(); const w = worker(tg.api);
+    await w.tick();
+    advance(9 * 60_000 + 58_000); await w.tick();
+    expect(frameOf(tg.edits.at(-1)!.text)).toBeDefined();
+    let row = await db.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } });
+    expect(row.nextUpdateAt.getTime()).toBe(now.getTime() + 2000);
+
+    advance(); await w.tick(); // ten minutes since the payment was first shown
+    const slow = tg.edits.at(-1)!.text;
+    expect(slow).toContain(still);
+    expect(frameOf(slow)).toBeUndefined();
+    row = await db.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } });
+    expect(row.state).toBe("ACTIVE");
+    expect(row.nextUpdateAt.getTime()).toBe(now.getTime() + 60_000);
+    const edits = tg.edits.length;
+    advance(59_000); await w.tick();
+    expect(tg.edits).toHaveLength(edits);
+    advance(1000); await w.tick(); // due again, same static text: no Telegram edit
+    expect(tg.edits).toHaveLength(edits);
+
+    // The backend moves on: the next due tick shows the new phase with its spinner.
+    await db.order.update({ where: { id: order.id }, data: { status: "PROCESSING", paidAt: now } });
+    advance(60_000); await w.tick();
+    expect(tg.edits.at(-1)!.text).not.toContain(still);
+    expect(frameOf(tg.edits.at(-1)!.text)).toBeDefined();
+    expect((await db.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } })).nextUpdateAt.getTime()).toBe(now.getTime() + 2000);
+    expect(tg.sent).toHaveLength(1);
+  });
+
+  it("restarts the ten-minute budget when the detected phase is left and entered again", async () => {
+    const order = await seed("en", { status: "PAYMENT_DETECTED", paid: false });
+    const tg = telegram(); const w = worker(tg.api);
+    await w.tick();
+    advance(8 * 60_000); await w.tick();
+    await db.order.update({ where: { id: order.id }, data: { status: "PENDING_PAYMENT" } });
+    advance(); await w.tick(); // payment withdrawn: idle, keeps the last text
+    await db.order.update({ where: { id: order.id }, data: { status: "PAYMENT_DETECTED" } });
+    advance(30_000); await w.tick(); // detected again: a fresh phase
+    advance(5 * 60_000); await w.tick();
+    expect(frameOf(tg.edits.at(-1)!.text)).toBeDefined();
+    expect(tg.edits.at(-1)!.text).not.toContain("Still verifying");
+  });
+
+  it("moves the same message from detected to the fulfillment spinner once paid, then stops on success", async () => {
+    const order = await seed("en", { status: "PAYMENT_DETECTED", paid: false });
+    const tg = telegram(); const w = worker(tg.api);
+    await w.tick();
+    await db.order.update({ where: { id: order.id }, data: { status: "PROCESSING", paidAt: now } });
+    advance(); await w.tick();
+    expect(tg.edits[0]!.text).toContain("✅ <b>Payment confirmed</b>");
+    expect(tg.edits[0]!.text).toContain("Starting your top-up...");
+    expect(frameOf(tg.edits[0]!.text)).toBeDefined();
+    await db.order.update({ where: { id: order.id }, data: { digiflazzDispatchedAt: now } });
+    advance(); await w.tick();
+    expect(tg.edits[1]!.text).toContain("Sending your order to the provider...");
+    await db.order.update({ where: { id: order.id }, data: { digiflazzAttempts: 1 } });
+    advance(); await w.tick();
+    expect(tg.edits[2]!.text).toContain("Processing your top-up...");
+    await db.order.update({ where: { id: order.id }, data: { status: "DELIVERED", deliveredAt: now } });
+    advance(); await w.tick();
+    expect(tg.edits[3]!.text).toContain("✅ <b>Top-up completed</b>");
+    expect(tg.edits[3]!.text).toContain("Your top-up was delivered successfully.");
+    expect(frameOf(tg.edits[3]!.text)).toBeUndefined();
+    advance(60_000); await w.tick();
+    expect(tg.sent).toHaveLength(1); expect(tg.edits).toHaveLength(4);
+  });
+
+  it("uses generic product wording for stock orders", async () => {
+    const order = await seed("en", { provider: "STOCK" });
+    const tg = telegram(); const w = worker(tg.api);
+    await w.tick();
+    expect(tg.sent[0]!.text).toContain("Preparing your product...");
+    await db.order.update({ where: { id: order.id }, data: { status: "DELIVERED", deliveredAt: now } });
+    advance(); await w.tick();
+    expect(tg.edits[0]!.text).toContain("✅ <b>Order completed</b>");
+    expect(tg.edits[0]!.text).not.toMatch(/top-up/i);
+  });
+
+  it("ends a manual order on a static waiting line instead of spinning for hours", async () => {
+    const order = await seed("en", { provider: "MANUAL" });
+    const tg = telegram(); const w = worker(tg.api);
+    await w.tick();
+    expect(tg.sent[0]!.text).toContain("Adding your order to the preparation queue...");
+    expect(frameOf(tg.sent[0]!.text)).toBeDefined();
+    advance(); await w.tick();
+    const waiting = tg.edits[0]!.text;
+    expect(waiting).toContain("🕒 <b>Payment confirmed</b>");
+    expect(waiting).toContain("Your order is waiting to be prepared. We'll update this message when it's ready.");
+    expect(frameOf(waiting)).toBeUndefined();
+    expect(waiting).not.toMatch(/provider|top-up|admin/i);
+    for (let i = 0; i < 30; i++) { advance(); await w.tick(); }
+    expect(tg.edits).toHaveLength(1);
+    expect((await db.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } })).state).toBe("WAITING");
+    // WAITING is never re-polled; the final transition wakes the row instead.
+    await db.order.update({ where: { id: order.id }, data: { status: "DELIVERED", deliveredAt: now } });
+    advance(10 * 60_000); await w.tick();
+    expect(tg.edits).toHaveLength(1);
+    await wakeFulfillmentMessage(db, order.id, now);
+    await w.tick();
+    expect(tg.edits).toHaveLength(2);
+    expect(tg.edits[1]!.text).toContain("✅ <b>Order completed</b>");
+    expect(tg.sent).toHaveLength(1);
+  });
+
+  it("words review for the buyer without internal fulfillment jargon", async () => {
+    const order = await seed("en");
+    await db.order.update({ where: { id: order.id }, data: { digiflazzStatus: "failed" } });
+    const tg = telegram(); await worker(tg.api).tick();
+    expect(tg.sent[0]!.text).toContain("⚠️ <b>Order under review</b>");
+    expect(tg.sent[0]!.text).not.toMatch(/manual fulfil|admin must|admin/i);
+  });
+
+  it("does not send anything for an order whose payment was never seen, and drops it silently if it expires", async () => {
+    const order = await seed("en", { status: "PENDING_PAYMENT", paid: false });
+    const tg = telegram(); const w = worker(tg.api);
+    await w.tick();
+    expect(tg.sent).toHaveLength(0);
+    expect((await db.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } })).state).toBe("READY");
+    await db.order.update({ where: { id: order.id }, data: { status: "EXPIRED" } });
+    advance(); await w.tick();
+    expect(tg.sent).toHaveLength(0);
+    expect((await db.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } })).state).toBe("FINISHED");
+  });
+
+  it("does not let many waiting manual orders starve a spinner", async () => {
+    const tg = telegram(); const w = worker(tg.api);
+    for (let i = 0; i < 12; i++) await seed("en", { provider: "MANUAL" });
+    await w.tick(); advance(); await w.tick(); // first ten: send then go WAITING
+    advance(); await w.tick(); advance(); await w.tick(); // last two
+    expect(await db.fulfillmentMessage.count({ where: { state: "WAITING" } })).toBe(12);
+    const spinning = await seed("en", { status: "PAYMENT_DETECTED", paid: false });
+    // Due after every waiting row would have been due again under a 60s re-poll.
+    await db.fulfillmentMessage.update({ where: { orderId: spinning.id }, data: { nextUpdateAt: new Date(now.getTime() + 4 * 60_000) } });
+    advance(5 * 60_000); await w.tick();
+    expect(tg.sent.filter(s => s.text.includes(spinning.orderCode))).toHaveLength(1);
+  });
+
+  it("wakes itself when the order ends while the waiting line is being written", async () => {
+    const order = await seed("en", { provider: "MANUAL" });
+    const tg = telegram(); const w = worker(tg.api);
+    await w.tick();
+    // The admin delivers the order after the worker read it as still queued.
+    const api = { ...tg.api, editMessageText: async (...args: Parameters<FulfillmentTelegramApi["editMessageText"]>) => {
+      await db.order.update({ where: { id: order.id }, data: { status: "DELIVERED", deliveredAt: now } });
+      return tg.api.editMessageText(...args);
+    } } as FulfillmentTelegramApi;
+    advance(); await worker(api).tick();
+    const row = await db.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } });
+    expect(row.state).not.toBe("WAITING");
+    expect(row.nextUpdateAt.getTime()).toBeLessThanOrEqual(now.getTime());
+    await w.tick();
+    expect(tg.edits.at(-1)!.text).toContain("✅ <b>Order completed</b>");
+  });
+
+  it("keeps the last text when a sent message's order falls back to awaiting payment", async () => {
+    const order = await seed("en", { status: "PAYMENT_DETECTED", paid: false });
+    const tg = telegram(); const w = worker(tg.api);
+    await w.tick();
+    await db.order.update({ where: { id: order.id }, data: { status: "PENDING_PAYMENT" } });
+    advance(); await w.tick();
+    expect(tg.edits).toHaveLength(0);
+    const row = await db.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } });
+    expect(row.lastText).toBe(tg.sent[0]!.text);
+    expect(row.finishedAt).toBeNull();
+    expect(row.claimedAt).toBeNull();
+  });
+
+  it("shows an underpaid order as a static review, not a verifying spinner", async () => {
+    const order = await seed("en", { status: "UNDERPAID", paid: false });
+    const tg = telegram(); await worker(tg.api).tick();
+    expect(tg.sent[0]!.text).toContain("⚠️ <b>Order under review</b>");
+    expect(tg.sent[0]!.text).not.toContain("Verifying your payment");
+    expect(frameOf(tg.sent[0]!.text)).toBeUndefined();
+    expect((await db.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } })).state).toBe("REVIEW");
+  });
+
+  it("stays silent when a stock order is already delivered before its first message", async () => {
+    const order = await seed("en", { provider: "STOCK", status: "DELIVERED" });
+    const tg = telegram(); await worker(tg.api).tick();
+    expect(tg.sent).toHaveLength(0);
+    const row = await db.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } });
+    expect(row.state).toBe("FINISHED");
+    expect(row.finishedAt).not.toBeNull();
+  });
+
+  it.each([["en", "credited to your wallet balance"], ["id", "dikreditkan ke saldo dompet"]])("tells the buyer a credited order went to the wallet balance (%s)", async (lang, phrase) => {
+    const order = await seed(lang, { provider: "MANUAL" });
+    const tg = telegram(); const w = worker(tg.api);
+    await w.tick();
+    await db.order.update({ where: { id: order.id }, data: { status: "CANCELLED" } });
+    await db.walletTransaction.create({ data: { userId: order.userId, delta: 1000, balanceAfter: 1000, reason: "unfulfilled_credit", orderId: order.id } });
+    await wakeFulfillmentMessage(db, order.id, now);
+    advance(); await w.tick();
+    expect(tg.edits.at(-1)!.text).toContain(phrase);
+    expect(tg.edits.at(-1)!.text).not.toMatch(/cancelled|dibatalkan/i);
+  });
+});
+
+describe("a Bybit BSC order gets one buyer-visible progress message", () => {
+  it("sends nothing while the payment bubble tracks confirmations, then one message from payment to delivery", async () => {
+    // The crud helpers stamp rows with the real clock; run the worker on it too.
+    now = new Date();
+    const user = await db.user.create({ data: { referralCode: crypto.randomUUID(), telegramId: BigInt(Math.floor(Math.random() * 1e9)), language: "en" } });
+    const category = await createCategory(db, crypto.randomUUID());
+    const product = await createCatalogProduct(db, { categoryId: category.id, name: "Manual BSC" });
+    const denomination = await createDenomination(db, {
+      productId: product.id, name: "Manual", type: "SHARED", durationLabel: "1 Month", price: "10.00", deliveryType: "manual",
+    });
+    const order = (await createOrderDirect(db, { channel: "bot", user, productId: denomination.id, quantity: 1 }))!;
+    await db.order.update({ where: { id: order.id }, data: { paymentMethod: "BYBIT_BSC" } });
+    const tg = telegram(); const w = worker(tg.api);
+    const txId = "0x" + "c".repeat(64);
+
+    await recordBybitBscPaymentDetected(db, { orderId: order.id, bybitTxId: txId, network: "BSC" });
+    advance(); await w.tick();
+    await recordBybitBscConfirmationProgress(db, { orderId: order.id, confirmations: 1, requiredConfirmations: 2 });
+    advance(); await w.tick();
+    await recordBybitBscConfirmationProgress(db, { orderId: order.id, confirmations: 2, requiredConfirmations: 2 });
+    advance(); await w.tick();
+    expect(tg.sent).toHaveLength(0);
+
+    expect((await deliverPaidBybitBscOrder(db, { orderId: order.id, bybitTxId: txId, amount: order.totalAmount })).status).toBe("processing");
+    advance(); await w.tick(); advance(); await w.tick();
+    expect(tg.sent).toHaveLength(1);
+    expect(tg.sent[0]!.text).not.toContain("Payment detected");
+
+    await db.$transaction(tx => fulfillManualOrder(tx, order.id, { adminId: user.id, content: "code-bsc" }));
+    advance(); await w.tick();
+    expect(tg.sent).toHaveLength(1);
+    expect(tg.edits.at(-1)!.text).toContain("✅ <b>Order completed</b>");
+    expect(new Set(tg.edits.map(e => e.id))).toEqual(new Set([tg.sent[0]!.id]));
+  });
+});
+
+describe("message failures alert admins only for Digiflazz orders", () => {
+  async function admin() {
+    const a = await db.user.create({ data: { referralCode: crypto.randomUUID(), telegramId: BigInt(Math.floor(Math.random() * 1e9)), role: "ADMIN" } });
+    await addAdminIdToDb(db, Number(a.telegramId));
+  }
+  const alerts = (orderId: number) => db.notificationOutbox.count({ where: { orderId, event: "ORDER_PIPELINE_FAILED" } });
+
+  it.each(["MANUAL", "STOCK"])("marks an uncertain %s send without paging admins", async (provider) => {
+    await admin();
+    const order = await seed("en", { provider });
+    const tg = telegram(); tg.failSend(new Error("socket closed before acknowledgement"));
+    await worker(tg.api).tick();
+    expect((await db.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } })).state).toBe("UNCERTAIN");
+    expect(await alerts(order.id)).toBe(0);
+  });
+
+  it.each(["MANUAL", "STOCK"])("stops a blocked %s chat without paging admins", async (provider) => {
+    await admin();
+    const order = await seed("en", { provider });
+    const tg = telegram(); tg.failSend(apiError(403, "Forbidden: bot was blocked by the user"));
+    await worker(tg.api).tick();
+    expect((await db.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } })).state).toBe("STOPPED");
+    expect(await alerts(order.id)).toBe(0);
+  });
+
+  it("still pages admins when a Digiflazz order's message is lost", async () => {
+    await admin();
+    const order = await seed("en", { provider: "DIGIFLAZZ" });
+    const tg = telegram(); tg.failSend(apiError(403, "Forbidden: bot was blocked by the user"));
+    await worker(tg.api).tick();
+    expect(await alerts(order.id)).toBeGreaterThan(0); // one row per registered admin
   });
 });

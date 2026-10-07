@@ -54,8 +54,13 @@ vi.mock("@app/db", async (orig) => {
     claimGatewaySlot: vi.fn(actual.claimGatewaySlot),
     getOrder: vi.fn(actual.getOrder),
     getOrderRaw: vi.fn(actual.getOrderRaw),
+    // Observed, not run: the settlement-path tests check that the instant
+    // Digiflazz dispatch is started, not what Digiflazz answers.
+    triggerDigiflazzDispatch: vi.fn(),
   };
 });
+import { triggerDigiflazzDispatch } from "@app/db";
+import { DIGIFLAZZ_CUSTOMER_DATA, routeDenominationToDigiflazz, routeOrderToDigiflazz } from "../../../tests/helpers/digiflazzRouting";
 
 import { prisma, createOrderDirect, upsertBulkPricing, deleteBulkPricing, attachPaymentProof, approveOrder, getOrder, getOrderRaw, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createCategory, createDenomination, updateDenomination, bulkAddStock, finalizeOrderPayment, listPendingTokopayOrders, createBybitBscOrder, adjustWallet, getCatalogProduct, settlePaidOrder, fulfillManualOrder, claimGatewaySlot, createPaymentAttempt, MAX_CART_ORDER_UNITS, BINANCE_UID_KEY, BINANCE_API_KEY_KEY, BINANCE_API_SECRET_KEY, BYBIT_UID_KEY, BYBIT_API_KEY_KEY, BYBIT_API_SECRET_KEY, BYBIT_BSC_DEPOSIT_ADDRESS_KEY, BYBIT_BSC_ENABLED_KEY, KOKINPAY_API_KEY_KEY } from "@app/db";
 import { BANNER_IMAGE_KEY } from "../src/util/banner";
@@ -6603,5 +6608,78 @@ describe("checkout handlers on an order with an unreadable reserved credential",
     const { ctx, sink } = customerCtx({ callbackData: `v1:checkout:refresh:${order.id}` });
     await checkout.refreshPaymentStatus(ctx, order.id);
     expect(calls(sink, "answerCallbackQuery").length).toBeGreaterThan(0);
+  });
+});
+
+describe("instant Digiflazz dispatch from the bot's own settlement paths", () => {
+  beforeEach(() => {
+    vi.mocked(triggerDigiflazzDispatch).mockReset();
+  });
+
+  it("admin approve starts the dispatch exactly once for a Digiflazz order it settles into PROCESSING, before any Telegram reply", async () => {
+    const order = (await makeOrder())!;
+    await routeOrderToDigiflazz(prisma, order.id);
+    await attachPaymentProof(prisma, order.id, { fileId: "proof-file", txid: "TX1234567890" });
+    const { ctx, sink } = adminCtx({ callbackData: `v1:adm:verif:approve:${order.id}` });
+    let telegramCallsAtTrigger = -1;
+    vi.mocked(triggerDigiflazzDispatch).mockImplementationOnce(() => {
+      telegramCallsAtTrigger = sink.length;
+    });
+
+    await verification.approve(ctx, order.id);
+
+    expect((await getOrder(prisma, order.id))!.status).toBe(OrderStatus.PROCESSING);
+    expect(triggerDigiflazzDispatch).toHaveBeenCalledTimes(1);
+    expect(triggerDigiflazzDispatch).toHaveBeenCalledWith(order.id);
+    expect(telegramCallsAtTrigger).toBe(0);
+    expect(sink.length).toBeGreaterThan(0);
+  });
+
+  it("admin approve of an order delivered from stock starts no dispatch", async () => {
+    const order = (await makeOrder())!;
+    await attachPaymentProof(prisma, order.id, { fileId: "proof-file", txid: "TX1234567890" });
+    const { ctx } = adminCtx({ callbackData: `v1:adm:verif:approve:${order.id}` });
+
+    await verification.approve(ctx, order.id);
+
+    expect((await getOrder(prisma, order.id))!.status).toBe(OrderStatus.DELIVERED);
+    expect(triggerDigiflazzDispatch).not.toHaveBeenCalled();
+  });
+
+  it("wallet checkout starts the dispatch exactly once for a Digiflazz order it settles into PROCESSING, before the confirmation edit", async () => {
+    await routeDenominationToDigiflazz(prisma, sample.product.id);
+    await adjustWallet(prisma, sample.user.id, "10", { currency: "IDR", reason: "admin_adjust" });
+    const { ctx, sink } = customerCtx({
+      callbackData: `v1:walletpay:${sample.product.id}:1`,
+      session: { ...userSession(), scratch: { useWalletIdr: true, customerData: DIGIFLAZZ_CUSTOMER_DATA } },
+    });
+    let telegramCallsAtTrigger = -1;
+    vi.mocked(triggerDigiflazzDispatch).mockImplementationOnce(() => {
+      telegramCallsAtTrigger = sink.length;
+    });
+
+    await checkout.completeOrderWithWallet(ctx, sample.product.id, 1);
+
+    const [order] = await prisma.order.findMany({ where: { userId: sample.user.id }, orderBy: { id: "desc" }, take: 1 });
+    expect(order!.status).toBe(OrderStatus.PROCESSING);
+    expect(order!.paymentMethod).toBe(PaymentMethod.WALLET);
+    expect(triggerDigiflazzDispatch).toHaveBeenCalledTimes(1);
+    expect(triggerDigiflazzDispatch).toHaveBeenCalledWith(order!.id);
+    expect(telegramCallsAtTrigger).toBe(0);
+    expect(sink.length).toBeGreaterThan(0);
+  });
+
+  it("wallet checkout of an order delivered from stock starts no dispatch", async () => {
+    await adjustWallet(prisma, sample.user.id, "10", { currency: "IDR", reason: "admin_adjust" });
+    const { ctx } = customerCtx({
+      callbackData: `v1:walletpay:${sample.product.id}:1`,
+      session: { ...userSession(), scratch: { useWalletIdr: true } },
+    });
+
+    await checkout.completeOrderWithWallet(ctx, sample.product.id, 1);
+
+    const [order] = await prisma.order.findMany({ where: { userId: sample.user.id }, orderBy: { id: "desc" }, take: 1 });
+    expect(order!.status).toBe(OrderStatus.DELIVERED);
+    expect(triggerDigiflazzDispatch).not.toHaveBeenCalled();
   });
 });

@@ -59,7 +59,7 @@ describe("OrdersPage", () => {
   it("uses the canonical automatic fulfillment badge for a processing top-up", async () => {
     renderOrders(() => ({ orders: [{ ...TWO_ORDERS.orders[0], status: "PROCESSING", fulfillment: { mode: "AUTO", provider: "DIGIFLAZZ", status: "PROCESSING", payment_status: "PAID", can_edit_customer_data: false } }] }));
     expect(await screen.findByText("Processing")).toBeInTheDocument();
-    expect(screen.queryByText("Being prepared")).not.toBeInTheDocument();
+    expect(screen.queryByText("Waiting to be prepared")).not.toBeInTheDocument();
   });
   beforeEach(() => {
     document.documentElement.lang = "en";

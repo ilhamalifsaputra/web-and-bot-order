@@ -47,6 +47,7 @@ import type { FastifyInstance } from "fastify";
 import { cleanupTestDb } from "./setup-env";
 import { decryptDeliveredContent, encryptDeliveredContent } from "@app/core/credentialCrypto";
 import { logger } from "@app/core/logger";
+import { DigiflazzRequestError } from "@app/core/suppliers/digiflazz";
 import {
   prisma,
   initDb,
@@ -55,8 +56,8 @@ import {
   createCatalogProduct,
   createDenomination,
   recordDigiflazzOutcome,
-  DIGIFLAZZ_RECHECK_SCHEDULE_SECONDS,
   dispatchPendingDigiflazzOrders,
+  dispatchDigiflazzOrderNow,
   DIGIFLAZZ_USERNAME_KEY,
   DIGIFLAZZ_API_KEY_KEY,
   DIGIFLAZZ_WEBHOOK_SECRET_KEY,
@@ -379,6 +380,89 @@ describe("Digiflazz webhook signature (X-Hub-Signature, HMAC-SHA1 over the raw b
       warn.mockRestore();
     }
   });
+
+  it("logs digiflazz.webhook_received for a verified delivery with the ref, status and time since dispatch, and nothing secret", async () => {
+    const order = await createProcessingDigiflazzOrder("ORD-DF-TIMING-OK", "15000", {
+      digiflazzDispatchedAt: new Date(Date.now() - 5_000),
+    });
+    digiflazzSupplierMock.createTransaction.mockResolvedValue(live(order.orderCode, "Sukses", "SN-TIMING"));
+    const info = vi.spyOn(logger, "info");
+    const raw = webhookBody({ refId: order.orderCode, status: "Sukses", sn: "SN-TIMING" });
+    const signature = hubSignature(raw);
+    try {
+      const res = await app.inject(delivery(raw, signature));
+      expect(res.statusCode).toBe(200);
+      const received = info.mock.calls.filter(
+        (c) => c[0] && typeof c[0] === "object" && (c[0] as { event?: string }).event === "digiflazz.webhook_received",
+      );
+      expect(received).toHaveLength(1);
+      expect(received[0]![0]).toEqual({
+        event: "digiflazz.webhook_received",
+        orderId: order.id,
+        orderCode: order.orderCode,
+        refId: order.orderCode,
+        callbackStatus: "Sukses",
+        msSinceDispatch: expect.any(Number),
+      });
+      expect((received[0]![0] as { msSinceDispatch: number }).msSinceDispatch).toBeGreaterThanOrEqual(5_000);
+      expect(String(received[0]![1])).toContain(order.orderCode);
+      const logged = JSON.stringify(info.mock.calls);
+      expect(logged).not.toContain(WEBHOOK_SECRET);
+      expect(logged).not.toContain(signature.slice("sha1=".length));
+      expect(logged).not.toContain(API_KEY);
+      expect(logged).not.toContain("123456789"); // the body's customer_no
+    } finally {
+      info.mockRestore();
+    }
+  });
+
+  it.each([
+    ["an HTTP 400", () => new DigiflazzRequestError("Digiflazz transaction HTTP 400", "http_4xx", 400)],
+    ["a reply without transaction data", () => new DigiflazzRequestError("Digiflazz transaction rejected: missing data in response", "rejected")],
+  ])("a recheck that gets %s stays pending at the supplier, and a later signed Sukses webhook delivers the order", async (_label, makeError) => {
+    // Already submitted under its ref id: Digiflazz may be processing it.
+    // Dispatched 5 s ago, so the backoff anchored on it puts the next recheck
+    // in the future.
+    const order = await createProcessingDigiflazzOrder(`ORD-DF-RECHECK-${makeError().kind}`, "15000", {
+      digiflazzDispatchedAt: new Date(Date.now() - 5_000),
+      digiflazzNextRecheckAt: new Date(Date.now() - 1_000),
+    });
+    await prisma.order.update({ where: { id: order.id }, data: { digiflazzAttempts: 1 } });
+    digiflazzSupplierMock.createTransaction.mockRejectedValueOnce(makeError());
+
+    await dispatchDigiflazzOrderNow(prisma, order.id);
+    const afterRecheck = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(afterRecheck.status).toBe("PROCESSING");
+    expect(afterRecheck.digiflazzStatus).toBe("pending_at_supplier");
+    expect(afterRecheck.digiflazzAttempts).toBe(2);
+    expect(afterRecheck.digiflazzNextRecheckAt!.getTime()).toBeGreaterThan(Date.now());
+    expect(await prisma.auditLog.count({ where: { action: "order.digiflazz_dispatch_failed", targetId: order.id } })).toBe(0);
+
+    // Digiflazz finishes the purchase and calls back (after the scheduled
+    // recheck time, so the webhook is not refused by the in-flight lease).
+    await prisma.order.update({ where: { id: order.id }, data: { digiflazzNextRecheckAt: new Date(Date.now() - 1_000) } });
+    digiflazzSupplierMock.createTransaction.mockResolvedValue(live(order.orderCode, "Sukses", "SN-AFTER-RECHECK"));
+    const res = await app.inject(signedPayload({ refId: order.orderCode, status: "Sukses", sn: "SN-AFTER-RECHECK" }));
+    expect(res.statusCode).toBe(200);
+
+    const delivered = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(delivered.status).toBe("DELIVERED");
+    expect(decryptDeliveredContent(delivered.deliveredContent, order.id)).toBe("SN-AFTER-RECHECK");
+    const refIds = digiflazzSupplierMock.createTransaction.mock.calls.map((c) => (c[1] as { refId: string }).refId);
+    expect(refIds).toEqual([order.orderCode, order.orderCode]);
+  });
+
+  it("does not log digiflazz.webhook_received for a delivery whose signature fails", async () => {
+    const order = await createProcessingDigiflazzOrder("ORD-DF-TIMING-BAD");
+    const info = vi.spyOn(logger, "info");
+    try {
+      const res = await app.inject(signedPayload({ refId: order.orderCode, secret: "not-the-shop-secret" }));
+      expect(res.statusCode).toBe(403);
+      expect(JSON.stringify(info.mock.calls)).not.toContain("digiflazz.webhook_received");
+    } finally {
+      info.mockRestore();
+    }
+  });
 });
 
 /**
@@ -393,24 +477,30 @@ describe("Digiflazz webhook signature (X-Hub-Signature, HMAC-SHA1 over the raw b
 describe("Digiflazz callback replay cannot place a second purchase (Task B3d)", () => {
   const pending = (refId: string) => ({ refId, status: "Pending", sn: null, message: null, price: null });
 
+  // Instant dispatch Task 4: a webhook Pending no longer moves the recheck
+  // into the lease window, so a replay that lands AFTER the first re-check
+  // finished may legitimately run its own (one-at-a-time) re-check. What must
+  // hold is the overlap case: while one re-check is in flight, a replay is
+  // refused. The first request is held inside createTransaction until the
+  // replay has been answered, so the two really overlap.
   it("two concurrent replays of one callback run only one live re-check", async () => {
-    // Dispatched just now, so the Pending outcome schedules the first recheck
-    // (+10s) inside the claim lease: a replay landing after the first re-check
-    // finished is still refused. A stale dispatch time would make that recheck
-    // already due (new front-loaded schedule), which is legitimately claimable.
-    const order = await createProcessingDigiflazzOrder("ORD-DF-B3D-RACE","15000", { digiflazzDispatchedAt: new Date() });
-    digiflazzSupplierMock.createTransaction.mockImplementation(
-      () => new Promise((r) => setTimeout(() => r(pending(order.orderCode)), 150)),
-    );
+    const order = await createProcessingDigiflazzOrder("ORD-DF-B3D-RACE", "15000", { digiflazzDispatchedAt: new Date() });
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    digiflazzSupplierMock.createTransaction.mockImplementation(async () => {
+      await held;
+      return pending(order.orderCode);
+    });
     const payload = signedPayload({ refId: order.orderCode, status: "Sukses", sn: "SN-X" });
 
-    const [a, b] = await Promise.all([
-      app.inject(payload),
-      app.inject(payload),
-    ]);
+    const first = app.inject(payload);
+    await vi.waitFor(() => expect(digiflazzSupplierMock.createTransaction).toHaveBeenCalledTimes(1), { timeout: 10_000 });
+    const second = await app.inject(payload);
+    release();
+    const a = await first;
 
     expect(a.statusCode).toBe(200);
-    expect(b.statusCode).toBe(200);
+    expect(second.statusCode).toBe(200);
     expect(digiflazzSupplierMock.createTransaction).toHaveBeenCalledTimes(1);
   });
 
@@ -438,7 +528,7 @@ describe("Digiflazz callback replay cannot place a second purchase (Task B3d)", 
 
   it("does not re-check while the poller holds its in-flight claim lease on the order", async () => {
     const order = await createProcessingDigiflazzOrder("ORD-DF-B3D-LEASED", "15000", {
-      digiflazzNextRecheckAt: new Date(Date.now() + 60_000), // inside the poller's claim lease
+      digiflazzNextRecheckAt: new Date(Date.now() + 30_000), // inside the poller's 45-second claim lease
     });
     const res = await app.inject(signedPayload({ refId: order.orderCode }));
     expect(res.statusCode).toBe(200);
@@ -653,15 +743,18 @@ describe("POST /pay/digiflazz/callback", () => {
     expect(updated!.status).toBe("PROCESSING");
   });
 
-  // Task 7: unlike before (a bare no-op comment), a Pending callback now
-  // advances the same recordDigiflazzOutcome backoff schedule the poller
-  // uses, so a webhook-driven Pending report stops being invisible to the
-  // realtime status feature.
-  it("a Pending callback advances the backoff schedule via recordDigiflazzOutcome and leaves the order PROCESSING", async () => {
-    // Dispatched "now", so the recheck delta below is measured from the same
-    // anchor recordDigiflazzOutcome uses (the order's dispatch time).
+  // Task 7 routed a webhook-driven Pending through recordDigiflazzOutcome;
+  // instant dispatch Task 4 changed what that write does for a webhook: it
+  // no longer consumes a backoff attempt or moves the schedule (a replayable
+  // callback must not be able to burn the 24h window). It puts the recheck
+  // time back to the value it had before the webhook took its lease.
+  it("a Pending callback leaves the order PROCESSING without consuming a backoff attempt or moving the scheduled recheck", async () => {
     const before = new Date();
-    const order = await createProcessingDigiflazzOrder("ORD-DFPENDING", "15000", { digiflazzDispatchedAt: before });
+    const scheduled = new Date(Date.now() + 30 * 60_000);
+    const order = await createProcessingDigiflazzOrder("ORD-DFPENDING", "15000", {
+      digiflazzDispatchedAt: before,
+      digiflazzNextRecheckAt: scheduled,
+    });
     digiflazzSupplierMock.createTransaction.mockResolvedValue({
       refId: order.orderCode,
       status: "Pending",
@@ -678,16 +771,9 @@ describe("POST /pay/digiflazz/callback", () => {
     const updated = await prisma.order.findUnique({ where: { id: order.id } });
     expect(updated!.status).toBe("PROCESSING");
     expect(updated!.digiflazzStatus).toBe("pending_at_supplier");
-    expect(updated!.digiflazzAttempts).toBe(1);
-    expect(updated!.digiflazzNextRecheckAt).not.toBeNull();
-    // DIGIFLAZZ_RECHECK_SCHEDULE_SECONDS[0] ahead (digiflazzBackoff.ts) — same delta-check pattern as digiflazz.test.ts's
-    // D2 case ("leaves a Pending order PROCESSING with the claim set").
-    const deltaMs = updated!.digiflazzNextRecheckAt!.getTime() - before.getTime();
-    // First recheck is due DIGIFLAZZ_RECHECK_SCHEDULE_SECONDS[0] after dispatch
-    // (digiflazzBackoff.ts); a slow test run may only push it later (never
-    // scheduled in the past), and it must stay far below the second step.
-    expect(deltaMs).toBeGreaterThanOrEqual(DIGIFLAZZ_RECHECK_SCHEDULE_SECONDS[0] * 1000);
-    expect(deltaMs).toBeLessThan(DIGIFLAZZ_RECHECK_SCHEDULE_SECONDS[2] * 1000);
+    expect(updated!.digiflazzAttempts).toBe(0);
+    expect(updated!.digiflazzNextRecheckAt).toEqual(scheduled);
+    expect(digiflazzSupplierMock.createTransaction).toHaveBeenCalledTimes(1);
   });
 
   // Review fix (Important, post-Task-12): a validly-signed replay for an
@@ -743,9 +829,16 @@ describe("POST /pay/digiflazz/callback", () => {
   // recordDigiflazzOutcome's "transient_error" kind — the same retryable
   // treatment dispatchPendingDigiflazzOrders' own catch block gives an
   // in-flight HTTP failure — while still never surfacing as an HTTP 500.
+  // Instant dispatch Task 4: the transient error is still recorded (the
+  // failure detail is visible to admins) but, like a webhook Pending, it does
+  // not consume a backoff attempt or move the scheduled recheck.
   it("leaves the order PROCESSING, records a retryable transient error, and still 200s when the live re-check itself throws", async () => {
     const before = new Date();
-    const order = await createProcessingDigiflazzOrder("ORD-DFLIVEFAIL", "15000", { digiflazzDispatchedAt: before });
+    const scheduled = new Date(Date.now() + 30 * 60_000);
+    const order = await createProcessingDigiflazzOrder("ORD-DFLIVEFAIL", "15000", {
+      digiflazzDispatchedAt: before,
+      digiflazzNextRecheckAt: scheduled,
+    });
     digiflazzSupplierMock.createTransaction.mockRejectedValue(new Error("Digiflazz transaction failed: request timed out"));
     const payload = signedPayload({ refId: order.orderCode, status: "Sukses", sn: "SN-1" });
 
@@ -757,14 +850,8 @@ describe("POST /pay/digiflazz/callback", () => {
     expect(updated!.status).toBe("PROCESSING");
     expect(updated!.deliveredContent).toBeNull();
     expect(updated!.digiflazzStatus).toBe("pending_at_supplier");
-    expect(updated!.digiflazzAttempts).toBe(1);
-    expect(updated!.digiflazzNextRecheckAt).not.toBeNull();
-    const deltaMs = updated!.digiflazzNextRecheckAt!.getTime() - before.getTime();
-    // First recheck is due DIGIFLAZZ_RECHECK_SCHEDULE_SECONDS[0] after dispatch
-    // (digiflazzBackoff.ts); a slow test run may only push it later (never
-    // scheduled in the past), and it must stay far below the second step.
-    expect(deltaMs).toBeGreaterThanOrEqual(DIGIFLAZZ_RECHECK_SCHEDULE_SECONDS[0] * 1000);
-    expect(deltaMs).toBeLessThan(DIGIFLAZZ_RECHECK_SCHEDULE_SECONDS[2] * 1000);
+    expect(updated!.digiflazzAttempts).toBe(0);
+    expect(updated!.digiflazzNextRecheckAt).toEqual(scheduled);
     expect(updated!.digiflazzFailureDetail).toContain("Digiflazz transaction failed: request timed out");
   });
 
@@ -794,12 +881,13 @@ describe("POST /pay/digiflazz/callback", () => {
 
   // Task 7 cross-entry-point proof: the poller (dispatchPendingDigiflazzOrders)
   // and this webhook's live re-check both funnel into the SAME
-  // recordDigiflazzOutcome — this test proves that claim is real by having
-  // the poller dispatch an order to Pending first (digiflazzAttempts -> 1),
-  // then sending this webhook a Pending callback for the SAME order and
-  // checking digiflazzAttempts continues to 2 rather than resetting to 1,
-  // which would only happen if the webhook ran its own independent counter.
-  it("a webhook Pending report picks up where the poller's own dispatch left off (shared attempt/backoff schedule, not reset)", async () => {
+  // recordDigiflazzOutcome — the poller dispatches an order to Pending first
+  // (digiflazzAttempts -> 1), then this webhook reports Pending for the SAME
+  // order. Instant dispatch Task 4: the webhook neither resets nor advances
+  // the poller's counter (it stays 1), and the recheck time goes back to the
+  // value the poller scheduled (here already due, so the poller's own
+  // recheck — which does count as an attempt — runs on its next tick).
+  it("a webhook Pending report leaves the poller's attempt counter and schedule where the poller put them (not reset, not advanced)", async () => {
     const order = await createProcessingDigiflazzOrder("ORD-DFCONTINUE", "15000", {
       digiflazzDispatchedAt: null,
       digiflazzStatus: null,
@@ -829,12 +917,11 @@ describe("POST /pay/digiflazz/callback", () => {
     // The callback arrives once the poller's first backoff has elapsed (a
     // callback inside the window right before a scheduled recheck is left to
     // that recheck — Task B3d, claimDigiflazzWebhookRecheck).
-    await prisma.order.update({ where: { id: order.id }, data: { digiflazzNextRecheckAt: new Date(Date.now() - 1_000) } });
+    const due = new Date(Date.now() - 1_000);
+    await prisma.order.update({ where: { id: order.id }, data: { digiflazzNextRecheckAt: due } });
 
     // Now this webhook's own live re-check ALSO reports Pending for the same
-    // order — recordDigiflazzOutcome must continue the same attempt counter/
-    // backoff schedule the poller started (1 -> 2), not restart a second
-    // independent one.
+    // order — the poller's counter must be neither reset nor advanced.
     const payload = signedPayload({ refId: order.orderCode, status: "Pending" });
     const res = await app.inject(payload);
     expect(res.statusCode).toBe(200);
@@ -843,7 +930,190 @@ describe("POST /pay/digiflazz/callback", () => {
     const updated = await prisma.order.findUnique({ where: { id: order.id } });
     expect(updated!.status).toBe("PROCESSING");
     expect(updated!.digiflazzStatus).toBe("pending_at_supplier");
-    expect(updated!.digiflazzAttempts).toBe(2); // continued, not reset to 1
+    expect(updated!.digiflazzAttempts).toBe(1); // not reset to 0, not advanced to 2
+    expect(updated!.digiflazzNextRecheckAt).toEqual(due); // back to the poller's schedule
     expect(updated!.digiflazzDispatchedAt).toEqual(afterDispatch!.digiflazzDispatchedAt); // same dispatch anchor, unchanged
+  });
+
+  // Instant dispatch Task 4, item 1: a signed delivery carries no nonce, so
+  // it can be replayed. Before, every replay that reached a live re-check
+  // answered Pending advanced the backoff by one step, so ~20 replays could
+  // exhaust the 24h window and terminal-fail a paid order nobody had looked
+  // at. Now a webhook-driven Pending/transient result changes neither.
+  it("20 replays of a signed Pending webhook leave the attempt count and next recheck unchanged and never fail the order", async () => {
+    await setSetting(prisma, ADMIN_IDS_KEY, "555");
+    const scheduled = new Date(Date.now() + 20 * 60_000);
+    const order = await createProcessingDigiflazzOrder("ORD-DF-REPLAY-20", "15000", {
+      digiflazzDispatchedAt: new Date(Date.now() - 60_000),
+      digiflazzNextRecheckAt: scheduled,
+    });
+    await prisma.order.update({ where: { id: order.id }, data: { digiflazzAttempts: 3 } });
+    digiflazzSupplierMock.createTransaction.mockResolvedValue({ refId: order.orderCode, status: "Pending", sn: null, message: null, price: null });
+    const payload = signedPayload({ refId: order.orderCode, status: "Pending" });
+
+    for (let i = 0; i < 20; i++) {
+      const res = await app.inject(payload);
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ status: "ok" });
+    }
+
+    // Each replay was a real (claimed, one-at-a-time) live re-check...
+    expect(digiflazzSupplierMock.createTransaction).toHaveBeenCalledTimes(20);
+    const updated = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    // ...but none of them moved the schedule or failed the order.
+    expect(updated.status).toBe("PROCESSING");
+    expect(updated.digiflazzStatus).toBe("pending_at_supplier");
+    expect(updated.digiflazzAttempts).toBe(3);
+    expect(updated.digiflazzNextRecheckAt).toEqual(scheduled);
+    expect(await prisma.auditLog.count({ where: { action: "order.digiflazz_dispatch_failed", targetId: order.id } })).toBe(0);
+    expect(await prisma.notificationOutbox.count({ where: { orderId: order.id } })).toBe(0);
+  });
+
+  it("20 replays whose live re-check throws a retryable error leave the attempt count and next recheck unchanged", async () => {
+    const scheduled = new Date(Date.now() + 20 * 60_000);
+    const order = await createProcessingDigiflazzOrder("ORD-DF-REPLAY-ERR", "15000", {
+      digiflazzDispatchedAt: new Date(Date.now() - 60_000),
+      digiflazzNextRecheckAt: scheduled,
+    });
+    await prisma.order.update({ where: { id: order.id }, data: { digiflazzAttempts: 2 } });
+    digiflazzSupplierMock.createTransaction.mockRejectedValue(new DigiflazzRequestError("Digiflazz transaction HTTP 503", "http_5xx", 503));
+    const payload = signedPayload({ refId: order.orderCode, status: "Pending" });
+
+    for (let i = 0; i < 20; i++) expect((await app.inject(payload)).statusCode).toBe(200);
+
+    const updated = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(updated.status).toBe("PROCESSING");
+    expect(updated.digiflazzStatus).toBe("pending_at_supplier");
+    expect(updated.digiflazzAttempts).toBe(2);
+    expect(updated.digiflazzNextRecheckAt).toEqual(scheduled);
+    expect(updated.digiflazzFailureDetail).toBe("Digiflazz transaction HTTP 503");
+  });
+
+  it("a webhook Pending on an order whose 24h window is already over does not fail it — that stays the poller's decision", async () => {
+    const order = await createProcessingDigiflazzOrder("ORD-DF-WEBHOOK-LATE", "15000", {
+      digiflazzDispatchedAt: new Date(Date.now() - 25 * 3_600_000),
+      digiflazzNextRecheckAt: new Date(Date.now() - 1_000),
+    });
+    await prisma.order.update({ where: { id: order.id }, data: { digiflazzAttempts: 12 } });
+    digiflazzSupplierMock.createTransaction.mockResolvedValue({ refId: order.orderCode, status: "Pending", sn: null, message: null, price: null });
+
+    expect((await app.inject(signedPayload({ refId: order.orderCode, status: "Pending" }))).statusCode).toBe(200);
+
+    const updated = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(updated.digiflazzStatus).toBe("pending_at_supplier");
+    expect(updated.digiflazzAttempts).toBe(12);
+    expect(await prisma.auditLog.count({ where: { action: "order.digiflazz_dispatch_failed", targetId: order.id } })).toBe(0);
+  });
+
+  // Task 4 review fix (I-1): the webhook's restore is a compare-and-set on
+  // the lease it took. If another check took the recheck slot while the live
+  // check was running (lease ran out, the cron claimed and recorded), the
+  // webhook's Pending answer must not overwrite what that check wrote.
+  it("a Pending answer that arrives after another check took over the recheck slot leaves that check's values alone", async () => {
+    const order = await createProcessingDigiflazzOrder("ORD-DF-CAS-PENDING", "15000", {
+      digiflazzNextRecheckAt: new Date(Date.now() + 20 * 60_000),
+    });
+    const cronNextRecheck = new Date(Date.now() + 90_000);
+    digiflazzSupplierMock.createTransaction.mockImplementation(async () => {
+      // Simulates the lease running out mid-call and the cron claiming and
+      // recording its own attempt in the meantime.
+      await prisma.order.update({ where: { id: order.id }, data: { digiflazzAttempts: 4, digiflazzNextRecheckAt: cronNextRecheck } });
+      return { refId: order.orderCode, status: "Pending", sn: null, message: null, price: null };
+    });
+    const info = vi.spyOn(logger, "info");
+    try {
+      const res = await app.inject(signedPayload({ refId: order.orderCode, status: "Pending" }));
+      expect(res.statusCode).toBe(200);
+      const updated = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+      expect(updated.digiflazzAttempts).toBe(4);
+      expect(updated.digiflazzNextRecheckAt).toEqual(cronNextRecheck);
+      const messages = info.mock.calls.map((c) => String(typeof c[0] === "string" ? c[0] : c[1]));
+      expect(messages.some((m) => m.includes(order.orderCode) && /another check took over/i.test(m))).toBe(true);
+    } finally {
+      info.mockRestore();
+    }
+  });
+
+  it("a Sukses answer still delivers even if another check took over the recheck slot meanwhile", async () => {
+    const order = await createProcessingDigiflazzOrder("ORD-DF-CAS-SUKSES");
+    digiflazzSupplierMock.createTransaction.mockImplementation(async () => {
+      await prisma.order.update({ where: { id: order.id }, data: { digiflazzAttempts: 4, digiflazzNextRecheckAt: new Date(Date.now() + 90_000) } });
+      return { refId: order.orderCode, status: "Sukses", sn: "SN-CAS", message: "ok", price: null };
+    });
+    expect((await app.inject(signedPayload({ refId: order.orderCode, status: "Sukses" }))).statusCode).toBe(200);
+    const updated = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(updated.status).toBe("DELIVERED");
+    expect(decryptDeliveredContent(updated.deliveredContent, order.id)).toBe("SN-CAS");
+  });
+
+  it("a webhook Gagal is still terminal, exactly as before", async () => {
+    await setSetting(prisma, ADMIN_IDS_KEY, "555");
+    const order = await createProcessingDigiflazzOrder("ORD-DF-WEBHOOK-GAGAL-T4");
+    digiflazzSupplierMock.createTransaction.mockResolvedValue({ refId: order.orderCode, status: "Gagal", sn: null, message: "Nomor tujuan salah", price: null });
+
+    expect((await app.inject(signedPayload({ refId: order.orderCode, status: "Gagal" }))).statusCode).toBe(200);
+
+    const updated = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(updated.digiflazzStatus).toBe("failed");
+    expect(updated.digiflazzNextRecheckAt).toBeNull();
+    expect(updated.digiflazzFailureDetail).toContain("Nomor tujuan salah");
+    expect(await prisma.auditLog.count({ where: { action: "order.digiflazz_dispatch_failed", targetId: order.id } })).toBe(1);
+  });
+});
+
+/** Instant dispatch Task 4, item 2: tell the deliveries that are not worth a
+ * 403 apart from a bad signature. */
+describe("Digiflazz webhook: signed pings and unreadable bodies", () => {
+  it.each([
+    ["a data object without ref_id", JSON.stringify({ data: { status: "Sukses", message: "test" } })],
+    ["no data object at all", JSON.stringify({ event: "ping" })],
+  ])("answers 200 ignored with an info log for a correctly signed body with %s", async (_label, raw) => {
+    const info = vi.spyOn(logger, "info");
+    const warn = vi.spyOn(logger, "warn");
+    try {
+      const res = await app.inject(delivery(raw, hubSignature(raw)));
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ status: "ignored" });
+      expect(digiflazzSupplierMock.createTransaction).not.toHaveBeenCalled();
+      const messages = info.mock.calls.map((c) => String(typeof c[0] === "string" ? c[0] : c[1]));
+      expect(messages.some((m) => /signed Digiflazz webhook/i.test(m) && /no transaction reference/i.test(m))).toBe(true);
+      expect(JSON.stringify(warn.mock.calls)).not.toMatch(/did not match/);
+    } finally {
+      info.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
+  it("still 403s a body without ref_id whose signature is wrong", async () => {
+    const raw = JSON.stringify({ event: "ping" });
+    const res = await app.inject(delivery(raw, hubSignature(raw, "attacker-key")));
+    expect(res.statusCode).toBe(403);
+    expect(res.json()).toEqual({ status: "bad signature" });
+  });
+
+  it("403s a body sent with an unsupported content type, with a warning that says the signature could not be checked (not 'bad signature')", async () => {
+    const warn = vi.spyOn(logger, "warn");
+    const raw = webhookBody({ refId: "ORD-DF-TEXTPLAIN" });
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: CALLBACK_URL,
+        payload: raw,
+        headers: {
+          "content-type": "text/plain",
+          "x-hub-signature": hubSignature(raw),
+          "x-forwarded-for": `198.51.100.${deliveryIp % 250}`,
+        },
+      });
+      expect(res.statusCode).toBe(403);
+      expect(res.json()).toEqual({ status: "unsupported content type" });
+      expect(digiflazzSupplierMock.createTransaction).not.toHaveBeenCalled();
+      const messages = warn.mock.calls.map((c) => String(typeof c[0] === "string" ? c[0] : c[1]));
+      expect(messages.some((m) => /not sent as JSON/i.test(m) && /signature could not be checked/i.test(m))).toBe(true);
+      expect(messages.some((m) => /did not match/i.test(m))).toBe(false);
+      expect(JSON.stringify(warn.mock.calls)).not.toContain("ORD-DF-TEXTPLAIN");
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

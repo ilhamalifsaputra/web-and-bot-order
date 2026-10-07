@@ -259,12 +259,19 @@ export async function recordBybitBscPaymentDetected(
       firstDetectedAt: order.firstDetectedAt ?? new Date(),
     },
   });
-  return tryTransitionOrderStatus(db, {
+  const moved = await tryTransitionOrderStatus(db, {
     orderId: args.orderId,
     from: OrderStatus.PENDING_PAYMENT,
     to: OrderStatus.PAYMENT_DETECTED,
     meta: `bybitTxId=${args.bybitTxId}`,
   });
+  // No progress message here on purpose. The buyer's payment bubble already
+  // turns into the live tracking screen (onPaymentDetected, then the
+  // confirmation tracker), and a second message saying "Payment detected"
+  // beside it would be a duplicate. settlePaidOrder registers the progress
+  // message once the deposit settles, so the order still ends up with one live
+  // message at a time.
+  return moved;
 }
 
 /** Orders the confirmation tracker should poll: a Bybit BSC deposit already

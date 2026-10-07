@@ -21,6 +21,7 @@ import {
   settlePaidOrder,
   logAdminAction,
   lowStockDenominations,
+  triggerDigiflazzDispatch,
 } from "@app/db";
 import type { MyContext } from "../context";
 import { adminEdit, retireKeyboard } from "../util/chat";
@@ -146,6 +147,10 @@ export async function approve(ctx: MyContext, orderId: number): Promise<void> {
       });
       return result;
     });
+    // The approval has committed. Start a Digiflazz-routed order's supplier
+    // request now, before any Telegram reply below; it is fire-and-forget,
+    // ignores non-Digiflazz orders and never throws.
+    if (settled.kind === "processing") triggerDigiflazzDispatch(settled.order.id);
     settleKind = settled.kind;
     buyerTgId = settled.order.user.telegramId;
     buyerLang = langCode(settled.order.user.language);

@@ -57,6 +57,20 @@ import { NotificationEvent } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { logger } from "@app/core/logger";
 
+/** Reconciled money rows (see @app/core/orderMoneyRows) for a manual-queue
+ * enqueue: here an IDR order fully paid from wallet credit, so the amount
+ * due is 0 while the order is worth 50.000. */
+function walletPaidIdrMoney() {
+  return {
+    itemsTotal: new Decimal("50000"),
+    bulkDiscount: new Decimal("0"),
+    discount: new Decimal("0"),
+    walletCredit: new Decimal("50000"),
+    uniqueCents: new Decimal("0"),
+    total: new Decimal("0"),
+  };
+}
+
 let db: TestDb;
 let prisma: PrismaClient;
 
@@ -668,8 +682,8 @@ describe("enqueueManualOrderAdminAlert", () => {
       orderId,
       orderCode: "ORD-MANUALTEST",
       items: [{ name: "Netflix Premium", qty: 2 }],
-      total: new Decimal("15.50"),
-      currency: "USDT",
+      currency: "IDR",
+      money: walletPaidIdrMoney(),
     });
 
     const rows = await prisma.notificationOutbox.findMany({
@@ -677,16 +691,22 @@ describe("enqueueManualOrderAdminAlert", () => {
     });
     const chatIds = rows.map((r) => (JSON.parse(r.payloadJson) as { chat_id: number }).chat_id).sort((a, b) => a - b);
     expect(chatIds).toEqual([4001, 4002, 4501, 4502]);
-    const payload = JSON.parse(rows[0]!.payloadJson) as {
-      order_code: string;
-      items: { name: string; qty: number }[];
-      total: string;
-      currency: string;
-    };
-    expect(payload.order_code).toBe("ORD-MANUALTEST");
-    expect(payload.items).toEqual([{ name: "Netflix Premium", qty: 2 }]);
-    expect(payload.total).toBe("15.5");
-    expect(payload.currency).toBe("USDT");
+    const payload = JSON.parse(rows[0]!.payloadJson) as Record<string, unknown>;
+    const { chat_id: _chatId, ...rest } = payload;
+    // The order's own value and currency, never the amount due as its price:
+    // a wallet-paid order owes 0 but is worth 50.000.
+    expect(rest).toEqual({
+      order_code: "ORD-MANUALTEST",
+      items: [{ name: "Netflix Premium", qty: 2 }],
+      currency: "IDR",
+      order_value: "50000",
+      subtotal: "50000",
+      bulk_discount: "0",
+      discount: "0",
+      wallet_credit: "50000",
+      unique_cents: "0",
+      total: "0",
+    });
   });
 });
 
@@ -1766,8 +1786,8 @@ describe("enqueueOwner*Email (EMAIL-channel owner notifications)", () => {
       orderId,
       orderCode: "ORD-OWNERMANUAL-OFF",
       items: [{ name: "Netflix Premium", qty: 1 }],
-      total: new Decimal("15.5"),
-      currency: "USDT",
+      currency: "IDR",
+      money: walletPaidIdrMoney(),
     });
 
     expect(
@@ -1775,7 +1795,7 @@ describe("enqueueOwner*Email (EMAIL-channel owner notifications)", () => {
     ).toBe(before);
   });
 
-  it("enqueueOwnerManualQueueEmail writes one EMAIL row with to/order_code/items/total(string)/currency when configured", async () => {
+  it("enqueueOwnerManualQueueEmail writes one EMAIL row with to/order_code/items/currency and the order's value, wallet credit and amount due (strings) when configured", async () => {
     await configureOwnerEmail("manual_queue");
     const orderId = await seedOrder();
 
@@ -1783,8 +1803,8 @@ describe("enqueueOwner*Email (EMAIL-channel owner notifications)", () => {
       orderId,
       orderCode: "ORD-OWNERMANUAL-ON",
       items: [{ name: "Netflix Premium", qty: 2 }],
-      total: new Decimal("15.50"),
-      currency: "USDT",
+      currency: "IDR",
+      money: walletPaidIdrMoney(),
     });
 
     const rows = await prisma.notificationOutbox.findMany({
@@ -1797,10 +1817,16 @@ describe("enqueueOwner*Email (EMAIL-channel owner notifications)", () => {
       to: "owner@example.com",
       order_code: "ORD-OWNERMANUAL-ON",
       items: [{ name: "Netflix Premium", qty: 2 }],
-      total: "15.5",
-      currency: "USDT",
+      currency: "IDR",
+      order_value: "50000",
+      subtotal: "50000",
+      bulk_discount: "0",
+      discount: "0",
+      wallet_credit: "50000",
+      unique_cents: "0",
+      total: "0",
     });
-    expect(typeof payload.total).toBe("string");
+    expect(typeof payload.order_value).toBe("string");
   });
 
   it("enqueueOwnerNewTicketEmail writes nothing when owner email is unconfigured", async () => {
@@ -1910,8 +1936,8 @@ describe("enqueueOwner*Email (EMAIL-channel owner notifications)", () => {
       orderId,
       orderCode: "ORD-CROSSCHECK",
       items: [{ name: "X", qty: 1 }],
-      total: new Decimal("1"),
       currency: "IDR",
+      money: walletPaidIdrMoney(),
     });
     expect(
       await prisma.notificationOutbox.count({ where: { event: NotificationEvent.OWNER_EMAIL_MANUAL_ORDER_QUEUED } }),

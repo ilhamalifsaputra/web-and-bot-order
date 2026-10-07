@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from "vite
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import PayPage from "./PayPage";
+import PayPage, { advanceCardState } from "./PayPage";
 import { apiGet, apiPost } from "../api/client";
 import { rememberCodeEmailed } from "../lib/orderCodeEmailed";
 import type { PayData, PayStatusData } from "../api/types";
@@ -217,6 +217,39 @@ describe("PayPage", () => {
       await new Promise((r) => setTimeout(r, 20));
       expect(screen.getByText(PROCESSING)).toBeInTheDocument();
       expect(screen.queryByText(/blockchain/i)).not.toBeInTheDocument();
+    });
+
+    // Instant dispatch Task 4, item 4: an admin closing/cancelling a paid
+    // order must not leave the big card promising it is being processed.
+    it("processing -> closed: an order an admin closed shows the closed card, not the processing copy", async () => {
+      const pay: PayData = { ...basePay, state: "processing", order: { ...basePay.order, status: "PROCESSING" } };
+      renderPay(respondFor(pay, { state: "closed", redirect: null }));
+      expect(await screen.findByText("This order is closed.")).toBeInTheDocument();
+      expect(screen.queryByText(PROCESSING)).not.toBeInTheDocument();
+      expect(screen.getByRole("link", { name: "My orders" })).toHaveAttribute("href", "/account/orders");
+    });
+
+    it("waiting -> closed: a cancelled unpaid order drops the pay-now block and shows the closed card", async () => {
+      const pay: PayData = {
+        ...basePay,
+        state: "waiting",
+        is_qris: true,
+        gateway: { trxId: "TRX1", payUrl: "https://pay.example/trx1", qrLink: "https://img.example/qr.png", qrString: null, totalBayar: "158000" },
+      };
+      renderPay(respondFor(pay, { state: "closed", redirect: null }));
+      expect(await screen.findByText("This order is closed.")).toBeInTheDocument();
+      expect(screen.queryByAltText("QRIS")).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Cancel this order" })).not.toBeInTheDocument();
+    });
+
+    it("advanceCardState: closed wins over any in-flight card; delivered/expired stay with the redirect/existing handling", () => {
+      expect(advanceCardState("processing", "closed")).toBe("closed");
+      expect(advanceCardState("confirming", "closed")).toBe("closed");
+      expect(advanceCardState("waiting", "closed")).toBe("closed");
+      expect(advanceCardState("processing", "delivered")).toBe("processing");
+      expect(advanceCardState("waiting", "expired")).toBe("waiting");
+      expect(advanceCardState("delivered", "closed")).toBe("delivered");
+      expect(advanceCardState("closed", "processing")).toBe("closed");
     });
 
     it("a terminal poll (expired) does not replace the card; only delivered redirects", async () => {

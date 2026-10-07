@@ -54,6 +54,9 @@ import { Decimal } from "@app/core/money";
 import { OrderCurrency, PaymentMethod } from "@app/core/enums";
 import { config } from "@app/core/config";
 import { renderEmail } from "../../../outbox-dispatcher/src/emailTemplates";
+import { render as renderTelegram } from "../../../outbox-dispatcher/src/templates";
+import { adjustWallet } from "./users";
+import { completeOrderWithWalletCredit } from "./wallet_checkout";
 
 // Render the real dispatcher/template with settings from this test's isolated
 // schema, rather than the dispatcher's process-global Prisma connection.
@@ -514,8 +517,14 @@ describe("settlePaidOrder — owner-email triggers", () => {
       to: "owner@example.com",
       order_code: order.orderCode,
       items: [{ name: "Manual Denom", qty: 1 }],
-      total: order.totalAmount.toString(),
       currency: order.currency,
+      order_value: "10",
+      subtotal: "10",
+      bulk_discount: "0",
+      discount: "0",
+      wallet_credit: "0",
+      unique_cents: "0",
+      total: "10",
     });
 
     // Mutual exclusivity: the AUTO branch's email must never fire alongside this one.
@@ -529,6 +538,55 @@ describe("settlePaidOrder — owner-email triggers", () => {
       where: { orderId: order.id, event: NotificationEvent.ADMIN_MANUAL_ORDER_QUEUED },
     });
     expect(adminAlertRows).toBe(1);
+  });
+
+  // Regression: an IDR manual order paid entirely from wallet credit has a
+  // totalAmount (amount due) of 0, and the owner email/admin alert used to
+  // print exactly that as the order's "Total". They must show what the order
+  // is worth, in the order's own currency, with the wallet credit beside it.
+  it("MANUAL settlement of a wallet-paid IDR order: owner email and admin alert show the product value in IDR, not 0 or USDT", async () => {
+    await configureOwnerEmail("manual_queue");
+    await addAdminIdToDb(prisma, 5002);
+    const manualDenom = await makeManualDenom(DeliveryType.MANUAL, "50000");
+    await adjustWallet(prisma, sample.user.id, "60000", { currency: "IDR", reason: "admin_adjust" });
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
+
+    const result = await prisma.$transaction((tx) =>
+      completeOrderWithWalletCredit(tx, {
+        channel: "bot",
+        user: { id: user.id, role: user.role, walletBalance: user.walletBalance },
+        productId: manualDenom.id,
+        quantity: 1,
+        currency: OrderCurrency.IDR,
+      }),
+    );
+    expect(result.kind).toBe("processing");
+    expect(new Decimal(result.order.totalAmount).isZero()).toBe(true);
+
+    const emailRow = await prisma.notificationOutbox.findFirstOrThrow({
+      where: { orderId: result.order.id, event: NotificationEvent.OWNER_EMAIL_MANUAL_ORDER_QUEUED },
+    });
+    const emailPayload = JSON.parse(emailRow.payloadJson) as Record<string, unknown>;
+    expect(emailPayload.currency).toBe("IDR");
+    expect(emailPayload.order_value).toBe("50000");
+    expect(emailPayload.wallet_credit).toBe("50000");
+    expect(emailPayload.total).toBe("0");
+    const email = await renderEmail(NotificationEvent.OWNER_EMAIL_MANUAL_ORDER_QUEUED, emailPayload);
+    expect(email!.text).toContain("Order value: Rp50.000");
+    expect(email!.text).toContain("Wallet credit: -Rp50.000");
+    expect(email!.text).toContain("Amount due: Rp0");
+    expect(email!.text).not.toContain("USDT");
+    expect(email!.text).not.toMatch(/^Total:/m);
+    expect(email!.text).toContain("needs manual fulfilment");
+
+    const alertRow = await prisma.notificationOutbox.findFirstOrThrow({
+      where: { orderId: result.order.id, event: NotificationEvent.ADMIN_MANUAL_ORDER_QUEUED },
+    });
+    const alert = renderTelegram(NotificationEvent.ADMIN_MANUAL_ORDER_QUEUED, JSON.parse(alertRow.payloadJson));
+    expect(alert).toContain("Order value: <b>Rp50.000</b>");
+    expect(alert).toContain("Wallet credit: -Rp50.000");
+    expect(alert).not.toContain("USDT");
+    expect(alert).not.toContain("Total:");
   });
 
   it("owner-email not configured: neither OWNER_EMAIL_ORDER_PAID nor OWNER_EMAIL_MANUAL_ORDER_QUEUED is enqueued, in either branch", async () => {

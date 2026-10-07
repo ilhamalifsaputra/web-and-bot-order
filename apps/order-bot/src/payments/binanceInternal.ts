@@ -44,6 +44,7 @@ import {
   clearOrderPaymentMessage,
   type BinanceInternalConfig,
   type DeliverResult,
+  triggerDigiflazzDispatch,
 } from "@app/db";
 import { coreT } from "../util/i18n";
 import { esc } from "../util/format";
@@ -563,6 +564,10 @@ export async function processTransfers(api: Api, txs: BinanceTx[], orders: Pendi
     if (cls === "match") {
       try {
         const r = await deliverPaidInternalOrder(prisma, { orderId: order.id, binanceTxId: tx.txId, amount: tx.amount });
+        // The settlement has committed. Start a Digiflazz-routed order's supplier
+        // request now, before the Telegram work below; it is fire-and-forget,
+        // ignores non-Digiflazz orders and never throws.
+        if (r.status === "processing") triggerDigiflazzDispatch(r.order.id);
         if (r.status === "delivered") {
           logger.info(`Matched by ${matchedBy} — delivered order ${order.orderCode} (transfer ${tx.txId})`);
           await onDelivered(api, r.order);

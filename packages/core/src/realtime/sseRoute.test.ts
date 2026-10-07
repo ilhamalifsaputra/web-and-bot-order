@@ -63,6 +63,57 @@ describe("streamSse", () => {
     vi.restoreAllMocks();
   });
 
+  it("closes the connection right after pushing a terminal initial value, without subscribing or polling", async () => {
+    const subscribe = vi.fn().mockReturnValue(() => {});
+    const poll = vi.fn();
+    const done = streamSse(reply as unknown as SseReply, req as unknown as SseRequest, {
+      initial: async () => ({ status: "DONE" }),
+      poll,
+      subscribe,
+      changed: () => true,
+      isTerminal: (v) => v.status === "DONE",
+    });
+    await done;
+    expect(dataFrames(reply.fakeRaw.writes)).toEqual([{ status: "DONE" }]);
+    expect(reply.fakeRaw.end).toHaveBeenCalledTimes(1);
+    expect(subscribe).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(poll).not.toHaveBeenCalled();
+  });
+
+  it("closes the connection after pushing a terminal value reached later, and unsubscribes", async () => {
+    const unsubscribe = vi.fn();
+    let onChange: (() => void) | undefined;
+    const done = streamSse(reply as unknown as SseReply, req as unknown as SseRequest, {
+      initial: async () => ({ status: "PENDING" }),
+      poll: async () => ({ status: "DONE" }),
+      subscribe: (fn) => { onChange = fn; return unsubscribe; },
+      changed: (prev, next) => prev?.status !== next.status,
+      isTerminal: (v) => v.status === "DONE",
+    });
+    await vi.waitFor(() => expect(onChange).toBeDefined());
+    onChange!();
+    await done;
+    expect(dataFrames(reply.fakeRaw.writes)).toEqual([{ status: "PENDING" }, { status: "DONE" }]);
+    expect(reply.fakeRaw.end).toHaveBeenCalledTimes(1);
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the connection open when isTerminal throws, and logs a warning", async () => {
+    const done = streamSse(reply as unknown as SseReply, req as unknown as SseRequest, {
+      initial: async () => ({ status: "PENDING" }),
+      poll: async () => ({ status: "PENDING" }),
+      subscribe: () => () => {},
+      changed: () => false,
+      isTerminal: () => { throw new Error("boom"); },
+    });
+    await vi.waitFor(() => expect(dataFrames(reply.fakeRaw.writes)).toHaveLength(1));
+    expect(reply.fakeRaw.end).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalled();
+    req.fakeRaw.emit("close");
+    await done;
+  });
+
   it("writes the initial() value as a data: frame immediately, before any poll tick", async () => {
     const initial = vi.fn().mockResolvedValue({ status: "PENDING" });
     const poll = vi.fn().mockResolvedValue({ status: "PENDING" });

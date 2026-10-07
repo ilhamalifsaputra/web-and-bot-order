@@ -7,8 +7,9 @@
  *    page refresh would re-read it. It drives the big payment-instructions
  *    card below and is never refetched by the poll itself. The card's stage
  *    only moves FORWARD when the poll reports a later in-flight stage
- *    (waiting -> confirming -> processing; advanceCardState), so a buyer who
- *    opened the page early is not left on stale copy.
+ *    (waiting -> confirming -> processing; advanceCardState), or to the
+ *    closed card when an admin closes the order, so a buyer who opened the
+ *    page early is not left on stale copy.
  *  - GET /api/v1/orders/:code/status (`poll`) refetches every 5s and drives
  *    the small #pay-status strip (_pay_status.njk), the delivered redirect,
  *    and that forward-only card advance — until the first
@@ -126,10 +127,14 @@ const IN_FLIGHT_RANK: Partial<Record<PayState, number>> = { waiting: 0, confirmi
 
 /** Which state the big card shows: the polled one only when it is a LATER
  * in-flight stage than the one the card already shows (waiting < confirming <
- * processing). Never moves backwards, and terminal states (delivered/expired/
- * closed) are left to the redirect / existing handling. */
+ * processing), or when the poll says the order was closed (an admin cancelled
+ * or closed it) while the card still shows an in-flight stage — otherwise a
+ * cancelled paid order would keep saying "being processed". Never moves
+ * backwards; delivered is left to the redirect and expired to the existing
+ * handling. */
 export function advanceCardState(current: PayState, polled: PayState | undefined): PayState {
   const from = IN_FLIGHT_RANK[current];
+  if (from !== undefined && polled === "closed") return "closed";
   const to = polled ? IN_FLIGHT_RANK[polled] : undefined;
   return from !== undefined && to !== undefined && to > from ? (polled as PayState) : current;
 }

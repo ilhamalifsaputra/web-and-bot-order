@@ -12,7 +12,7 @@ export default function OrderProgress({ fulfillment, children }: { fulfillment: 
   const tone = state.complete ? "text-grass-dark" : state.problem ? "text-amberx" : "text-pine";
   const steps = [
     { key: "web.order_progress_payment", done: paid, current: fulfillment.payment_status === "PENDING", problem: !paid && state.problem },
-    { key: "web.order_progress_processing", done: state.complete, current: paid && state.active, problem: paid && state.problem },
+    { key: "web.order_progress_processing", done: state.complete, current: paid && (state.active || state.waiting), problem: paid && state.problem },
     { key: "web.order_progress_completed", done: state.complete, current: false, problem: false },
   ];
   return (
@@ -26,11 +26,12 @@ export default function OrderProgress({ fulfillment, children }: { fulfillment: 
       </div>
       <ol aria-label={t("web.order_progress")} className="mt-4 grid grid-cols-3 gap-2 border-t border-line pt-4">
         {steps.map((step) => {
-          const StepIcon = step.done ? Check : step.problem ? CircleAlert : step.current && paid ? LoaderCircle : Circle;
+          const spinning = step.current && paid && state.active;
+          const StepIcon = step.done ? Check : step.problem ? CircleAlert : spinning ? LoaderCircle : step.current && paid ? Clock : Circle;
           return (
             <li key={step.key} aria-current={step.current && !state.problem ? "step" : undefined} className="flex min-w-0 flex-col items-center gap-2 text-center text-xs sm:text-sm">
               <span aria-hidden="true" className={`grid h-8 w-8 place-items-center rounded-full ${step.done ? "bg-grass-tint text-grass-dark" : step.problem ? "bg-amberx-tint text-amberx" : step.current ? "bg-pine-tint text-pine" : "bg-sand text-ink-faint"}`}>
-                <StepIcon className={`h-4 w-4 ${step.current && paid ? "animate-spin motion-reduce:animate-none" : ""}`} />
+                <StepIcon className={`h-4 w-4 ${spinning ? "animate-spin motion-reduce:animate-none" : ""}`} />
               </span>
               <span className="break-words text-ink-soft">{t(step.key)}</span>
             </li>

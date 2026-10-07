@@ -29,7 +29,10 @@
  * terminal, bounded by the 24h backoff window in digiflazzBackoff.ts. An
  * explicit "Gagal" is never retried — the same input would just fail
  * identically again — and goes straight to a terminal, admin-alerted
- * failure instead.
+ * failure instead. The same holds for a permanent request error on a
+ * FRESH dispatch (DigiflazzRequestError with retryable: false — a non-429
+ * 4xx). Every other request error, and every error on a recheck (the order
+ * was already submitted under its ref id), takes the transient retry path.
  *
  * This whole argument rests on createTransaction's refId-dedup behavior
  * (@app/core/suppliers/digiflazz) actually working as documented — that
@@ -55,18 +58,23 @@ import {
   parseProductRegion,
   digiflazzGroupKey,
   stripRegionSuffix,
+  DigiflazzRequestError,
   type DigiflazzCreds,
   type DigiflazzPriceListItem,
+  type DigiflazzStatus,
 } from "@app/core/suppliers/digiflazz";
+import { DigiflazzTimingEvent, elapsedMs, logDigiflazzTimingEvent } from "@app/core/suppliers/digiflazzTiming";
 import { NicknameService } from "@app/core/nickname/service";
-import type { PrismaClient } from "../client";
+import type { Prisma } from "@prisma/client";
+import { prisma as sharedPrisma, type PrismaClient } from "../client";
 import type { Db } from "./_types";
-import { getSetting, getDecryptedSetting } from "./settings";
+import { getSetting, getDecryptedSetting, onSettingWrite } from "./settings";
 import { getOrder, finalizeDeliverySideEffects, enqueueBuyerOrderReadyEmailIfGuest } from "./orders";
 import { resolveNicknameGate, buildNicknameProviderEntries } from "./nickname";
 import { isDenominationBelowCost } from "@app/core/denominationPrices";
 import { enqueueAdminDigiflazzBelowCost, enqueueDigiflazzReviewAlert, enqueueAdminDigiflazzResyncAborted, enqueueAdminDigiflazzSkusChanged } from "./notifications";
 import { logAdminAction } from "./audit";
+import { ensureFulfillmentMessage } from "./fulfillmentMessages";
 import {
   createCatalogProduct,
   createDenomination,
@@ -102,10 +110,33 @@ export const DIGIFLAZZ_USERNAME_KEY = "digiflazz_username";
 export const DIGIFLAZZ_API_KEY_KEY = "digiflazz_api_key";
 export const DIGIFLAZZ_ENABLED_KEY = "digiflazz_enabled";
 
+/** How long getDigiflazzCreds reuses a resolved (decrypted) credential pair
+ * before reading the settings again. Same 30s bound as the per-key settings
+ * cache underneath it (./settings), so it adds no new cross-process staleness:
+ * another process's credential edit is picked up within the same window it
+ * already was. */
+export const DIGIFLAZZ_CREDS_CACHE_TTL_MS = 30_000;
+const DIGIFLAZZ_CREDS_SETTING_KEYS = new Set([DIGIFLAZZ_USERNAME_KEY, DIGIFLAZZ_API_KEY_KEY, DIGIFLAZZ_ENABLED_KEY]);
+// Per `db` instance, like the settings cache. Holds only non-null results:
+// "missing/disabled" is never cached, so configuring credentials takes effect
+// on the very next dispatch. Never log these values.
+let digiflazzCredsCache = new WeakMap<object, { creds: DigiflazzCreds; expiresAt: number }>();
+onSettingWrite((key) => {
+  if (key === null || DIGIFLAZZ_CREDS_SETTING_KEYS.has(key)) digiflazzCredsCache = new WeakMap();
+});
+
 /** Read Digiflazz supplier credentials from Settings; null = the Digiflazz
  * auto-fulfilment path is off (either not configured, or explicitly
- * disabled). Mirrors getTokopayCreds's null-on-disabled-or-missing shape. */
+ * disabled). Mirrors getTokopayCreds's null-on-disabled-or-missing shape.
+ *
+ * A resolved pair is cached in memory for DIGIFLAZZ_CREDS_CACHE_TTL_MS (the
+ * decrypt + three settings reads sit on the instant-dispatch hot path), and
+ * dropped the moment setSetting/deleteSetting writes any of the three
+ * Digiflazz credential keys in this process. */
 export async function getDigiflazzCreds(db: Db): Promise<DigiflazzCreds | null> {
+  const cached = digiflazzCredsCache.get(db as object);
+  if (cached && cached.expiresAt > Date.now()) return { ...cached.creds };
+  const cacheAtRead = digiflazzCredsCache;
   const [username, apiKey, enabled] = await Promise.all([
     getSetting(db, DIGIFLAZZ_USERNAME_KEY),
     getDecryptedSetting(db, DIGIFLAZZ_API_KEY_KEY),
@@ -113,7 +144,13 @@ export async function getDigiflazzCreds(db: Db): Promise<DigiflazzCreds | null> 
   ]);
   if (!username || !apiKey) return null;
   if ((enabled ?? "").trim().toLowerCase() === "false") return null;
-  return { username, apiKey };
+  const creds = { username, apiKey };
+  // Skip storing if a credential write invalidated the cache while this read
+  // was in flight — the values just read may predate that write.
+  if (cacheAtRead === digiflazzCredsCache) {
+    digiflazzCredsCache.set(db as object, { creds, expiresAt: Date.now() + DIGIFLAZZ_CREDS_CACHE_TTL_MS });
+  }
+  return { ...creds };
 }
 
 /**
@@ -215,6 +252,9 @@ type DigiflazzCandidateOrder = {
   currency: string;
   digiflazzDispatchedAt: Date | null;
   digiflazzAttempts: number;
+  /** Only read for the timing log events; optional so a caller that never
+   * loaded it simply gets the payment-relative durations omitted. */
+  paidAt?: Date | null;
   items: {
     quantity: number;
     product: {
@@ -278,18 +318,24 @@ export interface DigiflazzDispatchSummary {
  * order permanently unclaimable (neither candidate-query arm would ever
  * match a bare `null`, since arm 1 needs digiflazzDispatchedAt: null —
  * already false by the time of a recheck — and arm 2 needs
- * digiflazzNextRecheckAt <= now, never true for null). Comfortably longer
- * than a single createTransaction HTTP round-trip (HTTP_TIMEOUT_MS.gatewayWrite,
- * @app/core/http) with generous margin, short enough that a genuinely
- * crashed attempt recovers within a couple of poller ticks rather than
- * being stuck until the 24h window silently expires with nobody paged. */
-export const DIGIFLAZZ_RECHECK_CLAIM_LEASE_MS = 3 * 60_000;
+ * digiflazzNextRecheckAt <= now, never true for null). 45 seconds: three
+ * times the 15-second createTransaction HTTP write timeout
+ * (HTTP_TIMEOUT_MS.gatewayWrite, @app/core/http), so a live request always
+ * finishes (or times out and records its outcome) well inside the lease,
+ * while a genuinely crashed attempt — including a direct dispatch started
+ * right after payment (dispatchDigiflazzOrderNow) whose process died — is
+ * re-submitted by the 5-second recovery cron with the same refId within
+ * about 50 seconds instead of minutes. */
+export const DIGIFLAZZ_RECHECK_CLAIM_LEASE_MS = 45_000;
 
 /**
  * Atomically claim the right for a Digiflazz callback to run one live
  * re-check (`createTransaction` with the order's refId) — backend audit,
- * Task B3d. The callback's signature, md5(refId:apiKey), is a fixed token
- * that replays forever, and that re-POST is only a harmless status check if
+ * Task B3d. The callback's signature (X-Hub-Signature, an HMAC-SHA1 of the
+ * raw body keyed by the webhook secret — verifyWebhook in
+ * @app/core/suppliers/digiflazz) binds the body but carries no timestamp or
+ * nonce, so a captured delivery replays forever, and that re-POST is only a
+ * harmless status check if
  * Digiflazz really dedups by ref_id (an unverified assumption, see
  * createTransaction in @app/core/suppliers/digiflazz). So a callback may
  * re-check only an order that:
@@ -305,26 +351,52 @@ export const DIGIFLAZZ_RECHECK_CLAIM_LEASE_MS = 3 * 60_000;
  *     backoff that happens to fall inside the window is refused too — the
  *     poller rechecks that order within the window anyway, so a refused
  *     genuine callback delays delivery by at most the lease, never loses it.
- * Winning the claim takes the lease itself; recordDigiflazzOutcome /
- * fulfillDigiflazzOrder then overwrite or clear it as usual.
+ * Winning the claim takes the lease itself; recordDigiflazzOutcome (with
+ * source "webhook", which puts the poller's scheduled recheck back on a
+ * Pending/transient result) / fulfillDigiflazzOrder then overwrite or clear it.
+ *
+ * Returns null when the claim was not won, otherwise the exact lease value it
+ * wrote (`leaseUntil`) and the value that lease replaced
+ * (`scheduledRecheckAt`). The claim is a read followed by a compare-and-set
+ * update whose WHERE also requires digiflazzNextRecheckAt to still equal the
+ * value read, so `scheduledRecheckAt` is exactly what this claim replaced. The
+ * webhook's later restore write is guarded on `leaseUntil` in the same way
+ * (recordDigiflazzOutcome), so it cannot overwrite a newer check's lease or
+ * outcome if this one outlived its lease.
  */
-export async function claimDigiflazzWebhookRecheck(db: Db, orderId: number, now: Date = new Date()): Promise<boolean> {
+export async function claimDigiflazzWebhookRecheck(
+  db: Db,
+  orderId: number,
+  now: Date = new Date(),
+): Promise<DigiflazzWebhookRecheckClaim | null> {
   const leaseUntil = new Date(now.getTime() + DIGIFLAZZ_RECHECK_CLAIM_LEASE_MS);
+  const current = await db.order.findUnique({ where: { id: orderId }, select: { digiflazzNextRecheckAt: true } });
+  if (!current) return null;
+  const scheduledRecheckAt = current.digiflazzNextRecheckAt;
+  // The same eligibility rule as before (no recheck time, a due one, or one
+  // beyond the lease window), checked on the value read...
+  const eligible =
+    scheduledRecheckAt === null || scheduledRecheckAt <= now || scheduledRecheckAt > leaseUntil;
+  if (!eligible) return null;
+  // ...and the UPDATE only applies if that value is still the one stored.
   const claim = await db.order.updateMany({
     where: {
       id: orderId,
       status: OrderStatus.PROCESSING,
       digiflazzDispatchedAt: { not: null },
       digiflazzStatus: "pending_at_supplier",
-      OR: [
-        { digiflazzNextRecheckAt: null },
-        { digiflazzNextRecheckAt: { lte: now } },
-        { digiflazzNextRecheckAt: { gt: leaseUntil } },
-      ],
+      digiflazzNextRecheckAt: scheduledRecheckAt,
     },
     data: { digiflazzNextRecheckAt: leaseUntil },
   });
-  return claim.count === 1;
+  return claim.count === 1 ? { leaseUntil, scheduledRecheckAt } : null;
+}
+
+/** What a won claimDigiflazzWebhookRecheck took: the lease it wrote and the
+ * recheck time that lease replaced. */
+export interface DigiflazzWebhookRecheckClaim {
+  leaseUntil: Date;
+  scheduledRecheckAt: Date | null;
 }
 
 /**
@@ -440,20 +512,35 @@ export type DigiflazzOutcome =
  *   terminal. If the 24h window is exhausted, falls through to the same
  *   terminal handling "terminal" gets below (same remedy either way: a
  *   human must finish the order).
- * - "terminal" (explicit "Gagal", or a structural resolution failure like
- *   a missing supplierSku) never retries — the same input would fail
+ * - "terminal" (explicit "Gagal", a permanent DigiflazzRequestError on a
+ *   fresh dispatch, or a structural resolution failure like a missing
+ *   supplierSku) never retries — the same input would fail
  *   identically again — and immediately alerts admins via
  *   alertDigiflazzDispatchFailed, same as today's Gagal handling.
  *
  * Returns "pending" or "failed" so the caller can tally its own summary
  * counters without re-deriving this same branch logic.
+ *
+ * `options.source: "webhook"` (the storefront callback's live re-check): a
+ * signed callback carries no nonce and can be replayed, so its "pending" /
+ * "transient_error" result must not spend the backoff budget. It leaves
+ * digiflazzAttempts unchanged and puts digiflazzNextRecheckAt back to
+ * `options.scheduledRecheckAt` — the value the poller had scheduled before
+ * claimDigiflazzWebhookRecheck replaced it with the in-flight lease — and it
+ * never terminal-fails the order on an exhausted 24h window (the poller's own
+ * next recheck makes that call). "terminal" is handled exactly as for the
+ * poller.
  */
 export async function recordDigiflazzOutcome(
   db: PrismaClient,
   order: DigiflazzCandidateOrder,
   outcome: DigiflazzOutcome,
   dispatchedAt: Date,
+  options: DigiflazzOutcomeOptions = {},
 ): Promise<"pending" | "failed"> {
+  if (outcome.kind !== "terminal" && options.source === "webhook") {
+    return recordWebhookNonTerminalOutcome(db, order, outcome, dispatchedAt, options);
+  }
   if (outcome.kind !== "terminal") {
     const attempt = order.digiflazzAttempts + 1;
     const nextRecheckAt = nextDigiflazzRecheckAt(dispatchedAt, attempt);
@@ -480,6 +567,62 @@ export async function recordDigiflazzOutcome(
     return terminalFailDigiflazzOrder(db, order, reason, true);
   }
   return terminalFailDigiflazzOrder(db, order, outcome.reason, outcome.supplierGaveReason);
+}
+
+/** Who produced an outcome. The default ("dispatch", or no options) is the
+ * poller or the direct dispatch, whose attempt counts against the backoff
+ * schedule. "webhook" is the callback's live re-check, which never does; it
+ * must hand over the claim it won (claimDigiflazzWebhookRecheck) so its write
+ * can be made conditional on still holding that lease. */
+export type DigiflazzOutcomeOptions =
+  | { source?: "dispatch" }
+  | ({ source: "webhook" } & DigiflazzWebhookRecheckClaim);
+
+/** recordDigiflazzOutcome's "webhook" branch for a Pending/transient result:
+ * same status and failure-detail write as the poller's, but the attempt
+ * counter is untouched and the recheck time goes back to the value the
+ * webhook's claim replaced. If that was null (should not happen for a
+ * pending_at_supplier order), it gets the time the next attempt would have
+ * had, or "now" when the 24h window is already over, so the poller — never
+ * the webhook — decides about the window.
+ *
+ * Compare-and-set: the write only applies while digiflazzNextRecheckAt still
+ * holds this webhook's own lease. If the live check outlived the lease and
+ * another check (the cron, a direct dispatch, another callback) claimed the
+ * order meanwhile, that check's lease or recorded outcome stands and this
+ * outcome is dropped with an info log — otherwise this write could reopen an
+ * order whose request is in flight, letting a second request for the same ref
+ * id overlap it, or put an older schedule step back. */
+async function recordWebhookNonTerminalOutcome(
+  db: PrismaClient,
+  order: DigiflazzCandidateOrder,
+  outcome: Extract<DigiflazzOutcome, { kind: "pending" | "transient_error" }>,
+  dispatchedAt: Date,
+  claim: DigiflazzWebhookRecheckClaim,
+): Promise<"pending"> {
+  const nextRecheckAt =
+    claim.scheduledRecheckAt ?? nextDigiflazzRecheckAt(dispatchedAt, order.digiflazzAttempts + 1) ?? new Date();
+  const write = await db.order.updateMany({
+    where: {
+      id: order.id,
+      status: OrderStatus.PROCESSING,
+      digiflazzStatus: "pending_at_supplier",
+      digiflazzNextRecheckAt: claim.leaseUntil,
+    },
+    data: {
+      digiflazzNextRecheckAt: nextRecheckAt,
+      digiflazzFailureDetail: outcome.kind === "transient_error" ? outcome.message : null,
+    },
+  });
+  if (write.count === 1) {
+    emitDigiflazzOrderStatusChanged(order.id);
+  } else {
+    logger.info(
+      { orderId: order.id },
+      `Did not record the Digiflazz webhook's ${outcome.kind === "pending" ? "Pending" : "failed"} live check for order ${order.orderCode}, because another check took over this order's recheck slot while the webhook's live check was running, so that check's outcome stands.`,
+    );
+  }
+  return "pending";
 }
 
 /**
@@ -581,13 +724,6 @@ async function computeAccountDiagnosticNote(
  * fallback KokinPay lookup — see this file's module doc comment for why
  * "reason is non-empty" isn't a usable trigger on its own (every call site
  * already folds a fallback string in even when Digiflazz gave nothing). */
-async function ensureFulfillmentMessage(db: Db, orderId: number): Promise<void> {
-  const order = await db.order.findUnique({ where: { id: orderId }, select: { user: { select: { telegramId: true } } } });
-  if (order?.user.telegramId != null) {
-    await db.fulfillmentMessage.upsert({ where: { orderId }, create: { orderId, chatId: order.user.telegramId }, update: {} });
-  }
-}
-
 async function terminalFailDigiflazzOrder(
   db: PrismaClient,
   order: DigiflazzCandidateOrder,
@@ -633,11 +769,16 @@ async function terminalFailDigiflazzOrder(
  * A paid order with missing provider credentials is marked for review and
  * alerts admins once; it must not silently remain queued forever.
  *
- * Each candidate is claimed and dispatched one at a time (not batched inside
+ * Each candidate is claimed and dispatched on its own (not batched inside
  * one transaction): a supplier HTTP round-trip
  * inside a long-held transaction would hold a connection and its locks, so the
  * atomic claim is its own short write and the HTTP call happens outside it —
- * same reasoning as enqueueFlashSaleBroadcast's chunking.
+ * same reasoning as enqueueFlashSaleBroadcast's chunking. Candidates run
+ * oldest-paidAt first, up to DIGIFLAZZ_DISPATCH_CONCURRENCY at a time, so one
+ * slow supplier call does not hold up the rest. Since payment rails now call
+ * dispatchDigiflazzOrderNow right after settlement, this cron is the recovery
+ * path: orders whose instant dispatch failed or crashed, due rechecks, and
+ * legacy orders.
  *
  * COUPLING WARNING (final whole-branch review): the `autoDeliverySource:
  * "digiflazz"` filter below is a hardcoded literal — this is the ONLY
@@ -655,208 +796,527 @@ async function terminalFailDigiflazzOrder(
 export async function dispatchPendingDigiflazzOrders(db: PrismaClient): Promise<DigiflazzDispatchSummary> {
   const creds = await getDigiflazzCreds(db);
 
-  const now = new Date();
   const candidates = await db.order.findMany({
-    where: {
-      status: OrderStatus.PROCESSING,
-      AND: [{ OR: [
-        { fulfillmentProvider: "DIGIFLAZZ" },
-        { fulfillmentProvider: null, items: { some: { product: { autoDeliverySource: "digiflazz" } } } },
-      ] }],
-      OR: [
-        { digiflazzDispatchedAt: null, OR: [{ digiflazzStatus: null }, { digiflazzStatus: { not: "failed" } }] },
-        { digiflazzStatus: "pending_at_supplier", digiflazzNextRecheckAt: { lte: now } },
-      ],
-    },
+    where: digiflazzCandidateWhere(new Date()),
+    include: DIGIFLAZZ_CANDIDATE_INCLUDE,
+    // Oldest payment first, so the queue drains in the order buyers paid;
+    // orders with no paidAt (legacy rows) go last, id breaks ties.
+    orderBy: [{ paidAt: { sort: "asc", nulls: "last" } }, { id: "asc" }],
+  });
+
+  const summary = emptyDigiflazzDispatchSummary();
+  await forEachWithConcurrency(candidates, DIGIFLAZZ_DISPATCH_CONCURRENCY, (order) =>
+    // Recover the durable status message for paid orders created before this
+    // feature (the direct path skips it — settlement already upserts it).
+    processDigiflazzOrder(db, creds, order, summary, { ensureFulfillmentMessage: true, trigger: "cron" }),
+  );
+  return summary;
+}
+
+/** How many candidate orders one cron tick processes at the same time. Each
+ * one still wins its own atomic claim first, so this only bounds how many
+ * supplier HTTP calls are in flight together — enough that one slow
+ * createTransaction (up to the 15-second write timeout) no longer holds the
+ * whole queue behind it, small enough not to hammer the supplier or the DB
+ * connection pool. */
+export const DIGIFLAZZ_DISPATCH_CONCURRENCY = 4;
+
+function emptyDigiflazzDispatchSummary(): DigiflazzDispatchSummary {
+  return { claimed: 0, delivered: 0, pending: 0, failed: 0 };
+}
+
+/** The single "is this order due for a Digiflazz request?" predicate, shared
+ * by the cron's candidate query and dispatchDigiflazzOrderNow: PROCESSING,
+ * routed to Digiflazz (fulfillmentProvider, or the legacy per-denomination
+ * autoDeliverySource when no provider was recorded), and either never
+ * dispatched (and not terminally failed) or a due recheck. Only a pre-filter:
+ * the atomic claim in processDigiflazzOrder re-checks the same conditions in
+ * its own UPDATE and is what actually prevents a duplicate request. */
+function digiflazzCandidateWhere(now: Date): Prisma.OrderWhereInput {
+  return {
+    status: OrderStatus.PROCESSING,
+    AND: [{ OR: [
+      { fulfillmentProvider: "DIGIFLAZZ" },
+      { fulfillmentProvider: null, items: { some: { product: { autoDeliverySource: "digiflazz" } } } },
+    ] }],
+    OR: [
+      { digiflazzDispatchedAt: null, OR: [{ digiflazzStatus: null }, { digiflazzStatus: { not: "failed" } }] },
+      { digiflazzStatus: "pending_at_supplier", digiflazzNextRecheckAt: { lte: now } },
+    ],
+  };
+}
+
+const DIGIFLAZZ_CANDIDATE_INCLUDE = {
+  items: {
     include: {
-      items: {
-        include: {
-          product: {
-            select: {
-              name: true,
-              supplierSku: true,
-              additionalFields: true,
-              providerInputMapping: true,
-              autoDeliverySource: true,
-              nicknameCheckGameCode: true,
-              product: { select: { digiflazzBrand: true, name: true } },
-            },
-          },
+      product: {
+        select: {
+          name: true,
+          supplierSku: true,
+          additionalFields: true,
+          providerInputMapping: true,
+          autoDeliverySource: true,
+          nicknameCheckGameCode: true,
+          product: { select: { digiflazzBrand: true, name: true } },
         },
       },
     },
+  },
+} satisfies Prisma.OrderInclude;
+
+/** Run `worker` over `items` with at most `limit` running at once, starting
+ * them in array order. Waits for every started worker even if one fails, then
+ * rethrows the first failure — so a cron tick never resolves while some of its
+ * requests are still running (protect: true relies on that). */
+async function forEachWithConcurrency<T>(items: readonly T[], limit: number, worker: (item: T) => Promise<void>): Promise<void> {
+  let next = 0;
+  const errors: unknown[] = [];
+  const lane = async () => {
+    while (next < items.length) {
+      const item = items[next++]!;
+      try {
+        await worker(item);
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, lane));
+  if (errors.length > 0) throw errors[0];
+}
+
+/**
+ * Place the Digiflazz request for ONE paid order right now — the instant
+ * path, called (via triggerDigiflazzDispatch) as soon as a payment
+ * transaction has committed, instead of waiting for the next cron tick.
+ *
+ * Loads the order only if it still matches the cron's candidate predicate
+ * (digiflazzCandidateWhere) and then runs exactly the same per-order step the
+ * cron runs (processDigiflazzOrder): same atomic claim, same in-flight lease,
+ * same Sukses/Pending/Gagal/transient handling, same refId (the order code).
+ * Whichever of this call, a concurrent duplicate trigger, or a cron tick wins
+ * the claim places the one request; every other caller gets a zero summary.
+ * A missing or ineligible order is a zero summary, not an error. Skips the
+ * fulfillment-message upsert the cron does (settlement already wrote it).
+ */
+export async function dispatchDigiflazzOrderNow(db: PrismaClient, orderId: number): Promise<DigiflazzDispatchSummary> {
+  return dispatchOneDigiflazzOrder(db, orderId, {});
+}
+
+async function dispatchOneDigiflazzOrder(
+  db: PrismaClient,
+  orderId: number,
+  context: { orderCode?: string },
+): Promise<DigiflazzDispatchSummary> {
+  const summary = emptyDigiflazzDispatchSummary();
+  const order = await db.order.findFirst({
+    where: { id: orderId, ...digiflazzCandidateWhere(new Date()) },
+    include: DIGIFLAZZ_CANDIDATE_INCLUDE,
   });
+  if (!order) return summary;
+  context.orderCode = order.orderCode;
+  const creds = await getDigiflazzCreds(db);
+  await processDigiflazzOrder(db, creds, order, summary, { ensureFulfillmentMessage: false, trigger: "direct" });
+  return summary;
+}
 
-  const summary: DigiflazzDispatchSummary = { claimed: 0, delivered: 0, pending: 0, failed: 0 };
+/** How many instant (direct) dispatches one process runs at the same time.
+ * A bulk action — e.g. an admin delivering 50 orders at once — would
+ * otherwise fire 50 simultaneous supplier requests. */
+export const DIGIFLAZZ_DIRECT_DISPATCH_CONCURRENCY = 8;
+/** How many further instant dispatches may wait for a free slot. Beyond this
+ * a trigger is dropped with a warning; the order is still PROCESSING and
+ * undispatched, so the 5-second recovery cron picks it up. */
+export const DIGIFLAZZ_DIRECT_DISPATCH_QUEUE_LIMIT = 200;
 
-  for (const order of candidates) {
-    // Recover the durable status message for paid orders created before this feature.
-    await ensureFulfillmentMessage(db, order.id);
-    if (!creds) {
-      await terminalFailDigiflazzOrder(db, order, "Payment received but Digiflazz credentials are not configured; restore the provider connection and review this order", true);
-      summary.failed++;
-      continue;
+// In-process limiter state. Memory only: a restart forgets the waiting line,
+// which is safe because every waiting order is still in the durable queue the
+// recovery cron reads.
+let directDispatchActive = 0;
+const directDispatchWaiting: Array<() => Promise<void>> = [];
+
+/** Test-only view of the limiter: running and waiting instant dispatches. */
+export function __digiflazzDirectDispatchLoadForTests(): { active: number; queued: number } {
+  return { active: directDispatchActive, queued: directDispatchWaiting.length };
+}
+
+/** Runs one job in a limiter slot, then hands the slot to the next waiting
+ * job. The job itself never rejects (see triggerDigiflazzDispatch), and the
+ * slot is released in `finally` whatever happens. */
+async function runDirectDispatchSlot(job: () => Promise<void>): Promise<void> {
+  directDispatchActive++;
+  try {
+    await job();
+  } catch {
+    // The job already logs its own failure; a slot must never leak.
+  } finally {
+    directDispatchActive--;
+    const next = directDispatchWaiting.shift();
+    if (next) void runDirectDispatchSlot(next);
+  }
+}
+
+/**
+ * Fire-and-forget wrapper around dispatchDigiflazzOrderNow for payment rails:
+ * call it only AFTER the payment transaction has committed. It returns
+ * immediately, never throws, and never leaves an unhandled rejection — any
+ * failure is logged at error level and the order stays in the durable queue,
+ * where the 5-second recovery cron (dispatchPendingDigiflazzOrders) picks it
+ * up. `db` defaults to the shared Prisma client; tests pass their own.
+ *
+ * Runs behind an in-process limiter: at most
+ * DIGIFLAZZ_DIRECT_DISPATCH_CONCURRENCY at once, up to
+ * DIGIFLAZZ_DIRECT_DISPATCH_QUEUE_LIMIT more waiting in arrival order, and a
+ * trigger beyond that is dropped with a warning (the cron recovers it). No
+ * timers: a finished dispatch starts the next waiting one.
+ */
+export function triggerDigiflazzDispatch(orderId: number, db: PrismaClient = sharedPrisma): void {
+  try {
+    const job = async () => {
+      const context: { orderCode?: string } = {};
+      try {
+        await dispatchOneDigiflazzOrder(db, orderId, context);
+      } catch (err) {
+        logDirectDispatchFailure(err, orderId, context.orderCode);
+      }
+    };
+    if (directDispatchActive < DIGIFLAZZ_DIRECT_DISPATCH_CONCURRENCY) {
+      void runDirectDispatchSlot(job);
+    } else if (directDispatchWaiting.length < DIGIFLAZZ_DIRECT_DISPATCH_QUEUE_LIMIT) {
+      directDispatchWaiting.push(job);
+    } else {
+      logDirectDispatchDropped(orderId);
     }
-    const isFreshDispatch = order.digiflazzDispatchedAt === null;
-    const claimNow = new Date();
-    // Atomic claim: only proceed to call Digiflazz if THIS call wins the
-    // race (count === 1). A concurrent tick, a restarted poller, or a retry
-    // that re-fetched the same candidate list all lose here instead of
-    // double-dispatching the same order to the supplier — same guard as
-    // before, now with a second shape covering the recheck branch (claims by
-    // digiflazzStatus/digiflazzNextRecheckAt instead of digiflazzDispatchedAt
-    // being null).
-    //
-    // The fresh-dispatch claim also takes the in-flight lease on
-    // digiflazzNextRecheckAt (Task B3d), exactly like the recheck claim: it
-    // tells claimDigiflazzWebhookRecheck that a /transaction call is in
-    // flight, so a callback arriving mid-dispatch cannot fire a concurrent
-    // one; and if this process dies before recording an outcome, the
-    // recheck arm picks the order up once the lease lapses instead of it
-    // sitting with a null recheck time forever.
-    const claim = isFreshDispatch
-      ? await db.order.updateMany({
-          where: { id: order.id, status: OrderStatus.PROCESSING, digiflazzDispatchedAt: null, OR: [{ digiflazzStatus: null }, { digiflazzStatus: { not: "failed" } }] },
-          data: {
-            digiflazzDispatchedAt: claimNow,
-            digiflazzStatus: "pending_at_supplier",
-            digiflazzNextRecheckAt: new Date(claimNow.getTime() + DIGIFLAZZ_RECHECK_CLAIM_LEASE_MS),
-          },
-        })
-      : await db.order.updateMany({
-          where: {
-            id: order.id,
-            status: OrderStatus.PROCESSING,
-            digiflazzStatus: "pending_at_supplier",
-            digiflazzNextRecheckAt: { lte: claimNow },
-          },
-          data: { digiflazzNextRecheckAt: new Date(claimNow.getTime() + DIGIFLAZZ_RECHECK_CLAIM_LEASE_MS) },
-        });
-    if (claim.count !== 1) continue;
-    summary.claimed++;
-    emitDigiflazzOrderStatusChanged(order.id);
+  } catch (err) {
+    // Nothing above should throw synchronously; kept so a trigger can never
+    // throw into a payment rail.
+    logDirectDispatchFailure(err, orderId, undefined);
+  }
+}
 
-    // dispatchedAt anchors the 24h backoff window: for a fresh dispatch
-    // this is the claimNow just written above (this in-memory `order` row
-    // was fetched BEFORE the claim, so order.digiflazzDispatchedAt is
-    // still its pre-claim null here); for a recheck it's the already-set
-    // original dispatch time, unchanged by this claim.
-    const dispatchedAt = order.digiflazzDispatchedAt ?? claimNow;
+function logDirectDispatchDropped(orderId: number): void {
+  try {
+    logger.warn(
+      { orderId },
+      `Skipped the instant Digiflazz dispatch for order id ${orderId} because ${DIGIFLAZZ_DIRECT_DISPATCH_CONCURRENCY} instant dispatches are already running and ${DIGIFLAZZ_DIRECT_DISPATCH_QUEUE_LIMIT} more are waiting; the order stays queued and the 5-second recovery cron will dispatch it.`,
+    );
+  } catch {
+    // Logging must never turn a handled overload into a thrown error.
+  }
+}
 
-    // I6/N1 fixes: resolveSingleDigiflazzItem is the single shared rule for
-    // "find the order's Digiflazz-routed item(s) and refuse unless there is
-    // exactly one at quantity 1" — see its doc comment above for the two
-    // failure shapes (no/unconfigured item vs. more than one unit) it
-    // distinguishes.
-    const resolution = resolveSingleDigiflazzItem(order);
-    if (!resolution.ok) {
-      // A structural resolution failure (missing supplierSku, wrong
-      // quantity) is always a specific, meaningful explanation — a config
-      // problem, not a "Digiflazz gave no reason" one — so the reactive
-      // diagnostic must never run for it.
-      await recordDigiflazzOutcome(
-        db,
-        order,
-        { kind: "terminal", reason: resolution.reason, supplierGaveReason: true },
-        dispatchedAt,
-      );
-      summary.failed++;
-      continue;
-    }
-    const { supplierSku } = resolution;
+function logDirectDispatchFailure(err: unknown, orderId: number, orderCode: string | undefined): void {
+  try {
+    const which = orderCode ? `order ${orderCode}` : `order id ${orderId}`;
+    logger.error(
+      { err, orderId },
+      `The instant Digiflazz dispatch for ${which} failed right after payment; the order stays queued and the 5-second recovery cron will retry it.`,
+    );
+  } catch {
+    // Logging must never turn a handled failure into an unhandled one.
+  }
+}
 
-    let customerNo: string;
-    // An edit that won the row lock before this claim must be the target submitted.
-    // Edits after the claim are rejected by updateOrderCustomerData's WHERE guard.
-    const submittedInput = await db.order.findUniqueOrThrow({ where: { id: order.id }, select: { customerData: true, inputConfigSnapshot: true } });
-    try { customerNo = buildDigiflazzCustomerNo(resolution.product, submittedInput.customerData, submittedInput.inputConfigSnapshot); }
-    catch {
-      await recordDigiflazzOutcome(db, order, { kind: "terminal", reason: "Invalid player input configuration or answers; needs manual review", supplierGaveReason: true }, dispatchedAt);
-      summary.failed++;
-      continue;
-    }
+/**
+ * The per-order step shared by the cron (dispatchPendingDigiflazzOrders) and
+ * the direct path (dispatchDigiflazzOrderNow): atomic claim with the in-flight
+ * lease -> resolve the single Digiflazz item -> build customer_no ->
+ * createTransaction (refId = order.orderCode) -> record the
+ * Sukses/Pending/Gagal/transient outcome. Tallies into `summary`. Holds no DB
+ * transaction across the HTTP call.
+ */
+async function processDigiflazzOrder(
+  db: PrismaClient,
+  creds: DigiflazzCreds | null,
+  order: DigiflazzCandidateOrder,
+  summary: DigiflazzDispatchSummary,
+  options: { ensureFulfillmentMessage: boolean; trigger: "direct" | "cron" },
+): Promise<void> {
+  if (options.ensureFulfillmentMessage) await ensureFulfillmentMessage(db, order.id);
+  if (!creds) {
+    await terminalFailDigiflazzOrder(db, order, "Payment received but Digiflazz credentials are not configured; restore the provider connection and review this order", true);
+    summary.failed++;
+    return;
+  }
+  const isFreshDispatch = order.digiflazzDispatchedAt === null;
+  const claimNow = new Date();
+  // Atomic claim: only proceed to call Digiflazz if THIS call wins the
+  // race (count === 1). A concurrent tick, a restarted poller, or a retry
+  // that re-fetched the same candidate list all lose here instead of
+  // double-dispatching the same order to the supplier — same guard as
+  // before, now with a second shape covering the recheck branch (claims by
+  // digiflazzStatus/digiflazzNextRecheckAt instead of digiflazzDispatchedAt
+  // being null).
+  //
+  // The fresh-dispatch claim also takes the in-flight lease on
+  // digiflazzNextRecheckAt (Task B3d), exactly like the recheck claim: it
+  // tells claimDigiflazzWebhookRecheck that a /transaction call is in
+  // flight, so a callback arriving mid-dispatch cannot fire a concurrent
+  // one; and if this process dies before recording an outcome, the
+  // recheck arm picks the order up once the lease lapses instead of it
+  // sitting with a null recheck time forever.
+  const claim = isFreshDispatch
+    ? await db.order.updateMany({
+        where: { id: order.id, status: OrderStatus.PROCESSING, digiflazzDispatchedAt: null, OR: [{ digiflazzStatus: null }, { digiflazzStatus: { not: "failed" } }] },
+        data: {
+          digiflazzDispatchedAt: claimNow,
+          digiflazzStatus: "pending_at_supplier",
+          digiflazzNextRecheckAt: new Date(claimNow.getTime() + DIGIFLAZZ_RECHECK_CLAIM_LEASE_MS),
+        },
+      })
+    : await db.order.updateMany({
+        where: {
+          id: order.id,
+          status: OrderStatus.PROCESSING,
+          digiflazzStatus: "pending_at_supplier",
+          digiflazzNextRecheckAt: { lte: claimNow },
+        },
+        data: { digiflazzNextRecheckAt: new Date(claimNow.getTime() + DIGIFLAZZ_RECHECK_CLAIM_LEASE_MS) },
+      });
+  if (claim.count !== 1) return;
+  summary.claimed++;
+  emitDigiflazzOrderStatusChanged(order.id);
 
+  // dispatchedAt anchors the 24h backoff window: for a fresh dispatch
+  // this is the claimNow just written above (this in-memory `order` row
+  // was fetched BEFORE the claim, so order.digiflazzDispatchedAt is
+  // still its pre-claim null here); for a recheck it's the already-set
+  // original dispatch time, unchanged by this claim.
+  const dispatchedAt = order.digiflazzDispatchedAt ?? claimNow;
+  const attempt = order.digiflazzAttempts + 1;
+  logDigiflazzTimingEvent(
+    {
+      event: DigiflazzTimingEvent.FULFILLMENT_CLAIMED,
+      orderId: order.id,
+      orderCode: order.orderCode,
+      trigger: options.trigger,
+      claimKind: isFreshDispatch ? "fresh" : "recheck",
+      attempt,
+      delayFromPaymentMs: elapsedMs(order.paidAt, claimNow),
+    },
+    `The ${options.trigger === "direct" ? "instant dispatch" : "5-second recovery cron"} claimed order ${order.orderCode} for ${isFreshDispatch ? "its first Digiflazz request" : `Digiflazz recheck attempt ${attempt}`}.`,
+  );
+
+  // I6/N1 fixes: resolveSingleDigiflazzItem is the single shared rule for
+  // "find the order's Digiflazz-routed item(s) and refuse unless there is
+  // exactly one at quantity 1" — see its doc comment above for the two
+  // failure shapes (no/unconfigured item vs. more than one unit) it
+  // distinguishes.
+  const resolution = resolveSingleDigiflazzItem(order);
+  if (!resolution.ok) {
+    // A structural resolution failure (missing supplierSku, wrong
+    // quantity) is always a specific, meaningful explanation — a config
+    // problem, not a "Digiflazz gave no reason" one — so the reactive
+    // diagnostic must never run for it.
+    await recordDigiflazzOutcome(
+      db,
+      order,
+      { kind: "terminal", reason: resolution.reason, supplierGaveReason: true },
+      dispatchedAt,
+    );
+    summary.failed++;
+    return;
+  }
+  const { supplierSku } = resolution;
+
+  let customerNo: string;
+  // An edit that won the row lock before this claim must be the target submitted.
+  // Edits after the claim are rejected by updateOrderCustomerData's WHERE guard.
+  const submittedInput = await db.order.findUniqueOrThrow({ where: { id: order.id }, select: { customerData: true, inputConfigSnapshot: true } });
+  try { customerNo = buildDigiflazzCustomerNo(resolution.product, submittedInput.customerData, submittedInput.inputConfigSnapshot); }
+  catch {
+    await recordDigiflazzOutcome(db, order, { kind: "terminal", reason: "Invalid player input configuration or answers; needs manual review", supplierGaveReason: true }, dispatchedAt);
+    summary.failed++;
+    return;
+  }
+
+  logDigiflazzTimingEvent(
+    {
+      event: DigiflazzTimingEvent.DIGIFLAZZ_REQUEST,
+      orderId: order.id,
+      orderCode: order.orderCode,
+      refId: order.orderCode,
+      skuCode: supplierSku,
+      attempt,
+    },
+    `Sending Digiflazz request attempt ${attempt} for order ${order.orderCode} (buyer SKU code ${supplierSku}).`,
+  );
+  const requestStartedAt = Date.now();
+  try {
+    let result: Awaited<ReturnType<typeof createTransaction>>;
     try {
-      const result = await createTransaction(creds, {
+      result = await createTransaction(creds, {
         refId: order.orderCode,
         buyerSkuCode: supplierSku,
         customerNo,
       });
+    } catch (requestErr) {
+      logDigiflazzResponse(order, { status: "error", durationMs: Date.now() - requestStartedAt, error: requestErr, isRecheck: !isFreshDispatch });
+      throw requestErr;
+    }
+    const apiDurationMs = Date.now() - requestStartedAt;
+    logDigiflazzResponse(order, { status: result.status, durationMs: apiDurationMs });
 
-      if (result.status === "Sukses") {
-        try {
-          await fulfillDigiflazzOrder(db, order.id, { sn: result.sn ?? "" });
-          summary.delivered++;
-          logger.info(`Digiflazz auto-delivered order ${order.orderCode} (buyerSkuCode ${supplierSku})`);
-        } catch (fulfillErr) {
-          // Digiflazz already confirmed Sukses — this order must NEVER be
-          // retried or re-dispatched (retrying would call Digiflazz again
-          // for an order it already fulfilled; fulfillDigiflazzOrder's own
-          // atomic claim would just throw ValidationError a second time
-          // regardless). Whatever failed here — a side effect after the
-          // DELIVERED claim already committed, or the claim itself losing
-          // a race to another caller — needs a human, same as any other
-          // terminal failure: alert directly (NOT via recordDigiflazzOutcome,
-          // which would wrongly write pending/terminal digiflazz* fields
-          // onto an order that may already be DELIVERED).
-          const fulfillMessage = describeFulfillFailure(fulfillErr);
-          await alertDigiflazzDispatchFailed(
-            db,
-            order,
-            `Digiflazz confirmed Sukses but fulfilling the order failed (${fulfillMessage})`,
-          );
-          // The order genuinely transitioned PROCESSING -> DELIVERED (the
-          // claim inside fulfillDigiflazzOrder committed before this later
-          // side effect threw) — realtime subscribers must still hear about
-          // that, even though this catch's own remedy is an admin alert
-          // rather than a digiflazz* field write.
-          emitDigiflazzOrderStatusChanged(order.id);
-          summary.failed++;
-        }
-      } else if (result.status === "Pending") {
-        const outcome = await recordDigiflazzOutcome(db, order, { kind: "pending" }, dispatchedAt);
-        if (outcome === "pending") {
-          summary.pending++;
-          logger.info(
-            `Digiflazz order ${order.orderCode} (buyerSkuCode ${supplierSku}) is Pending — scheduled for a recheck, awaiting the supplier's final report`,
-          );
-        } else {
-          summary.failed++;
-        }
-      } else {
-        const outcome = await recordDigiflazzOutcome(
+    if (result.status === "Sukses") {
+      try {
+        await fulfillDigiflazzOrder(db, order.id, { sn: result.sn ?? "", digiflazzApiDurationMs: apiDurationMs });
+        summary.delivered++;
+        logger.info(`Digiflazz auto-delivered order ${order.orderCode} (buyerSkuCode ${supplierSku})`);
+      } catch (fulfillErr) {
+        // Digiflazz already confirmed Sukses — this order must NEVER be
+        // retried or re-dispatched (retrying would call Digiflazz again
+        // for an order it already fulfilled; fulfillDigiflazzOrder's own
+        // atomic claim would just throw ValidationError a second time
+        // regardless). Whatever failed here — a side effect after the
+        // DELIVERED claim already committed, or the claim itself losing
+        // a race to another caller — needs a human, same as any other
+        // terminal failure: alert directly (NOT via recordDigiflazzOutcome,
+        // which would wrongly write pending/terminal digiflazz* fields
+        // onto an order that may already be DELIVERED).
+        const fulfillMessage = describeFulfillFailure(fulfillErr);
+        await alertDigiflazzDispatchFailed(
           db,
           order,
-          {
-            kind: "terminal",
-            reason: `Digiflazz reported Gagal${result.message ? ` (${result.message})` : ""}`,
-            // Only true when Digiflazz's own `message` field carried real
-            // content — a bare "Gagal" with no explanation is exactly the
-            // case the reactive account/region diagnostic exists for (see
-            // this file's module doc comment).
-            supplierGaveReason: Boolean(result.message),
-          },
-          dispatchedAt,
+          `Digiflazz confirmed Sukses but fulfilling the order failed (${fulfillMessage})`,
         );
+        // The order genuinely transitioned PROCESSING -> DELIVERED (the
+        // claim inside fulfillDigiflazzOrder committed before this later
+        // side effect threw) — realtime subscribers must still hear about
+        // that, even though this catch's own remedy is an admin alert
+        // rather than a digiflazz* field write.
+        emitDigiflazzOrderStatusChanged(order.id);
         summary.failed++;
-        void outcome; // always "failed" for kind:"terminal" — see recordDigiflazzOutcome
       }
-    } catch (err) {
-      // The HTTP call itself failed (network error, timeout, malformed
-      // response — see @app/core/suppliers/digiflazz's fetchDigiflazzJson).
-      // err's message is already credential-free (the client's own
-      // guarantee); never log err.cause or the request body. Unlike
-      // before this task, this is now RETRIED (recordDigiflazzOutcome's
-      // "transient_error" branch) rather than immediately terminal — see
-      // this file's module doc comment for why that's safe.
-      const message = err instanceof Error ? err.message : String(err);
-      const outcome = await recordDigiflazzOutcome(db, order, { kind: "transient_error", message }, dispatchedAt);
-      if (outcome === "pending") summary.pending++;
-      else summary.failed++;
+    } else if (result.status === "Pending") {
+      const outcome = await recordDigiflazzOutcome(db, order, { kind: "pending" }, dispatchedAt);
+      if (outcome === "pending") {
+        summary.pending++;
+        logger.info(
+          `Digiflazz order ${order.orderCode} (buyerSkuCode ${supplierSku}) is Pending — scheduled for a recheck, awaiting the supplier's final report`,
+        );
+      } else {
+        summary.failed++;
+        logDigiflazzOrderCompleted(order, "Gagal", dispatchedAt, new Date(), apiDurationMs);
+      }
+    } else {
+      const outcome = await recordDigiflazzOutcome(
+        db,
+        order,
+        {
+          kind: "terminal",
+          reason: `Digiflazz reported Gagal${result.message ? ` (${result.message})` : ""}`,
+          // Only true when Digiflazz's own `message` field carried real
+          // content — a bare "Gagal" with no explanation is exactly the
+          // case the reactive account/region diagnostic exists for (see
+          // this file's module doc comment).
+          supplierGaveReason: Boolean(result.message),
+        },
+        dispatchedAt,
+      );
+      summary.failed++;
+      void outcome; // always "failed" for kind:"terminal" — see recordDigiflazzOutcome
+      logDigiflazzOrderCompleted(order, "Gagal", dispatchedAt, new Date(), apiDurationMs);
+    }
+  } catch (err) {
+    // The HTTP call itself failed (network error, timeout, malformed
+    // response, refusal — see @app/core/suppliers/digiflazz's
+    // fetchDigiflazzJson). err's message is already credential-free (the
+    // client's own guarantee); never log err.cause or the request body.
+    //
+    // A permanent DigiflazzRequestError (a non-429 4xx) on a FRESH dispatch
+    // goes straight to the terminal admin-review outcome instead of 24 hours
+    // of retries. supplierGaveReason is true because the reason below already
+    // explains the failure; the account/region diagnostic would add nothing.
+    // Only safe on a fresh dispatch: a 4xx there means Digiflazz refused the
+    // first submission, so nothing was purchased (assumed — Digiflazz's 4xx
+    // semantics are unverified against a live account). On a recheck the
+    // order was already submitted under this ref id and may be processing or
+    // delivered at Digiflazz, so every error there stays transient below.
+    if (isFreshDispatch && err instanceof DigiflazzRequestError && !err.retryable) {
+      await recordDigiflazzOutcome(
+        db,
+        order,
+        { kind: "terminal", reason: describePermanentDigiflazzRequestError(err), supplierGaveReason: true },
+        dispatchedAt,
+      );
+      summary.failed++;
+      logDigiflazzOrderCompleted(order, "Gagal", dispatchedAt, new Date(), undefined);
+      return;
+    }
+    // Everything else (timeout, network, 5xx, 429, unparseable body, a 2xx
+    // without transaction data, an untyped error, or ANY error on a recheck)
+    // is RETRIED with the same ref id (recordDigiflazzOutcome's
+    // "transient_error" branch) — see this file's module doc comment for why
+    // that's safe.
+    const message = err instanceof Error ? err.message : String(err);
+    const outcome = await recordDigiflazzOutcome(db, order, { kind: "transient_error", message }, dispatchedAt);
+    if (outcome === "pending") summary.pending++;
+    else {
+      summary.failed++;
+      logDigiflazzOrderCompleted(order, "Gagal", dispatchedAt, new Date(), undefined);
     }
   }
+}
 
-  return summary;
+/** The admin-facing reason (digiflazzFailureDetail, alert, audit log) for a
+ * request Digiflazz refused permanently. Built only from the error's kind and
+ * HTTP status — never from a response body or the request. */
+function describePermanentDigiflazzRequestError(err: DigiflazzRequestError): string {
+  return `Digiflazz refused the request with HTTP ${err.httpStatus ?? "4xx"}, so it was not retried — check the Digiflazz credentials, the product code and the player details, then finish this order by hand`;
+}
+
+function logDigiflazzResponse(
+  order: DigiflazzCandidateOrder,
+  response: { status: DigiflazzStatus | "error"; durationMs: number; error?: unknown; isRecheck?: boolean },
+): void {
+  const typed = response.error instanceof DigiflazzRequestError ? response.error : null;
+  const errorKind = response.status === "error" ? (typed?.kind ?? "unknown") : undefined;
+  // Whether the error is eligible for another try with the same ref id: on a
+  // recheck every error is (within the 24h backoff window — see
+  // processDigiflazzOrder's catch), on a fresh dispatch per the error's kind.
+  const retryable = response.status === "error" ? (response.isRecheck || !typed || typed.retryable) : undefined;
+  logDigiflazzTimingEvent(
+    {
+      event: DigiflazzTimingEvent.DIGIFLAZZ_RESPONSE,
+      orderId: order.id,
+      orderCode: order.orderCode,
+      refId: order.orderCode,
+      status: response.status,
+      durationMs: response.durationMs,
+      errorKind,
+      retryable,
+    },
+    response.status === "error"
+      ? `The Digiflazz request for order ${order.orderCode} failed after ${response.durationMs} ms (${errorKind}); ${retryable ? "the same ref id will be tried again" : "it will not be retried"}.`
+      : `Digiflazz answered ${response.status} for order ${order.orderCode} in ${response.durationMs} ms.`,
+  );
+}
+
+/** order.completed for a terminal outcome reached in this module. A Sukses
+ * completion is logged by fulfillDigiflazzOrder itself, after its commit. */
+function logDigiflazzOrderCompleted(
+  order: { id: number; orderCode: string; paidAt?: Date | null },
+  outcome: "Sukses" | "Gagal",
+  firstDispatchedAt: Date | null | undefined,
+  completedAt: Date,
+  digiflazzApiDurationMs: number | undefined,
+): void {
+  const paymentToCompletionMs = elapsedMs(order.paidAt, completedAt);
+  logDigiflazzTimingEvent(
+    {
+      event: DigiflazzTimingEvent.ORDER_COMPLETED,
+      orderId: order.id,
+      orderCode: order.orderCode,
+      outcome,
+      paymentToFulfillmentMs: elapsedMs(order.paidAt, firstDispatchedAt),
+      digiflazzApiDurationMs,
+      digiflazzPendingDurationMs: elapsedMs(firstDispatchedAt, completedAt),
+      paymentToCompletionMs,
+    },
+    outcome === "Sukses"
+      ? `Order ${order.orderCode} was delivered by Digiflazz${paymentToCompletionMs !== undefined ? ` ${paymentToCompletionMs} ms after payment` : ""}.`
+      : `Order ${order.orderCode} failed at Digiflazz${paymentToCompletionMs !== undefined ? ` ${paymentToCompletionMs} ms after payment` : ""} and is waiting for an admin.`,
+  );
 }
 
 /**
@@ -877,7 +1337,12 @@ export async function dispatchPendingDigiflazzOrders(db: PrismaClient): Promise<
 export async function fulfillDigiflazzOrder(
   db: Db,
   orderId: number,
-  args: { sn: string },
+  args: {
+    sn: string;
+    /** Duration of the createTransaction call that reported Sukses, for the
+     * order.completed timing event; omitted when the caller did not time it. */
+    digiflazzApiDurationMs?: number;
+  },
 ) {
   const order = await getOrder(db, orderId);
   if (!order) throw new ValidationError("error.order_not_found");
@@ -917,6 +1382,9 @@ export async function fulfillDigiflazzOrder(
   // leaves PROCESSING retryable with the original supplier reference.
   if ("$transaction" in db) await db.$transaction(complete);
   else await complete(db);
+  // Logged right after the DELIVERED commit (the moment the buyer's order is
+  // done), before the side effects below, which have their own failure path.
+  logDigiflazzOrderCompleted(order, "Sukses", order.digiflazzDispatchedAt, now, args.digiflazzApiDurationMs);
 
   await finalizeDeliverySideEffects(db, order, now);
 

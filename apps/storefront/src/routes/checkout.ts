@@ -84,6 +84,7 @@ import {
   recordDigiflazzOutcome,
   resolveSingleDigiflazzItem,
   buildDigiflazzCustomerNo,
+  triggerDigiflazzDispatch,
 } from "@app/db";
 import { type Customer } from "../plugins/auth";
 import { clientIp, webhookRateLimited } from "../rateLimit";
@@ -108,10 +109,11 @@ import {
   type NowpaymentsInvoice,
 } from "@app/core/payments/nowpayments";
 import {
-  verifyWebhook as verifyDigiflazzWebhook,
+  inspectWebhook as inspectDigiflazzWebhook,
   createTransaction as createDigiflazzTransaction,
   type DigiflazzTransactionResult,
 } from "@app/core/suppliers/digiflazz";
+import { DigiflazzTimingEvent, elapsedMs, logDigiflazzTimingEvent } from "@app/core/suppliers/digiflazzTiming";
 import { gatewayLedgerTrxId } from "@app/core/payments/ledgerKey";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import { usdtFromIdr } from "../pricing";
@@ -765,10 +767,14 @@ export async function performCheckout(
     // books instead of opening a gateway payment for Rp0 — the buyer still
     // gets a paid, delivered order, which is what they are owed.
     if (orderHasNothingLeftToCollect(created)) {
-      return { order: (await settleFullyDiscountedOrder(tx, created.id)).order, settled: true };
+      const settled = await settleFullyDiscountedOrder(tx, created.id);
+      return { order: settled.order, settled: true, processing: settled.kind === "processing" };
     }
-    return { order: await finalizeOrderPayment(tx, created.id, choice), settled: false };
+    return { order: await finalizeOrderPayment(tx, created.id, choice), settled: false, processing: false };
   });
+  // The settlement has committed: start a Digiflazz-routed order's supplier
+  // request now (fire-and-forget, ignores non-Digiflazz orders, never throws).
+  if (order.processing) triggerDigiflazzDispatch(order.order!.id);
   return { orderCode: order.order!.orderCode, settledWithoutGateway: order.settled };
 }
 
@@ -806,6 +812,9 @@ export async function performWalletCheckout(
       customerData,
     });
   });
+  // The settlement has committed: start a Digiflazz-routed order's supplier
+  // request now (fire-and-forget, ignores non-Digiflazz orders, never throws).
+  if (result.kind === "processing") triggerDigiflazzDispatch(result.order.id);
   return { orderCode: result.order.orderCode };
 }
 
@@ -884,10 +893,14 @@ export async function performDirectCheckout(
     // Same zero-total routing as performCheckout above — see its comment,
     // including why the caller is told which branch ran.
     if (orderHasNothingLeftToCollect(created)) {
-      return { order: (await settleFullyDiscountedOrder(tx, created.id)).order, settled: true };
+      const settled = await settleFullyDiscountedOrder(tx, created.id);
+      return { order: settled.order, settled: true, processing: settled.kind === "processing" };
     }
-    return { order: await finalizeOrderPayment(tx, created.id, choice), settled: false };
+    return { order: await finalizeOrderPayment(tx, created.id, choice), settled: false, processing: false };
   });
+  // The settlement has committed: start a Digiflazz-routed order's supplier
+  // request now (fire-and-forget, ignores non-Digiflazz orders, never throws).
+  if (order.processing) triggerDigiflazzDispatch(order.order!.id);
   return { orderCode: order.order!.orderCode, settledWithoutGateway: order.settled };
 }
 
@@ -939,6 +952,9 @@ export async function performDirectWalletCheckout(
       customerData: directCustomerDataJson(denom, line.quantity, customerData),
     });
   });
+  // The settlement has committed: start a Digiflazz-routed order's supplier
+  // request now (fire-and-forget, ignores non-Digiflazz orders, never throws).
+  if (result.kind === "processing") triggerDigiflazzDispatch(result.order.id);
   return { orderCode: result.order.orderCode };
 }
 
@@ -1271,6 +1287,9 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         amount: live.amount,
         shopUrl: shopPublicUrl(),
       });
+      // The settlement has committed: start a Digiflazz-routed order's supplier
+      // request now (fire-and-forget, ignores non-Digiflazz orders, never throws).
+      if (r.status === "processing") triggerDigiflazzDispatch(r.order.id);
       if (r.status === "delivered") nudgeOutboxDispatcher();
       if (r.status === "stale") {
         logger.warn(
@@ -1389,6 +1408,9 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         amount: live.amount,
         shopUrl: shopPublicUrl(),
       });
+      // The settlement has committed: start a Digiflazz-routed order's supplier
+      // request now (fire-and-forget, ignores non-Digiflazz orders, never throws).
+      if (r.status === "processing") triggerDigiflazzDispatch(r.order.id);
       if (r.status === "delivered") nudgeOutboxDispatcher();
       if (r.status === "stale") {
         logger.warn(
@@ -1506,6 +1528,9 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
           amount: valueCheck.amount,
           shopUrl: shopPublicUrl(),
         });
+        // The settlement has committed: start a Digiflazz-routed order's supplier
+        // request now (fire-and-forget, ignores non-Digiflazz orders, never throws).
+        if (r.status === "processing") triggerDigiflazzDispatch(r.order.id);
         if (r.status === "delivered") nudgeOutboxDispatcher();
         if (r.status === "stale") {
           logger.warn(
@@ -1592,9 +1617,29 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         return reply.code(403).send({ status: "disabled" });
       }
 
-      const rawBody = (req as FastifyRequest & { rawBody?: Buffer }).rawBody ?? Buffer.alloc(0);
+      // Only the application/json parser above keeps the raw bytes. Any other
+      // content type was parsed by Fastify's own parsers (or not at all), so
+      // there is nothing the HMAC can be checked against — say exactly that
+      // instead of reporting a signature mismatch that never happened.
+      const rawBody = (req as FastifyRequest & { rawBody?: Buffer }).rawBody;
+      if (!rawBody) {
+        logger.warn(
+          "Refused a Digiflazz webhook because its body was not sent as JSON, so the raw bytes were not kept and its signature could not be checked — no order was looked up. Digiflazz itself always sends application/json; a steady stream of these is a misconfigured proxy or someone probing the callback.",
+        );
+        return reply.code(403).send({ status: "unsupported content type" });
+      }
       const sigHeader = req.headers["x-hub-signature"];
-      const cb = verifyDigiflazzWebhook(webhookSecret, rawBody, typeof sigHeader === "string" ? sigHeader : undefined);
+      const inspection = inspectDigiflazzWebhook(webhookSecret, rawBody, typeof sigHeader === "string" ? sigHeader : undefined);
+      if (!inspection.ok && inspection.reason === "no_reference") {
+        // Signature verified, but there is no transaction in the body: a
+        // Digiflazz test/ping delivery. Answer 200 so Digiflazz does not keep
+        // retrying it; nothing is looked up or changed.
+        logger.info(
+          "Ignored a correctly signed Digiflazz webhook that carries no transaction reference (data.ref_id), which is what Digiflazz test and ping deliveries look like — no order was looked up.",
+        );
+        return reply.send({ status: "ignored" });
+      }
+      const cb = inspection.ok ? inspection.callback : null;
       if (!cb) {
         // Same reasoning as the TokoPay/PayDisini/NOWPayments callbacks above:
         // neither the signature nor the body is logged (CLAUDE.md, "Never log
@@ -1611,6 +1656,22 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         logger.warn(`Digiflazz callback for unknown order ref ${cb.refId} — ignoring`);
         return reply.send({ status: "unmatched" });
       }
+      // Timing event (docs/LOGGING.md, "Digiflazz timing events"): only ever
+      // reached after the signature verified and the ref matched an order.
+      // Carries the verified ref and the callback's status — never the body,
+      // the signature or the secret.
+      const msSinceDispatch = elapsedMs(order.digiflazzDispatchedAt, new Date());
+      logDigiflazzTimingEvent(
+        {
+          event: DigiflazzTimingEvent.DIGIFLAZZ_WEBHOOK_RECEIVED,
+          orderId: order.id,
+          orderCode: order.orderCode,
+          refId: cb.refId,
+          callbackStatus: cb.status,
+          msSinceDispatch,
+        },
+        `Received a verified Digiflazz webhook reporting ${cb.status} for order ${order.orderCode}${msSinceDispatch !== undefined ? ` ${msSinceDispatch} ms after it was dispatched` : ""}.`,
+      );
 
       // Review fix (Important, post-Task-12): only an order still PROCESSING
       // can legitimately need a live re-check — a legitimate callback for an
@@ -1663,12 +1724,19 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
       }
       // At most one /transaction call per order at a time, across replays,
       // concurrent callbacks and the dispatch poller.
-      if (!(await claimDigiflazzWebhookRecheck(prisma, order.id))) {
+      const recheckClaim = await claimDigiflazzWebhookRecheck(prisma, order.id);
+      if (!recheckClaim) {
         logger.info(
           `Skipped the live re-check for a Digiflazz callback on order ${order.orderCode} because another check of that order is already in flight or due within minutes — that check records the outcome, so nothing is lost`,
         );
         return reply.send({ status: "ok" });
       }
+      // A Pending/transient result from this webhook puts back the recheck
+      // time the claim replaced (recordDigiflazzOutcome, source "webhook"): a
+      // replayable callback must never consume a backoff attempt or move the
+      // schedule. That write only applies while this claim's lease is still
+      // in place, so it can never undo a newer check's lease or outcome.
+      const webhookOutcomeOptions = { source: "webhook" as const, ...recheckClaim };
 
       let result: DigiflazzTransactionResult;
       try {
@@ -1688,7 +1756,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         const message = err instanceof Error ? err.message : String(err);
         logger.warn(`Digiflazz live re-check failed for order ${order.orderCode} (${message}) — leaving it PROCESSING`);
         try {
-          await recordDigiflazzOutcome(prisma, order, { kind: "transient_error", message }, dispatchedAt);
+          await recordDigiflazzOutcome(prisma, order, { kind: "transient_error", message }, dispatchedAt, webhookOutcomeOptions);
         } catch (recordErr) {
           // Same guarantee as the Gagal/Pending branches below: a failure
           // writing this outcome (e.g. the DB update itself) must not surface
@@ -1734,11 +1802,11 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
           logger.warn({ err }, `Digiflazz callback failed to record Gagal for order ${order.orderCode} — Gagal status was still reported by the supplier`);
         }
       } else if (result.status === "Pending") {
-        // Unlike before this task, a webhook-reported Pending now advances
-        // the same backoff schedule the poller uses (recordDigiflazzOutcome),
-        // instead of being invisible to the realtime status feature.
+        // Recorded through the same recordDigiflazzOutcome the poller uses (so
+        // the realtime status feature sees it), but as a webhook outcome: the
+        // attempt counter and the poller's scheduled recheck stay as they were.
         try {
-          await recordDigiflazzOutcome(prisma, order, { kind: "pending" }, dispatchedAt);
+          await recordDigiflazzOutcome(prisma, order, { kind: "pending" }, dispatchedAt, webhookOutcomeOptions);
         } catch (err) {
           logger.warn({ err }, `Digiflazz callback failed to record Pending for order ${order.orderCode} — supplier still reports Pending`);
         }

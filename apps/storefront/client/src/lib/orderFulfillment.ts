@@ -6,7 +6,9 @@ export function fulfillmentPresentation(fulfillment: OrderFulfillment) {
   const active = ["QUEUED", "SUBMITTING", "PROCESSING"].includes(fulfillment.status);
   const complete = fulfillment.status === "SUCCESS";
   const problem = ["FAILED", "NEEDS_REVIEW", "CANCELLED"].includes(fulfillment.status);
-  const base = { active, complete, problem, badge: "processing", titleKey: "web.fulfillment_not_started_title", bodyKey: "web.fulfillment_not_started_body" };
+  // `waiting`: in progress but nothing automatic is running (a manual order
+  // awaiting preparation, possibly for hours) — a static clock, never a spinner.
+  const base = { active, waiting: false, complete, problem, badge: "processing", titleKey: "web.fulfillment_not_started_title", bodyKey: "web.fulfillment_not_started_body" };
 
   if (fulfillment.status === "CANCELLED" && fulfillment.payment_status === "PENDING") {
     return { ...base, active: false, badge: "cancelled", titleKey: "web.status_chip_cancelled", bodyKey: "web.fulfillment_cancelled_body" };
@@ -22,7 +24,7 @@ export function fulfillmentPresentation(fulfillment: OrderFulfillment) {
   }
 
   if (fulfillment.mode === "MANUAL" && ["NOT_STARTED", "QUEUED", "SUBMITTING", "PROCESSING"].includes(fulfillment.status)) {
-    return { ...base, titleKey: "web.order_processing_title", bodyKey: "web.order_processing_body" };
+    return { ...base, active: false, waiting: true, titleKey: "web.order_processing_title", bodyKey: "web.order_processing_body" };
   }
 
   switch (fulfillment.status) {

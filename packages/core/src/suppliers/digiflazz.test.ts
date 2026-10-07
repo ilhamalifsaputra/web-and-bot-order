@@ -4,9 +4,14 @@ import {
   getPriceList,
   createTransaction,
   verifyWebhook,
+  inspectWebhook,
   parseProductRegion,
   stripRegionSuffix,
   digiflazzGroupKey,
+  DigiflazzRequestError,
+  classifyDigiflazzHttpStatus,
+  isRetryableDigiflazzErrorKind,
+  type DigiflazzRequestErrorKind,
   DigiflazzSupplierError,
 } from "./digiflazz";
 import { logger } from "../logger";
@@ -174,6 +179,129 @@ describe("createTransaction", () => {
     await expect(
       createTransaction(CREDS, { refId: "ORD-9", buyerSkuCode: "ML86", customerNo: "1" }),
     ).rejects.toThrow(/rejected/);
+  });
+});
+
+describe("createTransaction error classification (DigiflazzRequestError)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  async function caught(): Promise<DigiflazzRequestError> {
+    try {
+      await createTransaction(CREDS, { refId: "ORD-C", buyerSkuCode: "ML86", customerNo: "1" });
+    } catch (err) {
+      expect(err).toBeInstanceOf(DigiflazzRequestError);
+      expect(err).toBeInstanceOf(Error);
+      return err as DigiflazzRequestError;
+    }
+    throw new Error("createTransaction was expected to throw");
+  }
+
+  function timeoutError(): Error {
+    const err = new Error(`aborted while sending apiKey=${CREDS.apiKey}`);
+    err.name = "TimeoutError";
+    return err;
+  }
+
+  const httpCases: Array<[number, DigiflazzRequestErrorKind, boolean]> = [
+    [400, "http_4xx", false],
+    [401, "http_4xx", false],
+    [403, "http_4xx", false],
+    [404, "http_4xx", false],
+    [422, "http_4xx", false],
+    // A proxy-generated 408 may come after the request already reached
+    // Digiflazz, so it is retried with the same ref id like any timeout.
+    [408, "timeout", true],
+    [429, "http_429", true],
+    [500, "http_5xx", true],
+    [502, "http_5xx", true],
+    [503, "http_5xx", true],
+    [504, "http_5xx", true],
+  ];
+
+  it.each(httpCases)("HTTP %i is kind %s with retryable=%s and a static message", async (status, kind, retryable) => {
+    stubFetchJson({}, { ok: false, status });
+    const err = await caught();
+    expect(err.kind).toBe(kind);
+    expect(err.retryable).toBe(retryable);
+    expect(err.httpStatus).toBe(status);
+    expect(err.message).toBe(`Digiflazz transaction HTTP ${status}`);
+  });
+
+  it("a request that hits the deadline is kind timeout and retryable, with the old static message", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(timeoutError()));
+    const err = await caught();
+    expect(err.kind).toBe("timeout");
+    expect(err.retryable).toBe(true);
+    expect(err.message).toBe("Digiflazz transaction timed out");
+    expect(err.message).not.toContain(CREDS.apiKey);
+    expect(err.cause).toBeUndefined();
+  });
+
+  it("a fetch() rejection is kind network and retryable, and never carries the original error", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error(`ECONNRESET apiKey=${CREDS.apiKey}`)));
+    const err = await caught();
+    expect(err.kind).toBe("network");
+    expect(err.retryable).toBe(true);
+    expect(err.message).toBe("Digiflazz transaction network error");
+    expect(err.cause).toBeUndefined();
+    expect(JSON.stringify({ ...err, message: err.message })).not.toContain(CREDS.apiKey);
+  });
+
+  it("a body read that stalls past the deadline is kind timeout and retryable", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => { throw timeoutError(); } }),
+    );
+    const err = await caught();
+    expect(err.kind).toBe("timeout");
+    expect(err.retryable).toBe(true);
+    expect(err.message).toBe("Digiflazz transaction response body read timed out");
+  });
+
+  it("a malformed body is kind unparseable and retryable", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => { throw new SyntaxError("Unexpected token <"); } }),
+    );
+    const err = await caught();
+    expect(err.kind).toBe("unparseable");
+    expect(err.retryable).toBe(true);
+    expect(err.message).toBe("Digiflazz transaction returned an unparseable response");
+  });
+
+  it("a response with no transaction data is kind rejected and retryable (as uncertain as an unparseable body)", async () => {
+    stubFetchJson({ data: null });
+    const err = await caught();
+    expect(err.kind).toBe("rejected");
+    expect(err.retryable).toBe(true);
+    expect(err.message).toBe("Digiflazz transaction rejected: missing data in response");
+  });
+
+  it("getPriceList throws the same typed error, so the catalog sync keeps its messages", async () => {
+    stubFetchJson({}, { ok: false, status: 503 });
+    const err = await getPriceList(CREDS).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(DigiflazzRequestError);
+    expect((err as DigiflazzRequestError).kind).toBe("http_5xx");
+    expect((err as Error).message).toBe("Digiflazz price list HTTP 503");
+  });
+});
+
+describe("classifyDigiflazzHttpStatus / isRetryableDigiflazzErrorKind", () => {
+  it("maps statuses and kinds the same way createTransaction does", () => {
+    expect(classifyDigiflazzHttpStatus(429)).toBe("http_429");
+    expect(classifyDigiflazzHttpStatus(408)).toBe("timeout");
+    expect(classifyDigiflazzHttpStatus(500)).toBe("http_5xx");
+    expect(classifyDigiflazzHttpStatus(599)).toBe("http_5xx");
+    expect(classifyDigiflazzHttpStatus(400)).toBe("http_4xx");
+    expect(classifyDigiflazzHttpStatus(451)).toBe("http_4xx");
+    for (const kind of ["timeout", "network", "http_5xx", "http_429", "unparseable", "rejected"] as const) {
+      expect(isRetryableDigiflazzErrorKind(kind)).toBe(true);
+    }
+    for (const kind of ["http_4xx"] as const) {
+      expect(isRetryableDigiflazzErrorKind(kind)).toBe(false);
+    }
   });
 });
 
@@ -403,6 +531,50 @@ describe("verifyWebhook", () => {
     expect(logged).not.toContain(WEBHOOK_SECRET);
     expect(logged).not.toContain(badHeader.slice("sha1=".length));
     expect(logged).not.toContain("ORD-SECRETIVE");
+  });
+});
+
+describe("inspectWebhook (instant dispatch Task 4)", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("returns the callback for a valid delivery", () => {
+    const raw = webhookBody({ status: "Pending" });
+    expect(inspectWebhook(WEBHOOK_SECRET, raw, hubSignature(raw))).toEqual({
+      ok: true,
+      callback: expect.objectContaining({ refId: "ORD-100", status: "Pending" }),
+    });
+  });
+
+  it.each([
+    ["no_secret", "", (raw: string) => hubSignature(raw, "")],
+    ["bad_signature", WEBHOOK_SECRET, () => undefined],
+    ["bad_signature", WEBHOOK_SECRET, (raw: string) => hubSignature(raw, "wrong")],
+  ] as const)("rejects with %s", (reason, secret, header) => {
+    vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    const raw = webhookBody();
+    expect(inspectWebhook(secret, raw, header(raw))).toEqual({ ok: false, reason });
+  });
+
+  it("tells a correctly signed body without a reference (ping/test event) apart, without logging a warning", () => {
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    const noRef = JSON.stringify({ data: { status: "Sukses" } });
+    expect(inspectWebhook(WEBHOOK_SECRET, noRef, hubSignature(noRef))).toEqual({ ok: false, reason: "no_reference" });
+    const noData = JSON.stringify({ event: "ping" });
+    expect(inspectWebhook(WEBHOOK_SECRET, noData, hubSignature(noData))).toEqual({ ok: false, reason: "no_reference" });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("a correctly signed body that is not JSON is invalid_body", () => {
+    vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    const notJson = "ref_id=ORD-1";
+    expect(inspectWebhook(WEBHOOK_SECRET, notJson, hubSignature(notJson))).toEqual({ ok: false, reason: "invalid_body" });
+  });
+
+  it("verifyWebhook still logs a warning and returns null for a signed body without a reference", () => {
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    const noRef = JSON.stringify({ data: { status: "Sukses" } });
+    expect(verifyWebhook(WEBHOOK_SECRET, noRef, hubSignature(noRef))).toBeNull();
+    expect(warn).toHaveBeenCalledTimes(1);
   });
 });
 

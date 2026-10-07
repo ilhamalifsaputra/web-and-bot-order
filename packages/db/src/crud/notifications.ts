@@ -23,6 +23,7 @@ import {
   type DisplayCurrency,
 } from "@app/core/enums";
 import type { Decimal } from "@app/core/money";
+import type { OrderMoneyRows } from "@app/core/orderMoneyRows";
 import { resolveAdminIds } from "./admins";
 import { listRestockSubscribers } from "./reviews";
 import { countAvailableStock } from "./stock";
@@ -237,9 +238,10 @@ export async function enqueueDigiflazzReviewAlert(
  * Enqueue one admin DM per resolved admin alerting that a paid order routed
  * to the hand-fulfilment queue (settlePaidOrder's MANUAL branch — a
  * MANUAL/MANUAL_WITH_INFO SKU) and is waiting on an admin to fulfil it by
- * hand. Same fan-out-per-admin shape as `enqueueOrderPipelineFailed`. Numbers
- * are carried as Decimal `.toString()` — never `number` — per money rules.
- * No-op if no admin is resolved.
+ * hand. Same fan-out-per-admin shape as `enqueueOrderPipelineFailed`. Money
+ * is the caller's `reconciledOrderMoneyRows(order)` in `currency` (the
+ * order's own settlement currency) — see `manualQueueMoneyPayload`. No-op if
+ * no admin is resolved.
  */
 export async function enqueueManualOrderAdminAlert(
   db: Db,
@@ -247,8 +249,8 @@ export async function enqueueManualOrderAdminAlert(
     orderId: number;
     orderCode: string;
     items: { name: string; qty: number }[];
-    total: Decimal;
     currency: string;
+    money: OrderMoneyRows;
   },
 ): Promise<void> {
   for (const adminId of await resolveAdminIds(db)) {
@@ -260,12 +262,34 @@ export async function enqueueManualOrderAdminAlert(
           chat_id: adminId,
           order_code: args.orderCode,
           items: args.items,
-          total: args.total.toString(),
-          currency: args.currency,
+          ...manualQueueMoneyPayload(args.currency, args.money),
         }),
       },
     });
   }
+}
+
+/**
+ * The money half of both manual-queue payloads (ADMIN_MANUAL_ORDER_QUEUED and
+ * OWNER_EMAIL_MANUAL_ORDER_QUEUED), as decimal strings — never `number`.
+ *
+ * `total` is the amount still charged after wallet credit, so an order paid
+ * entirely from wallet credit has a total of 0. Printing that as the order's
+ * "Total" told the admin a paid order was worth nothing; `order_value` (items
+ * total minus bulk and voucher discounts) is what the order is worth, and the
+ * renderers lead with it (packages/outbox-dispatcher/src/manualQueueMoney.ts).
+ */
+function manualQueueMoneyPayload(currency: string, money: OrderMoneyRows): Record<string, string> {
+  return {
+    currency,
+    order_value: money.itemsTotal.minus(money.bulkDiscount).minus(money.discount).toString(),
+    subtotal: money.itemsTotal.toString(),
+    bulk_discount: money.bulkDiscount.toString(),
+    discount: money.discount.toString(),
+    wallet_credit: money.walletCredit.toString(),
+    unique_cents: money.uniqueCents.toString(),
+    total: money.total.toString(),
+  };
 }
 
 /**
@@ -762,18 +786,23 @@ export async function enqueueOwnerOrderPaidEmail(
  * same trigger, but a distinct event/payload from `ADMIN_MANUAL_ORDER_QUEUED`
  * so the email renderer never has to parse the Telegram alert's shape. No-op
  * unless the owner has the master toggle, `owner_email_on_manual_queue`, and
- * a valid `owner_email` all configured. `total` is carried as Decimal
- * `.toString()` — never `number` — per money rules.
+ * a valid `owner_email` all configured. Money is the same reconciled rows as
+ * the admin alert (`manualQueueMoneyPayload`), as decimal strings.
  */
 export async function enqueueOwnerManualQueueEmail(
   db: Db,
-  args: { orderId: number; orderCode: string; items: { name: string; qty: number }[]; total: Decimal; currency: string },
+  args: {
+    orderId: number;
+    orderCode: string;
+    items: { name: string; qty: number }[];
+    currency: string;
+    money: OrderMoneyRows;
+  },
 ): Promise<void> {
   await enqueueOwnerEmail(db, NotificationEvent.OWNER_EMAIL_MANUAL_ORDER_QUEUED, "manual_queue", args.orderId, {
     order_code: args.orderCode,
     items: args.items,
-    total: args.total.toString(),
-    currency: args.currency,
+    ...manualQueueMoneyPayload(args.currency, args.money),
   });
 }
 

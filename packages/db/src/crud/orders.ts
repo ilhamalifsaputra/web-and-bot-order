@@ -24,6 +24,7 @@ import { deriveOrderStatusFromItems } from "@app/core/orderItemStatus";
 import { fulfillmentProviderFor, getOrderFulfillment } from "@app/core/orderFulfillment";
 import { cartCompositionError } from "@app/core/cartComposition";
 import { emitDigiflazzOrderStatusChanged } from "@app/core/realtime/digiflazzEvents";
+import { DigiflazzTimingEvent, logDigiflazzTimingEvent } from "@app/core/suppliers/digiflazzTiming";
 import { reconciledOrderMoneyRows } from "@app/core/orderMoneyRows";
 import { parseAdditionalFields, validateCustomerData } from "@app/core/deliveryFields";
 import { parseInputFields, inputConfigSnapshot, orderInputConfig } from "@app/core/playerInput";
@@ -84,6 +85,7 @@ import {
   enqueueBuyerOrderReadyEmail,
 } from "./notifications";
 import { logAdminAction } from "./audit";
+import { ensureFulfillmentMessage, wakeFulfillmentMessage } from "./fulfillmentMessages";
 import { transitionOrderStatus, tryTransitionOrderStatus } from "./orderStatus";
 
 /**
@@ -1406,6 +1408,9 @@ export async function attachPaymentProof(
       status: OrderStatus.PENDING_VERIFICATION,
     },
   });
+  // Proof attached = payment seen but not yet verified: start the buyer's
+  // progress message in its "payment detected" phase.
+  await ensureFulfillmentMessage(db, orderId);
   return getOrder(db, orderId);
 }
 
@@ -2787,6 +2792,13 @@ export async function settlePaidOrder(
   // Don't hoist either call above this branch split.
   if (!isManual) {
     const result = await approveOrder(db, orderId, args);
+    // Every paid order gets the buyer's single progress message, whatever its
+    // provider; the worker renders the delivered outcome from canonical state.
+    // Exception: a stock order already DELIVERED synchronously gets its
+    // credentials DM, so a brand-new "Order completed" message beside it would
+    // be noise. A row created earlier (payment-detected phase) is left in
+    // place and the worker finalizes it.
+    if (result.order?.status !== OrderStatus.DELIVERED) await ensureFulfillmentMessage(db, orderId);
     // Sourced from the already-fetched `order` (this function's own getOrder
     // call above, which eager-loads items.product/user/voucher — no new
     // query) EXCEPT `paidAt`: approveOrder only stamps that column during its
@@ -2870,15 +2882,26 @@ export async function settlePaidOrder(
   // revenue would be recognised twice; the shared idempotency key
   // `order:{id}:payment` is the backstop for that).
   await postOrderPaymentPosting(db, order, now);
+  // Idempotent: reuses the row (and message) created when the payment was
+  // first detected, so detected -> confirmed edits one Telegram message.
+  await ensureFulfillmentMessage(db, orderId);
   if (isDigiflazz) {
-    if (order.user.telegramId != null) {
-      await db.fulfillmentMessage.upsert({
-        where: { orderId },
-        create: { orderId, chatId: order.user.telegramId },
-        update: {},
-      });
-    }
-    logger.info({ orderId, provider: "DIGIFLAZZ", fulfillmentStatus: "QUEUED" }, `Order ${order.orderCode} payment confirmed; automatic fulfillment queued.`);
+    // Timing anchor for the Digiflazz events (docs/LOGGING.md, "Digiflazz
+    // timing events"). This runs inside the caller's settlement transaction,
+    // so in the rare rollback case the line describes a write that did not
+    // commit; the later events only follow a committed order.
+    logDigiflazzTimingEvent(
+      {
+        event: DigiflazzTimingEvent.PAYMENT_CONFIRMED,
+        orderId,
+        orderCode: order.orderCode,
+        paymentMethod: order.paymentMethod,
+        currency: order.currency,
+        paidAt: now.toISOString(),
+        fulfillmentProvider: "DIGIFLAZZ",
+      },
+      `Order ${order.orderCode} payment confirmed; automatic Digiflazz fulfillment queued.`,
+    );
     const refreshed = await getOrder(db, orderId);
     emitDigiflazzOrderStatusChanged(orderId);
     return { kind: "processing", order: refreshed!, credentials: [] };
@@ -2893,19 +2916,24 @@ export async function settlePaidOrder(
   // only ever runs on the MANUAL side of the `if (!isManual)` split, so it
   // can never fire alongside enqueueOwnerOrderPaidEmail for the same order.
   const manualItems = order.items.map((item) => ({ name: item.product.name, qty: item.quantity }));
+  // Same value source as the AUTO branch's owner email: reconciled rows in the
+  // order's own settlement currency. Never `order.totalAmount` alone — that is
+  // the amount still due after wallet credit, so a wallet-paid order would be
+  // reported as worth 0.
+  const manualMoney = reconciledOrderMoneyRows(order);
   await enqueueManualOrderAdminAlert(db, {
     orderId,
     orderCode: order.orderCode,
     items: manualItems,
-    total: order.totalAmount,
     currency: order.currency,
+    money: manualMoney,
   });
   await enqueueOwnerManualQueueEmail(db, {
     orderId,
     orderCode: order.orderCode,
     items: manualItems,
-    total: order.totalAmount,
     currency: order.currency,
+    money: manualMoney,
   });
   logger.info(
     `Order ${order.orderCode} payment confirmed; queued for manual fulfilment (admin ${args.adminId}).`,
@@ -2947,6 +2975,9 @@ export async function fulfillManualOrder(
   await db.orderStatusHistory.create({
     data: { orderId, status: OrderStatus.DELIVERED, meta: `manual_fulfill by admin_id=${args.adminId}` },
   });
+  // Same transaction as the claim: the buyer's waiting progress message is not
+  // polled, so the final edit is triggered here.
+  await wakeFulfillmentMessage(db, orderId, now);
   // Per-item shadow of the claim above (Trustance Phase 1, Task 3): the admin
   // hand-delivered the order, so every line moves QUEUED -> DELIVERED. Behind
   // the atomic claim, so a lost double-tap race (claim.count !== 1 throws

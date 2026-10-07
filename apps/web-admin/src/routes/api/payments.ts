@@ -33,6 +33,7 @@ import {
   IdempotencyKeyReuseError,
   IdempotencyRequestInProgressError,
   type IdempotentReplay,
+  triggerDigiflazzDispatch,
 } from "@app/db";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
 import { paymentsMutationRateLimited } from "../../auth";
@@ -529,6 +530,9 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
         orderId: target.id,
         adminId: req.admin!.userId,
       });
+      // The match has committed: start a Digiflazz-routed order's supplier
+      // request now (fire-and-forget, ignores non-Digiflazz orders, never throws).
+      if (result.kind === "processing") triggerDigiflazzDispatch(result.order.id);
       await logAdminAction(prisma, {
         adminId: req.admin!.userId,
         action: "tx_manual_match",

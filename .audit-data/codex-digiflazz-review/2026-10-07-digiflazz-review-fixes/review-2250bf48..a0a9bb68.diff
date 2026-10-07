@@ -1,0 +1,955 @@
+# Review package: 2250bf48..HEAD
+
+## Commits
+a0a9bb68 fix: preserve sync provenance and durable fulfillment outcomes
+
+## Files changed
+ .../plans/2026-10-07-digiflazz-review-fixes.md     |  58 +++++++++++
+ packages/db/src/crud/catalog.ts                    |   2 +
+ packages/db/src/crud/digiflazz.test.ts             | 114 +++++++++++++++++++++
+ packages/db/src/crud/digiflazz.ts                  | 112 ++++++++++----------
+ packages/db/src/crud/digiflazzAutoDeactivated.ts   |  22 ++--
+ packages/db/src/crud/fulfillmentMessages.ts        |  19 +++-
+ packages/db/src/crud/orders.ts                     |   3 +
+ packages/db/src/crud/settings.ts                   |   6 ++
+ .../src/fulfillmentMessages.test.ts                |  83 ++++++++++++++-
+ .../outbox-dispatcher/src/fulfillmentMessages.ts   |  50 +++++----
+ 10 files changed, 382 insertions(+), 87 deletions(-)
+
+## Diff
+diff --git a/docs/superpowers/plans/2026-10-07-digiflazz-review-fixes.md b/docs/superpowers/plans/2026-10-07-digiflazz-review-fixes.md
+new file mode 100644
+index 00000000..fe82b5e4
+--- /dev/null
++++ b/docs/superpowers/plans/2026-10-07-digiflazz-review-fixes.md
+@@ -0,0 +1,58 @@
++# Digiflazz review fixes
++
++> For agentic workers: use superpowers:subagent-driven-development and test-driven-development.
++
++**Goal:** Complete the interrupted review of immediate dispatch and denomination synchronization, preserving admin decisions and delivering durable final Telegram progress messages.
++
++**Architecture:** Retain existing dispatch and synchronization entry points. Make availability and provenance changes atomic, preserve the settings freshness bound, and ensure persisted progress completion cannot lose a concurrent order transition.
++
++**Tech stack:** TypeScript, Prisma, PostgreSQL, Vitest, grammY.
++
++**Spec:** Existing catalog sync design (`../specs/2026-08-16-digiflazz-catalog-sync-design.md`), existing customer progress behavior, and the confirmed defects below.
++
++## Global constraints
++
++- Work only in this worktree; preserve unrelated local changes and other sessions' worktrees.
++- Keep money calculations in Decimal and existing quantization conventions.
++- No network calls inside database transactions; do not contact real Telegram or supplier APIs during tests.
++- Same-reference Digiflazz retries and the direct/cron/webhook lease ownership rules remain intact.
++- Admin deactivation must not be undone by a stale sync snapshot.
++- Commit availability changes and their provenance together, even when later rows fail.
++- Derived credentials must not extend source settings' 30-second freshness bound.
++- Reuse the saved Telegram message ID; uncertain or stopped sends remain stopped.
++- A credited order is terminal; a later credit must correct a previously finalized failure/cancellation message.
++- Final and waiting message completion must remain recoverable across concurrent transitions and worker crashes.
++- Test with the dedicated local database only, and use one Vitest worker to limit memory.
++
++## Review focus
++
++1. An admin turns off a sync-deactivated SKU after the sync's initial reads.
++2. A later SKU update fails after an earlier availability transition.
++3. Source settings are almost expired when the derived credentials cache fills.
++4. A cancelled or failed order receives credit after its Telegram message finishes.
++5. Delivery or credit commits during a Telegram edit, followed by worker interruption.
++
++## Task 1: Address the complete review findings
++
++**Files:**
++
++- `packages/db/src/crud/digiflazz.ts` and `digiflazzAutoDeactivated.ts`: synchronization and credential freshness.
++- `packages/db/src/crud/catalog.ts`: compatible lock ordering for admin availability changes.
++- `packages/db/src/crud/settings.ts`: source-cache metadata only if needed.
++- `packages/db/src/crud/fulfillmentMessages.ts`, `orders.ts`: waking corrected outcomes.
++- `packages/outbox-dispatcher/src/fulfillmentMessages.ts`: durable completion.
++- Corresponding existing tests; add a focused test file only if isolation requires it.
++
++**Interfaces:** Preserve public entry points and return shapes; add an internal helper or an optional narrowly scoped wake argument if necessary. Prefer existing schema fields and short row-locking transactions to new migrations.
++
++- [x] Write regression tests for all five review-focus cases. Assert actual database state, progress text/message ID, and recovery on a new worker; use controlled barriers or fault injection around real database operations for race cases.
++- [x] Run the new cases before implementation and capture expected failures, not setup errors.
++- [x] Make sync availability and remembered-ID updates atomic per SKU, reading current membership and current state under the same locking protocol as admin toggles. Handle marker cleanup without overwriting concurrent decisions.
++- [x] Prevent the credential cache from stacking another full TTL over aged source settings; retain same-process write invalidation.
++- [x] Finish credited messages, explicitly wake safe existing-message rows when credit corrects a terminal result (including already-cancelled recovery), and prevent a concurrent wake from being overwritten by a waiting/final save.
++- [x] Run affected test files with `node node_modules/vitest/vitest.mjs run <files> --maxWorkers=1 --minWorkers=1`. Record red/green evidence and any limitations in the task report.
++- [x] Self-review the diff, then commit only the plan, production fixes, and regression tests.
++
++## Integration verification
++
++The coordinator runs all workspace typechecks, test-source typechecking, production builds, migration drift/timestamp checks, frontend-boundary checks, storefront lint, detection-engine purity, and the complete Vitest suite with a single worker. An independent reviewer checks the whole fix diff before integration. Fetch before merging; merge and push to `origin/master` only after verification passes.
+diff --git a/packages/db/src/crud/catalog.ts b/packages/db/src/crud/catalog.ts
+index 23fd0780..4d9a8039 100644
+--- a/packages/db/src/crud/catalog.ts
++++ b/packages/db/src/crud/catalog.ts
+@@ -542,20 +542,22 @@ export function searchDenominations(db: Db, query: string, limit = 20) {
+  * Bulk activate/deactivate denominations in one writer — the admin toggle
+  * (web-admin single and bulk routes, the order-bot product toggle). Returns
+  * count updated. Because an admin has now decided about these denominations
+  * by hand, they are also dropped from the Digiflazz sync's auto-deactivated
+  * list, so the hourly resync never switches them back on. The hourly resync
+  * itself must not use this helper.
+  */
+ export async function bulkSetDenominationsActive(db: Db, ids: number[], isActive: boolean): Promise<number> {
+   if (!ids.length) return 0;
+   const run = async (tx: Db) => {
++    // Same marker→denomination lock order as catalog sync, even when these
++    // ids are not remembered yet: sync may be concurrently switching them off.
+     await forgetDigiflazzAutoDeactivatedIds(tx, ids);
+     const res = await tx.denomination.updateMany({ where: { id: { in: ids } }, data: { isActive } });
+     return res.count;
+   };
+   const ownsTransaction = "$transaction" in db && typeof db.$transaction === "function";
+   return ownsTransaction ? db.$transaction((tx: Tx) => run(tx)) : run(db);
+ }
+ 
+ /**
+  * Apply pre-computed new prices to denominations. Each item is {id, price}
+diff --git a/packages/db/src/crud/digiflazz.test.ts b/packages/db/src/crud/digiflazz.test.ts
+index 7662a668..601e57b9 100644
+--- a/packages/db/src/crud/digiflazz.test.ts
++++ b/packages/db/src/crud/digiflazz.test.ts
+@@ -1534,20 +1534,42 @@ describe("triggerDigiflazzDispatch — bounded direct-dispatch concurrency (inst
+         expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.DELIVERED);
+       }, LONG);
+       await waitUntilIdle();
+     } finally {
+       errorSpy.mockRestore();
+     }
+   });
+ });
+ 
+ describe("getDigiflazzCreds cache (instant dispatch Task 1)", () => {
++  it.each([
++    [DIGIFLAZZ_USERNAME_KEY, "otheruser", { username: "otheruser", apiKey: "shopkey" }],
++    [DIGIFLAZZ_API_KEY_KEY, "otherkey", { username: "shopuser", apiKey: "otherkey" }],
++    [DIGIFLAZZ_ENABLED_KEY, "false", null],
++  ])("does not extend an aged source setting's freshness for %s", async (key, value, expected) => {
++    const start = Date.now();
++    const clock = vi.spyOn(Date, "now").mockReturnValue(start);
++    try {
++      await setSetting(prisma, DIGIFLAZZ_USERNAME_KEY, "shopuser");
++      await setSetting(prisma, DIGIFLAZZ_API_KEY_KEY, "shopkey");
++      await setSetting(prisma, DIGIFLAZZ_ENABLED_KEY, "true");
++      // Another process writes directly; the source cache still has its old value.
++      await prisma.setting.update({ where: { key }, data: { value } });
++      clock.mockReturnValue(start + 29_000);
++      expect(await getDigiflazzCreds(prisma)).toEqual({ username: "shopuser", apiKey: "shopkey" });
++      clock.mockReturnValue(start + 31_000);
++      expect(await getDigiflazzCreds(prisma)).toEqual(expected);
++    } finally {
++      clock.mockRestore();
++    }
++  });
++
+   it("a second dispatch within the TTL does not re-read settings", async () => {
+     const first = await makeProcessingDigiflazzOrder();
+     digiflazzMock.createTransaction.mockResolvedValue({ refId: "x", status: "Pending", sn: null, message: null, price: null });
+     await dispatchDigiflazzOrderNow(prisma, first.id);
+ 
+     const getSettingSpy = vi.spyOn(settingsModule, "getSetting");
+     const getDecryptedSpy = vi.spyOn(settingsModule, "getDecryptedSetting");
+     try {
+       const second = (await createOrderDirect(prisma, { channel: "bot", user: sample.user, productId: sample.product.id, quantity: 1, customerData: JSON.stringify([{ user_id: "222" }]) }))!;
+       await prisma.order.update({ where: { id: second.id }, data: { status: OrderStatus.PROCESSING } });
+@@ -3590,20 +3612,112 @@ describe("resyncDigiflazzCatalog — auto-add new SKUs and reactivate sync-deact
+   function newSkus(count: number, prefix = "mlnew"): DigiflazzPriceListItem[] {
+     return Array.from({ length: count }, (_, i) =>
+       priceListItem({
+         buyerSkuCode: `${prefix}${i}`,
+         productName: `Mobile Legends ${1000 + i} Diamond`,
+         price: new Decimal(10000 + i * 100),
+       }),
+     );
+   }
+ 
++  it("preserves an admin deactivation after the sync reads its remembered snapshot", async () => {
++    const productId = await importMobileLegends();
++    const denom = await prisma.denomination.findFirstOrThrow({ where: { productId, supplierSku: "ml100" } });
++    await prisma.denomination.update({ where: { id: denom.id }, data: { isActive: false } });
++    await setSetting(prisma, MARKER_KEY, JSON.stringify([denom.id]));
++    digiflazzMock.getPriceList.mockResolvedValue([priceListItem({ buyerSkuCode: "ml100", price: new Decimal(15000) })]);
++    let adminChanged = false;
++    const adminToggle = async () => {
++      if (adminChanged) return;
++      adminChanged = true;
++      await bulkSetDenominationsActive(prisma, [denom.id], false);
++    };
++    const setting = new Proxy(prisma.setting, { get(target, prop) {
++      if (prop === "findUnique") return async (args: Parameters<typeof prisma.setting.findUnique>[0]) => {
++        const snapshot = await target.findUnique(args);
++        if (args.where.key === MARKER_KEY) await adminToggle();
++        return snapshot;
++      };
++      return Reflect.get(target, prop);
++    } });
++    const racingDb = new Proxy(prisma, { get(target, prop) {
++      if (prop === "setting") return setting;
++      // With locked reads, the same admin decision lands before the write transaction.
++      if (prop === "$transaction") return async (...args: unknown[]) => {
++        await adminToggle();
++        return Reflect.apply(target.$transaction, target, args);
++      };
++      const value = Reflect.get(target, prop);
++      return typeof value === "function" ? value.bind(target) : value;
++    } });
++    await resyncDigiflazzCatalog(racingDb);
++    expect(adminChanged).toBe(true);
++    expect((await prisma.denomination.findUniqueOrThrow({ where: { id: denom.id } })).isActive).toBe(false);
++    expect(await readMarker()).not.toContain(denom.id);
++  });
++
++  it("serializes concurrent admin decisions when the provenance marker is initially absent", async () => {
++    const productId = await importMobileLegends();
++    const denom = await prisma.denomination.findFirstOrThrow({ where: { productId, supplierSku: "ml100" } });
++    await prisma.setting.deleteMany({ where: { key: MARKER_KEY } });
++    const locked = deferred<void>();
++    const release = deferred<void>();
++    const first = prisma.$transaction(async tx => {
++      await bulkSetDenominationsActive(tx, [denom.id], false);
++      locked.resolve();
++      await release.promise; // Marker insert is still invisible to the second transaction.
++    });
++    await locked.promise;
++    const second = bulkSetDenominationsActive(prisma, [denom.id], true).then(() => "committed", error => error);
++    try {
++      // Wait for the real second writer to queue on the uncommitted marker,
++      // rather than rely on scheduling or an arbitrary sleep.
++      await vi.waitFor(async () => {
++        const waiting = await prisma.$queryRaw<Array<{ waiting: boolean }>>`
++          SELECT EXISTS (SELECT 1 FROM pg_stat_activity
++            WHERE datname = current_database() AND wait_event_type = 'Lock'
++              AND query LIKE '%settings%') AS waiting`;
++        expect(waiting[0]!.waiting).toBe(true);
++      }, { timeout: 3000 });
++    } finally {
++      release.resolve();
++      await first;
++    }
++    expect(await second).toBe("committed");
++    expect((await prisma.denomination.findUniqueOrThrow({ where: { id: denom.id } })).isActive).toBe(true);
++    expect(await readMarker()).toEqual([]);
++  });
++
++  it("commits each availability transition with its provenance before a later SKU fails", async () => {
++    const productId = await importMobileLegends([
++      { buyerSkuCode: "ml200", productName: "Mobile Legends 200 Diamond", price: "22000", costPrice: "20000" },
++    ]);
++    await prisma.denomination.updateMany({ where: { productId }, data: { isActive: true } });
++    const rows = await prisma.denomination.findMany({ where: { productId }, orderBy: { id: "asc" } });
++    digiflazzMock.getPriceList.mockResolvedValue(rows.map(row => priceListItem({
++      buyerSkuCode: row.supplierSku!, price: row.costPrice!, buyerProductStatus: false,
++    })));
++    let writes = 0;
++    const failingDb = prisma.$extends({ query: { denomination: { async update({ args, query }) {
++      if (++writes === 2) throw new Error("later SKU write failed");
++      return query(args);
++    } } } }) as unknown as PrismaClient;
++    await expect(resyncDigiflazzCatalog(failingDb)).rejects.toThrow("later SKU write failed");
++    const inactive = await prisma.denomination.findMany({ where: { productId, isActive: false } });
++    expect(inactive).toHaveLength(1);
++    expect(await readMarker()).toEqual([inactive[0]!.id]);
++    // A new run can recover exactly the committed SKU.
++    digiflazzMock.getPriceList.mockResolvedValue(rows.map(row => priceListItem({ buyerSkuCode: row.supplierSku!, price: row.costPrice! })));
++    expect((await resyncDigiflazzCatalog(prisma)).reactivated).toBe(1);
++    expect(await prisma.denomination.count({ where: { productId, isActive: true } })).toBe(2);
++  });
++
+   it("creates the new SKUs of an already-imported brand ACTIVE, priced by the markup, not overridden", async () => {
+     const productId = await importMobileLegends();
+     digiflazzMock.getPriceList.mockResolvedValue([
+       priceListItem({ buyerSkuCode: "ml100", price: new Decimal(15000) }),
+       ...newSkus(13),
+     ]);
+ 
+     const result = await resyncDigiflazzCatalog(prisma);
+     expect(result.added).toBe(13);
+     expect(result.reactivated).toBe(0);
+diff --git a/packages/db/src/crud/digiflazz.ts b/packages/db/src/crud/digiflazz.ts
+index 71e56434..0ba98202 100644
+--- a/packages/db/src/crud/digiflazz.ts
++++ b/packages/db/src/crud/digiflazz.ts
+@@ -61,40 +61,40 @@ import {
+   DigiflazzRequestError,
+   type DigiflazzCreds,
+   type DigiflazzPriceListItem,
+   type DigiflazzStatus,
+ } from "@app/core/suppliers/digiflazz";
+ import { DigiflazzTimingEvent, elapsedMs, logDigiflazzTimingEvent } from "@app/core/suppliers/digiflazzTiming";
+ import { NicknameService } from "@app/core/nickname/service";
+ import type { Prisma } from "@prisma/client";
+ import { prisma as sharedPrisma, type PrismaClient } from "../client";
+ import type { Db } from "./_types";
+-import { getSetting, getDecryptedSetting, onSettingWrite } from "./settings";
++import { getSetting, getDecryptedSetting, getSettingCacheExpiresAt, onSettingWrite } from "./settings";
+ import { getOrder, finalizeDeliverySideEffects, enqueueBuyerOrderReadyEmailIfGuest } from "./orders";
+ import { resolveNicknameGate, buildNicknameProviderEntries } from "./nickname";
+ import { isDenominationBelowCost } from "@app/core/denominationPrices";
+ import { enqueueAdminDigiflazzBelowCost, enqueueDigiflazzReviewAlert, enqueueAdminDigiflazzResyncAborted, enqueueAdminDigiflazzSkusChanged } from "./notifications";
+ import { logAdminAction } from "./audit";
+ import { ensureFulfillmentMessage } from "./fulfillmentMessages";
+ import {
+   createCatalogProduct,
+   createDenomination,
+   updateDenomination,
+   updateCatalogProduct,
+   ensureUniqueSlug,
+   slugify,
+ } from "./catalog";
+ import { nextDigiflazzRecheckAt } from "./digiflazzBackoff";
+ import { emitDigiflazzOrderStatusChanged, emitDigiflazzCatalogSyncChanged } from "@app/core/realtime/digiflazzEvents";
+ import { recordDigiflazzSyncStatus } from "./digiflazzSyncStatus";
+ import {
+-  getDigiflazzAutoDeactivatedIds,
++  lockDigiflazzAutoDeactivatedIds,
+   updateDigiflazzAutoDeactivatedIds,
+ } from "./digiflazzAutoDeactivated";
+ import { recordPollHealth } from "./poll_health";
+ import {
+   detect,
+   normalize,
+   extractFeatures,
+   buildSkuKey,
+   type DetectionResult,
+   type KnowledgeBase,
+@@ -105,21 +105,22 @@ import { getCatalogIndex, bumpCatalogRevision } from "./detectionIndex";
+ 
+ /** Setting keys — not yet wired to any admin UI (a later task adds that);
+  * this module is only the read-side resolver, matching the shape every other
+  * `getXCreds` sibling (e.g. getTokopayCreds) already uses. */
+ export const DIGIFLAZZ_USERNAME_KEY = "digiflazz_username";
+ export const DIGIFLAZZ_API_KEY_KEY = "digiflazz_api_key";
+ export const DIGIFLAZZ_ENABLED_KEY = "digiflazz_enabled";
+ 
+ /** How long getDigiflazzCreds reuses a resolved (decrypted) credential pair
+  * before reading the settings again. Same 30s bound as the per-key settings
+- * cache underneath it (./settings), so it adds no new cross-process staleness:
++ * cache underneath it (./settings), bounded by the oldest source expiry so it
++ * adds no new cross-process staleness:
+  * another process's credential edit is picked up within the same window it
+  * already was. */
+ export const DIGIFLAZZ_CREDS_CACHE_TTL_MS = 30_000;
+ const DIGIFLAZZ_CREDS_SETTING_KEYS = new Set([DIGIFLAZZ_USERNAME_KEY, DIGIFLAZZ_API_KEY_KEY, DIGIFLAZZ_ENABLED_KEY]);
+ // Per `db` instance, like the settings cache. Holds only non-null results:
+ // "missing/disabled" is never cached, so configuring credentials takes effect
+ // on the very next dispatch. Never log these values.
+ let digiflazzCredsCache = new WeakMap<object, { creds: DigiflazzCreds; expiresAt: number }>();
+ onSettingWrite((key) => {
+   if (key === null || DIGIFLAZZ_CREDS_SETTING_KEYS.has(key)) digiflazzCredsCache = new WeakMap();
+@@ -141,21 +142,23 @@ export async function getDigiflazzCreds(db: Db): Promise<DigiflazzCreds | null>
+     getSetting(db, DIGIFLAZZ_USERNAME_KEY),
+     getDecryptedSetting(db, DIGIFLAZZ_API_KEY_KEY),
+     getSetting(db, DIGIFLAZZ_ENABLED_KEY),
+   ]);
+   if (!username || !apiKey) return null;
+   if ((enabled ?? "").trim().toLowerCase() === "false") return null;
+   const creds = { username, apiKey };
+   // Skip storing if a credential write invalidated the cache while this read
+   // was in flight — the values just read may predate that write.
+   if (cacheAtRead === digiflazzCredsCache) {
+-    digiflazzCredsCache.set(db as object, { creds, expiresAt: Date.now() + DIGIFLAZZ_CREDS_CACHE_TTL_MS });
++    const expiresAt = Math.min(Date.now() + DIGIFLAZZ_CREDS_CACHE_TTL_MS,
++      ...[...DIGIFLAZZ_CREDS_SETTING_KEYS].map(key => getSettingCacheExpiresAt(db, key) ?? Date.now()));
++    digiflazzCredsCache.set(db as object, { creds, expiresAt });
+   }
+   return { ...creds };
+ }
+ 
+ /**
+  * Format one order's buyer-supplied answers (Order.customerData — one
+  * {fieldKey: answer} map per unit, see @app/core/deliveryFields) into the
+  * `customer_no` string Digiflazz expects for this denomination's SKU.
+  *
+  * ⚠ ASSUMPTION: Digiflazz's real per-SKU customer_no format (a single game
+@@ -2487,71 +2490,74 @@ async function resyncDigiflazzCatalogWithOutcome(
+       error:
+         abortReason.kind === "sharp_change"
+           ? `${abortReason.sharpChanges}/${abortReason.consideredRows} prices moved sharply`
+           : "supplier returned no usable rows",
+     });
+     emitDigiflazzCatalogSyncChanged();
+     return { counts: zero, abortReason: abortReason.kind };
+   }
+ 
+   const result = { ...zero };
+-  // Ids this job deactivated on earlier runs. Read straight from the table, not
+-  // through getSetting's cache, so a run never acts on a stale list.
+-  const remembered = new Set(await getDigiflazzAutoDeactivatedIds(db));
+-  const newlyDeactivated: number[] = [];
+-  const forget = new Set<number>();
+-  const mappedIds = new Set(mapped.map((d) => d.id));
+-  // A remembered denomination that is gone (or no longer Digiflazz-mapped) has
+-  // nothing left to reactivate.
+-  for (const id of remembered) if (!mappedIds.has(id)) forget.add(id);
+-
+-  for (const denom of mapped) {
+-    // Active again although remembered: an admin re-enabled it by hand, so the
+-    // id is stale. (If Digiflazz reports it down now, it is re-added below.)
+-    if (remembered.has(denom.id) && denom.isActive) forget.add(denom.id);
+-
+-    const item = bySku.get(denom.supplierSku!);
+-    if (!item) continue; // Digiflazz no longer lists this SKU — leave it as-is, not this job's concern.
+-
+-    // I5 fix: quantize to the same 4-decimal precision createDenomination
+-    // already uses, so a percentage markup can't drift the stored price
+-    // away from import-time precision.
+-    const data: Record<string, unknown> = {
+-      costPrice: quantizeMoney(item.price, 4),
+-      // Raw identity updates even when a manual price override is protected.
+-      supplierRawName: item.productName,
+-    };
+-    if (!denom.priceOverridden) {
+-      const newPrice = newSellPriceFor(item, denom.price);
+-      data.price = newPrice;
+-      // Counted only when the sell price really moves, so an unchanged run
+-      // reports (and audits) nothing.
+-      if (!moneyEq(newPrice, denom.price)) result.updated++;
+-    }
+-    if (denom.isActive && !item.buyerProductStatus) {
+-      data.isActive = false;
+-      result.deactivated++;
+-      newlyDeactivated.push(denom.id);
+-    } else if (!denom.isActive && item.buyerProductStatus && remembered.has(denom.id) && markupReadable) {
+-      // Only a SKU this job switched off comes back on; with an unreadable
+-      // markup it waits (still remembered) until the setting is fixed.
+-      data.isActive = true;
+-      result.reactivated++;
+-      forget.add(denom.id);
+-    }
+-    await updateDenomination(db, denom.id, data);
++  for (const snapshot of mapped) {
++    // Availability and its provenance commit together per SKU. Admin toggles
++    // take the same marker→denomination locks, including an initially absent
++    // marker, so neither writer can act on the other's stale membership.
++    const counts = await db.$transaction(async tx => {
++      const remembered = new Set(await lockDigiflazzAutoDeactivatedIds(tx));
++      await tx.$queryRaw`SELECT id FROM products WHERE id = ${snapshot.id} FOR UPDATE`;
++      const denom = await tx.denomination.findUnique({ where: { id: snapshot.id } });
++      if (!denom || denom.supplierSku !== snapshot.supplierSku) return zero;
++      const item = bySku.get(denom.supplierSku!);
++      const forget = remembered.has(denom.id) && denom.isActive ? [denom.id] : [];
++      if (!item) {
++        await updateDigiflazzAutoDeactivatedIds(tx, { remove: forget });
++        return zero;
++      }
++      const counts = { ...zero };
++      const data: Record<string, unknown> = {
++        costPrice: quantizeMoney(item.price, 4), supplierRawName: item.productName,
++      };
++      if (!denom.priceOverridden) {
++        const newPrice = newSellPriceFor(item, denom.price);
++        data.price = newPrice;
++        if (!moneyEq(newPrice, denom.price)) counts.updated++;
++      }
++      const add: number[] = [];
++      if (denom.isActive && !item.buyerProductStatus) {
++        data.isActive = false;
++        counts.deactivated++;
++        add.push(denom.id);
++      } else if (!denom.isActive && item.buyerProductStatus && remembered.has(denom.id) && markupReadable) {
++        // An unreadable markup keeps a sync-deactivated SKU remembered and off.
++        data.isActive = true;
++        counts.reactivated++;
++        forget.push(denom.id);
++      }
++      await updateDenomination(tx, denom.id, data);
++      await updateDigiflazzAutoDeactivatedIds(tx, { add, remove: forget });
++      return counts;
++    });
++    result.updated += counts.updated;
++    result.deactivated += counts.deactivated;
++    result.reactivated += counts.reactivated;
+   }
+ 
+-  // Merge this run's changes into the remembered list under a row lock, so a
+-  // concurrent run's additions are kept rather than overwritten.
+-  // (Forget first, then add: an id in both stays remembered.)
+-  await updateDigiflazzAutoDeactivatedIds(db, { add: newlyDeactivated, remove: forget });
++  // Clean up against current rows while holding the same marker lock; an
++  // initial catalog snapshot must not erase a concurrent sync's new decision.
++  await db.$transaction(async tx => {
++    const remembered = await lockDigiflazzAutoDeactivatedIds(tx);
++    if (!remembered.length) return;
++    const retained = new Set((await tx.denomination.findMany({
++      where: { id: { in: remembered }, supplierSku: { not: null }, isActive: false }, select: { id: true },
++    })).map(d => d.id));
++    await updateDigiflazzAutoDeactivatedIds(tx, { remove: remembered.filter(id => !retained.has(id)) });
++  });
+ 
+   // New SKUs on already-imported brands. Needs a readable markup to price them;
+   // the unreadable case is reported below. A failure here must not cost the
+   // rest of the run (below-cost check, audit, sync status), since the price
+   // and availability updates above are already committed.
+   if (markupReadable) {
+     try {
+       result.added = await addNewDigiflazzSkusToImportedBrands(db, rawPriceList, markupSettings);
+     } catch (err) {
+       logger.error(
+diff --git a/packages/db/src/crud/digiflazzAutoDeactivated.ts b/packages/db/src/crud/digiflazzAutoDeactivated.ts
+index 97c6c796..3c5c1a3d 100644
+--- a/packages/db/src/crud/digiflazzAutoDeactivated.ts
++++ b/packages/db/src/crud/digiflazzAutoDeactivated.ts
+@@ -28,47 +28,55 @@ export function parseDigiflazzIdList(raw: string | null | undefined): number[] {
+     return [];
+   }
+ }
+ 
+ /** The ids currently remembered, read straight from the table (never cached). */
+ export async function getDigiflazzAutoDeactivatedIds(db: Db): Promise<number[]> {
+   const row = await db.setting.findUnique({ where: { key: DIGIFLAZZ_AUTO_DEACTIVATED_IDS_KEY } });
+   return parseDigiflazzIdList(row?.value);
+ }
+ 
++/** Transaction-only lock protocol shared by sync and admin availability
++ * changes: marker first, denomination second, even if no marker existed. */
++export async function lockDigiflazzAutoDeactivatedIds(tx: Db): Promise<number[]> {
++  const key = DIGIFLAZZ_AUTO_DEACTIVATED_IDS_KEY;
++  // Prisma's empty-update upsert does a read then insert, which can fail its
++  // unique constraint when two writers initialize this marker concurrently.
++  await tx.$executeRaw`INSERT INTO settings (key, value, updated_at)
++    VALUES (${key}, '[]', NOW()) ON CONFLICT (key) DO NOTHING`;
++  await tx.$queryRaw`SELECT key FROM settings WHERE key = ${key} FOR UPDATE`;
++  return parseDigiflazzIdList((await tx.setting.findUniqueOrThrow({ where: { key } })).value);
++}
++
+ /**
+  * Apply a change to the remembered list under a row lock: first drop `remove`,
+  * then add `add` (so an id in both ends up remembered). Opens its own
+  * transaction when handed the bare client and reuses the caller's otherwise.
+  */
+ export async function updateDigiflazzAutoDeactivatedIds(
+   db: Db,
+   change: { add?: number[]; remove?: Iterable<number> },
+ ): Promise<void> {
+   const add = change.add ?? [];
+   const remove = new Set(change.remove ?? []);
+   if (add.length === 0 && remove.size === 0) return;
+   const run = async (tx: Db) => {
+     const key = DIGIFLAZZ_AUTO_DEACTIVATED_IDS_KEY;
+-    await tx.setting.upsert({ where: { key }, create: { key, value: "[]" }, update: {} });
+-    await tx.$queryRaw`SELECT key FROM settings WHERE key = ${key} FOR UPDATE`;
+-    const current = parseDigiflazzIdList((await tx.setting.findUniqueOrThrow({ where: { key } })).value);
++    const current = await lockDigiflazzAutoDeactivatedIds(tx);
+     const next = new Set(current.filter((id) => !remove.has(id)));
+     for (const id of add) next.add(id);
+     await tx.setting.update({ where: { key }, data: { value: JSON.stringify([...next].sort((a, b) => a - b)) } });
+   };
+   const ownsTransaction = "$transaction" in db && typeof db.$transaction === "function";
+   if (ownsTransaction) await db.$transaction((tx: Tx) => run(tx));
+   else await run(db);
+ }
+ 
+ /**
+  * Forget these ids — called when an admin sets a denomination's active state
+- * by hand. Skips the lock entirely when none of them is remembered, which is
+- * the normal case for every non-Digiflazz toggle.
++ * by hand. Always takes the marker lock before the caller updates availability:
++ * a concurrent sync may be about to remember one of these ids.
+  */
+ export async function forgetDigiflazzAutoDeactivatedIds(db: Db, ids: number[]): Promise<void> {
+   if (ids.length === 0) return;
+-  const remembered = new Set(await getDigiflazzAutoDeactivatedIds(db));
+-  if (!ids.some((id) => remembered.has(id))) return;
+   await updateDigiflazzAutoDeactivatedIds(db, { remove: ids });
+ }
+diff --git a/packages/db/src/crud/fulfillmentMessages.ts b/packages/db/src/crud/fulfillmentMessages.ts
+index d236fce0..c4f080ad 100644
+--- a/packages/db/src/crud/fulfillmentMessages.ts
++++ b/packages/db/src/crud/fulfillmentMessages.ts
+@@ -25,25 +25,34 @@ export async function ensureFulfillmentMessage(db: Db, orderId: number): Promise
+ 
+ /**
+  * Bring an order's progress message forward when the order reaches a final
+  * state, so the buyer sees the outcome promptly. Call it in the same
+  * transaction as the status write.
+  *
+  * A manual order's static WAITING line is never polled (it would wait for
+  * hours), so this is the only thing that moves it on: it becomes due as an
+  * ACTIVE row and the worker edits it to the final text. REVIEW rows are
+  * brought forward too. A row the worker holds right now (EDITING) only gets
+- * its due time touched: that write takes the row lock, so the worker's own
+- * save waits for this transaction and then re-reads the order (see the
+- * worker's WAITING re-check). Rows that never got a message, finished rows
+- * and flood-control backoffs are left alone.
++ * its due time touched. The worker saves under the order lock and compares
++ * the current phase, so a concurrent transition cannot disappear behind a
++ * static or final save. A credit correction may also reopen a finished
++ * failure/cancellation when it has a known message id. Flood-control backoffs
++ * and stopped/uncertain sends are left alone.
+  */
+-export async function wakeFulfillmentMessage(db: Db, orderId: number, now: Date = new Date()): Promise<void> {
++export async function wakeFulfillmentMessage(
++  db: Db, orderId: number, now: Date = new Date(), opts: { correctFinishedOutcome?: boolean } = {},
++): Promise<void> {
+   await db.fulfillmentMessage.updateMany({
+     where: { orderId, state: "WAITING" },
+     data: { state: "ACTIVE", nextUpdateAt: now },
+   });
+   await db.fulfillmentMessage.updateMany({
+     where: { orderId, state: { in: ["REVIEW", "EDITING"] } },
+     data: { nextUpdateAt: now },
+   });
++  if (opts.correctFinishedOutcome) {
++    await db.fulfillmentMessage.updateMany({
++      where: { orderId, state: "FINISHED", messageId: { not: null }, phase: { in: ["FAILED", "CANCELLED"] } },
++      data: { state: "ACTIVE", claimedAt: null, finishedAt: null, nextUpdateAt: now },
++    });
++  }
+ }
+diff --git a/packages/db/src/crud/orders.ts b/packages/db/src/crud/orders.ts
+index 9dd30fac..922ed2b3 100644
+--- a/packages/db/src/crud/orders.ts
++++ b/packages/db/src/crud/orders.ts
+@@ -1967,20 +1967,23 @@ async function creditOrderToBalanceLocked(
+     },
+   });
+   if (!wasAlreadyCancelled) {
+     await transitionOrderStatus(db, {
+       orderId: order.id,
+       from: order.status,
+       to: OrderStatus.CANCELLED,
+       meta: `credit_to_balance by admin_id=${args.adminId}`,
+     });
+   }
++  // Credit can change the buyer-visible outcome even without a status change
++  // (already-cancelled recovery), or after a failure message was finalized.
++  await wakeFulfillmentMessage(db, order.id, now, { correctFinishedOutcome: true });
+ 
+   logger.info(
+     `Credited order ${order.orderCode} (${amount.toString()} ${currency}) to buyer's credit balance — approved by admin ${args.adminId}`,
+   );
+   return { credited: amount, currency, wasAlreadyCancelled, evidenceRowsConsumed };
+ }
+ 
+ export async function rejectOrder(
+   db: Db,
+   orderId: number,
+diff --git a/packages/db/src/crud/settings.ts b/packages/db/src/crud/settings.ts
+index 57951e47..333e1ecd 100644
+--- a/packages/db/src/crud/settings.ts
++++ b/packages/db/src/crud/settings.ts
+@@ -46,20 +46,26 @@ function notifySettingWrite(key: string | null): void {
+ export async function getSetting(db: Db, key: string): Promise<string | null> {
+   const cache = cacheFor(db);
+   const cached = cache.get(key);
+   if (cached && cached.expiresAt > Date.now()) return cached.value;
+   const s = await db.setting.findUnique({ where: { key } });
+   const value = s ? s.value : null;
+   cache.set(key, { value, expiresAt: Date.now() + TTL_MS });
+   return value;
+ }
+ 
++/** Freshness metadata for derived caches; never returns a setting's value or
++ * performs a database read. Call after getSetting has populated the entry. */
++export function getSettingCacheExpiresAt(db: Db, key: string): number | undefined {
++  return caches.get(db as object)?.get(key)?.expiresAt;
++}
++
+ export async function setSetting(db: Db, key: string, value: string) {
+   await db.setting.upsert({
+     where: { key },
+     create: { key, value },
+     update: { value },
+   });
+   cacheFor(db).set(key, { value, expiresAt: Date.now() + TTL_MS });
+   notifySettingWrite(key);
+ }
+ 
+diff --git a/packages/outbox-dispatcher/src/fulfillmentMessages.test.ts b/packages/outbox-dispatcher/src/fulfillmentMessages.test.ts
+index 0c5b5beb..1c4f5547 100644
+--- a/packages/outbox-dispatcher/src/fulfillmentMessages.test.ts
++++ b/packages/outbox-dispatcher/src/fulfillmentMessages.test.ts
+@@ -1,15 +1,15 @@
+ import { beforeAll, afterAll, beforeEach, describe, expect, it } from "vitest";
+ import { PrismaClient } from "@prisma/client";
+ import {
+   addAdminIdToDb, createCategory, createCatalogProduct, createDenomination, createOrderDirect, deliverPaidBybitBscOrder, fulfillManualOrder,
+-  recordBybitBscConfirmationProgress, recordBybitBscPaymentDetected, wakeFulfillmentMessage,
++  recordBybitBscConfirmationProgress, recordBybitBscPaymentDetected, wakeFulfillmentMessage, creditOrderToBalance, transitionOrderStatus,
+ } from "@app/db";
+ import { provisionPgTestSchema } from "../../../tests/helpers/pgTestSchema";
+ import { FulfillmentMessageWorker, type FulfillmentTelegramApi } from "./fulfillmentMessages";
+ 
+ let db: PrismaClient;
+ let cleanup: () => Promise<void>;
+ let now: Date;
+ beforeAll(async () => {
+   const env = await provisionPgTestSchema("fulfillment_messages");
+   cleanup = env.cleanup;
+@@ -422,20 +422,101 @@ describe("customer progress phases in one Telegram message", () => {
+   it.each([["en", "credited to your wallet balance"], ["id", "dikreditkan ke saldo dompet"]])("tells the buyer a credited order went to the wallet balance (%s)", async (lang, phrase) => {
+     const order = await seed(lang, { provider: "MANUAL" });
+     const tg = telegram(); const w = worker(tg.api);
+     await w.tick();
+     await db.order.update({ where: { id: order.id }, data: { status: "CANCELLED" } });
+     await db.walletTransaction.create({ data: { userId: order.userId, delta: 1000, balanceAfter: 1000, reason: "unfulfilled_credit", orderId: order.id } });
+     await wakeFulfillmentMessage(db, order.id, now);
+     advance(); await w.tick();
+     expect(tg.edits.at(-1)!.text).toContain(phrase);
+     expect(tg.edits.at(-1)!.text).not.toMatch(/cancelled|dibatalkan/i);
++    const completed = await db.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } });
++    expect(completed).toMatchObject({ state: "FINISHED", phase: "CREDITED", messageId: tg.sent[0]!.id });
++    expect(completed.finishedAt).not.toBeNull();
++    const edits = tg.edits.length;
++    advance(120_000); await worker(tg.api).tick();
++    expect(tg.edits).toHaveLength(edits);
++  });
++});
++
++describe("durable progress outcome corrections", () => {
++  async function cancelledPaymentEvidence(orderId: number) {
++    await db.processedBinanceTx.create({ data: { binanceTxId: crypto.randomUUID(), orderId, amount: 1000, outcome: "delivery_failed" } });
++  }
++
++  it.each(["FAILED", "CANCELLED"])("edits the saved %s result when a later credit commits", async status => {
++    now = new Date();
++    const order = await seed("en", { provider: "MANUAL" });
++    const tg = telegram(); await worker(tg.api).tick();
++    await db.$transaction(async tx => {
++      await transitionOrderStatus(tx, { orderId: order.id, from: "PROCESSING", to: status });
++    });
++    advance(); await worker(tg.api).tick();
++    const finished = await db.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } });
++    expect(finished.state).toBe("FINISHED");
++    if (status === "CANCELLED") await cancelledPaymentEvidence(order.id);
++    await creditOrderToBalance(db, { orderId: order.id, adminId: order.userId });
++    const due = await db.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } });
++    expect(due).toMatchObject({ state: "ACTIVE", messageId: finished.messageId, finishedAt: null });
++    advance(); await worker(tg.api).tick();
++    const corrected = await db.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } });
++    expect(corrected).toMatchObject({ state: "FINISHED", phase: "CREDITED", messageId: finished.messageId });
++    expect(corrected.lastText).toContain("credited to your wallet balance");
++    expect(tg.edits.at(-1)!.id).toBe(finished.messageId);
++    expect(tg.sent).toHaveLength(1);
++  });
++
++  it("keeps delivery recoverable if the worker stops after saving a stale waiting edit", async () => {
++    now = new Date();
++    const order = await seed("en", { provider: "MANUAL" });
++    const tg = telegram(); await worker(tg.api).tick();
++    const api = { ...tg.api, editMessageText: async (...args: Parameters<FulfillmentTelegramApi["editMessageText"]>) => {
++      await db.$transaction(tx => transitionOrderStatus(tx, { orderId: order.id, from: "PROCESSING", to: "DELIVERED" }));
++      return tg.api.editMessageText(...args);
++    } } as FulfillmentTelegramApi;
++    // Interruption at the old post-save recheck: no second read can repair a durable WAITING row.
++    const interruptedDb = db.$extends({ query: { order: { async findUnique({ args, query }) {
++      if (args.select?.status) throw new Error("worker interrupted after save");
++      return query(args);
++    } } } }) as unknown as PrismaClient;
++    advance(); await new FulfillmentMessageWorker(api, { db: interruptedDb, now: () => now }).tick();
++    const saved = await db.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } });
++    expect(saved).toMatchObject({ state: "ACTIVE", finishedAt: null, messageId: 100 });
++    expect(saved.nextUpdateAt.getTime()).toBeLessThanOrEqual(now.getTime());
++    await worker(tg.api).tick();
++    expect(tg.edits.at(-1)!.text).toContain("Order completed");
++    expect((await db.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } })).state).toBe("FINISHED");
++    expect(tg.sent).toHaveLength(1);
++  });
++
++  it.each([false, true])("keeps credit recoverable when it commits during a cancellation edit (not modified=%s)", async notModified => {
++    now = new Date();
++    const order = await seed("en", { provider: "MANUAL" });
++    const tg = telegram(); await worker(tg.api).tick();
++    await db.$transaction(tx => transitionOrderStatus(tx, { orderId: order.id, from: "PROCESSING", to: "CANCELLED" }));
++    await cancelledPaymentEvidence(order.id);
++    const api = { ...tg.api, editMessageText: async (...args: Parameters<FulfillmentTelegramApi["editMessageText"]>) => {
++      await creditOrderToBalance(db, { orderId: order.id, adminId: order.userId });
++      if (notModified) throw apiError(400, "Bad Request: message is not modified");
++      return tg.api.editMessageText(...args);
++    } } as FulfillmentTelegramApi;
++    advance(); await worker(api).tick();
++    const saved = await db.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } });
++    expect(saved).toMatchObject({ state: "ACTIVE", finishedAt: null, messageId: 100 });
++    expect(saved.nextUpdateAt.getTime()).toBeLessThanOrEqual(now.getTime());
++    // Discard the old worker immediately after its save; a fresh worker must find the correction.
++    await worker(tg.api).tick();
++    const corrected = await db.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } });
++    expect(corrected).toMatchObject({ state: "FINISHED", phase: "CREDITED", messageId: 100 });
++    expect(corrected.lastText).toContain("credited to your wallet balance");
++    expect(tg.edits.at(-1)!.id).toBe(100);
++    expect(tg.sent).toHaveLength(1);
+   });
+ });
+ 
+ describe("a Bybit BSC order gets one buyer-visible progress message", () => {
+   it("sends nothing while the payment bubble tracks confirmations, then one message from payment to delivery", async () => {
+     // The crud helpers stamp rows with the real clock; run the worker on it too.
+     now = new Date();
+     const user = await db.user.create({ data: { referralCode: crypto.randomUUID(), telegramId: BigInt(Math.floor(Math.random() * 1e9)), language: "en" } });
+     const category = await createCategory(db, crypto.randomUUID());
+     const product = await createCatalogProduct(db, { categoryId: category.id, name: "Manual BSC" });
+diff --git a/packages/outbox-dispatcher/src/fulfillmentMessages.ts b/packages/outbox-dispatcher/src/fulfillmentMessages.ts
+index c95bca16..b06280d5 100644
+--- a/packages/outbox-dispatcher/src/fulfillmentMessages.ts
++++ b/packages/outbox-dispatcher/src/fulfillmentMessages.ts
+@@ -1,13 +1,13 @@
+ import type { Bot } from "grammy";
+ import type { Prisma } from "@prisma/client";
+-import { prisma, enqueueDigiflazzReviewAlert, wakeFulfillmentMessage, type PrismaClient } from "@app/db";
++import { prisma, enqueueDigiflazzReviewAlert, type PrismaClient } from "@app/db";
+ import { customerProgressPhase, fulfillmentProviderFor, type CustomerProgress, type CustomerProgressPhase } from "@app/core/orderFulfillment";
+ import { t } from "@app/core/i18n";
+ import { langCode } from "@app/core/enums";
+ import { logger } from "@app/core/logger";
+ import { escape } from "./templates";
+ 
+ export type FulfillmentTelegramApi = Pick<Bot["api"], "sendMessage" | "editMessageText">;
+ const include = { order: { include: { user: true, items: { include: { product: true } } } } } as const;
+ type MessageRow = Prisma.FulfillmentMessageGetPayload<{ include: typeof include }>;
+ const INTERVAL_MS = 2000;
+@@ -19,23 +19,21 @@ const IDLE_INTERVAL_MS = 30_000;
+ /** A payment can sit in the detected phase for a long time (an admin has not
+  * checked the proof yet, or settlement keeps rolling back). After this long in
+  * that one phase the spinner stops and the message is re-read only every
+  * DETECTED_SLOW_INTERVAL_MS, until the order's state moves it to another phase. */
+ export const DETECTED_SLOW_AFTER_MS = 10 * 60_000;
+ const DETECTED_SLOW_INTERVAL_MS = 60_000;
+ const FRAMES = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"];
+ /** Row states the worker polls. WAITING (a manual order's static wait) is not
+  * one of them: `wakeFulfillmentMessage` moves it on when the order ends. */
+ const POLLED_STATES = ["READY", "ACTIVE", "REVIEW"];
+-/** Order statuses in which a manual order may legitimately still be waiting. */
+-const STILL_WAITING_STATUSES: ReadonlySet<string> = new Set(["PROCESSING", "PAID"]);
+-const TERMINAL_PHASES: ReadonlySet<string> = new Set(["SUCCESS", "FAILED", "CANCELLED"]);
++const TERMINAL_PHASES: ReadonlySet<string> = new Set(["SUCCESS", "FAILED", "CANCELLED", "CREDITED"]);
+ 
+ /** Title + body locale keys per phase; the order status decides, never a timer.
+  * NONE has no text: the caller keeps whatever the message already says. */
+ function progressKeys({ phase, topUp }: CustomerProgress & { phase: Exclude<CustomerProgressPhase, "NONE"> }): { title: string; body: string } {
+   switch (phase) {
+     case "PAYMENT_DETECTED": return { title: "title_detected", body: "detected" };
+     case "AUTO_QUEUED": return { title: "title_confirmed", body: "auto_queued" };
+     case "AUTO_SUBMITTING": return { title: "title_confirmed", body: "auto_submitting" };
+     case "AUTO_PROCESSING": return { title: "title_confirmed", body: "auto_processing" };
+     case "PREPARING": return { title: "title_confirmed", body: "preparing" };
+@@ -105,60 +103,72 @@ export class FulfillmentMessageWorker {
+       });
+     });
+     logger.warn(
+       { orderId: row.orderId, state, provider },
+       provider === "DIGIFLAZZ"
+         ? `${reason} Order ${row.order.orderCode} was flagged for admin review.`
+         : `${reason} Order ${row.order.orderCode} is a ${provider.toLowerCase()} order, so no admin alert was raised; its fulfilment continues without the progress message.`,
+     );
+   }
+ 
+-  /** WAITING is not polled, so a final transition that committed after this
+-   * worker read the order (its wake found the row still claimed) must not be
+-   * lost: re-read the order once the WAITING save is durable. */
+-  private async recheckWaiting(orderId: number): Promise<void> {
+-    const order = await this.db.order.findUnique({ where: { id: orderId }, select: { status: true } });
+-    if (order && !STILL_WAITING_STATUSES.has(order.status.toUpperCase())) {
+-      await wakeFulfillmentMessage(this.db, orderId, this.now());
+-    }
++  /** Lock order matches status/credit writers: order, then message. No network
++   * calls inside the transaction. If Telegram rendered a stale phase, persist
++   * an immediately due correction together with its acknowledged message id;
++   * a crash after commit needs no follow-up reread to make it recoverable. */
++  private async saveProgress(row: MessageRow, data: Prisma.FulfillmentMessageUpdateManyMutationInput): Promise<void> {
++    await this.db.$transaction(async tx => {
++      await tx.$queryRaw`SELECT id FROM orders WHERE id = ${row.orderId} FOR UPDATE`;
++      const order = await tx.order.findUniqueOrThrow({ where: { id: row.orderId }, include: include.order.include });
++      const credited = order.status.toUpperCase() === "CANCELLED"
++        && !!(await tx.walletTransaction.findFirst({ where: { orderId: order.id, reason: "unfulfilled_credit" }, select: { id: true } }));
++      const messageSent = row.messageId !== null || typeof data.messageId === "number";
++      const current = customerProgressPhase(order, { messageSent, credited });
++      const correction = current.phase !== data.phase;
++      await tx.fulfillmentMessage.updateMany({
++        where: { orderId: row.orderId, state: row.state, claimedAt: row.claimedAt },
++        data: { ...data, ...(correction ? {
++          state: messageSent ? "ACTIVE" : "READY", finishedAt: null, nextUpdateAt: this.now(),
++        } : {}) },
++      });
++    });
+   }
+ 
+   private async deliver(row: MessageRow): Promise<boolean> {
+     // Re-read after acquiring the claim so a final callback wins over a stale frame.
+     const order = await this.db.order.findUniqueOrThrow({ where: { id: row.orderId }, include: include.order.include });
+     const credited = order.status.toUpperCase() === "CANCELLED"
+       && !!(await this.db.walletTransaction.findFirst({ where: { orderId: order.id, reason: "unfulfilled_credit" }, select: { id: true } }));
+     const progress = customerProgressPhase(order, { messageSent: row.messageId !== null, credited });
+     const where = { orderId: row.orderId, state: row.state, claimedAt: row.claimedAt };
+     const provider = fulfillmentProviderFor(order);
+     // When the message entered the phase it now shows. A change of phase, in
+     // either direction, starts the clock again.
+     const phaseStartedAt = row.phase === progress.phase && row.phaseStartedAt ? row.phaseStartedAt : this.now();
+     const phaseFields = { phase: progress.phase, phaseStartedAt };
+     if (row.messageId === null && (progress.phase === "NONE" || progress.phase === "CANCELLED"
+       || (progress.phase === "SUCCESS" && provider === "STOCK"))) {
+       // Nothing to tell yet (payment never seen), the order ended before the
+       // buyer heard anything, or a stock order was delivered instantly (its
+       // credentials DM is the message): release the claim without sending.
+       const finished = progress.phase !== "NONE";
+-      await this.db.fulfillmentMessage.updateMany({ where, data: {
++      await this.saveProgress(row, {
+         ...phaseFields, state: finished ? "FINISHED" : "READY", claimedAt: null, finishedAt: finished ? this.now() : null,
+         nextUpdateAt: new Date(this.now().getTime() + INTERVAL_MS),
+-      } });
++      });
+       return false;
+     }
+     if (progress.phase === "NONE") {
+       // A sent message whose order fell back to awaiting payment (a detected
+       // deposit was withdrawn): keep the last text rather than guess.
+-      await this.db.fulfillmentMessage.updateMany({ where, data: {
++      await this.saveProgress(row, {
+         ...phaseFields, state: "ACTIVE", claimedAt: null, nextUpdateAt: new Date(this.now().getTime() + IDLE_INTERVAL_MS),
+-      } });
++      });
+       return false;
+     }
+     const lang = langCode(order.user.language);
+     const keys = progressKeys({ ...progress, phase: progress.phase });
+     const frame = FRAMES[Math.floor(this.now().getTime() / INTERVAL_MS) % FRAMES.length];
+     const grouped = new Map<number, { name: string; quantity: number }>();
+     for (const item of order.items) {
+       const existing = grouped.get(item.productId);
+       if (existing) existing.quantity += item.quantity;
+       else grouped.set(item.productId, { name: item.product.name, quantity: item.quantity });
+@@ -183,39 +193,37 @@ export class FulfillmentMessageWorker {
+     const abort = () => controller.abort();
+     this.signal?.addEventListener("abort", abort, { once: true });
+     if (this.signal?.aborted) controller.abort();
+     const timeout = setTimeout(abort, 20_000);
+     // grammY types its signal with the abort-controller shim; native Node
+     // signals implement the same runtime contract accepted by fetch.
+     const apiSignal = controller.signal as unknown as NonNullable<Parameters<FulfillmentTelegramApi["sendMessage"]>[3]>;
+     try {
+       if (row.messageId === null) {
+         const sent = await this.api.sendMessage(String(row.chatId), text, { parse_mode: "HTML" }, apiSignal);
+-        await this.db.fulfillmentMessage.updateMany({ where, data: { ...data, messageId: sent.message_id } });
++        await this.saveProgress(row, { ...data, messageId: sent.message_id });
+       } else {
+         if (row.lastText !== text) await this.api.editMessageText(String(row.chatId), row.messageId, text, { parse_mode: "HTML" }, apiSignal);
+-        await this.db.fulfillmentMessage.updateMany({ where, data });
++        await this.saveProgress(row, data);
+       }
+-      if (state === "WAITING") await this.recheckWaiting(row.orderId);
+       return false;
+     } catch (error) {
+       const e = error as { error_code?: number; description?: string; parameters?: { retry_after?: number } };
+       if (e.error_code === 429) {
+         const nextUpdateAt = new Date(this.now().getTime() + Math.max(1, e.parameters?.retry_after ?? 30) * 1000);
+         await this.db.fulfillmentMessage.updateMany({ where, data: { state: row.messageId === null ? "READY" : "ACTIVE", claimedAt: null, nextUpdateAt } });
+         // Durable global backoff also prevents another process draining ready rows.
+         await this.db.fulfillmentMessage.updateMany({ where: { state: { in: POLLED_STATES }, nextUpdateAt: { lt: nextUpdateAt } }, data: { nextUpdateAt } });
+         return true;
+       }
+       if (row.messageId !== null && e.error_code === 400 && e.description?.includes("message is not modified")) {
+-        await this.db.fulfillmentMessage.updateMany({ where, data });
+-        if (state === "WAITING") await this.recheckWaiting(row.orderId);
++        await this.saveProgress(row, data);
+       } else if (e.error_code === 403 || e.error_code === 400) {
+         await this.stopAndAlert(row, "STOPPED", "Telegram status message is unavailable; automatic replacement is disabled.");
+       } else if (row.messageId === null) {
+         await this.stopAndAlert(row, "UNCERTAIN", "Telegram status message delivery is uncertain; automatic resend is disabled.");
+       } else {
+         // Editing the same message is safe to retry after transport/database failure.
+         await this.db.fulfillmentMessage.updateMany({ where, data: { state: "ACTIVE", claimedAt: null, nextUpdateAt: new Date(this.now().getTime() + 10_000) } });
+         logger.warn({ orderId: row.orderId }, "Telegram fulfillment edit deferred");
+       }
+       return false;

@@ -2503,7 +2503,7 @@ async function resyncDigiflazzCatalogWithOutcome(
     // marker, so neither writer can act on the other's stale membership.
     const counts = await db.$transaction(async tx => {
       const remembered = new Set(await lockDigiflazzAutoDeactivatedIds(tx));
-      await tx.$queryRaw`SELECT id FROM products WHERE id = ${snapshot.id} FOR UPDATE`;
+      await tx.$queryRaw`SELECT id FROM denominations WHERE id = ${snapshot.id} FOR UPDATE`;
       const denom = await tx.denomination.findUnique({ where: { id: snapshot.id } });
       if (!denom || denom.supplierSku !== snapshot.supplierSku) return zero;
       const item = bySku.get(denom.supplierSku!);

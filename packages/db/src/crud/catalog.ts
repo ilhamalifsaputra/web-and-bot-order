@@ -5,7 +5,8 @@
  * - Product (mid-tier): the customer-facing item (e.g. "CapCut Pro"); image,
  *   description and navigation only — NO price, NO stock.
  * - Denomination (leaf / SKU): the sellable unit (e.g. "1 Month"); price, cost,
- *   stock and auto-delivery all live here. Physically the old `products` table.
+ *   stock and auto-delivery all live here. Maps to `denominations`, renamed
+ *   from the old `products` table; the mid-tier Product now maps to `products`.
  *
  * Pre-rename, "Product" meant the SKU; that shape is now Denomination. The
  * mid-tier CRUD below still uses transitional `*CatalogProduct` names (e.g.

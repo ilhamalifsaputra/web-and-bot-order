@@ -56,6 +56,7 @@ import {
   addToCart,
   createCatalogProduct,
   createDenomination,
+  updateDenomination,
   bulkSetDenominationsActive,
   setSetting,
   deleteSetting,
@@ -3685,6 +3686,40 @@ describe("resyncDigiflazzCatalog — auto-add new SKUs and reactivate sync-deact
     expect(await second).toBe("committed");
     expect((await prisma.denomination.findUniqueOrThrow({ where: { id: denom.id } })).isActive).toBe(true);
     expect(await readMarker()).toEqual([]);
+  });
+
+  it("preserves an ordinary admin price override that commits while sync waits for the denomination", async () => {
+    const productId = await importMobileLegends();
+    const denom = await prisma.denomination.findFirstOrThrow({ where: { productId, supplierSku: "ml100" } });
+    digiflazzMock.getPriceList.mockResolvedValue([priceListItem({ buyerSkuCode: "ml100", price: new Decimal(15000) })]);
+    const overridden = deferred<void>();
+    const release = deferred<void>();
+    const admin = prisma.$transaction(async tx => {
+      // The regular denomination editor does not touch the availability marker.
+      await updateDenomination(tx, denom.id, { price: new Decimal(25000), priceOverridden: true });
+      overridden.resolve();
+      await release.promise;
+    });
+    await overridden.promise;
+    // Initial catalog reads see the previous price until the admin commits.
+    const sync = resyncDigiflazzCatalog(prisma).then(result => result, error => error);
+    try {
+      await vi.waitFor(async () => {
+        const waiting = await prisma.$queryRaw<Array<{ waiting: boolean }>>`
+          SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+            WHERE datname = current_database() AND wait_event_type = 'Lock'
+              AND query LIKE '%denominations%') AS waiting`;
+        expect(waiting[0]!.waiting).toBe(true);
+      }, { timeout: 3000 });
+    } finally {
+      release.resolve();
+      await admin;
+    }
+    expect(await sync).toMatchObject({ updated: 0 });
+    const current = await prisma.denomination.findUniqueOrThrow({ where: { id: denom.id } });
+    expect(current.priceOverridden).toBe(true);
+    expect(current.price.toString()).toBe("25000");
+    expect(current.costPrice!.toString()).toBe("15000");
   });
 
   it("commits each availability transition with its provenance before a later SKU fails", async () => {

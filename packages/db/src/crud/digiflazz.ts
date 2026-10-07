@@ -29,10 +29,10 @@
  * terminal, bounded by the 24h backoff window in digiflazzBackoff.ts. An
  * explicit "Gagal" is never retried — the same input would just fail
  * identically again — and goes straight to a terminal, admin-alerted
- * failure instead. The same holds for a permanent request error
- * (DigiflazzRequestError with retryable: false — a non-429 4xx or a reply
- * without transaction data); only retryable request errors (timeout,
- * network, 5xx, 429, unparseable body) take the transient retry path.
+ * failure instead. The same holds for a permanent request error on a
+ * FRESH dispatch (DigiflazzRequestError with retryable: false — a non-429
+ * 4xx). Every other request error, and every error on a recheck (the order
+ * was already submitted under its ref id), takes the transient retry path.
  *
  * This whole argument rests on createTransaction's refId-dedup behavior
  * (@app/core/suppliers/digiflazz) actually working as documented — that
@@ -477,8 +477,9 @@ export type DigiflazzOutcome =
  *   terminal. If the 24h window is exhausted, falls through to the same
  *   terminal handling "terminal" gets below (same remedy either way: a
  *   human must finish the order).
- * - "terminal" (explicit "Gagal", a permanent DigiflazzRequestError, or a
- *   structural resolution failure like a missing supplierSku) never retries — the same input would fail
+ * - "terminal" (explicit "Gagal", a permanent DigiflazzRequestError on a
+ *   fresh dispatch, or a structural resolution failure like a missing
+ *   supplierSku) never retries — the same input would fail
  *   identically again — and immediately alerts admins via
  *   alertDigiflazzDispatchFailed, same as today's Gagal handling.
  *
@@ -989,7 +990,7 @@ async function processDigiflazzOrder(
         customerNo,
       });
     } catch (requestErr) {
-      logDigiflazzResponse(order, { status: "error", durationMs: Date.now() - requestStartedAt, error: requestErr });
+      logDigiflazzResponse(order, { status: "error", durationMs: Date.now() - requestStartedAt, error: requestErr, isRecheck: !isFreshDispatch });
       throw requestErr;
     }
     const apiDurationMs = Date.now() - requestStartedAt;
@@ -1061,12 +1062,16 @@ async function processDigiflazzOrder(
     // fetchDigiflazzJson). err's message is already credential-free (the
     // client's own guarantee); never log err.cause or the request body.
     //
-    // A permanent DigiflazzRequestError (a non-429 4xx, or a 2xx without
-    // transaction data) fails the same way on every retry, so it goes
-    // straight to the terminal admin-review outcome instead of 24 hours of
-    // retries. supplierGaveReason is true because the reason below already
+    // A permanent DigiflazzRequestError (a non-429 4xx) on a FRESH dispatch
+    // goes straight to the terminal admin-review outcome instead of 24 hours
+    // of retries. supplierGaveReason is true because the reason below already
     // explains the failure; the account/region diagnostic would add nothing.
-    if (err instanceof DigiflazzRequestError && !err.retryable) {
+    // Only safe on a fresh dispatch: a 4xx there means Digiflazz refused the
+    // first submission, so nothing was purchased (assumed — Digiflazz's 4xx
+    // semantics are unverified against a live account). On a recheck the
+    // order was already submitted under this ref id and may be processing or
+    // delivered at Digiflazz, so every error there stays transient below.
+    if (isFreshDispatch && err instanceof DigiflazzRequestError && !err.retryable) {
       await recordDigiflazzOutcome(
         db,
         order,
@@ -1077,8 +1082,9 @@ async function processDigiflazzOrder(
       logDigiflazzOrderCompleted(order, "Gagal", dispatchedAt, new Date(), undefined);
       return;
     }
-    // Everything else (timeout, network, 5xx, 429, unparseable body, or an
-    // untyped error) is RETRIED with the same ref id (recordDigiflazzOutcome's
+    // Everything else (timeout, network, 5xx, 429, unparseable body, a 2xx
+    // without transaction data, an untyped error, or ANY error on a recheck)
+    // is RETRIED with the same ref id (recordDigiflazzOutcome's
     // "transient_error" branch) — see this file's module doc comment for why
     // that's safe.
     const message = err instanceof Error ? err.message : String(err);
@@ -1095,19 +1101,18 @@ async function processDigiflazzOrder(
  * request Digiflazz refused permanently. Built only from the error's kind and
  * HTTP status — never from a response body or the request. */
 function describePermanentDigiflazzRequestError(err: DigiflazzRequestError): string {
-  if (err.kind === "rejected") {
-    return "Digiflazz answered without any transaction data, so the request was treated as refused and not retried — check this order in the Digiflazz dashboard before finishing it by hand";
-  }
   return `Digiflazz refused the request with HTTP ${err.httpStatus ?? "4xx"}, so it was not retried — check the Digiflazz credentials, the product code and the player details, then finish this order by hand`;
 }
 
 function logDigiflazzResponse(
   order: DigiflazzCandidateOrder,
-  response: { status: DigiflazzStatus | "error"; durationMs: number; error?: unknown },
+  response: { status: DigiflazzStatus | "error"; durationMs: number; error?: unknown; isRecheck?: boolean },
 ): void {
   const typed = response.error instanceof DigiflazzRequestError ? response.error : null;
   const errorKind = response.status === "error" ? (typed?.kind ?? "unknown") : undefined;
-  const retryable = response.status === "error" ? (typed ? typed.retryable : true) : undefined;
+  // Whether the same ref id will be tried again — always on a recheck (see
+  // processDigiflazzOrder's catch), otherwise per the error's own kind.
+  const retryable = response.status === "error" ? (response.isRecheck || !typed || typed.retryable) : undefined;
   logDigiflazzTimingEvent(
     {
       event: DigiflazzTimingEvent.DIGIFLAZZ_RESPONSE,

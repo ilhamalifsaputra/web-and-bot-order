@@ -266,11 +266,11 @@ describe("createTransaction error classification (DigiflazzRequestError)", () =>
     expect(err.message).toBe("Digiflazz transaction returned an unparseable response");
   });
 
-  it("a response with no transaction data is kind rejected and permanent", async () => {
+  it("a response with no transaction data is kind rejected and retryable (as uncertain as an unparseable body)", async () => {
     stubFetchJson({ data: null });
     const err = await caught();
     expect(err.kind).toBe("rejected");
-    expect(err.retryable).toBe(false);
+    expect(err.retryable).toBe(true);
     expect(err.message).toBe("Digiflazz transaction rejected: missing data in response");
   });
 
@@ -290,10 +290,10 @@ describe("classifyDigiflazzHttpStatus / isRetryableDigiflazzErrorKind", () => {
     expect(classifyDigiflazzHttpStatus(599)).toBe("http_5xx");
     expect(classifyDigiflazzHttpStatus(400)).toBe("http_4xx");
     expect(classifyDigiflazzHttpStatus(451)).toBe("http_4xx");
-    for (const kind of ["timeout", "network", "http_5xx", "http_429", "unparseable"] as const) {
+    for (const kind of ["timeout", "network", "http_5xx", "http_429", "unparseable", "rejected"] as const) {
       expect(isRetryableDigiflazzErrorKind(kind)).toBe(true);
     }
-    for (const kind of ["http_4xx", "rejected"] as const) {
+    for (const kind of ["http_4xx"] as const) {
       expect(isRetryableDigiflazzErrorKind(kind)).toBe(false);
     }
   });

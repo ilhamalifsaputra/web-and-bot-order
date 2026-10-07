@@ -47,6 +47,7 @@ import type { FastifyInstance } from "fastify";
 import { cleanupTestDb } from "./setup-env";
 import { decryptDeliveredContent, encryptDeliveredContent } from "@app/core/credentialCrypto";
 import { logger } from "@app/core/logger";
+import { DigiflazzRequestError } from "@app/core/suppliers/digiflazz";
 import {
   prisma,
   initDb,
@@ -57,6 +58,7 @@ import {
   recordDigiflazzOutcome,
   DIGIFLAZZ_RECHECK_SCHEDULE_SECONDS,
   dispatchPendingDigiflazzOrders,
+  dispatchDigiflazzOrderNow,
   DIGIFLAZZ_USERNAME_KEY,
   DIGIFLAZZ_API_KEY_KEY,
   DIGIFLAZZ_WEBHOOK_SECRET_KEY,
@@ -413,6 +415,42 @@ describe("Digiflazz webhook signature (X-Hub-Signature, HMAC-SHA1 over the raw b
     } finally {
       info.mockRestore();
     }
+  });
+
+  it.each([
+    ["an HTTP 400", () => new DigiflazzRequestError("Digiflazz transaction HTTP 400", "http_4xx", 400)],
+    ["a reply without transaction data", () => new DigiflazzRequestError("Digiflazz transaction rejected: missing data in response", "rejected")],
+  ])("a recheck that gets %s stays pending at the supplier, and a later signed Sukses webhook delivers the order", async (_label, makeError) => {
+    // Already submitted under its ref id: Digiflazz may be processing it.
+    // Dispatched 5 s ago, so the backoff anchored on it puts the next recheck
+    // in the future.
+    const order = await createProcessingDigiflazzOrder(`ORD-DF-RECHECK-${makeError().kind}`, "15000", {
+      digiflazzDispatchedAt: new Date(Date.now() - 5_000),
+      digiflazzNextRecheckAt: new Date(Date.now() - 1_000),
+    });
+    await prisma.order.update({ where: { id: order.id }, data: { digiflazzAttempts: 1 } });
+    digiflazzSupplierMock.createTransaction.mockRejectedValueOnce(makeError());
+
+    await dispatchDigiflazzOrderNow(prisma, order.id);
+    const afterRecheck = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(afterRecheck.status).toBe("PROCESSING");
+    expect(afterRecheck.digiflazzStatus).toBe("pending_at_supplier");
+    expect(afterRecheck.digiflazzAttempts).toBe(2);
+    expect(afterRecheck.digiflazzNextRecheckAt!.getTime()).toBeGreaterThan(Date.now());
+    expect(await prisma.auditLog.count({ where: { action: "order.digiflazz_dispatch_failed", targetId: order.id } })).toBe(0);
+
+    // Digiflazz finishes the purchase and calls back (after the scheduled
+    // recheck time, so the webhook is not refused by the in-flight lease).
+    await prisma.order.update({ where: { id: order.id }, data: { digiflazzNextRecheckAt: new Date(Date.now() - 1_000) } });
+    digiflazzSupplierMock.createTransaction.mockResolvedValue(live(order.orderCode, "Sukses", "SN-AFTER-RECHECK"));
+    const res = await app.inject(signedPayload({ refId: order.orderCode, status: "Sukses", sn: "SN-AFTER-RECHECK" }));
+    expect(res.statusCode).toBe(200);
+
+    const delivered = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(delivered.status).toBe("DELIVERED");
+    expect(decryptDeliveredContent(delivered.deliveredContent, order.id)).toBe("SN-AFTER-RECHECK");
+    const refIds = digiflazzSupplierMock.createTransaction.mock.calls.map((c) => (c[1] as { refId: string }).refId);
+    expect(refIds).toEqual([order.orderCode, order.orderCode]);
   });
 
   it("does not log digiflazz.webhook_received for a delivery whose signature fails", async () => {

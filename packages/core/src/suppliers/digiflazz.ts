@@ -46,10 +46,15 @@ function normalizeStatus(raw: string | null): DigiflazzStatus {
  *  - retryable: `timeout` (the deadline elapsed, before or during the body
  *    read), `network` (fetch itself rejected: DNS, refused, reset, TLS),
  *    `http_5xx`, `http_429` (rate limited), `unparseable` (a body that is not
- *    JSON — typically a proxy error page).
+ *    JSON — typically a proxy error page), and `rejected` (a 2xx JSON reply
+ *    without any transaction data — as uncertain as an unparseable body: it
+ *    says nothing about whether the purchase exists, so it is retried with
+ *    the same ref id rather than given up on).
  *  - permanent: `http_4xx` (any other 4xx — bad credentials, unknown route,
- *    malformed request; the same request fails the same way again) and
- *    `rejected` (Digiflazz answered 2xx without any transaction data).
+ *    malformed request; the same request fails the same way again). An
+ *    explicit failure Digiflazz reports inside `data` (status Gagal) is not
+ *    an error at all — createTransaction returns it and the caller's Gagal
+ *    path handles it.
  */
 export type DigiflazzRequestErrorKind =
   | "timeout"
@@ -61,7 +66,7 @@ export type DigiflazzRequestErrorKind =
   | "rejected";
 
 export function isRetryableDigiflazzErrorKind(kind: DigiflazzRequestErrorKind): boolean {
-  return kind !== "http_4xx" && kind !== "rejected";
+  return kind !== "http_4xx";
 }
 
 /** Maps a non-2xx HTTP status to its error kind (see DigiflazzRequestErrorKind). */
@@ -370,7 +375,8 @@ export async function createTransaction(
   const d = body.data;
   if (!d) {
     // Digiflazz answers every transaction it processed with a `data` object
-    // (even a Gagal); a 2xx without one is treated as a refusal, not retried.
+    // (even a Gagal); a 2xx without one says nothing about whether the
+    // purchase exists, so it is retryable (same ref id), like an unparseable body.
     throw new DigiflazzRequestError("Digiflazz transaction rejected: missing data in response", "rejected");
   }
   return {

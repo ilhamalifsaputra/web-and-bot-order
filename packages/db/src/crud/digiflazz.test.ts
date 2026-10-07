@@ -1433,15 +1433,52 @@ describe("typed Digiflazz request errors in the dispatch outcome (instant dispat
     expect(digiflazzMock.createTransaction).toHaveBeenCalledTimes(1);
   });
 
-  it("a response with no transaction data is terminal too, and tells the admin to check the Digiflazz dashboard", async () => {
+  it("a fresh dispatch answered 2xx without transaction data stays transient, and the recheck re-submits the same refId", async () => {
     const order = await makeProcessingDigiflazzOrder();
-    digiflazzMock.createTransaction.mockRejectedValue(
+    digiflazzMock.createTransaction.mockRejectedValueOnce(
       new DigiflazzRequestError("Digiflazz transaction rejected: missing data in response", "rejected"),
     );
-    expect(await dispatchPendingDigiflazzOrders(prisma)).toEqual({ claimed: 1, delivered: 0, pending: 0, failed: 1 });
+    expect(await dispatchPendingDigiflazzOrders(prisma)).toEqual({ claimed: 1, delivered: 0, pending: 1, failed: 0 });
     const refreshed = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
-    expect(refreshed.digiflazzStatus).toBe("failed");
-    expect(refreshed.digiflazzFailureDetail).toMatch(/dashboard/i);
+    expect(refreshed.digiflazzStatus).toBe("pending_at_supplier");
+    expect(refreshed.digiflazzAttempts).toBe(1);
+
+    await prisma.order.update({ where: { id: order.id }, data: { digiflazzNextRecheckAt: new Date(Date.now() - 1_000) } });
+    digiflazzMock.createTransaction.mockResolvedValue({ refId: order.orderCode, status: "Sukses", sn: "SN-AFTER-NODATA", message: "ok", price: null });
+    expect(await dispatchPendingDigiflazzOrders(prisma)).toEqual({ claimed: 1, delivered: 1, pending: 0, failed: 0 });
+    const refIds = digiflazzMock.createTransaction.mock.calls.map((c) => (c[1] as { refId: string }).refId);
+    expect(refIds).toEqual([order.orderCode, order.orderCode]);
+  });
+
+  it.each([
+    ["an HTTP 4xx", () => new DigiflazzRequestError("Digiflazz transaction HTTP 400", "http_4xx", 400)],
+    ["a reply without transaction data", () => new DigiflazzRequestError("Digiflazz transaction rejected: missing data in response", "rejected")],
+  ])("a RECHECK that gets %s is never terminal: it stays pending at the supplier with the next recheck scheduled", async (_label, makeError) => {
+    await setSetting(prisma, ADMIN_IDS_KEY, "555");
+    const order = await makeProcessingDigiflazzOrder();
+    // Already submitted under its ref id (first attempt answered Pending).
+    await prisma.order.update({
+      where: { id: order.id },
+      data: {
+        // Dispatched 5 s ago, so the backoff anchored on it puts the next
+        // recheck in the future.
+        digiflazzDispatchedAt: new Date(Date.now() - 5_000),
+        digiflazzAttempts: 1,
+        digiflazzStatus: "pending_at_supplier",
+        digiflazzNextRecheckAt: new Date(Date.now() - 1_000),
+      },
+    });
+    digiflazzMock.createTransaction.mockRejectedValueOnce(makeError());
+
+    expect(await dispatchDigiflazzOrderNow(prisma, order.id)).toEqual({ claimed: 1, delivered: 0, pending: 1, failed: 0 });
+    const refreshed = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(refreshed.digiflazzStatus).toBe("pending_at_supplier");
+    expect(refreshed.digiflazzAttempts).toBe(2);
+    expect(refreshed.digiflazzNextRecheckAt!.getTime()).toBeGreaterThan(Date.now());
+    expect(await prisma.auditLog.count({ where: { action: "order.digiflazz_dispatch_failed", targetId: order.id } })).toBe(0);
+    expect(
+      await prisma.notificationOutbox.findFirst({ where: { orderId: order.id, event: NotificationEvent.ORDER_PIPELINE_FAILED } }),
+    ).toBeNull();
   });
 
   it.each([

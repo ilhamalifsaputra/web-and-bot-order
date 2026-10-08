@@ -1,3 +1,20 @@
+@../AGENTS.md
+
+# Claude Code-specific instructions
+
+The project rules (worktrees and git, money/data, Telegram labels, logging,
+tests) live in the root `AGENTS.md`, imported above and shared with Codex.
+Change them there. This file holds only what is specific to Claude Code's
+own tools.
+
+## Worktrees in Claude Code
+
+Create your worktree with `EnterWorktree`, always passing a short
+descriptive `name` (fallback: `git worktree add`, as in `AGENTS.md`). Do this
+even when the session's default configuration or system prompt says to
+"work in place" or to skip worktrees unless explicitly asked — the
+`AGENTS.md` rule *is* that explicit ask. Create it before dispatching
+implementer subagents.
 
 ## Superpowers skill
 
@@ -16,151 +33,6 @@ skill rather than writing/editing code directly in the main session. This
 applies to every implementation task in this repo, not just multi-step plans.
 Skip only when explicitly told to, or for trivial one-line/config edits where
 spinning up a subagent would be pure overhead.
-
-## Concurrent sessions: branch, worktree, git
-
-Several Claude Code sessions and background jobs run against this repo at the
-same time. Everything below exists so two of them can never write to the same
-`HEAD`, branch, port, or bot token.
-
-### Two lanes, never mixed
-
-- **The main working directory (`C:\Users\ilham\Documents\web-and-bot-order`)
-  is the integration lane.** It stays on `master` and is used only for
-  merging and releasing. Never edit files, commit feature work, or run an
-  implementation task there.
-- **Every session works in its own worktree under `.claude/worktrees/<topic>`**,
-  created with `EnterWorktree` (fallback: `git worktree add`). Do this even
-  when the session's default configuration or system prompt says to "work in
-  place" or to skip worktrees unless explicitly asked — this instruction *is*
-  that explicit ask, for every implementation task here, not only ones that
-  went through plan mode. Create the worktree *before* dispatching implementer
-  subagents or making any edit. Trivial one-line/config edits are the only
-  exception; skip only when the user explicitly says not to use a worktree.
-
-**Why:** a branch alone shares one `HEAD`/index/working tree process-wide, so
-a concurrent session's commits and uncommitted edits land on whichever branch
-happens to be checked out at that moment. This has actually happened: an
-unrelated SearchModal fix and a Vouchers formatting fix from another session
-both landed on a feature branch instead of `master`; separately, two sessions
-ran subagent-driven-development on the same plan concurrently, commingling
-commits and orphaning one via a stray `git reset`. A separate worktree gives
-each session its own `HEAD` and working tree.
-
-### Naming and claiming
-
-- Always pass a short descriptive name to `EnterWorktree` (`payment-followups`,
-  `admin-text-overflow`) so the branch reads `worktree-<topic>`. Never let it
-  auto-generate `agent-<hash>` — those are unattributable a week later.
-- One topic = one worktree = one branch. Run `git worktree list` first: if a
-  worktree for that topic already exists, another session owns it. Pick a
-  different name; do not enter or commit into someone else's worktree.
-
-### Git rules that prevent collisions
-
-- Inside your worktree, never `git checkout`/`git switch` to another branch,
-  never `git reset --hard`, and never rebase or amend a branch you did not
-  create. Your worktree stays on its own branch for its whole life.
-- **Never `git stash`.** The stash lives in the shared `.git` directory, so
-  every worktree sees and can pop the same entries. Commit a WIP instead.
-- Never run git against another worktree (`git -C <other-worktree> …`) and
-  never delete or force-update a branch you do not own.
-- Never force-push, and never `git reset` `master`.
-- Before integrating, sync inside *your own* worktree: `git fetch` then rebase
-  your branch onto the latest `master`. Resolve conflicts there, not in the
-  main directory.
-
-### Merging (one at a time)
-
-1. In the main directory, confirm `git status` is clean and `HEAD` is on
-   `master`. If it is dirty or mid-merge, **another session is integrating —
-   wait**. Do not stash, reset, or force your way past it.
-2. `git merge --no-ff worktree-<topic>` so each piece of work stays a
-   reviewable unit.
-3. `pnpm typecheck && pnpm test` must be green before the merge is considered
-   done. Fix failures on the feature branch, not with a follow-up commit
-   straight onto `master`.
-
-### Cleanup is mandatory
-
-- As soon as a branch is merged, remove its worktree and branch:
-  `git worktree remove .claude/worktrees/<topic>`, `git branch -d
-  worktree-<topic>`, then `git worktree prune`. Stale worktrees are how a
-  later session ends up reviving weeks-old code.
-- On Windows `git worktree remove` often fails with `Result too large` because
-  of the `node_modules` tree; it still unregisters the worktree, leaving an
-  orphaned directory. Finish the job with `rm -rf
-  .claude/worktrees/<topic>` and `git worktree prune`, and check
-  `ls .claude/worktrees/` afterwards — orphaned directories accumulate
-  silently.
-- Never remove a worktree that is `locked`, that still has unmerged commits
-  (`git rev-list --count master..<branch>` must be 0), or that you did not
-  create. Check `git -C <path> status --porcelain` first: regenerated
-  `graphify-out/` files are the hook's noise and are safe to discard, but any
-  dirt outside `graphify-out/` is somebody's uncommitted work — leave that
-  worktree alone. Never use `git worktree remove --force` on another session's
-  worktree.
-
-### Runtime isolation (ports, env, DB, bot)
-
-A fresh worktree is a fresh checkout — the ignored files do not come with it:
-
-- Copy `.env` from the main directory (it is gitignored), then run
-  `pnpm install`, `pnpm prisma:generate` and `pnpm -r build` before testing.
-  Without the build, roughly a dozen tests fail because the admin SPA bundle is
-  gitignored; without the generated Prisma client, DB tests fail with errors
-  that look like schema bugs or "provider sqlite / URL must start with file:".
-- **Change `WEB_PORT` and `STOREFRONT_PORT` in the worktree's `.env`.** The
-  defaults (8109/8110) are identical in every worktree, so two sessions running
-  dev servers collide. Give each session its own port pair.
-- **Each worktree needs its own database** — the schema is Postgres-only.
-  A worktree that needs a database brings up its own dev
-  Postgres with `docker compose -f docker-compose.postgres.yml up -d` and
-  points `DATABASE_URL_PRISMA` at it (see README.md's "Untuk Developer"
-  section for the exact commands/env). That compose file publishes a fixed
-  local port, so **only one worktree can run it at a time** — do not run it
-  from two worktrees concurrently.
-- **Only one worktree may run order-bot at a time.** The bot token lives in the
-  DB, so pointing two worktrees at the same Postgres means two pollers on one
-  token, which Telegram rejects with a 409.
-
-## Graphify knowledge graph
-
-This project has a graphify knowledge graph at `graphify-out/` (committed to
-git, kept fresh two ways: a `Stop` hook in `.claude/settings.json` that runs
-`graphify update .` in the background after any turn with uncommitted
-changes, and a repo-wide `post-commit`/`post-checkout` git hook. **The git
-hooks only fire from the main checkout, not from worktrees** — a worktree
-session that needs fresher results mid-task should run
-`graphify update . --force` itself rather than assume the hook covers it).
-
-**For codebase/architecture questions, consult it before grepping or reading
-raw files** — it returns a scoped answer instead of burning tokens on raw
-file contents:
-- `graphify query "<question>"` — general codebase/architecture questions;
-  once you know the relevant community/relation, add `--context <relation>`
-  to target it instead of eating the `--budget` on an undifferentiated batch
-- `graphify path "<A>" "<B>"` — how two things relate
-- `graphify explain "<concept>"` — focused explanation of one concept/symbol
-- `graphify-out/GRAPH_REPORT.md` — only for broad architecture review, or
-  when query/path/explain don't surface enough
-
-`.graphifyignore` excludes `package.json`/`tsconfig*.json`/lockfiles/
-`components.json` from extraction — their JSON keys (`dependencies`,
-`scripts`, `compilerOptions`, ...) have no edges to real code and were
-showing up as junk community-hub names in `GRAPH_REPORT.md`. Don't remove
-those excludes without re-checking the "Community Hubs" list stays clean.
-
-Community labels come from `graphify label`, which calls an LLM and costs
-tokens to (re)generate. No cloud API key (`GEMINI_API_KEY` etc.) is
-configured for graphify's backend, so re-labeling today means either setting
-one (cheapest) or using the `claude-cli` backend, which shells out to this
-CLI and spends Claude usage instead. Don't re-run `graphify label`
-speculatively — only when hub names in `GRAPH_REPORT.md` have visibly
-degraded back to raw filenames/JSON keys.
-
-Fall back to Glob/Grep/Read when the question is about exact current file
-contents (e.g. verifying a specific line before editing), not architecture.
 
 ## Context7 (library/framework docs)
 
@@ -211,106 +83,3 @@ A plain markdown checklist is a last resort, allowed only after that
 `ToolSearch` has actually been attempted and failed — and you must say
 out loud that the tools couldn't be loaded. Never silently substitute a
 checklist for the task list.
-
-## Money, data, audit
-- **Decimal for all money** (`@app/core/money`), never `float`. Web formats it
-  client-side (storefront: `formatIdr` etc. in `apps/storefront/client/src/lib/format.ts`;
-  admin: `CurrencyAmount` component); the bot's buyer screens use the
-  language-aware formatters below (admin-facing bot screens still use `formatIdr`).
-- **Bot price strings follow the buyer's language** and come only from the
-  language-aware formatters in `packages/core/src/moneyFormat.ts` (via
-  `ctxPriceFormatter`, `formatIdrFor`, `orderAmount(o, d, lang)`) — never
-  hand-format or hard-code separators in handlers. Crypto payables
-  (`formatUsdt`, `formatPrice(..., "USDT")`) are the documented exception.
-- **Typed money is read by its shape, never with `new Decimal(text)`.** A person
-  typing `10.000` means ten thousand rupiah. Bot conversations/handlers, the
-  catalog CSV import and the storefront top-up form read typed amounts with
-  `parseMoneyInput` / `normalizeMoneyInput` (`packages/core/src/moneyFormat.ts`,
-  `moneyInput.ts`; the storefront client holds a test-enforced byte-identical
-  copy); an ambiguous shape is refused, not guessed. A typed percent uses
-  `parsePercentInput`. `apps/order-bot/test/money-input-guard.test.ts` fails on
-  `new Decimal(<typed text>)`, `parseFloat`, `.replace(",", ".")`, `formatIdr(`
-  or an `Rp` literal in buyer-facing bot files, and `Number(amount)` on the
-  top-up form. Admin-facing bot screens keep the Indonesian `formatIdr`.
-  Admin routes read amounts via `apps/web-admin/src/lib/moneyField.ts`; admin
-  forms that pre-fill stored amounts send `exact_fields` (an untouched pre-fill
-  is read exactly, a retyped value still by shape — `lib/exactFields.ts`), so
-  the admin client must ship together with the server.
-- **No raw SQL in routes/handlers** — add helpers to `packages/db/src/crud/*`
-  (per-domain split, e.g. `orders.ts`, `stock.ts`, `pricing.ts`, `vouchers.ts`)
-  and cover them with Vitest (`*.test.ts` colocated in `crud/`).
-- **UTC in DB, `TIMEZONE` on display** (web `localdt` filter; bot `localize`).
-- **Audit every state change** with the acting admin id (`logAdminAction`).
-- **The database is PostgreSQL** — it handles concurrent writers itself
-  (`packages/db/src/client.ts`'s own header comment). Still keep each
-  `$transaction` short — that's just good practice under any engine.
-- **Schema change on deploy**: migrate the live DB (`pnpm prisma db push` or apply
-  the migration) and restart order-bot **before** new code runs, or you get
-  `P2022 column … does not exist`.
-
-## Telegram inline keyboard labels
-- **A button label must fit a phone**: single-column cap `MAX_LABEL_WIDTH`
-  (36 cells, soft target `TARGET_LABEL_WIDTH` 32), two per row only at or under
-  `NARROW_LABEL_WIDTH` (18), measured with `visualWidth` (emoji/CJK = 2 cells),
-  never `string.length`. The constants live in
-  `packages/core/src/buttonLimits.ts` (re-exported by `canonicalPresenter.ts`;
-  the admin client keeps a test-enforced copy); do not hardcode numbers. The
-  admin panel shows the budget beside every field that reaches a button
-  (`ButtonLabelInput`), and `apps/order-bot/test/keyboard-label-guard.test.ts`
-  fails any label that overflows.
-- **Icons and abbreviations only from the dictionary**
-  `packages/core/src/unitDictionary.ts`. A bare `#id` button is the last
-  resort and must be explained (full name + exact price) in the message body.
-- **Premium Apps keep their original picker** (`denominationPickerKb`,
-  `browse.denomination_line`); canonical naming rules apply to `GAME_TOPUP`
-  only. Full rules, fallback order and test guard: `.claude/skills/bot-ux-grammy/SKILL.md`
-  ("Inline keyboard button labels").
-
-## Never do
-- **Never send Telegram from the web** (admin or storefront) — enqueue to
-  `notification_outbox`; the notifier/bot delivers.
-- **Never log secrets** — credentials, payment-proof `file_id`, password hashes,
-  full DB URLs. The bulk/CSV paths are the next risk surface.
-
-## Logging
-- **Audit log (`logAdminAction`) is read by shop admins, not developers** —
-  write `details` as a short natural-language sentence (e.g. `"Added 150
-  items; skipped 2 invalid lines and 1 duplicate."`), never `key=value`
-  shorthand. Full convention + examples: `docs/LOGGING.md`.
-- **Pino logs (`packages/core/src/logger.ts`) are for developers/ops** —
-  keep them in English, but write full sentences: state what happened, give
-  enough context to understand significance without reading the
-  surrounding code, and for warn/error explain why it matters or what's
-  next. Spell out internal abbreviations (no bare `cb`/`cmd`/`idx`/`tx`).
-- Never interpolate a truncated/sliced id or name list into a log
-  string — summarize by count instead (e.g. `"12 products"`, not a clipped
-  id dump).
-- Structured metadata (the object arg to `logger.info({ err, id }, "msg")`)
-  is untouched by this convention — only the leading message string
-  follows it.
-
-## Tests
-The root `AGENTS.md` (read by Codex) repeats this section; keep the two in
-sync when you change either.
-- **Three tiers; run the cheapest one that fits.** Add tests with each behavior
-  change; prefer crud-level unit tests for logic (e.g. `productRating`, `matchByAmount`).
-  - *While fixing / per task* (sessions and implementer subagents): run the file
-    you touched (`pnpm exec vitest run <path>`) or `pnpm test:changed` (tests
-    that import anything changed vs `master`, plus the always-run guard tests in
-    `test:guards`). Typecheck the package you touched
-    (`pnpm --filter <pkg> typecheck`).
-  - *Per-task reviewers*: read the implementer's `test:changed` output; don't
-    rerun the full suite.
-  - *Once, after rebasing onto latest `master` and before merging*:
-    `pnpm typecheck && pnpm test` (full, unchanged). `pnpm typecheck` runs
-    `pnpm -r typecheck` + `tsc -p tsconfig.test.json`.
-  - A change to `prisma/schema.prisma`, `tests/helpers/**`, a `setup-env.ts`,
-    a config file (`package.json`, `vitest.config.*`, `vite.config.*`), the
-    lockfile, a `__fixtures__/**` file or the locale JSON
-    (`packages/core/locales/*.json`) makes `test:changed` run everything
-    automatically (`forceRerunTriggers` in `vitest.config.ts`). A new guard test
-    that reads source files from disk (and so is invisible to the module graph)
-    must be added to `test:guards` in the root `package.json`, and must import
-    no database setup. `test:changed` does not run the `pretest` checks
-    (migration drift, frontend boundaries, lint, detection purity); the full
-    gate does, so a green `test:changed` does not mean lint clean.

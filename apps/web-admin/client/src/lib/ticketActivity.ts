@@ -33,6 +33,12 @@ export interface TicketActivityContext {
 const MERGE_WINDOW_MS = 10_000;
 const MERGEABLE_ACTIONS = new Set(["ticket_reply", "ticket_resolve", "ticket_reopen", "ticket_close"]);
 
+/** "order_create" -> "Order create": a readable fallback for an action key with no details. */
+export function humanizeAction(action: string): string {
+  const words = action.replace(/_/g, " ").trim();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
 function sentence(row: TicketActivityRow, ctx: TicketActivityContext): string {
   switch (row.action) {
     case "ticket_create":
@@ -50,7 +56,7 @@ function sentence(row: TicketActivityRow, ctx: TicketActivityContext): string {
     case "ticket_status_change":
       if (row.statusChange) return `Status → ${ticketStatusLabel(row.statusChange.to)}`;
   }
-  return (row.details ?? row.action).replace(/ticket #\d+/gi, `ticket ${ctx.ticketLabel}`);
+  return (row.details ?? humanizeAction(row.action)).replace(/ticket #\d+/gi, `ticket ${ctx.ticketLabel}`);
 }
 
 /**

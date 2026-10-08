@@ -39,11 +39,22 @@ interface TicketIssueContextProps {
   units: LinkedUnitsState;
 }
 
+/** "PERCENT" -> "Percent", "fixed_amount" -> "Fixed amount". */
+function voucherTypeLabel(type: string): string {
+  const words = type.replace(/_/g, " ").trim().toLowerCase();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
 function ActivityLine({ entry }: { entry: OrderActivityEntry }) {
   return (
     <div className="min-w-0 text-sm">
       <div className="text-xs text-ink-soft">
-        <span title={entry.timeTitle}>{entry.time}</span> · {entry.actor}
+        {entry.time && (
+          <>
+            <span title={entry.timeTitle}>{entry.time}</span> ·{" "}
+          </>
+        )}
+        {entry.actor}
       </div>
       <div className="break-words text-ink">{entry.text}</div>
     </div>
@@ -104,7 +115,7 @@ export function TicketIssueContext({ ticketId, order, orderActivity, units }: Ti
                 // break-all: a voucher code is one unbroken token.
                 value={
                   <span className="font-mono text-xs break-all">
-                    {order.voucher.code} ({order.voucher.type})
+                    {order.voucher.code} ({voucherTypeLabel(order.voucher.type)})
                   </span>
                 }
               />

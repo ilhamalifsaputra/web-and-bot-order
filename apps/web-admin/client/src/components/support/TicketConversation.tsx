@@ -65,8 +65,12 @@ export function TicketConversation({ messages, onPreviewPhoto, composer, closedN
                 )}
                 <span>
                   <span className="font-medium text-ink">{m.sender}</span>
-                  {" · "}
-                  <span title={m.timeTitle}>{m.time}</span>
+                  {m.time && (
+                    <>
+                      {" · "}
+                      <span title={m.timeTitle}>{m.time}</span>
+                    </>
+                  )}
                 </span>
               </div>
               {/* pre-wrap keeps the customer's line breaks; break-words stops a

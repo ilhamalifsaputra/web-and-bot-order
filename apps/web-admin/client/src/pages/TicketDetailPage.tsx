@@ -33,7 +33,7 @@ import { toast } from "sonner";
 import { apiGet, apiPost, type ApiError } from "../api/client";
 import { describeError } from "../lib/errorMessages";
 import { ticketPriorityLabel } from "../lib/ticketPriority";
-import { buildTicketActivity, type TicketActivityRow, type TicketActivityEntry } from "../lib/ticketActivity";
+import { buildTicketActivity, humanizeAction, type TicketActivityRow, type TicketActivityEntry } from "../lib/ticketActivity";
 import { describeTicketCustomer, type TicketCustomerUser } from "../lib/ticketCustomer";
 
 const PRIORITY_VALUES = ["LOW", "MEDIUM", "HIGH", "URGENT"];
@@ -361,7 +361,7 @@ export function TicketDetailPage() {
     time: row.createdAtShort ?? row.createdAtDisplay ?? "",
     timeTitle: row.createdAtDisplay ?? "",
     actor: actorLabel(row),
-    text: row.details ?? row.action,
+    text: row.details ?? humanizeAction(row.action),
   }));
 
   const linkedOrderError = linkedOrder.error as ApiError | null;
@@ -567,16 +567,20 @@ export function TicketDetailPage() {
 
           <Card>
             <details className="group">
-              <summary className="mx-4 flex cursor-pointer list-none items-center justify-between gap-2 rounded-md font-heading text-base font-medium text-ink outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 [&::-webkit-details-marker]:hidden">
+              <summary className="mx-(--card-spacing) flex cursor-pointer list-none items-center justify-between gap-2 rounded-md font-heading text-base font-medium text-ink outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 [&::-webkit-details-marker]:hidden">
                 <span>Activity ({activity.length})</span>
                 <ChevronDown className="h-4 w-4 text-ink-soft transition-transform group-open:rotate-180" aria-hidden="true" />
               </summary>
-              <ol className="mx-4 mt-3 flex flex-col divide-y divide-line">
+              <ol className="mx-(--card-spacing) mt-3 flex flex-col divide-y divide-line">
                 {activity.map((entry) => (
                   <li key={entry.id} data-testid="activity-entry" className="flex flex-col gap-0.5 py-2 text-sm">
                     <div className="break-words text-ink">
-                      <span className="text-ink-soft" title={entry.timeTitle}>{entry.time}</span>
-                      {" · "}
+                      {entry.time && (
+                        <>
+                          <span className="text-ink-soft" title={entry.timeTitle}>{entry.time}</span>
+                          {" · "}
+                        </>
+                      )}
                       {entry.text}
                     </div>
                     {entry.statusTo && <div className="text-xs text-ink-soft">Status → {entry.statusTo}</div>}
@@ -584,7 +588,7 @@ export function TicketDetailPage() {
                 ))}
               </ol>
               {activity.length <= 1 && (
-                <p className="mx-4 text-sm text-ink-soft">No additional activity yet.</p>
+                <p className="mx-(--card-spacing) text-sm text-ink-soft">No additional activity yet.</p>
               )}
             </details>
           </Card>

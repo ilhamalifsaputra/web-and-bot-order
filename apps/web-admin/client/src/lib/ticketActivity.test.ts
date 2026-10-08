@@ -61,9 +61,9 @@ describe("buildTicketActivity", () => {
     expect(buildTicketActivity([r], ctx)[0]!.text).toBe("Assigned ticket #T-42 to Rina");
   });
 
-  it("falls back to the action name when details is missing", () => {
+  it("humanizes the action key when details is missing", () => {
     const r = row({ action: "ticket_weird", details: null });
-    expect(buildTicketActivity([r], ctx)[0]!.text).toBe("ticket_weird");
+    expect(buildTicketActivity([r], ctx)[0]!.text).toBe("Ticket weird");
   });
 
   it("folds a following status change within 10s by the same admin into the entry", () => {

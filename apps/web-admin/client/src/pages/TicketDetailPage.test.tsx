@@ -478,7 +478,7 @@ describe("TicketDetailPage — order context", () => {
     expect(within(orderCard).getAllByText("Netflix 1 Bulan")).toHaveLength(1);
     expect(within(orderCard).getByText("2 units · Rp50.000 each")).toBeInTheDocument();
     expect(within(orderCard).getByText("Rp100.000")).toBeInTheDocument();
-    expect(within(orderCard).getByText("DISKON10 (percent)")).toBeInTheDocument();
+    expect(within(orderCard).getByText("DISKON10 (Percent)")).toBeInTheDocument();
     expect(within(orderCard).queryByText("50000")).not.toBeInTheDocument();
   });
 

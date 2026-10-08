@@ -28,4 +28,8 @@ Tidak ada langkah produksi dalam dokumen ini yang sudah dijalankan. Approval pro
 
 ## Dependency lanjutan
 
-Gunakan pnpm9.15.9 dan frozen lockfile; rebuild backend dan kedua SPA. Nodemailer berpindah major ke10; smoke SMTP staging harus memverifikasi subject/body/HTML dan recovery link memakai mailbox staging. Tidak ada pengiriman provider live dari audit. CSS shadcn sudah lokal berlisensi MIT, CLI bukan dependency aplikasi. Audit produksi0 tidak berarti Docker image bebas advisory dev karena image masih memasang tooling; lihat12 residual pada DEPENDENCY_REMEDIATION.md sebelum mengekspose lingkungan development.
+Gunakan pnpm9.15.9 dan frozen lockfile; rebuild backend dan kedua SPA. Nodemailer berpindah major ke10; smoke SMTP staging harus memverifikasi subject/body/HTML dan recovery link memakai mailbox staging. Tidak ada pengiriman provider live dari audit. CSS shadcn sudah lokal berlisensi MIT, CLI bukan dependency aplikasi. Image masih memasang tooling development, yang kini juga telah diperbarui sampai audit all kosong; bukti sebelum/sesudah tersedia pada DEVELOPMENT_TOOLING_REMEDIATION.md.
+
+## Tooling development final
+
+Audit seluruh graph dependency kini0 seluruhkategori, termasuk tooling yang dipasangDocker. Rebuild dengan frozenlockfilepnpm9.15.9. MinimumSafari targetSPA naik14 ke14.1 karena kompatibilitas compilerpatched. Vitest4 memakai --maxWorkers tanpa --minWorkers; commandVitest2 di laporanlama adalah catatanhistoris. Tidak ada perubahan schema atau deployproduksi dari remediation ini.

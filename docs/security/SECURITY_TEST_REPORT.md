@@ -33,7 +33,7 @@ Build dari masing-masing `apps/storefront/client` dan `apps/web-admin/client`: `
 - Typecheck awal gagal karena error handler membaca unknown; diperbaiki dengan type guard. Upgrade static10 menuntut FastifyReply.header sebagai pengganti SetHeadersResponse/setHeader; kedua host disesuaikan.
 - Build kedua SPA dan bundle server:PASS. Warning ukuran chunk dan CheckoutPage imported static/dynamic masih ada; bukan error build dan tidak diubah dalam patch keamanan.
 - Lint storefront:PASS. Boundary frontend, timestamp migrasi, purity detection engine:PASS. Migration drift pada DB dummy:PASS (`No difference detected`).
-- Audit fase pertama exit1: awal1critical/41high/40moderate/4low, sesudah update terarah0critical/33high/35moderate/4low. Hasil historis33 high tersimpan pada dependency-audit-before.json. Remediasi lanjutan menghasilkan audit produksi exit0, seluruh kategori0; dependency-audit.json sekarang memuat hasil terbaru. Audit all termasuk dev masih12 advisory, dijelaskan pada DEPENDENCY_REMEDIATION.md.
+- Audit fase pertama exit1: awal1critical/41high/40moderate/4low, sesudah update terarah0critical/33high/35moderate/4low. Hasil historis33 high tersimpan pada dependency-audit-before.json. Remediasi lanjutan menghasilkan audit produksi exit0, seluruh kategori0; dependency-audit.json sekarang memuat hasil terbaru. Pada akhir fase33, audit all masih12findings; remediation tooling berikutnya menyelesaikan seluruhnya menjadi0, dijelaskan pada DEVELOPMENT_TOOLING_REMEDIATION.md.
 
 ## Hasil final pada lockfile terbaru
 
@@ -93,7 +93,7 @@ Regresi gabungan terakhir menjalankan keempat file dan dua file redaksi log pada
 | Pemeriksaan akhir | Hasil |
 |---|---|
 | Audit produksi, tanpa mute | PASS exit0; critical/high/moderate/low0 |
-| Audit all termasuk dev | Exit1;3critical/1high/7moderate/1low, residual tooling dilaporkan |
+| Audit all termasuk dev (fase33 historis) | Exit1;3critical/1high/7moderate/1low; kini resolved, lihat fase tooling di bawah |
 | Semua workspace typecheck + tsconfig.test | PASS exit0; diulang setelah fix log |
 | Storefront lint | PASS exit0 |
 | Storefront dan admin Vite build | PASS exit0 |
@@ -104,3 +104,21 @@ Regresi gabungan terakhir menjalankan keempat file dan dua file redaksi log pada
 | Independent review Astra high | Tidak ada temuan pada dependency remediation, CSS/license, fix log dan fixture overpayment |
 
 CSS vendored diverifikasi byte-identik dengan shadcn4.11.0. SMTP/provider live, pentest produksi dan deploy tetap belum dijalankan. Setelah pengujian, dummy container dihentikan dan log sementara dibersihkan; bukti audit JSON dan laporan ini dipertahankan. Push git tidak berarti deploy produksi telah dilakukan.
+
+## Verifikasi akhir seluruh tooling development
+
+Vitest4.1.11 dan coverage4.1.11; seluruh580file/10651tes lulus,0failed,0skipped. Full suite dipartisi menjadi2project yang disjoint. Frontend exit0; run backend awal exit1 karena6beforeAll setup PostgreSQL melewati hook default10detik, tanpa kegagalan asersi.343file/8008tes lulus,497tes pada6file belum dijalankan. hookTimeout ditetapkan30detik (testTimeout20detik tetap) dan seluruh6file diuji ulang dengan2worker:497/497lulus,exit0. Full backend349file tidak diulang sebagai satu command setelah perubahan hooktimeout. Hasil run dan rerun berikut meliputi580file/10651tes unik tanpa pendingfailure atau skipped akhir:
+
+| Project | File | Tes | Durasi |
+|---|---:|---:|---|
+| node | 343 | 8008 | 1337.72s (transform 26.59s, setup 0ms, import 1348.89s, tests 3829.30s, environment 1.85s) |
+| frontend | 231 | 2146 | 662.30s |
+| hooks | 6 | 497 | 67.07s (transform 2.56s, setup 0ms, import 5.42s, tests 126.45s, environment 1ms) |
+
+Command node: `node node_modules/vitest/vitest.mjs run --project=node --maxWorkers=4 --reporter=verbose`. Command frontend: `node node_modules/vitest/vitest.mjs run --project=frontend --maxWorkers=2 --reporter=verbose`. Rerun hook: command run scripts/backfill-stock-traceability.test.ts packages/db/src/crud/catalog.test.ts packages/db/src/crud/orders.test.ts packages/db/src/crud/revenue.test.ts packages/db/src/crud/settlePaidOrder.test.ts packages/db/src/crud/wallet_topup.test.ts --project=node --maxWorkers=2 --reporter=verbose. Shared DATABASE_URL_PRISMA hanya PostgreSQLdummy loopback55479; tidak ada providerlive atau produksimigration. Inventory580unique cocok dengan globsVitest2, tanpa filemissing/extra. Runmigrasi awal dihentikan saat menemukan mocklifecycleincompatibility dan tidak dihitungPASS. Regresired/green tercakup penyesuaianfixture denganasersi tetap; testvoucherphase juga menunggu renderedrefetch agar tidak bocor.
+
+Audit prod dan all exit0, critical/high/moderate/low seluruh0, advisories/mutedkosong; produksi300dependency, seluruhgraph676dependency. Bukti JSON sebelum/sesudah dipertahankan. VersiVitest2/Vite5/tinypool1/esbuildlama/parser7.1.4 tidak ada dalamlockfileakhir.
+
+Typecheckworkspace/testTS, lintstorefront, buildduaSPA, serverbundle,4guards danofflinefrozeninstall PASSexit0. Coverage providerV8baru:15file170tesPASS, statements94.62%,branches94.08%,functions100%,lines94.53%; threshold90dipertahankan. Coverage smoke memakai `run packages/core/src/detection --project=node --maxWorkers=1 --coverage --coverage.include=packages/core/src/detection/**`; tidak mengklaim angka ini sebagai coverage seluruhmonorepo. Summarytersimpan pada development-tooling-test-summary.json dan development-tooling-coverage-summary.json.
+
+Review independen Astrahigh tidak menemukan masalah pada graphdependency, projectinheritance/discovery, fixturelifecycle atau targetbrowser. BuildtargetSafari naik14 ke14.1 secaraeksplisit untuk compatibilitycompilerpatched; lainnya tetapdefaultVite6. Tidak ada BrowserE2ESafari dilakukan. Dummycontainer dihentikan sesudahtes; logtemporarydibersihkan. Commit/push sesuaiinstruksi pengguna tidak disamakan dengandeployproduksi.

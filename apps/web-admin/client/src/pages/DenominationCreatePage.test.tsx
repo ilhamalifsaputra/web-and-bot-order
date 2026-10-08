@@ -27,6 +27,7 @@ function Wrapper({ children }: { children: React.ReactNode }) {
 }
 
 beforeEach(() => {
+  vi.resetAllMocks();
   vi.restoreAllMocks();
   // F-007: breadcrumb fetches the product name via apiGet — give every test
   // a sane default so tests that don't care about the breadcrumb don't hit

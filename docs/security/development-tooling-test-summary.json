@@ -1,0 +1,37 @@
+{
+  "date": "2026-10-08",
+  "vitest": "4.1.11",
+  "projects": [
+    {
+      "project": "node",
+      "files": 343,
+      "tests": 8008,
+      "duration": "1337.72s (transform 26.59s, setup 0ms, import 1348.89s, tests 3829.30s, environment 1.85s)"
+    },
+    {
+      "project": "frontend",
+      "files": 231,
+      "tests": 2146,
+      "duration": "662.30s"
+    },
+    {
+      "project": "hooks",
+      "files": 6,
+      "tests": 497,
+      "duration": "67.07s (transform 2.56s, setup 0ms, import 5.42s, tests 126.45s, environment 1ms)"
+    }
+  ],
+  "totalFiles": 580,
+  "totalTests": 10651,
+  "failed": 0,
+  "skipped": 0,
+  "command": "node node_modules/vitest/vitest.mjs run --project=<node|frontend> --maxWorkers=<4|2> --reporter=verbose",
+  "initialNodeRun": {
+    "exitCode": 1,
+    "passedFiles": 343,
+    "failedSetupFiles": 6,
+    "passedTests": 8008,
+    "skippedTests": 497
+  },
+  "finalStatus": "All cases passed across complete project runs and six-file setup rerun; full node project not repeated after hookTimeout fix"
+}

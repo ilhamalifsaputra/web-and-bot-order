@@ -1,5 +1,5 @@
 import path from "node:path";
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 
 // Matches `glob` under any directory of an absolute changed-file path,
 // including dot-directories such as `.claude/worktrees/<topic>`.
@@ -16,14 +16,40 @@ export default defineConfig({
     },
   },
   test: {
-    include: [
-      "packages/**/*.test.ts",
-      "apps/**/*.test.ts",
-      "apps/**/*.test.tsx",
-      "tests/**/*.test.ts",
-      "scripts/**/*.test.ts",
+    // Projects replace environmentMatchGlobs in Vitest4. Disjoint includes
+    // keep every existing test file running once in its original environment.
+    projects: [
+      {
+        extends: true,
+        test: {
+          name: "node",
+          environment: "node",
+          include: [
+            "packages/**/*.test.ts",
+            "apps/**/*.test.ts",
+            "apps/**/*.test.tsx",
+            "tests/**/*.test.ts",
+            "scripts/**/*.test.ts",
+          ],
+          exclude: [
+            ...configDefaults.exclude,
+            "apps/web-admin/client/**",
+            "apps/storefront/client/**",
+          ],
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: "frontend",
+          environment: "jsdom",
+          include: [
+            "apps/web-admin/client/**/*.test.{ts,tsx}",
+            "apps/storefront/client/**/*.test.{ts,tsx}",
+          ],
+        },
+      },
     ],
-    environment: "node",
     // bcryptjs at the production work factor (12) costs ~450ms per hash and
     // ~500ms per compare, which is real time inside every auth test — enough
     // that the storefront's cross-IP account-lockout test spent ~3s in bcrypt
@@ -97,10 +123,6 @@ export default defineConfig({
     // work, though this file's globalSetup still runs and only picks the name. See
     // tests/helpers/globalSetup.ts and schemaFromTemplate.ts.
     globalSetup: ["tests/helpers/globalSetup.ts"],
-    environmentMatchGlobs: [
-      ["apps/web-admin/client/**", "jsdom"],
-      ["apps/storefront/client/**", "jsdom"],
-    ],
     // @testing-library/react's automatic afterEach(cleanup) only registers
     // when it detects a global test-framework `afterEach` — without this,
     // each jsdom test's rendered DOM leaks into the next test in the same
@@ -119,6 +141,8 @@ export default defineConfig({
     // realistic bar this change actually earns.
     coverage: {
       provider: "v8",
+      // Vitest4 otherwise omits unimported sources from coverage entirely.
+      include: ["packages/**/src/**/*.{ts,tsx}", "apps/**/src/**/*.{ts,tsx}", "scripts/**/*.ts"],
       reporter: ["text", "json-summary"],
       thresholds: {
         "packages/core/src/detection/**": {

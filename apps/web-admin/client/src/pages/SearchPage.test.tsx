@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -14,7 +14,8 @@ function Wrapper({ children }: { children: React.ReactNode }) {
   );
 }
 
-beforeEach(() => { vi.restoreAllMocks(); });
+beforeEach(() => { vi.resetAllMocks(); vi.restoreAllMocks(); });
+afterEach(() => { vi.useRealTimers(); });
 
 describe("SearchPage", () => {
   it("renders user and product results", async () => {
@@ -69,6 +70,9 @@ describe("SearchPage", () => {
       ),
     );
     const search = screen.getByPlaceholderText(/order code, username, or product/i);
+    // Vitest4 returns the existing spy; start the debounce phase after the
+    // initial request rather than counting that request as a typed search.
+    fetchSpy.mockClear();
     fireEvent.change(search, { target: { value: "budi" } });
     expect(fetchSpy).not.toHaveBeenCalled();
 

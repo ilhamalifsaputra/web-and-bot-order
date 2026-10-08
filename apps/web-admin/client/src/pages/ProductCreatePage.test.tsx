@@ -32,6 +32,7 @@ function Wrapper({ children }: { children: React.ReactNode }) {
 }
 
 beforeEach(() => {
+  vi.resetAllMocks();
   vi.restoreAllMocks();
   // Radix Select uses pointer-capture APIs and scrollIntoView — jsdom doesn't
   // implement them. Mock all three to prevent unhandled errors when the

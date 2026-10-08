@@ -32,3 +32,7 @@ Tidak ada enforce CSP baru: skrip inline/analytics opsional memerlukan inventory
 Seluruh33 advisory high produksi diselesaikan; audit produksi kini kosong (exit0). Nodemailer10.0.16, sharp0.35.5, kedua React Router7.18.4 dan override transitive patched terkunci. Shadcn CLI dihapus, stylesheet4.11.0 disalin byte-identik beserta lisensi ke admin src/styles dan import diarahkan lokal. Rincian33 advisory serta12 advisory tooling dev yang masih tersisa terdapat pada DEPENDENCY_REMEDIATION.md. Tidak menambah library/service.
 
 Regresi suite lengkap menemukan metadata access-log route yang memuat concrete secret webhook; kedua host kini menyamarkan route melalui redactPath yang sama seperti path. Fixture overpayment/storage disesuaikan dengan allowlist nyata tes, tanpa melemahkan production guard.
+
+## Remediasi tooling development lanjutan
+
+Seluruh finding audit all diselesaikan: Vitest/coverage4.1.11, Vite6.4.3, esbuild0.28.2 dan selector-parser7.1.6. Project node/jsdom mempertahankan580file. Lifecycle mock disesuaikan tanpa melemahkanasersi. Minimum targetSafari keduaSPA kini14.1; browserlain tetap. Rincian dan bukti: DEVELOPMENT_TOOLING_REMEDIATION.md.

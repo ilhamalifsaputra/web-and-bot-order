@@ -115,6 +115,7 @@ const EXISTING_NO_REGION_RESPONSE = {
 };
 
 beforeEach(() => {
+  vi.resetAllMocks();
   vi.restoreAllMocks();
   sessionStorage.clear();
   vi.mocked(apiGet).mockResolvedValue({ categories: [{ id: 1, name: "Top Up Game" }] });

@@ -28,7 +28,7 @@ import { errorBody } from "@app/core/errorBody";
 import { logger } from "@app/core/logger";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
 import { exactFields, readMoneyField } from "../../lib/moneyField";
-import { getPriceListCached } from "../../lib/digiflazzPriceListCache";
+import { getPriceListCached, getPriceListFresh } from "../../lib/digiflazzPriceListCache";
 
 /**
  * Read an import row's Rupiah price, or null if it isn't a finite amount.
@@ -76,7 +76,9 @@ export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Prom
       return reply.code(400).send({ error: NO_CREDENTIALS_ERROR });
     }
     // Through the shared cache: the Sync button calls /sync/run right before
-    // this, and a second fetch that soon is refused by Digiflazz (rc 83).
+    // this, and a second fetch that soon is refused by Digiflazz (rc 83). A
+    // list up to five minutes old is fine here because the preview prices
+    // nothing — /sync/apply writes the prices the admin reviewed.
     let items;
     try {
       items = await getPriceListCached(creds);
@@ -141,8 +143,11 @@ export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Prom
     }
     let outcome;
     try {
-      // The cached fetcher lets the preview that follows reuse this run's list.
-      outcome = await runDigiflazzCatalogSync(prisma, undefined, { fetchPriceList: getPriceListCached });
+      // Always a fresh list: this run writes prices, and the hourly cron (in
+      // order-bot, outside this cache) may have applied a newer list since
+      // any cached one was fetched. The fresh fetcher still honours the rc 83
+      // cooldown and stores its list, so the preview that follows reuses it.
+      outcome = await runDigiflazzCatalogSync(prisma, undefined, { fetchPriceList: getPriceListFresh });
     } catch (err) {
       if (isDigiflazzRateLimited(err)) {
         logger.warn(

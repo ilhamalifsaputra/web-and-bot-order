@@ -166,9 +166,6 @@ describe("POST /api/catalog/digiflazz/sync/preview", () => {
     );
   });
 
-  // I8: Digiflazz's own docs (and this branch's core-client test fixture)
-  // use the plural "Games" — the filter must not silently produce an empty
-  // preview just because production returns the plural form.
   it("answers 502 with code digiflazz_rate_limited and the Indonesian message when Digiflazz refuses with rc 83", async () => {
     await setSetting(prisma, "digiflazz_username", "u");
     await setSetting(prisma, "digiflazz_api_key", "k");
@@ -178,6 +175,9 @@ describe("POST /api/catalog/digiflazz/sync/preview", () => {
     expect(res.json()).toEqual({ error: RATE_LIMITED_MESSAGE, code: "digiflazz_rate_limited" });
   });
 
+  // I8: Digiflazz's own docs (and this branch's core-client test fixture)
+  // use the plural "Games" — the filter must not silently produce an empty
+  // preview just because production returns the plural form.
   it("I8: still picks up items whose category is the plural \"Games\"", async () => {
     await setSetting(prisma, "digiflazz_username", "u");
     await setSetting(prisma, "digiflazz_api_key", "k");
@@ -498,6 +498,26 @@ describe("POST /api/catalog/digiflazz/sync/run", () => {
     const preview = await postJson("/api/catalog/digiflazz/sync/preview", {});
     expect(preview.statusCode).toBe(200);
     expect(preview.json().groups).toHaveLength(1);
+    expect(digiflazzMock.getPriceList).toHaveBeenCalledTimes(1);
+  });
+
+  it("never prices from a cached list: a run right after a preview fetches the price list again", async () => {
+    await configureCreds();
+    digiflazzMock.getPriceList.mockResolvedValue([item("ml100", "Mobile Legends 100 Diamond", 15000)]);
+
+    expect((await postJson("/api/catalog/digiflazz/sync/preview", {})).statusCode).toBe(200);
+    expect((await postJson(RUN, {})).statusCode).toBe(200);
+    expect(digiflazzMock.getPriceList).toHaveBeenCalledTimes(2);
+  });
+
+  it("refuses a run during the rc 83 cooldown with code digiflazz_rate_limited, without asking Digiflazz again", async () => {
+    await configureCreds();
+    digiflazzMock.getPriceList.mockRejectedValueOnce(rateLimitedError());
+    expect((await postJson("/api/catalog/digiflazz/sync/preview", {})).statusCode).toBe(502);
+
+    const res = await postJson(RUN, {});
+    expect(res.statusCode).toBe(502);
+    expect(res.json()).toEqual({ error: RATE_LIMITED_MESSAGE, code: "digiflazz_rate_limited" });
     expect(digiflazzMock.getPriceList).toHaveBeenCalledTimes(1);
   });
 

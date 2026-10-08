@@ -88,10 +88,25 @@ export function classifyDigiflazzHttpStatus(status: number): DigiflazzRequestErr
  * admin. Callers use the class to tell a supplier problem from their own.
  */
 export class DigiflazzSupplierError extends Error {
-  constructor(message: string) {
+  /** Digiflazz's own response code when it refused the request (e.g. "83",
+   * its price-list rate limit); null when the failure never got that far. */
+  readonly rc: string | null;
+
+  constructor(message: string, rc: string | null = null) {
     super(message);
     this.name = "DigiflazzSupplierError";
+    this.rc = rc;
   }
+}
+
+/** Digiflazz's rc for "too many price-list checks" — the request was refused
+ * only because it came too soon after the previous one. */
+const DIGIFLAZZ_RATE_LIMITED_RC = "83";
+
+/** True when `err` is Digiflazz refusing a request because of its rate limit
+ * (rc 83): retrying right away only extends the limit, so callers should wait. */
+export function isDigiflazzRateLimited(err: unknown): boolean {
+  return err instanceof DigiflazzSupplierError && err.rc === DIGIFLAZZ_RATE_LIMITED_RC;
 }
 
 /**
@@ -214,7 +229,7 @@ export async function getPriceList(creds: DigiflazzCreds): Promise<DigiflazzPric
     const d = body.data as Record<string, unknown>;
     const message = str(d.message) ?? "no message";
     const rc = str(d.rc);
-    throw new DigiflazzSupplierError(`Digiflazz refused the price-list request: ${message}${rc ? ` (rc ${rc})` : ""}`);
+    throw new DigiflazzSupplierError(`Digiflazz refused the price-list request: ${message}${rc ? ` (rc ${rc})` : ""}`, rc);
   }
   const rows = Array.isArray(body.data) ? body.data : [];
   const items: DigiflazzPriceListItem[] = [];

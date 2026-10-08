@@ -13,6 +13,7 @@ import {
   isRetryableDigiflazzErrorKind,
   type DigiflazzRequestErrorKind,
   DigiflazzSupplierError,
+  isDigiflazzRateLimited,
 } from "./digiflazz";
 import { logger } from "../logger";
 
@@ -346,6 +347,26 @@ describe("getPriceList", () => {
     expect((err as Error).message).toContain("Limitasi request, coba beberapa saat lagi");
     expect((err as Error).message).toContain("83");
     expect((err as Error).message).not.toContain(CREDS.apiKey);
+  });
+
+  it("carries Digiflazz's rc on the refusal, so an rc 83 (price-list rate limit) is recognizable", async () => {
+    stubFetchJson({ data: { rc: "83", message: "Anda telah mencapai limitasi pengecekan pricelist" } });
+    const err = await getPriceList(CREDS).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(DigiflazzSupplierError);
+    expect((err as DigiflazzSupplierError).rc).toBe("83");
+    expect(isDigiflazzRateLimited(err)).toBe(true);
+  });
+
+  it("does not treat a refusal with another rc, a request error or a plain Error as rate limited", async () => {
+    stubFetchJson({ data: { rc: "41", message: "Signature salah" } });
+    const other = await getPriceList(CREDS).catch((e: unknown) => e);
+    expect((other as DigiflazzSupplierError).rc).toBe("41");
+    expect(isDigiflazzRateLimited(other)).toBe(false);
+    const requestError = new DigiflazzRequestError("Digiflazz price list HTTP 503", "http_5xx", 503);
+    expect(requestError.rc).toBeNull();
+    expect(isDigiflazzRateLimited(requestError)).toBe(false);
+    expect(isDigiflazzRateLimited(new Error("rc 83"))).toBe(false);
+    expect(isDigiflazzRateLimited(new DigiflazzSupplierError("rc 83 in the text only"))).toBe(false);
   });
 
   it("still returns an empty list for a genuinely empty price list", async () => {

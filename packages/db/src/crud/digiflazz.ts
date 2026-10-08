@@ -2345,17 +2345,23 @@ export interface DigiflazzResyncCounts {
 /** Why the circuit breaker stopped a run before it wrote anything. */
 export type DigiflazzResyncAbortReason = "sharp_change" | "no_usable_rows";
 
+/** Fetches Digiflazz's price list for a credential pair — `getPriceList`
+ * itself unless a caller injects another (the admin panel's short-lived cache,
+ * so one Sync click never asks Digiflazz twice). */
+export type DigiflazzPriceListFetcher = (creds: DigiflazzCreds) => Promise<DigiflazzPriceListItem[]>;
+
 /** resyncDigiflazzCatalog plus whether the circuit breaker aborted the run, so
  * a manual run can tell the admin "aborted" instead of "nothing changed". */
 async function resyncDigiflazzCatalogWithOutcome(
   db: PrismaClient,
+  fetchPriceList: DigiflazzPriceListFetcher = getPriceList,
 ): Promise<{ counts: DigiflazzResyncCounts; abortReason: DigiflazzResyncAbortReason | null }> {
   const zero = { updated: 0, deactivated: 0, added: 0, reactivated: 0 };
   const creds = await getDigiflazzCreds(db);
   if (!creds) return { counts: zero, abortReason: null };
 
   const [rawPriceList, mapped, markupSettings] = await Promise.all([
-    getPriceList(creds),
+    fetchPriceList(creds),
     db.denomination.findMany({ where: { supplierSku: { not: null } } }),
     getDigiflazzMarkupSettings(db), // I3 fix: read once for the whole run, not once per denomination.
   ]);
@@ -2693,10 +2699,14 @@ export async function releaseDigiflazzCatalogSyncLease(db: Db, token: string): P
  * `{ status: "busy" }` without touching anything when another sync holds the
  * lease. The lease is released after the run whether it succeeded or threw;
  * a resync error is passed on to the caller unchanged.
+ *
+ * `opts.fetchPriceList` replaces `getPriceList` for this run; the hourly cron
+ * passes nothing, so it always prices from a fresh list.
  */
 export async function runDigiflazzCatalogSync(
   db: PrismaClient,
   now: Date = new Date(),
+  opts: { fetchPriceList?: DigiflazzPriceListFetcher } = {},
 ): Promise<
   | { status: "busy" }
   | { status: "aborted"; abortReason: DigiflazzResyncAbortReason }
@@ -2705,7 +2715,7 @@ export async function runDigiflazzCatalogSync(
   const token = await claimDigiflazzCatalogSyncLease(db, now);
   if (!token) return { status: "busy" };
   try {
-    const { counts, abortReason } = await resyncDigiflazzCatalogWithOutcome(db);
+    const { counts, abortReason } = await resyncDigiflazzCatalogWithOutcome(db, opts.fetchPriceList);
     // The circuit breaker wrote nothing (and already alerted the admins); say
     // so instead of passing it off as a run that found no changes.
     if (abortReason) return { status: "aborted", abortReason };

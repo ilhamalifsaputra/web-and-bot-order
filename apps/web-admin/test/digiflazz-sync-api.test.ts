@@ -15,6 +15,7 @@ import { makeSession, sessionJtiKey, newJti } from "../src/auth";
 import { buildApp } from "../src/server";
 import { Decimal } from "@app/core/money";
 import { DigiflazzSupplierError } from "@app/core/suppliers/digiflazz";
+import { clearDigiflazzPriceListCache } from "../src/lib/digiflazzPriceListCache";
 
 const COOKIE = config.WEB_COOKIE_NAME;
 const ADMIN_TG = 999;
@@ -43,7 +44,17 @@ beforeEach(async () => {
   csrf = data.csrf;
   await setSetting(prisma, "setup_completed", "true");
   digiflazzMock.getPriceList.mockReset();
+  // The routes share an in-process price-list cache; every test starts cold.
+  clearDigiflazzPriceListCache();
 });
+
+const RATE_LIMITED_MESSAGE = "Digiflazz sedang membatasi pengecekan price-list (rc 83). Coba lagi beberapa menit lagi.";
+function rateLimitedError() {
+  return new DigiflazzSupplierError(
+    "Digiflazz refused the price-list request: Anda telah mencapai limitasi pengecekan pricelist (rc 83)",
+    "83",
+  );
+}
 
 function postJson(url: string, body: Record<string, unknown>) {
   return app.inject({
@@ -153,6 +164,15 @@ describe("POST /api/catalog/digiflazz/sync/preview", () => {
         { brand: "Arena Breakout Infinite", gameVariant: "Infinite" },
       ]),
     );
+  });
+
+  it("answers 502 with code digiflazz_rate_limited and the Indonesian message when Digiflazz refuses with rc 83", async () => {
+    await setSetting(prisma, "digiflazz_username", "u");
+    await setSetting(prisma, "digiflazz_api_key", "k");
+    digiflazzMock.getPriceList.mockRejectedValueOnce(rateLimitedError());
+    const res = await postJson("/api/catalog/digiflazz/sync/preview", {});
+    expect(res.statusCode).toBe(502);
+    expect(res.json()).toEqual({ error: RATE_LIMITED_MESSAGE, code: "digiflazz_rate_limited" });
   });
 
   // I8: Digiflazz's own docs (and this branch's core-client test fixture)
@@ -460,6 +480,45 @@ describe("POST /api/catalog/digiflazz/sync/run", () => {
 
     digiflazzMock.getPriceList.mockResolvedValue([]);
     expect((await postJson(RUN, {})).statusCode).toBe(200);
+  });
+
+  it("answers 502 with code digiflazz_rate_limited and the Indonesian message when Digiflazz refuses with rc 83", async () => {
+    await configureCreds();
+    digiflazzMock.getPriceList.mockRejectedValueOnce(rateLimitedError());
+    const res = await postJson(RUN, {});
+    expect(res.statusCode).toBe(502);
+    expect(res.json()).toEqual({ error: RATE_LIMITED_MESSAGE, code: "digiflazz_rate_limited" });
+  });
+
+  it("one Sync press (run, then preview) fetches the Digiflazz price list only once", async () => {
+    await configureCreds();
+    digiflazzMock.getPriceList.mockResolvedValue([item("ml100", "Mobile Legends 100 Diamond", 15000)]);
+
+    expect((await postJson(RUN, {})).statusCode).toBe(200);
+    const preview = await postJson("/api/catalog/digiflazz/sync/preview", {});
+    expect(preview.statusCode).toBe(200);
+    expect(preview.json().groups).toHaveLength(1);
+    expect(digiflazzMock.getPriceList).toHaveBeenCalledTimes(1);
+  });
+
+  it("never prices from a cached list: a run right after a preview fetches the price list again", async () => {
+    await configureCreds();
+    digiflazzMock.getPriceList.mockResolvedValue([item("ml100", "Mobile Legends 100 Diamond", 15000)]);
+
+    expect((await postJson("/api/catalog/digiflazz/sync/preview", {})).statusCode).toBe(200);
+    expect((await postJson(RUN, {})).statusCode).toBe(200);
+    expect(digiflazzMock.getPriceList).toHaveBeenCalledTimes(2);
+  });
+
+  it("refuses a run during the rc 83 cooldown with code digiflazz_rate_limited, without asking Digiflazz again", async () => {
+    await configureCreds();
+    digiflazzMock.getPriceList.mockRejectedValueOnce(rateLimitedError());
+    expect((await postJson("/api/catalog/digiflazz/sync/preview", {})).statusCode).toBe(502);
+
+    const res = await postJson(RUN, {});
+    expect(res.statusCode).toBe(502);
+    expect(res.json()).toEqual({ error: RATE_LIMITED_MESSAGE, code: "digiflazz_rate_limited" });
+    expect(digiflazzMock.getPriceList).toHaveBeenCalledTimes(1);
   });
 
   it("answers a generic 500, not 'Digiflazz could not be reached', for an error that is not the supplier's", async () => {

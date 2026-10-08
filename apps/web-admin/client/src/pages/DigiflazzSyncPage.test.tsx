@@ -136,6 +136,8 @@ afterEach(() => {
 // the preview — so every preview mock below is preceded by this run answer.
 const RUN_OK = { ok: true, updated: 0, deactivated: 0, added: 0, reactivated: 0 };
 const NO_CREDENTIALS_ERROR = "Digiflazz credentials are not configured. Set them in Settings first.";
+// The server's exact rc 83 answer from /sync/run and /sync/preview.
+const RATE_LIMITED_ERROR = "Digiflazz sedang membatasi pengecekan price-list (rc 83). Coba lagi beberapa menit lagi.";
 
 async function syncWizard(user: ReturnType<typeof userEvent.setup>) {
   vi.mocked(apiPost).mockResolvedValueOnce(RUN_OK).mockResolvedValueOnce(PREVIEW_RESPONSE);
@@ -396,6 +398,27 @@ describe("DigiflazzSyncPage — Sync runs the full sync before the preview", () 
     await waitFor(() => expect(screen.getByText(/credentials are not configured/i)).toBeInTheDocument());
     expect(screen.getAllByText(/credentials are not configured/i)).toHaveLength(1);
     expect(postedUrls()).toEqual(["/api/catalog/digiflazz/sync/run"]);
+  });
+
+  it("skips the preview and shows the rc 83 message when Digiflazz rate-limits the run", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.mocked(apiPost).mockRejectedValueOnce(new Error(RATE_LIMITED_ERROR));
+    render(<DigiflazzSyncPage />, { wrapper: Wrapper });
+    await user.click(screen.getByRole("button", { name: /sync dari digiflazz/i }));
+
+    await waitFor(() => expect(screen.getByText(RATE_LIMITED_ERROR)).toBeInTheDocument());
+    expect(screen.getAllByText(RATE_LIMITED_ERROR)).toHaveLength(1);
+    expect(postedUrls()).toEqual(["/api/catalog/digiflazz/sync/run"]);
+  });
+
+  it("shows the rc 83 message when only the preview is rate-limited", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.mocked(apiPost).mockResolvedValueOnce(RUN_OK).mockRejectedValueOnce(new Error(RATE_LIMITED_ERROR));
+    render(<DigiflazzSyncPage />, { wrapper: Wrapper });
+    await user.click(screen.getByRole("button", { name: /sync dari digiflazz/i }));
+
+    await waitFor(() => expect(screen.getByText(RATE_LIMITED_ERROR)).toBeInTheDocument());
+    expect(postedUrls()).toEqual(["/api/catalog/digiflazz/sync/run", "/api/catalog/digiflazz/sync/preview"]);
   });
 
   it("explains on the \"Sudah ada\" card that existing games are kept up to date automatically", async () => {

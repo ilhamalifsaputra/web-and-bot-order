@@ -14,6 +14,7 @@ import {
   getTicketWithOrder,
   listTicketMessages,
   getUser,
+  getUserContact,
   addTicketMessage,
   closeTicket,
   assignTicketWithAudit,
@@ -37,7 +38,8 @@ import {
 } from "@app/db";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
 import { getFileResolver } from "../../lib/telegramCheck";
-import { displayDate, displayDateTime } from "../../dateDisplay";
+import { displayDate, displayDateTime, displayShortDateTime } from "../../dateDisplay";
+import { parseStatusChange } from "../../lib/ticketStatusChange";
 
 /** Telegram file ids are URL-safe base64-ish tokens; anything else is not one. */
 const TELEGRAM_FILE_ID_RE = /^[A-Za-z0-9_-]{1,256}$/;
@@ -154,7 +156,10 @@ function titleCase(value: string): string {
  * the full User row (password hash, email, wallet balances, banned reason,
  * …), so this route must always project it down before it reaches the
  * admin's browser; never spread a raw `getUser(...)` result into a response. */
-function ticketPartyUser(user: Awaited<ReturnType<typeof getUser>>) {
+function ticketPartyUser(
+  user: Awaited<ReturnType<typeof getUser>>,
+  contact: { email: string | null; guestEmail: string | null; isGuest: boolean } | null,
+) {
   if (!user) return null;
   return {
     id: user.id,
@@ -162,6 +167,18 @@ function ticketPartyUser(user: Awaited<ReturnType<typeof getUser>>) {
     username: user.username,
     telegramId: user.telegramId,
     loginUsername: user.loginUsername,
+    // Contact fields so the page can name registered web users and guest
+    // checkouts, which have no Telegram name — still a strict projection.
+    // `getUser` deliberately omits these columns, so they come from a
+    // separate narrow select (see the route).
+    // Privacy (backend audit H-4, mirrors /api/search): email is sent ONLY as
+    // a last-resort name when the user has no other name, and guestEmail ONLY
+    // for a guest; otherwise the keys are omitted entirely.
+    ...(contact?.email && !user.fullName && !user.username && !user.loginUsername
+      ? { email: contact.email }
+      : {}),
+    ...(contact?.isGuest && contact.guestEmail ? { guestEmail: contact.guestEmail } : {}),
+    isGuest: contact?.isGuest ?? false,
   };
 }
 
@@ -243,7 +260,7 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
     if (!ticket) return reply.code(404).send({ error: "Ticket not found." });
     const cutoff = overdueCutoff();
 
-    const [messages, ticketUser, totalSpent, orderCount, recentOrders, openTicketCount] = await Promise.all([
+    const [messages, ticketUser, ticketUserContact, totalSpent, orderCount, recentOrders, openTicketCount] = await Promise.all([
       // Task 3: the admin-facing ticket detail view must include internal
       // notes (Task 1's `internal` flag) — this is the ONLY route that reads
       // messages for an admin's eyes, so `includeInternal: true` here is what
@@ -252,11 +269,24 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
       // customer-safe exclusion).
       listTicketMessages(prisma, ticketId, 100, { includeInternal: true }),
       getUser(prisma, ticket.userId),
+      // `getUser` never returns email/isGuest/guestEmail (backend audit H-4);
+      // this helper reads exactly those three columns, never the password hash.
+      getUserContact(prisma, ticket.userId),
       userTotalSpent(prisma, ticket.userId),
       countUserOrders(prisma, ticket.userId),
       listUserOrders(prisma, ticket.userId, 5),
       countOpenUserTickets(prisma, ticket.userId),
     ]);
+
+    if (!ticketUser) {
+      logger.warn(
+        { ticketId },
+        "Support ticket detail could not resolve the ticket's customer record, so the admin page will show the customer as unavailable.",
+      );
+    }
+
+    // One reference instant so "same day" is judged identically for every row.
+    const now = new Date();
 
     // Two arrays, not merged — keeps this route a thin data source and lets
     // the frontend (a later task) decide how to render/interleave them.
@@ -278,6 +308,7 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
         ...ticket,
         subject: ticket.subject?.trim() || deriveSubject(ticket.message),
         createdAtDisplay: displayDateTime(ticket.createdAt),
+        createdAtShort: displayShortDateTime(ticket.createdAt, now),
         waitingSince: displayDateTime(ticket.lastStatusChangeAt),
         isOverdue: isTicketOverdue(ticket, cutoff),
         firstResponseAtDisplay: displayDateTime(ticket.firstResponseAt),
@@ -290,8 +321,12 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
         assignedAtDisplay: displayDateTime(ticket.assignedAt),
         order: ticket.order ? { ...ticket.order, createdAtDisplay: displayDate(ticket.order.createdAt) } : null,
       },
-      messages: messages.map((m) => ({ ...m, createdAtDisplay: displayDateTime(m.createdAt) })),
-      user: ticketPartyUser(ticketUser),
+      messages: messages.map((m) => ({
+        ...m,
+        createdAtDisplay: displayDateTime(m.createdAt),
+        createdAtShort: displayShortDateTime(m.createdAt, now),
+      })),
+      user: ticketPartyUser(ticketUser, ticketUserContact),
       customer: {
         totalSpent,
         orderCount,
@@ -310,11 +345,15 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
           ...row,
           telegramUserId: row.telegramUserId != null ? row.telegramUserId.toString() : null,
           createdAtDisplay: displayDateTime(row.createdAt),
+          createdAtShort: displayShortDateTime(row.createdAt, now),
+          statusChange: row.action === "ticket_status_change" ? parseStatusChange(row.details) : null,
         })),
         order: orderTimeline.map((row) => ({
           ...row,
           telegramUserId: row.telegramUserId != null ? row.telegramUserId.toString() : null,
           createdAtDisplay: displayDateTime(row.createdAt),
+          createdAtShort: displayShortDateTime(row.createdAt, now),
+          statusChange: row.action === "ticket_status_change" ? parseStatusChange(row.details) : null,
         })),
       },
     });

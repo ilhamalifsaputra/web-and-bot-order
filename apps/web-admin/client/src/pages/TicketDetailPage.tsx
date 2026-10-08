@@ -8,12 +8,18 @@ import { CardRow } from "../components/shared/CardRow";
 import { CurrencyStack } from "../components/shared/CurrencyAmount";
 import { TicketStatusBadge } from "../components/shared/TicketStatusBadge";
 import { TicketPriorityBadge } from "../components/shared/TicketPriorityBadge";
-import { OrderUnitsCard, type OrderUnitsData } from "../components/orders/OrderUnitsCard";
+import type { OrderUnitsData } from "../components/orders/OrderUnitsCard";
+import { TicketConversation, type ConversationMessage } from "../components/support/TicketConversation";
+import {
+  TicketIssueContext,
+  type LinkedUnitsState,
+  type TicketOrder,
+} from "../components/support/TicketIssueContext";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import {
   Select,
@@ -22,11 +28,13 @@ import {
   SelectContent,
   SelectItem,
 } from "@/components/ui/select";
-import { Send, CircleX, CheckCircle2, RotateCcw, Lock } from "lucide-react";
+import { Send, CircleX, CheckCircle2, RotateCcw, Lock, ChevronDown } from "lucide-react";
 import { toast } from "sonner";
-import { apiGet, apiPost } from "../api/client";
+import { apiGet, apiPost, type ApiError } from "../api/client";
 import { describeError } from "../lib/errorMessages";
 import { ticketPriorityLabel } from "../lib/ticketPriority";
+import { buildTicketActivity, humanizeAction, type TicketActivityRow, type TicketActivityEntry } from "../lib/ticketActivity";
+import { describeTicketCustomer, type TicketCustomerUser } from "../lib/ticketCustomer";
 
 const PRIORITY_VALUES = ["LOW", "MEDIUM", "HIGH", "URGENT"];
 const CATEGORY_VALUES = ["ORDER", "PAYMENT", "ACCOUNT", "PRODUCT", "OTHER"];
@@ -37,36 +45,19 @@ function categoryLabel(category: string): string {
   return category.charAt(0) + category.slice(1).toLowerCase();
 }
 
-/** Task 3: `ticketNumber` (Task 1) is null for every ticket created before
- * that migration shipped — historical rows fall back to the old `#id`
- * label so they never render blank. */
+/** `ticketNumber` is null for every ticket created before it existed —
+ * those historical rows fall back to the old `#id` label. */
 function ticketDisplayLabel(ticket: { id: number; ticketNumber: string | null }): string {
   return ticket.ticketNumber ?? `#${ticket.id}`;
 }
 
-interface TicketOrderItem {
-  id: number;
-  quantity: number;
-  unitPrice: string;
-  product: { id: number; name: string };
-}
-
-interface TicketOrder {
-  id: number;
-  orderCode: string;
-  createdAt: string;
-  createdAtDisplay: string | null;
-  items: TicketOrderItem[];
-  voucher: { code: string; type: string } | null;
-}
-
-// No `subject` field — SupportTicket has no such column. The ticket's own
-// short text is `message` (the initial submission); the thread itself lives
-// in `messages` below.
 interface Ticket {
   id: number;
   ticketNumber: string | null;
   userId: number;
+  /** Always set: the stored subject, or one derived from the message. */
+  subject: string;
+  /** The customer's original complaint — the first message of the conversation. */
   message: string;
   photoFileIds: string | null;
   status: string;
@@ -78,6 +69,7 @@ interface Ticket {
   assignedBy: number | null;
   createdAt: string;
   createdAtDisplay: string | null;
+  createdAtShort: string | null;
   orderId: number | null;
   order: TicketOrder | null;
 }
@@ -86,9 +78,12 @@ interface TicketMessageRow {
   id: number;
   content: string;
   senderType: string;
+  /** User id of the sender — for an ADMIN message, the admin's User row. */
+  senderId?: number | null;
   internal: boolean;
   createdAt: string;
   createdAtDisplay: string | null;
+  createdAtShort: string | null;
   photoFileIds: string | null;
 }
 
@@ -98,24 +93,13 @@ interface CustomerContext {
   openTicketCount: number;
 }
 
-interface AuditLogRow {
-  id: number;
-  adminId: number | null;
-  // "ADMIN" | "CUSTOMER" (Phase H, customer-action audit trail) — may be
-  // absent on older/mocked fixtures, treated the same as "ADMIN".
-  actorType?: string;
-  action: string;
-  details: string | null;
-  createdAt: string;
-  createdAtDisplay: string | null;
-}
-
 interface TicketDetail {
   ticket: Ticket;
   messages: TicketMessageRow[];
-  user: { id: number; fullName: string | null; username: string | null } | null;
+  user: TicketCustomerUser | null;
   customer: CustomerContext;
-  timeline: { ticket: AuditLogRow[]; order: AuditLogRow[] };
+  /** Both newest first. */
+  timeline: { ticket: TicketActivityRow[]; order: TicketActivityRow[] };
 }
 
 interface AdminOption {
@@ -131,11 +115,8 @@ function useTicket(ticketId: string) {
   });
 }
 
-// Same source/shape as SupportPage.tsx's useAdmins() — resolving an
-// `adminId` (SupportTicket/AuditLog's FK) to a display name needs the same
-// admin roster, and this is a super-admin-only route (requireSuper): a
-// non-super admin simply sees the `Admin #<id>` fallback below, same as
-// SupportPage's assignee Select does.
+// Same source/shape as SupportPage.tsx's useAdmins(). Super-admin only
+// (requireSuper): anyone else sees the `Admin #<id>` / "Admin" fallbacks.
 function useAdmins() {
   return useQuery<{ admins: AdminOption[] }>({
     queryKey: ["admins"],
@@ -147,37 +128,33 @@ function useAdmins() {
  * The linked order's admin detail, for the per-unit replacement list (M20).
  *
  * Deliberately the SAME query key and route the order detail page uses, so the
- * two share one cache entry: opening this page after the order page costs no
- * second request, and a replacement opened from either surface invalidates both.
- * `ticket.order` (from the ticket route) carries only a summary — it has no
- * per-unit stock row, no delivered flag and no replacement history, which is
- * everything the card needs.
+ * two share one cache entry and a replacement opened from either surface
+ * invalidates both. `ticket.order` carries only a summary — no per-unit stock
+ * row, delivered flag or replacement history.
  *
- * GET /api/orders/:orderId is gated to non-readonly roles (blockReadonlyReads),
- * so for a readonly admin this query simply fails and the card is not rendered
- * — the rest of the ticket page is unaffected.
+ * GET /api/orders/:orderId is gated to non-readonly roles (blockReadonlyReads):
+ * a readonly admin gets a 403, which the page treats as "not shown" rather
+ * than an error. Any other failure offers a retry.
  *
  * NOTE ON CREDENTIALS: that route returns each unit's `stockItem.credentials`,
- * so the delivered account credentials DO arrive in this page's response even
- * though `<OrderUnitsCard showCredentials={false} />` below never renders them.
- * `showCredentials` is a presentation choice, not a fetch scope — the data sits
- * in the React Query cache under the shared `["order", id]` key either way. It
- * is not a new exposure (the same admin can read the same field on the order
- * detail page, and the route's own RBAC is what gates access to it), but do not
- * read `showCredentials={false}` as "this page cannot see credentials". If that
- * ever needs to be true, the route needs a projection — hiding the column here
- * would not achieve it.
+ * so the delivered credentials DO arrive in this page's React Query cache even
+ * though `showCredentials={false}` never renders them. That is a presentation
+ * choice, not a fetch scope; if this page must not see them, the route needs a
+ * projection.
  */
 function useLinkedOrderUnits(orderId: number | null) {
   return useQuery<OrderUnitsData>({
     queryKey: ["order", String(orderId)],
     queryFn: () => apiGet<OrderUnitsData>(`/api/orders/${orderId}`),
     enabled: orderId !== null,
+    // No automatic retries: a readonly role's 403 is permanent (retrying only
+    // keeps the skeleton up for seconds), and any other failure shows its own
+    // Retry button.
+    retry: false,
   });
 }
 
-/** Up to `max` Telegram photo `file_id`s parsed from a CSV column — shared by
- * the ticket's own attachments and each thread message's. */
+/** Up to `max` Telegram photo `file_id`s parsed from a CSV column. */
 function parsePhotoIds(csv: string | null, max = 3): string[] {
   if (!csv) return [];
   return csv
@@ -187,13 +164,58 @@ function parsePhotoIds(csv: string | null, max = 3): string[] {
     .slice(0, max);
 }
 
+function TicketDetailSkeleton() {
+  return (
+    <div role="status" aria-busy="true" aria-label="Loading ticket">
+      <div className="mb-6 flex flex-col gap-2">
+        <Skeleton className="h-3 w-20" />
+        <Skeleton className="h-8 w-56 max-w-full" />
+        <Skeleton className="h-4 w-80 max-w-full" />
+        <div className="mt-2 flex flex-wrap gap-2">
+          <Skeleton className="h-6 w-24" />
+          <Skeleton className="h-9 w-36" />
+          <Skeleton className="h-9 w-40" />
+        </div>
+      </div>
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_340px]">
+        <div className="flex min-w-0 flex-col gap-4">
+          <Card>
+            <CardContent className="flex flex-col gap-3">
+              <Skeleton className="h-5 w-32" />
+              <Skeleton className="h-16 w-full" />
+              <Skeleton className="h-16 w-4/5" />
+              <Skeleton className="h-24 w-full" />
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="flex flex-col gap-2">
+              <Skeleton className="h-5 w-24" />
+              <Skeleton className="h-4 w-full" />
+              <Skeleton className="h-4 w-2/3" />
+            </CardContent>
+          </Card>
+        </div>
+        <div className="flex min-w-0 flex-col gap-4">
+          <Card>
+            <CardContent className="flex flex-col gap-2">
+              <Skeleton className="h-5 w-24" />
+              <Skeleton className="h-4 w-full" />
+              <Skeleton className="h-4 w-3/4" />
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function TicketDetailPage() {
   const { ticketId } = useParams<{ ticketId: string }>();
   const navigate = useNavigate();
   const qc = useQueryClient();
   const { data, isError } = useTicket(ticketId ?? "");
   const { data: adminsData } = useAdmins();
-  const { data: linkedOrder } = useLinkedOrderUnits(data?.ticket.orderId ?? null);
+  const linkedOrder = useLinkedOrderUnits(data?.ticket.orderId ?? null);
   const [reply, setReply] = useState("");
   const [internal, setInternal] = useState(false);
   const [replyError, setReplyError] = useState<string | null>(null);
@@ -203,24 +225,16 @@ export function TicketDetailPage() {
   for (const a of adminsData?.admins ?? []) {
     if (a.id !== null) adminNameById.set(a.id, a.name ?? `Telegram ID ${a.telegramId}`);
   }
-  // I-1 (final whole-branch review): a CUSTOMER-actor row (e.g. the
-  // ticket_create row every ticket now gets, or a customer's own
-  // order_create/order_cancel/order_edit_info row) has adminId: null, same
-  // as it does for a true system entry — so this used to fall straight
-  // through to "System", mislabeling the customer's own action. The
-  // customer's identity is already shown once at the top of this page
-  // ("Customer: <name>"), so each timeline row just needs to say who acted,
-  // not repeat which customer.
-  function actorLabel(row: AuditLogRow): string {
+  // A CUSTOMER-actor row (the ticket_create row, a customer's own order
+  // action) has adminId: null just like a true system entry — it must still
+  // say the customer acted, not "System".
+  function actorLabel(row: TicketActivityRow): string {
     if (row.actorType === "CUSTOMER") return "Customer";
     if (row.adminId === null) return "System";
     return adminNameById.get(row.adminId) ?? `Admin #${row.adminId}`;
   }
-  // Task 3 (Phase C): plain admin-id → display-name resolution for the
-  // Assignment card's `ticket.adminId`/`ticket.assignedBy` fields — always a
-  // genuine admin id (or null meaning "unset"), never a CUSTOMER actor, so
-  // this doesn't need actorLabel's AuditLogRow-shaped CUSTOMER check above.
-  // Reuses the same adminNameById lookup so both helpers stay in sync.
+  // Plain admin-id → name for `ticket.adminId`/`ticket.assignedBy` — always a
+  // genuine admin id (or null meaning "unset"), never a customer actor.
   function adminLabel(adminId: number | null): string {
     if (adminId === null) return "System";
     return adminNameById.get(adminId) ?? `Admin #${adminId}`;
@@ -240,9 +254,8 @@ export function TicketDetailPage() {
     onError: (e: Error) => setReplyError(e.message),
   });
 
-  // Task 3: assignment picker — wired to the same POST /api/support/:ticketId/assign
-  // route SupportPage's own assignee Select posts to, now migrated (Task 3) to
-  // call assignTicketWithAudit so both surfaces stamp assignedAt/assignedBy.
+  // Same POST /api/support/:ticketId/assign route SupportPage's assignee
+  // Select posts to; both stamp assignedAt/assignedBy.
   const assign = useMutation({
     mutationFn: (nextAdminId: number | null) =>
       apiPost(`/api/support/${ticketId}/assign`, { adminId: nextAdminId }),
@@ -299,193 +312,180 @@ export function TicketDetailPage() {
   });
 
   if (isError) return <PageLayout title="Ticket"><p className="text-sm text-rust">Failed to load ticket.</p></PageLayout>;
-  if (!data) return <PageLayout title="Ticket"><p>Loading…</p></PageLayout>;
+  if (!data) return <PageLayout title="Ticket"><TicketDetailSkeleton /></PageLayout>;
 
   const { ticket, messages, user, customer, timeline } = data;
+  const ticketLabel = ticketDisplayLabel(ticket);
+  const isClosed = ticket.status === "CLOSED";
 
-  // Chronological (oldest first): a synthetic "Created" row, then each audit
-  // log in the order the actions actually happened — `timeline.ticket` comes
-  // back newest-first from listAuditLogs, so it's reversed here.
-  const ticketTimeline = [...timeline.ticket].reverse();
+  // The original complaint lives on the ticket itself, not in `messages`, so
+  // it is shown as the conversation's first message.
+  const conversation: ConversationMessage[] = [
+    {
+      key: "ticket",
+      sender: "Customer",
+      fromAdmin: false,
+      internal: false,
+      time: ticket.createdAtShort ?? ticket.createdAtDisplay ?? "",
+      timeTitle: ticket.createdAtDisplay ?? "",
+      content: ticket.message,
+      photoIds: parsePhotoIds(ticket.photoFileIds),
+    },
+    ...messages.map((m) => {
+      const fromAdmin = m.senderType === "ADMIN";
+      return {
+        key: `message-${m.id}`,
+        sender: fromAdmin ? ((m.senderId != null ? adminNameById.get(m.senderId) : undefined) ?? "Admin") : "Customer",
+        fromAdmin,
+        internal: m.internal === true,
+        time: m.createdAtShort ?? m.createdAtDisplay ?? "",
+        timeTitle: m.createdAtDisplay ?? "",
+        content: m.content,
+        photoIds: parsePhotoIds(m.photoFileIds),
+      };
+    }),
+  ];
 
-  const ticketPhotoIds = parsePhotoIds(ticket.photoFileIds);
+  const activity: TicketActivityEntry[] = buildTicketActivity(timeline.ticket, { ticketLabel, actorLabel });
+  if (!timeline.ticket.some((row) => row.action === "ticket_create")) {
+    activity.unshift({
+      id: -1,
+      time: ticket.createdAtShort ?? ticket.createdAtDisplay ?? "",
+      timeTitle: ticket.createdAtDisplay ?? "",
+      text: "Ticket created",
+    });
+  }
+
+  const orderActivity = timeline.order.map((row) => ({
+    id: row.id,
+    time: row.createdAtShort ?? row.createdAtDisplay ?? "",
+    timeTitle: row.createdAtDisplay ?? "",
+    actor: actorLabel(row),
+    text: row.details ?? humanizeAction(row.action),
+  }));
+
+  const linkedOrderError = linkedOrder.error as ApiError | null;
+  const unitsState: LinkedUnitsState = linkedOrder.data
+    ? { kind: "ready", data: linkedOrder.data }
+    : linkedOrder.isError
+      ? linkedOrderError?.status === 403
+        ? { kind: "hidden" }
+        : { kind: "error", onRetry: () => void linkedOrder.refetch(), retrying: linkedOrder.isFetching }
+      : { kind: "loading" };
+
+  const identity = describeTicketCustomer(user);
+
+  const composer = isClosed ? null : (
+    <div className="flex flex-col gap-3">
+      {replyError && <p className="text-sm text-rust">{replyError}</p>}
+      <Textarea
+        value={reply}
+        onChange={(e) => setReply(e.target.value)}
+        placeholder="Write a reply…"
+        aria-label="Reply"
+        rows={4}
+      />
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        {/* Internal note: stored and audited, never sent to the customer,
+            and it does not advance the ticket's status. */}
+        <label className="flex items-center gap-2">
+          <Checkbox
+            checked={internal}
+            onCheckedChange={(c) => setInternal(c === true)}
+            aria-label="Internal note (not visible to the customer)"
+          />
+          <span className="text-sm text-ink">Internal note (not visible to the customer)</span>
+        </label>
+        <Button onClick={() => sendReply.mutate()} disabled={!reply || sendReply.isPending}>
+          {internal ? <Lock className="h-4 w-4" /> : <Send className="h-4 w-4" />}
+          {sendReply.isPending ? "Saving…" : internal ? "Save internal note" : "Send reply"}
+        </Button>
+      </div>
+    </div>
+  );
 
   return (
-    <PageLayout title={`Ticket ${ticketDisplayLabel(ticket)}`}>
+    <PageLayout title={`Ticket ${ticketLabel}`}>
       <PageHeader
-        title={`Ticket ${ticketDisplayLabel(ticket)}`}
-        description={ticket.message}
+        title={`Ticket ${ticketLabel}`}
+        description={<span className="break-words">{ticket.subject}</span>}
         breadcrumb={[{ label: "Support", href: "/support" }]}
         actions={
           <>
-            <TicketStatusBadge status={ticket.status} />
-            <Select
-              value={ticket.priority}
-              onValueChange={(v) => setPriority.mutate(v)}
-              disabled={setPriority.isPending}
-            >
-              <SelectTrigger className="w-36" aria-label="Ticket priority">
-                <SelectValue>
-                  <TicketPriorityBadge priority={ticket.priority} />
-                </SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                {PRIORITY_VALUES.map((p) => (
-                  <SelectItem key={p} value={p}>
-                    {ticketPriorityLabel(p)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Select
-              value={ticket.category ?? UNCATEGORIZED}
-              onValueChange={(v) => setCategory.mutate(v === UNCATEGORIZED ? null : v)}
-              disabled={setCategory.isPending}
-            >
-              <SelectTrigger className="w-40" aria-label="Ticket category">
-                <SelectValue>
-                  {ticket.category ? categoryLabel(ticket.category) : "Uncategorized"}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={UNCATEGORIZED}>Uncategorized</SelectItem>
-                {CATEGORY_VALUES.map((c) => (
-                  <SelectItem key={c} value={c}>
-                    {categoryLabel(c)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            {/* Task 1 fix: mirrors the backend's actual resolveTicket guard (status
-                NOT IN [RESOLVED, CLOSED]) instead of an OPEN/REPLIED whitelist —
-                WAITING_ADMIN/WAITING_CUSTOMER tickets are now real and were
-                silently losing this button under the old check. */}
-            {ticket.status !== "RESOLVED" && ticket.status !== "CLOSED" && (
+            {/* Mirrors the backend's resolveTicket guard (status NOT IN
+                [RESOLVED, CLOSED]). */}
+            {ticket.status !== "RESOLVED" && !isClosed && (
               <Button variant="outline" onClick={() => resolve.mutate()} disabled={resolve.isPending}>
                 <CheckCircle2 className="h-4 w-4" />
                 Resolve
               </Button>
             )}
-            {ticket.status === "CLOSED" && (
+            {isClosed && (
               <Button variant="outline" onClick={() => reopen.mutate()} disabled={reopen.isPending}>
                 <RotateCcw className="h-4 w-4" />
                 Reopen
               </Button>
             )}
+            {!isClosed && (
+              <ConfirmDialog
+                trigger={<Button variant="ghost"><CircleX className="h-4 w-4" />Close ticket</Button>}
+                title="Close this ticket?"
+                description="The ticket will be marked as closed and no further replies can be added."
+                confirmLabel="Close"
+                onConfirm={() => close.mutate()}
+              />
+            )}
           </>
         }
       />
 
-      <div className="mb-4 text-sm text-ink-soft">
-        Customer: <span className="text-ink">{user?.fullName ?? user?.username ?? "Unknown"}</span>
-      </div>
-
-      <div className="grid grid-cols-1 gap-4 mb-6 lg:grid-cols-2">
-        {/* Order context */}
-        {ticket.order && (
-          <Card>
-            <CardHeader><CardTitle>Order Context</CardTitle></CardHeader>
-            <CardContent className="flex flex-col gap-1 divide-y divide-line">
-              <CardRow
-                label="Order"
-                value={
-                  <Link to={`/orders/${ticket.order.id}`} className="font-mono text-xs text-pine hover:underline">
-                    {ticket.order.orderCode}
-                  </Link>
-                }
-              />
-              <CardRow label="Purchased" value={<span className="text-xs text-ink-soft">{ticket.order.createdAtDisplay ?? "—"}</span>} />
-              {ticket.order.voucher && (
-                <CardRow
-                  label="Voucher"
-                  // break-all, not CardRow's generic break-words: a voucher
-                  // code is one unbroken token, so break-words would leave it
-                  // to be silently clipped by the card's overflow-hidden.
-                  value={<span className="font-mono text-xs break-all">{ticket.order.voucher.code} ({ticket.order.voucher.type})</span>}
-                />
-              )}
-            </CardContent>
-            <CardContent className="flex flex-col gap-1">
-              <div className="mb-1 text-xs font-medium text-ink-soft">Items</div>
-              {ticket.order.items.map((item) => (
-                <div key={item.id} className="flex items-center justify-between gap-2 text-sm">
-                  <span className="truncate text-ink" title={`${item.product.name} × ${item.quantity}`}>
-                    {item.product.name} × {item.quantity}
-                  </span>
-                  <span className="shrink-0 font-mono text-xs text-ink-soft">{item.unitPrice}</span>
-                </div>
-              ))}
-            </CardContent>
-            <CardContent className="border-t border-line pt-3 flex flex-col gap-2">
-              <div className="text-xs font-medium text-ink-soft">Order Activity</div>
-              {timeline.order.length === 0 ? (
-                <p className="text-xs text-ink-soft">No order activity recorded.</p>
-              ) : (
-                timeline.order.map((row) => (
-                  <div key={row.id} className="rounded-lg border-l-2 border-line bg-sand px-3 py-2">
-                    <div className="mb-0.5 text-xs text-ink-soft">
-                      {row.createdAtDisplay ?? "—"} — {actorLabel(row)}
-                    </div>
-                    <div className="text-sm break-words text-ink">{row.details ?? row.action}</div>
-                  </div>
-                ))
-              )}
-            </CardContent>
-          </Card>
-        )}
-
-        {/* Customer context */}
-        <Card>
-          <CardHeader><CardTitle>Customer</CardTitle></CardHeader>
-          <CardContent className="flex flex-col gap-1 divide-y divide-line">
-            <CardRow
-              label="Total Spent"
-              value={<CurrencyStack amounts={[{ currency: "IDR", value: customer.totalSpent.idr }, { currency: "USDT", value: customer.totalSpent.usdt }]} />}
-            />
-            <CardRow label="Total Orders" value={customer.orderCount} />
-            <CardRow label="Open Tickets" value={customer.openTicketCount} />
-          </CardContent>
-          <CardContent>
-            <Link to={`/users/${ticket.userId}`} className="text-sm text-pine hover:underline">
-              View customer profile →
-            </Link>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* The linked order's per-unit list (M20) — the same card the order
-          detail page renders, so a complaint about one dead account is
-          resolved against that UNIT from inside the ticket, and the request it
-          opens records this ticket. Full width rather than inside the grid
-          above: it is a table with row actions, not a summary panel. */}
-      {ticket.order && linkedOrder && (
-        <div className="mb-6">
-          <OrderUnitsCard
-            orderId={String(ticket.order.id)}
-            units={linkedOrder.order.items}
-            replacements={linkedOrder.stockReplacements}
-            isDelivered={linkedOrder.isDelivered}
-            title={`Units of Order ${ticket.order.orderCode}`}
-            showCredentials={false}
-            supportTicketId={ticket.id}
-          />
-        </div>
-      )}
-
-      {/* Assignment — Task 3: surfaces assignedAt/assignedBy (Task 1)
-          alongside the working-admin (adminId) picker. Posts to the same
-          POST /api/support/:ticketId/assign route SupportPage's own
-          per-row Select uses (Task 3 migrated that route to
-          assignTicketWithAudit so both surfaces stamp the audit trail). */}
-      <Card className="mb-6">
-        <CardHeader><CardTitle>Assignment</CardTitle></CardHeader>
-        <CardContent className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="mb-6 flex flex-wrap items-center gap-2">
+        <TicketStatusBadge status={ticket.status} />
+        <Select
+          value={ticket.priority}
+          onValueChange={(v) => setPriority.mutate(v)}
+          disabled={setPriority.isPending}
+        >
+          <SelectTrigger className="w-full sm:w-36" aria-label="Ticket priority">
+            <SelectValue>
+              <TicketPriorityBadge priority={ticket.priority} />
+            </SelectValue>
+          </SelectTrigger>
+          <SelectContent>
+            {PRIORITY_VALUES.map((p) => (
+              <SelectItem key={p} value={p}>
+                {ticketPriorityLabel(p)}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select
+          value={ticket.category ?? UNCATEGORIZED}
+          onValueChange={(v) => setCategory.mutate(v === UNCATEGORIZED ? null : v)}
+          disabled={setCategory.isPending}
+        >
+          <SelectTrigger className="w-full sm:w-40" aria-label="Ticket category">
+            <SelectValue>
+              {ticket.category ? categoryLabel(ticket.category) : "Not categorized"}
+            </SelectValue>
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={UNCATEGORIZED}>Not categorized</SelectItem>
+            {CATEGORY_VALUES.map((c) => (
+              <SelectItem key={c} value={c}>
+                {categoryLabel(c)}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <div className="flex w-full min-w-0 items-center gap-2 sm:w-auto">
+          <span className="shrink-0 text-sm text-ink-soft">Assignee:</span>
           <Select
             value={ticket.adminId !== null ? String(ticket.adminId) : UNASSIGNED}
             onValueChange={(v) => assign.mutate(v === UNASSIGNED ? null : Number(v))}
             disabled={assign.isPending}
           >
-            <SelectTrigger className="w-56" aria-label="Ticket assignee">
+            <SelectTrigger className="min-w-0 flex-1 sm:w-48 sm:flex-none" aria-label="Ticket assignee">
               <SelectValue>
                 {ticket.adminId !== null ? adminLabel(ticket.adminId) : "Unassigned"}
               </SelectValue>
@@ -499,146 +499,101 @@ export function TicketDetailPage() {
               ))}
             </SelectContent>
           </Select>
-          <span className="text-sm text-ink-soft">
-            {ticket.assignedAt
-              ? `Assigned by ${adminLabel(ticket.assignedBy)} on ${ticket.assignedAtDisplay ?? "—"}`
-              : "Not yet assigned."}
-          </span>
-        </CardContent>
-      </Card>
-
-      {/* Ticket timeline */}
-      <Card className="mb-6">
-        <CardHeader><CardTitle>Timeline</CardTitle></CardHeader>
-        <CardContent className="flex flex-col gap-2">
-          <div data-testid="timeline-row" className="rounded-lg border-l-2 border-pine bg-pine-tint px-4 py-3">
-            <div className="mb-1 text-xs text-ink-soft">{ticket.createdAtDisplay ?? "—"}</div>
-            <div className="text-sm text-ink">Created</div>
-          </div>
-          {ticketTimeline.map((row) => (
-            <div key={row.id} data-testid="timeline-row" className="rounded-lg border-l-2 border-line bg-sand px-4 py-3">
-              <div className="mb-1 text-xs text-ink-soft">
-                {row.createdAtDisplay ?? "—"} — {actorLabel(row)}
-              </div>
-              <div className="text-sm break-words text-ink">{row.details ?? row.action}</div>
-            </div>
-          ))}
-        </CardContent>
-      </Card>
-
-      {/* Attachments on the original ticket submission */}
-      {ticketPhotoIds.length > 0 && (
-        <div className="mb-6 flex gap-2">
-          {ticketPhotoIds.map((fileId) => (
-            <button
-              key={fileId}
-              type="button"
-              onClick={() => setPreviewFileId(fileId)}
-              className="overflow-hidden rounded-lg border border-line"
-              aria-label="View attachment"
-            >
-              <img src={`/api/support/photo/${fileId}`} alt="Attachment" className="h-16 w-16 object-cover" />
-            </button>
-          ))}
         </div>
-      )}
-
-      {/* Message thread */}
-      <div className="flex flex-col gap-3 mb-6">
-        {messages.map(m => {
-          const messagePhotoIds = parsePhotoIds(m.photoFileIds);
-          // Task 3: internal notes (Task 1's TicketMessage.internal) must be
-          // visually distinct from customer-visible messages — dashed border,
-          // no colored fill (unlike the solid pine/sand ADMIN/CUSTOMER tints
-          // above, which both mean "the customer can see this"), plus an
-          // explicit "Internal note" badge so it can't be mistaken for a real
-          // reply at a glance.
-          const isInternal = m.internal === true;
-          return (
-            <div
-              key={m.id}
-              data-testid="ticket-message"
-              className={`rounded-lg border-l-2 px-4 py-3 ${
-                isInternal
-                  ? "border-dashed border-ink-faint bg-paper"
-                  : m.senderType === "ADMIN"
-                    ? "border-pine bg-pine-tint"
-                    : "border-line bg-sand"
-              }`}
-            >
-              <div className="mb-1 flex items-center gap-1.5 text-xs text-ink-soft">
-                {isInternal && (
-                  <Badge variant="secondary" className="gap-1">
-                    <Lock className="h-3 w-3" />
-                    Internal note
-                  </Badge>
-                )}
-                <span>{m.senderType === "ADMIN" ? "Admin" : "Customer"} — {m.createdAtDisplay ?? "—"}</span>
-              </div>
-              {/* pre-wrap preserves long unbroken runs, so a pasted URL or
-                  token overflows the bubble without break-words. */}
-              <div className="text-sm text-ink whitespace-pre-wrap break-words">{m.content}</div>
-              {messagePhotoIds.length > 0 && (
-                <div className="mt-2 flex gap-2">
-                  {messagePhotoIds.map((fileId) => (
-                    <button
-                      key={fileId}
-                      type="button"
-                      onClick={() => setPreviewFileId(fileId)}
-                      className="overflow-hidden rounded-lg border border-line"
-                      aria-label="View attachment"
-                    >
-                      <img src={`/api/support/photo/${fileId}`} alt="Attachment" className="h-16 w-16 object-cover" />
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          );
-        })}
+        {ticket.adminId !== null && ticket.assignedAt && (
+          <span className="text-xs text-ink-soft">
+            Assigned by {adminLabel(ticket.assignedBy)}
+            {ticket.assignedAtDisplay ? ` · ${ticket.assignedAtDisplay}` : ""}
+          </span>
+        )}
       </div>
 
-      {/* Reply + close */}
-      {ticket.status !== "CLOSED" && (
-        <Card>
-          <CardHeader><CardTitle>Reply</CardTitle></CardHeader>
-          <CardContent className="flex flex-col gap-3">
-            {replyError && <p className="text-sm text-rust">{replyError}</p>}
-            <Textarea
-              value={reply}
-              onChange={e => setReply(e.target.value)}
-              placeholder="Write a reply…"
-              rows={4}
+      {/* DOM order is the mobile order: conversation, issue context, customer,
+          activity. On lg the first two form the left column. */}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_340px]">
+        <div className="flex min-w-0 flex-col gap-4">
+          <TicketConversation
+            messages={conversation}
+            onPreviewPhoto={setPreviewFileId}
+            composer={composer}
+            closedNote="This ticket is closed. Reopen it to reply."
+          />
+          {ticket.order && (
+            <TicketIssueContext
+              ticketId={ticket.id}
+              order={ticket.order}
+              orderActivity={orderActivity}
+              units={unitsState}
             />
-            {/* Task 3: internal-note toggle. When checked, the reply is
-                created with internal: true (Task 1's addTicketMessage) —
-                stored, audited, and rendered in the timeline above as a
-                dashed "Internal note" bubble instead of a customer-visible
-                Admin reply; it never advances the ticket's status. */}
-            <label className="flex items-center gap-2">
-              <Checkbox
-                checked={internal}
-                onCheckedChange={(c) => setInternal(c === true)}
-                aria-label="Internal note (not visible to the customer)"
-              />
-              <span className="text-sm text-ink">Internal note (not visible to the customer)</span>
-            </label>
-            <div className="flex gap-2">
-              <Button onClick={() => sendReply.mutate()} disabled={!reply || sendReply.isPending}>
-                {internal ? <Lock className="h-4 w-4" /> : <Send className="h-4 w-4" />}
-                {sendReply.isPending ? "Saving…" : internal ? "Save Internal Note" : "Send Reply"}
-              </Button>
-              <ConfirmDialog
-                trigger={<Button variant="destructive"><CircleX className="h-4 w-4" />Close Ticket</Button>}
-                title="Close this ticket?"
-                description="The ticket will be marked as closed and no further replies can be added."
-                confirmLabel="Close"
-                onConfirm={() => close.mutate()}
-              />
-            </div>
-          </CardContent>
-        </Card>
-      )}
+          )}
+        </div>
+
+        <div className="flex min-w-0 flex-col gap-4">
+          <Card>
+            <CardHeader>
+              <CardTitle as="h2">Customer</CardTitle>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-1">
+              <div className="text-sm font-medium break-words text-ink">{identity.name}</div>
+              <div className="flex flex-col divide-y divide-line">
+                {identity.identifiers.map((id) => (
+                  <CardRow
+                    key={id.label}
+                    label={id.label}
+                    value={<span className="break-all">{id.value}</span>}
+                  />
+                ))}
+                <CardRow label="Orders" value={customer.orderCount} />
+                <CardRow
+                  label="Total spent"
+                  value={
+                    <CurrencyStack
+                      amounts={[
+                        { currency: "IDR", value: customer.totalSpent.idr },
+                        { currency: "USDT", value: customer.totalSpent.usdt },
+                      ]}
+                    />
+                  }
+                />
+                <CardRow label="Open tickets" value={customer.openTicketCount} />
+              </div>
+              {user && (
+                <Link to={`/users/${ticket.userId}`} className="mt-2 w-fit text-sm text-pine hover:underline">
+                  View customer profile →
+                </Link>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <details className="group">
+              <summary className="mx-(--card-spacing) flex cursor-pointer list-none items-center justify-between gap-2 rounded-md font-heading text-base font-medium text-ink outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 [&::-webkit-details-marker]:hidden">
+                <span>Activity ({activity.length})</span>
+                <ChevronDown className="h-4 w-4 text-ink-soft transition-transform group-open:rotate-180" aria-hidden="true" />
+              </summary>
+              <ol className="mx-(--card-spacing) mt-3 flex flex-col divide-y divide-line">
+                {activity.map((entry) => (
+                  <li key={entry.id} data-testid="activity-entry" className="flex flex-col gap-0.5 py-2 text-sm">
+                    <div className="break-words text-ink">
+                      {entry.time && (
+                        <>
+                          <span className="text-ink-soft" title={entry.timeTitle}>{entry.time}</span>
+                          {" · "}
+                        </>
+                      )}
+                      {entry.text}
+                    </div>
+                    {entry.statusTo && <div className="text-xs text-ink-soft">Status → {entry.statusTo}</div>}
+                  </li>
+                ))}
+              </ol>
+              {activity.length <= 1 && (
+                <p className="mx-(--card-spacing) text-sm text-ink-soft">No additional activity yet.</p>
+              )}
+            </details>
+          </Card>
+        </div>
+      </div>
 
       <Dialog open={previewFileId !== null} onOpenChange={(open) => { if (!open) setPreviewFileId(null); }}>
         <DialogContent className="sm:max-w-lg">

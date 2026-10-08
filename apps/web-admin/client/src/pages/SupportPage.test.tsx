@@ -164,7 +164,7 @@ describe("SupportPage", () => {
     }
 
     expect(within(statCard("Open")).getByText("12")).toBeInTheDocument();
-    expect(within(statCard("Waiting Customer")).getByText("4")).toBeInTheDocument();
+    expect(within(statCard("Waiting for customer")).getByText("4")).toBeInTheDocument();
     expect(within(statCard("Overdue")).getByText("2")).toBeInTheDocument();
     expect(within(statCard("Unassigned")).getByText("6")).toBeInTheDocument();
     expect(within(statCard("Resolved Today")).getByText("9")).toBeInTheDocument();
@@ -315,7 +315,7 @@ describe("SupportPage", () => {
     await waitFor(() => expect(screen.getByText(/Order tidak sampai/)).toBeInTheDocument());
 
     await user.click(screen.getByRole("combobox", { name: "Status filter" }));
-    await user.click(await screen.findByRole("option", { name: "Waiting Customer" }));
+    await user.click(await screen.findByRole("option", { name: "Waiting for customer" }));
 
     await user.click(screen.getByRole("combobox", { name: "Priority filter" }));
     await user.click(await screen.findByRole("option", { name: "High" }));
@@ -659,7 +659,7 @@ describe("SupportPage", () => {
 
     await qc.invalidateQueries({ queryKey: ["support"] });
 
-    await waitFor(() => expect(screen.getByText(/Ticket #1 status changed to Waiting Customer/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/Ticket #1 status changed to Waiting for customer/)).toBeInTheDocument());
     expect(screen.getByText(/New ticket #3 from Sari/)).toBeInTheDocument();
   });
 

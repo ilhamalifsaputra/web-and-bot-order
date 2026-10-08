@@ -19,7 +19,7 @@ describe("TicketStatusBadge", () => {
 
   it("renders the REPLIED status with pine tone and custom label", () => {
     const { container } = render(<TicketStatusBadge status="REPLIED" />);
-    expect(screen.getByText("Waiting Customer")).toBeInTheDocument();
+    expect(screen.getByText("Waiting for customer")).toBeInTheDocument();
     expect(container.querySelector(".bg-pine-tint")).not.toBeNull();
     expect(container.querySelector(".text-pine-dark")).not.toBeNull();
   });

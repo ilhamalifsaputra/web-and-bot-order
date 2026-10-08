@@ -125,9 +125,11 @@ const ALL_CATEGORIES = "_all_";
 const ALL_ASSIGNED = "_all_";
 const STATUS_VALUES = ["OPEN", "REPLIED", "RESOLVED", "CLOSED"];
 /** Task 1 fix review (Important finding): the dropdown still shows the 4
- *  legacy buckets — matching ticketStatusLabel's OPEN/WAITING_ADMIN and
- *  REPLIED/WAITING_CUSTOMER pairing — but each selection must query BOTH
- *  statuses in its pair, or filtering by "Open"/"Waiting Customer" would
+ *  legacy buckets (OPEN also covers WAITING_ADMIN, REPLIED also covers
+ *  WAITING_CUSTOMER). The filter labels are bucket names and do NOT mirror the
+ *  badge labels one-to-one: ticketStatusLabel badges WAITING_ADMIN as "Waiting
+ *  for admin" while the "Open" filter still buckets it. Each selection must
+ *  query BOTH statuses in its pair, or filtering by "Open"/"Replied" would
  *  silently under-report every ticket that has already gone through the
  *  Task 1 fix's automatic WAITING_ADMIN/WAITING_CUSTOMER transition. The
  *  server's `parseCsvFilter` (apps/web-admin/src/routes/api/support.ts)
@@ -485,7 +487,7 @@ export function SupportPage() {
 
       <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
         <StatCard label="Open" value={data?.stats.open ?? 0} icon={MessageCircle} isLoading={!data} />
-        <StatCard label="Waiting Customer" value={data?.stats.waitingCustomer ?? 0} icon={Clock} isLoading={!data} />
+        <StatCard label="Waiting for customer" value={data?.stats.waitingCustomer ?? 0} icon={Clock} isLoading={!data} />
         <StatCard
           label="Overdue"
           value={data?.stats.overdue ?? 0}

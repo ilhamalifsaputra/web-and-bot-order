@@ -5,8 +5,10 @@ export interface TicketCustomerUser {
   username: string | null;
   telegramId: string | null;
   loginUsername: string | null;
-  email: string | null;
-  guestEmail: string | null;
+  /** Present only when the user has no other name (last-resort name fallback). */
+  email?: string | null;
+  /** Present only for a guest checkout. */
+  guestEmail?: string | null;
   isGuest: boolean;
 }
 

@@ -171,8 +171,13 @@ function ticketPartyUser(
     // checkouts, which have no Telegram name — still a strict projection.
     // `getUser` deliberately omits these columns, so they come from a
     // separate narrow select (see the route).
-    email: contact?.email ?? null,
-    guestEmail: contact?.guestEmail ?? null,
+    // Privacy (backend audit H-4, mirrors /api/search): email is sent ONLY as
+    // a last-resort name when the user has no other name, and guestEmail ONLY
+    // for a guest; otherwise the keys are omitted entirely.
+    ...(contact?.email && !user.fullName && !user.username && !user.loginUsername
+      ? { email: contact.email }
+      : {}),
+    ...(contact?.isGuest && contact.guestEmail ? { guestEmail: contact.guestEmail } : {}),
     isGuest: contact?.isGuest ?? false,
   };
 }

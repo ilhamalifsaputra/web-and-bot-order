@@ -680,6 +680,31 @@ describe("GET /api/support/:ticketId", () => {
     expect(hasKeyDeep(res.json(), "passwordHash")).toBe(false);
   });
 
+  it("sends email only as a last-resort name (no fullName/username/loginUsername), never guestEmail for a registered user", async () => {
+    const nameless = await prisma.user.create({
+      data: { email: "nameless@shop.test", referralCode: "NAMELESS-RC-1" },
+    });
+    const named = await createWebUser(prisma, {
+      loginUsername: "namedweb",
+      email: "named@shop.test",
+      passwordHash: "x-hash",
+      fullName: "Named Web",
+    });
+    const t1 = await createTicket(prisma, nameless.id, "Nameless help");
+    const t2 = await createTicket(prisma, named.id, "Named help");
+
+    const r1 = await get(`/api/support/${t1.id}`, cookie);
+    const u1 = (r1.json() as { user: Record<string, unknown> }).user;
+    expect(u1.email).toBe("nameless@shop.test");
+    expect(u1).not.toHaveProperty("guestEmail");
+
+    const r2 = await get(`/api/support/${t2.id}`, cookie);
+    const u2 = (r2.json() as { user: Record<string, unknown> }).user;
+    expect(u2).not.toHaveProperty("email");
+    expect(u2).not.toHaveProperty("guestEmail");
+    expect(r2.body).not.toContain("named@shop.test");
+  });
+
   it("includes the order timeline block when the ticket is linked to an order", async () => {
     const order = await prisma.order.create({
       data: { orderCode: "ORD-t1", userId: customerId, subtotalAmount: "1", totalAmount: "1" },
@@ -756,7 +781,8 @@ describe("GET /api/support/:ticketId", () => {
     expect(body.ticket.createdAtShort).toEqual(expect.any(String));
     expect(body.messages.length).toBeGreaterThan(0);
     for (const m of body.messages) expect(m.createdAtShort).toEqual(expect.any(String));
-    expect(body.user).toMatchObject({ email: null, guestEmail: "guest@example.com", isGuest: true });
+    expect(body.user).toMatchObject({ guestEmail: "guest@example.com", isGuest: true });
+    expect(body.user).not.toHaveProperty("email");
     expect(body.user).not.toHaveProperty("passwordHash");
     const changes = body.timeline.ticket.filter((r) => r.action === "ticket_status_change");
     expect(changes.find((r) => r.details === "garbled")?.statusChange).toBeNull();

@@ -5565,16 +5565,15 @@ describe("support", () => {
 
     const detailRes = await get(`/api/support/${ticket.id}`, seed.cookie);
     expect(detailRes.statusCode).toBe(200);
-    // The detail's `user` deliberately carries email/guestEmail (the ticket page
-    // uses it only as a last-resort display-name fallback), so the buyer's own
-    // email is allowed here; the assignee's email and every hash are not.
     for (const needle of [
       "buyer-hash-should-not-leak",
       "admin-hash-should-not-leak",
+      "buyer-secret@shop.test",
       "admin-secret@shop.test",
       "passwordHash",
       "walletBalance",
       "bannedReason",
+      '"email"',
     ]) {
       expect(detailRes.body, `GET /api/support/:ticketId body must not contain "${needle}"`).not.toContain(needle);
     }

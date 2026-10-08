@@ -52,6 +52,59 @@ beforeEach(() => {
   Element.prototype.releasePointerCapture = vi.fn();
 });
 
+describe("ProductDetailPage bulk deletion", () => {
+  it("requires selection and confirmation, cancels safely, submits only selected IDs and refreshes count", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    let deleted = false;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (init?.method === "POST" && url.endsWith("bulk-delete")) { deleted = true; return Response.json({ ok: true, count: 1 }); }
+      if (url === "/api/catalog") return Response.json({ categories: [], products: [] });
+      return Response.json(deleted ? { ...PRODUCT_DETAIL, product: { ...PRODUCT_DETAIL.product, denominations: [] } } : PRODUCT_DETAIL);
+    });
+    render(<ProductDetailPage />, { wrapper: Wrapper });
+    await screen.findByText("Private");
+    expect(screen.queryByRole("button", { name: "Delete selected" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("checkbox", { name: "Select 1 Month" }));
+    await user.click(screen.getByRole("button", { name: "Delete selected" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(/Delete 1 selected/)).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(fetchSpy.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
+    await user.click(screen.getByRole("button", { name: "Delete selected" }));
+    await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Delete selected" }));
+    await screen.findByText("Denominations (0)");
+    const posts = fetchSpy.mock.calls.filter(([, init]) => init?.method === "POST");
+    expect(posts).toHaveLength(1);
+    expect(posts[0]![0]).toBe("/api/catalog/products/1/denominations/bulk-delete");
+    expect(JSON.parse(String(posts[0]![1]?.body))).toEqual({ ids: [10] });
+    expect(screen.queryByText("1 selected")).not.toBeInTheDocument();
+  });
+
+  it("blocks repeated confirmation while pending and retains selection after backend failure", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    let finish!: (response: Response) => void;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      if (init?.method === "POST") return new Promise<Response>(resolve => { finish = resolve; });
+      return Response.json(PRODUCT_DETAIL);
+    });
+    render(<ProductDetailPage />, { wrapper: Wrapper });
+    await screen.findByText("Private");
+    await user.click(screen.getByRole("checkbox", { name: "Select all denominations" }));
+    await user.click(screen.getByRole("button", { name: "Delete selected" }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "Delete selected" }));
+    const progress = await within(dialog).findByRole("button", { name: "Processing…" });
+    expect(progress).toBeDisabled();
+    await user.click(progress);
+    expect(fetchSpy.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+    finish(Response.json({ error: "Database failure" }, { status: 500 }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(screen.getByText("1 selected")).toBeInTheDocument();
+    expect(screen.getByText("Denominations (1)")).toBeInTheDocument();
+  });
+});
+
 describe("ProductDetailPage", () => {
   it("marks a denomination below cost so the admin can review its price", async () => {
     const data = { ...PRODUCT_DETAIL, statsByDenom: { "10": { ...PRODUCT_DETAIL.statsByDenom["10"], belowCost: true } } };

@@ -434,11 +434,12 @@ export function DigiflazzSyncPage() {
     }
     setImporting(true);
     try {
-      const res = await apiPost<{ ok: true; brandsImported: number; denominationsImported: number }>(
+      const res = await apiPost<{ ok: true; brandsImported: number; denominationsImported: number; reports?: Array<{ created: number; updated: number; unchanged: number; skipped: number }> }>(
         "/api/catalog/digiflazz/sync/apply",
         { categoryId: Number(categoryId), brands },
       );
-      toast.success(`Imported ${res.brandsImported} game(s), ${res.denominationsImported} denomination(s). Activate them from the Catalog page when ready.`);
+      const skipped = res.reports?.reduce((count, report) => count + report.skipped, 0) ?? 0;
+      toast.success(`Imported ${res.brandsImported} game(s), ${res.denominationsImported} denomination(s).${skipped ? ` ${skipped} deleted supplier SKU(s) ignored; restore them from product detail if needed.` : ""} Activate them from the Catalog page when ready.`);
       // Imperative here (not left to the persisting effect above) because
       // this function never calls setPreview(null) before navigating away —
       // it jumps straight to /catalog, so the effect never gets a chance to

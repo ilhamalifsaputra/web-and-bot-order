@@ -217,7 +217,8 @@ describe("POST /api/catalog/digiflazz/sync/apply", () => {
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();
-    expect(body).toEqual({ ok: true, brandsImported: 1, denominationsImported: 1 });
+    expect(body).toMatchObject({ ok: true, brandsImported: 1, denominationsImported: 1, atomic: false });
+    expect(body.reports[0]).toMatchObject({ created: 1, conflicts: 0, errors: 0 });
   });
 
   it("rejects a non-positive price", async () => {

@@ -27,6 +27,8 @@ import {
   createDenomination,
   updateDenomination,
   deleteDenomination,
+  archiveDenominationBatch,
+  validateDenominationBatch,
   bulkSetCatalogProductsActive,
   bulkSetCatalogProductsCategory,
   bulkSetDenominationsActive,
@@ -654,6 +656,7 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
 
     const denomination = await getDenomination(prisma, id);
     if (!denomination) return reply.code(404).send({ error: "Denomination not found." });
+    if (denomination.isArchived) return reply.code(409).send({ error: "Restore the deleted denomination before changing its active status." });
 
     await bulkSetDenominationsActive(prisma, [id], active);
     await logAdminAction(prisma, {
@@ -672,6 +675,28 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
   // Mirrors POST /api/catalog/products/bulk-active's shape exactly, one
   // summary audit entry rather than one per denomination (matching that
   // route's own "no targetId on a multi-row action" convention).
+  for (const operation of ["bulk-delete", "bulk-restore"] as const) {
+    app.post(`/api/catalog/products/:productId/denominations/${operation}`, { preHandler: csrfProtect }, async (req, reply) => {
+      const productId = Number((req.params as { productId: string }).productId);
+      if (!Number.isSafeInteger(productId) || productId <= 0 || productId > 2147483647) return reply.code(400).send({ error: "Invalid product ID." });
+      try {
+        const ids = validateDenominationBatch((req.body as { ids?: unknown } | null)?.ids);
+        const result = await archiveDenominationBatch(prisma, productId, ids, operation === "bulk-delete", req.admin!.userId);
+        return reply.send({ ok: true, atomic: true, ...result });
+      } catch (err) {
+        if (err instanceof ValidationError) return reply.code(400).send({ error: err.message });
+        if ((err as { code?: string }).code === "P2002") return reply.code(409).send({ error: "Supplier identity conflict; nothing was restored." });
+        throw err;
+      }
+    });
+  }
+  app.get("/api/catalog/products/:productId/denominations/deleted", { preHandler: currentAdmin }, async (req, reply) => {
+    const productId = Number((req.params as { productId: string }).productId);
+    if (!Number.isSafeInteger(productId) || productId <= 0 || productId > 2147483647) return reply.code(400).send({ error: "Invalid product ID." });
+    const denominations = await prisma.denomination.findMany({ where: { productId, isArchived: true }, select: { id: true, name: true }, orderBy: { id: "asc" } });
+    return reply.send({ denominations });
+  });
+
   app.post("/api/catalog/denominations/bulk-active", { preHandler: csrfProtect }, async (req, reply) => {
     const body = (req.body ?? {}) as Record<string, unknown>;
     const ids = Array.isArray(body.ids) ? body.ids.filter((n): n is number => Number.isInteger(n)) : [];
@@ -694,6 +719,7 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     if (!Number.isInteger(id)) return reply.code(400).send({ error: "Invalid denomination id." });
     const existing = await getDenomination(prisma, id);
     if (!existing) return reply.code(404).send({ error: "Denomination not found." });
+    if (existing.isArchived) return reply.code(409).send({ error: "Restore the deleted denomination before editing it." });
 
     const body = (req.body ?? {}) as Record<string, unknown>;
     const name = (typeof body.name === "string" ? body.name : "").trim();
@@ -837,6 +863,7 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
           if (e instanceof CategoryMismatchError) {
             return reply.code(422).send({ error: "Denomination and product must be in the same category." });
           }
+          if (e instanceof ValidationError) return reply.code(409).send({ error: e.message });
           throw e;
         }
       }
@@ -862,26 +889,31 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     }
     const qtyUnit = typeof body.qtyUnit === "string" ? body.qtyUnit.trim() || null : null;
 
-    await updateDenomination(prisma, id, {
-      name,
-      type: type as ProductType,
-      durationLabel,
-      price,
-      costPrice,
-      resellerPrice,
-      ...(warrantyDays !== undefined ? { warrantyDays } : {}),
-      ...(sortOrder !== undefined ? { sortOrder } : {}),
-      description: typeof body.description === "string" ? body.description.trim() || null : null,
-      ...(deliveryType !== undefined ? { deliveryType } : {}),
-      ...(additionalFields !== undefined ? { additionalFields } : {}),
-      ...(providerInputMapping !== undefined ? { providerInputMapping } : {}),
-      autoDeliverySource,
-      supplierSku,
-      nicknameCheckGameCode,
-      priceOverridden,
-      qtyValue,
-      qtyUnit,
-    });
+    try {
+      await updateDenomination(prisma, id, {
+        name,
+        type: type as ProductType,
+        durationLabel,
+        price,
+        costPrice,
+        resellerPrice,
+        ...(warrantyDays !== undefined ? { warrantyDays } : {}),
+        ...(sortOrder !== undefined ? { sortOrder } : {}),
+        description: typeof body.description === "string" ? body.description.trim() || null : null,
+        ...(deliveryType !== undefined ? { deliveryType } : {}),
+        ...(additionalFields !== undefined ? { additionalFields } : {}),
+        ...(providerInputMapping !== undefined ? { providerInputMapping } : {}),
+        autoDeliverySource,
+        supplierSku,
+        nicknameCheckGameCode,
+        priceOverridden,
+        qtyValue,
+        qtyUnit,
+      });
+    } catch (err) {
+      if (err instanceof ValidationError) return reply.code(409).send({ error: err.message });
+      throw err;
+    }
     await logAdminAction(prisma, {
       adminId: req.admin!.userId,
       action: "denomination_update",
@@ -898,7 +930,8 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     const existing = await getDenominationWithProduct(prisma, id);
     if (!existing) return reply.code(404).send({ error: "Denomination not found." });
     try {
-      await deleteDenomination(prisma, id);
+      if (existing.supplierSku) await archiveDenominationBatch(prisma, existing.productId, [id], true, req.admin!.userId);
+      else await deleteDenomination(prisma, id);
     } catch (err) {
       if (err instanceof Error && err.message === "cannot delete a denomination with order history") {
         return reply.code(409).send({ error: "Cannot delete a denomination with order history." });

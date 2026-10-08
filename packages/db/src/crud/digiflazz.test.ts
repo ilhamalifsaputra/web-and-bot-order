@@ -99,6 +99,7 @@ import {
   recordDigiflazzOutcome,
   settlePaidOrder,
   isDigiflazzGameItem,
+  archiveDenominationBatch,
   pickDigiflazzInputTemplate,
   runDigiflazzCatalogSync,
   claimDigiflazzCatalogSyncLease,
@@ -147,6 +148,17 @@ beforeEach(async () => {
   kokinpayHttpMock.checkGameNickname.mockReset();
   await setSetting(prisma, DIGIFLAZZ_USERNAME_KEY, "shopuser");
   await setSetting(prisma, DIGIFLAZZ_API_KEY_KEY, "shopkey");
+});
+
+it("fulfills a previously paid Digiflazz order after its denomination was deleted from sale", async () => {
+  const order = await makeProcessingDigiflazzOrder();
+  const denom = await prisma.denomination.findUniqueOrThrow({ where: { id: sample.product.id } });
+  await archiveDenominationBatch(prisma, denom.productId, [denom.id], true, null);
+  digiflazzMock.createTransaction.mockResolvedValue({ status: "Sukses", refId: order.orderCode, buyerSkuCode: "ml100", customerNo: "123456789", message: "success", rc: "00", sn: "test-topup-receipt", price: new Decimal("100") });
+  const outcome = await dispatchPendingDigiflazzOrders(prisma);
+  expect(outcome.delivered).toBe(1);
+  expect(await prisma.order.findUnique({ where: { id: order.id } })).toMatchObject({ status: OrderStatus.DELIVERED });
+  expect(await prisma.orderItem.count({ where: { orderId: order.id, productId: denom.id } })).toBe(1);
 });
 
 /** Flip the sample denomination into a Digiflazz-mapped, manual_with_info SKU
@@ -2628,9 +2640,9 @@ describe("importDigiflazzBrand", () => {
     const denoms = await prisma.denomination.findMany({ where: { productId: first.productId, supplierSku: "ml100" } });
     expect(denoms).toHaveLength(1); // still exactly one row, not two
     expect(denoms[0]!.id).toBe(firstDenom.id); // same row, updated in place
-    expect(denoms[0]!.name).toBe("Mobile Legends 100 Diamond Updated");
+    expect(denoms[0]!.name).toBe(firstDenom.name); // display name remains admin-owned
     expect(denoms[0]!.supplierRawName).toBe("Mobile Legends 100 Diamond Updated");
-    expect(denoms[0]!.price.toString()).toBe("17000");
+    expect(denoms[0]!.price.toString()).toBe(firstDenom.price.toString());
     expect(denoms[0]!.costPrice!.toString()).toBe("15500");
   });
 
@@ -2672,11 +2684,11 @@ describe("importDigiflazzBrand", () => {
     const bySku = new Map(denoms.map((d) => [d.supplierSku, d]));
     // Updated in place — same row id as before, new name/price.
     expect(bySku.get("ml100")!.id).toBe(preexistingIds.get("ml100"));
-    expect(bySku.get("ml100")!.name).toBe("Mobile Legends 100 Diamond Updated");
-    expect(bySku.get("ml100")!.price.toString()).toBe("17000");
+    expect(bySku.get("ml100")!.name).toBe("Mobile Legends 100 Diamond");
+    expect(bySku.get("ml100")!.price.toString()).toBe("16500");
     expect(bySku.get("ml250")!.id).toBe(preexistingIds.get("ml250"));
-    expect(bySku.get("ml250")!.name).toBe("Mobile Legends 250 Diamond Updated");
-    expect(bySku.get("ml250")!.price.toString()).toBe("42000");
+    expect(bySku.get("ml250")!.name).toBe("Mobile Legends 250 Diamond");
+    expect(bySku.get("ml250")!.price.toString()).toBe("41000");
     // Newly created — fresh rows, not among the pre-existing ids.
     expect(bySku.has("ml500")).toBe(true);
     expect(preexistingIds.has("ml500")).toBe(false);

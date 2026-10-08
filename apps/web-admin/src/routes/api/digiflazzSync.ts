@@ -240,6 +240,10 @@ export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Prom
       if (brands.length === 0) {
         return reply.code(400).send({ error: "Select at least one brand to import." });
       }
+      if (brands.some(b => !b || typeof b.brand !== "string" || !b.brand.trim() || !Array.isArray(b.rows) || !b.rows.length ||
+          b.rows.some(row => !row || typeof row.buyerSkuCode !== "string" || !row.buyerSkuCode.trim() || typeof row.productName !== "string" || !row.productName.trim()))) {
+        return reply.code(400).send({ error: "Each import group requires a brand and valid supplier SKU rows." });
+      }
       const totalRows = brands.reduce((sum, b) => sum + (Array.isArray(b.rows) ? b.rows.length : 0), 0);
       if (totalRows > MAX_APPLY_ROWS) {
         return reply.code(400).send({ error: "Too many rows in one import — narrow the filter or import in smaller batches." });
@@ -290,13 +294,26 @@ export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Prom
 
       let brandsImported = 0;
       let denominationsImported = 0;
+      const reports = [];
       for (const [i, b] of brands.entries()) {
-        const result = await importDigiflazzBrand(prisma, {
-          brand: b.brand,
-          categoryId,
-          rows: parsedRows[i] ?? [],
-          gameVariant: gameVariants[i] ?? null,
-        });
+        let result;
+        try {
+          result = await importDigiflazzBrand(prisma, {
+            brand: b.brand,
+            categoryId,
+            rows: parsedRows[i] ?? [],
+            gameVariant: gameVariants[i] ?? null,
+          });
+        } catch (err) {
+          logger.warn({ brand: b.brand, brandsImported, denominationsImported, conflicts: err instanceof ValidationError ? 1 : 0, errors: err instanceof ValidationError ? 0 : 1 }, "Digiflazz import stopped");
+          if (err instanceof ValidationError || (err as { code?: string }).code === "P2002") {
+            const reason = err instanceof ValidationError ? err.message : "Supplier SKU identity conflict.";
+            return reply.code(409).send({ error: `${reason} ${brandsImported} preceding brand(s) committed; the conflicting brand was rolled back.`, brandsImported, denominationsImported, reports, atomic: false });
+          }
+          logger.error({ err, brand: b.brand, brandsImported, errors: 1 }, "Digiflazz brand transaction failed");
+          return reply.code(500).send({ error: `Import failed. ${brandsImported} preceding brand(s) committed; the failing brand was rolled back.`, brandsImported, denominationsImported, reports, atomic: false });
+        }
+        reports.push({ productId: result.productId, ...result.report });
         brandsImported++;
         denominationsImported += result.denominationCount;
       }
@@ -308,7 +325,7 @@ export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Prom
         targetId: null,
         details: `Imported ${brandsImported} game(s) / ${denominationsImported} denomination(s) from Digiflazz.`,
       });
-      return reply.send({ ok: true, brandsImported, denominationsImported });
+      return reply.send({ ok: true, brandsImported, denominationsImported, reports, atomic: false });
     },
   );
 

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageLayout } from "../components/shared/PageLayout";
@@ -49,6 +49,7 @@ interface DenominationRow {
   /** Compact-button quantity (Task 8/14), e.g. 86 "Diamonds" — null until set. */
   qtyValue: number | null;
   qtyUnit: string | null;
+  supplierSku?: string | null;
 }
 
 interface ProductDetail {
@@ -154,6 +155,31 @@ export function ProductDetailPage() {
   const [pendingDeleteDenom, setPendingDeleteDenom] = useState<DenominationRow | null>(null);
   const [selectedDenoms, setSelectedDenoms] = useState<Set<number>>(new Set());
   const [bulkActing, setBulkActing] = useState(false);
+  const actionInFlight = useRef(false);
+  const [pendingBulkDelete, setPendingBulkDelete] = useState<number[] | null>(null);
+  const [showDeleted, setShowDeleted] = useState(false);
+  const deletedQuery = useQuery<{ denominations: { id: number; name: string }[] }>({
+    queryKey: ["catalog", productId, "deleted"],
+    queryFn: () => apiGet(`/api/catalog/products/${productId}/denominations/deleted`),
+    enabled: showDeleted && !!productId,
+  });
+
+  async function archiveSelected(ids: number[], restore = false) {
+    if (actionInFlight.current || !ids.length) return;
+    actionInFlight.current = true;
+    setBulkActing(true);
+    try {
+      const result = await apiPost<{ count: number }>(`/api/catalog/products/${productId}/denominations/${restore ? "bulk-restore" : "bulk-delete"}`, { ids });
+      setSelectedDenoms(new Set());
+      await queryClient.invalidateQueries({ queryKey: CATALOG_QUERY_KEY });
+      toast.success(`${result.count} denomination(s) ${restore ? "restored inactive" : "deleted"}.`);
+    } catch (e) {
+      toast.error(describeError(e, "Failed to update denominations. Nothing was changed."));
+    } finally {
+      actionInFlight.current = false;
+      setBulkActing(false);
+    }
+  }
 
   // Clear the selection when navigating to a different product's detail
   // page — a stale selection surviving a productId change would let a bulk
@@ -161,6 +187,8 @@ export function ProductDetailPage() {
   // own filter-change clear.
   useEffect(() => {
     setSelectedDenoms(new Set());
+    setPendingBulkDelete(null);
+    setShowDeleted(false);
   }, [productId]);
 
   async function saveProduct() {
@@ -223,7 +251,7 @@ export function ProductDetailPage() {
   async function deleteDenomination(id: number) {
     try {
       await apiDelete(`/api/catalog/denominations/${id}`);
-      await queryClient.invalidateQueries({ queryKey: ["catalog", productId] });
+      await queryClient.invalidateQueries({ queryKey: CATALOG_QUERY_KEY });
       toast.success("Denomination deleted.");
     } catch (e) {
       toast.error(describeError(e, "Failed to delete denomination."));
@@ -242,6 +270,8 @@ export function ProductDetailPage() {
   // from closure, matching CatalogPage's own bulk handlers — the derived
   // binding is declared past this point, below the early returns.
   async function bulkSetDenomActive(active: boolean, ids: number[]) {
+    if (actionInFlight.current) return;
+    actionInFlight.current = true;
     const count = ids.length;
     setBulkActing(true);
     try {
@@ -252,6 +282,7 @@ export function ProductDetailPage() {
     } catch (e) {
       toast.error(describeError(e, "Failed to update denominations."));
     } finally {
+      actionInFlight.current = false;
       setBulkActing(false);
     }
   }
@@ -551,7 +582,11 @@ export function ProductDetailPage() {
                 <X className="h-4 w-4" />
                 Deactivate
               </Button>
-              <Button size="sm" variant="ghost" onClick={() => setSelectedDenoms(new Set())}>
+              <Button size="sm" variant="destructive" disabled={bulkActing} onClick={() => setPendingBulkDelete(Array.from(visibleSelectedDenoms))}>
+                <Trash2 className="h-4 w-4" aria-hidden="true" />
+                Delete selected
+              </Button>
+              <Button size="sm" variant="ghost" disabled={bulkActing} onClick={() => setSelectedDenoms(new Set())}>
                 Clear
               </Button>
             </div>
@@ -567,13 +602,14 @@ export function ProductDetailPage() {
                   <Checkbox
                     checked={allDenomsSelected}
                     onCheckedChange={toggleSelectAllDenoms}
-                    disabled={product.denominations.length === 0}
+                    disabled={bulkActing || product.denominations.length === 0}
                     aria-label="Select all denominations"
                   />
                 ),
                 render: d => (
                   <Checkbox
                     checked={selectedDenoms.has(d.id)}
+                    disabled={bulkActing}
                     onCheckedChange={() => toggleDenomSelected(d.id)}
                     onClick={(e) => e.stopPropagation()}
                     aria-label={`Select ${d.name}`}
@@ -629,7 +665,7 @@ export function ProductDetailPage() {
                   <Switch
                     checked={d.isActive}
                     onCheckedChange={(checked) => void toggleDenominationActive(d.id, checked)}
-                    disabled={togglingDenom.has(d.id)}
+                    disabled={bulkActing || togglingDenom.has(d.id)}
                   />
                 ),
               },
@@ -640,7 +676,7 @@ export function ProductDetailPage() {
                   <div onClick={(e) => e.stopPropagation()}>
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="icon-sm" aria-label={`Actions for ${d.name}`}>
+                        <Button variant="ghost" size="icon-sm" disabled={bulkActing} aria-label={`Actions for ${d.name}`}>
                           <MoreVertical className="h-4 w-4" />
                         </Button>
                       </DropdownMenuTrigger>
@@ -667,6 +703,22 @@ export function ProductDetailPage() {
             keyExtractor={d => d.id}
             empty={<EmptyState title="No denominations" description="Add a denomination to start selling this product." />}
           />
+          <Button className="mt-3" variant="ghost" size="sm" onClick={() => setShowDeleted(value => !value)}>
+            {showDeleted ? "Hide deleted denominations" : "Show deleted denominations"}
+          </Button>
+          {showDeleted && (
+            <div className="mt-3 space-y-2">
+              {deletedQuery.isPending && <p role="status">Loading deleted denominations…</p>}
+              {deletedQuery.isError && <p role="alert">Failed to load deleted denominations.</p>}
+              {deletedQuery.data?.denominations.length === 0 && <p>No deleted denominations.</p>}
+              {deletedQuery.data?.denominations.map(row => (
+                <div key={row.id} className="flex items-center justify-between gap-3">
+                  <span>{row.name}</span>
+                  <Button variant="outline" size="sm" disabled={bulkActing} onClick={() => void archiveSelected([row.id], true)}>Restore inactive</Button>
+                </div>
+              ))}
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -675,10 +727,16 @@ export function ProductDetailPage() {
           open
           onOpenChange={(open) => { if (!open) setPendingDeleteDenom(null); }}
           title="Delete this denomination?"
-          description={`Delete "${pendingDeleteDenom.name}". This is refused if it has order history.`}
+          description={pendingDeleteDenom.supplierSku ? `Remove "${pendingDeleteDenom.name}" from sale. Order history is retained. Supplier sync ignores this SKU until restored.` : `Delete "${pendingDeleteDenom.name}". Deletion is refused when it has order or stock history. Use Delete selected to archive while retaining history.`}
           confirmLabel="Delete"
           onConfirm={() => deleteDenomination(pendingDeleteDenom.id)}
         />
+      )}
+      {pendingBulkDelete && (
+        <ConfirmDialog open onOpenChange={open => { if (!open) setPendingBulkDelete(null); }}
+          title={`Delete ${pendingBulkDelete.length} selected denomination(s)?`}
+          description="Only the selected rows in this product will be removed from sale. This table shows all current denominations without pagination. Order and stock history are retained. Supplier SKUs stay excluded from sync until explicitly restored. Deactivate only pauses sales; Delete also hides the row."
+          confirmLabel="Delete selected" onConfirm={() => archiveSelected(pendingBulkDelete)} />
       )}
     </PageLayout>
   );

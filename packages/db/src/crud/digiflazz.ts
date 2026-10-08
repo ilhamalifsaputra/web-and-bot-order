@@ -1649,10 +1649,19 @@ export async function groupDigiflazzPriceListByBrand(
   // (post-split) displayName set — one findMany over every emitted brand.
   const finalBrands = preGroups.map((g) => g.brand);
   const existing = await db.product.findMany({
-    where: { digiflazzBrand: { in: finalBrands } },
+    where: { digiflazzBrand: { in: finalBrands }, isArchived: false },
     select: { id: true, digiflazzBrand: true },
   });
-  const existingByBrand = new Map(existing.map((p) => [p.digiflazzBrand!, p.id]));
+  const existingByBrand = new Map<string, number>();
+  const ambiguousBrands = new Set<string>();
+  for (const p of existing) {
+    if (existingByBrand.has(p.digiflazzBrand!)) ambiguousBrands.add(p.digiflazzBrand!);
+    existingByBrand.set(p.digiflazzBrand!, p.id);
+  }
+  for (const brand of ambiguousBrands) {
+    existingByBrand.delete(brand);
+    logger.warn({ brand, conflicts: 1 }, "Ambiguous Digiflazz product grouping; auto-add skipped pending duplicate audit");
+  }
 
   // Shadow-mode detection (Task 10): classify each group's representative
   // item and attach the DetectionResult for informational use only. This is
@@ -1812,6 +1821,12 @@ export interface DigiflazzImportRow {
    * that gap. */
   costPrice: Decimal.Value;
 }
+
+// supplierSku predates multi-provider mappings. Null source on a legacy row
+// means Digiflazz; other explicit providers have their own identity namespace.
+const DIGIFLAZZ_SUPPLIER_SCOPE: Prisma.DenominationWhereInput = {
+  OR: [{ autoDeliverySource: "digiflazz" }, { autoDeliverySource: null }],
+};
 
 /**
  * Task 10 shadow-mode side effect: run `detect()` over a just-imported
@@ -2004,13 +2019,12 @@ export function pickDigiflazzInputTemplate(
  * automatic, publishing is a separate explicit step. (SKUs Digiflazz adds
  * later to a brand imported here are added by resyncDigiflazzCatalog, active while the game is on sale.)
  *
- * Idempotent by (product, supplierSku) (I4 fix): re-running the wizard for a
- * brand/SKU that's already imported UPDATES the existing denomination
- * instead of creating a duplicate — a realistic scenario (an admin re-syncs
- * and re-imports the same brand because they missed a SKU the first time).
- * Scoped to this brand's own Product, not a cross-catalog lookup —
- * supplierSku has no unique DB constraint, and this matches the only
- * realistic re-import scenario without an extra broad query.
+ * Idempotent by global Digiflazz supplierSku ownership. SKU evidence takes
+ * precedence over presentation grouping. Ambiguous multi-product or changed
+ * grouping with previously unknown SKUs requires explicit manual review.
+ * Existing display fields and sell-price overrides remain admin-owned.
+ * A transaction advisory lock protects first creation and cross-brand imports;
+ * the partial unique supplier index protects other writers as well.
  *
  * Each row's price is compared against the admin's configured markup rule
  * (read ONCE per call, not once per row — I3 fix) to decide priceOverridden
@@ -2029,9 +2043,38 @@ export async function importDigiflazzBrand(
      * reuse-existing path — after birth, gameVariant is admin-owned. */
     gameVariant?: string | null;
   },
-): Promise<{ productId: number; denominationCount: number }> {
-  const { productId, touchedDenoms } = await db.$transaction(async (tx) => {
-    let product = await tx.product.findFirst({ where: { digiflazzBrand: args.brand } });
+): Promise<{ productId: number; denominationCount: number; report: { created: number; updated: number; unchanged: number; skipped: number; conflicts: number; errors: number } }> {
+  const { productId, touchedDenoms, report } = await db.$transaction(async (tx) => {
+    // Serialize the lookup AND first creation, across brands and processes.
+    // The unique supplier index also protects manual/CSV/provider-map writes.
+    await tx.$queryRaw`SELECT pg_advisory_xact_lock(73910421)::text`;
+    const requestedSkus = [...new Set(args.rows.map(row => row.buyerSkuCode))];
+    if (!requestedSkus.length) throw new ValidationError("Select at least one supplier SKU.");
+    const report = { created: 0, updated: 0, unchanged: 0, skipped: 0, conflicts: 0, errors: 0 };
+    const tombstones = await tx.denomination.findMany({ where: { ...DIGIFLAZZ_SUPPLIER_SCOPE, supplierSku: { in: requestedSkus }, isArchived: true } });
+    const ignoredSkus = new Set(tombstones.map(row => row.supplierSku));
+    const owners = await tx.denomination.findMany({
+      where: { ...DIGIFLAZZ_SUPPLIER_SCOPE, supplierSku: { in: requestedSkus }, isArchived: false },
+      include: { product: true },
+    });
+    if (new Set(owners.map(row => row.supplierSku)).size !== owners.length) {
+      throw new ValidationError("Duplicate supplier SKU ownership. Run the duplicate audit before importing.");
+    }
+    const ownerProducts = [...new Set(owners.map(row => row.productId))];
+    if (ownerProducts.length > 1) throw new ValidationError("Selected supplier SKUs belong to multiple products; explicit grouping review is required.");
+    const exactProducts = await tx.product.findMany({ where: { digiflazzBrand: args.brand, isArchived: false } });
+    if (!owners.length && exactProducts.length > 1) throw new ValidationError("Brand has multiple existing products; audit and review grouping before import.");
+    let product = owners[0]?.product ?? exactProducts[0];
+    if (!product && requestedSkus.every(sku => ignoredSkus.has(sku))) {
+      report.skipped = requestedSkus.length;
+      return { productId: tombstones[0]!.productId, touchedDenoms: [], report };
+    }
+    if (product && product.digiflazzBrand !== args.brand && product.categoryId !== args.categoryId) {
+      throw new ValidationError("Supplier SKU conflicts with the selected category.");
+    }
+    if (owners.length && product!.digiflazzBrand !== args.brand && owners.length !== requestedSkus.length) {
+      throw new ValidationError("Brand identity changed with new SKUs. Review the existing product mapping before importing.");
+    }
     if (!product) {
       product = await createCatalogProduct(tx, {
         categoryId: args.categoryId,
@@ -2073,11 +2116,12 @@ export async function importDigiflazzBrand(
     // stay untouched — they have their own side effects (e.g. slug
     // generation on create) that must not be batched.
     const existingDenoms = await tx.denomination.findMany({
-      where: { productId: product.id, supplierSku: { in: rows.map((r) => r.buyerSkuCode) } },
+      where: { ...DIGIFLAZZ_SUPPLIER_SCOPE, productId: product.id, supplierSku: { in: rows.map((r) => r.buyerSkuCode) } },
     });
     const existingDenomBySku = new Map(existingDenoms.map((d) => [d.supplierSku, d]));
 
     for (const row of rows) {
+      if (ignoredSkus.has(row.buyerSkuCode) && existingDenomBySku.get(row.buyerSkuCode)?.isArchived !== false) { report.skipped++; continue; }
       const price = quantizeMoney(row.price, 4);
       const costPrice = quantizeMoney(row.costPrice, 4);
       // An unreadable stored markup suggests nothing, so every imported price
@@ -2096,16 +2140,16 @@ export async function importDigiflazzBrand(
 
       const existingDenom = existingDenomBySku.get(row.buyerSkuCode);
       if (existingDenom) {
+        const changed = !existingDenom.costPrice?.equals(costPrice) || existingDenom.supplierRawName !== row.productName;
+        report[changed ? "updated" : "unchanged"]++;
         await updateDenomination(tx, existingDenom.id, {
-          name: denomName,
-          durationLabel: denomName,
           supplierRawName: row.productName,
-          price,
           costPrice,
-          priceOverridden,
         });
-        touchedDenoms.push({ id: existingDenom.id, name: denomName });
+        touchedDenoms.push({ id: existingDenom.id, name: existingDenom.name });
       } else {
+        // A deleted supplier SKU is deliberately ignored even on wizard import.
+        report.created++;
         // Wizard imports land inactive: "review before it goes live".
         touchedDenoms.push(
           await createDigiflazzDenomination(tx, {
@@ -2121,13 +2165,17 @@ export async function importDigiflazzBrand(
       }
     }
 
-    return { productId: product.id, touchedDenoms };
+    return { productId: product.id, touchedDenoms, report };
   });
 
   // Invalidate every Db handle's cached CatalogIndex so the next
   // getCatalogIndex()/detection run picks up the newly-imported Product and
   // denominations (Task 8). Done after the transaction commits.
-  await bumpCatalogRevision(db);
+  try {
+    await bumpCatalogRevision(db);
+  } catch (err) {
+    logger.warn({ err, productId }, "Digiflazz import committed; catalog revision refresh failed and will recover on the next index rebuild");
+  }
 
   // Task 10 shadow wiring: record the detection result on the new
   // Product/denomination rows. Deliberately runs AFTER the transaction has
@@ -2152,13 +2200,15 @@ export async function importDigiflazzBrand(
 
   // touchedDenoms.length, not args.rows.length — it reflects the deduped
   // row count (one entry per unique buyerSkuCode), not the raw input size.
-  return { productId, denominationCount: touchedDenoms.length };
+  logger.info({ productId, ...report }, "Digiflazz import completed");
+  return { productId, denominationCount: touchedDenoms.length, report };
 }
 
 /** Most new SKUs one resync run may add; the rest wait for the next run, so a
  * supplier dumping thousands of new rows at once can't flood the catalog or
  * hold a run open for minutes. */
 export const DIGIFLAZZ_AUTO_ADD_CAP_PER_RUN = 100;
+type DigiflazzWriteReport = { created: number; updated: number; unchanged: number; skipped: number; conflicts: number; errors: number };
 
 /**
  * Add the SKUs Digiflazz newly lists under a brand that already has a Product
@@ -2179,6 +2229,7 @@ async function addNewDigiflazzSkusToImportedBrands(
   rawPriceList: DigiflazzPriceListItem[],
   markupSettings: { type: string | null; value: string | null },
   cap: number = DIGIFLAZZ_AUTO_ADD_CAP_PER_RUN,
+  report?: DigiflazzWriteReport,
 ): Promise<number> {
   const grouped = await groupDigiflazzPriceListByBrand(db, rawPriceList.filter(isDigiflazzGameItem), {
     withDetection: false,
@@ -2190,7 +2241,7 @@ async function addNewDigiflazzSkusToImportedBrands(
   if (available.length === 0) return 0;
 
   const known = await db.denomination.findMany({
-    where: { supplierSku: { in: available.map((i) => i.buyerSkuCode) } },
+    where: { ...DIGIFLAZZ_SUPPLIER_SCOPE, supplierSku: { in: available.map((i) => i.buyerSkuCode) } },
     select: { supplierSku: true },
   });
   const knownSkus = new Set(known.map((d) => d.supplierSku));
@@ -2210,6 +2261,7 @@ async function addNewDigiflazzSkusToImportedBrands(
     try {
       created = await createMissingSkusForBrand(db, productId, candidates, markupSettings);
     } catch (err) {
+      if (report) report[(err as { code?: string }).code === "P2002" ? "conflicts" : "errors"]++;
       // One brand's failure must not stop the others or the rest of the sync.
       logger.error(
         { err, productId, skuCount: candidates.length },
@@ -2250,9 +2302,14 @@ async function createMissingSkusForBrand(
   markupSettings: { type: string | null; value: string | null },
 ): Promise<{ id: number; name: string }[]> {
   return db.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT pg_advisory_xact_lock(73910421)::text`;
     await tx.$queryRaw`SELECT id FROM products WHERE id = ${productId} FOR UPDATE`;
+    // Grouping happened before this lock. A duplicate repair or archive may
+    // have retired its selected parent while this transaction was waiting.
+    const product = await tx.product.findUnique({ where: { id: productId }, select: { isActive: true, isArchived: true } });
+    if (!product || product.isArchived) return [];
     const raced = await tx.denomination.findMany({
-      where: { supplierSku: { in: candidates.map((i) => i.buyerSkuCode) } },
+      where: { ...DIGIFLAZZ_SUPPLIER_SCOPE, supplierSku: { in: candidates.map((i) => i.buyerSkuCode) } },
       select: { supplierSku: true },
     });
     const racedSkus = new Set(raced.map((d) => d.supplierSku));
@@ -2270,11 +2327,8 @@ async function createMissingSkusForBrand(
     // Live only while the game is on sale: the product is active and at least
     // one of its SKUs is. A game the admin switched off still gets its new
     // SKUs (the catalog stays complete), but inactive, to go on with the rest.
-    const [product, activeSibling] = await Promise.all([
-      tx.product.findUnique({ where: { id: productId }, select: { isActive: true } }),
-      tx.denomination.findFirst({ where: { productId, isActive: true }, select: { id: true } }),
-    ]);
-    const onSale = product?.isActive === true && activeSibling !== null;
+    const activeSibling = await tx.denomination.findFirst({ where: { productId, isActive: true }, select: { id: true } });
+    const onSale = product.isActive && activeSibling !== null;
     const rows: { id: number; name: string }[] = [];
     for (const item of candidates) {
       if (racedSkus.has(item.buyerSkuCode)) continue;
@@ -2290,6 +2344,7 @@ async function createMissingSkusForBrand(
           inputConfig,
         }),
       );
+      racedSkus.add(item.buyerSkuCode);
     }
     return rows;
   });
@@ -2362,7 +2417,7 @@ async function resyncDigiflazzCatalogWithOutcome(
 
   const [rawPriceList, mapped, markupSettings] = await Promise.all([
     fetchPriceList(creds),
-    db.denomination.findMany({ where: { supplierSku: { not: null } } }),
+    db.denomination.findMany({ where: { ...DIGIFLAZZ_SUPPLIER_SCOPE, supplierSku: { not: null }, isArchived: false } }),
     getDigiflazzMarkupSettings(db), // I3 fix: read once for the whole run, not once per denomination.
   ]);
   // collapseToCheapestSeller first — a plain Map keyed by buyerSkuCode over
@@ -2503,6 +2558,7 @@ async function resyncDigiflazzCatalogWithOutcome(
   }
 
   const result = { ...zero };
+  const writeReport: DigiflazzWriteReport = { created: 0, updated: 0, unchanged: 0, skipped: 0, conflicts: 0, errors: 0 };
   for (const snapshot of mapped) {
     // Availability and its provenance commit together per SKU. Admin toggles
     // take the same marker→denomination locks, including an initially absent
@@ -2511,10 +2567,11 @@ async function resyncDigiflazzCatalogWithOutcome(
       const remembered = new Set(await lockDigiflazzAutoDeactivatedIds(tx));
       await tx.$queryRaw`SELECT id FROM denominations WHERE id = ${snapshot.id} FOR UPDATE`;
       const denom = await tx.denomination.findUnique({ where: { id: snapshot.id } });
-      if (!denom || denom.supplierSku !== snapshot.supplierSku) return zero;
+      if (!denom || denom.isArchived || denom.supplierSku !== snapshot.supplierSku) { writeReport.skipped++; return zero; }
       const item = bySku.get(denom.supplierSku!);
       const forget = remembered.has(denom.id) && denom.isActive ? [denom.id] : [];
       if (!item) {
+        writeReport.skipped++;
         await updateDigiflazzAutoDeactivatedIds(tx, { remove: forget });
         return zero;
       }
@@ -2538,6 +2595,9 @@ async function resyncDigiflazzCatalogWithOutcome(
         counts.reactivated++;
         forget.push(denom.id);
       }
+      const changed = counts.updated > 0 || counts.deactivated > 0 || counts.reactivated > 0 ||
+        !denom.costPrice?.equals(data.costPrice as Decimal) || denom.supplierRawName !== item.productName;
+      writeReport[changed ? "updated" : "unchanged"]++;
       await updateDenomination(tx, denom.id, data);
       await updateDigiflazzAutoDeactivatedIds(tx, { add, remove: forget });
       return counts;
@@ -2564,8 +2624,10 @@ async function resyncDigiflazzCatalogWithOutcome(
   // and availability updates above are already committed.
   if (markupReadable) {
     try {
-      result.added = await addNewDigiflazzSkusToImportedBrands(db, rawPriceList, markupSettings);
+      result.added = await addNewDigiflazzSkusToImportedBrands(db, rawPriceList, markupSettings, DIGIFLAZZ_AUTO_ADD_CAP_PER_RUN, writeReport);
+      writeReport.created = result.added;
     } catch (err) {
+      writeReport.errors++;
       logger.error(
         { err },
         "The Digiflazz catalog sync could not look up which new SKUs to add for already-imported brands, so it added none this run; the price, cost and availability updates it already made still stand, and the new SKUs will be tried again on the next run.",
@@ -2631,6 +2693,7 @@ async function resyncDigiflazzCatalogWithOutcome(
     });
   }
 
+  logger.info(writeReport, "Digiflazz recurring sync write report (existing visible SKUs and auto-add operations)");
   await recordDigiflazzSyncStatus(db, {
     status: "success",
     updated: result.updated,

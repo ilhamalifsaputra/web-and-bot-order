@@ -25,6 +25,7 @@ import type { PrismaClient, Tx } from "../client";
 import type { Db } from "./_types";
 import { slugify } from "../migrate/slug";
 import { forgetDigiflazzAutoDeactivatedIds } from "./digiflazzAutoDeactivated";
+import { logAdminAction } from "./audit";
 import { activeServiceGroups, isServiceActive } from "./serviceAvailability";
 import type { ServiceChannel } from "@app/core/services";
 
@@ -298,7 +299,7 @@ export function getCatalogProductWithDenominations(db: Db, productId: number) {
     where: { id: productId },
     include: {
       category: true,
-      denominations: { orderBy: [{ sortOrder: "asc" }, { price: "asc" }] },
+      denominations: { where: { isArchived: false }, orderBy: [{ sortOrder: "asc" }, { price: "asc" }] },
     },
   });
 }
@@ -327,7 +328,7 @@ export function listProducts(db: Db, categoryId?: number, archived: "exclude" | 
       ...(categoryId != null ? { categoryId } : {}),
       ...(archived === "exclude" ? { isArchived: false } : archived === "only" ? { isArchived: true } : {}),
     },
-    include: { category: true, _count: { select: { denominations: true } } },
+    include: { category: true, _count: { select: { denominations: { where: { isArchived: false } } } } },
     orderBy: [{ categoryId: "asc" }, { sortOrder: "asc" }, { name: "asc" }],
   });
 }
@@ -370,7 +371,8 @@ export async function deleteCatalogProduct(db: Db, productId: number): Promise<v
 /** Explicit cascade: delete a product and all its denominations. */
 export async function deleteCatalogProductCascade(db: PrismaClient, productId: number): Promise<void> {
   await db.$transaction(async (tx) => {
-    const denoms = await tx.denomination.findMany({ where: { productId }, select: { id: true } });
+    const denoms = await tx.denomination.findMany({ where: { productId }, select: { id: true, supplierSku: true } });
+    if (denoms.some(d => d.supplierSku)) throw new ValidationError("Archive supplier-linked products to preserve sync exclusions and history.");
     // Same check as assertNoStockHistory, batched across every denomination
     // at once (2 counts total) instead of calling it once per denomination
     // (2N counts) — the error message doesn't identify which denomination
@@ -400,7 +402,7 @@ export async function assignDenominationToProduct(
   ]);
   if (!denom || !product) throw new Error("denomination or product not found");
   if (denom.product.categoryId !== product.categoryId) throw new CategoryMismatchError();
-  await db.denomination.update({ where: { id: denominationId }, data: { productId } });
+  await updateDenomination(db, denominationId, { productId });
 }
 
 // ---- Denominations (leaf / SKU) ----
@@ -486,7 +488,20 @@ export async function createDenomination(
 
 export async function updateDenomination(db: Db, denominationId: number, fields: Record<string, unknown>) {
   if (Object.keys(fields).length === 0) return;
-  await db.denomination.update({ where: { id: denominationId }, data: fields });
+  // The condition is part of the write: a concurrent archive must retain
+  // its supplier identity and historical fields even after a stale edit read.
+  // Archive/restore maintenance uses its explicit transaction writer instead.
+  try {
+    await db.denomination.update({ where: { id: denominationId, isArchived: false }, data: fields });
+  } catch (err) {
+    if ((err as { code?: string }).code === "P2025") {
+      // Classify a rejected write; this read never authorizes an update.
+      // Preserve the existing missing-row error for callers outside the API.
+      const existing = await db.denomination.findUnique({ where: { id: denominationId }, select: { isArchived: true } });
+      if (existing?.isArchived) throw new ValidationError("Restore the deleted denomination before editing it.");
+    }
+    throw err;
+  }
   // Task 10: deliberately does NOT call bumpCatalogRevision. The Detection
   // Engine's catalog index (crud/detectionIndex.ts) is built from Product.name
   // only — no denomination field feeds it — so a denomination mutation cannot
@@ -553,7 +568,7 @@ export async function bulkSetDenominationsActive(db: Db, ids: number[], isActive
     // Same marker→denomination lock order as catalog sync, even when these
     // ids are not remembered yet: sync may be concurrently switching them off.
     await forgetDigiflazzAutoDeactivatedIds(tx, ids);
-    const res = await tx.denomination.updateMany({ where: { id: { in: ids } }, data: { isActive } });
+    const res = await tx.denomination.updateMany({ where: { id: { in: ids }, isArchived: false }, data: { isActive } });
     return res.count;
   };
   const ownsTransaction = "$transaction" in db && typeof db.$transaction === "function";
@@ -592,12 +607,58 @@ async function assertNoStockHistory(db: Db, denominationId: number): Promise<voi
  * stock history (see `assertNoStockHistory`).
  */
 export async function deleteDenomination(db: Db, denominationId: number): Promise<void> {
+  const existing = await db.denomination.findUnique({ where: { id: denominationId } });
+  if (existing?.supplierSku) {
+    throw new ValidationError("Use product-scoped deletion to archive supplier SKUs and preserve sync exclusions.");
+  }
   const orderCount = await db.orderItem.count({ where: { productId: denominationId } });
   if (orderCount > 0) {
     throw new Error("cannot delete a denomination with order history");
   }
   await assertNoStockHistory(db, denominationId);
   await db.denomination.delete({ where: { id: denominationId } });
+}
+
+export function validateDenominationBatch(ids: unknown): number[] {
+  if (!Array.isArray(ids) || !ids.length || ids.length > 500 ||
+      ids.some(id => typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0 || id > 2147483647)) {
+    throw new ValidationError("Select between 1 and 500 valid denomination IDs.");
+  }
+  return [...new Set<number>(ids)];
+}
+
+/** Atomic soft delete/restore. The retained supplierSku is the sync tombstone.
+ * Restore leaves the row inactive: publishing is a separate admin decision. */
+export async function archiveDenominationBatch(
+  db: PrismaClient, productId: number, input: unknown, archived: boolean, adminId: number | null,
+): Promise<{ count: number; ids: number[] }> {
+  const ids = validateDenominationBatch(input);
+  return db.$transaction(async tx => {
+    // Use sync's marker -> denomination lock order to avoid deadlocks.
+    await forgetDigiflazzAutoDeactivatedIds(tx, ids);
+    await tx.$queryRaw`SELECT id FROM denominations WHERE id = ANY(${ids}::int[]) ORDER BY id FOR UPDATE`;
+    const rows = await tx.denomination.findMany({ where: { id: { in: ids }, productId } });
+    if (rows.length !== ids.length) throw new ValidationError("Some selected IDs do not exist or belong to another product. Nothing was changed.");
+    if (!archived) {
+      const supplierRows = rows.filter(row => row.supplierSku);
+      const identities = supplierRows.map(row => `${row.autoDeliverySource ?? "digiflazz"}\u0000${row.supplierSku}`);
+      const conflicts = supplierRows.length ? await tx.denomination.count({ where: {
+        isArchived: false, id: { notIn: ids }, OR: supplierRows.map(row => ({
+          supplierSku: row.supplierSku,
+          autoDeliverySource: row.autoDeliverySource && row.autoDeliverySource !== "digiflazz" ? row.autoDeliverySource : undefined,
+          ...(!row.autoDeliverySource || row.autoDeliverySource === "digiflazz" ? { OR: [{ autoDeliverySource: null }, { autoDeliverySource: "digiflazz" }] } : {}),
+        })),
+      } }) : 0;
+      if (conflicts || new Set(identities).size !== identities.length) throw new ValidationError("Supplier identity conflict. Review the duplicate audit before restoring.");
+    }
+    await tx.denomination.updateMany({ where: { id: { in: ids }, productId }, data: { isArchived: archived, isActive: false } });
+    await logAdminAction(tx, {
+      adminId, action: archived ? "denomination_bulk_delete" : "denomination_bulk_restore",
+      targetType: "product", targetId: productId,
+      details: `${archived ? "Archived" : "Restored"} ${ids.length} denomination${ids.length === 1 ? "" : "s"}${archived ? "" : " to inactive status"} for product ${productId}. Requested denomination IDs: ${ids.join(", ")}.`,
+    });
+    return { count: ids.length, ids };
+  });
 }
 
 /** (denomination, availableCount) for active denominations at/below threshold. */

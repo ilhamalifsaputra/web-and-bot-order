@@ -1,5 +1,5 @@
 import "./setup-env"; // MUST be first: sets env + builds the temp DB schema.
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { config } from "@app/core/config";
 import {
@@ -14,6 +14,8 @@ import {
   createOrderDirect,
   DIGIFLAZZ_MARKUP_TYPE_KEY,
   DIGIFLAZZ_MARKUP_VALUE_KEY,
+  archiveDenominationBatch,
+  importDigiflazzBrand,
 } from "@app/db";
 import { resetDb } from "../../../tests/helpers/sampleData";
 import { makeSession, sessionJtiKey, newJti } from "../src/auth";
@@ -82,6 +84,46 @@ function del(url: string, c: string | null, csrfToken: string) {
 }
 
 describe("PATCH /api/catalog/denominations/:id", () => {
+  it.each(["manual", "manual_with_info"])("rejects a stale %s edit after archive and preserves its supplier tombstone", async deliveryType => {
+    const { denomId, productId, categoryId } = await seedDenominationWithContext();
+    const originalSku = "deleted-supplier-sku";
+    const fields = [{ key: "user_id", label: { id: "ID", en: "ID" }, type: "text", required: true, options: [], placeholder: "" }];
+    await prisma.denomination.update({ where: { id: denomId }, data: {
+      deliveryType: "manual_with_info", additionalFields: JSON.stringify(fields), autoDeliverySource: "digiflazz", supplierSku: originalSku,
+    } });
+    let readFinished!: () => void;
+    const read = new Promise<void>(resolve => { readFinished = resolve; });
+    let resume!: () => void;
+    const paused = new Promise<void>(resolve => { resume = resolve; });
+    const findUnique = prisma.denomination.findUnique.bind(prisma.denomination);
+    const spy = vi.spyOn(prisma.denomination, "findUnique").mockImplementationOnce((async args => {
+      const snapshot = await findUnique(args);
+      readFinished();
+      await paused;
+      return snapshot;
+    }) as typeof prisma.denomination.findUnique);
+    const pending = patchJson(`/api/catalog/denominations/${denomId}`, cookie, csrf, {
+      name: "Stale supplier edit", type: "SHARED", durationLabel: "1 Month", price: "12000", deliveryType,
+      additionalFields: fields, autoDeliverySource: "digiflazz", supplierSku: "replacement-supplier-sku",
+    }).then(response => response);
+    try {
+      await read;
+      await archiveDenominationBatch(prisma, productId, [denomId], true, null);
+    } finally {
+      resume();
+      spy.mockRestore();
+    }
+    const response = await pending;
+    expect(response.statusCode).toBe(409);
+    expect(await prisma.denomination.findUnique({ where: { id: denomId } })).toMatchObject({
+      isArchived: true, isActive: false, supplierSku: originalSku, autoDeliverySource: "digiflazz", name: "1 Month",
+    });
+    expect(await prisma.auditLog.count({ where: { action: "denomination_update", targetId: denomId } })).toBe(0);
+    const imported = await importDigiflazzBrand(prisma, { categoryId, brand: "Deleted supplier", rows: [{ buyerSkuCode: originalSku, productName: "Deleted supplier 86", price: "10000", costPrice: "9000" }] });
+    expect(imported.report.skipped).toBe(1);
+    expect(await prisma.denomination.count({ where: { supplierSku: originalSku } })).toBe(1);
+  });
+
   it("happy path: updates the denomination and audits", async () => {
     const id = await seedDenomination();
     const res = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
@@ -621,6 +663,60 @@ describe("DELETE /api/catalog/denominations/:id", () => {
     const res = await del(`/api/catalog/denominations/${id}`, cookie, csrf);
     expect(res.statusCode).toBe(409);
     expect(await prisma.denomination.findUnique({ where: { id } })).not.toBeNull();
+  });
+});
+
+describe("Product-scoped denomination bulk deletion", () => {
+  async function batch(productId: number, ids: unknown, c: string | null = cookie, token = csrf, operation = "bulk-delete") {
+    return app.inject({ method: "POST", url: `/api/catalog/products/${productId}/denominations/${operation}`,
+      headers: { "content-type": "application/json", "x-csrf-token": token }, cookies: c ? { [COOKIE]: c } : {}, payload: { ids } });
+  }
+  it("archives one batch atomically, deduplicates IDs, and can restore inactive", async () => {
+    const { denomId, productId } = await seedDenominationWithContext();
+    const res = await batch(productId, [denomId, denomId]);
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ ok: true, atomic: true, count: 1, ids: [denomId] });
+    expect(await prisma.denomination.findUnique({ where: { id: denomId } })).toMatchObject({ isArchived: true, isActive: false });
+    const detail = await app.inject({ method: "GET", url: `/api/catalog/${productId}`, cookies: { [COOKIE]: cookie } });
+    expect(detail.json().product.denominations).toHaveLength(0);
+    const restored = await batch(productId, [denomId], cookie, csrf, "bulk-restore");
+    expect(restored.statusCode).toBe(200);
+    expect(await prisma.denomination.findUnique({ where: { id: denomId } })).toMatchObject({ isArchived: false, isActive: false });
+  });
+  it("preserves order/stock history and blocks checkout on both channels", async () => {
+    const { denomId, productId } = await seedDenominationWithContext();
+    await bulkAddStock(prisma, denomId, ["test-credential"]);
+    const buyer = await upsertUser(prisma, { telegramId: 12345, username: "buyer", fullName: "Buyer" });
+    const order = await createOrderDirect(prisma, { channel: "web", user: buyer, productId: denomId, quantity: 1 });
+    expect((await batch(productId, [denomId])).statusCode).toBe(200);
+    expect(await prisma.orderItem.count({ where: { orderId: order!.id, productId: denomId } })).toBe(1);
+    expect(await prisma.stockItem.count({ where: { productId: denomId } })).toBe(1);
+    for (const channel of ["web", "bot"] as const) {
+      await expect(createOrderDirect(prisma, { channel, user: buyer, productId: denomId, quantity: 1 })).rejects.toThrow();
+    }
+  });
+  it("rejects malformed, foreign and absent IDs without changing valid rows", async () => {
+    const { denomId, productId } = await seedDenominationWithContext();
+    for (const ids of [[], ["1"], [0], [denomId, 2147483647]]) expect((await batch(productId, ids)).statusCode).toBe(400);
+    expect((await batch(productId + 100000, [denomId])).statusCode).toBe(400);
+    expect(await prisma.denomination.findUnique({ where: { id: denomId } })).toMatchObject({ isArchived: false });
+  });
+  it("requires authentication and CSRF", async () => {
+    const { denomId, productId } = await seedDenominationWithContext();
+    expect((await batch(productId, [denomId], null)).statusCode).toBe(401);
+    expect((await batch(productId, [denomId], cookie, "bad")).statusCode).toBe(403);
+    expect(await prisma.denomination.findUnique({ where: { id: denomId } })).toMatchObject({ isArchived: false });
+  });
+  it("denies a readonly admin with valid authentication and CSRF", async () => {
+    const { denomId, productId } = await seedDenominationWithContext();
+    const added = await app.inject({ method: "POST", url: "/api/admins/add", headers: { "x-csrf-token": csrf }, cookies: { [COOKIE]: cookie }, payload: { telegram_id: 555 } });
+    expect(added.statusCode).toBe(201);
+    const viewer = await upsertUser(prisma, { telegramId: 555, username: "viewer", fullName: "Viewer" });
+    const jti = newJti();
+    await setSetting(prisma, sessionJtiKey(555), jti);
+    const session = makeSession(viewer.id, 555, jti);
+    expect((await batch(productId, [denomId], session.raw, session.data.csrf)).statusCode).toBe(403);
+    expect(await prisma.denomination.findUnique({ where: { id: denomId } })).toMatchObject({ isArchived: false });
   });
 });
 

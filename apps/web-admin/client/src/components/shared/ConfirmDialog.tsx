@@ -49,20 +49,27 @@ export function ConfirmDialog({
   onOpenChange: onOpenChangeProp,
 }: ConfirmDialogProps): JSX.Element {
   const [openState, setOpenState] = React.useState(false)
+  const [busy, setBusy] = React.useState(false)
+  const busyRef = React.useRef(false)
   const isControlled = openProp !== undefined
   const open = isControlled ? openProp : openState
   const setOpen = isControlled ? (onOpenChangeProp ?? (() => {})) : setOpenState
 
   const handleConfirm = async () => {
+    if (busyRef.current) return
+    busyRef.current = true
+    setBusy(true)
     try {
       await onConfirm()
     } finally {
+      busyRef.current = false
+      setBusy(false)
       setOpen(false)
     }
   }
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={(value) => { if (!busyRef.current) setOpen(value) }}>
       {trigger && <DialogTrigger asChild>{trigger}</DialogTrigger>}
       <DialogContent showCloseButton={false}>
         <DialogHeader>
@@ -72,10 +79,10 @@ export function ConfirmDialog({
         {children}
         <DialogFooter>
           <DialogClose asChild>
-            <Button variant="outline">{cancelLabel}</Button>
+            <Button variant="outline" disabled={busy}>{cancelLabel}</Button>
           </DialogClose>
-          <Button variant={variant} onClick={handleConfirm}>
-            {confirmLabel}
+          <Button variant={variant} onClick={handleConfirm} disabled={busy} aria-busy={busy}>
+            {busy ? "Processing…" : confirmLabel}
           </Button>
         </DialogFooter>
       </DialogContent>

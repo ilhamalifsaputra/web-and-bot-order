@@ -21,13 +21,14 @@ import {
   DETECTION_REVIEW_RESOLVED,
   DETECTION_REVIEW_IGNORED,
 } from "@app/db";
-import { getPriceList, DigiflazzSupplierError } from "@app/core/suppliers/digiflazz";
+import { DigiflazzSupplierError, isDigiflazzRateLimited } from "@app/core/suppliers/digiflazz";
 import { Decimal } from "@app/core/money";
 import { ValidationError } from "@app/core/errors";
 import { errorBody } from "@app/core/errorBody";
 import { logger } from "@app/core/logger";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
 import { exactFields, readMoneyField } from "../../lib/moneyField";
+import { getPriceListCached } from "../../lib/digiflazzPriceListCache";
 
 /**
  * Read an import row's Rupiah price, or null if it isn't a finite amount.
@@ -56,6 +57,12 @@ const MAX_APPLY_ROWS = 500;
  * this exact text to skip the preview when a run already reported it. */
 const NO_CREDENTIALS_ERROR = "Digiflazz credentials are not configured. Set them in Settings first.";
 
+/** The 502 both /sync/preview and /sync/run answer when Digiflazz refuses the
+ * price-list request with rc 83 (checked too often). The wizard page matches
+ * this exact text to skip the preview, which would only be refused again. */
+const RATE_LIMITED_ERROR = "Digiflazz sedang membatasi pengecekan price-list (rc 83). Coba lagi beberapa menit lagi.";
+const RATE_LIMITED_BODY = { error: RATE_LIMITED_ERROR, code: "digiflazz_rate_limited" } as const;
+
 export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Promise<void> {
   // Step 1: fetch + group (dry run, no write) — same "preview then apply"
   // shape as /api/catalog/products/import, just sourced from Digiflazz's
@@ -68,10 +75,18 @@ export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Prom
     if (!creds) {
       return reply.code(400).send({ error: NO_CREDENTIALS_ERROR });
     }
+    // Through the shared cache: the Sync button calls /sync/run right before
+    // this, and a second fetch that soon is refused by Digiflazz (rc 83).
     let items;
     try {
-      items = await getPriceList(creds);
+      items = await getPriceListCached(creds);
     } catch (err) {
+      if (isDigiflazzRateLimited(err)) {
+        logger.warn(
+          "An admin's Digiflazz import preview could not load because Digiflazz is rate-limiting price-list checks (rc 83); the admin was asked to try again in a few minutes.",
+        );
+        return reply.code(502).send(RATE_LIMITED_BODY);
+      }
       return reply.code(502).send({ error: err instanceof Error ? err.message : "Failed to reach Digiflazz." });
     }
     // I8 fix: tolerant, case-insensitive match on "game"/"games" — Digiflazz's
@@ -126,8 +141,16 @@ export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Prom
     }
     let outcome;
     try {
-      outcome = await runDigiflazzCatalogSync(prisma);
+      // The cached fetcher lets the preview that follows reuse this run's list.
+      outcome = await runDigiflazzCatalogSync(prisma, undefined, { fetchPriceList: getPriceListCached });
     } catch (err) {
+      if (isDigiflazzRateLimited(err)) {
+        logger.warn(
+          { err },
+          "An admin's manual Digiflazz catalog sync did not run because Digiflazz is rate-limiting price-list checks (rc 83); nothing was changed, and the admin was asked to try again in a few minutes.",
+        );
+        return reply.code(502).send(RATE_LIMITED_BODY);
+      }
       if (err instanceof DigiflazzSupplierError) {
         logger.error(
           { err },

@@ -57,17 +57,21 @@ export default defineConfig({
     // (tests/helpers/testdb.ts pushes it) and on the shared test helpers, each
     // app's setup-env.ts is loaded by the runner rather than imported, and a
     // lockfile bump can change any dependency. Editing one of these must fall
-    // back to the full suite instead of silently running nothing. The first
-    // three entries are Vitest's own defaults, repeated because setting this
-    // option replaces them.
+    // back to the full suite instead of silently running nothing. Detection
+    // fixtures (__fixtures__) are read from disk by tests, so the module graph
+    // cannot see them either. Vitest matches these globs against absolute
+    // paths, so each needs a leading `**/` or it never fires. The first three
+    // entries are Vitest's own defaults, repeated because setting this option
+    // replaces them.
     forceRerunTriggers: [
       "**/package.json",
       "**/vitest.config.*",
       "**/vite.config.*",
-      "prisma/schema.prisma",
-      "tests/helpers/**",
+      "**/prisma/schema.prisma",
+      "**/tests/helpers/**",
       "**/test/setup-env.ts",
-      "pnpm-lock.yaml",
+      "**/pnpm-lock.yaml",
+      "**/__fixtures__/**",
     ],
     environmentMatchGlobs: [
       ["apps/web-admin/client/**", "jsdom"],

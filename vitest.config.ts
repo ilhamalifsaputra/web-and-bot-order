@@ -51,6 +51,24 @@ export default defineConfig({
     // ~6x the slowest known test: still short enough that a genuine hang
     // fails the run rather than hanging CI.
     testTimeout: 20_000,
+    // `vitest run --changed master` (pnpm test:changed) only reruns tests whose
+    // import graph touches a changed file. Some inputs reach nearly every test
+    // without being imported by it: every DB test depends on the Prisma schema
+    // (tests/helpers/testdb.ts pushes it) and on the shared test helpers, each
+    // app's setup-env.ts is loaded by the runner rather than imported, and a
+    // lockfile bump can change any dependency. Editing one of these must fall
+    // back to the full suite instead of silently running nothing. The first
+    // three entries are Vitest's own defaults, repeated because setting this
+    // option replaces them.
+    forceRerunTriggers: [
+      "**/package.json",
+      "**/vitest.config.*",
+      "**/vite.config.*",
+      "prisma/schema.prisma",
+      "tests/helpers/**",
+      "**/test/setup-env.ts",
+      "pnpm-lock.yaml",
+    ],
     environmentMatchGlobs: [
       ["apps/web-admin/client/**", "jsdom"],
       ["apps/storefront/client/**", "jsdom"],

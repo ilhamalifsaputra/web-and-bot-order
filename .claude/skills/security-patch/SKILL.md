@@ -28,7 +28,7 @@ A security fix in this repo needs two things a normal bug fix doesn't: proof the
 
 1. Reproduce first: write or identify a test that demonstrates the vulnerability (fails on current code). If the vulnerable path has no test coverage at all, that gap is part of what you're fixing.
 2. Fix with the minimum change that closes the hole — don't refactor or "improve" adjacent code in the same patch; scope creep in a security patch makes it harder to review and to backport.
-3. Confirm the regression test now passes, then run the full suite: `pnpm typecheck` and `pnpm test` must stay green.
+3. Confirm the regression test now passes, then run `pnpm test:changed` while iterating and typecheck the touched package. The full `pnpm typecheck` and `pnpm test` run once, after rebasing onto latest `master` and before merging, and must stay green.
 4. Never bypass safety checks to land the patch faster — no `--no-verify`, no skipping the CSRF/auth test trio on a touched route, no disabling a lint/type rule instead of satisfying it.
 5. If the fix touches `prisma/schema.prisma` or requires a config/env change, call that out explicitly — schema changes need the DB migrated and order-bot restarted before new code runs (see `money-and-data-integrity` skill).
 6. State the vulnerability and the fix in plain terms in the commit message / PR description — what was exploitable, and what specifically closes it. Don't log or print the exploit payload itself anywhere persistent.

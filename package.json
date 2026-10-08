@@ -39,6 +39,8 @@
     "typecheck": "pnpm -r typecheck && tsc -p tsconfig.test.json",
     "pretest": "pnpm run check-migration-drift && pnpm run check-migration-timestamps && pnpm run check-frontend-boundaries && pnpm --filter @app/storefront-client lint && pnpm run check-detection-engine-purity",
     "test": "vitest run",
+    "test:guards": "vitest run apps/order-bot/test/money-input-guard.test.ts apps/order-bot/test/keyboard-label-guard.test.ts tests/no-fake-claims.test.ts packages/core/src/moneyInput.test.ts packages/core/src/buttonLimits.test.ts packages/core/src/locales.test.ts packages/db/src/crud/dispatchTriggerGuard.test.ts apps/web-admin/client/src/components/ui/field-contrast.test.tsx",
+    "test:changed": "vitest run --changed master --passWithNoTests && pnpm test:guards",
     "test:envelope-v2": "cross-env CREDENTIAL_ENVELOPE_WRITE_V2=1 vitest run packages/core packages/db scripts",
     "e2e": "playwright test",
     "dev:web": "pnpm --filter @app/web-admin dev",

@@ -92,11 +92,14 @@ export function paymentStatusFor(order: FulfillmentOrder): OrderFulfillment["pay
   return status === "EXPIRED" ? "EXPIRED" : ["FAILED", "REJECTED"].includes(status) ? "FAILED" : "PENDING";
 }
 
-/** Percentages describe committed phases, never elapsed time. */
+/**
+ * Percentages describe committed phases, never elapsed time. While a payment is
+ * only detected or still being verified there is no honest percentage to show
+ * (it may yet fail or be underpaid), so those two phases yield `null` and the
+ * renderers omit the bar. The bar starts once the payment is confirmed.
+ */
 export function progressForPhase(phase: CustomerProgressPhase): number | null {
   switch (phase) {
-    case "PAYMENT_DETECTED": return 25;
-    case "VERIFYING": return 35;
     case "PAYMENT_CONFIRMED": return 40;
     case "AUTO_QUEUED": case "PREPARING": return 55;
     case "AUTO_SUBMITTING": return 65;

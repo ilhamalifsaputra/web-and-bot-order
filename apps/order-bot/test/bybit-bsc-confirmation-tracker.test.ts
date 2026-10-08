@@ -259,7 +259,7 @@ describe("pollOnce (confirmation tracker poll loop)", () => {
     expect(edits[0]!.chatId).toBe("555");
     expect(edits[0]!.messageId).toBe(777);
     expect(edits[0]!.text).toContain("Confirming payment");
-    expect(edits[0]!.text).toContain("35%");
+    expect(edits[0]!.text).not.toMatch(/[█░%]/u);
   });
 
   it("updates durable confirmation counts without a second rail writer or fabricated progress", async () => {
@@ -277,7 +277,7 @@ describe("pollOnce (confirmation tracker poll loop)", () => {
 
     expect(edits).toHaveLength(1);
     expect(edits[0]!.messageId).toBe(777);
-    expect(edits[0]!.text).toContain("35%");
+    expect(edits[0]!.text).not.toMatch(/[█░%]/u);
     expect(await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).toMatchObject({
       status: OrderStatus.CONFIRMING, confirmations: 2, paymentMsgChatId: 555n, paymentMsgId: 777,
     });

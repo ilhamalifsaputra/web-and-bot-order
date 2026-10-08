@@ -671,7 +671,7 @@ describe("processDeposits (poll-loop wiring)", () => {
     expect(edits).toHaveLength(1);
     expect(edits[0]!.messageId).toBe(777);
     expect(edits[0]!.text).toContain("Payment detected");
-    expect(edits[0]!.text).toContain("25%");
+    expect(edits[0]!.text).not.toMatch(/[█░%]/u);
 
     const afterDetected = await prisma.order.findUnique({ where: { id: order.id } });
     expect(afterDetected!.paymentMsgChatId).not.toBeNull();

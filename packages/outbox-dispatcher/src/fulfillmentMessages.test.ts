@@ -101,9 +101,9 @@ describe("persisted Telegram fulfillment status", () => {
     const captions: string[] = [];
     const api = { ...tg.api, editMessageText: async () => { throw apiError(400, "Bad Request: there is no text in the message to edit"); }, editMessageCaption: async (_chat: unknown, id: number, options: { caption: string }) => { expect(id).toBe(987); captions.push(options.caption); return true; } } as unknown as FulfillmentTelegramApi;
     await worker(api).tick();
-    expect(captions[0]).toContain(reference); expect(captions[0]).toContain("25%");
+    expect(captions[0]).toContain(reference); expect(captions[0]).not.toMatch(/[█░%]/u);
     await db.order.update({ where: { id: order.id }, data: { status: "CONFIRMING" } });
-    advance(); await worker(api).tick(); expect(captions[1]).toContain("35%");
+    advance(); await worker(api).tick(); expect(captions[1]).not.toMatch(/[█░%]/u);
     await db.order.update({ where: { id: order.id }, data: { status: "DELIVERED", paymentState: "PAID", walletCreditState: "CREDITED" } });
     advance(); await worker(api).tick(); expect(captions[2]).toContain("100%"); expect(captions[2]).toContain(reference);
     expect(captions[2]).not.toMatch(/[⣾⣽⣻⢿⡿⣟⣯⣷]/u);
@@ -265,7 +265,7 @@ describe("customer progress phases in one Telegram message", () => {
     const text = tg.sent[0]!.text;
     expect(text).toContain("<b>Payment detected</b>");
     expect(text).toContain("We&#x27;re checking your payment...");
-    expect(text).toContain("25%");
+    expect(text).not.toMatch(/[█░%]/u);
     expect(frameOf(text)).toBeDefined();
     expect(text).not.toMatch(/confirmed|completed|paid/i);
   });

@@ -1,6 +1,10 @@
 import path from "node:path";
 import { defineConfig } from "vitest/config";
 
+// Matches `glob` under any directory of an absolute changed-file path,
+// including dot-directories such as `.claude/worktrees/<topic>`.
+const anywhere = (glob: string) => `{**/,**/.*/**/}${glob}`;
+
 export default defineConfig({
   resolve: {
     alias: {
@@ -60,18 +64,22 @@ export default defineConfig({
     // back to the full suite instead of silently running nothing. Detection
     // fixtures (__fixtures__) are read from disk by tests, so the module graph
     // cannot see them either. Vitest matches these globs against absolute
-    // paths, so each needs a leading `**/` or it never fires. The first three
-    // entries are Vitest's own defaults, repeated because setting this option
-    // replaces them.
+    // paths, so each needs a leading `**/`; `anywhere` also lets that `**`
+    // cross dot-directories, because every worktree lives under `.claude/` and
+    // micromatch's `**` skips them by default (a bare `**/` pattern would never
+    // fire there). The first three entries are Vitest's own defaults, repeated
+    // because setting this option replaces them.
     forceRerunTriggers: [
-      "**/package.json",
-      "**/vitest.config.*",
-      "**/vite.config.*",
-      "**/prisma/schema.prisma",
-      "**/tests/helpers/**",
-      "**/test/setup-env.ts",
-      "**/pnpm-lock.yaml",
-      "**/__fixtures__/**",
+      ...[
+        "package.json",
+        "vitest.config.*",
+        "vite.config.*",
+        "prisma/schema.prisma",
+        "tests/helpers/**",
+        "test/setup-env.ts",
+        "pnpm-lock.yaml",
+        "__fixtures__/**",
+      ].map(anywhere),
     ],
     environmentMatchGlobs: [
       ["apps/web-admin/client/**", "jsdom"],

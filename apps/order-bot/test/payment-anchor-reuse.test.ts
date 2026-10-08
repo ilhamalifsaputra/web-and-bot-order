@@ -25,7 +25,7 @@ import { OrderCurrency, OrderStatus, PaymentMethod } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { makeCtx, calls } from "./helpers/ctx";
 import { smartEdit, renderMenu, menuAnchor } from "../src/util/chat";
-import { anchorPaymentMessage, menuBubbleKind, qrScreenKind } from "../src/util/paymentAnchor";
+import { anchorPaymentMessage, checkoutScreenOf, menuBubbleKind, qrScreenKind } from "../src/util/paymentAnchor";
 import { sweepPaidOrderBubbles } from "../src/jobs";
 
 /** The chat every makeCtx double lives in. */
@@ -163,6 +163,24 @@ describe("anchorPaymentMessage (each checkout keeps its own transaction bubble)"
     expect(menuBubbleKind(photoTap)).toBe("text");
     expect(menuBubbleKind(tapOn(803).ctx)).toBe("text");
     expect(menuBubbleKind(makeCtx({ text: "hi", session: { menuMsgId: 804 } }).ctx)).toBe("text");
+  });
+
+  it("takes a wallet completion's adopted id and kind from the same (tapped) message", () => {
+    // The buyer tapped an older text confirmation while the session menu is a banner photo.
+    const olderText = makeCtx({
+      callbackData: "v1:menu:main",
+      cbMessage: { message_id: 810, chat: { id: CHAT_ID, type: "private" }, date: 0 },
+      session: { menuMsgId: 811 },
+    }).ctx;
+    expect(checkoutScreenOf(olderText)).toEqual({ messageId: 810, kind: "text" });
+    const tappedPhoto = makeCtx({
+      callbackData: "v1:menu:main",
+      cbMessage: { message_id: 812, chat: { id: CHAT_ID, type: "private" }, date: 0, photo: [{ file_id: "f" }] },
+      session: { menuMsgId: 813 },
+    }).ctx;
+    expect(checkoutScreenOf(tappedPhoto)).toEqual({ messageId: 812, kind: "photo" });
+    expect(checkoutScreenOf(makeCtx({ text: "hi", session: { menuMsgId: 814 } }).ctx)).toEqual({ messageId: 814, kind: "text" });
+    expect(checkoutScreenOf(makeCtx({ text: "hi" }).ctx)).toBeUndefined();
   });
 
   it("reads a QR screen as a photo only while the sent QR photo is still the menu bubble", () => {

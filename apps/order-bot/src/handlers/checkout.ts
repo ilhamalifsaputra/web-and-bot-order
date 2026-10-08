@@ -94,7 +94,7 @@ import { triggerImmediatePoll as bybitBscTrackerImmediatePoll } from "../payment
 import { pollOnce as nowpaymentsPoll } from "../payments/nowpaymentsReconcile";
 import type { MyContext } from "../context";
 import { smartEdit } from "../util/chat";
-import { anchorPaymentMessage, menuBubbleKind, qrScreenKind } from "../util/paymentAnchor";
+import { anchorPaymentMessage, checkoutScreenOf, menuBubbleKind, qrScreenKind } from "../util/paymentAnchor";
 import { sendAccountFile } from "../util/delivery";
 import { flipSettledOrderBubble } from "../jobs";
 import { TELEGRAM_MESSAGE_TIMEOUT_MS } from "../payments/telegramTimeout";
@@ -1897,9 +1897,11 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
           ? "Created order via Telegram checkout, paid in full with wallet credit."
           : "Created order via Telegram checkout. A discount covered the whole price, so nothing was charged.",
       });
-      const checkoutMessageId = ctx.session.menuMsgId ?? ctx.callbackQuery?.message?.message_id;
-      if (checkoutMessageId != null) {
-        await adoptTransactionMessage(tx, r.order.id, ctx.chat!.id, checkoutMessageId, menuBubbleKind(ctx, checkoutMessageId));
+      // The tapped confirmation bubble, so the adopted id and its kind describe
+      // the same message (session menuMsgId can point at another bubble).
+      const checkoutScreen = checkoutScreenOf(ctx);
+      if (checkoutScreen) {
+        await adoptTransactionMessage(tx, r.order.id, ctx.chat!.id, checkoutScreen.messageId, checkoutScreen.kind);
       }
       return r;
     });

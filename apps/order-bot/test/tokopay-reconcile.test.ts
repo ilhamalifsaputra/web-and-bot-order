@@ -254,7 +254,7 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
     const created = await makeTokopayOrder();
     const [pending] = await listPendingTokopayOrders(prisma, new Date());
     await setOrderPaymentMessage(prisma, created!.id, 555, 777);
-    await adoptTransactionMessage(prisma, created!.id, 555, 777, "text");
+    await adoptTransactionMessage(prisma, created!.id, 555, 777, "photo");
     stubStatus({ status: "Paid", trx_id: trxId, total_bayar: qrisChargeAmount(pending!.totalAmount).toString() });
 
     await reconcileOrder(api, CREDS, pending!);
@@ -310,7 +310,7 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
       const created = await makeTokopayOrder();
       const [pending] = await listPendingTokopayOrders(prisma, new Date());
       await setOrderPaymentMessage(prisma, created!.id, 555, 777);
-      await adoptTransactionMessage(prisma, created!.id, 555, 777, "text");
+      await adoptTransactionMessage(prisma, created!.id, 555, 777, "photo");
       stubStatus({ status: "Paid", trx_id: "TRX-EDITFAIL", total_bayar: qrisChargeAmount(pending!.totalAmount).toString() });
 
       await reconcileOrder(api, CREDS, pending!);
@@ -404,7 +404,7 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
         data: { expiresAt: new Date(Date.now() + 30 * 60_000) },
       });
       await setOrderPaymentMessage(prisma, order.id, 555, 777);
-      await adoptTransactionMessage(prisma, order.id, 555, 777, "text");
+      await adoptTransactionMessage(prisma, order.id, 555, 777, "photo");
       return order;
     }
 
@@ -460,7 +460,7 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
     it("completes a delivered product on its acknowledged bubble with the product keyboard", async () => {
       const created = await makeTokopayOrder();
       await setOrderPaymentMessage(prisma, created!.id, 555, 778);
-      await adoptTransactionMessage(prisma, created!.id, 555, 778, "text");
+      await adoptTransactionMessage(prisma, created!.id, 555, 778, "photo");
       const api = fakeApi();
 
       await reconcilePaid(api, "TRX-PRODUCT-DELIVERED");
@@ -477,7 +477,7 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
       await updateDenomination(prisma, sample.product.id, { deliveryType: DeliveryType.MANUAL });
       const created = await makeTokopayOrder();
       await setOrderPaymentMessage(prisma, created!.id, 555, 779);
-      await adoptTransactionMessage(prisma, created!.id, 555, 779, "text");
+      await adoptTransactionMessage(prisma, created!.id, 555, 779, "photo");
       const api = fakeApi();
 
       await reconcilePaid(api, "TRX-PRODUCT-PROCESSING");
@@ -498,7 +498,7 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
       await routeOrderToDigiflazz(prisma, created!.id);
       const [pending] = await listPendingTokopayOrders(prisma, new Date());
       await setOrderPaymentMessage(prisma, created!.id, 555, 777);
-      await adoptTransactionMessage(prisma, created!.id, 555, 777, "text");
+      await adoptTransactionMessage(prisma, created!.id, 555, 777, "photo");
       stubStatus({ status: "Paid", trx_id: "TRX-DIGIFLAZZ", total_bayar: qrisChargeAmount(pending!.totalAmount).toString() });
       const api = fakeApi();
 

@@ -323,6 +323,17 @@ describe("credentials delivery record", () => {
 
     expect(await prisma.$executeRawUnsafe(sql)).toBe(0);
     expect(await state()).toEqual(after);
+
+    // A stock order delivered after the first run (its file may still be in
+    // flight) is never stamped by a later container start's re-run.
+    const cutoff = await prisma.setting.findUniqueOrThrow({ where: { key: "credentials_delivered_backfill_cutoff" } });
+    const lateDelivery = pending; // the in-flight order now completes, after the cutoff
+    await prisma.order.update({ where: { id: lateDelivery }, data: {
+      status: "DELIVERED", fulfillmentProvider: "STOCK", deliveredAt: new Date(new Date(cutoff.value).getTime() + 1000),
+    } });
+    expect(await prisma.$executeRawUnsafe(sql)).toBe(0);
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: lateDelivery } })).credentialsDeliveredAt).toBeNull();
+    expect((await prisma.setting.findUniqueOrThrow({ where: { key: "credentials_delivered_backfill_cutoff" } })).value).toBe(cutoff.value);
   });
 
   it("does not touch the message when the credentials were already recorded", async () => {

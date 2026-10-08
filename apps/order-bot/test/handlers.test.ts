@@ -394,7 +394,7 @@ describe("customer handlers", () => {
   it("Buy Again preserves an adopted QR receipt and opens a fresh product menu", async () => {
     const order = (await makeOrder())!;
     await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.DELIVERED } });
-    await adoptTransactionMessage(prisma, order.id, 42, 555, "text");
+    await adoptTransactionMessage(prisma, order.id, 42, 555, "photo");
     const { ctx, sink } = customerCtx({
       callbackData: "v1:browse:prods",
       cbMessage: { message_id: 555, chat: { id: 42 }, date: 0, photo: [{ file_id: "RECEIPT_QR" }] },

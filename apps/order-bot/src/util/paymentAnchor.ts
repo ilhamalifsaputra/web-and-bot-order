@@ -22,6 +22,18 @@ export function menuBubbleKind(ctx: MyContext, messageId: number | undefined = c
 }
 
 /**
+ * The checkout screen a synchronous (wallet/discount) completion adopts, with
+ * its id and kind taken from the SAME message: the tapped bubble when there is
+ * one (its real kind is on the callback), else the session's menu bubble.
+ */
+export function checkoutScreenOf(ctx: MyContext): { messageId: number; kind: TransactionMessageKind } | undefined {
+  const tapped = ctx.callbackQuery?.message;
+  if (tapped) return { messageId: tapped.message_id, kind: "photo" in tapped && tapped.photo ? "photo" : "text" };
+  const messageId = ctx.session.menuMsgId;
+  return messageId === undefined ? undefined : { messageId, kind: menuBubbleKind(ctx, messageId) };
+}
+
+/**
  * The kind of a QR payment screen once its send settled: "photo" when the QR
  * photo the caller sent (`qrPhotoId`) is still the menu bubble, otherwise the
  * text fallback's kind (see {@link menuBubbleKind}).

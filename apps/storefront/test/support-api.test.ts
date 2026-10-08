@@ -15,7 +15,8 @@
 // test that counts rows uses a FRESH user so its counts stay deterministic),
 // app.inject() for every call, and a local loginAs()/makeUser() copied from
 // spa-api.test.ts verbatim.
-import "./setup-env"; // FIRST import — sets env before @app/* load
+import "./setup-env";
+import { config } from "@app/core/config"; // FIRST import — sets env before @app/* load
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import {
@@ -112,6 +113,9 @@ const PNG = Buffer.from(
 );
 
 beforeAll(async () => {
+  // Suite kontrak membuat banyak fixture per sesi; kuota produksi diuji terpisah.
+  config.SUPPORT_CREATE_RATE_LIMIT_MAX = 100;
+  config.SUPPORT_REPLY_RATE_LIMIT_MAX = 300;
   await initDb();
   app = await buildApp();
 

@@ -1,7 +1,7 @@
 // Follow-up to guest checkout: the recovery email that carries the order code.
 //
 // A guest's only two ways back into a paid order are the 30-day session cookie
-// and `POST /api/v1/track` (order code alone). Before this feature the code
+// and `POST /api/v1/track` (kode order + token privat). Before this feature the code
 // existed ONLY on screen, so closing the tab and losing the cookie lost the
 // order for good. These tests pin the three properties that make the email
 // worth having AND safe to have:
@@ -148,10 +148,11 @@ describe("guest checkout emails the order code when SMTP is configured", () => {
     expect(text).toMatch(/kode pesanan/i);
   });
 
-  it("never tells the buyer they need their email address to get back in — the order code alone is the credential", async () => {
+  it("recovery memakai token pada tautan privat dan tidak meminta alamat email sebagai credential", async () => {
     await guestCheckout("code-only.guest@example.com");
     const { text } = onlyMailArgs();
     expect(text).not.toMatch(/and this email address|dan alamat email ini/i);
+    expect(text).toContain("access_token=");
   });
 
   it("never puts delivered product content or credentials in the mail", async () => {

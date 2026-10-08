@@ -10,6 +10,7 @@
 import fp from "fastify-plugin";
 import type { FastifyPluginAsync, FastifyRequest, preHandlerHookHandler } from "fastify";
 import { config } from "@app/core/config";
+import { isAdmin } from "@app/core/runtime";
 import { prisma, getSetting } from "@app/db";
 import {
   readSession,
@@ -36,7 +37,7 @@ export async function loadWebRole(telegramId: number): Promise<WebRole> {
 
 async function verifySession(raw: string | undefined): Promise<AdminSession | null> {
   const data = readSession(raw);
-  if (!data) return null;
+  if (!data || !isAdmin(data.telegramId)) return null;
   const storedJti = await getSetting(prisma, sessionJtiKey(data.telegramId));
   if (!storedJti || storedJti !== data.jti) return null;
   const role = await loadWebRole(data.telegramId);

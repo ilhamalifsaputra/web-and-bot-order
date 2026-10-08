@@ -260,7 +260,7 @@ export function readSession(raw: string | undefined): SessionData | null {
   if (!constantTimeEqual(sig, expected)) return null;
 
   const issued = Number(ts);
-  if (!Number.isFinite(issued)) return null;
+  if (!Number.isSafeInteger(issued) || issued > nowMs() / 1000 + 30) return null;
   const maxAgeSec = config.WEB_SESSION_TTL_HOURS * 3600;
   if (nowMs() / 1000 - issued > maxAgeSec) return null;
 

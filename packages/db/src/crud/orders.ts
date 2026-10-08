@@ -1,3 +1,4 @@
+import { guestOrderRecoveryUrl } from "@app/core/guestOrderAccess";
 /**
  * Orders domain — the heart of the money/stock logic. Port of the "Orders"
  * section of Python crud.py. Multi-step mutators (create/approve/reject/cancel)
@@ -2537,7 +2538,7 @@ export async function enqueueBuyerOrderReadyEmailIfGuest(
     // button above — /account/orders and the pay page are session-gated and
     // bounce them to a login they have no password for. /track trades the
     // order code back for a session and is their only way in.
-    trackUrl: base ? `${base}/track` : null,
+    trackUrl: base ? guestOrderRecoveryUrl(base, order.orderCode) : null,
   });
   return true;
 }

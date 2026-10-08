@@ -1,3 +1,4 @@
+import { guestOrderRecoveryUrl } from "@app/core/guestOrderAccess";
 /**
  * Versioned JSON API (`/api/v1`) — a JSON twin of the existing HTML catalog,
  * cart and checkout routes for the storefront's own client-side JS / a future
@@ -334,7 +335,7 @@ export async function sendGuestOrderCodeEmail(req: FastifyRequest, to: string, o
     const shopName = (await getSetting(prisma, "shop_name")) ?? "Toko Digital";
     const base = publicBase(req);
     const orderLink = `${base}/checkout/${orderCode}/pay`;
-    const trackLink = `${base}/track`;
+    const trackLink = guestOrderRecoveryUrl(base, orderCode);
 
     // Bilingual in one body (English then Indonesian), same shape as the
     // password-reset mail in apiAuth.ts — the shop serves both languages and an
@@ -342,13 +343,13 @@ export async function sendGuestOrderCodeEmail(req: FastifyRequest, to: string, o
     const text =
       `Your order code is:\n\n${orderCode}\n\n` +
       `Open your order:\n${orderLink}\n\n` +
-      `Lost this browser, or on another device? Open it again with the code above:\n${trackLink}\n\n` +
-      `Keep this email safe — the order code is the only way back into this order, so treat it like a password. What you bought is never sent by email; you read it on the order page.\n\n` +
+      `Lost this browser, or on another device? Use this private recovery link (valid for 30 days):\n${trackLink}\n\n` +
+      `Keep this email safe — the recovery link grants access to this order, so treat it like a password. What you bought is never sent by email; you read it on the order page.\n\n` +
       `--\n\n` +
       `Kode pesanan kamu:\n\n${orderCode}\n\n` +
       `Buka pesanan kamu:\n${orderLink}\n\n` +
-      `Browser ini hilang, atau kamu pindah perangkat? Buka lagi pakai kode di atas:\n${trackLink}\n\n` +
-      `Simpan email ini baik-baik — kode pesanan itu satu-satunya cara masuk kembali ke pesanan ini, jadi perlakukan seperti kata sandi. Barang yang kamu beli tidak pernah dikirim lewat email; kamu membacanya di halaman pesanan.`;
+      `Browser ini hilang, atau kamu pindah perangkat? Gunakan tautan pemulihan pribadi ini (berlaku 30 hari):\n${trackLink}\n\n` +
+      `Simpan email ini baik-baik — tautan pemulihan memberi akses ke pesanan ini, jadi perlakukan seperti kata sandi. Barang yang kamu beli tidak pernah dikirim lewat email; kamu membacanya di halaman pesanan.`;
 
     // Subject deliberately omits the order code: the code is now the entire
     // /track credential on its own (no email needed), so keeping it out of

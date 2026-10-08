@@ -15,6 +15,9 @@
  */
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { config } from "@app/core/config";
+import { guestOrderRecoveryUrl } from "@app/core/guestOrderAccess";
+import { clientIp, supportRateLimited } from "../rateLimit";
+import { logger } from "@app/core/logger";
 import { localize, addDays } from "@app/core/datetime";
 import { CategoryGroup, SenderType, OrderStatus, OrderKind, TicketStatus, zTicketCategory } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
@@ -188,6 +191,28 @@ function csrfHeaderOk(req: FastifyRequest, customer: Customer): boolean {
 }
 
 const apiAccountRoutes: FastifyPluginAsync = async (app) => {
+  app.addHook("onRequest", async (req, reply) => {
+    if (req.method !== "POST") return;
+    const route = req.routeOptions.url;
+    const kind = ["/api/v1/account/support", "/api/v1/account/support/new"].includes(route ?? "") ? "create"
+      : ["/api/v1/account/support/:id/reply", "/api/v1/account/support/:id/reopen"].includes(route ?? "") ? "reply" : null;
+    if (!kind) return;
+    const customer = await optionalCustomer(req);
+    if (!customer || !csrfHeaderOk(req, customer)) return;
+    if (supportRateLimited(kind, customer.userId, clientIp(req))) {
+      logger.warn({ requestId: req.id, ip: req.ip, actorId: customer.userId, route: req.routeOptions.url, decision: "support_rate_limited" }, "Permintaan support dibatasi sebelum parsing upload");
+      return reply.header("Retry-After", String(config.SUPPORT_RATE_LIMIT_WINDOW_SECONDS)).code(429).send({ error: "error.rate_limited" });
+    }
+  });
+  app.addHook("preValidation", async (req, reply) => {
+    if (req.method !== "POST" || !req.url.split("?", 1)[0]!.includes("/account/support") || req.isMultipart()) return;
+    const body = (req.body ?? {}) as Record<string, unknown> | null;
+    if (!body || typeof body !== "object" || Array.isArray(body)) return reply.code(400).send({ error: "invalid_request" });
+    const allowed = new Set(["message", "order_code", "subject", "category", "product_id", "description"]);
+    if (Object.entries(body).some(([key, value]) => !allowed.has(key) || (key === "product_id" ? !["string", "number"].includes(typeof value) : typeof value !== "string"))) {
+      return reply.code(400).send({ error: "invalid_request" });
+    }
+  });
   // ---- Overview ----
   app.get("/account", async (req, reply) => {
     const customer = await requireCustomer(req, reply);
@@ -257,6 +282,8 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
     const money = buyerOrderSummary(order);
     const transactionStatus = await transactionStatusView(order);
     return reply.send({
+      recovery_url: customer.user.isGuest && !customer.orderScope ? guestOrderRecoveryUrl("", order.orderCode) : null,
+      read_only: Boolean(customer.orderScope),
       order: {
         code: order.orderCode,
         status: order.status,
@@ -636,6 +663,7 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
       if (!customer) return;
       if (!csrfHeaderOk(req, customer)) return reply.code(403).send({ error: "csrf_failed" });
       const ticket = await getTicket(prisma, Number(req.params.id));
+      if (!ticket || ticket.userId !== customer.userId) return reply.code(404).send({ error: "not_found" });
       let message: string;
       let attachments: ParsedAttachment[] = [];
       if (req.isMultipart()) {

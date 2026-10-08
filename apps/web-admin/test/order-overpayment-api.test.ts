@@ -24,7 +24,9 @@ import type { FastifyInstance } from "fastify";
 
 vi.mock("@app/core/config", async () => {
   const actual = await vi.importActual<typeof import("@app/core/config")>("@app/core/config");
-  return { ...actual, config: { ...actual.config, ADMIN_IDS: [444] } };
+  // The fixture session below belongs to Telegram 999; it must remain an
+  // allowed admin when the auth guard rechecks the current allowlist.
+  return { ...actual, config: { ...actual.config, ADMIN_IDS: [444, 999] } };
 });
 
 import { config } from "@app/core/config";

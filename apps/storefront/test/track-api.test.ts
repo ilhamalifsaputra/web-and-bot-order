@@ -1,19 +1,10 @@
-// Task 5 (guest checkout) / Task 1 (order-code-only recovery): POST
-// /api/v1/track — a bare order code establishes a session for a guest buyer
-// whose cookie is gone or who switched devices. The order code is now a
-// bearer credential with no second factor, by product decision. Two
-// properties matter most and get their own tests: an order owned by a
-// REGISTERED account must never be openable this way, and every rejection
-// is byte-identical so the endpoint can't be used to probe which order
-// codes exist.
-//
-// Pattern: guest-checkout-api.test.ts — app.inject() against an isolated
-// temp DB, reusing its guest-checkout-via-POST-/api/v1/checkout helper shape.
+// Regression recovery bertoken; sesi checkout tetap dapat mengklaim akun sendiri.
 import "./setup-env"; // FIRST import — sets env before @app/* load
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { cleanupTestDb } from "./setup-env";
 import { prisma, initDb, setSetting, createCatalogProduct, createDenomination, addToCart } from "@app/db";
+import { mintGuestOrderAccess } from "@app/core/guestOrderAccess";
 import { hashPassword } from "@app/core/password";
 import { buildApp } from "../src/server";
 import { CART_COOKIE, CART_COOKIE_VERSION } from "../src/shop";
@@ -142,7 +133,7 @@ describe("POST /api/v1/track — happy path (Task 5)", () => {
       method: "POST",
       url: "/api/v1/track",
       headers: { "x-forwarded-for": freshIp() },
-      payload: { order_code: orderCode },
+      payload: { order_code: orderCode, access_token: mintGuestOrderAccess(orderCode) },
     });
 
     expect(res.statusCode).toBe(200);
@@ -163,7 +154,7 @@ describe("POST /api/v1/track — happy path (Task 5)", () => {
       method: "POST",
       url: "/api/v1/track",
       headers: { "x-forwarded-for": freshIp() },
-      payload: { order_code: orderCode },
+      payload: { order_code: orderCode, access_token: mintGuestOrderAccess(orderCode) },
     });
     expect(track.statusCode).toBe(200);
 
@@ -186,7 +177,7 @@ describe("POST /api/v1/track — happy path (Task 5)", () => {
       method: "POST",
       url: "/api/v1/track",
       headers: { "x-forwarded-for": freshIp() },
-      payload: { order_code: "  " + orderCode.toLowerCase() + "  " },
+      payload: { order_code: "  " + orderCode.toLowerCase() + "  ", access_token: mintGuestOrderAccess(orderCode) },
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().redirect).toBe(`/account/orders/${orderCode}`);
@@ -194,14 +185,14 @@ describe("POST /api/v1/track — happy path (Task 5)", () => {
 });
 
 describe("POST /api/v1/track — rejections are byte-identical (Task 5)", () => {
-  it("an extra email field in the body is ignored — the order code alone is enough", async () => {
+  it("field email tambahan diabaikan; recovery tetap memerlukan token sah", async () => {
     const orderCode = await makeGuestOrder("track.emailignored@example.com");
 
     const res = await app.inject({
       method: "POST",
       url: "/api/v1/track",
       headers: { "x-forwarded-for": freshIp() },
-      payload: { order_code: orderCode, email: "not.the.right.email@example.com" },
+      payload: { order_code: orderCode, access_token: mintGuestOrderAccess(orderCode), email: "not.the.right.email@example.com" },
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().redirect).toBe(`/account/orders/${orderCode}`);
@@ -221,7 +212,7 @@ describe("POST /api/v1/track — rejections are byte-identical (Task 5)", () => 
       method: "POST",
       url: "/api/v1/track",
       headers: { "x-forwarded-for": freshIp() },
-      payload: { order_code: acctOrderCode },
+      payload: { order_code: acctOrderCode, access_token: mintGuestOrderAccess(acctOrderCode) },
     });
 
     expect(missingOrder.statusCode).toBe(acctOrder.statusCode);
@@ -240,7 +231,7 @@ describe("POST /api/v1/track — rejections are byte-identical (Task 5)", () => 
       method: "POST",
       url: "/api/v1/track",
       headers: { "x-forwarded-for": freshIp() },
-      payload: { order_code: orderCode },
+      payload: { order_code: orderCode, access_token: mintGuestOrderAccess(orderCode) },
     });
     expect(res.statusCode).toBe(404);
     expect(res.json()).toEqual({ error: "web.track_not_found" });
@@ -292,7 +283,7 @@ describe("POST /api/v1/track — rejections are byte-identical (Task 5)", () => 
       method: "POST",
       url: "/api/v1/track",
       headers: { "x-forwarded-for": freshIp() },
-      payload: { order_code: orderCode },
+      payload: { order_code: orderCode, access_token: mintGuestOrderAccess(orderCode) },
     });
 
     expect(res.statusCode).toBe(baseline.statusCode);
@@ -337,7 +328,7 @@ describe("POST /api/v1/track — rejections are byte-identical (Task 5)", () => 
       method: "POST",
       url: "/api/v1/track",
       headers: { "x-forwarded-for": freshIp() },
-      payload: { order_code: orderCode },
+      payload: { order_code: orderCode, access_token: mintGuestOrderAccess(orderCode) },
     });
 
     expect(res.statusCode).toBe(baseline.statusCode);
@@ -501,7 +492,7 @@ describe("POST /api/v1/track — cross-site requests cannot mint a session (Task
       method: "POST",
       url: "/api/v1/track",
       headers: { "x-forwarded-for": freshIp(), origin: "https://evil.example" },
-      payload: { order_code: orderCode },
+      payload: { order_code: orderCode, access_token: mintGuestOrderAccess(orderCode) },
     });
     expect(res.statusCode).toBe(403);
     expect(res.json()).toEqual({ error: "csrf_failed" });
@@ -514,7 +505,7 @@ describe("POST /api/v1/track — cross-site requests cannot mint a session (Task
       method: "POST",
       url: "/api/v1/track",
       headers: { "x-forwarded-for": freshIp(), "sec-fetch-site": "cross-site" },
-      payload: { order_code: orderCode },
+      payload: { order_code: orderCode, access_token: mintGuestOrderAccess(orderCode) },
     });
     expect(res.statusCode).toBe(403);
     expect(res.headers["set-cookie"]).toBeUndefined();
@@ -530,7 +521,7 @@ describe("POST /api/v1/track — cross-site requests cannot mint a session (Task
         origin: "https://shop.test.invalid",
         "sec-fetch-site": "same-origin",
       },
-      payload: { order_code: orderCode },
+      payload: { order_code: orderCode, access_token: mintGuestOrderAccess(orderCode) },
     });
     expect(res.statusCode).toBe(200);
   });
@@ -550,21 +541,11 @@ describe("POST /api/v1/track — cross-site requests cannot mint a session (Task
 });
 
 describe("guest account claim needs the order's contact email (Task C1)", () => {
-  /** A session obtained the way an attacker would: the order code alone, via /track. */
+  /** Klaim akun hanya diuji dengan sesi checkout asli, bukan sesi recovery scoped. */
   async function trackedSession(email: string): Promise<{ userId: number; cookie: string; csrf: string }> {
-    const orderCode = await makeGuestOrder(email);
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/v1/track",
-      headers: { "x-forwarded-for": freshIp() },
-      payload: { order_code: orderCode },
-    });
-    expect(res.statusCode).toBe(200);
-    const setCookies = res.headers["set-cookie"];
-    const cookies = Array.isArray(setCookies) ? setCookies : [String(setCookies)];
-    const cookie = cookies.find((c) => c.startsWith(`${SHOP_COOKIE_NAME}=`))!.split(";")[0]!;
-    const order = (await prisma.order.findFirst({ where: { orderCode } }))!;
-    return { userId: order.userId, cookie, csrf: res.json().csrf_token };
+    const checkout = await makeGuestCheckout(email);
+    const order = (await prisma.order.findFirst({ where: { orderCode: checkout.orderCode } }))!;
+    return { userId: order.userId, cookie: checkout.cookie, csrf: checkout.csrf };
   }
 
   it("GET /account/settings tells the client the row is a guest", async () => {

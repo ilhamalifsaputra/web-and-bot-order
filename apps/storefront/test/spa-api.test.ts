@@ -129,6 +129,9 @@ function multipart(
 }
 
 beforeAll(async () => {
+  // Suite kontrak membuat banyak fixture per sesi; kuota produksi diuji terpisah.
+  config.SUPPORT_CREATE_RATE_LIMIT_MAX = 100;
+  config.SUPPORT_REPLY_RATE_LIMIT_MAX = 300;
   await initDb();
   app = await buildApp();
 

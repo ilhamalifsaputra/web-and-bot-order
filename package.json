@@ -62,5 +62,22 @@
   },
   "dependencies": {
     "@prisma/client": "^5.22.0"
+  },
+  "pnpm": {
+    "overrides": {
+      "@fastify/busboy": "3.2.2",
+      "find-my-way": "9.9.0",
+      "proxy-addr": "2.0.8",
+      "brace-expansion@>=1 <2": "1.1.21",
+      "brace-expansion@>=2 <3": "2.1.7",
+      "brace-expansion@>=5 <6": "5.0.12",
+      "fast-uri": "3.1.8",
+      "js-yaml@>=4 <5": "4.3.2",
+      "postcss": "8.5.23",
+      "nanoid@>=3 <4": "3.3.18",
+      "browserslist": "4.28.7",
+      "baseline-browser-mapping": "2.11.0",
+      "source-map-js": "1.2.2"
+    }
   }
 }

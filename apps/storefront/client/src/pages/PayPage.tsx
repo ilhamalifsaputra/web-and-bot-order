@@ -351,6 +351,7 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
       )}
 
       <div id="pay-status" className="mb-5">
+        {data.recovery_url && <a className="mb-3 inline-block text-sm underline" href={data.recovery_url}>{t("web.save_recovery_link")}</a>}
         {presentation ? (
           <Card className="min-w-0 bg-pine-tint/40">
             <TransactionStatus presentation={presentation} underpayment={underpayment}>
@@ -582,7 +583,7 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
             <Button
               variant="ghost"
               className="text-rust"
-              disabled={cancelMutation.isPending}
+              disabled={cancelMutation.isPending || data.read_only}
               onClick={() => setCancelDialogOpen(true)}
             >
               {t("web.cancel_order")}

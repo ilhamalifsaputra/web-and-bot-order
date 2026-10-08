@@ -357,6 +357,8 @@ export interface Underpayment {
 
 /** GET /api/v1/orders/:code/pay — the payView() JSON (server: apps/storefront/src/routes/checkout.ts). */
 export interface PayData {
+  read_only?: boolean;
+  recovery_url?: string | null;
   presentation?: CustomerProgress;
   underpayment?: Underpayment | null;
   order: {
@@ -546,6 +548,8 @@ export interface OrderFulfillment {
 
 /** GET /api/v1/account/orders/:code — complete buyer-owned order detail. */
 export interface OrderDetailData {
+  recovery_url?: string | null;
+  read_only?: boolean;
   order: {
     code: string;
     status: string;

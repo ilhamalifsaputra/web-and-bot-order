@@ -11,7 +11,8 @@ import { buildApp } from "../src/server";
 import { UPLOADS_DIR } from "../src/paths";
 
 const COOKIE = config.WEB_COOKIE_NAME;
-const ADMIN_TG = 998;
+// setup-env allowlists 999 and 1000; use an authorized fixture session.
+const ADMIN_TG = 999;
 let app: import("fastify").FastifyInstance;
 let cookie: string;
 let csrf: string;

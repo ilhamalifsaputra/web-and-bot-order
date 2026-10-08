@@ -1,35 +1,5 @@
-/**
- * "I bought as a guest and I've lost my order" — the recovery path for a
- * shopper who has no password to sign in with (guest checkout, Task 6).
- *
- * POST /api/v1/track (apps/storefront/src/routes/apiTrack.ts) exchanges the
- * order code alone for a live session on that guest's account, and answers
- * with the order's own URL.
- *
- * Two things about the server contract shape this page:
- *
- *  1. EVERY failure is one identical 404 (`web.track_not_found`) — "no such
- *     order" and "that order belongs to a registered account" are
- *     deliberately indistinguishable, so the endpoint can't be used to probe
- *     for valid order codes. The UI must not leak more than the server does,
- *     so there is exactly one failure message here too.
- *  2. Success establishes a session mid-request. Like LoginPage, the redirect
- *     is a FULL page load rather than a react-router navigate(): the shell has
- *     to re-render for the whole app to see the new session (account menu,
- *     the CSRF meta tag). `publicPost` has already adopted the response's
- *     `csrf_token` by then, which covers anything the page does before the
- *     browser actually leaves.
- *
- * Design-system migration (Task 14): the form is now a `<Card>` wrapping the
- * `<form>` (the form itself keeps native submit semantics — Enter-to-submit
- * — so it stays a real `<form>`, not a `<Card>` element), the order-code
- * field is `<FormField>`+`<Input>`, the submit is `<Button type="submit">`.
- * `FailureState`'s `EmptyState` usage (already design-system, Task 10) is
- * untouched — the single generic anti-enumeration message and the full-page
- * redirect on success are unchanged. See deviations.md
- * §14-pay-topup-track.
- */
-import { useState, type FormEvent } from "react";
+/** Pemulihan guest: kode dan token order, pesan gagal generik, tanpa auto-login. */
+import { useEffect, useState, type FormEvent } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { Clock, PackageSearch, TriangleAlert } from "lucide-react";
 import { publicPost } from "../api/client";
@@ -140,7 +110,12 @@ function FailureState({
 }
 
 export default function TrackOrderPage() {
-  const [orderCode, setOrderCode] = useState("");
+  const [recovery] = useState(() => new URLSearchParams(window.location.hash.slice(1)));
+  const [orderCode, setOrderCode] = useState(recovery.get("order_code") ?? "");
+  const [accessToken, setAccessToken] = useState(recovery.get("access_token") ?? "");
+  useEffect(() => {
+    if (window.location.hash) window.history.replaceState(null, "", window.location.pathname + window.location.search);
+  }, []);
   const [failure, setFailure] = useState<Failure | null>(null);
   const contact = useContactAction();
   // Shares the query cache useContactAction's useShopContext() call already
@@ -158,6 +133,7 @@ export default function TrackOrderPage() {
         // too just means the request carries what the buyer will see on the
         // order page rather than whatever their keyboard produced.
         order_code: orderCode.trim().toUpperCase(),
+        access_token: accessToken.trim(),
       }),
     onSuccess: (data) => window.location.assign(data.redirect),
     onError: (err) => setFailure(failureFor((err as Error).message)),
@@ -188,6 +164,9 @@ export default function TrackOrderPage() {
               maxLength={32}
               required
             />
+          </FormField>
+          <FormField label={t("web.track_access_token")} htmlFor="track_access_token">
+            <Input id="track_access_token" type="password" value={accessToken} onChange={(e) => setAccessToken(e.target.value)} autoComplete="off" maxLength={1024} required />
           </FormField>
           <Button type="submit" variant="primary" fullWidth disabled={!canSubmit}>
             {lookupMutation.isPending && <Spinner />}

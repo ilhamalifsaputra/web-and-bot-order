@@ -51,6 +51,7 @@ function renderTrack(ctx: ShopContext = context) {
 /** Fill the order code and submit — the page's only interaction. */
 function submitLookup(code = "ord123"): void {
   fireEvent.change(screen.getByLabelText("Order code"), { target: { value: code } });
+  fireEvent.change(screen.getByLabelText("Order access token"), { target: { value: "test-access-token" } });
   fireEvent.click(screen.getByRole("button", { name: "Find my order" }));
 }
 
@@ -63,7 +64,7 @@ describe("TrackOrderPage", () => {
     vi.clearAllMocks();
     originalLocation = Object.getOwnPropertyDescriptor(window, "location");
     assign = vi.fn();
-    Object.defineProperty(window, "location", { configurable: true, writable: true, value: { assign } });
+    Object.defineProperty(window, "location", { configurable: true, writable: true, value: { assign, hash: "", pathname: "/track", search: "" } });
   });
 
   afterEach(() => {
@@ -76,12 +77,12 @@ describe("TrackOrderPage", () => {
     // Points at the order page, not an inbox: guest checkout sends no mail,
     // so the order code exists nowhere else (see the copy guard in
     // packages/core/src/locales.test.ts).
-    expect(screen.getByText(/order code shown on your order page/)).toBeInTheDocument();
+    expect(screen.getByText(/recovery link/)).toBeInTheDocument();
     expect(screen.getByLabelText("Order code")).toBeInTheDocument();
     expect(screen.queryByLabelText("Email address")).not.toBeInTheDocument();
   });
 
-  it("posts the code alone to /api/v1/track and leaves for the redirect it answers with", async () => {
+  it("mengirim kode dan token akses to /api/v1/track and leaves for the redirect it answers with", async () => {
     (publicPost as Mock).mockResolvedValue({ redirect: "/account/orders/ORD123", csrf_token: "fresh" });
     renderTrack();
     submitLookup();
@@ -89,6 +90,7 @@ describe("TrackOrderPage", () => {
     await waitFor(() =>
       expect(publicPost).toHaveBeenCalledWith("/api/v1/track", {
         order_code: "ORD123",
+        access_token: "test-access-token",
       }),
     );
     // Full page load, not navigate(): the shell must re-render so the app
@@ -102,7 +104,7 @@ describe("TrackOrderPage", () => {
     submitLookup();
 
     expect(await screen.findByText("We couldn't open that order")).toBeInTheDocument();
-    const message = screen.getByText(/didn't match anything we can open/);
+    const message = screen.getByText(/Check the recovery link in your email/);
     expect(message).toBeInTheDocument();
     // The server answers every cause with one identical 404 so an order code
     // can't be guessed; the UI must not leak more than the server does.

@@ -23,6 +23,18 @@
 import type { FastifyRequest } from "fastify";
 import { config } from "@app/core/config";
 
+const MAX_RATE_LIMIT_BUCKETS = 10_000;
+const sweptAt = new WeakMap<Map<string, number[]>, number>();
+
+/** Sweep berkala dan kapasitas fail-closed membatasi memori dari identitas acak. */
+function sweepBuckets(store: Map<string, number[]>, now: number, windowSeconds: number): void {
+  if (now - (sweptAt.get(store) ?? -Infinity) < windowSeconds) return;
+  for (const [key, hits] of store) {
+    if (!hits.length || now - hits[hits.length - 1]! > windowSeconds) store.delete(key);
+  }
+  sweptAt.set(store, now);
+}
+
 /**
  * Shared sliding-window check used by every per-key throttle in this module.
  * Prunes hits older than `windowSeconds` out of `store`'s deque for `key`,
@@ -40,6 +52,8 @@ function slidingWindowLimited(
   maxHits: number,
 ): boolean {
   const now = Date.now() / 1000;
+  sweepBuckets(store, now, windowSeconds);
+  if (!store.has(key) && store.size >= MAX_RATE_LIMIT_BUCKETS) return true;
   const dq = store.get(key) ?? [];
   while (dq.length && now - dq[0]! > windowSeconds) dq.shift();
   if (dq.length >= maxHits) {
@@ -62,7 +76,7 @@ function slidingWindowLimited(
  * security audit 2026-06-23).
  */
 export function clientIp(req: FastifyRequest): string {
-  return req.ip || "unknown";
+  return rateLimitClientKey(req.ip || "unknown");
 }
 
 // ---------------------------------------------------------------------------
@@ -93,22 +107,30 @@ const accountFailures = new Map<string, number[]>();
 
 function pruneFailures(key: string, now: number): number[] {
   const window = config.WEB_LOGIN_RATE_LIMIT_WINDOW_SECONDS;
+  sweepBuckets(accountFailures, now, window);
   const dq = accountFailures.get(key) ?? [];
   while (dq.length && now - dq[0]! > window) dq.shift();
-  accountFailures.set(key, dq);
+  if (dq.length) accountFailures.set(key, dq);
+  else accountFailures.delete(key);
   return dq;
 }
 
 /** True if `identifier` has hit the failed-login cap within the window. */
 export function accountLockedOut(identifier: string): boolean {
   if (!identifier) return false;
+  sweepBuckets(accountFailures, Date.now() / 1000, config.WEB_LOGIN_RATE_LIMIT_WINDOW_SECONDS);
+  if (!accountFailures.has(identifier) && accountFailures.size >= MAX_RATE_LIMIT_BUCKETS) return true;
   return pruneFailures(identifier, Date.now() / 1000).length >= config.WEB_LOGIN_RATE_LIMIT_MAX;
 }
 
 /** Record one failed login against `identifier`. */
 export function recordAccountFailure(identifier: string): void {
   if (!identifier) return;
-  pruneFailures(identifier, Date.now() / 1000).push(Date.now() / 1000);
+  const now = Date.now() / 1000;
+  const dq = pruneFailures(identifier, now);
+  if (!accountFailures.has(identifier) && accountFailures.size >= MAX_RATE_LIMIT_BUCKETS) return;
+  if (dq.length < config.WEB_LOGIN_RATE_LIMIT_MAX) dq.push(now);
+  accountFailures.set(identifier, dq);
 }
 
 /** Clear an identifier's failure count (call on a successful login). */
@@ -321,6 +343,8 @@ function pushFailure(
   now: number,
   windowSeconds = TRACK_FAILURE_WINDOW_SECONDS,
 ): void {
+  sweepBuckets(store, now, windowSeconds);
+  if (!store.has(key) && store.size >= MAX_RATE_LIMIT_BUCKETS) return;
   const dq = prunedCount(store, key, now, windowSeconds);
   dq.push(now);
   store.set(key, dq);
@@ -457,6 +481,17 @@ export function checkoutSubmitRateLimited(ip: string): boolean {
 // ---------------------------------------------------------------------------
 
 const linkTelegramHits = new Map<string, number[]>();
+
+const supportIpHits = new Map<string, number[]>();
+const supportUserHits = new Map<string, number[]>();
+export function supportRateLimited(kind: "create" | "reply", userId: number, ip: string): boolean {
+  const max = kind === "create" ? config.SUPPORT_CREATE_RATE_LIMIT_MAX : config.SUPPORT_REPLY_RATE_LIMIT_MAX;
+  const window = config.SUPPORT_RATE_LIMIT_WINDOW_SECONDS;
+  // IP memakai tiga kali kuota akun untuk pelanggan yang berbagi NAT.
+  const ipLimited = slidingWindowLimited(supportIpHits, `${kind}:${rateLimitClientKey(ip)}`, window, max * 3);
+  const userLimited = slidingWindowLimited(supportUserHits, `${kind}:${userId}`, window, max);
+  return ipLimited || userLimited;
+}
 export const LINK_TELEGRAM_RATE_LIMIT_WINDOW_SECONDS = 600; // 10 minutes
 export const LINK_TELEGRAM_RATE_LIMIT_MAX = 5;
 

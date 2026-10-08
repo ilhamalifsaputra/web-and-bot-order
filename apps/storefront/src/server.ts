@@ -5,6 +5,9 @@
  * In production it is mounted by the composition root (apps/server).
  */
 import { dirname, join } from "node:path";
+import { posix } from "node:path";
+import { prisma, ownsTicketAttachment } from "@app/db";
+import { optionalCustomer } from "./plugins/auth";
 import { fileURLToPath } from "node:url";
 import Fastify, { type FastifyInstance } from "fastify";
 import compress from "@fastify/compress";
@@ -109,13 +112,24 @@ export async function buildApp(): Promise<FastifyInstance> {
     const rawPath = req.url.split("?", 1)[0]!;
     const path = redactPath(rawPath);
     logger.info(
-      { method: req.method, path, status: reply.statusCode, ms: Math.round(reply.elapsedTime) },
+      { requestId: req.id, ip: req.ip, route: req.routeOptions.url ? redactPath(req.routeOptions.url) : undefined, method: req.method, path, status: reply.statusCode, ms: Math.round(reply.elapsedTime) },
       "Handled a storefront HTTP request",
     );
     done();
   });
 
   await app.register(cookie);
+  app.addHook("onRequest", async (req, reply) => {
+    let path: string;
+    try { path = posix.normalize(decodeURIComponent(req.url.split("?", 1)[0]!).replaceAll("\\", "/")); }
+    catch { return reply.code(400).send({ error: "invalid_request" }); }
+    if (!path.toLowerCase().startsWith("/uploads/tickets/")) return;
+    reply.header("Cache-Control", "private, no-store");
+    const customer = await optionalCustomer(req);
+    if (!customer || customer.orderScope || !await ownsTicketAttachment(prisma, customer.userId, path)) {
+      return reply.code(404).send({ error: "not_found" });
+    }
+  });
   await app.register(formbody);
   await app.register(multipart);
   // SEO/perf: gzip/br/zstd HTML, JSON and static-asset responses. `global: true`
@@ -141,9 +155,13 @@ export async function buildApp(): Promise<FastifyInstance> {
     prefix: "/uploads/",
     decorateReply: false,
     // Make user-uploaded SVGs inert: no script execution if opened directly.
-    setHeaders: (res: import("@fastify/static").SetHeadersResponse) => {
-      res.setHeader("X-Content-Type-Options", "nosniff");
-      res.setHeader("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'");
+    setHeaders: (res, path) => {
+      // Static metadata menimpa header hook; final header tiket harus tetap privat.
+      if (path.replaceAll("\\", "/").toLowerCase().startsWith(join(UPLOADS_DIR, "tickets").replaceAll("\\", "/").toLowerCase() + "/")) {
+        res.header("Cache-Control", "private, no-store");
+      }
+      res.header("X-Content-Type-Options", "nosniff");
+      res.header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'");
     },
   });
   await app.register(authPlugin);
@@ -153,6 +171,10 @@ export async function buildApp(): Promise<FastifyInstance> {
   // API paths get JSON errors instead — the SPA's fetch layer reads
   // `data.error`, and an HTML body would just make it throw a parse error.
   app.setErrorHandler((err, req, reply) => {
+    const statusCode = err instanceof Error && "statusCode" in err ? err.statusCode : undefined;
+    if (typeof statusCode === "number" && statusCode >= 400 && statusCode < 500) {
+      return reply.code(statusCode).send({ error: statusCode === 413 ? "payload_too_large" : "invalid_request" });
+    }
     logger.error({ err, method: req.method, path: redactPath(req.url.split("?", 1)[0]!) }, "Unhandled error in a storefront request — serving the generic error page to the visitor");
     if (!reply.sent) {
       if (req.url.startsWith("/api/")) {

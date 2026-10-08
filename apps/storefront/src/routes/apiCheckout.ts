@@ -26,6 +26,7 @@
  */
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { ValidationError } from "@app/core/errors";
+import { guestOrderRecoveryUrl } from "@app/core/guestOrderAccess";
 import { StockActorType } from "@app/core/enums";
 import { prisma, getOrderByCode, cancelOrder } from "@app/db";
 import { optionalCustomer, type Customer } from "../plugins/auth";
@@ -96,7 +97,7 @@ const apiCheckoutRoutes: FastifyPluginAsync = async (app) => {
     if (!order || order.userId !== customer.userId) {
       return reply.code(404).send({ error: "not_found" });
     }
-    return reply.send(await payView(order));
+    return reply.send({ ...await payView(order), read_only: Boolean(customer.orderScope), recovery_url: customer.user.isGuest && !customer.orderScope ? guestOrderRecoveryUrl("", order.orderCode) : null });
   });
 
   // ---- Status poll (the SPA polls every 5s; redirect set once delivered) ----

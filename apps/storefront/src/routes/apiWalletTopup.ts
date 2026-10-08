@@ -228,6 +228,7 @@ const apiWalletTopupRoutes: FastifyPluginAsync = async (app) => {
     const customer = await requireCustomer(req, reply);
     if (!customer) return;
     if (!csrfHeaderOk(req, customer)) return reply.code(403).send({ error: "csrf_failed" });
+    if (checkoutSubmitRateLimited(clientIp(req))) return reply.header("Retry-After", "60").code(429).send({ error: "error.rate_limited" });
 
     const [fxRate, tokopay, bybit, bybitBsc, binance, paydisini, nowpayments] = await Promise.all([
       getUsdIdrRate(prisma),
@@ -345,3 +346,4 @@ const apiWalletTopupRoutes: FastifyPluginAsync = async (app) => {
 };
 
 export default apiWalletTopupRoutes;
+import { checkoutSubmitRateLimited, clientIp } from "../rateLimit";

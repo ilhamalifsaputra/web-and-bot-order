@@ -69,8 +69,9 @@ export async function establishSession(
   req: FastifyRequest,
   reply: FastifyReply,
   user: SessionUser,
+  orderScope?: string,
 ): Promise<CustomerSession> {
-  const guestCart = readGuestCart(req);
+  const guestCart = orderScope ? [] : readGuestCart(req);
   // The cart the merge builds ON TOP OF — the buyer's existing account cart,
   // which the guest lines join rather than replace.
   //
@@ -153,11 +154,11 @@ export async function establishSession(
   // account has none yet and is not a guest row, so a stale cookie never
   // overwrites a choice already made here or in the bot.
   const cookieCurrency = requestCurrency(req);
-  if (cookieCurrency) await adoptUserPreferredCurrencyIfUnset(prisma, user.id, cookieCurrency);
+  if (cookieCurrency && !orderScope) await adoptUserPreferredCurrencyIfUnset(prisma, user.id, cookieCurrency);
 
   const jti = newJti();
   await setSetting(prisma, shopSessionJtiKey(user.id), jti);
-  const { raw, data } = makeCustomerSession(user.id, user.telegramId, jti);
+  const { raw, data } = makeCustomerSession(user.id, user.telegramId, jti, orderScope);
   void reply.setCookie(SHOP_COOKIE_NAME, raw, {
     path: "/",
     httpOnly: true,

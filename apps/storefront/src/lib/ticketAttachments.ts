@@ -60,6 +60,18 @@ export interface TicketSubmission {
   orderCode: string | null;
 }
 
+/** Batas parser tetap memakai pesan validasi lampiran yang dipahami klien. */
+async function* ticketParts(req: FastifyRequest) {
+  try {
+    yield* req.parts({ limits: { fileSize: MAX_VIDEO_BYTES, files: MAX_TICKET_ATTACHMENTS, fields: 8, parts: 11, fieldSize: 8192 } });
+  } catch (error) {
+    const code = error instanceof Error && "code" in error ? error.code : undefined;
+    if (code === "FST_FILES_LIMIT") throw new ValidationError("web.support_attach_error_count");
+    if (code === "FST_REQ_FILE_TOO_LARGE") throw new ValidationError("web.support_attach_error_size");
+    throw error;
+  }
+}
+
 /**
  * Reads a `message` text field plus up to `MAX_TICKET_ATTACHMENTS` `attachments`
  * file parts off a multipart request. Throws `ValidationError` (i18n key,
@@ -81,7 +93,7 @@ export async function parseTicketMultipart(req: FastifyRequest): Promise<TicketS
   let orderCode = "";
   const attachments: ParsedAttachment[] = [];
   let fileCount = 0;
-  for await (const part of req.parts({ limits: { fileSize: MAX_VIDEO_BYTES } })) {
+  for await (const part of ticketParts(req)) {
     if (part.type === "field" && part.fieldname === "message") {
       message = String(part.value ?? "");
       continue;
@@ -152,7 +164,7 @@ export async function parseNewTicketMultipart(req: FastifyRequest): Promise<NewT
   let orderCode = "";
   const attachments: ParsedAttachment[] = [];
   let fileCount = 0;
-  for await (const part of req.parts({ limits: { fileSize: MAX_VIDEO_BYTES } })) {
+  for await (const part of ticketParts(req)) {
     if (part.type === "field") {
       if (part.fieldname === "subject") subject = String(part.value ?? "");
       else if (part.fieldname === "category") category = String(part.value ?? "");
@@ -212,7 +224,7 @@ async function validateAttachment(buffer: Buffer, mimetype: string): Promise<Par
 }
 
 async function writeAttachment(buffer: Buffer, ext: string): Promise<string> {
-  const filename = `evidence-${randomBytes(8).toString("hex")}.${ext}`;
+  const filename = `evidence-${randomBytes(16).toString("hex")}.${ext}`;
   await mkdir(TICKET_DIR, { recursive: true });
   await writeFile(join(TICKET_DIR, filename), buffer);
   return `${TICKET_URL_PREFIX}/${filename}`;

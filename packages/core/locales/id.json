@@ -1,4 +1,6 @@
 {
+  "web.save_recovery_link": "Simpan tautan akses pesanan (30 hari)",
+  "web.track_access_token": "Token akses pesanan",
   "web.field_optional": "Opsional",
   "web.field_required_hint": "Isi {field} untuk melanjutkan.",
   "web.checkout_account_hint": "Lengkapi data akun yang valid untuk melanjutkan.",
@@ -828,10 +830,10 @@
   "web.checkout_empty_title": "Belum ada yang bisa dibayar",
   "web.checkout_unavailable": "Halaman pembayaran belum bisa dimuat",
   "web.track_title": "Lacak pesanan",
-  "web.track_intro": "Masukkan kode pesanan yang tampil di halaman pesanan setelah checkout. Perlakukan kode ini seperti kata sandi — itu saja yang dibutuhkan untuk membuka pesananmu.",
+  "web.track_intro": "Buka tautan pemulihan dari email pesanan atau masukkan kode dan token akses. Tautan berlaku 30 hari. Simpan tautan ini seperti kata sandi.",
   "web.track_submit": "Cari pesananmu",
   "web.track_not_found_title": "Pesanannya belum bisa kami buka",
-  "web.track_not_found": "Kode pesanan itu belum cocok dengan pesanan yang bisa kami buka. Kode pesanan bentuknya seperti ORD-20260101-ABCD dan muncul di halaman pesanan tepat setelah checkout — cek lagi, lalu coba lagi. Kalau kamu punya akun toko, coba masuk saja — pesanan yang dibuat sambil masuk akun muncul di Pesanan saya.",
+  "web.track_not_found": "Pesanan belum bisa dibuka. Periksa tautan pemulihan dari email. Jika tautan kedaluwarsa atau email lama hanya berisi kode pesanan, hubungi toko. Jika memiliki akun, masuk untuk membuka pesanan.",
   "web.track_rate_limited_title": "Terlalu banyak percobaan",
   "web.track_rate_limited": "Terlalu banyak percobaan — tunggu sebentar, lalu coba lagi.",
   "web.track_contact_shop": "Hubungi toko",
@@ -1316,7 +1318,8 @@
   "admin.banner_removed_undo": "✅ Banner dihapus. Tap ↩️ Urungkan di bawah untuk memulihkan (dalam 30 detik).",
   "admin.banner_restored": "↩️ Banner dipulihkan.",
   "admin.undo_expired": "Waktu urungkan habis — banner tetap dihapus.",
-  "error.stale_screen": "Layar ini sudah kedaluwarsa — kirim /start untuk membuka menu baru.",
+  "error.stale_screen": "Layar ini sudah kedaluwarsa — kirim /start untuk membuka menu baru."
+,
   "transaction.waiting_title": "Selesaikan pembayaran",
   "transaction.waiting_body": "Selesaikan pembayaran untuk melanjutkan.",
   "transaction.payment_detected_title": "Pembayaran terdeteksi",

@@ -70,6 +70,22 @@ export const csrfProtect: preHandlerHookHandler[] = [currentCustomer, csrfCheck]
 
 const authPlugin: FastifyPluginAsync = async (app) => {
   app.decorateRequest("customer", null);
+  // Sesi recovery hanya membuka satu pesanan; tidak dapat mengubah akun/wallet.
+  app.addHook("onRequest", async (req, reply) => {
+    const session = readCustomerSession(req.cookies[SHOP_COOKIE_NAME]);
+    if (!session?.orderScope) return;
+    const path = req.url.split("?", 1)[0]!;
+    if (!path.startsWith("/api/") && !path.startsWith("/account/settings/")) return;
+    const own = encodeURIComponent(session.orderScope);
+    const allowed = [
+      `/api/v1/account/orders/${own}`, `/api/v1/account/orders/${own}/digiflazz/stream`,
+      `/api/v1/orders/${own}/pay`, `/api/v1/orders/${own}/status`,
+      "/api/v1/pages/context", "/api/v1/auth/logout", "/api/v1/track",
+    ];
+    if (!allowed.includes(path) || (req.method !== "GET" && path !== "/api/v1/auth/logout" && path !== "/api/v1/track")) {
+      return reply.code(404).send({ error: "not_found" });
+    }
+  });
 };
 
 export default fp(authPlugin, { name: "storefront-auth" });

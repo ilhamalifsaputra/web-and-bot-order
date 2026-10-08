@@ -70,3 +70,4 @@ export * from "./crud/ledgerPostings";
 export * from "./crud/reconcileLedger";
 export * from "./crud/settlements";
 export * from "./crud/overpayments";
+export { ownsTicketAttachment } from "./crud/ticketAccess";

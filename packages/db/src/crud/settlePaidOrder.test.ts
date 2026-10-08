@@ -41,6 +41,7 @@ import {
   StockEventType,
 } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
+import { verifyGuestOrderAccess } from "@app/core/guestOrderAccess";
 import {
   validateFieldAnswer,
   AdditionalFieldType,
@@ -1128,7 +1129,11 @@ describe("BUYER_EMAIL_ORDER_READY (guest buyer's order-ready email)", () => {
       const payload = JSON.parse((await readyRows(order.id))[0]!.payloadJson) as Record<string, unknown>;
       // Trailing slash on the configured base must not double up.
       expect(payload.order_url).toBe(`https://shop.example.com/checkout/${order.orderCode}/pay`);
-      expect(payload.track_url).toBe("https://shop.example.com/track");
+      const recovery = new URL(String(payload.track_url));
+      expect(recovery.origin + recovery.pathname).toBe("https://shop.example.com/track");
+      const params = new URLSearchParams(recovery.hash.slice(1));
+      expect(params.get("order_code")).toBe(order.orderCode);
+      expect(verifyGuestOrderAccess(params.get("access_token"), order.orderCode)).toBe(true);
     } finally {
       config.SHOP_PUBLIC_URL = previousShop;
       config.PUBLIC_URL = previousPublic;
@@ -1146,7 +1151,11 @@ describe("BUYER_EMAIL_ORDER_READY (guest buyer's order-ready email)", () => {
 
       const payload = JSON.parse((await readyRows(order.id))[0]!.payloadJson) as Record<string, unknown>;
       expect(payload.order_url).toBe(`https://fallback.example.com/checkout/${order.orderCode}/pay`);
-      expect(payload.track_url).toBe("https://fallback.example.com/track");
+      const recovery = new URL(String(payload.track_url));
+      expect(recovery.origin + recovery.pathname).toBe("https://fallback.example.com/track");
+      const params = new URLSearchParams(recovery.hash.slice(1));
+      expect(params.get("order_code")).toBe(order.orderCode);
+      expect(verifyGuestOrderAccess(params.get("access_token"), order.orderCode)).toBe(true);
     } finally {
       config.PUBLIC_URL = previousPublic;
     }

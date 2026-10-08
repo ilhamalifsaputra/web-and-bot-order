@@ -45,7 +45,7 @@ export default function OrderDetailPage() {
   // provider (or finished) the buyer must never be offered an editor, even for
   // the instant before a stale flag refreshes.
   const dispatched = ["SUBMITTING", "PROCESSING", "SUCCESS"].includes(data?.order.fulfillment?.status ?? "");
-  const canEdit = !dispatched && (data?.order.fulfillment?.can_edit_customer_data ?? Boolean(data?.processing));
+  const canEdit = !data?.read_only && !dispatched && (data?.order.fulfillment?.can_edit_customer_data ?? Boolean(data?.processing));
 
   useEffect(() => {
     if (!canEdit) setEditMode(false);
@@ -176,6 +176,7 @@ export default function OrderDetailPage() {
           <h1 className="page-title block! break-words">
             {t("web.order_code")} <span className="font-mono break-all">{order.code}</span>
           </h1>
+          {data.recovery_url && <a className="text-sm underline" href={data.recovery_url}>{t("web.save_recovery_link")}</a>}
         </div>
         <StatusBadge value={order.status} fulfillment={order.fulfillment} />
       </div>

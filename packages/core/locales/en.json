@@ -1,4 +1,6 @@
 {
+  "web.save_recovery_link": "Save order access link (30 days)",
+  "web.track_access_token": "Order access token",
   "web.field_optional": "Optional",
   "web.field_required_hint": "Enter {field} to continue.",
   "web.checkout_account_hint": "Complete valid account details to continue.",
@@ -828,10 +830,10 @@
   "web.checkout_empty_title": "There's nothing to check out yet",
   "web.checkout_unavailable": "We couldn't load your checkout",
   "web.track_title": "Track your order",
-  "web.track_intro": "Enter the order code shown on your order page after checkout. Treat it like a password — it's all that's needed to open the order.",
+  "web.track_intro": "Open the recovery link from your order email or enter your order code and access token. The link lasts 30 days. Keep it like a password.",
   "web.track_submit": "Find my order",
   "web.track_not_found_title": "We couldn't open that order",
-  "web.track_not_found": "That order code didn't match anything we can open. An order code looks like ORD-20260101-ABCD and appears on the order page right after checkout — check it and try again. If you have a shop account, sign in instead — orders placed while signed in open from My orders.",
+  "web.track_not_found": "We could not open this order. Check the recovery link in your email. Contact the shop if it expired or your older email only contains an order code. If you have an account, sign in to view your orders.",
   "web.track_rate_limited_title": "Too many attempts",
   "web.track_rate_limited": "Too many attempts — wait a moment, then try again.",
   "web.track_contact_shop": "Contact the shop",
@@ -1316,7 +1318,8 @@
   "admin.banner_removed_undo": "✅ Banner removed. Tap ↩️ Undo below to restore it (within 30 seconds).",
   "admin.banner_restored": "↩️ Banner restored.",
   "admin.undo_expired": "Undo window expired — banner stays removed.",
-  "error.stale_screen": "This screen is outdated — send /start to open a fresh menu.",
+  "error.stale_screen": "This screen is outdated — send /start to open a fresh menu."
+,
   "transaction.waiting_title": "Complete your payment",
   "transaction.waiting_body": "Complete your payment to continue.",
   "transaction.payment_detected_title": "Payment detected",

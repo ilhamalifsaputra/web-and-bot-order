@@ -28,6 +28,12 @@ export interface ApiError extends Error {
    * figure.
    */
   errorArgs?: Record<string, string>;
+  /**
+   * The HTTP status of the failed response, when one arrived. Lets a page tell
+   * an expected refusal (e.g. a 403 for a role that may not read a route) from
+   * a real failure without parsing `message`.
+   */
+  status?: number;
 }
 
 /**
@@ -51,10 +57,11 @@ function readErrorArgs(data: unknown): Record<string, string> | undefined {
 
 /** The Error a failed call rejects with: the server's key (or a generic
  * "<path> responded <status>") plus the figures its copy names. */
-function apiError(message: string, data: unknown): ApiError {
+function apiError(message: string, data: unknown, status?: number): ApiError {
   const err = new Error(message) as ApiError;
   const args = readErrorArgs(data);
   if (args) err.errorArgs = args;
+  if (status !== undefined) err.status = status;
   return err;
 }
 
@@ -71,7 +78,7 @@ export async function publicPost<T>(path: string, body: unknown): Promise<T> {
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({})) as { error?: string };
-    throw apiError(data.error ?? `${path} failed ${res.status}`, data);
+    throw apiError(data.error ?? `${path} failed ${res.status}`, data, res.status);
   }
   // Same guard as apiGet/apiPost/apiPatch/apiDelete below: a non-`/api` route
   // that 303s to /login (as `/setup/restart` did when it was this function's
@@ -107,7 +114,7 @@ async function throwForResponse(res: Response, path: string): Promise<never> {
   } catch {
     // Not JSON — fall through to the generic message below.
   }
-  throw apiError(data.error ?? `${path} responded ${res.status}`, data);
+  throw apiError(data.error ?? `${path} responded ${res.status}`, data, res.status);
 }
 
 /** Shared success-path guard for every helper below: `res.ok` doesn't

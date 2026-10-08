@@ -164,7 +164,7 @@ describe("SupportPage", () => {
     }
 
     expect(within(statCard("Open")).getByText("12")).toBeInTheDocument();
-    expect(within(statCard("Waiting Customer")).getByText("4")).toBeInTheDocument();
+    expect(within(statCard("Waiting for customer")).getByText("4")).toBeInTheDocument();
     expect(within(statCard("Overdue")).getByText("2")).toBeInTheDocument();
     expect(within(statCard("Unassigned")).getByText("6")).toBeInTheDocument();
     expect(within(statCard("Resolved Today")).getByText("9")).toBeInTheDocument();

@@ -317,6 +317,12 @@ export function OrderUnitsCard({
     });
   }
 
+  /** On a ticket the admin is acting on a complaint already made, so the
+   *  actions read as "create a replacement" rather than "report an issue";
+   *  the order page keeps its original wording. Same route either way. */
+  const ticketMode = supportTicketId != null;
+  const reportLabel = ticketMode ? "Create replacement" : "Report Issue";
+
   const allReportableSelected = reportable.length > 0 && reportable.every((row) => selected.has(row.id));
 
   return (
@@ -336,7 +342,7 @@ export function OrderUnitsCard({
               onClick={() => openReportDialog(Array.from(selectedIds))}
             >
               <TriangleAlert className="h-4 w-4" />
-              Report Issue ({selectedIds.size} {selectedIds.size === 1 ? "unit" : "units"})
+              {reportLabel} ({selectedIds.size} {selectedIds.size === 1 ? "unit" : "units"})
             </Button>
             <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
               Clear
@@ -461,7 +467,7 @@ export function OrderUnitsCard({
                       onClick={() => openReportDialog([row.id])}
                     >
                       <TriangleAlert className="h-4 w-4" />
-                      Report Issue
+                      {reportLabel}
                     </Button>
                   )}
                   {row.openRequest?.status === "AWAITING_STOCK" && (
@@ -508,9 +514,13 @@ export function OrderUnitsCard({
         <DialogContent showCloseButton={false}>
           <DialogHeader>
             <DialogTitle>
-              {reportTarget && reportTarget.length > 1
-                ? `Report ${reportTarget.length} bad accounts?`
-                : "Report a bad account?"}
+              {ticketMode
+                ? reportTarget && reportTarget.length > 1
+                  ? `Create replacements for ${reportTarget.length} units?`
+                  : "Create a replacement?"
+                : reportTarget && reportTarget.length > 1
+                  ? `Report ${reportTarget.length} bad accounts?`
+                  : "Report a bad account?"}
             </DialogTitle>
             <DialogDescription>
               The delivered account is retired and a spare is sent to the buyer straight away. If none is in
@@ -536,7 +546,13 @@ export function OrderUnitsCard({
                 setReportTarget(null);
               }}
             >
-              {report.isPending ? "Reporting…" : "Report"}
+              {ticketMode
+                ? report.isPending
+                  ? "Creating…"
+                  : "Create replacement"
+                : report.isPending
+                  ? "Reporting…"
+                  : "Report"}
             </Button>
           </DialogFooter>
         </DialogContent>

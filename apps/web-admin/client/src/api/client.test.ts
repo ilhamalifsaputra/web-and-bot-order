@@ -23,6 +23,11 @@ describe("apiGet", () => {
     await expect(apiGet("/api/dashboard/kpis")).rejects.toThrow("403");
   });
 
+  it("carries the response's HTTP status on the thrown error", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 403, text: async () => "This view isn't available to your role." })));
+    await expect(apiGet("/api/orders/1")).rejects.toMatchObject({ status: 403 });
+  });
+
   // Reproduces the bug: fetch() follows a 303 session/setup redirect (see
   // plugins/auth.ts and plugins/setupGate.ts) automatically, landing on a
   // 200 OK HTML page — res.ok is true, but res.json() throws a raw

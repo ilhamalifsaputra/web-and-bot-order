@@ -4174,6 +4174,23 @@ describe("runDigiflazzCatalogSync — one sync at a time", () => {
     expect(outcome).toEqual({ status: "done", result: { updated: 0, deactivated: 0, added: 0, reactivated: 0 } });
   });
 
+  it("fetches the price list through an injected fetchPriceList instead of getPriceList when one is given", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    await importDigiflazzBrand(prisma, {
+      brand: "Mobile Legends", categoryId: category.id,
+      rows: [{ buyerSkuCode: "ml100", productName: "Mobile Legends 100 Diamond", price: "15000", costPrice: "14000" }],
+    });
+    const fetchPriceList = vi.fn().mockResolvedValue([priceListItem({ buyerSkuCode: "ml100", price: new Decimal(14500) })]);
+
+    const outcome = await runDigiflazzCatalogSync(prisma, undefined, { fetchPriceList });
+    expect(outcome.status).toBe("done");
+    expect(fetchPriceList).toHaveBeenCalledTimes(1);
+    expect(fetchPriceList).toHaveBeenCalledWith({ username: "shopuser", apiKey: "shopkey" });
+    expect(digiflazzMock.getPriceList).not.toHaveBeenCalled();
+    const denom = await prisma.denomination.findFirstOrThrow({ where: { supplierSku: "ml100" } });
+    expect(denom.costPrice?.toString()).toBe("14500");
+  });
+
   it("answers busy without fetching the price list while another sync holds the lease", async () => {
     expect(await claimDigiflazzCatalogSyncLease(prisma)).not.toBeNull();
     digiflazzMock.getPriceList.mockResolvedValue([]);

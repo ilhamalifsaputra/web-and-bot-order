@@ -1,6 +1,10 @@
 import path from "node:path";
 import { configDefaults, defineConfig } from "vitest/config";
 
+// Matches `glob` under any directory of an absolute changed-file path,
+// including dot-directories such as `.claude/worktrees/<topic>`.
+const anywhere = (glob: string) => `{**/,**/.*/**/}${glob}`;
+
 export default defineConfig({
   resolve: {
     alias: {
@@ -63,8 +67,9 @@ export default defineConfig({
     // Vitest's 5s default is a unit-test budget, but most of this suite is
     // real-Postgres integration tests: tests/helpers/testdb.ts gives every test
     // file its own temp DB (so there is no cross-file lock contention to
-    // hide here) and each one pays a synchronous `prisma db push` plus real
-    // fsync-bound writes. The heavy ones therefore cost seconds of honest
+    // hide here) and each one pays for building that schema (an in-database
+    // copy of the run's template, see tests/helpers/schemaFromTemplate.ts)
+    // plus real fsync-bound writes. The heavy ones therefore cost seconds of honest
     // work — the 270-unit cart in packages/db/src/crud/order_creation.test.ts
     // takes ~3.0s on its own and the /setup/owner retry in
     // apps/web-admin/test/web.test.ts ~2.3s — leaving under 2x headroom
@@ -77,9 +82,47 @@ export default defineConfig({
     // ~6x the slowest known test: still short enough that a genuine hang
     // fails the run rather than hanging CI.
     testTimeout: 20_000,
-    // Real PostgreSQL setup runs Prisma db push per file; parallel startup
-    // can exceed Vitest4's 10s hook default even when all assertions are fast.
-    hookTimeout: 30_000,
+    // Vitest's 10s hook default is too short for the one hook per run that
+    // builds the test-schema template (db push + chart-of-accounts seed +
+    // migrate diff, ~15s idle and more under load), and for the beforeAll
+    // hooks in the other workers that wait on that build's advisory lock:
+    // makeTestDb() runs inside a test file's beforeAll, so on a loaded machine
+    // the files that arrive first would time out waiting rather than fail for
+    // a real reason. 180s still fails a genuinely hung hook.
+    hookTimeout: 180_000,
+    // `vitest run --changed master` (pnpm test:changed) only reruns tests whose
+    // import graph touches a changed file. Some inputs reach nearly every test
+    // without being visible in that graph: the Prisma schema (every DB test
+    // builds its schema from it), the shared test helpers, each app's
+    // setup-env.ts (a safety net; tests import it), config files, and the
+    // lockfile. Files that tests read from disk instead of importing are
+    // invisible too: detection `__fixtures__` and the i18n locale JSON that
+    // packages/core/src/i18n.ts loads with readFileSync. Editing any of these
+    // falls back to the full suite instead of silently running nothing.
+    // Vitest matches these globs against absolute paths, and every worktree
+    // lives under `.claude/`, which micromatch's `**` skips by default, so
+    // `anywhere` adds a dot-directory-crossing alternative. The first three
+    // entries are Vitest's own defaults, repeated because setting this option
+    // replaces them.
+    forceRerunTriggers: [
+      "package.json",
+      "vitest.config.*",
+      "vite.config.*",
+      "prisma/schema.prisma",
+      "tests/helpers/**",
+      "test/setup-env.ts",
+      "pnpm-lock.yaml",
+      "__fixtures__/**",
+      "packages/core/locales/*.json",
+    ].map(anywhere),
+    // Names this run's template Postgres schema; the first test file that
+    // needs a database builds it (db push + chart-of-accounts seed, once) and
+    // tests/helpers/testdb.ts and pgTestSchema.ts copy each file's schema from
+    // it in-database instead of spawning those two commands for every file.
+    // Runs without DB tests (guard runs, jsdom client runs) do no template
+    // work, though this file's globalSetup still runs and only picks the name. See
+    // tests/helpers/globalSetup.ts and schemaFromTemplate.ts.
+    globalSetup: ["tests/helpers/globalSetup.ts"],
     // @testing-library/react's automatic afterEach(cleanup) only registers
     // when it detects a global test-framework `afterEach` — without this,
     // each jsdom test's rendered DOM leaks into the next test in the same

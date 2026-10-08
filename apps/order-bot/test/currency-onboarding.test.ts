@@ -3,9 +3,6 @@ import "./setup-db";
 
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { logger } from "@app/core/logger";
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { prisma, upsertUser, setUserLanguage, setUserPreferredCurrency, getUser, setSetting } from "@app/db";
 import { t as coreT } from "@app/core/i18n";
 import { buildSampleData, resetDb } from "../../../tests/helpers/sampleData";
@@ -412,17 +409,6 @@ describe("requireCurrency guard", () => {
 describe("requireCurrency runs after joinGate", () => {
   beforeEach(async () => {
     await resetDb(prisma);
-  });
-
-  it("main.ts wires requireCurrency after registeredUser, rateLimit, commerceGate and joinGate", () => {
-    const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "src", "main.ts"), "utf8");
-    const at = (mw: string) => src.indexOf(`bot.use(${mw});`);
-    for (const mw of ["registeredUser", "rateLimit", "commerceGate", "joinGate", "requireCurrency"]) {
-      expect(at(mw), `${mw} is wired`).toBeGreaterThan(-1);
-    }
-    expect(at("requireCurrency")).toBeGreaterThan(at("joinGate"));
-    expect(at("joinGate")).toBeGreaterThan(at("rateLimit"));
-    expect(at("rateLimit")).toBeGreaterThan(at("registeredUser"));
   });
 
   it("a not-yet-joined user with no currency sees the join prompt first, then reaches the currency flow right after joining", async () => {

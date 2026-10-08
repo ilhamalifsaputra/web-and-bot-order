@@ -288,6 +288,25 @@ checklist for the task list.
   follows it.
 
 ## Tests
-- `pnpm typecheck` (runs `pnpm -r typecheck` + `tsc -p tsconfig.test.json`) and
-  `pnpm test` (`vitest run`) must stay green. Add tests with each behavior change;
-  prefer crud-level unit tests for logic (e.g. `productRating`, `matchByAmount`).
+- **Three tiers; run the cheapest one that fits.** Add tests with each behavior
+  change; prefer crud-level unit tests for logic (e.g. `productRating`, `matchByAmount`).
+  - *While fixing / per task* (sessions and implementer subagents): run the file
+    you touched (`pnpm exec vitest run <path>`) or `pnpm test:changed` (tests
+    that import anything changed vs `master`, plus the always-run guard tests in
+    `test:guards`). Typecheck the package you touched
+    (`pnpm --filter <pkg> typecheck`).
+  - *Per-task reviewers*: read the implementer's `test:changed` output; don't
+    rerun the full suite.
+  - *Once, after rebasing onto latest `master` and before merging*:
+    `pnpm typecheck && pnpm test` (full, unchanged). `pnpm typecheck` runs
+    `pnpm -r typecheck` + `tsc -p tsconfig.test.json`.
+  - A change to `prisma/schema.prisma`, `tests/helpers/**`, a `setup-env.ts`,
+    a config file (`package.json`, `vitest.config.*`, `vite.config.*`), the
+    lockfile, a `__fixtures__/**` file or the locale JSON
+    (`packages/core/locales/*.json`) makes `test:changed` run everything
+    automatically (`forceRerunTriggers` in `vitest.config.ts`). A new guard test
+    that reads source files from disk (and so is invisible to the module graph)
+    must be added to `test:guards` in the root `package.json`, and must import
+    no database setup. `test:changed` does not run the `pretest` checks
+    (migration drift, frontend boundaries, lint, detection purity); the full
+    gate does, so a green `test:changed` does not mean lint clean.

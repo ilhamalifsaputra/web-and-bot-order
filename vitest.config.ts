@@ -81,6 +81,11 @@ export default defineConfig({
         "__fixtures__/**",
       ].map(anywhere),
     ],
+    // Builds one template Postgres schema per run (db push + chart-of-accounts
+    // seed, once) that tests/helpers/testdb.ts and pgTestSchema.ts copy each
+    // test file's schema from in-database, instead of spawning those two
+    // commands for every file. See tests/helpers/globalSetup.ts.
+    globalSetup: ["tests/helpers/globalSetup.ts"],
     environmentMatchGlobs: [
       ["apps/web-admin/client/**", "jsdom"],
       ["apps/storefront/client/**", "jsdom"],

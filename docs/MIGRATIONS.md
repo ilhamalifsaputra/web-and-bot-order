@@ -123,6 +123,20 @@ tanpa `--accept-data-loss`. Sesudah SQL diterapkan, sinkronisasi skema rutin
 melalui entrypoint Docker tetap dapat berjalan. File ini tidak idempoten;
 jangan jalankan ulang pada database yang sudah memiliki kolom dan index tersebut.
 
+Entrypoint Docker sekarang otomatis menjalankan
+`deploy/sql/fulfillment-message-unique-index.sql` sebelum `db push`. Script ini
+idempoten: pada database kosong langkah ini dilewati, sedangkan pada tabel
+existing script mengunci penulisan sementara, memeriksa duplikasi pasangan
+non-null, lalu membuat unique index jika belum ada. Tidak ada baris yang diubah
+atau dihapus. Jika ada duplikasi atau SQL gagal, container tidak akan start dan
+error menjelaskan penyebabnya. Setelah index siap, `db push` menerapkan kolom
+lainnya dengan perlindungan data-loss tetap aktif.
+
+Entrypoint tidak menjalankan `migrate deploy`, sesuai mekanisme `db push` repo
+ini. Ini menghindari P3005 pada database existing tanpa baseline riwayat Prisma.
+Untuk menerapkan perbaikan Docker, rebuild image lalu recreate service server;
+restart saja tidak memasukkan script baru ke image.
+
 Database PostgreSQL lokal `bot_order`, schema `public`, telah diperbarui pada
 2026-10-08. Pemeriksaan sesudahnya memastikan keenam kolom dan index unik ada,
 jumlah baris tetap, dan diff database terhadap `schema.prisma` kosong.

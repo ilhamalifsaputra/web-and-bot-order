@@ -35,6 +35,7 @@ TSX="$APP_ROOT/node_modules/.bin/tsx"
 SCHEMA="$APP_ROOT/prisma/schema.prisma"
 CREDENTIAL_KEY_FILE="$DATA_DIR/credential_encryption.key"
 LEDGER_SEED="$APP_ROOT/scripts/seed-chart-of-accounts.ts"
+FULFILLMENT_INDEX_SQL="$APP_ROOT/deploy/sql/fulfillment-message-unique-index.sql"
 
 # Data-only migrations re-applied after every successful schema push on the
 # Postgres path. These are the releases' steps that `prisma db push` cannot
@@ -65,16 +66,21 @@ RUN_AS=""
 
 log() { echo "entrypoint: $*"; }
 
-# `prisma db push` syncs schema.prisma → DB. Deliberately WITHOUT
-# --accept-data-loss: if a change would drop data, the push must fail and
-# crash-loop the container (loud, visible) rather than quietly delete rows.
-# Resolve those by hand — docs/MIGRATIONS.md has the procedure.
-db_migrate() {
+# This deployment uses db push, without a Prisma migration-history baseline.
+# Do not run migrate deploy here: existing databases would fail with P3005.
+# Apply this reviewed additive index first because db push warns about any new
+# unique constraint on a populated table, even when no duplicate rows exist.
+prepare_fulfillment_index() {
+  log "Preparing the fulfillment_messages unique index before schema push..."
   # shellcheck disable=SC2086 # RUN_AS is an intentional word-split prefix
-  log "Applying pending SQL migrations via 'prisma migrate deploy'..."
-  $RUN_AS "$PRISMA" migrate deploy --schema "$SCHEMA" || true
+  if ! $RUN_AS "$PRISMA" db execute --schema "$SCHEMA" --file "$FULFILLMENT_INDEX_SQL"; then
+    log "ERROR: preparing the fulfillment_messages unique index failed; the container will not start. Read the SQL error above. If duplicate (chat_id, message_id) pairs exist, inspect and resolve them manually; no rows are deleted automatically. Procedure: docs/MIGRATIONS.md." >&2
+    exit 1
+  fi
 }
 
+# `prisma db push` syncs schema.prisma to DB without --accept-data-loss.
+# Changes that Prisma considers unsafe stop startup; see docs/MIGRATIONS.md.
 db_push() {
   # shellcheck disable=SC2086 # RUN_AS is an intentional word-split prefix
   if ! $RUN_AS "$PRISMA" db push --schema "$SCHEMA" --skip-generate; then
@@ -187,7 +193,7 @@ postgres_migrate() {
   # any change that would drop rows fails the push and stops the container.
   log "No pre-deploy snapshot is taken on the Postgres path (the dump runs on the host, not in this container). 'prisma db push' below still refuses any change that would drop data. Recommended before every deploy: take a dump yourself — see 'Backup — Postgres' in deploy/backup/README.md."
   wait_for_database
-  db_migrate
+  prepare_fulfillment_index
   db_push
   log "Schema is in sync with schema.prisma."
   seed_ledger_accounts

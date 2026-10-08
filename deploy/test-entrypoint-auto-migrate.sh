@@ -1,6 +1,6 @@
 #!/bin/sh
 # Manual test harness for docker-entrypoint.sh's auto_migrate() — specifically
-# the Postgres deploy sequence it automates (schema push → ledger chart-of-accounts
+# the Postgres deploy sequence it automates (unique index → schema push → ledger chart-of-accounts
 # seed → data-only migrations) and the four ways that sequence is allowed to stop.
 #
 # No container and no database needed: the same APP_ROOT override plus
@@ -37,6 +37,8 @@ make_app_root() {
   mkdir -p "$TMP_ROOT/data" "$TMP_ROOT/node_modules/.bin" "$TMP_ROOT/prisma" "$TMP_ROOT/scripts"
   : > "$TMP_ROOT/prisma/schema.prisma"
   : > "$TMP_ROOT/scripts/seed-chart-of-accounts.ts"
+  mkdir -p "$TMP_ROOT/deploy/sql"
+  cp "$SCRIPT_DIR/deploy/sql/fulfillment-message-unique-index.sql" "$TMP_ROOT/deploy/sql/"
   for _name in $DATA_MIGRATIONS_LIST; do
     mkdir -p "$TMP_ROOT/prisma/migrations/$_name"
     : > "$TMP_ROOT/prisma/migrations/$_name/migration.sql"
@@ -49,6 +51,7 @@ case " $* " in
   *" --stdin "*) cat >/dev/null; exit "${STUB_PROBE_RC:-0}" ;;
   *" migrate deploy "*) exit "${STUB_MIGRATE_RC:-0}" ;;
   *" db push "*) exit "${STUB_PUSH_RC:-0}" ;;
+  *fulfillment-message-unique-index.sql*) exit "${STUB_INDEX_RC:-0}" ;;
   *" --file "*) exit "${STUB_EXECUTE_RC:-0}" ;;
 esac
 exit 0
@@ -66,7 +69,7 @@ STUB
 }
 
 # The recorded commands reduced to one word each, in order, so a case can assert
-# the whole sequence as a single string: probe migrate push seed data.
+# the whole sequence as a single string: probe index push seed data.
 steps() {
   _out=""
   while IFS= read -r _line; do
@@ -75,6 +78,7 @@ steps() {
       *"migrate deploy"*) _out="$_out migrate" ;;
       *"db push"*) _out="$_out push" ;;
       tsx*seed-chart-of-accounts.ts) _out="$_out seed" ;;
+      *fulfillment-message-unique-index.sql*) _out="$_out index" ;;
       *--file*) _out="$_out data" ;;
       *) _out="$_out unexpected[$_line]" ;;
     esac
@@ -117,7 +121,7 @@ expect_output() {
 # --- Case 1: the full Postgres sequence, in order ---------------------------
 case_postgres_runs_push_then_seed_then_data() {
   make_app_root
-  _want="probe migrate push seed"
+  _want="probe index push seed"
   for _name in $DATA_MIGRATIONS_LIST; do _want="$_want data"; done
 
   rc=0
@@ -143,7 +147,7 @@ case_push_failure_exits_and_skips_rest() {
     # Nothing after the push may run: seeding or backfilling rows against a
     # schema that was not applied is exactly the P2022 order the entrypoint exists
     # to prevent.
-    expect_steps "probe migrate push" || rc=1
+    expect_steps "probe index push" || rc=1
     expect_output "will not start" || rc=1
   fi
   rm -rf "$TMP_ROOT"
@@ -153,7 +157,7 @@ case_push_failure_exits_and_skips_rest() {
 # --- Case 3: a non-zero seed warns and start-up continues -------------------
 case_seed_failure_warns_and_continues() {
   make_app_root
-  _want="probe migrate push seed"
+  _want="probe index push seed"
   for _name in $DATA_MIGRATIONS_LIST; do _want="$_want data"; done
 
   rc=0
@@ -244,6 +248,21 @@ case_listed_data_migrations_exist() {
   return $rc
 }
 
+case_index_failure_refuses_to_start() {
+  make_app_root
+  rc=0
+  if DATABASE_URL_PRISMA="postgresql://u:p@postgres:5432/db" STUB_INDEX_RC=1 run_auto_migrate; then
+    echo "  index failure must refuse to start" >&2
+    rc=1
+  else
+    expect_steps "probe index" || rc=1
+    expect_output "fulfillment_messages" || rc=1
+    expect_output "will not start" || rc=1
+  fi
+  rm -rf "$TMP_ROOT"
+  return $rc
+}
+
 if [ -z "$DATA_MIGRATIONS_LIST" ]; then
   echo "FAIL: could not read \$DATA_MIGRATIONS from $ENTRYPOINT"
   exit 1
@@ -257,9 +276,10 @@ case_sentinel_skips_everything && pass "SKIP_AUTO_MIGRATE sentinel skips everyth
 case_missing_url_refuses && pass "missing DATABASE_URL_PRISMA refuses to start" || fail "missing DATABASE_URL_PRISMA refuses to start"
 case_non_postgres_url_refuses && pass "non-postgresql URL refuses to start" || fail "non-postgresql URL refuses to start"
 case_listed_data_migrations_exist && pass "every listed data migration exists" || fail "every listed data migration exists"
+case_index_failure_refuses_to_start && pass "index failure refuses to start before push" || fail "index failure refuses to start before push"
 
 if [ "$FAILURES" -gt 0 ]; then
   echo "$FAILURES case(s) failed."
   exit 1
 fi
-echo "All 8 cases passed."
+echo "All 9 cases passed."

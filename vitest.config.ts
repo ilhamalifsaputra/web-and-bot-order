@@ -1,5 +1,5 @@
 import path from "node:path";
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 
 export default defineConfig({
   resolve: {
@@ -12,14 +12,40 @@ export default defineConfig({
     },
   },
   test: {
-    include: [
-      "packages/**/*.test.ts",
-      "apps/**/*.test.ts",
-      "apps/**/*.test.tsx",
-      "tests/**/*.test.ts",
-      "scripts/**/*.test.ts",
+    // Projects replace environmentMatchGlobs in Vitest4. Disjoint includes
+    // keep every existing test file running once in its original environment.
+    projects: [
+      {
+        extends: true,
+        test: {
+          name: "node",
+          environment: "node",
+          include: [
+            "packages/**/*.test.ts",
+            "apps/**/*.test.ts",
+            "apps/**/*.test.tsx",
+            "tests/**/*.test.ts",
+            "scripts/**/*.test.ts",
+          ],
+          exclude: [
+            ...configDefaults.exclude,
+            "apps/web-admin/client/**",
+            "apps/storefront/client/**",
+          ],
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: "frontend",
+          environment: "jsdom",
+          include: [
+            "apps/web-admin/client/**/*.test.{ts,tsx}",
+            "apps/storefront/client/**/*.test.{ts,tsx}",
+          ],
+        },
+      },
     ],
-    environment: "node",
     // bcryptjs at the production work factor (12) costs ~450ms per hash and
     // ~500ms per compare, which is real time inside every auth test — enough
     // that the storefront's cross-IP account-lockout test spent ~3s in bcrypt
@@ -51,10 +77,9 @@ export default defineConfig({
     // ~6x the slowest known test: still short enough that a genuine hang
     // fails the run rather than hanging CI.
     testTimeout: 20_000,
-    environmentMatchGlobs: [
-      ["apps/web-admin/client/**", "jsdom"],
-      ["apps/storefront/client/**", "jsdom"],
-    ],
+    // Real PostgreSQL setup runs Prisma db push per file; parallel startup
+    // can exceed Vitest4's 10s hook default even when all assertions are fast.
+    hookTimeout: 30_000,
     // @testing-library/react's automatic afterEach(cleanup) only registers
     // when it detects a global test-framework `afterEach` — without this,
     // each jsdom test's rendered DOM leaks into the next test in the same
@@ -73,6 +98,8 @@ export default defineConfig({
     // realistic bar this change actually earns.
     coverage: {
       provider: "v8",
+      // Vitest4 otherwise omits unimported sources from coverage entirely.
+      include: ["packages/**/src/**/*.{ts,tsx}", "apps/**/src/**/*.{ts,tsx}", "scripts/**/*.ts"],
       reporter: ["text", "json-summary"],
       thresholds: {
         "packages/core/src/detection/**": {

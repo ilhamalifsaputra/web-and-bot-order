@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, within, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
@@ -129,6 +129,7 @@ const SELECTED_SCOPE_VOUCHER = {
 };
 
 beforeEach(() => {
+  vi.resetAllMocks();
   vi.restoreAllMocks();
   // Radix Select/Popover use pointer-capture APIs and scrollIntoView — jsdom
   // doesn't implement them. Mock all three to prevent unhandled errors when a
@@ -140,6 +141,7 @@ beforeEach(() => {
 });
 
 describe("VouchersPage", () => {
+  afterEach(() => { vi.useRealTimers(); });
   it("renders voucher rows", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(listResponse([VOUCHER]));
     render(<VouchersPage />, { wrapper: Wrapper });
@@ -290,6 +292,9 @@ describe("VouchersPage", () => {
 
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(listResponse([]));
     const search = screen.getByPlaceholderText(/search voucher code/i);
+    // Re-spying preserves call history in Vitest4; observe only the typing
+    // phase after the initial list request has completed.
+    fetchSpy.mockClear();
     fireEvent.change(search, { target: { value: "SAVE" } });
     expect(fetchSpy).not.toHaveBeenCalled();
 
@@ -395,6 +400,7 @@ describe("VouchersPage", () => {
 
     const fetchSpy = vi
       .spyOn(globalThis, "fetch")
+      .mockClear()
       .mockResolvedValueOnce(jsonResponse({
         categories: [{ id: 1, name: "Streaming" }],
         products: [{ id: 9, name: "Disney Plus", categoryId: 1, isActive: true, isArchived: false }],
@@ -452,6 +458,7 @@ describe("VouchersPage", () => {
     const postSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       jsonResponse({ voucher: { ...VOUCHER } }),
     );
+    postSpy.mockClear();
     postSpy.mockResolvedValueOnce(listResponse([VOUCHER]));
 
     await user.click(screen.getByRole("button", { name: "Save Changes" }));
@@ -484,6 +491,7 @@ describe("VouchersPage", () => {
     await user.type(screen.getByLabelText(/^value/i), "3.000");
 
     const postSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(jsonResponse({ voucher: { ...odd } }));
+    postSpy.mockClear();
     postSpy.mockResolvedValueOnce(listResponse([odd]));
     await user.click(screen.getByRole("button", { name: "Save Changes" }));
 
@@ -503,6 +511,7 @@ describe("VouchersPage", () => {
     await user.type(screen.getByLabelText(/^value/i), "10.000");
 
     const postSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(jsonResponse({ voucher: { id: 5, code: "NEW" } }));
+    postSpy.mockClear();
     postSpy.mockResolvedValueOnce(listResponse([]));
     await user.click(screen.getByRole("button", { name: "Create" }));
 
@@ -529,6 +538,7 @@ describe("VouchersPage", () => {
     const postSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       jsonResponse({ voucher: { id: 99, code: "SAVE10" } }),
     );
+    postSpy.mockClear();
     postSpy.mockResolvedValueOnce(listResponse([VOUCHER]));
 
     await user.type(screen.getByLabelText(/^code/i), "SAVE10COPY");
@@ -567,6 +577,7 @@ describe("VouchersPage", () => {
     const postSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       jsonResponse({ ok: true }),
     );
+    postSpy.mockClear();
     postSpy.mockResolvedValueOnce(listResponse([VOUCHER]));
 
     await user.click(screen.getByRole("button", { name: "Actions for SAVE10" }));
@@ -595,6 +606,7 @@ describe("VouchersPage", () => {
     const postSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       jsonResponse({ ok: true }),
     );
+    postSpy.mockClear();
     postSpy.mockResolvedValueOnce(listResponse([]));
 
     await user.click(screen.getByRole("button", { name: "Delete" }));
@@ -640,6 +652,9 @@ describe("VouchersPage", () => {
     // caused an intermittent, order-dependent failure in the very next
     // test, "clears the bulk selection when the page changes").
     await waitFor(() => expect(postSpy).toHaveBeenCalledTimes(3));
+    // A fetch invocation alone does not prove the refetch has settled. Wait
+    // for its rendered result before resetting the shared spy in the next test.
+    await waitFor(() => expect(screen.getByText(/no vouchers/i)).toBeInTheDocument());
   });
 
   it("clears the bulk selection when the page changes", async () => {

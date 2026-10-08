@@ -6,9 +6,10 @@ Permintaan lanjutan: selesaikan 33 advisory high yang tersisa pada audit depende
 |---|---:|---:|---:|---:|
 | Produksi sebelum | 0 | 33 | 35 | 4 |
 | Produksi sesudah | 0 | 0 | 0 | 0 |
-| Semua dependency sesudah, termasuk dev | 3 | 1 | 7 | 1 |
+| Semua dependency sesudah fase33, termasuk dev (historis) | 3 | 1 | 7 | 1 |
+| Semua dependency sesudah fase tooling | 0 | 0 | 0 | 0 |
 
-Audit produksi sesudah exit0, advisories kosong; dependency produksi turun dari587 menjadi300. Audit seluruh dependency exit1. Bukti mentah: dependency-audit-before.json, dependency-audit.json dan dependency-audit-all.json. Angka audit adalah advisory registry, bukan jumlah exploit yang telah terbukti reachable.
+Audit produksi sesudah exit0, advisories kosong; dependency produksi turun dari587 menjadi300. Audit seluruh dependency fase33 exit1; sesudah remediation tooling exit0. Bukti mentah: dependency-audit-before.json, dependency-audit.json dan dependency-audit-all.json. Angka audit adalah advisory registry, bukan jumlah exploit yang telah terbukti reachable.
 
 ## Perubahan
 
@@ -57,11 +58,13 @@ RESOLVED berarti advisory baseline tidak terdapat lagi dalam audit produksi sesu
 | sharp | [GHSA-wq5f-xc86-pv6w](https://github.com/advisories/GHSA-wq5f-xc86-pv6w) | RESOLVED |
 | @modelcontextprotocol/sdk | [GHSA-6qxp-vccf-f47h](https://github.com/advisories/GHSA-6qxp-vccf-f47h) | RESOLVED |
 
-## Advisory tooling tersisa
+## Advisory tooling pada akhir fase33 (historis)
 
-Berikut berada di graph dev/build/test: Vitest2/Vite5/esbuild, tinypool dan postcss-selector-parser. Bukan bagian33 high produksi yang diminta. Tidak disembunyikan melalui ignore. Migrasi Vitest4 membutuhkan perubahan konfigurasi environment/projects dan pengujian tersendiri; tidak dilakukan dalam remediation ini.
+Bagian ini merekam baseline sebelum remediation lanjutan. Seluruh advisory di bawah kini RESOLVED pada audit all; lihat DEVELOPMENT_TOOLING_REMEDIATION.md dan dependency-audit-all.json terbaru. Snapshot sebelum disimpan di dependency-tooling-audit-before.json.
 
-Docker saat ini memasang devDependencies untuk tsx/Prisma, sehingga audit --prod tidak membuktikan image bebas semua package rentan. Aplikasi tidak menjalankan Vitest UI atau Vite dev server di produksi, tetapi dependency tooling tetap perlu dihapus dari image atau di-upgrade dalam pekerjaan berikutnya. Jangan mengekspos dev server ke jaringan.
+Pada fase sebelumnya, berikut berada di graph dev/build/test: Vitest2/Vite5/esbuild, tinypool dan postcss-selector-parser. Bukan bagian33 high produksi yang diminta. Tidak disembunyikan melalui ignore. Migrasi Vitest4 ditunda pada fase33 dan kemudian diselesaikan dalam remediation tooling lanjutan.
+
+Docker saat ini memasang devDependencies untuk tsx/Prisma, sehingga audit --prod tidak membuktikan image bebas semua package rentan. Aplikasi tidak menjalankan Vitest UI atau Vite dev server di produksi, dependency tooling kemudian telah di-upgrade sampai audit all kosong. Jangan mengekspos dev server ke jaringan.
 
 | Modul | Severity | Advisory |
 |---|---|---|

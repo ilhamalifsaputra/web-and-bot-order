@@ -58,43 +58,43 @@ export default defineConfig({
     testTimeout: 20_000,
     // Vitest's 10s hook default is too short for the one hook per run that
     // builds the test-schema template (db push + chart-of-accounts seed +
-    // migrate diff, ~15s idle and more under load), and for the hooks in the
-    // other workers that wait on that build's lock: makeTestDb() runs inside
-    // a test file's beforeAll, so whichever files arrive first would time out
-    // waiting rather than fail for a real reason. 60s still fails a genuinely
-    // hung hook.
-    hookTimeout: 60_000,
+    // migrate diff, ~15s idle and more under load), and for the beforeAll
+    // hooks in the other workers that wait on that build's advisory lock:
+    // makeTestDb() runs inside a test file's beforeAll, so on a loaded machine
+    // the files that arrive first would time out waiting rather than fail for
+    // a real reason. 180s still fails a genuinely hung hook.
+    hookTimeout: 180_000,
     // `vitest run --changed master` (pnpm test:changed) only reruns tests whose
     // import graph touches a changed file. Some inputs reach nearly every test
-    // without being imported by it: every DB test depends on the Prisma schema
-    // (tests/helpers/testdb.ts pushes it) and on the shared test helpers, each
-    // app's setup-env.ts is loaded by the runner rather than imported, and a
-    // lockfile bump can change any dependency. Editing one of these must fall
-    // back to the full suite instead of silently running nothing. Detection
-    // fixtures (__fixtures__) are read from disk by tests, so the module graph
-    // cannot see them either. Vitest matches these globs against absolute
-    // paths, so each needs a leading `**/`; `anywhere` also lets that `**`
-    // cross dot-directories, because every worktree lives under `.claude/` and
-    // micromatch's `**` skips them by default (a bare `**/` pattern would never
-    // fire there). The first three entries are Vitest's own defaults, repeated
-    // because setting this option replaces them.
+    // without being visible in that graph: the Prisma schema (every DB test
+    // builds its schema from it), the shared test helpers, each app's
+    // setup-env.ts (a safety net; tests import it), config files, and the
+    // lockfile. Files that tests read from disk instead of importing are
+    // invisible too: detection `__fixtures__` and the i18n locale JSON that
+    // packages/core/src/i18n.ts loads with readFileSync. Editing any of these
+    // falls back to the full suite instead of silently running nothing.
+    // Vitest matches these globs against absolute paths, and every worktree
+    // lives under `.claude/`, which micromatch's `**` skips by default, so
+    // `anywhere` adds a dot-directory-crossing alternative. The first three
+    // entries are Vitest's own defaults, repeated because setting this option
+    // replaces them.
     forceRerunTriggers: [
-      ...[
-        "package.json",
-        "vitest.config.*",
-        "vite.config.*",
-        "prisma/schema.prisma",
-        "tests/helpers/**",
-        "test/setup-env.ts",
-        "pnpm-lock.yaml",
-        "__fixtures__/**",
-      ].map(anywhere),
-    ],
+      "package.json",
+      "vitest.config.*",
+      "vite.config.*",
+      "prisma/schema.prisma",
+      "tests/helpers/**",
+      "test/setup-env.ts",
+      "pnpm-lock.yaml",
+      "__fixtures__/**",
+      "packages/core/locales/*.json",
+    ].map(anywhere),
     // Names this run's template Postgres schema; the first test file that
     // needs a database builds it (db push + chart-of-accounts seed, once) and
     // tests/helpers/testdb.ts and pgTestSchema.ts copy each file's schema from
     // it in-database instead of spawning those two commands for every file.
-    // Runs without DB tests do no template work. See
+    // Runs without DB tests (guard runs, jsdom client runs) do no template
+    // work, though this file's globalSetup still runs and only picks the name. See
     // tests/helpers/globalSetup.ts and schemaFromTemplate.ts.
     globalSetup: ["tests/helpers/globalSetup.ts"],
     environmentMatchGlobs: [

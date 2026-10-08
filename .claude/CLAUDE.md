@@ -106,8 +106,10 @@ each session its own `HEAD` and working tree.
 A fresh worktree is a fresh checkout — the ignored files do not come with it:
 
 - Copy `.env` from the main directory (it is gitignored), then run
-  `pnpm install` and `pnpm -r build` before testing. Without the build, roughly
-  a dozen tests fail because the admin SPA bundle is gitignored.
+  `pnpm install`, `pnpm prisma:generate` and `pnpm -r build` before testing.
+  Without the build, roughly a dozen tests fail because the admin SPA bundle is
+  gitignored; without the generated Prisma client, DB tests fail with errors
+  that look like schema bugs or "provider sqlite / URL must start with file:".
 - **Change `WEB_PORT` and `STOREFRONT_PORT` in the worktree's `.env`.** The
   defaults (8109/8110) are identical in every worktree, so two sessions running
   dev servers collide. Give each session its own port pair.
@@ -288,6 +290,8 @@ checklist for the task list.
   follows it.
 
 ## Tests
+The root `AGENTS.md` (read by Codex) repeats this section; keep the two in
+sync when you change either.
 - **Three tiers; run the cheapest one that fits.** Add tests with each behavior
   change; prefer crud-level unit tests for logic (e.g. `productRating`, `matchByAmount`).
   - *While fixing / per task* (sessions and implementer subagents): run the file

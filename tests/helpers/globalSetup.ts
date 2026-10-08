@@ -20,14 +20,19 @@ import { randomBytes } from "node:crypto";
 import { existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { GlobalSetupContext } from "vitest/node";
+import type { TestProject } from "vitest/node";
 import type { PgTestTemplate } from "./schemaFromTemplate";
 
-export default function setup({ provide }: GlobalSetupContext): () => Promise<void> {
+// Vitest 4 hands globalSetup the TestProject itself; `provide` is a method on
+// it, so it is called on the project rather than destructured. Vitest runs
+// this for the root project and for every project (node, frontend) that has
+// test files in the run; each picks its own name, and only a project whose
+// tests need a database ever builds the template it named.
+export default function setup(project: TestProject): () => Promise<void> {
   const schema = `test_template_${Math.floor(Date.now() / 1000)}_${randomBytes(6).toString("hex")}`;
   const workDir = join(tmpdir(), `pg-${schema}`);
   const template: PgTestTemplate = { schema, workDir };
-  provide("pgTestTemplate", template);
+  project.provide("pgTestTemplate", template);
 
   return async () => {
     // The builder creates the directory before it touches the database, so

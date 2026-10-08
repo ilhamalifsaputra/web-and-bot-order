@@ -23,6 +23,7 @@ import { logger } from "@app/core/logger";
 import { CUSTOMER_SERVICES } from "@app/core/services";
 import {
   prisma,
+  ownsTransactionMessageAt,
   userTotalSpent,
   listCatalogProducts,
   listCatalogProductsByGroup,
@@ -744,7 +745,8 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
   // bubble and clear the anchor so the render below sends a fresh message.
   const chatId = ctx.chat?.id;
   const cqMsg = ctx.callbackQuery?.message;
-  if (chatId !== undefined && cqMsg && "photo" in cqMsg && cqMsg.photo) {
+  if (chatId !== undefined && cqMsg && "photo" in cqMsg && cqMsg.photo
+    && !(await ownsTransactionMessageAt(prisma, chatId, cqMsg.message_id))) {
     try {
       await ctx.api.deleteMessage(chatId, cqMsg.message_id);
     } catch {

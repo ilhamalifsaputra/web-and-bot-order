@@ -72,6 +72,7 @@ import Button from "../components/ui/Button";
 import Alert from "../components/ui/Alert";
 import Badge from "../components/ui/Badge";
 import AlertDialog from "../components/ui/AlertDialog";
+import TransactionStatus from "../components/shop/TransactionStatus";
 
 /**
  * TSX port of _pay_status.njk — the polled status chip. Design-system
@@ -133,6 +134,7 @@ const IN_FLIGHT_RANK: Partial<Record<PayState, number>> = { waiting: 0, confirmi
  * backwards; delivered is left to the redirect and expired to the existing
  * handling. */
 export function advanceCardState(current: PayState, polled: PayState | undefined): PayState {
+  if (polled === "underpaid") return "underpaid";
   const from = IN_FLIGHT_RANK[current];
   if (from !== undefined && polled === "closed") return "closed";
   const to = polled ? IN_FLIGHT_RANK[polled] : undefined;
@@ -301,7 +303,9 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
   }
 
   const { order } = data;
-  const state = advanceCardState(data.state, poll?.state);
+  const presentation = poll?.presentation ?? data.presentation;
+  const underpayment = poll && "underpayment" in poll ? poll.underpayment : data.underpayment;
+  const state = presentation ? poll?.state ?? data.state : advanceCardState(data.state, poll?.state);
   const stripState = poll?.state ?? state;
 
   // Final-review fix — the web twin of the bot's payAlongsidePriceLine
@@ -333,7 +337,7 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
       <div className="max-w-2xl mx-auto">
         <h1 className="page-title text-2xl! mb-1">{t("web.pay_title")}</h1>
       <p className={emailedTo ? "text-sm text-ink-soft mb-2" : "text-sm text-ink-soft mb-5"}>
-        {t("web.order_code")}: <span className="codeish">{order.code}</span>
+        {t(isTopup ? "transaction.receipt" : "web.order_code")}: <span className="codeish break-all whitespace-normal">{order.code}</span>
       </p>
 
       {/* Directly under the code it is about, so the sentence and its subject
@@ -347,7 +351,20 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
       )}
 
       <div id="pay-status" className="mb-5">
-        <StatusStrip state={stripState} />
+        {presentation ? (
+          <Card className="min-w-0 bg-pine-tint/40">
+            <TransactionStatus presentation={presentation} underpayment={underpayment}>
+              {presentation.phase === "UNDERPAID" && (
+                <a href={data.bot_username ? `https://t.me/${data.bot_username}` : "/#contact"} className="btn btn-soft min-h-11">
+                  {t("transaction.contact_admin")}
+                </a>
+              )}
+              {state === "processing" && !isTopup && (
+                <Link to={deliveredHref} className="btn btn-soft min-h-11">{t("web.pay_processing_view_order")} <ChevronRight className="w-4 h-4" /></Link>
+              )}
+            </TransactionStatus>
+          </Card>
+        ) : <StatusStrip state={stripState} />}
       </div>
 
       {state === "waiting" && (
@@ -591,7 +608,7 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
         </>
       )}
 
-      {state === "delivered" && (
+      {state === "delivered" && !presentation && (
         <Card className="text-center py-10">
           <BadgeCheck className="w-12 h-12 text-grass mx-auto mb-3" />
           <h2 className="section-title">{t("web.pay_done_title")}</h2>
@@ -602,17 +619,17 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
         </Card>
       )}
 
-      {state === "confirming" && (
+      {state === "confirming" && !presentation && (
         <Card className="text-center py-10">
-          <Loader className="w-10 h-10 text-pine mx-auto mb-3 animate-spin" />
+          <Loader className="w-10 h-10 text-pine mx-auto mb-3 animate-spin motion-reduce:animate-none" />
           <p className="text-sm font-medium text-ink">{t("web.pay_confirming")}</p>
           <p className="text-xs text-ink-soft mt-2">{t("web.pay_confirming_sub")}</p>
         </Card>
       )}
 
-      {state === "processing" && (
+      {state === "processing" && !presentation && (
         <Card className="text-center py-10">
-          <Loader className="w-10 h-10 text-pine mx-auto mb-3 animate-spin" />
+          <Loader className="w-10 h-10 text-pine mx-auto mb-3 animate-spin motion-reduce:animate-none" />
           <p className="text-sm font-medium text-ink">{t("web.pay_processing")}</p>
           <p className="text-xs text-ink-soft mt-2">{t("web.pay_processing_sub")}</p>
           {!isTopup && (

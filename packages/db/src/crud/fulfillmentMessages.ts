@@ -1,26 +1,81 @@
-import { OrderKind } from "@app/core/enums";
 import type { Db } from "./_types";
+import { fulfillmentProviderFor } from "@app/core/orderFulfillment";
+
+/** Reserve bot checkout ownership before gateway work or Telegram I/O.
+ * The worker cannot send while the initial screen is awaiting acknowledgement.
+ */
+export async function reserveTransactionMessage(db: Db, orderId: number): Promise<void> {
+  const order = await db.order.findUniqueOrThrow({ where: { id: orderId }, select: { user: { select: { telegramId: true } } } });
+  if (order.user.telegramId == null) return;
+  await db.fulfillmentMessage.upsert({ where: { orderId }, create: {
+    orderId, chatId: order.user.telegramId, state: "WAITING_SCREEN",
+  }, update: {} });
+}
+
+/** Indexed lookup used by navigation and legacy QR cleanup. */
+export async function ownsTransactionMessageAt(db: Db, chatId: number | bigint, messageId: number): Promise<boolean> {
+  return !!(await db.fulfillmentMessage.findFirst({ where: { chatId: BigInt(chatId), messageId }, select: { orderId: true } }));
+}
 
 /**
  * Register the buyer's single Telegram progress message for an order. The
  * outbox-dispatcher's FulfillmentMessageWorker sends it once and then edits
  * that same message from the order's canonical state.
  *
- * Call only at a canonical moment: a real "payment seen" transition or a
- * settled payment. Not at a Bybit BSC deposit's detection: that rail's
- * payment bubble already shows the live confirmation count, so the message
- * starts at settlement there. Idempotent (`update: {}`), so a replayed webhook or a later
- * phase reuses the existing row and therefore the existing message. Returns
- * false for buyers without a Telegram chat (web-only shoppers) and for
- * wallet top-ups.
+ * Register at a canonical payment transition, including wallet payments.
+ * Adopt a persisted payment screen when available; replays preserve its ID.
+ * Buyers without a Telegram chat do not need a message.
  */
 export async function ensureFulfillmentMessage(db: Db, orderId: number): Promise<boolean> {
-  const order = await db.order.findUnique({ where: { id: orderId }, select: { kind: true, user: { select: { telegramId: true } } } });
+  const order = await db.order.findUnique({ where: { id: orderId }, select: {
+    kind: true, status: true, fulfillmentProvider: true, paymentMsgChatId: true, paymentMsgId: true,
+    user: { select: { telegramId: true } },
+    items: { select: { deliveryTypeSnapshot: true, product: { select: { autoDeliverySource: true, deliveryType: true } } } },
+  } });
   const chatId = order?.user.telegramId;
-  // Wallet top-ups have their own settled bubble and no product to fulfil.
-  if (chatId == null || order!.kind !== OrderKind.PRODUCT) return false;
-  await db.fulfillmentMessage.upsert({ where: { orderId }, create: { orderId, chatId }, update: {} });
+  if (chatId == null || !order) return false;
+  const tracked = await db.fulfillmentMessage.findUnique({ where: { orderId } });
+  const anchored = order.paymentMsgId != null && order.paymentMsgChatId != null;
+  // Instant stock delivery without a payment bubble uses its credentials artifact.
+  if (!tracked && !anchored && order.kind === "PRODUCT" && order.status === "DELIVERED" && fulfillmentProviderFor(order) !== "DIGIFLAZZ") return false;
+  await db.fulfillmentMessage.upsert({ where: { orderId }, create: {
+    orderId, chatId: order.paymentMsgChatId ?? chatId, messageId: order.paymentMsgId,
+    state: order.paymentMsgId == null ? "READY" : "ACTIVE",
+  }, update: {} });
+  await wakeFulfillmentMessage(db, orderId, new Date(), { correctFinishedOutcome: true });
   return true;
+}
+
+/** Adopt the actual payment screen, including QR captions, without a send. */
+export async function adoptTransactionMessage(db: Db, orderId: number, chatId: number | bigint, messageId: number): Promise<void> {
+  const order = await db.order.findUniqueOrThrow({ where: { id: orderId }, select: { status: true, paymentState: true, walletCreditState: true } });
+  const awaitingPayment = order.status === "PENDING_PAYMENT"
+    && !["PAYMENT_DETECTED", "VERIFYING", "PAID", "UNDERPAID"].includes(order.paymentState ?? "")
+    && !["NEEDS_REVIEW", "CREDITED"].includes(order.walletCreditState ?? "");
+  // An acknowledged canonical message never changes ID on ordinary navigation.
+  // The checkout anchor is assigned only once for a newly created transaction.
+  await db.fulfillmentMessage.upsert({ where: { orderId }, create: {
+    orderId, chatId: BigInt(chatId), messageId,
+    state: awaitingPayment ? "WAITING" : "ACTIVE",
+    phase: awaitingPayment ? "NONE" : null,
+  }, update: {} });
+  // Detection can register the row before checkout acknowledges its screen.
+  // Fill that empty slot without moving an already acknowledged message.
+  const empty = await db.fulfillmentMessage.findUniqueOrThrow({ where: { orderId } });
+  if (empty.messageId !== null) return;
+  const adopted = await db.fulfillmentMessage.updateMany({ where: { orderId, messageId: null, claimedAt: null,
+    state: { in: ["WAITING_SCREEN", "READY", "WAITING", "ACTIVE"] },
+  }, data: {
+    chatId: BigInt(chatId), messageId,
+    state: awaitingPayment ? "WAITING" : "ACTIVE",
+    phase: awaitingPayment ? "NONE" : null,
+  } });
+  if (!adopted.count) throw new Error("Transaction message delivery already holds the lease");
+}
+
+/** Legacy pollers defer all message writes once the durable coordinator owns it. */
+export async function ownsTransactionMessage(db: Db, orderId: number): Promise<boolean> {
+  return !!(await db.fulfillmentMessage.findUnique({ where: { orderId }, select: { orderId: true } }));
 }
 
 /**

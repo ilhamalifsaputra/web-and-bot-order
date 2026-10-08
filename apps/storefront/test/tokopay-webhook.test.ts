@@ -250,7 +250,8 @@ describe("POST /pay/tokopay/callback", () => {
     expect(res.json()).toEqual({ status: "amount mismatch" });
 
     const updated = await prisma.order.findUnique({ where: { id: order.id } });
-    expect(updated!.status).toBe("PENDING_PAYMENT");
+    expect(updated!.status).toBe("UNDERPAID");
+    expect(updated!.paymentState).toBe("UNDERPAID");
   });
 
   it("a forged callback body (paid=success, fake high amount) is rejected when the live check disagrees", async () => {
@@ -283,7 +284,8 @@ describe("POST /pay/tokopay/callback", () => {
     expect(res.json()).toEqual({ status: "amount mismatch" });
 
     const updated = await prisma.order.findUnique({ where: { id: order.id } });
-    expect(updated!.status).toBe("PENDING_PAYMENT");
+    expect(updated!.status).toBe("UNDERPAID");
+    expect(updated!.paymentState).toBe("UNDERPAID");
 
     const ledger = await prisma.processedTokopayTx.findUnique({ where: { trxId: "TRX-LIVESHORT-1" } });
     expect(ledger!.outcome).toBe("unmatched");

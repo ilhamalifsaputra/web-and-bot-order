@@ -6,7 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import PayPage, { advanceCardState } from "./PayPage";
 import { apiGet, apiPost } from "../api/client";
 import { rememberCodeEmailed } from "../lib/orderCodeEmailed";
-import type { PayData, PayStatusData } from "../api/types";
+import type { CustomerProgress, PayData, PayStatusData } from "../api/types";
 
 vi.mock("../api/client", () => ({
   apiGet: vi.fn(),
@@ -69,6 +69,50 @@ function respondFor(pay: PayData, status?: PayStatusData) {
     return pay;
   };
 }
+
+const presentation = (over: Partial<CustomerProgress> = {}): CustomerProgress => ({
+  phase: "AUTO_PROCESSING", spinner: true, topUp: true, progress: 80,
+  transactionType: "GAME_TOPUP", titleKey: "web.fulfillment_processing_title", bodyKey: "web.fulfillment_processing_body", ...over,
+});
+
+describe("canonical transaction presentation", () => {
+  beforeEach(() => { document.documentElement.lang = "en"; vi.clearAllMocks(); });
+  it("shows the backend phase percentage with accessible reduced motion", async () => {
+    const { container } = renderPay(respondFor({ ...basePay, state: "processing", presentation: presentation() }));
+    expect(await screen.findByRole("progressbar")).toHaveAttribute("aria-valuenow", "80");
+    expect(container.querySelector(".motion-reduce\\:animate-none")).toBeInTheDocument();
+  });
+  it("stops every transaction spinner while a paid manual order waits", async () => {
+    const { container } = renderPay(respondFor({ ...basePay, state: "processing", presentation: presentation({ phase: "MANUAL_WAITING", spinner: false, progress: null, topUp: false, transactionType: "PREMIUM_APPS", titleKey: "web.order_processing_title", bodyKey: "web.order_processing_body" }) }));
+    await screen.findByRole("heading", { name: "Waiting to be prepared" });
+    expect(container.querySelector(".animate-spin")).not.toBeInTheDocument();
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+  });
+  it("replaces stale processing with a static underpayment warning from the poll", async () => {
+    const { container } = renderPay(respondFor({ ...basePay, state: "processing", presentation: presentation() }, {
+      state: "underpaid", redirect: null,
+      presentation: presentation({ phase: "UNDERPAID", spinner: false, progress: null, titleKey: "web.status_chip_underpaid" }),
+      underpayment: { required: "5.10", received: "3.00", currency: "USDT" },
+    }));
+    expect(await screen.findByRole("heading", { name: "Paid too little" })).toBeInTheDocument();
+    expect(screen.getByText("5.1 USDT")).toBeInTheDocument();
+    expect(screen.getByText("3 USDT")).toBeInTheDocument();
+    expect(container.querySelector(".animate-spin")).not.toBeInTheDocument();
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Contact admin/ })).toHaveAttribute("href", "https://t.me/tokobot");
+  });
+  it.each([
+    ["NONE", false, null], ["PAYMENT_DETECTED", true, 25], ["WALLET_CREDITING", true, 80], ["WALLET_CREDITED", false, 100],
+  ] as const)("renders a wallet reference in full with wrapping during %s", async (phase, spinner, progress) => {
+    const receipt = "EXISTING-WALLET-REFERENCE-12345678901234567890";
+    (apiGet as Mock).mockImplementation(async () => ({ ...basePay, order: { ...basePay.order, code: receipt }, state: phase === "NONE" ? "waiting" : "processing", presentation: presentation({ phase, spinner, progress, transactionType: "WALLET_TOPUP" }) }));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[`/wallet/topup/${receipt}/pay`]}><Routes><Route path="/wallet/topup/:code/pay" element={<PayPage variant="topup" />} /></Routes></MemoryRouter></QueryClientProvider>);
+    expect(await screen.findByText(receipt)).toHaveClass("break-all");
+    if (progress === null) expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+    else expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", String(progress));
+  });
+});
 
 describe("PayPage", () => {
   beforeEach(() => {

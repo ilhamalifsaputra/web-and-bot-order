@@ -336,10 +336,29 @@ export interface NowpaymentsGateway {
 }
 
 /** payState() result — drives which pay.njk branch renders. */
-export type PayState = "waiting" | "confirming" | "processing" | "delivered" | "expired" | "closed";
+export type PayState = "waiting" | "confirming" | "processing" | "delivered" | "expired" | "closed" | "underpaid";
+
+/** Backend projection of durable transaction phases; animation never changes it. */
+export interface CustomerProgress {
+  phase: "NONE" | "PAYMENT_DETECTED" | "VERIFYING" | "PAYMENT_CONFIRMED" | "AUTO_QUEUED" | "AUTO_SUBMITTING" | "AUTO_PROCESSING" | "PREPARING" | "MANUAL_ENQUEUING" | "MANUAL_WAITING" | "SUCCESS" | "FAILED" | "REVIEW" | "CANCELLED" | "CREDITED" | "WALLET_CREDITING" | "WALLET_CREDITED" | "UNDERPAID";
+  spinner: boolean;
+  topUp: boolean;
+  progress: number | null;
+  transactionType: "GAME_TOPUP" | "PREMIUM_APPS" | "WALLET_TOPUP";
+  titleKey: string;
+  bodyKey: string;
+}
+
+export interface Underpayment {
+  required: string;
+  received: string | null;
+  currency: string;
+}
 
 /** GET /api/v1/orders/:code/pay — the payView() JSON (server: apps/storefront/src/routes/checkout.ts). */
 export interface PayData {
+  presentation?: CustomerProgress;
+  underpayment?: Underpayment | null;
   order: {
     code: string;
     status: string;
@@ -375,6 +394,8 @@ export interface PayData {
  * the HTMX partial used to send once the order flips to DELIVERED). Also the
  * shape of GET /api/v1/wallet/topup/:code/status (Task 5) — same payState(). */
 export interface PayStatusData {
+  presentation?: CustomerProgress;
+  underpayment?: Underpayment | null;
   state: PayState;
   redirect: string | null;
 }
@@ -515,10 +536,11 @@ export interface OrderDetailItem {
 
 /** Canonical buyer state derived by the backend from payment and fulfillment. */
 export interface OrderFulfillment {
+  presentation?: CustomerProgress;
   mode: "AUTO" | "MANUAL";
   provider: "DIGIFLAZZ" | "MANUAL" | "STOCK";
   status: "NOT_STARTED" | "QUEUED" | "SUBMITTING" | "PROCESSING" | "SUCCESS" | "FAILED" | "NEEDS_REVIEW" | "CANCELLED";
-  payment_status: "PENDING" | "PAID" | "FAILED" | "EXPIRED" | "REFUNDED";
+  payment_status: "PENDING" | "PAYMENT_DETECTED" | "VERIFYING" | "UNDERPAID" | "PAID" | "FAILED" | "EXPIRED" | "REFUNDED";
   can_edit_customer_data: boolean;
 }
 
@@ -529,6 +551,7 @@ export interface OrderDetailData {
     status: string;
     /** Backend-derived fulfillment; omitted by older API responses. */
     fulfillment?: OrderFulfillment;
+    underpayment?: Underpayment | null;
     subtotal: string;
     discount: string;
     bulk_discount: string;

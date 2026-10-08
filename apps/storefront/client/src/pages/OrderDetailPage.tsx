@@ -182,7 +182,7 @@ export default function OrderDetailPage() {
 
       <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[minmax(0,1fr)_22rem]">
         <div className="min-w-0 space-y-6">
-          {order.fulfillment && <OrderProgress fulfillment={order.fulfillment}>{liveUpdates}</OrderProgress>}
+          {order.fulfillment && <OrderProgress fulfillment={order.fulfillment} underpayment={order.underpayment}>{liveUpdates}</OrderProgress>}
           {pendingPayment && (
             <Card className="flex items-center justify-between gap-3 flex-wrap bg-pine-tint/40">
               <div className="text-sm text-ink-soft">

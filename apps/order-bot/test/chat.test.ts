@@ -4,7 +4,8 @@
  * rendered elsewhere), the wizard anchor editors, and consumeInput.
  * Pure ctx doubles; no DB.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+vi.mock("@app/db", () => ({ prisma: { fulfillmentMessage: { findFirst: vi.fn().mockResolvedValue(null) } } }));
 import { InlineKeyboard } from "grammy";
 import { makeCtx, calls } from "./helpers/ctx";
 import {

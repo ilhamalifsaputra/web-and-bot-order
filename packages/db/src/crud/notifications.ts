@@ -222,8 +222,8 @@ export async function enqueueOrderPipelineFailed(
   }
 }
 
-/** One actionable Digiflazz incident per order/admin, including ambiguous Telegram sends. */
-export async function enqueueDigiflazzReviewAlert(
+/** One actionable transaction incident per order/admin, including failed wallet credit. */
+export async function enqueueTransactionReviewAlert(
   db: Db,
   args: { orderId: number; orderCode: string; reason: string; incident?: string },
 ): Promise<void> {
@@ -233,6 +233,9 @@ export async function enqueueDigiflazzReviewAlert(
     }, `order:${args.orderId}:${args.incident ?? "needs_review"}:${adminId}`);
   }
 }
+
+/** Compatibility name for existing supplier and Telegram incident callers. */
+export const enqueueDigiflazzReviewAlert = enqueueTransactionReviewAlert;
 
 /**
  * Enqueue one admin DM per resolved admin alerting that a paid order routed

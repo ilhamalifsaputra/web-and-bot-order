@@ -1227,7 +1227,7 @@ describe("underpaid order delivered anyway (deliverUnderpaidOrder)", () => {
     const shortfall = total.minus("3");
     expect(shortfall.greaterThan(0)).toBe(true);
 
-    await deliverUnderpaidOrder(prisma, { orderId: order.id, adminId: ADMIN_ID });
+    await deliverUnderpaidOrder(prisma, { orderId: order.id, adminId: ADMIN_ID, reason: "Approved shortfall" });
 
     const posting = await postingByKey(`order:${order.id}:payment`);
     expect(posting.type).toBe(FinancialTransactionType.ORDER_PAYMENT);
@@ -1254,7 +1254,7 @@ describe("underpaid order delivered anyway (deliverUnderpaidOrder)", () => {
     const order = await makeUnderpaidOrder("0.0000");
     const total = new Decimal(order.totalAmount).toString();
 
-    await deliverUnderpaidOrder(prisma, { orderId: order.id, adminId: ADMIN_ID });
+    await deliverUnderpaidOrder(prisma, { orderId: order.id, adminId: ADMIN_ID, reason: "Approved shortfall" });
 
     // No receivable leg at all: entry amounts are strictly positive, and there is
     // genuinely no gateway holding anything.
@@ -1308,7 +1308,7 @@ describe("underpaid order delivered anyway (deliverUnderpaidOrder)", () => {
       },
     });
 
-    await deliverUnderpaidOrder(prisma, { orderId: order.id, adminId: ADMIN_ID });
+    await deliverUnderpaidOrder(prisma, { orderId: order.id, adminId: ADMIN_ID, reason: "Approved shortfall" });
 
     // The shortfall is measured against the EXTERNAL total (already net of
     // `walletUsed`), never against the order's gross value — the buyer's own

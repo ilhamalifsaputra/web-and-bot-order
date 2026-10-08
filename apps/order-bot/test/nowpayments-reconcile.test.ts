@@ -9,6 +9,7 @@ import {
   finalizeOrderPayment,
   listPendingNowpaymentsOrders,
   setOrderPaymentMessage,
+  adoptTransactionMessage,
   updateDenomination,
   setSetting,
   bulkAddStock,
@@ -263,6 +264,29 @@ describe("reconcileOrder (NOWPayments poller safety net)", () => {
     expect(tx).toBeNull();
   });
 
+  it("records trusted partially_paid evidence once and never fulfills it", async () => {
+    const order = await makeNowpaymentsOrder();
+    const [pending] = await listPendingNowpaymentsOrders(prisma, new Date());
+    stubStatus(finishedStatus(pending!.totalAmount, { payment_status: "partially_paid", payment_id: "TRX-PARTIAL-VALUED", actually_paid: "0.00625", order_id: order.orderCode }));
+    await reconcileOrder(fakeApi(), CREDS, pending!);
+    await reconcileOrder(fakeApi(), CREDS, pending!);
+    const after = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(after.status).toBe(OrderStatus.UNDERPAID);
+    expect(after.paymentState).toBe("UNDERPAID");
+    expect(after.paidAt).toBeNull();
+    expect(await prisma.qrisUnderpaidTx.count({ where: { orderId: order.id } })).toBe(1);
+    expect(await prisma.processedNowpaymentsTx.count({ where: { orderId: order.id } })).toBe(0);
+  });
+
+  it("refuses an authenticated invoice response carrying another order's ownership", async () => {
+    const order = await makeNowpaymentsOrder();
+    const [pending] = await listPendingNowpaymentsOrders(prisma, new Date());
+    stubStatus(finishedStatus(pending!.totalAmount, { payment_id: "TRX-WRONG-ORDER", order_id: "ANOTHER-ORDER" }));
+    await reconcileOrder(fakeApi(), CREDS, pending!);
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.PENDING_PAYMENT);
+    expect(await prisma.processedNowpaymentsTx.count({ where: { orderId: order.id } })).toBe(0);
+  });
+
   it("never delivers on an underpayment (finished but short), flags the order UNDERPAID, and alerts admins", async () => {
     const created = await makeNowpaymentsOrder();
     const [pending] = await listPendingNowpaymentsOrders(prisma, new Date());
@@ -366,170 +390,110 @@ describe("reconcileOrder (NOWPayments poller safety net)", () => {
  * jobs/index.ts), proving this rail now flips immediately like TokoPay/
  * PayDisini instead of waiting on the sweep.
  */
-describe("reconcileOrder flips the settled payment bubble (Task E3)", () => {
-  /** Deliver the one pending order with its bubble anchored at (555, 777). */
+describe("reconcileOrder delegates payment bubbles to their durable coordinator", () => {
   async function deliverAnchored(api: Api, trxId: string) {
     const created = await makeNowpaymentsOrder();
-    await setOrderPaymentMessage(prisma, created.id, 555, 777);
+    await prisma.$transaction(async (tx) => {
+      await adoptTransactionMessage(tx, created.id, 555, 777);
+      await setOrderPaymentMessage(tx, created.id, 555, 777);
+    });
     const [pending] = await listPendingNowpaymentsOrders(prisma, new Date());
     stubStatus(finishedStatus(pending!.totalAmount, { payment_id: trxId }));
-
     await reconcileOrder(api, CREDS, pending!);
-
-    return prisma.order.findUnique({ where: { id: created.id } });
+    return prisma.order.findUniqueOrThrow({ where: { id: created.id } });
   }
 
-  // Task E9 follow-up (I-1): the flip-before-nudge ORACLE for this rail.
-  // `nudgeOutboxDispatcher()` is otherwise unobserved here, so this rail could
-  // silently revert to `nudge(); flip();` — the reported credential-before-
-  // confirmation ordering — with the whole suite still green. The dispatcher's
-  // flush hook makes such a regression cosmetic in the combined server, but
-  // the standalone order-bot binary registers no flush hook at all, so there
-  // it is fully user-visible.
-  it("flips the bubble BEFORE nudging the outbox dispatcher", async () => {
+  async function expectOwned(orderId: number, messageId = 777) {
+    const row = await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId } });
+    expect(row.chatId).toBe(555n);
+    expect(row.messageId).toBe(messageId);
+    expect(row.state).toBe("ACTIVE");
+    expect(await prisma.fulfillmentMessage.count({ where: { orderId } })).toBe(1);
+  }
+
+  it("commits the canonical update before nudging and avoids racing the worker", async () => {
     const sequence: string[] = [];
     registerOutboxNudge(() => sequence.push("nudge"));
-    const api = {
-      sendMessage: vi.fn(async () => {
-        sequence.push("bubble");
-        return { message_id: 90210 };
-      }),
-      editMessageCaption: vi.fn(async () => undefined),
-      editMessageText: vi.fn(async () => {
-        sequence.push("bubble");
-      }),
-      deleteMessage: vi.fn(async () => {
-        sequence.push("bubble");
-        return true;
-      }),
-    } as unknown as Api;
-
-    await deliverAnchored(api, "TRX-ORDERING");
-
-    // Both must have happened — a pass because neither ran is worthless.
-    expect(sequence).toContain("bubble");
-    expect(sequence).toContain("nudge");
-    // `lastIndexOf`, not the first: a photo bubble is a delete AND a send, and
-    // the DM must not be triggered while the replacement is still in flight.
-    expect(sequence.lastIndexOf("bubble")).toBeLessThan(sequence.indexOf("nudge"));
-    registerOutboxNudge(null);
+    try {
+      const api = fakeApi();
+      const after = await deliverAnchored(api, "TRX-ORDERING");
+      expect(sequence).toContain("nudge");
+      await expectOwned(after.id);
+      expect(api.editMessageText).not.toHaveBeenCalled();
+      expect(api.deleteMessage).not.toHaveBeenCalled();
+      expect(api.sendMessage).not.toHaveBeenCalled();
+    } finally { registerOutboxNudge(null); }
   });
 
-  it("immediately flips an anchored TEXT bubble to success in place when it delivers the order", async () => {
+  it("preserves a text anchor on stock completion for the worker's final edit", async () => {
     const api = fakeApi();
-
     const after = await deliverAnchored(api, "TRX-E3-FLIP");
+    expect(after.status).toBe(OrderStatus.DELIVERED);
+    expect(after.paymentMsgChatId).toBe(555n);
+    expect(after.paymentMsgId).toBe(777);
+    await expectOwned(after.id);
+    expect(api.editMessageText).not.toHaveBeenCalled();
+    expect(triggerDigiflazzDispatch).not.toHaveBeenCalled();
+  });
 
-    expect(api.editMessageText).toHaveBeenCalledTimes(1);
-    const [chatId, msgId, , payload] = (api.editMessageText as ReturnType<typeof vi.fn>).mock.calls[0]!;
-    expect(chatId).toBe(555);
-    expect(msgId).toBe(777);
-    expect(payload.reply_markup.inline_keyboard.flat().map((b: { callback_data?: string }) => b.callback_data)).toContain("v1:order:list");
+  it("preserves a QR photo ID so the coordinator can edit its caption", async () => {
+    const api = fakeApi({ editMessageText: vi.fn().mockRejectedValue(noTextToEdit()) });
+    const after = await deliverAnchored(api, "TRX-E3-PHOTO");
+    await expectOwned(after.id);
     expect(api.deleteMessage).not.toHaveBeenCalled();
     expect(api.sendMessage).not.toHaveBeenCalled();
-    expect(after?.paymentMsgChatId).toBeNull();
-    expect(after?.paymentMsgId).toBeNull();
   });
 
-  it("replaces an anchored PHOTO (QR) bubble with a fresh message instead of leaving the QR image behind", async () => {
-    const api = fakeApi({ editMessageText: vi.fn().mockRejectedValue(noTextToEdit()) });
-
-    const after = await deliverAnchored(api, "TRX-E3-PHOTO");
-
-    expect(api.deleteMessage).toHaveBeenCalledWith(555, 777);
-    expect(api.sendMessage).toHaveBeenCalledTimes(1);
-    expect(after?.paymentMsgChatId).toBeNull();
-    expect(after?.paymentMsgId).toBeNull();
-  });
-
-  it("also flips the bubble for a manual-fulfilment order queued as PROCESSING", async () => {
+  it("wakes the same anchor for a static manual queue without a direct bubble edit", async () => {
     await updateDenomination(prisma, sample.product.id, { deliveryType: DeliveryType.MANUAL });
     const api = fakeApi();
-
     const after = await deliverAnchored(api, "TRX-E3-PROCESSING");
-
-    expect(after?.status).toBe(OrderStatus.PROCESSING);
-    const [, , , payload] = (api.editMessageText as ReturnType<typeof vi.fn>).mock.calls[0]!;
-    expect(payload.reply_markup.inline_keyboard.flat().map((b: { callback_data?: string }) => b.callback_data)).toContain("v1:order:list");
-    expect(after?.paymentMsgChatId).toBeNull();
+    expect(after.status).toBe(OrderStatus.PROCESSING);
+    await expectOwned(after.id);
+    expect(api.editMessageText).not.toHaveBeenCalled();
   });
 
-  it("keeps the anchor when the bubble flip is flood-controlled, so the paid-order bubble sweep retries it", async () => {
-    const api = fakeApi({
-      editMessageText: vi.fn().mockRejectedValue(telegramError(429, "Too Many Requests: retry after 30")),
-      deleteMessage: vi.fn().mockRejectedValue(telegramError(429, "Too Many Requests: retry after 30")),
+  it("credits a wallet once and preserves its canonical message for completion", async () => {
+    await prisma.user.update({ where: { id: sample.user.id }, data: { walletBalanceUsdt: "10" } });
+    const topup = await prisma.$transaction((tx) => createWalletTopupOrder(tx, {
+      userId: sample.user.id, amount: "5", currency: "USDT", method: PaymentMethod.NOWPAYMENTS, rate: "16000",
+    }));
+    await prisma.order.update({ where: { id: topup.id }, data: { paymentRef: JSON.stringify({ gateway: "nowpayments", invoiceId: "INV-E3-TOPUP" }) } });
+    await prisma.$transaction(async (tx) => {
+      await adoptTransactionMessage(tx, topup.id, 555, 888);
+      await setOrderPaymentMessage(tx, topup.id, 555, 888);
     });
-
-    const after = await deliverAnchored(api, "TRX-E3-FLOOD");
-
-    expect(after?.status).toBe(OrderStatus.DELIVERED); // delivery itself is unaffected by a bubble problem
-    expect(after?.paymentMsgChatId).not.toBeNull();
-    expect(after?.paymentMsgId).not.toBeNull();
-  });
-
-  it("words a settled wallet top-up as a neutral 'payment received' status and deletes a photo (QR) bubble with no replacement", async () => {
-    const STARTING_USDT = "10";
-    const TOPUP_USDT = "5";
-    await prisma.user.update({ where: { id: sample.user.id }, data: { walletBalanceUsdt: STARTING_USDT } });
-    const topup = await prisma.$transaction((tx) =>
-      createWalletTopupOrder(tx, {
-        userId: sample.user.id,
-        amount: TOPUP_USDT,
-        currency: "USDT",
-        method: PaymentMethod.NOWPAYMENTS,
-        rate: "16000",
-      }),
-    );
-    // finalizeWalletTopupPayment's NOWPAYMENTS branch stamps expiresAt/
-    // paymentMethod but not paymentRef — no live invoice call is made by
-    // this test util (that only happens in real checkout, over HTTP). Stamp
-    // the same tagged-JSON `extractInvoiceId` reads, mirroring
-    // makeNowpaymentsOrder above.
-    await prisma.order.update({
-      where: { id: topup.id },
-      data: { paymentRef: JSON.stringify({ gateway: "nowpayments", invoiceId: "INV-E3-TOPUP" }) },
-    });
-    await setOrderPaymentMessage(prisma, topup.id, 555, 888);
     const api = fakeApi({ editMessageText: vi.fn().mockRejectedValue(noTextToEdit()) });
     const [pending] = await listPendingNowpaymentsOrders(prisma, new Date());
     stubStatus(finishedStatus(pending!.totalAmount, { payment_id: "TRX-E3-TOPUP" }));
-
     await reconcileOrder(api, CREDS, pending!);
-
-    expect(api.deleteMessage).toHaveBeenCalledWith(555, 888);
-    expect(api.sendMessage).not.toHaveBeenCalled(); // no replacement — the outbox WALLET_TOPUP_CREDITED_DM already told the buyer
-    const after = await prisma.order.findUnique({ where: { id: topup.id } });
-    expect(after?.paymentMsgChatId).toBeNull();
-    expect(after?.paymentMsgId).toBeNull();
+    await reconcileOrder(api, CREDS, pending!);
+    await expectOwned(topup.id, 888);
+    const after = await prisma.order.findUniqueOrThrow({ where: { id: topup.id } });
+    expect(after.paymentState).toBe("PAID");
+    expect(after.walletCreditState).toBe("CREDITED");
+    expect(api.deleteMessage).not.toHaveBeenCalled();
+    expect(api.sendMessage).not.toHaveBeenCalled();
     const user = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
     expect(new Decimal(user.walletBalanceUsdt).toString()).toBe("15");
   });
 
-  it("starts the instant Digiflazz dispatch exactly once for a Digiflazz order it settles into PROCESSING, before the bubble edit", async () => {
+  it("starts automatic Digiflazz dispatch once while leaving message updates to the coordinator", async () => {
     const created = await makeNowpaymentsOrder();
     await routeOrderToDigiflazz(prisma, created.id);
-    await setOrderPaymentMessage(prisma, created.id, 555, 777);
+    await prisma.$transaction(async (tx) => {
+      await adoptTransactionMessage(tx, created.id, 555, 777);
+      await setOrderPaymentMessage(tx, created.id, 555, 777);
+    });
     const [pending] = await listPendingNowpaymentsOrders(prisma, new Date());
     stubStatus(finishedStatus(pending!.totalAmount, { payment_id: "TRX-DIGIFLAZZ" }));
     const api = fakeApi();
-
     await reconcileOrder(api, CREDS, pending!);
-
-    const after = await prisma.order.findUnique({ where: { id: created.id } });
-    expect(after?.status).toBe(OrderStatus.PROCESSING);
-    const trigger = vi.mocked(triggerDigiflazzDispatch);
-    expect(trigger).toHaveBeenCalledTimes(1);
-    expect(trigger).toHaveBeenCalledWith(created.id);
-    const edit = vi.mocked(api.editMessageText as unknown as ReturnType<typeof vi.fn>);
-    expect(edit).toHaveBeenCalled();
-    expect(trigger.mock.invocationCallOrder[0]!).toBeLessThan(edit.mock.invocationCallOrder[0]!);
-  });
-
-  it("does not start a Digiflazz dispatch for an order delivered from stock", async () => {
-    const after = await deliverAnchored(fakeApi(), "TRX-STOCK");
-
-    expect(after?.status).toBe(OrderStatus.DELIVERED);
-    expect(triggerDigiflazzDispatch).not.toHaveBeenCalled();
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: created.id } })).status).toBe(OrderStatus.PROCESSING);
+    expect(triggerDigiflazzDispatch).toHaveBeenCalledTimes(1);
+    expect(triggerDigiflazzDispatch).toHaveBeenCalledWith(created.id);
+    await expectOwned(created.id);
+    expect(api.editMessageText).not.toHaveBeenCalled();
   });
 });
 

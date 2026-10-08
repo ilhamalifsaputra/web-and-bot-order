@@ -49,7 +49,7 @@ describe("Digiflazz uses the shared progress-message helper", () => {
 
   it("reuses the existing row (and its sent message) when the order is fulfilled", async () => {
     const order = await processingDigiflazzOrder();
-    await prisma.fulfillmentMessage.create({ data: { orderId: order.id, chatId: 42n, messageId: 77, state: "ACTIVE" } });
+    await prisma.fulfillmentMessage.update({ where: { orderId: order.id }, data: { chatId: 42n, messageId: 77, state: "ACTIVE" } });
     await fulfillDigiflazzOrder(prisma, order.id, { sn: "SN-1" });
     const rows = await prisma.fulfillmentMessage.findMany({ where: { orderId: order.id } });
     expect(rows).toHaveLength(1);
@@ -58,6 +58,7 @@ describe("Digiflazz uses the shared progress-message helper", () => {
 
   it("creates the row for a Telegram buyer that had none, and none for a web-only buyer", async () => {
     const order = await processingDigiflazzOrder();
+    await prisma.fulfillmentMessage.deleteMany({ where: { orderId: order.id } });
     await fulfillDigiflazzOrder(prisma, order.id, { sn: "SN-2" });
     expect(await prisma.fulfillmentMessage.findMany({ where: { orderId: order.id } })).toHaveLength(1);
 

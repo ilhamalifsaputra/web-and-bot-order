@@ -796,9 +796,11 @@ describe("PaymentsPage — underpaid order resolution", () => {
     await user.click(within(menu).getByText("Deliver anyway"));
 
     const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("button", { name: "Deliver anyway" })).toBeDisabled();
+    await user.type(within(dialog).getByLabelText("Override reason"), "Approved shortfall");
     fireEvent.click(within(dialog).getByRole("button", { name: "Deliver anyway" }));
 
-    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/payments/order/501/deliver", {}, expect.objectContaining({ idempotencyKey: expect.any(String) })));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/payments/order/501/deliver", { reason: "Approved shortfall" }, expect.objectContaining({ idempotencyKey: expect.any(String) })));
   });
 
   it("refunds an underpaid order to the buyer's wallet", async () => {
@@ -991,6 +993,7 @@ describe("PaymentsPage — underpaid order resolution", () => {
     await user.click(within(menu).getByText("Deliver anyway"));
 
     const dialog = await screen.findByRole("dialog");
+    await user.type(within(dialog).getByLabelText("Override reason"), "Approved shortfall");
     fireEvent.click(within(dialog).getByRole("button", { name: "Deliver anyway" }));
 
     expect(await screen.findByText("Order is no longer underpaid.")).toBeInTheDocument();
@@ -1020,6 +1023,7 @@ describe("PaymentsPage — underpaid order resolution", () => {
     await user.click(within(menu).getByText("Deliver anyway"));
 
     const dialog = await screen.findByRole("dialog");
+    await user.type(within(dialog).getByLabelText("Override reason"), "Approved shortfall");
     fireEvent.click(within(dialog).getByRole("button", { name: "Deliver anyway" }));
 
     expect(

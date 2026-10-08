@@ -18,6 +18,7 @@ import {
   getSetting,
   deleteSetting,
   setOrderPaymentMessage,
+  adoptTransactionMessage,
   getUser,
   BYBIT_BSC_DEPOSIT_ADDRESS_KEY,
   BYBIT_API_KEY_KEY,
@@ -34,6 +35,7 @@ vi.mock("@app/db", async (orig) => ({
   triggerDigiflazzDispatch: vi.fn(),
 }));
 import type { Api } from "grammy";
+import { FulfillmentMessageWorker } from "../../../packages/outbox-dispatcher/src/fulfillmentMessages";
 import { telegramError } from "./helpers/ctx";
 import { config } from "@app/core/config";
 import { Decimal } from "@app/core/money";
@@ -351,10 +353,11 @@ describe("processDeposits (poll-loop wiring)", () => {
     amount: new Decimal(over.amount),
   });
 
-  it("starts the instant Digiflazz dispatch exactly once for a Digiflazz order it settles into PROCESSING, before the bubble edit", async () => {
+  it("starts the instant Digiflazz dispatch exactly once for a Digiflazz order it settles into PROCESSING, while the coordinator owns the bubble", async () => {
     const order = (await makeBybitBscOrder())!;
     await routeOrderToDigiflazz(prisma, order.id);
     await setOrderPaymentMessage(prisma, order.id, 555, 777);
+    await adoptTransactionMessage(prisma, order.id, 555, 777);
     const { api, edits } = fakeApi();
     const trigger = vi.mocked(triggerDigiflazzDispatch);
     let editsAtTrigger = -1;
@@ -367,7 +370,8 @@ describe("processDeposits (poll-loop wiring)", () => {
     expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.PROCESSING);
     expect(trigger).toHaveBeenCalledTimes(1);
     expect(trigger).toHaveBeenCalledWith(order.id);
-    expect(edits.length).toBeGreaterThan(0);
+    expect(edits).toHaveLength(0);
+    expect(await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } })).toMatchObject({ messageId: 777, state: "ACTIVE" });
     expect(editsAtTrigger).toBe(0);
   });
 
@@ -379,16 +383,20 @@ describe("processDeposits (poll-loop wiring)", () => {
     expect(triggerDigiflazzDispatch).not.toHaveBeenCalled();
   });
 
-  it("flips the anchored payment bubble to the success message with paymentSuccessKb", async () => {
+  it("defers the adopted payment bubble to the coordinator and completes the same message", async () => {
     const order = (await makeBybitBscOrder())!;
     await setOrderPaymentMessage(prisma, order.id, 555, 777);
+    await adoptTransactionMessage(prisma, order.id, 555, 777);
     const { api, edits } = fakeApi();
     await processDeposits(api, [dep({ txId: "0x" + "f".repeat(64), amount: order.totalAmount })], await inFlight(), "BSC");
     const updated = await prisma.order.findUnique({ where: { id: order.id } });
     expect(updated!.status).toBe(OrderStatus.DELIVERED);
 
+    expect(edits).toHaveLength(0);
+    expect(await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } })).toMatchObject({ messageId: 777, state: "ACTIVE" });
+    await new FulfillmentMessageWorker(api).tick(order.id);
     expect(edits).toHaveLength(1);
-    expect(edits[0]!.chatId).toBe(555);
+    expect(String(edits[0]!.chatId)).toBe("555");
     expect(edits[0]!.messageId).toBe(777);
     const markup = (edits[0]!.extra as { reply_markup?: { inline_keyboard?: Array<Array<{ callback_data?: string }>> } })
       .reply_markup;
@@ -396,76 +404,61 @@ describe("processDeposits (poll-loop wiring)", () => {
     expect(flat).toContain("v1:browse:prods");
     expect(flat).toContain("v1:order:list");
 
-    // T1: a successful terminal flip must clear the anchor pointer, so the
-    // generic sweeper (added in a later task) knows this bubble is done and
-    // doesn't re-edit it every cycle.
-    expect(updated!.paymentMsgChatId).toBeNull();
-    expect(updated!.paymentMsgId).toBeNull();
+    expect(updated!.paymentMsgChatId).toBe(555n);
+    expect(updated!.paymentMsgId).toBe(777);
+    expect(edits[0]!.text).toContain("100%");
+    expect(await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } })).toMatchObject({ messageId: 777, state: "FINISHED" });
   });
 
-  // T1 critical fix: a rejected edit (e.g. the buyer navigated away and the
-  // bubble was deleted — "message to edit not found") must still clear the
-  // anchor. Only a genuine wall-clock timeout is allowed to leave it in
-  // place; a message that can never be edited must self-heal instead of
-  // making the upcoming generic sweeper retry a doomed edit forever.
-  it("clears the anchor even when the bubble edit is rejected by Telegram, so it self-heals instead of retrying forever (T1)", async () => {
+  it("preserves coordinator ownership without calling the rail edit even if Telegram would reject it", async () => {
     const order = (await makeBybitBscOrder())!;
     await setOrderPaymentMessage(prisma, order.id, 555, 777);
+    await adoptTransactionMessage(prisma, order.id, 555, 777);
     const { api } = fakeApi();
-    api.editMessageText = async () => {
+    api.editMessageText = vi.fn(async () => {
       throw telegramError(400, "Bad Request: message to edit not found");
-    };
+    });
     await processDeposits(api, [dep({ txId: "0x" + "8".repeat(64), amount: order.totalAmount })], await inFlight(), "BSC");
     const updated = await prisma.order.findUnique({ where: { id: order.id } });
-    // Delivery itself must not be blocked by a bubble-edit failure.
     expect(updated!.status).toBe(OrderStatus.DELIVERED);
-    // The anchor clears because the edit attempt genuinely completed (it was
-    // just rejected) — a permanently-uneditable bubble must not stay
-    // anchored forever.
-    expect(updated!.paymentMsgChatId).toBeNull();
-    expect(updated!.paymentMsgId).toBeNull();
+    expect(api.editMessageText).not.toHaveBeenCalled();
+    expect(await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } })).toMatchObject({ messageId: 777, state: "ACTIVE" });
+    expect(updated!.paymentMsgChatId).toBe(555n);
+    expect(updated!.paymentMsgId).toBe(777);
   });
 
-  // The other half of that contract (F1): a rejection Telegram may well accept
-  // a minute later — flood control, a gateway hiccup, a network fault — is NOT
-  // evidence the bubble is dead, so the anchor has to survive it or the buyer
-  // is stranded on a stale payment screen with nothing left to retry the edit.
   it.each([
     ["Telegram flood control", "a", () => telegramError(429, "Too Many Requests: retry after 30")],
     ["a Telegram server error", "b", () => telegramError(502, "Bad Gateway")],
     ["a network fault that never reached Telegram", "c", () => new Error("socket hang up")],
-  ] as const)("keeps the anchor when the bubble edit fails with %s, so a later sweep retries it", async (_label, hexDigit, makeError) => {
+  ] as const)("defers coordinator-owned edits when Telegram would return %s", async (_label, hexDigit, makeError) => {
     const order = (await makeBybitBscOrder())!;
     await setOrderPaymentMessage(prisma, order.id, 555, 777);
+    await adoptTransactionMessage(prisma, order.id, 555, 777);
     const { api } = fakeApi();
-    api.editMessageText = async () => {
+    api.editMessageText = vi.fn(async () => {
       throw makeError();
-    };
+    });
     await processDeposits(api, [dep({ txId: "0x" + hexDigit.repeat(64), amount: order.totalAmount })], await inFlight(), "BSC");
     const updated = await prisma.order.findUnique({ where: { id: order.id } });
     expect(updated!.status).toBe(OrderStatus.DELIVERED);
+    expect(api.editMessageText).not.toHaveBeenCalled();
+    expect(await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } })).toMatchObject({ messageId: 777, state: "ACTIVE" });
     expect(updated!.paymentMsgChatId).not.toBeNull();
     expect(updated!.paymentMsgId).not.toBeNull();
   });
 
-  // T1 critical fix, other half of the same contract: a genuine wall-clock
-  // timeout (the edit call hangs and never resolves at all — never resolves,
-  // never rejects) is the ONLY case that must leave the anchor in place, so
-  // the next sweep retries it. Real timers (not fake) — faking timers breaks
-  // Prisma's own I/O in this test harness, same constraint the hung-upload
-  // test elsewhere in this file and tokopayReconcile's own sweep tests
-  // document.
-  it("leaves the anchor in place when the bubble edit genuinely times out, so a later sweep retries it (T1)", async () => {
+  it("does not call a hanging rail edit on a coordinator-owned bubble", async () => {
     const order = (await makeBybitBscOrder())!;
     await setOrderPaymentMessage(prisma, order.id, 555, 777);
+    await adoptTransactionMessage(prisma, order.id, 555, 777);
     const { api } = fakeApi();
-    api.editMessageText = () => new Promise(() => {}); // hangs forever — never resolves or rejects
+    api.editMessageText = vi.fn(() => new Promise<never>(() => {})); // hangs forever — never resolves or rejects
     await processDeposits(api, [dep({ txId: "0x" + "9".repeat(64), amount: order.totalAmount })], await inFlight(), "BSC");
     const updated = await prisma.order.findUnique({ where: { id: order.id } });
-    // Delivery itself must not be blocked by a hung bubble-edit.
     expect(updated!.status).toBe(OrderStatus.DELIVERED);
-    // The anchor must survive — unlike a rejection, a genuine timeout means
-    // the edit's real outcome is still unknown, so the next sweep must retry.
+    expect(api.editMessageText).not.toHaveBeenCalled();
+    expect(await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } })).toMatchObject({ messageId: 777, state: "ACTIVE" });
     expect(updated!.paymentMsgChatId).not.toBeNull();
     expect(updated!.paymentMsgId).not.toBeNull();
   }, 10_000);
@@ -664,24 +657,22 @@ describe("processDeposits (poll-loop wiring)", () => {
     expect(await prisma.processedBybitTx.count({ where: { bybitTxId: txId } })).toBe(1);
   });
 
-  it("pushes the live tracking screen to the anchored bubble exactly once — on the cycle that actually detects, not on later still-confirming cycles", async () => {
+  it("defers detected tracking to the adopted coordinator across repeated provider observations", async () => {
     const order = (await makeBybitBscOrder())!;
     await setOrderPaymentMessage(prisma, order.id, 555, 777);
+    await adoptTransactionMessage(prisma, order.id, 555, 777);
     const { api, edits } = fakeApi();
     const txId = "0x" + "7".repeat(64);
 
-    // Cycle 1: first sighting — pushes the tracking screen once.
+    // Cycle 1: first sighting wakes the coordinator without a direct rail edit.
     await processDeposits(api, [dep({ txId, amount: order.totalAmount, bybitStatus: 1 })], await inFlight(), "BSC");
+    expect(edits).toHaveLength(0);
+    await new FulfillmentMessageWorker(api).tick(order.id);
     expect(edits).toHaveLength(1);
-    expect(edits[0]!.chatId).toBe(555);
     expect(edits[0]!.messageId).toBe(777);
-    expect(edits[0]!.text).toContain("Waiting for the first on-chain confirmation");
+    expect(edits[0]!.text).toContain("Payment detected");
+    expect(edits[0]!.text).toContain("25%");
 
-    // T1: onPaymentDetected is an INTERIM edit, not a terminal one — the
-    // confirmation tracker depends on the anchor staying live so it can keep
-    // rewriting the same bubble as confirmations accrue. It must never clear
-    // paymentMsgChatId/paymentMsgId (that's reserved for the terminal
-    // delivered/processing flips).
     const afterDetected = await prisma.order.findUnique({ where: { id: order.id } });
     expect(afterDetected!.paymentMsgChatId).not.toBeNull();
     expect(afterDetected!.paymentMsgId).not.toBeNull();
@@ -770,16 +761,11 @@ describe("processDeposits — WALLET_TOPUP delivery (onDelivered success UI)", (
       createWalletTopupOrder(tx, { userId: sample.user.id, amount, currency: "USDT", method: PaymentMethod.BYBIT_BSC, rate: "16000" }),
     );
 
-    // Task E9 follow-up (I-1): the flip-before-nudge ORACLE for this rail.
-  // `nudgeOutboxDispatcher()` is otherwise unobserved here, so this rail could
-  // silently revert to `nudge(); flip();` — the reported credential-before-
-  // confirmation ordering — with the whole suite still green. The outbox
-  // dispatcher's flush hook makes such a regression cosmetic in the combined
-  // server, but the standalone order-bot binary registers no flush hook at
-  // all, so there it is fully user-visible.
-  it("flips the settled bubble BEFORE nudging the outbox dispatcher", async () => {
+  // Settlement wakes the durable message; rail callbacks only nudge delivery.
+  it("nudges the outbox while deferring the adopted wallet bubble to its coordinator", async () => {
     const order = await makeTopupOrder("3");
     await setOrderPaymentMessage(prisma, order.id, 555, 778);
+    await adoptTransactionMessage(prisma, order.id, 555, 778);
     const sequence: string[] = [];
     registerOutboxNudge(() => sequence.push("nudge"));
     const api = {
@@ -800,16 +786,16 @@ describe("processDeposits — WALLET_TOPUP delivery (onDelivered success UI)", (
 
     await processDeposits(api, [dep({ txId: "0x" + "a".repeat(64), amount: order.totalAmount })], await inFlight(), "BSC");
 
-    // Both must have happened — a pass because neither ran is worthless.
-    expect(sequence).toContain("bubble");
+    expect(sequence).not.toContain("bubble");
     expect(sequence).toContain("nudge");
-    expect(sequence.lastIndexOf("bubble")).toBeLessThan(sequence.indexOf("nudge"));
+    expect(await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } })).toMatchObject({ messageId: 778, state: "ACTIVE" });
     registerOutboxNudge(null);
   });
 
-  it("delivers, enqueues exactly one outbox top-up DM (never a direct Telegram DM), sends no credential file, and flips the anchored bubble to a neutral status", async () => {
+  it("credits the wallet once and renders its full receipt through the adopted coordinator", async () => {
     const order = await makeTopupOrder("3");
     await setOrderPaymentMessage(prisma, order.id, 555, 777);
+    await adoptTransactionMessage(prisma, order.id, 555, 777);
     const { api, sent, edits, sendDocumentCalls } = fakeApi();
     const txId = "0x" + "9".repeat(64);
     await processDeposits(api, [dep({ txId, amount: order.totalAmount })], await inFlight(), "BSC");
@@ -823,8 +809,8 @@ describe("processDeposits — WALLET_TOPUP delivery (onDelivered success UI)", (
     // No direct Telegram DM either (Task E1) — this rail used to send the
     // "top-up successful" message straight from the bot process, which could
     // double-notify the buyer once the outbox also carried it for the same
-    // top-up. The buyer's actual success message now comes exclusively from
-    // the outbox, enqueued inside settleWalletTopup.
+    // top-up. The durable coordinator renders the receipt; the outbox keeps
+    // its fallback event, suppressed while that coordinator remains available.
     expect(sent).toHaveLength(0);
 
     const freshUser = await getUser(prisma, sample.user.id);
@@ -841,26 +827,20 @@ describe("processDeposits — WALLET_TOPUP delivery (onDelivered success UI)", (
     expect(payload.currency).toBe("USDT");
     expect(payload.new_balance).toBe("3");
 
-    // Anchored bubble carries a neutral "payment received" status — not the
-    // generic "your items are being delivered now" product copy, and no
-    // longer the balance-quoting success sentence (that now lives
-    // exclusively in the outbox DM above).
+    expect(edits).toHaveLength(0);
+    expect(await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } })).toMatchObject({ messageId: 777, state: "ACTIVE" });
+    await new FulfillmentMessageWorker(api).tick(order.id);
     expect(edits).toHaveLength(1);
-    expect(edits[0]!.text).not.toContain("items are being delivered");
-    expect(edits[0]!.text).not.toContain("3.00 USDT");
-    expect(edits[0]!.text).toContain("Payment received");
-    expect(edits[0]!.text).toContain("top-up has been credited");
-
-    // …and the wallet keyboard, not paymentSuccessKb's "My Orders": a top-up
-    // leaves nothing in the order history to look up. Picked through
-    // `settledPaymentKb` (apps/order-bot/src/util/delivery.ts), the same helper
-    // the sweeper and the Refresh button use, so the buyer sees one keyboard
-    // regardless of which path reaches the bubble first.
-    const markup = (edits[0]!.extra as { reply_markup?: { inline_keyboard?: Array<Array<{ callback_data?: string }>> } })
-      .reply_markup;
-    const flat = (markup?.inline_keyboard ?? []).flat().map((b) => b.callback_data);
-    expect(flat).toContain("v1:topup:open");
-    expect(flat).not.toContain("v1:order:list");
+    expect(edits[0]!.messageId).toBe(777);
+    expect(edits[0]!.text).toContain(order.orderCode);
+    expect(edits[0]!.text).toContain("Wallet top-up completed");
+    expect(edits[0]!.text).toContain("100%");
+    expect(edits[0]!.text).toContain("Balance");
+    const markup = (edits[0]!.extra as { reply_markup: { inline_keyboard: Array<Array<{ callback_data?: string }>> } }).reply_markup;
+    const buttons = markup.inline_keyboard.flat().map(button => button.callback_data);
+    expect(buttons).toContain("v1:wallet:view");
+    expect(buttons).not.toContain("v1:order:list");
+    expect(await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } })).toMatchObject({ messageId: 777, state: "FINISHED" });
   });
 });
 

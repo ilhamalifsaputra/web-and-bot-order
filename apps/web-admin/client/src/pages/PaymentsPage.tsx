@@ -278,6 +278,7 @@ export function PaymentsPage() {
   const [matchError, setMatchError] = useState<string | null>(null);
   const [orderCodeFocused, setOrderCodeFocused] = useState(false);
   const [pendingDeliver, setPendingDeliver] = useState<UnderpaidOrderRow | null>(null);
+  const [deliverReason, setDeliverReason] = useState("");
   const [pendingRefund, setPendingRefund] = useState<UnderpaidOrderRow | null>(null);
   const [pendingCancel, setPendingCancel] = useState<UnderpaidOrderRow | null>(null);
   const [pendingCreditAnyway, setPendingCreditAnyway] = useState<UnderpaidOrderRow | null>(null);
@@ -342,7 +343,7 @@ export function PaymentsPage() {
   });
 
   const deliverAnyway = useMutation({
-    mutationFn: (orderId: number) => idempotentPost(`/api/payments/order/${orderId}/deliver`, {}),
+    mutationFn: (orderId: number) => idempotentPost(`/api/payments/order/${orderId}/deliver`, { reason: deliverReason.trim() }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["payments"] });
       toast.success("Order delivered.");
@@ -627,7 +628,7 @@ export function PaymentsPage() {
                           </>
                         ) : (
                           <>
-                            <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setPendingDeliver(o); }}>
+                            <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setDeliverReason(""); setPendingDeliver(o); }}>
                               <PackageCheck className="h-4 w-4" />
                               Deliver anyway
                             </DropdownMenuItem>
@@ -908,15 +909,21 @@ export function PaymentsPage() {
       )}
 
       {pendingDeliver && (
-        <ConfirmDialog
-          open
-          onOpenChange={(open) => { if (!open) setPendingDeliver(null); }}
-          title="Deliver this order anyway?"
-          description={`Order ${pendingDeliver.orderCode} was underpaid. Deliver it anyway — this writes off the shortfall.`}
-          confirmLabel="Deliver anyway"
-          variant="default"
-          onConfirm={() => deliverAnyway.mutate(pendingDeliver.id)}
-        />
+        <Dialog open onOpenChange={(open) => { if (!open) setPendingDeliver(null); }}>
+          <DialogContent>
+            <DialogHeader><DialogTitle>Deliver this order anyway?</DialogTitle></DialogHeader>
+            <p className="text-sm text-muted-foreground">Order {pendingDeliver.orderCode} was underpaid. Accept the shortfall and fulfill this order. Payment remains incomplete.</p>
+            <label className="space-y-2 text-sm">Override reason
+              <Input aria-label="Override reason" value={deliverReason} onChange={(e) => setDeliverReason(e.target.value)} placeholder="Why is the shortfall being accepted?" />
+            </label>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setPendingDeliver(null)}>Cancel</Button>
+              <Button disabled={!deliverReason.trim() || deliverAnyway.isPending} onClick={() => {
+                deliverAnyway.mutate(pendingDeliver.id, { onSuccess: () => setPendingDeliver(null) });
+              }}>Deliver anyway</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       )}
       {pendingRefund && (
         <ConfirmDialog

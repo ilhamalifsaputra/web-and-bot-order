@@ -30,7 +30,7 @@
 /**
  * The internal vocabulary every provider status collapses into.
  *
- * Deliberately four values, not the union of every gateway's enum: the callers
+ * Semantic phases rather than the union of every gateway's raw enum: callers
  * only ever branch on "settle this now" versus "not yet" versus "this is over".
  * A rail that reports something outside its known set maps to `pending`, which
  * is the safe default — it means "come back next cycle", never "deliver" and
@@ -41,8 +41,10 @@ export type NormalizedPaymentStatus =
   | "paid"
   /** Not settled yet, and not over — in flight, unknown, or unrecognised. */
   | "pending"
-  /** The gateway reported a terminal non-success (failed, refunded, or a
-   *  partial payment that will never complete on its own). */
+  | "detected"
+  | "verifying"
+  | "underpaid"
+  /** The gateway reported a terminal non-success (failed or refunded). */
   | "failed"
   /** The payment window closed at the gateway's end. */
   | "expired";
@@ -109,7 +111,7 @@ const IDR_GATEWAY_PAID_STATES: readonly string[] = [
  * the other one: it sounds close enough to paid, and treating it as such would
  * deliver goods for an underpayment.
  */
-const NOWPAYMENTS_FAILED_STATES: readonly string[] = ["failed", "refunded", "partially_paid"];
+const NOWPAYMENTS_FAILED_STATES: readonly string[] = ["failed", "refunded"];
 
 /** Bybit V5 deposit status, INTERNAL TRANSFER ledger: 1=Processing, 2=Success,
  *  3=Failed. Note 3 is a FAILURE here and a SUCCESS on the on-chain ledger
@@ -157,6 +159,9 @@ export function normalizeProviderStatus(
       const status = normalizeString(raw);
       if (status === null) return "pending";
       if (status === "finished") return "paid";
+      if (status === "partially_paid") return "underpaid";
+      if (status === "confirming") return "detected";
+      if (status === "confirmed" || status === "sending") return "verifying";
       if (status === "expired") return "expired";
       if (NOWPAYMENTS_FAILED_STATES.includes(status)) return "failed";
       return "pending";
@@ -170,6 +175,8 @@ export function normalizeProviderStatus(
     case StatusProvider.BYBIT_BSC: {
       if (typeof raw !== "number") return "pending";
       if (raw === BYBIT_BSC_SUCCESS) return "paid";
+      if (raw === 1) return "detected";
+      if (raw === 2) return "verifying";
       return "pending";
     }
   }

@@ -191,9 +191,13 @@ async function captureLogs(fn: () => Promise<void>): Promise<string> {
     },
   };
   if (streamSym) (stream as Record<symbol, unknown>)[streamSym] = sink;
+  const originalLevel = logger.level;
+  // Exercise every log level even when the test runner suppresses routine logs.
+  logger.level = "trace";
   try {
     await fn();
   } finally {
+    logger.level = originalLevel;
     if (streamSym) (stream as Record<symbol, unknown>)[streamSym] = original;
   }
   return captured;

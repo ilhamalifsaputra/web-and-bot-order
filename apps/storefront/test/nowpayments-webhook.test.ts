@@ -268,8 +268,8 @@ describe("POST /pay/nowpayments/callback", () => {
         trxId: "PID-B3A-UNITS",
       });
       const res = await post(raw, signature);
-      expect(res.json()).toEqual({ status: "amount mismatch" });
-      expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe("PENDING_PAYMENT");
+      expect(res.json()).toEqual({ status: "underpaid" });
+      expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe("UNDERPAID");
     });
 
     it("refuses an invoice priced in a currency other than usd", async () => {
@@ -540,9 +540,9 @@ describe("POST /pay/nowpayments/callback", () => {
     expect(ledger).toBeNull();
   });
 
-  it("ignores partially_paid (close-but-not-finished) without delivering — never an error condition", async () => {
+  it("records a trusted partially_paid invoice as UNDERPAID without delivering", async () => {
     const order = await createPendingNowpaymentsOrder("ORD-PARTIAL-NP", "50");
-    const { raw, signature } = signedIpn({ orderId: order.orderCode, amount: "49.99", trxId: "PID-PARTIAL-1", status: "partially_paid" });
+    const { raw, signature } = signedIpn({ orderId: order.orderCode, amount: "49.99", payAmount: "50", priceAmount: "50", trxId: "PID-PARTIAL-1", status: "partially_paid" });
     const res = await app.inject({
       method: "POST",
       url: "/pay/nowpayments/callback",
@@ -550,10 +550,13 @@ describe("POST /pay/nowpayments/callback", () => {
       payload: raw,
     });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ status: "ignored" });
+    expect(res.json()).toEqual({ status: "underpaid" });
 
     const updated = await prisma.order.findUnique({ where: { id: order.id } });
-    expect(updated!.status).toBe("PENDING_PAYMENT");
+    expect(updated!.status).toBe("UNDERPAID");
+    expect(updated!.paymentState).toBe("UNDERPAID");
+    expect(updated!.paidAt).toBeNull();
+    expect(await prisma.qrisUnderpaidTx.count({ where: { orderId: order.id } })).toBe(1);
   });
 
   // M-10 (backend audit 2026-07-31): the order left PENDING_PAYMENT (here,

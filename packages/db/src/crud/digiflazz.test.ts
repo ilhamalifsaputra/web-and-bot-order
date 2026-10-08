@@ -1131,6 +1131,8 @@ describe("dispatchDigiflazzOrderNow — direct per-order dispatch (instant dispa
 
   it("does not upsert the fulfillment message on the hot path (settlement already did; the cron still does for legacy orders)", async () => {
     const order = await makeProcessingDigiflazzOrder();
+    // Simulate a legacy order created before checkout reserved the coordinator.
+    await prisma.fulfillmentMessage.deleteMany({ where: { orderId: order.id } });
     digiflazzMock.createTransaction.mockResolvedValue({ refId: order.orderCode, status: "Pending", sn: null, message: null, price: null });
     await dispatchDigiflazzOrderNow(prisma, order.id);
     expect(await prisma.fulfillmentMessage.count({ where: { orderId: order.id } })).toBe(0);

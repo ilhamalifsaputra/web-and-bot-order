@@ -675,6 +675,14 @@ model Order {
   expiresAt              DateTime? @map("expires_at")
   paidAt                 DateTime? @map("paid_at")
   deliveredAt            DateTime? @map("delivered_at")
+  /// Provider payment facts, independent of fulfillment and admin overrides.
+  paymentState           String?   @map("payment_state")
+  /// Wallet credit outcome; a confirmed payment can require manual credit review.
+  walletCreditState      String?   @map("wallet_credit_state")
+  completionMode         String?   @map("completion_mode")
+  completedBy            Int?      @map("completed_by")
+  completedAt            DateTime? @map("completed_at")
+  completionReason       String?   @map("completion_reason")
   /// For manual_with_info orders: JSON-encoded list of the buyer's per-unit
   /// answers (keyed by field `key`), collected at checkout before payment. Null
   /// for auto/manual orders. TEXT per the JSON-in-string convention.
@@ -808,6 +816,7 @@ model FulfillmentMessage {
   order        Order    @relation(fields: [orderId], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@index([state, nextUpdateAt], map: "ix_fulfillment_messages_due")
+  @@unique([chatId, messageId], map: "ix_fulfillment_messages_chat_message")
   @@map("fulfillment_messages")
 }
 

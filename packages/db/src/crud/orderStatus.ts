@@ -19,7 +19,7 @@ import { ValidationError } from "@app/core/errors";
 import { Decimal } from "@app/core/money";
 import type { PrismaClient, Tx } from "../client";
 import type { Db } from "./_types";
-import { wakeFulfillmentMessage } from "./fulfillmentMessages";
+import { wakeFulfillmentMessage, ensureFulfillmentMessage } from "./fulfillmentMessages";
 
 /** Statuses after which the buyer's Telegram progress message shows its last text. */
 const FINAL_ORDER_STATUSES: ReadonlySet<string> = new Set([
@@ -29,6 +29,7 @@ const FINAL_ORDER_STATUSES: ReadonlySet<string> = new Set([
   OrderStatus.REJECTED,
   OrderStatus.REFUNDED,
   OrderStatus.FAILED,
+  OrderStatus.UNDERPAID,
 ]);
 
 export const LEGAL_TRANSITIONS: Record<string, readonly string[]> = {
@@ -144,7 +145,12 @@ export async function transitionOrderStatus(
 
   const claim = await db.order.updateMany({
     where: { id: orderId, status: from },
-    data: { status: to },
+    data: {
+      status: to,
+      ...(to === OrderStatus.UNDERPAID ? { paymentState: "UNDERPAID" } : {}),
+      ...(to === OrderStatus.PAYMENT_DETECTED ? { paymentState: "PAYMENT_DETECTED" } : {}),
+      ...(to === OrderStatus.CONFIRMING || to === OrderStatus.CONFIRMED ? { paymentState: "VERIFYING" } : {}),
+    },
   });
   if (claim.count !== 1) {
     // Either the order doesn't exist, or its actual current status no
@@ -158,7 +164,9 @@ export async function transitionOrderStatus(
   });
   // A final status ends the buyer's progress message promptly; a manual
   // order's static WAITING line is not polled, so this is what moves it on.
-  if (FINAL_ORDER_STATUSES.has(to)) await wakeFulfillmentMessage(db, orderId);
+  if (FINAL_ORDER_STATUSES.has(to) || to === OrderStatus.PAYMENT_DETECTED || to === OrderStatus.CONFIRMING || to === OrderStatus.CONFIRMED || to === OrderStatus.PROCESSING) {
+    await wakeFulfillmentMessage(db, orderId);
+  }
 }
 
 /**
@@ -181,6 +189,26 @@ export async function tryTransitionOrderStatus(
     if (e instanceof ValidationError && e.key === "error.illegal_status_transition") return false;
     throw e;
   }
+}
+
+/** Persist actual provider intermediate evidence without inventing milestones
+ * on rails which only report pending/success. Monotonic within one attempt.
+ */
+export async function recordProviderPaymentObservation(
+  db: Db,
+  args: { orderId: number; method: string; state: "PAYMENT_DETECTED" | "VERIFYING" },
+): Promise<boolean> {
+  const prior = args.state === "VERIFYING" ? ["WAITING_PAYMENT", "PAYMENT_DETECTED"] : ["WAITING_PAYMENT"];
+  const result = await db.order.updateMany({
+    where: { id: args.orderId, paymentMethod: args.method, status: OrderStatus.PENDING_PAYMENT,
+      OR: [{ paymentState: null }, { paymentState: { in: prior } }] },
+    data: { paymentState: args.state },
+  });
+  if (result.count === 1) {
+    await ensureFulfillmentMessage(db, args.orderId);
+    await wakeFulfillmentMessage(db, args.orderId);
+  }
+  return result.count === 1;
 }
 
 /**

@@ -22,8 +22,9 @@ import { hashPassword, verifyPassword } from "@app/core/password";
 import { Decimal } from "@app/core/money";
 import { parseCustomerData } from "@app/core/deliveryFields";
 import { orderInputConfig, parseInputFields } from "@app/core/playerInput";
-import { getOrderFulfillment, toBuyerDigiflazzStatus } from "@app/core/orderFulfillment";
+import { customerProgressPhase, getOrderFulfillment, toBuyerDigiflazzStatus } from "@app/core/orderFulfillment";
 import { buyerOrderSummary } from "./buyerOrderSummary";
+import { transactionStatusView } from "./checkout";
 import {
   parseTicketMultipart,
   parseNewTicketMultipart,
@@ -210,11 +211,15 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
     const customer = await requireCustomer(req, reply);
     if (!customer) return;
     const orders = await listUserOrders(prisma, customer.userId, 30, 0);
+    const cancelledIds = orders.filter(o => o.status === OrderStatus.CANCELLED).map(o => o.id);
+    const creditedIds = new Set(cancelledIds.length ? (await prisma.walletTransaction.findMany({
+      where: { orderId: { in: cancelledIds }, reason: "unfulfilled_credit" }, select: { orderId: true },
+    })).map(row => row.orderId) : []);
     return reply.send({
       orders: orders.map((o) => ({
         code: o.orderCode,
         status: o.status,
-        fulfillment: getOrderFulfillment(o),
+        fulfillment: { ...getOrderFulfillment(o), presentation: customerProgressPhase(o, { credited: creditedIds.has(o.id) }) },
         // Task 5 fix pass: `total` is denominated in the order's OWN
         // settlement currency ("IDR" | "USDT"), not always IDR — the client
         // formats it natively (formatOrderAmount), never display-converts it.
@@ -250,6 +255,7 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
     const customerDataFields = parseInputFields(inputConfig.additionalFields);
     const customerData = parseCustomerData(order.customerData);
     const money = buyerOrderSummary(order);
+    const transactionStatus = await transactionStatusView(order);
     return reply.send({
       order: {
         code: order.orderCode,
@@ -269,7 +275,8 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
         customer_data: customerData,
         delivered_content: order.deliveredContent,
         digiflazz_status: toBuyerDigiflazzStatus(order.digiflazzStatus),
-        fulfillment: getOrderFulfillment(order),
+        fulfillment: { ...getOrderFulfillment(order), presentation: transactionStatus.presentation },
+        underpayment: transactionStatus.underpayment,
         items: order.items.map((i) => ({
           name: i.product.name,
           duration: i.product.durationLabel,

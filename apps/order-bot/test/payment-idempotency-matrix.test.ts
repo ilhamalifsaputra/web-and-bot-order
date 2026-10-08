@@ -19,9 +19,8 @@ import "./setup-db";
  *  1. The buyer's Refresh tap arriving AFTER settlement. Every rail asserts one
  *     DM at settle time; none asserts the count still holds once the buyer taps
  *     🔄 on an order that is already paid — which is exactly when they tap it.
- *  2. The ORDER of a rail's two steps. `nudgeOutboxDispatcher()` is unobserved
- *     in every rail suite, so all six could revert to `nudge(); flip();` with a
- *     green suite. E3's own review flagged this as the missing oracle.
+ *  2. Settlement commits before the dispatcher is nudged. The message worker
+ *     then edits the owned checkout screen while legacy refreshes defer.
  *  3. Dedupe surviving a restart, i.e. that the guard is in the DATABASE and
  *     not in a module-level Set that a process bounce would clear.
  *  4. The full acceptance load — many refreshes, retries, detections and
@@ -38,6 +37,7 @@ import {
   createWalletTopupOrder,
   finalizeOrderPayment,
   setOrderPaymentMessage,
+  adoptTransactionMessage,
   deliverPaidTokopayOrder,
   listPendingTokopayOrders,
   bulkAddStock,
@@ -50,6 +50,7 @@ import { registerOutboxNudge } from "@app/core/nudge";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { telegramError } from "./helpers/ctx";
 import { flipSettledOrderBubble } from "../src/jobs";
+import { FulfillmentMessageWorker, type FulfillmentTelegramApi } from "../../../packages/outbox-dispatcher/src/fulfillmentMessages";
 import { reconcileOrder } from "../src/payments/tokopayReconcile";
 import { qrisChargeAmount } from "@app/core/payments/tokopay";
 
@@ -72,17 +73,14 @@ afterAll(async () => {
 
 const CREDS = { merchantId: "M", secret: "s", channel: "QRIS", minAmount: null };
 
-/** Telegram's answer to `editMessageText` on a PHOTO message — the one signal
- *  that says "this bubble carries a QR image, not text", and the reason a QRIS
- *  bubble flip is a delete rather than an edit. Deliberately NOT in
- *  `isPermanentBubbleEditFailure`'s permanent list. */
+/** Telegram identifies a saved QR photo; the worker edits its caption. */
 const noTextToEdit = () => telegramError(400, "Bad Request: there is no text in the message to edit");
 
 /**
  * A Telegram double that records the ORDER of every call across all methods,
  * not just the count per method. `calls` is the interleaved sequence, which is
- * what regression 2 needs — per-method spies cannot tell you that the delete
- * happened before the send.
+ * what regression 2 needs — per-method spies cannot tell you when the worker
+ * edited the saved screen relative to the committed settlement's nudge.
  */
 function recordingApi(opts: { photoBubble?: boolean } = {}) {
   const calls: string[] = [];
@@ -125,6 +123,7 @@ async function makeAnchoredTokopayOrder(kind: string) {
             amount: "50000",
             currency: "IDR",
             method: PaymentMethod.TOKOPAY,
+            channel: "bot",
           }),
         )
       : await prisma.$transaction(async (tx) => {
@@ -138,8 +137,20 @@ async function makeAnchoredTokopayOrder(kind: string) {
             method: PaymentMethod.TOKOPAY,
           });
         });
-  await setOrderPaymentMessage(prisma, order!.id, 555, 4242);
+  await prisma.$transaction(async (tx) => {
+    await adoptTransactionMessage(tx, order!.id, 555, 4242);
+    await setOrderPaymentMessage(tx, order!.id, 555, 4242);
+  });
   return order!;
+}
+
+async function render(api: Api, orderId: number) {
+  await new FulfillmentMessageWorker(api as unknown as FulfillmentTelegramApi, { db: prisma }).tick(orderId);
+}
+
+async function expectCanonicalCompletion(orderId: number) {
+  expect(await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId } })).toMatchObject({ chatId: 555n, messageId: 4242, state: "FINISHED" });
+  expect(await prisma.order.findUniqueOrThrow({ where: { id: orderId } })).toMatchObject({ paymentMsgChatId: 555n, paymentMsgId: 4242 });
 }
 
 const countTopupDms = (orderId: number) =>
@@ -151,14 +162,11 @@ const countTopupDms = (orderId: number) =>
 // Reported bug 1: a QRIS wallet top-up produced TWO "top-up successful"
 // messages, worded differently.
 //
-// The root cause was two producers, and the second one was invisible in the
-// enqueue sites: the settled QR bubble is a PHOTO, so flipping it could not be
-// an edit — it was a delete-then-RESEND, and the resent bubble was itself a
-// success message. Both halves are asserted here, because fixing only the
-// enqueue side would still leave the buyer with two messages.
+// A durable coordinator owns the original QR caption. Refresh defers to it;
+// repeated worker ticks and delivery retries must never create another screen.
 // ───────────────────────────────────────────────────────────────────────────
 describe("regression: a settled QRIS top-up yields exactly one success message, even after Refresh", () => {
-  it("deletes the QR photo bubble with no replacement, and never a second outbox DM", async () => {
+  it("edits the original QR caption once without sending a replacement or adding a second outbox DM", async () => {
     const order = await makeAnchoredTokopayOrder(OrderKind.WALLET_TOPUP);
     const { calls, api } = recordingApi({ photoBubble: true });
 
@@ -170,12 +178,16 @@ describe("regression: a settled QRIS top-up yields exactly one success message, 
     });
     const settled = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
     await flipSettledOrderBubble(api, { ...settled, user: { language: "en" } }, 5000);
-
-    // The QR image is gone and NOTHING took its place. `sendMessage` here would
-    // be the buyer's second "top-up successful" message — the reported bug.
-    expect(calls).toContain("deleteMessage");
+    expect(calls).toEqual([]); // Legacy refresh defers to the registered owner.
+    await render(api, order.id);
+    expect(calls.filter((c) => c === "editMessageCaption")).toHaveLength(1);
+    const [, messageId, payload] = vi.mocked(api.editMessageCaption).mock.calls[0]!;
+    expect(messageId).toBe(4242);
+    expect(payload).toMatchObject({ caption: expect.stringContaining(order.orderCode) });
+    expect(calls).not.toContain("deleteMessage");
     expect(calls).not.toContain("sendMessage");
     expect(await countTopupDms(order.id)).toBe(1);
+    await expectCanonicalCompletion(order.id);
   });
 
   it("still yields one message after ten Refresh taps on the settled order", async () => {
@@ -191,15 +203,15 @@ describe("regression: a settled QRIS top-up yields exactly one success message, 
     for (let tap = 0; tap < 10; tap++) {
       const current = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
       await flipSettledOrderBubble(api, { ...current, user: { language: "en" } }, 5000);
+      await render(api, order.id);
     }
 
-    // The anchor IS the work queue: the first flip clears it, so the nine
-    // after it resolve to "no_anchor" and touch Telegram not at all. That is
-    // what stops a buyer who taps Refresh repeatedly from collecting a bubble
-    // per tap.
-    expect(calls.filter((c) => c === "deleteMessage")).toHaveLength(1);
+    // Persisted FINISHED ownership makes the nine later worker ticks no-ops.
+    expect(calls.filter((c) => c === "editMessageCaption")).toHaveLength(1);
+    expect(calls).not.toContain("deleteMessage");
     expect(calls).not.toContain("sendMessage");
     expect(await countTopupDms(order.id)).toBe(1);
+    await expectCanonicalCompletion(order.id);
   });
 
   it("credits the wallet exactly once across those taps", async () => {
@@ -214,6 +226,7 @@ describe("regression: a settled QRIS top-up yields exactly one success message, 
     for (let tap = 0; tap < 10; tap++) {
       const current = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
       await flipSettledOrderBubble(api, { ...current, user: { language: "en" } }, 5000);
+      await render(api, order.id);
     }
 
     const credits = await prisma.walletTransaction.findMany({
@@ -226,19 +239,11 @@ describe("regression: a settled QRIS top-up yields exactly one success message, 
 });
 
 // ───────────────────────────────────────────────────────────────────────────
-// Reported bug 2: credentials appeared BEFORE the payment was confirmed
-// (Order → Credential sent → QRIS → Refresh → Payment Received).
-//
-// Nothing was ever delivered early — `approveOrder`'s atomic claim gates every
-// credential send — so this is purely about the order the buyer SEES. The rail
-// must finish flipping its bubble before it tells the dispatcher to send.
-//
-// `nudgeOutboxDispatcher()` is unobserved in every rail suite, which E3's own
-// review flagged: all six rails could revert to `nudge(); flip();` and the
-// suite would stay green. Registering a nudge spy is the oracle that closes it.
+// Payment settlement and message ownership commit before the dispatcher wakes.
+// The rail defers Telegram writes to the worker, which edits the original ID.
 // ───────────────────────────────────────────────────────────────────────────
-describe("regression: the payment bubble is settled before the buyer's DM is triggered", () => {
-  it("flips the bubble before nudging the outbox dispatcher", async () => {
+describe("regression: settlement commits before the durable message worker is nudged", () => {
+  it("nudges only after canonical settlement and lets the worker edit the owned message", async () => {
     await bulkAddStock(prisma, sample.product.id, ["cred-ordering-1"]);
     const order = await makeAnchoredTokopayOrder(OrderKind.PRODUCT);
     const [pending] = await listPendingTokopayOrders(prisma, new Date());
@@ -249,13 +254,17 @@ describe("regression: the payment bubble is settled before the buyer's DM is tri
     });
 
     const sequence: string[] = [];
-    registerOutboxNudge(() => sequence.push("nudge"));
+    let committed = false;
+    registerOutboxNudge(async () => {
+      sequence.push("nudge");
+      committed = (await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status === OrderStatus.DELIVERED;
+    });
     const api = {
       sendMessage: vi.fn(async () => {
         sequence.push("bubble");
         return { message_id: 90210 };
       }),
-      editMessageCaption: vi.fn(async () => undefined),
+      editMessageCaption: vi.fn(async () => { sequence.push("caption"); }),
       editMessageText: vi.fn(async () => {
         sequence.push("bubble");
         throw noTextToEdit();
@@ -268,14 +277,13 @@ describe("regression: the payment bubble is settled before the buyer's DM is tri
 
     await reconcileOrder(api, CREDS, pending!);
 
-    // Both must have happened — a test that passes because neither ran would
-    // be worthless.
-    expect(sequence).toContain("bubble");
-    expect(sequence).toContain("nudge");
-    // And every bubble call precedes the nudge. `lastIndexOf("bubble")` rather
-    // than the first, because a photo bubble is a delete AND a send: the DM
-    // must not be triggered while the replacement is still in flight.
-    expect(sequence.lastIndexOf("bubble")).toBeLessThan(sequence.indexOf("nudge"));
+    expect(sequence).toEqual(["nudge"]);
+    await vi.waitFor(() => expect(committed).toBe(true));
+    await render(api, order.id);
+    expect(sequence).toEqual(["nudge", "bubble", "caption"]);
+    expect(api.sendMessage).not.toHaveBeenCalled();
+    expect(api.deleteMessage).not.toHaveBeenCalled();
+    await expectCanonicalCompletion(order.id);
   });
 
   it("leaves the settled bubble carrying no Refresh button once it is flipped", async () => {
@@ -291,13 +299,13 @@ describe("regression: the payment bubble is settled before the buyer's DM is tri
       shopUrl: null,
     });
     const settled = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
-    const sent: Array<{ reply_markup?: { inline_keyboard: Array<Array<{ callback_data?: string }>> } }> = [];
+    const edited: Array<{ caption?: string; reply_markup?: { inline_keyboard: Array<Array<{ callback_data?: string }>> } }> = [];
     const api = {
-      sendMessage: vi.fn(async (_chat: number, _text: string, opts: (typeof sent)[number]) => {
-        sent.push(opts);
-        return { message_id: 90210 };
+      sendMessage: vi.fn(async () => ({ message_id: 90210 })),
+      editMessageCaption: vi.fn(async (_chat: number, id: number, opts: (typeof edited)[number]) => {
+        expect(id).toBe(4242);
+        edited.push(opts);
       }),
-      editMessageCaption: vi.fn(async () => undefined),
       editMessageText: vi.fn(async () => {
         throw noTextToEdit();
       }),
@@ -305,13 +313,17 @@ describe("regression: the payment bubble is settled before the buyer's DM is tri
     } as unknown as Api;
 
     await flipSettledOrderBubble(api, { ...settled, user: { language: "en" } }, 5000);
-
-    // A PRODUCT order DOES get a replacement bubble (unlike a top-up) — but it
-    // must not carry the pre-payment controls.
-    expect(sent).toHaveLength(1);
-    const buttons = (sent[0]!.reply_markup?.inline_keyboard ?? []).flat().map((b) => b.callback_data ?? "");
+    expect(edited).toHaveLength(0);
+    await render(api, order.id);
+    expect(edited).toHaveLength(1);
+    expect(edited[0]!.caption).toContain("100%");
+    const buttons = (edited[0]!.reply_markup?.inline_keyboard ?? []).flat().map((b) => b.callback_data ?? "");
     expect(buttons.some((b) => b.startsWith("refresh"))).toBe(false);
     expect(buttons.some((b) => b.startsWith("cancel"))).toBe(false);
+    expect(buttons.some((b) => b.includes("refresh") || b.includes("cancel"))).toBe(false);
+    expect(api.sendMessage).not.toHaveBeenCalled();
+    expect(api.deleteMessage).not.toHaveBeenCalled();
+    await expectCanonicalCompletion(order.id);
   });
 });
 
@@ -375,9 +387,15 @@ describe("acceptance: 10 refreshes + 5 webhook retries + 3 poller detections + 2
     for (let tap = 0; tap < 12; tap++) {
       const current = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
       await flipSettledOrderBubble(api, { ...current, user: { language: "en" } }, 5000);
+      await render(api, order.id);
     }
 
     expect(await prisma.processedTokopayTx.count({ where: { orderId: order.id } })).toBe(1);
+    expect(await prisma.financialTransaction.count({ where: { idempotencyKey: `order:${order.id}:payment` } })).toBe(1);
+    expect(api.editMessageCaption).toHaveBeenCalledTimes(1);
+    expect(api.deleteMessage).not.toHaveBeenCalled();
+    expect(api.sendMessage).not.toHaveBeenCalled();
+    await expectCanonicalCompletion(order.id);
     expect(
       await prisma.notificationOutbox.count({
         where: { event: NotificationEvent.ORDER_DELIVERED_DM, orderId: order.id },
@@ -411,9 +429,15 @@ describe("acceptance: 10 refreshes + 5 webhook retries + 3 poller detections + 2
     for (let tap = 0; tap < 12; tap++) {
       const current = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
       await flipSettledOrderBubble(api, { ...current, user: { language: "en" } }, 5000);
+      await render(api, order.id);
     }
 
     expect(await prisma.processedTokopayTx.count({ where: { orderId: order.id } })).toBe(1);
+    expect(await prisma.financialTransaction.count({ where: { idempotencyKey: `order:${order.id}:topup` } })).toBe(1);
+    expect(api.editMessageCaption).toHaveBeenCalledTimes(1);
+    expect(api.deleteMessage).not.toHaveBeenCalled();
+    expect(api.sendMessage).not.toHaveBeenCalled();
+    await expectCanonicalCompletion(order.id);
     expect(await countTopupDms(order.id)).toBe(1);
     expect(
       await prisma.walletTransaction.count({ where: { orderId: order.id, reason: "wallet_topup" } }),

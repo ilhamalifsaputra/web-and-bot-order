@@ -2,7 +2,7 @@ import "@testing-library/jest-dom";
 import { describe, it, expect, beforeEach } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import OrderProgress from "./OrderProgress";
-import type { OrderFulfillment } from "../../api/types";
+import type { CustomerProgress, OrderFulfillment } from "../../api/types";
 
 function f(over: Partial<OrderFulfillment>): OrderFulfillment {
   return { mode: "AUTO", provider: "DIGIFLAZZ", status: "PROCESSING", payment_status: "PAID", can_edit_customer_data: false, ...over };
@@ -62,5 +62,21 @@ describe("OrderProgress", () => {
     render(<OrderProgress fulfillment={f({ mode: "MANUAL", provider: "MANUAL", status: "QUEUED" })} />);
     expect(screen.getByRole("heading", { name: "Waiting to be prepared" })).toBeInTheDocument();
     expect(screen.queryByText(/by hand|manual/i)).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["NONE", false, null], ["PAYMENT_DETECTED", true, 25], ["VERIFYING", true, 35],
+    ["AUTO_QUEUED", true, 55], ["AUTO_SUBMITTING", true, 65], ["AUTO_PROCESSING", true, 80],
+    ["SUCCESS", false, 100], ["MANUAL_WAITING", false, null], ["UNDERPAID", false, null], ["REVIEW", false, null],
+  ] as const)("renders canonical %s exactly as projected by the backend", (phase, spinner, progress) => {
+    const presentation: CustomerProgress = {
+      phase, spinner, progress, topUp: true, transactionType: "GAME_TOPUP",
+      titleKey: "web.fulfillment_processing_title", bodyKey: "web.fulfillment_processing_body",
+    };
+    const { container } = render(<OrderProgress fulfillment={f({ presentation })} />);
+    expect(Boolean(container.querySelector(".animate-spin"))).toBe(spinner);
+    if (progress === null) expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+    else expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", String(progress));
+    expect(screen.queryByRole("list", { name: "Order progress" })).not.toBeInTheDocument();
   });
 });

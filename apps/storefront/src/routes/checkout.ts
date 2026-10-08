@@ -26,6 +26,7 @@ import { parseInputFields } from "@app/core/playerInput";
 import { logger } from "@app/core/logger";
 import { Decimal } from "@app/core/money";
 import { canonicalProduct } from "@app/core/canonicalProduct";
+import { customerProgressPhase, paymentStatusFor, type FulfillmentOrder } from "@app/core/orderFulfillment";
 import { effectiveUnitPrice, type FlashFields } from "@app/core/flash";
 import { bulkDiscountFor } from "@app/core/bulk";
 import { ensureUtc } from "@app/core/datetime";
@@ -57,6 +58,7 @@ import {
   getDenominationWithProduct,
   countAvailableStock,
   getOrderByCode,
+  findUnderpaidReceived,
   countUserPendingOrders,
   deliverPaidTokopayOrder,
   recordUnmatchedTokopayTx,
@@ -71,6 +73,8 @@ import {
   getNowpaymentsCreds,
   deliverPaidNowpaymentsOrder,
   recordUnmatchedNowpaymentsTx,
+  markOrderUnderpaid,
+  recordProviderPaymentObservation,
   enqueueAdminStalePayment,
   enqueueAdminUnconfirmablePayment,
   claimGatewaySlot,
@@ -115,6 +119,7 @@ import {
 } from "@app/core/suppliers/digiflazz";
 import { DigiflazzTimingEvent, elapsedMs, logDigiflazzTimingEvent } from "@app/core/suppliers/digiflazzTiming";
 import { gatewayLedgerTrxId } from "@app/core/payments/ledgerKey";
+import { normalizeProviderStatus, StatusProvider } from "@app/core/payments/paymentStatus";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import { usdtFromIdr } from "../pricing";
 import { flashViewFor, loadGuestCartItems } from "./cart";
@@ -579,6 +584,13 @@ export function payState(order: OrderRow) {
     order.expiresAt != null &&
     ensureUtc(order.expiresAt).toMillis() <= Date.now();
   if (order.status === OrderStatus.DELIVERED) return "delivered";
+  // A verified late wallet payment still needs credit recovery after cancellation.
+  if (order.kind === "WALLET_TOPUP" && order.walletCreditState === "NEEDS_REVIEW" && order.paymentState === "PAID"
+    && order.status !== OrderStatus.REFUNDED && order.status !== "CREDITED_TO_BALANCE") return "processing";
+  // A preserved payment fact does not reopen a transaction that has ended.
+  if (["CANCELLED", "REFUNDED", "FAILED", "REJECTED", "CREDITED_TO_BALANCE"].includes(order.status)) return "closed";
+  if (order.status === "EXPIRED") return "expired";
+  if (paymentStatusFor(order) === "UNDERPAID" && order.completionMode !== "ADMIN_OVERRIDE") return "underpaid";
   // PROCESSING is already paid and waiting on fulfillment: an automatic
   // top-up being sent (Digiflazz), or a MANUAL / MANUAL_WITH_INFO SKU waiting
   // for an admin to hand-type and send the account. It used to fall into the
@@ -588,7 +600,6 @@ export function payState(order: OrderRow) {
   if (order.status === OrderStatus.PROCESSING) return "processing";
   if (
     order.status === OrderStatus.PENDING_VERIFICATION ||
-    order.status === OrderStatus.PAID ||
     // Bybit BSC in-flight states (deposit seen / confirming on-chain / fully
     // confirmed) — without these, a live Bybit BSC order would fall into the
     // "closed" catch-all below and render as dead the moment a deposit is
@@ -598,8 +609,26 @@ export function payState(order: OrderRow) {
     order.status === OrderStatus.CONFIRMED
   )
     return "confirming";
+  if (order.status === OrderStatus.PAID || order.paymentState === "PAID") return "processing";
+  if (["PAYMENT_DETECTED", "VERIFYING"].includes(order.paymentState ?? "")) return "confirming";
   if (order.status === OrderStatus.PENDING_PAYMENT) return expired ? "expired" : "waiting";
   return "closed"; // cancelled / rejected / refunded / underpaid / failed
+}
+
+/** Transport the same backend projection used by Telegram. No provider calls. */
+export async function transactionStatusView(order: FulfillmentOrder & { id: number; currency: string; totalAmount: { toString(): string } }) {
+  const credited = order.status === OrderStatus.CANCELLED
+    && !!(await prisma.walletTransaction.findFirst({ where: { orderId: order.id, reason: "unfulfilled_credit" }, select: { id: true } }));
+  const presentation = customerProgressPhase(order, { credited });
+  let underpayment: { required: string; received: string | null; currency: string } | null = null;
+  if (paymentStatusFor(order) === "UNDERPAID") {
+    const [received, quote] = await Promise.all([
+      findUnderpaidReceived(prisma, order.id),
+      prisma.qrisUnderpaidTx.findFirst({ where: { orderId: order.id }, select: { expectedAmount: true } }),
+    ]);
+    underpayment = { required: (quote?.expectedAmount ?? order.totalAmount).toString(), received: received?.toString() ?? null, currency: order.currency };
+  }
+  return { presentation, underpayment };
 }
 
 /**
@@ -1158,6 +1187,7 @@ export async function payView(order: OrderRow) {
       expires_at_iso: order.expiresAt ? ensureUtc(order.expiresAt).toISO() : null,
     },
     state,
+    ...await transactionStatusView(order),
     is_binance: isBinance,
     is_bybit: isBybit,
     is_bybit_bsc: isBybitBsc,
@@ -1277,6 +1307,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         `TokoPay callback for order ${order.orderCode} is short-paid — got ${live.amount.toString()}, expected ${expectedCharge.toString()} — recording it as unmatched instead of delivering`,
       );
       await recordUnmatchedTokopayTx(prisma, { trxId: ledgerTrxId, amount: live.amount });
+      await markOrderUnderpaid(prisma, { orderId: order.id, gateway: "TokoPay", receivedAmount: live.amount, expectedAmount: expectedCharge });
       return reply.send({ status: "amount mismatch" });
     }
 
@@ -1398,6 +1429,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         `PayDisini callback for order ${order.orderCode} is short-paid — got ${live.amount.toString()}, expected ${order.totalAmount.toString()} — recording it as unmatched instead of delivering`,
       );
       await recordUnmatchedPaydisiniTx(prisma, { trxId: ledgerTrxId, amount: live.amount });
+      await markOrderUnderpaid(prisma, { orderId: order.id, gateway: "PayDisini", receivedAmount: live.amount, expectedAmount: order.totalAmount });
       return reply.send({ status: "amount mismatch" });
     }
 
@@ -1498,7 +1530,8 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
       // Only an EXACT "finished" status is a delivery — every other status
       // (waiting/confirming/confirmed/sending/partially_paid/failed/refunded/
       // expired) is "not ready yet" and ignored, never an error.
-      if (!cb.paid) return reply.send({ status: "ignored" });
+      const canonical = normalizeProviderStatus(StatusProvider.NOWPAYMENTS, cb.status);
+      if (!["paid", "underpaid", "detected", "verifying"].includes(canonical)) return reply.send({ status: "ignored" });
 
       const order = await getOrderByCode(prisma, cb.orderId);
       // Payment-4 fix, security audit 2026-06-23 — see the TokoPay callback above.
@@ -1509,10 +1542,23 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         );
         return reply.send({ status: "unmatched" });
       }
+      if (canonical === "detected" || canonical === "verifying") {
+        await recordProviderPaymentObservation(prisma, { orderId: order.id, method: PaymentMethod.NOWPAYMENTS, state: canonical === "detected" ? "PAYMENT_DETECTED" : "VERIFYING" });
+        return reply.send({ status: canonical });
+      }
       // Amount sanity: never deliver on a short/partial payment. Judged in the
       // invoice's price currency (usd), never by comparing the pay-currency
       // `actually_paid` to the USDT total — see checkNowpaymentsAmount (Task B3a).
       const valueCheck = checkNowpaymentsAmount(cb, order.totalAmount);
+      const receivedValue = valueCheck.ok ? valueCheck.amount : valueCheck.receivedValue;
+      if (canonical === "underpaid" || (!valueCheck.ok && receivedValue !== undefined)) {
+        if (receivedValue !== undefined && cb.payCurrency) {
+          await markOrderUnderpaid(prisma, { orderId: order.id, gateway: "NOWPayments", receivedAmount: receivedValue, expectedAmount: order.totalAmount });
+          return reply.send({ status: "underpaid" });
+        }
+        await enqueueAdminUnconfirmablePayment(prisma, { orderId: order.id, orderCode: order.orderCode, gateway: "NOWPayments", reason: "unverified_amount" });
+        return reply.send({ status: "unverified" });
+      }
       if (!valueCheck.ok) {
         logger.warn(
           `NOWPayments reported a finished payment for order ${order.orderCode}, but it could not be confirmed as covering the order because ${valueCheck.reason} — recording it as unmatched for an admin to review instead of delivering`,

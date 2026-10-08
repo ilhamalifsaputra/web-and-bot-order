@@ -1428,7 +1428,9 @@ describe("/api/v1/checkout + orders", () => {
     it("GET /orders/:code/status returns {state, redirect}", async () => {
       const res = await app.inject({ method: "GET", url: `/api/v1/orders/${orderCode}/status`, headers: { cookie } });
       expect(res.statusCode).toBe(200);
-      expect(res.json()).toEqual({ state: "waiting", redirect: null });
+      expect(res.json()).toMatchObject({ state: "waiting", redirect: null, underpayment: null,
+        presentation: { phase: "NONE", spinner: false, progress: null },
+      });
     });
 
     it("POST /orders/:code/cancel: trio, then the order is closed", async () => {
@@ -1863,14 +1865,18 @@ describe("checkout business rules (migrated from the Nunjucks checkout tests)", 
         await prisma.order.update({ where: { orderCode: code }, data: { status } });
         const res = await app.inject({ method: "GET", url: `/api/v1/orders/${code}/status`, headers: { cookie } });
         expect(res.statusCode).toBe(200);
-        expect(res.json()).toEqual({ state: "confirming", redirect: null });
+        expect(res.json()).toMatchObject({ state: "confirming", redirect: null, underpayment: null,
+          presentation: { phase: status === OrderStatus.PAYMENT_DETECTED ? "PAYMENT_DETECTED" : "VERIFYING", spinner: true, progress: status === OrderStatus.PAYMENT_DETECTED ? 25 : 35 },
+        });
       },
     );
 
     it("status poll returns the credentials-page redirect once DELIVERED (JSON twin of the old HX-Redirect)", async () => {
       await prisma.order.update({ where: { orderCode: code }, data: { status: OrderStatus.DELIVERED } });
       const res = await app.inject({ method: "GET", url: `/api/v1/orders/${code}/status`, headers: { cookie } });
-      expect(res.json()).toEqual({ state: "delivered", redirect: `/account/orders/${code}` });
+      expect(res.json()).toMatchObject({ state: "delivered", redirect: `/account/orders/${code}`, underpayment: null,
+        presentation: { phase: "SUCCESS", spinner: false, progress: 100 },
+      });
     });
   });
 });
@@ -2999,18 +3005,21 @@ describe("GET/PATCH /api/v1/account/orders/:code (Task 10: PROCESSING info edit 
     expect(body.order.customer_data_fields).toEqual(fields);
     expect(body.order.customer_data).toEqual([{ game_id: "player1" }]);
     expect(body.order.delivered_content).toBeNull();
+    expect(body.order.fulfillment.presentation).toMatchObject({ phase: "MANUAL_WAITING", spinner: false, progress: null });
   });
 
   it("GET exposes automatic fulfillment transitions and locks target edits after dispatch", async () => {
     const orderCode = await makeProcessingOrder([{ game_id: "player1" }]);
     await prisma.order.update({ where: { orderCode }, data: { status: OrderStatus.PENDING_PAYMENT, fulfillmentProvider: "DIGIFLAZZ" } });
     const detail = async () => (await app.inject({ method: "GET", url: `/api/v1/account/orders/${orderCode}`, headers: { cookie } })).json();
-    expect((await detail()).order.fulfillment).toEqual({
+    expect((await detail()).order.fulfillment).toMatchObject({
       mode: "AUTO", provider: "DIGIFLAZZ", status: "NOT_STARTED", payment_status: "PENDING", can_edit_customer_data: false,
+      presentation: { phase: "NONE", spinner: false, progress: null },
     });
     await prisma.order.update({ where: { orderCode }, data: { status: OrderStatus.PROCESSING, paidAt: new Date() } });
-    expect((await detail()).order.fulfillment).toEqual({
+    expect((await detail()).order.fulfillment).toMatchObject({
       mode: "AUTO", provider: "DIGIFLAZZ", status: "QUEUED", payment_status: "PAID", can_edit_customer_data: true,
+      presentation: { phase: "AUTO_QUEUED", spinner: true, progress: 55 },
     });
     await prisma.order.update({ where: { orderCode }, data: { digiflazzDispatchedAt: new Date() } });
     expect((await detail()).order.fulfillment).toMatchObject({ status: "SUBMITTING", can_edit_customer_data: false });
@@ -3037,7 +3046,25 @@ describe("GET/PATCH /api/v1/account/orders/:code (Task 10: PROCESSING info edit 
     const res = await app.inject({ method: "GET", url: "/api/v1/account/orders", headers: { cookie } });
     expect(res.statusCode).toBe(200);
     const row = res.json().orders.find((order: { code: string }) => order.code === orderCode);
-    expect(row.fulfillment).toEqual({ mode: "AUTO", provider: "DIGIFLAZZ", status: "NEEDS_REVIEW", payment_status: "PAID", can_edit_customer_data: false });
+    expect(row.fulfillment).toMatchObject({ mode: "AUTO", provider: "DIGIFLAZZ", status: "NEEDS_REVIEW", payment_status: "PAID", can_edit_customer_data: false, presentation: { phase: "REVIEW", spinner: false, progress: null } });
+  });
+
+  it("GET detail and list show credited recovery from the wallet ledger instead of ordinary cancellation", async () => {
+    const orderCode = await makeProcessingOrder([{ game_id: "player1" }]);
+    const cancelled = await prisma.order.update({ where: { orderCode }, data: { status: OrderStatus.CANCELLED, paymentState: "PAID" } });
+    await adjustWallet(prisma, buyerId, "25000", { reason: "unfulfilled_credit", orderId: cancelled.id });
+    const detail = await app.inject({ method: "GET", url: `/api/v1/account/orders/${orderCode}`, headers: { cookie } });
+    expect(detail.statusCode).toBe(200);
+    expect(detail.json().order.fulfillment.presentation).toMatchObject({ phase: "CREDITED", spinner: false, progress: null });
+    const list = await app.inject({ method: "GET", url: "/api/v1/account/orders", headers: { cookie } });
+    expect(list.statusCode).toBe(200);
+    expect(list.json().orders.find((row: { code: string }) => row.code === orderCode).fulfillment.presentation)
+      .toEqual(detail.json().order.fulfillment.presentation);
+
+    const ordinaryCode = await makeProcessingOrder([{ game_id: "player2" }]);
+    await prisma.order.update({ where: { orderCode: ordinaryCode }, data: { status: OrderStatus.CANCELLED } });
+    const ordinary = await app.inject({ method: "GET", url: `/api/v1/account/orders/${ordinaryCode}`, headers: { cookie } });
+    expect(ordinary.json().order.fulfillment.presentation.phase).toBe("CANCELLED");
   });
 
   it("GET returns delivered_content once DELIVERED (manual fulfilment)", async () => {

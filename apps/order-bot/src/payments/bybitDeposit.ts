@@ -37,6 +37,7 @@ import { fetchWithTimeoutSafe, HTTP_TIMEOUT_MS } from "@app/core/http";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import {
   prisma,
+  ownsTransactionMessage,
   listPendingBybitOrders,
   deliverPaidBybitOrder,
   markUnderpaidBybit,
@@ -274,7 +275,7 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
   // TELEGRAM_MESSAGE_TIMEOUT_MS so a stuck edit call can't stall the
   // credential send that follows below, let alone the poller past its own
   // tick.
-  if (order.paymentMsgChatId != null && order.paymentMsgId != null) {
+  if (order.paymentMsgChatId != null && order.paymentMsgId != null && !(await ownsTransactionMessage(prisma, order.id))) {
     const outcome = await withTimeout(
       editAnchoredBubble(
         api,
@@ -346,6 +347,7 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
  * never throws.
  */
 async function editBubbleToProcessing(api: Api, order: DeliveredOrder): Promise<void> {
+  if (await ownsTransactionMessage(prisma, order.id)) return;
   if (order.user.telegramId == null) return;
   if (order.paymentMsgChatId == null || order.paymentMsgId == null) return;
   const lang = langCode(order.user.language);

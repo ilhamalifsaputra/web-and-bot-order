@@ -181,11 +181,8 @@ beforeAll(async () => {
   });
   plainDenomId = plainDenom.id;
 
-  // Real telegramId (not null, unlike the guest-buyer pattern the other
-  // callback tests use) — fulfillDigiflazzOrder's buyer receipt DM
-  // (enqueueManualDeliveredDm, packages/db/src/crud/notifications.ts) is a
-  // no-op for a null telegramId, and this file wants to actually exercise
-  // that outbox enqueue.
+  // Real telegramId exercises the durable buyer completion message.
+  // Guest buyers without Telegram do not register a coordinator row.
   const user = await prisma.user.create({
     data: { telegramId: 424242, referralCode: "DFWH01" },
   });
@@ -567,7 +564,7 @@ describe("POST /pay/digiflazz/callback", () => {
   // before acting. Here the callback says Sukses/SN-STALE, but the mocked
   // live re-check reports the real (matching) Sukses/SN-12345 — the order
   // still delivers, using the FRESH sn, not cb.sn.
-  it("happy path: a Sukses callback whose live re-check also reports Sukses delivers the order and enqueues the buyer's receipt DM", async () => {
+  it("happy path: a live Sukses re-check delivers a legacy order and registers the buyer's canonical completion message", async () => {
     const order = await createProcessingDigiflazzOrder("ORD-DFHAPPY");
     digiflazzSupplierMock.createTransaction.mockResolvedValue({
       refId: order.orderCode,

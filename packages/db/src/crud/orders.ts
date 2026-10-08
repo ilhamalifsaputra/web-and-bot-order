@@ -85,7 +85,7 @@ import {
   enqueueBuyerOrderReadyEmail,
 } from "./notifications";
 import { logAdminAction } from "./audit";
-import { ensureFulfillmentMessage, wakeFulfillmentMessage } from "./fulfillmentMessages";
+import { ensureFulfillmentMessage, wakeFulfillmentMessage, reserveTransactionMessage } from "./fulfillmentMessages";
 import { transitionOrderStatus, tryTransitionOrderStatus } from "./orderStatus";
 
 /**
@@ -431,7 +431,7 @@ export const ORDER_USER_SELECT = {
 
 /** Eager-load shape matching the Python get_order selectinload set. */
 const fullInclude = {
-  items: { include: { product: true, stockItem: true } },
+  items: { include: { product: { include: { product: { include: { category: true } } } }, stockItem: true } },
   user: { select: ORDER_USER_SELECT },
   voucher: true,
 } satisfies Prisma.OrderInclude;
@@ -571,9 +571,13 @@ export function getOrderDigiflazzSnapshot(db: Db, orderId: number) {
       status: true,
       digiflazzStatus: true,
       paidAt: true,
+      paymentState: true,
+      completionMode: true,
+      kind: true,
+      walletCreditState: true,
       fulfillmentProvider: true,
       digiflazzDispatchedAt: true,
-      items: { select: { deliveryTypeSnapshot: true, product: { select: { autoDeliverySource: true, deliveryType: true } } } },
+      items: { select: { deliveryTypeSnapshot: true, product: { select: { autoDeliverySource: true, deliveryType: true, product: { select: { category: { select: { group: true } } } } } } } },
       digiflazzAttempts: true,
       digiflazzNextRecheckAt: true,
       digiflazzFailureDetail: true,
@@ -612,7 +616,7 @@ export function getOrderByCode(db: Db, orderCode: string) {
         include: {
           product: {
             include: {
-              product: { select: { digiflazzBrand: true, name: true } },
+              product: { select: { digiflazzBrand: true, name: true, category: { select: { group: true } } } },
             },
           },
         },
@@ -1257,6 +1261,7 @@ export async function createOrderDirect(
   logger.info(
     `Created direct order ${orderCode} for user ${args.user.id}, product ${args.productId}, quantity ${args.quantity}`,
   );
+  if (args.channel === "bot") await reserveTransactionMessage(db, order.id);
   return getOrder(db, order.id);
 }
 
@@ -1340,7 +1345,7 @@ export async function listUserOrders(db: Db, userId: number, limit = 5, offset =
     orderBy: { createdAt: "desc" },
     skip: offset,
     take: limit,
-    include: { items: { include: { product: true } } },
+    include: { items: { include: { product: { include: { product: { include: { category: true } } } } } } },
   });
   return orders.map(withoutDeliveredContent);
 }
@@ -1423,11 +1428,21 @@ export function listPendingVerifications(db: Db, limit = 50) {
   });
 }
 
+// Nullable canonical fields keep legacy unpaid orders eligible for expiry.
+// A confirmed payment awaiting wallet review must remain recoverable instead.
+const customerPaymentOutstanding: Prisma.OrderWhereInput = {
+  AND: [
+    { OR: [{ paymentState: null }, { paymentState: { not: "PAID" } }] },
+    { OR: [{ walletCreditState: null }, { walletCreditState: { not: "NEEDS_REVIEW" } }] },
+  ],
+};
+
 export function listExpiredPendingOrders(db: Db, now: Date) {
   return db.order.findMany({
     where: {
       status: OrderStatus.PENDING_PAYMENT,
       expiresAt: { not: null, lt: now },
+      ...customerPaymentOutstanding,
     },
     include: { user: true },
   });
@@ -1526,7 +1541,7 @@ export function countCancelled(db: Db): Promise<number> {
 
 /** PENDING_PAYMENT orders whose window has already lapsed — the count form of `listExpiredPendingOrders`. */
 export function countExpiredPending(db: Db, now: Date): Promise<number> {
-  return db.order.count({ where: { status: OrderStatus.PENDING_PAYMENT, expiresAt: { not: null, lt: now } } });
+  return db.order.count({ where: { status: OrderStatus.PENDING_PAYMENT, expiresAt: { not: null, lt: now }, ...customerPaymentOutstanding } });
 }
 
 // ---- SLA widgets (web-admin dashboard) ------------------------------------
@@ -1547,6 +1562,7 @@ export function listExpiringPendingPayments(db: Db, now: Date, until: Date, limi
     where: {
       status: OrderStatus.PENDING_PAYMENT,
       expiresAt: { not: null, gte: now, lte: until },
+      ...customerPaymentOutstanding,
     },
     orderBy: { expiresAt: "asc" },
     take: limit,
@@ -1666,8 +1682,8 @@ async function releaseOrderHolds(
  * at a terminal state (REJECTED/CANCELLED); `creditOrderToBalance` refuses to
  * touch a REJECTED one afterward ("error.order_terminal"), and only credits a
  * CANCELLED one through a separate, admin-noticed recovery path — so once an order's
- * `paidAt` is set (the same "was this actually paid" signal `settlePaidOrder`
- * stamps for a real payment event, see its own doc-comment), rejecting or
+ * `paidAt` is set or canonical `paymentState` is PAID (including wallet
+ * credit failures whose legacy timestamp is missing), rejecting or
  * cancelling it directly would strand that payment forever instead of
  * releasing it back to the buyer. Refuse the transition and point the caller
  * at `creditOrderToBalance` instead — unless this exact order was already
@@ -1678,9 +1694,9 @@ async function releaseOrderHolds(
  */
 async function assertNotPaidWithoutCredit(
   db: Db,
-  order: { id: number; paidAt: Date | null },
+  order: { id: number; paidAt: Date | null; paymentState?: string | null },
 ): Promise<void> {
-  if (!order.paidAt) return;
+  if (!order.paidAt && order.paymentState !== "PAID") return;
   const alreadyCredited = await db.walletTransaction.findFirst({
     where: { orderId: order.id, reason: "unfulfilled_credit" },
   });
@@ -2070,7 +2086,7 @@ export async function approveOrder(
   const now = new Date();
   const claim = await db.order.updateMany({
     where: { id: orderId, status: OrderStatus.PENDING_VERIFICATION },
-    data: { status: OrderStatus.DELIVERED, paidAt: now, deliveredAt: now },
+    data: { status: OrderStatus.DELIVERED, paidAt: now, deliveredAt: now, ...(order.completionMode !== "ADMIN_OVERRIDE" ? { paymentState: "PAID" } : {}) },
   });
   if (claim.count !== 1) {
     throw new ValidationError("error.order_not_pending_verification");
@@ -2783,7 +2799,10 @@ export async function settlePaidOrder(
   // column but never backfills it — see the migration's own comment), which
   // is exactly the pre-existing live-read behavior for those rows.
   const provider = fulfillmentProviderFor(order);
-  const isDigiflazz = provider === "DIGIFLAZZ";
+  const isDigiflazz = provider === "DIGIFLAZZ" && order.completionMode !== "ADMIN_OVERRIDE";
+  if (provider === "DIGIFLAZZ" && order.completionMode === "ADMIN_OVERRIDE") {
+    await db.order.update({ where: { id: orderId }, data: { digiflazzStatus: "failed", digiflazzNextRecheckAt: null } });
+  }
   const isManual = provider !== "STOCK";
 
   // ── AUTO branch (unchanged behavior) ────────────────────────────────────
@@ -2801,7 +2820,8 @@ export async function settlePaidOrder(
     // credentials DM, so a brand-new "Order completed" message beside it would
     // be noise. A row created earlier (payment-detected phase) is left in
     // place and the worker finalizes it.
-    if (result.order?.status !== OrderStatus.DELIVERED) await ensureFulfillmentMessage(db, orderId);
+    await ensureFulfillmentMessage(db, orderId);
+    await wakeFulfillmentMessage(db, orderId);
     // Sourced from the already-fetched `order` (this function's own getOrder
     // call above, which eager-loads items.product/user/voucher — no new
     // query) EXCEPT `paidAt`: approveOrder only stamps that column during its
@@ -2876,7 +2896,7 @@ export async function settlePaidOrder(
   });
   // Stamp paidAt for the "when did they pay" audit (deliveredAt stays null until
   // the admin fulfils via fulfillManualOrder).
-  await db.order.update({ where: { id: orderId }, data: { paidAt: now } });
+  await db.order.update({ where: { id: orderId }, data: { paidAt: now, ...(order.completionMode !== "ADMIN_OVERRIDE" ? { paymentState: "PAID" } : {}) } });
   // Recognise the order's revenue, using the same `now` just stamped as
   // `paidAt`. This branch is the MANUAL one and never calls `approveOrder`, so
   // it is the only place the posting can happen for a hand-fulfilled order —
@@ -2972,7 +2992,8 @@ export async function fulfillManualOrder(
   // same UPDATE so a double-tap can't fulfil twice (count!==1 on a lost race).
   const claim = await db.order.updateMany({
     where: { id: orderId, status: OrderStatus.PROCESSING, ...(fulfillmentProviderFor(order) === "DIGIFLAZZ" ? { digiflazzStatus: "failed" } : {}) },
-    data: { status: OrderStatus.DELIVERED, deliveredContent: encryptDeliveredContent(content, orderId), deliveredAt: now },
+    data: { status: OrderStatus.DELIVERED, deliveredContent: encryptDeliveredContent(content, orderId), deliveredAt: now,
+      ...(order.completionMode === "ADMIN_OVERRIDE" ? { completedBy: args.adminId, completedAt: now } : {}) },
   });
   if (claim.count !== 1) throw new ValidationError("error.order_not_processing");
   await db.orderStatusHistory.create({

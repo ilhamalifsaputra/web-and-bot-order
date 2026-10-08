@@ -2,7 +2,7 @@ import { beforeAll, afterAll, beforeEach, describe, expect, it } from "vitest";
 import { PrismaClient } from "@prisma/client";
 import {
   addAdminIdToDb, createCategory, createCatalogProduct, createDenomination, createOrderDirect, deliverPaidBybitBscOrder, fulfillManualOrder,
-  recordBybitBscConfirmationProgress, recordBybitBscPaymentDetected, wakeFulfillmentMessage, creditOrderToBalance, transitionOrderStatus,
+  recordBybitBscConfirmationProgress, recordBybitBscPaymentDetected, wakeFulfillmentMessage, creditOrderToBalance, transitionOrderStatus, adoptTransactionMessage,
 } from "@app/db";
 import { provisionPgTestSchema } from "../../../tests/helpers/pgTestSchema";
 import { FulfillmentMessageWorker, type FulfillmentTelegramApi } from "./fulfillmentMessages";
@@ -59,6 +59,57 @@ function apiError(code: number, description: string, retryAfter?: number) {
 }
 
 describe("persisted Telegram fulfillment status", () => {
+  it("waits for initial screen acknowledgement even if settlement completes first", async () => {
+    const order = await seed("en", { status: "PAYMENT_DETECTED", paid: false });
+    await db.fulfillmentMessage.update({ where: { orderId: order.id }, data: { state: "WAITING_SCREEN", messageId: null } });
+    const tg = telegram();
+    await worker(tg.api).tick();
+    expect(tg.sent).toHaveLength(0);
+    await db.order.update({ where: { id: order.id }, data: { status: "DELIVERED", paymentState: "PAID" } });
+    await wakeFulfillmentMessage(db, order.id, now);
+    await worker(tg.api).tick();
+    expect(tg.sent).toHaveLength(0);
+    await adoptTransactionMessage(db, order.id, order.userId, 906);
+    advance(); await worker(tg.api).tick();
+    expect(tg.sent).toHaveLength(0);
+    expect(tg.edits[0]).toMatchObject({ id: 906 });
+    expect(tg.edits[0]!.text).toContain("100%");
+  });
+
+  it("never overwrites an initial-send lease during late adoption", async () => {
+    const order = await seed();
+    await db.fulfillmentMessage.update({ where: { orderId: order.id }, data: { state: "SENDING", claimedAt: now } });
+    await expect(adoptTransactionMessage(db, order.id, 42n, 907)).rejects.toThrow("lease");
+    expect(await db.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } })).toMatchObject({ state: "SENDING", claimedAt: now, messageId: null });
+  });
+  it("edits an adopted wallet QR caption through verification and credit, retaining the full receipt", async () => {
+    const order = await seed("en", { status: "PAYMENT_DETECTED", paid: false });
+    const reference = "WLT-20261008-0000019284";
+    await db.order.update({ where: { id: order.id }, data: { kind: "WALLET_TOPUP", orderCode: reference } });
+    await db.fulfillmentMessage.update({ where: { orderId: order.id }, data: { messageId: 987, state: "ACTIVE" } });
+    const tg = telegram();
+    const captions: string[] = [];
+    const api = { ...tg.api, editMessageText: async () => { throw apiError(400, "Bad Request: there is no text in the message to edit"); }, editMessageCaption: async (_chat: unknown, id: number, options: { caption: string }) => { expect(id).toBe(987); captions.push(options.caption); return true; } } as unknown as FulfillmentTelegramApi;
+    await worker(api).tick();
+    expect(captions[0]).toContain(reference); expect(captions[0]).toContain("25%");
+    await db.order.update({ where: { id: order.id }, data: { status: "CONFIRMING" } });
+    advance(); await worker(api).tick(); expect(captions[1]).toContain("35%");
+    await db.order.update({ where: { id: order.id }, data: { status: "DELIVERED", paymentState: "PAID", walletCreditState: "CREDITED" } });
+    advance(); await worker(api).tick(); expect(captions[2]).toContain("100%"); expect(captions[2]).toContain(reference);
+    expect(captions[2]).not.toMatch(/[⣾⣽⣻⢿⡿⣟⣯⣷]/u);
+    expect(tg.sent).toHaveLength(0);
+    advance(60_000); await worker(api).tick(); expect(captions).toHaveLength(3);
+  });
+
+  it("renders underpaid trusted amounts as a static warning on the saved message", async () => {
+    const order = await seed("en", { status: "UNDERPAID", paid: false });
+    await db.order.update({ where: { id: order.id }, data: { currency: "USDT", totalAmount: "5.1", kind: "WALLET_TOPUP", paymentState: "UNDERPAID" } });
+    await db.processedBybitTx.create({ data: { orderId: order.id, bybitTxId: crypto.randomUUID(), amount: "3", outcome: "underpaid" } });
+    const tg = telegram(); await worker(tg.api).tick();
+    expect(tg.sent[0]!.text).toContain("5.1 USDT"); expect(tg.sent[0]!.text).toContain("3 USDT");
+    expect(tg.sent[0]!.text).toContain("bot description"); expect(tg.sent[0]!.text).not.toContain("%");
+    expect(tg.sent[0]!.text).not.toMatch(/[⣾⣽⣻⢿⡿⣟⣯⣷]/u);
+  });
   it("shows purchased item names with escaped HTML and excludes customer secrets", async () => {
     const order = await seed();
     const category = await createCategory(db, crypto.randomUUID());
@@ -202,17 +253,28 @@ describe("customer progress phases in one Telegram message", () => {
     const tg = telegram(); await worker(tg.api).tick();
     expect(tg.sent).toHaveLength(1);
     const text = tg.sent[0]!.text;
-    expect(text).toContain("💳 <b>Payment detected</b>");
-    expect(text).toContain("Verifying your payment...");
+    expect(text).toContain("<b>Payment detected</b>");
+    expect(text).toContain("We&#x27;re checking your payment...");
+    expect(text).toContain("25%");
     expect(frameOf(text)).toBeDefined();
     expect(text).not.toMatch(/confirmed|completed|paid/i);
   });
 
   it("uses the Indonesian copy for the detected phase", async () => {
-    await seed("id", { status: "PENDING_VERIFICATION", paid: false });
+    await seed("id", { status: "PAYMENT_DETECTED", paid: false });
     const tg = telegram(); await worker(tg.api).tick();
-    expect(tg.sent[0]!.text).toContain("💳 <b>Pembayaran terdeteksi</b>");
-    expect(tg.sent[0]!.text).toContain("Sedang memverifikasi pembayaran...");
+    expect(tg.sent[0]!.text).toContain("<b>Pembayaran terdeteksi</b>");
+    expect(tg.sent[0]!.text).toContain("Kami sedang memeriksa pembayaranmu...");
+  });
+
+  it("keeps submitted customer proof static while it awaits admin review", async () => {
+    const order = await seed("en", { status: "PENDING_VERIFICATION", paid: false });
+    const tg = telegram(); await worker(tg.api).tick();
+    expect(tg.sent[0]!.text).toContain("Top-up needs attention");
+    expect(tg.sent[0]!.text).not.toContain("Payment detected");
+    expect(frameOf(tg.sent[0]!.text)).toBeUndefined();
+    expect(tg.sent[0]!.text).not.toContain("%");
+    expect((await db.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } })).state).toBe("REVIEW");
   });
 
   it("rotates spinner frames by editing the same message and skips identical text", async () => {
@@ -233,7 +295,7 @@ describe("customer progress phases in one Telegram message", () => {
     ["en", "Still verifying your payment…"],
     ["id", "Masih memverifikasi pembayaran…"],
   ])("slows a detected payment to a static line after ten minutes in that phase (%s)", async (lang, still) => {
-    const order = await seed(lang, { status: "PENDING_VERIFICATION", paid: false });
+    const order = await seed(lang, { status: "PAYMENT_DETECTED", paid: false });
     const tg = telegram(); const w = worker(tg.api);
     await w.tick();
     advance(9 * 60_000 + 58_000); await w.tick();
@@ -269,8 +331,9 @@ describe("customer progress phases in one Telegram message", () => {
     await w.tick();
     advance(8 * 60_000); await w.tick();
     await db.order.update({ where: { id: order.id }, data: { status: "PENDING_PAYMENT" } });
-    advance(); await w.tick(); // payment withdrawn: idle, keeps the last text
+    advance(); await w.tick(); // payment withdrawn: static waiting, no progress
     await db.order.update({ where: { id: order.id }, data: { status: "PAYMENT_DETECTED" } });
+    await wakeFulfillmentMessage(db, order.id, now);
     advance(30_000); await w.tick(); // detected again: a fresh phase
     advance(5 * 60_000); await w.tick();
     expect(frameOf(tg.edits.at(-1)!.text)).toBeDefined();
@@ -283,15 +346,18 @@ describe("customer progress phases in one Telegram message", () => {
     await w.tick();
     await db.order.update({ where: { id: order.id }, data: { status: "PROCESSING", paidAt: now } });
     advance(); await w.tick();
-    expect(tg.edits[0]!.text).toContain("✅ <b>Payment confirmed</b>");
-    expect(tg.edits[0]!.text).toContain("Starting your top-up...");
+    expect(tg.edits[0]!.text).toContain("<b>Preparing your top-up</b>");
+    expect(tg.edits[0]!.text).toContain("Your top-up is being prepared.");
+    expect(tg.edits[0]!.text).toContain("55%");
     expect(frameOf(tg.edits[0]!.text)).toBeDefined();
     await db.order.update({ where: { id: order.id }, data: { digiflazzDispatchedAt: now } });
     advance(); await w.tick();
-    expect(tg.edits[1]!.text).toContain("Sending your order to the provider...");
+    expect(tg.edits[1]!.text).toContain("Sending your top-up for processing...");
+    expect(tg.edits[1]!.text).toContain("65%");
     await db.order.update({ where: { id: order.id }, data: { digiflazzAttempts: 1 } });
     advance(); await w.tick();
-    expect(tg.edits[2]!.text).toContain("Processing your top-up...");
+    expect(tg.edits[2]!.text).toContain("Your top-up is being processed.");
+    expect(tg.edits[2]!.text).toContain("80%");
     await db.order.update({ where: { id: order.id }, data: { status: "DELIVERED", deliveredAt: now } });
     advance(); await w.tick();
     expect(tg.edits[3]!.text).toContain("✅ <b>Top-up completed</b>");
@@ -305,7 +371,8 @@ describe("customer progress phases in one Telegram message", () => {
     const order = await seed("en", { provider: "STOCK" });
     const tg = telegram(); const w = worker(tg.api);
     await w.tick();
-    expect(tg.sent[0]!.text).toContain("Preparing your product...");
+    expect(tg.sent[0]!.text).toContain("Preparing your order");
+    expect(tg.sent[0]!.text).toContain("55%");
     await db.order.update({ where: { id: order.id }, data: { status: "DELIVERED", deliveredAt: now } });
     advance(); await w.tick();
     expect(tg.edits[0]!.text).toContain("✅ <b>Order completed</b>");
@@ -316,25 +383,23 @@ describe("customer progress phases in one Telegram message", () => {
     const order = await seed("en", { provider: "MANUAL" });
     const tg = telegram(); const w = worker(tg.api);
     await w.tick();
-    expect(tg.sent[0]!.text).toContain("Adding your order to the preparation queue...");
-    expect(frameOf(tg.sent[0]!.text)).toBeDefined();
-    advance(); await w.tick();
-    const waiting = tg.edits[0]!.text;
+    const waiting = tg.sent[0]!.text;
     expect(waiting).toContain("🕒 <b>Payment confirmed</b>");
-    expect(waiting).toContain("Your order is waiting to be prepared. We'll update this message when it's ready.");
+    expect(waiting).toContain("Your order is waiting to be prepared. We&#x27;ll update this message when it&#x27;s ready.");
     expect(frameOf(waiting)).toBeUndefined();
+    expect(waiting).not.toContain("%");
     expect(waiting).not.toMatch(/provider|top-up|admin/i);
     for (let i = 0; i < 30; i++) { advance(); await w.tick(); }
-    expect(tg.edits).toHaveLength(1);
+    expect(tg.edits).toHaveLength(0);
     expect((await db.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } })).state).toBe("WAITING");
     // WAITING is never re-polled; the final transition wakes the row instead.
     await db.order.update({ where: { id: order.id }, data: { status: "DELIVERED", deliveredAt: now } });
     advance(10 * 60_000); await w.tick();
-    expect(tg.edits).toHaveLength(1);
+    expect(tg.edits).toHaveLength(0);
     await wakeFulfillmentMessage(db, order.id, now);
     await w.tick();
-    expect(tg.edits).toHaveLength(2);
-    expect(tg.edits[1]!.text).toContain("✅ <b>Order completed</b>");
+    expect(tg.edits).toHaveLength(1);
+    expect(tg.edits[0]!.text).toContain("✅ <b>Order completed</b>");
     expect(tg.sent).toHaveLength(1);
   });
 
@@ -342,8 +407,10 @@ describe("customer progress phases in one Telegram message", () => {
     const order = await seed("en");
     await db.order.update({ where: { id: order.id }, data: { digiflazzStatus: "failed" } });
     const tg = telegram(); await worker(tg.api).tick();
-    expect(tg.sent[0]!.text).toContain("⚠️ <b>Order under review</b>");
-    expect(tg.sent[0]!.text).not.toMatch(/manual fulfil|admin must|admin/i);
+    expect(tg.sent[0]!.text).toContain("⚠️ <b>Top-up needs attention</b>");
+    expect(tg.sent[0]!.text).not.toMatch(/manual fulfil|admin must/i);
+    expect(frameOf(tg.sent[0]!.text)).toBeUndefined();
+    expect(tg.sent[0]!.text).not.toContain("%");
   });
 
   it("does not send anything for an order whose payment was never seen, and drops it silently if it expires", async () => {
@@ -375,6 +442,8 @@ describe("customer progress phases in one Telegram message", () => {
     const order = await seed("en", { provider: "MANUAL" });
     const tg = telegram(); const w = worker(tg.api);
     await w.tick();
+    // Force a fresh waiting edit after restart; static manual rows are otherwise idle.
+    await db.fulfillmentMessage.update({ where: { orderId: order.id }, data: { state: "ACTIVE", lastText: "Previous preparation phase", nextUpdateAt: now } });
     // The admin delivers the order after the worker read it as still queued.
     const api = { ...tg.api, editMessageText: async (...args: Parameters<FulfillmentTelegramApi["editMessageText"]>) => {
       await db.order.update({ where: { id: order.id }, data: { status: "DELIVERED", deliveredAt: now } });
@@ -388,15 +457,19 @@ describe("customer progress phases in one Telegram message", () => {
     expect(tg.edits.at(-1)!.text).toContain("✅ <b>Order completed</b>");
   });
 
-  it("keeps the last text when a sent message's order falls back to awaiting payment", async () => {
+  it("edits a sent message to static waiting when the order falls back to awaiting payment", async () => {
     const order = await seed("en", { status: "PAYMENT_DETECTED", paid: false });
     const tg = telegram(); const w = worker(tg.api);
     await w.tick();
     await db.order.update({ where: { id: order.id }, data: { status: "PENDING_PAYMENT" } });
     advance(); await w.tick();
-    expect(tg.edits).toHaveLength(0);
+    expect(tg.edits).toHaveLength(1);
     const row = await db.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } });
-    expect(row.lastText).toBe(tg.sent[0]!.text);
+    expect(row.lastText).toBe(tg.edits[0]!.text);
+    expect(row.lastText).toContain("Complete your payment");
+    expect(frameOf(row.lastText!)).toBeUndefined();
+    expect(row.lastText).not.toContain("%");
+    expect(row.state).toBe("WAITING");
     expect(row.finishedAt).toBeNull();
     expect(row.claimedAt).toBeNull();
   });
@@ -404,7 +477,7 @@ describe("customer progress phases in one Telegram message", () => {
   it("shows an underpaid order as a static review, not a verifying spinner", async () => {
     const order = await seed("en", { status: "UNDERPAID", paid: false });
     const tg = telegram(); await worker(tg.api).tick();
-    expect(tg.sent[0]!.text).toContain("⚠️ <b>Order under review</b>");
+    expect(tg.sent[0]!.text).toContain("⚠️ <b>Payment incomplete</b>");
     expect(tg.sent[0]!.text).not.toContain("Verifying your payment");
     expect(frameOf(tg.sent[0]!.text)).toBeUndefined();
     expect((await db.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } })).state).toBe("REVIEW");
@@ -469,6 +542,7 @@ describe("durable progress outcome corrections", () => {
     now = new Date();
     const order = await seed("en", { provider: "MANUAL" });
     const tg = telegram(); await worker(tg.api).tick();
+    await db.fulfillmentMessage.update({ where: { orderId: order.id }, data: { state: "ACTIVE", lastText: "Previous preparation phase", nextUpdateAt: now } });
     const api = { ...tg.api, editMessageText: async (...args: Parameters<FulfillmentTelegramApi["editMessageText"]>) => {
       await db.$transaction(tx => transitionOrderStatus(tx, { orderId: order.id, from: "PROCESSING", to: "DELIVERED" }));
       return tg.api.editMessageText(...args);
@@ -514,7 +588,7 @@ describe("durable progress outcome corrections", () => {
 });
 
 describe("a Bybit BSC order gets one buyer-visible progress message", () => {
-  it("sends nothing while the payment bubble tracks confirmations, then one message from payment to delivery", async () => {
+  it("edits the adopted payment bubble through confirmations and fulfillment without another send", async () => {
     // The crud helpers stamp rows with the real clock; run the worker on it too.
     now = new Date();
     const user = await db.user.create({ data: { referralCode: crypto.randomUUID(), telegramId: BigInt(Math.floor(Math.random() * 1e9)), language: "en" } });
@@ -525,6 +599,7 @@ describe("a Bybit BSC order gets one buyer-visible progress message", () => {
     });
     const order = (await createOrderDirect(db, { channel: "bot", user, productId: denomination.id, quantity: 1 }))!;
     await db.order.update({ where: { id: order.id }, data: { paymentMethod: "BYBIT_BSC" } });
+    await adoptTransactionMessage(db, order.id, user.telegramId!, 617);
     const tg = telegram(); const w = worker(tg.api);
     const txId = "0x" + "c".repeat(64);
 
@@ -538,14 +613,14 @@ describe("a Bybit BSC order gets one buyer-visible progress message", () => {
 
     expect((await deliverPaidBybitBscOrder(db, { orderId: order.id, bybitTxId: txId, amount: order.totalAmount })).status).toBe("processing");
     advance(); await w.tick(); advance(); await w.tick();
-    expect(tg.sent).toHaveLength(1);
-    expect(tg.sent[0]!.text).not.toContain("Payment detected");
+    expect(tg.sent).toHaveLength(0);
+    expect(tg.edits.at(-1)!.text).toContain("Payment confirmed");
 
     await db.$transaction(tx => fulfillManualOrder(tx, order.id, { adminId: user.id, content: "code-bsc" }));
     advance(); await w.tick();
-    expect(tg.sent).toHaveLength(1);
+    expect(tg.sent).toHaveLength(0);
     expect(tg.edits.at(-1)!.text).toContain("✅ <b>Order completed</b>");
-    expect(new Set(tg.edits.map(e => e.id))).toEqual(new Set([tg.sent[0]!.id]));
+    expect(new Set(tg.edits.map(e => e.id))).toEqual(new Set([617]));
   });
 });
 

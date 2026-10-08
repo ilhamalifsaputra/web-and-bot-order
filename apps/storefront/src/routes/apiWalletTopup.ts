@@ -40,7 +40,7 @@ import { readCanonicalMoney } from "@app/core/moneyFormat";
 import { optionalCustomer, type Customer } from "../plugins/auth";
 import { constantTimeEqual } from "../auth";
 import { errorBody } from "@app/core/errorBody";
-import { payView, payState } from "./checkout";
+import { payView, payState, transactionStatusView } from "./checkout";
 import { originOk } from "./cart";
 
 /** JSON-flavored auth gate: 401 body instead of the HTML routes' 303 — same
@@ -320,7 +320,7 @@ const apiWalletTopupRoutes: FastifyPluginAsync = async (app) => {
     const order = await loadOwnedTopup(req.params.code, customer);
     if (!order) return reply.code(404).send({ error: "not_found" });
     const state = payState(order);
-    return reply.send({ state, redirect: state === "delivered" ? "/account" : null });
+    return reply.send({ state, ...await transactionStatusView(order), redirect: state === "delivered" ? "/account" : null });
   });
 
   // ---- Buyer cancels a still-pending top-up ----

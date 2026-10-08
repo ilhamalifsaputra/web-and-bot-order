@@ -8,11 +8,13 @@ import {
   createBybitBscOrder,
   deliverPaidBybitBscOrder,
   setOrderPaymentMessage,
+  adoptTransactionMessage,
   setSetting,
   deleteSetting,
 } from "@app/db";
 import { OrderStatus, StockStatus } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
+import { FulfillmentMessageWorker } from "../../../packages/outbox-dispatcher/src/fulfillmentMessages";
 import {
   computeConfirmations,
   fetchConfirmations,
@@ -237,32 +239,51 @@ describe("pollOnce (confirmation tracker poll loop)", () => {
     expect(updated.deliveredAt).toBeNull();
   });
 
-  it("pushes the live tracking screen to the anchored bubble with the fresh confirmation count", async () => {
+  it("persists confirmations and lets the coordinator update the adopted bubble", async () => {
     const order = await makeTrackedOrder("0x" + "8".repeat(64));
     await setOrderPaymentMessage(prisma, order.id, 555, 777);
+    await adoptTransactionMessage(prisma, order.id, 555, 777);
     const { api, edits } = fakeApiWithEdits();
     mockChain("0x65", "0x65"); // 1 confirmation
     await pollOnce(api);
 
+    expect(edits).toHaveLength(0);
+    expect(await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).toMatchObject({
+      status: OrderStatus.CONFIRMING, confirmations: 1, paymentMsgChatId: 555n, paymentMsgId: 777,
+    });
+    expect(await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } })).toMatchObject({
+      state: "ACTIVE", messageId: 777,
+    });
+    await new FulfillmentMessageWorker(api).tick(order.id);
     expect(edits).toHaveLength(1);
-    expect(edits[0]!.chatId).toBe(555);
+    expect(edits[0]!.chatId).toBe("555");
     expect(edits[0]!.messageId).toBe(777);
-    expect(edits[0]!.text).toContain("1/15");
+    expect(edits[0]!.text).toContain("Confirming payment");
+    expect(edits[0]!.text).toContain("35%");
   });
 
-  it("keeps pushing on every successful tick, not just on a status transition (the count visibly climbs)", async () => {
+  it("updates durable confirmation counts without a second rail writer or fabricated progress", async () => {
     const order = await makeTrackedOrder("0x" + "9".repeat(64));
     await setOrderPaymentMessage(prisma, order.id, 555, 777);
+    await adoptTransactionMessage(prisma, order.id, 555, 777);
     const { api, edits } = fakeApiWithEdits();
 
     mockChain("0x65", "0x65"); // 1 confirmation -> PAYMENT_DETECTED -> CONFIRMING
     await pollOnce(api);
+    expect(edits).toHaveLength(0);
+    await new FulfillmentMessageWorker(api).tick(order.id);
     mockChain("0x66", "0x65"); // 2 confirmations -> still CONFIRMING, no status change
     await pollOnce(api);
 
-    expect(edits).toHaveLength(2);
-    expect(edits[0]!.text).toContain("1/15");
-    expect(edits[1]!.text).toContain("2/15");
+    expect(edits).toHaveLength(1);
+    expect(edits[0]!.messageId).toBe(777);
+    expect(edits[0]!.text).toContain("35%");
+    expect(await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).toMatchObject({
+      status: OrderStatus.CONFIRMING, confirmations: 2, paymentMsgChatId: 555n, paymentMsgId: 777,
+    });
+    expect(await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } })).toMatchObject({
+      state: "ACTIVE", messageId: 777, phase: "VERIFYING",
+    });
   });
 
   it("a tx-not-found cycle does not change status or escalate before the grace period is exhausted", async () => {

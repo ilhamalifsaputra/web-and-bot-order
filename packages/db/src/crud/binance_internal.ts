@@ -51,10 +51,11 @@ import { getSetting, getDecryptedSetting, setSetting } from "./settings";
 import { finalizeOrderPayment } from "./pricing";
 import { parseMinAmount, BINANCE_INTERNAL_MIN_AMOUNT_KEY } from "./_minAmount";
 import { enqueueAdminOverpaid } from "./notifications";
-import { settleWalletTopup, isLateSettleableWalletTopup, flagWalletTopupOverpayment } from "./wallet_topup";
+import { settleWalletTopup, isLateSettleableWalletTopup, flagWalletTopupOverpayment, preservePaidWalletCreditFailure } from "./wallet_topup";
 import { POLL_HEALTH_KEYS, getPollHealth, recordPollHealth, type PollHealth } from "./poll_health";
 import { getPendingPaymentAttempt, confirmPaymentAttempt } from "./payments";
 import { reclaimStaleMatchedClaim } from "./_staleClaim";
+import { logAdminAction } from "./audit";
 
 // ---------------------------------------------------------------------------
 // Resolved config (web-admin Settings win; .env is the bootstrap/recovery
@@ -385,6 +386,7 @@ export function getSettledBubbleOrder(db: Db, orderId: number) {
 export async function listPendingInternalOrders(db: Db, now: Date) {
   const orders = await db.order.findMany({
     where: {
+      OR: [{ walletCreditState: null }, { walletCreditState: { not: "NEEDS_REVIEW" } }],
       status: OrderStatus.PENDING_PAYMENT,
       paymentMethod: PaymentMethod.BINANCE_INTERNAL,
       paymentRef: { not: null },
@@ -505,6 +507,7 @@ export async function deliverPaidInternalOrder(
     }
   }
 
+  let verifiedWalletPayment = false;
   // 2. Deliver. On failure, flag the ledger row so we don't silently retry
   //    forever (e.g. paid but out of stock) and let the caller alert an admin.
   try {
@@ -517,7 +520,7 @@ export async function deliverPaidInternalOrder(
       // auto-cancelled between the poller's read and this delivery. A
       // cancelled PRODUCT order is NOT payable — its stock went back to the
       // pool — so it keeps falling through to "stale".
-      if (!order || (order.status !== OrderStatus.PENDING_PAYMENT && !isLateSettleableWalletTopup(order))) {
+      if (!order || order.paymentMethod !== PaymentMethod.BINANCE_INTERNAL || (order.status !== OrderStatus.PENDING_PAYMENT && !isLateSettleableWalletTopup(order))) {
         // If step 1 re-claimed this row from a non-delivering outcome, undo
         // that claim — restore the outcome/orderId/amount it overwrote —
         // instead of leaving the row "matched" against an order that never
@@ -563,6 +566,7 @@ export async function deliverPaidInternalOrder(
         return null;
       });
       if (order.kind === OrderKind.WALLET_TOPUP) {
+        verifiedWalletPayment = order.paymentMethod === PaymentMethod.BINANCE_INTERNAL;
         const { order: settled, credited } = await settleWalletTopup(tx, args.orderId, { amount: args.amount });
         // Overpayment: same flag + admin alert the product branch below raises,
         // without changing what was credited (see flagWalletTopupOverpayment).
@@ -622,7 +626,7 @@ export async function deliverPaidInternalOrder(
       }
       await tx.order.update({
         where: { id: args.orderId },
-        data: { binanceTxid: args.binanceTxId, paidAt: new Date() },
+        data: { binanceTxid: args.binanceTxId, paidAt: new Date(), paymentState: "PAID" },
       });
       await transitionOrderStatus(tx, {
         orderId: args.orderId,
@@ -691,6 +695,10 @@ export async function deliverPaidInternalOrder(
       return { status: "processing" as const, order: result.order };
     }, { timeout: 15000 });
   } catch (e) {
+    if (verifiedWalletPayment) {
+      await preservePaidWalletCreditFailure(db, { orderId: args.orderId, method: PaymentMethod.BINANCE_INTERNAL, providerTransactionId: args.binanceTxId, amount: args.amount })
+        .catch((err) => logger.error({ err, orderId: args.orderId }, "Could not persist the confirmed wallet payment after credit failure"));
+    }
     await db.processedBinanceTx
       .update({ where: { binanceTxId: args.binanceTxId }, data: { outcome: "delivery_failed" } })
       .catch(() => undefined);
@@ -917,14 +925,15 @@ export function countProcessedBinanceTx(db: Db, opts: { outcome?: string | null;
 
 /**
  * Resolve UNDERPAID by delivering anyway (operator eats the shortfall).
- * Flips UNDERPAID → PENDING_VERIFICATION then runs the normal approve/deliver
- * path (allocates stock, enqueues the testimoni outbox row). Same shape as
- * deliverPaidInternalOrder so the caller can show credentials.
+ * Records an audited override, then uses the normal stock/manual fulfillment
+ * route. Provider payment facts stay UNDERPAID even once delivery completes.
  */
 export async function deliverUnderpaidOrder(
   db: PrismaClient,
-  args: { orderId: number; adminId: number },
+  args: { orderId: number; adminId: number; reason: string },
 ): Promise<{ order: NonNullable<Awaited<ReturnType<typeof getOrder>>>; credentials: string[] }> {
+  const reason = args.reason.trim();
+  if (!reason) throw new ValidationError("error.override_reason_required");
   return db.$transaction(async (tx: Tx) => {
     const order = await getOrder(tx, args.orderId);
     if (!order) throw new ValidationError("error.order_not_found");
@@ -933,23 +942,24 @@ export async function deliverUnderpaidOrder(
     }
     await tx.order.update({
       where: { id: args.orderId },
-      data: { paidAt: new Date() },
+      data: { paymentState: "UNDERPAID", completionMode: "ADMIN_OVERRIDE", completionReason: reason },
     });
     await transitionOrderStatus(tx, {
       orderId: args.orderId,
       from: OrderStatus.UNDERPAID,
       to: OrderStatus.PENDING_VERIFICATION,
-      meta: `deliver_underpaid_anyway by admin_id=${args.adminId}`,
+      meta: `deliver_underpaid_anyway by admin_id=${args.adminId}: ${reason}`,
     });
-    // NOTE: a manual-delivery SKU CAN reach UNDERPAID (markUnderpaid triggers
-    // purely on received-amount vs order-total, independent of deliveryType)
-    // — but this path deliberately stays on approveOrder, not settlePaidOrder.
-    // For a manual SKU that means approveOrder's stock-allocation step throws
-    // error.cannot_deliver_out_of_stock (no stock was ever reserved for it),
-    // failing closed: the admin sees a clear error and can refund instead of
-    // "delivering anyway." Accepted scope exclusion — see the per-SKU
-    // delivery flows plan — not a silent gap.
-    const { order: delivered, credentials } = await approveOrder(tx, args.orderId, { adminId: args.adminId });
+    const result = await settlePaidOrder(tx, args.orderId, { adminId: args.adminId });
+    if (result.kind === "delivered") {
+      await tx.order.update({ where: { id: args.orderId }, data: { completedBy: args.adminId, completedAt: new Date() } });
+    }
+    await logAdminAction(tx, {
+      adminId: args.adminId, action: "underpaid_deliver", targetType: "order", targetId: args.orderId,
+      details: `Admin override for underpaid order ${order.orderCode}: ${reason}. Payment remains UNDERPAID; fulfillment ${result.kind}.`,
+    });
+    const delivered = (await getOrder(tx, args.orderId))!;
+    const credentials = result.credentials;
     logger.info(`Underpaid order ${delivered.orderCode} delivered anyway by admin ${args.adminId} — operator absorbed the shortfall`);
     return { order: delivered, credentials };
   });

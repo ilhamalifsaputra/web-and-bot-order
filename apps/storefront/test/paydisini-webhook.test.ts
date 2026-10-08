@@ -343,7 +343,8 @@ describe("POST /pay/paydisini/callback", () => {
     expect(res.json()).toEqual({ status: "amount mismatch" });
 
     const updated = await prisma.order.findUnique({ where: { id: order.id } });
-    expect(updated!.status).toBe("PENDING_PAYMENT"); // never delivered on a short payment
+    expect(updated!.status).toBe("UNDERPAID"); // never delivered on a short payment
+    expect(updated!.paymentState).toBe("UNDERPAID");
 
     const ledger = await prisma.processedPaydisiniTx.findUnique({ where: { trxId: "TRX-SHORT-1" } });
     expect(ledger).not.toBeNull();
@@ -362,7 +363,8 @@ describe("POST /pay/paydisini/callback", () => {
     expect(res.json()).toEqual({ status: "amount mismatch" });
 
     const updated = await prisma.order.findUnique({ where: { id: order.id } });
-    expect(updated!.status).toBe("PENDING_PAYMENT");
+    expect(updated!.status).toBe("UNDERPAID");
+    expect(updated!.paymentState).toBe("UNDERPAID");
 
     const ledger = await prisma.processedPaydisiniTx.findUnique({ where: { trxId: "TRX-LIVESHORT-1" } });
     expect(ledger!.outcome).toBe("unmatched");

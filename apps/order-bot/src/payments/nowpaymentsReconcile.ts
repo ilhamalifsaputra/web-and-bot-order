@@ -41,6 +41,8 @@ import { adminIds } from "@app/core/runtime";
 import { logger } from "@app/core/logger";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import { Decimal } from "@app/core/money";
+import { normalizeProviderStatus, StatusProvider } from "@app/core/payments/paymentStatus";
+import { recordProviderPaymentObservation } from "@app/db";
 import { getPaymentStatus, checkNowpaymentsAmount, RateLimitedError } from "@app/core/payments/nowpayments";
 import {
   MAX_ORDERS_PER_CYCLE,
@@ -201,6 +203,7 @@ function extractInvoiceId(paymentRef: string | null): string | null {
  */
 export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof getNowpaymentsCreds>>, order: PendingOrder): Promise<"ok" | "skipped" | "gateway_error"> {
   if (!creds) return "skipped";
+  if (order.currency !== "USDT") return "skipped";
 
   const invoiceId = extractInvoiceId(order.paymentRef);
   if (!invoiceId) return "skipped"; // no hosted invoice yet — nothing to reconcile, no gateway call made
@@ -229,7 +232,16 @@ export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof 
   // partially_paid/failed/refunded/expired and the in-flight states
   // (waiting/confirming/confirmed/sending) are all "not ready yet", never an
   // error condition worth alerting on.
-  if (!status.paid) return "ok";
+  if (status.orderId && status.orderId !== order.orderCode) {
+    logger.warn({ orderId: order.id }, "NOWPayments invoice response belongs to a different order; ignoring it");
+    return "ok";
+  }
+  const canonical = normalizeProviderStatus(StatusProvider.NOWPAYMENTS, status.status);
+  if (canonical === "detected" || canonical === "verifying") {
+    if (status.trxId) await recordProviderPaymentObservation(prisma, { orderId: order.id, method: "NOWPAYMENTS", state: canonical === "detected" ? "PAYMENT_DETECTED" : "VERIFYING" });
+    return "ok";
+  }
+  if (!status.paid && canonical !== "underpaid") return "ok";
 
   // Value check (Task B fix round): `actually_paid` is in the PAY currency
   // (whatever coin the buyer chose), so comparing it to the USDT order total
@@ -238,6 +250,15 @@ export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof 
   // the invoice's usd price by the same `checkNowpaymentsAmount` the IPN
   // webhook uses (Task B3a).
   const valueCheck = checkNowpaymentsAmount(status, order.totalAmount);
+  if (canonical === "underpaid") {
+    const received = valueCheck.ok ? valueCheck.amount : valueCheck.receivedValue;
+    if (received !== undefined && status.payCurrency && status.trxId) {
+      await markOrderUnderpaid(prisma, { orderId: order.id, gateway: "NOWPayments", receivedAmount: received, expectedAmount: order.totalAmount });
+    } else {
+      await enqueueAdminUnconfirmablePayment(prisma, { orderId: order.id, orderCode: order.orderCode, gateway: "NOWPayments", reason: "unverified_amount" });
+    }
+    return "ok";
+  }
   if (!valueCheck.ok) {
     if (valueCheck.receivedValue) {
       // Paid but short — never deliver on an underpayment; flag UNDERPAID and

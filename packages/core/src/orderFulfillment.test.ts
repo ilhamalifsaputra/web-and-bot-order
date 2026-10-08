@@ -30,9 +30,9 @@ describe("canonical fulfillment state", () => {
 describe("customerProgressPhase (Telegram progress message)", () => {
   const stock = { status: "DELIVERED", paidAt: new Date(), fulfillmentProvider: "STOCK", items: [{ product: { deliveryType: "auto" } }] };
   const manual = { status: "PROCESSING", paidAt: new Date(), fulfillmentProvider: "MANUAL", items: [{ product: { deliveryType: "manual" } }] };
-  it.each(["PAYMENT_DETECTED", "CONFIRMING", "CONFIRMED", "PENDING_VERIFICATION"])("%s is a detected payment that is never shown as paid", status => {
+  it.each(["PAYMENT_DETECTED", "CONFIRMING", "CONFIRMED"])("%s is a detected payment that is never shown as paid", status => {
     // paidAt may already be stamped inside a settling transaction; status wins.
-    expect(customerProgressPhase({ ...order, status, paidAt: new Date() })).toEqual({ phase: "PAYMENT_DETECTED", spinner: true, topUp: true });
+    expect(customerProgressPhase({ ...order, status, paidAt: new Date() })).toMatchObject({ phase: status === "PAYMENT_DETECTED" ? "PAYMENT_DETECTED" : "VERIFYING", spinner: true, topUp: true });
   });
   it("shows nothing for an order whose payment was never seen", () => {
     expect(customerProgressPhase({ ...order, status: "PENDING_PAYMENT", paidAt: null }).phase).toBe("NONE");
@@ -44,13 +44,13 @@ describe("customerProgressPhase (Telegram progress message)", () => {
     expect(customerProgressPhase({ ...order, digiflazzStatus: "failed" })).toMatchObject({ phase: "REVIEW", spinner: false });
   });
   it("uses generic product wording for stock orders", () => {
-    expect(customerProgressPhase({ ...stock, status: "PROCESSING" })).toEqual({ phase: "PREPARING", spinner: true, topUp: false });
-    expect(customerProgressPhase(stock)).toEqual({ phase: "SUCCESS", spinner: false, topUp: false });
-    expect(customerProgressPhase({ ...order, status: "DELIVERED" })).toEqual({ phase: "SUCCESS", spinner: false, topUp: true });
+    expect(customerProgressPhase({ ...stock, status: "PROCESSING" })).toMatchObject({ phase: "PREPARING", spinner: true, topUp: false });
+    expect(customerProgressPhase(stock)).toMatchObject({ phase: "SUCCESS", spinner: false, topUp: false });
+    expect(customerProgressPhase({ ...order, status: "DELIVERED" })).toMatchObject({ phase: "SUCCESS", spinner: false, topUp: true });
   });
-  it("shows a manual order's queue spinner only until the first message exists, then a static wait", () => {
-    expect(customerProgressPhase(manual, { messageSent: false })).toEqual({ phase: "MANUAL_ENQUEUING", spinner: true, topUp: false });
-    expect(customerProgressPhase(manual, { messageSent: true })).toEqual({ phase: "MANUAL_WAITING", spinner: false, topUp: false });
+  it("keeps a manual order static before and after a message exists", () => {
+    expect(customerProgressPhase(manual, { messageSent: false })).toMatchObject({ phase: "MANUAL_WAITING", spinner: false, progress: null, topUp: false });
+    expect(customerProgressPhase(manual, { messageSent: true })).toMatchObject({ phase: "MANUAL_WAITING", spinner: false, topUp: false });
   });
   it("reports failed and cancelled outcomes without a spinner", () => {
     expect(customerProgressPhase({ ...manual, status: "REJECTED" })).toMatchObject({ phase: "FAILED", spinner: false });
@@ -63,6 +63,6 @@ describe("customerProgressPhase (Telegram progress message)", () => {
     expect(customerProgressPhase({ ...manual, status: "CANCELLED" })).toMatchObject({ phase: "CANCELLED", spinner: false });
   });
   it("never shows an underpaid order as a payment still being verified", () => {
-    expect(customerProgressPhase({ ...order, status: "UNDERPAID", paidAt: null })).toEqual({ phase: "REVIEW", spinner: false, topUp: true });
+    expect(customerProgressPhase({ ...order, status: "UNDERPAID", paidAt: null })).toMatchObject({ phase: "UNDERPAID", spinner: false, progress: null, topUp: true });
   });
 });

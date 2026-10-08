@@ -494,13 +494,35 @@ describe("wallet-topup pay/status/cancel wrappers — ownership + kind checks", 
   it("GET .../status returns {state, redirect} and 404s the same way as .../pay", async () => {
     const res = await app.inject({ method: "GET", url: `/api/v1/wallet/topup/${topupCode}/status`, headers: { cookie: ownerCookie } });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ state: "waiting", redirect: null });
+    expect(res.json()).toMatchObject({ state: "waiting", redirect: null, underpayment: null,
+      presentation: { phase: "NONE", transactionType: "WALLET_TOPUP", spinner: false, progress: null },
+    });
 
     const foreign = await app.inject({ method: "GET", url: `/api/v1/wallet/topup/${topupCode}/status`, headers: { cookie: otherCookie } });
     expect(foreign.statusCode).toBe(404);
 
     const wrongKind = await app.inject({ method: "GET", url: `/api/v1/wallet/topup/${productOrderCode}/status`, headers: { cookie: ownerCookie } });
     expect(wrongKind.statusCode).toBe(404);
+  });
+
+  it("returns static trusted underpayment facts and keeps the complete existing wallet reference", async () => {
+    const source = await prisma.order.findUniqueOrThrow({ where: { orderCode: topupCode } });
+    const reference = "EXISTING-WALLET-REFERENCE-12345678901234567890";
+    const order = await prisma.order.create({ data: {
+      userId: source.userId, orderCode: reference, kind: "WALLET_TOPUP", status: "UNDERPAID", paymentState: "UNDERPAID",
+      currency: "IDR", subtotalAmount: "50000", totalAmount: "50000",
+    } });
+    await prisma.qrisUnderpaidTx.create({ data: { orderId: order.id, gateway: "TOKOPAY", expectedAmount: "51000", receivedAmount: "30000" } });
+    const status = await app.inject({ method: "GET", url: `/api/v1/wallet/topup/${reference}/status`, headers: { cookie: ownerCookie } });
+    expect(status.statusCode).toBe(200);
+    expect(status.json()).toMatchObject({ state: "underpaid", redirect: null,
+      presentation: { phase: "UNDERPAID", transactionType: "WALLET_TOPUP", spinner: false, progress: null },
+      underpayment: { required: "51000", received: "30000", currency: "IDR" },
+    });
+    const pay = await app.inject({ method: "GET", url: `/api/v1/wallet/topup/${reference}/pay`, headers: { cookie: ownerCookie } });
+    expect(pay.statusCode).toBe(200);
+    expect(pay.json().order.code).toBe(reference);
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).paymentState).toBe("UNDERPAID");
   });
 
   it("POST .../cancel: trio (401/403/200), 404 for someone else's code, 404 for a PRODUCT-kind code", async () => {

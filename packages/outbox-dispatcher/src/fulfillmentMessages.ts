@@ -1,23 +1,24 @@
 import type { Bot } from "grammy";
 import type { Prisma } from "@prisma/client";
-import { prisma, enqueueDigiflazzReviewAlert, type PrismaClient } from "@app/db";
-import { customerProgressPhase, fulfillmentProviderFor, type CustomerProgress, type CustomerProgressPhase } from "@app/core/orderFulfillment";
+import { prisma, enqueueDigiflazzReviewAlert, findUnderpaidReceived, type PrismaClient } from "@app/db";
+import { customerProgressPhase, fulfillmentProviderFor } from "@app/core/orderFulfillment";
+import { formatIdrFor } from "@app/core/moneyFormat";
+import { formatUsdt } from "@app/core/formatters";
 import { t } from "@app/core/i18n";
 import { langCode } from "@app/core/enums";
 import { logger } from "@app/core/logger";
 import { escape } from "./templates";
+import { renderTransactionStatusMessage } from "./transactionMessage";
 
-export type FulfillmentTelegramApi = Pick<Bot["api"], "sendMessage" | "editMessageText">;
-const include = { order: { include: { user: true, items: { include: { product: true } } } } } as const;
+export type FulfillmentTelegramApi = Pick<Bot["api"], "sendMessage" | "editMessageText" | "editMessageCaption">;
+const include = { order: { include: { user: true, items: { include: { product: { include: { product: { include: { category: true } } } } } } } } } as const;
 type MessageRow = Prisma.FulfillmentMessageGetPayload<{ include: typeof include }>;
 const INTERVAL_MS = 2000;
 const LEASE_MS = 60_000;
 const REVIEW_INTERVAL_MS = 30_000;
-/** A sent message whose order has nothing to show (payment fell back to
- * awaiting) keeps its last text and is only re-read this often. */
+/** Static waiting screens resume only when a canonical transition wakes them. */
 const IDLE_INTERVAL_MS = 30_000;
-/** A payment can sit in the detected phase for a long time (an admin has not
- * checked the proof yet, or settlement keeps rolling back). After this long in
+/** A detected payment or confirmation can take a long time. After this long in
  * that one phase the spinner stops and the message is re-read only every
  * DETECTED_SLOW_INTERVAL_MS, until the order's state moves it to another phase. */
 export const DETECTED_SLOW_AFTER_MS = 10 * 60_000;
@@ -26,26 +27,7 @@ const FRAMES = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"];
 /** Row states the worker polls. WAITING (a manual order's static wait) is not
  * one of them: `wakeFulfillmentMessage` moves it on when the order ends. */
 const POLLED_STATES = ["READY", "ACTIVE", "REVIEW"];
-const TERMINAL_PHASES: ReadonlySet<string> = new Set(["SUCCESS", "FAILED", "CANCELLED", "CREDITED"]);
-
-/** Title + body locale keys per phase; the order status decides, never a timer.
- * NONE has no text: the caller keeps whatever the message already says. */
-function progressKeys({ phase, topUp }: CustomerProgress & { phase: Exclude<CustomerProgressPhase, "NONE"> }): { title: string; body: string } {
-  switch (phase) {
-    case "PAYMENT_DETECTED": return { title: "title_detected", body: "detected" };
-    case "AUTO_QUEUED": return { title: "title_confirmed", body: "auto_queued" };
-    case "AUTO_SUBMITTING": return { title: "title_confirmed", body: "auto_submitting" };
-    case "AUTO_PROCESSING": return { title: "title_confirmed", body: "auto_processing" };
-    case "PREPARING": return { title: "title_confirmed", body: "preparing" };
-    case "MANUAL_ENQUEUING": return { title: "title_confirmed", body: "manual_enqueuing" };
-    case "MANUAL_WAITING": return { title: "title_waiting", body: "manual_waiting" };
-    case "SUCCESS": return topUp ? { title: "title_topup_success", body: "topup_success" } : { title: "title_success", body: "success" };
-    case "FAILED": return { title: topUp ? "title_topup_failed" : "title_failed", body: "failed" };
-    case "REVIEW": return { title: "title_review", body: "review" };
-    case "CREDITED": return { title: "title_credited", body: "credited" };
-    case "CANCELLED": return { title: "title_cancelled", body: "cancelled" };
-  }
-}
+const TERMINAL_PHASES: ReadonlySet<string> = new Set(["SUCCESS", "WALLET_CREDITED", "FAILED", "CANCELLED", "CREDITED"]);
 
 /** One persisted message per order. An initial send without an acknowledgement
  * cannot safely be retried: Telegram has no idempotent send API. */
@@ -59,11 +41,21 @@ export class FulfillmentMessageWorker {
     this.signal = opts.signal;
   }
 
-  async tick(): Promise<void> {
+  private keyboard(phase: string, kind: string, lang: string) {
+    const menu = { text: t("menu.main", lang), callback_data: "v1:menu:main" };
+    if (["SUCCESS", "WALLET_CREDITED", "CREDITED"].includes(phase)) {
+      return { inline_keyboard: kind === "WALLET_TOPUP"
+        ? [[{ text: t("transaction.wallet", lang), callback_data: "v1:wallet:view" }, menu]]
+        : [[{ text: t("checkout.buy_again_btn", lang), callback_data: "v1:browse:prods" }], [{ text: t("order.all_history_btn", lang), callback_data: "v1:order:list" }, menu]] };
+    }
+    return { inline_keyboard: [[menu]] };
+  }
+
+  async tick(orderId?: number): Promise<void> {
     const now = this.now();
     const stale = new Date(now.getTime() - LEASE_MS);
     const rows = await this.db.fulfillmentMessage.findMany({
-      where: { nextUpdateAt: { lte: now }, OR: [
+      where: { ...(orderId === undefined ? {} : { orderId }), nextUpdateAt: { lte: now }, OR: [
         { state: { in: POLLED_STATES }, claimedAt: null },
         { state: { in: ["SENDING", "EDITING"] }, claimedAt: { lte: stale } },
       ] }, include, take: 10, orderBy: [{ nextUpdateAt: "asc" }, { orderId: "asc" }],
@@ -156,16 +148,14 @@ export class FulfillmentMessageWorker {
       });
       return false;
     }
-    if (progress.phase === "NONE") {
-      // A sent message whose order fell back to awaiting payment (a detected
-      // deposit was withdrawn): keep the last text rather than guess.
+    if (progress.phase === "NONE" && (row.lastText === null || row.phase === "NONE")) {
+      // Keep the original transfer instructions while awaiting payment.
       await this.saveProgress(row, {
-        ...phaseFields, state: "ACTIVE", claimedAt: null, nextUpdateAt: new Date(this.now().getTime() + IDLE_INTERVAL_MS),
+        ...phaseFields, state: "WAITING", claimedAt: null, nextUpdateAt: new Date(this.now().getTime() + IDLE_INTERVAL_MS),
       });
       return false;
     }
     const lang = langCode(order.user.language);
-    const keys = progressKeys({ ...progress, phase: progress.phase });
     const frame = FRAMES[Math.floor(this.now().getTime() / INTERVAL_MS) % FRAMES.length];
     const grouped = new Map<number, { name: string; quantity: number }>();
     for (const item of order.items) {
@@ -173,19 +163,25 @@ export class FulfillmentMessageWorker {
       if (existing) existing.quantity += item.quantity;
       else grouped.set(item.productId, { name: item.product.name, quantity: item.quantity });
     }
-    // Bound catalog text before escaping, leaving room below Telegram's 4096
+    // Bound catalog text before escaping, leaving room below Telegram's 1024
     // character limit. Customer targets and delivered credentials stay private.
-    const items = [...grouped.values()].slice(0, 6).map(item => `${escape(item.name.slice(0, 80))}${item.name.length > 80 ? "…" : ""} × ${item.quantity}`).join("\n");
-    const summary = items ? `\n\n${items}${grouped.size > 6 ? "\n…" : ""}` : "";
+    const items = [...grouped.values()].slice(0, 3).map(item => `${escape(item.name.slice(0, 60))}${item.name.length > 60 ? "…" : ""} × ${item.quantity}`).join("\n");
+    const summary = items ? `\n\n${items}${grouped.size > 3 ? "\n…" : ""}` : "";
     // Detected for too long: a static "still verifying" line on a slow re-read.
     // The order's state still decides; this only stops the animation.
-    const slow = progress.phase === "PAYMENT_DETECTED" && this.now().getTime() - phaseStartedAt.getTime() >= DETECTED_SLOW_AFTER_MS;
-    const body = t(`order.progress_${slow ? "detected_slow" : keys.body}`, lang);
-    const title = t(`order.progress_${keys.title}`, lang);
-    const orderLine = t("order.progress_order_line", lang, { code: escape(order.orderCode) });
-    const text = `${title}\n${orderLine}${summary}\n\n${progress.spinner && !slow ? `${frame} ${body}` : body}`;
+    const slow = ["PAYMENT_DETECTED", "VERIFYING"].includes(progress.phase) && this.now().getTime() - phaseStartedAt.getTime() >= DETECTED_SLOW_AFTER_MS;
+    const money = (value: Parameters<typeof formatUsdt>[0]) => order.currency === "USDT" ? formatUsdt(value) : formatIdrFor(value, lang);
+    const walletCredit = progress.phase === "WALLET_CREDITED"
+      ? await this.db.walletTransaction.findFirst({ where: { orderId: order.id, reason: "wallet_topup" }, select: { delta: true, balanceAfter: true } }) : null;
+    const shortfall = progress.phase === "UNDERPAID" ? await findUnderpaidReceived(this.db, order.id) : null;
+    const expected = progress.phase === "UNDERPAID" ? await this.db.qrisUnderpaidTx.findFirst({ where: { orderId: order.id }, select: { expectedAmount: true } }) : null;
+    const text = renderTransactionStatusMessage({ orderCode: order.orderCode, presentation: progress, lang,
+      frame: frame!, summary: summary.trim(), amount: money(walletCredit?.delta ?? order.totalAmount),
+      balance: walletCredit ? money(walletCredit.balanceAfter) : undefined,
+      underpayment: progress.phase === "UNDERPAID" ? { required: money(expected?.expectedAmount ?? order.totalAmount), received: shortfall ? money(shortfall) : null } : null, slow,
+    });
     const terminal = TERMINAL_PHASES.has(progress.phase);
-    const state = progress.phase === "REVIEW" ? "REVIEW" : progress.phase === "MANUAL_WAITING" ? "WAITING" : terminal ? "FINISHED" : "ACTIVE";
+    const state = ["REVIEW", "UNDERPAID"].includes(progress.phase) ? "REVIEW" : progress.phase === "MANUAL_WAITING" ? "WAITING" : progress.phase === "NONE" ? "WAITING" : terminal ? "FINISHED" : "ACTIVE";
     const interval = state === "REVIEW" ? REVIEW_INTERVAL_MS : slow ? DETECTED_SLOW_INTERVAL_MS : INTERVAL_MS;
     const data = { ...phaseFields, state, claimedAt: null, lastText: text, finishedAt: terminal ? this.now() : null,
       nextUpdateAt: new Date(this.now().getTime() + interval) };
@@ -199,10 +195,20 @@ export class FulfillmentMessageWorker {
     const apiSignal = controller.signal as unknown as NonNullable<Parameters<FulfillmentTelegramApi["sendMessage"]>[3]>;
     try {
       if (row.messageId === null) {
-        const sent = await this.api.sendMessage(String(row.chatId), text, { parse_mode: "HTML" }, apiSignal);
+        const sent = await this.api.sendMessage(String(row.chatId), text, { parse_mode: "HTML", reply_markup: this.keyboard(progress.phase, progress.transactionType, lang) }, apiSignal);
         await this.saveProgress(row, { ...data, messageId: sent.message_id });
       } else {
-        if (row.lastText !== text) await this.api.editMessageText(String(row.chatId), row.messageId, text, { parse_mode: "HTML" }, apiSignal);
+        if (row.lastText !== text) {
+          try {
+            await this.api.editMessageText(String(row.chatId), row.messageId, text, { parse_mode: "HTML", reply_markup: this.keyboard(progress.phase, progress.transactionType, lang) }, apiSignal);
+          } catch (error) {
+            const e = error as { error_code?: number; description?: string };
+            // Only Telegram's explicit photo response permits caption fallback.
+            // A timeout/429/5xx never deletes or replaces the canonical message.
+            if (e.error_code !== 400 || !/there is no text in the message to edit/i.test(e.description ?? "")) throw error;
+            await this.api.editMessageCaption(String(row.chatId), row.messageId, { caption: text, parse_mode: "HTML", reply_markup: this.keyboard(progress.phase, progress.transactionType, lang) }, apiSignal);
+          }
+        }
         await this.saveProgress(row, data);
       }
       return false;

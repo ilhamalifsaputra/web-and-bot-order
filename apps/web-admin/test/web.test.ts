@@ -6882,7 +6882,7 @@ describe("payments", () => {
 
   it("deliver underpaid → DELIVERED + audit", async () => {
     const id = await makeUnderpaidOrder();
-    const res = await post(`/api/payments/order/${id}/deliver`, seed.cookie, { csrf_token: seed.csrf });
+    const res = await post(`/api/payments/order/${id}/deliver`, seed.cookie, { csrf_token: seed.csrf, reason: "Approved shortfall" });
     expect(res.statusCode).toBe(200);
     expect((await getOrder(prisma, id))!.status).toBe("DELIVERED");
     const audit = await prisma.auditLog.findMany({ where: { action: "underpaid_deliver", targetId: id } });

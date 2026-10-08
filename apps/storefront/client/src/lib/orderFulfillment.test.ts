@@ -35,3 +35,16 @@ describe("manual orders never spin", () => {
     expect(p.waiting).toBe(false);
   });
 });
+
+describe("canonical presentation wins over payment exceptions", () => {
+  it("shows admin-completed fulfillment while preserving the real underpaid payment fact", () => {
+    const state = fulfillmentPresentation({
+      mode: "MANUAL", provider: "MANUAL", status: "SUCCESS", payment_status: "UNDERPAID", can_edit_customer_data: false,
+      presentation: { phase: "SUCCESS", spinner: false, progress: null, topUp: false, transactionType: "PREMIUM_APPS", titleKey: "transaction.premium_success_title", bodyKey: "transaction.premium_success_body" },
+    });
+    expect(state.badge).toBe("completed");
+    expect(state.complete).toBe(true);
+    expect(state.active).toBe(false);
+    expect(state.progress).toBeNull();
+  });
+});

@@ -15,6 +15,7 @@ import {
   updateDenomination,
   deliverPaidTokopayOrder,
   triggerDigiflazzDispatch,
+  adoptTransactionMessage,
 } from "@app/db";
 import { routeOrderToDigiflazz } from "../../../tests/helpers/digiflazzRouting";
 
@@ -28,11 +29,11 @@ import { gatewayLedgerTrxId } from "@app/core/payments/ledgerKey";
 import type { Api } from "grammy";
 import { DeliveryType, OrderStatus, OrderCurrency, PaymentMethod } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
-import { logger } from "@app/core/logger";
 import { config } from "@app/core/config";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { telegramError } from "./helpers/ctx";
 import { onlyBubbleEdit } from "./helpers/settledBubble";
+import { FulfillmentMessageWorker } from "../../../packages/outbox-dispatcher/src/fulfillmentMessages";
 import { reconcileOrder, pollOnce, MAX_ORDERS_PER_CYCLE } from "../src/payments/tokopayReconcile";
 import { qrisChargeAmount } from "@app/core/payments/tokopay";
 import { TOKOPAY_MERCHANT_KEY, TOKOPAY_SECRET_KEY } from "@app/core/payments/tokopay";
@@ -60,10 +61,7 @@ const CREDS = { merchantId: "M", secret: "s", channel: "QRIS", minAmount: null }
  *  the anchored message's id, so a test cannot pass by confusing the two. */
 const REPLACEMENT_MSG_ID = 90210;
 
-/** `editMessageCaption` is still on the double even though nothing should ever
- *  call it: this rail used to flip a paid order's bubble through the caption,
- *  which "succeeded" while leaving the useless QR image in the buyer's chat, so
- *  a test that finds it called is finding that bug back. */
+/** Text and QR caption edits retain the transaction's acknowledged message ID. */
 const fakeApi = (
   overrides: Partial<{
     editMessageText: unknown;
@@ -78,10 +76,7 @@ const fakeApi = (
     deleteMessage: overrides.deleteMessage ?? vi.fn().mockResolvedValue(true),
   }) as unknown as Api;
 
-/** Telegram's answer to `editMessageText` on a PHOTO message — the one signal
- *  that says "this bubble carries a QR image, not text". Deliberately absent
- *  from `isPermanentBubbleEditFailure`'s permanent list, which is what routes
- *  it onto the delete-and-resend path. */
+/** Only this Telegram response permits the coordinator to try a caption edit. */
 const noTextToEdit = () => telegramError(400, "Bad Request: there is no text in the message to edit");
 
 /** The callback data on whatever keyboard a grammY call carried. */
@@ -259,84 +254,51 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
     const created = await makeTokopayOrder();
     const [pending] = await listPendingTokopayOrders(prisma, new Date());
     await setOrderPaymentMessage(prisma, created!.id, 555, 777);
+    await adoptTransactionMessage(prisma, created!.id, 555, 777);
     stubStatus({ status: "Paid", trx_id: trxId, total_bayar: qrisChargeAmount(pending!.totalAmount).toString() });
 
     await reconcileOrder(api, CREDS, pending!);
+    expect(api.editMessageText).not.toHaveBeenCalled();
+    await new FulfillmentMessageWorker(api).tick(created!.id);
 
     return prisma.order.findUnique({ where: { id: created!.id } });
   }
 
-  it("immediately flips an anchored TEXT bubble to success in place when it delivers the order", async () => {
+  it("lets the coordinator complete an acknowledged text bubble in place", async () => {
     const api = fakeApi();
 
     const after = await deliverAnchored(api, "TRX-FLIP");
 
     expect(api.editMessageText).toHaveBeenCalledTimes(1);
     const [chatId, msgId, , payload] = (api.editMessageText as ReturnType<typeof vi.fn>).mock.calls[0]!;
-    expect(chatId).toBe(555);
+    expect(String(chatId)).toBe("555");
     expect(msgId).toBe(777);
-    expect(buttonsOf(payload)).toContain("v1:browse:prods");
+    expect(buttonsOf(payload)).toContain("v1:order:list");
     // A bubble that took the edit is left exactly where it is.
     expect(api.editMessageCaption).not.toHaveBeenCalled();
     expect(api.deleteMessage).not.toHaveBeenCalled();
     expect(api.sendMessage).not.toHaveBeenCalled();
 
-    expect(after?.paymentMsgChatId).toBeNull();
-    expect(after?.paymentMsgId).toBeNull();
+    expect(after?.paymentMsgChatId).toBe(555n);
+    expect(after?.paymentMsgId).toBe(777);
   });
 
-  // The bug this rail's share of the change exists for: a photo bubble's
-  // CAPTION can be edited, so the old caption-first flip "succeeded" while
-  // Telegram left the now-meaningless QR image parked above the "payment
-  // received" line — on the path QRIS payments actually take most often.
-  // Telegram offers no way to turn a photo message into a text one, so the only
-  // way to get rid of the image is to delete the bubble and send it afresh.
-  it("replaces an anchored PHOTO (QR) bubble with a fresh message instead of leaving the QR image behind", async () => {
+  it("completes an acknowledged QR caption on the same message", async () => {
     const api = fakeApi({ editMessageText: vi.fn().mockRejectedValue(noTextToEdit()) });
 
     const after = await deliverAnchored(api, "TRX-FLIP-PHOTO");
 
-    expect(api.editMessageCaption).not.toHaveBeenCalled();
-    expect(api.deleteMessage).toHaveBeenCalledWith(555, 777);
-    // Sent into the bubble's own chat, taking the deleted bubble's place —
-    // not as a fallback DM, which would only repeat news the buyer already got
-    // with their account file.
-    expect(api.sendMessage).toHaveBeenCalledTimes(1);
-    const [target, text, payload] = (api.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0]!;
-    expect(target).toBe(555);
-    expect(String(text)).toContain("Payment received");
-    expect(buttonsOf(payload)).toContain("v1:browse:prods");
-
-    expect(after?.paymentMsgChatId).toBeNull();
-    expect(after?.paymentMsgId).toBeNull();
+    expect(api.editMessageCaption).toHaveBeenCalledTimes(1);
+    const edit = onlyBubbleEdit((api.editMessageCaption as ReturnType<typeof vi.fn>).mock.calls, []);
+    expect(edit).toMatchObject({ chatId: "555", msgId: 777 });
+    expect(edit.text).toContain("100%");
+    expect(api.deleteMessage).not.toHaveBeenCalled();
+    expect(api.sendMessage).not.toHaveBeenCalled();
+    expect(after?.paymentMsgChatId).toBe(555n);
+    expect(after?.paymentMsgId).toBe(777);
   });
 
-  // The anchor IS the work queue: `sweepPaidOrderBubbles` (jobs/index.ts)
-  // lists exactly the settled orders that still carry one, so clearing it
-  // after an edit Telegram merely refused THIS minute leaves nothing in the
-  // system that would ever retry — the buyer stares at a stale QRIS QR for an
-  // order that is already paid and delivered. QRIS is this shop's dominant
-  // payment method, so this rail is where that bug hurts most.
-  describe("a failed success-bubble flip only drops the anchor when the failure is final", () => {
-    let warnSpy: ReturnType<typeof vi.spyOn>;
-
-    beforeEach(() => {
-      warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => undefined as never);
-    });
-
-    afterEach(() => {
-      warnSpy.mockRestore();
-    });
-
-    /** True when the rail explained, in the log, why it is holding the anchor. */
-    const warnedAboutTheBubble = () =>
-      warnSpy.mock.calls.some((args) => args.some((arg) => typeof arg === "string" && arg.includes("payment bubble")));
-
-    /** An outage hits every call to Telegram, not just the first: an edit that
-     *  merely failed THIS minute is followed by a delete that fails the same
-     *  way, which is exactly what keeps the bubble (and the anchor) intact. A
-     *  delete that succeeded would mean the bubble really was a photo and the
-     *  replacement path could finish the job. */
+  describe("the durable coordinator handles completion edit failures", () => {
     const flipWith = (editError: unknown, deleteError = editError) =>
       fakeApi({
         editMessageText: vi.fn().mockRejectedValue(editError),
@@ -348,9 +310,12 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
       const created = await makeTokopayOrder();
       const [pending] = await listPendingTokopayOrders(prisma, new Date());
       await setOrderPaymentMessage(prisma, created!.id, 555, 777);
+      await adoptTransactionMessage(prisma, created!.id, 555, 777);
       stubStatus({ status: "Paid", trx_id: "TRX-EDITFAIL", total_bayar: qrisChargeAmount(pending!.totalAmount).toString() });
 
       await reconcileOrder(api, CREDS, pending!);
+      expect(api.editMessageText).not.toHaveBeenCalled();
+      await new FulfillmentMessageWorker(api).tick(created!.id);
 
       return prisma.order.findUnique({ where: { id: created!.id } });
     }
@@ -359,7 +324,7 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
       ["Telegram flood control", () => telegramError(429, "Too Many Requests: retry after 30")],
       ["a Telegram server error", () => telegramError(502, "Bad Gateway")],
       ["something that is not a Telegram API error at all, such as a network fault", () => new Error("socket hang up")],
-    ])("keeps the anchor when the flip fails with %s, so the paid-order bubble sweep retries it", async (_label, makeError) => {
+    ])("keeps the same message retryable after %s", async (_label, makeError) => {
       const api = flipWith(makeError());
 
       const after = await deliverWithFailedFlip(api);
@@ -370,7 +335,10 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
       // Nothing was sent: a replacement standing next to a bubble that is still
       // there would tell the buyer the same news twice.
       expect(api.sendMessage).not.toHaveBeenCalled();
-      expect(warnedAboutTheBubble()).toBe(true);
+      const coordinator = await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: after!.id } });
+      expect(coordinator).toMatchObject({ state: "ACTIVE", messageId: 777, chatId: 555n });
+      expect(coordinator.nextUpdateAt.getTime()).toBeGreaterThan(Date.now());
+      expect(api.deleteMessage).not.toHaveBeenCalled();
     });
 
     // A bubble Telegram has declared dead, or that already shows this exact
@@ -378,41 +346,32 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
     // on "message is not modified" deleting would destroy a bubble that is
     // already correct.
     it.each([
-      ["the bubble is gone for good", "Bad Request: message to edit not found"],
-      ["the bubble already shows this exact text", "Bad Request: message is not modified"],
-    ])("clears the anchor when Telegram says %s, so it self-heals out of the sweep's queue", async (_label, description) => {
+      ["the bubble is gone for good", "Bad Request: message to edit not found", "STOPPED"],
+      ["the bubble already shows this exact text", "Bad Request: message is not modified", "FINISHED"],
+    ])("stops further edits when Telegram says %s", async (_label, description, state) => {
       const api = flipWith(telegramError(400, description));
 
       const after = await deliverWithFailedFlip(api);
 
-      expect(after?.paymentMsgChatId).toBeNull();
-      expect(after?.paymentMsgId).toBeNull();
+      expect(after?.paymentMsgChatId).toBe(555n);
+      expect(after?.paymentMsgId).toBe(777);
+      expect(await prisma.fulfillmentMessage.findUnique({ where: { orderId: after!.id } })).toMatchObject({ state, messageId: 777 });
       expect(api.deleteMessage).not.toHaveBeenCalled();
       expect(api.sendMessage).not.toHaveBeenCalled();
     });
   });
 
-  // A wallet top-up settled on this rail used to be flipped with the PRODUCT
-  // sale's sentence and the "My Orders" keyboard, with no mention of the
-  // buyer's balance at all — and then had its anchor cleared, so the generic
-  // sweeper (`sweepPaidOrderBubbles`, jobs/index.ts), which words a top-up
-  // correctly, never got the chance to repair it. Both bubbles are now built
-  // by `settledPaymentBubble` (util/delivery.ts), the single mapping the
-  // sweeper and the buyer's own "🔄 Refresh Status" tap already share, so all
-  // six payment methods end a top-up identically. The PRODUCT cases below are
-  // the regression half of that: adopting the shared mapping must not reword
-  // an ordinary QRIS product sale.
-  describe("the success bubble a settled order is flipped to", () => {
+  describe("canonical completion for wallet and product orders", () => {
     /** Pre-credit balance, deliberately distinct from the post-credit one so a
      *  bubble quoting a stale snapshot is visibly wrong rather than plausible. */
     const STARTING_IDR = "123456";
     const TOPUP_IDR = "50000";
 
-    const bubbleEdit = (api: Api) =>
-      onlyBubbleEdit(
-        (api.editMessageCaption as ReturnType<typeof vi.fn>).mock.calls,
-        (api.editMessageText as ReturnType<typeof vi.fn>).mock.calls,
-      );
+    const bubbleEdit = (api: Api) => {
+      const captions = (api.editMessageCaption as ReturnType<typeof vi.fn>).mock.calls;
+      const edit = onlyBubbleEdit(captions, captions.length ? [] : (api.editMessageText as ReturnType<typeof vi.fn>).mock.calls);
+      return { ...edit, chatId: Number(edit.chatId) };
+    };
 
     /** Reconcile the one pending TokoPay order, with the gateway reporting it
      *  paid in full (order total + the QRIS admin fee). */
@@ -420,6 +379,8 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
       const [pending] = await listPendingTokopayOrders(prisma, new Date());
       stubStatus({ status: "Paid", trx_id: trxId, total_bayar: qrisChargeAmount(pending!.totalAmount).toString() });
       await reconcileOrder(api, CREDS, pending!);
+      expect(api.editMessageText).not.toHaveBeenCalled();
+      await new FulfillmentMessageWorker(api).tick(pending!.id);
     }
 
     async function makeAnchoredTopup() {
@@ -443,10 +404,11 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
         data: { expiresAt: new Date(Date.now() + 30 * 60_000) },
       });
       await setOrderPaymentMessage(prisma, order.id, 555, 777);
+      await adoptTransactionMessage(prisma, order.id, 555, 777);
       return order;
     }
 
-    it("words a settled wallet top-up as a neutral 'payment received' status — the balance-quoting success sentence now lives in the outbox DM instead", async () => {
+    it("shows the full wallet receipt, credit and final balance on the same bubble", async () => {
       const topup = await makeAnchoredTopup();
       const api = fakeApi();
 
@@ -455,19 +417,14 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
       const edit = bubbleEdit(api);
       expect(edit.chatId).toBe(555);
       expect(edit.msgId).toBe(777);
-      expect(edit.text).toContain("Payment received");
-      expect(edit.text).toContain("top-up has been credited");
-      // The bubble no longer quotes the order code or the credited balance —
-      // that now lives exclusively in the outbox DM (WALLET_TOPUP_CREDITED_DM).
-      expect(edit.text).not.toContain(topup.orderCode);
-      expect(edit.text).not.toContain("Rp173.456"); // Rp123.456 already held + Rp50.000 topped up
-      expect(edit.text).not.toContain("Rp123.456"); // never the pre-credit snapshot either
-      // Nor the English spelling (prices follow the buyer's language).
-      expect(edit.text).not.toContain("Rp173,456");
+      expect(edit.text).toContain("Wallet top-up completed");
+      expect(edit.text).toContain(topup.orderCode);
+      expect(edit.text).toContain("100%");
+      expect(edit.text).toContain("Rp173,456"); // English-language receipt uses the post-credit balance.
+      expect(edit.text).not.toContain("Rp123.456");
       expect(edit.text).not.toContain("Rp123,456");
 
-      // The wallet WAS actually credited even though the bubble stays silent
-      // about the number — that number is what the outbox DM carries.
+      // The receipt uses the actual ledger result, not the pre-credit balance.
       const user = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
       expect(new Decimal(user.walletBalance).toString()).toBe("173456");
     });
@@ -479,66 +436,69 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
       await reconcilePaid(api, "TRX-TOPUP-KB");
 
       const edit = bubbleEdit(api);
-      expect(edit.buttons).toContain("v1:topup:open");
+      expect(edit.buttons).toContain("v1:wallet:view");
       expect(edit.buttons).not.toContain("v1:order:list");
     });
 
-    // Task E2: a settled wallet top-up's photo (QR) bubble is deleted with NO
-    // replacement — the buyer's outbox WALLET_TOPUP_CREDITED_DM already told
-    // them the news, so a second message here would be the exact duplicate
-    // this task removes. The anchor still clears afterwards.
-    it("deletes a settled wallet top-up's photo (QR) bubble and sends nothing in its place", async () => {
+    it("retains a settled wallet QR receipt and edits its caption without another send", async () => {
       const topup = await makeAnchoredTopup();
       const api = fakeApi({ editMessageText: vi.fn().mockRejectedValue(noTextToEdit()) });
 
       await reconcilePaid(api, "TRX-TOPUP-PHOTO");
 
-      expect(api.deleteMessage).toHaveBeenCalledWith(555, 777);
+      expect(api.deleteMessage).not.toHaveBeenCalled();
+      expect(api.editMessageCaption).toHaveBeenCalledTimes(1);
+      expect(bubbleEdit(api)).toMatchObject({ chatId: 555, msgId: 777 });
+      expect(bubbleEdit(api).text).toContain(topup.orderCode);
       expect(api.sendMessage).not.toHaveBeenCalled();
 
       const after = await prisma.order.findUnique({ where: { id: topup.id } });
-      expect(after?.paymentMsgChatId).toBeNull();
-      expect(after?.paymentMsgId).toBeNull();
+      expect(after?.paymentMsgChatId).toBe(555n);
+      expect(after?.paymentMsgId).toBe(777);
     });
 
-    it("still tells a delivered product sale its items are on the way, with the product keyboard", async () => {
+    it("completes a delivered product on its acknowledged bubble with the product keyboard", async () => {
       const created = await makeTokopayOrder();
       await setOrderPaymentMessage(prisma, created!.id, 555, 778);
+      await adoptTransactionMessage(prisma, created!.id, 555, 778);
       const api = fakeApi();
 
       await reconcilePaid(api, "TRX-PRODUCT-DELIVERED");
 
       expect((await prisma.order.findUnique({ where: { id: created!.id } }))?.status).toBe(OrderStatus.DELIVERED);
       const edit = bubbleEdit(api);
-      expect(edit.text).toContain("Payment received");
-      expect(edit.text).toContain("being delivered now");
+      expect(edit.text).toContain("Order completed");
+      expect(edit.text).toContain("100%");
       expect(edit.buttons).toContain("v1:order:list");
       expect(edit.buttons).not.toContain("v1:topup:open");
     });
 
-    it("tells a manual-fulfilment product sale it is being prepared, with the same product keyboard", async () => {
+    it("shows a static manual wait on the acknowledged product bubble", async () => {
       await updateDenomination(prisma, sample.product.id, { deliveryType: DeliveryType.MANUAL });
       const created = await makeTokopayOrder();
       await setOrderPaymentMessage(prisma, created!.id, 555, 779);
+      await adoptTransactionMessage(prisma, created!.id, 555, 779);
       const api = fakeApi();
 
       await reconcilePaid(api, "TRX-PRODUCT-PROCESSING");
 
       expect((await prisma.order.findUnique({ where: { id: created!.id } }))?.status).toBe(OrderStatus.PROCESSING);
       const edit = bubbleEdit(api);
-      expect(edit.text).toContain("Payment received");
-      expect(edit.text).toContain("being prepared for delivery manually");
-      expect(edit.buttons).toContain("v1:order:list");
+      expect(edit.text).toContain("Payment confirmed");
+      expect(edit.text).toContain("waiting to be prepared");
+      expect(edit.text).not.toContain("%");
+      expect(edit.buttons).toContain("v1:menu:main");
       expect(edit.buttons).not.toContain("v1:topup:open");
     });
   });
 
   describe("instant Digiflazz dispatch", () => {
-    it("starts the dispatch exactly once for a Digiflazz order it settles into PROCESSING, before the bubble edit", async () => {
+    it("starts Digiflazz dispatch once while deferring the adopted bubble to its coordinator", async () => {
       const created = await makeTokopayOrder();
       await routeOrderToDigiflazz(prisma, created!.id);
       const [pending] = await listPendingTokopayOrders(prisma, new Date());
       await setOrderPaymentMessage(prisma, created!.id, 555, 777);
+      await adoptTransactionMessage(prisma, created!.id, 555, 777);
       stubStatus({ status: "Paid", trx_id: "TRX-DIGIFLAZZ", total_bayar: qrisChargeAmount(pending!.totalAmount).toString() });
       const api = fakeApi();
 
@@ -550,7 +510,9 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
       expect(trigger).toHaveBeenCalledTimes(1);
       expect(trigger).toHaveBeenCalledWith(after!.id);
       const edit = vi.mocked(api.editMessageText as unknown as ReturnType<typeof vi.fn>);
-      expect(edit).toHaveBeenCalled();
+      expect(edit).not.toHaveBeenCalled();
+      await new FulfillmentMessageWorker(api).tick(created!.id);
+      expect(edit).toHaveBeenCalledTimes(1);
       expect(trigger.mock.invocationCallOrder[0]!).toBeLessThan(edit.mock.invocationCallOrder[0]!);
     });
 

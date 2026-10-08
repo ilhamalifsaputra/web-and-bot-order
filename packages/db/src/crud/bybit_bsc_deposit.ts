@@ -36,7 +36,7 @@ import { getSetting, getDecryptedSetting, setSetting } from "./settings";
 import { finalizeOrderPayment } from "./pricing";
 import { BYBIT_API_KEY_KEY, BYBIT_API_SECRET_KEY } from "./bybit_deposit";
 import { parseMinAmount, BYBIT_BSC_MIN_AMOUNT_KEY } from "./_minAmount";
-import { settleWalletTopup, isLateSettleableWalletTopup, flagWalletTopupOverpayment } from "./wallet_topup";
+import { settleWalletTopup, isLateSettleableWalletTopup, flagWalletTopupOverpayment, preservePaidWalletCreditFailure } from "./wallet_topup";
 import { POLL_HEALTH_KEYS, getPollHealth, recordPollHealth, type PollHealth } from "./poll_health";
 import { AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES } from "./binance_internal";
 import { reclaimStaleMatchedClaim } from "./_staleClaim";
@@ -195,6 +195,7 @@ export async function createBybitBscOrder(
 export function listPendingBybitBscOrders(db: Db, now: Date) {
   return db.order.findMany({
     where: {
+      OR: [{ walletCreditState: null }, { walletCreditState: { not: "NEEDS_REVIEW" } }],
       status: OrderStatus.PENDING_PAYMENT,
       paymentMethod: PaymentMethod.BYBIT_BSC,
       expiresAt: { gt: now },
@@ -216,6 +217,7 @@ export function listPendingBybitBscOrders(db: Db, now: Date) {
 export function listInFlightBybitBscOrders(db: Db, now: Date) {
   return db.order.findMany({
     where: {
+      OR: [{ walletCreditState: null }, { walletCreditState: { not: "NEEDS_REVIEW" } }],
       status: { in: [OrderStatus.PENDING_PAYMENT, OrderStatus.PAYMENT_DETECTED, OrderStatus.CONFIRMING] },
       paymentMethod: PaymentMethod.BYBIT_BSC,
       expiresAt: { gt: now },
@@ -288,6 +290,7 @@ export async function recordBybitBscPaymentDetected(
 export function listTrackedBybitBscOrders(db: Db) {
   return db.order.findMany({
     where: {
+      OR: [{ walletCreditState: null }, { walletCreditState: { not: "NEEDS_REVIEW" } }],
       paymentMethod: PaymentMethod.BYBIT_BSC,
       status: { in: [OrderStatus.PAYMENT_DETECTED, OrderStatus.CONFIRMING] },
       bybitTxid: { not: null },
@@ -518,6 +521,7 @@ export async function deliverPaidBybitBscOrder(
     }
   }
 
+  let verifiedWalletPayment = false;
   // 2. Deliver. On failure, flag the ledger row so we don't silently retry
   //    forever (e.g. paid but out of stock) and let the caller alert an admin.
   try {
@@ -529,7 +533,7 @@ export async function deliverPaidBybitBscOrder(
       // its stock went back to the pool — so it keeps falling through to
       // "stale". CANCELLED stays OUT of PRE_DELIVERY_STATUSES itself, which
       // is what keeps the status normalization below from swallowing it.
-      if (!order || (!PRE_DELIVERY_STATUSES.includes(order.status) && !isLateSettleableWalletTopup(order))) {
+      if (!order || order.paymentMethod !== PaymentMethod.BYBIT_BSC || (!PRE_DELIVERY_STATUSES.includes(order.status) && !isLateSettleableWalletTopup(order))) {
         // If step 1 re-claimed this row from a non-delivering outcome, undo
         // that claim — restore the outcome/orderId/amount it overwrote —
         // instead of leaving the row "matched" against an order that never
@@ -572,6 +576,7 @@ export async function deliverPaidBybitBscOrder(
         return null;
       });
       if (order.kind === OrderKind.WALLET_TOPUP) {
+        verifiedWalletPayment = order.paymentMethod === PaymentMethod.BYBIT_BSC;
         // settleWalletTopup's own idempotency claim only matches
         // status === PENDING_PAYMENT (same idiom as approveOrder's claim).
         // But unlike the other 5 gateways, a Bybit BSC deposit is on-chain and
@@ -655,7 +660,7 @@ export async function deliverPaidBybitBscOrder(
       }
       await tx.order.update({
         where: { id: args.orderId },
-        data: { bybitTxid: args.bybitTxId, paidAt: new Date() },
+        data: { bybitTxid: args.bybitTxId, paidAt: new Date(), paymentState: "PAID" },
       });
       await transitionOrderStatus(tx, {
         orderId: args.orderId,
@@ -733,6 +738,10 @@ export async function deliverPaidBybitBscOrder(
       return { status: "processing" as const, order: result.order };
     }, { timeout: 15000 });
   } catch (e) {
+    if (verifiedWalletPayment) {
+      await preservePaidWalletCreditFailure(db, { orderId: args.orderId, method: PaymentMethod.BYBIT_BSC, providerTransactionId: args.bybitTxId, amount: args.amount })
+        .catch((err) => logger.error({ err, orderId: args.orderId }, "Could not persist the confirmed wallet payment after credit failure"));
+    }
     await db.processedBybitTx
       .update({ where: { bybitTxId: args.bybitTxId }, data: { outcome: "delivery_failed" } })
       .catch(() => undefined);
@@ -750,7 +759,7 @@ export async function deliverPaidBybitBscOrder(
     // each alert names the order it actually failed against, and an admin
     // needs to see each one.
     const order = await getOrder(db, args.orderId).catch(() => null);
-    if (order) {
+    if (order && !verifiedWalletPayment) {
       const moved = await tryTransitionOrderStatus(db, {
         orderId: args.orderId,
         from: order.status,

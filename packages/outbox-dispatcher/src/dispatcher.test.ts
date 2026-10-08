@@ -609,8 +609,10 @@ describe("drainBatch flushes the payment bubble before a settlement DM (Task E3)
     expect(log).toEqual(["flush", "dm"]);
   });
 
-  it("flushes before a WALLET_TOPUP_CREDITED_DM's sendMessage", async () => {
+  it("flushes before a legacy WALLET_TOPUP_CREDITED_DM's sendMessage", async () => {
     const { order } = await makeDeliveredOrder(600_102);
+    // This fallback predates the canonical coordinator reservation.
+    await prisma.fulfillmentMessage.deleteMany({ where: { orderId: order.id } });
     await enqueueWalletTopupCreditedDm(prisma, {
       orderId: order.id,
       orderCode: order.orderCode,
@@ -694,8 +696,9 @@ describe("drainBatch flushes the payment bubble before a settlement DM (Task E3)
   // hand-fulfilled SKU would read "your order is being prepared" above a
   // bubble still saying "waiting for payment" — the reported bug's symptom on
   // a different message.
-  it("flushes before an ORDER_PROCESSING_DM, the DM a rail cannot order correctly by itself", async () => {
+  it("flushes before a legacy ORDER_PROCESSING_DM without a coordinator", async () => {
     const { order } = await makeDeliveredOrder(600_107);
+    await prisma.fulfillmentMessage.deleteMany({ where: { orderId: order.id } });
     await enqueueNotification(prisma, NotificationEvent.ORDER_PROCESSING_DM, order.id, {
       chat_id: 600_107,
       order_code: order.orderCode,
@@ -802,6 +805,21 @@ async function makeManualDenom(deliveryType: string = DeliveryType.MANUAL) {
  * hand-crafted outbox rows.
  */
 describe("drainBatch delivers the per-SKU manual delivery-flow DMs", () => {
+  it("suppresses duplicate wallet success DMs and routine automatic owner email", async () => {
+    const buyer = await upsertUser(prisma, { telegramId: 500_997, username: "wallet-tracked", fullName: "Buyer" });
+    const order = await prisma.order.create({ data: { userId: buyer.id, orderCode: `WLT-${crypto.randomUUID()}`, kind: "WALLET_TOPUP", status: "DELIVERED", subtotalAmount: 1000, totalAmount: 1000, paymentState: "PAID", walletCreditState: "CREDITED" } });
+    await prisma.fulfillmentMessage.create({ data: { orderId: order.id, chatId: 500_997n, messageId: 444, state: "FINISHED" } });
+    await enqueueNotification(prisma, NotificationEvent.WALLET_TOPUP_CREDITED_DM, order.id, { chat_id: 500_997, order_code: order.orderCode, amount: "1000" });
+    await prisma.notificationOutbox.createMany({ data: [NotificationEvent.OWNER_EMAIL_WALLET_TOPUP, NotificationEvent.OWNER_EMAIL_ORDER_PAID].map(event => ({
+      event, orderId: order.id, channel: "EMAIL", payloadJson: JSON.stringify({ order_code: order.orderCode }),
+    })) });
+    const { bot, sendMessage } = fakeBot();
+    const emailsBefore = vi.mocked(sendMail).mock.calls.length;
+    await drainBatch(bot);
+    expect(sendMessage.mock.calls.filter(call => call[0] === 500_997)).toHaveLength(0);
+    expect(vi.mocked(sendMail).mock.calls.length).toBe(emailsBefore);
+    expect(await prisma.notificationOutbox.count({ where: { orderId: order.id, status: "SENT" } })).toBe(3);
+  });
   it("suppresses legacy manual notifications already queued for a Digiflazz order", async () => {
     const buyer = await upsertUser(prisma, { telegramId: 500_999, username: "auto-buyer", fullName: "Buyer" });
     const denom = await makeManualDenom();
@@ -818,7 +836,7 @@ describe("drainBatch delivers the per-SKU manual delivery-flow DMs", () => {
     const denom = await makeManualDenom();
     const order = await createOrderDirect(prisma, { user: buyer, channel: "bot", productId: denom.id, quantity: 1 });
     await prisma.order.update({ where: { id: order!.id }, data: { status: "PROCESSING", paidAt: new Date() } });
-    await prisma.fulfillmentMessage.create({ data: { orderId: order!.id, chatId: 500_998n } });
+    await prisma.fulfillmentMessage.upsert({ where: { orderId: order!.id }, create: { orderId: order!.id, chatId: 500_998n }, update: {} });
     await enqueueNotification(prisma, NotificationEvent.ORDER_PROCESSING_DM, order!.id, { chat_id: 500_998, order_code: order!.orderCode });
     const { bot, sendMessage } = fakeBot();
     await drainBatch(bot);

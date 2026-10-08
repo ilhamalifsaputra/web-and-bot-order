@@ -10,6 +10,7 @@ import { InputFile, type InlineKeyboard, type Keyboard } from "grammy";
 import { GrammyError } from "grammy";
 import type { MyContext } from "../context";
 import { releasePaymentAnchorIfReused } from "./paymentAnchor";
+import { prisma } from "@app/db";
 
 // Inline keyboards can ride on a message edit; reply keyboards (Keyboard /
 // ReplyKeyboardRemove) cannot, so smartEdit routes those through a fresh send.
@@ -34,6 +35,12 @@ function isNotModified(err: unknown): boolean {
   );
 }
 
+async function isTransactionBubble(ctx: MyContext, messageId: number | undefined): Promise<boolean> {
+  const chatId = ctx.chat?.id;
+  if (messageId === undefined || chatId === undefined) return false;
+  return !!(await prisma.fulfillmentMessage.findFirst({ where: { chatId: BigInt(chatId), messageId }, select: { orderId: true } }));
+}
+
 /**
  * Best-effort: strip the inline keyboard off an older bubble so only the
  * freshly rendered screen keeps live buttons. Keeps the "one active screen per
@@ -43,6 +50,7 @@ function isNotModified(err: unknown): boolean {
 export async function retireKeyboard(ctx: MyContext, messageId: number): Promise<void> {
   const chatId = ctx.chat?.id;
   if (chatId === undefined) return;
+  if (await isTransactionBubble(ctx, messageId)) return;
   try {
     await ctx.api.editMessageReplyMarkup(chatId, messageId, { reply_markup: undefined });
   } catch {
@@ -78,7 +86,11 @@ export async function smartEdit(ctx: MyContext, text: string, replyMarkup?: Mark
 
   // Reply keyboards can't attach to an edit — only edit when the markup is
   // inline (or absent); otherwise fall through to a fresh send carrying it.
-  if (ctx.callbackQuery && (replyMarkup === undefined || isInline(replyMarkup))) {
+  const tappedId = ctx.callbackQuery?.message?.message_id;
+  // Transaction status bubbles remain owned by their coordinator. Navigating
+  // opens the menu separately so another order cannot inherit this message.
+  const transactionBubble = await isTransactionBubble(ctx, tappedId);
+  if (ctx.callbackQuery && !transactionBubble && (replyMarkup === undefined || isInline(replyMarkup))) {
     const cqMsg = ctx.callbackQuery.message;
     let edited = true;
     try {
@@ -150,7 +162,7 @@ export async function renderMenu(
     // Editing in place only works when we're on a callback and the current
     // bubble is already a photo (the menus here use reply keyboards, so this is
     // rare — the common path is a fresh photo send below).
-    if (ctx.callbackQuery && (replyMarkup === undefined || isInline(replyMarkup))) {
+    if (ctx.callbackQuery && !(await isTransactionBubble(ctx, ctx.callbackQuery.message?.message_id)) && (replyMarkup === undefined || isInline(replyMarkup))) {
       const cqMsg = ctx.callbackQuery.message;
       if (cqMsg && "photo" in cqMsg && cqMsg.photo) {
         let edited = true;
@@ -231,7 +243,7 @@ async function editAnchor(
 ): Promise<number | undefined> {
   const body = truncateText(text);
   const chatId = ctx.chat?.id;
-  if (chatId !== undefined && anchorId !== undefined && (replyMarkup === undefined || isInline(replyMarkup))) {
+  if (chatId !== undefined && anchorId !== undefined && !(await isTransactionBubble(ctx, anchorId)) && (replyMarkup === undefined || isInline(replyMarkup))) {
     try {
       await ctx.api.editMessageText(chatId, anchorId, body, { parse_mode: "HTML", reply_markup: replyMarkup });
       return anchorId;

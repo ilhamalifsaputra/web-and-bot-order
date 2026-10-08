@@ -4,7 +4,7 @@
  * the buyer's own "🔄 Refresh Status" tap (`refreshPaymentStatus`,
  * handlers.test.ts).
  *
- * Both need the same two things — a settled, still-anchored order to find, and
+ * These legacy fallback tests need a settled, still-anchored order to find, and
  * a way to read back the single bubble edit that was made — and they used to
  * carry near-identical private copies of both. The only real difference is the
  * Telegram double each drives: the sweeper takes a bare `Api` of `vi.fn()`
@@ -110,6 +110,9 @@ export async function makeSettledAnchoredOrder(
   });
   const chatId = opts.chatId ?? 555;
   const msgId = opts.msgId ?? 1000 + ++anchorSeq;
+  // Simulate orders created before the durable coordinator was introduced.
+  // Canonical ownership/adoption is covered by the dedicated anchor suite.
+  await db.fulfillmentMessage.deleteMany({ where: { orderId: order!.id } });
   await setOrderPaymentMessage(db, order!.id, chatId, msgId);
   return { id: order!.id, orderCode: order!.orderCode, chatId, msgId };
 }

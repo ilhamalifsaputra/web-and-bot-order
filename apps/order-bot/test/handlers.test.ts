@@ -60,6 +60,8 @@ vi.mock("@app/db", async (orig) => {
   };
 });
 import { triggerDigiflazzDispatch } from "@app/db";
+import { adoptTransactionMessage } from "@app/db";
+import { FulfillmentMessageWorker } from "../../../packages/outbox-dispatcher/src/fulfillmentMessages";
 import { DIGIFLAZZ_CUSTOMER_DATA, routeDenominationToDigiflazz, routeOrderToDigiflazz } from "../../../tests/helpers/digiflazzRouting";
 
 import { prisma, createOrderDirect, upsertBulkPricing, deleteBulkPricing, attachPaymentProof, approveOrder, getOrder, getOrderRaw, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createCategory, createDenomination, updateDenomination, bulkAddStock, finalizeOrderPayment, listPendingTokopayOrders, createBybitBscOrder, adjustWallet, getCatalogProduct, settlePaidOrder, fulfillManualOrder, claimGatewaySlot, createPaymentAttempt, MAX_CART_ORDER_UNITS, BINANCE_UID_KEY, BINANCE_API_KEY_KEY, BINANCE_API_SECRET_KEY, BYBIT_UID_KEY, BYBIT_API_KEY_KEY, BYBIT_API_SECRET_KEY, BYBIT_BSC_DEPOSIT_ADDRESS_KEY, BYBIT_BSC_ENABLED_KEY, KOKINPAY_API_KEY_KEY } from "@app/db";
@@ -387,6 +389,27 @@ describe("customer handlers", () => {
     await customer.browseProductsFlat(ctx);
     expect(calls(sink, "deleteMessage").length).toBe(1);
     expect(calls(sink, "editMessageCaption").length).toBe(0);
+  });
+
+  it("Buy Again preserves an adopted QR receipt and opens a fresh product menu", async () => {
+    const order = (await makeOrder())!;
+    await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.DELIVERED } });
+    await adoptTransactionMessage(prisma, order.id, 42, 555);
+    const { ctx, sink } = customerCtx({
+      callbackData: "v1:browse:prods",
+      cbMessage: { message_id: 555, chat: { id: 42 }, date: 0, photo: [{ file_id: "RECEIPT_QR" }] },
+      session: { ...userSession(), menuMsgId: 555, scratch: { categoryId: sample.category.id, group: CategoryGroup.PREMIUM_APPS } },
+    });
+
+    await routeCallback(ctx);
+
+    expect(calls(sink, "deleteMessage")).toHaveLength(0);
+    expect(calls(sink, "editMessageText")).toHaveLength(0);
+    expect(calls(sink, "editMessageCaption")).toHaveLength(0);
+    // The browse flow also installs its numbered reply keyboard.
+    expect(calls(sink, "reply")).toHaveLength(2);
+    expect(ctx.session.menuMsgId).not.toBe(555);
+    expect(await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } })).toMatchObject({ messageId: 555 });
   });
 
   it("Product List has no inline keyboard on a single page (selection is by typed number)", async () => {
@@ -4605,12 +4628,15 @@ describe("checkout handlers", () => {
     expect(payment.amount.toString()).toBe(new Decimal(order!.totalAmount).toString());
   });
 
-  it("cancelPendingOrder on a photo wait screen (QRIS) deletes the QR bubble and sends a fresh Product Detail", async () => {
+  it("cancelPendingOrder preserves the canonical QR receipt and opens Product Detail separately", async () => {
     const order = await makeOrder();
     const { ctx, sink } = customerCtx({
       callbackData: `v1:checkout:cancel:${order!.id}`,
       cbMessage: { message_id: 5001, chat: { id: 42, type: "private" }, date: 0, photo: [{ file_id: "qr" }] },
     });
+    await prisma.fulfillmentMessage.upsert({ where: { orderId: order!.id }, create: { orderId: order!.id, chatId: 42n, messageId: 5001, state: "WAITING" }, update: { messageId: 5001, state: "WAITING" } });
+    ctx.session.qrMsgId = 5001;
+    ctx.session.menuMsgId = 5001;
 
     await checkout.cancelPendingOrder(ctx, order!.id);
 
@@ -4625,9 +4651,10 @@ describe("checkout handlers", () => {
     expect(audit?.customerId).toBe(sample.user.id);
     expect(audit?.details).toBe("Cancelled order via Telegram.");
 
-    // The photo (QR) bubble itself is deleted — no QR left hanging.
+    // The coordinator will edit cancellation on the original receipt.
     const deletes = calls(sink, "deleteMessage");
-    expect(deletes.some((c) => c.args[1] === 5001)).toBe(true);
+    expect(deletes.some((c) => c.args[1] === 5001)).toBe(false);
+    expect(await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order!.id } })).toMatchObject({ state: "ACTIVE", messageId: 5001 });
 
     // No setTimeout-based delayed delete of a separate "cancelled" notice — the
     // old behavior is gone; the render lands directly on Product Detail.
@@ -4955,7 +4982,12 @@ describe("wallet-credit checkout (walletm:*/walletpay:*)", () => {
     expect(orders[0]!.status).toBe(OrderStatus.DELIVERED);
     expect(orders[0]!.paymentMethod).toBe(PaymentMethod.WALLET);
     expect(orders[0]!.currency).toBe(OrderCurrency.IDR);
-    expect(sentIncludes(sink, "Payment received")).toBe(true);
+    expect(sentIncludes(sink, "Order completed")).toBe(true);
+    expect(sentIncludes(sink, "100%")).toBe(true);
+    const canonical = await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: orders[0]!.id } });
+    expect(canonical.messageId).toBe(ctx.callbackQuery!.message!.message_id);
+    expect(calls(sink, "editMessageText")[0]!.args[1]).toBe(canonical.messageId);
+    expect(calls(sink, "sendMessage")).toHaveLength(0);
     expect(ctx.session.scratch.useWalletIdr).toBeUndefined();
     expect(ctx.session.scratch.useWalletUsdt).toBeUndefined();
     // The account file is delivered DIRECTLY (not left to the outbox), so a
@@ -4992,7 +5024,12 @@ describe("wallet-credit checkout (walletm:*/walletpay:*)", () => {
     const orders = await prisma.order.findMany({ where: { userId: sample.user.id }, orderBy: { id: "desc" }, take: 1 });
     expect(orders[0]!.status).toBe(OrderStatus.DELIVERED);
     expect(orders[0]!.currency).toBe(OrderCurrency.USDT);
-    expect(sentIncludes(sink, "Payment received")).toBe(true);
+    expect(sentIncludes(sink, "Order completed")).toBe(true);
+    expect(sentIncludes(sink, "100%")).toBe(true);
+    const canonical = await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: orders[0]!.id } });
+    expect(canonical.messageId).toBe(ctx.callbackQuery!.message!.message_id);
+    expect(calls(sink, "editMessageText")[0]!.args[1]).toBe(canonical.messageId);
+    expect(calls(sink, "sendMessage")).toHaveLength(0);
     // Credentials delivered directly (see the IDR case above).
     const docs = calls(sink, "sendDocument");
     expect(docs).toHaveLength(1);
@@ -6667,6 +6704,34 @@ describe("instant Digiflazz dispatch from the bot's own settlement paths", () =>
     expect(triggerDigiflazzDispatch).toHaveBeenCalledWith(order!.id);
     expect(telegramCallsAtTrigger).toBe(0);
     expect(sink.length).toBeGreaterThan(0);
+  });
+
+  it.each(["MANUAL", "DIGIFLAZZ"] as const)("wallet-funded %s processing adopts the checkout ID and sends no second status", async provider => {
+    if (provider === "DIGIFLAZZ") await routeDenominationToDigiflazz(prisma, sample.product.id);
+    else await updateDenomination(prisma, sample.product.id, { deliveryType: DeliveryType.MANUAL });
+    await adjustWallet(prisma, sample.user.id, "10", { currency: "IDR", reason: "admin_adjust" });
+    const { ctx, sink } = customerCtx({
+      callbackData: `v1:walletpay:${sample.product.id}:1`,
+      cbMessage: { message_id: 888, chat: { id: 42 }, date: 0 },
+      session: { ...userSession(), menuMsgId: 888, scratch: { useWalletIdr: true, customerData: provider === "DIGIFLAZZ" ? DIGIFLAZZ_CUSTOMER_DATA : undefined } },
+    });
+
+    await checkout.completeOrderWithWallet(ctx, sample.product.id, 1);
+
+    const order = await prisma.order.findFirstOrThrow({ where: { userId: sample.user.id }, orderBy: { id: "desc" } });
+    expect(order.status).toBe(OrderStatus.PROCESSING);
+    const tracked = await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } });
+    expect(tracked).toMatchObject({ messageId: 888, chatId: 42n, phase: provider === "MANUAL" ? "MANUAL_WAITING" : "AUTO_QUEUED" });
+    expect(calls(sink, "editMessageText")).toHaveLength(1);
+    expect(calls(sink, "editMessageText")[0]!.args[1]).toBe(888);
+    expect(calls(sink, "sendMessage")).toHaveLength(0);
+    expect(calls(sink, "reply")).toHaveLength(0);
+
+    await new FulfillmentMessageWorker(ctx.api, { now: () => new Date(Date.now() + 3000) }).tick(order.id);
+    expect(await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } })).toMatchObject({ messageId: 888 });
+    expect(calls(sink, "sendMessage")).toHaveLength(0);
+    expect(calls(sink, "reply")).toHaveLength(0);
+    expect(calls(sink, "editMessageText").every(call => call.args[1] === 888)).toBe(true);
   });
 
   it("wallet checkout of an order delivered from stock starts no dispatch", async () => {

@@ -27,7 +27,7 @@ import { transitionOrderStatus } from "./orderStatus";
 import { enqueueNotification, enqueueAdminOverpaid } from "./notifications";
 import { getSetting, getDecryptedSetting } from "./settings";
 import { parseMinAmount, PAYDISINI_MIN_AMOUNT_KEY } from "./_minAmount";
-import { settleWalletTopup, isLateSettleableWalletTopup, flagWalletTopupOverpayment } from "./wallet_topup";
+import { settleWalletTopup, isLateSettleableWalletTopup, flagWalletTopupOverpayment, preservePaidWalletCreditFailure } from "./wallet_topup";
 import { getPendingPaymentAttempt, confirmPaymentAttempt } from "./payments";
 import { QRIS_RECLAIMABLE_OUTCOMES } from "./binance_internal";
 import { reclaimStaleMatchedClaim } from "./_staleClaim";
@@ -65,6 +65,7 @@ export async function getPaydisiniCreds(db: Db): Promise<(PaydisiniCreds & { min
 export function listPendingPaydisiniOrders(db: Db, now: Date, limit?: number) {
   return db.order.findMany({
     where: {
+      OR: [{ walletCreditState: null }, { walletCreditState: { not: "NEEDS_REVIEW" } }],
       status: OrderStatus.PENDING_PAYMENT,
       paymentMethod: PaymentMethod.PAYDISINI,
       expiresAt: { gt: now },
@@ -156,6 +157,7 @@ export async function deliverPaidPaydisiniOrder(
     }
   }
 
+  let verifiedWalletPayment = false;
   // 2. Deliver. On failure, flag the ledger row (e.g. paid but out of stock)
   //    so we never retry silently — the caller alerts via logs/admin.
   try {
@@ -199,6 +201,7 @@ export async function deliverPaidPaydisiniOrder(
         return null;
       });
       if (order.kind === OrderKind.WALLET_TOPUP) {
+        verifiedWalletPayment = order.paymentMethod === PaymentMethod.PAYDISINI;
         // Buyer DM (WALLET_TOPUP_CREDITED_DM) is enqueued inside
         // settleWalletTopup itself — the ONE call site for that event across
         // all six top-up rails, behind its own atomic claim. This webhook
@@ -257,7 +260,7 @@ export async function deliverPaidPaydisiniOrder(
       }
       await tx.order.update({
         where: { id: args.orderId },
-        data: { paidAt: new Date() },
+        data: { paidAt: new Date(), paymentState: "PAID" },
       });
       await transitionOrderStatus(tx, {
         orderId: args.orderId,
@@ -336,6 +339,10 @@ export async function deliverPaidPaydisiniOrder(
       return { status: "processing" as const, order: result.order };
     }, { timeout: 15000 });
   } catch (e) {
+    if (verifiedWalletPayment) {
+      await preservePaidWalletCreditFailure(db, { orderId: args.orderId, method: PaymentMethod.PAYDISINI, providerTransactionId: args.trxId, amount: args.amount })
+        .catch((err) => logger.error({ err, orderId: args.orderId }, "Could not persist the confirmed wallet payment after credit failure"));
+    }
     await db.processedPaydisiniTx
       .update({ where: { trxId: args.trxId }, data: { outcome: "delivery_failed" } })
       .catch(() => undefined);

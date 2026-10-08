@@ -22,6 +22,7 @@ import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
 import {
   prisma,
+  ownsTransactionMessageAt,
   getUser,
   countUserPendingOrders,
   createWalletTopupOrder,
@@ -356,7 +357,7 @@ export async function payTopupInternal(ctx: MyContext): Promise<void> {
   let order: Awaited<ReturnType<typeof createWalletTopupOrder>>;
   try {
     order = await prisma.$transaction((tx) =>
-      createWalletTopupOrder(tx, {
+      createWalletTopupOrder(tx, { channel: "bot",
         userId: user.id,
         amount: scratch.amount,
         currency: "USDT",
@@ -385,7 +386,7 @@ export async function payTopupInternal(ctx: MyContext): Promise<void> {
     : `${config.INTERNAL_PAYMENT_WINDOW_MINUTES}m`;
 
   const text = t(ctx, "checkout.internal_instructions", {
-    code: order.paymentRef,
+    code: order.orderCode,
     uid: esc(cfg.receiveUid),
     note: order.paymentRef,
     amount: price(order.totalAmount),
@@ -429,7 +430,7 @@ export async function payTopupBybit(ctx: MyContext): Promise<void> {
   let order: Awaited<ReturnType<typeof createWalletTopupOrder>>;
   try {
     order = await prisma.$transaction((tx) =>
-      createWalletTopupOrder(tx, {
+      createWalletTopupOrder(tx, { channel: "bot",
         userId: user.id,
         amount: scratch.amount,
         currency: "USDT",
@@ -493,7 +494,7 @@ export async function payTopupBybitBsc(ctx: MyContext): Promise<void> {
   let order: Awaited<ReturnType<typeof createWalletTopupOrder>>;
   try {
     order = await prisma.$transaction((tx) =>
-      createWalletTopupOrder(tx, {
+      createWalletTopupOrder(tx, { channel: "bot",
         userId: user.id,
         amount: scratch.amount,
         currency: "USDT",
@@ -559,7 +560,7 @@ export async function payTopupNowpayments(ctx: MyContext): Promise<void> {
   let order: Awaited<ReturnType<typeof createWalletTopupOrder>>;
   try {
     order = await prisma.$transaction((tx) =>
-      createWalletTopupOrder(tx, {
+      createWalletTopupOrder(tx, { channel: "bot",
         userId: user.id,
         amount: scratch.amount,
         currency: "USDT",
@@ -657,7 +658,7 @@ export async function payTopupTokopay(ctx: MyContext): Promise<void> {
   let order: Awaited<ReturnType<typeof createWalletTopupOrder>>;
   try {
     order = await prisma.$transaction((tx) =>
-      createWalletTopupOrder(tx, { userId: user.id, amount: scratch.amount, currency: "IDR", method: PaymentMethod.TOKOPAY }),
+      createWalletTopupOrder(tx, { channel: "bot", userId: user.id, amount: scratch.amount, currency: "IDR", method: PaymentMethod.TOKOPAY }),
     );
   } catch (e) {
     if (e instanceof ValidationError) {
@@ -717,7 +718,7 @@ export async function payTopupTokopay(ctx: MyContext): Promise<void> {
     try {
       const qrMsg = await ctx.replyWithPhoto(gateway.qrLink, { caption, parse_mode: "HTML", reply_markup: waitingKb });
       ctx.session.menuMsgId = qrMsg.message_id;
-      if (confirmMsgId && confirmMsgId !== qrMsg.message_id) {
+      if (confirmMsgId && confirmMsgId !== qrMsg.message_id && !(await ownsTransactionMessageAt(prisma, chatId, confirmMsgId))) {
         try { await ctx.api.deleteMessage(chatId, confirmMsgId); } catch { /* already gone or too old */ }
       }
     } catch (err) {
@@ -758,7 +759,7 @@ export async function payTopupPaydisini(ctx: MyContext): Promise<void> {
   let order: Awaited<ReturnType<typeof createWalletTopupOrder>>;
   try {
     order = await prisma.$transaction((tx) =>
-      createWalletTopupOrder(tx, { userId: user.id, amount: scratch.amount, currency: "IDR", method: PaymentMethod.PAYDISINI }),
+      createWalletTopupOrder(tx, { channel: "bot", userId: user.id, amount: scratch.amount, currency: "IDR", method: PaymentMethod.PAYDISINI }),
     );
   } catch (e) {
     if (e instanceof ValidationError) {
@@ -809,7 +810,7 @@ export async function payTopupPaydisini(ctx: MyContext): Promise<void> {
     try {
       const qrMsg = await ctx.replyWithPhoto(gateway.qrUrl, { caption, parse_mode: "HTML", reply_markup: waitingKb });
       ctx.session.menuMsgId = qrMsg.message_id;
-      if (confirmMsgId && confirmMsgId !== qrMsg.message_id) {
+      if (confirmMsgId && confirmMsgId !== qrMsg.message_id && !(await ownsTransactionMessageAt(prisma, chatId, confirmMsgId))) {
         try { await ctx.api.deleteMessage(chatId, confirmMsgId); } catch { /* already gone or too old */ }
       }
     } catch (err) {

@@ -14,7 +14,7 @@ import { attachPaymentProof, createOrderDirect, creditOrderToBalance, fulfillMan
 import { deliverPaidBybitBscOrder, recordBybitBscConfirmationProgress, recordBybitBscPaymentDetected } from "./bybit_bsc_deposit";
 import { createCategory, createCatalogProduct, createDenomination } from "./catalog";
 import { createWalletTopupOrder } from "./wallet_topup";
-import { ensureFulfillmentMessage, wakeFulfillmentMessage } from "./fulfillmentMessages";
+import { ensureFulfillmentMessage, wakeFulfillmentMessage, adoptTransactionMessage } from "./fulfillmentMessages";
 import { transitionOrderStatus } from "./orderStatus";
 import { DeliveryType, OrderStatus, PaymentMethod } from "@app/core/enums";
 
@@ -55,18 +55,50 @@ describe("ensureFulfillmentMessage", () => {
     expect(await ensureFulfillmentMessage(prisma, order.id)).toBe(false);
     expect(await rows(order.id)).toHaveLength(0);
   });
+  it.each([[null, true], ["STOCK", false]])("resolves legacy delivery routing while respecting the %s snapshot", async (fulfillmentProvider, expected) => {
+    const order = await pendingOrder(sample.product.id);
+    await prisma.fulfillmentMessage.deleteMany({ where: { orderId: order.id } });
+    await prisma.denomination.update({ where: { id: sample.product.id }, data: { autoDeliverySource: "digiflazz" } });
+    await prisma.order.update({ where: { id: order.id }, data: { status: "DELIVERED", fulfillmentProvider } });
+    expect(await ensureFulfillmentMessage(prisma, order.id)).toBe(expected);
+    expect(await rows(order.id)).toHaveLength(expected ? 1 : 0);
+  });
 });
 
 describe("progress message creation points", () => {
-  it("never creates a product progress message for a wallet top-up", async () => {
+  it("adopts the existing full-reference wallet payment bubble and reuses it at settlement", async () => {
     const topup = await createWalletTopupOrder(prisma, { userId: sample.user.id, amount: "50000", currency: "IDR", method: PaymentMethod.TOKOPAY });
-    expect(await ensureFulfillmentMessage(prisma, topup.id)).toBe(false);
-    expect(await rows(topup.id)).toHaveLength(0);
+    await adoptTransactionMessage(prisma, topup.id, 42n, 912);
+    expect((await rows(topup.id))[0]).toMatchObject({ chatId: 42n, messageId: 912, state: "WAITING" });
+    await prisma.order.update({ where: { id: topup.id }, data: { status: "DELIVERED" } });
+    await ensureFulfillmentMessage(prisma, topup.id);
+    expect((await rows(topup.id))[0]).toMatchObject({ messageId: 912, state: "ACTIVE" });
+    expect(await rows(topup.id)).toHaveLength(1);
+  });
+  it("registers wallet top-ups in the same canonical coordinator", async () => {
+    const topup = await createWalletTopupOrder(prisma, { userId: sample.user.id, amount: "50000", currency: "IDR", method: PaymentMethod.TOKOPAY });
+    expect(await ensureFulfillmentMessage(prisma, topup.id)).toBe(true);
+    expect(await rows(topup.id)).toHaveLength(1);
   });
 
-  it("does not create a message for an order that is merely awaiting payment", async () => {
+  it("adopts the acknowledged screen if detection registered an empty row first", async () => {
     const order = await pendingOrder(sample.product.id);
-    expect(await rows(order.id)).toHaveLength(0);
+    await ensureFulfillmentMessage(prisma, order.id);
+    await adoptTransactionMessage(prisma, order.id, 42n, 991);
+    await adoptTransactionMessage(prisma, order.id, 42n, 992);
+    expect((await rows(order.id))[0]).toMatchObject({ messageId: 991, state: "WAITING" });
+  });
+
+  it("activates an adopted screen when provider observation preceded its acknowledgement", async () => {
+    const order = await pendingOrder(sample.product.id);
+    await prisma.order.update({ where: { id: order.id }, data: { paymentState: "VERIFYING" } });
+    await adoptTransactionMessage(prisma, order.id, 42n, 993);
+    expect((await rows(order.id))[0]).toMatchObject({ messageId: 993, state: "ACTIVE", phase: null });
+  });
+
+  it("reserves bot checkout without permitting a send before its screen is acknowledged", async () => {
+    const order = await pendingOrder(sample.product.id);
+    expect((await rows(order.id))[0]).toMatchObject({ messageId: null, state: "WAITING_SCREEN" });
   });
 
   it("does not create the message when a Bybit BSC deposit is detected: the payment bubble's live tracking screen owns that phase", async () => {
@@ -74,7 +106,7 @@ describe("progress message creation points", () => {
     await prisma.order.update({ where: { id: order.id }, data: { paymentMethod: PaymentMethod.BYBIT_BSC } });
     expect(await recordBybitBscPaymentDetected(prisma, { orderId: order.id, bybitTxId: "0x" + "a".repeat(64), network: "BSC" })).toBe(true);
     expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.PAYMENT_DETECTED);
-    expect(await rows(order.id)).toHaveLength(0);
+    expect((await rows(order.id))[0]).toMatchObject({ messageId: null, state: "WAITING_SCREEN" });
   });
 
   it("creates exactly one message for a Bybit BSC order, at settlement, across detection -> confirmed -> paid -> delivered", async () => {
@@ -84,7 +116,7 @@ describe("progress message creation points", () => {
     await recordBybitBscPaymentDetected(prisma, { orderId: order.id, bybitTxId: txId, network: "BSC" });
     expect(await recordBybitBscConfirmationProgress(prisma, { orderId: order.id, confirmations: 1, requiredConfirmations: 3 })).toBe(OrderStatus.CONFIRMING);
     expect(await recordBybitBscConfirmationProgress(prisma, { orderId: order.id, confirmations: 3, requiredConfirmations: 3 })).toBe(OrderStatus.CONFIRMED);
-    expect(await rows(order.id)).toHaveLength(0);
+    expect((await rows(order.id))[0]).toMatchObject({ messageId: null, state: "WAITING_SCREEN" });
     const paid = await deliverPaidBybitBscOrder(prisma, { orderId: order.id, bybitTxId: txId, amount: order.totalAmount });
     expect(paid.status).toBe("processing");
     expect(await rows(order.id)).toHaveLength(1);
@@ -106,7 +138,7 @@ describe("progress message creation points", () => {
     await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.PENDING_VERIFICATION } });
     const result = await settlePaidOrder(prisma, order.id, { adminId: 0 });
     expect(result.kind).toBe("delivered");
-    expect(await rows(order.id)).toHaveLength(0);
+    expect((await rows(order.id))[0]).toMatchObject({ messageId: null, state: "WAITING_SCREEN" });
   });
 
   it("settling a stock order keeps the message already created in the detected phase so it gets finalized", async () => {
@@ -180,7 +212,7 @@ describe("a manual order's waiting message is woken by the final transition", ()
 
   it("but a non-final transition leaves it waiting", async () => {
     const order = await pendingOrder(sample.product.id);
-    await prisma.fulfillmentMessage.create({ data: { orderId: order.id, chatId: 42n, messageId: 1, state: "WAITING", nextUpdateAt: FAR } });
+    await prisma.fulfillmentMessage.update({ where: { orderId: order.id }, data: { messageId: 1, state: "WAITING", nextUpdateAt: FAR } });
     await transitionOrderStatus(prisma, { orderId: order.id, from: OrderStatus.PENDING_PAYMENT, to: OrderStatus.PENDING_VERIFICATION });
     expect((await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } })).state).toBe("WAITING");
   });
@@ -198,7 +230,7 @@ describe("wakeFulfillmentMessage", () => {
     ["STOPPED", "STOPPED", FAR],
   ] as const)("moves a %s row to %s", async (state, expected, due) => {
     const order = await pendingOrder(sample.product.id);
-    await prisma.fulfillmentMessage.create({ data: { orderId: order.id, chatId: 42n, messageId: 1, state, nextUpdateAt: FAR } });
+    await prisma.fulfillmentMessage.update({ where: { orderId: order.id }, data: { messageId: 1, state, nextUpdateAt: FAR } });
     await wakeFulfillmentMessage(prisma, order.id, now);
     const row = await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } });
     expect(row.state).toBe(expected);

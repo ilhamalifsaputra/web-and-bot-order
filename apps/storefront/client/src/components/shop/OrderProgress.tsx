@@ -1,11 +1,15 @@
 import { Check, Circle, CircleAlert, Clock, LoaderCircle } from "lucide-react";
 import type { ReactNode } from "react";
-import type { OrderFulfillment } from "../../api/types";
+import type { OrderFulfillment, Underpayment } from "../../api/types";
 import { t } from "../../lib/i18n";
 import { fulfillmentPresentation } from "../../lib/orderFulfillment";
 import Card from "../ui/Card";
+import TransactionStatus from "./TransactionStatus";
 
-export default function OrderProgress({ fulfillment, children }: { fulfillment: OrderFulfillment; children?: ReactNode }) {
+export default function OrderProgress({ fulfillment, underpayment, children }: { fulfillment: OrderFulfillment; underpayment?: Underpayment | null; children?: ReactNode }) {
+  if (fulfillment.presentation) {
+    return <Card className="min-w-0 bg-pine-tint/40"><TransactionStatus presentation={fulfillment.presentation} underpayment={underpayment}>{children}</TransactionStatus></Card>;
+  }
   const state = fulfillmentPresentation(fulfillment);
   const paid = fulfillment.payment_status === "PAID";
   const Icon = state.active ? LoaderCircle : state.complete ? Check : state.problem ? CircleAlert : Clock;

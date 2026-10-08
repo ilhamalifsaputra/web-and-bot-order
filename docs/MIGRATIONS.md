@@ -99,6 +99,34 @@ bertabrakan. Jangan me-rename folder migrasi yang sudah pernah diterapkan:
 itu merusak pelacakan `_prisma_migrations` di DB mana pun yang sudah
 menjalankannya dengan nama lama.
 
+## Catatan per migrasi: `20261008090000_transaction_payment_credit_state`
+
+Migrasi ini menambah enam kolom nullable pada `orders` untuk status pembayaran,
+kredit wallet, dan audit penyelesaian admin, serta unique index
+`fulfillment_messages(chat_id, message_id)`. Nomor order dan isi ledger tetap
+menggunakan source of truth existing. Baris dengan `message_id = NULL` tetap
+dapat dicatat sebelum layar pembayaran Telegram diakui.
+
+**Urutan penerapan:** cek bahwa tidak ada pasangan `chat_id, message_id`
+non-null yang dimiliki lebih dari satu order, terapkan SQL berikut pada database
+target yang belum memiliki perubahan ini, lalu regenerate Prisma client sebelum
+menjalankan kode baru:
+
+```bash
+pnpm exec prisma db execute --schema prisma/schema.prisma --file prisma/migrations/20261008090000_transaction_payment_credit_state/migration.sql
+pnpm exec prisma generate
+```
+
+`db push` dapat berhenti pada peringatan unique constraint meskipun preflight
+tidak menemukan duplikasi. Gunakan SQL additive yang sudah ditinjau di atas,
+tanpa `--accept-data-loss`. Sesudah SQL diterapkan, sinkronisasi skema rutin
+melalui entrypoint Docker tetap dapat berjalan. File ini tidak idempoten;
+jangan jalankan ulang pada database yang sudah memiliki kolom dan index tersebut.
+
+Database PostgreSQL lokal `bot_order`, schema `public`, telah diperbarui pada
+2026-10-08. Pemeriksaan sesudahnya memastikan keenam kolom dan index unik ada,
+jumlah baris tetap, dan diff database terhadap `schema.prisma` kosong.
+
 ## Catatan per migrasi: `20261005100000_add_order_item_cost_snapshot`
 
 Migrasi ini menambahkan `order_items.cost_snapshot` sebagai Decimal nullable

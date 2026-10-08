@@ -339,6 +339,17 @@ export async function drainBatch(bot: Bot, signal?: AbortSignal): Promise<number
     // order as manual or create a second buyer message next to its tracked one.
     // ORDER_PROCESSING_DM is also dropped for any order (manual included) that
     // already has a progress message row, which carries that same news.
+    if (row.orderId != null && row.event === NotificationEvent.WALLET_TOPUP_CREDITED_DM
+      && await prisma.fulfillmentMessage.count({ where: { orderId: row.orderId, state: { notIn: ["STOPPED", "UNCERTAIN"] } } })) {
+      await recordSent(row, "Telegram");
+      continue;
+    }
+    // Routine wallet credits are visible in transaction history; owner alerts
+    // are reserved for actionable financial exceptions.
+    if (row.event === NotificationEvent.OWNER_EMAIL_WALLET_TOPUP) {
+      await recordSent(row, "email");
+      continue;
+    }
     if (row.orderId != null && [
       NotificationEvent.ORDER_PROCESSING_DM,
       NotificationEvent.ADMIN_MANUAL_ORDER_QUEUED,
@@ -347,6 +358,7 @@ export async function drainBatch(bot: Bot, signal?: AbortSignal): Promise<number
     ].includes(row.event as never)) {
       const order = await prisma.order.findUnique({ where: { id: row.orderId }, include: { items: { include: { product: true } } } });
       const tracked = order && (fulfillmentProviderFor(order) === "DIGIFLAZZ"
+        || row.event === NotificationEvent.OWNER_EMAIL_ORDER_PAID && fulfillmentProviderFor(order) !== "MANUAL"
         || row.event === NotificationEvent.ORDER_PROCESSING_DM
           && (await prisma.fulfillmentMessage.count({ where: { orderId: row.orderId } })) > 0);
       if (tracked) {

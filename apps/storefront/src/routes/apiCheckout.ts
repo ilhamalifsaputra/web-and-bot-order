@@ -29,7 +29,7 @@ import { ValidationError } from "@app/core/errors";
 import { StockActorType } from "@app/core/enums";
 import { prisma, getOrderByCode, cancelOrder } from "@app/db";
 import { optionalCustomer, type Customer } from "../plugins/auth";
-import { checkoutView, payView, payState } from "./checkout";
+import { checkoutView, payView, payState, transactionStatusView } from "./checkout";
 import { csrfOk } from "./cart";
 import { clientIp, checkoutPreviewRateLimited } from "../rateLimit";
 
@@ -110,6 +110,7 @@ const apiCheckoutRoutes: FastifyPluginAsync = async (app) => {
     const state = payState(order);
     return reply.send({
       state,
+      ...await transactionStatusView(order),
       // Once delivered, the SPA navigates to the credentials page — the JSON
       // twin of the HTMX HX-Redirect header.
       redirect: state === "delivered" ? `/account/orders/${order.orderCode}` : null,

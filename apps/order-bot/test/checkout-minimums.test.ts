@@ -94,7 +94,12 @@ function buttons(sink: SentCall[]): string[] {
 
 describe("completeOrderWithWallet — an order a discount alone reduced to Rp0", () => {
   it("settles and delivers it without a gateway, though no wallet credit was toggled", async () => {
-    const { ctx, sink } = customerCtx({ appliedVoucherCode: "FREE100" });
+    const { ctx, sink } = makeCtx({
+      from: { id: 42, username: "tester" },
+      session: userSession({ appliedVoucherCode: "FREE100" }),
+      callbackData: `v1:walletpay:${sample.product.id}:1`,
+      cbMessage: { message_id: 777, chat: { id: 42, type: "private" }, date: 0 },
+    });
 
     await checkout.completeOrderWithWallet(ctx, sample.product.id, 1);
 
@@ -110,13 +115,15 @@ describe("completeOrderWithWallet — an order a discount alone reduced to Rp0",
     // (see zero_total_checkout.test.ts, which asserts this same equality).
     expect(full.expiresAt?.getTime()).toBe(order.expiresAt?.getTime());
     expect(await prisma.walletTransaction.count({ where: { userId: sample.user.id } })).toBe(0);
-    // The buyer is told the order is paid, not bounced back to the same screen.
-    // Checked as a fragment, not the full templated string: sentIncludes matches
-    // against JSON.stringify(args), which escapes the template's embedded "\n\n"
-    // as a literal two-character sequence, so a needle built from the same
-    // template (with a REAL newline) can never match it whole — this fragment
-    // sits after both newlines.
-    expect(sentIncludes(sink, `Order <code>${full.orderCode}</code> is fully covered`)).toBe(true);
+    // A fully discounted stock order renders the canonical completion receipt.
+    expect(sentIncludes(sink, t(ctx, "transaction.premium_success_title"))).toBe(true);
+    expect(sentIncludes(sink, `<code>${full.orderCode}</code>`)).toBe(true);
+    expect(sentIncludes(sink, "100%")).toBe(true);
+    expect(calls(sink, "editMessageText")).toHaveLength(1);
+    expect(calls(sink, "editMessageText")[0]!.args[1]).toBe(777);
+    expect(await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: full.id } })).toMatchObject({
+      state: "FINISHED", messageId: 777,
+    });
   });
 
   it("still refuses a tap with neither credit toggled nor a zeroing discount", async () => {

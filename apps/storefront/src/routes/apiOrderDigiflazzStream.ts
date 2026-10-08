@@ -25,7 +25,7 @@ import { prisma, getOrderByCode, getOrderDigiflazzSnapshot } from "@app/db";
 import { OrderKind } from "@app/core/enums";
 import { onDigiflazzOrderStatusChanged } from "@app/core/realtime/digiflazzEvents";
 import { streamSse } from "@app/core/realtime/sseRoute";
-import { getOrderFulfillment, toBuyerDigiflazzStatus, type OrderFulfillment } from "@app/core/orderFulfillment";
+import { customerProgressPhase, getOrderFulfillment, toBuyerDigiflazzStatus, type OrderFulfillment } from "@app/core/orderFulfillment";
 import { optionalCustomer } from "../plugins/auth";
 
 /** Buyer-safe mapping of the internal digiflazzStatus values — the wire
@@ -45,10 +45,13 @@ const TERMINAL_FULFILLMENT_STATUSES: ReadonlySet<OrderFulfillment["status"]> = n
 async function readBuyerSnapshot(orderId: number): Promise<BuyerOrderDigiflazzSnapshot | null> {
   const order = await getOrderDigiflazzSnapshot(prisma, orderId);
   if (!order) return null;
+  const credited = order.status === "CANCELLED" && !!(await prisma.walletTransaction.findFirst({
+    where: { orderId, reason: "unfulfilled_credit" }, select: { id: true },
+  }));
   return {
     orderStatus: order.status,
     digiflazzStatus: toBuyerDigiflazzStatus(order.digiflazzStatus),
-    fulfillment: getOrderFulfillment(order),
+    fulfillment: { ...getOrderFulfillment(order), presentation: customerProgressPhase(order, { credited }) },
   };
 }
 

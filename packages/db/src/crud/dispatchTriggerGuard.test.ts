@@ -51,12 +51,15 @@ export const SETTLE_FUNCTIONS = new Set([
 const TRIGGER = "triggerDigiflazzDispatch";
 
 /**
- * Settle call sites that intentionally rely on the 5-second recovery cron instead of the instant dispatch.
+ * Settle call sites that intentionally omit automatic supplier dispatch.
  * Key: `<repo-relative path with forward slashes>#<owner function name>`. Value: why.
- * Empty today: every production settle call site triggers. A stale entry (one that no longer matches a call site
+ * A stale entry (one that no longer matches a call site
  * that would otherwise fail) makes the guard fail too, so this list cannot rot.
  */
-export const ALLOWLIST = new Map<string, string>([]);
+export const ALLOWLIST = new Map<string, string>([
+  ["packages/db/src/crud/binance_internal.ts#deliverUnderpaidOrder",
+    "Audited ADMIN_OVERRIDE retains UNDERPAID payment facts. Supplier orders require manual resolution; settlePaidOrder parks them in review and automatic Digiflazz dispatch must stay disabled."],
+]);
 
 /** Directories scanned, relative to the repo root. */
 const SCAN_DIRS = ["apps", "packages", "scripts"];

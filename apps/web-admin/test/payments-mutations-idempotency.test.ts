@@ -77,10 +77,11 @@ async function makePendingUsdtOrder() {
   ))!;
 }
 
-function deliver(orderId: number, headers: Record<string, string> = {}) {
+function deliver(orderId: number, headers: Record<string, string> = {}, reason: unknown = "Approved shortfall") {
   return app.inject({
     method: "POST",
     url: `/api/payments/order/${orderId}/deliver`,
+    payload: { reason },
     headers: { "x-csrf-token": csrf, ...headers },
     cookies: { [COOKIE]: cookie },
   });
@@ -126,6 +127,19 @@ function dismiss(binanceTxId: string, headers: Record<string, string> = {}) {
 }
 
 describe("POST /api/payments/order/:orderId/deliver — Idempotency-Key", () => {
+  it("rejects an override without a reason before changing the order", async () => {
+    const order = await makeUnderpaidOrder("dtx-no-reason");
+    const response = await deliver(order.id, {}, " ");
+    expect(response.statusCode).toBe(400);
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe("UNDERPAID");
+    expect(await prisma.auditLog.count({ where: { targetId: order.id, action: "underpaid_deliver" } })).toBe(0);
+  });
+
+  it("binds the idempotency key to the supplied override reason", async () => {
+    const order = await makeUnderpaidOrder("dtx-reason-hash");
+    expect((await deliver(order.id, { "idempotency-key": "reason-bound" }, "Goodwill exception")).statusCode).toBe(200);
+    expect((await deliver(order.id, { "idempotency-key": "reason-bound" }, "A different explanation")).statusCode).toBe(409);
+  });
   it("with no header: two deliver attempts on the same order behave as before (first succeeds, second 422s)", async () => {
     const order = await makeUnderpaidOrder("dtx-no-header");
 

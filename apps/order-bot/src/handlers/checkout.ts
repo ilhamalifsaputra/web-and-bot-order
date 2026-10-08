@@ -10,6 +10,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { InlineKeyboard } from "grammy";
+import { FulfillmentMessageWorker } from "@app/outbox-dispatcher";
 import { config } from "@app/core/config";
 import { Decimal } from "@app/core/money";
 import { canonicalProduct } from "@app/core/canonicalProduct";
@@ -77,6 +78,8 @@ import {
   type Db,
   isServiceActive,
   triggerDigiflazzDispatch,
+  adoptTransactionMessage,
+  ownsTransactionMessageAt,
 } from "@app/db";
 import { createTransaction, computeQrisAdminFee } from "@app/core/payments/tokopay";
 import { qrisCaptionAmounts } from "../util/qrisCaption";
@@ -1556,7 +1559,7 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
         reply_markup: waitingKb,
       });
       ctx.session.menuMsgId = qrMsg.message_id;
-      if (confirmMsgId && confirmMsgId !== qrMsg.message_id) {
+      if (confirmMsgId && confirmMsgId !== qrMsg.message_id && !(await ownsTransactionMessageAt(prisma, chatId, confirmMsgId))) {
         try { await ctx.api.deleteMessage(chatId, confirmMsgId); } catch { /* already gone or too old */ }
       }
     } catch (err) {
@@ -1742,7 +1745,7 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
         reply_markup: waitingKb,
       });
       ctx.session.menuMsgId = qrMsg.message_id;
-      if (confirmMsgId && confirmMsgId !== qrMsg.message_id) {
+      if (confirmMsgId && confirmMsgId !== qrMsg.message_id && !(await ownsTransactionMessageAt(prisma, chatId, confirmMsgId))) {
         try { await ctx.api.deleteMessage(chatId, confirmMsgId); } catch { /* already gone or too old */ }
       }
     } catch (err) {
@@ -1892,6 +1895,10 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
           ? "Created order via Telegram checkout, paid in full with wallet credit."
           : "Created order via Telegram checkout. A discount covered the whole price, so nothing was charged.",
       });
+      const checkoutMessageId = ctx.session.menuMsgId ?? ctx.callbackQuery?.message?.message_id;
+      if (checkoutMessageId != null) {
+        await adoptTransactionMessage(tx, r.order.id, ctx.chat!.id, checkoutMessageId);
+      }
       return r;
     });
   } catch (e) {
@@ -1931,6 +1938,10 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
   delete ctx.session.scratch.customerData;
   delete ctx.session.scratch.checkoutIntentId;
 
+  // A synchronous wallet checkout uses the same coordinator as gateway rails.
+  // Its known checkout screen is already adopted inside the settlement commit.
+  await new FulfillmentMessageWorker(ctx.api).tick(result.order.id);
+
   if (result.kind === "delivered") {
     // Deliver the account file directly (the order is already DELIVERED and
     // the credit fully paid), exactly like the instant Binance Internal
@@ -1938,22 +1949,7 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
     // dispatcher running. Re-read the order fresh so stock is SOLD with live
     // credentials. Only if the direct send fails do we fall back to the
     // outbox DM.
-    // Confirmation FIRST, credentials second (final whole-branch review).
-    // This path has no payment bubble and never touches the outbox, so
-    // neither the per-rail reordering nor the dispatcher's flush hook can
-    // reach it — yet the buyer saw exactly the reported bug here: the account
-    // file arriving above a checkout screen still showing the unpaid summary,
-    // reading as "the shop sent my account before I paid". Nothing was ever
-    // delivered early (`completeOrderWithWalletCredit`'s claim gates the
-    // send); flipping the screen first is all it takes. `smartEdit` is a
-    // single bounded Telegram edit and its failure is already swallowed
-    // internally, so it cannot delay or block the delivery below.
-    await smartEdit(
-      ctx,
-      t(ctx, "checkout.wallet_paid", { code: result.order.orderCode }),
-      ckb.paymentSuccessKb(lang),
-    );
-
+    // The coordinator has already updated the confirmation before credentials.
     const deliveredOrder = await getOrder(prisma, result.order.id);
     const tgId =
       deliveredOrder?.user.telegramId != null ? Number(deliveredOrder.user.telegramId) : null;
@@ -1990,11 +1986,7 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
   // just sent. Nudge the dispatcher so that DM arrives near-instantly instead
   // of waiting for its next poll (matches the web-admin /approve route).
   nudgeOutboxDispatcher();
-  await smartEdit(
-    ctx,
-    t(ctx, "checkout.wallet_paid_processing", { code: result.order.orderCode }),
-    ckb.paymentSuccessKb(lang),
-  );
+  // The coordinator edits the acknowledged checkout screen from durable state.
 }
 
 // ---------------------------------------------------------------------------
@@ -2037,12 +2029,16 @@ export async function cancelPendingOrder(ctx: MyContext, orderId: number): Promi
 
   const chatId = ctx.chat!.id;
   cancelPaymentJobs(orderId);
+  const canonical = await prisma.fulfillmentMessage.findUnique({ where: { orderId }, select: { chatId: true, messageId: true } });
+  const canonicalMessageId = canonical?.chatId === BigInt(chatId) ? canonical.messageId : null;
 
   // Delete the QR code photo that was sent alongside payment instructions.
   const qrMsgId = ctx.session.qrMsgId;
   if (qrMsgId) {
     ctx.session.qrMsgId = undefined;
-    try { await ctx.api.deleteMessage(chatId, qrMsgId); } catch { /* already gone or too old */ }
+    if (qrMsgId !== canonicalMessageId && !(await ownsTransactionMessageAt(prisma, chatId, qrMsgId))) {
+      try { await ctx.api.deleteMessage(chatId, qrMsgId); } catch { /* already gone or too old */ }
+    }
   }
 
   if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "checkout.cancelled_toast") });
@@ -2064,7 +2060,7 @@ export async function cancelPendingOrder(ctx: MyContext, orderId: number): Promi
   // manual / Internal / Bybit / NOWPayments) edits straight to Detail in place.
   const cqMsg = ctx.callbackQuery?.message;
   const wasPhoto = !!(cqMsg && "photo" in cqMsg && cqMsg.photo);
-  if (wasPhoto && cqMsg) {
+  if (wasPhoto && cqMsg && cqMsg.message_id !== canonicalMessageId) {
     try {
       await ctx.api.deleteMessage(chatId, cqMsg.message_id);
     } catch {

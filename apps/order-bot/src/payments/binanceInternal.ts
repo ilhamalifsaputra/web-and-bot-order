@@ -34,6 +34,7 @@ import { fetchWithTimeoutSafe, HTTP_TIMEOUT_MS } from "@app/core/http";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import {
   prisma,
+  ownsTransactionMessage,
   listPendingInternalOrders,
   deliverPaidInternalOrder,
   markUnderpaid,
@@ -302,7 +303,7 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
   // own doc comment), and the `withTimeout` race here ensures a hung edit
   // gives up and falls through instead of stalling the credential send that
   // follows.
-  if (order.paymentMsgChatId != null && order.paymentMsgId != null) {
+  if (order.paymentMsgChatId != null && order.paymentMsgId != null && !(await ownsTransactionMessage(prisma, order.id))) {
     const outcome = await withTimeout(
       editAnchoredBubbleAndDecide(api, order, {
         chatId: Number(order.paymentMsgChatId),
@@ -426,6 +427,7 @@ async function editAnchoredBubbleAndDecide(
  * never throws.
  */
 async function editBubbleToProcessing(api: Api, order: DeliveredOrder): Promise<void> {
+  if (await ownsTransactionMessage(prisma, order.id)) return;
   if (order.user.telegramId == null) return;
   if (order.paymentMsgChatId == null || order.paymentMsgId == null) return;
   const lang = langCode(order.user.language);

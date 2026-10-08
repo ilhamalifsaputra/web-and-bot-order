@@ -162,11 +162,25 @@ async function makeExpiredOrder() {
     });
     return finalizeOrderPayment(tx, o!.id, { currency: OrderCurrency.IDR });
   });
+  // This fixture exercises the compatibility path for pre-coordinator orders.
+  await prisma.fulfillmentMessage.deleteMany({ where: { orderId: created!.id } });
   await prisma.order.update({ where: { id: created!.id }, data: { expiresAt: new Date(Date.now() - 60_000) } });
   return created!;
 }
 
 describe("autoCancelExpiredOrders", () => {
+  it("keeps an adopted QR and wakes its coordinator on automatic expiry", async () => {
+    const order = await makeExpiredOrder();
+    await prisma.fulfillmentMessage.create({ data: { orderId: order.id, chatId: 555n, messageId: 777, state: "WAITING" } });
+    await setOrderPaymentMessage(prisma, order.id, 555, 777);
+    const api = fakeApi();
+    await autoCancelExpiredOrders(api);
+    expect(api.deleteMessage).not.toHaveBeenCalled();
+    expect(api.sendMessage).not.toHaveBeenCalled();
+    expect(api.editMessageText).not.toHaveBeenCalled();
+    expect(await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } })).toMatchObject({ state: "ACTIVE", messageId: 777 });
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.CANCELLED);
+  });
   it("edits the anchored text bubble in place instead of sending a new message", async () => {
     const order = await makeExpiredOrder();
     await setOrderPaymentMessage(prisma, order.id, 555, 777);

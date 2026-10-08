@@ -66,15 +66,15 @@ describe("NOWPayments", () => {
   it("classifies its terminal non-success outcomes", () => {
     expect(normalizeProviderStatus(StatusProvider.NOWPAYMENTS, "failed")).toBe("failed");
     expect(normalizeProviderStatus(StatusProvider.NOWPAYMENTS, "refunded")).toBe("failed");
-    expect(normalizeProviderStatus(StatusProvider.NOWPAYMENTS, "partially_paid")).toBe("failed");
+    expect(normalizeProviderStatus(StatusProvider.NOWPAYMENTS, "partially_paid")).toBe("underpaid");
     expect(normalizeProviderStatus(StatusProvider.NOWPAYMENTS, "expired")).toBe("expired");
   });
 
   it("treats the in-flight statuses as pending, so a later cycle retries", () => {
     expect(normalizeProviderStatus(StatusProvider.NOWPAYMENTS, "waiting")).toBe("pending");
-    expect(normalizeProviderStatus(StatusProvider.NOWPAYMENTS, "confirming")).toBe("pending");
-    expect(normalizeProviderStatus(StatusProvider.NOWPAYMENTS, "confirmed")).toBe("pending");
-    expect(normalizeProviderStatus(StatusProvider.NOWPAYMENTS, "sending")).toBe("pending");
+    expect(normalizeProviderStatus(StatusProvider.NOWPAYMENTS, "confirming")).toBe("detected");
+    expect(normalizeProviderStatus(StatusProvider.NOWPAYMENTS, "confirmed")).toBe("verifying");
+    expect(normalizeProviderStatus(StatusProvider.NOWPAYMENTS, "sending")).toBe("verifying");
   });
 });
 

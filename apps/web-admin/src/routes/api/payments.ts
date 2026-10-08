@@ -181,9 +181,12 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
 
     const orderId = parsePositiveId((req.params as { orderId: string }).orderId);
     if (orderId === null) return reply.code(400).send({ error: "Invalid order id." });
+    const rawReason = (req.body as { reason?: unknown } | null)?.reason;
+    const reason = typeof rawReason === "string" ? rawReason.trim() : "";
+    if (!reason) return reply.code(400).send({ error: "An override reason is required." });
 
     const idempotencyKeyHeader = normalizeIdempotencyKey(req.headers["idempotency-key"]);
-    const idem = idempotencyKeyHeader ? { key: idempotencyKeyHeader, requestHash: hashIdempotentRequest({ orderId }) } : null;
+    const idem = idempotencyKeyHeader ? { key: idempotencyKeyHeader, requestHash: hashIdempotentRequest({ orderId, reason }) } : null;
 
     if (idem) {
       let replay: IdempotentReplay | null;
@@ -221,14 +224,7 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
     };
 
     try {
-      const { order } = await deliverUnderpaidOrder(prisma, { orderId, adminId: req.admin!.userId });
-      await logAdminAction(prisma, {
-        adminId: req.admin!.userId,
-        action: "underpaid_deliver",
-        targetType: "order",
-        targetId: orderId,
-        details: `Delivered underpaid order ${order.orderCode} anyway.`,
-      });
+      await deliverUnderpaidOrder(prisma, { orderId, adminId: req.admin!.userId, reason });
     } catch (e) {
       if (e instanceof ValidationError) return respond(422, errorBody(e));
       throw e;

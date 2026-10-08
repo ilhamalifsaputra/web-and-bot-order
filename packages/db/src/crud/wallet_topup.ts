@@ -50,7 +50,10 @@ import { getOrder, uniqueOrderCode, customerLabel, cancelOrder, findUnderpaidRec
 import { adjustWallet } from "./users";
 import { postUnderpaidTopupCreditPosting, postWalletTopupPosting } from "./ledgerPostings";
 import { finalizeOrderPayment, writeWithUniqueRailAmount, type UniqueAmountRail } from "./pricing";
-import { enqueueAdminOverpaid, enqueueOwnerWalletTopupEmail, enqueueWalletTopupCreditedDm } from "./notifications";
+import { enqueueAdminOverpaid, enqueueOwnerWalletTopupEmail, enqueueWalletTopupCreditedDm, enqueueTransactionReviewAlert } from "./notifications";
+import { ensureFulfillmentMessage, wakeFulfillmentMessage, reserveTransactionMessage } from "./fulfillmentMessages";
+import { confirmPaymentAttempt, getPendingPaymentAttempt } from "./payments";
+import { logAdminAction } from "./audit";
 
 const ZERO = new Decimal(0);
 
@@ -439,6 +442,7 @@ export async function createWalletTopupOrder(
   db: Db,
   args: {
     userId: number;
+    channel?: "bot" | "web";
     amount: Decimal.Value;
     currency: "IDR" | "USDT";
     method: WalletTopupMethod;
@@ -476,6 +480,8 @@ export async function createWalletTopupOrder(
       orderCode,
       userId: args.userId,
       kind: OrderKind.WALLET_TOPUP,
+      paymentState: "WAITING_PAYMENT",
+      walletCreditState: "NOT_STARTED",
       subtotalAmount: amount,
       totalAmount: amount,
       discountAmount: ZERO,
@@ -515,6 +521,7 @@ export async function createWalletTopupOrder(
 
   const finalized = await getOrder(db, order.id);
   if (!finalized) throw new ValidationError("error.order_not_found");
+  if (args.channel === "bot") await reserveTransactionMessage(db, order.id);
   return finalized;
 }
 
@@ -600,6 +607,8 @@ export async function settleWalletTopup(
     throw new ValidationError("error.order_not_wallet_topup");
   }
 
+  if (order.walletCreditState === "NEEDS_REVIEW") throw new ValidationError("error.wallet_credit_needs_review");
+
   const now = new Date();
   // CANCELLED is claimable alongside PENDING_PAYMENT (see
   // `isLateSettleableWalletTopup`): a top-up whose window lapsed was
@@ -610,7 +619,7 @@ export async function settleWalletTopup(
   const wasCancelled = order.status === OrderStatus.CANCELLED;
   const claim = await db.order.updateMany({
     where: { id: orderId, status: { in: [OrderStatus.PENDING_PAYMENT, OrderStatus.CANCELLED] } },
-    data: { status: OrderStatus.DELIVERED, paidAt: now, deliveredAt: now },
+    data: { status: OrderStatus.DELIVERED, paidAt: now, deliveredAt: now, paymentState: "PAID", walletCreditState: "CREDITED" },
   });
   if (claim.count !== 1) {
     const current = await getOrder(db, orderId);
@@ -707,6 +716,8 @@ export async function settleWalletTopup(
   // above never reaches it, and on the buyer having a Telegram id at all —
   // mirrors the gating every one of the former per-rail call sites used.
   const credited = new Decimal(order.totalAmount);
+  await ensureFulfillmentMessage(db, orderId);
+  await wakeFulfillmentMessage(db, orderId, now, { correctFinishedOutcome: true });
   if (credited.greaterThan(0) && order.user.telegramId != null) {
     await enqueueWalletTopupCreditedDm(db, {
       orderId: order.id,
@@ -720,6 +731,70 @@ export async function settleWalletTopup(
 
   const refreshed = await getOrder(db, orderId);
   return { order: refreshed!, credited, newBalance };
+}
+
+/** Preserve a verified payment after the credit transaction rolled back.
+ * Callers set their evidence flag only after claiming the provider transaction
+ * and validating the payable order's rail. Never use this for an unmatched or
+ * stale event. Payment confirmation is separate so a ledger conflict cannot
+ * erase the committed provider fact or misrepresent a successful wallet credit.
+ */
+export async function preservePaidWalletCreditFailure(
+  db: PrismaClient,
+  args: { orderId: number; method: string; providerTransactionId: string; amount: Decimal.Value },
+): Promise<boolean> {
+  const preserved = await db.$transaction(async (tx: Tx) => {
+    const order = await tx.order.findUnique({ where: { id: args.orderId } });
+    if (!order || order.kind !== OrderKind.WALLET_TOPUP || order.paymentMethod !== args.method) return false;
+    if (order.paymentState === "UNDERPAID" || order.walletCreditState === "CREDITED") return false;
+    if (order.walletCreditState === "NEEDS_REVIEW") return true;
+    const amount = new Decimal(args.amount);
+    const tolerance = new Set<string>([PaymentMethod.BYBIT, PaymentMethod.BYBIT_BSC, PaymentMethod.BINANCE_INTERNAL]).has(args.method)
+      ? new Decimal("0.001") : ZERO;
+    if (!amount.isFinite() || amount.lte(0) || amount.plus(tolerance).lt(order.totalAmount)) return false;
+    const claim = await tx.order.updateMany({
+      where: {
+        id: order.id,
+        paymentMethod: args.method,
+        status: { in: [OrderStatus.PENDING_PAYMENT, OrderStatus.PAYMENT_DETECTED, OrderStatus.CONFIRMING, OrderStatus.CONFIRMED, OrderStatus.CANCELLED] },
+      },
+      data: { paymentState: "PAID", walletCreditState: "NEEDS_REVIEW", paidAt: order.paidAt ?? new Date() },
+    });
+    if (claim.count !== 1) return false;
+    await logAdminAction(tx, {
+      adminId: null, action: "wallet_credit_needs_review", targetType: "order", targetId: order.id,
+      details: `Verified ${args.method} payment ${args.providerTransactionId} for wallet top-up ${order.orderCode}; credit failed and requires review.`,
+    });
+    return true;
+  });
+  if (!preserved) return false;
+  try {
+    await db.$transaction(async (tx: Tx) => {
+      const order = await tx.order.findUniqueOrThrow({ where: { id: args.orderId } });
+      await ensureFulfillmentMessage(tx, order.id);
+      await wakeFulfillmentMessage(tx, order.id, new Date(), { correctFinishedOutcome: true });
+      await enqueueTransactionReviewAlert(tx, {
+        orderId: order.id, orderCode: order.orderCode, incident: "wallet_credit_needs_review",
+        reason: "Payment is confirmed, but wallet credit failed. Review this wallet top-up and credit the verified payment manually; do not collect payment again.",
+      });
+    });
+  } catch (err) {
+    logger.error({ err, orderId: args.orderId }, "Payment fact persisted; wallet review notification requires a retry");
+  }
+
+  try {
+    await db.$transaction(async (tx: Tx) => {
+      const payment = await getPendingPaymentAttempt(tx, args.orderId);
+      const order = await tx.order.findUnique({ where: { id: args.orderId } });
+      if (payment?.method === args.method && payment.currency === order?.currency && payment.amount.equals(order.totalAmount)) {
+        await confirmPaymentAttempt(tx, { paymentId: payment.id, providerTransactionId: args.providerTransactionId });
+      }
+    });
+  } catch (err) {
+    logger.error({ err, orderId: args.orderId }, "Payment fact persisted but its ledger confirmation requires reconciliation");
+  }
+  logger.error({ orderId: args.orderId, provider: args.method, paymentStatus: "PAID", walletCreditState: "NEEDS_REVIEW" }, "Wallet credit failed after a verified payment");
+  return true;
 }
 
 /**

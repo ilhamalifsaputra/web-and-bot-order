@@ -34,6 +34,7 @@ import { logger } from "@app/core/logger";
 import { fetchWithTimeoutSafe, HTTP_TIMEOUT_MS } from "@app/core/http";
 import {
   prisma,
+  ownsTransactionMessage,
   listTrackedBybitBscOrders,
   recordBybitBscConfirmationProgress,
   recordBybitBscTrackingStale,
@@ -169,7 +170,7 @@ async function pushTrackingUpdate(
   confirmations: number,
   requiredConfirmations: number,
 ): Promise<void> {
-  if (order.paymentMsgChatId == null || order.paymentMsgId == null) return;
+  if (order.paymentMsgChatId == null || order.paymentMsgId == null || await ownsTransactionMessage(prisma, order.id)) return;
   const lang = langCode(order.user.language);
   try {
     await api.editMessageText(

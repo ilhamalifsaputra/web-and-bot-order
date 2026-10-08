@@ -54,6 +54,8 @@ import {
   runStorageCleanup,
   listSettledOrdersAwaitingBubbleEdit,
   clearOrderPaymentMessage,
+  ownsTransactionMessage,
+  wakeFulfillmentMessage,
   runDigiflazzCatalogSync,
   dispatchPendingDigiflazzOrders,
   bumpCatalogRevision,
@@ -365,6 +367,7 @@ export async function flipSettledOrderBubble(
   editTimeoutMs: number,
 ): Promise<BubbleFlipOutcome> {
   if (!FLIPPABLE_SETTLED_STATUSES.includes(order.status)) return "not_settled";
+  if (await ownsTransactionMessage(prisma, order.id)) { await wakeFulfillmentMessage(prisma, order.id); return "no_anchor"; }
   if (order.paymentMsgChatId == null || order.paymentMsgId == null) return "no_anchor";
   const { text, markup } = settledPaymentBubble(order);
   const outcome = await withTimeout(
@@ -456,8 +459,12 @@ export async function flushSettledOrderBubble(api: Api, orderId: number): Promis
  */
 async function notifyAutoCancelled(
   api: Api,
-  o: { tgId: bigint | null; lang: string; code: string; paymentMsgChatId: bigint | null; paymentMsgId: number | null },
+  o: { id: number; tgId: bigint | null; lang: string; code: string; paymentMsgChatId: bigint | null; paymentMsgId: number | null },
 ): Promise<void> {
+  if (await ownsTransactionMessage(prisma, o.id)) {
+    await wakeFulfillmentMessage(prisma, o.id);
+    return;
+  }
   const text = coreT("order.auto_cancelled", o.lang, { code: o.code });
   const markup = notificationKb(o.lang);
   if (o.paymentMsgChatId != null && o.paymentMsgId != null) {

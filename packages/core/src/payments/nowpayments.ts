@@ -198,6 +198,7 @@ export class RateLimitedError extends Error {}
 
 export interface NowpaymentsStatus {
   paid: boolean;
+  orderId?: string | null;
   /** `actually_paid` (falling back to `pay_amount`), in the PAY currency — not
    * comparable to an order total; judge it with `checkNowpaymentsAmount`. */
   amount: Decimal;
@@ -267,6 +268,7 @@ export async function getPaymentStatus(
     null;
   return {
     paid: isProviderPaid(StatusProvider.NOWPAYMENTS, statusStr),
+    orderId: optionalString(body.order_id),
     amount,
     trxId,
     status: statusStr,
@@ -427,7 +429,7 @@ export function verifyIpn(
     orderId,
     trxId,
     amount,
-    paid: status === "finished",
+    paid: isProviderPaid(StatusProvider.NOWPAYMENTS, status),
     status,
     actuallyPaid: optionalDecimal(body.actually_paid),
     payAmount: optionalDecimal(body.pay_amount),

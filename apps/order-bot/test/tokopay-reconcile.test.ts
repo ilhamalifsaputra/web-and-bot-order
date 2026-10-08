@@ -32,7 +32,6 @@ import { Decimal } from "@app/core/money";
 import { config } from "@app/core/config";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { telegramError } from "./helpers/ctx";
-import { onlyBubbleEdit } from "./helpers/settledBubble";
 import { FulfillmentMessageWorker } from "../../../packages/outbox-dispatcher/src/fulfillmentMessages";
 import { reconcileOrder, pollOnce, MAX_ORDERS_PER_CYCLE } from "../src/payments/tokopayReconcile";
 import { qrisChargeAmount } from "@app/core/payments/tokopay";
@@ -67,6 +66,7 @@ const fakeApi = (
     editMessageText: unknown;
     deleteMessage: unknown;
     sendMessage: unknown;
+    editMessageReplyMarkup: unknown;
   }> = {},
 ) =>
   ({
@@ -74,6 +74,7 @@ const fakeApi = (
     editMessageCaption: vi.fn().mockResolvedValue(undefined),
     editMessageText: overrides.editMessageText ?? vi.fn().mockResolvedValue(undefined),
     deleteMessage: overrides.deleteMessage ?? vi.fn().mockResolvedValue(true),
+    editMessageReplyMarkup: overrides.editMessageReplyMarkup ?? vi.fn().mockResolvedValue(true),
   }) as unknown as Api;
 
 /** Only this Telegram response permits the coordinator to try a caption edit. */
@@ -82,6 +83,19 @@ const noTextToEdit = () => telegramError(400, "Bad Request: there is no text in 
 /** The callback data on whatever keyboard a grammY call carried. */
 const buttonsOf = (payload: { reply_markup: { inline_keyboard: Array<Array<{ callback_data?: string }>> } }) =>
   payload.reply_markup.inline_keyboard.flat().map((b) => b.callback_data);
+
+/** A paid QR photo is never edited: the coordinator sends one status text in
+ *  its place and deletes the photo. Returns that one replacement text. */
+function replacementOf(api: Api, photo: { chatId: number; msgId: number }) {
+  expect(api.editMessageCaption).not.toHaveBeenCalled();
+  const deletes = (api.deleteMessage as ReturnType<typeof vi.fn>).mock.calls;
+  expect(deletes).toHaveLength(1);
+  expect([String(deletes[0]![0]), deletes[0]![1]]).toEqual([String(photo.chatId), photo.msgId]);
+  const sends = (api.sendMessage as ReturnType<typeof vi.fn>).mock.calls;
+  expect(sends).toHaveLength(1);
+  const [chatId, text, payload] = sends[0]!;
+  return { chatId: Number(chatId), text: String(text), buttons: buttonsOf(payload) };
+}
 
 /** Stub the gateway status call. */
 function stubStatus(data: Record<string, unknown>) {
@@ -250,11 +264,13 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
 
   /** Deliver the one pending order with its bubble anchored at (555, 777), and
    *  hand back the row so the anchor can be read afterwards. */
-  async function deliverAnchored(api: Api, trxId: string) {
+  async function deliverAnchored(api: Api, trxId: string, kind: "photo" | "text" | null = "photo") {
     const created = await makeTokopayOrder();
     const [pending] = await listPendingTokopayOrders(prisma, new Date());
     await setOrderPaymentMessage(prisma, created!.id, 555, 777);
-    await adoptTransactionMessage(prisma, created!.id, 555, 777, "photo");
+    await adoptTransactionMessage(prisma, created!.id, 555, 777, kind ?? "text");
+    // null: a message adopted before its kind was recorded.
+    if (kind === null) await prisma.fulfillmentMessage.update({ where: { orderId: created!.id }, data: { messageKind: null } });
     stubStatus({ status: "Paid", trx_id: trxId, total_bayar: qrisChargeAmount(pending!.totalAmount).toString() });
 
     await reconcileOrder(api, CREDS, pending!);
@@ -267,7 +283,7 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
   it("lets the coordinator complete an acknowledged text bubble in place", async () => {
     const api = fakeApi();
 
-    const after = await deliverAnchored(api, "TRX-FLIP");
+    const after = await deliverAnchored(api, "TRX-FLIP", "text");
 
     expect(api.editMessageText).toHaveBeenCalledTimes(1);
     const [chatId, msgId, , payload] = (api.editMessageText as ReturnType<typeof vi.fn>).mock.calls[0]!;
@@ -283,19 +299,46 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
     expect(after?.paymentMsgId).toBe(777);
   });
 
-  it("completes an acknowledged QR caption on the same message", async () => {
-    const api = fakeApi({ editMessageText: vi.fn().mockRejectedValue(noTextToEdit()) });
+  it("replaces an acknowledged QR photo with one completion text and deletes the photo", async () => {
+    const api = fakeApi();
 
     const after = await deliverAnchored(api, "TRX-FLIP-PHOTO");
 
-    expect(api.editMessageCaption).toHaveBeenCalledTimes(1);
-    const edit = onlyBubbleEdit((api.editMessageCaption as ReturnType<typeof vi.fn>).mock.calls, []);
-    expect(edit).toMatchObject({ chatId: "555", msgId: 777 });
-    expect(edit.text).toContain("100%");
-    expect(api.deleteMessage).not.toHaveBeenCalled();
-    expect(api.sendMessage).not.toHaveBeenCalled();
-    expect(after?.paymentMsgChatId).toBe(555n);
-    expect(after?.paymentMsgId).toBe(777);
+    // A known photo is never sent editMessageText.
+    expect(api.editMessageText).not.toHaveBeenCalled();
+    const status = replacementOf(api, { chatId: 555, msgId: 777 });
+    expect(status.chatId).toBe(555);
+    expect(status.text).toContain("100%");
+    expect(status.buttons).toContain("v1:order:list");
+    expect(after?.status).toBe(OrderStatus.DELIVERED);
+    expect(await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: after!.id } })).toMatchObject({
+      messageId: REPLACEMENT_MSG_ID, messageKind: "text", state: "FINISHED",
+    });
+  });
+
+  it("retires a legacy bubble once Telegram reports it is a photo, without editing its caption", async () => {
+    const api = fakeApi({ editMessageText: vi.fn().mockRejectedValue(noTextToEdit()) });
+
+    const after = await deliverAnchored(api, "TRX-FLIP-LEGACY", null);
+
+    expect(api.editMessageText).toHaveBeenCalledTimes(1);
+    expect(replacementOf(api, { chatId: 555, msgId: 777 }).text).toContain("100%");
+    expect(await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: after!.id } })).toMatchObject({
+      messageId: REPLACEMENT_MSG_ID, messageKind: "text",
+    });
+  });
+
+  it("strips the payment buttons from a QR photo Telegram will not delete, and still completes", async () => {
+    const api = fakeApi({ deleteMessage: vi.fn().mockRejectedValue(telegramError(400, "Bad Request: message can't be deleted")) });
+
+    const after = await deliverAnchored(api, "TRX-FLIP-OLD");
+
+    replacementOf(api, { chatId: 555, msgId: 777 });
+    expect(api.editMessageReplyMarkup).toHaveBeenCalledTimes(1);
+    const [chatId, msgId, payload] = (api.editMessageReplyMarkup as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    expect([String(chatId), msgId, payload]).toEqual(["555", 777, { reply_markup: { inline_keyboard: [] } }]);
+    expect(after?.status).toBe(OrderStatus.DELIVERED);
+    expect((await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: after!.id } })).state).toBe("FINISHED");
   });
 
   describe("the durable coordinator handles completion edit failures", () => {
@@ -305,12 +348,14 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
         deleteMessage: vi.fn().mockRejectedValue(deleteError),
       });
 
-    /** A delivered order with an anchored bubble whose flip failed as given. */
+    /** A delivered order with an anchored text bubble whose flip failed as
+     *  given. Edit failures concern an editable text bubble: a QR photo is
+     *  replaced, never edited, once paid (see the tests above). */
     async function deliverWithFailedFlip(api: Api) {
       const created = await makeTokopayOrder();
       const [pending] = await listPendingTokopayOrders(prisma, new Date());
       await setOrderPaymentMessage(prisma, created!.id, 555, 777);
-      await adoptTransactionMessage(prisma, created!.id, 555, 777, "photo");
+      await adoptTransactionMessage(prisma, created!.id, 555, 777, "text");
       stubStatus({ status: "Paid", trx_id: "TRX-EDITFAIL", total_bayar: qrisChargeAmount(pending!.totalAmount).toString() });
 
       await reconcileOrder(api, CREDS, pending!);
@@ -367,11 +412,8 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
     const STARTING_IDR = "123456";
     const TOPUP_IDR = "50000";
 
-    const bubbleEdit = (api: Api) => {
-      const captions = (api.editMessageCaption as ReturnType<typeof vi.fn>).mock.calls;
-      const edit = onlyBubbleEdit(captions, captions.length ? [] : (api.editMessageText as ReturnType<typeof vi.fn>).mock.calls);
-      return { ...edit, chatId: Number(edit.chatId) };
-    };
+    /** The one status text that replaced the anchored QR photo (the photo is deleted). */
+    const bubbleEdit = (api: Api, msgId = 777) => replacementOf(api, { chatId: 555, msgId });
 
     /** Reconcile the one pending TokoPay order, with the gateway reporting it
      *  paid in full (order total + the QRIS admin fee). */
@@ -408,7 +450,7 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
       return order;
     }
 
-    it("shows the full wallet receipt, credit and final balance on the same bubble", async () => {
+    it("shows the full wallet receipt, credit and final balance on the text that replaces the QR", async () => {
       const topup = await makeAnchoredTopup();
       const api = fakeApi();
 
@@ -416,7 +458,6 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
 
       const edit = bubbleEdit(api);
       expect(edit.chatId).toBe(555);
-      expect(edit.msgId).toBe(777);
       expect(edit.text).toContain("Wallet top-up completed");
       expect(edit.text).toContain(topup.orderCode);
       expect(edit.text).toContain("100%");
@@ -440,24 +481,22 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
       expect(edit.buttons).not.toContain("v1:order:list");
     });
 
-    it("retains a settled wallet QR receipt and edits its caption without another send", async () => {
+    it("replaces a settled wallet QR with exactly one receipt text, never a caption edit", async () => {
       const topup = await makeAnchoredTopup();
-      const api = fakeApi({ editMessageText: vi.fn().mockRejectedValue(noTextToEdit()) });
+      const api = fakeApi();
 
       await reconcilePaid(api, "TRX-TOPUP-PHOTO");
 
-      expect(api.deleteMessage).not.toHaveBeenCalled();
-      expect(api.editMessageCaption).toHaveBeenCalledTimes(1);
-      expect(bubbleEdit(api)).toMatchObject({ chatId: 555, msgId: 777 });
+      expect(api.editMessageText).not.toHaveBeenCalled();
       expect(bubbleEdit(api).text).toContain(topup.orderCode);
-      expect(api.sendMessage).not.toHaveBeenCalled();
-
-      const after = await prisma.order.findUnique({ where: { id: topup.id } });
-      expect(after?.paymentMsgChatId).toBe(555n);
-      expect(after?.paymentMsgId).toBe(777);
+      // Later passes edit the replacement text, never send another one.
+      await prisma.fulfillmentMessage.update({ where: { orderId: topup.id }, data: { state: "ACTIVE", nextUpdateAt: new Date(0), finishedAt: null } });
+      await new FulfillmentMessageWorker(api).tick(topup.id);
+      expect(api.sendMessage).toHaveBeenCalledTimes(1);
+      expect(api.deleteMessage).toHaveBeenCalledTimes(1);
     });
 
-    it("completes a delivered product on its acknowledged bubble with the product keyboard", async () => {
+    it("completes a delivered product on the text that replaces its QR, with the product keyboard", async () => {
       const created = await makeTokopayOrder();
       await setOrderPaymentMessage(prisma, created!.id, 555, 778);
       await adoptTransactionMessage(prisma, created!.id, 555, 778, "photo");
@@ -466,14 +505,14 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
       await reconcilePaid(api, "TRX-PRODUCT-DELIVERED");
 
       expect((await prisma.order.findUnique({ where: { id: created!.id } }))?.status).toBe(OrderStatus.DELIVERED);
-      const edit = bubbleEdit(api);
+      const edit = bubbleEdit(api, 778);
       expect(edit.text).toContain("Order completed");
       expect(edit.text).toContain("100%");
       expect(edit.buttons).toContain("v1:order:list");
       expect(edit.buttons).not.toContain("v1:topup:open");
     });
 
-    it("shows a static manual wait on the acknowledged product bubble", async () => {
+    it("shows a static manual wait on the text that replaces the product QR", async () => {
       await updateDenomination(prisma, sample.product.id, { deliveryType: DeliveryType.MANUAL });
       const created = await makeTokopayOrder();
       await setOrderPaymentMessage(prisma, created!.id, 555, 779);
@@ -483,7 +522,7 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
       await reconcilePaid(api, "TRX-PRODUCT-PROCESSING");
 
       expect((await prisma.order.findUnique({ where: { id: created!.id } }))?.status).toBe(OrderStatus.PROCESSING);
-      const edit = bubbleEdit(api);
+      const edit = bubbleEdit(api, 779);
       expect(edit.text).toContain("Payment confirmed");
       expect(edit.text).toContain("waiting to be prepared");
       expect(edit.text).not.toContain("%");
@@ -509,11 +548,12 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
       const trigger = vi.mocked(triggerDigiflazzDispatch);
       expect(trigger).toHaveBeenCalledTimes(1);
       expect(trigger).toHaveBeenCalledWith(after!.id);
-      const edit = vi.mocked(api.editMessageText as unknown as ReturnType<typeof vi.fn>);
-      expect(edit).not.toHaveBeenCalled();
+      const send = vi.mocked(api.sendMessage as unknown as ReturnType<typeof vi.fn>);
+      expect(send).not.toHaveBeenCalled();
       await new FulfillmentMessageWorker(api).tick(created!.id);
-      expect(edit).toHaveBeenCalledTimes(1);
-      expect(trigger.mock.invocationCallOrder[0]!).toBeLessThan(edit.mock.invocationCallOrder[0]!);
+      // The paid QR is replaced by one status text, after dispatch started.
+      expect(replacementOf(api, { chatId: 555, msgId: 777 }).text).toContain("top-up");
+      expect(trigger.mock.invocationCallOrder[0]!).toBeLessThan(send.mock.invocationCallOrder[0]!);
     });
 
     it("does not start a dispatch for an order delivered from stock", async () => {

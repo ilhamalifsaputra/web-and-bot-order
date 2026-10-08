@@ -100,6 +100,7 @@ function recordingApi(opts: { photoBubble?: boolean } = {}) {
         ? record("editMessageText", undefined, noTextToEdit)
         : record("editMessageText", undefined),
       deleteMessage: record("deleteMessage", true),
+      editMessageReplyMarkup: record("editMessageReplyMarkup", true),
     } as unknown as Api,
   };
 }
@@ -112,8 +113,8 @@ function stubStatus(data: Record<string, unknown>) {
   );
 }
 
-/** A PENDING_PAYMENT TokoPay order of either kind, anchored to a payment
- *  bubble the way a real checkout leaves it. */
+/** A PENDING_PAYMENT TokoPay order of either kind, anchored to its QRIS photo
+ *  the way a real checkout leaves it. */
 async function makeAnchoredTokopayOrder(kind: string) {
   const order =
     kind === OrderKind.WALLET_TOPUP
@@ -138,7 +139,7 @@ async function makeAnchoredTokopayOrder(kind: string) {
           });
         });
   await prisma.$transaction(async (tx) => {
-    await adoptTransactionMessage(tx, order!.id, 555, 4242, "text");
+    await adoptTransactionMessage(tx, order!.id, 555, 4242, "photo");
     await setOrderPaymentMessage(tx, order!.id, 555, 4242);
   });
   return order!;
@@ -148,8 +149,10 @@ async function render(api: Api, orderId: number) {
   await new FulfillmentMessageWorker(api as unknown as FulfillmentTelegramApi, { db: prisma }).tick(orderId);
 }
 
+/** Once paid, the QR photo 4242 is replaced by one status text (90210, the
+ *  doubles' sendMessage id), which the coordinator owns from then on. */
 async function expectCanonicalCompletion(orderId: number) {
-  expect(await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId } })).toMatchObject({ chatId: 555n, messageId: 4242, state: "FINISHED" });
+  expect(await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId } })).toMatchObject({ chatId: 555n, messageId: 90210, messageKind: "text", state: "FINISHED" });
   expect(await prisma.order.findUniqueOrThrow({ where: { id: orderId } })).toMatchObject({ paymentMsgChatId: 555n, paymentMsgId: 4242 });
 }
 
@@ -162,11 +165,12 @@ const countTopupDms = (orderId: number) =>
 // Reported bug 1: a QRIS wallet top-up produced TWO "top-up successful"
 // messages, worded differently.
 //
-// A durable coordinator owns the original QR caption. Refresh defers to it;
-// repeated worker ticks and delivery retries must never create another screen.
+// A durable coordinator owns the transaction message. Once paid it replaces the
+// QR photo with one status text; Refresh defers to it, and repeated worker
+// ticks and delivery retries must never create another screen.
 // ───────────────────────────────────────────────────────────────────────────
 describe("regression: a settled QRIS top-up yields exactly one success message, even after Refresh", () => {
-  it("edits the original QR caption once without sending a replacement or adding a second outbox DM", async () => {
+  it("replaces the QR photo with exactly one success text and adds no second outbox DM", async () => {
     const order = await makeAnchoredTokopayOrder(OrderKind.WALLET_TOPUP);
     const { calls, api } = recordingApi({ photoBubble: true });
 
@@ -180,12 +184,11 @@ describe("regression: a settled QRIS top-up yields exactly one success message, 
     await flipSettledOrderBubble(api, { ...settled, user: { language: "en" } }, 5000);
     expect(calls).toEqual([]); // Legacy refresh defers to the registered owner.
     await render(api, order.id);
-    expect(calls.filter((c) => c === "editMessageCaption")).toHaveLength(1);
-    const [, messageId, payload] = vi.mocked(api.editMessageCaption).mock.calls[0]!;
-    expect(messageId).toBe(4242);
-    expect(payload).toMatchObject({ caption: expect.stringContaining(order.orderCode) });
-    expect(calls).not.toContain("deleteMessage");
-    expect(calls).not.toContain("sendMessage");
+    // A known photo is never edited: one replacement text, then the QR is deleted.
+    expect(calls).toEqual(["sendMessage", "deleteMessage"]);
+    const [, text] = vi.mocked(api.sendMessage).mock.calls[0]! as unknown as [string, string];
+    expect(text).toContain(order.orderCode);
+    expect(vi.mocked(api.deleteMessage).mock.calls[0]!.slice(0, 2)).toEqual(["555", 4242]);
     expect(await countTopupDms(order.id)).toBe(1);
     await expectCanonicalCompletion(order.id);
   });
@@ -207,9 +210,7 @@ describe("regression: a settled QRIS top-up yields exactly one success message, 
     }
 
     // Persisted FINISHED ownership makes the nine later worker ticks no-ops.
-    expect(calls.filter((c) => c === "editMessageCaption")).toHaveLength(1);
-    expect(calls).not.toContain("deleteMessage");
-    expect(calls).not.toContain("sendMessage");
+    expect(calls).toEqual(["sendMessage", "deleteMessage"]);
     expect(await countTopupDms(order.id)).toBe(1);
     await expectCanonicalCompletion(order.id);
   });
@@ -240,10 +241,10 @@ describe("regression: a settled QRIS top-up yields exactly one success message, 
 
 // ───────────────────────────────────────────────────────────────────────────
 // Payment settlement and message ownership commit before the dispatcher wakes.
-// The rail defers Telegram writes to the worker, which edits the original ID.
+// The rail defers Telegram writes to the worker, which replaces the QR photo.
 // ───────────────────────────────────────────────────────────────────────────
 describe("regression: settlement commits before the durable message worker is nudged", () => {
-  it("nudges only after canonical settlement and lets the worker edit the owned message", async () => {
+  it("nudges only after canonical settlement and lets the worker replace the owned QR photo", async () => {
     await bulkAddStock(prisma, sample.product.id, ["cred-ordering-1"]);
     const order = await makeAnchoredTokopayOrder(OrderKind.PRODUCT);
     const [pending] = await listPendingTokopayOrders(prisma, new Date());
@@ -270,9 +271,10 @@ describe("regression: settlement commits before the durable message worker is nu
         throw noTextToEdit();
       }),
       deleteMessage: vi.fn(async () => {
-        sequence.push("bubble");
+        sequence.push("delete");
         return true;
       }),
+      editMessageReplyMarkup: vi.fn(async () => true),
     } as unknown as Api;
 
     await reconcileOrder(api, CREDS, pending!);
@@ -280,9 +282,9 @@ describe("regression: settlement commits before the durable message worker is nu
     expect(sequence).toEqual(["nudge"]);
     await vi.waitFor(() => expect(committed).toBe(true));
     await render(api, order.id);
-    expect(sequence).toEqual(["nudge", "bubble", "caption"]);
-    expect(api.sendMessage).not.toHaveBeenCalled();
-    expect(api.deleteMessage).not.toHaveBeenCalled();
+    expect(sequence).toEqual(["nudge", "bubble", "delete"]);
+    expect(api.editMessageText).not.toHaveBeenCalled();
+    expect(api.editMessageCaption).not.toHaveBeenCalled();
     await expectCanonicalCompletion(order.id);
   });
 
@@ -299,30 +301,32 @@ describe("regression: settlement commits before the durable message worker is nu
       shopUrl: null,
     });
     const settled = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
-    const edited: Array<{ caption?: string; reply_markup?: { inline_keyboard: Array<Array<{ callback_data?: string }>> } }> = [];
+    const sent: Array<{ text: string; reply_markup?: { inline_keyboard: Array<Array<{ callback_data?: string }>> } }> = [];
     const api = {
-      sendMessage: vi.fn(async () => ({ message_id: 90210 })),
-      editMessageCaption: vi.fn(async (_chat: number, id: number, opts: (typeof edited)[number]) => {
-        expect(id).toBe(4242);
-        edited.push(opts);
+      sendMessage: vi.fn(async (_chat: string, text: string, opts: Omit<(typeof sent)[number], "text">) => {
+        sent.push({ text, ...opts });
+        return { message_id: 90210 };
       }),
+      editMessageCaption: vi.fn(async () => true),
       editMessageText: vi.fn(async () => {
         throw noTextToEdit();
       }),
       deleteMessage: vi.fn(async () => true),
+      editMessageReplyMarkup: vi.fn(async () => true),
     } as unknown as Api;
 
     await flipSettledOrderBubble(api, { ...settled, user: { language: "en" } }, 5000);
-    expect(edited).toHaveLength(0);
+    expect(sent).toHaveLength(0);
     await render(api, order.id);
-    expect(edited).toHaveLength(1);
-    expect(edited[0]!.caption).toContain("100%");
-    const buttons = (edited[0]!.reply_markup?.inline_keyboard ?? []).flat().map((b) => b.callback_data ?? "");
+    // The QR photo is gone and its replacement text carries no payment actions.
+    expect(sent).toHaveLength(1);
+    expect(api.deleteMessage).toHaveBeenCalledTimes(1);
+    expect(sent[0]!.text).toContain("100%");
+    const buttons = (sent[0]!.reply_markup?.inline_keyboard ?? []).flat().map((b) => b.callback_data ?? "");
     expect(buttons.some((b) => b.startsWith("refresh"))).toBe(false);
     expect(buttons.some((b) => b.startsWith("cancel"))).toBe(false);
     expect(buttons.some((b) => b.includes("refresh") || b.includes("cancel"))).toBe(false);
-    expect(api.sendMessage).not.toHaveBeenCalled();
-    expect(api.deleteMessage).not.toHaveBeenCalled();
+    expect(api.editMessageCaption).not.toHaveBeenCalled();
     await expectCanonicalCompletion(order.id);
   });
 });
@@ -392,9 +396,9 @@ describe("acceptance: 10 refreshes + 5 webhook retries + 3 poller detections + 2
 
     expect(await prisma.processedTokopayTx.count({ where: { orderId: order.id } })).toBe(1);
     expect(await prisma.financialTransaction.count({ where: { idempotencyKey: `order:${order.id}:payment` } })).toBe(1);
-    expect(api.editMessageCaption).toHaveBeenCalledTimes(1);
-    expect(api.deleteMessage).not.toHaveBeenCalled();
-    expect(api.sendMessage).not.toHaveBeenCalled();
+    expect(api.editMessageCaption).not.toHaveBeenCalled();
+    expect(api.sendMessage).toHaveBeenCalledTimes(1);
+    expect(api.deleteMessage).toHaveBeenCalledTimes(1);
     await expectCanonicalCompletion(order.id);
     expect(
       await prisma.notificationOutbox.count({
@@ -434,9 +438,9 @@ describe("acceptance: 10 refreshes + 5 webhook retries + 3 poller detections + 2
 
     expect(await prisma.processedTokopayTx.count({ where: { orderId: order.id } })).toBe(1);
     expect(await prisma.financialTransaction.count({ where: { idempotencyKey: `order:${order.id}:topup` } })).toBe(1);
-    expect(api.editMessageCaption).toHaveBeenCalledTimes(1);
-    expect(api.deleteMessage).not.toHaveBeenCalled();
-    expect(api.sendMessage).not.toHaveBeenCalled();
+    expect(api.editMessageCaption).not.toHaveBeenCalled();
+    expect(api.sendMessage).toHaveBeenCalledTimes(1);
+    expect(api.deleteMessage).toHaveBeenCalledTimes(1);
     await expectCanonicalCompletion(order.id);
     expect(await countTopupDms(order.id)).toBe(1);
     expect(

@@ -61,7 +61,8 @@ const CREDS = { userKey: "uk", apiKey: "ak", channel: "QRIS", minAmount: null };
 /** A different ID makes an accidental replacement detectable. */
 const REPLACEMENT_MSG_ID = 90210;
 
-/** The coordinator edits a saved text message or QR caption in place. */
+/** The coordinator edits a saved text message in place; a paid QR photo is
+ *  replaced by one status text and deleted. */
 const fakeApi = (
   overrides: Partial<{
     editMessageText: unknown;
@@ -74,6 +75,7 @@ const fakeApi = (
     editMessageCaption: vi.fn().mockResolvedValue(undefined),
     editMessageText: overrides.editMessageText ?? vi.fn().mockResolvedValue(undefined),
     deleteMessage: overrides.deleteMessage ?? vi.fn().mockResolvedValue(true),
+    editMessageReplyMarkup: vi.fn().mockResolvedValue(true),
   }) as unknown as Api;
 
 /** Telegram identifies a saved photo, whose caption the worker then edits. */
@@ -226,9 +228,9 @@ describe("reconcileOrder (PayDisini poller safety net)", () => {
   });
 
   /** Acknowledge the real checkout screen before a provider can settle it. */
-  async function anchor(orderId: number, messageId = 777) {
+  async function anchor(orderId: number, messageId = 777, kind: "photo" | "text" = "photo") {
     await prisma.$transaction(async (tx) => {
-      await adoptTransactionMessage(tx, orderId, 555, messageId, "photo");
+      await adoptTransactionMessage(tx, orderId, 555, messageId, kind);
       await setOrderPaymentMessage(tx, orderId, 555, messageId);
     });
   }
@@ -249,15 +251,28 @@ describe("reconcileOrder (PayDisini poller safety net)", () => {
     (api.editMessageText as ReturnType<typeof vi.fn>).mock.calls,
   );
 
+  /** The one status text that replaced the anchored QR photo 777, which was
+   *  deleted; the photo itself is never edited. */
+  function replacement(api: Api) {
+    expect(api.editMessageText).not.toHaveBeenCalled();
+    expect(api.editMessageCaption).not.toHaveBeenCalled();
+    expect(api.deleteMessage).toHaveBeenCalledTimes(1);
+    expect(api.deleteMessage).toHaveBeenCalledWith("555", 777, expect.anything());
+    const sends = vi.mocked(api.sendMessage).mock.calls;
+    expect(sends).toHaveLength(1);
+    const [chatId, text, payload] = sends[0]! as unknown as [string, string, { reply_markup: { inline_keyboard: Array<Array<{ callback_data?: string }>> } }];
+    return { chatId, text, buttons: payload.reply_markup.inline_keyboard.flat().map((b) => b.callback_data ?? "") };
+  }
+
   async function reconcilePaid(api: Api, trxId: string): Promise<void> {
     const [pending] = await listPendingPaydisiniOrders(prisma, new Date());
     stubStatus({ status: "success", unique_code: trxId, amount: pending!.totalAmount.toString() });
     await reconcileOrder(api, CREDS, pending!);
   }
 
-  async function deliverAnchored(api: Api, trxId: string) {
+  async function deliverAnchored(api: Api, trxId: string, kind: "photo" | "text" = "photo") {
     const created = await makePaydisiniOrder();
-    await anchor(created!.id);
+    await anchor(created!.id, 777, kind);
     await reconcilePaid(api, trxId);
     return prisma.order.findUniqueOrThrow({ where: { id: created!.id } });
   }
@@ -283,7 +298,7 @@ describe("reconcileOrder (PayDisini poller safety net)", () => {
 
   it("lets the worker edit the original stock completion text once and retain its anchor", async () => {
     const api = fakeApi();
-    const after = await deliverAnchored(api, "TRX-FLIP");
+    const after = await deliverAnchored(api, "TRX-FLIP", "text");
     expectNoDirectMutation(api);
     await render(api, after.id);
     const edit = bubbleEdit(api);
@@ -299,15 +314,32 @@ describe("reconcileOrder (PayDisini poller safety net)", () => {
     expect(api.editMessageText).toHaveBeenCalledTimes(1);
   });
 
-  it("edits the original product QR caption without deletion or replacement", async () => {
-    const api = fakeApi({ editMessageText: vi.fn().mockRejectedValue(noTextToEdit()) });
+  it("replaces the original product QR with one completion text and deletes the QR", async () => {
+    const api = fakeApi();
     const after = await deliverAnchored(api, "TRX-FLIP-PHOTO");
     expectNoDirectMutation(api);
     await render(api, after.id);
-    expect(api.editMessageCaption).toHaveBeenCalledWith("555", 777, expect.objectContaining({ caption: expect.stringContaining("100%") }), expect.anything());
-    expect(api.deleteMessage).not.toHaveBeenCalled();
-    expect(api.sendMessage).not.toHaveBeenCalled();
-    expect(await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: after.id } })).toMatchObject({ chatId: 555n, messageId: 777, state: "FINISHED" });
+    const status = replacement(api);
+    expect(status.chatId).toBe("555");
+    expect(status.text).toContain("100%");
+    expect(await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: after.id } })).toMatchObject({
+      chatId: 555n, messageId: REPLACEMENT_MSG_ID, messageKind: "text", state: "FINISHED",
+    });
+    await render(api, after.id);
+    expect(api.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("learns that a legacy bubble is a photo and replaces it rather than editing its caption", async () => {
+    const api = fakeApi({ editMessageText: vi.fn().mockRejectedValue(noTextToEdit()) });
+    const created = await makePaydisiniOrder();
+    await anchor(created!.id);
+    await prisma.fulfillmentMessage.update({ where: { orderId: created!.id }, data: { messageKind: null } });
+    await reconcilePaid(api, "TRX-FLIP-LEGACY");
+    await render(api, created!.id);
+    expect(api.editMessageText).toHaveBeenCalledTimes(1);
+    expect(api.editMessageCaption).not.toHaveBeenCalled();
+    expect(api.sendMessage).toHaveBeenCalledTimes(1);
+    expect(api.deleteMessage).toHaveBeenCalledWith("555", 777, expect.anything());
   });
 
   it.each([
@@ -316,7 +348,7 @@ describe("reconcileOrder (PayDisini poller safety net)", () => {
     ["a network fault", () => new Error("socket hang up")],
   ])("lets the worker retain the anchor and schedule a retry after %s", async (_label, makeError) => {
     const api = fakeApi({ editMessageText: vi.fn().mockRejectedValue(makeError()) });
-    const after = await deliverAnchored(api, "TRX-EDITFAIL");
+    const after = await deliverAnchored(api, "TRX-EDITFAIL", "text");
     expectNoDirectMutation(api);
     await render(api, after.id);
     const row = await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: after.id } });
@@ -332,7 +364,7 @@ describe("reconcileOrder (PayDisini poller safety net)", () => {
     ["an unchanged completed message", "Bad Request: message is not modified", "FINISHED"],
   ])("lets the worker record %s without clearing ownership or sending a duplicate", async (_label, description, state) => {
     const api = fakeApi({ editMessageText: vi.fn().mockRejectedValue(telegramError(400, description)) });
-    const after = await deliverAnchored(api, "TRX-PERMANENT");
+    const after = await deliverAnchored(api, "TRX-PERMANENT", "text");
     expectNoDirectMutation(api);
     await render(api, after.id);
     expect(await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: after.id } })).toMatchObject({ state, chatId: 555n, messageId: 777 });
@@ -352,15 +384,14 @@ describe("reconcileOrder (PayDisini poller safety net)", () => {
       return order;
     }
 
-    it("shows the full reference, 100% completion and the credited balance on the same message", async () => {
+    it("shows the full reference, 100% completion and the credited balance on the text that replaces the QR", async () => {
       const topup = await makeAnchoredTopup();
       const api = fakeApi();
       await reconcilePaid(api, "TRX-TOPUP");
       expectNoDirectMutation(api);
       await render(api, topup.id);
-      const edit = bubbleEdit(api);
-      expect(String(edit.chatId)).toBe("555");
-      expect(edit.msgId).toBe(777);
+      const edit = replacement(api);
+      expect(edit.chatId).toBe("555");
       expect(edit.text).toContain(topup.orderCode);
       expect(edit.text).toContain("100%");
       expect(edit.text).toMatch(/173[.,]456/);
@@ -376,24 +407,22 @@ describe("reconcileOrder (PayDisini poller safety net)", () => {
       await reconcilePaid(api, "TRX-TOPUP-KB");
       expectNoDirectMutation(api);
       await render(api, topup.id);
-      expect(bubbleEdit(api).buttons).toContain("v1:wallet:view");
-      expect(bubbleEdit(api).buttons).not.toContain("v1:order:list");
+      expect(replacement(api).buttons).toContain("v1:wallet:view");
+      expect(replacement(api).buttons).not.toContain("v1:order:list");
     });
 
-    it("keeps and edits the wallet QR caption with the full completion receipt", async () => {
+    it("removes only the stale buttons from a wallet QR Telegram will not delete, and keeps the receipt", async () => {
       const topup = await makeAnchoredTopup();
-      const api = fakeApi({ editMessageText: vi.fn().mockRejectedValue(noTextToEdit()) });
+      const api = fakeApi({ deleteMessage: vi.fn().mockRejectedValue(telegramError(400, "Bad Request: message to delete not found")) });
       await reconcilePaid(api, "TRX-TOPUP-PHOTO");
       expectNoDirectMutation(api);
       await render(api, topup.id);
-      const captionCalls = vi.mocked(api.editMessageCaption).mock.calls;
-      const payload = captionCalls[0]![2] as { caption: string };
-      expect(payload.caption).toContain(topup.orderCode);
-      expect(payload.caption).toContain("100%");
-      expect(payload.caption).toMatch(/173[.,]456/);
-      expect(api.deleteMessage).not.toHaveBeenCalled();
-      expect(api.sendMessage).not.toHaveBeenCalled();
-      expect(await prisma.order.findUniqueOrThrow({ where: { id: topup.id } })).toMatchObject({ paymentMsgChatId: 555n, paymentMsgId: 777 });
+      const receipt = replacement(api);
+      expect(receipt.text).toContain(topup.orderCode);
+      expect(receipt.text).toContain("100%");
+      expect(receipt.text).toMatch(/173[.,]456/);
+      expect(api.editMessageReplyMarkup).toHaveBeenCalledWith("555", 777, { reply_markup: { inline_keyboard: [] } }, expect.anything());
+      expect(await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: topup.id } })).toMatchObject({ messageId: REPLACEMENT_MSG_ID, state: "FINISHED" });
     });
   });
 
@@ -402,27 +431,28 @@ describe("reconcileOrder (PayDisini poller safety net)", () => {
     const after = await deliverAnchored(api, "TRX-PRODUCT-DELIVERED");
     expectNoDirectMutation(api);
     await render(api, after.id);
-    const edit = bubbleEdit(api);
+    const edit = replacement(api);
     expect(edit.text).toContain(after.orderCode);
     expect(edit.text).toContain("100%");
     expect(edit.buttons).toContain("v1:order:list");
     expect(edit.buttons).not.toContain("v1:wallet:view");
   });
 
-  it("renders a manual product queue as a static wait on the same message", async () => {
+  it("renders a manual product queue as a static wait on the text that replaces the QR", async () => {
     await updateDenomination(prisma, sample.product.id, { deliveryType: DeliveryType.MANUAL });
     const api = fakeApi();
     const after = await deliverAnchored(api, "TRX-PRODUCT-PROCESSING");
     expect(after.status).toBe(OrderStatus.PROCESSING);
     expectNoDirectMutation(api);
     await render(api, after.id);
-    const edit = bubbleEdit(api);
+    const edit = replacement(api);
     expect(edit.text).toContain(after.orderCode);
     expect(edit.text).not.toContain("%");
     expect(edit.text).not.toMatch(/[â£¾â£½â£»â¢¿â¡¿â£Ÿâ£¯â£·]/u);
-    expect(await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: after.id } })).toMatchObject({ state: "WAITING", messageId: 777 });
+    expect(await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: after.id } })).toMatchObject({ state: "WAITING", messageId: REPLACEMENT_MSG_ID });
     await render(api, after.id);
-    expect(api.editMessageText).toHaveBeenCalledTimes(1);
+    expect(api.sendMessage).toHaveBeenCalledTimes(1);
+    expect(api.editMessageText).not.toHaveBeenCalled();
   });
 
   describe("instant Digiflazz dispatch", () => {
@@ -438,9 +468,9 @@ describe("reconcileOrder (PayDisini poller safety net)", () => {
       expect(trigger).toHaveBeenCalledTimes(1);
       expect(trigger).toHaveBeenCalledWith(created!.id);
       await render(api, created!.id);
-      const edit = vi.mocked(api.editMessageText);
-      expect(edit).toHaveBeenCalledTimes(1);
-      expect(trigger.mock.invocationCallOrder[0]!).toBeLessThan(edit.mock.invocationCallOrder[0]!);
+      replacement(api);
+      const send = vi.mocked(api.sendMessage);
+      expect(trigger.mock.invocationCallOrder[0]!).toBeLessThan(send.mock.invocationCallOrder[0]!);
     });
 
     it("does not start dispatch for stock completion", async () => {

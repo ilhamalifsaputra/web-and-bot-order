@@ -10,7 +10,7 @@ import { logger } from "@app/core/logger";
 import { escape } from "./templates";
 import { renderTransactionStatusMessage } from "./transactionMessage";
 
-export type FulfillmentTelegramApi = Pick<Bot["api"], "sendMessage" | "editMessageText" | "editMessageCaption">;
+export type FulfillmentTelegramApi = Pick<Bot["api"], "sendMessage" | "editMessageText" | "editMessageCaption" | "deleteMessage" | "editMessageReplyMarkup">;
 const include = { order: { include: { user: true, items: { include: { product: { include: { product: { include: { category: true } } } } } } } } } as const;
 type MessageRow = Prisma.FulfillmentMessageGetPayload<{ include: typeof include }>;
 const INTERVAL_MS = 2000;
@@ -28,6 +28,14 @@ const FRAMES = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"];
  * one of them: `wakeFulfillmentMessage` moves it on when the order ends. */
 const POLLED_STATES = ["READY", "ACTIVE", "REVIEW"];
 const TERMINAL_PHASES: ReadonlySet<string> = new Set(["SUCCESS", "WALLET_CREDITED", "FAILED", "CANCELLED", "CREDITED"]);
+/** Phases in which the payment is not verified yet, so a QR/invoice photo must
+ * stay visible (its caption is edited). In any other phase the photo is
+ * retired: one status text replaces it and the photo is deleted. */
+const QR_LIVE_PHASES: ReadonlySet<string> = new Set(["NONE", "PAYMENT_DETECTED", "VERIFYING"]);
+/** Phases whose status text offers the bot's existing Support entry. */
+const SUPPORT_PHASES: ReadonlySet<string> = new Set(["UNDERPAID", "REVIEW", "FAILED", "CANCELLED"]);
+/** Telegram's answer when editMessageText targets a photo/media message. */
+const NO_TEXT_TO_EDIT = /there is no text in the message to edit/i;
 
 /** One persisted message per order. An initial send without an acknowledgement
  * cannot safely be retried: Telegram has no idempotent send API. */
@@ -48,6 +56,8 @@ export class FulfillmentMessageWorker {
         ? [[{ text: t("transaction.wallet", lang), callback_data: "v1:wallet:view" }, menu]]
         : [[{ text: t("checkout.buy_again_btn", lang), callback_data: "v1:browse:prods" }], [{ text: t("order.all_history_btn", lang), callback_data: "v1:order:list" }, menu]] };
     }
+    // The same entry as the Help Center's Support button (the support conversation).
+    if (SUPPORT_PHASES.has(phase)) return { inline_keyboard: [[{ text: t("menu.support", lang), callback_data: "v1:support:open" }, menu]] };
     return { inline_keyboard: [[menu]] };
   }
 
@@ -124,6 +134,37 @@ export class FulfillmentMessageWorker {
     });
   }
 
+  /** Best-effort cleanup of a QR photo once its status text replaced it. It
+   * runs after the replacement is saved, is never retried and never throws:
+   * a photo left in the chat must not hold up payment or fulfilment. When
+   * Telegram refuses the delete (older than 48 hours, already gone, no
+   * rights), only the photo's stale payment buttons are removed. */
+  private async removeRetiredPhoto(row: MessageRow, photoId: number, signal: Parameters<FulfillmentTelegramApi["deleteMessage"]>[2]): Promise<void> {
+    const chatId = String(row.chatId);
+    try {
+      await this.api.deleteMessage(chatId, photoId, signal);
+      return;
+    } catch (error) {
+      const e = error as { error_code?: number; description?: string };
+      if (e.error_code !== 400 && e.error_code !== 403) {
+        logger.warn({ orderId: row.orderId, errorCode: e.error_code },
+          e.error_code === 429
+            ? "Telegram rate-limited deleting the replaced payment QR photo, so it stays in the chat; this cleanup is not retried."
+            : "Deleting the replaced payment QR photo failed before Telegram answered, so it may stay in the chat; this cleanup is not retried.");
+        return;
+      }
+      logger.info({ orderId: row.orderId, errorCode: e.error_code, description: e.description },
+        "Telegram refused to delete the replaced payment QR photo, so its payment buttons are removed instead.");
+    }
+    try {
+      await this.api.editMessageReplyMarkup(chatId, photoId, { reply_markup: { inline_keyboard: [] } }, signal);
+    } catch (error) {
+      const e = error as { error_code?: number; description?: string };
+      logger.warn({ orderId: row.orderId, errorCode: e.error_code, description: e.description },
+        "Removing the payment buttons from the replaced QR photo failed too; the photo keeps them, and the order is unaffected.");
+    }
+  }
+
   private async deliver(row: MessageRow): Promise<boolean> {
     // Re-read after acquiring the claim so a final callback wins over a stale frame.
     const order = await this.db.order.findUniqueOrThrow({ where: { id: row.orderId }, include: include.order.include });
@@ -193,43 +234,74 @@ export class FulfillmentMessageWorker {
     // grammY types its signal with the abort-controller shim; native Node
     // signals implement the same runtime contract accepted by fetch.
     const apiSignal = controller.signal as unknown as NonNullable<Parameters<FulfillmentTelegramApi["sendMessage"]>[3]>;
+    const options = { parse_mode: "HTML" as const, reply_markup: this.keyboard(progress.phase, progress.transactionType, lang) };
+    const qrLive = QR_LIVE_PHASES.has(progress.phase);
+    // The lease this pass holds; retiring a photo upgrades it to SENDING.
+    let claim: MessageRow = row;
+    // What a legacy (kind unknown) message turned out to be on this pass.
+    let learnedKind: "photo" | "text" | undefined;
     try {
       if (row.messageId === null) {
-        const sent = await this.api.sendMessage(String(row.chatId), text, { parse_mode: "HTML", reply_markup: this.keyboard(progress.phase, progress.transactionType, lang) }, apiSignal);
+        const sent = await this.api.sendMessage(String(row.chatId), text, options, apiSignal);
         await this.saveProgress(row, { ...data, messageId: sent.message_id, messageKind: "text" });
-      } else {
-        if (row.lastText !== text) {
+        return false;
+      }
+      // A QR/invoice photo stays only while the payment is unverified. Never
+      // call editMessageText on a known photo.
+      let retire = row.messageKind === "photo" && !qrLive;
+      if (!retire && row.lastText !== text) {
+        if (row.messageKind === "photo") {
+          await this.api.editMessageCaption(String(row.chatId), row.messageId, { ...options, caption: text }, apiSignal);
+        } else {
           try {
-            await this.api.editMessageText(String(row.chatId), row.messageId, text, { parse_mode: "HTML", reply_markup: this.keyboard(progress.phase, progress.transactionType, lang) }, apiSignal);
+            await this.api.editMessageText(String(row.chatId), row.messageId, text, options, apiSignal);
+            if (row.messageKind !== "text") learnedKind = "text";
           } catch (error) {
             const e = error as { error_code?: number; description?: string };
-            // Only Telegram's explicit photo response permits caption fallback.
-            // A timeout/429/5xx never deletes or replaces the canonical message.
-            if (e.error_code !== 400 || !/there is no text in the message to edit/i.test(e.description ?? "")) throw error;
-            await this.api.editMessageCaption(String(row.chatId), row.messageId, { caption: text, parse_mode: "HTML", reply_markup: this.keyboard(progress.phase, progress.transactionType, lang) }, apiSignal);
+            // Only Telegram's explicit photo response reveals a photo. A
+            // timeout/429/5xx never deletes or replaces the canonical message.
+            if (e.error_code !== 400 || !NO_TEXT_TO_EDIT.test(e.description ?? "")) throw error;
+            learnedKind = "photo";
+            if (qrLive) await this.api.editMessageCaption(String(row.chatId), row.messageId, { ...options, caption: text }, apiSignal);
+            else retire = true;
           }
         }
-        await this.saveProgress(row, data);
       }
+      if (!retire) {
+        await this.saveProgress(row, { ...data, ...(learnedKind ? { messageKind: learnedKind } : {}) });
+        return false;
+      }
+      // Claim the replacement exactly like an initial send: a crash between
+      // sendMessage and saving its id leaves SENDING, which becomes UNCERTAIN
+      // and is never resent.
+      const upgraded = await this.db.fulfillmentMessage.updateMany({ where, data: { state: "SENDING" } });
+      if (!upgraded.count) return false;
+      claim = { ...row, state: "SENDING" };
+      const sent = await this.api.sendMessage(String(row.chatId), text, options, apiSignal);
+      await this.saveProgress(claim, { ...data, messageId: sent.message_id, messageKind: "text" });
+      await this.removeRetiredPhoto(row, row.messageId, apiSignal);
       return false;
     } catch (error) {
       const e = error as { error_code?: number; description?: string; parameters?: { retry_after?: number } };
+      const sending = claim.messageId === null || claim.state === "SENDING";
+      const claimed = { orderId: claim.orderId, state: claim.state, claimedAt: claim.claimedAt };
+      const kind = learnedKind ? { messageKind: learnedKind } : {};
       if (e.error_code === 429) {
         const nextUpdateAt = new Date(this.now().getTime() + Math.max(1, e.parameters?.retry_after ?? 30) * 1000);
-        await this.db.fulfillmentMessage.updateMany({ where, data: { state: row.messageId === null ? "READY" : "ACTIVE", claimedAt: null, nextUpdateAt } });
+        await this.db.fulfillmentMessage.updateMany({ where: claimed, data: { ...kind, state: row.messageId === null ? "READY" : "ACTIVE", claimedAt: null, nextUpdateAt } });
         // Durable global backoff also prevents another process draining ready rows.
         await this.db.fulfillmentMessage.updateMany({ where: { state: { in: POLLED_STATES }, nextUpdateAt: { lt: nextUpdateAt } }, data: { nextUpdateAt } });
         return true;
       }
-      if (row.messageId !== null && e.error_code === 400 && e.description?.includes("message is not modified")) {
-        await this.saveProgress(row, data);
+      if (!sending && e.error_code === 400 && e.description?.includes("message is not modified")) {
+        await this.saveProgress(claim, { ...data, ...kind });
       } else if (e.error_code === 403 || e.error_code === 400) {
-        await this.stopAndAlert(row, "STOPPED", "Telegram status message is unavailable; automatic replacement is disabled.");
-      } else if (row.messageId === null) {
-        await this.stopAndAlert(row, "UNCERTAIN", "Telegram status message delivery is uncertain; automatic resend is disabled.");
+        await this.stopAndAlert(claim, "STOPPED", "Telegram status message is unavailable; automatic replacement is disabled.");
+      } else if (sending) {
+        await this.stopAndAlert(claim, "UNCERTAIN", "Telegram status message delivery is uncertain; automatic resend is disabled.");
       } else {
         // Editing the same message is safe to retry after transport/database failure.
-        await this.db.fulfillmentMessage.updateMany({ where, data: { state: "ACTIVE", claimedAt: null, nextUpdateAt: new Date(this.now().getTime() + 10_000) } });
+        await this.db.fulfillmentMessage.updateMany({ where: claimed, data: { ...kind, state: "ACTIVE", claimedAt: null, nextUpdateAt: new Date(this.now().getTime() + 10_000) } });
         logger.warn({ orderId: row.orderId }, "Telegram fulfillment edit deferred");
       }
       return false;

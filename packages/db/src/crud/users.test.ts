@@ -5,6 +5,7 @@ import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import {
   upsertUser,
   getUser,
+  getUserContact,
   getUserByTelegramId,
   searchUsers,
   userTotalSpent,
@@ -59,6 +60,30 @@ beforeAll(async () => {
 });
 afterAll(async () => {
   await db.cleanup();
+});
+
+describe("getUserContact", () => {
+  it("returns only email, isGuest and guestEmail, never passwordHash", async () => {
+    const user = await upsertUser(prisma, { telegramId: 9002, username: "contact", fullName: null });
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { passwordHash: "bcrypt$fakehash", email: "web@example.com" },
+    });
+    const found = await getUserContact(prisma, user.id);
+    expect(found).toEqual({ email: "web@example.com", isGuest: false, guestEmail: null });
+  });
+
+  it("returns the guest flag and address for a guest row, and null for an unknown id", async () => {
+    const guest = await prisma.user.create({
+      data: { isGuest: true, guestEmail: "guest@example.com", referralCode: "CONTACT-RC-1" },
+    });
+    expect(await getUserContact(prisma, guest.id)).toEqual({
+      email: null,
+      isGuest: true,
+      guestEmail: "guest@example.com",
+    });
+    expect(await getUserContact(prisma, 987654321)).toBeNull();
+  });
 });
 
 describe("getUserByTelegramId", () => {

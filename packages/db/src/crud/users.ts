@@ -114,6 +114,17 @@ export function getUser(db: Db, userId: number) {
   return db.user.findUnique({ where: { id: userId }, select: USER_SELECT });
 }
 
+/** The three contact columns `getUser` deliberately omits: a registered
+ * account's `email` plus the guest-checkout flag and address. For admin-only
+ * views that must name a customer who has no Telegram identity (e.g. the
+ * support ticket detail page). Never selects `passwordHash`. */
+export function getUserContact(db: Db, userId: number) {
+  return db.user.findUnique({
+    where: { id: userId },
+    select: { email: true, isGuest: true, guestEmail: true },
+  });
+}
+
 /**
  * Idempotent user creation. Refreshes username/full_name/last_seen on every
  * call; promotes to ADMIN on first sight if the telegram_id is allow-listed.

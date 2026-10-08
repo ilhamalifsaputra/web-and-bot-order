@@ -14,6 +14,7 @@ import {
   getTicketWithOrder,
   listTicketMessages,
   getUser,
+  getUserContact,
   addTicketMessage,
   closeTicket,
   assignTicketWithAudit,
@@ -263,12 +264,9 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
       // customer-safe exclusion).
       listTicketMessages(prisma, ticketId, 100, { includeInternal: true }),
       getUser(prisma, ticket.userId),
-      // `getUser` never returns email/isGuest/guestEmail (backend audit H-4),
-      // so read exactly those three columns — never the password hash.
-      prisma.user.findUnique({
-        where: { id: ticket.userId },
-        select: { email: true, isGuest: true, guestEmail: true },
-      }),
+      // `getUser` never returns email/isGuest/guestEmail (backend audit H-4);
+      // this helper reads exactly those three columns, never the password hash.
+      getUserContact(prisma, ticket.userId),
       userTotalSpent(prisma, ticket.userId),
       countUserOrders(prisma, ticket.userId),
       listUserOrders(prisma, ticket.userId, 5),

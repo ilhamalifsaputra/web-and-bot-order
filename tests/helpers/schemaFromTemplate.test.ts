@@ -15,7 +15,7 @@ import { randomBytes } from "node:crypto";
 import { PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { dropSchema, pushSchema, seedChartOfAccounts, withSchema } from "./pgSchemaPlumbing";
-import { createSchemaFromTemplate, getSchemaTemplate } from "./schemaFromTemplate";
+import { createSchemaFromTemplate, ensureSchemaTemplate } from "./schemaFromTemplate";
 
 const baseUrl = process.env.DATABASE_URL_PRISMA ?? "";
 const suffix = randomBytes(6).toString("hex");
@@ -137,8 +137,8 @@ describe("test-schema fast path parity with prisma db push + seed", () => {
   it(
     "builds the same schema, seed rows and sequence positions as the spawn path, and nothing in public",
     async () => {
-      const template = getSchemaTemplate();
-      expect(template, "globalSetup must provide the template for the fast path to be tested").toBeDefined();
+      const template = await ensureSchemaTemplate();
+      expect(template, "the run's template must be available for the fast path to be tested").toBeDefined();
 
       const fastClient = new PrismaClient({ datasourceUrl: withSchema(baseUrl, fastSchema) });
       try {

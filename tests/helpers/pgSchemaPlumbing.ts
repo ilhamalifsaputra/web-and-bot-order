@@ -1,6 +1,7 @@
 /**
  * Low-level plumbing shared by the test-schema helpers (testdb.ts,
- * pgTestSchema.ts) and the Vitest global setup (globalSetup.ts): building a
+ * pgTestSchema.ts, schemaFromTemplate.ts) and the Vitest global setup's
+ * teardown (globalSetup.ts): building a
  * schema-scoped connection URL, running the two provisioning subprocesses
  * (`prisma db push` and the chart-of-accounts seed), and dropping a schema.
  *

@@ -3,35 +3,42 @@
  *
  * The slow path (still used when this one is unavailable) spawns `prisma db
  * push` — and, for the app suites, the chart-of-accounts seed script — once per
- * test FILE, which was roughly 330 process spawns per full run. Instead,
- * tests/helpers/globalSetup.ts provisions ONE template schema per Vitest run
- * with exactly those commands, and writes the schema's DDL (from `prisma
- * migrate diff --from-empty`) to a temp file. Each test file then builds its
- * schema in-database: run the DDL inside the new schema, copy the template's
- * seed rows across, and move every copied table's id sequence past the copied
- * ids. tests/helpers/schemaFromTemplate.test.ts compares the result with the
- * slow path so the two cannot drift apart unnoticed.
+ * test FILE, which was roughly 330 process spawns per full run. Instead, the
+ * first test file of a run that needs a database builds ONE template schema
+ * with exactly those commands and writes the schema's DDL (from `prisma
+ * migrate diff --from-empty`) to a temp file (`ensureSchemaTemplate`). Every
+ * test file then builds its own schema in-database: run the DDL inside the new
+ * schema, copy the template's seed rows across, and move every copied table's
+ * id sequence past the copied ids. tests/helpers/schemaFromTemplate.test.ts
+ * compares the result with the slow path so the two cannot drift apart
+ * unnoticed.
  *
  * Like pgTestSchema.ts, this module must never import an `@app/*` module (its
  * callers run before the `@app/db` Prisma singleton is constructed). Plain
  * `@prisma/client` is fine.
  */
-import { readFileSync } from "node:fs";
-import type { PrismaClient } from "@prisma/client";
+import { exec } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { promisify } from "node:util";
+import { PrismaClient } from "@prisma/client";
 import { inject } from "vitest";
+import { ROOT, pushSchema, seedChartOfAccounts, withSchema } from "./pgSchemaPlumbing";
 
-/** What globalSetup.ts hands to the workers when the template is ready. */
+const execAsync = promisify(exec);
+
+/** What globalSetup.ts hands to the workers: where this run's template goes. */
 export interface PgTestTemplate {
-  /** Name of the once-per-run template schema holding the seed rows. */
+  /** Name of the run's template schema (`test_template_<epochSeconds>_<hex>`). */
   schema: string;
-  /** Path of the temp file holding the canonical schema's DDL script. */
-  ddlPath: string;
+  /** Temp directory for the template's DDL file and build-failure marker. */
+  workDir: string;
 }
 
 declare module "vitest" {
   export interface ProvidedContext {
-    // Optional: globalSetup provides nothing when it could not build the
-    // template, and the helpers then fall back to the slow spawn path.
+    // Optional so the helpers still work (via the slow spawn path) under a
+    // Vitest config that does not run tests/helpers/globalSetup.ts.
     pgTestTemplate?: PgTestTemplate;
   }
 }
@@ -42,29 +49,138 @@ export interface ReadyTemplate {
   statements: string[];
 }
 
-// The DDL file is read and split once per worker module graph rather than once
-// per provisioned schema.
-const statementCache = new Map<string, string[]>();
+/** Templates left by aborted runs are dropped once they are this old. */
+const STALE_TEMPLATE_SECONDS = 6 * 60 * 60;
+const TEMPLATE_NAME = /^test_template_(\d+)_[0-9a-f]+$/;
+
+// One resolution per worker module graph: a failed build is remembered here
+// (and, for other worker processes, by the marker file) instead of retried
+// for every schema.
+let resolved: Promise<ReadyTemplate | undefined> | undefined;
 
 /**
- * Returns the run's template, or undefined when globalSetup did not provide
- * one (it failed, or this code is running outside Vitest) — in which case the
- * caller must use the slow spawn path.
+ * Returns the run's template, building it first if no test file has yet, or
+ * undefined when there is none to use (no Vitest-provided location, no
+ * database URL, or the build failed) — in which case the caller must use the
+ * slow spawn path.
  */
-export function getSchemaTemplate(): ReadyTemplate | undefined {
+export function ensureSchemaTemplate(): Promise<ReadyTemplate | undefined> {
+  resolved ??= resolveTemplate();
+  return resolved;
+}
+
+async function resolveTemplate(): Promise<ReadyTemplate | undefined> {
   let provided: PgTestTemplate | undefined;
   try {
     provided = inject("pgTestTemplate");
   } catch {
     return undefined;
   }
-  if (!provided) return undefined;
-  let statements = statementCache.get(provided.ddlPath);
-  if (!statements) {
-    statements = prepareDdl(readFileSync(provided.ddlPath, "utf8"));
-    statementCache.set(provided.ddlPath, statements);
+  const baseUrl = process.env.DATABASE_URL_PRISMA;
+  if (!provided || !baseUrl) return undefined;
+  const { schema, workDir } = provided;
+  const ddlPath = join(workDir, "schema.sql");
+  const failedPath = join(workDir, "build-failed");
+
+  // Builders in parallel workers are serialised by a transaction-scoped
+  // advisory lock keyed on the template's name: the first one builds, the rest
+  // block on the lock and then find the ready marker. The interactive
+  // transaction pins the one connection the lock lives on, and the lock cannot
+  // outlive a crashed holder.
+  const client = new PrismaClient({ datasourceUrl: baseUrl });
+  let ready = false;
+  try {
+    ready = await client.$transaction(
+      async (tx) => {
+        await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(hashtext($1))`, schema);
+        if (existsSync(failedPath)) return false;
+        const [marker] = await tx.$queryRawUnsafe<{ comment: string | null }[]>(
+          `SELECT obj_description(oid, 'pg_namespace') AS comment FROM pg_namespace WHERE nspname = $1`,
+          schema,
+        );
+        if (marker?.comment === "ready" && existsSync(ddlPath)) return true;
+        try {
+          await buildTemplate(tx, schema, workDir, ddlPath, baseUrl);
+          return true;
+        } catch (err) {
+          console.warn(
+            `[test template] Building the test-schema template failed, so test files in this run will provision their own schema the slow way with prisma db push. Reason: ${firstLine(err)}`,
+          );
+          writeFileSync(failedPath, "");
+          return false;
+        }
+      },
+      // Waiting on the lock lasts as long as one build (push + seed + diff),
+      // which takes tens of seconds on a loaded machine.
+      { maxWait: 60_000, timeout: 600_000 },
+    );
+  } catch (err) {
+    console.warn(
+      `[test template] Could not check or build the test-schema template, so this test file provisions its schema the slow way with prisma db push. Reason: ${firstLine(err)}`,
+    );
+    return undefined;
+  } finally {
+    await client.$disconnect();
   }
-  return { schema: provided.schema, statements };
+  if (!ready) return undefined;
+  return { schema, statements: prepareDdl(readFileSync(ddlPath, "utf8")) };
+}
+
+type Tx = Parameters<Parameters<PrismaClient["$transaction"]>[0]>[0];
+
+/**
+ * Builds the template with exactly the commands the slow path runs per file,
+ * then marks it ready. Called with the advisory lock held. The work directory
+ * is created first because globalSetup's teardown takes it as the sign that a
+ * template schema may exist and needs dropping.
+ */
+async function buildTemplate(tx: Tx, schema: string, workDir: string, ddlPath: string, baseUrl: string) {
+  const started = Date.now();
+  mkdirSync(workDir, { recursive: true });
+
+  // Templates leaked by aborted runs carry their start time in the name;
+  // drop those older than six hours. No other test_* schema is touched.
+  const now = Math.floor(Date.now() / 1000);
+  const existing = await tx.$queryRawUnsafe<{ name: string }[]>(
+    `SELECT nspname AS name FROM pg_namespace WHERE nspname LIKE 'test\\_template\\_%'`,
+  );
+  let dropped = 0;
+  for (const { name } of existing) {
+    const match = TEMPLATE_NAME.exec(name);
+    if (!match || name === schema || now - Number(match[1]) < STALE_TEMPLATE_SECONDS) continue;
+    await tx.$executeRawUnsafe(`DROP SCHEMA IF EXISTS "${name}" CASCADE`);
+    dropped += 1;
+  }
+  if (dropped > 0) {
+    console.info(`[test template] Dropped ${dropped} test-schema template(s) left behind by runs more than six hours old.`);
+  }
+
+  // The DDL needs no database, so it is generated in a separate process while
+  // the template is pushed and seeded.
+  const ddlDone = execAsync(
+    `pnpm exec prisma migrate diff --from-empty --to-schema-datamodel prisma/schema.prisma --script --output "${ddlPath}"`,
+    { cwd: ROOT },
+  );
+  ddlDone.catch(() => {});
+  try {
+    const url = withSchema(baseUrl, schema);
+    pushSchema(url);
+    seedChartOfAccounts(url);
+    await ddlDone;
+  } catch (err) {
+    await ddlDone.catch(() => {});
+    throw err;
+  }
+  await tx.$executeRawUnsafe(`COMMENT ON SCHEMA "${schema}" IS 'ready'`);
+  console.info(
+    `[test template] Built the test-schema template for this run in ${((Date.now() - started) / 1000).toFixed(1)}s; test files copy their schemas from it.`,
+  );
+}
+
+// Subprocess errors embed the command line (never the URL, which travels in
+// the environment); keep only the first line so subprocess output stays out.
+function firstLine(err: unknown): string {
+  return (err instanceof Error ? err.message : String(err)).split(/\r?\n/)[0] ?? "unknown error";
 }
 
 /**

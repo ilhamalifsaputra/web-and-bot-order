@@ -5,14 +5,14 @@
  * app's own `public` schema).
  *
  * The tables normally come from the run's template (copied in-database by
- * tests/helpers/schemaFromTemplate.ts, built once by globalSetup.ts); when no
- * template was provided, this falls back to running `prisma db push` for the
- * file, as it always used to.
+ * tests/helpers/schemaFromTemplate.ts, built once per run by whichever test
+ * file needs it first); when there is no template to use, this falls back to
+ * running `prisma db push` for the file, as it always used to.
  */
 import { randomBytes } from "node:crypto";
 import { PrismaClient } from "@prisma/client";
 import { pushSchema, withSchema } from "./pgSchemaPlumbing";
-import { createSchemaFromTemplate, getSchemaTemplate } from "./schemaFromTemplate";
+import { createSchemaFromTemplate, ensureSchemaTemplate } from "./schemaFromTemplate";
 
 export interface TestDb {
   prisma: PrismaClient;
@@ -57,7 +57,7 @@ export async function makeTestDb(opts: { connectionLimit?: number } = {}): Promi
   });
 
   try {
-    const template = getSchemaTemplate();
+    const template = await ensureSchemaTemplate();
     if (template) {
       // Tables only, no seed rows: the slow path below never seeded either.
       await createSchemaFromTemplate(prisma, schema, template, { copySeedRows: false });

@@ -1,93 +1,52 @@
 /**
- * Vitest global setup (wired in the root vitest.config.ts): builds the
- * once-per-run template that tests/helpers/schemaFromTemplate.ts copies each
- * test file's Postgres schema from, so the per-file helpers (testdb.ts,
- * pgTestSchema.ts) no longer spawn `prisma db push` and the chart-of-accounts
- * seed for every file.
+ * Vitest global setup (wired in the root vitest.config.ts) for the test-schema
+ * template that tests/helpers/schemaFromTemplate.ts copies each test file's
+ * Postgres schema from.
  *
- * Runs in Vitest's main process before any worker starts. It hands the
- * template's schema name and DDL file path to the workers with `provide`
- * (read back with `inject`), Vitest's documented channel for this: provided
- * values are serialized into every worker's context, whereas process.env
- * changes made here are not part of Vitest's contract with its workers.
+ * It does no database work and spawns nothing: it only picks this run's
+ * template schema name and the temp directory its DDL will live in, and hands
+ * both to the workers with `provide` (read back with `inject`, Vitest's
+ * documented channel for this — provided values are serialized into every
+ * worker's context). The template itself is built lazily by the first test
+ * file that actually needs a database (see `ensureSchemaTemplate`), so a run
+ * with no DB tests — a guard run, a jsdom client run, a one-file
+ * `test:changed` — pays nothing for it.
  *
- * If anything fails it warns once, cleans up, and provides nothing: the
- * helpers then fall back to the old per-file spawn path, which is slower but
- * otherwise identical — so a broken template costs time, never correctness.
+ * The name carries the run's start time in epoch seconds so that a template
+ * leaked by an aborted run can be recognised by age and dropped by a later
+ * run's builder.
  */
-import { exec } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { promisify } from "node:util";
-// Importing the generated Prisma client also loads the repository's root .env
-// into process.env (the client does this itself at import time), which is how
-// DATABASE_URL_PRISMA reaches this main-process code — the same mechanism that
-// supplies it to the per-file helpers in the workers.
-import "@prisma/client";
 import type { GlobalSetupContext } from "vitest/node";
 import type { PgTestTemplate } from "./schemaFromTemplate";
-import { ROOT, dropSchema, pushSchema, seedChartOfAccounts, withSchema } from "./pgSchemaPlumbing";
 
-const execAsync = promisify(exec);
+export default function setup({ provide }: GlobalSetupContext): () => Promise<void> {
+  const schema = `test_template_${Math.floor(Date.now() / 1000)}_${randomBytes(6).toString("hex")}`;
+  const workDir = join(tmpdir(), `pg-${schema}`);
+  const template: PgTestTemplate = { schema, workDir };
+  provide("pgTestTemplate", template);
 
-export default async function setup({ provide }: GlobalSetupContext): Promise<() => Promise<void>> {
-  const baseUrl = process.env.DATABASE_URL_PRISMA;
-  if (!baseUrl) {
-    // Nothing to template against; the DB-backed helpers raise their own
-    // clear error if a test actually needs a database.
-    return async () => {};
-  }
-
-  const schema = `test_template_${randomBytes(6).toString("hex")}`;
-  const url = withSchema(baseUrl, schema);
-  const tempDir = mkdtempSync(join(tmpdir(), "pg-test-template-"));
-  const ddlPath = join(tempDir, "schema.sql");
-
-  const cleanup = async () => {
+  return async () => {
+    // The builder creates the directory before it touches the database, so
+    // its absence means no worker ever built (or tried to build) the
+    // template, and there is nothing to drop — no connection is opened.
+    if (!existsSync(workDir)) return;
     try {
-      await dropSchema(url, schema);
+      // Imported lazily so a run that never built the template does not even
+      // load the Prisma client. The import also loads the root .env, which is
+      // how DATABASE_URL_PRISMA reaches this main-process code.
+      const { dropSchema, withSchema } = await import("./pgSchemaPlumbing");
+      const baseUrl = process.env.DATABASE_URL_PRISMA;
+      if (baseUrl) await dropSchema(withSchema(baseUrl, schema), schema);
     } catch (err) {
+      const reason = (err instanceof Error ? err.message : String(err)).split(/\r?\n/)[0];
       console.warn(
-        `[test globalSetup] Could not drop the template schema ${schema}; it may be left behind in the dev database and can be dropped by hand. Reason: ${errorMessage(err)}`,
+        `[test globalSetup] Could not drop the template schema ${schema}; a later run drops it once it is six hours old. Reason: ${reason}`,
       );
     }
-    rmSync(tempDir, { recursive: true, force: true });
+    rmSync(workDir, { recursive: true, force: true });
   };
-
-  // The DDL needs no database, so it is generated in a separate process while
-  // the template is pushed and seeded, saving its couple of seconds of
-  // start-up on every run. Its rejection is observed below, after the push.
-  const ddlDone = execAsync(
-    `pnpm exec prisma migrate diff --from-empty --to-schema-datamodel prisma/schema.prisma --script --output "${ddlPath}"`,
-    { cwd: ROOT },
-  );
-  ddlDone.catch(() => {});
-  try {
-    // Exactly the commands the slow path runs per file, run once.
-    pushSchema(url);
-    seedChartOfAccounts(url);
-    await ddlDone;
-  } catch (err) {
-    console.warn(
-      `[test globalSetup] Building the test-schema template failed, so every test file will provision its own schema the slow way with prisma db push. Reason: ${errorMessage(err)}`,
-    );
-    // Let the DDL process finish before its temp directory is removed.
-    await ddlDone.catch(() => {});
-    await cleanup();
-    return async () => {};
-  }
-
-  const template: PgTestTemplate = { schema, ddlPath };
-  provide("pgTestTemplate", template);
-  return cleanup;
-}
-
-// Subprocess errors embed the full command line, which never includes the URL
-// (it is passed through the environment), but keep the message to its first
-// line so subprocess output cannot leak into the log either.
-function errorMessage(err: unknown): string {
-  const message = err instanceof Error ? err.message : String(err);
-  return message.split(/\r?\n/)[0] ?? "unknown error";
 }

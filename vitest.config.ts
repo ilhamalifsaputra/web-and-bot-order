@@ -41,8 +41,9 @@ export default defineConfig({
     // Vitest's 5s default is a unit-test budget, but most of this suite is
     // real-Postgres integration tests: tests/helpers/testdb.ts gives every test
     // file its own temp DB (so there is no cross-file lock contention to
-    // hide here) and each one pays a synchronous `prisma db push` plus real
-    // fsync-bound writes. The heavy ones therefore cost seconds of honest
+    // hide here) and each one pays for building that schema (an in-database
+    // copy of the run's template, see tests/helpers/schemaFromTemplate.ts)
+    // plus real fsync-bound writes. The heavy ones therefore cost seconds of honest
     // work — the 270-unit cart in packages/db/src/crud/order_creation.test.ts
     // takes ~3.0s on its own and the /setup/owner retry in
     // apps/web-admin/test/web.test.ts ~2.3s — leaving under 2x headroom
@@ -55,6 +56,14 @@ export default defineConfig({
     // ~6x the slowest known test: still short enough that a genuine hang
     // fails the run rather than hanging CI.
     testTimeout: 20_000,
+    // Vitest's 10s hook default is too short for the one hook per run that
+    // builds the test-schema template (db push + chart-of-accounts seed +
+    // migrate diff, ~15s idle and more under load), and for the hooks in the
+    // other workers that wait on that build's lock: makeTestDb() runs inside
+    // a test file's beforeAll, so whichever files arrive first would time out
+    // waiting rather than fail for a real reason. 60s still fails a genuinely
+    // hung hook.
+    hookTimeout: 60_000,
     // `vitest run --changed master` (pnpm test:changed) only reruns tests whose
     // import graph touches a changed file. Some inputs reach nearly every test
     // without being imported by it: every DB test depends on the Prisma schema
@@ -81,10 +90,12 @@ export default defineConfig({
         "__fixtures__/**",
       ].map(anywhere),
     ],
-    // Builds one template Postgres schema per run (db push + chart-of-accounts
-    // seed, once) that tests/helpers/testdb.ts and pgTestSchema.ts copy each
-    // test file's schema from in-database, instead of spawning those two
-    // commands for every file. See tests/helpers/globalSetup.ts.
+    // Names this run's template Postgres schema; the first test file that
+    // needs a database builds it (db push + chart-of-accounts seed, once) and
+    // tests/helpers/testdb.ts and pgTestSchema.ts copy each file's schema from
+    // it in-database instead of spawning those two commands for every file.
+    // Runs without DB tests do no template work. See
+    // tests/helpers/globalSetup.ts and schemaFromTemplate.ts.
     globalSetup: ["tests/helpers/globalSetup.ts"],
     environmentMatchGlobs: [
       ["apps/web-admin/client/**", "jsdom"],

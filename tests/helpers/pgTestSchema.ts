@@ -13,14 +13,14 @@
  * with the tables and the seeded chart of accounts, and returns a `cleanup()`
  * that drops it again so repeated test runs don't leave `test_*` schemas
  * piling up in the dev container. The schema is normally copied in-database
- * from the run's template (tests/helpers/schemaFromTemplate.ts, built once by
- * globalSetup.ts with the same two commands); when no template was provided it
- * falls back to running `prisma db push` and the seed script for this file.
+ * from the run's template (tests/helpers/schemaFromTemplate.ts, built once per
+ * run with the same two commands); when there is no template to use it falls
+ * back to running `prisma db push` and the seed script for this file.
  */
 import { randomBytes } from "node:crypto";
 import { PrismaClient } from "@prisma/client";
 import { dropSchema, pushSchema, seedChartOfAccounts, withSchema } from "./pgSchemaPlumbing";
-import { createSchemaFromTemplate, getSchemaTemplate } from "./schemaFromTemplate";
+import { createSchemaFromTemplate, ensureSchemaTemplate } from "./schemaFromTemplate";
 
 export interface PgTestSchemaEnv {
   /** Schema-scoped DATABASE_URL_PRISMA to bind the app's Prisma singleton to. */
@@ -46,7 +46,7 @@ export async function provisionPgTestSchema(prefix: string): Promise<PgTestSchem
   const url = withSchema(baseUrl, schema);
 
   try {
-    const template = getSchemaTemplate();
+    const template = await ensureSchemaTemplate();
     if (template) {
       // Already seeded: the template holds the chart of accounts, and its rows
       // are copied across along with the tables.
@@ -60,7 +60,7 @@ export async function provisionPgTestSchema(prefix: string): Promise<PgTestSchem
       pushSchema(url);
       // Seed the chart of accounts (Financial Ledger M3). Order settlement,
       // wallet top-ups, manual wallet adjustments and referral commissions all
-      // post to the double-entry ledger now, so a schema without these 15 rows
+      // post to the double-entry ledger now, so a schema without these rows
       // makes every app-level suite exercise those paths with the posting
       // SKIPPED (`postOrSkipMissingAccount`) rather than performed — which
       // passes, but tests a shop with no books instead of the real thing. It

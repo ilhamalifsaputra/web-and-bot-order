@@ -6748,3 +6748,72 @@ describe("instant Digiflazz dispatch from the bot's own settlement paths", () =>
     expect(triggerDigiflazzDispatch).not.toHaveBeenCalled();
   });
 });
+
+// After the fulfillment worker retires a checkout QR photo, the buyer's session
+// still remembers that (now deleted) photo as its menu bubble and payment
+// anchor. Navigating from the status text must still render exactly one new
+// bubble, never touch the status/receipt message, and never throw.
+describe("navigating after the worker retired the checkout QR photo", () => {
+  const QR_PHOTO_ID = 7701;
+
+  async function retiredOrder(kind: "product" | "wallet") {
+    const order = kind === "product"
+      ? (await makeOrder())!
+      : await makeWalletTopupOrder();
+    await prisma.order.update({ where: { id: order.id }, data: kind === "product"
+      ? { status: OrderStatus.DELIVERED, paidAt: new Date(), deliveredAt: new Date() }
+      : { paymentState: "PAID", paidAt: new Date(), walletCreditState: "CREDITED" } });
+    await adoptTransactionMessage(prisma, order.id, 42, QR_PHOTO_ID, "photo");
+    const telegram = makeCtx({ from: { id: 42 } });
+    await new FulfillmentMessageWorker(telegram.ctx.api, { now: () => new Date(Date.now() + 3000) }).tick(order.id);
+    // The worker spent one send (the status text) and one delete (the QR photo).
+    expect(calls(telegram.sink, "sendMessage")).toHaveLength(1);
+    expect(calls(telegram.sink, "deleteMessage").map(c => c.args[1])).toEqual([QR_PHOTO_ID]);
+    expect(calls(telegram.sink, "editMessageText")).toHaveLength(0);
+    expect(calls(telegram.sink, "editMessageCaption")).toHaveLength(0);
+    const row = await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } });
+    expect(row).toMatchObject({ messageKind: "text", state: "FINISHED" });
+    return { order, statusId: row.messageId! };
+  }
+
+  const staleSession = () => ({ ...userSession(), menuMsgId: QR_PHOTO_ID, paymentAnchorMsgId: QR_PHOTO_ID });
+
+  function expectOneFreshBubble(sink: SentCall[]) {
+    expect(calls(sink, "reply")).toHaveLength(1);
+    expect(calls(sink, "sendMessage")).toHaveLength(0);
+    expect(calls(sink, "replyWithPhoto")).toHaveLength(0);
+    expect(calls(sink, "editMessageText")).toHaveLength(0);
+    expect(calls(sink, "editMessageCaption")).toHaveLength(0);
+    expect(calls(sink, "deleteMessage")).toHaveLength(0);
+    // Retiring the stale menu bubble's keyboard targets the deleted photo; that
+    // single best-effort call fails quietly in Telegram and changes nothing.
+    expect(calls(sink, "editMessageReplyMarkup").map(c => c.args[1])).toEqual([QR_PHOTO_ID]);
+  }
+
+  it.each(["product", "wallet"] as const)("a Menu tap on the %s status text opens one new menu and leaves the status message alone", async kind => {
+    const { order, statusId } = await retiredOrder(kind);
+    const { ctx, sink } = customerCtx({
+      callbackData: "v1:menu:main",
+      cbMessage: { message_id: statusId, chat: { id: 42 }, date: 0, text: "status" },
+      session: staleSession(),
+      deletedMessageIds: [QR_PHOTO_ID],
+    });
+    await expect(routeCallback(ctx)).resolves.toBeUndefined();
+    expectOneFreshBubble(sink);
+    expect(await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } })).toMatchObject({ messageId: statusId, state: "FINISHED" });
+    expect(ctx.session.menuMsgId).not.toBe(QR_PHOTO_ID);
+  });
+
+  it.each(["product", "wallet"] as const)("a typed reply-keyboard Menu after a %s retire sends one new menu", async kind => {
+    const { order, statusId } = await retiredOrder(kind);
+    const { ctx, sink } = customerCtx({
+      text: persistentLabel("main", "en"),
+      session: staleSession(),
+      deletedMessageIds: [QR_PHOTO_ID],
+    });
+    await expect(customer.handleProductNumber(ctx)).resolves.toBeUndefined();
+    expectOneFreshBubble(sink);
+    expect(await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } })).toMatchObject({ messageId: statusId, state: "FINISHED" });
+    expect(ctx.session.menuMsgId).not.toBe(QR_PHOTO_ID);
+  });
+});

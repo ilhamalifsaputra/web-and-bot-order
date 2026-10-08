@@ -35,7 +35,7 @@ async function seed(language = "en", opts: { status?: string; provider?: string;
 type Markup = { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> };
 function telegram() {
   const sent: Array<{ chatId: string | number; text: string; id: number; markup?: Markup }> = [];
-  const edits: Array<{ chatId: string | number; id: number; text: string }> = [];
+  const edits: Array<{ chatId: string | number; id: number; text: string; markup?: Markup }> = [];
   const captions: Array<{ chatId: string | number; id: number; text: string }> = [];
   const deletes: Array<{ chatId: string | number; id: number }> = [];
   const markups: Array<{ chatId: string | number; id: number; markup?: Markup }> = [];
@@ -53,10 +53,10 @@ function telegram() {
       sent.push({ chatId, text, id, markup: options?.reply_markup });
       return { message_id: id };
     },
-    editMessageText: async (chatId: string | number, id: number, text: string) => {
+    editMessageText: async (chatId: string | number, id: number, text: string, options?: { reply_markup?: Markup }) => {
       count("editMessageText");
       if (editError) throw editError;
-      edits.push({ chatId, id, text });
+      edits.push({ chatId, id, text, ...(options?.reply_markup ? { markup: options.reply_markup } : {}) });
       return true;
     },
     editMessageCaption: async (chatId: string | number, id: number, options: { caption: string }) => {
@@ -776,7 +776,7 @@ describe("a QR photo is retired to one status text once payment is no longer pen
     const order = await seed("en", { status, paid: false });
     await asPhoto(order.id);
     const tg = telegram(); await worker(tg.api).tick();
-    expect(tg.sent).toHaveLength(1);
+    expect(tg.calls).toEqual({ sendMessage: 1, deleteMessage: 1 });
     expect(buttons(tg.sent[0]!.markup)).toEqual(["v1:support:open", "v1:menu:main"]);
     expect(tg.deletes.map(d => d.id)).toEqual([900]);
     expect(await rowOf(order.id)).toMatchObject({ state, messageKind: "text", messageId: tg.sent[0]!.id });
@@ -890,14 +890,16 @@ describe("a QR photo is retired to one status text once payment is no longer pen
     expect(await rowOf(paid.id)).toMatchObject({ messageId: tg.sent[0]!.id, messageKind: "text" });
   });
 
-  it("never resends after an ambiguous replacement send, and leaves the photo alone", async () => {
+  it("never resends after an ambiguous replacement send, keeps the photo and strips only its payment buttons", async () => {
     const order = await seed("en");
-    await asPhoto(order.id);
+    const chatId = await asPhoto(order.id);
     const tg = telegram(); tg.failSend(new Error("socket closed before acknowledgement"));
     await worker(tg.api).tick();
     expect(await rowOf(order.id)).toMatchObject({ state: "UNCERTAIN", messageId: 900, messageKind: "photo" });
+    expect(tg.calls).toEqual({ sendMessage: 1, editMessageReplyMarkup: 1 });
+    expect(tg.markups).toEqual([{ chatId, id: 900, markup: { inline_keyboard: [] } }]);
     tg.failSend(); advance(120_000); await worker(tg.api).tick();
-    expect(tg.calls.sendMessage).toBe(1); expect(tg.deletes).toHaveLength(0);
+    expect(tg.calls).toEqual({ sendMessage: 1, editMessageReplyMarkup: 1 });
   });
 
   it("treats a replacement interrupted between send and save as uncertain", async () => {
@@ -928,5 +930,123 @@ describe("a QR photo is retired to one status text once payment is no longer pen
     expect(row.nextUpdateAt.getTime()).toBe(now.getTime() + 15_000);
     tg.failSend(); advance(15_000); await worker(tg.api).tick();
     expect(tg.sent).toHaveLength(1); expect(tg.deletes.map(d => d.id)).toEqual([900]);
+  });
+
+  it("leaves the photo alone when the lease is lost between the replacement send and its save", async () => {
+    const order = await seed("en");
+    await asPhoto(order.id);
+    const tg = telegram();
+    const stolen = new Date(now.getTime() + 1);
+    const api = { ...tg.api, sendMessage: async (...args: Parameters<FulfillmentTelegramApi["sendMessage"]>) => {
+      const sent = await tg.api.sendMessage(...args);
+      // Another worker recovers the row while Telegram was answering.
+      await db.fulfillmentMessage.update({ where: { orderId: order.id }, data: { claimedAt: stolen } });
+      return sent;
+    } } as FulfillmentTelegramApi;
+    await worker(api).tick();
+    expect(tg.calls).toEqual({ sendMessage: 1 });
+    expect(await rowOf(order.id)).toMatchObject({ messageId: 900, messageKind: "photo", state: "SENDING", claimedAt: stolen });
+  });
+
+  it("marks a retire left in SENDING past its lease as uncertain without sending or deleting", async () => {
+    const order = await seed("en");
+    await asPhoto(order.id);
+    // The process died after claiming the replacement: SENDING, photo still saved.
+    await db.fulfillmentMessage.update({ where: { orderId: order.id }, data: {
+      state: "SENDING", claimedAt: new Date(now.getTime() - 61_000), nextUpdateAt: now,
+    } });
+    const tg = telegram(); await worker(tg.api).tick();
+    expect(tg.calls).toEqual({});
+    expect(await rowOf(order.id)).toMatchObject({ state: "UNCERTAIN", messageId: 900, messageKind: "photo" });
+    advance(120_000); await worker(tg.api).tick();
+    expect(tg.calls).toEqual({});
+  });
+
+  it.each([
+    [400, "Bad Request: chat not found", 1],
+    [403, "Forbidden: bot was blocked by the user", 0],
+  ])("stops a rejected replacement send (%s) and strips the photo's payment buttons only when the chat is reachable", async (code, description, stripped) => {
+    const order = await seed("en");
+    const chatId = await asPhoto(order.id);
+    const tg = telegram(); tg.failSend(apiError(code, description));
+    await worker(tg.api).tick();
+    expect(await rowOf(order.id)).toMatchObject({ state: "STOPPED", messageId: 900 });
+    expect(tg.calls).toEqual({ sendMessage: 1, ...(stripped ? { editMessageReplyMarkup: 1 } : {}) });
+    expect(tg.markups).toEqual(stripped ? [{ chatId, id: 900, markup: { inline_keyboard: [] } }] : []);
+    advance(120_000); await worker(tg.api).tick();
+    expect(tg.calls.sendMessage).toBe(1);
+  });
+
+  it("spends exactly one caption, one send, one delete and then only edits on the new text, through success", async () => {
+    const order = await seed("en", { status: "PAYMENT_DETECTED", paid: false });
+    const chatId = await asPhoto(order.id);
+    const tg = telegram(); const w = worker(tg.api);
+    await w.tick(); // detected: caption on the QR photo
+    expect(tg.calls).toEqual({ editMessageCaption: 1 });
+    await db.order.update({ where: { id: order.id }, data: { status: "PROCESSING", paidAt: now } });
+    advance(); await w.tick(); // paid: one replacement text, the QR deleted
+    expect(tg.calls).toEqual({ editMessageCaption: 1, sendMessage: 1, deleteMessage: 1 });
+    expect(tg.deletes).toEqual([{ chatId, id: 900 }]);
+    const statusId = tg.sent[0]!.id;
+    for (let i = 0; i < 3; i++) { advance(); await w.tick(); } // three spinner frames
+    expect(tg.calls).toEqual({ editMessageCaption: 1, sendMessage: 1, deleteMessage: 1, editMessageText: 3 });
+    await db.order.update({ where: { id: order.id }, data: { status: "DELIVERED", deliveredAt: now } });
+    advance(); await w.tick(); // final result on the same text
+    expect(tg.calls).toEqual({ editMessageCaption: 1, sendMessage: 1, deleteMessage: 1, editMessageText: 4 });
+    expect(tg.edits.at(-1)!.text).toContain("✅ <b>Top-up completed</b>");
+    expect(new Set(tg.edits.map(e => e.id))).toEqual(new Set([statusId]));
+    advance(60_000); await w.tick();
+    await wakeFulfillmentMessage(db, order.id, now); advance(); await w.tick();
+    expect(tg.calls).toEqual({ editMessageCaption: 1, sendMessage: 1, deleteMessage: 1, editMessageText: 4 });
+    expect(await rowOf(order.id)).toMatchObject({ state: "FINISHED", messageId: statusId, messageKind: "text" });
+  });
+
+  it("spends the same budget for a wallet top-up QR through crediting, ending on the wallet keyboard", async () => {
+    const order = await seed("en", { status: "PAYMENT_DETECTED", paid: false });
+    await db.order.update({ where: { id: order.id }, data: { kind: "WALLET_TOPUP" } });
+    const chatId = await asPhoto(order.id);
+    const tg = telegram(); const w = worker(tg.api);
+    await w.tick();
+    expect(tg.calls).toEqual({ editMessageCaption: 1 });
+    await db.order.update({ where: { id: order.id }, data: { status: "PENDING_PAYMENT", paymentState: "PAID", paidAt: now, walletCreditState: "CREDITING" } });
+    advance(); await w.tick(); // WALLET_CREDITING: replacement text, QR deleted
+    expect(tg.calls).toEqual({ editMessageCaption: 1, sendMessage: 1, deleteMessage: 1 });
+    expect(tg.deletes).toEqual([{ chatId, id: 900 }]);
+    expect(frameOf(tg.sent[0]!.text)).toBeDefined();
+    const statusId = tg.sent[0]!.id;
+    for (let i = 0; i < 2; i++) { advance(); await w.tick(); }
+    expect(tg.calls).toEqual({ editMessageCaption: 1, sendMessage: 1, deleteMessage: 1, editMessageText: 2 });
+    await db.order.update({ where: { id: order.id }, data: { status: "DELIVERED", walletCreditState: "CREDITED" } });
+    advance(); await w.tick(); // WALLET_CREDITED on the same text
+    expect(tg.calls).toEqual({ editMessageCaption: 1, sendMessage: 1, deleteMessage: 1, editMessageText: 3 });
+    const final = tg.edits.at(-1)!;
+    expect(final.id).toBe(statusId);
+    expect(final.text).toContain("100%");
+    expect(buttons(final.markup)).toEqual(["v1:wallet:view", "v1:menu:main"]);
+    advance(60_000); await w.tick();
+    await wakeFulfillmentMessage(db, order.id, now); advance(); await w.tick();
+    expect(tg.calls).toEqual({ editMessageCaption: 1, sendMessage: 1, deleteMessage: 1, editMessageText: 3 });
+    expect(await rowOf(order.id)).toMatchObject({ state: "FINISHED", phase: "WALLET_CREDITED", messageId: statusId });
+  });
+
+  it.each([
+    ["CANCELLED", "FINISHED", "CANCELLED"],
+    ["EXPIRED", "FINISHED", "CANCELLED"],
+    ["UNDERPAID", "REVIEW", "UNDERPAID"],
+  ])("retires a %s wallet top-up QR with one send and one delete", async (status, state, phase) => {
+    const order = await seed("en", { status, paid: false });
+    await db.order.update({ where: { id: order.id }, data: { kind: "WALLET_TOPUP" } });
+    await asPhoto(order.id);
+    const tg = telegram(); const w = worker(tg.api);
+    await w.tick();
+    expect(tg.calls).toEqual({ sendMessage: 1, deleteMessage: 1 });
+    expect(tg.deletes.map(d => d.id)).toEqual([900]);
+    expect(buttons(tg.sent[0]!.markup)).toEqual(["v1:support:open", "v1:menu:main"]);
+    // A REVIEW row is re-polled every 30 s; an unchanged status costs nothing.
+    advance(30_000); await w.tick();
+    advance(60_000); await w.tick();
+    await wakeFulfillmentMessage(db, order.id, now); advance(); await w.tick();
+    expect(tg.calls).toEqual({ sendMessage: 1, deleteMessage: 1 });
+    expect(await rowOf(order.id)).toMatchObject({ state, phase, messageKind: "text", messageId: tg.sent[0]!.id });
   });
 });

@@ -113,9 +113,10 @@ export class FulfillmentMessageWorker {
   /** Lock order matches status/credit writers: order, then message. No network
    * calls inside the transaction. If Telegram rendered a stale phase, persist
    * an immediately due correction together with its acknowledged message id;
-   * a crash after commit needs no follow-up reread to make it recoverable. */
-  private async saveProgress(row: MessageRow, data: Prisma.FulfillmentMessageUpdateManyMutationInput): Promise<void> {
-    await this.db.$transaction(async tx => {
+   * a crash after commit needs no follow-up reread to make it recoverable.
+   * Returns whether this pass still held the lease, i.e. the row was written. */
+  private async saveProgress(row: MessageRow, data: Prisma.FulfillmentMessageUpdateManyMutationInput): Promise<boolean> {
+    return this.db.$transaction(async tx => {
       await tx.$queryRaw`SELECT id FROM orders WHERE id = ${row.orderId} FOR UPDATE`;
       const order = await tx.order.findUniqueOrThrow({ where: { id: row.orderId }, include: include.order.include });
       const credited = order.status.toUpperCase() === "CANCELLED"
@@ -123,12 +124,13 @@ export class FulfillmentMessageWorker {
       const messageSent = row.messageId !== null || typeof data.messageId === "number";
       const current = customerProgressPhase(order, { messageSent, credited });
       const correction = current.phase !== data.phase;
-      await tx.fulfillmentMessage.updateMany({
+      const saved = await tx.fulfillmentMessage.updateMany({
         where: { orderId: row.orderId, state: row.state, claimedAt: row.claimedAt },
         data: { ...data, ...(correction ? {
           state: messageSent ? "ACTIVE" : "READY", finishedAt: null, nextUpdateAt: this.now(),
         } : {}) },
       });
+      return saved.count > 0;
     });
   }
 
@@ -154,12 +156,18 @@ export class FulfillmentMessageWorker {
       logger.info({ orderId: row.orderId, errorCode: e.error_code, description: e.description },
         "Telegram refused to delete the replaced payment QR photo, so its payment buttons are removed instead.");
     }
+    await this.clearPhotoButtons(row, photoId, signal);
+  }
+
+  /** Best effort: strip the inline payment buttons from a QR photo that can no
+   * longer be deleted or replaced. Never throws. */
+  private async clearPhotoButtons(row: MessageRow, photoId: number, signal: Parameters<FulfillmentTelegramApi["editMessageReplyMarkup"]>[3]): Promise<void> {
     try {
-      await this.api.editMessageReplyMarkup(chatId, photoId, { reply_markup: { inline_keyboard: [] } }, signal);
+      await this.api.editMessageReplyMarkup(String(row.chatId), photoId, { reply_markup: { inline_keyboard: [] } }, signal);
     } catch (error) {
       const e = error as { error_code?: number; description?: string };
       logger.warn({ orderId: row.orderId, errorCode: e.error_code, description: e.description },
-        "Removing the payment buttons from the replaced QR photo failed too; the photo keeps them, and the order is unaffected.");
+        "Removing the payment buttons from the QR photo failed; the photo keeps them, and the order is unaffected.");
     }
   }
 
@@ -276,8 +284,13 @@ export class FulfillmentMessageWorker {
       if (!upgraded.count) return false;
       claim = { ...row, state: "SENDING" };
       const sent = await this.api.sendMessage(String(row.chatId), text, options, apiSignal);
-      await this.saveProgress(claim, { ...data, messageId: sent.message_id, messageKind: "text" });
-      await this.removeRetiredPhoto(row, row.messageId, apiSignal);
+      if (await this.saveProgress(claim, { ...data, messageId: sent.message_id, messageKind: "text" })) {
+        await this.removeRetiredPhoto(row, row.messageId, apiSignal);
+      } else {
+        // Another worker took the row over; the photo may still be the message it owns.
+        logger.warn({ orderId: row.orderId },
+          "The replacement status text was sent but this worker lost its lease before saving it, so the QR photo is left in place.");
+      }
       return false;
     } catch (error) {
       const e = error as { error_code?: number; description?: string; parameters?: { retry_after?: number } };
@@ -295,8 +308,15 @@ export class FulfillmentMessageWorker {
         await this.saveProgress(claim, { ...data, ...kind });
       } else if (e.error_code === 403 || e.error_code === 400) {
         await this.stopAndAlert(claim, "STOPPED", "Telegram status message is unavailable; automatic replacement is disabled.");
+        // A rejected replacement leaves the paid order's QR photo in the chat:
+        // at least take its live payment buttons away (a 403 means the chat is
+        // unreachable, so there is nothing to try).
+        if (claim.state === "SENDING" && row.messageId !== null && e.error_code === 400) await this.clearPhotoButtons(row, row.messageId, apiSignal);
       } else if (sending) {
         await this.stopAndAlert(claim, "UNCERTAIN", "Telegram status message delivery is uncertain; automatic resend is disabled.");
+        // The replacement may or may not exist, so the photo is neither deleted
+        // nor replaced again; only its live payment buttons are taken away.
+        if (claim.state === "SENDING" && row.messageId !== null) await this.clearPhotoButtons(row, row.messageId, apiSignal);
       } else {
         // Editing the same message is safe to retry after transport/database failure.
         await this.db.fulfillmentMessage.updateMany({ where: claimed, data: { ...kind, state: "ACTIVE", claimedAt: null, nextUpdateAt: new Date(this.now().getTime() + 10_000) } });

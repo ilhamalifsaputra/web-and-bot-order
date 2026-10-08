@@ -207,6 +207,31 @@ contents (e.g. verifying a specific line before editing), not architecture.
   only. Full rules, fallback order and test guard: `.claude/skills/bot-ux-grammy/SKILL.md`
   ("Inline keyboard button labels").
 
+## Telegram message budget (keep chats quiet)
+Applies to every bot flow — catalog, game top-up, premium apps, wallet top-up,
+support, admin screens — and to the fulfillment-message worker
+(`packages/outbox-dispatcher/src/fulfillmentMessages.ts`).
+- **Edit first.** Every stage change, validation error, spinner frame and
+  re-render goes to a message the bot already owns (`smartEdit`/`menuAnchor`/
+  `editAnchor`, or the order's one `FulfillmentMessage`). Use
+  `editMessageCaption` on a photo; never call `editMessageText` on a known
+  photo (`FulfillmentMessage.messageKind`).
+- **Send only when nothing is editable** (first status after the QR photo is
+  retired, recovery after the tracked message vanished, no anchor at all) or
+  for a real deliverable (QR photo, credentials document). Never one message per
+  frame, stage, poll, webhook, retry or validation error. Store the new id and
+  edit it from then on. One status message per order; one wizard bubble per flow.
+- **Delete only known obsolete transient messages**: accepted typed inputs
+  (`consumeInput`, after the value is saved), the superseded confirm bubble, the
+  QR photo once the invoice is no longer payable (paid, cancelled, expired,
+  underpaid). Never sweep history, never delete a live status, receipt or
+  delivery. A failed delete (48 h window, 400/403/429) never blocks payment or
+  fulfillment — strip the stale keyboard instead.
+- **Tests pin the counts**: a test for a new or changed flow asserts the exact
+  number of `sendMessage` / `edit*` / `deleteMessage` / `sendDocument` calls,
+  not just that one happened. Full rules: `.claude/skills/bot-ux-grammy/SKILL.md`
+  ("Message budget").
+
 ## Never do
 - **Never send Telegram from the web** (admin or storefront) — enqueue to
   `notification_outbox`; the notifier/bot delivers.

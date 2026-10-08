@@ -30,6 +30,22 @@ Multi-step flows edit one anchor bubble (`adminAnchor`/`menuAnchor` for typed-in
 
 Exception: customer free-text with record value (support text, review comments, TxIDs) and photos whose `file_id` is stored are NOT deleted — those are the data, not scratch input.
 
+## Message budget (edit, send, delete in proportion)
+
+A clean chat is the product. Each Telegram call has one job; using the wrong one is how chats fill with dead bubbles. This applies to every flow: catalog, game top-up wizard, premium checkout, wallet top-up (currency → amount → rail → QR), support, admin screens, and the post-payment status worker.
+
+| Call | Use it for | Never for |
+|---|---|---|
+| `editMessageText` / `editMessageCaption` | every stage change, validation error, spinner frame, re-render of a screen the bot owns | a known photo with `editMessageText` (check `FulfillmentMessage.messageKind`; use the caption) |
+| `sendMessage` / `sendPhoto` / `sendDocument` | the first message of a flow, recovery when the tracked message is gone, a real deliverable (QR photo, credentials `.txt`) | each frame, stage, poll, webhook, retry or validation error |
+| `deleteMessage` | accepted typed input after its value is saved (`consumeInput`), the superseded confirm bubble, the QR photo once it is no longer payable | history sweeps, a live status/receipt/delivery message, another order's messages |
+
+- **One wizard bubble per flow, one status message per order.** After any unavoidable send, store the id (`session.menuMsgId`, `FulfillmentMessage.messageId`) and edit it from then on.
+- **QR lifecycle:** while payment is unverified (`NONE`, `PAYMENT_DETECTED`, `VERIFYING`) the QR photo stays and only its caption changes; once paid, cancelled, expired or underpaid, the worker sends ONE status text, saves its id, then deletes the photo. Same for wallet top-up.
+- **Spinner frames are edits on the same message**, throttled by the worker's cadence and `lastText` dedupe; they never send, never advance state, never show a percentage the backend did not earn.
+- **Cleanup is best effort:** a failed delete (48 h window, 400/403, 429) strips the stale keyboard if it can and moves on; it never blocks payment or fulfillment, and never retries in a loop.
+- **Tests pin exact counts** of `sendMessage` / `edit*` / `deleteMessage` / `sendDocument` for the flow (e.g. `expect(calls(sink, "sendMessage")).toHaveLength(1)`). "A call happened" is not enough.
+
 ## Toast vs alert
 
 - Routine success → non-blocking toast: `answerCallbackQuery({ text })`.

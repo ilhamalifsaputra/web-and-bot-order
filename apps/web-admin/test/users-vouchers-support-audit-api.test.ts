@@ -695,6 +695,57 @@ describe("GET /api/support/:ticketId", () => {
     for (const row of body.timeline.order) expect(typeof row.createdAtDisplay).toBe("string");
   });
 
+  it("adds short timestamps, statusChange parsing and the customer's contact fields for the redesigned detail page", async () => {
+    const guest = await prisma.user.create({
+      data: { isGuest: true, guestEmail: "guest@example.com", referralCode: "GUEST-RC-1" },
+    });
+    const ticket = await createTicket(prisma, guest.id, "Guest help");
+    await postJson(`/api/support/${ticket.id}/reply`, cookie, csrf, { content: "On it" });
+    await prisma.auditLog.create({
+      data: {
+        adminId,
+        action: "ticket_status_change",
+        targetType: "ticket",
+        targetId: ticket.id,
+        details: `Ticket #${ticket.id} moved from OPEN to WAITING_CUSTOMER.`,
+      },
+    });
+    await prisma.auditLog.create({
+      data: { adminId, action: "ticket_status_change", targetType: "ticket", targetId: ticket.id, details: "garbled" },
+    });
+
+    const res = await get(`/api/support/${ticket.id}`, cookie);
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as {
+      ticket: { createdAtShort: string | null };
+      messages: { createdAtShort: string | null }[];
+      user: { email: string | null; guestEmail: string | null; isGuest: boolean } | null;
+      timeline: {
+        ticket: {
+          action: string;
+          details: string;
+          createdAtShort: string | null;
+          statusChange: { from: string; to: string } | null;
+        }[];
+      };
+    };
+    expect(body.ticket.createdAtShort).toEqual(expect.any(String));
+    expect(body.messages.length).toBeGreaterThan(0);
+    for (const m of body.messages) expect(m.createdAtShort).toEqual(expect.any(String));
+    expect(body.user).toMatchObject({ email: null, guestEmail: "guest@example.com", isGuest: true });
+    expect(body.user).not.toHaveProperty("passwordHash");
+    const changes = body.timeline.ticket.filter((r) => r.action === "ticket_status_change");
+    expect(changes.find((r) => r.details === "garbled")?.statusChange).toBeNull();
+    expect(changes.find((r) => r.details !== "garbled")?.statusChange).toEqual({
+      from: "OPEN",
+      to: "WAITING_CUSTOMER",
+    });
+    for (const r of body.timeline.ticket) {
+      expect(r.createdAtShort).toEqual(expect.any(String));
+      if (r.action !== "ticket_status_change") expect(r.statusChange).toBeNull();
+    }
+  });
+
   it("404s for a non-existent ticket", async () => {
     const res = await get("/api/support/999999", cookie);
     expect(res.statusCode).toBe(404);

@@ -773,6 +773,12 @@ model Order {
   /// DuplicateCheckoutIntentError. Nullable: existing rows and any
   /// non-bot-originated order creation path never set it.
   checkoutIntentId       String?   @unique(map: "ix_orders_checkout_intent_id") @map("checkout_intent_id")
+  /// Set once Telegram acknowledged the credentials `.txt` document for this
+  /// order, together with that document's message id (first writer wins, via
+  /// markCredentialsDelivered). Automatic senders skip the document when set;
+  /// an admin's explicit resend does not.
+  credentialsDeliveredAt DateTime? @map("credentials_delivered_at")
+  credentialsDocMsgId    Int?      @map("credentials_doc_msg_id")
 
   user               User                 @relation(fields: [userId], references: [id], onUpdate: NoAction)
   voucher            Voucher?             @relation(fields: [voucherId], references: [id], onUpdate: NoAction)
@@ -806,6 +812,10 @@ model FulfillmentMessage {
   orderId      Int       @id @map("order_id")
   chatId       BigInt    @map("chat_id")
   messageId    Int?      @map("message_id")
+  /// Which kind of Telegram message `messageId` points at: "photo" (a QR
+  /// photo+caption payment screen) or "text", so the worker never calls
+  /// editMessageText on a photo. Null = legacy/unknown.
+  messageKind  String?   @map("message_kind")
   state        String   @default("READY")
   claimedAt    DateTime? @map("claimed_at")
   nextUpdateAt DateTime  @default(now()) @map("next_update_at")

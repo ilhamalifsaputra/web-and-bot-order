@@ -357,7 +357,7 @@ describe("processDeposits (poll-loop wiring)", () => {
     const order = (await makeBybitBscOrder())!;
     await routeOrderToDigiflazz(prisma, order.id);
     await setOrderPaymentMessage(prisma, order.id, 555, 777);
-    await adoptTransactionMessage(prisma, order.id, 555, 777);
+    await adoptTransactionMessage(prisma, order.id, 555, 777, "text");
     const { api, edits } = fakeApi();
     const trigger = vi.mocked(triggerDigiflazzDispatch);
     let editsAtTrigger = -1;
@@ -386,7 +386,7 @@ describe("processDeposits (poll-loop wiring)", () => {
   it("defers the adopted payment bubble to the coordinator and completes the same message", async () => {
     const order = (await makeBybitBscOrder())!;
     await setOrderPaymentMessage(prisma, order.id, 555, 777);
-    await adoptTransactionMessage(prisma, order.id, 555, 777);
+    await adoptTransactionMessage(prisma, order.id, 555, 777, "text");
     const { api, edits } = fakeApi();
     await processDeposits(api, [dep({ txId: "0x" + "f".repeat(64), amount: order.totalAmount })], await inFlight(), "BSC");
     const updated = await prisma.order.findUnique({ where: { id: order.id } });
@@ -413,7 +413,7 @@ describe("processDeposits (poll-loop wiring)", () => {
   it("preserves coordinator ownership without calling the rail edit even if Telegram would reject it", async () => {
     const order = (await makeBybitBscOrder())!;
     await setOrderPaymentMessage(prisma, order.id, 555, 777);
-    await adoptTransactionMessage(prisma, order.id, 555, 777);
+    await adoptTransactionMessage(prisma, order.id, 555, 777, "text");
     const { api } = fakeApi();
     api.editMessageText = vi.fn(async () => {
       throw telegramError(400, "Bad Request: message to edit not found");
@@ -434,7 +434,7 @@ describe("processDeposits (poll-loop wiring)", () => {
   ] as const)("defers coordinator-owned edits when Telegram would return %s", async (_label, hexDigit, makeError) => {
     const order = (await makeBybitBscOrder())!;
     await setOrderPaymentMessage(prisma, order.id, 555, 777);
-    await adoptTransactionMessage(prisma, order.id, 555, 777);
+    await adoptTransactionMessage(prisma, order.id, 555, 777, "text");
     const { api } = fakeApi();
     api.editMessageText = vi.fn(async () => {
       throw makeError();
@@ -451,7 +451,7 @@ describe("processDeposits (poll-loop wiring)", () => {
   it("does not call a hanging rail edit on a coordinator-owned bubble", async () => {
     const order = (await makeBybitBscOrder())!;
     await setOrderPaymentMessage(prisma, order.id, 555, 777);
-    await adoptTransactionMessage(prisma, order.id, 555, 777);
+    await adoptTransactionMessage(prisma, order.id, 555, 777, "text");
     const { api } = fakeApi();
     api.editMessageText = vi.fn(() => new Promise<never>(() => {})); // hangs forever — never resolves or rejects
     await processDeposits(api, [dep({ txId: "0x" + "9".repeat(64), amount: order.totalAmount })], await inFlight(), "BSC");
@@ -660,7 +660,7 @@ describe("processDeposits (poll-loop wiring)", () => {
   it("defers detected tracking to the adopted coordinator across repeated provider observations", async () => {
     const order = (await makeBybitBscOrder())!;
     await setOrderPaymentMessage(prisma, order.id, 555, 777);
-    await adoptTransactionMessage(prisma, order.id, 555, 777);
+    await adoptTransactionMessage(prisma, order.id, 555, 777, "text");
     const { api, edits } = fakeApi();
     const txId = "0x" + "7".repeat(64);
 
@@ -765,7 +765,7 @@ describe("processDeposits — WALLET_TOPUP delivery (onDelivered success UI)", (
   it("nudges the outbox while deferring the adopted wallet bubble to its coordinator", async () => {
     const order = await makeTopupOrder("3");
     await setOrderPaymentMessage(prisma, order.id, 555, 778);
-    await adoptTransactionMessage(prisma, order.id, 555, 778);
+    await adoptTransactionMessage(prisma, order.id, 555, 778, "text");
     const sequence: string[] = [];
     registerOutboxNudge(() => sequence.push("nudge"));
     const api = {
@@ -795,7 +795,7 @@ describe("processDeposits — WALLET_TOPUP delivery (onDelivered success UI)", (
   it("credits the wallet once and renders its full receipt through the adopted coordinator", async () => {
     const order = await makeTopupOrder("3");
     await setOrderPaymentMessage(prisma, order.id, 555, 777);
-    await adoptTransactionMessage(prisma, order.id, 555, 777);
+    await adoptTransactionMessage(prisma, order.id, 555, 777, "text");
     const { api, sent, edits, sendDocumentCalls } = fakeApi();
     const txId = "0x" + "9".repeat(64);
     await processDeposits(api, [dep({ txId, amount: order.totalAmount })], await inFlight(), "BSC");

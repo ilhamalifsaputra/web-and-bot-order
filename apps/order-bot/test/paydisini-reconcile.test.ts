@@ -228,7 +228,7 @@ describe("reconcileOrder (PayDisini poller safety net)", () => {
   /** Acknowledge the real checkout screen before a provider can settle it. */
   async function anchor(orderId: number, messageId = 777) {
     await prisma.$transaction(async (tx) => {
-      await adoptTransactionMessage(tx, orderId, 555, messageId);
+      await adoptTransactionMessage(tx, orderId, 555, messageId, "text");
       await setOrderPaymentMessage(tx, orderId, 555, messageId);
     });
   }

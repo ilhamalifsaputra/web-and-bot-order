@@ -196,7 +196,7 @@ export class FulfillmentMessageWorker {
     try {
       if (row.messageId === null) {
         const sent = await this.api.sendMessage(String(row.chatId), text, { parse_mode: "HTML", reply_markup: this.keyboard(progress.phase, progress.transactionType, lang) }, apiSignal);
-        await this.saveProgress(row, { ...data, messageId: sent.message_id });
+        await this.saveProgress(row, { ...data, messageId: sent.message_id, messageKind: "text" });
       } else {
         if (row.lastText !== text) {
           try {

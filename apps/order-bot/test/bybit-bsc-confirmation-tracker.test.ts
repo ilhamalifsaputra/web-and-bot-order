@@ -242,7 +242,7 @@ describe("pollOnce (confirmation tracker poll loop)", () => {
   it("persists confirmations and lets the coordinator update the adopted bubble", async () => {
     const order = await makeTrackedOrder("0x" + "8".repeat(64));
     await setOrderPaymentMessage(prisma, order.id, 555, 777);
-    await adoptTransactionMessage(prisma, order.id, 555, 777);
+    await adoptTransactionMessage(prisma, order.id, 555, 777, "text");
     const { api, edits } = fakeApiWithEdits();
     mockChain("0x65", "0x65"); // 1 confirmation
     await pollOnce(api);
@@ -265,7 +265,7 @@ describe("pollOnce (confirmation tracker poll loop)", () => {
   it("updates durable confirmation counts without a second rail writer or fabricated progress", async () => {
     const order = await makeTrackedOrder("0x" + "9".repeat(64));
     await setOrderPaymentMessage(prisma, order.id, 555, 777);
-    await adoptTransactionMessage(prisma, order.id, 555, 777);
+    await adoptTransactionMessage(prisma, order.id, 555, 777, "text");
     const { api, edits } = fakeApiWithEdits();
 
     mockChain("0x65", "0x65"); // 1 confirmation -> PAYMENT_DETECTED -> CONFIRMING

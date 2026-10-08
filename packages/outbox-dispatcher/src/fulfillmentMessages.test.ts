@@ -69,17 +69,27 @@ describe("persisted Telegram fulfillment status", () => {
     await wakeFulfillmentMessage(db, order.id, now);
     await worker(tg.api).tick();
     expect(tg.sent).toHaveLength(0);
-    await adoptTransactionMessage(db, order.id, order.userId, 906);
+    await adoptTransactionMessage(db, order.id, order.userId, 906, "text");
     advance(); await worker(tg.api).tick();
     expect(tg.sent).toHaveLength(0);
     expect(tg.edits[0]).toMatchObject({ id: 906 });
     expect(tg.edits[0]!.text).toContain("100%");
   });
 
+  it("records its own initial send as a text message together with the new id", async () => {
+    const order = await seed();
+    const tg = telegram();
+    await worker(tg.api).tick();
+    expect(tg.sent).toHaveLength(1);
+    expect(await db.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } })).toMatchObject({
+      messageId: tg.sent[0]!.id, messageKind: "text",
+    });
+  });
+
   it("never overwrites an initial-send lease during late adoption", async () => {
     const order = await seed();
     await db.fulfillmentMessage.update({ where: { orderId: order.id }, data: { state: "SENDING", claimedAt: now } });
-    await expect(adoptTransactionMessage(db, order.id, 42n, 907)).rejects.toThrow("lease");
+    await expect(adoptTransactionMessage(db, order.id, 42n, 907, "text")).rejects.toThrow("lease");
     expect(await db.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } })).toMatchObject({ state: "SENDING", claimedAt: now, messageId: null });
   });
   it("edits an adopted wallet QR caption through verification and credit, retaining the full receipt", async () => {
@@ -599,7 +609,7 @@ describe("a Bybit BSC order gets one buyer-visible progress message", () => {
     });
     const order = (await createOrderDirect(db, { channel: "bot", user, productId: denomination.id, quantity: 1 }))!;
     await db.order.update({ where: { id: order.id }, data: { paymentMethod: "BYBIT_BSC" } });
-    await adoptTransactionMessage(db, order.id, user.telegramId!, 617);
+    await adoptTransactionMessage(db, order.id, user.telegramId!, 617, "text");
     const tg = telegram(); const w = worker(tg.api);
     const txId = "0x" + "c".repeat(64);
 

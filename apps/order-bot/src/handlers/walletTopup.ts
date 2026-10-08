@@ -52,7 +52,7 @@ import { triggerImmediatePoll as bybitImmediatePoll } from "../payments/bybitDep
 import { triggerImmediatePoll as bybitBscImmediatePoll } from "../payments/bybitBscDeposit";
 import type { MyContext } from "../context";
 import { smartEdit, menuAnchor, consumeInput } from "../util/chat";
-import { anchorPaymentMessage } from "../util/paymentAnchor";
+import { anchorPaymentMessage, menuBubbleKind, qrScreenKind } from "../util/paymentAnchor";
 import { t } from "../util/i18n";
 import { esc, formatIdrFor, formatUsdtAmount } from "../util/format";
 import { currentUsdtRate } from "../util/rate";
@@ -398,7 +398,7 @@ export async function payTopupInternal(ctx: MyContext): Promise<void> {
     text,
     ckb.proofCancelKb(order.id, lang, true, { uid: cfg.receiveUid, note: order.paymentRef }),
   );
-  await anchorPaymentMessage(ctx, order.id, ctx.chat!.id);
+  await anchorPaymentMessage(ctx, order.id, ctx.chat!.id, menuBubbleKind(ctx));
   internalImmediatePoll(ctx.api);
 }
 
@@ -462,7 +462,7 @@ export async function payTopupBybit(ctx: MyContext): Promise<void> {
     expiry,
   });
   await smartEdit(ctx, text, ckb.proofCancelKb(order.id, lang, true));
-  await anchorPaymentMessage(ctx, order.id, ctx.chat!.id);
+  await anchorPaymentMessage(ctx, order.id, ctx.chat!.id, menuBubbleKind(ctx));
   bybitImmediatePoll(ctx.api);
 }
 
@@ -527,7 +527,7 @@ export async function payTopupBybitBsc(ctx: MyContext): Promise<void> {
     expiry,
   });
   await smartEdit(ctx, text, ckb.proofCancelKb(order.id, lang, true));
-  await anchorPaymentMessage(ctx, order.id, ctx.chat!.id);
+  await anchorPaymentMessage(ctx, order.id, ctx.chat!.id, menuBubbleKind(ctx));
   bybitBscImmediatePoll(ctx.api);
 }
 
@@ -627,7 +627,7 @@ export async function payTopupNowpayments(ctx: MyContext): Promise<void> {
     .row()
     .text(t(ctx, "menu.main"), ckb.cb("menu", "main"));
   await smartEdit(ctx, text, kb);
-  await anchorPaymentMessage(ctx, order.id, ctx.chat!.id);
+  await anchorPaymentMessage(ctx, order.id, ctx.chat!.id, menuBubbleKind(ctx));
 }
 
 /** QRIS (TokoPay) top-up. Mirrors checkout.buyNowTokopay. */
@@ -714,10 +714,11 @@ export async function payTopupTokopay(ctx: MyContext): Promise<void> {
   const confirmMsgId = ctx.callbackQuery?.message?.message_id ?? ctx.session.menuMsgId;
   ctx.session.qrMsgId = undefined;
   const waitingKb = ckb.qrisWaitingKb(order.id, lang);
+  let qrPhotoId: number | undefined;
   if (gateway.qrLink) {
     try {
       const qrMsg = await ctx.replyWithPhoto(gateway.qrLink, { caption, parse_mode: "HTML", reply_markup: waitingKb });
-      ctx.session.menuMsgId = qrMsg.message_id;
+      ctx.session.menuMsgId = qrPhotoId = qrMsg.message_id;
       if (confirmMsgId && confirmMsgId !== qrMsg.message_id && !(await ownsTransactionMessageAt(prisma, chatId, confirmMsgId))) {
         try { await ctx.api.deleteMessage(chatId, confirmMsgId); } catch { /* already gone or too old */ }
       }
@@ -728,7 +729,7 @@ export async function payTopupTokopay(ctx: MyContext): Promise<void> {
   } else {
     await smartEdit(ctx, caption, waitingKb);
   }
-  await anchorPaymentMessage(ctx, order.id, chatId);
+  await anchorPaymentMessage(ctx, order.id, chatId, qrScreenKind(ctx, qrPhotoId));
 }
 
 /** PayDisini top-up. Mirrors checkout.buyNowPaydisini. */
@@ -806,10 +807,11 @@ export async function payTopupPaydisini(ctx: MyContext): Promise<void> {
   const confirmMsgId = ctx.callbackQuery?.message?.message_id ?? ctx.session.menuMsgId;
   ctx.session.qrMsgId = undefined;
   const waitingKb = ckb.qrisWaitingKb(order.id, lang);
+  let qrPhotoId: number | undefined;
   if (gateway.qrUrl) {
     try {
       const qrMsg = await ctx.replyWithPhoto(gateway.qrUrl, { caption, parse_mode: "HTML", reply_markup: waitingKb });
-      ctx.session.menuMsgId = qrMsg.message_id;
+      ctx.session.menuMsgId = qrPhotoId = qrMsg.message_id;
       if (confirmMsgId && confirmMsgId !== qrMsg.message_id && !(await ownsTransactionMessageAt(prisma, chatId, confirmMsgId))) {
         try { await ctx.api.deleteMessage(chatId, confirmMsgId); } catch { /* already gone or too old */ }
       }
@@ -820,5 +822,5 @@ export async function payTopupPaydisini(ctx: MyContext): Promise<void> {
   } else {
     await smartEdit(ctx, caption, waitingKb);
   }
-  await anchorPaymentMessage(ctx, order.id, chatId);
+  await anchorPaymentMessage(ctx, order.id, chatId, qrScreenKind(ctx, qrPhotoId));
 }

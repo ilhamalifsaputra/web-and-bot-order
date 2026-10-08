@@ -138,7 +138,7 @@ async function makeAnchoredTokopayOrder(kind: string) {
           });
         });
   await prisma.$transaction(async (tx) => {
-    await adoptTransactionMessage(tx, order!.id, 555, 4242);
+    await adoptTransactionMessage(tx, order!.id, 555, 4242, "text");
     await setOrderPaymentMessage(tx, order!.id, 555, 4242);
   });
   return order!;

@@ -269,7 +269,10 @@ tanpa satu pun perintah manual sesudahnya:
    `docker-entrypoint.sh`), diterapkan lewat `prisma db execute --file`. `db push`
    hanya menyinkronkan **struktur**, jadi migrasi yang mengisi/membetulkan
    **baris** harus dieksekusi terpisah atau diam-diam tidak pernah jalan. Hari ini
-   isinya satu: `20260919120000_seed_usdt_rounding_ceil_since`.
+   isinya dua: `20260919120000_seed_usdt_rounding_ceil_since` dan
+   `20261008120100_backfill_credentials_delivered_at` (menandai order stok yang
+   sudah `DELIVERED` sebelum kolom `credentials_delivered_at` ada, supaya file
+   kredensialnya tidak dikirim ulang otomatis).
 
 **Langkah 3 dan 4 hanya WARNING kalau gagal, tidak pernah crash-loop.** Alasannya
 dua. Pertama, skema sudah ter-push di titik itu; container yang menolak start

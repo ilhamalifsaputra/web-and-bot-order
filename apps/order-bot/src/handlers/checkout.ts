@@ -94,7 +94,7 @@ import { triggerImmediatePoll as bybitBscTrackerImmediatePoll } from "../payment
 import { pollOnce as nowpaymentsPoll } from "../payments/nowpaymentsReconcile";
 import type { MyContext } from "../context";
 import { smartEdit } from "../util/chat";
-import { anchorPaymentMessage } from "../util/paymentAnchor";
+import { anchorPaymentMessage, menuBubbleKind, qrScreenKind } from "../util/paymentAnchor";
 import { sendAccountFile } from "../util/delivery";
 import { flipSettledOrderBubble } from "../jobs";
 import { TELEGRAM_MESSAGE_TIMEOUT_MS } from "../payments/telegramTimeout";
@@ -960,7 +960,7 @@ export async function buyNowInternal(ctx: MyContext, productId: number, quantity
     ckb.proofCancelKb(order.id, lang, true, { uid: cfg.receiveUid, note: order.paymentRef }),
   );
   // Anchor the instructions message so the poller can flip it to success.
-  await anchorPaymentMessage(ctx, order.id, ctx.chat!.id);
+  await anchorPaymentMessage(ctx, order.id, ctx.chat!.id, menuBubbleKind(ctx));
   // Latency optimization: an extra poll right now, on top of the regular
   // timer, so this fresh order's first check doesn't wait for the next tick.
   internalImmediatePoll(ctx.api);
@@ -1075,7 +1075,7 @@ export async function buyNowBybit(ctx: MyContext, productId: number, quantity: n
   }) + minAmountNote(ctx, bybit.minAmount, "USDT");
   await smartEdit(ctx, text, ckb.proofCancelKb(order.id, lang, true));
   // Anchor the instructions message so the poller can flip it to success.
-  await anchorPaymentMessage(ctx, order.id, ctx.chat!.id);
+  await anchorPaymentMessage(ctx, order.id, ctx.chat!.id, menuBubbleKind(ctx));
   // Latency optimization: an extra poll right now, on top of the regular
   // timer, so this fresh order's first check doesn't wait for the next tick.
   bybitImmediatePoll(ctx.api);
@@ -1194,7 +1194,7 @@ export async function buyNowBybitBsc(ctx: MyContext, productId: number, quantity
   }) + minAmountNote(ctx, bybitBsc.minAmount, "USDT");
   await smartEdit(ctx, text, ckb.proofCancelKb(order.id, lang, true));
   // Anchor the instructions message so the poller can flip it to success.
-  await anchorPaymentMessage(ctx, order.id, ctx.chat!.id);
+  await anchorPaymentMessage(ctx, order.id, ctx.chat!.id, menuBubbleKind(ctx));
   // Latency optimization: an extra poll right now, on top of the regular
   // timer, so this fresh order's first check doesn't wait for the next tick.
   // The real floor here is the on-chain confirmation Bybit itself requires —
@@ -1377,7 +1377,7 @@ export async function buyNowNowpayments(ctx: MyContext, productId: number, quant
   // (and any future success-flip) target the right bubble — mirrors
   // buyNowInternal/buyNowBybit (no countdown ticking here; that's only for
   // the manual Binance Pay screen).
-  await anchorPaymentMessage(ctx, order.id, ctx.chat!.id);
+  await anchorPaymentMessage(ctx, order.id, ctx.chat!.id, menuBubbleKind(ctx));
   await logCheckoutAudit(prisma, ctx, {
     action: "order_create",
     customerId: user.id,
@@ -1551,6 +1551,7 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
   const confirmMsgId = ctx.callbackQuery?.message?.message_id ?? ctx.session.menuMsgId;
   ctx.session.qrMsgId = undefined;
   const waitingKb = ckb.qrisWaitingKb(order.id, lang);
+  let qrPhotoId: number | undefined;
   if (gateway.qrLink) {
     try {
       const qrMsg = await ctx.replyWithPhoto(gateway.qrLink, {
@@ -1558,7 +1559,7 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
         parse_mode: "HTML",
         reply_markup: waitingKb,
       });
-      ctx.session.menuMsgId = qrMsg.message_id;
+      ctx.session.menuMsgId = qrPhotoId = qrMsg.message_id;
       if (confirmMsgId && confirmMsgId !== qrMsg.message_id && !(await ownsTransactionMessageAt(prisma, chatId, confirmMsgId))) {
         try { await ctx.api.deleteMessage(chatId, confirmMsgId); } catch { /* already gone or too old */ }
       }
@@ -1572,7 +1573,7 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
   }
   // Anchor whichever bubble (photo or text-fallback) became the wait screen, so
   // the reconcile poller's success-flip sweep can edit it once delivered.
-  await anchorPaymentMessage(ctx, order.id, chatId);
+  await anchorPaymentMessage(ctx, order.id, chatId, qrScreenKind(ctx, qrPhotoId));
   await logCheckoutAudit(prisma, ctx, {
     action: "order_create",
     customerId: user.id,
@@ -1737,6 +1738,7 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
   const confirmMsgId = ctx.callbackQuery?.message?.message_id ?? ctx.session.menuMsgId;
   ctx.session.qrMsgId = undefined;
   const waitingKb = ckb.qrisWaitingKb(order.id, lang);
+  let qrPhotoId: number | undefined;
   if (gateway.qrUrl) {
     try {
       const qrMsg = await ctx.replyWithPhoto(gateway.qrUrl, {
@@ -1744,7 +1746,7 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
         parse_mode: "HTML",
         reply_markup: waitingKb,
       });
-      ctx.session.menuMsgId = qrMsg.message_id;
+      ctx.session.menuMsgId = qrPhotoId = qrMsg.message_id;
       if (confirmMsgId && confirmMsgId !== qrMsg.message_id && !(await ownsTransactionMessageAt(prisma, chatId, confirmMsgId))) {
         try { await ctx.api.deleteMessage(chatId, confirmMsgId); } catch { /* already gone or too old */ }
       }
@@ -1758,7 +1760,7 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
   }
   // Anchor whichever bubble (photo or text-fallback) became the wait screen, so
   // the reconcile poller's success-flip sweep can edit it once delivered.
-  await anchorPaymentMessage(ctx, order.id, chatId);
+  await anchorPaymentMessage(ctx, order.id, chatId, qrScreenKind(ctx, qrPhotoId));
   await logCheckoutAudit(prisma, ctx, {
     action: "order_create",
     customerId: user.id,
@@ -1897,7 +1899,7 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
       });
       const checkoutMessageId = ctx.session.menuMsgId ?? ctx.callbackQuery?.message?.message_id;
       if (checkoutMessageId != null) {
-        await adoptTransactionMessage(tx, r.order.id, ctx.chat!.id, checkoutMessageId);
+        await adoptTransactionMessage(tx, r.order.id, ctx.chat!.id, checkoutMessageId, menuBubbleKind(ctx, checkoutMessageId));
       }
       return r;
     });

@@ -7,6 +7,8 @@
  * so the order still ends up with a single live message.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
@@ -14,7 +16,7 @@ import { attachPaymentProof, createOrderDirect, creditOrderToBalance, fulfillMan
 import { deliverPaidBybitBscOrder, recordBybitBscConfirmationProgress, recordBybitBscPaymentDetected } from "./bybit_bsc_deposit";
 import { createCategory, createCatalogProduct, createDenomination } from "./catalog";
 import { createWalletTopupOrder } from "./wallet_topup";
-import { ensureFulfillmentMessage, wakeFulfillmentMessage, adoptTransactionMessage } from "./fulfillmentMessages";
+import { ensureFulfillmentMessage, wakeFulfillmentMessage, adoptTransactionMessage, markCredentialsDelivered, credentialsDelivered } from "./fulfillmentMessages";
 import { transitionOrderStatus } from "./orderStatus";
 import { DeliveryType, OrderStatus, PaymentMethod } from "@app/core/enums";
 
@@ -68,7 +70,7 @@ describe("ensureFulfillmentMessage", () => {
 describe("progress message creation points", () => {
   it("adopts the existing full-reference wallet payment bubble and reuses it at settlement", async () => {
     const topup = await createWalletTopupOrder(prisma, { userId: sample.user.id, amount: "50000", currency: "IDR", method: PaymentMethod.TOKOPAY });
-    await adoptTransactionMessage(prisma, topup.id, 42n, 912);
+    await adoptTransactionMessage(prisma, topup.id, 42n, 912, "text");
     expect((await rows(topup.id))[0]).toMatchObject({ chatId: 42n, messageId: 912, state: "WAITING" });
     await prisma.order.update({ where: { id: topup.id }, data: { status: "DELIVERED" } });
     await ensureFulfillmentMessage(prisma, topup.id);
@@ -84,15 +86,15 @@ describe("progress message creation points", () => {
   it("adopts the acknowledged screen if detection registered an empty row first", async () => {
     const order = await pendingOrder(sample.product.id);
     await ensureFulfillmentMessage(prisma, order.id);
-    await adoptTransactionMessage(prisma, order.id, 42n, 991);
-    await adoptTransactionMessage(prisma, order.id, 42n, 992);
+    await adoptTransactionMessage(prisma, order.id, 42n, 991, "text");
+    await adoptTransactionMessage(prisma, order.id, 42n, 992, "text");
     expect((await rows(order.id))[0]).toMatchObject({ messageId: 991, state: "WAITING" });
   });
 
   it("activates an adopted screen when provider observation preceded its acknowledgement", async () => {
     const order = await pendingOrder(sample.product.id);
     await prisma.order.update({ where: { id: order.id }, data: { paymentState: "VERIFYING" } });
-    await adoptTransactionMessage(prisma, order.id, 42n, 993);
+    await adoptTransactionMessage(prisma, order.id, 42n, 993, "text");
     expect((await rows(order.id))[0]).toMatchObject({ messageId: 993, state: "ACTIVE", phase: null });
   });
 
@@ -235,5 +237,100 @@ describe("wakeFulfillmentMessage", () => {
     const row = await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } });
     expect(row.state).toBe(expected);
     expect(row.nextUpdateAt.getTime()).toBe(due.getTime());
+  });
+});
+
+describe("transaction message kind", () => {
+  it("persists the kind of the adopted payment screen", async () => {
+    const photo = await pendingOrder(sample.product.id);
+    await adoptTransactionMessage(prisma, photo.id, 42n, 1201, "photo");
+    expect((await rows(photo.id))[0]).toMatchObject({ messageId: 1201, messageKind: "photo" });
+    const text = await pendingOrder(sample.product.id);
+    await adoptTransactionMessage(prisma, text.id, 42n, 1202, "text");
+    expect((await rows(text.id))[0]).toMatchObject({ messageId: 1202, messageKind: "text" });
+  });
+
+  it("records the kind when it fills a detection-registered empty slot, and keeps it on a later adoption", async () => {
+    const order = await pendingOrder(sample.product.id);
+    await ensureFulfillmentMessage(prisma, order.id);
+    await adoptTransactionMessage(prisma, order.id, 42n, 1203, "photo");
+    await adoptTransactionMessage(prisma, order.id, 42n, 1204, "text");
+    expect((await rows(order.id))[0]).toMatchObject({ messageId: 1203, messageKind: "photo" });
+  });
+
+  it("leaves the kind unknown when ensureFulfillmentMessage adopts a legacy payment anchor", async () => {
+    const order = await pendingOrder(sample.product.id);
+    await prisma.fulfillmentMessage.deleteMany({ where: { orderId: order.id } });
+    await prisma.order.update({ where: { id: order.id }, data: { paymentMsgChatId: 42n, paymentMsgId: 1205 } });
+    await ensureFulfillmentMessage(prisma, order.id);
+    expect((await rows(order.id))[0]).toMatchObject({ messageId: 1205, messageKind: null });
+  });
+});
+
+describe("credentials delivery record", () => {
+  it("is first-writer-wins: a second mark returns false and keeps the first document id", async () => {
+    const order = await pendingOrder(sample.product.id);
+    expect(await credentialsDelivered(prisma, order.id)).toBe(false);
+    expect(await markCredentialsDelivered(prisma, order.id, 3001)).toBe(true);
+    const first = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(first.credentialsDocMsgId).toBe(3001);
+    expect(first.credentialsDeliveredAt).toBeInstanceOf(Date);
+    expect(await markCredentialsDelivered(prisma, order.id, 3002)).toBe(false);
+    const second = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(second.credentialsDocMsgId).toBe(3001);
+    expect(second.credentialsDeliveredAt).toEqual(first.credentialsDeliveredAt);
+    expect(await credentialsDelivered(prisma, order.id)).toBe(true);
+  });
+
+  it("wakes the order's status message so it re-renders", async () => {
+    const order = await pendingOrder(sample.product.id);
+    const later = new Date(Date.now() + 3_600_000);
+    await prisma.fulfillmentMessage.update({ where: { orderId: order.id }, data: { messageId: 3003, state: "WAITING", nextUpdateAt: later } });
+    expect(await markCredentialsDelivered(prisma, order.id, 3004)).toBe(true);
+    const row = (await rows(order.id))[0]!;
+    expect(row.state).toBe("ACTIVE");
+    expect(row.nextUpdateAt.getTime()).toBeLessThan(later.getTime());
+  });
+
+  it("the backfill migration marks only delivered stock orders, and a re-run changes nothing", async () => {
+    const sql = readFileSync(fileURLToPath(new URL("../../../../prisma/migrations/20261008120100_backfill_credentials_delivered_at/migration.sql", import.meta.url)), "utf8");
+    const deliveredAt = new Date("2026-09-01T00:00:00.000Z");
+    const deliver = async (productId: number, data: { fulfillmentProvider?: string | null; status?: string } = {}) => {
+      const order = await pendingOrder(productId);
+      await prisma.order.update({ where: { id: order.id }, data: { status: "DELIVERED", deliveredAt, fulfillmentProvider: null, ...data } });
+      return order.id;
+    };
+    const stockSnapshot = await deliver(sample.product.id, { fulfillmentProvider: "STOCK" });
+    const legacyStock = await deliver(sample.product.id);
+    const manual = await deliver((await manualDenom()).id);
+    const manualSnapshot = await deliver(sample.product.id, { fulfillmentProvider: "MANUAL" });
+    const pending = await deliver(sample.product.id, { status: "PROCESSING" });
+    const alreadyMarked = await deliver(sample.product.id, { fulfillmentProvider: "STOCK" });
+    await markCredentialsDelivered(prisma, alreadyMarked, 3100, new Date("2026-09-02T00:00:00.000Z"));
+    const topup = await createWalletTopupOrder(prisma, { userId: sample.user.id, amount: "50000", currency: "IDR", method: PaymentMethod.TOKOPAY });
+    await prisma.order.update({ where: { id: topup.id }, data: { status: "DELIVERED", deliveredAt } });
+
+    const state = async () => Object.fromEntries((await prisma.order.findMany({
+      where: { id: { in: [stockSnapshot, legacyStock, manual, manualSnapshot, pending, alreadyMarked, topup.id] } },
+      select: { id: true, credentialsDeliveredAt: true, credentialsDocMsgId: true },
+    })).map(o => [o.id, o]));
+    expect(await prisma.$executeRawUnsafe(sql)).toBe(2);
+    const after = await state();
+    expect(after[stockSnapshot]).toMatchObject({ credentialsDeliveredAt: deliveredAt, credentialsDocMsgId: null });
+    expect(after[legacyStock]).toMatchObject({ credentialsDeliveredAt: deliveredAt, credentialsDocMsgId: null });
+    for (const id of [manual, manualSnapshot, pending, topup.id]) expect(after[id]!.credentialsDeliveredAt).toBeNull();
+    expect(after[alreadyMarked]).toMatchObject({ credentialsDeliveredAt: new Date("2026-09-02T00:00:00.000Z"), credentialsDocMsgId: 3100 });
+
+    expect(await prisma.$executeRawUnsafe(sql)).toBe(0);
+    expect(await state()).toEqual(after);
+  });
+
+  it("does not touch the message when the credentials were already recorded", async () => {
+    const order = await pendingOrder(sample.product.id);
+    await markCredentialsDelivered(prisma, order.id, 3005);
+    const later = new Date(Date.now() + 3_600_000);
+    await prisma.fulfillmentMessage.update({ where: { orderId: order.id }, data: { messageId: 3006, state: "WAITING", nextUpdateAt: later } });
+    expect(await markCredentialsDelivered(prisma, order.id, 3007)).toBe(false);
+    expect((await rows(order.id))[0]).toMatchObject({ state: "WAITING", nextUpdateAt: later });
   });
 });

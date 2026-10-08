@@ -46,8 +46,19 @@ export async function ensureFulfillmentMessage(db: Db, orderId: number): Promise
   return true;
 }
 
-/** Adopt the actual payment screen, including QR captions, without a send. */
-export async function adoptTransactionMessage(db: Db, orderId: number, chatId: number | bigint, messageId: number): Promise<void> {
+/** Which kind of Telegram message a tracked `messageId` is (`FulfillmentMessage.messageKind`). */
+export type TransactionMessageKind = "photo" | "text";
+
+/**
+ * Adopt the actual payment screen, including QR captions, without a send.
+ * `kind` is what was actually sent: a QR photo+caption bubble is "photo",
+ * everything else "text". It is stored with the message id, and only when this
+ * call is the one that sets the id — an already acknowledged message keeps its
+ * own id and kind.
+ */
+export async function adoptTransactionMessage(
+  db: Db, orderId: number, chatId: number | bigint, messageId: number, kind: TransactionMessageKind,
+): Promise<void> {
   const order = await db.order.findUniqueOrThrow({ where: { id: orderId }, select: { status: true, paymentState: true, walletCreditState: true } });
   const awaitingPayment = order.status === "PENDING_PAYMENT"
     && !["PAYMENT_DETECTED", "VERIFYING", "PAID", "UNDERPAID"].includes(order.paymentState ?? "")
@@ -55,7 +66,7 @@ export async function adoptTransactionMessage(db: Db, orderId: number, chatId: n
   // An acknowledged canonical message never changes ID on ordinary navigation.
   // The checkout anchor is assigned only once for a newly created transaction.
   await db.fulfillmentMessage.upsert({ where: { orderId }, create: {
-    orderId, chatId: BigInt(chatId), messageId,
+    orderId, chatId: BigInt(chatId), messageId, messageKind: kind,
     state: awaitingPayment ? "WAITING" : "ACTIVE",
     phase: awaitingPayment ? "NONE" : null,
   }, update: {} });
@@ -66,11 +77,35 @@ export async function adoptTransactionMessage(db: Db, orderId: number, chatId: n
   const adopted = await db.fulfillmentMessage.updateMany({ where: { orderId, messageId: null, claimedAt: null,
     state: { in: ["WAITING_SCREEN", "READY", "WAITING", "ACTIVE"] },
   }, data: {
-    chatId: BigInt(chatId), messageId,
+    chatId: BigInt(chatId), messageId, messageKind: kind,
     state: awaitingPayment ? "WAITING" : "ACTIVE",
     phase: awaitingPayment ? "NONE" : null,
   } });
   if (!adopted.count) throw new Error("Transaction message delivery already holds the lease");
+}
+
+/**
+ * Record that Telegram acknowledged the credentials `.txt` document for an
+ * order. First writer wins: one conditional update sets both columns only while
+ * `credentialsDeliveredAt` is still null, so a concurrent or repeated sender
+ * can never overwrite the recorded document id.
+ * Returns whether this call set them; when it did, the order's progress message
+ * is made due so it re-renders from the new state.
+ */
+export async function markCredentialsDelivered(db: Db, orderId: number, messageId: number, now: Date = new Date()): Promise<boolean> {
+  const set = await db.order.updateMany({
+    where: { id: orderId, credentialsDeliveredAt: null },
+    data: { credentialsDeliveredAt: now, credentialsDocMsgId: messageId },
+  });
+  if (!set.count) return false;
+  await wakeFulfillmentMessage(db, orderId, now);
+  return true;
+}
+
+/** Whether the credentials document for this order has been recorded as delivered. */
+export async function credentialsDelivered(db: Db, orderId: number): Promise<boolean> {
+  const order = await db.order.findUnique({ where: { id: orderId }, select: { credentialsDeliveredAt: true } });
+  return order?.credentialsDeliveredAt != null;
 }
 
 /** Legacy pollers defer all message writes once the durable coordinator owns it. */

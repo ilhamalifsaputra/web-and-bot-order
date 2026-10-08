@@ -59,6 +59,10 @@ const SYNC_ABORTED_MESSAGE =
 /** The server's exact /sync/run (and /sync/preview) answer when Digiflazz has
  * no credentials — the preview would only repeat it, so it is skipped. */
 const NO_CREDENTIALS_ERROR = "Digiflazz credentials are not configured. Set them in Settings first.";
+/** The server's exact /sync/run (and /sync/preview) answer when Digiflazz
+ * refuses the price-list check with rc 83 — a preview right after it would
+ * only be refused again, so it is skipped too. */
+const RATE_LIMITED_ERROR = "Digiflazz sedang membatasi pengecekan price-list (rc 83). Coba lagi beberapa menit lagi.";
 
 /** "13 SKU baru ditambahkan, 1 dinonaktifkan, 5 harga diperbarui" — zero
  * parts left out; "Tidak ada perubahan" when nothing changed. New SKUs are
@@ -311,7 +315,8 @@ export function DigiflazzSyncPage() {
   // active, reactivations, deactivations — the same run as the hourly job),
   // then loads the preview of brand-new games for the import wizard below.
   // A failed run (busy, Digiflazz down) is shown but the preview still loads,
-  // except when credentials are missing — the preview would fail the same way.
+  // except when credentials are missing or Digiflazz is rate-limiting (rc 83) —
+  // the preview would fail the same way.
   async function runSync() {
     setLoadingPreview(true);
     setPreviewError(null);
@@ -332,7 +337,7 @@ export function DigiflazzSyncPage() {
       } catch (err) {
         const message = describeError(err, "Sync dari Digiflazz gagal.");
         setRunError(message);
-        if (err instanceof Error && err.message === NO_CREDENTIALS_ERROR) return;
+        if (err instanceof Error && (err.message === NO_CREDENTIALS_ERROR || err.message === RATE_LIMITED_ERROR)) return;
       }
       const res = await apiPost<PreviewResponse>("/api/catalog/digiflazz/sync/preview", {});
       setPreview(res);

@@ -5,13 +5,13 @@
  */
 // Task 1 fix (backend): WAITING_ADMIN/WAITING_CUSTOMER are now live values a
 // ticket's status column can hold (see TicketStatus's own doc comment,
-// @app/core/enums) — labeled under the same bucket as their OPEN/REPLIED
-// counterpart, since they mean the same thing to an admin reading this page.
+// @app/core/enums). REPLIED means the same as WAITING_CUSTOMER to an admin
+// (the ball is in the customer's court), so they share a label.
 export const TICKET_STATUS_LABELS: Record<string, string> = {
   OPEN: "Open",
-  WAITING_ADMIN: "Open",
-  REPLIED: "Waiting Customer",
-  WAITING_CUSTOMER: "Waiting Customer",
+  WAITING_ADMIN: "Waiting for admin",
+  REPLIED: "Waiting for customer",
+  WAITING_CUSTOMER: "Waiting for customer",
   RESOLVED: "Resolved",
   CLOSED: "Closed",
 };

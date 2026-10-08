@@ -147,6 +147,7 @@ export function TicketIssueContext({ ticketId, order, orderActivity, units }: Ti
       {units.kind === "ready" && (
         <OrderUnitsCard
           orderId={String(order.id)}
+          currency={order.currency}
           units={units.data.order.items}
           replacements={units.data.stockReplacements}
           isDelivered={units.data.isDelivered}

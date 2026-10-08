@@ -553,6 +553,7 @@ export function OrderDetailPage() {
       ) : (
         <OrderUnitsCard
           orderId={orderId ?? ""}
+          currency={order.currency}
           units={order.items}
           replacements={stockReplacements}
           isDelivered={isDelivered}

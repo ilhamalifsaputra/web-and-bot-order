@@ -144,7 +144,7 @@ describe("OrderDetailPage", () => {
     // Wait for data — product name is in the items table td (unique leaf cell)
     await waitFor(() => expect(screen.getByText("CapCut Pro 1M")).toBeInTheDocument());
     // Unit price td has "99000" (different from itemsTotal "50000" to avoid any confusion)
-    expect(screen.getByText("99000")).toBeInTheDocument();
+    expect(screen.getByText("Rp99.000")).toBeInTheDocument();
     expect(screen.getByText("2026-01-01 07:00")).toBeInTheDocument(); // createdAtDisplay
   });
 

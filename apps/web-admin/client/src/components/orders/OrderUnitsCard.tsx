@@ -23,6 +23,7 @@ import { toast } from "sonner";
 import { apiPost } from "../../api/client";
 import { describeError } from "../../lib/errorMessages";
 import { visibleSelection } from "../../lib/selection";
+import { formatMoneyOrCode } from "../../lib/ticketOrderSummary";
 
 /** The currencies this shop's money ever comes back as — same union
  *  api/types.ts uses, and the only ones `formatCurrencyDisplay` accepts. */
@@ -71,6 +72,8 @@ export interface OrderUnitsData {
 const TERMINAL_STATUSES = ["COMPLETED", "REFUNDED_INSTEAD", "CANCELLED", "FAILED"];
 
 interface OrderUnitsCardProps {
+  /** The order's currency code, used to format each unit price. */
+  currency: string;
   /** The order these units belong to, as the route param spells it — also the
    *  `["order", orderId]` query key both pages cache this order under, which is
    *  what a successful action invalidates. */
@@ -152,6 +155,7 @@ function outcomeText(row: StockReplacementRow): string {
  */
 export function OrderUnitsCard({
   orderId,
+  currency,
   units,
   replacements,
   isDelivered,
@@ -391,7 +395,7 @@ export function OrderUnitsCard({
               ),
             },
             { key: "qty", header: "Qty", render: (row: UnitRow) => <span className="text-sm text-center">{row.quantity}</span> },
-            { key: "price", header: "Unit Price", render: (row: UnitRow) => <span className="text-sm font-mono">{row.unitPrice}</span> },
+            { key: "price", header: "Unit Price", render: (row: UnitRow) => <span className="text-sm font-mono">{formatMoneyOrCode(row.unitPrice, currency)}</span> },
             ...(showCredentials
               ? [
                   // Credentials are email:password blobs an admin must read in

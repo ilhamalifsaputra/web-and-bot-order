@@ -20,7 +20,7 @@ export interface TicketOrderSummary {
 
 type KnownCurrency = Parameters<typeof formatCurrencyDisplay>[1];
 
-function money(value: string, currency: string): string {
+export function formatMoneyOrCode(value: string, currency: string): string {
   if (currency === "IDR" || currency === "USDT" || currency === "USD") {
     return formatCurrencyDisplay(value, currency as KnownCurrency);
   }
@@ -37,12 +37,12 @@ export function summarizeTicketOrder(order: TicketOrderInput): TicketOrderSummar
     else groups.set(key, { name: item.product.name, units: item.quantity, unitPrice: item.unitPrice });
   }
   const lines = [...groups.values()].map((g) => {
-    const price = money(g.unitPrice, order.currency);
+    const price = formatMoneyOrCode(g.unitPrice, order.currency);
     return {
       name: g.name,
       units: g.units,
       unitPriceText: g.units === 1 ? price : `${g.units} units · ${price} each`,
     };
   });
-  return { lines, totalText: money(order.totalAmount, order.currency) };
+  return { lines, totalText: formatMoneyOrCode(order.totalAmount, order.currency) };
 }

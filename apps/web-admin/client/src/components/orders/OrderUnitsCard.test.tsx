@@ -32,11 +32,29 @@ beforeEach(() => {
   vi.mocked(apiPost).mockReset();
 });
 
+describe("OrderUnitsCard — unit price", () => {
+  it("formats the unit price with the order currency", () => {
+    render(
+      <OrderUnitsCard orderId="55" currency="IDR" units={[{ ...unit(1), unitPrice: "50000" }]} replacements={[]} isDelivered />,
+      { wrapper: Wrapper },
+    );
+    expect(screen.getByText("Rp50.000")).toBeInTheDocument();
+  });
+
+  it("falls back to the raw value plus code for an unsupported currency", () => {
+    render(
+      <OrderUnitsCard orderId="55" currency="EUR" units={[{ ...unit(1), unitPrice: "50000" }]} replacements={[]} isDelivered />,
+      { wrapper: Wrapper },
+    );
+    expect(screen.getByText("50000 EUR")).toBeInTheDocument();
+  });
+});
+
 describe("OrderUnitsCard — action wording", () => {
   it("keeps the Report Issue wording on the order page", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     render(
-      <OrderUnitsCard orderId="55" units={[unit(1), unit(2)]} replacements={[]} isDelivered />,
+      <OrderUnitsCard orderId="55" currency="IDR" units={[unit(1), unit(2)]} replacements={[]} isDelivered />,
       { wrapper: Wrapper },
     );
 
@@ -56,6 +74,7 @@ describe("OrderUnitsCard — action wording", () => {
     render(
       <OrderUnitsCard
         orderId="55"
+        currency="IDR"
         units={[unit(1), unit(2)]}
         replacements={[]}
         isDelivered
@@ -90,7 +109,7 @@ describe("OrderUnitsCard — action wording", () => {
   it("names a single-unit ticket replacement in the singular", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     render(
-      <OrderUnitsCard orderId="55" units={[unit(1)]} replacements={[]} isDelivered supportTicketId={34} />,
+      <OrderUnitsCard orderId="55" currency="IDR" units={[unit(1)]} replacements={[]} isDelivered supportTicketId={34} />,
       { wrapper: Wrapper },
     );
 

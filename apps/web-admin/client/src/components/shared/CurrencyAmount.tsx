@@ -27,6 +27,16 @@ export function formatCurrencyDisplay(value: string, currency: "IDR" | "USDT" | 
   return `${amount.toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toFixed(2)} ${currency}`;
 }
 
+type KnownCurrency = Parameters<typeof formatCurrencyDisplay>[1];
+
+/** Like `formatCurrencyDisplay`, but tolerates an unrecognised currency code by printing "<value> <code>". */
+export function formatMoneyOrCode(value: string, currency: string): string {
+  if (currency === "IDR" || currency === "USDT" || currency === "USD") {
+    return formatCurrencyDisplay(value, currency as KnownCurrency);
+  }
+  return `${value} ${currency}`;
+}
+
 export interface CurrencyAmount {
   currency: "IDR" | "USDT" | "USD";
   value: string;

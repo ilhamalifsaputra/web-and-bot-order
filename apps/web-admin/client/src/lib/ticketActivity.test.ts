@@ -43,7 +43,7 @@ describe("buildTicketActivity", () => {
 
   it("maps action-keyed sentences", () => {
     const rows = [
-      row({ action: "ticket_note", createdAt: at(0) }),
+      row({ action: "ticket_internal_note", createdAt: at(0) }),
       row({ action: "ticket_resolve", createdAt: at(100) }),
       row({ action: "ticket_reopen", createdAt: at(200) }),
       row({ action: "ticket_close", createdAt: at(300) }),
@@ -94,7 +94,7 @@ describe("buildTicketActivity", () => {
   });
 
   it("does not fold into a non-mergeable action", () => {
-    const note = row({ action: "ticket_note", createdAt: at(0) });
+    const note = row({ action: "ticket_internal_note", createdAt: at(0) });
     const sc = row({ action: "ticket_status_change", createdAt: at(2), statusChange: { from: "OPEN", to: "RESOLVED" } });
     expect(buildTicketActivity([sc, note], ctx)).toHaveLength(2);
   });

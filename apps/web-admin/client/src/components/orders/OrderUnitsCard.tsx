@@ -17,13 +17,12 @@ import {
   DialogDescription,
   DialogFooter,
 } from "@/components/ui/dialog";
-import { formatCurrencyDisplay } from "../shared/CurrencyAmount";
+import { formatCurrencyDisplay, formatMoneyOrCode } from "../shared/CurrencyAmount";
 import { TriangleAlert, RefreshCw, Undo2, History } from "lucide-react";
 import { toast } from "sonner";
 import { apiPost } from "../../api/client";
 import { describeError } from "../../lib/errorMessages";
 import { visibleSelection } from "../../lib/selection";
-import { formatMoneyOrCode } from "../../lib/ticketOrderSummary";
 
 /** The currencies this shop's money ever comes back as — same union
  *  api/types.ts uses, and the only ones `formatCurrencyDisplay` accepts. */

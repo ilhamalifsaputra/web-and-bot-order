@@ -1,4 +1,4 @@
-import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount";
+import { formatMoneyOrCode } from "../components/shared/CurrencyAmount";
 
 export interface TicketOrderInput {
   items: { id: number; quantity: number; unitPrice: string; product: { id: number; name: string } }[];
@@ -16,15 +16,6 @@ export interface TicketOrderLine {
 export interface TicketOrderSummary {
   lines: TicketOrderLine[];
   totalText: string;
-}
-
-type KnownCurrency = Parameters<typeof formatCurrencyDisplay>[1];
-
-export function formatMoneyOrCode(value: string, currency: string): string {
-  if (currency === "IDR" || currency === "USDT" || currency === "USD") {
-    return formatCurrencyDisplay(value, currency as KnownCurrency);
-  }
-  return `${value} ${currency}`;
 }
 
 /** Collapses an order's items into one line per product + unit price, product-agnostic. */

@@ -601,7 +601,7 @@ describe("TicketDetailPage — customer", () => {
     });
     const card = customerCard();
     expect(within(card).getByText("budi_web")).toBeInTheDocument();
-    expect(within(card).getByText("budi@example.com")).toBeInTheDocument();
+    expect(within(card).queryByText("budi@example.com")).not.toBeInTheDocument();
     expect(screen.queryByText("Unknown")).not.toBeInTheDocument();
   });
 
@@ -690,6 +690,23 @@ describe("TicketDetailPage — activity", () => {
     // The real ticket_create row replaces the synthetic one — no duplicate.
     expect(rows.map((r) => r.textContent)).toEqual(["10:00 · Ticket created", "12:00 · Customer replied"]);
     expect(screen.queryByText(/System/)).not.toBeInTheDocument();
+  });
+
+  it("renders the real ticket_internal_note audit action as an actor-based sentence", async () => {
+    const detail = {
+      ...BASE_DETAIL,
+      timeline: {
+        ...BASE_DETAIL.timeline,
+        ticket: [
+          auditRow({ id: 130, action: "ticket_internal_note", details: "Added an internal note on ticket #1.", createdAt: "2026-06-26T12:00:00.000Z", createdAtDisplay: "2026-06-26 12:00", createdAtShort: "12:00" }),
+          ...BASE_DETAIL.timeline.ticket,
+        ],
+      },
+    };
+    await renderLoaded(detail);
+
+    const rows = screen.getAllByTestId("activity-entry");
+    expect(rows[rows.length - 1]).toHaveTextContent("12:00 · Rina added an internal note");
   });
 
   it("says No additional activity yet when nothing happened after creation", async () => {

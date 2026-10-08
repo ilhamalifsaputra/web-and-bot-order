@@ -1,7 +1,19 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { formatCurrencyDisplay, formatCurrencyParts, CurrencyStack } from "./CurrencyAmount";
+import { formatCurrencyDisplay, formatCurrencyParts, formatMoneyOrCode, CurrencyStack } from "./CurrencyAmount";
+
+describe("formatMoneyOrCode", () => {
+  it("formats known currencies like formatCurrencyDisplay", () => {
+    expect(formatMoneyOrCode("18000", "IDR")).toBe("Rp18.000");
+    expect(formatMoneyOrCode("5", "USD")).toBe("5.00 USD");
+    expect(formatMoneyOrCode("1.5", "USDT")).toBe("1.5 USDT");
+  });
+
+  it("prints the raw value and code for an unrecognised currency", () => {
+    expect(formatMoneyOrCode("12.5", "EUR")).toBe("12.5 EUR");
+  });
+});
 
 describe("formatCurrencyDisplay", () => {
   it("formats IDR with a Rp prefix and dotted thousands, no decimals", () => {

@@ -13,16 +13,13 @@ const base: TicketCustomerUser = {
 };
 
 describe("describeTicketCustomer", () => {
-  it("prefers fullName and lists email and Telegram ID identifiers", () => {
+  it("prefers fullName and lists only the Telegram ID identifier (never the email)", () => {
     expect(
       describeTicketCustomer({ ...base, fullName: "Rina", username: "rina", email: "r@x.id", telegramId: "123" }),
     ).toEqual({
       name: "Rina",
       kind: "registered",
-      identifiers: [
-        { label: "Email", value: "r@x.id" },
-        { label: "Telegram ID", value: "123" },
-      ],
+      identifiers: [{ label: "Telegram ID", value: "123" }],
     });
   });
 
@@ -30,6 +27,14 @@ describe("describeTicketCustomer", () => {
     expect(describeTicketCustomer({ ...base, username: "rina" }).name).toBe("@rina");
     expect(describeTicketCustomer({ ...base, loginUsername: "rina_l" }).name).toBe("rina_l");
     expect(describeTicketCustomer({ ...base, email: "r@x.id" }).name).toBe("r@x.id");
+  });
+
+  it("does not list email as an identifier when it is the fallback name", () => {
+    expect(describeTicketCustomer({ ...base, email: "r@x.id" })).toEqual({
+      name: "r@x.id",
+      kind: "registered",
+      identifiers: [],
+    });
   });
 
   it("omits identifiers that are absent", () => {

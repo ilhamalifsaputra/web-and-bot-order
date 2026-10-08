@@ -4,7 +4,7 @@ import type { FastifyInstance } from "fastify";
 import { config } from "@app/core/config";
 import { addMinutes } from "@app/core/datetime";
 import { SenderType } from "@app/core/enums";
-import { prisma, initDb, upsertUser, setSetting, createTicket, addTicketMessage, assignTicket, createCategory, createCatalogProduct, createDenomination, bulkAddStock, createOrderDirect, setUserPreferredCurrency } from "@app/db";
+import { prisma, initDb, upsertUser, setSetting, createTicket, addTicketMessage, assignTicket, createCategory, createCatalogProduct, createDenomination, bulkAddStock, createOrderDirect, setUserPreferredCurrency, createWebUser } from "@app/db";
 import { resetDb } from "../../../tests/helpers/sampleData";
 import { makeSession, sessionJtiKey, newJti } from "../src/auth";
 import { buildApp } from "../src/server";
@@ -654,6 +654,30 @@ describe("GET /api/support/:ticketId", () => {
     // ticket_reply above wrote an audit row targeting this ticket.
     expect(body.timeline.ticket.length).toBeGreaterThan(0);
     expect(body.timeline.order).toEqual([]);
+  });
+
+  it("never leaks a registered customer's passwordHash anywhere in the JSON (backend audit H-4)", async () => {
+    const LEAK_HASH = "hash-must-never-leave-the-server-h4-support";
+    const web = await createWebUser(prisma, {
+      loginUsername: "h4support",
+      email: "h4-support@shop.test",
+      passwordHash: LEAK_HASH,
+      fullName: "H4 Support",
+    });
+    const order = await prisma.order.create({
+      data: { orderCode: "ORD-h4s", userId: web.id, subtotalAmount: "1", totalAmount: "1" },
+    });
+    const ticket = await createTicket(prisma, web.id, "Leak check", null, null, order.id);
+
+    const res = await get(`/api/support/${ticket.id}`, cookie);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).not.toContain(LEAK_HASH);
+    const hasKeyDeep = (v: unknown, key: string): boolean =>
+      v !== null && typeof v === "object" &&
+      (Array.isArray(v)
+        ? v.some((x) => hasKeyDeep(x, key))
+        : Object.entries(v as Record<string, unknown>).some(([k, x]) => k === key || hasKeyDeep(x, key)));
+    expect(hasKeyDeep(res.json(), "passwordHash")).toBe(false);
   });
 
   it("includes the order timeline block when the ticket is linked to an order", async () => {

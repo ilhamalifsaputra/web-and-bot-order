@@ -45,7 +45,7 @@ function sentence(row: TicketActivityRow, ctx: TicketActivityContext): string {
       return "Ticket created";
     case "ticket_reply":
       return `${ctx.actorLabel(row)} replied`;
-    case "ticket_note":
+    case "ticket_internal_note":
       return `${ctx.actorLabel(row)} added an internal note`;
     case "ticket_resolve":
       return "Resolved";

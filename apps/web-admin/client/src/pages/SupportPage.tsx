@@ -125,9 +125,11 @@ const ALL_CATEGORIES = "_all_";
 const ALL_ASSIGNED = "_all_";
 const STATUS_VALUES = ["OPEN", "REPLIED", "RESOLVED", "CLOSED"];
 /** Task 1 fix review (Important finding): the dropdown still shows the 4
- *  legacy buckets — matching ticketStatusLabel's OPEN/WAITING_ADMIN and
- *  REPLIED/WAITING_CUSTOMER pairing — but each selection must query BOTH
- *  statuses in its pair, or filtering by "Open"/"Waiting for customer" would
+ *  legacy buckets (OPEN also covers WAITING_ADMIN, REPLIED also covers
+ *  WAITING_CUSTOMER). The filter labels are bucket names and do NOT mirror the
+ *  badge labels one-to-one: ticketStatusLabel badges WAITING_ADMIN as "Waiting
+ *  for admin" while the "Open" filter still buckets it. Each selection must
+ *  query BOTH statuses in its pair, or filtering by "Open"/"Replied" would
  *  silently under-report every ticket that has already gone through the
  *  Task 1 fix's automatic WAITING_ADMIN/WAITING_CUSTOMER transition. The
  *  server's `parseCsvFilter` (apps/web-admin/src/routes/api/support.ts)

@@ -155,7 +155,10 @@ describe("persisted Telegram fulfillment status", () => {
     await db.processedBybitTx.create({ data: { orderId: order.id, bybitTxId: crypto.randomUUID(), amount: "3", outcome: "underpaid" } });
     const tg = telegram(); await worker(tg.api).tick();
     expect(tg.sent[0]!.text).toContain("5.1 USDT"); expect(tg.sent[0]!.text).toContain("3 USDT");
-    expect(tg.sent[0]!.text).toContain("bot description"); expect(tg.sent[0]!.text).not.toContain("%");
+    expect(tg.sent[0]!.text).toContain("less than the required amount");
+    expect(tg.sent[0]!.text).toContain("Need help? Tap 💬 Support below.");
+    expect(tg.sent[0]!.text).not.toMatch(/bot description|pay again/i); expect(tg.sent[0]!.text).not.toContain("%");
+    expect(buttons(tg.sent[0]!.markup)).toContain("v1:support:open");
     expect(tg.sent[0]!.text).not.toMatch(/[⣾⣽⣻⢿⡿⣟⣯⣷]/u);
   });
   it("shows purchased item names with escaped HTML and excludes customer secrets", async () => {

@@ -2,6 +2,11 @@ import { getCustomerFacingReference, type CustomerProgress } from "@app/core/ord
 import { t } from "@app/core/i18n";
 import { escape } from "./templates";
 
+/** Phases whose Telegram status carries the bot's Support button; their text
+ * ends with a hint pointing at it. Bot-only: the web renders the shared body
+ * keys without this hint. */
+export const SUPPORT_PHASES: ReadonlySet<string> = new Set(["UNDERPAID", "REVIEW", "FAILED", "CANCELLED"]);
+
 /** Pure Telegram presentation. Financial figures are supplied by the domain. */
 export function renderTransactionStatusMessage(input: {
   orderCode: string;
@@ -35,5 +40,6 @@ export function renderTransactionStatusMessage(input: {
     lines.push("", `${"█".repeat(cells)}${"░".repeat(10 - cells)} ${p.progress}%`);
   }
   lines.push("", escape(t(input.slow ? "order.progress_detected_slow" : p.bodyKey, lang)));
+  if (SUPPORT_PHASES.has(p.phase)) lines.push(escape(t("transaction.support_hint", lang)));
   return lines.join("\n");
 }

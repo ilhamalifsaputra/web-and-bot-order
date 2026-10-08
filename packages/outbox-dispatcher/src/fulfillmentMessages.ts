@@ -8,7 +8,7 @@ import { t } from "@app/core/i18n";
 import { langCode } from "@app/core/enums";
 import { logger } from "@app/core/logger";
 import { escape } from "./templates";
-import { renderTransactionStatusMessage } from "./transactionMessage";
+import { renderTransactionStatusMessage, SUPPORT_PHASES } from "./transactionMessage";
 
 export type FulfillmentTelegramApi = Pick<Bot["api"], "sendMessage" | "editMessageText" | "editMessageCaption" | "deleteMessage" | "editMessageReplyMarkup">;
 const include = { order: { include: { user: true, items: { include: { product: { include: { product: { include: { category: true } } } } } } } } } as const;
@@ -32,8 +32,6 @@ const TERMINAL_PHASES: ReadonlySet<string> = new Set(["SUCCESS", "WALLET_CREDITE
  * stay visible (its caption is edited). In any other phase the photo is
  * retired: one status text replaces it and the photo is deleted. */
 const QR_LIVE_PHASES: ReadonlySet<string> = new Set(["NONE", "PAYMENT_DETECTED", "VERIFYING"]);
-/** Phases whose status text offers the bot's existing Support entry. */
-const SUPPORT_PHASES: ReadonlySet<string> = new Set(["UNDERPAID", "REVIEW", "FAILED", "CANCELLED"]);
 /** Telegram's answer when editMessageText targets a photo/media message. */
 const NO_TEXT_TO_EDIT = /there is no text in the message to edit/i;
 

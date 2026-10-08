@@ -17,6 +17,23 @@ describe("progress bar before the payment is verified", () => {
     expect(text).toContain("⣾");
     expect(text).not.toMatch(/[█░%]/u);
   });
+  it.each([
+    ["UNDERPAID", { status: "UNDERPAID" }],
+    ["REVIEW", { status: "PROCESSING", paidAt: new Date(), digiflazzStatus: "failed" }],
+    ["FAILED", { status: "FAILED" }],
+    ["CANCELLED", { status: "CANCELLED" }],
+  ] as const)("ends a %s status with the hint at the Support button", (phase, over) => {
+    for (const [lang, hint] of [["en", "Need help? Tap 💬 Support below."], ["id", "Butuh bantuan? Ketuk 💬 Bantuan di bawah."]] as const) {
+      const presentation = customerProgressPhase({ ...order, ...over });
+      expect(presentation.phase).toBe(phase);
+      const text = renderTransactionStatusMessage({ orderCode: "ORD-1", presentation, lang, frame: "⣾", amount: "Rp10.000" });
+      expect(text.endsWith(hint)).toBe(true);
+      expect(text).not.toMatch(/bot description|deskripsi bot/);
+    }
+  });
+  it.each(["PENDING_PAYMENT", "PAYMENT_DETECTED", "PAID", "DELIVERED"])("adds no Support hint to a %s status", status => {
+    expect(render(status)).not.toContain("Need help?");
+  });
   it("still shows the bar once the payment is confirmed", () => {
     const text = render("PAID");
     expect(text).toContain("40%");

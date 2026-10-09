@@ -83,6 +83,13 @@ interface TxRow {
   orderCode: string | null;
   orderKind: string | null;
   orderStatus: string | null;
+  /** The order an unmatched payment was probably meant for (a short-paid or
+   *  unverified callback that named one). DISPLAY ONLY — not proof of
+   *  payment; `orderId` stays null until the payment settles an order. Code
+   *  and kind are null when there is no hint or the order no longer exists. */
+  suggestedOrderId: number | null;
+  suggestedOrderCode: string | null;
+  suggestedOrderKind: string | null;
   processedAt: string;
   processedAtDisplay: string | null;
 }
@@ -809,6 +816,21 @@ export function PaymentsPage() {
                     </Link>
                     {tx.orderStatus && <StatusBadge status={tx.orderStatus} />}
                   </span>
+                ) : tx.suggestedOrderId != null ? (
+                  // A hint, not a settlement: muted so it never reads as the
+                  // linked order above.
+                  <span
+                    className="inline-flex flex-wrap items-center gap-2"
+                    title="Order this payment was meant for — not settled."
+                  >
+                    <Link
+                      to={`/orders/${tx.suggestedOrderId}`}
+                      className="font-mono text-xs text-ink-soft hover:underline"
+                    >
+                      {tx.suggestedOrderCode ?? `#${tx.suggestedOrderId}`}
+                    </Link>
+                    <span className="text-xs text-ink-soft">suggested</span>
+                  </span>
                 ) : (
                   <span className="font-mono text-xs">—</span>
                 ),
@@ -819,7 +841,12 @@ export function PaymentsPage() {
               // Reuses StatusBadge (the same pill vocabulary the Outcome column
               // uses) rather than a second badge system — WALLET_TOPUP/PRODUCT
               // are registered in its tone map.
-              render: tx => tx.orderKind ? <StatusBadge status={tx.orderKind} /> : <span className="text-xs text-ink-soft">—</span>,
+              // Falls back to the suggested order's kind on an unmatched row,
+              // the same effective kind the server's `kind` filter matches.
+              render: tx => {
+                const kind = tx.orderKind ?? tx.suggestedOrderKind;
+                return kind ? <StatusBadge status={kind} /> : <span className="text-xs text-ink-soft">—</span>;
+              },
             },
             {
               key: "amount",

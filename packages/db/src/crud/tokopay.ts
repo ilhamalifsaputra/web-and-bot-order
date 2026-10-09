@@ -382,14 +382,25 @@ export async function deliverPaidTokopayOrder(
   }
 }
 
-/** A callback that matched no payable order — record once for manual review. */
+/** A callback that matched no payable order — record once for manual review.
+ *  `suggestedOrderId` is the order the callback named when it had one but
+ *  could not settle it (short-paid, unverified amount, wrong method/currency).
+ *  It is a display-only hint for the Payments ledger and is deliberately NOT
+ *  written to `orderId`: an `unmatched` row linked by `orderId` counts as
+ *  proof of a full payment (`orderHasIncomingLedgerPayment`,
+ *  `consumeIncomingLedgerPayment`), and this row may be short or zero. */
 export async function recordUnmatchedTokopayTx(
   db: Db,
-  args: { trxId: string; amount: Decimal.Value },
+  args: { trxId: string; amount: Decimal.Value; suggestedOrderId?: number | null },
 ): Promise<boolean> {
   try {
     await db.processedTokopayTx.create({
-      data: { trxId: args.trxId, amount: new Decimal(args.amount), outcome: "unmatched" },
+      data: {
+        trxId: args.trxId,
+        amount: new Decimal(args.amount),
+        outcome: "unmatched",
+        suggestedOrderId: args.suggestedOrderId ?? null,
+      },
     });
     return true;
   } catch (e) {

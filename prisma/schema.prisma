@@ -1730,17 +1730,19 @@ model Broadcast {
 }
 
 model ProcessedBinanceTx {
-  id          Int      @id @default(autoincrement())
-  binanceTxId String   @unique(map: "ix_processed_binance_tx_txid") @map("binance_tx_id")
-  orderId     Int?     @map("order_id")
-  amount      Decimal?
+  id               Int      @id @default(autoincrement())
+  binanceTxId      String   @unique(map: "ix_processed_binance_tx_txid") @map("binance_tx_id")
+  orderId          Int?     @map("order_id")
+  /// See ProcessedTokopayTx.suggestedOrderId — display only, never payment evidence.
+  suggestedOrderId Int?     @map("suggested_order_id")
+  amount           Decimal?
   // matched | underpaid | unmatched
-  outcome     String
-  createdAt   DateTime @default(now()) @map("created_at")
+  outcome          String
+  createdAt        DateTime @default(now()) @map("created_at")
   /// Bumped on every write. A "matched" claim untouched for
   /// STALE_MATCHED_CLAIM_MS whose order is still unpaid is a crashed
   /// delivery and is reclaimable (crud/_staleClaim.ts).
-  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
+  updatedAt        DateTime @default(now()) @updatedAt @map("updated_at")
 
   @@index([orderId], map: "ix_processed_binance_tx_order_id")
   @@map("processed_binance_tx")
@@ -1752,14 +1754,16 @@ model ProcessedBinanceTx {
 /// no memo, so there is no underpaid auto-path (an amount that matches no order
 /// is simply "unmatched"); outcome is matched | unmatched | delivery_failed.
 model ProcessedBybitTx {
-  id        Int      @id @default(autoincrement())
-  bybitTxId String   @unique(map: "ix_processed_bybit_tx_txid") @map("bybit_tx_id")
-  orderId   Int?     @map("order_id")
-  amount    Decimal?
-  outcome   String
-  createdAt DateTime @default(now()) @map("created_at")
+  id               Int      @id @default(autoincrement())
+  bybitTxId        String   @unique(map: "ix_processed_bybit_tx_txid") @map("bybit_tx_id")
+  orderId          Int?     @map("order_id")
+  /// See ProcessedTokopayTx.suggestedOrderId — display only, never payment evidence.
+  suggestedOrderId Int?     @map("suggested_order_id")
+  amount           Decimal?
+  outcome          String
+  createdAt        DateTime @default(now()) @map("created_at")
   /// See ProcessedBinanceTx.updatedAt.
-  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+  updatedAt        DateTime @default(now()) @updatedAt @map("updated_at")
 
   @@index([orderId], map: "ix_processed_bybit_tx_order_id")
   @@map("processed_bybit_tx")
@@ -1770,15 +1774,23 @@ model ProcessedBybitTx {
 /// reference id is claimed exactly once, so repeated callbacks can never
 /// double-deliver an order (plan.md §15.5).
 model ProcessedTokopayTx {
-  id        Int      @id @default(autoincrement())
-  trxId     String   @unique(map: "ix_processed_tokopay_tx_trxid") @map("trx_id")
-  orderId   Int?     @map("order_id")
-  amount    Decimal?
+  id               Int      @id @default(autoincrement())
+  trxId            String   @unique(map: "ix_processed_tokopay_tx_trxid") @map("trx_id")
+  orderId          Int?     @map("order_id")
+  /// The order this payment was probably meant for, recorded when a gateway
+  /// callback knew the order but could not settle it (short-paid, unverified
+  /// amount, wrong method/currency). DISPLAY ONLY — never read by any money,
+  /// reclaim, credit, settle or "actionable" logic (orderHasIncomingLedgerPayment,
+  /// consumeIncomingLedgerPayment, creditOrderToBalance and the Payments
+  /// actionable filter all key on `orderId`). `orderId` stays null until the
+  /// payment actually settles an order.
+  suggestedOrderId Int?     @map("suggested_order_id")
+  amount           Decimal?
   // matched | unmatched | delivery_failed
-  outcome   String
-  createdAt DateTime @default(now()) @map("created_at")
+  outcome          String
+  createdAt        DateTime @default(now()) @map("created_at")
   /// See ProcessedBinanceTx.updatedAt.
-  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+  updatedAt        DateTime @default(now()) @updatedAt @map("updated_at")
 
   @@index([orderId], map: "ix_processed_tokopay_tx_order_id")
   @@map("processed_tokopay_tx")
@@ -1787,15 +1799,17 @@ model ProcessedTokopayTx {
 /// Idempotency ledger for PayDisini (QRIS/e-wallet, IDR) webhook callbacks —
 /// same insert-first-on-unique pattern as ProcessedTokopayTx.
 model ProcessedPaydisiniTx {
-  id        Int      @id @default(autoincrement())
-  trxId     String   @unique(map: "ix_processed_paydisini_tx_trxid") @map("trx_id")
-  orderId   Int?     @map("order_id")
-  amount    Decimal?
+  id               Int      @id @default(autoincrement())
+  trxId            String   @unique(map: "ix_processed_paydisini_tx_trxid") @map("trx_id")
+  orderId          Int?     @map("order_id")
+  /// See ProcessedTokopayTx.suggestedOrderId — display only, never payment evidence.
+  suggestedOrderId Int?     @map("suggested_order_id")
+  amount           Decimal?
   // matched | unmatched | delivery_failed | stale
-  outcome   String
-  createdAt DateTime @default(now()) @map("created_at")
+  outcome          String
+  createdAt        DateTime @default(now()) @map("created_at")
   /// See ProcessedBinanceTx.updatedAt.
-  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+  updatedAt        DateTime @default(now()) @updatedAt @map("updated_at")
 
   @@index([orderId], map: "ix_processed_paydisini_tx_order_id")
   @@map("processed_paydisini_tx")
@@ -1804,15 +1818,17 @@ model ProcessedPaydisiniTx {
 /// Idempotency ledger for NOWPayments (USDT crypto invoice) IPN callbacks —
 /// same insert-first-on-unique pattern. trxId stores NOWPayments' payment_id.
 model ProcessedNowpaymentsTx {
-  id        Int      @id @default(autoincrement())
-  trxId     String   @unique(map: "ix_processed_nowpayments_tx_trxid") @map("trx_id")
-  orderId   Int?     @map("order_id")
-  amount    Decimal?
+  id               Int      @id @default(autoincrement())
+  trxId            String   @unique(map: "ix_processed_nowpayments_tx_trxid") @map("trx_id")
+  orderId          Int?     @map("order_id")
+  /// See ProcessedTokopayTx.suggestedOrderId — display only, never payment evidence.
+  suggestedOrderId Int?     @map("suggested_order_id")
+  amount           Decimal?
   // matched | unmatched | delivery_failed | stale
-  outcome   String
-  createdAt DateTime @default(now()) @map("created_at")
+  outcome          String
+  createdAt        DateTime @default(now()) @map("created_at")
   /// See ProcessedBinanceTx.updatedAt.
-  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+  updatedAt        DateTime @default(now()) @updatedAt @map("updated_at")
 
   @@index([orderId], map: "ix_processed_nowpayments_tx_order_id")
   @@map("processed_nowpayments_tx")

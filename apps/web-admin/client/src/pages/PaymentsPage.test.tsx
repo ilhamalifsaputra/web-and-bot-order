@@ -716,6 +716,30 @@ describe("PaymentsPage", () => {
     expect(screen.getByText("Cancelled")).toBeInTheDocument();
   });
 
+  it("shows an unmatched row's suggested order as a muted, labelled link, falls back to its kind for Type, and renders the amount with its currency", async () => {
+    const ledger = [
+      { id: 1, gateway: "tokopay", reference: "TP-SHORT", amount: "40000", currency: "IDR", outcome: "unmatched", memo: null, orderId: null, orderCode: null, orderKind: null, orderStatus: null, suggestedOrderId: 21, suggestedOrderCode: "ORD-HINTED", suggestedOrderKind: "WALLET_TOPUP", processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
+      { id: 2, gateway: "tokopay", reference: "TP-GHOST", amount: "1000", currency: "IDR", outcome: "unmatched", memo: null, orderId: null, orderCode: null, orderKind: null, orderStatus: null, suggestedOrderId: 22, suggestedOrderCode: null, suggestedOrderKind: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
+    ];
+    mockPaymentsFetch({ enabled: true, ledger, total: 2, todayCount: 0, page: 1, hasNext: false, outcomes: ["unmatched"], kinds: ["PRODUCT", "WALLET_TOPUP"], counts: {} });
+    render(<PaymentsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("TP-SHORT")).toBeInTheDocument());
+
+    const link = screen.getByRole("link", { name: "ORD-HINTED" });
+    expect(link).toHaveAttribute("href", "/orders/21");
+    expect(link).toHaveClass("text-ink-soft");
+    const shortRow = link.closest("tr")!;
+    expect(within(shortRow).getByText("suggested")).toBeInTheDocument();
+    expect(within(shortRow).getByTitle("Order this payment was meant for — not settled.")).toBeInTheDocument();
+    // Type falls back to the suggested order's kind.
+    expect(within(shortRow).getByText("Wallet Topup")).toBeInTheDocument();
+    // Amount renders now that the server sends the currency.
+    expect(within(shortRow).getByText(/40[.,]000/)).toBeInTheDocument();
+
+    // A hint whose order code is unknown falls back to `#id`.
+    expect(screen.getByRole("link", { name: "#22" })).toHaveAttribute("href", "/orders/22");
+  });
+
   it("seeds the order-type filter from ?kind= in the URL on mount", async () => {
     mockPaymentsFetch({ enabled: true, ledger: [], total: 0, todayCount: 0, page: 1, hasNext: false, outcomes: [], kinds: ["PRODUCT", "WALLET_TOPUP"], counts: {} });
     render(

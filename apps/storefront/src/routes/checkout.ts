@@ -1251,7 +1251,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
     // compared against a USDT order's total (Payment-4 fix, security audit
     // 2026-06-23).
     if (!order || order.paymentMethod !== PaymentMethod.TOKOPAY || order.currency !== OrderCurrency.IDR) {
-      await recordUnmatchedTokopayTx(prisma, { trxId: cb.trxId, amount: cb.amount });
+      await recordUnmatchedTokopayTx(prisma, { trxId: cb.trxId, amount: cb.amount, suggestedOrderId: order?.id ?? null });
       logger.warn(
         `A signed TokoPay callback reported a payment of ${cb.amount.toString()} against reference "${cb.refId}", but no TokoPay rupiah order of that code exists — recorded as an unmatched transaction and left for manual review rather than delivered, because there is no order to deliver. Real money may have arrived with nobody credited for it, so somebody should find out whose payment this was.`,
       );
@@ -1273,7 +1273,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
       // The row is reclaimable, so a later status that does carry the amount
       // still delivers normally.
       const unverifiedTrxId = gatewayLedgerTrxId(live.trxId, order.orderCode);
-      await recordUnmatchedTokopayTx(prisma, { trxId: unverifiedTrxId, amount: 0 });
+      await recordUnmatchedTokopayTx(prisma, { trxId: unverifiedTrxId, amount: 0, suggestedOrderId: order.id });
       // Deduped per (order, admin, reason) inside the helper, so every retry
       // and poller cycle can call it and each admin is told exactly once.
       await enqueueAdminUnconfirmablePayment(prisma, {
@@ -1306,7 +1306,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
       logger.warn(
         `TokoPay callback for order ${order.orderCode} is short-paid — got ${live.amount.toString()}, expected ${expectedCharge.toString()} — recording it as unmatched instead of delivering`,
       );
-      await recordUnmatchedTokopayTx(prisma, { trxId: ledgerTrxId, amount: live.amount });
+      await recordUnmatchedTokopayTx(prisma, { trxId: ledgerTrxId, amount: live.amount, suggestedOrderId: order.id });
       await markOrderUnderpaid(prisma, { orderId: order.id, gateway: "TokoPay", receivedAmount: live.amount, expectedAmount: expectedCharge });
       return reply.send({ status: "amount mismatch" });
     }
@@ -1379,7 +1379,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
     const order = await getOrderByCode(prisma, cb.refId);
     // Payment-4 fix, security audit 2026-06-23 — see the TokoPay callback above.
     if (!order || order.paymentMethod !== PaymentMethod.PAYDISINI || order.currency !== OrderCurrency.IDR) {
-      await recordUnmatchedPaydisiniTx(prisma, { trxId: cb.trxId, amount: cb.amount });
+      await recordUnmatchedPaydisiniTx(prisma, { trxId: cb.trxId, amount: cb.amount, suggestedOrderId: order?.id ?? null });
       logger.warn(
         `A signed PayDisini callback reported a payment of ${cb.amount.toString()} against reference "${cb.refId}", but no PayDisini rupiah order of that code exists — recorded as an unmatched transaction and left for manual review rather than delivered, because there is no order to deliver. Real money may have arrived with nobody credited for it, so somebody should find out whose payment this was.`,
       );
@@ -1397,7 +1397,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
       // Same as the TokoPay callback above: paid status, no amount — parked for
       // manual review with one admin alert, never delivered.
       const unverifiedTrxId = gatewayLedgerTrxId(live.trxId, order.orderCode);
-      await recordUnmatchedPaydisiniTx(prisma, { trxId: unverifiedTrxId, amount: 0 });
+      await recordUnmatchedPaydisiniTx(prisma, { trxId: unverifiedTrxId, amount: 0, suggestedOrderId: order.id });
       // Deduped per (order, admin, reason) inside the helper, so every retry
       // and poller cycle can call it and each admin is told exactly once.
       await enqueueAdminUnconfirmablePayment(prisma, {
@@ -1428,7 +1428,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
       logger.warn(
         `PayDisini callback for order ${order.orderCode} is short-paid — got ${live.amount.toString()}, expected ${order.totalAmount.toString()} — recording it as unmatched instead of delivering`,
       );
-      await recordUnmatchedPaydisiniTx(prisma, { trxId: ledgerTrxId, amount: live.amount });
+      await recordUnmatchedPaydisiniTx(prisma, { trxId: ledgerTrxId, amount: live.amount, suggestedOrderId: order.id });
       await markOrderUnderpaid(prisma, { orderId: order.id, gateway: "PayDisini", receivedAmount: live.amount, expectedAmount: order.totalAmount });
       return reply.send({ status: "amount mismatch" });
     }
@@ -1536,7 +1536,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
       const order = await getOrderByCode(prisma, cb.orderId);
       // Payment-4 fix, security audit 2026-06-23 — see the TokoPay callback above.
       if (!order || order.paymentMethod !== PaymentMethod.NOWPAYMENTS || order.currency !== OrderCurrency.USDT) {
-        await recordUnmatchedNowpaymentsTx(prisma, { trxId: cb.trxId, amount: cb.amount });
+        await recordUnmatchedNowpaymentsTx(prisma, { trxId: cb.trxId, amount: cb.amount, suggestedOrderId: order?.id ?? null });
         logger.warn(
           `A signed NOWPayments IPN reported a finished payment of ${cb.amount.toString()} against reference "${cb.orderId}", but no NOWPayments USDT order of that code exists — recorded as an unmatched transaction and left for manual review rather than delivered, because there is no order to deliver. Real money may have arrived with nobody credited for it, so somebody should find out whose payment this was.`,
         );
@@ -1563,7 +1563,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         logger.warn(
           `NOWPayments reported a finished payment for order ${order.orderCode}, but it could not be confirmed as covering the order because ${valueCheck.reason} — recording it as unmatched for an admin to review instead of delivering`,
         );
-        await recordUnmatchedNowpaymentsTx(prisma, { trxId: cb.trxId, amount: cb.amount });
+        await recordUnmatchedNowpaymentsTx(prisma, { trxId: cb.trxId, amount: cb.amount, suggestedOrderId: order.id });
         return reply.send({ status: "amount mismatch" });
       }
 

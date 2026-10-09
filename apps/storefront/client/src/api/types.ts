@@ -468,6 +468,18 @@ export interface ShopContext {
    * HomePage's own contact section treats an absent number. */
   wa_number: string | null;
   tzname: string;
+  /** Owner-edited legal business identity for the footer / contact page;
+   * each field is null when the owner left it empty. Optional so an older or
+   * mocked payload reads as "nothing set". */
+  business?: {
+    legal_name: string | null;
+    address: string | null;
+    phone: string | null;
+    email: string | null;
+    hours: string | null;
+  };
+  /** Which payment-method logos the footer may show (display only). */
+  pay_methods?: { qris: boolean; card: boolean };
   /** True only when `web_analytics_id` is set, i.e. this shop actually loads
    * Google Analytics. The privacy page reads it so it never claims tracking a
    * given shop doesn't do; optional so an older/mocked payload reads as

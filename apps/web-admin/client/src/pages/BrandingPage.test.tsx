@@ -34,6 +34,11 @@ const BRANDING_DATA = {
   emailResetPasswordTitle: "Reset your password",
   emailResetPasswordSubtitle: "We received a request to reset your password.",
   emailResetPasswordMessage: "Click the button below to choose a new password.",
+  businessLegalName: "PT Contoh Usaha",
+  businessAddress: "Jl. Contoh No. 1, Jakarta",
+  businessPhone: "+62 21 555 0100",
+  businessEmail: "cs@example.com",
+  businessHours: "",
 };
 
 beforeEach(() => {
@@ -354,5 +359,50 @@ describe("BrandingPage", () => {
     // Also check a field in a different card (Shop name) has no color picker.
     await user.click(screen.getAllByRole("button", { name: "Edit" })[0]);
     expect(document.querySelector('input[type="color"]')).not.toBeInTheDocument();
+  });
+
+  it("renders the Identitas Usaha card with its five fields, help text and legal-name placeholder", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(BRANDING_DATA), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    render(<BrandingPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Identitas Usaha")).toBeInTheDocument());
+    const card = screen.getByText("Identitas Usaha").closest('[data-slot="card"]') as HTMLElement;
+    expect(within(card).getByText(/Wajib diisi untuk verifikasi Xendit/)).toBeInTheDocument();
+    expect(within(card).getByText("Nama badan usaha")).toBeInTheDocument();
+    expect(within(card).getByText("PT Contoh Usaha")).toBeInTheDocument();
+    expect(within(card).getByText("Alamat kantor")).toBeInTheDocument();
+    expect(within(card).getByText("Telepon layanan pelanggan")).toBeInTheDocument();
+    expect(within(card).getByText("Email layanan pelanggan")).toBeInTheDocument();
+    expect(within(card).getByText("Jam operasional")).toBeInTheDocument();
+    // Unset hours shows the "not set" marker.
+    expect(within(card).getByText("not set")).toBeInTheDocument();
+
+    const user = userEvent.setup();
+    await user.click(within(card).getAllByRole("button", { name: "Edit" })[0]);
+    const input = within(card).getByRole("textbox");
+    expect(input).toHaveAttribute("placeholder", "PT Nama Usaha Anda");
+    expect(input).toHaveValue("PT Contoh Usaha");
+  });
+
+  it("edits the office address in a textarea", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(BRANDING_DATA), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    render(<BrandingPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Identitas Usaha")).toBeInTheDocument());
+    const card = screen.getByText("Identitas Usaha").closest('[data-slot="card"]') as HTMLElement;
+    const user = userEvent.setup();
+    // Second Edit button in the card is the office address.
+    await user.click(within(card).getAllByRole("button", { name: "Edit" })[1]);
+    const box = within(card).getByRole("textbox");
+    expect(box.tagName).toBe("TEXTAREA");
+    expect(box).toHaveValue("Jl. Contoh No. 1, Jakarta");
   });
 });

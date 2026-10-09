@@ -419,4 +419,74 @@ describe("branding page", () => {
     const res = await postJson("/api/branding/text", cookie, "bad", { key: "email_brand_color", value: "#112233" });
     expect(res.statusCode).toBe(403);
   });
+
+  describe("business identity settings", () => {
+    const BIZ: Record<string, string> = {
+      business_legal_name: "PT Contoh Usaha",
+      business_address: "Jl. Contoh No. 1\nJakarta",
+      business_phone: "+62 (21) 555-0100",
+      business_email: "cs@example.com",
+      business_hours: "Setiap hari 08.00–22.00 WIB",
+    };
+
+    it("saves each key and reads it back from GET /api/branding", async () => {
+      for (const [key, value] of Object.entries(BIZ)) {
+        const res = await postJson("/api/branding/text", cookie, csrf, { key, value });
+        expect(res.statusCode).toBe(200);
+      }
+      const data = (await app.inject({ method: "GET", url: "/api/branding", cookies: { [COOKIE]: cookie } })).json() as Record<string, string>;
+      expect(data.businessLegalName).toBe("PT Contoh Usaha");
+      expect(data.businessAddress).toBe("Jl. Contoh No. 1\nJakarta");
+      expect(data.businessPhone).toBe("+62 (21) 555-0100");
+      expect(data.businessEmail).toBe("cs@example.com");
+      expect(data.businessHours).toBe("Setiap hari 08.00–22.00 WIB");
+    });
+
+    it("returns empty strings when unset", async () => {
+      const data = (await app.inject({ method: "GET", url: "/api/branding", cookies: { [COOKIE]: cookie } })).json() as Record<string, string>;
+      for (const f of ["businessLegalName", "businessAddress", "businessPhone", "businessEmail", "businessHours"]) {
+        expect(data[f]).toBe("");
+      }
+    });
+
+    it("rejects a bad email and a bad phone with 400", async () => {
+      for (const bad of ["nope", "a@b", "@x.com"]) {
+        const res = await postJson("/api/branding/text", cookie, csrf, { key: "business_email", value: bad });
+        expect(res.statusCode).toBe(400);
+      }
+      for (const bad of ["0812abc", "08/12", "call me"]) {
+        const res = await postJson("/api/branding/text", cookie, csrf, { key: "business_phone", value: bad });
+        expect(res.statusCode).toBe(400);
+      }
+      expect(await getSetting(prisma, "business_email")).toBeNull();
+      expect(await getSetting(prisma, "business_phone")).toBeNull();
+    });
+
+    it("rejects over-length values and accepts exactly the cap", async () => {
+      const caps: Array<[string, number, string]> = [
+        ["business_legal_name", 120, "x"],
+        ["business_address", 300, "x"],
+        ["business_phone", 30, "1"],
+        ["business_hours", 120, "x"],
+      ];
+      for (const [key, max, ch] of caps) {
+        const over = await postJson("/api/branding/text", cookie, csrf, { key, value: ch.repeat(max + 1) });
+        expect(over.statusCode).toBe(400);
+        const ok = await postJson("/api/branding/text", cookie, csrf, { key, value: ch.repeat(max) });
+        expect(ok.statusCode).toBe(200);
+      }
+      const longEmail = `${"a".repeat(120)}@example.com`;
+      const res = await postJson("/api/branding/text", cookie, csrf, { key: "business_email", value: longEmail });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("an empty value deletes the setting row and audits it", async () => {
+      await setSetting(prisma, "business_hours", "Senin-Jumat");
+      const res = await postJson("/api/branding/text", cookie, csrf, { key: "business_hours", value: "  " });
+      expect(res.statusCode).toBe(200);
+      expect(await prisma.setting.findUnique({ where: { key: "business_hours" } })).toBeNull();
+      const audit = await prisma.auditLog.findFirst({ where: { action: "setting_clear" }, orderBy: { id: "desc" } });
+      expect(audit!.details).toContain("business_hours");
+    });
+  });
 });

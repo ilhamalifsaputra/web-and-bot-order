@@ -30,6 +30,11 @@ interface BrandingData {
   emailResetPasswordTitle: string;
   emailResetPasswordSubtitle: string;
   emailResetPasswordMessage: string;
+  businessLegalName: string;
+  businessAddress: string;
+  businessPhone: string;
+  businessEmail: string;
+  businessHours: string;
 }
 
 function useBranding() {
@@ -99,6 +104,9 @@ function TextFieldRow({
   multiline,
   helperText,
   colorPicker,
+  placeholder,
+  inputMode,
+  maxLength,
 }: {
   label: string;
   fieldKey: string;
@@ -107,6 +115,9 @@ function TextFieldRow({
   multiline?: boolean;
   helperText?: string;
   colorPicker?: boolean;
+  placeholder?: string;
+  inputMode?: "tel" | "email" | "text";
+  maxLength?: number;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
@@ -163,6 +174,8 @@ function TextFieldRow({
             <Textarea
               rows={4}
               value={draft}
+              placeholder={placeholder}
+              maxLength={maxLength}
               onChange={e => setDraft(e.target.value)}
               autoFocus
             />
@@ -170,6 +183,9 @@ function TextFieldRow({
             <div className="flex items-center gap-2">
               <Input
                 type="text"
+                inputMode={inputMode}
+                placeholder={placeholder}
+                maxLength={maxLength}
                 value={draft}
                 onChange={e => setDraft(e.target.value)}
                 autoFocus
@@ -352,6 +368,54 @@ export function BrandingPage() {
                 value={data.welcome}
                 onSaved={invalidate}
                 multiline
+              />
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader><CardTitle>Identitas Usaha</CardTitle></CardHeader>
+            <CardContent className="divide-y divide-line">
+              <p className="pb-3 text-xs text-ink-soft">
+                Ditampilkan di footer dan halaman Kontak toko. Wajib diisi untuk verifikasi Xendit; nama badan usaha harus sama persis dengan NIB/akta.
+              </p>
+              <TextFieldRow
+                label="Nama badan usaha"
+                fieldKey="business_legal_name"
+                value={data.businessLegalName}
+                onSaved={invalidate}
+                placeholder="PT Nama Usaha Anda"
+                maxLength={120}
+              />
+              <TextFieldRow
+                label="Alamat kantor"
+                fieldKey="business_address"
+                value={data.businessAddress}
+                onSaved={invalidate}
+                multiline
+                maxLength={300}
+              />
+              <TextFieldRow
+                label="Telepon layanan pelanggan"
+                fieldKey="business_phone"
+                value={data.businessPhone}
+                onSaved={invalidate}
+                inputMode="tel"
+                maxLength={30}
+              />
+              <TextFieldRow
+                label="Email layanan pelanggan"
+                fieldKey="business_email"
+                value={data.businessEmail}
+                onSaved={invalidate}
+                inputMode="email"
+                maxLength={120}
+              />
+              <TextFieldRow
+                label="Jam operasional"
+                fieldKey="business_hours"
+                value={data.businessHours}
+                onSaved={invalidate}
+                maxLength={120}
               />
             </CardContent>
           </Card>

@@ -23,9 +23,18 @@
 -- after it are recorded by the bot itself when Telegram acknowledges the file.
 -- The cutoff is read back in the same statement (the inserted row through
 -- RETURNING, an existing row from the table) so the file stays one statement.
--- Known edge: an order delivered in the seconds before the first run whose file
--- was still in flight is treated as delivered; that is the deploy boundary, and
--- old-code deliveries were never tracked anyway.
+-- Deploy window: during a rolling deploy the dispatcher is down while the bot
+-- keeps delivering stock orders and queueing their ORDER_DELIVERED_DM, all
+-- before this first run's cutoff. Stamping those orders would make the new
+-- dispatcher record the queued DM as sent without sending the file (it skips
+-- automatic DMs once `credentials_delivered_at` is set), and the same would
+-- swallow an admin resend queued before the deploy and a FAILED DM an admin
+-- retries later. So an order with any ORDER_DELIVERED_DM row not yet SENT
+-- (matched on the outbox's `order_id` column, which every enqueue path sets)
+-- is left null: the dispatcher sends its file and the bot records it. Known
+-- edge: a file whose old-code direct send was in flight at the first run, with
+-- no outbox row, is treated as delivered; old-code deliveries were never
+-- tracked anyway.
 --
 -- "Stock order" is resolved exactly as `fulfillmentProviderFor`
 -- (packages/core/src/orderFulfillment.ts) does: the frozen
@@ -58,6 +67,13 @@ WHERE o."credentials_delivered_at" IS NULL
   AND UPPER(o."status") = 'DELIVERED'
   AND o."kind" = 'PRODUCT'
   AND COALESCE(o."delivered_at", o."paid_at", o."created_at") < (SELECT MIN("at") FROM cutoff)
+  AND NOT EXISTS (
+    SELECT 1
+    FROM "notification_outbox" AS n
+    WHERE n."order_id" = o."id"
+      AND n."event" = 'ORDER_DELIVERED_DM'
+      AND n."status" <> 'SENT'
+  )
   AND (
     o."fulfillment_provider" = 'STOCK'
     OR (

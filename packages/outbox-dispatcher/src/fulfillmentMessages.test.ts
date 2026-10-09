@@ -951,18 +951,21 @@ describe("a QR photo is retired to one status text once payment is no longer pen
     expect(await rowOf(order.id)).toMatchObject({ messageId: 900, messageKind: "photo", state: "SENDING", claimedAt: stolen });
   });
 
-  it("marks a retire left in SENDING past its lease as uncertain without sending or deleting", async () => {
+  it("marks a retire left in SENDING past its lease as uncertain, strips the photo's payment buttons, and never sends or deletes", async () => {
     const order = await seed("en");
-    await asPhoto(order.id);
+    const chatId = await asPhoto(order.id);
     // The process died after claiming the replacement: SENDING, photo still saved.
     await db.fulfillmentMessage.update({ where: { orderId: order.id }, data: {
       state: "SENDING", claimedAt: new Date(now.getTime() - 61_000), nextUpdateAt: now,
     } });
     const tg = telegram(); await worker(tg.api).tick();
-    expect(tg.calls).toEqual({});
+    // The replacement may or may not exist, so the photo is neither deleted
+    // nor replaced; only its live payment buttons are taken away.
+    expect(tg.calls).toEqual({ editMessageReplyMarkup: 1 });
+    expect(tg.markups).toEqual([{ chatId, id: 900, markup: { inline_keyboard: [] } }]);
     expect(await rowOf(order.id)).toMatchObject({ state: "UNCERTAIN", messageId: 900, messageKind: "photo" });
     advance(120_000); await worker(tg.api).tick();
-    expect(tg.calls).toEqual({});
+    expect(tg.calls).toEqual({ editMessageReplyMarkup: 1 });
   });
 
   it.each([

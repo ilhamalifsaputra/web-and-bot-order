@@ -1834,6 +1834,24 @@ async function settleDiscountCoveredOrder(
   return settleFullyDiscountedOrder(tx, created.id);
 }
 
+/**
+ * One inline pass of the status-message coordinator after a wallet checkout
+ * has committed. The order is already paid (and, for stock, delivered), so a
+ * failure here must never reach the bot's generic error reply: that would add
+ * a misleading "something went wrong" message to a successful purchase. The
+ * background worker picks the row up on its next pass.
+ */
+async function tickStatusMessageAfterWalletCheckout(ctx: MyContext, orderId: number, orderCode: string): Promise<void> {
+  try {
+    await new FulfillmentMessageWorker(ctx.api).tick(orderId);
+  } catch (err) {
+    logger.warn(
+      { err, orderId },
+      `Updating the status message for paid wallet order ${orderCode} failed; the order itself is settled, and the background fulfillment-message worker will update the message on its next pass.`,
+    );
+  }
+}
+
 export async function completeOrderWithWallet(ctx: MyContext, productId: number, quantity: number): Promise<void> {
   const info = requireUser(ctx);
   const lang = ctx.session.lang;
@@ -1967,7 +1985,7 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
 
   // A synchronous wallet checkout uses the same coordinator as gateway rails.
   // Its known checkout screen is already adopted inside the settlement commit.
-  await new FulfillmentMessageWorker(ctx.api).tick(result.order.id);
+  await tickStatusMessageAfterWalletCheckout(ctx, result.order.id, result.order.orderCode);
 
   if (result.kind === "delivered") {
     // Deliver the account file directly (the order is already DELIVERED and
@@ -2005,7 +2023,7 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
       }
       // Due now if the file was acknowledged (completed); otherwise this pass
       // is not due yet and the status keeps saying the file is on its way.
-      await new FulfillmentMessageWorker(ctx.api).tick(result.order.id);
+      await tickStatusMessageAfterWalletCheckout(ctx, result.order.id, result.order.orderCode);
     }
 
     return;

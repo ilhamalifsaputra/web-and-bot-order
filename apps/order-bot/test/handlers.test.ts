@@ -6815,6 +6815,33 @@ describe("instant Digiflazz dispatch from the bot's own settlement paths", () =>
     expect(order!.status).toBe(OrderStatus.DELIVERED);
     expect(triggerDigiflazzDispatch).not.toHaveBeenCalled();
   });
+
+  it("a status-message tick that throws after a wallet stock delivery adds no reply and the handler resolves", async () => {
+    await adjustWallet(prisma, sample.user.id, "10", { currency: "IDR", reason: "admin_adjust" });
+    const { ctx, sink } = customerCtx({
+      callbackData: `v1:walletpay:${sample.product.id}:1`,
+      session: { ...userSession(), scratch: { useWalletIdr: true } },
+    });
+    // The checkout is paid and delivered before either inline pass runs; a DB
+    // error in a pass must leave the row to the background worker, not reach
+    // the bot's generic error reply.
+    const tick = vi.spyOn(FulfillmentMessageWorker.prototype, "tick").mockRejectedValue(new Error("database unavailable"));
+    try {
+      await expect(checkout.completeOrderWithWallet(ctx, sample.product.id, 1)).resolves.toBeUndefined();
+      expect(tick).toHaveBeenCalledTimes(2);
+    } finally {
+      tick.mockRestore();
+    }
+
+    const order = await prisma.order.findFirstOrThrow({ where: { userId: sample.user.id }, orderBy: { id: "desc" } });
+    expect(order.status).toBe(OrderStatus.DELIVERED);
+    expect(order.credentialsDocMsgId).toEqual(expect.any(Number));
+    expect(calls(sink, "sendDocument")).toHaveLength(1);
+    expect(calls(sink, "sendMessage")).toHaveLength(0);
+    expect(calls(sink, "reply")).toHaveLength(0);
+    expect(calls(sink, "editMessageText")).toHaveLength(0);
+    expect(calls(sink, "deleteMessage")).toHaveLength(0);
+  });
 });
 
 // After the fulfillment worker retires a checkout QR photo, the buyer's session

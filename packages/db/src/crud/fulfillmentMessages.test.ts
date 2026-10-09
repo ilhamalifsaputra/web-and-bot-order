@@ -18,6 +18,7 @@ import { createCategory, createCatalogProduct, createDenomination } from "./cata
 import { createWalletTopupOrder } from "./wallet_topup";
 import { ensureFulfillmentMessage, wakeFulfillmentMessage, adoptTransactionMessage, markCredentialsDelivered, credentialsDelivered } from "./fulfillmentMessages";
 import { transitionOrderStatus } from "./orderStatus";
+import { bulkAddStock } from "./stock";
 import { DeliveryType, OrderStatus, PaymentMethod } from "@app/core/enums";
 
 let db: TestDb;
@@ -317,6 +318,7 @@ describe("credentials delivery record", () => {
   it("the backfill migration marks only delivered stock orders, and a re-run changes nothing", async () => {
     const sql = readFileSync(fileURLToPath(new URL("../../../../prisma/migrations/20261008120100_backfill_credentials_delivered_at/migration.sql", import.meta.url)), "utf8");
     const deliveredAt = new Date("2026-09-01T00:00:00.000Z");
+    await bulkAddStock(prisma, sample.product.id, Array.from({ length: 5 }, (_, i) => `extra${i}@example.com:pwd${i}`));
     const deliver = async (productId: number, data: { fulfillmentProvider?: string | null; status?: string } = {}) => {
       const order = await pendingOrder(productId);
       await prisma.order.update({ where: { id: order.id }, data: { status: "DELIVERED", deliveredAt, fulfillmentProvider: null, ...data } });
@@ -331,16 +333,31 @@ describe("credentials delivery record", () => {
     await markCredentialsDelivered(prisma, alreadyMarked, 3100, new Date("2026-09-02T00:00:00.000Z"));
     const topup = await createWalletTopupOrder(prisma, { userId: sample.user.id, amount: "50000", currency: "IDR", method: PaymentMethod.TOKOPAY });
     await prisma.order.update({ where: { id: topup.id }, data: { status: "DELIVERED", deliveredAt } });
+    // Delivered during the deploy window, while the dispatcher was down: the
+    // credentials DM is still queued (PENDING) or awaiting an admin retry
+    // (FAILED). Stamping these would make the new dispatcher record the DM as
+    // sent without sending the file. A DM already SENT is a real delivery.
+    const dm = (orderId: number, status: string) => prisma.notificationOutbox.create({
+      data: { event: "ORDER_DELIVERED_DM", orderId, status, payloadJson: JSON.stringify({ chat_id: 1, order_code: "X" }) },
+    });
+    const dmPending = await deliver(sample.product.id, { fulfillmentProvider: "STOCK" });
+    await dm(dmPending, "SENT");
+    await dm(dmPending, "PENDING");
+    const dmFailed = await deliver(sample.product.id);
+    await dm(dmFailed, "FAILED");
+    const dmSent = await deliver(sample.product.id, { fulfillmentProvider: "STOCK" });
+    await dm(dmSent, "SENT");
 
     const state = async () => Object.fromEntries((await prisma.order.findMany({
-      where: { id: { in: [stockSnapshot, legacyStock, manual, manualSnapshot, pending, alreadyMarked, topup.id] } },
+      where: { id: { in: [stockSnapshot, legacyStock, manual, manualSnapshot, pending, alreadyMarked, topup.id, dmPending, dmFailed, dmSent] } },
       select: { id: true, credentialsDeliveredAt: true, credentialsDocMsgId: true },
     })).map(o => [o.id, o]));
-    expect(await prisma.$executeRawUnsafe(sql)).toBe(2);
+    expect(await prisma.$executeRawUnsafe(sql)).toBe(3);
     const after = await state();
     expect(after[stockSnapshot]).toMatchObject({ credentialsDeliveredAt: deliveredAt, credentialsDocMsgId: null });
     expect(after[legacyStock]).toMatchObject({ credentialsDeliveredAt: deliveredAt, credentialsDocMsgId: null });
-    for (const id of [manual, manualSnapshot, pending, topup.id]) expect(after[id]!.credentialsDeliveredAt).toBeNull();
+    expect(after[dmSent]).toMatchObject({ credentialsDeliveredAt: deliveredAt, credentialsDocMsgId: null });
+    for (const id of [manual, manualSnapshot, pending, topup.id, dmPending, dmFailed]) expect(after[id]!.credentialsDeliveredAt).toBeNull();
     expect(after[alreadyMarked]).toMatchObject({ credentialsDeliveredAt: new Date("2026-09-02T00:00:00.000Z"), credentialsDocMsgId: 3100 });
 
     expect(await prisma.$executeRawUnsafe(sql)).toBe(0);

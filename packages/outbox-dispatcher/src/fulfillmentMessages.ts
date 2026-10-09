@@ -116,6 +116,10 @@ export class FulfillmentMessageWorker {
       // A crash between sendMessage and saving its id has an unknown outcome.
       if (row.state === "SENDING") {
         await this.stopAndAlert(row, "UNCERTAIN", "Telegram status message send was interrupted; delivery is uncertain.");
+        // An interrupted retire leaves the QR photo saved: the replacement may
+        // or may not exist, so the photo is neither deleted nor replaced, but
+        // its live payment buttons are taken away (as deliver() does).
+        if (row.messageKind === "photo" && row.messageId !== null) await this.clearPhotoButtonsWithTimeout(row, row.messageId);
         continue;
       }
       const initial = row.messageId === null;
@@ -211,6 +215,23 @@ export class FulfillmentMessageWorker {
       const e = error as { error_code?: number; description?: string };
       logger.warn({ orderId: row.orderId, errorCode: e.error_code, description: e.description },
         "Removing the payment buttons from the QR photo failed; the photo keeps them, and the order is unaffected.");
+    }
+  }
+
+  /** clearPhotoButtons outside deliver(): bounded by the same 20 s timeout and
+   * the worker's own abort signal, so a hung request cannot stall the tick. */
+  private async clearPhotoButtonsWithTimeout(row: MessageRow, photoId: number): Promise<void> {
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    this.signal?.addEventListener("abort", abort, { once: true });
+    if (this.signal?.aborted) controller.abort();
+    const timeout = setTimeout(abort, 20_000);
+    try {
+      await this.clearPhotoButtons(row, photoId,
+        controller.signal as unknown as NonNullable<Parameters<FulfillmentTelegramApi["editMessageReplyMarkup"]>[3]>);
+    } finally {
+      clearTimeout(timeout);
+      this.signal?.removeEventListener("abort", abort);
     }
   }
 

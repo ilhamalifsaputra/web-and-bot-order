@@ -638,6 +638,9 @@ export async function settleClaimedBybitBscDeposit(
     transitionMeta: string;
     adminId: number;
     onVerifiedWalletPayment?: () => void;
+    /** Who matched the deposit to the order — only changes log wording.
+     *  Defaults to the poller. */
+    source?: "poller" | "manual";
   },
 ): Promise<Extract<BybitBscDeliverResult, { status: "delivered" | "processing" }>> {
   const order = args.order;
@@ -784,7 +787,9 @@ export async function settleClaimedBybitBscDeposit(
       currency: order.currency,
     });
     logger.warn(
-      `Bybit BSC order ${result.order.orderCode} was overpaid — got ${paidAmount.toString()}, expected ${order.totalAmount.toString()} (excess ${excess.toString()} ${order.currency}) — flagged for manual refund/credit, an admin alert was enqueued`,
+      args.source === "manual"
+        ? `Bybit BSC order ${result.order.orderCode} was overpaid on an admin's manual match — got ${paidAmount.toString()}, expected ${order.totalAmount.toString()} (excess ${excess.toString()} ${order.currency}) — flagged for manual refund/credit, an admin alert was enqueued`
+        : `Bybit BSC order ${result.order.orderCode} was overpaid — got ${paidAmount.toString()}, expected ${order.totalAmount.toString()} (excess ${excess.toString()} ${order.currency}) — flagged for manual refund/credit, an admin alert was enqueued`,
     );
   }
   if (result.kind === "delivered") {
@@ -796,7 +801,9 @@ export async function settleClaimedBybitBscDeposit(
         providerPaymentId: args.bybitTxId,
         status: "delivered",
       },
-    `Auto-delivered Bybit BSC order ${result.order.orderCode} for transaction ${args.bybitTxId}`,
+    args.source === "manual"
+      ? `Delivered Bybit BSC order ${result.order.orderCode} after an admin manually matched transaction ${args.bybitTxId} to it`
+      : `Auto-delivered Bybit BSC order ${result.order.orderCode} for transaction ${args.bybitTxId}`,
     );
     return { status: "delivered" as const, order: result.order, credentials: result.credentials };
   }

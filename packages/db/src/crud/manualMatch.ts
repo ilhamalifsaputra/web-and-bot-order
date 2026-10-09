@@ -151,7 +151,15 @@ export async function manualMatchLedgerTx(
     return { ...result, gateway };
   }
 
-  if (row.outcome !== "unmatched") throw new ValidationError("error.tx_not_unmatched");
+  // One exception to "must be unmatched": a TokoPay/PayDisini row already
+  // "matched" to THIS order may be an earlier manual match that crashed
+  // between its claim and its delivery. Let it through so the deliver
+  // function's guarded stale-claim reclaim decides — it refuses unless the
+  // claim is old enough not to be in flight and the order is still unpaid.
+  // (Bybit claims and settles in one transaction, so it cannot strand a row.)
+  const strandedOwnClaim =
+    (gateway === "tokopay" || gateway === "paydisini") && row.outcome === "matched" && row.orderId === args.orderId;
+  if (row.outcome !== "unmatched" && !strandedOwnClaim) throw new ValidationError("error.tx_not_unmatched");
   if (gateway === "nowpayments") throw new ValidationError("error.manual_match_nowpayments_unverifiable");
 
   const order = await getOrder(db, args.orderId);
@@ -248,6 +256,7 @@ async function manualMatchBybit(
       amount: ledger.amount,
       transitionMeta: `manual_match bybitTxId=${args.bybitTxId} by admin_id=${args.adminId}`,
       adminId: args.adminId,
+      source: "manual",
     });
     return r.status === "delivered"
       ? { kind: "delivered" as const, order: r.order, credentials: r.credentials }

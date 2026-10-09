@@ -138,14 +138,25 @@ export async function deliverPaidTokopayOrder(
   let manualPrior: { orderId: number | null; amount: Decimal | null } | null = null;
   if (args.manual) {
     const prior = await db.processedTokopayTx.findUnique({ where: { trxId: args.trxId } });
-    const claimed =
-      prior && prior.outcome === "unmatched"
-        ? await db.processedTokopayTx.updateMany({
-            where: { trxId: args.trxId, outcome: "unmatched", orderId: prior.orderId },
-            data: { orderId: args.orderId, amount: new Decimal(args.amount), outcome: "matched" },
-          })
-        : { count: 0 };
-    if (!prior || claimed.count === 0) {
+    let claimedCount = 0;
+    if (prior && prior.outcome === "unmatched") {
+      claimedCount = (
+        await db.processedTokopayTx.updateMany({
+          where: { trxId: args.trxId, outcome: "unmatched", orderId: prior.orderId },
+          data: { orderId: args.orderId, amount: new Decimal(args.amount), outcome: "matched" },
+        })
+      ).count;
+    } else if (prior && prior.outcome === "matched" && prior.orderId === args.orderId) {
+      // An earlier manual match of this same row to this same order crashed
+      // between its claim and its delivery, leaving the row "matched" with
+      // nothing delivered. An admin repeating that exact match recovers it
+      // through the same guarded stale-claim reclaim the callbacks use
+      // (crud/_staleClaim.ts: same order only, claim older than
+      // STALE_MATCHED_CLAIM_MS, order still payable) — never for a different
+      // order, and never a claim young enough to still be in flight.
+      claimedCount = (await recoverStaleTokopayClaim(db, args.trxId, args.orderId, new Decimal(args.amount))) ? 1 : 0;
+    }
+    if (!prior || claimedCount === 0) {
       logger.info(
         {
           event: PaymentLogEvent.PAYMENT_ALREADY_CONFIRMED,
@@ -158,7 +169,9 @@ export async function deliverPaidTokopayOrder(
       );
       return { status: "already_processed" };
     }
-    manualPrior = { orderId: prior.orderId, amount: prior.amount };
+    // A recovered stranded claim was itself made from an "unmatched" row, so
+    // undoing it means "unmatched" with no order.
+    manualPrior = { orderId: prior.outcome === "unmatched" ? prior.orderId : null, amount: prior.amount };
   } else {
     try {
       await db.processedTokopayTx.create({
@@ -234,7 +247,9 @@ export async function deliverPaidTokopayOrder(
             providerPaymentId: args.trxId,
             status: "stale",
           },
-          `Did not settle TokoPay transaction ${args.trxId} because order ${args.orderId} is no longer payable — it was cancelled, already settled, or is not a TokoPay order, so the ledger row is marked stale and a human decides what the payment was for`,
+          manualPrior
+            ? `Did not settle TokoPay transaction ${args.trxId} on an admin's manual match because order ${args.orderId} is no longer payable — it was cancelled, already settled, or is not a TokoPay order, so the ledger row was returned to unmatched for the admin to decide again`
+            : `Did not settle TokoPay transaction ${args.trxId} because order ${args.orderId} is no longer payable — it was cancelled, already settled, or is not a TokoPay order, so the ledger row is marked stale and a human decides what the payment was for`,
         );
         return { status: "stale" as const };
       }

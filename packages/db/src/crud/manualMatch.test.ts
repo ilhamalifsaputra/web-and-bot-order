@@ -440,33 +440,185 @@ describe("QRIS deliver functions in manual mode", () => {
   });
 });
 
-describe("manualMatchLedgerTx — true concurrency", () => {
-  it("two admins matching one bybit row to two orders: exactly one wins, only one order is paid", async () => {
+/** Resolves every waiter once `n` callers have arrived — or rejects after a
+ *  timeout, so a caller that never got past the pre-guards fails the test
+ *  loudly instead of hanging it. Calls after the n-th pass straight through. */
+function makeBarrier(n: number, timeoutMs = 15_000) {
+  let arrived = 0;
+  let release!: () => void;
+  const all = new Promise<void>((resolve) => (release = resolve));
+  return {
+    get arrived() {
+      return arrived;
+    },
+    wait: async () => {
+      arrived += 1;
+      if (arrived >= n) release();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`only ${arrived} of ${n} callers reached the barrier`)), timeoutMs);
+      });
+      try {
+        await Promise.race([all, timeout]);
+      } finally {
+        clearTimeout(timer);
+      }
+    },
+  };
+}
+
+/** `prisma`, but with `model.method` (or the client's own `method` when
+ *  `model` is null) held at `wait` before it runs — so every concurrent
+ *  caller has passed all of manualMatchLedgerTx's read-only pre-guards before
+ *  any of them reaches the outcome-gated claim, and only that gate decides. */
+function gatedDb(model: string | null, method: string, wait: () => Promise<void>): PrismaClient {
+  type Fn = (...a: unknown[]) => unknown;
+  const gate = (target: object, fn: Fn) => async (...a: unknown[]) => {
+    await wait();
+    return fn.apply(target, a);
+  };
+  return new Proxy(prisma, {
+    get(target, prop) {
+      const value = Reflect.get(target, prop, target) as unknown;
+      if (model === null && prop === method) return gate(target, value as Fn);
+      if (model !== null && prop === model) {
+        return new Proxy(value as object, {
+          get(d, p) {
+            const f = Reflect.get(d, p, d) as unknown;
+            if (p === method) return gate(d, f as Fn);
+            return typeof f === "function" ? (f as Fn).bind(d) : f;
+          },
+        });
+      }
+      return typeof value === "function" ? (value as Fn).bind(target) : value;
+    },
+  }) as PrismaClient;
+}
+
+describe("manualMatchLedgerTx — true concurrency (forced race)", () => {
+  async function twoOrdersSameTotal(method: string, currency: "IDR" | "USDT") {
     await bulkAddStock(prisma, sample.product.id, ["race-cred-1", "race-cred-2"]);
-    const a = await makePendingOrder(PaymentMethod.BYBIT, "USDT");
-    const b = await makePendingOrder(PaymentMethod.BYBIT, "USDT");
+    const a = await makePendingOrder(method, currency);
+    const b = await makePendingOrder(method, currency);
     // Same total on both, so whichever wins is an exact (not overpaid) match.
     await prisma.order.update({ where: { id: b.id }, data: { totalAmount: a.totalAmount } });
-    const amount = a.totalAmount;
-    await recordUnmatchedBybitTx(prisma, { bybitTxId: "by-race-1", amount });
+    return { a, b };
+  }
 
-    const results = await Promise.allSettled([
-      manualMatchLedgerTx(prisma, { reference: "by-race-1", orderId: a.id, adminId }),
-      manualMatchLedgerTx(prisma, { reference: "by-race-1", orderId: b.id, adminId: adminB }),
-    ]);
+  async function expectExactlyOneWinner(results: PromiseSettledResult<unknown>[], a: { id: number }, b: { id: number }) {
     const fulfilled = results.filter((r) => r.status === "fulfilled");
     const rejected = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
     expect(fulfilled.length).toBe(1);
     expect(rejected.length).toBe(1);
     expect(rejected[0]!.reason).toBeInstanceOf(ValidationError);
     expect((rejected[0]!.reason as ValidationError).message).toBe("error.tx_not_unmatched");
-
     const orders = await prisma.order.findMany({ where: { id: { in: [a.id, b.id] } } });
     expect(orders.filter((o) => o.status === OrderStatus.DELIVERED).length).toBe(1);
     expect(orders.filter((o) => o.status === OrderStatus.PENDING_PAYMENT).length).toBe(1);
+  }
+
+  it("Bybit: both admins pass every pre-guard, then only the in-transaction outcome gate decides — exactly one wins", async () => {
+    const { a, b } = await twoOrdersSameTotal(PaymentMethod.BYBIT, "USDT");
+    await recordUnmatchedBybitTx(prisma, { bybitTxId: "by-race-1", amount: a.totalAmount });
+
+    // Hold both callers at the start of the claim transaction.
+    const barrier = makeBarrier(2);
+    const gated = gatedDb(null, "$transaction", barrier.wait);
+    const results = await Promise.allSettled([
+      manualMatchLedgerTx(gated, { reference: "by-race-1", orderId: a.id, adminId }),
+      manualMatchLedgerTx(gated, { reference: "by-race-1", orderId: b.id, adminId: adminB }),
+    ]);
+    expect(barrier.arrived).toBe(2);
+    await expectExactlyOneWinner(results, a, b);
     const row = await prisma.processedBybitTx.findUniqueOrThrow({ where: { bybitTxId: "by-race-1" } });
     expect(row.outcome).toBe("matched");
     expect([a.id, b.id]).toContain(row.orderId);
+  });
+
+  it("TokoPay: both admins pass every pre-guard and read the row as unmatched, then only the compare-and-swap claim decides — exactly one wins", async () => {
+    const { a, b } = await twoOrdersSameTotal(PaymentMethod.TOKOPAY, "IDR");
+    await recordUnmatchedTokopayTx(prisma, { trxId: "tp-race-1", amount: qrisChargeAmount(a.totalAmount) });
+
+    // Hold both callers at the claim's updateMany, after the deliver
+    // function's own read saw "unmatched" for both.
+    const barrier = makeBarrier(2);
+    const gated = gatedDb("processedTokopayTx", "updateMany", barrier.wait);
+    const results = await Promise.allSettled([
+      manualMatchLedgerTx(gated, { reference: "tp-race-1", orderId: a.id, adminId }),
+      manualMatchLedgerTx(gated, { reference: "tp-race-1", orderId: b.id, adminId: adminB }),
+    ]);
+    expect(barrier.arrived).toBe(2);
+    await expectExactlyOneWinner(results, a, b);
+    const row = await prisma.processedTokopayTx.findUniqueOrThrow({ where: { trxId: "tp-race-1" } });
+    expect(row.outcome).toBe("matched");
+    expect([a.id, b.id]).toContain(row.orderId);
+  });
+});
+
+describe("manualMatchLedgerTx — recovering a stranded QRIS manual claim", () => {
+  const elevenMinutesAgo = () => new Date(Date.now() - 11 * 60_000);
+
+  it("TokoPay: a same-order matched row older than the stale window is recovered and settled when the admin repeats the match", async () => {
+    const order = await makePendingOrder(PaymentMethod.TOKOPAY, "IDR");
+    const at = elevenMinutesAgo();
+    await prisma.processedTokopayTx.create({
+      data: { trxId: "tp-stranded-1", orderId: order.id, amount: qrisChargeAmount(order.totalAmount), outcome: "matched", createdAt: at, updatedAt: at },
+    });
+    const result = await manualMatchLedgerTx(prisma, { reference: "tp-stranded-1", orderId: order.id, adminId });
+    expect(result.kind).toBe("delivered");
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.DELIVERED);
+    const row = await prisma.processedTokopayTx.findUniqueOrThrow({ where: { trxId: "tp-stranded-1" } });
+    expect(row).toMatchObject({ outcome: "matched", orderId: order.id });
+  });
+
+  it("PayDisini: the same recovery works", async () => {
+    const order = await makePendingOrder(PaymentMethod.PAYDISINI, "IDR");
+    const at = elevenMinutesAgo();
+    await prisma.processedPaydisiniTx.create({
+      data: { trxId: "pd-stranded-1", orderId: order.id, amount: order.totalAmount, outcome: "matched", createdAt: at, updatedAt: at },
+    });
+    const result = await manualMatchLedgerTx(prisma, { reference: "pd-stranded-1", orderId: order.id, adminId });
+    expect(result.kind).toBe("delivered");
+  });
+
+  it("a same-order matched row that is still fresh (possibly in flight) is refused", async () => {
+    const order = await makePendingOrder(PaymentMethod.TOKOPAY, "IDR");
+    await prisma.processedTokopayTx.create({
+      data: { trxId: "tp-fresh-1", orderId: order.id, amount: qrisChargeAmount(order.totalAmount), outcome: "matched" },
+    });
+    await expectValidation(
+      manualMatchLedgerTx(prisma, { reference: "tp-fresh-1", orderId: order.id, adminId }),
+      "error.tx_not_unmatched",
+    );
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.PENDING_PAYMENT);
+  });
+
+  it("a stale matched row belonging to a DIFFERENT order is refused", async () => {
+    const owner = await makePendingOrder(PaymentMethod.TOKOPAY, "IDR");
+    const other = await makePendingOrder(PaymentMethod.TOKOPAY, "IDR");
+    const at = elevenMinutesAgo();
+    await prisma.processedTokopayTx.create({
+      data: { trxId: "tp-other-1", orderId: owner.id, amount: qrisChargeAmount(other.totalAmount), outcome: "matched", createdAt: at, updatedAt: at },
+    });
+    await expectValidation(
+      manualMatchLedgerTx(prisma, { reference: "tp-other-1", orderId: other.id, adminId }),
+      "error.tx_not_unmatched",
+    );
+    const row = await prisma.processedTokopayTx.findUniqueOrThrow({ where: { trxId: "tp-other-1" } });
+    expect(row).toMatchObject({ outcome: "matched", orderId: owner.id });
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: other.id } })).status).toBe(OrderStatus.PENDING_PAYMENT);
+  });
+
+  it("a Bybit matched row for the same order is still refused (Bybit claims and settles in one transaction)", async () => {
+    const order = await makePendingOrder(PaymentMethod.BYBIT, "USDT");
+    const at = elevenMinutesAgo();
+    await prisma.processedBybitTx.create({
+      data: { bybitTxId: "by-stranded-1", orderId: order.id, amount: order.totalAmount, outcome: "matched", createdAt: at, updatedAt: at },
+    });
+    await expectValidation(
+      manualMatchLedgerTx(prisma, { reference: "by-stranded-1", orderId: order.id, adminId }),
+      "error.tx_not_unmatched",
+    );
   });
 });
 

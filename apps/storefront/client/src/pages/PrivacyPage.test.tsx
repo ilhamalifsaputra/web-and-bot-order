@@ -97,6 +97,20 @@ describe("informational pages", () => {
     expect(screen.queryByText(/\{company\}/)).not.toBeInTheDocument();
   });
 
+  it("names the legal entity as data controller on the privacy page", async () => {
+    renderPage(
+      <PrivacyPage />,
+      context({
+        shop_name: "Trustance",
+        business: { legal_name: "PT Contoh Usaha", address: null, phone: null, email: null, hours: null },
+      }),
+    );
+    expect(
+      await screen.findByText(/PT Contoh Usaha, which runs Trustance, is the controller/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/\{company\}/)).not.toBeInTheDocument();
+  });
+
   it("hides the analytics section unless the shop actually loads analytics", async () => {
     const { unmount } = renderPage(<PrivacyPage />, context());
     expect(await screen.findByRole("heading", { level: 1, name: "Privacy Policy" })).toBeInTheDocument();

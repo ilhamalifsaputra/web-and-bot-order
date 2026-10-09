@@ -292,6 +292,28 @@ describe("credentials delivery record", () => {
     expect(row.nextUpdateAt.getTime()).toBeLessThan(later.getTime());
   });
 
+  it.each(["ACTIVE", "READY"])("makes a polled %s row with a later due time due right away, so 'completed' lands promptly", async (state) => {
+    const order = await pendingOrder(sample.product.id);
+    const later = new Date(Date.now() + 3_600_000);
+    await prisma.fulfillmentMessage.update({ where: { orderId: order.id }, data: { messageId: state === "READY" ? null : 3005, state, nextUpdateAt: later } });
+    const now = new Date();
+    expect(await markCredentialsDelivered(prisma, order.id, 3006, now)).toBe(true);
+    const row = (await rows(order.id))[0]!;
+    expect(row.state).toBe(state);
+    expect(row.nextUpdateAt.getTime()).toBe(now.getTime());
+  });
+
+  it("never reopens a finished row, and a repeated mark wakes nothing", async () => {
+    const order = await pendingOrder(sample.product.id);
+    const later = new Date(Date.now() + 3_600_000);
+    await prisma.fulfillmentMessage.update({ where: { orderId: order.id }, data: { messageId: 3007, state: "FINISHED", nextUpdateAt: later } });
+    expect(await markCredentialsDelivered(prisma, order.id, 3008)).toBe(true);
+    expect((await rows(order.id))[0]).toMatchObject({ state: "FINISHED", nextUpdateAt: later });
+    await prisma.fulfillmentMessage.update({ where: { orderId: order.id }, data: { state: "ACTIVE" } });
+    expect(await markCredentialsDelivered(prisma, order.id, 3009)).toBe(false);
+    expect((await rows(order.id))[0]).toMatchObject({ state: "ACTIVE", nextUpdateAt: later });
+  });
+
   it("the backfill migration marks only delivered stock orders, and a re-run changes nothing", async () => {
     const sql = readFileSync(fileURLToPath(new URL("../../../../prisma/migrations/20261008120100_backfill_credentials_delivered_at/migration.sql", import.meta.url)), "utf8");
     const deliveredAt = new Date("2026-09-01T00:00:00.000Z");

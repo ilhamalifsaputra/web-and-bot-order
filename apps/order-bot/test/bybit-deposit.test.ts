@@ -556,6 +556,10 @@ describe("processDeposits (poll-loop wiring)", () => {
       where: { orderId: order.id, event: "ORDER_DELIVERED_DM" },
     });
     expect(outboxRows.length).toBeGreaterThan(0); // the same fallback a genuine sendAccountFile throw would enqueue
+    // Nothing was acknowledged, so nothing is recorded: the buyer's status
+    // stays on "sending" and the fallback row is not dropped as a duplicate.
+    expect(updated!.credentialsDeliveredAt).toBeNull();
+    expect(api.sendDocument).toHaveBeenCalledTimes(1);
   }, 15_000);
 });
 

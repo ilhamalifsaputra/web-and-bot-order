@@ -7,6 +7,18 @@ import { escape } from "./templates";
  * keys without this hint. */
 export const SUPPORT_PHASES: ReadonlySet<string> = new Set(["UNDERPAID", "REVIEW", "FAILED", "CANCELLED"]);
 
+/** The one definition of which Telegram statuses carry the Support button:
+ * the support phases, and a stock delivery whose credentials file has been
+ * "sending" for too long (its slow line itself points at the button). */
+export function supportButtonFor(phase: string, slow: boolean): boolean {
+  return SUPPORT_PHASES.has(phase) || (phase === "DELIVERING" && slow);
+}
+
+/** The static line a phase shows once it has been slow for too long. */
+function slowLineKey(phase: string): string {
+  return phase === "DELIVERING" ? "transaction.premium_delivering_slow" : "order.progress_detected_slow";
+}
+
 /** Pure Telegram presentation. Financial figures are supplied by the domain. */
 export function renderTransactionStatusMessage(input: {
   orderCode: string;
@@ -42,7 +54,7 @@ export function renderTransactionStatusMessage(input: {
     const cells = Math.round(p.progress / 10);
     lines.push("", `${"█".repeat(cells)}${"░".repeat(10 - cells)} ${p.progress}%`);
   }
-  lines.push("", escape(t(input.slow ? "order.progress_detected_slow" : p.bodyKey, lang)));
+  lines.push("", escape(t(input.slow ? slowLineKey(p.phase) : p.bodyKey, lang)));
   if (SUPPORT_PHASES.has(p.phase)) lines.push(escape(t("transaction.support_hint", lang)));
   return lines.join("\n");
 }

@@ -203,7 +203,9 @@ export async function approve(ctx: MyContext, orderId: number): Promise<void> {
     // Delivery is instant: no interim "payment verified / being prepared" DM —
     // the account file below is the single delivery notification.
     try {
-      await sendAccountFile(ctx.api, Number(buyerTgId), { orderCode, items: buyerItems }, buyerLang);
+      // Automatic: skipped (and still counted as delivered) if this order's
+      // file was already acknowledged.
+      await sendAccountFile(ctx.api, Number(buyerTgId), { id: orderId, orderCode, items: buyerItems }, buyerLang);
       dmOk = true;
       const redacted = credGroups.flatMap(([, creds]) => creds.map(redactCredentials));
       logger.info(`Delivered order ${orderCode} to user ${buyerTgId} (${redacted.length} credential set(s))`);
@@ -267,7 +269,8 @@ export async function resendCredentials(ctx: MyContext, orderId: number): Promis
   }
 
   try {
-    await sendAccountFile(ctx.api, Number(buyerTgId), { orderCode, items: soldItems }, buyerLang);
+    // An admin resend always sends, even after an acknowledged delivery.
+    await sendAccountFile(ctx.api, Number(buyerTgId), { id: order.id, orderCode, items: soldItems }, buyerLang, { resend: true });
     await ctx.answerCallbackQuery({ text: t(ctx, "admin.resend_ok"), show_alert: true });
     logger.info(`Resent credentials for order ${orderCode} to user ${buyerTgId}`);
   } catch (err) {

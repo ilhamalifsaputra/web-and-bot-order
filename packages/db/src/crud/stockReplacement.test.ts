@@ -290,6 +290,8 @@ describe("replaceStockItem — replacement stock available", () => {
     const payload = JSON.parse(queued[0]!.payloadJson) as Record<string, unknown>;
     expect(payload.order_code).toBe(order.orderCode);
     expect(payload.chat_id).toBe(Number(sample.user.telegramId));
+    // A deliberate redelivery: sent even though the original file was acknowledged.
+    expect(payload.resend).toBe(true);
     // The credential itself never rides in the payload — the dispatcher reads
     // it live, which is exactly why repointing the OrderItem redelivers the
     // NEW account (CLAUDE.md: never log/queue secrets).

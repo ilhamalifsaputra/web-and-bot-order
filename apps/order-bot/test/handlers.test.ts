@@ -54,13 +54,16 @@ vi.mock("@app/db", async (orig) => {
     claimGatewaySlot: vi.fn(actual.claimGatewaySlot),
     getOrder: vi.fn(actual.getOrder),
     getOrderRaw: vi.fn(actual.getOrderRaw),
+    // Wrapped so a test can fail the delivery record once after a real send.
+    markCredentialsDelivered: vi.fn(actual.markCredentialsDelivered),
     // Observed, not run: the settlement-path tests check that the instant
     // Digiflazz dispatch is started, not what Digiflazz answers.
     triggerDigiflazzDispatch: vi.fn(),
   };
 });
 import { triggerDigiflazzDispatch } from "@app/db";
-import { adoptTransactionMessage } from "@app/db";
+import { adoptTransactionMessage, markCredentialsDelivered } from "@app/db";
+import { sendAccountFile } from "../src/util/delivery";
 import { FulfillmentMessageWorker } from "../../../packages/outbox-dispatcher/src/fulfillmentMessages";
 import { DIGIFLAZZ_CUSTOMER_DATA, routeDenominationToDigiflazz, routeOrderToDigiflazz } from "../../../tests/helpers/digiflazzRouting";
 
@@ -4988,6 +4991,21 @@ describe("wallet-credit checkout (walletm:*/walletpay:*)", () => {
     expect(canonical.messageId).toBe(ctx.callbackQuery!.message!.message_id);
     expect(calls(sink, "editMessageText")[0]!.args[1]).toBe(canonical.messageId);
     expect(calls(sink, "sendMessage")).toHaveLength(0);
+    // One status message: "sending your account details…" while the file is
+    // in flight, then "completed" only after Telegram acknowledged it.
+    const statusEdits = calls(sink, "editMessageText");
+    expect(statusEdits).toHaveLength(2);
+    expect(statusEdits.map((c) => c.args[1])).toEqual([canonical.messageId, canonical.messageId]);
+    expect(String(statusEdits[0]!.args[2])).toContain("Sending your account details…");
+    expect(String(statusEdits[0]!.args[2])).not.toContain("Order completed");
+    expect(String(statusEdits[1]!.args[2])).toContain("Order completed");
+    expect(String(statusEdits[1]!.args[2])).toContain("Your account details were sent as a file.");
+    const statusOrder = sink.map((c) => c.method).filter((m) => m === "editMessageText" || m === "sendDocument");
+    expect(statusOrder).toEqual(["editMessageText", "sendDocument", "editMessageText"]);
+    expect(calls(sink, "deleteMessage")).toHaveLength(0);
+    for (const edit of statusEdits) expect(String(edit.args[2])).not.toMatch(/user\d@example\.com|pwd\d/);
+    expect(canonical.state).toBe("FINISHED");
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: orders[0]!.id } })).credentialsDocMsgId).toEqual(expect.any(Number));
     expect(ctx.session.scratch.useWalletIdr).toBeUndefined();
     expect(ctx.session.scratch.useWalletUsdt).toBeUndefined();
     // The account file is delivered DIRECTLY (not left to the outbox), so a
@@ -5693,6 +5711,56 @@ describe("verification handlers", () => {
     const { ctx, sink } = adminCtx({ callbackData: `v1:adm:verif:resend:${order.id}` });
     await verification.resendCredentials(ctx, order.id);
     expect(calls(sink, "sendDocument").some((c) => c.args[0] === 42)).toBe(true);
+  });
+
+  it("records the approve's acknowledged file; the admin resend still sends and keeps the first record", async () => {
+    const order = await pendingVerificationOrder();
+    const approve = adminCtx({ callbackData: `v1:adm:verif:approve:${order.id}` });
+    await verification.approve(approve.ctx, order.id);
+    const docs = calls(approve.sink, "sendDocument");
+    expect(docs).toHaveLength(1);
+    const first = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(first.credentialsDeliveredAt).toBeInstanceOf(Date);
+    expect(first.credentialsDocMsgId).toEqual(expect.any(Number));
+
+    const resend = adminCtx({ callbackData: `v1:adm:verif:resend:${order.id}` });
+    await verification.resendCredentials(resend.ctx, order.id);
+    expect(calls(resend.sink, "sendDocument")).toHaveLength(1);
+    const after = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(after.credentialsDocMsgId).toBe(first.credentialsDocMsgId);
+    expect(after.credentialsDeliveredAt).toEqual(first.credentialsDeliveredAt);
+  });
+
+  it("sendAccountFile records an acknowledged file and skips a second automatic send", async () => {
+    const order = await pendingVerificationOrder();
+    await verification.approve(adminCtx({ callbackData: `v1:adm:verif:approve:${order.id}` }).ctx, order.id);
+    const full = (await getOrder(prisma, order.id))!;
+    await prisma.order.update({ where: { id: order.id }, data: { credentialsDeliveredAt: null, credentialsDocMsgId: null } });
+
+    const { ctx, sink } = adminCtx();
+    expect(await sendAccountFile(ctx.api, 42, full, "en")).toBe("sent");
+    const recorded = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(recorded.credentialsDocMsgId).toEqual(expect.any(Number));
+    // A replay (webhook, poller re-run, restart) sends nothing.
+    expect(await sendAccountFile(ctx.api, 42, full, "en")).toBe("already_delivered");
+    expect(calls(sink, "sendDocument")).toHaveLength(1);
+    expect(calls(sink, "sendMessage")).toHaveLength(0);
+    // A send Telegram rejects records nothing and still throws for the caller's fallback.
+    await prisma.order.update({ where: { id: order.id }, data: { credentialsDeliveredAt: null, credentialsDocMsgId: null } });
+    const failing = { ...ctx.api, sendDocument: () => Promise.reject(new Error("socket hang up")) } as unknown as typeof ctx.api;
+    await expect(sendAccountFile(failing, 42, full, "en")).rejects.toThrow("socket hang up");
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).credentialsDeliveredAt).toBeNull();
+  });
+
+  it("sendAccountFile reports a sent file as sent even when recording it fails, so no fallback resends it", async () => {
+    const order = await pendingVerificationOrder();
+    await verification.approve(adminCtx({ callbackData: `v1:adm:verif:approve:${order.id}` }).ctx, order.id);
+    const full = (await getOrder(prisma, order.id))!;
+    await prisma.order.update({ where: { id: order.id }, data: { credentialsDeliveredAt: null, credentialsDocMsgId: null } });
+    vi.mocked(markCredentialsDelivered).mockRejectedValueOnce(new Error("simulated database outage"));
+    const { ctx, sink } = adminCtx();
+    expect(await sendAccountFile(ctx.api, 42, full, "en")).toBe("sent");
+    expect(calls(sink, "sendDocument")).toHaveLength(1);
   });
 
   // M-28: the delivery log used to interpolate a `redacted.join(", ")` list of
@@ -6761,7 +6829,8 @@ describe("navigating after the worker retired the checkout QR photo", () => {
       ? (await makeOrder())!
       : await makeWalletTopupOrder();
     await prisma.order.update({ where: { id: order.id }, data: kind === "product"
-      ? { status: OrderStatus.DELIVERED, paidAt: new Date(), deliveredAt: new Date() }
+      // The credentials file already acknowledged, so the status ends "completed".
+      ? { status: OrderStatus.DELIVERED, paidAt: new Date(), deliveredAt: new Date(), credentialsDeliveredAt: new Date(), credentialsDocMsgId: 7702 }
       : { paymentState: "PAID", paidAt: new Date(), walletCreditState: "CREDITED" } });
     await adoptTransactionMessage(prisma, order.id, 42, QR_PHOTO_ID, "photo");
     const telegram = makeCtx({ from: { id: 42 } });

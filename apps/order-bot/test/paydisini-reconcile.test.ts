@@ -33,6 +33,7 @@ import { config } from "@app/core/config";
 import { registerOutboxNudge } from "@app/core/nudge";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { telegramError } from "./helpers/ctx";
+import { acknowledgeCredentialsFile } from "./helpers/credentialsFile";
 import { onlyBubbleEdit } from "./helpers/settledBubble";
 import { FulfillmentMessageWorker, type FulfillmentTelegramApi } from "../../../packages/outbox-dispatcher/src/fulfillmentMessages";
 import { reconcileOrder, pollOnce, MAX_ORDERS_PER_CYCLE } from "../src/payments/paydisiniReconcile";
@@ -243,6 +244,9 @@ describe("reconcileOrder (PayDisini poller safety net)", () => {
   }
 
   async function render(api: Api, orderId: number) {
+    // A delivered stock order completes once the outbox's credentials file is
+    // acknowledged; these tests are about the completed status.
+    await acknowledgeCredentialsFile(orderId);
     await new FulfillmentMessageWorker(api as unknown as FulfillmentTelegramApi, { db: prisma }).tick(orderId);
   }
 

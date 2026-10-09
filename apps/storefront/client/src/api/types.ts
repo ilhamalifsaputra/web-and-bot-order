@@ -340,7 +340,7 @@ export type PayState = "waiting" | "confirming" | "processing" | "delivered" | "
 
 /** Backend projection of durable transaction phases; animation never changes it. */
 export interface CustomerProgress {
-  phase: "NONE" | "PAYMENT_DETECTED" | "VERIFYING" | "PAYMENT_CONFIRMED" | "AUTO_QUEUED" | "AUTO_SUBMITTING" | "AUTO_PROCESSING" | "PREPARING" | "MANUAL_ENQUEUING" | "MANUAL_WAITING" | "SUCCESS" | "FAILED" | "REVIEW" | "CANCELLED" | "CREDITED" | "WALLET_CREDITING" | "WALLET_CREDITED" | "UNDERPAID";
+  phase: "NONE" | "PAYMENT_DETECTED" | "VERIFYING" | "PAYMENT_CONFIRMED" | "AUTO_QUEUED" | "AUTO_SUBMITTING" | "AUTO_PROCESSING" | "PREPARING" | "MANUAL_ENQUEUING" | "MANUAL_WAITING" | "DELIVERING" | "SUCCESS" | "FAILED" | "REVIEW" | "CANCELLED" | "CREDITED" | "WALLET_CREDITING" | "WALLET_CREDITED" | "UNDERPAID";
   spinner: boolean;
   topUp: boolean;
   progress: number | null;

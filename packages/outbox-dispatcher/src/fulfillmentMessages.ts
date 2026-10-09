@@ -11,7 +11,7 @@ import { decryptDeliveredContent } from "@app/core/credentialCrypto";
 import { langCode } from "@app/core/enums";
 import { logger } from "@app/core/logger";
 import { escape } from "./templates";
-import { renderTransactionStatusMessage, SUPPORT_PHASES } from "./transactionMessage";
+import { renderTransactionStatusMessage, supportButtonFor } from "./transactionMessage";
 
 export type FulfillmentTelegramApi = Pick<Bot["api"], "sendMessage" | "editMessageText" | "editMessageCaption" | "deleteMessage" | "editMessageReplyMarkup">;
 const include = { order: { include: { user: true, items: { include: { product: { include: { product: { include: { category: true } } } } } } } } } as const;
@@ -26,6 +26,11 @@ const IDLE_INTERVAL_MS = 30_000;
  * DETECTED_SLOW_INTERVAL_MS, until the order's state moves it to another phase. */
 export const DETECTED_SLOW_AFTER_MS = 10 * 60_000;
 const DETECTED_SLOW_INTERVAL_MS = 60_000;
+/** A stock order's credentials file normally lands within seconds of
+ * delivery. After this long still "sending", the spinner stops on one honest
+ * static line with the Support button, re-read every DETECTED_SLOW_INTERVAL_MS
+ * until the acknowledgement (`markCredentialsDelivered`) wakes the row. */
+export const DELIVERING_SLOW_AFTER_MS = 2 * 60_000;
 const FRAMES = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"];
 /** Row states the worker polls. WAITING (a manual order's static wait) is not
  * one of them: `wakeFulfillmentMessage` moves it on when the order ends. */
@@ -85,7 +90,7 @@ export class FulfillmentMessageWorker {
     this.signal = opts.signal;
   }
 
-  private keyboard(phase: string, kind: string, lang: string) {
+  private keyboard(phase: string, kind: string, lang: string, slow: boolean) {
     const menu = { text: t("menu.main", lang), callback_data: "v1:menu:main" };
     if (["SUCCESS", "WALLET_CREDITED", "CREDITED"].includes(phase)) {
       return { inline_keyboard: kind === "WALLET_TOPUP"
@@ -93,7 +98,7 @@ export class FulfillmentMessageWorker {
         : [[{ text: t("checkout.buy_again_btn", lang), callback_data: "v1:browse:prods" }], [{ text: t("order.all_history_btn", lang), callback_data: "v1:order:list" }, menu]] };
     }
     // The same entry as the Help Center's Support button (the support conversation).
-    if (SUPPORT_PHASES.has(phase)) return { inline_keyboard: [[{ text: t("menu.support", lang), callback_data: "v1:support:open" }, menu]] };
+    if (supportButtonFor(phase, slow)) return { inline_keyboard: [[{ text: t("menu.support", lang), callback_data: "v1:support:open" }, menu]] };
     return { inline_keyboard: [[menu]] };
   }
 
@@ -160,7 +165,7 @@ export class FulfillmentMessageWorker {
       const credited = order.status.toUpperCase() === "CANCELLED"
         && !!(await tx.walletTransaction.findFirst({ where: { orderId: order.id, reason: "unfulfilled_credit" }, select: { id: true } }));
       const messageSent = row.messageId !== null || typeof data.messageId === "number";
-      const current = customerProgressPhase(order, { messageSent, credited });
+      const current = customerProgressPhase(order, { messageSent, credited, credentialsDelivered: order.credentialsDeliveredAt !== null });
       const correction = current.phase !== data.phase;
       const saved = await tx.fulfillmentMessage.updateMany({
         where: { orderId: row.orderId, state: row.state, claimedAt: row.claimedAt },
@@ -214,22 +219,31 @@ export class FulfillmentMessageWorker {
     const order = await this.db.order.findUniqueOrThrow({ where: { id: row.orderId }, include: include.order.include });
     const credited = order.status.toUpperCase() === "CANCELLED"
       && !!(await this.db.walletTransaction.findFirst({ where: { orderId: order.id, reason: "unfulfilled_credit" }, select: { id: true } }));
-    const progress = customerProgressPhase(order, { messageSent: row.messageId !== null, credited });
+    // A delivered stock order is complete for the buyer only once Telegram
+    // acknowledged its credentials file; until then it shows DELIVERING.
+    const progress = customerProgressPhase(order, { messageSent: row.messageId !== null, credited, credentialsDelivered: order.credentialsDeliveredAt !== null });
     const where = { orderId: row.orderId, state: row.state, claimedAt: row.claimedAt };
     const provider = fulfillmentProviderFor(order);
     // When the message entered the phase it now shows. A change of phase, in
     // either direction, starts the clock again.
     const phaseStartedAt = row.phase === progress.phase && row.phaseStartedAt ? row.phaseStartedAt : this.now();
     const phaseFields = { phase: progress.phase, phaseStartedAt };
+    // Too long in one waiting phase: a static line on a slow re-read. The
+    // order's state still decides; this only stops the animation.
+    const inPhaseMs = this.now().getTime() - phaseStartedAt.getTime();
+    const slow = (["PAYMENT_DETECTED", "VERIFYING"].includes(progress.phase) && inPhaseMs >= DETECTED_SLOW_AFTER_MS)
+      || (progress.phase === "DELIVERING" && inPhaseMs >= DELIVERING_SLOW_AFTER_MS);
     if (row.messageId === null && (progress.phase === "NONE" || progress.phase === "CANCELLED"
-      || (progress.phase === "SUCCESS" && provider === "STOCK"))) {
+      || progress.phase === "DELIVERING" || (progress.phase === "SUCCESS" && provider === "STOCK"))) {
       // Nothing to tell yet (payment never seen), the order ended before the
       // buyer heard anything, or a stock order was delivered instantly (its
-      // credentials DM is the message): release the claim without sending.
-      const finished = progress.phase !== "NONE";
+      // credentials file is the message, sent or still on its way): release
+      // the claim without sending. A file still on its way keeps the row
+      // polled, so its acknowledgement (or a later problem) is picked up.
+      const finished = progress.phase === "CANCELLED" || progress.phase === "SUCCESS";
       await this.saveProgress(row, {
         ...phaseFields, state: finished ? "FINISHED" : "READY", claimedAt: null, finishedAt: finished ? this.now() : null,
-        nextUpdateAt: new Date(this.now().getTime() + INTERVAL_MS),
+        nextUpdateAt: new Date(this.now().getTime() + (slow ? DETECTED_SLOW_INTERVAL_MS : INTERVAL_MS)),
       });
       return false;
     }
@@ -252,15 +266,17 @@ export class FulfillmentMessageWorker {
     // character limit. Customer targets and delivered credentials stay private.
     const items = [...grouped.values()].slice(0, 3).map(item => `${escape(item.name.slice(0, 60))}${item.name.length > 60 ? "…" : ""} × ${item.quantity}`).join("\n");
     const summary = items ? `\n\n${items}${grouped.size > 3 ? "\n…" : ""}` : "";
-    // Detected for too long: a static "still verifying" line on a slow re-read.
-    // The order's state still decides; this only stops the animation.
-    const slow = ["PAYMENT_DETECTED", "VERIFYING"].includes(progress.phase) && this.now().getTime() - phaseStartedAt.getTime() >= DETECTED_SLOW_AFTER_MS;
     const money = (value: Parameters<typeof formatUsdt>[0]) => order.currency === "USDT" ? formatUsdt(value) : formatIdrFor(value, lang);
     const walletCredit = progress.phase === "WALLET_CREDITED"
       ? await this.db.walletTransaction.findFirst({ where: { orderId: order.id, reason: "wallet_topup" }, select: { delta: true, balanceAfter: true } }) : null;
     const shortfall = progress.phase === "UNDERPAID" ? await findUnderpaidReceived(this.db, order.id) : null;
     const expected = progress.phase === "UNDERPAID" ? await this.db.qrisUnderpaidTx.findFirst({ where: { orderId: order.id }, select: { expectedAmount: true } }) : null;
-    const text = renderTransactionStatusMessage({ orderCode: order.orderCode, presentation: progress, lang,
+    // A completed stock order is only SUCCESS once its file was acknowledged,
+    // so the bot can say where the account details went. Bot-only body: the
+    // web renders the shared, channel-neutral success body.
+    const presentation = progress.phase === "SUCCESS" && provider === "STOCK"
+      ? { ...progress, bodyKey: "transaction.premium_file_sent_body" } : progress;
+    const text = renderTransactionStatusMessage({ orderCode: order.orderCode, presentation, lang,
       frame: frame!, summary: summary.trim(),
       details: progress.phase === "SUCCESS" && progress.transactionType === "GAME_TOPUP" && provider === "DIGIFLAZZ" ? gameReceiptDetails(order, lang) : undefined, amount: money(walletCredit?.delta ?? order.totalAmount),
       balance: walletCredit ? money(walletCredit.balanceAfter) : undefined,
@@ -279,7 +295,7 @@ export class FulfillmentMessageWorker {
     // grammY types its signal with the abort-controller shim; native Node
     // signals implement the same runtime contract accepted by fetch.
     const apiSignal = controller.signal as unknown as NonNullable<Parameters<FulfillmentTelegramApi["sendMessage"]>[3]>;
-    const options = { parse_mode: "HTML" as const, reply_markup: this.keyboard(progress.phase, progress.transactionType, lang) };
+    const options = { parse_mode: "HTML" as const, reply_markup: this.keyboard(progress.phase, progress.transactionType, lang, slow) };
     const qrLive = QR_LIVE_PHASES.has(progress.phase);
     // The lease this pass holds; retiring a photo upgrades it to SENDING.
     let claim: MessageRow = row;

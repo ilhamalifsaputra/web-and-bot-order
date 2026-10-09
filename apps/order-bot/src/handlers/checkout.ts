@@ -1953,7 +1953,9 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
     // dispatcher running. Re-read the order fresh so stock is SOLD with live
     // credentials. Only if the direct send fails do we fall back to the
     // outbox DM.
-    // The coordinator has already updated the confirmation before credentials.
+    // The coordinator has already turned the confirmation into "sending your
+    // account details…"; once the file is acknowledged (sendAccountFile
+    // records it and wakes the row) one more pass edits it to "completed".
     const deliveredOrder = await getOrder(prisma, result.order.id);
     const tgId =
       deliveredOrder?.user.telegramId != null ? Number(deliveredOrder.user.telegramId) : null;
@@ -1978,6 +1980,9 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
           );
         }
       }
+      // Due now if the file was acknowledged (completed); otherwise this pass
+      // is not due yet and the status keeps saying the file is on its way.
+      await new FulfillmentMessageWorker(ctx.api).tick(result.order.id);
     }
 
     return;

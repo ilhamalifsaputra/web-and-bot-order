@@ -49,6 +49,7 @@ import { Decimal } from "@app/core/money";
 import { registerOutboxNudge } from "@app/core/nudge";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { telegramError } from "./helpers/ctx";
+import { acknowledgeCredentialsFile } from "./helpers/credentialsFile";
 import { flipSettledOrderBubble } from "../src/jobs";
 import { FulfillmentMessageWorker, type FulfillmentTelegramApi } from "../../../packages/outbox-dispatcher/src/fulfillmentMessages";
 import { reconcileOrder } from "../src/payments/tokopayReconcile";
@@ -146,6 +147,9 @@ async function makeAnchoredTokopayOrder(kind: string) {
 }
 
 async function render(api: Api, orderId: number) {
+  // A delivered stock order completes once the outbox's credentials file is
+  // acknowledged (repeating it is a no-op: first writer wins).
+  await acknowledgeCredentialsFile(orderId);
   await new FulfillmentMessageWorker(api as unknown as FulfillmentTelegramApi, { db: prisma }).tick(orderId);
 }
 

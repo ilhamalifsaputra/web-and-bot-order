@@ -99,6 +99,13 @@ export async function markCredentialsDelivered(db: Db, orderId: number, messageI
   });
   if (!set.count) return false;
   await wakeFulfillmentMessage(db, orderId, now);
+  // The status is waiting on exactly this fact ("sending your account
+  // details…"), so a polled row is due now, not on its normal cadence. A
+  // FINISHED row is never reopened.
+  await db.fulfillmentMessage.updateMany({
+    where: { orderId, state: { in: ["ACTIVE", "READY"] }, nextUpdateAt: { gt: now } },
+    data: { nextUpdateAt: now },
+  });
   return true;
 }
 

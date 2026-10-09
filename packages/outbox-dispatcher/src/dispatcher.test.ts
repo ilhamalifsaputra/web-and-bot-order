@@ -31,6 +31,8 @@ const dbMockState = vi.hoisted(() => ({
   recordPollHealthError: null as Error | null,
   /** Task B1.1: how many upcoming markNotificationSent calls throw. */
   markSentFailuresLeft: 0,
+  /** How many upcoming markCredentialsDelivered calls throw. */
+  markCredentialsFailuresLeft: 0,
   /** Task B1.3: forces getSmtpCreds to reject. */
   smtpCredsError: null as Error | null,
   /** Task B1.3: forces renderEmail to reject. */
@@ -56,6 +58,13 @@ vi.mock("@app/db", async () => {
         throw new Error("simulated database outage while recording SENT");
       }
       return actual.markNotificationSent(...args);
+    },
+    markCredentialsDelivered: async (...args: Parameters<typeof actual.markCredentialsDelivered>) => {
+      if (dbMockState.markCredentialsFailuresLeft > 0) {
+        dbMockState.markCredentialsFailuresLeft--;
+        throw new Error("simulated database outage while recording the credentials delivery");
+      }
+      return actual.markCredentialsDelivered(...args);
     },
     getSmtpCreds: async (...args: Parameters<typeof actual.getSmtpCreds>) => {
       if (dbMockState.smtpCredsError) throw dbMockState.smtpCredsError;
@@ -548,6 +557,119 @@ describe("drainBatch delivers a delivered order's credentials as a document", ()
  * (`flushSettledOrderBubble`, apps/order-bot/src/jobs/index.ts) has its own
  * dedicated tests in apps/order-bot/test/jobs.test.ts.
  */
+/**
+ * An acknowledged credentials file is recorded on the order
+ * (`credentialsDeliveredAt`/`credentialsDocMsgId`), and an automatic
+ * ORDER_DELIVERED_DM replayed after that is dropped instead of sending the
+ * buyer's secrets a second time. Only an admin resend (`resend: true` in the
+ * payload) sends again.
+ */
+describe("ORDER_DELIVERED_DM never sends an acknowledged credentials file twice", () => {
+  afterEach(() => { dbMockState.markCredentialsFailuresLeft = 0; });
+
+  async function deliveredOrder(telegramId: number) {
+    const user = await upsertUser(prisma, { telegramId, username: `t5buyer${telegramId}`, fullName: "T5 Buyer" });
+    const category = await createCategory(prisma, `t5-cat-${telegramId}`);
+    const parent = await createCatalogProduct(prisma, { categoryId: category.id, name: `T5 Product ${telegramId}` });
+    const denom = await createDenomination(prisma, {
+      productId: parent.id, name: "T5 Denom", type: ProductType.SHARED, durationLabel: "1 Month", price: "5.00",
+    });
+    await bulkAddStock(prisma, denom.id, [`t5-cred-${telegramId}@example.com:pwd`]);
+    await adjustWallet(prisma, user.id, "10", { currency: "IDR", reason: "admin_adjust" });
+    const funded = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
+    const { order } = await prisma.$transaction((tx) =>
+      completeOrderWithWalletCredit(tx, {
+        channel: "bot",
+        user: { id: funded.id, role: funded.role, walletBalance: funded.walletBalance },
+        productId: denom.id, quantity: 1, currency: OrderCurrency.IDR,
+      }),
+    );
+    return order;
+  }
+  const enqueue = (order: { id: number; orderCode: string }, telegramId: number, resend?: boolean) =>
+    enqueueOrderDeliveredDm(prisma, { orderId: order.id, orderCode: order.orderCode, telegramId: BigInt(telegramId), language: "en", ...(resend ? { resend } : {}) });
+  const lastRow = (orderId: number) => prisma.notificationOutbox.findFirstOrThrow({
+    where: { orderId, event: NotificationEvent.ORDER_DELIVERED_DM }, orderBy: { id: "desc" },
+  });
+  const docBot = (messageId: number) => {
+    const sendDocument = vi.fn().mockResolvedValue({ message_id: messageId });
+    const sendMessage = vi.fn().mockResolvedValue({ message_id: 1 });
+    return { bot: { api: { sendDocument, sendMessage } } as unknown as Bot, sendDocument, sendMessage };
+  };
+
+  it("records the acknowledged document, then drops an automatic replay without sending", async () => {
+    const order = await deliveredOrder(600_201);
+    await enqueue(order, 600_201);
+    const first = docBot(7001);
+    await drainBatch(first.bot);
+    expect(first.sendDocument).toHaveBeenCalledTimes(1);
+    expect(first.sendMessage).toHaveBeenCalledTimes(0);
+    const recorded = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(recorded.credentialsDocMsgId).toBe(7001);
+    expect(recorded.credentialsDeliveredAt).toBeInstanceOf(Date);
+
+    await enqueue(order, 600_201); // webhook replay / poller re-run / restart
+    const replay = docBot(7002);
+    await drainBatch(replay.bot);
+    expect(replay.sendDocument).toHaveBeenCalledTimes(0);
+    expect(replay.sendMessage).toHaveBeenCalledTimes(0);
+    expect((await lastRow(order.id)).status).toBe("SENT");
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).credentialsDocMsgId).toBe(7001);
+  });
+
+  it("still sends an admin resend, keeping the first recorded document id", async () => {
+    const order = await deliveredOrder(600_202);
+    await enqueue(order, 600_202);
+    await drainBatch(docBot(7011).bot);
+    await enqueue(order, 600_202, true);
+    const resend = docBot(7012);
+    await drainBatch(resend.bot);
+    expect(resend.sendDocument).toHaveBeenCalledTimes(1);
+    expect(resend.sendDocument.mock.calls[0]![0]).toBe(600_202);
+    expect((await lastRow(order.id)).status).toBe("SENT");
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).credentialsDocMsgId).toBe(7011);
+  });
+
+  it("records nothing when sendDocument fails, so the retry still sends", async () => {
+    const order = await deliveredOrder(600_203);
+    await enqueue(order, 600_203);
+    const failing = docBot(0);
+    failing.sendDocument.mockRejectedValueOnce(new Error("socket hang up"));
+    await drainBatch(failing.bot);
+    expect(failing.sendDocument).toHaveBeenCalledTimes(1);
+    expect((await lastRow(order.id)).status).not.toBe("SENT");
+    const after = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(after.credentialsDeliveredAt).toBeNull();
+    expect(after.credentialsDocMsgId).toBeNull();
+    // This file shares one database with no reset: drop the retryable row so
+    // a later test's drain does not pick it up.
+    await prisma.notificationOutbox.deleteMany({ where: { orderId: order.id } });
+  });
+
+  it("keeps a sent file sent when recording it fails: the row is SENT, never retried", async () => {
+    const order = await deliveredOrder(600_204);
+    await enqueue(order, 600_204);
+    dbMockState.markCredentialsFailuresLeft = 1;
+    const bot = docBot(7031);
+    await drainBatch(bot.bot);
+    expect(bot.sendDocument).toHaveBeenCalledTimes(1);
+    expect((await lastRow(order.id)).status).toBe("SENT");
+    await drainBatch(bot.bot);
+    expect(bot.sendDocument).toHaveBeenCalledTimes(1);
+  });
+
+  it("puts the resend flag, and never a credential, in the outbox payload", async () => {
+    const order = await deliveredOrder(600_205);
+    await enqueue(order, 600_205, true);
+    const payload = (await lastRow(order.id)).payloadJson;
+    expect(JSON.parse(payload)).toMatchObject({ chat_id: 600_205, order_code: order.orderCode, resend: true });
+    expect(payload).not.toContain("t5-cred-");
+    await enqueue(order, 600_205);
+    expect(JSON.parse((await lastRow(order.id)).payloadJson)).not.toHaveProperty("resend");
+    await prisma.notificationOutbox.deleteMany({ where: { orderId: order.id } }); // never drained here
+  });
+});
+
 describe("drainBatch flushes the payment bubble before a settlement DM (Task E3)", () => {
   afterEach(() => registerPaymentBubbleFlush(null));
 

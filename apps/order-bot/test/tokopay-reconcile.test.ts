@@ -32,6 +32,7 @@ import { Decimal } from "@app/core/money";
 import { config } from "@app/core/config";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { telegramError } from "./helpers/ctx";
+import { acknowledgeCredentialsFile } from "./helpers/credentialsFile";
 import { FulfillmentMessageWorker } from "../../../packages/outbox-dispatcher/src/fulfillmentMessages";
 import { reconcileOrder, pollOnce, MAX_ORDERS_PER_CYCLE } from "../src/payments/tokopayReconcile";
 import { qrisChargeAmount } from "@app/core/payments/tokopay";
@@ -275,10 +276,40 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
 
     await reconcileOrder(api, CREDS, pending!);
     expect(api.editMessageText).not.toHaveBeenCalled();
+    // The outbox delivered and Telegram acknowledged the credentials file.
+    await acknowledgeCredentialsFile(created!.id);
     await new FulfillmentMessageWorker(api).tick(created!.id);
 
     return prisma.order.findUnique({ where: { id: created!.id } });
   }
+
+  it("shows 'sending your account details' on the QR's replacement until the outbox file is acknowledged", async () => {
+    const api = fakeApi();
+    const created = await makeTokopayOrder();
+    const [pending] = await listPendingTokopayOrders(prisma, new Date());
+    await setOrderPaymentMessage(prisma, created!.id, 555, 777);
+    await adoptTransactionMessage(prisma, created!.id, 555, 777, "photo");
+    stubStatus({ status: "Paid", trx_id: "TRX-SENDING", total_bayar: qrisChargeAmount(pending!.totalAmount).toString() });
+    await reconcileOrder(api, CREDS, pending!);
+    const worker = new FulfillmentMessageWorker(api);
+    await worker.tick(created!.id);
+
+    const status = replacementOf(api, { chatId: 555, msgId: 777 });
+    expect(status.text).toContain("Sending your account details…");
+    expect(status.text).not.toContain("Order completed");
+    expect(await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: created!.id } })).toMatchObject({ state: "ACTIVE", phase: "DELIVERING" });
+
+    await acknowledgeCredentialsFile(created!.id);
+    await worker.tick(created!.id);
+    expect(api.editMessageText).toHaveBeenCalledTimes(1);
+    const [, msgId, text] = (api.editMessageText as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    expect(msgId).toBe(REPLACEMENT_MSG_ID);
+    expect(String(text)).toContain("Order completed");
+    expect(String(text)).toContain("Your account details were sent as a file.");
+    expect(api.sendMessage).toHaveBeenCalledTimes(1);
+    expect(api.deleteMessage).toHaveBeenCalledTimes(1);
+    expect(api.editMessageCaption).not.toHaveBeenCalled();
+  });
 
   it("lets the coordinator complete an acknowledged text bubble in place", async () => {
     const api = fakeApi();
@@ -360,6 +391,7 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
 
       await reconcileOrder(api, CREDS, pending!);
       expect(api.editMessageText).not.toHaveBeenCalled();
+      await acknowledgeCredentialsFile(created!.id);
       await new FulfillmentMessageWorker(api).tick(created!.id);
 
       return prisma.order.findUnique({ where: { id: created!.id } });
@@ -422,6 +454,7 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
       stubStatus({ status: "Paid", trx_id: trxId, total_bayar: qrisChargeAmount(pending!.totalAmount).toString() });
       await reconcileOrder(api, CREDS, pending!);
       expect(api.editMessageText).not.toHaveBeenCalled();
+      await acknowledgeCredentialsFile(pending!.id);
       await new FulfillmentMessageWorker(api).tick(pending!.id);
     }
 

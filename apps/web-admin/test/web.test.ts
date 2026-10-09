@@ -1278,6 +1278,13 @@ describe("orders API — approve/resend enqueue the buyer's account DM", () => {
     expect(
       await prisma.notificationOutbox.count({ where: { orderId, event: "ORDER_DELIVERED_DM" } }),
     ).toBe(2);
+    // The approve row is automatic (dropped once the file was acknowledged);
+    // only the admin resend carries the flag that sends it again.
+    const [approved, resent] = await prisma.notificationOutbox.findMany({
+      where: { orderId, event: "ORDER_DELIVERED_DM" }, orderBy: { id: "asc" },
+    });
+    expect(JSON.parse(approved!.payloadJson)).not.toHaveProperty("resend");
+    expect(JSON.parse(resent!.payloadJson)).toMatchObject({ resend: true });
 
     const audit = await prisma.auditLog.findMany({
       where: { action: "order_resend_credentials", targetId: orderId },
@@ -1790,6 +1797,10 @@ describe("POST /api/orders/bulk-action", () => {
     const body = JSON.parse(res.body) as { succeeded: number[]; failed: { id: number; error: string }[] };
     expect(body.succeeded).toEqual([delivered]);
     expect(body.failed).toEqual([{ id: notDelivered, error: "error.not_eligible" }]);
+    const resent = await prisma.notificationOutbox.findFirstOrThrow({
+      where: { orderId: delivered, event: "ORDER_DELIVERED_DM" }, orderBy: { id: "desc" },
+    });
+    expect(JSON.parse(resent.payloadJson)).toMatchObject({ resend: true });
 
     const audit = await prisma.auditLog.findMany({ where: { action: "order_bulk_resend" } });
     expect(audit.length).toBe(1);

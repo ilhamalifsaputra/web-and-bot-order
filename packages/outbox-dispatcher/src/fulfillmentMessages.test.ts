@@ -3,10 +3,11 @@ import { PrismaClient } from "@prisma/client";
 import {
   addAdminIdToDb, createCategory, createCatalogProduct, createDenomination, createOrderDirect, deliverPaidBybitBscOrder, fulfillManualOrder,
   recordBybitBscConfirmationProgress, recordBybitBscPaymentDetected, wakeFulfillmentMessage, creditOrderToBalance, transitionOrderStatus, adoptTransactionMessage,
+  markCredentialsDelivered,
 } from "@app/db";
 import { encryptDeliveredContent } from "@app/core/credentialCrypto";
 import { provisionPgTestSchema } from "../../../tests/helpers/pgTestSchema";
-import { FulfillmentMessageWorker, type FulfillmentTelegramApi } from "./fulfillmentMessages";
+import { DELIVERING_SLOW_AFTER_MS, FulfillmentMessageWorker, type FulfillmentTelegramApi } from "./fulfillmentMessages";
 
 let db: PrismaClient;
 let cleanup: () => Promise<void>;
@@ -425,7 +426,7 @@ describe("customer progress phases in one Telegram message", () => {
     await w.tick();
     expect(tg.sent[0]!.text).toContain("Preparing your order");
     expect(tg.sent[0]!.text).toContain("55%");
-    await db.order.update({ where: { id: order.id }, data: { status: "DELIVERED", deliveredAt: now } });
+    await db.order.update({ where: { id: order.id }, data: { status: "DELIVERED", deliveredAt: now, credentialsDeliveredAt: now } });
     advance(); await w.tick();
     expect(tg.edits[0]!.text).toContain("✅ <b>Order completed</b>");
     expect(tg.edits[0]!.text).not.toMatch(/top-up/i);
@@ -537,6 +538,7 @@ describe("customer progress phases in one Telegram message", () => {
 
   it("stays silent when a stock order is already delivered before its first message", async () => {
     const order = await seed("en", { provider: "STOCK", status: "DELIVERED" });
+    await db.order.update({ where: { id: order.id }, data: { credentialsDeliveredAt: now, credentialsDocMsgId: 4000 } });
     const tg = telegram(); await worker(tg.api).tick();
     expect(tg.sent).toHaveLength(0);
     const row = await db.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } });
@@ -1171,5 +1173,139 @@ describe("a delivered Digiflazz game top-up shows its Game ID, Zone/Server ID an
     expect(text).not.toMatch(/Top-up completed|delivered successfully|Game ID|SN:|12345678|rc 53|stack/i);
     expect(text).toContain("contact support");
     expect(buttons(tg.edits[0]!.markup)).toContain("v1:support:open");
+  });
+});
+
+describe("a delivered stock order completes only once its credentials file is acknowledged", () => {
+  const rowOf = (orderId: number) => db.fulfillmentMessage.findUniqueOrThrow({ where: { orderId } });
+  const deliver = (orderId: number) => db.order.update({ where: { id: orderId }, data: { status: "DELIVERED", deliveredAt: now } });
+  const SENDING = "Sending your account details…";
+
+  it("shows 'sending your account details' with the spinner, then 'completed' after the acknowledgement", async () => {
+    const order = await seed("en", { provider: "STOCK" });
+    const tg = telegram(); const w = worker(tg.api);
+    await w.tick(); // "Preparing your order"
+    await deliver(order.id);
+    advance(); await w.tick();
+    const delivering = tg.edits[0]!.text;
+    expect(delivering).toContain(`<b>${SENDING}</b>`);
+    expect(frameOf(delivering)).toBeDefined();
+    expect(delivering).toContain("90%");
+    expect(delivering).not.toMatch(/completed|✅/i);
+    expect(buttons(tg.edits[0]!.markup)).toEqual(["v1:menu:main"]);
+    expect(await rowOf(order.id)).toMatchObject({ state: "ACTIVE", phase: "DELIVERING" });
+    advance(); await w.tick(); // the existing spinner keeps turning on the same message
+    expect(frameOf(tg.edits[1]!.text)).toBeDefined();
+
+    // The direct sender acknowledged the file: the row is due at once.
+    expect(await markCredentialsDelivered(db, order.id, 5001, now)).toBe(true);
+    await w.tick();
+    const done = tg.edits[2]!.text;
+    expect(done).toContain("✅ <b>Order completed</b>");
+    expect(done).toContain("Your account details were sent as a file.");
+    expect(frameOf(done)).toBeUndefined();
+    expect(await rowOf(order.id)).toMatchObject({ state: "FINISHED", phase: "SUCCESS" });
+    // Terminal: never edited again, never reverts.
+    advance(120_000); await w.tick();
+    expect(tg.calls).toEqual({ sendMessage: 1, editMessageText: 3 });
+    expect(new Set(tg.edits.map(e => e.id))).toEqual(new Set([tg.sent[0]!.id]));
+  });
+
+  it("stops the spinner after two minutes on one honest static line with the Support button", async () => {
+    const order = await seed("id", { provider: "STOCK" });
+    const tg = telegram(); const w = worker(tg.api);
+    await w.tick();
+    await deliver(order.id);
+    advance(); await w.tick();
+    advance(DELIVERING_SLOW_AFTER_MS); await w.tick();
+    const slow = tg.edits.at(-1)!;
+    expect(slow.text).toContain("Detail akunmu masih dalam proses pengiriman. Jika kamu belum menerima file, ketuk 💬 Bantuan di bawah.");
+    expect(frameOf(slow.text)).toBeUndefined();
+    expect(slow.text).not.toMatch(/[█░%]/u);
+    expect(slow.text).not.toMatch(/selesai|✅/);
+    expect(buttons(slow.markup)).toEqual(["v1:support:open", "v1:menu:main"]);
+    const edits = tg.edits.length;
+    // Static: re-read slowly, never re-edited for a frame.
+    advance(); await w.tick();
+    advance(60_000); await w.tick();
+    expect(tg.edits).toHaveLength(edits);
+    await markCredentialsDelivered(db, order.id, 5002, now);
+    await w.tick();
+    expect(tg.edits.at(-1)!.text).toContain("✅ <b>Pesanan selesai</b>");
+    expect(tg.edits.at(-1)!.text).toContain("Detail akunmu sudah dikirim sebagai file.");
+    expect(buttons(tg.edits.at(-1)!.markup)).not.toContain("v1:support:open");
+    expect(tg.calls.sendMessage).toBe(1);
+    expect(tg.calls.editMessageText).toBe(edits + 1);
+  });
+
+  it("sends nothing while a status-less stock order's file is on its way; the file is the message", async () => {
+    const order = await seed("en", { provider: "STOCK", status: "DELIVERED" });
+    const tg = telegram(); const w = worker(tg.api);
+    await w.tick();
+    expect(await rowOf(order.id)).toMatchObject({ state: "READY", phase: "DELIVERING", messageId: null, finishedAt: null });
+    advance(DELIVERING_SLOW_AFTER_MS + 2000); await w.tick();
+    expect(await rowOf(order.id)).toMatchObject({ state: "READY", messageId: null });
+    await markCredentialsDelivered(db, order.id, 5003, now);
+    await w.tick();
+    expect(await rowOf(order.id)).toMatchObject({ state: "FINISHED", phase: "SUCCESS", messageId: null });
+    expect(tg.calls).toEqual({});
+  });
+
+  it("retires a QR photo to one 'sending' text, then edits that text to 'completed'", async () => {
+    const order = await seed("en", { provider: "STOCK", status: "PAYMENT_DETECTED", paid: false });
+    const row = await rowOf(order.id);
+    await adoptTransactionMessage(db, order.id, row.chatId, 900, "photo");
+    const tg = telegram(); const w = worker(tg.api);
+    await w.tick(); // caption while detected
+    await db.order.update({ where: { id: order.id }, data: { status: "DELIVERED", deliveredAt: now, paidAt: now } });
+    advance(); await w.tick();
+    expect(tg.sent).toHaveLength(1);
+    expect(tg.sent[0]!.text).toContain(SENDING);
+    expect(tg.deletes).toEqual([{ chatId: String(row.chatId), id: 900 }]);
+    await markCredentialsDelivered(db, order.id, 5004, now);
+    await w.tick();
+    expect(tg.edits.at(-1)).toMatchObject({ id: tg.sent[0]!.id });
+    expect(tg.edits.at(-1)!.text).toContain("✅ <b>Order completed</b>");
+    expect(tg.calls).toEqual({ editMessageCaption: 1, sendMessage: 1, deleteMessage: 1, editMessageText: 1 });
+  });
+
+  it("never claims completion while the file was not acknowledged (a failed send records nothing)", async () => {
+    const order = await seed("en", { provider: "STOCK" });
+    const tg = telegram(); const w = worker(tg.api);
+    await w.tick();
+    await deliver(order.id);
+    for (let i = 0; i < 5; i++) { advance(); await w.tick(); }
+    expect(tg.edits.every(e => !/completed|✅/i.test(e.text))).toBe(true);
+    expect(await rowOf(order.id)).toMatchObject({ phase: "DELIVERING", state: "ACTIVE" });
+  });
+
+  it("never puts the stock credential in the status text", async () => {
+    const order = await seed("en", { provider: "STOCK" });
+    const secret = "buyer@example.com | hunter2-secret";
+    await db.order.update({ where: { id: order.id }, data: { deliveredContent: encryptDeliveredContent(secret, order.id) } });
+    const tg = telegram(); const w = worker(tg.api);
+    await w.tick();
+    await deliver(order.id);
+    advance(); await w.tick();
+    await markCredentialsDelivered(db, order.id, 5005, now);
+    await w.tick();
+    for (const text of [...tg.sent.map(s => s.text), ...tg.edits.map(e => e.text)]) {
+      expect(text).not.toMatch(/hunter2|buyer@example\.com/);
+    }
+    expect(tg.edits.at(-1)!.text).toContain("Order completed");
+  });
+
+  it("leaves manual and Digiflazz completions unaffected by the credentials record", async () => {
+    for (const provider of ["MANUAL", "DIGIFLAZZ"]) {
+      const order = await seed("en", { provider });
+      const tg = telegram(); const w = worker(tg.api);
+      await w.tick();
+      await deliver(order.id);
+      await wakeFulfillmentMessage(db, order.id, now);
+      advance(); await w.tick();
+      expect(tg.edits.at(-1)!.text).toMatch(/✅ <b>(Order|Top-up) completed<\/b>/);
+      expect(tg.edits.at(-1)!.text).not.toContain("sent as a file");
+      expect(await rowOf(order.id)).toMatchObject({ state: "FINISHED", phase: "SUCCESS" });
+    }
   });
 });

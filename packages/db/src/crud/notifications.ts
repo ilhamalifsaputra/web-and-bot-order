@@ -1273,10 +1273,16 @@ export async function releaseNotificationClaimWithBackoff(
  * Same payload shape the payment-gateway auto-confirm rails already enqueue
  * (see tokopay.ts `deliverPaidTokopayOrder`). No-op for web-only buyers
  * (telegramId=null) — they see their order on the storefront instead.
+ *
+ * `resend: true` marks a deliberate redelivery (an admin resend or a stock
+ * replacement): the dispatcher sends it even when the order's credentials
+ * file was already acknowledged (`Order.credentialsDeliveredAt`). Without it
+ * the row is an automatic delivery, which the dispatcher drops once the file
+ * was acknowledged, so a replay never sends the buyer's secrets twice.
  */
 export async function enqueueOrderDeliveredDm(
   db: Db,
-  args: { orderId: number; orderCode: string; telegramId: bigint | null; language: string | null },
+  args: { orderId: number; orderCode: string; telegramId: bigint | null; language: string | null; resend?: boolean },
 ): Promise<void> {
   if (args.telegramId == null) return;
   const shopUrl = config.SHOP_PUBLIC_URL ?? config.PUBLIC_URL ?? null;
@@ -1289,6 +1295,7 @@ export async function enqueueOrderDeliveredDm(
         order_code: args.orderCode,
         order_url: shopUrl ? `${shopUrl.replace(/\/+$/, "")}/account/orders/${args.orderCode}` : null,
         buyer_language: langCode(args.language),
+        ...(args.resend ? { resend: true } : {}),
       }),
     },
   });

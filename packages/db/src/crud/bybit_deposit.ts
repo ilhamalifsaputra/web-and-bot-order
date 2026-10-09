@@ -204,10 +204,10 @@ export async function deliverPaidBybitOrder(
   //    `reclaimedFrom` remembers exactly what the reclaim overwrote
   //    (outcome/orderId/amount) so step 2 can put it back if this turns out
   //    to be a stale match — this rail's amount-matching means a reclaim can
-  //    land on the WRONG order, and unlike Binance there is no
-  //    manualMatchTx/dismissUnmatchedTx equivalent for Bybit at all, so an
-  //    unreverted stale reclaim would strand the row with no recovery path,
-  //    automatic or manual.
+  //    land on the WRONG order, and the admin's manual match
+  //    (manualMatchLedgerTx, crud/manualMatch.ts) only takes "unmatched"
+  //    rows, so an unreverted stale reclaim would strand the row with no
+  //    recovery path, automatic or manual.
   let reclaimedFrom: Pick<ProcessedBybitTx, "outcome" | "orderId" | "amount"> | null = null;
   try {
     await db.processedBybitTx.create({
@@ -288,7 +288,7 @@ export async function deliverPaidBybitOrder(
         // permanently unreachable: "matched" is excluded from
         // AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES, so it can never be re-claimed
         // again, and
-        // there is no manual-match tool for Bybit either. A fresh claim
+        // the manual match only takes "unmatched" rows. A fresh claim
         // (reclaimedFrom === null) has nothing to undo — that row simply
         // stays "matched" against this now-stale order, the same
         // pre-existing behavior as before this fix.
@@ -313,152 +313,16 @@ export async function deliverPaidBybitOrder(
         );
         return { status: "stale" as const };
       }
-      // Trustance Phase A Task A2b: look up this order's own PENDING Payment
-      // ledger row (if any) BEFORE settling, so both branches below can
-      // confirm it once delivery actually succeeds. May legitimately be null
-      // — orders created before this ledger was wired up, or a rail change
-      // that left no PENDING row — and that is never treated as an error.
-      const pendingPayment = await getPendingPaymentAttempt(tx, args.orderId).catch((err) => {
-        logger.warn({ err }, `Could not look up the Payment ledger row for order ${args.orderId} — this only keeps a benign miss from stopping the settlement; a genuine database error here still aborts this whole transaction, exactly as it would without this lookup`);
-        return null;
-      });
-      if (order.kind === OrderKind.WALLET_TOPUP) {
-        verifiedWalletPayment = order.paymentMethod === PaymentMethod.BYBIT;
-        const { order: settled, credited } = await settleWalletTopup(tx, args.orderId, { amount: args.amount });
-        // Overpayment: same flag + admin alert the product branch below raises,
-        // without changing what was credited (see flagWalletTopupOverpayment).
-        await flagWalletTopupOverpayment(tx, {
-          order: settled,
-          credited,
-          paid: args.amount,
-          expected: order.totalAmount,
-          rail: "Bybit",
-          markLedgerOverpaid: () =>
-            tx.processedBybitTx.update({ where: { bybitTxId: args.bybitTxId }, data: { outcome: "overpaid" } }),
-        });
-        if (pendingPayment) {
-          // Best-effort: swallows the benign race where a concurrent
-          // poller/webhook already confirmed this same Payment row
-          // (ValidationError, count!==1) — expected and harmless. A genuine
-          // database error here still aborts this whole transaction
-          // regardless of this .catch, since Postgres poisons an
-          // interactive transaction on any failed statement; this call
-          // cannot rescue the settlement from that, it only prevents the
-          // benign race from doing so.
-          //
-          // Financial Ledger M3: the confirmation also captures Bybit's own
-          // deposit id, which is what `Payment.providerTransactionId` is
-          // reconciled against when a provider settlement report is matched.
-          // No `fee`/`netAmount` are passed: nothing in this rail's poller
-          // payload reports a cut Bybit deducted, so both columns stay null —
-          // Payment.fee's documented "not known" (prisma/schema.prisma), which
-          // is deliberately NOT the same statement as a fee of zero.
-          await confirmPaymentAttempt(tx, {
-            paymentId: pendingPayment.id,
-            providerTransactionId: args.bybitTxId,
-          }).catch((err) =>
-            logger.warn({ err }, `Could not confirm the Payment ledger row for order ${settled.orderCode} — that row is left stuck PENDING and needs manual reconciliation. Whether the settlement itself survived depends on which failure this was, and this line cannot tell them apart: the benign race this catch exists for (another poller or webhook confirmed the same row first) leaves the order settled, but a real database error — a unique violation on providerTransactionId, say — has already aborted this interactive transaction in Postgres, so the settlement rolls back with it. Check whether the order actually reached its settled status before treating this as harmless`),
-          );
-        }
-        // settleWalletTopup (packages/db/src/crud/wallet_topup.ts) already
-        // enqueued the buyer's WALLET_TOPUP_CREDITED_DM outbox row, one frame
-        // deeper on the line above, behind its own atomic claim — that single
-        // call site is shared by all six top-up-capable rails, this one
-        // included, so nothing here may enqueue it again or DM the buyer
-        // directly. `onDelivered` (apps/order-bot/src/payments/
-        // bybitDeposit.ts) no longer sends a DM for a WALLET_TOPUP order
-        // either; it only nudges the outbox dispatcher and updates the
-        // payment bubble.
-        logger.info(
-          {
-            event: PaymentLogEvent.PAYMENT_CONFIRMED,
-            orderId: args.orderId,
-            provider: PaymentMethod.BYBIT,
-            providerPaymentId: args.bybitTxId,
-            status: "delivered",
-          },
-        `Settled Bybit wallet top-up order ${settled.orderCode} for transaction ${args.bybitTxId} — the buyer's balance was credited and their notification queued`,
-        );
-        return { status: "delivered" as const, order: settled, credentials: [] };
-      }
-      await tx.order.update({
-        where: { id: args.orderId },
-        data: { bybitTxid: args.bybitTxId, paidAt: new Date(), paymentState: "PAID" },
-      });
-      await transitionOrderStatus(tx, {
-        orderId: args.orderId,
-        from: OrderStatus.PENDING_PAYMENT,
-        to: OrderStatus.PENDING_VERIFICATION,
-        meta: `bybitTxId=${args.bybitTxId}`,
-      });
-      const result = await settlePaidOrder(tx, args.orderId, { adminId: 0 });
-      if (pendingPayment) {
-        // See the WALLET_TOPUP branch above for what this .catch actually
-        // protects against, and for why no fee figures are captured here.
-        await confirmPaymentAttempt(tx, {
-          paymentId: pendingPayment.id,
-          providerTransactionId: args.bybitTxId,
-        }).catch((err) =>
-          logger.warn({ err }, `Could not confirm the Payment ledger row for order ${result.order.orderCode} — that row is left stuck PENDING and needs manual reconciliation. Whether the settlement itself survived depends on which failure this was, and this line cannot tell them apart: the benign race this catch exists for (another poller or webhook confirmed the same row first) leaves the order settled, but a real database error — a unique violation on providerTransactionId, say — has already aborted this interactive transaction in Postgres, so the settlement rolls back with it. Check whether the order actually reached its settled status before treating this as harmless`),
-        );
-      }
-      // Overpayment: the buyer sent more USDT than the order total. Still
-      // deliver (handled above) but flag the ledger row and alert admins so
-      // the excess can be refunded/credited manually — never auto-refunded.
-      // Identical shape to binance_internal.ts's own branch (M-13, backend
-      // audit 2026-07-31) and to the three gateway rails': this rail's match
-      // tolerance already let an overpaid deposit through to delivery, and
-      // until now it left no ledger flag and no admin alert, so the excess
-      // had no operational trail for a later refund request. Unconditional
-      // with respect to delivery type — a buyer can overpay regardless of
-      // whether the SKU auto-delivers or is fulfilled by hand.
-      //
-      // Writing "overpaid" here does not disturb this rail's re-claim
-      // behaviour: AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES holds only
-      // "delivery_failed", and "overpaid" is as terminal as the "matched" it
-      // replaces (see that constant's doc-comment in binance_internal.ts —
-      // both mean a delivery actually ran). It is already a member of
-      // TX_OUTCOMES, so the ops panel lists it with no schema change.
-      const paidAmount = new Decimal(args.amount);
-      const excess = paidAmount.minus(order.totalAmount);
-      if (excess.greaterThan(0)) {
-        await tx.processedBybitTx.update({ where: { bybitTxId: args.bybitTxId }, data: { outcome: "overpaid" } });
-        await enqueueAdminOverpaid(tx, {
-          orderId: result.order.id,
-          orderCode: result.order.orderCode,
-          paid: paidAmount,
-          expected: order.totalAmount,
-          excess,
-          currency: order.currency,
-        });
-        logger.warn(
-          `Bybit order ${result.order.orderCode} was overpaid — got ${paidAmount.toString()}, expected ${order.totalAmount.toString()} (excess ${excess.toString()} ${order.currency}) — flagged for manual refund/credit, an admin alert was enqueued`,
-        );
-      }
-      if (result.kind === "delivered") {
-        logger.info(
-          {
-            event: PaymentLogEvent.PAYMENT_CONFIRMED,
-            orderId: args.orderId,
-            provider: PaymentMethod.BYBIT,
-            providerPaymentId: args.bybitTxId,
-            status: "delivered",
-          },
-        `Auto-delivered Bybit order ${result.order.orderCode} for transaction ${args.bybitTxId}`,
-        );
-        return { status: "delivered" as const, order: result.order, credentials: result.credentials };
-      }
-      logger.info(
-        {
-          event: PaymentLogEvent.PAYMENT_CONFIRMED,
-          orderId: args.orderId,
-          provider: PaymentMethod.BYBIT,
-          providerPaymentId: args.bybitTxId,
-          status: "processing",
+      return settleClaimedBybitDeposit(tx, {
+        order,
+        bybitTxId: args.bybitTxId,
+        amount: args.amount,
+        transitionMeta: `bybitTxId=${args.bybitTxId}`,
+        adminId: 0,
+        onVerifiedWalletPayment: () => {
+          verifiedWalletPayment = true;
         },
-      `Bybit order ${result.order.orderCode} paid — queued for manual fulfilment (transaction ${args.bybitTxId})`,
-      );
-      return { status: "processing" as const, order: result.order };
+      });
     }, { timeout: 15000 });
   } catch (e) {
     if (verifiedWalletPayment) {
@@ -470,6 +334,177 @@ export async function deliverPaidBybitOrder(
       .catch(() => undefined);
     throw e;
   }
+}
+
+/**
+ * The settlement half of Bybit internal-transfer delivery, run inside the caller's
+ * transaction once the `processed_bybit_tx` row has been claimed for
+ * `args.order` and the order has been checked as payable. Shared by the
+ * poller path (`deliverPaidBybitOrder`, which claims outside the transaction) and
+ * the admin manual match (`manualMatchLedgerTx`, crud/manualMatch.ts, which
+ * claims inside it), so both settle a deposit in exactly the same way.
+ * `transitionMeta` and `adminId` record who settled it;
+ * `onVerifiedWalletPayment` fires just before a wallet top-up is credited, so
+ * the poller can preserve a verified payment if that credit then fails.
+ */
+export async function settleClaimedBybitDeposit(
+  tx: Tx,
+  args: {
+    order: NonNullable<Awaited<ReturnType<typeof getOrder>>>;
+    bybitTxId: string;
+    amount: Decimal.Value;
+    transitionMeta: string;
+    adminId: number;
+    onVerifiedWalletPayment?: () => void;
+  },
+): Promise<Extract<BybitDeliverResult, { status: "delivered" | "processing" }>> {
+  const order = args.order;
+  // Trustance Phase A Task A2b: look up this order's own PENDING Payment
+  // ledger row (if any) BEFORE settling, so both branches below can
+  // confirm it once delivery actually succeeds. May legitimately be null
+  // — orders created before this ledger was wired up, or a rail change
+  // that left no PENDING row — and that is never treated as an error.
+  const pendingPayment = await getPendingPaymentAttempt(tx, order.id).catch((err) => {
+    logger.warn({ err }, `Could not look up the Payment ledger row for order ${order.id} — this only keeps a benign miss from stopping the settlement; a genuine database error here still aborts this whole transaction, exactly as it would without this lookup`);
+    return null;
+  });
+  if (order.kind === OrderKind.WALLET_TOPUP) {
+    if (order.paymentMethod === PaymentMethod.BYBIT) args.onVerifiedWalletPayment?.();
+    const { order: settled, credited } = await settleWalletTopup(tx, order.id, { amount: args.amount });
+    // Overpayment: same flag + admin alert the product branch below raises,
+    // without changing what was credited (see flagWalletTopupOverpayment).
+    await flagWalletTopupOverpayment(tx, {
+      order: settled,
+      credited,
+      paid: args.amount,
+      expected: order.totalAmount,
+      rail: "Bybit",
+      markLedgerOverpaid: () =>
+        tx.processedBybitTx.update({ where: { bybitTxId: args.bybitTxId }, data: { outcome: "overpaid" } }),
+    });
+    if (pendingPayment) {
+      // Best-effort: swallows the benign race where a concurrent
+      // poller/webhook already confirmed this same Payment row
+      // (ValidationError, count!==1) — expected and harmless. A genuine
+      // database error here still aborts this whole transaction
+      // regardless of this .catch, since Postgres poisons an
+      // interactive transaction on any failed statement; this call
+      // cannot rescue the settlement from that, it only prevents the
+      // benign race from doing so.
+      //
+      // Financial Ledger M3: the confirmation also captures Bybit's own
+      // deposit id, which is what `Payment.providerTransactionId` is
+      // reconciled against when a provider settlement report is matched.
+      // No `fee`/`netAmount` are passed: nothing in this rail's poller
+      // payload reports a cut Bybit deducted, so both columns stay null —
+      // Payment.fee's documented "not known" (prisma/schema.prisma), which
+      // is deliberately NOT the same statement as a fee of zero.
+      await confirmPaymentAttempt(tx, {
+        paymentId: pendingPayment.id,
+        providerTransactionId: args.bybitTxId,
+      }).catch((err) =>
+        logger.warn({ err }, `Could not confirm the Payment ledger row for order ${settled.orderCode} — that row is left stuck PENDING and needs manual reconciliation. Whether the settlement itself survived depends on which failure this was, and this line cannot tell them apart: the benign race this catch exists for (another poller or webhook confirmed the same row first) leaves the order settled, but a real database error — a unique violation on providerTransactionId, say — has already aborted this interactive transaction in Postgres, so the settlement rolls back with it. Check whether the order actually reached its settled status before treating this as harmless`),
+      );
+    }
+    // settleWalletTopup (packages/db/src/crud/wallet_topup.ts) already
+    // enqueued the buyer's WALLET_TOPUP_CREDITED_DM outbox row, one frame
+    // deeper on the line above, behind its own atomic claim — that single
+    // call site is shared by all six top-up-capable rails, this one
+    // included, so nothing here may enqueue it again or DM the buyer
+    // directly. `onDelivered` (apps/order-bot/src/payments/
+    // bybitDeposit.ts) no longer sends a DM for a WALLET_TOPUP order
+    // either; it only nudges the outbox dispatcher and updates the
+    // payment bubble.
+    logger.info(
+      {
+        event: PaymentLogEvent.PAYMENT_CONFIRMED,
+        orderId: order.id,
+        provider: PaymentMethod.BYBIT,
+        providerPaymentId: args.bybitTxId,
+        status: "delivered",
+      },
+    `Settled Bybit wallet top-up order ${settled.orderCode} for transaction ${args.bybitTxId} — the buyer's balance was credited and their notification queued`,
+    );
+    return { status: "delivered" as const, order: settled, credentials: [] };
+  }
+  await tx.order.update({
+    where: { id: order.id },
+    data: { bybitTxid: args.bybitTxId, paidAt: new Date(), paymentState: "PAID" },
+  });
+  await transitionOrderStatus(tx, {
+    orderId: order.id,
+    from: OrderStatus.PENDING_PAYMENT,
+    to: OrderStatus.PENDING_VERIFICATION,
+    meta: args.transitionMeta,
+  });
+  const result = await settlePaidOrder(tx, order.id, { adminId: args.adminId });
+  if (pendingPayment) {
+    // See the WALLET_TOPUP branch above for what this .catch actually
+    // protects against, and for why no fee figures are captured here.
+    await confirmPaymentAttempt(tx, {
+      paymentId: pendingPayment.id,
+      providerTransactionId: args.bybitTxId,
+    }).catch((err) =>
+      logger.warn({ err }, `Could not confirm the Payment ledger row for order ${result.order.orderCode} — that row is left stuck PENDING and needs manual reconciliation. Whether the settlement itself survived depends on which failure this was, and this line cannot tell them apart: the benign race this catch exists for (another poller or webhook confirmed the same row first) leaves the order settled, but a real database error — a unique violation on providerTransactionId, say — has already aborted this interactive transaction in Postgres, so the settlement rolls back with it. Check whether the order actually reached its settled status before treating this as harmless`),
+    );
+  }
+  // Overpayment: the buyer sent more USDT than the order total. Still
+  // deliver (handled above) but flag the ledger row and alert admins so
+  // the excess can be refunded/credited manually — never auto-refunded.
+  // Identical shape to binance_internal.ts's own branch (M-13, backend
+  // audit 2026-07-31) and to the three gateway rails': this rail's match
+  // tolerance already let an overpaid deposit through to delivery, and
+  // until now it left no ledger flag and no admin alert, so the excess
+  // had no operational trail for a later refund request. Unconditional
+  // with respect to delivery type — a buyer can overpay regardless of
+  // whether the SKU auto-delivers or is fulfilled by hand.
+  //
+  // Writing "overpaid" here does not disturb this rail's re-claim
+  // behaviour: AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES holds only
+  // "delivery_failed", and "overpaid" is as terminal as the "matched" it
+  // replaces (see that constant's doc-comment in binance_internal.ts —
+  // both mean a delivery actually ran). It is already a member of
+  // TX_OUTCOMES, so the ops panel lists it with no schema change.
+  const paidAmount = new Decimal(args.amount);
+  const excess = paidAmount.minus(order.totalAmount);
+  if (excess.greaterThan(0)) {
+    await tx.processedBybitTx.update({ where: { bybitTxId: args.bybitTxId }, data: { outcome: "overpaid" } });
+    await enqueueAdminOverpaid(tx, {
+      orderId: result.order.id,
+      orderCode: result.order.orderCode,
+      paid: paidAmount,
+      expected: order.totalAmount,
+      excess,
+      currency: order.currency,
+    });
+    logger.warn(
+      `Bybit order ${result.order.orderCode} was overpaid — got ${paidAmount.toString()}, expected ${order.totalAmount.toString()} (excess ${excess.toString()} ${order.currency}) — flagged for manual refund/credit, an admin alert was enqueued`,
+    );
+  }
+  if (result.kind === "delivered") {
+    logger.info(
+      {
+        event: PaymentLogEvent.PAYMENT_CONFIRMED,
+        orderId: order.id,
+        provider: PaymentMethod.BYBIT,
+        providerPaymentId: args.bybitTxId,
+        status: "delivered",
+      },
+    `Auto-delivered Bybit order ${result.order.orderCode} for transaction ${args.bybitTxId}`,
+    );
+    return { status: "delivered" as const, order: result.order, credentials: result.credentials };
+  }
+  logger.info(
+    {
+      event: PaymentLogEvent.PAYMENT_CONFIRMED,
+      orderId: order.id,
+      provider: PaymentMethod.BYBIT,
+      providerPaymentId: args.bybitTxId,
+      status: "processing",
+    },
+  `Bybit order ${result.order.orderCode} paid — queued for manual fulfilment (transaction ${args.bybitTxId})`,
+  );
+  return { status: "processing" as const, order: result.order };
 }
 
 /**

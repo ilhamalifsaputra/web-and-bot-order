@@ -605,13 +605,17 @@ export async function ledgerOutcomeCountsForView(db: Db, actionable: boolean): P
  */
 export type LedgerGateway = "binance" | "bybit" | "tokopay" | "paydisini" | "nowpayments";
 
-/** The one currency each gateway's ledger `amount` is recorded in. Binance
- *  Pay, Bybit (both sub-rails) and NOWPayments settle USDT; TokoPay and
- *  PayDisini are rupiah QRIS/e-wallet rails. */
-const LEDGER_GATEWAY_CURRENCY: Record<LedgerGateway, string> = {
+/** The currency each gateway's ledger `amount` is recorded in. Binance Pay and
+ *  Bybit (both sub-rails) record USDT; TokoPay and PayDisini are rupiah
+ *  QRIS/e-wallet rails. NOWPayments is null: its ledger `amount` is the IPN's
+ *  `actually_paid`, which is in whatever coin the buyer paid with (TRX, BTC,
+ *  a USDT variant…), and the row does not record which coin that was — so
+ *  the amount cannot be labelled, compared with an order total, or used to
+ *  settle an order (see `manualMatchLedgerTx`, crud/manualMatch.ts). */
+export const LEDGER_GATEWAY_CURRENCY: Record<LedgerGateway, "USDT" | "IDR" | null> = {
   binance: "USDT",
   bybit: "USDT",
-  nowpayments: "USDT",
+  nowpayments: null,
   tokopay: "IDR",
   paydisini: "IDR",
 };
@@ -624,9 +628,9 @@ export interface UnifiedLedgerRow {
   reference: string;
   amount: string | null;
   /** The currency `amount` is in. None of the five ledger tables store one,
-   *  but each gateway only ever settles in a single currency, so it is read
-   *  from `LEDGER_GATEWAY_CURRENCY` by the row's `gateway`. Typed nullable for
-   *  parity with the client's row shape; never null today. */
+   *  so it is read from `LEDGER_GATEWAY_CURRENCY` by the row's `gateway`.
+   *  Null for NOWPayments, whose amount is in the buyer's (unrecorded) pay
+   *  coin. */
   currency: string | null;
   outcome: string;
   createdAt: Date;

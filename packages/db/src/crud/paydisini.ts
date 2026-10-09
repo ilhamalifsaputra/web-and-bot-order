@@ -104,7 +104,7 @@ async function recoverStalePaydisiniClaim(db: PrismaClient, trxId: string, order
  */
 export async function deliverPaidPaydisiniOrder(
   db: PrismaClient,
-  args: { orderId: number; trxId: string; amount: Decimal.Value; shopUrl?: string | null },
+  args: { orderId: number; trxId: string; amount: Decimal.Value; shopUrl?: string | null; manual?: { adminId: number } },
 ): Promise<PaydisiniDeliverResult> {
   // 1. Claim the trx id. A duplicate normally means another callback already
   //    handled it — UNLESS the prior claim's outcome is one of
@@ -123,26 +123,27 @@ export async function deliverPaidPaydisiniOrder(
   //    `updateMany` sees count=1 and
   //    proceeds; the other sees count=0 and correctly reports
   //    already_processed.
-  try {
-    await db.processedPaydisiniTx.create({
-      data: { trxId: args.trxId, orderId: args.orderId, amount: new Decimal(args.amount), outcome: "matched" },
-    });
-  } catch (e) {
-    if (!isUniqueViolation(e)) throw e;
-    const reclaimed = await db.processedPaydisiniTx.updateMany({
-      where: { trxId: args.trxId, outcome: { in: [...QRIS_RECLAIMABLE_OUTCOMES] } },
-      data: { orderId: args.orderId, amount: new Decimal(args.amount), outcome: "matched" },
-    });
-    // Task B2: a "matched" row whose delivery crashed before finishing is
-    // recoverable too — see crud/_staleClaim.ts for exactly when.
-    const recovered =
-      reclaimed.count === 1 ||
-      (await recoverStalePaydisiniClaim(db, args.trxId, args.orderId, new Decimal(args.amount)));
-    if (!recovered) {
-      // The idempotency gate working, not a fault: this payment was already
-      // settled by whichever of the webhook or the reconcile poller got here
-      // first. Logged at info for exactly that reason — see PaymentLogEvent
-      // (@app/core/payments/logEvents) on why an expected race is never a warning.
+  // Manual mode (an admin matching an "unmatched" ledger row to an order,
+  // manualMatchLedgerTx in crud/manualMatch.ts) claims differently from a
+  // callback: ONLY from "unmatched" — never "delivery_failed", which belongs
+  // to a delivery attempt for some order already — and as a compare-and-swap
+  // on the exact orderId it read, so `manualPrior` is exactly what the claim
+  // overwrote. A stale order or a delivery that throws puts the row back to
+  // that state below, so the payment stays in the manual-match queue instead
+  // of being stamped "stale"/"delivery_failed" against an order the admin
+  // merely tried. No row is created here: an admin can only match a row that
+  // already exists.
+  let manualPrior: { orderId: number | null; amount: Decimal | null } | null = null;
+  if (args.manual) {
+    const prior = await db.processedPaydisiniTx.findUnique({ where: { trxId: args.trxId } });
+    const claimed =
+      prior && prior.outcome === "unmatched"
+        ? await db.processedPaydisiniTx.updateMany({
+            where: { trxId: args.trxId, outcome: "unmatched", orderId: prior.orderId },
+            data: { orderId: args.orderId, amount: new Decimal(args.amount), outcome: "matched" },
+          })
+        : { count: 0 };
+    if (!prior || claimed.count === 0) {
       logger.info(
         {
           event: PaymentLogEvent.PAYMENT_ALREADY_CONFIRMED,
@@ -151,9 +152,44 @@ export async function deliverPaidPaydisiniOrder(
           providerPaymentId: args.trxId,
           status: "already_processed",
         },
-        `Skipped settling PayDisini transaction ${args.trxId} for order ${args.orderId} because it had already been processed — the ledger claim was lost to whichever path confirmed this payment first, so nothing was delivered or credited twice`,
+        `Did not manually match PayDisini transaction ${args.trxId} to order ${args.orderId} because its ledger row is no longer unmatched — another admin or the gateway's own callback claimed it first, so nothing was delivered or credited`,
       );
       return { status: "already_processed" };
+    }
+    manualPrior = { orderId: prior.orderId, amount: prior.amount };
+  } else {
+    try {
+      await db.processedPaydisiniTx.create({
+        data: { trxId: args.trxId, orderId: args.orderId, amount: new Decimal(args.amount), outcome: "matched" },
+      });
+    } catch (e) {
+      if (!isUniqueViolation(e)) throw e;
+      const reclaimed = await db.processedPaydisiniTx.updateMany({
+        where: { trxId: args.trxId, outcome: { in: [...QRIS_RECLAIMABLE_OUTCOMES] } },
+        data: { orderId: args.orderId, amount: new Decimal(args.amount), outcome: "matched" },
+      });
+      // Task B2: a "matched" row whose delivery crashed before finishing is
+      // recoverable too — see crud/_staleClaim.ts for exactly when.
+      const recovered =
+        reclaimed.count === 1 ||
+        (await recoverStalePaydisiniClaim(db, args.trxId, args.orderId, new Decimal(args.amount)));
+      if (!recovered) {
+        // The idempotency gate working, not a fault: this payment was already
+        // settled by whichever of the webhook or the reconcile poller got here
+        // first. Logged at info for exactly that reason — see PaymentLogEvent
+        // (@app/core/payments/logEvents) on why an expected race is never a warning.
+        logger.info(
+          {
+            event: PaymentLogEvent.PAYMENT_ALREADY_CONFIRMED,
+            orderId: args.orderId,
+            provider: PaymentMethod.PAYDISINI,
+            providerPaymentId: args.trxId,
+            status: "already_processed",
+          },
+          `Skipped settling PayDisini transaction ${args.trxId} for order ${args.orderId} because it had already been processed — the ledger claim was lost to whichever path confirmed this payment first, so nothing was delivered or credited twice`,
+        );
+        return { status: "already_processed" };
+      }
     }
   }
 
@@ -176,9 +212,18 @@ export async function deliverPaidPaydisiniOrder(
         // Use `tx` (not the outer `db`) — we're still inside db.$transaction, and a
         // second connection writing the same row here would wait on the row lock
         // the surrounding transaction already holds until it times out.
-        await tx.processedPaydisiniTx
-          .update({ where: { trxId: args.trxId }, data: { outcome: "stale" } })
-          .catch(() => undefined);
+        if (manualPrior) {
+          // Manual mode: the order stopped being payable after the admin's
+          // checks ran. Put the row back exactly as the claim found it.
+          await tx.processedPaydisiniTx.update({
+            where: { trxId: args.trxId },
+            data: { outcome: "unmatched", orderId: manualPrior.orderId, amount: manualPrior.amount },
+          });
+        } else {
+          await tx.processedPaydisiniTx
+            .update({ where: { trxId: args.trxId }, data: { outcome: "stale" } })
+            .catch(() => undefined);
+        }
         logger.info(
           {
             event: PaymentLogEvent.PAYMENT_ALREADY_CONFIRMED,
@@ -266,9 +311,9 @@ export async function deliverPaidPaydisiniOrder(
         orderId: args.orderId,
         from: OrderStatus.PENDING_PAYMENT,
         to: OrderStatus.PENDING_VERIFICATION,
-        meta: `trxId=${args.trxId}`,
+        meta: args.manual ? `manual_match trxId=${args.trxId} by admin_id=${args.manual.adminId}` : `trxId=${args.trxId}`,
       });
-      const result = await settlePaidOrder(tx, args.orderId, { adminId: 0 });
+      const result = await settlePaidOrder(tx, args.orderId, { adminId: args.manual?.adminId ?? 0 });
       if (pendingPayment) {
         // See the WALLET_TOPUP branch above for what this .catch actually
         // protects against, and for why no fee figures are captured here.
@@ -339,6 +384,44 @@ export async function deliverPaidPaydisiniOrder(
       return { status: "processing" as const, order: result.order };
     }, { timeout: 15000 });
   } catch (e) {
+    if (manualPrior) {
+      // Manual mode: the delivery transaction rolled back, so nothing was
+      // delivered or credited. Undo the claim too (all-or-nothing, like
+      // manualMatchTx) so the admin sees the error and the row stays
+      // matchable, rather than leaving a "delivery_failed" row that would
+      // count as proof this order was paid. No wallet preservation either:
+      // the gateway never confirmed this payment as this order's.
+      // Only while the order is still unpaid: if it has moved on, the
+      // settlement did commit (only the acknowledgement was lost), and
+      // reopening the row would let the same money settle a second order.
+      const current = await db.order.findUnique({ where: { id: args.orderId }, select: { status: true } }).catch(() => null);
+      if (current?.status !== OrderStatus.PENDING_PAYMENT) {
+        logger.error(
+          { orderId: args.orderId, providerPaymentId: args.trxId },
+          `A manual match of PayDisini transaction ${args.trxId} to order ${args.orderId} reported an error, but the order is no longer awaiting payment (or could not be read), so the ledger row was left matched to it rather than reopened — an admin must check whether the order was actually settled`,
+        );
+        throw e;
+      }
+      const reverted = await db.processedPaydisiniTx
+        .updateMany({
+          where: { trxId: args.trxId, orderId: args.orderId, outcome: "matched" },
+          data: { outcome: "unmatched", orderId: manualPrior.orderId, amount: manualPrior.amount },
+        })
+        .catch((err) => {
+          logger.error(
+            { err, orderId: args.orderId, providerPaymentId: args.trxId },
+            `Could not return PayDisini ledger row ${args.trxId} to unmatched after a failed manual match to order ${args.orderId} — the row is left claimed by that order although nothing was delivered, so an admin must check it`,
+          );
+          return null;
+        });
+      if (reverted && reverted.count === 0) {
+        logger.error(
+          { orderId: args.orderId, providerPaymentId: args.trxId },
+          `A failed manual match of PayDisini transaction ${args.trxId} to order ${args.orderId} could not be undone because the ledger row had already changed — an admin must check what the row now points at`,
+        );
+      }
+      throw e;
+    }
     if (verifiedWalletPayment) {
       await preservePaidWalletCreditFailure(db, { orderId: args.orderId, method: PaymentMethod.PAYDISINI, providerTransactionId: args.trxId, amount: args.amount })
         .catch((err) => logger.error({ err, orderId: args.orderId }, "Could not persist the confirmed wallet payment after credit failure"));

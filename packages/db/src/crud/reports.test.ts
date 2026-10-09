@@ -601,6 +601,8 @@ describe("listCombinedLedger order enrichment (top-ups vs product sales)", () =>
 });
 
 describe("listCombinedLedger currency and suggested order", () => {
+  // NOWPayments is null: its ledger amount is in whatever coin the buyer paid
+  // with (`actually_paid`), and that coin is not recorded on the row.
   it("stamps each row with its gateway's currency", async () => {
     await prisma.processedBinanceTx.create({ data: { binanceTxId: "bn-cur", amount: "1.5", outcome: "unmatched" } });
     await prisma.processedBybitTx.create({ data: { bybitTxId: "by-cur", amount: "2", outcome: "unmatched" } });
@@ -613,7 +615,7 @@ describe("listCombinedLedger currency and suggested order", () => {
     expect(currencyByReference).toEqual({
       "bn-cur": "USDT",
       "by-cur": "USDT",
-      "np-cur": "USDT",
+      "np-cur": null,
       "tp-cur": "IDR",
       "pd-cur": "IDR",
     });

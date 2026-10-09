@@ -187,7 +187,7 @@ describe("SettingsPage", () => {
     expect(within(card).getByText("Xendit card payments enabled")).toBeInTheDocument();
     expect(within(card).getByText(/Settings → API Keys/)).toBeInTheDocument();
     expect(within(card).getByText(/Settings → Webhooks/)).toBeInTheDocument();
-    expect(within(card).getByText("Alur pembayaran Xendit menyusul; setting ini belum dipakai di checkout.")).toBeInTheDocument();
+    expect(within(card).getByText("Switch QRIS/Kartu sudah mengatur logo metode pembayaran di footer toko; checkout Xendit menyusul.")).toBeInTheDocument();
     // None of the Xendit keys leaks into "Other Settings".
     expect(document.getElementById("settings-other")).toBeNull();
   });

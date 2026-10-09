@@ -190,7 +190,7 @@ const PAY_CRED_GROUPS = [
 
 // Short per-gateway note shown under the card's credential fields.
 const GATEWAY_NOTES: Record<string, string> = {
-  xendit: "Alur pembayaran Xendit menyusul; setting ini belum dipakai di checkout.",
+  xendit: "Switch QRIS/Kartu sudah mengatur logo metode pembayaran di footer toko; checkout Xendit menyusul.",
 };
 
 const PAY_CRED_KEYS = new Set([
@@ -270,8 +270,8 @@ const FIELD_DESCRIPTIONS: Record<string, string> = {
     "From Xendit Dashboard → Settings → API Keys. The key needs Money-In write permission. Starts with xnd_development_ (test) or xnd_production_ (live) — never shown once saved; Test Connection reports which mode it is.",
   xendit_callback_token:
     'From Xendit Dashboard → Settings → Webhooks ("Verification token"). Used to confirm payment notifications really came from Xendit — never shown once saved.',
-  xendit_qris_enabled: 'Type "true" or "false" — offer QRIS through Xendit once the payment flow is live.',
-  xendit_card_enabled: 'Type "true" or "false" — offer credit/debit cards through Xendit once the payment flow is live.',
+  xendit_qris_enabled: 'Type "true" or "false" — show the QRIS logo in the storefront footer now; QRIS checkout through Xendit follows once the payment flow is live.',
+  xendit_card_enabled: 'Type "true" or "false" — show the card logos in the storefront footer now; card checkout through Xendit follows once the payment flow is live.',
   paydisini_userkey: "Your PayDisini account's user key.",
   paydisini_apikey: "Authenticates requests to PayDisini — never shown once saved.",
   paydisini_default_channel: "Default PayDisini payment channel offered at checkout.",

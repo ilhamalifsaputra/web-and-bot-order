@@ -17,7 +17,7 @@ import Card from "../components/ui/Card";
 import TelegramIcon from "../components/shop/TelegramIcon";
 import WhatsAppIcon from "../components/shop/WhatsAppIcon";
 import { t } from "../lib/i18n";
-import { telHref } from "../lib/telHref";
+import { isPlainEmail, telHref } from "../lib/telHref";
 
 function Row({ icon, label, children }: { icon: ReactNode; label: string; children: ReactNode }) {
   return (
@@ -78,9 +78,13 @@ export default function ContactPage() {
               )}
               {email && (
                 <Row icon={<Mail className="h-5 w-5" aria-hidden="true" />} label={t("web.contact_email")}>
-                  <a href={`mailto:${email}`} className="text-pine hover:underline">
-                    {email}
-                  </a>
+                  {isPlainEmail(email) ? (
+                    <a href={`mailto:${email}`} className="text-pine hover:underline">
+                      {email}
+                    </a>
+                  ) : (
+                    email
+                  )}
                 </Row>
               )}
               {hours && (

@@ -50,7 +50,38 @@ describe("Footer business identity", () => {
 
   it("links to /contact", () => {
     renderFooter(ctx());
-    expect(screen.getByRole("link", { name: "Contact us" })).toHaveAttribute("href", "/contact");
+    const links = screen.getAllByRole("link", { name: "Contact us" });
+    expect(links.length).toBeGreaterThanOrEqual(2);
+    for (const l of links) expect(l).toHaveAttribute("href", "/contact");
+  });
+
+  it("starts the Contact block open on mobile and Quick Links collapsed", () => {
+    renderFooter(ctx(FULL));
+    const contactBtn = screen.getByRole("button", { name: "Contact" });
+    const quickBtn = screen.getByRole("button", { name: "Quick Links" });
+    expect(contactBtn).toHaveAttribute("aria-expanded", "true");
+    expect(quickBtn).toHaveAttribute("aria-expanded", "false");
+    const hiddenAncestor = (el: HTMLElement) => el.closest(".hidden");
+    expect(hiddenAncestor(screen.getByRole("link", { name: /cs@contoh\.id/ }))).toBeNull();
+    expect(hiddenAncestor(screen.getByRole("link", { name: /\+62 812/ }))).toBeNull();
+    expect(hiddenAncestor(screen.getByText("09.00 - 21.00 WIB"))).toBeNull();
+    expect(hiddenAncestor(screen.getByRole("link", { name: /WhatsApp/ }))).toBeNull();
+    expect(hiddenAncestor(screen.getByRole("link", { name: /Telegram/ }))).toBeNull();
+    const contactLinks = screen.getAllByRole("link", { name: "Contact us" });
+    const visible = contactLinks.filter((l) => !l.closest(".hidden"));
+    expect(visible).toHaveLength(1);
+    // Quick Links body is the collapsed one.
+    expect(contactLinks.some((l) => l.closest(".hidden"))).toBe(true);
+  });
+
+  it("shows an unsafe email as plain text, not a mailto link", () => {
+    renderFooter(
+      ctx({
+        business: { legal_name: null, address: null, phone: null, email: "a@b.id?cc=x@y.z", hours: null },
+      }),
+    );
+    expect(screen.getByText(/a@b\.id\?cc=x@y\.z/)).toBeInTheDocument();
+    expect(document.querySelector('a[href^="mailto:"]')).toBeNull();
   });
 
   it("shows operator, address, contacts, payment marks and copyright when configured", () => {

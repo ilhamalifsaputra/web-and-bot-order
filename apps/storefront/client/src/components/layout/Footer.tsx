@@ -13,7 +13,7 @@ import { Link } from "react-router-dom";
 import { ChevronDown, Clock, Mail, Phone, Store } from "lucide-react";
 import type { ShopContext } from "../../api/types";
 import { t } from "../../lib/i18n";
-import { telHref } from "../../lib/telHref";
+import { isPlainEmail, telHref } from "../../lib/telHref";
 import PaymentMarks from "../shop/PaymentMarks";
 import TelegramIcon from "../shop/TelegramIcon";
 import WhatsAppIcon from "../shop/WhatsAppIcon";
@@ -43,9 +43,18 @@ export const FOOTER_LINKS = [
  * Not the Task 6 Accordion primitive — lightweight inline markup, matching how
  * HomePage's FAQ hand-rolls its own <details> styling.
  */
-function FooterBlock({ heading, children }: { heading: string; children: ReactNode }) {
+function FooterBlock({
+  heading,
+  children,
+  defaultOpen = false,
+}: {
+  heading: string;
+  children: ReactNode;
+  /** Start expanded on mobile (the Contact block, so reviewers see it untapped). */
+  defaultOpen?: boolean;
+}) {
   const bodyId = useId();
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(defaultOpen);
   return (
     <>
       <h3 className="font-display text-base font-semibold text-ink">
@@ -92,7 +101,6 @@ export default function Footer({
   const hours = ctx?.business?.hours ?? "";
   const payMethods = ctx?.pay_methods;
   const showPayMarks = Boolean(payMethods && (payMethods.qris || payMethods.card));
-  const hasContactList = Boolean(waNumber || botUsername || phone || email || hours);
 
   return (
     <footer
@@ -145,8 +153,8 @@ export default function Footer({
           {/* Column 4: direct contact. Each link is independently conditional on
               the shop having set that channel up. */}
           <div className="border-t border-line py-1 sm:border-0 sm:py-0">
-            <FooterBlock heading={t("web.footer_contact_heading")}>
-              {hasContactList && (
+            <FooterBlock heading={t("web.footer_contact_heading")} defaultOpen>
+              {(
                 <ul className="mt-3 flex flex-col gap-2 text-sm">
                   {waNumber && (
                     <li>
@@ -190,12 +198,18 @@ export default function Footer({
                   )}
                   {email && (
                     <li>
-                      <a
-                        href={`mailto:${email}`}
-                        className="flex items-center gap-2 break-all text-ink-soft transition-colors hover:text-pine"
-                      >
-                        <Mail className="h-4 w-4 shrink-0" aria-hidden="true" /> {email}
-                      </a>
+                      {isPlainEmail(email) ? (
+                        <a
+                          href={`mailto:${email}`}
+                          className="flex items-center gap-2 break-all text-ink-soft transition-colors hover:text-pine"
+                        >
+                          <Mail className="h-4 w-4 shrink-0" aria-hidden="true" /> {email}
+                        </a>
+                      ) : (
+                        <span className="flex items-center gap-2 break-all text-ink-soft">
+                          <Mail className="h-4 w-4 shrink-0" aria-hidden="true" /> {email}
+                        </span>
+                      )}
                     </li>
                   )}
                   {hours && (
@@ -204,6 +218,11 @@ export default function Footer({
                       <span className="whitespace-pre-line">{hours}</span>
                     </li>
                   )}
+                  <li>
+                    <Link to="/contact" className="text-ink-soft transition-colors hover:text-pine">
+                      {t("web.contact_page_title")}
+                    </Link>
+                  </li>
                 </ul>
               )}
             </FooterBlock>

@@ -59,6 +59,11 @@ export interface MakeCtxOptions {
    * found"). Lets a test drive smartEdit's and editAnchor's fresh-send
    * fallback without first scripting a deleteMessage call. */
   deletedMessageIds?: number[];
+  /** Message ids that are photo+caption bubbles for THIS ctx: an api-level
+   * editMessageText targeting one rejects the way real Telegram does
+   * ("there is no text in the message to edit"), so a test can drive
+   * editAnchor's caption fallback. Opt-in; no effect when unset. */
+  photoMessageIds?: number[];
   from?: { id: number; username?: string; first_name?: string; last_name?: string };
   /** Sets ctx.callbackQuery with this data. */
   callbackData?: string;
@@ -125,6 +130,7 @@ export function makeCtx(opts: MakeCtxOptions = {}): FakeCtx {
   // fall through to a fresh send instead of "successfully" editing a bubble
   // that no longer exists.
   const deletedIds = new Set<number>(opts.deletedMessageIds ?? []);
+  const photoIds = new Set<number>(opts.photoMessageIds ?? []);
 
   // A raw grammY InputFile can't be JSON.stringify'd (its toJSON throws
   // "must be sent via grammY"), which would blow up sentIncludes the moment a
@@ -180,6 +186,9 @@ export function makeCtx(opts: MakeCtxOptions = {}): FakeCtx {
       const messageId = args[1];
       if (typeof messageId === "number" && deletedIds.has(messageId)) {
         return Promise.reject(new Error("message to edit not found"));
+      }
+      if (method === "editMessageText" && typeof messageId === "number" && photoIds.has(messageId)) {
+        return Promise.reject(telegramError(400, "Bad Request: there is no text in the message to edit", method));
       }
       sink.push({ method, args: sanitize(args) });
       return Promise.resolve({ message_id: ++msgSeq, chat, date: 0 });

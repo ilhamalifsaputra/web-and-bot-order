@@ -796,16 +796,16 @@ export function nicknameConfirmKb(productId: number, qty: number, lang: string):
   ]);
 }
 
-/** Shown alongside nicknameCheck.ts's re-prompt after a DEFINITIVE
- * "account not found" answer (final-review Important #2). The buyer can
- * either just type a new target (unchanged typo-fix path — the prompt bubble
- * still waits for text) or tap 'Continue anyway' to proceed to
- * confirm/pay with their last-typed target stored unverified, matching the
+/** Shown by nicknameCheck.ts after a DEFINITIVE "account not found" answer
+ * (final-review Important #2). 'Try Again' re-asks the ID fields in the same
+ * wizard bubble (as on nicknameConfirmKb); 'Continue anyway' proceeds to
+ * confirm/pay with the last-typed target stored unverified, matching the
  * storefront's own non-blocking degrade posture instead of hard-stopping the
  * checkout on a possibly-misconfigured product. 'Cancel' abandons exactly
  * like voucherCancelKb/nicknameConfirmKb. */
 export function nicknameNotFoundKb(productId: number, qty: number, lang: string): InlineKeyboard {
   return ik([
+    [{ text: coreT("checkout.nickname_retry_btn", lang), data: cb("nick", "retry") }],
     [{ text: coreT("checkout.nickname_continue_btn", lang), data: cb("nick", "continue") }],
     [{ text: coreT("checkout.cancel_btn", lang), data: cb("buy", productId, qty) }],
   ]);

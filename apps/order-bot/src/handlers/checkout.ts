@@ -93,7 +93,7 @@ import { pollOnce as bybitBscPoll, triggerImmediatePoll as bybitBscImmediatePoll
 import { triggerImmediatePoll as bybitBscTrackerImmediatePoll } from "../payments/bybitBscConfirmationTracker";
 import { pollOnce as nowpaymentsPoll } from "../payments/nowpaymentsReconcile";
 import type { MyContext } from "../context";
-import { smartEdit } from "../util/chat";
+import { smartEdit, menuAnchor } from "../util/chat";
 import { anchorPaymentMessage, checkoutScreenOf, menuBubbleKind, qrScreenKind } from "../util/paymentAnchor";
 import { sendAccountFile } from "../util/delivery";
 import { flipSettledOrderBubble } from "../jobs";
@@ -681,7 +681,13 @@ function confirmOrderText(
   );
 }
 
-/** Re-render confirmation as a fresh message (used after voucher entry). */
+/**
+ * Render the confirmation at the end of a wizard (Game ID / Zone, voucher
+ * entry, nickname check) into the wizard's own bubble: a tap edits the tapped
+ * bubble, typed input edits `session.menuMsgId` (menuAnchor). Only when that
+ * bubble is gone does it send one new message, which becomes the anchor and
+ * retires the old keyboard (editAnchor/smartEdit do both).
+ */
 export async function renderOrderConfirmation(
   ctx: MyContext,
   productId: number,
@@ -691,31 +697,34 @@ export async function renderOrderConfirmation(
   const rate = await currentUsdtRate();
   const r = await computeConfirmation(ctx, productId, quantity, rate);
   if (!r) return;
+  // Same mint as showOrderConfirmation. The wizards reach the summary here,
+  // not through showOrderConfirmation, and clearPlayerInputScratch drops any
+  // earlier id on the way, so without this a wizard-path order carried no
+  // checkoutIntentId and lost the duplicate-intent guard.
+  if (typeof ctx.session.scratch.checkoutIntentId !== "string") {
+    ctx.session.scratch.checkoutIntentId = randomUUID();
+  }
   const rails = await offerableRails(r.subtotal, rate);
-  const msg = await ctx.api.sendMessage(
-    ctx.chat!.id,
+  await menuAnchor(
+    ctx,
     confirmOrderText(ctx, r, quantity, closingLineFor(ctx, r, rails), ctxPriceFormatter(ctx, rate)),
-    {
-      parse_mode: "HTML",
-      reply_markup: ckb.orderConfirmKb(
-        productId,
-        quantity,
-        lang,
-        r.voucherCode,
-        rails.binance,
-        rails.bybit,
-        rails.tokopay,
-        rails.paydisini,
-        rails.nowpayments,
-        rails.bybitBsc,
-        r.idrBalance,
-        r.usdtBalance,
-        r.walletDeduction,
-        r.fullyCovered,
-      ),
-    },
+    ckb.orderConfirmKb(
+      productId,
+      quantity,
+      lang,
+      r.voucherCode,
+      rails.binance,
+      rails.bybit,
+      rails.tokopay,
+      rails.paydisini,
+      rails.nowpayments,
+      rails.bybitBsc,
+      r.idrBalance,
+      r.usdtBalance,
+      r.walletDeduction,
+      r.fullyCovered,
+    ),
   );
-  ctx.session.menuMsgId = msg.message_id;
 }
 
 /**

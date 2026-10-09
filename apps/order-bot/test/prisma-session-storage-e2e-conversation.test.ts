@@ -285,8 +285,11 @@ describe("end-to-end: customerInfoConversation through the REAL Prisma session a
     expect(rowAfterAnswer!.kind).toBe("checkout");
 
     // The conversation actually continued to completion and rendered the
-    // order confirmation screen — not just "didn't throw".
-    expect(sink.some((c) => c.method === "sendMessage" && JSON.stringify(c.payload).includes("Confirm Order"))).toBe(true);
+    // order confirmation screen — not just "didn't throw". It is an EDIT of
+    // the wizard bubble whose id came back out of Postgres (menuMsgId), not
+    // a new message (message budget: one wizard bubble per flow).
+    expect(sink.some((c) => c.method === "editMessageText" && JSON.stringify(c.payload).includes("Confirm Order"))).toBe(true);
+    expect(sink.filter((c) => c.method === "sendMessage")).toHaveLength(0);
 
     await prisma.$disconnect().catch(() => undefined);
   });

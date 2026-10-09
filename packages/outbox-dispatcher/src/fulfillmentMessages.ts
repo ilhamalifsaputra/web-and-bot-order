@@ -5,6 +5,9 @@ import { customerProgressPhase, fulfillmentProviderFor } from "@app/core/orderFu
 import { formatIdrFor } from "@app/core/moneyFormat";
 import { formatUsdt } from "@app/core/formatters";
 import { t } from "@app/core/i18n";
+import { parseAdditionalFields, parseCustomerData } from "@app/core/deliveryFields";
+import { nicknameInputKeys, orderInputConfig } from "@app/core/playerInput";
+import { decryptDeliveredContent } from "@app/core/credentialCrypto";
 import { langCode } from "@app/core/enums";
 import { logger } from "@app/core/logger";
 import { escape } from "./templates";
@@ -34,6 +37,41 @@ const TERMINAL_PHASES: ReadonlySet<string> = new Set(["SUCCESS", "WALLET_CREDITE
 const QR_LIVE_PHASES: ReadonlySet<string> = new Set(["NONE", "PAYMENT_DETECTED", "VERIFYING"]);
 /** Telegram's answer when editMessageText targets a photo/media message. */
 const NO_TEXT_TO_EDIT = /there is no text in the message to edit/i;
+
+/** Receipt lines for a successful Digiflazz game top-up: the Game ID and
+ * Zone/Server ID the buyer typed (read only through the denomination's input
+ * mapping, so no other answer, such as an e-mail or password, is ever shown)
+ * and the full supplier serial number. Values are escaped; a line whose value
+ * is missing is left out. */
+function gameReceiptDetails(order: MessageRow["order"], lang: string): string[] {
+  const lines: string[] = [];
+  const first = order.items[0];
+  if (first) {
+    try {
+      const config = orderInputConfig(first.product, order.inputConfigSnapshot);
+      const keys: { targetKey: string; zoneKey?: string; serverKey?: string } = nicknameInputKeys(parseAdditionalFields(config.additionalFields), config.providerInputMapping);
+      const units = parseCustomerData(order.customerData);
+      const values = (key?: string) => [...new Set(units.map(unit => (key ? unit[key] : undefined)?.trim()).filter((v): v is string => !!v))];
+      for (const [label, key] of [["transaction.game_id", keys.targetKey], ["transaction.zone_id", keys.zoneKey], ["transaction.server_id", keys.serverKey]] as const) {
+        const found = values(key);
+        if (found.length) lines.push(`${escape(t(label, lang))}: <code>${escape(found.join(", "))}</code>`);
+      }
+    } catch (error) {
+      logger.warn({ orderCode: order.orderCode, errorName: error instanceof Error ? error.name : typeof error },
+        "The saved input configuration of a game top-up could not be read, so its Game ID is left out of the status message.");
+    }
+  }
+  if (order.deliveredContent) {
+    try {
+      const sn = decryptDeliveredContent(order.deliveredContent, order.id)?.trim();
+      if (sn) lines.push(`${escape(t("transaction.sn", lang))}: <code>${escape(sn)}</code>`);
+    } catch (error) {
+      logger.warn({ orderCode: order.orderCode, errorName: error instanceof Error ? error.name : typeof error },
+        "The serial number of a delivered game top-up could not be decrypted, so it is left out of the status message; the order itself is unaffected.");
+    }
+  }
+  return lines;
+}
 
 /** One persisted message per order. An initial send without an acknowledgement
  * cannot safely be retried: Telegram has no idempotent send API. */
@@ -223,7 +261,8 @@ export class FulfillmentMessageWorker {
     const shortfall = progress.phase === "UNDERPAID" ? await findUnderpaidReceived(this.db, order.id) : null;
     const expected = progress.phase === "UNDERPAID" ? await this.db.qrisUnderpaidTx.findFirst({ where: { orderId: order.id }, select: { expectedAmount: true } }) : null;
     const text = renderTransactionStatusMessage({ orderCode: order.orderCode, presentation: progress, lang,
-      frame: frame!, summary: summary.trim(), amount: money(walletCredit?.delta ?? order.totalAmount),
+      frame: frame!, summary: summary.trim(),
+      details: progress.phase === "SUCCESS" && progress.transactionType === "GAME_TOPUP" && provider === "DIGIFLAZZ" ? gameReceiptDetails(order, lang) : undefined, amount: money(walletCredit?.delta ?? order.totalAmount),
       balance: walletCredit ? money(walletCredit.balanceAfter) : undefined,
       underpayment: progress.phase === "UNDERPAID" ? { required: money(expected?.expectedAmount ?? order.totalAmount), received: shortfall ? money(shortfall) : null } : null, slow,
     });

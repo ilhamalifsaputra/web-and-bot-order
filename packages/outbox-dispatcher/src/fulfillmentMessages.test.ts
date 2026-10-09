@@ -4,6 +4,7 @@ import {
   addAdminIdToDb, createCategory, createCatalogProduct, createDenomination, createOrderDirect, deliverPaidBybitBscOrder, fulfillManualOrder,
   recordBybitBscConfirmationProgress, recordBybitBscPaymentDetected, wakeFulfillmentMessage, creditOrderToBalance, transitionOrderStatus, adoptTransactionMessage,
 } from "@app/db";
+import { encryptDeliveredContent } from "@app/core/credentialCrypto";
 import { provisionPgTestSchema } from "../../../tests/helpers/pgTestSchema";
 import { FulfillmentMessageWorker, type FulfillmentTelegramApi } from "./fulfillmentMessages";
 
@@ -1048,5 +1049,127 @@ describe("a QR photo is retired to one status text once payment is no longer pen
     await wakeFulfillmentMessage(db, order.id, now); advance(); await w.tick();
     expect(tg.calls).toEqual({ sendMessage: 1, deleteMessage: 1 });
     expect(await rowOf(order.id)).toMatchObject({ state, phase, messageKind: "text", messageId: tg.sent[0]!.id });
+  });
+});
+
+describe("a delivered Digiflazz game top-up shows its Game ID, Zone/Server ID and full SN", () => {
+  const fields = JSON.stringify([
+    { key: "uid", label: { id: "UID", en: "UID" }, type: "text", required: true },
+    { key: "zone", label: { id: "Zone", en: "Zone" }, type: "text", required: true },
+    { key: "password", label: { id: "Password", en: "Password" }, type: "text", required: false },
+  ]);
+  async function gameOrder(opts: { fields?: string; mapping?: string; customerData?: unknown; sn?: string | null; provider?: string; group?: string } = {}) {
+    const order = await seed("en", { provider: opts.provider ?? "DIGIFLAZZ" });
+    const category = await createCategory(db, { name: crypto.randomUUID(), ...(opts.group ? { group: opts.group } : {}) });
+    const product = await createCatalogProduct(db, { categoryId: category.id, name: "Game" });
+    const denomination = await createDenomination(db, {
+      productId: product.id, name: "86 Diamonds", type: "SHARED", durationLabel: "One time", price: "1000",
+      additionalFields: opts.fields ?? fields, providerInputMapping: opts.mapping ?? null,
+    });
+    await db.orderItem.create({ data: { orderId: order.id, productId: denomination.id, quantity: 1, unitPrice: 1000, warrantyDaysSnapshot: 0 } });
+    await db.order.update({ where: { id: order.id }, data: {
+      customerData: JSON.stringify(opts.customerData ?? [{ uid: "12345678", zone: "2201", password: "hunter2-secret" }]),
+      deliveredContent: opts.sn === null ? null : encryptDeliveredContent(opts.sn ?? "SN-OK-123", order.id),
+    } });
+    return order;
+  }
+  async function finish(order: { id: number }) {
+    const tg = telegram(); const w = worker(tg.api);
+    await w.tick(); // the first status message (processing)
+    await db.order.update({ where: { id: order.id }, data: { status: "DELIVERED", deliveredAt: now } });
+    advance(); await w.tick();
+    return tg;
+  }
+
+  it("shows the Game ID, Zone ID and a 200-character SN in full, and never another answer", async () => {
+    const sn = "SN" + "ab12-".repeat(40);
+    expect(sn.length).toBe(202);
+    const tg = await finish(await gameOrder({ sn }));
+    expect(tg.calls).toEqual({ sendMessage: 1, editMessageText: 1 });
+    const text = tg.edits[0]!.text;
+    expect(text).toContain("Game ID: <code>12345678</code>");
+    expect(text).toContain("Zone ID: <code>2201</code>");
+    expect(text).toContain(`SN: <code>${sn}</code>`);
+    expect(text).toContain("86 Diamonds");
+    expect(text).toContain("Top-up completed");
+    expect(text).not.toMatch(/hunter2|password/i);
+    expect(text.length).toBeLessThan(4096);
+  });
+
+  it("follows the denomination's provider input mapping for the Game ID, Zone and Server", async () => {
+    const tg = await finish(await gameOrder({
+      fields: JSON.stringify([
+        { key: "a", label: { id: "A", en: "A" }, type: "text", required: true }, { key: "b", label: { id: "B", en: "B" }, type: "text", required: true },
+        { key: "c", label: { id: "C", en: "C" }, type: "text", required: true },
+      ]),
+      mapping: JSON.stringify({ nickname: { targetKey: "c", zoneKey: "a", serverKey: "b" } }),
+      customerData: [{ a: "Z9", b: "S7", c: "G1" }],
+    }));
+    const text = tg.edits[0]!.text;
+    expect(text).toContain("Game ID: <code>G1</code>");
+    expect(text).toContain("Zone ID: <code>Z9</code>");
+    expect(text).toContain("Server ID: <code>S7</code>");
+  });
+
+  it("omits the zone line when the denomination has no zone field", async () => {
+    const tg = await finish(await gameOrder({ fields: JSON.stringify([{ key: "uid", label: { id: "UID", en: "UID" }, type: "text", required: true }]), customerData: [{ uid: "777", zone: "9999" }] }));
+    expect(tg.edits[0]!.text).toContain("Game ID: <code>777</code>");
+    expect(tg.edits[0]!.text).not.toMatch(/Zone ID|Server ID|9999/);
+  });
+
+  it("escapes HTML in the typed values", async () => {
+    const tg = await finish(await gameOrder({ customerData: [{ uid: "<b>1</b>", zone: "a&b" }] }));
+    expect(tg.edits[0]!.text).toContain("<code>&lt;b&gt;1&lt;/b&gt;</code>");
+    expect(tg.edits[0]!.text).toContain("<code>a&amp;b</code>");
+  });
+
+  it("leaves the SN line out, without failing, when the delivered content cannot be decrypted", async () => {
+    const order = await gameOrder();
+    // A real envelope whose auth tag was tampered with: decryption throws.
+    const envelope = JSON.parse(encryptDeliveredContent("not-a-valid-envelope", order.id)) as { authTag: string };
+    envelope.authTag = Buffer.alloc(16).toString("base64");
+    await db.order.update({ where: { id: order.id }, data: { deliveredContent: JSON.stringify(envelope) } });
+    const tg = await finish(order);
+    expect(tg.calls).toEqual({ sendMessage: 1, editMessageText: 1 });
+    expect(tg.edits[0]!.text).toContain("Game ID: <code>12345678</code>");
+    expect(tg.edits[0]!.text).not.toMatch(/SN:|not-a-valid/);
+    expect(tg.edits[0]!.text).toContain("Top-up completed");
+  });
+
+  it("shows no SN line when no serial number was stored", async () => {
+    const tg = await finish(await gameOrder({ sn: null }));
+    expect(tg.edits[0]!.text).toContain("Game ID:");
+    expect(tg.edits[0]!.text).not.toContain("SN:");
+  });
+
+  it("shows no receipt block for a manual game order, whose delivered content is admin-typed", async () => {
+    const order = await gameOrder({ provider: "MANUAL", group: "GAME_TOPUP" });
+    await db.order.update({ where: { id: order.id }, data: { status: "DELIVERED", deliveredAt: now } });
+    const tg = telegram();
+    await worker(tg.api).tick();
+    expect(tg.calls).toEqual({ sendMessage: 1 });
+    expect(tg.sent[0]!.text).toContain("Top-up completed");
+    expect(tg.sent[0]!.text).not.toMatch(/Game ID|SN:|12345678/);
+  });
+
+  it("is unaffected for a premium app delivered through Digiflazz", async () => {
+    const tg = await finish(await gameOrder({ group: "PREMIUM_APPS" }));
+    expect(tg.edits[0]!.text).not.toMatch(/Game ID|SN:|12345678/);
+  });
+
+  it.each([
+    ["FAILED", { status: "FAILED" }],
+    ["REVIEW", { digiflazzStatus: "failed", digiflazzFailureDetail: "rc 53 supplier stack trace" }],
+  ])("stays generic and never says completed when the top-up is %s", async (_name, patch) => {
+    const order = await gameOrder();
+    const tg = telegram(); const w = worker(tg.api);
+    await w.tick();
+    await db.order.update({ where: { id: order.id }, data: patch });
+    advance(); await w.tick();
+    expect(tg.calls).toEqual({ sendMessage: 1, editMessageText: 1 });
+    const text = tg.edits[0]!.text;
+    expect(text).not.toMatch(/Top-up completed|delivered successfully|Game ID|SN:|12345678|rc 53|stack/i);
+    expect(text).toContain("contact support");
+    expect(buttons(tg.edits[0]!.markup)).toContain("v1:support:open");
   });
 });

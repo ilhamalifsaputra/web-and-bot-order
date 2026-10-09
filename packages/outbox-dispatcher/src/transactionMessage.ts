@@ -14,6 +14,8 @@ export function renderTransactionStatusMessage(input: {
   lang: string;
   frame: string;
   summary?: string;
+  /** Already-escaped receipt lines (game ID, zone/server, SN) shown under the items. */
+  details?: string[];
   amount: string;
   balance?: string;
   underpayment?: { required: string; received: string | null } | null;
@@ -28,6 +30,7 @@ export function renderTransactionStatusMessage(input: {
     `${icon} <b>${escape(t(p.titleKey, lang))}</b>`, "",
     ...(wallet ? [escape(t("transaction.wallet", lang)), `${escape(t("transaction.receipt", lang))}: ${reference}`] : [`${escape(t("transaction.order", lang))} ${reference}`]),
     ...(input.summary ? ["", input.summary] : []),
+    ...(input.details?.length ? ["", ...input.details] : []),
     "", `${escape(t("transaction.amount", lang))}: ${escape(input.amount)}`,
     ...(input.balance ? [`${escape(t("transaction.balance", lang))}: ${escape(input.balance)}`] : []),
   ];

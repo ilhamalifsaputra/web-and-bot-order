@@ -15,7 +15,7 @@ export const XENDIT_CALLBACK_TOKEN_KEY = "xendit_callback_token";
 export const XENDIT_QRIS_ENABLED_KEY = "xendit_qris_enabled";
 export const XENDIT_CARD_ENABLED_KEY = "xendit_card_enabled";
 
-const API_BASE = process.env.XENDIT_API_BASE ?? "https://api.xendit.co";
+const API_BASE = "https://api.xendit.co";
 
 export type XenditCreds = {
   secretKey: string;

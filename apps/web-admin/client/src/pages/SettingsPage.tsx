@@ -371,7 +371,7 @@ function validateField(key: string, value: string): string | null {
   if ((key === "xendit_qris_enabled" || key === "xendit_card_enabled") && !["true", "false"].includes(value)) {
     return 'Must be "true" or "false".';
   }
-  if (key === "digiflazz_markup_type" &&!["percent", "flat"].includes(value)) {
+  if (key === "digiflazz_markup_type" && !["percent", "flat"].includes(value)) {
     return 'Must be "percent" or "flat".';
   }
   if (key === "digiflazz_markup_value") {

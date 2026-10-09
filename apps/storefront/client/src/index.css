@@ -93,6 +93,9 @@
   --color-rust-tint: #fde7e7;
   --color-plum: #6d28d9;
   --color-plum-tint: #f1ebfe;
+  --color-brand-visa: #1a1f71;
+  --color-brand-mastercard: #eb001b;
+  --color-brand-jcb: #0b4ea2;
   --font-display: Outfit, system-ui, sans-serif;
   --font-sans: Manrope, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, monospace;

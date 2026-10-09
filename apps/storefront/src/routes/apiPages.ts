@@ -12,7 +12,12 @@ import type { FastifyPluginAsync } from "fastify";
 import { config } from "@app/core/config";
 import { localize } from "@app/core/datetime";
 import { UserRole } from "@app/core/enums";
-import { prisma, getSetting, hasActiveFlashSale } from "@app/db";
+import {
+  prisma,
+  getSetting,
+  hasActiveFlashSale,
+  getPayMethodDisplayFlags,
+} from "@app/db";
 import { optionalCustomer } from "../plugins/auth";
 import { requestLang, requestCurrency, resolveDisplayCurrency, readGuestCart, resolveBotUsername } from "../shop";
 import { getUsdIdrRate } from "../pricing";
@@ -33,7 +38,24 @@ const apiPagesRoutes: FastifyPluginAsync = async (app) => {
   app.get("/pages/context", async (req, reply) => {
     reply.header("Cache-Control", "private, no-store");
     const customer = await optionalCustomer(req);
-    const [fxRate, shopName, shopTagline, cartCount, favicon, logo, botUsername, analyticsId, flashOn, waNumber] = await Promise.all([
+    const [
+      fxRate,
+      shopName,
+      shopTagline,
+      cartCount,
+      favicon,
+      logo,
+      botUsername,
+      analyticsId,
+      flashOn,
+      waNumber,
+      businessLegalName,
+      businessAddress,
+      businessPhone,
+      businessEmail,
+      businessHours,
+      payMethods,
+    ] = await Promise.all([
       getUsdIdrRate(prisma),
       getSetting(prisma, "shop_name"),
       getSetting(prisma, "shop_tagline"),
@@ -51,7 +73,17 @@ const apiPagesRoutes: FastifyPluginAsync = async (app) => {
       // section already reads (see pageData.ts's homePageData), surfaced
       // here too since the footer renders on every page, not just Home.
       getSetting(prisma, "support_whatsapp"),
+      // Legal business identity (owner-edited in the admin Branding page) for
+      // the footer / contact page; null when the owner has left a field empty.
+      getSetting(prisma, "business_legal_name"),
+      getSetting(prisma, "business_address"),
+      getSetting(prisma, "business_phone"),
+      getSetting(prisma, "business_email"),
+      getSetting(prisma, "business_hours"),
+      // Presence-only (no decryption): a corrupt secret row must not 500 every page.
+      getPayMethodDisplayFlags(prisma),
     ]);
+    const orNull = (v: string | null): string | null => (v ?? "").trim() || null;
     return reply.send({
       lang: requestLang(req),
       fx: fxRate ? fxRate.toString() : null,
@@ -93,6 +125,16 @@ const apiPagesRoutes: FastifyPluginAsync = async (app) => {
       // caches this context for 30s, so the extra query is per-visit, not
       // per-navigation.
       flash_active: flashOn,
+      business: {
+        legal_name: orNull(businessLegalName),
+        address: orNull(businessAddress),
+        phone: orNull(businessPhone),
+        email: orNull(businessEmail),
+        hours: orNull(businessHours),
+      },
+      // Display flags for the footer's payment-method logos only; checkout
+      // availability is decided elsewhere and is untouched by these.
+      pay_methods: payMethods,
     });
   });
 

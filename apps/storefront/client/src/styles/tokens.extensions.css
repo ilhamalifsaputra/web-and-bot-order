@@ -102,4 +102,14 @@
      resize this container, update BOTH copies (this one and that @theme
      line). */
   --gg-container-wide: 90rem;
+
+  /* --gg-brand-visa / -mastercard / -jcb — the card-scheme marks in the
+     footer's PaymentMarks ONLY. These are the schemes' official brand colours
+     and are deliberately not part of the shop palette.
+     Consuming utilities: `text-brand-visa` etc., resolved from the literal
+     mirrors `--color-brand-*` in the `@theme` block of ../index.css. If you
+     change one, update BOTH copies. */
+  --gg-brand-visa: #1a1f71;
+  --gg-brand-mastercard: #eb001b;
+  --gg-brand-jcb: #0b4ea2;
 }

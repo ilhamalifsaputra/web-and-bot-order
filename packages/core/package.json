@@ -44,6 +44,7 @@
     "./delivery": "./src/delivery.ts",
     "./reviews": "./src/reviews.ts",
     "./payments/tokopay": "./src/payments/tokopay.ts",
+    "./payments/xendit": "./src/payments/xendit.ts",
     "./payments/paydisini": "./src/payments/paydisini.ts",
     "./payments/nowpayments": "./src/payments/nowpayments.ts",
     "./payments/ledgerKey": "./src/payments/ledgerKey.ts",

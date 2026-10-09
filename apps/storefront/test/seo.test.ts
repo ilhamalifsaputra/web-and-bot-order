@@ -268,6 +268,59 @@ describe("metadata for search results and social previews", () => {
     }
   });
 
+  it("renders /contact for crawlers with only the business rows the owner filled in", async () => {
+    // Nothing configured: heading, intro and the help link only.
+    const bare = await app.inject({ method: "GET", url: "/contact" });
+    expect(bare.statusCode).toBe(200);
+    expect(bare.body).not.toContain("noindex");
+    expect(bare.body).toContain('<link rel="canonical" href="https://shop.test.invalid/contact"');
+    const bareShell = /<div id="seo-shell">([\s\S]*?)<\/div>$/m.exec(bare.body)?.[1] ?? bare.body;
+    expect(bareShell).toMatch(/<h1>/);
+    expect(bareShell).not.toContain("<dl>");
+
+    await setSetting(prisma, "business_legal_name", "  PT Contoh <Digital>  ");
+    await setSetting(prisma, "business_address", "Jl. Mawar 1\nJakarta");
+    await setSetting(prisma, "business_phone", "   ");
+    await setSetting(prisma, "business_email", "cs@contoh.id");
+    try {
+      const res = await app.inject({ method: "GET", url: "/contact" });
+      expect(res.body).toContain("<dl>");
+      // Trimmed and HTML-escaped, like every other crawler-visible value.
+      expect(res.body).toContain("<dd>PT Contoh &lt;Digital&gt;</dd>");
+      expect(res.body).toContain("<dd>Jl. Mawar 1<br>Jakarta</dd>");
+      expect(res.body).toContain("<dd>cs@contoh.id</dd>");
+      // A whitespace-only setting counts as absent, matching GET /pages/context.
+      expect(res.body).not.toMatch(/<dt>(Phone|Telepon)<\/dt>/);
+    } finally {
+      for (const k of ["business_legal_name", "business_address", "business_phone", "business_email"]) {
+        await setSetting(prisma, k, "");
+      }
+    }
+  });
+
+  it("substitutes {company} on the policy pages: legal name when set, shop name otherwise", async () => {
+    const operated = (body: string) => /<p>([^<]*is operated by [^<]*)<\/p>/.exec(body)?.[1] ?? "";
+    const before = await app.inject({ method: "GET", url: "/terms" });
+    const fallback = operated(before.body);
+    expect(fallback).not.toBe("");
+    expect(fallback).not.toContain("{company}");
+    expect(before.body).not.toContain("{company}");
+    // Block counts mirror the React pages: terms has 10 blocks + the intro.
+    expect(before.body.match(/<h2>/g)?.length).toBe(10);
+
+    await setSetting(prisma, "business_legal_name", "  PT Contoh <Digital>  ");
+    try {
+      for (const url of ["/terms", "/about", "/privacy"]) {
+        const res = await app.inject({ method: "GET", url });
+        expect(res.body, url).toContain("PT Contoh &lt;Digital&gt;");
+        expect(res.body, url).not.toContain("{company}");
+      }
+      expect(operated((await app.inject({ method: "GET", url: "/terms" })).body)).not.toBe(fallback);
+    } finally {
+      await setSetting(prisma, "business_legal_name", "");
+    }
+  });
+
   it("puts the product's detail blocks in the crawler shell and its structured data", async () => {
     const res = await app.inject({ method: "GET", url: `/p/${activeProductSlug}` });
     const shell = /<div id="seo-shell">([\s\S]*?)<\/div>/.exec(res.body)?.[1] ?? "";
@@ -282,7 +335,7 @@ describe("metadata for search results and social previews", () => {
 
   it("lists the home and informational pages in the sitemap", async () => {
     const res = await app.inject({ method: "GET", url: "/sitemap.xml" });
-    for (const p of ["/", "/about", "/how-to-order", "/terms", "/privacy", "/refund"]) {
+    for (const p of ["/", "/about", "/contact", "/how-to-order", "/terms", "/privacy", "/refund"]) {
       expect(res.body, `sitemap missing ${p}`).toContain(`<loc>https://shop.test.invalid${p}</loc>`);
     }
   });

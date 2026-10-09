@@ -161,6 +161,37 @@ describe("SettingsPage", () => {
     expect(document.getElementById("settings-other")).toBeNull();
   });
 
+  it("renders a Xendit gateway group with its fields, help text and the not-yet-in-checkout note", async () => {
+    const f = (key: string, label: string, secret: boolean) => ({ key, label, secret, hasValue: false, value: "", needsRestart: false });
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({
+        ...SETTINGS_DATA,
+        fields: [
+          ...SETTINGS_DATA.fields,
+          f("xendit_secret_key", "Xendit secret key", true),
+          f("xendit_callback_token", "Xendit callback (webhook verification) token", true),
+          f("xendit_qris_enabled", "Xendit QRIS enabled", false),
+          f("xendit_card_enabled", "Xendit card payments enabled", false),
+        ],
+        payMethodState: { ...SETTINGS_DATA.payMethodState, xendit: { enabled: true, configured: false } },
+      }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+
+    render(<SettingsPage />, { wrapper: Wrapper });
+
+    await waitFor(() => expect(document.getElementById("settings-pay-xendit")).not.toBeNull());
+    const card = document.getElementById("settings-pay-xendit") as HTMLElement;
+    expect(within(card).getByText("Xendit secret key")).toBeInTheDocument();
+    expect(within(card).getByText("Xendit callback (webhook verification) token")).toBeInTheDocument();
+    expect(within(card).getByText("Xendit QRIS enabled")).toBeInTheDocument();
+    expect(within(card).getByText("Xendit card payments enabled")).toBeInTheDocument();
+    expect(within(card).getByText(/Settings → API Keys/)).toBeInTheDocument();
+    expect(within(card).getByText(/Settings → Webhooks/)).toBeInTheDocument();
+    expect(within(card).getByText("Switch QRIS/Kartu sudah mengatur logo metode pembayaran di footer toko; checkout Xendit menyusul.")).toBeInTheDocument();
+    // None of the Xendit keys leaks into "Other Settings".
+    expect(document.getElementById("settings-other")).toBeNull();
+  });
+
   it("shows loading state while fetching", () => {
     vi.spyOn(globalThis, "fetch").mockReturnValueOnce(new Promise(() => {}));
     render(<SettingsPage />, { wrapper: Wrapper });

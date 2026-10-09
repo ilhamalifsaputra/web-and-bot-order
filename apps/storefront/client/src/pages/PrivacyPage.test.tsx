@@ -5,6 +5,7 @@ import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import PrivacyPage from "./PrivacyPage";
 import AboutPage from "./AboutPage";
+import TermsPage from "./TermsPage";
 import { apiGet } from "../api/client";
 import type { ShopContext } from "../api/types";
 
@@ -77,6 +78,51 @@ describe("informational pages", () => {
     renderPage(<AboutPage />, context({ shop_name: "Trustance" }));
     expect(await screen.findByText(/Trustance sells digital products/)).toBeInTheDocument();
     expect(screen.queryByText(/\{shop\}/)).not.toBeInTheDocument();
+  });
+
+  it("fills {company} with the legal name when set and falls back to the shop name", async () => {
+    const withLegal = renderPage(
+      <TermsPage />,
+      context({
+        shop_name: "Trustance",
+        business: { legal_name: "PT Contoh Usaha", address: null, phone: null, email: null, hours: null },
+      }),
+    );
+    expect(await screen.findByText(/Trustance is operated by PT Contoh Usaha/)).toBeInTheDocument();
+    expect(screen.queryByText(/\{company\}/)).not.toBeInTheDocument();
+    withLegal.unmount();
+
+    renderPage(<AboutPage />, context({ shop_name: "Trustance" }));
+    expect(await screen.findAllByText(/Trustance is operated by Trustance/)).not.toHaveLength(0);
+    expect(screen.queryByText(/\{company\}/)).not.toBeInTheDocument();
+  });
+
+  it("pairs each Terms heading with its own body (delivery vs cancellation)", async () => {
+    renderPage(<TermsPage />, context());
+    const bodyOf = async (name: string) => {
+      const heading = await screen.findByRole("heading", { name });
+      return heading.closest("section")?.textContent ?? "";
+    };
+    const delivery = await bodyOf("Delivery of digital products");
+    expect(delivery).toContain("depending on the server and the provider");
+    expect(delivery).not.toContain("can be cancelled");
+    const cancel = await bodyOf("Cancelling an order");
+    expect(cancel).toContain("An order can be cancelled as long as it hasn't been paid.");
+    expect(cancel).not.toContain("depending on the server");
+  });
+
+  it("names the legal entity as data controller on the privacy page", async () => {
+    renderPage(
+      <PrivacyPage />,
+      context({
+        shop_name: "Trustance",
+        business: { legal_name: "PT Contoh Usaha", address: null, phone: null, email: null, hours: null },
+      }),
+    );
+    expect(
+      await screen.findByText(/PT Contoh Usaha, which runs Trustance, is the controller/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/\{company\}/)).not.toBeInTheDocument();
   });
 
   it("hides the analytics section unless the shop actually loads analytics", async () => {

@@ -25,7 +25,9 @@ import {
   getNowpaymentsCreds,
   getDigiflazzCreds,
   getKokinpayCreds,
+  getXenditCreds,
 } from "@app/db";
+import { checkXenditConnection } from "@app/core/payments/xendit";
 import { checkTransaction as tokopayCheckTransaction } from "@app/core/payments/tokopay";
 import { checkTransaction as paydisiniCheckTransaction } from "@app/core/payments/paydisini";
 import { getPaymentStatus as nowpaymentsGetStatus } from "@app/core/payments/nowpayments";
@@ -241,12 +243,34 @@ export async function testKokinpay(): Promise<ConnectionTestResult> {
   }
 }
 
+/** Xendit's balance endpoint is a real authenticated read, so this gives a
+ * reliable pass/fail (unlike TokoPay/PayDisini) and also reports Test vs Live
+ * mode, which the client cannot work out itself because the key is masked. */
+export async function testXendit(): Promise<ConnectionTestResult> {
+  const creds = await getXenditCreds(prisma);
+  if (!creds) return { ok: false, detail: "Xendit secret key and callback token are not both set (or Xendit is switched off)." };
+  const result = await checkXenditConnection(creds.secretKey);
+  if (result.ok) {
+    const mode = result.mode === "test" ? "mode Test" : result.mode === "live" ? "mode Live" : "mode tidak dikenali";
+    return { ok: true, detail: `Terhubung — ${mode}.` };
+  }
+  switch (result.reason) {
+    case "unauthorized":
+      return { ok: false, detail: "Xendit rejected the secret key. Check that it is correct and has the Money-In write permission." };
+    case "http_error":
+      return { ok: false, detail: `Xendit answered with an unexpected error (HTTP ${result.status ?? "?"}). Try again shortly or check Xendit's status page.` };
+    default:
+      return { ok: false, detail: "Could not reach Xendit. Check the server's network connection and try again." };
+  }
+}
+
 /** Method key (as used in PAYMENT_METHODS / PAY_CRED_GROUPS, or — for
  * Digiflazz/KokinPay — the supplier equivalent) → tester. "bybit_bsc"
  * intentionally reuses testBybit — it shares the same account credentials as
  * "bybit", so there is nothing separate to verify here. */
 export const CONNECTION_TESTS: Record<string, () => Promise<ConnectionTestResult>> = {
   tokopay: testTokopay,
+  xendit: testXendit,
   paydisini: testPaydisini,
   nowpayments: testNowpayments,
   bybit: testBybit,

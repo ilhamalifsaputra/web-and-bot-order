@@ -163,7 +163,7 @@ const KNOWN_PATHS = new RegExp(
     "|/wallet/topup|/wallet/topup/[^/]+/pay" +
     "|/account|/account/orders|/account/orders/[^/]+|/account/referral" +
     "|/account/reviews|/account/support|/account/support/\\d+|/account/settings|/help" +
-    "|/about|/how-to-order|/terms|/privacy|/refund)$",
+    "|/about|/contact|/how-to-order|/terms|/privacy|/refund)$",
 );
 
 /**
@@ -175,12 +175,28 @@ const KNOWN_PATHS = new RegExp(
  * they exist. Keep the block counts in step with the React pages.
  */
 const STATIC_PAGES: Record<string, { prefix: string; blocks: number }> = {
-  "/about": { prefix: "about", blocks: 4 },
+  "/about": { prefix: "about", blocks: 5 },
   "/how-to-order": { prefix: "hto", blocks: 5 },
-  "/terms": { prefix: "terms", blocks: 5 },
-  "/privacy": { prefix: "privacy", blocks: 5 },
+  "/terms": { prefix: "terms", blocks: 10 },
+  "/privacy": { prefix: "privacy", blocks: 7 },
   "/refund": { prefix: "refund", blocks: 5 },
 };
+
+/** Owner-set business setting, trimmed; "" when unset (same rule as the
+ *  `business` block of GET /pages/context and the /contact branch). */
+async function readBusinessSetting(key: string): Promise<string> {
+  return ((await getSetting(prisma, key)) ?? "").trim();
+}
+
+/**
+ * Placeholder values for the policy copy. `{company}` is the owner-set legal
+ * name, falling back to the shop name — the SAME fallback the React pages use
+ * (client/src/lib/company.ts), so crawler text equals human text.
+ */
+async function staticPageArgs(shopName: string): Promise<{ shop: string; company: string }> {
+  const legalName = await readBusinessSetting("business_legal_name");
+  return { shop: shopName, company: legalName || shopName };
+}
 
 interface HeadInfo {
   title: string;
@@ -523,10 +539,55 @@ async function headInfo(
       status: 200,
     };
   }
+  if (path === "/contact") {
+    // Mirrors ContactPage.tsx: same title/intro keys, same owner-set business
+    // settings, same trim-and-drop-empty rule as apiPages.ts's `business`
+    // block, same row order, and the same help card. The WhatsApp/Telegram
+    // buttons are left out (crawler text may be a subset of the page, never
+    // more).
+    const read = readBusinessSetting;
+    const [legalName, address, phone, email, hours] = await Promise.all([
+      read("business_legal_name"),
+      read("business_address"),
+      read("business_phone"),
+      read("business_email"),
+      read("business_hours"),
+    ]);
+    const heading = t("web.contact_page_title", lang);
+    const intro = t("web.contact_intro", lang);
+    const rows: Array<[string, string]> = [
+      ["web.contact_legal_name", legalName],
+      ["web.contact_address", address],
+      ["web.contact_phone", phone],
+      ["web.contact_email", email],
+      ["web.contact_hours_label", hours],
+    ];
+    const details = rows
+      .filter(([, value]) => value)
+      .map(([key, value]) => `<dt>${esc(t(key, lang))}</dt><dd>${esc(value).replace(/\r?\n/g, "<br>")}</dd>`)
+      .join("");
+    return {
+      title: `${heading} — ${shopName}`,
+      meta:
+        `<meta name="description" content="${esc(intro.slice(0, 160))}">` +
+        canonicalLink(path) +
+        socialMeta({ title: heading, description: intro, path, lang, shopName }),
+      body: seoShell(
+        `<nav><a href="/">${esc(shopName)}</a></nav>` +
+          `<h1>${esc(heading)}</h1>` +
+          `<p>${esc(intro)}</p>` +
+          (details ? `<dl>${details}</dl>` : "") +
+          `<h2>${esc(t("web.static_help_title", lang))}</h2>` +
+          `<p>${esc(t("web.static_help_body", lang))}</p>` +
+          `<a href="/help">${esc(t("web.static_help_cta", lang))}</a>`,
+      ),
+      status: 200,
+    };
+  }
   const staticPage = STATIC_PAGES[path];
   if (staticPage) {
     const { prefix, blocks } = staticPage;
-    const args = { shop: shopName };
+    const args = await staticPageArgs(shopName);
     const heading = t(`web.${prefix}_title`, lang);
     const intro = t(`web.${prefix}_intro`, lang, args);
     // The analytics section only exists on shops that load analytics — same

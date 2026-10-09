@@ -2,17 +2,18 @@ import StaticPage from "../components/shop/StaticPage";
 import Callout from "../components/shop/Callout";
 import { useShopContext } from "../components/Layout";
 import { t } from "../lib/i18n";
+import { companyName } from "../lib/company";
 
 export default function PrivacyPage() {
   const { data: ctx } = useShopContext();
   return (
     <StaticPage
       prefix="privacy"
-      blocks={5}
-      args={{ shop: ctx?.shop_name ?? "" }}
-      // Block 4 (your rights / how to reach us) stays a warning Callout — same
+      blocks={7}
+      args={{ shop: ctx?.shop_name ?? "", company: companyName(ctx) }}
+      // Block 6 (your order credentials) stays a warning Callout — same
       // wrapper as the timeline layout, just no numbered badge.
-      steps={[{}, {}, {}, { callout: "warning" }, {}]}
+      steps={[{}, {}, {}, {}, {}, { callout: "warning" }, {}]}
     >
       {/* Only shown when this shop actually has `web_analytics_id` set —
           a privacy policy that claims tracking a shop doesn't do is as wrong

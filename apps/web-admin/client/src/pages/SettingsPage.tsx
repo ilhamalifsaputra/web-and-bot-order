@@ -137,6 +137,11 @@ const PAY_CRED_GROUPS = [
     fieldKeys: ["tokopay_merchant_id", "tokopay_secret", "tokopay_min_amount"],
   },
   {
+    methodKey: "xendit",
+    label: "Xendit",
+    fieldKeys: ["xendit_secret_key", "xendit_callback_token", "xendit_qris_enabled", "xendit_card_enabled"],
+  },
+  {
     methodKey: "paydisini",
     label: "PayDisini",
     fieldKeys: [
@@ -183,8 +188,14 @@ const PAY_CRED_GROUPS = [
   },
 ] as const;
 
+// Short per-gateway note shown under the card's credential fields.
+const GATEWAY_NOTES: Record<string, string> = {
+  xendit: "Switch QRIS/Kartu sudah mengatur logo metode pembayaran di footer toko; checkout Xendit menyusul.",
+};
+
 const PAY_CRED_KEYS = new Set([
   "tokopay_merchant_id", "tokopay_secret", "tokopay_enabled", "tokopay_min_amount",
+  "xendit_secret_key", "xendit_callback_token", "xendit_enabled", "xendit_qris_enabled", "xendit_card_enabled",
   "paydisini_userkey", "paydisini_apikey", "paydisini_enabled", "paydisini_default_channel", "paydisini_min_amount",
   "nowpayments_api_key", "nowpayments_ipn_secret", "nowpayments_enabled", "nowpayments_pay_currency", "nowpayments_min_amount",
   "bybit_uid", "bybit_api_key", "bybit_api_secret", "bybit_enabled", "bybit_min_amount",
@@ -255,6 +266,12 @@ const FIELD_DESCRIPTIONS: Record<string, string> = {
   tokopay_secret: "Signs requests to TokoPay — never shown once saved.",
   tokopay_min_amount:
     "Minimum amount customers can pay via TokoPay — an order total or a wallet top-up. Raising it also raises the minimum the top-up forms advertise.",
+  xendit_secret_key:
+    "From Xendit Dashboard → Settings → API Keys. The key needs Money-In write permission. Starts with xnd_development_ (test) or xnd_production_ (live) — never shown once saved; Test Connection reports which mode it is.",
+  xendit_callback_token:
+    'From Xendit Dashboard → Settings → Webhooks ("Verification token"). Used to confirm payment notifications really came from Xendit — never shown once saved.',
+  xendit_qris_enabled: 'Type "true" or "false" — show the QRIS logo in the storefront footer now; QRIS checkout through Xendit follows once the payment flow is live.',
+  xendit_card_enabled: 'Type "true" or "false" — show the card logos in the storefront footer now; card checkout through Xendit follows once the payment flow is live.',
   paydisini_userkey: "Your PayDisini account's user key.",
   paydisini_apikey: "Authenticates requests to PayDisini — never shown once saved.",
   paydisini_default_channel: "Default PayDisini payment channel offered at checkout.",
@@ -346,6 +363,12 @@ function validateField(key: string, value: string): string | null {
     return "Keep it under 500 characters.";
   }
   if (key === "digiflazz_enabled" && !["true", "false"].includes(value.toLowerCase())) {
+    return 'Must be "true" or "false".';
+  }
+  if (key === "xendit_secret_key" && !value.startsWith("xnd_")) {
+    return 'Xendit secret keys start with "xnd_".';
+  }
+  if ((key === "xendit_qris_enabled" || key === "xendit_card_enabled") && !["true", "false"].includes(value)) {
     return 'Must be "true" or "false".';
   }
   if (key === "digiflazz_markup_type" && !["percent", "flat"].includes(value)) {
@@ -703,6 +726,11 @@ function GatewayCard({
               onStatusChange={onStatusChange}
             />
           ))}
+        </CardContent>
+      )}
+      {GATEWAY_NOTES[methodKey] && (
+        <CardContent className="pt-0">
+          <p className="text-xs text-ink-soft">{GATEWAY_NOTES[methodKey]}</p>
         </CardContent>
       )}
       <CardContent className="pt-0">

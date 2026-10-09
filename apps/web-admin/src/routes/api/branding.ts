@@ -23,7 +23,23 @@ const TEXT_KEYS = new Set([
   "email_reset_password_title",
   "email_reset_password_subtitle",
   "email_reset_password_message",
+  // Legal business identity shown on the storefront footer/contact page
+  // (required for payment-gateway merchant review). Never hard-coded.
+  "business_legal_name",
+  "business_address",
+  "business_phone",
+  "business_email",
+  "business_hours",
 ]);
+
+const BUSINESS_KEYS = new Set([
+  "business_legal_name",
+  "business_address",
+  "business_phone",
+  "business_email",
+  "business_hours",
+]);
+const BUSINESS_PHONE_RE = /^[0-9 +\-()]+$/;
 
 // Accent color for the owner-email design system's buttons/badges/header rule.
 const BRAND_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
@@ -41,6 +57,11 @@ const TEXT_KEY_MAX_LENGTH: Record<string, number> = {
   email_reset_password_title: 150,
   email_reset_password_subtitle: 200,
   email_reset_password_message: 1000,
+  business_legal_name: 120,
+  business_address: 300,
+  business_phone: 30,
+  business_email: 120,
+  business_hours: 120,
 };
 
 export default async function brandingApiRoutes(app: FastifyInstance): Promise<void> {
@@ -63,6 +84,11 @@ export default async function brandingApiRoutes(app: FastifyInstance): Promise<v
       emailResetPasswordTitle,
       emailResetPasswordSubtitle,
       emailResetPasswordMessage,
+      businessLegalName,
+      businessAddress,
+      businessPhone,
+      businessEmail,
+      businessHours,
     ] = await Promise.all([
       getSetting(prisma, "web_favicon_url"),
       getSetting(prisma, "web_logo_url"),
@@ -81,6 +107,11 @@ export default async function brandingApiRoutes(app: FastifyInstance): Promise<v
       getSetting(prisma, "email_reset_password_title"),
       getSetting(prisma, "email_reset_password_subtitle"),
       getSetting(prisma, "email_reset_password_message"),
+      getSetting(prisma, "business_legal_name"),
+      getSetting(prisma, "business_address"),
+      getSetting(prisma, "business_phone"),
+      getSetting(prisma, "business_email"),
+      getSetting(prisma, "business_hours"),
     ]);
     return reply.send({
       faviconUrl: favicon ?? "",
@@ -101,6 +132,11 @@ export default async function brandingApiRoutes(app: FastifyInstance): Promise<v
       emailResetPasswordTitle: emailResetPasswordTitle ?? "",
       emailResetPasswordSubtitle: emailResetPasswordSubtitle ?? "",
       emailResetPasswordMessage: emailResetPasswordMessage ?? "",
+      businessLegalName: businessLegalName ?? "",
+      businessAddress: businessAddress ?? "",
+      businessPhone: businessPhone ?? "",
+      businessEmail: businessEmail ?? "",
+      businessHours: businessHours ?? "",
     });
   });
 
@@ -125,9 +161,26 @@ export default async function brandingApiRoutes(app: FastifyInstance): Promise<v
     if (key === "email_support_address" && value !== "" && !OWNER_EMAIL_RE.test(value)) {
       return reply.code(400).send({ error: "That doesn't look like a valid email address, e.g. support@example.com." });
     }
+    if (key === "business_email" && value !== "" && !OWNER_EMAIL_RE.test(value)) {
+      return reply.code(400).send({ error: "That doesn't look like a valid email address, e.g. cs@example.com." });
+    }
+    if (key === "business_phone" && value !== "" && !BUSINESS_PHONE_RE.test(value)) {
+      return reply.code(400).send({ error: "Phone numbers may only contain digits, spaces, +, -, ( and )." });
+    }
     const maxLength = TEXT_KEY_MAX_LENGTH[key];
     if (maxLength !== undefined && value.length > maxLength) {
       return reply.code(400).send({ error: `Keep this under ${maxLength} characters (currently ${value.length}).` });
+    }
+
+    if (BUSINESS_KEYS.has(key) && value === "") {
+      await deleteSetting(prisma, key);
+      await logAdminAction(prisma, {
+        adminId: req.admin!.userId,
+        action: "setting_clear",
+        targetType: "setting",
+        details: `Cleared setting "${key}".`,
+      });
+      return reply.send({ ok: true });
     }
 
     await setSetting(prisma, key, value);

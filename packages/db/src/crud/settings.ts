@@ -101,6 +101,7 @@ export function __clearSettingsCacheForTests(db: Db): void {
  * encrypted blob instead of a real token. */
 export const ENCRYPTED_SETTING_KEYS = new Set([
   "tokopay_secret", "paydisini_apikey",
+  "xendit_secret_key", "xendit_callback_token",
   "bybit_api_key", "bybit_api_secret",
   "binance_api_key", "binance_api_secret",
   "nowpayments_api_key", "nowpayments_ipn_secret",

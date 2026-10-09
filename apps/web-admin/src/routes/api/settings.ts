@@ -91,6 +91,11 @@ const EDITABLE: Record<string, string> = {
   tokopay_secret: "TokoPay secret key",
   tokopay_enabled: "TokoPay enabled",
   tokopay_min_amount: "TokoPay min amount (IDR)",
+  xendit_enabled: "Xendit enabled",
+  xendit_secret_key: "Xendit secret key",
+  xendit_callback_token: "Xendit callback (webhook verification) token",
+  xendit_qris_enabled: "Xendit QRIS enabled",
+  xendit_card_enabled: "Xendit card payments enabled",
   paydisini_userkey: "PayDisini user key",
   paydisini_apikey: "PayDisini API key",
   paydisini_enabled: "PayDisini enabled",
@@ -163,6 +168,7 @@ const SECRET_KEYS = new Set([
   "binance_api_key", "binance_api_secret", "nowpayments_api_key", "nowpayments_ipn_secret", "bscscan_api_key",
   "smtp_pass", "digiflazz_api_key", DIGIFLAZZ_WEBHOOK_SECRET_KEY, "kokinpay_api_key", "coingecko_api_key",
   "paydisini_userkey", "tokopay_merchant_id", "bybit_uid",
+  "xendit_secret_key", "xendit_callback_token",
   // The /metrics scrape token (routes/metrics.ts). Not in EDITABLE today (it
   // is set via METRICS_TOKEN or a direct settings row); listed here so it
   // stays masked/unexported the moment anyone makes it editable.
@@ -189,6 +195,7 @@ const SMTP_FROM_RE = /^([^\s@]+@[^\s@]+\.[^\s@]+|.+<[^\s@]+@[^\s@]+\.[^\s@]+>)$/
 
 const PAYMENT_METHODS: Record<string, { enabledKey: string; credKeys: string[]; label: string }> = {
   tokopay: { enabledKey: "tokopay_enabled", credKeys: ["tokopay_merchant_id", "tokopay_secret"], label: "TokoPay" },
+  xendit: { enabledKey: "xendit_enabled", credKeys: ["xendit_secret_key", "xendit_callback_token"], label: "Xendit" },
   paydisini: { enabledKey: "paydisini_enabled", credKeys: ["paydisini_userkey", "paydisini_apikey"], label: "PayDisini" },
   nowpayments: { enabledKey: "nowpayments_enabled", credKeys: ["nowpayments_api_key", "nowpayments_ipn_secret"], label: "NOWPayments" },
   bybit: { enabledKey: "bybit_enabled", credKeys: ["bybit_uid", "bybit_api_key", "bybit_api_secret"], label: "Bybit" },
@@ -520,6 +527,17 @@ async function applyFieldEdit(
         'That doesn\'t look like a Google Analytics measurement ID. It starts with "G-" followed by letters and numbers, like G-ABC1234XYZ — find it in Google Analytics under Admin › Data streams. Leave it blank to turn analytics off.',
       );
     }
+  }
+
+  if (key === "xendit_secret_key" && !value.startsWith("xnd_")) {
+    throw new FieldEditError(
+      400,
+      'That doesn\'t look like a Xendit secret key. It starts with "xnd_development_" (test) or "xnd_production_" (live) — copy it from the Xendit Dashboard under Settings › API Keys.',
+    );
+  }
+
+  if ((key === "xendit_qris_enabled" || key === "xendit_card_enabled") && value !== "true" && value !== "false") {
+    throw new FieldEditError(400, 'This switch only accepts "true" or "false".');
   }
 
   if (key === "bybit_bsc_required_confirmations" && value !== "") {

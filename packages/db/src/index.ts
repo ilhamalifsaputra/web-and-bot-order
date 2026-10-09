@@ -30,6 +30,7 @@ export * from "./crud/broadcasts";
 export * from "./crud/orderMinimums";
 export * from "./crud/pricing";
 export * from "./crud/tokopay";
+export * from "./crud/xendit";
 export * from "./crud/digiflazz";
 export * from "./crud/digiflazzDuplicateAudit";
 export * from "./crud/fulfillmentMessages";

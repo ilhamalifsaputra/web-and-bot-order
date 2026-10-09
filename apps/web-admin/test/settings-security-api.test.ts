@@ -918,3 +918,118 @@ describe("POST /api/settings/restart", () => {
     expect(res.statusCode).toBe(403);
   });
 });
+
+describe("Xendit settings", () => {
+  const SECRET = "xnd_development_supersecretvalue";
+  const TOKEN = "callback-token-value";
+
+  it("stores both secrets encrypted, masks them on GET, and audits '(updated)'", async () => {
+    expect((await postJson("/api/settings/edit", cookie, csrf, { key: "xendit_secret_key", value: SECRET })).statusCode).toBe(200);
+    expect((await postJson("/api/settings/edit", cookie, csrf, { key: "xendit_callback_token", value: TOKEN })).statusCode).toBe(200);
+    expect(await getSetting(prisma, "xendit_secret_key")).not.toBe(SECRET);
+    expect(await getDecryptedSetting(prisma, "xendit_secret_key")).toBe(SECRET);
+    expect(await getDecryptedSetting(prisma, "xendit_callback_token")).toBe(TOKEN);
+
+    const res = await getJson("/api/settings", cookie);
+    expect(res.body).not.toContain(SECRET);
+    expect(res.body).not.toContain(TOKEN);
+    const fields = (res.json() as { fields: Array<{ key: string; secret: boolean; hasValue: boolean; value: string }> }).fields;
+    for (const k of ["xendit_secret_key", "xendit_callback_token"]) {
+      const f = fields.find((x) => x.key === k)!;
+      expect(f).toMatchObject({ secret: true, hasValue: true, value: "" });
+    }
+    const audits = await prisma.auditLog.findMany({ where: { action: "setting_set" } });
+    expect(audits.map((a) => a.details)).toContain('Changed setting "xendit_secret_key" to "(updated)".');
+    expect(audits.map((a) => a.details).join("\n")).not.toContain(SECRET);
+  });
+
+  it("leaves both secrets out of export and refuses them on import", async () => {
+    await setSetting(prisma, "xendit_secret_key", SECRET);
+    await setSetting(prisma, "xendit_callback_token", TOKEN);
+    const exp = (await getJson("/api/settings/export", cookie)).json() as { fields: Record<string, string> };
+    expect(exp.fields).not.toHaveProperty("xendit_secret_key");
+    expect(exp.fields).not.toHaveProperty("xendit_callback_token");
+
+    await setSetting(prisma, "xendit_secret_key", "unchanged-marker");
+    const res = await postJson("/api/settings/import", cookie, csrf, {
+      fields: { xendit_secret_key: SECRET, xendit_callback_token: TOKEN },
+    });
+    expect(res.json()).toMatchObject({ applied: 0, skipped: 2 });
+    expect(await getSetting(prisma, "xendit_secret_key")).toBe("unchanged-marker");
+    expect(await getSetting(prisma, "xendit_callback_token")).toBe(TOKEN);
+  });
+
+  it("rejects a secret key without the xnd_ prefix, writing nothing", async () => {
+    const res = await postJson("/api/settings/edit", cookie, csrf, { key: "xendit_secret_key", value: "sk_live_nope" });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toContain("xnd_");
+    expect(await getSetting(prisma, "xendit_secret_key")).toBeNull();
+  });
+
+  it("accepts only true/false for the channel switches", async () => {
+    for (const key of ["xendit_qris_enabled", "xendit_card_enabled"]) {
+      const bad = await postJson("/api/settings/edit", cookie, csrf, { key, value: "maybe" });
+      expect(bad.statusCode).toBe(400);
+      expect(await getSetting(prisma, key)).toBeNull();
+      const ok = await postJson("/api/settings/edit", cookie, csrf, { key, value: "true" });
+      expect(ok.statusCode).toBe(200);
+      expect(await getSetting(prisma, key)).toBe("true");
+    }
+  });
+
+  it("toggles Xendit through the shared payment toggle and audits it", async () => {
+    const res = await postJson("/api/settings/payments/toggle", cookie, csrf, { method: "xendit", enabled: "true" });
+    expect(res.statusCode).toBe(200);
+    expect(await getSetting(prisma, "xendit_enabled")).toBe("true");
+    const audit = await prisma.auditLog.findFirst({ where: { action: "payment_method_toggle" } });
+    expect(audit?.details).toBe("Turned Xendit on.");
+  });
+
+  describe("connection test", () => {
+    afterEach(() => vi.unstubAllGlobals());
+
+    async function saveCreds(key = SECRET) {
+      await postJson("/api/settings/edit", cookie, csrf, { key: "xendit_secret_key", value: key });
+      await postJson("/api/settings/edit", cookie, csrf, { key: "xendit_callback_token", value: TOKEN });
+    }
+
+    it("fails clearly when the credentials are not saved", async () => {
+      const res = await postJson("/api/settings/payments/xendit/test", cookie, csrf);
+      expect(res.statusCode).toBe(200);
+      expect(res.json().ok).toBe(false);
+    });
+
+    it("reports Test mode on success and never echoes the key", async () => {
+      await saveCreds();
+      const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ balance: 1000 }) });
+      vi.stubGlobal("fetch", fetchMock);
+      const res = await postJson("/api/settings/payments/xendit/test", cookie, csrf);
+      expect(res.json()).toEqual({ ok: true, detail: "Terhubung — mode Test." });
+      expect(fetchMock.mock.calls[0]![0]).toBe("https://api.xendit.co/balance");
+      expect(res.body).not.toContain(SECRET);
+    });
+
+    it("reports Live mode for a production key", async () => {
+      await saveCreds("xnd_production_abc");
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ balance: 5 }) }));
+      const res = await postJson("/api/settings/payments/xendit/test", cookie, csrf);
+      expect(res.json().detail).toBe("Terhubung — mode Live.");
+    });
+
+    it("reports a rejected key on 401", async () => {
+      await saveCreds();
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 401, json: async () => ({}) }));
+      const res = await postJson("/api/settings/payments/xendit/test", cookie, csrf);
+      expect(res.json().ok).toBe(false);
+      expect(res.json().detail).toContain("rejected the secret key");
+    });
+
+    it("reports a network failure without leaking the key", async () => {
+      await saveCreds();
+      vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error(`connect failed ${SECRET}`)));
+      const res = await postJson("/api/settings/payments/xendit/test", cookie, csrf);
+      expect(res.json().ok).toBe(false);
+      expect(res.body).not.toContain(SECRET);
+    });
+  });
+});

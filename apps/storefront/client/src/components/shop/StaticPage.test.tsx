@@ -15,7 +15,7 @@ describe("StaticPage", () => {
   });
 
   it("prose variant (default) renders section <h2>s and no numbered timeline", () => {
-    const { container } = renderPage(<StaticPage prefix="about" blocks={4} />);
+    const { container } = renderPage(<StaticPage prefix="about" blocks={5} />);
 
     // One h1, then one h2 per block (+ the end-of-page help CTA h2).
     expect(container.querySelectorAll("h1")).toHaveLength(1);

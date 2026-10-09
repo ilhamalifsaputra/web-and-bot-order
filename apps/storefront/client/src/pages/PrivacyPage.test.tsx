@@ -97,6 +97,20 @@ describe("informational pages", () => {
     expect(screen.queryByText(/\{company\}/)).not.toBeInTheDocument();
   });
 
+  it("pairs each Terms heading with its own body (delivery vs cancellation)", async () => {
+    renderPage(<TermsPage />, context());
+    const bodyOf = async (name: string) => {
+      const heading = await screen.findByRole("heading", { name });
+      return heading.closest("section")?.textContent ?? "";
+    };
+    const delivery = await bodyOf("Delivery of digital products");
+    expect(delivery).toContain("depending on the server and the provider");
+    expect(delivery).not.toContain("can be cancelled");
+    const cancel = await bodyOf("Cancelling an order");
+    expect(cancel).toContain("An order can be cancelled as long as it hasn't been paid.");
+    expect(cancel).not.toContain("depending on the server");
+  });
+
   it("names the legal entity as data controller on the privacy page", async () => {
     renderPage(
       <PrivacyPage />,

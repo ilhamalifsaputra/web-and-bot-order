@@ -35,6 +35,14 @@ function isNotModified(err: unknown): boolean {
   );
 }
 
+/** Telegram's answer to editMessageText on a photo+caption bubble. */
+function isPhotoBubble(err: unknown): boolean {
+  return (
+    err instanceof GrammyError &&
+    /there is no text in the message to edit/i.test(err.description)
+  );
+}
+
 async function isTransactionBubble(ctx: MyContext, messageId: number | undefined): Promise<boolean> {
   const chatId = ctx.chat?.id;
   if (messageId === undefined || chatId === undefined) return false;
@@ -243,17 +251,44 @@ async function editAnchor(
 ): Promise<number | undefined> {
   const body = truncateText(text);
   const chatId = ctx.chat?.id;
+  let anchorGone = false;
   if (chatId !== undefined && anchorId !== undefined && !(await isTransactionBubble(ctx, anchorId)) && (replyMarkup === undefined || isInline(replyMarkup))) {
     try {
       await ctx.api.editMessageText(chatId, anchorId, body, { parse_mode: "HTML", reply_markup: replyMarkup });
       return anchorId;
     } catch (err) {
       if (isNotModified(err)) return anchorId;
-      // fall through to a fresh send (anchor may be a photo or deleted)
+      if (isPhotoBubble(err)) {
+        // The anchor is a photo+caption bubble (a wizard started from a
+        // product-detail photo): its caption is the editable part. Without
+        // this, every typed step fell through to a fresh send — one new
+        // bubble per step instead of one wizard bubble.
+        if (body.length <= MAX_CAPTION_LEN) {
+          try {
+            await ctx.api.editMessageCaption(chatId, anchorId, { caption: body, parse_mode: "HTML", reply_markup: replyMarkup });
+            return anchorId;
+          } catch (captionErr) {
+            if (isNotModified(captionErr)) return anchorId;
+            // fall through to a fresh send
+          }
+        } else {
+          // Too long for a caption: drop the photo and send ONE text bubble
+          // that becomes the anchor, rather than leaving a photo with a
+          // stale prompt above the new screen. Best effort — a failed delete
+          // just leaves the photo, whose keyboard is retired below.
+          try {
+            await ctx.api.deleteMessage(chatId, anchorId);
+            anchorGone = true;
+          } catch {
+            /* too old or already gone */
+          }
+        }
+      }
+      // fall through to a fresh send (anchor deleted, or not editable)
     }
   }
   const msg = await ctx.reply(body, { parse_mode: "HTML", reply_markup: replyMarkup });
-  if (anchorId !== undefined && anchorId !== msg.message_id) await retireKeyboard(ctx, anchorId);
+  if (!anchorGone && anchorId !== undefined && anchorId !== msg.message_id) await retireKeyboard(ctx, anchorId);
   return msg.message_id;
 }
 

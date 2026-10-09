@@ -343,7 +343,88 @@ describe("nicknameCheckConversation — configured fields", () => {
     const result = await run(denom.id, ["wrong", ckb.cb("nick", "retry"), "correct", ckb.cb("nick", "confirm")]);
     expect(kokinpayMock.checkGameNickname).toHaveBeenCalledTimes(2);
     expect(JSON.parse(result.session.scratch.customerData as string)).toEqual([{ target: "correct" }]);
+    // The Try Again button the test taps is one the not-found screen really offers.
+    const notFound = result.sink.find((c) => JSON.stringify(c.args).includes("Account not found"))!;
+    expect(JSON.stringify(notFound.args)).toContain(ckb.cb("nick", "retry"));
   });
+
+  it("the not-found keyboard offers Try Again beside Continue anyway and Cancel", () => {
+    const flat = ckb.nicknameNotFoundKb(7, 1, "en").inline_keyboard.flat().map((b) => (b as { callback_data?: string }).callback_data);
+    expect(flat).toEqual([ckb.cb("nick", "retry"), ckb.cb("nick", "continue"), "v1:buy:7:1"]);
+  });
+
+  it("not-found → stray typed ID → Try Again → found → summary stays in ONE bubble with exact call counts", async () => {
+    const { denom } = await makeConfiguredDenom({ withCreds: true });
+    kokinpayMock.checkGameNickname.mockResolvedValueOnce({ valid: false, nickname: null }).mockResolvedValueOnce({ valid: true, nickname: "Corrected" });
+    const BUBBLE = 500;
+    const sink: SentCall[] = [];
+    const session = { ...userSession(), menuMsgId: BUBBLE, scratch: { pendingNicknameProductId: denom.id, pendingNicknameQuantity: 1 } } as SessionData;
+    const bubble = () => ({ message_id: session.menuMsgId ?? BUBBLE, chat: { id: 42, type: "private" }, date: 0 });
+    const entry = makeCtx({ sink, sharedSession: session, from: { id: 42 }, callbackData: `v1:buy:${denom.id}:1`, cbMessage: bubble() }).ctx;
+    const marks: number[] = [];
+    const typed = (text: string) => () => { marks.push(sink.length); return makeCtx({ sink, sharedSession: session, from: { id: 42 }, text }).ctx; };
+    // rejectDuplicateAnswerCallbackQuery: a real bot cannot answer one tap twice.
+    const tap = (data: string) => () => { marks.push(sink.length); return makeCtx({ sink, sharedSession: session, from: { id: 42 }, callbackData: data, cbMessage: bubble(), rejectDuplicateAnswerCallbackQuery: true }).ctx; };
+    const conv = new FakeConversation([typed("wrong"), typed("correct"), tap(ckb.cb("nick", "retry")), typed("correct"), tap(ckb.cb("nick", "confirm"))]);
+
+    await nicknameCheckConversation(conv.asMyConversation(), entry);
+
+    const SCREEN = ["sendMessage", "reply", "editMessageText", "editMessageCaption", "deleteMessage", "replyWithPhoto"];
+    const step = (i: number) => sink.slice(marks[i], marks[i + 1] ?? sink.length).filter((c) => SCREEN.includes(c.method)).map((c) => c.method);
+    // "wrong" typed: deleted, the not-found screen edits the wizard bubble.
+    expect(step(0)).toEqual(["deleteMessage", "editMessageText"]);
+    // A stray typed ID on the not-found screen is not ignored: it is deleted
+    // and the same bubble now says to tap Try Again.
+    expect(step(1)).toEqual(["deleteMessage", "editMessageText"]);
+    expect(JSON.stringify(sink.slice(marks[1], marks[2]))).toContain(t(entry, "checkout.nickname_retry_hint"));
+    // Try Again: the Player ID prompt edits the same bubble; the tap is answered once.
+    expect(step(2)).toEqual(["editMessageText"]);
+    expect(calls(sink.slice(marks[2], marks[3]), "answerCallbackQuery")).toHaveLength(1);
+    // New ID typed: deleted, the found screen edits the bubble.
+    expect(step(3)).toEqual(["deleteMessage", "editMessageText"]);
+    // Confirm: the order summary edits the bubble.
+    expect(step(4)).toEqual(["editMessageText"]);
+    expect(JSON.stringify(sink.at(-1))).toContain("Confirm Order");
+    expect(calls(sink, "sendMessage")).toHaveLength(0);
+    expect(calls(sink, "reply")).toHaveLength(0);
+    expect(session.menuMsgId).toBe(BUBBLE);
+    expect(JSON.parse(session.scratch.customerData as string)).toEqual([{ target: "correct" }]);
+    expect(kokinpayMock.checkGameNickname).toHaveBeenCalledTimes(2);
+  });
+  it("a stray typed message on the FOUND screen is deleted and the same bubble re-renders with the hint; Confirm then edits to the summary", async () => {
+    const { denom } = await makeConfiguredDenom({ withCreds: true });
+    kokinpayMock.checkGameNickname.mockResolvedValue({ valid: true, nickname: "Player" });
+    const BUBBLE = 500;
+    const sink: SentCall[] = [];
+    const session = { ...userSession(), menuMsgId: BUBBLE, scratch: { pendingNicknameProductId: denom.id, pendingNicknameQuantity: 1 } } as SessionData;
+    const bubble = () => ({ message_id: session.menuMsgId ?? BUBBLE, chat: { id: 42, type: "private" }, date: 0 });
+    const entry = makeCtx({ sink, sharedSession: session, from: { id: 42 }, callbackData: `v1:buy:${denom.id}:1`, cbMessage: bubble() }).ctx;
+    const marks: number[] = [];
+    let stray: ReturnType<typeof makeCtx>["ctx"] | undefined;
+    const conv = new FakeConversation([
+      () => { marks.push(sink.length); return makeCtx({ sink, sharedSession: session, from: { id: 42 }, text: "000123" }).ctx; },
+      () => { marks.push(sink.length); stray = makeCtx({ sink, sharedSession: session, from: { id: 42 }, text: "is this right?" }).ctx; return stray; },
+      () => { marks.push(sink.length); return makeCtx({ sink, sharedSession: session, from: { id: 42 }, callbackData: ckb.cb("nick", "confirm"), cbMessage: bubble() }).ctx; },
+    ]);
+
+    await nicknameCheckConversation(conv.asMyConversation(), entry);
+
+    const SCREEN = ["sendMessage", "reply", "editMessageText", "editMessageCaption", "deleteMessage", "replyWithPhoto"];
+    const step = (i: number) => sink.slice(marks[i], marks[i + 1] ?? sink.length).filter((c) => SCREEN.includes(c.method)).map((c) => c.method);
+    expect(step(0)).toEqual(["deleteMessage", "editMessageText"]);
+    expect(step(1)).toEqual(["deleteMessage", "editMessageText"]);
+    const strayStep = sink.slice(marks[1], marks[2]);
+    expect(calls(strayStep, "deleteMessage")[0]!.args[1]).toBe(stray!.message!.message_id);
+    expect(calls(strayStep, "editMessageText")[0]!.args[1]).toBe(BUBBLE);
+    expect(JSON.stringify(strayStep)).toContain(t(entry, "checkout.nickname_retry_hint"));
+    expect(JSON.stringify(strayStep)).toContain("Player");
+    expect(step(2)).toEqual(["editMessageText"]);
+    expect(JSON.stringify(sink.at(-1))).toContain("Confirm Order");
+    expect(calls(sink, "sendMessage")).toHaveLength(0);
+    expect(calls(sink, "reply")).toHaveLength(0);
+    expect(JSON.parse(session.scratch.customerData as string)).toEqual([{ target: "000123" }]);
+  });
+
   it("Retry after a found result discards prior input", async () => {
     const { denom } = await makeConfiguredDenom({ withCreds: true });
     kokinpayMock.checkGameNickname.mockResolvedValue({ valid: true, nickname: "Player" });

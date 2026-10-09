@@ -54,13 +54,16 @@ vi.mock("@app/db", async (orig) => {
     claimGatewaySlot: vi.fn(actual.claimGatewaySlot),
     getOrder: vi.fn(actual.getOrder),
     getOrderRaw: vi.fn(actual.getOrderRaw),
+    // Wrapped so a test can fail the delivery record once after a real send.
+    markCredentialsDelivered: vi.fn(actual.markCredentialsDelivered),
     // Observed, not run: the settlement-path tests check that the instant
     // Digiflazz dispatch is started, not what Digiflazz answers.
     triggerDigiflazzDispatch: vi.fn(),
   };
 });
 import { triggerDigiflazzDispatch } from "@app/db";
-import { adoptTransactionMessage } from "@app/db";
+import { adoptTransactionMessage, markCredentialsDelivered } from "@app/db";
+import { sendAccountFile } from "../src/util/delivery";
 import { FulfillmentMessageWorker } from "../../../packages/outbox-dispatcher/src/fulfillmentMessages";
 import { DIGIFLAZZ_CUSTOMER_DATA, routeDenominationToDigiflazz, routeOrderToDigiflazz } from "../../../tests/helpers/digiflazzRouting";
 
@@ -394,7 +397,7 @@ describe("customer handlers", () => {
   it("Buy Again preserves an adopted QR receipt and opens a fresh product menu", async () => {
     const order = (await makeOrder())!;
     await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.DELIVERED } });
-    await adoptTransactionMessage(prisma, order.id, 42, 555);
+    await adoptTransactionMessage(prisma, order.id, 42, 555, "photo");
     const { ctx, sink } = customerCtx({
       callbackData: "v1:browse:prods",
       cbMessage: { message_id: 555, chat: { id: 42 }, date: 0, photo: [{ file_id: "RECEIPT_QR" }] },
@@ -4988,6 +4991,21 @@ describe("wallet-credit checkout (walletm:*/walletpay:*)", () => {
     expect(canonical.messageId).toBe(ctx.callbackQuery!.message!.message_id);
     expect(calls(sink, "editMessageText")[0]!.args[1]).toBe(canonical.messageId);
     expect(calls(sink, "sendMessage")).toHaveLength(0);
+    // One status message: "sending your account details…" while the file is
+    // in flight, then "completed" only after Telegram acknowledged it.
+    const statusEdits = calls(sink, "editMessageText");
+    expect(statusEdits).toHaveLength(2);
+    expect(statusEdits.map((c) => c.args[1])).toEqual([canonical.messageId, canonical.messageId]);
+    expect(String(statusEdits[0]!.args[2])).toContain("Sending your account details…");
+    expect(String(statusEdits[0]!.args[2])).not.toContain("Order completed");
+    expect(String(statusEdits[1]!.args[2])).toContain("Order completed");
+    expect(String(statusEdits[1]!.args[2])).toContain("Your account details were sent as a file.");
+    const statusOrder = sink.map((c) => c.method).filter((m) => m === "editMessageText" || m === "sendDocument");
+    expect(statusOrder).toEqual(["editMessageText", "sendDocument", "editMessageText"]);
+    expect(calls(sink, "deleteMessage")).toHaveLength(0);
+    for (const edit of statusEdits) expect(String(edit.args[2])).not.toMatch(/user\d@example\.com|pwd\d/);
+    expect(canonical.state).toBe("FINISHED");
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: orders[0]!.id } })).credentialsDocMsgId).toEqual(expect.any(Number));
     expect(ctx.session.scratch.useWalletIdr).toBeUndefined();
     expect(ctx.session.scratch.useWalletUsdt).toBeUndefined();
     // The account file is delivered DIRECTLY (not left to the outbox), so a
@@ -5693,6 +5711,56 @@ describe("verification handlers", () => {
     const { ctx, sink } = adminCtx({ callbackData: `v1:adm:verif:resend:${order.id}` });
     await verification.resendCredentials(ctx, order.id);
     expect(calls(sink, "sendDocument").some((c) => c.args[0] === 42)).toBe(true);
+  });
+
+  it("records the approve's acknowledged file; the admin resend still sends and keeps the first record", async () => {
+    const order = await pendingVerificationOrder();
+    const approve = adminCtx({ callbackData: `v1:adm:verif:approve:${order.id}` });
+    await verification.approve(approve.ctx, order.id);
+    const docs = calls(approve.sink, "sendDocument");
+    expect(docs).toHaveLength(1);
+    const first = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(first.credentialsDeliveredAt).toBeInstanceOf(Date);
+    expect(first.credentialsDocMsgId).toEqual(expect.any(Number));
+
+    const resend = adminCtx({ callbackData: `v1:adm:verif:resend:${order.id}` });
+    await verification.resendCredentials(resend.ctx, order.id);
+    expect(calls(resend.sink, "sendDocument")).toHaveLength(1);
+    const after = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(after.credentialsDocMsgId).toBe(first.credentialsDocMsgId);
+    expect(after.credentialsDeliveredAt).toEqual(first.credentialsDeliveredAt);
+  });
+
+  it("sendAccountFile records an acknowledged file and skips a second automatic send", async () => {
+    const order = await pendingVerificationOrder();
+    await verification.approve(adminCtx({ callbackData: `v1:adm:verif:approve:${order.id}` }).ctx, order.id);
+    const full = (await getOrder(prisma, order.id))!;
+    await prisma.order.update({ where: { id: order.id }, data: { credentialsDeliveredAt: null, credentialsDocMsgId: null } });
+
+    const { ctx, sink } = adminCtx();
+    expect(await sendAccountFile(ctx.api, 42, full, "en")).toBe("sent");
+    const recorded = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(recorded.credentialsDocMsgId).toEqual(expect.any(Number));
+    // A replay (webhook, poller re-run, restart) sends nothing.
+    expect(await sendAccountFile(ctx.api, 42, full, "en")).toBe("already_delivered");
+    expect(calls(sink, "sendDocument")).toHaveLength(1);
+    expect(calls(sink, "sendMessage")).toHaveLength(0);
+    // A send Telegram rejects records nothing and still throws for the caller's fallback.
+    await prisma.order.update({ where: { id: order.id }, data: { credentialsDeliveredAt: null, credentialsDocMsgId: null } });
+    const failing = { ...ctx.api, sendDocument: () => Promise.reject(new Error("socket hang up")) } as unknown as typeof ctx.api;
+    await expect(sendAccountFile(failing, 42, full, "en")).rejects.toThrow("socket hang up");
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).credentialsDeliveredAt).toBeNull();
+  });
+
+  it("sendAccountFile reports a sent file as sent even when recording it fails, so no fallback resends it", async () => {
+    const order = await pendingVerificationOrder();
+    await verification.approve(adminCtx({ callbackData: `v1:adm:verif:approve:${order.id}` }).ctx, order.id);
+    const full = (await getOrder(prisma, order.id))!;
+    await prisma.order.update({ where: { id: order.id }, data: { credentialsDeliveredAt: null, credentialsDocMsgId: null } });
+    vi.mocked(markCredentialsDelivered).mockRejectedValueOnce(new Error("simulated database outage"));
+    const { ctx, sink } = adminCtx();
+    expect(await sendAccountFile(ctx.api, 42, full, "en")).toBe("sent");
+    expect(calls(sink, "sendDocument")).toHaveLength(1);
   });
 
   // M-28: the delivery log used to interpolate a `redacted.join(", ")` list of
@@ -6746,5 +6814,102 @@ describe("instant Digiflazz dispatch from the bot's own settlement paths", () =>
     const [order] = await prisma.order.findMany({ where: { userId: sample.user.id }, orderBy: { id: "desc" }, take: 1 });
     expect(order!.status).toBe(OrderStatus.DELIVERED);
     expect(triggerDigiflazzDispatch).not.toHaveBeenCalled();
+  });
+
+  it("a status-message tick that throws after a wallet stock delivery adds no reply and the handler resolves", async () => {
+    await adjustWallet(prisma, sample.user.id, "10", { currency: "IDR", reason: "admin_adjust" });
+    const { ctx, sink } = customerCtx({
+      callbackData: `v1:walletpay:${sample.product.id}:1`,
+      session: { ...userSession(), scratch: { useWalletIdr: true } },
+    });
+    // The checkout is paid and delivered before either inline pass runs; a DB
+    // error in a pass must leave the row to the background worker, not reach
+    // the bot's generic error reply.
+    const tick = vi.spyOn(FulfillmentMessageWorker.prototype, "tick").mockRejectedValue(new Error("database unavailable"));
+    try {
+      await expect(checkout.completeOrderWithWallet(ctx, sample.product.id, 1)).resolves.toBeUndefined();
+      expect(tick).toHaveBeenCalledTimes(2);
+    } finally {
+      tick.mockRestore();
+    }
+
+    const order = await prisma.order.findFirstOrThrow({ where: { userId: sample.user.id }, orderBy: { id: "desc" } });
+    expect(order.status).toBe(OrderStatus.DELIVERED);
+    expect(order.credentialsDocMsgId).toEqual(expect.any(Number));
+    expect(calls(sink, "sendDocument")).toHaveLength(1);
+    expect(calls(sink, "sendMessage")).toHaveLength(0);
+    expect(calls(sink, "reply")).toHaveLength(0);
+    expect(calls(sink, "editMessageText")).toHaveLength(0);
+    expect(calls(sink, "deleteMessage")).toHaveLength(0);
+  });
+});
+
+// After the fulfillment worker retires a checkout QR photo, the buyer's session
+// still remembers that (now deleted) photo as its menu bubble and payment
+// anchor. Navigating from the status text must still render exactly one new
+// bubble, never touch the status/receipt message, and never throw.
+describe("navigating after the worker retired the checkout QR photo", () => {
+  const QR_PHOTO_ID = 7701;
+
+  async function retiredOrder(kind: "product" | "wallet") {
+    const order = kind === "product"
+      ? (await makeOrder())!
+      : await makeWalletTopupOrder();
+    await prisma.order.update({ where: { id: order.id }, data: kind === "product"
+      // The credentials file already acknowledged, so the status ends "completed".
+      ? { status: OrderStatus.DELIVERED, paidAt: new Date(), deliveredAt: new Date(), credentialsDeliveredAt: new Date(), credentialsDocMsgId: 7702 }
+      : { paymentState: "PAID", paidAt: new Date(), walletCreditState: "CREDITED" } });
+    await adoptTransactionMessage(prisma, order.id, 42, QR_PHOTO_ID, "photo");
+    const telegram = makeCtx({ from: { id: 42 } });
+    await new FulfillmentMessageWorker(telegram.ctx.api, { now: () => new Date(Date.now() + 3000) }).tick(order.id);
+    // The worker spent one send (the status text) and one delete (the QR photo).
+    expect(calls(telegram.sink, "sendMessage")).toHaveLength(1);
+    expect(calls(telegram.sink, "deleteMessage").map(c => c.args[1])).toEqual([QR_PHOTO_ID]);
+    expect(calls(telegram.sink, "editMessageText")).toHaveLength(0);
+    expect(calls(telegram.sink, "editMessageCaption")).toHaveLength(0);
+    const row = await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } });
+    expect(row).toMatchObject({ messageKind: "text", state: "FINISHED" });
+    return { order, statusId: row.messageId! };
+  }
+
+  const staleSession = () => ({ ...userSession(), menuMsgId: QR_PHOTO_ID, paymentAnchorMsgId: QR_PHOTO_ID });
+
+  function expectOneFreshBubble(sink: SentCall[]) {
+    expect(calls(sink, "reply")).toHaveLength(1);
+    expect(calls(sink, "sendMessage")).toHaveLength(0);
+    expect(calls(sink, "replyWithPhoto")).toHaveLength(0);
+    expect(calls(sink, "editMessageText")).toHaveLength(0);
+    expect(calls(sink, "editMessageCaption")).toHaveLength(0);
+    expect(calls(sink, "deleteMessage")).toHaveLength(0);
+    // Retiring the stale menu bubble's keyboard targets the deleted photo; that
+    // single best-effort call fails quietly in Telegram and changes nothing.
+    expect(calls(sink, "editMessageReplyMarkup").map(c => c.args[1])).toEqual([QR_PHOTO_ID]);
+  }
+
+  it.each(["product", "wallet"] as const)("a Menu tap on the %s status text opens one new menu and leaves the status message alone", async kind => {
+    const { order, statusId } = await retiredOrder(kind);
+    const { ctx, sink } = customerCtx({
+      callbackData: "v1:menu:main",
+      cbMessage: { message_id: statusId, chat: { id: 42 }, date: 0, text: "status" },
+      session: staleSession(),
+      deletedMessageIds: [QR_PHOTO_ID],
+    });
+    await expect(routeCallback(ctx)).resolves.toBeUndefined();
+    expectOneFreshBubble(sink);
+    expect(await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } })).toMatchObject({ messageId: statusId, state: "FINISHED" });
+    expect(ctx.session.menuMsgId).not.toBe(QR_PHOTO_ID);
+  });
+
+  it.each(["product", "wallet"] as const)("a typed reply-keyboard Menu after a %s retire sends one new menu", async kind => {
+    const { order, statusId } = await retiredOrder(kind);
+    const { ctx, sink } = customerCtx({
+      text: persistentLabel("main", "en"),
+      session: staleSession(),
+      deletedMessageIds: [QR_PHOTO_ID],
+    });
+    await expect(customer.handleProductNumber(ctx)).resolves.toBeUndefined();
+    expectOneFreshBubble(sink);
+    expect(await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } })).toMatchObject({ messageId: statusId, state: "FINISHED" });
+    expect(ctx.session.menuMsgId).not.toBe(QR_PHOTO_ID);
   });
 });

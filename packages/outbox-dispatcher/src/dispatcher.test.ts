@@ -31,6 +31,8 @@ const dbMockState = vi.hoisted(() => ({
   recordPollHealthError: null as Error | null,
   /** Task B1.1: how many upcoming markNotificationSent calls throw. */
   markSentFailuresLeft: 0,
+  /** How many upcoming markCredentialsDelivered calls throw. */
+  markCredentialsFailuresLeft: 0,
   /** Task B1.3: forces getSmtpCreds to reject. */
   smtpCredsError: null as Error | null,
   /** Task B1.3: forces renderEmail to reject. */
@@ -56,6 +58,13 @@ vi.mock("@app/db", async () => {
         throw new Error("simulated database outage while recording SENT");
       }
       return actual.markNotificationSent(...args);
+    },
+    markCredentialsDelivered: async (...args: Parameters<typeof actual.markCredentialsDelivered>) => {
+      if (dbMockState.markCredentialsFailuresLeft > 0) {
+        dbMockState.markCredentialsFailuresLeft--;
+        throw new Error("simulated database outage while recording the credentials delivery");
+      }
+      return actual.markCredentialsDelivered(...args);
     },
     getSmtpCreds: async (...args: Parameters<typeof actual.getSmtpCreds>) => {
       if (dbMockState.smtpCredsError) throw dbMockState.smtpCredsError;
@@ -119,6 +128,9 @@ import {
   enqueueAdminNewTicketDm,
   enqueueTicketReplyDm,
   enqueueTicketClosedDm,
+  manualMatchTx,
+  recordUnmatchedTx,
+  adoptTransactionMessage,
 } from "@app/db";
 import { setBotIdentity, resetBotIdentity } from "@app/core/runtime";
 import { registerPaymentBubbleFlush } from "@app/core/nudge";
@@ -128,6 +140,7 @@ import { Decimal } from "@app/core/money";
 import { sendMail } from "@app/core/mailer";
 import { buildSampleData } from "../../../tests/helpers/sampleData";
 import { drainBatch, runDispatcher } from "./dispatcher";
+import { FulfillmentMessageWorker, type FulfillmentTelegramApi } from "./fulfillmentMessages";
 
 afterAll(async () => {
   await prisma.$disconnect();
@@ -548,6 +561,119 @@ describe("drainBatch delivers a delivered order's credentials as a document", ()
  * (`flushSettledOrderBubble`, apps/order-bot/src/jobs/index.ts) has its own
  * dedicated tests in apps/order-bot/test/jobs.test.ts.
  */
+/**
+ * An acknowledged credentials file is recorded on the order
+ * (`credentialsDeliveredAt`/`credentialsDocMsgId`), and an automatic
+ * ORDER_DELIVERED_DM replayed after that is dropped instead of sending the
+ * buyer's secrets a second time. Only an admin resend (`resend: true` in the
+ * payload) sends again.
+ */
+describe("ORDER_DELIVERED_DM never sends an acknowledged credentials file twice", () => {
+  afterEach(() => { dbMockState.markCredentialsFailuresLeft = 0; });
+
+  async function deliveredOrder(telegramId: number) {
+    const user = await upsertUser(prisma, { telegramId, username: `t5buyer${telegramId}`, fullName: "T5 Buyer" });
+    const category = await createCategory(prisma, `t5-cat-${telegramId}`);
+    const parent = await createCatalogProduct(prisma, { categoryId: category.id, name: `T5 Product ${telegramId}` });
+    const denom = await createDenomination(prisma, {
+      productId: parent.id, name: "T5 Denom", type: ProductType.SHARED, durationLabel: "1 Month", price: "5.00",
+    });
+    await bulkAddStock(prisma, denom.id, [`t5-cred-${telegramId}@example.com:pwd`]);
+    await adjustWallet(prisma, user.id, "10", { currency: "IDR", reason: "admin_adjust" });
+    const funded = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
+    const { order } = await prisma.$transaction((tx) =>
+      completeOrderWithWalletCredit(tx, {
+        channel: "bot",
+        user: { id: funded.id, role: funded.role, walletBalance: funded.walletBalance },
+        productId: denom.id, quantity: 1, currency: OrderCurrency.IDR,
+      }),
+    );
+    return order;
+  }
+  const enqueue = (order: { id: number; orderCode: string }, telegramId: number, resend?: boolean) =>
+    enqueueOrderDeliveredDm(prisma, { orderId: order.id, orderCode: order.orderCode, telegramId: BigInt(telegramId), language: "en", ...(resend ? { resend } : {}) });
+  const lastRow = (orderId: number) => prisma.notificationOutbox.findFirstOrThrow({
+    where: { orderId, event: NotificationEvent.ORDER_DELIVERED_DM }, orderBy: { id: "desc" },
+  });
+  const docBot = (messageId: number) => {
+    const sendDocument = vi.fn().mockResolvedValue({ message_id: messageId });
+    const sendMessage = vi.fn().mockResolvedValue({ message_id: 1 });
+    return { bot: { api: { sendDocument, sendMessage } } as unknown as Bot, sendDocument, sendMessage };
+  };
+
+  it("records the acknowledged document, then drops an automatic replay without sending", async () => {
+    const order = await deliveredOrder(600_201);
+    await enqueue(order, 600_201);
+    const first = docBot(7001);
+    await drainBatch(first.bot);
+    expect(first.sendDocument).toHaveBeenCalledTimes(1);
+    expect(first.sendMessage).toHaveBeenCalledTimes(0);
+    const recorded = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(recorded.credentialsDocMsgId).toBe(7001);
+    expect(recorded.credentialsDeliveredAt).toBeInstanceOf(Date);
+
+    await enqueue(order, 600_201); // webhook replay / poller re-run / restart
+    const replay = docBot(7002);
+    await drainBatch(replay.bot);
+    expect(replay.sendDocument).toHaveBeenCalledTimes(0);
+    expect(replay.sendMessage).toHaveBeenCalledTimes(0);
+    expect((await lastRow(order.id)).status).toBe("SENT");
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).credentialsDocMsgId).toBe(7001);
+  });
+
+  it("still sends an admin resend, keeping the first recorded document id", async () => {
+    const order = await deliveredOrder(600_202);
+    await enqueue(order, 600_202);
+    await drainBatch(docBot(7011).bot);
+    await enqueue(order, 600_202, true);
+    const resend = docBot(7012);
+    await drainBatch(resend.bot);
+    expect(resend.sendDocument).toHaveBeenCalledTimes(1);
+    expect(resend.sendDocument.mock.calls[0]![0]).toBe(600_202);
+    expect((await lastRow(order.id)).status).toBe("SENT");
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).credentialsDocMsgId).toBe(7011);
+  });
+
+  it("records nothing when sendDocument fails, so the retry still sends", async () => {
+    const order = await deliveredOrder(600_203);
+    await enqueue(order, 600_203);
+    const failing = docBot(0);
+    failing.sendDocument.mockRejectedValueOnce(new Error("socket hang up"));
+    await drainBatch(failing.bot);
+    expect(failing.sendDocument).toHaveBeenCalledTimes(1);
+    expect((await lastRow(order.id)).status).not.toBe("SENT");
+    const after = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(after.credentialsDeliveredAt).toBeNull();
+    expect(after.credentialsDocMsgId).toBeNull();
+    // This file shares one database with no reset: drop the retryable row so
+    // a later test's drain does not pick it up.
+    await prisma.notificationOutbox.deleteMany({ where: { orderId: order.id } });
+  });
+
+  it("keeps a sent file sent when recording it fails: the row is SENT, never retried", async () => {
+    const order = await deliveredOrder(600_204);
+    await enqueue(order, 600_204);
+    dbMockState.markCredentialsFailuresLeft = 1;
+    const bot = docBot(7031);
+    await drainBatch(bot.bot);
+    expect(bot.sendDocument).toHaveBeenCalledTimes(1);
+    expect((await lastRow(order.id)).status).toBe("SENT");
+    await drainBatch(bot.bot);
+    expect(bot.sendDocument).toHaveBeenCalledTimes(1);
+  });
+
+  it("puts the resend flag, and never a credential, in the outbox payload", async () => {
+    const order = await deliveredOrder(600_205);
+    await enqueue(order, 600_205, true);
+    const payload = (await lastRow(order.id)).payloadJson;
+    expect(JSON.parse(payload)).toMatchObject({ chat_id: 600_205, order_code: order.orderCode, resend: true });
+    expect(payload).not.toContain("t5-cred-");
+    await enqueue(order, 600_205);
+    expect(JSON.parse((await lastRow(order.id)).payloadJson)).not.toHaveProperty("resend");
+    await prisma.notificationOutbox.deleteMany({ where: { orderId: order.id } }); // never drained here
+  });
+});
+
 describe("drainBatch flushes the payment bubble before a settlement DM (Task E3)", () => {
   afterEach(() => registerPaymentBubbleFlush(null));
 
@@ -1940,4 +2066,64 @@ describe("flood-control sleep honours the abort signal (Task B1.4)", () => {
     expect(after!.status).toBe("PENDING");
     expect(after!.attempts).toBe(0);
   }, 15_000);
+});
+
+/**
+ * A web-admin manual match settles a stock order to DELIVERED and queues the
+ * buyer's credentials DM. End to end: the dispatcher sends the file once and
+ * records it, and the buyer's one status message moves from "sending your
+ * account details" to "completed" by editing the same message.
+ */
+describe("a web-admin manual match delivers the credentials file and completes the status message", () => {
+  it("sends one document, records it, and edits the status DELIVERING → SUCCESS", async () => {
+    const telegramId = 600_301;
+    const user = await upsertUser(prisma, { telegramId, username: `mmbuyer${telegramId}`, fullName: "Match Buyer" });
+    const category = await createCategory(prisma, `mm-cat-${telegramId}`);
+    const parent = await createCatalogProduct(prisma, { categoryId: category.id, name: `MM Product ${telegramId}` });
+    const denom = await createDenomination(prisma, {
+      productId: parent.id, name: "MM Denom", type: ProductType.SHARED, durationLabel: "1 Month", price: "5.00",
+    });
+    await bulkAddStock(prisma, denom.id, [`mm-cred-${telegramId}@example.com:pwd`]);
+    const order = (await createOrderDirect(prisma, { channel: "bot", user, productId: denom.id, quantity: 1 }))!;
+    // The buyer's payment screen is the order's one status message.
+    await adoptTransactionMessage(prisma, order.id, telegramId, 8100, "text");
+    await recordUnmatchedTx(prisma, { binanceTxId: "mm-e2e-1", amount: "5.00" });
+
+    const settled = await manualMatchTx(prisma, { binanceTxId: "mm-e2e-1", orderId: order.id, adminId: user.id });
+    expect(settled.kind).toBe("delivered");
+
+    const calls: Record<string, number> = {};
+    const edits: Array<{ id: number; text: string }> = [];
+    const count = (name: string) => { calls[name] = (calls[name] ?? 0) + 1; };
+    const statusApi = {
+      sendMessage: async () => { count("sendMessage"); return { message_id: 1 }; },
+      editMessageText: async (_chat: unknown, id: number, text: string) => { count("editMessageText"); edits.push({ id, text }); return true; },
+      editMessageCaption: async () => { count("editMessageCaption"); return true; },
+      deleteMessage: async () => { count("deleteMessage"); return true; },
+      editMessageReplyMarkup: async () => { count("editMessageReplyMarkup"); return true; },
+    } as unknown as FulfillmentTelegramApi;
+    const worker = new FulfillmentMessageWorker(statusApi, { db: prisma });
+
+    await worker.tick(order.id);
+    expect(edits.at(-1)!.text).toContain("Sending your account details");
+    expect((await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } })).phase).toBe("DELIVERING");
+
+    const docs = fakeDocBot();
+    docs.sendDocument.mockResolvedValue({ message_id: 8200 });
+    await drainBatch(docs.bot);
+    const toBuyer = docs.sendDocument.mock.calls.filter(([chatId]) => chatId === telegramId);
+    expect(toBuyer).toHaveLength(1);
+    expect(docs.sendMessage.mock.calls.filter(([chatId]) => chatId === telegramId)).toHaveLength(0);
+    const recorded = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(recorded.credentialsDocMsgId).toBe(8200);
+    expect(recorded.credentialsDeliveredAt).toBeInstanceOf(Date);
+
+    await worker.tick(order.id);
+    expect(edits.at(-1)!.text).toContain("Order completed");
+    expect(await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } }))
+      .toMatchObject({ state: "FINISHED", phase: "SUCCESS", messageId: 8100 });
+    // One edit to "sending", one to "completed", all on the payment screen.
+    expect(calls).toEqual({ editMessageText: 2 });
+    expect(new Set(edits.map((e) => e.id))).toEqual(new Set([8100]));
+  });
 });

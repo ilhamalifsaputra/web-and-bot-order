@@ -58,6 +58,7 @@ export type CustomerProgressPhase =
   | "NONE" | "PAYMENT_DETECTED" | "VERIFYING" | "PAYMENT_CONFIRMED" | "UNDERPAID"
   | "AUTO_QUEUED" | "AUTO_SUBMITTING" | "AUTO_PROCESSING" | "PREPARING"
   | "MANUAL_ENQUEUING" | "MANUAL_WAITING"
+  | "DELIVERING"
   | "SUCCESS" | "FAILED" | "REVIEW" | "CANCELLED" | "CREDITED" | "WALLET_CREDITING" | "WALLET_CREDITED";
 export interface CustomerProgress {
   phase: CustomerProgressPhase;
@@ -92,15 +93,19 @@ export function paymentStatusFor(order: FulfillmentOrder): OrderFulfillment["pay
   return status === "EXPIRED" ? "EXPIRED" : ["FAILED", "REJECTED"].includes(status) ? "FAILED" : "PENDING";
 }
 
-/** Percentages describe committed phases, never elapsed time. */
+/**
+ * Percentages describe committed phases, never elapsed time. While a payment is
+ * only detected or still being verified there is no honest percentage to show
+ * (it may yet fail or be underpaid), so those two phases yield `null` and the
+ * renderers omit the bar. The bar starts once the payment is confirmed.
+ */
 export function progressForPhase(phase: CustomerProgressPhase): number | null {
   switch (phase) {
-    case "PAYMENT_DETECTED": return 25;
-    case "VERIFYING": return 35;
     case "PAYMENT_CONFIRMED": return 40;
     case "AUTO_QUEUED": case "PREPARING": return 55;
     case "AUTO_SUBMITTING": return 65;
     case "AUTO_PROCESSING": case "WALLET_CREDITING": return 80;
+    case "DELIVERING": return 90;
     case "SUCCESS": case "WALLET_CREDITED": return 100;
     default: return null;
   }
@@ -113,8 +118,14 @@ export function progressForPhase(phase: CustomerProgressPhase): number | null {
  * submitted payment proofs remain static from their first render. `credited` says
  * the paid amount went to the buyer's wallet balance (an `unfulfilled_credit`
  * ledger row), which `creditOrderToBalance` records on a CANCELLED order.
+ * `credentialsDelivered` says Telegram acknowledged the stock order's
+ * credentials file (`Order.credentialsDeliveredAt`). Only the Telegram status
+ * worker passes it: a delivered STOCK order it reports as not yet acknowledged
+ * shows DELIVERING ("sending your account details") instead of SUCCESS. Callers
+ * that leave it out (the storefront, which shows the account on the order page
+ * itself) keep SUCCESS.
  */
-export function customerProgressPhase(order: FulfillmentOrder, opts: { messageSent?: boolean; credited?: boolean } = {}): CustomerProgress {
+export function customerProgressPhase(order: FulfillmentOrder, opts: { messageSent?: boolean; credited?: boolean; credentialsDelivered?: boolean } = {}): CustomerProgress {
   const provider = fulfillmentProviderFor(order);
   const group = order.items.map(i => i.product.product?.category?.group).find(Boolean);
   const transactionType = order.kind === "WALLET_TOPUP" ? "WALLET_TOPUP" : group === "GAME_TOPUP" || (!group && provider === "DIGIFLAZZ") ? "GAME_TOPUP" : "PREMIUM_APPS";
@@ -124,7 +135,7 @@ export function customerProgressPhase(order: FulfillmentOrder, opts: { messageSe
   const copy: Record<CustomerProgressPhase, string> = {
     NONE: "waiting", PAYMENT_DETECTED: "payment_detected", VERIFYING: "verifying", PAYMENT_CONFIRMED: `${prefix}_confirmed`,
     UNDERPAID: "underpaid", AUTO_QUEUED: `${prefix}_queued`, AUTO_SUBMITTING: `${prefix}_submitting`, AUTO_PROCESSING: `${prefix}_processing`,
-    PREPARING: `${prefix}_queued`, MANUAL_ENQUEUING: "manual_waiting", MANUAL_WAITING: "manual_waiting", SUCCESS: `${prefix}_success`,
+    PREPARING: `${prefix}_queued`, MANUAL_ENQUEUING: "manual_waiting", MANUAL_WAITING: "manual_waiting", DELIVERING: "premium_delivering", SUCCESS: `${prefix}_success`,
     FAILED: `${prefix}_failed`, REVIEW: `${prefix}_review`, CANCELLED: "cancelled", CREDITED: "credited",
     WALLET_CREDITING: "wallet_crediting", WALLET_CREDITED: "wallet_success",
   };
@@ -133,7 +144,13 @@ export function customerProgressPhase(order: FulfillmentOrder, opts: { messageSe
     progress: (phase === "SUCCESS" && (provider === "MANUAL" || order.completionMode === "ADMIN_OVERRIDE")) ? null : progressForPhase(phase),
     titleKey: `transaction.${copy[phase]}_title`, bodyKey: `transaction.${copy[phase]}_body`,
   });
-  if (status === "DELIVERED") return of(transactionType === "WALLET_TOPUP" ? "WALLET_CREDITED" : "SUCCESS", false);
+  if (status === "DELIVERED") {
+    if (transactionType === "WALLET_TOPUP") return of("WALLET_CREDITED", false);
+    // A stock order is DELIVERED before its credentials file is sent; it is
+    // only complete for the buyer once Telegram acknowledged that file.
+    if (provider === "STOCK" && opts.credentialsDelivered === false) return of("DELIVERING", true);
+    return of("SUCCESS", false);
+  }
   if (status === "CREDITED_TO_BALANCE" || (status === "CANCELLED" && opts.credited)) return of("CREDITED", false);
   // A late authenticated payment can require credit review after cancellation.
   if (transactionType === "WALLET_TOPUP" && paymentStatusFor(order) === "PAID" && order.walletCreditState === "NEEDS_REVIEW") return of("REVIEW", false);

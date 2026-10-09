@@ -555,7 +555,7 @@ describe("processTransfers (poll-loop wiring)", () => {
   it("defers the adopted payment bubble to the coordinator and completes the same message", async () => {
     const order = (await makeInternalOrder())!;
     await setOrderPaymentMessage(prisma, order.id, 555, 777);
-    await adoptTransactionMessage(prisma, order.id, 555, 777);
+    await adoptTransactionMessage(prisma, order.id, 555, 777, "text");
     const { api, edits } = fakeApi();
     await processTransfers(api, [txFor({ txId: "T-FLIP", note: order.paymentRef!, amount: order.totalAmount })], await pending());
     const updated = await prisma.order.findUnique({ where: { id: order.id } });
@@ -582,7 +582,7 @@ describe("processTransfers (poll-loop wiring)", () => {
   it("preserves coordinator ownership without calling the rail edit even if Telegram would reject it", async () => {
     const order = (await makeInternalOrder())!;
     await setOrderPaymentMessage(prisma, order.id, 555, 777);
-    await adoptTransactionMessage(prisma, order.id, 555, 777);
+    await adoptTransactionMessage(prisma, order.id, 555, 777, "text");
     const { api } = fakeApi();
     api.editMessageText = vi.fn(async () => {
       throw telegramError(400, "Bad Request: message to edit not found");
@@ -603,7 +603,7 @@ describe("processTransfers (poll-loop wiring)", () => {
   ])("defers coordinator-owned edits when Telegram would return %s", async (_label, makeError) => {
     const order = (await makeInternalOrder())!;
     await setOrderPaymentMessage(prisma, order.id, 555, 777);
-    await adoptTransactionMessage(prisma, order.id, 555, 777);
+    await adoptTransactionMessage(prisma, order.id, 555, 777, "text");
     const { api } = fakeApi();
     api.editMessageText = vi.fn(async () => {
       throw makeError();
@@ -621,7 +621,7 @@ describe("processTransfers (poll-loop wiring)", () => {
     const order = (await makeInternalOrder())!;
     await routeOrderToDigiflazz(prisma, order.id);
     await setOrderPaymentMessage(prisma, order.id, 555, 777);
-    await adoptTransactionMessage(prisma, order.id, 555, 777);
+    await adoptTransactionMessage(prisma, order.id, 555, 777, "text");
     const { api, edits } = fakeApi();
     const trigger = vi.mocked(triggerDigiflazzDispatch);
     let editsAtTrigger = -1;
@@ -747,7 +747,7 @@ describe("processTransfers — WALLET_TOPUP delivery (onDelivered success UI)", 
   it("nudges the outbox while deferring the adopted wallet bubble to its coordinator", async () => {
     const order = await makeTopupOrder("10");
     await setOrderPaymentMessage(prisma, order.id, 555, 778);
-    await adoptTransactionMessage(prisma, order.id, 555, 778);
+    await adoptTransactionMessage(prisma, order.id, 555, 778, "text");
     const sequence: string[] = [];
     registerOutboxNudge(() => sequence.push("nudge"));
     const api = {
@@ -812,7 +812,7 @@ describe("processTransfers — WALLET_TOPUP delivery (onDelivered success UI)", 
   it("credits the wallet once and renders its full receipt through the adopted coordinator", async () => {
     const order = await makeTopupOrder("10");
     await setOrderPaymentMessage(prisma, order.id, 555, 777);
-    await adoptTransactionMessage(prisma, order.id, 555, 777);
+    await adoptTransactionMessage(prisma, order.id, 555, 777, "text");
     const { api, edits } = fakeApi();
     await processTransfers(api, [txFor({ txId: "T-TOPUP-BUBBLE", note: order.paymentRef!, amount: order.totalAmount })], await pending());
 

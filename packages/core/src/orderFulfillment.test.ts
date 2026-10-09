@@ -48,6 +48,22 @@ describe("customerProgressPhase (Telegram progress message)", () => {
     expect(customerProgressPhase(stock)).toMatchObject({ phase: "SUCCESS", spinner: false, topUp: false });
     expect(customerProgressPhase({ ...order, status: "DELIVERED" })).toMatchObject({ phase: "SUCCESS", spinner: false, topUp: true });
   });
+  it("keeps a delivered stock order on 'sending your account details' until its file is acknowledged", () => {
+    expect(customerProgressPhase(stock, { credentialsDelivered: false })).toMatchObject({
+      phase: "DELIVERING", spinner: true, topUp: false, progress: 90,
+      titleKey: "transaction.premium_delivering_title", bodyKey: "transaction.premium_delivering_body",
+    });
+    expect(customerProgressPhase(stock, { credentialsDelivered: true })).toMatchObject({ phase: "SUCCESS", spinner: false, progress: 100 });
+    // Callers without a file concept (the storefront shows the account on its page) keep SUCCESS.
+    expect(customerProgressPhase(stock).phase).toBe("SUCCESS");
+  });
+  it("gates only stock orders on the credentials file", () => {
+    const manualDone = { ...manual, status: "DELIVERED" };
+    expect(customerProgressPhase(manualDone, { credentialsDelivered: false }).phase).toBe("SUCCESS");
+    expect(customerProgressPhase({ ...order, status: "DELIVERED" }, { credentialsDelivered: false }).phase).toBe("SUCCESS");
+    const wallet = { ...stock, kind: "WALLET_TOPUP", items: [] };
+    expect(customerProgressPhase(wallet, { credentialsDelivered: false }).phase).toBe("WALLET_CREDITED");
+  });
   it("keeps a manual order static before and after a message exists", () => {
     expect(customerProgressPhase(manual, { messageSent: false })).toMatchObject({ phase: "MANUAL_WAITING", spinner: false, progress: null, topUp: false });
     expect(customerProgressPhase(manual, { messageSent: true })).toMatchObject({ phase: "MANUAL_WAITING", spinner: false, topUp: false });

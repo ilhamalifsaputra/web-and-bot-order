@@ -93,8 +93,8 @@ import { pollOnce as bybitBscPoll, triggerImmediatePoll as bybitBscImmediatePoll
 import { triggerImmediatePoll as bybitBscTrackerImmediatePoll } from "../payments/bybitBscConfirmationTracker";
 import { pollOnce as nowpaymentsPoll } from "../payments/nowpaymentsReconcile";
 import type { MyContext } from "../context";
-import { smartEdit } from "../util/chat";
-import { anchorPaymentMessage } from "../util/paymentAnchor";
+import { smartEdit, menuAnchor } from "../util/chat";
+import { anchorPaymentMessage, checkoutScreenOf, menuBubbleKind, qrScreenKind } from "../util/paymentAnchor";
 import { sendAccountFile } from "../util/delivery";
 import { flipSettledOrderBubble } from "../jobs";
 import { TELEGRAM_MESSAGE_TIMEOUT_MS } from "../payments/telegramTimeout";
@@ -359,7 +359,9 @@ async function availableCheckoutDenomination(ctx: MyContext, productId: number):
     return product;
   }
   if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, key), show_alert: true });
-  await smartEdit(ctx, t(ctx, key), ckb.backToMain(ctx.session.lang));
+  // menuAnchor: at the end of a typed wizard step this edits the wizard
+  // bubble instead of sending a new one (a tap still edits the tapped bubble).
+  await menuAnchor(ctx, t(ctx, key), ckb.backToMain(ctx.session.lang));
   return null;
 }
 
@@ -681,7 +683,13 @@ function confirmOrderText(
   );
 }
 
-/** Re-render confirmation as a fresh message (used after voucher entry). */
+/**
+ * Render the confirmation at the end of a wizard (Game ID / Zone, voucher
+ * entry, nickname check) into the wizard's own bubble: a tap edits the tapped
+ * bubble, typed input edits `session.menuMsgId` (menuAnchor). Only when that
+ * bubble is gone does it send one new message, which becomes the anchor and
+ * retires the old keyboard (editAnchor/smartEdit do both).
+ */
 export async function renderOrderConfirmation(
   ctx: MyContext,
   productId: number,
@@ -691,31 +699,34 @@ export async function renderOrderConfirmation(
   const rate = await currentUsdtRate();
   const r = await computeConfirmation(ctx, productId, quantity, rate);
   if (!r) return;
+  // Same mint as showOrderConfirmation. The wizards reach the summary here,
+  // not through showOrderConfirmation, and clearPlayerInputScratch drops any
+  // earlier id on the way, so without this a wizard-path order carried no
+  // checkoutIntentId and lost the duplicate-intent guard.
+  if (typeof ctx.session.scratch.checkoutIntentId !== "string") {
+    ctx.session.scratch.checkoutIntentId = randomUUID();
+  }
   const rails = await offerableRails(r.subtotal, rate);
-  const msg = await ctx.api.sendMessage(
-    ctx.chat!.id,
+  await menuAnchor(
+    ctx,
     confirmOrderText(ctx, r, quantity, closingLineFor(ctx, r, rails), ctxPriceFormatter(ctx, rate)),
-    {
-      parse_mode: "HTML",
-      reply_markup: ckb.orderConfirmKb(
-        productId,
-        quantity,
-        lang,
-        r.voucherCode,
-        rails.binance,
-        rails.bybit,
-        rails.tokopay,
-        rails.paydisini,
-        rails.nowpayments,
-        rails.bybitBsc,
-        r.idrBalance,
-        r.usdtBalance,
-        r.walletDeduction,
-        r.fullyCovered,
-      ),
-    },
+    ckb.orderConfirmKb(
+      productId,
+      quantity,
+      lang,
+      r.voucherCode,
+      rails.binance,
+      rails.bybit,
+      rails.tokopay,
+      rails.paydisini,
+      rails.nowpayments,
+      rails.bybitBsc,
+      r.idrBalance,
+      r.usdtBalance,
+      r.walletDeduction,
+      r.fullyCovered,
+    ),
   );
-  ctx.session.menuMsgId = msg.message_id;
 }
 
 /**
@@ -960,7 +971,7 @@ export async function buyNowInternal(ctx: MyContext, productId: number, quantity
     ckb.proofCancelKb(order.id, lang, true, { uid: cfg.receiveUid, note: order.paymentRef }),
   );
   // Anchor the instructions message so the poller can flip it to success.
-  await anchorPaymentMessage(ctx, order.id, ctx.chat!.id);
+  await anchorPaymentMessage(ctx, order.id, ctx.chat!.id, menuBubbleKind(ctx));
   // Latency optimization: an extra poll right now, on top of the regular
   // timer, so this fresh order's first check doesn't wait for the next tick.
   internalImmediatePoll(ctx.api);
@@ -1075,7 +1086,7 @@ export async function buyNowBybit(ctx: MyContext, productId: number, quantity: n
   }) + minAmountNote(ctx, bybit.minAmount, "USDT");
   await smartEdit(ctx, text, ckb.proofCancelKb(order.id, lang, true));
   // Anchor the instructions message so the poller can flip it to success.
-  await anchorPaymentMessage(ctx, order.id, ctx.chat!.id);
+  await anchorPaymentMessage(ctx, order.id, ctx.chat!.id, menuBubbleKind(ctx));
   // Latency optimization: an extra poll right now, on top of the regular
   // timer, so this fresh order's first check doesn't wait for the next tick.
   bybitImmediatePoll(ctx.api);
@@ -1194,7 +1205,7 @@ export async function buyNowBybitBsc(ctx: MyContext, productId: number, quantity
   }) + minAmountNote(ctx, bybitBsc.minAmount, "USDT");
   await smartEdit(ctx, text, ckb.proofCancelKb(order.id, lang, true));
   // Anchor the instructions message so the poller can flip it to success.
-  await anchorPaymentMessage(ctx, order.id, ctx.chat!.id);
+  await anchorPaymentMessage(ctx, order.id, ctx.chat!.id, menuBubbleKind(ctx));
   // Latency optimization: an extra poll right now, on top of the regular
   // timer, so this fresh order's first check doesn't wait for the next tick.
   // The real floor here is the on-chain confirmation Bybit itself requires —
@@ -1377,7 +1388,7 @@ export async function buyNowNowpayments(ctx: MyContext, productId: number, quant
   // (and any future success-flip) target the right bubble — mirrors
   // buyNowInternal/buyNowBybit (no countdown ticking here; that's only for
   // the manual Binance Pay screen).
-  await anchorPaymentMessage(ctx, order.id, ctx.chat!.id);
+  await anchorPaymentMessage(ctx, order.id, ctx.chat!.id, menuBubbleKind(ctx));
   await logCheckoutAudit(prisma, ctx, {
     action: "order_create",
     customerId: user.id,
@@ -1551,28 +1562,35 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
   const confirmMsgId = ctx.callbackQuery?.message?.message_id ?? ctx.session.menuMsgId;
   ctx.session.qrMsgId = undefined;
   const waitingKb = ckb.qrisWaitingKb(order.id, lang);
+  let qrPhotoId: number | undefined;
   if (gateway.qrLink) {
+    // Only the photo send falls back to the text bubble: once the photo is
+    // out, a later failure must not ALSO render the instructions as text
+    // (a second payment screen that would take the anchor and orphan the QR).
     try {
       const qrMsg = await ctx.replyWithPhoto(gateway.qrLink, {
         caption,
         parse_mode: "HTML",
         reply_markup: waitingKb,
       });
-      ctx.session.menuMsgId = qrMsg.message_id;
-      if (confirmMsgId && confirmMsgId !== qrMsg.message_id && !(await ownsTransactionMessageAt(prisma, chatId, confirmMsgId))) {
-        try { await ctx.api.deleteMessage(chatId, confirmMsgId); } catch { /* already gone or too old */ }
-      }
+      ctx.session.menuMsgId = qrPhotoId = qrMsg.message_id;
     } catch (err) {
       logger.error({ err }, `Failed to send the QRIS QR code photo for order ${order.orderCode} — falling back to a text-only instructions bubble`);
       // QR image failed — fall back to a text-only instructions bubble.
       await smartEdit(ctx, caption, waitingKb);
+    }
+    // The QR photo replaced the confirm bubble — delete it right after.
+    if (qrPhotoId !== undefined && confirmMsgId && confirmMsgId !== qrPhotoId) {
+      try {
+        if (!(await ownsTransactionMessageAt(prisma, chatId, confirmMsgId))) await ctx.api.deleteMessage(chatId, confirmMsgId);
+      } catch { /* already gone, too old, or the ownership read failed — leave it */ }
     }
   } else {
     await smartEdit(ctx, caption, waitingKb);
   }
   // Anchor whichever bubble (photo or text-fallback) became the wait screen, so
   // the reconcile poller's success-flip sweep can edit it once delivered.
-  await anchorPaymentMessage(ctx, order.id, chatId);
+  await anchorPaymentMessage(ctx, order.id, chatId, qrScreenKind(ctx, qrPhotoId));
   await logCheckoutAudit(prisma, ctx, {
     action: "order_create",
     customerId: user.id,
@@ -1737,28 +1755,35 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
   const confirmMsgId = ctx.callbackQuery?.message?.message_id ?? ctx.session.menuMsgId;
   ctx.session.qrMsgId = undefined;
   const waitingKb = ckb.qrisWaitingKb(order.id, lang);
+  let qrPhotoId: number | undefined;
   if (gateway.qrUrl) {
+    // Only the photo send falls back to the text bubble: once the photo is
+    // out, a later failure must not ALSO render the instructions as text
+    // (a second payment screen that would take the anchor and orphan the QR).
     try {
       const qrMsg = await ctx.replyWithPhoto(gateway.qrUrl, {
         caption,
         parse_mode: "HTML",
         reply_markup: waitingKb,
       });
-      ctx.session.menuMsgId = qrMsg.message_id;
-      if (confirmMsgId && confirmMsgId !== qrMsg.message_id && !(await ownsTransactionMessageAt(prisma, chatId, confirmMsgId))) {
-        try { await ctx.api.deleteMessage(chatId, confirmMsgId); } catch { /* already gone or too old */ }
-      }
+      ctx.session.menuMsgId = qrPhotoId = qrMsg.message_id;
     } catch (err) {
       logger.error({ err }, `Failed to send the PayDisini QR code photo for order ${order.orderCode} — falling back to a text-only instructions bubble`);
       // QR image failed — fall back to a text-only instructions bubble.
       await smartEdit(ctx, caption, waitingKb);
+    }
+    // The QR photo replaced the confirm bubble — delete it right after.
+    if (qrPhotoId !== undefined && confirmMsgId && confirmMsgId !== qrPhotoId) {
+      try {
+        if (!(await ownsTransactionMessageAt(prisma, chatId, confirmMsgId))) await ctx.api.deleteMessage(chatId, confirmMsgId);
+      } catch { /* already gone, too old, or the ownership read failed — leave it */ }
     }
   } else {
     await smartEdit(ctx, caption, waitingKb);
   }
   // Anchor whichever bubble (photo or text-fallback) became the wait screen, so
   // the reconcile poller's success-flip sweep can edit it once delivered.
-  await anchorPaymentMessage(ctx, order.id, chatId);
+  await anchorPaymentMessage(ctx, order.id, chatId, qrScreenKind(ctx, qrPhotoId));
   await logCheckoutAudit(prisma, ctx, {
     action: "order_create",
     customerId: user.id,
@@ -1807,6 +1832,24 @@ async function settleDiscountCoveredOrder(
   });
   if (!created) throw new ValidationError("error.order_not_found");
   return settleFullyDiscountedOrder(tx, created.id);
+}
+
+/**
+ * One inline pass of the status-message coordinator after a wallet checkout
+ * has committed. The order is already paid (and, for stock, delivered), so a
+ * failure here must never reach the bot's generic error reply: that would add
+ * a misleading "something went wrong" message to a successful purchase. The
+ * background worker picks the row up on its next pass.
+ */
+async function tickStatusMessageAfterWalletCheckout(ctx: MyContext, orderId: number, orderCode: string): Promise<void> {
+  try {
+    await new FulfillmentMessageWorker(ctx.api).tick(orderId);
+  } catch (err) {
+    logger.warn(
+      { err, orderId },
+      `Updating the status message for paid wallet order ${orderCode} failed; the order itself is settled, and the background fulfillment-message worker will update the message on its next pass.`,
+    );
+  }
 }
 
 export async function completeOrderWithWallet(ctx: MyContext, productId: number, quantity: number): Promise<void> {
@@ -1895,9 +1938,11 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
           ? "Created order via Telegram checkout, paid in full with wallet credit."
           : "Created order via Telegram checkout. A discount covered the whole price, so nothing was charged.",
       });
-      const checkoutMessageId = ctx.session.menuMsgId ?? ctx.callbackQuery?.message?.message_id;
-      if (checkoutMessageId != null) {
-        await adoptTransactionMessage(tx, r.order.id, ctx.chat!.id, checkoutMessageId);
+      // The tapped confirmation bubble, so the adopted id and its kind describe
+      // the same message (session menuMsgId can point at another bubble).
+      const checkoutScreen = checkoutScreenOf(ctx);
+      if (checkoutScreen) {
+        await adoptTransactionMessage(tx, r.order.id, ctx.chat!.id, checkoutScreen.messageId, checkoutScreen.kind);
       }
       return r;
     });
@@ -1940,7 +1985,7 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
 
   // A synchronous wallet checkout uses the same coordinator as gateway rails.
   // Its known checkout screen is already adopted inside the settlement commit.
-  await new FulfillmentMessageWorker(ctx.api).tick(result.order.id);
+  await tickStatusMessageAfterWalletCheckout(ctx, result.order.id, result.order.orderCode);
 
   if (result.kind === "delivered") {
     // Deliver the account file directly (the order is already DELIVERED and
@@ -1949,7 +1994,9 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
     // dispatcher running. Re-read the order fresh so stock is SOLD with live
     // credentials. Only if the direct send fails do we fall back to the
     // outbox DM.
-    // The coordinator has already updated the confirmation before credentials.
+    // The coordinator has already turned the confirmation into "sending your
+    // account details…"; once the file is acknowledged (sendAccountFile
+    // records it and wakes the row) one more pass edits it to "completed".
     const deliveredOrder = await getOrder(prisma, result.order.id);
     const tgId =
       deliveredOrder?.user.telegramId != null ? Number(deliveredOrder.user.telegramId) : null;
@@ -1974,6 +2021,9 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
           );
         }
       }
+      // Due now if the file was acknowledged (completed); otherwise this pass
+      // is not due yet and the status keeps saying the file is on its way.
+      await tickStatusMessageAfterWalletCheckout(ctx, result.order.id, result.order.orderCode);
     }
 
     return;

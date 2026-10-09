@@ -63,6 +63,7 @@ pnpm seed-chart-of-accounts
 # Jalankan file dalam DATA_MIGRATIONS (docker-entrypoint.sh) sesuai urutan,
 # misalnya untuk daftar pada rilis ini:
 pnpm exec prisma db execute --schema prisma/schema.prisma --file prisma/migrations/20260919120000_seed_usdt_rounding_ceil_since/migration.sql
+pnpm exec prisma db execute --schema prisma/schema.prisma --file prisma/migrations/20261008120100_backfill_credentials_delivered_at/migration.sql
 pnpm --filter @app/web-admin-client build
 pnpm --filter @app/storefront-client build
 pm2 restart bot-order

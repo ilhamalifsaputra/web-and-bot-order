@@ -131,6 +131,53 @@ describe("wizard anchors", () => {
   });
 });
 
+describe("wizard anchor on a photo bubble (product-detail photo)", () => {
+  it("edits the photo's caption in place when the anchor has no text, instead of sending a new bubble", async () => {
+    const { ctx, sink } = makeCtx({ text: "000123", session: { menuMsgId: 70 }, photoMessageIds: [70] });
+    await menuAnchor(ctx, "Zone ID?", kb());
+
+    const captions = calls(sink, "editMessageCaption");
+    expect(captions).toHaveLength(1);
+    expect(captions[0]!.args[1]).toBe(70);
+    expect((captions[0]!.args[2] as { caption: string }).caption).toBe("Zone ID?");
+    expect(calls(sink, "editMessageText")).toHaveLength(0);
+    expect(calls(sink, "reply")).toHaveLength(0);
+    expect(calls(sink, "sendMessage")).toHaveLength(0);
+    expect(calls(sink, "deleteMessage")).toHaveLength(0);
+    expect(ctx.session.menuMsgId).toBe(70);
+  });
+
+  it("every typed step keeps editing the same photo caption (no new bubble per step)", async () => {
+    const session = { lang: "en", scratch: {}, menuMsgId: 71 } as never;
+    const sink: Parameters<typeof calls>[0] = [];
+    for (const step of ["Player ID?", "Zone ID?", "Summary"]) {
+      const { ctx } = makeCtx({ sink, sharedSession: session, text: "typed", photoMessageIds: [71] });
+      await menuAnchor(ctx, step, kb());
+    }
+    expect(calls(sink, "editMessageCaption")).toHaveLength(3);
+    expect(calls(sink, "reply")).toHaveLength(0);
+    expect(calls(sink, "sendMessage")).toHaveLength(0);
+    expect((session as { menuMsgId: number }).menuMsgId).toBe(71);
+  });
+
+  it("deletes the photo and sends ONE text bubble when the text is too long for a caption, then anchors that bubble", async () => {
+    const { ctx, sink } = makeCtx({ text: "000123", session: { menuMsgId: 72 }, photoMessageIds: [72] });
+    const long = "x".repeat(1025);
+    await menuAnchor(ctx, long, kb());
+
+    expect(calls(sink, "editMessageCaption")).toHaveLength(0);
+    const deletes = calls(sink, "deleteMessage");
+    expect(deletes).toHaveLength(1);
+    expect(deletes[0]!.args[1]).toBe(72);
+    expect(calls(sink, "reply")).toHaveLength(1);
+    expect(calls(sink, "sendMessage")).toHaveLength(0);
+    // The photo is gone, so there is no stale keyboard to retire.
+    expect(calls(sink, "editMessageReplyMarkup")).toHaveLength(0);
+    expect(ctx.session.menuMsgId).not.toBe(72);
+    expect(ctx.session.menuMsgId).toBeDefined();
+  });
+});
+
 describe("renderMenu (photo+caption bubble)", () => {
   it("on a no-op caption edit (\"message is not modified\") still anchors the tapped photo bubble as the active menu", async () => {
     // Same regression as smartEdit's analogous test above, for the

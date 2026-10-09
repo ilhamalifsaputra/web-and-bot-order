@@ -119,8 +119,13 @@ describe("completeOrderWithWallet — an order a discount alone reduced to Rp0",
     expect(sentIncludes(sink, t(ctx, "transaction.premium_success_title"))).toBe(true);
     expect(sentIncludes(sink, `<code>${full.orderCode}</code>`)).toBe(true);
     expect(sentIncludes(sink, "100%")).toBe(true);
-    expect(calls(sink, "editMessageText")).toHaveLength(1);
-    expect(calls(sink, "editMessageText")[0]!.args[1]).toBe(777);
+    // Two edits of the same screen: "sending your account details…" while the
+    // file is in flight, then "completed" once Telegram acknowledged it.
+    expect(calls(sink, "editMessageText")).toHaveLength(2);
+    expect(calls(sink, "editMessageText").map((c) => c.args[1])).toEqual([777, 777]);
+    expect(String(calls(sink, "editMessageText")[0]!.args[2])).toContain("Sending your account details…");
+    expect(calls(sink, "sendDocument")).toHaveLength(1);
+    expect(calls(sink, "sendMessage")).toHaveLength(0);
     expect(await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: full.id } })).toMatchObject({
       state: "FINISHED", messageId: 777,
     });

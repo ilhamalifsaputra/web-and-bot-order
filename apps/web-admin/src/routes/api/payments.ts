@@ -5,6 +5,7 @@ import { ValidationError } from "@app/core/errors";
 import { errorBody } from "@app/core/errorBody";
 import type { Decimal } from "@app/core/money";
 import { logger } from "@app/core/logger";
+import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import { evaluatePollHealth } from "@app/core/payments/pollHealth";
 import {
   prisma,
@@ -229,6 +230,9 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
       if (e instanceof ValidationError) return respond(422, errorBody(e));
       throw e;
     }
+    // Committed: deliver the queued buyer DM (credentials file or "being
+    // prepared" note) now instead of on the dispatcher's next poll.
+    nudgeOutboxDispatcher();
     logger.info(`Admin ${req.admin!.userId} delivered underpaid order ${orderId} anyway via the web panel`);
     return respond(200, { ok: true });
   });
@@ -529,6 +533,9 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
       // The match has committed: start a Digiflazz-routed order's supplier
       // request now (fire-and-forget, ignores non-Digiflazz orders, never throws).
       if (result.kind === "processing") triggerDigiflazzDispatch(result.order.id);
+      // Deliver the queued buyer DM (credentials file or "being prepared"
+      // note) now instead of on the dispatcher's next poll.
+      nudgeOutboxDispatcher();
       await logAdminAction(prisma, {
         adminId: req.admin!.userId,
         action: "tx_manual_match",

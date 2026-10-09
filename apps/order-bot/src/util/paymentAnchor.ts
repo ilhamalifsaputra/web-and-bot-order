@@ -3,13 +3,50 @@
  * payment, fulfillment and wallet credit; navigation opens a separate menu.
  * Legacy untracked screens can still release their temporary menu anchors.
  */
-import { prisma, setOrderPaymentMessage, clearPaymentMessageAnchorsAt, adoptTransactionMessage } from "@app/db";
+import { prisma, setOrderPaymentMessage, clearPaymentMessageAnchorsAt, adoptTransactionMessage, type TransactionMessageKind } from "@app/db";
 import { logger } from "@app/core/logger";
 import type { MyContext } from "../context";
 
 /**
+ * The kind of message this chat's menu bubble is after a `smartEdit` render.
+ * smartEdit edits a tapped photo bubble's caption in place, so a "text" render
+ * still leaves a photo when the buyer tapped one (e.g. a banner screen) and the
+ * edit landed; any fresh send it makes is text. A QR photo sent by the caller
+ * itself is known to be a photo and should be passed as such directly.
+ * `messageId` defaults to the session's menu bubble.
+ */
+export function menuBubbleKind(ctx: MyContext, messageId: number | undefined = ctx.session.menuMsgId): TransactionMessageKind {
+  const tapped = ctx.callbackQuery?.message;
+  const photo = !!tapped && "photo" in tapped && !!tapped.photo;
+  return photo && messageId !== undefined && tapped.message_id === messageId ? "photo" : "text";
+}
+
+/**
+ * The checkout screen a synchronous (wallet/discount) completion adopts, with
+ * its id and kind taken from the SAME message: the tapped bubble when there is
+ * one (its real kind is on the callback), else the session's menu bubble.
+ */
+export function checkoutScreenOf(ctx: MyContext): { messageId: number; kind: TransactionMessageKind } | undefined {
+  const tapped = ctx.callbackQuery?.message;
+  if (tapped) return { messageId: tapped.message_id, kind: "photo" in tapped && tapped.photo ? "photo" : "text" };
+  const messageId = ctx.session.menuMsgId;
+  return messageId === undefined ? undefined : { messageId, kind: menuBubbleKind(ctx, messageId) };
+}
+
+/**
+ * The kind of a QR payment screen once its send settled: "photo" when the QR
+ * photo the caller sent (`qrPhotoId`) is still the menu bubble, otherwise the
+ * text fallback's kind (see {@link menuBubbleKind}).
+ */
+export function qrScreenKind(ctx: MyContext, qrPhotoId: number | undefined): TransactionMessageKind {
+  return qrPhotoId !== undefined && qrPhotoId === ctx.session.menuMsgId ? "photo" : menuBubbleKind(ctx);
+}
+
+/**
  * Point an order's payment-message anchor at this chat's menu bubble and
- * remember, in the session, that the bubble is now anchored.
+ * remember, in the session, that the bubble is now anchored. `kind` is the
+ * kind of message that bubble actually is ("photo" for a QR photo+caption
+ * screen), stored so the worker never edits a photo as text.
  *
  * A no-op when the chat has no menu bubble yet: there is no message to anchor,
  * and writing a pointer to a message id we don't have would be a lie. Callers
@@ -19,11 +56,12 @@ export async function anchorPaymentMessage(
   ctx: MyContext,
   orderId: number,
   chatId: number | bigint,
+  kind: TransactionMessageKind,
 ): Promise<void> {
   const messageId = ctx.session.menuMsgId;
   if (messageId === undefined) return;
   const canonicalMessageId = await prisma.$transaction(async tx => {
-    await adoptTransactionMessage(tx, orderId, chatId, messageId);
+    await adoptTransactionMessage(tx, orderId, chatId, messageId, kind);
     const canonical = await tx.fulfillmentMessage.findUniqueOrThrow({ where: { orderId } });
     await setOrderPaymentMessage(tx, orderId, canonical.chatId, canonical.messageId!);
     return canonical.messageId!;

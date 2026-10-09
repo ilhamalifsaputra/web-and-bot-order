@@ -12,7 +12,19 @@ vi.mock("@app/core/payments/tokopay", async (orig) => ({
   }),
 }));
 
+vi.mock("@app/core/payments/paydisini", async (orig) => ({
+  ...(await orig<typeof import("@app/core/payments/paydisini")>()),
+  createTransaction: vi.fn().mockResolvedValue({
+    trxId: "PD-TOPUP-TEST",
+    qrString: "000",
+    qrUrl: "https://x/pd-qr.png",
+    checkoutUrl: null,
+    totalBayar: "100",
+  }),
+}));
+
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { PAYDISINI_USERKEY_KEY, PAYDISINI_APIKEY_KEY } from "@app/core/payments/paydisini";
 import {
   prisma,
   setSetting,
@@ -22,7 +34,7 @@ import {
 } from "@app/db";
 import { OrderKind, PaymentMethod } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
-import { makeCtx, calls, lastMarkup } from "./helpers/ctx";
+import { makeCtx, calls, lastMarkup, type SentCall } from "./helpers/ctx";
 import type { SessionData } from "../src/context";
 import { invalidateRateCache } from "../src/util/rate";
 import { topupMethodsKb } from "../src/keyboards/customer";
@@ -383,6 +395,184 @@ describe("the amount prompt advertises the effective minimum", () => {
     expect(ctx.session.awaitingTopupCurrency).toBeUndefined();
     expect((ctx.session.scratch as Record<string, unknown>).topupAmount).toBe("15000");
     expect(JSON.stringify(sink)).toContain("v1:topup:pay:tokopay");
+  });
+});
+
+// ===========================================================================
+// One bubble for the whole top-up: currency → amount → invalid amount →
+// valid amount → rail → QR, with the exact Telegram calls of every step
+// (message budget, AGENTS.md).
+// ===========================================================================
+
+describe("wallet top-up stays in one bubble — exact Telegram call counts", () => {
+  const BUBBLE = 600;
+  const SCREEN = ["sendMessage", "reply", "editMessageText", "editMessageCaption", "deleteMessage", "replyWithPhoto", "sendPhoto"];
+  const screen = (sink: SentCall[], from: number) => sink.slice(from).filter((c) => SCREEN.includes(c.method)).map((c) => c.method);
+
+  async function enableTokopay() {
+    await setSetting(prisma, "tokopay_merchant_id", "M1");
+    await setSetting(prisma, "tokopay_secret", "S1");
+    await setSetting(prisma, "min_order_amount_idr", "10000");
+  }
+
+  function flow() {
+    const sink: SentCall[] = [];
+    const session = { ...userSession(), menuMsgId: BUBBLE } as SessionData;
+    const bubble = () => ({ message_id: session.menuMsgId!, chat: { id: 42, type: "private" }, date: 0 });
+    const tap = (data: string, extra: Parameters<typeof makeCtx>[0] = {}) =>
+      makeCtx({ sink, sharedSession: session, from: { id: 42 }, callbackData: data, cbMessage: bubble(), ...extra }).ctx;
+    const typed = (text: string) => makeCtx({ sink, sharedSession: session, from: { id: 42 }, text }).ctx;
+    return { sink, session, tap, typed };
+  }
+
+  /** Drive currency → invalid → valid, asserting each step; returns the flow. */
+  async function upToRailPicker() {
+    const f = flow();
+    // Currency picked: the amount prompt edits the tapped wallet bubble.
+    let mark = f.sink.length;
+    await routeCallback(f.tap("v1:topup:currency:idr"));
+    expect(screen(f.sink, mark)).toEqual(["editMessageText"]);
+    expect(f.session.awaitingTopupCurrency).toBe("IDR");
+
+    // Invalid amount: deleted, the same bubble re-renders with the error.
+    mark = f.sink.length;
+    const bad = f.typed("5000");
+    await walletTopup.handleTopupAmountInput(bad, "IDR", "5000");
+    expect(screen(f.sink, mark)).toEqual(["deleteMessage", "editMessageText"]);
+    expect(f.sink.slice(mark).find((c) => c.method === "deleteMessage")!.args[1]).toBe(bad.message!.message_id);
+    expect(f.sink.slice(mark).find((c) => c.method === "editMessageText")!.args[1]).toBe(BUBBLE);
+    expect(JSON.stringify(f.sink.slice(mark))).toContain("valid amount");
+
+    // Valid amount: deleted, and the rail picker EDITS the same bubble.
+    mark = f.sink.length;
+    const good = f.typed("15000");
+    await walletTopup.handleTopupAmountInput(good, "IDR", "15000");
+    expect(screen(f.sink, mark)).toEqual(["deleteMessage", "editMessageText"]);
+    const railEdit = f.sink.slice(mark).find((c) => c.method === "editMessageText")!;
+    expect(railEdit.args[1]).toBe(BUBBLE);
+    expect(JSON.stringify(railEdit.args)).toContain("v1:topup:pay:tokopay");
+    expect(f.session.menuMsgId).toBe(BUBBLE);
+    return f;
+  }
+
+  it("currency → invalid amount → valid amount → rail → QR: edits until the QR photo, which is the only new message", async () => {
+    await enableTokopay();
+    const f = await upToRailPicker();
+
+    // Rail tapped: the QR photo is sent and the picker bubble deleted right after it.
+    const mark = f.sink.length;
+    await walletTopup.payTopupTokopay(f.tap("v1:topup:pay:tokopay", { replyWithPhotoResult: { photo: [{ file_id: "qr" }] } }));
+    expect(screen(f.sink, mark)).toEqual(["replyWithPhoto", "deleteMessage"]);
+    expect(f.sink.slice(mark).find((c) => c.method === "deleteMessage")!.args[1]).toBe(BUBBLE);
+
+    expect(calls(f.sink, "sendMessage")).toHaveLength(0);
+    expect(calls(f.sink, "reply")).toHaveLength(0);
+    const order = await prisma.order.findFirstOrThrow({ where: { userId: sample.user.id } });
+    const anchor = await prisma.fulfillmentMessage.findUnique({ where: { orderId: order.id } });
+    expect(anchor?.messageId).toBe(f.session.menuMsgId);
+    expect(anchor?.messageKind).toBe("photo");
+  });
+
+  it("the typed amount is deleted only after it has been captured", async () => {
+    await enableTokopay();
+    const f = flow();
+    f.session.awaitingTopupCurrency = "IDR";
+    const good = f.typed("15000");
+    let amountAtDelete: unknown = "not deleted";
+    const realDelete = good.api.deleteMessage.bind(good.api);
+    (good.api as unknown as { deleteMessage: typeof realDelete }).deleteMessage = (async (...args: Parameters<typeof realDelete>) => {
+      amountAtDelete = (f.session.scratch as Record<string, unknown>).topupAmount;
+      return realDelete(...args);
+    }) as typeof realDelete;
+    await walletTopup.handleTopupAmountInput(good, "IDR", "15000");
+    expect(amountAtDelete).toBe("15000");
+  });
+
+  async function enablePaydisini() {
+    await setSetting(prisma, PAYDISINI_USERKEY_KEY, "uk");
+    await setSetting(prisma, PAYDISINI_APIKEY_KEY, "ak");
+  }
+
+  it("PayDisini rail: the QR photo is the only new message and the picker bubble is deleted right after it", async () => {
+    await enablePaydisini();
+    const f = flow();
+    f.session.scratch = { topupCurrency: "IDR", topupAmount: "50000" };
+    await walletTopup.payTopupPaydisini(f.tap("v1:topup:pay:paydisini", { replyWithPhotoResult: { photo: [{ file_id: "qr" }] } }));
+
+    expect(screen(f.sink, 0)).toEqual(["replyWithPhoto", "deleteMessage"]);
+    expect(calls(f.sink, "deleteMessage")[0]!.args[1]).toBe(BUBBLE);
+    const order = await prisma.order.findFirstOrThrow({ where: { userId: sample.user.id } });
+    const anchor = await prisma.fulfillmentMessage.findUnique({ where: { orderId: order.id } });
+    expect(anchor?.messageId).toBe(f.session.menuMsgId);
+    expect(anchor?.messageKind).toBe("photo");
+  });
+
+  it.each(["TokoPay", "PayDisini"] as const)(
+    "%s rail: the ownership read throwing after the photo leaves exactly the QR photo — no second payment screen",
+    async (rail) => {
+      await enableTokopay();
+      await enablePaydisini();
+      const f = flow();
+      f.session.scratch = { topupCurrency: "IDR", topupAmount: "50000" };
+      const delegate = prisma.fulfillmentMessage;
+      const original = delegate.findFirst.bind(delegate);
+      let failed = false;
+      const spy = vi.spyOn(delegate, "findFirst").mockImplementation(((args: { where?: { messageId?: number } }) => {
+        if (!failed && args?.where?.messageId === BUBBLE) {
+          failed = true;
+          return Promise.reject(new Error("Connection terminated unexpectedly"));
+        }
+        return original(args as never);
+      }) as never);
+      const ctx = f.tap(`v1:topup:pay:${rail.toLowerCase()}`, { replyWithPhotoResult: { photo: [{ file_id: "qr" }] } });
+      try {
+        if (rail === "TokoPay") await walletTopup.payTopupTokopay(ctx);
+        else await walletTopup.payTopupPaydisini(ctx);
+      } finally {
+        spy.mockRestore();
+      }
+
+      expect(failed).toBe(true);
+      expect(screen(f.sink, 0)).toEqual(["replyWithPhoto"]);
+      const order = await prisma.order.findFirstOrThrow({ where: { userId: sample.user.id } });
+      const anchor = await prisma.fulfillmentMessage.findUnique({ where: { orderId: order.id } });
+      expect(anchor?.messageId).toBe(f.session.menuMsgId);
+      expect(f.session.menuMsgId).not.toBe(BUBBLE);
+      expect(anchor?.messageKind).toBe("photo");
+    },
+  );
+
+  it("no rail accepts the amount: that screen EDITS the top-up bubble, nothing is sent", async () => {
+    // No IDR rail configured at all, so a valid typed amount has nowhere to go.
+    const f = flow();
+    f.session.awaitingTopupCurrency = "IDR";
+    await walletTopup.handleTopupAmountInput(f.typed("15000"), "IDR", "15000");
+
+    expect(screen(f.sink, 0)).toEqual(["deleteMessage", "editMessageText"]);
+    const edit = calls(f.sink, "editMessageText")[0]!;
+    expect(edit.args[1]).toBe(BUBBLE);
+    expect(JSON.stringify(edit.args)).toContain("v1:topup:currency:idr");
+    expect(calls(f.sink, "sendMessage")).toHaveLength(0);
+    expect(calls(f.sink, "reply")).toHaveLength(0);
+  });
+
+  it("when the QR photo cannot be sent, the text fallback EDITS the picker bubble — nothing is sent twice", async () => {
+    await enableTokopay();
+    const f = await upToRailPicker();
+
+    const mark = f.sink.length;
+    const railTap = f.tap("v1:topup:pay:tokopay");
+    (railTap as unknown as { replyWithPhoto: () => Promise<never> }).replyWithPhoto = () => Promise.reject(new Error("wrong file identifier/HTTP URL specified"));
+    await walletTopup.payTopupTokopay(railTap);
+
+    expect(screen(f.sink, mark)).toEqual(["editMessageText"]);
+    expect(calls(f.sink, "sendMessage")).toHaveLength(0);
+    expect(calls(f.sink, "reply")).toHaveLength(0);
+    expect(f.session.menuMsgId).toBe(BUBBLE);
+    const order = await prisma.order.findFirstOrThrow({ where: { userId: sample.user.id } });
+    const anchor = await prisma.fulfillmentMessage.findUnique({ where: { orderId: order.id } });
+    expect(anchor?.messageId).toBe(BUBBLE);
+    expect(anchor?.messageKind).toBe("text");
   });
 });
 

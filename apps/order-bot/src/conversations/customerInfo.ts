@@ -153,10 +153,10 @@ export async function customerInfoConversation(conversation: MyConversation, ctx
       return;
     }
 
-    // Anchor pattern: the typed answer is deleted and every retry edits the
-    // field-prompt bubble instead of stacking error replies.
+    // Anchor pattern: the typed answer is deleted (only once it has been
+    // judged, and saved when valid) and every retry edits the field-prompt
+    // bubble instead of stacking error replies.
     if (u.callbackQuery) await u.answerCallbackQuery();
-    else await consumeInput(u);
 
     const field = fields[fieldIdx]!;
     let value: string;
@@ -164,6 +164,7 @@ export async function customerInfoConversation(conversation: MyConversation, ctx
       value = validateFieldAnswer(field, text);
     } catch (e) {
       if (e instanceof ValidationError) {
+        if (!u.callbackQuery) await consumeInput(u);
         await menuAnchor(u, fieldPrompt(lang, unitIdx, quantity, field, e.key, e.formatArgs), fieldKb(fieldIdx));
         continue;
       }
@@ -171,6 +172,7 @@ export async function customerInfoConversation(conversation: MyConversation, ctx
     }
 
     currentUnit[field.key] = value;
+    if (!u.callbackQuery) await consumeInput(u);
     fieldIdx++;
     if (fieldIdx < fields.length) {
       await menuAnchor(u, fieldPrompt(lang, unitIdx, quantity, fields[fieldIdx]!), fieldKb(fieldIdx));

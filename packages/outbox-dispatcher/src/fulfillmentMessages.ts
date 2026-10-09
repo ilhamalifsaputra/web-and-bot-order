@@ -5,12 +5,15 @@ import { customerProgressPhase, fulfillmentProviderFor } from "@app/core/orderFu
 import { formatIdrFor } from "@app/core/moneyFormat";
 import { formatUsdt } from "@app/core/formatters";
 import { t } from "@app/core/i18n";
+import { parseAdditionalFields, parseCustomerData } from "@app/core/deliveryFields";
+import { nicknameInputKeys, orderInputConfig } from "@app/core/playerInput";
+import { decryptDeliveredContent } from "@app/core/credentialCrypto";
 import { langCode } from "@app/core/enums";
 import { logger } from "@app/core/logger";
 import { escape } from "./templates";
-import { renderTransactionStatusMessage } from "./transactionMessage";
+import { renderTransactionStatusMessage, supportButtonFor } from "./transactionMessage";
 
-export type FulfillmentTelegramApi = Pick<Bot["api"], "sendMessage" | "editMessageText" | "editMessageCaption">;
+export type FulfillmentTelegramApi = Pick<Bot["api"], "sendMessage" | "editMessageText" | "editMessageCaption" | "deleteMessage" | "editMessageReplyMarkup">;
 const include = { order: { include: { user: true, items: { include: { product: { include: { product: { include: { category: true } } } } } } } } } as const;
 type MessageRow = Prisma.FulfillmentMessageGetPayload<{ include: typeof include }>;
 const INTERVAL_MS = 2000;
@@ -23,11 +26,57 @@ const IDLE_INTERVAL_MS = 30_000;
  * DETECTED_SLOW_INTERVAL_MS, until the order's state moves it to another phase. */
 export const DETECTED_SLOW_AFTER_MS = 10 * 60_000;
 const DETECTED_SLOW_INTERVAL_MS = 60_000;
+/** A stock order's credentials file normally lands within seconds of
+ * delivery. After this long still "sending", the spinner stops on one honest
+ * static line with the Support button, re-read every DETECTED_SLOW_INTERVAL_MS
+ * until the acknowledgement (`markCredentialsDelivered`) wakes the row. */
+export const DELIVERING_SLOW_AFTER_MS = 2 * 60_000;
 const FRAMES = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"];
 /** Row states the worker polls. WAITING (a manual order's static wait) is not
  * one of them: `wakeFulfillmentMessage` moves it on when the order ends. */
 const POLLED_STATES = ["READY", "ACTIVE", "REVIEW"];
 const TERMINAL_PHASES: ReadonlySet<string> = new Set(["SUCCESS", "WALLET_CREDITED", "FAILED", "CANCELLED", "CREDITED"]);
+/** Phases in which the payment is not verified yet, so a QR/invoice photo must
+ * stay visible (its caption is edited). In any other phase the photo is
+ * retired: one status text replaces it and the photo is deleted. */
+const QR_LIVE_PHASES: ReadonlySet<string> = new Set(["NONE", "PAYMENT_DETECTED", "VERIFYING"]);
+/** Telegram's answer when editMessageText targets a photo/media message. */
+const NO_TEXT_TO_EDIT = /there is no text in the message to edit/i;
+
+/** Receipt lines for a successful Digiflazz game top-up: the Game ID and
+ * Zone/Server ID the buyer typed (read only through the denomination's input
+ * mapping, so no other answer, such as an e-mail or password, is ever shown)
+ * and the full supplier serial number. Values are escaped; a line whose value
+ * is missing is left out. */
+function gameReceiptDetails(order: MessageRow["order"], lang: string): string[] {
+  const lines: string[] = [];
+  const first = order.items[0];
+  if (first) {
+    try {
+      const config = orderInputConfig(first.product, order.inputConfigSnapshot);
+      const keys: { targetKey: string; zoneKey?: string; serverKey?: string } = nicknameInputKeys(parseAdditionalFields(config.additionalFields), config.providerInputMapping);
+      const units = parseCustomerData(order.customerData);
+      const values = (key?: string) => [...new Set(units.map(unit => (key ? unit[key] : undefined)?.trim()).filter((v): v is string => !!v))];
+      for (const [label, key] of [["transaction.game_id", keys.targetKey], ["transaction.zone_id", keys.zoneKey], ["transaction.server_id", keys.serverKey]] as const) {
+        const found = values(key);
+        if (found.length) lines.push(`${escape(t(label, lang))}: <code>${escape(found.join(", "))}</code>`);
+      }
+    } catch (error) {
+      logger.warn({ orderCode: order.orderCode, errorName: error instanceof Error ? error.name : typeof error },
+        "The saved input configuration of a game top-up could not be read, so its Game ID is left out of the status message.");
+    }
+  }
+  if (order.deliveredContent) {
+    try {
+      const sn = decryptDeliveredContent(order.deliveredContent, order.id)?.trim();
+      if (sn) lines.push(`${escape(t("transaction.sn", lang))}: <code>${escape(sn)}</code>`);
+    } catch (error) {
+      logger.warn({ orderCode: order.orderCode, errorName: error instanceof Error ? error.name : typeof error },
+        "The serial number of a delivered game top-up could not be decrypted, so it is left out of the status message; the order itself is unaffected.");
+    }
+  }
+  return lines;
+}
 
 /** One persisted message per order. An initial send without an acknowledgement
  * cannot safely be retried: Telegram has no idempotent send API. */
@@ -41,13 +90,15 @@ export class FulfillmentMessageWorker {
     this.signal = opts.signal;
   }
 
-  private keyboard(phase: string, kind: string, lang: string) {
+  private keyboard(phase: string, kind: string, lang: string, slow: boolean) {
     const menu = { text: t("menu.main", lang), callback_data: "v1:menu:main" };
     if (["SUCCESS", "WALLET_CREDITED", "CREDITED"].includes(phase)) {
       return { inline_keyboard: kind === "WALLET_TOPUP"
         ? [[{ text: t("transaction.wallet", lang), callback_data: "v1:wallet:view" }, menu]]
         : [[{ text: t("checkout.buy_again_btn", lang), callback_data: "v1:browse:prods" }], [{ text: t("order.all_history_btn", lang), callback_data: "v1:order:list" }, menu]] };
     }
+    // The same entry as the Help Center's Support button (the support conversation).
+    if (supportButtonFor(phase, slow)) return { inline_keyboard: [[{ text: t("menu.support", lang), callback_data: "v1:support:open" }, menu]] };
     return { inline_keyboard: [[menu]] };
   }
 
@@ -65,6 +116,10 @@ export class FulfillmentMessageWorker {
       // A crash between sendMessage and saving its id has an unknown outcome.
       if (row.state === "SENDING") {
         await this.stopAndAlert(row, "UNCERTAIN", "Telegram status message send was interrupted; delivery is uncertain.");
+        // An interrupted retire leaves the QR photo saved: the replacement may
+        // or may not exist, so the photo is neither deleted nor replaced, but
+        // its live payment buttons are taken away (as deliver() does).
+        if (row.messageKind === "photo" && row.messageId !== null) await this.clearPhotoButtonsWithTimeout(row, row.messageId);
         continue;
       }
       const initial = row.messageId === null;
@@ -105,23 +160,79 @@ export class FulfillmentMessageWorker {
   /** Lock order matches status/credit writers: order, then message. No network
    * calls inside the transaction. If Telegram rendered a stale phase, persist
    * an immediately due correction together with its acknowledged message id;
-   * a crash after commit needs no follow-up reread to make it recoverable. */
-  private async saveProgress(row: MessageRow, data: Prisma.FulfillmentMessageUpdateManyMutationInput): Promise<void> {
-    await this.db.$transaction(async tx => {
+   * a crash after commit needs no follow-up reread to make it recoverable.
+   * Returns whether this pass still held the lease, i.e. the row was written. */
+  private async saveProgress(row: MessageRow, data: Prisma.FulfillmentMessageUpdateManyMutationInput): Promise<boolean> {
+    return this.db.$transaction(async tx => {
       await tx.$queryRaw`SELECT id FROM orders WHERE id = ${row.orderId} FOR UPDATE`;
       const order = await tx.order.findUniqueOrThrow({ where: { id: row.orderId }, include: include.order.include });
       const credited = order.status.toUpperCase() === "CANCELLED"
         && !!(await tx.walletTransaction.findFirst({ where: { orderId: order.id, reason: "unfulfilled_credit" }, select: { id: true } }));
       const messageSent = row.messageId !== null || typeof data.messageId === "number";
-      const current = customerProgressPhase(order, { messageSent, credited });
+      const current = customerProgressPhase(order, { messageSent, credited, credentialsDelivered: order.credentialsDeliveredAt !== null });
       const correction = current.phase !== data.phase;
-      await tx.fulfillmentMessage.updateMany({
+      const saved = await tx.fulfillmentMessage.updateMany({
         where: { orderId: row.orderId, state: row.state, claimedAt: row.claimedAt },
         data: { ...data, ...(correction ? {
           state: messageSent ? "ACTIVE" : "READY", finishedAt: null, nextUpdateAt: this.now(),
         } : {}) },
       });
+      return saved.count > 0;
     });
+  }
+
+  /** Best-effort cleanup of a QR photo once its status text replaced it. It
+   * runs after the replacement is saved, is never retried and never throws:
+   * a photo left in the chat must not hold up payment or fulfilment. When
+   * Telegram refuses the delete (older than 48 hours, already gone, no
+   * rights), only the photo's stale payment buttons are removed. */
+  private async removeRetiredPhoto(row: MessageRow, photoId: number, signal: Parameters<FulfillmentTelegramApi["deleteMessage"]>[2]): Promise<void> {
+    const chatId = String(row.chatId);
+    try {
+      await this.api.deleteMessage(chatId, photoId, signal);
+      return;
+    } catch (error) {
+      const e = error as { error_code?: number; description?: string };
+      if (e.error_code !== 400 && e.error_code !== 403) {
+        logger.warn({ orderId: row.orderId, errorCode: e.error_code },
+          e.error_code === 429
+            ? "Telegram rate-limited deleting the replaced payment QR photo, so it stays in the chat; this cleanup is not retried."
+            : "Deleting the replaced payment QR photo failed before Telegram answered, so it may stay in the chat; this cleanup is not retried.");
+        return;
+      }
+      logger.info({ orderId: row.orderId, errorCode: e.error_code, description: e.description },
+        "Telegram refused to delete the replaced payment QR photo, so its payment buttons are removed instead.");
+    }
+    await this.clearPhotoButtons(row, photoId, signal);
+  }
+
+  /** Best effort: strip the inline payment buttons from a QR photo that can no
+   * longer be deleted or replaced. Never throws. */
+  private async clearPhotoButtons(row: MessageRow, photoId: number, signal: Parameters<FulfillmentTelegramApi["editMessageReplyMarkup"]>[3]): Promise<void> {
+    try {
+      await this.api.editMessageReplyMarkup(String(row.chatId), photoId, { reply_markup: { inline_keyboard: [] } }, signal);
+    } catch (error) {
+      const e = error as { error_code?: number; description?: string };
+      logger.warn({ orderId: row.orderId, errorCode: e.error_code, description: e.description },
+        "Removing the payment buttons from the QR photo failed; the photo keeps them, and the order is unaffected.");
+    }
+  }
+
+  /** clearPhotoButtons outside deliver(): bounded by the same 20 s timeout and
+   * the worker's own abort signal, so a hung request cannot stall the tick. */
+  private async clearPhotoButtonsWithTimeout(row: MessageRow, photoId: number): Promise<void> {
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    this.signal?.addEventListener("abort", abort, { once: true });
+    if (this.signal?.aborted) controller.abort();
+    const timeout = setTimeout(abort, 20_000);
+    try {
+      await this.clearPhotoButtons(row, photoId,
+        controller.signal as unknown as NonNullable<Parameters<FulfillmentTelegramApi["editMessageReplyMarkup"]>[3]>);
+    } finally {
+      clearTimeout(timeout);
+      this.signal?.removeEventListener("abort", abort);
+    }
   }
 
   private async deliver(row: MessageRow): Promise<boolean> {
@@ -129,22 +240,31 @@ export class FulfillmentMessageWorker {
     const order = await this.db.order.findUniqueOrThrow({ where: { id: row.orderId }, include: include.order.include });
     const credited = order.status.toUpperCase() === "CANCELLED"
       && !!(await this.db.walletTransaction.findFirst({ where: { orderId: order.id, reason: "unfulfilled_credit" }, select: { id: true } }));
-    const progress = customerProgressPhase(order, { messageSent: row.messageId !== null, credited });
+    // A delivered stock order is complete for the buyer only once Telegram
+    // acknowledged its credentials file; until then it shows DELIVERING.
+    const progress = customerProgressPhase(order, { messageSent: row.messageId !== null, credited, credentialsDelivered: order.credentialsDeliveredAt !== null });
     const where = { orderId: row.orderId, state: row.state, claimedAt: row.claimedAt };
     const provider = fulfillmentProviderFor(order);
     // When the message entered the phase it now shows. A change of phase, in
     // either direction, starts the clock again.
     const phaseStartedAt = row.phase === progress.phase && row.phaseStartedAt ? row.phaseStartedAt : this.now();
     const phaseFields = { phase: progress.phase, phaseStartedAt };
+    // Too long in one waiting phase: a static line on a slow re-read. The
+    // order's state still decides; this only stops the animation.
+    const inPhaseMs = this.now().getTime() - phaseStartedAt.getTime();
+    const slow = (["PAYMENT_DETECTED", "VERIFYING"].includes(progress.phase) && inPhaseMs >= DETECTED_SLOW_AFTER_MS)
+      || (progress.phase === "DELIVERING" && inPhaseMs >= DELIVERING_SLOW_AFTER_MS);
     if (row.messageId === null && (progress.phase === "NONE" || progress.phase === "CANCELLED"
-      || (progress.phase === "SUCCESS" && provider === "STOCK"))) {
+      || progress.phase === "DELIVERING" || (progress.phase === "SUCCESS" && provider === "STOCK"))) {
       // Nothing to tell yet (payment never seen), the order ended before the
       // buyer heard anything, or a stock order was delivered instantly (its
-      // credentials DM is the message): release the claim without sending.
-      const finished = progress.phase !== "NONE";
+      // credentials file is the message, sent or still on its way): release
+      // the claim without sending. A file still on its way keeps the row
+      // polled, so its acknowledgement (or a later problem) is picked up.
+      const finished = progress.phase === "CANCELLED" || progress.phase === "SUCCESS";
       await this.saveProgress(row, {
         ...phaseFields, state: finished ? "FINISHED" : "READY", claimedAt: null, finishedAt: finished ? this.now() : null,
-        nextUpdateAt: new Date(this.now().getTime() + INTERVAL_MS),
+        nextUpdateAt: new Date(this.now().getTime() + (slow ? DETECTED_SLOW_INTERVAL_MS : INTERVAL_MS)),
       });
       return false;
     }
@@ -167,16 +287,19 @@ export class FulfillmentMessageWorker {
     // character limit. Customer targets and delivered credentials stay private.
     const items = [...grouped.values()].slice(0, 3).map(item => `${escape(item.name.slice(0, 60))}${item.name.length > 60 ? "…" : ""} × ${item.quantity}`).join("\n");
     const summary = items ? `\n\n${items}${grouped.size > 3 ? "\n…" : ""}` : "";
-    // Detected for too long: a static "still verifying" line on a slow re-read.
-    // The order's state still decides; this only stops the animation.
-    const slow = ["PAYMENT_DETECTED", "VERIFYING"].includes(progress.phase) && this.now().getTime() - phaseStartedAt.getTime() >= DETECTED_SLOW_AFTER_MS;
     const money = (value: Parameters<typeof formatUsdt>[0]) => order.currency === "USDT" ? formatUsdt(value) : formatIdrFor(value, lang);
     const walletCredit = progress.phase === "WALLET_CREDITED"
       ? await this.db.walletTransaction.findFirst({ where: { orderId: order.id, reason: "wallet_topup" }, select: { delta: true, balanceAfter: true } }) : null;
     const shortfall = progress.phase === "UNDERPAID" ? await findUnderpaidReceived(this.db, order.id) : null;
     const expected = progress.phase === "UNDERPAID" ? await this.db.qrisUnderpaidTx.findFirst({ where: { orderId: order.id }, select: { expectedAmount: true } }) : null;
-    const text = renderTransactionStatusMessage({ orderCode: order.orderCode, presentation: progress, lang,
-      frame: frame!, summary: summary.trim(), amount: money(walletCredit?.delta ?? order.totalAmount),
+    // A completed stock order is only SUCCESS once its file was acknowledged,
+    // so the bot can say where the account details went. Bot-only body: the
+    // web renders the shared, channel-neutral success body.
+    const presentation = progress.phase === "SUCCESS" && provider === "STOCK"
+      ? { ...progress, bodyKey: "transaction.premium_file_sent_body" } : progress;
+    const text = renderTransactionStatusMessage({ orderCode: order.orderCode, presentation, lang,
+      frame: frame!, summary: summary.trim(),
+      details: progress.phase === "SUCCESS" && progress.transactionType === "GAME_TOPUP" && provider === "DIGIFLAZZ" ? gameReceiptDetails(order, lang) : undefined, amount: money(walletCredit?.delta ?? order.totalAmount),
       balance: walletCredit ? money(walletCredit.balanceAfter) : undefined,
       underpayment: progress.phase === "UNDERPAID" ? { required: money(expected?.expectedAmount ?? order.totalAmount), received: shortfall ? money(shortfall) : null } : null, slow,
     });
@@ -193,43 +316,86 @@ export class FulfillmentMessageWorker {
     // grammY types its signal with the abort-controller shim; native Node
     // signals implement the same runtime contract accepted by fetch.
     const apiSignal = controller.signal as unknown as NonNullable<Parameters<FulfillmentTelegramApi["sendMessage"]>[3]>;
+    const options = { parse_mode: "HTML" as const, reply_markup: this.keyboard(progress.phase, progress.transactionType, lang, slow) };
+    const qrLive = QR_LIVE_PHASES.has(progress.phase);
+    // The lease this pass holds; retiring a photo upgrades it to SENDING.
+    let claim: MessageRow = row;
+    // What a legacy (kind unknown) message turned out to be on this pass.
+    let learnedKind: "photo" | "text" | undefined;
     try {
       if (row.messageId === null) {
-        const sent = await this.api.sendMessage(String(row.chatId), text, { parse_mode: "HTML", reply_markup: this.keyboard(progress.phase, progress.transactionType, lang) }, apiSignal);
-        await this.saveProgress(row, { ...data, messageId: sent.message_id });
-      } else {
-        if (row.lastText !== text) {
+        const sent = await this.api.sendMessage(String(row.chatId), text, options, apiSignal);
+        await this.saveProgress(row, { ...data, messageId: sent.message_id, messageKind: "text" });
+        return false;
+      }
+      // A QR/invoice photo stays only while the payment is unverified. Never
+      // call editMessageText on a known photo.
+      let retire = row.messageKind === "photo" && !qrLive;
+      if (!retire && row.lastText !== text) {
+        if (row.messageKind === "photo") {
+          await this.api.editMessageCaption(String(row.chatId), row.messageId, { ...options, caption: text }, apiSignal);
+        } else {
           try {
-            await this.api.editMessageText(String(row.chatId), row.messageId, text, { parse_mode: "HTML", reply_markup: this.keyboard(progress.phase, progress.transactionType, lang) }, apiSignal);
+            await this.api.editMessageText(String(row.chatId), row.messageId, text, options, apiSignal);
+            if (row.messageKind !== "text") learnedKind = "text";
           } catch (error) {
             const e = error as { error_code?: number; description?: string };
-            // Only Telegram's explicit photo response permits caption fallback.
-            // A timeout/429/5xx never deletes or replaces the canonical message.
-            if (e.error_code !== 400 || !/there is no text in the message to edit/i.test(e.description ?? "")) throw error;
-            await this.api.editMessageCaption(String(row.chatId), row.messageId, { caption: text, parse_mode: "HTML", reply_markup: this.keyboard(progress.phase, progress.transactionType, lang) }, apiSignal);
+            // Only Telegram's explicit photo response reveals a photo. A
+            // timeout/429/5xx never deletes or replaces the canonical message.
+            if (e.error_code !== 400 || !NO_TEXT_TO_EDIT.test(e.description ?? "")) throw error;
+            learnedKind = "photo";
+            if (qrLive) await this.api.editMessageCaption(String(row.chatId), row.messageId, { ...options, caption: text }, apiSignal);
+            else retire = true;
           }
         }
-        await this.saveProgress(row, data);
+      }
+      if (!retire) {
+        await this.saveProgress(row, { ...data, ...(learnedKind ? { messageKind: learnedKind } : {}) });
+        return false;
+      }
+      // Claim the replacement exactly like an initial send: a crash between
+      // sendMessage and saving its id leaves SENDING, which becomes UNCERTAIN
+      // and is never resent.
+      const upgraded = await this.db.fulfillmentMessage.updateMany({ where, data: { state: "SENDING" } });
+      if (!upgraded.count) return false;
+      claim = { ...row, state: "SENDING" };
+      const sent = await this.api.sendMessage(String(row.chatId), text, options, apiSignal);
+      if (await this.saveProgress(claim, { ...data, messageId: sent.message_id, messageKind: "text" })) {
+        await this.removeRetiredPhoto(row, row.messageId, apiSignal);
+      } else {
+        // Another worker took the row over; the photo may still be the message it owns.
+        logger.warn({ orderId: row.orderId },
+          "The replacement status text was sent but this worker lost its lease before saving it, so the QR photo is left in place.");
       }
       return false;
     } catch (error) {
       const e = error as { error_code?: number; description?: string; parameters?: { retry_after?: number } };
+      const sending = claim.messageId === null || claim.state === "SENDING";
+      const claimed = { orderId: claim.orderId, state: claim.state, claimedAt: claim.claimedAt };
+      const kind = learnedKind ? { messageKind: learnedKind } : {};
       if (e.error_code === 429) {
         const nextUpdateAt = new Date(this.now().getTime() + Math.max(1, e.parameters?.retry_after ?? 30) * 1000);
-        await this.db.fulfillmentMessage.updateMany({ where, data: { state: row.messageId === null ? "READY" : "ACTIVE", claimedAt: null, nextUpdateAt } });
+        await this.db.fulfillmentMessage.updateMany({ where: claimed, data: { ...kind, state: row.messageId === null ? "READY" : "ACTIVE", claimedAt: null, nextUpdateAt } });
         // Durable global backoff also prevents another process draining ready rows.
         await this.db.fulfillmentMessage.updateMany({ where: { state: { in: POLLED_STATES }, nextUpdateAt: { lt: nextUpdateAt } }, data: { nextUpdateAt } });
         return true;
       }
-      if (row.messageId !== null && e.error_code === 400 && e.description?.includes("message is not modified")) {
-        await this.saveProgress(row, data);
+      if (!sending && e.error_code === 400 && e.description?.includes("message is not modified")) {
+        await this.saveProgress(claim, { ...data, ...kind });
       } else if (e.error_code === 403 || e.error_code === 400) {
-        await this.stopAndAlert(row, "STOPPED", "Telegram status message is unavailable; automatic replacement is disabled.");
-      } else if (row.messageId === null) {
-        await this.stopAndAlert(row, "UNCERTAIN", "Telegram status message delivery is uncertain; automatic resend is disabled.");
+        await this.stopAndAlert(claim, "STOPPED", "Telegram status message is unavailable; automatic replacement is disabled.");
+        // A rejected replacement leaves the paid order's QR photo in the chat:
+        // at least take its live payment buttons away (a 403 means the chat is
+        // unreachable, so there is nothing to try).
+        if (claim.state === "SENDING" && row.messageId !== null && e.error_code === 400) await this.clearPhotoButtons(row, row.messageId, apiSignal);
+      } else if (sending) {
+        await this.stopAndAlert(claim, "UNCERTAIN", "Telegram status message delivery is uncertain; automatic resend is disabled.");
+        // The replacement may or may not exist, so the photo is neither deleted
+        // nor replaced again; only its live payment buttons are taken away.
+        if (claim.state === "SENDING" && row.messageId !== null) await this.clearPhotoButtons(row, row.messageId, apiSignal);
       } else {
         // Editing the same message is safe to retry after transport/database failure.
-        await this.db.fulfillmentMessage.updateMany({ where, data: { state: "ACTIVE", claimedAt: null, nextUpdateAt: new Date(this.now().getTime() + 10_000) } });
+        await this.db.fulfillmentMessage.updateMany({ where: claimed, data: { ...kind, state: "ACTIVE", claimedAt: null, nextUpdateAt: new Date(this.now().getTime() + 10_000) } });
         logger.warn({ orderId: row.orderId }, "Telegram fulfillment edit deferred");
       }
       return false;

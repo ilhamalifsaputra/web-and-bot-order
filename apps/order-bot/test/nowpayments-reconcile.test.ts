@@ -394,7 +394,7 @@ describe("reconcileOrder delegates payment bubbles to their durable coordinator"
   async function deliverAnchored(api: Api, trxId: string) {
     const created = await makeNowpaymentsOrder();
     await prisma.$transaction(async (tx) => {
-      await adoptTransactionMessage(tx, created.id, 555, 777);
+      await adoptTransactionMessage(tx, created.id, 555, 777, "text");
       await setOrderPaymentMessage(tx, created.id, 555, 777);
     });
     const [pending] = await listPendingNowpaymentsOrders(prisma, new Date());
@@ -460,7 +460,7 @@ describe("reconcileOrder delegates payment bubbles to their durable coordinator"
     }));
     await prisma.order.update({ where: { id: topup.id }, data: { paymentRef: JSON.stringify({ gateway: "nowpayments", invoiceId: "INV-E3-TOPUP" }) } });
     await prisma.$transaction(async (tx) => {
-      await adoptTransactionMessage(tx, topup.id, 555, 888);
+      await adoptTransactionMessage(tx, topup.id, 555, 888, "text");
       await setOrderPaymentMessage(tx, topup.id, 555, 888);
     });
     const api = fakeApi({ editMessageText: vi.fn().mockRejectedValue(noTextToEdit()) });
@@ -482,7 +482,7 @@ describe("reconcileOrder delegates payment bubbles to their durable coordinator"
     const created = await makeNowpaymentsOrder();
     await routeOrderToDigiflazz(prisma, created.id);
     await prisma.$transaction(async (tx) => {
-      await adoptTransactionMessage(tx, created.id, 555, 777);
+      await adoptTransactionMessage(tx, created.id, 555, 777, "text");
       await setOrderPaymentMessage(tx, created.id, 555, 777);
     });
     const [pending] = await listPendingNowpaymentsOrders(prisma, new Date());

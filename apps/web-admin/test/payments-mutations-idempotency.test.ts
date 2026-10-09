@@ -165,6 +165,8 @@ describe("POST /api/payments/order/:orderId/deliver — Idempotency-Key", () => 
 
     const auditRows = await prisma.auditLog.findMany({ where: { action: "underpaid_deliver", targetId: order.id } });
     expect(auditRows).toHaveLength(1);
+    // The replay queues no second credentials DM.
+    expect(await prisma.notificationOutbox.count({ where: { orderId: order.id, event: "ORDER_DELIVERED_DM" } })).toBe(1);
   });
 
   it("replays a stored 422 the same way — a retry doesn't re-attempt a delivery the order can no longer accept", async () => {
@@ -305,6 +307,8 @@ describe("POST /api/payments/match — Idempotency-Key", () => {
     expect(auditRows).toHaveLength(1);
     const tx = await prisma.processedBinanceTx.findUnique({ where: { binanceTxId: "mtx-replay-success" } });
     expect(tx!.outcome).toBe("matched");
+    // The replay queues no second credentials DM.
+    expect(await prisma.notificationOutbox.count({ where: { orderId: order.id, event: "ORDER_DELIVERED_DM" } })).toBe(1);
   });
 
   it("replays a stored 400 the same way — a repeated invalid request doesn't re-validate every time", async () => {

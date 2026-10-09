@@ -79,4 +79,19 @@ describe("OrderProgress", () => {
     else expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", String(progress));
     expect(screen.queryByRole("list", { name: "Order progress" })).not.toBeInTheDocument();
   });
+
+  it.each([
+    ["UNDERPAID", "transaction.underpaid_body", "The payment received is less than the required amount"],
+    ["REVIEW", "transaction.game_review_body", "Our team is reviewing your top-up"],
+    ["FAILED", "transaction.game_failed_body", "Your top-up could not be completed"],
+    ["CANCELLED", "transaction.cancelled_body", "This transaction has ended"],
+  ] as const)("shows the channel-neutral %s body on the web, without the bot's Support-button hint", (phase, bodyKey, body) => {
+    const presentation: CustomerProgress = {
+      phase, spinner: false, progress: null, topUp: true, transactionType: "GAME_TOPUP",
+      titleKey: "transaction.underpaid_title", bodyKey,
+    };
+    const { container } = render(<OrderProgress fulfillment={f({ presentation })} />);
+    expect(container).toHaveTextContent(body);
+    expect(container).not.toHaveTextContent(/Need help\? Tap|button below|bot description/i);
+  });
 });

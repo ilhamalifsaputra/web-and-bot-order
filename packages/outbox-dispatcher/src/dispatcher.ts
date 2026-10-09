@@ -72,6 +72,7 @@ import {
   markNotificationSent,
   markNotificationFailed,
   getOrderByCodeFull,
+  markCredentialsDelivered,
   getSmtpCreds,
   recordPollHealth,
 } from "@app/db";
@@ -542,6 +543,18 @@ async function deliverAccountDm(
     await failRow(row, `order not found for code ${code}`, 1);
     return "ok";
   }
+  // An automatic delivery (a gateway rail, a direct send's fallback, a replay
+  // after a restart) is dropped once Telegram has acknowledged this order's
+  // file: sending again would hand the buyer their secrets twice. Only an
+  // admin resend or a stock replacement carries `resend: true`.
+  if (payload.resend !== true && order.credentialsDeliveredAt) {
+    logger.info(
+      { notificationId: row.id, orderId: order.id },
+      `Order ${order.orderCode}'s credentials file was already delivered, so automatic notification ${row.id} is recorded as sent without sending it again.`,
+    );
+    await recordSent(row, "Telegram");
+    return "ok";
+  }
 
   const lang = langCode(order.user.language);
   const warranty = warrantyDaysFor(order.items);
@@ -551,12 +564,31 @@ async function deliverAccountDm(
   );
   const file = new InputFile(Buffer.from(content, "utf8"), accountFileName(order.orderCode));
 
-  return trySend(bot, row, () =>
-    bot.api.sendDocument(chatId, file, {
+  return trySend(bot, row, async () => {
+    const sent = await bot.api.sendDocument(chatId, file, {
       caption: buildDeliveryCaption(order.orderCode, warranty, lang),
       parse_mode: "HTML",
-    }),
-  );
+    });
+    await recordCredentialsDelivered(order.id, order.orderCode, sent.message_id);
+  });
+}
+
+/**
+ * Record that Telegram acknowledged an order's credentials file. Never throws:
+ * the file is already in the buyer's chat, so a database failure here must not
+ * turn the send into a failed attempt that is retried (a second copy of the
+ * secrets). The cost of a lost record is the status message waiting on its
+ * slow "still being sent" line until an admin looks.
+ */
+async function recordCredentialsDelivered(orderId: number, orderCode: string, messageId: number): Promise<void> {
+  try {
+    await markCredentialsDelivered(prisma, orderId, messageId);
+  } catch (err) {
+    logger.error(
+      { err, orderId },
+      `Order ${orderCode}'s credentials file was sent, but recording the delivery failed; the file is not sent again, and the buyer's status message keeps saying it is still being sent.`,
+    );
+  }
 }
 
 /**

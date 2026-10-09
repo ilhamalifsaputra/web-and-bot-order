@@ -25,7 +25,7 @@ import { OrderCurrency, OrderStatus, PaymentMethod } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { makeCtx, calls } from "./helpers/ctx";
 import { smartEdit, renderMenu, menuAnchor } from "../src/util/chat";
-import { anchorPaymentMessage } from "../src/util/paymentAnchor";
+import { anchorPaymentMessage, checkoutScreenOf, menuBubbleKind, qrScreenKind } from "../src/util/paymentAnchor";
 import { sweepPaidOrderBubbles } from "../src/jobs";
 
 /** The chat every makeCtx double lives in. */
@@ -98,10 +98,10 @@ describe("anchorPaymentMessage (each checkout keeps its own transaction bubble)"
     const orderB = await makePendingOrder();
     const { ctx } = tapOn(777);
 
-    await anchorPaymentMessage(ctx, orderA.id, CHAT_ID);
+    await anchorPaymentMessage(ctx, orderA.id, CHAT_ID, "text");
     await smartEdit(ctx, "Main menu", kb());
     const nextMessageId = ctx.session.menuMsgId;
-    await anchorPaymentMessage(ctx, orderB.id, CHAT_ID);
+    await anchorPaymentMessage(ctx, orderB.id, CHAT_ID, "text");
 
     expect(nextMessageId).not.toBe(777);
     expect(await anchorOf(orderA.id)).toEqual({ chatId: BigInt(CHAT_ID), messageId: 777 });
@@ -115,9 +115,9 @@ describe("anchorPaymentMessage (each checkout keeps its own transaction bubble)"
     const orderA = await makePendingOrder();
     const orderB = await makePendingOrder();
     const { ctx } = tapOn(777);
-    await anchorPaymentMessage(ctx, orderA.id, CHAT_ID);
+    await anchorPaymentMessage(ctx, orderA.id, CHAT_ID, "text");
 
-    await expect(anchorPaymentMessage(ctx, orderB.id, CHAT_ID)).rejects.toThrow();
+    await expect(anchorPaymentMessage(ctx, orderB.id, CHAT_ID, "text")).rejects.toThrow();
 
     expect(await anchorOf(orderA.id)).toEqual({ chatId: BigInt(CHAT_ID), messageId: 777 });
     expect(await anchorOf(orderB.id)).toEqual({ chatId: null, messageId: null });
@@ -131,22 +131,73 @@ describe("anchorPaymentMessage (each checkout keeps its own transaction bubble)"
   it("retains the canonical ID when the same order is reanchored from another menu", async () => {
     const order = await makePendingOrder();
     const { ctx } = tapOn(777);
-    await anchorPaymentMessage(ctx, order.id, CHAT_ID);
+    await anchorPaymentMessage(ctx, order.id, CHAT_ID, "text");
     await smartEdit(ctx, "Main menu", kb());
     expect(ctx.session.menuMsgId).not.toBe(777);
 
-    await anchorPaymentMessage(ctx, order.id, CHAT_ID);
+    await anchorPaymentMessage(ctx, order.id, CHAT_ID, "text");
 
     expect(await anchorOf(order.id)).toEqual({ chatId: BigInt(CHAT_ID), messageId: 777 });
     expect(await prisma.fulfillmentMessage.findUnique({ where: { orderId: order.id } })).toMatchObject({ messageId: 777 });
     expect(ctx.session.paymentAnchorMsgId).toBe(777);
   });
 
+  it.each(["photo", "text"] as const)("persists the %s kind of the anchored payment screen", async (kind) => {
+    const order = await makePendingOrder();
+    const { ctx } = tapOn(777);
+
+    await anchorPaymentMessage(ctx, order.id, CHAT_ID, kind);
+
+    expect(await prisma.fulfillmentMessage.findUnique({ where: { orderId: order.id } })).toMatchObject({ messageId: 777, messageKind: kind });
+  });
+
+  it("reads a caption-edited photo menu bubble as a photo, anything else as text", () => {
+    const photoTap = makeCtx({
+      callbackData: "v1:menu:main",
+      cbMessage: { message_id: 801, chat: { id: CHAT_ID, type: "private" }, date: 0, photo: [{ file_id: "f" }] },
+      session: { menuMsgId: 801 },
+    }).ctx;
+    expect(menuBubbleKind(photoTap)).toBe("photo");
+    // The tapped photo was not the bubble that ended up as the menu (a fresh text send replaced it).
+    photoTap.session.menuMsgId = 802;
+    expect(menuBubbleKind(photoTap)).toBe("text");
+    expect(menuBubbleKind(tapOn(803).ctx)).toBe("text");
+    expect(menuBubbleKind(makeCtx({ text: "hi", session: { menuMsgId: 804 } }).ctx)).toBe("text");
+  });
+
+  it("takes a wallet completion's adopted id and kind from the same (tapped) message", () => {
+    // The buyer tapped an older text confirmation while the session menu is a banner photo.
+    const olderText = makeCtx({
+      callbackData: "v1:menu:main",
+      cbMessage: { message_id: 810, chat: { id: CHAT_ID, type: "private" }, date: 0 },
+      session: { menuMsgId: 811 },
+    }).ctx;
+    expect(checkoutScreenOf(olderText)).toEqual({ messageId: 810, kind: "text" });
+    const tappedPhoto = makeCtx({
+      callbackData: "v1:menu:main",
+      cbMessage: { message_id: 812, chat: { id: CHAT_ID, type: "private" }, date: 0, photo: [{ file_id: "f" }] },
+      session: { menuMsgId: 813 },
+    }).ctx;
+    expect(checkoutScreenOf(tappedPhoto)).toEqual({ messageId: 812, kind: "photo" });
+    expect(checkoutScreenOf(makeCtx({ text: "hi", session: { menuMsgId: 814 } }).ctx)).toEqual({ messageId: 814, kind: "text" });
+    expect(checkoutScreenOf(makeCtx({ text: "hi" }).ctx)).toBeUndefined();
+  });
+
+  it("reads a QR screen as a photo only while the sent QR photo is still the menu bubble", () => {
+    const { ctx } = tapOn(805);
+    ctx.session.menuMsgId = 806;
+    expect(qrScreenKind(ctx, 806)).toBe("photo");
+    // The photo send was followed by a text fallback that took over the menu bubble.
+    ctx.session.menuMsgId = 805;
+    expect(qrScreenKind(ctx, 806)).toBe("text");
+    expect(qrScreenKind(ctx, undefined)).toBe("text");
+  });
+
   it("does nothing when the chat has no menu bubble to anchor", async () => {
     const order = await makePendingOrder();
     const { ctx } = makeCtx({ text: "hi" });
 
-    await anchorPaymentMessage(ctx, order.id, CHAT_ID);
+    await anchorPaymentMessage(ctx, order.id, CHAT_ID, "text");
 
     expect(await anchorOf(order.id)).toEqual({ chatId: null, messageId: null });
     expect(ctx.session.paymentAnchorMsgId).toBeUndefined();
@@ -156,10 +207,10 @@ describe("anchorPaymentMessage (each checkout keeps its own transaction bubble)"
     const orderA = await makePendingOrder();
     const orderB = await makePendingOrder();
     const { ctx } = tapOn(777);
-    await anchorPaymentMessage(ctx, orderA.id, CHAT_ID);
+    await anchorPaymentMessage(ctx, orderA.id, CHAT_ID, "text");
     await smartEdit(ctx, "Main menu", kb());
     const nextMessageId = ctx.session.menuMsgId;
-    await anchorPaymentMessage(ctx, orderB.id, CHAT_ID);
+    await anchorPaymentMessage(ctx, orderB.id, CHAT_ID, "text");
     await prisma.order.update({ where: { id: orderA.id }, data: { status: OrderStatus.DELIVERED } });
 
     const api = fakeApi();
@@ -177,12 +228,12 @@ describe("anchorPaymentMessage (each checkout keeps its own transaction bubble)"
       const orderA = await makePendingOrder();
       const orderB = await makePendingOrder();
       const { ctx } = tapOn(777);
-      await anchorPaymentMessage(ctx, orderA.id, CHAT_ID);
+      await anchorPaymentMessage(ctx, orderA.id, CHAT_ID, "text");
       await prisma.order.update({ where: { id: orderA.id }, data: { status } });
 
       await smartEdit(ctx, "Main menu", kb());
       const nextMessageId = ctx.session.menuMsgId;
-      await anchorPaymentMessage(ctx, orderB.id, CHAT_ID);
+      await anchorPaymentMessage(ctx, orderB.id, CHAT_ID, "text");
 
       expect(nextMessageId).not.toBe(777);
       expect(await anchorOf(orderA.id)).toEqual({ chatId: BigInt(CHAT_ID), messageId: 777 });
@@ -195,7 +246,7 @@ describe("navigating away from an anchored payment bubble", () => {
   it("sends a fresh menu instead of editing the canonical transaction", async () => {
     const order = await makePendingOrder();
     const { ctx, sink } = tapOn(777);
-    await anchorPaymentMessage(ctx, order.id, CHAT_ID);
+    await anchorPaymentMessage(ctx, order.id, CHAT_ID, "text");
 
     await smartEdit(ctx, "🏠 Main menu", kb());
 
@@ -211,7 +262,7 @@ describe("navigating away from an anchored payment bubble", () => {
   it("keeps the sweeper off the screen the buyer navigated to", async () => {
     const order = await makePendingOrder();
     const { ctx } = tapOn(777);
-    await anchorPaymentMessage(ctx, order.id, CHAT_ID);
+    await anchorPaymentMessage(ctx, order.id, CHAT_ID, "text");
     await smartEdit(ctx, "🏠 Main menu", kb());
     await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.DELIVERED } });
 
@@ -234,7 +285,7 @@ describe("navigating away from an anchored payment bubble", () => {
       },
       session: { menuMsgId: 777 },
     });
-    await anchorPaymentMessage(ctx, order.id, CHAT_ID);
+    await anchorPaymentMessage(ctx, order.id, CHAT_ID, "text");
 
     await renderMenu(ctx, "🏠 Main menu", kb(), "banner.jpg");
 
@@ -249,7 +300,7 @@ describe("navigating away from an anchored payment bubble", () => {
   it("protects the transaction when typed input renders through menuAnchor", async () => {
     const order = await makePendingOrder();
     const { ctx: payment } = tapOn(777);
-    await anchorPaymentMessage(payment, order.id, CHAT_ID);
+    await anchorPaymentMessage(payment, order.id, CHAT_ID, "text");
     const { ctx, sink } = makeCtx({ text: "2", sharedSession: payment.session });
 
     await menuAnchor(ctx, "Choose a product", kb());
@@ -266,7 +317,7 @@ describe("navigating away from an anchored payment bubble", () => {
   it("leaves the anchor alone when the render lands on a different message", async () => {
     const order = await makePendingOrder();
     const { ctx } = tapOn(777);
-    await anchorPaymentMessage(ctx, order.id, CHAT_ID);
+    await anchorPaymentMessage(ctx, order.id, CHAT_ID, "text");
 
     // A tap on some OTHER bubble: the payment instructions in 777 survive
     // untouched, so the anchor still describes reality.
@@ -285,7 +336,7 @@ describe("navigating away from an anchored payment bubble", () => {
     async (status) => {
       const order = await makePendingOrder();
       const { ctx } = tapOn(777);
-      await anchorPaymentMessage(ctx, order.id, CHAT_ID);
+      await anchorPaymentMessage(ctx, order.id, CHAT_ID, "text");
       await prisma.order.update({ where: { id: order.id }, data: { status } });
 
       await smartEdit(ctx, "🏠 Main menu", kb());
@@ -309,7 +360,7 @@ describe("a render that falls through to a fresh send", () => {
       session: { menuMsgId: 777 },
       deletedMessageIds: [777],
     });
-    await anchorPaymentMessage(ctx, order.id, CHAT_ID);
+    await anchorPaymentMessage(ctx, order.id, CHAT_ID, "text");
     anchorClears.calls = 0;
 
     await smartEdit(ctx, "🏠 Main menu", kb());
@@ -333,7 +384,7 @@ describe("a render that falls through to a fresh send", () => {
       session: { menuMsgId: 777 },
       deletedMessageIds: [777],
     });
-    await anchorPaymentMessage(ctx, order.id, CHAT_ID);
+    await anchorPaymentMessage(ctx, order.id, CHAT_ID, "text");
     anchorClears.calls = 0;
 
     await renderMenu(ctx, "🏠 Main menu", kb(), "banner.jpg");
@@ -349,7 +400,7 @@ describe("transaction ownership across sessions", () => {
   it("protects the stored transaction after restart without a session stamp", async () => {
     const order = await makePendingOrder();
     const { ctx: payment } = tapOn(777);
-    await anchorPaymentMessage(payment, order.id, CHAT_ID);
+    await anchorPaymentMessage(payment, order.id, CHAT_ID, "text");
     const { ctx, sink } = tapOn(777); // no session stamp — e.g. a restarted bot
 
     await smartEdit(ctx, "🏠 Main menu", kb());
@@ -367,7 +418,7 @@ describe("transaction ownership across sessions", () => {
   it("keeps a normal menu editable after navigating away from the transaction", async () => {
     const order = await makePendingOrder();
     const { ctx } = tapOn(777);
-    await anchorPaymentMessage(ctx, order.id, CHAT_ID);
+    await anchorPaymentMessage(ctx, order.id, CHAT_ID, "text");
     anchorClears.calls = 0;
 
     await smartEdit(ctx, "🏠 Main menu", kb());

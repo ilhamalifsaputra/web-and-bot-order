@@ -30,10 +30,13 @@ import {
   accountFileName,
   type DeliveredItem,
 } from "@app/core/delivery";
+import { prisma, credentialsDelivered, markCredentialsDelivered } from "@app/db";
+import { logger } from "@app/core/logger";
 import { notificationKb, paymentSuccessKb, walletKb } from "../keyboards/customer";
 import { coreT } from "./i18n";
 
 interface DeliverableOrder {
+  id: number;
   orderCode: string;
   items: DeliveredItem[];
 }
@@ -175,22 +178,59 @@ export function bubbleOnPhotoFor(kind: string): { onPhoto: "delete" } | { onPhot
   return kind === OrderKind.WALLET_TOPUP ? { onPhoto: "delete" } : { onPhoto: "replace", fallbackDm: null };
 }
 
-/** Send the buyer their account file (caption + `.txt`). Throws on failure. */
+/** What `sendAccountFile` did: sent the file now, or skipped an automatic send
+ * because Telegram already acknowledged this order's file earlier. */
+export type AccountFileOutcome = "sent" | "already_delivered";
+
+/**
+ * Send the buyer their account file (caption + `.txt`). Throws when the send
+ * fails, so callers can log and fall back (outbox retry or the admin's resend
+ * button), exactly as before.
+ *
+ * An automatic send (every caller except the admin resend) is skipped when the
+ * order's `credentialsDeliveredAt` is already set: a webhook replay, a poller
+ * re-run or a restart must never hand the buyer their secrets twice. An admin
+ * resend passes `resend: true` and always sends.
+ *
+ * Right after Telegram acknowledges the document, the delivery is recorded
+ * (`markCredentialsDelivered`, first writer wins), which lets the buyer's
+ * status message move from "sending your account details" to "completed". A
+ * database failure while recording is logged and swallowed: the file IS in
+ * the buyer's chat, so the caller must not treat it as a failed send and
+ * enqueue another copy.
+ */
 export async function sendAccountFile(
   api: Api,
   chatId: number,
   order: DeliverableOrder,
   lang: string,
-): Promise<void> {
+  opts: { resend?: boolean } = {},
+): Promise<AccountFileOutcome> {
+  if (!opts.resend && (await credentialsDelivered(prisma, order.id))) {
+    logger.info(
+      { orderId: order.id },
+      `Order ${order.orderCode}'s credentials file was already delivered, so this automatic send was skipped to avoid sending it twice.`,
+    );
+    return "already_delivered";
+  }
   const warranty = warrantyDaysFor(order.items);
   const content = buildAccountFileContent(
     { orderCode: order.orderCode, warrantyDays: warranty, items: order.items },
     lang,
   );
   const file = new InputFile(Buffer.from(content, "utf8"), accountFileName(order.orderCode));
-  await api.sendDocument(chatId, file, {
+  const sent = await api.sendDocument(chatId, file, {
     caption: buildDeliveryCaption(order.orderCode, warranty, lang),
     parse_mode: "HTML",
     reply_markup: notificationKb(lang),
   });
+  try {
+    await markCredentialsDelivered(prisma, order.id, sent.message_id);
+  } catch (err) {
+    logger.error(
+      { err, orderId: order.id },
+      `Order ${order.orderCode}'s credentials file was sent, but recording the delivery failed; it is not sent again, and the buyer's status message keeps saying it is still being sent.`,
+    );
+  }
+  return "sent";
 }

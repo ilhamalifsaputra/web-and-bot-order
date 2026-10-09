@@ -50,7 +50,7 @@ import { postOrderWalletCreditPosting } from "./ledgerPostings";
 import { getSetting, getDecryptedSetting, setSetting } from "./settings";
 import { finalizeOrderPayment } from "./pricing";
 import { parseMinAmount, BINANCE_INTERNAL_MIN_AMOUNT_KEY } from "./_minAmount";
-import { enqueueAdminOverpaid } from "./notifications";
+import { enqueueAdminOverpaid, enqueueOrderDeliveredDm } from "./notifications";
 import { settleWalletTopup, isLateSettleableWalletTopup, flagWalletTopupOverpayment, preservePaidWalletCreditFailure } from "./wallet_topup";
 import { POLL_HEALTH_KEYS, getPollHealth, recordPollHealth, type PollHealth } from "./poll_health";
 import { getPendingPaymentAttempt, confirmPaymentAttempt } from "./payments";
@@ -953,6 +953,16 @@ export async function deliverUnderpaidOrder(
     const result = await settlePaidOrder(tx, args.orderId, { adminId: args.adminId });
     if (result.kind === "delivered") {
       await tx.order.update({ where: { id: args.orderId }, data: { completedBy: args.adminId, completedAt: new Date() } });
+      // settlePaidOrder leaves the credentials DM to its caller. Queue it in
+      // this transaction, like an admin approve, so a Telegram buyer always
+      // gets the file (no-op for a web-only buyer). The caller nudges the
+      // dispatcher after commit.
+      await enqueueOrderDeliveredDm(tx, {
+        orderId: result.order.id,
+        orderCode: result.order.orderCode,
+        telegramId: result.order.user.telegramId,
+        language: result.order.user.language,
+      });
     }
     await logAdminAction(tx, {
       adminId: args.adminId, action: "underpaid_deliver", targetType: "order", targetId: args.orderId,
@@ -1147,6 +1157,17 @@ export async function manualMatchTx(
       meta: `manual_match binanceTxId=${args.binanceTxId} by admin_id=${args.adminId}`,
     });
     const result = await settlePaidOrder(tx, args.orderId, { adminId: args.adminId });
+    // Same as deliverUnderpaidOrder: the buyer's credentials DM is queued in
+    // this transaction (no-op for a web-only buyer); the caller nudges the
+    // dispatcher after commit.
+    if (result.kind === "delivered") {
+      await enqueueOrderDeliveredDm(tx, {
+        orderId: result.order.id,
+        orderCode: result.order.orderCode,
+        telegramId: result.order.user.telegramId,
+        language: result.order.user.language,
+      });
+    }
     logger.info(`Manually matched Binance transaction ${args.binanceTxId} to order ${result.order.orderCode} by admin ${args.adminId}`);
     return result;
   });

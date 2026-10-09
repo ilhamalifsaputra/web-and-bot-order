@@ -443,11 +443,13 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
           language: order.user.language,
         });
       } else {
+        // An admin resend: sent even after an acknowledged delivery.
         await enqueueOrderDeliveredDm(tx, {
           orderId: order.id,
           orderCode: order.orderCode,
           telegramId: order.user.telegramId,
           language: order.user.language,
+          resend: true,
         });
       }
       await logAdminAction(tx, {
@@ -714,6 +716,7 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
                 orderCode: order.orderCode,
                 telegramId: order.user.telegramId,
                 language: order.user.language,
+                resend: true, // an admin resend, like the single-order route
               });
             }
           });

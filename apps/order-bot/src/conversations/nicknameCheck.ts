@@ -5,7 +5,7 @@ import { validateCustomerData, type AdditionalField } from "@app/core/deliveryFi
 import { buildPlayerNicknameRequest, parseInputFields } from "@app/core/playerInput";
 import { prisma, getDenominationWithProduct, resolveNicknameGate, buildNicknameProviderEntries } from "@app/db";
 import type { MyContext, MyConversation } from "../context";
-import { menuAnchor } from "../util/chat";
+import { menuAnchor, consumeInput } from "../util/chat";
 import { esc } from "../util/format";
 import { coreT } from "../util/i18n";
 import * as ckb from "../keyboards/customer";
@@ -52,20 +52,34 @@ export async function confirmCustomerInputs(conversation: MyConversation, ctx: M
   };
   if (!checked.result || (checked.result.status !== "found" && !(checked.result.status === "not_found" && checked.result.definitive))) { await finalize(ctx); return; }
   const found = checked.result.status === "found";
-  await menuAnchor(ctx, found ? coreT("checkout.nickname_found", lang, { nickname: esc(checked.result.status === "found" ? checked.result.nickname : "") }) : coreT("checkout.nickname_not_found", lang), found ? ckb.nicknameConfirmKb(productId, quantity, lang) : ckb.nicknameNotFoundKb(productId, quantity, lang));
+  const resultText = found ? coreT("checkout.nickname_found", lang, { nickname: esc(checked.result.status === "found" ? checked.result.nickname : "") }) : coreT("checkout.nickname_not_found", lang);
+  const resultKb = found ? ckb.nicknameConfirmKb(productId, quantity, lang) : ckb.nicknameNotFoundKb(productId, quantity, lang);
+  await menuAnchor(ctx, resultText, resultKb);
   for (;;) {
     const u = await conversation.wait();
     const data = u.callbackQuery?.data ?? "";
     const text = u.message?.text ?? "";
     if ((data === ckb.cb("nick", "confirm") && found) || (data === ckb.cb("nick", "continue") && !found)) { await u.answerCallbackQuery(); await finalize(u); return; }
     if (data === ckb.cb("nick", "retry")) {
-      await u.answerCallbackQuery(); clearPlayerInputScratch(u);
+      // customerInfoConversation answers this tap itself; answering it here
+      // too made Telegram reject the second answer and the retry threw.
+      clearPlayerInputScratch(u);
       u.session.scratch.pendingInfoProductId = productId;
       u.session.scratch.pendingInfoQuantity = quantity;
       await customerInfoConversation(conversation, u); return;
     }
     if (/^\/(start|cancel)(?:@\w+)?(?:\s|$)/.test(text) || data.startsWith("v1:buy:")) { if (u.callbackQuery) await u.answerCallbackQuery(); clearPlayerInputScratch(u); await startCommand(u); return; }
     if (ckb.isPersistentLabel(text)) { clearPlayerInputScratch(u); await handleProductNumber(u); return; }
+    if (u.message) {
+      // A typed message here (usually a corrected ID) is not silently
+      // dropped: delete it and re-render this same bubble saying how to
+      // enter a new ID. It is not taken as the new ID itself, because the
+      // wizard may need several fields (ID + Zone) re-asked in order, which
+      // Try Again already does.
+      await consumeInput(u);
+      await menuAnchor(u, `${coreT("checkout.nickname_retry_hint", lang)}\n\n${resultText}`, resultKb);
+      continue;
+    }
     if (u.callbackQuery) await u.answerCallbackQuery({ text: coreT("error.stale_screen", lang) });
   }
 }

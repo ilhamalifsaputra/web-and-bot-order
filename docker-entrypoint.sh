@@ -53,7 +53,7 @@ FULFILLMENT_INDEX_SQL="$APP_ROOT/deploy/sql/fulfillment-message-unique-index.sql
 # When a release ships a new data-only migration, append its folder name here
 # (space-separated, oldest first) and state in the migration's own header comment
 # why re-running it is safe.
-DATA_MIGRATIONS="20260919120000_seed_usdt_rounding_ceil_since"
+DATA_MIGRATIONS="20260919120000_seed_usdt_rounding_ceil_since 20261008120100_backfill_credentials_delivered_at"
 
 # Bounded wait for the database to accept connections before the schema push.
 # Overridable so the wait can be shortened in tests; 10 x 2s is the default.

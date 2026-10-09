@@ -10,8 +10,8 @@ describe("canonical transaction presentation", () => {
     expect(customerProgressPhase({ ...order, status: "PROCESSING", paidAt: new Date(), fulfillmentProvider: "MANUAL" })).toMatchObject({ phase: "MANUAL_WAITING", spinner: false, progress: null });
   });
   it.each([
-    ["PAYMENT_DETECTED", 25], ["CONFIRMING", 35], ["CONFIRMED", 35], ["PAID", 40],
-  ])("uses factual %s payment phase", (status, progress) => {
+    ["PAYMENT_DETECTED", null], ["CONFIRMING", null], ["CONFIRMED", null], ["PAID", 40],
+  ])("uses factual %s payment phase (no percentage until the payment is verified)", (status, progress) => {
     expect(customerProgressPhase({ ...order, status })).toMatchObject({ progress, spinner: true });
   });
   it("maps provider work to fixed backend phases", () => {

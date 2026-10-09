@@ -1278,6 +1278,13 @@ describe("orders API — approve/resend enqueue the buyer's account DM", () => {
     expect(
       await prisma.notificationOutbox.count({ where: { orderId, event: "ORDER_DELIVERED_DM" } }),
     ).toBe(2);
+    // The approve row is automatic (dropped once the file was acknowledged);
+    // only the admin resend carries the flag that sends it again.
+    const [approved, resent] = await prisma.notificationOutbox.findMany({
+      where: { orderId, event: "ORDER_DELIVERED_DM" }, orderBy: { id: "asc" },
+    });
+    expect(JSON.parse(approved!.payloadJson)).not.toHaveProperty("resend");
+    expect(JSON.parse(resent!.payloadJson)).toMatchObject({ resend: true });
 
     const audit = await prisma.auditLog.findMany({
       where: { action: "order_resend_credentials", targetId: orderId },
@@ -1790,6 +1797,10 @@ describe("POST /api/orders/bulk-action", () => {
     const body = JSON.parse(res.body) as { succeeded: number[]; failed: { id: number; error: string }[] };
     expect(body.succeeded).toEqual([delivered]);
     expect(body.failed).toEqual([{ id: notDelivered, error: "error.not_eligible" }]);
+    const resent = await prisma.notificationOutbox.findFirstOrThrow({
+      where: { orderId: delivered, event: "ORDER_DELIVERED_DM" }, orderBy: { id: "desc" },
+    });
+    expect(JSON.parse(resent.payloadJson)).toMatchObject({ resend: true });
 
     const audit = await prisma.auditLog.findMany({ where: { action: "order_bulk_resend" } });
     expect(audit.length).toBe(1);
@@ -6880,13 +6891,57 @@ describe("payments", () => {
     return order.id;
   }
 
-  it("deliver underpaid → DELIVERED + audit", async () => {
+  /** The payloads of an order's ORDER_DELIVERED_DM outbox rows. */
+  async function deliveredDms(orderId: number) {
+    const rows = await prisma.notificationOutbox.findMany({ where: { orderId, event: "ORDER_DELIVERED_DM" } });
+    return rows.map((r) => JSON.parse(r.payloadJson) as Record<string, unknown>);
+  }
+
+  it("deliver underpaid → DELIVERED + audit, queues the buyer's credentials DM and wakes the dispatcher", async () => {
     const id = await makeUnderpaidOrder();
+    const orderCode = (await getOrder(prisma, id))!.orderCode;
+    let nudges = 0;
+    registerOutboxNudge(() => { nudges++; });
     const res = await post(`/api/payments/order/${id}/deliver`, seed.cookie, { csrf_token: seed.csrf, reason: "Approved shortfall" });
+    registerOutboxNudge(null);
     expect(res.statusCode).toBe(200);
     expect((await getOrder(prisma, id))!.status).toBe("DELIVERED");
     const audit = await prisma.auditLog.findMany({ where: { action: "underpaid_deliver", targetId: id } });
     expect(audit.length).toBe(1);
+    const dms = await deliveredDms(id);
+    expect(dms).toHaveLength(1);
+    expect(dms[0]).toMatchObject({ chat_id: CUSTOMER_TG, order_code: orderCode });
+    // Automatic delivery: the dispatcher drops it once the file was acknowledged.
+    expect(dms[0]).not.toHaveProperty("resend");
+    expect(nudges).toBe(1);
+  });
+
+  it("deliver underpaid queues no credentials DM for a web-only buyer (no Telegram id)", async () => {
+    const web = await createWebUser(prisma, {
+      loginUsername: "underpaidweb", email: "underpaidweb@shop.test", passwordHash: "x", fullName: "Web Buyer",
+    });
+    const order = (await createOrderDirect(prisma, { channel: "web", user: web, productId: seed.productId, quantity: 1 }))!;
+    await markUnderpaid(prisma, { orderId: order.id, binanceTxId: `UTX-${order.id}`, amount: "3.00" });
+    const res = await post(`/api/payments/order/${order.id}/deliver`, seed.cookie, { csrf_token: seed.csrf, reason: "Approved shortfall" });
+    expect(res.statusCode).toBe(200);
+    expect((await getOrder(prisma, order.id))!.status).toBe("DELIVERED");
+    expect(await deliveredDms(order.id)).toHaveLength(0);
+  });
+
+  it("deliver underpaid on a manual-delivery SKU queues it for hand-fulfilment: one processing DM, no credentials DM", async () => {
+    const manualDenom = await createDenomination(prisma, {
+      productId: seed.catalogProductId, name: `UnderpaidManual${Math.random()}`, type: ProductType.SHARED,
+      durationLabel: "1 Month", price: "5.00",
+    });
+    await updateDenomination(prisma, manualDenom.id, { deliveryType: DeliveryType.MANUAL });
+    const user = (await getUser(prisma, seed.customerId))!;
+    const order = (await createOrderDirect(prisma, { channel: "web", user, productId: manualDenom.id, quantity: 1 }))!;
+    await markUnderpaid(prisma, { orderId: order.id, binanceTxId: `UTX-${order.id}`, amount: "3.00" });
+    const res = await post(`/api/payments/order/${order.id}/deliver`, seed.cookie, { csrf_token: seed.csrf, reason: "Approved shortfall" });
+    expect(res.statusCode).toBe(200);
+    expect((await getOrder(prisma, order.id))!.status).toBe("PROCESSING");
+    expect(await prisma.notificationOutbox.count({ where: { orderId: order.id, event: "ORDER_PROCESSING_DM" } })).toBe(1);
+    expect(await deliveredDms(order.id)).toHaveLength(0);
   });
 
   it("refund underpaid → REFUNDED + wallet credit", async () => {
@@ -6927,8 +6982,42 @@ describe("payments", () => {
     const tx = await prisma.processedBinanceTx.findUnique({ where: { binanceTxId: "MTX1" } });
     expect(tx!.outcome).toBe("matched");
     expect(tx!.orderId).toBe(order.id);
-    // approve path enqueues exactly one testimoni outbox row.
-    expect((await prisma.notificationOutbox.findMany({ where: { orderId: order.id } })).length).toBe(1);
+    // Like an admin approve: the testimonial post and the buyer's credentials
+    // DM, nothing else.
+    const rows = await prisma.notificationOutbox.findMany({ where: { orderId: order.id } });
+    expect(rows.map((r) => r.event).sort()).toEqual(["ORDER_DELIVERED", "ORDER_DELIVERED_DM"]);
+    const dms = await deliveredDms(order.id);
+    expect(dms).toHaveLength(1);
+    expect(dms[0]).toMatchObject({ chat_id: CUSTOMER_TG, order_code: order.orderCode });
+    expect(dms[0]).not.toHaveProperty("resend");
+  });
+
+  it("manual match wakes the dispatcher once after the match commits", async () => {
+    const user = (await getUser(prisma, seed.customerId))!;
+    const order = (await createOrderDirect(prisma, { channel: "web", user, productId: seed.productId, quantity: 1 }))!;
+    await recordUnmatchedTx(prisma, { binanceTxId: "MTX-NUDGE", amount: "5.00" });
+    let nudges = 0;
+    registerOutboxNudge(() => { nudges++; });
+    const res = await post("/api/payments/match", seed.cookie, {
+      csrf_token: seed.csrf, binance_tx_id: "MTX-NUDGE", order_code: order.orderCode,
+    });
+    registerOutboxNudge(null);
+    expect(res.statusCode).toBe(200);
+    expect(nudges).toBe(1);
+  });
+
+  it("manual match queues no credentials DM for a web-only buyer (no Telegram id)", async () => {
+    const web = await createWebUser(prisma, {
+      loginUsername: "matchweb", email: "matchweb@shop.test", passwordHash: "x", fullName: "Web Buyer",
+    });
+    const order = (await createOrderDirect(prisma, { channel: "web", user: web, productId: seed.productId, quantity: 1 }))!;
+    await recordUnmatchedTx(prisma, { binanceTxId: "MTX-WEB", amount: "5.00" });
+    const res = await post("/api/payments/match", seed.cookie, {
+      csrf_token: seed.csrf, binance_tx_id: "MTX-WEB", order_code: order.orderCode,
+    });
+    expect(res.statusCode).toBe(200);
+    expect((await getOrder(prisma, order.id))!.status).toBe("DELIVERED");
+    expect(await deliveredDms(order.id)).toHaveLength(0);
   });
 
   it("credit unmatched tx → buyer credit balance + order CANCELLED + tx credited_to_balance + audit", async () => {

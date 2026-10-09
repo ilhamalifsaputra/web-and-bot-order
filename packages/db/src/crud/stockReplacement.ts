@@ -468,6 +468,9 @@ async function notifyBuyerOfRedelivery(
       orderCode: item.order.orderCode,
       telegramId: item.order.user.telegramId,
       language: item.order.user.language,
+      // The replacement credential is new: send it even though the order's
+      // original file was already acknowledged.
+      resend: true,
     });
     return "TELEGRAM_DM";
   }

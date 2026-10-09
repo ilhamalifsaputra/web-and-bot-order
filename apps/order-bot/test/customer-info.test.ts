@@ -14,6 +14,18 @@ vi.mock("@app/core/payments/tokopay", async (orig) => ({
   }),
 }));
 
+vi.mock("@app/core/payments/paydisini", async (orig) => ({
+  ...(await orig<typeof import("@app/core/payments/paydisini")>()),
+  createTransaction: vi.fn().mockResolvedValue({
+    trxId: "PD-TEST",
+    qrString: "000",
+    qrUrl: "https://x/pd-qr.png",
+    checkoutUrl: null,
+    totalBayar: "100",
+  }),
+}));
+
+import { PAYDISINI_USERKEY_KEY, PAYDISINI_APIKEY_KEY } from "@app/core/payments/paydisini";
 import {
   prisma,
   createCategory,
@@ -21,16 +33,20 @@ import {
   createDenomination,
   updateDenomination,
   setSetting,
+  BINANCE_UID_KEY,
+  BINANCE_API_KEY_KEY,
+  BINANCE_API_SECRET_KEY,
 } from "@app/db";
 import { DeliveryType, OrderStatus } from "@app/core/enums";
 import { AdditionalFieldType, type AdditionalField } from "@app/core/deliveryFields";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
-import { makeCtx, FakeConversation, calls, sentIncludes, type SentCall } from "./helpers/ctx";
+import { makeCtx, FakeConversation, calls, sentIncludes, lastMarkup, type SentCall } from "./helpers/ctx";
 import type { SessionData } from "../src/context";
 import { invalidateRateCache } from "../src/util/rate";
 import { t } from "../src/util/i18n";
 import * as checkout from "../src/handlers/checkout";
 import { customerInfoConversation } from "../src/conversations/customerInfo";
+import * as ckb from "../src/keyboards/customer";
 
 let sample: SampleData;
 
@@ -358,6 +374,320 @@ describe("customerInfoConversation", () => {
     await customerInfoConversation(conv.asMyConversation(), entry);
 
     expect(sentIncludes(sink, "Confirm Order")).toBe(true);
+  });
+});
+
+// ===========================================================================
+// One wizard bubble: Game ID → Zone → order summary → QR, with the exact
+// Telegram calls each step makes (message budget, AGENTS.md).
+// ===========================================================================
+
+const ZONE_FIELD: AdditionalField = {
+  key: "zone_id",
+  label: { id: "Zone ID", en: "Zone ID" },
+  type: AdditionalFieldType.TEXT,
+  required: true,
+  options: [],
+  placeholder: "",
+};
+const OPTIONAL_ZONE_FIELD: AdditionalField = { ...ZONE_FIELD, required: false };
+
+/** The Telegram calls that put or change something on the buyer's screen. */
+const SCREEN_CALLS = ["sendMessage", "reply", "editMessageText", "editMessageCaption", "deleteMessage", "replyWithPhoto", "sendPhoto", "sendDocument"];
+const screenCalls = (sink: SentCall[], from = 0) => sink.slice(from).filter((c) => SCREEN_CALLS.includes(c.method)).map((c) => c.method);
+
+const WIZARD_BUBBLE = 500;
+
+/**
+ * A scripted wizard over ONE shared session, started from a Buy tap on the
+ * order bubble `WIZARD_BUBBLE`. Steps are typed text, or `tap:<data>` — a tap
+ * on the bubble the session currently anchors (that is where the wizard's
+ * buttons live). `marks` records the sink length when each step is handed to
+ * the conversation, so a test can read what every single step sent.
+ */
+function wizardRun(denomId: number, steps: string[], opts: { failDeleteOnStep?: number } = {}) {
+  const sink: SentCall[] = [];
+  const session = {
+    ...userSession(),
+    menuMsgId: WIZARD_BUBBLE,
+    scratch: { pendingInfoProductId: denomId, pendingInfoQuantity: 1 },
+  } as SessionData;
+  const bubble = () => ({ message_id: session.menuMsgId ?? WIZARD_BUBBLE, chat: { id: 42, type: "private" }, date: 0 });
+  const entry = makeCtx({ sink, sharedSession: session, from: { id: 42, username: "tester" }, callbackData: `v1:buy:${denomId}:1`, cbMessage: bubble() }).ctx;
+  const marks: number[] = [];
+  const queue = steps.map((step, i) => () => {
+    marks.push(sink.length);
+    const c = step.startsWith("tap:")
+      ? makeCtx({ sink, sharedSession: session, from: { id: 42, username: "tester" }, callbackData: step.slice(4), cbMessage: bubble() }).ctx
+      : makeCtx({ sink, sharedSession: session, from: { id: 42, username: "tester" }, text: step }).ctx;
+    if (opts.failDeleteOnStep === i) {
+      (c.api as unknown as { deleteMessage: () => Promise<never> }).deleteMessage = () => Promise.reject(new Error("message can't be deleted"));
+    }
+    return c;
+  });
+  return { sink, session, entry, marks, conv: new FakeConversation(queue) };
+}
+
+function stepCalls(run: { sink: SentCall[]; marks: number[] }, i: number): string[] {
+  const end = run.marks[i + 1] ?? run.sink.length;
+  return run.sink.slice(run.marks[i]!, end).filter((c) => SCREEN_CALLS.includes(c.method)).map((c) => c.method);
+}
+
+function skipButtonOffered(sink: SentCall[]): boolean {
+  return JSON.stringify(lastMarkup(sink) ?? {}).includes(ckb.cb("input", "skip", 1));
+}
+
+describe("single-bubble checkout wizard — exact Telegram call counts", () => {
+  it("Game ID → Zone → summary edits ONE bubble; the typed answers are deleted; the summary is never a new message", async () => {
+    const denom = await makeManualWithInfoDenom([GAME_ID_FIELD, ZONE_FIELD]);
+    const run = wizardRun(denom.id, ["GID-1", "Z-1"]);
+
+    await customerInfoConversation(run.conv.asMyConversation(), run.entry);
+
+    // Entry (Buy tap): the Game ID prompt edits the tapped bubble in place.
+    expect(screenCalls(run.sink.slice(0, run.marks[0]))).toEqual(["editMessageText"]);
+    // Game ID typed: the answer is deleted, the Zone prompt edits the same bubble.
+    expect(stepCalls(run, 0)).toEqual(["deleteMessage", "editMessageText"]);
+    // Zone typed: deleted, and the order summary EDITS the wizard bubble.
+    expect(stepCalls(run, 1)).toEqual(["deleteMessage", "editMessageText"]);
+    const summary = calls(run.sink, "editMessageText").at(-1)!;
+    expect(summary.args[1]).toBe(WIZARD_BUBBLE);
+    expect(JSON.stringify(summary.args)).toContain("Confirm Order");
+    expect(calls(run.sink, "sendMessage")).toHaveLength(0);
+    expect(calls(run.sink, "reply")).toHaveLength(0);
+    expect(calls(run.sink, "editMessageCaption")).toHaveLength(0);
+    expect(run.session.menuMsgId).toBe(WIZARD_BUBBLE);
+    expect(JSON.parse(run.session.scratch.customerData as string)).toEqual([{ game_id: "GID-1", zone_id: "Z-1" }]);
+  });
+
+  it("the summary falls back to ONE new message only when the wizard bubble is gone, and anchors it", async () => {
+    const denom = await makeManualWithInfoDenom([GAME_ID_FIELD]);
+    const sink: SentCall[] = [];
+    const session = { ...userSession(), menuMsgId: WIZARD_BUBBLE, scratch: { pendingInfoProductId: denom.id, pendingInfoQuantity: 1 } } as SessionData;
+    const entry = makeCtx({ sink, sharedSession: session, callbackData: `v1:buy:${denom.id}:1`, cbMessage: { message_id: WIZARD_BUBBLE, chat: { id: 42, type: "private" }, date: 0 } }).ctx;
+    // The buyer deleted the wizard bubble before typing the answer.
+    const typed = makeCtx({ sink, sharedSession: session, text: "GID-1", deletedMessageIds: [WIZARD_BUBBLE] }).ctx;
+
+    await customerInfoConversation(new FakeConversation([typed]).asMyConversation(), entry);
+
+    expect(calls(sink, "reply")).toHaveLength(1);
+    expect(calls(sink, "sendMessage")).toHaveLength(0);
+    expect(sentIncludes(calls(sink, "reply"), "Confirm Order")).toBe(true);
+    expect(session.menuMsgId).not.toBe(WIZARD_BUBBLE);
+    expect(session.menuMsgId).toBeDefined();
+  });
+
+  it("a required zone offers no Skip button; an optional zone does, and Skip edits straight to the summary", async () => {
+    const required = await makeManualWithInfoDenom([GAME_ID_FIELD, ZONE_FIELD]);
+    const req = wizardRun(required.id, ["GID-1", "/cancel"]);
+    await customerInfoConversation(req.conv.asMyConversation(), req.entry);
+    // The last screen before /cancel is the Zone prompt.
+    const zonePromptReq = req.sink.slice(0, req.marks[1]);
+    expect(sentIncludes(zonePromptReq, "Zone ID")).toBe(true);
+    expect(skipButtonOffered(zonePromptReq)).toBe(false);
+
+    const optional = await makeManualWithInfoDenom([GAME_ID_FIELD, OPTIONAL_ZONE_FIELD]);
+    const opt = wizardRun(optional.id, ["GID-1", `tap:${ckb.cb("input", "skip", 1)}`]);
+    await customerInfoConversation(opt.conv.asMyConversation(), opt.entry);
+    expect(skipButtonOffered(opt.sink.slice(0, opt.marks[1]))).toBe(true);
+    // Skip tap: answered, and the summary edits the tapped wizard bubble.
+    expect(stepCalls(opt, 1)).toEqual(["editMessageText"]);
+    expect(JSON.stringify(calls(opt.sink, "editMessageText").at(-1)!.args)).toContain("Confirm Order");
+    expect(calls(opt.sink, "sendMessage")).toHaveLength(0);
+    expect(calls(opt.sink, "reply")).toHaveLength(0);
+    expect(JSON.parse(opt.session.scratch.customerData as string)).toEqual([{ game_id: "GID-1", zone_id: "" }]);
+  });
+
+  it("no zone field: the step is bypassed and the Game ID answer goes straight to the summary edit", async () => {
+    const denom = await makeManualWithInfoDenom([GAME_ID_FIELD]);
+    const run = wizardRun(denom.id, ["GID-1"]);
+    await customerInfoConversation(run.conv.asMyConversation(), run.entry);
+    expect(sentIncludes(run.sink, "Zone ID")).toBe(false);
+    expect(stepCalls(run, 0)).toEqual(["deleteMessage", "editMessageText"]);
+    expect(calls(run.sink, "sendMessage")).toHaveLength(0);
+  });
+
+  it("an invalid answer re-renders the SAME bubble with the error and deletes the typed input", async () => {
+    const denom = await makeManualWithInfoDenom([EMAIL_FIELD]);
+    const run = wizardRun(denom.id, ["not-an-email", "buyer@example.com"]);
+    await customerInfoConversation(run.conv.asMyConversation(), run.entry);
+
+    expect(stepCalls(run, 0)).toEqual(["deleteMessage", "editMessageText"]);
+    const errorEdit = run.sink.slice(run.marks[0], run.marks[1]).find((c) => c.method === "editMessageText")!;
+    expect(errorEdit.args[1]).toBe(WIZARD_BUBBLE);
+    expect(JSON.stringify(errorEdit.args)).toContain("Please enter a valid email address.");
+    expect(stepCalls(run, 1)).toEqual(["deleteMessage", "editMessageText"]);
+    expect(calls(run.sink, "sendMessage")).toHaveLength(0);
+    expect(calls(run.sink, "reply")).toHaveLength(0);
+  });
+
+  it("a failed delete of the typed answer is tolerated: the value is still saved and the wizard advances in the same bubble", async () => {
+    const denom = await makeManualWithInfoDenom([GAME_ID_FIELD, ZONE_FIELD]);
+    const run = wizardRun(denom.id, ["GID-1", "Z-1"], { failDeleteOnStep: 0 });
+    await customerInfoConversation(run.conv.asMyConversation(), run.entry);
+
+    expect(stepCalls(run, 0)).toEqual(["editMessageText"]);
+    expect(JSON.parse(run.session.scratch.customerData as string)).toEqual([{ game_id: "GID-1", zone_id: "Z-1" }]);
+    expect(calls(run.sink, "sendMessage")).toHaveLength(0);
+    expect(calls(run.sink, "reply")).toHaveLength(0);
+  });
+
+  it("a stale tap after the wizard advanced only toasts error.stale_screen — no edit, no send, no state change", async () => {
+    const denom = await makeManualWithInfoDenom([GAME_ID_FIELD, OPTIONAL_ZONE_FIELD]);
+    // Field 0's (now superseded) Skip button, tapped while the Zone prompt shows.
+    const run = wizardRun(denom.id, ["GID-1", `tap:${ckb.cb("input", "skip", 0)}`, "Z-1"]);
+    await customerInfoConversation(run.conv.asMyConversation(), run.entry);
+
+    expect(stepCalls(run, 1)).toEqual([]);
+    const staleAnswer = run.sink.slice(run.marks[1], run.marks[2]).filter((c) => c.method === "answerCallbackQuery");
+    expect(staleAnswer).toHaveLength(1);
+    expect((staleAnswer[0]!.args[0] as { text?: string }).text).toBe(t(run.entry, "error.stale_screen"));
+    // The Zone step was still waiting: the next answer lands in zone_id.
+    expect(JSON.parse(run.session.scratch.customerData as string)).toEqual([{ game_id: "GID-1", zone_id: "Z-1" }]);
+  });
+
+  it("Back re-renders the previous prompt in the same bubble; Cancel leaves the wizard", async () => {
+    const denom = await makeManualWithInfoDenom([GAME_ID_FIELD, ZONE_FIELD]);
+    const run = wizardRun(denom.id, ["OLD", `tap:${ckb.cb("input", "back")}`, "NEW", "Z-1"]);
+    await customerInfoConversation(run.conv.asMyConversation(), run.entry);
+    expect(stepCalls(run, 1)).toEqual(["editMessageText"]);
+    expect(JSON.parse(run.session.scratch.customerData as string)).toEqual([{ game_id: "NEW", zone_id: "Z-1" }]);
+    expect(calls(run.sink, "sendMessage")).toHaveLength(0);
+    expect(calls(run.sink, "reply")).toHaveLength(0);
+
+    const cancel = wizardRun(denom.id, ["GID-1", `tap:v1:buy:${denom.id}:1`]);
+    await customerInfoConversation(cancel.conv.asMyConversation(), cancel.entry);
+    expect(cancel.session.scratch.customerData).toBeUndefined();
+    expect(cancel.session.scratch.pendingInfoProductId).toBeUndefined();
+    expect(await prisma.order.count()).toBe(0);
+  });
+
+  it("the QR that follows the summary is the only new message, and the summary bubble is deleted right after it", async () => {
+    await setSetting(prisma, "tokopay_merchant_id", "M1");
+    await setSetting(prisma, "tokopay_secret", "S1");
+    const denom = await makeManualWithInfoDenom([GAME_ID_FIELD, ZONE_FIELD]);
+    const run = wizardRun(denom.id, ["GID-1", "Z-1"]);
+    await customerInfoConversation(run.conv.asMyConversation(), run.entry);
+
+    const before = run.sink.length;
+    const railTap = makeCtx({
+      sink: run.sink,
+      sharedSession: run.session,
+      callbackData: `v1:payq:${denom.id}:1`,
+      cbMessage: { message_id: run.session.menuMsgId!, chat: { id: 42, type: "private" }, date: 0 },
+      replyWithPhotoResult: { photo: [{ file_id: "qr" }] },
+    }).ctx;
+    await checkout.buyNowTokopay(railTap, denom.id, 1);
+
+    expect(screenCalls(run.sink, before)).toEqual(["replyWithPhoto", "deleteMessage"]);
+    expect(calls(run.sink.slice(before), "deleteMessage")[0]!.args[1]).toBe(WIZARD_BUBBLE);
+    const order = await prisma.order.findFirstOrThrow({ where: { userId: sample.user.id } });
+    const anchor = await prisma.fulfillmentMessage.findUnique({ where: { orderId: order.id } });
+    expect(anchor?.messageId).toBe(run.session.menuMsgId);
+    expect(anchor?.messageKind).toBe("photo");
+  });
+});
+
+/**
+ * Make the FIRST fulfillmentMessage lookup of `messageId` reject, the way a
+ * dropped database connection would — that lookup is the QR send's
+ * ownsTransactionMessageAt check on the confirm bubble. Returns a restore fn.
+ */
+function failFirstOwnershipReadOf(messageId: number): () => void {
+  const delegate = prisma.fulfillmentMessage;
+  const original = delegate.findFirst.bind(delegate);
+  let failed = false;
+  const spy = vi.spyOn(delegate, "findFirst").mockImplementation(((args: { where?: { messageId?: number } }) => {
+    if (!failed && args?.where?.messageId === messageId) {
+      failed = true;
+      return Promise.reject(new Error("Connection terminated unexpectedly"));
+    }
+    return original(args as never);
+  }) as never);
+  return () => spy.mockRestore();
+}
+
+describe("product QR send: a failed cleanup after the photo never renders a second payment screen", () => {
+  it.each([
+    ["TokoPay", "v1:payq"],
+    ["PayDisini", "v1:payd"],
+  ] as const)("%s: the ownership read throwing after the photo leaves exactly the QR photo, anchored as a photo", async (rail, prefix) => {
+    await setSetting(prisma, "tokopay_merchant_id", "M1");
+    await setSetting(prisma, "tokopay_secret", "S1");
+    await setSetting(prisma, PAYDISINI_USERKEY_KEY, "uk");
+    await setSetting(prisma, PAYDISINI_APIKEY_KEY, "ak");
+    const sink: SentCall[] = [];
+    const session = { ...userSession(), menuMsgId: WIZARD_BUBBLE } as SessionData;
+    const ctx = makeCtx({
+      sink,
+      sharedSession: session,
+      callbackData: `${prefix}:${sample.product.id}:1`,
+      cbMessage: { message_id: WIZARD_BUBBLE, chat: { id: 42, type: "private" }, date: 0 },
+      replyWithPhotoResult: { photo: [{ file_id: "qr" }] },
+    }).ctx;
+    const restore = failFirstOwnershipReadOf(WIZARD_BUBBLE);
+    try {
+      if (rail === "TokoPay") await checkout.buyNowTokopay(ctx, sample.product.id, 1);
+      else await checkout.buyNowPaydisini(ctx, sample.product.id, 1);
+    } finally {
+      restore();
+    }
+
+    expect(screenCalls(sink)).toEqual(["replyWithPhoto"]);
+    const order = await prisma.order.findFirstOrThrow({ where: { userId: sample.user.id } });
+    const anchor = await prisma.fulfillmentMessage.findUnique({ where: { orderId: order.id } });
+    expect(anchor?.messageId).toBe(session.menuMsgId);
+    expect(session.menuMsgId).not.toBe(WIZARD_BUBBLE);
+    expect(anchor?.messageKind).toBe("photo");
+  });
+});
+
+describe("the summary step when the product stopped being buyable", () => {
+  it("typed input at the end of a wizard edits the wizard bubble with the error — no new message", async () => {
+    const denom = await makeManualWithInfoDenom([GAME_ID_FIELD]);
+    await prisma.denomination.update({ where: { id: denom.id }, data: { isActive: false } });
+    const sink: SentCall[] = [];
+    const session = { ...userSession(), menuMsgId: WIZARD_BUBBLE } as SessionData;
+    const typed = makeCtx({ sink, sharedSession: session, text: "SAVE10" }).ctx;
+
+    await checkout.renderOrderConfirmation(typed, denom.id, 1);
+
+    expect(screenCalls(sink)).toEqual(["editMessageText"]);
+    expect(calls(sink, "editMessageText")[0]!.args[1]).toBe(WIZARD_BUBBLE);
+    expect(sentIncludes(sink, t(typed, "error.try_again"))).toBe(true);
+    expect(session.menuMsgId).toBe(WIZARD_BUBBLE);
+  });
+});
+
+describe("checkoutIntentId on the wizard path", () => {
+  it("an order placed after the wizard carries a checkoutIntentId, and a duplicate tap with that intent creates no second order", async () => {
+    await setSetting(prisma, "tokopay_merchant_id", "M1");
+    await setSetting(prisma, "tokopay_secret", "S1");
+    await setSetting(prisma, BINANCE_UID_KEY, "UID123");
+    await setSetting(prisma, BINANCE_API_KEY_KEY, "key");
+    await setSetting(prisma, BINANCE_API_SECRET_KEY, "secret");
+    await setSetting(prisma, "usd_idr_rate", "16000");
+    const denom = await makeManualWithInfoDenom([GAME_ID_FIELD]);
+    const run = wizardRun(denom.id, ["GID-1"]);
+    await customerInfoConversation(run.conv.asMyConversation(), run.entry);
+
+    const intent = run.session.scratch.checkoutIntentId;
+    expect(typeof intent).toBe("string");
+    // A second tap racing the first reads the same session snapshot (same
+    // intent). It goes to a DIFFERENT rail so the per-rail duplicate pre-check
+    // cannot be what refuses it — only the atomic intent guard can.
+    const staleScratch = { ...run.session.scratch };
+
+    const first = makeCtx({ sharedSession: run.session, callbackData: `v1:payq:${denom.id}:1` }).ctx;
+    await checkout.buyNowTokopay(first, denom.id, 1);
+    const orders = await prisma.order.findMany({ where: { userId: sample.user.id } });
+    expect(orders).toHaveLength(1);
+    expect(orders[0]!.checkoutIntentId).toBe(intent);
+
+    const { ctx: second, sink } = customerCtx({ callbackData: `v1:payx:${denom.id}:1`, session: { ...userSession(), scratch: staleScratch } });
+    await checkout.buyNowInternal(second, denom.id, 1);
+    expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1);
+    expect(sentIncludes(sink, t(second, "checkout.duplicate_pending"))).toBe(true);
   });
 });
 

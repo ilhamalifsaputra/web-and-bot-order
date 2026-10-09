@@ -52,7 +52,7 @@ import { triggerImmediatePoll as bybitImmediatePoll } from "../payments/bybitDep
 import { triggerImmediatePoll as bybitBscImmediatePoll } from "../payments/bybitBscDeposit";
 import type { MyContext } from "../context";
 import { smartEdit, menuAnchor, consumeInput } from "../util/chat";
-import { anchorPaymentMessage } from "../util/paymentAnchor";
+import { anchorPaymentMessage, menuBubbleKind, qrScreenKind } from "../util/paymentAnchor";
 import { t } from "../util/i18n";
 import { esc, formatIdrFor, formatUsdtAmount } from "../util/format";
 import { currentUsdtRate } from "../util/rate";
@@ -193,7 +193,6 @@ export async function promptTopupAmount(ctx: MyContext, currency: "IDR" | "USDT"
  * re-validates for real once a gateway is picked.
  */
 export async function handleTopupAmountInput(ctx: MyContext, currency: "IDR" | "USDT", rawText: string): Promise<void> {
-  await consumeInput(ctx);
   const lang = ctx.session.lang;
   const { limits, min } = await topupBounds(currency);
   const rangeLine = topupRangeLine(ctx, limits, currency, min);
@@ -216,7 +215,10 @@ export async function handleTopupAmountInput(ctx: MyContext, currency: "IDR" | "
     (!min || amount.greaterThanOrEqualTo(min)) &&
     (!max || amount.lessThanOrEqualTo(max));
 
+  // The typed amount is deleted once it has been judged (and, when valid,
+  // saved) — every screen after it edits the same top-up bubble.
   if (!valid) {
+    await consumeInput(ctx);
     await menuAnchor(ctx, t(ctx, "wallet.topup_amount_invalid", { range_line: rangeLine }), ckb.topupAmountCancelKb(lang));
     ctx.session.awaitingTopupCurrency = currency;
     return;
@@ -225,6 +227,7 @@ export async function handleTopupAmountInput(ctx: MyContext, currency: "IDR" | "
   ctx.session.awaitingTopupCurrency = undefined;
   sc(ctx).topupCurrency = currency;
   sc(ctx).topupAmount = amount!.toString();
+  await consumeInput(ctx);
   await showTopupMethods(ctx, currency, amount!);
 }
 
@@ -272,7 +275,9 @@ async function offeredTopupRails(
   return { rate, methods };
 }
 
-/** Amount captured -> show the gateway picker for the chosen currency. */
+/** Amount captured -> show the gateway picker for the chosen currency. Reached
+ *  from the typed amount, so it renders through menuAnchor: an edit of the
+ *  top-up bubble, not a new message (smartEdit only edits on a tap). */
 async function showTopupMethods(ctx: MyContext, currency: "IDR" | "USDT", amount: Decimal): Promise<void> {
   const lang = ctx.session.lang;
   const { methods } = await offeredTopupRails(currency, amount);
@@ -283,13 +288,13 @@ async function showTopupMethods(ctx: MyContext, currency: "IDR" | "USDT", amount
   // prompt and this tap. Say so instead of rendering a picker with nothing in
   // it — a keyboard whose only button is "Back" reads as a bug.
   if (methods.length === 0) {
-    await smartEdit(ctx, t(ctx, "wallet.topup_no_rail_for_amount"), ckb.topupCurrencyKb(lang));
+    await menuAnchor(ctx, t(ctx, "wallet.topup_no_rail_for_amount"), ckb.topupCurrencyKb(lang));
     return;
   }
 
   const offers = (method: WalletTopupMethod) => methods.includes(method);
   const amountText = currency === "IDR" ? formatIdrFor(amount, ctx.session.lang) : formatUsdtAmount(amount);
-  await smartEdit(
+  await menuAnchor(
     ctx,
     t(ctx, "wallet.topup_choose_method", { currency, amount: amountText }),
     ckb.topupMethodsKb(
@@ -398,7 +403,7 @@ export async function payTopupInternal(ctx: MyContext): Promise<void> {
     text,
     ckb.proofCancelKb(order.id, lang, true, { uid: cfg.receiveUid, note: order.paymentRef }),
   );
-  await anchorPaymentMessage(ctx, order.id, ctx.chat!.id);
+  await anchorPaymentMessage(ctx, order.id, ctx.chat!.id, menuBubbleKind(ctx));
   internalImmediatePoll(ctx.api);
 }
 
@@ -462,7 +467,7 @@ export async function payTopupBybit(ctx: MyContext): Promise<void> {
     expiry,
   });
   await smartEdit(ctx, text, ckb.proofCancelKb(order.id, lang, true));
-  await anchorPaymentMessage(ctx, order.id, ctx.chat!.id);
+  await anchorPaymentMessage(ctx, order.id, ctx.chat!.id, menuBubbleKind(ctx));
   bybitImmediatePoll(ctx.api);
 }
 
@@ -527,7 +532,7 @@ export async function payTopupBybitBsc(ctx: MyContext): Promise<void> {
     expiry,
   });
   await smartEdit(ctx, text, ckb.proofCancelKb(order.id, lang, true));
-  await anchorPaymentMessage(ctx, order.id, ctx.chat!.id);
+  await anchorPaymentMessage(ctx, order.id, ctx.chat!.id, menuBubbleKind(ctx));
   bybitBscImmediatePoll(ctx.api);
 }
 
@@ -627,7 +632,7 @@ export async function payTopupNowpayments(ctx: MyContext): Promise<void> {
     .row()
     .text(t(ctx, "menu.main"), ckb.cb("menu", "main"));
   await smartEdit(ctx, text, kb);
-  await anchorPaymentMessage(ctx, order.id, ctx.chat!.id);
+  await anchorPaymentMessage(ctx, order.id, ctx.chat!.id, menuBubbleKind(ctx));
 }
 
 /** QRIS (TokoPay) top-up. Mirrors checkout.buyNowTokopay. */
@@ -714,21 +719,28 @@ export async function payTopupTokopay(ctx: MyContext): Promise<void> {
   const confirmMsgId = ctx.callbackQuery?.message?.message_id ?? ctx.session.menuMsgId;
   ctx.session.qrMsgId = undefined;
   const waitingKb = ckb.qrisWaitingKb(order.id, lang);
+  let qrPhotoId: number | undefined;
   if (gateway.qrLink) {
+    // Only the photo send falls back to the text bubble: once the photo is
+    // out, a later failure must not ALSO render the instructions as text
+    // (two live payment screens) — the confirm-bubble cleanup is best effort.
     try {
       const qrMsg = await ctx.replyWithPhoto(gateway.qrLink, { caption, parse_mode: "HTML", reply_markup: waitingKb });
-      ctx.session.menuMsgId = qrMsg.message_id;
-      if (confirmMsgId && confirmMsgId !== qrMsg.message_id && !(await ownsTransactionMessageAt(prisma, chatId, confirmMsgId))) {
-        try { await ctx.api.deleteMessage(chatId, confirmMsgId); } catch { /* already gone or too old */ }
-      }
+      ctx.session.menuMsgId = qrPhotoId = qrMsg.message_id;
     } catch (err) {
       logger.error({ err }, `Failed to send the QRIS QR code photo for wallet top-up order ${order.orderCode} — falling back to a text-only instructions bubble`);
       await smartEdit(ctx, caption, waitingKb);
     }
+    // The QR photo replaced the confirm bubble — delete it right after.
+    if (qrPhotoId !== undefined && confirmMsgId && confirmMsgId !== qrPhotoId) {
+      try {
+        if (!(await ownsTransactionMessageAt(prisma, chatId, confirmMsgId))) await ctx.api.deleteMessage(chatId, confirmMsgId);
+      } catch { /* already gone, too old, or the ownership read failed — leave it */ }
+    }
   } else {
     await smartEdit(ctx, caption, waitingKb);
   }
-  await anchorPaymentMessage(ctx, order.id, chatId);
+  await anchorPaymentMessage(ctx, order.id, chatId, qrScreenKind(ctx, qrPhotoId));
 }
 
 /** PayDisini top-up. Mirrors checkout.buyNowPaydisini. */
@@ -806,19 +818,26 @@ export async function payTopupPaydisini(ctx: MyContext): Promise<void> {
   const confirmMsgId = ctx.callbackQuery?.message?.message_id ?? ctx.session.menuMsgId;
   ctx.session.qrMsgId = undefined;
   const waitingKb = ckb.qrisWaitingKb(order.id, lang);
+  let qrPhotoId: number | undefined;
   if (gateway.qrUrl) {
+    // Only the photo send falls back to the text bubble: once the photo is
+    // out, a later failure must not ALSO render the instructions as text
+    // (two live payment screens) — the confirm-bubble cleanup is best effort.
     try {
       const qrMsg = await ctx.replyWithPhoto(gateway.qrUrl, { caption, parse_mode: "HTML", reply_markup: waitingKb });
-      ctx.session.menuMsgId = qrMsg.message_id;
-      if (confirmMsgId && confirmMsgId !== qrMsg.message_id && !(await ownsTransactionMessageAt(prisma, chatId, confirmMsgId))) {
-        try { await ctx.api.deleteMessage(chatId, confirmMsgId); } catch { /* already gone or too old */ }
-      }
+      ctx.session.menuMsgId = qrPhotoId = qrMsg.message_id;
     } catch (err) {
       logger.error({ err }, `Failed to send the PayDisini QR code photo for wallet top-up order ${order.orderCode} — falling back to a text-only instructions bubble`);
       await smartEdit(ctx, caption, waitingKb);
     }
+    // The QR photo replaced the confirm bubble — delete it right after.
+    if (qrPhotoId !== undefined && confirmMsgId && confirmMsgId !== qrPhotoId) {
+      try {
+        if (!(await ownsTransactionMessageAt(prisma, chatId, confirmMsgId))) await ctx.api.deleteMessage(chatId, confirmMsgId);
+      } catch { /* already gone, too old, or the ownership read failed — leave it */ }
+    }
   } else {
     await smartEdit(ctx, caption, waitingKb);
   }
-  await anchorPaymentMessage(ctx, order.id, chatId);
+  await anchorPaymentMessage(ctx, order.id, chatId, qrScreenKind(ctx, qrPhotoId));
 }

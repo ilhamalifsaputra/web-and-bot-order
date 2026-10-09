@@ -5,6 +5,7 @@ import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import PrivacyPage from "./PrivacyPage";
 import AboutPage from "./AboutPage";
+import TermsPage from "./TermsPage";
 import { apiGet } from "../api/client";
 import type { ShopContext } from "../api/types";
 
@@ -77,6 +78,23 @@ describe("informational pages", () => {
     renderPage(<AboutPage />, context({ shop_name: "Trustance" }));
     expect(await screen.findByText(/Trustance sells digital products/)).toBeInTheDocument();
     expect(screen.queryByText(/\{shop\}/)).not.toBeInTheDocument();
+  });
+
+  it("fills {company} with the legal name when set and falls back to the shop name", async () => {
+    const withLegal = renderPage(
+      <TermsPage />,
+      context({
+        shop_name: "Trustance",
+        business: { legal_name: "PT Contoh Usaha", address: null, phone: null, email: null, hours: null },
+      }),
+    );
+    expect(await screen.findByText(/Trustance is operated by PT Contoh Usaha/)).toBeInTheDocument();
+    expect(screen.queryByText(/\{company\}/)).not.toBeInTheDocument();
+    withLegal.unmount();
+
+    renderPage(<AboutPage />, context({ shop_name: "Trustance" }));
+    expect(await screen.findAllByText(/Trustance is operated by Trustance/)).not.toHaveLength(0);
+    expect(screen.queryByText(/\{company\}/)).not.toBeInTheDocument();
   });
 
   it("hides the analytics section unless the shop actually loads analytics", async () => {

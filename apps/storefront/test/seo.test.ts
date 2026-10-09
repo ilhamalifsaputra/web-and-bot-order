@@ -298,6 +298,29 @@ describe("metadata for search results and social previews", () => {
     }
   });
 
+  it("substitutes {company} on the policy pages: legal name when set, shop name otherwise", async () => {
+    const operated = (body: string) => /<p>([^<]*is operated by [^<]*)<\/p>/.exec(body)?.[1] ?? "";
+    const before = await app.inject({ method: "GET", url: "/terms" });
+    const fallback = operated(before.body);
+    expect(fallback).not.toBe("");
+    expect(fallback).not.toContain("{company}");
+    expect(before.body).not.toContain("{company}");
+    // Block counts mirror the React pages: terms has 10 blocks + the intro.
+    expect(before.body.match(/<h2>/g)?.length).toBe(10);
+
+    await setSetting(prisma, "business_legal_name", "  PT Contoh <Digital>  ");
+    try {
+      for (const url of ["/terms", "/about", "/privacy"]) {
+        const res = await app.inject({ method: "GET", url });
+        expect(res.body, url).toContain("PT Contoh &lt;Digital&gt;");
+        expect(res.body, url).not.toContain("{company}");
+      }
+      expect(operated((await app.inject({ method: "GET", url: "/terms" })).body)).not.toBe(fallback);
+    } finally {
+      await setSetting(prisma, "business_legal_name", "");
+    }
+  });
+
   it("puts the product's detail blocks in the crawler shell and its structured data", async () => {
     const res = await app.inject({ method: "GET", url: `/p/${activeProductSlug}` });
     const shell = /<div id="seo-shell">([\s\S]*?)<\/div>/.exec(res.body)?.[1] ?? "";

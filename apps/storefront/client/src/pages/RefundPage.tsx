@@ -1,5 +1,7 @@
 import StaticPage from "../components/shop/StaticPage";
 
+// The refund copy has no {company} placeholder (it points to the Contact page
+// instead), so no args are needed.
 export default function RefundPage() {
   return (
     <StaticPage

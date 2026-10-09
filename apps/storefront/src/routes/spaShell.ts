@@ -175,12 +175,28 @@ const KNOWN_PATHS = new RegExp(
  * they exist. Keep the block counts in step with the React pages.
  */
 const STATIC_PAGES: Record<string, { prefix: string; blocks: number }> = {
-  "/about": { prefix: "about", blocks: 4 },
+  "/about": { prefix: "about", blocks: 5 },
   "/how-to-order": { prefix: "hto", blocks: 5 },
-  "/terms": { prefix: "terms", blocks: 5 },
-  "/privacy": { prefix: "privacy", blocks: 5 },
+  "/terms": { prefix: "terms", blocks: 10 },
+  "/privacy": { prefix: "privacy", blocks: 7 },
   "/refund": { prefix: "refund", blocks: 5 },
 };
+
+/** Owner-set business setting, trimmed; "" when unset (same rule as the
+ *  `business` block of GET /pages/context and the /contact branch). */
+async function readBusinessSetting(key: string): Promise<string> {
+  return ((await getSetting(prisma, key)) ?? "").trim();
+}
+
+/**
+ * Placeholder values for the policy copy. `{company}` is the owner-set legal
+ * name, falling back to the shop name — the SAME fallback the React pages use
+ * (client/src/lib/company.ts), so crawler text equals human text.
+ */
+async function staticPageArgs(shopName: string): Promise<{ shop: string; company: string }> {
+  const legalName = await readBusinessSetting("business_legal_name");
+  return { shop: shopName, company: legalName || shopName };
+}
 
 interface HeadInfo {
   title: string;
@@ -529,7 +545,7 @@ async function headInfo(
     // block, same row order, and the same help card. The WhatsApp/Telegram
     // buttons are left out (crawler text may be a subset of the page, never
     // more).
-    const read = async (key: string): Promise<string> => ((await getSetting(prisma, key)) ?? "").trim();
+    const read = readBusinessSetting;
     const [legalName, address, phone, email, hours] = await Promise.all([
       read("business_legal_name"),
       read("business_address"),
@@ -571,7 +587,7 @@ async function headInfo(
   const staticPage = STATIC_PAGES[path];
   if (staticPage) {
     const { prefix, blocks } = staticPage;
-    const args = { shop: shopName };
+    const args = await staticPageArgs(shopName);
     const heading = t(`web.${prefix}_title`, lang);
     const intro = t(`web.${prefix}_intro`, lang, args);
     // The analytics section only exists on shops that load analytics — same

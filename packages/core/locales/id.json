@@ -1245,7 +1245,7 @@
   "web.terms_h4": "Yang membatalkan garansi",
   "web.terms_p4": "Mengubah data login akun (email, kata sandi, nomor pemulihan) kecuali deskripsi produknya membolehkan; memakai produk untuk hal yang melanggar aturan penyedia layanan; atau menyerahkan produk ke orang lain.",
   "web.terms_h5": "Harga dan ketersediaan",
-  "web.terms_p5": "Semua harga ditampilkan dan ditagihkan dalam Rupiah (IDR). Harga dan stok bisa berubah kapan saja, tetapi total yang kamu lihat saat checkout adalah total akhir yang ditagihkan. Kalau stok ternyata kosong setelah kamu membayar, kami tawarkan penggantian atau pengembalian dana penuh.",
+  "web.terms_p5": "Harga dasar produk ditetapkan dalam Rupiah (IDR). Pembayaran QRIS dan kartu ditagihkan dalam Rupiah; pembayaran USDT ditagihkan sebesar nominal USDT yang tampil di halaman checkout. Harga dan stok bisa berubah kapan saja, tetapi total yang tampil di checkout adalah jumlah final yang kamu bayar. Kalau stok ternyata kosong setelah kamu membayar, kami tawarkan penggantian atau pengembalian dana penuh.",
   "web.terms_h6": "Metode pembayaran",
   "web.terms_p6": "Metode pembayaran yang tersedia ditampilkan di halaman checkout, antara lain QRIS, kartu kredit/debit (Visa, Mastercard, JCB) bila tersedia, USDT, dan saldo akun. Pembayaran QRIS dan kartu diproses oleh mitra pembayaran kami, Xendit, bila metode tersebut tersedia. Pesanan baru diproses setelah pembayaran terkonfirmasi.",
   "web.terms_h7": "Pengiriman produk digital",

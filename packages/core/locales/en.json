@@ -1245,7 +1245,7 @@
   "web.terms_h4": "What voids the warranty",
   "web.terms_p4": "Changing the account's login details (email, password, recovery number) unless the product description allows it; using the product for anything that breaks the provider's own rules; or handing the product to someone else.",
   "web.terms_h5": "Pricing and availability",
-  "web.terms_p5": "All prices are shown and charged in Indonesian Rupiah (IDR). Prices and stock can change at any time, but the total you see at checkout is the final total you're charged. If stock turns out to be empty after you've paid, we offer a replacement or a full refund.",
+  "web.terms_p5": "Base product prices are set in Indonesian Rupiah (IDR). QRIS and card payments are charged in Rupiah; USDT payments are charged in the USDT amount shown on the checkout page. Prices and stock can change at any time, but the total shown at checkout is the final amount you pay. If stock turns out to be empty after you've paid, we offer a replacement or a full refund.",
   "web.terms_h6": "Payment methods",
   "web.terms_p6": "The payment methods available are shown at checkout and include QRIS, credit/debit card (Visa, Mastercard, JCB) where available, USDT, and account balance. QRIS and card payments are processed by our payment partner, Xendit, where those methods are available. An order is processed only after payment is confirmed.",
   "web.terms_h7": "Delivery of digital products",

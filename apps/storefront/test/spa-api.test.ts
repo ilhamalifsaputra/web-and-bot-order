@@ -1869,7 +1869,7 @@ describe("checkout business rules (migrated from the Nunjucks checkout tests)", 
         const res = await app.inject({ method: "GET", url: `/api/v1/orders/${code}/status`, headers: { cookie } });
         expect(res.statusCode).toBe(200);
         expect(res.json()).toMatchObject({ state: "confirming", redirect: null, underpayment: null,
-          presentation: { phase: status === OrderStatus.PAYMENT_DETECTED ? "PAYMENT_DETECTED" : "VERIFYING", spinner: true, progress: status === OrderStatus.PAYMENT_DETECTED ? 25 : 35 },
+          presentation: { phase: status === OrderStatus.PAYMENT_DETECTED ? "PAYMENT_DETECTED" : "VERIFYING", spinner: true, progress: null },
         });
       },
     );

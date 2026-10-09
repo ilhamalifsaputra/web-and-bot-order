@@ -112,4 +112,10 @@ describe("GET /api/v1/pages/context — pay_methods", () => {
     await setXendit(false, true);
     expect((await context()).pay_methods).toEqual({ qris: true, card: true });
   });
+
+  it("stays 200 with correct flags when a Xendit secret cannot be decrypted", async () => {
+    await setXendit(true, true);
+    await setSetting(prisma, "xendit_secret_key", '{"keyVersion":1,"iv":"x","ciphertext":"x","authTag":"x"}');
+    expect((await context()).pay_methods).toEqual({ qris: true, card: true });
+  });
 });

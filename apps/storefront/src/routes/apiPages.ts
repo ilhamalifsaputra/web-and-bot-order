@@ -16,9 +16,7 @@ import {
   prisma,
   getSetting,
   hasActiveFlashSale,
-  getTokopayCreds,
-  getPaydisiniCreds,
-  getXenditCreds,
+  getPayMethodDisplayFlags,
 } from "@app/db";
 import { optionalCustomer } from "../plugins/auth";
 import { requestLang, requestCurrency, resolveDisplayCurrency, readGuestCart, resolveBotUsername } from "../shop";
@@ -56,9 +54,7 @@ const apiPagesRoutes: FastifyPluginAsync = async (app) => {
       businessPhone,
       businessEmail,
       businessHours,
-      tokopay,
-      paydisini,
-      xendit,
+      payMethods,
     ] = await Promise.all([
       getUsdIdrRate(prisma),
       getSetting(prisma, "shop_name"),
@@ -84,10 +80,8 @@ const apiPagesRoutes: FastifyPluginAsync = async (app) => {
       getSetting(prisma, "business_phone"),
       getSetting(prisma, "business_email"),
       getSetting(prisma, "business_hours"),
-      // Gateway credentials, read only to derive the display flags below.
-      getTokopayCreds(prisma),
-      getPaydisiniCreds(prisma),
-      getXenditCreds(prisma),
+      // Presence-only (no decryption): a corrupt secret row must not 500 every page.
+      getPayMethodDisplayFlags(prisma),
     ]);
     const orNull = (v: string | null): string | null => (v ?? "").trim() || null;
     return reply.send({
@@ -140,10 +134,7 @@ const apiPagesRoutes: FastifyPluginAsync = async (app) => {
       },
       // Display flags for the footer's payment-method logos only; checkout
       // availability is decided elsewhere and is untouched by these.
-      pay_methods: {
-        qris: Boolean(tokopay || paydisini || (xendit && xendit.qrisEnabled)),
-        card: Boolean(xendit && xendit.cardEnabled),
-      },
+      pay_methods: payMethods,
     });
   });
 

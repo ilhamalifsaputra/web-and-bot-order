@@ -50,9 +50,7 @@ import {
   Clock,
   Loader,
   Mail,
-  MessageCircle,
   RefreshCw,
-  Send,
   ShieldCheck,
   Timer,
   TimerOff,
@@ -67,6 +65,8 @@ import { readCodeEmailed } from "../lib/orderCodeEmailed";
 import Stepper from "../components/shop/Stepper";
 import ErrorPage from "./ErrorPage";
 import Skeleton from "../components/shop/Skeleton";
+import WhatsAppIcon from "../components/shop/WhatsAppIcon";
+import TelegramIcon from "../components/shop/TelegramIcon";
 import Card from "../components/ui/Card";
 import Button from "../components/ui/Button";
 import Alert from "../components/ui/Alert";
@@ -178,7 +178,7 @@ function GatewayDownFallback({
             rel="noopener noreferrer"
             className="btn btn-ghost btn-sm"
           >
-            <MessageCircle className="w-3.5 h-3.5" /> WhatsApp
+            <WhatsAppIcon className="w-3.5 h-3.5" /> WhatsApp
           </a>
         ) : botUsername ? (
           <a
@@ -187,7 +187,7 @@ function GatewayDownFallback({
             rel="noopener noreferrer"
             className="btn btn-ghost btn-sm"
           >
-            <Send className="w-3.5 h-3.5" /> Telegram
+            <TelegramIcon className="w-3.5 h-3.5" /> Telegram
           </a>
         ) : null}
       </div>
@@ -550,7 +550,7 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
                     rel="noopener noreferrer"
                     className="btn btn-soft btn-sm mt-3"
                   >
-                    <Send className="w-3.5 h-3.5" /> Telegram
+                    <TelegramIcon className="w-3.5 h-3.5" /> Telegram
                   </a>
                 )}
               </>

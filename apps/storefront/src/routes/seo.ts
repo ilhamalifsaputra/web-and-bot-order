@@ -41,7 +41,7 @@ const seoRoutes: FastifyPluginAsync = async (app) => {
     // the two pages a search engine most wants for a shop's identity (about,
     // policies) had no entry at all. Keep in sync with STATIC_PAGES in
     // spaShell.ts.
-    const urlTags: string[] = ["/", "/about", "/how-to-order", "/terms", "/privacy", "/refund"].map(
+    const urlTags: string[] = ["/", "/about", "/contact", "/how-to-order", "/terms", "/privacy", "/refund"].map(
       (p) => `<url><loc>${xmlEscape(origin + p)}</loc></url>`,
     );
     for (const c of categories) {

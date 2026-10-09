@@ -14,6 +14,18 @@ vi.mock("@app/core/payments/tokopay", async (orig) => ({
   }),
 }));
 
+vi.mock("@app/core/payments/paydisini", async (orig) => ({
+  ...(await orig<typeof import("@app/core/payments/paydisini")>()),
+  createTransaction: vi.fn().mockResolvedValue({
+    trxId: "PD-TEST",
+    qrString: "000",
+    qrUrl: "https://x/pd-qr.png",
+    checkoutUrl: null,
+    totalBayar: "100",
+  }),
+}));
+
+import { PAYDISINI_USERKEY_KEY, PAYDISINI_APIKEY_KEY } from "@app/core/payments/paydisini";
 import {
   prisma,
   createCategory,
@@ -573,6 +585,77 @@ describe("single-bubble checkout wizard — exact Telegram call counts", () => {
     const anchor = await prisma.fulfillmentMessage.findUnique({ where: { orderId: order.id } });
     expect(anchor?.messageId).toBe(run.session.menuMsgId);
     expect(anchor?.messageKind).toBe("photo");
+  });
+});
+
+/**
+ * Make the FIRST fulfillmentMessage lookup of `messageId` reject, the way a
+ * dropped database connection would — that lookup is the QR send's
+ * ownsTransactionMessageAt check on the confirm bubble. Returns a restore fn.
+ */
+function failFirstOwnershipReadOf(messageId: number): () => void {
+  const delegate = prisma.fulfillmentMessage;
+  const original = delegate.findFirst.bind(delegate);
+  let failed = false;
+  const spy = vi.spyOn(delegate, "findFirst").mockImplementation(((args: { where?: { messageId?: number } }) => {
+    if (!failed && args?.where?.messageId === messageId) {
+      failed = true;
+      return Promise.reject(new Error("Connection terminated unexpectedly"));
+    }
+    return original(args as never);
+  }) as never);
+  return () => spy.mockRestore();
+}
+
+describe("product QR send: a failed cleanup after the photo never renders a second payment screen", () => {
+  it.each([
+    ["TokoPay", "v1:payq"],
+    ["PayDisini", "v1:payd"],
+  ] as const)("%s: the ownership read throwing after the photo leaves exactly the QR photo, anchored as a photo", async (rail, prefix) => {
+    await setSetting(prisma, "tokopay_merchant_id", "M1");
+    await setSetting(prisma, "tokopay_secret", "S1");
+    await setSetting(prisma, PAYDISINI_USERKEY_KEY, "uk");
+    await setSetting(prisma, PAYDISINI_APIKEY_KEY, "ak");
+    const sink: SentCall[] = [];
+    const session = { ...userSession(), menuMsgId: WIZARD_BUBBLE } as SessionData;
+    const ctx = makeCtx({
+      sink,
+      sharedSession: session,
+      callbackData: `${prefix}:${sample.product.id}:1`,
+      cbMessage: { message_id: WIZARD_BUBBLE, chat: { id: 42, type: "private" }, date: 0 },
+      replyWithPhotoResult: { photo: [{ file_id: "qr" }] },
+    }).ctx;
+    const restore = failFirstOwnershipReadOf(WIZARD_BUBBLE);
+    try {
+      if (rail === "TokoPay") await checkout.buyNowTokopay(ctx, sample.product.id, 1);
+      else await checkout.buyNowPaydisini(ctx, sample.product.id, 1);
+    } finally {
+      restore();
+    }
+
+    expect(screenCalls(sink)).toEqual(["replyWithPhoto"]);
+    const order = await prisma.order.findFirstOrThrow({ where: { userId: sample.user.id } });
+    const anchor = await prisma.fulfillmentMessage.findUnique({ where: { orderId: order.id } });
+    expect(anchor?.messageId).toBe(session.menuMsgId);
+    expect(session.menuMsgId).not.toBe(WIZARD_BUBBLE);
+    expect(anchor?.messageKind).toBe("photo");
+  });
+});
+
+describe("the summary step when the product stopped being buyable", () => {
+  it("typed input at the end of a wizard edits the wizard bubble with the error — no new message", async () => {
+    const denom = await makeManualWithInfoDenom([GAME_ID_FIELD]);
+    await prisma.denomination.update({ where: { id: denom.id }, data: { isActive: false } });
+    const sink: SentCall[] = [];
+    const session = { ...userSession(), menuMsgId: WIZARD_BUBBLE } as SessionData;
+    const typed = makeCtx({ sink, sharedSession: session, text: "SAVE10" }).ctx;
+
+    await checkout.renderOrderConfirmation(typed, denom.id, 1);
+
+    expect(screenCalls(sink)).toEqual(["editMessageText"]);
+    expect(calls(sink, "editMessageText")[0]!.args[1]).toBe(WIZARD_BUBBLE);
+    expect(sentIncludes(sink, t(typed, "error.try_again"))).toBe(true);
+    expect(session.menuMsgId).toBe(WIZARD_BUBBLE);
   });
 });
 

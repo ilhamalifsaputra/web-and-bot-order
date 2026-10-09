@@ -359,7 +359,9 @@ async function availableCheckoutDenomination(ctx: MyContext, productId: number):
     return product;
   }
   if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, key), show_alert: true });
-  await smartEdit(ctx, t(ctx, key), ckb.backToMain(ctx.session.lang));
+  // menuAnchor: at the end of a typed wizard step this edits the wizard
+  // bubble instead of sending a new one (a tap still edits the tapped bubble).
+  await menuAnchor(ctx, t(ctx, key), ckb.backToMain(ctx.session.lang));
   return null;
 }
 
@@ -1562,6 +1564,9 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
   const waitingKb = ckb.qrisWaitingKb(order.id, lang);
   let qrPhotoId: number | undefined;
   if (gateway.qrLink) {
+    // Only the photo send falls back to the text bubble: once the photo is
+    // out, a later failure must not ALSO render the instructions as text
+    // (a second payment screen that would take the anchor and orphan the QR).
     try {
       const qrMsg = await ctx.replyWithPhoto(gateway.qrLink, {
         caption,
@@ -1569,13 +1574,16 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
         reply_markup: waitingKb,
       });
       ctx.session.menuMsgId = qrPhotoId = qrMsg.message_id;
-      if (confirmMsgId && confirmMsgId !== qrMsg.message_id && !(await ownsTransactionMessageAt(prisma, chatId, confirmMsgId))) {
-        try { await ctx.api.deleteMessage(chatId, confirmMsgId); } catch { /* already gone or too old */ }
-      }
     } catch (err) {
       logger.error({ err }, `Failed to send the QRIS QR code photo for order ${order.orderCode} — falling back to a text-only instructions bubble`);
       // QR image failed — fall back to a text-only instructions bubble.
       await smartEdit(ctx, caption, waitingKb);
+    }
+    // The QR photo replaced the confirm bubble — delete it right after.
+    if (qrPhotoId !== undefined && confirmMsgId && confirmMsgId !== qrPhotoId) {
+      try {
+        if (!(await ownsTransactionMessageAt(prisma, chatId, confirmMsgId))) await ctx.api.deleteMessage(chatId, confirmMsgId);
+      } catch { /* already gone, too old, or the ownership read failed — leave it */ }
     }
   } else {
     await smartEdit(ctx, caption, waitingKb);
@@ -1749,6 +1757,9 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
   const waitingKb = ckb.qrisWaitingKb(order.id, lang);
   let qrPhotoId: number | undefined;
   if (gateway.qrUrl) {
+    // Only the photo send falls back to the text bubble: once the photo is
+    // out, a later failure must not ALSO render the instructions as text
+    // (a second payment screen that would take the anchor and orphan the QR).
     try {
       const qrMsg = await ctx.replyWithPhoto(gateway.qrUrl, {
         caption,
@@ -1756,13 +1767,16 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
         reply_markup: waitingKb,
       });
       ctx.session.menuMsgId = qrPhotoId = qrMsg.message_id;
-      if (confirmMsgId && confirmMsgId !== qrMsg.message_id && !(await ownsTransactionMessageAt(prisma, chatId, confirmMsgId))) {
-        try { await ctx.api.deleteMessage(chatId, confirmMsgId); } catch { /* already gone or too old */ }
-      }
     } catch (err) {
       logger.error({ err }, `Failed to send the PayDisini QR code photo for order ${order.orderCode} — falling back to a text-only instructions bubble`);
       // QR image failed — fall back to a text-only instructions bubble.
       await smartEdit(ctx, caption, waitingKb);
+    }
+    // The QR photo replaced the confirm bubble — delete it right after.
+    if (qrPhotoId !== undefined && confirmMsgId && confirmMsgId !== qrPhotoId) {
+      try {
+        if (!(await ownsTransactionMessageAt(prisma, chatId, confirmMsgId))) await ctx.api.deleteMessage(chatId, confirmMsgId);
+      } catch { /* already gone, too old, or the ownership read failed — leave it */ }
     }
   } else {
     await smartEdit(ctx, caption, waitingKb);

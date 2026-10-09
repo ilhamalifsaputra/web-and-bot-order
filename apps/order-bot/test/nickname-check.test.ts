@@ -391,6 +391,40 @@ describe("nicknameCheckConversation — configured fields", () => {
     expect(JSON.parse(session.scratch.customerData as string)).toEqual([{ target: "correct" }]);
     expect(kokinpayMock.checkGameNickname).toHaveBeenCalledTimes(2);
   });
+  it("a stray typed message on the FOUND screen is deleted and the same bubble re-renders with the hint; Confirm then edits to the summary", async () => {
+    const { denom } = await makeConfiguredDenom({ withCreds: true });
+    kokinpayMock.checkGameNickname.mockResolvedValue({ valid: true, nickname: "Player" });
+    const BUBBLE = 500;
+    const sink: SentCall[] = [];
+    const session = { ...userSession(), menuMsgId: BUBBLE, scratch: { pendingNicknameProductId: denom.id, pendingNicknameQuantity: 1 } } as SessionData;
+    const bubble = () => ({ message_id: session.menuMsgId ?? BUBBLE, chat: { id: 42, type: "private" }, date: 0 });
+    const entry = makeCtx({ sink, sharedSession: session, from: { id: 42 }, callbackData: `v1:buy:${denom.id}:1`, cbMessage: bubble() }).ctx;
+    const marks: number[] = [];
+    let stray: ReturnType<typeof makeCtx>["ctx"] | undefined;
+    const conv = new FakeConversation([
+      () => { marks.push(sink.length); return makeCtx({ sink, sharedSession: session, from: { id: 42 }, text: "000123" }).ctx; },
+      () => { marks.push(sink.length); stray = makeCtx({ sink, sharedSession: session, from: { id: 42 }, text: "is this right?" }).ctx; return stray; },
+      () => { marks.push(sink.length); return makeCtx({ sink, sharedSession: session, from: { id: 42 }, callbackData: ckb.cb("nick", "confirm"), cbMessage: bubble() }).ctx; },
+    ]);
+
+    await nicknameCheckConversation(conv.asMyConversation(), entry);
+
+    const SCREEN = ["sendMessage", "reply", "editMessageText", "editMessageCaption", "deleteMessage", "replyWithPhoto"];
+    const step = (i: number) => sink.slice(marks[i], marks[i + 1] ?? sink.length).filter((c) => SCREEN.includes(c.method)).map((c) => c.method);
+    expect(step(0)).toEqual(["deleteMessage", "editMessageText"]);
+    expect(step(1)).toEqual(["deleteMessage", "editMessageText"]);
+    const strayStep = sink.slice(marks[1], marks[2]);
+    expect(calls(strayStep, "deleteMessage")[0]!.args[1]).toBe(stray!.message!.message_id);
+    expect(calls(strayStep, "editMessageText")[0]!.args[1]).toBe(BUBBLE);
+    expect(JSON.stringify(strayStep)).toContain(t(entry, "checkout.nickname_retry_hint"));
+    expect(JSON.stringify(strayStep)).toContain("Player");
+    expect(step(2)).toEqual(["editMessageText"]);
+    expect(JSON.stringify(sink.at(-1))).toContain("Confirm Order");
+    expect(calls(sink, "sendMessage")).toHaveLength(0);
+    expect(calls(sink, "reply")).toHaveLength(0);
+    expect(JSON.parse(session.scratch.customerData as string)).toEqual([{ target: "000123" }]);
+  });
+
   it("Retry after a found result discards prior input", async () => {
     const { denom } = await makeConfiguredDenom({ withCreds: true });
     kokinpayMock.checkGameNickname.mockResolvedValue({ valid: true, nickname: "Player" });

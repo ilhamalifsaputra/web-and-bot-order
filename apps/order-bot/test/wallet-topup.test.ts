@@ -12,7 +12,19 @@ vi.mock("@app/core/payments/tokopay", async (orig) => ({
   }),
 }));
 
+vi.mock("@app/core/payments/paydisini", async (orig) => ({
+  ...(await orig<typeof import("@app/core/payments/paydisini")>()),
+  createTransaction: vi.fn().mockResolvedValue({
+    trxId: "PD-TOPUP-TEST",
+    qrString: "000",
+    qrUrl: "https://x/pd-qr.png",
+    checkoutUrl: null,
+    totalBayar: "100",
+  }),
+}));
+
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { PAYDISINI_USERKEY_KEY, PAYDISINI_APIKEY_KEY } from "@app/core/payments/paydisini";
 import {
   prisma,
   setSetting,
@@ -474,6 +486,74 @@ describe("wallet top-up stays in one bubble — exact Telegram call counts", () 
     }) as typeof realDelete;
     await walletTopup.handleTopupAmountInput(good, "IDR", "15000");
     expect(amountAtDelete).toBe("15000");
+  });
+
+  async function enablePaydisini() {
+    await setSetting(prisma, PAYDISINI_USERKEY_KEY, "uk");
+    await setSetting(prisma, PAYDISINI_APIKEY_KEY, "ak");
+  }
+
+  it("PayDisini rail: the QR photo is the only new message and the picker bubble is deleted right after it", async () => {
+    await enablePaydisini();
+    const f = flow();
+    f.session.scratch = { topupCurrency: "IDR", topupAmount: "50000" };
+    await walletTopup.payTopupPaydisini(f.tap("v1:topup:pay:paydisini", { replyWithPhotoResult: { photo: [{ file_id: "qr" }] } }));
+
+    expect(screen(f.sink, 0)).toEqual(["replyWithPhoto", "deleteMessage"]);
+    expect(calls(f.sink, "deleteMessage")[0]!.args[1]).toBe(BUBBLE);
+    const order = await prisma.order.findFirstOrThrow({ where: { userId: sample.user.id } });
+    const anchor = await prisma.fulfillmentMessage.findUnique({ where: { orderId: order.id } });
+    expect(anchor?.messageId).toBe(f.session.menuMsgId);
+    expect(anchor?.messageKind).toBe("photo");
+  });
+
+  it.each(["TokoPay", "PayDisini"] as const)(
+    "%s rail: the ownership read throwing after the photo leaves exactly the QR photo — no second payment screen",
+    async (rail) => {
+      await enableTokopay();
+      await enablePaydisini();
+      const f = flow();
+      f.session.scratch = { topupCurrency: "IDR", topupAmount: "50000" };
+      const delegate = prisma.fulfillmentMessage;
+      const original = delegate.findFirst.bind(delegate);
+      let failed = false;
+      const spy = vi.spyOn(delegate, "findFirst").mockImplementation(((args: { where?: { messageId?: number } }) => {
+        if (!failed && args?.where?.messageId === BUBBLE) {
+          failed = true;
+          return Promise.reject(new Error("Connection terminated unexpectedly"));
+        }
+        return original(args as never);
+      }) as never);
+      const ctx = f.tap(`v1:topup:pay:${rail.toLowerCase()}`, { replyWithPhotoResult: { photo: [{ file_id: "qr" }] } });
+      try {
+        if (rail === "TokoPay") await walletTopup.payTopupTokopay(ctx);
+        else await walletTopup.payTopupPaydisini(ctx);
+      } finally {
+        spy.mockRestore();
+      }
+
+      expect(failed).toBe(true);
+      expect(screen(f.sink, 0)).toEqual(["replyWithPhoto"]);
+      const order = await prisma.order.findFirstOrThrow({ where: { userId: sample.user.id } });
+      const anchor = await prisma.fulfillmentMessage.findUnique({ where: { orderId: order.id } });
+      expect(anchor?.messageId).toBe(f.session.menuMsgId);
+      expect(f.session.menuMsgId).not.toBe(BUBBLE);
+      expect(anchor?.messageKind).toBe("photo");
+    },
+  );
+
+  it("no rail accepts the amount: that screen EDITS the top-up bubble, nothing is sent", async () => {
+    // No IDR rail configured at all, so a valid typed amount has nowhere to go.
+    const f = flow();
+    f.session.awaitingTopupCurrency = "IDR";
+    await walletTopup.handleTopupAmountInput(f.typed("15000"), "IDR", "15000");
+
+    expect(screen(f.sink, 0)).toEqual(["deleteMessage", "editMessageText"]);
+    const edit = calls(f.sink, "editMessageText")[0]!;
+    expect(edit.args[1]).toBe(BUBBLE);
+    expect(JSON.stringify(edit.args)).toContain("v1:topup:currency:idr");
+    expect(calls(f.sink, "sendMessage")).toHaveLength(0);
+    expect(calls(f.sink, "reply")).toHaveLength(0);
   });
 
   it("when the QR photo cannot be sent, the text fallback EDITS the picker bubble — nothing is sent twice", async () => {

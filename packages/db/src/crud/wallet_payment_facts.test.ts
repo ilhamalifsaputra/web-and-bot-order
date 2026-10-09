@@ -8,7 +8,8 @@ import { deliverPaidPaydisiniOrder, listPendingPaydisiniOrders } from "./paydisi
 import { deliverPaidNowpaymentsOrder, listPendingNowpaymentsOrders } from "./nowpayments";
 import { deliverPaidBybitOrder, listPendingBybitOrders } from "./bybit_deposit";
 import { deliverPaidBybitBscOrder, listPendingBybitBscOrders } from "./bybit_bsc_deposit";
-import { deliverPaidInternalOrder, deliverUnderpaidOrder, markUnderpaid, listPendingInternalOrders } from "./binance_internal";
+import { deliverPaidInternalOrder, deliverUnderpaidOrder, markUnderpaid, listPendingInternalOrders, manualMatchTx, recordUnmatchedTx } from "./binance_internal";
+import * as audit from "./audit";
 import { cancelOrder, countExpiredPending, createOrderDirect, fulfillManualOrder, listExpiredPendingOrders, listExpiringPendingPayments } from "./orders";
 import { finalizeOrderPayment } from "./pricing";
 import { OrderStatus, PaymentMethod, DeliveryType, StockActorType } from "@app/core/enums";
@@ -134,5 +135,73 @@ describe("underpaid admin completion preserves provider facts", () => {
     expect(completed.order.status).toBe(OrderStatus.DELIVERED);
     expect(completed.order.paymentState).toBe("UNDERPAID");
     expect(completed.order.completedAt).not.toBeNull();
+  });
+});
+
+/**
+ * The two web-admin settlements (deliver an underpaid order anyway, manually
+ * match an unmatched Binance transfer) queue the buyer's credentials DM in
+ * the same transaction as the DELIVERED status — exactly like an admin
+ * approve — so a Telegram buyer always gets the file and the status message
+ * can complete once it is acknowledged.
+ */
+describe("web-admin settlements queue the credentials DM atomically", () => {
+  const dmRows = (orderId: number) =>
+    db.prisma.notificationOutbox.findMany({ where: { orderId, event: "ORDER_DELIVERED_DM" } });
+
+  async function underpaidOrder(txId: string) {
+    const order = (await createOrderDirect(db.prisma, { channel: "web", user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    await markUnderpaid(db.prisma, { orderId: order.id, binanceTxId: txId, amount: order.totalAmount.div(2) });
+    return order;
+  }
+
+  it("deliverUnderpaidOrder queues one automatic DM for the Telegram buyer", async () => {
+    const order = await underpaidOrder("dm-underpaid");
+    await deliverUnderpaidOrder(db.prisma, { orderId: order.id, adminId: sample.user.id, reason: "Goodwill" });
+    const rows = await dmRows(order.id);
+    expect(rows).toHaveLength(1);
+    const payload = JSON.parse(rows[0]!.payloadJson);
+    expect(payload).toMatchObject({ chat_id: 42, order_code: order.orderCode });
+    expect(payload).not.toHaveProperty("resend");
+  });
+
+  it("deliverUnderpaidOrder rolls the DM back with the delivery when the transaction fails", async () => {
+    const order = await underpaidOrder("dm-underpaid-rollback");
+    vi.spyOn(audit, "logAdminAction").mockRejectedValueOnce(new Error("simulated audit write failure"));
+    await expect(deliverUnderpaidOrder(db.prisma, { orderId: order.id, adminId: sample.user.id, reason: "Goodwill" }))
+      .rejects.toThrow("simulated audit write failure");
+    expect(await dmRows(order.id)).toHaveLength(0);
+    expect((await db.prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.UNDERPAID);
+  });
+
+  it("manualMatchTx queues one automatic DM for the Telegram buyer", async () => {
+    const order = (await createOrderDirect(db.prisma, { channel: "web", user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    await recordUnmatchedTx(db.prisma, { binanceTxId: "dm-match", amount: "5.00" });
+    const result = await manualMatchTx(db.prisma, { binanceTxId: "dm-match", orderId: order.id, adminId: sample.user.id });
+    expect(result.kind).toBe("delivered");
+    const rows = await dmRows(order.id);
+    expect(rows).toHaveLength(1);
+    const payload = JSON.parse(rows[0]!.payloadJson);
+    expect(payload).toMatchObject({ chat_id: 42, order_code: order.orderCode });
+    expect(payload).not.toHaveProperty("resend");
+  });
+
+  it("manualMatchTx enqueues inside its transaction: a failed enqueue undoes the match and the delivery", async () => {
+    const order = (await createOrderDirect(db.prisma, { channel: "web", user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    await recordUnmatchedTx(db.prisma, { binanceTxId: "dm-match-rollback", amount: "5.00" });
+    vi.spyOn(notifications, "enqueueOrderDeliveredDm").mockRejectedValueOnce(new Error("simulated outbox write failure"));
+    await expect(manualMatchTx(db.prisma, { binanceTxId: "dm-match-rollback", orderId: order.id, adminId: sample.user.id }))
+      .rejects.toThrow("simulated outbox write failure");
+    expect((await db.prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.PENDING_PAYMENT);
+    expect((await db.prisma.processedBinanceTx.findUniqueOrThrow({ where: { binanceTxId: "dm-match-rollback" } })).outcome).toBe("unmatched");
+    expect(await dmRows(order.id)).toHaveLength(0);
+  });
+
+  it("queues no DM when the settlement is a manual-delivery order (PROCESSING, not delivered)", async () => {
+    await db.prisma.denomination.update({ where: { id: sample.product.id }, data: { deliveryType: DeliveryType.MANUAL } });
+    const order = await underpaidOrder("dm-underpaid-manual");
+    const queued = await deliverUnderpaidOrder(db.prisma, { orderId: order.id, adminId: sample.user.id, reason: "Goodwill" });
+    expect(queued.order.status).toBe(OrderStatus.PROCESSING);
+    expect(await dmRows(order.id)).toHaveLength(0);
   });
 });

@@ -128,6 +128,9 @@ import {
   enqueueAdminNewTicketDm,
   enqueueTicketReplyDm,
   enqueueTicketClosedDm,
+  manualMatchTx,
+  recordUnmatchedTx,
+  adoptTransactionMessage,
 } from "@app/db";
 import { setBotIdentity, resetBotIdentity } from "@app/core/runtime";
 import { registerPaymentBubbleFlush } from "@app/core/nudge";
@@ -137,6 +140,7 @@ import { Decimal } from "@app/core/money";
 import { sendMail } from "@app/core/mailer";
 import { buildSampleData } from "../../../tests/helpers/sampleData";
 import { drainBatch, runDispatcher } from "./dispatcher";
+import { FulfillmentMessageWorker, type FulfillmentTelegramApi } from "./fulfillmentMessages";
 
 afterAll(async () => {
   await prisma.$disconnect();
@@ -2062,4 +2066,64 @@ describe("flood-control sleep honours the abort signal (Task B1.4)", () => {
     expect(after!.status).toBe("PENDING");
     expect(after!.attempts).toBe(0);
   }, 15_000);
+});
+
+/**
+ * A web-admin manual match settles a stock order to DELIVERED and queues the
+ * buyer's credentials DM. End to end: the dispatcher sends the file once and
+ * records it, and the buyer's one status message moves from "sending your
+ * account details" to "completed" by editing the same message.
+ */
+describe("a web-admin manual match delivers the credentials file and completes the status message", () => {
+  it("sends one document, records it, and edits the status DELIVERING → SUCCESS", async () => {
+    const telegramId = 600_301;
+    const user = await upsertUser(prisma, { telegramId, username: `mmbuyer${telegramId}`, fullName: "Match Buyer" });
+    const category = await createCategory(prisma, `mm-cat-${telegramId}`);
+    const parent = await createCatalogProduct(prisma, { categoryId: category.id, name: `MM Product ${telegramId}` });
+    const denom = await createDenomination(prisma, {
+      productId: parent.id, name: "MM Denom", type: ProductType.SHARED, durationLabel: "1 Month", price: "5.00",
+    });
+    await bulkAddStock(prisma, denom.id, [`mm-cred-${telegramId}@example.com:pwd`]);
+    const order = (await createOrderDirect(prisma, { channel: "bot", user, productId: denom.id, quantity: 1 }))!;
+    // The buyer's payment screen is the order's one status message.
+    await adoptTransactionMessage(prisma, order.id, telegramId, 8100, "text");
+    await recordUnmatchedTx(prisma, { binanceTxId: "mm-e2e-1", amount: "5.00" });
+
+    const settled = await manualMatchTx(prisma, { binanceTxId: "mm-e2e-1", orderId: order.id, adminId: user.id });
+    expect(settled.kind).toBe("delivered");
+
+    const calls: Record<string, number> = {};
+    const edits: Array<{ id: number; text: string }> = [];
+    const count = (name: string) => { calls[name] = (calls[name] ?? 0) + 1; };
+    const statusApi = {
+      sendMessage: async () => { count("sendMessage"); return { message_id: 1 }; },
+      editMessageText: async (_chat: unknown, id: number, text: string) => { count("editMessageText"); edits.push({ id, text }); return true; },
+      editMessageCaption: async () => { count("editMessageCaption"); return true; },
+      deleteMessage: async () => { count("deleteMessage"); return true; },
+      editMessageReplyMarkup: async () => { count("editMessageReplyMarkup"); return true; },
+    } as unknown as FulfillmentTelegramApi;
+    const worker = new FulfillmentMessageWorker(statusApi, { db: prisma });
+
+    await worker.tick(order.id);
+    expect(edits.at(-1)!.text).toContain("Sending your account details");
+    expect((await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } })).phase).toBe("DELIVERING");
+
+    const docs = fakeDocBot();
+    docs.sendDocument.mockResolvedValue({ message_id: 8200 });
+    await drainBatch(docs.bot);
+    const toBuyer = docs.sendDocument.mock.calls.filter(([chatId]) => chatId === telegramId);
+    expect(toBuyer).toHaveLength(1);
+    expect(docs.sendMessage.mock.calls.filter(([chatId]) => chatId === telegramId)).toHaveLength(0);
+    const recorded = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(recorded.credentialsDocMsgId).toBe(8200);
+    expect(recorded.credentialsDeliveredAt).toBeInstanceOf(Date);
+
+    await worker.tick(order.id);
+    expect(edits.at(-1)!.text).toContain("Order completed");
+    expect(await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } }))
+      .toMatchObject({ state: "FINISHED", phase: "SUCCESS", messageId: 8100 });
+    // One edit to "sending", one to "completed", all on the payment screen.
+    expect(calls).toEqual({ editMessageText: 2 });
+    expect(new Set(edits.map((e) => e.id))).toEqual(new Set([8100]));
+  });
 });

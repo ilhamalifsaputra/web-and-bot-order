@@ -23,6 +23,7 @@ import {
   creditOrderToBalance,
   approveOrder,
   getOrder,
+  getOrderByCode,
   getOrderByCodeFull,
   listUserDeliveredOrders,
   getOrderByCodeFullForDisplay,
@@ -1957,5 +1958,19 @@ describe.each([false, true])("order read choke points with CREDENTIAL_ENVELOPE_W
     expect((await getOrderByCodeFullForDisplay(prisma, order.orderCode))!.items[0]!.stockItem!.credentials).toBe(
       "order-6d@x.com:pw",
     );
+  });
+});
+
+describe("getOrderByCode", () => {
+  beforeEach(async () => {
+    await resetDb(prisma);
+  });
+
+  it("carries the catalog product's slug for the storefront's back/retry link", async () => {
+    const sample = await buildSampleData(prisma);
+    const order = (await createOrderDirect(prisma, { channel: "web", user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    const parent = await prisma.denomination.findUniqueOrThrow({ where: { id: sample.product.id }, select: { product: { select: { slug: true } } } });
+    expect(parent.product.slug).toBeTruthy();
+    expect((await getOrderByCode(prisma, order.orderCode))!.items[0]!.product.product.slug).toBe(parent.product.slug);
   });
 });

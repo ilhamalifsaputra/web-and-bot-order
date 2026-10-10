@@ -361,8 +361,31 @@ export interface Underpayment {
   currency: string;
 }
 
+/** The Game ID / Zone / Server a buyer typed for one unit of a game top-up,
+ * read server-side only through the denomination's input mapping. An empty
+ * value is left out (server: apps/storefront/src/routes/gameTopupDetails.ts). */
+export interface GameTarget {
+  game_id?: string;
+  zone_id?: string;
+  server_id?: string;
+}
+
+/** Game top-up details on the product-order pay page and order detail, owner
+ * only. Optional: GET /api/v1/wallet/topup/:code/pay shares PayData and never
+ * sends them; the two product-order endpoints always do (null when n/a). */
+export interface GameTopupDetailsFields {
+  /** First item's catalog product slug (retry/back link to /p/:slug); null when the order has no item. */
+  product_slug?: string | null;
+  /** One entry per unit that has a mapped value; null unless the order is a
+   * GAME_TOPUP (or its saved input configuration is unreadable). May be []. */
+  game_target?: GameTarget[] | null;
+  /** Full decrypted Digiflazz SN — never truncate it. Null unless a DELIVERED
+   * GAME_TOPUP whose SN decrypted and is non-empty. */
+  sn?: string | null;
+}
+
 /** GET /api/v1/orders/:code/pay — the payView() JSON (server: apps/storefront/src/routes/checkout.ts). */
-export interface PayData {
+export interface PayData extends GameTopupDetailsFields {
   read_only?: boolean;
   recovery_url?: string | null;
   presentation?: CustomerProgress;
@@ -569,7 +592,7 @@ export interface OrderFulfillment {
 }
 
 /** GET /api/v1/account/orders/:code — complete buyer-owned order detail. */
-export interface OrderDetailData {
+export interface OrderDetailData extends GameTopupDetailsFields {
   recovery_url?: string | null;
   read_only?: boolean;
   order: {

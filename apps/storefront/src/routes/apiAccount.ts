@@ -28,6 +28,7 @@ import { orderInputConfig, parseInputFields } from "@app/core/playerInput";
 import { customerProgressPhase, getOrderFulfillment, toBuyerDigiflazzStatus } from "@app/core/orderFulfillment";
 import { buyerOrderSummary } from "./buyerOrderSummary";
 import { transactionStatusView } from "./checkout";
+import { gameTopupDetails } from "./gameTopupDetails";
 import {
   parseTicketMultipart,
   parseNewTicketMultipart,
@@ -282,6 +283,9 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
     const money = buyerOrderSummary(order);
     const transactionStatus = await transactionStatusView(order);
     return reply.send({
+      // The display reader already decrypted deliveredContent (an unreadable
+      // value is null there, logged by order id), so the SN is read as is.
+      ...gameTopupDetails(order, transactionStatus.presentation.transactionType, () => order.deliveredContent),
       recovery_url: customer.user.isGuest && !customer.orderScope ? guestOrderRecoveryUrl("", order.orderCode) : null,
       read_only: Boolean(customer.orderScope),
       order: {

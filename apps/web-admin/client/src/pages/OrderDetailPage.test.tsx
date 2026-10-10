@@ -171,6 +171,27 @@ describe("OrderDetailPage", () => {
     expect(screen.getByRole("button", { name: /resend to telegram/i })).toBeInTheDocument();
   });
 
+  it("hides Credit to Balance and says why while the supplier may still deliver", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          ...ORDER_DETAIL_DATA,
+          order: { ...ORDER_DETAIL_DATA.order, status: "PROCESSING", digiflazzStatus: "pending_at_supplier" },
+          canAct: false,
+          canCredit: false,
+          canReject: true,
+          canCreditCancelled: false,
+          creditLockedBySupplier: true,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    render(<OrderDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("CapCut Pro 1M")).toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: /credit to balance/i })).not.toBeInTheDocument();
+    expect(screen.getByText(/waiting for the supplier's result/i)).toBeInTheDocument();
+  });
+
   it("offers Credit to Balance on a cancelled order whose payment was never returned, and posts it", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
@@ -772,8 +793,19 @@ describe("OrderDetailPage — realtime digiflazz sub-status", () => {
     expect(screen.getByText(/attempt 2/i)).toBeInTheDocument();
   });
 
+  // A push that flips digiflazzStatus to/from "failed" also refetches (credit
+  // and hand-fulfil unlock without a status change), so these two queue a
+  // second response carrying the same failed fields the push carries.
+  function failedRefetch(fields: Record<string, unknown>) {
+    return new Response(
+      JSON.stringify({ ...ORDER_DETAIL_DATA, order: { ...ORDER_DETAIL_DATA.order, ...fields } }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  }
+
   it("shows the failed badge and the failure detail text once the SSE stream pushes a failed status", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(
       new Response(JSON.stringify(ORDER_DETAIL_DATA), {
         status: 200,
         headers: { "Content-Type": "application/json" },
@@ -782,6 +814,10 @@ describe("OrderDetailPage — realtime digiflazz sub-status", () => {
     render(<OrderDetailPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("CapCut Pro 1M")).toBeInTheDocument());
 
+    fetchSpy.mockResolvedValueOnce(failedRefetch({
+      digiflazzStatus: "failed", digiflazzAttempts: 5, digiflazzNextRecheckAt: null,
+      digiflazzFailureDetail: "Supplier returned insufficient balance.", accountDiagnosticNote: null,
+    }));
     MockEventSource.instances[0].emit({
       orderStatus: "PENDING_VERIFICATION",
       digiflazzStatus: "failed",
@@ -793,13 +829,16 @@ describe("OrderDetailPage — realtime digiflazz sub-status", () => {
 
     await waitFor(() => expect(screen.getByText(/failed — needs manual review/i)).toBeInTheDocument());
     expect(screen.getByText("Supplier returned insufficient balance.")).toBeInTheDocument();
+    // The status did not change, but the failure refetched the detail anyway.
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2));
     // No diagnostic note on this failure (Digiflazz's own message was
     // specific enough) — the reactive-diagnostic paragraph must not render.
     expect(screen.queryByText(/KokinPay:/i)).not.toBeInTheDocument();
   });
 
   it("shows the reactive account/region diagnostic note once the SSE stream pushes one alongside a failed status", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(
       new Response(JSON.stringify(ORDER_DETAIL_DATA), {
         status: 200,
         headers: { "Content-Type": "application/json" },
@@ -808,6 +847,11 @@ describe("OrderDetailPage — realtime digiflazz sub-status", () => {
     render(<OrderDetailPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("CapCut Pro 1M")).toBeInTheDocument());
 
+    fetchSpy.mockResolvedValueOnce(failedRefetch({
+      digiflazzStatus: "failed", digiflazzAttempts: 5, digiflazzNextRecheckAt: null,
+      digiflazzFailureDetail: "Digiflazz reported Gagal",
+      accountDiagnosticNote: "KokinPay: akun tidak ditemukan untuk kode game mobile-legends — kemungkinan salah ID/region.",
+    }));
     MockEventSource.instances[0].emit({
       orderStatus: "PENDING_VERIFICATION",
       digiflazzStatus: "failed",

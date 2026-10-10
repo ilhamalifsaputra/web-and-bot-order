@@ -27,6 +27,7 @@ import {
   logAdminAction,
   computeOrderEligibility,
   isDigiflazzInFlight,
+  isDigiflazzCreditLocked,
   cancelledOrderIdsWithMoneyReturned,
   orderHasIncomingLedgerPayment,
   revenueSummary,
@@ -277,6 +278,7 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
             cancelledOrderWasPaid: await orderHasIncomingLedgerPayment(prisma, order.id),
           }
         : undefined;
+    const digiflazzCreditLocked = isDigiflazzCreditLocked(order);
     return reply.send({
       order: { ...masked, createdAtDisplay: displayDateTime(order.createdAt) },
       hasDeliveredContent,
@@ -285,7 +287,14 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
       // canCreditCancelled — one shared eligibility function
       // (packages/db/src/crud/orders.ts) so the list, detail, and bulk-action
       // routes can't drift apart.
-      ...computeOrderEligibility(order.status, order.user.telegramId, { ...eligibilityOpts, digiflazzInFlight: isDigiflazzInFlight(order) }),
+      ...computeOrderEligibility(order.status, order.user.telegramId, {
+        ...eligibilityOpts,
+        digiflazzInFlight: isDigiflazzInFlight(order),
+        digiflazzCreditLocked,
+      }),
+      // Lets the page say WHY there is no "Credit to Balance" button: the
+      // supplier may still deliver, and creditOrderToBalance refuses it.
+      creditLockedBySupplier: digiflazzCreditLocked,
       customerDataFields,
       customerData,
       stockReplacements: stockReplacements.map(serializeStockReplacement),

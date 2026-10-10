@@ -1817,6 +1817,11 @@ export async function cancelOrder(db: Db, orderId: number, reason: string, actor
  * `error.transfer_already_used` otherwise, or with
  * `error.payment_currency_mismatch` for a non-USDT order.
  *
+ * Refused with `error.order_in_flight_at_supplier` while a Digiflazz order may
+ * still be completed by the supplier (`isDigiflazzCreditLocked`, checked on
+ * the locked row) — crediting it would let the buyer keep both the balance and
+ * the top-up.
+ *
  * Audited at the route layer via `logAdminAction`.
  */
 export type CreditOrderToBalanceResult = {
@@ -1882,6 +1887,17 @@ async function creditOrderToBalanceLocked(
     where: { orderId: order.id, reason: "unfulfilled_credit" },
   });
   if (prior) throw new ValidationError("error.already_credited");
+
+  // A Digiflazz order the supplier may still complete must not be credited:
+  // crediting cancels it, a later supplier "Sukses" then loses
+  // fulfillDigiflazzOrder's PROCESSING claim (only an admin alert follows), and
+  // the buyer ends up with both the top-up and the balance. Checked on the row
+  // read under the lock above, so the dispatcher/webhook cannot move it between
+  // this check and the credit. Credit opens again once the provider marks the
+  // order `failed`. See `isDigiflazzCreditLocked` for the CANCELLED case.
+  if (isDigiflazzCreditLocked(order)) {
+    throw new ValidationError("error.order_in_flight_at_supplier", { orderCode: order.orderCode });
+  }
 
   // An order that arrives here already CANCELLED had its holds released and its
   // CANCELLED transition written by whatever cancelled it (`cancelOrder` runs
@@ -3112,7 +3128,9 @@ export interface OrderEligibility {
    * used to be missing even though `canReject` already covered PROCESSING,
    * so Reject was the only refund-shaped action offered, and rejecting moves
    * the order to the terminal REJECTED state where `creditOrderToBalance`
-   * then refuses to act — stranding the buyer's already-paid money. */
+   * then refuses to act — stranding the buyer's already-paid money. False for
+   * a Digiflazz order still in flight (`opts.digiflazzInFlight`), which the
+   * server refuses with `error.order_in_flight_at_supplier`. */
   canCredit: boolean;
   /** PROCESSING — manual hand-fulfil, needs admin-typed content. False for a
    * Digiflazz order still in flight (`opts.digiflazzInFlight`). */
@@ -3152,19 +3170,51 @@ export function isDigiflazzInFlight(
   );
 }
 
+/**
+ * Whether `creditOrderToBalance` must refuse this order because the supplier
+ * may still deliver it. A PROCESSING order: exactly `isDigiflazzInFlight`. A
+ * CANCELLED order: the same rule applied as if it were still PROCESSING, but
+ * only once it was actually handed to the supplier (`digiflazzDispatchedAt`
+ * set, or already `pending_at_supplier`) — a supplier "Sukses" for it would
+ * still reach the player while its claim on the order fails. A CANCELLED
+ * Digiflazz order that was never dispatched (e.g. an expired checkout whose
+ * late payment is being recovered) is not locked: the dispatcher only picks
+ * PROCESSING orders, so nothing can still deliver it.
+ */
+export function isDigiflazzCreditLocked(
+  order: Parameters<typeof isDigiflazzInFlight>[0] & { digiflazzDispatchedAt: Date | null },
+): boolean {
+  if (isDigiflazzInFlight(order)) return true;
+  return (
+    order.status === OrderStatus.CANCELLED &&
+    (order.digiflazzDispatchedAt != null || order.digiflazzStatus === "pending_at_supplier") &&
+    isDigiflazzInFlight({ ...order, status: OrderStatus.PROCESSING })
+  );
+}
+
 export function computeOrderEligibility(
   status: string,
   telegramId: bigint | null,
-  opts?: { cancelledOrderHasMoneyReturned?: boolean; cancelledOrderWasPaid?: boolean; digiflazzInFlight?: boolean },
+  opts?: {
+    cancelledOrderHasMoneyReturned?: boolean;
+    cancelledOrderWasPaid?: boolean;
+    /** `isDigiflazzInFlight(order)` — locks canFulfill and canCredit. */
+    digiflazzInFlight?: boolean;
+    /** `isDigiflazzCreditLocked(order)` — locks canCreditCancelled. */
+    digiflazzCreditLocked?: boolean;
+  },
 ): OrderEligibility {
   const isDelivered = status === OrderStatus.DELIVERED;
   return {
     isDelivered,
     canAct: status === OrderStatus.PENDING_VERIFICATION,
+    // Mirrors creditOrderToBalance, which refuses a Digiflazz order the
+    // supplier may still complete (`error.order_in_flight_at_supplier`).
     canCredit:
-      status === OrderStatus.PENDING_VERIFICATION ||
-      status === OrderStatus.UNDERPAID ||
-      status === OrderStatus.PROCESSING,
+      (status === OrderStatus.PENDING_VERIFICATION ||
+        status === OrderStatus.UNDERPAID ||
+        status === OrderStatus.PROCESSING) &&
+      opts?.digiflazzInFlight !== true,
     // Mirrors fulfillManualOrder's claim, which refuses a Digiflazz order the
     // provider has not failed (`isDigiflazzInFlight`).
     canFulfill: status === OrderStatus.PROCESSING && opts?.digiflazzInFlight !== true,
@@ -3173,7 +3223,8 @@ export function computeOrderEligibility(
     canCreditCancelled:
       status === OrderStatus.CANCELLED &&
       opts?.cancelledOrderHasMoneyReturned === false &&
-      opts?.cancelledOrderWasPaid === true,
+      opts?.cancelledOrderWasPaid === true &&
+      opts?.digiflazzCreditLocked !== true,
   };
 }
 

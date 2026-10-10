@@ -52,15 +52,16 @@ describe("order eligibility for Digiflazz orders", () => {
 
     const detail = async (id: number) =>
       (await app.inject({ method: "GET", url: `/api/orders/${id}`, cookies: { [COOKIE]: cookie } })).json() as { canFulfill: boolean; canCredit: boolean };
-    expect(await detail(inFlight.id)).toMatchObject({ canFulfill: false, canCredit: true });
-    expect((await detail(failed.id)).canFulfill).toBe(true);
-    expect((await detail(manual.id)).canFulfill).toBe(true);
+    // canCredit mirrors creditOrderToBalance's in-flight refusal.
+    expect(await detail(inFlight.id)).toMatchObject({ canFulfill: false, canCredit: false });
+    expect(await detail(failed.id)).toMatchObject({ canFulfill: true, canCredit: true });
+    expect(await detail(manual.id)).toMatchObject({ canFulfill: true, canCredit: true });
 
     const list = await app.inject({ method: "GET", url: "/api/orders", cookies: { [COOKIE]: cookie } });
-    const rows = list.json().orders as Array<{ id: number; eligibility: { canFulfill: boolean } }>;
-    const canFulfill = (id: number) => rows.find((r) => r.id === id)!.eligibility.canFulfill;
-    expect(canFulfill(inFlight.id)).toBe(false);
-    expect(canFulfill(failed.id)).toBe(true);
-    expect(canFulfill(manual.id)).toBe(true);
+    const rows = list.json().orders as Array<{ id: number; eligibility: { canFulfill: boolean; canCredit: boolean } }>;
+    const flags = (id: number) => rows.find((r) => r.id === id)!.eligibility;
+    expect(flags(inFlight.id)).toMatchObject({ canFulfill: false, canCredit: false });
+    expect(flags(failed.id)).toMatchObject({ canFulfill: true, canCredit: true });
+    expect(flags(manual.id)).toMatchObject({ canFulfill: true, canCredit: true });
   });
 });

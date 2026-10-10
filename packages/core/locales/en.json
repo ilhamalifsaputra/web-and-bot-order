@@ -332,6 +332,7 @@
   "error.order_not_digiflazz": "This order isn't a single-item Digiflazz-routed order, so it can't be auto-fulfilled this way.",
   "error.order_paid_needs_credit": "This order was already paid — credit it to the buyer's balance instead of rejecting/cancelling it, so the payment isn't lost.",
   "error.order_terminal": "This order is already closed and can't be credited.",
+  "error.order_in_flight_at_supplier": "Order {orderCode} is still waiting for the supplier's result, so it can't be credited until that status is final.",
   "error.order_not_pending": "This order can no longer be paid.",
   "error.unique_amount_exhausted": "Too many payments of this amount are waiting right now. Please try again in a few minutes or choose another payment method.",
   "error.ticket_not_found": "Ticket not found.",

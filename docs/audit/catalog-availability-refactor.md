@@ -38,7 +38,19 @@ Data katalog tetap terpadu. Registry keluarga pada admin mengatur tab dan filter
 
 ## 5. Pengujian dan verifikasi
 
-Hasil akhir dicatat setelah pemeriksaan selesai. Suite memakai database PostgreSQL khusus sesi; tidak menjalankan bot poller atau transaksi produksi. Test regresi mencakup resolver, API, picker/cart, keluarga legacy, inventory, credit, pesan bot, serta SSE eligibility.
+Verifikasi memakai database PostgreSQL khusus sesi; tidak menjalankan bot poller atau transaksi produksi. Test regresi mencakup resolver, API, picker/cart, keluarga legacy, inventory, credit, pesan bot, serta SSE eligibility.
+
+| Pemeriksaan | Hasil |
+|---|---|
+| `pnpm -r build` | Lulus; bundle admin dibangun ulang setelah perbaikan drawer |
+| `pnpm typecheck` penuh setelah sinkronisasi master | Lulus |
+| Test terarah bot, conversation, API stok, dan halaman stok | 5 file, 548 test lulus |
+| Test kemampuan inventory admin setelah perubahan terakhir | 9 test lulus |
+| Playwright katalog dan tautan stok provider, viewport 360/1440 | 4 test lulus |
+| Pretest suite penuh: migration drift/timestamps, frontend boundaries, lint storefront, detection purity | Lulus |
+| `pnpm test` penuh | Belum selesai; pengguna meminta merge dan push segera sebelum hasil akhir tersedia |
+
+Suite penuh tidak diklaim lulus. Integrasi dipercepat sesuai instruksi pengguna. Bukti visual tersedia untuk [mobile](catalog-availability/catalog-mobile.png) dan [desktop](catalog-availability/catalog-desktop.png).
 
 ## 6. Deployment dan rollback
 

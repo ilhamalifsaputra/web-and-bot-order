@@ -40,7 +40,7 @@ const FULL: Partial<ShopContext> = {
   },
   pay_methods: { qris: true, card: true },
   wa_number: "62811111",
-  bot_username: "tokobot",
+  support_telegram_url: "https://t.me/tokosupport",
 };
 
 describe("Footer business identity", () => {

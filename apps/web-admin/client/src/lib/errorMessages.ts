@@ -78,6 +78,10 @@ const KNOWN_ERROR_MESSAGES: Record<string, string> = {
     "This payment ({received} {currency}) is less than the order needs ({required} {currency}). Use the underpaid flow for this order instead of a manual match.",
   "error.manual_match_nowpayments_unverifiable":
     "A NOWPayments amount is recorded in the coin the buyer paid with, so it cannot be checked against the order total. Check the payment in the NOWPayments dashboard and resolve the order directly.",
+  "error.manual_match_underpaid_payment":
+    "This transfer is a short payment already being handled through underpaid order {orderCode}. Resolve it there instead of matching it to another order.",
+  "error.dismiss_payment_may_still_settle":
+    "This payment cannot be dismissed yet: its amount has not been confirmed, or the order it was meant for is still waiting for payment, so the gateway may still settle it. Check it again once that order has closed.",
   "error.illegal_admin_task_status_transition":
     "This task's status just changed — refresh the page and try again.",
   "error.admin_task_assignee_not_found":

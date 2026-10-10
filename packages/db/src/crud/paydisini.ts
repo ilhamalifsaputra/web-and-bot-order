@@ -31,6 +31,8 @@ import { settleWalletTopup, isLateSettleableWalletTopup, flagWalletTopupOverpaym
 import { getPendingPaymentAttempt, confirmPaymentAttempt } from "./payments";
 import { QRIS_RECLAIMABLE_OUTCOMES } from "./binance_internal";
 import { reclaimStaleMatchedClaim } from "./_staleClaim";
+import { undoFailedManualQrisClaim } from "./_manualQrisClaim";
+import { ValidationError } from "@app/core/errors";
 
 // Declared in ./_minAmount (the leaf module that also parses it) so
 // orderMinimums.ts can read all six rails' keys without importing this
@@ -207,10 +209,13 @@ export async function deliverPaidPaydisiniOrder(
   }
 
   let verifiedWalletPayment = false;
+  // Set when the error came from inside the delivery transaction's callback,
+  // which means Prisma rolled it back — see crud/_manualQrisClaim.ts.
+  let settleCallbackThrew = false;
   // 2. Deliver. On failure, flag the ledger row (e.g. paid but out of stock)
   //    so we never retry silently — the caller alerts via logs/admin.
   try {
-    return await db.$transaction(async (tx: Tx) => {
+    const settleInTx = async (tx: Tx) => {
       const order = await getOrder(tx, args.orderId);
       // A cancelled WALLET_TOPUP is still payable (isLateSettleableWalletTopup):
       // the buyer paid after the window closed, and a top-up reserves nothing
@@ -269,6 +274,11 @@ export async function deliverPaidPaydisiniOrder(
         // itself) must not enqueue it again here, or the buyer would be
         // notified twice.
         const { order: settled, credited } = await settleWalletTopup(tx, args.orderId, { amount: args.amount });
+        // Manual mode: a zero credit means the top-up's own payment settled it
+        // between this transaction's read and settleWalletTopup's claim. Never
+        // report that as this payment's match — fail, so the claim is undone
+        // and the row goes back to the manual-match queue.
+        if (args.manual && !credited.greaterThan(0)) throw new ValidationError("error.order_not_pending");
         // Overpayment: same flag + admin alert the product branch below raises,
         // without changing what was credited (see flagWalletTopupOverpayment).
         await flagWalletTopupOverpayment(tx, {
@@ -397,6 +407,14 @@ export async function deliverPaidPaydisiniOrder(
       `PayDisini order ${result.order.orderCode} paid — queued for manual fulfilment (transaction ${args.trxId})`,
       );
       return { status: "processing" as const, order: result.order };
+    };
+    return await db.$transaction(async (tx: Tx) => {
+      try {
+        return await settleInTx(tx);
+      } catch (inner) {
+        settleCallbackThrew = true;
+        throw inner;
+      }
     }, { timeout: 15000 });
   } catch (e) {
     if (manualPrior) {
@@ -406,35 +424,22 @@ export async function deliverPaidPaydisiniOrder(
       // matchable, rather than leaving a "delivery_failed" row that would
       // count as proof this order was paid. No wallet preservation either:
       // the gateway never confirmed this payment as this order's.
-      // Only while the order is still unpaid: if it has moved on, the
-      // settlement did commit (only the acknowledgement was lost), and
-      // reopening the row would let the same money settle a second order.
-      const current = await db.order.findUnique({ where: { id: args.orderId }, select: { status: true } }).catch(() => null);
-      if (current?.status !== OrderStatus.PENDING_PAYMENT) {
-        logger.error(
-          { orderId: args.orderId, providerPaymentId: args.trxId },
-          `A manual match of PayDisini transaction ${args.trxId} to order ${args.orderId} reported an error, but the order is no longer awaiting payment (or could not be read), so the ledger row was left matched to it rather than reopened — an admin must check whether the order was actually settled`,
-        );
-        throw e;
-      }
-      const reverted = await db.processedPaydisiniTx
-        .updateMany({
-          where: { trxId: args.trxId, orderId: args.orderId, outcome: "matched" },
-          data: { outcome: "unmatched", orderId: manualPrior.orderId, amount: manualPrior.amount },
-        })
-        .catch((err) => {
-          logger.error(
-            { err, orderId: args.orderId, providerPaymentId: args.trxId },
-            `Could not return PayDisini ledger row ${args.trxId} to unmatched after a failed manual match to order ${args.orderId} — the row is left claimed by that order although nothing was delivered, so an admin must check it`,
-          );
-          return null;
-        });
-      if (reverted && reverted.count === 0) {
-        logger.error(
-          { orderId: args.orderId, providerPaymentId: args.trxId },
-          `A failed manual match of PayDisini transaction ${args.trxId} to order ${args.orderId} could not be undone because the ledger row had already changed — an admin must check what the row now points at`,
-        );
-      }
+      // Same rule as the TokoPay mirror: a callback error is a certain
+      // rollback and always undoes the claim; an error that may have come
+      // after COMMIT is checked first, under a lock, for proof this match
+      // settled the order. See crud/_manualQrisClaim.ts.
+      const prior = manualPrior;
+      await undoFailedManualQrisClaim(db, {
+        rail: "PayDisini",
+        trxId: args.trxId,
+        orderId: args.orderId,
+        certainRollback: settleCallbackThrew,
+        revert: (tx) =>
+          tx.processedPaydisiniTx.updateMany({
+            where: { trxId: args.trxId, orderId: args.orderId, outcome: "matched" },
+            data: { outcome: "unmatched", orderId: prior.orderId, amount: prior.amount },
+          }),
+      });
       throw e;
     }
     if (verifiedWalletPayment) {

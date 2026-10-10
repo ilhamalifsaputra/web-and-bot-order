@@ -28,8 +28,11 @@
  * never what stops one payment settling two orders — the outcome-gated
  * `updateMany` is.
  *
- * The display-only `suggestedOrderId` column is never read here: it is a hint
- * for the admin, not evidence of anything.
+ * The display-only `suggestedOrderId` column is never evidence of payment:
+ * nothing here settles, credits or reclaims because of it. It is read only to
+ * REFUSE — a short QRIS payment already owned by the underpaid flow
+ * (`assertNotUnderpaidShortPayment`), and a dismiss the gateway could still
+ * overtake (`dismissUnmatchedLedgerTx`).
  */
 import { OrderStatus, PaymentMethod } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
@@ -53,13 +56,20 @@ export interface LedgerRowSummary {
   outcome: string;
   amount: Decimal | null;
   orderId: number | null;
+  /** Display-only hint (see the module comment) — read here only to refuse. */
+  suggestedOrderId: number | null;
+  createdAt: Date;
 }
 
 const ALL_GATEWAYS: readonly LedgerGateway[] = ["binance", "bybit", "tokopay", "paydisini", "nowpayments"];
 
 async function findRowOn(db: Db, gateway: LedgerGateway, reference: string): Promise<LedgerRowSummary | null> {
-  const pick = (r: { outcome: string; amount: Decimal | null; orderId: number | null } | null) =>
-    r ? { reference, outcome: r.outcome, amount: r.amount, orderId: r.orderId } : null;
+  const pick = (
+    r: { outcome: string; amount: Decimal | null; orderId: number | null; suggestedOrderId: number | null; createdAt: Date } | null,
+  ) =>
+    r
+      ? { reference, outcome: r.outcome, amount: r.amount, orderId: r.orderId, suggestedOrderId: r.suggestedOrderId, createdAt: r.createdAt }
+      : null;
   switch (gateway) {
     case "binance":
       return pick(await db.processedBinanceTx.findUnique({ where: { binanceTxId: reference } }));
@@ -128,6 +138,96 @@ function requiredAmount(gateway: keyof typeof GATEWAY_METHODS, orderTotal: Decim
   }
 }
 
+/** How `markOrderUnderpaid` spells each QRIS gateway in `QrisUnderpaidTx.gateway`
+ *  (the storefront callbacks and the reconcile pollers pass these literals). */
+const UNDERPAID_GATEWAY_NAME = { tokopay: "TokoPay", paydisini: "PayDisini" } as const;
+
+/**
+ * How far apart a legacy ledger row and an underpaid record may have been
+ * written and still be taken for the same short payment. The storefront
+ * callback writes the row and then, in the very next statement, flags the
+ * order UNDERPAID — milliseconds apart. Ten minutes is deliberately generous:
+ * a false match here only REFUSES a manual match (the admin can still resolve
+ * the payment through the underpaid order), while a miss would let one short
+ * payment be spent twice.
+ */
+export const LEGACY_UNDERPAID_ROW_WINDOW_MS = 10 * 60_000;
+
+/**
+ * Refuse a TokoPay/PayDisini row that is a SHORT payment for some order A the
+ * callback already handed to the underpaid flow. On a short payment the
+ * storefront callback writes this row (amount = received, `suggestedOrderId`
+ * = A) AND calls `markOrderUnderpaid`, which records the same money in
+ * `QrisUnderpaidTx`; the underpaid actions (refund to wallet, credit anyway,
+ * deliver anyway) pay that money out without touching this row. Matching the
+ * row to another order C as well would spend the same rupiah twice.
+ *
+ * Refused when:
+ *  - the row names A and A has a `QrisUnderpaidTx` on this gateway or is
+ *    UNDERPAID (the record is never deleted, so "was underpaid" is covered);
+ *  - the row names A, A is still PENDING_PAYMENT on this gateway, and the row
+ *    is short for A — the callback writes the row BEFORE flagging A, and a
+ *    failed flag is retried by the reconcile poller, so A is about to become
+ *    UNDERPAID with this very money;
+ *  - the row names no order (written before `suggestedOrderId` existed) and
+ *    an underpaid record on this gateway holds exactly the row's amount and
+ *    was written within LEGACY_UNDERPAID_ROW_WINDOW_MS of it.
+ *
+ * Race-free without a lock: `markOrderUnderpaid` only moves an order out of
+ * PENDING_PAYMENT, and no order ever returns to PENDING_PAYMENT, so an A seen
+ * here as neither pending nor underpaid can never become underpaid later.
+ * Called right before the claim, after every other guard.
+ */
+async function assertNotUnderpaidShortPayment(
+  db: Db,
+  gateway: "tokopay" | "paydisini",
+  row: LedgerRowSummary,
+): Promise<void> {
+  const gatewayName = UNDERPAID_GATEWAY_NAME[gateway];
+  if (row.suggestedOrderId != null) {
+    const suggested = await db.order.findUnique({
+      where: { id: row.suggestedOrderId },
+      select: { id: true, orderCode: true, status: true, totalAmount: true, paymentMethod: true },
+    });
+    if (!suggested) return;
+    const underpaid = await db.qrisUnderpaidTx.findFirst({ where: { orderId: suggested.id, gateway: gatewayName } });
+    const shortForSuggested =
+      suggested.status === OrderStatus.PENDING_PAYMENT &&
+      suggested.paymentMethod != null &&
+      GATEWAY_METHODS[gateway].includes(suggested.paymentMethod) &&
+      row.amount != null &&
+      new Decimal(row.amount).lessThan(requiredAmount(gateway, suggested.totalAmount));
+    if (underpaid || suggested.status === OrderStatus.UNDERPAID || shortForSuggested) {
+      throw new ValidationError("error.manual_match_underpaid_payment", { orderCode: suggested.orderCode });
+    }
+    return;
+  }
+  if (row.amount == null) return;
+  const legacy = await db.qrisUnderpaidTx.findFirst({
+    where: {
+      gateway: gatewayName,
+      receivedAmount: new Decimal(row.amount),
+      createdAt: {
+        gte: new Date(row.createdAt.getTime() - LEGACY_UNDERPAID_ROW_WINDOW_MS),
+        lte: new Date(row.createdAt.getTime() + LEGACY_UNDERPAID_ROW_WINDOW_MS),
+      },
+    },
+    select: { orderId: true },
+  });
+  if (!legacy) return;
+  const order = await db.order.findUnique({ where: { id: legacy.orderId }, select: { orderCode: true } });
+  throw new ValidationError("error.manual_match_underpaid_payment", { orderCode: order?.orderCode ?? `#${legacy.orderId}` });
+}
+
+/** A guarded status transition losing its race means the order stopped
+ *  waiting for payment mid-match — say so in the words the admin knows. */
+function asOrderNotPending(e: unknown): never {
+  if (e instanceof ValidationError && e.key === "error.illegal_status_transition") {
+    throw new ValidationError("error.order_not_pending");
+  }
+  throw e;
+}
+
 /**
  * Attach an UNMATCHED ledger row to a PENDING_PAYMENT order and settle it,
  * on any gateway. The order must be on the row's gateway and in its
@@ -190,8 +290,11 @@ export async function manualMatchLedgerTx(
 
   let result: SettleResult;
   if (gateway === "bybit") {
-    result = await manualMatchBybit(db, { bybitTxId: args.reference, orderId: args.orderId, adminId: args.adminId });
+    result = await manualMatchBybit(db, { bybitTxId: args.reference, orderId: args.orderId, adminId: args.adminId }).catch(
+      asOrderNotPending,
+    );
   } else {
+    await assertNotUnderpaidShortPayment(db, gateway, row);
     const deliver = gateway === "tokopay" ? deliverPaidTokopayOrder : deliverPaidPaydisiniOrder;
     const r = await deliver(db, {
       orderId: args.orderId,
@@ -199,7 +302,7 @@ export async function manualMatchLedgerTx(
       amount: received,
       shopUrl: args.shopUrl ?? null,
       manual: { adminId: args.adminId },
-    });
+    }).catch(asOrderNotPending);
     if (r.status === "already_processed") throw new ValidationError("error.tx_not_unmatched");
     if (r.status === "stale") throw new ValidationError("error.order_not_pending");
     result =
@@ -265,9 +368,39 @@ async function manualMatchBybit(
 }
 
 /**
+ * The gateways whose callbacks and reconcile pollers RECLAIM an "unmatched"
+ * row for the order it was parked for (QRIS_RECLAIMABLE_OUTCOMES,
+ * ./binance_internal; NOWPayments' value-check parking in the storefront
+ * IPN). "dismissed" is not reclaimable, so dismissing such a row while the
+ * gateway can still settle it would block the delivery of a real payment.
+ * Mirrored by `dismissBlocked` in apps/web-admin/client/src/pages/PaymentsPage.tsx.
+ */
+const DISMISS_GUARDED_GATEWAYS: ReadonlySet<LedgerGateway> = new Set(["tokopay", "paydisini", "nowpayments"]);
+
+/**
+ * Refuse dismissing a row the gateway may still settle: a "paid but no
+ * amount" row (parked with amount 0 so a later status carrying the amount
+ * can reclaim it and deliver), or a row whose suggested order is still
+ * PENDING_PAYMENT. Reading the display-only hint here only refuses; it never
+ * moves money. Once the suggested order has closed, the row is dismissable.
+ */
+async function assertGatewayCannotStillSettle(db: Db, row: LedgerRowSummary): Promise<void> {
+  if (row.amount == null || !new Decimal(row.amount).greaterThan(0)) {
+    throw new ValidationError("error.dismiss_payment_may_still_settle");
+  }
+  if (row.suggestedOrderId == null) return;
+  const suggested = await db.order.findUnique({ where: { id: row.suggestedOrderId }, select: { status: true } });
+  if (suggested?.status === OrderStatus.PENDING_PAYMENT) {
+    throw new ValidationError("error.dismiss_payment_may_still_settle");
+  }
+}
+
+/**
  * Acknowledge an UNMATCHED ledger row that belongs to no order, on any
  * gateway: unmatched → dismissed. The row is kept (auditable, listable under
  * the "dismissed" filter). Binance delegates to `dismissUnmatchedTx`.
+ * TokoPay/PayDisini/NOWPayments rows the gateway may still settle are
+ * refused (`assertGatewayCannotStillSettle`).
  */
 export async function dismissUnmatchedLedgerTx(
   db: Db,
@@ -279,6 +412,7 @@ export async function dismissUnmatchedLedgerTx(
     return { gateway };
   }
   if (row.outcome !== "unmatched") throw new ValidationError("error.tx_not_unmatched");
+  if (DISMISS_GUARDED_GATEWAYS.has(gateway)) await assertGatewayCannotStillSettle(db, row);
   // Gated on the outcome so a concurrent match is never overwritten by a
   // dismiss that read "unmatched" first.
   const data = { outcome: "dismissed" };

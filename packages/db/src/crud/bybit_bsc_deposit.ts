@@ -23,6 +23,7 @@ import { config } from "@app/core/config";
 import { OrderStatus, OrderCurrency, OrderKind, PaymentMethod } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { logger } from "@app/core/logger";
+import { ValidationError } from "@app/core/errors";
 import { PaymentLogEvent } from "@app/core/payments/logEvents";
 import type { ProcessedBybitTx } from "@prisma/client";
 import type { PrismaClient, Tx } from "../client";
@@ -679,6 +680,11 @@ export async function settleClaimedBybitBscDeposit(
       await tx.order.update({ where: { id: order.id }, data: { status: OrderStatus.PENDING_PAYMENT } });
     }
     const { order: settled, credited } = await settleWalletTopup(tx, order.id, { amount: args.amount });
+    // Manual match only: a zero credit means another path settled this
+    // top-up between the caller's read and settleWalletTopup's claim. Fail so
+    // the caller's transaction rolls the deposit's claim back, instead of
+    // reporting a match that credited nothing. The poller keeps its no-op.
+    if (args.source === "manual" && !credited.greaterThan(0)) throw new ValidationError("error.order_not_pending");
     // Overpayment: same flag + admin alert the product branch below raises,
     // without changing what was credited (see flagWalletTopupOverpayment).
     await flagWalletTopupOverpayment(tx, {

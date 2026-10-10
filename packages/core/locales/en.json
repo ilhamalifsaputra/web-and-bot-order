@@ -371,6 +371,8 @@
   "error.manual_match_amount_unknown": "This payment has no recorded amount, so it cannot be matched to an order. Check the gateway's dashboard and resolve the order directly.",
   "error.manual_match_amount_short": "This payment ({received} {currency}) is less than the order needs ({required} {currency}). Use the underpaid flow for this order instead of a manual match.",
   "error.manual_match_nowpayments_unverifiable": "A NOWPayments amount is recorded in the coin the buyer paid with, so it cannot be checked against the order total. Check the payment in the NOWPayments dashboard and resolve the order directly.",
+  "error.manual_match_underpaid_payment": "This transfer is a short payment already being handled through underpaid order {orderCode}. Resolve it there instead of matching it to another order.",
+  "error.dismiss_payment_may_still_settle": "This payment cannot be dismissed yet: its amount has not been confirmed, or the order it was meant for is still waiting for payment, so the gateway may still settle it. Check it again once that order has closed.",
   "error.payment_already_pending": "This order already has a pending payment attempt.",
   "error.rate_limited": "Too many requests. Please wait a moment.",
   "error.refund_not_found": "Refund not found.",

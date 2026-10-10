@@ -371,6 +371,8 @@
   "error.manual_match_amount_unknown": "Pembayaran ini tidak punya jumlah yang tercatat, jadi tidak bisa dicocokkan ke pesanan. Periksa dasbor gateway dan selesaikan pesanan secara langsung.",
   "error.manual_match_amount_short": "Pembayaran ini ({received} {currency}) kurang dari yang dibutuhkan pesanan ({required} {currency}). Gunakan alur kurang bayar untuk pesanan ini, bukan pencocokan manual.",
   "error.manual_match_nowpayments_unverifiable": "Jumlah NOWPayments dicatat dalam koin yang dipakai pembeli, jadi tidak bisa dibandingkan dengan total pesanan. Periksa pembayarannya di dasbor NOWPayments dan selesaikan pesanan secara langsung.",
+  "error.manual_match_underpaid_payment": "Transfer ini adalah pembayaran kurang yang sudah ditangani lewat pesanan kurang bayar {orderCode}. Selesaikan di sana, jangan dicocokkan ke pesanan lain.",
+  "error.dismiss_payment_may_still_settle": "Pembayaran ini belum bisa diabaikan: jumlahnya belum terkonfirmasi, atau pesanan tujuannya masih menunggu pembayaran, jadi gateway mungkin masih menyelesaikannya. Periksa lagi setelah pesanan itu ditutup.",
   "error.payment_already_pending": "Pesanan ini sudah punya percobaan pembayaran yang tertunda.",
   "error.rate_limited": "Terlalu banyak permintaan. Tunggu sebentar.",
   "error.refund_not_found": "Refund tidak ditemukan.",

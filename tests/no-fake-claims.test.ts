@@ -57,6 +57,9 @@ const FORBIDDEN: Forbidden[] = [
     why: "round-the-clock availability claim",
     pattern:
       /24\s*\/\s*7|24\s*x\s*7|24\s+hours\s+a\s+day|around\s+the\s+clock|24\s+jam|setiap\s+saat/i,
+    allowKeys: {
+      "web.terms_p7": "manual-product delivery deadline, not round-the-clock availability",
+    },
   },
   {
     why: "fixed reply-time claim",
@@ -82,6 +85,7 @@ const FORBIDDEN: Forbidden[] = [
       "web.badge_instant": "the product-card chip, which the client only renders for an auto product with stock",
       "web.pay_wallet_idr_sub": "paying from a wallet balance is immediate; not a delivery promise",
       "web.pay_wallet_usdt_sub": "paying from a wallet balance is immediate; not a delivery promise",
+      "web.terms_p7": "conditional timing for automatic products; manual products have a separate delivery deadline",
     },
   },
   {

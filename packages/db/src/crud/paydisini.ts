@@ -215,106 +215,187 @@ export async function deliverPaidPaydisiniOrder(
   // 2. Deliver. On failure, flag the ledger row (e.g. paid but out of stock)
   //    so we never retry silently — the caller alerts via logs/admin.
   try {
-    const settleInTx = async (tx: Tx) => {
-      const order = await getOrder(tx, args.orderId);
-      // A cancelled WALLET_TOPUP is still payable (isLateSettleableWalletTopup):
-      // the buyer paid after the window closed, and a top-up reserves nothing
-      // that cancelling gave away. A cancelled PRODUCT order is NOT — its
-      // stock went back to the pool — so it keeps falling through to "stale".
-      if (
-        !order ||
-        (order.status !== OrderStatus.PENDING_PAYMENT && !isLateSettleableWalletTopup(order)) ||
-        order.paymentMethod !== PaymentMethod.PAYDISINI
-      ) {
-        // Correct the audit row: the trx matched an order that's no longer payable.
-        // Use `tx` (not the outer `db`) — we're still inside db.$transaction, and a
-        // second connection writing the same row here would wait on the row lock
-        // the surrounding transaction already holds until it times out.
-        if (manualPrior) {
-          // Manual mode: the order stopped being payable after the admin's
-          // checks ran. Put the row back exactly as the claim found it.
-          await tx.processedPaydisiniTx.update({
-            where: { trxId: args.trxId },
-            data: { outcome: "unmatched", orderId: manualPrior.orderId, amount: manualPrior.amount },
-          });
-        } else {
-          await tx.processedPaydisiniTx
-            .update({ where: { trxId: args.trxId }, data: { outcome: "stale" } })
-            .catch(() => undefined);
+    return await db.$transaction(async (tx: Tx) => {
+      try {
+        const order = await getOrder(tx, args.orderId);
+        // A cancelled WALLET_TOPUP is still payable (isLateSettleableWalletTopup):
+        // the buyer paid after the window closed, and a top-up reserves nothing
+        // that cancelling gave away. A cancelled PRODUCT order is NOT — its
+        // stock went back to the pool — so it keeps falling through to "stale".
+        if (
+          !order ||
+          (order.status !== OrderStatus.PENDING_PAYMENT && !isLateSettleableWalletTopup(order)) ||
+          order.paymentMethod !== PaymentMethod.PAYDISINI
+        ) {
+          // Correct the audit row: the trx matched an order that's no longer payable.
+          // Use `tx` (not the outer `db`) — we're still inside db.$transaction, and a
+          // second connection writing the same row here would wait on the row lock
+          // the surrounding transaction already holds until it times out.
+          if (manualPrior) {
+            // Manual mode: the order stopped being payable after the admin's
+            // checks ran. Put the row back exactly as the claim found it.
+            await tx.processedPaydisiniTx.update({
+              where: { trxId: args.trxId },
+              data: { outcome: "unmatched", orderId: manualPrior.orderId, amount: manualPrior.amount },
+            });
+          } else {
+            await tx.processedPaydisiniTx
+              .update({ where: { trxId: args.trxId }, data: { outcome: "stale" } })
+              .catch(() => undefined);
+          }
+          logger.info(
+            {
+              event: PaymentLogEvent.PAYMENT_ALREADY_CONFIRMED,
+              orderId: args.orderId,
+              provider: PaymentMethod.PAYDISINI,
+              providerPaymentId: args.trxId,
+              status: "stale",
+            },
+            manualPrior
+              ? `Did not settle PayDisini transaction ${args.trxId} on an admin's manual match because order ${args.orderId} is no longer payable — it was cancelled, already settled, or is not a PayDisini order, so the ledger row was returned to unmatched for the admin to decide again`
+              : `Did not settle PayDisini transaction ${args.trxId} because order ${args.orderId} is no longer payable — it was cancelled, already settled, or is not a PayDisini order, so the ledger row is marked stale and a human decides what the payment was for`,
+          );
+          return { status: "stale" as const };
         }
-        logger.info(
+        // Trustance Phase A Task A2b: look up this order's own PENDING Payment
+        // ledger row (if any) BEFORE settling, so both branches below can
+        // confirm it once delivery actually succeeds. May legitimately be null
+        // — orders created before this ledger was wired up, or a rail change
+        // that left no PENDING row — and that is never treated as an error.
+        const pendingPayment = await getPendingPaymentAttempt(tx, args.orderId).catch((err) => {
+          logger.warn({ err }, `Could not look up the Payment ledger row for order ${args.orderId} — this only keeps a benign miss from stopping the settlement; a genuine database error here still aborts this whole transaction, exactly as it would without this lookup`);
+          return null;
+        });
+        if (order.kind === OrderKind.WALLET_TOPUP) {
+          verifiedWalletPayment = order.paymentMethod === PaymentMethod.PAYDISINI;
+          // Buyer DM (WALLET_TOPUP_CREDITED_DM) is enqueued inside
+          // settleWalletTopup itself — the ONE call site for that event across
+          // all six top-up rails, behind its own atomic claim. This webhook
+          // (running in the web process, which must never send Telegram
+          // itself) must not enqueue it again here, or the buyer would be
+          // notified twice.
+          const { order: settled, credited } = await settleWalletTopup(tx, args.orderId, { amount: args.amount });
+          // Manual mode: a zero credit means the top-up's own payment settled it
+          // between this transaction's read and settleWalletTopup's claim. Never
+          // report that as this payment's match — fail, so the claim is undone
+          // and the row goes back to the manual-match queue.
+          if (args.manual && !credited.greaterThan(0)) throw new ValidationError("error.order_not_pending");
+          // Overpayment: same flag + admin alert the product branch below raises,
+          // without changing what was credited (see flagWalletTopupOverpayment).
+          await flagWalletTopupOverpayment(tx, {
+            order: settled,
+            credited,
+            paid: args.amount,
+            expected: order.totalAmount,
+            rail: "PayDisini",
+            markLedgerOverpaid: () =>
+              tx.processedPaydisiniTx.update({ where: { trxId: args.trxId }, data: { outcome: "overpaid" } }),
+          });
+          if (pendingPayment) {
+            // Best-effort: swallows the benign race where a concurrent
+            // poller/webhook already confirmed this same Payment row
+            // (ValidationError, count!==1) — expected and harmless. A genuine
+            // database error here still aborts this whole transaction
+            // regardless of this .catch, since Postgres poisons an
+            // interactive transaction on any failed statement; this call
+            // cannot rescue the settlement from that, it only prevents the
+            // benign race from doing so.
+            //
+            // Financial Ledger M3: the confirmation also captures PayDisini's own
+            // `trxId`, which is what `Payment.providerTransactionId` is reconciled
+            // against when a provider settlement report is matched. No
+            // `fee`/`netAmount` are passed: PayDisini reports no fee figure in its
+            // webhook or poller payload (unlike TokoPay, which at least has a
+            // locally-estimated QRIS surcharge — see crud/tokopay.ts), so both
+            // columns stay null — Payment.fee's documented "not known"
+            // (prisma/schema.prisma), which is deliberately NOT the same
+            // statement as a fee of zero.
+            await confirmPaymentAttempt(tx, {
+              paymentId: pendingPayment.id,
+              providerTransactionId: args.trxId,
+            }).catch((err) =>
+              logger.warn({ err }, `Could not confirm the Payment ledger row for order ${settled.orderCode} — that row is left stuck PENDING and needs manual reconciliation. Whether the settlement itself survived depends on which failure this was, and this line cannot tell them apart: the benign race this catch exists for (another poller or webhook confirmed the same row first) leaves the order settled, but a real database error — a unique violation on providerTransactionId, say — has already aborted this interactive transaction in Postgres, so the settlement rolls back with it. Check whether the order actually reached its settled status before treating this as harmless`),
+            );
+          }
+          logger.info(
           {
-            event: PaymentLogEvent.PAYMENT_ALREADY_CONFIRMED,
+            event: PaymentLogEvent.PAYMENT_CONFIRMED,
             orderId: args.orderId,
             provider: PaymentMethod.PAYDISINI,
             providerPaymentId: args.trxId,
-            status: "stale",
+            status: "delivered",
           },
-          manualPrior
-            ? `Did not settle PayDisini transaction ${args.trxId} on an admin's manual match because order ${args.orderId} is no longer payable — it was cancelled, already settled, or is not a PayDisini order, so the ledger row was returned to unmatched for the admin to decide again`
-            : `Did not settle PayDisini transaction ${args.trxId} because order ${args.orderId} is no longer payable — it was cancelled, already settled, or is not a PayDisini order, so the ledger row is marked stale and a human decides what the payment was for`,
-        );
-        return { status: "stale" as const };
-      }
-      // Trustance Phase A Task A2b: look up this order's own PENDING Payment
-      // ledger row (if any) BEFORE settling, so both branches below can
-      // confirm it once delivery actually succeeds. May legitimately be null
-      // — orders created before this ledger was wired up, or a rail change
-      // that left no PENDING row — and that is never treated as an error.
-      const pendingPayment = await getPendingPaymentAttempt(tx, args.orderId).catch((err) => {
-        logger.warn({ err }, `Could not look up the Payment ledger row for order ${args.orderId} — this only keeps a benign miss from stopping the settlement; a genuine database error here still aborts this whole transaction, exactly as it would without this lookup`);
-        return null;
-      });
-      if (order.kind === OrderKind.WALLET_TOPUP) {
-        verifiedWalletPayment = order.paymentMethod === PaymentMethod.PAYDISINI;
-        // Buyer DM (WALLET_TOPUP_CREDITED_DM) is enqueued inside
-        // settleWalletTopup itself — the ONE call site for that event across
-        // all six top-up rails, behind its own atomic claim. This webhook
-        // (running in the web process, which must never send Telegram
-        // itself) must not enqueue it again here, or the buyer would be
-        // notified twice.
-        const { order: settled, credited } = await settleWalletTopup(tx, args.orderId, { amount: args.amount });
-        // Manual mode: a zero credit means the top-up's own payment settled it
-        // between this transaction's read and settleWalletTopup's claim. Never
-        // report that as this payment's match — fail, so the claim is undone
-        // and the row goes back to the manual-match queue.
-        if (args.manual && !credited.greaterThan(0)) throw new ValidationError("error.order_not_pending");
-        // Overpayment: same flag + admin alert the product branch below raises,
-        // without changing what was credited (see flagWalletTopupOverpayment).
-        await flagWalletTopupOverpayment(tx, {
-          order: settled,
-          credited,
-          paid: args.amount,
-          expected: order.totalAmount,
-          rail: "PayDisini",
-          markLedgerOverpaid: () =>
-            tx.processedPaydisiniTx.update({ where: { trxId: args.trxId }, data: { outcome: "overpaid" } }),
+          `Settled PayDisini wallet top-up order ${settled.orderCode} for transaction ${args.trxId} — the buyer's balance was credited and their notification queued`,
+          );
+          return { status: "delivered" as const, order: settled, credentials: [] };
+        }
+        await tx.order.update({
+          where: { id: args.orderId },
+          data: { paidAt: new Date(), paymentState: "PAID" },
         });
+        await transitionOrderStatus(tx, {
+          orderId: args.orderId,
+          from: OrderStatus.PENDING_PAYMENT,
+          to: OrderStatus.PENDING_VERIFICATION,
+          meta: args.manual ? `manual_match trxId=${args.trxId} by admin_id=${args.manual.adminId}` : `trxId=${args.trxId}`,
+        });
+        const result = await settlePaidOrder(tx, args.orderId, { adminId: args.manual?.adminId ?? 0 });
         if (pendingPayment) {
-          // Best-effort: swallows the benign race where a concurrent
-          // poller/webhook already confirmed this same Payment row
-          // (ValidationError, count!==1) — expected and harmless. A genuine
-          // database error here still aborts this whole transaction
-          // regardless of this .catch, since Postgres poisons an
-          // interactive transaction on any failed statement; this call
-          // cannot rescue the settlement from that, it only prevents the
-          // benign race from doing so.
-          //
-          // Financial Ledger M3: the confirmation also captures PayDisini's own
-          // `trxId`, which is what `Payment.providerTransactionId` is reconciled
-          // against when a provider settlement report is matched. No
-          // `fee`/`netAmount` are passed: PayDisini reports no fee figure in its
-          // webhook or poller payload (unlike TokoPay, which at least has a
-          // locally-estimated QRIS surcharge — see crud/tokopay.ts), so both
-          // columns stay null — Payment.fee's documented "not known"
-          // (prisma/schema.prisma), which is deliberately NOT the same
-          // statement as a fee of zero.
+          // See the WALLET_TOPUP branch above for what this .catch actually
+          // protects against, and for why no fee figures are captured here.
           await confirmPaymentAttempt(tx, {
             paymentId: pendingPayment.id,
             providerTransactionId: args.trxId,
           }).catch((err) =>
-            logger.warn({ err }, `Could not confirm the Payment ledger row for order ${settled.orderCode} — that row is left stuck PENDING and needs manual reconciliation. Whether the settlement itself survived depends on which failure this was, and this line cannot tell them apart: the benign race this catch exists for (another poller or webhook confirmed the same row first) leaves the order settled, but a real database error — a unique violation on providerTransactionId, say — has already aborted this interactive transaction in Postgres, so the settlement rolls back with it. Check whether the order actually reached its settled status before treating this as harmless`),
+            logger.warn({ err }, `Could not confirm the Payment ledger row for order ${result.order.orderCode} — that row is left stuck PENDING and needs manual reconciliation. Whether the settlement itself survived depends on which failure this was, and this line cannot tell them apart: the benign race this catch exists for (another poller or webhook confirmed the same row first) leaves the order settled, but a real database error — a unique violation on providerTransactionId, say — has already aborted this interactive transaction in Postgres, so the settlement rolls back with it. Check whether the order actually reached its settled status before treating this as harmless`),
           );
+        }
+        // Buyer DM via the outbox — only if the buyer has a Telegram account.
+        // Web-only buyers (telegramId=null) have no chat to DM; they see their
+        // order on the storefront instead. Link only — the outbox payload is
+        // visible in the admin /outbox panel, never put credentials in it.
+        // Skipped for a "processing" result — settlePaidOrder already enqueued
+        // the buyer's ORDER_PROCESSING_DM for manual-fulfilment SKUs.
+        if (result.kind === "delivered" && result.order.user.telegramId != null) {
+          await enqueueNotification(tx, NotificationEvent.ORDER_DELIVERED_DM, result.order.id, {
+            chat_id: Number(result.order.user.telegramId),
+            order_code: result.order.orderCode,
+            order_url: args.shopUrl ? `${args.shopUrl.replace(/\/+$/, "")}/account/orders/${result.order.orderCode}` : null,
+            buyer_language: langCode(result.order.user.language),
+          });
+        }
+        // Overpayment: the buyer paid more than the order total. Still deliver
+        // (handled above) but flag the ledger row and alert admins so the
+        // excess can be refunded/credited manually — never auto-refunded. This
+        // stays unconditional — a buyer can overpay regardless of delivery type.
+        const paidAmount = new Decimal(args.amount);
+        const excess = paidAmount.minus(order.totalAmount);
+        if (excess.greaterThan(0)) {
+          await tx.processedPaydisiniTx.update({ where: { trxId: args.trxId }, data: { outcome: "overpaid" } });
+          await enqueueAdminOverpaid(tx, {
+            orderId: result.order.id,
+            orderCode: result.order.orderCode,
+            paid: paidAmount,
+            expected: order.totalAmount,
+            excess,
+            currency: order.currency,
+          });
+          logger.warn(
+            `PayDisini order ${result.order.orderCode} was overpaid — got ${paidAmount.toString()}, expected ${order.totalAmount.toString()} (excess ${excess.toString()} ${order.currency}) — flagged for manual refund/credit, an admin alert was enqueued`,
+          );
+        }
+        if (result.kind === "delivered") {
+          logger.info(
+          {
+            event: PaymentLogEvent.PAYMENT_CONFIRMED,
+            orderId: args.orderId,
+            provider: PaymentMethod.PAYDISINI,
+            providerPaymentId: args.trxId,
+            status: "delivered",
+          },
+          `Auto-delivered PayDisini order ${result.order.orderCode} for transaction ${args.trxId}`,
+          );
+          return { status: "delivered" as const, order: result.order, credentials: result.credentials };
         }
         logger.info(
         {
@@ -322,96 +403,13 @@ export async function deliverPaidPaydisiniOrder(
           orderId: args.orderId,
           provider: PaymentMethod.PAYDISINI,
           providerPaymentId: args.trxId,
-          status: "delivered",
+          status: "processing",
         },
-        `Settled PayDisini wallet top-up order ${settled.orderCode} for transaction ${args.trxId} — the buyer's balance was credited and their notification queued`,
+        `PayDisini order ${result.order.orderCode} paid — queued for manual fulfilment (transaction ${args.trxId})`,
         );
-        return { status: "delivered" as const, order: settled, credentials: [] };
-      }
-      await tx.order.update({
-        where: { id: args.orderId },
-        data: { paidAt: new Date(), paymentState: "PAID" },
-      });
-      await transitionOrderStatus(tx, {
-        orderId: args.orderId,
-        from: OrderStatus.PENDING_PAYMENT,
-        to: OrderStatus.PENDING_VERIFICATION,
-        meta: args.manual ? `manual_match trxId=${args.trxId} by admin_id=${args.manual.adminId}` : `trxId=${args.trxId}`,
-      });
-      const result = await settlePaidOrder(tx, args.orderId, { adminId: args.manual?.adminId ?? 0 });
-      if (pendingPayment) {
-        // See the WALLET_TOPUP branch above for what this .catch actually
-        // protects against, and for why no fee figures are captured here.
-        await confirmPaymentAttempt(tx, {
-          paymentId: pendingPayment.id,
-          providerTransactionId: args.trxId,
-        }).catch((err) =>
-          logger.warn({ err }, `Could not confirm the Payment ledger row for order ${result.order.orderCode} — that row is left stuck PENDING and needs manual reconciliation. Whether the settlement itself survived depends on which failure this was, and this line cannot tell them apart: the benign race this catch exists for (another poller or webhook confirmed the same row first) leaves the order settled, but a real database error — a unique violation on providerTransactionId, say — has already aborted this interactive transaction in Postgres, so the settlement rolls back with it. Check whether the order actually reached its settled status before treating this as harmless`),
-        );
-      }
-      // Buyer DM via the outbox — only if the buyer has a Telegram account.
-      // Web-only buyers (telegramId=null) have no chat to DM; they see their
-      // order on the storefront instead. Link only — the outbox payload is
-      // visible in the admin /outbox panel, never put credentials in it.
-      // Skipped for a "processing" result — settlePaidOrder already enqueued
-      // the buyer's ORDER_PROCESSING_DM for manual-fulfilment SKUs.
-      if (result.kind === "delivered" && result.order.user.telegramId != null) {
-        await enqueueNotification(tx, NotificationEvent.ORDER_DELIVERED_DM, result.order.id, {
-          chat_id: Number(result.order.user.telegramId),
-          order_code: result.order.orderCode,
-          order_url: args.shopUrl ? `${args.shopUrl.replace(/\/+$/, "")}/account/orders/${result.order.orderCode}` : null,
-          buyer_language: langCode(result.order.user.language),
-        });
-      }
-      // Overpayment: the buyer paid more than the order total. Still deliver
-      // (handled above) but flag the ledger row and alert admins so the
-      // excess can be refunded/credited manually — never auto-refunded. This
-      // stays unconditional — a buyer can overpay regardless of delivery type.
-      const paidAmount = new Decimal(args.amount);
-      const excess = paidAmount.minus(order.totalAmount);
-      if (excess.greaterThan(0)) {
-        await tx.processedPaydisiniTx.update({ where: { trxId: args.trxId }, data: { outcome: "overpaid" } });
-        await enqueueAdminOverpaid(tx, {
-          orderId: result.order.id,
-          orderCode: result.order.orderCode,
-          paid: paidAmount,
-          expected: order.totalAmount,
-          excess,
-          currency: order.currency,
-        });
-        logger.warn(
-          `PayDisini order ${result.order.orderCode} was overpaid — got ${paidAmount.toString()}, expected ${order.totalAmount.toString()} (excess ${excess.toString()} ${order.currency}) — flagged for manual refund/credit, an admin alert was enqueued`,
-        );
-      }
-      if (result.kind === "delivered") {
-        logger.info(
-        {
-          event: PaymentLogEvent.PAYMENT_CONFIRMED,
-          orderId: args.orderId,
-          provider: PaymentMethod.PAYDISINI,
-          providerPaymentId: args.trxId,
-          status: "delivered",
-        },
-        `Auto-delivered PayDisini order ${result.order.orderCode} for transaction ${args.trxId}`,
-        );
-        return { status: "delivered" as const, order: result.order, credentials: result.credentials };
-      }
-      logger.info(
-      {
-        event: PaymentLogEvent.PAYMENT_CONFIRMED,
-        orderId: args.orderId,
-        provider: PaymentMethod.PAYDISINI,
-        providerPaymentId: args.trxId,
-        status: "processing",
-      },
-      `PayDisini order ${result.order.orderCode} paid — queued for manual fulfilment (transaction ${args.trxId})`,
-      );
-      return { status: "processing" as const, order: result.order };
-    };
-    return await db.$transaction(async (tx: Tx) => {
-      try {
-        return await settleInTx(tx);
+        return { status: "processing" as const, order: result.order };
       } catch (inner) {
+        // Thrown inside the callback: Prisma rolls this transaction back.
         settleCallbackThrew = true;
         throw inner;
       }

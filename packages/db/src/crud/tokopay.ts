@@ -217,132 +217,217 @@ export async function deliverPaidTokopayOrder(
   // 2. Deliver. On failure, flag the ledger row (e.g. paid but out of stock)
   //    so we never retry silently — the caller alerts via logs/admin.
   try {
-    const settleInTx = async (tx: Tx) => {
-      const order = await getOrder(tx, args.orderId);
-      // A cancelled WALLET_TOPUP is still payable (isLateSettleableWalletTopup):
-      // the buyer paid after the window closed, and a top-up reserves nothing
-      // that cancelling gave away. A cancelled PRODUCT order is NOT — its
-      // stock went back to the pool — so it keeps falling through to "stale".
-      if (
-        !order ||
-        (order.status !== OrderStatus.PENDING_PAYMENT && !isLateSettleableWalletTopup(order)) ||
-        order.paymentMethod !== PaymentMethod.TOKOPAY
-      ) {
-        // Correct the audit row: the trx matched an order that's no longer payable.
-        // Use `tx` (not the outer `db`) — we're still inside db.$transaction, and a
-        // second connection writing the same row here would wait on the row lock
-        // the surrounding transaction already holds until it times out.
-        if (manualPrior) {
-          // Manual mode: the order stopped being payable after the admin's
-          // checks ran. Put the row back exactly as the claim found it.
-          await tx.processedTokopayTx.update({
-            where: { trxId: args.trxId },
-            data: { outcome: "unmatched", orderId: manualPrior.orderId, amount: manualPrior.amount },
-          });
-        } else {
-          await tx.processedTokopayTx
-            .update({ where: { trxId: args.trxId }, data: { outcome: "stale" } })
-            .catch(() => undefined);
+    return await db.$transaction(async (tx: Tx) => {
+      try {
+        const order = await getOrder(tx, args.orderId);
+        // A cancelled WALLET_TOPUP is still payable (isLateSettleableWalletTopup):
+        // the buyer paid after the window closed, and a top-up reserves nothing
+        // that cancelling gave away. A cancelled PRODUCT order is NOT — its
+        // stock went back to the pool — so it keeps falling through to "stale".
+        if (
+          !order ||
+          (order.status !== OrderStatus.PENDING_PAYMENT && !isLateSettleableWalletTopup(order)) ||
+          order.paymentMethod !== PaymentMethod.TOKOPAY
+        ) {
+          // Correct the audit row: the trx matched an order that's no longer payable.
+          // Use `tx` (not the outer `db`) — we're still inside db.$transaction, and a
+          // second connection writing the same row here would wait on the row lock
+          // the surrounding transaction already holds until it times out.
+          if (manualPrior) {
+            // Manual mode: the order stopped being payable after the admin's
+            // checks ran. Put the row back exactly as the claim found it.
+            await tx.processedTokopayTx.update({
+              where: { trxId: args.trxId },
+              data: { outcome: "unmatched", orderId: manualPrior.orderId, amount: manualPrior.amount },
+            });
+          } else {
+            await tx.processedTokopayTx
+              .update({ where: { trxId: args.trxId }, data: { outcome: "stale" } })
+              .catch(() => undefined);
+          }
+          logger.info(
+            {
+              event: PaymentLogEvent.PAYMENT_ALREADY_CONFIRMED,
+              orderId: args.orderId,
+              provider: PaymentMethod.TOKOPAY,
+              providerPaymentId: args.trxId,
+              status: "stale",
+            },
+            manualPrior
+              ? `Did not settle TokoPay transaction ${args.trxId} on an admin's manual match because order ${args.orderId} is no longer payable — it was cancelled, already settled, or is not a TokoPay order, so the ledger row was returned to unmatched for the admin to decide again`
+              : `Did not settle TokoPay transaction ${args.trxId} because order ${args.orderId} is no longer payable — it was cancelled, already settled, or is not a TokoPay order, so the ledger row is marked stale and a human decides what the payment was for`,
+          );
+          return { status: "stale" as const };
         }
-        logger.info(
+        // Trustance Phase A Task A2b: look up this order's own PENDING Payment
+        // ledger row (if any) BEFORE settling, so both branches below can
+        // confirm it once delivery actually succeeds. May legitimately be null
+        // — orders created before this ledger was wired up, or a rail change
+        // that left no PENDING row — and that is never treated as an error.
+        const pendingPayment = await getPendingPaymentAttempt(tx, args.orderId).catch((err) => {
+          logger.warn({ err }, `Could not look up the Payment ledger row for order ${args.orderId} — this only keeps a benign miss from stopping the settlement; a genuine database error here still aborts this whole transaction, exactly as it would without this lookup`);
+          return null;
+        });
+        if (order.kind === OrderKind.WALLET_TOPUP) {
+          verifiedWalletPayment = order.paymentMethod === PaymentMethod.TOKOPAY;
+          // Buyer DM (WALLET_TOPUP_CREDITED_DM) is enqueued inside
+          // settleWalletTopup itself — the ONE call site for that event across
+          // all six top-up rails, behind its own atomic claim. This webhook
+          // (running in the web process, which must never send Telegram
+          // itself) must not enqueue it again here, or the buyer would be
+          // notified twice.
+          const { order: settled, credited } = await settleWalletTopup(tx, args.orderId, { amount: args.amount });
+          // Manual mode: a zero credit means the top-up's own payment settled it
+          // between this transaction's read and settleWalletTopup's claim. Never
+          // report that as this payment's match — fail, so the claim is undone
+          // and the row goes back to the manual-match queue.
+          if (args.manual && !credited.greaterThan(0)) throw new ValidationError("error.order_not_pending");
+          // Overpayment: same flag + admin alert the product branch below raises,
+          // without changing what was credited (see flagWalletTopupOverpayment).
+          // TokoPay bills the QRIS surcharge on top of the total, so — exactly
+          // like the product branch — the comparison is against that charge.
+          // `qrisChargeAmount` is our LOCAL estimate of the fee; if TokoPay's own
+          // fee rounding lands even Rp1 above it, the top-up is flagged overpaid
+          // by that rupiah, just as a product order already is. No tolerance is
+          // added here, to stay consistent with the product branch; the admin
+          // alert shows the excess, so a Rp1 rounding case is recognisable.
+          await flagWalletTopupOverpayment(tx, {
+            order: settled,
+            credited,
+            paid: args.amount,
+            expected: qrisChargeAmount(order.totalAmount),
+            rail: "TokoPay",
+            markLedgerOverpaid: () =>
+              tx.processedTokopayTx.update({ where: { trxId: args.trxId }, data: { outcome: "overpaid" } }),
+          });
+          if (pendingPayment) {
+            // Best-effort: swallows the benign race where a concurrent
+            // poller/webhook already confirmed this same Payment row
+            // (ValidationError, count!==1) — expected and harmless. A genuine
+            // database error here still aborts this whole transaction
+            // regardless of this .catch, since Postgres poisons an
+            // interactive transaction on any failed statement; this call
+            // cannot rescue the settlement from that, it only prevents the
+            // benign race from doing so.
+            //
+            // Financial Ledger M3: the confirmation also captures what this rail
+            // knows about the money that arrived — TokoPay's own `trxId` (the id
+            // that will appear on its settlement report, which is what
+            // `Payment.providerTransactionId` is reconciled on), plus the only
+            // fee-shaped figures this shop has for any of its six rails.
+            //
+            // `fee` is `computeQrisAdminFee(order.totalAmount)`: the QRIS
+            // surcharge the buyer pays ON TOP of the order total, so `netAmount`
+            // is the total itself — not `amount - fee`. The buyer's gross payment
+            // is `qrisChargeAmount` (total + fee, which is what the overpayment
+            // check below compares against), and the surcharge portion never
+            // becomes this shop's money at all; the total IS what the shop nets.
+            //
+            // Captured as DATA only — no `FEE` ledger posting is made from it,
+            // here or anywhere. Two reasons, and both matter: the figure is a
+            // LOCAL ESTIMATE (Rp100 + 0.70%, packages/core/src/payments/
+            // tokopay.ts) of what TokoPay will charge, not a cut TokoPay reported
+            // having deducted; and the `ORDER_PAYMENT` posting that settling this
+            // order already made (crud/ledgerPostings.ts) books
+            // `order.totalAmount` — the net receipt — so booking the surcharge
+            // separately would either double-count money that posting already
+            // nets out or invent a financial event from an estimate. This shop's
+            // standing rule is that ledger data and reports never contain
+            // estimated figures dressed up as real ones, so `payment_fee.idr` and
+            // `FinancialTransactionType.FEE` stay unused until a rail reports a
+            // real fee. Pinned by a test in crud/tokopay.test.ts.
+            await confirmPaymentAttempt(tx, {
+              paymentId: pendingPayment.id,
+              providerTransactionId: args.trxId,
+              fee: computeQrisAdminFee(order.totalAmount),
+              netAmount: order.totalAmount,
+            }).catch((err) =>
+              logger.warn({ err }, `Could not confirm the Payment ledger row for order ${settled.orderCode} — that row is left stuck PENDING and needs manual reconciliation. Whether the settlement itself survived depends on which failure this was, and this line cannot tell them apart: the benign race this catch exists for (another poller or webhook confirmed the same row first) leaves the order settled, but a real database error — a unique violation on providerTransactionId, say — has already aborted this interactive transaction in Postgres, so the settlement rolls back with it. Check whether the order actually reached its settled status before treating this as harmless`),
+            );
+          }
+          logger.info(
           {
-            event: PaymentLogEvent.PAYMENT_ALREADY_CONFIRMED,
+            event: PaymentLogEvent.PAYMENT_CONFIRMED,
             orderId: args.orderId,
             provider: PaymentMethod.TOKOPAY,
             providerPaymentId: args.trxId,
-            status: "stale",
+            status: "delivered",
           },
-          manualPrior
-            ? `Did not settle TokoPay transaction ${args.trxId} on an admin's manual match because order ${args.orderId} is no longer payable — it was cancelled, already settled, or is not a TokoPay order, so the ledger row was returned to unmatched for the admin to decide again`
-            : `Did not settle TokoPay transaction ${args.trxId} because order ${args.orderId} is no longer payable — it was cancelled, already settled, or is not a TokoPay order, so the ledger row is marked stale and a human decides what the payment was for`,
-        );
-        return { status: "stale" as const };
-      }
-      // Trustance Phase A Task A2b: look up this order's own PENDING Payment
-      // ledger row (if any) BEFORE settling, so both branches below can
-      // confirm it once delivery actually succeeds. May legitimately be null
-      // — orders created before this ledger was wired up, or a rail change
-      // that left no PENDING row — and that is never treated as an error.
-      const pendingPayment = await getPendingPaymentAttempt(tx, args.orderId).catch((err) => {
-        logger.warn({ err }, `Could not look up the Payment ledger row for order ${args.orderId} — this only keeps a benign miss from stopping the settlement; a genuine database error here still aborts this whole transaction, exactly as it would without this lookup`);
-        return null;
-      });
-      if (order.kind === OrderKind.WALLET_TOPUP) {
-        verifiedWalletPayment = order.paymentMethod === PaymentMethod.TOKOPAY;
-        // Buyer DM (WALLET_TOPUP_CREDITED_DM) is enqueued inside
-        // settleWalletTopup itself — the ONE call site for that event across
-        // all six top-up rails, behind its own atomic claim. This webhook
-        // (running in the web process, which must never send Telegram
-        // itself) must not enqueue it again here, or the buyer would be
-        // notified twice.
-        const { order: settled, credited } = await settleWalletTopup(tx, args.orderId, { amount: args.amount });
-        // Manual mode: a zero credit means the top-up's own payment settled it
-        // between this transaction's read and settleWalletTopup's claim. Never
-        // report that as this payment's match — fail, so the claim is undone
-        // and the row goes back to the manual-match queue.
-        if (args.manual && !credited.greaterThan(0)) throw new ValidationError("error.order_not_pending");
-        // Overpayment: same flag + admin alert the product branch below raises,
-        // without changing what was credited (see flagWalletTopupOverpayment).
-        // TokoPay bills the QRIS surcharge on top of the total, so — exactly
-        // like the product branch — the comparison is against that charge.
-        // `qrisChargeAmount` is our LOCAL estimate of the fee; if TokoPay's own
-        // fee rounding lands even Rp1 above it, the top-up is flagged overpaid
-        // by that rupiah, just as a product order already is. No tolerance is
-        // added here, to stay consistent with the product branch; the admin
-        // alert shows the excess, so a Rp1 rounding case is recognisable.
-        await flagWalletTopupOverpayment(tx, {
-          order: settled,
-          credited,
-          paid: args.amount,
-          expected: qrisChargeAmount(order.totalAmount),
-          rail: "TokoPay",
-          markLedgerOverpaid: () =>
-            tx.processedTokopayTx.update({ where: { trxId: args.trxId }, data: { outcome: "overpaid" } }),
+          `Settled TokoPay wallet top-up order ${settled.orderCode} for transaction ${args.trxId} — the buyer's balance was credited and their notification queued`,
+          );
+          return { status: "delivered" as const, order: settled, credentials: [] };
+        }
+        await tx.order.update({
+          where: { id: args.orderId },
+          data: { binanceTxid: null, paidAt: new Date() },
         });
+        await transitionOrderStatus(tx, {
+          orderId: args.orderId,
+          from: OrderStatus.PENDING_PAYMENT,
+          to: OrderStatus.PENDING_VERIFICATION,
+          meta: args.manual ? `manual_match trxId=${args.trxId} by admin_id=${args.manual.adminId}` : `trxId=${args.trxId}`,
+        });
+        const result = await settlePaidOrder(tx, args.orderId, { adminId: args.manual?.adminId ?? 0 });
         if (pendingPayment) {
-          // Best-effort: swallows the benign race where a concurrent
-          // poller/webhook already confirmed this same Payment row
-          // (ValidationError, count!==1) — expected and harmless. A genuine
-          // database error here still aborts this whole transaction
-          // regardless of this .catch, since Postgres poisons an
-          // interactive transaction on any failed statement; this call
-          // cannot rescue the settlement from that, it only prevents the
-          // benign race from doing so.
-          //
-          // Financial Ledger M3: the confirmation also captures what this rail
-          // knows about the money that arrived — TokoPay's own `trxId` (the id
-          // that will appear on its settlement report, which is what
-          // `Payment.providerTransactionId` is reconciled on), plus the only
-          // fee-shaped figures this shop has for any of its six rails.
-          //
-          // `fee` is `computeQrisAdminFee(order.totalAmount)`: the QRIS
-          // surcharge the buyer pays ON TOP of the order total, so `netAmount`
-          // is the total itself — not `amount - fee`. The buyer's gross payment
-          // is `qrisChargeAmount` (total + fee, which is what the overpayment
-          // check below compares against), and the surcharge portion never
-          // becomes this shop's money at all; the total IS what the shop nets.
-          //
-          // Captured as DATA only — no `FEE` ledger posting is made from it,
-          // here or anywhere. Two reasons, and both matter: the figure is a
-          // LOCAL ESTIMATE (Rp100 + 0.70%, packages/core/src/payments/
-          // tokopay.ts) of what TokoPay will charge, not a cut TokoPay reported
-          // having deducted; and the `ORDER_PAYMENT` posting that settling this
-          // order already made (crud/ledgerPostings.ts) books
-          // `order.totalAmount` — the net receipt — so booking the surcharge
-          // separately would either double-count money that posting already
-          // nets out or invent a financial event from an estimate. This shop's
-          // standing rule is that ledger data and reports never contain
-          // estimated figures dressed up as real ones, so `payment_fee.idr` and
-          // `FinancialTransactionType.FEE` stay unused until a rail reports a
-          // real fee. Pinned by a test in crud/tokopay.test.ts.
+          // See the WALLET_TOPUP branch above for what this .catch actually
+          // protects against, and for why the fee figures are captured as data
+          // with no `FEE` ledger posting behind them.
           await confirmPaymentAttempt(tx, {
             paymentId: pendingPayment.id,
             providerTransactionId: args.trxId,
             fee: computeQrisAdminFee(order.totalAmount),
             netAmount: order.totalAmount,
           }).catch((err) =>
-            logger.warn({ err }, `Could not confirm the Payment ledger row for order ${settled.orderCode} — that row is left stuck PENDING and needs manual reconciliation. Whether the settlement itself survived depends on which failure this was, and this line cannot tell them apart: the benign race this catch exists for (another poller or webhook confirmed the same row first) leaves the order settled, but a real database error — a unique violation on providerTransactionId, say — has already aborted this interactive transaction in Postgres, so the settlement rolls back with it. Check whether the order actually reached its settled status before treating this as harmless`),
+            logger.warn({ err }, `Could not confirm the Payment ledger row for order ${result.order.orderCode} — that row is left stuck PENDING and needs manual reconciliation. Whether the settlement itself survived depends on which failure this was, and this line cannot tell them apart: the benign race this catch exists for (another poller or webhook confirmed the same row first) leaves the order settled, but a real database error — a unique violation on providerTransactionId, say — has already aborted this interactive transaction in Postgres, so the settlement rolls back with it. Check whether the order actually reached its settled status before treating this as harmless`),
           );
+        }
+        // Buyer DM via the outbox — only if the buyer has a Telegram account.
+        // Web-only buyers (telegramId=null) have no chat to DM; they see their
+        // order on the storefront instead. Link only — the outbox payload is
+        // visible in the admin /outbox panel, never put credentials in it.
+        // Skipped for a "processing" result — settlePaidOrder already enqueued
+        // the buyer's ORDER_PROCESSING_DM for manual-fulfilment SKUs.
+        if (result.kind === "delivered" && result.order.user.telegramId != null) {
+          await enqueueNotification(tx, NotificationEvent.ORDER_DELIVERED_DM, result.order.id, {
+            chat_id: Number(result.order.user.telegramId),
+            order_code: result.order.orderCode,
+            order_url: args.shopUrl ? `${args.shopUrl.replace(/\/+$/, "")}/account/orders/${result.order.orderCode}` : null,
+            buyer_language: langCode(result.order.user.language),
+          });
+        }
+        // Overpayment: the buyer paid more than the order total. Still deliver
+        // (handled above) but flag the ledger row and alert admins so the
+        // excess can be refunded/credited manually — never auto-refunded. This
+        // stays unconditional — a buyer can overpay regardless of delivery type.
+        const paidAmount = new Decimal(args.amount);
+        const expectedCharge = qrisChargeAmount(order.totalAmount);
+        const excess = paidAmount.minus(expectedCharge);
+        if (excess.greaterThan(0)) {
+          await tx.processedTokopayTx.update({ where: { trxId: args.trxId }, data: { outcome: "overpaid" } });
+          await enqueueAdminOverpaid(tx, {
+            orderId: result.order.id,
+            orderCode: result.order.orderCode,
+            paid: paidAmount,
+            expected: expectedCharge,
+            excess,
+            currency: order.currency,
+          });
+          logger.warn(
+            `TokoPay order ${result.order.orderCode} was overpaid — got ${paidAmount.toString()}, expected ${expectedCharge.toString()} (excess ${excess.toString()} ${order.currency}) — flagged for manual refund/credit, an admin alert was enqueued`,
+          );
+        }
+        if (result.kind === "delivered") {
+          logger.info(
+          {
+            event: PaymentLogEvent.PAYMENT_CONFIRMED,
+            orderId: args.orderId,
+            provider: PaymentMethod.TOKOPAY,
+            providerPaymentId: args.trxId,
+            status: "delivered",
+          },
+          `Auto-delivered TokoPay order ${result.order.orderCode} for transaction ${args.trxId}`,
+          );
+          return { status: "delivered" as const, order: result.order, credentials: result.credentials };
         }
         logger.info(
         {
@@ -350,100 +435,13 @@ export async function deliverPaidTokopayOrder(
           orderId: args.orderId,
           provider: PaymentMethod.TOKOPAY,
           providerPaymentId: args.trxId,
-          status: "delivered",
+          status: "processing",
         },
-        `Settled TokoPay wallet top-up order ${settled.orderCode} for transaction ${args.trxId} — the buyer's balance was credited and their notification queued`,
+        `TokoPay order ${result.order.orderCode} paid — queued for manual fulfilment (transaction ${args.trxId})`,
         );
-        return { status: "delivered" as const, order: settled, credentials: [] };
-      }
-      await tx.order.update({
-        where: { id: args.orderId },
-        data: { binanceTxid: null, paidAt: new Date() },
-      });
-      await transitionOrderStatus(tx, {
-        orderId: args.orderId,
-        from: OrderStatus.PENDING_PAYMENT,
-        to: OrderStatus.PENDING_VERIFICATION,
-        meta: args.manual ? `manual_match trxId=${args.trxId} by admin_id=${args.manual.adminId}` : `trxId=${args.trxId}`,
-      });
-      const result = await settlePaidOrder(tx, args.orderId, { adminId: args.manual?.adminId ?? 0 });
-      if (pendingPayment) {
-        // See the WALLET_TOPUP branch above for what this .catch actually
-        // protects against, and for why the fee figures are captured as data
-        // with no `FEE` ledger posting behind them.
-        await confirmPaymentAttempt(tx, {
-          paymentId: pendingPayment.id,
-          providerTransactionId: args.trxId,
-          fee: computeQrisAdminFee(order.totalAmount),
-          netAmount: order.totalAmount,
-        }).catch((err) =>
-          logger.warn({ err }, `Could not confirm the Payment ledger row for order ${result.order.orderCode} — that row is left stuck PENDING and needs manual reconciliation. Whether the settlement itself survived depends on which failure this was, and this line cannot tell them apart: the benign race this catch exists for (another poller or webhook confirmed the same row first) leaves the order settled, but a real database error — a unique violation on providerTransactionId, say — has already aborted this interactive transaction in Postgres, so the settlement rolls back with it. Check whether the order actually reached its settled status before treating this as harmless`),
-        );
-      }
-      // Buyer DM via the outbox — only if the buyer has a Telegram account.
-      // Web-only buyers (telegramId=null) have no chat to DM; they see their
-      // order on the storefront instead. Link only — the outbox payload is
-      // visible in the admin /outbox panel, never put credentials in it.
-      // Skipped for a "processing" result — settlePaidOrder already enqueued
-      // the buyer's ORDER_PROCESSING_DM for manual-fulfilment SKUs.
-      if (result.kind === "delivered" && result.order.user.telegramId != null) {
-        await enqueueNotification(tx, NotificationEvent.ORDER_DELIVERED_DM, result.order.id, {
-          chat_id: Number(result.order.user.telegramId),
-          order_code: result.order.orderCode,
-          order_url: args.shopUrl ? `${args.shopUrl.replace(/\/+$/, "")}/account/orders/${result.order.orderCode}` : null,
-          buyer_language: langCode(result.order.user.language),
-        });
-      }
-      // Overpayment: the buyer paid more than the order total. Still deliver
-      // (handled above) but flag the ledger row and alert admins so the
-      // excess can be refunded/credited manually — never auto-refunded. This
-      // stays unconditional — a buyer can overpay regardless of delivery type.
-      const paidAmount = new Decimal(args.amount);
-      const expectedCharge = qrisChargeAmount(order.totalAmount);
-      const excess = paidAmount.minus(expectedCharge);
-      if (excess.greaterThan(0)) {
-        await tx.processedTokopayTx.update({ where: { trxId: args.trxId }, data: { outcome: "overpaid" } });
-        await enqueueAdminOverpaid(tx, {
-          orderId: result.order.id,
-          orderCode: result.order.orderCode,
-          paid: paidAmount,
-          expected: expectedCharge,
-          excess,
-          currency: order.currency,
-        });
-        logger.warn(
-          `TokoPay order ${result.order.orderCode} was overpaid — got ${paidAmount.toString()}, expected ${expectedCharge.toString()} (excess ${excess.toString()} ${order.currency}) — flagged for manual refund/credit, an admin alert was enqueued`,
-        );
-      }
-      if (result.kind === "delivered") {
-        logger.info(
-        {
-          event: PaymentLogEvent.PAYMENT_CONFIRMED,
-          orderId: args.orderId,
-          provider: PaymentMethod.TOKOPAY,
-          providerPaymentId: args.trxId,
-          status: "delivered",
-        },
-        `Auto-delivered TokoPay order ${result.order.orderCode} for transaction ${args.trxId}`,
-        );
-        return { status: "delivered" as const, order: result.order, credentials: result.credentials };
-      }
-      logger.info(
-      {
-        event: PaymentLogEvent.PAYMENT_CONFIRMED,
-        orderId: args.orderId,
-        provider: PaymentMethod.TOKOPAY,
-        providerPaymentId: args.trxId,
-        status: "processing",
-      },
-      `TokoPay order ${result.order.orderCode} paid — queued for manual fulfilment (transaction ${args.trxId})`,
-      );
-      return { status: "processing" as const, order: result.order };
-    };
-    return await db.$transaction(async (tx: Tx) => {
-      try {
-        return await settleInTx(tx);
+        return { status: "processing" as const, order: result.order };
       } catch (inner) {
+        // Thrown inside the callback: Prisma rolls this transaction back.
         settleCallbackThrew = true;
         throw inner;
       }

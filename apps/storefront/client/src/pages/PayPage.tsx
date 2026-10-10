@@ -73,6 +73,7 @@ import Alert from "../components/ui/Alert";
 import Badge from "../components/ui/Badge";
 import AlertDialog from "../components/ui/AlertDialog";
 import TransactionStatus from "../components/shop/TransactionStatus";
+import GameTopupDetailCard from "../components/shop/GameTopupDetailCard";
 
 /**
  * TSX port of _pay_status.njk — the polled status chip. Design-system
@@ -143,13 +144,13 @@ export function advanceCardState(current: PayState, polled: PayState | undefined
 
 /** Contact fallback shown when a gateway is down — shared by the TokoPay/
  * PayDisini/NOWPayments gateway_error branches below (pay.njk repeats this
- * exact block three times with the same wa_number → bot_username fallback). */
+ * exact block three times with the same wa_number → support_telegram_url fallback). */
 function GatewayDownFallback({
   payPath,
   titleKey,
   bodyKey,
   waNumber,
-  botUsername,
+  telegramUrl,
 }: {
   /** Full client-side path to reload — `/checkout/:code/pay` for a product
    * order, `/wallet/topup/:code/pay` for a top-up (the two variants' client
@@ -160,7 +161,8 @@ function GatewayDownFallback({
   titleKey: string;
   bodyKey: string;
   waNumber: string;
-  botUsername: string;
+  /** Admin `support_contact` link; null hides the Telegram button. */
+  telegramUrl: string | null;
 }) {
   return (
     <div className="mt-4">
@@ -180,9 +182,9 @@ function GatewayDownFallback({
           >
             <WhatsAppIcon className="w-3.5 h-3.5" /> WhatsApp
           </a>
-        ) : botUsername ? (
+        ) : telegramUrl ? (
           <a
-            href={`https://t.me/${botUsername}`}
+            href={telegramUrl}
             target="_blank"
             rel="noopener noreferrer"
             className="btn btn-ghost btn-sm"
@@ -225,10 +227,7 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
   // The only seam between the two order kinds — see the file header.
   const apiBase = isTopup ? "/wallet/topup" : "/orders";
   const loginNextBase = isTopup ? "/wallet/topup" : "/checkout";
-  const retryHref = isTopup ? "/wallet/topup" : "/cart";
-  const retryLabelKey = isTopup ? "web.wallet_topup_retry" : "web.back_to_cart";
   const deliveredHref = isTopup ? "/account" : `/account/orders/${code}`;
-  const deliveredLabelKey = isTopup ? "web.wallet_topup_view_wallet" : "web.view_credentials";
   const closedHref = isTopup ? "/account" : "/account/orders";
   const closedLabelKey = isTopup ? "web.account_title" : "web.account_orders";
   // Full-reload retry link for GatewayDownFallback — the client route for
@@ -260,6 +259,17 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
   useEffect(() => {
     if (poll?.redirect) navigate(poll.redirect);
   }, [poll, navigate]);
+
+  // A game top-up (never the wallet top-up variant) swaps the cart/credentials
+  // wording for product-page / top-up wording. The branch key is the server's
+  // presentation; a legacy payload without one is recognised by `game_target`
+  // (null for every other order type).
+  const livePresentation = poll?.presentation ?? data?.presentation;
+  const isGame =
+    !isTopup && (livePresentation ? livePresentation.transactionType === "GAME_TOPUP" : Array.isArray(data?.game_target));
+  const retryHref = isTopup ? "/wallet/topup" : isGame ? (data?.product_slug ? `/p/${data.product_slug}` : "/") : "/cart";
+  const retryLabelKey = isTopup ? "web.wallet_topup_retry" : isGame ? "web.back_to_product" : "web.back_to_cart";
+  const deliveredLabelKey = isTopup ? "web.wallet_topup_view_wallet" : isGame ? "web.view_topup_details" : "web.view_credentials";
 
   const cancelMutation = useMutation({
     mutationFn: () => apiPost<{ ok: boolean }>(`/api/v1${apiBase}/${code}/cancel`, {}),
@@ -356,9 +366,14 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
           <Card className="min-w-0 bg-pine-tint/40">
             <TransactionStatus presentation={presentation} underpayment={underpayment}>
               {presentation.phase === "UNDERPAID" && (
-                <a href={data.bot_username ? `https://t.me/${data.bot_username}` : "/#contact"} className="btn btn-soft min-h-11">
+                <a href={data.support_telegram_url ?? "/#contact"} className="btn btn-soft min-h-11">
                   {t("transaction.contact_admin")}
                 </a>
+              )}
+              {state === "delivered" && isGame && (
+                <Link to={deliveredHref} className="btn btn-soft min-h-11">
+                  {t(deliveredLabelKey)} <ChevronRight className="w-4 h-4" />
+                </Link>
               )}
               {state === "processing" && !isTopup && (
                 <Link to={deliveredHref} className="btn btn-soft min-h-11">{t("web.pay_processing_view_order")} <ChevronRight className="w-4 h-4" /></Link>
@@ -468,7 +483,7 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
                     titleKey="web.pay_idr_down_title"
                     bodyKey="web.pay_idr_down_body"
                     waNumber={data.wa_number}
-                    botUsername={data.bot_username}
+                    telegramUrl={data.support_telegram_url}
                   />
                 ) : null}
               </>
@@ -508,7 +523,7 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
                     titleKey="web.pay_idr_down_title"
                     bodyKey="web.pay_idr_down_body"
                     waNumber={data.wa_number}
-                    botUsername={data.bot_username}
+                    telegramUrl={data.support_telegram_url}
                   />
                 ) : null}
               </>
@@ -536,16 +551,16 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
                     titleKey="web.pay_nowpayments_down_title"
                     bodyKey="web.pay_nowpayments_down_body"
                     waNumber={data.wa_number}
-                    botUsername={data.bot_username}
+                    telegramUrl={data.support_telegram_url}
                   />
                 ) : null}
               </>
             ) : (
               <>
                 <p className="text-sm text-ink-soft">{t("web.pay_method_elsewhere")}</p>
-                {data.bot_username && (
+                {data.support_telegram_url && (
                   <a
-                    href={`https://t.me/${data.bot_username}`}
+                    href={data.support_telegram_url}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="btn btn-soft btn-sm mt-3"
@@ -609,11 +624,19 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
         </>
       )}
 
+      {/* Game top-up: the typed target (and, once delivered, the full SN) under
+          the status, compact. Hidden while paying or after the order closed. */}
+      {isGame && (state === "processing" || state === "delivered") && (
+        <div className="mb-5">
+          <GameTopupDetailCard items={[]} targets={data.game_target ?? []} sn={data.sn ?? null} />
+        </div>
+      )}
+
       {state === "delivered" && !presentation && (
         <Card className="text-center py-10">
           <BadgeCheck className="w-12 h-12 text-grass mx-auto mb-3" />
           <h2 className="section-title">{t("web.pay_done_title")}</h2>
-          <p className="text-sm text-ink-soft mt-1">{t("web.pay_done_sub")}</p>
+          <p className="text-sm text-ink-soft mt-1">{t(isGame ? "web.pay_done_sub_topup" : "web.pay_done_sub")}</p>
           <Link to={deliveredHref} className="btn btn-primary mt-5">
             {t(deliveredLabelKey)} <ChevronRight className="w-4 h-4" />
           </Link>
@@ -644,7 +667,7 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
       {state === "expired" && (
         <Card className="text-center py-10">
           <TimerOff className="w-10 h-10 text-rust mx-auto mb-3" />
-          <p className="text-sm text-ink-soft">{t("web.pay_expired")}</p>
+          <p className="text-sm text-ink-soft">{t(isGame ? "web.pay_expired_topup" : "web.pay_expired")}</p>
           <Link to={retryHref} className="btn btn-primary mt-4">
             {t(retryLabelKey)}
           </Link>

@@ -22,6 +22,7 @@ const context: ShopContext = {
   favicon_url: "/static/favicon.svg",
   logo_url: "",
   bot_username: "tokobot",
+  support_telegram_url: "https://t.me/shopsupport",
   wa_number: null,
   tzname: "Asia/Jakarta",
   currency: null,
@@ -52,6 +53,7 @@ function homeFixture(overrides: Partial<HomePageData> = {}): HomePageData {
     testimonials: [],
     low_threshold: 5,
     bot_username: "tokobot",
+    support_telegram_url: "https://t.me/shopsupport",
     wa_number: "6281234567890",
     ...overrides,
   };
@@ -187,8 +189,8 @@ describe("HomePage", () => {
   // Pins the "dead Telegram link" fix (fe9869a) now ported to React: never
   // render a https://t.me/ link with no username, and don't leave the
   // contact grid at a multi-column width sized for a card that isn't there.
-  it("never renders a dead Telegram link when bot_username is empty, and collapses the contact grid to 1 column with no WA card either", async () => {
-    const { container } = renderHome(homeFixture({ bot_username: "", wa_number: "" }));
+  it("never renders a dead Telegram link when support_telegram_url is null (even with a bot username), and collapses the contact grid to 1 column with no WA card either", async () => {
+    const { container } = renderHome(homeFixture({ support_telegram_url: null, wa_number: "" }));
     await screen.findByRole("heading", { name: "Netflix Premium" });
     expect(screen.queryByText("Telegram")).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /t\.me/ })).not.toBeInTheDocument();
@@ -197,13 +199,14 @@ describe("HomePage", () => {
     expect(grid?.className).not.toMatch(/sm:grid-cols-[23]/);
   });
 
-  it("renders the https://t.me/<username> Telegram link when bot_username is configured", async () => {
-    renderHome(homeFixture({ bot_username: "realtoko_bot" }));
+  it("renders the Telegram contact from support_telegram_url, never from the bot username", async () => {
+    renderHome(homeFixture({ bot_username: "realtoko_bot", support_telegram_url: "https://t.me/shop_help" }));
     await screen.findByRole("heading", { name: "Netflix Premium" });
     expect(screen.getByRole("link", { name: /Telegram/ })).toHaveAttribute(
       "href",
-      "https://t.me/realtoko_bot",
+      "https://t.me/shop_help",
     );
+    expect(document.querySelector('a[href*="realtoko_bot"]')).toBeNull();
   });
 
   it("renders the hero image with the configured src when hero_image is set", async () => {

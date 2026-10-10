@@ -5,8 +5,7 @@ import { customerProgressPhase, fulfillmentProviderFor } from "@app/core/orderFu
 import { formatIdrFor } from "@app/core/moneyFormat";
 import { formatUsdt } from "@app/core/formatters";
 import { t } from "@app/core/i18n";
-import { parseAdditionalFields, parseCustomerData } from "@app/core/deliveryFields";
-import { nicknameInputKeys, orderInputConfig } from "@app/core/playerInput";
+import { orderGameTargets } from "@app/core/playerInput";
 import { decryptDeliveredContent } from "@app/core/credentialCrypto";
 import { langCode } from "@app/core/enums";
 import { logger } from "@app/core/logger";
@@ -53,12 +52,9 @@ function gameReceiptDetails(order: MessageRow["order"], lang: string): string[] 
   const first = order.items[0];
   if (first) {
     try {
-      const config = orderInputConfig(first.product, order.inputConfigSnapshot);
-      const keys: { targetKey: string; zoneKey?: string; serverKey?: string } = nicknameInputKeys(parseAdditionalFields(config.additionalFields), config.providerInputMapping);
-      const units = parseCustomerData(order.customerData);
-      const values = (key?: string) => [...new Set(units.map(unit => (key ? unit[key] : undefined)?.trim()).filter((v): v is string => !!v))];
-      for (const [label, key] of [["transaction.game_id", keys.targetKey], ["transaction.zone_id", keys.zoneKey], ["transaction.server_id", keys.serverKey]] as const) {
-        const found = values(key);
+      const targets = orderGameTargets(first.product, order.inputConfigSnapshot, order.customerData);
+      for (const [label, name] of [["transaction.game_id", "game_id"], ["transaction.zone_id", "zone_id"], ["transaction.server_id", "server_id"]] as const) {
+        const found = [...new Set(targets.map(target => target[name]).filter((v): v is string => !!v))];
         if (found.length) lines.push(`${escape(t(label, lang))}: <code>${escape(found.join(", "))}</code>`);
       }
     } catch (error) {

@@ -27,6 +27,7 @@ const context: ShopContext = {
   favicon_url: "/static/favicon.svg",
   logo_url: "",
   bot_username: "tokobot",
+  support_telegram_url: "https://t.me/shopsupport",
   wa_number: null,
   tzname: "Asia/Jakarta",
   analytics_enabled: false,
@@ -127,7 +128,7 @@ describe("TrackOrderPage", () => {
     await screen.findByText("We couldn't open that order");
     expect(screen.getByRole("link", { name: "Message us on Telegram" })).toHaveAttribute(
       "href",
-      "https://t.me/tokobot",
+      "https://t.me/shopsupport",
     );
     expect(screen.queryByRole("link", { name: "Help center" })).not.toBeInTheDocument();
     // Sign in stays, demoted: legitimate for a REGISTERED buyer who wandered here.
@@ -151,9 +152,9 @@ describe("TrackOrderPage", () => {
     expect(screen.getByRole("link", { name: "My orders" })).toHaveAttribute("href", "/account/orders");
   });
 
-  it("falls back to the home page's public contact section when this shop has no bot handle", async () => {
+  it("falls back to the home page's public contact section when this shop has no support_contact set (even though a bot username exists)", async () => {
     (publicPost as Mock).mockRejectedValue(new Error("/api/v1/track failed 500"));
-    renderTrack({ ...context, bot_username: "" });
+    renderTrack({ ...context, support_telegram_url: null });
     submitLookup();
 
     await screen.findByText("Something went wrong. Please try again.");

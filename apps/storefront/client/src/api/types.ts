@@ -58,6 +58,8 @@ export interface HomePageData {
   testimonials: Testimonial[];
   low_threshold: number;
   bot_username: string;
+  /** Admin `support_contact` as a t.me link, or null (hide the Telegram contact). */
+  support_telegram_url: string | null;
   wa_number: string;
 }
 
@@ -183,6 +185,10 @@ export interface ProductPageData {
      * renders InstantBuyPage.tsx instead of this page's usual plan picker +
      * Cart→Checkout hop. */
     checkout_flow: "catalog" | "instant";
+    /** Server-decided page template: "game" renders InstantBuyPage (every
+     * GAME_TOPUP product, plus instant-flow categories); "catalog" the usual
+     * plan picker + cart page. */
+    template: "game" | "catalog";
   };
   denominations: ProductDenomination[];
   default_restock_denomination_id: number;
@@ -355,8 +361,31 @@ export interface Underpayment {
   currency: string;
 }
 
+/** The Game ID / Zone / Server a buyer typed for one unit of a game top-up,
+ * read server-side only through the denomination's input mapping. An empty
+ * value is left out (server: apps/storefront/src/routes/gameTopupDetails.ts). */
+export interface GameTarget {
+  game_id?: string;
+  zone_id?: string;
+  server_id?: string;
+}
+
+/** Game top-up details on the product-order pay page and order detail, owner
+ * only. Optional: GET /api/v1/wallet/topup/:code/pay shares PayData and never
+ * sends them; the two product-order endpoints always do (null when n/a). */
+export interface GameTopupDetailsFields {
+  /** First item's catalog product slug (retry/back link to /p/:slug); null when the order has no item. */
+  product_slug?: string | null;
+  /** One entry per unit that has a mapped value; null unless the order is a
+   * GAME_TOPUP (or its saved input configuration is unreadable). May be []. */
+  game_target?: GameTarget[] | null;
+  /** Full decrypted Digiflazz SN — never truncate it. Null unless a DELIVERED
+   * GAME_TOPUP whose SN decrypted and is non-empty. */
+  sn?: string | null;
+}
+
 /** GET /api/v1/orders/:code/pay — the payView() JSON (server: apps/storefront/src/routes/checkout.ts). */
-export interface PayData {
+export interface PayData extends GameTopupDetailsFields {
   read_only?: boolean;
   recovery_url?: string | null;
   presentation?: CustomerProgress;
@@ -390,6 +419,8 @@ export interface PayData {
   min_amount: string | null;
   wa_number: string;
   bot_username: string;
+  /** Admin `support_contact` as a t.me link, or null (hide the Telegram contact). */
+  support_telegram_url: string | null;
 }
 
 /** GET /api/v1/orders/:code/status — the ~5s poll (JSON twin of the HX-Redirect
@@ -462,6 +493,8 @@ export interface ShopContext {
   favicon_url: string;
   logo_url: string;
   bot_username: string;
+  /** Admin `support_contact` as a t.me link, or null (hide the Telegram contact). */
+  support_telegram_url: string | null;
   /** WhatsApp number for the footer's contact link (`support_whatsapp`
    * Setting), or null/empty when the shop hasn't set one — the footer hides
    * the WhatsApp link entirely rather than show a dead one, same as
@@ -559,7 +592,7 @@ export interface OrderFulfillment {
 }
 
 /** GET /api/v1/account/orders/:code — complete buyer-owned order detail. */
-export interface OrderDetailData {
+export interface OrderDetailData extends GameTopupDetailsFields {
   recovery_url?: string | null;
   read_only?: boolean;
   order: {

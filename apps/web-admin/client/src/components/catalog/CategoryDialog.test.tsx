@@ -38,6 +38,13 @@ beforeEach(() => {
 });
 
 describe("CategoryDialog", () => {
+  it("explains that the Game Top-Up group always uses the top-up page", () => {
+    render(<CategoryDialog onClose={vi.fn()} onSaved={vi.fn()} />);
+    expect(
+      screen.getByText(/Game Top-Up group always use the top-up page/),
+    ).toBeInTheDocument();
+  });
+
   it("creates a category with POST when no category is given", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ category: { id: 9 } }, 201));
     vi.stubGlobal("fetch", fetchMock);

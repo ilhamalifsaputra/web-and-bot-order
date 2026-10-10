@@ -40,15 +40,16 @@ const context = {
   favicon_url: "/static/favicon.svg",
   logo_url: "",
   bot_username: "tokobot",
+  support_telegram_url: "https://t.me/shopsupport",
   wa_number: null,
   tzname: "Asia/Jakarta",
 };
 
 const emptySupportList: SupportData = { tickets: [] };
 
-function renderTicket(respond: (path: string) => unknown, id = "7") {
+function renderTicket(respond: (path: string) => unknown, id = "7", ctx: object = context) {
   (apiGet as Mock).mockImplementation(async (path: string) => {
-    if (path === "/api/v1/pages/context") return context;
+    if (path === "/api/v1/pages/context") return ctx;
     if (path === "/api/v1/account/support") return emptySupportList;
     return respond(path);
   });
@@ -171,6 +172,22 @@ describe("TicketDetailPage", () => {
     await screen.findByRole("heading", { name: "Ticket #7" });
     expect(screen.getByText("ORD-TICK-1")).toBeInTheDocument();
     expect(screen.getByText(/Netflix/)).toBeInTheDocument();
+  });
+
+  it("links the sidebar's Telegram help to support_contact, never to the bot username", async () => {
+    renderTicket(() => openTicket);
+    await screen.findByRole("heading", { name: "Ticket #7" });
+    expect(screen.getByRole("link", { name: "Message us on Telegram" })).toHaveAttribute(
+      "href",
+      "https://t.me/shopsupport",
+    );
+  });
+
+  it("hides the sidebar's Telegram help when support_contact is unset, even with a bot username", async () => {
+    renderTicket(() => openTicket, "7", { ...context, support_telegram_url: null });
+    await screen.findByRole("heading", { name: "Ticket #7" });
+    expect(screen.queryByRole("link", { name: "Message us on Telegram" })).not.toBeInTheDocument();
+    expect(document.querySelector('a[href*="tokobot"]')).toBeNull();
   });
 
   it("shows the generic no-order sidebar text when the ticket has no linked order", async () => {

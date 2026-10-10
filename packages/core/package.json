@@ -10,6 +10,7 @@
     "./denominationPrices": "./src/denominationPrices.ts",
     "./canonicalProduct": "./src/canonicalProduct.ts",
     "./buttonLimits": "./src/buttonLimits.ts",
+    "./telegramContact": "./src/telegramContact.ts",
     "./unitDictionary": "./src/unitDictionary.ts",
     "./unitDisplay": "./src/unitDisplay.ts",
     "./datetime": "./src/datetime.ts",

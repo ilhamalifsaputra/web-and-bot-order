@@ -151,6 +151,9 @@ export function CategoryDialog({
                 </span>
               </label>
             </RadioGroup>
+            <p className="mt-2 text-xs text-ink-soft">
+              Categories in the Game Top-Up group always use the top-up page, whichever flow is chosen here.
+            </p>
           </div>
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="cat-group">Group</Label>

@@ -13,6 +13,12 @@ vi.mock("../api/client", () => ({
   apiPost: vi.fn(),
 }));
 
+// The top-up page is covered by InstantBuyPage.test.tsx; here it only needs to
+// be identifiable when ProductPage picks it.
+vi.mock("./InstantBuyPage", () => ({
+  default: () => <div>instant-buy-page-stub</div>,
+}));
+
 // jsdom has no IntersectionObserver (see HomePage.test.tsx's own note on this)
 // and the detail/reviews/related-products sections now mount with Framer
 // Motion's `whileInView`, which throws on mount without it — a no-op stub is
@@ -89,6 +95,7 @@ const productData: ProductPageData = {
     rating: 4.6,
     rating_count: 12,
     checkout_flow: "catalog",
+    template: "catalog",
   },
   denominations: [
     {
@@ -182,6 +189,18 @@ describe("ProductPage", () => {
   // T2: the product name isn't known until the fetch resolves, so this page
   // sets document.title itself rather than relying on routeTitle.ts's
   // pathname-only mapping (which deliberately skips /p/:slug).
+  it("renders the top-up page when the server says template is game, even in catalog flow", async () => {
+    renderProduct("mlbb", () => ({ ...productData, product: { ...productData.product, checkout_flow: "catalog", template: "game" } }));
+    expect(await screen.findByText("instant-buy-page-stub")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Add to cart/ })).not.toBeInTheDocument();
+  });
+
+  it("renders the catalog page when the server says template is catalog, even in instant flow", async () => {
+    renderProduct("netflix-premium", () => ({ ...productData, product: { ...productData.product, checkout_flow: "instant", template: "catalog" } }));
+    expect(await screen.findByRole("heading", { name: "Netflix Premium" })).toBeInTheDocument();
+    expect(screen.queryByText("instant-buy-page-stub")).not.toBeInTheDocument();
+  });
+
   it("sets document.title to the product name once it loads (T2)", async () => {
     renderProduct("netflix-premium", () => productData);
     await screen.findByRole("heading", { name: "Netflix Premium" });

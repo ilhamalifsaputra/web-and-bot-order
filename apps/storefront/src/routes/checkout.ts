@@ -123,7 +123,7 @@ import { normalizeProviderStatus, StatusProvider } from "@app/core/payments/paym
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import { usdtFromIdr } from "../pricing";
 import { flashViewFor, loadGuestCartItems } from "./cart";
-import { resolveBotUsername, requestLang, requestCurrency, resolveDisplayCurrency } from "../shop";
+import { resolveBotUsername, resolveSupportTelegramUrl, requestLang, requestCurrency, resolveDisplayCurrency } from "../shop";
 
 /** Per-buyer cap on simultaneously unpaid orders. Exported so every
  * order-creating storefront rail enforces the SAME number (the cart-based
@@ -1206,6 +1206,7 @@ export async function payView(order: OrderRow) {
     min_amount: minAmountDisplay,
     wa_number: waNumber,
     bot_username: await resolveBotUsername(),
+    support_telegram_url: await resolveSupportTelegramUrl(),
   };
 }
 

@@ -18,6 +18,7 @@ import Skeleton from "../components/shop/Skeleton";
 import StatusBadge from "../components/shop/StatusBadge";
 import OrderProgress from "../components/shop/OrderProgress";
 import DeliveryFieldInput from "../components/shop/DeliveryFieldInput";
+import GameTopupDetailCard from "../components/shop/GameTopupDetailCard";
 import ErrorPage from "./ErrorPage";
 import Spinner from "../components/shop/Spinner";
 import Alert from "../components/ui/Alert";
@@ -114,6 +115,9 @@ export default function OrderDetailPage() {
   const showWallet = Boolean(order.wallet_credit) && order.wallet_credit !== "0";
   const qty = order.items.length;
   const fields = order.customer_data_fields;
+  // A game top-up has no warranty or generic "delivered content" — its SN
+  // lives in GameTopupDetailCard. Stock credentials (a voucher code) still show.
+  const isGameTopup = order.fulfillment?.presentation?.transactionType === "GAME_TOPUP";
 
   function startEdit(): void {
     setAnswers(Array.from({ length: qty }, (_, unitIdx) => ({ ...(order.customer_data[unitIdx] ?? {}) })));
@@ -223,7 +227,7 @@ export default function OrderDetailPage() {
                   <tr>
                     <th>{t("web.order_items")}</th>
                     <th>{t("web.order_total")}</th>
-                    <th>{t("web.warranty")}</th>
+                    {!isGameTopup && <th>{t("web.warranty")}</th>}
                   </tr>
                 </thead>
                 <tbody>
@@ -236,7 +240,7 @@ export default function OrderDetailPage() {
                       <td>
                         <span className="font-semibold text-pine text-sm whitespace-nowrap">{formatIdr(i.unit_price)}</span>
                       </td>
-                      <td className="text-xs text-ink-soft">{t("web.warranty_days", { days: i.warranty_days })}</td>
+                      {!isGameTopup && <td className="text-xs text-ink-soft">{t("web.warranty_days", { days: i.warranty_days })}</td>}
                     </tr>
                   ))}
                 </tbody>
@@ -250,7 +254,7 @@ export default function OrderDetailPage() {
                   {i.duration && <div className="text-xs text-ink-faint">{i.duration}</div>}
                   <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
                     <span className="font-semibold text-pine text-sm whitespace-nowrap">{formatIdr(i.unit_price)}</span>
-                    <span className="text-xs text-ink-soft">{t("web.warranty_days", { days: i.warranty_days })}</span>
+                    {!isGameTopup && <span className="text-xs text-ink-soft">{t("web.warranty_days", { days: i.warranty_days })}</span>}
                   </div>
                 </li>
               ))}
@@ -342,6 +346,17 @@ export default function OrderDetailPage() {
             </section>
           )}
 
+          {/* Only once the order is being fulfilled or done, like PayPage: the
+              green card must not read as success on an unpaid/closed order. */}
+          {isGameTopup && (processing || delivered) && (
+            <GameTopupDetailCard
+              items={order.items}
+              targets={data.game_target ?? []}
+              sn={data.sn ?? null}
+              digiflazzStatus={order.digiflazz_status}
+            />
+          )}
+
           {delivered && order.items.some((item) => item.credentials) && (
             <section id="credentials" className="card card-pad border-grass/40 mb-5">
               <h2 className="section-title flex items-center gap-2">
@@ -368,7 +383,7 @@ export default function OrderDetailPage() {
             </section>
           )}
 
-          {delivered && order.delivered_content && (
+          {!isGameTopup && delivered && order.delivered_content && (
             <section className="card card-pad border-grass/40">
               <h2 className="section-title flex items-center gap-2">
                 <BadgeCheck className="w-5 h-5 text-grass" /> {t("web.delivered_content_title")}

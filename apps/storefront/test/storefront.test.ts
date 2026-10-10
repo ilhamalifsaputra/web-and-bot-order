@@ -700,6 +700,21 @@ describe("GET /api/v1/pages/home — bot_username resolution (Task 9 fix)", () =
     expect(res.json().bot_username).toBe("realtoko_bot");
     await deleteSetting(prisma, "bot_username");
   });
+
+  it("support_telegram_url follows support_contact (set / unset / invalid), independent of the bot username", async () => {
+    const home = async () => (await app.inject({ method: "GET", url: "/api/v1/pages/home" })).json();
+    await setSetting(prisma, "bot_username", "realtoko_bot");
+    try {
+      expect((await home()).support_telegram_url).toBeNull();
+      await setSetting(prisma, "support_contact", "t.me/shop_support");
+      expect((await home()).support_telegram_url).toBe("https://t.me/shop_support");
+      await setSetting(prisma, "support_contact", "not a handle!");
+      expect((await home()).support_telegram_url).toBeNull();
+    } finally {
+      await deleteSetting(prisma, "support_contact");
+      await deleteSetting(prisma, "bot_username");
+    }
+  });
 });
 
 // GET /register's form-render test was dropped on the auth cutover

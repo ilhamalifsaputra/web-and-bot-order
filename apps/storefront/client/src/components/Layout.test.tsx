@@ -31,6 +31,7 @@ const context: ShopContext = {
   favicon_url: "/static/favicon.svg",
   logo_url: "",
   bot_username: "tokobot",
+  support_telegram_url: "https://t.me/shopsupport",
   wa_number: null,
   tzname: "Asia/Jakarta",
   currency: null,
@@ -287,7 +288,7 @@ describe("Layout", () => {
   });
 
   it("hides the whole contact column when neither WhatsApp nor Telegram is configured", async () => {
-    renderLayout({ wa_number: null, bot_username: "" });
+    renderLayout({ wa_number: null, support_telegram_url: null });
     await waitFor(() => expect(apiGet).toHaveBeenCalled());
     await screen.findByText("home content");
 
@@ -306,14 +307,14 @@ describe("Layout", () => {
     );
   });
 
-  it("links the footer's Telegram entry to t.me/<bot_username> only when it's set", async () => {
-    renderLayout({ bot_username: "tokobot" });
+  it("links the footer's Telegram entry to the support_contact link, never the bot username", async () => {
+    renderLayout({ support_telegram_url: "https://t.me/shopsupport" });
     await waitFor(() => expect(apiGet).toHaveBeenCalled());
     await screen.findByText("home content");
 
     expect(screen.getByRole("link", { name: /telegram/i })).toHaveAttribute(
       "href",
-      "https://t.me/tokobot",
+      "https://t.me/shopsupport",
     );
   });
 

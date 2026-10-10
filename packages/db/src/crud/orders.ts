@@ -617,7 +617,7 @@ export function getOrderByCode(db: Db, orderCode: string) {
         include: {
           product: {
             include: {
-              product: { select: { digiflazzBrand: true, name: true, category: { select: { group: true } } } },
+              product: { select: { digiflazzBrand: true, name: true, slug: true, category: { select: { group: true } } } },
             },
           },
         },

@@ -43,6 +43,7 @@ const basePay: PayData = {
   min_amount: null,
   wa_number: "",
   bot_username: "tokobot",
+  support_telegram_url: "https://t.me/shopsupport",
 };
 
 function renderPay(respond: (path: string) => unknown, code = "ORD1") {
@@ -99,7 +100,7 @@ describe("canonical transaction presentation", () => {
     expect(screen.getByText("3 USDT")).toBeInTheDocument();
     expect(container.querySelector(".animate-spin")).not.toBeInTheDocument();
     expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /Contact admin/ })).toHaveAttribute("href", "https://t.me/tokobot");
+    expect(screen.getByRole("link", { name: /Contact admin/ })).toHaveAttribute("href", "https://t.me/shopsupport");
   });
   it.each([
     ["NONE", false, null], ["PAYMENT_DETECTED", true, 25], ["WALLET_CREDITING", true, 80], ["WALLET_CREDITED", false, 100],
@@ -111,6 +112,77 @@ describe("canonical transaction presentation", () => {
     expect(await screen.findByText(receipt)).toHaveClass("break-all");
     if (progress === null) expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
     else expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", String(progress));
+  });
+});
+
+describe("PayPage game top-up", () => {
+  const SN = "SN-" + "k3J9".repeat(50);
+  const gamePay = (over: Partial<PayData> = {}): PayData => ({
+    ...basePay,
+    state: "delivered",
+    order: { ...basePay.order, status: "DELIVERED" },
+    product_slug: "mobile-legends",
+    game_target: [{ game_id: "12345678", zone_id: "2222" }],
+    sn: SN,
+    ...over,
+  });
+  const done = { state: "delivered", redirect: null } as const;
+  beforeEach(() => { document.documentElement.lang = "en"; vi.clearAllMocks(); });
+
+  it("delivered legacy card uses top-up wording, a details link and the detail card", async () => {
+    renderPay(respondFor(gamePay(), done));
+    expect(await screen.findByText("Your top-up has been sent. See the details in My orders.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /View top-up details/ })).toHaveAttribute("href", "/account/orders/ORD1");
+    expect(screen.queryByText(/credentials/i)).not.toBeInTheDocument();
+    expect(screen.getByText("12345678")).toBeInTheDocument();
+    expect(screen.getByText(SN)).toBeInTheDocument();
+  });
+
+  it("shows the target (no SN yet) under the status while the top-up is processing", async () => {
+    renderPay(respondFor(gamePay({
+      state: "processing", sn: null,
+      presentation: presentation({ transactionType: "GAME_TOPUP" }),
+    })));
+    expect(await screen.findByText("12345678")).toBeInTheDocument();
+    expect(screen.queryByText("SN / reference")).not.toBeInTheDocument();
+  });
+
+  it("an expired game order sends the buyer back to the product page", async () => {
+    renderPay(respondFor(gamePay({ state: "expired", sn: null, game_target: [] })));
+    expect(await screen.findByText(/Order again from the product page/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Back to product" })).toHaveAttribute("href", "/p/mobile-legends");
+  });
+
+  it("falls back to the home page when the order has no product slug", async () => {
+    renderPay(respondFor(gamePay({ state: "expired", sn: null, product_slug: null })));
+    expect(await screen.findByRole("link", { name: "Back to product" })).toHaveAttribute("href", "/");
+  });
+
+  it("a premium order keeps the credentials wording, the cart link and shows no top-up card", async () => {
+    renderPay(respondFor({ ...basePay, state: "delivered", product_slug: "netflix", game_target: null, sn: null }, done));
+    expect(await screen.findByText("Your credentials are ready in My orders.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /View my credentials/ })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Top-up details" })).not.toBeInTheDocument();
+  });
+
+  it("a premium order's expired link still goes to the cart", async () => {
+    renderPay(respondFor({ ...basePay, state: "expired", product_slug: "netflix", game_target: null }));
+    expect(await screen.findByRole("link", { name: "Back to cart" })).toHaveAttribute("href", "/cart");
+  });
+
+  it("the wallet top-up page is unchanged", async () => {
+    (apiGet as Mock).mockImplementation(async (path: string) =>
+      path.endsWith("/status") ? { state: "expired", redirect: null } : { ...basePay, state: "expired" });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter initialEntries={["/wallet/topup/ORD1/pay"]}>
+          <Routes><Route path="/wallet/topup/:code/pay" element={<PayPage variant="topup" />} /></Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByText(/Your items are still in stock/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Try again" })).toHaveAttribute("href", "/wallet/topup");
   });
 });
 
@@ -199,6 +271,19 @@ describe("PayPage", () => {
     expect(screen.getByText("Rupiah payment is briefly unavailable")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Try again/ })).toHaveAttribute("href", "/checkout/ORD1/pay");
     expect(screen.getByRole("link", { name: /WhatsApp/ })).toHaveAttribute("href", "https://wa.me/6281234567890");
+  });
+
+  it("gateway-error Telegram fallback uses support_contact, and is hidden when it is unset (never the bot)", async () => {
+    const down: PayData = { ...basePay, state: "waiting", is_qris: true, gateway: null, gateway_error: true, wa_number: "" };
+    const first = renderPay(respondFor(down));
+    await screen.findByRole("heading", { name: "Payment" });
+    expect(screen.getByRole("link", { name: /Telegram/ })).toHaveAttribute("href", "https://t.me/shopsupport");
+    first.unmount();
+
+    renderPay(respondFor({ ...down, support_telegram_url: null }));
+    await screen.findByRole("heading", { name: "Payment" });
+    expect(screen.queryByRole("link", { name: /Telegram/ })).not.toBeInTheDocument();
+    expect(document.querySelector('a[href*="tokobot"]')).toBeNull();
   });
 
   it("navigates to the credentials page once the poll reports delivered", async () => {
@@ -467,6 +552,7 @@ describe("PayPage", () => {
       favicon_url: "/static/favicon.svg",
       logo_url: "",
       bot_username: "tokobot",
+      support_telegram_url: "https://t.me/shopsupport",
       wa_number: null,
       tzname: "Asia/Jakarta",
       currency,

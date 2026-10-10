@@ -7,6 +7,7 @@ import { config } from "@app/core/config";
 import { parseDisplayCurrency, type DisplayCurrency } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { botUsername } from "@app/core/runtime";
+import { telegramContactUrl } from "@app/core/telegramContact";
 import { prisma, getSetting } from "@app/db";
 import { getUsdIdrRate } from "./pricing";
 import { optionalCustomer, type Customer } from "./plugins/auth";
@@ -18,6 +19,16 @@ export async function resolveBotUsername(): Promise<string> {
   const fromDb = ((await getSetting(prisma, "bot_username")) ?? "").trim();
   const v = (fromDb || (botUsername() ?? "")).trim();
   return v.toLowerCase() === BOT_USERNAME_PLACEHOLDER ? "" : v;
+}
+
+/**
+ * Telegram link for the storefront's help/contact buttons, from the admin
+ * `support_contact` setting (never the bot username — that is for login and
+ * deep links only). null when unset or not a valid Telegram handle, in which
+ * case the client hides the Telegram contact entirely.
+ */
+export async function resolveSupportTelegramUrl(): Promise<string | null> {
+  return telegramContactUrl(await getSetting(prisma, "support_contact"));
 }
 
 /**

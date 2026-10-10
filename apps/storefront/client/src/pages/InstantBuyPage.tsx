@@ -113,7 +113,7 @@ export default function InstantBuyPage() {
   const isDesktop = useIsWideDesktop();
 
   // Same query key ProductPage.tsx's own useQuery uses for this endpoint —
-  // when this page is reached via ProductPage's checkout_flow branch, the
+  // when this page is reached via ProductPage's template branch, the
   // product payload is already cached from ProductPage's own fetch, so this
   // resolves instantly instead of a second round trip.
   const { data, error } = useQuery({

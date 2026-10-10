@@ -39,10 +39,10 @@ export default function ContactPage() {
   const email = ctx?.business?.email ?? "";
   const hours = ctx?.business?.hours ?? "";
   const waNumber = ctx?.wa_number ?? "";
-  const botUsername = ctx?.bot_username ?? "";
+  const telegramUrl = ctx?.support_telegram_url ?? "";
   const phoneHref = phone ? telHref(phone) : null;
   const hasRows = Boolean(legalName || address || phone || email || hours);
-  const hasChannels = Boolean(waNumber || botUsername);
+  const hasChannels = Boolean(waNumber || telegramUrl);
 
   return (
     <div className="mx-auto max-w-3xl">
@@ -106,9 +106,9 @@ export default function ContactPage() {
                   <WhatsAppIcon className="h-4 w-4" /> WhatsApp
                 </a>
               )}
-              {botUsername && (
+              {telegramUrl && (
                 <a
-                  href={`https://t.me/${botUsername}`}
+                  href={telegramUrl}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="btn btn-soft"

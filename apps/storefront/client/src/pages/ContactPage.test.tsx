@@ -58,7 +58,7 @@ describe("ContactPage", () => {
           hours: "09.00 - 21.00",
         },
         wa_number: "62811222",
-        bot_username: "tokobot",
+        support_telegram_url: "https://t.me/tokosupport",
       }),
     );
     expect(await screen.findByRole("heading", { level: 1, name: "Contact us" })).toBeInTheDocument();
@@ -76,7 +76,7 @@ describe("ContactPage", () => {
     );
     expect(screen.getByRole("link", { name: /Telegram/ })).toHaveAttribute(
       "href",
-      "https://t.me/tokobot",
+      "https://t.me/tokosupport",
     );
     expect(screen.getByRole("link", { name: /Open a support ticket/ })).toHaveAttribute(
       "href",

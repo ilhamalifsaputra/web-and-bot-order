@@ -63,6 +63,7 @@ const productData: ProductPageData = {
     rating: null,
     rating_count: 0,
     checkout_flow: "instant",
+    template: "game",
   },
   denominations: [
     {

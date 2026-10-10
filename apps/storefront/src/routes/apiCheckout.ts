@@ -31,6 +31,7 @@ import { StockActorType } from "@app/core/enums";
 import { prisma, getOrderByCode, cancelOrder } from "@app/db";
 import { optionalCustomer, type Customer } from "../plugins/auth";
 import { checkoutView, payView, payState, transactionStatusView } from "./checkout";
+import { decryptGameSn, gameTopupDetails } from "./gameTopupDetails";
 import { csrfOk } from "./cart";
 import { clientIp, checkoutPreviewRateLimited } from "../rateLimit";
 
@@ -97,7 +98,15 @@ const apiCheckoutRoutes: FastifyPluginAsync = async (app) => {
     if (!order || order.userId !== customer.userId) {
       return reply.code(404).send({ error: "not_found" });
     }
-    return reply.send({ ...await payView(order), read_only: Boolean(customer.orderScope), recovery_url: customer.user.isGuest && !customer.orderScope ? guestOrderRecoveryUrl("", order.orderCode) : null });
+    const view = await payView(order);
+    // Game top-up details only here, after the owner check above — the
+    // wallet top-up pay page shares payView and stays unchanged.
+    return reply.send({
+      ...view,
+      ...gameTopupDetails(order, view.presentation.transactionType, () => decryptGameSn(order)),
+      read_only: Boolean(customer.orderScope),
+      recovery_url: customer.user.isGuest && !customer.orderScope ? guestOrderRecoveryUrl("", order.orderCode) : null,
+    });
   });
 
   // ---- Status poll (the SPA polls every 5s; redirect set once delivered) ----

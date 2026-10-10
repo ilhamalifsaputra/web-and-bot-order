@@ -30,7 +30,8 @@ import {
 } from "@app/db";
 import { PRODUCT_VARIANT_WIDTHS, defaultThumbKind, webpSrcset } from "./images";
 import { resolveDenomIconKind } from "./denomIcon";
-import { resolveBotUsername } from "./shop";
+import { productTemplate } from "./productTemplate";
+import { resolveBotUsername, resolveSupportTelegramUrl } from "./shop";
 import { aggregateRating, shapeProducts, sortProductCards, type SortKey } from "./cards";
 
 /**
@@ -91,6 +92,7 @@ export async function homePageData() {
     testimonials,
     low_threshold: config.LOW_STOCK_THRESHOLD,
     bot_username: await resolveBotUsername(),
+    support_telegram_url: await resolveSupportTelegramUrl(),
     wa_number: (waNumber ?? "").replace(/[^0-9]/g, ""),
   };
 }
@@ -240,11 +242,12 @@ export async function productPageData(rawSlug: string, isReseller = false, displ
       icon_kind: resolveDenomIconKind(product, product.category, product.denominations[0]?.qtyUnit ?? null),
       rating: productRatingAvg,
       rating_count: productRatingCount,
-      // Task 6 (Digiflazz instant-buy pilot): already fetched via
-      // getCatalogProductBySlugWithDenominations's `include: { category: true }`
-      // — no crud-layer change needed. Drives ProductPage.tsx's branch to
-      // InstantBuyPage.tsx.
+      // Already fetched via getCatalogProductBySlugWithDenominations's
+      // `include: { category: true }` — no crud-layer change needed.
       checkout_flow: product.category.checkoutFlow,
+      // The server picks the page template; the client branches on this, not
+      // on checkout_flow (kept above only for cached older clients).
+      template: productTemplate(product.category),
     },
     denominations,
     default_restock_denomination_id: defaultRestockDenominationId,

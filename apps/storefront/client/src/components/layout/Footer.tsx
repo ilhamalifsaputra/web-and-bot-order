@@ -92,7 +92,6 @@ export default function Footer({
   const shopName = ctx?.shop_name ?? "";
   const shopTagline = ctx?.shop_tagline ?? "";
   const waNumber = ctx?.wa_number ?? "";
-  const botUsername = ctx?.bot_username ?? "";
   const legalName = ctx?.business?.legal_name ?? "";
   const address = ctx?.business?.address ?? "";
   const phone = ctx?.business?.phone ?? "";
@@ -101,6 +100,7 @@ export default function Footer({
   const hours = ctx?.business?.hours ?? "";
   const payMethods = ctx?.pay_methods;
   const showPayMarks = Boolean(payMethods && (payMethods.qris || payMethods.card));
+  const telegramUrl = ctx?.support_telegram_url ?? "";
 
   return (
     <footer
@@ -168,10 +168,10 @@ export default function Footer({
                       </a>
                     </li>
                   )}
-                  {botUsername && (
+                  {telegramUrl && (
                     <li>
                       <a
-                        href={`https://t.me/${botUsername}`}
+                        href={telegramUrl}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="flex items-center gap-2 text-ink-soft transition-colors hover:text-pine"

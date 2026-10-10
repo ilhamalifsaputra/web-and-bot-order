@@ -170,13 +170,13 @@ export default function HomePage() {
     );
   }
 
-  const { hero_image, categories, products, testimonials, low_threshold, bot_username, wa_number } = data;
+  const { hero_image, categories, products, testimonials, low_threshold, support_telegram_url, wa_number } = data;
   // Real inventory only — never a fabricated/placeholder product. Fewer than
   // 2 available products means no composition at all (see homepage design spec).
   const heroProducts = products.length >= 2 ? products.slice(0, 3) : [];
   const fx = ctx?.fx;
 
-  const contactCount = 1 + (wa_number ? 1 : 0) + (bot_username ? 1 : 0);
+  const contactCount = 1 + (wa_number ? 1 : 0) + (support_telegram_url ? 1 : 0);
   const contactCols = contactCount === 3 ? "sm:grid-cols-3" : contactCount === 2 ? "sm:grid-cols-2" : "";
 
   // FAQ — the <Accordion> primitive replaces the native <details> + faq-in
@@ -602,9 +602,9 @@ export default function HomePage() {
             </a>
           )}
 
-          {bot_username && (
+          {support_telegram_url && (
             <a
-              href={`https://t.me/${bot_username}`}
+              href={support_telegram_url}
               target="_blank"
               rel="noopener noreferrer"
               className="card card-pad group flex flex-col items-center gap-3 text-center transition hover:-translate-y-0.5 hover:shadow-lift"

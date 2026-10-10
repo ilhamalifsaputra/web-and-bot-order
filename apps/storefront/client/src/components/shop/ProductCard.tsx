@@ -4,7 +4,7 @@
  * product detail page.
  */
 import { Link } from "react-router-dom";
-import { motion } from "framer-motion";
+import { motion } from "motion/react";
 import { Tag, Zap } from "lucide-react";
 import { t, tCount } from "../../lib/i18n";
 import { pressable } from "../../lib/motion";

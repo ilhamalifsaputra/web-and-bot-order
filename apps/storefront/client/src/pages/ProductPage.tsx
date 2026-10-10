@@ -8,7 +8,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { motion } from "framer-motion";
 import {
   Bell,
   Package,
@@ -26,7 +25,6 @@ import { useDocumentTitle } from "../lib/useDocumentTitle";
 import { t, tCount } from "../lib/i18n";
 import { tError } from "../lib/errors";
 import { formatPriceFor } from "../lib/format";
-import { fadeUp } from "../lib/motion";
 import { useIsDesktop } from "../lib/useMediaQuery";
 import Breadcrumb from "../components/shop/Breadcrumb";
 import Stars from "../components/shop/Stars";
@@ -42,13 +40,6 @@ import InstantBuyPage from "./InstantBuyPage";
 import Spinner from "../components/shop/Spinner";
 import Skeleton from "../components/shop/Skeleton";
 import EmptyState from "../components/shop/EmptyState";
-
-const revealProps = {
-  variants: fadeUp,
-  initial: "initial" as const,
-  whileInView: "animate" as const,
-  viewport: { once: true, margin: "-80px" },
-};
 
 /** Qty input contract: 1..min(99, available) for a denomination that draws
  * from local stock (`uses_local_inventory`, decided by the server) — a
@@ -493,7 +484,7 @@ export default function ProductPage() {
           buy action off the first screen. Each block disappears when the
           admin left that field empty, so no headings dangle over nothing. */}
       {(product.what_you_get || product.terms || product.warranty_note) && (
-        <motion.section {...revealProps} className="mt-10 card card-pad">
+        <section className="mt-10 card card-pad">
           {/* Deliberately not tabs or an accordion. All three blocks are short,
               and each one answers a question a hesitant buyer asks before
               paying — hiding two of them behind a tap costs a tap and hides
@@ -525,13 +516,13 @@ export default function ProductPage() {
                 </p>
               </div>
             ))}
-        </motion.section>
+        </section>
       )}
 
       <ShareRow productName={product.name} />
 
       {/* Reviews */}
-      <motion.section {...revealProps} className="mt-10">
+      <section className="mt-10">
         <h2 className="section-title mb-3">{t("web.reviews")}</h2>
         {/* R4: the catalog card that links here already shows this same
             aggregate (ProductCard.tsx) — without it, the signal a shopper saw
@@ -570,19 +561,19 @@ export default function ProductPage() {
              control is already the loudest thing on this page. */
           <EmptyState icon={Star} title={t("web.no_reviews")} description={t("web.no_reviews_desc")} />
         )}
-      </motion.section>
+      </section>
 
       {/* STO-011: same-category "You might also like" shelf — this product
           detail page had no cross-sell/discovery path back into the catalog. */}
       {related_products.length > 0 && (
-        <motion.section {...revealProps} className="mt-10">
+        <section className="mt-10">
           <h2 className="section-title mb-3">{t("web.related_products")}</h2>
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
             {related_products.map((p) => (
               <ProductCard key={p.slug} p={p} fx={fx} lowThreshold={low_threshold} />
             ))}
           </div>
-        </motion.section>
+        </section>
       )}
 
       {/* Reserved runway for the sticky bar. It's `fixed`, so it overlays the

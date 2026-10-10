@@ -34,6 +34,32 @@ function Harness({ onClose }: { onClose?: () => void }) {
 }
 
 describe("Modal", () => {
+  it("keeps typing focus across parent rerenders and uses the latest close handler", async () => {
+    const closed = vi.fn();
+    function TypingDialog() {
+      const [value, setValue] = useState("");
+      const [open, setOpen] = useState(false);
+      return <>
+        <button onClick={() => setOpen(true)}>Edit</button>
+        <Modal open={open} title="Edit name" onClose={() => { closed(value); setOpen(false); }}>
+          <input aria-label="Name" value={value} onChange={(event) => setValue(event.target.value)} />
+        </Modal>
+      </>;
+    }
+    const user = userEvent.setup();
+    render(<TypingDialog />);
+    await user.click(screen.getByText("Edit"));
+    const input = screen.getByRole("textbox", { name: "Name" });
+    await user.click(input);
+    await user.type(input, "Trustance");
+    expect(input).toHaveValue("Trustance");
+    expect(input).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(closed).toHaveBeenCalledExactlyOnceWith("Trustance");
+    expect(screen.getByText("Edit")).toHaveFocus();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
   it("renders nothing while closed", () => {
     render(<Harness />);
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();

@@ -12,7 +12,7 @@
 import { useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { Zap } from "lucide-react";
-import { motion } from "framer-motion";
+import { motion } from "motion/react";
 import { apiGet } from "../api/client";
 import { SORT_KEYS, type ShelfPageData, type SortKey } from "../api/types";
 import { useShopContext } from "../components/Layout";

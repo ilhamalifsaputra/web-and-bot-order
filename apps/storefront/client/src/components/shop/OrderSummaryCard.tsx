@@ -204,9 +204,9 @@ export default function OrderSummaryCard({
         <Card>
           <h2 className="section-title mb-3">{t("web.summary")}</h2>
           {accountSummary && (
-            <div className="mb-3 text-sm">
+            <Card variant="inset" className="mb-4 text-sm">
               <p className="font-semibold text-ink break-words">{accountSummary.plan}</p>
-              <dl className="mt-2 space-y-1">
+              <dl className="mt-3 space-y-2">
                 {accountSummary.fields.map((field) => (
                   <div key={field.key} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-3">
                     <dt className="text-ink-soft">{field.label}</dt>
@@ -214,9 +214,9 @@ export default function OrderSummaryCard({
                   </div>
                 ))}
               </dl>
-            </div>
+            </Card>
           )}
-          <div className="text-sm divide-y divide-line">
+          <div className="text-sm">
             <div className="flex justify-between py-2">
               <span className="text-ink-soft">{t("web.subtotal")}</span>
               <span>{formatPriceFor(totals.subtotal, currency, fx)}</span>
@@ -252,7 +252,7 @@ export default function OrderSummaryCard({
                 </span>
               </div>
             )}
-            <div className="flex items-baseline justify-between py-3">
+            <div className="mt-2 flex items-baseline justify-between gap-3 border-t border-line pb-2 pt-4">
               <span className="text-base font-semibold text-ink">{t("web.order_total")}</span>
               <Price value={method === "qris" ? totals.qris_grand_total : totals.total} fx={fx} size="text-lg" />
             </div>

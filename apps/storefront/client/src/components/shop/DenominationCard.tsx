@@ -84,7 +84,7 @@ export default function DenominationCard({ d, fx, lowThreshold, checked, onChang
   const Icon = iconKind ? ICON_KIND_ICONS[iconKind] : null;
   return (
     <label
-      className={`denom-card cursor-pointer grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-lg border-2 border-line bg-card p-3 sm:p-4 shadow-soft transition-all duration-150 hover:shadow-lift has-[:checked]:border-pine has-[:checked]:ring-2 has-[:checked]:ring-pine/35 ${!buyable ? "opacity-60" : ""}`}
+      className={`denom-card cursor-pointer grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-lg border-2 border-line bg-card p-3 sm:p-4 transition-[background-color,border-color,box-shadow] duration-150 ease-gg hover:border-pine-tint hover:shadow-soft has-[:checked]:bg-pine-tint has-[:checked]:border-pine focus-within:ring-2 focus-within:ring-pine ${!buyable ? "opacity-60" : ""}`}
       data-denom-id={d.id}
       data-price={d.price}
       data-available={d.available}

@@ -44,6 +44,7 @@
  * directly, with vertical scrolling completely unaffected. See index.css's
  * comment on `#root` for the full explanation and how it was verified.
  */
+import { preferredScrollBehavior } from "../lib/scrollBehavior";
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -179,7 +180,7 @@ export default function HelpPage() {
   // on every re-render, since `selectedTicketId` only changes then.
   useEffect(() => {
     if (selectedTicketId == null) return;
-    document.getElementById("inline-ticket-panel")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    document.getElementById("inline-ticket-panel")?.scrollIntoView({ behavior: preferredScrollBehavior(), block: "start" });
   }, [selectedTicketId]);
 
   const createMutation = useMutation({

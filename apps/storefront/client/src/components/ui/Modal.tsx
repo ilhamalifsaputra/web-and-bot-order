@@ -18,12 +18,13 @@
  */
 import { useId, useRef, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
-import { AnimatePresence, motion } from "framer-motion";
+import { AnimatePresence, motion } from "motion/react";
 import { X } from "lucide-react";
 import { cn } from "./cn";
 import { fadeIn, scrim } from "../../lib/motion";
 import IconButton from "./IconButton";
 import { useDialogA11y } from "./useDialogA11y";
+import DialogLayer from "./DialogLayer";
 
 export type ModalSize = "sm" | "md" | "lg";
 
@@ -75,7 +76,7 @@ export default function Modal({
   return createPortal(
     <AnimatePresence>
       {open && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+        <DialogLayer className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <motion.div
             variants={scrim}
             initial="initial"
@@ -133,7 +134,7 @@ export default function Modal({
               <div className="flex flex-wrap items-center justify-end gap-2 pt-1">{footer}</div>
             )}
           </motion.div>
-        </div>
+        </DialogLayer>
       )}
     </AnimatePresence>,
     document.body,

@@ -5,7 +5,7 @@
  * header/cart, no data fetching — the shop isn't configured yet), driven by
  * the `setup-pending` <meta> tag lib/spaFallback.ts injects into the shell.
  */
-import { motion } from "framer-motion";
+import { motion } from "motion/react";
 import { t } from "../lib/i18n";
 import { fadeUp } from "../lib/motion";
 

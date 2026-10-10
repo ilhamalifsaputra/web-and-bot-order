@@ -18,7 +18,7 @@ export default function ProgressBar({ value }: ProgressBarProps) {
       aria-valuemax={100}
       className="h-1.5 w-full overflow-hidden rounded-full bg-sand"
     >
-      <div className="h-full rounded-full bg-pine transition-all" style={{ width: `${pct}%` }} />
+      <div className="h-full rounded-full bg-pine transition-[width] motion-reduce:transition-none" style={{ width: `${pct}%` }} />
     </div>
   );
 }

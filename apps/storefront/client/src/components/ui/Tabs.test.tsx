@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, vi } from "vitest";
 import { useState } from "react";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, within } from "@testing-library/react";
 import Tabs, { type TabItem } from "./Tabs";
 
 const ITEMS: TabItem[] = [
@@ -11,6 +11,18 @@ const ITEMS: TabItem[] = [
 ];
 
 describe("Tabs", () => {
+  it("keeps independent tab groups isolated during rapid keyboard selection", () => {
+    render(<><Tabs items={ITEMS} aria-label="First" /><Tabs items={ITEMS} aria-label="Second" /></>);
+    const first = screen.getByRole("tablist", { name: "First" });
+    const second = screen.getByRole("tablist", { name: "Second" });
+    within(first).getByRole("tab", { selected: true }).focus();
+    for (let index = 0; index < 20; index++) fireEvent.keyDown(first, { key: "ArrowRight" });
+    expect(within(first).getAllByRole("tab", { selected: true })).toHaveLength(1);
+    expect(within(first).getByRole("tab", { selected: true })).toHaveTextContent("Diamonds");
+    expect(within(second).getByRole("tab", { selected: true })).toHaveTextContent("Termurah");
+    const ids = screen.getAllByRole("tab").map(tab => tab.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
   it("renders a tablist with one selected tab (uncontrolled, defaults to first)", () => {
     render(<Tabs items={ITEMS} aria-label="Sort" />);
     expect(screen.getByRole("tablist", { name: "Sort" })).toBeInTheDocument();
@@ -32,7 +44,8 @@ describe("Tabs", () => {
     const membership = screen.getByRole("tab", { name: "Membership" });
     fireEvent.click(membership);
     expect(membership).toHaveAttribute("aria-selected", "true");
-    expect(membership).toHaveClass("bg-pine-tint", "text-pine-dark");
+    expect(membership).toHaveClass("text-pine-dark");
+    expect(membership.querySelector('[aria-hidden="true"]')).toHaveClass("bg-pine-tint");
     expect(screen.getByRole("tab", { name: "Termurah" })).toHaveClass("bg-sand", "text-ink-soft");
   });
 

@@ -1,7 +1,6 @@
 import * as React from "react"
 import { useState, useEffect } from "react"
 import type { ReactNode } from "react"
-import { motion } from "framer-motion"
 import {
   Table,
   TableHeader,
@@ -11,13 +10,8 @@ import {
   TableCell,
 } from "@/components/ui/table"
 import { cn } from "@/lib/utils"
-import { staggerContainer, staggerItem } from "@/lib/motion"
 import { SkeletonRow } from "./SkeletonRow"
 import { EmptyState } from "./EmptyState"
-
-const MotionTableBody = motion.create(TableBody)
-const MotionTableRow = motion.create(TableRow)
-const MotionCardRow = motion.create("div")
 
 /** Returns true once mounted on a viewport narrower than `breakpoint` px.
  *  Defaults to false in SSR / test environments (no matchMedia). */
@@ -134,22 +128,17 @@ export function DataTable<T>({
         ) : data.length === 0 ? (
           emptyNode
         ) : (
-          <motion.div
+          <div
             className="contents"
-            variants={staggerContainer}
-            initial="initial"
-            animate="animate"
           >
             {data.map((row) => {
               const selectionNode = selectionColumn?.render(row);
               return (
-                <MotionCardRow
+                <div
                   key={keyExtractor(row)}
-                  variants={staggerItem}
-                  whileTap={onRowClick ? { scale: 0.98 } : undefined}
                   className={cn(
-                    "rounded-lg border border-line p-4 overflow-hidden",
-                    nested ? "bg-sand" : "bg-card",
+                    "rounded-lg border p-4 overflow-hidden",
+                    nested ? "border-transparent bg-sand" : "border-line bg-card",
                     onRowClick && (nested ? "cursor-pointer active:bg-border" : "cursor-pointer active:bg-sand")
                   )}
                   onClick={onRowClick ? () => onRowClick(row) : undefined}
@@ -162,7 +151,7 @@ export function DataTable<T>({
                   {dataColumns.map((col) => (
                     <div
                       key={col.key}
-                      className="flex items-start justify-between gap-3 py-1.5 border-b border-line last:border-0"
+                      className="flex items-start justify-between gap-3 py-2"
                     >
                       <span className="text-xs font-medium text-ink-soft shrink-0 pt-0.5">
                         {col.header}
@@ -179,10 +168,10 @@ export function DataTable<T>({
                       ))}
                     </div>
                   )}
-                </MotionCardRow>
+                </div>
               );
             })}
-          </motion.div>
+          </div>
         )}
       </div>
     );
@@ -214,11 +203,10 @@ export function DataTable<T>({
             </TableRow>
           </TableBody>
         ) : (
-          <MotionTableBody variants={staggerContainer} initial="initial" animate="animate">
+          <TableBody>
             {data.map((row) => (
-              <MotionTableRow
+              <TableRow
                 key={keyExtractor(row)}
-                variants={staggerItem}
                 className={cn(onRowClick && "cursor-pointer hover:bg-sand")}
                 onClick={onRowClick ? () => onRowClick(row) : undefined}
               >
@@ -227,9 +215,9 @@ export function DataTable<T>({
                     {col.render(row)}
                   </TableCell>
                 ))}
-              </MotionTableRow>
+              </TableRow>
             ))}
-          </MotionTableBody>
+          </TableBody>
         )}
       </Table>
     </div>

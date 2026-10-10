@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Outlet, useLocation } from "react-router-dom";
 import { Sidebar } from "./Sidebar";
 import { TopBar } from "./TopBar";
@@ -11,6 +11,9 @@ export function AppShell(): JSX.Element {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const location = useLocation();
+  const menuRef = useRef<HTMLButtonElement>(null);
+  const closeSidebar = useCallback(() => setSidebarOpen(false), []);
+  const closeSearch = useCallback(() => setSearchOpen(false), []);
 
   // Ctrl+K / Cmd+K shortcut to open search
   useEffect(() => {
@@ -29,12 +32,15 @@ export function AppShell(): JSX.Element {
       <div className="flex h-screen overflow-hidden bg-paper">
         <Sidebar
           open={sidebarOpen}
-          onClose={() => setSidebarOpen(false)}
+          onClose={closeSidebar}
+          triggerRef={menuRef}
         />
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
           <TopBar
             onMenuClick={() => setSidebarOpen((o) => !o)}
             onSearchOpen={() => setSearchOpen(true)}
+            menuRef={menuRef}
+            sidebarOpen={sidebarOpen}
           />
           <main className="flex flex-1 flex-col overflow-y-auto bg-paper">
             <div className="mx-auto w-full max-w-[1440px] flex-1 px-4 py-4 sm:px-5 sm:py-6 lg:px-6 xl:px-8">
@@ -47,7 +53,7 @@ export function AppShell(): JSX.Element {
           </main>
         </div>
       </div>
-      <SearchModal open={searchOpen} onClose={() => setSearchOpen(false)} />
+      <SearchModal open={searchOpen} onClose={closeSearch} />
       <Toaster />
     </>
   );

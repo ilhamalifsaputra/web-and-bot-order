@@ -2,6 +2,8 @@ import "@testing-library/jest-dom";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
+import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { SearchModal } from "./SearchModal";
 
 function renderModal(onClose: () => void = () => {}) {
@@ -27,6 +29,51 @@ beforeEach(() => {
 });
 
 describe("SearchModal", () => {
+  it("clears a failed search when its query is cleared without retrying an empty query", async () => {
+    const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("offline"));
+    renderModal();
+    typeQuery("steam");
+    await screen.findByRole("alert");
+    typeQuery("");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByText(/type to search across/i)).toBeInTheDocument();
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+  it("distinguishes server failure from an empty search and retries the same query", async () => {
+    const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ q: "steam", exactOrderId: null, users: [], products: [] })));
+    renderModal();
+    typeQuery("steam");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Search could not be loaded");
+    expect(screen.queryByText(/no results for/i)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry search" }));
+    expect(await screen.findByText(/no results for/i)).toBeInTheDocument();
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("traps focus, keeps typing focused, and returns to the opener on Escape", async () => {
+    mockSearchResponse({ q: "steam", exactOrderId: null, users: [], products: [] });
+    function Harness() {
+      const [open, setOpen] = useState(false);
+      return <MemoryRouter>
+        <button onClick={() => setOpen(true)}>Open search</button>
+        <SearchModal open={open} onClose={() => setOpen(false)} />
+      </MemoryRouter>;
+    }
+    const user = userEvent.setup();
+    render(<Harness />);
+    await user.click(screen.getByText("Open search"));
+    const input = screen.getByRole("textbox", { name: "Search orders, products, users" });
+    expect(input).toHaveFocus();
+    await user.type(input, "steam");
+    expect(input).toHaveFocus();
+    await user.tab();
+    expect(screen.getByRole("dialog")).toContainElement(document.activeElement as HTMLElement);
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.getByText("Open search")).toHaveFocus());
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
   it("renders a user hit and a product hit grouped under their type headers", async () => {
     mockSearchResponse({
       q: "steam",

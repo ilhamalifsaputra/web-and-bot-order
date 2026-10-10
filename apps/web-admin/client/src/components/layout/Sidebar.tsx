@@ -1,4 +1,5 @@
-import type { ComponentType } from "react";
+import { useEffect, type ComponentType, type RefObject } from "react";
+import { MotionDialog } from "../shared/MotionDialog";
 import { NavLink, useNavigate } from "react-router-dom";
 import { useShopInfo } from "../../hooks/useShopInfo";
 import {
@@ -33,6 +34,7 @@ import { logout } from "../../api/client";
 interface SidebarProps {
   open: boolean;
   onClose: () => void;
+  triggerRef?: RefObject<HTMLButtonElement>;
 }
 
 interface NavItemConfig {
@@ -154,7 +156,7 @@ function SidebarContent({ onClose }: { onClose: () => void }) {
         <button
           type="button"
           onClick={onClose}
-          className="flex h-10 w-10 items-center justify-center rounded-md text-ink-soft hover:text-ink lg:hidden"
+          className="flex h-11 w-11 items-center justify-center rounded-md text-ink-soft hover:text-ink lg:hidden"
           aria-label="Close navigation"
         >
           <X className="h-5 w-5" />
@@ -182,7 +184,7 @@ function SidebarContent({ onClose }: { onClose: () => void }) {
                       if (window.innerWidth < 1024) onClose();
                     }}
                     className={({ isActive }) =>
-                      `flex items-center rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+                      `flex min-h-11 items-center rounded-md px-3 py-2 text-sm font-medium transition-colors ${
                         isActive
                           ? "bg-pine-tint text-pine"
                           : "text-ink-soft hover:bg-sand hover:text-ink"
@@ -213,7 +215,7 @@ function SidebarContent({ onClose }: { onClose: () => void }) {
         <button
           type="button"
           onClick={handleLogout}
-          className="text-xs text-ink-soft hover:text-rust"
+          className="min-h-11 px-2 text-sm text-ink-soft hover:text-rust"
         >
           Logout
         </button>
@@ -222,7 +224,15 @@ function SidebarContent({ onClose }: { onClose: () => void }) {
   );
 }
 
-export function Sidebar({ open, onClose }: SidebarProps): JSX.Element {
+export function Sidebar({ open, onClose, triggerRef }: SidebarProps): JSX.Element {
+  useEffect(() => {
+    if (!open || typeof window.matchMedia !== "function") return;
+    const media = window.matchMedia("(min-width: 1024px)");
+    const closeOnDesktop = () => { if (media.matches) onClose(); };
+    closeOnDesktop();
+    media.addEventListener("change", closeOnDesktop);
+    return () => media.removeEventListener("change", closeOnDesktop);
+  }, [open, onClose]);
   return (
     <>
       {/* Desktop: always-visible fixed-width sidebar */}
@@ -231,15 +241,9 @@ export function Sidebar({ open, onClose }: SidebarProps): JSX.Element {
       </aside>
 
       {/* Mobile: drawer + backdrop */}
-      <div
-        className={`fixed inset-0 z-[45] bg-ink/40 lg:hidden transition-opacity duration-200 ${open ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none"}`}
-        onClick={onClose}
-      />
-      <aside
-        className={`fixed inset-y-0 left-0 z-50 w-56 lg:hidden transition-transform duration-200 ease-in-out ${open ? "translate-x-0" : "-translate-x-full"}`}
-      >
+      <MotionDialog open={open} onClose={onClose} title="Navigation" drawer restoreFocusRef={triggerRef}>
         <SidebarContent onClose={onClose} />
-      </aside>
+      </MotionDialog>
     </>
   );
 }

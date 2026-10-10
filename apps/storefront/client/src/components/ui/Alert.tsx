@@ -35,14 +35,13 @@ import { cn } from "./cn";
 export type AlertTone = "info" | "success" | "warning" | "error" | "tip";
 export type AlertVariant = "banner" | "panel";
 
-/** banner = ex-Flash. info/success/error are Flash's originals verbatim;
- * warning/tip complete the tone set for new callers. */
+/** Banner tones keep guidance, success, attention and errors distinct. */
 const BANNER_TONE: Record<AlertTone, string> = {
-  info: "bg-sand text-ink border-line",
-  success: "bg-grass-tint text-grass-dark border-grass/30",
-  warning: "bg-amberx-tint text-amberx border-amberx/30",
+  info: "bg-pine-tint text-pine-dark border-pine/30",
+  success: "bg-grass-tint text-ink-soft border-grass/30",
+  warning: "bg-amberx-tint text-ink-soft border-amberx/30",
   error: "bg-rust-tint text-rust-dark border-rust/30",
-  tip: "bg-grass-tint text-grass-dark border-grass/30",
+  tip: "bg-pine-tint text-pine-dark border-pine/30",
 };
 const BANNER_ICON: Record<AlertTone, LucideIcon> = {
   info: Info,
@@ -52,12 +51,11 @@ const BANNER_ICON: Record<AlertTone, LucideIcon> = {
   tip: Lightbulb,
 };
 
-/** panel = ex-Callout. info/tip/warning are Callout's originals verbatim
- * (info→pine, tip→grass, warning→rust); success/error added for new callers. */
+/** Panels use the same semantic colors as banners. */
 const PANEL_TONE: Record<AlertTone, { tint: string; fg: string }> = {
-  info: { tint: "bg-pine-tint", fg: "text-pine" },
-  tip: { tint: "bg-grass-tint", fg: "text-grass-dark" },
-  warning: { tint: "bg-rust-tint", fg: "text-rust-dark" },
+  info: { tint: "bg-pine-tint", fg: "text-pine-dark" },
+  tip: { tint: "bg-pine-tint", fg: "text-pine-dark" },
+  warning: { tint: "bg-amberx-tint", fg: "text-amberx" },
   success: { tint: "bg-grass-tint", fg: "text-grass-dark" },
   error: { tint: "bg-rust-tint", fg: "text-rust-dark" },
 };
@@ -104,7 +102,7 @@ const Alert = forwardRef<HTMLDivElement, AlertProps>(function Alert(
         )}
         {...rest}
       >
-        {icon ?? <Icon className="w-4 h-4 shrink-0 mt-px" />}
+        {icon ?? <Icon className={cn("w-4 h-4 shrink-0 mt-px", PANEL_TONE[tone].fg)} aria-hidden="true" />}
         {title != null ? (
           <div className="min-w-0">
             <p className="font-semibold">{title}</p>

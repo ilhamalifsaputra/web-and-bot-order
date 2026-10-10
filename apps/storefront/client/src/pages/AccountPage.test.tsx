@@ -224,7 +224,7 @@ describe("AccountPage", () => {
       expect(await screen.findByText("No orders yet — your purchases will show up here.")).toBeInTheDocument();
       expect(
         screen.getByText(
-          "Once you buy something it lands here, with its delivery status and your credentials.",
+          "Your purchases and their payment and delivery status appear here.",
         ),
       ).toBeInTheDocument();
     });

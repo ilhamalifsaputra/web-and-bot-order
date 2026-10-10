@@ -60,8 +60,14 @@ test("catalog to guest checkout and synthetic authenticated pages", async ({ pag
 
 test("public route smoke, brand assets, metadata and errors", async ({ page, request }) => {
   const errors: string[] = [];
+  const consoleErrors: { text: string; path: string }[] = [];
   const failed: { path: string; status: number }[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() !== "error") return;
+    const url = message.location().url;
+    consoleErrors.push({ text: message.text(), path: url ? new URL(url).pathname : "" });
+  });
   page.on("response", (r) => {
     const url = new URL(r.url());
     if (url.origin === "http://127.0.0.1:8240" && r.status() >= 400) failed.push({ path: url.pathname, status: r.status() });
@@ -88,10 +94,45 @@ test("public route smoke, brand assets, metadata and errors", async ({ page, req
     expect(await res.text(), route).toContain('name="robots" content="noindex, nofollow"');
   }
   for (const route of ["/sitemap.xml", "/robots.txt"]) expect((await request.get(route)).status()).toBe(200);
-  writeFileSync(resolve(output, "route-results.json"), JSON.stringify({ fixture: "local synthetic only", rows, errors, failed }, null, 2));
+  writeFileSync(resolve(output, "route-results.json"), JSON.stringify({ fixture: "local synthetic only", rows, errors, consoleErrors, failed }, null, 2));
   expect(errors).toEqual([]);
+  expect(consoleErrors.filter((r) => !(r.text.startsWith("Failed to load resource:") && (r.path === "/audit-not-found" || r.path.startsWith("/api/v1/account/"))))).toEqual([]);
   // /help deliberately requires authentication; record those 401s, not as asset failures.
   expect(failed.filter((r) => r.path !== "/audit-not-found" && !(r.status === 401 && r.path.startsWith("/api/v1/account/")))).toEqual([]);
+});
+
+test("local initial-load performance sample", async ({ page }) => {
+  await page.addInitScript(() => {
+    const vitals = { lcpMs: null as number | null, cls: 0 };
+    (window as Window & { auditVitals?: typeof vitals }).auditVitals = vitals;
+    new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) vitals.lcpMs = entry.startTime;
+    }).observe({ type: "largest-contentful-paint", buffered: true });
+    new PerformanceObserver((list) => {
+      for (const raw of list.getEntries()) {
+        const entry = raw as PerformanceEntry & { hadRecentInput: boolean; value: number };
+        if (!entry.hadRecentInput) vitals.cls += entry.value;
+      }
+    }).observe({ type: "layout-shift", buffered: true });
+  });
+  const samples = [];
+  for (const width of [390, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto("/");
+    await expect(page.locator("h1")).toBeVisible();
+    await page.evaluate(() => document.fonts.ready);
+    // Explicit observation window after fonts/render; this is a lab sample,
+    // not a field percentile or a Core Web Vitals pass/fail threshold.
+    await page.waitForTimeout(1000);
+    const sample = await page.evaluate(() => {
+      const nav = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming;
+      const vitals = (window as Window & { auditVitals?: { lcpMs: number | null; cls: number } }).auditVitals;
+      return { lcpMs: vitals?.lcpMs ?? null, initialCls: vitals?.cls ?? null, ttfbMs: nav.responseStart - nav.requestStart, transferBytes: nav.transferSize };
+    });
+    expect(sample.lcpMs).not.toBeNull();
+    samples.push({ route: "/", viewport: width, ...sample });
+  }
+  writeFileSync(resolve(output, "performance-results.json"), JSON.stringify({ environment: "localhost Chromium, no CPU/network throttling, reduced motion, synthetic catalog; 1s initial observation; no INP or field measurement", samples }, null, 2));
 });
 
 test("footer disclosures, policies, safe area and drawer keyboard", async ({ page }) => {

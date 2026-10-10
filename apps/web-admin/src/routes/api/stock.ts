@@ -3,6 +3,7 @@ import { csvRow } from "../../lib/csv";
 import { parsePositiveId } from "../../lib/params";
 import { logger } from "@app/core/logger";
 import { config } from "@app/core/config";
+import { fulfillmentSourceOf, usesLocalInventory, type FulfillmentSource } from "@app/core/productAvailability";
 import { CredentialKeyConfigError } from "@app/core/credentialCrypto";
 import { formatIdr, formatUsdt, usdtFromIdr } from "@app/core/formatters";
 import { StockStatus, DeadReason, DEAD_REASON_PHRASES, zDeadReason } from "@app/core/enums";
@@ -83,7 +84,10 @@ export const CREDENTIAL_KEY_ERROR_MESSAGE =
  * `<5` (this function) or `<threshold` (the sidebar), which could silently
  * disagree; unifying on `<=` is a small, deliberate behavior change from the
  * old `<5` here (see the T3 task brief/commit for the full comparison). */
-function stockStatusLabel(available: number, threshold: number): string {
+function stockStatusLabel(available: number, threshold: number, source: FulfillmentSource): string {
+  // Provider/manual SKUs never hold stock rows: "Out of Stock" would be false.
+  if (source === "PROVIDER_API") return "Provider";
+  if (source === "MANUAL") return "Manual";
   if (available === 0) return "Out of Stock";
   if (available <= threshold) return "Low Stock";
   return "In Stock";
@@ -96,7 +100,14 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
       stockStatusCounts(prisma),
       restockSubscriberCounts(prisma),
     ]);
-    return reply.send({ denominations, counts, waiting, lowStockThreshold: config.LOW_STOCK_THRESHOLD });
+    // Additive per-row fields so the client need not re-derive whether a SKU
+    // draws from local stock (provider/manual SKUs never hold stock rows).
+    const rows = denominations.map((d) => ({
+      ...d,
+      fulfillmentSource: fulfillmentSourceOf(d),
+      usesLocalInventory: usesLocalInventory(d),
+    }));
+    return reply.send({ denominations: rows, counts, waiting, lowStockThreshold: config.LOW_STOCK_THRESHOLD });
   });
 
   // Full, unfiltered inventory export — mirrors GET /api/stock's own data
@@ -139,7 +150,7 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
         String(cnt?.sold ?? 0),
         // Same rule as the admin UI: blank unless out of stock with requests.
         available === 0 && waiting[d.id] ? String(waiting[d.id]) : "",
-        stockStatusLabel(available, config.LOW_STOCK_THRESHOLD),
+        stockStatusLabel(available, config.LOW_STOCK_THRESHOLD, fulfillmentSourceOf(d)),
       ]);
     }
 

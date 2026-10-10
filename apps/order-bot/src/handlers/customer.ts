@@ -1121,7 +1121,7 @@ export async function browseProduct(ctx: MyContext, productId: number, requested
       sold: t(ctx, "browse.sold_count", { count: sold }),
       plans: planLines.join("\n"),
     });
-    if (product.description) {
+    if (product.category.group !== CategoryGroup.PREMIUM_APPS && product.description?.trim()) {
       text += "\n\n" + t(ctx, "browse.description", { description: esc(product.description) });
     }
     // A USD buyer whose rate is unavailable saw Rp prices above — say so, once.
@@ -1267,8 +1267,13 @@ export async function browseDenomination(
         percent: bulkRule.discountPercent,
       });
   }
-  if (d.product.description) {
-    text += "\n\n" + t(ctx, "browse.description", { description: esc(d.product.description) });
+  // Premium terms belong to the chosen plan. Every other category (including
+  // unclassified and future groups) shares the parent product's description.
+  const description = (d.product.category.group === CategoryGroup.PREMIUM_APPS
+    ? d.description
+    : d.product.description)?.trim();
+  if (description) {
+    text += "\n\n" + t(ctx, "browse.description", { description: esc(description) });
   }
   if (isGame) {
     // Also reached directly via the single-denomination collapse, which

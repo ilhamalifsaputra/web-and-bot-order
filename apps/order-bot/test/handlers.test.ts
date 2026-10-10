@@ -537,6 +537,88 @@ describe("customer handlers", () => {
     expect(JSON.stringify(sink)).toContain("Netflix");
   });
 
+  it.each([CategoryGroup.PREMIUM_APPS, CategoryGroup.GAME_TOPUP, null])("package description source follows category %s in one edited detail bubble", async (group) => {
+    await prisma.category.update({ where: { id: sample.parentProduct.categoryId }, data: { group } });
+    await prisma.product.update({ where: { id: sample.parentProduct.id }, data: { description: "Product <overview> & benefits\nSecond line 🎮" } });
+    await prisma.denomination.update({ where: { id: sample.product.id }, data: { description: "  Package <rules> & benefits\nSecond line 🎮  " } });
+    const { ctx, sink } = customerCtx({ callbackData: `v1:browse:denom:${sample.product.id}` });
+
+    await customer.browseDenomination(ctx, sample.product.id);
+
+    const edits = calls(sink, "editMessageText");
+    expect(edits).toHaveLength(1);
+    if (group === CategoryGroup.PREMIUM_APPS) {
+      expect(edits[0]!.args[0]).toContain("Package &lt;rules&gt; &amp; benefits\nSecond line 🎮");
+      expect(edits[0]!.args[0]).not.toContain("Product &lt;overview&gt;");
+    } else {
+      expect(edits[0]!.args[0]).toContain("Product &lt;overview&gt; &amp; benefits\nSecond line 🎮");
+      expect(edits[0]!.args[0]).not.toContain("Package &lt;rules&gt;");
+    }
+    expect(calls(sink, "editMessageCaption")).toHaveLength(0);
+    expect(calls(sink, "reply")).toHaveLength(0);
+    expect(calls(sink, "sendMessage")).toHaveLength(0);
+    expect(calls(sink, "replyWithPhoto")).toHaveLength(0);
+    expect(calls(sink, "deleteMessage")).toHaveLength(0);
+    expect(calls(sink, "sendDocument")).toHaveLength(0);
+  });
+
+  it("package description survives a single-package collapse and photo caption edits", async () => {
+    await prisma.category.update({ where: { id: sample.parentProduct.categoryId }, data: { group: CategoryGroup.PREMIUM_APPS } });
+    await prisma.product.update({ where: { id: sample.parentProduct.id }, data: { description: null, imageFileId: "PACKAGE_PHOTO" } });
+    await prisma.denomination.update({ where: { id: sample.product.id }, data: { description: "Package terms" } });
+    const { ctx, sink } = customerCtx({
+      callbackData: `v1:browse:pick:${sample.parentProduct.id}`,
+      cbMessage: { message_id: 777, chat: { id: 42, type: "private" }, date: 0, photo: [{ file_id: "PACKAGE_PHOTO", file_unique_id: "package", width: 10, height: 10 }] },
+    });
+
+    await customer.browseProduct(ctx, sample.parentProduct.id);
+
+    const edits = calls(sink, "editMessageCaption");
+    expect(edits).toHaveLength(1);
+    expect(edits[0]!.args[0]).toMatchObject({ caption: expect.stringContaining("Package terms") });
+    expect(calls(sink, "editMessageText")).toHaveLength(0);
+    expect(calls(sink, "reply")).toHaveLength(0);
+    expect(calls(sink, "sendMessage")).toHaveLength(0);
+    expect(calls(sink, "replyWithPhoto")).toHaveLength(0);
+    expect(calls(sink, "deleteMessage")).toHaveLength(0);
+    expect(calls(sink, "sendDocument")).toHaveLength(0);
+  });
+
+  it.each([null, "   "])("empty package description %s adds no description block for Premium Apps", async (description) => {
+    await prisma.category.update({ where: { id: sample.parentProduct.categoryId }, data: { group: CategoryGroup.PREMIUM_APPS } });
+    await prisma.product.update({ where: { id: sample.parentProduct.id }, data: { description: "Product overview" } });
+    await prisma.denomination.update({ where: { id: sample.product.id }, data: { description } });
+    const { ctx, sink } = customerCtx({ callbackData: `v1:browse:denom:${sample.product.id}` });
+
+    await customer.browseDenomination(ctx, sample.product.id);
+
+    const text = calls(sink, "editMessageText")[0]!.args[0] as string;
+    expect(text).not.toContain("Product overview");
+    expect(text).not.toContain("📝");
+  });
+
+  it.each([CategoryGroup.PREMIUM_APPS, CategoryGroup.GAME_TOPUP, null])("package description picker follows category %s and each premium plan shows its own terms", async (group) => {
+    await prisma.category.update({ where: { id: sample.parentProduct.categoryId }, data: { group } });
+    await prisma.product.update({ where: { id: sample.parentProduct.id }, data: { description: "Product overview" } });
+    await prisma.denomination.update({ where: { id: sample.product.id }, data: { description: "First package terms" } });
+    const second = await createDenomination(prisma, {
+      productId: sample.parentProduct.id, name: "Second plan", type: "SHARED", durationLabel: "3 Months", price: "12", description: "Second package terms",
+    });
+    const picker = customerCtx({ callbackData: `v1:browse:pick:${sample.parentProduct.id}` });
+    await customer.browseProduct(picker.ctx, sample.parentProduct.id);
+    const pickerText = JSON.stringify(picker.sink);
+    expect(pickerText.includes("Product overview")).toBe(group !== CategoryGroup.PREMIUM_APPS);
+    expect(pickerText).not.toContain("First package terms");
+    expect(pickerText).not.toContain("Second package terms");
+
+    const detail = customerCtx({ callbackData: `v1:browse:denom:${second.id}`, session: { ...userSession(), scratch: picker.ctx.session.scratch } });
+    await customer.browseDenomination(detail.ctx, second.id);
+    const detailText = calls(detail.sink, "editMessageText")[0]!.args[0] as string;
+    expect(detailText.includes("Second package terms")).toBe(group === CategoryGroup.PREMIUM_APPS);
+    expect(detailText.includes("Product overview")).toBe(group !== CategoryGroup.PREMIUM_APPS);
+    expect(detailText).not.toContain("First package terms");
+  });
+
   // The old footer ("Updated HH:mm:ss WIB") was the moment of rendering, not the
   // age of any data — it made a stale screen look freshly checked.
   it("browseDenomination and the plan picker no longer print a render-time 'Updated … WIB' line, and label the sold count all-time", async () => {

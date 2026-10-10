@@ -205,7 +205,7 @@ export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof 
     // reclaimable, so a later status that does carry the amount still delivers.
     const trxId = gatewayLedgerTrxId(status.trxId, order.orderCode);
     try {
-      const newlyParked = await recordUnmatchedTokopayTx(prisma, { trxId, amount: 0 });
+      const newlyParked = await recordUnmatchedTokopayTx(prisma, { trxId, amount: 0, suggestedOrderId: order.id });
       // Deduped per (order, admin, reason) inside the helper, so calling it
       // every cycle still tells each admin exactly once — and a cycle that
       // parked the row but failed to queue the alert is repaired by the next.

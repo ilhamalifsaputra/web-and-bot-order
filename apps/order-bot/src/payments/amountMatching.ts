@@ -15,6 +15,7 @@
  * from here directly.
  */
 import { Decimal } from "@app/core/money";
+import { AMOUNT_TOLERANCE } from "@app/core/formatters";
 
 // Internal transfers are exact off-chain ledger moves (no on-chain
 // slippage/fees), so the residual error is whatever rounding the gateway
@@ -23,8 +24,9 @@ import { Decimal } from "@app/core/money";
 // gateway's decimal string; parsePositiveAmount below removed it, so this
 // tolerance now covers only the gateway side.) Tight on purpose: it lets the
 // M-9 unique-cents offset (see computeUniqueCents) shrink to a much smaller
-// surcharge while still disambiguating same-amount orders.
-export const AMOUNT_TOLERANCE = 0.001; // USDT
+// surcharge while still disambiguating same-amount orders. The constant lives
+// in @app/core/formatters so the db layer's manual match applies the same one.
+export { AMOUNT_TOLERANCE };
 
 // ── M-14 (backend audit 2026-07-31) overpayment cap ─────────────────────────
 // matchByAmount's best-fit selection (see below) has NO ambiguity-guard

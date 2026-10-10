@@ -664,6 +664,16 @@ describe("recordUnmatchedTokopayTx", () => {
     const rows = await prisma.processedTokopayTx.findMany({ where: { trxId: "trx-unmatched-2" } });
     expect(rows.length).toBe(1);
   });
+
+  it("stores the suggested order id as a display hint without linking orderId", async () => {
+    const order = await makePendingTokopayOrder();
+    const ok = await recordUnmatchedTokopayTx(prisma, { trxId: "trx-unmatched-hint", amount: new Decimal("5000"), suggestedOrderId: order.id });
+    expect(ok).toBe(true);
+    const row = await prisma.processedTokopayTx.findUniqueOrThrow({ where: { trxId: "trx-unmatched-hint" } });
+    expect(row.suggestedOrderId).toBe(order.id);
+    expect(row.orderId).toBeNull();
+    expect(row.outcome).toBe("unmatched");
+  });
 });
 
 // Task 15: an `unmatched` ledger row (webhook callback that arrived while the

@@ -6,6 +6,7 @@ import { errorBody } from "@app/core/errorBody";
 import type { Decimal } from "@app/core/money";
 import { logger } from "@app/core/logger";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
+import { config } from "@app/core/config";
 import { evaluatePollHealth } from "@app/core/payments/pollHealth";
 import {
   prisma,
@@ -19,8 +20,9 @@ import {
   refundUnderpaidOrderTx,
   logUnderpaidRefundCommitted,
   creditUnderpaidTopupAnyway,
-  manualMatchTx,
-  dismissUnmatchedTx,
+  manualMatchLedgerTx,
+  dismissUnmatchedLedgerTx,
+  type LedgerGateway,
   getProcessedBinanceTx,
   creditOrderToBalance,
   listOrders,
@@ -49,6 +51,34 @@ const PAGE_SIZE = 50;
 const ORDER_KINDS = [OrderKind.PRODUCT, OrderKind.WALLET_TOPUP] as const;
 
 class NotFoundError extends Error {}
+
+/** Every payment ledger the manual match / dismiss routes accept, with the
+ *  name an admin knows it by — used in the audit log and the developer log.
+ *  Typed as a full `Record` so a new `LedgerGateway` cannot be added without a
+ *  name here; it is also the allow-list the optional `gateway` field is
+ *  validated against. */
+const LEDGER_GATEWAY_NAMES: Record<LedgerGateway, string> = {
+  binance: "Binance",
+  bybit: "Bybit",
+  tokopay: "TokoPay",
+  paydisini: "PayDisini",
+  nowpayments: "NOWPayments",
+};
+
+function isLedgerGateway(value: string): value is LedgerGateway {
+  return Object.prototype.hasOwnProperty.call(LEDGER_GATEWAY_NAMES, value);
+}
+
+/** The optional `gateway` body field: trimmed, and absent/empty → null (the
+ *  server then resolves the reference across every ledger, which is how a
+ *  Binance-only client from before this field existed keeps working). Returned
+ *  raw so the idempotency hash covers exactly what was sent; validated by the
+ *  caller after the idempotency claim, so a refusal is stored like any other. */
+function rawGatewayField(body: Record<string, unknown>): string | null {
+  if (body.gateway == null) return null;
+  const value = String(body.gateway).trim();
+  return value.length > 0 ? value : null;
+}
 
 /** Stable name for the underpaid-order refund route's idempotency ledger row
  * (packages/db/src/crud/idempotency.ts) — not the literal URL, so it stays
@@ -475,13 +505,17 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
       return reply.code(429).send({ error: "error.rate_limited" });
     }
 
+    // `binance_tx_id` is the transfer reference on ANY gateway — the field
+    // keeps its old name so clients from before the multi-gateway match work
+    // unchanged.
     const body = req.body as Record<string, string>;
     const binanceTxId = (body.binance_tx_id ?? "").trim();
     const orderCode = (body.order_code ?? "").trim();
+    const gateway = rawGatewayField(body);
 
     const idempotencyKeyHeader = normalizeIdempotencyKey(req.headers["idempotency-key"]);
     const idem = idempotencyKeyHeader
-      ? { key: idempotencyKeyHeader, requestHash: hashIdempotentRequest({ binanceTxId, orderCode }) }
+      ? { key: idempotencyKeyHeader, requestHash: hashIdempotentRequest({ binanceTxId, orderCode, gateway }) }
       : null;
 
     if (idem) {
@@ -522,13 +556,20 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
     if (!binanceTxId || !orderCode) {
       return respond(400, { error: "Both a transfer id and an order code are required." });
     }
+    if (gateway !== null && !isLedgerGateway(gateway)) {
+      return respond(400, { error: "Unknown payment gateway." });
+    }
     try {
       const target = await getOrderByCode(prisma, orderCode);
       if (!target) return respond(404, { error: `Order ${orderCode} not found.` });
-      const result = await manualMatchTx(prisma, {
-        binanceTxId,
+      const result = await manualMatchLedgerTx(prisma, {
+        reference: binanceTxId,
+        gateway,
         orderId: target.id,
         adminId: req.admin!.userId,
+        // The storefront's public origin, so a QRIS match's buyer DM carries
+        // the order link — the same origin the storefront callbacks use.
+        shopUrl: config.SHOP_PUBLIC_URL ?? config.PUBLIC_URL ?? null,
       });
       // The match has committed: start a Digiflazz-routed order's supplier
       // request now (fire-and-forget, ignores non-Digiflazz orders, never throws).
@@ -536,17 +577,31 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
       // Deliver the queued buyer DM (credentials file or "being prepared"
       // note) now instead of on the dispatcher's next poll.
       nudgeOutboxDispatcher();
-      await logAdminAction(prisma, {
-        adminId: req.admin!.userId,
-        action: "tx_manual_match",
-        targetType: "order",
-        targetId: result.order.id,
-        details:
-          result.kind === "delivered"
-            ? `Matched transfer ${binanceTxId} to order ${result.order.orderCode}.`
-            : `Matched transfer ${binanceTxId} to order ${result.order.orderCode}; queued for manual fulfilment.`,
-      });
-      logger.info(`Admin ${req.admin!.userId} manually matched Binance transfer ${binanceTxId} to order ${orderCode} via the web panel`);
+      const gatewayName = LEDGER_GATEWAY_NAMES[result.gateway];
+      // For a WALLET_TOPUP order this line is the ONLY record of the acting
+      // admin — the wallet credit writes no status-history row. Written after
+      // the settlement committed, so a failure here must not turn a completed
+      // match into an error the admin might "fix" by matching again.
+      try {
+        await logAdminAction(prisma, {
+          adminId: req.admin!.userId,
+          action: "tx_manual_match",
+          targetType: "order",
+          targetId: result.order.id,
+          details:
+            result.kind === "delivered"
+              ? `Matched ${gatewayName} transfer ${binanceTxId} to order ${result.order.orderCode}.`
+              : `Matched ${gatewayName} transfer ${binanceTxId} to order ${result.order.orderCode}; queued for manual fulfilment.`,
+        });
+      } catch (err) {
+        logger.error(
+          { err, adminId: req.admin!.userId, orderId: result.order.id, reference: binanceTxId, gateway: result.gateway },
+          `Admin ${req.admin!.userId} manually matched ${gatewayName} transfer ${binanceTxId} to order ${result.order.orderCode} and the match committed, but its audit row could not be written — record this match in the audit log by hand.`,
+        );
+      }
+      logger.info(
+        `Admin ${req.admin!.userId} manually matched ${gatewayName} transfer ${binanceTxId} to order ${result.order.orderCode} from the web panel; the order is now ${result.kind === "delivered" ? "delivered" : "queued for fulfilment"}.`,
+      );
       return respond(200, { ok: true });
     } catch (e) {
       if (e instanceof ValidationError) return respond(422, errorBody(e));
@@ -647,10 +702,16 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
       return reply.code(429).send({ error: "error.rate_limited" });
     }
 
-    const binanceTxId = ((req.body as Record<string, string>).binance_tx_id ?? "").trim();
+    // `binance_tx_id` is the transfer reference on any gateway (old field name
+    // kept for older clients); `gateway` is optional, as on /match.
+    const body = req.body as Record<string, string>;
+    const binanceTxId = (body.binance_tx_id ?? "").trim();
+    const gateway = rawGatewayField(body);
 
     const idempotencyKeyHeader = normalizeIdempotencyKey(req.headers["idempotency-key"]);
-    const idem = idempotencyKeyHeader ? { key: idempotencyKeyHeader, requestHash: hashIdempotentRequest({ binanceTxId }) } : null;
+    const idem = idempotencyKeyHeader
+      ? { key: idempotencyKeyHeader, requestHash: hashIdempotentRequest({ binanceTxId, gateway }) }
+      : null;
 
     if (idem) {
       let replay: IdempotentReplay | null;
@@ -688,17 +749,24 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
     };
 
     if (!binanceTxId) return respond(400, { error: "A payment reference is required." });
+    if (gateway !== null && !isLedgerGateway(gateway)) {
+      return respond(400, { error: "Unknown payment gateway." });
+    }
     try {
-      await prisma.$transaction(async (tx) => {
-        await dismissUnmatchedTx(tx, binanceTxId);
+      // One transaction: the ledger flip and its audit row commit together or
+      // not at all.
+      const gatewayName = await prisma.$transaction(async (tx) => {
+        const dismissed = await dismissUnmatchedLedgerTx(tx, { reference: binanceTxId, gateway });
+        const name = LEDGER_GATEWAY_NAMES[dismissed.gateway];
         await logAdminAction(tx, {
           adminId: req.admin!.userId,
           action: "tx_dismiss",
           targetType: "payment",
-          details: `Dismissed unmatched transfer ${binanceTxId}.`,
+          details: `Dismissed unmatched ${name} transfer ${binanceTxId}.`,
         });
+        return name;
       });
-      logger.info(`Admin ${req.admin!.userId} dismissed unmatched Binance transfer ${binanceTxId} via the web panel`);
+      logger.info(`Admin ${req.admin!.userId} dismissed unmatched ${gatewayName} transfer ${binanceTxId} from the web panel.`);
       return respond(200, { ok: true });
     } catch (e) {
       if (e instanceof ValidationError) return respond(422, errorBody(e));

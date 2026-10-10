@@ -46,6 +46,10 @@ export const SETTLE_FUNCTIONS = new Set([
   "deliverPaidInternalOrder",
   "deliverPaidBybitOrder",
   "deliverPaidBybitBscOrder",
+  "settleClaimedBybitDeposit",
+  "settleClaimedBybitBscDeposit",
+  "manualMatchBybit",
+  "manualMatchLedgerTx",
 ]);
 
 const TRIGGER = "triggerDigiflazzDispatch";

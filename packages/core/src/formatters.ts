@@ -257,6 +257,20 @@ export function generatePaymentRef(): string {
 }
 
 /**
+ * How far (USDT) a received amount may fall short of an order's total and
+ * still count as paying it on the memo-less, amount-matched rails (Binance
+ * internal, Bybit internal, Bybit BSC). Internal transfers are exact off-chain
+ * ledger moves, so this only absorbs the gateway's own rounding when it
+ * reports the amount. Tight on purpose: it lets the unique-cents offset below
+ * stay small while still disambiguating same-amount orders.
+ *
+ * Declared here (not in the bot's amountMatching.ts, which re-exports it) so
+ * the db layer's manual match (packages/db/src/crud/manualMatch.ts) applies
+ * the very same figure the pollers do.
+ */
+export const AMOUNT_TOLERANCE = 0.001; // USDT
+
+/**
  * Deterministic amount offset (0.002 … 0.098 USDT) keyed off order id, used to
  * disambiguate simultaneous transfers of the same base amount (M-9).
  *

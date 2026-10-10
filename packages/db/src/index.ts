@@ -42,6 +42,7 @@ export * from "./crud/digiflazzAutoDeactivated";
 export * from "./crud/kokinpay";
 export * from "./crud/paydisini";
 export * from "./crud/nowpayments";
+export * from "./crud/manualMatch";
 export * from "./crud/wallet_checkout";
 export * from "./crud/wallet_topup";
 export * from "./crud/credentials";

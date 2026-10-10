@@ -1,0 +1,981 @@
+/**
+ * Manual match / dismiss of an "unmatched" payment ledger row on every
+ * gateway (crud/manualMatch.ts). Money-critical: every refusal below is a
+ * case where settling would deliver goods or credit a wallet for money that
+ * is not proven to belong to the order, or settle one payment twice.
+ */
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
+import type { PrismaClient } from "@prisma/client";
+
+vi.mock("@app/core/config", async () => {
+  const actual = await vi.importActual<typeof import("@app/core/config")>("@app/core/config");
+  return { ...actual, config: { ...actual.config, ADMIN_IDS: [444] } };
+});
+
+import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
+import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
+import {
+  createOrderDirect,
+  createWalletTopupOrder,
+  bulkAddStock,
+  recordUnmatchedTx,
+  recordUnmatchedBybitTx,
+  recordUnmatchedTokopayTx,
+  recordUnmatchedPaydisiniTx,
+  recordUnmatchedNowpaymentsTx,
+  deliverPaidTokopayOrder,
+  deliverPaidPaydisiniOrder,
+  findUnmatchedLedgerRow,
+  manualMatchLedgerTx,
+  dismissUnmatchedLedgerTx,
+  markOrderUnderpaid,
+} from "@app/db";
+import { AMOUNT_TOLERANCE } from "@app/core/formatters";
+import { OrderStatus, PaymentMethod, StockStatus } from "@app/core/enums";
+import { Decimal } from "@app/core/money";
+import { ValidationError } from "@app/core/errors";
+import { qrisChargeAmount } from "@app/core/payments/tokopay";
+
+let db: TestDb;
+let prisma: PrismaClient;
+let sample: SampleData;
+let adminId: number;
+let adminB: number;
+
+beforeAll(async () => {
+  db = await makeTestDb();
+  prisma = db.prisma;
+  await Promise.all(Array.from({ length: 4 }, () => prisma.$queryRaw`SELECT 1 AS ok FROM pg_sleep(0.05)`));
+});
+afterAll(async () => {
+  await db.cleanup();
+});
+beforeEach(async () => {
+  await resetDb(prisma);
+  sample = await buildSampleData(prisma);
+  // The acting admin is a users.id (stock events FK it).
+  const mk = (n: number) => prisma.user.create({ data: { telegramId: BigInt(910000 + n), referralCode: `mm-adm${n}` } });
+  adminId = (await mk(1)).id;
+  adminB = (await mk(2)).id;
+});
+
+async function makePendingOrder(method: string, currency: "IDR" | "USDT") {
+  const order = (await createOrderDirect(prisma, { channel: "bot", user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+  return prisma.order.update({ where: { id: order.id }, data: { paymentMethod: method, currency } });
+}
+
+function makeTopupOrder(method: string, currency: "IDR" | "USDT", amount: string) {
+  return prisma.$transaction((tx) =>
+    createWalletTopupOrder(tx, {
+      userId: sample.user.id,
+      amount,
+      currency,
+      method: method as never,
+      ...(currency === "USDT" ? { rate: "16000" } : {}),
+    }),
+  );
+}
+
+async function expectValidation(p: Promise<unknown>, key: string) {
+  const err = await p.then(
+    () => null,
+    (e: unknown) => e,
+  );
+  expect(err).toBeInstanceOf(ValidationError);
+  expect((err as ValidationError).message).toBe(key);
+}
+
+async function wipeStock() {
+  await prisma.stockItem.updateMany({ where: { productId: sample.product.id }, data: { status: StockStatus.SOLD } });
+}
+
+async function statusMetas(orderId: number) {
+  const rows = await prisma.orderStatusHistory.findMany({ where: { orderId }, orderBy: { id: "asc" } });
+  return rows.map((r) => r.meta ?? "");
+}
+
+describe("findUnmatchedLedgerRow", () => {
+  it("throws error.tx_not_found for an unknown reference", async () => {
+    await expectValidation(findUnmatchedLedgerRow(prisma, { reference: "nope" }), "error.tx_not_found");
+  });
+
+  it("finds the row on its own gateway without being told which", async () => {
+    await recordUnmatchedPaydisiniTx(prisma, { trxId: "pd-find-1", amount: "100" });
+    const found = await findUnmatchedLedgerRow(prisma, { reference: "pd-find-1" });
+    expect(found.gateway).toBe("paydisini");
+    expect(found.row.outcome).toBe("unmatched");
+    expect(new Decimal(found.row.amount!).equals(100)).toBe(true);
+  });
+
+  it("refuses an ambiguous reference with no gateway, and resolves it when the gateway is given", async () => {
+    await recordUnmatchedTokopayTx(prisma, { trxId: "dup-ref", amount: "100" });
+    await recordUnmatchedPaydisiniTx(prisma, { trxId: "dup-ref", amount: "200" });
+    await expectValidation(findUnmatchedLedgerRow(prisma, { reference: "dup-ref" }), "error.tx_reference_ambiguous");
+    const found = await findUnmatchedLedgerRow(prisma, { reference: "dup-ref", gateway: "paydisini" });
+    expect(found.gateway).toBe("paydisini");
+    expect(new Decimal(found.row.amount!).equals(200)).toBe(true);
+  });
+
+  it("only looks in the given gateway's table", async () => {
+    await recordUnmatchedTokopayTx(prisma, { trxId: "tp-only", amount: "100" });
+    await expectValidation(findUnmatchedLedgerRow(prisma, { reference: "tp-only", gateway: "bybit" }), "error.tx_not_found");
+  });
+
+  it("returns a row whatever its outcome, so callers can say it is not unmatched", async () => {
+    await prisma.processedBybitTx.create({ data: { bybitTxId: "by-matched", amount: "5", outcome: "matched" } });
+    const found = await findUnmatchedLedgerRow(prisma, { reference: "by-matched" });
+    expect(found).toMatchObject({ gateway: "bybit", row: { outcome: "matched" } });
+  });
+});
+
+describe("manualMatchLedgerTx — success on each gateway", () => {
+  it("TokoPay: claims the row, settles the order and names the admin in the status history", async () => {
+    const order = await makePendingOrder(PaymentMethod.TOKOPAY, "IDR");
+    await recordUnmatchedTokopayTx(prisma, { trxId: "tp-ok-1", amount: qrisChargeAmount(order.totalAmount) });
+
+    const result = await manualMatchLedgerTx(prisma, { reference: "tp-ok-1", orderId: order.id, adminId });
+    expect(result.gateway).toBe("tokopay");
+    expect(result.kind).toBe("delivered");
+    expect(result.order.id).toBe(order.id);
+    expect(result.credentials.length).toBe(1);
+
+    const row = await prisma.processedTokopayTx.findUniqueOrThrow({ where: { trxId: "tp-ok-1" } });
+    expect(row).toMatchObject({ outcome: "matched", orderId: order.id });
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.DELIVERED);
+    expect((await statusMetas(order.id)).some((m) => m.includes(`manual_match`) && m.includes(`admin_id=${adminId}`))).toBe(true);
+  });
+
+  it("PayDisini: claims the row and settles the order", async () => {
+    const order = await makePendingOrder(PaymentMethod.PAYDISINI, "IDR");
+    await recordUnmatchedPaydisiniTx(prisma, { trxId: "pd-ok-1", amount: order.totalAmount });
+
+    const result = await manualMatchLedgerTx(prisma, { reference: "pd-ok-1", orderId: order.id, adminId });
+    expect(result.gateway).toBe("paydisini");
+    expect(result.kind).toBe("delivered");
+    const row = await prisma.processedPaydisiniTx.findUniqueOrThrow({ where: { trxId: "pd-ok-1" } });
+    expect(row).toMatchObject({ outcome: "matched", orderId: order.id });
+    expect((await statusMetas(order.id)).some((m) => m.includes(`admin_id=${adminId}`))).toBe(true);
+  });
+
+  it("Bybit internal transfer: claims the unmatched row and settles the BYBIT order", async () => {
+    const order = await makePendingOrder(PaymentMethod.BYBIT, "USDT");
+    await recordUnmatchedBybitTx(prisma, { bybitTxId: "by-ok-1", amount: order.totalAmount });
+
+    const result = await manualMatchLedgerTx(prisma, { reference: "by-ok-1", orderId: order.id, adminId });
+    expect(result.gateway).toBe("bybit");
+    expect(result.kind).toBe("delivered");
+    const row = await prisma.processedBybitTx.findUniqueOrThrow({ where: { bybitTxId: "by-ok-1" } });
+    expect(row).toMatchObject({ outcome: "matched", orderId: order.id });
+    const settled = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(settled.status).toBe(OrderStatus.DELIVERED);
+    expect(settled.bybitTxid).toBe("by-ok-1");
+    expect(settled.paymentState).toBe("PAID");
+    expect((await statusMetas(order.id)).some((m) => m.includes("manual_match") && m.includes(`admin_id=${adminId}`))).toBe(true);
+  });
+
+  it("Bybit BSC: the shared bybit row settles a BYBIT_BSC order", async () => {
+    const order = await makePendingOrder(PaymentMethod.BYBIT_BSC, "USDT");
+    await recordUnmatchedBybitTx(prisma, { bybitTxId: "0xbsc-ok-1", amount: order.totalAmount });
+
+    const result = await manualMatchLedgerTx(prisma, { reference: "0xbsc-ok-1", orderId: order.id, adminId });
+    expect(result.gateway).toBe("bybit");
+    expect(result.kind).toBe("delivered");
+    const row = await prisma.processedBybitTx.findUniqueOrThrow({ where: { bybitTxId: "0xbsc-ok-1" } });
+    expect(row).toMatchObject({ outcome: "matched", orderId: order.id });
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).bybitTxid).toBe("0xbsc-ok-1");
+  });
+
+  it("Bybit accepts an amount short of the total by no more than the poller's tolerance", async () => {
+    const order = await makePendingOrder(PaymentMethod.BYBIT, "USDT");
+    const amount = new Decimal(order.totalAmount).minus(AMOUNT_TOLERANCE);
+    await recordUnmatchedBybitTx(prisma, { bybitTxId: "by-tol-1", amount });
+    const result = await manualMatchLedgerTx(prisma, { reference: "by-tol-1", orderId: order.id, adminId });
+    expect(result.kind).toBe("delivered");
+  });
+
+  it("a WALLET_TOPUP order matched through TokoPay credits the buyer's rupiah wallet", async () => {
+    const order = await makeTopupOrder(PaymentMethod.TOKOPAY, "IDR", "20000");
+    await recordUnmatchedTokopayTx(prisma, { trxId: "tp-topup-1", amount: qrisChargeAmount(order.totalAmount) });
+
+    const result = await manualMatchLedgerTx(prisma, { reference: "tp-topup-1", orderId: order.id, adminId });
+    expect(result.kind).toBe("delivered");
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
+    expect(new Decimal(user.walletBalance).equals(order.totalAmount)).toBe(true);
+    expect((await prisma.processedTokopayTx.findUniqueOrThrow({ where: { trxId: "tp-topup-1" } })).outcome).toBe("matched");
+  });
+
+  it("a WALLET_TOPUP order matched through Bybit credits the buyer's USDT wallet", async () => {
+    const order = await makeTopupOrder(PaymentMethod.BYBIT, "USDT", "10");
+    await recordUnmatchedBybitTx(prisma, { bybitTxId: "by-topup-1", amount: order.totalAmount });
+
+    const result = await manualMatchLedgerTx(prisma, { reference: "by-topup-1", orderId: order.id, adminId });
+    expect(result.kind).toBe("delivered");
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
+    expect(new Decimal(user.walletBalanceUsdt).equals(order.totalAmount)).toBe(true);
+    expect((await prisma.processedBybitTx.findUniqueOrThrow({ where: { bybitTxId: "by-topup-1" } })).outcome).toBe("matched");
+  });
+
+  it("Binance still delegates to manualMatchTx", async () => {
+    const order = await makePendingOrder(PaymentMethod.BINANCE_INTERNAL, "USDT");
+    await recordUnmatchedTx(prisma, { binanceTxId: "bn-ok-1", amount: order.totalAmount });
+    const result = await manualMatchLedgerTx(prisma, { reference: "bn-ok-1", orderId: order.id, adminId });
+    expect(result.gateway).toBe("binance");
+    expect(result.kind).toBe("delivered");
+    const row = await prisma.processedBinanceTx.findUniqueOrThrow({ where: { binanceTxId: "bn-ok-1" } });
+    expect(row).toMatchObject({ outcome: "matched", orderId: order.id });
+  });
+});
+
+describe("manualMatchLedgerTx — refusals", () => {
+  it("refuses every NOWPayments row: its amount is in the buyer's pay coin and cannot be verified", async () => {
+    const order = await makePendingOrder(PaymentMethod.NOWPAYMENTS, "USDT");
+    await recordUnmatchedNowpaymentsTx(prisma, { trxId: "np-1", amount: "1000" });
+    await expectValidation(
+      manualMatchLedgerTx(prisma, { reference: "np-1", orderId: order.id, adminId }),
+      "error.manual_match_nowpayments_unverifiable",
+    );
+    expect((await prisma.processedNowpaymentsTx.findUniqueOrThrow({ where: { trxId: "np-1" } })).outcome).toBe("unmatched");
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.PENDING_PAYMENT);
+  });
+
+  it.each(["matched", "dismissed", "delivery_failed"])("refuses a row whose outcome is %s", async (outcome) => {
+    const order = await makePendingOrder(PaymentMethod.TOKOPAY, "IDR");
+    await prisma.processedTokopayTx.create({ data: { trxId: `tp-${outcome}`, amount: qrisChargeAmount(order.totalAmount), outcome } });
+    await expectValidation(
+      manualMatchLedgerTx(prisma, { reference: `tp-${outcome}`, orderId: order.id, adminId }),
+      "error.tx_not_unmatched",
+    );
+  });
+
+  it("refuses a bybit row that is not unmatched", async () => {
+    const order = await makePendingOrder(PaymentMethod.BYBIT, "USDT");
+    await prisma.processedBybitTx.create({ data: { bybitTxId: "by-dismissed", amount: order.totalAmount, outcome: "dismissed" } });
+    await expectValidation(
+      manualMatchLedgerTx(prisma, { reference: "by-dismissed", orderId: order.id, adminId }),
+      "error.tx_not_unmatched",
+    );
+  });
+
+  it("refuses an unknown reference", async () => {
+    const order = await makePendingOrder(PaymentMethod.TOKOPAY, "IDR");
+    await expectValidation(manualMatchLedgerTx(prisma, { reference: "ghost", orderId: order.id, adminId }), "error.tx_not_found");
+  });
+
+  it("refuses an ambiguous reference when no gateway is given", async () => {
+    const order = await makePendingOrder(PaymentMethod.TOKOPAY, "IDR");
+    await recordUnmatchedTokopayTx(prisma, { trxId: "amb-1", amount: qrisChargeAmount(order.totalAmount) });
+    await recordUnmatchedBybitTx(prisma, { bybitTxId: "amb-1", amount: "5" });
+    await expectValidation(
+      manualMatchLedgerTx(prisma, { reference: "amb-1", orderId: order.id, adminId }),
+      "error.tx_reference_ambiguous",
+    );
+    const result = await manualMatchLedgerTx(prisma, { reference: "amb-1", gateway: "tokopay", orderId: order.id, adminId });
+    expect(result.gateway).toBe("tokopay");
+  });
+
+  it("refuses a missing order", async () => {
+    await recordUnmatchedTokopayTx(prisma, { trxId: "tp-no-order", amount: "100000" });
+    await expectValidation(manualMatchLedgerTx(prisma, { reference: "tp-no-order", orderId: 999999, adminId }), "error.order_not_found");
+  });
+
+  it("refuses an order that is not PENDING_PAYMENT", async () => {
+    const order = await makePendingOrder(PaymentMethod.BYBIT, "USDT");
+    await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.CANCELLED } });
+    await recordUnmatchedBybitTx(prisma, { bybitTxId: "by-cancelled", amount: order.totalAmount });
+    await expectValidation(
+      manualMatchLedgerTx(prisma, { reference: "by-cancelled", orderId: order.id, adminId }),
+      "error.order_not_pending",
+    );
+    expect((await prisma.processedBybitTx.findUniqueOrThrow({ where: { bybitTxId: "by-cancelled" } })).outcome).toBe("unmatched");
+  });
+
+  it("refuses an order whose payment method is not the row's gateway", async () => {
+    const order = await makePendingOrder(PaymentMethod.PAYDISINI, "IDR");
+    await recordUnmatchedTokopayTx(prisma, { trxId: "tp-wrong-method", amount: "1000000" });
+    await expectValidation(
+      manualMatchLedgerTx(prisma, { reference: "tp-wrong-method", orderId: order.id, adminId }),
+      "error.payment_method_mismatch",
+    );
+    const binanceOrder = await makePendingOrder(PaymentMethod.BINANCE_INTERNAL, "USDT");
+    await recordUnmatchedBybitTx(prisma, { bybitTxId: "by-wrong-method", amount: "100" });
+    await expectValidation(
+      manualMatchLedgerTx(prisma, { reference: "by-wrong-method", orderId: binanceOrder.id, adminId }),
+      "error.payment_method_mismatch",
+    );
+  });
+
+  it("refuses an order in a different currency from the gateway", async () => {
+    const order = await makePendingOrder(PaymentMethod.BYBIT, "IDR");
+    await recordUnmatchedBybitTx(prisma, { bybitTxId: "by-idr", amount: "1000000" });
+    const err = await manualMatchLedgerTx(prisma, { reference: "by-idr", orderId: order.id, adminId }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ValidationError);
+    expect((err as ValidationError).message).toBe("error.payment_currency_mismatch");
+    expect((err as ValidationError).formatArgs).toEqual({ paymentCurrency: "USDT", orderCurrency: "IDR" });
+  });
+
+  it("refuses a row with no amount or a zero amount", async () => {
+    const order = await makePendingOrder(PaymentMethod.TOKOPAY, "IDR");
+    await prisma.processedTokopayTx.create({ data: { trxId: "tp-null-amount", amount: null, outcome: "unmatched" } });
+    await recordUnmatchedTokopayTx(prisma, { trxId: "tp-zero-amount", amount: 0 });
+    await expectValidation(
+      manualMatchLedgerTx(prisma, { reference: "tp-null-amount", orderId: order.id, adminId }),
+      "error.manual_match_amount_unknown",
+    );
+    await expectValidation(
+      manualMatchLedgerTx(prisma, { reference: "tp-zero-amount", orderId: order.id, adminId }),
+      "error.manual_match_amount_unknown",
+    );
+  });
+
+  it("TokoPay: refuses an amount that covers the total but not the QRIS charge", async () => {
+    const order = await makePendingOrder(PaymentMethod.TOKOPAY, "IDR");
+    await recordUnmatchedTokopayTx(prisma, { trxId: "tp-short", amount: order.totalAmount });
+    await expectValidation(
+      manualMatchLedgerTx(prisma, { reference: "tp-short", orderId: order.id, adminId }),
+      "error.manual_match_amount_short",
+    );
+    expect((await prisma.processedTokopayTx.findUniqueOrThrow({ where: { trxId: "tp-short" } })).outcome).toBe("unmatched");
+  });
+
+  it("PayDisini: refuses an amount below the order total", async () => {
+    const order = await makePendingOrder(PaymentMethod.PAYDISINI, "IDR");
+    await recordUnmatchedPaydisiniTx(prisma, { trxId: "pd-short", amount: new Decimal(order.totalAmount).minus("0.01") });
+    await expectValidation(
+      manualMatchLedgerTx(prisma, { reference: "pd-short", orderId: order.id, adminId }),
+      "error.manual_match_amount_short",
+    );
+  });
+
+  it("Bybit: refuses an amount short by more than the tolerance", async () => {
+    const order = await makePendingOrder(PaymentMethod.BYBIT, "USDT");
+    const amount = new Decimal(order.totalAmount).minus(AMOUNT_TOLERANCE).minus("0.0001");
+    await recordUnmatchedBybitTx(prisma, { bybitTxId: "by-short", amount });
+    await expectValidation(
+      manualMatchLedgerTx(prisma, { reference: "by-short", orderId: order.id, adminId }),
+      "error.manual_match_amount_short",
+    );
+    expect((await prisma.processedBybitTx.findUniqueOrThrow({ where: { bybitTxId: "by-short" } })).outcome).toBe("unmatched");
+  });
+});
+
+describe("manualMatchLedgerTx — failure leaves the row matchable again", () => {
+  it("TokoPay: a delivery that throws (out of stock) reverts the row to unmatched and leaves the order unpaid", async () => {
+    const order = await makePendingOrder(PaymentMethod.TOKOPAY, "IDR");
+    await recordUnmatchedTokopayTx(prisma, { trxId: "tp-fail-1", amount: qrisChargeAmount(order.totalAmount) });
+    await wipeStock();
+
+    await expect(manualMatchLedgerTx(prisma, { reference: "tp-fail-1", orderId: order.id, adminId })).rejects.toBeTruthy();
+    const row = await prisma.processedTokopayTx.findUniqueOrThrow({ where: { trxId: "tp-fail-1" } });
+    expect(row).toMatchObject({ outcome: "unmatched", orderId: null });
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.PENDING_PAYMENT);
+  });
+
+  it("Bybit: a delivery that throws rolls the whole match back", async () => {
+    const order = await makePendingOrder(PaymentMethod.BYBIT, "USDT");
+    await recordUnmatchedBybitTx(prisma, { bybitTxId: "by-fail-1", amount: order.totalAmount });
+    await wipeStock();
+
+    await expect(manualMatchLedgerTx(prisma, { reference: "by-fail-1", orderId: order.id, adminId })).rejects.toBeTruthy();
+    const row = await prisma.processedBybitTx.findUniqueOrThrow({ where: { bybitTxId: "by-fail-1" } });
+    expect(row).toMatchObject({ outcome: "unmatched", orderId: null });
+    const after = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(after.status).toBe(OrderStatus.PENDING_PAYMENT);
+    expect(after.bybitTxid).toBeNull();
+  });
+});
+
+describe("QRIS deliver functions in manual mode", () => {
+  it("TokoPay manual mode cannot claim a delivery_failed row", async () => {
+    const order = await makePendingOrder(PaymentMethod.TOKOPAY, "IDR");
+    await prisma.processedTokopayTx.create({
+      data: { trxId: "tp-df-1", amount: qrisChargeAmount(order.totalAmount), outcome: "delivery_failed" },
+    });
+    const result = await deliverPaidTokopayOrder(prisma, {
+      orderId: order.id,
+      trxId: "tp-df-1",
+      amount: qrisChargeAmount(order.totalAmount),
+      manual: { adminId },
+    });
+    expect(result.status).toBe("already_processed");
+    expect((await prisma.processedTokopayTx.findUniqueOrThrow({ where: { trxId: "tp-df-1" } })).outcome).toBe("delivery_failed");
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.PENDING_PAYMENT);
+  });
+
+  it("PayDisini manual mode cannot claim a delivery_failed row", async () => {
+    const order = await makePendingOrder(PaymentMethod.PAYDISINI, "IDR");
+    await prisma.processedPaydisiniTx.create({ data: { trxId: "pd-df-1", amount: order.totalAmount, outcome: "delivery_failed" } });
+    const result = await deliverPaidPaydisiniOrder(prisma, {
+      orderId: order.id,
+      trxId: "pd-df-1",
+      amount: order.totalAmount,
+      manual: { adminId },
+    });
+    expect(result.status).toBe("already_processed");
+    expect((await prisma.processedPaydisiniTx.findUniqueOrThrow({ where: { trxId: "pd-df-1" } })).outcome).toBe("delivery_failed");
+  });
+
+  it("TokoPay manual mode on an order that is no longer payable puts the row back to unmatched, not stale", async () => {
+    const order = await makePendingOrder(PaymentMethod.TOKOPAY, "IDR");
+    await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.CANCELLED } });
+    await recordUnmatchedTokopayTx(prisma, { trxId: "tp-stale-1", amount: qrisChargeAmount(order.totalAmount) });
+    const result = await deliverPaidTokopayOrder(prisma, {
+      orderId: order.id,
+      trxId: "tp-stale-1",
+      amount: qrisChargeAmount(order.totalAmount),
+      manual: { adminId },
+    });
+    expect(result.status).toBe("stale");
+    const row = await prisma.processedTokopayTx.findUniqueOrThrow({ where: { trxId: "tp-stale-1" } });
+    expect(row).toMatchObject({ outcome: "unmatched", orderId: null });
+  });
+
+  it("PayDisini manual mode reverts the row to unmatched when delivery throws", async () => {
+    const order = await makePendingOrder(PaymentMethod.PAYDISINI, "IDR");
+    await recordUnmatchedPaydisiniTx(prisma, { trxId: "pd-fail-1", amount: order.totalAmount });
+    await wipeStock();
+    await expect(
+      deliverPaidPaydisiniOrder(prisma, { orderId: order.id, trxId: "pd-fail-1", amount: order.totalAmount, manual: { adminId } }),
+    ).rejects.toBeTruthy();
+    const row = await prisma.processedPaydisiniTx.findUniqueOrThrow({ where: { trxId: "pd-fail-1" } });
+    expect(row).toMatchObject({ outcome: "unmatched", orderId: null });
+  });
+});
+
+/** Resolves every waiter once `n` callers have arrived — or rejects after a
+ *  timeout, so a caller that never got past the pre-guards fails the test
+ *  loudly instead of hanging it. Calls after the n-th pass straight through. */
+function makeBarrier(n: number, timeoutMs = 15_000) {
+  let arrived = 0;
+  let release!: () => void;
+  const all = new Promise<void>((resolve) => (release = resolve));
+  return {
+    get arrived() {
+      return arrived;
+    },
+    wait: async () => {
+      arrived += 1;
+      if (arrived >= n) release();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`only ${arrived} of ${n} callers reached the barrier`)), timeoutMs);
+      });
+      try {
+        await Promise.race([all, timeout]);
+      } finally {
+        clearTimeout(timer);
+      }
+    },
+  };
+}
+
+/** `prisma`, but with `model.method` (or the client's own `method` when
+ *  `model` is null) held at `wait` before it runs — so every concurrent
+ *  caller has passed all of manualMatchLedgerTx's read-only pre-guards before
+ *  any of them reaches the outcome-gated claim, and only that gate decides. */
+function gatedDb(model: string | null, method: string, wait: () => Promise<void>): PrismaClient {
+  type Fn = (...a: unknown[]) => unknown;
+  const gate = (target: object, fn: Fn) => async (...a: unknown[]) => {
+    await wait();
+    return fn.apply(target, a);
+  };
+  return new Proxy(prisma, {
+    get(target, prop) {
+      const value = Reflect.get(target, prop, target) as unknown;
+      if (model === null && prop === method) return gate(target, value as Fn);
+      if (model !== null && prop === model) {
+        return new Proxy(value as object, {
+          get(d, p) {
+            const f = Reflect.get(d, p, d) as unknown;
+            if (p === method) return gate(d, f as Fn);
+            return typeof f === "function" ? (f as Fn).bind(d) : f;
+          },
+        });
+      }
+      return typeof value === "function" ? (value as Fn).bind(target) : value;
+    },
+  }) as PrismaClient;
+}
+
+describe("manualMatchLedgerTx — true concurrency (forced race)", () => {
+  async function twoOrdersSameTotal(method: string, currency: "IDR" | "USDT") {
+    await bulkAddStock(prisma, sample.product.id, ["race-cred-1", "race-cred-2"]);
+    const a = await makePendingOrder(method, currency);
+    const b = await makePendingOrder(method, currency);
+    // Same total on both, so whichever wins is an exact (not overpaid) match.
+    await prisma.order.update({ where: { id: b.id }, data: { totalAmount: a.totalAmount } });
+    return { a, b };
+  }
+
+  async function expectExactlyOneWinner(results: PromiseSettledResult<unknown>[], a: { id: number }, b: { id: number }) {
+    const fulfilled = results.filter((r) => r.status === "fulfilled");
+    const rejected = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+    expect(fulfilled.length).toBe(1);
+    expect(rejected.length).toBe(1);
+    expect(rejected[0]!.reason).toBeInstanceOf(ValidationError);
+    expect((rejected[0]!.reason as ValidationError).message).toBe("error.tx_not_unmatched");
+    const orders = await prisma.order.findMany({ where: { id: { in: [a.id, b.id] } } });
+    expect(orders.filter((o) => o.status === OrderStatus.DELIVERED).length).toBe(1);
+    expect(orders.filter((o) => o.status === OrderStatus.PENDING_PAYMENT).length).toBe(1);
+  }
+
+  it("Bybit: both admins pass every pre-guard, then only the in-transaction outcome gate decides — exactly one wins", async () => {
+    const { a, b } = await twoOrdersSameTotal(PaymentMethod.BYBIT, "USDT");
+    await recordUnmatchedBybitTx(prisma, { bybitTxId: "by-race-1", amount: a.totalAmount });
+
+    // Hold both callers at the start of the claim transaction.
+    const barrier = makeBarrier(2);
+    const gated = gatedDb(null, "$transaction", barrier.wait);
+    const results = await Promise.allSettled([
+      manualMatchLedgerTx(gated, { reference: "by-race-1", orderId: a.id, adminId }),
+      manualMatchLedgerTx(gated, { reference: "by-race-1", orderId: b.id, adminId: adminB }),
+    ]);
+    expect(barrier.arrived).toBe(2);
+    await expectExactlyOneWinner(results, a, b);
+    const row = await prisma.processedBybitTx.findUniqueOrThrow({ where: { bybitTxId: "by-race-1" } });
+    expect(row.outcome).toBe("matched");
+    expect([a.id, b.id]).toContain(row.orderId);
+  });
+
+  it("TokoPay: both admins pass every pre-guard and read the row as unmatched, then only the compare-and-swap claim decides — exactly one wins", async () => {
+    const { a, b } = await twoOrdersSameTotal(PaymentMethod.TOKOPAY, "IDR");
+    await recordUnmatchedTokopayTx(prisma, { trxId: "tp-race-1", amount: qrisChargeAmount(a.totalAmount) });
+
+    // Hold both callers at the claim's updateMany, after the deliver
+    // function's own read saw "unmatched" for both.
+    const barrier = makeBarrier(2);
+    const gated = gatedDb("processedTokopayTx", "updateMany", barrier.wait);
+    const results = await Promise.allSettled([
+      manualMatchLedgerTx(gated, { reference: "tp-race-1", orderId: a.id, adminId }),
+      manualMatchLedgerTx(gated, { reference: "tp-race-1", orderId: b.id, adminId: adminB }),
+    ]);
+    expect(barrier.arrived).toBe(2);
+    await expectExactlyOneWinner(results, a, b);
+    const row = await prisma.processedTokopayTx.findUniqueOrThrow({ where: { trxId: "tp-race-1" } });
+    expect(row.outcome).toBe("matched");
+    expect([a.id, b.id]).toContain(row.orderId);
+  });
+});
+
+describe("manualMatchLedgerTx — recovering a stranded QRIS manual claim", () => {
+  const elevenMinutesAgo = () => new Date(Date.now() - 11 * 60_000);
+
+  it("TokoPay: a same-order matched row older than the stale window is recovered and settled when the admin repeats the match", async () => {
+    const order = await makePendingOrder(PaymentMethod.TOKOPAY, "IDR");
+    const at = elevenMinutesAgo();
+    await prisma.processedTokopayTx.create({
+      data: { trxId: "tp-stranded-1", orderId: order.id, amount: qrisChargeAmount(order.totalAmount), outcome: "matched", createdAt: at, updatedAt: at },
+    });
+    const result = await manualMatchLedgerTx(prisma, { reference: "tp-stranded-1", orderId: order.id, adminId });
+    expect(result.kind).toBe("delivered");
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.DELIVERED);
+    const row = await prisma.processedTokopayTx.findUniqueOrThrow({ where: { trxId: "tp-stranded-1" } });
+    expect(row).toMatchObject({ outcome: "matched", orderId: order.id });
+  });
+
+  it("PayDisini: the same recovery works", async () => {
+    const order = await makePendingOrder(PaymentMethod.PAYDISINI, "IDR");
+    const at = elevenMinutesAgo();
+    await prisma.processedPaydisiniTx.create({
+      data: { trxId: "pd-stranded-1", orderId: order.id, amount: order.totalAmount, outcome: "matched", createdAt: at, updatedAt: at },
+    });
+    const result = await manualMatchLedgerTx(prisma, { reference: "pd-stranded-1", orderId: order.id, adminId });
+    expect(result.kind).toBe("delivered");
+  });
+
+  it("a same-order matched row that is still fresh (possibly in flight) is refused", async () => {
+    const order = await makePendingOrder(PaymentMethod.TOKOPAY, "IDR");
+    await prisma.processedTokopayTx.create({
+      data: { trxId: "tp-fresh-1", orderId: order.id, amount: qrisChargeAmount(order.totalAmount), outcome: "matched" },
+    });
+    await expectValidation(
+      manualMatchLedgerTx(prisma, { reference: "tp-fresh-1", orderId: order.id, adminId }),
+      "error.tx_not_unmatched",
+    );
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.PENDING_PAYMENT);
+  });
+
+  it("a stale matched row belonging to a DIFFERENT order is refused", async () => {
+    const owner = await makePendingOrder(PaymentMethod.TOKOPAY, "IDR");
+    const other = await makePendingOrder(PaymentMethod.TOKOPAY, "IDR");
+    const at = elevenMinutesAgo();
+    await prisma.processedTokopayTx.create({
+      data: { trxId: "tp-other-1", orderId: owner.id, amount: qrisChargeAmount(other.totalAmount), outcome: "matched", createdAt: at, updatedAt: at },
+    });
+    await expectValidation(
+      manualMatchLedgerTx(prisma, { reference: "tp-other-1", orderId: other.id, adminId }),
+      "error.tx_not_unmatched",
+    );
+    const row = await prisma.processedTokopayTx.findUniqueOrThrow({ where: { trxId: "tp-other-1" } });
+    expect(row).toMatchObject({ outcome: "matched", orderId: owner.id });
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: other.id } })).status).toBe(OrderStatus.PENDING_PAYMENT);
+  });
+
+  it("a Bybit matched row for the same order is still refused (Bybit claims and settles in one transaction)", async () => {
+    const order = await makePendingOrder(PaymentMethod.BYBIT, "USDT");
+    const at = elevenMinutesAgo();
+    await prisma.processedBybitTx.create({
+      data: { bybitTxId: "by-stranded-1", orderId: order.id, amount: order.totalAmount, outcome: "matched", createdAt: at, updatedAt: at },
+    });
+    await expectValidation(
+      manualMatchLedgerTx(prisma, { reference: "by-stranded-1", orderId: order.id, adminId }),
+      "error.tx_not_unmatched",
+    );
+  });
+});
+
+describe("dismissUnmatchedLedgerTx", () => {
+  const seeders = {
+    bybit: (ref: string) => recordUnmatchedBybitTx(prisma, { bybitTxId: ref, amount: "5" }),
+    tokopay: (ref: string) => recordUnmatchedTokopayTx(prisma, { trxId: ref, amount: "5" }),
+    paydisini: (ref: string) => recordUnmatchedPaydisiniTx(prisma, { trxId: ref, amount: "5" }),
+    nowpayments: (ref: string) => recordUnmatchedNowpaymentsTx(prisma, { trxId: ref, amount: "5" }),
+  } as const;
+  const outcomeOf = async (gateway: keyof typeof seeders, ref: string) => {
+    switch (gateway) {
+      case "bybit":
+        return (await prisma.processedBybitTx.findUniqueOrThrow({ where: { bybitTxId: ref } })).outcome;
+      case "tokopay":
+        return (await prisma.processedTokopayTx.findUniqueOrThrow({ where: { trxId: ref } })).outcome;
+      case "paydisini":
+        return (await prisma.processedPaydisiniTx.findUniqueOrThrow({ where: { trxId: ref } })).outcome;
+      case "nowpayments":
+        return (await prisma.processedNowpaymentsTx.findUniqueOrThrow({ where: { trxId: ref } })).outcome;
+    }
+  };
+
+  it.each(Object.keys(seeders) as (keyof typeof seeders)[])("%s: dismisses an unmatched row", async (gateway) => {
+    await seeders[gateway](`dis-${gateway}`);
+    const result = await dismissUnmatchedLedgerTx(prisma, { reference: `dis-${gateway}` });
+    expect(result.gateway).toBe(gateway);
+    expect(await outcomeOf(gateway, `dis-${gateway}`)).toBe("dismissed");
+  });
+
+  it.each(Object.keys(seeders) as (keyof typeof seeders)[])("%s: refuses a row that is not unmatched", async (gateway) => {
+    await seeders[gateway](`dis2-${gateway}`);
+    await dismissUnmatchedLedgerTx(prisma, { reference: `dis2-${gateway}`, gateway });
+    await expectValidation(dismissUnmatchedLedgerTx(prisma, { reference: `dis2-${gateway}`, gateway }), "error.tx_not_unmatched");
+  });
+
+  it("binance still delegates to dismissUnmatchedTx", async () => {
+    await recordUnmatchedTx(prisma, { binanceTxId: "dis-bn", amount: "5" });
+    const result = await dismissUnmatchedLedgerTx(prisma, { reference: "dis-bn" });
+    expect(result.gateway).toBe("binance");
+    expect((await prisma.processedBinanceTx.findUniqueOrThrow({ where: { binanceTxId: "dis-bn" } })).outcome).toBe("dismissed");
+  });
+
+  it("refuses an unknown reference", async () => {
+    await expectValidation(dismissUnmatchedLedgerTx(prisma, { reference: "ghost" }), "error.tx_not_found");
+  });
+});
+
+/** A TokoPay/PayDisini order A short-paid by Rp50.000, with its ledger row
+ *  written exactly as the storefront callback writes it (unmatched, amount =
+ *  received, `suggestedOrderId` = A) and A flagged UNDERPAID by
+ *  `markOrderUnderpaid`, plus a cheaper pending order C on the same gateway
+ *  that the short money would fully cover. */
+async function shortPaidSetup(gateway: "tokopay" | "paydisini", ref: string, opts: { hint?: boolean; markUnderpaid?: boolean } = {}) {
+  const method = gateway === "tokopay" ? PaymentMethod.TOKOPAY : PaymentMethod.PAYDISINI;
+  await bulkAddStock(prisma, sample.product.id, [`${ref}-cred-1`, `${ref}-cred-2`]);
+  const a = await prisma.order.update({ where: { id: (await makePendingOrder(method, "IDR")).id }, data: { totalAmount: "100000" } });
+  const c = await prisma.order.update({ where: { id: (await makePendingOrder(method, "IDR")).id }, data: { totalAmount: "30000" } });
+  const received = new Decimal("50000");
+  const record = gateway === "tokopay" ? recordUnmatchedTokopayTx : recordUnmatchedPaydisiniTx;
+  await record(prisma, { trxId: ref, amount: received, suggestedOrderId: opts.hint === false ? null : a.id });
+  if (opts.markUnderpaid !== false) {
+    const expected = gateway === "tokopay" ? qrisChargeAmount(a.totalAmount) : new Decimal(a.totalAmount);
+    expect(
+      await markOrderUnderpaid(prisma, {
+        orderId: a.id,
+        gateway: gateway === "tokopay" ? "TokoPay" : "PayDisini",
+        receivedAmount: received,
+        expectedAmount: expected,
+      }),
+    ).toBe(true);
+  }
+  return { a, c, received };
+}
+
+async function qrisRow(gateway: "tokopay" | "paydisini", ref: string) {
+  return gateway === "tokopay"
+    ? prisma.processedTokopayTx.findUniqueOrThrow({ where: { trxId: ref } })
+    : prisma.processedPaydisiniTx.findUniqueOrThrow({ where: { trxId: ref } });
+}
+
+describe("manualMatchLedgerTx — a short payment already in the underpaid flow cannot be spent again (C1)", () => {
+  // resetDb leaves qris_underpaid_tx alone (no FK to orders), so a previous
+  // test's same-amount record would otherwise feed the legacy rule here.
+  beforeEach(async () => {
+    await prisma.qrisUnderpaidTx.deleteMany();
+  });
+
+  it.each(["tokopay", "paydisini"] as const)(
+    "%s: a short-paid row whose suggested order is UNDERPAID is refused for a cheaper order, and the row is untouched",
+    async (gateway) => {
+      const { a, c } = await shortPaidSetup(gateway, `c1-${gateway}`);
+      await expectValidation(
+        manualMatchLedgerTx(prisma, { reference: `c1-${gateway}`, orderId: c.id, adminId }),
+        "error.manual_match_underpaid_payment",
+      );
+      expect(await qrisRow(gateway, `c1-${gateway}`)).toMatchObject({ outcome: "unmatched", orderId: null, suggestedOrderId: a.id });
+      expect((await prisma.order.findUniqueOrThrow({ where: { id: c.id } })).status).toBe(OrderStatus.PENDING_PAYMENT);
+      expect((await prisma.order.findUniqueOrThrow({ where: { id: a.id } })).status).toBe(OrderStatus.UNDERPAID);
+    },
+  );
+
+  it("names the underpaid order in the refusal", async () => {
+    const { a, c } = await shortPaidSetup("tokopay", "c1-name");
+    const err = await manualMatchLedgerTx(prisma, { reference: "c1-name", orderId: c.id, adminId }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ValidationError);
+    expect((err as ValidationError).formatArgs).toMatchObject({ orderCode: a.orderCode });
+  });
+
+  it("a legacy row with no suggested order is refused when an underpaid record on the same gateway holds the same amount close in time", async () => {
+    const { c } = await shortPaidSetup("tokopay", "c1-legacy", { hint: false });
+    await expectValidation(
+      manualMatchLedgerTx(prisma, { reference: "c1-legacy", orderId: c.id, adminId }),
+      "error.manual_match_underpaid_payment",
+    );
+    expect(await qrisRow("tokopay", "c1-legacy")).toMatchObject({ outcome: "unmatched", orderId: null });
+  });
+
+  it("a legacy row is NOT refused for an underpaid record of the same amount on a different gateway", async () => {
+    const { c } = await shortPaidSetup("tokopay", "c1-legacy-gw", { hint: false, markUnderpaid: false });
+    const other = await makePendingOrder(PaymentMethod.PAYDISINI, "IDR");
+    await markOrderUnderpaid(prisma, { orderId: other.id, gateway: "PayDisini", receivedAmount: "50000", expectedAmount: other.totalAmount });
+    const result = await manualMatchLedgerTx(prisma, { reference: "c1-legacy-gw", orderId: c.id, adminId });
+    expect(result.order.id).toBe(c.id);
+  });
+
+  it("a legacy row is NOT refused for a same-amount underpaid record created far outside the time window", async () => {
+    const { c } = await shortPaidSetup("tokopay", "c1-legacy-old", { hint: false });
+    await prisma.qrisUnderpaidTx.updateMany({ data: { createdAt: new Date(Date.now() - 2 * 60 * 60_000) } });
+    const result = await manualMatchLedgerTx(prisma, { reference: "c1-legacy-old", orderId: c.id, adminId });
+    expect(result.order.id).toBe(c.id);
+  });
+
+  it("a short row whose suggested order is still awaiting payment is refused too (the callback flags it UNDERPAID right after writing the row)", async () => {
+    const { a, c } = await shortPaidSetup("paydisini", "c1-pending", { markUnderpaid: false });
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: a.id } })).status).toBe(OrderStatus.PENDING_PAYMENT);
+    await expectValidation(
+      manualMatchLedgerTx(prisma, { reference: "c1-pending", orderId: c.id, adminId }),
+      "error.manual_match_underpaid_payment",
+    );
+    expect(await qrisRow("paydisini", "c1-pending")).toMatchObject({ outcome: "unmatched", orderId: null });
+  });
+
+  it("a row whose suggested order closed without being flagged underpaid (e.g. cancelled) still matches", async () => {
+    const { a, c } = await shortPaidSetup("tokopay", "c1-cancelled", { markUnderpaid: false });
+    await prisma.order.update({ where: { id: a.id }, data: { status: OrderStatus.CANCELLED } });
+    const result = await manualMatchLedgerTx(prisma, { reference: "c1-cancelled", orderId: c.id, adminId });
+    expect(result.order.id).toBe(c.id);
+    // "overpaid": Rp50.000 more than covers C's charge — flagged, still settled.
+    expect(await qrisRow("tokopay", "c1-cancelled")).toMatchObject({ outcome: "overpaid", orderId: c.id });
+  });
+
+  it("an unmatched row with no underpaid record anywhere still matches", async () => {
+    const { c } = await shortPaidSetup("paydisini", "c1-plain", { hint: false, markUnderpaid: false });
+    const result = await manualMatchLedgerTx(prisma, { reference: "c1-plain", orderId: c.id, adminId });
+    expect(result.order.id).toBe(c.id);
+  });
+});
+
+/** `prisma`, but inside its `$transaction` callbacks the first call to
+ *  `model.method` first runs `before` on a separate connection — a
+ *  concurrent path acting after the transaction's own reads but before its
+ *  first write. */
+function interceptInTx(model: string, method: string, before: () => Promise<void>): PrismaClient {
+  type Fn = (...a: unknown[]) => unknown;
+  let fired = false;
+  const wrapTx = (tx: object) =>
+    new Proxy(tx, {
+      get(t, p) {
+        const v = Reflect.get(t, p, t) as unknown;
+        if (p !== model) return typeof v === "function" ? (v as Fn).bind(t) : v;
+        return new Proxy(v as object, {
+          get(d, q) {
+            const f = Reflect.get(d, q, d) as unknown;
+            if (q === method && !fired) {
+              return async (...a: unknown[]) => {
+                fired = true;
+                await before();
+                return (f as Fn).apply(d, a);
+              };
+            }
+            return typeof f === "function" ? (f as Fn).bind(d) : f;
+          },
+        });
+      },
+    });
+  return new Proxy(prisma, {
+    get(target, prop) {
+      const value = Reflect.get(target, prop, target) as unknown;
+      if (prop === "$transaction") {
+        return (cb: (tx: object) => Promise<unknown>, opts?: unknown) =>
+          (value as Fn).call(target, (tx: object) => cb(wrapTx(tx)), opts);
+      }
+      return typeof value === "function" ? (value as Fn).bind(target) : value;
+    },
+  }) as PrismaClient;
+}
+
+/** `prisma` whose first `$transaction` runs `around` instead — for errors
+ *  raised outside the transaction callback (before it starts, or after it
+ *  commits). Later transactions run normally. */
+function aroundTx(around: (run: () => Promise<unknown>) => Promise<unknown>): PrismaClient {
+  type Fn = (...a: unknown[]) => unknown;
+  let used = false;
+  return new Proxy(prisma, {
+    get(target, prop) {
+      const value = Reflect.get(target, prop, target) as unknown;
+      if (prop === "$transaction") {
+        return (cb: unknown, opts?: unknown) => {
+          const run = () => (value as Fn).call(target, cb, opts) as Promise<unknown>;
+          if (used) return run();
+          used = true;
+          return around(run);
+        };
+      }
+      return typeof value === "function" ? (value as Fn).bind(target) : value;
+    },
+  }) as PrismaClient;
+}
+
+describe("manualMatchLedgerTx — a QRIS match that fails inside its transaction always reopens the row (I1)", () => {
+  const cases = [
+    ["tokopay", OrderStatus.DELIVERED],
+    ["tokopay", OrderStatus.CANCELLED],
+    ["paydisini", OrderStatus.DELIVERED],
+    ["paydisini", OrderStatus.CANCELLED],
+  ] as const;
+
+  it.each(cases)("%s: the order moving to %s concurrently fails the match and the row is back to unmatched", async (gateway, moved) => {
+    const method = gateway === "tokopay" ? PaymentMethod.TOKOPAY : PaymentMethod.PAYDISINI;
+    const order = await makePendingOrder(method, "IDR");
+    const ref = `i1-${gateway}-${moved}`;
+    const amount = gateway === "tokopay" ? qrisChargeAmount(order.totalAmount) : new Decimal(order.totalAmount);
+    await (gateway === "tokopay" ? recordUnmatchedTokopayTx : recordUnmatchedPaydisiniTx)(prisma, { trxId: ref, amount });
+
+    // Another path settles (or the auto-cancel closes) the order after the
+    // delivery transaction re-read it as payable, before its first write.
+    const db = interceptInTx("order", "update", async () => {
+      await prisma.order.update({ where: { id: order.id }, data: { status: moved } });
+    });
+    const err = await manualMatchLedgerTx(db, { reference: ref, orderId: order.id, adminId }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ValidationError);
+    expect(await qrisRow(gateway, ref)).toMatchObject({ outcome: "unmatched", orderId: null });
+    expect(await statusMetas(order.id)).not.toContainEqual(expect.stringContaining(ref));
+    expect((err as ValidationError).message).toBe("error.order_not_pending");
+  });
+
+  it("an error raised before the transaction ran reopens the row while the order is still unpaid", async () => {
+    const order = await makePendingOrder(PaymentMethod.TOKOPAY, "IDR");
+    await recordUnmatchedTokopayTx(prisma, { trxId: "i1-pre", amount: qrisChargeAmount(order.totalAmount) });
+    const db = aroundTx(async () => {
+      throw new Error("connection reset before the transaction started");
+    });
+    await expect(manualMatchLedgerTx(db, { reference: "i1-pre", orderId: order.id, adminId })).rejects.toThrow("connection reset");
+    expect(await qrisRow("tokopay", "i1-pre")).toMatchObject({ outcome: "unmatched", orderId: null });
+  });
+
+  it("an error raised after OUR settlement committed leaves the row matched to the settled order", async () => {
+    const order = await makePendingOrder(PaymentMethod.TOKOPAY, "IDR");
+    await recordUnmatchedTokopayTx(prisma, { trxId: "i1-post", amount: qrisChargeAmount(order.totalAmount) });
+    const db = aroundTx(async (run) => {
+      await run();
+      throw new Error("acknowledgement lost after commit");
+    });
+    await expect(manualMatchLedgerTx(db, { reference: "i1-post", orderId: order.id, adminId })).rejects.toThrow("acknowledgement lost");
+    expect(await qrisRow("tokopay", "i1-post")).toMatchObject({ outcome: "matched", orderId: order.id });
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.DELIVERED);
+  });
+
+  it("an ambiguous error while the order was settled by ANOTHER path reopens the row", async () => {
+    const order = await makePendingOrder(PaymentMethod.PAYDISINI, "IDR");
+    await recordUnmatchedPaydisiniTx(prisma, { trxId: "i1-other", amount: order.totalAmount });
+    const db = aroundTx(async () => {
+      await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.DELIVERED } });
+      throw new Error("connection reset");
+    });
+    await expect(manualMatchLedgerTx(db, { reference: "i1-other", orderId: order.id, adminId })).rejects.toThrow("connection reset");
+    expect(await qrisRow("paydisini", "i1-other")).toMatchObject({ outcome: "unmatched", orderId: null });
+  });
+});
+
+describe("manualMatchLedgerTx — a top-up credited by another path in the meantime is refused, not reported matched (I2)", () => {
+  it.each(["tokopay", "paydisini"] as const)("%s: the row goes back to unmatched and no wallet moves", async (gateway) => {
+    const method = gateway === "tokopay" ? PaymentMethod.TOKOPAY : PaymentMethod.PAYDISINI;
+    const order = await makeTopupOrder(method, "IDR", "20000");
+    const ref = `i2-${gateway}`;
+    const amount = gateway === "tokopay" ? qrisChargeAmount(order.totalAmount) : new Decimal(order.totalAmount);
+    await (gateway === "tokopay" ? recordUnmatchedTokopayTx : recordUnmatchedPaydisiniTx)(prisma, { trxId: ref, amount });
+    const before = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
+
+    // The top-up's own payment settles it between the delivery
+    // transaction's read and settleWalletTopup's claim.
+    const db = interceptInTx("order", "updateMany", async () => {
+      await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.DELIVERED, walletCreditState: "CREDITED" } });
+    });
+    await expectValidation(manualMatchLedgerTx(db, { reference: ref, orderId: order.id, adminId }), "error.order_not_pending");
+    expect(await qrisRow(gateway, ref)).toMatchObject({ outcome: "unmatched", orderId: null });
+    const after = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
+    expect(new Decimal(after.walletBalance).equals(before.walletBalance)).toBe(true);
+  });
+
+  it.each([PaymentMethod.BYBIT, PaymentMethod.BYBIT_BSC])("Bybit (%s): the whole match rolls back and no wallet moves", async (method) => {
+    const order = await makeTopupOrder(method, "USDT", "10");
+    const ref = `i2-${method}`;
+    await recordUnmatchedBybitTx(prisma, { bybitTxId: ref, amount: order.totalAmount });
+    const before = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
+
+    const db = interceptInTx("order", "updateMany", async () => {
+      await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.DELIVERED, walletCreditState: "CREDITED" } });
+    });
+    await expectValidation(manualMatchLedgerTx(db, { reference: ref, orderId: order.id, adminId }), "error.order_not_pending");
+    expect(await prisma.processedBybitTx.findUniqueOrThrow({ where: { bybitTxId: ref } })).toMatchObject({ outcome: "unmatched", orderId: null });
+    const after = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
+    expect(new Decimal(after.walletBalanceUsdt).equals(before.walletBalanceUsdt)).toBe(true);
+  });
+});
+
+describe("dismissUnmatchedLedgerTx — never dismisses a payment the gateway may still settle (I3)", () => {
+  const recorders = {
+    tokopay: recordUnmatchedTokopayTx,
+    paydisini: recordUnmatchedPaydisiniTx,
+    nowpayments: recordUnmatchedNowpaymentsTx,
+  } as const;
+
+  it.each(["tokopay", "paydisini", "nowpayments"] as const)("%s: refuses a row with a zero amount", async (gateway) => {
+    const ref = `i3-zero-${gateway}`;
+    await recorders[gateway](prisma, { trxId: ref, amount: 0 });
+    await expectValidation(dismissUnmatchedLedgerTx(prisma, { reference: ref, gateway }), "error.dismiss_payment_may_still_settle");
+    expect((await findUnmatchedLedgerRow(prisma, { reference: ref, gateway })).row.outcome).toBe("unmatched");
+  });
+
+  it("refuses a row whose amount is null", async () => {
+    await prisma.processedTokopayTx.create({ data: { trxId: "i3-null", amount: null, outcome: "unmatched" } });
+    await expectValidation(dismissUnmatchedLedgerTx(prisma, { reference: "i3-null" }), "error.dismiss_payment_may_still_settle");
+  });
+
+  it.each(["tokopay", "paydisini", "nowpayments"] as const)("%s: refuses a row whose suggested order is still awaiting payment", async (gateway) => {
+    const method = { tokopay: PaymentMethod.TOKOPAY, paydisini: PaymentMethod.PAYDISINI, nowpayments: PaymentMethod.NOWPAYMENTS }[gateway];
+    const order = await makePendingOrder(method, gateway === "nowpayments" ? "USDT" : "IDR");
+    const ref = `i3-pending-${gateway}`;
+    await recorders[gateway](prisma, { trxId: ref, amount: "5", suggestedOrderId: order.id });
+    await expectValidation(dismissUnmatchedLedgerTx(prisma, { reference: ref, gateway }), "error.dismiss_payment_may_still_settle");
+    expect((await findUnmatchedLedgerRow(prisma, { reference: ref, gateway })).row.outcome).toBe("unmatched");
+  });
+
+  it("dismisses a row once its suggested order has closed", async () => {
+    const order = await makePendingOrder(PaymentMethod.TOKOPAY, "IDR");
+    await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.CANCELLED } });
+    await recordUnmatchedTokopayTx(prisma, { trxId: "i3-closed", amount: "5", suggestedOrderId: order.id });
+    await dismissUnmatchedLedgerTx(prisma, { reference: "i3-closed" });
+    expect((await findUnmatchedLedgerRow(prisma, { reference: "i3-closed" })).row.outcome).toBe("dismissed");
+  });
+
+  it("a Bybit row with a zero amount can still be dismissed (the rule covers the gateway-settled rails only)", async () => {
+    await recordUnmatchedBybitTx(prisma, { bybitTxId: "i3-bybit-zero", amount: "0" });
+    await dismissUnmatchedLedgerTx(prisma, { reference: "i3-bybit-zero" });
+    expect((await findUnmatchedLedgerRow(prisma, { reference: "i3-bybit-zero" })).row.outcome).toBe("dismissed");
+  });
+});

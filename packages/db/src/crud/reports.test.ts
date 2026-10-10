@@ -16,6 +16,7 @@ import {
   recentOrders,
   reconcileFinances,
   orderHasIncomingLedgerPayment,
+  consumeIncomingLedgerPayment,
   USDT_ROUNDING_CEIL_SINCE_KEY,
 } from "./reports";
 import { setSetting, __clearSettingsCacheForTests } from "./settings";
@@ -596,6 +597,128 @@ describe("listCombinedLedger order enrichment (top-ups vs product sales)", () =>
 
     const unfiltered = await listCombinedLedger(prisma, { limit: 50 });
     expect(unfiltered.total).toBe(references.length + 1);
+  });
+});
+
+describe("listCombinedLedger currency and suggested order", () => {
+  // NOWPayments is null: its ledger amount is in whatever coin the buyer paid
+  // with (`actually_paid`), and that coin is not recorded on the row.
+  it("stamps each row with its gateway's currency", async () => {
+    await prisma.processedBinanceTx.create({ data: { binanceTxId: "bn-cur", amount: "1.5", outcome: "unmatched" } });
+    await prisma.processedBybitTx.create({ data: { bybitTxId: "by-cur", amount: "2", outcome: "unmatched" } });
+    await prisma.processedNowpaymentsTx.create({ data: { trxId: "np-cur", amount: "3", outcome: "unmatched" } });
+    await prisma.processedTokopayTx.create({ data: { trxId: "tp-cur", amount: "50000", outcome: "unmatched" } });
+    await prisma.processedPaydisiniTx.create({ data: { trxId: "pd-cur", amount: "60000", outcome: "unmatched" } });
+
+    const { rows } = await listCombinedLedger(prisma);
+    const currencyByReference = Object.fromEntries(rows.map((r) => [r.reference, r.currency]));
+    expect(currencyByReference).toEqual({
+      "bn-cur": "USDT",
+      "by-cur": "USDT",
+      "np-cur": null,
+      "tp-cur": "IDR",
+      "pd-cur": "IDR",
+    });
+  });
+
+  it("returns the suggested order's id, code and kind on an unmatched row that carries a hint, leaving orderId null", async () => {
+    const topup = await prisma.order.create({
+      data: { orderCode: "ORD-HINT-1", userId, subtotalAmount: "1", totalAmount: "100000", status: "UNDERPAID", kind: "WALLET_TOPUP" },
+    });
+    await prisma.processedTokopayTx.create({ data: { trxId: "tp-hint", amount: "40000", outcome: "unmatched", suggestedOrderId: topup.id } });
+    await prisma.processedBinanceTx.create({ data: { binanceTxId: "bn-nohint", amount: "1", outcome: "unmatched" } });
+    // A hint pointing at an order that no longer exists keeps the id but no code/kind.
+    await prisma.processedPaydisiniTx.create({ data: { trxId: "pd-ghost-hint", amount: "1", outcome: "unmatched", suggestedOrderId: 987654321 } });
+
+    const { rows } = await listCombinedLedger(prisma);
+    expect(rows.find((r) => r.reference === "tp-hint")).toMatchObject({
+      orderId: null,
+      orderCode: null,
+      orderKind: null,
+      orderStatus: null,
+      suggestedOrderId: topup.id,
+      suggestedOrderCode: "ORD-HINT-1",
+      suggestedOrderKind: "WALLET_TOPUP",
+      suggestedOrderStatus: "UNDERPAID",
+    });
+    expect(rows.find((r) => r.reference === "bn-nohint")).toMatchObject({
+      suggestedOrderId: null,
+      suggestedOrderCode: null,
+      suggestedOrderKind: null,
+      suggestedOrderStatus: null,
+    });
+    expect(rows.find((r) => r.reference === "pd-ghost-hint")).toMatchObject({
+      suggestedOrderId: 987654321,
+      suggestedOrderCode: null,
+      suggestedOrderKind: null,
+      suggestedOrderStatus: null,
+    });
+  });
+
+  it("resolves linked and suggested orders in the same single order query", async () => {
+    const sale = await prisma.order.create({
+      data: { orderCode: "ORD-ONEQ-1", userId, subtotalAmount: "1", totalAmount: "1", status: "DELIVERED", kind: "PRODUCT" },
+    });
+    const hinted = await prisma.order.create({
+      data: { orderCode: "ORD-ONEQ-2", userId, subtotalAmount: "1", totalAmount: "1", status: "UNDERPAID", kind: "PRODUCT" },
+    });
+    await prisma.processedTokopayTx.create({ data: { trxId: "tp-oneq-a", amount: "1", outcome: "matched", orderId: sale.id } });
+    await prisma.processedTokopayTx.create({ data: { trxId: "tp-oneq-b", amount: "0", outcome: "unmatched", suggestedOrderId: hinted.id } });
+
+    const counter = { orderFindMany: 0 };
+    const { rows } = await listCombinedLedger(countingDb(prisma, counter), { limit: 50 });
+    expect(counter.orderFindMany).toBe(1);
+    expect(rows.find((r) => r.reference === "tp-oneq-b")).toMatchObject({ suggestedOrderCode: "ORD-ONEQ-2", suggestedOrderStatus: "UNDERPAID" });
+  });
+
+  it("filters by kind using the suggested order's kind when the row has no linked order", async () => {
+    const topup = await prisma.order.create({
+      data: { orderCode: "ORD-KIND-HINT", userId, subtotalAmount: "1", totalAmount: "100000", status: "UNDERPAID", kind: "WALLET_TOPUP" },
+    });
+    const sale = await prisma.order.create({
+      data: { orderCode: "ORD-KIND-SALE", userId, subtotalAmount: "1", totalAmount: "1", status: "DELIVERED", kind: "PRODUCT" },
+    });
+    await prisma.processedTokopayTx.create({ data: { trxId: "tp-kind-hint", amount: "1", outcome: "unmatched", suggestedOrderId: topup.id } });
+    await prisma.processedTokopayTx.create({ data: { trxId: "tp-kind-sale", amount: "1", outcome: "matched", orderId: sale.id } });
+    await prisma.processedBinanceTx.create({ data: { binanceTxId: "bn-kind-orphan", amount: "1", outcome: "unmatched" } });
+
+    const topups = await listCombinedLedger(prisma, { kind: "WALLET_TOPUP" });
+    expect(topups.rows.map((r) => r.reference)).toEqual(["tp-kind-hint"]);
+    expect(topups.total).toBe(1);
+    const sales = await listCombinedLedger(prisma, { kind: "PRODUCT" });
+    expect(sales.rows.map((r) => r.reference)).toEqual(["tp-kind-sale"]);
+  });
+
+  it("keeps the actionable filter on orderId only — a hint at a DELIVERED order does not hide the row", async () => {
+    const delivered = await prisma.order.create({
+      data: { orderCode: "ORD-ACT-HINT", userId, subtotalAmount: "1", totalAmount: "1", status: "DELIVERED", kind: "PRODUCT" },
+    });
+    await prisma.processedTokopayTx.create({ data: { trxId: "tp-act-hint", amount: "1", outcome: "unmatched", suggestedOrderId: delivered.id } });
+
+    const list = await listCombinedLedger(prisma, { outcome: "unmatched", actionable: true });
+    expect(list.rows.map((r) => r.reference)).toEqual(["tp-act-hint"]);
+    expect(await actionableManualMatchQueueCounts(prisma)).toEqual({ unmatched: 1, deliveryFailed: 0 });
+  });
+});
+
+// Money guard rail: `suggestedOrderId` is a display hint only. An unmatched row
+// that merely suggests an order (a short or unverified payment) must never be
+// read as proof the order was paid in full, or an admin could credit the whole
+// order total to the buyer's balance off a partial payment.
+describe("suggestedOrderId is never payment evidence", () => {
+  it("a short-paid unmatched TokoPay row with only suggestedOrderId set proves nothing and is not consumed", async () => {
+    const order = await prisma.order.create({
+      data: { orderCode: "ORD-SHORT-HINT", userId, subtotalAmount: "100000", totalAmount: "100000", status: "CANCELLED", kind: "PRODUCT" },
+    });
+    await prisma.processedTokopayTx.create({
+      data: { trxId: "tp-short-hint", amount: "40000", outcome: "unmatched", suggestedOrderId: order.id },
+    });
+
+    expect(await orderHasIncomingLedgerPayment(prisma, order.id)).toBe(false);
+    expect(await prisma.$transaction((tx) => consumeIncomingLedgerPayment(tx, order.id))).toBe(0);
+    const row = await prisma.processedTokopayTx.findUniqueOrThrow({ where: { trxId: "tp-short-hint" } });
+    expect(row.outcome).toBe("unmatched");
+    expect(row.orderId).toBeNull();
   });
 });
 

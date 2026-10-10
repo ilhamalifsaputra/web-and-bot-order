@@ -11,8 +11,9 @@
  *   - Same key + same endpoint + same request hash ⇒ the stored response is
  *     replayed verbatim and NOTHING re-runs. The hash covers a small, fixed
  *     set of the request's meaningful fields (`{ orderId }` for the three
- *     per-order actions, `{ binanceTxId, orderCode }` for match and credit,
- *     `{ binanceTxId }` for dismiss), and the routes store the response for
+ *     per-order actions, `{ binanceTxId, orderCode, gateway }` for match,
+ *     `{ binanceTxId, orderCode }` for credit, `{ binanceTxId, gateway }` for
+ *     dismiss), and the routes store the response for
  *     EVERY exit, 4xx included — a replayed failure is still a replay, so the
  *     admin gets the identical error back without the mutation being
  *     reconsidered.

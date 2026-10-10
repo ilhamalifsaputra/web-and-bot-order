@@ -605,6 +605,21 @@ export async function ledgerOutcomeCountsForView(db: Db, actionable: boolean): P
  */
 export type LedgerGateway = "binance" | "bybit" | "tokopay" | "paydisini" | "nowpayments";
 
+/** The currency each gateway's ledger `amount` is recorded in. Binance Pay and
+ *  Bybit (both sub-rails) record USDT; TokoPay and PayDisini are rupiah
+ *  QRIS/e-wallet rails. NOWPayments is null: its ledger `amount` is the IPN's
+ *  `actually_paid`, which is in whatever coin the buyer paid with (TRX, BTC,
+ *  a USDT variant…), and the row does not record which coin that was — so
+ *  the amount cannot be labelled, compared with an order total, or used to
+ *  settle an order (see `manualMatchLedgerTx`, crud/manualMatch.ts). */
+export const LEDGER_GATEWAY_CURRENCY: Record<LedgerGateway, "USDT" | "IDR" | null> = {
+  binance: "USDT",
+  bybit: "USDT",
+  nowpayments: null,
+  tokopay: "IDR",
+  paydisini: "IDR",
+};
+
 export interface UnifiedLedgerRow {
   id: number;
   gateway: LedgerGateway;
@@ -612,10 +627,10 @@ export interface UnifiedLedgerRow {
    *  `bybitTxId`, or `trxId` depending on the source table. */
   reference: string;
   amount: string | null;
-  /** None of the five ledger tables store a currency column (see each
-   *  table's schema) — always null today. Kept in the shape for parity with
-   *  the pre-existing (also-always-null) Binance-only response field rather
-   *  than inferring one, which is an unrelated pre-existing gap. */
+  /** The currency `amount` is in. None of the five ledger tables store one,
+   *  so it is read from `LEDGER_GATEWAY_CURRENCY` by the row's `gateway`.
+   *  Null for NOWPayments, whose amount is in the buyer's (unrecorded) pay
+   *  coin. */
   currency: string | null;
   outcome: string;
   createdAt: Date;
@@ -635,15 +650,34 @@ export interface UnifiedLedgerRow {
    *  unmatched row's order is already closed out (e.g. CANCELLED) without
    *  opening it. */
   orderStatus: string | null;
+  /** The order this payment was probably meant for, when a gateway callback
+   *  knew it but could not settle it (short-paid, unverified amount, wrong
+   *  method/currency) — the row's `suggestedOrderId` column. DISPLAY ONLY: it
+   *  is not proof of payment, `orderId` stays null, and the `actionable`
+   *  filter ignores it. Null when the row carries no hint. */
+  suggestedOrderId: number | null;
+  /** `Order.orderCode` of `suggestedOrderId`, null when there is no hint or
+   *  that order no longer exists. */
+  suggestedOrderCode: string | null;
+  /** `Order.kind` of `suggestedOrderId`, null like `suggestedOrderCode`. The
+   *  `kind` filter falls back to it on rows with no linked order. */
+  suggestedOrderKind: string | null;
+  /** `Order.status` of `suggestedOrderId`, null like `suggestedOrderCode`.
+   *  The Payments page hides Dismiss on a TokoPay/PayDisini/NOWPayments row
+   *  whose suggested order is still PENDING_PAYMENT — the gateway may still
+   *  settle it (mirrors `dismissUnmatchedLedgerTx`'s refusal). */
+  suggestedOrderStatus: string | null;
 }
 
 export interface CombinedLedgerFilter {
   outcome?: string | null;
   q?: string | null;
-  /** Filter to one `Order.kind` ("PRODUCT" | "WALLET_TOPUP"). Rows with no
-   *  order are excluded by any non-null value here — they belong to neither
-   *  kind. Applied in JS after the order join, because `kind` lives on
-   *  `Order` and none of the five ledger tables carry it. */
+  /** Filter to one `Order.kind` ("PRODUCT" | "WALLET_TOPUP"), matched on the
+   *  row's effective kind: its linked order's kind, else its suggested
+   *  order's kind (`orderKind ?? suggestedOrderKind`). Rows with neither are
+   *  excluded by any non-null value here — they belong to neither kind.
+   *  Applied in JS after the order join, because `kind` lives on `Order` and
+   *  none of the five ledger tables carry it. */
   kind?: string | null;
   /** Drop rows that no longer need an admin — order DELIVERED or REFUNDED, or
    *  CANCELLED with proof the money was returned — the same rule
@@ -731,59 +765,67 @@ export async function listCombinedLedger(db: Db, opts: CombinedLedgerFilter = {}
   ]);
 
   // Pre-join shape: everything the ledger tables themselves can supply.
-  // `orderCode`/`orderKind`/`orderStatus` are filled in from the single order
-  // query below.
-  type PreJoinRow = Omit<UnifiedLedgerRow, "orderCode" | "orderKind" | "orderStatus">;
+  // `orderCode`/`orderKind`/`orderStatus` and the suggested order's code/kind
+  // are filled in from the single order query below.
+  type PreJoinRow = Omit<
+    UnifiedLedgerRow,
+    "orderCode" | "orderKind" | "orderStatus" | "suggestedOrderCode" | "suggestedOrderKind" | "suggestedOrderStatus"
+  >;
   const merged: PreJoinRow[] = [
     ...binance.map((r) => ({
       id: r.id,
       gateway: "binance" as const,
       reference: r.binanceTxId,
       amount: r.amount != null ? r.amount.toString() : null,
-      currency: null,
+      currency: LEDGER_GATEWAY_CURRENCY.binance,
       outcome: r.outcome,
       createdAt: r.createdAt,
       orderId: r.orderId,
+      suggestedOrderId: r.suggestedOrderId,
     })),
     ...bybit.map((r) => ({
       id: r.id,
       gateway: "bybit" as const,
       reference: r.bybitTxId,
       amount: r.amount != null ? r.amount.toString() : null,
-      currency: null,
+      currency: LEDGER_GATEWAY_CURRENCY.bybit,
       outcome: r.outcome,
       createdAt: r.createdAt,
       orderId: r.orderId,
+      suggestedOrderId: r.suggestedOrderId,
     })),
     ...tokopay.map((r) => ({
       id: r.id,
       gateway: "tokopay" as const,
       reference: r.trxId,
       amount: r.amount != null ? r.amount.toString() : null,
-      currency: null,
+      currency: LEDGER_GATEWAY_CURRENCY.tokopay,
       outcome: r.outcome,
       createdAt: r.createdAt,
       orderId: r.orderId,
+      suggestedOrderId: r.suggestedOrderId,
     })),
     ...paydisini.map((r) => ({
       id: r.id,
       gateway: "paydisini" as const,
       reference: r.trxId,
       amount: r.amount != null ? r.amount.toString() : null,
-      currency: null,
+      currency: LEDGER_GATEWAY_CURRENCY.paydisini,
       outcome: r.outcome,
       createdAt: r.createdAt,
       orderId: r.orderId,
+      suggestedOrderId: r.suggestedOrderId,
     })),
     ...nowpayments.map((r) => ({
       id: r.id,
       gateway: "nowpayments" as const,
       reference: r.trxId,
       amount: r.amount != null ? r.amount.toString() : null,
-      currency: null,
+      currency: LEDGER_GATEWAY_CURRENCY.nowpayments,
       outcome: r.outcome,
       createdAt: r.createdAt,
       orderId: r.orderId,
+      suggestedOrderId: r.suggestedOrderId,
     })),
   ];
   merged.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
@@ -792,8 +834,13 @@ export async function listCombinedLedger(db: Db, opts: CombinedLedgerFilter = {}
   // per row. Rows whose `orderId` is null (unmatched or dismissed transfers),
   // and rows pointing at an order that no longer exists, keep null code/kind
   // and are still returned; dropping them would hide exactly the transfers an
-  // admin most needs to see.
-  const orderIds = [...new Set(merged.map((r) => r.orderId).filter((id): id is number => id != null))];
+  // admin most needs to see. Suggested (display-only) order ids ride along in
+  // the same query so a hint costs no extra round trip.
+  const orderIds = [
+    ...new Set(
+      merged.flatMap((r) => [r.orderId, r.suggestedOrderId]).filter((id): id is number => id != null),
+    ),
+  ];
   const orders = orderIds.length
     ? await db.order.findMany({
         where: { id: { in: orderIds } },
@@ -804,26 +851,36 @@ export async function listCombinedLedger(db: Db, opts: CombinedLedgerFilter = {}
 
   // `actionable` only means something for the two outcomes that are admin work
   // (see `ACTIONABLE_LEDGER_OUTCOMES`); for any other outcome filter, or none,
-  // the flag leaves the rows alone.
+  // the flag leaves the rows alone. Only orders a row is actually LINKED to
+  // (`orderId`) feed the rule — a suggested order is a display hint and must
+  // never decide whether a payment still needs an admin.
   let kept = merged;
   if (opts.actionable && isActionableLedgerOutcome(opts.outcome)) {
-    const isActionable = await actionableLedgerRowPredicate(db, new Map(orders.map((o) => [o.id, o.status])));
+    const linkedIds = new Set(merged.map((r) => r.orderId).filter((id): id is number => id != null));
+    const linkedStatuses = new Map(orders.filter((o) => linkedIds.has(o.id)).map((o) => [o.id, o.status]));
+    const isActionable = await actionableLedgerRowPredicate(db, linkedStatuses);
     kept = merged.filter((r) => isActionable(r.orderId));
   }
 
   let joined: UnifiedLedgerRow[] = kept.map((r) => {
     const order = r.orderId != null ? orderById.get(r.orderId) : undefined;
+    const suggested = r.suggestedOrderId != null ? orderById.get(r.suggestedOrderId) : undefined;
     return {
       ...r,
       orderCode: order?.orderCode ?? null,
       orderKind: order?.kind ?? null,
       orderStatus: order?.status ?? null,
+      suggestedOrderCode: suggested?.orderCode ?? null,
+      suggestedOrderKind: suggested?.kind ?? null,
+      suggestedOrderStatus: suggested?.status ?? null,
     };
   });
 
   // Applied to the whole merged set BEFORE slicing, so the filter spans every
-  // page and `total` below counts exactly the rows the filter yields.
-  if (opts.kind) joined = joined.filter((r) => r.orderKind === opts.kind);
+  // page and `total` below counts exactly the rows the filter yields. Matches
+  // on the effective kind, so an unmatched row that only suggests a top-up
+  // order still shows under the top-up filter.
+  if (opts.kind) joined = joined.filter((r) => (r.orderKind ?? r.suggestedOrderKind) === opts.kind);
 
   const offset = opts.offset ?? 0;
   const limit = opts.limit ?? 50;

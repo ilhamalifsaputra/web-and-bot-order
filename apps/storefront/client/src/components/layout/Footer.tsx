@@ -234,7 +234,7 @@ export default function Footer({
       </div>
 
       {/* Separator + centred copyright bar. */}
-      <div className="border-t border-line px-4 py-4 text-center text-xs text-ink-faint sm:py-6 sm:text-sm lg:px-6">
+      <div className="border-t border-line px-4 py-4 text-center text-xs text-ink-soft sm:py-6 sm:text-sm lg:px-6">
         <nav aria-label={t("web.footer_policies")} className="mb-3 flex flex-wrap justify-center gap-x-4 gap-y-2">
           {["terms", "privacy", "refund"].map((page) => (
             <Link key={page} to={`/${page}`} className="inline-flex min-h-11 items-center text-ink-soft hover:text-pine">

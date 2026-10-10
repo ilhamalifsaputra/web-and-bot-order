@@ -24,6 +24,8 @@ const AUTO: DenominationCardData = {
   flash: null,
   available: 20,
   in_stock: true,
+  uses_local_inventory: true,
+  purchasable: true,
   delivery_type: "auto",
 };
 
@@ -98,7 +100,7 @@ describe("DenominationCard", () => {
   });
 
   it("dims and disables a non-purchasable auto denomination", () => {
-    renderCard({ d: { ...AUTO, available: 0, in_stock: false } });
+    renderCard({ d: { ...AUTO, available: 0, in_stock: false, purchasable: false } });
     const radio = screen.getByRole("radio") as HTMLInputElement;
     expect(radio).toBeDisabled();
     expect(screen.getByText("5 Diamonds").closest("label")!.className).toContain("opacity-60");
@@ -110,7 +112,7 @@ describe("DenominationCard", () => {
   // path (low-stock / out-of-stock branches a non-auto plan can never reach).
   describe("availability signal", () => {
     it("shows the Available pill for a non-auto denomination", () => {
-      renderCard({ d: { ...AUTO, delivery_type: "manual_with_info", available: 0, in_stock: false } });
+      renderCard({ d: { ...AUTO, delivery_type: "manual_with_info", available: 0, in_stock: false, uses_local_inventory: false, purchasable: true } });
       const pill = screen.getByText("Available");
       expect(pill).toHaveClass("bg-grass-tint", "text-grass-dark-aa");
     });
@@ -120,6 +122,14 @@ describe("DenominationCard", () => {
       renderCard({ d: { ...AUTO, delivery_type: "auto", available: 3 } });
       expect(screen.getByText("3 left")).toBeInTheDocument();
       expect(screen.queryByText("Available")).not.toBeInTheDocument();
+    });
+
+    it("an auto + provider plan with no stock rows is selectable and shows no stock count", () => {
+      // delivery_type "auto" but the server says it is a provider SKU.
+      renderCard({ d: { ...AUTO, delivery_type: "auto", available: 0, in_stock: false, uses_local_inventory: false, purchasable: true } });
+      expect(screen.getByRole("radio")).not.toBeDisabled();
+      expect(screen.getByText("Available")).toBeInTheDocument();
+      expect(screen.queryByText(/left|Out of stock/i)).not.toBeInTheDocument();
     });
   });
 

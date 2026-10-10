@@ -50,23 +50,23 @@ const revealProps = {
   viewport: { once: true, margin: "-80px" },
 };
 
-/** Qty input contract: 1..min(99, available) for an auto denomination — a
- * non-auto denomination has no stock concept (available is always 0 by
- * design), so its cap is a flat 99 (matching the bot's MAX_QTY_PER_ORDER),
+/** Qty input contract: 1..min(99, available) for a denomination that draws
+ * from local stock (`uses_local_inventory`, decided by the server) — a
+ * provider or manual denomination has no stock concept (available is always 0
+ * by design), so its cap is a flat 99 (matching the bot's MAX_QTY_PER_ORDER),
  * never tied to stock. */
-function clampQty(raw: number, available: number, isAuto: boolean): number {
-  const max = isAuto ? Math.max(1, Math.min(99, available)) : 99;
+function clampQty(raw: number, available: number, usesLocalInventory: boolean): number {
+  const max = usesLocalInventory ? Math.max(1, Math.min(99, available)) : 99;
   if (!Number.isFinite(raw)) return 1;
   return Math.max(1, Math.min(Math.trunc(raw), max));
 }
 
-/** A denomination is purchasable when it's in stock (auto) OR when it's a
- * non-auto delivery type (manual/manual_with_info never have stock rows by
- * design — Task 2 skips stock reservation for them). Bug A fix (Task 6):
- * gating purely on `in_stock` made every manual-delivery product
- * permanently unbuyable on the storefront. */
-function purchasable(d: { delivery_type: string; in_stock: boolean }): boolean {
-  return d.delivery_type !== "auto" || d.in_stock;
+/** Whether a denomination can be bought is the server's verdict
+ * (`purchasable`, from @app/core/productAvailability via pageData.ts) — the
+ * client never re-derives it from delivery_type/in_stock. Gating on
+ * `in_stock` alone once made every manual and provider SKU unbuyable. */
+function purchasable(d: { purchasable: boolean }): boolean {
+  return d.purchasable;
 }
 
 /**
@@ -262,17 +262,17 @@ export default function ProductPage() {
 
   // Preselect the first in-stock plan, else the first plan — same order as
   // the script's `firstEnabled || radios[0]`.
-  const fallback = denominations.find((d) => d.in_stock) ?? denominations[0];
+  const fallback = denominations.find((d) => d.purchasable) ?? denominations[0];
   const selected = denominations.find((d) => d.id === selectedId) ?? fallback;
   if (!selected) return null;
 
-  function selectDenomination(id: number, available: number, isAuto: boolean): void {
+  function selectDenomination(id: number, available: number, usesLocalInventory: boolean): void {
     setSelectedId(id);
-    setQty((prev) => clampQty(prev, available, isAuto));
+    setQty((prev) => clampQty(prev, available, usesLocalInventory));
   }
 
   const buying = addMutation.isPending || buyMutation.isPending;
-  const selectedIsAuto = selected.delivery_type === "auto";
+  const selectedUsesStock = selected.uses_local_inventory;
 
   return (
     <>
@@ -364,7 +364,7 @@ export default function ProductPage() {
                   fx={fx}
                   lowThreshold={low_threshold}
                   checked={d.id === selected.id}
-                  onChange={() => selectDenomination(d.id, d.available, d.delivery_type === "auto")}
+                  onChange={() => selectDenomination(d.id, d.available, d.uses_local_inventory)}
                   iconKind={product.icon_kind}
                 />
               ))}
@@ -395,7 +395,7 @@ export default function ProductPage() {
                 <StockBadge
                   available={selected.available}
                   lowThreshold={low_threshold}
-                  allNonAuto={!selectedIsAuto}
+                  allNonAuto={!selectedUsesStock}
                 />
               </div>
             </div>
@@ -430,9 +430,9 @@ export default function ProductPage() {
                     name="qty"
                     value={qty}
                     min={1}
-                    max={selectedIsAuto ? Math.max(1, Math.min(99, selected.available)) : 99}
+                    max={selectedUsesStock ? Math.max(1, Math.min(99, selected.available)) : 99}
                     className="field w-20! text-center"
-                    onChange={(e) => setQty(clampQty(Number(e.target.value), selected.available, selectedIsAuto))}
+                    onChange={(e) => setQty(clampQty(Number(e.target.value), selected.available, selectedUsesStock))}
                   />
                 </div>
                 <button
@@ -456,6 +456,10 @@ export default function ProductPage() {
                   <Zap className="w-4 h-4" /> {t("web.buy_now")}
                 </button>
               </form>
+            ) : !selectedUsesStock ? (
+              // Unavailable for a reason other than stock: a provider or
+              // manual SKU never offers "Notify me".
+              <p className="mt-3 text-sm text-ink-soft">{t("web.checkout_product_unavailable")}</p>
             ) : (
               // Out-of-stock restock CTA (works only when logged in).
               <form id="restock-form" className="mt-3" onSubmit={(e) => e.preventDefault()}>
@@ -602,7 +606,7 @@ export default function ProductPage() {
           view beside the image, so it needs none of this. Shared component
           (components.md "Sticky purchase bar") — Add to Cart stays in the
           in-page form only, so just `primaryAction` is passed. */}
-      {!isDesktop && !buyAreaVisible && (purchasable(selected) || !needsTelegram) && (
+      {!isDesktop && !buyAreaVisible && (purchasable(selected) || (selectedUsesStock && !needsTelegram)) && (
         <StickyPurchaseBar
           ariaLabel={t("web.purchase_bar")}
           priceLabel={selected.canonical ? [selected.canonical.displayName, ...selected.canonical.qualifiers].join(" · ") : selected.duration_label || selected.name}

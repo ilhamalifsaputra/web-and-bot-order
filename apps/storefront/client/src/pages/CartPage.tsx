@@ -113,11 +113,11 @@ function CartLine({ item, fx, onMutated }: CartLineProps) {
               <FlashBadge percent={item.flash.discount_percent} endsAt={item.flash.ends_at} />
             </div>
           )}
-          {/* Non-auto lines never have stock rows by design (available is
-              always 0), so this comparison is only meaningful for auto lines —
-              gating on delivery_type avoids a permanent, misleading "0 left"
-              warning on a legitimate manual/manual_with_info line. */}
-          {item.delivery_type === "auto" && item.qty > item.available && (
+          {/* Provider and manual lines never have stock rows by design
+              (available is always 0), so this comparison is only meaningful
+              for a line the server marks `uses_local_inventory` — otherwise a
+              legitimate provider/manual line gets a permanent "0 left". */}
+          {item.uses_local_inventory && item.qty > item.available && (
             <div className="text-xs text-rust mt-1">{t("web.stock_left", { count: item.available })}</div>
           )}
         </div>

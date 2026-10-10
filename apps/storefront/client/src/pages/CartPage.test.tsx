@@ -42,6 +42,7 @@ const cartData: CartPageData = {
       line_total: "158000",
       available: 5,
       delivery_type: "auto",
+      uses_local_inventory: true,
     },
   ],
   subtotal: "158000",
@@ -331,11 +332,31 @@ describe("CartPage", () => {
   // suppressed for those, not driven by the meaningless available count.
   it("does not show the stock-shortage warning for a non-auto line even though qty > available", async () => {
     const manualCart: CartPageData = {
-      items: [{ ...cartData.items[0]!, delivery_type: "manual", available: 0, qty: 3 }],
+      items: [{ ...cartData.items[0]!, delivery_type: "manual", uses_local_inventory: false, available: 0, qty: 3 }],
       subtotal: "237000",
     };
     renderCart(() => manualCart);
     await screen.findByRole("heading", { name: "Cart (4)" });
     expect(screen.queryByText(/left$/)).not.toBeInTheDocument();
+  });
+
+  it("does not show the stock-shortage warning for an auto + provider line the server marks non-local", async () => {
+    const providerCart: CartPageData = {
+      items: [{ ...cartData.items[0]!, delivery_type: "auto", uses_local_inventory: false, available: 0, qty: 3 }],
+      subtotal: "237000",
+    };
+    renderCart(() => providerCart);
+    await screen.findByRole("heading", { name: "Cart (4)" });
+    expect(screen.queryByText(/left$/)).not.toBeInTheDocument();
+  });
+
+  it("still warns on a local-inventory line asking for more than is in stock", async () => {
+    const shortCart: CartPageData = {
+      items: [{ ...cartData.items[0]!, uses_local_inventory: true, available: 1, qty: 3 }],
+      subtotal: "237000",
+    };
+    renderCart(() => shortCart);
+    await screen.findByRole("heading", { name: "Cart (4)" });
+    expect(screen.getByText(/1 left$/)).toBeInTheDocument();
   });
 });

@@ -79,11 +79,11 @@ const revealProps = {
   viewport: { once: true, margin: "-80px" },
 };
 
-/** Mirrors ProductPage.tsx's own `purchasable` (and DenominationCard's local
- * copy) — a denomination is buyable when it's in stock (auto) or a non-auto
- * delivery type (manual/manual_with_info never carry stock rows by design). */
-function purchasable(d: { delivery_type: string; in_stock: boolean }): boolean {
-  return d.delivery_type !== "auto" || d.in_stock;
+/** The server's verdict (`purchasable`, @app/core/productAvailability via
+ * pageData.ts), the same one ProductPage and DenominationCard read — a
+ * provider SKU (e.g. auto + Digiflazz) with no stock rows stays buyable. */
+function purchasable(d: { purchasable: boolean }): boolean {
+  return d.purchasable;
 }
 
 /** Whole-branch review F4a: the local `humanError(message)` this page and
@@ -161,7 +161,7 @@ export default function InstantBuyPage() {
   }, [slug]);
 
   const denominations = data?.denominations ?? [];
-  const fallback = denominations.find((d) => d.in_stock) ?? denominations[0];
+  const fallback = denominations.find((d) => d.purchasable) ?? denominations[0];
   const selected = denominations.find((d) => d.id === selectedId) ?? fallback;
   const needsInfo = (selected?.additional_fields.length ?? 0) > 0;
   const fieldConfigKey = JSON.stringify(selected?.additional_fields ?? []);

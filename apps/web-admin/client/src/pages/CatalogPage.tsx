@@ -330,7 +330,7 @@ export function CatalogPage() {
         title="Catalog"
         description="Manage products and their variants."
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
             <Button variant="ghost" size="sm" onClick={() => navigate("/categories")}>
               Manage categories
             </Button>

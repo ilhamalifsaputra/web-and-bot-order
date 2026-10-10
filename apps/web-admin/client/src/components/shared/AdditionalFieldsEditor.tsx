@@ -30,9 +30,11 @@ const FIELD_TYPES: { value: AdditionalFieldDraft["type"]; label: string }[] = [
  * both pages already use for every other field.
  */
 export function AdditionalFieldsEditor({
+  isGame = true,
   value,
   onChange,
 }: {
+  isGame?: boolean;
   value: AdditionalFieldDraft[];
   onChange: (next: AdditionalFieldDraft[]) => void;
 }) {
@@ -56,7 +58,7 @@ export function AdditionalFieldsEditor({
                 <label className="text-xs font-medium text-ink">Question (Indonesian)</label>
                 <Input
                   className="mt-1"
-                  placeholder="e.g. ID Game"
+                  placeholder={isGame ? "e.g. ID Game" : "e.g. Email akun"}
                   value={row.labelId}
                   onChange={(e) => updateRow(index, { labelId: e.target.value })}
                 />
@@ -65,7 +67,7 @@ export function AdditionalFieldsEditor({
                 <label className="text-xs font-medium text-ink">Question (English)</label>
                 <Input
                   className="mt-1"
-                  placeholder="e.g. Game ID"
+                  placeholder={isGame ? "e.g. Game ID" : "e.g. Account email"}
                   value={row.labelEn}
                   onChange={(e) => updateRow(index, { labelEn: e.target.value })}
                 />
@@ -120,7 +122,7 @@ export function AdditionalFieldsEditor({
             <label className="text-xs font-medium text-ink">Placeholder (Optional)</label>
             <Input
               className="mt-1"
-              placeholder="e.g. 1023849571"
+              placeholder={isGame ? "e.g. 1023849571" : "e.g. buyer@example.com"}
               value={row.placeholder}
               onChange={(e) => updateRow(index, { placeholder: e.target.value })}
             />

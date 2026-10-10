@@ -55,6 +55,29 @@ const MANUAL_WITH_INFO_FIELDS = [
   { key: "ign", label: { id: "IGN", en: "IGN" }, type: "text", required: true, options: [], placeholder: "" },
 ];
 
+describe("Premium Apps denomination fields", () => {
+  it.each(["PREMIUM_APPS", null])("hides game controls and preserves stored hidden metadata on save (group %s)", async (group) => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.mocked(apiGet).mockResolvedValue({
+      product: {
+        ...PRODUCT_DETAIL.product,
+        category: { id: 2, name: "Apps", group },
+        denominations: [{ ...PRODUCT_DETAIL.product.denominations[0], qtyValue: 86, qtyUnit: "Diamonds", nicknameCheckGameCode: "mobile-legends", providerInputMapping: null }],
+      },
+    });
+    vi.mocked(apiPatch).mockResolvedValue({ id: 10 });
+    render(<DenominationEditPage />, { wrapper: Wrapper });
+    await screen.findByDisplayValue("Netflix 1 Month");
+    expect(screen.queryByText("Quantity Value")).not.toBeInTheDocument();
+    expect(screen.queryByText("Quantity Unit")).not.toBeInTheDocument();
+    expect(screen.queryByText(/nickname check game code/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/advanced provider input mapping/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Account Type" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /save changes/i }));
+    await waitFor(() => expect(apiPatch).toHaveBeenCalledWith("/api/catalog/denominations/10", expect.objectContaining({ qtyValue: 86, qtyUnit: "Diamonds", nicknameCheckGameCode: "mobile-legends" })));
+  });
+});
+
 const MANUAL_WITH_INFO_PRODUCT_DETAIL = {
   product: {
     id: 42,
@@ -222,6 +245,7 @@ describe("DenominationEditPage", () => {
     vi.mocked(apiGet).mockResolvedValue({
       product: {
         id: 42,
+        category: { id: 3, name: "Games", group: "GAME_TOPUP" },
         name: "Netflix Premium",
         denominations: [{ ...PRODUCT_DETAIL.product.denominations[0], qtyValue: 86, qtyUnit: "Diamonds" }],
       },

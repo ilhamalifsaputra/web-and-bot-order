@@ -191,6 +191,9 @@ export function ProductDetailPage() {
     setShowDeleted(false);
   }, [productId]);
 
+  const selectedCategory = catalog?.categories?.find((c) => String(c.id) === categoryDraft);
+  const isGame = (selectedCategory ?? data?.product.category)?.group === "GAME_TOPUP";
+
   async function saveProduct() {
     setSavingProduct(true);
     setProductError(null);
@@ -198,14 +201,14 @@ export function ProductDetailPage() {
       await apiPatch(`/api/catalog/products/${productId}`, {
         name: nameDraft.trim(),
         description: descriptionDraft.trim(),
-        gameVariant: gameVariantDraft.trim(),
-        gameVariantEmoji: gameVariantEmojiDraft.trim(),
-        gameRegion: gameRegionDraft.trim(),
+        gameVariant: isGame ? gameVariantDraft.trim() : data?.product.gameVariant ?? null,
+        gameVariantEmoji: isGame ? gameVariantEmojiDraft.trim() : data?.product.gameVariantEmoji ?? null,
+        gameRegion: isGame ? gameRegionDraft.trim() : data?.product.gameRegion ?? null,
         whatYouGet: whatYouGetDraft.trim(),
         terms: termsDraft.trim(),
         warrantyNote: warrantyNoteDraft.trim(),
-        thumbnailKind: thumbnailKindDraft === AUTO_KIND ? null : thumbnailKindDraft,
-        currencyIconKind: currencyIconKindDraft === AUTO_KIND ? null : currencyIconKindDraft,
+        thumbnailKind: isGame ? (thumbnailKindDraft === AUTO_KIND ? null : thumbnailKindDraft) : data?.product.thumbnailKind ?? null,
+        currencyIconKind: isGame ? (currencyIconKindDraft === AUTO_KIND ? null : currencyIconKindDraft) : data?.product.currencyIconKind ?? null,
         ...(categoryDraft ? { categoryId: Number(categoryDraft) } : {}),
       });
       setEditingProduct(false);
@@ -414,10 +417,8 @@ export function ProductDetailPage() {
               <Textarea className="mt-1" rows={3} value={descriptionDraft} onChange={(e) => setDescriptionDraft(e.target.value)} />
             </div>
             {/* Catalog-presentation classification (Fase 12 task 22) —
-                optional; hidden entirely (not disabled) for a product whose
-                category is in the PREMIUM_APPS group, which uses its own
-                presentation instead. */}
-            {product.category?.group !== "PREMIUM_APPS" && (
+                optional; only relevant for a Game Top Up category. */}
+            {isGame && (
               <>
                 <div>
                   <label className="text-sm font-medium text-ink" id="product-thumbnail-kind-label">
@@ -457,39 +458,44 @@ export function ProductDetailPage() {
                 </div>
               </>
             )}
-            {/* Game-navigation classification (Task 8/14) — optional, powers
-                the bot's catalog navigation and denomination labeling for
-                game top-up products (e.g. Mobile Legends' Diamonds variant). */}
-            <div>
-              <label className="text-sm font-medium text-ink">Game Variant</label>
-              <ButtonLabelInput
-                kind="gameVariant"
-                emoji={gameVariantEmojiDraft.trim() !== ""}
-                className="mt-1"
-                placeholder="e.g. Diamonds"
-                value={gameVariantDraft}
-                onChange={(e) => setGameVariantDraft(e.target.value)}
-              />
-            </div>
-            <div>
-              <label className="text-sm font-medium text-ink">Game Variant Emoji</label>
-              <Input
-                className="mt-1 w-24"
-                placeholder="e.g. 💎"
-                value={gameVariantEmojiDraft}
-                onChange={(e) => setGameVariantEmojiDraft(e.target.value)}
-              />
-            </div>
-            <div>
-              <label className="text-sm font-medium text-ink">Game Region</label>
-              <ButtonLabelInput
-                kind="gameRegion"
-                className="mt-1"
-                placeholder="e.g. Global"
-                value={gameRegionDraft}
-                onChange={(e) => setGameRegionDraft(e.target.value)}
-              />
-            </div>
+            {isGame && (
+              <>
+                {/* Game-navigation classification (Task 8/14) — optional, powers
+                    the bot's catalog navigation and denomination labeling for
+                    game top-up products (e.g. Mobile Legends' Diamonds variant). */}
+                <div>
+                  <label className="text-sm font-medium text-ink">Game Variant</label>
+                  <ButtonLabelInput
+                    kind="gameVariant"
+                    emoji={gameVariantEmojiDraft.trim() !== ""}
+                    className="mt-1"
+                    placeholder="e.g. Diamonds"
+                    value={gameVariantDraft}
+                    onChange={(e) => setGameVariantDraft(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label className="text-sm font-medium text-ink">Game Variant Emoji</label>
+                  <Input
+                    className="mt-1 w-24"
+                    placeholder="e.g. 💎"
+                    value={gameVariantEmojiDraft}
+                    onChange={(e) => setGameVariantEmojiDraft(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label className="text-sm font-medium text-ink">Game Region</label>
+                  <ButtonLabelInput
+                    kind="gameRegion"
+                    className="mt-1"
+                    placeholder="e.g. Global"
+                    value={gameRegionDraft}
+                    onChange={(e) => setGameRegionDraft(e.target.value)}
+                  />
+                </div>
+              </>
+            )}
+
             <div>
               <label className="text-sm font-medium text-ink">What the buyer gets</label>
               <Textarea

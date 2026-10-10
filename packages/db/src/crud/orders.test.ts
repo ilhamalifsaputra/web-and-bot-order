@@ -33,6 +33,7 @@ import {
   countUserOrders,
   shopFulfilmentStats,
   computeOrderEligibility,
+  isDigiflazzInFlight,
   channelMaskedBuyerId,
   customerLabel,
   findUnderpaidReceived,
@@ -1086,6 +1087,43 @@ describe("H-2 — paid PROCESSING orders: canCredit, successful credit, and reje
     expect(new Decimal(after.walletBalance).minus(new Decimal(before.walletBalance)).toString()).toBe(
       new Decimal(order.totalAmount).toString(),
     );
+    expect((await getOrder(prisma, order.id))!.status).toBe("CANCELLED");
+  });
+
+  it("canFulfill is false while a Digiflazz order is in flight; reject/credit flags are unchanged", () => {
+    expect(computeOrderEligibility("PROCESSING", null, { digiflazzInFlight: true })).toMatchObject({
+      canFulfill: false, canReject: true, canCredit: true,
+    });
+    expect(computeOrderEligibility("PROCESSING", null, { digiflazzInFlight: false }).canFulfill).toBe(true);
+  });
+
+  it("isDigiflazzInFlight: PROCESSING Digiflazz orders until the provider fails them; never MANUAL", async () => {
+    const pending = await makeOrder("PROCESSING", { fulfillmentProvider: "DIGIFLAZZ", digiflazzStatus: "pending_at_supplier" });
+    const queued = await makeOrder("PROCESSING", { fulfillmentProvider: "DIGIFLAZZ" });
+    const failed = await makeOrder("PROCESSING", { fulfillmentProvider: "DIGIFLAZZ", digiflazzStatus: "failed" });
+    const manual = await makeOrder("PROCESSING", { fulfillmentProvider: "MANUAL" });
+    const delivered = await makeOrder("DELIVERED", { fulfillmentProvider: "DIGIFLAZZ" });
+    const flag = async (id: number) => isDigiflazzInFlight((await getOrder(prisma, id))!);
+    expect(await flag(pending.id)).toBe(true);
+    expect(await flag(queued.id)).toBe(true);
+    expect(await flag(failed.id)).toBe(false);
+    expect(await flag(manual.id)).toBe(false);
+    expect(await flag(delivered.id)).toBe(false);
+  });
+
+  // DOCUMENTS CURRENT BEHAVIOUR (catalog-availability task 2 finding), not an
+  // endorsement: creditOrderToBalance has no Digiflazz guard, so an admin can
+  // credit the buyer and cancel an order the supplier may still complete. A
+  // later supplier "Sukses" then loses fulfillDigiflazzOrder's PROCESSING claim
+  // and only raises an admin alert — the top-up may already be delivered.
+  // canCredit mirrors the server, so it stays true for in-flight orders.
+  it("creditOrderToBalance currently accepts a Digiflazz order still pending at the supplier", async () => {
+    const order = await makeOrder("PROCESSING", {
+      paidAt: new Date(), currency: "IDR", fulfillmentProvider: "DIGIFLAZZ",
+      digiflazzStatus: "pending_at_supplier", digiflazzDispatchedAt: new Date(),
+    });
+    const res = await creditOrderToBalance(prisma, { orderId: order.id, adminId: 5 });
+    expect(new Decimal(res.credited).equals(order.totalAmount)).toBe(true);
     expect((await getOrder(prisma, order.id))!.status).toBe("CANCELLED");
   });
 

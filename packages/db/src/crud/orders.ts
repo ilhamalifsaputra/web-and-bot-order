@@ -1534,7 +1534,7 @@ export async function countAwaitingManualFulfillment(db: Db): Promise<number> {
       items: { select: { deliveryTypeSnapshot: true, product: { select: { autoDeliverySource: true, deliveryType: true } } } },
     },
   });
-  return rows.filter((o) => fulfillmentProviderFor(o) !== "DIGIFLAZZ" || o.digiflazzStatus === "failed").length;
+  return rows.filter((o) => !isDigiflazzInFlight({ ...o, status: OrderStatus.PROCESSING })).length;
 }
 
 /** Orders successfully delivered — the Orders page KPI's "Delivered" count and
@@ -3110,7 +3110,8 @@ export interface OrderEligibility {
    * the order to the terminal REJECTED state where `creditOrderToBalance`
    * then refuses to act — stranding the buyer's already-paid money. */
   canCredit: boolean;
-  /** PROCESSING — manual hand-fulfil, needs admin-typed content. */
+  /** PROCESSING — manual hand-fulfil, needs admin-typed content. False for a
+   * Digiflazz order still in flight (`opts.digiflazzInFlight`). */
   canFulfill: boolean;
   /** PENDING_VERIFICATION | PROCESSING — reject is legal from both. */
   canReject: boolean;
@@ -3130,10 +3131,27 @@ export interface OrderEligibility {
   canCreditCancelled: boolean;
 }
 
+/**
+ * A PROCESSING order routed to Digiflazz that the provider has not failed yet
+ * (queued, submitting, or pending at the supplier). Such an order needs no
+ * admin: `fulfillManualOrder` refuses it, and `countAwaitingManualFulfillment`
+ * leaves it out. The provider comes from `fulfillmentProviderFor` (stored
+ * column, else the SKU) — never a category name.
+ */
+export function isDigiflazzInFlight(
+  order: { status: string; digiflazzStatus: string | null } & Parameters<typeof fulfillmentProviderFor>[0],
+): boolean {
+  return (
+    order.status === OrderStatus.PROCESSING &&
+    fulfillmentProviderFor(order) === "DIGIFLAZZ" &&
+    order.digiflazzStatus !== "failed"
+  );
+}
+
 export function computeOrderEligibility(
   status: string,
   telegramId: bigint | null,
-  opts?: { cancelledOrderHasMoneyReturned?: boolean; cancelledOrderWasPaid?: boolean },
+  opts?: { cancelledOrderHasMoneyReturned?: boolean; cancelledOrderWasPaid?: boolean; digiflazzInFlight?: boolean },
 ): OrderEligibility {
   const isDelivered = status === OrderStatus.DELIVERED;
   return {
@@ -3143,7 +3161,9 @@ export function computeOrderEligibility(
       status === OrderStatus.PENDING_VERIFICATION ||
       status === OrderStatus.UNDERPAID ||
       status === OrderStatus.PROCESSING,
-    canFulfill: status === OrderStatus.PROCESSING,
+    // Mirrors fulfillManualOrder's claim, which refuses a Digiflazz order the
+    // provider has not failed (`isDigiflazzInFlight`).
+    canFulfill: status === OrderStatus.PROCESSING && opts?.digiflazzInFlight !== true,
     canReject: status === OrderStatus.PENDING_VERIFICATION || status === OrderStatus.PROCESSING,
     canResend: isDelivered && telegramId != null,
     canCreditCancelled:

@@ -26,6 +26,7 @@ import {
   enqueueManualDeliveredDm,
   logAdminAction,
   computeOrderEligibility,
+  isDigiflazzInFlight,
   cancelledOrderIdsWithMoneyReturned,
   orderHasIncomingLedgerPayment,
   revenueSummary,
@@ -173,7 +174,7 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
     const ordersWithDisplay = orders.map((o) => ({
       ...o,
       createdAtDisplay: displayDate(o.createdAt),
-      eligibility: computeOrderEligibility(o.status, o.user?.telegramId ?? null),
+      eligibility: computeOrderEligibility(o.status, o.user?.telegramId ?? null, { digiflazzInFlight: isDigiflazzInFlight(o) }),
     }));
     return reply.send({
       orders: ordersWithDisplay,
@@ -284,7 +285,7 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
       // canCreditCancelled — one shared eligibility function
       // (packages/db/src/crud/orders.ts) so the list, detail, and bulk-action
       // routes can't drift apart.
-      ...computeOrderEligibility(order.status, order.user.telegramId, eligibilityOpts),
+      ...computeOrderEligibility(order.status, order.user.telegramId, { ...eligibilityOpts, digiflazzInFlight: isDigiflazzInFlight(order) }),
       customerDataFields,
       customerData,
       stockReplacements: stockReplacements.map(serializeStockReplacement),
@@ -662,7 +663,7 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
         failed.push({ id: orderId, error: "error.order_not_found" });
         continue;
       }
-      const eligibility = computeOrderEligibility(order.status, order.user.telegramId);
+      const eligibility = computeOrderEligibility(order.status, order.user.telegramId, { digiflazzInFlight: isDigiflazzInFlight(order) });
 
       try {
         if (action === "deliver") {

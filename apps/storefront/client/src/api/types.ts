@@ -58,6 +58,8 @@ export interface HomePageData {
   testimonials: Testimonial[];
   low_threshold: number;
   bot_username: string;
+  /** Admin `support_contact` as a t.me link, or null (hide the Telegram contact). */
+  support_telegram_url: string | null;
   wa_number: string;
 }
 
@@ -390,6 +392,8 @@ export interface PayData {
   min_amount: string | null;
   wa_number: string;
   bot_username: string;
+  /** Admin `support_contact` as a t.me link, or null (hide the Telegram contact). */
+  support_telegram_url: string | null;
 }
 
 /** GET /api/v1/orders/:code/status — the ~5s poll (JSON twin of the HX-Redirect
@@ -462,6 +466,8 @@ export interface ShopContext {
   favicon_url: string;
   logo_url: string;
   bot_username: string;
+  /** Admin `support_contact` as a t.me link, or null (hide the Telegram contact). */
+  support_telegram_url: string | null;
   /** WhatsApp number for the footer's contact link (`support_whatsapp`
    * Setting), or null/empty when the shop hasn't set one — the footer hides
    * the WhatsApp link entirely rather than show a dead one, same as

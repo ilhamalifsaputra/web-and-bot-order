@@ -30,7 +30,7 @@ import {
 } from "@app/db";
 import { PRODUCT_VARIANT_WIDTHS, defaultThumbKind, webpSrcset } from "./images";
 import { resolveDenomIconKind } from "./denomIcon";
-import { resolveBotUsername } from "./shop";
+import { resolveBotUsername, resolveSupportTelegramUrl } from "./shop";
 import { aggregateRating, shapeProducts, sortProductCards, type SortKey } from "./cards";
 
 /**
@@ -91,6 +91,7 @@ export async function homePageData() {
     testimonials,
     low_threshold: config.LOW_STOCK_THRESHOLD,
     bot_username: await resolveBotUsername(),
+    support_telegram_url: await resolveSupportTelegramUrl(),
     wa_number: (waNumber ?? "").replace(/[^0-9]/g, ""),
   };
 }

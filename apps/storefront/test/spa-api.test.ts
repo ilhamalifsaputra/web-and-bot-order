@@ -517,6 +517,26 @@ describe("GET /api/v1/pages/context", () => {
     expect(typeof body.tzname).toBe("string");
   });
 
+  it("support_telegram_url comes from the support_contact setting — null when unset or invalid, never the bot username", async () => {
+    const get = async () => (await app.inject({ method: "GET", url: "/api/v1/pages/context" })).json();
+    await deleteSetting(prisma, "support_contact");
+    await setSetting(prisma, "bot_username", "realtoko_bot");
+    try {
+      expect((await get()).support_telegram_url).toBeNull();
+
+      await setSetting(prisma, "support_contact", "@shop_support");
+      const set = await get();
+      expect(set.support_telegram_url).toBe("https://t.me/shop_support");
+      expect(set.bot_username).toBe("realtoko_bot"); // still sent for login/deep links
+
+      await setSetting(prisma, "support_contact", "javascript:alert(1)");
+      expect((await get()).support_telegram_url).toBeNull();
+    } finally {
+      await deleteSetting(prisma, "support_contact");
+      await deleteSetting(prisma, "bot_username");
+    }
+  });
+
   it("returns customer display fields when signed in — and never the CSRF token", async () => {
     await makeUser("ctxuser", "ctx-pw-12345", "CTXREF");
     const { cookie } = await loginAs("ctxuser", "ctx-pw-12345");
@@ -1857,6 +1877,18 @@ describe("checkout business rules (migrated from the Nunjucks checkout tests)", 
       await deleteSetting(prisma, "bybit_bsc_min_amount");
       const withoutNote = await app.inject({ method: "GET", url: `/api/v1/orders/${code}/pay`, headers: { cookie } });
       expect(withoutNote.json().min_amount).toBeNull();
+    });
+
+    it("pay view carries support_telegram_url from support_contact (null when unset or invalid)", async () => {
+      const pay = async () =>
+        (await app.inject({ method: "GET", url: `/api/v1/orders/${code}/pay`, headers: { cookie } })).json();
+      await deleteSetting(prisma, "support_contact");
+      expect((await pay()).support_telegram_url).toBeNull();
+      await setSetting(prisma, "support_contact", "@shop_support");
+      expect((await pay()).support_telegram_url).toBe("https://t.me/shop_support");
+      await setSetting(prisma, "support_contact", "https://evil.example/x");
+      expect((await pay()).support_telegram_url).toBeNull();
+      await deleteSetting(prisma, "support_contact");
     });
 
     // Without the in-flight branches in payState, a live Bybit BSC order

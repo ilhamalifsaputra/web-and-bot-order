@@ -23,9 +23,10 @@ import Input from "../components/ui/Input";
  * back to a door they have no key for. Both destinations below are reachable
  * with no session:
  *
- *  - `https://t.me/<bot_username>` — the shop's public Telegram handle, the
- *    same one HomePage's contact section and PayPage's gateway-down fallback
- *    link to. It rides on GET /api/v1/pages/context, which `optionalCustomer`
+ *  - `support_telegram_url` — the shop's Telegram contact from the admin
+ *    `support_contact` setting (never the bot username), the same one
+ *    HomePage's contact section and PayPage's gateway-down fallback link to.
+ *    It rides on GET /api/v1/pages/context, which `optionalCustomer`
  *    serves to anonymous visitors (apiPages.ts) and which Layout has already
  *    fetched, so this costs no extra request and needs no new endpoint.
  *  - `/#contact` — the home page's contact section, for a shop with no bot
@@ -35,9 +36,9 @@ import Input from "../components/ui/Input";
  */
 function useContactAction(): EmptyStateAction {
   const { data: ctx } = useShopContext();
-  const botUsername = ctx?.bot_username ?? "";
-  return botUsername
-    ? { label: t("web.ticket_help_telegram"), href: `https://t.me/${botUsername}` }
+  const telegramUrl = ctx?.support_telegram_url ?? "";
+  return telegramUrl
+    ? { label: t("web.ticket_help_telegram"), href: telegramUrl }
     : { label: t("web.track_contact_shop"), href: "/#contact" };
 }
 

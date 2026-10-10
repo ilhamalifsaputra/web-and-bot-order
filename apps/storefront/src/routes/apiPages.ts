@@ -19,7 +19,7 @@ import {
   getPayMethodDisplayFlags,
 } from "@app/db";
 import { optionalCustomer } from "../plugins/auth";
-import { requestLang, requestCurrency, resolveDisplayCurrency, readGuestCart, resolveBotUsername } from "../shop";
+import { requestLang, requestCurrency, resolveDisplayCurrency, readGuestCart, resolveBotUsername, resolveSupportTelegramUrl } from "../shop";
 import { getUsdIdrRate } from "../pricing";
 import {
   homePageData,
@@ -55,6 +55,7 @@ const apiPagesRoutes: FastifyPluginAsync = async (app) => {
       businessEmail,
       businessHours,
       payMethods,
+      supportTelegramUrl,
     ] = await Promise.all([
       getUsdIdrRate(prisma),
       getSetting(prisma, "shop_name"),
@@ -82,6 +83,8 @@ const apiPagesRoutes: FastifyPluginAsync = async (app) => {
       getSetting(prisma, "business_hours"),
       // Presence-only (no decryption): a corrupt secret row must not 500 every page.
       getPayMethodDisplayFlags(prisma),
+      // Telegram contact = admin `support_contact`, never the bot username.
+      resolveSupportTelegramUrl(),
     ]);
     const orNull = (v: string | null): string | null => (v ?? "").trim() || null;
     return reply.send({
@@ -114,6 +117,7 @@ const apiPagesRoutes: FastifyPluginAsync = async (app) => {
       favicon_url: favicon || "/static/favicon.svg",
       logo_url: logo || "",
       bot_username: botUsername,
+      support_telegram_url: supportTelegramUrl,
       wa_number: (waNumber ?? "").replace(/[^0-9]/g, "") || null,
       tzname: config.TIMEZONE,
       // Whether this shop loads Google Analytics at all — the privacy page

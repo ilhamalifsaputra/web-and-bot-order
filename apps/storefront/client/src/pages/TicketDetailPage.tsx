@@ -138,7 +138,7 @@ export default function TicketDetailPage() {
   }
 
   const { ticket, order } = data;
-  const telegramSupportUrl = ctx?.bot_username ? `https://t.me/${ctx.bot_username}` : null;
+  const telegramSupportUrl = ctx?.support_telegram_url ?? null;
   const hasSupportReplied = data.messages.some((m) => !m.from_user) || Boolean(ticket.admin_reply);
 
   return (

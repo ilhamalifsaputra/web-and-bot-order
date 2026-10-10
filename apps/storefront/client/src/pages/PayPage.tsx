@@ -143,13 +143,13 @@ export function advanceCardState(current: PayState, polled: PayState | undefined
 
 /** Contact fallback shown when a gateway is down — shared by the TokoPay/
  * PayDisini/NOWPayments gateway_error branches below (pay.njk repeats this
- * exact block three times with the same wa_number → bot_username fallback). */
+ * exact block three times with the same wa_number → support_telegram_url fallback). */
 function GatewayDownFallback({
   payPath,
   titleKey,
   bodyKey,
   waNumber,
-  botUsername,
+  telegramUrl,
 }: {
   /** Full client-side path to reload — `/checkout/:code/pay` for a product
    * order, `/wallet/topup/:code/pay` for a top-up (the two variants' client
@@ -160,7 +160,8 @@ function GatewayDownFallback({
   titleKey: string;
   bodyKey: string;
   waNumber: string;
-  botUsername: string;
+  /** Admin `support_contact` link; null hides the Telegram button. */
+  telegramUrl: string | null;
 }) {
   return (
     <div className="mt-4">
@@ -180,9 +181,9 @@ function GatewayDownFallback({
           >
             <WhatsAppIcon className="w-3.5 h-3.5" /> WhatsApp
           </a>
-        ) : botUsername ? (
+        ) : telegramUrl ? (
           <a
-            href={`https://t.me/${botUsername}`}
+            href={telegramUrl}
             target="_blank"
             rel="noopener noreferrer"
             className="btn btn-ghost btn-sm"
@@ -356,7 +357,7 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
           <Card className="min-w-0 bg-pine-tint/40">
             <TransactionStatus presentation={presentation} underpayment={underpayment}>
               {presentation.phase === "UNDERPAID" && (
-                <a href={data.bot_username ? `https://t.me/${data.bot_username}` : "/#contact"} className="btn btn-soft min-h-11">
+                <a href={data.support_telegram_url ?? "/#contact"} className="btn btn-soft min-h-11">
                   {t("transaction.contact_admin")}
                 </a>
               )}
@@ -468,7 +469,7 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
                     titleKey="web.pay_idr_down_title"
                     bodyKey="web.pay_idr_down_body"
                     waNumber={data.wa_number}
-                    botUsername={data.bot_username}
+                    telegramUrl={data.support_telegram_url}
                   />
                 ) : null}
               </>
@@ -508,7 +509,7 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
                     titleKey="web.pay_idr_down_title"
                     bodyKey="web.pay_idr_down_body"
                     waNumber={data.wa_number}
-                    botUsername={data.bot_username}
+                    telegramUrl={data.support_telegram_url}
                   />
                 ) : null}
               </>
@@ -536,16 +537,16 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
                     titleKey="web.pay_nowpayments_down_title"
                     bodyKey="web.pay_nowpayments_down_body"
                     waNumber={data.wa_number}
-                    botUsername={data.bot_username}
+                    telegramUrl={data.support_telegram_url}
                   />
                 ) : null}
               </>
             ) : (
               <>
                 <p className="text-sm text-ink-soft">{t("web.pay_method_elsewhere")}</p>
-                {data.bot_username && (
+                {data.support_telegram_url && (
                   <a
-                    href={`https://t.me/${data.bot_username}`}
+                    href={data.support_telegram_url}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="btn btn-soft btn-sm mt-3"

@@ -17,7 +17,7 @@ export default defineConfig({
   timeout: 90_000,
   reporter: "list",
   outputDir: "../../.audit-data/readiness/playwright",
-  use: { baseURL: "http://127.0.0.1:8240", browserName: "chromium", reducedMotion: "reduce", trace: "off" },
+  use: { baseURL: "http://127.0.0.1:8240", browserName: "chromium", contextOptions: { reducedMotion: "reduce" }, trace: "off" },
   webServer: {
     cwd: resolve(__dirname, "../.."),
     command: "pnpm exec tsx tests/audit/seed.ts && pnpm --filter @app/storefront start",

@@ -8,7 +8,7 @@ mkdirSync(output, { recursive: true });
 const publicRoutes = ["/", "/categories", "/products", "/c/audit-apps", "/c/audit-games", "/c/audit-legacy", "/p/audit-subscription", "/p/audit-game", "/p/audit-legacy-app", "/flash", "/cart", "/checkout", "/track", "/help", "/about", "/contact", "/how-to-order", "/terms", "/privacy", "/refund", "/login", "/register", "/forgot", "/reset/audit-invalid", "/audit-not-found"];
 
 test("screenshots mobile and desktop before/after", async ({ page }) => {
-  for (const [width, height] of [[360, 800], [390, 844], [430, 932], [1280, 800], [1440, 900]]) {
+  for (const [width, height] of [[360, 800], [390, 844], [430, 932], [1280, 800], [1440, 900]] as const) {
     await page.setViewportSize({ width, height });
     await page.goto("/contact");
     await expect(page.locator("footer")).toContainText("PT Contoh Audit Digital");
@@ -68,7 +68,7 @@ test("public route smoke, brand assets, metadata and errors", async ({ page, req
   });
   const rows = [];
   test.setTimeout(180_000);
-  for (const [width, height] of [[360, 800], [390, 844], [430, 932], [1280, 800], [1440, 900]]) {
+  for (const [width, height] of [[360, 800], [390, 844], [430, 932], [1280, 800], [1440, 900]] as const) {
   for (const route of publicRoutes) {
     await page.setViewportSize({ width, height });
     const res = await page.goto(route);
@@ -131,7 +131,7 @@ test("configured official logo fits all target viewports", async ({ page }) => {
     const response = await route.fetch();
     await route.fulfill({ response, json: { ...await response.json(), logo_url: "/audit/reference-logo.png" } });
   });
-  for (const [width, height] of [[360, 800], [390, 844], [430, 932], [1280, 800], [1440, 900]]) {
+  for (const [width, height] of [[360, 800], [390, 844], [430, 932], [1280, 800], [1440, 900]] as const) {
     await page.setViewportSize({ width, height });
     await page.goto("/contact");
     const logo = page.locator("header").getByRole("img", { name: "Trustance" });

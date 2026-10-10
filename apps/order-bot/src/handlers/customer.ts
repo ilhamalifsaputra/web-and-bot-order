@@ -1121,9 +1121,8 @@ export async function browseProduct(ctx: MyContext, productId: number, requested
       sold: t(ctx, "browse.sold_count", { count: sold }),
       plans: planLines.join("\n"),
     });
-    if (product.category.group !== CategoryGroup.PREMIUM_APPS && product.description?.trim()) {
-      text += "\n\n" + t(ctx, "browse.description", { description: esc(product.description) });
-    }
+    // Every non-game picker includes legacy null-group Premium Apps. Package
+    // terms belong on the selected denomination's detail, not this picker.
     // A USD buyer whose rate is unavailable saw Rp prices above — say so, once.
     text += prices.rateNotice(lang);
     await render(text, ckb.denominationPickerKb(active.map((d) => ({ ...d, buttonLabel: buttonLabels.get(d.id) })), productId, product.name, lang));
@@ -1267,11 +1266,10 @@ export async function browseDenomination(
         percent: bulkRule.discountPercent,
       });
   }
-  // Premium terms belong to the chosen plan. Every other category (including
-  // unclassified and future groups) shares the parent product's description.
-  const description = (d.product.category.group === CategoryGroup.PREMIUM_APPS
-    ? d.description
-    : d.product.description)?.trim();
+  // Match the picker and service classification: legacy null-group categories
+  // are Premium Apps too, so their terms belong to the chosen plan. Only game
+  // top-ups share the parent product's description; empty plan terms stay empty.
+  const description = (isGame ? d.product.description : d.description)?.trim();
   if (description) {
     text += "\n\n" + t(ctx, "browse.description", { description: esc(description) });
   }

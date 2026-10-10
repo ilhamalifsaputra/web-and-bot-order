@@ -42,13 +42,13 @@ describe("getPayMethodDisplayFlags", () => {
     expect(await getPayMethodDisplayFlags(prisma)).toEqual({ qris: true, card: false });
   });
 
-  it("Xendit qris/card follow their switches and the master switch", async () => {
+  it("never advertises Xendit methods before a checkout integration exists", async () => {
     await xendit("true", "false");
-    expect(await getPayMethodDisplayFlags(prisma)).toEqual({ qris: true, card: false });
+    expect(await getPayMethodDisplayFlags(prisma)).toEqual({ qris: false, card: false });
     await xendit("false", "true");
-    expect(await getPayMethodDisplayFlags(prisma)).toEqual({ qris: false, card: true });
+    expect(await getPayMethodDisplayFlags(prisma)).toEqual({ qris: false, card: false });
     await xendit("true", "true");
-    expect(await getPayMethodDisplayFlags(prisma)).toEqual({ qris: true, card: true });
+    expect(await getPayMethodDisplayFlags(prisma)).toEqual({ qris: false, card: false });
     await setSetting(prisma, "xendit_enabled", "false");
     expect(await getPayMethodDisplayFlags(prisma)).toEqual({ qris: false, card: false });
   });
@@ -57,6 +57,6 @@ describe("getPayMethodDisplayFlags", () => {
     await xendit("true", "true");
     await setSetting(prisma, "xendit_secret_key", '{"keyVersion":1,"iv":"x","ciphertext":"x","authTag":"x"}');
     await expect(getXenditCreds(prisma)).rejects.toThrow();
-    expect(await getPayMethodDisplayFlags(prisma)).toEqual({ qris: true, card: true });
+    expect(await getPayMethodDisplayFlags(prisma)).toEqual({ qris: false, card: false });
   });
 });

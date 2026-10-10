@@ -213,7 +213,7 @@ export interface ShopContext {
   customer: Customer | null;
   /** Favicon URL (web_favicon_url setting) or the bundled default. */
   favicon_url: string;
-  /** Header logo URL (web_logo_url setting); empty = fall back to the store icon. */
+  /** Brand logo URL (web_logo_url setting); empty = use the configured wordmark. */
   logo_url: string;
 }
 

@@ -76,6 +76,12 @@ const seoRoutes: FastifyPluginAsync = async (app) => {
       "Disallow: /account",
       "Disallow: /cart",
       "Disallow: /checkout",
+      "Disallow: /wallet",
+      "Disallow: /login",
+      "Disallow: /register",
+      "Disallow: /forgot",
+      "Disallow: /reset",
+      "Disallow: /track",
       "Disallow: /api/",
     ];
     if (origin) {

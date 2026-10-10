@@ -9,7 +9,7 @@ describe("routeTitle", () => {
   });
 
   it("leads with the shop name on the home page (matches spaShell.ts's headInfo)", () => {
-    expect(routeTitle("/", "", SHOP)).toBe("Toko Digital — Digital products, delivered automatically after payment (where available)");
+    expect(routeTitle("/", "", SHOP)).toBe("Toko Digital — Your digital needs, one trusted place.");
   });
 
   it("follows the <Page> — <Shop name> format for static routes", () => {

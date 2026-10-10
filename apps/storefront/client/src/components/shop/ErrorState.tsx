@@ -17,6 +17,7 @@ import StatusScreen from "./StatusScreen";
 export interface ErrorStateProps {
   /** Friendly, already-localised. NEVER pass an `Error.message` here. */
   title?: string;
+  titleAs?: "p" | "h1" | "h2";
   /** Friendly, already-localised. NEVER pass a stack / status code here. */
   description?: string;
   /** Re-run the failed request. Omit → the action becomes a full page reload. */
@@ -25,13 +26,14 @@ export interface ErrorStateProps {
   bare?: boolean;
 }
 
-export default function ErrorState({ title, description, onRetry, bare }: ErrorStateProps) {
+export default function ErrorState({ title, titleAs, description, onRetry, bare }: ErrorStateProps) {
   return (
     <StatusScreen
       bare={bare}
       tone="danger"
       icon={ServerCrash}
       title={title ?? t("web.state_error_title")}
+      titleAs={titleAs}
       description={description ?? t("web.state_error_body")}
       action={
         onRetry

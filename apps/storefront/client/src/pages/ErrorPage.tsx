@@ -27,9 +27,10 @@ export default function ErrorPage({ statusCode = 404, message }: ErrorPageProps)
   return (
     <motion.div variants={fadeUp} initial="initial" animate="animate">
       {isServerError ? (
-        <ErrorState description={description} />
+        <ErrorState description={description} titleAs="h1" />
       ) : (
         <NotFoundState
+          titleAs="h1"
           description={description}
           action={{ label: t("web.back_home"), to: "/" }}
         />

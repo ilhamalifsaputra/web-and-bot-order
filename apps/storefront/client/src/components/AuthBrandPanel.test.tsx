@@ -33,7 +33,7 @@ describe("AuthBrandPanel", () => {
   it("renders the shared TrustBadgeRow with the four capability claims, stacked", async () => {
     renderPanel();
     expect(await screen.findByText("Automatic delivery where available")).toBeInTheDocument();
-    expect(screen.getByText("QRIS & USDT")).toBeInTheDocument();
+    expect(screen.getByText("Payment options at checkout")).toBeInTheDocument();
     expect(screen.getByText("Warranty per plan")).toBeInTheDocument();
     expect(screen.getByText("Help via support ticket")).toBeInTheDocument();
     // The trust claims are a real list, laid out as a stack (orientation="column").

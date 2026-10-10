@@ -83,7 +83,7 @@ describe("HomePage", () => {
 
   it("renders the hero, a product card, and a category pill", async () => {
     renderHome(homeFixture());
-    expect(await screen.findByText("Digital products, delivered automatically after payment (where available)")).toBeInTheDocument();
+    expect(await screen.findByText("Your digital needs, one trusted place.")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Netflix Premium" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /View products/ })).toHaveAttribute("href", "/c/streaming");
   });
@@ -117,8 +117,8 @@ describe("HomePage", () => {
     expect(await screen.findByText("Four steps, done")).toBeInTheDocument();
     // An <ol> — the order of the steps is part of the meaning, not decoration.
     expect(document.querySelector("#how-to-order ol")?.children).toHaveLength(4);
-    expect(screen.getByRole("heading", { name: "Pick a product & plan" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Credentials appear on your order" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Choose your digital product" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Track fulfillment on your order" })).toBeInTheDocument();
   });
 
   it("renders the four trust points", async () => {
@@ -255,7 +255,7 @@ describe("HomePage", () => {
       .getAllByRole("listitem")
       .map((li) => li.textContent);
     expect(labels).toEqual(
-      expect.arrayContaining(["Automatic delivery where available", "QRIS & USDT", "Warranty per plan", "Help via support ticket"]),
+      expect.arrayContaining(["Automatic delivery where available", "Payment options at checkout", "Warranty per plan", "Help via support ticket"]),
     );
   });
 

@@ -76,7 +76,7 @@ describe("informational pages", () => {
 
   it("substitutes the shop name into the intro rather than leaving the placeholder", async () => {
     renderPage(<AboutPage />, context({ shop_name: "Trustance" }));
-    expect(await screen.findByText(/Trustance sells digital products/)).toBeInTheDocument();
+    expect(await screen.findByText(/Trustance is a digital commerce platform/)).toBeInTheDocument();
     expect(screen.queryByText(/\{shop\}/)).not.toBeInTheDocument();
   });
 
@@ -104,7 +104,7 @@ describe("informational pages", () => {
       return heading.closest("section")?.textContent ?? "";
     };
     const delivery = await bodyOf("Delivery of digital products");
-    expect(delivery).toContain("depending on the server and the provider");
+    expect(delivery).toContain("queues and provider issues can delay fulfillment");
     expect(delivery).not.toContain("can be cancelled");
     const cancel = await bodyOf("Cancelling an order");
     expect(cancel).toContain("An order can be cancelled as long as it hasn't been paid.");

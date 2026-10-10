@@ -210,6 +210,8 @@ describe("CheckoutPage", () => {
   it("placing the order successfully navigates to pay_url", async () => {
     renderCheckout(() => checkoutData);
     await screen.findByRole("heading", { name: "Checkout" });
+    // The heading can render before the effect selects the default method.
+    await waitFor(() => expect(screen.getByRole("radio", { name: /BINANCE/ })).toBeChecked());
     const response: PlaceOrderResponse = { order_code: "ORD123", pay_url: "/checkout/ORD123/pay" };
     (apiPost as Mock).mockResolvedValue(response);
     fireEvent.click(screen.getByRole("button", { name: /Place order/ }));

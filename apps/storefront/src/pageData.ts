@@ -9,6 +9,7 @@ import { config } from "@app/core/config";
 import { canonicalProduct, type CanonicalProductContext } from "@app/core/canonicalProduct";
 import { Decimal } from "@app/core/money";
 import { activeFlashPercent, effectiveUnitPrice, flashPrice } from "@app/core/flash";
+import { hasSellableStock, usesLocalInventory } from "@app/core/productAvailability";
 import { checkoutInputConfiguration } from "./inputConfiguration";
 import {
   prisma,
@@ -161,9 +162,10 @@ export async function productPageData(rawSlug: string, isReseller = false, displ
     // Badge only when the flash price is the one this viewer actually gets —
     // the same rule flashViewFor applies to a cart line.
     const flashPct = salePrice !== null && unit.equals(salePrice) ? activeFlashPercent(d) : null;
+    const canonical = canonicalProduct({ denomination: { ...d, createdAt: d.createdAt.toISOString() }, product, category: product.category, stockAvailable: hasSellableStock(d, available) }, { ...displayContext, effectivePriceIDR: unit.toString() });
     return {
       id: d.id,
-      canonical: canonicalProduct({ denomination: { ...d, createdAt: d.createdAt.toISOString() }, product, category: product.category, stockAvailable: d.deliveryType !== "auto" || available > 0 }, { ...displayContext, effectivePriceIDR: unit.toString() }),
+      canonical,
       name: d.name,
       duration_label: d.durationLabel,
       // Always the price a shopper actually pays — the pre-sale figure lives
@@ -181,11 +183,17 @@ export async function productPageData(rawSlug: string, isReseller = false, displ
       warranty_days: d.warrantyDays,
       available,
       in_stock: available > 0,
+      // From @app/core/productAvailability (additive). `uses_local_inventory`
+      // is false for provider (e.g. auto + Digiflazz) and manual SKUs, which
+      // never hold stock rows: the client must not show their stock count,
+      // "N left" or "Notify me". `purchasable` is the canonical verdict the
+      // client gates buying on, so it never re-derives the rule itself.
+      uses_local_inventory: usesLocalInventory(d),
+      purchasable: canonical.availability.purchasable,
       bulk: rule ? { min_quantity: rule.minQuantity, discount_percent: rule.discountPercent } : null,
-      // Non-auto SKUs never have stock rows (Task 2 skips stock reservation
-      // for them), so `available`/`in_stock` above are always 0/false by
-      // design — the client gates purchasability on delivery_type instead
-      // (see ProductPage.tsx's `purchasable`). additional_fields is the
+      // Provider and manual SKUs never have stock rows, so `available`/
+      // `in_stock` above are 0/false for them by design — the client gates
+      // purchasability on `purchasable` instead. additional_fields is the
       // parsed manual_with_info field spec ([] for auto/manual).
       delivery_type: d.deliveryType,
       ...checkoutInputConfiguration(d),
@@ -196,7 +204,7 @@ export async function productPageData(rawSlug: string, isReseller = false, displ
   // ProductPage applies client-side, precomputed here so the initial
   // server-shaped payload already names a valid denomination id.
   // `denominations` is never empty here (guarded by the null return above).
-  const defaultRestockDenominationId = (denominations.find((d) => d.in_stock) ?? denominations[0])!.id;
+  const defaultRestockDenominationId = (denominations.find((d) => d.purchasable) ?? denominations[0])!.id;
 
   // STO-011 "You might also like" — same category, current product excluded,
   // capped at a small shelf rather than the full category listing.

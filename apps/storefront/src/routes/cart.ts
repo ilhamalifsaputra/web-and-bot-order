@@ -19,6 +19,7 @@ import { canonicalProduct, type CanonicalProduct } from "@app/core/canonicalProd
 import { effectiveUnitPrice, flashPrice, activeFlashPercent } from "@app/core/flash";
 import { CategoryGroup, UserRole } from "@app/core/enums";
 import type { CartCompositionLine } from "@app/core/cartComposition";
+import { hasSellableStock, usesLocalInventory } from "@app/core/productAvailability";
 import {
   prisma,
   getCartWithDenominationProduct,
@@ -117,6 +118,10 @@ export interface CartLineView {
    * apart from a premium SKU that collects buyer info: the Digiflazz catalog
    * sync creates both as `manual_with_info`. See @app/core/cartComposition. */
   auto_delivery_source: string | null;
+  /** True when this SKU draws from local stock (@app/core/productAvailability).
+   * Only then is `available` meaningful; a provider or manual line must not
+   * show a stock warning. Additive. */
+  uses_local_inventory: boolean;
   /** Live flash sale on this SKU, or null. `unit_price` above ALREADY carries
    * the discount; this is only what the line needs to strike through the old
    * price and count down to the end of the sale. */
@@ -201,7 +206,7 @@ export async function loadCartLines(
 ): Promise<CartLineView[]> {
   const groups = await activeServiceGroups(prisma, "web");
   const display = { ...await getCanonicalRateContext(prisma), preferredCurrency: resolveDisplayCurrency(customer?.user, requestCurrency(req)) ?? "IDR", locale: requestLang(req), generatedAt: new Date().toISOString() };
-  const canonicalOf = (denom: GuestCartItem["product"], unit: Decimal, available: number) => canonicalProduct({ denomination: { ...denom, createdAt: denom.createdAt.toISOString() }, product: denom.product, category: denom.product.category, stockAvailable: denom.deliveryType !== "auto" || available > 0 }, { ...display, effectivePriceIDR: unit.toString() });
+  const canonicalOf = (denom: GuestCartItem["product"], unit: Decimal, available: number) => canonicalProduct({ denomination: { ...denom, createdAt: denom.createdAt.toISOString() }, product: denom.product, category: denom.product.category, stockAvailable: hasSellableStock(denom, available) }, { ...display, effectivePriceIDR: unit.toString() });
   if (customer) {
     const isReseller = customer.user.role === UserRole.RESELLER;
     // Join the parent Product so the line can show `Product - Denomination`.
@@ -238,6 +243,7 @@ export async function loadCartLines(
             available,
             delivery_type: denom.deliveryType,
             auto_delivery_source: denom.autoDeliverySource,
+            uses_local_inventory: usesLocalInventory(denom),
             flash: flashViewFor(denom, unit),
           };
         }),
@@ -272,6 +278,7 @@ export async function loadCartLines(
         available,
         delivery_type: denom.deliveryType,
         auto_delivery_source: denom.autoDeliverySource,
+        uses_local_inventory: usesLocalInventory(denom),
         flash: flashViewFor(denom, unit),
       } satisfies CartLineView;
     }),

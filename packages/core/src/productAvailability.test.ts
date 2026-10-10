@@ -6,6 +6,7 @@
 import { describe, expect, it } from "vitest";
 import {
   fulfillmentSourceOf,
+  hasSellableStock,
   resolveDenominationAvailability,
   usesLocalInventory,
   type FulfillmentSource,
@@ -191,5 +192,23 @@ describe("resolveDenominationAvailability", () => {
         availableStock: null,
       }).state,
     ).toBe("AVAILABLE");
+  });
+});
+
+describe("hasSellableStock", () => {
+  it("is false only for a local-inventory SKU with no stock rows", () => {
+    for (const deliveryType of DELIVERY_TYPES) {
+      for (const autoDeliverySource of SOURCES) {
+        for (const stock of [0, 3]) {
+          const local = expectedSource(deliveryType, autoDeliverySource) === "INTERNAL_INVENTORY";
+          expect(hasSellableStock({ deliveryType, autoDeliverySource }, stock)).toBe(!local || stock > 0);
+        }
+      }
+    }
+  });
+
+  it("treats an auto + digiflazz SKU with zero stock as sellable", () => {
+    expect(hasSellableStock({ deliveryType: "auto", autoDeliverySource: "digiflazz" }, 0)).toBe(true);
+    expect(hasSellableStock({ deliveryType: "auto", autoDeliverySource: null }, 0)).toBe(false);
   });
 });

@@ -33,6 +33,16 @@ export function usesLocalInventory(d: FulfillmentSourceFields): boolean {
   return fulfillmentSourceOf(d) === "INTERNAL_INVENTORY";
 }
 
+/**
+ * False only for a local-inventory SKU with no AVAILABLE stock rows. This is
+ * the stock half of availability (admin deactivation is checked separately,
+ * e.g. by `canonicalProduct`); it is the `stockAvailable` input display code
+ * passes, so a provider or manual SKU is never shown "out of stock".
+ */
+export function hasSellableStock(d: FulfillmentSourceFields, availableStock: number): boolean {
+  return !usesLocalInventory(d) || availableStock > 0;
+}
+
 export type AvailabilityState = "AVAILABLE" | "UNAVAILABLE" | "UNKNOWN";
 export type AvailabilityReason = "admin_inactive" | "out_of_inventory" | "inventory_unknown";
 

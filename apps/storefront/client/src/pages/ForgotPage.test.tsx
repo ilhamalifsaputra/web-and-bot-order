@@ -71,7 +71,7 @@ describe("ForgotPage", () => {
   it("renders the brand panel's trust strip and policy links", () => {
     renderForgot();
     expect(screen.getByText("Automatic delivery where available")).toBeInTheDocument();
-    expect(screen.getByText("QRIS & USDT")).toBeInTheDocument();
+    expect(screen.getByText("Payment options at checkout")).toBeInTheDocument();
     expect(screen.getByText("Warranty per plan")).toBeInTheDocument();
     expect(screen.getByText("Help via support ticket")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Terms & Conditions" })).toHaveAttribute("href", "/terms");

@@ -15,6 +15,7 @@ import StatusScreen, { type StatusScreenAction } from "./StatusScreen";
 
 export interface NotFoundStateProps {
   title?: string;
+  titleAs?: "p" | "h1" | "h2";
   description?: string;
   /** Defaults to a link back to the home page. */
   action?: StatusScreenAction;
@@ -24,6 +25,7 @@ export interface NotFoundStateProps {
 
 export default function NotFoundState({
   title,
+  titleAs,
   description,
   action,
   secondaryAction,
@@ -34,6 +36,7 @@ export default function NotFoundState({
       bare={bare}
       icon={PackageX}
       title={title ?? t("web.state_notfound_title")}
+      titleAs={titleAs}
       description={description ?? t("web.state_notfound_body")}
       action={action ?? { label: t("web.back_home"), to: "/" }}
       secondaryAction={secondaryAction}

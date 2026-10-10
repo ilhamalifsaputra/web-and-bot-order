@@ -23,7 +23,8 @@
  * gives them more chrome than before (see the note in each page file).
  */
 import { Link } from "react-router-dom";
-import { CheckCircle, Headphones, Shield, Store, Zap } from "lucide-react";
+import { CheckCircle, Headphones, Shield, Zap } from "lucide-react";
+import BrandLogo from "./BrandLogo";
 import { useShopContext } from "./Layout";
 import { t } from "../lib/i18n";
 import TrustBadgeRow from "./ui/TrustBadgeRow";
@@ -36,25 +37,13 @@ const POLICY_LINKS = [
 
 export default function AuthBrandPanel({ className = "" }: { className?: string }) {
   const { data: ctx } = useShopContext();
-  const shopName = ctx?.shop_name ?? "";
 
   return (
     <div
       className={`w-full rounded-3xl bg-pine px-6 py-8 text-white sm:px-8 sm:py-10 lg:order-first ${className}`}
     >
       <Link to="/" className="flex items-center gap-2 text-white">
-        {ctx?.logo_url ? (
-          <img
-            src={ctx.logo_url}
-            alt={shopName}
-            width={160}
-            height={28}
-            className="h-7 w-auto max-w-[10rem] object-contain"
-          />
-        ) : (
-          <Store className="h-6 w-6" />
-        )}
-        <span className="font-display text-lg font-semibold">{shopName}</span>
+        <BrandLogo ctx={ctx} inverse />
       </Link>
 
       <p className="mt-3 text-sm text-pine-tint">{t("web.trust_badge")}</p>
@@ -66,7 +55,7 @@ export default function AuthBrandPanel({ className = "" }: { className?: string 
         className="mt-6 text-pine-tint"
         items={[
           { icon: <Zap className="h-4 w-4 shrink-0 text-grass" />, label: t("web.trust_instant") },
-          { icon: <Shield className="h-4 w-4 shrink-0 text-grass" />, label: "QRIS & USDT" },
+          { icon: <Shield className="h-4 w-4 shrink-0 text-grass" />, label: t("web.payment_at_checkout") },
           { icon: <CheckCircle className="h-4 w-4 shrink-0 text-pine-tint" />, label: t("web.feat_warranty") },
           { icon: <Headphones className="h-4 w-4 shrink-0 text-pine-tint" />, label: t("web.badge_support") },
         ]}

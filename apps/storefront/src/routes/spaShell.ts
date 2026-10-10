@@ -249,7 +249,7 @@ async function headInfo(
     // The hero subtitle is page copy and free to grow past what a search
     // snippet shows (~160 chars); the meta description is its own key so
     // rewriting one never silently truncates the other.
-    const metaDesc = t("web.home_meta_description", lang);
+    const metaDesc = t("web.home_meta_description", lang, { shop: shopName });
     const origin = baseUrl();
     // Organization identifies the shop itself; WebSite + SearchAction is what
     // lets Google offer a search box for the site in results. Both are only
@@ -281,7 +281,7 @@ async function headInfo(
       meta:
         `<meta name="description" content="${esc(metaDesc)}">` +
         canonicalLink(path) +
-        socialMeta({ title: `${shopName} — ${tagline}`, description: metaDesc, path, lang, shopName }) +
+        socialMeta({ title: `${shopName} — ${tagline}`, description: metaDesc, path, lang, shopName, image: logoUrl }) +
         siteJsonLd,
       body: seoShell(
         `<h1>${esc(t("web.hero_title", lang))}</h1>` +
@@ -571,7 +571,7 @@ async function headInfo(
       meta:
         `<meta name="description" content="${esc(intro.slice(0, 160))}">` +
         canonicalLink(path) +
-        socialMeta({ title: heading, description: intro, path, lang, shopName }),
+        socialMeta({ title: heading, description: intro, path, lang, shopName, image: logoUrl }),
       body: seoShell(
         `<nav><a href="/">${esc(shopName)}</a></nav>` +
           `<h1>${esc(heading)}</h1>` +
@@ -603,7 +603,7 @@ async function headInfo(
       meta:
         `<meta name="description" content="${esc(intro.slice(0, 160))}">` +
         canonicalLink(path) +
-        socialMeta({ title: heading, description: intro, path, lang, shopName }),
+        socialMeta({ title: heading, description: intro, path, lang, shopName, image: logoUrl }),
       body: seoShell(
         `<nav><a href="/">${esc(shopName)}</a></nav>` +
           `<h1>${esc(heading)}</h1>` +
@@ -628,7 +628,7 @@ async function headInfo(
   const noIndex = `<meta name="robots" content="noindex, nofollow">`;
   for (const [re, key] of TITLE_KEYS) {
     if (re.test(path)) {
-      return { title: `${t(key, lang)} — ${shopName}`, meta: noIndex + canonicalLink(path), body: "", status: 200 };
+      return { title: `${t(key, lang)} — ${shopName}`, meta: noIndex, body: "", status: 200 };
     }
   }
   // /account/orders/:code — order codes are private; generic title, no lookup.
@@ -636,7 +636,7 @@ async function headInfo(
     return {
       title: `${t("web.account_orders", lang)} — ${shopName}`,
       status: 200,
-      meta: noIndex + canonicalLink(path),
+      meta: noIndex,
       body: "",
     };
   }

@@ -86,19 +86,19 @@ describe("GET /api/v1/pages/context — pay_methods", () => {
     expect((await context()).pay_methods).toEqual({ qris: true, card: false });
   });
 
-  it("Xendit with only QRIS enabled", async () => {
+  it("configured Xendit QRIS is not advertised without a checkout rail", async () => {
     await setXendit(true, false);
-    expect((await context()).pay_methods).toEqual({ qris: true, card: false });
+    expect((await context()).pay_methods).toEqual({ qris: false, card: false });
   });
 
-  it("Xendit with only card enabled", async () => {
+  it("configured Xendit cards are not advertised without a checkout rail", async () => {
     await setXendit(false, true);
-    expect((await context()).pay_methods).toEqual({ qris: false, card: true });
+    expect((await context()).pay_methods).toEqual({ qris: false, card: false });
   });
 
-  it("Xendit with both enabled", async () => {
+  it("Xendit switches do not advertise unimplemented methods", async () => {
     await setXendit(true, true);
-    expect((await context()).pay_methods).toEqual({ qris: true, card: true });
+    expect((await context()).pay_methods).toEqual({ qris: false, card: false });
   });
 
   it("Xendit switched off hides both flags", async () => {
@@ -107,15 +107,15 @@ describe("GET /api/v1/pages/context — pay_methods", () => {
     expect((await context()).pay_methods).toEqual({ qris: false, card: false });
   });
 
-  it("TokoPay plus Xendit card-only keeps both flags true", async () => {
+  it("TokoPay remains visible while Xendit cards remain unavailable", async () => {
     await setTokopay();
     await setXendit(false, true);
-    expect((await context()).pay_methods).toEqual({ qris: true, card: true });
+    expect((await context()).pay_methods).toEqual({ qris: true, card: false });
   });
 
   it("stays 200 with correct flags when a Xendit secret cannot be decrypted", async () => {
     await setXendit(true, true);
     await setSetting(prisma, "xendit_secret_key", '{"keyVersion":1,"iv":"x","ciphertext":"x","authTag":"x"}');
-    expect((await context()).pay_methods).toEqual({ qris: true, card: true });
+    expect((await context()).pay_methods).toEqual({ qris: false, card: false });
   });
 });

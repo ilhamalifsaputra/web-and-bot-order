@@ -10,7 +10,8 @@
  */
 import { useId, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { ChevronDown, Clock, Mail, Phone, Store } from "lucide-react";
+import { ChevronDown, Clock, Mail, Phone } from "lucide-react";
+import BrandLogo from "../BrandLogo";
 import type { ShopContext } from "../../api/types";
 import { t } from "../../lib/i18n";
 import { isPlainEmail, telHref } from "../../lib/telHref";
@@ -46,24 +47,22 @@ export const FOOTER_LINKS = [
 function FooterBlock({
   heading,
   children,
-  defaultOpen = false,
 }: {
   heading: string;
   children: ReactNode;
-  /** Start expanded on mobile (the Contact block, so reviewers see it untapped). */
-  defaultOpen?: boolean;
 }) {
   const bodyId = useId();
-  const [open, setOpen] = useState(defaultOpen);
+  const [open, setOpen] = useState(false);
   return (
     <>
       <h3 className="font-display text-base font-semibold text-ink">
+        <span className="hidden sm:block">{heading}</span>
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}
           aria-expanded={open}
           aria-controls={bodyId}
-          className="flex w-full items-center justify-between py-2 text-left sm:pointer-events-none sm:py-0"
+          className="flex min-h-11 w-full items-center justify-between py-2 text-left sm:hidden"
         >
           {heading}
           <ChevronDown
@@ -89,7 +88,6 @@ export default function Footer({
    *  visible/hidden logic (Layout owns that decision). */
   clearBottomNav?: boolean;
 }) {
-  const shopName = ctx?.shop_name ?? "";
   const shopTagline = ctx?.shop_tagline ?? "";
   const waNumber = ctx?.wa_number ?? "";
   const legalName = ctx?.business?.legal_name ?? "";
@@ -110,16 +108,14 @@ export default function Footer({
           : ""
       }`}
     >
-      <div className="mx-auto max-w-6xl px-4 py-10 lg:px-6">
+      <div className="mx-auto max-w-6xl px-4 py-6 sm:py-10 lg:px-6">
         <div className="grid gap-4 sm:gap-8 md:grid-cols-4">
           {/* Columns 1-2: brand identity + tagline + the legal operator and
               address (owner-set in Branding; each shown only when filled). No
               social icons — this shop has no social-links Setting for them. */}
           <div className="md:col-span-2">
-            <span className="flex items-center gap-2 font-display font-semibold text-pine">
-              <Store className="h-5 w-5" /> {shopName}
-            </span>
-            {shopTagline && <p className="mt-3 max-w-sm text-sm text-ink-soft">{shopTagline}</p>}
+            <BrandLogo ctx={ctx} />
+            <p className="mt-2 max-w-sm text-sm text-ink-soft">{shopTagline || t("web.brand_description")}</p>
             {legalName && (
               <p className="mt-3 text-sm font-medium text-ink">
                 {t("web.footer_operated_by", { name: legalName })}
@@ -153,7 +149,7 @@ export default function Footer({
           {/* Column 4: direct contact. Each link is independently conditional on
               the shop having set that channel up. */}
           <div className="border-t border-line py-1 sm:border-0 sm:py-0">
-            <FooterBlock heading={t("web.footer_contact_heading")} defaultOpen>
+            <FooterBlock heading={t("web.footer_contact_heading")}>
               {(
                 <ul className="mt-3 flex flex-col gap-2 text-sm">
                   {waNumber && (
@@ -230,7 +226,7 @@ export default function Footer({
         </div>
 
         {showPayMarks && (
-          <div className="mt-8 flex flex-wrap items-center gap-3 border-t border-line pt-6">
+          <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-line pt-4 sm:mt-8 sm:pt-6">
             <span className="text-sm font-semibold text-ink">{t("web.footer_payment_methods")}</span>
             <PaymentMarks methods={payMethods} />
           </div>
@@ -238,7 +234,14 @@ export default function Footer({
       </div>
 
       {/* Separator + centred copyright bar. */}
-      <div className="border-t border-line px-4 py-6 text-center text-xs text-ink-faint sm:text-sm lg:px-6">
+      <div className="border-t border-line px-4 py-4 text-center text-xs text-ink-soft sm:py-6 sm:text-sm lg:px-6">
+        <nav aria-label={t("web.footer_policies")} className="mb-3 flex flex-wrap justify-center gap-x-4 gap-y-2">
+          {["terms", "privacy", "refund"].map((page) => (
+            <Link key={page} to={`/${page}`} className="inline-flex min-h-11 items-center text-ink-soft hover:text-pine">
+              {t(`web.${page}_title`)}
+            </Link>
+          ))}
+        </nav>
         {legalName && (
           <p className="mb-1">
             © {new Date().getFullYear()} {legalName}

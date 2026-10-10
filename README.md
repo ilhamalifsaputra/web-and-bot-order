@@ -6,10 +6,12 @@ Toko digital lengkap dalam satu aplikasi:
 - **Panel admin web** — kelola produk, stok, pesanan, dan pengaturan.
 - **Toko web** — etalase untuk berjualan lewat website/domain sendiri.
 
-Enam metode pembayaran aktif: **TokoPay (QRIS)**, **PayDisini (QRIS/e-wallet)**,
+Enam integrasi pembayaran tersedia: **TokoPay (QRIS)**, **PayDisini (QRIS/e-wallet)**,
 **NOWPayments (USDT)**, **Binance Internal**, **Bybit Internal Transfer**, dan
-**Bybit BSC (on-chain)**. Semuanya terkonfirmasi otomatis; akun langsung
-terkirim setelah pembayaran terverifikasi.
+**Bybit BSC (on-chain)**. Metode yang ditawarkan mengikuti konfigurasi dan
+kelayakan pesanan. Setelah pembayaran terverifikasi, pengiriman mengikuti
+jenis produk: top up ke akun pemain, pengiriman stok otomatis, atau proses manual.
+Konfigurasi Xendit tersedia di admin, tetapi belum terhubung ke checkout.
 
 Dibangun dengan **Node.js + TypeScript** (monorepo pnpm). Bot, panel admin, dan
 toko web berbagi **satu database PostgreSQL**.

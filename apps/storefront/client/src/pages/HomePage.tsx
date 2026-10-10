@@ -268,7 +268,7 @@ export default function HomePage() {
             className="mt-8 border-t border-white/10 pt-5 text-ink-faint"
             items={[
               { icon: <Zap className="h-4 w-4 text-grass" />, label: t("web.trust_instant") },
-              { icon: <Shield className="h-4 w-4 text-grass" />, label: "QRIS & USDT" },
+              { icon: <Shield className="h-4 w-4 text-grass" />, label: t("web.payment_at_checkout") },
               { icon: <CheckCircle className="h-4 w-4 text-pine-tint" />, label: t("web.feat_warranty") },
               { icon: <Headphones className="h-4 w-4 text-pine-tint" />, label: t("web.badge_support") },
             ]}

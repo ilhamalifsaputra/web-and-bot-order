@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import Footer from "./Footer";
 import type { ShopContext } from "../../api/types";
@@ -55,12 +55,17 @@ describe("Footer business identity", () => {
     for (const l of links) expect(l).toHaveAttribute("href", "/contact");
   });
 
-  it("starts the Contact block open on mobile and Quick Links collapsed", () => {
+  it("starts both blocks collapsed and exposes contacts through keyboard-operable buttons", () => {
     renderFooter(ctx(FULL));
     const contactBtn = screen.getByRole("button", { name: "Contact" });
     const quickBtn = screen.getByRole("button", { name: "Quick Links" });
-    expect(contactBtn).toHaveAttribute("aria-expanded", "true");
+    expect(contactBtn).toHaveAttribute("aria-expanded", "false");
     expect(quickBtn).toHaveAttribute("aria-expanded", "false");
+    const contactBody = document.getElementById(contactBtn.getAttribute("aria-controls")!)!;
+    expect(contactBody).toHaveClass("hidden");
+    fireEvent.click(contactBtn);
+    expect(contactBtn).toHaveAttribute("aria-expanded", "true");
+    expect(contactBody).not.toHaveClass("hidden");
     const hiddenAncestor = (el: HTMLElement) => el.closest(".hidden");
     expect(hiddenAncestor(screen.getByRole("link", { name: /cs@contoh\.id/ }))).toBeNull();
     expect(hiddenAncestor(screen.getByRole("link", { name: /\+62 812/ }))).toBeNull();
@@ -72,6 +77,15 @@ describe("Footer business identity", () => {
     expect(visible).toHaveLength(1);
     // Quick Links body is the collapsed one.
     expect(contactLinks.some((l) => l.closest(".hidden"))).toBe(true);
+  });
+
+  it("keeps the legal identity and policy links outside the collapsed blocks", () => {
+    renderFooter(ctx({ ...FULL, logo_url: "/uploads/branding/owner-logo.png" }));
+    expect(screen.getByRole("img", { name: "Toko Digital" })).toHaveAttribute("src", "/uploads/branding/owner-logo.png");
+    expect(screen.getByText(/Jl\. Mawar 1/).closest(".hidden")).toBeNull();
+    for (const name of ["Terms & Conditions", "Privacy Policy", "Refund Policy"]) {
+      expect(screen.getAllByRole("link", { name }).some((link) => !link.closest(".hidden"))).toBe(true);
+    }
   });
 
   it("shows an unsafe email as plain text, not a mailto link", () => {

@@ -37,6 +37,7 @@ import type { ShopContext } from "../../api/types";
 import { t } from "../../lib/i18n";
 import { scrim, slideInLeft } from "../../lib/motion";
 import CurrencyToggle from "./CurrencyToggle";
+import BrandLogo from "../BrandLogo";
 
 /** Row styling for the mobile nav drawer — hover/active both use the "pine"
  * token. Icons are `currentColor` (lucide-react), so tinting the row text also
@@ -131,7 +132,6 @@ export default function MobileDrawer({
   const location = useLocation();
   const panelRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
-  const shopName = ctx?.shop_name ?? "";
   const cartCount = ctx?.cart_count ?? 0;
 
   // Lock body scroll while the drawer is open, compensating for the
@@ -212,7 +212,7 @@ export default function MobileDrawer({
             className="fixed inset-y-0 left-0 z-50 flex w-80 max-w-[85vw] flex-col bg-card sm:hidden"
           >
             <div className="flex items-center justify-between border-b border-black/[0.06] px-6 pb-5 pt-7">
-              <span className="font-display text-lg font-semibold text-ink">{shopName}</span>
+              <BrandLogo ctx={ctx} />
               <button
                 ref={closeButtonRef}
                 type="button"

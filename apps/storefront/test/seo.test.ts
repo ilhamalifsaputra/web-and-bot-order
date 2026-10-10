@@ -253,7 +253,7 @@ describe("metadata for search results and social previews", () => {
     expect(shell).toContain("Why buying here is safe");
     // Whatever the shell claims must also be on the rendered page — anything
     // written only for crawlers is cloaking.
-    expect(shell).toContain("Pick a product &amp; plan");
+    expect(shell).toContain("Choose your digital product");
   });
 
   it("serves the informational pages as real, indexable pages with crawler-visible prose", async () => {
@@ -358,9 +358,37 @@ describe("metadata for search results and social previews", () => {
     expect(home.body).not.toContain("noindex");
   });
 
+  it("does not repeat private order codes or reset tokens in canonical or social metadata", async () => {
+    for (const url of ["/reset/PRIVATE-RESET", "/checkout/PRIVATE-ORDER/pay", "/wallet/topup/PRIVATE-TOPUP/pay", "/account/orders/PRIVATE-ORDER"]) {
+      const res = await app.inject({ method: "GET", url });
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toContain('content="noindex, nofollow"');
+      expect(res.body).not.toContain('rel="canonical"');
+      expect(res.body).not.toContain('property="og:');
+      expect(res.body).not.toContain("PRIVATE-");
+    }
+  });
+
   it("declares an apple-touch-icon for iOS home-screen shortcuts", async () => {
     const res = await app.inject({ method: "GET", url: "/" });
     expect(res.body).toContain('rel="apple-touch-icon"');
+  });
+
+  it("uses configured branding assets in the shell instead of the generic fallback", async () => {
+    await setSetting(prisma, "web_favicon_url", "/uploads/branding/owner-favicon.png");
+    await setSetting(prisma, "web_logo_url", "/uploads/branding/owner-logo.png");
+    try {
+      const res = await app.inject({ method: "GET", url: "/" });
+      expect(res.body).toContain('rel="icon" href="/uploads/branding/owner-favicon.png"');
+      expect(res.body).toContain('rel="apple-touch-icon" href="/uploads/branding/owner-logo.png"');
+      expect(res.body).not.toContain('href="/static/favicon.svg"');
+      expect(res.body).toContain('property="og:image" content="https://shop.test.invalid/uploads/branding/owner-logo.png"');
+      expect(res.body).toContain('name="twitter:image" content="https://shop.test.invalid/uploads/branding/owner-logo.png"');
+      expect(res.body).not.toContain("{shop}");
+    } finally {
+      await setSetting(prisma, "web_favicon_url", "");
+      await setSetting(prisma, "web_logo_url", "");
+    }
   });
 });
 

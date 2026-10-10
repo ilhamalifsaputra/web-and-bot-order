@@ -44,6 +44,8 @@ export type StatusScreenTone = "neutral" | "danger";
 export interface StatusScreenProps {
   icon: LucideIcon;
   title: string;
+  /** Use a real heading when this state is the page's primary content. */
+  titleAs?: "p" | "h1" | "h2";
   description?: string;
   action?: StatusScreenAction;
   secondaryAction?: StatusScreenAction;
@@ -83,6 +85,7 @@ function ActionControl({ action, kind }: { action: StatusScreenAction; kind: "pr
 export default function StatusScreen({
   icon: Icon,
   title,
+  titleAs: Title = "p",
   description,
   action,
   secondaryAction,
@@ -97,7 +100,7 @@ export default function StatusScreen({
         strokeWidth={1.5}
         aria-hidden="true"
       />
-      <p className="mt-4 font-display text-base font-semibold text-ink">{title}</p>
+      <Title className="mt-4 font-display text-base font-semibold text-ink">{title}</Title>
       {description && (
         <p className="mx-auto mt-2 max-w-sm text-sm leading-relaxed text-ink-soft">{description}</p>
       )}

@@ -19,7 +19,7 @@ describe("ErrorPage", () => {
     expect(screen.getByText("404")).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "404" })).not.toBeInTheDocument();
     // NotFoundState's copy + the passed-through default message.
-    expect(screen.getByText("Page not found")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "Page not found" })).toBeInTheDocument();
     expect(screen.getByText("That page doesn't exist.")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Back to home" })).toHaveAttribute("href", "/");
   });
@@ -31,7 +31,7 @@ describe("ErrorPage", () => {
       </MemoryRouter>,
     );
     expect(screen.getByText("500")).toBeInTheDocument();
-    expect(screen.getByText("Something went wrong")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "Something went wrong" })).toBeInTheDocument();
     expect(screen.getByText("Something broke.")).toBeInTheDocument();
   });
 

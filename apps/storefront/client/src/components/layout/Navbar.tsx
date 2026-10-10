@@ -11,7 +11,8 @@
  */
 import type { RefObject } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { Globe, LogIn, Menu, PackageSearch, Search, ShoppingCart, Store, User } from "lucide-react";
+import { Globe, LogIn, Menu, PackageSearch, Search, ShoppingCart, User } from "lucide-react";
+import BrandLogo from "../BrandLogo";
 import type { ShopContext } from "../../api/types";
 import { currentLang, t } from "../../lib/i18n";
 import { useSearchOverlay } from "../shop/SearchOverlay";
@@ -33,13 +34,12 @@ export default function Navbar({
   const lang = currentLang();
   const otherLang = lang === "id" ? "en" : "id";
   const backPath = location.pathname + location.search;
-  const shopName = ctx?.shop_name ?? "";
   const cartCount = ctx?.cart_count ?? 0;
   const { open: openSearch } = useSearchOverlay();
 
   return (
     <header className="sticky top-0 z-30 border-b border-line bg-card/90 backdrop-blur-sm">
-      <div className="mx-auto flex h-16 max-w-6xl items-center gap-4 px-4 lg:px-6">
+      <div className="mx-auto flex h-16 max-w-6xl items-center gap-2 px-4 sm:gap-4 lg:px-6">
         <button
           ref={triggerRef}
           type="button"
@@ -55,21 +55,8 @@ export default function Navbar({
           <Menu className="h-5 w-5" />
         </button>
 
-        <Link to="/" className="flex shrink-0 items-center gap-2 text-pine">
-          {ctx?.logo_url ? (
-            // object-contain, so the logo keeps its own ratio; the declared box
-            // just stops the header reflowing while it loads.
-            <img
-              src={ctx.logo_url}
-              alt={shopName}
-              width={160}
-              height={28}
-              className="h-7 w-auto max-w-[10rem] object-contain"
-            />
-          ) : (
-            <Store className="h-6 w-6" />
-          )}
-          <span className="text-lg font-display font-semibold text-ink">{shopName}</span>
+        <Link to="/" className="flex min-w-0 items-center text-pine">
+          <BrandLogo ctx={ctx} />
         </Link>
 
         <div className="relative mx-4 hidden max-w-xl flex-1 sm:block">
@@ -77,7 +64,7 @@ export default function Navbar({
         </div>
 
         <nav
-          className="ml-auto flex items-center gap-1 text-sm text-ink-soft sm:ml-0"
+          className="ml-auto flex shrink-0 items-center gap-1 text-sm text-ink-soft sm:ml-0"
           aria-label={t("web.nav_main")}
         >
           {/* Mobile-only: the desktop search pill is `hidden ... sm:block`, so
@@ -125,12 +112,13 @@ export default function Navbar({
           {ctx?.customer ? (
             <Link
               to="/account"
+              aria-label={t("web.nav_account")}
               className={`flex items-center gap-1 rounded-lg px-2.5 py-2 hover:bg-sand ${location.pathname.startsWith("/account") ? "text-pine" : ""}`}
             >
               <User className="h-4 w-4" /> <span className="hidden sm:inline">{t("web.nav_account")}</span>
             </Link>
           ) : (
-            <Link to="/login" className="flex items-center gap-1 rounded-lg px-2.5 py-2 hover:bg-sand">
+            <Link to="/login" aria-label={t("web.nav_login")} className="flex items-center gap-1 rounded-lg px-2.5 py-2 hover:bg-sand">
               <LogIn className="h-4 w-4" /> <span className="hidden sm:inline">{t("web.nav_login")}</span>
             </Link>
           )}

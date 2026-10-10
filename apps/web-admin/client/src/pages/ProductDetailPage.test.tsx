@@ -163,6 +163,42 @@ describe("ProductDetailPage", () => {
     expect(otherRow.querySelectorAll("td")[5]).toHaveTextContent("5");
   });
 
+  it("shows where a provider or manual SKU is fulfilled from instead of a fake 0 stock, and a real count for a stock-backed SKU", async () => {
+    const mixed = {
+      ...PRODUCT_DETAIL,
+      product: {
+        ...PRODUCT_DETAIL.product,
+        denominations: [
+          ...PRODUCT_DETAIL.product.denominations,
+          { id: 20, name: "Provider Pack", price: "1000", costPrice: null, isActive: true, type: "SHARED", durationLabel: "-" },
+          { id: 30, name: "Manual Pack", price: "1000", costPrice: null, isActive: true, type: "SHARED", durationLabel: "-" },
+          { id: 40, name: "Sold Out Pack", price: "1000", costPrice: null, isActive: true, type: "SHARED", durationLabel: "-" },
+        ],
+      },
+      statsByDenom: {
+        "10": { id: 10, available: 5, waiting: 0, rule: null, fulfillmentSource: "INTERNAL_INVENTORY", usesLocalInventory: true },
+        "20": { id: 20, available: 0, waiting: 4, rule: null, fulfillmentSource: "PROVIDER_API", usesLocalInventory: false },
+        "30": { id: 30, available: 0, waiting: 0, rule: null, fulfillmentSource: "MANUAL", usesLocalInventory: false },
+        "40": { id: 40, available: 0, waiting: 0, rule: null, fulfillmentSource: "INTERNAL_INVENTORY", usesLocalInventory: true },
+      },
+    };
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(mixed), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    render(<ProductDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Provider Pack")).toBeInTheDocument());
+
+    const stockCell = (name: string) => screen.getByText(name).closest("tr")!.querySelectorAll("td")[5];
+    expect(stockCell("Provider Pack")).toHaveTextContent("Provider");
+    expect(stockCell("Provider Pack")).not.toHaveTextContent("0");
+    expect(stockCell("Manual Pack")).toHaveTextContent("Manual");
+    expect(stockCell("1 Month")).toHaveTextContent("5");
+    // A stock-backed SKU that has sold out is a genuine 0.
+    expect(stockCell("Sold Out Pack")).toHaveTextContent("0");
+    // Restock requests mean nothing for a SKU with no local stock.
+    expect(screen.getByText("Provider Pack").closest("tr")!.querySelectorAll("td")[6]).toHaveTextContent("—");
+  });
+
   it("shows the product photo upload field with no image set", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       new Response(JSON.stringify(PRODUCT_DETAIL), { status: 200, headers: { "Content-Type": "application/json" } }),

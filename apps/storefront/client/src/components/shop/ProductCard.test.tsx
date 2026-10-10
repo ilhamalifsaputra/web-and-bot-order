@@ -94,6 +94,20 @@ describe("ProductCard", () => {
     expect(screen.getByText("Available")).toBeInTheDocument();
   });
 
+  it("does not present a mixed product's partial local stock as the product's badge", () => {
+    // 2 local units + provider plans the server says are always purchasable.
+    const mixed: ProductCardData = { ...base, available: 2, all_non_auto: false, all_local_inventory: false };
+    renderCard(<ProductCard p={mixed} fx="16000" lowThreshold={5} />);
+    expect(screen.queryByText("2 left")).not.toBeInTheDocument();
+    expect(screen.queryByText("Out of stock")).not.toBeInTheDocument();
+    expect(screen.getByText("Available")).toBeInTheDocument();
+  });
+
+  it("keeps the real count badge when every plan is local inventory", () => {
+    renderCard(<ProductCard p={{ ...base, available: 2, all_non_auto: false, all_local_inventory: true }} fx="16000" lowThreshold={5} />);
+    expect(screen.getByText("2 left")).toBeInTheDocument();
+  });
+
   it("uses the design-system card elevation: shadow-soft resting, shadow-lift on hover", () => {
     renderCard(
       <ProductCard p={base} fx="16000" lowThreshold={5} />,

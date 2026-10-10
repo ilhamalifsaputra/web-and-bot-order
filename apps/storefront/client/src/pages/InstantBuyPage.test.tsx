@@ -74,6 +74,8 @@ const productData: ProductPageData = {
       warranty_days: 0,
       available: 0,
       in_stock: false,
+      uses_local_inventory: false,
+      purchasable: true,
       bulk: null,
       delivery_type: "manual_with_info",
       additional_fields: [
@@ -89,6 +91,8 @@ const productData: ProductPageData = {
       warranty_days: 0,
       available: 0,
       in_stock: false,
+      uses_local_inventory: false,
+      purchasable: true,
       bulk: null,
       delivery_type: "manual_with_info",
       additional_fields: [

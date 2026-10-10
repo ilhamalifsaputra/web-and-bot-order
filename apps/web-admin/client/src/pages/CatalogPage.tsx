@@ -48,6 +48,14 @@ import { apiPost, apiDelete } from "../api/client";
 import { useCatalog, type ProductRow } from "../api/catalog";
 import { describeError } from "../lib/errorMessages";
 import { visibleSelection } from "../lib/selection";
+import {
+  familyTabOptions,
+  familyTabFromParam,
+  familyTabToParam,
+  matchesFamilyTab,
+  type FamilyTab,
+} from "../lib/catalogFamily";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 interface ImportPreviewRow {
   ok: boolean;
@@ -91,6 +99,9 @@ export function CatalogPage() {
   // this list already narrowed to that category.
   const [searchParams, setSearchParams] = useSearchParams();
   const [categoryFilter, setCategoryFilter] = useState(searchParams.get("categoryId") ?? "all");
+  // Product-family tab, kept in ?tab= like the category filter so the view is
+  // shareable. It is a client-side filter over the one (unpaginated) query.
+  const familyTab = familyTabFromParam(searchParams.get("tab"));
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [sortBy, setSortBy] = useState<SortMode>("name");
   const [showImport, setShowImport] = useState(false);
@@ -115,13 +126,28 @@ export function CatalogPage() {
     setSearchParams(next, { replace: true });
   }
 
+  /** Switches the family tab. A category filter that belongs to the other
+   *  family would silently show nothing, so it is dropped with the switch. */
+  function changeFamilyTab(next: FamilyTab) {
+    const nextParams = new URLSearchParams(searchParams);
+    const param = familyTabToParam(next);
+    if (param === null) nextParams.delete("tab");
+    else nextParams.set("tab", param);
+    const category = (data?.categories ?? []).find((c) => String(c.id) === categoryFilter);
+    if (category && !matchesFamilyTab(category.group, next)) {
+      setCategoryFilter("all");
+      nextParams.delete("categoryId");
+    }
+    setSearchParams(nextParams, { replace: true });
+  }
+
   // Catalog filters client-side, so a selection surviving a filter change would
   // let a bulk action silently apply to products no longer on screen. `sortBy`
   // is deliberately absent: it reorders the visible rows without changing which
   // rows are visible, so clearing on a sort change would only surprise.
   useEffect(() => {
     setSelected(new Set());
-  }, [filter, categoryFilter, statusFilter]);
+  }, [filter, categoryFilter, statusFilter, familyTab]);
 
   const invalidateCatalog = () => queryClient.invalidateQueries({ queryKey: ["catalog"] });
 
@@ -267,18 +293,31 @@ export function CatalogPage() {
 
   const products = data?.products ?? [];
   const categories = data?.categories ?? [];
-  const nonArchived = products.filter((p) => !p.isArchived);
+  // Everything below the tabs — the tiles, the Category options and the list —
+  // is scoped to the active family. A product's family is its category's group
+  // (a legacy ungrouped category counts as Digital Apps), never its name.
+  const tabProducts = products.filter((p) => matchesFamilyTab(p.category?.group, familyTab));
+  const tabCategories = categories.filter((c) => matchesFamilyTab(c.group, familyTab));
+  const nonArchived = tabProducts.filter((p) => !p.isArchived);
+  // A ?categoryId= from another family (a stale link) would match nothing.
+  const activeCategoryFilter = tabCategories.some((c) => String(c.id) === categoryFilter)
+    ? categoryFilter
+    : "all";
+  const tabCount = (tab: FamilyTab) =>
+    products.filter((p) => !p.isArchived && matchesFamilyTab(p.category?.group, tab)).length;
 
+  // Tiles count products and variants separately: Products = non-archived
+  // products in this tab; Variants = their non-archived denominations.
   const stats = {
     products: nonArchived.length,
-    categories: categories.length,
+    categories: tabCategories.length,
     variants: nonArchived.reduce((sum, p) => sum + p._count.denominations, 0),
     active: nonArchived.filter((p) => p.isActive).length,
     inactive: nonArchived.filter((p) => !p.isActive).length,
   };
 
   const hasActiveFilter =
-    !!filter || categoryFilter !== "all" || statusFilter !== "all" || sortBy !== "name";
+    !!filter || activeCategoryFilter !== "all" || statusFilter !== "all" || sortBy !== "name";
   const clearFilters = () => {
     setFilter("");
     changeCategoryFilter("all");
@@ -286,14 +325,14 @@ export function CatalogPage() {
     setSortBy("name");
   };
 
-  const filtered = products
+  const filtered = tabProducts
     .filter(
       (p) =>
         !filter ||
         p.name.toLowerCase().includes(filter.toLowerCase()) ||
         (p.category?.name ?? "").toLowerCase().includes(filter.toLowerCase()),
     )
-    .filter((p) => categoryFilter === "all" || p.category?.id === Number(categoryFilter))
+    .filter((p) => activeCategoryFilter === "all" || p.category?.id === Number(activeCategoryFilter))
     .filter((p) => {
       if (statusFilter === "archived") return p.isArchived;
       if (p.isArchived) return false; // archived only shows under the explicit "Archived" filter
@@ -356,6 +395,20 @@ export function CatalogPage() {
         }
       />
 
+      {/* Product-family tabs. Scrolls sideways on a narrow phone rather than
+          widening the page. */}
+      <div className="mb-4 overflow-x-auto">
+        <Tabs value={familyTab} onValueChange={(v) => changeFamilyTab(v as FamilyTab)}>
+          <TabsList aria-label="Product family" className="group-data-horizontal/tabs:h-10">
+            {familyTabOptions().map((tab) => (
+              <TabsTrigger key={tab.value} value={tab.value} className="min-h-9 px-3">
+                {tab.label} ({tabCount(tab.value)})
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
+      </div>
+
       <div className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
         <StatTile label="Products" value={stats.products} />
         <StatTile
@@ -377,13 +430,13 @@ export function CatalogPage() {
         />
         <div className="flex flex-col gap-1">
           <label className="text-xs text-ink-soft">Category</label>
-          <Select value={categoryFilter} onValueChange={changeCategoryFilter}>
+          <Select value={activeCategoryFilter} onValueChange={changeCategoryFilter}>
             <SelectTrigger size="sm" className="w-40">
               <SelectValue placeholder="All categories" />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All categories</SelectItem>
-              {categories.map((c) => (
+              {tabCategories.map((c) => (
                 <SelectItem key={c.id} value={String(c.id)}>
                   {c.name}
                 </SelectItem>

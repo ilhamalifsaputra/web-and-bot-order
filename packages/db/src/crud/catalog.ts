@@ -20,6 +20,7 @@ import { quantizeMoney } from "@app/core/formatters";
 import { isFlashActive } from "@app/core/flash";
 import { Decimal } from "@app/core/money";
 import { ValidationError } from "@app/core/errors";
+import { usesLocalInventory } from "@app/core/productAvailability";
 import type { Category, Denomination, Prisma, Product } from "@prisma/client";
 import type { PrismaClient, Tx } from "../client";
 import type { Db } from "./_types";
@@ -661,7 +662,12 @@ export async function archiveDenominationBatch(
   });
 }
 
-/** (denomination, availableCount) for active denominations at/below threshold. */
+/**
+ * (denomination, availableCount) for active denominations at/below threshold.
+ * Only SKUs that draw from local stock (`usesLocalInventory`): manual SKUs and
+ * provider (`auto` + digiflazz) SKUs never hold stock rows, so they would
+ * otherwise read as permanently "0 left".
+ */
 export async function lowStockDenominations(
   db: Db,
   threshold: number,
@@ -677,6 +683,7 @@ export async function lowStockDenominations(
   const map = new Map<number, number>();
   for (const c of counts) map.set(c.productId, c._count.id);
   return denoms
+    .filter((d) => usesLocalInventory(d))
     .map((d) => ({ denomination: d, available: map.get(d.id) ?? 0 }))
     .filter((r) => r.available <= threshold)
     .sort((a, b) => a.available - b.available);
@@ -1064,6 +1071,7 @@ export function listDenominationsWithFlashInfo(db: Db) {
       isActive: true,
       productId: true,
       deliveryType: true,
+      autoDeliverySource: true,
       flashDiscountPercent: true,
       flashStartsAt: true,
       flashEndsAt: true,

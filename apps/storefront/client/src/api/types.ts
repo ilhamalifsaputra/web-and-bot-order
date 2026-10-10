@@ -120,10 +120,17 @@ export interface ProductDenomination {
   warranty_days: number;
   available: number;
   in_stock: boolean;
+  /** Server verdict (@app/core/productAvailability): true when this SKU
+   * draws from local stock. Provider (e.g. auto + Digiflazz) and manual SKUs
+   * never hold stock rows, so `available`/`in_stock` mean nothing for them —
+   * no stock count, "N left" or "Notify me". */
+  uses_local_inventory: boolean;
+  /** Server verdict: can this plan be bought now. The client gates buying on
+   * this and never re-derives it from delivery_type/in_stock. */
+  purchasable: boolean;
   bulk: { min_quantity: number; discount_percent: string } | null;
-  /** "auto" | "manual" | "manual_with_info" (DeliveryType) — non-auto SKUs
-   * never have stock rows (available is always 0/in_stock always false by
-   * design), so purchasability is gated on this instead of on stock. */
+  /** "auto" | "manual" | "manual_with_info" (DeliveryType). Not an
+   * availability signal — see `purchasable` / `uses_local_inventory`. */
   delivery_type: string;
   /** Parsed manual_with_info field spec — [] for auto/manual. */
   additional_fields: AdditionalField[];
@@ -220,10 +227,12 @@ export interface CartLineView {
    * JSON twin of FlashLineView (apps/storefront/src/routes/cart.ts).
    * `unit_price`/`line_total` above ALREADY carry the discount. */
   flash?: FlashInfo | null;
-  /** "auto" | "manual" | "manual_with_info" (DeliveryType) — non-auto lines
-   * have no stock concept, so `available` is always 0 for them (don't use it
-   * to render a stock warning on a non-auto line). */
+  /** "auto" | "manual" | "manual_with_info" (DeliveryType). */
   delivery_type: string;
+  /** Server verdict (@app/core/productAvailability): only a line that draws
+   * from local stock has a meaningful `available`; never render a stock
+   * warning on a provider or manual line. */
+  uses_local_inventory: boolean;
 }
 
 /** GET /api/v1/cart, and the fresh payload every cart mutation (add/update/remove)

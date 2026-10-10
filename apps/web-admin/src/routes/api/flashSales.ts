@@ -21,7 +21,7 @@ import { readPercentField, percentFieldError } from "../../lib/moneyField";
 import { localize, parseShopLocal } from "@app/core/datetime";
 import { isFlashActive } from "@app/core/flash";
 import { quantizeMoney } from "@app/core/formatters";
-import { DeliveryType } from "@app/core/enums";
+import { usesLocalInventory } from "@app/core/productAvailability";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
 
 /** A body array of denomination ids, deduped, or null if empty/malformed. */
@@ -49,7 +49,7 @@ export default async function flashSalesApiRoutes(app: FastifyInstance): Promise
       endsAt: d.flashEndsAt!,
     }));
     const performance = await flashSalePerformance(prisma, entries);
-    const autoDeliveryIds = scheduled.filter((d) => d.deliveryType === DeliveryType.AUTO).map((d) => d.id);
+    const autoDeliveryIds = scheduled.filter((d) => usesLocalInventory(d)).map((d) => d.id);
     const availableStock = await availableStockCountsByDenomination(prisma, autoDeliveryIds);
 
     return reply.send({
@@ -102,7 +102,7 @@ export default async function flashSalesApiRoutes(app: FastifyInstance): Promise
                 // 0 = auto-delivery but currently out of stock. The client
                 // needs to tell these apart to decide whether to render a
                 // stock progress bar at all.
-                availableStock: d.deliveryType === DeliveryType.AUTO ? (availableStock.get(d.id) ?? 0) : null,
+                availableStock: usesLocalInventory(d) ? (availableStock.get(d.id) ?? 0) : null,
               }
             : null,
         };

@@ -261,6 +261,71 @@ function adminCtx(opts: Parameters<typeof makeCtx>[0] = {}) {
   });
 }
 
+describe("admin inventory capabilities", () => {
+  function oneEdit(sink: SentCall[]) {
+    expect(calls(sink, "editMessageText")).toHaveLength(1);
+    expect(calls(sink, "editMessageCaption")).toHaveLength(0);
+    expect(calls(sink, "sendMessage")).toHaveLength(0);
+    expect(calls(sink, "deleteMessage")).toHaveLength(0);
+    expect(calls(sink, "sendDocument")).toHaveLength(0);
+  }
+
+  it.each([
+    { deliveryType: "auto", autoDeliverySource: "digiflazz", label: "Provider fulfillment", local: false },
+    { deliveryType: "manual", autoDeliverySource: null, label: "Manual fulfillment", local: false },
+    { deliveryType: "auto", autoDeliverySource: null, label: "Available stock: 5", local: true },
+  ])("shows fulfillment instead of stock for $deliveryType/$autoDeliverySource", async ({ label, local, ...fields }) => {
+    await prisma.denomination.update({ where: { id: sample.product.id }, data: fields });
+    const data = `v1:adm:prod:edit:${sample.product.id}`;
+    const { ctx, sink } = adminCtx({ callbackData: data });
+    await handleAdminCallback(ctx, data.split(":"));
+    expect(sentIncludes(sink, label)).toBe(true);
+    expect(sentIncludes(sink, "Available stock:")).toBe(local);
+    expect(sentIncludes(sink, `v1:adm:prod:stock:${sample.product.id}`)).toBe(local);
+    oneEdit(sink);
+
+    const menu = adminCtx({ callbackData: "v1:adm:prod:menu" });
+    await handleAdminCallback(menu.ctx, "v1:adm:prod:menu".split(":"));
+    expect(sentIncludes(menu.sink, local ? "stock 5" : label)).toBe(true);
+    expect(sentIncludes(menu.sink, "stock 5")).toBe(local);
+    oneEdit(menu.sink);
+  });
+
+  it("offers uploads only for local inventory, independent of product family", async () => {
+    await createDenomination(prisma, { productId: sample.parentProduct.id, name: "Provider", type: "SHARED", durationLabel: "-", price: "5", deliveryType: "auto", autoDeliverySource: "digiflazz" });
+    await createDenomination(prisma, { productId: sample.parentProduct.id, name: "Manual", type: "SHARED", durationLabel: "-", price: "5", deliveryType: "manual" });
+    const { ctx, sink } = adminCtx({ callbackData: "v1:adm:stock:menu" });
+    await handleAdminCallback(ctx, "v1:adm:stock:menu".split(":"));
+    expect(sentIncludes(sink, sample.product.name)).toBe(true);
+    expect(sentIncludes(sink, "Provider")).toBe(false);
+    expect(sentIncludes(sink, "Manual")).toBe(false);
+    oneEdit(sink);
+  });
+
+  it.each([null, CategoryGroup.PREMIUM_APPS, CategoryGroup.GAME_TOPUP])("keeps app account metadata out of game detail, with category group %s", async (group) => {
+    await prisma.category.update({ where: { id: sample.category.id }, data: { group } });
+    await prisma.denomination.update({ where: { id: sample.product.id }, data: { autoDeliverySource: "digiflazz" } });
+    const data = `v1:adm:prod:edit:${sample.product.id}`;
+    const { ctx, sink } = adminCtx({ callbackData: data });
+    await handleAdminCallback(ctx, data.split(":"));
+    for (const label of ["Warranty:", "Duration:", "Type:"]) {
+      expect(sentIncludes(sink, label)).toBe(group !== CategoryGroup.GAME_TOPUP);
+    }
+    expect(sentIncludes(sink, "Provider fulfillment")).toBe(true);
+    oneEdit(sink);
+  });
+
+  it.each(["digiflazz", null])("refuses a stale stock view on non-inventory SKU %s", async (autoDeliverySource) => {
+    await prisma.denomination.update({ where: { id: sample.product.id }, data: { deliveryType: "manual", autoDeliverySource } });
+    const data = `v1:adm:prod:stock:${sample.product.id}`;
+    const { ctx, sink } = adminCtx({ callbackData: data });
+    await handleAdminCallback(ctx, data.split(":"));
+    expect(sentIncludes(sink, "does not use local inventory")).toBe(true);
+    expect(await prisma.auditLog.count({ where: { action: "stock_view" } })).toBe(0);
+    oneEdit(sink);
+  });
+});
+
 /** Create a PENDING_PAYMENT order for the sample user. */
 async function makeOrder(qty = 1) {
   return prisma.$transaction((tx) =>
@@ -3947,7 +4012,7 @@ describe("qty stepper", () => {
 
   it("denominationDetailKb emits an active dec5/inc5 stepper row for a mid-range qty", () => {
     const kb = denominationDetailKb(
-      { id: sample.product.id, name: "Netflix Premium 1M", price: "5.00", deliveryType: DeliveryType.AUTO },
+      { id: sample.product.id, name: "Netflix Premium 1M", price: "5.00", deliveryType: DeliveryType.AUTO, autoDeliverySource: null },
       20,
       "en",
       10,
@@ -3962,7 +4027,7 @@ describe("qty stepper", () => {
 
   it("denominationDetailKb no-ops dec/dec5 at qty=1", () => {
     const kb = denominationDetailKb(
-      { id: sample.product.id, name: "Netflix Premium 1M", price: "5.00", deliveryType: DeliveryType.AUTO },
+      { id: sample.product.id, name: "Netflix Premium 1M", price: "5.00", deliveryType: DeliveryType.AUTO, autoDeliverySource: null },
       20,
       "en",
       1,
@@ -3979,7 +4044,7 @@ describe("qty stepper", () => {
 
   it("denominationDetailKb no-ops inc/inc5 at qty=stock", () => {
     const kb = denominationDetailKb(
-      { id: sample.product.id, name: "Netflix Premium 1M", price: "5.00", deliveryType: DeliveryType.AUTO },
+      { id: sample.product.id, name: "Netflix Premium 1M", price: "5.00", deliveryType: DeliveryType.AUTO, autoDeliverySource: null },
       5,
       "en",
       5,
@@ -4022,7 +4087,7 @@ describe("product detail: sold count + refresh", () => {
 
   it("denominationDetailKb includes a Refresh button above Back for in-stock and out-of-stock cases", () => {
     const inStock = denominationDetailKb(
-      { id: sample.product.id, name: "Netflix Premium 1M", price: "5.00", deliveryType: DeliveryType.AUTO },
+      { id: sample.product.id, name: "Netflix Premium 1M", price: "5.00", deliveryType: DeliveryType.AUTO, autoDeliverySource: null },
       20,
       "en",
       1,
@@ -4031,7 +4096,7 @@ describe("product detail: sold count + refresh", () => {
     expect(inStockFlat.some((b) => b.callback_data === `v1:browse:refresh:${sample.product.id}:1`)).toBe(true);
 
     const outOfStock = denominationDetailKb(
-      { id: sample.product.id, name: "Netflix Premium 1M", price: "5.00", deliveryType: DeliveryType.AUTO },
+      { id: sample.product.id, name: "Netflix Premium 1M", price: "5.00", deliveryType: DeliveryType.AUTO, autoDeliverySource: null },
       0,
       "en",
       1,
@@ -4045,7 +4110,7 @@ describe("product detail: sold count + refresh", () => {
     // included) never have StockItem rows by design — availableStock is
     // always 0 for them, but that must never gate purchasability.
     const kb = denominationDetailKb(
-      { id: sample.product.id, name: "Manual Denom", price: "5.00", deliveryType: DeliveryType.MANUAL_WITH_INFO },
+      { id: sample.product.id, name: "Manual Denom", price: "5.00", deliveryType: DeliveryType.MANUAL_WITH_INFO, autoDeliverySource: null },
       0,
       "en",
       1,
@@ -4057,7 +4122,7 @@ describe("product detail: sold count + refresh", () => {
 
   it("denominationDetailKb caps the qty stepper at MAX_CART_ORDER_UNITS (not availableStock=0) for a non-AUTO SKU", () => {
     const kb = denominationDetailKb(
-      { id: sample.product.id, name: "Manual Denom", price: "5.00", deliveryType: DeliveryType.MANUAL_WITH_INFO },
+      { id: sample.product.id, name: "Manual Denom", price: "5.00", deliveryType: DeliveryType.MANUAL_WITH_INFO, autoDeliverySource: null },
       0,
       "en",
       MAX_CART_ORDER_UNITS,

@@ -117,3 +117,4 @@ graphify-out/
 
 # Reproducible checkout UI harness evidence stays local.
 /.audit-data/checkout-dynamic-sticky/
+/.audit-data/catalog-availability/

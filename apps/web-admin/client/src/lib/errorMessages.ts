@@ -47,6 +47,9 @@ const KNOWN_ERROR_MESSAGES: Record<string, string> = {
     "This order is no longer awaiting fulfilment — it may have already been processed.",
   "error.order_paid_needs_credit":
     "This order was already paid — use \"Credit to Balance\" instead of Reject/Cancel, so the payment isn't lost.",
+  // `{orderCode}` is always passed by creditOrderToBalance, the only throw site.
+  "error.order_in_flight_at_supplier":
+    "Order {orderCode} is still waiting for the supplier's result, so credit is locked until that status is final. Refresh the page to see the current state.",
   "error.already_credited":
     "This order's payment has already been credited to the buyer's balance, so nothing was handed over a second time. Refresh the page to see the current state.",
   "error.order_already_refunded":

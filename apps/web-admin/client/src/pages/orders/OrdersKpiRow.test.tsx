@@ -2,6 +2,7 @@ import "@testing-library/jest-dom";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { AWAITING_FULFILLMENT_HINT } from "../../lib/awaitingFulfillment";
 import { OrdersKpiRow } from "./OrdersKpiRow";
 
 const KPIS = {
@@ -36,6 +37,13 @@ describe("OrdersKpiRow", () => {
     renderWith(vi.fn(async () => jsonResponse(KPIS)));
     await waitFor(() => expect(screen.getByText("42")).toBeInTheDocument());
     expect(screen.getByText("30")).toBeInTheDocument();
+  });
+
+  it("explains Awaiting Fulfillment with the Operation Center wording (in-flight provider orders are not counted)", async () => {
+    renderWith(vi.fn(async () => jsonResponse(KPIS)));
+    await waitFor(() => expect(screen.getByText("42")).toBeInTheDocument());
+    expect(screen.getByText("Awaiting Fulfillment")).toHaveAttribute("title", AWAITING_FULFILLMENT_HINT);
+    expect(AWAITING_FULFILLMENT_HINT).toContain("provider are not counted");
   });
 
   it("shows loading skeletons, never a real-looking 0, while the fetch is in flight", async () => {

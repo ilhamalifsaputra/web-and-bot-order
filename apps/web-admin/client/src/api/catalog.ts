@@ -29,7 +29,9 @@ export interface ProductRow {
   isArchived: boolean;
   webImageUrl: string | null;
   createdAt: string;
-  category: { id: number; name: string; emoji: string | null } | null;
+  /** `group` is the category's product family ("GAME_TOPUP" | "PREMIUM_APPS"),
+   * null for a legacy category an admin never classified. */
+  category: { id: number; name: string; emoji: string | null; group?: string | null } | null;
   _count: { denominations: number };
   /** Admin-authored game-navigation classification (Task 8/14) — the bot's
    * catalog navigation and denomination labeling (Tasks 11-13) key off

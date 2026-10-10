@@ -863,6 +863,25 @@ describe("orders", () => {
     expect((await getOrder(prisma, orderId))!.status).toBe("CANCELLED");
   });
 
+  // A Digiflazz order the supplier may still complete: no Credit button, and
+  // the route refuses with a 422 (not a 500) and writes no audit row.
+  it("credit-balance refuses a Digiflazz order still pending at the supplier with 422", async () => {
+    const orderId = await makeProcessingOrder();
+    await prisma.order.update({
+      where: { id: orderId },
+      data: { fulfillmentProvider: "DIGIFLAZZ", digiflazzStatus: "pending_at_supplier", digiflazzDispatchedAt: new Date() },
+    });
+    const detail = (await app.inject({ method: "GET", url: `/api/orders/${orderId}`, cookies: { [COOKIE]: seed.cookie } })).json();
+    expect(detail).toMatchObject({ canCredit: false, creditLockedBySupplier: true });
+
+    const creditRes = await post(`/api/orders/${orderId}/credit-balance`, seed.cookie, { csrf_token: seed.csrf });
+    expect(creditRes.statusCode).toBe(422);
+    expect(JSON.parse(creditRes.body).error).toBe("error.order_in_flight_at_supplier");
+    expect((await getOrder(prisma, orderId))!.status).toBe("PROCESSING");
+    expect(await prisma.walletTransaction.count({ where: { orderId, reason: "unfulfilled_credit" } })).toBe(0);
+    expect(await prisma.auditLog.count({ where: { action: "order_credit_balance", targetId: orderId } })).toBe(0);
+  });
+
   it("GET order detail: canReject is true for both PENDING_VERIFICATION and PROCESSING, but canAct (Approve) stays PENDING_VERIFICATION-only", async () => {
     const pendingId = await makePendingOrder();
     const pendingRes = await app.inject({

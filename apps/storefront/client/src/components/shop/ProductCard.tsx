@@ -51,9 +51,15 @@ export interface ProductCardData {
   /** ISO end of the sale behind `flash_discount` — the badge retires itself
    * when it passes. */
   flash_ends_at?: string | null;
-  /** True when every active denomination is non-`auto` delivery — these
-   * never carry a real stock count and are always purchasable (STO-001). */
+  /** True when no active denomination draws from local inventory (provider
+   * SKUs such as auto + Digiflazz, and manual ones) — these never carry a
+   * real stock count and are always purchasable (STO-001). Server verdict. */
   all_non_auto: boolean;
+  /** True when every active denomination draws from local inventory — only
+   * then is `available` the product's stock. A mixed product must not show
+   * its partial local count as the product's badge. Optional only so older
+   * fixtures type-check; the server always sends it. */
+  all_local_inventory?: boolean;
 }
 
 export interface ProductCardProps {
@@ -125,11 +131,12 @@ export default function ProductCard({ p, fx, lowThreshold }: ProductCardProps) {
             placeholder (fails WCAG AA); white on bg-grass-dark is ~5:1.
             Still the grass family (positive capability), never off-palette
             amber — same treatment as the sibling bulk-discount badge above.
-            Gated on !all_non_auto AND available > 0: when every denomination is
-            manual delivery nothing is delivered instantly, and an auto product
-            with no stock has nothing to deliver — either way the pill would
-            mislead the buyer. (Only auto denominations ever hold stock rows, so
-            `available > 0` also proves an auto plan is in stock on a mixed product.) */}
+            Gated on !all_non_auto AND available > 0: when no denomination draws
+            from local stock nothing is delivered from inventory, and a local
+            product with no stock has nothing to deliver — either way the pill
+            would mislead the buyer. (`available` counts local-inventory
+            denominations only, so `available > 0` also proves a local plan is
+            in stock on a mixed product.) */}
         {!p.all_non_auto && p.available > 0 && (
           <span className="absolute right-2 bottom-2 sm:right-3 sm:bottom-3 inline-flex items-center gap-1 rounded-full bg-grass-dark px-2.5 py-1 text-xs font-medium text-white">
             <Zap className="w-3 h-3" /> {t("web.badge_instant")}
@@ -165,7 +172,14 @@ export default function ProductCard({ p, fx, lowThreshold }: ProductCardProps) {
                 only, and it never feeds a total. */}
             {preSale !== null && <FlashWasPrice value={preSale} endsAt={p.flash_ends_at ?? null} />}
           </p>
-          <StockBadge available={p.available} lowThreshold={lowThreshold} allNonAuto={p.all_non_auto} />
+          {/* A count badge only when every plan is local stock; a mixed
+              product is purchasable through its provider/manual plans
+              whatever its partial local count says. */}
+          <StockBadge
+            available={p.available}
+            lowThreshold={lowThreshold}
+            allNonAuto={p.all_non_auto || p.all_local_inventory === false}
+          />
         </div>
 
         {p.bulk_discount && p.bulk_min_qty && (

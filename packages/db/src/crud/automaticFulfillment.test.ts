@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
-import { createOrderDirect, createOrderFromCart, attachPaymentProof, settlePaidOrder, updateOrderCustomerData, fulfillManualOrder } from "./orders";
+import { createOrderDirect, createOrderFromCart, attachPaymentProof, settlePaidOrder, updateOrderCustomerData, fulfillManualOrder, creditOrderToBalance } from "./orders";
 import { bulkAddStock } from "./stock";
 import { dispatchPendingDigiflazzOrders, recordDigiflazzOutcome, fulfillDigiflazzOrder } from "./digiflazz";
 import { setSetting } from "./settings";
@@ -143,5 +143,73 @@ describe("automatic fulfillment routing", () => {
     alertFault.fail = false;
     await recordDigiflazzOutcome(db.prisma, order, { kind: "terminal", reason: "provider rejected", supplierGaveReason: true }, new Date());
     expect(await db.prisma.notificationOutbox.count({ where: { orderId: order.id, event: NotificationEvent.ORDER_PIPELINE_FAILED } })).toBe(1);
+  });
+});
+
+// Owner decision (catalog-availability): crediting a Digiflazz order the
+// supplier may still complete would cancel it, and a later supplier "Sukses"
+// would then lose fulfillDigiflazzOrder's PROCESSING claim while the top-up
+// still reached the player — the buyer keeps both. Credit is refused until the
+// provider's status is final (`failed`).
+describe("creditOrderToBalance while the supplier may still deliver", () => {
+  async function moneySnapshot(orderId: number) {
+    return {
+      wallet: (await db.prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } })).walletBalance.toString(),
+      walletRows: await db.prisma.walletTransaction.count(),
+      ledgerRows: await db.prisma.financialTransaction.count(),
+      status: (await db.prisma.order.findUniqueOrThrow({ where: { id: orderId } })).status,
+    };
+  }
+  const credit = (orderId: number) =>
+    creditOrderToBalance(db.prisma, { orderId, adminId: sample.user.id });
+
+  it("refuses an order pending at the supplier and moves no money", async () => {
+    const order = await paidOrder();
+    await db.prisma.order.update({ where: { id: order.id }, data: { digiflazzDispatchedAt: new Date(), digiflazzStatus: "pending_at_supplier" } });
+    const before = await moneySnapshot(order.id);
+    await expect(credit(order.id)).rejects.toMatchObject({ key: "error.order_in_flight_at_supplier", formatArgs: { orderCode: order.orderCode } });
+    expect(await moneySnapshot(order.id)).toEqual(before);
+    expect(before.status).toBe("PROCESSING");
+  });
+
+  it("refuses a paid order that is still queued (not dispatched yet, digiflazzStatus null)", async () => {
+    const order = await paidOrder();
+    expect(order.digiflazzStatus).toBeNull();
+    const before = await moneySnapshot(order.id);
+    await expect(credit(order.id)).rejects.toMatchObject({ key: "error.order_in_flight_at_supplier" });
+    expect(await moneySnapshot(order.id)).toEqual(before);
+  });
+
+  it("refuses a CANCELLED order the supplier already received and has not failed", async () => {
+    const order = await paidOrder();
+    await db.prisma.order.update({
+      where: { id: order.id },
+      data: { status: "CANCELLED", digiflazzDispatchedAt: new Date(), digiflazzStatus: "pending_at_supplier" },
+    });
+    const before = await moneySnapshot(order.id);
+    await expect(credit(order.id)).rejects.toMatchObject({ key: "error.order_in_flight_at_supplier" });
+    expect(await moneySnapshot(order.id)).toEqual(before);
+  });
+
+  it("after a refused credit, the supplier's Sukses still delivers the order with no review alert", async () => {
+    const order = await paidOrder();
+    await db.prisma.order.update({ where: { id: order.id }, data: { digiflazzDispatchedAt: new Date(), digiflazzStatus: "pending_at_supplier" } });
+    await expect(credit(order.id)).rejects.toMatchObject({ key: "error.order_in_flight_at_supplier" });
+    await fulfillDigiflazzOrder(db.prisma, order.id, { sn: "SN-OK" });
+    expect((await db.prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe("DELIVERED");
+    expect(await db.prisma.walletTransaction.count({ where: { orderId: order.id, reason: "unfulfilled_credit" } })).toBe(0);
+    expect(await db.prisma.notificationOutbox.count({ where: { orderId: order.id, event: NotificationEvent.ORDER_PIPELINE_FAILED } })).toBe(0);
+    expect(await db.prisma.auditLog.count({ where: { targetId: order.id, action: "order.digiflazz_dispatch_failed" } })).toBe(0);
+  });
+
+  it("credits an order once the provider failed it (terminal), as before", async () => {
+    const order = await paidOrder();
+    await recordDigiflazzOutcome(db.prisma, order, { kind: "terminal", reason: "provider rejected", supplierGaveReason: true }, new Date());
+    const before = await db.prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
+    const res = await credit(order.id);
+    expect(res.credited.equals(order.totalAmount)).toBe(true);
+    const after = await db.prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
+    expect(after.walletBalance.minus(before.walletBalance).equals(order.totalAmount)).toBe(true);
+    expect((await db.prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe("CANCELLED");
   });
 });

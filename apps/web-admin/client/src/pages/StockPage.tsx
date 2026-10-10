@@ -22,6 +22,7 @@ import { StatusBadge } from "../components/shared/StatusBadge";
 import { RestockRequestsHeader } from "../components/shared/RestockRequestsHeader";
 import { apiGet } from "../api/client";
 import { formatRestockRequests } from "../lib/restockRequests";
+import { ALL_TAB, familyTabOptions, matchesFamilyTab, type FamilyTab } from "../lib/catalogFamily";
 
 interface DenominationRow {
   id: number;
@@ -30,10 +31,16 @@ interface DenominationRow {
   /** "auto" = fulfilled from stock rows; anything else (manual/form) never
    *  holds stock, so it must never be scored against the stock tiers below. */
   deliveryType: string;
+  /** Where the SKU is fulfilled from, resolved by the server (provider wins
+   *  over deliveryType). Only INTERNAL_INVENTORY draws from local stock rows. */
+  fulfillmentSource: "INTERNAL_INVENTORY" | "PROVIDER_API" | "MANUAL";
+  /** True only when the SKU is fulfilled by reserving a local stock row — the
+   *  one case a stock count or tier means anything for. */
+  usesLocalInventory: boolean;
   product: {
     id: number;
     name: string;
-    category: { id: number; name: string } | null;
+    category: { id: number; name: string; group?: string | null } | null;
   } | null;
 }
 
@@ -67,9 +74,15 @@ type SortMode = "name" | "available-asc" | "category";
  *  stock tiers would always read "Out of Stock" for a SKU that was never
  *  meant to carry stock at all. An inactive SKU is excluded from the KPI
  *  tiles entirely regardless of delivery type. */
-function stockTier(row: DenominationRow, available: number, threshold: number): "inactive" | "manual" | "out" | "low" | "healthy" {
+function stockTier(
+  row: DenominationRow,
+  available: number,
+  threshold: number,
+): "inactive" | "manual" | "provider" | "out" | "low" | "healthy" {
   if (!row.isActive) return "inactive";
-  if (row.deliveryType !== "auto") return "manual";
+  // No local stock rows: there is nothing to score, and no live supplier stock
+  // signal exists either, so these are never "out" or "in stock".
+  if (!row.usesLocalInventory) return row.fulfillmentSource === "PROVIDER_API" ? "provider" : "manual";
   if (available === 0) return "out";
   if (available <= threshold) return "low";
   return "healthy";
@@ -82,6 +95,9 @@ function compareRows(
   counts: StockData["counts"],
 ): number {
   if (sortBy === "available-asc") {
+    // Provider/manual SKUs hold no local stock rows, so their "0" is not a
+    // shortage: keep them after every real inventory row (ties fall to name).
+    if (a.usesLocalInventory !== b.usesLocalInventory) return a.usesLocalInventory ? -1 : 1;
     const av = counts[String(a.id)]?.available ?? 0;
     const bv = counts[String(b.id)]?.available ?? 0;
     return av - bv;
@@ -104,6 +120,7 @@ export function StockPage() {
   const { data, isLoading, isError } = useStock();
   const [filter, setFilter] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("all");
+  const [familyFilter, setFamilyFilter] = useState<FamilyTab>(ALL_TAB);
   const [availabilityFilter, setAvailabilityFilter] = useState<AvailabilityFilter>("all");
   const [sortBy, setSortBy] = useState<SortMode>("name");
 
@@ -119,34 +136,41 @@ export function StockPage() {
   const counts = data?.counts ?? {};
   const isGenuinelyEmpty = denominations.length === 0;
 
+  // Category options belong to the chosen family, so a Game Top-Up view never
+  // offers a Digital Apps category.
   const categories = Array.from(
     denominations.reduce((map, d) => {
-      if (d.product?.category) map.set(d.product.category.id, d.product.category.name);
+      const category = d.product?.category;
+      if (category && matchesFamilyTab(category.group, familyFilter)) map.set(category.id, category.name);
       return map;
     }, new Map<number, string>()),
   )
     .map(([id, name]) => ({ id, name }))
     .sort((a, b) => a.name.localeCompare(b.name));
+  const activeCategoryFilter = categories.some((c) => String(c.id) === categoryFilter) ? categoryFilter : "all";
 
   const lowStockThreshold = data?.lowStockThreshold ?? 0;
   const tierOf = (d: DenominationRow) => stockTier(d, counts[String(d.id)]?.available ?? 0, lowStockThreshold);
 
-  // Inactive SKUs are excluded from every tile below (they're not part of the
-  // live catalog); manual-delivery SKUs count toward Total SKU but never
-  // toward the stock-tier tiles (Available/Low/Out) — they never hold stock
-  // rows, so scoring them against those tiers would always read "out".
-  const activeDenominations = denominations.filter((d) => d.isActive);
-  const stockTrackedDenominations = activeDenominations.filter((d) => d.deliveryType === "auto");
-  const totalSku = activeDenominations.length;
+  // Every tile counts only active SKUs that draw from local inventory:
+  // provider and manual SKUs never hold stock rows, so counting them would
+  // inflate the totals and scoring them against the stock tiers would always
+  // read "out". Inactive SKUs are not part of the live catalog. The tiles
+  // follow the family filter, like the list.
+  const stockTrackedDenominations = denominations.filter(
+    (d) => d.isActive && d.usesLocalInventory && matchesFamilyTab(d.product?.category?.group, familyFilter),
+  );
+  const totalSku = stockTrackedDenominations.length;
   const availableCount = stockTrackedDenominations.filter((d) => tierOf(d) === "healthy" || tierOf(d) === "low").length;
   const lowStockCount = stockTrackedDenominations.filter((d) => tierOf(d) === "low").length;
   const outOfStockCount = stockTrackedDenominations.filter((d) => tierOf(d) === "out").length;
 
   const hasActiveFilter =
-    !!filter || categoryFilter !== "all" || availabilityFilter !== "all" || sortBy !== "name";
+    !!filter || familyFilter !== ALL_TAB || activeCategoryFilter !== "all" || availabilityFilter !== "all" || sortBy !== "name";
   const clearFilters = () => {
     setFilter("");
     setCategoryFilter("all");
+    setFamilyFilter(ALL_TAB);
     setAvailabilityFilter("all");
     setSortBy("name");
   };
@@ -159,7 +183,8 @@ export function StockPage() {
         (d.product?.name ?? "").toLowerCase().includes(filter.toLowerCase()) ||
         (d.product?.category?.name ?? "").toLowerCase().includes(filter.toLowerCase()),
     )
-    .filter((d) => categoryFilter === "all" || String(d.product?.category?.id) === categoryFilter)
+    .filter((d) => matchesFamilyTab(d.product?.category?.group, familyFilter))
+    .filter((d) => activeCategoryFilter === "all" || String(d.product?.category?.id) === activeCategoryFilter)
     .filter((d) => {
       if (availabilityFilter === "all") return true;
       const tier = tierOf(d);
@@ -182,7 +207,7 @@ export function StockPage() {
       />
 
       <div className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
-        <StatTile label="Total SKU" value={totalSku} isLoading={!data} />
+        <StatTile label="Stock-tracked SKU" value={totalSku} isLoading={!data} />
         <StatTile label="In stock (SKUs)" value={availableCount} isLoading={!data} />
         <StatTile label="Low Stock" value={lowStockCount} isLoading={!data} />
         <StatTile label="Out of Stock" value={outOfStockCount} isLoading={!data} />
@@ -195,8 +220,23 @@ export function StockPage() {
           placeholder="Filter by denomination, product, or category…"
         />
         <div className="flex flex-col gap-1">
+          <label className="text-xs text-ink-soft">Product type</label>
+          <Select value={familyFilter} onValueChange={(v) => setFamilyFilter(v as FamilyTab)}>
+            <SelectTrigger size="sm" className="w-40">
+              <SelectValue placeholder="All products" />
+            </SelectTrigger>
+            <SelectContent>
+              {familyTabOptions().map((tab) => (
+                <SelectItem key={tab.value} value={tab.value}>
+                  {tab.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="flex flex-col gap-1">
           <label className="text-xs text-ink-soft">Category</label>
-          <Select value={categoryFilter} onValueChange={setCategoryFilter}>
+          <Select value={activeCategoryFilter} onValueChange={setCategoryFilter}>
             <SelectTrigger size="sm" className="w-40">
               <SelectValue placeholder="All categories" />
             </SelectTrigger>
@@ -269,6 +309,7 @@ export function StockPage() {
                   const tier = stockTier(row, available, lowStockThreshold);
                   if (tier === "inactive") return <StatusBadge status="INACTIVE" />;
                   if (tier === "manual") return <StatusBadge status="MANUAL" />;
+                  if (tier === "provider") return <StatusBadge status="PROVIDER" />;
                   if (tier === "out") return <StatusBadge status="OUT_OF_STOCK" />;
                   if (tier === "low") return <StatusBadge status="LOW_STOCK" />;
                   return <StatusBadge status="IN_STOCK" />;
@@ -278,6 +319,7 @@ export function StockPage() {
                 key: "available",
                 header: "Available",
                 render: (row) => {
+                  if (!row.usesLocalInventory) return <span className="text-sm text-ink-soft">—</span>;
                   const available = counts[String(row.id)]?.available ?? 0;
                   return (
                     <span
@@ -297,7 +339,9 @@ export function StockPage() {
                 header: <RestockRequestsHeader />,
                 render: (row) => (
                   <span className="text-sm text-ink-soft">
-                    {formatRestockRequests(data?.waiting[String(row.id)], counts[String(row.id)]?.available)}
+                    {row.usesLocalInventory
+                      ? formatRestockRequests(data?.waiting[String(row.id)], counts[String(row.id)]?.available)
+                      : "—"}
                   </span>
                 ),
               },
@@ -305,6 +349,15 @@ export function StockPage() {
                 key: "stock",
                 header: "Stock",
                 render: (row) => {
+                  // No local stock rows, so no stock figure: "No stock added"
+                  // or "Sold out" would be false for a provider/manual SKU.
+                  if (!row.usesLocalInventory) {
+                    return (
+                      <div className="min-w-[120px] text-sm text-ink-soft">
+                        {row.fulfillmentSource === "PROVIDER_API" ? "Provider" : "Manual"}
+                      </div>
+                    );
+                  }
                   const cnt = counts[String(row.id)];
                   const available = cnt?.available ?? 0;
                   const reserved = cnt?.reserved ?? 0;
@@ -377,11 +430,11 @@ export function StockPage() {
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
-                          <DropdownMenuItem onSelect={() => navigate(`/stock/${row.id}`)}>
+                          <DropdownMenuItem onSelect={() => navigate(row.usesLocalInventory ? `/stock/${row.id}` : row.product ? `/catalog/${row.product.id}` : "/catalog")}>
                             <Eye className="h-4 w-4" />
                             View
                           </DropdownMenuItem>
-                          {available > 0 && (
+                          {row.usesLocalInventory && available > 0 && (
                             <DropdownMenuItem asChild>
                               <a href={`/api/stock/${row.id}/download`}>
                                 <Download className="h-4 w-4" />
@@ -399,7 +452,7 @@ export function StockPage() {
             data={filtered}
             isLoading={isLoading}
             keyExtractor={(row) => row.id}
-            onRowClick={(row) => navigate(`/stock/${row.id}`)}
+            onRowClick={(row) => navigate(row.usesLocalInventory ? `/stock/${row.id}` : row.product ? `/catalog/${row.product.id}` : "/catalog")}
             empty={
               isGenuinelyEmpty ? (
                 <EmptyState

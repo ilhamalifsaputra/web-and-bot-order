@@ -32,6 +32,7 @@ import { bulkDiscountFor } from "@app/core/bulk";
 import { ensureUtc } from "@app/core/datetime";
 import { formatIdr, formatUsdt } from "@app/core/formatters";
 import { cartCompositionError } from "@app/core/cartComposition";
+import { hasSellableStock } from "@app/core/productAvailability";
 import {
   prisma,
   getCart,
@@ -410,7 +411,7 @@ export async function checkoutView(
   const display = { ...rateContext, preferredCurrency: resolveDisplayCurrency(customer?.user, requestCurrency(req)) ?? "IDR", locale: requestLang(req), generatedAt: new Date().toISOString() };
   const canonicalItems = await Promise.all(totals.lines.map(async (ci) => {
     const [denom, available] = await Promise.all([getDenominationWithProduct(prisma, ci.productId), countAvailableStock(prisma, ci.productId)]);
-    return denom ? canonicalProduct({ denomination: { ...denom, createdAt: denom.createdAt.toISOString() }, product: denom.product, category: denom.product.category, stockAvailable: denom.deliveryType !== DeliveryType.AUTO || available > 0 }, { ...display, effectivePriceIDR: effectiveUnitPrice(ci.product, totals.isReseller, totals.pricedAt).toString() }) : null;
+    return denom ? canonicalProduct({ denomination: { ...denom, createdAt: denom.createdAt.toISOString() }, product: denom.product, category: denom.product.category, stockAvailable: hasSellableStock(denom, available) }, { ...display, effectivePriceIDR: effectiveUnitPrice(ci.product, totals.isReseller, totals.pricedAt).toString() }) : null;
   }));
   const haveRate = Boolean(fxRate);
   // Third condition on every USDT rail, beyond "configured" and "clears the

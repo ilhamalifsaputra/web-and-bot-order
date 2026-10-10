@@ -59,6 +59,19 @@ beforeEach(() => {
 });
 
 describe("StockProductPage", () => {
+  it.each(["Provider plan", "Manual plan"])("hides inventory controls for %s even through a direct stock link", async (name) => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(jsonResponse({
+      ...STOCK_PRODUCT_DATA,
+      product: { ...PRODUCT, name, usesLocalInventory: false },
+    }));
+    render(<StockProductPage />, { wrapper: Wrapper });
+    expect(await screen.findByText(/does not use local inventory/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Add Stock" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: /credentials/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /download credentials/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "View product" })).toHaveAttribute("href", "/catalog/1");
+  });
+
   it("shows stock product detail", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(jsonResponse(STOCK_PRODUCT_DATA));
     render(<StockProductPage />, { wrapper: Wrapper });

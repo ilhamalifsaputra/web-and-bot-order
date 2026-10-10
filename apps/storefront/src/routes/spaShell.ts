@@ -23,6 +23,7 @@ import type { FastifyInstance } from "fastify";
 import { config } from "@app/core/config";
 import { t } from "@app/core/i18n";
 import { formatIdr } from "@app/core/formatters";
+import { hasSellableStock } from "@app/core/productAvailability";
 import {
   prisma,
   getSetting,
@@ -331,13 +332,11 @@ async function headInfo(
       ),
     ]);
 
-    // Availability mirrors ProductPage.tsx's `purchasable()`: a non-auto
-    // denomination (manual / manual_with_info) never has stock rows by design,
-    // so it counts as available. Claiming InStock unconditionally — as this
+    // Availability follows @app/core/productAvailability, the rule the order
+    // server applies: a provider or manual denomination never has stock rows
+    // by design, so it counts as available. Claiming InStock unconditionally — as this
     // did before — risks a Google Merchant penalty once a product sells out.
-    const anyPurchasable = product.denominations.some(
-      (d) => d.deliveryType !== "auto" || (stock[d.id]?.available ?? 0) > 0,
-    );
+    const anyPurchasable = product.denominations.some((d) => hasSellableStock(d, stock[d.id]?.available ?? 0));
 
     // Star rating for the rich snippet. Reviews attach to the denomination
     // bought, so a product's rating is the aggregate across its own

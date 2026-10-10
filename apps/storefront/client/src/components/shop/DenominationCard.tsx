@@ -53,16 +53,19 @@ export interface DenominationCardData {
   flash?: FlashInfo | null;
   available: number;
   in_stock: boolean;
+  /** Server verdict: this plan draws from local stock (see api/types.ts). */
+  uses_local_inventory: boolean;
+  /** Server verdict: this plan can be bought now (see api/types.ts). */
+  purchasable: boolean;
   /** "auto" | "manual" | "manual_with_info" (DeliveryType). */
   delivery_type: string;
 }
 
-/** Bug B fix (Task 6): the radio used to be disabled={!d.in_stock}, which
- * permanently disabled selecting ANY manual/manual_with_info plan (they
- * never have stock rows by design — Task 2 skips stock reservation for
- * them). Mirrors ProductPage.tsx's `purchasable`. */
+/** The radio once used disabled={!d.in_stock}, which disabled every manual
+ * and provider plan (they never have stock rows by design). It now reads the
+ * server's verdict, the same field ProductPage.tsx gates buying on. */
 function purchasable(d: DenominationCardData): boolean {
-  return d.canonical?.availability.purchasable ?? (d.delivery_type !== "auto" || d.in_stock);
+  return d.purchasable;
 }
 
 export interface DenominationCardProps {
@@ -111,13 +114,13 @@ export default function DenominationCard({ d, fx, lowThreshold, checked, onChang
             {d.canonical?.displayName || d.duration_label || d.name}
           </div>
           {!!d.canonical?.qualifiers.length && <div className="text-xs text-ink-soft break-words">{d.canonical.qualifiers.join(" · ")}</div>}
-          {/* Non-auto (provider-backed, e.g. Digiflazz) plans have no real
+          {/* Provider (e.g. auto + Digiflazz) and manual plans have no real
               stock count — a number would be misleading, but rendering
               nothing left the buyer with no "purchasable" cue at all. Show
               the plain "Available" pill (StockBadge's allNonAuto branch,
               identical markup to the catalog card's). */}
           <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
-            {d.delivery_type === "auto" ? (
+            {d.uses_local_inventory ? (
               <StockBadge available={d.available} lowThreshold={lowThreshold} />
             ) : (
               <StockBadge available={d.available} lowThreshold={lowThreshold} allNonAuto />

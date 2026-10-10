@@ -83,6 +83,10 @@ interface DenomStat {
   belowCost?: boolean;
   id: number;
   available: number;
+  /** Where the SKU is fulfilled from (resolved by the server). Only
+   *  INTERNAL_INVENTORY draws from local stock, so only it has a stock count. */
+  fulfillmentSource?: "INTERNAL_INVENTORY" | "PROVIDER_API" | "MANUAL";
+  usesLocalInventory?: boolean;
   waiting: number;
   rule: { minQuantity: number; discountPercent: string } | null;
   flash?: { discountPercent: string; active: boolean } | null;
@@ -659,11 +663,33 @@ export function ProductDetailPage() {
                 key: "stock",
                 header: "Stock",
                 // "—" (not a fake 0) when the server sent no stat for this
-                // denomination at all — a genuine 0 (a manual SKU, or an
-                // auto one that has simply sold out) still renders as 0.
-                render: d => { const stat = statsByDenom[String(d.id)]; return <span className="text-sm">{stat ? stat.available : "—"}</span>; },
+                // denomination at all. A SKU that holds no local stock rows
+                // (supplier API or manual hand-off) shows where it is fulfilled
+                // from instead of a meaningless 0; a genuine 0 on a
+                // stock-backed SKU that has sold out still renders as 0.
+                render: d => {
+                  const stat = statsByDenom[String(d.id)];
+                  if (!stat) return <span className="text-sm">—</span>;
+                  if (stat.usesLocalInventory === false) {
+                    return (
+                      <span className="text-sm text-ink-soft">
+                        {stat.fulfillmentSource === "PROVIDER_API" ? "Provider" : "Manual"}
+                      </span>
+                    );
+                  }
+                  return <span className="text-sm">{stat.available}</span>;
+                },
               },
-              { key: "waiting", header: <RestockRequestsHeader />, render: d => { const stat = statsByDenom[String(d.id)]; return <span className="text-sm text-ink-soft">{formatRestockRequests(stat?.waiting, stat?.available)}</span>; } },
+              {
+                key: "waiting",
+                header: <RestockRequestsHeader />,
+                render: d => {
+                  const stat = statsByDenom[String(d.id)];
+                  // A restock request only means something for a stock-backed SKU.
+                  const shown = stat?.usesLocalInventory === false ? "—" : formatRestockRequests(stat?.waiting, stat?.available);
+                  return <span className="text-sm text-ink-soft">{shown}</span>;
+                },
+              },
               {
                 key: "active",
                 header: "Active",

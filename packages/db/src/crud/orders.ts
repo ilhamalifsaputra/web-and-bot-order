@@ -24,6 +24,7 @@ import {
 import { deriveOrderStatusFromItems } from "@app/core/orderItemStatus";
 import { fulfillmentProviderFor, getOrderFulfillment } from "@app/core/orderFulfillment";
 import { cartCompositionError } from "@app/core/cartComposition";
+import { usesLocalInventory } from "@app/core/productAvailability";
 import { emitDigiflazzOrderStatusChanged } from "@app/core/realtime/digiflazzEvents";
 import { DigiflazzTimingEvent, logDigiflazzTimingEvent } from "@app/core/suppliers/digiflazzTiming";
 import { reconciledOrderMoneyRows } from "@app/core/orderMoneyRows";
@@ -918,7 +919,7 @@ export async function createOrderFromCart(
   // practice the storefront blocks mixing delivery types in one cart, so a cart
   // is either all-auto or all-manual, but this handles either line-by-line.)
   for (const ci of cart) {
-    if (ci.product.deliveryType !== DeliveryType.AUTO || ci.product.autoDeliverySource === "digiflazz") continue;
+    if (!usesLocalInventory(ci.product)) continue;
     const available = await countAvailableStock(db, ci.productId);
     if (available < ci.quantity) {
       throw new ValidationError("error.out_of_stock", { product: ci.product.name });
@@ -985,7 +986,7 @@ export async function createOrderFromCart(
   // that can't be batched without changing which stock item lands on which
   // line).
   for (const ci of cart) {
-    if (ci.product.deliveryType !== DeliveryType.AUTO || ci.product.autoDeliverySource === "digiflazz") continue;
+    if (!usesLocalInventory(ci.product)) continue;
     const lineItemIds = unpairedItemIds.get(ci.productId) ?? [];
     for (let k = 0; k < ci.quantity; k++) {
       const orderItemId = lineItemIds.shift();
@@ -1064,7 +1065,9 @@ export async function createOrderDirect(
     where: { id: args.productId },
     include: { product: { include: { category: true } } },
   });
-  if (!product || !product.isActive || !product.product.isActive || product.product.isArchived || !product.product.category.isActive) throw new ValidationError("error.out_of_stock", { product: "(unknown)" });
+  // Unknown or admin-deactivated SKU: unavailable, not "out of stock" (local
+  // stock is checked further down, for local-inventory SKUs only).
+  if (!product || !product.isActive || !product.product.isActive || product.product.isArchived || !product.product.category.isActive) throw new ValidationError("error.product_unavailable");
   // A top-up SKU with no input fields could only ever dispatch an empty
   // customer number, so refuse it before any money moves. A missing
   // supplierSku or quantity > 1 is deliberately NOT refused here: the
@@ -1121,7 +1124,7 @@ export async function createOrderDirect(
   // availability pre-check and the per-unit reservation below, and create the
   // OrderItem rows with stockItemId=null (fulfilled by hand via
   // settlePaidOrder → fulfillManualOrder). Auto SKUs behave exactly as before.
-  const isManual = product.deliveryType !== DeliveryType.AUTO || product.autoDeliverySource === "digiflazz";
+  const isManual = !usesLocalInventory(product);
 
   // Pre-check before reserving anything (fast-fail on the common "ordered too
   // much" case) — see createOrderFromCart's matching guard for the rationale.
@@ -1502,8 +1505,10 @@ export function countUnderpaid(db: Db): Promise<number> {
 
 /**
  * Manual/manual_with_info orders paid and awaiting an admin to hand-type and
- * send the account content ("Awaiting Fulfillment" on the dashboard).
- * Deliberately NOT named countProcessing — that pre-existing function counts
+ * send the account content ("Awaiting Fulfillment" on the dashboard): the
+ * `PROCESSING` orders that need a human, i.e. every `PROCESSING` order EXCEPT
+ * one still in flight at Digiflazz (it joins this count only once the provider
+ * failed it). Deliberately NOT named countProcessing — that pre-existing function counts
  * CONFIRMED/PAID orders (a different, payment-gateway-in-flight concept) and
  * must not be touched or confused with this one.
  *
@@ -1519,8 +1524,21 @@ export function countUnderpaid(db: Db): Promise<number> {
  * requires `items: { some: ... }`. So a filter here would be dead weight that
  * implies the invariant is weaker than it is.
  */
-export function countAwaitingManualFulfillment(db: Db): Promise<number> {
-  return db.order.count({ where: { status: OrderStatus.PROCESSING } });
+export async function countAwaitingManualFulfillment(db: Db): Promise<number> {
+  // A Digiflazz order sitting in PROCESSING is normally in flight at the
+  // provider (queued, submitting or pending_at_supplier) and needs no admin;
+  // it only joins the manual queue once the provider failed it. The provider
+  // is resolved by `fulfillmentProviderFor` (stored column, else the SKU), the
+  // same rule the order detail uses — never a category name.
+  const rows = await db.order.findMany({
+    where: { status: OrderStatus.PROCESSING },
+    select: {
+      fulfillmentProvider: true,
+      digiflazzStatus: true,
+      items: { select: { deliveryTypeSnapshot: true, product: { select: { autoDeliverySource: true, deliveryType: true } } } },
+    },
+  });
+  return rows.filter((o) => !isDigiflazzInFlight({ ...o, status: OrderStatus.PROCESSING })).length;
 }
 
 /** Orders successfully delivered — the Orders page KPI's "Delivered" count and
@@ -1799,6 +1817,11 @@ export async function cancelOrder(db: Db, orderId: number, reason: string, actor
  * `error.transfer_already_used` otherwise, or with
  * `error.payment_currency_mismatch` for a non-USDT order.
  *
+ * Refused with `error.order_in_flight_at_supplier` while a Digiflazz order may
+ * still be completed by the supplier (`isDigiflazzCreditLocked`, checked on
+ * the locked row) — crediting it would let the buyer keep both the balance and
+ * the top-up.
+ *
  * Audited at the route layer via `logAdminAction`.
  */
 export type CreditOrderToBalanceResult = {
@@ -1864,6 +1887,17 @@ async function creditOrderToBalanceLocked(
     where: { orderId: order.id, reason: "unfulfilled_credit" },
   });
   if (prior) throw new ValidationError("error.already_credited");
+
+  // A Digiflazz order the supplier may still complete must not be credited:
+  // crediting cancels it, a later supplier "Sukses" then loses
+  // fulfillDigiflazzOrder's PROCESSING claim (only an admin alert follows), and
+  // the buyer ends up with both the top-up and the balance. Checked on the row
+  // read under the lock above, so the dispatcher/webhook cannot move it between
+  // this check and the credit. Credit opens again once the provider marks the
+  // order `failed`. See `isDigiflazzCreditLocked` for the CANCELLED case.
+  if (isDigiflazzCreditLocked(order)) {
+    throw new ValidationError("error.order_in_flight_at_supplier", { orderCode: order.orderCode });
+  }
 
   // An order that arrives here already CANCELLED had its holds released and its
   // CANCELLED transition written by whatever cancelled it (`cancelOrder` runs
@@ -3094,9 +3128,12 @@ export interface OrderEligibility {
    * used to be missing even though `canReject` already covered PROCESSING,
    * so Reject was the only refund-shaped action offered, and rejecting moves
    * the order to the terminal REJECTED state where `creditOrderToBalance`
-   * then refuses to act — stranding the buyer's already-paid money. */
+   * then refuses to act — stranding the buyer's already-paid money. False for
+   * a Digiflazz order still in flight (`opts.digiflazzInFlight`), which the
+   * server refuses with `error.order_in_flight_at_supplier`. */
   canCredit: boolean;
-  /** PROCESSING — manual hand-fulfil, needs admin-typed content. */
+  /** PROCESSING — manual hand-fulfil, needs admin-typed content. False for a
+   * Digiflazz order still in flight (`opts.digiflazzInFlight`). */
   canFulfill: boolean;
   /** PENDING_VERIFICATION | PROCESSING — reject is legal from both. */
   canReject: boolean;
@@ -3116,26 +3153,78 @@ export interface OrderEligibility {
   canCreditCancelled: boolean;
 }
 
+/**
+ * A PROCESSING order routed to Digiflazz that the provider has not failed yet
+ * (queued, submitting, or pending at the supplier). Such an order needs no
+ * admin: `fulfillManualOrder` refuses it, and `countAwaitingManualFulfillment`
+ * leaves it out. The provider comes from `fulfillmentProviderFor` (stored
+ * column, else the SKU) — never a category name.
+ */
+export function isDigiflazzInFlight(
+  order: { status: string; digiflazzStatus: string | null } & Parameters<typeof fulfillmentProviderFor>[0],
+): boolean {
+  return (
+    order.status === OrderStatus.PROCESSING &&
+    fulfillmentProviderFor(order) === "DIGIFLAZZ" &&
+    order.digiflazzStatus !== "failed"
+  );
+}
+
+/**
+ * Whether `creditOrderToBalance` must refuse this order because the supplier
+ * may still deliver it. A PROCESSING order: exactly `isDigiflazzInFlight`. A
+ * CANCELLED order: the same rule applied as if it were still PROCESSING, but
+ * only once it was actually handed to the supplier (`digiflazzDispatchedAt`
+ * set, or already `pending_at_supplier`) — a supplier "Sukses" for it would
+ * still reach the player while its claim on the order fails. A CANCELLED
+ * Digiflazz order that was never dispatched (e.g. an expired checkout whose
+ * late payment is being recovered) is not locked: the dispatcher only picks
+ * PROCESSING orders, so nothing can still deliver it.
+ */
+export function isDigiflazzCreditLocked(
+  order: Parameters<typeof isDigiflazzInFlight>[0] & { digiflazzDispatchedAt: Date | null },
+): boolean {
+  if (isDigiflazzInFlight(order)) return true;
+  return (
+    order.status === OrderStatus.CANCELLED &&
+    (order.digiflazzDispatchedAt != null || order.digiflazzStatus === "pending_at_supplier") &&
+    isDigiflazzInFlight({ ...order, status: OrderStatus.PROCESSING })
+  );
+}
+
 export function computeOrderEligibility(
   status: string,
   telegramId: bigint | null,
-  opts?: { cancelledOrderHasMoneyReturned?: boolean; cancelledOrderWasPaid?: boolean },
+  opts?: {
+    cancelledOrderHasMoneyReturned?: boolean;
+    cancelledOrderWasPaid?: boolean;
+    /** `isDigiflazzInFlight(order)` — locks canFulfill and canCredit. */
+    digiflazzInFlight?: boolean;
+    /** `isDigiflazzCreditLocked(order)` — locks canCreditCancelled. */
+    digiflazzCreditLocked?: boolean;
+  },
 ): OrderEligibility {
   const isDelivered = status === OrderStatus.DELIVERED;
   return {
     isDelivered,
     canAct: status === OrderStatus.PENDING_VERIFICATION,
+    // Mirrors creditOrderToBalance, which refuses a Digiflazz order the
+    // supplier may still complete (`error.order_in_flight_at_supplier`).
     canCredit:
-      status === OrderStatus.PENDING_VERIFICATION ||
-      status === OrderStatus.UNDERPAID ||
-      status === OrderStatus.PROCESSING,
-    canFulfill: status === OrderStatus.PROCESSING,
+      (status === OrderStatus.PENDING_VERIFICATION ||
+        status === OrderStatus.UNDERPAID ||
+        status === OrderStatus.PROCESSING) &&
+      opts?.digiflazzInFlight !== true,
+    // Mirrors fulfillManualOrder's claim, which refuses a Digiflazz order the
+    // provider has not failed (`isDigiflazzInFlight`).
+    canFulfill: status === OrderStatus.PROCESSING && opts?.digiflazzInFlight !== true,
     canReject: status === OrderStatus.PENDING_VERIFICATION || status === OrderStatus.PROCESSING,
     canResend: isDelivered && telegramId != null,
     canCreditCancelled:
       status === OrderStatus.CANCELLED &&
       opts?.cancelledOrderHasMoneyReturned === false &&
-      opts?.cancelledOrderWasPaid === true,
+      opts?.cancelledOrderWasPaid === true &&
+      opts?.digiflazzCreditLocked !== true,
   };
 }
 

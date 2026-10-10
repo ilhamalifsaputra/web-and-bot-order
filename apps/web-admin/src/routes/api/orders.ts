@@ -26,6 +26,8 @@ import {
   enqueueManualDeliveredDm,
   logAdminAction,
   computeOrderEligibility,
+  isDigiflazzInFlight,
+  isDigiflazzCreditLocked,
   cancelledOrderIdsWithMoneyReturned,
   orderHasIncomingLedgerPayment,
   revenueSummary,
@@ -173,7 +175,7 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
     const ordersWithDisplay = orders.map((o) => ({
       ...o,
       createdAtDisplay: displayDate(o.createdAt),
-      eligibility: computeOrderEligibility(o.status, o.user?.telegramId ?? null),
+      eligibility: computeOrderEligibility(o.status, o.user?.telegramId ?? null, { digiflazzInFlight: isDigiflazzInFlight(o) }),
     }));
     return reply.send({
       orders: ordersWithDisplay,
@@ -276,6 +278,7 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
             cancelledOrderWasPaid: await orderHasIncomingLedgerPayment(prisma, order.id),
           }
         : undefined;
+    const digiflazzCreditLocked = isDigiflazzCreditLocked(order);
     return reply.send({
       order: { ...masked, createdAtDisplay: displayDateTime(order.createdAt) },
       hasDeliveredContent,
@@ -284,7 +287,14 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
       // canCreditCancelled — one shared eligibility function
       // (packages/db/src/crud/orders.ts) so the list, detail, and bulk-action
       // routes can't drift apart.
-      ...computeOrderEligibility(order.status, order.user.telegramId, eligibilityOpts),
+      ...computeOrderEligibility(order.status, order.user.telegramId, {
+        ...eligibilityOpts,
+        digiflazzInFlight: isDigiflazzInFlight(order),
+        digiflazzCreditLocked,
+      }),
+      // Lets the page say WHY there is no "Credit to Balance" button: the
+      // supplier may still deliver, and creditOrderToBalance refuses it.
+      creditLockedBySupplier: digiflazzCreditLocked,
       customerDataFields,
       customerData,
       stockReplacements: stockReplacements.map(serializeStockReplacement),
@@ -662,7 +672,7 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
         failed.push({ id: orderId, error: "error.order_not_found" });
         continue;
       }
-      const eligibility = computeOrderEligibility(order.status, order.user.telegramId);
+      const eligibility = computeOrderEligibility(order.status, order.user.telegramId, { digiflazzInFlight: isDigiflazzInFlight(order) });
 
       try {
         if (action === "deliver") {

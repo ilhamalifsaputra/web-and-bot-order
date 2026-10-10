@@ -11,6 +11,7 @@ import type { CatalogProduct } from "@app/db";
 import { Decimal } from "@app/core/money";
 import { activeFlashPercent, effectiveUnitPrice, flashPrice } from "@app/core/flash";
 import { activeBulkPercent } from "@app/core/bulk";
+import { usesLocalInventory } from "@app/core/productAvailability";
 import { PRODUCT_VARIANT_WIDTHS, defaultThumbKind, webpSrcset, type ThumbnailKind } from "./images";
 
 export type ProductCard = {
@@ -33,7 +34,7 @@ export type ProductCard = {
    *  set, so a client that later loses the photo still has a kind to fall
    *  back to. */
   image_kind: ThumbnailKind;
-  /** Available stock across all denominations of this product. */
+  /** Available stock across this product's local-inventory denominations. */
   available: number;
   rating: number | null;
   rating_count: number;
@@ -49,12 +50,17 @@ export type ProductCard = {
   from_base_price: string | null;
   /** When the flash sale behind `flash_discount` ends (ISO), for the countdown. */
   flash_ends_at: string | null;
-  /** True when every active denomination is a non-`auto` delivery type
-   * (manual/manual_with_info), so this product never carries a real stock
-   * count and is always purchasable — mirrors the product page's own
-   * `purchasable()` rule (STO-001). The card's stock badge should skip its
-   * red "out of stock" state in that case rather than reading `available`. */
+  /** True when no active denomination draws from local inventory
+   * (@app/core/productAvailability: provider SKUs such as auto + Digiflazz,
+   * and manual/manual_with_info), so this product never carries a real stock
+   * count and is always purchasable (STO-001). The name predates provider
+   * SKUs; it is kept so the payload shape does not change. */
   all_non_auto: boolean;
+  /** True when every active denomination draws from local inventory. Only
+   * then is `available` the product's real stock; a mixed product (some
+   * provider/manual plans) is purchasable regardless of it, so its card must
+   * not present the partial local count as the product's stock. Additive. */
+  all_local_inventory: boolean;
 };
 
 /** Available stock keyed by denomination id. */
@@ -126,7 +132,10 @@ export function shapeProducts(
       if (livePrice(d).lessThan(livePrice(cheapest))) cheapest = d;
     }
     const fromPrice = livePrice(cheapest);
-    const available = denoms.reduce((sum, d) => sum + (stock[d.id]?.available ?? 0), 0);
+    // Only local-inventory SKUs carry a real stock count; a provider SKU's
+    // stray rows (if any) must not inflate the product's figure.
+    const localDenoms = denoms.filter((d) => usesLocalInventory(d));
+    const available = localDenoms.reduce((sum, d) => sum + (stock[d.id]?.available ?? 0), 0);
     // Best (largest) active bulk discount across this product's denominations.
     let bulkDiscount: string | null = null;
     let bulkMinQty: number | null = null;
@@ -182,7 +191,8 @@ export function shapeProducts(
       flash_discount: flashDiscount,
       from_base_price: fromBasePrice,
       flash_ends_at: flashEndsAt,
-      all_non_auto: denoms.every((d) => d.deliveryType !== "auto"),
+      all_non_auto: localDenoms.length === 0,
+      all_local_inventory: localDenoms.length === denoms.length,
     });
   }
   return cards;

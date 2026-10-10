@@ -30,7 +30,7 @@ const FIELD_TYPES: { value: AdditionalFieldDraft["type"]; label: string }[] = [
  * both pages already use for every other field.
  */
 export function AdditionalFieldsEditor({
-  isGame = true,
+  isGame = false,
   value,
   onChange,
 }: {

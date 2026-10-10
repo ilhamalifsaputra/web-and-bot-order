@@ -106,6 +106,8 @@ const productData: ProductPageData = {
       warranty_days: 7,
       available: 0,
       in_stock: false,
+      uses_local_inventory: true,
+      purchasable: false,
       bulk: null,
       delivery_type: "auto",
       additional_fields: [],
@@ -118,6 +120,8 @@ const productData: ProductPageData = {
       warranty_days: 7,
       available: 3,
       in_stock: true,
+      uses_local_inventory: true,
+      purchasable: true,
       bulk: null,
       delivery_type: "auto",
       additional_fields: [],
@@ -130,6 +134,8 @@ const productData: ProductPageData = {
       warranty_days: 14,
       available: 20,
       in_stock: true,
+      uses_local_inventory: true,
+      purchasable: true,
       bulk: null,
       delivery_type: "auto",
       additional_fields: [],
@@ -268,7 +274,7 @@ describe("ProductPage", () => {
   it("shows the restock CTA instead of the buy form for an out-of-stock-only product", async () => {
     const allOut: ProductPageData = {
       ...productData,
-      denominations: productData.denominations.map((d) => ({ ...d, available: 0, in_stock: false })),
+      denominations: productData.denominations.map((d) => ({ ...d, available: 0, in_stock: false, purchasable: false })),
     };
     renderProduct("netflix-premium", () => allOut);
     expect(await screen.findByRole("button", { name: /Notify me when ready/ })).toBeInTheDocument();
@@ -279,7 +285,7 @@ describe("ProductPage", () => {
   describe("restock CTA feedback", () => {
     const allOut: ProductPageData = {
       ...productData,
-      denominations: productData.denominations.map((d) => ({ ...d, available: 0, in_stock: false })),
+      denominations: productData.denominations.map((d) => ({ ...d, available: 0, in_stock: false, purchasable: false })),
     };
 
     it("hides the Notify button and explains why for a signed-in account without a linked Telegram", async () => {
@@ -468,6 +474,8 @@ describe("ProductPage", () => {
           warranty_days: 7,
           available: 0,
           in_stock: false,
+          uses_local_inventory: false,
+          purchasable: true,
           bulk: null,
           delivery_type: "manual",
           additional_fields: [],
@@ -479,6 +487,37 @@ describe("ProductPage", () => {
     expect(screen.getByRole("button", { name: /Add to cart/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Buy now/ })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Notify me when ready/ })).not.toBeInTheDocument();
+  });
+
+  // An auto + Digiflazz SKU is delivery_type "auto" with no stock rows; the
+  // server marks it purchasable and non-local, so it must buy normally with
+  // an uncapped qty, no stock count and no "Notify me".
+  it("buys an auto + provider plan with zero stock rows like any purchasable plan", async () => {
+    const providerOnly: ProductPageData = {
+      ...productData,
+      denominations: [
+        {
+          id: 11,
+          name: "Provider Plan",
+          duration_label: "Provider Plan",
+          price: "15000",
+          warranty_days: 0,
+          available: 0,
+          in_stock: false,
+          uses_local_inventory: false,
+          purchasable: true,
+          bulk: null,
+          delivery_type: "auto",
+          additional_fields: [],
+        },
+      ],
+    };
+    renderProduct("netflix-premium", () => providerOnly);
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    expect(screen.getByRole("button", { name: /Buy now/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Notify me when ready/ })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Out of stock|left$/)).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Quantity")).toHaveAttribute("max", "99");
   });
 
   // Bug B regression (Task 6): DenominationCard's radio used to be
@@ -498,6 +537,8 @@ describe("ProductPage", () => {
           warranty_days: 7,
           available: 0,
           in_stock: false,
+          uses_local_inventory: false,
+          purchasable: true,
           bulk: null,
           delivery_type: "manual_with_info",
           additional_fields: [],
@@ -526,6 +567,8 @@ describe("ProductPage", () => {
           warranty_days: 7,
           available: 0,
           in_stock: false,
+          uses_local_inventory: false,
+          purchasable: true,
           bulk: null,
           delivery_type: "manual",
           additional_fields: [],
@@ -595,6 +638,8 @@ describe("ProductPage", () => {
           warranty_days: 7,
           available: 0,
           in_stock: false,
+          uses_local_inventory: false,
+          purchasable: true,
           bulk: null,
           delivery_type: "manual",
           additional_fields: [],
@@ -691,7 +736,7 @@ describe("ProductPage sticky purchase bar", () => {
   it("offers the restock CTA instead of Buy now when nothing is purchasable", async () => {
     const allOut: ProductPageData = {
       ...productData,
-      denominations: productData.denominations.map((d) => ({ ...d, available: 0, in_stock: false })),
+      denominations: productData.denominations.map((d) => ({ ...d, available: 0, in_stock: false, purchasable: false })),
     };
     renderProduct("netflix-premium", () => allOut);
     await screen.findByRole("heading", { name: "Netflix Premium" });

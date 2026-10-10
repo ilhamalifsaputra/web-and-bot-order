@@ -14,6 +14,7 @@ import { FulfillmentMessageWorker } from "@app/outbox-dispatcher";
 import { config } from "@app/core/config";
 import { Decimal } from "@app/core/money";
 import { canonicalProduct } from "@app/core/canonicalProduct";
+import { usesLocalInventory } from "@app/core/productAvailability";
 import { boundedCanonicalName } from "../util/canonicalPresenter";
 import { effectiveUnitPrice } from "@app/core/flash";
 import { bulkDiscountFor } from "@app/core/bulk";
@@ -537,11 +538,12 @@ export async function showOrderConfirmation(
     delete ctx.session.scratch.prefilledCustomerDataUnit;
     delete ctx.session.scratch.checkoutIntentId;
   }
-  // Stock rows only ever exist for AUTO SKUs (Task 2 skips reservation
-  // entirely for manual/manual_with_info) — running this check for a
-  // non-auto product would always see 0 available and falsely reject every
-  // manual-delivery purchase at the very first screen.
-  if (product.deliveryType === DeliveryType.AUTO) {
+  // Stock rows only ever exist for local-inventory SKUs
+  // (@app/core/productAvailability; order creation skips reservation for the
+  // rest) — running this check for a provider (e.g. auto + Digiflazz) or
+  // manual SKU would always see 0 available and falsely reject the purchase
+  // at the very first screen.
+  if (usesLocalInventory(product)) {
     const stock = await countAvailableStock(prisma, productId);
     if (stock < quantity) {
       // Stock disappeared under the user. Toast, then replace the now-invalid

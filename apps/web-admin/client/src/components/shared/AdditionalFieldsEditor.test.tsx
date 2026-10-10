@@ -34,6 +34,21 @@ describe("AdditionalFieldsEditor", () => {
     expect(screen.getAllByDisplayValue("Email")).toHaveLength(2);
   });
 
+  it("shows Game Top Up examples for a game and Premium Apps examples otherwise (default is not game)", () => {
+    const drafts: AdditionalFieldDraft[] = [{ ...emptyFieldDraft(), key: "id" }];
+    const { rerender } = render(<AdditionalFieldsEditor isGame value={drafts} onChange={vi.fn()} />);
+    expect(screen.getByPlaceholderText("e.g. ID Game")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("e.g. 1023849571")).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText("e.g. Email akun")).not.toBeInTheDocument();
+
+    // Omitting the prop must never leak game examples into a Premium Apps form.
+    rerender(<AdditionalFieldsEditor value={drafts} onChange={vi.fn()} />);
+    expect(screen.getByPlaceholderText("e.g. Email akun")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("e.g. buyer@example.com")).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText("e.g. ID Game")).not.toBeInTheDocument();
+    expect(screen.queryByPlaceholderText("e.g. 1023849571")).not.toBeInTheDocument();
+  });
+
   it("clicking + Add Field appends a blank draft row", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     const onChange = vi.fn();
@@ -58,7 +73,7 @@ describe("AdditionalFieldsEditor", () => {
   it("typing in a row's English question input reports the updated draft via onChange", () => {
     const onChange = vi.fn();
     const drafts: AdditionalFieldDraft[] = [{ ...emptyFieldDraft(), labelEn: "" }];
-    render(<AdditionalFieldsEditor value={drafts} onChange={onChange} />);
+    render(<AdditionalFieldsEditor isGame value={drafts} onChange={onChange} />);
     fireEvent.change(screen.getByPlaceholderText(/e\.g\. game id/i), { target: { value: "Server ID" } });
     expect(onChange).toHaveBeenCalledWith([{ ...emptyFieldDraft(), labelEn: "Server ID" }]);
   });

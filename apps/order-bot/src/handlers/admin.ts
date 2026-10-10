@@ -12,6 +12,8 @@ import { config } from "@app/core/config";
 import { isAdmin } from "@app/core/runtime";
 import { Decimal, isValidWalletAdjustment } from "@app/core/money";
 import { parseMoneyInput } from "@app/core/moneyFormat";
+import { fulfillmentSourceOf, usesLocalInventory } from "@app/core/productAvailability";
+import { serviceForCategoryGroup } from "@app/core/services";
 import { ensureUtc } from "@app/core/datetime";
 import { UserRole, DeadReason, langCode, OrderKind } from "@app/core/enums";
 import { logger } from "@app/core/logger";
@@ -22,6 +24,7 @@ import {
   revenueSummary,
   lowStockDenominations,
   countAvailableStock,
+  stockStatusCounts,
   listVouchers,
   getUser,
   getUserByTelegramId,
@@ -112,13 +115,15 @@ async function showProducts(ctx: MyContext): Promise<void> {
     await adminEdit(ctx, t(ctx, "admin.empty_products"), akb.backToAdminKb(lang));
     return;
   }
-  const stockMap = new Map<number, number>();
-  for (const p of allProducts) stockMap.set(p.id, await countAvailableStock(prisma, p.id));
+  const stock = await stockStatusCounts(prisma);
 
   const lines = ["🛍 <b>Products</b>", ""];
   for (const p of allProducts) {
     const status = p.isActive ? "🟢" : "⚪";
-    lines.push(`${status} <b>${esc(p.name)}</b> — ${formatIdr(p.price)} • stock ${stockMap.get(p.id)}`);
+    const fulfillment = usesLocalInventory(p)
+      ? `stock ${stock[p.id]?.available ?? 0}`
+      : t(ctx, fulfillmentSourceOf(p) === "PROVIDER_API" ? "admin.fulfillment_provider" : "admin.fulfillment_manual");
+    lines.push(`${status} <b>${esc(p.name)}</b> — ${formatIdr(p.price)} • ${fulfillment}`);
   }
   await adminEdit(ctx, lines.join("\n"), akb.productsAdminKb(allProducts, lang));
 }
@@ -130,7 +135,7 @@ async function showProducts(ctx: MyContext): Promise<void> {
 async function showStockMenu(ctx: MyContext): Promise<void> {
   const lang = ctx.session.lang;
   const products = await prisma.denomination.findMany({ where: { isActive: true }, orderBy: { name: "asc" } });
-  await adminEdit(ctx, t(ctx, "admin.hdr_stock_pick"), akb.stockProductsKb(products, lang));
+  await adminEdit(ctx, t(ctx, "admin.hdr_stock_pick"), akb.stockProductsKb(products.filter(usesLocalInventory), lang));
 }
 
 async function showVouchersMenu(ctx: MyContext): Promise<void> {
@@ -447,22 +452,25 @@ async function showSettings(ctx: MyContext): Promise<void> {
 
 async function viewProductAdmin(ctx: MyContext, productId: number): Promise<void> {
   const lang = ctx.session.lang;
-  const p = await prisma.denomination.findUnique({ where: { id: productId } });
+  const p = await prisma.denomination.findUnique({ where: { id: productId }, include: { product: { include: { category: true } } } });
   if (p === null) {
     await ctx.answerCallbackQuery({ text: t(ctx, "admin.toast.not_found"), show_alert: true });
     return;
   }
-  const stock = await countAvailableStock(prisma, p.id);
+  const localInventory = usesLocalInventory(p);
+  const isGame = serviceForCategoryGroup(p.product.category.group as Parameters<typeof serviceForCategoryGroup>[0]).id === "game_topup";
+  const stock = localInventory ? await countAvailableStock(prisma, p.id) : null;
   const text =
     `🛍 <b>${esc(p.name)}</b>\n\n` +
-    `Type: ${p.type.toLowerCase()}\n` +
-    `Duration: ${esc(p.durationLabel)}\n` +
+    (isGame ? "" : `Type: ${p.type.toLowerCase()}\nDuration: ${esc(p.durationLabel)}\n`) +
     `Price: ${formatIdr(p.price)}\n` +
     `Reseller price: ${p.resellerPrice ? formatIdr(p.resellerPrice) : "-"}\n` +
-    `Warranty: ${p.warrantyDays} days\n` +
+    (isGame ? "" : `Warranty: ${p.warrantyDays} days\n`) +
     `Status: ${p.isActive ? "🟢 Active" : "⚪ Inactive"}\n` +
-    `Available stock: ${stock}`;
-  await adminEdit(ctx, text, akb.productViewKb(productId, p.isActive, lang));
+    (localInventory
+      ? `Available stock: ${stock}`
+      : t(ctx, fulfillmentSourceOf(p) === "PROVIDER_API" ? "admin.fulfillment_provider" : "admin.fulfillment_manual"));
+  await adminEdit(ctx, text, akb.productViewKb(productId, p.isActive, lang, localInventory));
 }
 
 async function toggleProduct(ctx: MyContext, denominationId: number): Promise<void> {
@@ -498,6 +506,10 @@ async function viewStockItems(ctx: MyContext, productId: number): Promise<void> 
   const p = await prisma.denomination.findUnique({ where: { id: productId } });
   if (p === null) {
     await ctx.answerCallbackQuery({ text: t(ctx, "admin.toast.product_not_found"), show_alert: true });
+    return;
+  }
+  if (!usesLocalInventory(p)) {
+    await adminEdit(ctx, t(ctx, "admin.inventory_not_used"), akb.backToAdminKb(lang));
     return;
   }
   const items = await listStockItemsForProduct(prisma, productId);

@@ -20,6 +20,8 @@ const DENOM_HEALTHY = {
   name: "1 Month",
   isActive: true,
   deliveryType: "auto",
+  fulfillmentSource: "INTERNAL_INVENTORY",
+  usesLocalInventory: true,
   product: { id: 1, name: "CapCut Pro", category: { id: 1, name: "Apps" } },
 };
 const DENOM_LOW = {
@@ -27,6 +29,8 @@ const DENOM_LOW = {
   name: "3 Months",
   isActive: true,
   deliveryType: "auto",
+  fulfillmentSource: "INTERNAL_INVENTORY",
+  usesLocalInventory: true,
   product: { id: 2, name: "Netflix Premium", category: { id: 2, name: "Streaming" } },
 };
 const DENOM_OUT = {
@@ -34,6 +38,8 @@ const DENOM_OUT = {
   name: "1 Year",
   isActive: true,
   deliveryType: "auto",
+  fulfillmentSource: "INTERNAL_INVENTORY",
+  usesLocalInventory: true,
   product: { id: 3, name: "Spotify", category: { id: 2, name: "Streaming" } },
 };
 
@@ -89,10 +95,10 @@ describe("StockPage", () => {
     render(<StockPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("1 Month")).toBeInTheDocument());
 
-    // Scope to the KPI grid (found via the collision-free "Total SKU" label)
+    // Scope to the KPI grid (found via the collision-free "Stock-tracked SKU" label)
     // so "Low Stock"/"Out of Stock" don't ambiguously match a row's badge too.
-    const kpiRow = screen.getByText("Total SKU").closest('[data-slot="card"]')!.parentElement as HTMLElement;
-    expect(tileValue(kpiRow, "Total SKU")).toBe("3");
+    const kpiRow = screen.getByText("Stock-tracked SKU").closest('[data-slot="card"]')!.parentElement as HTMLElement;
+    expect(tileValue(kpiRow, "Stock-tracked SKU")).toBe("3");
     expect(tileValue(kpiRow, "In stock (SKUs)")).toBe("2");
     expect(tileValue(kpiRow, "Low Stock")).toBe("1");
     expect(tileValue(kpiRow, "Out of Stock")).toBe("1");
@@ -105,12 +111,12 @@ describe("StockPage", () => {
     );
     render(<StockPage />, { wrapper: Wrapper });
 
-    const kpiRow = screen.getByText("Total SKU").closest('[data-slot="card"]')!.parentElement as HTMLElement;
-    expect(tileValue(kpiRow, "Total SKU")).toBeNull();
+    const kpiRow = screen.getByText("Stock-tracked SKU").closest('[data-slot="card"]')!.parentElement as HTMLElement;
+    expect(tileValue(kpiRow, "Stock-tracked SKU")).toBeNull();
     expect(screen.queryByText("0", { selector: ".font-display" })).not.toBeInTheDocument();
 
     resolveFetch(new Response(JSON.stringify(STOCK_DATA), { status: 200, headers: { "Content-Type": "application/json" } }));
-    await waitFor(() => expect(tileValue(kpiRow, "Total SKU")).toBe("3"));
+    await waitFor(() => expect(tileValue(kpiRow, "Stock-tracked SKU")).toBe("3"));
   });
 
   it("shows a status badge and the ready-count for every row (S-UI: no percentage bar)", async () => {
@@ -139,6 +145,8 @@ describe("StockPage", () => {
       name: "Lifetime",
       isActive: true,
       deliveryType: "auto",
+  fulfillmentSource: "INTERNAL_INVENTORY",
+  usesLocalInventory: true,
       product: { id: 4, name: "CapCut Pro", category: { id: 1, name: "Apps" } },
     };
     mockStock({
@@ -163,6 +171,8 @@ describe("StockPage", () => {
       name: "Custom Rank Boost",
       isActive: true,
       deliveryType: "manual",
+      fulfillmentSource: "MANUAL",
+      usesLocalInventory: false,
       product: { id: 5, name: "Mobile Legends", category: { id: 1, name: "Apps" } },
     };
     mockStock({
@@ -173,15 +183,17 @@ describe("StockPage", () => {
     render(<StockPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("Custom Rank Boost")).toBeInTheDocument());
 
-    const kpiRow = screen.getByText("Total SKU").closest('[data-slot="card"]')!.parentElement as HTMLElement;
-    // Total SKU includes the manual SKU; Out of Stock does not.
-    expect(tileValue(kpiRow, "Total SKU")).toBe("4");
+    const kpiRow = screen.getByText("Stock-tracked SKU").closest('[data-slot="card"]')!.parentElement as HTMLElement;
+    // Neither tile counts the manual SKU: it holds no local stock rows.
+    expect(tileValue(kpiRow, "Stock-tracked SKU")).toBe("3");
     expect(tileValue(kpiRow, "Out of Stock")).toBe("1");
 
     const row = screen.getByText("Custom Rank Boost").closest("tr")!;
-    expect(within(row).getByText("Manual")).toBeInTheDocument();
+    // Status badge and Stock column both say Manual; neither invents a stock state.
+    expect(within(row).getAllByText("Manual")).toHaveLength(2);
     expect(within(row).queryByText("Out Of Stock")).not.toBeInTheDocument();
-    expect(within(row).getByText("No stock added")).toBeInTheDocument();
+    expect(within(row).queryByText("No stock added")).not.toBeInTheDocument();
+    expect(within(row).queryByText("Sold out")).not.toBeInTheDocument();
 
     const user = userEvent.setup();
     await user.click(within(row).getByRole("button", { name: "Actions for Custom Rank Boost" }));
@@ -195,6 +207,8 @@ describe("StockPage", () => {
       name: "Discontinued Plan",
       isActive: false,
       deliveryType: "auto",
+  fulfillmentSource: "INTERNAL_INVENTORY",
+  usesLocalInventory: true,
       product: { id: 6, name: "Old App", category: { id: 1, name: "Apps" } },
     };
     mockStock({
@@ -205,9 +219,9 @@ describe("StockPage", () => {
     render(<StockPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("Discontinued Plan")).toBeInTheDocument());
 
-    const kpiRow = screen.getByText("Total SKU").closest('[data-slot="card"]')!.parentElement as HTMLElement;
+    const kpiRow = screen.getByText("Stock-tracked SKU").closest('[data-slot="card"]')!.parentElement as HTMLElement;
     // The inactive row's 9-available stock never inflates Total SKU or In stock (SKUs).
-    expect(tileValue(kpiRow, "Total SKU")).toBe("3");
+    expect(tileValue(kpiRow, "Stock-tracked SKU")).toBe("3");
     expect(tileValue(kpiRow, "In stock (SKUs)")).toBe("2");
 
     const row = screen.getByText("Discontinued Plan").closest("tr")!;
@@ -260,6 +274,81 @@ describe("StockPage", () => {
     expect(screen.getByText("1 Year")).toBeInTheDocument();
   });
 
+  it("labels a provider (Digiflazz) SKU Provider, never Out Of Stock or Sold out, and keeps it out of the KPI tiles", async () => {
+    const providerDenom = {
+      id: 70,
+      name: "86 Diamonds",
+      isActive: true,
+      deliveryType: "auto",
+      autoDeliverySource: "digiflazz",
+      fulfillmentSource: "PROVIDER_API",
+      usesLocalInventory: false,
+      product: { id: 7, name: "Mobile Legends", category: { id: 8, name: "Games", group: "GAME_TOPUP" } },
+    };
+    mockStock({
+      ...STOCK_DATA,
+      denominations: [...STOCK_DATA.denominations, providerDenom],
+      counts: { ...STOCK_DATA.counts, "70": { available: 0, reserved: 0, sold: 0, dead: 0 } },
+      waiting: { "70": 3 },
+    });
+    render(<StockPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("86 Diamonds")).toBeInTheDocument());
+
+    const kpiRow = screen.getByText("Stock-tracked SKU").closest('[data-slot="card"]')!.parentElement as HTMLElement;
+    expect(tileValue(kpiRow, "Stock-tracked SKU")).toBe("3");
+    expect(tileValue(kpiRow, "Out of Stock")).toBe("1");
+
+    const row = screen.getByText("86 Diamonds").closest("tr")!;
+    expect(within(row).getAllByText("Provider")).toHaveLength(2);
+    expect(within(row).queryByText("Out Of Stock")).not.toBeInTheDocument();
+    expect(within(row).queryByText("No stock added")).not.toBeInTheDocument();
+    expect(within(row).queryByText("Sold out")).not.toBeInTheDocument();
+    // A restock request means nothing for a SKU with no local stock.
+    expect(within(row).queryByText("3")).not.toBeInTheDocument();
+  });
+
+  it("filters by product type: Game Top-Up, Digital Apps, with a legacy ungrouped category counting as Digital Apps", async () => {
+    const user = userEvent.setup();
+    const gameDenom = {
+      id: 80,
+      name: "Weekly Pass",
+      isActive: true,
+      deliveryType: "manual_with_info",
+      fulfillmentSource: "MANUAL",
+      usesLocalInventory: false,
+      product: { id: 9, name: "Free Fire", category: { id: 9, name: "Games", group: "GAME_TOPUP" } },
+    };
+    const appDenom = {
+      id: 81,
+      name: "Family Plan",
+      isActive: true,
+      deliveryType: "auto",
+      fulfillmentSource: "INTERNAL_INVENTORY",
+      usesLocalInventory: true,
+      product: { id: 10, name: "Spotify Family", category: { id: 10, name: "Music", group: "PREMIUM_APPS" } },
+    };
+    mockStock({
+      ...STOCK_DATA,
+      // STOCK_DATA's three rows have no group at all: legacy, so Digital Apps.
+      denominations: [...STOCK_DATA.denominations, gameDenom, appDenom],
+      counts: { ...STOCK_DATA.counts, "81": { available: 4, reserved: 0, sold: 0, dead: 0 } },
+    });
+    render(<StockPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Weekly Pass")).toBeInTheDocument());
+
+    await user.click(screen.getByText("All Products").closest('[role="combobox"]')!);
+    await user.click(await screen.findByRole("option", { name: "Game Top-Up" }));
+    await waitFor(() => expect(screen.queryByText("1 Month")).not.toBeInTheDocument());
+    expect(screen.getByText("Weekly Pass")).toBeInTheDocument();
+    expect(screen.queryByText("Family Plan")).not.toBeInTheDocument();
+
+    await user.click(screen.getByText("Game Top-Up", { selector: '[data-slot="select-value"]' }).closest('[role="combobox"]')!);
+    await user.click(await screen.findByRole("option", { name: "Digital Apps" }));
+    await waitFor(() => expect(screen.queryByText("Weekly Pass")).not.toBeInTheDocument());
+    expect(screen.getByText("1 Month")).toBeInTheDocument();
+    expect(screen.getByText("Family Plan")).toBeInTheDocument();
+  });
+
   it("sorts by lowest available first", async () => {
     const user = userEvent.setup();
     mockStock();
@@ -277,6 +366,45 @@ describe("StockPage", () => {
     expect(dataRows[0]).toContain("1 Year"); // 0 available
     expect(dataRows[1]).toContain("3 Months"); // 3 available
     expect(dataRows[2]).toContain("1 Month"); // 8 available
+  });
+
+  it("Low Stock First puts provider and manual SKUs (no stock rows, so a meaningless 0) after every inventory row", async () => {
+    const user = userEvent.setup();
+    const providerDenom = {
+      id: 60,
+      name: "Aaa Provider Pack",
+      isActive: true,
+      deliveryType: "auto",
+      fulfillmentSource: "PROVIDER_API",
+      usesLocalInventory: false,
+      product: { id: 6, name: "Free Fire", category: { id: 1, name: "Apps" } },
+    };
+    const manualDenom = {
+      id: 61,
+      name: "Aab Manual Pack",
+      isActive: true,
+      deliveryType: "manual",
+      fulfillmentSource: "MANUAL",
+      usesLocalInventory: false,
+      product: { id: 6, name: "Free Fire", category: { id: 1, name: "Apps" } },
+    };
+    mockStock({ ...STOCK_DATA, denominations: [providerDenom, manualDenom, ...STOCK_DATA.denominations] });
+    render(<StockPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("1 Month")).toBeInTheDocument());
+
+    await user.click(screen.getByText("Name A–Z").closest('[role="combobox"]')!);
+    await user.click(await screen.findByRole("option", { name: "Low Stock First" }));
+
+    const dataRows = screen
+      .getAllByRole("row")
+      .map((r) => r.textContent ?? "")
+      .filter((text) => /1 Month|3 Months|1 Year|Provider Pack|Manual Pack/.test(text));
+    expect(dataRows).toHaveLength(5);
+    expect(dataRows[0]).toContain("1 Year");
+    expect(dataRows[1]).toContain("3 Months");
+    expect(dataRows[2]).toContain("1 Month");
+    expect(dataRows[3]).toContain("Provider Pack");
+    expect(dataRows[4]).toContain("Manual Pack");
   });
 
   it("row overflow menu offers View and Download Credentials when stock is available", async () => {

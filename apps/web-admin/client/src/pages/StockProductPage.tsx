@@ -85,6 +85,7 @@ interface StockProductData {
     name: string;
     isActive: boolean;
     broadcastOnRestock: boolean;
+    usesLocalInventory?: boolean;
     product: { id: number; name: string; category: { name: string } | null } | null;
   };
   items: StockItem[];
@@ -547,6 +548,16 @@ export function StockProductPage() {
   }
 
   const { product, items, statusCounts, waiting, total, capped } = data;
+
+  if (product.usesLocalInventory === false) {
+    return (
+      <PageLayout title={product.name}>
+        <PageHeader title={product.name} breadcrumb={[{ label: "Stock", href: "/stock" }]} />
+        <p className="text-sm text-ink-soft">This product does not use local inventory. Manage its fulfillment in the catalog.</p>
+        {product.product && <a className="mt-4 inline-block text-sm underline" href={`/catalog/${product.product.id}`}>View product</a>}
+      </PageLayout>
+    );
+  }
 
   return (
     <PageLayout title={product.name}>

@@ -269,10 +269,58 @@ describe("DenominationCreatePage", () => {
       type: "SHARED",
       durationLabel: "1 Month",
       price: "15000",
-      deliveryType: "auto",
+      // A game top-up never defaults to "auto" (local stock rows): buyer-info
+      // delivery with the Game ID field pre-filled.
+      deliveryType: "manual_with_info",
+      additionalFields: [expect.objectContaining({ key: "user_id", required: true })],
       qtyValue: 86,
       qtyUnit: "Diamonds",
     });
+  });
+
+  it("defaults a Game Top Up denomination to buyer-info delivery (not automatic stock) and submits it valid", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.mocked(apiPost).mockResolvedValueOnce({ id: 9, name: "1 Month Plan", slug: "x" });
+    vi.mocked(apiGet).mockResolvedValue({ product: { id: 42, name: "Mobile Legends", category: { group: "GAME_TOPUP" } } });
+    render(<DenominationCreatePage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByRole("radio", { name: /^manual delivery/i })).toBeChecked());
+    expect(screen.getByRole("radio", { name: /^automatic delivery/i })).not.toBeChecked();
+    expect(screen.getByRole("radio", { name: /^require buyer information/i })).toBeChecked();
+    expect(screen.getAllByDisplayValue("Game ID").length).toBeGreaterThan(0);
+
+    await fillBaseFields(user);
+    const btn = screen.getByRole("button", { name: /create denomination/i });
+    await waitFor(() => expect(btn).not.toBeDisabled());
+    await user.click(btn);
+    await waitFor(() => expect(apiPost).toHaveBeenCalled());
+    const [, body] = vi.mocked(apiPost).mock.calls[0] as [string, Record<string, unknown>];
+    expect(body.deliveryType).toBe("manual_with_info");
+    expect(Array.isArray(body.additionalFields)).toBe(true);
+  });
+
+  it("lets an admin switch a Game Top Up denomination to Automatic explicitly", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.mocked(apiPost).mockResolvedValueOnce({ id: 9, name: "1 Month Plan", slug: "x" });
+    vi.mocked(apiGet).mockResolvedValue({ product: { id: 42, name: "Mobile Legends", category: { group: "GAME_TOPUP" } } });
+    render(<DenominationCreatePage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByRole("radio", { name: /^manual delivery/i })).toBeChecked());
+    await user.click(screen.getByRole("radio", { name: /^automatic delivery/i }));
+    await fillBaseFields(user);
+    const btn = screen.getByRole("button", { name: /create denomination/i });
+    await waitFor(() => expect(btn).not.toBeDisabled());
+    await user.click(btn);
+    await waitFor(() => expect(apiPost).toHaveBeenCalled());
+    const [, body] = vi.mocked(apiPost).mock.calls[0] as [string, Record<string, unknown>];
+    expect(body.deliveryType).toBe("auto");
+    expect(body).not.toHaveProperty("additionalFields");
+  });
+
+  it.each(["PREMIUM_APPS", null])("keeps a Premium Apps / legacy (group %s) denomination on Automatic delivery by default", async (group) => {
+    vi.mocked(apiGet).mockResolvedValue({ product: { id: 42, name: "Netflix Premium", category: { group } } });
+    render(<DenominationCreatePage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByRole("link", { name: "Netflix Premium" })).toBeInTheDocument());
+    expect(screen.getByRole("radio", { name: /^automatic delivery/i })).toBeChecked();
+    expect(screen.queryByDisplayValue("Game ID")).not.toBeInTheDocument();
   });
 
   it("omits qtyValue and qtyUnit from the submit body when left blank", async () => {

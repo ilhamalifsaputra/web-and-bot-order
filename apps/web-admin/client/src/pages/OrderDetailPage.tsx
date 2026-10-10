@@ -126,6 +126,10 @@ interface OrderDetailData {
   /** CANCELLED, and the server found no proof its payment was ever handed back
    * (no balance credit, no completed refund) — offer to credit it now. */
   canCreditCancelled: boolean;
+  /** A Digiflazz order the supplier may still deliver — credit is refused
+   * server-side until the provider's status is final. `optional` only because
+   * older cached/mocked responses predate the field. */
+  creditLockedBySupplier?: boolean;
   /** True once the order is PROCESSING (manual/manual_with_info SKU, paid,
    * awaiting an admin to hand-type and send the account content). */
   canFulfill: boolean;
@@ -194,7 +198,11 @@ export function OrderDetailPage() {
         digiflazzFailureDetail: string | null;
         accountDiagnosticNote: string | null;
       };
-      if (snapshot.orderStatus !== prev.order.status) {
+      // A provider failure changes canCredit/canFulfill without a status
+      // change (credit and hand-fulfil unlock once Digiflazz says `failed`),
+      // so it refetches too.
+      const failedChanged = (snapshot.digiflazzStatus === "failed") !== (prev.order.digiflazzStatus === "failed");
+      if (snapshot.orderStatus !== prev.order.status || failedChanged) {
         // The order's overall status changed (e.g. a Sukses-driven
         // DELIVERED transition) — canAct/canCredit/canFulfill/canReject/
         // isDelivered are server-computed siblings of order.status, not
@@ -659,6 +667,12 @@ export function OrderDetailPage() {
                 variant="default"
                 onConfirm={() => creditBalance.mutate()}
               />
+            )}
+
+            {data.creditLockedBySupplier && (
+              <p className="w-full text-xs text-ink-soft">
+                Waiting for the supplier's result — Credit to Balance is locked until its status is final.
+              </p>
             )}
 
             {canCreditCancelled && (

@@ -151,6 +151,33 @@ describe("GET /api/flash-sales/denominations", () => {
     expect(row.flash.availableStock).toBeNull();
   });
 
+  it("reports availableStock as null for a legacy auto + digiflazz SKU (provider-fulfilled)", async () => {
+    const category = await createCategory(prisma, "Cat");
+    const product = await createCatalogProduct(prisma, { categoryId: category.id, name: "Parent", description: "x" });
+    const denom = await createDenomination(prisma, {
+      productId: product.id,
+      name: "Provider flash item",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10000",
+      deliveryType: "auto",
+    });
+    await prisma.denomination.update({
+      where: { id: denom.id },
+      data: {
+        autoDeliverySource: "digiflazz",
+        flashDiscountPercent: "10",
+        flashStartsAt: new Date(Date.now() - 60_000),
+        flashEndsAt: new Date(Date.now() + 60_000),
+      },
+    });
+
+    const res = await get("/api/flash-sales/denominations", cookie);
+    expect(res.statusCode).toBe(200);
+    const row = res.json().denominations.find((d: { id: number }) => d.id === denom.id);
+    expect(row.flash.availableStock).toBeNull();
+  });
+
   // Regression test: flashPrice() (checkout's shared pricing function) is
   // time-gated and returns null outside [flashStartsAt, flashEndsAt) — i.e.
   // for exactly the "scheduled" and "ended" statuses computed a line above

@@ -51,5 +51,9 @@ describe("OperationCenter", () => {
     );
     const awaitingFulfillmentLink = screen.getByText("Awaiting Fulfillment").closest("a");
     expect(awaitingFulfillmentLink).toHaveAttribute("href", "/orders?status=PROCESSING");
+    // The list behind that link also shows provider-in-flight orders the
+    // counter leaves out, so the card explains what the number counts.
+    expect(awaitingFulfillmentLink).toHaveAttribute("title", expect.stringMatching(/manual hand-off/i));
+    expect(awaitingFulfillmentLink).toHaveAttribute("title", expect.stringMatching(/provider/i));
   });
 });

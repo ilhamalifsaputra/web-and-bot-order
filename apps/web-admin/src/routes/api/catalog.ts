@@ -41,6 +41,7 @@ import { Decimal } from "@app/core/money";
 import { denominationPriceError, isDenominationBelowCost } from "@app/core/denominationPrices";
 import { readMoneyField, readPercentField, moneyFieldError, percentFieldError, exactFields } from "../../lib/moneyField";
 import { isFlashActive } from "@app/core/flash";
+import { fulfillmentSourceOf, usesLocalInventory } from "@app/core/productAvailability";
 import { ProductType, DeliveryType, CategoryGroup } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { errorBody } from "@app/core/errorBody";
@@ -1011,6 +1012,10 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
         id: d.id,
         belowCost: isDenominationBelowCost(d),
         available: await countAvailableStock(prisma, d.id),
+        // Provider/manual SKUs never hold local stock rows, so the client must
+        // not render their `available: 0` as a stock figure.
+        fulfillmentSource: fulfillmentSourceOf(d),
+        usesLocalInventory: usesLocalInventory(d),
         waiting: await countRestockSubscribers(prisma, d.id),
         rule: await getBulkPricingForDenomination(prisma, d.id),
         // Percent + whether the window is live right now, so the product

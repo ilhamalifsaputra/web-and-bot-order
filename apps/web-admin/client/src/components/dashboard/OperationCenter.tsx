@@ -8,6 +8,8 @@ type OpCardDef = {
   key: keyof OperationsSummary;
   label: string;
   href: string | null;
+  /** Tooltip explaining what the number counts when the label alone could mislead. */
+  hint?: string;
   // money-at-risk queues escalate to red; the rest warn; zero is idle.
   critical?: boolean;
 };
@@ -28,7 +30,12 @@ const CARDS: OpCardDef[] = [
   // Manual/manual_with_info orders paid and waiting on an admin to hand-type
   // and send the account — distinct from "Orders Processing" above (the
   // unrelated legacy CONFIRMED/PAID payment-gateway metric).
-  { key: "awaitingFulfillment", label: "Awaiting Fulfillment", href: "/orders?status=PROCESSING" },
+  { key: "awaitingFulfillment", label: "Awaiting Fulfillment",
+    href: "/orders?status=PROCESSING",
+    // The list behind the link shows every PROCESSING order, including ones
+    // still in flight at Digiflazz that the counter deliberately leaves out.
+    hint: "Orders that need a manual hand-off. Orders still being processed by the provider are not counted here.",
+  },
 ];
 
 function level(count: number, critical?: boolean): "ok" | "warn" | "critical" | "idle" {
@@ -71,9 +78,9 @@ export function OperationCenter() {
               </Card>
             );
             return c.href === null ? (
-              <div key={c.key}>{inner}</div>
+              <div key={c.key} title={c.hint}>{inner}</div>
             ) : (
-              <Link key={c.key} to={c.href} className="block transition-transform hover:-translate-y-0.5">
+              <Link key={c.key} to={c.href} title={c.hint} className="block transition-transform hover:-translate-y-0.5">
                 {inner}
               </Link>
             );

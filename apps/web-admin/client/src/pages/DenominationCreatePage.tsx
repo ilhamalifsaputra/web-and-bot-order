@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
 import { PageLayout } from "../components/shared/PageLayout";
 import { PageHeader } from "../components/shared/PageHeader";
-import { DeliveryTypeSection } from "../components/shared/DeliveryTypeSection";
+import { DeliveryTypeSection, AUTO_DELIVERY_FIELDS_TEMPLATE } from "../components/shared/DeliveryTypeSection";
 import { ButtonLabelInput } from "../components/shared/ButtonLabelInput";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -80,8 +80,20 @@ export function DenominationCreatePage() {
   // every other field on this form.
   const [qtyValue, setQtyValue] = useState("");
   const [qtyUnit, setQtyUnit] = useState("");
-  const [deliveryType, setDeliveryType] = useState("auto");
-  const [additionalFields, setAdditionalFields] = useState<AdditionalFieldDraft[]>([]);
+  // `null` until the admin touches the control, so the default can follow the
+  // parent product's family once it loads. Game Top Up must not default to
+  // "auto" (that draws from local stock rows, which a game top-up never holds);
+  // it defaults to buyer-info delivery with the Game ID field pre-filled, which
+  // is the shape a supplier-linked or hand-delivered top-up needs. Premium Apps
+  // and legacy categories keep "auto".
+  const [deliveryTypeChoice, setDeliveryTypeChoice] = useState<string | null>(null);
+  const [additionalFieldsChoice, setAdditionalFieldsChoice] = useState<AdditionalFieldDraft[] | null>(null);
+  const deliveryType = deliveryTypeChoice ?? (isGame ? "manual_with_info" : "auto");
+  const additionalFields =
+    additionalFieldsChoice ??
+    (deliveryTypeChoice === null && isGame ? AUTO_DELIVERY_FIELDS_TEMPLATE : []);
+  const setDeliveryType = (next: string) => setDeliveryTypeChoice(next);
+  const setAdditionalFields = (next: AdditionalFieldDraft[]) => setAdditionalFieldsChoice(next);
   const [autoDeliverySource, setAutoDeliverySource] = useState<string | null>(null);
   const [supplierSku, setSupplierSku] = useState("");
   const [nicknameCheckGameCode, setNicknameCheckGameCode] = useState("");

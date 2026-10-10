@@ -97,6 +97,9 @@ const TONE: Record<string, Tone> = {
   // stock-tier badge — falls back to neutral anyway, listed explicitly like
   // every other domain above for clarity.
   MANUAL: "neutral",
+  // Same column, a SKU fulfilled by a supplier API: no local stock rows, and
+  // no live supplier stock signal either, so it is never scored as in/out.
+  PROVIDER: "neutral",
 };
 
 const TONE_CLASS: Record<Tone, string> = {

@@ -1505,8 +1505,10 @@ export function countUnderpaid(db: Db): Promise<number> {
 
 /**
  * Manual/manual_with_info orders paid and awaiting an admin to hand-type and
- * send the account content ("Awaiting Fulfillment" on the dashboard).
- * Deliberately NOT named countProcessing — that pre-existing function counts
+ * send the account content ("Awaiting Fulfillment" on the dashboard): the
+ * `PROCESSING` orders that need a human, i.e. every `PROCESSING` order EXCEPT
+ * one still in flight at Digiflazz (it joins this count only once the provider
+ * failed it). Deliberately NOT named countProcessing — that pre-existing function counts
  * CONFIRMED/PAID orders (a different, payment-gateway-in-flight concept) and
  * must not be touched or confused with this one.
  *

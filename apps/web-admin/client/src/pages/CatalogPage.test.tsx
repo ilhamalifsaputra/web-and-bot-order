@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { CatalogPage } from "./CatalogPage";
+import { FAMILY_REGISTRY } from "../lib/catalogFamily";
 
 function Wrapper({ children }: { children: React.ReactNode }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -506,4 +507,105 @@ describe("CatalogPage", () => {
     await waitFor(() => expect(screen.getByText("Retired App")).toBeInTheDocument());
     expect(screen.queryByText("CapCut Pro")).not.toBeInTheDocument();
   });
+describe("CatalogPage product-family tabs", () => {
+  const GAME_CAT = { ...GAMES, group: "GAME_TOPUP" };
+  const APPS_CAT = { ...CATEGORY, group: "PREMIUM_APPS" };
+  const LEGACY_CAT = { ...CATEGORY, id: 9, name: "Legacy", group: null };
+  const GAME_PRODUCT = { ...GAMES_PRODUCT, category: { id: 5, name: "Games", emoji: "🎮", group: "GAME_TOPUP" }, _count: { denominations: 4 } };
+  const APP_PRODUCT = { ...PRODUCT, category: { id: 2, name: "Apps", emoji: "📱", group: "PREMIUM_APPS" } };
+  // A name that sounds like a game, but its category is not Game Top Up.
+  const LEGACY_PRODUCT = { ...PRODUCT, id: 7, name: "Mobile Legends Gift", category: { id: 9, name: "Legacy", emoji: null, group: null } };
+
+  function mockCatalog() {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({ categories: [GAME_CAT, APPS_CAT, LEGACY_CAT], products: [GAME_PRODUCT, APP_PRODUCT, LEGACY_PRODUCT] }),
+    );
+  }
+
+  it("shows All Products by default, then filters by the category's group, with a legacy group null counting as Digital Apps", async () => {
+    const user = userEvent.setup();
+    mockCatalog();
+    renderAt("/catalog");
+    await waitFor(() => expect(screen.getByText("Free Fire")).toBeInTheDocument());
+    expect(screen.getByRole("tab", { name: /all products/i })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByText("CapCut Pro")).toBeInTheDocument();
+    expect(screen.getByText("Mobile Legends Gift")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: /game top-up/i }));
+    await waitFor(() => expect(screen.queryByText("CapCut Pro")).not.toBeInTheDocument());
+    expect(screen.getByText("Free Fire")).toBeInTheDocument();
+    expect(screen.queryByText("Mobile Legends Gift")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: /digital apps/i }));
+    await waitFor(() => expect(screen.queryByText("Free Fire")).not.toBeInTheDocument());
+    expect(screen.getByText("CapCut Pro")).toBeInTheDocument();
+    expect(screen.getByText("Mobile Legends Gift")).toBeInTheDocument();
+  });
+
+  it("scopes the stat tiles to the tab and keeps products and variants separate", async () => {
+    const user = userEvent.setup();
+    mockCatalog();
+    renderAt("/catalog");
+    await waitFor(() => expect(screen.getByText("Free Fire")).toBeInTheDocument());
+    const tile = (label: string) =>
+      screen.getByText(label, { selector: "p, span, div" }).closest('[data-slot="card"]')?.querySelector(".font-display")?.textContent;
+    expect(tile("Products")).toBe("3");
+    expect(tile("Variants")).toBe("10"); // 4 + 3 + 3
+
+    await user.click(screen.getByRole("tab", { name: /game top-up/i }));
+    await waitFor(() => expect(tile("Products")).toBe("1"));
+    expect(tile("Variants")).toBe("4");
+    expect(tile("Categories")).toBe("1");
+  });
+
+  it("offers only the active tab's categories, and drops a category filter that belongs to the other family", async () => {
+    const user = userEvent.setup();
+    mockCatalog();
+    renderAt("/catalog?categoryId=2");
+    await waitFor(() => expect(screen.getByText("CapCut Pro")).toBeInTheDocument());
+    expect(screen.queryByText("Free Fire")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: /game top-up/i }));
+    await waitFor(() => expect(screen.getByText("Free Fire")).toBeInTheDocument());
+    expect(screen.queryByText("CapCut Pro")).not.toBeInTheDocument();
+
+    await user.click(screen.getByText("All categories").closest('[role="combobox"]')!);
+    expect(await screen.findByRole("option", { name: "Games" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "Apps" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "Legacy" })).not.toBeInTheDocument();
+  });
+
+  it("renders a tab and filters for a family added to the registry, with no component change", async () => {
+    const user = userEvent.setup();
+    FAMILY_REGISTRY.push({ group: "GIFT_CARDS", tabLabel: "Gift Cards", param: "gift" });
+    try {
+      const giftCat = { ...CATEGORY, id: 11, name: "Gift", group: "GIFT_CARDS" };
+      const giftProduct = { ...PRODUCT, id: 12, name: "Steam Card", category: { id: 11, name: "Gift", emoji: null, group: "GIFT_CARDS" } };
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        jsonResponse({ categories: [APPS_CAT, giftCat], products: [APP_PRODUCT, giftProduct] }),
+      );
+      renderAt("/catalog");
+      await waitFor(() => expect(screen.getByText("Steam Card")).toBeInTheDocument());
+      const labels = screen.getAllByRole("tab").map((t) => t.textContent);
+      expect(labels).toEqual(["All Products (2)", "Game Top-Up (0)", "Digital Apps (1)", "Gift Cards (1)"]);
+
+      await user.click(screen.getByRole("tab", { name: /gift cards/i }));
+      await waitFor(() => expect(screen.queryByText("CapCut Pro")).not.toBeInTheDocument());
+      expect(screen.getByText("Steam Card")).toBeInTheDocument();
+    } finally {
+      FAMILY_REGISTRY.pop();
+    }
+  });
+
+  it("clears the bulk selection when the tab changes", async () => {
+    const user = userEvent.setup();
+    mockCatalog();
+    renderAt("/catalog");
+    await waitFor(() => expect(screen.getByText("Free Fire")).toBeInTheDocument());
+    await user.click(screen.getByRole("checkbox", { name: "Select Free Fire" }));
+    expect(screen.getByText("1 selected")).toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: /digital apps/i }));
+    await waitFor(() => expect(screen.queryByText("1 selected")).not.toBeInTheDocument());
+  });
+});
 });

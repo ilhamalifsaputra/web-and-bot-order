@@ -1,0 +1,21 @@
+{
+  "environment": "localhost Chromium, no CPU/network throttling, reduced motion, synthetic catalog; 1s initial observation; no INP or field measurement",
+  "samples": [
+    {
+      "route": "/",
+      "viewport": 390,
+      "lcpMs": 364,
+      "initialCls": 0.025553561253561254,
+      "ttfbMs": 20.600000143051147,
+      "transferBytes": 2364
+    },
+    {
+      "route": "/",
+      "viewport": 1440,
+      "lcpMs": 176,
+      "initialCls": 0.06510497310099451,
+      "ttfbMs": 18.800000190734863,
+      "transferBytes": 2364
+    }
+  ]
+}

@@ -851,6 +851,25 @@ describe("lowStockDenominations", () => {
     expect(ids).not.toContain(manualDenom.id);
     expect(ids).not.toContain(manualWithInfoDenom.id);
   });
+
+  it("excludes auto + digiflazz SKUs: they are fulfilled by the provider, never from local stock", async () => {
+    const cat = await makeCategory();
+    const product = await makeProduct(cat.id, "Low Stock Provider");
+    const providerDenom = await createDenomination(prisma, {
+      productId: product.id,
+      name: "Provider 86 Diamonds",
+      type: "SHARED",
+      durationLabel: "-",
+      price: "20000",
+      deliveryType: "auto",
+      autoDeliverySource: "digiflazz",
+    });
+    const localDenom = await makeDenom(product.id, "Local Auto Empty", "10000");
+
+    const ids = (await lowStockDenominations(prisma, 5)).map((r) => r.denomination.id);
+    expect(ids).not.toContain(providerDenom.id);
+    expect(ids).toContain(localDenom.id);
+  });
 });
 
 describe("flash sales", () => {

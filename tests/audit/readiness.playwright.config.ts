@@ -24,6 +24,6 @@ export default defineConfig({
     url: "http://127.0.0.1:8240",
     reuseExistingServer: false,
     timeout: 180_000,
-    env: { DATABASE_URL_PRISMA: dbUrl.toString(), STOREFRONT_HOST: "127.0.0.1", STOREFRONT_PORT: "8240", CREDENTIAL_ENCRYPTION_KEY: "00".repeat(32), NODE_ENV: "test" },
+    env: { DATABASE_URL_PRISMA: dbUrl.toString(), STOREFRONT_HOST: "127.0.0.1", STOREFRONT_PORT: "8240", PUBLIC_URL: "http://127.0.0.1:8240", SHOP_PUBLIC_URL: "http://127.0.0.1:8240", CREDENTIAL_ENCRYPTION_KEY: "00".repeat(32), NODE_ENV: "test" },
   },
 });

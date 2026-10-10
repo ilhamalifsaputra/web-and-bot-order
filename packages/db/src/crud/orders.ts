@@ -1520,8 +1520,21 @@ export function countUnderpaid(db: Db): Promise<number> {
  * requires `items: { some: ... }`. So a filter here would be dead weight that
  * implies the invariant is weaker than it is.
  */
-export function countAwaitingManualFulfillment(db: Db): Promise<number> {
-  return db.order.count({ where: { status: OrderStatus.PROCESSING } });
+export async function countAwaitingManualFulfillment(db: Db): Promise<number> {
+  // A Digiflazz order sitting in PROCESSING is normally in flight at the
+  // provider (queued, submitting or pending_at_supplier) and needs no admin;
+  // it only joins the manual queue once the provider failed it. The provider
+  // is resolved by `fulfillmentProviderFor` (stored column, else the SKU), the
+  // same rule the order detail uses — never a category name.
+  const rows = await db.order.findMany({
+    where: { status: OrderStatus.PROCESSING },
+    select: {
+      fulfillmentProvider: true,
+      digiflazzStatus: true,
+      items: { select: { deliveryTypeSnapshot: true, product: { select: { autoDeliverySource: true, deliveryType: true } } } },
+    },
+  });
+  return rows.filter((o) => fulfillmentProviderFor(o) !== "DIGIFLAZZ" || o.digiflazzStatus === "failed").length;
 }
 
 /** Orders successfully delivered — the Orders page KPI's "Delivered" count and

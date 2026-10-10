@@ -210,6 +210,25 @@ describe("order status counts", () => {
     expect(await countProcessing(prisma)).toBe(2); // CONFIRMED + PAID, unaffected
   });
 
+  it("countAwaitingManualFulfillment skips Digiflazz orders still in flight at the provider", async () => {
+    await makeOrder("PROCESSING", { fulfillmentProvider: "MANUAL" }); // counted
+    await makeOrder("PROCESSING", { fulfillmentProvider: "DIGIFLAZZ", digiflazzStatus: "failed" }); // counted: needs an admin
+    await makeOrder("PROCESSING", { fulfillmentProvider: "DIGIFLAZZ", digiflazzStatus: "pending_at_supplier" }); // in flight
+    await makeOrder("PROCESSING", { fulfillmentProvider: "DIGIFLAZZ" }); // queued, not dispatched yet
+    // Legacy row without fulfillmentProvider: the provider is read from the SKU.
+    const category = await createCategory(prisma, `AwaitCat${Math.random()}`);
+    const parent = await createCatalogProduct(prisma, { categoryId: category.id, name: "Await Game" });
+    const provider = await createDenomination(prisma, {
+      productId: parent.id, name: "86 Diamonds", type: "SHARED", durationLabel: "-", price: "5.00",
+      deliveryType: "auto", autoDeliverySource: "digiflazz",
+    });
+    const legacy = await makeOrder("PROCESSING");
+    await prisma.orderItem.create({
+      data: { orderId: legacy.id, productId: provider.id, quantity: 1, unitPrice: "5.00", warrantyDaysSnapshot: 0 },
+    });
+    expect(await countAwaitingManualFulfillment(prisma)).toBe(2);
+  });
+
   it("countPendingVerifications counts every PENDING_VERIFICATION row, with no page-size cap", async () => {
     for (let i = 0; i < 5; i++) await makeOrder("PENDING_VERIFICATION");
     expect(await countPendingVerifications(prisma)).toBe(5);

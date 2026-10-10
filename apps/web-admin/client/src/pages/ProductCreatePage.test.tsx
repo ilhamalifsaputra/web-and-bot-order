@@ -50,6 +50,36 @@ beforeEach(() => {
 });
 
 describe("ProductCreatePage", () => {
+  it("shows game settings only for a game category and omits their draft after switching to Premium Apps", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.mocked(apiGet).mockResolvedValue({
+      categories: [
+        { id: 2, name: "Apps", isActive: true, group: "PREMIUM_APPS" },
+        { id: 3, name: "Games", isActive: true, group: "GAME_TOPUP" },
+      ],
+      products: [],
+    });
+    vi.mocked(apiPost).mockResolvedValue({ id: 42 });
+    render(<ProductCreatePage />, { wrapper: Wrapper });
+    expect(screen.queryByText("Game Variant")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("combobox"));
+    await user.click(await screen.findByRole("option", { name: "Games" }));
+    fireEvent.change(screen.getByPlaceholderText(/e\.g\. diamonds/i), { target: { value: "Diamonds" } });
+    fireEvent.change(screen.getByPlaceholderText(/e\.g\. global/i), { target: { value: "Global" } });
+    await user.click(screen.getByRole("combobox"));
+    await user.click(await screen.findByRole("option", { name: "Apps" }));
+    expect(screen.queryByText("Game Variant")).not.toBeInTheDocument();
+    expect(screen.queryByText("Game Variant Emoji")).not.toBeInTheDocument();
+    expect(screen.queryByText("Game Region")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByPlaceholderText(/capcut pro/i), { target: { value: "CapCut Pro" } });
+    await user.click(screen.getByRole("button", { name: /create product/i }));
+    await waitFor(() => expect(apiPost).toHaveBeenCalled());
+    const body = vi.mocked(apiPost).mock.calls[0][1];
+    expect(body).not.toHaveProperty("gameVariant");
+    expect(body).not.toHaveProperty("gameVariantEmoji");
+    expect(body).not.toHaveProperty("gameRegion");
+  });
+
   it("renders name input and submit button after categories load", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       new Response(JSON.stringify(CATALOG_DATA), {
@@ -131,13 +161,13 @@ describe("ProductCreatePage", () => {
 
     vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(
-        new Response(JSON.stringify(CATALOG_DATA), {
+        new Response(JSON.stringify({ ...CATALOG_DATA, categories: [{ id: 2, name: "Apps", isActive: true, group: "GAME_TOPUP" }] }), {
           status: 200,
           headers: { "Content-Type": "application/json" },
         }),
       )
       .mockResolvedValueOnce(
-        new Response(JSON.stringify(CATALOG_DATA), {
+        new Response(JSON.stringify({ ...CATALOG_DATA, categories: [{ id: 2, name: "Apps", isActive: true, group: "GAME_TOPUP" }] }), {
           status: 200,
           headers: { "Content-Type": "application/json" },
         }),
@@ -345,9 +375,13 @@ describe("ProductCreatePage Telegram button hints", () => {
     new Response(JSON.stringify(CATALOG_DATA), { status: 200, headers: { "Content-Type": "application/json" } });
 
   it("explains the Telegram button limit and counts cells under Name, Game Variant and Game Region", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(jsonOk());
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.mocked(apiGet).mockResolvedValue({ ...CATALOG_DATA, categories: [{ id: 2, name: "Games", isActive: true, group: "GAME_TOPUP" }] });
     render(<ProductCreatePage />, { wrapper: Wrapper });
     await waitFor(() => screen.getByPlaceholderText(/capcut pro/i));
+
+    await user.click(screen.getByRole("combobox"));
+    await user.click(await screen.findByRole("option", { name: "Games" }));
 
     expect(screen.getAllByText(/Shown on the Telegram/)).toHaveLength(3);
     expect(screen.getAllByTestId("button-label-counter").map((el) => el.textContent)).toEqual(["0/30", "0/18", "0/18"]);

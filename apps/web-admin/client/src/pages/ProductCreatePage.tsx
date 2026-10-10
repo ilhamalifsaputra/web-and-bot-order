@@ -47,6 +47,8 @@ export function ProductCreatePage() {
   const activeCategories = (data?.categories ?? []).filter((c) => c.isActive);
   const inactiveCategories = (data?.categories ?? []).filter((c) => !c.isActive);
 
+  const isGame = data?.categories.find((c) => c.id === categoryId)?.group === "GAME_TOPUP";
+
   const createCategory = useMutation({
     mutationFn: () =>
       apiPost<{ category: { id: number; name: string } }>("/api/catalog/categories", {
@@ -69,9 +71,9 @@ export function ProductCreatePage() {
         categoryId: categoryId!,
         ...(emoji.trim() ? { emoji: emoji.trim() } : {}),
         ...(description.trim() ? { description: description.trim() } : {}),
-        ...(gameVariant.trim() ? { gameVariant: gameVariant.trim() } : {}),
-        ...(gameVariantEmoji.trim() ? { gameVariantEmoji: gameVariantEmoji.trim() } : {}),
-        ...(gameRegion.trim() ? { gameRegion: gameRegion.trim() } : {}),
+        ...(isGame && gameVariant.trim() ? { gameVariant: gameVariant.trim() } : {}),
+        ...(isGame && gameVariantEmoji.trim() ? { gameVariantEmoji: gameVariantEmoji.trim() } : {}),
+        ...(isGame && gameRegion.trim() ? { gameRegion: gameRegion.trim() } : {}),
         ...(whatYouGet.trim() ? { whatYouGet: whatYouGet.trim() } : {}),
         ...(terms.trim() ? { terms: terms.trim() } : {}),
         ...(warrantyNote.trim() ? { warrantyNote: warrantyNote.trim() } : {}),
@@ -195,41 +197,45 @@ export function ProductCreatePage() {
           />
         </div>
 
-        {/* Game-navigation classification (Task 8/14) — optional, powers the
-            bot's catalog navigation and denomination labeling for game
-            top-up products (e.g. Mobile Legends' Diamonds variant). */}
-        <div>
-          <label className="block text-sm font-medium text-ink">Game Variant</label>
-          <ButtonLabelInput
-            kind="gameVariant"
-            emoji={gameVariantEmoji.trim() !== ""}
-            className="mt-1"
-            placeholder="e.g. Diamonds"
-            value={gameVariant}
-            onChange={(e) => setGameVariant(e.target.value)}
-          />
-        </div>
+        {isGame && (
+          <>
+            {/* Game-navigation classification (Task 8/14) — optional, powers the
+                bot's catalog navigation and denomination labeling for game
+                top-up products (e.g. Mobile Legends' Diamonds variant). */}
+            <div>
+              <label className="block text-sm font-medium text-ink">Game Variant</label>
+              <ButtonLabelInput
+                kind="gameVariant"
+                emoji={gameVariantEmoji.trim() !== ""}
+                className="mt-1"
+                placeholder="e.g. Diamonds"
+                value={gameVariant}
+                onChange={(e) => setGameVariant(e.target.value)}
+              />
+            </div>
 
-        <div>
-          <label className="block text-sm font-medium text-ink">Game Variant Emoji</label>
-          <Input
-            className="mt-1 w-24"
-            placeholder="e.g. 💎"
-            value={gameVariantEmoji}
-            onChange={(e) => setGameVariantEmoji(e.target.value)}
-          />
-        </div>
+            <div>
+              <label className="block text-sm font-medium text-ink">Game Variant Emoji</label>
+              <Input
+                className="mt-1 w-24"
+                placeholder="e.g. 💎"
+                value={gameVariantEmoji}
+                onChange={(e) => setGameVariantEmoji(e.target.value)}
+              />
+            </div>
 
-        <div>
-          <label className="block text-sm font-medium text-ink">Game Region</label>
-          <ButtonLabelInput
-            kind="gameRegion"
-            className="mt-1"
-            placeholder="e.g. Global"
-            value={gameRegion}
-            onChange={(e) => setGameRegion(e.target.value)}
-          />
-        </div>
+            <div>
+              <label className="block text-sm font-medium text-ink">Game Region</label>
+              <ButtonLabelInput
+                kind="gameRegion"
+                className="mt-1"
+                placeholder="e.g. Global"
+                value={gameRegion}
+                onChange={(e) => setGameRegion(e.target.value)}
+              />
+            </div>
+          </>
+        )}
 
         <div>
           <label className="text-sm font-medium text-ink">Description</label>

@@ -108,10 +108,10 @@ export function DenominationCreatePage() {
           ...(deliveryType === "manual_with_info" && autoDeliverySource
             ? { autoDeliverySource, supplierSku: supplierSku.trim() }
             : {}),
-          ...(nicknameCheckGameCode.trim() ? { nicknameCheckGameCode: nicknameCheckGameCode.trim() } : {}),
-          ...(providerInputMapping.trim() ? { providerInputMapping: providerInputMapping.trim() } : {}),
-          ...(qtyValue.trim() ? { qtyValue: Number(qtyValue.trim()) } : {}),
-          ...(qtyUnit.trim() ? { qtyUnit: qtyUnit.trim() } : {}),
+          ...(isGame && nicknameCheckGameCode.trim() ? { nicknameCheckGameCode: nicknameCheckGameCode.trim() } : {}),
+          ...(isGame && providerInputMapping.trim() ? { providerInputMapping: providerInputMapping.trim() } : {}),
+          ...(isGame && qtyValue.trim() ? { qtyValue: Number(qtyValue.trim()) } : {}),
+          ...(isGame && qtyUnit.trim() ? { qtyUnit: qtyUnit.trim() } : {}),
         },
       ),
     onMutate: () => setError(null),
@@ -192,24 +192,23 @@ export function DenominationCreatePage() {
           )}
         </div>
 
-        {/* Compact-button quantity (Task 8/14) — optional, powers the bot's
-            "86 Diamonds"-style compact denomination button label. */}
-        <div className="flex gap-3">
-          <div>
-            <label className="block text-sm font-medium text-ink">Quantity Value</label>
-            <Input
-              className="mt-1 w-32"
-              type="number"
-              min="0"
-              step="1"
-              placeholder="e.g. 86"
-              value={qtyValue}
-              onChange={(e) => setQtyValue(e.target.value)}
-            />
-          </div>
-          <div className="min-w-0 flex-1">
-            <label className="block text-sm font-medium text-ink">Quantity Unit</label>
-            {isGame ? (
+        {/* Game Top Up quantity builds the compact Telegram button label. */}
+        {isGame && (
+          <div className="flex gap-3">
+            <div>
+              <label className="block text-sm font-medium text-ink">Quantity Value</label>
+              <Input
+                className="mt-1 w-32"
+                type="number"
+                min="0"
+                step="1"
+                placeholder="e.g. 86"
+                value={qtyValue}
+                onChange={(e) => setQtyValue(e.target.value)}
+              />
+            </div>
+            <div className="min-w-0 flex-1">
+              <label className="block text-sm font-medium text-ink">Quantity Unit</label>
               <ButtonLabelInput
                 kind="qtyUnit"
                 className="mt-1"
@@ -217,16 +216,9 @@ export function DenominationCreatePage() {
                 value={qtyUnit}
                 onChange={(e) => setQtyUnit(e.target.value)}
               />
-            ) : (
-              <Input
-                className="mt-1"
-                placeholder="e.g. Diamonds"
-                value={qtyUnit}
-                onChange={(e) => setQtyUnit(e.target.value)}
-              />
-            )}
+            </div>
           </div>
-        </div>
+        )}
 
         <div>
           <label className="text-sm font-medium text-ink">
@@ -251,6 +243,7 @@ export function DenominationCreatePage() {
         </div>
 
         <DeliveryTypeSection
+          isGame={isGame}
           deliveryType={deliveryType}
           onDeliveryTypeChange={setDeliveryType}
           additionalFields={additionalFields}

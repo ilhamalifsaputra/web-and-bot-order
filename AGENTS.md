@@ -153,6 +153,38 @@ degraded back to raw filenames/JSON keys.
 Fall back to Glob/Grep/Read when the question is about exact current file
 contents (e.g. verifying a specific line before editing), not architecture.
 
+## Premium Apps and Game Top Up stay separate
+
+- **Apply this separation everywhere**, for both Codex and Claude: admin,
+  storefront, Telegram bot, APIs, validation, imports/sync, search, navigation,
+  checkout, fulfillment, and customer-facing messages. Shared components and
+  database models must not make one product family inherit the other's fields,
+  terminology, defaults, or behavior.
+- **Use the category's product group** (`PREMIUM_APPS` / `GAME_TOPUP`) and the
+  established group resolver for legacy categories wherever applicable. Do not
+  guess the family from a product name or treat every non-Premium product as a
+  game. When an admin changes category, update the relevant form fields and
+  validation immediately.
+- **Show and require only fields the selected family actually uses.** Game
+  variant/emoji, game region, top-up quantity/unit, currency icons, player ID,
+  nickname checks, and game provider mapping belong to Game Top Up. Premium
+  Apps use app/account/plan/duration/warranty terminology and must not show
+  game placeholders, examples, hints, or game-only settings. Shared settings
+  such as price, delivery method, and buyer information remain available when
+  the actual purchase/delivery flow needs them (e.g. account email for an app).
+- **Hidden fields must not affect validation or submit stale drafts.** Preserve
+  existing stored metadata when editing unrelated settings; do not silently
+  erase or migrate old data just to simplify a form. New Premium Apps records
+  must not receive game metadata/defaults from shared form state.
+- **Keep each family's intended presentation and purchase flow.** In particular,
+  Premium Apps retain their plan/account picker; Game Top Up uses its game,
+  variant, region, and denomination flow. Any intentional shared behavior must
+  be justified by its actual use in both families.
+- **Cover both families when changing a shared surface**, including legacy
+  category handling and category switching where supported. Assert that
+  family-specific controls/behavior are present for the right family and absent
+  for the other.
+
 ## Money, data, audit
 - **Decimal for all money** (`@app/core/money`), never `float`. Web formats it
   client-side (storefront: `formatIdr` etc. in `apps/storefront/client/src/lib/format.ts`;

@@ -26,7 +26,7 @@ const PRODUCT_DETAIL = {
     id: 1,
     name: "CapCut Pro",
     isActive: true,
-    category: { id: 2, name: "Apps" },
+    category: { id: 2, name: "Apps", group: "GAME_TOPUP" },
     denominations: [
       {
         id: 10,
@@ -475,7 +475,7 @@ describe("ProductDetailPage", () => {
   // currencyIconKind (denomination-card currency chip) — optional selects
   // shown in the edit-mode form, hidden entirely (not disabled) for a
   // product whose category is in the PREMIUM_APPS group.
-  it("shows the thumbnail style and currency icon selects for a non-PREMIUM_APPS product", async () => {
+  it("shows the thumbnail style and currency icon selects for a GAME_TOPUP product", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = String(input);
@@ -567,6 +567,53 @@ describe("ProductDetailPage", () => {
     await waitFor(() => expect(screen.getByText("Private")).toBeInTheDocument());
 
     expect(screen.getByRole("button", { name: "Apps" })).toBeInTheDocument();
+  });
+});
+
+describe("ProductDetailPage category-specific settings", () => {
+  it.each(["PREMIUM_APPS", null])("hides game settings for Premium Apps including legacy categories (group %s)", async (group) => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const category = { id: 2, name: "Creative", group, isActive: true };
+    const detail = { ...PRODUCT_DETAIL, product: { ...PRODUCT_DETAIL.product, category, gameVariant: "Diamonds", gameRegion: "Global" } };
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const body = String(input) === "/api/catalog"
+        ? { categories: [category], products: [] }
+        : !init?.method ? detail : { ok: true };
+      return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+    render(<ProductDetailPage />, { wrapper: Wrapper });
+    await user.click(await screen.findByRole("button", { name: /edit product/i }));
+    for (const label of ["Game Variant", "Game Variant Emoji", "Game Region"]) {
+      expect(screen.queryByText(label)).not.toBeInTheDocument();
+    }
+    expect(screen.queryByRole("combobox", { name: /ikon currency/i })).not.toBeInTheDocument();
+    expect(screen.getByText("What the buyer gets")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith("/api/catalog/products/1", expect.objectContaining({ method: "PATCH" })));
+    const patch = fetchSpy.mock.calls.find(([url, init]) => url === "/api/catalog/products/1" && init?.method === "PATCH")!;
+    expect(JSON.parse(String(patch[1]?.body))).toMatchObject({ gameVariant: "Diamonds", gameRegion: "Global" });
+  });
+
+  it("updates the game settings immediately when the selected category changes", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const body = String(input) === "/api/catalog"
+        ? { categories: [
+          { id: 2, name: "Games", group: "GAME_TOPUP", isActive: true },
+          { id: 3, name: "Apps", group: "PREMIUM_APPS", isActive: true },
+        ], products: [] }
+        : PRODUCT_DETAIL;
+      return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+    render(<ProductDetailPage />, { wrapper: Wrapper });
+    await user.click(await screen.findByRole("button", { name: /edit product/i }));
+    expect(screen.getByText("Game Variant")).toBeInTheDocument();
+    await user.click(screen.getByRole("combobox", { name: "Category" }));
+    await user.click(await screen.findByRole("option", { name: "Apps" }));
+    expect(screen.queryByText("Game Variant")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("combobox", { name: "Category" }));
+    await user.click(await screen.findByRole("option", { name: "Games" }));
+    expect(screen.getByText("Game Variant")).toBeInTheDocument();
   });
 });
 

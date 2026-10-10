@@ -54,6 +54,29 @@ async function fillBaseFields(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe("DenominationCreatePage", () => {
+  it.each(["PREMIUM_APPS", null])("hides game fields for Premium Apps (group %s) while allowing buyer account information", async (group) => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.mocked(apiGet).mockResolvedValue({ product: { id: 42, name: "Netflix Premium", category: { group } } });
+    vi.mocked(apiPost).mockResolvedValue({ id: 7 });
+    render(<DenominationCreatePage />, { wrapper: Wrapper });
+    await fillBaseFields(user);
+    expect(screen.queryByText("Quantity Value")).not.toBeInTheDocument();
+    expect(screen.queryByText("Quantity Unit")).not.toBeInTheDocument();
+    expect(screen.queryByText(/nickname check game code/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/advanced provider input mapping/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Player ID/)).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /add field/i }));
+    fireEvent.change(screen.getByPlaceholderText("e.g. Email akun"), { target: { value: "Email" } });
+    fireEvent.change(screen.getByPlaceholderText("e.g. Account email"), { target: { value: "Email" } });
+    await user.click(screen.getByRole("button", { name: /create denomination/i }));
+    await waitFor(() => expect(apiPost).toHaveBeenCalled());
+    const body = vi.mocked(apiPost).mock.calls[0][1];
+    expect(body).toHaveProperty("additionalFields", [expect.objectContaining({ key: "email" })]);
+    for (const key of ["qtyValue", "qtyUnit", "nicknameCheckGameCode", "providerInputMapping"]) {
+      expect(body).not.toHaveProperty(key);
+    }
+  });
+
   it("shows the real product name in the breadcrumb, not the literal word 'Product' (F-007)", async () => {
     render(<DenominationCreatePage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByRole("link", { name: "Netflix Premium" })).toBeInTheDocument());
@@ -163,10 +186,10 @@ describe("DenominationCreatePage", () => {
     // real requirements (both bilingual labels, select needs options), so a
     // half-filled row must keep the button disabled rather than let the
     // admin hit the server's generic rejection message.
-    fireEvent.change(screen.getByPlaceholderText(/e\.g\. id game/i), { target: { value: "IGN" } });
+    fireEvent.change(screen.getByPlaceholderText(/e\.g\. email akun/i), { target: { value: "IGN" } });
     expect(btn).toBeDisabled();
 
-    fireEvent.change(screen.getByPlaceholderText(/e\.g\. game id/i), { target: { value: "IGN" } });
+    fireEvent.change(screen.getByPlaceholderText(/e\.g\. account email/i), { target: { value: "IGN" } });
     expect(btn).not.toBeDisabled();
   });
 
@@ -231,6 +254,7 @@ describe("DenominationCreatePage", () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     vi.mocked(apiPost).mockResolvedValueOnce({ id: 7, name: "86 Diamonds", slug: "86-diamonds" });
 
+    vi.mocked(apiGet).mockResolvedValue({ product: { id: 42, name: "Mobile Legends", category: { group: "GAME_TOPUP" } } });
     render(<DenominationCreatePage />, { wrapper: Wrapper });
     await fillBaseFields(user);
     fireEvent.change(screen.getByPlaceholderText(/e\.g\. 86/i), { target: { value: "86" } });
@@ -287,8 +311,8 @@ describe("DenominationCreatePage", () => {
     await user.click(screen.getByRole("radio", { name: /^manual delivery/i }));
     await user.click(screen.getByRole("radio", { name: /^require buyer information/i }));
     await user.click(screen.getByRole("button", { name: /add field/i }));
-    fireEvent.change(screen.getByPlaceholderText(/e\.g\. id game/i), { target: { value: "IGN" } });
-    fireEvent.change(screen.getByPlaceholderText(/e\.g\. game id/i), { target: { value: "IGN" } });
+    fireEvent.change(screen.getByPlaceholderText(/e\.g\. email akun/i), { target: { value: "IGN" } });
+    fireEvent.change(screen.getByPlaceholderText(/e\.g\. account email/i), { target: { value: "IGN" } });
 
     const btn = screen.getByRole("button", { name: /create denomination/i });
     await waitFor(() => expect(btn).not.toBeDisabled());
@@ -325,10 +349,10 @@ describe("DenominationCreatePage", () => {
     await user.click(screen.getByRole("radio", { name: /^manual delivery/i }));
     await user.click(screen.getByRole("radio", { name: /^require buyer information/i }));
     await user.click(screen.getByRole("button", { name: /add field/i }));
-    fireEvent.change(screen.getByPlaceholderText(/e\.g\. id game/i), { target: { value: "IGN" } });
-    fireEvent.change(screen.getByPlaceholderText(/e\.g\. game id/i), { target: { value: "IGN" } });
+    fireEvent.change(screen.getByPlaceholderText(/e\.g\. email akun/i), { target: { value: "IGN" } });
+    fireEvent.change(screen.getByPlaceholderText(/e\.g\. account email/i), { target: { value: "IGN" } });
     await user.click(screen.getByRole("radio", { name: /^digiflazz/i }));
-    fireEvent.change(screen.getByPlaceholderText(/e\.g\. mlbb86/i), { target: { value: "mlbb86" } });
+    fireEvent.change(screen.getByPlaceholderText("Supplier SKU code"), { target: { value: "mlbb86" } });
 
     // Back out of "Require buyer information" without changing the method —
     // Step 4 should disappear along with its Digiflazz/Supplier SKU state.

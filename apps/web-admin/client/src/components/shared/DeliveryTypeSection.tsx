@@ -69,6 +69,7 @@ function RadioOptionCard({
  * `deliveryType === "manual_with_info"`) needed no changes.
  */
 export function DeliveryTypeSection({
+  isGame,
   deliveryType,
   onDeliveryTypeChange,
   additionalFields,
@@ -82,6 +83,7 @@ export function DeliveryTypeSection({
   providerInputMapping = "",
   onProviderInputMappingChange,
 }: {
+  isGame: boolean;
   deliveryType: string;
   onDeliveryTypeChange: (next: string) => void;
   additionalFields: AdditionalFieldDraft[];
@@ -133,7 +135,7 @@ export function DeliveryTypeSection({
   function selectAutoDeliverySource(next: AutoDeliverySourceOption) {
     if (next === "digiflazz") {
       onAutoDeliverySourceChange("digiflazz");
-      if (additionalFields.length === 0) {
+      if (isGame && additionalFields.length === 0) {
         onAdditionalFieldsChange(AUTO_DELIVERY_FIELDS_TEMPLATE);
       }
     } else {
@@ -231,10 +233,10 @@ export function DeliveryTypeSection({
           <label className="text-sm font-medium text-ink">Buyer Information Fields</label>
           <p className="mt-1 mb-2 text-xs text-ink-soft">
             {method === "auto"
-              ? "Optional. Add fields only if this SKU needs input from the buyer (for example a Player ID); buyers fill them before paying."
+              ? `Optional. Add fields only if this SKU needs input from the buyer (for example ${isGame ? "a Player ID" : "an account email"}); buyers fill them before paying.`
               : "The buyer fills these in before paying. At least one field is required."}
           </p>
-          <AdditionalFieldsEditor value={additionalFields} onChange={onAdditionalFieldsChange} />
+          <AdditionalFieldsEditor isGame={isGame} value={additionalFields} onChange={onAdditionalFieldsChange} />
         </div>
       )}
 
@@ -275,7 +277,7 @@ export function DeliveryTypeSection({
               </label>
               <Input
                 className="mt-1"
-                placeholder="e.g. mlbb86"
+                placeholder={isGame ? "e.g. mlbb86" : "Supplier SKU code"}
                 value={supplierSku}
                 onChange={(e) => onSupplierSkuChange(e.target.value)}
               />
@@ -296,7 +298,7 @@ export function DeliveryTypeSection({
           field. NOT shown for plain Manual (no info) — that combination
           collects no buyer account field at all, so there's nothing for a
           live check to verify against. */}
-      {(requiresInfo || method === "auto") && (
+      {isGame && (requiresInfo || method === "auto") && (
         <div>
           <label className="text-sm font-medium text-ink">Nickname check game code (optional)</label>
           <Input
@@ -310,7 +312,7 @@ export function DeliveryTypeSection({
           </p>
         </div>
       )}
-      {onProviderInputMappingChange && (requiresInfo || method === "auto") && (
+      {isGame && onProviderInputMappingChange && (requiresInfo || method === "auto") && (
         <details>
           <summary className="cursor-pointer text-sm font-medium text-ink">Advanced provider input mapping</summary>
           <label htmlFor="provider-input-mapping" className="mt-2 block text-sm text-ink-soft">Server mapping (JSON)</label>

@@ -1,6 +1,7 @@
 import { ShoppingCart, Wallet, PackageSearch, RefreshCw, CheckCircle2, XCircle } from "lucide-react";
 import { StatCard } from "../../components/shared/StatCard";
 import { CurrencyStack, type CurrencyAmount } from "../../components/shared/CurrencyAmount";
+import { AWAITING_FULFILLMENT_HINT } from "../../lib/awaitingFulfillment";
 import { useOrdersKpis } from "../../hooks/useOrdersKpis";
 
 const ALL_KINDS = "Counts every order, including wallet top-up orders, across the whole shop (not just the filtered list below).";
@@ -40,7 +41,7 @@ export function OrdersKpiRow(): JSX.Element {
         />
         <StatCard
           label="Awaiting Fulfillment"
-          hint={ALL_KINDS}
+          hint={AWAITING_FULFILLMENT_HINT}
           value={data?.awaitingFulfillment ?? 0}
           icon={PackageSearch}
           tone="warning"

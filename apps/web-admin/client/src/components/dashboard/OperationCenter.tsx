@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import { Card, CardContent } from "../ui/card";
 import { UrgencyDot } from "../shared/UrgencyDot";
+import { AWAITING_FULFILLMENT_HINT } from "../../lib/awaitingFulfillment";
 import { useOperations } from "../../hooks/useOperations";
 import type { OperationsSummary } from "../../api/types";
 
@@ -34,7 +35,7 @@ const CARDS: OpCardDef[] = [
     href: "/orders?status=PROCESSING",
     // The list behind the link shows every PROCESSING order, including ones
     // still in flight at Digiflazz that the counter deliberately leaves out.
-    hint: "Orders that need a manual hand-off. Orders still being processed by the provider are not counted here.",
+    hint: AWAITING_FULFILLMENT_HINT,
   },
 ];
 

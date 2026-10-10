@@ -368,6 +368,45 @@ describe("StockPage", () => {
     expect(dataRows[2]).toContain("1 Month"); // 8 available
   });
 
+  it("Low Stock First puts provider and manual SKUs (no stock rows, so a meaningless 0) after every inventory row", async () => {
+    const user = userEvent.setup();
+    const providerDenom = {
+      id: 60,
+      name: "Aaa Provider Pack",
+      isActive: true,
+      deliveryType: "auto",
+      fulfillmentSource: "PROVIDER_API",
+      usesLocalInventory: false,
+      product: { id: 6, name: "Free Fire", category: { id: 1, name: "Apps" } },
+    };
+    const manualDenom = {
+      id: 61,
+      name: "Aab Manual Pack",
+      isActive: true,
+      deliveryType: "manual",
+      fulfillmentSource: "MANUAL",
+      usesLocalInventory: false,
+      product: { id: 6, name: "Free Fire", category: { id: 1, name: "Apps" } },
+    };
+    mockStock({ ...STOCK_DATA, denominations: [providerDenom, manualDenom, ...STOCK_DATA.denominations] });
+    render(<StockPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("1 Month")).toBeInTheDocument());
+
+    await user.click(screen.getByText("Name A–Z").closest('[role="combobox"]')!);
+    await user.click(await screen.findByRole("option", { name: "Low Stock First" }));
+
+    const dataRows = screen
+      .getAllByRole("row")
+      .map((r) => r.textContent ?? "")
+      .filter((text) => /1 Month|3 Months|1 Year|Provider Pack|Manual Pack/.test(text));
+    expect(dataRows).toHaveLength(5);
+    expect(dataRows[0]).toContain("1 Year");
+    expect(dataRows[1]).toContain("3 Months");
+    expect(dataRows[2]).toContain("1 Month");
+    expect(dataRows[3]).toContain("Provider Pack");
+    expect(dataRows[4]).toContain("Manual Pack");
+  });
+
   it("row overflow menu offers View and Download Credentials when stock is available", async () => {
     const user = userEvent.setup();
     mockStock();

@@ -95,6 +95,9 @@ function compareRows(
   counts: StockData["counts"],
 ): number {
   if (sortBy === "available-asc") {
+    // Provider/manual SKUs hold no local stock rows, so their "0" is not a
+    // shortage: keep them after every real inventory row (ties fall to name).
+    if (a.usesLocalInventory !== b.usesLocalInventory) return a.usesLocalInventory ? -1 : 1;
     const av = counts[String(a.id)]?.available ?? 0;
     const bv = counts[String(b.id)]?.available ?? 0;
     return av - bv;

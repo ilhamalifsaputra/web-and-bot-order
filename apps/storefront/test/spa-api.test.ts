@@ -2596,6 +2596,30 @@ describe("/api/v1/account twins", () => {
       }
     });
 
+    it("restock subscribe refuses a provider-fulfilled or manual SKU (nothing local to restock)", async () => {
+      const uid = await makeUser("restockprov", "restock-pw-123", "RESTOCKPRV");
+      await prisma.user.update({ where: { id: uid }, data: { telegramId: BigInt(880_000_124) } });
+      const session = await loginAs("restockprov", "restock-pw-123");
+      const base = await prisma.denomination.findUniqueOrThrow({ where: { id: denomId } });
+      const provider = await createDenomination(prisma, {
+        productId: base.productId, name: "Provider restock SKU", type: "SHARED", durationLabel: "1 Month",
+        price: "10000", deliveryType: "auto", autoDeliverySource: "digiflazz",
+      });
+      const manual = await createDenomination(prisma, {
+        productId: base.productId, name: "Manual restock SKU", type: "SHARED", durationLabel: "1 Month",
+        price: "10000", deliveryType: "manual",
+      });
+      for (const id of [provider.id, manual.id]) {
+        const res = await app.inject({
+          method: "POST",
+          url: `/api/v1/restock/${id}`,
+          headers: { cookie: session.cookie, "x-csrf-token": session.csrf },
+        });
+        expect(res.json().result).toBe("unavailable");
+        expect(await prisma.restockSubscription.count({ where: { userId: uid, productId: id } })).toBe(0);
+      }
+    });
+
     // Migrated from the deleted account.ts (docs/REACT_STOREFRONT_MIGRATION.md
     // Phase 7) — never had a Nunjucks-era HTTP test of its own (checked the
     // full git history), so this is new server-level coverage for logic that

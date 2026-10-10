@@ -149,7 +149,7 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
         String(cnt?.reserved ?? 0),
         String(cnt?.sold ?? 0),
         // Same rule as the admin UI: blank unless out of stock with requests.
-        available === 0 && waiting[d.id] ? String(waiting[d.id]) : "",
+        usesLocalInventory(d) && available === 0 && waiting[d.id] ? String(waiting[d.id]) : "",
         stockStatusLabel(available, config.LOW_STOCK_THRESHOLD, fulfillmentSourceOf(d)),
       ]);
     }

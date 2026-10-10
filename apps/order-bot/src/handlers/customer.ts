@@ -1791,6 +1791,14 @@ export async function subscribeRestock(ctx: MyContext, denominationId: number): 
     await smartEdit(ctx, msg, ckb.backToMain(lang));
     return;
   }
+  // Provider/manual SKUs never run out of local stock, so there is nothing to
+  // restock; answer with a toast only and leave the product bubble untouched.
+  if (!usesLocalInventory(denomination)) {
+    if (ctx.callbackQuery) {
+      await ctx.answerCallbackQuery({ text: t(ctx, "browse.restock_not_needed"), show_alert: true });
+    }
+    return;
+  }
   const isNew = await subscribeToRestock(prisma, info.id, denominationId);
   const msg = t(ctx, isNew ? "browse.subscribed_restock" : "browse.already_subscribed");
   if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: msg });

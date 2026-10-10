@@ -58,6 +58,25 @@ describe("GET /api/stock/export status column", () => {
     expect(statusOf("ManualSku")).toBe("Manual");
     expect(statusOf("LocalSku")).toBe("Out of Stock");
   });
+
+  it("fills Restock Requests only for local-inventory SKUs, even when a provider SKU has subscribers", async () => {
+    const { provider, manual, local } = await seedMix();
+    const buyer = await upsertUser(prisma, { telegramId: 4242, username: "buyer", fullName: "Buyer" });
+    for (const d of [provider, manual, local]) {
+      await prisma.restockSubscription.create({ data: { userId: buyer.id, productId: d.id } });
+    }
+    const res = await app.inject({ method: "GET", url: "/api/stock/export", cookies: { [COOKIE]: cookie } });
+    expect(res.statusCode).toBe(200);
+    const rows = res.body.split("\r\n");
+    // Restock Requests is the second-to-last column, Status the last.
+    const restockOf = (name: string) => {
+      const cells = rows.find((r) => r.startsWith(`${name},`))!.split(",");
+      return cells[cells.length - 2];
+    };
+    expect(restockOf("ProviderSku")).toBe("");
+    expect(restockOf("ManualSku")).toBe("");
+    expect(restockOf("LocalSku")).toBe("1");
+  });
 });
 
 describe("GET /api/stock fulfillment source", () => {

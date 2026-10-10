@@ -76,6 +76,13 @@ function callbackData(sink: SentCall[]): string[] {
   });
 }
 
+function buttonLabels(sink: SentCall[]): string[] {
+  return sink.flatMap((c) => c.args).flatMap((a) => {
+    const kb = (a as { reply_markup?: { inline_keyboard?: Array<Array<{ text?: string }>> } } | null)?.reply_markup?.inline_keyboard;
+    return kb ? kb.flat().map((b) => b.text ?? "") : [];
+  });
+}
+
 function bodies(sink: SentCall[]): string {
   return sink.flatMap((c) => c.args).filter((a): a is string => typeof a === "string").join("\n");
 }
@@ -98,6 +105,10 @@ describe("denomination detail", () => {
     const data = callbackData(sink);
     expect(data).toContain(`v1:buy:${providerId}:1`);
     expect(data.some((d) => d.startsWith("v1:restock"))).toBe(false);
+    // "Notify me" is a keyboard button, never body text: pin it on the
+    // inline keyboard itself.
+    expect(buttonLabels(sink)).not.toContain(notify);
+    expect(buttonLabels(sink).length).toBeGreaterThan(0);
     expect(text).not.toContain(notify);
   });
 
@@ -122,6 +133,7 @@ describe("denomination detail", () => {
     const data = callbackData(sink);
     expect(data).toContain(`v1:restock:sub:${emptyLocalId}`);
     expect(data.some((d) => d.startsWith(`v1:buy:${emptyLocalId}`))).toBe(false);
+    expect(buttonLabels(sink)).toContain(notify);
   });
 });
 
@@ -190,7 +202,10 @@ describe("order confirmation", () => {
     await checkout.showOrderConfirmation(ctx, providerId, 1);
     expect(bodies(sink)).not.toContain(coreT("error.out_of_stock", "en", { product: "Provider Plan" }));
     expect(JSON.stringify(calls(sink, "answerCallbackQuery"))).not.toContain("out of stock");
+    // Edit-first: the confirmation is one edit of the existing bubble.
+    expect(calls(sink, "editMessageText")).toHaveLength(1);
     expect(calls(sink, "sendMessage")).toHaveLength(0);
+    expect(calls(sink, "deleteMessage")).toHaveLength(0);
   });
 
   it("still refuses a plain auto SKU with no stock (one edit to the notice, no send)", async () => {
@@ -199,5 +214,27 @@ describe("order confirmation", () => {
     expect(calls(sink, "editMessageText")).toHaveLength(1);
     expect(calls(sink, "sendMessage")).toHaveLength(0);
     expect(bodies(sink)).toContain(coreT("error.out_of_stock", "en", { product: "Empty Local" }));
+  });
+});
+
+describe("restock subscription", () => {
+  it("refuses a provider SKU with one alert toast: no subscription, no edit, no send", async () => {
+    const { ctx, sink } = customerCtx({ callbackData: `v1:restock:sub:${providerId}` });
+    await customer.subscribeRestock(ctx, providerId);
+    expect(await prisma.restockSubscription.count({ where: { productId: providerId } })).toBe(0);
+    expect(calls(sink, "answerCallbackQuery")).toHaveLength(1);
+    expect(JSON.stringify(calls(sink, "answerCallbackQuery"))).toContain(coreT("browse.restock_not_needed", "en"));
+    expect(calls(sink, "editMessageText")).toHaveLength(0);
+    expect(calls(sink, "sendMessage")).toHaveLength(0);
+    expect(calls(sink, "deleteMessage")).toHaveLength(0);
+  });
+
+  it("still subscribes an empty local-inventory SKU: one toast + one edit", async () => {
+    const { ctx, sink } = customerCtx({ callbackData: `v1:restock:sub:${emptyLocalId}` });
+    await customer.subscribeRestock(ctx, emptyLocalId);
+    expect(await prisma.restockSubscription.count({ where: { productId: emptyLocalId } })).toBe(1);
+    expect(calls(sink, "answerCallbackQuery")).toHaveLength(1);
+    expect(calls(sink, "editMessageText")).toHaveLength(1);
+    expect(calls(sink, "sendMessage")).toHaveLength(0);
   });
 });

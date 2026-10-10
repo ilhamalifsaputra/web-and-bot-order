@@ -151,6 +151,7 @@
   "admin.verification_item": "Order <code>{code}</code>\nUser: {user}\nTotal: <b>{total}</b>\nTxID: <code>{txid}</code>\n\n{lines}",
   "admin.verifications": "✅ Verifications ({count})",
   "admin.vouchers": "🎟 Vouchers",
+  "browse.restock_not_needed": "This product is available to order right now, so no restock alert is needed.",
   "browse.already_subscribed": "You are already subscribed for restock alerts on this product.",
   "browse.bulk_deal": "Bulk deal: buy <b>{min_qty}+</b> and save <b>{percent}%</b>.",
   "browse.buy_now": "🛒 Buy Now",

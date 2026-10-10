@@ -21,6 +21,7 @@ import { logger } from "@app/core/logger";
 import { localize, addDays } from "@app/core/datetime";
 import { CategoryGroup, SenderType, OrderStatus, OrderKind, TicketStatus, zTicketCategory } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
+import { usesLocalInventory } from "@app/core/productAvailability";
 import { hashPassword, verifyPassword } from "@app/core/password";
 import { Decimal } from "@app/core/money";
 import { parseCustomerData } from "@app/core/deliveryFields";
@@ -800,6 +801,8 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
     if (!denom?.isActive || !(await isServiceActive(prisma, denom.product.category.group as CategoryGroup | null, "web"))) {
       return reply.send({ ok: false, result: "unavailable", redirect });
     }
+    // Provider/manual SKUs never run out of local stock: nothing to restock.
+    if (!usesLocalInventory(denom)) return reply.send({ ok: false, result: "unavailable", redirect });
     // Restock DMs go out over Telegram, so a web-only account can never be served.
     if (customer.user.telegramId == null) return reply.send({ ok: false, result: "needs_telegram", redirect });
     const isNew = await subscribeToRestock(prisma, customer.userId, denom.id);

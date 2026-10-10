@@ -151,6 +151,7 @@
   "admin.verification_item": "Order <code>{code}</code>\nUser: {user}\nTotal: <b>{total}</b>\nTxID: <code>{txid}</code>\n\n{lines}",
   "admin.verifications": "✅ Verifikasi ({count})",
   "admin.vouchers": "🎟 Voucher",
+  "browse.restock_not_needed": "Produk ini bisa dipesan sekarang, jadi notifikasi restock tidak diperlukan.",
   "browse.already_subscribed": "Notifikasi restock untuk produk ini sudah aktif.",
   "browse.bulk_deal": "Harga bundel: beli <b>{min_qty}+</b> dan hemat <b>{percent}%</b>.",
   "browse.buy_now": "🛒 Beli Sekarang",

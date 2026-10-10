@@ -78,14 +78,14 @@ describe("DenominationCard", () => {
     expect(label.className.split(/\s+/)).not.toContain("card-pad");
   });
 
-  it("marks the selected state with a 2px pine border + focus ring and NO fill", () => {
+  it("marks selection with a blue fill and border, with a separate keyboard focus ring", () => {
     renderCard({ checked: true });
     const label = screen.getByText("5 Diamonds").closest("label")!;
     expect(label.className).toContain("border-2");
     expect(label.className).toContain("has-[:checked]:border-pine");
-    expect(label.className).toContain("has-[:checked]:ring-2");
-    // The old solid-colour wash is gone.
-    expect(label.className).not.toContain("bg-pine-tint/40");
+    expect(label.className).toContain("has-[:checked]:bg-pine-tint");
+    expect(label.className).toContain("focus-within:ring-2");
+    expect(label.className).toContain("focus-within:ring-pine");
   });
 
   it("keeps the radio + data-* selection contract the picker logic depends on", () => {

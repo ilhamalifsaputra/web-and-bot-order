@@ -5,12 +5,10 @@
  */
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { motion } from "framer-motion";
 import { Box, ChevronRight, PackageSearch } from "lucide-react";
 import { apiGet } from "../api/client";
 import type { CategoriesPageData } from "../api/types";
 import { t } from "../lib/i18n";
-import { staggerContainer, staggerItem } from "../lib/motion";
 import { useShopContext } from "../components/Layout";
 import { useSuggestedProducts } from "../lib/useSuggestedProducts";
 import Breadcrumb from "../components/shop/Breadcrumb";
@@ -60,14 +58,11 @@ export default function CategoriesPage() {
       </div>
 
       {categories.length > 0 ? (
-        <motion.div
+        <div
           className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3"
-          variants={staggerContainer}
-          initial="initial"
-          animate="animate"
         >
           {categories.map((c) => (
-            <motion.div key={c.slug} variants={staggerItem}>
+            <div key={c.slug}>
               <Link
                 to={`/c/${c.slug}`}
                 className="group flex h-full items-center gap-4 rounded-2xl border border-line bg-card p-5 shadow-soft transition hover:border-pine-tint hover:shadow-lift"
@@ -84,9 +79,9 @@ export default function CategoriesPage() {
                   </span>
                 </div>
               </Link>
-            </motion.div>
+            </div>
           ))}
-        </motion.div>
+        </div>
       ) : (
         <EmptyState
           icon={PackageSearch}

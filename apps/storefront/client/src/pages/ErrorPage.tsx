@@ -9,7 +9,7 @@
  * conversations. The `statusCode` / `message` prop API the shell passes is
  * unchanged, as is the `fadeUp` entrance.
  */
-import { motion } from "framer-motion";
+import { motion } from "motion/react";
 import { t } from "../lib/i18n";
 import { fadeUp } from "../lib/motion";
 import ErrorState from "../components/shop/ErrorState";

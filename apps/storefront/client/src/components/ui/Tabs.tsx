@@ -20,6 +20,8 @@
  */
 import { useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { cn } from "./cn";
+import { motion, useReducedMotion } from "motion/react";
+import { SELECTION_SPRING } from "../../lib/motion";
 
 export interface TabItem {
   value: string;
@@ -52,6 +54,7 @@ export default function Tabs({
   "aria-labelledby": ariaLabelledby,
 }: TabsProps) {
   const baseId = useId();
+  const reduced = useReducedMotion();
   const listRef = useRef<HTMLDivElement>(null);
   const isControlled = value !== undefined;
   const [internal, setInternal] = useState(
@@ -128,13 +131,20 @@ export default function Tabs({
               disabled={item.disabled}
               onClick={() => select(item.value)}
               className={cn(
-                "rounded-full px-3 py-1.5 text-xs font-semibold transition-colors",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pine/35",
-                selected ? "bg-pine-tint text-pine-dark" : "bg-sand text-ink-soft hover:text-ink",
+                "relative min-h-11 rounded-full px-4 py-2 text-sm font-semibold transition-colors",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pine",
+                selected ? "text-pine-dark" : "bg-sand text-ink-soft hover:text-ink",
                 item.disabled && "cursor-not-allowed opacity-50",
               )}
             >
-              {item.label}
+              {selected && <motion.span
+                aria-hidden="true"
+                layoutId={reduced ? undefined : `${baseId}-selection`}
+                initial={false}
+                transition={reduced ? { duration: 0 } : SELECTION_SPRING}
+                className="pointer-events-none absolute inset-0 rounded-full bg-pine-tint"
+              />}
+              <span className="relative">{item.label}</span>
             </button>
           );
         })}

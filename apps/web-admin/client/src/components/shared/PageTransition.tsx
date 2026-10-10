@@ -1,21 +1,24 @@
-import type { ReactNode } from "react";
-import { AnimatePresence, motion } from "framer-motion";
+import { Suspense, useEffect, useRef, type ReactNode } from "react";
+import { motion, useReducedMotion } from "motion/react";
 import { useLocation } from "react-router-dom";
-import { fadeUp } from "@/lib/motion";
+import { DURATION, EASE } from "@/lib/motion";
 
+/** Keep route content available immediately; lazy chunks preserve the shell. */
 export function PageTransition({ children }: { children: ReactNode }): JSX.Element {
   const location = useLocation();
+  const reduced = useReducedMotion();
+  const mounted = useRef(false);
+  useEffect(() => { mounted.current = true; }, []);
   return (
-    <AnimatePresence mode="wait" initial={false}>
+    <Suspense fallback={<div role="status" aria-busy="true" className="py-10 text-center text-ink-soft">Loading...</div>}>
       <motion.div
         key={location.pathname}
-        variants={fadeUp}
-        initial="initial"
-        animate="animate"
-        exit="exit"
+        initial={reduced || !mounted.current ? false : { y: 4, opacity: 1 }}
+        animate={{ y: 0, opacity: 1 }}
+        transition={{ duration: reduced ? 0 : DURATION.base, ease: EASE }}
       >
         {children}
       </motion.div>
-    </AnimatePresence>
+    </Suspense>
   );
 }

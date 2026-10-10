@@ -5,6 +5,15 @@ import { render, screen } from "@testing-library/react";
 import Alert from "./Alert";
 
 describe("Alert", () => {
+  it("uses attention amber for warnings, blue for guidance, and green only for success", () => {
+    const { rerender } = render(<Alert variant="panel" tone="warning">Check the details</Alert>);
+    expect(screen.getByRole("status")).toHaveClass("bg-amberx-tint");
+    rerender(<Alert variant="banner" tone="tip">Helpful guidance</Alert>);
+    expect(screen.getByRole("status")).toHaveClass("bg-pine-tint");
+    rerender(<Alert variant="banner" tone="success">Saved</Alert>);
+    expect(screen.getByRole("status")).toHaveClass("bg-grass-tint");
+  });
+
   it("banner + error is an assertive role=alert", () => {
     render(
       <Alert variant="banner" tone="error">

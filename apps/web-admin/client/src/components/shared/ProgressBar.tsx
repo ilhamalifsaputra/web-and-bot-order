@@ -19,7 +19,7 @@ export function ProgressBar({ value, tone, className }: ProgressBarProps): JSX.E
   return (
     <div className={cn("h-1.5 w-full overflow-hidden rounded-full bg-sand", className)}>
       <div
-        className={cn("h-full rounded-full transition-all", TONE_CLASS[tone])}
+        className={cn("h-full rounded-full transition-[width] motion-reduce:transition-none", TONE_CLASS[tone])}
         style={{ width: `${pct}%` }}
       />
     </div>

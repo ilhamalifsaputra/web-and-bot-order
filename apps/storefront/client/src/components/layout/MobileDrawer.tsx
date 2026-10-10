@@ -6,15 +6,14 @@
  * Home/Products/Categories, Flash sale (when live), language, Help, trust
  * footer.
  *
- * Moved verbatim from the old single-file Layout.tsx (Task 5 chrome split).
- * The a11y contract is preserved exactly: role="dialog" + aria-modal, focus
- * trap (DRAWER_FOCUSABLE), Esc-to-close, scrim, body-scroll lock, and focus
+ * Shares useDialogA11y with the other storefront dialogs: role="dialog",
+ * aria-modal, focus trap, Esc-to-close, scrim, body-scroll lock, and focus
  * restore to the hamburger trigger on close. prefers-reduced-motion is
  * honoured by the app-wide <MotionConfig reducedMotion="user"> in main.tsx.
  */
 import { useEffect, useRef, type ReactNode, type RefObject } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { AnimatePresence, motion } from "framer-motion";
+import { AnimatePresence, motion } from "motion/react";
 import {
   Check,
   CircleUser,
@@ -38,6 +37,8 @@ import { t } from "../../lib/i18n";
 import { scrim, slideInLeft } from "../../lib/motion";
 import CurrencyToggle from "./CurrencyToggle";
 import BrandLogo from "../BrandLogo";
+import { useDialogA11y } from "../ui/useDialogA11y";
+import DialogLayer from "../ui/DialogLayer";
 
 /** Row styling for the mobile nav drawer — hover/active both use the "pine"
  * token. Icons are `currentColor` (lucide-react), so tinting the row text also
@@ -48,7 +49,6 @@ function drawerRowClass(active: boolean) {
   }`;
 }
 
-const DRAWER_FOCUSABLE = "a[href], button:not(:disabled)";
 
 /** Every drawer icon renders at one size and one stroke weight. */
 const DRAWER_ICON = { className: "h-5 w-5 shrink-0", strokeWidth: 1.75 } as const;
@@ -134,58 +134,21 @@ export default function MobileDrawer({
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const cartCount = ctx?.cart_count ?? 0;
 
-  // Lock body scroll while the drawer is open, compensating for the
-  // scrollbar's width so the page doesn't reflow/shift under the fixed panel.
+  useDialogA11y({ open, onClose, panelRef, initialFocusRef: closeButtonRef, restoreFocusRef: triggerRef });
+
   useEffect(() => {
-    if (!open) return;
-    const scrollbarWidth = window.innerWidth - document.documentElement.clientWidth;
-    const { overflow, paddingRight } = document.body.style;
-    document.body.style.overflow = "hidden";
-    if (scrollbarWidth > 0) {
-      document.body.style.paddingRight = `${scrollbarWidth}px`;
-    }
-    return () => {
-      document.body.style.overflow = overflow;
-      document.body.style.paddingRight = paddingRight;
-    };
-  }, [open]);
-
-  // Esc closes; Tab/Shift+Tab trap focus inside the panel; focus moves to the
-  // close button on open and back to the hamburger trigger on close.
-  useEffect(() => {
-    if (!open) return;
-    closeButtonRef.current?.focus();
-
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        onClose();
-        return;
-      }
-      if (event.key !== "Tab" || !panelRef.current) return;
-      const focusable = panelRef.current.querySelectorAll<HTMLElement>(DRAWER_FOCUSABLE);
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (!first || !last) return;
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    }
-
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("keydown", onKeyDown);
-      triggerRef.current?.focus();
-    };
-  }, [open, onClose, triggerRef]);
+    if (!open || typeof window.matchMedia !== "function") return;
+    const media = window.matchMedia("(min-width: 640px)");
+    const closeOnDesktop = () => { if (media.matches) onClose(); };
+    closeOnDesktop();
+    media.addEventListener("change", closeOnDesktop);
+    return () => media.removeEventListener("change", closeOnDesktop);
+  }, [open, onClose]);
 
   return (
     <AnimatePresence>
       {open && (
-        <>
+        <DialogLayer className="contents">
           <motion.div
             variants={scrim}
             initial="initial"
@@ -218,7 +181,7 @@ export default function MobileDrawer({
                 type="button"
                 onClick={onClose}
                 aria-label={t("web.nav_close_menu")}
-                className="flex h-10 w-10 items-center justify-center rounded-lg text-ink-soft transition-colors hover:bg-sand hover:text-ink"
+                className="flex h-11 w-11 items-center justify-center rounded-lg text-ink-soft transition-colors hover:bg-sand hover:text-ink"
               >
                 <X className="h-5 w-5" />
               </button>
@@ -360,7 +323,7 @@ export default function MobileDrawer({
               )}
             </div>
           </motion.div>
-        </>
+        </DialogLayer>
       )}
     </AnimatePresence>
   );

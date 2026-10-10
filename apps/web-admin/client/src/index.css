@@ -174,3 +174,41 @@
   60% { opacity: 1; transform: scale(1.08); }
   100% { opacity: 1; transform: scale(1); }
 }
+
+:root {
+  --motion-duration-fast: 150ms;
+  --motion-duration-base: 220ms;
+  --motion-duration-panel: 280ms;
+  --motion-ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@layer base {
+  :focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 3px;
+  }
+}
+
+[data-slot="dropdown-menu-content"], [data-slot="dropdown-menu-sub-content"] {
+  animation-duration: var(--motion-duration-fast);
+  animation-timing-function: var(--motion-ease);
+}
+
+/* Compact desktop tables keep their density; touch controls have a usable hit area. */
+@media (pointer: coarse) {
+  [data-slot="button"], [data-slot="input"], [data-slot="select-trigger"],
+  [data-slot="dropdown-menu-item"], [data-slot="dropdown-menu-checkbox-item"], [data-slot="dropdown-menu-radio-item"] {
+    min-height: 44px;
+  }
+  [data-slot="button"][data-size^="icon"] { min-width: 44px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0s !important;
+    transition-delay: 0s !important;
+    scroll-behavior: auto !important;
+  }
+}

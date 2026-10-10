@@ -6,13 +6,11 @@
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { PackageSearch } from "lucide-react";
-import { motion } from "framer-motion";
 import { apiGet } from "../api/client";
 import { SORT_KEYS, type CategoryPageData, type SortKey } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import { useDocumentTitle } from "../lib/useDocumentTitle";
 import { t } from "../lib/i18n";
-import { staggerContainer, staggerItem } from "../lib/motion";
 import { useSuggestedProducts } from "../lib/useSuggestedProducts";
 import Breadcrumb from "../components/shop/Breadcrumb";
 import ProductCard from "../components/shop/ProductCard";
@@ -129,18 +127,15 @@ export default function CategoryPage() {
           )}
           {/* STO-018: same fix as the homepage's "Latest products" grid — a
               single product left two-thirds of the row empty. */}
-          <motion.div
+          <div
             className={`grid gap-4 ${products.length === 1 ? "max-w-xs" : "grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5"}`}
-            variants={staggerContainer}
-            initial="initial"
-            animate="animate"
           >
             {products.map((p) => (
-              <motion.div key={p.slug} variants={staggerItem} className="h-full">
+              <div key={p.slug} className="h-full">
                 <ProductCard p={p} fx={fx} lowThreshold={low_threshold} />
-              </motion.div>
+              </div>
             ))}
-          </motion.div>
+          </div>
         </>
       ) : (
         <EmptyState

@@ -11,6 +11,8 @@ import { forwardRef, type HTMLAttributes } from "react";
 import { cn } from "./cn";
 
 export interface CardProps extends HTMLAttributes<HTMLDivElement> {
+  /** Inset groups related details inside a parent card without a second border/shadow. */
+  variant?: "default" | "inset";
   /** Hover elevation (`shadow-soft` → `shadow-lift`). */
   interactive?: boolean;
   /** `.card-pad` internal padding. Default true. */
@@ -18,15 +20,15 @@ export interface CardProps extends HTMLAttributes<HTMLDivElement> {
 }
 
 const Card = forwardRef<HTMLDivElement, CardProps>(function Card(
-  { interactive = false, padded = true, className, ...rest },
+  { variant = "default", interactive = false, padded = true, className, ...rest },
   ref,
 ) {
   return (
     <div
       ref={ref}
       className={cn(
-        "card",
-        padded && "card-pad",
+        variant === "inset" ? "card-inset" : "card",
+        padded && (variant === "inset" ? "p-4" : "card-pad"),
         interactive && "transition-shadow hover:shadow-lift",
         className,
       )}

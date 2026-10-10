@@ -38,7 +38,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { motion } from "framer-motion";
 import { Package, ScrollText, ShieldCheck, Zap } from "lucide-react";
 import { apiGet, apiPost } from "../api/client";
 import { useIdempotentPost } from "../api/idempotency";
@@ -48,7 +47,6 @@ import { useDocumentTitle } from "../lib/useDocumentTitle";
 import { currentLang, t } from "../lib/i18n";
 import { humanError } from "../lib/errors";
 import { formatPriceFor } from "../lib/format";
-import { fadeUp } from "../lib/motion";
 import { rememberCodeEmailed } from "../lib/orderCodeEmailed";
 import { allFieldsValid, isValidEmail } from "../lib/deliveryFields";
 import { useIsWideDesktop } from "../lib/useMediaQuery";
@@ -71,13 +69,6 @@ import OrderSummaryCard, { idrRailPriceAndPay } from "../components/shop/OrderSu
 import { GuestContactCard } from "./CheckoutPage";
 import ErrorPage from "./ErrorPage";
 import Button from "../components/ui/Button";
-
-const revealProps = {
-  variants: fadeUp,
-  initial: "initial" as const,
-  whileInView: "animate" as const,
-  viewport: { once: true, margin: "-80px" },
-};
 
 /** The server's verdict (`purchasable`, @app/core/productAvailability via
  * pageData.ts), the same one ProductPage and DenominationCard read — a
@@ -566,7 +557,7 @@ export default function InstantBuyPage() {
               half-applied the way the old read-cart/remove-lines/add-line
               sequence could. */}
           <div className="card card-pad">
-            <h2 className="section-title mb-3">{t("web.choose_plan")}</h2>
+            <h2 className="section-title mb-3">{t("web.choose_option")}</h2>
             <div className="grid gap-3">
               {denominations.map((d) => (
                 <DenominationCard
@@ -654,7 +645,7 @@ export default function InstantBuyPage() {
       {/* Description/trust section — ProductPage.tsx's own three optional
           blocks, unchanged. */}
       {(product.what_you_get || product.terms || product.warranty_note) && (
-        <motion.section {...revealProps} className="mt-10 card card-pad">
+        <section className="mt-10 card card-pad">
           {[
             { key: "what_you_get", icon: Package, title: t("web.what_you_get"), body: product.what_you_get },
             { key: "terms", icon: ScrollText, title: t("web.product_terms"), body: product.terms },
@@ -670,7 +661,7 @@ export default function InstantBuyPage() {
                 <p className="mt-2 text-sm leading-relaxed text-ink-soft whitespace-pre-line">{block.body}</p>
               </div>
             ))}
-        </motion.section>
+        </section>
       )}
 
       {/* Sticky mobile total + submit — the shared <StickyPurchaseBar>

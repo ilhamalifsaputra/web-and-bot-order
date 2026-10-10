@@ -80,9 +80,9 @@ export default function App() {
   return (
     // This boundary only ever fires for the four auth routes below — every
     // route inside <Layout/> has its own Suspense in PageTransition.tsx,
-    // placed *inside* AnimatePresence's animated container so a suspending
-    // page never blanks the header/footer chrome or breaks the transition
-    // (see that file's comment). The auth routes render outside <Layout/>
+    // kept stable around the animated route so lazy navigation preserves
+    // the header/footer chrome and the previous content while pending.
+    // The auth routes render outside <Layout/>
     // with no chrome to preserve, so a plain top-level fallback is fine here.
     <Suspense fallback={<div className="min-h-[50vh] px-4 py-10"><RouteFallback /></div>}>
       {/* Sibling of <Routes>, not inside <Layout/>: covers every route,

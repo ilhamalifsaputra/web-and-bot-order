@@ -117,9 +117,53 @@
   --ease-gg: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-/* v3 CDN applied hover: styles unconditionally; v4 gates them behind
-   @media (hover: hover), which would drop hover styling on touch screens. */
-@custom-variant hover (&:hover);
+/* Hover lift/zoom is reserved for precise pointers; touch gets press feedback. */
+@custom-variant hover {
+  @media (hover: hover) and (pointer: fine) {
+    &:hover { @slot; }
+  }
+}
+
+:root {
+  --motion-duration-fast: 150ms;
+  --motion-duration-base: 220ms;
+  --motion-duration-panel: 280ms;
+  --motion-ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.card-inset {
+  background: var(--sand);
+  border: 0;
+  border-radius: var(--r-md);
+  box-shadow: none;
+}
+
+.btn {
+  transition: background-color var(--motion-duration-fast) var(--motion-ease),
+    color var(--motion-duration-fast) var(--motion-ease),
+    box-shadow var(--motion-duration-fast) var(--motion-ease),
+    transform var(--motion-duration-fast) var(--motion-ease);
+}
+.btn:active:not(:disabled) { transform: scale(.98); }
+.btn:focus-visible {
+  outline: 2px solid var(--pine);
+  outline-offset: 3px;
+}
+.btn.focus-on-dark:focus-visible { outline-color: white; }
+
+/* Avoid stacking a whole-main CSS entrance on route-level Motion. */
+main { animation: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0s !important;
+    transition-delay: 0s !important;
+    scroll-behavior: auto !important;
+  }
+  .btn:active:not(:disabled) { transform: none; }
+}
 
 @layer base {
   /* base.njk put these classes on <body>; the SPA's <body> only holds #root,

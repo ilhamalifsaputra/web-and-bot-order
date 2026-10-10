@@ -146,7 +146,7 @@ export function PaymentMethodRow({
   return (
     <label
       className={cn(
-        "flex cursor-pointer items-start gap-3 rounded-xl border-2 border-line bg-card p-3 shadow-soft transition-all duration-150 hover:shadow-lift focus-within:ring-2 focus-within:ring-pine has-[:checked]:border-pine has-[:checked]:ring-2 has-[:checked]:ring-pine/35",
+        "flex cursor-pointer items-start gap-3 rounded-xl border-2 border-line bg-card p-4 transition-[background-color,border-color,box-shadow] duration-150 ease-gg hover:border-pine-tint hover:shadow-soft focus-within:ring-2 focus-within:ring-pine has-[:checked]:bg-pine-tint has-[:checked]:border-pine",
       )}
     >
       <Radio name="method" value={value} className="mt-1 shrink-0" checked={checked} onChange={onSelect} />

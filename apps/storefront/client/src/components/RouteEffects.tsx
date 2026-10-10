@@ -24,8 +24,7 @@
  *    steal focus from wherever the browser already put it.
  *
  * <main> itself is a stable target for the focus move even though
- * PageTransition's <AnimatePresence mode="wait"> unmounts/remounts the
- * *Outlet content* on every route change (Layout.tsx:495) — <main> is
+ * PageTransition replaces the keyed Outlet content on route changes. <main> is
  * Layout's own JSX, not the Outlet's, so it never unmounts and is always
  * present to receive focus without racing that animation.
  */

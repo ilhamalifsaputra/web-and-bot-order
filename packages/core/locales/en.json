@@ -806,6 +806,7 @@
   "web.bulk_deal": "Buy {min}+ → save {percent}%",
   "web.buy_now": "Buy now",
   "web.choose_plan": "Choose a plan",
+  "web.choose_option": "Choose an option",
   "web.cart_empty": "Your cart is empty — browse the products.",
   "web.cart_title": "Cart",
   "web.catalog_empty": "No products yet — check back soon.",

@@ -1,0 +1,109 @@
+{
+  "method": "Production Vite bundles; raw bytes and node gzip per file. Summed gzip is an inventory, not one page transfer. Largest index chunk recorded separately. Contrast uses WCAG sRGB relative luminance for listed opaque pairs only.",
+  "summary": {
+    "storefront": {
+      "before": {
+        "jsChunks": 43,
+        "jsBytes": 950115,
+        "jsGzip": 297963,
+        "cssGzip": 13722,
+        "largestIndexChunk": {
+          "file": "index-CInhhEbz.js",
+          "bytes": 778623,
+          "gzip": 236225
+        }
+      },
+      "after": {
+        "jsChunks": 44,
+        "jsBytes": 950175,
+        "jsGzip": 298277,
+        "cssGzip": 13932,
+        "largestIndexChunk": {
+          "file": "index-C5FDJaVv.js",
+          "bytes": 778401,
+          "gzip": 236284
+        }
+      }
+    },
+    "web-admin": {
+      "before": {
+        "jsChunks": 97,
+        "jsBytes": 1562775,
+        "jsGzip": 502292,
+        "cssGzip": 44061,
+        "largestIndexChunk": {
+          "file": "index-ChX8fDh0.js",
+          "bytes": 976116,
+          "gzip": 295668
+        }
+      },
+      "after": {
+        "jsChunks": 95,
+        "jsBytes": 1563333,
+        "jsGzip": 500524,
+        "cssGzip": 44480,
+        "largestIndexChunk": {
+          "file": "index-1ZpdVTqP.js",
+          "bytes": 1024675,
+          "gzip": 310087
+        }
+      }
+    }
+  },
+  "contrasts": [
+    {
+      "role": "blue guidance text",
+      "foreground": "#1d4ed8",
+      "background": "#e6effe",
+      "ratio": 5.79
+    },
+    {
+      "role": "success banner text",
+      "foreground": "#5a6473",
+      "background": "#e7f6ec",
+      "ratio": 5.36
+    },
+    {
+      "role": "warning banner text",
+      "foreground": "#5a6473",
+      "background": "#fdedcf",
+      "ratio": 5.19
+    },
+    {
+      "role": "success icon (nontext)",
+      "foreground": "#15803d",
+      "background": "#e7f6ec",
+      "ratio": 4.49
+    },
+    {
+      "role": "warning icon (nontext)",
+      "foreground": "#b45c0a",
+      "background": "#fdedcf",
+      "ratio": 4.06
+    },
+    {
+      "role": "error text",
+      "foreground": "#b91c1c",
+      "background": "#fde7e7",
+      "ratio": 5.47
+    },
+    {
+      "role": "muted text on inset",
+      "foreground": "#5a6473",
+      "background": "#eef1f6",
+      "ratio": 5.29
+    },
+    {
+      "role": "legacy faint on inset (deferred)",
+      "foreground": "#677288",
+      "background": "#eef1f6",
+      "ratio": 4.27
+    },
+    {
+      "role": "primary button text",
+      "foreground": "#ffffff",
+      "background": "#2563eb",
+      "ratio": 5.17
+    }
+  ]
+}

@@ -8,7 +8,6 @@
  * section (design.md §4.8, "not customer-count promises"), and the API no
  * longer computes any home-page figures.
  */
-import { useEffect } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -39,7 +38,7 @@ import {
   Zap,
 } from "lucide-react";
 import { apiGet } from "../api/client";
-import { motion } from "framer-motion";
+import { motion, useReducedMotion } from "motion/react";
 import { hoverLift, staggerContainer, staggerItem } from "../lib/motion";
 import type { HomePageData } from "../api/types";
 import { useShopContext } from "../components/Layout";
@@ -94,6 +93,7 @@ const HERO_CARD_STYLES: Array<{ top: string; right: string; rotate: number }> = 
 ];
 
 export default function HomePage() {
+  const reducedMotion = useReducedMotion();
   const { data: ctx } = useShopContext();
   const { data } = useQuery({
     queryKey: ["home"],
@@ -104,45 +104,6 @@ export default function HomePage() {
   // just return the same empty list. Wired up anyway for consistency with
   // every other empty state; it simply never has anything to show here.
   const { data: suggested } = useSuggestedProducts(!!data && data.products.length === 0);
-  // Section reveal on scroll — port of home.njk's inline <script>: the same
-  // document-wide querySelectorAll, same threshold/class toggling, same
-  // no-IntersectionObserver / reduced-motion fallback (immediately visible,
-  // also handled by the CSS `@media` rule in HomePage.css).
-  //
-  // STO-006: that mechanism has no safety net beyond real scrolling — a
-  // screenshot/print/PDF tool, a non-scrolling crawler, or slow/erroring JS
-  // left 5 of 7 sections permanently at `opacity:0`. A timeout forces every
-  // `.reveal` visible after REVEAL_FALLBACK_MS regardless of intersection,
-  // so no code path can leave content invisible forever.
-  useEffect(() => {
-    if (!data) return;
-    const reveals = document.querySelectorAll<HTMLElement>(".reveal");
-    if (!reveals.length) return;
-    const REVEAL_FALLBACK_MS = 2000;
-    const fallback = window.setTimeout(() => {
-      reveals.forEach((r) => r.classList.add("visible"));
-    }, REVEAL_FALLBACK_MS);
-    if ("IntersectionObserver" in window) {
-      const revObs = new IntersectionObserver(
-        (entries) => {
-          entries.forEach((e) => {
-            if (e.isIntersecting) {
-              e.target.classList.add("visible");
-              revObs.unobserve(e.target);
-            }
-          });
-        },
-        { threshold: 0.1 },
-      );
-      reveals.forEach((r) => revObs.observe(r));
-      return () => {
-        revObs.disconnect();
-        window.clearTimeout(fallback);
-      };
-    }
-    reveals.forEach((r) => r.classList.add("visible"));
-    return () => window.clearTimeout(fallback);
-  }, [data]);
 
   // STO-006/performance.md: rendering nothing while the initial query is
   // pending reads as a blank/broken page on a slow connection. A full
@@ -282,14 +243,14 @@ export default function HomePage() {
           >
             <motion.div
               className="relative h-full"
-              variants={staggerContainer}
-              initial="initial"
+              variants={reducedMotion ? undefined : staggerContainer}
+              initial={reducedMotion ? false : "initial"}
               animate="animate"
             >
               {heroProducts.map((p, i) => (
                 <motion.div
                   key={p.slug}
-                  variants={staggerItem}
+                  variants={reducedMotion ? undefined : staggerItem}
                   {...hoverLift}
                   className="pointer-events-auto absolute w-48 rounded-2xl border border-white/15 bg-white/10 p-3 shadow-lift backdrop-blur-md"
                   style={{ top: HERO_CARD_STYLES[i]!.top, right: HERO_CARD_STYLES[i]!.right, rotate: HERO_CARD_STYLES[i]!.rotate }}
@@ -337,7 +298,7 @@ export default function HomePage() {
       </section>
 
       {/* 2. Fitur / keunggulan */}
-      <section className="mt-16 reveal">
+      <section className="mt-16">
         <p className="text-center text-sm font-semibold uppercase tracking-wide text-pine">
           {t("web.features_kicker")}
         </p>
@@ -383,7 +344,7 @@ export default function HomePage() {
           shape, and stacking three identical grids made the page read as one
           undifferentiated wall. The connector line only appears at `lg`, where
           all four steps genuinely sit on one row. */}
-      <section className="mt-16 reveal" id="how-to-order">
+      <section className="mt-16" id="how-to-order">
         <p className="text-center text-sm font-semibold uppercase tracking-wide text-pine">{t("web.how_kicker")}</p>
         <h2 className="mt-1 text-center font-display text-3xl font-bold text-ink">{t("web.how_title")}</h2>
         <p className="mx-auto mt-2 max-w-2xl text-center text-ink-soft">{t("web.how_sub")}</p>
@@ -402,7 +363,7 @@ export default function HomePage() {
 
       {/* 3. Kategori */}
       {categories.length > 0 && (
-        <section className="mt-16 reveal" id="categories">
+        <section className="mt-16" id="categories">
           <p className="text-sm font-semibold uppercase tracking-wide text-pine">{t("web.categories")}</p>
           <h2 className="mt-1 font-display text-2xl font-bold text-ink">{t("web.categories_title")}</h2>
 
@@ -430,7 +391,7 @@ export default function HomePage() {
       )}
 
       {/* 4. Produk unggulan */}
-      <section id="products" className="mt-16 reveal">
+      <section id="products" className="mt-16">
         <div className="flex items-end justify-between">
           <div>
             <p className="text-sm font-semibold uppercase tracking-wide text-pine">{t("web.featured_kicker")}</p>
@@ -467,7 +428,7 @@ export default function HomePage() {
       </section>
 
       {/* 5. Our Promise (replaces vanity numbers) */}
-      <section className="mt-16 overflow-hidden rounded-3xl bg-pine px-6 py-10 text-white sm:px-10 reveal">
+      <section className="mt-16 overflow-hidden rounded-3xl bg-pine px-6 py-10 text-white sm:px-10">
         <h2 className="text-center font-display text-2xl font-bold sm:text-3xl">{t("web.promise_title")}</h2>
         <p className="mt-1 text-center text-pine-tint">{t("web.promise_sub")}</p>
         <div className="mt-8 grid gap-6 text-center sm:grid-cols-2 lg:grid-cols-4">
@@ -508,7 +469,7 @@ export default function HomePage() {
           "Our Promise" set when it replaced the invented stats band. Rendered
           as a checklist inside one card so it reads differently from the pine
           promise block directly above it. */}
-      <section className="mt-16 reveal">
+      <section className="mt-16">
         {/* Content card (Card = .card, radius-lg 16px), not a full-bleed
             marketing band — the 24px band radius was wrong for it. */}
         <Card padded={false} className="p-6 sm:p-10">
@@ -533,7 +494,7 @@ export default function HomePage() {
           komentar). Section disembunyikan saat belum ada ulasan, supaya tidak
           ada testimoni karangan di halaman. */}
       {testimonials.length > 0 && (
-        <section className="mt-16 reveal">
+        <section className="mt-16">
           <div className="text-center mb-8">
             <p className="text-xs font-semibold tracking-widest uppercase text-pine mb-2">{t("web.testi_kicker")}</p>
             <h2 className="font-display text-2xl sm:text-3xl font-bold text-ink tracking-tight">
@@ -569,7 +530,7 @@ export default function HomePage() {
       )}
 
       {/* 7. FAQ */}
-      <section className="mt-16 reveal">
+      <section className="mt-16">
         <p className="text-center text-sm font-semibold uppercase tracking-wide text-pine">{t("web.faq_kicker")}</p>
         <h2 className="mt-1 text-center font-display text-3xl font-bold text-ink">{t("web.faq_title")}</h2>
         <p className="mt-2 text-center text-ink-soft">{t("web.faq_sub")}</p>
@@ -579,7 +540,7 @@ export default function HomePage() {
       </section>
 
       {/* 8. Kontak */}
-      <section className="mt-16 reveal" id="contact">
+      <section className="mt-16" id="contact">
         <p className="text-center text-sm font-semibold uppercase tracking-wide text-pine">{t("web.contact_kicker")}</p>
         <h2 className="mt-1 text-center font-display text-3xl font-bold text-ink">{t("web.contact_title")}</h2>
         <p className="mt-2 text-center text-ink-soft">{t("web.contact_sub")}</p>

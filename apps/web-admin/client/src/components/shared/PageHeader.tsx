@@ -12,9 +12,9 @@ interface PageHeaderProps {
 
 export function PageHeader({ title, description, breadcrumb, actions }: PageHeaderProps): JSX.Element {
   return (
-    <div className="mb-6">
+    <div className="mb-6 sm:mb-8">
       {breadcrumb && breadcrumb.length > 0 && (
-        <nav className="mb-1 flex items-center gap-1 text-xs text-ink-soft">
+        <nav aria-label="Breadcrumb" className="mb-2 flex flex-wrap items-center gap-1 text-xs text-ink-soft">
           {breadcrumb.map((crumb, i) => (
             <React.Fragment key={i}>
               {i > 0 && <ChevronRight className="h-3.5 w-3.5 text-ink-faint" />}
@@ -32,13 +32,13 @@ export function PageHeader({ title, description, breadcrumb, actions }: PageHead
           ))}
         </nav>
       )}
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
-          <h1 className="font-display text-2xl font-semibold text-ink">
+          <h1 className="font-display text-2xl font-semibold leading-tight tracking-tight text-ink sm:text-3xl">
             {title}
           </h1>
           {description && (
-            <p className="mt-0.5 text-sm text-ink-soft">{description}</p>
+            <p className="mt-2 max-w-prose text-sm leading-relaxed text-ink-soft">{description}</p>
           )}
         </div>
         {actions && (

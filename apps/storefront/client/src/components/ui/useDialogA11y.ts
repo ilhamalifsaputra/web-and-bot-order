@@ -15,16 +15,12 @@
  * `prefers-reduced-motion` is NOT handled here — it rides on the app-wide
  * `<MotionConfig reducedMotion="user">` in `main.tsx`, same as MobileDrawer.
  *
- * MobileDrawer itself is intentionally left on its own inline copy of this
- * logic: it is already-reviewed Task 5 code with drawer-specific focusable
- * selectors, and rewiring it onto this hook would be a risky change to a
- * shipped component for no functional gain. This hook removes the duplication
- * between the two NEW dialog primitives, which is where it actually matters.
+ * MobileDrawer uses this same lifecycle so all storefront overlays restore
+ * focus consistently. Callback updates do not restart an open focus trap.
  */
-import { useEffect, type RefObject } from "react";
+import { useEffect, useRef, type RefObject } from "react";
 
-/** Same intent as MobileDrawer's `DRAWER_FOCUSABLE`, widened to the controls a
- * generic modal body can contain (inputs, selects, explicit tabindex). */
+/** Focusable controls shared by modal bodies and the navigation drawer. */
 export const DIALOG_FOCUSABLE =
   'a[href], button:not(:disabled), textarea:not(:disabled), input:not(:disabled), select:not(:disabled), [tabindex]:not([tabindex="-1"])';
 
@@ -46,6 +42,8 @@ export function useDialogA11y({
   initialFocusRef,
   restoreFocusRef,
 }: DialogA11yOptions): void {
+  const closeRef = useRef(onClose);
+  useEffect(() => { closeRef.current = onClose; }, [onClose]);
   // Lock body scroll while open, compensating for the scrollbar's width so the
   // page doesn't shift under the fixed overlay.
   useEffect(() => {
@@ -77,11 +75,14 @@ export function useDialogA11y({
     function onKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
         event.stopPropagation();
-        onClose();
+        event.preventDefault();
+        closeRef.current();
         return;
       }
       if (event.key !== "Tab" || !panelRef.current) return;
-      const focusable = panelRef.current.querySelectorAll<HTMLElement>(DIALOG_FOCUSABLE);
+      const focusable = Array.from(panelRef.current.querySelectorAll<HTMLElement>(DIALOG_FOCUSABLE))
+        .filter((element) => !element.closest('[hidden], [inert], [aria-hidden="true"]') &&
+          !(element instanceof HTMLInputElement && element.type === "hidden"));
       const first = focusable[0];
       const last = focusable[focusable.length - 1];
       if (!first || !last) {
@@ -91,7 +92,10 @@ export function useDialogA11y({
         panelRef.current.focus();
         return;
       }
-      if (event.shiftKey && document.activeElement === first) {
+      if (!panelRef.current.contains(document.activeElement) || document.activeElement === panelRef.current) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      } else if (event.shiftKey && document.activeElement === first) {
         event.preventDefault();
         last.focus();
       } else if (!event.shiftKey && document.activeElement === last) {
@@ -105,5 +109,5 @@ export function useDialogA11y({
       document.removeEventListener("keydown", onKeyDown);
       previouslyFocused?.focus?.();
     };
-  }, [open, onClose, panelRef, initialFocusRef, restoreFocusRef]);
+  }, [open, panelRef, initialFocusRef, restoreFocusRef]);
 }

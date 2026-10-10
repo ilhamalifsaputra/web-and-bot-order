@@ -71,7 +71,7 @@ function getCards(container: HTMLElement): HTMLElement[] {
 
 function getNestedCards(container: HTMLElement): HTMLElement[] {
   return Array.from(
-    container.querySelectorAll<HTMLElement>(".rounded-lg.border.border-line.bg-sand")
+    container.querySelectorAll<HTMLElement>(".rounded-lg.border.border-transparent.bg-sand")
   );
 }
 

@@ -50,7 +50,7 @@ export default function Navbar({
           // rendered (AnimatePresence unmounts it on close) — a dangling
           // aria-controls reference when closed is worse than none.
           aria-controls={drawerOpen ? "mobile-nav-drawer" : undefined}
-          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-ink-soft transition-colors hover:bg-sand hover:text-ink sm:hidden"
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-ink-soft transition-colors hover:bg-sand hover:text-ink sm:hidden"
         >
           <Menu className="h-5 w-5" />
         </button>
@@ -76,7 +76,7 @@ export default function Navbar({
             onClick={() => openSearch()}
             aria-label={t("web.nav_search")}
             aria-haspopup="dialog"
-            className="flex h-10 w-10 items-center justify-center rounded-lg text-ink-soft transition-colors hover:bg-sand hover:text-ink sm:hidden"
+            className="flex h-11 w-11 items-center justify-center rounded-lg text-ink-soft transition-colors hover:bg-sand hover:text-ink sm:hidden"
           >
             <Search className="h-5 w-5" />
           </button>
@@ -113,19 +113,19 @@ export default function Navbar({
             <Link
               to="/account"
               aria-label={t("web.nav_account")}
-              className={`flex items-center gap-1 rounded-lg px-2.5 py-2 hover:bg-sand ${location.pathname.startsWith("/account") ? "text-pine" : ""}`}
+              className={`flex min-h-11 min-w-11 items-center justify-center gap-1 rounded-lg px-2.5 py-2 hover:bg-sand ${location.pathname.startsWith("/account") ? "text-pine" : ""}`}
             >
               <User className="h-4 w-4" /> <span className="hidden sm:inline">{t("web.nav_account")}</span>
             </Link>
           ) : (
-            <Link to="/login" aria-label={t("web.nav_login")} className="flex items-center gap-1 rounded-lg px-2.5 py-2 hover:bg-sand">
+            <Link to="/login" aria-label={t("web.nav_login")} className="flex min-h-11 min-w-11 items-center justify-center gap-1 rounded-lg px-2.5 py-2 hover:bg-sand">
               <LogIn className="h-4 w-4" /> <span className="hidden sm:inline">{t("web.nav_login")}</span>
             </Link>
           )}
 
           <Link
             to="/cart"
-            className="relative flex items-center gap-1.5 rounded-full bg-pine-tint px-3 py-2 font-medium text-pine-dark hover:bg-pine-tint/80"
+            className="relative flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-full bg-pine-tint px-3 py-2 font-medium text-pine-dark hover:bg-pine-tint/80"
             aria-label={t("web.nav_cart")}
           >
             <ShoppingCart className="h-4 w-4" /> <span className="hidden sm:inline">{t("web.nav_cart")}</span>

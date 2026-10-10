@@ -448,40 +448,15 @@ describe("HomePage", () => {
     expect(await screen.findByRole("heading", { name: "Netflix Premium" })).toBeInTheDocument();
   });
 
-  // STO-006: the scroll-reveal IntersectionObserver has no safety net for
-  // non-scrolling consumers (screenshot tools, crawlers) — a timeout must
-  // force every `.reveal` section visible even without an intersection.
-  // jsdom doesn't implement IntersectionObserver at all (the component's own
-  // "no IntersectionObserver" branch would reveal everything immediately),
-  // so a no-op fake is installed here to exercise the "has IntersectionObserver
-  // but it never fires" path the timeout exists for.
-  it("forces .reveal sections visible after the fallback timeout even without an intersection firing", async () => {
-    class NeverFiresObserver {
-      observe() {}
-      unobserve() {}
-      disconnect() {}
-      takeRecords() {
-        return [];
-      }
-    }
-    vi.stubGlobal("IntersectionObserver", NeverFiresObserver);
-    vi.useFakeTimers();
+  it("shows the catalog and information without waiting for an intersection or timer", async () => {
+    const observer = vi.fn();
+    vi.stubGlobal("IntersectionObserver", observer);
     try {
       const { container } = renderHome(homeFixture());
-      // Flush the mocked apiGet promise + the resulting React effect without
-      // relying on real timers (fake timers are active).
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(0);
-      });
-      const reveals = container.querySelectorAll<HTMLElement>(".reveal");
-      expect(reveals.length).toBeGreaterThan(0);
-      expect(Array.from(reveals).some((r) => r.classList.contains("visible"))).toBe(false);
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(2100);
-      });
-      expect(Array.from(reveals).every((r) => r.classList.contains("visible"))).toBe(true);
+      expect(await screen.findByRole("heading", { name: "Netflix Premium" })).toBeInTheDocument();
+      expect(container.querySelector(".reveal")).toBeNull();
+      expect(observer).not.toHaveBeenCalled();
     } finally {
-      vi.useRealTimers();
       vi.unstubAllGlobals();
     }
   });

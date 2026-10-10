@@ -12,7 +12,7 @@
  * created confirmation) without a global toast queue no page yet needs.
  */
 import { useEffect } from "react";
-import { AnimatePresence, motion } from "framer-motion";
+import { AnimatePresence, motion } from "motion/react";
 import { CheckCircle, AlertTriangle, Info } from "lucide-react";
 import { fadeUp } from "../../lib/motion";
 

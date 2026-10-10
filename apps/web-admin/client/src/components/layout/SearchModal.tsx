@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ShoppingCart, Package, Users, Search } from "lucide-react";
 import { apiGet } from "../../api/client";
+import { MotionDialog } from "../shared/MotionDialog";
 
 interface SearchResult {
   type: "order" | "product" | "user";
@@ -64,6 +65,8 @@ export function SearchModal({ open, onClose }: SearchModalProps): JSX.Element {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
   const [loading, setLoading] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   const navigate = useNavigate();
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -71,18 +74,19 @@ export function SearchModal({ open, onClose }: SearchModalProps): JSX.Element {
     if (open) {
       setQuery("");
       setResults([]);
-      const t = setTimeout(() => inputRef.current?.focus(), 50);
-      return () => clearTimeout(t);
+      setFailed(false);
     }
   }, [open]);
 
   useEffect(() => {
-    if (!query.trim()) {
+    if (!open || !query.trim()) {
       setResults([]);
       setLoading(false);
+      setFailed(false);
       return;
     }
     setLoading(true);
+    setFailed(false);
     let cancelled = false;
     const timer = setTimeout(() => {
       apiGet<SearchApiResponse>(`/api/search?q=${encodeURIComponent(query.trim())}`)
@@ -101,47 +105,31 @@ export function SearchModal({ open, onClose }: SearchModalProps): JSX.Element {
           }
           setResults(mapped);
         })
-        .catch(() => { if (!cancelled) setResults([]); })
+        .catch(() => { if (!cancelled) { setResults([]); setFailed(true); } })
         .finally(() => { if (!cancelled) setLoading(false); });
     }, 300);
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [query]);
-
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
-    }
-    if (open) document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
-
-  if (!open) return <></>;
+  }, [open, query, attempt]);
 
   const grouped = (["order", "product", "user"] as const)
     .map((type) => ({ type, items: results.filter((r) => r.type === type) }))
     .filter((g) => g.items.length > 0);
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-ink/40 pt-[15vh]"
-      onClick={onClose}
-    >
-      <div
-        className="w-full max-w-lg rounded-lg border border-line bg-card shadow-lift"
-        onClick={(e) => e.stopPropagation()}
-      >
+    <MotionDialog open={open} onClose={onClose} title="Search" initialFocusRef={inputRef} className="max-h-[70dvh] overflow-y-auto">
         {/* Input row */}
         <div className="flex items-center gap-2 border-b border-line px-4 py-3">
           <Search className="h-4 w-4 flex-shrink-0 text-ink-faint" />
           <input
             ref={inputRef}
             type="text"
+            aria-label="Search orders, products, users"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search orders, products, users..."
             className="flex-1 bg-transparent text-sm text-ink outline-none placeholder:text-ink-faint"
           />
-          {loading && <span className="text-xs text-ink-faint">Searching…</span>}
+          {loading && <span role="status" className="text-xs text-ink-faint">Searching…</span>}
         </div>
 
         {/* Results */}
@@ -184,9 +172,15 @@ export function SearchModal({ open, onClose }: SearchModalProps): JSX.Element {
         )}
 
         {/* Empty state */}
-        {query.trim() && !loading && grouped.length === 0 && (
+        {query.trim() && !loading && !failed && grouped.length === 0 && (
           <div className="px-4 py-6 text-center text-sm text-ink-faint">
             No results for &ldquo;{query}&rdquo;
+          </div>
+        )}
+        {failed && !loading && (
+          <div role="alert" className="px-4 py-3 text-sm text-rust">
+            <p>Search could not be loaded. Try again.</p>
+            <button type="button" className="mt-2 min-h-11 rounded-md border border-line px-3 text-ink" onClick={() => setAttempt((value) => value + 1)}>Retry search</button>
           </div>
         )}
 
@@ -196,7 +190,6 @@ export function SearchModal({ open, onClose }: SearchModalProps): JSX.Element {
             Type to search across orders, products, and customers.
           </div>
         )}
-      </div>
-    </div>
+    </MotionDialog>
   );
 }

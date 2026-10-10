@@ -1,6 +1,7 @@
 /** Order detail uses canonical backend fulfillment, full-detail SSE refetches
  * and five-second polling while payment or delivery is outstanding.
  * Historical amounts preserve their settlement and central-IDR bases. */
+import { preferredScrollBehavior } from "../lib/scrollBehavior";
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
@@ -81,7 +82,7 @@ export default function OrderDetailPage() {
 
   useEffect(() => {
     if (data && window.location.hash === "#credentials") {
-      document.getElementById("credentials")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      document.getElementById("credentials")?.scrollIntoView({ behavior: preferredScrollBehavior(), block: "start" });
     }
   }, [data]);
 

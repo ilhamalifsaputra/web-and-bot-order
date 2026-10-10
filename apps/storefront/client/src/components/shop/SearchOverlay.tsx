@@ -40,7 +40,7 @@ import {
 import { createPortal } from "react-dom";
 import { Link, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { AnimatePresence, motion } from "framer-motion";
+import { AnimatePresence, motion } from "motion/react";
 import { Package, Search, X } from "lucide-react";
 import { apiGet } from "../../api/client";
 import type { SearchPageData } from "../../api/types";
@@ -49,6 +49,7 @@ import { t } from "../../lib/i18n";
 import { fadeIn, scrim } from "../../lib/motion";
 import { clearRecent, pushRecent, readRecent } from "../../lib/recentSearches";
 import { useDialogA11y } from "../ui/useDialogA11y";
+import DialogLayer from "../ui/DialogLayer";
 import Price from "./Price";
 
 /** ~220ms: long enough to skip the per-keystroke fetch on a fast typist, short
@@ -237,7 +238,7 @@ function SearchOverlay({
   return createPortal(
     <AnimatePresence>
       {open && (
-        <div className="fixed inset-0 z-50">
+        <DialogLayer className="fixed inset-0 z-50">
           <motion.div
             variants={scrim}
             initial="initial"
@@ -385,7 +386,7 @@ function SearchOverlay({
               )}
             </div>
           </motion.div>
-        </div>
+        </DialogLayer>
       )}
     </AnimatePresence>,
     document.body,

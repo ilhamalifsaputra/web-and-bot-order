@@ -86,7 +86,9 @@ Existing USD display tetap kebijakan konversi IDR per USDT, bukan klaim settleme
 
 ## Contoh JSON list dan detail
 
-Semua ID, SKU, waktu dan harga berikut synthetic, memakai fixture API manual-delivery. Header `Cookie: shop_lang=id; shop_currency=IDR`. Field legacy dipertahankan; `price` legacy pada endpoint kompatibilitas adalah nilai DB, sedangkan canonical menunjukkan effective price yang akan dipakai checkout. `stock/status` legacy tetap count inventory; canonical availability mengerti manual delivery sehingga stock0 tidak berarti tidak bisa dibeli.
+Semua ID, SKU, waktu dan harga berikut synthetic, memakai fixture API manual-delivery. Header `Cookie: shop_lang=id; shop_currency=IDR`. Field legacy dipertahankan; `price` legacy pada endpoint kompatibilitas adalah nilai DB, sedangkan canonical menunjukkan effective price yang akan dipakai checkout. `stock` pada contoh ini adalah stok internal (jumlah baris `StockItem` AVAILABLE), bukan sinyal ketersediaan: SKU game provider/manual tidak memiliki baris stok, jadi `stock` 0 tetap `status: "in_stock"` dan `canonical.availability` `available`/`purchasable: true`.
+
+Aturan resolver (`packages/core/src/productAvailability.ts`, `@app/core/productAvailability`) adalah satu-satunya definisi sumber fulfillment dan ketersediaan. `fulfillmentSourceOf` memberi `PROVIDER_API` bila `autoDeliverySource` adalah `digiflazz` (menang atas `deliveryType`), `INTERNAL_INVENTORY` bila `deliveryType` `auto`, selain itu `MANUAL`. Hanya `INTERNAL_INVENTORY` yang memakai stok lokal (`usesLocalInventory`); SKU `auto` + `digiflazz` lama adalah SKU provider, bukan SKU stok. Deaktivasi admin (SKU, produk, kategori, atau produk diarsipkan) selalu menang; provider/manual selain itu selalu tersedia, dan hanya inventory lokal yang bisa `out_of_inventory` (hitungan yang belum dimuat adalah `UNKNOWN`, bukan habis). Jangan menulis ulang kriteria ini per call site (`deliveryType === "auto"`); `tests/availability-guard.test.ts` menggagalkan pola tersebut.
 
 `GET /api/v1/products`:
 
@@ -96,7 +98,7 @@ Semua ID, SKU, waktu dan harga berikut synthetic, memakai fixture API manual-del
     "id": 1, "slug": "mobile-legends", "name": "Mobile Legends", "description": null, "image": null,
     "category": { "id": 1, "slug": "canonical-fixture", "name": "Canonical", "emoji": null, "description": null, "image": null },
     "denominations": [{
-      "id": 17, "name": "86 Diamonds + 8 Bonus Global", "price": "21000.1254", "stock": 0, "status": "out_of_stock",
+      "id": 17, "name": "86 Diamonds + 8 Bonus Global", "price": "21000.1254", "stock": 0, "status": "in_stock",
       "canonical": {
         "id": 17, "supplierSku": "synthetic-86", "rawName": "Mobile Legends 86 Diamonds + 8 Bonus Global", "rawNameProvenance": "supplier",
         "displayName": "86 Diamonds + 8 Bonus Global",
@@ -123,7 +125,7 @@ Semua ID, SKU, waktu dan harga berikut synthetic, memakai fixture API manual-del
     "id": 1, "slug": "mobile-legends", "name": "Mobile Legends", "description": null, "image": null,
     "category": { "id": 1, "slug": "canonical-fixture", "name": "Canonical", "emoji": null, "description": null, "image": null },
     "denominations": [{
-      "id": 17, "name": "86 Diamonds + 8 Bonus Global", "price": "21000.1254", "stock": 0, "status": "out_of_stock",
+      "id": 17, "name": "86 Diamonds + 8 Bonus Global", "price": "21000.1254", "stock": 0, "status": "in_stock",
       "canonical": {
         "id": 17, "supplierSku": "synthetic-86", "rawName": "Mobile Legends 86 Diamonds + 8 Bonus Global", "rawNameProvenance": "supplier",
         "displayName": "86 Diamonds + 8 Bonus Global",

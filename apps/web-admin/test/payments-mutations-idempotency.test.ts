@@ -23,17 +23,25 @@ import {
   recordUnmatchedTokopayTx,
   recordUnmatchedNowpaymentsTx,
   triggerDigiflazzDispatch,
+  logAdminAction,
 } from "@app/db";
+import { logger } from "@app/core/logger";
 import { PaymentMethod } from "@app/core/enums";
 import { qrisChargeAmount } from "@app/core/payments/tokopay";
 import { routeOrderToDigiflazz } from "../../../tests/helpers/digiflazzRouting";
 
 // The instant Digiflazz dispatch is observed, not run: the manual-match test
 // checks that it is started for a PROCESSING settlement, not what Digiflazz answers.
-vi.mock("@app/db", async (orig) => ({
-  ...(await orig<typeof import("@app/db")>()),
-  triggerDigiflazzDispatch: vi.fn(),
-}));
+// `logAdminAction` passes through to the real one; a test makes it fail once
+// to check a match that committed still answers success.
+vi.mock("@app/db", async (orig) => {
+  const actual = await orig<typeof import("@app/db")>();
+  return {
+    ...actual,
+    triggerDigiflazzDispatch: vi.fn(),
+    logAdminAction: vi.fn((...a: Parameters<typeof actual.logAdminAction>) => actual.logAdminAction(...a)),
+  };
+});
 import { resetDb, buildSampleData, type SampleData } from "../../../tests/helpers/sampleData";
 import { buildApp } from "../src/server";
 import { makeSession, sessionJtiKey, newJti } from "../src/auth";
@@ -527,6 +535,40 @@ describe("POST /api/payments/match and /dismiss — every gateway", () => {
     expect(audit).toHaveLength(1);
     expect(audit[0]!.adminId).toBe(adminUserId);
     expect(audit[0]!.details).toBe(`Matched TokoPay transfer tp-route-1 to order ${order.orderCode}.`);
+  });
+
+  it("still answers success when the match committed but its audit row could not be written, and logs an error saying so", async () => {
+    const order = await makePendingTokopayOrder();
+    await recordUnmatchedTokopayTx(prisma, { trxId: "tp-route-audit-fail", amount: qrisChargeAmount(order.totalAmount) });
+    vi.mocked(logAdminAction).mockRejectedValueOnce(new Error("audit table unavailable"));
+    const errorSpy = vi.spyOn(logger, "error");
+    try {
+      const res = await matchWith({ binance_tx_id: "tp-route-audit-fail", order_code: order.orderCode, gateway: "tokopay" });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ ok: true });
+      expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe("DELIVERED");
+      const call = errorSpy.mock.calls.find((c) => typeof c[1] === "string" && c[1].includes("audit"));
+      expect(call).toBeTruthy();
+      expect(call![0]).toMatchObject({ adminId: adminUserId, orderId: order.id, reference: "tp-route-audit-fail", gateway: "tokopay" });
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("puts the storefront order link in the buyer's delivery DM of a QRIS match", async () => {
+    const order = await makePendingTokopayOrder();
+    await recordUnmatchedTokopayTx(prisma, { trxId: "tp-route-link", amount: qrisChargeAmount(order.totalAmount) });
+    const cfg = config as { SHOP_PUBLIC_URL?: string | null };
+    const saved = cfg.SHOP_PUBLIC_URL;
+    cfg.SHOP_PUBLIC_URL = "https://shop.example/";
+    try {
+      const res = await matchWith({ binance_tx_id: "tp-route-link", order_code: order.orderCode, gateway: "tokopay" });
+      expect(res.statusCode).toBe(200);
+    } finally {
+      cfg.SHOP_PUBLIC_URL = saved;
+    }
+    const dm = await prisma.notificationOutbox.findFirstOrThrow({ where: { event: "ORDER_DELIVERED_DM", orderId: order.id } });
+    expect(JSON.parse(dm.payloadJson)).toMatchObject({ order_url: `https://shop.example/account/orders/${order.orderCode}` });
   });
 
   it("resolves a TokoPay reference without a gateway (the server looks it up across the ledgers)", async () => {

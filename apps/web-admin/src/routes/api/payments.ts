@@ -6,6 +6,7 @@ import { errorBody } from "@app/core/errorBody";
 import type { Decimal } from "@app/core/money";
 import { logger } from "@app/core/logger";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
+import { config } from "@app/core/config";
 import { evaluatePollHealth } from "@app/core/payments/pollHealth";
 import {
   prisma,
@@ -566,6 +567,9 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
         gateway,
         orderId: target.id,
         adminId: req.admin!.userId,
+        // The storefront's public origin, so a QRIS match's buyer DM carries
+        // the order link — the same origin the storefront callbacks use.
+        shopUrl: config.SHOP_PUBLIC_URL ?? config.PUBLIC_URL ?? null,
       });
       // The match has committed: start a Digiflazz-routed order's supplier
       // request now (fire-and-forget, ignores non-Digiflazz orders, never throws).
@@ -575,17 +579,26 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
       nudgeOutboxDispatcher();
       const gatewayName = LEDGER_GATEWAY_NAMES[result.gateway];
       // For a WALLET_TOPUP order this line is the ONLY record of the acting
-      // admin — the wallet credit writes no status-history row.
-      await logAdminAction(prisma, {
-        adminId: req.admin!.userId,
-        action: "tx_manual_match",
-        targetType: "order",
-        targetId: result.order.id,
-        details:
-          result.kind === "delivered"
-            ? `Matched ${gatewayName} transfer ${binanceTxId} to order ${result.order.orderCode}.`
-            : `Matched ${gatewayName} transfer ${binanceTxId} to order ${result.order.orderCode}; queued for manual fulfilment.`,
-      });
+      // admin — the wallet credit writes no status-history row. Written after
+      // the settlement committed, so a failure here must not turn a completed
+      // match into an error the admin might "fix" by matching again.
+      try {
+        await logAdminAction(prisma, {
+          adminId: req.admin!.userId,
+          action: "tx_manual_match",
+          targetType: "order",
+          targetId: result.order.id,
+          details:
+            result.kind === "delivered"
+              ? `Matched ${gatewayName} transfer ${binanceTxId} to order ${result.order.orderCode}.`
+              : `Matched ${gatewayName} transfer ${binanceTxId} to order ${result.order.orderCode}; queued for manual fulfilment.`,
+        });
+      } catch (err) {
+        logger.error(
+          { err, adminId: req.admin!.userId, orderId: result.order.id, reference: binanceTxId, gateway: result.gateway },
+          `Admin ${req.admin!.userId} manually matched ${gatewayName} transfer ${binanceTxId} to order ${result.order.orderCode} and the match committed, but its audit row could not be written — record this match in the audit log by hand.`,
+        );
+      }
       logger.info(
         `Admin ${req.admin!.userId} manually matched ${gatewayName} transfer ${binanceTxId} to order ${result.order.orderCode} from the web panel; the order is now ${result.kind === "delivered" ? "delivered" : "queued for fulfilment"}.`,
       );

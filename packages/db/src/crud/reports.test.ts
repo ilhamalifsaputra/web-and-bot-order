@@ -639,16 +639,19 @@ describe("listCombinedLedger currency and suggested order", () => {
       suggestedOrderId: topup.id,
       suggestedOrderCode: "ORD-HINT-1",
       suggestedOrderKind: "WALLET_TOPUP",
+      suggestedOrderStatus: "UNDERPAID",
     });
     expect(rows.find((r) => r.reference === "bn-nohint")).toMatchObject({
       suggestedOrderId: null,
       suggestedOrderCode: null,
       suggestedOrderKind: null,
+      suggestedOrderStatus: null,
     });
     expect(rows.find((r) => r.reference === "pd-ghost-hint")).toMatchObject({
       suggestedOrderId: 987654321,
       suggestedOrderCode: null,
       suggestedOrderKind: null,
+      suggestedOrderStatus: null,
     });
   });
 
@@ -665,7 +668,7 @@ describe("listCombinedLedger currency and suggested order", () => {
     const counter = { orderFindMany: 0 };
     const { rows } = await listCombinedLedger(countingDb(prisma, counter), { limit: 50 });
     expect(counter.orderFindMany).toBe(1);
-    expect(rows.find((r) => r.reference === "tp-oneq-b")).toMatchObject({ suggestedOrderCode: "ORD-ONEQ-2" });
+    expect(rows.find((r) => r.reference === "tp-oneq-b")).toMatchObject({ suggestedOrderCode: "ORD-ONEQ-2", suggestedOrderStatus: "UNDERPAID" });
   });
 
   it("filters by kind using the suggested order's kind when the row has no linked order", async () => {

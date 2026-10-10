@@ -699,6 +699,42 @@ describe("PaymentsPage", () => {
     expect(within(menu).queryByText("Add to buyer's credit balance")).not.toBeInTheDocument();
   });
 
+  it("offers no checkbox and no Dismiss on a row the gateway may still settle (no confirmed amount, or its suggested order still awaiting payment)", async () => {
+    const user = userEvent.setup();
+    const base = { currency: "IDR", outcome: "unmatched", memo: null, orderId: null, orderCode: null, orderKind: null, orderStatus: null, suggestedOrderCode: null, suggestedOrderKind: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" };
+    const ledger = [
+      { ...base, id: 1, gateway: "tokopay", reference: "TP-ZERO", amount: "0", suggestedOrderId: 41, suggestedOrderStatus: "CANCELLED" },
+      { ...base, id: 2, gateway: "paydisini", reference: "PD-PENDING", amount: "50000", suggestedOrderId: 42, suggestedOrderStatus: "PENDING_PAYMENT" },
+      { ...base, id: 3, gateway: "nowpayments", reference: "NP-ZERO", amount: "0", currency: null, suggestedOrderId: null, suggestedOrderStatus: null },
+      { ...base, id: 4, gateway: "tokopay", reference: "TP-CLOSED", amount: "50000", suggestedOrderId: 43, suggestedOrderStatus: "UNDERPAID" },
+      // The rule covers the gateway-settled rails only.
+      { ...base, id: 5, gateway: "bybit", reference: "BY-ZERO", amount: "0", currency: "USDT", suggestedOrderId: null, suggestedOrderStatus: null },
+    ];
+    mockPaymentsFetch({ enabled: true, ledger, total: ledger.length, todayCount: 0, page: 1, hasNext: false, outcomes: ["unmatched"], counts: {} });
+    render(<PaymentsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("TP-ZERO")).toBeInTheDocument());
+
+    for (const ref of ["TP-ZERO", "PD-PENDING", "NP-ZERO"]) {
+      expect(screen.queryByRole("checkbox", { name: `Select transfer ${ref}` })).not.toBeInTheDocument();
+    }
+    expect(screen.getByRole("checkbox", { name: "Select transfer TP-CLOSED" })).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Select transfer BY-ZERO" })).toBeInTheDocument();
+
+    for (const ref of ["TP-ZERO", "PD-PENDING"]) {
+      await user.click(screen.getByRole("button", { name: `Actions for transfer ${ref}` }));
+      const menu = await screen.findByRole("menu");
+      expect(within(menu).getByText("Match to order…")).toBeInTheDocument();
+      expect(within(menu).queryByText("Dismiss")).not.toBeInTheDocument();
+      await user.keyboard("{Escape}");
+      await waitFor(() => expect(screen.queryByRole("menu")).not.toBeInTheDocument());
+    }
+    // NOWPayments offers no match either, so nothing is left to put in a menu.
+    expect(screen.queryByRole("button", { name: "Actions for transfer NP-ZERO" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Actions for transfer TP-CLOSED" }));
+    expect(within(await screen.findByRole("menu")).getByText("Dismiss")).toBeInTheDocument();
+  });
+
   it("keeps the credit item on a Binance row's menu beside Match to order…", async () => {
     const user = userEvent.setup();
     const ledger = [

@@ -90,6 +90,9 @@ interface TxRow {
   suggestedOrderId: number | null;
   suggestedOrderCode: string | null;
   suggestedOrderKind: string | null;
+  /** The suggested order's current status (null like its code) — decides
+   *  whether the gateway may still settle this row (see `dismissBlocked`). */
+  suggestedOrderStatus: string | null;
   processedAt: string;
   processedAtDisplay: string | null;
 }
@@ -97,6 +100,29 @@ interface OrderPartyRow {
   fullName: string | null;
   username: string | null;
 }
+/** Gateways whose callbacks/pollers still reclaim an "unmatched" row for the
+ *  order it was parked for; "dismissed" is not reclaimable. */
+const DISMISS_GUARDED_GATEWAYS: ReadonlySet<string> = new Set(["tokopay", "paydisini", "nowpayments"]);
+
+/** A decimal string holding a value above zero ("0", "0.00", "-5" and null are not). */
+function isPositiveAmount(amount: string | null): boolean {
+  if (amount == null) return false;
+  const s = amount.trim();
+  return !s.startsWith("-") && /[1-9]/.test(s);
+}
+
+/**
+ * True when Dismiss must not be offered on this unmatched row: on TokoPay,
+ * PayDisini and NOWPayments, a row with no confirmed amount, or whose
+ * suggested order is still awaiting payment, may still be settled by the
+ * gateway — dismissing it would block that delivery. Mirrors the server's
+ * refusal (`dismissUnmatchedLedgerTx`, packages/db/src/crud/manualMatch.ts).
+ */
+function dismissBlocked(tx: TxRow): boolean {
+  if (!DISMISS_GUARDED_GATEWAYS.has(tx.gateway)) return false;
+  return !isPositiveAmount(tx.amount) || tx.suggestedOrderStatus === "PENDING_PAYMENT";
+}
+
 interface UnderpaidOrderRow {
   id: number;
   orderCode: string;
@@ -448,9 +474,9 @@ export function PaymentsPage() {
 
   const ledgerRows = data?.ledger ?? [];
   // Every gateway's unmatched row can be dismissed (/api/payments/dismiss
-  // takes the row's gateway beside its reference), so every one is eligible
-  // for bulk dismiss.
-  const eligibleRows = ledgerRows.filter(tx => tx.outcome === "unmatched");
+  // takes the row's gateway beside its reference) — except one the gateway
+  // may still settle (`dismissBlocked`), which the server would refuse.
+  const eligibleRows = ledgerRows.filter(tx => tx.outcome === "unmatched" && !dismissBlocked(tx));
   const allEligibleSelected = eligibleRows.length > 0 && eligibleRows.every(tx => selected.has(tx.id));
   // Scoped to eligibleRows, not the whole ledger: only unmatched transfers
   // get a checkbox, so one that gets matched between refetches must drop out
@@ -815,7 +841,7 @@ export function PaymentsPage() {
                   aria-label="Select all eligible transfers"
                 />
               ),
-              render: tx => tx.outcome === "unmatched" ? (
+              render: tx => tx.outcome === "unmatched" && !dismissBlocked(tx) ? (
                 <Checkbox
                   checked={selected.has(tx.id)}
                   onCheckedChange={() => toggleSelected(tx.id)}
@@ -931,8 +957,11 @@ export function PaymentsPage() {
               //    cannot be checked against an order (the server refuses it);
               //  - "Add to buyer's credit balance" stays Binance-only
               //    (/api/payments/credit reads the Binance ledger);
-              //  - "Dismiss" works on every gateway.
-              render: tx => tx.outcome === "unmatched" ? (
+              //  - "Dismiss" works on every gateway, except on a row the
+              //    gateway may still settle (`dismissBlocked`).
+              // A row left with no item at all (a blocked NOWPayments row)
+              // gets no menu.
+              render: tx => tx.outcome === "unmatched" && (tx.gateway !== "nowpayments" || !dismissBlocked(tx)) ? (
                 <div onClick={(e) => e.stopPropagation()}>
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
@@ -953,10 +982,12 @@ export function PaymentsPage() {
                           Add to buyer&apos;s credit balance
                         </DropdownMenuItem>
                       )}
-                      <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setPendingDismiss(tx); }}>
-                        <X className="h-4 w-4" />
-                        Dismiss
-                      </DropdownMenuItem>
+                      {!dismissBlocked(tx) && (
+                        <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setPendingDismiss(tx); }}>
+                          <X className="h-4 w-4" />
+                          Dismiss
+                        </DropdownMenuItem>
+                      )}
                     </DropdownMenuContent>
                   </DropdownMenu>
                 </div>

@@ -662,6 +662,11 @@ export interface UnifiedLedgerRow {
   /** `Order.kind` of `suggestedOrderId`, null like `suggestedOrderCode`. The
    *  `kind` filter falls back to it on rows with no linked order. */
   suggestedOrderKind: string | null;
+  /** `Order.status` of `suggestedOrderId`, null like `suggestedOrderCode`.
+   *  The Payments page hides Dismiss on a TokoPay/PayDisini/NOWPayments row
+   *  whose suggested order is still PENDING_PAYMENT — the gateway may still
+   *  settle it (mirrors `dismissUnmatchedLedgerTx`'s refusal). */
+  suggestedOrderStatus: string | null;
 }
 
 export interface CombinedLedgerFilter {
@@ -764,7 +769,7 @@ export async function listCombinedLedger(db: Db, opts: CombinedLedgerFilter = {}
   // are filled in from the single order query below.
   type PreJoinRow = Omit<
     UnifiedLedgerRow,
-    "orderCode" | "orderKind" | "orderStatus" | "suggestedOrderCode" | "suggestedOrderKind"
+    "orderCode" | "orderKind" | "orderStatus" | "suggestedOrderCode" | "suggestedOrderKind" | "suggestedOrderStatus"
   >;
   const merged: PreJoinRow[] = [
     ...binance.map((r) => ({
@@ -867,6 +872,7 @@ export async function listCombinedLedger(db: Db, opts: CombinedLedgerFilter = {}
       orderStatus: order?.status ?? null,
       suggestedOrderCode: suggested?.orderCode ?? null,
       suggestedOrderKind: suggested?.kind ?? null,
+      suggestedOrderStatus: suggested?.status ?? null,
     };
   });
 

@@ -242,10 +242,8 @@ export async function productPageData(rawSlug: string, isReseller = false, displ
       icon_kind: resolveDenomIconKind(product, product.category, product.denominations[0]?.qtyUnit ?? null),
       rating: productRatingAvg,
       rating_count: productRatingCount,
-      // Task 6 (Digiflazz instant-buy pilot): already fetched via
-      // getCatalogProductBySlugWithDenominations's `include: { category: true }`
-      // — no crud-layer change needed. Drives ProductPage.tsx's branch to
-      // InstantBuyPage.tsx.
+      // Already fetched via getCatalogProductBySlugWithDenominations's
+      // `include: { category: true }` — no crud-layer change needed.
       checkout_flow: product.category.checkoutFlow,
       // The server picks the page template; the client branches on this, not
       // on checkout_flow (kept above only for cached older clients).

@@ -251,9 +251,10 @@ export default function ProductPage() {
   const { product, denominations, reviews, related_products, low_threshold } = data;
   const fx = ctx?.fx;
 
-  // Task 6 (Digiflazz instant-buy pilot): a category flagged checkoutFlow
-  // "instant" renders the single-page buy flow instead of this page's usual
-  // image/plan-picker + Cart→Checkout hop. InstantBuyPage re-fetches this
+  // The server picks the template (`product.template`, see
+  // apps/storefront/src/productTemplate.ts): "game" renders the single-page
+  // top-up flow instead of this page's usual image/plan-picker + Cart→Checkout
+  // hop. InstantBuyPage re-fetches this
   // same product payload itself (same query key, so it hits the cache this
   // fetch just populated) rather than threading two dozen props through —
   // everything below this line is the unchanged catalog-flow path.

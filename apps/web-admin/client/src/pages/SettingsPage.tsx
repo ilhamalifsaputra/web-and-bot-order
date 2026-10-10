@@ -241,7 +241,7 @@ const FIELD_DESCRIPTIONS: Record<string, string> = {
   welcome: "Shown when a customer starts the Telegram bot.",
   banner_image: "Displayed on the storefront homepage banner.",
   support_contact:
-    "Your Telegram contact, shown on the website and on the bot's support buttons. Use @username or t.me/username; if empty or invalid, the website hides its Telegram contact.",
+    "Your Telegram contact, shown on the website and on the bot's support screen. Use @username or t.me/username; if empty or invalid, the website hides its Telegram contact.",
   support_whatsapp: "WhatsApp number shown as a support option on the website.",
   web_analytics_id: "Google Analytics measurement ID, used to track storefront visits.",
   usd_idr_rate:

@@ -29,7 +29,7 @@ export function telegramContactUrl(raw: string | null | undefined): string | nul
       return INVITE_HASH_RE.test(path.slice("joinchat/".length)) ? `https://t.me/${path}` : null;
     }
     if (path.toLowerCase() === "joinchat") return null; // invite prefix with no hash
-    return HANDLE_RE.test(path) ?`https://t.me/${path}` : null;
+    return HANDLE_RE.test(path) ? `https://t.me/${path}` : null;
   }
 
   const handle = text.startsWith("@") ? text.slice(1) : text;

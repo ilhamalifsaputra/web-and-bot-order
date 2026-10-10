@@ -724,7 +724,7 @@ describe("OrderDetailPage game top-up", () => {
   });
   afterEach(() => vi.unstubAllGlobals());
 
-  it("shows the top-up detail card and drops warranty, credentials and delivered-content", async () => {
+  it("shows the top-up detail card and drops warranty and delivered-content", async () => {
     renderDetail(() => gameData());
     expect(await screen.findByRole("heading", { name: "Top-up details" })).toBeInTheDocument();
     expect(screen.getByText("Zone ID")).toBeInTheDocument();
@@ -732,9 +732,40 @@ describe("OrderDetailPage game top-up", () => {
     // The full SN appears once (the card), never also in a Delivered-content card.
     expect(screen.getAllByText(SN)).toHaveLength(1);
     expect(screen.queryByText(/warranty/i)).not.toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Your credentials" })).not.toBeInTheDocument();
-    expect(screen.queryByText("stray:cred")).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Delivered content" })).not.toBeInTheDocument();
+  });
+
+  it("still shows stock credentials on a game order delivered from stock (voucher code)", async () => {
+    renderDetail(() => gameData());
+    expect(await screen.findByRole("heading", { name: "Your credentials" })).toBeInTheDocument();
+    expect(screen.getByText("stray:cred")).toBeInTheDocument();
+  });
+
+  it("shows no credentials section on a Digiflazz game order without stock credentials", async () => {
+    const base = gameData();
+    renderDetail(() => gameData({ order: { ...base.order, items: [{ ...base.order.items[0]!, credentials: null }] } }));
+    await screen.findByRole("heading", { name: "Top-up details" });
+    expect(screen.queryByRole("heading", { name: "Your credentials" })).not.toBeInTheDocument();
+  });
+
+  it("hides the top-up card while payment is pending and after the order closed", async () => {
+    const base = gameData();
+    const { unmount } = renderDetail(() =>
+      gameData({ order: { ...base.order, status: "PENDING_PAYMENT" }, delivered: false, pending_payment: true, processing: false }),
+    );
+    await screen.findByText("Total");
+    expect(screen.queryByRole("heading", { name: "Top-up details" })).not.toBeInTheDocument();
+    unmount();
+    renderDetail(() =>
+      gameData({ order: { ...base.order, status: "EXPIRED" }, delivered: false, pending_payment: false, processing: false }),
+    );
+    await screen.findByText("Total");
+    expect(screen.queryByRole("heading", { name: "Top-up details" })).not.toBeInTheDocument();
+  });
+
+  it("shows the top-up card while the order is processing", async () => {
+    renderDetail(() => gameData({ delivered: false, processing: true, sn: null }));
+    expect(await screen.findByRole("heading", { name: "Top-up details" })).toBeInTheDocument();
   });
 
   it("keeps the customer-input section on a game order", async () => {

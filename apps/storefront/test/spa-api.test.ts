@@ -645,6 +645,21 @@ describe("GET /api/v1/pages/*", () => {
     expect(found.additional_fields).toEqual(fields);
   });
 
+  it("product page template: a GAME_TOPUP catalog-flow category is \"game\", a Premium/null-group one \"catalog\"", async () => {
+    const mk = async (group: "GAME_TOPUP" | "PREMIUM_APPS" | null) => {
+      const tag = Math.random().toString(36).slice(2);
+      const cat = await prisma.category.create({ data: { name: `Tpl ${tag}`, slug: `tpl-${tag}`, sortOrder: 98, group, checkoutFlow: "catalog" } });
+      const product = await createCatalogProduct(prisma, { categoryId: cat.id, name: `Tpl Product ${tag}` });
+      await createDenomination(prisma, { productId: product.id, name: "Plan", type: "SHARED", durationLabel: "1 Month", price: "10000" });
+      const res = await app.inject({ method: "GET", url: `/api/v1/pages/product/${product.slug}` });
+      expect(res.statusCode).toBe(200);
+      return res.json().product.template;
+    };
+    expect(await mk("GAME_TOPUP")).toBe("game");
+    expect(await mk("PREMIUM_APPS")).toBe("catalog");
+    expect(await mk(null)).toBe("catalog");
+  });
+
   it("search returns matches for q", async () => {
     const res = await app.inject({ method: "GET", url: "/api/v1/pages/search?q=netflix" });
     expect(res.statusCode).toBe(200);

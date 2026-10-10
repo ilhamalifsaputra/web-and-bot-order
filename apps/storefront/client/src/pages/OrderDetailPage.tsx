@@ -115,8 +115,8 @@ export default function OrderDetailPage() {
   const showWallet = Boolean(order.wallet_credit) && order.wallet_credit !== "0";
   const qty = order.items.length;
   const fields = order.customer_data_fields;
-  // A game top-up has no warranty, stock credentials or "delivered content" —
-  // its SN lives in GameTopupDetailCard.
+  // A game top-up has no warranty or generic "delivered content" — its SN
+  // lives in GameTopupDetailCard. Stock credentials (a voucher code) still show.
   const isGameTopup = order.fulfillment?.presentation?.transactionType === "GAME_TOPUP";
 
   function startEdit(): void {
@@ -346,7 +346,9 @@ export default function OrderDetailPage() {
             </section>
           )}
 
-          {isGameTopup && (
+          {/* Only once the order is being fulfilled or done, like PayPage: the
+              green card must not read as success on an unpaid/closed order. */}
+          {isGameTopup && (processing || delivered) && (
             <GameTopupDetailCard
               items={order.items}
               targets={data.game_target ?? []}
@@ -355,7 +357,7 @@ export default function OrderDetailPage() {
             />
           )}
 
-          {!isGameTopup && delivered && order.items.some((item) => item.credentials) && (
+          {delivered && order.items.some((item) => item.credentials) && (
             <section id="credentials" className="card card-pad border-grass/40 mb-5">
               <h2 className="section-title flex items-center gap-2">
                 <BadgeCheck className="w-5 h-5 text-grass" /> {t("web.credentials")}

@@ -20,7 +20,7 @@ tidak diperiksa langsung oleh agent.
 | Legal: refund/garansi/privacy final | `/terms`, `/privacy`, `/refund` | NEEDS_OWNER_CONFIRMATION | Draft faktual dan diff ada di `legal-review.md`; SLA 7 hari/1×24/instan sebelumnya tidak terverifikasi | `LEGAL_REVIEW_REQUIRED`: setujui teks, nominal/metode/tenggat refund, retensi dan praktik data |
 | UX rekomendasi: footer compact/keyboard | Footer/header/drawer | PASS | Disclosure mobile tertutup, relationship/state ARIA, policy links permanen, identitas tidak tersembunyi | Bukan persyaratan desain resmi Xendit |
 | SEO/security: private tidak terindeks | Account/reset/order/pay/track | PASS | noindex; canonical private dihapus, tidak ada OG order data; sitemap publik saja | Robots bukan pengganti auth; ownership API dipertahankan |
-| Kualitas: build/typecheck/unit/browser | Kode worktree | BLOCKED | Hasil final akan dicatat setelah gate selesai | Lihat `validation-results.md` |
+| Kualitas: build/typecheck/unit/browser | Kode worktree | PASS | Typecheck penuh + 598 file/11.121 tes lulus; lint/build dan 6 skenario browser unik lulus | Bukti dan batas cakupan di `validation-results.md`; ulangi smoke setelah rilis yang disetujui |
 | Rekomendasi: sampel performa/kontras lokal | Homepage + token footer | PASS | LCP/CLS awal dicatat pada 390/1440px, tanpa throttle; kontras legal footer 5,29:1 | Sampel terbatas; bukan klaim CWV/WCAG produksi |
 | Performa lapangan / WCAG menyeluruh | Situs live di perangkat nyata | BLOCKED | Tidak ada RUM/CrUX/lighthouse, INP lapangan atau audit WCAG formal pada task ini | Uji lapangan terpisah; tidak mengklaim CWV/WCAG lulus |
 | Keputusan aktivasi merchant | Dashboard Xendit | BLOCKED | Review belum berlangsung/selesai menurut owner | `XENDIT_DECISION_PENDING`; tidak ada jaminan penerimaan |
@@ -30,5 +30,8 @@ Referensi resmi: [kriteria situs](https://help.xendit.co/hc/id/articles/44057842
 [penolakan/aktivasi](https://help.xendit.co/hc/en-us/articles/4801728966553-Why-my-application-was-rejected-What-to-do-next),
 [dokumen merchant Indonesia](https://help.xendit.co/hc/en-us/articles/10891368765593-ID-What-are-the-legal-documents-required-to-register-to-Xendit-for-Indonesian-Merchants).
 
-`TECHNICALLY_READY` hanya akan dipakai untuk cakupan patch yang lulus gate lokal.
-`NEEDS_OWNER_VERIFICATION` dan `XENDIT_DECISION_PENDING` tetap terpisah.
+`TECHNICALLY_READY`: cakupan patch lokal lulus gate penuh dan pengujian browser.
+`NEEDS_OWNER_VERIFICATION`: kebijakan final, hak distribusi, gateway live dan
+wallet/USDT masih memerlukan tindak lanjut owner. Identitas sudah dikonfirmasi.
+`XENDIT_DECISION_PENDING`: merchant belum aktif dan keputusan tetap milik Xendit.
+Status kode lokal tidak berarti website live sudah diperbarui atau merchant disetujui.

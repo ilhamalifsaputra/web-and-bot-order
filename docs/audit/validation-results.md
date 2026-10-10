@@ -16,7 +16,7 @@ Tidak memakai akun/order pelanggan. Port 8239/8240; bot/outbox tidak dijalankan.
 | Focused backend | PASS | 28 tes SEO; 15 tes payment flags/context |
 | `pnpm exec playwright test -c tests/audit/readiness.playwright.config.ts` | PASS | 5 tes, 55,9 detik; 125 observasi route/viewport, search, guest checkout, akun sintetis, footer/keyboard dan logo |
 | `pnpm typecheck` | PASS | Seluruh package + tsc tsconfig.test.json, setelah fetch/rebase master |
-| `pnpm test` | BLOCKED | Gate penuh setelah sync master |
+| `pnpm test` | PASS | Run akhir: 598/598 file, 11.121/11.121 tes; 922,42 detik, setelah fetch/rebase master |
 | Firefox/WebKit | SKIPPED | Browser tersedia Chromium; tidak menambah dependency |
 | Transaksi produksi / akun nyata | SKIPPED | Di luar batas audit; checkout browser berhenti sebelum pembayaran |
 | Smoke console + sampel performa lokal (focused Playwright) | PASS | 2 tes; 125 route diulang untuk console, LCP/CLS awal pada 390/1440px; 6 skenario browser unik keseluruhan |
@@ -80,3 +80,24 @@ Sampel performa awal (localhost, tanpa throttle, 1 detik observasi): homepage
 390x900px LCP 364ms/CLS 0,0256; 1440x900px LCP 176ms/CLS 0,0651. Hasil bukan p75 dan
 bukan audit INP. Nilai dapat berubah menurut cache, font, katalog, jaringan dan
 beban mesin; JSON mencatat environment dan raw sample.
+
+## Hasil akhir
+
+`TECHNICALLY_READY` untuk cakupan patch lokal pada branch
+`worktree-trustance-readiness`, basis master `0959e631`. Typecheck penuh versi
+akhir exit 0; full test terakhir exit 0, 598 file dan 11.121 tes lulus seluruhnya.
+Pretest migration drift/timestamp, frontend boundaries, storefront lint, dan
+detection purity juga lulus. Tidak ada filter tes pada gate penuh.
+
+Browser: full run 5 skenario lulus, lalu focused run 2 skenario (smoke console
+ulang + performance sample) lulus: 6 skenario unik. Ada 125 kombinasi route dan
+viewport, tanpa exception JavaScript atau console error tak terduga; resource
+401 auth dan 404 sintetis dicatat sebagai state yang diharapkan. Dua puluh lima
+screenshot tersedia. Build awal seluruh workspace dan build storefront akhir
+keduanya lulus; lockfile/dependency/schema source tidak berubah.
+
+`NEEDS_OWNER_VERIFICATION` untuk finalisasi kebijakan, hak distribusi, status
+settlement gateway lain, monitoring kontak, wallet/USDT dan praktik data.
+Identitas bisnis telah dikonfirmasi owner; dokumen tidak diperiksa langsung.
+`XENDIT_DECISION_PENDING`: Xendit belum aktif menurut owner. Tidak ada push,
+merge ke master, deployment, pembayaran produksi atau pengiriman nyata.

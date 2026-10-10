@@ -24,6 +24,7 @@ import {
 import { deriveOrderStatusFromItems } from "@app/core/orderItemStatus";
 import { fulfillmentProviderFor, getOrderFulfillment } from "@app/core/orderFulfillment";
 import { cartCompositionError } from "@app/core/cartComposition";
+import { usesLocalInventory } from "@app/core/productAvailability";
 import { emitDigiflazzOrderStatusChanged } from "@app/core/realtime/digiflazzEvents";
 import { DigiflazzTimingEvent, logDigiflazzTimingEvent } from "@app/core/suppliers/digiflazzTiming";
 import { reconciledOrderMoneyRows } from "@app/core/orderMoneyRows";
@@ -918,7 +919,7 @@ export async function createOrderFromCart(
   // practice the storefront blocks mixing delivery types in one cart, so a cart
   // is either all-auto or all-manual, but this handles either line-by-line.)
   for (const ci of cart) {
-    if (ci.product.deliveryType !== DeliveryType.AUTO || ci.product.autoDeliverySource === "digiflazz") continue;
+    if (!usesLocalInventory(ci.product)) continue;
     const available = await countAvailableStock(db, ci.productId);
     if (available < ci.quantity) {
       throw new ValidationError("error.out_of_stock", { product: ci.product.name });
@@ -985,7 +986,7 @@ export async function createOrderFromCart(
   // that can't be batched without changing which stock item lands on which
   // line).
   for (const ci of cart) {
-    if (ci.product.deliveryType !== DeliveryType.AUTO || ci.product.autoDeliverySource === "digiflazz") continue;
+    if (!usesLocalInventory(ci.product)) continue;
     const lineItemIds = unpairedItemIds.get(ci.productId) ?? [];
     for (let k = 0; k < ci.quantity; k++) {
       const orderItemId = lineItemIds.shift();
@@ -1121,7 +1122,7 @@ export async function createOrderDirect(
   // availability pre-check and the per-unit reservation below, and create the
   // OrderItem rows with stockItemId=null (fulfilled by hand via
   // settlePaidOrder → fulfillManualOrder). Auto SKUs behave exactly as before.
-  const isManual = product.deliveryType !== DeliveryType.AUTO || product.autoDeliverySource === "digiflazz";
+  const isManual = !usesLocalInventory(product);
 
   // Pre-check before reserving anything (fast-fail on the common "ordered too
   // much" case) — see createOrderFromCart's matching guard for the rationale.

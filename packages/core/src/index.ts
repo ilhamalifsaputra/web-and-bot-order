@@ -1,6 +1,7 @@
 export * from "./config";
 export * from "./enums";
 export * from "./cartComposition";
+export * from "./productAvailability";
 export * from "./orderItemStatus";
 export * from "./money";
 export * from "./canonicalProduct";

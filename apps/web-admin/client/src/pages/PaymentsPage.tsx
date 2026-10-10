@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router-dom";
 import { PageLayout } from "../components/shared/PageLayout";
@@ -14,7 +14,7 @@ import { StatCard } from "../components/shared/StatCard";
 import { UrgencyDot } from "../components/shared/UrgencyDot";
 import { Pagination } from "../components/shared/Pagination";
 import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount";
-import { CreditCard, PackageCheck, Undo2, X, MoreVertical, Clock, Hourglass, XCircle, Wallet } from "lucide-react";
+import { CreditCard, PackageCheck, Undo2, X, MoreVertical, Clock, Hourglass, XCircle, Wallet, Link2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -283,6 +283,12 @@ export function PaymentsPage() {
   const [q, setQ] = useState("");
   const [matchForm, setMatchForm] = useState({ binance_tx_id: "", order_code: "" });
   const [matchError, setMatchError] = useState<string | null>(null);
+  // The gateway of the ledger row the form was pre-filled from ("Match to
+  // order…"), so the server need not guess which ledger the reference is on.
+  // Dropped as soon as the admin edits the Transfer ID by hand — the server
+  // then resolves the typed reference across every ledger.
+  const [matchGateway, setMatchGateway] = useState<LedgerGateway | null>(null);
+  const matchCardRef = useRef<HTMLDivElement>(null);
   const [orderCodeFocused, setOrderCodeFocused] = useState(false);
   const [pendingDeliver, setPendingDeliver] = useState<UnderpaidOrderRow | null>(null);
   const [deliverReason, setDeliverReason] = useState("");
@@ -319,17 +325,35 @@ export function PaymentsPage() {
   const idempotentPost = useIdempotentPost();
 
   const match = useMutation({
-    mutationFn: () => idempotentPost("/api/payments/match", matchForm),
-    onSuccess: () => {
+    mutationFn: (form: { binance_tx_id: string; order_code: string; gateway?: LedgerGateway }) =>
+      idempotentPost("/api/payments/match", form),
+    onSuccess: (_res, form) => {
       void qc.invalidateQueries({ queryKey: ["payments"] });
+      toast.success(`Transfer matched to order ${form.order_code}.`);
       setMatchForm({ binance_tx_id: "", order_code: "" });
+      setMatchGateway(null);
       setMatchError(null);
     },
     onError: (e: Error) => setMatchError(describeError(e)),
   });
 
+  /** "Match to order…" on a ledger row: fill the Manual Match form with the
+   *  row's reference (and its suggested order, a hint the admin still
+   *  confirms) and bring the form into view. */
+  function startMatchFromRow(tx: TxRow) {
+    setMatchForm({ binance_tx_id: tx.reference, order_code: tx.suggestedOrderCode ?? "" });
+    setMatchGateway(tx.gateway);
+    setMatchError(null);
+    matchCardRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    // After the menu closes: Radix hands focus back to the menu trigger on
+    // close, which would otherwise steal it straight back.
+    setTimeout(() => {
+      matchCardRef.current?.querySelector<HTMLInputElement>("input[data-match-transfer-id]")?.focus({ preventScroll: true });
+    }, 0);
+  }
+
   const dismiss = useMutation({
-    mutationFn: (txId: string) => idempotentPost("/api/payments/dismiss", { binance_tx_id: txId }),
+    mutationFn: (tx: TxRow) => idempotentPost("/api/payments/dismiss", { binance_tx_id: tx.reference, gateway: tx.gateway }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["payments"] });
       toast.success("Transfer dismissed.");
@@ -423,15 +447,14 @@ export function PaymentsPage() {
   });
 
   const ledgerRows = data?.ledger ?? [];
-  // Manual match/credit/dismiss only exist for Binance transactions — a
-  // TokoPay/PayDisini/etc. row is never "eligible" for bulk dismiss even
-  // when unmatched, since /api/payments/dismiss only understands Binance
-  // reference ids.
-  const eligibleRows = ledgerRows.filter(tx => tx.outcome === "unmatched" && tx.gateway === "binance");
+  // Every gateway's unmatched row can be dismissed (/api/payments/dismiss
+  // takes the row's gateway beside its reference), so every one is eligible
+  // for bulk dismiss.
+  const eligibleRows = ledgerRows.filter(tx => tx.outcome === "unmatched");
   const allEligibleSelected = eligibleRows.length > 0 && eligibleRows.every(tx => selected.has(tx.id));
-  // Scoped to eligibleRows, not the whole ledger: only unmatched Binance
-  // transfers get a checkbox, so one that gets matched between refetches must
-  // drop out of the count and out of the dismiss payload.
+  // Scoped to eligibleRows, not the whole ledger: only unmatched transfers
+  // get a checkbox, so one that gets matched between refetches must drop out
+  // of the count and out of the dismiss payload.
   const visibleSelected = visibleSelection(selected, eligibleRows, tx => tx.id);
 
   function toggleSelected(id: number) {
@@ -456,7 +479,7 @@ export function PaymentsPage() {
   const bulkDismiss = useMutation({
     mutationFn: async (ids: number[]) => {
       const rows = ledgerRows.filter(tx => ids.includes(tx.id));
-      const results = await Promise.allSettled(rows.map(tx => idempotentPost("/api/payments/dismiss", { binance_tx_id: tx.reference })));
+      const results = await Promise.allSettled(rows.map(tx => idempotentPost("/api/payments/dismiss", { binance_tx_id: tx.reference, gateway: tx.gateway })));
       const failed = results.filter(r => r.status === "rejected").length;
       return { succeeded: results.length - failed, failed };
     },
@@ -509,7 +532,9 @@ export function PaymentsPage() {
         />
       </div>
 
-      {/* Manual match form */}
+      {/* Manual match form. Wrapped so "Match to order…" can scroll to it:
+          this React 18 Card/Input pair does not forward refs. */}
+      <div ref={matchCardRef}>
       <Card className="mb-6">
         <CardHeader><CardTitle>Manual Match</CardTitle></CardHeader>
         <CardContent className="flex flex-col gap-3">
@@ -517,8 +542,15 @@ export function PaymentsPage() {
           <div className="flex flex-wrap items-start gap-2">
             <Input
               placeholder="Transfer ID"
+              data-match-transfer-id
               value={matchForm.binance_tx_id}
-              onChange={e => setMatchForm(f => ({ ...f, binance_tx_id: e.target.value }))}
+              onChange={e => {
+                const value = e.target.value;
+                setMatchForm(f => ({ ...f, binance_tx_id: value }));
+                // A hand-typed reference may be on another ledger: let the
+                // server resolve it instead of sending the row's gateway.
+                setMatchGateway(null);
+              }}
               className="w-48"
             />
             <div className="relative w-40">
@@ -563,11 +595,12 @@ export function PaymentsPage() {
               description={`Match transfer ${matchForm.binance_tx_id} to order ${matchForm.order_code}.`}
               confirmLabel="Match"
               variant="default"
-              onConfirm={() => match.mutate()}
+              onConfirm={() => match.mutate(matchGateway ? { ...matchForm, gateway: matchGateway } : matchForm)}
             />
           </div>
         </CardContent>
       </Card>
+      </div>
 
       {underpaid.length > 0 && (
         <Card className="mb-6">
@@ -782,7 +815,7 @@ export function PaymentsPage() {
                   aria-label="Select all eligible transfers"
                 />
               ),
-              render: tx => tx.outcome === "unmatched" && tx.gateway === "binance" ? (
+              render: tx => tx.outcome === "unmatched" ? (
                 <Checkbox
                   checked={selected.has(tx.id)}
                   onCheckedChange={() => toggleSelected(tx.id)}
@@ -852,11 +885,20 @@ export function PaymentsPage() {
               key: "amount",
               header: "Amount",
               render: tx => (
-                <span className="font-mono text-sm">
-                  {tx.amount && tx.currency
-                    ? formatCurrencyDisplay(tx.amount, tx.currency as "IDR" | "USDT" | "USD")
-                    : "—"}
-                </span>
+                tx.amount && !tx.currency ? (
+                  // NOWPayments: the amount is in whatever coin the buyer
+                  // paid with, which the ledger does not record — shown as
+                  // received, never formatted as a currency it is not.
+                  <span className="font-mono text-sm" title="Amount in the buyer's payment coin — not converted">
+                    {tx.amount}
+                  </span>
+                ) : (
+                  <span className="font-mono text-sm">
+                    {tx.amount && tx.currency
+                      ? formatCurrencyDisplay(tx.amount, tx.currency as "IDR" | "USDT" | "USD")
+                      : "—"}
+                  </span>
+                )
               ),
             },
             {
@@ -883,10 +925,14 @@ export function PaymentsPage() {
             {
               key: "actions",
               header: "",
-              // Manual match/credit/dismiss are Binance-specific (the backend
-              // routes operate on processedBinanceTx directly) — other
-              // gateways never show this dropdown, even on an unmatched row.
-              render: tx => tx.outcome === "unmatched" && tx.gateway === "binance" ? (
+              // Every gateway's unmatched row gets this menu:
+              //  - "Match to order…" pre-fills the Manual Match form — except
+              //    on NOWPayments, whose amount is in the buyer's pay coin and
+              //    cannot be checked against an order (the server refuses it);
+              //  - "Add to buyer's credit balance" stays Binance-only
+              //    (/api/payments/credit reads the Binance ledger);
+              //  - "Dismiss" works on every gateway.
+              render: tx => tx.outcome === "unmatched" ? (
                 <div onClick={(e) => e.stopPropagation()}>
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
@@ -895,10 +941,18 @@ export function PaymentsPage() {
                       </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
-                      <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setPendingCredit(tx); setCreditOrderCode(""); }}>
-                        <Wallet className="h-4 w-4" />
-                        Add to buyer&apos;s credit balance
-                      </DropdownMenuItem>
+                      {tx.gateway !== "nowpayments" && (
+                        <DropdownMenuItem onSelect={() => startMatchFromRow(tx)}>
+                          <Link2 className="h-4 w-4" />
+                          Match to order…
+                        </DropdownMenuItem>
+                      )}
+                      {tx.gateway === "binance" && (
+                        <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setPendingCredit(tx); setCreditOrderCode(""); }}>
+                          <Wallet className="h-4 w-4" />
+                          Add to buyer&apos;s credit balance
+                        </DropdownMenuItem>
+                      )}
                       <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setPendingDismiss(tx); }}>
                         <X className="h-4 w-4" />
                         Dismiss
@@ -991,7 +1045,7 @@ export function PaymentsPage() {
           title="Dismiss transfer?"
           description={`Mark transfer ${pendingDismiss.reference} as dismissed.`}
           confirmLabel="Dismiss"
-          onConfirm={() => dismiss.mutate(pendingDismiss.reference)}
+          onConfirm={() => dismiss.mutate(pendingDismiss)}
         />
       )}
       {pendingCredit && (

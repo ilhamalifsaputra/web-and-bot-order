@@ -286,7 +286,7 @@ describe("PaymentsPage", () => {
     expect(within(dialog).getByText(/TX1/)).toBeInTheDocument();
     fireEvent.click(within(dialog).getByRole("button", { name: "Dismiss" }));
 
-    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/payments/dismiss", { binance_tx_id: "TX1" }, expect.objectContaining({ idempotencyKey: expect.any(String) })));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/payments/dismiss", { binance_tx_id: "TX1", gateway: "binance" }, expect.objectContaining({ idempotencyKey: expect.any(String) })));
   });
 
   it("does not show an actions menu for a matched transfer", async () => {
@@ -504,8 +504,8 @@ describe("PaymentsPage", () => {
     await user.click(screen.getByRole("button", { name: /dismiss 2 transfers/i }));
 
     await waitFor(() => {
-      expect(apiPost).toHaveBeenCalledWith("/api/payments/dismiss", { binance_tx_id: "BULK1" }, expect.objectContaining({ idempotencyKey: expect.any(String) }));
-      expect(apiPost).toHaveBeenCalledWith("/api/payments/dismiss", { binance_tx_id: "BULK2" }, expect.objectContaining({ idempotencyKey: expect.any(String) }));
+      expect(apiPost).toHaveBeenCalledWith("/api/payments/dismiss", { binance_tx_id: "BULK1", gateway: "binance" }, expect.objectContaining({ idempotencyKey: expect.any(String) }));
+      expect(apiPost).toHaveBeenCalledWith("/api/payments/dismiss", { binance_tx_id: "BULK2", gateway: "binance" }, expect.objectContaining({ idempotencyKey: expect.any(String) }));
     });
   });
 
@@ -523,7 +523,7 @@ describe("PaymentsPage", () => {
     expect(screen.getByText("1 selected")).toBeInTheDocument();
   });
 
-  // Only unmatched Binance transfers get a checkbox, so a transfer the
+  // Only unmatched transfers get a checkbox, so a transfer the
   // reconciler matches between refetches must drop out of the count — otherwise
   // Dismiss would carry an id whose row no longer offers a checkbox at all.
   it("stops counting a selected transfer once it is no longer eligible", async () => {
@@ -562,9 +562,9 @@ describe("PaymentsPage", () => {
     await user.click(screen.getByRole("button", { name: /dismiss 1 transfer/i }));
 
     await waitFor(() =>
-      expect(apiPost).toHaveBeenCalledWith("/api/payments/dismiss", { binance_tx_id: "STAYS" }, expect.objectContaining({ idempotencyKey: expect.any(String) })),
+      expect(apiPost).toHaveBeenCalledWith("/api/payments/dismiss", { binance_tx_id: "STAYS", gateway: "binance" }, expect.objectContaining({ idempotencyKey: expect.any(String) })),
     );
-    expect(apiPost).not.toHaveBeenCalledWith("/api/payments/dismiss", { binance_tx_id: "GETSMATCHED" }, expect.objectContaining({ idempotencyKey: expect.any(String) }));
+    expect(apiPost).not.toHaveBeenCalledWith("/api/payments/dismiss", expect.objectContaining({ binance_tx_id: "GETSMATCHED" }), expect.anything());
   });
 
   it("clears the bulk selection when navigating to the next page", async () => {
@@ -674,7 +674,8 @@ describe("PaymentsPage", () => {
     expect(screen.queryByText(/showing only items still needing action/i)).not.toBeInTheDocument();
   });
 
-  it("renders a gateway column and omits the row-action dropdown for a non-Binance row, even when unmatched", async () => {
+  it("renders a gateway column and offers match + dismiss (but not credit) on an unmatched non-Binance row", async () => {
+    const user = userEvent.setup();
     const ledger = [
       { id: 1, gateway: "binance", reference: "BN-1", amount: "1", currency: "IDR", outcome: "unmatched", memo: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
       { id: 2, gateway: "tokopay", reference: "TP-1", amount: "50000", currency: "IDR", outcome: "unmatched", memo: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
@@ -687,11 +688,152 @@ describe("PaymentsPage", () => {
     expect(screen.getByText("TokoPay")).toBeInTheDocument();
     expect(screen.getByText("Binance Internal")).toBeInTheDocument();
 
-    // Binance's unmatched row gets the actions dropdown; TokoPay's doesn't,
-    // even though it's also unmatched (manual match/credit/dismiss are
-    // Binance-only on the backend).
-    expect(screen.getByRole("button", { name: "Actions for transfer BN-1" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Actions for transfer TP-1" })).not.toBeInTheDocument();
+    // Every gateway's unmatched row is selectable for bulk dismiss.
+    expect(screen.getByRole("checkbox", { name: "Select transfer TP-1" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Actions for transfer TP-1" }));
+    const menu = await screen.findByRole("menu");
+    expect(within(menu).getByText("Match to order…")).toBeInTheDocument();
+    expect(within(menu).getByText("Dismiss")).toBeInTheDocument();
+    // Credit-to-balance stays Binance-only on the backend.
+    expect(within(menu).queryByText("Add to buyer's credit balance")).not.toBeInTheDocument();
+  });
+
+  it("keeps the credit item on a Binance row's menu beside Match to order…", async () => {
+    const user = userEvent.setup();
+    const ledger = [
+      { id: 1, gateway: "binance", reference: "BN-1", amount: "1", currency: "USDT", outcome: "unmatched", memo: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
+    ];
+    mockPaymentsFetch({ enabled: true, ledger, total: 1, todayCount: 0, page: 1, hasNext: false, outcomes: ["unmatched"], counts: {} });
+    render(<PaymentsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("BN-1")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "Actions for transfer BN-1" }));
+    const menu = await screen.findByRole("menu");
+    expect(within(menu).getByText("Match to order…")).toBeInTheDocument();
+    expect(within(menu).getByText("Add to buyer's credit balance")).toBeInTheDocument();
+    expect(within(menu).getByText("Dismiss")).toBeInTheDocument();
+  });
+
+  it("pre-fills the Manual Match form from a Bybit row's menu and sends the gateway with the match", async () => {
+    const user = userEvent.setup();
+    const ledger = [
+      { id: 7, gateway: "bybit", reference: "BY-77", amount: "10", currency: "USDT", outcome: "unmatched", memo: null, orderId: null, orderCode: null, orderKind: null, orderStatus: null, suggestedOrderId: 31, suggestedOrderCode: "ORD-SUGG", suggestedOrderKind: "PRODUCT", processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
+    ];
+    mockPaymentsFetch({ enabled: true, ledger, total: 1, todayCount: 0, page: 1, hasNext: false, outcomes: ["unmatched"], counts: {} });
+    vi.mocked(apiPost).mockResolvedValue({ ok: true });
+    render(<PaymentsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("BY-77")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "Actions for transfer BY-77" }));
+    const menu = await screen.findByRole("menu");
+    await user.click(within(menu).getByText("Match to order…"));
+
+    expect(screen.getByPlaceholderText("Transfer ID")).toHaveValue("BY-77");
+    expect(screen.getByPlaceholderText("Order code")).toHaveValue("ORD-SUGG");
+    expect(Element.prototype.scrollIntoView).toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Match" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Match" }));
+
+    await waitFor(() =>
+      expect(apiPost).toHaveBeenCalledWith(
+        "/api/payments/match",
+        { binance_tx_id: "BY-77", order_code: "ORD-SUGG", gateway: "bybit" },
+        expect.objectContaining({ idempotencyKey: expect.any(String) }),
+      ),
+    );
+    expect(await screen.findByText("Transfer matched to order ORD-SUGG.")).toBeInTheDocument();
+  });
+
+  it("leaves the order code empty when the row has no suggestion, and drops the gateway once the Transfer ID is edited by hand", async () => {
+    const user = userEvent.setup();
+    const ledger = [
+      { id: 8, gateway: "paydisini", reference: "PD-8", amount: "50000", currency: "IDR", outcome: "unmatched", memo: null, orderId: null, orderCode: null, orderKind: null, orderStatus: null, suggestedOrderId: null, suggestedOrderCode: null, suggestedOrderKind: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
+    ];
+    mockPaymentsFetch({ enabled: true, ledger, total: 1, todayCount: 0, page: 1, hasNext: false, outcomes: ["unmatched"], counts: {} });
+    vi.mocked(apiPost).mockResolvedValue({ ok: true });
+    render(<PaymentsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("PD-8")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "Actions for transfer PD-8" }));
+    await user.click(within(await screen.findByRole("menu")).getByText("Match to order…"));
+    expect(screen.getByPlaceholderText("Transfer ID")).toHaveValue("PD-8");
+    expect(screen.getByPlaceholderText("Order code")).toHaveValue("");
+
+    fireEvent.change(screen.getByPlaceholderText("Transfer ID"), { target: { value: "OTHER-REF" } });
+    fireEvent.change(screen.getByPlaceholderText("Order code"), { target: { value: "ORD-1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Match" }));
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Match" }));
+
+    await waitFor(() =>
+      expect(apiPost).toHaveBeenCalledWith(
+        "/api/payments/match",
+        { binance_tx_id: "OTHER-REF", order_code: "ORD-1" },
+        expect.objectContaining({ idempotencyKey: expect.any(String) }),
+      ),
+    );
+  });
+
+  it("dismisses a TokoPay row with its gateway in the request", async () => {
+    const user = userEvent.setup();
+    const ledger = [
+      { id: 2, gateway: "tokopay", reference: "TP-1", amount: "50000", currency: "IDR", outcome: "unmatched", memo: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
+    ];
+    mockPaymentsFetch({ enabled: true, ledger, total: 1, todayCount: 0, page: 1, hasNext: false, outcomes: ["unmatched"], counts: {} });
+    vi.mocked(apiPost).mockResolvedValue({ ok: true });
+    render(<PaymentsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("TP-1")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "Actions for transfer TP-1" }));
+    await user.click(within(await screen.findByRole("menu")).getByText("Dismiss"));
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Dismiss" }));
+
+    await waitFor(() =>
+      expect(apiPost).toHaveBeenCalledWith("/api/payments/dismiss", { binance_tx_id: "TP-1", gateway: "tokopay" }, expect.objectContaining({ idempotencyKey: expect.any(String) })),
+    );
+  });
+
+  it("offers only Dismiss on a NOWPayments row (its amount cannot be checked against an order), and bulk dismiss includes it", async () => {
+    const user = userEvent.setup();
+    const ledger = [
+      { id: 9, gateway: "nowpayments", reference: "NP-9", amount: "0.00123", currency: null, outcome: "unmatched", memo: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
+    ];
+    mockPaymentsFetch({ enabled: true, ledger, total: 1, todayCount: 0, page: 1, hasNext: false, outcomes: ["unmatched"], counts: {} });
+    vi.mocked(apiPost).mockResolvedValue({ ok: true });
+    render(<PaymentsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("NP-9")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "Actions for transfer NP-9" }));
+    const menu = await screen.findByRole("menu");
+    expect(within(menu).getByText("Dismiss")).toBeInTheDocument();
+    expect(within(menu).queryByText("Match to order…")).not.toBeInTheDocument();
+    expect(within(menu).queryByText("Add to buyer's credit balance")).not.toBeInTheDocument();
+    await user.keyboard("{Escape}");
+
+    await user.click(screen.getByRole("checkbox", { name: "Select transfer NP-9" }));
+    await user.click(screen.getByRole("button", { name: /dismiss 1 transfer/i }));
+    await waitFor(() =>
+      expect(apiPost).toHaveBeenCalledWith("/api/payments/dismiss", { binance_tx_id: "NP-9", gateway: "nowpayments" }, expect.objectContaining({ idempotencyKey: expect.any(String) })),
+    );
+  });
+
+  it("shows a NOWPayments amount as the plain coin amount, flagged as unconverted, when the server sends no currency", async () => {
+    const ledger = [
+      { id: 9, gateway: "nowpayments", reference: "NP-9", amount: "0.00123", currency: null, outcome: "unmatched", memo: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
+      { id: 10, gateway: "tokopay", reference: "TP-NOAMT", amount: null, currency: "IDR", outcome: "unmatched", memo: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
+    ];
+    mockPaymentsFetch({ enabled: true, ledger, total: 2, todayCount: 0, page: 1, hasNext: false, outcomes: ["unmatched"], counts: {} });
+    render(<PaymentsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("NP-9")).toBeInTheDocument());
+
+    const amount = screen.getByText("0.00123");
+    expect(amount).toHaveClass("font-mono");
+    expect(amount).toHaveAttribute("title", "Amount in the buyer's payment coin — not converted");
+    // A row with no amount still shows the dash.
+    const noAmountRow = screen.getByText("TP-NOAMT").closest("tr")!;
+    expect(within(noAmountRow).getAllByText("—").length).toBeGreaterThan(0);
   });
 
   // T5: a wallet top-up's payment was indistinguishable from a product sale

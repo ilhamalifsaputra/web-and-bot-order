@@ -59,6 +59,25 @@ const KNOWN_ERROR_MESSAGES: Record<string, string> = {
   // creditOrderToBalance (a Binance transfer is always USDT).
   "error.payment_currency_mismatch":
     "This payment's currency ({paymentCurrency}) does not match the order's currency ({orderCurrency}), so it can't be applied to this order.",
+  // Manual match / dismiss on every gateway (packages/db/src/crud/manualMatch.ts).
+  // Copy matches packages/core/locales/en.json; `{received}`/`{required}`/
+  // `{currency}` are always passed by the single amount-short throw site.
+  "error.tx_not_found":
+    "No payment with that reference was found in the payment ledger.",
+  "error.tx_not_unmatched":
+    "This payment is no longer unmatched. It may already have been matched or dismissed, so refresh the list.",
+  "error.tx_reference_ambiguous":
+    "This reference exists on more than one payment gateway. Choose the gateway and try again.",
+  "error.order_not_pending":
+    "This order is no longer waiting for payment, so a transfer can't be matched to it.",
+  "error.payment_method_mismatch":
+    "This order is not set to be paid through this payment's gateway.",
+  "error.manual_match_amount_unknown":
+    "This payment has no recorded amount, so it cannot be matched to an order. Check the gateway's dashboard and resolve the order directly.",
+  "error.manual_match_amount_short":
+    "This payment ({received} {currency}) is less than the order needs ({required} {currency}). Use the underpaid flow for this order instead of a manual match.",
+  "error.manual_match_nowpayments_unverifiable":
+    "A NOWPayments amount is recorded in the coin the buyer paid with, so it cannot be checked against the order total. Check the payment in the NOWPayments dashboard and resolve the order directly.",
   "error.illegal_admin_task_status_transition":
     "This task's status just changed — refresh the page and try again.",
   "error.admin_task_assignee_not_found":

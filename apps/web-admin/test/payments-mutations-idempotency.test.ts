@@ -11,7 +11,21 @@ import "./setup-env";
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { config } from "@app/core/config";
-import { prisma, initDb, setSetting, markUnderpaid, createOrderDirect, createInternalOrder, recordUnmatchedTx, triggerDigiflazzDispatch } from "@app/db";
+import {
+  prisma,
+  initDb,
+  setSetting,
+  markUnderpaid,
+  createOrderDirect,
+  createInternalOrder,
+  createWalletTopupOrder,
+  recordUnmatchedTx,
+  recordUnmatchedTokopayTx,
+  recordUnmatchedNowpaymentsTx,
+  triggerDigiflazzDispatch,
+} from "@app/db";
+import { PaymentMethod } from "@app/core/enums";
+import { qrisChargeAmount } from "@app/core/payments/tokopay";
 import { routeOrderToDigiflazz } from "../../../tests/helpers/digiflazzRouting";
 
 // The instant Digiflazz dispatch is observed, not run: the manual-match test
@@ -30,6 +44,7 @@ let app: FastifyInstance;
 let cookie: string;
 let csrf: string;
 let sample: SampleData;
+let adminUserId: number;
 
 beforeAll(async () => {
   await initDb();
@@ -44,6 +59,7 @@ beforeEach(async () => {
   await resetDb(prisma);
   sample = await buildSampleData(prisma);
   const admin = await prisma.user.create({ data: { telegramId: ADMIN_TG, username: "admin", fullName: "Admin", role: "ADMIN", referralCode: `a${Math.random()}` } });
+  adminUserId = admin.id;
   const jti = newJti();
   await setSetting(prisma, sessionJtiKey(ADMIN_TG), jti);
   const { raw, data } = makeSession(admin.id, ADMIN_TG, jti);
@@ -461,5 +477,185 @@ describe("POST /api/payments/dismiss — Idempotency-Key", () => {
 
     const txB = await prisma.processedBinanceTx.findUnique({ where: { binanceTxId: "dstx-conflict-b" } });
     expect(txB!.outcome).toBe("unmatched");
+  });
+});
+
+// Manual match / dismiss on every gateway (crud/manualMatch.ts). The route
+// takes an optional `gateway` beside the transfer reference; without one the
+// crud resolves the reference across all five ledgers, so old Binance-only
+// clients keep working.
+describe("POST /api/payments/match and /dismiss — every gateway", () => {
+  function matchWith(body: Record<string, string>, headers: Record<string, string> = {}) {
+    return app.inject({
+      method: "POST",
+      url: "/api/payments/match",
+      headers: { "x-csrf-token": csrf, "content-type": "application/x-www-form-urlencoded", ...headers },
+      cookies: { [COOKIE]: cookie },
+      payload: new URLSearchParams(body).toString(),
+    });
+  }
+
+  function dismissWith(body: Record<string, string>, headers: Record<string, string> = {}) {
+    return app.inject({
+      method: "POST",
+      url: "/api/payments/dismiss",
+      headers: { "x-csrf-token": csrf, "content-type": "application/x-www-form-urlencoded", ...headers },
+      cookies: { [COOKIE]: cookie },
+      payload: new URLSearchParams(body).toString(),
+    });
+  }
+
+  async function makePendingTokopayOrder() {
+    const order = (await createOrderDirect(prisma, { channel: "web", user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    return prisma.order.update({ where: { id: order.id }, data: { paymentMethod: PaymentMethod.TOKOPAY, currency: "IDR" } });
+  }
+
+  it("matches an unmatched TokoPay row named by gateway, settles the order and audits the gateway by name", async () => {
+    const order = await makePendingTokopayOrder();
+    await recordUnmatchedTokopayTx(prisma, { trxId: "tp-route-1", amount: qrisChargeAmount(order.totalAmount) });
+
+    const res = await matchWith({ binance_tx_id: "tp-route-1", order_code: order.orderCode, gateway: "tokopay" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ ok: true });
+
+    const row = await prisma.processedTokopayTx.findUniqueOrThrow({ where: { trxId: "tp-route-1" } });
+    expect(row.outcome).toBe("matched");
+    expect(row.orderId).toBe(order.id);
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe("DELIVERED");
+
+    const audit = await prisma.auditLog.findMany({ where: { action: "tx_manual_match", targetId: order.id } });
+    expect(audit).toHaveLength(1);
+    expect(audit[0]!.adminId).toBe(adminUserId);
+    expect(audit[0]!.details).toBe(`Matched TokoPay transfer tp-route-1 to order ${order.orderCode}.`);
+  });
+
+  it("resolves a TokoPay reference without a gateway (the server looks it up across the ledgers)", async () => {
+    const order = await makePendingTokopayOrder();
+    await recordUnmatchedTokopayTx(prisma, { trxId: "tp-route-nogw", amount: qrisChargeAmount(order.totalAmount) });
+
+    const res = await matchWith({ binance_tx_id: "tp-route-nogw", order_code: order.orderCode });
+    expect(res.statusCode).toBe(200);
+    expect((await prisma.processedTokopayTx.findUniqueOrThrow({ where: { trxId: "tp-route-nogw" } })).orderId).toBe(order.id);
+  });
+
+  it("writes the acting admin to the audit trail when a TokoPay match credits a wallet top-up", async () => {
+    const order = await prisma.$transaction((tx) =>
+      createWalletTopupOrder(tx, { userId: sample.user.id, amount: "20000", currency: "IDR", method: PaymentMethod.TOKOPAY }),
+    );
+    await recordUnmatchedTokopayTx(prisma, { trxId: "tp-route-topup", amount: qrisChargeAmount(order.totalAmount) });
+
+    const res = await matchWith({ binance_tx_id: "tp-route-topup", order_code: order.orderCode, gateway: "tokopay" });
+    expect(res.statusCode).toBe(200);
+
+    // settleWalletTopup writes no status-history row, so this audit line is
+    // the only place the acting admin is recorded for a top-up.
+    const audit = await prisma.auditLog.findMany({ where: { action: "tx_manual_match", targetId: order.id } });
+    expect(audit).toHaveLength(1);
+    expect(audit[0]!.adminId).toBe(adminUserId);
+    expect(audit[0]!.details).toBe(`Matched TokoPay transfer tp-route-topup to order ${order.orderCode}.`);
+  });
+
+  it("names Binance in the audit for a legacy Binance match sent without a gateway", async () => {
+    const order = await makePendingOrder();
+    await recordUnmatchedTx(prisma, { binanceTxId: "bn-legacy", amount: "1.00" });
+
+    const res = await match("bn-legacy", order.orderCode);
+    expect(res.statusCode).toBe(200);
+    const audit = await prisma.auditLog.findFirstOrThrow({ where: { action: "tx_manual_match", targetId: order.id } });
+    expect(audit.details).toBe(`Matched Binance transfer bn-legacy to order ${order.orderCode}.`);
+    expect(audit.adminId).toBe(adminUserId);
+  });
+
+  it("rejects an unknown gateway with 400 before touching any ledger row", async () => {
+    const order = await makePendingTokopayOrder();
+    await recordUnmatchedTokopayTx(prisma, { trxId: "tp-route-badgw", amount: qrisChargeAmount(order.totalAmount) });
+
+    const res = await matchWith({ binance_tx_id: "tp-route-badgw", order_code: order.orderCode, gateway: "paypal" });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ error: "Unknown payment gateway." });
+    expect((await prisma.processedTokopayTx.findUniqueOrThrow({ where: { trxId: "tp-route-badgw" } })).outcome).toBe("unmatched");
+
+    const dis = await dismissWith({ binance_tx_id: "tp-route-badgw", gateway: "paypal" });
+    expect(dis.statusCode).toBe(400);
+    expect(dis.json()).toEqual({ error: "Unknown payment gateway." });
+    expect((await prisma.processedTokopayTx.findUniqueOrThrow({ where: { trxId: "tp-route-badgw" } })).outcome).toBe("unmatched");
+  });
+
+  it("refuses a NOWPayments match with the crud's error key", async () => {
+    const order = await makePendingTokopayOrder();
+    await recordUnmatchedNowpaymentsTx(prisma, { trxId: "np-route-1", amount: "0.5" });
+
+    const res = await matchWith({ binance_tx_id: "np-route-1", order_code: order.orderCode, gateway: "nowpayments" });
+    expect(res.statusCode).toBe(422);
+    expect(res.json()).toEqual({ error: "error.manual_match_nowpayments_unverifiable" });
+    expect(await prisma.auditLog.count({ where: { action: "tx_manual_match" } })).toBe(0);
+  });
+
+  it("replays a gateway match for the same key and body, and 409s when only the gateway differs", async () => {
+    const order = await makePendingTokopayOrder();
+    await recordUnmatchedTokopayTx(prisma, { trxId: "tp-route-idem", amount: qrisChargeAmount(order.totalAmount) });
+    const key = "match-gateway-key";
+    const body = { binance_tx_id: "tp-route-idem", order_code: order.orderCode, gateway: "tokopay" };
+
+    const first = await matchWith(body, { "idempotency-key": key });
+    expect(first.statusCode).toBe(200);
+    const second = await matchWith(body, { "idempotency-key": key });
+    expect(second.statusCode).toBe(200);
+    expect(second.json()).toEqual({ ok: true });
+    expect(await prisma.auditLog.count({ where: { action: "tx_manual_match", targetId: order.id } })).toBe(1);
+
+    // The gateway is part of the request hash: the same reference and order
+    // on another gateway is a different request.
+    const third = await matchWith({ ...body, gateway: "paydisini" }, { "idempotency-key": key });
+    expect(third.statusCode).toBe(409);
+    expect(third.json()).toEqual({ error: "idempotency_key_reused" });
+  });
+
+  it("dismisses an unmatched TokoPay row and audits the gateway by name", async () => {
+    await recordUnmatchedTokopayTx(prisma, { trxId: "tp-route-dismiss", amount: "1000" });
+
+    const res = await dismissWith({ binance_tx_id: "tp-route-dismiss", gateway: "tokopay" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ ok: true });
+    expect((await prisma.processedTokopayTx.findUniqueOrThrow({ where: { trxId: "tp-route-dismiss" } })).outcome).toBe("dismissed");
+
+    const audit = await prisma.auditLog.findMany({ where: { action: "tx_dismiss" } });
+    expect(audit).toHaveLength(1);
+    expect(audit[0]!.adminId).toBe(adminUserId);
+    expect(audit[0]!.details).toBe("Dismissed unmatched TokoPay transfer tp-route-dismiss.");
+  });
+
+  it("dismisses an unmatched NOWPayments row", async () => {
+    await recordUnmatchedNowpaymentsTx(prisma, { trxId: "np-route-dismiss", amount: "0.5" });
+
+    const res = await dismissWith({ binance_tx_id: "np-route-dismiss", gateway: "nowpayments" });
+    expect(res.statusCode).toBe(200);
+    expect((await prisma.processedNowpaymentsTx.findUniqueOrThrow({ where: { trxId: "np-route-dismiss" } })).outcome).toBe("dismissed");
+    const audit = await prisma.auditLog.findFirstOrThrow({ where: { action: "tx_dismiss" } });
+    expect(audit.details).toBe("Dismissed unmatched NOWPayments transfer np-route-dismiss.");
+  });
+
+  it("replays a gateway dismiss for the same key and body, and 409s when only the gateway differs", async () => {
+    await recordUnmatchedTokopayTx(prisma, { trxId: "tp-route-dis-idem", amount: "1000" });
+    const key = "dismiss-gateway-key";
+    const body = { binance_tx_id: "tp-route-dis-idem", gateway: "tokopay" };
+
+    expect((await dismissWith(body, { "idempotency-key": key })).statusCode).toBe(200);
+    const again = await dismissWith(body, { "idempotency-key": key });
+    expect(again.statusCode).toBe(200);
+    expect(await prisma.auditLog.count({ where: { action: "tx_dismiss" } })).toBe(1);
+
+    const other = await dismissWith({ ...body, gateway: "paydisini" }, { "idempotency-key": key });
+    expect(other.statusCode).toBe(409);
+    expect(other.json()).toEqual({ error: "idempotency_key_reused" });
+  });
+
+  it("still dismisses a legacy Binance transfer sent without a gateway, naming Binance", async () => {
+    await recordUnmatchedTx(prisma, { binanceTxId: "bn-legacy-dismiss", amount: "1.00" });
+    const res = await dismiss("bn-legacy-dismiss");
+    expect(res.statusCode).toBe(200);
+    const audit = await prisma.auditLog.findFirstOrThrow({ where: { action: "tx_dismiss" } });
+    expect(audit.details).toBe("Dismissed unmatched Binance transfer bn-legacy-dismiss.");
+    expect(audit.adminId).toBe(adminUserId);
   });
 });

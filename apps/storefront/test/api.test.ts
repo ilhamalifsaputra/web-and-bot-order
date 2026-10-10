@@ -169,6 +169,33 @@ describe("GET /api/v1/categories/:slug/products", () => {
     });
   });
 
+  it("reports provider and manual SKUs without local stock as in_stock, consistent with canonical.availability", async () => {
+    const cat = await prisma.category.create({ data: { name: "Provider Games", slug: "provider-games", sortOrder: 9 } });
+    const product = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Provider Game" });
+    const provider = await createDenomination(prisma, {
+      productId: product.id, name: "86 Diamonds", type: "SHARED", durationLabel: "-", price: "20000",
+      deliveryType: DeliveryType.AUTO, autoDeliverySource: "digiflazz",
+    });
+    const manual = await createDenomination(prisma, {
+      productId: product.id, name: "172 Diamonds", type: "SHARED", durationLabel: "-", price: "40000",
+      deliveryType: DeliveryType.MANUAL,
+    });
+    const localEmpty = await createDenomination(prisma, {
+      productId: product.id, name: "Voucher", type: "SHARED", durationLabel: "-", price: "50000",
+      deliveryType: DeliveryType.AUTO,
+    });
+
+    const res = await app.inject({ method: "GET", url: `/api/v1/products/${product.slug}` });
+    expect(res.statusCode).toBe(200);
+    const denoms = res.json().product.denominations as Array<{ id: number; stock: number; status: string; canonical: { availability: { status: string } } }>;
+    const byId = new Map(denoms.map((d) => [d.id, d]));
+    for (const id of [provider.id, manual.id]) {
+      // `stock` stays the local stock-row count (0 here); `status` must not contradict canonical.
+      expect(byId.get(id)).toMatchObject({ stock: 0, status: "in_stock", canonical: { availability: { status: "available" } } });
+    }
+    expect(byId.get(localEmpty.id)).toMatchObject({ stock: 0, status: "out_of_stock", canonical: { availability: { status: "out_of_stock" } } });
+  });
+
   it("404s an unknown category slug", async () => {
     const res = await app.inject({ method: "GET", url: "/api/v1/categories/no-such-category/products" });
     expect(res.statusCode).toBe(404);

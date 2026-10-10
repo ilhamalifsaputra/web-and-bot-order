@@ -17,6 +17,7 @@ import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { Decimal } from "@app/core/money";
 import { canonicalProduct, type CanonicalProduct, type CanonicalProductContext } from "@app/core/canonicalProduct";
 import { effectiveUnitPrice } from "@app/core/flash";
+import { resolveDenominationAvailability, usesLocalInventory } from "@app/core/productAvailability";
 import { config } from "@app/core/config";
 import { logger } from "@app/core/logger";
 import { sendMail } from "@app/core/mailer";
@@ -78,6 +79,9 @@ interface DenominationJson {
   id: number;
   name: string;
   price: string;
+  /** Count of AVAILABLE local stock rows. Provider/manual SKUs never hold
+   * stock rows, so this reads 0 for them — `status`/`canonical` say whether
+   * they can be bought. */
   stock: number;
   status: "in_stock" | "low_stock" | "out_of_stock";
   additional_fields: AdditionalField[];
@@ -106,11 +110,20 @@ function categoryJson(category: Category): CategoryJson {
 
 async function denominationJson(d: Denomination, product: CatalogProduct, display: Omit<CanonicalProductContext, "effectivePriceIDR">, isReseller: boolean): Promise<DenominationJson> {
   const stock = await countAvailableStock(prisma, d.id);
+  const local = usesLocalInventory(d);
+  const availability = resolveDenominationAvailability({
+    denom: d, productActive: product.isActive, productArchived: product.isArchived,
+    categoryActive: product.category.isActive, availableStock: stock,
+  });
+  // Provider/manual SKUs are not limited by local stock: an available one is
+  // in stock. Local-stock SKUs (and inactive rows, which this API does not
+  // list anyway) keep the stock-count thresholds.
   const status: DenominationJson["status"] =
-    stock <= 0 ? "out_of_stock" : stock <= config.LOW_STOCK_THRESHOLD ? "low_stock" : "in_stock";
+    !local && availability.state === "AVAILABLE" ? "in_stock"
+      : stock <= 0 ? "out_of_stock" : stock <= config.LOW_STOCK_THRESHOLD ? "low_stock" : "in_stock";
   return {
     id: d.id,
-    canonical: canonicalProduct({ denomination: { ...d, createdAt: d.createdAt.toISOString() }, product, category: product.category, stockAvailable: d.deliveryType !== "auto" || stock > 0 }, { ...display, effectivePriceIDR: effectiveUnitPrice(d, isReseller).toString() }),
+    canonical: canonicalProduct({ denomination: { ...d, createdAt: d.createdAt.toISOString() }, product, category: product.category, stockAvailable: !local || stock > 0 }, { ...display, effectivePriceIDR: effectiveUnitPrice(d, isReseller).toString() }),
     name: d.name,
     price: new Decimal(d.price).toString(),
     stock,

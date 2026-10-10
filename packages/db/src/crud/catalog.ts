@@ -1071,6 +1071,7 @@ export function listDenominationsWithFlashInfo(db: Db) {
       isActive: true,
       productId: true,
       deliveryType: true,
+      autoDeliverySource: true,
       flashDiscountPercent: true,
       flashStartsAt: true,
       flashEndsAt: true,

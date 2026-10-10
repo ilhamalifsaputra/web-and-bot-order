@@ -38,7 +38,7 @@ const game: ProductPageData = {
     additional_fields: [{ key: "player_id", label: { en: "Player ID", id: "ID Pemain" }, type: "number", required: true, options: [], placeholder: "Player ID", minLength: 3 }] })),
 };
 const preview: CheckoutData = {
-  items_empty: false, items: [{ denomination_id: 1, delivery_type: "manual_with_info", additional_fields: game.denominations[0].additional_fields, qty: 1 }],
+  items_empty: false, items: [{ denomination_id: 1, delivery_type: "manual_with_info", additional_fields: game.denominations[0]!.additional_fields, qty: 1 }],
   subtotal: "5078", total: "5078", bulk_discount: "0", voucher_discount: "0", qris_admin_fee: "136", qris_grand_total: "5214",
   total_usdt: "0.33", voucher_code: "", error_key: null, binance_enabled: false, bybit_enabled: false,
   bybit_bsc_enabled: false, idr_enabled: true, paydisini_enabled: false, nowpayments_enabled: false,
@@ -86,13 +86,14 @@ async function noOverflow(page: Page) {
 for (const width of [360, 375, 390, 430, 768, 1280, 1440]) {
   for (const reducedMotion of ["no-preference", "reduce"] as const) {
     test.describe(`${width}px / ${reducedMotion}`, () => {
-      test.use({ viewport: { width, height: 900 }, reducedMotion });
+      test.use({ viewport: { width, height: 900 }, contextOptions: { reducedMotion } });
 
       test("admin keyboard overlays, family filters and nested surfaces", async ({ page }, info) => {
         const unexpected = await mockApi(page);
         const errors: string[] = [];
         page.on("pageerror", error => errors.push(error.message));
         await page.goto("/catalog");
+        expect(await page.evaluate(() => matchMedia("(prefers-reduced-motion: reduce)").matches)).toBe(reducedMotion === "reduce");
         await expect(page.getByRole("tab", { name: "All Products (3)" })).toBeVisible();
         await page.getByRole("tab", { name: "Game Top-Up (1)" }).click();
         await expect(page.getByRole("tab", { name: "Game Top-Up (1)" })).toHaveAttribute("data-state", "active");
@@ -147,6 +148,7 @@ for (const width of [360, 375, 390, 430, 768, 1280, 1440]) {
         const errors: string[] = [];
         page.on("pageerror", error => errors.push(error.message));
         await page.goto(`${store}/products`);
+        expect(await page.evaluate(() => matchMedia("(prefers-reduced-motion: reduce)").matches)).toBe(reducedMotion === "reduce");
         await expect(page.getByRole("heading", { name: "Digital Product 48", exact: true })).toBeAttached();
         const lastCard = page.locator('a[href="/p/product-47"]').first();
         expect(await lastCard.evaluate(el => {

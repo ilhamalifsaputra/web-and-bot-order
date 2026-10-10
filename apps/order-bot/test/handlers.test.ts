@@ -3947,7 +3947,7 @@ describe("qty stepper", () => {
 
   it("denominationDetailKb emits an active dec5/inc5 stepper row for a mid-range qty", () => {
     const kb = denominationDetailKb(
-      { id: sample.product.id, name: "Netflix Premium 1M", price: "5.00", deliveryType: DeliveryType.AUTO },
+      { id: sample.product.id, name: "Netflix Premium 1M", price: "5.00", deliveryType: DeliveryType.AUTO, autoDeliverySource: null },
       20,
       "en",
       10,
@@ -3962,7 +3962,7 @@ describe("qty stepper", () => {
 
   it("denominationDetailKb no-ops dec/dec5 at qty=1", () => {
     const kb = denominationDetailKb(
-      { id: sample.product.id, name: "Netflix Premium 1M", price: "5.00", deliveryType: DeliveryType.AUTO },
+      { id: sample.product.id, name: "Netflix Premium 1M", price: "5.00", deliveryType: DeliveryType.AUTO, autoDeliverySource: null },
       20,
       "en",
       1,
@@ -3979,7 +3979,7 @@ describe("qty stepper", () => {
 
   it("denominationDetailKb no-ops inc/inc5 at qty=stock", () => {
     const kb = denominationDetailKb(
-      { id: sample.product.id, name: "Netflix Premium 1M", price: "5.00", deliveryType: DeliveryType.AUTO },
+      { id: sample.product.id, name: "Netflix Premium 1M", price: "5.00", deliveryType: DeliveryType.AUTO, autoDeliverySource: null },
       5,
       "en",
       5,
@@ -4022,7 +4022,7 @@ describe("product detail: sold count + refresh", () => {
 
   it("denominationDetailKb includes a Refresh button above Back for in-stock and out-of-stock cases", () => {
     const inStock = denominationDetailKb(
-      { id: sample.product.id, name: "Netflix Premium 1M", price: "5.00", deliveryType: DeliveryType.AUTO },
+      { id: sample.product.id, name: "Netflix Premium 1M", price: "5.00", deliveryType: DeliveryType.AUTO, autoDeliverySource: null },
       20,
       "en",
       1,
@@ -4031,7 +4031,7 @@ describe("product detail: sold count + refresh", () => {
     expect(inStockFlat.some((b) => b.callback_data === `v1:browse:refresh:${sample.product.id}:1`)).toBe(true);
 
     const outOfStock = denominationDetailKb(
-      { id: sample.product.id, name: "Netflix Premium 1M", price: "5.00", deliveryType: DeliveryType.AUTO },
+      { id: sample.product.id, name: "Netflix Premium 1M", price: "5.00", deliveryType: DeliveryType.AUTO, autoDeliverySource: null },
       0,
       "en",
       1,
@@ -4045,7 +4045,7 @@ describe("product detail: sold count + refresh", () => {
     // included) never have StockItem rows by design — availableStock is
     // always 0 for them, but that must never gate purchasability.
     const kb = denominationDetailKb(
-      { id: sample.product.id, name: "Manual Denom", price: "5.00", deliveryType: DeliveryType.MANUAL_WITH_INFO },
+      { id: sample.product.id, name: "Manual Denom", price: "5.00", deliveryType: DeliveryType.MANUAL_WITH_INFO, autoDeliverySource: null },
       0,
       "en",
       1,
@@ -4057,7 +4057,7 @@ describe("product detail: sold count + refresh", () => {
 
   it("denominationDetailKb caps the qty stepper at MAX_CART_ORDER_UNITS (not availableStock=0) for a non-AUTO SKU", () => {
     const kb = denominationDetailKb(
-      { id: sample.product.id, name: "Manual Denom", price: "5.00", deliveryType: DeliveryType.MANUAL_WITH_INFO },
+      { id: sample.product.id, name: "Manual Denom", price: "5.00", deliveryType: DeliveryType.MANUAL_WITH_INFO, autoDeliverySource: null },
       0,
       "en",
       MAX_CART_ORDER_UNITS,

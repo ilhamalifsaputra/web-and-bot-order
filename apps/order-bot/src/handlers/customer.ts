@@ -13,6 +13,7 @@ import { config } from "@app/core/config";
 import { botUsername } from "@app/core/runtime";
 import { Decimal } from "@app/core/money";
 import { canonicalProduct } from "@app/core/canonicalProduct";
+import { fulfillmentSourceOf, hasSellableStock, usesLocalInventory } from "@app/core/productAvailability";
 import { presentCanonicalCatalog, boundedCanonicalName } from "../util/canonicalPresenter";
 import { noteUnknownUnits } from "../util/unknownUnits";
 import { gameTopUpDenomLabel } from "../util/denominationLabel";
@@ -1107,9 +1108,15 @@ export async function browseProduct(ctx: MyContext, productId: number, requested
       const priceText = sale && unitPrice.equals(sale)
         ? t(ctx, "browse.flash_price", { old: prices.price(d.price), new: prices.price(unitPrice) })
         : prices.price(unitPrice);
-      // Stock rows only exist for AUTO SKUs; a manual plan has none by design, so show a dash, not a "0".
-      const stockDisplay = d.deliveryType === DeliveryType.AUTO ? (stocks.get(d.id) ?? 0) : "—";
-      planLines.push(t(ctx, "browse.denomination_line", { duration: esc(d.durationLabel || d.name), price: priceText, stock: stockDisplay }));
+      // Only a local-inventory SKU has a stock count (@app/core/productAvailability). A provider SKU
+      // (e.g. auto + Digiflazz) shows no stock at all; a manual plan keeps its dash, not a "0".
+      const source = fulfillmentSourceOf(d);
+      if (source === "PROVIDER_API") {
+        planLines.push(t(ctx, "browse.denomination_line_provider", { duration: esc(d.durationLabel || d.name), price: priceText }));
+      } else {
+        const stockDisplay = source === "INTERNAL_INVENTORY" ? (stocks.get(d.id) ?? 0) : "—";
+        planLines.push(t(ctx, "browse.denomination_line", { duration: esc(d.durationLabel || d.name), price: priceText, stock: stockDisplay }));
+      }
       // The original rule: a compact quantity button only when the admin set qtyValue + qtyUnit; otherwise the
       // picker falls back to the plan name (formatDenominationLabel).
       buttonLabels.set(d.id, d.qtyValue != null && d.qtyUnit
@@ -1133,7 +1140,7 @@ export async function browseProduct(ctx: MyContext, productId: number, requested
   const gameStocks = await availableStockCountsByDenomination(prisma, active.map((d) => d.id));
   const products = active.map((d) => canonicalProduct({
     denomination: { ...d, createdAt: d.createdAt.toISOString() }, product, category: product.category,
-    stockAvailable: d.deliveryType !== DeliveryType.AUTO || (gameStocks.get(d.id) ?? 0) > 0,
+    stockAvailable: hasSellableStock(d, gameStocks.get(d.id) ?? 0),
   }, { ...rateContext, effectivePriceIDR: effectiveUnitPrice(d, info.role === UserRole.RESELLER).toString(), preferredCurrency: parseDisplayCurrency(ctx.session.dbUser?.preferredCurrency) ?? "IDR", locale: lang }));
   noteUnknownUnits(products);
   const hint = await gameInputHint(ctx, active.map((d) => ({ ...d, product })));
@@ -1201,21 +1208,21 @@ export async function browseDenomination(
   const rateContext = await getCanonicalRateContext(prisma);
   const rate = rateContext.rate ? new Decimal(rateContext.rate) : null;
   const prices = ctxPriceFormatter(ctx, rate);
-  const canonical = canonicalProduct({ denomination: { ...d, createdAt: d.createdAt.toISOString() }, product: d.product, category: d.product.category, stockAvailable: d.deliveryType !== DeliveryType.AUTO || stock > 0 }, { ...rateContext, effectivePriceIDR: unit.toString(), preferredCurrency: parseDisplayCurrency(ctx.session.dbUser?.preferredCurrency) ?? "IDR", locale: lang });
+  const canonical = canonicalProduct({ denomination: { ...d, createdAt: d.createdAt.toISOString() }, product: d.product, category: d.product.category, stockAvailable: hasSellableStock(d, stock) }, { ...rateContext, effectivePriceIDR: unit.toString(), preferredCurrency: parseDisplayCurrency(ctx.session.dbUser?.preferredCurrency) ?? "IDR", locale: lang });
   const plan = await boundedCanonicalName(canonical, (html) => ctx.api.sendMessage(ctx.chat!.id, html, { parse_mode: "HTML" }));
   const sale = flashPrice(d);
   const onSale = sale !== null && unit.equals(sale);
 
-  // Stock rows only ever exist for AUTO SKUs — a manual/manual_with_info SKU
-  // has none by design, so this screen's own "In stock" line would otherwise
-  // read as sold out directly beside the (correctly) purchasable Buy button
-  // below. `stock` itself stays the raw count for denominationDetailKb's
-  // gating/stepper-bound logic further down; only the displayed text changes.
-  // This template reaches every non-GAME_TOPUP category now — Premium Apps
-  // and any as-yet-unclassified null-group category (the compact detail
-  // template below drops the stock line entirely, GAME_TOPUP only) — so an
-  // AUTO denomination always shows the raw number here.
-  const stockDisplay = d.deliveryType === DeliveryType.AUTO ? stock : "—";
+  // Stock rows only ever exist for local-inventory SKUs
+  // (@app/core/productAvailability) — a manual SKU has none by design, so
+  // this screen's own "In stock" line would otherwise read as sold out
+  // directly beside the (correctly) purchasable Buy button below. `stock`
+  // itself stays the raw count for denominationDetailKb's gating/stepper-bound
+  // logic further down; only the displayed text changes. A provider SKU
+  // (e.g. auto + Digiflazz) uses its own template below with no Stock or
+  // Warranty line at all.
+  const source = fulfillmentSourceOf(d);
+  const stockDisplay = source === "INTERNAL_INVENTORY" ? stock : "—";
 
   const priceText = onSale
     ? t(ctx, "browse.flash_price", { old: prices.price(d.price), new: canonical.formattedPrice })
@@ -1236,6 +1243,19 @@ export async function browseDenomination(
         product: esc(d.product.name),
         plan: esc(plan),
         price: priceText,
+        sold,
+        rating: ratingStr,
+      })
+    : source === "PROVIDER_API"
+    // A provider SKU outside GAME_TOPUP (Premium Apps or a null group):
+    // keep the Premium plan wording but no Stock or Warranty line — the
+    // supplier fulfils it, so neither is a real attribute of this SKU.
+    ? t(ctx, "browse.denomination_detail_provider", {
+        product: esc(d.product.name),
+        plan: esc(plan),
+        price: priceText,
+        duration: esc(d.durationLabel.length > 1200 ? `#${d.id}` : d.durationLabel),
+        type: d.type.toLowerCase(),
         sold,
         rating: ratingStr,
       })
@@ -1319,14 +1339,14 @@ export async function qtyInputStart(ctx: MyContext, denominationId: number): Pro
     await smartEdit(ctx, t(ctx, "error.try_again"), ckb.backToMain(lang));
     return;
   }
-  // Stock rows only ever exist for AUTO SKUs (Task 2 skips reservation
-  // entirely for manual/manual_with_info) — running this check for a
-  // non-auto product would always see 0 available and falsely reject every
-  // manual-delivery purchase before the qty prompt even opens. Cap the
+  // Stock rows only ever exist for local-inventory SKUs
+  // (@app/core/productAvailability) — running this check for a provider
+  // (e.g. auto + Digiflazz) or manual SKU would always see 0 available and
+  // falsely reject the purchase before the qty prompt even opens. Cap the
   // effective max at MAX_CART_ORDER_UNITS instead, the same limit the
   // storefront's cart checkout applies to manual items.
   let effectiveMax = MAX_CART_ORDER_UNITS;
-  if (d.deliveryType === DeliveryType.AUTO) {
+  if (usesLocalInventory(d)) {
     const stock = await countAvailableStock(prisma, d.id);
     if (stock <= 0) {
       if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "browse.out_of_stock"), show_alert: true });
@@ -1352,11 +1372,11 @@ async function handleQtyTextInput(ctx: MyContext, denominationId: number, rawTex
     await menuAnchor(ctx, t(ctx, "error.try_again"), ckb.backToMain(lang));
     return;
   }
-  // Stock rows only ever exist for AUTO SKUs — see the comment in
-  // qtyInputStart. Non-AUTO SKUs are capped at MAX_CART_ORDER_UNITS instead
-  // of the always-zero stock count.
+  // Stock rows only ever exist for local-inventory SKUs — see the comment in
+  // qtyInputStart. Provider and manual SKUs are capped at MAX_CART_ORDER_UNITS
+  // instead of the always-zero stock count.
   const effectiveMax =
-    d.deliveryType === DeliveryType.AUTO ? await countAvailableStock(prisma, d.id) : MAX_CART_ORDER_UNITS;
+    usesLocalInventory(d) ? await countAvailableStock(prisma, d.id) : MAX_CART_ORDER_UNITS;
 
   const isValid = /^\d+$/.test(rawText) && parseInt(rawText, 10) >= 1;
   if (!isValid || parseInt(rawText, 10) > effectiveMax) {
@@ -1380,12 +1400,12 @@ export async function qtyChange(
     if (ctx.callbackQuery) await ctx.answerCallbackQuery();
     return;
   }
-  // Stock rows only ever exist for AUTO SKUs — see the comment in
-  // qtyInputStart. Non-AUTO SKUs are clamped against MAX_CART_ORDER_UNITS
-  // instead of the always-zero stock count, which would otherwise floor
-  // every manual-SKU qty change back down to 1.
+  // Stock rows only ever exist for local-inventory SKUs — see the comment in
+  // qtyInputStart. Provider and manual SKUs are clamped against
+  // MAX_CART_ORDER_UNITS instead of the always-zero stock count, which would
+  // otherwise floor every such qty change back down to 1.
   const effectiveMax =
-    d.deliveryType === DeliveryType.AUTO ? await countAvailableStock(prisma, d.id) : MAX_CART_ORDER_UNITS;
+    usesLocalInventory(d) ? await countAvailableStock(prisma, d.id) : MAX_CART_ORDER_UNITS;
   const delta =
     action === "inc" ? 1 : action === "dec" ? -1 : action === "inc5" ? 5 : action === "dec5" ? -5 : 0;
   const newQty = Math.max(1, Math.min(qty + delta, effectiveMax));

@@ -11,6 +11,7 @@ import type { Decimal } from "@app/core/money";
 import { ensureUtc } from "@app/core/datetime";
 import { CategoryGroup, DeliveryType, OrderStatus, PaymentMethod, StockStatus, TicketStatus } from "@app/core/enums";
 import { CUSTOMER_SERVICES, type CustomerService } from "@app/core/services";
+import { hasSellableStock, usesLocalInventory } from "@app/core/productAvailability";
 import { t as coreT } from "@app/core/i18n";
 import { MAX_CART_ORDER_UNITS } from "@app/db";
 import { formatPrice, formatUsdtBalance, formatIdrFor, truncLabel } from "../util/format";
@@ -55,13 +56,15 @@ interface ProductLike {
   id: number;
   name: string;
   price: Decimal.Value;
-  /** Gates purchasability in denominationDetailKb — only AUTO SKUs ever carry
-   * StockItem rows, so non-AUTO SKUs must never be gated on stock count.
-   * Typed as `string` (not the `DeliveryType` union) because it's populated
-   * straight from Prisma's generated Denomination row, which types the
-   * `delivery_type` column as a plain string — same as OrderLike.status
-   * above and how checkout.ts's `product.deliveryType` is typed. */
+  /** With `autoDeliverySource`, gates purchasability in denominationDetailKb
+   * through @app/core/productAvailability — only local-inventory SKUs ever
+   * carry StockItem rows, so provider (e.g. auto + Digiflazz) and manual SKUs
+   * must never be gated on stock count. Typed as `string` (not the
+   * `DeliveryType` union) because it's populated straight from Prisma's
+   * generated Denomination row, which types the `delivery_type` column as a
+   * plain string — same as OrderLike.status above. */
   deliveryType: string;
+  autoDeliverySource: string | null;
 }
 interface OrderLike {
   id: number;
@@ -296,17 +299,19 @@ export function denominationDetailKb(
   parentPage = 0,
 ): InlineKeyboard {
   const rows: Btn[][] = [];
-  // Stock rows only ever exist for AUTO SKUs (manual/manual_with_info skip
-  // reservation entirely) — gating purchasability on availableStock for a
-  // non-AUTO SKU would always see 0 and permanently show "Notify me when back
-  // in stock" instead of "Buy Now", including for the entire Digiflazz
-  // catalog (every imported SKU is manual_with_info).
-  const purchasable = denom.deliveryType !== DeliveryType.AUTO || availableStock > 0;
+  // Stock rows only ever exist for local-inventory SKUs
+  // (@app/core/productAvailability) — gating purchasability on
+  // availableStock for a provider (e.g. auto + Digiflazz) or manual SKU would
+  // always see 0 and permanently show "Notify me when back in stock" instead
+  // of "Buy Now".
+  const local = usesLocalInventory(denom);
+  const purchasable = hasSellableStock(denom, availableStock);
   if (purchasable) {
-    // Non-AUTO SKUs never have stock rows, so the qty-stepper bounds can't use
-    // availableStock (always 0) — cap against MAX_CART_ORDER_UNITS instead,
-    // the same limit the storefront's cart checkout applies to manual items.
-    const maxQty = denom.deliveryType === DeliveryType.AUTO ? availableStock : MAX_CART_ORDER_UNITS;
+    // Provider and manual SKUs never have stock rows, so the qty-stepper
+    // bounds can't use availableStock (always 0) — cap against
+    // MAX_CART_ORDER_UNITS instead, the same limit the storefront's cart
+    // checkout applies to manual items.
+    const maxQty = local ? availableStock : MAX_CART_ORDER_UNITS;
     qty = Math.max(1, Math.min(qty, maxQty));
     const dec5: Btn =
       qty > 1

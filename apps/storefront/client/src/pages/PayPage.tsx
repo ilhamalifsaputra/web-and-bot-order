@@ -73,6 +73,7 @@ import Alert from "../components/ui/Alert";
 import Badge from "../components/ui/Badge";
 import AlertDialog from "../components/ui/AlertDialog";
 import TransactionStatus from "../components/shop/TransactionStatus";
+import GameTopupDetailCard from "../components/shop/GameTopupDetailCard";
 
 /**
  * TSX port of _pay_status.njk — the polled status chip. Design-system
@@ -226,10 +227,7 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
   // The only seam between the two order kinds — see the file header.
   const apiBase = isTopup ? "/wallet/topup" : "/orders";
   const loginNextBase = isTopup ? "/wallet/topup" : "/checkout";
-  const retryHref = isTopup ? "/wallet/topup" : "/cart";
-  const retryLabelKey = isTopup ? "web.wallet_topup_retry" : "web.back_to_cart";
   const deliveredHref = isTopup ? "/account" : `/account/orders/${code}`;
-  const deliveredLabelKey = isTopup ? "web.wallet_topup_view_wallet" : "web.view_credentials";
   const closedHref = isTopup ? "/account" : "/account/orders";
   const closedLabelKey = isTopup ? "web.account_title" : "web.account_orders";
   // Full-reload retry link for GatewayDownFallback — the client route for
@@ -261,6 +259,17 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
   useEffect(() => {
     if (poll?.redirect) navigate(poll.redirect);
   }, [poll, navigate]);
+
+  // A game top-up (never the wallet top-up variant) swaps the cart/credentials
+  // wording for product-page / top-up wording. The branch key is the server's
+  // presentation; a legacy payload without one is recognised by `game_target`
+  // (null for every other order type).
+  const livePresentation = poll?.presentation ?? data?.presentation;
+  const isGame =
+    !isTopup && (livePresentation ? livePresentation.transactionType === "GAME_TOPUP" : Array.isArray(data?.game_target));
+  const retryHref = isTopup ? "/wallet/topup" : isGame ? (data?.product_slug ? `/p/${data.product_slug}` : "/") : "/cart";
+  const retryLabelKey = isTopup ? "web.wallet_topup_retry" : isGame ? "web.back_to_product" : "web.back_to_cart";
+  const deliveredLabelKey = isTopup ? "web.wallet_topup_view_wallet" : isGame ? "web.view_topup_details" : "web.view_credentials";
 
   const cancelMutation = useMutation({
     mutationFn: () => apiPost<{ ok: boolean }>(`/api/v1${apiBase}/${code}/cancel`, {}),
@@ -360,6 +369,11 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
                 <a href={data.support_telegram_url ?? "/#contact"} className="btn btn-soft min-h-11">
                   {t("transaction.contact_admin")}
                 </a>
+              )}
+              {state === "delivered" && isGame && (
+                <Link to={deliveredHref} className="btn btn-soft min-h-11">
+                  {t(deliveredLabelKey)} <ChevronRight className="w-4 h-4" />
+                </Link>
               )}
               {state === "processing" && !isTopup && (
                 <Link to={deliveredHref} className="btn btn-soft min-h-11">{t("web.pay_processing_view_order")} <ChevronRight className="w-4 h-4" /></Link>
@@ -610,11 +624,19 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
         </>
       )}
 
+      {/* Game top-up: the typed target (and, once delivered, the full SN) under
+          the status, compact. Hidden while paying or after the order closed. */}
+      {isGame && (state === "processing" || state === "delivered") && (
+        <div className="mb-5">
+          <GameTopupDetailCard items={[]} targets={data.game_target ?? []} sn={data.sn ?? null} />
+        </div>
+      )}
+
       {state === "delivered" && !presentation && (
         <Card className="text-center py-10">
           <BadgeCheck className="w-12 h-12 text-grass mx-auto mb-3" />
           <h2 className="section-title">{t("web.pay_done_title")}</h2>
-          <p className="text-sm text-ink-soft mt-1">{t("web.pay_done_sub")}</p>
+          <p className="text-sm text-ink-soft mt-1">{t(isGame ? "web.pay_done_sub_topup" : "web.pay_done_sub")}</p>
           <Link to={deliveredHref} className="btn btn-primary mt-5">
             {t(deliveredLabelKey)} <ChevronRight className="w-4 h-4" />
           </Link>
@@ -645,7 +667,7 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
       {state === "expired" && (
         <Card className="text-center py-10">
           <TimerOff className="w-10 h-10 text-rust mx-auto mb-3" />
-          <p className="text-sm text-ink-soft">{t("web.pay_expired")}</p>
+          <p className="text-sm text-ink-soft">{t(isGame ? "web.pay_expired_topup" : "web.pay_expired")}</p>
           <Link to={retryHref} className="btn btn-primary mt-4">
             {t(retryLabelKey)}
           </Link>

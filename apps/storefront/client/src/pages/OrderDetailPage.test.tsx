@@ -692,3 +692,70 @@ describe("OrderDetailPage — status card, layout and refresh demotion", () => {
     expect(container.firstElementChild).toHaveClass("min-w-0");
   });
 });
+
+describe("OrderDetailPage game top-up", () => {
+  const SN = "SN-" + "9z8Y7x6W".repeat(25);
+  const progress = (transactionType: "GAME_TOPUP" | "PREMIUM_APPS") => ({
+    phase: "SUCCESS" as const, spinner: false, topUp: transactionType === "GAME_TOPUP", progress: 100,
+    transactionType, titleKey: "web.fulfillment_processing_title", bodyKey: "web.fulfillment_processing_body",
+  });
+  const fulfillment = (transactionType: "GAME_TOPUP" | "PREMIUM_APPS"): NonNullable<OrderDetailData["order"]["fulfillment"]> => ({
+    mode: "AUTO", provider: transactionType === "GAME_TOPUP" ? "DIGIFLAZZ" : "STOCK", status: "SUCCESS",
+    payment_status: "PAID", can_edit_customer_data: false, presentation: progress(transactionType),
+  });
+  const gameData = (over: Partial<OrderDetailData> = {}): OrderDetailData => ({
+    order: {
+      ...baseOrder,
+      fulfillment: fulfillment("GAME_TOPUP"),
+      customer_data_fields: infoFields,
+      customer_data: [{ game_id: "12345678" }],
+      delivered_content: SN,
+      items: [{ name: "Mobile Legends", duration: "86 Diamonds", unit_price: "20000", warranty_days: 30, credentials: "stray:cred" }],
+    },
+    delivered: true, pending_payment: false, processing: false,
+    product_slug: "mobile-legends", game_target: [{ game_id: "12345678", zone_id: "2222" }], sn: SN,
+    ...over,
+  });
+
+  beforeEach(() => {
+    document.documentElement.lang = "en";
+    vi.clearAllMocks();
+    vi.stubGlobal("EventSource", MockEventSource);
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("shows the top-up detail card and drops warranty, credentials and delivered-content", async () => {
+    renderDetail(() => gameData());
+    expect(await screen.findByRole("heading", { name: "Top-up details" })).toBeInTheDocument();
+    expect(screen.getByText("Zone ID")).toBeInTheDocument();
+    expect(screen.getByText("2222")).toBeInTheDocument();
+    // The full SN appears once (the card), never also in a Delivered-content card.
+    expect(screen.getAllByText(SN)).toHaveLength(1);
+    expect(screen.queryByText(/warranty/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Your credentials" })).not.toBeInTheDocument();
+    expect(screen.queryByText("stray:cred")).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Delivered content" })).not.toBeInTheDocument();
+  });
+
+  it("keeps the customer-input section on a game order", async () => {
+    renderDetail(() => gameData());
+    await screen.findByRole("heading", { name: "Top-up details" });
+    expect(screen.getByRole("heading", { name: "Your submitted information" })).toBeInTheDocument();
+  });
+
+  it("leaves a premium order unchanged: warranty, credentials, delivered content, no top-up card", async () => {
+    renderDetail(() => ({
+      order: {
+        ...baseOrder,
+        fulfillment: fulfillment("PREMIUM_APPS"),
+        delivered_content: "acct@example.com",
+        items: [{ ...baseOrder.items[0], credentials: "user:pass" }],
+      },
+      delivered: true, pending_payment: false, processing: false,
+    }));
+    expect(await screen.findByRole("heading", { name: "Your credentials" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Delivered content" })).toBeInTheDocument();
+    expect(screen.getByText(/30-day warranty/)).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Top-up details" })).not.toBeInTheDocument();
+  });
+});

@@ -231,7 +231,7 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
       credentials: MASKED_CREDENTIAL,
       createdAtDisplay: displayDate(i.addedAt),
     }));
-    return reply.send({ product, items: itemsWithDisplay, statusCounts, total, capped, page, waiting });
+    return reply.send({ product: { ...product, usesLocalInventory: usesLocalInventory(product) }, items: itemsWithDisplay, statusCounts, total, capped, page, waiting });
   });
 
   app.post("/api/stock/:productId/bulk-add", { preHandler: csrfProtect }, async (req, reply) => {
@@ -248,6 +248,7 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
     }
     const product = await getDenominationWithProduct(prisma, productId);
     if (!product) return reply.code(404).send({ error: "Product not found." });
+    if (!usesLocalInventory(product)) return reply.code(422).send({ error: "This product does not use local inventory." });
 
     const adminId = req.admin!.userId;
     let res: BulkAddStockResult;

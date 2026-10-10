@@ -295,7 +295,7 @@ export function productTypePickerKb(): InlineKeyboard {
 }
 
 /** Single product view with toggle + edit + bulk pricing + stock + back. */
-export function productViewKb(productId: number, isActive: boolean, lang: string): InlineKeyboard {
+export function productViewKb(productId: number, isActive: boolean, lang: string, usesLocalInventory = true): InlineKeyboard {
   const toggleLabel = isActive ? "⚪ Deactivate" : "🟢 Activate";
   return ik([
     [
@@ -305,7 +305,7 @@ export function productViewKb(productId: number, isActive: boolean, lang: string
     [{ text: "💲 Edit Price", data: cb("adm", "prod", "price", productId) }],
     [
       { text: "💰 Bulk Pricing", data: cb("adm", "bulk", "menu", productId) },
-      { text: "📦 Stock Items", data: cb("adm", "prod", "stock", productId) },
+      ...(usesLocalInventory ? [{ text: "📦 Stock Items", data: cb("adm", "prod", "stock", productId) }] : []),
     ],
     [{ text: coreT("menu.back", lang), data: cb("adm", "prod", "menu") }],
   ]);

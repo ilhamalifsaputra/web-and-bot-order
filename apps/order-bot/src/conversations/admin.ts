@@ -15,6 +15,7 @@ import type { MessageEntity } from "grammy/types";
 import { botToken, isAdmin } from "@app/core/runtime";
 import { Decimal } from "@app/core/money";
 import { parseMoneyInput, parsePercentInput } from "@app/core/moneyFormat";
+import { usesLocalInventory } from "@app/core/productAvailability";
 import { ProductType, SenderType, VoucherType } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
@@ -115,6 +116,11 @@ export async function stockUploadConversation(conversation: MyConversation, ctx:
   const productId = parseInt((ctx.callbackQuery?.data ?? "").split(":").at(-1)!, 10);
 
   await ctx.answerCallbackQuery();
+  const product = await conversation.external(() => getDenomination(prisma, productId));
+  if (!product || !usesLocalInventory(product)) {
+    await adminEdit(ctx, t(ctx, "admin.inventory_not_used"), akb.backToAdminKb(lang));
+    return;
+  }
   await adminEdit(ctx, t(ctx, "admin.stock_ask_upload"), akb.cancelInputKb());
 
   let credentials: string[];

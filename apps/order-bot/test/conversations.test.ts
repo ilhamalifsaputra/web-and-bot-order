@@ -582,6 +582,24 @@ describe("support + reject conversations", () => {
 // ===========================================================================
 
 describe("admin conversations", () => {
+  it.each([
+    { deliveryType: "auto", autoDeliverySource: "digiflazz" },
+    { deliveryType: "manual", autoDeliverySource: null },
+  ])("stockUpload: refuses a stale upload button for $deliveryType/$autoDeliverySource", async (fields) => {
+    await prisma.denomination.update({ where: { id: sample.product.id }, data: fields });
+    const before = await prisma.stockItem.count();
+    const sink: SentCall[] = [];
+    const entry = entryAdmin(sink, `v1:adm:stock:add:${sample.product.id}`);
+    await stockUploadConversation(new FakeConversation([]).asMyConversation(), entry);
+    expect(sentIncludes(sink, "does not use local inventory")).toBe(true);
+    expect(await prisma.stockItem.count()).toBe(before);
+    expect(await prisma.auditLog.count({ where: { action: "stock_upload" } })).toBe(0);
+    expect(calls(sink, "editMessageText")).toHaveLength(1);
+    expect(calls(sink, "sendMessage")).toHaveLength(0);
+    expect(calls(sink, "deleteMessage")).toHaveLength(0);
+    expect(calls(sink, "sendDocument")).toHaveLength(0);
+  });
+
   it("stockUpload: parses pasted creds, adds stock, audits", async () => {
     const before = await prisma.stockItem.count({ where: { productId: sample.product.id } });
     const sink: SentCall[] = [];

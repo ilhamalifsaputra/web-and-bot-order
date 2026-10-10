@@ -430,11 +430,11 @@ export function StockPage() {
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
-                          <DropdownMenuItem onSelect={() => navigate(`/stock/${row.id}`)}>
+                          <DropdownMenuItem onSelect={() => navigate(row.usesLocalInventory ? `/stock/${row.id}` : row.product ? `/catalog/${row.product.id}` : "/catalog")}>
                             <Eye className="h-4 w-4" />
                             View
                           </DropdownMenuItem>
-                          {available > 0 && (
+                          {row.usesLocalInventory && available > 0 && (
                             <DropdownMenuItem asChild>
                               <a href={`/api/stock/${row.id}/download`}>
                                 <Download className="h-4 w-4" />
@@ -452,7 +452,7 @@ export function StockPage() {
             data={filtered}
             isLoading={isLoading}
             keyExtractor={(row) => row.id}
-            onRowClick={(row) => navigate(`/stock/${row.id}`)}
+            onRowClick={(row) => navigate(row.usesLocalInventory ? `/stock/${row.id}` : row.product ? `/catalog/${row.product.id}` : "/catalog")}
             empty={
               isGenuinelyEmpty ? (
                 <EmptyState

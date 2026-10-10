@@ -17,6 +17,7 @@ const COOKIE = config.WEB_COOKIE_NAME;
 const ADMIN_TG = 999;
 let app: FastifyInstance;
 let cookie: string;
+let csrf: string;
 
 beforeAll(async () => {
   await initDb();
@@ -33,7 +34,9 @@ beforeEach(async () => {
   const admin = await upsertUser(prisma, { telegramId: ADMIN_TG, username: "admin", fullName: "Admin" });
   const jti = newJti();
   await setSetting(prisma, sessionJtiKey(ADMIN_TG), jti);
-  cookie = makeSession(admin.id, ADMIN_TG, jti).raw;
+  const session = makeSession(admin.id, ADMIN_TG, jti);
+  cookie = session.raw;
+  csrf = session.data.csrf;
   await setSetting(prisma, "setup_completed", "true");
 });
 
@@ -80,6 +83,21 @@ describe("GET /api/stock/export status column", () => {
 });
 
 describe("GET /api/stock fulfillment source", () => {
+  it("gates stock uploads by fulfillment source while preserving inventory uploads", async () => {
+    const { provider, manual, local } = await seedMix();
+    for (const product of [provider, manual, local]) {
+      const detail = await app.inject({ method: "GET", url: `/api/stock/${product.id}`, cookies: { [COOKIE]: cookie } });
+      expect(detail.json().product.usesLocalInventory).toBe(product.id === local.id);
+      const res = await app.inject({
+        method: "POST", url: `/api/stock/${product.id}/bulk-add`, cookies: { [COOKIE]: cookie },
+        payload: { csrf_token: csrf, credentials: "account@example.com:password" },
+      });
+      expect(res.statusCode).toBe(product.id === local.id ? 200 : 422);
+      expect(await prisma.stockItem.count({ where: { productId: product.id } })).toBe(product.id === local.id ? 1 : 0);
+      expect(await prisma.auditLog.count({ where: { targetId: product.id, action: "stock_upload" } })).toBe(product.id === local.id ? 1 : 0);
+    }
+  });
+
   it("adds fulfillmentSource and usesLocalInventory to every denomination row", async () => {
     const { provider, manual, local } = await seedMix();
     const res = await app.inject({ method: "GET", url: "/api/stock", cookies: { [COOKIE]: cookie } });

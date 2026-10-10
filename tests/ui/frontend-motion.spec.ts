@@ -158,6 +158,7 @@ for (const width of [360, 375, 390, 430, 768, 1280, 1440]) {
         await noOverflow(page);
         await page.locator('a[href="/p/premium"]').first().click();
         await expect(page.getByRole("heading", { name: "Premium App", exact: true })).toBeVisible();
+        await expect(page.getByRole("heading", { name: "Choose a plan", exact: true })).toBeVisible();
         await expect(page.getByLabel("Player ID", { exact: true })).toHaveCount(0);
         await expect(page.getByRole("radio").first()).toBeChecked();
         await noOverflow(page);
@@ -166,6 +167,8 @@ for (const width of [360, 375, 390, 430, 768, 1280, 1440]) {
         await page.goForward();
         await expect(page.getByRole("heading", { name: "Premium App", exact: true })).toBeVisible();
         await page.goto(`${store}/p/game`);
+        await expect(page.getByRole("heading", { name: "Choose an option", exact: true })).toBeVisible();
+        await expect(page.getByRole("heading", { name: "Choose a plan", exact: true })).toHaveCount(0);
         await page.getByLabel("Player ID", { exact: true }).fill("4531475056881819915");
         await expect(page.locator("#checkout-summary .card-inset")).toContainText("4531475056881819915");
         const selected = page.locator(".denom-card").filter({ has: page.getByRole("radio", { checked: true }) });

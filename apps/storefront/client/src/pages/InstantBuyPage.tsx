@@ -557,7 +557,7 @@ export default function InstantBuyPage() {
               half-applied the way the old read-cart/remove-lines/add-line
               sequence could. */}
           <div className="card card-pad">
-            <h2 className="section-title mb-3">{t("web.choose_plan")}</h2>
+            <h2 className="section-title mb-3">{t("web.choose_option")}</h2>
             <div className="grid gap-3">
               {denominations.map((d) => (
                 <DenominationCard

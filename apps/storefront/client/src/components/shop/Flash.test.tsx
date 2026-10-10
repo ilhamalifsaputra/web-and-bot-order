@@ -5,8 +5,7 @@ import Flash from "./Flash";
 
 /**
  * Flash is a compat shim over <Alert variant="banner">. These assertions pin
- * the DOM it produces to what the old hand-rolled Flash produced, class-for-
- * class, so call sites that still import it do not shift.
+ * the wrapper, content and icons while inheriting the shared semantic tones.
  */
 describe("Flash (Alert shim)", () => {
   it("renders nothing without text", () => {
@@ -14,11 +13,11 @@ describe("Flash (Alert shim)", () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it("info (default) keeps the exact wrapper classes and neutral tone", () => {
+  it("info (default) keeps the wrapper and uses the shared guidance tone", () => {
     const { container } = render(<Flash text="Heads up" />);
     const el = container.firstElementChild as HTMLElement;
     expect(el.className).toBe(
-      "flex items-start gap-2 rounded-xl px-4 py-3 mb-5 text-sm border bg-sand text-ink border-line",
+      "flex items-start gap-2 rounded-xl px-4 py-3 mb-5 text-sm border bg-pine-tint text-pine-dark border-pine/30",
     );
     expect(el).not.toHaveAttribute("role");
     expect(el.querySelector("span")).toHaveTextContent("Heads up");
@@ -34,11 +33,11 @@ describe("Flash (Alert shim)", () => {
     expect(el.querySelector("svg.lucide-triangle-alert")).toBeInTheDocument();
   });
 
-  it("success tone matches the old grass classes and icon", () => {
+  it("success keeps its green surface and icon with readable body text", () => {
     const { container } = render(<Flash text="Saved" kind="success" />);
     const el = container.firstElementChild as HTMLElement;
     expect(el.className).toBe(
-      "flex items-start gap-2 rounded-xl px-4 py-3 mb-5 text-sm border bg-grass-tint text-grass-dark border-grass/30",
+      "flex items-start gap-2 rounded-xl px-4 py-3 mb-5 text-sm border bg-grass-tint text-ink-soft border-grass/30",
     );
     expect(el.querySelector("svg.lucide-circle-check-big")).toBeInTheDocument();
   });

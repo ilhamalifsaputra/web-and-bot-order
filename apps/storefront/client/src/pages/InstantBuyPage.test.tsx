@@ -1083,7 +1083,7 @@ describe("InstantBuyPage", () => {
         product: { ...productData.product, icon_kind: "diamond" },
       };
       renderInstantBuy({ product: withIcon });
-      const heading = await screen.findByRole("heading", { name: "Choose a plan" });
+      const heading = await screen.findByRole("heading", { name: "Choose an option" });
       const denomList = heading.nextElementSibling as HTMLElement;
       expect(denomList.querySelectorAll(".lucide-gem")).toHaveLength(productData.denominations.length);
     });
@@ -1094,7 +1094,7 @@ describe("InstantBuyPage", () => {
         product: { ...productData.product, icon_kind: null },
       };
       renderInstantBuy({ product: noIcon });
-      const heading = await screen.findByRole("heading", { name: "Choose a plan" });
+      const heading = await screen.findByRole("heading", { name: "Choose an option" });
       const denomList = heading.nextElementSibling as HTMLElement;
       expect(denomList.querySelectorAll("label.denom-card svg")).toHaveLength(0);
     });

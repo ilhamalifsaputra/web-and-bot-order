@@ -44,7 +44,7 @@ describe("TopBar", () => {
     const user = userEvent.setup();
     renderTopBar();
     await user.click(screen.getByRole("button", { name: /admin/i }));
-    const logoutButton = await screen.findByRole("button", { name: "Logout" });
+    const logoutButton = await screen.findByRole("menuitem", { name: "Logout" });
     await user.click(logoutButton);
     await waitFor(() =>
       expect(fetch).toHaveBeenCalledWith("/logout", expect.objectContaining({ method: "POST" })),

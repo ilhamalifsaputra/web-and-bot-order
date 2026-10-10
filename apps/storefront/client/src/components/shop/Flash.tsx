@@ -4,9 +4,8 @@
  * keep working unchanged; new code imports `Alert` from `components/ui/Alert`
  * directly.
  *
- * Emits byte-identical DOM to the old hand-rolled Flash — same wrapper classes
- * (incl. `mb-5`), same lucide icon per `kind`, same `<span>` text node, and no
- * ARIA role (`role={false}`), matching its historical output. The pages gain
+ * Keeps the wrapper spacing, lucide icon per `kind`, `<span>` text node, and no
+ * ARIA role (`role={false}`). Colors follow the shared Alert semantic palette. The pages gain
  * the spec `role="alert"` when they migrate to `<Alert>` in Fase 7.
  *
  * Renders nothing when `text` is empty/null, same as before.

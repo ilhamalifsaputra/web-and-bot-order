@@ -364,6 +364,7 @@
   "error.overpayment_none_recorded": "No payment rail recorded an overpayment for this order, so there is no excess to credit.",
   "error.overpayment_already_credited": "The overpayment on this order has already been credited to the buyer's balance.",
   "error.out_of_stock": "<b>{product}</b> is out of stock. Please try a different product.",
+  "error.product_unavailable": "This product is currently unavailable. Please try a different product.",
   "error.payment_amount_invalid": "The payment amount must be a valid, finite number greater than zero.",
   "error.payment_fee_invalid": "A payment's fee and net amount must each be a valid, finite number that is not negative.",
   "error.payment_currency_mismatch": "This payment's currency ({paymentCurrency}) does not match the order's currency ({orderCurrency}).",

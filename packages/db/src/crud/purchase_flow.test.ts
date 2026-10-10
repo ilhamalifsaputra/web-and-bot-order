@@ -77,11 +77,30 @@ describe("createOrderDirect", () => {
     ).rejects.toMatchObject({ key: "error.invalid_quantity" });
   });
 
-  it("unknown product → error.out_of_stock", async () => {
+  // Not "out of stock": an unknown or admin-deactivated SKU is unavailable,
+  // which the old "(unknown) is out of stock" message misreported.
+  it("unknown product → error.product_unavailable", async () => {
     const { user } = sample;
     await expect(
       createOrderDirect(prisma, { channel: "bot", user, productId: 99999, quantity: 1 }),
-    ).rejects.toMatchObject({ key: "error.out_of_stock" });
+    ).rejects.toMatchObject({ key: "error.product_unavailable" });
+  });
+
+  it("inactive denomination, product or category → error.product_unavailable", async () => {
+    const { user, product } = sample;
+    const denom = await prisma.denomination.findUniqueOrThrow({ where: { id: product.id }, include: { product: true } });
+    const attempt = () => createOrderDirect(prisma, { channel: "bot", user, productId: product.id, quantity: 1 });
+
+    await prisma.denomination.update({ where: { id: denom.id }, data: { isActive: false } });
+    await expect(attempt()).rejects.toMatchObject({ key: "error.product_unavailable" });
+    await prisma.denomination.update({ where: { id: denom.id }, data: { isActive: true } });
+
+    await prisma.product.update({ where: { id: denom.productId }, data: { isActive: false } });
+    await expect(attempt()).rejects.toMatchObject({ key: "error.product_unavailable" });
+    await prisma.product.update({ where: { id: denom.productId }, data: { isActive: true } });
+
+    await prisma.category.update({ where: { id: denom.product.categoryId }, data: { isActive: false } });
+    await expect(attempt()).rejects.toMatchObject({ key: "error.product_unavailable" });
   });
 
   it("with voucher SAVE10 → 10% off + used_count bumps", async () => {

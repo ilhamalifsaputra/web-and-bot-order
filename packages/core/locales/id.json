@@ -364,6 +364,7 @@
   "error.overpayment_none_recorded": "Tidak ada rail pembayaran yang mencatat kelebihan bayar untuk pesanan ini, jadi tidak ada kelebihan yang bisa dikreditkan.",
   "error.overpayment_already_credited": "Kelebihan bayar pesanan ini sudah dikreditkan ke saldo pembeli.",
   "error.out_of_stock": "<b>{product}</b> habis. Coba produk lain.",
+  "error.product_unavailable": "Produk ini sedang tidak tersedia. Coba produk lain.",
   "error.payment_amount_invalid": "Jumlah pembayaran harus berupa angka yang valid, terbatas, dan lebih besar dari nol.",
   "error.payment_fee_invalid": "Biaya dan jumlah bersih sebuah pembayaran harus berupa angka yang valid, terbatas, dan tidak negatif.",
   "error.payment_currency_mismatch": "Mata uang pembayaran ini ({paymentCurrency}) tidak sama dengan mata uang pesanan ({orderCurrency}).",

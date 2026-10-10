@@ -1065,7 +1065,9 @@ export async function createOrderDirect(
     where: { id: args.productId },
     include: { product: { include: { category: true } } },
   });
-  if (!product || !product.isActive || !product.product.isActive || product.product.isArchived || !product.product.category.isActive) throw new ValidationError("error.out_of_stock", { product: "(unknown)" });
+  // Unknown or admin-deactivated SKU: unavailable, not "out of stock" (local
+  // stock is checked further down, for local-inventory SKUs only).
+  if (!product || !product.isActive || !product.product.isActive || product.product.isArchived || !product.product.category.isActive) throw new ValidationError("error.product_unavailable");
   // A top-up SKU with no input fields could only ever dispatch an empty
   // customer number, so refuse it before any money moves. A missing
   // supplierSku or quantity > 1 is deliberately NOT refused here: the

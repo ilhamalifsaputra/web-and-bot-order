@@ -7,12 +7,13 @@
  * The bot and the storefront once re-derived it inline as
  * `deliveryType !== "auto"`, which ignores `autoDeliverySource`: an
  * `auto` + `digiflazz` SKU then showed "Out of stock" / "Notify me" while the
- * server accepted the order. This scans apps/order-bot/src, apps/storefront/src
- * and apps/storefront/client/src with the TypeScript AST (comments and prose
- * never match) and fails on:
+ * server accepted the order. This scans apps/order-bot/src, apps/storefront/src,
+ * apps/storefront/client/src, apps/web-admin/src and packages/*\/src with the
+ * TypeScript AST (comments and prose never match) and fails on:
  *
  *  1. a comparison (=== !== == !=) of a deliveryType / delivery_type value with
- *     "auto" or DeliveryType.AUTO;
+ *     "auto" or DeliveryType.AUTO, a `switch (x.deliveryType) { case "auto": }`
+ *     clause, or `["auto"].includes(x.deliveryType)`;
  *  2. any other DeliveryType.AUTO reference — the "auto means local stock"
  *     rule lives in core, not in an app.
  *
@@ -24,7 +25,7 @@
  * value (e.g. an import/admin form), never one that decides eligibility or
  * stock, and say why.
  */
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import * as ts from "typescript";
 import { describe, expect, it } from "vitest";
@@ -34,10 +35,30 @@ const SCANNED_DIRS = [
   join(ROOT, "apps", "order-bot", "src"),
   join(ROOT, "apps", "storefront", "src"),
   join(ROOT, "apps", "storefront", "client", "src"),
+  join(ROOT, "apps", "web-admin", "src"),
+  ...readdirSync(join(ROOT, "packages"), { withFileTypes: true })
+    .filter((e) => e.isDirectory())
+    .map((e) => join(ROOT, "packages", e.name, "src"))
+    .filter((dir) => existsSync(dir)),
 ];
 
-/** repo-relative path (forward slashes) → why it may mention the token. Empty today. */
-const ALLOWLIST: Record<string, string> = {};
+/**
+ * repo-relative path (forward slashes) → why it may mention the token.
+ * Whole-file entries: a new stock decision added to one of these files is not
+ * caught, so keep the list short and review additions to these files by hand.
+ */
+const ALLOWLIST: Record<string, string> = {
+  "packages/core/src/productAvailability.ts":
+    "The resolver itself: the one place that maps deliveryType (+ autoDeliverySource) to a fulfillment source.",
+  "packages/core/src/cartComposition.ts":
+    "Cart-mixing rule (never combine delivery classes in one cart, digiflazz lines are rejected first); it compares the delivery class of cart lines, not stock or availability.",
+  "packages/core/src/orderFulfillment.ts":
+    "Classifies a finished order's fulfillment kind (MANUAL vs STOCK) from its item snapshots; it does not gate purchase or show stock.",
+  "packages/db/src/crud/catalog.ts":
+    "lowStockDenominations narrows the query to deliveryType auto as a prefilter and then applies usesLocalInventory to every row; admin form write paths live elsewhere.",
+  "apps/web-admin/src/routes/api/catalog.ts":
+    "Admin create/update write paths: the default deliveryType for a new SKU and the additionalFields validation for the chosen type; they store a value, they never decide stock.",
+};
 
 const DELIVERY_NAME = /^(deliveryType|delivery_type)$/;
 
@@ -45,6 +66,15 @@ const DELIVERY_NAME = /^(deliveryType|delivery_type)$/;
 function tailName(expr: ts.Expression): string | null {
   let e = expr;
   while (ts.isParenthesizedExpression(e) || ts.isNonNullExpression(e) || ts.isAsExpression(e)) e = e.expression;
+  // `(snapshot ?? product.deliveryType) === "auto"`: either side may be the delivery type.
+  if (
+    ts.isBinaryExpression(e) &&
+    (e.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken || e.operatorToken.kind === ts.SyntaxKind.BarBarToken)
+  ) {
+    const left = tailName(e.left);
+    if (left && DELIVERY_NAME.test(left)) return left;
+    return tailName(e.right);
+  }
   if (ts.isIdentifier(e)) return e.text;
   if (ts.isPropertyAccessExpression(e)) return e.name.text;
   if (ts.isElementAccessExpression(e) && ts.isStringLiteral(e.argumentExpression)) return e.argumentExpression.text;
@@ -83,6 +113,28 @@ export function availabilityViolations(fileName: string, code: string): string[]
           break;
         }
       }
+    } else if (ts.isCaseClause(node) && ts.isSwitchStatement(node.parent.parent)) {
+      // switch (x.deliveryType) { case "auto": ... }
+      const switched = node.parent.parent.expression;
+      const name = tailName(switched);
+      if (name && DELIVERY_NAME.test(name) && isAutoValue(node.expression)) {
+        found.push(`${fileName}:${line(node)}: switch (${switched.getText()}) case ${node.expression.getText()} — use usesLocalInventory/hasSellableStock (server, bot) or the server's purchasable/uses_local_inventory field (client)`);
+        reported.add(node.expression);
+      }
+    } else if (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      node.expression.name.text === "includes" &&
+      ts.isArrayLiteralExpression(node.expression.expression) &&
+      node.arguments.length > 0
+    ) {
+      // ["auto"].includes(x.deliveryType)
+      const elements = node.expression.expression.elements;
+      const name = tailName(node.arguments[0]!);
+      if (name && DELIVERY_NAME.test(name) && elements.some((el) => isAutoValue(el))) {
+        found.push(`${fileName}:${line(node)}: ${node.getText()} — use usesLocalInventory/hasSellableStock (server, bot) or the server's purchasable/uses_local_inventory field (client)`);
+        for (const el of elements) reported.add(el);
+      }
     } else if (isDeliveryTypeAuto(node) && !reported.has(node)) {
       found.push(`${fileName}:${line(node)}: DeliveryType.AUTO — the local-stock rule lives in @app/core/productAvailability`);
     }
@@ -116,6 +168,11 @@ describe("availability guard (synthetic fixtures)", () => {
     ["const isAuto = deliveryType === `auto`;", "bare identifier, template literal"],
     ['const show = item.delivery_type === "auto" && item.qty > item.available;', "client field"],
     ["const kinds = [DeliveryType.AUTO];", "bare DeliveryType.AUTO"],
+    ['switch (d.deliveryType) { case "auto": return 1; default: return 2; }', "switch case string"],
+    ["switch (denom.delivery_type) { case DeliveryType.AUTO: return 1; }", "switch case enum"],
+    ['const local = ["auto"].includes(d.deliveryType);', "array includes"],
+    ['const k = (i.snapshot ?? i.product.deliveryType) !== "auto";', "nullish-coalesced operand"],
+    ['const local = ["auto", "manual"].includes(item.delivery_type);', "array includes, several values"],
   ])("flags %s (%s)", (code) => {
     expect(availabilityViolations("fixture.ts", code)).toHaveLength(1);
   });
@@ -127,6 +184,9 @@ describe("availability guard (synthetic fixtures)", () => {
     'const created = { deliveryType: "auto" };',
     'const mode = scrollRestoration === "auto";',
     '// d.deliveryType !== "auto" in a comment',
+    'switch (d.deliveryType) { case "manual": return 1; default: return 2; }',
+    'switch (mode) { case "auto": return 1; }',
+    'const manual = ["manual", "manual_with_info"].includes(d.deliveryType);',
     'const doc = "deliveryType !== \\"auto\\"";',
   ])("allows %s", (code) => {
     expect(availabilityViolations("fixture.ts", code)).toEqual([]);

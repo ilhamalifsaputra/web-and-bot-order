@@ -257,7 +257,7 @@ export default function ProductPage() {
   // same product payload itself (same query key, so it hits the cache this
   // fetch just populated) rather than threading two dozen props through —
   // everything below this line is the unchanged catalog-flow path.
-  if (product.checkout_flow === "instant") return <InstantBuyPage />;
+  if (product.template === "game") return <InstantBuyPage />;
 
   // Preselect the first in-stock plan, else the first plan — same order as
   // the script's `firstEnabled || radios[0]`.

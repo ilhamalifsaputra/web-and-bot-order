@@ -30,6 +30,7 @@ import {
 } from "@app/db";
 import { PRODUCT_VARIANT_WIDTHS, defaultThumbKind, webpSrcset } from "./images";
 import { resolveDenomIconKind } from "./denomIcon";
+import { productTemplate } from "./productTemplate";
 import { resolveBotUsername, resolveSupportTelegramUrl } from "./shop";
 import { aggregateRating, shapeProducts, sortProductCards, type SortKey } from "./cards";
 
@@ -246,6 +247,9 @@ export async function productPageData(rawSlug: string, isReseller = false, displ
       // — no crud-layer change needed. Drives ProductPage.tsx's branch to
       // InstantBuyPage.tsx.
       checkout_flow: product.category.checkoutFlow,
+      // The server picks the page template; the client branches on this, not
+      // on checkout_flow (kept above only for cached older clients).
+      template: productTemplate(product.category),
     },
     denominations,
     default_restock_denomination_id: defaultRestockDenominationId,

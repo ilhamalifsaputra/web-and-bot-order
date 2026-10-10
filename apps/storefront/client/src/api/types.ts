@@ -185,6 +185,10 @@ export interface ProductPageData {
      * renders InstantBuyPage.tsx instead of this page's usual plan picker +
      * Cart→Checkout hop. */
     checkout_flow: "catalog" | "instant";
+    /** Server-decided page template: "game" renders InstantBuyPage (every
+     * GAME_TOPUP product, plus instant-flow categories); "catalog" the usual
+     * plan picker + cart page. */
+    template: "game" | "catalog";
   };
   denominations: ProductDenomination[];
   default_restock_denomination_id: number;

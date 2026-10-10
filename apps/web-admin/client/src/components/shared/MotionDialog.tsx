@@ -1,4 +1,4 @@
-import { useRef, type ReactNode, type RefObject } from "react";
+import { useLayoutEffect, useRef, type ReactNode, type RefObject } from "react";
 import { Dialog } from "radix-ui";
 import { AnimatePresence, motion, useIsPresent, useReducedMotion } from "motion/react";
 import { DURATION, fadeIn, scrim, slideInLeft } from "@/lib/motion";
@@ -23,6 +23,16 @@ function Content({ onOpenAutoFocus, onCloseAutoFocus, ...props }: MotionDialogPr
 }) {
   const present = useIsPresent();
   const reduced = useReducedMotion();
+  const panelRef = useRef<HTMLDivElement>(null);
+  const wasPresent = useRef(true);
+  useLayoutEffect(() => {
+    // A quick reopen can reuse the exiting portal, so Radix's mount autofocus
+    // does not run again. Re-enter focus without replacing its focus trap.
+    if (present && !wasPresent.current) {
+      (props.initialFocusRef?.current ?? panelRef.current)?.focus({ preventScroll: true });
+    }
+    wasPresent.current = present;
+  }, [present, props.initialFocusRef]);
   const variants = reduced ? undefined : props.drawer ? slideInLeft : fadeIn;
   return (
     <>
@@ -39,6 +49,7 @@ function Content({ onOpenAutoFocus, onCloseAutoFocus, ...props }: MotionDialogPr
         onOpenAutoFocus={onOpenAutoFocus} onCloseAutoFocus={onCloseAutoFocus}
       >
         <motion.div
+          ref={panelRef}
           variants={variants} initial="initial" animate="animate" exit="exit"
           transition={{ duration: reduced ? 0 : DURATION.base }}
           aria-hidden={!present || undefined}
@@ -62,6 +73,8 @@ function Content({ onOpenAutoFocus, onCloseAutoFocus, ...props }: MotionDialogPr
 
 export function MotionDialog(props: MotionDialogProps) {
   const previousFocus = useRef<HTMLElement | null>(null);
+  const openRef = useRef(props.open);
+  openRef.current = props.open;
   return (
     <Dialog.Root open={props.open} onOpenChange={(open) => { if (!open) props.onClose(); }}>
       <AnimatePresence>
@@ -78,6 +91,8 @@ export function MotionDialog(props: MotionDialogProps) {
               }}
               onCloseAutoFocus={(event) => {
                 event.preventDefault();
+                // Radix may finish an old focus-scope cleanup after a reopen.
+                if (openRef.current) return;
                 const target = props.restoreFocusRef?.current ?? previousFocus.current;
                 if (target?.isConnected) target.focus({ preventScroll: true });
               }}

@@ -210,9 +210,11 @@ test("search can reopen before its exit finishes without losing focus or trappin
   const input = page.getByRole("dialog", { name: "Search", exact: true }).getByRole("textbox");
   await expect(input).toBeFocused();
   // Consecutive shortcut events occur within the 150ms exit transition.
-  await page.keyboard.press("Control+k");
-  await page.keyboard.press("Control+k");
-  await expect(input).toBeFocused();
+  for (let attempt = 0; attempt < 5; attempt++) {
+    await page.keyboard.press("Control+k");
+    await page.keyboard.press("Control+k");
+    await expect(input).toBeFocused();
+  }
   await input.fill("premium");
   await expect(input).toBeFocused();
   await page.keyboard.press("Escape");

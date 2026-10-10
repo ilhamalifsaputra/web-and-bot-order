@@ -1,6 +1,6 @@
 # Audit frontend motion dan interaction Trustance
 
-Tanggal: 11 Oktober 2026 (Asia/Jakarta). Baseline: `c7b081f8`; branch `worktree-frontend-motion-audit`. Dokumen ini ditulis sebelum application source berubah. Status hasil implementasi/validasi ditambahkan setelah pengujian.
+Tanggal: 11 Oktober 2026 (Asia/Jakarta). Baseline: `c7b081f8`; branch `worktree-frontend-motion-audit`. Bagian audit/rencana awal ditulis sebelum application source berubah. Hasil implementasi/validasi ditambahkan setelah pengujian.
 
 ## A. Executive summary dan RECON
 
@@ -188,6 +188,8 @@ Environment: Windows, Chromium Playwright, production Vite bundles; semua browse
 | Layout/Tabs/scrollBehavior/SearchModal follow-up | 4 files, 54 tests PASS, sebelum tambahan rapid-tab dan clear-search |
 | Layout setelah resize listener | 36 tests PASS; Tabs + DenominationCard 26 tests PASS |
 | SearchModal + Alert final focused run | 18 tests PASS |
+| Typecheck harness browser | Menemukan fixture index tanpa non-null assertion dan reducedMotion harus melalui contextOptions. Diperbaiki; tiap case browser kini mengassert matchMedia benar-benar sesuai preference sebelum menguji UI. |
+| Rapid reopen follow-up | Run ulang menemukan reuse portal tidak mengulang mount-autofocus. MotionDialog mengembalikan fokus saat re-enter dan mengabaikan delayed close-focus milik scope lama bila sudah open. Skenario 5 rapid toggles diulang 5 kali: 5 PASS. Full gate pertama dihentikan untuk memasukkan perbaikan ini. |
 | `pnpm exec playwright test -c tests/ui/frontend-motion.playwright.config.ts` | **32 PASS**: 360/375/390/430/768/1280/1440px, normal/reduced, trap/Escape/restore, Back/Forward, 48-card immediate visibility, premium/game/legacy filters, account retention/selected total, rapid search reopen, touch, drawer resize, overflow, no pageerror/unexpected API |
 | `pnpm exec playwright test -c tests/ui/checkout.playwright.config.ts` | **10 PASS**: 320–1280px, primary/sticky/footer, selected amount/account payload, blur constraints, duplicate submit guard |
 | `node tests/ui/measure-frontend-motion.mjs` | Bundle inventory and opaque-pair contrast recorded in metrics.json |

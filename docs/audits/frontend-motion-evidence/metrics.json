@@ -39,13 +39,13 @@
       },
       "after": {
         "jsChunks": 95,
-        "jsBytes": 1563044,
-        "jsGzip": 500489,
+        "jsBytes": 1563052,
+        "jsGzip": 500377,
         "cssGzip": 44480,
         "largestIndexChunk": {
-          "file": "index-WQ8bjyUC.js",
-          "bytes": 1024386,
-          "gzip": 309988
+          "file": "index-DwNHFt_3.js",
+          "bytes": 1024394,
+          "gzip": 309999
         }
       }
     }

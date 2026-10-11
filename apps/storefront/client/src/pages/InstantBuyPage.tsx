@@ -406,7 +406,7 @@ export default function InstantBuyPage() {
     return (
       <div aria-busy="true" aria-label={t("web.loading")}>
         <Skeleton className="mb-6 h-4 w-48" />
-        <div className="space-y-4">
+        <div className="space-y-4 max-w-2xl mx-auto">
           <Skeleton className="h-48 w-full sm:h-56" />
           <Skeleton className="h-8 w-3/4" />
           <Skeleton className="h-24 w-full" />

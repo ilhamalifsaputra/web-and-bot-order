@@ -602,6 +602,25 @@ describe("InstantBuyPage", () => {
     expect(cartCalls()).toEqual([]);
   });
 
+  it("constrains the loading skeleton to the same max-w-2xl width as the loaded form", async () => {
+    vi.clearAllMocks();
+    (apiGet as Mock).mockImplementation(() => new Promise(() => {}));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/p/mobile-legends-diamonds"]}>
+          <Routes>
+            <Route path="/p/:slug" element={<InstantBuyPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    const busy = document.querySelector('[aria-busy="true"]')!;
+    expect(busy).not.toBeNull();
+    const body = busy.querySelector(".space-y-4")!;
+    expect(body).toHaveClass("max-w-2xl", "mx-auto");
+  });
+
   it("scrolls the place-order error into view exactly once when it appears", async () => {
     const scrollIntoView = vi.fn();
     (Element.prototype as unknown as { scrollIntoView: unknown }).scrollIntoView = scrollIntoView;

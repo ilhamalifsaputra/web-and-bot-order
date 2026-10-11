@@ -28,7 +28,7 @@ describe("useAction", () => {
     const pending = deferred<string>();
     const onSuccess = vi.fn();
     const { result } = renderHook(() => useAction({ mutationFn: () => pending.promise, onSuccess }));
-    act(() => { result.current.mutate(); result.current.reset(); });
+    act(() => { result.current.mutate(undefined); result.current.reset(); });
     await act(async () => { pending.resolve("obsolete"); });
     expect(result.current.data).toBeUndefined();
     expect(result.current.isPending).toBe(false);
@@ -39,7 +39,7 @@ describe("useAction", () => {
     const pending = deferred<string>();
     const onSuccess = vi.fn();
     const { result, unmount } = renderHook(() => useAction({ mutationFn: () => pending.promise, onSuccess }));
-    act(() => { result.current.mutate(); });
+    act(() => { result.current.mutate(undefined); });
     unmount();
     await act(async () => { pending.resolve("obsolete"); });
     expect(onSuccess).not.toHaveBeenCalled();
@@ -48,7 +48,7 @@ describe("useAction", () => {
   it("normalizes thrown errors and ends the pending state", async () => {
     const onError = vi.fn();
     const { result } = renderHook(() => useAction({ mutationFn: () => { throw "offline"; }, onError }));
-    act(() => { result.current.mutate(); });
+    act(() => { result.current.mutate(undefined); });
     await waitFor(() => expect(result.current.isPending).toBe(false));
     expect(result.current.error?.message).toBe("offline");
     expect(onError).toHaveBeenCalledExactlyOnceWith(result.current.error);

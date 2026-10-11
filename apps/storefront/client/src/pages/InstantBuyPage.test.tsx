@@ -360,6 +360,19 @@ describe("InstantBuyPage", () => {
     expect((apiPost as Mock).mock.calls.some((c) => c[0] === "/api/v1/topup/order")).toBe(false);
   });
 
+  it("bounds the header image height and constrains the form width so the title and Player ID stay above the fold", async () => {
+    renderInstantBuy();
+    await screen.findByText("Summary");
+    const form = document.getElementById("buy-form")!;
+    expect(form).toHaveClass("max-w-2xl", "mx-auto");
+    const img = screen.getByRole("img", { name: "Mobile Legends Diamonds" });
+    expect(img).toHaveClass("object-contain");
+    expect(img).not.toHaveClass("object-cover");
+    const frame = img.parentElement!.parentElement!;
+    expect(frame).toHaveClass("h-48", "sm:h-56");
+    expect(frame).not.toHaveClass("aspect-[4/3]");
+  });
+
   it("keeps field validation visible when selecting another plan with the same fields", async () => {
     renderInstantBuy();
     await screen.findByText("Summary");
@@ -977,7 +990,7 @@ describe("InstantBuyPage", () => {
         fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "1234567" } });
         await act(async () => { await vi.advanceTimersByTimeAsync(800); });
 
-        await vi.waitFor(() => expect(screen.getByText("✓ ProGamer99")).toBeInTheDocument());
+        await vi.waitFor(() => expect(screen.getByText("ProGamer99")).toBeInTheDocument());
       } finally {
         vi.useRealTimers();
       }
@@ -1029,6 +1042,54 @@ describe("InstantBuyPage", () => {
             expect.objectContaining({ signal: expect.any(AbortSignal) }),
           ),
         );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("presents a found nickname in an inset card with a check icon and a bold nickname", async () => {
+      try {
+        renderInstantBuy();
+        const baseApiPost = (apiPost as Mock).getMockImplementation()!;
+        (apiPost as Mock).mockImplementation(async (path: string, body: Record<string, unknown>, signal?: AbortSignal) => {
+          if (path === "/api/v1/topup/check-account") return { available: true, valid: true, nickname: "SultanMLBB" };
+          return baseApiPost(path, body, signal);
+        });
+        await screen.findByText("Summary");
+        vi.useFakeTimers();
+        fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "1234567" } });
+        fireEvent.change(screen.getByLabelText("Zone ID"), { target: { value: "1234" } });
+        await act(async () => { await vi.advanceTimersByTimeAsync(800); });
+        const found = await vi.waitFor(() => screen.getByTestId("nickname-check-found"));
+        expect(found).toHaveClass("card-inset");
+        expect(found).not.toHaveClass("text-xs");
+        expect(found.querySelector("svg")).not.toBeNull();
+        const name = within(found).getByText("SultanMLBB");
+        expect(name).toHaveClass("font-semibold", "text-ink");
+        expect(screen.queryByTestId("nickname-check-not-found")).not.toBeInTheDocument();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("presents a not-found nickname as a warning alert, not small grey text", async () => {
+      try {
+        renderInstantBuy();
+        const baseApiPost = (apiPost as Mock).getMockImplementation()!;
+        (apiPost as Mock).mockImplementation(async (path: string, body: Record<string, unknown>, signal?: AbortSignal) => {
+          if (path === "/api/v1/topup/check-account") return { available: true, valid: false, nickname: null };
+          return baseApiPost(path, body, signal);
+        });
+        await screen.findByText("Summary");
+        vi.useFakeTimers();
+        fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "1234567" } });
+        fireEvent.change(screen.getByLabelText("Zone ID"), { target: { value: "1234" } });
+        await act(async () => { await vi.advanceTimersByTimeAsync(800); });
+        const notFound = await vi.waitFor(() => screen.getByTestId("nickname-check-not-found"));
+        expect(notFound).toHaveClass("bg-amberx-tint");
+        expect(notFound).not.toHaveClass("text-xs");
+        expect(notFound).toHaveAttribute("role", "alert");
+        expect(screen.queryByTestId("nickname-check-found")).not.toBeInTheDocument();
       } finally {
         vi.useRealTimers();
       }

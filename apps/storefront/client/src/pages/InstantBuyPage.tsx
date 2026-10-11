@@ -38,7 +38,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Package, ScrollText, ShieldCheck, Zap } from "lucide-react";
+import { BadgeCheck, Package, ScrollText, ShieldCheck, Zap } from "lucide-react";
 import { apiGet, apiPost } from "../api/client";
 import { useIdempotentPost } from "../api/idempotency";
 import type { CheckoutData, PlaceOrderResponse, ProductPageData } from "../api/types";
@@ -56,6 +56,7 @@ import DenominationCard from "../components/shop/DenominationCard";
 import StickyPurchaseBar from "../components/shop/StickyPurchaseBar";
 import DeliveryFieldInput from "../components/shop/DeliveryFieldInput";
 import Alert from "../components/ui/Alert";
+import Card from "../components/ui/Card";
 import Skeleton from "../components/shop/Skeleton";
 import Spinner from "../components/shop/Spinner";
 import PaymentMethodSelector, {
@@ -396,7 +397,7 @@ export default function InstantBuyPage() {
       <div aria-busy="true" aria-label={t("web.loading")}>
         <Skeleton className="mb-6 h-4 w-48" />
         <div className="space-y-4">
-          <Skeleton className="aspect-[4/3] w-full" />
+          <Skeleton className="h-48 w-full sm:h-56" />
           <Skeleton className="h-8 w-3/4" />
           <Skeleton className="h-24 w-full" />
           <Skeleton className="h-14 w-full" />
@@ -461,13 +462,13 @@ export default function InstantBuyPage() {
           {humanError(previewQuery.error)}
         </Alert>
       )}
-      <form id="buy-form" noValidate onSubmit={(e) => { e.preventDefault(); submitOrder(); }} className="grid gap-6 items-start">
+      <form id="buy-form" noValidate onSubmit={(e) => { e.preventDefault(); submitOrder(); }} className="grid gap-6 items-start max-w-2xl mx-auto">
         <div className="space-y-6">
           {/* 1. Product header — image/title/description, ProductPage.tsx's
               own JSX pattern, folded into one card so it stacks with the rest
               of this page's sections. */}
           <div className="card card-pad">
-            <div className="aspect-[4/3] w-full overflow-hidden rounded-xl bg-sand">
+            <div className="h-48 sm:h-56 w-full overflow-hidden rounded-xl bg-sand">
               {product.image ? (
                 <picture className="block w-full h-full">
                   {product.image_srcset && (
@@ -484,7 +485,7 @@ export default function InstantBuyPage() {
                     decoding="async"
                     width={800}
                     height={600}
-                    className="w-full h-full object-cover"
+                    className="w-full h-full object-contain"
                   />
                 </picture>
               ) : (
@@ -530,14 +531,25 @@ export default function InstantBuyPage() {
                 </p>
               )}
               {!nicknameCheck.pending && nicknameCheck.nickname && (
-                <p className="mt-2 text-xs text-grass-dark" data-testid="nickname-check-found">
-                  {t("web.nickname_check_found", { nickname: nicknameCheck.nickname })}
-                </p>
+                <Card
+                  variant="inset"
+                  className="mt-3 flex items-center gap-2 text-sm text-ink-soft"
+                  role="status"
+                  data-testid="nickname-check-found"
+                >
+                  <BadgeCheck className="h-5 w-5 shrink-0 text-grass" aria-hidden="true" />
+                  <span className="font-semibold text-ink">{nicknameCheck.nickname}</span>
+                </Card>
               )}
               {!nicknameCheck.pending && !nicknameCheck.nickname && nicknameCheck.notFound && (
-                <p className="mt-2 text-xs text-ink-soft" data-testid="nickname-check-not-found">
+                <Alert
+                  variant="banner"
+                  tone="warning"
+                  className="mt-3 mb-0!"
+                  data-testid="nickname-check-not-found"
+                >
                   {t("web.nickname_check_not_found")}
-                </p>
+                </Alert>
               )}
             </div>
           )}

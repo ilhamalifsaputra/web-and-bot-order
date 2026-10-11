@@ -30,23 +30,23 @@
  * credential changes" (distinct from the order-info "Simpan perubahan / Save
  * changes" row) — see deviations.md §17-support.
  */
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { useEffect, useState, type FormEvent } from "react";
 import { useSearchParams } from "react-router-dom";
-import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiGet, apiPost } from "../api/client";
 import type { SettingsData } from "../api/types";
 import { useShopContext } from "../components/Layout";
-import { currentLang, t } from "../lib/i18n";
-import { tError } from "../lib/errors";
+import CurrencyToggle from "../components/layout/CurrencyToggle";
+import PasswordInput from "../components/shop/PasswordInput";
+import Spinner from "../components/shop/Spinner";
+import TelegramLoginButton from "../components/shop/TelegramLoginButton";
 import Alert from "../components/ui/Alert";
 import Button from "../components/ui/Button";
 import Card from "../components/ui/Card";
 import FormField from "../components/ui/FormField";
 import Input from "../components/ui/Input";
-import CurrencyToggle from "../components/layout/CurrencyToggle";
-import PasswordInput from "../components/shop/PasswordInput";
-import Spinner from "../components/shop/Spinner";
-import TelegramLoginButton from "../components/shop/TelegramLoginButton";
+import { tError } from "../lib/errors";
+import { currentLang, t } from "../lib/i18n";
 
 interface CredentialsVars {
   username: string;
@@ -146,165 +146,179 @@ export default function SettingsPage() {
         </Alert>
       )}
 
-      <div className="grid lg:grid-cols-2 gap-6 items-start">
-        <Card>
-          <h2 className="font-display text-lg font-semibold mb-4">{t("web.settings_login_section")}</h2>
-          {/* `space-y-5` rather than `space-y-4`: with a help line hanging off
+      <SettingsUsername onSubmit={onSubmit} username={username} setUsername={setUsername} email={email} setEmail={setEmail} page={page} mutationErrorText={mutationErrorText} credentialsMutation={credentialsMutation} ctx={ctx} />
+    </>
+  );
+}
+
+function SettingsUsername({ onSubmit, username, setUsername, email, setEmail, page, mutationErrorText, credentialsMutation, ctx }: {
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  username: string;
+  setUsername: import("react").Dispatch<import("react").SetStateAction<string>>;
+  email: string;
+  setEmail: import("react").Dispatch<import("react").SetStateAction<string>>;
+  page: SettingsData;
+  mutationErrorText: string | null;
+  credentialsMutation: import("@tanstack/react-query").UseMutationResult<{ ok: boolean; password_changed: boolean; }, Error, CredentialsVars, unknown>;
+  ctx: NoInfer<import("../api/types").ShopContext> | undefined;
+}) {
+  return (<div className="grid lg:grid-cols-2 gap-6 items-start">
+    <Card>
+      <h2 className="font-display text-lg font-semibold mb-4">{t("web.settings_login_section")}</h2>
+      {/* `space-y-5` rather than `space-y-4`: with a help line hanging off
               the username field, tighter gaps made the help text look like it
               belonged to the field below it. */}
-          <form onSubmit={onSubmit} className="space-y-5">
-            <div>
-              <FormField label={t("web.register_username")} htmlFor="username">
-                <Input
-                  type="text"
-                  id="username"
-                  name="username"
-                  value={username}
-                  onChange={(e) => setUsername(e.target.value)}
-                  autoComplete="username"
-                  // The pattern below only accepts lowercase, so a phone keyboard
-                  // must not auto-capitalise or autocorrect what is typed here —
-                  // otherwise the field silently fails validation on the first
-                  // character. Unchanged rules, just a keyboard that respects them.
-                  autoCapitalize="none"
-                  autoCorrect="off"
-                  spellCheck={false}
-                  minLength={3}
-                  maxLength={32}
-                  // STO-014: must match LOGIN_USERNAME_RE (packages/db/src/crud/webauth.ts).
-                  pattern="[a-z0-9_]+"
-                  aria-describedby="username_help"
-                />
-              </FormField>
-              <p id="username_help" className="text-xs text-ink-faint mt-1.5">
-                {t("web.register_username_help")}
-              </p>
-            </div>
-            <FormField label={t("web.register_email")} htmlFor="email">
+      <form onSubmit={onSubmit} className="space-y-5">
+        <div>
+          <FormField label={t("web.register_username")} htmlFor="username">
+            <Input
+              type="text"
+              id="username"
+              name="username"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              autoComplete="username"
+              // The pattern below only accepts lowercase, so a phone keyboard
+              // must not auto-capitalise or autocorrect what is typed here —
+              // otherwise the field silently fails validation on the first
+              // character. Unchanged rules, just a keyboard that respects them.
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+              minLength={3}
+              maxLength={32}
+              // STO-014: must match LOGIN_USERNAME_RE (packages/db/src/crud/webauth.ts).
+              pattern="[a-z0-9_]+"
+              aria-describedby="username_help"
+            />
+          </FormField>
+          <p id="username_help" className="text-xs text-ink-faint mt-1.5">
+            {t("web.register_username_help")}
+          </p>
+        </div>
+        <FormField label={t("web.register_email")} htmlFor="email">
+          <Input
+            type="email"
+            id="email"
+            name="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            autoComplete="email"
+            // `type="email"` alone is enough on iOS but not everywhere;
+            // inputMode makes the "@" and "." keyboard the explicit ask.
+            inputMode="email"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+          />
+        </FormField>
+        {/* A guest row proves it owns the order with the contact email
+                typed at checkout — the server refuses a credentials change
+                on a guest row without it (backend audit Task C1). */}
+        {page.is_guest && (
+          <div>
+            <FormField label={t("web.settings_guest_email")} htmlFor="guest_email">
               <Input
                 type="email"
-                id="email"
-                name="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                autoComplete="email"
-                // `type="email"` alone is enough on iOS but not everywhere;
-                // inputMode makes the "@" and "." keyboard the explicit ask.
+                id="guest_email"
+                name="guest_email"
                 inputMode="email"
                 autoCapitalize="none"
                 autoCorrect="off"
                 spellCheck={false}
+                autoComplete="email"
+                aria-describedby="guest_email_help"
               />
             </FormField>
-            {/* A guest row proves it owns the order with the contact email
-                typed at checkout — the server refuses a credentials change
-                on a guest row without it (backend audit Task C1). */}
-            {page.is_guest && (
-              <div>
-                <FormField label={t("web.settings_guest_email")} htmlFor="guest_email">
-                  <Input
-                    type="email"
-                    id="guest_email"
-                    name="guest_email"
-                    inputMode="email"
-                    autoCapitalize="none"
-                    autoCorrect="off"
-                    spellCheck={false}
-                    autoComplete="email"
-                    aria-describedby="guest_email_help"
-                  />
-                </FormField>
-                <p id="guest_email_help" className="text-xs text-ink-faint mt-1.5">
-                  {t("web.settings_guest_email_help")}
-                </p>
-              </div>
-            )}
-            {page.has_password && (
-              <FormField label={t("web.settings_current_password")} htmlFor="current_password">
-                <PasswordInput
-                  id="current_password"
-                  name="current_password"
-                  autoComplete="current-password"
-                />
-              </FormField>
-            )}
-            <FormField label={t("web.settings_new_password")} htmlFor="new_password">
-              <PasswordInput
-                id="new_password"
-                name="new_password"
-                autoComplete="new-password"
-                minLength={8}
-              />
-            </FormField>
-            {/* Next to the button that produced it: on a phone a failure
+            <p id="guest_email_help" className="text-xs text-ink-faint mt-1.5">
+              {t("web.settings_guest_email_help")}
+            </p>
+          </div>
+        )}
+        {page.has_password && (
+          <FormField label={t("web.settings_current_password")} htmlFor="current_password">
+            <PasswordInput
+              id="current_password"
+              name="current_password"
+              autoComplete="current-password"
+            />
+          </FormField>
+        )}
+        <FormField label={t("web.settings_new_password")} htmlFor="new_password">
+          <PasswordInput
+            id="new_password"
+            name="new_password"
+            autoComplete="new-password"
+            minLength={8}
+          />
+        </FormField>
+        {/* Next to the button that produced it: on a phone a failure
                 announced at the top of the page is off-screen by the time the
                 thumb reaches Save. `<Alert variant="banner" tone="error">`
                 carries `role="alert"` itself, so it is spoken when it appears
                 rather than only on the next focus move. */}
-            {mutationErrorText && (
-              <Alert variant="banner" tone="error">
-                {mutationErrorText}
-              </Alert>
-            )}
-            <Button
-              type="submit"
-              variant="primary"
-              className="w-full sm:w-auto"
-              disabled={credentialsMutation.isPending}
-            >
-              {credentialsMutation.isPending && <Spinner />}
-              {t("web.settings_save")}
-            </Button>
-          </form>
-        </Card>
+        {mutationErrorText && (
+          <Alert variant="banner" tone="error">
+            {mutationErrorText}
+          </Alert>
+        )}
+        <Button
+          type="submit"
+          variant="primary"
+          className="w-full sm:w-auto"
+          disabled={credentialsMutation.isPending}
+        >
+          {credentialsMutation.isPending && <Spinner />}
+          {t("web.settings_save")}
+        </Button>
+      </form>
+    </Card>
 
-        {/* Task 5: currency + a read-only glance at the language setting.
+    {/* Task 5: currency + a read-only glance at the language setting.
             Currency persists via the same Task-4 endpoint the Navbar/
             MobileDrawer switcher uses (useCurrencySwitch, inside
             CurrencyToggle) — language stays the server-driven /lang
             round-trip, so it's shown here for reference only, not editable. */}
-        <Card>
-          <h2 className="font-display text-lg font-semibold mb-4">{t("web.settings_preferences_section")}</h2>
-          <div className="space-y-4">
-            <div>
-              <p className="field-label mb-1.5">{t("web.currency_label")}</p>
-              <CurrencyToggle currency={ctx?.currency ?? null} fx={ctx?.fx} variant="stacked" />
-            </div>
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-ink-soft">{t("web.lang_label")}</span>
-              <span className="font-medium">{t(`web.lang_name_${currentLang()}`)}</span>
-            </div>
-          </div>
-        </Card>
-
-        <Card>
-          <h2 className="font-display text-lg font-semibold mb-4">{t("web.settings_tg_section")}</h2>
-          {page.tg_linked ? (
-            <Alert variant="banner" tone="success">
-              {t("web.settings_tg_linked", { name: page.tg_name })}
-            </Alert>
-          ) : page.is_guest ? (
-            // A guest row can't link Telegram until it is claimed with the
-            // order email (the server refuses too) — backend audit Task C.
-            <p className="text-sm text-ink-soft">{t("web.settings_tg_guest")}</p>
-          ) : (
-            <>
-              <p className="text-sm text-ink-soft mb-4">{t("web.settings_tg_hint")}</p>
-              {page.bot_id ? (
-                <TelegramLoginButton
-                  botId={page.bot_id}
-                  authUrl="/account/settings/link-telegram"
-                  // Arms the server's one-time link intent; the callback
-                  // refuses a link that wasn't started here.
-                  beforeNavigate={() => apiPost("/api/v1/account/settings/link-telegram/start", {})}
-                />
-              ) : (
-                <p className="text-sm text-ink-faint">{t("web.settings_tg_unconfigured")}</p>
-              )}
-            </>
-          )}
-        </Card>
+    <Card>
+      <h2 className="font-display text-lg font-semibold mb-4">{t("web.settings_preferences_section")}</h2>
+      <div className="space-y-4">
+        <div>
+          <p className="field-label mb-1.5">{t("web.currency_label")}</p>
+          <CurrencyToggle currency={ctx?.currency ?? null} fx={ctx?.fx} variant="stacked" />
+        </div>
+        <div className="flex items-center justify-between text-sm">
+          <span className="text-ink-soft">{t("web.lang_label")}</span>
+          <span className="font-medium">{t(`web.lang_name_${currentLang()}`)}</span>
+        </div>
       </div>
-    </>
-  );
+    </Card>
+
+    <Card>
+      <h2 className="font-display text-lg font-semibold mb-4">{t("web.settings_tg_section")}</h2>
+      {page.tg_linked ? (
+        <Alert variant="banner" tone="success">
+          {t("web.settings_tg_linked", { name: page.tg_name })}
+        </Alert>
+      ) : page.is_guest ? (
+        // A guest row can't link Telegram until it is claimed with the
+        // order email (the server refuses too) — backend audit Task C.
+        <p className="text-sm text-ink-soft">{t("web.settings_tg_guest")}</p>
+      ) : (
+        <>
+          <p className="text-sm text-ink-soft mb-4">{t("web.settings_tg_hint")}</p>
+          {page.bot_id ? (
+            <TelegramLoginButton
+              botId={page.bot_id}
+              authUrl="/account/settings/link-telegram"
+              // Arms the server's one-time link intent; the callback
+              // refuses a link that wasn't started here.
+              beforeNavigate={() => apiPost("/api/v1/account/settings/link-telegram/start", {})}
+            />
+          ) : (
+            <p className="text-sm text-ink-faint">{t("web.settings_tg_unconfigured")}</p>
+          )}
+        </>
+      )}
+    </Card>
+  </div>);
 }

@@ -1,3 +1,4 @@
+import CheckoutErrorBanner from "../components/shop/CheckoutErrorBanner";
 /**
  * TSX port of apps/storefront/views/checkout.njk + its embedded totals
  * partial views/_checkout_totals.njk. checkout.njk's inline <script>
@@ -46,39 +47,35 @@
  * page only has to clear the bar's visible height, not re-derive the notch
  * geometry itself. See deviations.md §13-checkout.
  */
-import { useEffect, useState, type KeyboardEvent } from "react";
-import { Link, useNavigate } from "react-router-dom";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, ShoppingCart } from "lucide-react";
-import { apiGet, apiPost } from "../api/client";
+import { useState, type KeyboardEvent } from "react";
+import { Link, useNavigate } from "react-router-dom";
 import { canonicalPurchaseName } from "../api/canonical";
+import { apiGet, apiPost } from "../api/client";
 import { useIdempotentPost } from "../api/idempotency";
 import type { AdditionalField, CheckoutData, PlaceOrderResponse } from "../api/types";
 import { useShopContext } from "../components/Layout";
-import { t } from "../lib/i18n";
-import { humanError } from "../lib/errors";
-import { formatPriceFor } from "../lib/format";
-import { rememberCodeEmailed } from "../lib/orderCodeEmailed";
-import { allFieldsValid, isValidEmail } from "../lib/deliveryFields";
-import { useIsWideDesktop } from "../lib/useMediaQuery";
-import { useSuggestedProducts } from "../lib/useSuggestedProducts";
+import DeliveryFieldInput from "../components/shop/DeliveryFieldInput";
 import EmptyState from "../components/shop/EmptyState";
+import OrderSummaryCard from "../components/shop/OrderSummaryCard";
+import { idrRailPriceAndPay } from "../components/shop/OrderSummaryCard.helpers";
+import PaymentMethodSelector from "../components/shop/PaymentMethodSelector";
+import { anyMethodEnabled, defaultMethod, isIdrWalletSufficient, isUsdtWalletSufficient } from "../components/shop/PaymentMethodSelector.helpers";
 import Skeleton from "../components/shop/Skeleton";
 import Stepper from "../components/shop/Stepper";
-import DeliveryFieldInput from "../components/shop/DeliveryFieldInput";
 import StickyPurchaseBar from "../components/shop/StickyPurchaseBar";
-import PaymentMethodSelector, {
-  anyMethodEnabled,
-  defaultMethod,
-  isIdrWalletSufficient,
-  isUsdtWalletSufficient,
-} from "../components/shop/PaymentMethodSelector";
-import OrderSummaryCard, { idrRailPriceAndPay } from "../components/shop/OrderSummaryCard";
 import Card from "../components/ui/Card";
-import Label from "../components/ui/Label";
-import Input from "../components/ui/Input";
-import Alert from "../components/ui/Alert";
 import { cn } from "../components/ui/cn";
+import Input from "../components/ui/Input";
+import Label from "../components/ui/Label";
+import { allFieldsValid, isValidEmail } from "../lib/deliveryFields";
+import { humanError } from "../lib/errors";
+import { formatPriceFor } from "../lib/format";
+import { t } from "../lib/i18n";
+import { rememberCodeEmailed } from "../lib/orderCodeEmailed";
+import { useIsWideDesktop } from "../lib/useMediaQuery";
+import { useSuggestedProducts } from "../lib/useSuggestedProducts";
 
 // `humanError` — "turn whatever an API rejection carried into something a shopper
 // can read" — lived here as a local helper taking the rejection's MESSAGE, and
@@ -116,7 +113,7 @@ function InfoStepCard({
   // than making the buyer retype the same email N times.
   function copyToAll(): void {
     const first = answers[0] ?? {};
-    for (let unitIdx = 1; unitIdx < qty; unitIdx++) {
+    for (let unitIdx = 1;unitIdx < qty;unitIdx++) {
       for (const field of fields) {
         onChange(unitIdx, field.key, first[field.key] ?? "");
       }
@@ -244,12 +241,9 @@ export function GuestContactCard({
 }
 
 export default function CheckoutPage() {
-  const navigate = useNavigate();
-  const queryClient = useQueryClient();
   const { data: ctx } = useShopContext();
   // Tailwind's lg breakpoint (1024px) switches between the in-card desktop
   // submit button and the mobile sticky bar below.
-  const isDesktop = useIsWideDesktop();
   const { data, error } = useQuery({
     queryKey: ["checkout", ctx?.currency ?? null, ctx?.lang, ctx?.pricing_context],
     queryFn: () => apiGet<CheckoutData>("/api/v1/checkout"),
@@ -259,10 +253,68 @@ export default function CheckoutPage() {
     retry: false,
   });
 
-  const [page, setPage] = useState<CheckoutData | null>(null);
-  const [totals, setTotals] = useState<CheckoutData | null>(null);
-  const [voucherInput, setVoucherInput] = useState("");
-  const [method, setMethod] = useState<string | null>(null);
+  // Nothing loaded yet, and nothing went wrong: a placeholder shaped like the
+  // page, not the blank screen this used to render while the query was in
+  // flight (STO-006 / performance.md, same treatment as OrdersPage).
+  if (!data) {
+    if (!error) {
+      return (
+        <div aria-busy="true" aria-label={t("web.loading")}>
+          <Skeleton className="mb-5 h-8 w-48" />
+          <div className="grid items-start gap-6">
+            <div className="space-y-6">
+              <Card className="space-y-3">
+                <Skeleton className="h-5 w-40" />
+                {[0, 1, 2].map((i) => (
+                  <Skeleton key={i} className="h-14 w-full rounded-xl" />
+                ))}
+              </Card>
+              <Card className="space-y-3">
+                <Skeleton className="h-4 w-24" />
+                <Skeleton className="h-10 w-full" />
+              </Card>
+            </div>
+            <Card className="space-y-3">
+              <Skeleton className="h-5 w-28" />
+              <Skeleton className="h-4 w-full" />
+              <Skeleton className="h-4 w-2/3" />
+              <Skeleton className="h-10 w-full" />
+            </Card>
+          </div>
+        </div>
+      );
+    }
+    // The checkout payload never arrived — most likely the anonymous read
+    // throttle (429). Say so in words the buyer can act on and give them
+    // somewhere to go, rather than leaving an empty page or a bare error key.
+    return (
+      <>
+        <Stepper step={2} />
+        <h1 className="page-title text-2xl! mb-5">{t("web.checkout_title")}</h1>
+        <EmptyState
+          icon={AlertTriangle}
+          title={t("web.checkout_unavailable")}
+          description={humanError(error)}
+          action={{ label: t("web.back_to_cart"), to: "/cart" }}
+          secondaryAction={{ label: t("web.nav_products"), to: "/products" }}
+        />
+      </>
+    );
+  }
+
+  return <CheckoutForm key={JSON.stringify(data.items.map(item => [item.denomination_id, item.qty, item.additional_fields]))} data={data} />;
+}
+
+function CheckoutForm({ data }: { data: CheckoutData }) {
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const { data: ctx } = useShopContext();
+  const isDesktop = useIsWideDesktop();
+  const [initialPage] = useState(() => data);
+  const page = { ...initialPage, items: data.items };
+  const [totals, setTotals] = useState<CheckoutData>(() => data);
+  const [voucherInput, setVoucherInput] = useState(() => data.voucher_code ?? "");
+  const [method, setMethod] = useState<string | null>(() => defaultMethod(data));
   // The whole rejection, not just its key: the figures its copy quotes ride on
   // the Error itself (`errorArgs`, F4a). `placeOrderErrorKey` below is derived
   // from it for the two places that branch on WHICH failure this was.
@@ -273,39 +325,16 @@ export default function CheckoutPage() {
   const [guestEmail, setGuestEmail] = useState("");
   // One answer-map per unit for the manual_with_info info step — [] when the
   // cart has no such line (the section then renders nothing).
-  const [answers, setAnswers] = useState<Array<Record<string, string>>>([]);
+  const [answers, setAnswers] = useState<Array<Record<string, string>>>(() => {
+    const item = data.items.find(line => line.additional_fields.length > 0);
+    return item ? Array.from({ length: item.qty }, () => ({})) : [];
+  });
 
   // No 401 redirect to /login any more: GET /api/v1/checkout serves anonymous
   // visitors (guest checkout), so being signed out is a normal state of this
   // page rather than an error to bounce out of. Any failure that DOES happen
   // (a 429 from the anonymous read throttle, a network blip) is rendered
   // below instead of leaving the visitor on a blank page.
-
-  // First load only: seed both halves of the split state, the voucher input,
-  // and the default method selection. Never re-runs once `page` is set —
-  // later GETs of this query (e.g. a background refetch) must not clobber
-  // whatever the buyer has since typed/selected.
-  useEffect(() => {
-    if (data && !page) {
-      setPage(data);
-      setTotals(data);
-      setVoucherInput(data.voucher_code ?? "");
-      setMethod(defaultMethod(data));
-      const infoItem = data.items.find((i) => i.additional_fields.length > 0);
-      if (infoItem) setAnswers(Array.from({ length: infoItem.qty }, () => ({})));
-    }
-  }, [data, page]);
-  // Preference refetches update item text while preserving the buyer's inputs.
-  useEffect(() => {
-    if (data) setPage((previous) => previous ? { ...previous, items: data.items } : previous);
-  }, [data]);
-  const inputConfigKey = JSON.stringify(data?.items.map((item) => [item.denomination_id, item.qty, item.additional_fields]) ?? []);
-  useEffect(() => {
-    const item = data?.items.find((line) => line.additional_fields.length > 0);
-    setAnswers(item ? Array.from({ length: item.qty }, () => ({})) : []);
-    // Reset only when schema/selection changes; a price refetch preserves inputs.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [inputConfigKey]);
 
   // Fetched only once the cart is known to be empty at checkout — never
   // delays the empty-cart card itself, which paints from `page` alone. Not
@@ -405,55 +434,6 @@ export default function CheckoutPage() {
     },
   });
 
-  // Nothing loaded yet, and nothing went wrong: a placeholder shaped like the
-  // page, not the blank screen this used to render while the query was in
-  // flight (STO-006 / performance.md, same treatment as OrdersPage).
-  if (!page || !totals) {
-    if (!error) {
-      return (
-        <div aria-busy="true" aria-label={t("web.loading")}>
-          <Skeleton className="mb-5 h-8 w-48" />
-          <div className="grid items-start gap-6">
-            <div className="space-y-6">
-              <Card className="space-y-3">
-                <Skeleton className="h-5 w-40" />
-                {[0, 1, 2].map((i) => (
-                  <Skeleton key={i} className="h-14 w-full rounded-xl" />
-                ))}
-              </Card>
-              <Card className="space-y-3">
-                <Skeleton className="h-4 w-24" />
-                <Skeleton className="h-10 w-full" />
-              </Card>
-            </div>
-            <Card className="space-y-3">
-              <Skeleton className="h-5 w-28" />
-              <Skeleton className="h-4 w-full" />
-              <Skeleton className="h-4 w-2/3" />
-              <Skeleton className="h-10 w-full" />
-            </Card>
-          </div>
-        </div>
-      );
-    }
-    // The checkout payload never arrived — most likely the anonymous read
-    // throttle (429). Say so in words the buyer can act on and give them
-    // somewhere to go, rather than leaving an empty page or a bare error key.
-    return (
-      <>
-        <Stepper step={2} />
-        <h1 className="page-title text-2xl! mb-5">{t("web.checkout_title")}</h1>
-        <EmptyState
-          icon={AlertTriangle}
-          title={t("web.checkout_unavailable")}
-          description={humanError(error)}
-          action={{ label: t("web.back_to_cart"), to: "/cart" }}
-          secondaryAction={{ label: t("web.nav_products"), to: "/products" }}
-        />
-      </>
-    );
-  }
-
   // An empty cart used to bounce to /cart. For a guest that is one navigation
   // to an equally empty screen — say it here, where they are, and name the way
   // forward. Never render a payment form for a cart with nothing in it.
@@ -476,32 +456,26 @@ export default function CheckoutPage() {
 
   // Wallet-credit radios — only offered when credit fully covers the live
   // total (post-voucher); hidden (not disabled) otherwise.
-  const idrWalletSufficient = isIdrWalletSufficient(totals);
-  const usdtWalletSufficient = isUsdtWalletSufficient(totals);
-  const anyMethod = anyMethodEnabled(totals) || idrWalletSufficient || usdtWalletSufficient;
+  const { infoItem, placeOrderBlocked, placeOrderDisabled } = checkoutPurchaseStatus({ totals, page, answers, guestEmail, placeOrderMutation });
+
   // Info step (Task 6): the single-SKU-per-non-auto-cart guard means there's
   // ever at most one manual_with_info line.
-  const infoItem = page.items.find((i) => i.additional_fields.length > 0) ?? null;
-  const infoValid = !infoItem || allFieldsValid(infoItem.additional_fields, answers, infoItem.qty);
+
   // Both submit controls share one set of gates so neither can offer an order
   // the other refuses: `blocked` is the permanent "not payable yet" state the
   // dimmed styling explains, `disabled` adds the transient in-flight state.
   // Client-side courtesy only — it saves a wasted round trip; the server
   // re-validates and owns `web.guest_email_invalid`.
-  const guestEmailValid = !page.is_guest || isValidEmail(guestEmail);
-  const placeOrderBlocked = !anyMethod || !infoValid || !guestEmailValid;
-  const placeOrderDisabled = placeOrderBlocked || placeOrderMutation.isPending;
+
   // Final-review fix: the sticky bar's "Price $X · Pay RpY" line for a USD
   // viewer on QRIS/PayDisini — same helper (and so the same rule and figures)
   // as the summary card; null everywhere else, which leaves the bar unchanged.
   const barPriceAndPay = idrRailPriceAndPay(method, totals, ctx?.currency ?? null, ctx?.fx);
 
   function setAnswer(unitIdx: number, key: string, value: string): void {
-    setAnswers((prev) => {
-      const next = prev.slice();
-      next[unitIdx] = { ...next[unitIdx], [key]: value };
-      return next;
-    });
+    setAnswers((prev) => prev.map((answer, position) =>
+      position === unitIdx ? { ...answer, [key]: value } : answer,
+    ));
   }
 
   return (
@@ -514,70 +488,9 @@ export default function CheckoutPage() {
           voucher error out of the summary column: repeating the identical
           sentence in a page-level banner is noise, and the banner is a whole
           column away from the input the buyer has to fix. */}
-      {placeOrderErrorKey && !(page.is_guest && placeOrderErrorKey === "web.guest_email_invalid") && (
-        <Alert variant="banner" tone="error">
-          {humanError(placeOrderError)}
-        </Alert>
-      )}
+      <CheckoutErrorBanner error={placeOrderError} isGuest={Boolean(page?.is_guest)} />
 
-      <form
-        onSubmit={(e) => e.preventDefault()}
-        // The sticky bar is fixed (out of flow) and would otherwise sit on top
-        // of the last thing in the form ("Back to cart") — reserve its visible
-        // height at the end of the page instead. StickyPurchaseBar already
-        // pads its own bottom for the iOS safe area, so this only needs a
-        // plain utility, not a re-derived env()/calc() of its own.
-        className={cn("grid gap-6 items-start", !isDesktop && "pb-28")}
-      >
-        <div className="space-y-6">
-          {page.items.some((item) => item.canonical) && (
-            <div className="card card-pad space-y-3">
-              {page.items.map((item) => item.canonical && <div key={item.denomination_id} className="break-words [overflow-wrap:anywhere]">
-                <p className="font-semibold">{canonicalPurchaseName(item.canonical)}</p>
-                <p className="text-sm text-pine">{item.canonical.formattedPrice} × {item.qty}</p>
-              </div>)}
-            </div>
-          )}
-          {/* First card in the column for a guest: the shop needs to know
-              where the order goes before anything about paying for it. */}
-          {page.is_guest && (
-            <GuestContactCard
-              email={guestEmail}
-              onChange={setGuestEmail}
-              serverRejected={placeOrderErrorKey === "web.guest_email_invalid"}
-            />
-          )}
-
-          {infoItem && (
-            <InfoStepCard fields={infoItem.additional_fields} qty={infoItem.qty} answers={answers} onChange={setAnswer} />
-          )}
-        </div>
-
-        {/* Use live totals so voucher discounts update wallet eligibility. */}
-        <div>
-          <PaymentMethodSelector data={totals} method={method} onSelect={setMethod} />
-        </div>
-
-        <div className="min-w-0">
-          <OrderSummaryCard
-            totals={totals}
-            method={method}
-            fx={ctx?.fx}
-            voucherInput={voucherInput}
-            onVoucherInputChange={setVoucherInput}
-            onVoucherApply={applyVoucher}
-            onVoucherKeyDown={onVoucherKeyDown}
-            voucherPending={previewMutation.isPending}
-            showDesktopSubmit={isDesktop}
-            submitLabel={t("web.place_order")}
-            submitDisabled={placeOrderDisabled}
-            submitBlocked={placeOrderBlocked}
-            onSubmit={() => placeOrderMutation.mutate()}
-            submitPending={placeOrderMutation.isPending}
-            backTo={{ label: t("web.back_to_cart"), to: "/cart" }}
-          />
-        </div>
-      </form>
+      <CheckoutPaymentForm isDesktop={isDesktop} page={page} guestEmail={guestEmail} setGuestEmail={setGuestEmail} placeOrderErrorKey={placeOrderErrorKey} infoItem={infoItem} answers={answers} setAnswer={setAnswer} totals={totals} method={method} setMethod={setMethod} ctx={ctx} voucherInput={voucherInput} setVoucherInput={setVoucherInput} applyVoucher={applyVoucher} onVoucherKeyDown={onVoucherKeyDown} previewMutation={previewMutation} placeOrderDisabled={placeOrderDisabled} placeOrderBlocked={placeOrderBlocked} placeOrderMutation={placeOrderMutation} />
 
       {/* Sticky mobile total: on a phone the summary card stacks *below* the method
           list, so the buyer chooses a payment rail with the amount they are
@@ -590,21 +503,153 @@ export default function CheckoutPage() {
           keeps the in-card button below the methods. The IDR figure only, matching the previous
           hand-rolled bar: the USDT hint stays in the summary card, where
           there is room for it without crowding the button off a 320px row. */}
-      {!isDesktop && (
-        <StickyPurchaseBar
-          ariaLabel={t("web.purchase_bar")}
-          priceLabel={t("web.order_total")}
-          price={formatPriceFor(method === "qris" ? totals.qris_grand_total : totals.total, ctx?.currency ?? null, ctx?.fx)}
-          secondaryChip={barPriceAndPay && <span className="text-xs text-ink-soft">{barPriceAndPay}</span>}
-          primaryAction={{
-            label: t("web.place_order"),
-            onClick: () => placeOrderMutation.mutate(),
-            pending: placeOrderMutation.isPending,
-            disabled: placeOrderDisabled,
-            blocked: placeOrderBlocked,
-          }}
-        />
-      )}
+      <CheckoutMobileTotal isDesktop={isDesktop} method={method} totals={totals} ctx={ctx} barPriceAndPay={barPriceAndPay} placeOrderMutation={placeOrderMutation} placeOrderDisabled={placeOrderDisabled} placeOrderBlocked={placeOrderBlocked} />
     </>
   );
+}
+
+function CheckoutBuyerDetails({ page, guestEmail, setGuestEmail, placeOrderErrorKey, infoItem, answers, setAnswer }: {
+  page: { items: import("../api/types").CheckoutItem[]; items_empty: boolean; subtotal: string; bulk_discount: string; voucher_discount: string; total: string; qris_admin_fee: string; qris_grand_total: string; total_usdt: string | null; voucher_code: string; error_key: string | null; binance_enabled: boolean; bybit_enabled: boolean; bybit_bsc_enabled: boolean; idr_enabled: boolean; paydisini_enabled: boolean; nowpayments_enabled: boolean; wallet_idr: string; wallet_usdt: string; wallet_idr_enabled: boolean; wallet_usdt_enabled: boolean; is_guest: boolean; below_all_minimums: boolean; };
+  guestEmail: string;
+  setGuestEmail: import("react").Dispatch<import("react").SetStateAction<string>>;
+  placeOrderErrorKey: string | null;
+  infoItem: import("../api/types").CheckoutItem | null;
+  answers: Record<string, string>[];
+  setAnswer: (unitIdx: number, key: string, value: string) => void;
+}) {
+  return (<div className="space-y-6">
+    {page.items.some((item) => item.canonical) && (
+      <div className="card card-pad space-y-3">
+        {page.items.map((item) => item.canonical && <div key={item.denomination_id} className="break-words [overflow-wrap:anywhere]">
+          <p className="font-semibold">{canonicalPurchaseName(item.canonical)}</p>
+          <p className="text-sm text-pine">{item.canonical.formattedPrice} × {item.qty}</p>
+        </div>)}
+      </div>
+    )}
+    {/* First card in the column for a guest: the shop needs to know
+              where the order goes before anything about paying for it. */}
+    {page.is_guest && (
+      <GuestContactCard
+        email={guestEmail}
+        onChange={setGuestEmail}
+        serverRejected={placeOrderErrorKey === "web.guest_email_invalid"}
+      />
+    )}
+
+    {infoItem && (
+      <InfoStepCard fields={infoItem.additional_fields} qty={infoItem.qty} answers={answers} onChange={setAnswer} />
+    )}
+  </div>);
+}
+
+function CheckoutPaymentForm({ isDesktop, page, guestEmail, setGuestEmail, placeOrderErrorKey, infoItem, answers, setAnswer, totals, method, setMethod, ctx, voucherInput, setVoucherInput, applyVoucher, onVoucherKeyDown, previewMutation, placeOrderDisabled, placeOrderBlocked, placeOrderMutation }: {
+  isDesktop: boolean;
+  page: { items: import("../api/types").CheckoutItem[]; items_empty: boolean; subtotal: string; bulk_discount: string; voucher_discount: string; total: string; qris_admin_fee: string; qris_grand_total: string; total_usdt: string | null; voucher_code: string; error_key: string | null; binance_enabled: boolean; bybit_enabled: boolean; bybit_bsc_enabled: boolean; idr_enabled: boolean; paydisini_enabled: boolean; nowpayments_enabled: boolean; wallet_idr: string; wallet_usdt: string; wallet_idr_enabled: boolean; wallet_usdt_enabled: boolean; is_guest: boolean; below_all_minimums: boolean; };
+  guestEmail: string;
+  setGuestEmail: import("react").Dispatch<import("react").SetStateAction<string>>;
+  placeOrderErrorKey: string | null;
+  infoItem: import("../api/types").CheckoutItem | null;
+  answers: Record<string, string>[];
+  setAnswer: (unitIdx: number, key: string, value: string) => void;
+  totals: CheckoutData;
+  method: string | null;
+  setMethod: import("react").Dispatch<import("react").SetStateAction<string | null>>;
+  ctx: NoInfer<import("../api/types").ShopContext> | undefined;
+  voucherInput: string;
+  setVoucherInput: import("react").Dispatch<import("react").SetStateAction<string>>;
+  applyVoucher: () => void;
+  onVoucherKeyDown: (event: KeyboardEvent<HTMLInputElement>) => void;
+  previewMutation: import("@tanstack/react-query").UseMutationResult<CheckoutData, Error, string, unknown>;
+  placeOrderDisabled: boolean;
+  placeOrderBlocked: boolean;
+  placeOrderMutation: import("@tanstack/react-query").UseMutationResult<PlaceOrderResponse, Error, void, unknown>;
+}) {
+  return (<form
+    onSubmit={(e) => e.preventDefault()}
+    // The sticky bar is fixed (out of flow) and would otherwise sit on top
+    // of the last thing in the form ("Back to cart") — reserve its visible
+    // height at the end of the page instead. StickyPurchaseBar already
+    // pads its own bottom for the iOS safe area, so this only needs a
+    // plain utility, not a re-derived env()/calc() of its own.
+    className={cn("grid gap-6 items-start", !isDesktop && "pb-28")}
+  >
+    <CheckoutBuyerDetails page={page} guestEmail={guestEmail} setGuestEmail={setGuestEmail} placeOrderErrorKey={placeOrderErrorKey} infoItem={infoItem} answers={answers} setAnswer={setAnswer} />
+
+    {/* Use live totals so voucher discounts update wallet eligibility. */}
+    <div>
+      <PaymentMethodSelector data={totals} method={method} onSelect={setMethod} />
+    </div>
+
+    <div className="min-w-0">
+      <OrderSummaryCard
+        totals={totals}
+        method={method}
+        fx={ctx?.fx}
+        voucherInput={voucherInput}
+        onVoucherInputChange={setVoucherInput}
+        onVoucherApply={applyVoucher}
+        onVoucherKeyDown={onVoucherKeyDown}
+        voucherPending={previewMutation.isPending}
+        showDesktopSubmit={isDesktop}
+        submitLabel={t("web.place_order")}
+        submitDisabled={placeOrderDisabled}
+        submitBlocked={placeOrderBlocked}
+        onSubmit={() => placeOrderMutation.mutate()}
+        submitPending={placeOrderMutation.isPending}
+        backTo={{ label: t("web.back_to_cart"), to: "/cart" }}
+      />
+    </div>
+  </form>);
+}
+
+function CheckoutMobileTotal({ isDesktop, method, totals, ctx, barPriceAndPay, placeOrderMutation, placeOrderDisabled, placeOrderBlocked }: {
+  isDesktop: boolean;
+  method: string | null;
+  totals: CheckoutData;
+  ctx: NoInfer<import("../api/types").ShopContext> | undefined;
+  barPriceAndPay: string | null;
+  placeOrderMutation: import("@tanstack/react-query").UseMutationResult<PlaceOrderResponse, Error, void, unknown>;
+  placeOrderDisabled: boolean;
+  placeOrderBlocked: boolean;
+}) {
+  return (!isDesktop && (
+    <StickyPurchaseBar
+      ariaLabel={t("web.purchase_bar")}
+      priceLabel={t("web.order_total")}
+      price={formatPriceFor(method === "qris" ? totals.qris_grand_total : totals.total, ctx?.currency ?? null, ctx?.fx)}
+      secondaryChip={barPriceAndPay && <span className="text-xs text-ink-soft">{barPriceAndPay}</span>}
+      primaryAction={{
+        label: t("web.place_order"),
+        onClick: () => placeOrderMutation.mutate(),
+        pending: placeOrderMutation.isPending,
+        disabled: placeOrderDisabled,
+        blocked: placeOrderBlocked,
+      }}
+    />
+  ));
+}
+
+function checkoutPurchaseStatus({ totals, page, answers, guestEmail, placeOrderMutation }: {
+  totals: CheckoutData;
+  page: { items: import("../api/types").CheckoutItem[]; items_empty: boolean; subtotal: string; bulk_discount: string; voucher_discount: string; total: string; qris_admin_fee: string; qris_grand_total: string; total_usdt: string | null; voucher_code: string; error_key: string | null; binance_enabled: boolean; bybit_enabled: boolean; bybit_bsc_enabled: boolean; idr_enabled: boolean; paydisini_enabled: boolean; nowpayments_enabled: boolean; wallet_idr: string; wallet_usdt: string; wallet_idr_enabled: boolean; wallet_usdt_enabled: boolean; is_guest: boolean; below_all_minimums: boolean; };
+  answers: Record<string, string>[];
+  guestEmail: string;
+  placeOrderMutation: import("@tanstack/react-query").UseMutationResult<PlaceOrderResponse, Error, void, unknown>;
+}) {
+  const idrWalletSufficient = isIdrWalletSufficient(totals);
+
+  const usdtWalletSufficient = isUsdtWalletSufficient(totals);
+
+  const anyMethod = anyMethodEnabled(totals) || idrWalletSufficient || usdtWalletSufficient;
+
+  const infoItem = page.items.find((i) => i.additional_fields.length > 0) ?? null;
+
+  const infoValid = !infoItem || allFieldsValid(infoItem.additional_fields, answers, infoItem.qty);
+
+  const guestEmailValid = !page.is_guest || isValidEmail(guestEmail);
+
+  const placeOrderBlocked = !anyMethod || !infoValid || !guestEmailValid;
+
+  const placeOrderDisabled = placeOrderBlocked || placeOrderMutation.isPending;
+  return { infoItem, placeOrderBlocked, placeOrderDisabled };
 }

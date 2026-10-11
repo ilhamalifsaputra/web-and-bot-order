@@ -1,3 +1,4 @@
+import { guestMenuGroups, MenuGroup, MenuItem } from "./AccountPage.helpers";
 /**
  * TSX port of apps/storefront/views/account.njk, since restructured for the
  * phone: the page used to be one undifferentiated wall of five identical link
@@ -43,8 +44,6 @@
  * menu is the sole nav listing. Both wallet balances now live only in the
  * summary grid.
  */
-import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   ChevronRight,
@@ -58,32 +57,22 @@ import {
   Wallet,
   type LucideIcon,
 } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { apiGet, apiPost } from "../api/client";
-import type { AccountData, AccountOrderSummary, AccountOrdersData } from "../api/types";
+import type { AccountData, AccountOrdersData, AccountOrderSummary } from "../api/types";
 import { useShopContext } from "../components/Layout";
-import { t } from "../lib/i18n";
-import { formatIdr, formatNativeUsdt, formatOrderAmount } from "../lib/format";
-import { useMediaQuery } from "../lib/useMediaQuery";
-import { useSuggestedProducts } from "../lib/useSuggestedProducts";
 import EmptyState from "../components/shop/EmptyState";
 import Skeleton from "../components/shop/Skeleton";
 import StatusBadge from "../components/shop/StatusBadge";
 import Toast from "../components/shop/Toast";
+import AlertDialog from "../components/ui/AlertDialog";
 import Button from "../components/ui/Button";
 import Card from "../components/ui/Card";
-import AlertDialog from "../components/ui/AlertDialog";
-
-interface MenuItem {
-  href: string;
-  icon: LucideIcon;
-  labelKey: string;
-  descriptionKey: string;
-}
-
-export interface MenuGroup {
-  headingKey: string;
-  items: MenuItem[];
-}
+import { formatIdr, formatNativeUsdt, formatOrderAmount } from "../lib/format";
+import { t } from "../lib/i18n";
+import { useMediaQuery } from "../lib/useMediaQuery";
+import { useSuggestedProducts } from "../lib/useSuggestedProducts";
 
 /**
  * The same five destinations as before, grouped so each card answers one
@@ -112,32 +101,6 @@ const MENU_GROUPS: MenuGroup[] = [
     ],
   },
 ];
-
-/**
- * What a guest account actually has behind it. A guest checked out without
- * registering: the account is synthetic, has no password, no referral code,
- * no reviews and no support tickets — so every other destination would open a
- * screen that can only be empty or refuse them. Orders are the one real thing
- * there, and the reason they have a session at all.
- */
-const GUEST_HREFS = new Set(["/account/orders"]);
-
-/**
- * Narrow a menu to what a guest can actually use, by destination rather than
- * by position. The first version filtered `MENU_GROUPS[0]`, which was only
- * correct while Orders happened to sit in the first group — reshuffling the
- * menu (an ordinary thing to do to an account page) would have handed guests
- * an empty nav with no way to reach the one screen they have, and nothing
- * would have failed to say so. Groups left with no items are dropped, so a
- * heading never renders over an empty list.
- *
- * Exported for its own test; the page itself only uses `GUEST_MENU_GROUPS`.
- */
-export function guestMenuGroups(groups: MenuGroup[]): MenuGroup[] {
-  return groups
-    .map((group) => ({ ...group, items: group.items.filter((item) => GUEST_HREFS.has(item.href)) }))
-    .filter((group) => group.items.length > 0);
-}
 
 const GUEST_MENU_GROUPS: MenuGroup[] = guestMenuGroups(MENU_GROUPS);
 
@@ -377,129 +340,149 @@ export default function AccountPage() {
     // rest of the shop uses. No effect below `lg` — both wrapper divs are
     // unpositioned there, so mobile/tablet render exactly as before.
     <div className="lg:relative lg:left-1/2 lg:w-screen lg:-translate-x-1/2">
-    <div className="space-y-8 lg:mx-auto lg:max-w-7xl lg:px-6">
-      <Toast text={toastText} onDismiss={() => setToastText(null)} kind="success" />
+      <AccountDashboard toastText={toastText} setToastText={setToastText} data={data} logoutMutation={logoutMutation} setLogoutDialogOpen={setLogoutDialogOpen} isGuest={isGuest} logoutDialogOpen={logoutDialogOpen} copyReferral={copyReferral} isDashboard={isDashboard} menuGroups={menuGroups} recentOrders={recentOrders} suggested={suggested} shopCtx={shopCtx} />
+    </div>
+  );
+}
 
-      <h1 className="page-title">{t("web.account_title")}</h1>
+function AccountDashboard({ toastText, setToastText, data, logoutMutation, setLogoutDialogOpen, isGuest, logoutDialogOpen, copyReferral, isDashboard, menuGroups, recentOrders, suggested, shopCtx }: {
+  toastText: string | null;
+  setToastText: import("react").Dispatch<import("react").SetStateAction<string | null>>;
+  data: AccountData;
+  logoutMutation: import("@tanstack/react-query").UseMutationResult<{ ok: boolean; }, Error, void, unknown>;
+  setLogoutDialogOpen: import("react").Dispatch<import("react").SetStateAction<boolean>>;
+  isGuest: boolean;
+  logoutDialogOpen: boolean;
+  copyReferral: () => void;
+  isDashboard: boolean;
+  menuGroups: MenuGroup[];
+  recentOrders: NoInfer<AccountOrdersData> | undefined;
+  suggested: NoInfer<import("../api/types").ShelfPageData> | undefined;
+  shopCtx: NoInfer<import("../api/types").ShopContext> | undefined;
+}) {
+  return (<div className="space-y-8 lg:mx-auto lg:max-w-7xl lg:px-6">
+    <Toast text={toastText} onDismiss={() => setToastText(null)} kind="success" />
 
-      {/* Identity block. On a phone the sign-out button drops below the name
+    <h1 className="page-title">{t("web.account_title")}</h1>
+
+    {/* Identity block. On a phone the sign-out button drops below the name
           and goes full width: sharing the row with a long name would squeeze
           both, and sign-out is the one destructive action here — it should be
           deliberate, not something the thumb brushes while scrolling. */}
-      <Card className="flex flex-col gap-4 sm:flex-row sm:items-center">
-        <div className="flex min-w-0 flex-1 items-center gap-4">
-          <span
-            className="grid h-14 w-14 shrink-0 place-items-center rounded-full bg-pine-tint font-display text-xl font-semibold text-pine-dark"
-            aria-hidden="true"
-          >
-            {initialOf(data.name)}
-          </span>
-          <div className="min-w-0">
-            {/* Name stays its own text node (not concatenated into the
+    <Card className="flex flex-col gap-4 sm:flex-row sm:items-center">
+      <div className="flex min-w-0 flex-1 items-center gap-4">
+        <span
+          className="grid h-14 w-14 shrink-0 place-items-center rounded-full bg-pine-tint font-display text-xl font-semibold text-pine-dark"
+          aria-hidden="true"
+        >
+          {initialOf(data.name)}
+        </span>
+        <div className="min-w-0">
+          {/* Name stays its own text node (not concatenated into the
                 greeting string) so it wraps predictably on a 320px screen
                 and is independently addressable in tests/assistive tech. */}
-            <div className="font-display text-lg font-semibold break-words text-ink">
-              {t("web.account_greeting")} <span>{data.name}</span>
-            </div>
+          <div className="font-display text-lg font-semibold break-words text-ink">
+            {t("web.account_greeting")} <span>{data.name}</span>
           </div>
         </div>
-        {/* Signing out costs a guest more than it costs a registered
+      </div>
+      {/* Signing out costs a guest more than it costs a registered
             customer — there is no password to come back with, only the order
             code itself. Say so next to the button rather than letting them
             find out afterwards. */}
-        <div className="flex shrink-0 flex-col gap-2 sm:items-end">
-          <Button
-            variant="ghost"
-            className="w-full shrink-0 text-rust sm:w-auto"
-            disabled={logoutMutation.isPending}
-            onClick={() => setLogoutDialogOpen(true)}
-          >
-            <LogOut className="w-4 h-4" aria-hidden="true" /> {t("web.nav_logout")}
-          </Button>
-          {isGuest && (
-            <p className="max-w-xs text-xs leading-relaxed text-ink-soft sm:text-right">
-              {t("web.guest_account_note")}
-            </p>
-          )}
-        </div>
-      </Card>
+      <div className="flex shrink-0 flex-col gap-2 sm:items-end">
+        <Button
+          variant="ghost"
+          className="w-full shrink-0 text-rust sm:w-auto"
+          disabled={logoutMutation.isPending}
+          onClick={() => setLogoutDialogOpen(true)}
+        >
+          <LogOut className="w-4 h-4" aria-hidden="true" /> {t("web.nav_logout")}
+        </Button>
+        {isGuest && (
+          <p className="max-w-xs text-xs leading-relaxed text-ink-soft sm:text-right">
+            {t("web.guest_account_note")}
+          </p>
+        )}
+      </div>
+    </Card>
 
-      {/* Required behavior change (Task 16): the logout trigger opens this
+    {/* Required behavior change (Task 16): the logout trigger opens this
           confirmation instead of running logoutMutation directly. onConfirm is
           the EXACT SAME logoutMutation.mutate() call the old onClick made — the
           full-reload-on-success (window.location.assign("/")) still lives on the
           mutation's onSuccess, untouched. */}
-      <AlertDialog
-        open={logoutDialogOpen}
-        onCancel={() => setLogoutDialogOpen(false)}
-        onConfirm={() => logoutMutation.mutate()}
-        title={t("web.logout_confirm_title")}
-        description={t("web.logout_confirm_body")}
-        confirmLabel={t("web.logout_confirm_yes")}
-        cancelLabel={t("web.logout_confirm_no")}
-        tone="danger"
-        confirmPending={logoutMutation.isPending}
-      />
+    <AlertDialog
+      open={logoutDialogOpen}
+      onCancel={() => setLogoutDialogOpen(false)}
+      onConfirm={() => logoutMutation.mutate()}
+      title={t("web.logout_confirm_title")}
+      description={t("web.logout_confirm_body")}
+      confirmLabel={t("web.logout_confirm_yes")}
+      cancelLabel={t("web.logout_confirm_no")}
+      tone="danger"
+      confirmPending={logoutMutation.isPending}
+    />
 
-      {/* Summary grid: 2x2 below `lg`, one row of 4 at `lg`. Orders before
+    {/* Summary grid: 2x2 below `lg`, one row of 4 at `lg`. Orders before
           referral, and both wallet balances carry heavier (pine-tint)
           styling than orders/referral so the numbers customers check most
           often read as the priority. */}
-      {/* A guest has no wallet to spend and no referral code to share, so
+    {/* A guest has no wallet to spend and no referral code to share, so
           three of the four tiles would read "Rp0"/blank — one honest card
           beats four, three of which are about things they don't have. */}
-      <div className={isGuest ? "grid grid-cols-1 gap-4 sm:max-w-xs" : "grid grid-cols-2 gap-4 lg:grid-cols-4"}>
-        <SummaryCard
-          as="link"
-          href="/account/orders"
-          icon={Receipt}
-          labelKey="web.account_orders"
-          value={String(data.order_count)}
-          helperKey="web.account_view_history"
-        />
-        {/* Both wallet tiles now link to the top-up flow (Task 5) — previously
+    <div className={isGuest ? "grid grid-cols-1 gap-4 sm:max-w-xs" : "grid grid-cols-2 gap-4 lg:grid-cols-4"}>
+      <SummaryCard
+        as="link"
+        href="/account/orders"
+        icon={Receipt}
+        labelKey="web.account_orders"
+        value={String(data.order_count)}
+        helperKey="web.account_view_history"
+      />
+      {/* Both wallet tiles now link to the top-up flow (Task 5) — previously
             "as=static", since there was nothing to navigate to. The currency
             is pre-selected via the query string WalletTopupPage reads. */}
-        {!isGuest && (
-          <>
-            <SummaryCard
-              as="link"
-              href="/wallet/topup?currency=IDR"
-              emphasized
-              icon={Wallet}
-              labelKey="web.account_credit_idr"
-              value={formatIdr(data.wallet_idr)}
-              helperKey="web.wallet_topup_cta"
-            />
-            <SummaryCard
-              as="button"
-              onClick={copyReferral}
-              icon={Gift}
-              labelKey="web.account_referral"
-              value={data.referral_code}
-              helperKey="web.account_tap_to_copy"
-            />
-            <SummaryCard
-              as="link"
-              href="/wallet/topup?currency=USDT"
-              emphasized
-              icon={Coins}
-              labelKey="web.account_credit_usdt"
-              value={formatNativeUsdt(data.wallet_usdt)}
-              helperKey="web.wallet_topup_cta"
-            />
-          </>
-        )}
-      </div>
+      {!isGuest && (
+        <>
+          <SummaryCard
+            as="link"
+            href="/wallet/topup?currency=IDR"
+            emphasized
+            icon={Wallet}
+            labelKey="web.account_credit_idr"
+            value={formatIdr(data.wallet_idr)}
+            helperKey="web.wallet_topup_cta"
+          />
+          <SummaryCard
+            as="button"
+            onClick={copyReferral}
+            icon={Gift}
+            labelKey="web.account_referral"
+            value={data.referral_code}
+            helperKey="web.account_tap_to_copy"
+          />
+          <SummaryCard
+            as="link"
+            href="/wallet/topup?currency=USDT"
+            emphasized
+            icon={Coins}
+            labelKey="web.account_credit_usdt"
+            value={formatNativeUsdt(data.wallet_usdt)}
+            helperKey="web.wallet_topup_cta"
+          />
+        </>
+      )}
+    </div>
 
-      {/* Below `lg`: the grouped menu stacks full-width, exactly as before.
+    {/* Below `lg`: the grouped menu stacks full-width, exactly as before.
           At `lg`: it becomes the dashboard's left rail (~1/3 width) and a
           right column of widgets appears alongside it. The
           `space-y-8`/`lg:space-y-0` pair hands spacing duties to the grid's
           own `gap` once the split is active. */}
-      <div className="space-y-8 lg:grid lg:grid-cols-12 lg:items-start lg:gap-6 lg:space-y-0">
-        <div className="space-y-8 lg:col-span-4">
-          {/* Grouped destinations. Each group is a labelled <nav> so
+    <div className="space-y-8 lg:grid lg:grid-cols-12 lg:items-start lg:gap-6 lg:space-y-0">
+      <div className="space-y-8 lg:col-span-4">
+        {/* Grouped destinations. Each group is a labelled <nav> so
               assistive tech gets the same "these three things are about
               help" grouping the headings give a sighted visitor. Below `lg`
               this is three separate cards (unchanged); at `lg` it becomes
@@ -508,38 +491,38 @@ export default function AccountPage() {
               (this app's own useMediaQuery.ts convention: two renderable
               shapes for the same content is wasted work and ambiguous to
               assistive tech/tests, so only one ever mounts). */}
-          {isDashboard ? (
-            <Card padded={false} className="overflow-hidden">
-              {menuGroups.map((group) => (
-                <nav key={group.headingKey} aria-label={t(group.headingKey)}>
-                  <div className="bg-sand/60 px-4 py-2 text-xs font-semibold tracking-wide text-ink uppercase">
-                    {t(group.headingKey)}
-                  </div>
-                  <div className="divide-y divide-line">
-                    {group.items.map((item) => (
-                      <MenuRow key={item.href} item={item} />
-                    ))}
-                  </div>
-                </nav>
-              ))}
-            </Card>
-          ) : (
-            <div className="space-y-6">
-              {menuGroups.map((group) => (
-                <nav key={group.headingKey} aria-label={t(group.headingKey)} className="space-y-2">
-                  <h2 className="stat-label px-1">{t(group.headingKey)}</h2>
-                  <Card padded={false} className="divide-y divide-line overflow-hidden">
-                    {group.items.map((item) => (
-                      <MenuRow key={item.href} item={item} />
-                    ))}
-                  </Card>
-                </nav>
-              ))}
-            </div>
-          )}
-        </div>
+        {isDashboard ? (
+          <Card padded={false} className="overflow-hidden">
+            {menuGroups.map((group) => (
+              <nav key={group.headingKey} aria-label={t(group.headingKey)}>
+                <div className="bg-sand/60 px-4 py-2 text-xs font-semibold tracking-wide text-ink uppercase">
+                  {t(group.headingKey)}
+                </div>
+                <div className="divide-y divide-line">
+                  {group.items.map((item) => (
+                    <MenuRow key={item.href} item={item} />
+                  ))}
+                </div>
+              </nav>
+            ))}
+          </Card>
+        ) : (
+          <div className="space-y-6">
+            {menuGroups.map((group) => (
+              <nav key={group.headingKey} aria-label={t(group.headingKey)} className="space-y-2">
+                <h2 className="stat-label px-1">{t(group.headingKey)}</h2>
+                <Card padded={false} className="divide-y divide-line overflow-hidden">
+                  {group.items.map((item) => (
+                    <MenuRow key={item.href} item={item} />
+                  ))}
+                </Card>
+              </nav>
+            ))}
+          </div>
+        )}
+      </div>
 
-        {/* Right column — desktop only. Recent Orders reuses the existing
+      {/* Right column — desktop only. Recent Orders reuses the existing
             /api/v1/account/orders endpoint (no new API). This used to also
             carry a Wallet overview panel and a Referral panel, but both only
             restated the summary grid above (same balances, same referral
@@ -547,45 +530,43 @@ export default function AccountPage() {
             no customer-facing "recent activity" feed to build a second
             widget from (the audit log is admin-only), so Recent Orders is
             the sole widget here rather than a fabricated companion. */}
-        <div className="hidden space-y-6 lg:col-span-8 lg:block">
-          <Card>
-            <div className="mb-4 flex items-center justify-between gap-3">
-              <h2 className="section-title">{t("web.account_recent_orders")}</h2>
-              <Link to="/account/orders" className="link text-sm whitespace-nowrap">
-                {t("web.account_view_history")}
-              </Link>
+      <div className="hidden space-y-6 lg:col-span-8 lg:block">
+        <Card>
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <h2 className="section-title">{t("web.account_recent_orders")}</h2>
+            <Link to="/account/orders" className="link text-sm whitespace-nowrap">
+              {t("web.account_view_history")}
+            </Link>
+          </div>
+          {!recentOrders ? (
+            <div className="space-y-4">
+              {[0, 1, 2].map((i) => (
+                <div key={i} className="flex items-center justify-between gap-3">
+                  <Skeleton className="h-4 w-40" />
+                  <Skeleton className="h-4 w-16" />
+                </div>
+              ))}
             </div>
-            {!recentOrders ? (
-              <div className="space-y-4">
-                {[0, 1, 2].map((i) => (
-                  <div key={i} className="flex items-center justify-between gap-3">
-                    <Skeleton className="h-4 w-40" />
-                    <Skeleton className="h-4 w-16" />
-                  </div>
-                ))}
-              </div>
-            ) : recentOrders.orders.length === 0 ? (
-              <EmptyState
-                icon={Receipt}
-                title={t("web.no_orders")}
-                description={t("web.no_orders_desc")}
-                action={{ label: t("web.nav_products"), to: "/products" }}
-                bare
-                suggestions={
-                  suggested ? { products: suggested.products, fx: shopCtx?.fx, lowThreshold: suggested.low_threshold } : undefined
-                }
-              />
-            ) : (
-              <div className="divide-y divide-line">
-                {recentOrders.orders.slice(0, 4).map((order) => (
-                  <RecentOrderRow key={order.code} order={order} />
-                ))}
-              </div>
-            )}
-          </Card>
-        </div>
+          ) : recentOrders.orders.length === 0 ? (
+            <EmptyState
+              icon={Receipt}
+              title={t("web.no_orders")}
+              description={t("web.no_orders_desc")}
+              action={{ label: t("web.nav_products"), to: "/products" }}
+              bare
+              suggestions={
+                suggested ? { products: suggested.products, fx: shopCtx?.fx, lowThreshold: suggested.low_threshold } : undefined
+              }
+            />
+          ) : (
+            <div className="divide-y divide-line">
+              {recentOrders.orders.slice(0, 4).map((order) => (
+                <RecentOrderRow key={order.code} order={order} />
+              ))}
+            </div>
+          )}
+        </Card>
       </div>
     </div>
-    </div>
-  );
+  </div>);
 }

@@ -5,6 +5,11 @@
  */
 import { currentLang } from "./i18n";
 
+const relativeFormatters = {
+  id: new Intl.RelativeTimeFormat("id", { numeric: "auto" }),
+  en: new Intl.RelativeTimeFormat("en", { numeric: "auto" }),
+};
+
 const SECOND = 1000;
 const MINUTE = 60 * SECOND;
 const HOUR = 60 * MINUTE;
@@ -26,7 +31,7 @@ export function formatRelativeTime(iso: string, now: number = Date.now()): strin
 
   const deltaMs = then - now;
   const absMs = Math.abs(deltaMs);
-  const rtf = new Intl.RelativeTimeFormat(currentLang(), { numeric: "auto" });
+  const rtf = relativeFormatters[currentLang() === "id" ? "id" : "en"];
 
   if (absMs < 45 * SECOND) {
     return rtf.format(Math.round(deltaMs / SECOND), "second");

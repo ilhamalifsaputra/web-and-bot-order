@@ -1,7 +1,7 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { renderHook } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { renderHook } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useSse } from "./useSse";
 
 class MockEventSource {
@@ -117,4 +117,22 @@ describe("useSse", () => {
     expect(MockEventSource.instances).toHaveLength(2);
     expect(MockEventSource.instances[1]!.closed).toBe(false);
   });
+  it("uses the latest merger without reconnecting an unchanged subscription", () => {
+    const queryClient = new QueryClient();
+    const firstMerge = vi.fn((_previous: number | undefined, next: unknown) => Number(next) + 1);
+    const nextMerge = vi.fn((_previous: number | undefined, next: unknown) => Number(next) + 10);
+    const { rerender } = renderHook(({ merge }) => useSse("/api/stream", ["latest"], merge), {
+      wrapper: makeWrapper(queryClient), initialProps: { merge: firstMerge },
+    });
+    const connection = MockEventSource.instances[0]!;
+    connection.emit(2);
+    rerender({ merge: nextMerge });
+    connection.emit(3);
+    expect(MockEventSource.instances).toHaveLength(1);
+    expect(connection.closed).toBe(false);
+    expect(firstMerge).toHaveBeenCalledTimes(1);
+    expect(nextMerge).toHaveBeenCalledTimes(1);
+    expect(queryClient.getQueryData(["latest"])).toBe(13);
+  });
+
 });

@@ -1,3 +1,4 @@
+import * as m from "motion/react-m";
 /**
  * Tabs (Segmented control) — `components.md` "Segmented control / tabs":
  * a row of pill buttons, `radius-full`, `12–14px/600`, padding
@@ -18,10 +19,10 @@
  *
  * Business-agnostic: `items` carry plain `label` nodes and string values.
  */
+import { useReducedMotion } from "motion/react";
 import { useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { cn } from "./cn";
-import { motion, useReducedMotion } from "motion/react";
 import { SELECTION_SPRING } from "../../lib/motion";
+import { cn } from "./cn";
 
 export interface TabItem {
   value: string;
@@ -137,7 +138,7 @@ export default function Tabs({
                 item.disabled && "cursor-not-allowed opacity-50",
               )}
             >
-              {selected && <motion.span
+              {selected && <m.span
                 aria-hidden="true"
                 layoutId={reduced ? undefined : `${baseId}-selection`}
                 initial={false}

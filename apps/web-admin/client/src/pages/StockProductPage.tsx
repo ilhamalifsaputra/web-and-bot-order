@@ -1,36 +1,36 @@
-import { useState } from "react";
-import { useParams } from "react-router-dom";
-import { useQuery, useMutation, useQueryClient, keepPreviousData } from "@tanstack/react-query";
-import { PageLayout } from "../components/shared/PageLayout";
-import { PageHeader } from "../components/shared/PageHeader";
-import { DataTable } from "../components/shared/DataTable";
-import { EmptyState } from "../components/shared/EmptyState";
-import { StatusBadge } from "../components/shared/StatusBadge";
-import { ConfirmDialog } from "../components/shared/ConfirmDialog";
-import { StockHistoryDialog } from "../components/shared/StockHistoryDialog";
-import { Pagination } from "../components/shared/Pagination";
-import { SearchBar } from "../components/shared/SearchBar";
-import { RestockRequestsHeader } from "../components/shared/RestockRequestsHeader";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
-import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { Eye, EyeOff, Copy, Check, Save, X, Ban, SquarePen, Lock, MoreVertical, Trash2, History } from "lucide-react";
 import {
   DropdownMenu,
-  DropdownMenuTrigger,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
+  DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Ban, Check, Copy, Eye, EyeOff, History, Lock, MoreVertical, Save, SquarePen, Trash2, X } from "lucide-react";
+import { useId, useState } from "react";
+import { useParams } from "react-router-dom";
 import { toast } from "sonner";
 import { apiGet, apiPost } from "../api/client";
+import { ConfirmDialog } from "../components/shared/ConfirmDialog";
+import { DataTable } from "../components/shared/DataTable";
+import { EmptyState } from "../components/shared/EmptyState";
+import { PageHeader } from "../components/shared/PageHeader";
+import { PageLayout } from "../components/shared/PageLayout";
+import { Pagination } from "../components/shared/Pagination";
+import { RestockRequestsHeader } from "../components/shared/RestockRequestsHeader";
+import { SearchBar } from "../components/shared/SearchBar";
+import { StatusBadge } from "../components/shared/StatusBadge";
+import { StockHistoryDialog } from "../components/shared/StockHistoryDialog";
 import { describeError } from "../lib/errorMessages";
-import { visibleSelection } from "../lib/selection";
 import { formatRestockRequests } from "../lib/restockRequests";
+import { visibleSelection } from "../lib/selection";
 
 /** Mirrors DeadReason in @app/core/enums (the client doesn't import @app/core). */
 const DEAD_REASONS = [
@@ -46,11 +46,12 @@ const DEFAULT_DEAD_REASON = "OTHER";
 const deadReasonLabel = (value: string) => DEAD_REASONS.find((r) => r.value === value)?.label ?? value;
 
 function DeadReasonSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const fieldId = useId();
   return (
     <div className="space-y-1.5">
-      <label className="text-sm font-medium text-ink" id="dead-reason-label">Reason</label>
+      <label htmlFor={`${fieldId}-reason-1`} className="text-sm font-medium text-ink" id="dead-reason-label">Reason</label>
       <Select value={value} onValueChange={onChange}>
-        <SelectTrigger aria-labelledby="dead-reason-label" className="w-full">
+        <SelectTrigger id={`${fieldId}-reason-1`} aria-labelledby="dead-reason-label" className="w-full">
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
@@ -160,40 +161,7 @@ export function StockProductPage() {
     setSearchDraft("");
   }
 
-  async function fetchRevealed(item: StockItem): Promise<string> {
-    const result = await apiPost<{ ok: boolean; credentials: string | null }>(
-      `/api/stock/item/${item.id}/reveal`,
-      {},
-    );
-    const text = result.credentials ?? "";
-    setRevealedId(item.id);
-    setRevealedText(text);
-    return text;
-  }
-
-  function toggleReveal(item: StockItem) {
-    if (revealedId === item.id) {
-      setRevealedId(null);
-      setRevealedText(null);
-      return;
-    }
-    fetchRevealed(item).catch((e: unknown) => {
-      toast.error(describeError(e, "Failed to reveal the account credential."));
-    });
-  }
-
-  async function copyCredential(item: StockItem) {
-    if (!navigator.clipboard) return;
-    try {
-      const text = revealedId === item.id && revealedText != null ? revealedText : await fetchRevealed(item);
-      await navigator.clipboard.writeText(text);
-      setCopiedId(item.id);
-      setTimeout(() => setCopiedId(id => (id === item.id ? null : id)), 1500);
-    } catch (err) {
-      console.error("Failed to copy the stock item's account credential to the clipboard", err);
-      toast.error(describeError(err, "Failed to copy the account credential."));
-    }
-  }
+  const { toggleReveal, copyCredential } = useStockCredentials({ setRevealedId, setRevealedText, revealedId, revealedText, setCopiedId });
 
   const bulkAdd = useMutation({
     mutationFn: () =>
@@ -279,75 +247,9 @@ export function StockProductPage() {
   // Takes an explicit `ids` argument rather than reading `selected` from
   // closure: selection is per-tab, and only the caller inside renderStockTable
   // knows which tab's items are on screen.
-  async function bulkMarkDead(ids: number[]) {
-    const count = ids.length;
-    setBulkActing(true);
-    try {
-      await apiPost(`/api/stock/${productId}/bulk-dead`, { ids, reason: deadReason });
-      setSelected(new Set());
-      await qc.invalidateQueries({ queryKey: ["stock", productId] });
-      toast.success(`${count} item(s) marked dead.`);
-    } catch (e) {
-      toast.error(describeError(e, "Failed to mark items dead."));
-    } finally {
-      setBulkActing(false);
-      setDeadReason(DEFAULT_DEAD_REASON);
-    }
-  }
+  const { bulkMarkDead, bulkDelete } = useStockBulkActions({ setBulkActing, productId, deadReason, setSelected, qc, setDeadReason });
 
-  async function bulkDelete(ids: number[]) {
-    setBulkActing(true);
-    try {
-      const result = await apiPost<{ ok: boolean; count: number; skipped: number }>(
-        `/api/stock/${productId}/bulk-delete`,
-        { ids },
-      );
-      setSelected(new Set());
-      await qc.invalidateQueries({ queryKey: ["stock", productId] });
-      toast.success(
-        result.skipped === 0
-          ? `${result.count} item(s) deleted.`
-          : `${result.count} item(s) deleted. ${result.skipped} skipped (sold or linked to an order).`,
-      );
-    } catch (e) {
-      toast.error(describeError(e, "Failed to delete items."));
-    } finally {
-      setBulkActing(false);
-    }
-  }
-
-  async function markItemDead(id: number) {
-    try {
-      await apiPost(`/api/stock/item/${id}/dead`, { reason: deadReason });
-      await qc.invalidateQueries({ queryKey: ["stock", productId] });
-      toast.success("Stock item marked dead.");
-    } catch (e) {
-      toast.error(describeError(e, "Failed to mark item dead."));
-    } finally {
-      setDeadReason(DEFAULT_DEAD_REASON);
-    }
-  }
-
-  async function deleteItem(id: number) {
-    try {
-      await apiPost(`/api/stock/item/${id}/delete`, {});
-      await qc.invalidateQueries({ queryKey: ["stock", productId] });
-      toast.success("Stock item deleted.");
-    } catch (e) {
-      toast.error(describeError(e, "Failed to delete item."));
-    }
-  }
-
-  async function saveNote(id: number) {
-    try {
-      await apiPost(`/api/stock/item/${id}/note`, { note: noteDraft });
-      setEditingNoteId(null);
-      await qc.invalidateQueries({ queryKey: ["stock", productId] });
-      toast.success("Note saved.");
-    } catch (e) {
-      toast.error(describeError(e, "Failed to update note."));
-    }
-  }
+  const { markItemDead, deleteItem, saveNote } = useStockItemActions({ deadReason, qc, productId, setDeadReason, noteDraft, setEditingNoteId });
 
   function renderStockTable(tabItems: StockItem[]) {
     // Scoped to this tab's items: marking an item dead moves it out of the
@@ -357,7 +259,7 @@ export function StockProductPage() {
     return (
       <>
         {visibleSelected.size > 0 && (
-          <div className="sticky bottom-4 z-10 mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-line bg-card px-3 py-2 text-sm shadow-lift transition-all duration-150">
+          <div className="sticky bottom-4 z-10 mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-line bg-card px-3 py-2 text-sm shadow-lift transition-[color,background-color,border-color,opacity,transform] duration-150">
             <span className="text-ink-soft">{visibleSelected.size} selected</span>
             <ConfirmDialog
               trigger={<Button size="sm" variant="destructive" disabled={bulkActing} onClick={() => setDeadReason(DEFAULT_DEAD_REASON)}>Mark selected dead</Button>}
@@ -381,153 +283,7 @@ export function StockProductPage() {
           </div>
         )}
 
-        <Card>
-          <CardContent>
-            <DataTable
-              nested
-              columns={[
-                {
-                  key: "select",
-                  kind: "selection",
-                  header: (
-                    <Checkbox
-                      checked={tabItems.length > 0 && tabItems.every((i) => selected.has(i.id))}
-                      onCheckedChange={() => toggleSelectAllInTab(tabItems)}
-                      aria-label="Select all stock items on this page"
-                    />
-                  ),
-                  render: item => (
-                    <Checkbox
-                      checked={selected.has(item.id)}
-                      onCheckedChange={() => toggleSelected(item.id)}
-                      aria-label={`Select stock item ${item.id}`}
-                    />
-                  ),
-                },
-                { key: "id", header: "#", render: item => <span className="font-mono text-xs text-ink-soft">{item.id}</span> },
-                { key: "status", header: "Status", render: item => <StatusBadge status={item.status} /> },
-                {
-                  key: "credentials",
-                  header: (
-                    <span className="inline-flex items-center gap-1">
-                      <Lock className="h-3.5 w-3.5 text-ink-faint" />
-                      Account
-                    </span>
-                  ),
-                  render: item => {
-                    const revealed = revealedId === item.id;
-                    return (
-                      <div className="flex items-center gap-1">
-                        <span className="font-mono text-xs text-ink break-all">
-                          {revealed ? (revealedText || "—") : item.credentials}
-                        </span>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          aria-label={
-                            revealed
-                              ? `Hide account for stock item ${item.id}`
-                              : `Show account for stock item ${item.id}`
-                          }
-                          onClick={() => toggleReveal(item)}
-                        >
-                          {revealed ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          aria-label={`Copy account for stock item ${item.id}`}
-                          onClick={() => void copyCredential(item)}
-                        >
-                          {copiedId === item.id
-                            ? <Check className="h-3.5 w-3.5 text-grass" />
-                            : <Copy className="h-3.5 w-3.5" />}
-                        </Button>
-                      </div>
-                    );
-                  },
-                },
-                {
-                  key: "note",
-                  header: "Note",
-                  render: item =>
-                    editingNoteId === item.id ? (
-                      <div className="flex items-center gap-2">
-                        <Input
-                          aria-label={`Note for stock item ${item.id}`}
-                          value={noteDraft}
-                          onChange={e => setNoteDraft(e.target.value)}
-                          className="h-7 text-xs max-w-[180px]"
-                          autoFocus
-                        />
-                        <Button size="sm" variant="ghost" onClick={() => void saveNote(item.id)}><Save className="h-4 w-4" />Save</Button>
-                        <Button size="sm" variant="ghost" onClick={() => setEditingNoteId(null)}><X className="h-4 w-4" />Cancel</Button>
-                      </div>
-                    ) : (
-                      <div className="flex max-w-[240px] flex-col gap-0.5">
-                        <span className="block truncate text-xs text-ink-soft" title={item.note ?? undefined}>
-                          {item.note ?? "—"}
-                        </span>
-                        {item.status === "DEAD" && item.deadReason && (
-                          <span className="text-xs font-medium text-ink-soft">{deadReasonLabel(item.deadReason)}</span>
-                        )}
-                      </div>
-                    ),
-                },
-                { key: "added", header: "Added", render: item => <span className="text-xs text-ink-soft">{item.createdAtDisplay ?? "—"}</span> },
-                {
-                  key: "actions",
-                  header: "",
-                  render: item => (
-                    <div onClick={(e) => e.stopPropagation()}>
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="icon-sm" aria-label={`Actions for stock item ${item.id}`}>
-                            <MoreVertical className="h-4 w-4" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem onSelect={() => { setEditingNoteId(item.id); setNoteDraft(item.note ?? ""); }}>
-                            <SquarePen className="h-4 w-4" />
-                            Edit Note
-                          </DropdownMenuItem>
-                          <DropdownMenuItem onSelect={() => setHistoryItemId(item.id)}>
-                            <History className="h-4 w-4" />
-                            History
-                          </DropdownMenuItem>
-                          {item.status !== "DEAD" && (
-                            <>
-                              <DropdownMenuSeparator />
-                              <DropdownMenuItem
-                                variant="destructive"
-                                onSelect={(e) => { e.preventDefault(); setDeadReason(DEFAULT_DEAD_REASON); setPendingMarkDead(item); }}
-                              >
-                                <Ban className="h-4 w-4" />
-                                Mark Dead
-                              </DropdownMenuItem>
-                            </>
-                          )}
-                          {item.status !== "SOLD" && (
-                            <DropdownMenuItem
-                              variant="destructive"
-                              onSelect={(e) => { e.preventDefault(); setPendingDelete(item); }}
-                            >
-                              <Trash2 className="h-4 w-4" />
-                              Delete
-                            </DropdownMenuItem>
-                          )}
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </div>
-                  ),
-                },
-              ]}
-              data={tabItems}
-              keyExtractor={item => item.id}
-              empty={<EmptyState title="No stock items" description="Add credentials above to stock this denomination." />}
-            />
-          </CardContent>
-        </Card>
+        <StockItemsTable tabItems={tabItems} selected={selected} toggleSelectAllInTab={toggleSelectAllInTab} toggleSelected={toggleSelected} revealedId={revealedId} revealedText={revealedText} toggleReveal={toggleReveal} copyCredential={copyCredential} copiedId={copiedId} editingNoteId={editingNoteId} noteDraft={noteDraft} setNoteDraft={setNoteDraft} saveNote={saveNote} setEditingNoteId={setEditingNoteId} setHistoryItemId={setHistoryItemId} setDeadReason={setDeadReason} setPendingMarkDead={setPendingMarkDead} setPendingDelete={setPendingDelete} />
       </>
     );
   }
@@ -584,61 +340,12 @@ export function StockProductPage() {
       </div>
 
       {/* Bulk add */}
-      <Card className="mb-6">
-        <CardHeader><CardTitle>Bulk Add Credentials</CardTitle></CardHeader>
-        <CardContent className="flex flex-col gap-3">
-          {bulkMsg && <p className="text-sm text-grass">{bulkMsg}</p>}
-          {bulkError && <p className="text-sm text-rust">{bulkError}</p>}
-          <Textarea
-            aria-label="Credentials, one per line"
-            value={credentials}
-            onChange={e => setCredentials(e.target.value)}
-            placeholder="One credential per line…"
-            rows={6}
-            className="font-mono text-sm"
-          />
-          <Button onClick={() => bulkAdd.mutate()} disabled={bulkAdd.isPending || !credentials.trim()} className="self-start">
-            {bulkAdd.isPending ? "Adding…" : "Add Stock"}
-          </Button>
-          <label className="flex items-center gap-2 text-sm text-ink cursor-pointer">
-            <Checkbox
-              checked={product.broadcastOnRestock}
-              onCheckedChange={(checked) => toggleBroadcast.mutate(checked === true)}
-              disabled={toggleBroadcast.isPending}
-              aria-label="Broadcast to all customers when I add stock to this product"
-            />
-            Broadcast to all customers when I add stock to this product
-          </label>
-        </CardContent>
-      </Card>
+      <StockProductBulkAddCredentials bulkMsg={bulkMsg} bulkError={bulkError} credentials={credentials} setCredentials={setCredentials} bulkAdd={bulkAdd} product={product} toggleBroadcast={toggleBroadcast} />
 
       {/* Items table, grouped by status */}
       <h2 className="text-sm font-semibold text-ink mb-3">Stock Items</h2>
 
-      <div className="mb-3 flex flex-wrap items-center gap-2">
-        <SearchBar
-          value={searchDraft}
-          onChange={setSearchDraft}
-          onSearch={() => { setSearch(searchDraft.trim()); setPage(1); }}
-          placeholder="Search this tab's accounts…"
-        />
-        {search && (
-          <>
-            <span className="text-sm text-ink-soft">
-              {capped
-                ? `Showing the first ${total} matches for "${search}" — narrow your search`
-                : `Showing ${total} result${total === 1 ? "" : "s"} for "${search}"`}
-            </span>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => { setSearch(""); setSearchDraft(""); setPage(1); }}
-            >
-              Clear
-            </Button>
-          </>
-        )}
-      </div>
+      <StockSearchControls searchDraft={searchDraft} setSearchDraft={setSearchDraft} setSearch={setSearch} setPage={setPage} search={search} capped={capped} total={total} />
 
       <Tabs value={activeTab} onValueChange={changeTab}>
         <TabsList>
@@ -694,4 +401,380 @@ export function StockProductPage() {
       )}
     </PageLayout>
   );
+}
+
+function StockProductBulkAddCredentials({ bulkMsg, bulkError, credentials, setCredentials, bulkAdd, product, toggleBroadcast }: {
+  bulkMsg: string | null;
+  bulkError: string | null;
+  credentials: string;
+  setCredentials: import("react").Dispatch<import("react").SetStateAction<string>>;
+  bulkAdd: import("@tanstack/react-query").UseMutationResult<{ ok: boolean; added: number; skipped: number; message: string; }, Error, void, unknown>;
+  product: { id: number; name: string; isActive: boolean; broadcastOnRestock: boolean; usesLocalInventory?: boolean; product: { id: number; name: string; category: { name: string; } | null; } | null; };
+  toggleBroadcast: import("@tanstack/react-query").UseMutationResult<{ ok: boolean; broadcastOnRestock: boolean; }, Error, boolean, { previous: [readonly unknown[], StockProductData | undefined][]; }>;
+}) {
+  return (<Card className="mb-6">
+    <CardHeader><CardTitle>Bulk Add Credentials</CardTitle></CardHeader>
+    <CardContent className="flex flex-col gap-3">
+      {bulkMsg && <p className="text-sm text-grass">{bulkMsg}</p>}
+      {bulkError && <p className="text-sm text-rust">{bulkError}</p>}
+      <Textarea
+        aria-label="Credentials, one per line"
+        value={credentials}
+        onChange={e => setCredentials(e.target.value)}
+        placeholder="One credential per line…"
+        rows={6}
+        className="font-mono text-sm"
+      />
+      <Button onClick={() => bulkAdd.mutate()} disabled={bulkAdd.isPending || !credentials.trim()} className="self-start">
+        {bulkAdd.isPending ? "Adding…" : "Add Stock"}
+      </Button>
+      <label className="flex items-center gap-2 text-sm text-ink cursor-pointer">
+        <Checkbox
+          checked={product.broadcastOnRestock}
+          onCheckedChange={(checked) => toggleBroadcast.mutate(checked === true)}
+          disabled={toggleBroadcast.isPending}
+          aria-label="Broadcast to all customers when I add stock to this product"
+        />
+        Broadcast to all customers when I add stock to this product
+      </label>
+    </CardContent>
+  </Card>);
+}
+
+function StockSearchControls({ searchDraft, setSearchDraft, setSearch, setPage, search, capped, total }: {
+  searchDraft: string;
+  setSearchDraft: import("react").Dispatch<import("react").SetStateAction<string>>;
+  setSearch: import("react").Dispatch<import("react").SetStateAction<string>>;
+  setPage: import("react").Dispatch<import("react").SetStateAction<number>>;
+  search: string;
+  capped: boolean;
+  total: number;
+}) {
+  return (<div className="mb-3 flex flex-wrap items-center gap-2">
+    <SearchBar
+      value={searchDraft}
+      onChange={setSearchDraft}
+      onSearch={() => { setSearch(searchDraft.trim()); setPage(1); }}
+      placeholder="Search this tab's accounts…"
+    />
+    {search && (
+      <>
+        <span className="text-sm text-ink-soft">
+          {capped
+            ? `Showing the first ${total} matches for "${search}" — narrow your search`
+            : `Showing ${total} result${total === 1 ? "" : "s"} for "${search}"`}
+        </span>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => { setSearch(""); setSearchDraft(""); setPage(1); }}
+        >
+          Clear
+        </Button>
+      </>
+    )}
+  </div>);
+}
+
+function StockItemsTable({ tabItems, selected, toggleSelectAllInTab, toggleSelected, revealedId, revealedText, toggleReveal, copyCredential, copiedId, editingNoteId, noteDraft, setNoteDraft, saveNote, setEditingNoteId, setHistoryItemId, setDeadReason, setPendingMarkDead, setPendingDelete }: {
+  tabItems: StockItem[];
+  selected: Set<number>;
+  toggleSelectAllInTab: (items: StockItem[]) => void;
+  toggleSelected: (id: number) => void;
+  revealedId: number | null;
+  revealedText: string | null;
+  toggleReveal: (item: StockItem) => void;
+  copyCredential: (item: StockItem) => Promise<void>;
+  copiedId: number | null;
+  editingNoteId: number | null;
+  noteDraft: string;
+  setNoteDraft: import("react").Dispatch<import("react").SetStateAction<string>>;
+  saveNote: (id: number) => Promise<void>;
+  setEditingNoteId: import("react").Dispatch<import("react").SetStateAction<number | null>>;
+  setHistoryItemId: import("react").Dispatch<import("react").SetStateAction<number | null>>;
+  setDeadReason: import("react").Dispatch<import("react").SetStateAction<string>>;
+  setPendingMarkDead: import("react").Dispatch<import("react").SetStateAction<StockItem | null>>;
+  setPendingDelete: import("react").Dispatch<import("react").SetStateAction<StockItem | null>>;
+}) {
+  return (<Card>
+    <CardContent>
+      <DataTable
+        nested
+        columns={[
+          {
+            key: "select",
+            kind: "selection",
+            header: (
+              <Checkbox
+                checked={tabItems.length > 0 && tabItems.every((i) => selected.has(i.id))}
+                onCheckedChange={() => toggleSelectAllInTab(tabItems)}
+                aria-label="Select all stock items on this page"
+              />
+            ),
+            render: item => (
+              <Checkbox
+                checked={selected.has(item.id)}
+                onCheckedChange={() => toggleSelected(item.id)}
+                aria-label={`Select stock item ${item.id}`}
+              />
+            ),
+          },
+          { key: "id", header: "#", render: item => <span className="font-mono text-xs text-ink-soft">{item.id}</span> },
+          { key: "status", header: "Status", render: item => <StatusBadge status={item.status} /> },
+          {
+            key: "credentials",
+            header: (
+              <span className="inline-flex items-center gap-1">
+                <Lock className="h-3.5 w-3.5 text-ink-faint" />
+                Account
+              </span>
+            ),
+            render: item => {
+              const revealed = revealedId === item.id;
+              return (
+                <div className="flex items-center gap-1">
+                  <span className="font-mono text-xs text-ink break-all">
+                    {revealed ? (revealedText || "—") : item.credentials}
+                  </span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    aria-label={
+                      revealed
+                        ? `Hide account for stock item ${item.id}`
+                        : `Show account for stock item ${item.id}`
+                    }
+                    onClick={() => toggleReveal(item)}
+                  >
+                    {revealed ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    aria-label={`Copy account for stock item ${item.id}`}
+                    onClick={() => void copyCredential(item)}
+                  >
+                    {copiedId === item.id
+                      ? <Check className="h-3.5 w-3.5 text-grass" />
+                      : <Copy className="h-3.5 w-3.5" />}
+                  </Button>
+                </div>
+              );
+            },
+          },
+          {
+            key: "note",
+            header: "Note",
+            render: item =>
+              editingNoteId === item.id ? (
+                <div className="flex items-center gap-2">
+                  <Input
+                    aria-label={`Note for stock item ${item.id}`}
+                    value={noteDraft}
+                    onChange={e => setNoteDraft(e.target.value)}
+                    className="h-7 text-xs max-w-[180px]"
+                    autoFocus
+                  />
+                  <Button size="sm" variant="ghost" onClick={() => void saveNote(item.id)}><Save className="h-4 w-4" />Save</Button>
+                  <Button size="sm" variant="ghost" onClick={() => setEditingNoteId(null)}><X className="h-4 w-4" />Cancel</Button>
+                </div>
+              ) : (
+                <div className="flex max-w-[240px] flex-col gap-0.5">
+                  <span className="block truncate text-xs text-ink-soft" title={item.note ?? undefined}>
+                    {item.note ?? "—"}
+                  </span>
+                  {item.status === "DEAD" && item.deadReason && (
+                    <span className="text-xs font-medium text-ink-soft">{deadReasonLabel(item.deadReason)}</span>
+                  )}
+                </div>
+              ),
+          },
+          { key: "added", header: "Added", render: item => <span className="text-xs text-ink-soft">{item.createdAtDisplay ?? "—"}</span> },
+          {
+            key: "actions",
+            header: "",
+            render: item => (
+              <div onClick={(e) => e.stopPropagation()}>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="ghost" size="icon-sm" aria-label={`Actions for stock item ${item.id}`}>
+                      <MoreVertical className="h-4 w-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onSelect={() => { setEditingNoteId(item.id); setNoteDraft(item.note ?? ""); }}>
+                      <SquarePen className="h-4 w-4" />
+                      Edit Note
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onSelect={() => setHistoryItemId(item.id)}>
+                      <History className="h-4 w-4" />
+                      History
+                    </DropdownMenuItem>
+                    {item.status !== "DEAD" && (
+                      <>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          variant="destructive"
+                          onSelect={(e) => { e.preventDefault(); setDeadReason(DEFAULT_DEAD_REASON); setPendingMarkDead(item); }}
+                        >
+                          <Ban className="h-4 w-4" />
+                          Mark Dead
+                        </DropdownMenuItem>
+                      </>
+                    )}
+                    {item.status !== "SOLD" && (
+                      <DropdownMenuItem
+                        variant="destructive"
+                        onSelect={(e) => { e.preventDefault(); setPendingDelete(item); }}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                        Delete
+                      </DropdownMenuItem>
+                    )}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+            ),
+          },
+        ]}
+        data={tabItems}
+        keyExtractor={item => item.id}
+        empty={<EmptyState title="No stock items" description="Add credentials above to stock this denomination." />}
+      />
+    </CardContent>
+  </Card>);
+}
+
+function useStockCredentials({ setRevealedId, setRevealedText, revealedId, revealedText, setCopiedId }: {
+  setRevealedId: import("react").Dispatch<import("react").SetStateAction<number | null>>;
+  setRevealedText: import("react").Dispatch<import("react").SetStateAction<string | null>>;
+  revealedId: number | null;
+  revealedText: string | null;
+  setCopiedId: import("react").Dispatch<import("react").SetStateAction<number | null>>;
+}) {
+  async function fetchRevealed(item: StockItem): Promise<string> {
+    const result = await apiPost<{ ok: boolean; credentials: string | null }>(
+      `/api/stock/item/${item.id}/reveal`,
+      {},
+    );
+    const text = result.credentials ?? "";
+    setRevealedId(item.id);
+    setRevealedText(text);
+    return text;
+  }
+
+  function toggleReveal(item: StockItem) {
+    if (revealedId === item.id) {
+      setRevealedId(null);
+      setRevealedText(null);
+      return;
+    }
+    fetchRevealed(item).catch((e: unknown) => {
+      toast.error(describeError(e, "Failed to reveal the account credential."));
+    });
+  }
+
+  async function copyCredential(item: StockItem) {
+    if (!navigator.clipboard) return;
+    try {
+      const text = revealedId === item.id && revealedText != null ? revealedText : await fetchRevealed(item);
+      await navigator.clipboard.writeText(text);
+      setCopiedId(item.id);
+      setTimeout(() => setCopiedId(id => (id === item.id ? null : id)), 1500);
+    } catch (err) {
+      console.error("Failed to copy the stock item's account credential to the clipboard", err);
+      toast.error(describeError(err, "Failed to copy the account credential."));
+    }
+  }
+  return { toggleReveal, copyCredential };
+}
+
+function useStockBulkActions({ setBulkActing, productId, deadReason, setSelected, qc, setDeadReason }: {
+  setBulkActing: import("react").Dispatch<import("react").SetStateAction<boolean>>;
+  productId: string | undefined;
+  deadReason: string;
+  setSelected: import("react").Dispatch<import("react").SetStateAction<Set<number>>>;
+  qc: import("@tanstack/react-query").QueryClient;
+  setDeadReason: import("react").Dispatch<import("react").SetStateAction<string>>;
+}) {
+  async function bulkMarkDead(ids: number[]) {
+    const count = ids.length;
+    setBulkActing(true);
+    try {
+      await apiPost(`/api/stock/${productId}/bulk-dead`, { ids, reason: deadReason });
+      setSelected(new Set());
+      await qc.invalidateQueries({ queryKey: ["stock", productId] });
+      toast.success(`${count} item(s) marked dead.`);
+    } catch (e) {
+      toast.error(describeError(e, "Failed to mark items dead."));
+    } finally {
+      setBulkActing(false);
+      setDeadReason(DEFAULT_DEAD_REASON);
+    }
+  }
+
+  async function bulkDelete(ids: number[]) {
+    setBulkActing(true);
+    try {
+      const result = await apiPost<{ ok: boolean; count: number; skipped: number }>(
+        `/api/stock/${productId}/bulk-delete`,
+        { ids },
+      );
+      setSelected(new Set());
+      await qc.invalidateQueries({ queryKey: ["stock", productId] });
+      toast.success(
+        result.skipped === 0
+          ? `${result.count} item(s) deleted.`
+          : `${result.count} item(s) deleted. ${result.skipped} skipped (sold or linked to an order).`,
+      );
+    } catch (e) {
+      toast.error(describeError(e, "Failed to delete items."));
+    } finally {
+      setBulkActing(false);
+    }
+  }
+  return { bulkMarkDead, bulkDelete };
+}
+
+function useStockItemActions({ deadReason, qc, productId, setDeadReason, noteDraft, setEditingNoteId }: {
+  deadReason: string;
+  qc: import("@tanstack/react-query").QueryClient;
+  productId: string | undefined;
+  setDeadReason: import("react").Dispatch<import("react").SetStateAction<string>>;
+  noteDraft: string;
+  setEditingNoteId: import("react").Dispatch<import("react").SetStateAction<number | null>>;
+}) {
+  async function markItemDead(id: number) {
+    try {
+      await apiPost(`/api/stock/item/${id}/dead`, { reason: deadReason });
+      await qc.invalidateQueries({ queryKey: ["stock", productId] });
+      toast.success("Stock item marked dead.");
+    } catch (e) {
+      toast.error(describeError(e, "Failed to mark item dead."));
+    } finally {
+      setDeadReason(DEFAULT_DEAD_REASON);
+    }
+  }
+
+  async function deleteItem(id: number) {
+    try {
+      await apiPost(`/api/stock/item/${id}/delete`, {});
+      await qc.invalidateQueries({ queryKey: ["stock", productId] });
+      toast.success("Stock item deleted.");
+    } catch (e) {
+      toast.error(describeError(e, "Failed to delete item."));
+    }
+  }
+
+  async function saveNote(id: number) {
+    try {
+      await apiPost(`/api/stock/item/${id}/note`, { note: noteDraft });
+      setEditingNoteId(null);
+      await qc.invalidateQueries({ queryKey: ["stock", productId] });
+      toast.success("Note saved.");
+    } catch (e) {
+      toast.error(describeError(e, "Failed to update note."));
+    }
+  }
+  return { markItemDead, deleteItem, saveNote } as const;
 }

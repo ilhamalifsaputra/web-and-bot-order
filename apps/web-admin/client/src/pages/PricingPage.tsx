@@ -1,21 +1,21 @@
-import { useEffect, useRef, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Decimal } from "decimal.js";
-import { apiGet, apiPost, apiPut, apiDelete } from "../api/client";
-import { exactFieldsOf } from "../lib/exactFields";
-import { PageLayout } from "../components/shared/PageLayout";
-import { PageHeader } from "../components/shared/PageHeader";
-import { DataTable } from "../components/shared/DataTable";
-import { SaveConfirmDialog } from "../components/shared/SaveConfirmDialog";
-import { ConfirmDialog } from "../components/shared/ConfirmDialog";
-import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount";
-import { Card, CardHeader, CardTitle, CardContent, CardDescription } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useId, useRef, useState } from "react";
+import { apiDelete, apiGet, apiPost, apiPut } from "../api/client";
+import { ConfirmDialog } from "../components/shared/ConfirmDialog";
+import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount.helpers";
+import { DataTable } from "../components/shared/DataTable";
+import { PageHeader } from "../components/shared/PageHeader";
+import { PageLayout } from "../components/shared/PageLayout";
+import { SaveConfirmDialog } from "../components/shared/SaveConfirmDialog";
+import { exactFieldsOf } from "../lib/exactFields";
+import { marginDisplay } from "./PricingPage.helpers";
 
 type RuleType = "none" | "percent" | "flat";
 interface Category { id: number; name: string; group: string | null; markupType: "percent" | "flat" | null; markupValue: string | null; skuCount: number }
@@ -30,19 +30,21 @@ interface Impact { eligibleCount: number; changedCount: number; sample: { denomi
 const ROUNDING = [{ value: "none", label: "Tanpa pembulatan tambahan" }, { value: "ceil_100", label: "Ke atas Rp100" }, { value: "ceil_500", label: "Ke atas Rp500" }, { value: "ceil_1000", label: "Ke atas Rp1.000" }];
 const AMOUNTS = ["markupValue", "lowMarginWarnPct"] as const;
 const money = (value: string) => formatCurrencyDisplay(value, "IDR");
-export const marginDisplay = (value: string | null) => value === null ? "—" : `${new Decimal(value).toDecimalPlaces(2).toString()}%`;
 function payload(form: Form, initial: Form | null) {
-  return { ...form, markupType: form.markupType === "none" ? null : form.markupType,
+  return {
+    ...form, markupType: form.markupType === "none" ? null : form.markupType,
     lowMarginWarnPct: form.lowMarginWarnPct || null,
-    exact_fields: exactFieldsOf(form, initial, AMOUNTS).filter(key => key !== "markupValue" || initial?.markupType === form.markupType) };
+    exact_fields: exactFieldsOf(form, initial, AMOUNTS).filter(key => key !== "markupValue" || initial?.markupType === form.markupType)
+  };
 }
-function TypeSelect({ value, onChange, label, allowNone = true }: { value: string; onChange: (v: RuleType) => void; label: string; allowNone?: boolean }) {
-  return <Select value={value} onValueChange={v => onChange(v as RuleType)}><SelectTrigger aria-label={label}><SelectValue /></SelectTrigger><SelectContent>
+function TypeSelect({ id, value, onChange, label, allowNone = true }: { id?: string; value: string; onChange: (v: RuleType) => void; label: string; allowNone?: boolean }) {
+  return <Select value={value} onValueChange={v => onChange(v as RuleType)}><SelectTrigger id={id} aria-label={label}><SelectValue /></SelectTrigger><SelectContent>
     {allowNone && <SelectItem value="none">Tanpa markup</SelectItem>}<SelectItem value="percent">Persentase (%)</SelectItem><SelectItem value="flat">Nominal tetap (IDR)</SelectItem>
   </SelectContent></Select>;
 }
 
 export function PricingPage() {
+  const fieldId = useId();
   const qc = useQueryClient();
   const query = useQuery({ queryKey: ["pricing"], queryFn: () => apiGet<PricingData>("/api/pricing") });
   const [form, setForm] = useState<Form>({ markupType: "none", markupValue: "0", rounding: "none", lowMarginWarnPct: "" });
@@ -85,7 +87,7 @@ export function PricingPage() {
     }, 400);
     return () => { clearTimeout(timer); controller.abort(); sequence.current++; };
   }, [form, sample, initial, owner]);
-  const dirty = initial !== null && (JSON.stringify(form) !== JSON.stringify(initial) || !query.data?.policy.globalRuleReadable || !query.data?.policy.roundingReadable);
+  const { dirty } = pricingFormStatus({ initial, form, query });
   const reload = async () => { await qc.invalidateQueries({ queryKey: ["pricing"] }); await qc.invalidateQueries({ queryKey: ["catalog"] }); };
   async function saveGlobal() {
     await apiPost("/api/pricing/global", payload(form, initial));
@@ -95,8 +97,10 @@ export function PricingPage() {
     if (!editCategory) return;
     setCategorySaving(true); setCategoryError(null);
     try {
-      await apiPut(`/api/pricing/categories/${editCategory.id}`, { markupType: categoryType, markupValue: categoryValue,
-        exact_fields: categoryType === editCategory.markupType && categoryValue === editCategory.markupValue ? ["markupValue"] : [] });
+      await apiPut(`/api/pricing/categories/${editCategory.id}`, {
+        markupType: categoryType, markupValue: categoryValue,
+        exact_fields: categoryType === editCategory.markupType && categoryValue === editCategory.markupValue ? ["markupValue"] : []
+      });
       setEditCategory(null); await reload(); setNotice("Aturan kategori disimpan. Terapkan sekarang atau tunggu sync berikutnya.");
     } catch (e) { setCategoryError((e as Error).message); } finally { setCategorySaving(false); }
   }
@@ -108,20 +112,7 @@ export function PricingPage() {
       {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
       <nav aria-label="Pricing sections" className="mb-5 flex gap-5 overflow-x-auto text-sm text-pine"><a href="#global-pricing">Global Defaults</a><a href="#category-rules">Category Rules</a><a href="#apply-pricing">Terapkan harga</a></nav>
       <div className="space-y-6">
-        <Card id="global-pricing"><CardHeader><CardTitle as="h2">Global Defaults</CardTitle><CardDescription>Aturan dasar untuk SKU Digiflazz yang mengikuti harga otomatis.</CardDescription></CardHeader>
-          <CardContent><form className="space-y-5" onSubmit={e => { e.preventDefault(); setSaveOpen(true); }}>
-            {(!query.data.policy.globalRuleReadable || !query.data.policy.roundingReadable) && <Alert variant="destructive"><AlertDescription>Kebijakan tersimpan tidak terbaca. Periksa dan simpan kembali sebelum menghitung harga.</AlertDescription></Alert>}
-            <fieldset disabled={!owner} className="grid gap-4 sm:grid-cols-2">
-              <div className="space-y-2"><label className="text-sm font-medium">Jenis markup</label><TypeSelect value={form.markupType} label="Jenis markup" onChange={v => setForm({ ...form, markupType: v, markupValue: "0" })} /></div>
-              <div className="space-y-2"><label htmlFor="markup-value" className="text-sm font-medium">Markup {form.markupType === "flat" ? "(IDR)" : "(%)"}</label><Input id="markup-value" inputMode="decimal" disabled={form.markupType === "none"} value={form.markupValue} onChange={e => setForm({ ...form, markupValue: e.target.value })} /></div>
-              <div className="space-y-2"><label className="text-sm font-medium">Pembulatan harga</label><Select value={form.rounding} onValueChange={v => setForm({ ...form, rounding: v })}><SelectTrigger aria-label="Pembulatan harga"><SelectValue /></SelectTrigger><SelectContent>{ROUNDING.map(r => <SelectItem key={r.value} value={r.value}>{r.label}</SelectItem>)}</SelectContent></Select></div>
-              <div className="space-y-2"><label htmlFor="margin-warning" className="text-sm font-medium">Peringatan margin di bawah (%)</label><Input id="margin-warning" inputMode="decimal" placeholder="Kosong = nonaktif" value={form.lowMarginWarnPct} onChange={e => setForm({ ...form, lowMarginWarnPct: e.target.value })} /></div>
-            </fieldset>
-            {owner && <div className="border-t border-line pt-4 space-y-3"><label htmlFor="sample-cost" className="text-sm font-medium">Preview dari HPP contoh (IDR)</label><Input id="sample-cost" className="max-w-xs" inputMode="decimal" value={sample} onChange={e => setSample(e.target.value)} />
-              <div aria-live="polite">{checking && <p className="text-sm text-ink-soft">Menghitung preview…</p>}{previewError && <p role="alert" className="text-sm text-rust">{previewError}</p>}{preview?.map((r, i) => <div key={i} className="flex flex-wrap gap-x-8 gap-y-2"><div><p className="text-xs text-ink-soft">Harga hasil aturan</p><p className="text-xl font-semibold tabular-nums">{money(r.effectivePrice)}</p></div><div className="text-sm text-ink-soft"><p>Estimasi laba: {r.grossProfit === null ? "—" : money(r.grossProfit)}</p><p>Margin: {marginDisplay(r.grossMarginPct)} sebelum biaya/diskon</p></div></div>)}</div>
-            </div>}
-            <Button type="submit" disabled={!owner || !dirty || checking || !preview || !!previewError}>Simpan default</Button>
-          </form></CardContent></Card>
+        <PricingGlobalDefaults setSaveOpen={setSaveOpen} query={query} owner={owner} fieldId={fieldId} form={form} setForm={setForm} sample={sample} setSample={setSample} checking={checking} previewError={previewError} preview={preview} dirty={dirty} />
         <Card id="category-rules"><CardHeader><CardTitle as="h2">Category Rules</CardTitle><CardDescription>Aturan kategori menggantikan default global. Harga SKU manual tetap dipertahankan.</CardDescription></CardHeader><CardContent>
           <DataTable nested data={query.data.categories} keyExtractor={c => c.id} columns={[
             { key: "name", header: "Kategori", render: c => <div>{c.name}<p className="text-xs text-ink-soft">{c.group === "GAME_TOPUP" ? "Game Top Up" : "Premium Apps"} · {c.skuCount} SKU Digiflazz</p></div> },
@@ -145,4 +136,43 @@ export function PricingPage() {
     <ConfirmDialog open={!!remove} onOpenChange={v => { if (!v) setRemove(null); }} title="Hapus aturan kategori?" description="Kategori kembali mengikuti default global pada sync atau penerapan berikutnya." onConfirm={async () => { if (!remove) return; try { await apiDelete(`/api/pricing/categories/${remove.id}`); await reload(); } catch (e) { setError((e as Error).message); } }} />
     <SaveConfirmDialog open={!!impact} onOpenChange={v => { if (!v) setImpact(null); }} title="Terapkan aturan tersimpan sekarang?" confirmLabel="Terapkan sekarang" description={<span className="block space-y-3"><span className="block">{impact?.changedCount} dari {impact?.eligibleCount} SKU otomatis berubah. Dampak diperiksa ulang saat diterapkan.</span><span className="block space-y-2">{impact?.sample.map(r => <span key={r.denominationId} className="block text-sm"><span>{r.productName} · {r.name}</span><span className="block text-right tabular-nums">{money(r.oldPrice)} → {money(r.newPrice)}</span></span>)}</span></span>} onConfirm={async () => { const result = await apiPost<{ updatedCount: number }>("/api/pricing/reprice/apply", { scope: scope === "all" ? "all" : Number(scope) }); await reload(); return `${result.updatedCount} SKU diperbarui.`; }} />
   </PageLayout>;
+}
+
+function PricingGlobalDefaults({ setSaveOpen, query, owner, fieldId, form, setForm, sample, setSample, checking, previewError, preview, dirty }: {
+  setSaveOpen: import("react").Dispatch<import("react").SetStateAction<boolean>>;
+  query: import("@tanstack/react-query").QueryObserverSuccessResult<NoInfer<PricingData>, Error> | import("@tanstack/react-query").QueryObserverPlaceholderResult<NoInfer<PricingData>, Error>;
+  owner: boolean;
+  fieldId: string;
+  form: Form;
+  setForm: import("react").Dispatch<import("react").SetStateAction<Form>>;
+  sample: string;
+  setSample: import("react").Dispatch<import("react").SetStateAction<string>>;
+  checking: boolean;
+  previewError: string | null;
+  preview: PreviewRow[] | null;
+  dirty: boolean;
+}) {
+  return (<Card id="global-pricing"><CardHeader><CardTitle as="h2">Global Defaults</CardTitle><CardDescription>Aturan dasar untuk SKU Digiflazz yang mengikuti harga otomatis.</CardDescription></CardHeader>
+    <CardContent><form className="space-y-5" onSubmit={e => { e.preventDefault(); setSaveOpen(true); }}>
+      {(!query.data.policy.globalRuleReadable || !query.data.policy.roundingReadable) && <Alert variant="destructive"><AlertDescription>Kebijakan tersimpan tidak terbaca. Periksa dan simpan kembali sebelum menghitung harga.</AlertDescription></Alert>}
+      <fieldset disabled={!owner} className="grid gap-4 sm:grid-cols-2">
+        <div className="space-y-2"><label htmlFor={`${fieldId}-jenis-markup-1`} className="text-sm font-medium">Jenis markup</label><TypeSelect id={`${fieldId}-jenis-markup-1`} value={form.markupType} label="Jenis markup" onChange={v => setForm({ ...form, markupType: v, markupValue: "0" })} /></div>
+        <div className="space-y-2"><label htmlFor="markup-value" className="text-sm font-medium">Markup {form.markupType === "flat" ? "(IDR)" : "(%)"}</label><Input id="markup-value" inputMode="decimal" disabled={form.markupType === "none"} value={form.markupValue} onChange={e => setForm({ ...form, markupValue: e.target.value })} /></div>
+        <div className="space-y-2"><label htmlFor={`${fieldId}-pembulatan-harga-2`} className="text-sm font-medium">Pembulatan harga</label><Select value={form.rounding} onValueChange={v => setForm({ ...form, rounding: v })}><SelectTrigger id={`${fieldId}-pembulatan-harga-2`} aria-label="Pembulatan harga"><SelectValue /></SelectTrigger><SelectContent>{ROUNDING.map(r => <SelectItem key={r.value} value={r.value}>{r.label}</SelectItem>)}</SelectContent></Select></div>
+        <div className="space-y-2"><label htmlFor="margin-warning" className="text-sm font-medium">Peringatan margin di bawah (%)</label><Input id="margin-warning" inputMode="decimal" placeholder="Kosong = nonaktif" value={form.lowMarginWarnPct} onChange={e => setForm({ ...form, lowMarginWarnPct: e.target.value })} /></div>
+      </fieldset>
+      {owner && <div className="border-t border-line pt-4 space-y-3"><label htmlFor="sample-cost" className="text-sm font-medium">Preview dari HPP contoh (IDR)</label><Input id="sample-cost" className="max-w-xs" inputMode="decimal" value={sample} onChange={e => setSample(e.target.value)} />
+        <div aria-live="polite">{checking && <p className="text-sm text-ink-soft">Menghitung preview…</p>}{previewError && <p role="alert" className="text-sm text-rust">{previewError}</p>}{preview?.map(r => <div key={r.costPrice} className="flex flex-wrap gap-x-8 gap-y-2"><div><p className="text-xs text-ink-soft">Harga hasil aturan</p><p className="text-xl font-semibold tabular-nums">{money(r.effectivePrice)}</p></div><div className="text-sm text-ink-soft"><p>Estimasi laba: {r.grossProfit === null ? "—" : money(r.grossProfit)}</p><p>Margin: {marginDisplay(r.grossMarginPct)} sebelum biaya/diskon</p></div></div>)}</div>
+      </div>}
+      <Button type="submit" disabled={!owner || !dirty || checking || !preview || !!previewError}>Simpan default</Button>
+    </form></CardContent></Card>);
+}
+
+function pricingFormStatus({ initial, form, query }: {
+  initial: Form | null;
+  form: Form;
+  query: import("@tanstack/react-query").UseQueryResult<NoInfer<PricingData>, Error>;
+}) {
+  const dirty = initial !== null && (JSON.stringify(form) !== JSON.stringify(initial) || !query.data?.policy.globalRuleReadable || !query.data?.policy.roundingReadable);
+  return { dirty };
 }

@@ -1,51 +1,51 @@
-import { useEffect, useState } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
-import { toast } from "sonner";
-import { PageLayout } from "../components/shared/PageLayout";
-import { PageHeader } from "../components/shared/PageHeader";
-import { FilterBar } from "../components/shared/FilterBar";
-import { SearchBar } from "../components/shared/SearchBar";
-import { DataTable } from "../components/shared/DataTable";
-import { EmptyState } from "../components/shared/EmptyState";
-import { StatusBadge } from "../components/shared/StatusBadge";
-import { Pagination } from "../components/shared/Pagination";
-import { ConfirmDialog } from "../components/shared/ConfirmDialog";
-import { DateInput } from "../components/shared/DateInput";
-import { Stars } from "../components/shared/Stars";
-import { ReviewsKpiRow } from "./reviews/ReviewsKpiRow";
-import { RatingDistributionCard } from "./reviews/RatingDistributionCard";
-import { ProductRatingsCard } from "./reviews/ProductRatingsCard";
-import { ReplyDialog, type ReplyDialogReview } from "./reviews/ReplyDialog";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Card, CardContent } from "@/components/ui/card";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
 import {
   DropdownMenu,
-  DropdownMenuTrigger,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
+  DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  Star,
-  MoreVertical,
-  Eye,
-  ShoppingBag,
-  Reply,
-  MessageSquareOff,
-  XCircle,
-  RotateCcw,
-  EyeOff,
   CircleCheck,
+  Eye,
+  EyeOff,
+  MessageSquareOff,
+  MoreVertical,
+  Reply,
+  RotateCcw,
+  ShoppingBag,
+  Star,
   Trash2,
+  XCircle,
 } from "lucide-react";
-import { formatRelativeTime } from "../lib/relativeTime";
-import { apiGet, apiPost, apiDelete } from "../api/client";
-import { describeError } from "../lib/errorMessages";
+import { useEffect, useId, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { toast } from "sonner";
+import { apiDelete, apiGet, apiPost } from "../api/client";
+import { ConfirmDialog } from "../components/shared/ConfirmDialog";
+import { DataTable } from "../components/shared/DataTable";
+import { DateInput } from "../components/shared/DateInput";
+import { EmptyState } from "../components/shared/EmptyState";
+import { FilterBar } from "../components/shared/FilterBar";
+import { PageHeader } from "../components/shared/PageHeader";
+import { PageLayout } from "../components/shared/PageLayout";
+import { Pagination } from "../components/shared/Pagination";
+import { SearchBar } from "../components/shared/SearchBar";
+import { Stars } from "../components/shared/Stars";
+import { StatusBadge } from "../components/shared/StatusBadge";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
+import { describeError } from "../lib/errorMessages";
+import { formatRelativeTime } from "../lib/relativeTime";
+import { ProductRatingsCard } from "./reviews/ProductRatingsCard";
+import { RatingDistributionCard } from "./reviews/RatingDistributionCard";
+import { ReplyDialog, type ReplyDialogReview } from "./reviews/ReplyDialog";
+import { ReviewsKpiRow } from "./reviews/ReviewsKpiRow";
 
 interface ReviewUser {
   fullName: string | null;
@@ -175,6 +175,7 @@ function useReviews(filters: Filters) {
 }
 
 export function ReviewsPage() {
+  const fieldId = useId();
   const navigate = useNavigate();
   const qc = useQueryClient();
 
@@ -258,13 +259,13 @@ export function ReviewsPage() {
 
   const hasActiveFilter = Boolean(
     filters.q ||
-      filters.rating ||
-      filters.status ||
-      filters.sentiment ||
-      filters.product ||
-      filters.hidden ||
-      filters.since ||
-      filters.until,
+    filters.rating ||
+    filters.status ||
+    filters.sentiment ||
+    filters.product ||
+    filters.hidden ||
+    filters.since ||
+    filters.until,
   );
 
   const reviews = data?.reviews ?? [];
@@ -306,319 +307,9 @@ export function ReviewsPage() {
         </div>
       </div>
 
-      <FilterBar onApply={applyFilters} onClear={clearFilters} className="mb-4">
-        <SearchBar
-          value={searchInput}
-          onChange={setSearchInput}
-          loading={isFetching && searchInput !== ""}
-          placeholder="Search comment or customer…"
-          className="w-full sm:w-64"
-        />
+      <ReviewsRating applyFilters={applyFilters} clearFilters={clearFilters} searchInput={searchInput} setSearchInput={setSearchInput} isFetching={isFetching} fieldId={fieldId} draft={draft} setDraft={setDraft} productOptions={productOptions} />
 
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-ink-soft">Rating</label>
-          <Select
-            value={draft.rating || "_all_"}
-            onValueChange={(v) => setDraft((d) => ({ ...d, rating: v === "_all_" ? "" : v }))}
-          >
-            <SelectTrigger className="w-28" aria-label="Rating">
-              <SelectValue placeholder="All" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="_all_">All</SelectItem>
-              {RATING_VALUES.map((r) => (
-                <SelectItem key={r} value={r}>
-                  {r}★
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-ink-soft">Reply Status</label>
-          <Select
-            value={draft.status || "_all_"}
-            onValueChange={(v) => setDraft((d) => ({ ...d, status: v === "_all_" ? "" : v }))}
-          >
-            <SelectTrigger className="w-36" aria-label="Reply Status">
-              <SelectValue placeholder="All" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="_all_">All</SelectItem>
-              {STATUS_VALUES.map((s) => (
-                <SelectItem key={s} value={s}>
-                  {statusLabel(s)}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-ink-soft">Sentiment</label>
-          <Select
-            value={draft.sentiment || "_all_"}
-            onValueChange={(v) => setDraft((d) => ({ ...d, sentiment: v === "_all_" ? "" : v }))}
-          >
-            <SelectTrigger className="w-32" aria-label="Sentiment">
-              <SelectValue placeholder="All" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="_all_">All</SelectItem>
-              {SENTIMENT_VALUES.map((s) => (
-                <SelectItem key={s} value={s}>
-                  {sentimentLabel(s)}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-ink-soft">Product</label>
-          <Select
-            value={draft.product || "_all_"}
-            onValueChange={(v) => setDraft((d) => ({ ...d, product: v === "_all_" ? "" : v }))}
-          >
-            <SelectTrigger className="w-44" aria-label="Product">
-              <SelectValue placeholder="All products" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="_all_">All</SelectItem>
-              {productOptions.map((p) => (
-                <SelectItem key={p.productId} value={String(p.productId)}>
-                  {p.productName}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-ink-soft">Visibility</label>
-          <Select
-            value={draft.hidden || "_all_"}
-            onValueChange={(v) => setDraft((d) => ({ ...d, hidden: v === "_all_" ? "" : v }))}
-          >
-            <SelectTrigger className="w-32" aria-label="Visibility">
-              <SelectValue placeholder="All" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="_all_">All</SelectItem>
-              <SelectItem value="0">Visible</SelectItem>
-              <SelectItem value="1">Hidden</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-ink-soft">From</label>
-          <DateInput
-            value={draft.since}
-            onChange={(e) => setDraft((d) => ({ ...d, since: e.target.value }))}
-            className="w-36"
-          />
-        </div>
-
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-ink-soft">To</label>
-          <DateInput
-            value={draft.until}
-            onChange={(e) => setDraft((d) => ({ ...d, until: e.target.value }))}
-            className="w-36"
-          />
-        </div>
-      </FilterBar>
-
-      <Card>
-        <CardContent>
-          <DataTable
-            nested
-            stickyHeader
-            columns={[
-              {
-                key: "customer",
-                header: "Customer",
-                render: (row) => (
-                  <div className="flex max-w-[240px] items-center gap-3">
-                    <Avatar className="shrink-0">
-                      <AvatarFallback>{reviewerInitial(row.user)}</AvatarFallback>
-                    </Avatar>
-                    <div className="min-w-0">
-                      <div className="truncate text-sm font-medium text-ink" title={primaryIdentity(row.user)}>
-                        {primaryIdentity(row.user)}
-                      </div>
-                      {secondaryIdentity(row.user) && (
-                        <div className="truncate text-xs text-ink-soft" title={secondaryIdentity(row.user)}>
-                          {secondaryIdentity(row.user)}
-                        </div>
-                      )}
-                      <Badge variant="secondary" className="mt-1">
-                        Verified Purchase
-                      </Badge>
-                    </div>
-                  </div>
-                ),
-              },
-              {
-                key: "review",
-                header: "Review",
-                render: (row) => (
-                  <div className={row.hidden ? "flex max-w-xs flex-col gap-1 opacity-50" : "flex max-w-xs flex-col gap-1"}>
-                    <Stars rating={row.rating} />
-                    <span className="line-clamp-2 text-sm text-ink-soft">{row.comment ?? "—"}</span>
-                  </div>
-                ),
-              },
-              {
-                key: "product",
-                header: "Product",
-                render: (row) => (
-                  <span
-                    className="block max-w-[240px] truncate text-sm text-ink-soft"
-                    title={row.product?.name ?? undefined}
-                  >
-                    {row.product?.name ?? "—"}
-                  </span>
-                ),
-              },
-              {
-                key: "status",
-                header: "Status",
-                render: (row) => (
-                  <div className="flex flex-wrap items-center gap-1">
-                    <StatusBadge status={row.hidden ? "HIDDEN" : row.status} />
-                    <StatusBadge status={row.sentiment} />
-                  </div>
-                ),
-              },
-              {
-                key: "activity",
-                header: "Activity",
-                render: (row) => {
-                  // No repliedAtDisplay from the API (only createdAtDisplay is
-                  // server-formatted), so there's no correct absolute string to
-                  // fall back on here. formatRelativeTime(iso, display) only
-                  // reads `display` once the gap exceeds 30 days (or the date is
-                  // invalid) — every other branch is purely elapsed-time-based
-                  // and timezone-safe. Passing the raw ISO as `display` and then
-                  // comparing the result back against it detects exactly that
-                  // fallback path (reusing formatRelativeTime's own threshold
-                  // instead of duplicating the "30 days" constant here), so a
-                  // reply older than 30 days omits the line rather than ever
-                  // rendering a raw ISO timestamp to the admin.
-                  const repliedRelative =
-                    row.adminReply != null && row.repliedAt != null
-                      ? formatRelativeTime(row.repliedAt, row.repliedAt)
-                      : null;
-                  const repliedLabel =
-                    repliedRelative != null && repliedRelative !== row.repliedAt ? repliedRelative : null;
-                  return (
-                    <div className="flex flex-col gap-0.5">
-                      <span className="text-xs text-ink-soft">{row.createdAtDisplay ?? "—"}</span>
-                      {repliedLabel != null && (
-                        <span className="text-xs text-ink-faint">Replied {repliedLabel}</span>
-                      )}
-                    </div>
-                  );
-                },
-              },
-              {
-                key: "actions",
-                header: "",
-                render: (row) => (
-                  <div onClick={(e) => e.stopPropagation()}>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="icon-sm" aria-label={`Actions for review #${row.id}`}>
-                          <MoreVertical className="h-4 w-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem onSelect={() => navigate(`/users/${row.userId}`)}>
-                          <Eye className="h-4 w-4" />
-                          View Customer
-                        </DropdownMenuItem>
-                        <DropdownMenuItem onSelect={() => navigate(`/orders/${row.orderId}`)}>
-                          <ShoppingBag className="h-4 w-4" />
-                          View Order
-                        </DropdownMenuItem>
-                        <DropdownMenuItem
-                          onSelect={(e) => {
-                            e.preventDefault();
-                            openReply(row);
-                          }}
-                        >
-                          <Reply className="h-4 w-4" />
-                          {row.adminReply != null ? "Edit Reply" : "Reply"}
-                        </DropdownMenuItem>
-                        {row.adminReply != null && (
-                          <DropdownMenuItem onSelect={() => deleteReply.mutate(row.id)}>
-                            <MessageSquareOff className="h-4 w-4" />
-                            Delete Reply
-                          </DropdownMenuItem>
-                        )}
-                        {row.status === "CLOSED" ? (
-                          <DropdownMenuItem onSelect={() => setStatus.mutate({ id: row.id, status: "PENDING_REPLY" })}>
-                            <RotateCcw className="h-4 w-4" />
-                            Reopen
-                          </DropdownMenuItem>
-                        ) : (
-                          <DropdownMenuItem onSelect={() => setStatus.mutate({ id: row.id, status: "CLOSED" })}>
-                            <XCircle className="h-4 w-4" />
-                            Mark Closed
-                          </DropdownMenuItem>
-                        )}
-                        <DropdownMenuItem onSelect={() => toggleHide.mutate({ id: row.id, hide: !row.hidden })}>
-                          {/* CircleCheck for Unhide (not Eye — Eye is already
-                              "View Customer" above in this same menu; CircleCheck
-                              mirrors UsersPage.tsx's Unban, the same shape of
-                              reversing a suppression state). */}
-                          {row.hidden ? <CircleCheck className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
-                          {row.hidden ? "Unhide" : "Hide"}
-                        </DropdownMenuItem>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem
-                          variant="destructive"
-                          onSelect={(e) => {
-                            e.preventDefault();
-                            setDeleteTargetId(row.id);
-                          }}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                          Delete Review
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </div>
-                ),
-              },
-            ]}
-            data={reviews}
-            isLoading={isLoading}
-            keyExtractor={(row) => row.id}
-            empty={
-              hasActiveFilter ? (
-                <EmptyState
-                  icon={Star}
-                  title="No reviews match these filters."
-                  description="Try widening the date range or clearing a filter."
-                  action={{ label: "Refresh", onClick: () => void refetch() }}
-                  secondaryAction={{ label: "Clear Filters", onClick: clearFilters }}
-                />
-              ) : (
-                <EmptyState
-                  icon={Star}
-                  title="No reviews yet"
-                  description="Customer reviews will appear here after their first delivered order."
-                  action={{ label: "Refresh", onClick: () => void refetch() }}
-                />
-              )
-            }
-          />
-        </CardContent>
-      </Card>
+      <ReviewsSummary navigate={navigate} openReply={openReply} deleteReply={deleteReply} setStatus={setStatus} toggleHide={toggleHide} setDeleteTargetId={setDeleteTargetId} reviews={reviews} isLoading={isLoading} hasActiveFilter={hasActiveFilter} refetch={refetch} clearFilters={clearFilters} />
 
       {data && (
         <div className="mt-4">
@@ -648,4 +339,344 @@ export function ReviewsPage() {
       )}
     </PageLayout>
   );
+}
+
+function ReviewsRating({ applyFilters, clearFilters, searchInput, setSearchInput, isFetching, fieldId, draft, setDraft, productOptions }: {
+  applyFilters: () => void;
+  clearFilters: () => void;
+  searchInput: string;
+  setSearchInput: import("react").Dispatch<import("react").SetStateAction<string>>;
+  isFetching: boolean;
+  fieldId: string;
+  draft: { rating: string; status: string; sentiment: string; product: string; hidden: string; since: string; until: string; };
+  setDraft: import("react").Dispatch<import("react").SetStateAction<{ rating: string; status: string; sentiment: string; product: string; hidden: string; since: string; until: string; }>>;
+  productOptions: ReviewSummary[];
+}) {
+  return (<FilterBar onApply={applyFilters} onClear={clearFilters} className="mb-4">
+    <SearchBar
+      value={searchInput}
+      onChange={setSearchInput}
+      loading={isFetching && searchInput !== ""}
+      placeholder="Search comment or customer…"
+      className="w-full sm:w-64"
+    />
+
+    <div className="flex flex-col gap-1">
+      <label htmlFor={`${fieldId}-rating-1`} className="text-xs text-ink-soft">Rating</label>
+      <Select
+        value={draft.rating || "_all_"}
+        onValueChange={(v) => setDraft((d) => ({ ...d, rating: v === "_all_" ? "" : v }))}
+      >
+        <SelectTrigger id={`${fieldId}-rating-1`} className="w-28" aria-label="Rating">
+          <SelectValue placeholder="All" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="_all_">All</SelectItem>
+          {RATING_VALUES.map((r) => (
+            <SelectItem key={r} value={r}>
+              {r}★
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+
+    <div className="flex flex-col gap-1">
+      <label htmlFor={`${fieldId}-reply-status-2`} className="text-xs text-ink-soft">Reply Status</label>
+      <Select
+        value={draft.status || "_all_"}
+        onValueChange={(v) => setDraft((d) => ({ ...d, status: v === "_all_" ? "" : v }))}
+      >
+        <SelectTrigger id={`${fieldId}-reply-status-2`} className="w-36" aria-label="Reply Status">
+          <SelectValue placeholder="All" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="_all_">All</SelectItem>
+          {STATUS_VALUES.map((s) => (
+            <SelectItem key={s} value={s}>
+              {statusLabel(s)}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+
+    <div className="flex flex-col gap-1">
+      <label htmlFor={`${fieldId}-sentiment-3`} className="text-xs text-ink-soft">Sentiment</label>
+      <Select
+        value={draft.sentiment || "_all_"}
+        onValueChange={(v) => setDraft((d) => ({ ...d, sentiment: v === "_all_" ? "" : v }))}
+      >
+        <SelectTrigger id={`${fieldId}-sentiment-3`} className="w-32" aria-label="Sentiment">
+          <SelectValue placeholder="All" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="_all_">All</SelectItem>
+          {SENTIMENT_VALUES.map((s) => (
+            <SelectItem key={s} value={s}>
+              {sentimentLabel(s)}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+
+    <div className="flex flex-col gap-1">
+      <label htmlFor={`${fieldId}-product-4`} className="text-xs text-ink-soft">Product</label>
+      <Select
+        value={draft.product || "_all_"}
+        onValueChange={(v) => setDraft((d) => ({ ...d, product: v === "_all_" ? "" : v }))}
+      >
+        <SelectTrigger id={`${fieldId}-product-4`} className="w-44" aria-label="Product">
+          <SelectValue placeholder="All products" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="_all_">All</SelectItem>
+          {productOptions.map((p) => (
+            <SelectItem key={p.productId} value={String(p.productId)}>
+              {p.productName}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+
+    <div className="flex flex-col gap-1">
+      <label htmlFor={`${fieldId}-visibility-5`} className="text-xs text-ink-soft">Visibility</label>
+      <Select
+        value={draft.hidden || "_all_"}
+        onValueChange={(v) => setDraft((d) => ({ ...d, hidden: v === "_all_" ? "" : v }))}
+      >
+        <SelectTrigger id={`${fieldId}-visibility-5`} className="w-32" aria-label="Visibility">
+          <SelectValue placeholder="All" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="_all_">All</SelectItem>
+          <SelectItem value="0">Visible</SelectItem>
+          <SelectItem value="1">Hidden</SelectItem>
+        </SelectContent>
+      </Select>
+    </div>
+
+    <div className="flex flex-col gap-1">
+      <label htmlFor={`${fieldId}-from-6`} className="text-xs text-ink-soft">From</label>
+      <DateInput id={`${fieldId}-from-6`}
+        value={draft.since}
+        onChange={(e) => setDraft((d) => ({ ...d, since: e.target.value }))}
+        className="w-36"
+      />
+    </div>
+
+    <div className="flex flex-col gap-1">
+      <label htmlFor={`${fieldId}-to-7`} className="text-xs text-ink-soft">To</label>
+      <DateInput id={`${fieldId}-to-7`}
+        value={draft.until}
+        onChange={(e) => setDraft((d) => ({ ...d, until: e.target.value }))}
+        className="w-36"
+      />
+    </div>
+  </FilterBar>);
+}
+
+function ReviewsSummary({ navigate, openReply, deleteReply, setStatus, toggleHide, setDeleteTargetId, reviews, isLoading, hasActiveFilter, refetch, clearFilters }: {
+  navigate: import("react-router-dom").NavigateFunction;
+  openReply: (row: ReviewRow) => void;
+  deleteReply: import("@tanstack/react-query").UseMutationResult<{ ok: boolean; }, Error, number, unknown>;
+  setStatus: import("@tanstack/react-query").UseMutationResult<{ ok: boolean; }, Error, { id: number; status: string; }, unknown>;
+  toggleHide: import("@tanstack/react-query").UseMutationResult<{ ok: boolean; hidden: boolean; }, Error, { id: number; hide: boolean; }, unknown>;
+  setDeleteTargetId: import("react").Dispatch<import("react").SetStateAction<number | null>>;
+  reviews: ReviewRow[];
+  isLoading: boolean;
+  hasActiveFilter: boolean;
+  refetch: (options?: import("@tanstack/react-query").RefetchOptions) => Promise<import("@tanstack/react-query").QueryObserverResult<NoInfer<ReviewsResponse>, Error>>;
+  clearFilters: () => void;
+}) {
+  return (<Card>
+    <CardContent>
+      <DataTable
+        nested
+        stickyHeader
+        columns={[
+          {
+            key: "customer",
+            header: "Customer",
+            render: (row) => (
+              <div className="flex max-w-[240px] items-center gap-3">
+                <Avatar className="shrink-0">
+                  <AvatarFallback>{reviewerInitial(row.user)}</AvatarFallback>
+                </Avatar>
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-medium text-ink" title={primaryIdentity(row.user)}>
+                    {primaryIdentity(row.user)}
+                  </div>
+                  {secondaryIdentity(row.user) && (
+                    <div className="truncate text-xs text-ink-soft" title={secondaryIdentity(row.user)}>
+                      {secondaryIdentity(row.user)}
+                    </div>
+                  )}
+                  <Badge variant="secondary" className="mt-1">
+                    Verified Purchase
+                  </Badge>
+                </div>
+              </div>
+            ),
+          },
+          {
+            key: "review",
+            header: "Review",
+            render: (row) => (
+              <div className={row.hidden ? "flex max-w-xs flex-col gap-1 opacity-50" : "flex max-w-xs flex-col gap-1"}>
+                <Stars rating={row.rating} />
+                <span className="line-clamp-2 text-sm text-ink-soft">{row.comment ?? "—"}</span>
+              </div>
+            ),
+          },
+          {
+            key: "product",
+            header: "Product",
+            render: (row) => (
+              <span
+                className="block max-w-[240px] truncate text-sm text-ink-soft"
+                title={row.product?.name ?? undefined}
+              >
+                {row.product?.name ?? "—"}
+              </span>
+            ),
+          },
+          {
+            key: "status",
+            header: "Status",
+            render: (row) => (
+              <div className="flex flex-wrap items-center gap-1">
+                <StatusBadge status={row.hidden ? "HIDDEN" : row.status} />
+                <StatusBadge status={row.sentiment} />
+              </div>
+            ),
+          },
+          {
+            key: "activity",
+            header: "Activity",
+            render: (row) => {
+              // No repliedAtDisplay from the API (only createdAtDisplay is
+              // server-formatted), so there's no correct absolute string to
+              // fall back on here. formatRelativeTime(iso, display) only
+              // reads `display` once the gap exceeds 30 days (or the date is
+              // invalid) — every other branch is purely elapsed-time-based
+              // and timezone-safe. Passing the raw ISO as `display` and then
+              // comparing the result back against it detects exactly that
+              // fallback path (reusing formatRelativeTime's own threshold
+              // instead of duplicating the "30 days" constant here), so a
+              // reply older than 30 days omits the line rather than ever
+              // rendering a raw ISO timestamp to the admin.
+              const repliedRelative =
+                row.adminReply != null && row.repliedAt != null
+                  ? formatRelativeTime(row.repliedAt, row.repliedAt)
+                  : null;
+              const repliedLabel =
+                repliedRelative != null && repliedRelative !== row.repliedAt ? repliedRelative : null;
+              return (
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-xs text-ink-soft">{row.createdAtDisplay ?? "—"}</span>
+                  {repliedLabel != null && (
+                    <span className="text-xs text-ink-faint">Replied {repliedLabel}</span>
+                  )}
+                </div>
+              );
+            },
+          },
+          {
+            key: "actions",
+            header: "",
+            render: (row) => (
+              <div onClick={(e) => e.stopPropagation()}>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="ghost" size="icon-sm" aria-label={`Actions for review #${row.id}`}>
+                      <MoreVertical className="h-4 w-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onSelect={() => navigate(`/users/${row.userId}`)}>
+                      <Eye className="h-4 w-4" />
+                      View Customer
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onSelect={() => navigate(`/orders/${row.orderId}`)}>
+                      <ShoppingBag className="h-4 w-4" />
+                      View Order
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onSelect={(e) => {
+                        e.preventDefault();
+                        openReply(row);
+                      }}
+                    >
+                      <Reply className="h-4 w-4" />
+                      {row.adminReply != null ? "Edit Reply" : "Reply"}
+                    </DropdownMenuItem>
+                    {row.adminReply != null && (
+                      <DropdownMenuItem onSelect={() => deleteReply.mutate(row.id)}>
+                        <MessageSquareOff className="h-4 w-4" />
+                        Delete Reply
+                      </DropdownMenuItem>
+                    )}
+                    {row.status === "CLOSED" ? (
+                      <DropdownMenuItem onSelect={() => setStatus.mutate({ id: row.id, status: "PENDING_REPLY" })}>
+                        <RotateCcw className="h-4 w-4" />
+                        Reopen
+                      </DropdownMenuItem>
+                    ) : (
+                      <DropdownMenuItem onSelect={() => setStatus.mutate({ id: row.id, status: "CLOSED" })}>
+                        <XCircle className="h-4 w-4" />
+                        Mark Closed
+                      </DropdownMenuItem>
+                    )}
+                    <DropdownMenuItem onSelect={() => toggleHide.mutate({ id: row.id, hide: !row.hidden })}>
+                      {/* CircleCheck for Unhide (not Eye — Eye is already
+                              "View Customer" above in this same menu; CircleCheck
+                              mirrors UsersPage.tsx's Unban, the same shape of
+                              reversing a suppression state). */}
+                      {row.hidden ? <CircleCheck className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
+                      {row.hidden ? "Unhide" : "Hide"}
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      variant="destructive"
+                      onSelect={(e) => {
+                        e.preventDefault();
+                        setDeleteTargetId(row.id);
+                      }}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                      Delete Review
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+            ),
+          },
+        ]}
+        data={reviews}
+        isLoading={isLoading}
+        keyExtractor={(row) => row.id}
+        empty={
+          hasActiveFilter ? (
+            <EmptyState
+              icon={Star}
+              title="No reviews match these filters."
+              description="Try widening the date range or clearing a filter."
+              action={{ label: "Refresh", onClick: () => void refetch() }}
+              secondaryAction={{ label: "Clear Filters", onClick: clearFilters }}
+            />
+          ) : (
+            <EmptyState
+              icon={Star}
+              title="No reviews yet"
+              description="Customer reviews will appear here after their first delivered order."
+              action={{ label: "Refresh", onClick: () => void refetch() }}
+            />
+          )
+        }
+      />
+    </CardContent>
+  </Card>);
 }

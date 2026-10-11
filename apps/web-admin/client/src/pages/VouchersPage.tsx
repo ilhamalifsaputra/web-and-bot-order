@@ -1,59 +1,59 @@
-import { useState, useEffect } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import {
-  Copy,
-  Check,
-  Tag,
-  Plus,
-  X,
-  Trash2,
-  CheckCircle2,
-  Ban,
-  CalendarClock,
-  Repeat,
-  MoreVertical,
-  Eye,
-  Pencil,
-  CopyPlus,
-} from "lucide-react";
-import { PageLayout } from "../components/shared/PageLayout";
-import { PageHeader } from "../components/shared/PageHeader";
-import { DataTable } from "../components/shared/DataTable";
-import { EmptyState } from "../components/shared/EmptyState";
-import { ConfirmDialog } from "../components/shared/ConfirmDialog";
-import { FilterBar } from "../components/shared/FilterBar";
-import { SearchBar } from "../components/shared/SearchBar";
-import { StatCard } from "../components/shared/StatCard";
-import { Pagination } from "../components/shared/Pagination";
-import { ProgressBar } from "../components/shared/ProgressBar";
-import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount";
-import { exactFieldsOf } from "../lib/exactFields";
-import { Button } from "@/components/ui/button";
-import { DateInput } from "../components/shared/DateInput";
-import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectTrigger,
-  SelectValue,
-  SelectContent,
-  SelectItem,
-} from "@/components/ui/select";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   DropdownMenu,
-  DropdownMenuTrigger,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
+  DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { StatusBadge } from "../components/shared/StatusBadge";
+import { Input } from "@/components/ui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  Ban,
+  CalendarClock,
+  Check,
+  CheckCircle2,
+  Copy,
+  CopyPlus,
+  Eye,
+  MoreVertical,
+  Pencil,
+  Plus,
+  Repeat,
+  Tag,
+  Trash2,
+  X,
+} from "lucide-react";
+import { useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
 import { apiGet, apiPost } from "../api/client";
+import { ConfirmDialog } from "../components/shared/ConfirmDialog";
+import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount.helpers";
+import { DataTable } from "../components/shared/DataTable";
+import { DateInput } from "../components/shared/DateInput";
+import { EmptyState } from "../components/shared/EmptyState";
+import { FilterBar } from "../components/shared/FilterBar";
+import { PageHeader } from "../components/shared/PageHeader";
+import { PageLayout } from "../components/shared/PageLayout";
+import { Pagination } from "../components/shared/Pagination";
+import { ProgressBar } from "../components/shared/ProgressBar";
+import { SearchBar } from "../components/shared/SearchBar";
+import { StatCard } from "../components/shared/StatCard";
+import { StatusBadge } from "../components/shared/StatusBadge";
 import { describeError } from "../lib/errorMessages";
+import { exactFieldsOf } from "../lib/exactFields";
 import { visibleSelection } from "../lib/selection";
 
 interface VoucherProductRef {
@@ -255,7 +255,8 @@ function ProductScopePicker({
   const products = data?.products ?? [];
   const categories = data?.categories ?? [];
 
-  const pickable = products.filter((p) => (p.isActive && !p.isArchived) || selectedIds.includes(p.id));
+  const selectedIdSet = new Set(selectedIds);
+  const pickable = products.filter((p) => (p.isActive && !p.isArchived) || selectedIdSet.has(p.id));
   const filtered = pickable.filter((p) => !filter || p.name.toLowerCase().includes(filter.toLowerCase()));
 
   const byCategory = new Map<number, CatalogProduct[]>();
@@ -308,7 +309,7 @@ function ProductScopePicker({
                     >
                       <Checkbox
                         className="shrink-0"
-                        checked={selectedIds.includes(p.id)}
+                        checked={selectedIdSet.has(p.id)}
                         onCheckedChange={() => toggle(p.id)}
                       />
                       <span className="truncate" title={p.name}>{p.name}</span>
@@ -325,10 +326,11 @@ function ProductScopePicker({
 }
 
 export function VouchersPage() {
+  const fieldId = useId();
   const qc = useQueryClient();
   const [showForm, setShowForm] = useState(false);
   const [mode, setMode] = useState<"create" | "edit">("create");
-  const [editingId, setEditingId] = useState<number | null>(null);
+  const editingId = useRef<number | null>(null);
   const [form, setForm] = useState<VoucherFormState>(EMPTY_FORM);
   // The form as Edit/Duplicate pre-filled it from the server (null for a blank
   // create form) — what `exact_fields` compares against.
@@ -386,14 +388,14 @@ export function VouchersPage() {
   function closeForm() {
     setShowForm(false);
     setMode("create");
-    setEditingId(null);
+    editingId.current = null;
     setForm(EMPTY_FORM);
     setPrefill(null);
   }
 
   function openCreateForm() {
     setMode("create");
-    setEditingId(null);
+    editingId.current = null;
     setForm(EMPTY_FORM);
     setPrefill(null);
     setShowForm(true);
@@ -407,7 +409,7 @@ export function VouchersPage() {
 
   function openEditForm(v: Voucher) {
     setMode("edit");
-    setEditingId(v.id);
+    editingId.current = v.id;
     prefillForm({
       code: v.code,
       type: v.type,
@@ -425,7 +427,7 @@ export function VouchersPage() {
 
   function openDuplicateForm(v: Voucher) {
     setMode("create");
-    setEditingId(null);
+    editingId.current = null;
     prefillForm({
       code: "",
       type: v.type,
@@ -512,172 +514,9 @@ export function VouchersPage() {
         }
       />
 
-      <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <StatCard label="Active" value={data?.stats.active ?? 0} icon={CheckCircle2} tone="success" isLoading={!data} />
-        <StatCard label="Scheduled" value={data?.stats.scheduled ?? 0} icon={CalendarClock} tone="warning" isLoading={!data} />
-        <StatCard label="Expired" value={data?.stats.expired ?? 0} icon={Ban} isLoading={!data} />
-        <StatCard
-          label="Redemptions (currently held)"
-          hint="Redemptions still held by an order. A cancelled, rejected or expired order releases its redemption, so this can go down."
-          value={data?.stats.totalRedemptions ?? 0}
-          icon={Repeat}
-          isLoading={!data}
-        />
-      </div>
+      <VoucherStats data={data} />
 
-      {showForm && (
-        <Card className="mb-6">
-          <CardHeader><CardTitle>{mode === "edit" ? "Edit Voucher" : "New Voucher"}</CardTitle></CardHeader>
-          <CardContent>
-            <form
-              onSubmit={e => {
-                e.preventDefault();
-                if (mode === "edit" && editingId != null) update.mutate({ id: editingId, form });
-                else create.mutate(form);
-              }}
-              className="flex flex-wrap items-start gap-3"
-            >
-              <div className="flex flex-col gap-1">
-                <label htmlFor="voucher-code" className="text-xs font-medium text-ink">
-                  Code <span className="text-rust">*</span>
-                </label>
-                <Input
-                  id="voucher-code"
-                  required
-                  placeholder="e.g. SAVE10"
-                  value={form.code}
-                  onChange={e => setForm(f => ({ ...f, code: e.target.value }))}
-                  className="w-32"
-                />
-              </div>
-              <div className="flex flex-col gap-1">
-                <label htmlFor="voucher-type" className="text-xs font-medium text-ink">
-                  Type <span className="text-rust">*</span>
-                </label>
-                <Select value={form.type} onValueChange={v => setForm(f => ({ ...f, type: v }))}>
-                  <SelectTrigger id="voucher-type" className="w-32" aria-label="Type">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {(data?.types ?? ["PERCENT", "FIXED"]).map(t => (
-                      <SelectItem key={t} value={t}>{t}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="flex flex-col gap-1">
-                <label htmlFor="voucher-value" className="text-xs font-medium text-ink">
-                  Value <span className="text-rust">*</span>
-                </label>
-                <Input
-                  id="voucher-value"
-                  required
-                  placeholder="e.g. 10"
-                  value={form.value}
-                  onChange={e => setForm(f => ({ ...f, value: e.target.value }))}
-                  className="w-24"
-                />
-              </div>
-              <div className="flex flex-col gap-1">
-                <label htmlFor="voucher-min-purchase" className="text-xs font-medium text-ink">
-                  Min purchase
-                </label>
-                <Input
-                  id="voucher-min-purchase"
-                  placeholder="Optional"
-                  value={form.min_purchase}
-                  onChange={e => setForm(f => ({ ...f, min_purchase: e.target.value }))}
-                  className="w-28"
-                />
-              </div>
-              <div className="flex flex-col gap-1">
-                <label htmlFor="voucher-max-discount" className="text-xs font-medium text-ink">
-                  Max discount
-                </label>
-                <Input
-                  id="voucher-max-discount"
-                  placeholder="Optional"
-                  value={form.max_discount}
-                  onChange={e => setForm(f => ({ ...f, max_discount: e.target.value }))}
-                  className="w-28"
-                />
-              </div>
-              <div className="flex flex-col gap-1">
-                <label htmlFor="voucher-usage-limit" className="text-xs font-medium text-ink">
-                  Usage limit
-                </label>
-                <Input
-                  id="voucher-usage-limit"
-                  placeholder="Optional"
-                  value={form.usage_limit}
-                  onChange={e => setForm(f => ({ ...f, usage_limit: e.target.value }))}
-                  className="w-28"
-                />
-              </div>
-              <div className="flex flex-col gap-1">
-                <label htmlFor="voucher-start" className="text-xs font-medium text-ink">
-                  Starts
-                </label>
-                <DateInput
-                  id="voucher-start"
-                  placeholder="Optional"
-                  value={form.start_at}
-                  onChange={e => setForm(f => ({ ...f, start_at: e.target.value }))}
-                  className="w-36"
-                />
-              </div>
-              <div className="flex flex-col gap-1">
-                <label htmlFor="voucher-expires" className="text-xs font-medium text-ink">
-                  Expires
-                </label>
-                <DateInput
-                  id="voucher-expires"
-                  placeholder="Optional"
-                  value={form.expires_at}
-                  onChange={e => setForm(f => ({ ...f, expires_at: e.target.value }))}
-                  className="w-36"
-                />
-              </div>
-              <div className="flex flex-col gap-1">
-                <label htmlFor="voucher-scope" className="text-xs font-medium text-ink">
-                  Scope
-                </label>
-                <Select
-                  value={form.scope}
-                  onValueChange={v => setForm(f => ({
-                    ...f,
-                    scope: v as "ALL" | "SELECTED",
-                    product_ids: v === "ALL" ? [] : f.product_ids,
-                  }))}
-                >
-                  <SelectTrigger id="voucher-scope" className="w-40" aria-label="Scope">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {(data?.scopes ?? ["ALL", "SELECTED"]).map(s => (
-                      <SelectItem key={s} value={s}>{s === "ALL" ? "All Products" : "Selected Products"}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              {form.scope === "SELECTED" && (
-                <div className="flex flex-col gap-1">
-                  <label className="text-xs font-medium text-ink">Products</label>
-                  <ProductScopePicker
-                    selectedIds={form.product_ids}
-                    onChange={ids => setForm(f => ({ ...f, product_ids: ids }))}
-                  />
-                </div>
-              )}
-              <Button type="submit" disabled={create.isPending || update.isPending} className="self-end">
-                {mode === "edit"
-                  ? (update.isPending ? "Saving…" : "Save Changes")
-                  : (create.isPending ? "Creating…" : "Create")}
-              </Button>
-            </form>
-          </CardContent>
-        </Card>
-      )}
+      <VouchersVoucherCode showForm={showForm} mode={mode} editingId={editingId} update={update} create={create} form={form} setForm={setForm} data={data} />
 
       <FilterBar className="mb-4">
         <SearchBar
@@ -687,12 +526,12 @@ export function VouchersPage() {
           className="w-full sm:w-64"
         />
         <div className="flex flex-col gap-1">
-          <label className="text-xs text-ink-soft">Status</label>
+          <label htmlFor={`${fieldId}-status-1`} className="text-xs text-ink-soft">Status</label>
           <Select
             value={status || "_all_"}
             onValueChange={v => { setStatus(v === "_all_" ? "" : v); setPage(1); }}
           >
-            <SelectTrigger className="w-40"><SelectValue placeholder="All statuses" /></SelectTrigger>
+            <SelectTrigger id={`${fieldId}-status-1`} className="w-40"><SelectValue placeholder="All statuses" /></SelectTrigger>
             <SelectContent>
               <SelectItem value="_all_">All</SelectItem>
               <SelectItem value="active">Active</SelectItem>
@@ -705,211 +544,9 @@ export function VouchersPage() {
         </div>
       </FilterBar>
 
-      {visibleSelected.size > 0 && (
-        <div className="sticky bottom-4 z-10 mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-line bg-card px-3 py-2 text-sm shadow-lift transition-all duration-150">
-          <span className="text-ink-soft">{visibleSelected.size} selected</span>
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={bulkAction.isPending}
-            onClick={() => bulkAction.mutate({ ids: Array.from(visibleSelected), action: "activate" })}
-          >
-            Activate {visibleSelected.size} voucher{visibleSelected.size === 1 ? "" : "s"}
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={bulkAction.isPending}
-            onClick={() => bulkAction.mutate({ ids: Array.from(visibleSelected), action: "deactivate" })}
-          >
-            Deactivate {visibleSelected.size} voucher{visibleSelected.size === 1 ? "" : "s"}
-          </Button>
-          <ConfirmDialog
-            trigger={
-              <Button size="sm" variant="destructive" disabled={bulkAction.isPending}>
-                Delete {visibleSelected.size} voucher{visibleSelected.size === 1 ? "" : "s"}
-              </Button>
-            }
-            title={`Delete ${visibleSelected.size} voucher${visibleSelected.size === 1 ? "" : "s"}?`}
-            description="Vouchers that have already been used are skipped, not deleted."
-            confirmLabel="Delete"
-            onConfirm={() => bulkAction.mutate({ ids: Array.from(visibleSelected), action: "delete" })}
-          />
-          <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>Clear</Button>
-        </div>
-      )}
+      <VoucherBulkActions visibleSelected={visibleSelected} bulkAction={bulkAction} setSelected={setSelected} />
 
-      <Card>
-        <CardContent>
-          <DataTable
-            nested
-            columns={[
-              {
-                key: "select",
-                kind: "selection",
-                header: (
-                  <Checkbox
-                    checked={allSelected}
-                    onCheckedChange={toggleSelectAll}
-                    disabled={vouchers.length === 0}
-                    aria-label="Select all vouchers"
-                  />
-                ),
-                render: v => (
-                  <Checkbox
-                    checked={selected.has(v.id)}
-                    onCheckedChange={() => toggleSelected(v.id)}
-                    onClick={e => e.stopPropagation()}
-                    aria-label={`Select voucher ${v.code}`}
-                  />
-                ),
-              },
-              {
-                key: "voucher",
-                header: "Voucher",
-                render: v => (
-                  <div className="flex flex-col gap-0.5">
-                    <div className="flex items-center gap-1.5">
-                      <span className="max-w-[200px] truncate font-mono text-sm" title={v.code}>{v.code}</span>
-                      <button
-                        type="button"
-                        onClick={() => handleCopy(v)}
-                        aria-label={`Copy code ${v.code}`}
-                        className="shrink-0 text-ink-soft transition-colors hover:text-ink"
-                      >
-                        {copiedId === v.id
-                          ? <Check className="h-3.5 w-3.5 text-grass-dark" />
-                          : <Copy className="h-3.5 w-3.5" />}
-                      </button>
-                    </div>
-                    <span className="text-xs text-ink-soft">
-                      {v.type === "PERCENT" ? "Percent off" : "Fixed amount off"}
-                    </span>
-                  </div>
-                ),
-              },
-              {
-                key: "discount",
-                header: "Discount",
-                render: v => {
-                  const secondary = discountSecondary(v);
-                  return (
-                    <div className="flex flex-col gap-0.5">
-                      <span className="font-mono text-sm">{discountPrimary(v)}</span>
-                      {secondary && <span className="text-xs text-ink-soft">{secondary}</span>}
-                    </div>
-                  );
-                },
-              },
-              {
-                key: "usage",
-                header: "Usage",
-                render: v => {
-                  const pct = v.usageLimit != null ? (v.usedCount / v.usageLimit) * 100 : 0;
-                  const tone = pct < 50 ? "grass" : pct < 85 ? "amberx" : "rust";
-                  return (
-                    <div className="flex min-w-[100px] flex-col gap-1">
-                      <span className="text-sm">{usagePrimary(v)}</span>
-                      {v.usageLimit != null && <ProgressBar value={pct} tone={tone} />}
-                    </div>
-                  );
-                },
-              },
-              {
-                key: "expiration",
-                header: "Expiration",
-                render: v => {
-                  const { text, muted } = expirationCell(v, now);
-                  return <span className={`text-sm ${muted ? "text-ink-soft" : "text-ink"}`}>{text}</span>;
-                },
-              },
-              {
-                key: "status",
-                header: "Status",
-                render: v => <StatusBadge status={voucherStatusToneKey(v.status)} />,
-              },
-              {
-                key: "scope",
-                header: "Scope",
-                render: v => {
-                  if (v.scope === "ALL") return <span className="text-sm text-ink-soft">All Products</span>;
-                  const shown = v.products.slice(0, 2);
-                  const extra = v.products.length - shown.length;
-                  return (
-                    <div className="flex flex-wrap gap-1">
-                      {shown.map(p => <Badge key={p.id} variant="default" className="max-w-full truncate" title={p.name}>{p.name}</Badge>)}
-                      {extra > 0 && <Badge variant="default">+{extra} more</Badge>}
-                    </div>
-                  );
-                },
-              },
-              {
-                key: "performance",
-                header: "Performance",
-                render: v => (
-                  <div className="flex flex-col gap-0.5">
-                    <span className="text-sm">{v.ordersCount} orders</span>
-                    <span className="text-xs text-ink-soft">
-                      {formatCurrencyDisplay(v.revenue, "IDR")} · {v.customers} customers
-                      {v.excludedFxOrders > 0 && <span> · {v.excludedFxOrders} orders missing FX</span>}
-                    </span>
-                  </div>
-                ),
-              },
-              {
-                key: "actions",
-                header: "",
-                render: v => (
-                  <div onClick={e => e.stopPropagation()}>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="icon-sm" aria-label={`Actions for ${v.code}`}>
-                          <MoreVertical className="h-4 w-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem onSelect={() => setViewing(v)}>
-                          <Eye className="h-4 w-4" />
-                          View
-                        </DropdownMenuItem>
-                        <DropdownMenuItem onSelect={() => openEditForm(v)}>
-                          <Pencil className="h-4 w-4" />
-                          Edit
-                        </DropdownMenuItem>
-                        <DropdownMenuItem onSelect={() => openDuplicateForm(v)}>
-                          <CopyPlus className="h-4 w-4" />
-                          Duplicate
-                        </DropdownMenuItem>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem onSelect={() => toggle.mutate({ id: v.id, active: !v.isActive })}>
-                          {v.isActive ? <Ban className="h-4 w-4" /> : <CheckCircle2 className="h-4 w-4" />}
-                          {v.isActive ? "Disable" : "Enable"}
-                        </DropdownMenuItem>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem
-                          variant="destructive"
-                          onSelect={e => { e.preventDefault(); setPendingDelete(v); }}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                          Delete
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </div>
-                ),
-              },
-            ]}
-            data={vouchers}
-            isLoading={!data}
-            keyExtractor={v => v.id}
-            empty={
-              status || q
-                ? <EmptyState icon={Tag} title="No matching vouchers" description="Try a different search or status filter." />
-                : <EmptyState icon={Tag} title="No vouchers found" description="Create your first voucher to offer discounts." />
-            }
-          />
-        </CardContent>
-      </Card>
+      <VouchersTable allSelected={allSelected} toggleSelectAll={toggleSelectAll} vouchers={vouchers} selected={selected} toggleSelected={toggleSelected} handleCopy={handleCopy} copiedId={copiedId} now={now} setViewing={setViewing} openEditForm={openEditForm} openDuplicateForm={openDuplicateForm} toggle={toggle} setPendingDelete={setPendingDelete} data={data} status={status} q={q} />
 
       {data && (
         <div className="mt-4">
@@ -922,62 +559,7 @@ export function VouchersPage() {
         </div>
       )}
 
-      {viewing && (
-        <Dialog open onOpenChange={open => { if (!open) setViewing(null); }}>
-          <DialogContent className="sm:max-w-md">
-            <DialogHeader>
-              <DialogTitle className="font-mono break-all">{viewing.code}</DialogTitle>
-            </DialogHeader>
-            <div className="flex flex-col gap-4 text-sm">
-              <div className="flex items-center justify-between">
-                <StatusBadge status={voucherStatusToneKey(viewing.status)} />
-                <span className="text-xs text-ink-soft">
-                  {viewing.type === "PERCENT" ? "Percent off" : "Fixed amount off"}
-                </span>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <div className="text-xs text-ink-soft">Discount</div>
-                  <div className="font-medium text-ink">{discountPrimary(viewing)}</div>
-                  {discountSecondary(viewing) && (
-                    <div className="text-xs text-ink-soft">{discountSecondary(viewing)}</div>
-                  )}
-                </div>
-                <div>
-                  <div className="text-xs text-ink-soft">Usage</div>
-                  <div className="font-medium text-ink">{usagePrimary(viewing)}</div>
-                </div>
-                <div>
-                  <div className="text-xs text-ink-soft">Expiration</div>
-                  <div className={expirationCell(viewing, now).muted ? "text-ink-soft" : "font-medium text-ink"}>
-                    {expirationCell(viewing, now).text}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-xs text-ink-soft">Performance</div>
-                  <div className="font-medium text-ink">{viewing.ordersCount} orders</div>
-                  <div className="text-xs text-ink-soft">
-                    {formatCurrencyDisplay(viewing.revenue, "IDR")} · {viewing.customers} customers
-                    {viewing.excludedFxOrders > 0 && <span> · {viewing.excludedFxOrders} orders missing FX</span>}
-                  </div>
-                </div>
-              </div>
-              <div>
-                <div className="mb-1 text-xs text-ink-soft">Scope</div>
-                {viewing.scope === "ALL" ? (
-                  <span className="text-sm text-ink">All Products</span>
-                ) : viewing.products.length === 0 ? (
-                  <span className="text-sm text-ink-soft">No products selected</span>
-                ) : (
-                  <div className="flex flex-wrap gap-1">
-                    {viewing.products.map(p => <Badge key={p.id} variant="default" className="max-w-full truncate" title={p.name}>{p.name}</Badge>)}
-                  </div>
-                )}
-              </div>
-            </div>
-          </DialogContent>
-        </Dialog>
-      )}
+      <VoucherDetailsDialog viewing={viewing} setViewing={setViewing} now={now} />
 
       {pendingDelete && (
         <ConfirmDialog
@@ -991,4 +573,480 @@ export function VouchersPage() {
       )}
     </PageLayout>
   );
+}
+
+function VouchersVoucherCode({ showForm, mode, editingId, update, create, form, setForm, data }: {
+  showForm: boolean;
+  mode: "create" | "edit";
+  editingId: import("react").MutableRefObject<number | null>;
+  update: import("@tanstack/react-query").UseMutationResult<unknown, Error, { id: number; form: VoucherFormState; }, unknown>;
+  create: import("@tanstack/react-query").UseMutationResult<unknown, Error, VoucherFormState, unknown>;
+  form: VoucherFormState;
+  setForm: import("react").Dispatch<import("react").SetStateAction<VoucherFormState>>;
+  data: NoInfer<VouchersData> | undefined;
+}) {
+  return (showForm && (
+    <Card className="mb-6">
+      <CardHeader><CardTitle>{mode === "edit" ? "Edit Voucher" : "New Voucher"}</CardTitle></CardHeader>
+      <CardContent>
+        <form
+          onSubmit={e => {
+            e.preventDefault();
+            if (mode === "edit" && editingId.current != null) update.mutate({ id: editingId.current, form });
+            else create.mutate(form);
+          }}
+          className="flex flex-wrap items-start gap-3"
+        >
+          <div className="flex flex-col gap-1">
+            <label htmlFor="voucher-code" className="text-xs font-medium text-ink">
+              Code <span className="text-rust">*</span>
+            </label>
+            <Input
+              id="voucher-code"
+              required
+              placeholder="e.g. SAVE10"
+              value={form.code}
+              onChange={e => setForm(f => ({ ...f, code: e.target.value }))}
+              className="w-32"
+            />
+          </div>
+          <div className="flex flex-col gap-1">
+            <label htmlFor="voucher-type" className="text-xs font-medium text-ink">
+              Type <span className="text-rust">*</span>
+            </label>
+            <Select value={form.type} onValueChange={v => setForm(f => ({ ...f, type: v }))}>
+              <SelectTrigger id="voucher-type" className="w-32" aria-label="Type">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {(data?.types ?? ["PERCENT", "FIXED"]).map(t => (
+                  <SelectItem key={t} value={t}>{t}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="flex flex-col gap-1">
+            <label htmlFor="voucher-value" className="text-xs font-medium text-ink">
+              Value <span className="text-rust">*</span>
+            </label>
+            <Input
+              id="voucher-value"
+              required
+              placeholder="e.g. 10"
+              value={form.value}
+              onChange={e => setForm(f => ({ ...f, value: e.target.value }))}
+              className="w-24"
+            />
+          </div>
+          <div className="flex flex-col gap-1">
+            <label htmlFor="voucher-min-purchase" className="text-xs font-medium text-ink">
+              Min purchase
+            </label>
+            <Input
+              id="voucher-min-purchase"
+              placeholder="Optional"
+              value={form.min_purchase}
+              onChange={e => setForm(f => ({ ...f, min_purchase: e.target.value }))}
+              className="w-28"
+            />
+          </div>
+          <div className="flex flex-col gap-1">
+            <label htmlFor="voucher-max-discount" className="text-xs font-medium text-ink">
+              Max discount
+            </label>
+            <Input
+              id="voucher-max-discount"
+              placeholder="Optional"
+              value={form.max_discount}
+              onChange={e => setForm(f => ({ ...f, max_discount: e.target.value }))}
+              className="w-28"
+            />
+          </div>
+          <div className="flex flex-col gap-1">
+            <label htmlFor="voucher-usage-limit" className="text-xs font-medium text-ink">
+              Usage limit
+            </label>
+            <Input
+              id="voucher-usage-limit"
+              placeholder="Optional"
+              value={form.usage_limit}
+              onChange={e => setForm(f => ({ ...f, usage_limit: e.target.value }))}
+              className="w-28"
+            />
+          </div>
+          <div className="flex flex-col gap-1">
+            <label htmlFor="voucher-start" className="text-xs font-medium text-ink">
+              Starts
+            </label>
+            <DateInput
+              id="voucher-start"
+              placeholder="Optional"
+              value={form.start_at}
+              onChange={e => setForm(f => ({ ...f, start_at: e.target.value }))}
+              className="w-36"
+            />
+          </div>
+          <div className="flex flex-col gap-1">
+            <label htmlFor="voucher-expires" className="text-xs font-medium text-ink">
+              Expires
+            </label>
+            <DateInput
+              id="voucher-expires"
+              placeholder="Optional"
+              value={form.expires_at}
+              onChange={e => setForm(f => ({ ...f, expires_at: e.target.value }))}
+              className="w-36"
+            />
+          </div>
+          <div className="flex flex-col gap-1">
+            <label htmlFor="voucher-scope" className="text-xs font-medium text-ink">
+              Scope
+            </label>
+            <Select
+              value={form.scope}
+              onValueChange={v => setForm(f => ({
+                ...f,
+                scope: v as "ALL" | "SELECTED",
+                product_ids: v === "ALL" ? [] : f.product_ids,
+              }))}
+            >
+              <SelectTrigger id="voucher-scope" className="w-40" aria-label="Scope">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {(data?.scopes ?? ["ALL", "SELECTED"]).map(s => (
+                  <SelectItem key={s} value={s}>{s === "ALL" ? "All Products" : "Selected Products"}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          {form.scope === "SELECTED" && (
+            <div className="flex flex-col gap-1">
+              <div className="text-xs font-medium text-ink">Products</div>
+              <ProductScopePicker
+                selectedIds={form.product_ids}
+                onChange={ids => setForm(f => ({ ...f, product_ids: ids }))}
+              />
+            </div>
+          )}
+          <Button type="submit" disabled={create.isPending || update.isPending} className="self-end">
+            {mode === "edit"
+              ? (update.isPending ? "Saving…" : "Save Changes")
+              : (create.isPending ? "Creating…" : "Create")}
+          </Button>
+        </form>
+      </CardContent>
+    </Card>
+  ));
+}
+
+function VoucherBulkActions({ visibleSelected, bulkAction, setSelected }: {
+  visibleSelected: Set<number>;
+  bulkAction: import("@tanstack/react-query").UseMutationResult<{ succeeded: number[]; failed: { id: number; error: string; }[]; }, Error, { ids: number[]; action: "activate" | "deactivate" | "delete"; }, unknown>;
+  setSelected: import("react").Dispatch<import("react").SetStateAction<Set<number>>>;
+}) {
+  return (visibleSelected.size > 0 && (
+    <div className="sticky bottom-4 z-10 mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-line bg-card px-3 py-2 text-sm shadow-lift transition-[color,background-color,border-color,opacity,transform] duration-150">
+      <span className="text-ink-soft">{visibleSelected.size} selected</span>
+      <Button
+        size="sm"
+        variant="outline"
+        disabled={bulkAction.isPending}
+        onClick={() => bulkAction.mutate({ ids: Array.from(visibleSelected), action: "activate" })}
+      >
+        Activate {visibleSelected.size} voucher{visibleSelected.size === 1 ? "" : "s"}
+      </Button>
+      <Button
+        size="sm"
+        variant="outline"
+        disabled={bulkAction.isPending}
+        onClick={() => bulkAction.mutate({ ids: Array.from(visibleSelected), action: "deactivate" })}
+      >
+        Deactivate {visibleSelected.size} voucher{visibleSelected.size === 1 ? "" : "s"}
+      </Button>
+      <ConfirmDialog
+        trigger={
+          <Button size="sm" variant="destructive" disabled={bulkAction.isPending}>
+            Delete {visibleSelected.size} voucher{visibleSelected.size === 1 ? "" : "s"}
+          </Button>
+        }
+        title={`Delete ${visibleSelected.size} voucher${visibleSelected.size === 1 ? "" : "s"}?`}
+        description="Vouchers that have already been used are skipped, not deleted."
+        confirmLabel="Delete"
+        onConfirm={() => bulkAction.mutate({ ids: Array.from(visibleSelected), action: "delete" })}
+      />
+      <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>Clear</Button>
+    </div>
+  ));
+}
+
+function VoucherDetailsDialog({ viewing, setViewing, now }: {
+  viewing: Voucher | null;
+  setViewing: import("react").Dispatch<import("react").SetStateAction<Voucher | null>>;
+  now: Date;
+}) {
+  return (viewing && (
+    <Dialog open onOpenChange={open => { if (!open) setViewing(null); }}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle className="font-mono break-all">{viewing.code}</DialogTitle>
+        </DialogHeader>
+        <div className="flex flex-col gap-4 text-sm">
+          <div className="flex items-center justify-between">
+            <StatusBadge status={voucherStatusToneKey(viewing.status)} />
+            <span className="text-xs text-ink-soft">
+              {viewing.type === "PERCENT" ? "Percent off" : "Fixed amount off"}
+            </span>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <div className="text-xs text-ink-soft">Discount</div>
+              <div className="font-medium text-ink">{discountPrimary(viewing)}</div>
+              {discountSecondary(viewing) && (
+                <div className="text-xs text-ink-soft">{discountSecondary(viewing)}</div>
+              )}
+            </div>
+            <div>
+              <div className="text-xs text-ink-soft">Usage</div>
+              <div className="font-medium text-ink">{usagePrimary(viewing)}</div>
+            </div>
+            <div>
+              <div className="text-xs text-ink-soft">Expiration</div>
+              <div className={expirationCell(viewing, now).muted ? "text-ink-soft" : "font-medium text-ink"}>
+                {expirationCell(viewing, now).text}
+              </div>
+            </div>
+            <div>
+              <div className="text-xs text-ink-soft">Performance</div>
+              <div className="font-medium text-ink">{viewing.ordersCount} orders</div>
+              <div className="text-xs text-ink-soft">
+                {formatCurrencyDisplay(viewing.revenue, "IDR")} · {viewing.customers} customers
+                {viewing.excludedFxOrders > 0 && <span> · {viewing.excludedFxOrders} orders missing FX</span>}
+              </div>
+            </div>
+          </div>
+          <div>
+            <div className="mb-1 text-xs text-ink-soft">Scope</div>
+            {viewing.scope === "ALL" ? (
+              <span className="text-sm text-ink">All Products</span>
+            ) : viewing.products.length === 0 ? (
+              <span className="text-sm text-ink-soft">No products selected</span>
+            ) : (
+              <div className="flex flex-wrap gap-1">
+                {viewing.products.map(p => <Badge key={p.id} variant="default" className="max-w-full truncate" title={p.name}>{p.name}</Badge>)}
+              </div>
+            )}
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  ));
+}
+
+function VoucherStats({ data }: {
+  data: NoInfer<VouchersData> | undefined;
+}) {
+  return (<div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
+    <StatCard label="Active" value={data?.stats.active ?? 0} icon={CheckCircle2} tone="success" isLoading={!data} />
+    <StatCard label="Scheduled" value={data?.stats.scheduled ?? 0} icon={CalendarClock} tone="warning" isLoading={!data} />
+    <StatCard label="Expired" value={data?.stats.expired ?? 0} icon={Ban} isLoading={!data} />
+    <StatCard
+      label="Redemptions (currently held)"
+      hint="Redemptions still held by an order. A cancelled, rejected or expired order releases its redemption, so this can go down."
+      value={data?.stats.totalRedemptions ?? 0}
+      icon={Repeat}
+      isLoading={!data}
+    />
+  </div>);
+}
+
+function VouchersTable({ allSelected, toggleSelectAll, vouchers, selected, toggleSelected, handleCopy, copiedId, now, setViewing, openEditForm, openDuplicateForm, toggle, setPendingDelete, data, status, q }: {
+  allSelected: boolean;
+  toggleSelectAll: () => void;
+  vouchers: Voucher[];
+  selected: Set<number>;
+  toggleSelected: (id: number) => void;
+  handleCopy: (v: Voucher) => void;
+  copiedId: number | null;
+  now: Date;
+  setViewing: import("react").Dispatch<import("react").SetStateAction<Voucher | null>>;
+  openEditForm: (v: Voucher) => void;
+  openDuplicateForm: (v: Voucher) => void;
+  toggle: import("@tanstack/react-query").UseMutationResult<unknown, Error, { id: number; active: boolean; }, unknown>;
+  setPendingDelete: import("react").Dispatch<import("react").SetStateAction<Voucher | null>>;
+  data: NoInfer<VouchersData> | undefined;
+  status: string;
+  q: string;
+}) {
+  return (<Card>
+    <CardContent>
+      <DataTable
+        nested
+        columns={[
+          {
+            key: "select",
+            kind: "selection",
+            header: (
+              <Checkbox
+                checked={allSelected}
+                onCheckedChange={toggleSelectAll}
+                disabled={vouchers.length === 0}
+                aria-label="Select all vouchers"
+              />
+            ),
+            render: v => (
+              <Checkbox
+                checked={selected.has(v.id)}
+                onCheckedChange={() => toggleSelected(v.id)}
+                onClick={e => e.stopPropagation()}
+                aria-label={`Select voucher ${v.code}`}
+              />
+            ),
+          },
+          {
+            key: "voucher",
+            header: "Voucher",
+            render: v => (
+              <div className="flex flex-col gap-0.5">
+                <div className="flex items-center gap-1.5">
+                  <span className="max-w-[200px] truncate font-mono text-sm" title={v.code}>{v.code}</span>
+                  <button
+                    type="button"
+                    onClick={() => handleCopy(v)}
+                    aria-label={`Copy code ${v.code}`}
+                    className="shrink-0 text-ink-soft transition-colors hover:text-ink"
+                  >
+                    {copiedId === v.id
+                      ? <Check className="h-3.5 w-3.5 text-grass-dark" />
+                      : <Copy className="h-3.5 w-3.5" />}
+                  </button>
+                </div>
+                <span className="text-xs text-ink-soft">
+                  {v.type === "PERCENT" ? "Percent off" : "Fixed amount off"}
+                </span>
+              </div>
+            ),
+          },
+          {
+            key: "discount",
+            header: "Discount",
+            render: v => {
+              const secondary = discountSecondary(v);
+              return (
+                <div className="flex flex-col gap-0.5">
+                  <span className="font-mono text-sm">{discountPrimary(v)}</span>
+                  {secondary && <span className="text-xs text-ink-soft">{secondary}</span>}
+                </div>
+              );
+            },
+          },
+          {
+            key: "usage",
+            header: "Usage",
+            render: v => {
+              const pct = v.usageLimit != null ? (v.usedCount / v.usageLimit) * 100 : 0;
+              const tone = pct < 50 ? "grass" : pct < 85 ? "amberx" : "rust";
+              return (
+                <div className="flex min-w-[100px] flex-col gap-1">
+                  <span className="text-sm">{usagePrimary(v)}</span>
+                  {v.usageLimit != null && <ProgressBar value={pct} tone={tone} />}
+                </div>
+              );
+            },
+          },
+          {
+            key: "expiration",
+            header: "Expiration",
+            render: v => {
+              const { text, muted } = expirationCell(v, now);
+              return <span className={`text-sm ${muted ? "text-ink-soft" : "text-ink"}`}>{text}</span>;
+            },
+          },
+          {
+            key: "status",
+            header: "Status",
+            render: v => <StatusBadge status={voucherStatusToneKey(v.status)} />,
+          },
+          {
+            key: "scope",
+            header: "Scope",
+            render: v => {
+              if (v.scope === "ALL") return <span className="text-sm text-ink-soft">All Products</span>;
+              const shown = v.products.slice(0, 2);
+              const extra = v.products.length - shown.length;
+              return (
+                <div className="flex flex-wrap gap-1">
+                  {shown.map(p => <Badge key={p.id} variant="default" className="max-w-full truncate" title={p.name}>{p.name}</Badge>)}
+                  {extra > 0 && <Badge variant="default">+{extra} more</Badge>}
+                </div>
+              );
+            },
+          },
+          {
+            key: "performance",
+            header: "Performance",
+            render: v => (
+              <div className="flex flex-col gap-0.5">
+                <span className="text-sm">{v.ordersCount} orders</span>
+                <span className="text-xs text-ink-soft">
+                  {formatCurrencyDisplay(v.revenue, "IDR")} · {v.customers} customers
+                  {v.excludedFxOrders > 0 && <span> · {v.excludedFxOrders} orders missing FX</span>}
+                </span>
+              </div>
+            ),
+          },
+          {
+            key: "actions",
+            header: "",
+            render: v => (
+              <div onClick={e => e.stopPropagation()}>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="ghost" size="icon-sm" aria-label={`Actions for ${v.code}`}>
+                      <MoreVertical className="h-4 w-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onSelect={() => setViewing(v)}>
+                      <Eye className="h-4 w-4" />
+                      View
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onSelect={() => openEditForm(v)}>
+                      <Pencil className="h-4 w-4" />
+                      Edit
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onSelect={() => openDuplicateForm(v)}>
+                      <CopyPlus className="h-4 w-4" />
+                      Duplicate
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem onSelect={() => toggle.mutate({ id: v.id, active: !v.isActive })}>
+                      {v.isActive ? <Ban className="h-4 w-4" /> : <CheckCircle2 className="h-4 w-4" />}
+                      {v.isActive ? "Disable" : "Enable"}
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      variant="destructive"
+                      onSelect={e => { e.preventDefault(); setPendingDelete(v); }}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                      Delete
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+            ),
+          },
+        ]}
+        data={vouchers}
+        isLoading={!data}
+        keyExtractor={v => v.id}
+        empty={
+          status || q
+            ? <EmptyState icon={Tag} title="No matching vouchers" description="Try a different search or status filter." />
+            : <EmptyState icon={Tag} title="No vouchers found" description="Create your first voucher to offer discounts." />
+        }
+      />
+    </CardContent>
+  </Card>);
 }

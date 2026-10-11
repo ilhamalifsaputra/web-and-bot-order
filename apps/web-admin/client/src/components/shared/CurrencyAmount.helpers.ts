@@ -1,0 +1,54 @@
+import Decimal from "decimal.js";
+
+/**
+ * Native USDT amount: up to 4dp, half-up, trailing zeros stripped, whole
+ * values with no decimal point at all — "0", "1", "1.5", "12.34", "96.7",
+ * "123.4568". Mirrors packages/core/formatters.ts's formatUsdtAmount,
+ * byte-for-byte.
+ */
+export function formatUsdtAmount(value: string | number): string {
+  return new Decimal(value).toDecimalPlaces(4, Decimal.ROUND_HALF_UP).toString();
+}
+
+/**
+ * Pure display formatting only — the backend (packages/db/src/crud) already
+ * did every Decimal-precision money computation; these values are final.
+ * Mirrors packages/core/src/formatters.ts's formatIdr/formatPrice/formatUsdt
+ * OUTPUT SHAPE exactly, using Decimal for display rounding rather than binary floating-point.
+ */
+export function formatCurrencyDisplay(value: string, currency: "IDR" | "USDT" | "USD"): string {
+  const amount = new Decimal(value);
+  if (currency === "IDR") {
+    const whole = amount.toDecimalPlaces(0, Decimal.ROUND_HALF_UP);
+    const grouped = whole.abs().toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+    return `${whole.isNegative() && !whole.isZero() ? "-" : ""}Rp${grouped}`;
+  }
+  if (currency === "USDT") return `${formatUsdtAmount(value)} ${currency}`;
+  return `${amount.toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toFixed(2)} ${currency}`;
+}
+
+export type KnownCurrency = Parameters<typeof formatCurrencyDisplay>[1];
+
+/** Like `formatCurrencyDisplay`, but tolerates an unrecognised currency code by printing "<value> <code>". */
+export function formatMoneyOrCode(value: string, currency: string): string {
+  if (currency === "IDR" || currency === "USDT" || currency === "USD") {
+    return formatCurrencyDisplay(value, currency as KnownCurrency);
+  }
+  return `${value} ${currency}`;
+}
+
+/**
+ * Same values as `formatCurrencyDisplay`, split into an emphasized amount and
+ * a de-emphasized currency suffix — for table cells that want to style the
+ * two differently (e.g. Orders table's Total column) without re-deriving the
+ * formatting logic locally. IDR has no suffix (the "Rp" prefix already reads
+ * as the currency), matching `formatCurrencyDisplay`'s own IDR output shape.
+ */
+export function formatCurrencyParts(
+  value: string,
+  currency: "IDR" | "USDT" | "USD",
+): { amount: string; suffix: string } {
+  if (currency === "IDR") return { amount: formatCurrencyDisplay(value, currency), suffix: "" };
+  if (currency === "USDT") return { amount: formatUsdtAmount(value), suffix: "USDT" };
+  return { amount: new Decimal(value).toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toFixed(2), suffix: "USD" };
+}

@@ -1,11 +1,11 @@
-import "@testing-library/jest-dom";
-import { describe, it, expect, beforeEach, vi, type Mock } from "vitest";
-import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import InlineTicketPanel from "./InlineTicketPanel";
+import "@testing-library/jest-dom";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
+import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { apiGet, apiPost } from "../../api/client";
 import type { SupportTicketSummary, TicketDetailData } from "../../api/types";
+import InlineTicketPanel from "./InlineTicketPanel";
 
 vi.mock("../../api/client", () => ({
   apiGet: vi.fn(),
@@ -94,7 +94,7 @@ describe("InlineTicketPanel", () => {
   });
 
   it("shows a skeleton while the ticket is loading", async () => {
-    let resolveFetch: (v: unknown) => void = () => {};
+    let resolveFetch: (v: unknown) => void = () => { };
     renderPanel(() => new Promise((resolve) => (resolveFetch = resolve)));
     expect(screen.getByLabelText("Loading…")).toBeInTheDocument();
     act(() => resolveFetch(openTicket));
@@ -186,7 +186,7 @@ describe("InlineTicketPanel", () => {
       ticket: { ...openTicket.ticket, attachments: ["/uploads/tickets/error-login.png"] },
     }));
     await screen.findByText("#TK-7");
-    const link = screen.getByRole("link", { name: /error-login\.png/ });
+    const link = screen.getByRole("link", { name: /^error-login\.png$/ });
     expect(link).toHaveAttribute("href", "/uploads/tickets/error-login.png");
     expect(link).toHaveAttribute("download");
   });

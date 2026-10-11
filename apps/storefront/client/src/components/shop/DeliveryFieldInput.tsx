@@ -20,13 +20,20 @@
  * the server re-validates from scratch (validateCustomerData) before
  * persisting either at checkout or via the PATCH info route.
  */
-import { useState } from "react";
+import { useState, type InputHTMLAttributes } from "react";
 import type { AdditionalField } from "../../api/types";
 import { fieldError } from "../../lib/deliveryFields";
-import { t, currentLang } from "../../lib/i18n";
+import { currentLang, t } from "../../lib/i18n";
 import FormField from "../ui/FormField";
 import Input from "../ui/Input";
 import Select from "../ui/Select";
+
+const INPUT_ATTRIBUTES: Record<Exclude<AdditionalField["type"], "select">, InputHTMLAttributes<HTMLInputElement>> = {
+  text: { type: "text" },
+  number: { type: "text", inputMode: "numeric", pattern: "[0-9]*" },
+  email: { type: "email", inputMode: "email", autoComplete: "email" },
+  url: { type: "url", inputMode: "url" },
+};
 
 export default function DeliveryFieldInput({
   field,
@@ -53,40 +60,43 @@ export default function DeliveryFieldInput({
   function blur() { setTouched(true); onBlur?.(); }
   return (
     <FormField label={label} htmlFor={inputId} error={errorText} hint={hint}>
-      {field.type === "select" ? (
-        <Select id={inputId} value={value} onChange={(e) => onChange(e.target.value)} onBlur={blur} required={field.required}>
-          <option value="">{t("web.checkout_info_select_placeholder")}</option>
-          {field.options.map((opt) => (
-            <option key={opt} value={opt}>
-              {opt}
-            </option>
-          ))}
-        </Select>
-      ) : (
-        <Input
-          id={inputId}
-          type={
-            field.type === "email" ? "email" : field.type === "url" ? "url" : "text"
-          }
-          // `type` alone gets the right keyboard on iOS Safari but not
-          // reliably on Android, whose keyboards key off inputMode — so both
-          // are declared rather than trusting the type to carry it.
-          inputMode={
-            field.type === "number" ? "numeric" : field.type === "email" ? "email" : field.type === "url" ? "url" : undefined
-          }
-          pattern={field.type === "number" ? "[0-9]*" : undefined}
-          // A manual_with_info order routinely asks for the buyer's own email;
-          // without this they retype an address the browser already knows.
-          autoComplete={field.type === "email" ? "email" : undefined}
-          value={value}
-          required={field.required}
-          minLength={field.minLength}
-          maxLength={field.maxLength ?? 4096}
-          placeholder={field.placeholder || undefined}
-          onChange={(e) => onChange(e.target.value)}
-          onBlur={blur}
-        />
-      )}
+      <DeliveryFieldControl field={field} inputId={inputId} value={value} onChange={onChange} blur={blur} />
     </FormField>
   );
+}
+
+function DeliveryFieldControl({ field, inputId, value, onChange, blur, ...controlProps }: {
+  field: { key: string; options: string[]; type: "number" | "text" | "email" | "url" | "select"; label: { id: string; en: string; }; required: boolean; placeholder: string; helpText?: string | undefined; minLength?: number | undefined; maxLength?: number | undefined; pattern?: "^[0-9]+$" | "^[a-zA-Z0-9_]+$" | undefined; };
+  inputId: string;
+  value: string;
+  onChange: (value: string) => void;
+  blur: () => void;
+  id?: string;
+  invalid?: boolean;
+  "aria-invalid"?: import("react").AriaAttributes["aria-invalid"];
+  "aria-describedby"?: string;
+}) {
+  return (field.type === "select" ? (
+    <Select {...controlProps} id={inputId} value={value} onChange={(e) => onChange(e.target.value)} onBlur={blur} required={field.required}>
+      <option value="">{t("web.checkout_info_select_placeholder")}</option>
+      {field.options.map((opt) => (
+        <option key={opt} value={opt}>
+          {opt}
+        </option>
+      ))}
+    </Select>
+  ) : (
+    <Input
+      {...controlProps}
+      id={inputId}
+      {...INPUT_ATTRIBUTES[field.type]}
+      value={value}
+      required={field.required}
+      minLength={field.minLength}
+      maxLength={field.maxLength ?? 4096}
+      placeholder={field.placeholder || undefined}
+      onChange={(e) => onChange(e.target.value)}
+      onBlur={blur}
+    />
+  ));
 }

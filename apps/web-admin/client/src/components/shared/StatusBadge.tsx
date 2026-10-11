@@ -1,3 +1,4 @@
+import { titleCase } from "./StatusBadge.helpers";
 type Tone = "success" | "warning" | "danger" | "neutral";
 
 const TONE: Record<string, Tone> = {
@@ -108,21 +109,6 @@ const TONE_CLASS: Record<Tone, string> = {
   danger: "bg-rust-tint text-rust-dark",
   neutral: "bg-sand text-ink-soft",
 };
-
-/** The exact wording `StatusBadge` renders for a raw code. Exported so a
- *  filter dropdown can label its options identically to the badges in the
- *  rows it filters, instead of title-casing the same codes a second time. */
-export function statusLabel(status: string): string {
-  return titleCase(status);
-}
-
-function titleCase(status: string): string {
-  return status
-    .toLowerCase()
-    .split("_")
-    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-    .join(" ");
-}
 
 export function StatusBadge({ status }: { status: string }) {
   const tone = TONE[status] ?? "neutral";

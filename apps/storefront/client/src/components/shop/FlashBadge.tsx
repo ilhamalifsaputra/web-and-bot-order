@@ -1,3 +1,4 @@
+import { flashPercentLabel } from "./FlashBadge.helpers";
 /**
  * Shared flash-sale UI — the ⚡ percent badge, the live countdown to the end
  * of the sale, and the struck-through pre-sale price. Used by the product
@@ -22,10 +23,10 @@
  * the ⚡ icon or the rust colour alone), and the struck-through figure carries
  * an sr-only "Was Rp…" label because `line-through` is not announced.
  */
-import { useEffect, useState } from "react";
 import { Zap } from "lucide-react";
-import { t } from "../../lib/i18n";
+import { useEffect, useState } from "react";
 import { formatPriceFor } from "../../lib/format";
+import { t } from "../../lib/i18n";
 import { useShopContext } from "../../lib/useShopContext";
 
 /** JSON twin of FlashLineView (apps/storefront/src/routes/cart.ts) and of the
@@ -35,16 +36,6 @@ export interface FlashInfo {
   /** The pre-sale price, for the strike-through — NOT what the buyer pays. */
   base_price: string;
   ends_at: string;
-}
-
-/** Whole-percent display value, or null when the payload isn't a usable
- * percent (mirrors activeFlashPercent's (0,100] guard client-side, so a bad
- * row can never render a "−0%"/"−250%" badge). */
-export function flashPercentLabel(percent: string | number | null | undefined): number | null {
-  if (percent === null || percent === undefined || percent === "") return null;
-  const n = Number(percent);
-  if (!Number.isFinite(n) || n <= 0 || n > 100) return null;
-  return Math.round(n);
 }
 
 // A struck-through "was" price is a factual claim about what this plan used to

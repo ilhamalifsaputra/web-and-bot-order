@@ -1,15 +1,15 @@
-import { useSearchParams, useNavigate } from "react-router-dom";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useQuery } from "@tanstack/react-query";
+import { PackageSearch, SearchX, Users } from "lucide-react";
 import { useEffect, useState } from "react";
-import { Users, PackageSearch, SearchX } from "lucide-react";
-import { PageLayout } from "../components/shared/PageLayout";
-import { PageHeader } from "../components/shared/PageHeader";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { apiGet } from "../api/client";
 import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
 import { FilterBar } from "../components/shared/FilterBar";
+import { PageHeader } from "../components/shared/PageHeader";
+import { PageLayout } from "../components/shared/PageLayout";
 import { SearchBar } from "../components/shared/SearchBar";
-import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
-import { apiGet } from "../api/client";
 
 interface UserHit {
   id: number;
@@ -65,7 +65,7 @@ export function SearchPage() {
       else setParams({});
     }, 300);
     return () => clearTimeout(timer);
-  }, [draft]);
+  }, [draft, setParams]);
 
   useEffect(() => {
     if (data?.exactOrderId) {

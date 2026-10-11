@@ -1,3 +1,4 @@
+import * as m from "motion/react-m";
 /**
  * "Flash sale" — the products whose sale window is open right now. The nav
  * drawer only links here when `flash_active` says a sale is running, but the
@@ -9,22 +10,22 @@
  * checkout prices against. ProductCard already renders the sale badge and the
  * struck-through base price from each card's `flash` field.
  */
-import { useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { Zap } from "lucide-react";
-import { motion } from "motion/react";
+import { useSearchParams } from "react-router-dom";
 import { apiGet } from "../api/client";
 import { SORT_KEYS, type ShelfPageData, type SortKey } from "../api/types";
 import { useShopContext } from "../components/Layout";
-import { t } from "../lib/i18n";
-import { staggerContainer, staggerItem } from "../lib/motion";
-import { useSuggestedProducts } from "../lib/useSuggestedProducts";
 import Breadcrumb from "../components/shop/Breadcrumb";
+import EmptyState from "../components/shop/EmptyState";
 import ProductCard from "../components/shop/ProductCard";
 import ProductCardSkeleton from "../components/shop/ProductCardSkeleton";
 import Skeleton from "../components/shop/Skeleton";
 import SortSelect from "../components/shop/SortSelect";
-import EmptyState from "../components/shop/EmptyState";
+import { t } from "../lib/i18n";
+import { staggerContainer, staggerItem } from "../lib/motion";
+import { useSuggestedProducts } from "../lib/useSuggestedProducts";
+;
 
 const SKELETON_CARDS = Array.from({ length: 4 }, (_, i) => i);
 
@@ -81,18 +82,18 @@ export default function FlashPage() {
               <SortSelect value={sort} onChange={(next) => setParams(next === "default" ? {} : { sort: next })} />
             </div>
           )}
-          <motion.div
+          <m.div
             className={`grid gap-4 ${products.length === 1 ? "max-w-xs" : "grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5"}`}
             variants={staggerContainer}
             initial="initial"
             animate="animate"
           >
             {products.map((p) => (
-              <motion.div key={p.slug} variants={staggerItem} className="h-full">
+              <m.div key={p.slug} variants={staggerItem} className="h-full">
                 <ProductCard p={p} fx={ctx?.fx} lowThreshold={low_threshold} />
-              </motion.div>
+              </m.div>
             ))}
-          </motion.div>
+          </m.div>
         </>
       ) : (
         <EmptyState

@@ -1,17 +1,16 @@
-import * as React from "react"
-import { useState, useEffect } from "react"
-import type { ReactNode } from "react"
 import {
   Table,
-  TableHeader,
-  TableRow,
-  TableHead,
   TableBody,
   TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
 } from "@/components/ui/table"
 import { cn } from "@/lib/utils"
-import { SkeletonRow } from "./SkeletonRow"
+import type { ReactNode } from "react"
+import { useEffect, useState } from "react"
 import { EmptyState } from "./EmptyState"
+import { SkeletonRow } from "./SkeletonRow"
 
 /** Returns true once mounted on a viewport narrower than `breakpoint` px.
  *  Defaults to false in SSR / test environments (no matchMedia). */
@@ -141,10 +140,22 @@ export function DataTable<T>({
                     nested ? "border-transparent bg-sand" : "border-line bg-card",
                     onRowClick && (nested ? "cursor-pointer active:bg-border" : "cursor-pointer active:bg-sand")
                   )}
-                  onClick={onRowClick ? () => onRowClick(row) : undefined}
+                  role={onRowClick ? "button" : undefined}
+                  tabIndex={onRowClick ? 0 : undefined}
+                  onKeyDown={onRowClick ? (event) => {
+                    if (event.target !== event.currentTarget) return;
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      onRowClick(row);
+                    }
+                  } : undefined}
+                  onClick={onRowClick ? (event) => {
+                    if ((event.target as HTMLElement).closest("[data-row-selection]")) return;
+                    onRowClick(row);
+                  } : undefined}
                 >
                   {selectionNode ? (
-                    <div className="pb-2" onClick={(e) => e.stopPropagation()}>
+                    <div className="pb-2" data-row-selection>
                       {selectionNode}
                     </div>
                   ) : null}

@@ -14,24 +14,25 @@
  * orders match this filter" (§16 — a dead end otherwise, so it names a way
  * out).
  */
-import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { Receipt } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { apiGet } from "../api/client";
 import type { AccountOrderSummary, AccountOrdersData } from "../api/types";
 import { useShopContext } from "../components/Layout";
-import { t } from "../lib/i18n";
-import { useIsDesktop } from "../lib/useMediaQuery";
-import { useSuggestedProducts } from "../lib/useSuggestedProducts";
 import EmptyState from "../components/shop/EmptyState";
-import { formatOrderAmount } from "../lib/format";
 import Skeleton from "../components/shop/Skeleton";
-import StatusBadge, { statusLabel } from "../components/shop/StatusBadge";
+import StatusBadge from "../components/shop/StatusBadge";
+import { statusLabel } from "../components/shop/StatusBadge.helpers";
 import Button from "../components/ui/Button";
 import Card from "../components/ui/Card";
 import Input from "../components/ui/Input";
 import Select from "../components/ui/Select";
+import { formatOrderAmount } from "../lib/format";
+import { t } from "../lib/i18n";
+import { useIsDesktop } from "../lib/useMediaQuery";
+import { useSuggestedProducts } from "../lib/useSuggestedProducts";
 
 const SKELETON_ROWS = Array.from({ length: 4 }, (_, i) => i);
 

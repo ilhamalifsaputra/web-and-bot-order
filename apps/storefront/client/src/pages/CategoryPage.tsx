@@ -3,22 +3,22 @@
  * pills to switch category (active one highlighted), product grid, empty state.
  * Restyled onto the design system in Task 10 (page-templates.md §2).
  */
-import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { PackageSearch } from "lucide-react";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import { apiGet } from "../api/client";
 import { SORT_KEYS, type CategoryPageData, type SortKey } from "../api/types";
 import { useShopContext } from "../components/Layout";
-import { useDocumentTitle } from "../lib/useDocumentTitle";
-import { t } from "../lib/i18n";
-import { useSuggestedProducts } from "../lib/useSuggestedProducts";
 import Breadcrumb from "../components/shop/Breadcrumb";
+import EmptyState from "../components/shop/EmptyState";
 import ProductCard from "../components/shop/ProductCard";
 import ProductCardSkeleton from "../components/shop/ProductCardSkeleton";
 import Skeleton from "../components/shop/Skeleton";
 import SortSelect from "../components/shop/SortSelect";
+import { t } from "../lib/i18n";
+import { useDocumentTitle } from "../lib/useDocumentTitle";
+import { useSuggestedProducts } from "../lib/useSuggestedProducts";
 import ErrorPage from "./ErrorPage";
-import EmptyState from "../components/shop/EmptyState";
 
 const SKELETON_CARDS = Array.from({ length: 8 }, (_, i) => i);
 
@@ -104,11 +104,10 @@ export default function CategoryPage() {
           <Link
             key={c.slug}
             to={`/c/${c.slug}`}
-            className={`inline-flex items-center gap-2 whitespace-nowrap rounded-full px-3 py-1.5 text-sm font-semibold transition-colors ${
-              c.id === category.id
-                ? "bg-pine-tint text-pine-dark"
-                : "bg-sand text-ink-soft hover:bg-pine-tint hover:text-pine-dark"
-            }`}
+            className={`inline-flex items-center gap-2 whitespace-nowrap rounded-full px-3 py-1.5 text-sm font-semibold transition-colors ${c.id === category.id
+              ? "bg-pine-tint text-pine-dark"
+              : "bg-sand text-ink-soft hover:bg-pine-tint hover:text-pine-dark"
+              }`}
           >
             {c.emoji ? `${c.emoji} ` : ""}
             {c.name}
@@ -116,36 +115,47 @@ export default function CategoryPage() {
         ))}
       </div>
 
-      {products.length > 0 ? (
-        <>
-          {/* STO-007: cheapest/newest/rating sort — only worth showing once
-              there's more than one product to reorder. */}
-          {products.length > 1 && (
-            <div className="flex justify-end mb-4">
-              <SortSelect value={sort} onChange={(next) => setParams(next === "default" ? {} : { sort: next })} />
-            </div>
-          )}
-          {/* STO-018: same fix as the homepage's "Latest products" grid — a
-              single product left two-thirds of the row empty. */}
-          <div
-            className={`grid gap-4 ${products.length === 1 ? "max-w-xs" : "grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5"}`}
-          >
-            {products.map((p) => (
-              <div key={p.slug} className="h-full">
-                <ProductCard p={p} fx={fx} lowThreshold={low_threshold} />
-              </div>
-            ))}
-          </div>
-        </>
-      ) : (
-        <EmptyState
-          icon={PackageSearch}
-          title={t("web.catalog_empty")}
-          description={t("web.catalog_empty_desc")}
-          action={{ label: t("web.nav_products"), to: "/products" }}
-          suggestions={suggested ? { products: suggested.products, fx, lowThreshold: suggested.low_threshold } : undefined}
-        />
-      )}
+      <CategoryProductsSection products={products} sort={sort} setParams={setParams} fx={fx} low_threshold={low_threshold} suggested={suggested} />
     </>
   );
+}
+
+function CategoryProductsSection({ products, sort, setParams, fx, low_threshold, suggested }: {
+  products: import("../components/shop/ProductCard").ProductCardData[];
+  sort: "default" | "cheapest" | "newest" | "rating";
+  setParams: import("react-router-dom").SetURLSearchParams;
+  fx: string | null | undefined;
+  low_threshold: number;
+  suggested: NoInfer<import("../api/types").ShelfPageData> | undefined;
+}) {
+  return (products.length > 0 ? (
+    <>
+      {/* STO-007: cheapest/newest/rating sort — only worth showing once
+              there's more than one product to reorder. */}
+      {products.length > 1 && (
+        <div className="flex justify-end mb-4">
+          <SortSelect value={sort} onChange={(next) => setParams(next === "default" ? {} : { sort: next })} />
+        </div>
+      )}
+      {/* STO-018: same fix as the homepage's "Latest products" grid — a
+              single product left two-thirds of the row empty. */}
+      <div
+        className={`grid gap-4 ${products.length === 1 ? "max-w-xs" : "grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5"}`}
+      >
+        {products.map((p) => (
+          <div key={p.slug} className="h-full">
+            <ProductCard p={p} fx={fx} lowThreshold={low_threshold} />
+          </div>
+        ))}
+      </div>
+    </>
+  ) : (
+    <EmptyState
+      icon={PackageSearch}
+      title={t("web.catalog_empty")}
+      description={t("web.catalog_empty_desc")}
+      action={{ label: t("web.nav_products"), to: "/products" }}
+      suggestions={suggested ? { products: suggested.products, fx, lowThreshold: suggested.low_threshold } : undefined}
+    />
+  ));
 }

@@ -18,8 +18,8 @@
  * A "show more" affordance is the caller's job (render fewer `items`).
  * Business-agnostic: `items` carry plain nodes.
  */
-import { useId, useState, type ReactNode } from "react";
 import { ChevronDown } from "lucide-react";
+import { useId, useState, type ReactNode } from "react";
 import { cn } from "./cn";
 
 export interface AccordionItem {
@@ -56,6 +56,7 @@ export default function Accordion({
   const isControlled = value !== undefined;
   const [internal, setInternal] = useState<string[]>(() => toArray(defaultValue));
   const open = isControlled ? toArray(value) : internal;
+  const openSet = new Set(open);
 
   function emit(next: string[]) {
     if (!isControlled) setInternal(next);
@@ -74,7 +75,7 @@ export default function Accordion({
   return (
     <div className={cn("card divide-y divide-line overflow-hidden", className)}>
       {items.map((item) => {
-        const isOpen = open.includes(item.value);
+        const isOpen = openSet.has(item.value);
         const triggerId = `${baseId}-trigger-${item.value}`;
         const regionId = `${baseId}-region-${item.value}`;
         return (

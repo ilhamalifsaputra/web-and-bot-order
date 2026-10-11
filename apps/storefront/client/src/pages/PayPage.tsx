@@ -1,3 +1,5 @@
+import { useQueryClient } from "@tanstack/react-query";
+import { advanceCardState } from "./PayPage.helpers";
 /**
  * TSX port of apps/storefront/views/pay.njk + its polled fragment
  * views/_pay_status.njk. Two independent data sources, exactly like the NJK:
@@ -40,8 +42,6 @@
  * itself, and every fetch/poll/state-machine/countdown mechanism below, is
  * byte-unchanged.
  */
-import { useEffect, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   AlertTriangle,
@@ -56,24 +56,26 @@ import {
   TimerOff,
   Wallet,
 } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { apiGet, apiPost } from "../api/client";
 import type { PayData, PayState, PayStatusData } from "../api/types";
-import { t } from "../lib/i18n";
-import { formatOrderAmount, formatPriceFor, showsUsdDisplay } from "../lib/format";
-import { useShopContext } from "../lib/useShopContext";
-import { readCodeEmailed } from "../lib/orderCodeEmailed";
-import Stepper from "../components/shop/Stepper";
-import ErrorPage from "./ErrorPage";
-import Skeleton from "../components/shop/Skeleton";
-import WhatsAppIcon from "../components/shop/WhatsAppIcon";
-import TelegramIcon from "../components/shop/TelegramIcon";
-import Card from "../components/ui/Card";
-import Button from "../components/ui/Button";
-import Alert from "../components/ui/Alert";
-import Badge from "../components/ui/Badge";
-import AlertDialog from "../components/ui/AlertDialog";
-import TransactionStatus from "../components/shop/TransactionStatus";
 import GameTopupDetailCard from "../components/shop/GameTopupDetailCard";
+import Skeleton from "../components/shop/Skeleton";
+import Stepper from "../components/shop/Stepper";
+import TelegramIcon from "../components/shop/TelegramIcon";
+import TransactionStatus from "../components/shop/TransactionStatus";
+import WhatsAppIcon from "../components/shop/WhatsAppIcon";
+import Alert from "../components/ui/Alert";
+import AlertDialog from "../components/ui/AlertDialog";
+import Badge from "../components/ui/Badge";
+import Button from "../components/ui/Button";
+import Card from "../components/ui/Card";
+import { formatOrderAmount, formatPriceFor, showsUsdDisplay } from "../lib/format";
+import { t } from "../lib/i18n";
+import { readCodeEmailed } from "../lib/orderCodeEmailed";
+import { useShopContext } from "../lib/useShopContext";
+import ErrorPage from "./ErrorPage";
 
 /**
  * TSX port of _pay_status.njk — the polled status chip. Design-system
@@ -123,23 +125,6 @@ function StatusStrip({ state }: { state: PayState }) {
     );
   }
   return <Badge variant="neutral">{t("web.status_closed")}</Badge>;
-}
-
-const IN_FLIGHT_RANK: Partial<Record<PayState, number>> = { waiting: 0, confirming: 1, processing: 2 };
-
-/** Which state the big card shows: the polled one only when it is a LATER
- * in-flight stage than the one the card already shows (waiting < confirming <
- * processing), or when the poll says the order was closed (an admin cancelled
- * or closed it) while the card still shows an in-flight stage — otherwise a
- * cancelled paid order would keep saying "being processed". Never moves
- * backwards; delivered is left to the redirect and expired to the existing
- * handling. */
-export function advanceCardState(current: PayState, polled: PayState | undefined): PayState {
-  if (polled === "underpaid") return "underpaid";
-  const from = IN_FLIGHT_RANK[current];
-  if (from !== undefined && polled === "closed") return "closed";
-  const to = polled ? IN_FLIGHT_RANK[polled] : undefined;
-  return from !== undefined && to !== undefined && to > from ? (polled as PayState) : current;
 }
 
 /** Contact fallback shown when a gateway is down — shared by the TokoPay/
@@ -225,55 +210,31 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
   const navigate = useNavigate();
   const isTopup = variant === "topup";
   // The only seam between the two order kinds — see the file header.
-  const apiBase = isTopup ? "/wallet/topup" : "/orders";
-  const loginNextBase = isTopup ? "/wallet/topup" : "/checkout";
-  const deliveredHref = isTopup ? "/account" : `/account/orders/${code}`;
-  const closedHref = isTopup ? "/account" : "/account/orders";
-  const closedLabelKey = isTopup ? "web.account_title" : "web.account_orders";
+  const { apiBase, loginNextBase, deliveredHref, closedHref, closedLabelKey, payPagePath } = paymentRoutePaths({ isTopup, code });
+
   // Full-reload retry link for GatewayDownFallback — the client route for
   // this page (App.tsx), not the API base above.
-  const payPagePath = isTopup ? `/wallet/topup/${code}/pay` : `/checkout/${code}/pay`;
 
-  const { data, error } = useQuery({
-    queryKey: ["pay", apiBase, code],
-    queryFn: () => apiGet<PayData>(`/api/v1${apiBase}/${code}/pay`),
-    retry: false,
-  });
-
-  useEffect(() => {
-    if ((error as (Error & { status?: number }) | null)?.status === 401) {
-      window.location.assign(`/login?next=${loginNextBase}/${code}/pay`);
-    }
-  }, [error, code, loginNextBase]);
+  const { data, error, poll } = usePaymentStatus({ apiBase, code, loginNextBase });
 
   // Polls every 5s (the HTMX twin); drives the small strip, the
   // delivered-redirect, and advances the big card to a later in-flight stage
   // (see advanceCardState and the file header).
-  const { data: poll } = useQuery({
-    queryKey: ["pay-status", apiBase, code],
-    queryFn: () => apiGet<PayStatusData>(`/api/v1${apiBase}/${code}/status`),
-    refetchInterval: 5000,
-    enabled: Boolean(data),
-  });
-
-  useEffect(() => {
-    if (poll?.redirect) navigate(poll.redirect);
-  }, [poll, navigate]);
 
   // A game top-up (never the wallet top-up variant) swaps the cart/credentials
   // wording for product-page / top-up wording. The branch key is the server's
   // presentation; a legacy payload without one is recognised by `game_target`
   // (null for every other order type).
-  const livePresentation = poll?.presentation ?? data?.presentation;
-  const isGame =
-    !isTopup && (livePresentation ? livePresentation.transactionType === "GAME_TOPUP" : Array.isArray(data?.game_target));
-  const retryHref = isTopup ? "/wallet/topup" : isGame ? (data?.product_slug ? `/p/${data.product_slug}` : "/") : "/cart";
-  const retryLabelKey = isTopup ? "web.wallet_topup_retry" : isGame ? "web.back_to_product" : "web.back_to_cart";
-  const deliveredLabelKey = isTopup ? "web.wallet_topup_view_wallet" : isGame ? "web.view_topup_details" : "web.view_credentials";
+  const { isGame, retryHref, retryLabelKey, deliveredLabelKey } = paymentDestinations({ poll, data, isTopup });
 
+  const queryClient = useQueryClient();
   const cancelMutation = useMutation({
     mutationFn: () => apiPost<{ ok: boolean }>(`/api/v1${apiBase}/${code}/cancel`, {}),
-    onSuccess: () => navigate(retryHref),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["pay", apiBase, code] });
+      void queryClient.invalidateQueries({ queryKey: ["pay-status", apiBase, code] });
+      navigate(retryHref);
+    },
   });
 
   // The one logic addition Task 14 makes: the cancel button no longer fires
@@ -313,10 +274,7 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
   }
 
   const { order } = data;
-  const presentation = poll?.presentation ?? data.presentation;
-  const underpayment = poll && "underpayment" in poll ? poll.underpayment : data.underpayment;
-  const state = presentation ? poll?.state ?? data.state : advanceCardState(data.state, poll?.state);
-  const stripState = poll?.state ?? state;
+  const { presentation, underpayment, state, stripState } = paymentProgress({ poll, data });
 
   // Final-review fix — the web twin of the bot's payAlongsidePriceLine
   // (apps/order-bot/src/util/format.ts), through the same shared
@@ -344,345 +302,563 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
   return (
     <>
       <Stepper step={state === "delivered" ? 3 : 2} />
-      <div className="max-w-2xl mx-auto">
-        <h1 className="page-title text-2xl! mb-1">{t("web.pay_title")}</h1>
-      <p className={emailedTo ? "text-sm text-ink-soft mb-2" : "text-sm text-ink-soft mb-5"}>
-        {t(isTopup ? "transaction.receipt" : "web.order_code")}: <span className="codeish break-all whitespace-normal">{order.code}</span>
-      </p>
+      <PaymentPageContent emailedTo={emailedTo} isTopup={isTopup} order={order} data={data} presentation={presentation} underpayment={underpayment} state={state} isGame={isGame} deliveredHref={deliveredHref} deliveredLabelKey={deliveredLabelKey} stripState={stripState} priceAndPayLine={priceAndPayLine} payPagePath={payPagePath} countdownText={countdownText} cancelMutation={cancelMutation} setCancelDialogOpen={setCancelDialogOpen} cancelDialogOpen={cancelDialogOpen} retryHref={retryHref} retryLabelKey={retryLabelKey} closedHref={closedHref} closedLabelKey={closedLabelKey} />
+    </>
+  );
+}
 
-      {/* Directly under the code it is about, so the sentence and its subject
-          are read together. Quiet by design — it is reassurance, not an action
-          competing with the payment instructions below it. */}
-      {emailedTo && (
-        <p className="mb-5 flex items-start gap-1.5 text-xs leading-relaxed text-ink-soft">
-          <Mail className="mt-0.5 w-3.5 h-3.5 shrink-0 text-grass" />
-          <span>{t("web.pay_code_emailed", { email: emailedTo })}</span>
-        </p>
-      )}
+function PayPayStatus({ data, presentation, underpayment, state, isGame, deliveredHref, deliveredLabelKey, isTopup, stripState }: {
+  data: PayData;
+  presentation: import("../api/types").CustomerProgress | undefined;
+  underpayment: import("../api/types").Underpayment | null | undefined;
+  state: PayState;
+  isGame: boolean;
+  deliveredHref: string;
+  deliveredLabelKey: "web.wallet_topup_view_wallet" | "web.view_topup_details" | "web.view_credentials";
+  isTopup: boolean;
+  stripState: PayState;
+}) {
+  return (<div id="pay-status" className="mb-5">
+    {data.recovery_url && <a className="mb-3 inline-block text-sm underline" href={data.recovery_url}>{t("web.save_recovery_link")}</a>}
+    {presentation ? (
+      <Card className="min-w-0 bg-pine-tint/40">
+        <TransactionStatus presentation={presentation} underpayment={underpayment}>
+          {presentation.phase === "UNDERPAID" && (
+            <a href={data.support_telegram_url ?? "/#contact"} className="btn btn-soft min-h-11">
+              {t("transaction.contact_admin")}
+            </a>
+          )}
+          {state === "delivered" && isGame && (
+            <Link to={deliveredHref} className="btn btn-soft min-h-11">
+              {t(deliveredLabelKey)} <ChevronRight className="w-4 h-4" />
+            </Link>
+          )}
+          {state === "processing" && !isTopup && (
+            <Link to={deliveredHref} className="btn btn-soft min-h-11">{t("web.pay_processing_view_order")} <ChevronRight className="w-4 h-4" /></Link>
+          )}
+        </TransactionStatus>
+      </Card>
+    ) : <StatusStrip state={stripState} />}
+  </div>);
+}
 
-      <div id="pay-status" className="mb-5">
-        {data.recovery_url && <a className="mb-3 inline-block text-sm underline" href={data.recovery_url}>{t("web.save_recovery_link")}</a>}
-        {presentation ? (
-          <Card className="min-w-0 bg-pine-tint/40">
-            <TransactionStatus presentation={presentation} underpayment={underpayment}>
-              {presentation.phase === "UNDERPAID" && (
-                <a href={data.support_telegram_url ?? "/#contact"} className="btn btn-soft min-h-11">
-                  {t("transaction.contact_admin")}
-                </a>
-              )}
-              {state === "delivered" && isGame && (
-                <Link to={deliveredHref} className="btn btn-soft min-h-11">
-                  {t(deliveredLabelKey)} <ChevronRight className="w-4 h-4" />
-                </Link>
-              )}
-              {state === "processing" && !isTopup && (
-                <Link to={deliveredHref} className="btn btn-soft min-h-11">{t("web.pay_processing_view_order")} <ChevronRight className="w-4 h-4" /></Link>
-              )}
-            </TransactionStatus>
-          </Card>
-        ) : <StatusStrip state={stripState} />}
-      </div>
+function PendingPayment({ state, data, order, priceAndPayLine, payPagePath, countdownText, cancelMutation, setCancelDialogOpen, cancelDialogOpen }: {
+  state: PayState;
+  data: PayData;
+  order: { code: string; status: string; currency: string; total: string; qris_admin_fee: string | null; qris_grand_total: string | null; payment_ref: string | null; expires_at_iso: string | null; };
+  priceAndPayLine: (payable: string | null) => import("react").JSX.Element | null;
+  payPagePath: string;
+  countdownText: string;
+  cancelMutation: import("@tanstack/react-query").UseMutationResult<{ ok: boolean; }, Error, void, unknown>;
+  setCancelDialogOpen: import("react").Dispatch<import("react").SetStateAction<boolean>>;
+  cancelDialogOpen: boolean;
+}) {
+  return (state === "waiting" && (
+    <PendingPaymentPanel data={data} order={order} priceAndPayLine={priceAndPayLine} payPagePath={payPagePath} countdownText={countdownText} cancelMutation={cancelMutation} setCancelDialogOpen={setCancelDialogOpen} cancelDialogOpen={cancelDialogOpen} />
+  ));
+}
 
-      {state === "waiting" && (
-        <>
-          <Card>
-            {data.is_binance ? (
-              <>
-                <h2 className="section-title mb-3">{t("web.pay_usdt_title")}</h2>
-                <ol className="text-sm text-ink-soft space-y-3 list-decimal pl-4">
-                  <li>{t("web.binance_step_open")}</li>
-                  <li>
-                    {t("web.binance_step_uid")}
-                    <div className="codeish text-base! mt-1 select-all break-all">{data.binance_uid}</div>
-                  </li>
-                  <li>
-                    {t("web.binance_step_amount")}
-                    <div className="font-display font-semibold text-pine text-2xl mt-1">${order.total}</div>
-                  </li>
-                  <li>
-                    {t("web.binance_step_note")}
-                    <div className="codeish text-base! mt-1 select-all break-all">{order.payment_ref}</div>
-                  </li>
-                </ol>
-                <p className="text-xs text-ink-faint mt-4">{t("web.binance_auto_note")}</p>
-              </>
-            ) : data.is_bybit ? (
-              <>
-                <h2 className="section-title mb-3">{t("web.pay_bybit_title")}</h2>
-                <p className="text-sm text-ink-soft mt-2">{t("web.pay_bybit_amount")}</p>
-                <div className="font-display font-semibold text-pine text-2xl mt-1">${order.total}</div>
-                {data.bybit_uid && (
-                  <>
-                    <p className="text-sm text-ink-soft mt-3">{t("web.pay_bybit_uid")}</p>
-                    <div className="codeish text-base! mt-1 select-all break-all">{data.bybit_uid}</div>
-                  </>
-                )}
-                <p className="text-xs text-ink-faint mt-4">{t("web.pay_bybit_note")}</p>
-              </>
-            ) : data.is_bybit_bsc ? (
-              <>
-                <h2 className="section-title mb-3">{t("web.pay_bybit_bsc_title")}</h2>
-                <p className="text-sm text-ink-soft mt-2">{t("web.pay_bybit_bsc_amount")}</p>
-                <div className="font-display font-semibold text-pine text-2xl mt-1">${order.total}</div>
-                {data.bybit_bsc_address && (
-                  <>
-                    <p className="text-sm text-ink-soft mt-3">{t("web.pay_bybit_bsc_address")}</p>
-                    <div className="codeish text-base! mt-1 select-all break-all">{data.bybit_bsc_address}</div>
-                    <p className="text-xs text-amberx mt-2">{t("web.pay_bybit_bsc_chain_warning")}</p>
-                  </>
-                )}
-                <p className="text-xs text-ink-faint mt-4">{t("web.pay_bybit_bsc_note")}</p>
-              </>
-            ) : data.is_qris ? (
-              <>
-                <h2 className="section-title mb-3">{t("web.pay_idr_title")}</h2>
-                {order.qris_admin_fee != null ? (
-                  <>
-                    <div className="text-sm text-ink-soft flex justify-between">
-                      <span>{t("web.subtotal")}</span>
-                      <span>{formatOrderAmount(order.total, order.currency)}</span>
-                    </div>
-                    <div className="text-sm text-ink-soft flex justify-between">
-                      <span>{t("web.qris_admin_fee")}</span>
-                      <span>{formatOrderAmount(order.qris_admin_fee, order.currency)}</span>
-                    </div>
-                    <div className="font-display font-semibold text-pine text-2xl mt-1">
-                      {formatOrderAmount(order.qris_grand_total, order.currency)}
-                    </div>
-                    {priceAndPayLine(order.qris_grand_total)}
-                  </>
-                ) : (
-                  <>
-                    <div className="font-display font-semibold text-pine text-2xl">
-                      {formatOrderAmount(order.total, order.currency)}
-                    </div>
-                    {priceAndPayLine(order.total)}
-                  </>
-                )}
-                {data.gateway ? (
-                  <>
-                    {data.gateway.qrLink && (
-                      <div className="mt-4 flex justify-center">
-                        <img
-                          src={data.gateway.qrLink}
-                          alt="QRIS"
-                          className="w-56 h-56 rounded-xl border border-line bg-white p-2"
-                        />
-                      </div>
-                    )}
-                    {data.gateway.payUrl && (
-                      <a href={data.gateway.payUrl} target="_blank" rel="noopener" className="btn btn-primary w-full mt-4">
-                        <Wallet className="w-4 h-4" /> {t("web.pay_open_gateway")}
-                      </a>
-                    )}
-                    <p className="text-xs text-ink-faint mt-3">{t("web.tokopay_auto_note")}</p>
-                  </>
-                ) : data.gateway_error ? (
-                  <GatewayDownFallback
-                    payPath={payPagePath}
-                    titleKey="web.pay_idr_down_title"
-                    bodyKey="web.pay_idr_down_body"
-                    waNumber={data.wa_number}
-                    telegramUrl={data.support_telegram_url}
-                  />
-                ) : null}
-              </>
-            ) : data.is_paydisini ? (
-              <>
-                <h2 className="section-title mb-3">{t("web.pay_paydisini_title")}</h2>
-                <div className="font-display font-semibold text-pine text-2xl">
-                  {formatOrderAmount(order.total, order.currency)}
-                </div>
-                {priceAndPayLine(order.total)}
-                {data.paydisini_gateway ? (
-                  <>
-                    {data.paydisini_gateway.qrUrl && (
-                      <div className="mt-4 flex justify-center">
-                        <img
-                          src={data.paydisini_gateway.qrUrl}
-                          alt="QRIS"
-                          className="w-56 h-56 rounded-xl border border-line bg-white p-2"
-                        />
-                      </div>
-                    )}
-                    {data.paydisini_gateway.checkoutUrl && (
-                      <a
-                        href={data.paydisini_gateway.checkoutUrl}
-                        target="_blank"
-                        rel="noopener"
-                        className="btn btn-primary w-full mt-4"
-                      >
-                        <Wallet className="w-4 h-4" /> {t("web.pay_open_gateway")}
-                      </a>
-                    )}
-                    <p className="text-xs text-ink-faint mt-3">{t("web.paydisini_auto_note")}</p>
-                  </>
-                ) : data.paydisini_gateway_error ? (
-                  <GatewayDownFallback
-                    payPath={payPagePath}
-                    titleKey="web.pay_idr_down_title"
-                    bodyKey="web.pay_idr_down_body"
-                    waNumber={data.wa_number}
-                    telegramUrl={data.support_telegram_url}
-                  />
-                ) : null}
-              </>
-            ) : data.is_nowpayments ? (
-              <>
-                <h2 className="section-title mb-3">{t("web.pay_nowpayments_title")}</h2>
-                <div className="font-display font-semibold text-pine text-2xl">${order.total}</div>
-                {data.nowpayments_gateway ? (
-                  <>
-                    {data.nowpayments_gateway.invoiceUrl && (
-                      <a
-                        href={data.nowpayments_gateway.invoiceUrl}
-                        target="_blank"
-                        rel="noopener"
-                        className="btn btn-primary w-full mt-4"
-                      >
-                        <Wallet className="w-4 h-4" /> {t("web.pay_open_gateway")}
-                      </a>
-                    )}
-                    <p className="text-xs text-ink-faint mt-3">{t("web.nowpayments_auto_note")}</p>
-                  </>
-                ) : data.nowpayments_gateway_error ? (
-                  <GatewayDownFallback
-                    payPath={payPagePath}
-                    titleKey="web.pay_nowpayments_down_title"
-                    bodyKey="web.pay_nowpayments_down_body"
-                    waNumber={data.wa_number}
-                    telegramUrl={data.support_telegram_url}
-                  />
-                ) : null}
-              </>
-            ) : (
-              <>
-                <p className="text-sm text-ink-soft">{t("web.pay_method_elsewhere")}</p>
-                {data.support_telegram_url && (
-                  <a
-                    href={data.support_telegram_url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="btn btn-soft btn-sm mt-3"
-                  >
-                    <TelegramIcon className="w-3.5 h-3.5" /> Telegram
-                  </a>
-                )}
-              </>
-            )}
+function PendingPaymentPanel({ data, order, priceAndPayLine, payPagePath, countdownText, cancelMutation, setCancelDialogOpen, cancelDialogOpen }: {
+  data: PayData;
+  order: { code: string; status: string; currency: string; total: string; qris_admin_fee: string | null; qris_grand_total: string | null; payment_ref: string | null; expires_at_iso: string | null; };
+  priceAndPayLine: (payable: string | null) => import("react").JSX.Element | null;
+  payPagePath: string;
+  countdownText: string;
+  cancelMutation: import("@tanstack/react-query").UseMutationResult<{ ok: boolean; }, Error, void, unknown>;
+  setCancelDialogOpen: import("react").Dispatch<import("react").SetStateAction<boolean>>;
+  cancelDialogOpen: boolean;
+}) {
+  return (<>
+    <PaymentInstructionsCard data={data} order={order} priceAndPayLine={priceAndPayLine} payPagePath={payPagePath} countdownText={countdownText} />
 
-            {data.min_amount && (
-              <p className="text-xs text-amberx mt-3 flex items-start gap-1.5">
-                <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
-                {t("web.pay_min_amount_note", { min: data.min_amount })}
-              </p>
-            )}
+    <div className="mt-4 text-center">
+      <Button
+        variant="ghost"
+        className="text-rust"
+        disabled={cancelMutation.isPending || data.read_only}
+        onClick={() => setCancelDialogOpen(true)}
+      >
+        {t("web.cancel_order")}
+      </Button>
+    </div>
 
-            <div className="flex items-center gap-2 mt-4 text-xs text-ink-faint">
-              <ShieldCheck className="w-3.5 h-3.5 text-grass" />
-              {t("web.pay_trust")}
-            </div>
-
-            {order.expires_at_iso && (
-              <div className="flex items-center gap-2 mt-5 pt-4 border-t border-line text-sm text-ink-soft">
-                <Timer className="w-4 h-4 text-amberx" />
-                {t("web.pay_countdown")}
-                <span id="countdown" className="font-mono font-semibold text-ink">
-                  {countdownText}
-                </span>
-              </div>
-            )}
-          </Card>
-
-          <div className="mt-4 text-center">
-            <Button
-              variant="ghost"
-              className="text-rust"
-              disabled={cancelMutation.isPending || data.read_only}
-              onClick={() => setCancelDialogOpen(true)}
-            >
-              {t("web.cancel_order")}
-            </Button>
-          </div>
-
-          {/* The required behavior change (Task 14): open a confirmation
+    {/* The required behavior change (Task 14): open a confirmation
               instead of firing cancelMutation.mutate() straight from the
               trigger's onClick. onConfirm below is the EXACT SAME call the
               old direct-execute onClick made — see the diff self-check note
               in deviations.md §14-pay-topup-track. */}
-          <AlertDialog
-            open={cancelDialogOpen}
-            onCancel={() => setCancelDialogOpen(false)}
-            onConfirm={() => cancelMutation.mutate()}
-            title={t("web.cancel_order_confirm_title")}
-            description={t("web.cancel_order_confirm_body", { code: order.code })}
-            confirmLabel={t("web.cancel_order_confirm_yes")}
-            cancelLabel={t("web.cancel_order_confirm_no")}
-            tone="danger"
-            confirmPending={cancelMutation.isPending}
-          />
-        </>
-      )}
+    <AlertDialog
+      open={cancelDialogOpen}
+      onCancel={() => setCancelDialogOpen(false)}
+      onConfirm={() => cancelMutation.mutate()}
+      title={t("web.cancel_order_confirm_title")}
+      description={t("web.cancel_order_confirm_body", { code: order.code })}
+      confirmLabel={t("web.cancel_order_confirm_yes")}
+      cancelLabel={t("web.cancel_order_confirm_no")}
+      tone="danger"
+      confirmPending={cancelMutation.isPending}
+    />
+  </>);
+}
 
-      {/* Game top-up: the typed target (and, once delivered, the full SN) under
+function PaymentPageContent({ emailedTo, isTopup, order, data, presentation, underpayment, state, isGame, deliveredHref, deliveredLabelKey, stripState, priceAndPayLine, payPagePath, countdownText, cancelMutation, setCancelDialogOpen, cancelDialogOpen, retryHref, retryLabelKey, closedHref, closedLabelKey }: {
+  emailedTo: string | null;
+  isTopup: boolean;
+  order: { code: string; status: string; currency: string; total: string; qris_admin_fee: string | null; qris_grand_total: string | null; payment_ref: string | null; expires_at_iso: string | null; };
+  data: PayData;
+  presentation: import("../api/types").CustomerProgress | undefined;
+  underpayment: import("../api/types").Underpayment | null | undefined;
+  state: PayState;
+  isGame: boolean;
+  deliveredHref: string;
+  deliveredLabelKey: "web.wallet_topup_view_wallet" | "web.view_topup_details" | "web.view_credentials";
+  stripState: PayState;
+  priceAndPayLine: (payable: string | null) => import("react").JSX.Element | null;
+  payPagePath: string;
+  countdownText: string;
+  cancelMutation: import("@tanstack/react-query").UseMutationResult<{ ok: boolean; }, Error, void, unknown>;
+  setCancelDialogOpen: import("react").Dispatch<import("react").SetStateAction<boolean>>;
+  cancelDialogOpen: boolean;
+  retryHref: string;
+  retryLabelKey: "web.wallet_topup_retry" | "web.back_to_product" | "web.back_to_cart";
+  closedHref: "/account" | "/account/orders";
+  closedLabelKey: "web.account_title" | "web.account_orders";
+}) {
+  return (<div className="max-w-2xl mx-auto">
+    <h1 className="page-title text-2xl! mb-1">{t("web.pay_title")}</h1>
+    <p className={emailedTo ? "text-sm text-ink-soft mb-2" : "text-sm text-ink-soft mb-5"}>
+      {t(isTopup ? "transaction.receipt" : "web.order_code")}: <span className="codeish break-all whitespace-normal">{order.code}</span>
+    </p>
+
+    {/* Directly under the code it is about, so the sentence and its subject
+          are read together. Quiet by design — it is reassurance, not an action
+          competing with the payment instructions below it. */}
+    {emailedTo && (
+      <p className="mb-5 flex items-start gap-1.5 text-xs leading-relaxed text-ink-soft">
+        <Mail className="mt-0.5 w-3.5 h-3.5 shrink-0 text-grass" />
+        <span>{t("web.pay_code_emailed", { email: emailedTo })}</span>
+      </p>
+    )}
+
+    <PayPayStatus data={data} presentation={presentation} underpayment={underpayment} state={state} isGame={isGame} deliveredHref={deliveredHref} deliveredLabelKey={deliveredLabelKey} isTopup={isTopup} stripState={stripState} />
+
+    <PendingPayment state={state} data={data} order={order} priceAndPayLine={priceAndPayLine} payPagePath={payPagePath} countdownText={countdownText} cancelMutation={cancelMutation} setCancelDialogOpen={setCancelDialogOpen} cancelDialogOpen={cancelDialogOpen} />
+
+    {/* Game top-up: the typed target (and, once delivered, the full SN) under
           the status, compact. Hidden while paying or after the order closed. */}
-      {isGame && (state === "processing" || state === "delivered") && (
-        <div className="mb-5">
-          <GameTopupDetailCard items={[]} targets={data.game_target ?? []} sn={data.sn ?? null} />
-        </div>
-      )}
-
-      {state === "delivered" && !presentation && (
-        <Card className="text-center py-10">
-          <BadgeCheck className="w-12 h-12 text-grass mx-auto mb-3" />
-          <h2 className="section-title">{t("web.pay_done_title")}</h2>
-          <p className="text-sm text-ink-soft mt-1">{t(isGame ? "web.pay_done_sub_topup" : "web.pay_done_sub")}</p>
-          <Link to={deliveredHref} className="btn btn-primary mt-5">
-            {t(deliveredLabelKey)} <ChevronRight className="w-4 h-4" />
-          </Link>
-        </Card>
-      )}
-
-      {state === "confirming" && !presentation && (
-        <Card className="text-center py-10">
-          <Loader className="w-10 h-10 text-pine mx-auto mb-3 animate-spin motion-reduce:animate-none" />
-          <p className="text-sm font-medium text-ink">{t("web.pay_confirming")}</p>
-          <p className="text-xs text-ink-soft mt-2">{t("web.pay_confirming_sub")}</p>
-        </Card>
-      )}
-
-      {state === "processing" && !presentation && (
-        <Card className="text-center py-10">
-          <Loader className="w-10 h-10 text-pine mx-auto mb-3 animate-spin motion-reduce:animate-none" />
-          <p className="text-sm font-medium text-ink">{t("web.pay_processing")}</p>
-          <p className="text-xs text-ink-soft mt-2">{t("web.pay_processing_sub")}</p>
-          {!isTopup && (
-            <Link to={deliveredHref} className="btn btn-soft mt-4">
-              {t("web.pay_processing_view_order")} <ChevronRight className="w-4 h-4" />
-            </Link>
-          )}
-        </Card>
-      )}
-
-      {state === "expired" && (
-        <Card className="text-center py-10">
-          <TimerOff className="w-10 h-10 text-rust mx-auto mb-3" />
-          <p className="text-sm text-ink-soft">{t(isGame ? "web.pay_expired_topup" : "web.pay_expired")}</p>
-          <Link to={retryHref} className="btn btn-primary mt-4">
-            {t(retryLabelKey)}
-          </Link>
-        </Card>
-      )}
-
-      {state === "closed" && (
-        <Card className="text-center py-10">
-          <p className="text-sm text-ink-soft">{t("web.pay_closed")}</p>
-          <Link to={closedHref} className="btn btn-soft mt-4">
-            {t(closedLabelKey)}
-          </Link>
-        </Card>
-      )}
+    {isGame && (state === "processing" || state === "delivered") && (
+      <div className="mb-5">
+        <GameTopupDetailCard items={[]} targets={data.game_target ?? []} sn={data.sn ?? null} />
       </div>
+    )}
+
+    <DeliveredPaymentNotice state={state} presentation={presentation} isGame={isGame} deliveredHref={deliveredHref} deliveredLabelKey={deliveredLabelKey} />
+
+    {state === "confirming" && !presentation && (
+      <Card className="text-center py-10">
+        <Loader className="w-10 h-10 text-pine mx-auto mb-3 animate-spin motion-reduce:animate-none" />
+        <p className="text-sm font-medium text-ink">{t("web.pay_confirming")}</p>
+        <p className="text-xs text-ink-soft mt-2">{t("web.pay_confirming_sub")}</p>
+      </Card>
+    )}
+
+    <ProcessingPaymentNotice state={state} presentation={presentation} isTopup={isTopup} deliveredHref={deliveredHref} />
+
+    {state === "expired" && (
+      <Card className="text-center py-10">
+        <TimerOff className="w-10 h-10 text-rust mx-auto mb-3" />
+        <p className="text-sm text-ink-soft">{t(isGame ? "web.pay_expired_topup" : "web.pay_expired")}</p>
+        <Link to={retryHref} className="btn btn-primary mt-4">
+          {t(retryLabelKey)}
+        </Link>
+      </Card>
+    )}
+
+    {state === "closed" && (
+      <Card className="text-center py-10">
+        <p className="text-sm text-ink-soft">{t("web.pay_closed")}</p>
+        <Link to={closedHref} className="btn btn-soft mt-4">
+          {t(closedLabelKey)}
+        </Link>
+      </Card>
+    )}
+  </div>);
+}
+
+function usePaymentStatus({ apiBase, code, loginNextBase }: {
+  apiBase: "/wallet/topup" | "/orders";
+  code: string;
+  loginNextBase: "/wallet/topup" | "/checkout";
+}) {
+  const navigate = useNavigate();
+  const { data, error } = useQuery({
+    queryKey: ["pay", apiBase, code],
+    queryFn: () => apiGet<PayData>(`/api/v1${apiBase}/${code}/pay`),
+    retry: false,
+  });
+
+  useEffect(() => {
+    if ((error as (Error & { status?: number }) | null)?.status === 401) {
+      window.location.assign(`/login?next=${loginNextBase}/${code}/pay`);
+    }
+  }, [error, code, loginNextBase]);
+
+  const { data: poll } = useQuery({
+    queryKey: ["pay-status", apiBase, code],
+    queryFn: () => apiGet<PayStatusData>(`/api/v1${apiBase}/${code}/status`),
+    refetchInterval: 5000,
+    enabled: Boolean(data),
+  });
+
+  useEffect(() => {
+    if (poll?.redirect) navigate(poll.redirect);
+  }, [poll, navigate]);
+  return { data, error, poll };
+}
+
+function PaymentInstructionsCard({ data, order, priceAndPayLine, payPagePath, countdownText }: {
+  data: PayData;
+  order: { code: string; status: string; currency: string; total: string; qris_admin_fee: string | null; qris_grand_total: string | null; payment_ref: string | null; expires_at_iso: string | null; };
+  priceAndPayLine: (payable: string | null) => import("react").JSX.Element | null;
+  payPagePath: string;
+  countdownText: string;
+}) {
+  return (<Card>
+    <PaymentMethodInstructions data={data} order={order} priceAndPayLine={priceAndPayLine} payPagePath={payPagePath} />
+
+    {data.min_amount && (
+      <p className="text-xs text-amberx mt-3 flex items-start gap-1.5">
+        <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+        {t("web.pay_min_amount_note", { min: data.min_amount })}
+      </p>
+    )}
+
+    <div className="flex items-center gap-2 mt-4 text-xs text-ink-faint">
+      <ShieldCheck className="w-3.5 h-3.5 text-grass" />
+      {t("web.pay_trust")}
+    </div>
+
+    {order.expires_at_iso && (
+      <div className="flex items-center gap-2 mt-5 pt-4 border-t border-line text-sm text-ink-soft">
+        <Timer className="w-4 h-4 text-amberx" />
+        {t("web.pay_countdown")}
+        <span id="countdown" className="font-mono font-semibold text-ink">
+          {countdownText}
+        </span>
+      </div>
+    )}
+  </Card>);
+}
+
+function DeliveredPaymentNotice({ state, presentation, isGame, deliveredHref, deliveredLabelKey }: {
+  state: PayState;
+  presentation: import("../api/types").CustomerProgress | undefined;
+  isGame: boolean;
+  deliveredHref: string;
+  deliveredLabelKey: "web.wallet_topup_view_wallet" | "web.view_topup_details" | "web.view_credentials";
+}) {
+  return (state === "delivered" && !presentation && (
+    <Card className="text-center py-10">
+      <BadgeCheck className="w-12 h-12 text-grass mx-auto mb-3" />
+      <h2 className="section-title">{t("web.pay_done_title")}</h2>
+      <p className="text-sm text-ink-soft mt-1">{t(isGame ? "web.pay_done_sub_topup" : "web.pay_done_sub")}</p>
+      <Link to={deliveredHref} className="btn btn-primary mt-5">
+        {t(deliveredLabelKey)} <ChevronRight className="w-4 h-4" />
+      </Link>
+    </Card>
+  ));
+}
+
+function ProcessingPaymentNotice({ state, presentation, isTopup, deliveredHref }: {
+  state: PayState;
+  presentation: import("../api/types").CustomerProgress | undefined;
+  isTopup: boolean;
+  deliveredHref: string;
+}) {
+  return (state === "processing" && !presentation && (
+    <Card className="text-center py-10">
+      <Loader className="w-10 h-10 text-pine mx-auto mb-3 animate-spin motion-reduce:animate-none" />
+      <p className="text-sm font-medium text-ink">{t("web.pay_processing")}</p>
+      <p className="text-xs text-ink-soft mt-2">{t("web.pay_processing_sub")}</p>
+      {!isTopup && (
+        <Link to={deliveredHref} className="btn btn-soft mt-4">
+          {t("web.pay_processing_view_order")} <ChevronRight className="w-4 h-4" />
+        </Link>
+      )}
+    </Card>
+  ));
+}
+
+function QrisInstructions({ order, priceAndPayLine, data, payPagePath }: {
+  order: { code: string; status: string; currency: string; total: string; qris_admin_fee: string | null; qris_grand_total: string | null; payment_ref: string | null; expires_at_iso: string | null; };
+  priceAndPayLine: (payable: string | null) => import("react").JSX.Element | null;
+  data: PayData;
+  payPagePath: string;
+}) {
+  return (<>
+    <h2 className="section-title mb-3">{t("web.pay_idr_title")}</h2>
+    {order.qris_admin_fee != null ? (
+      <>
+        <div className="text-sm text-ink-soft flex justify-between">
+          <span>{t("web.subtotal")}</span>
+          <span>{formatOrderAmount(order.total, order.currency)}</span>
+        </div>
+        <div className="text-sm text-ink-soft flex justify-between">
+          <span>{t("web.qris_admin_fee")}</span>
+          <span>{formatOrderAmount(order.qris_admin_fee, order.currency)}</span>
+        </div>
+        <div className="font-display font-semibold text-pine text-2xl mt-1">
+          {formatOrderAmount(order.qris_grand_total, order.currency)}
+        </div>
+        {priceAndPayLine(order.qris_grand_total)}
+      </>
+    ) : (
+      <>
+        <div className="font-display font-semibold text-pine text-2xl">
+          {formatOrderAmount(order.total, order.currency)}
+        </div>
+        {priceAndPayLine(order.total)}
+      </>
+    )}
+    {data.gateway ? (
+      <>
+        {data.gateway.qrLink && (
+          <div className="mt-4 flex justify-center">
+            <img
+              src={data.gateway.qrLink}
+              alt="QRIS"
+              className="w-56 h-56 rounded-xl border border-line bg-white p-2"
+            />
+          </div>
+        )}
+        {data.gateway.payUrl && (
+          <a href={data.gateway.payUrl} target="_blank" rel="noopener" className="btn btn-primary w-full mt-4">
+            <Wallet className="w-4 h-4" /> {t("web.pay_open_gateway")}
+          </a>
+        )}
+        <p className="text-xs text-ink-faint mt-3">{t("web.tokopay_auto_note")}</p>
+      </>
+    ) : data.gateway_error ? (
+      <GatewayDownFallback
+        payPath={payPagePath}
+        titleKey="web.pay_idr_down_title"
+        bodyKey="web.pay_idr_down_body"
+        waNumber={data.wa_number}
+        telegramUrl={data.support_telegram_url}
+      />
+    ) : null}
+  </>);
+}
+
+function PaydisiniInstructions({ order, priceAndPayLine, data, payPagePath }: {
+  order: { code: string; status: string; currency: string; total: string; qris_admin_fee: string | null; qris_grand_total: string | null; payment_ref: string | null; expires_at_iso: string | null; };
+  priceAndPayLine: (payable: string | null) => import("react").JSX.Element | null;
+  data: PayData;
+  payPagePath: string;
+}) {
+  return (<>
+    <h2 className="section-title mb-3">{t("web.pay_paydisini_title")}</h2>
+    <div className="font-display font-semibold text-pine text-2xl">
+      {formatOrderAmount(order.total, order.currency)}
+    </div>
+    {priceAndPayLine(order.total)}
+    {data.paydisini_gateway ? (
+      <>
+        {data.paydisini_gateway.qrUrl && (
+          <div className="mt-4 flex justify-center">
+            <img
+              src={data.paydisini_gateway.qrUrl}
+              alt="QRIS"
+              className="w-56 h-56 rounded-xl border border-line bg-white p-2"
+            />
+          </div>
+        )}
+        {data.paydisini_gateway.checkoutUrl && (
+          <a
+            href={data.paydisini_gateway.checkoutUrl}
+            target="_blank"
+            rel="noopener"
+            className="btn btn-primary w-full mt-4"
+          >
+            <Wallet className="w-4 h-4" /> {t("web.pay_open_gateway")}
+          </a>
+        )}
+        <p className="text-xs text-ink-faint mt-3">{t("web.paydisini_auto_note")}</p>
+      </>
+    ) : data.paydisini_gateway_error ? (
+      <GatewayDownFallback
+        payPath={payPagePath}
+        titleKey="web.pay_idr_down_title"
+        bodyKey="web.pay_idr_down_body"
+        waNumber={data.wa_number}
+        telegramUrl={data.support_telegram_url}
+      />
+    ) : null}
+  </>);
+}
+
+function NowPaymentsInstructions({ order, data, payPagePath }: {
+  order: { code: string; status: string; currency: string; total: string; qris_admin_fee: string | null; qris_grand_total: string | null; payment_ref: string | null; expires_at_iso: string | null; };
+  data: PayData;
+  payPagePath: string;
+}) {
+  return (<>
+    <h2 className="section-title mb-3">{t("web.pay_nowpayments_title")}</h2>
+    <div className="font-display font-semibold text-pine text-2xl">${order.total}</div>
+    {data.nowpayments_gateway ? (
+      <>
+        {data.nowpayments_gateway.invoiceUrl && (
+          <a
+            href={data.nowpayments_gateway.invoiceUrl}
+            target="_blank"
+            rel="noopener"
+            className="btn btn-primary w-full mt-4"
+          >
+            <Wallet className="w-4 h-4" /> {t("web.pay_open_gateway")}
+          </a>
+        )}
+        <p className="text-xs text-ink-faint mt-3">{t("web.nowpayments_auto_note")}</p>
+      </>
+    ) : data.nowpayments_gateway_error ? (
+      <GatewayDownFallback
+        payPath={payPagePath}
+        titleKey="web.pay_nowpayments_down_title"
+        bodyKey="web.pay_nowpayments_down_body"
+        waNumber={data.wa_number}
+        telegramUrl={data.support_telegram_url}
+      />
+    ) : null}
+  </>);
+}
+
+function paymentDestinations({ poll, data, isTopup }: {
+  poll: NoInfer<PayStatusData> | undefined;
+  data: NoInfer<PayData> | undefined;
+  isTopup: boolean;
+}) {
+  const livePresentation = poll?.presentation ?? data?.presentation;
+
+  const isGame =
+    !isTopup && (livePresentation ? livePresentation.transactionType === "GAME_TOPUP" : Array.isArray(data?.game_target));
+
+  const retryHref = isTopup ? "/wallet/topup" : isGame ? (data?.product_slug ? `/p/${data.product_slug}` : "/") : "/cart";
+
+  const retryLabelKey = isTopup ? "web.wallet_topup_retry" : isGame ? "web.back_to_product" : "web.back_to_cart";
+
+  const deliveredLabelKey = isTopup ? "web.wallet_topup_view_wallet" : isGame ? "web.view_topup_details" : "web.view_credentials";
+  return { isGame, retryHref, retryLabelKey, deliveredLabelKey } as const;
+}
+
+function paymentProgress({ poll, data }: {
+  poll: NoInfer<PayStatusData> | undefined;
+  data: NoInfer<PayData>;
+}) {
+  const presentation = poll?.presentation ?? data.presentation;
+
+  const underpayment = poll && "underpayment" in poll ? poll.underpayment : data.underpayment;
+
+  const state = presentation ? poll?.state ?? data.state : advanceCardState(data.state, poll?.state);
+
+  const stripState = poll?.state ?? state;
+  return { presentation, underpayment, state, stripState };
+}
+
+function PaymentMethodInstructions({ data, order, priceAndPayLine, payPagePath }: {
+  data: PayData;
+  order: { code: string; status: string; currency: string; total: string; qris_admin_fee: string | null; qris_grand_total: string | null; payment_ref: string | null; expires_at_iso: string | null; };
+  priceAndPayLine: (payable: string | null) => import("react").JSX.Element | null;
+  payPagePath: string;
+}) {
+  if (data.is_binance) return (
+    <>
+      <h2 className="section-title mb-3">{t("web.pay_usdt_title")}</h2>
+      <ol className="text-sm text-ink-soft space-y-3 list-decimal pl-4">
+        <li>{t("web.binance_step_open")}</li>
+        <li>
+          {t("web.binance_step_uid")}
+          <div className="codeish text-base! mt-1 select-all break-all">{data.binance_uid}</div>
+        </li>
+        <li>
+          {t("web.binance_step_amount")}
+          <div className="font-display font-semibold text-pine text-2xl mt-1">${order.total}</div>
+        </li>
+        <li>
+          {t("web.binance_step_note")}
+          <div className="codeish text-base! mt-1 select-all break-all">{order.payment_ref}</div>
+        </li>
+      </ol>
+      <p className="text-xs text-ink-faint mt-4">{t("web.binance_auto_note")}</p>
     </>
   );
+  if (data.is_bybit) return (
+    <>
+      <h2 className="section-title mb-3">{t("web.pay_bybit_title")}</h2>
+      <p className="text-sm text-ink-soft mt-2">{t("web.pay_bybit_amount")}</p>
+      <div className="font-display font-semibold text-pine text-2xl mt-1">${order.total}</div>
+      {data.bybit_uid && (
+        <>
+          <p className="text-sm text-ink-soft mt-3">{t("web.pay_bybit_uid")}</p>
+          <div className="codeish text-base! mt-1 select-all break-all">{data.bybit_uid}</div>
+        </>
+      )}
+      <p className="text-xs text-ink-faint mt-4">{t("web.pay_bybit_note")}</p>
+    </>
+  );
+  if (data.is_bybit_bsc) return (
+    <>
+      <h2 className="section-title mb-3">{t("web.pay_bybit_bsc_title")}</h2>
+      <p className="text-sm text-ink-soft mt-2">{t("web.pay_bybit_bsc_amount")}</p>
+      <div className="font-display font-semibold text-pine text-2xl mt-1">${order.total}</div>
+      {data.bybit_bsc_address && (
+        <>
+          <p className="text-sm text-ink-soft mt-3">{t("web.pay_bybit_bsc_address")}</p>
+          <div className="codeish text-base! mt-1 select-all break-all">{data.bybit_bsc_address}</div>
+          <p className="text-xs text-amberx mt-2">{t("web.pay_bybit_bsc_chain_warning")}</p>
+        </>
+      )}
+      <p className="text-xs text-ink-faint mt-4">{t("web.pay_bybit_bsc_note")}</p>
+    </>
+  );
+  if (data.is_qris) return (
+    <QrisInstructions order={order} priceAndPayLine={priceAndPayLine} data={data} payPagePath={payPagePath} />
+  );
+  if (data.is_paydisini) return (
+    <PaydisiniInstructions order={order} priceAndPayLine={priceAndPayLine} data={data} payPagePath={payPagePath} />
+  );
+  if (data.is_nowpayments) return (
+    <NowPaymentsInstructions order={order} data={data} payPagePath={payPagePath} />
+  );
+  return (
+    <>
+      <p className="text-sm text-ink-soft">{t("web.pay_method_elsewhere")}</p>
+      {data.support_telegram_url && (
+        <a
+          href={data.support_telegram_url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="btn btn-soft btn-sm mt-3"
+        >
+          <TelegramIcon className="w-3.5 h-3.5" /> Telegram
+        </a>
+      )}
+    </>
+  );
+}
+
+function paymentRoutePaths({ isTopup, code }: {
+  isTopup: boolean;
+  code: string;
+}) {
+  const apiBase = isTopup ? "/wallet/topup" : "/orders";
+
+  const loginNextBase = isTopup ? "/wallet/topup" : "/checkout";
+
+  const deliveredHref = isTopup ? "/account" : `/account/orders/${code}`;
+
+  const closedHref = isTopup ? "/account" : "/account/orders";
+
+  const closedLabelKey = isTopup ? "web.account_title" : "web.account_orders";
+
+  const payPagePath = isTopup ? `/wallet/topup/${code}/pay` : `/checkout/${code}/pay`;
+  return { apiBase, loginNextBase, deliveredHref, closedHref, closedLabelKey, payPagePath } as const;
 }

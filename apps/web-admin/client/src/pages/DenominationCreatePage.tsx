@@ -1,23 +1,17 @@
-import { useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate, useParams } from "react-router-dom";
-import { PageLayout } from "../components/shared/PageLayout";
-import { PageHeader } from "../components/shared/PageHeader";
-import { DeliveryTypeSection, AUTO_DELIVERY_FIELDS_TEMPLATE } from "../components/shared/DeliveryTypeSection";
-import { ButtonLabelInput } from "../components/shared/ButtonLabelInput";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  Select,
-  SelectTrigger,
-  SelectValue,
-  SelectContent,
-  SelectItem,
-} from "@/components/ui/select";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useId, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
 import { apiGet, apiPost } from "../api/client";
-import { draftsToFields, fieldsAreValid } from "../lib/additionalFields";
 import type { AdditionalFieldDraft } from "../api/types";
+import { DeliveryTypeSection } from "../components/shared/DeliveryTypeSection";
+import { AUTO_DELIVERY_FIELDS_TEMPLATE } from "../components/shared/DeliveryTypeSection.helpers";
+import { DenominationIdentityFields } from "../components/shared/DenominationIdentityFields";
+import { PageHeader } from "../components/shared/PageHeader";
+import { PageLayout } from "../components/shared/PageLayout";
+import { draftsToFields, fieldsAreValid } from "../lib/additionalFields";
 
 const DENOMINATION_TYPES = [
   { value: "SHARED", label: "Shared" },
@@ -64,6 +58,7 @@ function useParentProduct(productId: string | undefined) {
 }
 
 export function DenominationCreatePage() {
+  const fieldId = useId();
   const { productId } = useParams<{ productId: string }>();
   const navigate = useNavigate();
   const qc = useQueryClient();
@@ -134,13 +129,7 @@ export function DenominationCreatePage() {
     onError: (e: Error) => setError(e.message),
   });
 
-  const canSubmit =
-    name.trim().length > 0 &&
-    type !== null &&
-    durationLabel.trim().length > 0 &&
-    isValidPrice(price) &&
-    ((deliveryType !== "manual_with_info" && additionalFields.length === 0) || fieldsAreValid(additionalFields)) &&
-    (autoDeliverySource !== "digiflazz" || supplierSku.trim().length > 0);
+  const { canSubmit } = denominationSubmission({ name, type, durationLabel, price, deliveryType, additionalFields, autoDeliverySource, supplierSku });
 
   return (
     <PageLayout title="New Denomination">
@@ -153,106 +142,7 @@ export function DenominationCreatePage() {
       />
 
       <div className="max-w-lg flex flex-col gap-4">
-        <div>
-          <label className="text-sm font-medium text-ink">
-            Name <span className="text-rust">*</span>
-          </label>
-          {isGame ? (
-            <ButtonLabelInput
-              kind="denominationGame"
-              productName={loadedName}
-              builtFromQuantity={qtyValue.trim() !== "" && qtyUnit.trim() !== ""}
-              className="mt-1"
-              placeholder="e.g. Netflix Premium"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-            />
-          ) : (
-            <Input
-              className="mt-1"
-              placeholder="e.g. Netflix Premium"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-            />
-          )}
-        </div>
-
-        <div>
-          <label className="text-sm font-medium text-ink">
-            Duration Label <span className="text-rust">*</span>
-          </label>
-          {isGame ? (
-            <>
-              <Input
-                className="mt-1"
-                placeholder="e.g. 1 Month"
-                value={durationLabel}
-                onChange={(e) => setDurationLabel(e.target.value)}
-              />
-              <p data-testid="duration-label-game-hint" className="mt-1 text-xs text-ink-soft">
-              Game Top Up: this reaches the Telegram button only when it differs from the Name, and is then added after the quantity. Keep it short.
-            </p>
-            </>
-          ) : (
-            <ButtonLabelInput
-              kind="denominationPlan"
-              className="mt-1"
-              placeholder="e.g. 1 Month"
-              value={durationLabel}
-              onChange={(e) => setDurationLabel(e.target.value)}
-            />
-          )}
-        </div>
-
-        {/* Game Top Up quantity builds the compact Telegram button label. */}
-        {isGame && (
-          <div className="flex gap-3">
-            <div>
-              <label className="block text-sm font-medium text-ink">Quantity Value</label>
-              <Input
-                className="mt-1 w-32"
-                type="number"
-                min="0"
-                step="1"
-                placeholder="e.g. 86"
-                value={qtyValue}
-                onChange={(e) => setQtyValue(e.target.value)}
-              />
-            </div>
-            <div className="min-w-0 flex-1">
-              <label className="block text-sm font-medium text-ink">Quantity Unit</label>
-              <ButtonLabelInput
-                kind="qtyUnit"
-                className="mt-1"
-                placeholder="e.g. Diamonds"
-                value={qtyUnit}
-                onChange={(e) => setQtyUnit(e.target.value)}
-              />
-            </div>
-          </div>
-        )}
-
-        <div>
-          <label className="text-sm font-medium text-ink">
-            Account Type <span className="text-rust">*</span>
-          </label>
-          <Select value={type ?? ""} onValueChange={(v) => setType(v)}>
-            <SelectTrigger className="mt-1" aria-label="Account Type">
-              <SelectValue placeholder="Select type" />
-            </SelectTrigger>
-            <SelectContent>
-              {DENOMINATION_TYPES.map((t) => (
-                <SelectItem key={t.value} value={t.value}>
-                  {t.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <p className="mt-1 text-xs text-ink-soft">
-            Shared = one account used by multiple buyers at once. Private = a dedicated account for a
-            single buyer.
-          </p>
-        </div>
+        <DenominationIdentityFields fieldId={fieldId} isGame={isGame} productName={loadedName} name={name} setName={setName} durationLabel={durationLabel} setDurationLabel={setDurationLabel} qtyValue={qtyValue} setQtyValue={setQtyValue} qtyUnit={qtyUnit} setQtyUnit={setQtyUnit} type={type} setType={setType} />
 
         <DeliveryTypeSection
           isGame={isGame}
@@ -271,10 +161,10 @@ export function DenominationCreatePage() {
         />
 
         <div>
-          <label className="text-sm font-medium text-ink">
+          <label htmlFor={`${fieldId}-price-idr-6`} className="text-sm font-medium text-ink">
             Price (IDR) <span className="text-rust">*</span>
           </label>
-          <Input
+          <Input id={`${fieldId}-price-idr-6`}
             className="mt-1"
             placeholder="e.g. 15000"
             value={price}
@@ -284,8 +174,8 @@ export function DenominationCreatePage() {
         </div>
 
         <div>
-          <label className="text-sm font-medium text-ink">Cost Price (IDR)</label>
-          <Input
+          <label htmlFor={`${fieldId}-cost-price-idr-7`} className="text-sm font-medium text-ink">Cost Price (IDR)</label>
+          <Input id={`${fieldId}-cost-price-idr-7`}
             className="mt-1"
             placeholder="Optional"
             value={costPrice}
@@ -297,8 +187,8 @@ export function DenominationCreatePage() {
         </div>
 
         <div>
-          <label className="text-sm font-medium text-ink">Reseller Price (IDR)</label>
-          <Input
+          <label htmlFor={`${fieldId}-reseller-price-idr-8`} className="text-sm font-medium text-ink">Reseller Price (IDR)</label>
+          <Input id={`${fieldId}-reseller-price-idr-8`}
             className="mt-1"
             placeholder="Optional"
             value={resellerPrice}
@@ -308,8 +198,8 @@ export function DenominationCreatePage() {
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-ink">Warranty Days</label>
-          <Input
+          <label htmlFor={`${fieldId}-warranty-days-9`} className="block text-sm font-medium text-ink">Warranty Days</label>
+          <Input id={`${fieldId}-warranty-days-9`}
             className="mt-1 w-32"
             placeholder="Optional"
             value={warrantyDays}
@@ -318,8 +208,8 @@ export function DenominationCreatePage() {
         </div>
 
         <div>
-          <label className="text-sm font-medium text-ink">Description</label>
-          <Textarea
+          <label htmlFor={`${fieldId}-description-10`} className="text-sm font-medium text-ink">Description</label>
+          <Textarea id={`${fieldId}-description-10`}
             className="mt-1"
             rows={3}
             placeholder="Optional"
@@ -336,4 +226,24 @@ export function DenominationCreatePage() {
       </div>
     </PageLayout>
   );
+}
+
+function denominationSubmission({ name, type, durationLabel, price, deliveryType, additionalFields, autoDeliverySource, supplierSku }: {
+  name: string;
+  type: string | null;
+  durationLabel: string;
+  price: string;
+  deliveryType: string;
+  additionalFields: AdditionalFieldDraft[];
+  autoDeliverySource: string | null;
+  supplierSku: string;
+}) {
+  const canSubmit =
+    name.trim().length > 0 &&
+    type !== null &&
+    durationLabel.trim().length > 0 &&
+    isValidPrice(price) &&
+    ((deliveryType !== "manual_with_info" && additionalFields.length === 0) || fieldsAreValid(additionalFields)) &&
+    (autoDeliverySource !== "digiflazz" || supplierSku.trim().length > 0);
+  return { canSubmit };
 }

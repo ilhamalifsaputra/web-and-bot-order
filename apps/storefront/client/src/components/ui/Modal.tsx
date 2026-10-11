@@ -1,3 +1,4 @@
+import * as m from "motion/react-m";
 /**
  * Modal (Dialog) — the storefront's overlay-dialog primitive.
  *
@@ -16,15 +17,15 @@
  * Business-agnostic: no domain types, no routing, no i18n — the caller passes
  * `title` / `children` / `footer` content.
  */
+import { X } from "lucide-react";
+import { AnimatePresence } from "motion/react";
 import { useId, useRef, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
-import { AnimatePresence, motion } from "motion/react";
-import { X } from "lucide-react";
-import { cn } from "./cn";
 import { fadeIn, scrim } from "../../lib/motion";
+import { cn } from "./cn";
+import DialogLayer from "./DialogLayer";
 import IconButton from "./IconButton";
 import { useDialogA11y } from "./useDialogA11y";
-import DialogLayer from "./DialogLayer";
 
 export type ModalSize = "sm" | "md" | "lg";
 
@@ -77,7 +78,7 @@ export default function Modal({
     <AnimatePresence>
       {open && (
         <DialogLayer className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <motion.div
+          <m.div
             variants={scrim}
             initial="initial"
             animate="animate"
@@ -86,7 +87,7 @@ export default function Modal({
             className="absolute inset-0 bg-ink/45"
             onClick={onClose}
           />
-          <motion.div
+          <m.div
             ref={panelRef}
             variants={fadeIn}
             initial="initial"
@@ -133,7 +134,7 @@ export default function Modal({
             {footer != null && (
               <div className="flex flex-wrap items-center justify-end gap-2 pt-1">{footer}</div>
             )}
-          </motion.div>
+          </m.div>
         </DialogLayer>
       )}
     </AnimatePresence>,

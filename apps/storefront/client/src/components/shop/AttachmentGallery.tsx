@@ -36,7 +36,7 @@ export default function AttachmentGallery({ urls }: { urls: string[] }) {
           {VIDEO_EXT.has(extOf(url)) ? (
             <video src={url} controls className="w-40 max-w-full rounded-md border border-line bg-ink/5" />
           ) : (
-            <a href={url} target="_blank" rel="noreferrer" className="block rounded-md border border-line overflow-hidden">
+            <a aria-label={`Open attachment ${basenameOf(url)}`} href={url} target="_blank" rel="noreferrer" className="block rounded-md border border-line overflow-hidden">
               <img src={url} alt="" className="w-20 h-20 object-cover" />
             </a>
           )}

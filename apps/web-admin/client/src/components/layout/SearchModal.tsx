@@ -1,6 +1,6 @@
+import { Package, Search, ShoppingCart, Users } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ShoppingCart, Package, Users, Search } from "lucide-react";
 import { apiGet } from "../../api/client";
 import { MotionDialog } from "../shared/MotionDialog";
 
@@ -61,22 +61,22 @@ function userLabel(u: SearchApiResponse["users"][number]): { label: string; subl
   return { label: `Customer #${u.id}` };
 }
 
-export function SearchModal({ open, onClose }: SearchModalProps): JSX.Element {
+export function SearchModal(props: SearchModalProps): JSX.Element {
+  const inputRef = useRef<HTMLInputElement>(null);
+  return (
+    <MotionDialog open={props.open} onClose={props.onClose} title="Search" initialFocusRef={inputRef} className="max-h-[70dvh] overflow-y-auto">
+      <SearchSession key={String(props.open)} {...props} inputRef={inputRef} />
+    </MotionDialog>
+  );
+}
+
+function SearchSession({ open, onClose, inputRef }: SearchModalProps & { inputRef: import("react").RefObject<HTMLInputElement> }): JSX.Element {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [failed, setFailed] = useState(false);
   const [attempt, setAttempt] = useState(0);
   const navigate = useNavigate();
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    if (open) {
-      setQuery("");
-      setResults([]);
-      setFailed(false);
-    }
-  }, [open]);
 
   useEffect(() => {
     if (!open || !query.trim()) {
@@ -116,80 +116,80 @@ export function SearchModal({ open, onClose }: SearchModalProps): JSX.Element {
     .filter((g) => g.items.length > 0);
 
   return (
-    <MotionDialog open={open} onClose={onClose} title="Search" initialFocusRef={inputRef} className="max-h-[70dvh] overflow-y-auto">
-        {/* Input row */}
-        <div className="flex items-center gap-2 border-b border-line px-4 py-3">
-          <Search className="h-4 w-4 flex-shrink-0 text-ink-faint" />
-          <input
-            ref={inputRef}
-            type="text"
-            aria-label="Search orders, products, users"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search orders, products, users..."
-            className="flex-1 bg-transparent text-sm text-ink outline-none placeholder:text-ink-faint"
-          />
-          {loading && <span role="status" className="text-xs text-ink-faint">Searching…</span>}
-        </div>
+    <>
+      {/* Input row */}
+      <div className="flex items-center gap-2 border-b border-line px-4 py-3">
+        <Search className="h-4 w-4 flex-shrink-0 text-ink-faint" />
+        <input
+          ref={inputRef}
+          type="text"
+          aria-label="Search orders, products, users"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search orders, products, users..."
+          className="flex-1 bg-transparent text-sm text-ink outline-none placeholder:text-ink-faint"
+        />
+        {loading && <span role="status" className="text-xs text-ink-faint">Searching…</span>}
+      </div>
 
-        {/* Results */}
-        {grouped.length > 0 && (
-          <div className="max-h-80 overflow-y-auto py-2">
-            {grouped.map(({ type, items }) => {
-              const Icon = TYPE_ICONS[type];
-              return (
-                <div key={type}>
-                  <div className="px-4 py-1 text-xs font-semibold uppercase tracking-wider text-ink-faint">
-                    {TYPE_LABELS[type]}
-                  </div>
-                  {items.map((result) => (
-                    <button
-                      key={`${result.type}-${result.id}`}
-                      type="button"
-                      className="flex w-full items-center gap-3 px-4 py-2 text-left hover:bg-sand"
-                      onClick={() => {
-                        navigate(result.href);
-                        onClose();
-                      }}
-                    >
-                      <Icon className="h-4 w-4 flex-shrink-0 text-ink-faint" />
-                      <div className="min-w-0">
-                        <div className="truncate text-sm font-medium text-ink">
-                          {result.label}
-                        </div>
-                        {result.sublabel && (
-                          <div className="truncate text-xs text-ink-soft">
-                            {result.sublabel}
-                          </div>
-                        )}
-                      </div>
-                    </button>
-                  ))}
+      {/* Results */}
+      {grouped.length > 0 && (
+        <div className="max-h-80 overflow-y-auto py-2">
+          {grouped.map(({ type, items }) => {
+            const Icon = TYPE_ICONS[type];
+            return (
+              <div key={type}>
+                <div className="px-4 py-1 text-xs font-semibold uppercase tracking-wider text-ink-faint">
+                  {TYPE_LABELS[type]}
                 </div>
-              );
-            })}
-          </div>
-        )}
+                {items.map((result) => (
+                  <button
+                    key={`${result.type}-${result.id}`}
+                    type="button"
+                    className="flex w-full items-center gap-3 px-4 py-2 text-left hover:bg-sand"
+                    onClick={() => {
+                      navigate(result.href);
+                      onClose();
+                    }}
+                  >
+                    <Icon className="h-4 w-4 flex-shrink-0 text-ink-faint" />
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-medium text-ink">
+                        {result.label}
+                      </div>
+                      {result.sublabel && (
+                        <div className="truncate text-xs text-ink-soft">
+                          {result.sublabel}
+                        </div>
+                      )}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            );
+          })}
+        </div>
+      )}
 
-        {/* Empty state */}
-        {query.trim() && !loading && !failed && grouped.length === 0 && (
-          <div className="px-4 py-6 text-center text-sm text-ink-faint">
-            No results for &ldquo;{query}&rdquo;
-          </div>
-        )}
-        {failed && !loading && (
-          <div role="alert" className="px-4 py-3 text-sm text-rust">
-            <p>Search could not be loaded. Try again.</p>
-            <button type="button" className="mt-2 min-h-11 rounded-md border border-line px-3 text-ink" onClick={() => setAttempt((value) => value + 1)}>Retry search</button>
-          </div>
-        )}
+      {/* Empty state */}
+      {query.trim() && !loading && !failed && grouped.length === 0 && (
+        <div className="px-4 py-6 text-center text-sm text-ink-faint">
+          No results for &ldquo;{query}&rdquo;
+        </div>
+      )}
+      {failed && !loading && (
+        <div role="alert" className="px-4 py-3 text-sm text-rust">
+          <p>Search could not be loaded. Try again.</p>
+          <button type="button" className="mt-2 min-h-11 rounded-md border border-line px-3 text-ink" onClick={() => setAttempt((value) => value + 1)}>Retry search</button>
+        </div>
+      )}
 
-        {/* Prompt when empty query */}
-        {!query.trim() && (
-          <div className="px-4 py-3 text-xs text-ink-faint">
-            Type to search across orders, products, and customers.
-          </div>
-        )}
-    </MotionDialog>
+      {/* Prompt when empty query */}
+      {!query.trim() && (
+        <div className="px-4 py-3 text-xs text-ink-faint">
+          Type to search across orders, products, and customers.
+        </div>
+      )}
+    </>
   );
 }

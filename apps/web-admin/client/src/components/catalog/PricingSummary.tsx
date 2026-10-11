@@ -1,7 +1,7 @@
-import { Decimal } from "decimal.js";
-import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { formatCurrencyDisplay } from "../shared/CurrencyAmount";
+import { Badge } from "@/components/ui/badge";
+import { Decimal } from "decimal.js";
+import { formatCurrencyDisplay } from "../shared/CurrencyAmount.helpers";
 
 export interface CatalogPricingInfo {
   automaticAvailable: boolean;

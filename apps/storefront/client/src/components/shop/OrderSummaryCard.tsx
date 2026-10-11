@@ -1,3 +1,4 @@
+import { idrRailPriceAndPay } from "./OrderSummaryCard.helpers";
 /**
  * Extracted from CheckoutPage.tsx (Task 6, storefront instant-buy pilot):
  * the voucher-input card plus the `#checkout-summary` totals card (two
@@ -27,21 +28,22 @@
  * is a single-page buy with no separate cart/checkout screens, so it supplies
  * its own label/icon and omits `backTo` entirely.
  */
+import { AlertTriangle, ChevronRight } from "lucide-react";
 import type { KeyboardEvent, ReactNode, Ref } from "react";
 import { Link } from "react-router-dom";
-import { AlertTriangle, ChevronRight } from "lucide-react";
 import type { CheckoutData } from "../../api/types";
+import { formatIdr, formatPriceFor } from "../../lib/format";
 import { t } from "../../lib/i18n";
-import { formatIdr, formatPriceFor, isIdrRail, showsUsdDisplay } from "../../lib/format";
 import { useShopContext } from "../../lib/useShopContext";
-import FlashBadge, { flashPercentLabel } from "./FlashBadge";
-import Price from "./Price";
-import Spinner from "./Spinner";
-import Card from "../ui/Card";
 import Button from "../ui/Button";
+import Card from "../ui/Card";
 import Input from "../ui/Input";
 import Label from "../ui/Label";
 import { cn } from "../ui/cn";
+import FlashBadge from "./FlashBadge";
+import { flashPercentLabel } from "./FlashBadge.helpers";
+import Price from "./Price";
+import Spinner from "./Spinner";
 
 /**
  * The biggest live flash discount in the cart, plus the last moment any of
@@ -61,40 +63,6 @@ function cartFlashSummary(data: CheckoutData | undefined): { percent: number; en
     if (lineEnd && (endsAt === null || lineEnd > endsAt)) endsAt = lineEnd;
   }
   return percent === null ? null : { percent, endsAt };
-}
-
-/**
- * Final-review fix: the "Price $X · Pay RpY" line for a checkout preview — the
- * web twin of the bot's payAlongsidePriceLine, through the same shared
- * `checkout.price_and_pay` locale key. Non-null ONLY when the viewer's display
- * currency renders as "$" (USD preference + usable rate) AND the selected
- * method is IDR-settled (QRIS/TokoPay, PayDisini, or a wallet_idr balance
- * debit) — exactly the case where what the viewer sees differs from what
- * they're actually charged. IDR/null viewers, a missing rate, and USDT rails
- * all get null.
- *
- * Same two figures the bot uses (and PayPage.tsx after the order exists), so
- * "Price" means one thing on every surface: Price is the pre-fee order total
- * (`totals.total`) converted once via formatPriceFor; Pay is the actual IDR
- * charge — `qris_grand_total` on QRIS (fee-inclusive), `total` on PayDisini or
- * wallet_idr (no fee) — formatted with `formatIdr` directly, never re-converted.
- * Both are still canonical IDR in the preview: Decimal strings the server
- * computes in Rupiah (routes/checkout.ts cartTotals) before any rail has
- * touched them. Shared by this card and both pages' sticky bars so the three
- * surfaces cannot drift apart.
- */
-export function idrRailPriceAndPay(
-  method: string | null,
-  totals: Pick<CheckoutData, "total" | "qris_grand_total">,
-  currency: "USD" | "IDR" | null,
-  fx: string | null | undefined,
-): string | null {
-  if (!isIdrRail(method) || !showsUsdDisplay(currency, fx)) return null;
-  const payableIdr = method === "qris" ? totals.qris_grand_total : totals.total;
-  return t("checkout.price_and_pay", {
-    price: formatPriceFor(totals.total, currency, fx),
-    pay: formatIdr(payableIdr),
-  });
 }
 
 export interface OrderSummaryCardProps {
@@ -164,41 +132,7 @@ export default function OrderSummaryCard({
   return (
     // Keep the coupon and summary together in normal flow after payment.
     <div className="space-y-6">
-      <Card>
-        <Label htmlFor="voucher_code">{t("web.voucher_label")}</Label>
-        <div className="flex gap-2">
-          <Input
-            id="voucher_code"
-            value={voucherInput}
-            onChange={(e) => onVoucherInputChange(e.target.value)}
-            onKeyDown={onVoucherKeyDown}
-            className="min-w-0 uppercase"
-            placeholder={t("web.voucher_placeholder")}
-            maxLength={32}
-            invalid={totals.error_key ? true : undefined}
-            aria-describedby={totals.error_key ? "voucher_code_error" : undefined}
-          />
-          <Button
-            id="voucher_apply"
-            variant="soft"
-            className="shrink-0"
-            disabled={voucherPending}
-            onClick={onVoucherApply}
-          >
-            {voucherPending && <Spinner />}
-            {t("web.voucher_apply")}
-          </Button>
-        </div>
-        {/* STO-005: the voucher error belongs next to the field it
-            validates, on every viewport — it used to render in the
-            summary column, a full column gutter away on desktop. */}
-        {totals.error_key && (
-          <p id="voucher_code_error" role="alert" className="mt-2 flex items-center gap-1.5 text-sm text-rust-dark">
-            <AlertTriangle className="w-4 h-4 shrink-0" /> {t(totals.error_key)}
-          </p>
-        )}
-        {!totals.error_key && totals.voucher_code && <p className="mt-2 text-sm text-grass-dark">{t("web.voucher_applied", { code: totals.voucher_code })}</p>}
-      </Card>
+      <OrderSummaryCardVoucherCode voucherInput={voucherInput} onVoucherInputChange={onVoucherInputChange} onVoucherKeyDown={onVoucherKeyDown} totals={totals} voucherPending={voucherPending} onVoucherApply={onVoucherApply} />
 
       <div id="checkout-summary">
         <Card>
@@ -216,47 +150,7 @@ export default function OrderSummaryCard({
               </dl>
             </Card>
           )}
-          <div className="text-sm">
-            <div className="flex justify-between py-2">
-              <span className="text-ink-soft">{t("web.subtotal")}</span>
-              <span>{formatPriceFor(totals.subtotal, currency, fx)}</span>
-            </div>
-            {/* Modest marker only: the subtotal above is already the sale
-                price, and the full countdown belongs on the product page. */}
-            {flashSummary && (
-              <div className="flex flex-wrap items-center justify-between gap-2 py-2">
-                <span className="text-ink-soft">{t("web.flash_applied")}</span>
-                <FlashBadge percent={flashSummary.percent} endsAt={flashSummary.endsAt} />
-              </div>
-            )}
-            {totals.bulk_discount !== "0" && (
-              <div className="flex justify-between py-2 text-grass-dark">
-                <span>{t("web.bulk_discount")}</span>
-                <span>−{formatPriceFor(totals.bulk_discount, currency, fx)}</span>
-              </div>
-            )}
-            {totals.voucher_discount !== "0" && (
-              <div className="flex justify-between py-2 text-grass-dark">
-                <span>{t("web.voucher_discount")}</span>
-                <span>−{formatPriceFor(totals.voucher_discount, currency, fx)}</span>
-              </div>
-            )}
-            {method === "qris" && (
-              <div className="flex justify-between py-2">
-                <span className="text-ink-soft">{t("web.qris_admin_fee")}</span>
-                <span>
-                  {formatPriceFor(totals.qris_admin_fee, currency, fx)}
-                  {priceAndPay && (
-                    <span className="text-ink-faint"> · {formatIdr(totals.qris_admin_fee)}</span>
-                  )}
-                </span>
-              </div>
-            )}
-            <div className="mt-2 flex items-baseline justify-between gap-3 border-t border-line pb-2 pt-4">
-              <span className="text-base font-semibold text-ink">{t("web.order_total")}</span>
-              <Price value={method === "qris" ? totals.qris_grand_total : totals.total} fx={fx} size="text-lg" />
-            </div>
-          </div>
+          <OrderPriceBreakdown totals={totals} currency={currency} fx={fx} flashSummary={flashSummary} method={method} priceAndPay={priceAndPay} />
           {priceAndPay && <p className="mb-2 text-right text-sm text-ink-soft">{priceAndPay}</p>}
           {fx && <p className="text-xs text-ink-faint">{t("web.usdt_note")}</p>}
           {/* The caller decides whether this in-flow CTA is offered;
@@ -286,4 +180,100 @@ export default function OrderSummaryCard({
       </div>
     </div>
   );
+}
+
+function OrderSummaryCardVoucherCode({ voucherInput, onVoucherInputChange, onVoucherKeyDown, totals, voucherPending, onVoucherApply }: {
+  voucherInput: string;
+  onVoucherInputChange: (value: string) => void;
+  onVoucherKeyDown: (event: KeyboardEvent<HTMLInputElement>) => void;
+  totals: CheckoutData;
+  voucherPending: boolean;
+  onVoucherApply: () => void;
+}) {
+  return (<Card>
+    <Label htmlFor="voucher_code">{t("web.voucher_label")}</Label>
+    <div className="flex gap-2">
+      <Input
+        id="voucher_code"
+        value={voucherInput}
+        onChange={(e) => onVoucherInputChange(e.target.value)}
+        onKeyDown={onVoucherKeyDown}
+        className="min-w-0 uppercase"
+        placeholder={t("web.voucher_placeholder")}
+        maxLength={32}
+        invalid={totals.error_key ? true : undefined}
+        aria-describedby={totals.error_key ? "voucher_code_error" : undefined}
+      />
+      <Button
+        id="voucher_apply"
+        variant="soft"
+        className="shrink-0"
+        disabled={voucherPending}
+        onClick={onVoucherApply}
+      >
+        {voucherPending && <Spinner />}
+        {t("web.voucher_apply")}
+      </Button>
+    </div>
+    {/* STO-005: the voucher error belongs next to the field it
+            validates, on every viewport — it used to render in the
+            summary column, a full column gutter away on desktop. */}
+    {totals.error_key && (
+      <p id="voucher_code_error" role="alert" className="mt-2 flex items-center gap-1.5 text-sm text-rust-dark">
+        <AlertTriangle className="w-4 h-4 shrink-0" /> {t(totals.error_key)}
+      </p>
+    )}
+    {!totals.error_key && totals.voucher_code && <p className="mt-2 text-sm text-grass-dark">{t("web.voucher_applied", { code: totals.voucher_code })}</p>}
+  </Card>);
+}
+
+function OrderPriceBreakdown({ totals, currency, fx, flashSummary, method, priceAndPay }: {
+  totals: CheckoutData;
+  currency: "USD" | "IDR" | null;
+  fx: string | null | undefined;
+  flashSummary: { percent: number; endsAt: string | null; } | null;
+  method: string | null;
+  priceAndPay: string | null;
+}) {
+  return (<div className="text-sm">
+    <div className="flex justify-between py-2">
+      <span className="text-ink-soft">{t("web.subtotal")}</span>
+      <span>{formatPriceFor(totals.subtotal, currency, fx)}</span>
+    </div>
+    {/* Modest marker only: the subtotal above is already the sale
+                price, and the full countdown belongs on the product page. */}
+    {flashSummary && (
+      <div className="flex flex-wrap items-center justify-between gap-2 py-2">
+        <span className="text-ink-soft">{t("web.flash_applied")}</span>
+        <FlashBadge percent={flashSummary.percent} endsAt={flashSummary.endsAt} />
+      </div>
+    )}
+    {totals.bulk_discount !== "0" && (
+      <div className="flex justify-between py-2 text-grass-dark">
+        <span>{t("web.bulk_discount")}</span>
+        <span>−{formatPriceFor(totals.bulk_discount, currency, fx)}</span>
+      </div>
+    )}
+    {totals.voucher_discount !== "0" && (
+      <div className="flex justify-between py-2 text-grass-dark">
+        <span>{t("web.voucher_discount")}</span>
+        <span>−{formatPriceFor(totals.voucher_discount, currency, fx)}</span>
+      </div>
+    )}
+    {method === "qris" && (
+      <div className="flex justify-between py-2">
+        <span className="text-ink-soft">{t("web.qris_admin_fee")}</span>
+        <span>
+          {formatPriceFor(totals.qris_admin_fee, currency, fx)}
+          {priceAndPay && (
+            <span className="text-ink-faint"> · {formatIdr(totals.qris_admin_fee)}</span>
+          )}
+        </span>
+      </div>
+    )}
+    <div className="mt-2 flex items-baseline justify-between gap-3 border-t border-line pb-2 pt-4">
+      <span className="text-base font-semibold text-ink">{t("web.order_total")}</span>
+      <Price value={method === "qris" ? totals.qris_grand_total : totals.total} fx={fx} size="text-lg" />
+    </div>
+  </div>);
 }

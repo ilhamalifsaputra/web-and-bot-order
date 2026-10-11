@@ -1,3 +1,4 @@
+import { anyMethodEnabled, isIdrWalletSufficient, isUsdtWalletSufficient } from "./PaymentMethodSelector.helpers";
 /**
  * Extracted from CheckoutPage.tsx (Task 6, storefront instant-buy pilot) so
  * InstantBuyPage.tsx can render the exact same payment-method picker without
@@ -22,93 +23,15 @@
  * groups only wrap already-conditional rows in a heading, never add/remove a
  * row or change when one renders.
  */
+import { Wallet } from "lucide-react";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { Wallet } from "lucide-react";
 import type { CheckoutData } from "../../api/types";
-import { t } from "../../lib/i18n";
 import { formatIdr, formatNativeUsdt } from "../../lib/format";
-import Radio from "../ui/Radio";
+import { t } from "../../lib/i18n";
 import Card from "../ui/Card";
 import { cn } from "../ui/cn";
-
-/** All-or-nothing wallet-credit gates: only "sufficient" when the balance
- * covers the live total outright — never offered as a partial discount.
- * `wallet_*_enabled` comes first because it answers a different question: may
- * this shop offer a balance payment to THIS visitor at all (it is false for a
- * guest, who has no wallet behind the number). Reading the server's flag
- * rather than `is_guest` keeps that decision on the server side. */
-export function isIdrWalletSufficient(data: CheckoutData): boolean {
-  return data.wallet_idr_enabled && Number(data.total) > 0 && Number(data.wallet_idr) >= Number(data.total);
-}
-export function isUsdtWalletSufficient(data: CheckoutData): boolean {
-  return (
-    data.wallet_usdt_enabled && data.total_usdt != null && Number(data.wallet_usdt) >= Number(data.total_usdt)
-  );
-}
-
-/** checkout.njk's default-selection cascade: the first enabled method wins,
- * in file/priority order (qris → paydisini → binance → bybit → bybit_bsc →
- * nowpayments), falling back to wallet credit only when no gateway is
- * configured at all — a buyer with both a gateway and wallet credit
- * available shouldn't have their credit silently pre-selected for them.
- * Returns null when nothing is payable. */
-export function defaultMethod(data: CheckoutData): string | null {
-  if (data.idr_enabled) return "qris";
-  if (data.paydisini_enabled) return "paydisini";
-  if (data.binance_enabled) return "binance";
-  if (data.bybit_enabled) return "bybit";
-  if (data.bybit_bsc_enabled) return "bybit_bsc";
-  if (data.nowpayments_enabled) return "nowpayments";
-  if (isIdrWalletSufficient(data)) return "wallet_idr";
-  if (isUsdtWalletSufficient(data)) return "wallet_usdt";
-  return null;
-}
-
-export function anyMethodEnabled(data: CheckoutData): boolean {
-  return (
-    data.idr_enabled ||
-    data.paydisini_enabled ||
-    data.binance_enabled ||
-    data.bybit_enabled ||
-    data.bybit_bsc_enabled ||
-    data.nowpayments_enabled
-  );
-}
-
-/**
- * Whether `method` is still one of the rows this component would actually
- * render for `data` — i.e. the single source of truth this file already
- * has for "which methods are offered", reused instead of re-deriving it at
- * each call site. Exists for InstantBuyPage.tsx's re-pricing case (Task 6
- * review, I-3): picking a pricier denomination can re-price the order past a
- * wallet-credit balance that covered the cheaper one, and `method` itself
- * doesn't auto-clear just because the totals changed under it — callers use
- * this to notice and reset the selection instead of leaving `method` pointed
- * at a row that no longer renders.
- */
-export function isMethodValid(data: CheckoutData, method: string | null): boolean {
-  switch (method) {
-    case "qris":
-      return data.idr_enabled;
-    case "paydisini":
-      return data.paydisini_enabled;
-    case "binance":
-      return data.binance_enabled;
-    case "bybit":
-      return data.bybit_enabled;
-    case "bybit_bsc":
-      return data.bybit_bsc_enabled;
-    case "nowpayments":
-      return data.nowpayments_enabled;
-    case "wallet_idr":
-      return isIdrWalletSufficient(data);
-    case "wallet_usdt":
-      return isUsdtWalletSufficient(data);
-    default:
-      return false;
-  }
-}
+import Radio from "../ui/Radio";
 
 /**
  * One payment-method radio row (gateway or wallet credit — they are the same
@@ -199,169 +122,219 @@ export default function PaymentMethodSelector({
   return (
     <Card>
       <h2 className="section-title mb-3">{t("web.pay_method")}</h2>
-      <div className="space-y-5">
-        {showIdrGroup && (
-          <div className="space-y-3" role="group" aria-labelledby="payment-group-idr">
-            <p className="field-label" id="payment-group-idr">
-              {t("web.pay_group_idr")}
-            </p>
-            {data.idr_enabled && (
-              <PaymentMethodRow
-                value="qris"
-                checked={method === "qris"}
-                onSelect={() => onSelect("qris")}
-                icon={
-                  <img
-                    src="/static/pay/qris.png"
-                    alt="QRIS"
-                    className="h-7 w-auto max-w-20 object-contain shrink-0 mt-0.5"
-                  />
-                }
-                title={t("web.pay_idr_title")}
-                subtitle={t("web.pay_idr_sub")}
-                feeNote={t("web.qris_admin_fee_note")}
-              />
-            )}
-            {data.paydisini_enabled && (
-              <PaymentMethodRow
-                value="paydisini"
-                checked={method === "paydisini"}
-                onSelect={() => onSelect("paydisini")}
-                icon={
-                  <img
-                    src="/static/pay/qris.png"
-                    alt="PayDisini"
-                    className="h-7 w-auto max-w-20 object-contain shrink-0 mt-0.5"
-                  />
-                }
-                title={t("web.pay_paydisini_title")}
-                subtitle={t("web.pay_paydisini_sub")}
-              />
-            )}
-          </div>
-        )}
-        {showCryptoGroup && (
-          <div className="space-y-3" role="group" aria-labelledby="payment-group-crypto">
-            <p className="field-label" id="payment-group-crypto">
-              {t("web.pay_group_crypto")}
-            </p>
-            {data.binance_enabled && (
-              <PaymentMethodRow
-                value="binance"
-                checked={method === "binance"}
-                onSelect={() => onSelect("binance")}
-                icon={
-                  <img
-                    src="/static/pay/binance.png"
-                    alt="Binance"
-                    className="h-7 w-7 object-contain shrink-0 mt-0.5"
-                  />
-                }
-                title={t("web.pay_usdt_title")}
-                subtitle={t("web.pay_usdt_sub")}
-              />
-            )}
-            {data.bybit_enabled && (
-              <PaymentMethodRow
-                value="bybit"
-                checked={method === "bybit"}
-                onSelect={() => onSelect("bybit")}
-                icon={
-                  <img
-                    src="/static/pay/bybit.png"
-                    alt="Bybit"
-                    className="h-7 w-7 rounded-sm object-contain shrink-0 mt-0.5"
-                  />
-                }
-                title={t("web.pay_bybit_title")}
-                subtitle={t("web.pay_bybit_sub")}
-              />
-            )}
-            {data.bybit_bsc_enabled && (
-              <PaymentMethodRow
-                value="bybit_bsc"
-                checked={method === "bybit_bsc"}
-                onSelect={() => onSelect("bybit_bsc")}
-                icon={
-                  <img
-                    src="/static/pay/bybit.png"
-                    alt="Bybit"
-                    className="h-7 w-7 rounded-sm object-contain shrink-0 mt-0.5"
-                  />
-                }
-                title={t("web.pay_bybit_bsc_title")}
-                subtitle={t("web.pay_bybit_bsc_sub")}
-              />
-            )}
-            {data.nowpayments_enabled && (
-              <PaymentMethodRow
-                value="nowpayments"
-                checked={method === "nowpayments"}
-                onSelect={() => onSelect("nowpayments")}
-                icon={
-                  <img
-                    src="/static/pay/nowpayments.png"
-                    alt="NOWPayments"
-                    className="h-7 w-7 rounded-sm object-contain shrink-0 mt-0.5"
-                  />
-                }
-                title={t("web.pay_nowpayments_title")}
-                subtitle={t("web.pay_nowpayments_sub")}
-              />
-            )}
-          </div>
-        )}
-        {showWalletGroup && (
-          <div className="space-y-3" role="group" aria-labelledby="payment-group-wallet">
-            <p className="field-label" id="payment-group-wallet">
-              {t("web.pay_group_wallet")}
-            </p>
-            {idrWalletSufficient && (
-              <PaymentMethodRow
-                value="wallet_idr"
-                checked={method === "wallet_idr"}
-                onSelect={() => onSelect("wallet_idr")}
-                icon={<Wallet className="h-7 w-7 object-contain shrink-0 mt-0.5 text-pine" />}
-                title={t("web.pay_wallet_idr_title")}
-                subtitle={t("web.pay_wallet_idr_sub", { amount: formatIdr(data.wallet_idr) })}
-              />
-            )}
-            {usdtWalletSufficient && (
-              <PaymentMethodRow
-                value="wallet_usdt"
-                checked={method === "wallet_usdt"}
-                onSelect={() => onSelect("wallet_usdt")}
-                icon={<Wallet className="h-7 w-7 object-contain shrink-0 mt-0.5 text-pine" />}
-                title={t("web.pay_wallet_usdt_title")}
-                subtitle={t("web.pay_wallet_usdt_sub", { amount: formatNativeUsdt(data.wallet_usdt) })}
-              />
-            )}
-          </div>
-        )}
-        {!anyMethodEnabled(data) && !idrWalletSufficient && !usdtWalletSufficient && (
-          <div className="text-center text-sm text-ink-soft border border-dashed border-line rounded-xl py-6 px-3">
-            <Wallet className="w-5 h-5 mx-auto mb-1.5 text-ink-faint" />
-            {/* Two causes look identical in the `*_enabled` flags — they are
+      <PaymentMethodGroups showIdrGroup={showIdrGroup} data={data} method={method} onSelect={onSelect} showCryptoGroup={showCryptoGroup} showWalletGroup={showWalletGroup} idrWalletSufficient={idrWalletSufficient} usdtWalletSufficient={usdtWalletSufficient} />
+    </Card>
+  );
+}
+
+function PaymentMethodGroups({ showIdrGroup, data, method, onSelect, showCryptoGroup, showWalletGroup, idrWalletSufficient, usdtWalletSufficient }: {
+  showIdrGroup: boolean;
+  data: CheckoutData;
+  method: string | null;
+  onSelect: (method: string) => void;
+  showCryptoGroup: boolean;
+  showWalletGroup: boolean;
+  idrWalletSufficient: boolean;
+  usdtWalletSufficient: boolean;
+}) {
+  return (<div className="space-y-5">
+    <IdrPaymentMethods showIdrGroup={showIdrGroup} data={data} method={method} onSelect={onSelect} />
+    <CryptoPaymentMethods showCryptoGroup={showCryptoGroup} data={data} method={method} onSelect={onSelect} />
+    <WalletPaymentMethods showWalletGroup={showWalletGroup} idrWalletSufficient={idrWalletSufficient} method={method} onSelect={onSelect} data={data} usdtWalletSufficient={usdtWalletSufficient} />
+    <NoPaymentMethods data={data} idrWalletSufficient={idrWalletSufficient} usdtWalletSufficient={usdtWalletSufficient} />
+  </div>);
+}
+
+function IdrPaymentMethods({ showIdrGroup, data, method, onSelect }: {
+  showIdrGroup: boolean;
+  data: CheckoutData;
+  method: string | null;
+  onSelect: (method: string) => void;
+}) {
+  return (showIdrGroup && (
+    <div className="space-y-3" role="group" aria-labelledby="payment-group-idr">
+      <p className="field-label" id="payment-group-idr">
+        {t("web.pay_group_idr")}
+      </p>
+      {data.idr_enabled && (
+        <PaymentMethodRow
+          value="qris"
+          checked={method === "qris"}
+          onSelect={() => onSelect("qris")}
+          icon={
+            <img
+              src="/static/pay/qris.png"
+              alt="QRIS"
+              className="h-7 w-auto max-w-20 object-contain shrink-0 mt-0.5"
+            />
+          }
+          title={t("web.pay_idr_title")}
+          subtitle={t("web.pay_idr_sub")}
+          feeNote={t("web.qris_admin_fee_note")}
+        />
+      )}
+      {data.paydisini_enabled && (
+        <PaymentMethodRow
+          value="paydisini"
+          checked={method === "paydisini"}
+          onSelect={() => onSelect("paydisini")}
+          icon={
+            <img
+              src="/static/pay/qris.png"
+              alt="PayDisini"
+              className="h-7 w-auto max-w-20 object-contain shrink-0 mt-0.5"
+            />
+          }
+          title={t("web.pay_paydisini_title")}
+          subtitle={t("web.pay_paydisini_sub")}
+        />
+      )}
+    </div>
+  ));
+}
+
+function CryptoPaymentMethods({ showCryptoGroup, data, method, onSelect }: {
+  showCryptoGroup: boolean;
+  data: CheckoutData;
+  method: string | null;
+  onSelect: (method: string) => void;
+}) {
+  return (showCryptoGroup && (
+    <div className="space-y-3" role="group" aria-labelledby="payment-group-crypto">
+      <p className="field-label" id="payment-group-crypto">
+        {t("web.pay_group_crypto")}
+      </p>
+      {data.binance_enabled && (
+        <PaymentMethodRow
+          value="binance"
+          checked={method === "binance"}
+          onSelect={() => onSelect("binance")}
+          icon={
+            <img
+              src="/static/pay/binance.png"
+              alt="Binance"
+              className="h-7 w-7 object-contain shrink-0 mt-0.5"
+            />
+          }
+          title={t("web.pay_usdt_title")}
+          subtitle={t("web.pay_usdt_sub")}
+        />
+      )}
+      {data.bybit_enabled && (
+        <PaymentMethodRow
+          value="bybit"
+          checked={method === "bybit"}
+          onSelect={() => onSelect("bybit")}
+          icon={
+            <img
+              src="/static/pay/bybit.png"
+              alt="Bybit"
+              className="h-7 w-7 rounded-sm object-contain shrink-0 mt-0.5"
+            />
+          }
+          title={t("web.pay_bybit_title")}
+          subtitle={t("web.pay_bybit_sub")}
+        />
+      )}
+      {data.bybit_bsc_enabled && (
+        <PaymentMethodRow
+          value="bybit_bsc"
+          checked={method === "bybit_bsc"}
+          onSelect={() => onSelect("bybit_bsc")}
+          icon={
+            <img
+              src="/static/pay/bybit.png"
+              alt="Bybit"
+              className="h-7 w-7 rounded-sm object-contain shrink-0 mt-0.5"
+            />
+          }
+          title={t("web.pay_bybit_bsc_title")}
+          subtitle={t("web.pay_bybit_bsc_sub")}
+        />
+      )}
+      {data.nowpayments_enabled && (
+        <PaymentMethodRow
+          value="nowpayments"
+          checked={method === "nowpayments"}
+          onSelect={() => onSelect("nowpayments")}
+          icon={
+            <img
+              src="/static/pay/nowpayments.png"
+              alt="NOWPayments"
+              className="h-7 w-7 rounded-sm object-contain shrink-0 mt-0.5"
+            />
+          }
+          title={t("web.pay_nowpayments_title")}
+          subtitle={t("web.pay_nowpayments_sub")}
+        />
+      )}
+    </div>
+  ));
+}
+
+function WalletPaymentMethods({ showWalletGroup, idrWalletSufficient, method, onSelect, data, usdtWalletSufficient }: {
+  showWalletGroup: boolean;
+  idrWalletSufficient: boolean;
+  method: string | null;
+  onSelect: (method: string) => void;
+  data: CheckoutData;
+  usdtWalletSufficient: boolean;
+}) {
+  return (showWalletGroup && (
+    <div className="space-y-3" role="group" aria-labelledby="payment-group-wallet">
+      <p className="field-label" id="payment-group-wallet">
+        {t("web.pay_group_wallet")}
+      </p>
+      {idrWalletSufficient && (
+        <PaymentMethodRow
+          value="wallet_idr"
+          checked={method === "wallet_idr"}
+          onSelect={() => onSelect("wallet_idr")}
+          icon={<Wallet className="h-7 w-7 object-contain shrink-0 mt-0.5 text-pine" />}
+          title={t("web.pay_wallet_idr_title")}
+          subtitle={t("web.pay_wallet_idr_sub", { amount: formatIdr(data.wallet_idr) })}
+        />
+      )}
+      {usdtWalletSufficient && (
+        <PaymentMethodRow
+          value="wallet_usdt"
+          checked={method === "wallet_usdt"}
+          onSelect={() => onSelect("wallet_usdt")}
+          icon={<Wallet className="h-7 w-7 object-contain shrink-0 mt-0.5 text-pine" />}
+          title={t("web.pay_wallet_usdt_title")}
+          subtitle={t("web.pay_wallet_usdt_sub", { amount: formatNativeUsdt(data.wallet_usdt) })}
+        />
+      )}
+    </div>
+  ));
+}
+
+function NoPaymentMethods({ data, idrWalletSufficient, usdtWalletSufficient }: {
+  data: CheckoutData;
+  idrWalletSufficient: boolean;
+  usdtWalletSufficient: boolean;
+}) {
+  return (!anyMethodEnabled(data) && !idrWalletSufficient && !usdtWalletSufficient && (
+    <div className="text-center text-sm text-ink-soft border border-dashed border-line rounded-xl py-6 px-3">
+      <Wallet className="w-5 h-5 mx-auto mb-1.5 text-ink-faint" />
+      {/* Two causes look identical in the `*_enabled` flags — they are
                 false for both — but they need opposite messages. When the shop
                 has a working gateway and the order is merely too cheap for it
                 (`below_all_minimums`), the buyer fixes this themselves by buying
                 a little more, and telling them to contact support sends them to
                 ask a question the shop cannot answer either. The support wording
                 stays for the case it was written for: no usable gateway at all. */}
-            {data.below_all_minimums ? (
-              <p>{t("web.pay_below_minimum_all")}</p>
-            ) : (
-              <p>
-                {t("web.pay_none_available_prefix")}{" "}
-                <Link to="/account/support" className="text-pine underline transition-colors hover:text-pine-dark">
-                  {t("web.pay_none_available_link")}
-                </Link>
-                {t("web.pay_none_available_suffix")}
-              </p>
-            )}
-          </div>
-        )}
-      </div>
-    </Card>
-  );
+      {data.below_all_minimums ? (
+        <p>{t("web.pay_below_minimum_all")}</p>
+      ) : (
+        <p>
+          {t("web.pay_none_available_prefix")}{" "}
+          <Link to="/account/support" className="text-pine underline transition-colors hover:text-pine-dark">
+            {t("web.pay_none_available_link")}
+          </Link>
+          {t("web.pay_none_available_suffix")}
+        </p>
+      )}
+    </div>
+  ));
 }

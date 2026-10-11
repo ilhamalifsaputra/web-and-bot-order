@@ -1,28 +1,29 @@
-import { useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
-import { PageLayout } from "../components/shared/PageLayout";
-import { PageHeader } from "../components/shared/PageHeader";
-import { ButtonLabelInput } from "../components/shared/ButtonLabelInput";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
-  SelectTrigger,
-  SelectValue,
   SelectContent,
-  SelectItem,
   SelectGroup,
+  SelectItem,
   SelectLabel,
   SelectSeparator,
+  SelectTrigger,
+  SelectValue,
 } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useId, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { CATALOG_QUERY_KEY, useCatalog } from "../api/catalog";
 import { apiPost } from "../api/client";
-import { useCatalog, CATALOG_QUERY_KEY } from "../api/catalog";
+import { ButtonLabelInput } from "../components/shared/ButtonLabelInput";
+import { PageHeader } from "../components/shared/PageHeader";
+import { PageLayout } from "../components/shared/PageLayout";
 
 const NEW_CATEGORY_SENTINEL = "__new__";
 
 export function ProductCreatePage() {
+  const fieldId = useId();
   const navigate = useNavigate();
   const qc = useQueryClient();
   const { data } = useCatalog();
@@ -96,10 +97,10 @@ export function ProductCreatePage() {
       />
 
       <div className="max-w-lg flex flex-col gap-4">
-        <div>
-          <label className="text-sm font-medium text-ink">
+        <fieldset>
+          <legend className="text-sm font-medium text-ink">
             Category <span className="text-rust">*</span>
-          </label>
+          </legend>
           {creatingCategory ? (
             <div className="mt-1 flex flex-col gap-2">
               <ButtonLabelInput
@@ -172,13 +173,13 @@ export function ProductCreatePage() {
               </SelectContent>
             </Select>
           )}
-        </div>
+        </fieldset>
 
         <div>
-          <label className="text-sm font-medium text-ink">
+          <label htmlFor={`${fieldId}-name-1`} className="text-sm font-medium text-ink">
             Name <span className="text-rust">*</span>
           </label>
-          <ButtonLabelInput
+          <ButtonLabelInput id={`${fieldId}-name-1`}
             kind="productList"
             className="mt-1"
             placeholder="e.g. CapCut Pro"
@@ -188,8 +189,8 @@ export function ProductCreatePage() {
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-ink">Emoji</label>
-          <Input
+          <label htmlFor={`${fieldId}-emoji-2`} className="block text-sm font-medium text-ink">Emoji</label>
+          <Input id={`${fieldId}-emoji-2`}
             className="mt-1 w-24"
             placeholder="e.g. 🎬"
             value={emoji}
@@ -203,8 +204,8 @@ export function ProductCreatePage() {
                 bot's catalog navigation and denomination labeling for game
                 top-up products (e.g. Mobile Legends' Diamonds variant). */}
             <div>
-              <label className="block text-sm font-medium text-ink">Game Variant</label>
-              <ButtonLabelInput
+              <label htmlFor={`${fieldId}-game-variant-3`} className="block text-sm font-medium text-ink">Game Variant</label>
+              <ButtonLabelInput id={`${fieldId}-game-variant-3`}
                 kind="gameVariant"
                 emoji={gameVariantEmoji.trim() !== ""}
                 className="mt-1"
@@ -215,8 +216,8 @@ export function ProductCreatePage() {
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-ink">Game Variant Emoji</label>
-              <Input
+              <label htmlFor={`${fieldId}-game-variant-emoji-4`} className="block text-sm font-medium text-ink">Game Variant Emoji</label>
+              <Input id={`${fieldId}-game-variant-emoji-4`}
                 className="mt-1 w-24"
                 placeholder="e.g. 💎"
                 value={gameVariantEmoji}
@@ -225,8 +226,8 @@ export function ProductCreatePage() {
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-ink">Game Region</label>
-              <ButtonLabelInput
+              <label htmlFor={`${fieldId}-game-region-5`} className="block text-sm font-medium text-ink">Game Region</label>
+              <ButtonLabelInput id={`${fieldId}-game-region-5`}
                 kind="gameRegion"
                 className="mt-1"
                 placeholder="e.g. Global"
@@ -238,8 +239,8 @@ export function ProductCreatePage() {
         )}
 
         <div>
-          <label className="text-sm font-medium text-ink">Description</label>
-          <Textarea
+          <label htmlFor={`${fieldId}-description-6`} className="text-sm font-medium text-ink">Description</label>
+          <Textarea id={`${fieldId}-description-6`}
             className="mt-1"
             rows={3}
             placeholder="Short description shown on the storefront."
@@ -253,8 +254,8 @@ export function ProductCreatePage() {
             creation is what stops products going live with nothing but a
             one-line description. */}
         <div>
-          <label className="text-sm font-medium text-ink">What the buyer gets</label>
-          <Textarea
+          <label htmlFor={`${fieldId}-what-the-buyer-gets-7`} className="text-sm font-medium text-ink">What the buyer gets</label>
+          <Textarea id={`${fieldId}-what-the-buyer-gets-7`}
             className="mt-1"
             rows={3}
             placeholder="Private account, 1 device&#10;Can change the profile name&#10;Active for 30 days"
@@ -264,8 +265,8 @@ export function ProductCreatePage() {
         </div>
 
         <div>
-          <label className="text-sm font-medium text-ink">Terms of use</label>
-          <Textarea
+          <label htmlFor={`${fieldId}-terms-of-use-8`} className="text-sm font-medium text-ink">Terms of use</label>
+          <Textarea id={`${fieldId}-terms-of-use-8`}
             className="mt-1"
             rows={2}
             placeholder="Don't change the account email or password — it voids the warranty."
@@ -275,8 +276,8 @@ export function ProductCreatePage() {
         </div>
 
         <div>
-          <label className="text-sm font-medium text-ink">Warranty</label>
-          <Textarea
+          <label htmlFor={`${fieldId}-warranty-9`} className="text-sm font-medium text-ink">Warranty</label>
+          <Textarea id={`${fieldId}-warranty-9`}
             className="mt-1"
             rows={2}
             placeholder="Full 30-day warranty, claimed through a support ticket."

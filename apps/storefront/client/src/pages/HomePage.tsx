@@ -1,3 +1,5 @@
+import * as m from "motion/react-m";
+import { keyedContent } from "../lib/keyedContent";
 /**
  * TSX port of apps/storefront/views/home.njk (design.md §4.8) — hero, features,
  * categories, featured products, "Our Promise", real
@@ -8,7 +10,6 @@
  * section (design.md §4.8, "not customer-count promises"), and the API no
  * longer computes any home-page figures.
  */
-import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
   BadgeCheck,
@@ -37,26 +38,27 @@ import {
   Wrench,
   Zap,
 } from "lucide-react";
+import { useReducedMotion } from "motion/react";
+import { Link } from "react-router-dom";
 import { apiGet } from "../api/client";
-import { motion, useReducedMotion } from "motion/react";
-import { hoverLift, staggerContainer, staggerItem } from "../lib/motion";
 import type { HomePageData } from "../api/types";
 import { useShopContext } from "../components/Layout";
-import { t } from "../lib/i18n";
-import { useSuggestedProducts } from "../lib/useSuggestedProducts";
+import EmptyState from "../components/shop/EmptyState";
+import Price from "../components/shop/Price";
+import ProductCard from "../components/shop/ProductCard";
+import ProductCardSkeleton from "../components/shop/ProductCardSkeleton";
+import Skeleton from "../components/shop/Skeleton";
+import Stars from "../components/shop/Stars";
+import StepTimeline from "../components/shop/StepTimeline";
+import TelegramIcon from "../components/shop/TelegramIcon";
+import WhatsAppIcon from "../components/shop/WhatsAppIcon";
 import Accordion, { type AccordionItem } from "../components/ui/Accordion";
 import Alert from "../components/ui/Alert";
 import Card from "../components/ui/Card";
 import TrustBadgeRow from "../components/ui/TrustBadgeRow";
-import ProductCard from "../components/shop/ProductCard";
-import ProductCardSkeleton from "../components/shop/ProductCardSkeleton";
-import Skeleton from "../components/shop/Skeleton";
-import StepTimeline from "../components/shop/StepTimeline";
-import Stars from "../components/shop/Stars";
-import EmptyState from "../components/shop/EmptyState";
-import Price from "../components/shop/Price";
-import WhatsAppIcon from "../components/shop/WhatsAppIcon";
-import TelegramIcon from "../components/shop/TelegramIcon";
+import { t } from "../lib/i18n";
+import { hoverLift, staggerContainer, staggerItem } from "../lib/motion";
+import { useSuggestedProducts } from "../lib/useSuggestedProducts";
 import "./HomePage.css";
 
 const FAQ_NUMBERS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
@@ -171,131 +173,7 @@ export default function HomePage() {
   return (
     <>
       {/* 1. Hero (design.md §4.8, mockup perbaikan) */}
-      <section className="relative overflow-hidden rounded-3xl bg-ink px-6 py-12 sm:px-10 sm:py-16 mb-12">
-        {hero_image ? (
-          <>
-            <img
-              src={hero_image}
-              alt=""
-              aria-hidden="true"
-              loading="eager"
-              decoding="async"
-              width={1600}
-              height={600}
-              className="absolute inset-0 h-full w-full object-cover"
-            />
-            <div className="absolute inset-0 bg-linear-to-br from-ink/95 via-ink/90 to-pine-dark/80"></div>
-          </>
-        ) : (
-          <div className="absolute inset-0 bg-linear-to-br from-ink via-ink to-pine-dark"></div>
-        )}
-        {/* Layered depth: two low-opacity glows -> reused .dot-grid texture -> soft vignette.
-            All decorative, aria-hidden, and never intercept clicks. */}
-        <div aria-hidden="true" className="pointer-events-none absolute -right-16 -top-16 h-64 w-64 rounded-full bg-pine/20 blur-3xl"></div>
-        <div aria-hidden="true" className="pointer-events-none absolute -left-10 bottom-0 h-56 w-56 rounded-full bg-grass/10 blur-3xl"></div>
-        <div aria-hidden="true" className="dot-grid pointer-events-none absolute inset-0"></div>
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute inset-0 opacity-20 bg-[radial-gradient(ellipse_at_center,transparent_45%,var(--color-ink)_100%)]"
-        ></div>
-        <div className={`relative max-w-2xl ${heroProducts.length >= 2 ? "lg:max-w-xl" : ""}`}>
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-medium uppercase tracking-wide text-grass">
-            <ShieldCheck className="h-3.5 w-3.5" />
-            {t("web.hero_badge")}
-          </span>
-          <h1 className="mt-5 text-4xl font-display font-bold leading-tight text-white sm:text-5xl">
-            {t("web.hero_title")}
-          </h1>
-          <p className="mt-4 text-lg text-ink-faint">{t("web.hero_sub")}</p>
-          <div className="mt-7 flex flex-wrap gap-3">
-            {/* Dark-surface exception (foundations.md §7): pine-fill primary
-                works on bg-ink; the outline CTA keeps a white border/hover
-                rather than .btn-ghost (ink-soft-on-sand is unreadable here).
-                Both keep the white .focus-on-dark ring. */}
-            <motion.a href="#products" {...hoverLift} className="btn btn-primary focus-on-dark">
-              <ShoppingBag className="h-5 w-5" />
-              {t("web.hero_cta")}
-            </motion.a>
-            <a
-              href="#contact"
-              className="btn border border-white/20 text-white hover:bg-white/15 focus-on-dark"
-            >
-              <MessageCircle className="h-5 w-5" />
-              {t("web.hero_cta2")}
-            </a>
-          </div>
-          {/* honest trust chips: capabilities/guarantees, no customer-count claims */}
-          <TrustBadgeRow
-            className="mt-8 border-t border-white/10 pt-5 text-ink-faint"
-            items={[
-              { icon: <Zap className="h-4 w-4 text-grass" />, label: t("web.trust_instant") },
-              { icon: <Shield className="h-4 w-4 text-grass" />, label: t("web.payment_at_checkout") },
-              { icon: <CheckCircle className="h-4 w-4 text-pine-tint" />, label: t("web.feat_warranty") },
-              { icon: <Headphones className="h-4 w-4 text-pine-tint" />, label: t("web.badge_support") },
-            ]}
-          />
-        </div>
-
-        {heroProducts.length > 0 && (
-          <div
-            data-testid="hero-product-preview"
-            className="pointer-events-none absolute inset-y-0 right-0 hidden w-[36%] lg:block"
-          >
-            <motion.div
-              className="relative h-full"
-              variants={reducedMotion ? undefined : staggerContainer}
-              initial={reducedMotion ? false : "initial"}
-              animate="animate"
-            >
-              {heroProducts.map((p, i) => (
-                <motion.div
-                  key={p.slug}
-                  variants={reducedMotion ? undefined : staggerItem}
-                  {...hoverLift}
-                  className="pointer-events-auto absolute w-48 rounded-2xl border border-white/15 bg-white/10 p-3 shadow-lift backdrop-blur-md"
-                  style={{ top: HERO_CARD_STYLES[i]!.top, right: HERO_CARD_STYLES[i]!.right, rotate: HERO_CARD_STYLES[i]!.rotate }}
-                >
-                  <Link to={`/p/${p.slug}`} className="focus-on-dark flex items-center gap-3">
-                    <span className="grid h-11 w-11 shrink-0 place-items-center overflow-hidden rounded-xl bg-white/10">
-                      {p.image ? (
-                        <picture className="block h-full w-full">
-                          {/* block + full size: <picture> is inline by default,
-                              which would drop the h-full/w-full the <img> relies
-                              on in this fixed 44px well (see ProductCard). */}
-                          {p.image_srcset && (
-                            <source type="image/webp" srcSet={p.image_srcset} sizes="44px" />
-                          )}
-                          <img
-                            src={p.image}
-                            alt=""
-                            aria-hidden="true"
-                            // Eager on purpose: these three cards sit beside the
-                            // hero heading inside the fold on desktop (lg:block),
-                            // so lazy-loading them only delays what's already
-                            // visible on first paint instead of deferring
-                            // anything actually offscreen.
-                            loading="eager"
-                            decoding="async"
-                            width={44}
-                            height={44}
-                            className="h-full w-full object-cover"
-                          />
-                        </picture>
-                      ) : (
-                        <Package className="h-5 w-5 text-white/70" aria-hidden="true" />
-                      )}
-                    </span>
-                    <span className="min-w-0">
-                      <span className="block truncate text-sm font-semibold text-white">{p.name}</span>
-                      <Price value={p.from_price} fx={fx} size="text-xs" tone="light" />
-                    </span>
-                  </Link>
-                </motion.div>
-              ))}
-            </motion.div>
-          </div>
-        )}
-      </section>
+      <HomeHero hero_image={hero_image} heroProducts={heroProducts} reducedMotion={reducedMotion} fx={fx} />
 
       {/* 2. Fitur / keunggulan */}
       <section className="mt-16">
@@ -391,41 +269,7 @@ export default function HomePage() {
       )}
 
       {/* 4. Produk unggulan */}
-      <section id="products" className="mt-16">
-        <div className="flex items-end justify-between">
-          <div>
-            <p className="text-sm font-semibold uppercase tracking-wide text-pine">{t("web.featured_kicker")}</p>
-            <h2 className="mt-1 font-display text-2xl font-bold text-ink">{t("web.new_arrivals")}</h2>
-          </div>
-          {categories.length > 0 && (
-            <a href="#categories" className="inline-flex items-center gap-1 group text-sm font-medium text-pine hover:text-pine-dark">
-              {t("web.view_by_category")} <ChevronRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5" />
-            </a>
-          )}
-        </div>
-
-        {products.length > 0 ? (
-          // STO-018: a single product in a 3-column grid leaves two-thirds of
-          // the row empty, reading as broken rather than a deliberate
-          // one-item shelf — clamp to one column with a capped width instead
-          // of stretching an isolated card across the full row.
-          <div className={`mt-5 grid gap-5 ${products.length === 1 ? "max-w-sm" : "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3"}`}>
-            {products.map((p) => (
-              <ProductCard key={p.slug} p={p} fx={fx} lowThreshold={low_threshold} />
-            ))}
-          </div>
-        ) : (
-          <div className="mt-5">
-            <EmptyState
-              icon={PackageSearch}
-              title={t("web.catalog_empty")}
-              description={t("web.catalog_empty_desc")}
-              action={{ label: t("web.nav_categories"), to: "/categories" }}
-              suggestions={suggested ? { products: suggested.products, fx, lowThreshold: suggested.low_threshold } : undefined}
-            />
-          </div>
-        )}
-      </section>
+      <Home4ProdukUnggulan categories={categories} products={products} fx={fx} low_threshold={low_threshold} suggested={suggested} />
 
       {/* 5. Our Promise (replaces vanity numbers) */}
       <section className="mt-16 overflow-hidden rounded-3xl bg-pine px-6 py-10 text-white sm:px-10">
@@ -504,8 +348,8 @@ export default function HomePage() {
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {testimonials.map((review, i) => (
-              <Card key={i} className="flex flex-col gap-3">
+            {keyedContent(testimonials).map(({ item: review, key }) => (
+              <Card key={key} className="flex flex-col gap-3">
                 <div className="flex items-start gap-3">
                   <div className="w-10 h-10 rounded-full bg-pine flex items-center justify-center text-white font-display font-bold text-sm shrink-0">
                     {review.initial}
@@ -540,67 +384,252 @@ export default function HomePage() {
       </section>
 
       {/* 8. Kontak */}
-      <section className="mt-16" id="contact">
-        <p className="text-center text-sm font-semibold uppercase tracking-wide text-pine">{t("web.contact_kicker")}</p>
-        <h2 className="mt-1 text-center font-display text-3xl font-bold text-ink">{t("web.contact_title")}</h2>
-        <p className="mt-2 text-center text-ink-soft">{t("web.contact_sub")}</p>
-
-        <div className={`mt-8 grid grid-cols-1 ${contactCols} gap-4 max-w-2xl mx-auto`}>
-          {wa_number && (
-            <a
-              href={`https://wa.me/${wa_number}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="card card-pad group flex flex-col items-center gap-3 text-center transition hover:-translate-y-0.5 hover:shadow-lift"
-            >
-              <div className="grid h-12 w-12 place-items-center rounded-2xl bg-grass-tint">
-                <WhatsAppIcon className="h-6 w-6 text-grass-dark" />
-              </div>
-              <div>
-                <h3 className="font-semibold text-ink">WhatsApp</h3>
-                <p className="mt-1 text-xs text-ink-faint">{t("web.contact_wa_sub")}</p>
-              </div>
-            </a>
-          )}
-
-          {support_telegram_url && (
-            <a
-              href={support_telegram_url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="card card-pad group flex flex-col items-center gap-3 text-center transition hover:-translate-y-0.5 hover:shadow-lift"
-            >
-              <div className="grid h-12 w-12 place-items-center rounded-2xl bg-pine-tint">
-                <TelegramIcon className="h-6 w-6 text-pine" />
-              </div>
-              <div>
-                <h3 className="font-semibold text-ink">Telegram</h3>
-                <p className="mt-1 text-xs text-ink-faint">{t("web.contact_tg_sub")}</p>
-              </div>
-            </a>
-          )}
-
-          <Link
-            to="/account/support"
-            className="card card-pad group flex flex-col items-center gap-3 text-center transition hover:-translate-y-0.5 hover:shadow-lift"
-          >
-            <div className="grid h-12 w-12 place-items-center rounded-2xl bg-pine-tint">
-              <Ticket className="h-6 w-6 text-pine" />
-            </div>
-            <div>
-              <h3 className="font-semibold text-ink">{t("web.contact_ticket")}</h3>
-              <p className="mt-1 text-xs text-ink-faint">{t("web.contact_ticket_sub")}</p>
-            </div>
-          </Link>
-        </div>
-
-        <div className="mt-5 max-w-sm mx-auto">
-          <div className="rounded-2xl bg-pine-tint p-4 flex items-start gap-2.5 text-sm text-ink-soft">
-            <Clock className="h-4 w-4 text-pine shrink-0 mt-0.5" />
-            <p>{t("web.contact_hours")}</p>
-          </div>
-        </div>
-      </section>
+      <HomeWhatsApp contactCols={contactCols} wa_number={wa_number} support_telegram_url={support_telegram_url} />
     </>
   );
+}
+
+function HomeHero({ hero_image, heroProducts, reducedMotion, fx }: {
+  hero_image: string | null;
+  heroProducts: import("../components/shop/ProductCard").ProductCardData[];
+  reducedMotion: boolean | null;
+  fx: string | null | undefined;
+}) {
+  return (<section className="relative overflow-hidden rounded-3xl bg-ink px-6 py-12 sm:px-10 sm:py-16 mb-12">
+    {hero_image ? (
+      <>
+        <img
+          src={hero_image}
+          alt=""
+          aria-hidden="true"
+          loading="eager"
+          decoding="async"
+          width={1600}
+          height={600}
+          className="absolute inset-0 h-full w-full object-cover"
+        />
+        <div className="absolute inset-0 bg-linear-to-br from-ink/95 via-ink/90 to-pine-dark/80"></div>
+      </>
+    ) : (
+      <div className="absolute inset-0 bg-linear-to-br from-ink via-ink to-pine-dark"></div>
+    )}
+    {/* Layered depth: two low-opacity glows -> reused .dot-grid texture -> soft vignette.
+            All decorative, aria-hidden, and never intercept clicks. */}
+    <div aria-hidden="true" className="pointer-events-none absolute -right-16 -top-16 h-64 w-64 rounded-full bg-pine/20 blur-3xl"></div>
+    <div aria-hidden="true" className="pointer-events-none absolute -left-10 bottom-0 h-56 w-56 rounded-full bg-grass/10 blur-3xl"></div>
+    <div aria-hidden="true" className="dot-grid pointer-events-none absolute inset-0"></div>
+    <div
+      aria-hidden="true"
+      className="pointer-events-none absolute inset-0 opacity-20 bg-[radial-gradient(ellipse_at_center,transparent_45%,var(--color-ink)_100%)]"
+    ></div>
+    <div className={`relative max-w-2xl ${heroProducts.length >= 2 ? "lg:max-w-xl" : ""}`}>
+      <span className="inline-flex items-center gap-1.5 rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-medium uppercase tracking-wide text-grass">
+        <ShieldCheck className="h-3.5 w-3.5" />
+        {t("web.hero_badge")}
+      </span>
+      <h1 className="mt-5 text-4xl font-display font-bold leading-tight text-white sm:text-5xl">
+        {t("web.hero_title")}
+      </h1>
+      <p className="mt-4 text-lg text-ink-faint">{t("web.hero_sub")}</p>
+      <div className="mt-7 flex flex-wrap gap-3">
+        {/* Dark-surface exception (foundations.md §7): pine-fill primary
+                works on bg-ink; the outline CTA keeps a white border/hover
+                rather than .btn-ghost (ink-soft-on-sand is unreadable here).
+                Both keep the white .focus-on-dark ring. */}
+        <m.a href="#products" {...hoverLift} className="btn btn-primary focus-on-dark">
+          <ShoppingBag className="h-5 w-5" />
+          {t("web.hero_cta")}
+        </m.a>
+        <a
+          href="#contact"
+          className="btn border border-white/20 text-white hover:bg-white/15 focus-on-dark"
+        >
+          <MessageCircle className="h-5 w-5" />
+          {t("web.hero_cta2")}
+        </a>
+      </div>
+      {/* honest trust chips: capabilities/guarantees, no customer-count claims */}
+      <TrustBadgeRow
+        className="mt-8 border-t border-white/10 pt-5 text-ink-faint"
+        items={[
+          { icon: <Zap className="h-4 w-4 text-grass" />, label: t("web.trust_instant") },
+          { icon: <Shield className="h-4 w-4 text-grass" />, label: t("web.payment_at_checkout") },
+          { icon: <CheckCircle className="h-4 w-4 text-pine-tint" />, label: t("web.feat_warranty") },
+          { icon: <Headphones className="h-4 w-4 text-pine-tint" />, label: t("web.badge_support") },
+        ]}
+      />
+    </div>
+
+    {heroProducts.length > 0 && (
+      <div
+        data-testid="hero-product-preview"
+        className="pointer-events-none absolute inset-y-0 right-0 hidden w-[36%] lg:block"
+      >
+        <m.div
+          className="relative h-full"
+          variants={reducedMotion ? undefined : staggerContainer}
+          initial={reducedMotion ? false : "initial"}
+          animate="animate"
+        >
+          {heroProducts.map((p, i) => (
+            <m.div
+              key={p.slug}
+              variants={reducedMotion ? undefined : staggerItem}
+              {...hoverLift}
+              className="pointer-events-auto absolute w-48 rounded-2xl border border-white/15 bg-white/10 p-3 shadow-lift backdrop-blur-md"
+              style={{ top: HERO_CARD_STYLES[i]!.top, right: HERO_CARD_STYLES[i]!.right, rotate: HERO_CARD_STYLES[i]!.rotate }}
+            >
+              <Link to={`/p/${p.slug}`} className="focus-on-dark flex items-center gap-3">
+                <span className="grid h-11 w-11 shrink-0 place-items-center overflow-hidden rounded-xl bg-white/10">
+                  {p.image ? (
+                    <picture className="block h-full w-full">
+                      {/* block + full size: <picture> is inline by default,
+                              which would drop the h-full/w-full the <img> relies
+                              on in this fixed 44px well (see ProductCard). */}
+                      {p.image_srcset && (
+                        <source type="image/webp" srcSet={p.image_srcset} sizes="44px" />
+                      )}
+                      <img
+                        src={p.image}
+                        alt=""
+                        aria-hidden="true"
+                        // Eager on purpose: these three cards sit beside the
+                        // hero heading inside the fold on desktop (lg:block),
+                        // so lazy-loading them only delays what's already
+                        // visible on first paint instead of deferring
+                        // anything actually offscreen.
+                        loading="eager"
+                        decoding="async"
+                        width={44}
+                        height={44}
+                        className="h-full w-full object-cover"
+                      />
+                    </picture>
+                  ) : (
+                    <Package className="h-5 w-5 text-white/70" aria-hidden="true" />
+                  )}
+                </span>
+                <span className="min-w-0">
+                  <span className="block truncate text-sm font-semibold text-white">{p.name}</span>
+                  <Price value={p.from_price} fx={fx} size="text-xs" tone="light" />
+                </span>
+              </Link>
+            </m.div>
+          ))}
+        </m.div>
+      </div>
+    )}
+  </section>);
+}
+
+function Home4ProdukUnggulan({ categories, products, fx, low_threshold, suggested }: {
+  categories: import("../api/types").Category[];
+  products: import("../components/shop/ProductCard").ProductCardData[];
+  fx: string | null | undefined;
+  low_threshold: number;
+  suggested: NoInfer<import("../api/types").ShelfPageData> | undefined;
+}) {
+  return (<section id="products" className="mt-16">
+    <div className="flex items-end justify-between">
+      <div>
+        <p className="text-sm font-semibold uppercase tracking-wide text-pine">{t("web.featured_kicker")}</p>
+        <h2 className="mt-1 font-display text-2xl font-bold text-ink">{t("web.new_arrivals")}</h2>
+      </div>
+      {categories.length > 0 && (
+        <a href="#categories" className="inline-flex items-center gap-1 group text-sm font-medium text-pine hover:text-pine-dark">
+          {t("web.view_by_category")} <ChevronRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5" />
+        </a>
+      )}
+    </div>
+
+    {products.length > 0 ? (
+      // STO-018: a single product in a 3-column grid leaves two-thirds of
+      // the row empty, reading as broken rather than a deliberate
+      // one-item shelf — clamp to one column with a capped width instead
+      // of stretching an isolated card across the full row.
+      <div className={`mt-5 grid gap-5 ${products.length === 1 ? "max-w-sm" : "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3"}`}>
+        {products.map((p) => (
+          <ProductCard key={p.slug} p={p} fx={fx} lowThreshold={low_threshold} />
+        ))}
+      </div>
+    ) : (
+      <div className="mt-5">
+        <EmptyState
+          icon={PackageSearch}
+          title={t("web.catalog_empty")}
+          description={t("web.catalog_empty_desc")}
+          action={{ label: t("web.nav_categories"), to: "/categories" }}
+          suggestions={suggested ? { products: suggested.products, fx, lowThreshold: suggested.low_threshold } : undefined}
+        />
+      </div>
+    )}
+  </section>);
+}
+
+function HomeWhatsApp({ contactCols, wa_number, support_telegram_url }: {
+  contactCols: "" | "sm:grid-cols-3" | "sm:grid-cols-2";
+  wa_number: string;
+  support_telegram_url: string | null;
+}) {
+  return (<section className="mt-16" id="contact">
+    <p className="text-center text-sm font-semibold uppercase tracking-wide text-pine">{t("web.contact_kicker")}</p>
+    <h2 className="mt-1 text-center font-display text-3xl font-bold text-ink">{t("web.contact_title")}</h2>
+    <p className="mt-2 text-center text-ink-soft">{t("web.contact_sub")}</p>
+
+    <div className={`mt-8 grid grid-cols-1 ${contactCols} gap-4 max-w-2xl mx-auto`}>
+      {wa_number && (
+        <a
+          href={`https://wa.me/${wa_number}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="card card-pad group flex flex-col items-center gap-3 text-center transition hover:-translate-y-0.5 hover:shadow-lift"
+        >
+          <div className="grid h-12 w-12 place-items-center rounded-2xl bg-grass-tint">
+            <WhatsAppIcon className="h-6 w-6 text-grass-dark" />
+          </div>
+          <div>
+            <h3 className="font-semibold text-ink">WhatsApp</h3>
+            <p className="mt-1 text-xs text-ink-faint">{t("web.contact_wa_sub")}</p>
+          </div>
+        </a>
+      )}
+
+      {support_telegram_url && (
+        <a
+          href={support_telegram_url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="card card-pad group flex flex-col items-center gap-3 text-center transition hover:-translate-y-0.5 hover:shadow-lift"
+        >
+          <div className="grid h-12 w-12 place-items-center rounded-2xl bg-pine-tint">
+            <TelegramIcon className="h-6 w-6 text-pine" />
+          </div>
+          <div>
+            <h3 className="font-semibold text-ink">Telegram</h3>
+            <p className="mt-1 text-xs text-ink-faint">{t("web.contact_tg_sub")}</p>
+          </div>
+        </a>
+      )}
+
+      <Link
+        to="/account/support"
+        className="card card-pad group flex flex-col items-center gap-3 text-center transition hover:-translate-y-0.5 hover:shadow-lift"
+      >
+        <div className="grid h-12 w-12 place-items-center rounded-2xl bg-pine-tint">
+          <Ticket className="h-6 w-6 text-pine" />
+        </div>
+        <div>
+          <h3 className="font-semibold text-ink">{t("web.contact_ticket")}</h3>
+          <p className="mt-1 text-xs text-ink-faint">{t("web.contact_ticket_sub")}</p>
+        </div>
+      </Link>
+    </div>
+
+    <div className="mt-5 max-w-sm mx-auto">
+      <div className="rounded-2xl bg-pine-tint p-4 flex items-start gap-2.5 text-sm text-ink-soft">
+        <Clock className="h-4 w-4 text-pine shrink-0 mt-0.5" />
+        <p>{t("web.contact_hours")}</p>
+      </div>
+    </div>
+  </section>);
 }

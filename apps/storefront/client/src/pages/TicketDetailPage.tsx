@@ -6,28 +6,28 @@
  * (unlike OrderDetailPage's item table, nothing here needs a structurally
  * different mobile markup, just a narrower column).
  */
-import { useEffect, useMemo, useState } from "react";
-import { Link, useParams, useLocation } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { CheckCircle2, Clock, RotateCcw } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Link, useLocation, useParams } from "react-router-dom";
 import { apiGet, apiPost, apiPostFormWithProgress } from "../api/client";
 import type { SupportData, TicketDetailData } from "../api/types";
-import { t } from "../lib/i18n";
-import { tError } from "../lib/errors";
 import { useShopContext } from "../components/Layout";
-import { buildTicketTimeline } from "../lib/ticketTimeline";
-import { loadTicketDraft, clearTicketDraft } from "../lib/ticketDraft";
+import EmptyState from "../components/shop/EmptyState";
+import Skeleton from "../components/shop/Skeleton";
+import Spinner from "../components/shop/Spinner";
+import TicketComposer from "../components/shop/TicketComposer";
+import TicketMessageThread from "../components/shop/TicketMessageThread";
+import TicketSidebar from "../components/shop/TicketSidebar";
+import TicketStatusBadge from "../components/shop/TicketStatusBadge";
+import Toast from "../components/shop/Toast";
 import Button from "../components/ui/Button";
 import Card from "../components/ui/Card";
-import TicketStatusBadge from "../components/shop/TicketStatusBadge";
-import TicketMessageThread from "../components/shop/TicketMessageThread";
-import TicketComposer from "../components/shop/TicketComposer";
-import TicketSidebar from "../components/shop/TicketSidebar";
-import EmptyState from "../components/shop/EmptyState";
+import { tError } from "../lib/errors";
+import { t } from "../lib/i18n";
+import { clearTicketDraft, loadTicketDraft } from "../lib/ticketDraft";
+import { buildTicketTimeline } from "../lib/ticketTimeline";
 import ErrorPage from "./ErrorPage";
-import Spinner from "../components/shop/Spinner";
-import Skeleton from "../components/shop/Skeleton";
-import Toast from "../components/shop/Toast";
 
 const QUICK_REPLY_TEMPLATES: Array<{ key: string; labelKey: string; templateKey: string }> = [
   { key: "still_not_working", labelKey: "web.ticket_quick_still_not_working", templateKey: "web.ticket_template_still_not_working" },
@@ -177,66 +177,7 @@ export default function TicketDetailPage() {
       </div>
 
       <div className="grid gap-5 lg:grid-cols-[1fr_320px]">
-        <div>
-          <Card className="mb-4">
-            <TicketMessageThread entries={timeline} />
-            {!hasSupportReplied && (
-              <div className="mt-4">
-                <EmptyState icon={Clock} title={t("web.ticket_waiting_title")} description={t("web.ticket_waiting_desc")} />
-              </div>
-            )}
-          </Card>
-
-          {ticket.closed ? (
-            <Card className="flex items-center justify-between gap-3 flex-wrap bg-sand">
-              <div className="flex items-center gap-2 text-sm text-ink-soft">
-                <CheckCircle2 className="w-4 h-4 text-grass" />
-                {ticket.reopenable ? t("web.ticket_closed_reopenable") : t("web.ticket_closed_expired")}
-              </div>
-              {ticket.reopenable && (
-                <Button
-                  variant="soft"
-                  size="sm"
-                  disabled={reopenMutation.isPending}
-                  onClick={() => reopenMutation.mutate()}
-                >
-                  {reopenMutation.isPending && <Spinner />}
-                  <RotateCcw className="w-3.5 h-3.5" /> {t("web.ticket_reopen_btn")}
-                </Button>
-              )}
-            </Card>
-          ) : (
-            <>
-              <div className="mt-4 flex flex-wrap gap-2">
-                {hasSupportReplied && (
-                  <Button
-                    variant="soft"
-                    size="sm"
-                    disabled={closeMutation.isPending}
-                    onClick={() => closeMutation.mutate()}
-                  >
-                    <CheckCircle2 className="w-3.5 h-3.5" /> {t("web.ticket_quick_issue_solved")}
-                  </Button>
-                )}
-                {QUICK_REPLY_TEMPLATES.map((qr) => (
-                  <Button key={qr.key} variant="soft" size="sm" onClick={() => applyTemplate(qr.templateKey)}>
-                    {t(qr.labelKey)}
-                  </Button>
-                ))}
-              </div>
-              <TicketComposer
-                ticketId={ticketId}
-                message={message}
-                onMessageChange={setMessage}
-                files={files}
-                onFilesChange={setFiles}
-                onSubmit={submitReply}
-                pending={replyMutation.isPending}
-                uploadProgress={uploadProgress}
-              />
-            </>
-          )}
-        </div>
+        <TicketConversationPanel timeline={timeline} hasSupportReplied={hasSupportReplied} ticket={ticket} reopenMutation={reopenMutation} closeMutation={closeMutation} applyTemplate={applyTemplate} ticketId={ticketId} message={message} setMessage={setMessage} files={files} setFiles={setFiles} submitReply={submitReply} replyMutation={replyMutation} uploadProgress={uploadProgress} />
 
         <TicketSidebar
           order={order}
@@ -247,4 +188,82 @@ export default function TicketDetailPage() {
       </div>
     </>
   );
+}
+
+function TicketConversationPanel({ timeline, hasSupportReplied, ticket, reopenMutation, closeMutation, applyTemplate, ticketId, message, setMessage, files, setFiles, submitReply, replyMutation, uploadProgress }: {
+  timeline: import("../lib/ticketTimeline").TicketTimelineEntry[];
+  hasSupportReplied: boolean;
+  ticket: { id: number; message: string; status: string; created_at_display: string; admin_reply: string | null; replied_at_display: string | null; closed: boolean; closed_at_display: string | null; reopenable: boolean; attachments: string[]; };
+  reopenMutation: import("@tanstack/react-query").UseMutationResult<{ ok: boolean; }, Error, void, unknown>;
+  closeMutation: import("@tanstack/react-query").UseMutationResult<{ ok: boolean; }, Error, void, unknown>;
+  applyTemplate: (templateKey: string) => void;
+  ticketId: number;
+  message: string;
+  setMessage: import("react").Dispatch<import("react").SetStateAction<string>>;
+  files: File[];
+  setFiles: import("react").Dispatch<import("react").SetStateAction<File[]>>;
+  submitReply: () => void;
+  replyMutation: import("@tanstack/react-query").UseMutationResult<{ ok: boolean; }, Error, { message: string; files: File[]; }, unknown>;
+  uploadProgress: number;
+}) {
+  return (<div>
+    <Card className="mb-4">
+      <TicketMessageThread entries={timeline} />
+      {!hasSupportReplied && (
+        <div className="mt-4">
+          <EmptyState icon={Clock} title={t("web.ticket_waiting_title")} description={t("web.ticket_waiting_desc")} />
+        </div>
+      )}
+    </Card>
+
+    {ticket.closed ? (
+      <Card className="flex items-center justify-between gap-3 flex-wrap bg-sand">
+        <div className="flex items-center gap-2 text-sm text-ink-soft">
+          <CheckCircle2 className="w-4 h-4 text-grass" />
+          {ticket.reopenable ? t("web.ticket_closed_reopenable") : t("web.ticket_closed_expired")}
+        </div>
+        {ticket.reopenable && (
+          <Button
+            variant="soft"
+            size="sm"
+            disabled={reopenMutation.isPending}
+            onClick={() => reopenMutation.mutate()}
+          >
+            {reopenMutation.isPending && <Spinner />}
+            <RotateCcw className="w-3.5 h-3.5" /> {t("web.ticket_reopen_btn")}
+          </Button>
+        )}
+      </Card>
+    ) : (
+      <>
+        <div className="mt-4 flex flex-wrap gap-2">
+          {hasSupportReplied && (
+            <Button
+              variant="soft"
+              size="sm"
+              disabled={closeMutation.isPending}
+              onClick={() => closeMutation.mutate()}
+            >
+              <CheckCircle2 className="w-3.5 h-3.5" /> {t("web.ticket_quick_issue_solved")}
+            </Button>
+          )}
+          {QUICK_REPLY_TEMPLATES.map((qr) => (
+            <Button key={qr.key} variant="soft" size="sm" onClick={() => applyTemplate(qr.templateKey)}>
+              {t(qr.labelKey)}
+            </Button>
+          ))}
+        </div>
+        <TicketComposer
+          ticketId={ticketId}
+          message={message}
+          onMessageChange={setMessage}
+          files={files}
+          onFilesChange={setFiles}
+          onSubmit={submitReply}
+          pending={replyMutation.isPending}
+          uploadProgress={uploadProgress}
+        />
+      </>
+    )}
+  </div>);
 }

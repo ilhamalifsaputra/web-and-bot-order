@@ -1,3 +1,4 @@
+import { keyedContent } from "../lib/keyedContent";
 /**
  * TSX port of apps/storefront/views/reviews.njk. The rating field is a plain
  * `<select>` of 5..1 (checked the template — not radios).
@@ -12,25 +13,25 @@
  * select keeps a width cap (`w-24!`) so it doesn't stretch to `.field`'s full
  * width. Rating/comment payload is unchanged.
  */
-import { useEffect, useState, type FormEvent } from "react";
-import { Star } from "lucide-react";
 import { useMutation, useQuery } from "@tanstack/react-query";
+import { Star } from "lucide-react";
+import { useEffect, useState, type FormEvent } from "react";
 import { apiGet, apiPost } from "../api/client";
 import type { AccountReview, PendingReview, ReviewsData } from "../api/types";
 import { useShopContext } from "../components/Layout";
-import { t } from "../lib/i18n";
-import { humanError } from "../lib/errors";
-import { useSuggestedProducts } from "../lib/useSuggestedProducts";
-import Stars from "../components/shop/Stars";
-import Spinner from "../components/shop/Spinner";
-import Skeleton from "../components/shop/Skeleton";
 import EmptyState from "../components/shop/EmptyState";
+import Skeleton from "../components/shop/Skeleton";
+import Spinner from "../components/shop/Spinner";
+import Stars from "../components/shop/Stars";
 import Alert from "../components/ui/Alert";
 import Button from "../components/ui/Button";
 import Card from "../components/ui/Card";
 import FormField from "../components/ui/FormField";
 import Select from "../components/ui/Select";
 import Textarea from "../components/ui/Textarea";
+import { humanError } from "../lib/errors";
+import { t } from "../lib/i18n";
+import { useSuggestedProducts } from "../lib/useSuggestedProducts";
 
 interface ReviewSubmission {
   order_id: number;
@@ -177,8 +178,8 @@ export default function ReviewsPage() {
       <section>
         {data.reviews.length > 0 ? (
           <div className="grid sm:grid-cols-2 gap-4 items-start">
-            {data.reviews.map((r, idx) => (
-              <ReviewCard key={idx} review={r} />
+            {keyedContent(data.reviews).map(({ item: r, key }) => (
+              <ReviewCard key={key} review={r} />
             ))}
           </div>
         ) : (

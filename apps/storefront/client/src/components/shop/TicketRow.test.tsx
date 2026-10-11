@@ -1,9 +1,10 @@
 import "@testing-library/jest-dom";
-import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { TicketTableRow, TicketCard, subjectOf } from "./TicketRow";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SupportTicketSummary } from "../../api/types";
+import { TicketCard, TicketTableRow } from "./TicketRow";
+import { subjectOf } from "./TicketRow.helpers";
 
 const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
 

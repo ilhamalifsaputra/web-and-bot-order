@@ -23,29 +23,29 @@
  * the destination and the "exactly one" property are unchanged, only the
  * element type. See deviations.md §13-checkout.
  */
-import { useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronRight, Package, RefreshCw, ShoppingBag, Trash2 } from "lucide-react";
-import { apiGet, apiPost } from "../api/client";
+import { useEffect, useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
 import { canonicalPurchaseName } from "../api/canonical";
+import { apiGet, apiPost } from "../api/client";
 import type { CartLineView, CartPageData } from "../api/types";
 import { useShopContext } from "../components/Layout";
-import { t } from "../lib/i18n";
-import { formatPriceFor, formatUsdt } from "../lib/format";
-import { useIsWideDesktop } from "../lib/useMediaQuery";
-import { useSuggestedProducts } from "../lib/useSuggestedProducts";
-import FlashBadge, { FlashWasPrice } from "../components/shop/FlashBadge";
 import EmptyState from "../components/shop/EmptyState";
+import FlashBadge, { FlashWasPrice } from "../components/shop/FlashBadge";
 import Price from "../components/shop/Price";
 import Skeleton from "../components/shop/Skeleton";
-import Stepper from "../components/shop/Stepper";
 import Spinner from "../components/shop/Spinner";
+import Stepper from "../components/shop/Stepper";
 import StickyPurchaseBar from "../components/shop/StickyPurchaseBar";
-import Card from "../components/ui/Card";
 import Button from "../components/ui/Button";
+import Card from "../components/ui/Card";
 import IconButton from "../components/ui/IconButton";
 import Input from "../components/ui/Input";
+import { formatPriceFor, formatUsdt } from "../lib/format";
+import { t } from "../lib/i18n";
+import { useIsWideDesktop } from "../lib/useMediaQuery";
+import { useSuggestedProducts } from "../lib/useSuggestedProducts";
 
 /** Mirrors the input's own min="0" max="99" — the server's clampQty is still
  * the source of truth, this only keeps the field itself sane while typing. */
@@ -61,7 +61,9 @@ interface CartLineProps {
 }
 
 function CartLine({ item, fx, onMutated }: CartLineProps) {
-  const [qty, setQty] = useState(item.qty);
+  const [quantityDraft, setQuantityDraft] = useState<{ base: number; value: number } | null>(null);
+  const qty = quantityDraft?.base === item.qty ? quantityDraft.value : item.qty;
+  const setQty = (value: number) => setQuantityDraft({ base: item.qty, value });
   // Removal is destructive and used to fire on the first tap of a small icon
   // button — exactly the control a thumb hits by accident on a phone. The row
   // asks first instead, in place: an inline two-state control keeps the answer
@@ -250,48 +252,64 @@ export default function CartPage() {
         {cartCount > 0 ? ` (${cartCount})` : ""}
       </h1>
 
-      {items.length > 0 ? (
-        <>
-          {/* The bottom padding reserves the space the mobile checkout bar
+      <CartItemsSection items={items} isDesktop={isDesktop} fx={fx} handleMutated={handleMutated} subtotal={subtotal} ctx={ctx} currency={currency} navigate={navigate} suggested={suggested} />
+    </>
+  );
+}
+
+function CartItemsSection({ items, isDesktop, fx, handleMutated, subtotal, ctx, currency, navigate, suggested }: {
+  items: CartLineView[];
+  isDesktop: boolean;
+  fx: string | null | undefined;
+  handleMutated: (next: CartPageData) => void;
+  subtotal: string;
+  ctx: NoInfer<import("../api/types").ShopContext> | undefined;
+  currency: "USD" | "IDR" | null;
+  navigate: import("react-router-dom").NavigateFunction;
+  suggested: NoInfer<import("../api/types").ShelfPageData> | undefined;
+}) {
+  return (items.length > 0 ? (
+    <>
+      {/* The bottom padding reserves the space the mobile checkout bar
               occupies, so the last line item stays readable instead of sitting
               underneath it. */}
-          <div className={`grid lg:grid-cols-3 gap-6 items-start${isDesktop ? "" : " pb-28"}`}>
-            {/* Lines */}
-            <Card padded={false} className="lg:col-span-2 divide-y divide-line">
-              {items.map((item) => (
-                <CartLine key={item.key} item={item} fx={fx} onMutated={handleMutated} />
-              ))}
-            </Card>
+      <div className={`grid lg:grid-cols-3 gap-6 items-start${isDesktop ? "" : " pb-28"}`}>
+        {/* Lines */}
+        <Card padded={false} className="lg:col-span-2 divide-y divide-line">
+          {items.map((item) => (
+            <CartLine key={item.key} item={item} fx={fx} onMutated={handleMutated} />
+          ))}
+        </Card>
 
-            {/* Summary */}
-            <div className="lg:sticky lg:top-4">
-              <Card>
-                <h2 className="section-title mb-3">{t("web.summary")}</h2>
-                <div className="flex items-center justify-between text-sm py-1.5">
-                  <span className="text-ink-soft">{t("web.subtotal")}</span>
-                  <Price value={subtotal} fx={fx} size="text-sm" />
-                </div>
-                <p className="text-xs text-ink-faint mt-1">{t("web.discounts_at_checkout")}</p>
-                {/* On a phone the checkout call to action lives in the sticky bar
+        {/* Summary */}
+        <div className="lg:sticky lg:top-4">
+          <Card>
+            <h2 className="section-title mb-3">{t("web.summary")}</h2>
+            <div className="flex items-center justify-between text-sm py-1.5">
+              <span className="text-ink-soft">{t("web.subtotal")}</span>
+              <Price value={subtotal} fx={fx} size="text-sm" />
+            </div>
+            <p className="text-xs text-ink-faint mt-1">{t("web.discounts_at_checkout")}</p>
+            {/* On a phone the checkout call to action lives in the sticky bar
                     below, so the card must not repeat it — two identical links to
                     /checkout on one page is noise for anything reading the page
                     sequentially, and the card's copy is the one nobody scrolls to. */}
-                {isDesktop && (
-                  <Link to="/checkout" className="btn btn-primary w-full mt-4">
-                    {t("web.to_checkout")} <ChevronRight className="w-4 h-4" />
-                  </Link>
-                )}
-                {/* STO-008: cart previously offered no way back to browsing —
+            {isDesktop && (
+              <Link to="/checkout" className="btn btn-primary w-full mt-4">
+                {t("web.to_checkout")} <ChevronRight className="w-4 h-4" />
+              </Link>
+            )}
+            {/* STO-008: cart previously offered no way back to browsing —
                     only "Continue to payment". */}
-                <Link to="/" className="btn btn-ghost w-full mt-2">
-                  {t("web.continue_shopping")}
-                </Link>
-                {ctx && !ctx.customer && <p className="text-xs text-ink-faint mt-3">{t("web.login_to_checkout")}</p>}
-              </Card>
-            </div>
-          </div>
+            <Link to="/" className="btn btn-ghost w-full mt-2">
+              {t("web.continue_shopping")}
+            </Link>
+            {ctx && !ctx.customer && <p className="text-xs text-ink-faint mt-3">{t("web.login_to_checkout")}</p>}
+          </Card>
+        </div>
+      </div>
 
-          {/* The summary card stacks below every line item on a phone, which
+      {/* The summary card stacks below every line item on a phone, which
               put the only way to pay an entire cart's worth of scrolling away.
               The shared StickyPurchaseBar (Task 11) keeps the total and the
               call to action in reach at any scroll position, portaled out of
@@ -300,39 +318,37 @@ export default function CartPage() {
               leaves the summary in view. Its CTA navigates programmatically
               (StickyPurchaseBar's action slot is a button, not a Link) — same
               /checkout destination as the desktop link above. */}
-          {!isDesktop && (
-            <StickyPurchaseBar
-              ariaLabel={t("web.purchase_bar")}
-              priceLabel={t("web.subtotal")}
-              price={formatPriceFor(subtotal, currency, fx)}
-              // Same rule as Price.tsx: the "≈ $" hint only applies to the
-              // undecided (null) default — once a currency preference is
-              // set, that IS the one figure shown, above.
-              secondaryChip={
-                currency === null && formatUsdt(subtotal, fx) ? (
-                  <span className="text-xs text-ink-faint">{formatUsdt(subtotal, fx)}</span>
-                ) : undefined
-              }
-              primaryAction={{
-                label: (
-                  <>
-                    {t("web.to_checkout")} <ChevronRight className="w-4 h-4" />
-                  </>
-                ),
-                onClick: () => navigate("/checkout"),
-              }}
-            />
-          )}
-        </>
-      ) : (
-        <EmptyState
-          icon={ShoppingBag}
-          title={t("web.cart_empty")}
-          description={t("web.cart_empty_desc")}
-          action={{ label: t("web.hero_cta"), to: "/products" }}
-          suggestions={suggested ? { products: suggested.products, fx, lowThreshold: suggested.low_threshold } : undefined}
+      {!isDesktop && (
+        <StickyPurchaseBar
+          ariaLabel={t("web.purchase_bar")}
+          priceLabel={t("web.subtotal")}
+          price={formatPriceFor(subtotal, currency, fx)}
+          // Same rule as Price.tsx: the "≈ $" hint only applies to the
+          // undecided (null) default — once a currency preference is
+          // set, that IS the one figure shown, above.
+          secondaryChip={
+            currency === null && formatUsdt(subtotal, fx) ? (
+              <span className="text-xs text-ink-faint">{formatUsdt(subtotal, fx)}</span>
+            ) : undefined
+          }
+          primaryAction={{
+            label: (
+              <>
+                {t("web.to_checkout")} <ChevronRight className="w-4 h-4" />
+              </>
+            ),
+            onClick: () => navigate("/checkout"),
+          }}
         />
       )}
     </>
-  );
+  ) : (
+    <EmptyState
+      icon={ShoppingBag}
+      title={t("web.cart_empty")}
+      description={t("web.cart_empty_desc")}
+      action={{ label: t("web.hero_cta"), to: "/products" }}
+      suggestions={suggested ? { products: suggested.products, fx, lowThreshold: suggested.low_threshold } : undefined}
+    />
+  ));
 }

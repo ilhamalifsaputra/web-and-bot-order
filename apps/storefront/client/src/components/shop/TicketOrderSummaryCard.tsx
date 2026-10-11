@@ -1,3 +1,4 @@
+import { keyedContent } from "../../lib/keyedContent";
 /** The linked order's context card in the ticket sidebar. "Download
  * Credentials"/"View order" both deep-link to OrderDetailPage rather than
  * re-rendering the credential-reveal UI here — that page's existing
@@ -8,11 +9,11 @@
  * into expandable sections" on tablet/mobile) without a dedicated accordion
  * component — `open` by default keeps desktop looking exactly like a normal
  * always-expanded card. */
-import { Copy, ExternalLink, ShieldCheck, ShieldAlert, Clock } from "lucide-react";
+import { Clock, Copy, ExternalLink, ShieldAlert, ShieldCheck } from "lucide-react";
 import { Link } from "react-router-dom";
-import { t } from "../../lib/i18n";
-import { formatOrderAmount } from "../../lib/format";
 import type { TicketOrderSummary } from "../../api/types";
+import { formatOrderAmount } from "../../lib/format";
+import { t } from "../../lib/i18n";
 import Button from "../ui/Button";
 import StatusBadge from "./StatusBadge";
 
@@ -26,8 +27,8 @@ export default function TicketOrderSummaryCard({ order }: { order: TicketOrderSu
         <StatusBadge value={order.status} />
       </div>
       <dl className="mt-3 space-y-1.5 text-sm">
-        {order.items.map((item, idx) => (
-          <div key={idx} className="flex justify-between gap-3">
+        {keyedContent(order.items).map(({ item, key }) => (
+          <div key={key} className="flex justify-between gap-3">
             <dt className="text-ink-soft">
               {item.name}
               {item.duration ? ` · ${item.duration}` : ""}

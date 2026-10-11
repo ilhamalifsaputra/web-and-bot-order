@@ -1,31 +1,31 @@
-import { useMemo, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { toast } from "sonner";
-import { PageLayout } from "../components/shared/PageLayout";
-import { PageHeader } from "../components/shared/PageHeader";
-import { FilterBar } from "../components/shared/FilterBar";
-import { DataTable } from "../components/shared/DataTable";
-import { DateInput } from "../components/shared/DateInput";
-import { EmptyState } from "../components/shared/EmptyState";
-import { Pagination } from "../components/shared/Pagination";
-import { StatusBadge } from "../components/shared/StatusBadge";
-import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import {
   Dialog,
   DialogContent,
-  DialogHeader,
-  DialogTitle,
   DialogDescription,
   DialogFooter,
+  DialogHeader,
+  DialogTitle,
 } from "@/components/ui/dialog";
-import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Landmark, Plus, Trash2, TriangleAlert } from "lucide-react";
+import { useId, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 import { apiPost } from "../api/client";
-import { describeError } from "../lib/errorMessages";
+import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount.helpers";
+import { DataTable } from "../components/shared/DataTable";
+import { DateInput } from "../components/shared/DateInput";
+import { EmptyState } from "../components/shared/EmptyState";
+import { FilterBar } from "../components/shared/FilterBar";
+import { PageHeader } from "../components/shared/PageHeader";
+import { PageLayout } from "../components/shared/PageLayout";
+import { Pagination } from "../components/shared/Pagination";
+import { StatusBadge } from "../components/shared/StatusBadge";
 import { useSettlements, type SettlementRow } from "../hooks/useSettlements";
+import { describeError } from "../lib/errorMessages";
 
 /** The currencies `formatCurrencyDisplay` accepts — the server sends only these
  *  two, and a row in anything else could not have been recorded. */
@@ -88,6 +88,7 @@ const emptyForm = {
  * refusal always comes from the one place that owns the rule.
  */
 export function SettlementsPage() {
+  const fieldId = useId();
   const qc = useQueryClient();
   const [page, setPage] = useState(1);
   const [providerFilter, setProviderFilter] = useState("");
@@ -95,7 +96,7 @@ export function SettlementsPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [form, setForm] = useState(emptyForm);
   const [lines, setLines] = useState<DraftLine[]>([]);
-  const [nextLineKey, setNextLineKey] = useState(1);
+  const nextLineKey = useRef<number>(1);
 
   const { data, isLoading, isError } = useSettlements({
     page,
@@ -154,8 +155,8 @@ export function SettlementsPage() {
     !record.isPending;
 
   function addLine() {
-    setLines((prev) => [...prev, { key: nextLineKey, amount: "", providerTransactionId: "" }]);
-    setNextLineKey((k) => k + 1);
+    const key = nextLineKey.current++;
+    setLines((prev) => [...prev, { key, amount: "", providerTransactionId: "" }]);
   }
 
   function updateLine(key: number, patch: Partial<DraftLine>) {
@@ -252,23 +253,166 @@ export function SettlementsPage() {
         }
       />
 
-      <div className="flex flex-col gap-4">
-        <FilterBar onClear={providerFilter || currencyFilter ? clearFilters : undefined}>
+      <SettlementsProvider providerFilter={providerFilter} currencyFilter={currencyFilter} clearFilters={clearFilters} fieldId={fieldId} setProviderFilter={setProviderFilter} setPage={setPage} data={data} setCurrencyFilter={setCurrencyFilter} isError={isError} unpostedCount={unpostedCount} COLUMNS={COLUMNS} rows={rows} isLoading={isLoading} page={page} />
+
+      <SettlementsRecordAProviderPayout dialogOpen={dialogOpen} setDialogOpen={setDialogOpen} setForm={setForm} setLines={setLines} form={form} data={data} addLine={addLine} lines={lines} fieldId={fieldId} updateLine={updateLine} canSubmit={canSubmit} record={record} />
+    </PageLayout>
+  );
+}
+
+function SettlementsProvider({ providerFilter, currencyFilter, clearFilters, fieldId, setProviderFilter, setPage, data, setCurrencyFilter, isError, unpostedCount, COLUMNS, rows, isLoading, page }: {
+  providerFilter: string;
+  currencyFilter: string;
+  clearFilters: () => void;
+  fieldId: string;
+  setProviderFilter: import("react").Dispatch<import("react").SetStateAction<string>>;
+  setPage: import("react").Dispatch<import("react").SetStateAction<number>>;
+  data: NoInfer<import("../hooks/useSettlements").SettlementsResponse> | undefined;
+  setCurrencyFilter: import("react").Dispatch<import("react").SetStateAction<string>>;
+  isError: boolean;
+  unpostedCount: number;
+  COLUMNS: { key: string; header: string; render: (row: SettlementRow) => import("react").JSX.Element; }[];
+  rows: SettlementRow[];
+  isLoading: boolean;
+  page: number;
+}) {
+  return (<div className="flex flex-col gap-4">
+    <FilterBar onClear={providerFilter || currencyFilter ? clearFilters : undefined}>
+      <div className="flex flex-col gap-1">
+        <label htmlFor={`${fieldId}-provider-1`} className="text-xs text-ink-soft">Provider</label>
+        <Select
+          value={providerFilter || "_all_"}
+          onValueChange={(v) => {
+            setProviderFilter(v === "_all_" ? "" : v);
+            setPage(1);
+          }}
+        >
+          <SelectTrigger id={`${fieldId}-provider-1`} className="w-48" aria-label="Provider">
+            <SelectValue placeholder="All providers" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="_all_">All</SelectItem>
+            {(data?.providers ?? []).map((p) => (
+              <SelectItem key={p} value={p}>
+                {p}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      <div className="flex flex-col gap-1">
+        <label htmlFor={`${fieldId}-currency-2`} className="text-xs text-ink-soft">Currency</label>
+        <Select
+          value={currencyFilter || "_all_"}
+          onValueChange={(v) => {
+            setCurrencyFilter(v === "_all_" ? "" : v);
+            setPage(1);
+          }}
+        >
+          <SelectTrigger id={`${fieldId}-currency-2`} className="w-32" aria-label="Currency">
+            <SelectValue placeholder="All" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="_all_">All</SelectItem>
+            {(data?.currencies ?? ["IDR", "USDT"]).map((c) => (
+              <SelectItem key={c} value={c}>
+                {c}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+    </FilterBar>
+
+    {isError && <p className="text-sm text-rust">Failed to load settlements.</p>}
+
+    {unpostedCount > 0 && (
+      <div className="flex items-start gap-2 rounded-lg border border-rust/40 bg-rust/5 px-3 py-2 text-sm text-ink">
+        <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-rust" />
+        <span>
+          {unpostedCount === 1
+            ? "One batch on this page was recorded but never booked to the ledger, so the shop's cash position is understated by its amount."
+            : `${unpostedCount} batches on this page were recorded but never booked to the ledger, so the shop's cash position is understated by their amounts.`}{" "}
+          This happens when the chart of accounts is missing an account — ask a developer to run
+          the chart-of-accounts setup, then record those batches again.
+        </span>
+      </div>
+    )}
+
+    <Card>
+      <CardContent>
+        <DataTable
+          nested
+          columns={COLUMNS}
+          data={rows}
+          isLoading={isLoading && !data}
+          keyExtractor={(row) => row.id}
+          empty={
+            <EmptyState
+              icon={Landmark}
+              title="No settlements recorded yet"
+              description="Record a provider's payout statement to show that money as received in the shop's books."
+            />
+          }
+        />
+      </CardContent>
+    </Card>
+
+    {data && (
+      <Pagination page={page} pageSize={data.pageSize} total={data.total} onPageChange={setPage} />
+    )}
+  </div>);
+}
+
+function SettlementsRecordAProviderPayout({ dialogOpen, setDialogOpen, setForm, setLines, form, data, addLine, lines, fieldId, updateLine, canSubmit, record }: {
+  dialogOpen: boolean;
+  setDialogOpen: import("react").Dispatch<import("react").SetStateAction<boolean>>;
+  setForm: import("react").Dispatch<import("react").SetStateAction<{ provider: string; batchReference: string; settlementDate: string; currency: string; grossAmount: string; feeAmount: string; netAmount: string; }>>;
+  setLines: import("react").Dispatch<import("react").SetStateAction<DraftLine[]>>;
+  form: { provider: string; batchReference: string; settlementDate: string; currency: string; grossAmount: string; feeAmount: string; netAmount: string; };
+  data: NoInfer<import("../hooks/useSettlements").SettlementsResponse> | undefined;
+  addLine: () => void;
+  lines: DraftLine[];
+  fieldId: string;
+  updateLine: (key: number, patch: Partial<DraftLine>) => void;
+  canSubmit: boolean;
+  record: import("@tanstack/react-query").UseMutationResult<{ ok: boolean; settlementId: number; posted: boolean; }, Error, void, unknown>;
+}) {
+  return (<Dialog
+    open={dialogOpen}
+    onOpenChange={(open) => {
+      setDialogOpen(open);
+      if (!open) {
+        setForm(emptyForm);
+        setLines([]);
+      }
+    }}
+  >
+    <DialogContent className="max-h-[85vh] overflow-y-auto">
+      <DialogHeader>
+        <DialogTitle>Record a provider payout</DialogTitle>
+        <DialogDescription>
+          Copy the three amounts straight off the provider's statement. The collected amount must
+          equal the provider's cut plus what reached the shop's account — if they don't add up,
+          the entry is refused rather than guessed at.
+        </DialogDescription>
+      </DialogHeader>
+
+      <div className="flex flex-col gap-3">
+        <div className="grid grid-cols-2 gap-3">
           <div className="flex flex-col gap-1">
-            <label className="text-xs text-ink-soft">Provider</label>
+            <label className="text-sm font-medium text-ink" htmlFor="settlement-provider">
+              Provider
+            </label>
             <Select
-              value={providerFilter || "_all_"}
-              onValueChange={(v) => {
-                setProviderFilter(v === "_all_" ? "" : v);
-                setPage(1);
-              }}
+              value={form.provider}
+              onValueChange={(v) => setForm((f) => ({ ...f, provider: v }))}
             >
-              <SelectTrigger className="w-48" aria-label="Provider">
-                <SelectValue placeholder="All providers" />
+              <SelectTrigger id="settlement-provider" aria-label="Payout provider">
+                <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="_all_">All</SelectItem>
-                {(data?.providers ?? []).map((p) => (
+                {PROVIDERS.map((p) => (
                   <SelectItem key={p} value={p}>
                     {p}
                   </SelectItem>
@@ -277,19 +421,17 @@ export function SettlementsPage() {
             </Select>
           </div>
           <div className="flex flex-col gap-1">
-            <label className="text-xs text-ink-soft">Currency</label>
+            <label className="text-sm font-medium text-ink" htmlFor="settlement-currency">
+              Currency
+            </label>
             <Select
-              value={currencyFilter || "_all_"}
-              onValueChange={(v) => {
-                setCurrencyFilter(v === "_all_" ? "" : v);
-                setPage(1);
-              }}
+              value={form.currency}
+              onValueChange={(v) => setForm((f) => ({ ...f, currency: v }))}
             >
-              <SelectTrigger className="w-32" aria-label="Currency">
-                <SelectValue placeholder="All" />
+              <SelectTrigger id="settlement-currency" aria-label="Batch currency">
+                <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="_all_">All</SelectItem>
                 {(data?.currencies ?? ["IDR", "USDT"]).map((c) => (
                   <SelectItem key={c} value={c}>
                     {c}
@@ -298,232 +440,127 @@ export function SettlementsPage() {
               </SelectContent>
             </Select>
           </div>
-        </FilterBar>
+        </div>
 
-        {isError && <p className="text-sm text-rust">Failed to load settlements.</p>}
+        <div className="flex flex-col gap-1">
+          <label className="text-sm font-medium text-ink" htmlFor="settlement-date">
+            Date the provider settled it
+          </label>
+          <DateInput
+            id="settlement-date"
+            value={form.settlementDate}
+            onChange={(e) => setForm((f) => ({ ...f, settlementDate: e.target.value }))}
+            aria-label="Settlement date"
+          />
+          <span className="text-xs text-ink-soft">
+            The date on the statement, not today — reports for a period read this date.
+          </span>
+        </div>
 
-        {unpostedCount > 0 && (
-          <div className="flex items-start gap-2 rounded-lg border border-rust/40 bg-rust/5 px-3 py-2 text-sm text-ink">
-            <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-rust" />
-            <span>
-              {unpostedCount === 1
-                ? "One batch on this page was recorded but never booked to the ledger, so the shop's cash position is understated by its amount."
-                : `${unpostedCount} batches on this page were recorded but never booked to the ledger, so the shop's cash position is understated by their amounts.`}{" "}
-              This happens when the chart of accounts is missing an account — ask a developer to run
-              the chart-of-accounts setup, then record those batches again.
-            </span>
-          </div>
-        )}
+        <div className="flex flex-col gap-1">
+          <label className="text-sm font-medium text-ink" htmlFor="settlement-reference">
+            Statement or payout id (optional)
+          </label>
+          <Input
+            id="settlement-reference"
+            value={form.batchReference}
+            onChange={(e) => setForm((f) => ({ ...f, batchReference: e.target.value }))}
+            placeholder="As the provider prints it"
+          />
+        </div>
 
-        <Card>
-          <CardContent>
-            <DataTable
-              nested
-              columns={COLUMNS}
-              data={rows}
-              isLoading={isLoading && !data}
-              keyExtractor={(row) => row.id}
-              empty={
-                <EmptyState
-                  icon={Landmark}
-                  title="No settlements recorded yet"
-                  description="Record a provider's payout statement to show that money as received in the shop's books."
-                />
-              }
+        <div className="grid grid-cols-3 gap-3">
+          <div className="flex flex-col gap-1">
+            <label className="text-sm font-medium text-ink" htmlFor="settlement-gross">
+              Collected
+            </label>
+            <Input
+              id="settlement-gross"
+              inputMode="decimal"
+              value={form.grossAmount}
+              onChange={(e) => setForm((f) => ({ ...f, grossAmount: e.target.value }))}
+              placeholder="0"
             />
-          </CardContent>
-        </Card>
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-sm font-medium text-ink" htmlFor="settlement-fee">
+              Provider's cut
+            </label>
+            <Input
+              id="settlement-fee"
+              inputMode="decimal"
+              value={form.feeAmount}
+              onChange={(e) => setForm((f) => ({ ...f, feeAmount: e.target.value }))}
+              placeholder="0"
+            />
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-sm font-medium text-ink" htmlFor="settlement-net">
+              Received
+            </label>
+            <Input
+              id="settlement-net"
+              inputMode="decimal"
+              value={form.netAmount}
+              onChange={(e) => setForm((f) => ({ ...f, netAmount: e.target.value }))}
+              placeholder="0"
+            />
+          </div>
+        </div>
 
-        {data && (
-          <Pagination page={page} pageSize={data.pageSize} total={data.total} onPageChange={setPage} />
-        )}
+        <div className="flex flex-col gap-2 rounded-lg border border-line p-3">
+          <div className="flex items-center justify-between">
+            <span className="text-sm font-medium text-ink">Statement lines (optional)</span>
+            <Button size="sm" variant="outline" onClick={addLine}>
+              <Plus className="h-4 w-4" />
+              Add line
+            </Button>
+          </div>
+          <span className="text-xs text-ink-soft">
+            Break the batch down line by line if the statement itemises it. A line whose provider
+            transaction id matches a payment in this shop is linked to it; one that matches nothing
+            is still recorded, which is how an unexplained payout gets noticed.
+          </span>
+          {lines.map((line) => (
+            <div key={line.key} className="flex items-end gap-2">
+              <div className="flex flex-1 flex-col gap-1">
+                <label htmlFor={`${fieldId}-amount-3-${line.key}`} className="text-xs text-ink-soft">Amount</label>
+                <Input id={`${fieldId}-amount-3-${line.key}`}
+                  inputMode="decimal"
+                  value={line.amount}
+                  onChange={(e) => updateLine(line.key, { amount: e.target.value })}
+                  aria-label="Statement line amount"
+                />
+              </div>
+              <div className="flex flex-1 flex-col gap-1">
+                <label htmlFor={`${fieldId}-provider-transaction-id-4-${line.key}`} className="text-xs text-ink-soft">Provider transaction id</label>
+                <Input id={`${fieldId}-provider-transaction-id-4-${line.key}`}
+                  value={line.providerTransactionId}
+                  onChange={(e) => updateLine(line.key, { providerTransactionId: e.target.value })}
+                  aria-label="Statement line provider transaction id"
+                />
+              </div>
+              <Button
+                size="icon-sm"
+                variant="ghost"
+                aria-label="Remove this statement line"
+                onClick={() => setLines((prev) => prev.filter((l) => l.key !== line.key))}
+              >
+                <Trash2 className="h-4 w-4" />
+              </Button>
+            </div>
+          ))}
+        </div>
       </div>
 
-      <Dialog
-        open={dialogOpen}
-        onOpenChange={(open) => {
-          setDialogOpen(open);
-          if (!open) {
-            setForm(emptyForm);
-            setLines([]);
-          }
-        }}
-      >
-        <DialogContent className="max-h-[85vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>Record a provider payout</DialogTitle>
-            <DialogDescription>
-              Copy the three amounts straight off the provider's statement. The collected amount must
-              equal the provider's cut plus what reached the shop's account — if they don't add up,
-              the entry is refused rather than guessed at.
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="flex flex-col gap-3">
-            <div className="grid grid-cols-2 gap-3">
-              <div className="flex flex-col gap-1">
-                <label className="text-sm font-medium text-ink" htmlFor="settlement-provider">
-                  Provider
-                </label>
-                <Select
-                  value={form.provider}
-                  onValueChange={(v) => setForm((f) => ({ ...f, provider: v }))}
-                >
-                  <SelectTrigger id="settlement-provider" aria-label="Payout provider">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {PROVIDERS.map((p) => (
-                      <SelectItem key={p} value={p}>
-                        {p}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="flex flex-col gap-1">
-                <label className="text-sm font-medium text-ink" htmlFor="settlement-currency">
-                  Currency
-                </label>
-                <Select
-                  value={form.currency}
-                  onValueChange={(v) => setForm((f) => ({ ...f, currency: v }))}
-                >
-                  <SelectTrigger id="settlement-currency" aria-label="Batch currency">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {(data?.currencies ?? ["IDR", "USDT"]).map((c) => (
-                      <SelectItem key={c} value={c}>
-                        {c}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-
-            <div className="flex flex-col gap-1">
-              <label className="text-sm font-medium text-ink" htmlFor="settlement-date">
-                Date the provider settled it
-              </label>
-              <DateInput
-                id="settlement-date"
-                value={form.settlementDate}
-                onChange={(e) => setForm((f) => ({ ...f, settlementDate: e.target.value }))}
-                aria-label="Settlement date"
-              />
-              <span className="text-xs text-ink-soft">
-                The date on the statement, not today — reports for a period read this date.
-              </span>
-            </div>
-
-            <div className="flex flex-col gap-1">
-              <label className="text-sm font-medium text-ink" htmlFor="settlement-reference">
-                Statement or payout id (optional)
-              </label>
-              <Input
-                id="settlement-reference"
-                value={form.batchReference}
-                onChange={(e) => setForm((f) => ({ ...f, batchReference: e.target.value }))}
-                placeholder="As the provider prints it"
-              />
-            </div>
-
-            <div className="grid grid-cols-3 gap-3">
-              <div className="flex flex-col gap-1">
-                <label className="text-sm font-medium text-ink" htmlFor="settlement-gross">
-                  Collected
-                </label>
-                <Input
-                  id="settlement-gross"
-                  inputMode="decimal"
-                  value={form.grossAmount}
-                  onChange={(e) => setForm((f) => ({ ...f, grossAmount: e.target.value }))}
-                  placeholder="0"
-                />
-              </div>
-              <div className="flex flex-col gap-1">
-                <label className="text-sm font-medium text-ink" htmlFor="settlement-fee">
-                  Provider's cut
-                </label>
-                <Input
-                  id="settlement-fee"
-                  inputMode="decimal"
-                  value={form.feeAmount}
-                  onChange={(e) => setForm((f) => ({ ...f, feeAmount: e.target.value }))}
-                  placeholder="0"
-                />
-              </div>
-              <div className="flex flex-col gap-1">
-                <label className="text-sm font-medium text-ink" htmlFor="settlement-net">
-                  Received
-                </label>
-                <Input
-                  id="settlement-net"
-                  inputMode="decimal"
-                  value={form.netAmount}
-                  onChange={(e) => setForm((f) => ({ ...f, netAmount: e.target.value }))}
-                  placeholder="0"
-                />
-              </div>
-            </div>
-
-            <div className="flex flex-col gap-2 rounded-lg border border-line p-3">
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-medium text-ink">Statement lines (optional)</span>
-                <Button size="sm" variant="outline" onClick={addLine}>
-                  <Plus className="h-4 w-4" />
-                  Add line
-                </Button>
-              </div>
-              <span className="text-xs text-ink-soft">
-                Break the batch down line by line if the statement itemises it. A line whose provider
-                transaction id matches a payment in this shop is linked to it; one that matches nothing
-                is still recorded, which is how an unexplained payout gets noticed.
-              </span>
-              {lines.map((line) => (
-                <div key={line.key} className="flex items-end gap-2">
-                  <div className="flex flex-1 flex-col gap-1">
-                    <label className="text-xs text-ink-soft">Amount</label>
-                    <Input
-                      inputMode="decimal"
-                      value={line.amount}
-                      onChange={(e) => updateLine(line.key, { amount: e.target.value })}
-                      aria-label="Statement line amount"
-                    />
-                  </div>
-                  <div className="flex flex-1 flex-col gap-1">
-                    <label className="text-xs text-ink-soft">Provider transaction id</label>
-                    <Input
-                      value={line.providerTransactionId}
-                      onChange={(e) => updateLine(line.key, { providerTransactionId: e.target.value })}
-                      aria-label="Statement line provider transaction id"
-                    />
-                  </div>
-                  <Button
-                    size="icon-sm"
-                    variant="ghost"
-                    aria-label="Remove this statement line"
-                    onClick={() => setLines((prev) => prev.filter((l) => l.key !== line.key))}
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setDialogOpen(false)}>
-              Cancel
-            </Button>
-            <Button disabled={!canSubmit} onClick={() => record.mutate()}>
-              {record.isPending ? "Recording…" : "Record settlement"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </PageLayout>
-  );
+      <DialogFooter>
+        <Button variant="outline" onClick={() => setDialogOpen(false)}>
+          Cancel
+        </Button>
+        <Button disabled={!canSubmit} onClick={() => record.mutate()}>
+          {record.isPending ? "Recording…" : "Record settlement"}
+        </Button>
+      </DialogFooter>
+    </DialogContent>
+  </Dialog>);
 }

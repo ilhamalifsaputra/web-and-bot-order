@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom";
 import { useState } from "react";
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, waitFor, waitForElementToBeRemoved } from "@testing-library/react";
+import { act, render, screen, waitFor, waitForElementToBeRemoved } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SaveConfirmDialog } from "./SaveConfirmDialog";
 
@@ -26,6 +26,23 @@ function Harness({
 }
 
 describe("SaveConfirmDialog", () => {
+  it("ignores a save that completes after the dialog has been closed and reopened", async () => {
+    let finish!: () => void;
+    const onConfirm = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const onOpenChange = vi.fn();
+    const props = { onConfirm, onOpenChange, title: "Save this setting?" };
+    const view = render(<SaveConfirmDialog {...props} open />);
+    await userEvent.setup().click(screen.getByRole("button", { name: "Save" }));
+
+    view.rerender(<SaveConfirmDialog {...props} open={false} />);
+    view.rerender(<SaveConfirmDialog {...props} open />);
+    await act(async () => { finish(); });
+
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+    expect(screen.queryByText("Saved successfully")).not.toBeInTheDocument();
+    expect(onOpenChange).not.toHaveBeenCalled();
+  });
+
   it("confirm -> saving -> success shows a checkmark and auto-closes", async () => {
     const onConfirm = vi.fn().mockResolvedValue(undefined);
     render(<Harness onConfirm={onConfirm} successMessage="Saved successfully" />);

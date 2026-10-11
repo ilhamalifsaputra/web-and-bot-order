@@ -1,28 +1,28 @@
-import { PricingSummary, type CatalogPricingInfo } from "../components/catalog/PricingSummary";
-import { familyOfGroup } from "../lib/catalogFamily";
-import { ConfirmDialog } from "../components/shared/ConfirmDialog";
-import { useEffect, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate, useParams } from "react-router-dom";
-import { PageLayout } from "../components/shared/PageLayout";
-import { PageHeader } from "../components/shared/PageHeader";
-import { DeliveryTypeSection } from "../components/shared/DeliveryTypeSection";
-import { ButtonLabelInput } from "../components/shared/ButtonLabelInput";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
-  SelectTrigger,
-  SelectValue,
   SelectContent,
   SelectItem,
+  SelectTrigger,
+  SelectValue,
 } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Save, Trash2 } from "lucide-react";
-import { apiGet, apiPatch, apiPost, apiDelete } from "../api/client";
-import { exactFieldsOf } from "../lib/exactFields";
-import { draftsToFields, fieldToDraft, fieldsAreValid } from "../lib/additionalFields";
+import { useId, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
+import { apiDelete, apiGet, apiPatch, apiPost } from "../api/client";
 import type { AdditionalField, AdditionalFieldDraft } from "../api/types";
+import { PricingSummary, type CatalogPricingInfo } from "../components/catalog/PricingSummary";
+import { ConfirmDialog } from "../components/shared/ConfirmDialog";
+import { DeliveryTypeSection } from "../components/shared/DeliveryTypeSection";
+import { DenominationIdentityFields } from "../components/shared/DenominationIdentityFields";
+import { PageHeader } from "../components/shared/PageHeader";
+import { PageLayout } from "../components/shared/PageLayout";
+import { draftsToFields, fieldToDraft, fieldsAreValid } from "../lib/additionalFields";
+import { familyOfGroup } from "../lib/catalogFamily";
+import { exactFieldsOf } from "../lib/exactFields";
 
 const DENOMINATION_TYPES = [
   { value: "SHARED", label: "Shared" },
@@ -106,20 +106,15 @@ function isValidPrice(value: string): boolean {
   return !Number.isNaN(Number(value.trim()));
 }
 
-export function DenominationEditPage() {
+function DenominationEditForm({ data }: { data: ProductDetailForEdit }) {
+  const fieldId = useId();
   const { productId, denomId } = useParams<{ productId: string; denomId: string }>();
   const navigate = useNavigate();
   const qc = useQueryClient();
 
-  const { data, isError } = useQuery<ProductDetailForEdit>({
-    queryKey: ["catalog", productId],
-    queryFn: async () => apiGet<ProductDetailForEdit>(`/api/catalog/${productId}`),
-    enabled: !!productId,
-  });
   const denomination = data?.product.denominations.find((d) => d.id === Number(denomId));
   const isGame = familyOfGroup(data?.product.category?.group) === "GAME_TOPUP";
   const pricing = data?.statsByDenom?.[Number(denomId)]?.pricing;
-  const [pricingMode, setPricingMode] = useState<"auto" | "manual">("manual");
   const [autoConfirm, setAutoConfirm] = useState(false);
 
   const { data: catalogList } = useQuery<CatalogListData>({
@@ -130,72 +125,14 @@ export function DenominationEditPage() {
     (p) => p.category?.id === data?.product.category?.id,
   );
 
-  const [loaded, setLoaded] = useState(false);
-  const [name, setName] = useState("");
-  const [type, setType] = useState<string | null>(null);
-  const [durationLabel, setDurationLabel] = useState("");
-  const [price, setPrice] = useState("");
-  const [costPrice, setCostPrice] = useState("");
-  const [resellerPrice, setResellerPrice] = useState("");
-  const [warrantyDays, setWarrantyDays] = useState("");
-  const [description, setDescription] = useState("");
-  const [sortOrder, setSortOrder] = useState("");
-  const [moveToProductId, setMoveToProductId] = useState<string | null>(null);
-  const [deliveryType, setDeliveryType] = useState("auto");
-  const [additionalFields, setAdditionalFields] = useState<AdditionalFieldDraft[]>([]);
-  const [autoDeliverySource, setAutoDeliverySource] = useState<string | null>(null);
-  const [supplierSku, setSupplierSku] = useState("");
-  const [nicknameCheckGameCode, setNicknameCheckGameCode] = useState("");
-  const [providerInputMapping, setProviderInputMapping] = useState("");
+  const { pricingMode, setPricingMode, name, setName, type, setType, durationLabel, setDurationLabel, price, setPrice, costPrice, setCostPrice, resellerPrice, setResellerPrice, warrantyDays, setWarrantyDays, description, setDescription, sortOrder, setSortOrder, moveToProductId, setMoveToProductId, deliveryType, setDeliveryType, additionalFields, setAdditionalFields, autoDeliverySource, setAutoDeliverySource, supplierSku, setSupplierSku, nicknameCheckGameCode, setNicknameCheckGameCode, providerInputMapping, setProviderInputMapping, qtyValue, setQtyValue, qtyUnit, setQtyUnit, error, setError, bulkMinQuantity, setBulkMinQuantity, bulkDiscountPercent, setBulkDiscountPercent, pricePrefill, bulkPrefill, bulkError, setBulkError, existingRule } = useDenominationDraft({ data, denomId, denomination: denomination!, pricing, productId });
+
   // Compact-button quantity (Task 8/14), e.g. 86 "Diamonds" — independent of
   // every other field on this form.
-  const [qtyValue, setQtyValue] = useState("");
-  const [qtyUnit, setQtyUnit] = useState("");
-  const [error, setError] = useState<string | null>(null);
 
-  const [bulkMinQuantity, setBulkMinQuantity] = useState("");
-  const [bulkDiscountPercent, setBulkDiscountPercent] = useState("");
   // The server's own decimal strings this form was pre-filled with, so a save
   // can name the untouched ones in `exact_fields` (lib/exactFields.ts) and a
   // stored 100.123 is never re-read by shape as 100123.
-  const [pricePrefill, setPricePrefill] = useState<PriceFields | null>(null);
-  const [bulkPrefill, setBulkPrefill] = useState<{ discountPercent: string } | null>(null);
-  const [bulkError, setBulkError] = useState<string | null>(null);
-  const existingRule = data?.statsByDenom?.[Number(denomId)]?.rule ?? null;
-
-  useEffect(() => {
-    if (loaded || !denomination) return;
-    setName(denomination.name);
-    setType(denomination.type);
-    setDurationLabel(denomination.durationLabel);
-    setPrice(denomination.price);
-    setPricingMode(pricing?.automaticAvailable && !denomination.priceOverridden ? "auto" : "manual");
-    setCostPrice(denomination.costPrice ?? "");
-    setResellerPrice(denomination.resellerPrice ?? "");
-    setPricePrefill({
-      price: denomination.price,
-      costPrice: denomination.costPrice ?? "",
-      resellerPrice: denomination.resellerPrice ?? "",
-    });
-    setWarrantyDays(denomination.warrantyDays ? String(denomination.warrantyDays) : "");
-    setDescription(denomination.description ?? "");
-    setSortOrder(String(denomination.sortOrder ?? 0));
-    setMoveToProductId(productId ?? null);
-    setDeliveryType(denomination.deliveryType || "auto");
-    setAdditionalFields(parseStoredAdditionalFields(denomination.additionalFields));
-    setAutoDeliverySource(denomination.autoDeliverySource ?? null);
-    setSupplierSku(denomination.supplierSku ?? "");
-    setNicknameCheckGameCode(denomination.nicknameCheckGameCode ?? "");
-    setProviderInputMapping(denomination.providerInputMapping ?? "");
-    setQtyValue(denomination.qtyValue != null ? String(denomination.qtyValue) : "");
-    setQtyUnit(denomination.qtyUnit ?? "");
-    if (existingRule) {
-      setBulkMinQuantity(String(existingRule.minQuantity));
-      setBulkDiscountPercent(existingRule.discountPercent);
-      setBulkPrefill({ discountPercent: existingRule.discountPercent });
-    }
-    setLoaded(true);
-  }, [denomination, loaded, existingRule]);
 
   const save = useMutation({
     mutationFn: () =>
@@ -268,16 +205,7 @@ export function DenominationEditPage() {
     bulkDiscountPercent.trim() !== "" &&
     !Number.isNaN(Number(bulkDiscountPercent.trim()));
 
-  const canSubmit =
-    name.trim().length > 0 &&
-    type !== null &&
-    durationLabel.trim().length > 0 &&
-    isValidPrice(price) &&
-    ((deliveryType !== "manual_with_info" && additionalFields.length === 0) || fieldsAreValid(additionalFields)) &&
-    (autoDeliverySource !== "digiflazz" || supplierSku.trim().length > 0);
-
-  if (isError) return <PageLayout title="Edit Denomination"><p className="text-sm text-rust">Failed to load denomination.</p></PageLayout>;
-  if (!loaded) return <PageLayout title="Edit Denomination"><p>Loading…</p></PageLayout>;
+  const { canSubmit } = denominationSubmission({ name, type, durationLabel, price, deliveryType, additionalFields, autoDeliverySource, supplierSku });
 
   return (
     <PageLayout title="Edit Denomination">
@@ -293,88 +221,7 @@ export function DenominationEditPage() {
       />
 
       <div className="max-w-lg flex flex-col gap-4">
-        <div>
-          <label className="text-sm font-medium text-ink">
-            Name <span className="text-rust">*</span>
-          </label>
-          {isGame ? (
-            <ButtonLabelInput
-              kind="denominationGame"
-              productName={data?.product.name}
-              builtFromQuantity={qtyValue.trim() !== "" && qtyUnit.trim() !== ""}
-              className="mt-1"
-              placeholder="e.g. Netflix Premium"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-            />
-          ) : (
-            <Input className="mt-1" placeholder="e.g. Netflix Premium" value={name} onChange={(e) => setName(e.target.value)} />
-          )}
-        </div>
-
-        <div>
-          <label className="text-sm font-medium text-ink">
-            Duration Label <span className="text-rust">*</span>
-          </label>
-          {isGame ? (
-            <>
-              <Input className="mt-1" placeholder="e.g. 1 Month" value={durationLabel} onChange={(e) => setDurationLabel(e.target.value)} />
-              <p data-testid="duration-label-game-hint" className="mt-1 text-xs text-ink-soft">
-              Game Top Up: this reaches the Telegram button only when it differs from the Name, and is then added after the quantity. Keep it short.
-            </p>
-            </>
-          ) : (
-            <ButtonLabelInput kind="denominationPlan" className="mt-1" placeholder="e.g. 1 Month" value={durationLabel} onChange={(e) => setDurationLabel(e.target.value)} />
-          )}
-        </div>
-
-        {/* Game Top Up quantity builds the compact Telegram button label. */}
-        {isGame && (
-          <div className="flex gap-3">
-            <div>
-              <label className="block text-sm font-medium text-ink">Quantity Value</label>
-              <Input
-                className="mt-1 w-32"
-                type="number"
-                min="0"
-                step="1"
-                placeholder="e.g. 86"
-                value={qtyValue}
-                onChange={(e) => setQtyValue(e.target.value)}
-              />
-            </div>
-            <div className="min-w-0 flex-1">
-              <label className="block text-sm font-medium text-ink">Quantity Unit</label>
-              <ButtonLabelInput
-                kind="qtyUnit"
-                className="mt-1"
-                placeholder="e.g. Diamonds"
-                value={qtyUnit}
-                onChange={(e) => setQtyUnit(e.target.value)}
-              />
-            </div>
-          </div>
-        )}
-
-        <div>
-          <label className="text-sm font-medium text-ink">
-            Account Type <span className="text-rust">*</span>
-          </label>
-          <Select value={type ?? ""} onValueChange={(v) => setType(v)}>
-            <SelectTrigger className="mt-1" aria-label="Account Type">
-              <SelectValue placeholder="Select type" />
-            </SelectTrigger>
-            <SelectContent>
-              {DENOMINATION_TYPES.map((t) => (
-                <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <p className="mt-1 text-xs text-ink-soft">
-            Shared = one account used by multiple buyers at once. Private = a dedicated account for a
-            single buyer.
-          </p>
-        </div>
+        <DenominationIdentityFields fieldId={fieldId} isGame={isGame} productName={data?.product.name} name={name} setName={setName} durationLabel={durationLabel} setDurationLabel={setDurationLabel} qtyValue={qtyValue} setQtyValue={setQtyValue} qtyUnit={qtyUnit} setQtyUnit={setQtyUnit} type={type} setType={setType} />
 
         <DeliveryTypeSection
           isGame={isGame}
@@ -393,47 +240,38 @@ export function DenominationEditPage() {
         />
 
         {pricing && <PricingSummary pricing={pricing} />}
-        {isGame && autoDeliverySource === "digiflazz" && deliveryType === "manual_with_info" && (
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Mode harga</label>
-            <Select value={pricingMode} onValueChange={value => { if (value === "auto" && pricingMode === "manual") setAutoConfirm(true); else setPricingMode(value as "auto" | "manual"); }}>
-              <SelectTrigger aria-label="Mode harga"><SelectValue /></SelectTrigger>
-              <SelectContent><SelectItem value="auto" disabled={!costPrice.trim()}>Otomatis</SelectItem><SelectItem value="manual">Manual</SelectItem></SelectContent>
-            </Select>
-            <p className="text-xs text-ink-soft">Otomatis mengikuti HPP dan aturan kategori/global. Manual melindungi harga saat sync.</p>
-          </div>
-        )}
+        <DenominationEditModeHarga isGame={isGame} autoDeliverySource={autoDeliverySource} deliveryType={deliveryType} fieldId={fieldId} pricingMode={pricingMode} setAutoConfirm={setAutoConfirm} setPricingMode={setPricingMode} costPrice={costPrice} />
         <ConfirmDialog open={autoConfirm} onOpenChange={setAutoConfirm} title="Gunakan harga otomatis?" description="Saat disimpan, harga manual akan diganti dengan hasil aturan terbaru dari HPP. Harga ditentukan kembali oleh server." variant="default" onConfirm={() => setPricingMode("auto")} />
         <div>
-          <label className="text-sm font-medium text-ink">
+          <label htmlFor={`${fieldId}-price-idr-7`} className="text-sm font-medium text-ink">
             Price (IDR) <span className="text-rust">*</span>
           </label>
-          <Input className="mt-1" placeholder="e.g. 15000" disabled={isGame && autoDeliverySource === "digiflazz" && deliveryType === "manual_with_info" && pricingMode === "auto"} value={price} onChange={(e) => setPrice(e.target.value)} />
+          <Input id={`${fieldId}-price-idr-7`} className="mt-1" placeholder="e.g. 15000" disabled={isGame && autoDeliverySource === "digiflazz" && deliveryType === "manual_with_info" && pricingMode === "auto"} value={price} onChange={(e) => setPrice(e.target.value)} />
           <p className="mt-1 text-xs text-ink-soft">Shown to customers.</p>
         </div>
 
         <div>
-          <label className="text-sm font-medium text-ink">Cost Price (IDR)</label>
-          <Input className="mt-1" placeholder="Optional" value={costPrice} onChange={(e) => setCostPrice(e.target.value)} />
+          <label htmlFor={`${fieldId}-cost-price-idr-8`} className="text-sm font-medium text-ink">Cost Price (IDR)</label>
+          <Input id={`${fieldId}-cost-price-idr-8`} className="mt-1" placeholder="Optional" value={costPrice} onChange={(e) => setCostPrice(e.target.value)} />
           <p className="mt-1 text-xs text-ink-soft">
             What you pay your supplier. For margin reports only — buyers never see this.
           </p>
         </div>
 
         <div>
-          <label className="text-sm font-medium text-ink">Reseller Price (IDR)</label>
-          <Input className="mt-1" placeholder="Optional" value={resellerPrice} onChange={(e) => setResellerPrice(e.target.value)} />
+          <label htmlFor={`${fieldId}-reseller-price-idr-9`} className="text-sm font-medium text-ink">Reseller Price (IDR)</label>
+          <Input id={`${fieldId}-reseller-price-idr-9`} className="mt-1" placeholder="Optional" value={resellerPrice} onChange={(e) => setResellerPrice(e.target.value)} />
           <p className="mt-1 text-xs text-ink-soft">Charged instead of Price to reseller-role customers.</p>
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-ink">Warranty Days</label>
-          <Input className="mt-1 w-32" placeholder="Optional" value={warrantyDays} onChange={(e) => setWarrantyDays(e.target.value)} />
+          <label htmlFor={`${fieldId}-warranty-days-10`} className="block text-sm font-medium text-ink">Warranty Days</label>
+          <Input id={`${fieldId}-warranty-days-10`} className="mt-1 w-32" placeholder="Optional" value={warrantyDays} onChange={(e) => setWarrantyDays(e.target.value)} />
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-ink">Sort Order</label>
-          <Input
+          <label htmlFor={`${fieldId}-sort-order-11`} className="block text-sm font-medium text-ink">Sort Order</label>
+          <Input id={`${fieldId}-sort-order-11`}
             className="mt-1 w-32"
             placeholder="0"
             value={sortOrder}
@@ -443,9 +281,9 @@ export function DenominationEditPage() {
         </div>
 
         <div>
-          <label className="text-sm font-medium text-ink">Move to Product</label>
+          <label htmlFor={`${fieldId}-move-to-product-12`} className="text-sm font-medium text-ink">Move to Product</label>
           <Select value={moveToProductId ?? ""} onValueChange={(v) => setMoveToProductId(v)}>
-            <SelectTrigger className="mt-1">
+            <SelectTrigger id={`${fieldId}-move-to-product-12`} className="mt-1">
               <SelectValue placeholder="Select product" />
             </SelectTrigger>
             <SelectContent>
@@ -460,8 +298,8 @@ export function DenominationEditPage() {
         </div>
 
         <div>
-          <label className="text-sm font-medium text-ink">Description</label>
-          <Textarea className="mt-1" rows={3} placeholder="Optional" value={description} onChange={(e) => setDescription(e.target.value)} />
+          <label htmlFor={`${fieldId}-description-13`} className="text-sm font-medium text-ink">Description</label>
+          <Textarea id={`${fieldId}-description-13`} className="mt-1" rows={3} placeholder="Optional" value={description} onChange={(e) => setDescription(e.target.value)} />
         </div>
 
         {error && <p className="text-sm text-rust">{error}</p>}
@@ -470,54 +308,161 @@ export function DenominationEditPage() {
           {save.isPending ? "Saving…" : "Save Changes"}
         </Button>
 
-        <div className="mt-4 border-t border-line pt-4">
-          <h2 className="text-sm font-medium text-ink">Bulk Pricing</h2>
-          <p className="mt-1 text-xs text-ink-soft">
-            Give a quantity discount when a customer buys this denomination in bulk.
-          </p>
-
-          <div className="mt-3 flex items-end gap-3">
-            <div>
-              <label className="block text-sm font-medium text-ink">Min Quantity</label>
-              <Input
-                className="mt-1 w-28"
-                placeholder="e.g. 5"
-                value={bulkMinQuantity}
-                onChange={(e) => setBulkMinQuantity(e.target.value)}
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-ink">Discount %</label>
-              <Input
-                className="mt-1 w-28"
-                placeholder="e.g. 10"
-                value={bulkDiscountPercent}
-                onChange={(e) => setBulkDiscountPercent(e.target.value)}
-              />
-            </div>
-            <Button
-              variant="outline"
-              disabled={!canSaveBulkPricing || saveBulkPricing.isPending}
-              onClick={() => saveBulkPricing.mutate()}
-            >
-              <Save className="h-4 w-4" />
-              {saveBulkPricing.isPending ? "Saving…" : existingRule ? "Update" : "Save"}
-            </Button>
-            {existingRule && (
-              <Button
-                variant="ghost"
-                disabled={removeBulkPricing.isPending}
-                onClick={() => removeBulkPricing.mutate()}
-                className="text-rust"
-              >
-                <Trash2 className="h-4 w-4" />
-                Remove
-              </Button>
-            )}
-          </div>
-          {bulkError && <p className="mt-2 text-sm text-rust">{bulkError}</p>}
-        </div>
+        <DenominationEditBulkPricing fieldId={fieldId} bulkMinQuantity={bulkMinQuantity} setBulkMinQuantity={setBulkMinQuantity} bulkDiscountPercent={bulkDiscountPercent} setBulkDiscountPercent={setBulkDiscountPercent} canSaveBulkPricing={canSaveBulkPricing} saveBulkPricing={saveBulkPricing} existingRule={existingRule} removeBulkPricing={removeBulkPricing} bulkError={bulkError} />
       </div>
     </PageLayout>
   );
+}
+
+function DenominationEditBulkPricing({ fieldId, bulkMinQuantity, setBulkMinQuantity, bulkDiscountPercent, setBulkDiscountPercent, canSaveBulkPricing, saveBulkPricing, existingRule, removeBulkPricing, bulkError }: {
+  fieldId: string;
+  bulkMinQuantity: string;
+  setBulkMinQuantity: import("react").Dispatch<import("react").SetStateAction<string>>;
+  bulkDiscountPercent: string;
+  setBulkDiscountPercent: import("react").Dispatch<import("react").SetStateAction<string>>;
+  canSaveBulkPricing: boolean;
+  saveBulkPricing: import("@tanstack/react-query").UseMutationResult<unknown, Error, void, void>;
+  existingRule: BulkPricingRule | null;
+  removeBulkPricing: import("@tanstack/react-query").UseMutationResult<unknown, Error, void, void>;
+  bulkError: string | null;
+}) {
+  return (<div className="mt-4 border-t border-line pt-4">
+    <h2 className="text-sm font-medium text-ink">Bulk Pricing</h2>
+    <p className="mt-1 text-xs text-ink-soft">
+      Give a quantity discount when a customer buys this denomination in bulk.
+    </p>
+
+    <div className="mt-3 flex items-end gap-3">
+      <div>
+        <label htmlFor={`${fieldId}-min-quantity-14`} className="block text-sm font-medium text-ink">Min Quantity</label>
+        <Input id={`${fieldId}-min-quantity-14`}
+          className="mt-1 w-28"
+          placeholder="e.g. 5"
+          value={bulkMinQuantity}
+          onChange={(e) => setBulkMinQuantity(e.target.value)}
+        />
+      </div>
+      <div>
+        <label htmlFor={`${fieldId}-discount-15`} className="block text-sm font-medium text-ink">Discount %</label>
+        <Input id={`${fieldId}-discount-15`}
+          className="mt-1 w-28"
+          placeholder="e.g. 10"
+          value={bulkDiscountPercent}
+          onChange={(e) => setBulkDiscountPercent(e.target.value)}
+        />
+      </div>
+      <Button
+        variant="outline"
+        disabled={!canSaveBulkPricing || saveBulkPricing.isPending}
+        onClick={() => saveBulkPricing.mutate()}
+      >
+        <Save className="h-4 w-4" />
+        {saveBulkPricing.isPending ? "Saving…" : existingRule ? "Update" : "Save"}
+      </Button>
+      {existingRule && (
+        <Button
+          variant="ghost"
+          disabled={removeBulkPricing.isPending}
+          onClick={() => removeBulkPricing.mutate()}
+          className="text-rust"
+        >
+          <Trash2 className="h-4 w-4" />
+          Remove
+        </Button>
+      )}
+    </div>
+    {bulkError && <p className="mt-2 text-sm text-rust">{bulkError}</p>}
+  </div>);
+}
+
+function DenominationEditModeHarga({ isGame, autoDeliverySource, deliveryType, fieldId, pricingMode, setAutoConfirm, setPricingMode, costPrice }: {
+  isGame: boolean;
+  autoDeliverySource: string | null;
+  deliveryType: string;
+  fieldId: string;
+  pricingMode: "auto" | "manual";
+  setAutoConfirm: import("react").Dispatch<import("react").SetStateAction<boolean>>;
+  setPricingMode: import("react").Dispatch<import("react").SetStateAction<"auto" | "manual">>;
+  costPrice: string;
+}) {
+  return (isGame && autoDeliverySource === "digiflazz" && deliveryType === "manual_with_info" && (
+    <div className="space-y-2">
+      <label htmlFor={`${fieldId}-mode-harga-6`} className="text-sm font-medium">Mode harga</label>
+      <Select value={pricingMode} onValueChange={value => { if (value === "auto" && pricingMode === "manual") setAutoConfirm(true); else setPricingMode(value as "auto" | "manual"); }}>
+        <SelectTrigger id={`${fieldId}-mode-harga-6`} aria-label="Mode harga"><SelectValue /></SelectTrigger>
+        <SelectContent><SelectItem value="auto" disabled={!costPrice.trim()}>Otomatis</SelectItem><SelectItem value="manual">Manual</SelectItem></SelectContent>
+      </Select>
+      <p className="text-xs text-ink-soft">Otomatis mengikuti HPP dan aturan kategori/global. Manual melindungi harga saat sync.</p>
+    </div>
+  ));
+}
+
+function denominationSubmission({ name, type, durationLabel, price, deliveryType, additionalFields, autoDeliverySource, supplierSku }: {
+  name: string;
+  type: string | null;
+  durationLabel: string;
+  price: string;
+  deliveryType: string;
+  additionalFields: AdditionalFieldDraft[];
+  autoDeliverySource: string | null;
+  supplierSku: string;
+}) {
+  const canSubmit =
+    name.trim().length > 0 &&
+    type !== null &&
+    durationLabel.trim().length > 0 &&
+    isValidPrice(price) &&
+    ((deliveryType !== "manual_with_info" && additionalFields.length === 0) || fieldsAreValid(additionalFields)) &&
+    (autoDeliverySource !== "digiflazz" || supplierSku.trim().length > 0);
+  return { canSubmit };
+}
+
+function useDenominationDraft({ data, denomId, denomination, pricing, productId }: {
+  data: ProductDetailForEdit;
+  denomId: string | undefined;
+  denomination: EditableDenomination;
+  pricing: CatalogPricingInfo | undefined;
+  productId: string | undefined;
+}) {
+  const existingRule = data.statsByDenom?.[Number(denomId)]?.rule ?? null;
+  // Keep the exact stored values from the first loaded render for untouched money fields.
+  const [initial] = useState(() => ({ denomination, existingRule, productId, pricing }));
+  const [pricingMode, setPricingMode] = useState<"auto" | "manual">(() => initial.pricing?.automaticAvailable && !initial.denomination.priceOverridden ? "auto" : "manual");
+  const [name, setName] = useState(() => (initial.denomination.name));
+  const [type, setType] = useState<string | null>(() => (initial.denomination.type));
+  const [durationLabel, setDurationLabel] = useState(() => (initial.denomination.durationLabel));
+  const [price, setPrice] = useState(() => (initial.denomination.price));
+  const [costPrice, setCostPrice] = useState(() => (initial.denomination.costPrice ?? ""));
+  const [resellerPrice, setResellerPrice] = useState(() => (initial.denomination.resellerPrice ?? ""));
+  const [warrantyDays, setWarrantyDays] = useState(() => (initial.denomination.warrantyDays ? String(initial.denomination.warrantyDays) : ""));
+  const [description, setDescription] = useState(() => (initial.denomination.description ?? ""));
+  const [sortOrder, setSortOrder] = useState(() => (String(initial.denomination.sortOrder ?? 0)));
+  const [moveToProductId, setMoveToProductId] = useState<string | null>(() => (initial.productId ?? null));
+  const [deliveryType, setDeliveryType] = useState(() => (initial.denomination.deliveryType || "auto"));
+  const [additionalFields, setAdditionalFields] = useState<AdditionalFieldDraft[]>(() => (parseStoredAdditionalFields(initial.denomination.additionalFields)));
+  const [autoDeliverySource, setAutoDeliverySource] = useState<string | null>(() => (initial.denomination.autoDeliverySource ?? null));
+  const [supplierSku, setSupplierSku] = useState(() => (initial.denomination.supplierSku ?? ""));
+  const [nicknameCheckGameCode, setNicknameCheckGameCode] = useState(() => (initial.denomination.nicknameCheckGameCode ?? ""));
+  const [providerInputMapping, setProviderInputMapping] = useState(() => (initial.denomination.providerInputMapping ?? ""));
+  const [qtyValue, setQtyValue] = useState(() => (initial.denomination.qtyValue != null ? String(initial.denomination.qtyValue) : ""));
+  const [qtyUnit, setQtyUnit] = useState(() => (initial.denomination.qtyUnit ?? ""));
+  const [error, setError] = useState<string | null>(null);
+  const [bulkMinQuantity, setBulkMinQuantity] = useState(() => (initial.existingRule ? String(initial.existingRule.minQuantity) : ""));
+  const [bulkDiscountPercent, setBulkDiscountPercent] = useState(() => (initial.existingRule ? initial.existingRule.discountPercent : ""));
+  const [bulkError, setBulkError] = useState<string | null>(null);
+  const pricePrefill: PriceFields = { price: initial.denomination.price, costPrice: initial.denomination.costPrice ?? "", resellerPrice: initial.denomination.resellerPrice ?? "" };
+  const bulkPrefill = initial.existingRule ? { discountPercent: initial.existingRule.discountPercent } : null;
+  return { name, setName, type, setType, durationLabel, setDurationLabel, price, setPrice, costPrice, setCostPrice, resellerPrice, setResellerPrice, warrantyDays, setWarrantyDays, description, setDescription, sortOrder, setSortOrder, moveToProductId, setMoveToProductId, deliveryType, setDeliveryType, additionalFields, setAdditionalFields, autoDeliverySource, setAutoDeliverySource, supplierSku, setSupplierSku, nicknameCheckGameCode, setNicknameCheckGameCode, providerInputMapping, setProviderInputMapping, qtyValue, setQtyValue, qtyUnit, setQtyUnit, error, setError, bulkMinQuantity, setBulkMinQuantity, bulkDiscountPercent, setBulkDiscountPercent, pricePrefill, bulkPrefill, bulkError, setBulkError, existingRule, pricingMode, setPricingMode };
+}
+
+export function DenominationEditPage() {
+  const { productId, denomId } = useParams<{ productId: string; denomId: string }>();
+  const { data, isError } = useQuery<ProductDetailForEdit>({
+    queryKey: ["catalog", productId],
+    queryFn: async () => apiGet<ProductDetailForEdit>(`/api/catalog/${productId}`),
+    enabled: !!productId,
+  });
+  if (isError) return <PageLayout title="Edit Denomination"><p className="text-sm text-rust">Failed to load denomination.</p></PageLayout>;
+  if (!data?.product.denominations.some(d => d.id === Number(denomId))) return <PageLayout title="Edit Denomination"><p>Loading…</p></PageLayout>;
+  return <DenominationEditForm key={denomId} data={data} />;
 }

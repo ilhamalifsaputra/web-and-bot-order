@@ -1,4 +1,4 @@
-import { formatMoneyOrCode } from "../components/shared/CurrencyAmount";
+import { formatMoneyOrCode } from "../components/shared/CurrencyAmount.helpers";
 
 export interface TicketOrderInput {
   items: { id: number; quantity: number; unitPrice: string; product: { id: number; name: string } }[];

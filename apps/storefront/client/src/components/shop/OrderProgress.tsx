@@ -12,8 +12,8 @@ export default function OrderProgress({ fulfillment, underpayment, children }: {
   }
   const state = fulfillmentPresentation(fulfillment);
   const paid = fulfillment.payment_status === "PAID";
-  const Icon = state.active ? LoaderCircle : state.complete ? Check : state.problem ? CircleAlert : Clock;
-  const tone = state.complete ? "text-grass-dark" : state.problem ? "text-amberx" : "text-pine";
+  const Icon = progressIcon(state);
+  const tone = progressTone(state);
   const steps = [
     { key: "web.order_progress_payment", done: paid, current: fulfillment.payment_status === "PENDING", problem: !paid && state.problem },
     { key: "web.order_progress_processing", done: state.complete, current: paid && (state.active || state.waiting), problem: paid && state.problem },
@@ -29,20 +29,48 @@ export default function OrderProgress({ fulfillment, underpayment, children }: {
         </div>
       </div>
       <ol aria-label={t("web.order_progress")} className="mt-4 grid grid-cols-3 gap-2 border-t border-line pt-4">
-        {steps.map((step) => {
-          const spinning = step.current && paid && state.active;
-          const StepIcon = step.done ? Check : step.problem ? CircleAlert : spinning ? LoaderCircle : step.current && paid ? Clock : Circle;
-          return (
-            <li key={step.key} aria-current={step.current && !state.problem ? "step" : undefined} className="flex min-w-0 flex-col items-center gap-2 text-center text-xs sm:text-sm">
-              <span aria-hidden="true" className={`grid h-8 w-8 place-items-center rounded-full ${step.done ? "bg-grass-tint text-grass-dark" : step.problem ? "bg-amberx-tint text-amberx" : step.current ? "bg-pine-tint text-pine" : "bg-sand text-ink-faint"}`}>
-                <StepIcon className={`h-4 w-4 ${spinning ? "animate-spin motion-reduce:animate-none" : ""}`} />
-              </span>
-              <span className="break-words text-ink-soft">{t(step.key)}</span>
-            </li>
-          );
-        })}
+        {steps.map((step) => <ProgressStep key={step.key} step={step} paid={paid} active={state.active} problem={state.problem} />)}
       </ol>
       {children && <div className="mt-3">{children}</div>}
     </Card>
   );
+}
+
+function ProgressStep({ step, paid, active, problem }: { step: { key: string; done: boolean; current: boolean; problem: boolean }; paid: boolean; active: boolean; problem: boolean }) {
+  const spinning = step.current && paid && active;
+  const StepIcon = progressStepIcon(step, paid, spinning);
+  return (
+    <li key={step.key} aria-current={step.current && !problem ? "step" : undefined} className="flex min-w-0 flex-col items-center gap-2 text-center text-xs sm:text-sm">
+      <span aria-hidden="true" className={`grid h-8 w-8 place-items-center rounded-full ${progressStepTone(step)}`}>
+        <StepIcon className={`h-4 w-4 ${spinning ? "animate-spin motion-reduce:animate-none" : ""}`} />
+      </span>
+      <span className="break-words text-ink-soft">{t(step.key)}</span>
+    </li>
+  );
+}
+
+function progressIcon(state: ReturnType<typeof fulfillmentPresentation>) {
+  if (state.active) return LoaderCircle;
+  if (state.complete) return Check;
+  if (state.problem) return CircleAlert;
+  return Clock;
+}
+function progressTone(state: ReturnType<typeof fulfillmentPresentation>) {
+  if (state.complete) return "text-grass-dark";
+  if (state.problem) return "text-amberx";
+  return "text-pine";
+}
+type ProgressStepState = { done: boolean; problem: boolean; current: boolean };
+function progressStepIcon(step: ProgressStepState, paid: boolean, spinning: boolean) {
+  if (step.done) return Check;
+  if (step.problem) return CircleAlert;
+  if (spinning) return LoaderCircle;
+  if (step.current && paid) return Clock;
+  return Circle;
+}
+function progressStepTone(step: ProgressStepState) {
+  if (step.done) return "bg-grass-tint text-grass-dark";
+  if (step.problem) return "bg-amberx-tint text-amberx";
+  if (step.current) return "bg-pine-tint text-pine";
+  return "bg-sand text-ink-faint";
 }

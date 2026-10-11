@@ -1,10 +1,10 @@
 import "@testing-library/jest-dom";
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { AdditionalFieldsEditor } from "./AdditionalFieldsEditor";
-import { emptyFieldDraft } from "../../lib/additionalFields";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdditionalFieldDraft } from "../../api/types";
+import { emptyFieldDraft } from "../../lib/additionalFields";
+import { AdditionalFieldsEditor } from "./AdditionalFieldsEditor";
 
 beforeEach(() => {
   // Radix Select uses pointer-capture APIs and scrollIntoView — jsdom doesn't
@@ -54,7 +54,7 @@ describe("AdditionalFieldsEditor", () => {
     const onChange = vi.fn();
     render(<AdditionalFieldsEditor value={[]} onChange={onChange} />);
     await user.click(screen.getByRole("button", { name: /add field/i }));
-    expect(onChange).toHaveBeenCalledWith([emptyFieldDraft()]);
+    expect(onChange).toHaveBeenCalledWith([{ ...emptyFieldDraft(), draftId: expect.any(String) }]);
   });
 
   it("clicking Remove on a row removes only that row", async () => {
@@ -95,4 +95,13 @@ describe("AdditionalFieldsEditor", () => {
     rerender(<AdditionalFieldsEditor value={[{ ...drafts[0]!, type: "select" }]} onChange={vi.fn()} />);
     expect(screen.getByPlaceholderText(/comma-separated/i)).toBeInTheDocument();
   });
+  it("preserves the remaining input element when a preceding draft is removed", () => {
+    const first = { ...emptyFieldDraft(), draftId: "first", labelEn: "First" };
+    const second = { ...emptyFieldDraft(), draftId: "second", labelEn: "Second" };
+    const { rerender } = render(<AdditionalFieldsEditor value={[first, second]} onChange={vi.fn()} />);
+    const input = screen.getByDisplayValue("Second");
+    rerender(<AdditionalFieldsEditor value={[second]} onChange={vi.fn()} />);
+    expect(screen.getByDisplayValue("Second")).toBe(input);
+  });
+
 });

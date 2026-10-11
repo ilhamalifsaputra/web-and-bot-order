@@ -1,61 +1,62 @@
-import { useEffect, useRef, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { toast } from "sonner";
-import {
-  Save,
-  SquarePen,
-  KeyRound,
-  Settings as SettingsIcon,
-  Bot,
-  Mail,
-  CreditCard,
-  SlidersHorizontal,
-  ArrowLeftRight,
-  Copy,
-  Check,
-  TriangleAlert,
-  RefreshCw,
-  Download,
-  Upload,
-  DatabaseBackup,
-  MoreVertical,
-  Users,
-  Gamepad2,
-  UserSearch,
-  Blocks,
-} from "lucide-react";
-import { PageLayout } from "../components/shared/PageLayout";
-import { PageHeader } from "../components/shared/PageHeader";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
-import { Switch } from "@/components/ui/switch";
-import {
-  Select,
-  SelectTrigger,
-  SelectValue,
-  SelectContent,
-  SelectItem,
-} from "@/components/ui/select";
-import { StatusBadge } from "@/components/shared/StatusBadge";
-import { SaveConfirmDialog } from "../components/shared/SaveConfirmDialog";
-import { SettingsSearch, highlightMatch, matchesQuery } from "@/components/shared/SettingsSearch";
-import { SettingsNav, type SettingsNavLink } from "@/components/shared/SettingsNav";
+import type { HealthEntry } from "@/api/types";
 import { SettingsHealthCard, type HealthSection } from "@/components/shared/SettingsHealthCard";
+import { SettingsNav, type SettingsNavLink } from "@/components/shared/SettingsNav";
 import { SettingsSaveStatus } from "@/components/shared/SettingsSaveStatus";
+import { SettingsSearch } from "@/components/shared/SettingsSearch";
+import { highlightMatch, matchesQuery } from "@/components/shared/SettingsSearch.helpers";
+import { StatusBadge } from "@/components/shared/StatusBadge";
+import { UrgencyDot } from "@/components/shared/UrgencyDot";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { apiPost, apiGet } from "../api/client";
-import { exactFieldsOf } from "../lib/exactFields";
-import { useSettings, type SettingsField, type PayMethodState } from "@/hooks/useSettings";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
+import { useSettings, type PayMethodState, type SettingsField } from "@/hooks/useSettings";
 import { describeError } from "@/lib/errorMessages";
 import { HEALTH_DOT } from "@/lib/healthDot";
-import { UrgencyDot } from "@/components/shared/UrgencyDot";
-import type { HealthEntry } from "@/api/types";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import {
+  ArrowLeftRight,
+  Blocks,
+  Bot,
+  Check,
+  Copy,
+  CreditCard,
+  DatabaseBackup,
+  Download,
+  Gamepad2,
+  KeyRound,
+  Mail,
+  MoreVertical,
+  RefreshCw,
+  Save,
+  Settings as SettingsIcon,
+  SlidersHorizontal,
+  SquarePen,
+  TriangleAlert,
+  Upload,
+  Users,
+  UserSearch,
+} from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
+import { apiGet, apiPost } from "../api/client";
+import { PageHeader } from "../components/shared/PageHeader";
+import { PageLayout } from "../components/shared/PageLayout";
+import { SaveConfirmDialog } from "../components/shared/SaveConfirmDialog";
+import { exactFieldsOf } from "../lib/exactFields";
 
 // Per-channel service switches: the same service can be on for the Telegram
 // bot and off for the website (or vice versa).
@@ -433,8 +434,6 @@ interface TestResult {
   detail: string;
 }
 
-
-
 interface FieldRowProps {
   field: SettingsField;
   query: string;
@@ -504,118 +503,7 @@ function FieldRow({ field, query, onSaved, onStatusChange, onNeedsRestart, selec
 
   return (
     <div className="flex items-start justify-between gap-4 rounded-md py-3 px-2 -mx-2 hover:bg-muted/50">
-      <div className="flex-1 min-w-0 mr-4">
-        <div className="text-sm font-medium text-ink">
-          {field.secret && (
-            <KeyRound
-              className="mr-1 inline h-3.5 w-3.5 text-ink-faint"
-              aria-label="Sensitive field"
-            />
-          )}
-          {highlightMatch(field.label, query)}
-          {field.needsRestart && <RestartRequiredBadge className="ml-2" />}
-        </div>
-        {FIELD_DESCRIPTIONS[field.key] && (
-          <div className="mt-0.5 text-xs text-ink-soft">{FIELD_DESCRIPTIONS[field.key]}</div>
-        )}
-        {/* break-all: setting values are webhook/base URLs, bank account
-            numbers and merchant ids — long unbroken tokens that used to run
-            into the Edit/Copy buttons. Matches the TOTP secret below. */}
-        {!editing && (
-          <div className="mt-1 text-xs break-all text-ink-soft">
-            {field.secret ? (
-              field.hasValue ? "••••••••" : <StatusBadge status="NOT_CONFIGURED" />
-            ) : (
-              field.value || <StatusBadge status="OPTIONAL" />
-            )}
-          </div>
-        )}
-        {editing && (
-          // Chrome's password manager pairs a bare type="password" input with
-          // the NEAREST PRECEDING text input on the page as a guessed
-          // "username" — on this page, that's SettingsSearch's own "Search
-          // settings…" box, which renders before the field list in DOM
-          // order. autoComplete hints alone don't reliably stop this; a
-          // <form> boundary scopes Chrome's search to inside this tiny form
-          // instead of all the way up to SettingsSearch. Since this is the
-          // first real <form> around these buttons, they'd otherwise become
-          // native submit buttons by HTML's own default (Button never sets
-          // one) — every button below gets an explicit type="button", and
-          // onSubmit is a preventDefault backstop alongside the existing
-          // onKeyDown Enter handling.
-          <form onSubmit={(e) => e.preventDefault()} autoComplete="off">
-            <div className="mt-2 flex flex-col gap-1.5">
-              <div className="flex flex-wrap gap-2 items-center">
-                {selectOptions ? (
-                  <Select value={value} onValueChange={setValue}>
-                    <SelectTrigger className="w-full max-w-sm" aria-label={field.label}>
-                      <SelectValue placeholder="Select a type" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {selectOptions.map((opt) => (
-                        <SelectItem key={opt.value} value={opt.value}>
-                          {opt.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                ) : (
-                  <Input
-                    type={field.secret ? "password" : "text"}
-                    value={value}
-                    onChange={(e) => setValue(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && !validationError) setConfirmOpen(true);
-                      if (e.key === "Escape") cancelEditing();
-                    }}
-                    aria-label={field.label}
-                    aria-invalid={validationError ? true : undefined}
-                    autoFocus
-                    className="w-full max-w-sm"
-                    // Reported bug: filling in a secret field (e.g. Digiflazz
-                    // API key) here was landing in the page's own "Search
-                    // settings…" box instead. Root cause: this is a generic
-                    // setting value, not a real account credential, but
-                    // rendering it as `type="password"` with no autoComplete
-                    // hint and no <form> boundary makes Chrome's native
-                    // password manager treat it as a login field — it pairs
-                    // the field with the NEAREST PRECEDING text input on the
-                    // page as a guessed "username" (here, SettingsSearch's own
-                    // search box) and offers to autofill this admin's saved
-                    // /login credentials into both. "new-password" is the
-                    // standard signal that stops Chrome from treating a
-                    // password-shaped input as a saved-login target; plain
-                    // "off" for the non-secret case is just hygiene (a
-                    // markup-type/value field has no business being
-                    // autofilled either).
-                    autoComplete={field.secret ? "new-password" : "off"}
-                  />
-                )}
-                {field.secret && (
-                  <Button
-                    type="button"
-                    size="icon-sm"
-                    variant="ghost"
-                    aria-label={`Copy ${field.label}`}
-                    onClick={() => void copyValue()}
-                    disabled={!value}
-                  >
-                    {copied ? <Check className="h-3.5 w-3.5 text-grass" /> : <Copy className="h-3.5 w-3.5" />}
-                  </Button>
-                )}
-                <Button type="button" size="sm" onClick={() => setConfirmOpen(true)} disabled={!!validationError}>
-                  <Save className="h-4 w-4" />
-                  Save
-                </Button>
-                <Button type="button" size="sm" variant="ghost" onClick={cancelEditing}>
-                  Cancel
-                </Button>
-              </div>
-              {validationError && <p className="text-sm text-rust">{validationError}</p>}
-            </div>
-          </form>
-        )}
-      </div>
+      <FieldRowSensitiveField field={field} query={query} editing={editing} selectOptions={selectOptions} value={value} setValue={setValue} validationError={validationError} setConfirmOpen={setConfirmOpen} cancelEditing={cancelEditing} copyValue={copyValue} copied={copied} />
       {/* Rendered unconditionally (not inside `editing && …`) — save()
           flips `editing` false as soon as the request resolves, which would
           otherwise unmount this mid-animation and cut off the checkmark. */}
@@ -820,18 +708,9 @@ export function SettingsPage() {
   const [query, setQuery] = useState("");
 
   // Password change
-  const [pwCurrent, setPwCurrent] = useState("");
-  const [pwNew, setPwNew] = useState("");
-  const [pwConfirmOpen, setPwConfirmOpen] = useState(false);
+  const { pwCurrent, setPwCurrent, pwNew, setPwNew, pwConfirmOpen, setPwConfirmOpen, totpCode, setTotpCode, tfaError, tfaSaving, disablePw, setDisablePw, disableTotp, setDisableTotp, tfaEnableConfirmOpen, setTfaEnableConfirmOpen, tfaDisableConfirmOpen, setTfaDisableConfirmOpen, changePassword, tfaAction, enableTwoFa, disableTwoFa } = useSettingsSecurity({ markSaved, invalidate });
 
   // 2FA
-  const [totpCode, setTotpCode] = useState("");
-  const [tfaError, setTfaError] = useState<string | null>(null);
-  const [tfaSaving, setTfaSaving] = useState(false);
-  const [disablePw, setDisablePw] = useState("");
-  const [disableTotp, setDisableTotp] = useState("");
-  const [tfaEnableConfirmOpen, setTfaEnableConfirmOpen] = useState(false);
-  const [tfaDisableConfirmOpen, setTfaDisableConfirmOpen] = useState(false);
 
   // FX refresh
   const [fxConfirmOpen, setFxConfirmOpen] = useState(false);
@@ -855,8 +734,7 @@ export function SettingsPage() {
   const [restartConfirmOpen, setRestartConfirmOpen] = useState(false);
 
   // Import
-  const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
-  const [importConfirmOpen, setImportConfirmOpen] = useState(false);
+  const { importPreview, setImportPreview, importConfirmOpen, setImportConfirmOpen, handleExport, handleImportFile, runImport } = useSettingsTransfer({ invalidate, markSaved });
 
   function onSaved() {
     invalidate();
@@ -876,6 +754,835 @@ export function SettingsPage() {
     onSaved();
     return `Rate updated to ${result.rate} (${result.status})`;
   }
+
+  const togglePayment = useMutation({
+    mutationFn: ({ method, enabled }: { method: string; enabled: boolean }) =>
+      apiPost("/api/settings/payments/toggle", { method, enabled: enabled ? "true" : "false" }),
+    onSuccess: () => { invalidate(); markSaved(); },
+  });
+  const toggleService = useMutation({
+    mutationFn: ({ service, channel, enabled }: { service: string; channel: "bot" | "web"; enabled: boolean }) =>
+      apiPost("/api/settings/services/toggle", { service, channel, enabled }),
+    onSuccess: () => { invalidate(); markSaved(); },
+  });
+
+  async function runTest(methodKey: string) {
+    const result = await apiPost<TestResult>(`/api/settings/payments/${methodKey}/test`, {});
+    setTestResults((prev) => ({ ...prev, [methodKey]: result }));
+    return result.detail;
+  }
+
+  async function runRestart() {
+    await apiPost("/api/settings/restart", {});
+    setRestartPending(false);
+    markSaved();
+    return "Restart triggered — the bot process will pick up the change shortly.";
+  }
+
+  const { handleRefreshConnections } = useConnectionChecks({ data, setRefreshingConnections, setTestResults });
+
+  if (!data) {
+    return (
+      <PageLayout title="Settings">
+        <PageHeader title="Settings" />
+        {isLoading && <p className="text-ink-soft">Loading settings…</p>}
+        {isError && <p className="text-rust">Failed to load settings.</p>}
+      </PageLayout>
+    );
+  }
+
+  const { fieldQueryFor, generalFields, telegramFields, joinGateFields, smtpFields, otherFields, fxFields, digiflazzFields, kokinpayFields, generalVisible, servicesVisible, telegramVisible, joinGateVisible, smtpVisible, otherVisible, fxVisible, digiflazzVisible, kokinpayVisible, securityVisible, payGroupsVisible, topLinks, bottomLinks, healthSections } = buildSettingsSections({ data, query });
+
+  // Search visibility — a section is visible if its own title matches, or any
+  // field inside it does; a field row filters further inside FieldRow itself.
+
+  // When a section's own title matched, its individual FieldRows should all
+  // stay visible (not re-filtered down to a label match) — FieldRow only
+  // hides a row on an unmatched query, so pass "" to it in that case.
+
+  return (
+    <PageLayout title="Settings">
+      <PageHeader
+        title="Settings"
+        actions={
+          <>
+            <SettingsSaveStatus fieldStatuses={fieldStatuses} lastSavedAt={lastSavedAt} />
+            <QuickActionsMenu
+              onExport={() => void handleExport()}
+              onImportFile={handleImportFile}
+              onRefreshConnections={() => void handleRefreshConnections()}
+              refreshing={refreshingConnections}
+            />
+          </>
+        }
+      />
+
+      <SettingsHealthCard sections={healthSections} />
+
+      <div className="lg:grid lg:grid-cols-[220px_minmax(0,1fr)] lg:items-start lg:gap-8">
+        <SettingsSidebar query={query} setQuery={setQuery} topLinks={topLinks} payGroupsVisible={payGroupsVisible} bottomLinks={bottomLinks} />
+
+        <div className="flex flex-col gap-6 max-w-2xl [&>*]:scroll-mt-20">
+
+          {/* General */}
+          <SettingsGeneral generalVisible={generalVisible} generalFields={generalFields} fieldQueryFor={fieldQueryFor} onSaved={onSaved} onStatusChange={onStatusChange} />
+
+          <SettingsServices servicesVisible={servicesVisible} data={data} query={query} setPendingService={setPendingService} />
+
+          {/* Telegram & Bot */}
+          <SettingsTelegramAndBot telegramVisible={telegramVisible} telegramFields={telegramFields} fieldQueryFor={fieldQueryFor} onSaved={onSaved} onStatusChange={onStatusChange} setRestartPending={setRestartPending} setPendingTest={setPendingTest} testResults={testResults} restartPending={restartPending} setRestartConfirmOpen={setRestartConfirmOpen} />
+
+          {/* Join Gate */}
+          <SettingsJoinGate joinGateVisible={joinGateVisible} joinGateFields={joinGateFields} fieldQueryFor={fieldQueryFor} onSaved={onSaved} onStatusChange={onStatusChange} setPendingTest={setPendingTest} testResults={testResults} />
+
+          {/* Email (SMTP) */}
+          <SettingsEmailSMTP smtpVisible={smtpVisible} smtpFields={smtpFields} fieldQueryFor={fieldQueryFor} onSaved={onSaved} onStatusChange={onStatusChange} setPendingTest={setPendingTest} testResults={testResults} />
+
+          {/* Payment Credentials — one card per method */}
+          {payGroupsVisible.filter((g) => g.visible).map((g) => (
+            <SettingsGatewayCard key={g.methodKey} g={g} fieldQueryFor={fieldQueryFor} onSaved={onSaved} onStatusChange={onStatusChange} setPendingToggle={setPendingToggle} testResults={testResults} setPendingTest={setPendingTest} data={data} />
+          ))}
+
+          <PaymentToggleDialog pendingToggle={pendingToggle} setPendingToggle={setPendingToggle} togglePayment={togglePayment} />
+
+          <ServiceToggleDialog pendingService={pendingService} setPendingService={setPendingService} toggleService={toggleService} />
+
+          <SettingsConnectionTestDialog pendingTest={pendingTest} setPendingTest={setPendingTest} setTestResults={setTestResults} runTest={runTest} />
+
+          <SaveConfirmDialog
+            open={restartConfirmOpen}
+            onOpenChange={setRestartConfirmOpen}
+            title="Restart the bot?"
+            description="Active conversations may briefly disconnect while the process restarts."
+            confirmLabel="Restart"
+            variant="destructive"
+            onConfirm={runRestart}
+          />
+
+          <SettingsImportConfiguration importConfirmOpen={importConfirmOpen} setImportPreview={setImportPreview} setImportConfirmOpen={setImportConfirmOpen} importPreview={importPreview} runImport={runImport} />
+
+          {/* Other / catch-all for any future fields */}
+          <SettingsOtherSettings otherVisible={otherVisible} otherFields={otherFields} fieldQueryFor={fieldQueryFor} onSaved={onSaved} onStatusChange={onStatusChange} />
+
+          {/* Exchange Rates */}
+          <SettingsExchangeRates fxVisible={fxVisible} fxFields={fxFields} fieldQueryFor={fieldQueryFor} onSaved={onSaved} onStatusChange={onStatusChange} setFxConfirmOpen={setFxConfirmOpen} fxLastRefreshedAt={fxLastRefreshedAt} fxConfirmOpen={fxConfirmOpen} refreshFx={refreshFx} />
+
+          {/* Digiflazz (Top Up Game) */}
+          <SettingsDigiflazzTopUpGame digiflazzVisible={digiflazzVisible} digiflazzFields={digiflazzFields} fieldQueryFor={fieldQueryFor} onSaved={onSaved} onStatusChange={onStatusChange} data={data} setPendingTest={setPendingTest} testResults={testResults} />
+
+          {/* KokinPay (Nickname Check) — Task 7. Separate paid service from
+              Digiflazz, so its own Card; no markup-rule section since this is
+              a lookup-only service, not something priced/sold. */}
+          <SettingsKokinPayNicknameCheck kokinpayVisible={kokinpayVisible} kokinpayFields={kokinpayFields} fieldQueryFor={fieldQueryFor} onSaved={onSaved} onStatusChange={onStatusChange} setPendingTest={setPendingTest} testResults={testResults} />
+
+          {/* Security */}
+          {securityVisible && (
+            <Card id="settings-security">
+              <CardHeader>
+                <CardTitle as="h2">Security</CardTitle>
+              </CardHeader>
+              <CardContent className="flex flex-col gap-6">
+
+                {/* Change Password */}
+                <SettingsChangePassword setPwConfirmOpen={setPwConfirmOpen} pwCurrent={pwCurrent} setPwCurrent={setPwCurrent} pwNew={pwNew} setPwNew={setPwNew} pwConfirmOpen={pwConfirmOpen} changePassword={changePassword} />
+
+                {/* Two-Factor Authentication */}
+                <SettingsTwoFactorAuthentication tfaError={tfaError} data={data} tfaAction={tfaAction} tfaSaving={tfaSaving} totpCode={totpCode} setTotpCode={setTotpCode} setTfaEnableConfirmOpen={setTfaEnableConfirmOpen} disablePw={disablePw} setDisablePw={setDisablePw} disableTotp={disableTotp} setDisableTotp={setDisableTotp} setTfaDisableConfirmOpen={setTfaDisableConfirmOpen} tfaEnableConfirmOpen={tfaEnableConfirmOpen} enableTwoFa={enableTwoFa} tfaDisableConfirmOpen={tfaDisableConfirmOpen} disableTwoFa={disableTwoFa} />
+
+              </CardContent>
+            </Card>
+          )}
+
+        </div>
+      </div>
+    </PageLayout>
+  );
+}
+
+function FieldRowSensitiveField({ field, query, editing, selectOptions, value, setValue, validationError, setConfirmOpen, cancelEditing, copyValue, copied }: {
+  field: SettingsField;
+  query: string;
+  editing: boolean;
+  selectOptions: { value: string; label: string; }[] | undefined;
+  value: string;
+  setValue: import("react").Dispatch<import("react").SetStateAction<string>>;
+  validationError: string | null;
+  setConfirmOpen: import("react").Dispatch<import("react").SetStateAction<boolean>>;
+  cancelEditing: () => void;
+  copyValue: () => Promise<void>;
+  copied: boolean;
+}) {
+  return (<div className="flex-1 min-w-0 mr-4">
+    <div className="text-sm font-medium text-ink">
+      {field.secret && (
+        <KeyRound
+          className="mr-1 inline h-3.5 w-3.5 text-ink-faint"
+          aria-label="Sensitive field"
+        />
+      )}
+      {highlightMatch(field.label, query)}
+      {field.needsRestart && <RestartRequiredBadge className="ml-2" />}
+    </div>
+    {FIELD_DESCRIPTIONS[field.key] && (
+      <div className="mt-0.5 text-xs text-ink-soft">{FIELD_DESCRIPTIONS[field.key]}</div>
+    )}
+    {/* break-all: setting values are webhook/base URLs, bank account
+            numbers and merchant ids — long unbroken tokens that used to run
+            into the Edit/Copy buttons. Matches the TOTP secret below. */}
+    <SensitiveSettingValue editing={editing} field={field} />
+    <SensitiveSettingEditor editing={editing} selectOptions={selectOptions} value={value} setValue={setValue} field={field} validationError={validationError} setConfirmOpen={setConfirmOpen} cancelEditing={cancelEditing} copyValue={copyValue} copied={copied} />
+  </div>);
+}
+
+function SettingsTelegramAndBot({ telegramVisible, telegramFields, fieldQueryFor, onSaved, onStatusChange, setRestartPending, setPendingTest, testResults, restartPending, setRestartConfirmOpen }: {
+  telegramVisible: boolean;
+  telegramFields: SettingsField[];
+  fieldQueryFor: (label: string) => string;
+  onSaved: () => void;
+  onStatusChange: (key: string, status: "editing" | "saving" | null) => void;
+  setRestartPending: import("react").Dispatch<import("react").SetStateAction<boolean>>;
+  setPendingTest: import("react").Dispatch<import("react").SetStateAction<{ methodKey: string; label: string; } | null>>;
+  testResults: Record<string, TestResult>;
+  restartPending: boolean;
+  setRestartConfirmOpen: import("react").Dispatch<import("react").SetStateAction<boolean>>;
+}) {
+  return (telegramVisible && (
+    <Card id="settings-telegram">
+      <CardHeader>
+        <CardTitle as="h2">Telegram &amp; Bot</CardTitle>
+      </CardHeader>
+      <CardContent className="divide-y divide-line">
+        {telegramFields.map((field) => (
+          <FieldRow
+            key={field.key}
+            field={field}
+            query={fieldQueryFor("Telegram & Bot")}
+            onSaved={onSaved}
+            onStatusChange={onStatusChange}
+            onNeedsRestart={() => setRestartPending(true)}
+          />
+        ))}
+      </CardContent>
+      <CardContent className="flex flex-wrap items-center gap-3 pt-0">
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={!telegramFields.find((f) => f.key === "bot_token")?.hasValue}
+          onClick={() => setPendingTest({ methodKey: "__telegram_bot_token__", label: "Order Bot token" })}
+        >
+          Test Connection
+        </Button>
+        {testResults.__telegram_bot_token__ && (
+          <p className={`text-xs ${testResults.__telegram_bot_token__.ok ? "text-grass-dark" : "text-rust"}`}>
+            {testResults.__telegram_bot_token__.detail}
+          </p>
+        )}
+        {restartPending && (
+          <div className="flex items-center gap-2">
+            <RestartRequiredBadge />
+            <Button size="sm" variant="outline" onClick={() => setRestartConfirmOpen(true)}>
+              Restart Bot
+            </Button>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  ));
+}
+
+function SettingsJoinGate({ joinGateVisible, joinGateFields, fieldQueryFor, onSaved, onStatusChange, setPendingTest, testResults }: {
+  joinGateVisible: boolean;
+  joinGateFields: SettingsField[];
+  fieldQueryFor: (label: string) => string;
+  onSaved: () => void;
+  onStatusChange: (key: string, status: "editing" | "saving" | null) => void;
+  setPendingTest: import("react").Dispatch<import("react").SetStateAction<{ methodKey: string; label: string; } | null>>;
+  testResults: Record<string, TestResult>;
+}) {
+  return (joinGateVisible && (
+    <Card id="settings-joingate">
+      <CardHeader>
+        <CardTitle as="h2">Join Gate</CardTitle>
+      </CardHeader>
+      <CardContent className="divide-y divide-line">
+        {joinGateFields.map((field) => (
+          <FieldRow
+            key={field.key}
+            field={field}
+            query={fieldQueryFor("Join Gate")}
+            onSaved={onSaved}
+            onStatusChange={onStatusChange}
+          />
+        ))}
+      </CardContent>
+      <CardContent className="flex flex-wrap items-center gap-3 pt-0">
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={!joinGateFields.find((f) => f.key === "join_gate_channel_id")?.hasValue}
+          onClick={() => setPendingTest({ methodKey: "__telegram_join_channel__", label: "Join Gate channel" })}
+        >
+          Test Connection (Channel)
+        </Button>
+        {testResults.__telegram_join_channel__ && (
+          <p className={`text-xs ${testResults.__telegram_join_channel__.ok ? "text-grass-dark" : "text-rust"}`}>
+            {testResults.__telegram_join_channel__.detail}
+          </p>
+        )}
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={!joinGateFields.find((f) => f.key === "join_gate_group_id")?.hasValue}
+          onClick={() => setPendingTest({ methodKey: "__telegram_join_group__", label: "Join Gate group" })}
+        >
+          Test Connection (Group)
+        </Button>
+        {testResults.__telegram_join_group__ && (
+          <p className={`text-xs ${testResults.__telegram_join_group__.ok ? "text-grass-dark" : "text-rust"}`}>
+            {testResults.__telegram_join_group__.detail}
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  ));
+}
+
+function SettingsEmailSMTP({ smtpVisible, smtpFields, fieldQueryFor, onSaved, onStatusChange, setPendingTest, testResults }: {
+  smtpVisible: boolean;
+  smtpFields: SettingsField[];
+  fieldQueryFor: (label: string) => string;
+  onSaved: () => void;
+  onStatusChange: (key: string, status: "editing" | "saving" | null) => void;
+  setPendingTest: import("react").Dispatch<import("react").SetStateAction<{ methodKey: string; label: string; } | null>>;
+  testResults: Record<string, TestResult>;
+}) {
+  return (smtpVisible && (
+    <Card id="settings-email">
+      <CardHeader>
+        <CardTitle as="h2">Email (SMTP)</CardTitle>
+      </CardHeader>
+      <CardContent className="divide-y divide-line">
+        {smtpFields.map((field) => (
+          <FieldRow
+            key={field.key}
+            field={field}
+            query={fieldQueryFor("Email (SMTP)")}
+            onSaved={onSaved}
+            onStatusChange={onStatusChange}
+          />
+        ))}
+      </CardContent>
+      <CardContent className="flex flex-wrap items-center gap-3 pt-0">
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={!smtpFields.find((f) => f.key === "smtp_host")?.hasValue}
+          onClick={() => setPendingTest({ methodKey: "__smtp__", label: "SMTP" })}
+        >
+          Test Connection
+        </Button>
+        {testResults.__smtp__ && (
+          <p className={`text-xs ${testResults.__smtp__.ok ? "text-grass-dark" : "text-rust"}`}>
+            {testResults.__smtp__.detail}
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  ));
+}
+
+function SettingsExchangeRates({ fxVisible, fxFields, fieldQueryFor, onSaved, onStatusChange, setFxConfirmOpen, fxLastRefreshedAt, fxConfirmOpen, refreshFx }: {
+  fxVisible: boolean;
+  fxFields: SettingsField[];
+  fieldQueryFor: (label: string) => string;
+  onSaved: () => void;
+  onStatusChange: (key: string, status: "editing" | "saving" | null) => void;
+  setFxConfirmOpen: import("react").Dispatch<import("react").SetStateAction<boolean>>;
+  fxLastRefreshedAt: number | null;
+  fxConfirmOpen: boolean;
+  refreshFx: () => Promise<string>;
+}) {
+  return (fxVisible && (
+    <Card id="settings-exchange-rates">
+      <CardHeader>
+        <CardTitle as="h2">Exchange Rates</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="divide-y divide-line">
+          {fxFields.map((field) => (
+            <FieldRow
+              key={field.key}
+              field={field}
+              query={fieldQueryFor("Exchange Rates")}
+              onSaved={onSaved}
+              onStatusChange={onStatusChange}
+            />
+          ))}
+        </div>
+        <div className="flex flex-wrap items-center gap-3 pt-3">
+          <Button onClick={() => setFxConfirmOpen(true)} variant="outline">
+            Refresh USDT Rate
+          </Button>
+          {fxLastRefreshedAt && (
+            <span className="text-xs text-ink-soft">
+              Last synced {Math.max(1, Math.round((Date.now() - fxLastRefreshedAt) / 60000))} minute
+              {Math.max(1, Math.round((Date.now() - fxLastRefreshedAt) / 60000)) === 1 ? "" : "s"} ago
+            </span>
+          )}
+          <SaveConfirmDialog
+            open={fxConfirmOpen}
+            onOpenChange={setFxConfirmOpen}
+            title="Refresh the USDT exchange rate?"
+            description="Fetches the current market rate and applies it immediately."
+            confirmLabel="Refresh"
+            onConfirm={refreshFx}
+          />
+        </div>
+      </CardContent>
+    </Card>
+  ));
+}
+
+function SettingsDigiflazzTopUpGame({ digiflazzVisible, digiflazzFields, fieldQueryFor, onSaved, onStatusChange, data, setPendingTest, testResults }: {
+  digiflazzVisible: boolean;
+  digiflazzFields: SettingsField[];
+  fieldQueryFor: (label: string) => string;
+  onSaved: () => void;
+  onStatusChange: (key: string, status: "editing" | "saving" | null) => void;
+  data: import("../hooks/useSettings").SettingsData;
+  setPendingTest: import("react").Dispatch<import("react").SetStateAction<{ methodKey: string; label: string; } | null>>;
+  testResults: Record<string, TestResult>;
+}) {
+  return (digiflazzVisible && (
+    <Card id="settings-digiflazz">
+      <CardHeader>
+        <CardTitle as="h2">Digiflazz (Top Up Game)</CardTitle>
+        <a href="/pricing" className="text-sm text-pine underline">Markup &amp; pricing ? Pricing &amp; Margins</a>
+      </CardHeader>
+      <CardContent className="divide-y divide-line">
+        {digiflazzFields.map((field) => (
+          <FieldRow
+            key={field.key}
+            field={field}
+            query={fieldQueryFor("Digiflazz (Top Up Game)")}
+            onSaved={onSaved}
+            onStatusChange={onStatusChange}
+          />
+        ))}
+      </CardContent>
+      <CardContent className="space-y-1 pt-0">
+        <p className="text-sm font-medium text-ink">Webhook URL</p>
+        {data.digiflazzWebhookUrl ? (
+          <>
+            <code className="block rounded bg-sand px-2 py-1 text-sm font-mono break-all text-ink select-all">
+              {data.digiflazzWebhookUrl}
+            </code>
+            <p className="text-xs text-ink-soft">
+              Paste this into the Digiflazz dashboard as the webhook URL, with the same secret as the webhook secret above.
+            </p>
+          </>
+        ) : (
+          <p className="text-xs text-ink-soft">
+            No public storefront address is configured. Set SHOP_PUBLIC_URL (or PUBLIC_URL) on the server to get the webhook URL for the Digiflazz dashboard.
+          </p>
+        )}
+      </CardContent>
+      <CardContent className="flex flex-wrap items-center gap-3 pt-0">
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={!digiflazzFields.find((f) => f.key === "digiflazz_api_key")?.hasValue}
+          title={
+            digiflazzFields.find((f) => f.key === "digiflazz_api_key")?.hasValue
+              ? undefined
+              : "Add credentials above to test this connection."
+          }
+          onClick={() => setPendingTest({ methodKey: "digiflazz", label: "Digiflazz" })}
+        >
+          Test Connection
+        </Button>
+        {testResults.digiflazz && (
+          <p className={`text-xs ${testResults.digiflazz.ok ? "text-grass-dark" : "text-rust"}`}>
+            {testResults.digiflazz.detail}
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  ));
+}
+
+function SettingsKokinPayNicknameCheck({ kokinpayVisible, kokinpayFields, fieldQueryFor, onSaved, onStatusChange, setPendingTest, testResults }: {
+  kokinpayVisible: boolean;
+  kokinpayFields: SettingsField[];
+  fieldQueryFor: (label: string) => string;
+  onSaved: () => void;
+  onStatusChange: (key: string, status: "editing" | "saving" | null) => void;
+  setPendingTest: import("react").Dispatch<import("react").SetStateAction<{ methodKey: string; label: string; } | null>>;
+  testResults: Record<string, TestResult>;
+}) {
+  return (kokinpayVisible && (
+    <Card id="settings-kokinpay">
+      <CardHeader>
+        <CardTitle as="h2">KokinPay (Nickname Check)</CardTitle>
+      </CardHeader>
+      <CardContent className="divide-y divide-line">
+        {kokinpayFields.map((field) => (
+          <FieldRow
+            key={field.key}
+            field={field}
+            query={fieldQueryFor("KokinPay (Nickname Check)")}
+            onSaved={onSaved}
+            onStatusChange={onStatusChange}
+          />
+        ))}
+      </CardContent>
+      <CardContent className="flex flex-wrap items-center gap-3 pt-0">
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={!kokinpayFields.find((f) => f.key === "kokinpay_api_key")?.hasValue}
+          title={
+            kokinpayFields.find((f) => f.key === "kokinpay_api_key")?.hasValue
+              ? undefined
+              : "Add credentials above to test this connection."
+          }
+          onClick={() => setPendingTest({ methodKey: "kokinpay", label: "KokinPay" })}
+        >
+          Test Connection
+        </Button>
+        {testResults.kokinpay && (
+          <p className={`text-xs ${testResults.kokinpay.ok ? "text-grass-dark" : "text-rust"}`}>
+            {testResults.kokinpay.detail}
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  ));
+}
+
+function SensitiveSettingEditor({ editing, selectOptions, value, setValue, field, validationError, setConfirmOpen, cancelEditing, copyValue, copied }: {
+  editing: boolean;
+  selectOptions: { value: string; label: string; }[] | undefined;
+  value: string;
+  setValue: import("react").Dispatch<import("react").SetStateAction<string>>;
+  field: SettingsField;
+  validationError: string | null;
+  setConfirmOpen: import("react").Dispatch<import("react").SetStateAction<boolean>>;
+  cancelEditing: () => void;
+  copyValue: () => Promise<void>;
+  copied: boolean;
+}) {
+  return (editing && (
+    // Chrome's password manager pairs a bare type="password" input with
+    // the NEAREST PRECEDING text input on the page as a guessed
+    // "username" — on this page, that's SettingsSearch's own "Search
+    // settings…" box, which renders before the field list in DOM
+    // order. autoComplete hints alone don't reliably stop this; a
+    // <form> boundary scopes Chrome's search to inside this tiny form
+    // instead of all the way up to SettingsSearch. Since this is the
+    // first real <form> around these buttons, they'd otherwise become
+    // native submit buttons by HTML's own default (Button never sets
+    // one) — every button below gets an explicit type="button", and
+    // onSubmit is a preventDefault backstop alongside the existing
+    // onKeyDown Enter handling.
+    <form onSubmit={(e) => e.preventDefault()} autoComplete="off">
+      <div className="mt-2 flex flex-col gap-1.5">
+        <div className="flex flex-wrap gap-2 items-center">
+          {selectOptions ? (
+            <Select value={value} onValueChange={setValue}>
+              <SelectTrigger className="w-full max-w-sm" aria-label={field.label}>
+                <SelectValue placeholder="Select a type" />
+              </SelectTrigger>
+              <SelectContent>
+                {selectOptions.map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : (
+            <Input
+              type={field.secret ? "password" : "text"}
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !validationError) setConfirmOpen(true);
+                if (e.key === "Escape") cancelEditing();
+              }}
+              aria-label={field.label}
+              aria-invalid={validationError ? true : undefined}
+              autoFocus
+              className="w-full max-w-sm"
+              // Reported bug: filling in a secret field (e.g. Digiflazz
+              // API key) here was landing in the page's own "Search
+              // settings…" box instead. Root cause: this is a generic
+              // setting value, not a real account credential, but
+              // rendering it as `type="password"` with no autoComplete
+              // hint and no <form> boundary makes Chrome's native
+              // password manager treat it as a login field — it pairs
+              // the field with the NEAREST PRECEDING text input on the
+              // page as a guessed "username" (here, SettingsSearch's own
+              // search box) and offers to autofill this admin's saved
+              // /login credentials into both. "new-password" is the
+              // standard signal that stops Chrome from treating a
+              // password-shaped input as a saved-login target; plain
+              // "off" for the non-secret case is just hygiene (a
+              // markup-type/value field has no business being
+              // autofilled either).
+              autoComplete={field.secret ? "new-password" : "off"}
+            />
+          )}
+          {field.secret && (
+            <Button
+              type="button"
+              size="icon-sm"
+              variant="ghost"
+              aria-label={`Copy ${field.label}`}
+              onClick={() => void copyValue()}
+              disabled={!value}
+            >
+              {copied ? <Check className="h-3.5 w-3.5 text-grass" /> : <Copy className="h-3.5 w-3.5" />}
+            </Button>
+          )}
+          <Button type="button" size="sm" onClick={() => setConfirmOpen(true)} disabled={!!validationError}>
+            <Save className="h-4 w-4" />
+            Save
+          </Button>
+          <Button type="button" size="sm" variant="ghost" onClick={cancelEditing}>
+            Cancel
+          </Button>
+        </div>
+        {validationError && <p className="text-sm text-rust">{validationError}</p>}
+      </div>
+    </form>
+  ));
+}
+
+function SettingsChangePassword({ setPwConfirmOpen, pwCurrent, setPwCurrent, pwNew, setPwNew, pwConfirmOpen, changePassword }: {
+  setPwConfirmOpen: import("react").Dispatch<import("react").SetStateAction<boolean>>;
+  pwCurrent: string;
+  setPwCurrent: import("react").Dispatch<import("react").SetStateAction<string>>;
+  pwNew: string;
+  setPwNew: import("react").Dispatch<import("react").SetStateAction<string>>;
+  pwConfirmOpen: boolean;
+  changePassword: () => Promise<string>;
+}) {
+  return (<div>
+    <div className="text-sm font-medium text-ink mb-3">
+      Change Password
+    </div>
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        setPwConfirmOpen(true);
+      }}
+      className="flex flex-col gap-2 max-w-xs"
+    >
+      <Input
+        type="password"
+        placeholder="Current password"
+        value={pwCurrent}
+        onChange={(e) => setPwCurrent(e.target.value)}
+        aria-label="Current password"
+        required
+      />
+      <Input
+        type="password"
+        placeholder="New password (min 8 chars)"
+        value={pwNew}
+        onChange={(e) => setPwNew(e.target.value)}
+        aria-label="New password"
+        required
+        minLength={8}
+      />
+      <Button type="submit" className="self-start">
+        Change Password
+      </Button>
+    </form>
+    <SaveConfirmDialog
+      open={pwConfirmOpen}
+      onOpenChange={setPwConfirmOpen}
+      title="Change your password?"
+      description="You'll need the new password next time you sign in."
+      confirmLabel="Change Password"
+      onConfirm={changePassword}
+    />
+  </div>);
+}
+
+function SettingsTwoFactorAuthentication({ tfaError, data, tfaAction, tfaSaving, totpCode, setTotpCode, setTfaEnableConfirmOpen, disablePw, setDisablePw, disableTotp, setDisableTotp, setTfaDisableConfirmOpen, tfaEnableConfirmOpen, enableTwoFa, tfaDisableConfirmOpen, disableTwoFa }: {
+  tfaError: string | null;
+  data: import("../hooks/useSettings").SettingsData;
+  tfaAction: (path: string, body: Record<string, string>) => Promise<void>;
+  tfaSaving: boolean;
+  totpCode: string;
+  setTotpCode: import("react").Dispatch<import("react").SetStateAction<string>>;
+  setTfaEnableConfirmOpen: import("react").Dispatch<import("react").SetStateAction<boolean>>;
+  disablePw: string;
+  setDisablePw: import("react").Dispatch<import("react").SetStateAction<string>>;
+  disableTotp: string;
+  setDisableTotp: import("react").Dispatch<import("react").SetStateAction<string>>;
+  setTfaDisableConfirmOpen: import("react").Dispatch<import("react").SetStateAction<boolean>>;
+  tfaEnableConfirmOpen: boolean;
+  enableTwoFa: () => Promise<string>;
+  tfaDisableConfirmOpen: boolean;
+  disableTwoFa: () => Promise<string>;
+}) {
+  return (<div>
+    <div className="text-sm font-medium text-ink mb-3">
+      Two-Factor Authentication
+    </div>
+    {tfaError && (
+      <p className="text-sm text-rust mb-2">{tfaError}</p>
+    )}
+
+    {!data.twoFaEnabled && !data.twoFaPending && (
+      <div>
+        <p className="text-sm text-ink-soft mb-3">
+          2FA is not enabled. Enable it for extra account security.
+        </p>
+        <Button
+          onClick={() => tfaAction("/api/settings/2fa/begin", {})}
+          disabled={tfaSaving}
+          variant="outline"
+        >
+          {tfaSaving ? "…" : "Enable 2FA"}
+        </Button>
+      </div>
+    )}
+
+    {data.twoFaPending && (
+      <div className="flex flex-col gap-3">
+        <p className="text-sm text-ink-soft">
+          Add this secret to your authenticator app, then enter the generated code:
+        </p>
+        <code className="block rounded bg-sand px-2 py-1 text-sm font-mono break-all text-ink">
+          {data.twoFaPending.secret}
+        </code>
+        <p className="text-xs text-ink-soft break-all">
+          {data.twoFaPending.uri}
+        </p>
+        <div className="flex flex-wrap gap-2 items-center">
+          <Input
+            type="text"
+            placeholder="6-digit code"
+            value={totpCode}
+            onChange={(e) => setTotpCode(e.target.value)}
+            aria-label="6-digit authenticator code"
+            className="w-36"
+            maxLength={6}
+          />
+          <Button onClick={() => setTfaEnableConfirmOpen(true)} disabled={tfaSaving}>
+            Confirm
+          </Button>
+          <Button
+            variant="ghost"
+            onClick={() => tfaAction("/api/settings/2fa/cancel", {})}
+            disabled={tfaSaving}
+          >
+            Cancel
+          </Button>
+        </div>
+      </div>
+    )}
+
+    {data.twoFaEnabled && !data.twoFaPending && (
+      <div className="flex flex-col gap-3">
+        <p className="text-sm text-grass">2FA is currently enabled.</p>
+        <p className="text-sm text-ink-soft">
+          To disable, enter your password and a TOTP code:
+        </p>
+        <div className="flex flex-col gap-2 max-w-xs">
+          <Input
+            type="password"
+            placeholder="Current password"
+            value={disablePw}
+            onChange={(e) => setDisablePw(e.target.value)}
+            aria-label="Current password"
+          />
+          <Input
+            type="text"
+            placeholder="6-digit TOTP code"
+            value={disableTotp}
+            onChange={(e) => setDisableTotp(e.target.value)}
+            aria-label="6-digit TOTP code"
+            className="w-36"
+            maxLength={6}
+          />
+          <Button
+            variant="destructive"
+            onClick={() => setTfaDisableConfirmOpen(true)}
+            disabled={tfaSaving}
+            className="self-start"
+          >
+            Disable 2FA
+          </Button>
+        </div>
+      </div>
+    )}
+    {/* Both rendered unconditionally — enabling/disabling 2FA
+                      flips data.twoFaPending/twoFaEnabled on refetch, which
+                      would otherwise unmount these mid-animation and cut off
+                      the checkmark. */}
+    <SaveConfirmDialog
+      open={tfaEnableConfirmOpen}
+      onOpenChange={setTfaEnableConfirmOpen}
+      title="Enable two-factor authentication?"
+      description="You'll need your authenticator app's code every time you sign in from now on."
+      confirmLabel="Enable"
+      onConfirm={enableTwoFa}
+    />
+    <SaveConfirmDialog
+      open={tfaDisableConfirmOpen}
+      onOpenChange={setTfaDisableConfirmOpen}
+      title="Disable two-factor authentication?"
+      description="Your account will only be protected by your password after this."
+      confirmLabel="Disable"
+      variant="destructive"
+      onConfirm={disableTwoFa}
+    />
+  </div>);
+}
+
+function SensitiveSettingValue({ editing, field }: {
+  editing: boolean;
+  field: SettingsField;
+}) {
+  return (!editing && (
+    <div className="mt-1 text-xs break-all text-ink-soft">
+      {field.secret ? (
+        field.hasValue ? "••••••••" : <StatusBadge status="NOT_CONFIGURED" />
+      ) : (
+        field.value || <StatusBadge status="OPTIONAL" />
+      )}
+    </div>
+  ));
+}
+
+function useSettingsSecurity({ markSaved, invalidate }: {
+  markSaved: () => void;
+  invalidate: () => void;
+}) {
+  const [pwCurrent, setPwCurrent] = useState("");
+
+  const [pwNew, setPwNew] = useState("");
+
+  const [pwConfirmOpen, setPwConfirmOpen] = useState(false);
+
+  const [totpCode, setTotpCode] = useState("");
+
+  const [tfaError, setTfaError] = useState<string | null>(null);
+
+  const [tfaSaving, setTfaSaving] = useState(false);
+
+  const [disablePw, setDisablePw] = useState("");
+
+  const [disableTotp, setDisableTotp] = useState("");
+
+  const [tfaEnableConfirmOpen, setTfaEnableConfirmOpen] = useState(false);
+
+  const [tfaDisableConfirmOpen, setTfaDisableConfirmOpen] = useState(false);
 
   async function changePassword() {
     await apiPost("/api/settings/password", {
@@ -923,30 +1630,16 @@ export function SettingsPage() {
     markSaved();
     return "Two-factor authentication disabled.";
   }
+  return { pwCurrent, setPwCurrent, pwNew, setPwNew, pwConfirmOpen, setPwConfirmOpen, totpCode, setTotpCode, tfaError, tfaSaving, disablePw, setDisablePw, disableTotp, setDisableTotp, tfaEnableConfirmOpen, setTfaEnableConfirmOpen, tfaDisableConfirmOpen, setTfaDisableConfirmOpen, changePassword, tfaAction, enableTwoFa, disableTwoFa };
+}
 
-  const togglePayment = useMutation({
-    mutationFn: ({ method, enabled }: { method: string; enabled: boolean }) =>
-      apiPost("/api/settings/payments/toggle", { method, enabled: enabled ? "true" : "false" }),
-    onSuccess: () => { invalidate(); markSaved(); },
-  });
-  const toggleService = useMutation({
-    mutationFn: ({ service, channel, enabled }: { service: string; channel: "bot" | "web"; enabled: boolean }) =>
-      apiPost("/api/settings/services/toggle", { service, channel, enabled }),
-    onSuccess: () => { invalidate(); markSaved(); },
-  });
+function useSettingsTransfer({ invalidate, markSaved }: {
+  invalidate: () => void;
+  markSaved: () => void;
+}) {
+  const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
 
-  async function runTest(methodKey: string) {
-    const result = await apiPost<TestResult>(`/api/settings/payments/${methodKey}/test`, {});
-    setTestResults((prev) => ({ ...prev, [methodKey]: result }));
-    return result.detail;
-  }
-
-  async function runRestart() {
-    await apiPost("/api/settings/restart", {});
-    setRestartPending(false);
-    markSaved();
-    return "Restart triggered — the bot process will pick up the change shortly.";
-  }
+  const [importConfirmOpen, setImportConfirmOpen] = useState(false);
 
   async function handleExport() {
     try {
@@ -985,7 +1678,114 @@ export function SettingsPage() {
     const reasons = (result.skippedKeys ?? []).map((s) => `${s.key}: ${s.reason}`).join(" ");
     return reasons ? `${summary} ${reasons}` : summary;
   }
+  return { importPreview, setImportPreview, importConfirmOpen, setImportConfirmOpen, handleExport, handleImportFile, runImport };
+}
 
+function buildSettingsSections({ data, query }: {
+  data: import("../hooks/useSettings").SettingsData;
+  query: string;
+}) {
+  const showGeneral = fieldGroup(data.fields, BRANDING_KEYS).length > 0;
+
+  const showTelegram = fieldGroup(data.fields, TELEGRAM_KEYS).length > 0;
+
+  const showJoinGate = fieldGroup(data.fields, JOIN_GATE_KEYS).length > 0;
+
+  const showSmtp = fieldGroup(data.fields, SMTP_KEYS).length > 0;
+
+  const showOther = fieldsOther(data.fields).length > 0;
+
+  const payGroups = PAY_CRED_GROUPS.map(({ methodKey, label, fieldKeys }) => {
+    const credFields = data.fields.filter((f) => (fieldKeys as readonly string[]).includes(f.key));
+    const methodState = data.payMethodState[methodKey];
+    return { methodKey, label, credFields, methodState, sectionId: `settings-pay-${methodKey}` };
+    // Every PAY_CRED_GROUPS entry has a matching PAYMENT_METHODS entry
+    // server-side, so `methodState` is always present in practice — the
+    // type predicate below just makes that explicit for TypeScript.
+  }).filter((g): g is typeof g & { methodState: PayMethodState } => g.methodState !== undefined);
+
+  function sectionVisible(label: string, fields: SettingsField[]): boolean {
+    if (!query) return true;
+    if (matchesQuery(label, query)) return true;
+    return fields.some((f) => matchesQuery(f.label, query));
+  }
+
+  function fieldQueryFor(label: string): string {
+    return query && matchesQuery(label, query) ? "" : query;
+  }
+
+  const generalFields = fieldGroup(data.fields, BRANDING_KEYS);
+
+  const telegramFields = fieldGroup(data.fields, TELEGRAM_KEYS);
+
+  const joinGateFields = fieldGroup(data.fields, JOIN_GATE_KEYS);
+
+  const smtpFields = fieldGroup(data.fields, SMTP_KEYS);
+
+  const otherFields = fieldsOther(data.fields);
+
+  const fxFields = fieldGroup(data.fields, FX_KEYS);
+
+  const digiflazzFields = fieldGroup(data.fields, DIGIFLAZZ_KEYS);
+
+  const kokinpayFields = fieldGroup(data.fields, KOKINPAY_KEYS);
+
+  const generalVisible = showGeneral && sectionVisible("General", generalFields);
+
+  const servicesVisible = !query || matchesQuery("Services", query) || data.serviceStates.some((service) => matchesQuery(service.label, query));
+
+  const telegramVisible = showTelegram && sectionVisible("Telegram & Bot", telegramFields);
+
+  const joinGateVisible = showJoinGate && sectionVisible("Join Gate", joinGateFields);
+
+  const smtpVisible = showSmtp && sectionVisible("Email (SMTP)", smtpFields);
+
+  const otherVisible = showOther && sectionVisible("Other Settings", otherFields);
+
+  const fxVisible = sectionVisible("Exchange Rates", fxFields);
+
+  const digiflazzVisible = sectionVisible("Digiflazz (Top Up Game)", digiflazzFields);
+
+  const kokinpayVisible = sectionVisible("KokinPay (Nickname Check)", kokinpayFields);
+
+  const securityVisible = sectionVisible("Security", []);
+
+  const payGroupsVisible = payGroups.map((g) => ({ ...g, visible: sectionVisible(g.label, g.credFields) }));
+
+  const navIcon = (Icon: typeof SettingsIcon) => Icon;
+
+  const topLinks: SettingsNavLink[] = [
+    ...(showGeneral ? [{ id: "settings-general", label: "General", icon: navIcon(SettingsIcon), visible: generalVisible }] : []),
+    { id: "settings-services", label: "Services", icon: navIcon(Blocks), visible: servicesVisible },
+    ...(showTelegram ? [{ id: "settings-telegram", label: "Telegram & Bot", icon: navIcon(Bot), visible: telegramVisible }] : []),
+    ...(showJoinGate ? [{ id: "settings-joingate", label: "Join Gate", icon: navIcon(Users), visible: joinGateVisible }] : []),
+    ...(showSmtp ? [{ id: "settings-email", label: "Email (SMTP)", icon: navIcon(Mail), visible: smtpVisible }] : []),
+  ];
+
+  const bottomLinks: SettingsNavLink[] = [
+    ...(showOther ? [{ id: "settings-other", label: "Other Settings", icon: navIcon(SlidersHorizontal), visible: otherVisible }] : []),
+    { id: "settings-exchange-rates", label: "Exchange Rates", icon: navIcon(ArrowLeftRight), visible: fxVisible },
+    { id: "settings-digiflazz", label: "Digiflazz (Top Up Game)", icon: navIcon(Gamepad2), visible: digiflazzVisible },
+    { id: "settings-kokinpay", label: "KokinPay (Nickname Check)", icon: navIcon(UserSearch), visible: kokinpayVisible },
+    { id: "settings-security", label: "Security", icon: navIcon(KeyRound), visible: securityVisible },
+  ];
+
+  const healthSections: HealthSection[] = [
+    { label: "Shop Information", status: (fieldGroup(data.fields, new Set(["shop_name"]))[0]?.hasValue ? "CONFIGURED" : "NOT_CONFIGURED") },
+    { label: "Telegram Bot", status: telegramFields.find((f) => f.key === "bot_token")?.hasValue ? "CONFIGURED" : "NOT_CONFIGURED" },
+    { label: "Payment Gateway", status: Object.values(data.payMethodState).some((m) => m.configured) ? "CONFIGURED" : "NOT_CONFIGURED" },
+    { label: "Exchange Rates", status: fxFields.find((f) => f.key === "usd_idr_rate")?.hasValue ? "CONFIGURED" : "NOT_CONFIGURED" },
+    { label: "Email (SMTP)", status: smtpFields.find((f) => f.key === "smtp_host")?.hasValue ? "CONFIGURED" : "OPTIONAL" },
+    { label: "Security", status: data.twoFaEnabled ? "CONFIGURED" : "OPTIONAL" },
+  ];
+  return { fieldQueryFor, generalFields, telegramFields, joinGateFields, smtpFields, otherFields, fxFields, digiflazzFields, kokinpayFields, generalVisible, servicesVisible, telegramVisible, joinGateVisible, smtpVisible, otherVisible, fxVisible, digiflazzVisible, kokinpayVisible, securityVisible, payGroupsVisible, topLinks, bottomLinks, healthSections };
+}
+
+function useConnectionChecks({ data, setRefreshingConnections, setTestResults }: {
+  data: NoInfer<import("../hooks/useSettings").SettingsData> | undefined;
+  setRefreshingConnections: import("react").Dispatch<import("react").SetStateAction<boolean>>;
+  setTestResults: import("react").Dispatch<import("react").SetStateAction<Record<string, TestResult>>>;
+}) {
   async function handleRefreshConnections() {
     if (!data) return;
     setRefreshingConnections(true);
@@ -1012,759 +1812,264 @@ export function SettingsPage() {
       setRefreshingConnections(false);
     }
   }
+  return { handleRefreshConnections };
+}
 
-  if (!data) {
-    return (
-      <PageLayout title="Settings">
-        <PageHeader title="Settings" />
-        {isLoading && <p className="text-ink-soft">Loading settings…</p>}
-        {isError && <p className="text-rust">Failed to load settings.</p>}
-      </PageLayout>
-    );
-  }
+function PaymentToggleDialog({ pendingToggle, setPendingToggle, togglePayment }: {
+  pendingToggle: { methodKey: string; label: string; nextEnabled: boolean; } | null;
+  setPendingToggle: import("react").Dispatch<import("react").SetStateAction<{ methodKey: string; label: string; nextEnabled: boolean; } | null>>;
+  togglePayment: import("@tanstack/react-query").UseMutationResult<unknown, Error, { method: string; enabled: boolean; }, unknown>;
+}) {
+  return (<SaveConfirmDialog
+    open={pendingToggle !== null}
+    onOpenChange={(open) => { if (!open) setPendingToggle(null); }}
+    title={
+      pendingToggle
+        ? `${pendingToggle.nextEnabled ? "Enable" : "Disable"} ${pendingToggle.label}?`
+        : ""
+    }
+    description={
+      pendingToggle?.nextEnabled
+        ? "Customers will be able to pay with this gateway immediately."
+        : "Customers will no longer be able to pay with this gateway."
+    }
+    confirmLabel={pendingToggle?.nextEnabled ? "Enable" : "Disable"}
+    variant={pendingToggle?.nextEnabled ? "default" : "destructive"}
+    successMessage="Payment method updated"
+    onConfirm={async () => {
+      if (!pendingToggle) return;
+      await togglePayment.mutateAsync({
+        method: pendingToggle.methodKey,
+        enabled: pendingToggle.nextEnabled,
+      });
+    }}
+  />);
+}
 
-  const showGeneral = fieldGroup(data.fields, BRANDING_KEYS).length > 0;
-  const showTelegram = fieldGroup(data.fields, TELEGRAM_KEYS).length > 0;
-  const showJoinGate = fieldGroup(data.fields, JOIN_GATE_KEYS).length > 0;
-  const showSmtp = fieldGroup(data.fields, SMTP_KEYS).length > 0;
-  const showOther = fieldsOther(data.fields).length > 0;
-  const payGroups = PAY_CRED_GROUPS.map(({ methodKey, label, fieldKeys }) => {
-    const credFields = data.fields.filter((f) => (fieldKeys as readonly string[]).includes(f.key));
-    const methodState = data.payMethodState[methodKey];
-    return { methodKey, label, credFields, methodState, sectionId: `settings-pay-${methodKey}` };
-    // Every PAY_CRED_GROUPS entry has a matching PAYMENT_METHODS entry
-    // server-side, so `methodState` is always present in practice — the
-    // type predicate below just makes that explicit for TypeScript.
-  }).filter((g): g is typeof g & { methodState: PayMethodState } => g.methodState !== undefined);
+function ServiceToggleDialog({ pendingService, setPendingService, toggleService }: {
+  pendingService: { id: string; label: string; channel: "bot" | "web"; nextEnabled: boolean; } | null;
+  setPendingService: import("react").Dispatch<import("react").SetStateAction<{ id: string; label: string; channel: "bot" | "web"; nextEnabled: boolean; } | null>>;
+  toggleService: import("@tanstack/react-query").UseMutationResult<unknown, Error, { service: string; channel: "bot" | "web"; enabled: boolean; }, unknown>;
+}) {
+  return (<SaveConfirmDialog
+    open={pendingService !== null}
+    onOpenChange={(open) => { if (!open) setPendingService(null); }}
+    title={pendingService ? `${pendingService.nextEnabled ? "Enable" : "Disable"} ${pendingService.label} for ${CHANNEL_PHRASE[pendingService.channel]}?` : ""}
+    description={!pendingService ? "" : pendingService.nextEnabled
+      ? `Customers can browse and place new orders for this service on ${CHANNEL_PHRASE[pendingService.channel]} immediately.`
+      : `This hides the service and blocks new orders on ${CHANNEL_PHRASE[pendingService.channel]}. Existing orders continue processing.`}
+    confirmLabel={pendingService?.nextEnabled ? "Enable" : "Disable"}
+    variant={pendingService?.nextEnabled ? "default" : "destructive"}
+    successMessage="Service availability updated"
+    onConfirm={async () => {
+      if (!pendingService) return;
+      await toggleService.mutateAsync({ service: pendingService.id, channel: pendingService.channel, enabled: pendingService.nextEnabled });
+    }}
+  />);
+}
 
-  // Search visibility — a section is visible if its own title matches, or any
-  // field inside it does; a field row filters further inside FieldRow itself.
-  function sectionVisible(label: string, fields: SettingsField[]): boolean {
-    if (!query) return true;
-    if (matchesQuery(label, query)) return true;
-    return fields.some((f) => matchesQuery(f.label, query));
-  }
-  // When a section's own title matched, its individual FieldRows should all
-  // stay visible (not re-filtered down to a label match) — FieldRow only
-  // hides a row on an unmatched query, so pass "" to it in that case.
-  function fieldQueryFor(label: string): string {
-    return query && matchesQuery(label, query) ? "" : query;
-  }
+function SettingsConnectionTestDialog({ pendingTest, setPendingTest, setTestResults, runTest }: {
+  pendingTest: { methodKey: string; label: string } | null;
+  setPendingTest: import("react").Dispatch<import("react").SetStateAction<{ methodKey: string; label: string } | null>>;
+  setTestResults: import("react").Dispatch<import("react").SetStateAction<Record<string, TestResult>>>;
+  runTest: (methodKey: string) => Promise<string>;
+}) {
+  return (<SaveConfirmDialog
+    open={pendingTest !== null}
+    onOpenChange={(open) => { if (!open) setPendingTest(null); }}
+    title={pendingTest ? `Test the ${pendingTest.label} connection?` : ""}
+    description="This checks whether the currently-saved credentials work, without changing anything."
+    confirmLabel="Test"
+    onConfirm={async () => {
+      if (!pendingTest) return "";
+      if (pendingTest.methodKey === "__telegram_bot_token__") {
+        const result = await apiPost<TestResult>("/api/settings/telegram/test", { target: "bot_token" });
+        setTestResults((prev) => ({ ...prev, __telegram_bot_token__: result }));
+        return result.detail;
+      }
+      if (pendingTest.methodKey === "__telegram_join_channel__") {
+        const result = await apiPost<TestResult>("/api/settings/telegram/test", { target: "join_gate_channel_id" });
+        setTestResults((prev) => ({ ...prev, __telegram_join_channel__: result }));
+        return result.detail;
+      }
+      if (pendingTest.methodKey === "__telegram_join_group__") {
+        const result = await apiPost<TestResult>("/api/settings/telegram/test", { target: "join_gate_group_id" });
+        setTestResults((prev) => ({ ...prev, __telegram_join_group__: result }));
+        return result.detail;
+      }
+      if (pendingTest.methodKey === "__smtp__") {
+        const result = await apiPost<TestResult>("/api/settings/smtp/test", {});
+        setTestResults((prev) => ({ ...prev, __smtp__: result }));
+        return result.detail;
+      }
+      return runTest(pendingTest.methodKey);
+    }}
+  />);
+}
 
-  const generalFields = fieldGroup(data.fields, BRANDING_KEYS);
-  const telegramFields = fieldGroup(data.fields, TELEGRAM_KEYS);
-  const joinGateFields = fieldGroup(data.fields, JOIN_GATE_KEYS);
-  const smtpFields = fieldGroup(data.fields, SMTP_KEYS);
-  const otherFields = fieldsOther(data.fields);
-  const fxFields = fieldGroup(data.fields, FX_KEYS);
-  const digiflazzFields = fieldGroup(data.fields, DIGIFLAZZ_KEYS);
-  const kokinpayFields = fieldGroup(data.fields, KOKINPAY_KEYS);
+function SettingsSidebar({ query, setQuery, topLinks, payGroupsVisible, bottomLinks }: {
+  query: string;
+  setQuery: import("react").Dispatch<import("react").SetStateAction<string>>;
+  topLinks: SettingsNavLink[];
+  payGroupsVisible: { visible: boolean; methodKey: "bybit" | "tokopay" | "paydisini" | "nowpayments" | "xendit" | "bybit_bsc" | "binance_internal"; label: "TokoPay" | "Xendit" | "PayDisini" | "NOWPayments" | "Bybit" | "Bybit BSC" | "Binance Internal Transfer"; credFields: SettingsField[]; methodState: PayMethodState; sectionId: string; }[];
+  bottomLinks: SettingsNavLink[];
+}) {
+  return (<div className="lg:sticky lg:top-4">
+    <SettingsSearch value={query} onChange={setQuery} />
+    <SettingsNav
+      topLinks={topLinks}
+      group={
+        payGroupsVisible.length > 0
+          ? {
+            label: "Payment Gateways",
+            icon: CreditCard,
+            links: payGroupsVisible.map((g) => ({ id: g.sectionId, label: g.label, icon: CreditCard, visible: g.visible })),
+          }
+          : null
+      }
+      bottomLinks={bottomLinks}
+    />
+  </div>);
+}
 
-  const generalVisible = showGeneral && sectionVisible("General", generalFields);
-  const servicesVisible = !query || matchesQuery("Services", query) || data.serviceStates.some((service) => matchesQuery(service.label, query));
-  const telegramVisible = showTelegram && sectionVisible("Telegram & Bot", telegramFields);
-  const joinGateVisible = showJoinGate && sectionVisible("Join Gate", joinGateFields);
-  const smtpVisible = showSmtp && sectionVisible("Email (SMTP)", smtpFields);
-  const otherVisible = showOther && sectionVisible("Other Settings", otherFields);
-  const fxVisible = sectionVisible("Exchange Rates", fxFields);
-  const digiflazzVisible = sectionVisible("Digiflazz (Top Up Game)", digiflazzFields);
-  const kokinpayVisible = sectionVisible("KokinPay (Nickname Check)", kokinpayFields);
-  const securityVisible = sectionVisible("Security", []);
-  const payGroupsVisible = payGroups.map((g) => ({ ...g, visible: sectionVisible(g.label, g.credFields) }));
-
-  const navIcon = (Icon: typeof SettingsIcon) => Icon;
-  const topLinks: SettingsNavLink[] = [
-    ...(showGeneral ? [{ id: "settings-general", label: "General", icon: navIcon(SettingsIcon), visible: generalVisible }] : []),
-    { id: "settings-services", label: "Services", icon: navIcon(Blocks), visible: servicesVisible },
-    ...(showTelegram ? [{ id: "settings-telegram", label: "Telegram & Bot", icon: navIcon(Bot), visible: telegramVisible }] : []),
-    ...(showJoinGate ? [{ id: "settings-joingate", label: "Join Gate", icon: navIcon(Users), visible: joinGateVisible }] : []),
-    ...(showSmtp ? [{ id: "settings-email", label: "Email (SMTP)", icon: navIcon(Mail), visible: smtpVisible }] : []),
-  ];
-  const bottomLinks: SettingsNavLink[] = [
-    ...(showOther ? [{ id: "settings-other", label: "Other Settings", icon: navIcon(SlidersHorizontal), visible: otherVisible }] : []),
-    { id: "settings-exchange-rates", label: "Exchange Rates", icon: navIcon(ArrowLeftRight), visible: fxVisible },
-    { id: "settings-digiflazz", label: "Digiflazz (Top Up Game)", icon: navIcon(Gamepad2), visible: digiflazzVisible },
-    { id: "settings-kokinpay", label: "KokinPay (Nickname Check)", icon: navIcon(UserSearch), visible: kokinpayVisible },
-    { id: "settings-security", label: "Security", icon: navIcon(KeyRound), visible: securityVisible },
-  ];
-
-  const healthSections: HealthSection[] = [
-    { label: "Shop Information", status: (fieldGroup(data.fields, new Set(["shop_name"]))[0]?.hasValue ? "CONFIGURED" : "NOT_CONFIGURED") },
-    { label: "Telegram Bot", status: telegramFields.find((f) => f.key === "bot_token")?.hasValue ? "CONFIGURED" : "NOT_CONFIGURED" },
-    { label: "Payment Gateway", status: Object.values(data.payMethodState).some((m) => m.configured) ? "CONFIGURED" : "NOT_CONFIGURED" },
-    { label: "Exchange Rates", status: fxFields.find((f) => f.key === "usd_idr_rate")?.hasValue ? "CONFIGURED" : "NOT_CONFIGURED" },
-    { label: "Email (SMTP)", status: smtpFields.find((f) => f.key === "smtp_host")?.hasValue ? "CONFIGURED" : "OPTIONAL" },
-    { label: "Security", status: data.twoFaEnabled ? "CONFIGURED" : "OPTIONAL" },
-  ];
-
-  return (
-    <PageLayout title="Settings">
-      <PageHeader
-        title="Settings"
-        actions={
-          <>
-            <SettingsSaveStatus fieldStatuses={fieldStatuses} lastSavedAt={lastSavedAt} />
-            <QuickActionsMenu
-              onExport={() => void handleExport()}
-              onImportFile={handleImportFile}
-              onRefreshConnections={() => void handleRefreshConnections()}
-              refreshing={refreshingConnections}
-            />
-          </>
-        }
-      />
-
-      <SettingsHealthCard sections={healthSections} />
-
-      <div className="lg:grid lg:grid-cols-[220px_minmax(0,1fr)] lg:items-start lg:gap-8">
-        <div className="lg:sticky lg:top-4">
-          <SettingsSearch value={query} onChange={setQuery} />
-          <SettingsNav
-            topLinks={topLinks}
-            group={
-              payGroupsVisible.length > 0
-                ? {
-                    label: "Payment Gateways",
-                    icon: CreditCard,
-                    links: payGroupsVisible.map((g) => ({ id: g.sectionId, label: g.label, icon: CreditCard, visible: g.visible })),
-                  }
-                : null
-            }
-            bottomLinks={bottomLinks}
+function SettingsGeneral({ generalVisible, generalFields, fieldQueryFor, onSaved, onStatusChange }: {
+  generalVisible: boolean;
+  generalFields: SettingsField[];
+  fieldQueryFor: (label: string) => string;
+  onSaved: () => void;
+  onStatusChange: (key: string, status: "editing" | "saving" | null) => void;
+}) {
+  return (generalVisible && (
+    <Card id="settings-general">
+      <CardHeader>
+        <CardTitle as="h2">General</CardTitle>
+      </CardHeader>
+      <CardContent className="divide-y divide-line">
+        {generalFields.map((field) => (
+          <FieldRow
+            key={field.key}
+            field={field}
+            query={fieldQueryFor("General")}
+            onSaved={onSaved}
+            onStatusChange={onStatusChange}
           />
-        </div>
+        ))}
+      </CardContent>
+    </Card>
+  ));
+}
 
-        <div className="flex flex-col gap-6 max-w-2xl [&>*]:scroll-mt-20">
-
-          {/* General */}
-          {generalVisible && (
-            <Card id="settings-general">
-              <CardHeader>
-                <CardTitle as="h2">General</CardTitle>
-              </CardHeader>
-              <CardContent className="divide-y divide-line">
-                {generalFields.map((field) => (
-                  <FieldRow
-                    key={field.key}
-                    field={field}
-                    query={fieldQueryFor("General")}
-                    onSaved={onSaved}
-                    onStatusChange={onStatusChange}
-                  />
-                ))}
-              </CardContent>
-            </Card>
-          )}
-
-          {servicesVisible && (
-            <Card id="settings-services">
-              <CardHeader>
-                <CardTitle as="h2">Services</CardTitle>
-                <p className="text-sm text-ink-soft">Control which service groups customers can browse and purchase, separately for the Telegram bot and the website.</p>
-              </CardHeader>
-              <CardContent className="divide-y divide-line">
-                {data.serviceStates
-                  .filter((service) => !query || matchesQuery("Services", query) || matchesQuery(service.label, query))
-                  .map((service) => (
-                    <div key={service.id} className="py-4 first:pt-0 last:pb-0">
-                      <p className="font-medium text-ink">{highlightMatch(service.label, query)}</p>
-                      <div className="mt-2 flex flex-wrap gap-x-6 gap-y-2">
-                        {SERVICE_CHANNEL_ROWS.map(({ channel, name }) => {
-                          const enabled = channel === "bot" ? service.enabledBot : service.enabledWeb;
-                          return (
-                            <label key={channel} className="flex items-center gap-2 text-sm text-ink-soft">
-                              <Switch
-                                aria-label={`${service.label} on ${CHANNEL_PHRASE[channel]}`}
-                                checked={enabled}
-                                onCheckedChange={(nextEnabled) => setPendingService({ id: service.id, label: service.label, channel, nextEnabled })}
-                              />
-                              <span>{name}: {enabled ? "available" : "hidden, no new orders"}</span>
-                            </label>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  ))}
-              </CardContent>
-            </Card>
-          )}
-
-          {/* Telegram & Bot */}
-          {telegramVisible && (
-            <Card id="settings-telegram">
-              <CardHeader>
-                <CardTitle as="h2">Telegram &amp; Bot</CardTitle>
-              </CardHeader>
-              <CardContent className="divide-y divide-line">
-                {telegramFields.map((field) => (
-                  <FieldRow
-                    key={field.key}
-                    field={field}
-                    query={fieldQueryFor("Telegram & Bot")}
-                    onSaved={onSaved}
-                    onStatusChange={onStatusChange}
-                    onNeedsRestart={() => setRestartPending(true)}
-                  />
-                ))}
-              </CardContent>
-              <CardContent className="flex flex-wrap items-center gap-3 pt-0">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={!telegramFields.find((f) => f.key === "bot_token")?.hasValue}
-                  onClick={() => setPendingTest({ methodKey: "__telegram_bot_token__", label: "Order Bot token" })}
-                >
-                  Test Connection
-                </Button>
-                {testResults.__telegram_bot_token__ && (
-                  <p className={`text-xs ${testResults.__telegram_bot_token__.ok ? "text-grass-dark" : "text-rust"}`}>
-                    {testResults.__telegram_bot_token__.detail}
-                  </p>
-                )}
-                {restartPending && (
-                  <div className="flex items-center gap-2">
-                    <RestartRequiredBadge />
-                    <Button size="sm" variant="outline" onClick={() => setRestartConfirmOpen(true)}>
-                      Restart Bot
-                    </Button>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          )}
-
-          {/* Join Gate */}
-          {joinGateVisible && (
-            <Card id="settings-joingate">
-              <CardHeader>
-                <CardTitle as="h2">Join Gate</CardTitle>
-              </CardHeader>
-              <CardContent className="divide-y divide-line">
-                {joinGateFields.map((field) => (
-                  <FieldRow
-                    key={field.key}
-                    field={field}
-                    query={fieldQueryFor("Join Gate")}
-                    onSaved={onSaved}
-                    onStatusChange={onStatusChange}
-                  />
-                ))}
-              </CardContent>
-              <CardContent className="flex flex-wrap items-center gap-3 pt-0">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={!joinGateFields.find((f) => f.key === "join_gate_channel_id")?.hasValue}
-                  onClick={() => setPendingTest({ methodKey: "__telegram_join_channel__", label: "Join Gate channel" })}
-                >
-                  Test Connection (Channel)
-                </Button>
-                {testResults.__telegram_join_channel__ && (
-                  <p className={`text-xs ${testResults.__telegram_join_channel__.ok ? "text-grass-dark" : "text-rust"}`}>
-                    {testResults.__telegram_join_channel__.detail}
-                  </p>
-                )}
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={!joinGateFields.find((f) => f.key === "join_gate_group_id")?.hasValue}
-                  onClick={() => setPendingTest({ methodKey: "__telegram_join_group__", label: "Join Gate group" })}
-                >
-                  Test Connection (Group)
-                </Button>
-                {testResults.__telegram_join_group__ && (
-                  <p className={`text-xs ${testResults.__telegram_join_group__.ok ? "text-grass-dark" : "text-rust"}`}>
-                    {testResults.__telegram_join_group__.detail}
-                  </p>
-                )}
-              </CardContent>
-            </Card>
-          )}
-
-          {/* Email (SMTP) */}
-          {smtpVisible && (
-            <Card id="settings-email">
-              <CardHeader>
-                <CardTitle as="h2">Email (SMTP)</CardTitle>
-              </CardHeader>
-              <CardContent className="divide-y divide-line">
-                {smtpFields.map((field) => (
-                  <FieldRow
-                    key={field.key}
-                    field={field}
-                    query={fieldQueryFor("Email (SMTP)")}
-                    onSaved={onSaved}
-                    onStatusChange={onStatusChange}
-                  />
-                ))}
-              </CardContent>
-              <CardContent className="flex flex-wrap items-center gap-3 pt-0">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={!smtpFields.find((f) => f.key === "smtp_host")?.hasValue}
-                  onClick={() => setPendingTest({ methodKey: "__smtp__", label: "SMTP" })}
-                >
-                  Test Connection
-                </Button>
-                {testResults.__smtp__ && (
-                  <p className={`text-xs ${testResults.__smtp__.ok ? "text-grass-dark" : "text-rust"}`}>
-                    {testResults.__smtp__.detail}
-                  </p>
-                )}
-              </CardContent>
-            </Card>
-          )}
-
-          {/* Payment Credentials — one card per method */}
-          {payGroupsVisible.filter((g) => g.visible).map((g) => (
-            <GatewayCard
-              key={g.methodKey}
-              methodKey={g.methodKey}
-              label={g.label}
-              credFields={g.credFields}
-              methodState={g.methodState}
-              sectionId={g.sectionId}
-              query={fieldQueryFor(g.label)}
-              onSaved={onSaved}
-              onStatusChange={onStatusChange}
-              onToggle={(methodKey, label, nextEnabled) => setPendingToggle({ methodKey, label, nextEnabled })}
-              testResult={testResults[g.methodKey]}
-              onTest={(methodKey, label) => setPendingTest({ methodKey, label })}
-              health={g.methodKey === "bybit" ? data.bybitHealth : g.methodKey === "bybit_bsc" ? data.bybitBscHealth : undefined}
-            />
+function SettingsServices({ servicesVisible, data, query, setPendingService }: {
+  servicesVisible: boolean;
+  data: import("../hooks/useSettings").SettingsData;
+  query: string;
+  setPendingService: import("react").Dispatch<import("react").SetStateAction<{ id: string; label: string; channel: "bot" | "web"; nextEnabled: boolean; } | null>>;
+}) {
+  return (servicesVisible && (
+    <Card id="settings-services">
+      <CardHeader>
+        <CardTitle as="h2">Services</CardTitle>
+        <p className="text-sm text-ink-soft">Control which service groups customers can browse and purchase, separately for the Telegram bot and the website.</p>
+      </CardHeader>
+      <CardContent className="divide-y divide-line">
+        {data.serviceStates
+          .filter((service) => !query || matchesQuery("Services", query) || matchesQuery(service.label, query))
+          .map((service) => (
+            <div key={service.id} className="py-4 first:pt-0 last:pb-0">
+              <p className="font-medium text-ink">{highlightMatch(service.label, query)}</p>
+              <div className="mt-2 flex flex-wrap gap-x-6 gap-y-2">
+                {SERVICE_CHANNEL_ROWS.map(({ channel, name }) => {
+                  const enabled = channel === "bot" ? service.enabledBot : service.enabledWeb;
+                  return (
+                    <label key={channel} className="flex items-center gap-2 text-sm text-ink-soft">
+                      <Switch
+                        aria-label={`${service.label} on ${CHANNEL_PHRASE[channel]}`}
+                        checked={enabled}
+                        onCheckedChange={(nextEnabled) => setPendingService({ id: service.id, label: service.label, channel, nextEnabled })}
+                      />
+                      <span>{name}: {enabled ? "available" : "hidden, no new orders"}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
           ))}
+      </CardContent>
+    </Card>
+  ));
+}
 
-          <SaveConfirmDialog
-            open={pendingToggle !== null}
-            onOpenChange={(open) => { if (!open) setPendingToggle(null); }}
-            title={
-              pendingToggle
-                ? `${pendingToggle.nextEnabled ? "Enable" : "Disable"} ${pendingToggle.label}?`
-                : ""
-            }
-            description={
-              pendingToggle?.nextEnabled
-                ? "Customers will be able to pay with this gateway immediately."
-                : "Customers will no longer be able to pay with this gateway."
-            }
-            confirmLabel={pendingToggle?.nextEnabled ? "Enable" : "Disable"}
-            variant={pendingToggle?.nextEnabled ? "default" : "destructive"}
-            successMessage="Payment method updated"
-            onConfirm={async () => {
-              if (!pendingToggle) return;
-              await togglePayment.mutateAsync({
-                method: pendingToggle.methodKey,
-                enabled: pendingToggle.nextEnabled,
-              });
-            }}
+function SettingsGatewayCard({ g, fieldQueryFor, onSaved, onStatusChange, setPendingToggle, testResults, setPendingTest, data }: {
+  g: { visible: boolean; methodKey: "bybit" | "tokopay" | "paydisini" | "nowpayments" | "xendit" | "bybit_bsc" | "binance_internal"; label: "TokoPay" | "Xendit" | "PayDisini" | "NOWPayments" | "Bybit" | "Bybit BSC" | "Binance Internal Transfer"; credFields: SettingsField[]; methodState: PayMethodState; sectionId: string; };
+  fieldQueryFor: (label: string) => string;
+  onSaved: () => void;
+  onStatusChange: (key: string, status: "editing" | "saving" | null) => void;
+  setPendingToggle: import("react").Dispatch<import("react").SetStateAction<{ methodKey: string; label: string; nextEnabled: boolean; } | null>>;
+  testResults: Record<string, TestResult>;
+  setPendingTest: import("react").Dispatch<import("react").SetStateAction<{ methodKey: string; label: string; } | null>>;
+  data: import("../hooks/useSettings").SettingsData;
+}) {
+  return (<GatewayCard
+    key={g.methodKey}
+    methodKey={g.methodKey}
+    label={g.label}
+    credFields={g.credFields}
+    methodState={g.methodState}
+    sectionId={g.sectionId}
+    query={fieldQueryFor(g.label)}
+    onSaved={onSaved}
+    onStatusChange={onStatusChange}
+    onToggle={(methodKey, label, nextEnabled) => setPendingToggle({ methodKey, label, nextEnabled })}
+    testResult={testResults[g.methodKey]}
+    onTest={(methodKey, label) => setPendingTest({ methodKey, label })}
+    health={g.methodKey === "bybit" ? data.bybitHealth : g.methodKey === "bybit_bsc" ? data.bybitBscHealth : undefined}
+  />);
+}
+
+function SettingsImportConfiguration({ importConfirmOpen, setImportPreview, setImportConfirmOpen, importPreview, runImport }: {
+  importConfirmOpen: NonNullable<{ importPreview: ImportPreview | null; setImportPreview: import("react").Dispatch<import("react").SetStateAction<ImportPreview | null>>; importConfirmOpen: boolean; setImportConfirmOpen: import("react").Dispatch<import("react").SetStateAction<boolean>>; handleExport: () => Promise<void>; handleImportFile: (preview: ImportPreview) => void; runImport: () => Promise<string>; }>["importConfirmOpen"];
+  setImportPreview: NonNullable<{ importPreview: ImportPreview | null; setImportPreview: import("react").Dispatch<import("react").SetStateAction<ImportPreview | null>>; importConfirmOpen: boolean; setImportConfirmOpen: import("react").Dispatch<import("react").SetStateAction<boolean>>; handleExport: () => Promise<void>; handleImportFile: (preview: ImportPreview) => void; runImport: () => Promise<string>; }>["setImportPreview"];
+  setImportConfirmOpen: NonNullable<{ importPreview: ImportPreview | null; setImportPreview: import("react").Dispatch<import("react").SetStateAction<ImportPreview | null>>; importConfirmOpen: boolean; setImportConfirmOpen: import("react").Dispatch<import("react").SetStateAction<boolean>>; handleExport: () => Promise<void>; handleImportFile: (preview: ImportPreview) => void; runImport: () => Promise<string>; }>["setImportConfirmOpen"];
+  importPreview: NonNullable<{ importPreview: ImportPreview | null; setImportPreview: import("react").Dispatch<import("react").SetStateAction<ImportPreview | null>>; importConfirmOpen: boolean; setImportConfirmOpen: import("react").Dispatch<import("react").SetStateAction<boolean>>; handleExport: () => Promise<void>; handleImportFile: (preview: ImportPreview) => void; runImport: () => Promise<string>; }>["importPreview"];
+  runImport: NonNullable<{ importPreview: ImportPreview | null; setImportPreview: import("react").Dispatch<import("react").SetStateAction<ImportPreview | null>>; importConfirmOpen: boolean; setImportConfirmOpen: import("react").Dispatch<import("react").SetStateAction<boolean>>; handleExport: () => Promise<void>; handleImportFile: (preview: ImportPreview) => void; runImport: () => Promise<string>; }>["runImport"];
+}) {
+  return (<SaveConfirmDialog
+    open={importConfirmOpen}
+    onOpenChange={(open) => { if (!open) setImportPreview(null); setImportConfirmOpen(open); }}
+    title="Import configuration?"
+    description={
+      importPreview
+        ? `This will update up to ${importPreview.count} setting${importPreview.count === 1 ? "" : "s"}. Secret fields and unrecognized keys are skipped automatically.`
+        : ""
+    }
+    confirmLabel="Import"
+    onConfirm={runImport}
+  />);
+}
+
+function SettingsOtherSettings({ otherVisible, otherFields, fieldQueryFor, onSaved, onStatusChange }: {
+  otherVisible: boolean;
+  otherFields: SettingsField[];
+  fieldQueryFor: (label: string) => string;
+  onSaved: () => void;
+  onStatusChange: (key: string, status: "editing" | "saving" | null) => void;
+}) {
+  return (otherVisible && (
+    <Card id="settings-other">
+      <CardHeader>
+        <CardTitle as="h2">Other Settings</CardTitle>
+      </CardHeader>
+      <CardContent className="divide-y divide-line">
+        {otherFields.map((field) => (
+          <FieldRow
+            key={field.key}
+            field={field}
+            query={fieldQueryFor("Other Settings")}
+            onSaved={onSaved}
+            onStatusChange={onStatusChange}
           />
-
-          <SaveConfirmDialog
-            open={pendingService !== null}
-            onOpenChange={(open) => { if (!open) setPendingService(null); }}
-            title={pendingService ? `${pendingService.nextEnabled ? "Enable" : "Disable"} ${pendingService.label} for ${CHANNEL_PHRASE[pendingService.channel]}?` : ""}
-            description={!pendingService ? "" : pendingService.nextEnabled
-              ? `Customers can browse and place new orders for this service on ${CHANNEL_PHRASE[pendingService.channel]} immediately.`
-              : `This hides the service and blocks new orders on ${CHANNEL_PHRASE[pendingService.channel]}. Existing orders continue processing.`}
-            confirmLabel={pendingService?.nextEnabled ? "Enable" : "Disable"}
-            variant={pendingService?.nextEnabled ? "default" : "destructive"}
-            successMessage="Service availability updated"
-            onConfirm={async () => {
-              if (!pendingService) return;
-              await toggleService.mutateAsync({ service: pendingService.id, channel: pendingService.channel, enabled: pendingService.nextEnabled });
-            }}
-          />
-
-          <SaveConfirmDialog
-            open={pendingTest !== null}
-            onOpenChange={(open) => { if (!open) setPendingTest(null); }}
-            title={pendingTest ? `Test the ${pendingTest.label} connection?` : ""}
-            description="This checks whether the currently-saved credentials work, without changing anything."
-            confirmLabel="Test"
-            onConfirm={async () => {
-              if (!pendingTest) return "";
-              if (pendingTest.methodKey === "__telegram_bot_token__") {
-                const result = await apiPost<TestResult>("/api/settings/telegram/test", { target: "bot_token" });
-                setTestResults((prev) => ({ ...prev, __telegram_bot_token__: result }));
-                return result.detail;
-              }
-              if (pendingTest.methodKey === "__telegram_join_channel__") {
-                const result = await apiPost<TestResult>("/api/settings/telegram/test", { target: "join_gate_channel_id" });
-                setTestResults((prev) => ({ ...prev, __telegram_join_channel__: result }));
-                return result.detail;
-              }
-              if (pendingTest.methodKey === "__telegram_join_group__") {
-                const result = await apiPost<TestResult>("/api/settings/telegram/test", { target: "join_gate_group_id" });
-                setTestResults((prev) => ({ ...prev, __telegram_join_group__: result }));
-                return result.detail;
-              }
-              if (pendingTest.methodKey === "__smtp__") {
-                const result = await apiPost<TestResult>("/api/settings/smtp/test", {});
-                setTestResults((prev) => ({ ...prev, __smtp__: result }));
-                return result.detail;
-              }
-              return runTest(pendingTest.methodKey);
-            }}
-          />
-
-          <SaveConfirmDialog
-            open={restartConfirmOpen}
-            onOpenChange={setRestartConfirmOpen}
-            title="Restart the bot?"
-            description="Active conversations may briefly disconnect while the process restarts."
-            confirmLabel="Restart"
-            variant="destructive"
-            onConfirm={runRestart}
-          />
-
-          <SaveConfirmDialog
-            open={importConfirmOpen}
-            onOpenChange={(open) => { if (!open) setImportPreview(null); setImportConfirmOpen(open); }}
-            title="Import configuration?"
-            description={
-              importPreview
-                ? `This will update up to ${importPreview.count} setting${importPreview.count === 1 ? "" : "s"}. Secret fields and unrecognized keys are skipped automatically.`
-                : ""
-            }
-            confirmLabel="Import"
-            onConfirm={runImport}
-          />
-
-          {/* Other / catch-all for any future fields */}
-          {otherVisible && (
-            <Card id="settings-other">
-              <CardHeader>
-                <CardTitle as="h2">Other Settings</CardTitle>
-              </CardHeader>
-              <CardContent className="divide-y divide-line">
-                {otherFields.map((field) => (
-                  <FieldRow
-                    key={field.key}
-                    field={field}
-                    query={fieldQueryFor("Other Settings")}
-                    onSaved={onSaved}
-                    onStatusChange={onStatusChange}
-                  />
-                ))}
-              </CardContent>
-            </Card>
-          )}
-
-          {/* Exchange Rates */}
-          {fxVisible && (
-            <Card id="settings-exchange-rates">
-              <CardHeader>
-                <CardTitle as="h2">Exchange Rates</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="divide-y divide-line">
-                  {fxFields.map((field) => (
-                    <FieldRow
-                      key={field.key}
-                      field={field}
-                      query={fieldQueryFor("Exchange Rates")}
-                      onSaved={onSaved}
-                      onStatusChange={onStatusChange}
-                    />
-                  ))}
-                </div>
-                <div className="flex flex-wrap items-center gap-3 pt-3">
-                  <Button onClick={() => setFxConfirmOpen(true)} variant="outline">
-                    Refresh USDT Rate
-                  </Button>
-                  {fxLastRefreshedAt && (
-                    <span className="text-xs text-ink-soft">
-                      Last synced {Math.max(1, Math.round((Date.now() - fxLastRefreshedAt) / 60000))} minute
-                      {Math.max(1, Math.round((Date.now() - fxLastRefreshedAt) / 60000)) === 1 ? "" : "s"} ago
-                    </span>
-                  )}
-                  <SaveConfirmDialog
-                    open={fxConfirmOpen}
-                    onOpenChange={setFxConfirmOpen}
-                    title="Refresh the USDT exchange rate?"
-                    description="Fetches the current market rate and applies it immediately."
-                    confirmLabel="Refresh"
-                    onConfirm={refreshFx}
-                  />
-                </div>
-              </CardContent>
-            </Card>
-          )}
-
-          {/* Digiflazz (Top Up Game) */}
-          {digiflazzVisible && (
-            <Card id="settings-digiflazz">
-              <CardHeader>
-                <CardTitle as="h2">Digiflazz (Top Up Game)</CardTitle>
-                <a href="/pricing" className="text-sm text-pine underline">Markup &amp; pricing ? Pricing &amp; Margins</a>
-              </CardHeader>
-              <CardContent className="divide-y divide-line">
-                {digiflazzFields.map((field) => (
-                  <FieldRow
-                    key={field.key}
-                    field={field}
-                    query={fieldQueryFor("Digiflazz (Top Up Game)")}
-                    onSaved={onSaved}
-                    onStatusChange={onStatusChange}
-                  />
-                ))}
-              </CardContent>
-              <CardContent className="space-y-1 pt-0">
-                <p className="text-sm font-medium text-ink">Webhook URL</p>
-                {data.digiflazzWebhookUrl ? (
-                  <>
-                    <code className="block rounded bg-sand px-2 py-1 text-sm font-mono break-all text-ink select-all">
-                      {data.digiflazzWebhookUrl}
-                    </code>
-                    <p className="text-xs text-ink-soft">
-                      Paste this into the Digiflazz dashboard as the webhook URL, with the same secret as the webhook secret above.
-                    </p>
-                  </>
-                ) : (
-                  <p className="text-xs text-ink-soft">
-                    No public storefront address is configured. Set SHOP_PUBLIC_URL (or PUBLIC_URL) on the server to get the webhook URL for the Digiflazz dashboard.
-                  </p>
-                )}
-              </CardContent>
-              <CardContent className="flex flex-wrap items-center gap-3 pt-0">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={!digiflazzFields.find((f) => f.key === "digiflazz_api_key")?.hasValue}
-                  title={
-                    digiflazzFields.find((f) => f.key === "digiflazz_api_key")?.hasValue
-                      ? undefined
-                      : "Add credentials above to test this connection."
-                  }
-                  onClick={() => setPendingTest({ methodKey: "digiflazz", label: "Digiflazz" })}
-                >
-                  Test Connection
-                </Button>
-                {testResults.digiflazz && (
-                  <p className={`text-xs ${testResults.digiflazz.ok ? "text-grass-dark" : "text-rust"}`}>
-                    {testResults.digiflazz.detail}
-                  </p>
-                )}
-              </CardContent>
-            </Card>
-          )}
-
-          {/* KokinPay (Nickname Check) — Task 7. Separate paid service from
-              Digiflazz, so its own Card; no markup-rule section since this is
-              a lookup-only service, not something priced/sold. */}
-          {kokinpayVisible && (
-            <Card id="settings-kokinpay">
-              <CardHeader>
-                <CardTitle as="h2">KokinPay (Nickname Check)</CardTitle>
-              </CardHeader>
-              <CardContent className="divide-y divide-line">
-                {kokinpayFields.map((field) => (
-                  <FieldRow
-                    key={field.key}
-                    field={field}
-                    query={fieldQueryFor("KokinPay (Nickname Check)")}
-                    onSaved={onSaved}
-                    onStatusChange={onStatusChange}
-                  />
-                ))}
-              </CardContent>
-              <CardContent className="flex flex-wrap items-center gap-3 pt-0">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={!kokinpayFields.find((f) => f.key === "kokinpay_api_key")?.hasValue}
-                  title={
-                    kokinpayFields.find((f) => f.key === "kokinpay_api_key")?.hasValue
-                      ? undefined
-                      : "Add credentials above to test this connection."
-                  }
-                  onClick={() => setPendingTest({ methodKey: "kokinpay", label: "KokinPay" })}
-                >
-                  Test Connection
-                </Button>
-                {testResults.kokinpay && (
-                  <p className={`text-xs ${testResults.kokinpay.ok ? "text-grass-dark" : "text-rust"}`}>
-                    {testResults.kokinpay.detail}
-                  </p>
-                )}
-              </CardContent>
-            </Card>
-          )}
-
-          {/* Security */}
-          {securityVisible && (
-            <Card id="settings-security">
-              <CardHeader>
-                <CardTitle as="h2">Security</CardTitle>
-              </CardHeader>
-              <CardContent className="flex flex-col gap-6">
-
-                {/* Change Password */}
-                <div>
-                  <div className="text-sm font-medium text-ink mb-3">
-                    Change Password
-                  </div>
-                  <form
-                    onSubmit={(e) => {
-                      e.preventDefault();
-                      setPwConfirmOpen(true);
-                    }}
-                    className="flex flex-col gap-2 max-w-xs"
-                  >
-                    <Input
-                      type="password"
-                      placeholder="Current password"
-                      value={pwCurrent}
-                      onChange={(e) => setPwCurrent(e.target.value)}
-                      aria-label="Current password"
-                      required
-                    />
-                    <Input
-                      type="password"
-                      placeholder="New password (min 8 chars)"
-                      value={pwNew}
-                      onChange={(e) => setPwNew(e.target.value)}
-                      aria-label="New password"
-                      required
-                      minLength={8}
-                    />
-                    <Button type="submit" className="self-start">
-                      Change Password
-                    </Button>
-                  </form>
-                  <SaveConfirmDialog
-                    open={pwConfirmOpen}
-                    onOpenChange={setPwConfirmOpen}
-                    title="Change your password?"
-                    description="You'll need the new password next time you sign in."
-                    confirmLabel="Change Password"
-                    onConfirm={changePassword}
-                  />
-                </div>
-
-                {/* Two-Factor Authentication */}
-                <div>
-                  <div className="text-sm font-medium text-ink mb-3">
-                    Two-Factor Authentication
-                  </div>
-                  {tfaError && (
-                    <p className="text-sm text-rust mb-2">{tfaError}</p>
-                  )}
-
-                  {!data.twoFaEnabled && !data.twoFaPending && (
-                    <div>
-                      <p className="text-sm text-ink-soft mb-3">
-                        2FA is not enabled. Enable it for extra account security.
-                      </p>
-                      <Button
-                        onClick={() => tfaAction("/api/settings/2fa/begin", {})}
-                        disabled={tfaSaving}
-                        variant="outline"
-                      >
-                        {tfaSaving ? "…" : "Enable 2FA"}
-                      </Button>
-                    </div>
-                  )}
-
-                  {data.twoFaPending && (
-                    <div className="flex flex-col gap-3">
-                      <p className="text-sm text-ink-soft">
-                        Add this secret to your authenticator app, then enter the generated code:
-                      </p>
-                      <code className="block rounded bg-sand px-2 py-1 text-sm font-mono break-all text-ink">
-                        {data.twoFaPending.secret}
-                      </code>
-                      <p className="text-xs text-ink-soft break-all">
-                        {data.twoFaPending.uri}
-                      </p>
-                      <div className="flex flex-wrap gap-2 items-center">
-                        <Input
-                          type="text"
-                          placeholder="6-digit code"
-                          value={totpCode}
-                          onChange={(e) => setTotpCode(e.target.value)}
-                          aria-label="6-digit authenticator code"
-                          className="w-36"
-                          maxLength={6}
-                        />
-                        <Button onClick={() => setTfaEnableConfirmOpen(true)} disabled={tfaSaving}>
-                          Confirm
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          onClick={() => tfaAction("/api/settings/2fa/cancel", {})}
-                          disabled={tfaSaving}
-                        >
-                          Cancel
-                        </Button>
-                      </div>
-                    </div>
-                  )}
-
-                  {data.twoFaEnabled && !data.twoFaPending && (
-                    <div className="flex flex-col gap-3">
-                      <p className="text-sm text-grass">2FA is currently enabled.</p>
-                      <p className="text-sm text-ink-soft">
-                        To disable, enter your password and a TOTP code:
-                      </p>
-                      <div className="flex flex-col gap-2 max-w-xs">
-                        <Input
-                          type="password"
-                          placeholder="Current password"
-                          value={disablePw}
-                          onChange={(e) => setDisablePw(e.target.value)}
-                          aria-label="Current password"
-                        />
-                        <Input
-                          type="text"
-                          placeholder="6-digit TOTP code"
-                          value={disableTotp}
-                          onChange={(e) => setDisableTotp(e.target.value)}
-                          aria-label="6-digit TOTP code"
-                          className="w-36"
-                          maxLength={6}
-                        />
-                        <Button
-                          variant="destructive"
-                          onClick={() => setTfaDisableConfirmOpen(true)}
-                          disabled={tfaSaving}
-                          className="self-start"
-                        >
-                          Disable 2FA
-                        </Button>
-                      </div>
-                    </div>
-                  )}
-                  {/* Both rendered unconditionally — enabling/disabling 2FA
-                      flips data.twoFaPending/twoFaEnabled on refetch, which
-                      would otherwise unmount these mid-animation and cut off
-                      the checkmark. */}
-                  <SaveConfirmDialog
-                    open={tfaEnableConfirmOpen}
-                    onOpenChange={setTfaEnableConfirmOpen}
-                    title="Enable two-factor authentication?"
-                    description="You'll need your authenticator app's code every time you sign in from now on."
-                    confirmLabel="Enable"
-                    onConfirm={enableTwoFa}
-                  />
-                  <SaveConfirmDialog
-                    open={tfaDisableConfirmOpen}
-                    onOpenChange={setTfaDisableConfirmOpen}
-                    title="Disable two-factor authentication?"
-                    description="Your account will only be protected by your password after this."
-                    confirmLabel="Disable"
-                    variant="destructive"
-                    onConfirm={disableTwoFa}
-                  />
-                </div>
-
-              </CardContent>
-            </Card>
-          )}
-
-        </div>
-      </div>
-    </PageLayout>
-  );
+        ))}
+      </CardContent>
+    </Card>
+  ));
 }

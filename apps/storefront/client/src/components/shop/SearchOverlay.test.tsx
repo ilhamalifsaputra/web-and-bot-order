@@ -1,15 +1,15 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import "@testing-library/jest-dom";
-import { describe, it, expect, beforeEach, vi, type Mock } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { SearchOverlayProvider, useSearchOverlay } from "./SearchOverlay";
-import SearchRedirect from "../../pages/SearchRedirect";
+import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { apiGet } from "../../api/client";
 import type { SearchPageData } from "../../api/types";
-import type { ProductCardData } from "./ProductCard";
 import { RECENT_KEY } from "../../lib/recentSearches";
+import SearchRedirect from "../../pages/SearchRedirect";
+import type { ProductCardData } from "./ProductCard";
+import { SearchOverlayProvider, useSearchOverlay } from "./SearchOverlay";
 
 vi.mock("../../api/client", () => ({ apiGet: vi.fn() }));
 
@@ -234,4 +234,27 @@ describe("SearchOverlay", () => {
     await user.click(screen.getByRole("button", { name: "Open search" }));
     expect(screen.getByRole("dialog", { name: "Search" })).toBeInTheDocument();
   });
+  it("drops a keyboard highlight when the result set changes, then lets hover select a new row", async () => {
+    const user = userEvent.setup();
+    renderOverlay({ q: "netflix", products: [product], low_threshold: 5 });
+    (apiGet as Mock).mockImplementation(async (path: string) => path.includes("q=spotify")
+      ? { q: "spotify", products: [product2], low_threshold: 5 }
+      : { q: "netflix", products: [product], low_threshold: 5 });
+    await user.click(screen.getByRole("button", { name: "Open search" }));
+    const input = screen.getByRole("combobox");
+    await user.type(input, "netflix");
+    await screen.findByRole("option", { name: /Netflix Premium/ });
+    await user.keyboard("{ArrowDown}");
+    expect(input).toHaveAttribute("aria-activedescendant");
+    await user.clear(input);
+    await user.type(input, "spotify");
+    const option = await screen.findByRole("option", { name: /Spotify Premium/ });
+    expect(input).not.toHaveAttribute("aria-activedescendant");
+    expect(option).toHaveAttribute("aria-selected", "false");
+    await user.hover(option);
+    expect(option).toHaveAttribute("aria-selected", "true");
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(screen.getByTestId("loc")).toHaveTextContent("/p/spotify-premium"));
+  });
+
 });

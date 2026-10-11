@@ -1,28 +1,29 @@
-import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
-import { PageLayout } from "../components/shared/PageLayout";
-import { PageHeader } from "../components/shared/PageHeader";
-import { FilterBar } from "../components/shared/FilterBar";
-import { DataTable } from "../components/shared/DataTable";
-import { EmptyState } from "../components/shared/EmptyState";
-import { StatTile } from "../components/shared/StatTile";
 import { Button } from "@/components/ui/button";
-import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
+import { Card, CardContent } from "@/components/ui/card";
 import {
   DropdownMenu,
-  DropdownMenuTrigger,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Boxes, Eye, Download, MoreVertical } from "lucide-react";
-import { Card, CardContent } from "@/components/ui/card";
-import { SearchBar } from "../components/shared/SearchBar";
-import { StatusBadge } from "../components/shared/StatusBadge";
-import { RestockRequestsHeader } from "../components/shared/RestockRequestsHeader";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { useQuery } from "@tanstack/react-query";
+import { Boxes, Download, Eye, MoreVertical } from "lucide-react";
+import { useId, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { apiGet } from "../api/client";
-import { formatRestockRequests } from "../lib/restockRequests";
+import { DataTable } from "../components/shared/DataTable";
+import { EmptyState } from "../components/shared/EmptyState";
+import { FilterBar } from "../components/shared/FilterBar";
+import { PageHeader } from "../components/shared/PageHeader";
+import { PageLayout } from "../components/shared/PageLayout";
+import { RestockRequestsHeader } from "../components/shared/RestockRequestsHeader";
+import { SearchBar } from "../components/shared/SearchBar";
+import { SelectFilter } from "../components/shared/SelectFilter";
+import { StatTile } from "../components/shared/StatTile";
+import { StatusBadge } from "../components/shared/StatusBadge";
 import { ALL_TAB, familyTabOptions, matchesFamilyTab, type FamilyTab } from "../lib/catalogFamily";
+import { formatRestockRequests } from "../lib/restockRequests";
 
 interface DenominationRow {
   id: number;
@@ -116,6 +117,7 @@ function useStock() {
 }
 
 export function StockPage() {
+  const fieldId = useId();
   const navigate = useNavigate();
   const { data, isLoading, isError } = useStock();
   const [filter, setFilter] = useState("");
@@ -213,266 +215,290 @@ export function StockPage() {
         <StatTile label="Out of Stock" value={outOfStockCount} isLoading={!data} />
       </div>
 
-      <FilterBar onClear={hasActiveFilter ? clearFilters : undefined} className="mb-4">
-        <SearchBar
-          value={filter}
-          onChange={setFilter}
-          placeholder="Filter by denomination, product, or category…"
-        />
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-ink-soft">Product type</label>
-          <Select value={familyFilter} onValueChange={(v) => setFamilyFilter(v as FamilyTab)}>
-            <SelectTrigger size="sm" className="w-40">
-              <SelectValue placeholder="All products" />
-            </SelectTrigger>
-            <SelectContent>
-              {familyTabOptions().map((tab) => (
-                <SelectItem key={tab.value} value={tab.value}>
-                  {tab.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-ink-soft">Category</label>
-          <Select value={activeCategoryFilter} onValueChange={setCategoryFilter}>
-            <SelectTrigger size="sm" className="w-40">
-              <SelectValue placeholder="All categories" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All categories</SelectItem>
-              {categories.map((c) => (
-                <SelectItem key={c.id} value={String(c.id)}>
-                  {c.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-ink-soft">Availability</label>
-          <Select value={availabilityFilter} onValueChange={(v) => setAvailabilityFilter(v as AvailabilityFilter)}>
-            <SelectTrigger size="sm" className="w-36">
-              <SelectValue placeholder="All" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All</SelectItem>
-              <SelectItem value="in-stock">In Stock</SelectItem>
-              <SelectItem value="low">Low Stock</SelectItem>
-              <SelectItem value="out">Out of Stock</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-ink-soft">Sort</label>
-          <Select value={sortBy} onValueChange={(v) => setSortBy(v as SortMode)}>
-            <SelectTrigger size="sm" className="w-40">
-              <SelectValue placeholder="Sort" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="name">Name A–Z</SelectItem>
-              <SelectItem value="available-asc">Low Stock First</SelectItem>
-              <SelectItem value="category">Category</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-      </FilterBar>
+      <StockFilters hasActiveFilter={hasActiveFilter} clearFilters={clearFilters} filter={filter} setFilter={setFilter} fieldId={fieldId} familyFilter={familyFilter} setFamilyFilter={setFamilyFilter} activeCategoryFilter={activeCategoryFilter} setCategoryFilter={setCategoryFilter} categories={categories} availabilityFilter={availabilityFilter} setAvailabilityFilter={setAvailabilityFilter} sortBy={sortBy} setSortBy={setSortBy} />
 
-      <Card>
-        <CardContent>
-          <DataTable
-            nested
-            columns={[
-              {
-                key: "denomination",
-                header: "Denomination",
-                render: (row) => (
-                  <div className="max-w-[240px]">
-                    <div className="truncate font-medium text-sm text-ink" title={row.name}>
-                      {row.name}
-                    </div>
-                    <div
-                      className="truncate text-xs text-ink-soft"
-                      title={row.product?.category?.name ?? undefined}
-                    >
-                      {row.product?.category?.name ?? "—"}
-                    </div>
-                  </div>
-                ),
-              },
-              {
-                key: "status",
-                header: "Status",
-                render: (row) => {
-                  const available = counts[String(row.id)]?.available ?? 0;
-                  const tier = stockTier(row, available, lowStockThreshold);
-                  if (tier === "inactive") return <StatusBadge status="INACTIVE" />;
-                  if (tier === "manual") return <StatusBadge status="MANUAL" />;
-                  if (tier === "provider") return <StatusBadge status="PROVIDER" />;
-                  if (tier === "out") return <StatusBadge status="OUT_OF_STOCK" />;
-                  if (tier === "low") return <StatusBadge status="LOW_STOCK" />;
-                  return <StatusBadge status="IN_STOCK" />;
-                },
-              },
-              {
-                key: "available",
-                header: "Available",
-                render: (row) => {
-                  if (!row.usesLocalInventory) return <span className="text-sm text-ink-soft">—</span>;
-                  const available = counts[String(row.id)]?.available ?? 0;
-                  return (
-                    <span
-                      className={
-                        available === 0
-                          ? "font-semibold text-rust"
-                          : "text-sm text-ink"
-                      }
-                    >
-                      {available}
-                    </span>
-                  );
-                },
-              },
-              {
-                key: "waiting",
-                header: <RestockRequestsHeader />,
-                render: (row) => (
-                  <span className="text-sm text-ink-soft">
-                    {row.usesLocalInventory
-                      ? formatRestockRequests(data?.waiting[String(row.id)], counts[String(row.id)]?.available)
-                      : "—"}
-                  </span>
-                ),
-              },
-              {
-                key: "stock",
-                header: "Stock",
-                render: (row) => {
-                  // No local stock rows, so no stock figure: "No stock added"
-                  // or "Sold out" would be false for a provider/manual SKU.
-                  if (!row.usesLocalInventory) {
-                    return (
-                      <div className="min-w-[120px] text-sm text-ink-soft">
-                        {row.fulfillmentSource === "PROVIDER_API" ? "Provider" : "Manual"}
-                      </div>
-                    );
-                  }
-                  const cnt = counts[String(row.id)];
-                  const available = cnt?.available ?? 0;
-                  const reserved = cnt?.reserved ?? 0;
-                  const sold = cnt?.sold ?? 0;
-                  const dead = cnt?.dead ?? 0;
-                  // "No stock added" only when this SKU has NEVER held a
-                  // stock row at all (never an add, sale, reservation, or
-                  // dead mark) — distinct from "Sold out", which means it
-                  // once had stock but every unit is now spoken for.
-                  const everHadStock = available + reserved + sold + dead > 0;
-                  const toneClass = !everHadStock
-                    ? "text-ink-soft"
-                    : available === 0
-                      ? "font-semibold text-rust"
-                      : available <= lowStockThreshold
-                        ? "font-semibold text-amberx"
-                        : "font-semibold text-grass";
-                  const label = !everHadStock ? "No stock added" : available === 0 ? "Sold out" : `${available} ready`;
-                  return (
-                    <div className="min-w-[120px] text-sm">
-                      <span className={toneClass}>{label}</span>
-                      {reserved > 0 && <span className="text-ink-soft"> · {reserved} reserved</span>}
-                    </div>
-                  );
-                },
-              },
-              {
-                key: "reserved",
-                header: "Reserved",
-                render: (row) => {
-                  const cnt = counts[String(row.id)];
-                  return (
-                    <span className="text-sm text-ink-soft">{cnt?.reserved ?? 0}</span>
-                  );
-                },
-              },
-              {
-                key: "sold",
-                header: "Sold",
-                render: (row) => {
-                  const cnt = counts[String(row.id)];
-                  return (
-                    <span className="text-sm text-ink-soft">{cnt?.sold ?? 0}</span>
-                  );
-                },
-              },
-              {
-                key: "product",
-                header: "Product",
-                render: (row) => (
-                  <span
-                    className="block max-w-[240px] truncate text-sm text-ink-soft"
-                    title={row.product?.name ?? undefined}
-                  >
-                    {row.product?.name ?? "—"}
-                  </span>
-                ),
-              },
-              {
-                key: "actions",
-                header: "",
-                render: (row) => {
-                  const available = counts[String(row.id)]?.available ?? 0;
-                  return (
-                    <div onClick={(e) => e.stopPropagation()}>
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="icon-sm" aria-label={`Actions for ${row.name}`}>
-                            <MoreVertical className="h-4 w-4" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem onSelect={() => navigate(row.usesLocalInventory ? `/stock/${row.id}` : row.product ? `/catalog/${row.product.id}` : "/catalog")}>
-                            <Eye className="h-4 w-4" />
-                            View
-                          </DropdownMenuItem>
-                          {row.usesLocalInventory && available > 0 && (
-                            <DropdownMenuItem asChild>
-                              <a href={`/api/stock/${row.id}/download`}>
-                                <Download className="h-4 w-4" />
-                                Download Credentials
-                              </a>
-                            </DropdownMenuItem>
-                          )}
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </div>
-                  );
-                },
-              },
-            ]}
-            data={filtered}
-            isLoading={isLoading}
-            keyExtractor={(row) => row.id}
-            onRowClick={(row) => navigate(row.usesLocalInventory ? `/stock/${row.id}` : row.product ? `/catalog/${row.product.id}` : "/catalog")}
-            empty={
-              isGenuinelyEmpty ? (
-                <EmptyState
-                  icon={Boxes}
-                  title="No denominations found"
-                  description="Stock will appear here once denominations exist."
-                  action={{ label: "Go to Catalog", onClick: () => navigate("/catalog") }}
-                />
-              ) : (
-                <EmptyState
-                  icon={Boxes}
-                  title="No denominations found"
-                  description="Try adjusting your search or filters."
-                  secondaryAction={{ label: "Clear Filters", onClick: clearFilters }}
-                />
-              )
-            }
-          />
-        </CardContent>
-      </Card>
+      <StockSummary counts={counts} lowStockThreshold={lowStockThreshold} data={data} navigate={navigate} filtered={filtered} isLoading={isLoading} isGenuinelyEmpty={isGenuinelyEmpty} clearFilters={clearFilters} />
     </PageLayout>
   );
+}
+
+function StockFilters({ hasActiveFilter, clearFilters, filter, setFilter, fieldId, familyFilter, setFamilyFilter, activeCategoryFilter, setCategoryFilter, categories, availabilityFilter, setAvailabilityFilter, sortBy, setSortBy }: {
+  hasActiveFilter: boolean;
+  clearFilters: () => void;
+  filter: string;
+  setFilter: import("react").Dispatch<import("react").SetStateAction<string>>;
+  fieldId: string;
+  familyFilter: string;
+  setFamilyFilter: import("react").Dispatch<import("react").SetStateAction<string>>;
+  activeCategoryFilter: string;
+  setCategoryFilter: import("react").Dispatch<import("react").SetStateAction<string>>;
+  categories: { id: number; name: string; }[];
+  availabilityFilter: AvailabilityFilter;
+  setAvailabilityFilter: import("react").Dispatch<import("react").SetStateAction<AvailabilityFilter>>;
+  sortBy: SortMode;
+  setSortBy: import("react").Dispatch<import("react").SetStateAction<SortMode>>;
+}) {
+  return (<FilterBar onClear={hasActiveFilter ? clearFilters : undefined} className="mb-4">
+    <SearchBar
+      value={filter}
+      onChange={setFilter}
+      placeholder="Filter by denomination, product, or category…"
+    />
+    <div className="flex flex-col gap-1">
+      <label htmlFor={`${fieldId}-product-type-1`} className="text-xs text-ink-soft">Product type</label>
+      <Select value={familyFilter} onValueChange={(v) => setFamilyFilter(v as FamilyTab)}>
+        <SelectTrigger id={`${fieldId}-product-type-1`} size="sm" className="w-40">
+          <SelectValue placeholder="All products" />
+        </SelectTrigger>
+        <SelectContent>
+          {familyTabOptions().map((tab) => (
+            <SelectItem key={tab.value} value={tab.value}>
+              {tab.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+    <SelectFilter id={`${fieldId}-category-2`} label="Category" value={activeCategoryFilter} onValueChange={setCategoryFilter} size="sm" triggerClassName="w-40" placeholder="All categories">
+      <SelectItem value="all">All categories</SelectItem>
+      {categories.map((c) => (
+        <SelectItem key={c.id} value={String(c.id)}>
+          {c.name}
+        </SelectItem>
+      ))}
+    </SelectFilter>
+    <div className="flex flex-col gap-1">
+      <label htmlFor={`${fieldId}-availability-3`} className="text-xs text-ink-soft">Availability</label>
+      <Select value={availabilityFilter} onValueChange={(v) => setAvailabilityFilter(v as AvailabilityFilter)}>
+        <SelectTrigger id={`${fieldId}-availability-3`} size="sm" className="w-36">
+          <SelectValue placeholder="All" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="all">All</SelectItem>
+          <SelectItem value="in-stock">In Stock</SelectItem>
+          <SelectItem value="low">Low Stock</SelectItem>
+          <SelectItem value="out">Out of Stock</SelectItem>
+        </SelectContent>
+      </Select>
+    </div>
+    <div className="flex flex-col gap-1">
+      <label htmlFor={`${fieldId}-sort-4`} className="text-xs text-ink-soft">Sort</label>
+      <Select value={sortBy} onValueChange={(v) => setSortBy(v as SortMode)}>
+        <SelectTrigger id={`${fieldId}-sort-4`} size="sm" className="w-40">
+          <SelectValue placeholder="Sort" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="name">Name A–Z</SelectItem>
+          <SelectItem value="available-asc">Low Stock First</SelectItem>
+          <SelectItem value="category">Category</SelectItem>
+        </SelectContent>
+      </Select>
+    </div>
+  </FilterBar>);
+}
+
+function StockSummary({ counts, lowStockThreshold, data, navigate, filtered, isLoading, isGenuinelyEmpty, clearFilters }: {
+  counts: Record<string, StockCounts>;
+  lowStockThreshold: number;
+  data: NoInfer<StockData> | undefined;
+  navigate: import("react-router-dom").NavigateFunction;
+  filtered: DenominationRow[];
+  isLoading: boolean;
+  isGenuinelyEmpty: boolean;
+  clearFilters: () => void;
+}) {
+  return (<Card>
+    <CardContent>
+      <DataTable
+        nested
+        columns={[
+          {
+            key: "denomination",
+            header: "Denomination",
+            render: (row) => (
+              <div className="max-w-[240px]">
+                <div className="truncate font-medium text-sm text-ink" title={row.name}>
+                  {row.name}
+                </div>
+                <div
+                  className="truncate text-xs text-ink-soft"
+                  title={row.product?.category?.name ?? undefined}
+                >
+                  {row.product?.category?.name ?? "—"}
+                </div>
+              </div>
+            ),
+          },
+          {
+            key: "status",
+            header: "Status",
+            render: (row) => {
+              const available = counts[String(row.id)]?.available ?? 0;
+              const tier = stockTier(row, available, lowStockThreshold);
+              if (tier === "inactive") return <StatusBadge status="INACTIVE" />;
+              if (tier === "manual") return <StatusBadge status="MANUAL" />;
+              if (tier === "provider") return <StatusBadge status="PROVIDER" />;
+              if (tier === "out") return <StatusBadge status="OUT_OF_STOCK" />;
+              if (tier === "low") return <StatusBadge status="LOW_STOCK" />;
+              return <StatusBadge status="IN_STOCK" />;
+            },
+          },
+          {
+            key: "available",
+            header: "Available",
+            render: (row) => {
+              if (!row.usesLocalInventory) return <span className="text-sm text-ink-soft">—</span>;
+              const available = counts[String(row.id)]?.available ?? 0;
+              return (
+                <span
+                  className={
+                    available === 0
+                      ? "font-semibold text-rust"
+                      : "text-sm text-ink"
+                  }
+                >
+                  {available}
+                </span>
+              );
+            },
+          },
+          {
+            key: "waiting",
+            header: <RestockRequestsHeader />,
+            render: (row) => (
+              <span className="text-sm text-ink-soft">
+                {row.usesLocalInventory
+                  ? formatRestockRequests(data?.waiting[String(row.id)], counts[String(row.id)]?.available)
+                  : "—"}
+              </span>
+            ),
+          },
+          {
+            key: "stock",
+            header: "Stock",
+            render: (row) => {
+              // No local stock rows, so no stock figure: "No stock added"
+              // or "Sold out" would be false for a provider/manual SKU.
+              if (!row.usesLocalInventory) {
+                return (
+                  <div className="min-w-[120px] text-sm text-ink-soft">
+                    {row.fulfillmentSource === "PROVIDER_API" ? "Provider" : "Manual"}
+                  </div>
+                );
+              }
+              const cnt = counts[String(row.id)];
+              const available = cnt?.available ?? 0;
+              const reserved = cnt?.reserved ?? 0;
+              const sold = cnt?.sold ?? 0;
+              const dead = cnt?.dead ?? 0;
+              // "No stock added" only when this SKU has NEVER held a
+              // stock row at all (never an add, sale, reservation, or
+              // dead mark) — distinct from "Sold out", which means it
+              // once had stock but every unit is now spoken for.
+              const everHadStock = available + reserved + sold + dead > 0;
+              const toneClass = !everHadStock
+                ? "text-ink-soft"
+                : available === 0
+                  ? "font-semibold text-rust"
+                  : available <= lowStockThreshold
+                    ? "font-semibold text-amberx"
+                    : "font-semibold text-grass";
+              const label = !everHadStock ? "No stock added" : available === 0 ? "Sold out" : `${available} ready`;
+              return (
+                <div className="min-w-[120px] text-sm">
+                  <span className={toneClass}>{label}</span>
+                  {reserved > 0 && <span className="text-ink-soft"> · {reserved} reserved</span>}
+                </div>
+              );
+            },
+          },
+          {
+            key: "reserved",
+            header: "Reserved",
+            render: (row) => {
+              const cnt = counts[String(row.id)];
+              return (
+                <span className="text-sm text-ink-soft">{cnt?.reserved ?? 0}</span>
+              );
+            },
+          },
+          {
+            key: "sold",
+            header: "Sold",
+            render: (row) => {
+              const cnt = counts[String(row.id)];
+              return (
+                <span className="text-sm text-ink-soft">{cnt?.sold ?? 0}</span>
+              );
+            },
+          },
+          {
+            key: "product",
+            header: "Product",
+            render: (row) => (
+              <span
+                className="block max-w-[240px] truncate text-sm text-ink-soft"
+                title={row.product?.name ?? undefined}
+              >
+                {row.product?.name ?? "—"}
+              </span>
+            ),
+          },
+          {
+            key: "actions",
+            header: "",
+            render: (row) => {
+              const available = counts[String(row.id)]?.available ?? 0;
+              return (
+                <div onClick={(e) => e.stopPropagation()}>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="ghost" size="icon-sm" aria-label={`Actions for ${row.name}`}>
+                        <MoreVertical className="h-4 w-4" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem onSelect={() => navigate(row.usesLocalInventory ? `/stock/${row.id}` : row.product ? `/catalog/${row.product.id}` : "/catalog")}>
+                        <Eye className="h-4 w-4" />
+                        View
+                      </DropdownMenuItem>
+                      {row.usesLocalInventory && available > 0 && (
+                        <DropdownMenuItem asChild>
+                          <a href={`/api/stock/${row.id}/download`}>
+                            <Download className="h-4 w-4" />
+                            Download Credentials
+                          </a>
+                        </DropdownMenuItem>
+                      )}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+              );
+            },
+          },
+        ]}
+        data={filtered}
+        isLoading={isLoading}
+        keyExtractor={(row) => row.id}
+        onRowClick={(row) => navigate(row.usesLocalInventory ? `/stock/${row.id}` : row.product ? `/catalog/${row.product.id}` : "/catalog")}
+        empty={
+          isGenuinelyEmpty ? (
+            <EmptyState
+              icon={Boxes}
+              title="No denominations found"
+              description="Stock will appear here once denominations exist."
+              action={{ label: "Go to Catalog", onClick: () => navigate("/catalog") }}
+            />
+          ) : (
+            <EmptyState
+              icon={Boxes}
+              title="No denominations found"
+              description="Try adjusting your search or filters."
+              secondaryAction={{ label: "Clear Filters", onClick: clearFilters }}
+            />
+          )
+        }
+      />
+    </CardContent>
+  </Card>);
 }

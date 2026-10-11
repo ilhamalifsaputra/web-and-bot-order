@@ -1,9 +1,9 @@
-import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
-import { DataTable } from "../shared/DataTable";
-import { StatusBadge } from "../shared/StatusBadge";
-import { EmptyState } from "../shared/EmptyState";
-import { formatCurrencyDisplay } from "../shared/CurrencyAmount";
 import { useRecentOrders } from "../../hooks/useRecentOrders";
+import { formatCurrencyDisplay } from "../shared/CurrencyAmount.helpers";
+import { DataTable } from "../shared/DataTable";
+import { EmptyState } from "../shared/EmptyState";
+import { StatusBadge } from "../shared/StatusBadge";
+import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 
 export function RecentOrdersTable() {
   const { data, isLoading, isError } = useRecentOrders();

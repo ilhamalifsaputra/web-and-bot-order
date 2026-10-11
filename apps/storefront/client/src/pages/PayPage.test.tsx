@@ -1,12 +1,13 @@
-import "@testing-library/jest-dom";
-import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import PayPage, { advanceCardState } from "./PayPage";
+import "@testing-library/jest-dom";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { apiGet, apiPost } from "../api/client";
-import { rememberCodeEmailed } from "../lib/orderCodeEmailed";
 import type { CustomerProgress, PayData, PayStatusData } from "../api/types";
+import { rememberCodeEmailed } from "../lib/orderCodeEmailed";
+import PayPage from "./PayPage";
+import { advanceCardState } from "./PayPage.helpers";
 
 vi.mock("../api/client", () => ({
   apiGet: vi.fn(),

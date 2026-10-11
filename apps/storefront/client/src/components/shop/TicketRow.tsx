@@ -1,3 +1,4 @@
+import { subjectOf } from "./TicketRow.helpers";
 /**
  * One ticket in the /help "My tickets" list, in both layouts:
  *   - `TicketTableRow` — a `<tr>` for the desktop `.data-table`.
@@ -15,23 +16,10 @@
  * two handlers from both firing.
  */
 import { ChevronRight } from "lucide-react";
-import { t } from "../../lib/i18n";
-import { formatRelativeTime } from "../../lib/formatRelativeTime";
 import type { SupportTicketSummary } from "../../api/types";
+import { formatRelativeTime } from "../../lib/formatRelativeTime";
+import { t } from "../../lib/i18n";
 import TicketStatusBadge from "./TicketStatusBadge";
-
-const SUBJECT_MAX = 80;
-
-/** First line of `message`, trimmed and clipped to ~80 chars with an ellipsis. */
-function firstLine(message: string): string {
-  const line = (message.split("\n")[0] ?? "").trim();
-  return line.length > SUBJECT_MAX ? `${line.slice(0, SUBJECT_MAX).trimEnd()}…` : line;
-}
-
-/** The subject to show for a ticket: its own subject, else the message's first line. */
-export function subjectOf(ticket: SupportTicketSummary): string {
-  return ticket.subject?.trim() || firstLine(ticket.message);
-}
 
 export interface TicketRowProps {
   ticket: SupportTicketSummary;
@@ -50,9 +38,8 @@ export function TicketTableRow({ ticket, onSelect, selected }: TicketRowProps) {
       // box-shadow is in the transition list, not just colours: the selected
       // state's `ring-1` compiles to a box-shadow, so without it the ring
       // snaps on/off while the background fades.
-      className={`cursor-pointer transition-[background-color,box-shadow] ease-gg hover:bg-sand/40 ${
-        selected ? "bg-pine-tint/40 ring-1 ring-inset ring-pine" : ""
-      }`}
+      className={`cursor-pointer transition-[background-color,box-shadow] ease-gg hover:bg-sand/40 ${selected ? "bg-pine-tint/40 ring-1 ring-inset ring-pine" : ""
+        }`}
     >
       <td>
         <button
@@ -99,9 +86,8 @@ export function TicketCard({ ticket, onSelect, selected }: TicketRowProps) {
       onClick={() => onSelect(ticket.id)}
       // Same as the table row: the selected `ring-1` is a box-shadow, so it
       // belongs in the transition list alongside the background colour.
-      className={`card block w-full p-4 text-left transition-[background-color,box-shadow] ease-gg hover:bg-sand/40 ${
-        selected ? "bg-pine-tint/40 ring-1 ring-pine" : ""
-      }`}
+      className={`card block w-full p-4 text-left transition-[background-color,box-shadow] ease-gg hover:bg-sand/40 ${selected ? "bg-pine-tint/40 ring-1 ring-pine" : ""
+        }`}
     >
       <div className="flex items-center justify-between gap-3">
         <span className="font-semibold text-pine">{ticketRef(ticket.id)}</span>

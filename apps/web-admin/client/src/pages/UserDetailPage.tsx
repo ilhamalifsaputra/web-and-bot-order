@@ -1,29 +1,29 @@
-import { useState } from "react";
-import { useParams, useNavigate } from "react-router-dom";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { PageLayout } from "../components/shared/PageLayout";
-import { PageHeader } from "../components/shared/PageHeader";
-import { DataTable } from "../components/shared/DataTable";
-import { EmptyState } from "../components/shared/EmptyState";
-import { StatusBadge } from "../components/shared/StatusBadge";
-import { CurrencyBadge } from "../components/shared/CurrencyBadge";
-import { ConfirmDialog } from "../components/shared/ConfirmDialog";
-import { CurrencyStack } from "../components/shared/CurrencyAmount";
-import { CardRow } from "../components/shared/CardRow";
-import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import {
   Select,
-  SelectTrigger,
-  SelectValue,
   SelectContent,
   SelectItem,
+  SelectTrigger,
+  SelectValue,
 } from "@/components/ui/select";
-import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
-import { CircleCheck, Ban } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Ban, CircleCheck } from "lucide-react";
+import { useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
 import { apiGet, apiPost } from "../api/client";
+import { CardRow } from "../components/shared/CardRow";
+import { ConfirmDialog } from "../components/shared/ConfirmDialog";
+import { CurrencyStack } from "../components/shared/CurrencyAmount";
+import { CurrencyBadge } from "../components/shared/CurrencyBadge";
+import { DataTable } from "../components/shared/DataTable";
+import { EmptyState } from "../components/shared/EmptyState";
+import { PageHeader } from "../components/shared/PageHeader";
+import { PageLayout } from "../components/shared/PageLayout";
+import { StatusBadge } from "../components/shared/StatusBadge";
 import { describeError } from "../lib/errorMessages";
 
 interface UserDetail {
@@ -123,92 +123,7 @@ export function UserDetailPage() {
       />
 
       {/* User info */}
-      <div className="grid grid-cols-1 gap-4 mb-6 sm:grid-cols-2">
-        <Card>
-          <CardHeader><CardTitle>Profile</CardTitle></CardHeader>
-          <CardContent className="divide-y divide-line">
-            {user.banned && (
-              <div className="mb-2 rounded bg-rust-tint px-3 py-2 text-xs font-medium break-words text-rust-dark">
-                BANNED{user.banReason ? ` — ${user.banReason}` : ""}
-              </div>
-            )}
-            {/* Both are single unbroken tokens (a Telegram username runs to 32
-                chars), so they need break-all — CardRow's generic break-words
-                cannot break a token, leaving it to be clipped by the card. */}
-            <CardRow label="Telegram ID" value={<span className="font-mono text-xs break-all">{user.telegramId ?? "—"}</span>} />
-            <CardRow
-              label="Username"
-              value={<span className="break-all">{user.username ? `@${user.username}` : "—"}</span>}
-            />
-            <CardRow
-              label="Role"
-              value={
-                user.role === "ADMIN" ? (
-                  <StatusBadge status={user.role} />
-                ) : (
-                  <Select value={user.role} onValueChange={(role) => setRole.mutate(role)} disabled={setRole.isPending}>
-                    <SelectTrigger className="w-28"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      {data.roles.map((r) => (
-                        <SelectItem key={r} value={r}>{r}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                )
-              }
-            />
-            <CardRow label="Display Currency" value={<CurrencyBadge currency={user.preferredCurrency as "USD" | "IDR" | null} />} />
-            <CardRow label="Wallet" value={<CurrencyStack amounts={[{ currency: "IDR", value: user.walletBalance }, { currency: "USDT", value: user.walletBalanceUsdt }]} />} />
-            <CardRow label="Total spent" value={<CurrencyStack amounts={[{ currency: "IDR", value: data.totalSpent.idr }, { currency: "USDT", value: data.totalSpent.usdt }]} />} />
-          </CardContent>
-        </Card>
-
-        <div className="flex flex-col gap-4">
-          {/* Wallet adjust */}
-          <Card>
-            <CardHeader><CardTitle>Wallet Adjustment</CardTitle></CardHeader>
-            <CardContent className="flex flex-col gap-3">
-              <div className="flex gap-2">
-                <Button type="button" size="sm" variant={walletCurrency === "IDR" ? "default" : "outline"} onClick={() => setWalletCurrency("IDR")}>IDR</Button>
-                <Button type="button" size="sm" variant={walletCurrency === "USDT" ? "default" : "outline"} onClick={() => setWalletCurrency("USDT")}>USDT</Button>
-              </div>
-              <div className="flex gap-2">
-                <Input placeholder="Amount (+ or −)" value={walletForm.delta} onChange={e => setWalletForm(f => ({ ...f, delta: e.target.value }))} className="w-32" />
-                <Input placeholder="Reason (required)" value={walletForm.note} onChange={e => setWalletForm(f => ({ ...f, note: e.target.value }))} className="flex-1" />
-                <Button onClick={() => wallet.mutate()} disabled={wallet.isPending}>Adjust</Button>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Ban / unban */}
-          <Card>
-            <CardHeader><CardTitle>Account</CardTitle></CardHeader>
-            <CardContent>
-              {user.banned ? (
-                <ConfirmDialog
-                  trigger={<Button variant="outline"><CircleCheck className="h-4 w-4" />Unban user</Button>}
-                  title="Unban this user?"
-                  description="The user will be able to use the bot again."
-                  confirmLabel="Unban"
-                  variant="default"
-                  onConfirm={() => ban.mutate(false)}
-                />
-              ) : (
-                <div className="flex gap-2">
-                  <Input placeholder="Ban reason (optional)" value={banReason} onChange={e => setBanReason(e.target.value)} className="flex-1" />
-                  <ConfirmDialog
-                    trigger={<Button variant="destructive"><Ban className="h-4 w-4" />Ban user</Button>}
-                    title="Ban this user?"
-                    description="The user will be blocked from using the bot."
-                    confirmLabel="Ban"
-                    onConfirm={() => ban.mutate(true)}
-                  />
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        </div>
-      </div>
+      <UserDetailProfile user={user} setRole={setRole} data={data} walletCurrency={walletCurrency} setWalletCurrency={setWalletCurrency} walletForm={walletForm} setWalletForm={setWalletForm} wallet={wallet} ban={ban} banReason={banReason} setBanReason={setBanReason} />
 
       {/* Orders */}
       <Card className="mb-6">
@@ -316,4 +231,105 @@ export function UserDetailPage() {
       </Card>
     </PageLayout>
   );
+}
+
+function UserDetailProfile({ user, setRole, data, walletCurrency, setWalletCurrency, walletForm, setWalletForm, wallet, ban, banReason, setBanReason }: {
+  user: { id: number; username: string | null; fullName: string | null; telegramId: string | null; role: string; banned: boolean; banReason: string | null; walletBalance: string; walletBalanceUsdt: string; preferredCurrency: string | null; };
+  setRole: import("@tanstack/react-query").UseMutationResult<unknown, Error, string, unknown>;
+  data: UserDetail;
+  walletCurrency: "IDR" | "USDT";
+  setWalletCurrency: import("react").Dispatch<import("react").SetStateAction<"IDR" | "USDT">>;
+  walletForm: { delta: string; note: string; };
+  setWalletForm: import("react").Dispatch<import("react").SetStateAction<{ delta: string; note: string; }>>;
+  wallet: import("@tanstack/react-query").UseMutationResult<unknown, Error, void, unknown>;
+  ban: import("@tanstack/react-query").UseMutationResult<unknown, Error, boolean, unknown>;
+  banReason: string;
+  setBanReason: import("react").Dispatch<import("react").SetStateAction<string>>;
+}) {
+  return (<div className="grid grid-cols-1 gap-4 mb-6 sm:grid-cols-2">
+    <Card>
+      <CardHeader><CardTitle>Profile</CardTitle></CardHeader>
+      <CardContent className="divide-y divide-line">
+        {user.banned && (
+          <div className="mb-2 rounded bg-rust-tint px-3 py-2 text-xs font-medium break-words text-rust-dark">
+            BANNED{user.banReason ? ` — ${user.banReason}` : ""}
+          </div>
+        )}
+        {/* Both are single unbroken tokens (a Telegram username runs to 32
+                chars), so they need break-all — CardRow's generic break-words
+                cannot break a token, leaving it to be clipped by the card. */}
+        <CardRow label="Telegram ID" value={<span className="font-mono text-xs break-all">{user.telegramId ?? "—"}</span>} />
+        <CardRow
+          label="Username"
+          value={<span className="break-all">{user.username ? `@${user.username}` : "—"}</span>}
+        />
+        <CardRow
+          label="Role"
+          value={
+            user.role === "ADMIN" ? (
+              <StatusBadge status={user.role} />
+            ) : (
+              <Select value={user.role} onValueChange={(role) => setRole.mutate(role)} disabled={setRole.isPending}>
+                <SelectTrigger className="w-28"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {data.roles.map((r) => (
+                    <SelectItem key={r} value={r}>{r}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )
+          }
+        />
+        <CardRow label="Display Currency" value={<CurrencyBadge currency={user.preferredCurrency as "USD" | "IDR" | null} />} />
+        <CardRow label="Wallet" value={<CurrencyStack amounts={[{ currency: "IDR", value: user.walletBalance }, { currency: "USDT", value: user.walletBalanceUsdt }]} />} />
+        <CardRow label="Total spent" value={<CurrencyStack amounts={[{ currency: "IDR", value: data.totalSpent.idr }, { currency: "USDT", value: data.totalSpent.usdt }]} />} />
+      </CardContent>
+    </Card>
+
+    <div className="flex flex-col gap-4">
+      {/* Wallet adjust */}
+      <Card>
+        <CardHeader><CardTitle>Wallet Adjustment</CardTitle></CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          <div className="flex gap-2">
+            <Button type="button" size="sm" variant={walletCurrency === "IDR" ? "default" : "outline"} onClick={() => setWalletCurrency("IDR")}>IDR</Button>
+            <Button type="button" size="sm" variant={walletCurrency === "USDT" ? "default" : "outline"} onClick={() => setWalletCurrency("USDT")}>USDT</Button>
+          </div>
+          <div className="flex gap-2">
+            <Input placeholder="Amount (+ or −)" value={walletForm.delta} onChange={e => setWalletForm(f => ({ ...f, delta: e.target.value }))} className="w-32" />
+            <Input placeholder="Reason (required)" value={walletForm.note} onChange={e => setWalletForm(f => ({ ...f, note: e.target.value }))} className="flex-1" />
+            <Button onClick={() => wallet.mutate()} disabled={wallet.isPending}>Adjust</Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Ban / unban */}
+      <Card>
+        <CardHeader><CardTitle>Account</CardTitle></CardHeader>
+        <CardContent>
+          {user.banned ? (
+            <ConfirmDialog
+              trigger={<Button variant="outline"><CircleCheck className="h-4 w-4" />Unban user</Button>}
+              title="Unban this user?"
+              description="The user will be able to use the bot again."
+              confirmLabel="Unban"
+              variant="default"
+              onConfirm={() => ban.mutate(false)}
+            />
+          ) : (
+            <div className="flex gap-2">
+              <Input placeholder="Ban reason (optional)" value={banReason} onChange={e => setBanReason(e.target.value)} className="flex-1" />
+              <ConfirmDialog
+                trigger={<Button variant="destructive"><Ban className="h-4 w-4" />Ban user</Button>}
+                title="Ban this user?"
+                description="The user will be blocked from using the bot."
+                confirmLabel="Ban"
+                onConfirm={() => ban.mutate(true)}
+              />
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  </div>);
 }

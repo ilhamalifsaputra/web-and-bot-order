@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom";
-import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { highlightMatch, matchesQuery } from "./SettingsSearch";
+import { describe, expect, it } from "vitest";
+import { highlightMatch, matchesQuery } from "./SettingsSearch.helpers";
 
 describe("matchesQuery", () => {
   it("matches case-insensitively", () => {

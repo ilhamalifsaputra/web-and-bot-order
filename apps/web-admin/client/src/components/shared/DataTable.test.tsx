@@ -81,6 +81,19 @@ describe("DataTable mobile card stack", () => {
     delete (window as any).matchMedia;
   });
 
+  it("opens a focused card with Enter or Space without activating it from its checkbox", () => {
+    const onRowClick = vi.fn();
+    render(<DataTable columns={[makeSelectionColumn(), COLUMNS[0]]} data={ROWS} keyExtractor={(r) => r.id} onRowClick={onRowClick} />);
+    const card = screen.getByRole("button", { name: /Alpha/ });
+    expect(card).toHaveAttribute("tabindex", "0");
+    fireEvent.keyDown(card, { key: "Enter" });
+    fireEvent.keyDown(card, { key: " " });
+    expect(onRowClick).toHaveBeenCalledTimes(2);
+    expect(onRowClick).toHaveBeenLastCalledWith(ROWS[0]);
+    fireEvent.keyDown(within(card).getByRole("checkbox"), { key: " " });
+    expect(onRowClick).toHaveBeenCalledTimes(2);
+  });
+
   it("renders exactly one checkbox per card", () => {
     const columns = [makeSelectionColumn(), COLUMNS[0]];
     const { container } = render(

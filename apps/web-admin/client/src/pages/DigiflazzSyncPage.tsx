@@ -1,20 +1,20 @@
-import { useEffect, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
-import { PageLayout } from "../components/shared/PageLayout";
-import { PageHeader } from "../components/shared/PageHeader";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
-import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { apiPost, apiGet } from "../api/client";
-import { describeError } from "../lib/errorMessages";
+import { apiGet, apiPost } from "../api/client";
+import { PageHeader } from "../components/shared/PageHeader";
+import { PageLayout } from "../components/shared/PageLayout";
 import { useDigiflazzSyncStatus } from "../hooks/useDigiflazzSyncStatus";
-import { formatRelativeTime } from "../lib/relativeTime";
+import { describeError } from "../lib/errorMessages";
 import { exactFieldsOf } from "../lib/exactFields";
+import { formatRelativeTime } from "../lib/relativeTime";
 
 interface SkuRow {
   buyerSkuCode: string;
@@ -475,41 +475,7 @@ export function DigiflazzSyncPage() {
 
   return (
     <PageLayout title="Sync Digiflazz">
-      <Card className="mb-6">
-        <CardHeader>
-          <CardTitle>Hourly Sync Status</CardTitle>
-        </CardHeader>
-        <CardContent>
-          {syncStatus.data === undefined && (
-            <p className="text-sm text-ink-soft">Loading sync status…</p>
-          )}
-          {syncStatus.data === null && (
-            <p className="text-sm text-ink-soft">
-              This shop's catalog has never been auto-synced yet — the hourly sync will run automatically.
-            </p>
-          )}
-          {syncStatus.data && syncStatus.data.status === "success" && (
-            <p className="text-sm text-ink">
-              Last synced {formatRelativeTime(syncStatus.data.finishedAt, syncStatus.data.finishedAt)} —{" "}
-              {syncStatus.data.updated} price(s) updated, {syncStatus.data.added} new SKU(s) added,{" "}
-              {syncStatus.data.reactivated} reactivated, {syncStatus.data.deactivated} deactivated.
-            </p>
-          )}
-          {syncStatus.data && syncStatus.data.status === "aborted" && (
-            <p className="text-sm text-rust">
-              {syncStatus.data.abortReason === "sharp_change"
-                ? "Aborted: too many prices moved sharply — this usually means the supplier's response was malformed, not a real market-wide price change."
-                : "Aborted: the supplier returned no usable price data."}{" "}
-              ({formatRelativeTime(syncStatus.data.finishedAt, syncStatus.data.finishedAt)})
-            </p>
-          )}
-          {syncStatus.data && syncStatus.data.status === "error" && (
-            <p className="text-sm text-rust">
-              The last sync attempt failed. ({formatRelativeTime(syncStatus.data.finishedAt, syncStatus.data.finishedAt)})
-            </p>
-          )}
-        </CardContent>
-      </Card>
+      <DigiflazzSyncHourlySyncStatus syncStatus={syncStatus} />
 
       <DetectionPanel />
 
@@ -527,121 +493,199 @@ export function DigiflazzSyncPage() {
       {runError && <p className="mb-2 text-sm text-rust">{runError}</p>}
       {previewError && <p className="text-sm text-rust">{previewError}</p>}
 
-      {preview && (
-        <div className="flex flex-col gap-4">
-          {/* Stacks full-width on mobile, sits side-by-side from `sm` up —
+      <DigiflazzSyncSudahAda preview={preview} filter={filter} setFilter={setFilter} categoryId={categoryId} changeCategory={changeCategory} loadingPreview={loadingPreview} importing={importing} categories={categories} newGroups={newGroups} expanded={expanded} toggleExpanded={toggleExpanded} priceIsInvalid={priceIsInvalid} checkedSkus={checkedSkus} toggleSku={toggleSku} priceFor={priceFor} setPriceEdits={setPriceEdits} existingGroups={existingGroups} applyImport={applyImport} previewError={previewError} hasInvalidCheckedPrice={hasInvalidCheckedPrice} />
+    </PageLayout>
+  );
+}
+
+function DigiflazzSyncHourlySyncStatus({ syncStatus }: {
+  syncStatus: import("@tanstack/react-query").UseQueryResult<NoInfer<import("../api/types").DigiflazzSyncStatus | null>, Error>;
+}) {
+  return (<Card className="mb-6">
+    <CardHeader>
+      <CardTitle>Hourly Sync Status</CardTitle>
+    </CardHeader>
+    <CardContent>
+      {syncStatus.data === undefined && (
+        <p className="text-sm text-ink-soft">Loading sync status…</p>
+      )}
+      {syncStatus.data === null && (
+        <p className="text-sm text-ink-soft">
+          This shop's catalog has never been auto-synced yet — the hourly sync will run automatically.
+        </p>
+      )}
+      {syncStatus.data && syncStatus.data.status === "success" && (
+        <p className="text-sm text-ink">
+          Last synced {formatRelativeTime(syncStatus.data.finishedAt, syncStatus.data.finishedAt)} —{" "}
+          {syncStatus.data.updated} price(s) updated, {syncStatus.data.added} new SKU(s) added,{" "}
+          {syncStatus.data.reactivated} reactivated, {syncStatus.data.deactivated} deactivated.
+        </p>
+      )}
+      {syncStatus.data && syncStatus.data.status === "aborted" && (
+        <p className="text-sm text-rust">
+          {syncStatus.data.abortReason === "sharp_change"
+            ? "Aborted: too many prices moved sharply — this usually means the supplier's response was malformed, not a real market-wide price change."
+            : "Aborted: the supplier returned no usable price data."}{" "}
+          ({formatRelativeTime(syncStatus.data.finishedAt, syncStatus.data.finishedAt)})
+        </p>
+      )}
+      {syncStatus.data && syncStatus.data.status === "error" && (
+        <p className="text-sm text-rust">
+          The last sync attempt failed. ({formatRelativeTime(syncStatus.data.finishedAt, syncStatus.data.finishedAt)})
+        </p>
+      )}
+    </CardContent>
+  </Card>);
+}
+
+function DigiflazzSync({ newGroups, expanded, toggleExpanded, priceIsInvalid, checkedSkus, toggleSku, priceFor, setPriceEdits }: {
+  newGroups: BrandGroup[];
+  expanded: Set<string>;
+  toggleExpanded: (brand: string) => void;
+  priceIsInvalid: (key: string, suggested: string) => boolean;
+  checkedSkus: Set<string>;
+  toggleSku: (key: string) => void;
+  priceFor: (key: string, suggested: string) => string;
+  setPriceEdits: import("react").Dispatch<import("react").SetStateAction<Record<string, string>>>;
+}) {
+  return (newGroups.map((g) => (
+    <Card key={g.brand}>
+      <CardHeader className="flex flex-row items-center justify-between">
+        <CardTitle>
+          <button
+            type="button"
+            className="w-full cursor-pointer p-0 text-left"
+            aria-expanded={expanded.has(g.brand)}
+            onClick={() => toggleExpanded(g.brand)}
+          >
+            {g.rawBrand}{g.region ? <span className="text-ink-soft"> ({g.region})</span> : null}
+            {g.gameVariant ? (
+              <Badge variant="secondary" className="ml-1 bg-sand text-ink-soft">
+                {g.gameVariant}
+              </Badge>
+            ) : null}{" "}
+            <span className="text-sm text-ink-soft">— {g.skus.length} SKU(s), Baru</span>
+          </button>
+        </CardTitle>
+      </CardHeader>
+      {expanded.has(g.brand) && (
+        <CardContent className="space-y-2">
+          {g.skus.map((s) => {
+            const key = `${g.brand}::${s.buyerSkuCode}`;
+            const invalid = priceIsInvalid(key, s.suggestedPrice);
+            return (
+              // Stacks vertically below `sm` (checkbox+name on one
+              // line, cost+price input on the next, both full-width)
+              // — the row's fixed-width pieces (checkbox, cost
+              // label, price input) leave no room for the product
+              // name on a ~360px phone viewport if forced onto one
+              // line, causing exactly the "kelebihan layar" overflow
+              // this component must never produce.
+              <div key={key} className="flex flex-col gap-2 border-b border-line pb-2 last:border-0 last:pb-0 sm:flex-row sm:items-center sm:gap-3">
+                <div className="flex items-center gap-3">
+                  <Checkbox checked={checkedSkus.has(key)} onCheckedChange={() => toggleSku(key)} />
+                  <span className="flex-1 text-sm sm:hidden">{s.productName}</span>
+                </div>
+                <span className="hidden flex-1 text-sm sm:inline">{s.productName}</span>
+                <div className="flex items-center gap-3 pl-7 sm:pl-0">
+                  <span className="shrink-0 text-xs text-ink-soft">Cost {s.costPrice} (IDR)</span>
+                  <Input
+                    className={invalid ? "w-full border-rust sm:w-32" : "w-full sm:w-32"}
+                    value={priceFor(key, s.suggestedPrice)}
+                    onChange={(e) => setPriceEdits((p) => ({ ...p, [key]: e.target.value }))}
+                  />
+                </div>
+              </div>
+            );
+          })}
+        </CardContent>
+      )}
+    </Card>
+  )));
+}
+
+function DigiflazzSyncSudahAda({ preview, filter, setFilter, categoryId, changeCategory, loadingPreview, importing, categories, newGroups, expanded, toggleExpanded, priceIsInvalid, checkedSkus, toggleSku, priceFor, setPriceEdits, existingGroups, applyImport, previewError, hasInvalidCheckedPrice }: {
+  preview: PreviewResponse | null;
+  filter: string;
+  setFilter: import("react").Dispatch<import("react").SetStateAction<string>>;
+  categoryId: string;
+  changeCategory: (value: string) => Promise<void>;
+  loadingPreview: boolean;
+  importing: boolean;
+  categories: Category[];
+  newGroups: BrandGroup[];
+  expanded: Set<string>;
+  toggleExpanded: (brand: string) => void;
+  priceIsInvalid: (key: string, suggested: string) => boolean;
+  checkedSkus: Set<string>;
+  toggleSku: (key: string) => void;
+  priceFor: (key: string, suggested: string) => string;
+  setPriceEdits: import("react").Dispatch<import("react").SetStateAction<Record<string, string>>>;
+  existingGroups: BrandGroup[];
+  applyImport: () => Promise<void>;
+  previewError: string | null;
+  hasInvalidCheckedPrice: boolean;
+}) {
+  return (preview && (
+    <div className="flex flex-col gap-4">
+      {/* Stacks full-width on mobile, sits side-by-side from `sm` up —
               two fixed-width `max-w-xs` fields side by side on a narrow phone
               viewport (~360px) leaves no room for either to be usable. */}
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-            <Input
-              placeholder="Filter by game name…"
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
-              className="w-full sm:max-w-xs"
-            />
-            <Select value={categoryId} onValueChange={v => void changeCategory(v)} disabled={loadingPreview || importing}>
-              <SelectTrigger className="w-full sm:max-w-xs">
-                <SelectValue placeholder="Target category" />
-              </SelectTrigger>
-              <SelectContent>
-                {categories.map((c) => (
-                  <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+        <Input
+          placeholder="Filter by game name…"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          className="w-full sm:max-w-xs"
+        />
+        <Select value={categoryId} onValueChange={v => void changeCategory(v)} disabled={loadingPreview || importing}>
+          <SelectTrigger className="w-full sm:max-w-xs">
+            <SelectValue placeholder="Target category" />
+          </SelectTrigger>
+          <SelectContent>
+            {categories.map((c) => (
+              <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
 
-          {newGroups.map((g) => (
-            <Card key={g.brand}>
-              <CardHeader className="flex flex-row items-center justify-between">
-                <CardTitle>
-                  <button
-                    type="button"
-                    className="w-full cursor-pointer p-0 text-left"
-                    aria-expanded={expanded.has(g.brand)}
-                    onClick={() => toggleExpanded(g.brand)}
-                  >
-                    {g.rawBrand}{g.region ? <span className="text-ink-soft"> ({g.region})</span> : null}
-                    {g.gameVariant ? (
-                      <Badge variant="secondary" className="ml-1 bg-sand text-ink-soft">
-                        {g.gameVariant}
-                      </Badge>
-                    ) : null}{" "}
-                    <span className="text-sm text-ink-soft">— {g.skus.length} SKU(s), Baru</span>
-                  </button>
-                </CardTitle>
-              </CardHeader>
-              {expanded.has(g.brand) && (
-                <CardContent className="space-y-2">
-                  {g.skus.map((s) => {
-                    const key = `${g.brand}::${s.buyerSkuCode}`;
-                    const invalid = priceIsInvalid(key, s.suggestedPrice);
-                    return (
-                      // Stacks vertically below `sm` (checkbox+name on one
-                      // line, cost+price input on the next, both full-width)
-                      // — the row's fixed-width pieces (checkbox, cost
-                      // label, price input) leave no room for the product
-                      // name on a ~360px phone viewport if forced onto one
-                      // line, causing exactly the "kelebihan layar" overflow
-                      // this component must never produce.
-                      <div key={key} className="flex flex-col gap-2 border-b border-line pb-2 last:border-0 last:pb-0 sm:flex-row sm:items-center sm:gap-3">
-                        <div className="flex items-center gap-3">
-                          <Checkbox checked={checkedSkus.has(key)} onCheckedChange={() => toggleSku(key)} />
-                          <span className="flex-1 text-sm sm:hidden">{s.productName}</span>
-                        </div>
-                        <span className="hidden flex-1 text-sm sm:inline">{s.productName}</span>
-                        <div className="flex items-center gap-3 pl-7 sm:pl-0">
-                          <span className="shrink-0 text-xs text-ink-soft">Cost {s.costPrice} (IDR)</span>
-                          <Input
-                            className={invalid ? "w-full border-rust sm:w-32" : "w-full sm:w-32"}
-                            value={priceFor(key, s.suggestedPrice)}
-                            onChange={(e) => setPriceEdits((p) => ({ ...p, [key]: e.target.value }))}
-                          />
-                        </div>
-                      </div>
-                    );
-                  })}
-                </CardContent>
-              )}
-            </Card>
-          ))}
+      <DigiflazzSync newGroups={newGroups} expanded={expanded} toggleExpanded={toggleExpanded} priceIsInvalid={priceIsInvalid} checkedSkus={checkedSkus} toggleSku={toggleSku} priceFor={priceFor} setPriceEdits={setPriceEdits} />
 
-          {existingGroups.length > 0 && (
-            <Card>
-              <CardHeader><CardTitle>Sudah ada ({existingGroups.length})</CardTitle></CardHeader>
-              <CardContent>
-                <p className="text-sm text-ink-soft">
-                  Game ini sudah diimpor dan diperbarui otomatis setiap jam dan saat Anda menekan Sync: harga
-                  ikut diperbarui, SKU baru langsung ditambahkan (aktif bila game sedang dijual), dan SKU yang tidak tersedia dinonaktifkan.
-                </p>
-                <ul className="mt-2 text-sm">
-                  {existingGroups.map((g) => (
-                    <li key={g.brand}>
-                      {g.rawBrand}{g.region ? <span className="text-ink-soft"> ({g.region})</span> : null}
-                      {g.gameVariant ? (
-                        <Badge variant="secondary" className="ml-1 bg-sand text-ink-soft">
-                          {g.gameVariant}
-                        </Badge>
-                      ) : null} — {g.skus.length} SKU(s)
-                    </li>
-                  ))}
-                </ul>
-              </CardContent>
-            </Card>
-          )}
+      {existingGroups.length > 0 && (
+        <Card>
+          <CardHeader><CardTitle>Sudah ada ({existingGroups.length})</CardTitle></CardHeader>
+          <CardContent>
+            <p className="text-sm text-ink-soft">
+              Game ini sudah diimpor dan diperbarui otomatis setiap jam dan saat Anda menekan Sync: harga
+              ikut diperbarui, SKU baru langsung ditambahkan (aktif bila game sedang dijual), dan SKU yang tidak tersedia dinonaktifkan.
+            </p>
+            <ul className="mt-2 text-sm">
+              {existingGroups.map((g) => (
+                <li key={g.brand}>
+                  {g.rawBrand}{g.region ? <span className="text-ink-soft"> ({g.region})</span> : null}
+                  {g.gameVariant ? (
+                    <Badge variant="secondary" className="ml-1 bg-sand text-ink-soft">
+                      {g.gameVariant}
+                    </Badge>
+                  ) : null} — {g.skus.length} SKU(s)
+                </li>
+              ))}
+            </ul>
+          </CardContent>
+        </Card>
+      )}
 
-          {newGroups.length > 0 && (
-            <div className="flex flex-col items-start gap-1">
-              <Button onClick={() => void applyImport()} disabled={importing || loadingPreview || !!previewError || !categoryId || hasInvalidCheckedPrice}>
-                {importing ? "Importing…" : "Impor Terpilih"}
-              </Button>
-              {hasInvalidCheckedPrice && (
-                <p className="text-sm text-rust">Fix the highlighted price(s) before importing.</p>
-              )}
-            </div>
+      {newGroups.length > 0 && (
+        <div className="flex flex-col items-start gap-1">
+          <Button onClick={() => void applyImport()} disabled={importing || loadingPreview || !!previewError || !categoryId || hasInvalidCheckedPrice}>
+            {importing ? "Importing…" : "Impor Terpilih"}
+          </Button>
+          {hasInvalidCheckedPrice && (
+            <p className="text-sm text-rust">Fix the highlighted price(s) before importing.</p>
           )}
         </div>
       )}
-    </PageLayout>
-  );
+    </div>
+  ));
 }

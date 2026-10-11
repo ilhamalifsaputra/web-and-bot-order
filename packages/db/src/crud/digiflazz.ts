@@ -1817,7 +1817,9 @@ export interface DigiflazzImportRow {
 
 // supplierSku predates multi-provider mappings. Null source on a legacy row
 // means Digiflazz; other explicit providers have their own identity namespace.
-const DIGIFLAZZ_SUPPLIER_SCOPE: Prisma.DenominationWhereInput = {
+// Exported for crud/pricingPolicy.ts's reprice, which must cover exactly the
+// rows the resync covers.
+export const DIGIFLAZZ_SUPPLIER_SCOPE: Prisma.DenominationWhereInput = {
   OR: [{ autoDeliverySource: "digiflazz" }, { autoDeliverySource: null }],
 };
 

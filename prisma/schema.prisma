@@ -188,6 +188,13 @@ model Category {
   /// "instant" (Digiflazz-backed top-up pilot — buyer enters a game ID/server
   /// at checkout and the order auto-dispatches to the supplier on payment).
   checkoutFlow String  @default("catalog") @map("checkout_flow")
+  /// Category markup rule for supplier-costed (Digiflazz) SKUs in this
+  /// category: "percent" | "flat", always set together with markupValue (a
+  /// percent, or a rupiah amount for "flat"). Both null = inherit the global
+  /// default (Settings digiflazz_markup_*). Written only via
+  /// crud/pricingPolicy.ts, which validates the pair.
+  markupType   String?  @map("markup_type")
+  markupValue  Decimal? @map("markup_value")
 
   products Product[]
 

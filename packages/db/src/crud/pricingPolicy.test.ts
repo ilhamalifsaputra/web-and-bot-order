@@ -15,6 +15,7 @@ import { getSetting, setSetting } from "./settings";
 import {
   DIGIFLAZZ_MARKUP_TYPE_KEY,
   DIGIFLAZZ_MARKUP_VALUE_KEY,
+  DIGIFLAZZ_CATALOG_SYNC_LEASE_KEY,
   claimDigiflazzCatalogSyncLease,
   releaseDigiflazzCatalogSyncLease,
 } from "./digiflazz";
@@ -24,6 +25,7 @@ import {
   PricingValidationError,
   PricingPolicyUnreadableError,
   RepriceBusyError,
+  RepriceLeaseLostError,
   getPricingPolicy,
   setGlobalPricing,
   setCategoryRule,
@@ -195,6 +197,31 @@ describe("setGlobalPricing", () => {
     expect((await audits())[0]!.details).toBe("Changed the default markup from an unreadable value to 10%.");
   });
 
+  it("describes zero markups precisely instead of 'no markup to no markup'", async () => {
+    await setGlobalPricing(prisma, adminId, { markupType: "percent", markupValue: d("0") });
+    await setGlobalPricing(prisma, adminId, { markupType: "flat", markupValue: d("0") });
+    expect((await audits()).map((r) => r.details)).toEqual([
+      "Changed the default markup from no markup to 0%.",
+      "Changed the default markup from 0% to a flat Rp0.",
+    ]);
+  });
+
+  it("rejects out-of-range or fractional-rupiah markups", async () => {
+    const bad = [
+      { markupType: "percent" as const, markupValue: d("1000.0001") },
+      { markupType: "percent" as const, markupValue: d("10.00001") },
+      { markupType: "flat" as const, markupValue: d("100000001") },
+      { markupType: "flat" as const, markupValue: d("1500.5") },
+      { lowMarginWarnPct: d("5.00001") },
+    ];
+    for (const input of bad) {
+      await expect(setGlobalPricing(prisma, adminId, input)).rejects.toBeInstanceOf(PricingValidationError);
+    }
+    await setGlobalPricing(prisma, adminId, { markupType: "percent", markupValue: d("1000") });
+    await setGlobalPricing(prisma, adminId, { markupType: "flat", markupValue: d("100000000") });
+    expect(await getSetting(prisma, DIGIFLAZZ_MARKUP_VALUE_KEY)).toBe("100000000");
+  });
+
   it("rejects invalid input and writes nothing", async () => {
     const bad = [
       { rounding: "ceil_7" as never },
@@ -259,6 +286,9 @@ describe("category rules", () => {
       { markupType: null, markupValue: d("5") },
       { markupType: "bogus" as never, markupValue: d("5") },
       { markupType: "flat" as const, markupValue: d("-1") },
+      { markupType: "flat" as const, markupValue: d("10.5") },
+      { markupType: "flat" as const, markupValue: d("100000001") },
+      { markupType: "percent" as const, markupValue: d("1001") },
     ];
     for (const rule of bad) {
       await expect(setCategoryRule(prisma, adminId, cat.id, rule)).rejects.toBeInstanceOf(PricingValidationError);
@@ -389,6 +419,85 @@ describe("applyReprice", () => {
     await applyReprice(prisma, adminId, "all");
     const again = await claimDigiflazzCatalogSyncLease(prisma);
     expect(again).not.toBeNull();
+  });
+
+  it("counts a row that turned manual between listing and locking as skipped and leaves it alone", async () => {
+    const s = await seedRepriceCatalog();
+    const res = await applyReprice(prisma, adminId, "all", new Date(), {
+      beforeBatch: async () => {
+        await prisma.denomination.update({ where: { id: s.a.id }, data: { priceOverridden: true } });
+      },
+    });
+    expect(res).toEqual({ eligibleCount: 3, updatedCount: 1, unchangedCount: 1, skippedCount: 1 });
+    expect((await priceOf(s.a.id)).toString()).toBe("100000");
+    expect((await priceOf(s.g.id)).toString()).toBe("55000");
+    expect((await audits("pricing_reprice"))[0]!.details).toBe(
+      "Repriced 1 Digiflazz item from the current pricing rules; 1 was already up to date. 1 item was skipped because it changed while repricing.",
+    );
+  });
+
+  async function seedFlatBatchCatalog(n: number) {
+    await setGlobalPricing(prisma, adminId, { markupType: "flat", markupValue: d("100") });
+    const cat = await makeCategory("Batches");
+    const skus = [];
+    for (let i = 0; i < n; i++) skus.push(await makeSku(cat.id, { cost: "1000", price: "1000" }));
+    await prisma.auditLog.deleteMany();
+    return skus;
+  }
+
+  it("keeps an audit row for batches already committed when a later batch fails, and releases the lease", async () => {
+    const skus = await seedFlatBatchCatalog(5);
+    const boom = new Error("simulated database failure");
+    await expect(
+      applyReprice(prisma, adminId, "all", new Date(), {
+        batchSize: 2,
+        beforeBatch: async (index) => {
+          if (index === 1) throw boom;
+        },
+      }),
+    ).rejects.toBe(boom);
+    const prices = await Promise.all(skus.map((s) => priceOf(s.id)));
+    expect(prices.map((p) => p.toString())).toEqual(["1100", "1100", "1000", "1000", "1000"]);
+    const rows = await audits("pricing_reprice");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.details).toBe("Repriced 2 Digiflazz items before the run stopped on an error; the rest were not changed.");
+    expect(await claimDigiflazzCatalogSyncLease(prisma)).not.toBeNull();
+  });
+
+  it("stops with RepriceLeaseLostError when the sync lease is taken over mid-run", async () => {
+    const skus = await seedFlatBatchCatalog(4);
+    await expect(
+      applyReprice(prisma, adminId, "all", new Date(), {
+        batchSize: 2,
+        beforeBatch: async (index) => {
+          if (index === 1) {
+            await prisma.setting.update({ where: { key: DIGIFLAZZ_CATALOG_SYNC_LEASE_KEY }, data: { value: "another-sync" } });
+          }
+        },
+      }),
+    ).rejects.toBeInstanceOf(RepriceLeaseLostError);
+    const prices = await Promise.all(skus.map((s) => priceOf(s.id)));
+    expect(prices.map((p) => p.toString())).toEqual(["1100", "1100", "1000", "1000"]);
+    expect((await audits("pricing_reprice"))[0]!.details).toBe(
+      "Repriced 2 Digiflazz items before the run stopped on an error; the rest were not changed.",
+    );
+    // The new holder's lease is not released by the stopped run.
+    const lease = await prisma.setting.findUniqueOrThrow({ where: { key: DIGIFLAZZ_CATALOG_SYNC_LEASE_KEY } });
+    expect(lease.value).toBe("another-sync");
+  });
+
+  it("renews the lease at every batch so a long run keeps it", async () => {
+    await seedFlatBatchCatalog(2);
+    const start = new Date(Date.now() - 60 * 60_000);
+    await applyReprice(prisma, adminId, "all", start, {
+      batchSize: 1,
+      beforeBatch: async (index) => {
+        if (index === 1) {
+          const lease = await prisma.setting.findUniqueOrThrow({ where: { key: DIGIFLAZZ_CATALOG_SYNC_LEASE_KEY } });
+          expect(lease.updatedAt.getTime()).toBeGreaterThan(start.getTime());
+        }
+      },
+    });
   });
 
   it("refuses with PricingPolicyUnreadableError on an unreadable global markup and changes nothing", async () => {

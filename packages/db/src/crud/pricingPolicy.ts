@@ -36,6 +36,7 @@ import {
   DIGIFLAZZ_MARKUP_TYPE_KEY,
   DIGIFLAZZ_MARKUP_VALUE_KEY,
   DIGIFLAZZ_SUPPLIER_SCOPE,
+  DIGIFLAZZ_CATALOG_SYNC_LEASE_KEY,
   claimDigiflazzCatalogSyncLease,
   releaseDigiflazzCatalogSyncLease,
 } from "./digiflazz";
@@ -69,6 +70,15 @@ export class RepriceBusyError extends Error {
   constructor() {
     super("A Digiflazz catalog sync or another reprice is running right now. Try again in a minute.");
     this.name = "RepriceBusyError";
+  }
+}
+
+/** A reprice lost the shared lease mid-run (it expired and a catalog sync
+ * took it). Batches already done keep their prices and are audited. */
+export class RepriceLeaseLostError extends Error {
+  constructor() {
+    super("The reprice stopped part-way because a Digiflazz catalog sync took over. Items repriced so far keep their new price; run it again to finish.");
+    this.name = "RepriceLeaseLostError";
   }
 }
 
@@ -122,10 +132,10 @@ function describeRupiah(v: Decimal): string {
   return v.isInteger() ? formatIdr(v) : `Rp${v.toFixed()}`;
 }
 
-/** "10%", "a flat Rp1.500", or "no markup" (blank type, or a zero amount). */
+/** "10%", "0%", "a flat Rp1.500", or "no markup" (blank type). */
 function describeRule(rule: MarkupRule | null): string {
   if (rule === null) return "an unreadable value";
-  if (rule.type === null || rule.value.isZero()) return "no markup";
+  if (rule.type === null) return "no markup";
   return rule.type === "percent" ? `${rule.value.toFixed()}%` : `a flat ${describeRupiah(rule.value)}`;
 }
 
@@ -161,6 +171,28 @@ export interface GlobalPricingInput {
   lowMarginWarnPct?: Decimal | null;
 }
 
+/** Upper bounds keep a typo from pricing the catalog at absurd values and keep
+ * the stored plain decimal well inside readStoredMarkupValue's digit limits. */
+export const MAX_PERCENT_MARKUP = new Decimal(1000);
+export const MAX_FLAT_MARKUP_IDR = new Decimal(100_000_000);
+/** Percents (markup, low-margin warning) carry at most this many decimals. */
+const PERCENT_MAX_DP = 4;
+
+/** A percent or flat markup amount: zero or more, bounded, a percent with at
+ * most 4 decimals, a flat amount in whole rupiah (IDR has no fraction). */
+function validateMarkupAmount(type: MarkupType, value: Decimal): void {
+  if (!value.isFinite() || value.isNegative()) throw new PricingValidationError("The markup must be zero or more.");
+  if (type === "percent") {
+    if (value.gt(MAX_PERCENT_MARKUP)) throw new PricingValidationError("A percent markup can be at most 1000%.");
+    if (value.decimalPlaces() > PERCENT_MAX_DP) {
+      throw new PricingValidationError("A percent markup can have at most 4 decimal places.");
+    }
+  } else {
+    if (value.gt(MAX_FLAT_MARKUP_IDR)) throw new PricingValidationError("A flat markup can be at most Rp100.000.000.");
+    if (!value.isInteger()) throw new PricingValidationError("A flat markup must be a whole rupiah amount.");
+  }
+}
+
 function validateGlobalInput(input: GlobalPricingInput): void {
   const hasType = input.markupType !== undefined;
   const hasValue = input.markupValue !== undefined;
@@ -172,13 +204,19 @@ function validateGlobalInput(input: GlobalPricingInput): void {
     if (!input.markupValue!.isFinite() || input.markupValue!.isNegative()) {
       throw new PricingValidationError("The markup must be zero or more.");
     }
+    if (input.markupType !== null) validateMarkupAmount(input.markupType, input.markupValue!);
   }
   if (input.rounding !== undefined && !isRoundingPolicy(input.rounding)) {
     throw new PricingValidationError("Choose one of the listed rounding options.");
   }
   const warn = input.lowMarginWarnPct;
-  if (warn !== undefined && warn !== null && (!warn.isFinite() || warn.isNegative() || warn.gte(100))) {
-    throw new PricingValidationError("The low-margin warning must be at least 0% and below 100%.");
+  if (warn !== undefined && warn !== null) {
+    if (!warn.isFinite() || warn.isNegative() || warn.gte(100)) {
+      throw new PricingValidationError("The low-margin warning must be at least 0% and below 100%.");
+    }
+    if (warn.decimalPlaces() > PERCENT_MAX_DP) {
+      throw new PricingValidationError("The low-margin warning can have at most 4 decimal places.");
+    }
   }
 }
 
@@ -220,6 +258,9 @@ export async function setGlobalPricing(
   }
 
   if (writes.length === 0) return { changed: false };
+  // Not one $transaction on purpose: setSetting keeps its read cache and
+  // write listeners per `db` object, so writing through a tx client would
+  // leave the caller's client serving the old values for up to 30 s.
   for (const [key, value] of writes) await setSetting(db, key, value);
   await logAdminAction(db, {
     adminId,
@@ -260,9 +301,7 @@ export async function setCategoryRule(
   if (hasType && rule.markupType !== "percent" && rule.markupType !== "flat") {
     throw new PricingValidationError('Markup type must be "percent" or "flat".');
   }
-  if (hasValue && (!rule.markupValue!.isFinite() || rule.markupValue!.isNegative())) {
-    throw new PricingValidationError("The markup must be zero or more.");
-  }
+  if (hasType) validateMarkupAmount(rule.markupType!, rule.markupValue!);
 
   const category = await db.category.findUnique({
     where: { id: categoryId },
@@ -440,48 +479,81 @@ export async function applyReprice(
   adminId: number | null,
   scope: RepriceScope,
   now: Date = new Date(),
+  /** Test seams only: a smaller batch size, and a hook run before each
+   * batch's transaction (to change rows or the lease mid-run, or to fail). */
+  opts: { batchSize?: number; beforeBatch?: (batchIndex: number) => Promise<void> } = {},
 ): Promise<RepriceResult> {
   // Refuse an unreadable policy before taking the lease.
   const policy = await loadUsablePolicy(db);
+  const batchSize = opts.batchSize ?? REPRICE_BATCH_SIZE;
   const token = await claimDigiflazzCatalogSyncLease(db, now);
   if (!token) throw new RepriceBusyError();
   try {
-    const ids = (
-      await db.denomination.findMany({ where: eligibleWhere(scope), select: { id: true }, orderBy: { id: "asc" } })
-    ).map((r) => r.id);
-    const result: RepriceResult = { eligibleCount: ids.length, updatedCount: 0, unchangedCount: 0, skippedCount: 0 };
-
-    for (let i = 0; i < ids.length; i += REPRICE_BATCH_SIZE) {
-      const batch = ids.slice(i, i + REPRICE_BATCH_SIZE);
-      const counts = await db.$transaction(async (tx) => {
-        const c = { updated: 0, unchanged: 0, skipped: 0 };
-        await tx.$queryRaw`SELECT id FROM denominations WHERE id IN (${Prisma.join(batch)}) ORDER BY id FOR UPDATE`;
-        const locked = await tx.denomination.findMany({
-          where: { AND: [{ id: { in: batch } }, eligibleWhere(scope)] },
-          select: { id: true, price: true, costPrice: true, product: { select: { categoryId: true } } },
-        });
-        c.skipped = batch.length - locked.length;
-        for (const row of locked) {
-          const newPrice = newPriceFor(policy, { ...row, categoryId: row.product.categoryId });
-          if (moneyEq(newPrice, row.price)) {
-            c.unchanged++;
-            continue;
-          }
-          await updateDenomination(tx, row.id, { price: newPrice });
-          c.updated++;
-        }
-        return c;
-      });
-      result.updatedCount += counts.updated;
-      result.unchangedCount += counts.unchanged;
-      result.skippedCount += counts.skipped;
-    }
-
     let where = "";
     if (scope !== "all") {
       const category = await db.category.findUnique({ where: { id: scope }, select: { name: true } });
       if (category) where = ` in category "${category.name}"`;
     }
+    const auditTarget = { targetType: scope === "all" ? "setting" : "category", targetId: scope === "all" ? null : scope };
+    const ids = (
+      await db.denomination.findMany({ where: eligibleWhere(scope), select: { id: true }, orderBy: { id: "asc" } })
+    ).map((r) => r.id);
+    const result: RepriceResult = { eligibleCount: ids.length, updatedCount: 0, unchangedCount: 0, skippedCount: 0 };
+
+    try {
+      for (let i = 0, batchIndex = 0; i < ids.length; i += batchSize, batchIndex++) {
+        const batch = ids.slice(i, i + batchSize);
+        if (opts.beforeBatch) await opts.beforeBatch(batchIndex);
+        const counts = await db.$transaction(async (tx) => {
+          // Renew the lease and prove it is still ours, so a run longer than
+          // the lease never overlaps a catalog sync that took it over.
+          const renewed = await tx.setting.updateMany({
+            where: { key: DIGIFLAZZ_CATALOG_SYNC_LEASE_KEY, value: token },
+            data: { updatedAt: new Date() },
+          });
+          if (renewed.count !== 1) throw new RepriceLeaseLostError();
+          const c = { updated: 0, unchanged: 0, skipped: 0 };
+          await tx.$queryRaw`SELECT id FROM denominations WHERE id IN (${Prisma.join(batch)}) ORDER BY id FOR UPDATE`;
+          const locked = await tx.denomination.findMany({
+            where: { AND: [{ id: { in: batch } }, eligibleWhere(scope)] },
+            select: { id: true, price: true, costPrice: true, product: { select: { categoryId: true } } },
+          });
+          c.skipped = batch.length - locked.length;
+          for (const row of locked) {
+            const newPrice = newPriceFor(policy, { ...row, categoryId: row.product.categoryId });
+            if (moneyEq(newPrice, row.price)) {
+              c.unchanged++;
+              continue;
+            }
+            await updateDenomination(tx, row.id, { price: newPrice });
+            c.updated++;
+          }
+          return c;
+        });
+        result.updatedCount += counts.updated;
+        result.unchangedCount += counts.unchanged;
+        result.skippedCount += counts.skipped;
+      }
+    } catch (err) {
+      // Earlier batches are committed live prices: they must not go unaudited.
+      if (result.updatedCount > 0) {
+        try {
+          await logAdminAction(db, {
+            adminId,
+            action: "pricing_reprice",
+            ...auditTarget,
+            details: `Repriced ${plural(result.updatedCount, "Digiflazz item", "Digiflazz items")}${where} before the run stopped on an error; the rest were not changed.`,
+          });
+        } catch (auditErr) {
+          logger.error(
+            { err: auditErr, updatedCount: result.updatedCount },
+            "A pricing reprice failed part-way and its partial audit row could not be written either, so some Digiflazz prices changed without an audit entry.",
+          );
+        }
+      }
+      throw err;
+    }
+
     const skippedNote = result.skippedCount > 0
       ? ` ${plural(result.skippedCount, "item was", "items were")} skipped because ${result.skippedCount === 1 ? "it" : "they"} changed while repricing.`
       : "";
@@ -493,8 +565,7 @@ export async function applyReprice(
     await logAdminAction(db, {
       adminId,
       action: "pricing_reprice",
-      targetType: scope === "all" ? "setting" : "category",
-      targetId: scope === "all" ? null : scope,
+      ...auditTarget,
       details,
     });
     return result;

@@ -14,7 +14,7 @@ describe("GameTopupDetailCard", () => {
     expect(LONG_SN.length).toBeGreaterThan(200);
     render(
       <GameTopupDetailCard
-        items={[{ name: "Mobile Legends", duration: "86 Diamonds" }]}
+        items={[{ id: 1, name: "Mobile Legends", duration: "86 Diamonds" }]}
         targets={[{ game_id: "12345678", zone_id: "2222" }]}
         sn={LONG_SN}
       />,
@@ -38,7 +38,7 @@ describe("GameTopupDetailCard", () => {
   });
 
   it("omits every line that has no value (no empty labels)", () => {
-    render(<GameTopupDetailCard items={[{ name: "Free Fire", duration: null }]} targets={[{ game_id: "999" }]} sn={null} />);
+    render(<GameTopupDetailCard items={[{ id: 2, name: "Free Fire", duration: null }]} targets={[{ game_id: "999" }]} sn={null} />);
     expect(screen.getByText("Game ID")).toBeInTheDocument();
     expect(screen.queryByText("Zone ID")).not.toBeInTheDocument();
     expect(screen.queryByText("Server ID")).not.toBeInTheDocument();

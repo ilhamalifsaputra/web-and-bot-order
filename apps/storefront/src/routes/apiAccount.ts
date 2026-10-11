@@ -310,6 +310,7 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
         fulfillment: { ...getOrderFulfillment(order), presentation: transactionStatus.presentation },
         underpayment: transactionStatus.underpayment,
         items: order.items.map((i) => ({
+          id: i.id,
           name: i.product.name,
           duration: i.product.durationLabel,
           unit_price: i.unitPrice.toString(),
@@ -395,6 +396,7 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
     return reply.send({
       pending,
       reviews: myReviews.map((r) => ({
+        id: r.id,
         product_name: r.product.name,
         rating: r.rating,
         comment: r.comment,
@@ -724,6 +726,7 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
         attachments: splitAttachments(ticket.attachmentUrls),
       },
       messages: messages.map((m) => ({
+        id: m.id,
         from_user: m.senderType === SenderType.USER,
         content: m.content,
         created_at_display: dt(m.createdAt),
@@ -746,6 +749,7 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
             voucher_code: order.voucher?.code ?? null,
             delivered: order.status === OrderStatus.DELIVERED,
             items: order.items.map((i) => ({
+              id: i.id,
               name: i.product.name,
               duration: i.product.durationLabel,
               warranty_days: i.warrantyDaysSnapshot,

@@ -59,13 +59,14 @@ export function SearchPage() {
   useEffect(() => { setDraft(q); }, [q]);
 
   useEffect(() => {
+    if (draft.trim() === q) return;
     const timer = setTimeout(() => {
       const trimmed = draft.trim();
       if (trimmed) setParams({ q: trimmed });
       else setParams({});
     }, 300);
     return () => clearTimeout(timer);
-  }, [draft, setParams]);
+  }, [draft, q, setParams]);
 
   useEffect(() => {
     if (data?.exactOrderId) {

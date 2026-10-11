@@ -16,6 +16,7 @@
 import type { LucideIcon } from "lucide-react";
 
 export interface StepItem {
+  id: string;
   icon: LucideIcon;
   /** Omitted only when `description` is a fully custom node that renders its
    *  own heading(s) (How-to-Order's merged QRIS/USDT step). */
@@ -48,7 +49,7 @@ function GridTimeline({ steps }: { steps: StepItem[] }) {
   return (
     <ol className="grid gap-x-8 gap-y-6 sm:grid-cols-2 lg:grid-cols-4 lg:gap-y-8">
       {steps.map((step, idx) => (
-        <li key={step.title ?? step.icon.displayName ?? "step"} className="relative flex gap-4 lg:block">
+        <li key={step.id} className="relative flex gap-4 lg:block">
           {idx < steps.length - 1 && (
             <span
               aria-hidden="true"
@@ -70,7 +71,7 @@ function StackedTimeline({ steps }: { steps: StepItem[] }) {
   return (
     <ol>
       {steps.map((step, idx) => (
-        <li key={step.title ?? step.icon.displayName ?? "step"} className={`relative flex gap-4 ${idx < steps.length - 1 ? "pb-8" : ""}`}>
+        <li key={step.id} className={`relative flex gap-4 ${idx < steps.length - 1 ? "pb-8" : ""}`}>
           {idx < steps.length - 1 && (
             <span aria-hidden="true" className="absolute left-5 top-10 bottom-0 w-px bg-line" />
           )}

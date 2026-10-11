@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import userEvent from "@testing-library/user-event";
-import { useState } from "react";
+import { StrictMode, useState } from "react";
 import { SearchModal } from "./SearchModal";
 
 function renderModal(onClose: () => void = () => {}) {
@@ -29,6 +29,21 @@ beforeEach(() => {
 });
 
 describe("SearchModal", () => {
+  it("starts a new opening empty and ignores the previous session's late response", async () => {
+    let resolveSearch!: (value: Response) => void;
+    vi.spyOn(globalThis, "fetch").mockImplementation(() => new Promise((resolve) => { resolveSearch = resolve; }));
+    const view = render(<MemoryRouter><SearchModal open session={1} onClose={() => {}} /></MemoryRouter>);
+    typeQuery("old query");
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(1));
+    view.rerender(<MemoryRouter><SearchModal open={false} session={1} onClose={() => {}} /></MemoryRouter>);
+    view.rerender(<MemoryRouter><SearchModal open session={2} onClose={() => {}} /></MemoryRouter>);
+    expect(screen.getByRole("textbox")).toHaveValue("");
+    resolveSearch(new Response(JSON.stringify({ q: "old query", exactOrderId: 42, users: [], products: [] })));
+    await waitFor(() => expect(screen.queryByText("Order ORD-42")).not.toBeInTheDocument());
+    expect(screen.getByRole("textbox")).toHaveValue("");
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+  });
+
   it("clears a failed search when its query is cleared without retrying an empty query", async () => {
     const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("offline"));
     renderModal();
@@ -61,7 +76,7 @@ describe("SearchModal", () => {
       </MemoryRouter>;
     }
     const user = userEvent.setup();
-    render(<Harness />);
+    render(<StrictMode><Harness /></StrictMode>);
     await user.click(screen.getByText("Open search"));
     const input = screen.getByRole("textbox", { name: "Search orders, products, users" });
     expect(input).toHaveFocus();

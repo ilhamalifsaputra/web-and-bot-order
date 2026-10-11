@@ -1,4 +1,3 @@
-import { useQueryClient } from "@tanstack/react-query";
 /**
  * Buy wallet CREDIT itself through the existing payment gateways (Task 5,
  * apps/storefront/src/routes/apiWalletTopup.ts). Structure mirrors
@@ -21,10 +20,10 @@ import { useQueryClient } from "@tanstack/react-query";
  * §14-pay-topup-track. No mutation payload, endpoint, or gating logic
  * changed.
  */
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle, Wallet } from "lucide-react";
 import type { ReactNode } from "react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { apiGet, apiPost } from "../api/client";
 import type { WalletTopupCreateResponse, WalletTopupData } from "../api/types";
@@ -217,6 +216,9 @@ export default function WalletTopupPage() {
   const [amount, setAmount] = useState("");
   const [method, setMethod] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<unknown>(null);
+  const submitRequest = useRef<symbol | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  useEffect(() => () => { submitRequest.current = null; }, []);
   // The amount as typed is only ever shown back in the field. Everything that
   // judges or sends it reads this instead: the figure read by its shape
   // ("10.000" IDR = 10000, "5,5" USDT = 5.5) as a canonical plain decimal, or
@@ -242,18 +244,25 @@ export default function WalletTopupPage() {
     );
   }, [data, currency, parsed]);
 
-  const queryClient = useQueryClient();
-  const submitMutation = useMutation({
-    mutationFn: () =>
-      // The canonical figure, never the raw text: the submit button is disabled
-      // while `parsed` is null, so this always sends digits[.digits].
-      apiPost<WalletTopupCreateResponse>("/api/v1/wallet/topup", { currency, amount: parsed, method }),
-    onSuccess: (resp) => {
-      void queryClient.invalidateQueries({ queryKey: ["wallet-topup"] });
-      navigate(`/wallet/topup/${resp.orderCode}/pay`);
-    },
-    onError: (err) => setSubmitError(err),
-  });
+  async function submitTopup() {
+    if (submitRequest.current || !data || !amountValid(data, currency, parsed) || !method) return;
+    const token = Symbol();
+    submitRequest.current = token;
+    setSubmitting(true);
+    setSubmitError(null);
+    try {
+      // Creation only issues a pending invoice; it does not credit a balance.
+      const response = await apiPost<WalletTopupCreateResponse>("/api/v1/wallet/topup", { currency, amount: parsed, method });
+      if (submitRequest.current === token) navigate(`/wallet/topup/${response.orderCode}/pay`);
+    } catch (error) {
+      if (submitRequest.current === token) setSubmitError(error);
+    } finally {
+      if (submitRequest.current === token) {
+        submitRequest.current = null;
+      }
+      setSubmitting(false);
+    }
+  }
 
   if (!data) {
     if (!error) {
@@ -294,7 +303,7 @@ export default function WalletTopupPage() {
   const hint = limitsHint(data, currency);
   const valid = amountValid(data, currency, parsed);
   const submitBlocked = !valid || !method;
-  const submitDisabled = submitBlocked || submitMutation.isPending;
+  const submitDisabled = submitBlocked || submitting;
 
   return (
     <div className="max-w-lg mx-auto">
@@ -306,12 +315,12 @@ export default function WalletTopupPage() {
         </Alert>
       )}
 
-      <WalletTopupTopupAmount currency={currency} setCurrency={setCurrency} hint={hint} amountUnreadable={amountUnreadable} amount={amount} setAmount={setAmount} options={options} method={method} setMethod={setMethod} belowEveryRailMinimum={belowEveryRailMinimum} submitBlocked={submitBlocked} submitDisabled={submitDisabled} submitMutation={submitMutation} />
+      <WalletTopupTopupAmount currency={currency} setCurrency={setCurrency} hint={hint} amountUnreadable={amountUnreadable} amount={amount} setAmount={setAmount} options={options} method={method} setMethod={setMethod} belowEveryRailMinimum={belowEveryRailMinimum} submitBlocked={submitBlocked} submitDisabled={submitDisabled} submitTopup={submitTopup} submitting={submitting} />
     </div>
   );
 }
 
-function WalletTopupTopupAmount({ currency, setCurrency, hint, amountUnreadable, amount, setAmount, options, method, setMethod, belowEveryRailMinimum, submitBlocked, submitDisabled, submitMutation }: {
+function WalletTopupTopupAmount({ currency, setCurrency, hint, amountUnreadable, amount, setAmount, options, method, setMethod, belowEveryRailMinimum, submitBlocked, submitDisabled, submitTopup, submitting }: {
   currency: Currency;
   setCurrency: import("react").Dispatch<import("react").SetStateAction<Currency>>;
   hint: string | null;
@@ -324,7 +333,8 @@ function WalletTopupTopupAmount({ currency, setCurrency, hint, amountUnreadable,
   belowEveryRailMinimum: boolean;
   submitBlocked: boolean;
   submitDisabled: boolean;
-  submitMutation: import("@tanstack/react-query").UseMutationResult<WalletTopupCreateResponse, Error, void, unknown>;
+  submitTopup: () => Promise<void>;
+  submitting: boolean;
 }) {
   return (<form onSubmit={(e) => e.preventDefault()} className="space-y-6">
     <Card className="space-y-4">
@@ -396,9 +406,9 @@ function WalletTopupTopupAmount({ currency, setCurrency, hint, amountUnreadable,
       fullWidth
       className={cn(submitBlocked && "opacity-50")}
       disabled={submitDisabled}
-      onClick={() => submitMutation.mutate()}
+      onClick={() => void submitTopup()}
     >
-      {submitMutation.isPending && <Spinner />}
+      {submitting && <Spinner />}
       {t("web.wallet_topup_submit")}
     </Button>
   </form>);

@@ -36,13 +36,19 @@ interface SaveConfirmDialogProps {
  * submit, and other non-button triggers.
  */
 export function SaveConfirmDialog(props: SaveConfirmDialogProps): JSX.Element {
-  return <Dialog open={props.open} onOpenChange={props.onOpenChange}>
-    <SaveSession key={String(props.open)} {...props} />
+  const busyRef = React.useRef(false);
+  return <Dialog open={props.open} onOpenChange={(next) => {
+    if (!busyRef.current) props.onOpenChange(next);
+  }}>
+    <DialogContent showCloseButton={false}>
+      <SaveSession key={String(props.open)} {...props} busyRef={busyRef} />
+    </DialogContent>
   </Dialog>;
 }
 
+// Radix mounts this with the content and retains it through the closing
+// animation. A new opening gets a fresh draft without resetting after paint.
 function SaveSession({
-  open,
   onOpenChange,
   title,
   description,
@@ -51,12 +57,13 @@ function SaveSession({
   successMessage = "Saved successfully",
   variant = "default",
   onConfirm,
-}: SaveConfirmDialogProps): JSX.Element {
+  busyRef,
+}: SaveConfirmDialogProps & { busyRef: React.MutableRefObject<boolean> }): JSX.Element {
   const [phase, setPhase] = React.useState<Phase>("confirm");
   const [errorMessage, setErrorMessage] = React.useState<string | null>(null);
   const [resolvedMessage, setResolvedMessage] = React.useState<string | null>(null);
   const closeTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
-  const mounted = React.useRef(true);
+  const mounted = React.useRef(false);
 
   React.useEffect(() => {
     mounted.current = true;
@@ -67,6 +74,8 @@ function SaveSession({
   }, []);
 
   async function handleConfirm() {
+    if (busyRef.current) return;
+    busyRef.current = true;
     setPhase("saving");
     setErrorMessage(null);
     try {
@@ -85,43 +94,44 @@ function SaveSession({
   }
 
   const busy = phase === "saving" || phase === "success";
+  React.useLayoutEffect(() => {
+    busyRef.current = busy;
+    return () => { busyRef.current = false; };
+  }, [busy, busyRef]);
 
   return (
-    <DialogContent showCloseButton={false}
-      onEscapeKeyDown={(event) => { if (busy) event.preventDefault(); }}
-      onInteractOutside={(event) => { if (busy) event.preventDefault(); }}>
-
-      {phase === "success" ? (
-        <>
-          <DialogHeader className="items-center text-center">
-            <div className="mb-1 flex size-16 items-center justify-center rounded-full bg-grass-tint">
-              <CircleCheckIcon className="size-10 text-grass-dark motion-safe:animate-checkmark-pop" />
-            </div>
-            <DialogTitle>Saved</DialogTitle>
-          </DialogHeader>
-          <p role="status" aria-live="polite" className="text-center text-sm text-ink-soft">
-            {resolvedMessage}
-          </p>
-        </>
-      ) : (
-        <>
-          <DialogHeader>
-            <DialogTitle>{title}</DialogTitle>
-            {description && <DialogDescription>{description}</DialogDescription>}
-          </DialogHeader>
-          {phase === "error" && errorMessage && (
-            <p className="text-sm text-rust">{errorMessage}</p>
-          )}
-          <DialogFooter>
-            <Button variant="outline" disabled={busy} onClick={() => onOpenChange(false)}>
-              {cancelLabel}
-            </Button>
-            <Button variant={variant} disabled={busy} onClick={() => void handleConfirm()}>
-              {phase === "saving" ? "Saving…" : confirmLabel}
-            </Button>
-          </DialogFooter>
-        </>
-      )}
-    </DialogContent>
+    <>
+        {phase === "success" ? (
+          <>
+            <DialogHeader className="items-center text-center">
+              <div className="mb-1 flex size-16 items-center justify-center rounded-full bg-grass-tint">
+                <CircleCheckIcon className="size-10 text-grass-dark motion-safe:animate-checkmark-pop" />
+              </div>
+              <DialogTitle>Saved</DialogTitle>
+            </DialogHeader>
+            <p role="status" aria-live="polite" className="text-center text-sm text-ink-soft">
+              {resolvedMessage}
+            </p>
+          </>
+        ) : (
+          <>
+            <DialogHeader>
+              <DialogTitle>{title}</DialogTitle>
+              {description && <DialogDescription>{description}</DialogDescription>}
+            </DialogHeader>
+            {phase === "error" && errorMessage && (
+              <p className="text-sm text-rust">{errorMessage}</p>
+            )}
+            <DialogFooter>
+              <Button variant="outline" disabled={busy} onClick={() => onOpenChange(false)}>
+                {cancelLabel}
+              </Button>
+              <Button variant={variant} disabled={busy} onClick={() => void handleConfirm()}>
+                {phase === "saving" ? "Saving…" : confirmLabel}
+              </Button>
+            </DialogFooter>
+          </>
+        )}
+    </>
   );
 }

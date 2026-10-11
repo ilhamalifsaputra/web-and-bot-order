@@ -5,11 +5,20 @@ import { Zap, Shield } from "lucide-react";
 import TrustBadgeRow, { type TrustBadge } from "./TrustBadgeRow";
 
 const ITEMS: TrustBadge[] = [
-  { icon: <Zap data-testid="icon-zap" className="h-4 w-4 text-grass" />, label: "Instant delivery" },
-  { icon: <Shield data-testid="icon-shield" className="h-4 w-4 text-grass" />, label: "QRIS & USDT" },
+  { id: "instant", icon: <Zap data-testid="icon-zap" className="h-4 w-4 text-grass" />, label: "Instant delivery" },
+  { id: "payments", icon: <Shield data-testid="icon-shield" className="h-4 w-4 text-grass" />, label: "QRIS & USDT" },
 ];
 
 describe("TrustBadgeRow", () => {
+  it("keeps badge nodes with their identity when equal labels reorder", () => {
+    const a = { ...ITEMS[0]!, label: "Same" };
+    const b = { ...ITEMS[1]!, label: "Same" };
+    const { rerender } = render(<TrustBadgeRow items={[a, b]} />);
+    const first = screen.getAllByRole("listitem")[0];
+    rerender(<TrustBadgeRow items={[b, a]} />);
+    expect(screen.getAllByRole("listitem")[1]).toBe(first);
+  });
+
   it("renders one list item per badge, with its label and icon", () => {
     render(<TrustBadgeRow items={ITEMS} />);
     const items = screen.getAllByRole("listitem");

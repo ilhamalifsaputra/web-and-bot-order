@@ -1,5 +1,3 @@
-import { useAction } from "../hooks/useAction";
-import { keyedContent } from "../lib/keyedContent";
 /**
  * TSX port of apps/storefront/views/product.njk — image, denomination picker
  * (price/stock/qty-max/buy-vs-restock driven by the selected plan, replicating
@@ -18,7 +16,7 @@ import {
   Star,
   Zap,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { apiGet, apiPost } from "../api/client";
 import type { CartPageData, ProductPageData } from "../api/types";
@@ -123,6 +121,10 @@ type RestockResult = "subscribed" | "already" | "unavailable" | "needs_telegram"
 
 export default function ProductPage() {
   const { slug = "" } = useParams<{ slug: string }>();
+  return <ProductSession key={slug} slug={slug} />;
+}
+
+function ProductSession({ slug }: { slug: string }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { data: ctx } = useShopContext();
@@ -148,42 +150,15 @@ export default function ProductPage() {
   const [qty, setQty] = useState(1);
   const [cartError, setCartError] = useState<unknown>(null);
   const isDesktop = useIsDesktop();
-  // The live summary card is the sticky bar's sentinel: the bar exists only to
-  // stand in for the real buy controls once they've scrolled away, so it stays
-  // hidden while they're on screen rather than duplicating a button the shopper
-  // is already looking at. Held as state (not a ref) so attaching the node
-  // re-runs the observer effect — the node only exists after the query
-  // resolves, and hooks can't wait for that.
-  const [buyArea, setBuyArea] = useState<HTMLElement | null>(null);
-  const [buyAreaVisible, setBuyAreaVisible] = useState(true);
+  const { setBuyArea, buyAreaVisible } = useProductPurchaseVisibility();
 
-  // A different product slug means a different denomination set — start over,
-  // same as a fresh page load would.
-  useEffect(() => {
-    setSelectedId(null);
-    setQty(1);
-  }, [slug]);
-
-  useEffect(() => {
-    // Assume visible wherever IntersectionObserver is missing (jsdom, older
-    // hosts): erring towards "hidden bar" keeps a purchase path that can't be
-    // observed from covering content it can't prove is scrolled past.
-    if (!buyArea || typeof IntersectionObserver !== "function") return;
-    const observer = new IntersectionObserver((entries) => {
-      const entry = entries[entries.length - 1];
-      setBuyAreaVisible(entry ? entry.isIntersecting : true);
-    });
-    observer.observe(buyArea);
-    return () => observer.disconnect();
-  }, [buyArea]);
-
-  const { addMutation, buyMutation, restockMutation } = useProductPurchase({ queryClient, setCartError, navigate, slug });
+  const { addMutation, buyMutation } = useProductPurchase({ queryClient, setCartError, navigate });
+  const { requestRestock, restockPending, restockDone, restockFeedbackKey, resetRestock } = useRestockSubscription({ slug, navigate });
 
   // Restock DMs go out over Telegram, so a signed-in account without a linked
   // Telegram can't be served — hide the button and say why instead. Anonymous
   // visitors keep it (tapping it sends them to log in).
   const needsTelegram = Boolean(ctx?.customer) && ctx?.customer?.telegram_linked === false;
-  const { restockDone, restockFeedbackKey } = restockFeedback({ restockMutation, selectedId, data });
 
   if (error) {
     if ((error as Error & { status?: number }).status === 404) return <ErrorPage />;
@@ -225,6 +200,7 @@ export default function ProductPage() {
   if (!selected) return null;
 
   function selectDenomination(id: number, available: number, usesLocalInventory: boolean): void {
+    resetRestock();
     setSelectedId(id);
     setQty((prev) => clampQty(prev, available, usesLocalInventory));
   }
@@ -242,7 +218,7 @@ export default function ProductPage() {
         ]}
       />
 
-      <ProductProductDetail product={product} denominations={denominations} fx={fx} low_threshold={low_threshold} selected={selected} selectDenomination={selectDenomination} setBuyArea={setBuyArea} ctx={ctx} selectedUsesStock={selectedUsesStock} cartError={cartError} qty={qty} setQty={setQty} buying={buying} addMutation={addMutation} buyMutation={buyMutation} needsTelegram={needsTelegram} restockMutation={restockMutation} restockDone={restockDone} restockFeedbackKey={restockFeedbackKey} />
+      <ProductProductDetail product={product} denominations={denominations} fx={fx} low_threshold={low_threshold} selected={selected} selectDenomination={selectDenomination} setBuyArea={setBuyArea} ctx={ctx} selectedUsesStock={selectedUsesStock} cartError={cartError} qty={qty} setQty={setQty} buying={buying} addMutation={addMutation} buyMutation={buyMutation} needsTelegram={needsTelegram} requestRestock={requestRestock} restockPending={restockPending} restockDone={restockDone} restockFeedbackKey={restockFeedbackKey} />
 
       {/* Product detail blocks — deliberately BELOW the buy area, not next to
           the short description: these are what a buyer reads while deciding,
@@ -290,7 +266,7 @@ export default function ProductPage() {
           view beside the image, so it needs none of this. Shared component
           (components.md "Sticky purchase bar") — Add to Cart stays in the
           in-page form only, so just `primaryAction` is passed. */}
-      <ProductMobilePurchaseBar qty={qty} isDesktop={isDesktop} buyAreaVisible={buyAreaVisible} selected={selected} selectedUsesStock={selectedUsesStock} needsTelegram={needsTelegram} ctx={ctx} fx={fx} buyMutation={buyMutation} buying={buying} restockFeedbackKey={restockFeedbackKey} restockMutation={restockMutation} restockDone={restockDone} />
+      <ProductMobilePurchaseBar qty={qty} isDesktop={isDesktop} buyAreaVisible={buyAreaVisible} selected={selected} selectedUsesStock={selectedUsesStock} needsTelegram={needsTelegram} ctx={ctx} fx={fx} buyMutation={buyMutation} buying={buying} restockFeedbackKey={restockFeedbackKey} requestRestock={requestRestock} restockPending={restockPending} restockDone={restockDone} />
     </>
   );
 }
@@ -384,7 +360,7 @@ function ProductPlanPrice({ selected, ctx, fx, low_threshold, selectedUsesStock 
   </div>);
 }
 
-function ProductBuyForm({ selected, qty, selectedUsesStock, setQty, buying, addMutation, buyMutation, needsTelegram, restockMutation, restockDone, restockFeedbackKey }: {
+function ProductBuyForm({ selected, qty, selectedUsesStock, setQty, buying, addMutation, buyMutation, needsTelegram, requestRestock, restockPending, restockDone, restockFeedbackKey }: {
   selected: import("../api/types").ProductDenomination;
   qty: number;
   selectedUsesStock: boolean;
@@ -393,7 +369,8 @@ function ProductBuyForm({ selected, qty, selectedUsesStock, setQty, buying, addM
   addMutation: import("@tanstack/react-query").UseMutationResult<CartPageData, Error, { denomination_id: number; qty: number; }, void>;
   buyMutation: import("@tanstack/react-query").UseMutationResult<CartPageData, Error, { denomination_id: number; qty: number; }, void>;
   needsTelegram: boolean;
-  restockMutation: { mutate: (variables: number) => void; reset: () => void; data?: { denominationId: number; result: RestockResult; } | undefined; error: Error | null; isPending: boolean; };
+  requestRestock: (denominationId: number) => Promise<void>;
+  restockPending: boolean;
   restockDone: boolean;
   restockFeedbackKey: string | null;
 }) {
@@ -417,10 +394,9 @@ function ProductBuyForm({ selected, qty, selectedUsesStock, setQty, buying, addM
           max={selectedUsesStock ? Math.max(1, Math.min(99, selected.available)) : 99}
           className="field w-20! text-center"
           onChange={(e) => {
-            const raw = e.target.value;
-            if (!raw.trim()) { setQty(1); return; }
-            const next = Number(raw);
-            if (Number.isFinite(next)) setQty(clampQty(next, selected.available, selectedUsesStock));
+            const value = e.currentTarget.valueAsNumber;
+            if (!Number.isFinite(value)) { setQty(1); return; }
+            setQty(clampQty(value, selected.available, selectedUsesStock));
           }}
         />
       </div>
@@ -458,10 +434,10 @@ function ProductBuyForm({ selected, qty, selectedUsesStock, setQty, buying, addM
         <button
           type="button"
           className="btn btn-soft"
-          disabled={restockMutation.isPending || restockDone}
-          onClick={() => restockMutation.mutate(selected.id)}
+          disabled={restockPending || restockDone}
+          onClick={() => void requestRestock(selected.id)}
         >
-          {restockMutation.isPending && <Spinner />}
+          {restockPending && <Spinner />}
           <Bell className="w-4 h-4" /> {t("web.notify_restock")}
         </button>
       )}
@@ -538,8 +514,8 @@ function ProductReviews({ product, reviews }: {
     )}
     {reviews.length > 0 ? (
       <div className="grid sm:grid-cols-2 gap-4 items-start">
-        {keyedContent(reviews).map(({ item: r, key }) => (
-          <div key={key} className="card card-pad">
+        {reviews.map((r) => (
+          <div key={r.id} className="card card-pad">
             <div className="flex items-center gap-2">
               <Stars rating={r.rating} />
               <span className="text-xs text-ink-faint">
@@ -560,7 +536,7 @@ function ProductReviews({ product, reviews }: {
   </section>);
 }
 
-function ProductMobilePurchaseBar({ qty, isDesktop, buyAreaVisible, selected, selectedUsesStock, needsTelegram, ctx, fx, buyMutation, buying, restockFeedbackKey, restockMutation, restockDone }: {
+function ProductMobilePurchaseBar({ qty, isDesktop, buyAreaVisible, selected, selectedUsesStock, needsTelegram, ctx, fx, buyMutation, buying, restockFeedbackKey, requestRestock, restockPending, restockDone }: {
   qty: number;
   isDesktop: boolean;
   buyAreaVisible: boolean;
@@ -572,7 +548,8 @@ function ProductMobilePurchaseBar({ qty, isDesktop, buyAreaVisible, selected, se
   buyMutation: import("@tanstack/react-query").UseMutationResult<CartPageData, Error, { denomination_id: number; qty: number; }, void>;
   buying: boolean;
   restockFeedbackKey: string | null;
-  restockMutation: { mutate: (variables: number) => void; reset: () => void; data?: { denominationId: number; result: RestockResult; } | undefined; error: Error | null; isPending: boolean; };
+  requestRestock: (denominationId: number) => Promise<void>;
+  restockPending: boolean;
   restockDone: boolean;
 }) {
   return (!isDesktop && !buyAreaVisible && (purchasable(selected) || (selectedUsesStock && !needsTelegram)) && (
@@ -594,9 +571,9 @@ function ProductMobilePurchaseBar({ qty, isDesktop, buyAreaVisible, selected, se
             // that does exist — an empty bar is wasted screen on 320px.
             label: restockFeedbackKey ? t(restockFeedbackKey) : t("web.notify_restock"),
             icon: <Bell className="w-4 h-4" />,
-            onClick: () => restockMutation.mutate(selected.id),
-            pending: restockMutation.isPending,
-            disabled: restockMutation.isPending || restockDone,
+            onClick: () => void requestRestock(selected.id),
+            pending: restockPending,
+            disabled: restockPending || restockDone,
             variant: "soft",
           }
       }
@@ -604,7 +581,7 @@ function ProductMobilePurchaseBar({ qty, isDesktop, buyAreaVisible, selected, se
   ));
 }
 
-function ProductProductDetail({ product, denominations, fx, low_threshold, selected, selectDenomination, setBuyArea, ctx, selectedUsesStock, cartError, qty, setQty, buying, addMutation, buyMutation, needsTelegram, restockMutation, restockDone, restockFeedbackKey }: {
+function ProductProductDetail({ product, denominations, fx, low_threshold, selected, selectDenomination, setBuyArea, ctx, selectedUsesStock, cartError, qty, setQty, buying, addMutation, buyMutation, needsTelegram, requestRestock, restockPending, restockDone, restockFeedbackKey }: {
   product: { slug: string; name: string; description: string | null; what_you_get: string | null; terms: string | null; warranty_note: string | null; category_name: string; category_slug: string; image: string | null; image_srcset?: string | null; image_kind?: import("../api/types").ThumbnailKind | null; icon_kind?: import("../api/types").DenomIconKind | null; rating: number | null; rating_count: number; checkout_flow: "catalog" | "instant"; template: "game" | "catalog"; };
   denominations: import("../api/types").ProductDenomination[];
   fx: string | null | undefined;
@@ -621,7 +598,8 @@ function ProductProductDetail({ product, denominations, fx, low_threshold, selec
   addMutation: import("@tanstack/react-query").UseMutationResult<CartPageData, Error, { denomination_id: number; qty: number; }, void>;
   buyMutation: import("@tanstack/react-query").UseMutationResult<CartPageData, Error, { denomination_id: number; qty: number; }, void>;
   needsTelegram: boolean;
-  restockMutation: { mutate: (variables: number) => void; reset: () => void; data?: { denominationId: number; result: RestockResult; } | undefined; error: Error | null; isPending: boolean; };
+  requestRestock: (denominationId: number) => Promise<void>;
+  restockPending: boolean;
   restockDone: boolean;
   restockFeedbackKey: string | null;
 }) {
@@ -681,19 +659,22 @@ function ProductProductDetail({ product, denominations, fx, low_threshold, selec
           </Alert>
         )}
 
-        <ProductBuyForm selected={selected} qty={qty} selectedUsesStock={selectedUsesStock} setQty={setQty} buying={buying} addMutation={addMutation} buyMutation={buyMutation} needsTelegram={needsTelegram} restockMutation={restockMutation} restockDone={restockDone} restockFeedbackKey={restockFeedbackKey} />
+        <ProductBuyForm selected={selected} qty={qty} selectedUsesStock={selectedUsesStock} setQty={setQty} buying={buying} addMutation={addMutation} buyMutation={buyMutation} needsTelegram={needsTelegram} requestRestock={requestRestock} restockPending={restockPending} restockDone={restockDone} restockFeedbackKey={restockFeedbackKey} />
       </div>
     </div>
   </div>);
 }
 
-function useProductPurchase({ queryClient, setCartError, navigate, slug }: {
+function useProductPurchase({ queryClient, setCartError, navigate }: {
   queryClient: import("@tanstack/react-query").QueryClient;
   setCartError: import("react").Dispatch<unknown>;
   navigate: import("react-router-dom").NavigateFunction;
-  slug: string;
 }) {
-  const invalidateContext = () => queryClient.invalidateQueries({ queryKey: ["context"] });
+  const invalidateContext = () => {
+    void queryClient.invalidateQueries({ queryKey: ["context"] });
+    void queryClient.invalidateQueries({ queryKey: ["cart"] });
+    void queryClient.invalidateQueries({ queryKey: ["checkout"] });
+  };
 
   const addMutation = useMutation({
     mutationFn: (vars: { denomination_id: number; qty: number }) => apiPost<CartPageData>("/api/v1/cart", vars),
@@ -704,7 +685,6 @@ function useProductPurchase({ queryClient, setCartError, navigate, slug }: {
     },
     onError: (err) => setCartError(err),
   });
-
   const buyMutation = useMutation({
     mutationFn: (vars: { denomination_id: number; qty: number }) => apiPost<CartPageData>("/api/v1/cart", vars),
     onMutate: () => setCartError(null),
@@ -714,27 +694,70 @@ function useProductPurchase({ queryClient, setCartError, navigate, slug }: {
     },
     onError: (err) => setCartError(err),
   });
-
-  const restockMutation = useAction({
-    mutationFn: async (denominationId: number) => ({ ...(await apiPost<{ result: RestockResult }>(`/api/v1/restock/${denominationId}`, {})), denominationId }),
-    onError: (err) => {
-      if ((err as Error & { status?: number }).status === 401) {
-        navigate(`/login?next=/p/${slug}`);
-      }
-    },
-  });
-  return { addMutation, buyMutation, restockMutation };
+  return { addMutation, buyMutation };
 }
 
-function restockFeedback({ restockMutation, selectedId, data }: {
-  restockMutation: { mutate: (variables: number) => void; reset: () => void; data?: { denominationId: number; result: RestockResult; } | undefined; error: Error | null; isPending: boolean; };
-  selectedId: number | null;
-  data: NoInfer<ProductPageData> | undefined;
+function useRestockSubscription({ slug, navigate }: {
+  slug: string;
+  navigate: import("react-router-dom").NavigateFunction;
 }) {
-  const restockResult = restockMutation.data?.denominationId === (selectedId ?? data?.denominations.find(d => d.purchasable)?.id ?? data?.denominations[0]?.id) ? restockMutation.data?.result : undefined;
+  const restockRequest = useRef<symbol | null>(null);
+  const [restockPendingToken, setRestockPendingToken] = useState<symbol | null>(null);
+  const restockPending = restockPendingToken !== null;
+  const [restockResult, setRestockResult] = useState<RestockResult | null>(null);
+  useEffect(() => () => { restockRequest.current = null; }, []);
+  async function requestRestock(denominationId: number) {
+    if (restockRequest.current) return;
+    const token = Symbol();
+    restockRequest.current = token;
+    setRestockPendingToken(token);
+    try {
+      const response = await apiPost<{ result: RestockResult }>(`/api/v1/restock/${denominationId}`, {});
+      if (restockRequest.current === token) setRestockResult(response.result);
+    } catch (error) {
+      if (restockRequest.current === token && (error as Error & { status?: number }).status === 401) {
+        navigate(`/login?next=/p/${slug}`);
+      }
+    } finally {
+      if (restockRequest.current === token) {
+        restockRequest.current = null;
+      }
+      setRestockPendingToken(current => current === token ? null : current);
+    }
+  }
 
+  function resetRestock() {
+    restockRequest.current = null;
+    setRestockResult(null);
+    setRestockPendingToken(null);
+  }
   const restockDone = restockResult === "subscribed" || restockResult === "already";
-
   const restockFeedbackKey = restockResult ? `web.restock_${restockResult}` : null;
-  return { restockDone, restockFeedbackKey } as const;
+  return { requestRestock, restockPending, restockDone, restockFeedbackKey, resetRestock };
+}
+
+function useProductPurchaseVisibility() {
+  // The live summary card is the sticky bar's sentinel: the bar exists only to
+  // stand in for the real buy controls once they've scrolled away, so it stays
+  // hidden while they're on screen rather than duplicating a button the shopper
+  // is already looking at. Held as state (not a ref) so attaching the node
+  // re-runs the observer effect — the node only exists after the query
+  // resolves, and hooks can't wait for that.
+  const [buyArea, setBuyArea] = useState<HTMLElement | null>(null);
+  const [buyAreaVisible, setBuyAreaVisible] = useState(true);
+
+  useEffect(() => {
+    // Assume visible wherever IntersectionObserver is missing (jsdom, older
+    // hosts): erring towards "hidden bar" keeps a purchase path that can't be
+    // observed from covering content it can't prove is scrolled past.
+    if (!buyArea || typeof IntersectionObserver !== "function") return;
+    const observer = new IntersectionObserver((entries) => {
+      const entry = entries[entries.length - 1];
+      setBuyAreaVisible(entry ? entry.isIntersecting : true);
+    });
+    observer.observe(buyArea);
+    return () => observer.disconnect();
+  }, [buyArea]);
+
+  return { setBuyArea, buyAreaVisible };
 }

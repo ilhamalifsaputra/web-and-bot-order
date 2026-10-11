@@ -111,6 +111,12 @@ A fresh worktree is a fresh checkout — the ignored files do not come with it:
   section for the exact commands/env). That compose file publishes a fixed
   local port, so **only one worktree can run it at a time** — do not run it
   from two worktrees concurrently.
+- After verifying `DATABASE_URL_PRISMA` targets your isolated worktree database,
+  initialize its existing repo schema with `pnpm exec prisma db push
+  --skip-generate` before the full suite. Most tests create private schemas,
+  but `packages/db/src/crud/integrity.test.ts` checks the database's `public`
+  schema directly and requires those tables. Never apply this setup command to
+  another session's database or a production database.
 - **Only one worktree may run order-bot at a time.** The bot token lives in the
   DB, so pointing two worktrees at the same Postgres means two pollers on one
   token, which Telegram rejects with a 409.
@@ -286,6 +292,21 @@ support, admin screens — and to the fulfillment-message worker
 - Structured metadata (the object arg to `logger.info({ err, id }, "msg")`)
   is untouched by this convention — only the leading message string
   follows it.
+
+## React client correctness (local checks, no CI)
+
+- For React client changes, run the affected package's typecheck, relevant
+  tests, the existing Storefront lint, and `pnpm doctor:changed`. This checks
+  both clients against `master`, including untracked source files.
+- Before completing a React correctness task, run `pnpm doctor:bugs` and
+  `pnpm doctor:full` alongside the full verification gate below. The latter
+  keeps other diagnostic categories visible without expanding the task scope.
+- `pnpm lint` runs Storefront's token lint and the Doctor Bugs scan for both
+  clients. Record full diagnostic and runtime verification results in
+  `docs/REACT_DOCTOR_PHASE_1_REPORT.md`. A changed scan supplements this review;
+  it does not prove runtime correctness or replace the full scan.
+- Fix confirmed failures rather than adding suppressions or dummy cache
+  invalidation. These checks are local scripts, not commit/deployment hooks.
 
 ## Tests
 - **Three tiers; run the cheapest one that fits.** Add tests with each behavior

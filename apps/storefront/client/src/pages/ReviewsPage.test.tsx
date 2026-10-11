@@ -15,7 +15,7 @@ vi.mock("../api/client", () => ({
 const reviewsData: ReviewsData = {
   pending: [{ order_id: 1, code: "ORD1", product_id: 9, product_name: "Netflix" }],
   reviews: [
-    { product_name: "Spotify", rating: 4, comment: "Great", created_at_display: "2026-07-01" },
+    { id: 1, product_name: "Spotify", rating: 4, comment: "Great", created_at_display: "2026-07-01" },
   ],
 };
 
@@ -117,7 +117,7 @@ describe("ReviewsPage", () => {
     const multilineComment = `Barang sesuai deskripsi.\n\nPengiriman cepat, admin ramah.\n\n${longToken}`;
     renderReviews(() => ({
       pending: [],
-      reviews: [{ product_name: "Spotify", rating: 4, comment: multilineComment, created_at_display: "2026-07-01" }],
+      reviews: [{ id: 2, product_name: "Spotify", rating: 4, comment: multilineComment, created_at_display: "2026-07-01" }],
     }));
     await screen.findByText("Spotify");
     const commentParagraph = document.querySelector("p.text-sm.text-ink-soft.mt-2");

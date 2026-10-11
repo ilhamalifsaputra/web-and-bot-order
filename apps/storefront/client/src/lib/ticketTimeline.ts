@@ -12,6 +12,7 @@
 import type { TicketMessage } from "../api/types";
 
 export interface SystemTimelineEvent {
+  id: string;
   kind: "system";
   key: "created" | "closed";
   labelKey: string;
@@ -19,6 +20,7 @@ export interface SystemTimelineEvent {
 }
 
 export interface MessageTimelineEntry {
+  id: string;
   kind: "message";
   from_user: boolean;
   content: string;
@@ -29,6 +31,7 @@ export interface MessageTimelineEntry {
 export type TicketTimelineEntry = SystemTimelineEvent | MessageTimelineEntry;
 
 export interface TicketTimelineInput {
+  id: number;
   message: string;
   created_at_display: string;
   admin_reply: string | null;
@@ -39,9 +42,10 @@ export interface TicketTimelineInput {
 
 export function buildTicketTimeline(ticket: TicketTimelineInput, messages: TicketMessage[]): TicketTimelineEntry[] {
   const entries: TicketTimelineEntry[] = [
-    { kind: "system", key: "created", labelKey: "web.ticket_event_created", created_at_display: ticket.created_at_display },
+    { id: `ticket:${ticket.id}:created`, kind: "system", key: "created", labelKey: "web.ticket_event_created", created_at_display: ticket.created_at_display },
     {
       kind: "message",
+      id: `ticket:${ticket.id}:opening`,
       from_user: true,
       content: ticket.message,
       created_at_display: ticket.created_at_display,
@@ -50,6 +54,7 @@ export function buildTicketTimeline(ticket: TicketTimelineInput, messages: Ticke
     ...messages.map(
       (m): TicketTimelineEntry => ({
         kind: "message",
+        id: `message:${m.id}`,
         from_user: m.from_user,
         content: m.content,
         created_at_display: m.created_at_display,
@@ -60,6 +65,7 @@ export function buildTicketTimeline(ticket: TicketTimelineInput, messages: Ticke
   if (ticket.admin_reply) {
     entries.push({
       kind: "message",
+      id: `ticket:${ticket.id}:legacy-reply`,
       from_user: false,
       content: ticket.admin_reply,
       created_at_display: ticket.replied_at_display ?? ticket.created_at_display,
@@ -69,6 +75,7 @@ export function buildTicketTimeline(ticket: TicketTimelineInput, messages: Ticke
   if (ticket.closed_at_display) {
     entries.push({
       kind: "system",
+      id: `ticket:${ticket.id}:closed`,
       key: "closed",
       labelKey: "web.ticket_event_closed",
       created_at_display: ticket.closed_at_display,

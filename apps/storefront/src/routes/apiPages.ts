@@ -177,6 +177,7 @@ const apiPagesRoutes: FastifyPluginAsync = async (app) => {
       // localize() the Nunjucks localdt filter used — so the React page
       // renders byte-identical strings without shipping luxon+tz data.
       reviews: data.reviews.map((r) => ({
+        id: r.id,
         rating: r.rating,
         comment: r.comment,
         author: r.author,

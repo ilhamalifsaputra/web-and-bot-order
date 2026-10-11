@@ -1,5 +1,5 @@
 /**
- * Pure helpers converting between the stored AdditionalField shape
+ * Helpers converting between the stored AdditionalField shape
  * (packages/core/src/deliveryFields.ts's zAdditionalField, mirrored locally
  * as api/types.ts's AdditionalField) and AdditionalFieldDraft, the looser
  * free-typed shape AdditionalFieldsEditor edits (a still-typing key, an
@@ -7,15 +7,20 @@
  */
 import type { AdditionalField, AdditionalFieldDraft } from "../api/types";
 
+// Browser-session identities, never credentials or serialized business IDs.
+// A counter also works on plain HTTP, where randomUUID is unavailable.
+let nextDraftId = 0;
+
 /** A fresh, blank row for "+ Add Field". Defaults mirror the server schema's
  * defaults (type "text", required true). */
 export function emptyFieldDraft(): AdditionalFieldDraft {
-  return { key: "", labelId: "", labelEn: "", type: "text", required: true, optionsText: "", placeholder: "" };
+  return { draftId: `draft:${++nextDraftId}`, key: "", labelId: "", labelEn: "", type: "text", required: true, optionsText: "", placeholder: "" };
 }
 
 /** Seed an editable draft from a loaded/stored field (edit page prefill). */
 export function fieldToDraft(field: AdditionalField): AdditionalFieldDraft {
   return {
+    draftId: `stored:${field.key}`,
     key: field.key,
     labelId: field.label.id,
     labelEn: field.label.en,

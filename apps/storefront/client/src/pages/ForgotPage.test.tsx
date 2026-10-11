@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, beforeEach, vi, type Mock } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, act } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import ForgotPage from "./ForgotPage";
@@ -45,6 +45,21 @@ describe("ForgotPage", () => {
       await screen.findByText("If that email is registered, a reset link is on its way."),
     ).toBeInTheDocument();
     expect(screen.queryByLabelText("Email")).not.toBeInTheDocument();
+  });
+
+  it("sends one reset email for repeated submits while the request is pending", async () => {
+    let resolve!: (value: { sent: boolean; unavailable: boolean }) => void;
+    (publicPost as Mock).mockImplementation(() => new Promise(done => { resolve = done; }));
+    renderForgot();
+    const email = screen.getByLabelText("Email");
+    fireEvent.change(email, { target: { value: "alice@example.com" } });
+    const form = email.closest("form")!;
+    fireEvent.submit(form);
+    fireEvent.submit(form);
+    expect(publicPost).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Send reset link" })).toBeDisabled();
+    await act(async () => { resolve({ sent: true, unavailable: false }); });
+    expect(await screen.findByText("If that email is registered, a reset link is on its way.")).toBeInTheDocument();
   });
 
   it("swaps to the unavailable notice on {unavailable:true}", async () => {

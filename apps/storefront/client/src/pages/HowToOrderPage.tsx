@@ -41,10 +41,10 @@ export default function HowToOrderPage() {
       blocks={5}
       variant="timeline"
       steps={[
-        { icon: ListChecks },
-        { icon: ShoppingCart },
-        { icon: CreditCard, render: paymentStep },
-        { icon: PackageCheck, block: 5 },
+        { id: "web.hto_h1", icon: ListChecks },
+        { id: "web.hto_h2", icon: ShoppingCart },
+        { id: "web.hto_h3", icon: CreditCard, render: paymentStep },
+        { id: "web.hto_h5", icon: PackageCheck, block: 5 },
       ]}
     />
   );

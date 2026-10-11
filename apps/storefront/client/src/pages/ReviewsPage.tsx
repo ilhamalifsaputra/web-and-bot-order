@@ -1,4 +1,3 @@
-import { keyedContent } from "../lib/keyedContent";
 /**
  * TSX port of apps/storefront/views/reviews.njk. The rating field is a plain
  * `<select>` of 5..1 (checked the template — not radios).
@@ -178,8 +177,8 @@ export default function ReviewsPage() {
       <section>
         {data.reviews.length > 0 ? (
           <div className="grid sm:grid-cols-2 gap-4 items-start">
-            {keyedContent(data.reviews).map(({ item: r, key }) => (
-              <ReviewCard key={key} review={r} />
+            {data.reviews.map((r) => (
+              <ReviewCard key={r.id} review={r} />
             ))}
           </div>
         ) : (

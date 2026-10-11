@@ -1,4 +1,3 @@
-import { keyedContent } from "../../lib/keyedContent";
 /** The linked order's context card in the ticket sidebar. "Download
  * Credentials"/"View order" both deep-link to OrderDetailPage rather than
  * re-rendering the credential-reveal UI here — that page's existing
@@ -27,8 +26,8 @@ export default function TicketOrderSummaryCard({ order }: { order: TicketOrderSu
         <StatusBadge value={order.status} />
       </div>
       <dl className="mt-3 space-y-1.5 text-sm">
-        {keyedContent(order.items).map(({ item, key }) => (
-          <div key={key} className="flex justify-between gap-3">
+        {order.items.map((item) => (
+          <div key={item.id} className="flex justify-between gap-3">
             <dt className="text-ink-soft">
               {item.name}
               {item.duration ? ` · ${item.duration}` : ""}

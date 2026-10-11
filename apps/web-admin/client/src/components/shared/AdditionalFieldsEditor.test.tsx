@@ -16,6 +16,19 @@ beforeEach(() => {
 });
 
 describe("AdditionalFieldsEditor", () => {
+  it("preserves the remaining draft's input and focus when an earlier row is removed", () => {
+    const first = emptyFieldDraft();
+    const second = { ...emptyFieldDraft(), labelEn: "Account email" };
+    const onChange = vi.fn();
+    const view = render(<AdditionalFieldsEditor value={[first, second]} onChange={onChange} />);
+    const input = screen.getByDisplayValue("Account email");
+    input.focus();
+    view.rerender(<AdditionalFieldsEditor value={[second]} onChange={onChange} />);
+    expect(screen.getByDisplayValue("Account email")).toBe(input);
+    expect(input).toHaveFocus();
+    expect(first.draftId).not.toBe(second.draftId);
+  });
+
   it("renders no field rows and an Add Field button when value is empty", () => {
     render(<AdditionalFieldsEditor value={[]} onChange={vi.fn()} />);
     expect(screen.queryAllByPlaceholderText(/e\.g\. id game/i)).toHaveLength(0);
@@ -75,7 +88,7 @@ describe("AdditionalFieldsEditor", () => {
     const drafts: AdditionalFieldDraft[] = [{ ...emptyFieldDraft(), labelEn: "" }];
     render(<AdditionalFieldsEditor isGame value={drafts} onChange={onChange} />);
     fireEvent.change(screen.getByPlaceholderText(/e\.g\. game id/i), { target: { value: "Server ID" } });
-    expect(onChange).toHaveBeenCalledWith([{ ...emptyFieldDraft(), labelEn: "Server ID" }]);
+    expect(onChange).toHaveBeenCalledWith([{ ...drafts[0], labelEn: "Server ID" }]);
   });
 
   it("toggling the required checkbox reports the flipped value via onChange", async () => {

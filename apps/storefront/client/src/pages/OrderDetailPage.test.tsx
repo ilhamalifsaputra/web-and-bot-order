@@ -62,7 +62,7 @@ const baseOrder: OrderDetailData["order"] = {
   customer_data: [],
   delivered_content: null,
   items: [
-    { name: "Netflix", duration: "1 month", unit_price: "158000", warranty_days: 30, credentials: null },
+    { id: 1, name: "Netflix", duration: "1 month", unit_price: "158000", warranty_days: 30, credentials: null },
   ],
 };
 
@@ -76,7 +76,7 @@ function renderDetail(respond: (path: string) => unknown, code = "ORD1", ctx: Sh
     return respond(path);
   });
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  return { queryClient, ...render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[`/account/orders/${code}`]}>
         <Routes>
@@ -85,10 +85,25 @@ function renderDetail(respond: (path: string) => unknown, code = "ORD1", ctx: Sh
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
-  );
+  ) };
 }
 
 describe("OrderDetailPage", () => {
+  it("keeps credential DOM nodes with their order item after duplicate-name rows reorder", async () => {
+    const item = baseOrder.items[0]!;
+    const data: OrderDetailData = { order: { ...baseOrder, items: [
+      { ...item, id: 101, credentials: "first-secret" },
+      { ...item, id: 102, credentials: "second-secret" },
+    ] }, delivered: true, processing: false, pending_payment: false };
+    const { queryClient } = renderDetail(() => data);
+    const first = await screen.findByText("first-secret");
+    const second = screen.getByText("second-secret");
+    await act(async () => { queryClient.setQueryData(["account-order", "ORD1"], { ...data, order: { ...data.order, items: [...data.order.items].reverse() } }); });
+    await waitFor(() => expect(document.querySelectorAll("#credentials code")[0]).toBe(second));
+    expect(screen.getByText("first-secret")).toBe(first);
+    expect(screen.getByText("second-secret")).toBe(second);
+  });
+
   beforeEach(() => {
     document.documentElement.lang = "en";
     vi.clearAllMocks();
@@ -710,7 +725,7 @@ describe("OrderDetailPage game top-up", () => {
       customer_data_fields: infoFields,
       customer_data: [{ game_id: "12345678" }],
       delivered_content: SN,
-      items: [{ name: "Mobile Legends", duration: "86 Diamonds", unit_price: "20000", warranty_days: 30, credentials: "stray:cred" }],
+      items: [{ id: 2, name: "Mobile Legends", duration: "86 Diamonds", unit_price: "20000", warranty_days: 30, credentials: "stray:cred" }],
     },
     delivered: true, pending_payment: false, processing: false,
     product_slug: "mobile-legends", game_target: [{ game_id: "12345678", zone_id: "2222" }], sn: SN,

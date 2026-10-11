@@ -13,7 +13,15 @@ export default function PrivacyPage() {
       args={{ shop: ctx?.shop_name ?? "", company: companyName(ctx) }}
       // Block 6 (your order credentials) stays a warning Callout — same
       // wrapper as the timeline layout, just no numbered badge.
-      steps={[{}, {}, {}, {}, {}, { callout: "warning" }, {}]}
+      steps={[
+        { id: "web.privacy_h1", block: 1 },
+        { id: "web.privacy_h2", block: 2 },
+        { id: "web.privacy_h3", block: 3 },
+        { id: "web.privacy_h4", block: 4 },
+        { id: "web.privacy_h5", block: 5 },
+        { id: "web.privacy_h6", block: 6, callout: "warning" },
+        { id: "web.privacy_h7", block: 7 },
+      ]}
     >
       {/* Only shown when this shop actually has `web_analytics_id` set —
           a privacy policy that claims tracking a shop doesn't do is as wrong

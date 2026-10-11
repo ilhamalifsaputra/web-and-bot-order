@@ -35,6 +35,8 @@ import Callout, { type CalloutVariant } from "./Callout";
 import StepTimeline, { type StepItem } from "./StepTimeline";
 
 export interface StaticPageStep {
+  /** Stable locale-block or custom-step identity, independent of visual order. */
+  id: string;
   /** Per-block badge icon. Only rendered by `variant="timeline"`; prose pages
    *  omit it (they have no badges). */
   icon?: LucideIcon;
@@ -75,7 +77,7 @@ export default function StaticPage({
   children,
 }: StaticPageProps) {
   const config: StaticPageStep[] =
-    steps ?? Array.from({ length: blocks }, (_, i) => ({ icon: FileText, block: i + 1 }));
+    steps ?? Array.from({ length: blocks }, (_, i) => ({ id: `web.${prefix}_h${i + 1}`, icon: FileText, block: i + 1 }));
 
   return (
     <div className="mx-auto max-w-3xl">
@@ -120,11 +122,11 @@ function ProseBody({ prefix, args, config, children }: BodyProps) {
   return (
     <article className="mt-10 space-y-8">
       {config.map((step, idx) => {
+        if (step.render) return <div key={step.id}>{step.render}</div>;
         const n = step.block ?? idx + 1;
-        if (step.render) return <div key={t(`web.${prefix}_h${n}`)}>{step.render}</div>;
         const body = t(`web.${prefix}_p${n}`, args);
         return (
-          <section key={body}>
+          <section key={step.id}>
             <h2 className="font-display text-xl font-semibold text-ink sm:text-2xl">
               {t(`web.${prefix}_h${n}`)}
             </h2>
@@ -148,11 +150,12 @@ function TimelineBody({ prefix, args, config, children }: BodyProps) {
   const items: StepItem[] = config.map((step, idx) => {
     const icon = step.icon ?? FileText;
     if (step.render) {
-      return { icon, description: step.render };
+      return { id: step.id, icon, description: step.render };
     }
     const n = step.block ?? idx + 1;
     const body = t(`web.${prefix}_p${n}`, args);
     return {
+      id: step.id,
       icon,
       title: t(`web.${prefix}_h${n}`),
       description: step.callout ? (

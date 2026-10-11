@@ -10,6 +10,7 @@ import { Fragment } from "react";
 import { Link } from "react-router-dom";
 
 export interface BreadcrumbItem {
+  /** Ancestor hrefs are unique; at most one unlinked item denotes the current page. */
   label: string;
   href?: string;
 }
@@ -24,7 +25,7 @@ export default function Breadcrumb({ items }: BreadcrumbProps) {
       {items.map((c, i) => {
         const isLast = i === items.length - 1;
         return (
-          <Fragment key={c.href ?? c.label}>
+          <Fragment key={c.href ?? "current"}>
             {c.href && !isLast ? (
               <Link to={c.href} className="hover:text-pine">
                 {c.label}

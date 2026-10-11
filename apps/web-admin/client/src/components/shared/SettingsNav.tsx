@@ -73,15 +73,17 @@ export function SettingsNav({ topLinks, group, bottomLinks }: SettingsNavProps):
     return stored ?? true;
   });
   const [activeId, setActiveId] = useState<string | null>(null);
+  const persistedExpanded = useRef(expanded);
   const linkRefs = useRef<Map<string, HTMLAnchorElement>>(new Map());
 
   const allLinks = [...topLinks, ...(group?.links ?? []), ...bottomLinks].filter((l) => l.visible);
-  const allLinkIds = allLinks.map((l) => l.id).join(",");
+  const allLinkIds = JSON.stringify(allLinks.map((l) => l.id));
 
   useEffect(() => {
     // Not implemented in some test/SSR environments — scrollspy simply stays
     // inactive there rather than crashing (a real browser always has this).
-    if (allLinks.length === 0 || typeof IntersectionObserver === "undefined") return;
+    const ids: string[] = JSON.parse(allLinkIds);
+    if (ids.length === 0 || typeof IntersectionObserver === "undefined") return;
     const observer = new IntersectionObserver(
       (entries) => {
         // The topmost section whose heading has crossed just below the
@@ -94,12 +96,11 @@ export function SettingsNav({ topLinks, group, bottomLinks }: SettingsNavProps):
       },
       { rootMargin: "-64px 0px -70% 0px", threshold: 0 },
     );
-    for (const link of allLinks) {
-      const el = document.getElementById(link.id);
+    for (const id of ids) {
+      const el = document.getElementById(id);
       if (el) observer.observe(el);
     }
     return () => observer.disconnect();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allLinkIds]);
 
   useEffect(() => {
@@ -115,10 +116,14 @@ export function SettingsNav({ topLinks, group, bottomLinks }: SettingsNavProps):
     }
   }, [activeId]);
 
+  useEffect(() => {
+    if (persistedExpanded.current === expanded) return;
+    writeExpandedStorage(expanded);
+    persistedExpanded.current = expanded;
+  }, [expanded]);
+
   function toggleExpanded() {
-    const next = !expanded;
-    setExpanded(next);
-    writeExpandedStorage(next);
+    setExpanded((prev) => !prev);
   }
 
   function renderLink(link: SettingsNavLink, opts: { indent?: boolean; collapsedOnDesktop?: boolean } = {}) {

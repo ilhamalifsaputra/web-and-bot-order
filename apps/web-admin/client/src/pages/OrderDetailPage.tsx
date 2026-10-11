@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, CircleDollarSign, Eye, EyeOff, HandCoins, MailX, RefreshCw, Send, X } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { toast } from "sonner";
 import { apiGet, apiPost } from "../api/client";
@@ -16,10 +16,8 @@ import { EmptyState } from "../components/shared/EmptyState";
 import { PageHeader } from "../components/shared/PageHeader";
 import { PageLayout } from "../components/shared/PageLayout";
 import { StatusBadge } from "../components/shared/StatusBadge";
-import { useAction } from "../hooks/useAction";
 import { useSse } from "../hooks/useSse";
 import { describeError } from "../lib/errorMessages";
-import { keyedContent } from "../lib/keyedContent";
 
 interface OrderItem {
   id: number;
@@ -180,6 +178,10 @@ function useOrderDetail(orderId: string) {
 
 export function OrderDetailPage() {
   const { orderId } = useParams<{ orderId: string }>();
+  return <OrderDetailSession key={orderId} orderId={orderId} />;
+}
+
+function OrderDetailSession({ orderId }: { orderId: string | undefined }) {
   const qc = useQueryClient();
   const { data, isError } = useOrderDetail(orderId ?? "");
   useOrderProviderStream({ orderId, qc });
@@ -192,7 +194,10 @@ export function OrderDetailPage() {
   // and tagged with its order id so navigating to another order can't show it.
   const [revealed, setRevealed] = useState<(RevealedOrderSecrets & { orderId: string }) | null>(null);
 
-  const refresh = () => void qc.invalidateQueries({ queryKey: ["order", orderId] });
+  const refresh = () => {
+    void qc.invalidateQueries({ queryKey: ["order", orderId] });
+    void qc.invalidateQueries({ queryKey: ["orders"] });
+  };
 
   const approve = useMutation({
     mutationFn: () => apiPost(`/api/orders/${orderId}/approve`, {}),
@@ -212,11 +217,32 @@ export function OrderDetailPage() {
     onError: (e: Error) => setActionError(describeError(e)),
   });
 
-  const resend = useAction({
-    mutationFn: () => apiPost(`/api/orders/${orderId}/resend`, {}),
-    onSuccess: () => { setActionError(null); },
-    onError: (e: Error) => setActionError(describeError(e)),
-  });
+  const resendRequest = useRef<symbol | null>(null);
+  const revealRequest = useRef<symbol | null>(null);
+  const [resendPendingToken, setResendPendingToken] = useState<symbol | null>(null);
+  const resending = resendPendingToken !== null;
+  const [revealing, setRevealing] = useState(false);
+  useEffect(() => () => {
+    resendRequest.current = null;
+    revealRequest.current = null;
+  }, []);
+  async function resendDelivery() {
+    if (resendRequest.current) return;
+    const token = Symbol();
+    resendRequest.current = token;
+    setResendPendingToken(token);
+    try {
+      await apiPost(`/api/orders/${orderId}/resend`, {});
+      if (resendRequest.current === token) setActionError(null);
+    } catch (error) {
+      if (resendRequest.current === token) setActionError(describeError(error as Error));
+    } finally {
+      if (resendRequest.current === token) {
+        resendRequest.current = null;
+        setResendPendingToken(current => current === token ? null : current);
+      }
+    }
+  }
 
   const fulfill = useMutation({
     mutationFn: () => apiPost(`/api/orders/${orderId}/fulfill`, { content: fulfillContent }),
@@ -246,16 +272,32 @@ export function OrderDetailPage() {
     onError: (e: Error) => setActionError(describeError(e)),
   });
 
-  const reveal = useAction({
-    mutationFn: () => apiPost<RevealedOrderSecrets>(`/api/orders/${orderId}/reveal`, {}),
-    onSuccess: (result) => { setRevealed({ ...result, orderId: orderId ?? "" }); setActionError(null); },
-    onError: (e: Error) => setActionError(describeError(e.message)),
-  });
   const shown = revealed && revealed.orderId === orderId ? revealed : null;
-  const toggleReveal = () => {
-    if (shown) setRevealed(null);
-    else reveal.mutate();
-  };
+  async function toggleReveal() {
+    if (revealRequest.current) return;
+    if (shown) {
+      setRevealed(null);
+      return;
+    }
+    const token = Symbol();
+    revealRequest.current = token;
+    setRevealing(true);
+    try {
+      // Plaintext belongs only to this mounted order session, never a mutation cache.
+      const result = await apiPost<RevealedOrderSecrets>(`/api/orders/${orderId}/reveal`, {});
+      if (revealRequest.current === token) {
+        setRevealed({ ...result, orderId: orderId ?? "" });
+        setActionError(null);
+      }
+    } catch (error) {
+      if (revealRequest.current === token) setActionError(describeError((error as Error).message));
+    } finally {
+      if (revealRequest.current === token) {
+        revealRequest.current = null;
+        setRevealing(false);
+      }
+    }
+  }
 
   if (isError) {
     return (
@@ -273,6 +315,15 @@ export function OrderDetailPage() {
   }
 
   const { order, money, canAct, canCredit, canCreditCancelled, canFulfill, canReject, isDelivered, hasDeliveredContent, customerDataFields, customerData } = data;
+  const orderUnitIds = order.items.flatMap(item => Array.from(
+    { length: item.quantity },
+    (_, unit) => `item:${item.id}:unit:${unit + 1}`,
+  ));
+  const buyerUnits = customerData.map((answers, index) => ({
+    id: orderUnitIds[index] ?? `order:${order.id}:legacy-answer:${index + 1}`,
+    number: index + 1,
+    answers,
+  }));
   const stockReplacements = data.stockReplacements ?? [];
   const overpayment = data.overpayment ?? null;
   /** Offer the action only while there really is something to hand back — the
@@ -299,7 +350,7 @@ export function OrderDetailPage() {
     <Button
       variant="ghost"
       size="sm"
-      disabled={reveal.isPending}
+      disabled={revealing}
       aria-label={shown ? `Hide delivered ${noun}` : `Show delivered ${noun}`}
       onClick={toggleReveal}
     >
@@ -380,17 +431,17 @@ export function OrderDetailPage() {
         <Card className="mt-6">
           <CardHeader><CardTitle>Buyer-Submitted Info</CardTitle></CardHeader>
           <CardContent className="flex flex-col gap-2 text-sm">
-            {keyedContent(customerData).map(({ item: unit, key }, i) => (
-              <div key={key} className="flex flex-col gap-1">
+            {buyerUnits.map((unit) => (
+              <div key={unit.id} className="flex flex-col gap-1">
                 {customerDataFields.map(field => (
                   <div key={field.key} className="flex justify-between gap-4">
                     <span className="shrink-0 text-ink-soft">
-                      {customerData.length > 1 ? `Unit ${i + 1} — ${field.label.en}` : field.label.en}
+                      {buyerUnits.length > 1 ? `Unit ${unit.number} — ${field.label.en}` : field.label.en}
                     </span>
                     {/* Buyer-typed free text — the least predictable value on
                         this page, so it wraps rather than being clipped by the
                         card's overflow-hidden. */}
-                    <span className="min-w-0 break-words text-ink text-right">{unit[field.key] || "—"}</span>
+                    <span className="min-w-0 break-words text-ink text-right">{unit.answers[field.key] || "—"}</span>
                   </div>
                 ))}
               </div>
@@ -404,7 +455,7 @@ export function OrderDetailPage() {
       <OrderDetailDeliveredContent isDelivered={isDelivered} hasDeliveredContent={hasDeliveredContent} revealButton={revealButton} shown={shown} order={order} />
 
       {/* Actions */}
-      <OrderDetailActions canAct={canAct} canCredit={canCredit} canCreditCancelled={canCreditCancelled} canResend={canResend} canFulfill={canFulfill} canReject={canReject} resend={resend} approve={approve} rejectReason={rejectReason} setRejectReason={setRejectReason} reject={reject} setActionError={setActionError} creditBalance={creditBalance} data={data} fulfillContent={fulfillContent} setFulfillContent={setFulfillContent} fulfill={fulfill} />
+      <OrderDetailActions canAct={canAct} canCredit={canCredit} canCreditCancelled={canCreditCancelled} canResend={canResend} canFulfill={canFulfill} canReject={canReject} resending={resending} resendDelivery={resendDelivery} approve={approve} rejectReason={rejectReason} setRejectReason={setRejectReason} reject={reject} setActionError={setActionError} creditBalance={creditBalance} data={data} fulfillContent={fulfillContent} setFulfillContent={setFulfillContent} fulfill={fulfill} />
     </PageLayout>
   );
 }
@@ -656,14 +707,15 @@ function OrderDetailDeliveredContent({ isDelivered, hasDeliveredContent, revealB
   ));
 }
 
-function OrderDetailActions({ canAct, canCredit, canCreditCancelled, canResend, canFulfill, canReject, resend, approve, rejectReason, setRejectReason, reject, setActionError, creditBalance, data, fulfillContent, setFulfillContent, fulfill }: {
+function OrderDetailActions({ canAct, canCredit, canCreditCancelled, canResend, canFulfill, canReject, resending, resendDelivery, approve, rejectReason, setRejectReason, reject, setActionError, creditBalance, data, fulfillContent, setFulfillContent, fulfill }: {
   canAct: boolean;
   canCredit: boolean;
   canCreditCancelled: boolean;
   canResend: boolean;
   canFulfill: boolean;
   canReject: boolean;
-  resend: { mutate: (variables: void) => void; reset: () => void; data?: unknown; error: Error | null; isPending: boolean; };
+  resending: boolean;
+  resendDelivery: () => Promise<void>;
   approve: import("@tanstack/react-query").UseMutationResult<unknown, Error, void, unknown>;
   rejectReason: string;
   setRejectReason: import("react").Dispatch<import("react").SetStateAction<string>>;
@@ -676,13 +728,14 @@ function OrderDetailActions({ canAct, canCredit, canCreditCancelled, canResend, 
   fulfill: import("@tanstack/react-query").UseMutationResult<unknown, Error, void, unknown>;
 }) {
   return ((canAct || canCredit || canCreditCancelled || canResend || canFulfill || canReject) && (
-    <OrderDetailActionsActions canResend={canResend} resend={resend} canAct={canAct} approve={approve} canReject={canReject} rejectReason={rejectReason} setRejectReason={setRejectReason} reject={reject} setActionError={setActionError} canCredit={canCredit} creditBalance={creditBalance} data={data} canCreditCancelled={canCreditCancelled} canFulfill={canFulfill} fulfillContent={fulfillContent} setFulfillContent={setFulfillContent} fulfill={fulfill} />
+    <OrderDetailActionsActions canResend={canResend} resending={resending} resendDelivery={resendDelivery} canAct={canAct} approve={approve} canReject={canReject} rejectReason={rejectReason} setRejectReason={setRejectReason} reject={reject} setActionError={setActionError} canCredit={canCredit} creditBalance={creditBalance} data={data} canCreditCancelled={canCreditCancelled} canFulfill={canFulfill} fulfillContent={fulfillContent} setFulfillContent={setFulfillContent} fulfill={fulfill} />
   ));
 }
 
-function OrderDetailActionsActions({ canResend, resend, canAct, approve, canReject, rejectReason, setRejectReason, reject, setActionError, canCredit, creditBalance, data, canCreditCancelled, canFulfill, fulfillContent, setFulfillContent, fulfill }: {
+function OrderDetailActionsActions({ canResend, resending, resendDelivery, canAct, approve, canReject, rejectReason, setRejectReason, reject, setActionError, canCredit, creditBalance, data, canCreditCancelled, canFulfill, fulfillContent, setFulfillContent, fulfill }: {
   canResend: boolean;
-  resend: { mutate: (variables: void) => void; reset: () => void; data?: unknown; error: Error | null; isPending: boolean; };
+  resending: boolean;
+  resendDelivery: () => Promise<void>;
   canAct: boolean;
   approve: import("@tanstack/react-query").UseMutationResult<unknown, Error, void, unknown>;
   canReject: boolean;
@@ -704,12 +757,12 @@ function OrderDetailActionsActions({ canResend, resend, canAct, approve, canReje
     <CardContent className="flex flex-wrap gap-3">
       {canResend && (
         <ConfirmDialog
-          trigger={<Button variant="outline" disabled={resend.isPending}><RefreshCw className="h-4 w-4" />{resend.isPending ? "Resending…" : "Resend to Telegram"}</Button>}
+          trigger={<Button variant="outline" disabled={resending}><RefreshCw className="h-4 w-4" />{resending ? "Resending…" : "Resend to Telegram"}</Button>}
           title="Resend credentials to the buyer?"
           description="Queues a fresh account-credentials message to the buyer's Telegram — use this if they say they never received it."
           confirmLabel="Resend"
           variant="default"
-          onConfirm={() => resend.mutate()}
+          onConfirm={resendDelivery}
         />
       )}
 

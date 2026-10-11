@@ -1,4 +1,3 @@
-import { keyedContent } from "../../lib/keyedContent";
 /** Renders a merged ticket timeline (see lib/ticketTimeline.ts) as chat
  * bubbles: customer right-aligned/tinted, support left-aligned/neutral,
  * system events centered. Groups consecutive entries under a date divider
@@ -41,13 +40,13 @@ export default function TicketMessageThread({ entries }: { entries: TicketTimeli
   let lastDateKey = "";
   return (
     <div className="space-y-3">
-      {keyedContent(entries).map(({ item: entry, key }) => {
+      {entries.map((entry) => {
         const datePart = entry.created_at_display.slice(0, 10);
         const timePart = entry.created_at_display.slice(11);
         const showDivider = datePart !== lastDateKey;
         lastDateKey = datePart;
         return (
-          <div key={key}>
+          <div key={entry.id}>
             {showDivider && (
               <div className="my-4 flex items-center gap-3 text-xs font-semibold text-ink-faint">
                 <span className="h-px flex-1 bg-line" /> {dateGroupLabel(datePart)} <span className="h-px flex-1 bg-line" />

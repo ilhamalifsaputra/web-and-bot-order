@@ -321,6 +321,18 @@ describe("HelpPage", () => {
     }
   });
 
+  it("preserves a newly selected status when a pending search debounce lands", async () => {
+    renderHelp({ list: populatedList, formOptions: populatedFormOptions, orders: populatedOrders });
+    await screen.findByText("Cannot log in to my account");
+    fireEvent.change(screen.getByLabelText(t("web.help_search_tickets")), { target: { value: "refund" } });
+    fireEvent.click(screen.getByRole("button", { name: /Waiting for you/ }));
+    await waitFor(() => {
+      const calls = (apiGet as Mock).mock.calls.map((c) => String(c[0]));
+      expect(calls.some((url) => url.includes("q=refund") && url.includes("status=waiting_for_you"))).toBe(true);
+    });
+    expect(screen.getByLabelText(t("web.help_search_tickets"))).toHaveValue("refund");
+  });
+
   it("selecting a ticket row opens the InlineTicketPanel", async () => {
     renderHelp({ list: populatedList, formOptions: populatedFormOptions, orders: populatedOrders });
     await screen.findByText("Cannot log in to my account");

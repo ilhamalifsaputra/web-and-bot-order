@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, beforeEach, vi, type Mock } from "vitest";
-import { render, screen, within, fireEvent, waitFor } from "@testing-library/react";
+import { act, render, screen, within, fireEvent, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import CartPage from "./CartPage";
@@ -61,12 +61,11 @@ function canonicalMonth(id: number, parentName: string): CanonicalProduct {
   };
 }
 
-function renderCart(respond: (path: string) => unknown, ctx: ShopContext = context) {
+function renderCart(respond: (path: string) => unknown, ctx: ShopContext = context, queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
   (apiGet as Mock).mockImplementation(async (path: string) => {
     if (path === "/api/v1/pages/context") return ctx;
     return respond(path);
   });
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={["/cart"]}>
@@ -83,6 +82,21 @@ describe("CartPage", () => {
   beforeEach(() => {
     document.documentElement.lang = "en";
     vi.clearAllMocks();
+  });
+
+  it("preserves a newer quantity draft when the earlier update finishes", async () => {
+    let release!: (value: CartPageData) => void;
+    (apiPost as Mock).mockImplementation(() => new Promise((resolve) => { release = resolve; }));
+    renderCart(() => cartData);
+    const input = await screen.findByLabelText("Quantity");
+    fireEvent.change(input, { target: { value: "3" } });
+    fireEvent.click(screen.getByRole("button", { name: "Update" }));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledTimes(1));
+    fireEvent.change(input, { target: { value: "5" } });
+    await act(async () => { release({ ...cartData, items: [{ ...cartData.items[0]!, qty: 3 }] }); });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Update" })).toBeEnabled());
+    expect(input).toHaveValue(5);
+    expect(apiPost).toHaveBeenCalledExactlyOnceWith("/api/v1/cart/update", { key: 10, qty: 3 });
   });
 
   it("renders lines + subtotal with the header cart count", async () => {
@@ -143,6 +157,35 @@ describe("CartPage", () => {
     fireEvent.click(within(row).getByRole("button", { name: "Update" }));
     await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/v1/cart/update", { key: 10, qty: 3 }));
     expect(await screen.findAllByText("Rp237,000")).not.toHaveLength(0);
+  });
+
+  it("shows the server's accepted quantity after update, including a server clamp", async () => {
+    renderCart(() => cartData);
+    const input = await screen.findByLabelText("Quantity");
+    fireEvent.change(input, { target: { value: "3" } });
+    (apiPost as Mock).mockResolvedValue({ ...cartData, items: [{ ...cartData.items[0]!, qty: 1, line_total: "79000" }], subtotal: "79000" });
+    fireEvent.click(screen.getByRole("button", { name: "Update" }));
+    await waitFor(() => expect(input).toHaveValue(1));
+    expect(apiPost).toHaveBeenCalledExactlyOnceWith("/api/v1/cart/update", { key: 10, qty: 3 });
+  });
+
+  it("follows refetched quantity while clean and preserves an unsaved draft on refetch/error", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    renderCart(() => cartData, context, client);
+    const input = await screen.findByLabelText("Quantity");
+    const replaceQty = async (qty: number) => act(async () => {
+      client.setQueriesData({ queryKey: ["cart"] }, { ...cartData, items: [{ ...cartData.items[0]!, qty }] });
+    });
+    await replaceQty(4);
+    await waitFor(() => expect(input).toHaveValue(4));
+    fireEvent.change(input, { target: { value: "3" } });
+    await replaceQty(1);
+    expect(input).toHaveValue(3);
+    (apiPost as Mock).mockRejectedValue(new Error("offline"));
+    fireEvent.click(screen.getByRole("button", { name: "Update" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Update" })).toBeEnabled());
+    expect(input).toHaveValue(3);
+    expect(apiPost).toHaveBeenCalledExactlyOnceWith("/api/v1/cart/update", { key: 10, qty: 3 });
   });
 
   // Removal now takes two taps: the trash icon only opens an inline

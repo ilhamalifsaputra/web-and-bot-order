@@ -135,4 +135,42 @@ describe("useSse", () => {
     expect(queryClient.getQueryData(["latest"])).toBe(13);
   });
 
+
+  it("uses the latest committed merge with an equal inline key without reconnecting", () => {
+    const queryClient = new QueryClient();
+    const merge = vi.fn((_prev: unknown, next: unknown) => next);
+    const { rerender, unmount } = renderHook(({ prefix }) => useSse("/api/stream", ["same-key"],
+      (_prev, next) => { merge(_prev, next); return { prefix, next }; }), {
+      wrapper: makeWrapper(queryClient), initialProps: { prefix: "old" },
+    });
+    rerender({ prefix: "new" });
+    expect(MockEventSource.instances).toHaveLength(1);
+    const source = MockEventSource.instances[0]!;
+    source.emit({ value: 2 });
+    expect(merge).toHaveBeenCalledTimes(1);
+    expect(queryClient.getQueryData(["same-key"])).toEqual({ prefix: "new", next: { value: 2 } });
+    unmount();
+    source.emit({ value: 3 });
+    expect(source.closed).toBe(true);
+    expect(merge).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes on URL/null transitions and never writes a late message to a new key", () => {
+    const queryClient = new QueryClient();
+    const initialProps: { url: string | null; id: string } = { url: "/one", id: "1" };
+    const { rerender, unmount } = renderHook(({ url, id }: { url: string | null; id: string }) =>
+      useSse(url, ["order", id]), { wrapper: makeWrapper(queryClient), initialProps });
+    const first = MockEventSource.instances[0]!;
+    rerender({ url: "/two", id: "2" });
+    expect(first.closed).toBe(true);
+    expect(MockEventSource.instances).toHaveLength(2);
+    first.emit({ old: true });
+    expect(queryClient.getQueryData(["order", "1"])).toBeUndefined();
+    MockEventSource.instances[1]!.emit({ current: true });
+    expect(queryClient.getQueryData(["order", "2"])).toEqual({ current: true });
+    rerender({ url: null, id: "2" });
+    expect(MockEventSource.instances[1]!.closed).toBe(true);
+    expect(MockEventSource.instances).toHaveLength(2);
+    unmount();
+  });
 });

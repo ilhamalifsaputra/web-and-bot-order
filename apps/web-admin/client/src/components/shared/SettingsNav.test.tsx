@@ -2,6 +2,7 @@ import "@testing-library/jest-dom";
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen, within, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { StrictMode } from "react";
 import { Settings as SettingsIcon, CreditCard, KeyRound } from "lucide-react";
 import { SettingsNav } from "./SettingsNav";
 import { computeNavScrollLeft } from "./settingsNavScroll";
@@ -73,6 +74,17 @@ describe("SettingsNav", () => {
 
     render(<SettingsNav topLinks={TOP} group={GROUP} bottomLinks={BOTTOM} />);
     expect(screen.getByRole("button", { name: /payment gateways/i })).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("persists only the committed result of rapid toggles under StrictMode", () => {
+    const write = vi.spyOn(window.localStorage, "setItem");
+    render(<StrictMode><SettingsNav topLinks={TOP} group={GROUP} bottomLinks={BOTTOM} /></StrictMode>);
+    expect(write).not.toHaveBeenCalled();
+    const toggle = screen.getByRole("button", { name: /payment gateways/i });
+    act(() => { toggle.click(); toggle.click(); toggle.click(); });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(write).toHaveBeenCalledExactlyOnceWith("settings-nav-pay-expanded", "false");
+    write.mockRestore();
   });
 });
 

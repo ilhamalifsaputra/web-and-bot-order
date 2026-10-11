@@ -87,7 +87,7 @@ export function SearchOverlayProvider({
   const [initialQuery, setInitialQuery] = useState("");
 
   const open = useCallback((query = "") => {
-    setSession(current => current + 1);
+    setSession((current) => current + 1);
     setInitialQuery(query);
     setIsOpen(true);
   }, []);
@@ -134,7 +134,7 @@ function SearchOverlay({
   const [value, setValue] = useState(initialQuery);
   const [debounced, setDebounced] = useState(() => initialQuery.trim());
   const [recent, setRecent] = useState<string[]>(readRecent);
-  const [activeIndex, setActiveIndex] = useState(-1);
+  const [selection, setSelection] = useState<{ query: string; data: SearchPageData | undefined; index: number } | null>(null);
 
   // Dialog a11y contract: scroll-lock, Esc→onClose, focus trap, focus restore
   // to whatever opened the panel (the header pill or the mobile search icon).
@@ -155,14 +155,22 @@ function SearchOverlay({
 
   const { results, showSkeleton, showEmpty, showResults } = searchResultState({ enabled, data, isFetching });
 
-  // A keyboard selection belongs to the exact result set it was made in.
-  const [activeResults, setActiveResults] = useState<typeof data>(undefined);
-  const selectedIndex = activeResults === data ? activeIndex : -1;
+  // Selection belongs to the result snapshot that the user navigated.
+  const activeIndex = selection?.query === debounced && selection.data === data ? selection.index : -1;
+  function setActiveIndex(next: number | ((current: number) => number)) {
+    setSelection((current) => ({
+      query: debounced,
+      data,
+      index: typeof next === "function"
+        ? next(current?.query === debounced && current.data === data ? current.index : -1)
+        : next,
+    }));
+  }
 
   const optionId = (index: number) => `${listboxId}-opt-${index}`;
   const activeDescendant =
-    showResults && selectedIndex >= 0 && selectedIndex < results.length
-      ? optionId(selectedIndex)
+    showResults && activeIndex >= 0 && activeIndex < results.length
+      ? optionId(activeIndex)
       : undefined;
 
   // Keyboard selection can walk a highlighted row past the visible window of
@@ -170,11 +178,11 @@ function SearchOverlay({
   // `sm:max-h-[70vh]`); pull the active option back into view on every move.
   // Skip when nothing is highlighted (`activeIndex < 0`).
   useEffect(() => {
-    if (selectedIndex < 0) return;
-    const row = document.getElementById(`${listboxId}-opt-${selectedIndex}`);
+    if (activeIndex < 0) return;
+    const row = document.getElementById(`${listboxId}-opt-${activeIndex}`);
     // Optional call: jsdom (test env) has no `scrollIntoView` implementation.
     row?.scrollIntoView?.({ block: "nearest" });
-  }, [selectedIndex, listboxId]);
+  }, [activeIndex, listboxId]);
 
   const selectResult = useCallback(
     (product: ProductCardData) => {
@@ -185,17 +193,17 @@ function SearchOverlay({
     [value, onClose, navigate],
   );
 
-  const runRecent = useCallback((term: string) => {
+  function runRecent(term: string) {
     setValue(term);
     setDebounced(term.trim());
     setActiveIndex(-1);
     inputRef.current?.focus();
-  }, []);
+  }
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (selectedIndex >= 0 && results[selectedIndex]) {
-      selectResult(results[selectedIndex]!);
+    if (activeIndex >= 0 && results[activeIndex]) {
+      selectResult(results[activeIndex]!);
       return;
     }
     // No highlighted row: there is no dedicated results page to route to, so
@@ -210,14 +218,12 @@ function SearchOverlay({
   function onKeyDown(event: KeyboardEvent<HTMLInputElement>) {
     if (!showResults || (event.key !== "ArrowDown" && event.key !== "ArrowUp")) return;
     event.preventDefault();
-    setActiveResults(data);
     setActiveIndex(event.key === "ArrowDown"
-      ? Math.min(selectedIndex + 1, results.length - 1)
-      : Math.max(-1, selectedIndex - 1));
+      ? Math.min(activeIndex + 1, results.length - 1)
+      : Math.max(-1, activeIndex - 1));
   }
 
   function highlightResult(index: import("react").SetStateAction<number>) {
-    setActiveResults(data);
     setActiveIndex(index);
   }
 
@@ -279,7 +285,7 @@ function SearchOverlay({
               </button>
             </form>
 
-            <SearchResultsPanel showSkeleton={showSkeleton} showEmpty={showEmpty} debounced={debounced} onClose={onClose} showResults={showResults} listboxId={listboxId} results={results} optionId={optionId} activeIndex={selectedIndex} selectResult={selectResult} setActiveIndex={highlightResult} fx={fx} enabled={enabled} recent={recent} onClearRecent={onClearRecent} runRecent={runRecent} />
+            <SearchResultsPanel showSkeleton={showSkeleton} showEmpty={showEmpty} debounced={debounced} onClose={onClose} showResults={showResults} listboxId={listboxId} results={results} optionId={optionId} activeIndex={activeIndex} selectResult={selectResult} setActiveIndex={highlightResult} fx={fx} enabled={enabled} recent={recent} onClearRecent={onClearRecent} runRecent={runRecent} />
           </m.div>
         </DialogLayer>
       )}

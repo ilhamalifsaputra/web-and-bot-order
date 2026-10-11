@@ -1,4 +1,3 @@
-import { keyedContent } from "../../lib/keyedContent";
 import { FilePreview } from "./FilePreview";
 /**
  * Dashed drop-zone evidence picker for the /help create-ticket form
@@ -10,10 +9,11 @@ import { FilePreview } from "./FilePreview";
  * files in the caller's state, nothing uploads until the surrounding form
  * submits.
  */
-import { Paperclip, X } from "lucide-react";
 import { useRef, useState, type ChangeEvent, type DragEvent } from "react";
-import { MAX_TICKET_ATTACHMENTS, validateNewFiles } from "../../lib/attachmentValidation";
+import { Paperclip, X } from "lucide-react";
 import { t } from "../../lib/i18n";
+import { MAX_TICKET_ATTACHMENTS, validateNewFiles } from "../../lib/attachmentValidation";
+import { useFileRows } from "../../hooks/useFileRows";
 
 export interface EvidenceUploaderProps {
   files: File[];
@@ -25,6 +25,7 @@ export default function EvidenceUploader({ files, onChange, disabled }: Evidence
   const inputRef = useRef<HTMLInputElement>(null);
   const [error, setError] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
+  const rows = useFileRows(files);
 
   const atLimit = files.length >= MAX_TICKET_ATTACHMENTS;
 
@@ -99,21 +100,21 @@ export default function EvidenceUploader({ files, onChange, disabled }: Evidence
       )}
       {files.length > 0 && (
         <ul className="mt-2 flex flex-wrap gap-2">
-          {keyedContent(files, file => JSON.stringify([file.name, file.type, file.size, file.lastModified])).map(({ item: file, key }, idx) => (
+          {rows.map(({ file, id, index }) => (
             // L2 nested surface. These rows sit inside NewTicketCard's white
             // `.card` form; the old `bg-card` made them white-on-white, the one
             // real camouflage instance on /help. `.card-2` recesses them onto
             // sand. Padding stays the compact `px-2 py-1` — `card-pad-2`'s 1rem
             // is a panel padding, not a chip padding.
             <li
-              key={key}
+              key={id}
               className="card-2 flex items-center gap-2 px-2 py-1 text-xs"
             >
               <FilePreview file={file} />
               <span className="max-w-[8rem] truncate">{file.name}</span>
               <button
                 type="button"
-                onClick={() => removeAt(idx)}
+                onClick={() => removeAt(index)}
                 aria-label={t("web.support_attach_remove")}
                 className="-mr-1 rounded p-1 text-ink-faint hover:text-rust"
               >

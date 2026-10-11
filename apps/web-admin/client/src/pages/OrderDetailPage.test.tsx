@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor, within, fireEvent, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -1074,6 +1074,46 @@ describe("OrderDetailPage — realtime digiflazz sub-status", () => {
 });
 
 describe("OrderDetailPage — credential reveal", () => {
+  it("keeps buyer-answer rows attached to order units when identical answers reorder", async () => {
+    const item = ORDER_DETAIL_DATA.order.items[0]!;
+    const data = { ...ORDER_DETAIL_DATA, order: { ...ORDER_DETAIL_DATA.order, items: [{ ...item, id: 101 }, { ...item, id: 102 }] },
+      customerDataFields: [{ key: "email", label: { id: "Email", en: "Email" }, type: "email", required: true, options: [], placeholder: "" }],
+      customerData: [{ email: "same@example.com" }, { email: "same@example.com" }],
+    };
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify(data), { status: 200 }));
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<MemoryRouter initialEntries={["/orders/1"]}><QueryClientProvider client={qc}>
+      <Routes><Route path="/orders/:orderId" element={<OrderDetailPage />} /></Routes>
+    </QueryClientProvider></MemoryRouter>);
+    const answers = await screen.findAllByText("same@example.com");
+    const first = answers[0]!.parentElement!.parentElement;
+    const second = answers[1]!.parentElement!.parentElement;
+    await act(async () => { qc.setQueryData(["order", "1"], { ...data, order: { ...data.order, items: [...data.order.items].reverse() } }); });
+    await waitFor(() => expect(screen.getAllByText("same@example.com")[0]!.parentElement!.parentElement).toBe(second));
+    expect(screen.getAllByText("same@example.com")[1]!.parentElement!.parentElement).toBe(first);
+  });
+
+  it("keeps revealed secrets out of both query and mutation caches and prevents duplicate reveal", async () => {
+    mockDetail();
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    let resolve!: (value: { credentials: { id: number; text: string }[]; deliveredContent: null }) => void;
+    vi.mocked(apiPost).mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+    render(<MemoryRouter initialEntries={["/orders/1"]}><QueryClientProvider client={qc}>
+      <Routes><Route path="/orders/:orderId" element={<OrderDetailPage />} /></Routes>
+    </QueryClientProvider></MemoryRouter>);
+    const button = await screen.findByRole("button", { name: "Show delivered credentials" });
+    fireEvent.click(button);
+    fireEvent.click(button);
+    expect(apiPost).toHaveBeenCalledTimes(1);
+    await act(async () => { resolve({ credentials: [{ id: 100, text: "secret-for-this-session" }], deliveredContent: null }); });
+    expect(await screen.findByText("secret-for-this-session")).toBeInTheDocument();
+    expect(qc.getMutationCache().getAll()).toHaveLength(0);
+    expect(JSON.stringify(qc.getQueryData(["order", "1"]))).not.toContain("secret-for-this-session");
+    fireEvent.click(screen.getByRole("button", { name: "Hide delivered credentials" }));
+    expect(screen.queryByText("secret-for-this-session")).not.toBeInTheDocument();
+    expect(qc.getMutationCache().getAll()).toHaveLength(0);
+  });
+
   function mockDetail() {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       new Response(JSON.stringify(AUTO_DELIVERED_DATA), { status: 200, headers: { "Content-Type": "application/json" } }),

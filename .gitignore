@@ -118,3 +118,6 @@ graphify-out/
 # Reproducible checkout UI harness evidence stays local.
 /.audit-data/checkout-dynamic-sticky/
 /.audit-data/catalog-availability/
+
+# React Doctor local scan artifacts and downloaded rule documentation.
+/.local/react-doctor/

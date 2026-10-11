@@ -3,9 +3,21 @@ import { emptyFieldDraft, fieldToDraft, draftsToFields, hasAtLeastOneField, fiel
 import type { AdditionalField, AdditionalFieldDraft } from "../api/types";
 
 describe("emptyFieldDraft", () => {
+  it("creates distinct client row IDs without a secure-context UUID API", () => {
+    const descriptor = Object.getOwnPropertyDescriptor(crypto, "randomUUID");
+    Object.defineProperty(crypto, "randomUUID", { value: undefined, configurable: true });
+    try {
+      expect(emptyFieldDraft().draftId).not.toBe(emptyFieldDraft().draftId);
+    } finally {
+      if (descriptor) Object.defineProperty(crypto, "randomUUID", descriptor);
+      else Reflect.deleteProperty(crypto, "randomUUID");
+    }
+  });
+
   it("returns a blank draft with type text and required true", () => {
     const draft = emptyFieldDraft();
     expect(draft).toEqual({
+      draftId: expect.any(String),
       key: "",
       labelId: "",
       labelEn: "",
@@ -28,6 +40,7 @@ describe("fieldToDraft", () => {
       placeholder: "Pick a server",
     };
     expect(fieldToDraft(field)).toEqual({
+      draftId: "stored:server",
       key: "server",
       labelId: "Server",
       labelEn: "Server",
@@ -40,6 +53,15 @@ describe("fieldToDraft", () => {
 });
 
 describe("draftsToFields", () => {
+  it("keeps stored metadata while excluding client-only row identity", () => {
+    const field: AdditionalField = {
+      key: "account", label: { id: "Akun", en: "Account" }, type: "text",
+      required: true, options: [], placeholder: "", helpText: "Use your account", minLength: 2,
+    };
+    expect(draftsToFields([fieldToDraft(field)])).toEqual([field]);
+    expect(draftsToFields([{ ...emptyFieldDraft(), labelId: "Akun", labelEn: "Account" }])[0]).not.toHaveProperty("draftId");
+  });
+
   it("trims strings and converts a text-field draft with empty options", () => {
     const draft: AdditionalFieldDraft = {
       key: "  ign  ",

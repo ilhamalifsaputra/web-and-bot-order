@@ -69,6 +69,15 @@ export async function setSetting(db: Db, key: string, value: string) {
   notifySettingWrite(key);
 }
 
+/** After an atomic multi-setting transaction commits, invalidate the caller's
+ * cache so subsequent reads cannot return the policy from before the commit. */
+export function invalidateSettingCache(db: Db, keys: readonly string[]): void {
+  for (const key of keys) {
+    cacheFor(db).delete(key);
+    notifySettingWrite(key);
+  }
+}
+
 export function listAllSettings(db: Db) {
   return db.setting.findMany({ orderBy: { key: "asc" } });
 }

@@ -42,6 +42,7 @@ import adminTasksApiRoutes from "./routes/api/adminTasks";
 import settingsApiRoutes from "./routes/api/settings";
 import brandingApiRoutes from "./routes/api/branding";
 import catalogApiRoutes from "./routes/api/catalog";
+import pricingApiRoutes from "./routes/api/pricing";
 import digiflazzSyncApiRoutes from "./routes/api/digiflazzSync";
 import digiflazzCatalogSyncStreamRoutes from "./routes/api/digiflazzCatalogSyncStream";
 import flashSalesApiRoutes from "./routes/api/flashSales";
@@ -176,6 +177,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(settingsApiRoutes);
   await app.register(brandingApiRoutes);
   await app.register(catalogApiRoutes);
+  await app.register(pricingApiRoutes);
   await app.register(digiflazzSyncApiRoutes);
   await app.register(digiflazzCatalogSyncStreamRoutes);
   await app.register(flashSalesApiRoutes);

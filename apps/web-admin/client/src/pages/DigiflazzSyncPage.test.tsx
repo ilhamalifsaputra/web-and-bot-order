@@ -116,6 +116,7 @@ const EXISTING_NO_REGION_RESPONSE = {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  vi.mocked(apiPost).mockResolvedValue(PREVIEW_RESPONSE);
   vi.restoreAllMocks();
   sessionStorage.clear();
   vi.mocked(apiGet).mockResolvedValue({ categories: [{ id: 1, name: "Top Up Game" }] });
@@ -165,7 +166,7 @@ describe("DigiflazzSyncPage", () => {
   it("C1: filtering the brand list to one brand and importing excludes the filtered-out brand, even though its SKUs stay checked", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     await syncWizard(user);
-    vi.mocked(apiPost).mockResolvedValueOnce({ ok: true, brandsImported: 1, denominationsImported: 1 });
+    vi.mocked(apiPost).mockImplementation(async (url) => url.endsWith("/sync/preview") ? PREVIEW_RESPONSE : { ok: true, brandsImported: 1, denominationsImported: 1 } as never);
 
     // Filter down to Mobile Legends only — Free Fire's card disappears, but
     // (per the default-checked-on-sync behavior) its SKU is still "checked"
@@ -185,7 +186,7 @@ describe("DigiflazzSyncPage", () => {
   it("C1: importing with an empty filter still includes every checked brand (no over-correction)", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     await syncWizard(user);
-    vi.mocked(apiPost).mockResolvedValueOnce({ ok: true, brandsImported: 2, denominationsImported: 2 });
+    vi.mocked(apiPost).mockImplementation(async (url) => url.endsWith("/sync/preview") ? PREVIEW_RESPONSE : { ok: true, brandsImported: 2, denominationsImported: 2 } as never);
 
     await selectCategory(user);
     await user.click(screen.getByRole("button", { name: /impor terpilih/i }));
@@ -220,7 +221,7 @@ describe("DigiflazzSyncPage", () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     await syncWizard(user);
     await selectCategory(user);
-    vi.mocked(apiPost).mockResolvedValueOnce({ ok: true, brandsImported: 2, denominationsImported: 2 });
+    vi.mocked(apiPost).mockImplementation(async (url) => url.endsWith("/sync/preview") ? PREVIEW_RESPONSE : { ok: true, brandsImported: 2, denominationsImported: 2 } as never);
 
     await user.click(screen.getByRole("button", { name: /mobile legends/i }));
     fireEvent.change(screen.getByDisplayValue("16500"), { target: { value: "16.500,50" } });
@@ -537,7 +538,7 @@ describe("DigiflazzSyncPage — preview persistence and elapsed-time counter", (
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     const { unmount } = await syncWizard(user);
     await selectCategory(user);
-    vi.mocked(apiPost).mockResolvedValueOnce({ ok: true, brandsImported: 2, denominationsImported: 2 });
+    vi.mocked(apiPost).mockImplementation(async (url) => url.endsWith("/sync/preview") ? PREVIEW_RESPONSE : { ok: true, brandsImported: 2, denominationsImported: 2 } as never);
 
     await user.click(screen.getByRole("button", { name: /impor terpilih/i }));
     await waitFor(() => expect(findApplyCall()).toBeTruthy());

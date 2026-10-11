@@ -211,8 +211,7 @@ const DIGIFLAZZ_KEYS = new Set([
   "digiflazz_api_key",
   "digiflazz_webhook_secret",
   "digiflazz_enabled",
-  "digiflazz_markup_type",
-  "digiflazz_markup_value",
+
 ]);
 
 // KokinPay: the live nickname-check lookup (Task 7) — a separate paid
@@ -222,6 +221,7 @@ const DIGIFLAZZ_KEYS = new Set([
 const KOKINPAY_KEYS = new Set(["kokinpay_api_key"]);
 
 const ALL_GROUPED_KEYS = new Set([
+  "digiflazz_markup_type", "digiflazz_markup_value", "pricing_rounding", "pricing_low_margin_warn_pct",
   ...BRANDING_KEYS,
   ...TELEGRAM_KEYS,
   ...JOIN_GATE_KEYS,
@@ -433,10 +433,7 @@ interface TestResult {
   detail: string;
 }
 
-const DIGIFLAZZ_MARKUP_TYPE_OPTIONS = [
-  { value: "percent", label: "Percent" },
-  { value: "flat", label: "Flat (IDR)" },
-];
+
 
 interface FieldRowProps {
   field: SettingsField;
@@ -1500,6 +1497,7 @@ export function SettingsPage() {
             <Card id="settings-digiflazz">
               <CardHeader>
                 <CardTitle as="h2">Digiflazz (Top Up Game)</CardTitle>
+                <a href="/pricing" className="text-sm text-pine underline">Markup &amp; pricing ? Pricing &amp; Margins</a>
               </CardHeader>
               <CardContent className="divide-y divide-line">
                 {digiflazzFields.map((field) => (
@@ -1509,7 +1507,6 @@ export function SettingsPage() {
                     query={fieldQueryFor("Digiflazz (Top Up Game)")}
                     onSaved={onSaved}
                     onStatusChange={onStatusChange}
-                    selectOptions={field.key === "digiflazz_markup_type" ? DIGIFLAZZ_MARKUP_TYPE_OPTIONS : undefined}
                   />
                 ))}
               </CardContent>

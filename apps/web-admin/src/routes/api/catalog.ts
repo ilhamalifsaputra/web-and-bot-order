@@ -36,8 +36,14 @@ import {
   bulkSetCatalogProductsArchived,
   logAdminAction,
   isDigiflazzPriceOverridden,
+  computeDigiflazzMarkupPrice,
+  InvalidDigiflazzMarkupError,
+  PricingPolicyUnreadableError,
+  getPricingPolicy,
+  getCategoryRule,
 } from "@app/db";
 import { Decimal } from "@app/core/money";
+import { catalogPricing } from "../../lib/catalogPricing";
 import { denominationPriceError, isDenominationBelowCost } from "@app/core/denominationPrices";
 import { readMoneyField, readPercentField, moneyFieldError, percentFieldError, exactFields } from "../../lib/moneyField";
 import { isFlashActive } from "@app/core/flash";
@@ -734,7 +740,7 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     const durationLabel = (typeof body.durationLabel === "string" ? body.durationLabel : "").trim();
     if (!durationLabel) return reply.code(400).send({ error: "Duration is required." });
 
-    const price = parsePrice(body, "price");
+    let price = parsePrice(body, "price");
     if (price === null) return reply.code(400).send({ error: moneyFieldError("Price") });
 
     const costPrice = body.costPrice != null ? parsePrice(body, "costPrice") : null;
@@ -831,25 +837,37 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
       }
     }
 
-    // priceOverridden is always computed server-side, never trusted from the
-    // client — it's what protects a hand-edited price from being silently
-    // recomputed by the next resyncDigiflazzCatalog tick. isDigiflazzPriceOverridden
-    // is the single shared rule for this (see its doc comment in
-    // crud/digiflazz.ts for why this used to be hand-rolled per call site,
-    // and why that drifted out of sync across review rounds) — pass it
-    // `costPrice`, the SAME local variable this same request is about to
-    // persist a few lines below, never `existing.costPrice`: costPrice is an
-    // "always overwrite, null if omitted" field on this route (same category
-    // as autoDeliverySource/supplierSku, see the comment on those above),
-    // NOT touch-only-if-provided like deliveryType/warrantyDays — the admin
-    // client (DenominationEditPage.tsx) omits `costPrice` from the request
-    // body whenever that form field is blank, which nulls the row's
-    // costPrice right here in this same request, so the row's pre-request
-    // value is never the right thing to compare against.
-    let priceOverridden = false;
-    if (autoDeliverySource === "digiflazz") {
-      priceOverridden = await isDigiflazzPriceOverridden(prisma, price, costPrice);
+    const pricingMode = body.pricingMode;
+    if (pricingMode !== undefined && pricingMode !== "auto" && pricingMode !== "manual") {
+      return reply.code(400).send({ error: "Pricing mode must be auto or manual." });
     }
+    const parent = await prisma.product.findUnique({ where: { id: existing.productId }, include: { category: true } });
+    const categoryId = parent?.categoryId ?? null;
+    let priceOverridden = existing.priceOverridden;
+    if (pricingMode === "auto") {
+      if (autoDeliverySource !== "digiflazz" || parent?.category?.group !== "GAME_TOPUP" || costPrice === null) {
+        return reply.code(400).send({ error: "Automatic pricing requires a Digiflazz Game Top Up SKU with a known cost." });
+      }
+      try {
+        price = await computeDigiflazzMarkupPrice(prisma, costPrice, categoryId);
+      } catch (err) {
+        if (err instanceof InvalidDigiflazzMarkupError || err instanceof PricingPolicyUnreadableError) {
+          return reply.code(400).send({ error: err.message });
+        }
+        throw err;
+      }
+      priceOverridden = false;
+    } else if (pricingMode === "manual") {
+      priceOverridden = true;
+    } else if (autoDeliverySource === "digiflazz") {
+      const costChanged = costPrice === null ? existing.costPrice !== null
+        : existing.costPrice === null || !costPrice.equals(existing.costPrice);
+      if (!price.equals(existing.price) || costChanged || existing.autoDeliverySource !== "digiflazz") {
+        priceOverridden = await isDigiflazzPriceOverridden(prisma, price, costPrice, categoryId);
+      }
+    }
+    const resolvedPriceError = denominationPriceError({ price, costPrice, resellerPrice });
+    if (resolvedPriceError) return reply.code(400).send({ error: resolvedPriceError });
 
     // Re-parenting (moving this denomination to a different mid-tier Product)
     // is validated and applied FIRST, before any other field, so a rejected
@@ -1006,10 +1024,14 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     const product = await getCatalogProductWithDenominations(prisma, productId);
     if (!product) return reply.code(404).send({ error: "Product not found." });
 
+    const [pricingPolicy, categoryRule] = await Promise.all([
+      getPricingPolicy(prisma), getCategoryRule(prisma, product.categoryId),
+    ]);
     const now = new Date();
     const denomStats = await Promise.all(
       product.denominations.map(async (d) => ({
         id: d.id,
+        pricing: catalogPricing(d, product.category.group, pricingPolicy, categoryRule),
         belowCost: isDenominationBelowCost(d),
         available: await countAvailableStock(prisma, d.id),
         // Provider/manual SKUs never hold local stock rows, so the client must

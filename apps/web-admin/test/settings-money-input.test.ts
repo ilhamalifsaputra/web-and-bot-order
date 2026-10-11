@@ -72,26 +72,12 @@ describe("money settings read typed amounts by shape", () => {
     expect(await getSetting(prisma, key)).toBe(stored);
   });
 
-  it("a flat Digiflazz markup typed 1.500 is Rp1.500, not Rp1,5", async () => {
-    await setSetting(prisma, "digiflazz_markup_type", "flat");
-    const res = await edit("digiflazz_markup_value", "1.500");
-    expect(res.statusCode, res.body).toBe(200);
-    expect(await getSetting(prisma, "digiflazz_markup_value")).toBe("1500");
-  });
-
-  it("a percent Digiflazz markup reads 1,5 as one and a half percent and refuses 1.500", async () => {
-    await setSetting(prisma, "digiflazz_markup_type", "percent");
-    expect((await edit("digiflazz_markup_value", "1,5")).statusCode).toBe(200);
-    expect(await getSetting(prisma, "digiflazz_markup_value")).toBe("1.5");
-    const res = await edit("digiflazz_markup_value", "1.500");
+  it.each(["digiflazz_markup_type", "digiflazz_markup_value"])("%s is now edited only in Pricing & Margins", async key => {
+    await setSetting(prisma, key, "15");
+    const res = await edit(key, "20");
     expect(res.statusCode).toBe(400);
-    expect(await getSetting(prisma, "digiflazz_markup_value")).toBe("1.5");
-  });
-
-  it("a zero markup is still allowed", async () => {
-    await setSetting(prisma, "digiflazz_markup_type", "flat");
-    expect((await edit("digiflazz_markup_value", "0")).statusCode).toBe(200);
-    expect(await getSetting(prisma, "digiflazz_markup_value")).toBe("0");
+    expect(res.json().error).toContain("Pricing & Margins");
+    expect(await getSetting(prisma, key)).toBe("15");
   });
 
   it.each([
@@ -137,12 +123,6 @@ describe("a pre-filled stored value survives a re-save (exact_fields)", () => {
     expect(await getSetting(prisma, "tokopay_min_amount")).toBe("5000.5");
   });
 
-  it("an untouched flat markup 1500 stays 1500", async () => {
-    await setSetting(prisma, "digiflazz_markup_type", "flat");
-    await setSetting(prisma, "digiflazz_markup_value", "1500");
-    expect((await edit("digiflazz_markup_value", "1500", true)).statusCode).toBe(200);
-    expect(await getSetting(prisma, "digiflazz_markup_value")).toBe("1500");
-  });
 
   // The hand-typed USDT rate (money audit A1) is read by shape like the
   // minimums; an untouched pre-fill must re-save exactly, or a stored

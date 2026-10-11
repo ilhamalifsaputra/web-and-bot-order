@@ -72,7 +72,7 @@ export async function optionalAdmin(req: FastifyRequest): Promise<AdminSession |
 // `/api/users`'s wallet adjustment, and naming it here means a later change
 // that adds it to `OPS_PREFIXES` has to argue with this list instead of
 // silently widening the grant.
-const CONFIG_PREFIXES = ["/api/catalog", "/api/vouchers", "/api/users", "/api/settings", "/api/stock", "/api/admins", "/api/broadcast", "/api/settlements"];
+const CONFIG_PREFIXES = ["/api/pricing", "/api/catalog", "/api/vouchers", "/api/users", "/api/settings", "/api/stock", "/api/admins", "/api/broadcast", "/api/settlements"];
 // Operational routes — super + support. `/api/admin-tasks` (the Task 9b
 // queue: assign/start/complete/escalate on manual-ops tasks) sits here, not
 // in CONFIG_PREFIXES — it's an operational queue like Support/Orders, not a

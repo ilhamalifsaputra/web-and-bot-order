@@ -508,3 +508,15 @@ describe("applyReprice", () => {
     expect(await claimDigiflazzCatalogSyncLease(prisma)).not.toBeNull();
   });
 });
+
+describe("policy write atomicity", () => {
+  it("rolls back the full policy when its audit cannot be recorded", async () => {
+    await setGlobalPricing(prisma, adminId, { markupType: "percent", markupValue: d("15") });
+    await expect(setGlobalPricing(prisma, 2147483647, { markupType: "flat", markupValue: d("1500"), rounding: "ceil_500" })).rejects.toThrow();
+    const policy = await getPricingPolicy(prisma);
+    expect(policy.globalRule?.type).toBe("percent");
+    expect(policy.globalRule?.value.toString()).toBe("15");
+    expect(policy.rounding).toBe("none");
+    expect(await getSetting(prisma, DIGIFLAZZ_MARKUP_TYPE_KEY)).toBe("percent");
+  });
+});

@@ -3201,10 +3201,13 @@ describe("resyncDigiflazzCatalog", () => {
 
     // Count only the markup keys: the Digiflazz credentials are now cached
     // (getDigiflazzCreds), so the second run legitimately reads them fewer times.
-    const isMarkupRead = (call: unknown[]) => call[1] === DIGIFLAZZ_MARKUP_TYPE_KEY || call[1] === DIGIFLAZZ_MARKUP_VALUE_KEY;
+    const isMarkupRead = (call: unknown[]) => {
+      const keys = (call[0] as { where?: { key?: { in?: string[] } } })?.where?.key?.in;
+      return keys?.includes(DIGIFLAZZ_MARKUP_TYPE_KEY) && keys.includes(DIGIFLAZZ_MARKUP_VALUE_KEY);
+    };
     await makeDigiflazzDenom("ml100", "15000");
     digiflazzMock.getPriceList.mockResolvedValue([priceListItem({ buyerSkuCode: "ml100", price: new Decimal(15500) })]);
-    const spyOneRow = vi.spyOn(settingsModule, "getSetting");
+    const spyOneRow = vi.spyOn(prisma.setting, "findMany");
     await resyncDigiflazzCatalog(prisma);
     const callsForOneRow = spyOneRow.mock.calls.filter(isMarkupRead).length;
     spyOneRow.mockRestore();
@@ -3217,7 +3220,7 @@ describe("resyncDigiflazzCatalog", () => {
       priceListItem({ buyerSkuCode: "ml250", price: new Decimal(38500) }),
       priceListItem({ buyerSkuCode: "ml500", price: new Decimal(76000) }),
     ]);
-    const spyThreeRows = vi.spyOn(settingsModule, "getSetting");
+    const spyThreeRows = vi.spyOn(prisma.setting, "findMany");
     await resyncDigiflazzCatalog(prisma);
     const callsForThreeRows = spyThreeRows.mock.calls.filter(isMarkupRead).length;
     spyThreeRows.mockRestore();

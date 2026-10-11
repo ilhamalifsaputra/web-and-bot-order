@@ -142,6 +142,7 @@ export async function apiGet<T>(path: string): Promise<T> {
 /** Everything `apiPost` can be asked to do beyond "POST this body". Both are
  * optional; a call that passes neither behaves exactly as it always has. */
 export interface PostOptions {
+  signal?: AbortSignal;
   /** Opaque per-operation key sent as `Idempotency-Key`. The six payment
    * mutations in apps/web-admin/src/routes/api/payments.ts (deliver, refund,
    * cancel, match, credit, dismiss) replay the first attempt's stored response
@@ -171,6 +172,7 @@ export async function apiPost<T>(path: string, body: unknown, options?: PostOpti
   if (options?.idempotencyKey) headers["Idempotency-Key"] = options.idempotencyKey;
   const res = await fetch(path, {
     method: "POST",
+    signal: options?.signal,
     credentials: "include",
     headers,
     body: JSON.stringify(body),
@@ -214,4 +216,11 @@ export async function logout(): Promise<void> {
   if (!res.ok) {
     throw new Error(`Logout failed (${res.status})`);
   }
+}
+
+export async function apiPut<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(path, { method: "PUT", credentials: "include",
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken() }, body: JSON.stringify(body) });
+  if (!res.ok) return throwForResponse(res, path);
+  return parseJsonOrThrow<T>(res, path);
 }

@@ -29,7 +29,7 @@ import {
 } from "@app/core/pricingRule";
 import type { Db } from "./_types";
 import type { PrismaClient } from "../client";
-import { getSetting, setSetting } from "./settings";
+import { setSetting, invalidateSettingCache } from "./settings";
 import { logAdminAction } from "./audit";
 import { updateDenomination } from "./catalog";
 import {
@@ -43,6 +43,7 @@ import {
 
 export const PRICING_ROUNDING_KEY = "pricing_rounding";
 export const PRICING_LOW_MARGIN_WARN_PCT_KEY = "pricing_low_margin_warn_pct";
+const POLICY_KEYS = [DIGIFLAZZ_MARKUP_TYPE_KEY, DIGIFLAZZ_MARKUP_VALUE_KEY, PRICING_ROUNDING_KEY, PRICING_LOW_MARGIN_WARN_PCT_KEY];
 
 /** Invalid pricing input; the message is fit to show an admin (Task 4 → 400). */
 export class PricingValidationError extends Error {
@@ -105,12 +106,11 @@ function readStoredPercent(raw: string): Decimal | null {
 }
 
 export async function getPricingPolicy(db: Db): Promise<PricingPolicy> {
-  const [type, value, roundingRaw, lowRaw] = await Promise.all([
-    getSetting(db, DIGIFLAZZ_MARKUP_TYPE_KEY),
-    getSetting(db, DIGIFLAZZ_MARKUP_VALUE_KEY),
-    getSetting(db, PRICING_ROUNDING_KEY),
-    getSetting(db, PRICING_LOW_MARGIN_WARN_PCT_KEY),
-  ]);
+  // One database snapshot: independently cached reads could combine the old
+  // percent amount with a newly saved flat type (or the reverse).
+  const rows = await db.setting.findMany({ where: { key: { in: POLICY_KEYS } }, select: { key: true, value: true } });
+  const values = new Map(rows.map(row => [row.key, row.value]));
+  const [type, value, roundingRaw, lowRaw] = POLICY_KEYS.map(key => values.get(key) ?? null) as [string | null, string | null, string | null, string | null];
   const globalRule = readStoredMarkupRule({ type, value });
   const roundingTrim = (roundingRaw ?? "").trim();
   const roundingReadable = roundingTrim === "" || isRoundingPolicy(roundingTrim);
@@ -193,7 +193,7 @@ function validateMarkupAmount(type: MarkupType, value: Decimal): void {
   }
 }
 
-function validateGlobalInput(input: GlobalPricingInput): void {
+export function validateGlobalPricingInput(input: GlobalPricingInput): void {
   const hasType = input.markupType !== undefined;
   const hasValue = input.markupValue !== undefined;
   if (hasType !== hasValue) throw new PricingValidationError("Set the markup type and amount together.");
@@ -230,7 +230,12 @@ export async function setGlobalPricing(
   adminId: number | null,
   input: GlobalPricingInput,
 ): Promise<{ changed: boolean }> {
-  validateGlobalInput(input);
+  validateGlobalPricingInput(input);
+  if ("$transaction" in db) {
+    const result = await db.$transaction(tx => setGlobalPricing(tx, adminId, input));
+    if (result.changed) invalidateSettingCache(db, POLICY_KEYS);
+    return result;
+  }
   const before = await getPricingPolicy(db);
   const clauses: string[] = [];
   const writes: Array<[string, string]> = [];
@@ -258,9 +263,7 @@ export async function setGlobalPricing(
   }
 
   if (writes.length === 0) return { changed: false };
-  // Not one $transaction on purpose: setSetting keeps its read cache and
-  // write listeners per `db` object, so writing through a tx client would
-  // leave the caller's client serving the old values for up to 30 s.
+  // The outer call supplies one transaction for the complete policy and audit.
   for (const [key, value] of writes) await setSetting(db, key, value);
   await logAdminAction(db, {
     adminId,
@@ -295,6 +298,7 @@ export async function setCategoryRule(
   categoryId: number,
   rule: CategoryRuleInput,
 ): Promise<{ changed: boolean }> {
+  if ("$transaction" in db) return db.$transaction(tx => setCategoryRule(tx, adminId, categoryId, rule));
   const hasType = rule.markupType !== null;
   const hasValue = rule.markupValue !== null;
   if (hasType !== hasValue) throw new PricingValidationError("Set the category's markup type and amount together, or clear both.");

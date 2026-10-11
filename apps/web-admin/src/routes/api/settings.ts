@@ -744,6 +744,10 @@ export default async function settingsApiRoutes(app: FastifyInstance): Promise<v
   });
 
   app.post("/api/settings/edit", { preHandler: csrfProtect }, async (req, reply) => {
+    const pricingKey = (req.body as { key?: unknown } | null)?.key;
+    if (["digiflazz_markup_type", "digiflazz_markup_value", "pricing_rounding", "pricing_low_margin_warn_pct"].includes(String(pricingKey))) {
+      return reply.code(400).send({ error: "Edit this policy in Pricing & Margins (/pricing)." });
+    }
     const body = (req.body ?? {}) as Record<string, string>;
     try {
       // The settings form pre-fills each field with its stored value; an

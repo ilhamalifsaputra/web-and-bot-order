@@ -99,3 +99,11 @@ describe("Sidebar", () => {
     await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent("/login"));
   });
 });
+
+it("navigates to Pricing & Margins and marks it active", async () => {
+  renderSidebar();
+  const link = screen.getAllByRole("link", { name: "Pricing & Margins" })[0]!;
+  expect(link).toHaveAttribute("href", "/pricing");
+  await userEvent.click(link);
+  expect(link).toHaveAttribute("aria-current", "page");
+});

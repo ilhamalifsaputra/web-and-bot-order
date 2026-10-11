@@ -10,6 +10,7 @@ import {
   FolderTree,
   Boxes,
   Tag,
+  BadgePercent,
   Users,
   MessageCircle,
   Megaphone,
@@ -75,6 +76,7 @@ const NAV_GROUPS: NavGroup[] = [
     header: "Products",
     items: [
       { to: "/catalog", label: "Catalog", icon: Package },
+      { to: "/pricing", label: "Pricing & Margins", icon: BadgePercent },
       { to: "/categories", label: "Categories", icon: FolderTree },
       { to: "/stock", label: "Stock", icon: Boxes, badge: "stock" },
       { to: "/flash-sales", label: "Flash Sales", icon: Zap },

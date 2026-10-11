@@ -1,3 +1,5 @@
+import { PricingSourceBadge, PricingMargin, type CatalogPricingInfo } from "../components/catalog/PricingSummary";
+import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount";
 import { useEffect, useRef, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -80,6 +82,7 @@ interface ProductDetail {
 }
 
 interface DenomStat {
+  pricing?: CatalogPricingInfo;
   belowCost?: boolean;
   id: number;
   available: number;
@@ -658,7 +661,9 @@ export function ProductDetailPage() {
               },
               { key: "type", header: "Type", render: d => <StatusBadge status={d.type} /> },
               { key: "duration", header: "Duration", render: d => <span className="text-sm text-ink-soft">{d.durationLabel}</span> },
-              { key: "price", header: "Price", render: d => <span className="font-mono text-sm">{d.price}</span> },
+              { key: "price", header: "Price", className: "text-right tabular-nums", render: d => <span className="font-medium">{formatCurrencyDisplay(d.price, "IDR")}</span> },
+              { key: "pricingSource", header: "Sumber harga", render: d => { const p = statsByDenom[String(d.id)]?.pricing; return p ? <PricingSourceBadge pricing={p} /> : "?"; } },
+              { key: "margin", header: "Margin (sebelum biaya/diskon)", className: "text-right tabular-nums", render: d => { const p = statsByDenom[String(d.id)]?.pricing; return p ? <PricingMargin pricing={p} /> : "?"; } },
               {
                 key: "stock",
                 header: "Stock",

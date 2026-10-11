@@ -156,11 +156,11 @@ describe("ProductDetailPage", () => {
     // Column order: select, name, type, duration, price, stock, … — index 5
     // is the Stock cell.
     const row = screen.getByText("3 Months").closest("tr")!;
-    expect(row.querySelectorAll("td")[5]).toHaveTextContent("—");
+    expect(row.querySelectorAll("td")[7]).toHaveTextContent("—");
 
     // The denomination WITH a real stat still shows its true (possibly zero) count.
     const otherRow = screen.getByText("1 Month").closest("tr")!;
-    expect(otherRow.querySelectorAll("td")[5]).toHaveTextContent("5");
+    expect(otherRow.querySelectorAll("td")[7]).toHaveTextContent("5");
   });
 
   it("shows where a provider or manual SKU is fulfilled from instead of a fake 0 stock, and a real count for a stock-backed SKU", async () => {
@@ -188,7 +188,7 @@ describe("ProductDetailPage", () => {
     render(<ProductDetailPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("Provider Pack")).toBeInTheDocument());
 
-    const stockCell = (name: string) => screen.getByText(name).closest("tr")!.querySelectorAll("td")[5];
+    const stockCell = (name: string) => screen.getByText(name).closest("tr")!.querySelectorAll("td")[7];
     expect(stockCell("Provider Pack")).toHaveTextContent("Provider");
     expect(stockCell("Provider Pack")).not.toHaveTextContent("0");
     expect(stockCell("Manual Pack")).toHaveTextContent("Manual");
@@ -196,7 +196,7 @@ describe("ProductDetailPage", () => {
     // A stock-backed SKU that has sold out is a genuine 0.
     expect(stockCell("Sold Out Pack")).toHaveTextContent("0");
     // Restock requests mean nothing for a SKU with no local stock.
-    expect(screen.getByText("Provider Pack").closest("tr")!.querySelectorAll("td")[6]).toHaveTextContent("—");
+    expect(screen.getByText("Provider Pack").closest("tr")!.querySelectorAll("td")[8]).toHaveTextContent("—");
   });
 
   it("shows the product photo upload field with no image set", async () => {

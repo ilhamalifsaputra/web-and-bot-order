@@ -448,6 +448,20 @@ describe("ProductPage", () => {
     expect(screen.getByText("That page doesn't exist.")).toBeInTheDocument();
   });
 
+  it("renders a retryable ErrorState on a non-404 error and refetches on retry", async () => {
+    const path = "/api/v1/pages/product/netflix-premium";
+    renderProduct("netflix-premium", () => {
+      throw Object.assign(new Error("boom"), { status: 500 });
+    });
+    const retry = await screen.findByRole("button", { name: /try again/i });
+    expect(screen.queryByText("404")).not.toBeInTheDocument();
+    const callsFor = () => (apiGet as Mock).mock.calls.filter((c) => c[0] === path).length;
+    const before = callsFor();
+    expect(before).toBeGreaterThanOrEqual(1);
+    fireEvent.click(retry);
+    await waitFor(() => expect(callsFor()).toBe(before + 1));
+  });
+
   it("adds to cart then navigates to /cart", async () => {
     (apiPost as Mock).mockResolvedValue({ items: [], subtotal: "0" });
     renderProduct("netflix-premium", () => productData);

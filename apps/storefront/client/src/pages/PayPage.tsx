@@ -64,6 +64,7 @@ import { useShopContext } from "../lib/useShopContext";
 import { readCodeEmailed } from "../lib/orderCodeEmailed";
 import Stepper from "../components/shop/Stepper";
 import ErrorPage from "./ErrorPage";
+import ErrorState from "../components/shop/ErrorState";
 import Skeleton from "../components/shop/Skeleton";
 import WhatsAppIcon from "../components/shop/WhatsAppIcon";
 import TelegramIcon from "../components/shop/TelegramIcon";
@@ -234,7 +235,7 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
   // this page (App.tsx), not the API base above.
   const payPagePath = isTopup ? `/wallet/topup/${code}/pay` : `/checkout/${code}/pay`;
 
-  const { data, error } = useQuery({
+  const { data, error, refetch } = useQuery({
     queryKey: ["pay", apiBase, code],
     queryFn: () => apiGet<PayData>(`/api/v1${apiBase}/${code}/pay`),
     retry: false,
@@ -301,7 +302,9 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
 
   if (error) {
     if ((error as Error & { status?: number }).status === 404) return <ErrorPage />;
-    return null;
+    // 401 is mid-redirect to /login (effect above): keep it blank, not an error.
+    if ((error as Error & { status?: number }).status === 401) return null;
+    return <ErrorState onRetry={() => void refetch()} />;
   }
   if (!data) {
     return (

@@ -69,6 +69,7 @@ import PaymentMethodSelector, {
 import OrderSummaryCard, { idrRailPriceAndPay } from "../components/shop/OrderSummaryCard";
 import { GuestContactCard } from "./CheckoutPage";
 import ErrorPage from "./ErrorPage";
+import ErrorState from "../components/shop/ErrorState";
 import Button from "../components/ui/Button";
 
 /** The server's verdict (`purchasable`, @app/core/productAvailability via
@@ -108,7 +109,7 @@ export default function InstantBuyPage() {
   // when this page is reached via ProductPage's template branch, the
   // product payload is already cached from ProductPage's own fetch, so this
   // resolves instantly instead of a second round trip.
-  const { data, error } = useQuery({
+  const { data, error, refetch } = useQuery({
     queryKey: ["product", slug, ctx?.currency ?? null, ctx?.lang, ctx?.pricing_context],
     queryFn: () => apiGet<ProductPageData>(`/api/v1/pages/product/${slug}`),
     // Preference changes must not turn the selected plan/schema into an empty
@@ -390,7 +391,7 @@ export default function InstantBuyPage() {
 
   if (error) {
     if ((error as Error & { status?: number }).status === 404) return <ErrorPage />;
-    return null;
+    return <ErrorState onRetry={() => void refetch()} />;
   }
   if (!data) {
     return (

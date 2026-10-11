@@ -36,6 +36,7 @@ import Alert from "../components/ui/Alert";
 import FlashBadge, { FlashCountdown, FlashWasPrice } from "../components/shop/FlashBadge";
 import ProductCard from "../components/shop/ProductCard";
 import ErrorPage from "./ErrorPage";
+import ErrorState from "../components/shop/ErrorState";
 import InstantBuyPage from "./InstantBuyPage";
 import Spinner from "../components/shop/Spinner";
 import Skeleton from "../components/shop/Skeleton";
@@ -124,7 +125,7 @@ export default function ProductPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { data: ctx } = useShopContext();
-  const { data, error } = useQuery({
+  const { data, error, refetch } = useQuery({
     queryKey: ["product", slug, ctx?.currency ?? null, ctx?.lang, ctx?.pricing_context],
     queryFn: () => apiGet<ProductPageData>(`/api/v1/pages/product/${slug}`),
     // Keep the instant checkout mounted while preferences reprice this product.
@@ -220,7 +221,7 @@ export default function ProductPage() {
 
   if (error) {
     if ((error as Error & { status?: number }).status === 404) return <ErrorPage />;
-    return null;
+    return <ErrorState onRetry={() => void refetch()} />;
   }
   if (!data) {
     return (

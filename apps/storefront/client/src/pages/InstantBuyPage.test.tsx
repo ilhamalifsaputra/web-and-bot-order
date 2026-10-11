@@ -168,6 +168,7 @@ function renderInstantBuy(
     preview?: (body: Record<string, unknown>) => CheckoutData;
     ctx?: ShopContext;
     throughProductPage?: boolean;
+    productError?: Error;
   } = {},
 ) {
   const ctx = options.ctx ?? context;
@@ -178,7 +179,10 @@ function renderInstantBuy(
 
   (apiGet as Mock).mockImplementation(async (path: string) => {
     if (path === "/api/v1/pages/context") return ctx;
-    if (path === `/api/v1/pages/product/${slug}`) return product;
+    if (path === `/api/v1/pages/product/${slug}`) {
+      if (options.productError) throw options.productError;
+      return product;
+    }
     if (path === "/api/v1/cart") return emptyCart;
     if (path === "/api/v1/checkout") return checkout;
     throw new Error(`unexpected GET ${path}`);
@@ -206,6 +210,19 @@ function renderInstantBuy(
 }
 
 describe("InstantBuyPage", () => {
+  it("renders a retryable ErrorState on a non-404 product error and refetches on retry", async () => {
+    vi.clearAllMocks();
+    renderInstantBuy({ productError: Object.assign(new Error("boom"), { status: 500 }) });
+    const retry = await screen.findByRole("button", { name: /try again/i });
+    expect(screen.queryByText("404")).not.toBeInTheDocument();
+    const callsFor = () =>
+      (apiGet as Mock).mock.calls.filter((c) => c[0] === "/api/v1/pages/product/mobile-legends-diamonds").length;
+    const before = callsFor();
+    expect(before).toBeGreaterThanOrEqual(1);
+    fireEvent.click(retry);
+    await waitFor(() => expect(callsFor()).toBe(before + 1));
+  });
+
   it.each([false, true])("preserves account answers when choosing a different diamond amount (product route: %s)", async (throughProductPage) => {
     renderInstantBuy({ throughProductPage });
     await screen.findByText("Summary");

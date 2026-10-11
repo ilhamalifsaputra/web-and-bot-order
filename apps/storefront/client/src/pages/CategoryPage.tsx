@@ -18,6 +18,7 @@ import ProductCardSkeleton from "../components/shop/ProductCardSkeleton";
 import Skeleton from "../components/shop/Skeleton";
 import SortSelect from "../components/shop/SortSelect";
 import ErrorPage from "./ErrorPage";
+import ErrorState from "../components/shop/ErrorState";
 import EmptyState from "../components/shop/EmptyState";
 
 const SKELETON_CARDS = Array.from({ length: 8 }, (_, i) => i);
@@ -28,7 +29,7 @@ export default function CategoryPage() {
   const [params, setParams] = useSearchParams();
   const rawSort = params.get("sort");
   const sort: SortKey = SORT_KEYS.includes(rawSort as SortKey) ? (rawSort as SortKey) : "default";
-  const { data, error } = useQuery({
+  const { data, error, refetch } = useQuery({
     queryKey: ["category", slug, sort],
     queryFn: () => apiGet<CategoryPageData>(`/api/v1/pages/category/${slug}?sort=${sort}`),
     retry: false,
@@ -46,7 +47,7 @@ export default function CategoryPage() {
 
   if (error) {
     if ((error as Error & { status?: number }).status === 404) return <ErrorPage />;
-    return null;
+    return <ErrorState onRetry={() => void refetch()} />;
   }
   // STO-006/performance.md: rendering nothing while the initial query is
   // pending reads as a blank/broken page on a slow connection — show a

@@ -470,6 +470,20 @@ describe("PayPage", () => {
     expect(await screen.findByText("404")).toBeInTheDocument();
   });
 
+  it("renders a retryable ErrorState on a non-404 error and re-fetches (never re-creates) the order", async () => {
+    const path = "/api/v1/checkout/ORD1/pay";
+    renderPay(() => {
+      throw Object.assign(new Error("boom"), { status: 500 });
+    });
+    const retry = await screen.findByRole("button", { name: /try again/i });
+    expect(screen.queryByText("404")).not.toBeInTheDocument();
+    const callsFor = () => (apiGet as Mock).mock.calls.filter((c) => typeof c[0] === "string" && c[0].endsWith("/ORD1/pay")).length;
+    expect(callsFor()).toBe(1);
+    fireEvent.click(retry);
+    await waitFor(() => expect(callsFor()).toBe(2));
+    expect(apiPost).not.toHaveBeenCalled();
+  });
+
   // Guest checkout's order-code email (docs/archive/PROJECT_ARCHITECTURE.md §Guest
   // Checkout). CheckoutPage cannot show this itself — a successful guest
   // checkout leaves the SPA via a full page load — so the notice lands here,

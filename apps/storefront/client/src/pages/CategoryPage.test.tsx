@@ -167,4 +167,17 @@ describe("CategoryPage", () => {
     expect(await screen.findByText("404")).toBeInTheDocument();
     expect(screen.getByText("That page doesn't exist.")).toBeInTheDocument();
   });
+
+  it("renders a retryable ErrorState on a non-404 error and refetches on retry", async () => {
+    const path = "/api/v1/pages/category/streaming?sort=default";
+    renderCategory("streaming", () => {
+      throw Object.assign(new Error("boom"), { status: 500 });
+    });
+    const retry = await screen.findByRole("button", { name: /try again/i });
+    expect(screen.queryByText("404")).not.toBeInTheDocument();
+    const callsFor = () => (apiGet as Mock).mock.calls.filter((c) => c[0] === path).length;
+    expect(callsFor()).toBe(1);
+    fireEvent.click(retry);
+    await waitFor(() => expect(callsFor()).toBe(2));
+  });
 });

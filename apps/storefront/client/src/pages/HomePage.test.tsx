@@ -239,11 +239,54 @@ describe("HomePage", () => {
     const primary = await screen.findByRole("link", { name: /Browse products/ });
     expect(primary.className).toContain("btn-primary");
     expect(primary.className).toContain("focus-on-dark");
-    const secondary = screen.getByRole("link", { name: /Contact support/ });
+    const secondary = screen.getByRole("link", { name: "Categories" });
+    // H-02: the secondary CTA browses categories, not the contact section.
+    expect(secondary).toHaveAttribute("href", "#categories");
+    expect(primary).toHaveAttribute("href", "#products");
     // .btn-ghost (ink-soft on sand) is unreadable on bg-ink — the outline CTA
     // keeps a white border + white/15 hover instead (foundations.md §7).
     expect(secondary.className).toContain("hover:bg-white/15");
     expect(secondary.className).toContain("focus-on-dark");
+  });
+
+  // H-01: catalog first — hero → categories → products → features → how-to-order.
+  it("orders the sections hero, categories, products, features, how-to-order", async () => {
+    const { container } = renderHome(homeFixture());
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    const hero = container.querySelector("section.bg-ink")!;
+    const categories = container.querySelector("#categories")!;
+    const products = container.querySelector("#products")!;
+    const howTo = container.querySelector("#how-to-order")!;
+    const features = screen.getByRole("heading", { level: 2, name: "Why shop with us?" }).closest("section")!;
+    const follows = (a: Element, b: Element) =>
+      Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(follows(hero, categories)).toBe(true);
+    expect(follows(categories, products)).toBe(true);
+    expect(follows(products, features)).toBe(true);
+    expect(follows(features, howTo)).toBe(true);
+  });
+
+  it("uses text-white/80, not text-ink-faint, for the hero sub-copy and trust chips on the dark surface", async () => {
+    const { container } = renderHome(homeFixture());
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    const hero = container.querySelector("section.bg-ink")!;
+    expect(hero.querySelector("p.text-lg")!.className).toContain("text-white/80");
+    expect(hero.querySelector("ul")!.className).toContain("text-white/80");
+    expect(hero.querySelector("p.text-lg")!.className).not.toContain("text-ink-faint");
+    expect(hero.querySelector("ul")!.className).not.toContain("text-ink-faint");
+  });
+
+  it("gives every home section heading the same text-2xl sm:text-3xl font-semibold scale", async () => {
+    const { container } = renderHome(homeFixture());
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    const h2s = Array.from(container.querySelectorAll("h2"));
+    expect(h2s.length).toBeGreaterThanOrEqual(6);
+    for (const h of h2s) {
+      expect(h.className).toContain("text-2xl");
+      expect(h.className).toContain("sm:text-3xl");
+      expect(h.className).toContain("font-semibold");
+      expect(h.className).not.toContain("font-bold");
+    }
   });
 
   it("renders the hero trust chips through the shared TrustBadgeRow primitive", async () => {
@@ -364,7 +407,7 @@ describe("HomePage", () => {
     await screen.findByRole("heading", { name: "Netflix Premium" });
     const grid = screen.getByRole("heading", { name: "Netflix Premium" }).closest(".grid");
     expect(grid?.className).toContain("max-w-sm");
-    expect(grid?.className).not.toMatch(/sm:grid-cols-2|lg:grid-cols-3/);
+    expect(grid?.className).not.toMatch(/sm:grid-cols-3|lg:grid-cols-4/);
   });
 
   it("keeps the multi-column grid when there's more than one product", async () => {
@@ -372,7 +415,12 @@ describe("HomePage", () => {
     renderHome(homeFixture({ products: [product, second] }));
     await screen.findByRole("heading", { name: "Netflix Premium" });
     const grid = screen.getByRole("heading", { name: "Netflix Premium" }).closest(".grid");
-    expect(grid?.className).toMatch(/sm:grid-cols-2/);
+    // H-05: same density as CategoryPage.
+    expect(grid?.className).toContain("grid-cols-2");
+    expect(grid?.className).toContain("sm:grid-cols-3");
+    expect(grid?.className).toContain("lg:grid-cols-4");
+    expect(grid?.className).toContain("xl:grid-cols-5");
+    expect(grid?.className).toContain("gap-4");
   });
 
   // Flash sales: `from_price` already carries the discount, so the card only

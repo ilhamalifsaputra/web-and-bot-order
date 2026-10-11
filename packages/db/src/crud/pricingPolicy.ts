@@ -338,6 +338,17 @@ export function clearCategoryRule(db: Db, adminId: number | null, categoryId: nu
   return setCategoryRule(db, adminId, categoryId, { markupType: null, markupValue: null });
 }
 
+/** One category's own rule; null when it has none (inherits the global
+ * default) or the category does not exist. For single-row callers; a run over
+ * many rows loads {@link getCategoryRuleMap} once instead. */
+export async function getCategoryRule(db: Db, categoryId: number): Promise<MarkupRule | null> {
+  const row = await db.category.findUnique({
+    where: { id: categoryId },
+    select: { markupType: true, markupValue: true },
+  });
+  return row ? storedCategoryRule(row) : null;
+}
+
 /** categoryId → rule, for every category with a complete rule. A category
  * missing from the map inherits the global default. */
 export async function getCategoryRuleMap(db: Db): Promise<Map<number, MarkupRule>> {

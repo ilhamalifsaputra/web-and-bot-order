@@ -63,6 +63,8 @@ import {
   getOrder,
   ADMIN_IDS_KEY,
   KOKINPAY_API_KEY_KEY,
+  PRICING_ROUNDING_KEY,
+  createCategory,
 } from "@app/db";
 import {
   getDigiflazzCreds,
@@ -2554,14 +2556,14 @@ describe("isDigiflazzPriceOverridden", () => {
   it("is false when the price matches the markup suggestion for the given cost", async () => {
     await setSetting(prisma, DIGIFLAZZ_MARKUP_TYPE_KEY, "percent");
     await setSetting(prisma, DIGIFLAZZ_MARKUP_VALUE_KEY, "10");
-    const overridden = await isDigiflazzPriceOverridden(prisma, new Decimal(11000), new Decimal(10000));
+    const overridden = await isDigiflazzPriceOverridden(prisma, new Decimal(11000), new Decimal(10000), null);
     expect(overridden).toBe(false);
   });
 
   it("is true when the price disagrees with the markup suggestion for the given cost", async () => {
     await setSetting(prisma, DIGIFLAZZ_MARKUP_TYPE_KEY, "percent");
     await setSetting(prisma, DIGIFLAZZ_MARKUP_VALUE_KEY, "10");
-    const overridden = await isDigiflazzPriceOverridden(prisma, new Decimal(12000), new Decimal(10000));
+    const overridden = await isDigiflazzPriceOverridden(prisma, new Decimal(12000), new Decimal(10000), null);
     expect(overridden).toBe(true);
   });
 
@@ -2569,7 +2571,7 @@ describe("isDigiflazzPriceOverridden", () => {
   // confirm the price matches a computed suggestion, so it's protected
   // rather than assumed to need no protecting.
   it("is true when costPrice is null, regardless of price", async () => {
-    const overridden = await isDigiflazzPriceOverridden(prisma, new Decimal(12345), null);
+    const overridden = await isDigiflazzPriceOverridden(prisma, new Decimal(12345), null, null);
     expect(overridden).toBe(true);
   });
 });
@@ -2858,7 +2860,7 @@ describe("Digiflazz markup setting read safely", () => {
   it("isDigiflazzPriceOverridden protects the price when the markup is unreadable", async () => {
     await setSetting(prisma, DIGIFLAZZ_MARKUP_TYPE_KEY, "percent");
     await setSetting(prisma, DIGIFLAZZ_MARKUP_VALUE_KEY, "10%");
-    expect(await isDigiflazzPriceOverridden(prisma, new Decimal(11000), new Decimal(10000))).toBe(true);
+    expect(await isDigiflazzPriceOverridden(prisma, new Decimal(11000), new Decimal(10000), null)).toBe(true);
   });
 
   it("importDigiflazzBrand still imports with an unreadable markup, marking every row overridden", async () => {
@@ -5488,5 +5490,192 @@ describe("splitMixedTypeProducts / detectMixedTypeProducts", () => {
     expect(pulsaAfter.name).toBe("Pulsa Telkomsel");
     const pulsaDenomAfter = await prisma.denomination.findUniqueOrThrow({ where: { id: pulsaDenom.id } });
     expect(pulsaDenomAfter.productId).toBe(allBaseProduct.id);
+  });
+});
+
+// ---- Pricing & Margins Task 3: category rule + rounding in the Digiflazz paths ----
+describe("Digiflazz pricing — category rules and rounding (Pricing & Margins)", () => {
+  async function setGlobalPercent(value: string) {
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_TYPE_KEY, "percent");
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_VALUE_KEY, value);
+  }
+  async function setCategoryPercent(categoryId: number, value: string | null) {
+    await prisma.category.update({
+      where: { id: categoryId },
+      data: value === null ? { markupType: null, markupValue: null } : { markupType: "percent", markupValue: value },
+    });
+  }
+  /** Import a brand (at whatever prices the caller passes) and publish it. */
+  async function importBrand(brand: string, categoryId: number, rows: DigiflazzImportRow[]) {
+    const { productId } = await importDigiflazzBrand(prisma, { brand, categoryId, rows });
+    await prisma.product.update({ where: { id: productId }, data: { isActive: true } });
+    await prisma.denomination.updateMany({ where: { productId }, data: { isActive: true } });
+    return productId;
+  }
+  const row = (sku: string, price: string, costPrice: string): DigiflazzImportRow =>
+    ({ buyerSkuCode: sku, productName: `Item ${sku}`, price, costPrice });
+
+  it("regression: with no category rule and rounding none, resync stores exactly the legacy quantizeMoney(cost × (1 + M/100), 4)", async () => {
+    await setGlobalPercent("7.5");
+    const category = await prisma.category.findFirstOrThrow();
+    const productId = await importBrand("Legacy", category.id, [row("lg1", "1075", "1000")]);
+    digiflazzMock.getPriceList.mockResolvedValue([priceListItem({ buyerSkuCode: "lg1", brand: "Legacy", price: new Decimal("1234.5678") })]);
+    await resyncDigiflazzCatalog(prisma);
+    const denom = await prisma.denomination.findFirstOrThrow({ where: { productId, supplierSku: "lg1" } });
+    // 1234.5678 + 1234.5678 × 7.5 / 100 = 1327.160385 → 1327.1604 (half-up, 4 dp)
+    expect(denom.price.toString()).toBe("1327.1604");
+    expect(denom.priceOverridden).toBe(false);
+  });
+
+  it("resync prices each SKU by its own product's category rule, falling back to the global default", async () => {
+    await setGlobalPercent("10");
+    const catA = await prisma.category.findFirstOrThrow();
+    const catB = await createCategory(prisma, "Voucher B");
+    await setCategoryPercent(catB.id, "20");
+    const pA = await importBrand("Brand A", catA.id, [row("a1", "11000", "10000")]);
+    const pB = await importBrand("Brand B", catB.id, [row("b1", "12000", "10000")]);
+    digiflazzMock.getPriceList.mockResolvedValue([
+      priceListItem({ buyerSkuCode: "a1", brand: "Brand A", price: new Decimal(12000) }),
+      priceListItem({ buyerSkuCode: "b1", brand: "Brand B", price: new Decimal(12000) }),
+    ]);
+    await resyncDigiflazzCatalog(prisma);
+    expect((await prisma.denomination.findFirstOrThrow({ where: { productId: pA, supplierSku: "a1" } })).price.toString()).toBe("13200");
+    expect((await prisma.denomination.findFirstOrThrow({ where: { productId: pB, supplierSku: "b1" } })).price.toString()).toBe("14400");
+  });
+
+  it("resync applies the stored rounding policy (ceil_100)", async () => {
+    await setGlobalPercent("10");
+    await setSetting(prisma, PRICING_ROUNDING_KEY, "ceil_100");
+    const category = await prisma.category.findFirstOrThrow();
+    const productId = await importBrand("Round", category.id, [row("r1", "16700", "15123")]);
+    digiflazzMock.getPriceList.mockResolvedValue([priceListItem({ buyerSkuCode: "r1", brand: "Round", price: new Decimal(15223) })]);
+    await resyncDigiflazzCatalog(prisma);
+    // 15223 × 1.1 = 16745.3 → up to the next Rp100
+    expect((await prisma.denomination.findFirstOrThrow({ where: { productId, supplierSku: "r1" } })).price.toString()).toBe("16800");
+  });
+
+  it("import compares the submitted price against the category-rule price (with rounding) to decide priceOverridden", async () => {
+    await setGlobalPercent("10");
+    await setSetting(prisma, PRICING_ROUNDING_KEY, "ceil_100");
+    const cat = await createCategory(prisma, "Voucher C");
+    await setCategoryPercent(cat.id, "20");
+    const { productId } = await importDigiflazzBrand(prisma, {
+      brand: "Brand C", categoryId: cat.id,
+      rows: [
+        row("c1", "12100", "10050"), // 10050 × 1.2 = 12060 → 12100: this category's price
+        row("c2", "11100", "10050"), // the global 10% price (11055 → 11100): not this category's
+      ],
+    });
+    const c1 = await prisma.denomination.findFirstOrThrow({ where: { productId, supplierSku: "c1" } });
+    const c2 = await prisma.denomination.findFirstOrThrow({ where: { productId, supplierSku: "c2" } });
+    expect(c1.priceOverridden).toBe(false);
+    expect(c2.priceOverridden).toBe(true);
+  });
+
+  it("auto-add prices a new SKU by the brand's category rule and rounding", async () => {
+    await setGlobalPercent("10");
+    await setSetting(prisma, PRICING_ROUNDING_KEY, "ceil_500");
+    const cat = await createCategory(prisma, "Voucher D");
+    await setCategoryPercent(cat.id, "25");
+    const productId = await importBrand("Brand D", cat.id, [row("d1", "12500", "10000")]);
+    digiflazzMock.getPriceList.mockResolvedValue([
+      priceListItem({ buyerSkuCode: "d1", productName: "Brand D 1", brand: "Brand D", price: new Decimal(10000) }),
+      priceListItem({ buyerSkuCode: "d2", productName: "Brand D 2", brand: "Brand D", price: new Decimal(10100) }),
+    ]);
+    const counts = await resyncDigiflazzCatalog(prisma);
+    expect(counts.added).toBe(1);
+    const d2 = await prisma.denomination.findFirstOrThrow({ where: { productId, supplierSku: "d2" } });
+    // 10100 × 1.25 = 12625 → up to the next Rp500
+    expect(d2.price.toString()).toBe("13000");
+    expect(d2.priceOverridden).toBe(false);
+  });
+
+  it("a category rule change followed by two syncs reprices from cost once and never stacks markup", async () => {
+    await setGlobalPercent("10");
+    const cat = await createCategory(prisma, "Voucher E");
+    const productId = await importBrand("Brand E", cat.id, [row("e1", "22000", "20000")]);
+    digiflazzMock.getPriceList.mockResolvedValue([priceListItem({ buyerSkuCode: "e1", brand: "Brand E", price: new Decimal(20000) })]);
+    await resyncDigiflazzCatalog(prisma);
+    const read = async () => (await prisma.denomination.findFirstOrThrow({ where: { productId, supplierSku: "e1" } })).price.toString();
+    expect(await read()).toBe("22000");
+    await setCategoryPercent(cat.id, "20");
+    await resyncDigiflazzCatalog(prisma);
+    expect(await read()).toBe("24000");
+    await resyncDigiflazzCatalog(prisma);
+    expect(await read()).toBe("24000");
+  });
+
+  it("Scenario E: a cost rising above a manual price leaves the manual price alone and still raises the below-cost alert", async () => {
+    await setSetting(prisma, ADMIN_IDS_KEY, "777");
+    await setGlobalPercent("10");
+    const cat = await createCategory(prisma, "Voucher F");
+    await setCategoryPercent(cat.id, "20");
+    const productId = await importBrand("Brand F", cat.id, [row("f1", "20000", "18000")]);
+    const f1 = await prisma.denomination.findFirstOrThrow({ where: { productId, supplierSku: "f1" } });
+    expect(f1.priceOverridden).toBe(true); // 20000 is not the category price (21600)
+    digiflazzMock.getPriceList.mockResolvedValue([priceListItem({ buyerSkuCode: "f1", brand: "Brand F", price: new Decimal(21000) })]);
+    await resyncDigiflazzCatalog(prisma);
+    const after = await prisma.denomination.findUniqueOrThrow({ where: { id: f1.id } });
+    expect(after.price.toString()).toBe("20000");
+    expect(after.costPrice!.toString()).toBe("21000");
+    expect(after.priceOverridden).toBe(true);
+    expect(await prisma.notificationOutbox.count({ where: { event: "ADMIN_DIGIFLAZZ_BELOW_COST" } })).toBe(1);
+  });
+
+  it("Scenario H: two syncs of the same SKU keep one row, update the cost and preserve the admin's manual fields", async () => {
+    await setGlobalPercent("10");
+    const cat = await createCategory(prisma, "Voucher H");
+    const productId = await importBrand("Brand H", cat.id, [row("h1", "11000", "10000")]);
+    const h1 = await prisma.denomination.findFirstOrThrow({ where: { productId, supplierSku: "h1" } });
+    await prisma.denomination.update({
+      where: { id: h1.id },
+      data: { name: "Admin Name", description: "Admin text", price: "15000", priceOverridden: true },
+    });
+    digiflazzMock.getPriceList.mockResolvedValue([priceListItem({ buyerSkuCode: "h1", productName: "Supplier H1", brand: "Brand H", price: new Decimal(10500) })]);
+    await resyncDigiflazzCatalog(prisma);
+    digiflazzMock.getPriceList.mockResolvedValue([priceListItem({ buyerSkuCode: "h1", productName: "Supplier H1", brand: "Brand H", price: new Decimal(10800) })]);
+    await resyncDigiflazzCatalog(prisma);
+    const rows = await prisma.denomination.findMany({ where: { supplierSku: "h1" } });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.costPrice!.toString()).toBe("10800");
+    expect(rows[0]!).toMatchObject({ name: "Admin Name", description: "Admin text", priceOverridden: true, isActive: true });
+    expect(rows[0]!.price.toString()).toBe("15000");
+  });
+
+  it("isDigiflazzPriceOverridden compares against the category-aware, rounded price when given a category", async () => {
+    await setGlobalPercent("10");
+    await setSetting(prisma, PRICING_ROUNDING_KEY, "ceil_100");
+    const cat = await createCategory(prisma, "Voucher I");
+    await setCategoryPercent(cat.id, "20");
+    // 10050 × 1.2 = 12060 → 12100; the global rule would give 11055 → 11100
+    expect(await isDigiflazzPriceOverridden(prisma, new Decimal(12100), new Decimal(10050), cat.id)).toBe(false);
+    expect(await isDigiflazzPriceOverridden(prisma, new Decimal(11100), new Decimal(10050), cat.id)).toBe(true);
+    expect(await isDigiflazzPriceOverridden(prisma, new Decimal(12060), new Decimal(10050), cat.id)).toBe(true);
+    // A null category: the global default (still rounded).
+    expect(await isDigiflazzPriceOverridden(prisma, new Decimal(11100), new Decimal(10050), null)).toBe(false);
+  });
+
+  it("an unreadable stored rounding policy is handled like an unreadable markup: no repricing, import protected, admins told", async () => {
+    await setGlobalPercent("10");
+    const cat = await createCategory(prisma, "Voucher J");
+    const productId = await importBrand("Brand J", cat.id, [row("j1", "11000", "10000")]);
+    await setSetting(prisma, PRICING_ROUNDING_KEY, "ceil_7");
+    expect(await isDigiflazzPriceOverridden(prisma, new Decimal(11000), new Decimal(10000), cat.id)).toBe(true);
+    digiflazzMock.getPriceList.mockResolvedValue([priceListItem({ buyerSkuCode: "j1", brand: "Brand J", price: new Decimal(12000) })]);
+    await resyncDigiflazzCatalog(prisma);
+    const j1 = await prisma.denomination.findFirstOrThrow({ where: { productId, supplierSku: "j1" } });
+    expect(j1.price.toString()).toBe("12000"); // kept, then lifted to the new cost — never priced from a guess
+    expect(j1.costPrice!.toString()).toBe("12000");
+    const audit = await prisma.auditLog.findFirst({ where: { action: "digiflazz_markup_unreadable" } });
+    expect(audit?.details).toMatch(/rounding/i);
+    const { productId: p2 } = await importDigiflazzBrand(prisma, { brand: "Brand J2", categoryId: cat.id, rows: [row("j2", "11000", "10000")] });
+    expect((await prisma.denomination.findFirstOrThrow({ where: { productId: p2, supplierSku: "j2" } })).priceOverridden).toBe(true);
+  });
+
+  it("computeDigiflazzMarkupPrice and applyDigiflazzMarkup keep their legacy results", async () => {
+    await setGlobalPercent("7.5");
+    expect(applyDigiflazzMarkup(new Decimal("1234.5678"), { type: "percent", value: "7.5" }).toString()).toBe("1327.160385");
+    expect(applyDigiflazzMarkup(new Decimal(100), { type: "weird", value: "50" }).toString()).toBe("100");
+    expect((await computeDigiflazzMarkupPrice(prisma, new Decimal("1234.5678"))).toString()).toBe("1327.1604");
   });
 });

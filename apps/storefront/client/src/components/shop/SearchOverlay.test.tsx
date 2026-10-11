@@ -223,6 +223,38 @@ describe("SearchOverlay", () => {
     );
   });
 
+  it("uses a 16px-on-mobile input and a 44px close target", async () => {
+    const user = userEvent.setup();
+    renderOverlay(emptyData);
+    await user.click(screen.getByRole("button", { name: "Open search" }));
+    const input = screen.getByRole("combobox");
+    expect(input).toHaveClass("text-base", "sm:text-sm");
+    expect(input).not.toHaveClass("text-sm");
+    const close = screen.getByRole("button", { name: "Close search" });
+    expect(close).toHaveClass("grid", "h-11", "w-11", "place-items-center");
+  });
+
+  it("offers categories and products links in the empty state and closes on click", async () => {
+    const user = userEvent.setup();
+    renderOverlay(emptyData);
+    await user.click(screen.getByRole("button", { name: "Open search" }));
+    const dialog = screen.getByRole("dialog");
+    const links = within(dialog).getAllByRole("link");
+    expect(links).toHaveLength(2);
+    expect(within(dialog).getByRole("link", { name: "Categories" })).toHaveAttribute(
+      "href",
+      "/categories",
+    );
+    expect(within(dialog).getByRole("link", { name: "Browse all products" })).toHaveAttribute(
+      "href",
+      "/products",
+    );
+
+    await user.click(within(dialog).getByRole("link", { name: "Browse all products" }));
+    await waitFor(() => expect(screen.getByTestId("loc")).toHaveTextContent("/products"));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
   it("still opens when localStorage is unavailable (Safari private mode)", async () => {
     installStorage({
       getItem: () => {

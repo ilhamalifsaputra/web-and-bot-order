@@ -1197,6 +1197,9 @@ describe("InstantBuyPage", () => {
         expect(found.querySelector("svg")).not.toBeNull();
         const name = within(found).getByText("SultanMLBB");
         expect(name).toHaveClass("font-semibold", "text-ink");
+        // A screen reader hears what the bare nickname is, via a hidden label.
+        expect(found).toHaveTextContent("Account found: SultanMLBB");
+        expect(within(found).getByText("Account found:")).toHaveClass("sr-only");
         expect(screen.queryByTestId("nickname-check-not-found")).not.toBeInTheDocument();
       } finally {
         vi.useRealTimers();

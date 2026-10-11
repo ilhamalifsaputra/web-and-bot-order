@@ -551,6 +551,7 @@ export default function InstantBuyPage() {
                   data-testid="nickname-check-found"
                 >
                   <BadgeCheck className="h-5 w-5 shrink-0 text-grass" aria-hidden="true" />
+                  <span className="sr-only">{t("web.nickname_check_found_label")}: </span>
                   <span className="font-semibold text-ink">{nicknameCheck.nickname}</span>
                 </Card>
               )}

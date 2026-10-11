@@ -45,7 +45,7 @@
 import { OrderStatus, OrderItemStatus, ProductType, DeliveryType } from "@app/core/enums";
 import { Decimal, moneyEq } from "@app/core/money";
 import { quantizeMoney } from "@app/core/formatters";
-import { parseMoneyInput, parsePercentInput } from "@app/core/moneyFormat";
+import { readStoredMarkupValue } from "@app/core/pricingRule";
 import { randomUUID } from "node:crypto";
 import { logger } from "@app/core/logger";
 import { encryptDeliveredContent } from "@app/core/credentialCrypto";
@@ -1727,19 +1727,12 @@ export async function getDigiflazzMarkupSettings(db: Db): Promise<{ type: string
 }
 
 /**
- * The markup amount a stored setting holds (a percent for type "percent", a
- * rupiah amount otherwise), or null when the stored value cannot be read as a
- * non-negative number. Blank or unset is a zero markup. The settings route
- * stores the plain decimal (`10`, `12.345`, `1500`), read exactly; anything
- * else (a legacy hand-typed value) is read by its shape — parsePercentInput
- * for a percent (`1,5`), parseMoneyInput for rupiah (`1,500`). `10%`, signs,
- * `NaN` and exponents are null: never thrown, never a negative markup.
+ * The markup amount a stored setting holds, or null when unreadable. Kept for
+ * existing callers; the parsing now lives in `readStoredMarkupValue`
+ * (`@app/core/pricingRule`), the single authority for the pricing formula.
  */
 export function readDigiflazzMarkup(settings: { type: string | null; value: string | null }): Decimal | null {
-  const raw = (settings.value ?? "").trim();
-  if (raw === "") return new Decimal(0);
-  if (/^\d{1,30}(\.\d{1,30})?$/.test(raw)) return new Decimal(raw);
-  return settings.type === "percent" ? parsePercentInput(raw) : parseMoneyInput(raw, "IDR");
+  return readStoredMarkupValue(settings);
 }
 
 /** Thrown by {@link applyDigiflazzMarkup} when the stored markup is unreadable

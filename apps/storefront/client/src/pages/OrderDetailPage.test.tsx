@@ -833,5 +833,7 @@ describe("OrderDetailPage game top-up", () => {
     }));
     expect(await screen.findByRole("link", { name: /Pay now/ })).toBeInTheDocument();
     expect(screen.getAllByText("Awaiting payment")).toHaveLength(1);
+    // No orphan "Status" label left behind in the pay card.
+    expect(screen.queryByText("Status", { exact: true })).not.toBeInTheDocument();
   });
 });

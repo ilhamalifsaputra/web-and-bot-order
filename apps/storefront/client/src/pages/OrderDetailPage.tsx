@@ -247,8 +247,7 @@ export default function OrderDetailPage() {
             </section>
           )}
           {pendingPayment && (
-            <Card className="flex items-center justify-between gap-3 flex-wrap bg-pine-tint/40">
-              <div className="text-sm text-ink-soft">{t("web.order_status")}</div>
+            <Card className="flex items-center justify-end gap-3 flex-wrap bg-pine-tint/40">
               <Link to={`/checkout/${order.code}/pay`} className="btn btn-primary min-h-11">
                 <Wallet className="w-4 h-4" /> {t("web.pay_now")}
               </Link>

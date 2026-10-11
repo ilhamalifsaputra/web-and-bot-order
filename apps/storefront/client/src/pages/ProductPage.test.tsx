@@ -896,6 +896,20 @@ describe("ProductPage sharing and image formats", () => {
     expect(picker?.querySelector("#denom-list")).toHaveClass("grid-cols-1");
   });
 
+  it("keeps the Premium plan picker on the default row layout (no stacked Game cards)", async () => {
+    renderProduct("netflix-premium", () => productData);
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    const list = document.querySelector("#denom-list")!;
+    expect(list).toHaveClass("grid-cols-1");
+    expect(list.className).not.toContain("sm:grid-cols-2");
+    const labels = list.querySelectorAll("label.denom-card");
+    expect(labels.length).toBeGreaterThan(0);
+    labels.forEach((l) => {
+      expect(l.className).toContain("grid-cols-[minmax(0,1fr)_auto]");
+      expect(l.className).not.toContain("flex-col");
+    });
+  });
+
   it("asks phones for the numeric keypad on the qty field", async () => {
     renderProduct("netflix-premium", () => productData);
     await screen.findByRole("heading", { name: "Netflix Premium" });

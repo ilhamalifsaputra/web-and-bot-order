@@ -77,20 +77,41 @@ export interface DenominationCardProps {
   /** Resolved once per product (apps/storefront/src/denomIcon.ts), shared by
    * every denomination of that product — null/undefined renders no chip. */
   iconKind?: DenomIconKind | null;
+  /** "row" (default) is the one-line name | price card the Premium plan picker
+   * uses. "stacked" puts name, price and badges in one column so the card
+   * still fits when the Game Top Up grid shows 2-3 cards per row. */
+  layout?: "row" | "stacked";
 }
 
-export default function DenominationCard({ d, fx, lowThreshold, checked, onChange, iconKind }: DenominationCardProps) {
+const SURFACE_CLASSES =
+  "rounded-lg border-2 border-line bg-card p-3 sm:p-4 transition-[background-color,border-color,box-shadow] duration-150 ease-gg hover:border-pine-tint hover:shadow-soft has-[:checked]:bg-pine-tint has-[:checked]:border-pine focus-within:ring-2 focus-within:ring-pine";
+
+export default function DenominationCard({ d, fx, lowThreshold, checked, onChange, iconKind, layout = "row" }: DenominationCardProps) {
   const buyable = purchasable(d);
   const Icon = iconKind ? ICON_KIND_ICONS[iconKind] : null;
+  const stacked = layout === "stacked";
+  const arrangement = stacked
+    ? "flex flex-col items-start justify-center gap-1.5 min-h-11 min-w-0"
+    : "grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2";
+  const badges = (
+    <div className={stacked ? "flex flex-wrap items-center gap-1.5" : "mt-0.5 flex flex-wrap items-center gap-1.5"}>
+      {d.uses_local_inventory ? (
+        <StockBadge available={d.available} lowThreshold={lowThreshold} />
+      ) : (
+        <StockBadge available={d.available} lowThreshold={lowThreshold} allNonAuto />
+      )}
+      {d.flash && <FlashBadge percent={d.flash.discount_percent} endsAt={d.flash.ends_at} />}
+    </div>
+  );
   return (
     <label
-      className={`denom-card cursor-pointer grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-lg border-2 border-line bg-card p-3 sm:p-4 transition-[background-color,border-color,box-shadow] duration-150 ease-gg hover:border-pine-tint hover:shadow-soft has-[:checked]:bg-pine-tint has-[:checked]:border-pine focus-within:ring-2 focus-within:ring-pine ${!buyable ? "opacity-60" : ""}`}
+      className={`denom-card cursor-pointer ${arrangement} ${SURFACE_CLASSES} ${!buyable ? "opacity-60" : ""}`}
       data-denom-id={d.id}
       data-price={d.price}
       data-available={d.available}
       data-label={d.name}
     >
-      <div className="flex items-center gap-2 min-w-0">
+      <div className={stacked ? "flex items-start gap-2 min-w-0 w-full" : "flex items-center gap-2 min-w-0"}>
         <input
           type="radio"
           name="denomination_id"
@@ -119,17 +140,10 @@ export default function DenominationCard({ d, fx, lowThreshold, checked, onChang
               nothing left the buyer with no "purchasable" cue at all. Show
               the plain "Available" pill (StockBadge's allNonAuto branch,
               identical markup to the catalog card's). */}
-          <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
-            {d.uses_local_inventory ? (
-              <StockBadge available={d.available} lowThreshold={lowThreshold} />
-            ) : (
-              <StockBadge available={d.available} lowThreshold={lowThreshold} allNonAuto />
-            )}
-            {d.flash && <FlashBadge percent={d.flash.discount_percent} endsAt={d.flash.ends_at} />}
-          </div>
+          {!stacked && badges}
         </div>
       </div>
-      <div className="text-right whitespace-nowrap">
+      <div className={stacked ? "text-left whitespace-nowrap" : "text-right whitespace-nowrap"}>
         {d.canonical ? <span className="font-semibold text-pine text-sm whitespace-nowrap">{d.canonical.formattedPrice}</span> : <Price value={d.price} fx={fx} size="text-sm" />}
         {/* `price` is already the sale price — this is the pre-sale figure. */}
         {d.flash && (
@@ -138,6 +152,7 @@ export default function DenominationCard({ d, fx, lowThreshold, checked, onChang
           </div>
         )}
       </div>
+      {stacked && badges}
     </label>
   );
 }

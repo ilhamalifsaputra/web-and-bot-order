@@ -1208,6 +1208,21 @@ describe("InstantBuyPage", () => {
     });
   });
 
+  describe("denomination grid (H-24)", () => {
+    it("lays the list out 2/3 columns from sm/lg with stacked cards", async () => {
+      renderInstantBuy({ product: productData });
+      const heading = await screen.findByRole("heading", { name: "Choose an option" });
+      const denomList = heading.nextElementSibling as HTMLElement;
+      expect(denomList).toHaveClass("grid", "gap-3", "sm:grid-cols-2", "lg:grid-cols-3");
+      const labels = denomList.querySelectorAll("label.denom-card");
+      expect(labels.length).toBeGreaterThan(0);
+      labels.forEach((l) => {
+        expect(l.className).toContain("flex-col");
+        expect(l.className).not.toContain("grid-cols-[");
+      });
+    });
+  });
+
   // Fase 12: product.icon_kind is resolved once server-side and forwarded to
   // every DenominationCard as `iconKind` — same contract ProductPage.tsx
   // follows for its own (catalog-flow) denom-list.

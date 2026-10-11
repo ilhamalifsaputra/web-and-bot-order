@@ -565,10 +565,11 @@ export default function InstantBuyPage() {
               sequence could. */}
           <div className="card card-pad">
             <h2 className="section-title mb-3">{t("web.choose_option")}</h2>
-            <div className="grid gap-3">
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {denominations.map((d) => (
                 <DenominationCard
                   key={d.id}
+                  layout="stacked"
                   d={d}
                   fx={fx}
                   lowThreshold={low_threshold}

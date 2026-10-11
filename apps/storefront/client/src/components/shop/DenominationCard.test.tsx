@@ -162,6 +162,39 @@ describe("DenominationCard", () => {
     });
   });
 
+  describe("layout", () => {
+    it("default row layout keeps the two-column grid contract", () => {
+      renderCard();
+      const label = screen.getByText("5 Diamonds").closest("label")!;
+      expect(label.className).toContain("grid-cols-[minmax(0,1fr)_auto]");
+      expect(label.className.split(/\s+/)).toContain("grid");
+      expect(label.getAttribute("data-layout")).toBeNull();
+    });
+
+    it("stacked layout puts the name before the price and drops the row grid", () => {
+      renderCard({ layout: "stacked" });
+      const label = screen.getByText("5 Diamonds").closest("label")!;
+      expect(label.className).not.toContain("grid-cols-");
+      expect(label.className).toContain("flex-col");
+      expect(label.className).toContain("min-h-11");
+      const name = screen.getByText("5 Diamonds");
+      const price = screen.getByText(/5[.,]000/);
+      expect(name.compareDocumentPosition(price) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it("stacked layout keeps the radio, selected styling, data-* and badges", () => {
+      renderCard({ layout: "stacked", checked: true, iconKind: "diamond", d: { ...AUTO, available: 3 } });
+      const radio = screen.getByRole("radio");
+      expect(radio).toBeChecked();
+      const label = radio.closest("label")!;
+      expect(label.getAttribute("data-denom-id")).toBe("1");
+      expect(label.className).toContain("has-[:checked]:border-pine");
+      expect(label.className).toContain("focus-within:ring-pine");
+      expect(label.querySelector(".lucide-gem")).toBeInTheDocument();
+      expect(screen.getByText("3 left")).toBeInTheDocument();
+    });
+  });
+
   // Regression guard: the icon chip must never disturb the radio/data-*
   // contract the product page's picker logic reads (task-17-brief.md).
   it("keeps the radio + data-* contract unchanged when an icon chip is shown", () => {

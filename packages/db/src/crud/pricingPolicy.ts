@@ -43,7 +43,12 @@ import {
 
 export const PRICING_ROUNDING_KEY = "pricing_rounding";
 export const PRICING_LOW_MARGIN_WARN_PCT_KEY = "pricing_low_margin_warn_pct";
-const POLICY_KEYS = [DIGIFLAZZ_MARKUP_TYPE_KEY, DIGIFLAZZ_MARKUP_VALUE_KEY, PRICING_ROUNDING_KEY, PRICING_LOW_MARGIN_WARN_PCT_KEY];
+
+// Digiflazz also imports this module. Resolve its shared constants at call
+// time so module initialization order cannot capture undefined values.
+function policySettingKeys(): string[] {
+  return [DIGIFLAZZ_MARKUP_TYPE_KEY, DIGIFLAZZ_MARKUP_VALUE_KEY, PRICING_ROUNDING_KEY, PRICING_LOW_MARGIN_WARN_PCT_KEY];
+}
 
 /** Invalid pricing input; the message is fit to show an admin (Task 4 → 400). */
 export class PricingValidationError extends Error {
@@ -106,11 +111,12 @@ function readStoredPercent(raw: string): Decimal | null {
 }
 
 export async function getPricingPolicy(db: Db): Promise<PricingPolicy> {
+  const policyKeys = policySettingKeys();
   // One database snapshot: independently cached reads could combine the old
   // percent amount with a newly saved flat type (or the reverse).
-  const rows = await db.setting.findMany({ where: { key: { in: POLICY_KEYS } }, select: { key: true, value: true } });
+  const rows = await db.setting.findMany({ where: { key: { in: policyKeys } }, select: { key: true, value: true } });
   const values = new Map(rows.map(row => [row.key, row.value]));
-  const [type, value, roundingRaw, lowRaw] = POLICY_KEYS.map(key => values.get(key) ?? null) as [string | null, string | null, string | null, string | null];
+  const [type, value, roundingRaw, lowRaw] = policyKeys.map(key => values.get(key) ?? null) as [string | null, string | null, string | null, string | null];
   const globalRule = readStoredMarkupRule({ type, value });
   const roundingTrim = (roundingRaw ?? "").trim();
   const roundingReadable = roundingTrim === "" || isRoundingPolicy(roundingTrim);
@@ -233,7 +239,7 @@ export async function setGlobalPricing(
   validateGlobalPricingInput(input);
   if ("$transaction" in db) {
     const result = await db.$transaction(tx => setGlobalPricing(tx, adminId, input));
-    if (result.changed) invalidateSettingCache(db, POLICY_KEYS);
+    if (result.changed) invalidateSettingCache(db, policySettingKeys());
     return result;
   }
   const before = await getPricingPolicy(db);

@@ -16,6 +16,23 @@ beforeEach(() => {
 });
 
 describe("AdditionalFieldsEditor", () => {
+  it("adds a field with a local identity when randomUUID is unavailable on plain HTTP", () => {
+    const descriptor = Object.getOwnPropertyDescriptor(crypto, "randomUUID");
+    Object.defineProperty(crypto, "randomUUID", { value: undefined, configurable: true });
+    try {
+      const onChange = vi.fn();
+      render(<AdditionalFieldsEditor value={[]} onChange={onChange} />);
+      fireEvent.click(screen.getByRole("button", { name: /add field/i }));
+      expect(onChange).toHaveBeenCalledTimes(1);
+      const [draft] = onChange.mock.calls[0]![0] as AdditionalFieldDraft[];
+      expect(draft?.draftId).toMatch(/^draft:\d+$/);
+      expect(draft?.key).toBe("");
+    } finally {
+      if (descriptor) Object.defineProperty(crypto, "randomUUID", descriptor);
+      else Reflect.deleteProperty(crypto, "randomUUID");
+    }
+  });
+
   it("preserves the remaining draft's input and focus when an earlier row is removed", () => {
     const first = emptyFieldDraft();
     const second = { ...emptyFieldDraft(), labelEn: "Account email" };

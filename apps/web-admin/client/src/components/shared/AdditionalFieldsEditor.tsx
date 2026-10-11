@@ -47,7 +47,7 @@ export function AdditionalFieldsEditor({
     onChange(value.filter((_, i) => i !== index));
   }
   function addRow() {
-    onChange([...value, { ...emptyFieldDraft(), draftId: crypto.randomUUID() }]);
+    onChange([...value, emptyFieldDraft()]);
   }
 
   return (

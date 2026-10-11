@@ -857,6 +857,26 @@ describe("CheckoutPage", () => {
       }
     });
 
+    it("scrolls the guest email field into view, once, when the server rejects the email", async () => {
+      // No banner renders for this error (it shows inside GuestContactCard), so
+      // the banner scroll has no target; the email field is scrolled instead.
+      const scrollIntoView = vi.fn();
+      (Element.prototype as unknown as { scrollIntoView: unknown }).scrollIntoView = scrollIntoView;
+      try {
+        renderCheckout(() => guestData);
+        await screen.findByRole("heading", { name: "Checkout" });
+        fireEvent.change(screen.getByLabelText("Email address"), { target: { value: "typo@example.com" } });
+        (apiPost as Mock).mockRejectedValue(new Error("web.guest_email_invalid"));
+        expect(scrollIntoView).not.toHaveBeenCalled();
+        fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
+        await screen.findByText(GUEST_EMAIL_INVALID);
+        expect(scrollIntoView).toHaveBeenCalledTimes(1);
+        expect(scrollIntoView.mock.contexts[0]).toBe(screen.getByLabelText("Email address"));
+      } finally {
+        delete (Element.prototype as unknown as { scrollIntoView?: unknown }).scrollIntoView;
+      }
+    });
+
     it("keeps the buyer on the page with a readable message when the server rejects the email", async () => {
       renderCheckout(() => guestData);
       await screen.findByRole("heading", { name: "Checkout" });

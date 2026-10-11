@@ -274,7 +274,10 @@ export default function CheckoutPage() {
   const errorBannerRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!placeOrderError) return;
-    errorBannerRef.current?.scrollIntoView?.({ block: "nearest", behavior: preferredScrollBehavior() });
+    // A rejected guest email has no banner (the error renders inside
+    // GuestContactCard), so bring that card's email field into view instead.
+    const target = errorBannerRef.current ?? document.getElementById("guest_email");
+    target?.scrollIntoView?.({ block: "nearest", behavior: preferredScrollBehavior() });
   }, [placeOrderError]);
   // Guest checkout only — a registered buyer never sees the field, and the
   // value is never sent for them (the server ignores it anyway).

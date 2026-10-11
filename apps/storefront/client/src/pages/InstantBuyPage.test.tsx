@@ -644,6 +644,33 @@ describe("InstantBuyPage", () => {
     }
   });
 
+  it("scrolls the guest email field into view, once, when the server rejects the email", async () => {
+    // The banner is suppressed for this error (GuestContactCard shows it), so
+    // the email field is the scroll target instead.
+    const scrollIntoView = vi.fn();
+    (Element.prototype as unknown as { scrollIntoView: unknown }).scrollIntoView = scrollIntoView;
+    try {
+      renderInstantBuy({ checkout: { ...checkoutData, is_guest: true } });
+      await screen.findByText("Summary");
+      const basePost = (apiPost as Mock).getMockImplementation()!;
+      (apiPost as Mock).mockImplementation(async (path: string, body: Record<string, unknown>) => {
+        if (path === "/api/v1/topup/order") throw new Error("web.guest_email_invalid");
+        return basePost(path, body);
+      });
+      fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "1234567" } });
+      fireEvent.change(screen.getByLabelText("Zone ID"), { target: { value: "1111" } });
+      fireEvent.change(screen.getByLabelText("Email address"), { target: { value: "typo@example.com" } });
+      await waitFor(() => expect(screen.getAllByRole("button", { name: /Buy now/ })[0]).not.toBeDisabled());
+      expect(scrollIntoView).not.toHaveBeenCalled();
+      fireEvent.click(screen.getAllByRole("button", { name: /Buy now/ })[0]!);
+      await screen.findByText(/Enter a valid email address/);
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+      expect(scrollIntoView.mock.contexts[0]).toBe(screen.getByLabelText("Email address"));
+    } finally {
+      delete (Element.prototype as unknown as { scrollIntoView?: unknown }).scrollIntoView;
+    }
+  });
+
   // Batch 2 review finding: the preview query's own request never carries the
   // applied voucher code (previewMutation, a separate call, owns that
   // re-price) — with React Query's default staleTime:0, a background

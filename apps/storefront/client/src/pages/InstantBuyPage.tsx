@@ -138,7 +138,10 @@ export default function InstantBuyPage() {
   const errorBannerRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!placeOrderError) return;
-    errorBannerRef.current?.scrollIntoView?.({ block: "nearest", behavior: preferredScrollBehavior() });
+    // A rejected guest email has no banner (the error renders inside
+    // GuestContactCard), so bring that card's email field into view instead.
+    const target = errorBannerRef.current ?? document.getElementById("guest_email");
+    target?.scrollIntoView?.({ block: "nearest", behavior: preferredScrollBehavior() });
   }, [placeOrderError]);
   const [page, setPage] = useState<CheckoutData | null>(null);
   const [storedTotals, setTotals] = useState<CheckoutData | null>(null);

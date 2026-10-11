@@ -170,7 +170,7 @@ function renderProduct(slug: string, respond: (path: string) => unknown, ctx: Sh
     return respond(path);
   });
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  const view = render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[`/p/${slug}`]}>
         <Routes>
@@ -182,6 +182,7 @@ function renderProduct(slug: string, respond: (path: string) => unknown, ctx: Sh
       </MemoryRouter>
     </QueryClientProvider>,
   );
+  return { ...view, queryClient };
 }
 
 describe("ProductPage", () => {
@@ -460,6 +461,22 @@ describe("ProductPage", () => {
     expect(before).toBeGreaterThanOrEqual(1);
     fireEvent.click(retry);
     await waitFor(() => expect(callsFor()).toBe(before + 1));
+  });
+
+  it("keeps the loaded page when a later background refetch fails", async () => {
+    let fail = false;
+    const { queryClient } = renderProduct("netflix-premium", () => {
+      if (fail) throw Object.assign(new Error("boom"), { status: 500 });
+      return productData;
+    });
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    fail = true;
+    await queryClient.refetchQueries({ queryKey: ["product"] });
+    await waitFor(() =>
+      expect(queryClient.getQueryCache().findAll({ queryKey: ["product"] })[0]?.state.status).toBe("error"),
+    );
+    expect(screen.getByRole("heading", { name: "Netflix Premium" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /try again/i })).not.toBeInTheDocument();
   });
 
   it("adds to cart then navigates to /cart", async () => {

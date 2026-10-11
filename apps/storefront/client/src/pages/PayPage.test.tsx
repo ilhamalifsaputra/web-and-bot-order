@@ -49,7 +49,7 @@ const basePay: PayData = {
 function renderPay(respond: (path: string) => unknown, code = "ORD1") {
   (apiGet as Mock).mockImplementation(async (path: string) => respond(path));
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  const view = render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[`/checkout/${code}/pay`]}>
         <Routes>
@@ -60,6 +60,7 @@ function renderPay(respond: (path: string) => unknown, code = "ORD1") {
       </MemoryRouter>
     </QueryClientProvider>,
   );
+  return { ...view, queryClient };
 }
 
 /** Every test's order fetches BOTH /pay and /status — this keeps the status
@@ -489,6 +490,34 @@ describe("PayPage", () => {
     expect(callsFor()).toBe(1);
     fireEvent.click(retry);
     await waitFor(() => expect(callsFor()).toBe(2));
+    expect(apiPost).not.toHaveBeenCalled();
+  });
+
+  it("keeps the QR page rendered when a later background refetch of the order fails", async () => {
+    const pay: PayData = {
+      ...basePay,
+      state: "waiting",
+      is_qris: true,
+      gateway: { trxId: "TRX1", payUrl: "https://pay.example/trx1", qrLink: "https://img.example/qr.png", qrString: null, totalBayar: "158000" },
+    };
+    const ok = respondFor(pay);
+    let fail = false;
+    const { queryClient } = renderPay((path) => {
+      if (fail && path.endsWith("/ORD1/pay")) throw Object.assign(new Error("boom"), { status: 500 });
+      return ok(path);
+    });
+    await screen.findByAltText("QRIS");
+    fail = true;
+    const payCalls = () => (apiGet as Mock).mock.calls.filter((c) => typeof c[0] === "string" && c[0].endsWith("/ORD1/pay")).length;
+    const before = payCalls();
+    await queryClient.refetchQueries();
+    await waitFor(() => expect(payCalls()).toBeGreaterThan(before));
+    await waitFor(() =>
+      expect(queryClient.getQueryCache().getAll().some((q) => q.state.status === "error")).toBe(true),
+    );
+    expect(screen.getByAltText("QRIS")).toBeInTheDocument();
+    expect(screen.getByText("Rp158,000")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /try again/i })).not.toBeInTheDocument();
     expect(apiPost).not.toHaveBeenCalled();
   });
 

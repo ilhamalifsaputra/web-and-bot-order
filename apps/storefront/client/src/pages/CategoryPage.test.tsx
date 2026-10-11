@@ -58,7 +58,7 @@ function renderCategory(slug: string, respond: (path: string) => unknown) {
     return respond(path);
   });
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  const view = render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[`/c/${slug}`]}>
         <Routes>
@@ -67,6 +67,7 @@ function renderCategory(slug: string, respond: (path: string) => unknown) {
       </MemoryRouter>
     </QueryClientProvider>,
   );
+  return { ...view, queryClient };
 }
 
 describe("CategoryPage", () => {
@@ -186,5 +187,21 @@ describe("CategoryPage", () => {
     expect(callsFor()).toBe(1);
     fireEvent.click(retry);
     await waitFor(() => expect(callsFor()).toBe(2));
+  });
+
+  it("keeps the loaded page when a later background refetch fails", async () => {
+    let fail = false;
+    const { queryClient } = renderCategory("streaming", () => {
+      if (fail) throw Object.assign(new Error("boom"), { status: 500 });
+      return categoryData;
+    });
+    expect(await screen.findByRole("heading", { name: "Netflix Premium" })).toBeInTheDocument();
+    fail = true;
+    await queryClient.refetchQueries({ queryKey: ["category"] });
+    await waitFor(() =>
+      expect(queryClient.getQueryState(["category", "streaming", "default"])?.status).toBe("error"),
+    );
+    expect(screen.getByRole("heading", { name: "Netflix Premium" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /try again/i })).not.toBeInTheDocument();
   });
 });

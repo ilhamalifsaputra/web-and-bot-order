@@ -304,7 +304,9 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
     if ((error as Error & { status?: number }).status === 404) return <ErrorPage />;
     // 401 is mid-redirect to /login (effect above): keep it blank, not an error.
     if ((error as Error & { status?: number }).status === 401) return null;
-    return <ErrorState onRetry={() => void refetch()} />;
+    // A failed background refetch must not replace an already-loaded page
+    // (the QR page above all): the error state is for the initial load only.
+    if (!data) return <ErrorState onRetry={() => void refetch()} />;
   }
   if (!data) {
     return (

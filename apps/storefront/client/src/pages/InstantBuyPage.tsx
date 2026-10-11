@@ -391,7 +391,8 @@ export default function InstantBuyPage() {
 
   if (error) {
     if ((error as Error & { status?: number }).status === 404) return <ErrorPage />;
-    return <ErrorState onRetry={() => void refetch()} />;
+    // A failed background refetch must not replace an already-loaded page.
+    if (!data) return <ErrorState onRetry={() => void refetch()} />;
   }
   if (!data) {
     return (

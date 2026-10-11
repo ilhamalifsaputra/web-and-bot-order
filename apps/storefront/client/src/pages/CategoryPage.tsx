@@ -47,7 +47,8 @@ export default function CategoryPage() {
 
   if (error) {
     if ((error as Error & { status?: number }).status === 404) return <ErrorPage />;
-    return <ErrorState onRetry={() => void refetch()} />;
+    // A failed background refetch must not replace an already-loaded page.
+    if (!data) return <ErrorState onRetry={() => void refetch()} />;
   }
   // STO-006/performance.md: rendering nothing while the initial query is
   // pending reads as a blank/broken page on a slow connection — show a

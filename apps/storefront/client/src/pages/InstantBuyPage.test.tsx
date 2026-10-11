@@ -251,6 +251,23 @@ describe("InstantBuyPage", () => {
     await waitFor(() => expect(callsFor()).toBe(before + 1));
   });
 
+  it("keeps the loaded form when a later background refetch fails", async () => {
+    vi.clearAllMocks();
+    const { queryClient } = renderInstantBuy();
+    await screen.findByText("Summary");
+    (apiGet as Mock).mockImplementation(async () => {
+      throw Object.assign(new Error("boom"), { status: 500 });
+    });
+    await queryClient.refetchQueries({ queryKey: ["product"] });
+    await waitFor(() =>
+      expect(
+        queryClient.getQueryCache().findAll({ queryKey: ["product"] }).some((q) => q.state.status === "error"),
+      ).toBe(true),
+    );
+    expect(screen.getByText("Summary")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /try again/i })).not.toBeInTheDocument();
+  });
+
   it.each([false, true])("preserves account answers when choosing a different diamond amount (product route: %s)", async (throughProductPage) => {
     renderInstantBuy({ throughProductPage });
     await screen.findByText("Summary");

@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, afterEach, beforeEach, vi, type Mock } from "vitest";
-import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import CheckoutPage from "./CheckoutPage";
@@ -101,6 +101,19 @@ describe("CheckoutPage", () => {
     expect(await screen.findByRole("heading", { name: "Checkout" })).toBeInTheDocument();
     expect(screen.getByText("Summary")).toBeInTheDocument();
     expect(screen.getAllByText("Rp158,000").length).toBeGreaterThan(0);
+  });
+
+  // H-31 / H-33 (batch 5): the Premium checkout total is the large figure, and
+  // the Cart → Pay → Done stepper stays on this (cart-based) flow.
+  it("shows the order total at text-2xl and keeps the stepper", async () => {
+    const { container } = renderCheckout(() => checkoutData);
+    await screen.findByRole("heading", { name: "Checkout" });
+    const summary = document.getElementById("checkout-summary")!;
+    const label = within(summary).getByText("Total", { exact: true });
+    const figure = label.parentElement!.querySelector(".text-2xl");
+    expect(figure).not.toBeNull();
+    expect(figure!.closest(".font-display")).not.toBeNull();
+    expect(container.querySelectorAll('li[aria-label="1 · Cart"]')).toHaveLength(1);
   });
 
   it("identifies two different parent products with the same canonical plan name", async () => {

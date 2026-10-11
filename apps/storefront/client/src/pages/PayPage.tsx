@@ -344,9 +344,25 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
       </p>
     ) : null;
 
+  // The time left to pay, shown directly under the amount and before the QR /
+  // gateway button in whichever waiting branch renders (only one does, so it
+  // appears once). Display only: `countdownText` still comes from the single
+  // useCountdown() call above.
+  const countdownRow = order.expires_at_iso ? (
+    <div className="flex items-center gap-2 mt-3 text-sm text-ink-soft">
+      <Timer className="w-4 h-4 text-amberx" />
+      {t("web.pay_countdown")}
+      <span id="countdown" className="font-mono font-semibold text-ink">
+        {countdownText}
+      </span>
+    </div>
+  ) : null;
+
   return (
     <>
-      <Stepper step={state === "delivered" ? 3 : 2} />
+      {/* Cart → Pay → Done describes the Premium catalog checkout only: a Game
+          Top Up (InstantBuy) and a wallet top-up never had a cart step. */}
+      {!isGame && !isTopup && <Stepper step={state === "delivered" ? 3 : 2} />}
       <div className="max-w-2xl mx-auto">
         <h1 className="page-title text-2xl! mb-1">{t("web.pay_title")}</h1>
       <p className={emailedTo ? "text-sm text-ink-soft mb-2" : "text-sm text-ink-soft mb-5"}>
@@ -401,6 +417,7 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
                   <li>
                     {t("web.binance_step_amount")}
                     <div className="font-display font-semibold text-pine text-2xl mt-1">${order.total}</div>
+                    {countdownRow}
                   </li>
                   <li>
                     {t("web.binance_step_note")}
@@ -414,6 +431,7 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
                 <h2 className="section-title mb-3">{t("web.pay_bybit_title")}</h2>
                 <p className="text-sm text-ink-soft mt-2">{t("web.pay_bybit_amount")}</p>
                 <div className="font-display font-semibold text-pine text-2xl mt-1">${order.total}</div>
+                {countdownRow}
                 {data.bybit_uid && (
                   <>
                     <p className="text-sm text-ink-soft mt-3">{t("web.pay_bybit_uid")}</p>
@@ -427,6 +445,7 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
                 <h2 className="section-title mb-3">{t("web.pay_bybit_bsc_title")}</h2>
                 <p className="text-sm text-ink-soft mt-2">{t("web.pay_bybit_bsc_amount")}</p>
                 <div className="font-display font-semibold text-pine text-2xl mt-1">${order.total}</div>
+                {countdownRow}
                 {data.bybit_bsc_address && (
                   <>
                     <p className="text-sm text-ink-soft mt-3">{t("web.pay_bybit_bsc_address")}</p>
@@ -462,6 +481,7 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
                     {priceAndPayLine(order.total)}
                   </>
                 )}
+                {countdownRow}
                 {data.gateway ? (
                   <>
                     {data.gateway.qrLink && (
@@ -497,6 +517,7 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
                   {formatOrderAmount(order.total, order.currency)}
                 </div>
                 {priceAndPayLine(order.total)}
+                {countdownRow}
                 {data.paydisini_gateway ? (
                   <>
                     {data.paydisini_gateway.qrUrl && (
@@ -534,6 +555,7 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
               <>
                 <h2 className="section-title mb-3">{t("web.pay_nowpayments_title")}</h2>
                 <div className="font-display font-semibold text-pine text-2xl">${order.total}</div>
+                {countdownRow}
                 {data.nowpayments_gateway ? (
                   <>
                     {data.nowpayments_gateway.invoiceUrl && (
@@ -561,6 +583,7 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
             ) : (
               <>
                 <p className="text-sm text-ink-soft">{t("web.pay_method_elsewhere")}</p>
+                {countdownRow}
                 {data.support_telegram_url && (
                   <a
                     href={data.support_telegram_url}
@@ -585,16 +608,6 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
               <ShieldCheck className="w-3.5 h-3.5 text-grass" />
               {t("web.pay_trust")}
             </div>
-
-            {order.expires_at_iso && (
-              <div className="flex items-center gap-2 mt-5 pt-4 border-t border-line text-sm text-ink-soft">
-                <Timer className="w-4 h-4 text-amberx" />
-                {t("web.pay_countdown")}
-                <span id="countdown" className="font-mono font-semibold text-ink">
-                  {countdownText}
-                </span>
-              </div>
-            )}
           </Card>
 
           <div className="mt-4 text-center">

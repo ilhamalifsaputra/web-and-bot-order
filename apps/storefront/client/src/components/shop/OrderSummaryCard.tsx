@@ -254,7 +254,11 @@ export default function OrderSummaryCard({
             )}
             <div className="mt-2 flex items-baseline justify-between gap-3 border-t border-line pb-2 pt-4">
               <span className="text-base font-semibold text-ink">{t("web.order_total")}</span>
-              <Price value={method === "qris" ? totals.qris_grand_total : totals.total} fx={fx} size="text-lg" />
+              {/* The page's key figure: larger than its label and in the display
+                  face, like the other big totals (PayPage, ProductPage). */}
+              <span className="font-display">
+                <Price value={method === "qris" ? totals.qris_grand_total : totals.total} fx={fx} size="text-2xl" />
+              </span>
             </div>
           </div>
           {priceAndPay && <p className="mb-2 text-right text-sm text-ink-soft">{priceAndPay}</p>}

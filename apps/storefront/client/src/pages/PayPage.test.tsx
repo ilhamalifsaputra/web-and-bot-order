@@ -661,3 +661,150 @@ describe("PayPage", () => {
     expect(maxWidthContainer!.contains(stepperOl!)).toBe(false);
   });
 });
+
+// H-34 / H-33 (storefront visual hierarchy, batch 5): the countdown sits
+// directly under the amount, before the QR / gateway CTA, rendered once; the
+// Cart → Pay → Done stepper only shows for a Premium catalog order.
+describe("PayPage countdown position and stepper visibility", () => {
+  beforeEach(() => {
+    document.documentElement.lang = "en";
+    vi.clearAllMocks();
+    vi.spyOn(Date, "now").mockReturnValue(new Date("2026-07-04T12:00:00.000Z").getTime());
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const expiring = { ...basePay.order, expires_at_iso: "2026-07-04T12:04:30.000Z" };
+  const before = (a: Element, b: Element) =>
+    (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+  const onlyCountdown = (container: HTMLElement) => {
+    const all = container.querySelectorAll("#countdown");
+    expect(all).toHaveLength(1);
+    expect(all[0]).toHaveTextContent("4:30");
+    expect(all[0]).toHaveClass("font-mono", "font-semibold");
+    return all[0];
+  };
+
+  it("QRIS: countdown follows the amount and precedes the QR image and gateway button", async () => {
+    const pay: PayData = {
+      ...basePay,
+      state: "waiting",
+      is_qris: true,
+      order: expiring,
+      gateway: { trxId: "TRX1", payUrl: "https://pay.example/trx1", qrLink: "https://img.example/qr.png", qrString: null, totalBayar: "158000" },
+    };
+    const { container } = renderPay(respondFor(pay));
+    await screen.findByRole("heading", { name: "Payment" });
+    const countdown = onlyCountdown(container);
+    expect(before(screen.getByText("Rp158,000"), countdown)).toBe(true);
+    expect(before(countdown, screen.getByAltText("QRIS"))).toBe(true);
+    expect(before(countdown, screen.getByRole("link", { name: /Open payment page/ }))).toBe(true);
+  });
+
+  it("QRIS with admin fee: countdown follows the grand total and precedes the QR image", async () => {
+    const pay: PayData = {
+      ...basePay,
+      state: "waiting",
+      is_qris: true,
+      order: { ...expiring, qris_admin_fee: "1206", qris_grand_total: "159206" },
+      gateway: { trxId: "TRX1", payUrl: null, qrLink: "https://img.example/qr.png", qrString: null, totalBayar: "159206" },
+    };
+    const { container } = renderPay(respondFor(pay));
+    await screen.findByRole("heading", { name: "Payment" });
+    const countdown = onlyCountdown(container);
+    expect(before(screen.getByText("Rp159,206"), countdown)).toBe(true);
+    expect(before(countdown, screen.getByAltText("QRIS"))).toBe(true);
+  });
+
+  it("PayDisini: countdown follows the amount and precedes the QR image and checkout button", async () => {
+    const pay: PayData = {
+      ...basePay,
+      state: "waiting",
+      is_paydisini: true,
+      order: expiring,
+      paydisini_gateway: { trxId: "P1", qrString: null, qrUrl: "https://img.example/pd.png", checkoutUrl: "https://pd.example/c", totalBayar: "158000" },
+    };
+    const { container } = renderPay(respondFor(pay));
+    await screen.findByRole("heading", { name: "Payment" });
+    const countdown = onlyCountdown(container);
+    expect(before(screen.getByText("Rp158,000"), countdown)).toBe(true);
+    expect(before(countdown, screen.getByAltText("QRIS"))).toBe(true);
+    expect(before(countdown, screen.getByRole("link", { name: /Open payment page/ }))).toBe(true);
+  });
+
+  it("NOWPayments: countdown follows the amount and precedes the invoice button", async () => {
+    const pay: PayData = {
+      ...basePay,
+      state: "waiting",
+      is_nowpayments: true,
+      order: { ...expiring, currency: "USDT", total: "9.88" },
+      nowpayments_gateway: { invoiceId: "N1", invoiceUrl: "https://np.example/i" },
+    };
+    const { container } = renderPay(respondFor(pay));
+    await screen.findByRole("heading", { name: "Payment" });
+    const countdown = onlyCountdown(container);
+    expect(before(screen.getByText("$9.88"), countdown)).toBe(true);
+    expect(before(countdown, screen.getByRole("link", { name: /Open payment page/ }))).toBe(true);
+  });
+
+  it.each([
+    ["Binance", { is_binance: true, binance_uid: "B-1" }],
+    ["Bybit", { is_bybit: true, bybit_uid: "UID-999" }],
+    ["Bybit BSC", { is_bybit_bsc: true, bybit_bsc_address: "0xabc" }],
+  ] as const)("%s: countdown renders once, directly after the amount", async (_name, over) => {
+    const pay: PayData = {
+      ...basePay,
+      ...over,
+      state: "waiting",
+      order: { ...expiring, currency: "USDT", total: "9.88" },
+    };
+    const { container } = renderPay(respondFor(pay));
+    await screen.findByRole("heading", { name: "Payment" });
+    const countdown = onlyCountdown(container);
+    expect(before(screen.getByText("$9.88"), countdown)).toBe(true);
+    expect(before(countdown, screen.getByText(/^Secure payment/))).toBe(true);
+  });
+
+  it("no countdown at all when the order has no expiry", async () => {
+    const { container } = renderPay(respondFor({ ...basePay, state: "waiting", is_qris: true }));
+    await screen.findByRole("heading", { name: "Payment" });
+    expect(container.querySelectorAll("#countdown")).toHaveLength(0);
+  });
+
+  it("a Premium catalog order shows the Cart → Pay → Done stepper", async () => {
+    const { container } = renderPay(respondFor({ ...basePay, state: "waiting", is_qris: true, game_target: null }));
+    await screen.findByRole("heading", { name: "Payment" });
+    expect(container.querySelectorAll('li[aria-label="1 · Cart"]')).toHaveLength(1);
+    expect(container.querySelector('li[aria-label="2 · Payment"]')).toHaveAttribute("aria-current", "step");
+  });
+
+  it("a Game Top Up order shows no stepper (it has no cart step)", async () => {
+    const { container } = renderPay(respondFor({
+      ...basePay,
+      state: "waiting",
+      is_qris: true,
+      product_slug: "mobile-legends",
+      game_target: [{ game_id: "12345678", zone_id: "2222" }],
+    }));
+    await screen.findByRole("heading", { name: "Payment" });
+    expect(container.querySelector('li[aria-label="1 · Cart"]')).not.toBeInTheDocument();
+    expect(container.querySelector('li[aria-current="step"]')).not.toBeInTheDocument();
+  });
+
+  it("a wallet top-up shows no stepper", async () => {
+    (apiGet as Mock).mockImplementation(async (path: string) =>
+      path.endsWith("/status") ? { state: "waiting", redirect: null } : { ...basePay, state: "waiting", is_qris: true });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { container } = render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter initialEntries={["/wallet/topup/ORD1/pay"]}>
+          <Routes><Route path="/wallet/topup/:code/pay" element={<PayPage variant="topup" />} /></Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    await screen.findByRole("heading", { name: "Payment" });
+    expect(container.querySelector('li[aria-label="1 · Cart"]')).not.toBeInTheDocument();
+    expect(container.querySelector('li[aria-current="step"]')).not.toBeInTheDocument();
+  });
+});

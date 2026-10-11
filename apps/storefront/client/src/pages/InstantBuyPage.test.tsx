@@ -210,6 +210,20 @@ function renderInstantBuy(
 }
 
 describe("InstantBuyPage", () => {
+  // H-31 (batch 5): the Game Top Up summary total is the large figure too,
+  // and this flow (no cart) shows no Cart → Pay → Done stepper.
+  it("shows the order total at text-2xl in the display font and no stepper", async () => {
+    vi.clearAllMocks();
+    const { container } = renderInstantBuy();
+    await screen.findByText("Summary");
+    const summary = document.getElementById("checkout-summary")!;
+    const label = within(summary).getByText("Total", { exact: true });
+    const figure = label.parentElement!.querySelector(".text-2xl");
+    expect(figure).not.toBeNull();
+    expect(figure!.closest(".font-display")).not.toBeNull();
+    expect(container.querySelector('li[aria-label="1 · Cart"]')).not.toBeInTheDocument();
+  });
+
   it("renders a retryable ErrorState on a non-404 product error and refetches on retry", async () => {
     vi.clearAllMocks();
     renderInstantBuy({ productError: Object.assign(new Error("boom"), { status: 500 }) });

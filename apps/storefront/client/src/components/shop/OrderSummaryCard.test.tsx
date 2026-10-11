@@ -156,3 +156,23 @@ describe("OrderSummaryCard — Price · Pay on IDR rails for a USD viewer", () =
     expect(summary).not.toHaveTextContent("Rp158,000");
   });
 });
+
+// H-31 (storefront visual hierarchy, batch 5): the total is the page's key
+// figure — larger than its "Total" label and styled like the other big totals
+// (`font-display font-semibold text-pine text-2xl`).
+describe("OrderSummaryCard — total emphasis", () => {
+  beforeEach(() => {
+    document.documentElement.lang = "en";
+    vi.clearAllMocks();
+  });
+
+  it("renders the total figure at text-2xl in the display font, not text-lg", () => {
+    const summary = renderCard("IDR", "qris");
+    const label = Array.from(summary.querySelectorAll("span")).find((s) => s.textContent === "Total")!;
+    const row = label.parentElement!;
+    const figure = row.querySelector(".text-2xl")!;
+    expect(figure).toHaveTextContent("Rp159,206");
+    expect(figure.closest(".font-display")).not.toBeNull();
+    expect(row.querySelector(".text-lg")).toBeNull();
+  });
+});

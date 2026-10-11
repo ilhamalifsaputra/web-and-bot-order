@@ -1,3 +1,4 @@
+import * as m from "motion/react-m";
 /**
  * Toast — a fixed-position, auto-dismissing status banner (`components.md`
  * "Toast / notifications").
@@ -11,9 +12,9 @@
  * That's the smallest primitive that covers today's need (a support-ticket-
  * created confirmation) without a global toast queue no page yet needs.
  */
+import { AlertTriangle, CheckCircle, Info } from "lucide-react";
+import { AnimatePresence } from "motion/react";
 import { useEffect } from "react";
-import { AnimatePresence, motion } from "motion/react";
-import { CheckCircle, AlertTriangle, Info } from "lucide-react";
 import { fadeUp } from "../../lib/motion";
 
 export interface ToastProps {
@@ -46,7 +47,7 @@ export default function Toast({ text, onDismiss, kind = "success", durationMs = 
     >
       <AnimatePresence>
         {text && (
-          <motion.div
+          <m.div
             variants={fadeUp}
             initial="initial"
             animate="animate"
@@ -55,7 +56,7 @@ export default function Toast({ text, onDismiss, kind = "success", durationMs = 
           >
             <Icon className="w-4 h-4 shrink-0" />
             <span>{text}</span>
-          </motion.div>
+          </m.div>
         )}
       </AnimatePresence>
     </div>

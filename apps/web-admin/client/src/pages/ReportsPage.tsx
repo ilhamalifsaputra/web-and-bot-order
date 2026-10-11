@@ -1,15 +1,15 @@
-import { useQuery } from "@tanstack/react-query";
-import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
-import { Download } from "lucide-react";
-import { PageLayout } from "../components/shared/PageLayout";
-import { PageHeader } from "../components/shared/PageHeader";
-import { EmptyState } from "../components/shared/EmptyState";
-import { DataTable } from "../components/shared/DataTable";
-import { StatusBadge } from "../components/shared/StatusBadge";
-import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount";
 import { Button } from "@/components/ui/button";
-import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { useQuery } from "@tanstack/react-query";
+import { Download } from "lucide-react";
 import { apiGet } from "../api/client";
+import { RevenueChart } from "../components/dashboard/RevenueChart";
+import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount.helpers";
+import { DataTable } from "../components/shared/DataTable";
+import { EmptyState } from "../components/shared/EmptyState";
+import { PageHeader } from "../components/shared/PageHeader";
+import { PageLayout } from "../components/shared/PageLayout";
+import { StatusBadge } from "../components/shared/StatusBadge";
 
 interface DayRevenue {
   day: string;
@@ -82,15 +82,7 @@ export function ReportsPage() {
               <Card>
                 <CardHeader><CardTitle>Daily Revenue (IDR) — Last {data.days} days</CardTitle></CardHeader>
                 <CardContent>
-                  <ResponsiveContainer width="100%" height={180}>
-                    <AreaChart data={data.daily}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="var(--color-line)" />
-                      <XAxis dataKey="day" tick={{ fontSize: 11 }} />
-                      <YAxis tick={{ fontSize: 11 }} />
-                      <Tooltip />
-                      <Area type="monotone" dataKey="revenue_idr" stroke="var(--color-grass)" fill="var(--color-grass-tint)" />
-                    </AreaChart>
-                  </ResponsiveContainer>
+                  <RevenueChart daily={data.daily} />
                 </CardContent>
               </Card>
             ) : (

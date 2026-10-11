@@ -1,7 +1,7 @@
-import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
-import { EmptyState } from "../shared/EmptyState";
-import { formatCurrencyDisplay } from "../shared/CurrencyAmount";
 import { useTopProducts } from "../../hooks/useTopProducts";
+import { formatCurrencyDisplay } from "../shared/CurrencyAmount.helpers";
+import { EmptyState } from "../shared/EmptyState";
+import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 
 export function TopProductsList() {
   const { data, isLoading, isError } = useTopProducts();

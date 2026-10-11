@@ -1,39 +1,39 @@
-import { useEffect, useState } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useNavigate, useSearchParams } from "react-router-dom";
-import { toast } from "sonner";
-import { PageLayout } from "../components/shared/PageLayout";
-import { PageHeader } from "../components/shared/PageHeader";
-import { FilterBar } from "../components/shared/FilterBar";
-import { SearchBar } from "../components/shared/SearchBar";
-import { DataTable } from "../components/shared/DataTable";
-import { EmptyState } from "../components/shared/EmptyState";
-import { StatusBadge } from "../components/shared/StatusBadge";
-import { Pagination } from "../components/shared/Pagination";
-import { CurrencyStack, type CurrencyAmount } from "../components/shared/CurrencyAmount";
-import { CurrencyBadge } from "../components/shared/CurrencyBadge";
-import { CustomersKpiRow } from "./customers/CustomersKpiRow";
-import { ConfirmDialog } from "../components/shared/ConfirmDialog";
-import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
-import { DateInput } from "../components/shared/DateInput";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   DropdownMenu,
-  DropdownMenuTrigger,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
+  DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Users, MoreVertical, Eye, ShoppingBag, Wallet, LifeBuoy, Copy, Ban, CircleCheck } from "lucide-react";
-import { formatRelativeTime } from "../lib/relativeTime";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Ban, CircleCheck, Copy, Eye, LifeBuoy, MoreVertical, ShoppingBag, Users, Wallet } from "lucide-react";
+import { useEffect, useId, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { toast } from "sonner";
 import { apiGet, apiPost } from "../api/client";
-import { describeError } from "../lib/errorMessages";
-import { visibleSelection } from "../lib/selection";
+import { ConfirmDialog } from "../components/shared/ConfirmDialog";
+import { CurrencyStack, type CurrencyAmount } from "../components/shared/CurrencyAmount";
+import { CurrencyBadge } from "../components/shared/CurrencyBadge";
+import { DataTable } from "../components/shared/DataTable";
+import { DateInput } from "../components/shared/DateInput";
+import { EmptyState } from "../components/shared/EmptyState";
+import { FilterBar } from "../components/shared/FilterBar";
+import { PageHeader } from "../components/shared/PageHeader";
+import { PageLayout } from "../components/shared/PageLayout";
+import { Pagination } from "../components/shared/Pagination";
+import { SearchBar } from "../components/shared/SearchBar";
+import { StatusBadge } from "../components/shared/StatusBadge";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
+import { describeError } from "../lib/errorMessages";
+import { formatRelativeTime } from "../lib/relativeTime";
+import { visibleSelection } from "../lib/selection";
+import { CustomersKpiRow } from "./customers/CustomersKpiRow";
 
 interface CustomerRow {
   id: number;
@@ -167,6 +167,7 @@ function nonZeroAmounts(spent: { idr: string; usdt: string }): CurrencyAmount[] 
 }
 
 export function UsersPage() {
+  const fieldId = useId();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [banTargetId, setBanTargetId] = useState<number | null>(null);
@@ -182,7 +183,13 @@ export function UsersPage() {
     sort: "newest",
   });
   const [filters, setFilters] = useState<Filters>({ ...EMPTY_FILTERS, q: initialQ });
-  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [selection, setSelection] = useState<{ scope: Filters; ids: Set<number> } | null>(null);
+  const selected = selection?.scope === filters ? selection.ids : new Set<number>();
+  const setSelected = (next: Set<number> | ((previous: Set<number>) => Set<number>)) =>
+    setSelection(previous => ({
+      scope: filters, ids: typeof next === "function"
+        ? next(previous?.scope === filters ? previous.ids : new Set<number>()) : next
+    }));
 
   // Search is live/debounced rather than Apply-gated (unlike the other
   // filters below) — its own immediate-typing state, separate from `draft`.
@@ -198,13 +205,6 @@ export function UsersPage() {
   }, [debouncedQ, setSearchParams]);
 
   const { data, isLoading, isFetching, isError, refetch } = useCustomers(filters);
-
-  // A stale selection surviving a new page/filter result set would let the
-  // Export bulk action silently apply to rows no longer on screen — clear it
-  // whenever the query changes (identical discipline to OrdersPage.tsx).
-  useEffect(() => {
-    setSelected(new Set());
-  }, [filters]);
 
   const banMutation = useMutation({
     mutationFn: (vars: { id: number; doBan: boolean }) =>
@@ -253,25 +253,9 @@ export function UsersPage() {
     setSearchParams({}, { replace: true });
   }
 
-  const hasActiveFilter = Boolean(
-    filters.q ||
-      filters.role ||
-      filters.status ||
-      filters.since ||
-      filters.until ||
-      filters.lastSeenSince ||
-      filters.lastSeenUntil ||
-      filters.sort !== "newest",
-  );
+  const hasActiveFilter = [filters.q, filters.role, filters.status, filters.since, filters.until, filters.lastSeenSince, filters.lastSeenUntil, filters.sort !== "newest"].some(Boolean);
 
-  const exportParams = new URLSearchParams();
-  if (filters.q) exportParams.set("q", filters.q);
-  if (filters.role) exportParams.set("role", filters.role);
-  if (filters.status) exportParams.set("status", filters.status);
-  if (filters.since) exportParams.set("since", filters.since);
-  if (filters.until) exportParams.set("until", filters.until);
-  if (filters.lastSeenSince) exportParams.set("lastSeenSince", filters.lastSeenSince);
-  if (filters.lastSeenUntil) exportParams.set("lastSeenUntil", filters.lastSeenUntil);
+  const { exportParams } = buildCustomerExportParams({ filters });
 
   function toggleSelected(id: number) {
     setSelected((s) => {
@@ -312,110 +296,10 @@ export function UsersPage() {
 
       <CustomersKpiRow />
 
-      <FilterBar onApply={applyFilters} onClear={clearFilters} className="mb-4">
-        <SearchBar
-          value={searchInput}
-          onChange={setSearchInput}
-          loading={isFetching && searchInput !== ""}
-          placeholder="Search by name, username, Telegram ID…"
-          className="w-full sm:w-[420px]"
-        />
-
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-ink-soft">Role</label>
-          <Select
-            value={draft.role || "_all_"}
-            onValueChange={(v) => setDraft((f) => ({ ...f, role: v === "_all_" ? "" : v }))}
-          >
-            <SelectTrigger className="w-36" aria-label="Role">
-              <SelectValue placeholder="All roles" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="_all_">All</SelectItem>
-              {roles.map((r) => (
-                <SelectItem key={r} value={r}>
-                  {roleLabel(r)}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-ink-soft">Status</label>
-          <Select
-            value={draft.status || "_all_"}
-            onValueChange={(v) => setDraft((f) => ({ ...f, status: v === "_all_" ? "" : v }))}
-          >
-            <SelectTrigger className="w-32" aria-label="Status">
-              <SelectValue placeholder="All statuses" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="_all_">All</SelectItem>
-              <SelectItem value="active">Active</SelectItem>
-              <SelectItem value="banned">Banned</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-ink-soft">Joined From</label>
-          <DateInput
-            value={draft.since}
-            onChange={(e) => setDraft((f) => ({ ...f, since: e.target.value }))}
-            className="w-36"
-          />
-        </div>
-
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-ink-soft">Joined To</label>
-          <DateInput
-            value={draft.until}
-            onChange={(e) => setDraft((f) => ({ ...f, until: e.target.value }))}
-            className="w-36"
-          />
-        </div>
-
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-ink-soft">Last Seen From</label>
-          <DateInput
-            value={draft.lastSeenSince}
-            onChange={(e) => setDraft((f) => ({ ...f, lastSeenSince: e.target.value }))}
-            className="w-36"
-          />
-        </div>
-
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-ink-soft">Last Seen To</label>
-          <DateInput
-            value={draft.lastSeenUntil}
-            onChange={(e) => setDraft((f) => ({ ...f, lastSeenUntil: e.target.value }))}
-            className="w-36"
-          />
-        </div>
-
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-ink-soft">Sort</label>
-          <Select
-            value={draft.sort}
-            onValueChange={(v) => setDraft((f) => ({ ...f, sort: v }))}
-          >
-            <SelectTrigger className="w-48" aria-label="Sort">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {Object.entries(SORT_LABELS).map(([value, label]) => (
-                <SelectItem key={value} value={value}>
-                  {label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-      </FilterBar>
+      <UsersRole applyFilters={applyFilters} clearFilters={clearFilters} searchInput={searchInput} setSearchInput={setSearchInput} isFetching={isFetching} fieldId={fieldId} draft={draft} setDraft={setDraft} roles={roles} />
 
       {visibleSelected.size > 0 && (
-        <div className="sticky bottom-4 z-10 mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-line bg-card px-3 py-2 text-sm shadow-lift transition-all duration-150">
+        <div className="sticky bottom-4 z-10 mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-line bg-card px-3 py-2 text-sm shadow-lift transition-[color,background-color,border-color,opacity,transform] duration-150">
           <span className="text-ink-soft">{visibleSelected.size} selected</span>
           <a href={`/api/users/export?ids=${Array.from(visibleSelected).join(",")}`}>
             <Button size="sm" variant="ghost">Export</Button>
@@ -426,227 +310,7 @@ export function UsersPage() {
         </div>
       )}
 
-      <Card>
-        <CardContent>
-          <DataTable
-            nested
-            stickyHeader
-            columns={[
-              {
-                key: "select",
-                kind: "selection",
-                header: (
-                  <Checkbox
-                    checked={allOnPageSelected}
-                    onCheckedChange={toggleSelectAllOnPage}
-                    aria-label="Select all customers on this page"
-                  />
-                ),
-                render: (row) => (
-                  <Checkbox
-                    checked={selected.has(row.id)}
-                    onCheckedChange={() => toggleSelected(row.id)}
-                    onClick={(e) => e.stopPropagation()}
-                    aria-label={`Select customer ${row.fullName ?? row.username ?? row.id}`}
-                  />
-                ),
-              },
-              {
-                key: "customer",
-                header: "Customer",
-                render: (row) => (
-                  <div className="flex max-w-[240px] items-center gap-3">
-                    <Avatar className="shrink-0">
-                      <AvatarFallback>{initialFor(row)}</AvatarFallback>
-                    </Avatar>
-                    <div className="min-w-0">
-                      <div className="truncate text-sm font-medium text-ink" title={primaryIdentity(row)}>
-                        {primaryIdentity(row)}
-                      </div>
-                      <div className="truncate text-xs text-ink-soft" title={secondaryIdentity(row)}>
-                        {secondaryIdentity(row)}
-                      </div>
-                    </div>
-                  </div>
-                ),
-              },
-              {
-                key: "telegramId",
-                header: "Telegram ID",
-                render: (row) => (
-                  <span className="font-mono text-xs text-ink-soft">{row.telegramId ?? "—"}</span>
-                ),
-              },
-              {
-                key: "role",
-                header: "Role",
-                render: (row) => <StatusBadge status={row.role} />,
-              },
-              {
-                key: "status",
-                header: "Status",
-                render: (row) =>
-                  row.banned ? (
-                    <StatusBadge status="BANNED" />
-                  ) : isNewCustomer(row) ? (
-                    <StatusBadge status="NEW_CUSTOMER" />
-                  ) : row.deliveredOrders >= 2 ? (
-                    <StatusBadge status="RETURNING" />
-                  ) : null,
-              },
-              {
-                key: "joined",
-                header: "Joined",
-                render: (row) => (
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <span className="text-xs text-ink-soft">
-                        {formatRelativeTime(row.createdAt, row.createdAtDisplay ?? "—")}
-                      </span>
-                    </TooltipTrigger>
-                    <TooltipContent>{row.createdAtDisplay ?? "—"}</TooltipContent>
-                  </Tooltip>
-                ),
-              },
-              {
-                key: "lastSeen",
-                header: "Last Seen",
-                render: (row) =>
-                  row.lastSeenAt ? (
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <span className="text-xs text-ink-soft">
-                          {formatRelativeTime(row.lastSeenAt, row.lastSeenAtDisplay ?? "—")}
-                        </span>
-                      </TooltipTrigger>
-                      <TooltipContent>{row.lastSeenAtDisplay ?? "—"}</TooltipContent>
-                    </Tooltip>
-                  ) : (
-                    <span className="text-xs text-ink-soft">—</span>
-                  ),
-              },
-              {
-                key: "totalSpent",
-                header: <span title="Delivered product orders only, counting wallet credit spent on them. Funding a wallet is not spending — top-ups are in Wallet Transactions.">Total Spent</span>,
-                render: (row) => {
-                  const amounts = nonZeroAmounts(row.totalSpent);
-                  return amounts.length > 0 ? (
-                    <CurrencyStack amounts={amounts} />
-                  ) : (
-                    <span className="text-xs text-ink-soft">—</span>
-                  );
-                },
-              },
-              {
-                key: "orders",
-                header: <span title="Every order on this account, wallet top-ups included — account activity, not purchases.">Orders</span>,
-                render: (row) => <span className="text-sm text-ink">{row.totalOrders}</span>,
-              },
-              {
-                key: "lastOrder",
-                header: <span title="The account's latest order of any kind, a wallet top-up included.">Last Order</span>,
-                render: (row) => (
-                  <span className="text-xs text-ink-soft">{row.lastOrderAtDisplay ?? "—"}</span>
-                ),
-              },
-              {
-                key: "currency",
-                header: "Currency",
-                render: (row) => <CurrencyBadge currency={row.preferredCurrency as "USD" | "IDR" | null} />,
-              },
-              {
-                key: "actions",
-                header: "",
-                render: (row) => {
-                  const ordersTarget = targetForOrders(row);
-                  return (
-                    <div onClick={(e) => e.stopPropagation()}>
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="icon-sm" aria-label={`Actions for ${row.fullName ?? row.username ?? row.id}`}>
-                            <MoreVertical className="h-4 w-4" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem onSelect={() => navigate(`/users/${row.id}`)}>
-                            <Eye className="h-4 w-4" />
-                            View Customer
-                          </DropdownMenuItem>
-                          {ordersTarget != null && (
-                            <DropdownMenuItem onSelect={() => navigate(`/orders?q=${encodeURIComponent(ordersTarget)}`)}>
-                              <ShoppingBag className="h-4 w-4" />
-                              View Orders
-                            </DropdownMenuItem>
-                          )}
-                          <DropdownMenuItem onSelect={() => navigate(`/users/${row.id}#ledger`)}>
-                            <Wallet className="h-4 w-4" />
-                            Transactions
-                          </DropdownMenuItem>
-                          <DropdownMenuItem onSelect={() => navigate(`/users/${row.id}#tickets`)}>
-                            <LifeBuoy className="h-4 w-4" />
-                            Support Tickets
-                          </DropdownMenuItem>
-                          {row.telegramId != null && (
-                            <DropdownMenuItem onSelect={() => copyTelegramId(row.telegramId!)}>
-                              <Copy className="h-4 w-4" />
-                              Copy Telegram ID
-                            </DropdownMenuItem>
-                          )}
-                          <DropdownMenuSeparator />
-                          {row.banned ? (
-                            <DropdownMenuItem
-                              onSelect={(e) => {
-                                e.preventDefault();
-                                setBanTargetId(row.id);
-                              }}
-                            >
-                              <CircleCheck className="h-4 w-4" />
-                              Unban
-                            </DropdownMenuItem>
-                          ) : (
-                            <DropdownMenuItem
-                              variant="destructive"
-                              onSelect={(e) => {
-                                e.preventDefault();
-                                setBanTargetId(row.id);
-                              }}
-                            >
-                              <Ban className="h-4 w-4" />
-                              Suspend
-                            </DropdownMenuItem>
-                          )}
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </div>
-                  );
-                },
-              },
-            ]}
-            data={pageUsers}
-            isLoading={isLoading}
-            keyExtractor={(row) => row.id}
-            onRowClick={(row) => navigate(`/users/${row.id}`)}
-            empty={
-              hasActiveFilter ? (
-                <EmptyState
-                  icon={Users}
-                  title="No customers match these filters."
-                  description="Try widening the date range or clearing a filter."
-                  action={{ label: "Refresh", onClick: () => void refetch() }}
-                  secondaryAction={{ label: "Clear Filters", onClick: clearFilters }}
-                />
-              ) : (
-                <EmptyState
-                  icon={Users}
-                  title="No customers yet"
-                  description="Customers will appear here once they interact with the shop."
-                  action={{ label: "Refresh", onClick: () => void refetch() }}
-                />
-              )
-            }
-          />
-        </CardContent>
-      </Card>
+      <UsersSelectAllCustomersOnThis allOnPageSelected={allOnPageSelected} toggleSelectAllOnPage={toggleSelectAllOnPage} selected={selected} toggleSelected={toggleSelected} navigate={navigate} copyTelegramId={copyTelegramId} setBanTargetId={setBanTargetId} pageUsers={pageUsers} isLoading={isLoading} hasActiveFilter={hasActiveFilter} refetch={refetch} clearFilters={clearFilters} />
 
       {data && (
         <div className="mt-4">
@@ -660,23 +324,403 @@ export function UsersPage() {
         </div>
       )}
 
-      {banTarget && (
-        <ConfirmDialog
-          open
-          onOpenChange={(open) => {
-            if (!open) setBanTargetId(null);
-          }}
-          title={banTarget.banned ? "Unban this customer?" : "Suspend this customer?"}
-          description={
-            banTarget.banned
-              ? "The customer will be able to use the bot again."
-              : "The customer will be blocked from using the bot."
-          }
-          confirmLabel={banTarget.banned ? "Unban" : "Suspend"}
-          variant={banTarget.banned ? "default" : "destructive"}
-          onConfirm={() => banMutation.mutate({ id: banTarget.id, doBan: !banTarget.banned })}
-        />
-      )}
+      <CustomerBanDialog banTarget={banTarget} setBanTargetId={setBanTargetId} banMutation={banMutation} />
     </PageLayout>
   );
+}
+
+function UsersRole({ applyFilters, clearFilters, searchInput, setSearchInput, isFetching, fieldId, draft, setDraft, roles }: {
+  applyFilters: () => void;
+  clearFilters: () => void;
+  searchInput: string;
+  setSearchInput: import("react").Dispatch<import("react").SetStateAction<string>>;
+  isFetching: boolean;
+  fieldId: string;
+  draft: { role: string; status: string; since: string; until: string; lastSeenSince: string; lastSeenUntil: string; sort: string; };
+  setDraft: import("react").Dispatch<import("react").SetStateAction<{ role: string; status: string; since: string; until: string; lastSeenSince: string; lastSeenUntil: string; sort: string; }>>;
+  roles: string[];
+}) {
+  return (<FilterBar onApply={applyFilters} onClear={clearFilters} className="mb-4">
+    <SearchBar
+      value={searchInput}
+      onChange={setSearchInput}
+      loading={isFetching && searchInput !== ""}
+      placeholder="Search by name, username, Telegram ID…"
+      className="w-full sm:w-[420px]"
+    />
+
+    <div className="flex flex-col gap-1">
+      <label htmlFor={`${fieldId}-role-1`} className="text-xs text-ink-soft">Role</label>
+      <Select
+        value={draft.role || "_all_"}
+        onValueChange={(v) => setDraft((f) => ({ ...f, role: v === "_all_" ? "" : v }))}
+      >
+        <SelectTrigger id={`${fieldId}-role-1`} className="w-36" aria-label="Role">
+          <SelectValue placeholder="All roles" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="_all_">All</SelectItem>
+          {roles.map((r) => (
+            <SelectItem key={r} value={r}>
+              {roleLabel(r)}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+
+    <div className="flex flex-col gap-1">
+      <label htmlFor={`${fieldId}-status-2`} className="text-xs text-ink-soft">Status</label>
+      <Select
+        value={draft.status || "_all_"}
+        onValueChange={(v) => setDraft((f) => ({ ...f, status: v === "_all_" ? "" : v }))}
+      >
+        <SelectTrigger id={`${fieldId}-status-2`} className="w-32" aria-label="Status">
+          <SelectValue placeholder="All statuses" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="_all_">All</SelectItem>
+          <SelectItem value="active">Active</SelectItem>
+          <SelectItem value="banned">Banned</SelectItem>
+        </SelectContent>
+      </Select>
+    </div>
+
+    <div className="flex flex-col gap-1">
+      <label htmlFor={`${fieldId}-joined-from-3`} className="text-xs text-ink-soft">Joined From</label>
+      <DateInput id={`${fieldId}-joined-from-3`}
+        value={draft.since}
+        onChange={(e) => setDraft((f) => ({ ...f, since: e.target.value }))}
+        className="w-36"
+      />
+    </div>
+
+    <div className="flex flex-col gap-1">
+      <label htmlFor={`${fieldId}-joined-to-4`} className="text-xs text-ink-soft">Joined To</label>
+      <DateInput id={`${fieldId}-joined-to-4`}
+        value={draft.until}
+        onChange={(e) => setDraft((f) => ({ ...f, until: e.target.value }))}
+        className="w-36"
+      />
+    </div>
+
+    <div className="flex flex-col gap-1">
+      <label htmlFor={`${fieldId}-last-seen-from-5`} className="text-xs text-ink-soft">Last Seen From</label>
+      <DateInput id={`${fieldId}-last-seen-from-5`}
+        value={draft.lastSeenSince}
+        onChange={(e) => setDraft((f) => ({ ...f, lastSeenSince: e.target.value }))}
+        className="w-36"
+      />
+    </div>
+
+    <div className="flex flex-col gap-1">
+      <label htmlFor={`${fieldId}-last-seen-to-6`} className="text-xs text-ink-soft">Last Seen To</label>
+      <DateInput id={`${fieldId}-last-seen-to-6`}
+        value={draft.lastSeenUntil}
+        onChange={(e) => setDraft((f) => ({ ...f, lastSeenUntil: e.target.value }))}
+        className="w-36"
+      />
+    </div>
+
+    <div className="flex flex-col gap-1">
+      <label htmlFor={`${fieldId}-sort-7`} className="text-xs text-ink-soft">Sort</label>
+      <Select
+        value={draft.sort}
+        onValueChange={(v) => setDraft((f) => ({ ...f, sort: v }))}
+      >
+        <SelectTrigger id={`${fieldId}-sort-7`} className="w-48" aria-label="Sort">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {Object.entries(SORT_LABELS).map(([value, label]) => (
+            <SelectItem key={value} value={value}>
+              {label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  </FilterBar>);
+}
+
+function UsersSelectAllCustomersOnThis({ allOnPageSelected, toggleSelectAllOnPage, selected, toggleSelected, navigate, copyTelegramId, setBanTargetId, pageUsers, isLoading, hasActiveFilter, refetch, clearFilters }: {
+  allOnPageSelected: boolean;
+  toggleSelectAllOnPage: () => void;
+  selected: Set<number>;
+  toggleSelected: (id: number) => void;
+  navigate: import("react-router-dom").NavigateFunction;
+  copyTelegramId: (telegramId: string) => void;
+  setBanTargetId: import("react").Dispatch<import("react").SetStateAction<number | null>>;
+  pageUsers: CustomerRow[];
+  isLoading: boolean;
+  hasActiveFilter: boolean;
+  refetch: (options?: import("@tanstack/react-query").RefetchOptions) => Promise<import("@tanstack/react-query").QueryObserverResult<NoInfer<CustomersData>, Error>>;
+  clearFilters: () => void;
+}) {
+  return (<Card>
+    <CardContent>
+      <DataTable
+        nested
+        stickyHeader
+        columns={[
+          {
+            key: "select",
+            kind: "selection",
+            header: (
+              <Checkbox
+                checked={allOnPageSelected}
+                onCheckedChange={toggleSelectAllOnPage}
+                aria-label="Select all customers on this page"
+              />
+            ),
+            render: (row) => (
+              <Checkbox
+                checked={selected.has(row.id)}
+                onCheckedChange={() => toggleSelected(row.id)}
+                onClick={(e) => e.stopPropagation()}
+                aria-label={`Select customer ${row.fullName ?? row.username ?? row.id}`}
+              />
+            ),
+          },
+          {
+            key: "customer",
+            header: "Customer",
+            render: (row) => (
+              <div className="flex max-w-[240px] items-center gap-3">
+                <Avatar className="shrink-0">
+                  <AvatarFallback>{initialFor(row)}</AvatarFallback>
+                </Avatar>
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-medium text-ink" title={primaryIdentity(row)}>
+                    {primaryIdentity(row)}
+                  </div>
+                  <div className="truncate text-xs text-ink-soft" title={secondaryIdentity(row)}>
+                    {secondaryIdentity(row)}
+                  </div>
+                </div>
+              </div>
+            ),
+          },
+          {
+            key: "telegramId",
+            header: "Telegram ID",
+            render: (row) => (
+              <span className="font-mono text-xs text-ink-soft">{row.telegramId ?? "—"}</span>
+            ),
+          },
+          {
+            key: "role",
+            header: "Role",
+            render: (row) => <StatusBadge status={row.role} />,
+          },
+          {
+            key: "status",
+            header: "Status",
+            render: (row) =>
+              row.banned ? (
+                <StatusBadge status="BANNED" />
+              ) : isNewCustomer(row) ? (
+                <StatusBadge status="NEW_CUSTOMER" />
+              ) : row.deliveredOrders >= 2 ? (
+                <StatusBadge status="RETURNING" />
+              ) : null,
+          },
+          {
+            key: "joined",
+            header: "Joined",
+            render: (row) => (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="text-xs text-ink-soft">
+                    {formatRelativeTime(row.createdAt, row.createdAtDisplay ?? "—")}
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>{row.createdAtDisplay ?? "—"}</TooltipContent>
+              </Tooltip>
+            ),
+          },
+          {
+            key: "lastSeen",
+            header: "Last Seen",
+            render: (row) =>
+              row.lastSeenAt ? (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span className="text-xs text-ink-soft">
+                      {formatRelativeTime(row.lastSeenAt, row.lastSeenAtDisplay ?? "—")}
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent>{row.lastSeenAtDisplay ?? "—"}</TooltipContent>
+                </Tooltip>
+              ) : (
+                <span className="text-xs text-ink-soft">—</span>
+              ),
+          },
+          {
+            key: "totalSpent",
+            header: <span title="Delivered product orders only, counting wallet credit spent on them. Funding a wallet is not spending — top-ups are in Wallet Transactions.">Total Spent</span>,
+            render: (row) => {
+              const amounts = nonZeroAmounts(row.totalSpent);
+              return amounts.length > 0 ? (
+                <CurrencyStack amounts={amounts} />
+              ) : (
+                <span className="text-xs text-ink-soft">—</span>
+              );
+            },
+          },
+          {
+            key: "orders",
+            header: <span title="Every order on this account, wallet top-ups included — account activity, not purchases.">Orders</span>,
+            render: (row) => <span className="text-sm text-ink">{row.totalOrders}</span>,
+          },
+          {
+            key: "lastOrder",
+            header: <span title="The account's latest order of any kind, a wallet top-up included.">Last Order</span>,
+            render: (row) => (
+              <span className="text-xs text-ink-soft">{row.lastOrderAtDisplay ?? "—"}</span>
+            ),
+          },
+          {
+            key: "currency",
+            header: "Currency",
+            render: (row) => <CurrencyBadge currency={row.preferredCurrency as "USD" | "IDR" | null} />,
+          },
+          {
+            key: "actions",
+            header: "",
+            render: (row) => {
+              const ordersTarget = targetForOrders(row);
+              return (
+                <div onClick={(e) => e.stopPropagation()}>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="ghost" size="icon-sm" aria-label={`Actions for ${row.fullName ?? row.username ?? row.id}`}>
+                        <MoreVertical className="h-4 w-4" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem onSelect={() => navigate(`/users/${row.id}`)}>
+                        <Eye className="h-4 w-4" />
+                        View Customer
+                      </DropdownMenuItem>
+                      {ordersTarget != null && (
+                        <DropdownMenuItem onSelect={() => navigate(`/orders?q=${encodeURIComponent(ordersTarget)}`)}>
+                          <ShoppingBag className="h-4 w-4" />
+                          View Orders
+                        </DropdownMenuItem>
+                      )}
+                      <DropdownMenuItem onSelect={() => navigate(`/users/${row.id}#ledger`)}>
+                        <Wallet className="h-4 w-4" />
+                        Transactions
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onSelect={() => navigate(`/users/${row.id}#tickets`)}>
+                        <LifeBuoy className="h-4 w-4" />
+                        Support Tickets
+                      </DropdownMenuItem>
+                      {row.telegramId != null && (
+                        <DropdownMenuItem onSelect={() => copyTelegramId(row.telegramId!)}>
+                          <Copy className="h-4 w-4" />
+                          Copy Telegram ID
+                        </DropdownMenuItem>
+                      )}
+                      <DropdownMenuSeparator />
+                      {row.banned ? (
+                        <DropdownMenuItem
+                          onSelect={(e) => {
+                            e.preventDefault();
+                            setBanTargetId(row.id);
+                          }}
+                        >
+                          <CircleCheck className="h-4 w-4" />
+                          Unban
+                        </DropdownMenuItem>
+                      ) : (
+                        <DropdownMenuItem
+                          variant="destructive"
+                          onSelect={(e) => {
+                            e.preventDefault();
+                            setBanTargetId(row.id);
+                          }}
+                        >
+                          <Ban className="h-4 w-4" />
+                          Suspend
+                        </DropdownMenuItem>
+                      )}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+              );
+            },
+          },
+        ]}
+        data={pageUsers}
+        isLoading={isLoading}
+        keyExtractor={(row) => row.id}
+        onRowClick={(row) => navigate(`/users/${row.id}`)}
+        empty={
+          hasActiveFilter ? (
+            <EmptyState
+              icon={Users}
+              title="No customers match these filters."
+              description="Try widening the date range or clearing a filter."
+              action={{ label: "Refresh", onClick: () => void refetch() }}
+              secondaryAction={{ label: "Clear Filters", onClick: clearFilters }}
+            />
+          ) : (
+            <EmptyState
+              icon={Users}
+              title="No customers yet"
+              description="Customers will appear here once they interact with the shop."
+              action={{ label: "Refresh", onClick: () => void refetch() }}
+            />
+          )
+        }
+      />
+    </CardContent>
+  </Card>);
+}
+
+function CustomerBanDialog({ banTarget, setBanTargetId, banMutation }: {
+  banTarget: CustomerRow | null;
+  setBanTargetId: import("react").Dispatch<import("react").SetStateAction<number | null>>;
+  banMutation: import("@tanstack/react-query").UseMutationResult<unknown, Error, { id: number; doBan: boolean; }, unknown>;
+}) {
+  return (banTarget && (
+    <ConfirmDialog
+      open
+      onOpenChange={(open) => {
+        if (!open) setBanTargetId(null);
+      }}
+      title={banTarget.banned ? "Unban this customer?" : "Suspend this customer?"}
+      description={
+        banTarget.banned
+          ? "The customer will be able to use the bot again."
+          : "The customer will be blocked from using the bot."
+      }
+      confirmLabel={banTarget.banned ? "Unban" : "Suspend"}
+      variant={banTarget.banned ? "default" : "destructive"}
+      onConfirm={() => banMutation.mutate({ id: banTarget.id, doBan: !banTarget.banned })}
+    />
+  ));
+}
+
+function buildCustomerExportParams({ filters }: {
+  filters: Filters;
+}) {
+  const exportParams = new URLSearchParams();
+
+  if (filters.q) exportParams.set("q", filters.q);
+
+  if (filters.role) exportParams.set("role", filters.role);
+
+  if (filters.status) exportParams.set("status", filters.status);
+
+  if (filters.since) exportParams.set("since", filters.since);
+
+  if (filters.until) exportParams.set("until", filters.until);
+
+  if (filters.lastSeenSince) exportParams.set("lastSeenSince", filters.lastSeenSince);
+
+  if (filters.lastSeenUntil) exportParams.set("lastSeenUntil", filters.lastSeenUntil);
+  return { exportParams };
 }

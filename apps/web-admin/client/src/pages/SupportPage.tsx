@@ -1,58 +1,59 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
-import { toast } from "sonner";
-import { PageLayout } from "../components/shared/PageLayout";
-import { PageHeader } from "../components/shared/PageHeader";
-import { FilterBar } from "../components/shared/FilterBar";
-import { SearchBar } from "../components/shared/SearchBar";
-import { DataTable } from "../components/shared/DataTable";
-import { EmptyState } from "../components/shared/EmptyState";
-import { ConfirmDialog } from "../components/shared/ConfirmDialog";
-import { StatCard } from "../components/shared/StatCard";
-import { Pagination } from "../components/shared/Pagination";
-import { TicketStatusBadge } from "../components/shared/TicketStatusBadge";
-import { TicketPriorityBadge } from "../components/shared/TicketPriorityBadge";
-import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import {
-  Select,
-  SelectTrigger,
-  SelectValue,
-  SelectContent,
-  SelectItem,
-} from "@/components/ui/select";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   DropdownMenu,
-  DropdownMenuTrigger,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuSub,
-  DropdownMenuSubTrigger,
   DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  Clock,
+  Eye,
   MessageCircle,
   MoreVertical,
-  Eye,
-  UserCog,
-  XCircle,
-  Clock,
-  AlertTriangle,
-  UserX,
-  CheckCircle2,
-  Tag,
   RotateCcw,
+  Tag,
+  UserCog,
+  UserX,
+  XCircle,
 } from "lucide-react";
-import { ticketStatusLabel } from "../lib/ticketStatus";
-import { ticketPriorityLabel } from "../lib/ticketPriority";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { toast } from "sonner";
 import { apiGet, apiPost } from "../api/client";
+import { ConfirmDialog } from "../components/shared/ConfirmDialog";
+import { DataTable } from "../components/shared/DataTable";
+import { EmptyState } from "../components/shared/EmptyState";
+import { FilterBar } from "../components/shared/FilterBar";
+import { PageHeader } from "../components/shared/PageHeader";
+import { PageLayout } from "../components/shared/PageLayout";
+import { Pagination } from "../components/shared/Pagination";
+import { SearchBar } from "../components/shared/SearchBar";
+import { SelectFilter } from "../components/shared/SelectFilter";
+import { StatCard } from "../components/shared/StatCard";
+import { TicketPriorityBadge } from "../components/shared/TicketPriorityBadge";
+import { TicketStatusBadge } from "../components/shared/TicketStatusBadge";
 import { describeError } from "../lib/errorMessages";
 import { visibleSelection } from "../lib/selection";
+import { ticketPriorityLabel } from "../lib/ticketPriority";
+import { ticketStatusLabel } from "../lib/ticketStatus";
 
 interface TicketUser {
   id: number;
@@ -188,6 +189,7 @@ function customerLabel(user: TicketUser | null): string {
 }
 
 export function SupportPage() {
+  const fieldId = useId();
   const navigate = useNavigate();
   const qc = useQueryClient();
 
@@ -228,19 +230,7 @@ export function SupportPage() {
   // the previous SupportPage.tsx used).
   const { data: adminsData } = useAdmins();
 
-  const assignableAdmins = useMemo(
-    () => (adminsData?.admins ?? []).filter((a): a is AdminOption & { id: number } => a.id !== null),
-    [adminsData],
-  );
-  const adminNameById = useMemo(() => {
-    const map = new Map<number, string>();
-    for (const a of assignableAdmins) map.set(a.id, a.name ?? `Telegram ID ${a.telegramId}`);
-    return map;
-  }, [assignableAdmins]);
-
-  const [selected, setSelected] = useState<Set<number>>(new Set());
-  const [hoveredMessageId, setHoveredMessageId] = useState<number | null>(null);
-  const [closeTarget, setCloseTarget] = useState<number | null>(null);
+  const { assignableAdmins, adminNameById, selected, setSelected, hoveredMessageId, setHoveredMessageId, closeTarget, setCloseTarget, assign, close, resolve, reopen, classify, bulkAction } = useTicketActions({ adminsData, q, filters, data, qc });
 
   // A stale selection surviving a new page/filter result set would let a
   // bulk action silently apply to rows no longer on screen — clear it
@@ -255,33 +245,6 @@ export function SupportPage() {
   // verbatim; kept self-contained here. Reset to null whenever the
   // filter/page changes (below), so a fresh view establishes its own
   // baseline instead of toasting for every row already on screen.
-  const previousStatusesRef = useRef<Map<number, string> | null>(null);
-
-  useEffect(() => {
-    setSelected(new Set());
-    previousStatusesRef.current = null;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [q, filters]);
-
-  useEffect(() => {
-    if (!data) return;
-    const prev = previousStatusesRef.current;
-    if (prev) {
-      for (const item of data.items) {
-        const prevStatus = prev.get(item.id);
-        if (prevStatus === undefined) {
-          toast(`New ticket #${item.id} from ${customerLabel(item.user)}`);
-        } else if (prevStatus !== item.status) {
-          toast(`Ticket #${item.id} status changed to ${ticketStatusLabel(item.status)}`);
-        }
-      }
-    }
-    previousStatusesRef.current = new Map(data.items.map((item) => [item.id, item.status]));
-  }, [data]);
-
-  function invalidateAll() {
-    void qc.invalidateQueries({ queryKey: ["support"] });
-  }
 
   /** Pre-seed the diffing ref for ids this page itself just closed, so the
    *  refetch that `invalidateAll()` triggers doesn't ALSO read as a status
@@ -291,87 +254,6 @@ export function SupportPage() {
    *  touch `status`, so they can never trigger the diffing effect's status
    *  branch in the first place. A ticket genuinely closed by a *different*
    *  admin (not seeded here) still surfaces its diff-toast normally. */
-  function markClosedInRef(ids: number[]) {
-    const ref = previousStatusesRef.current;
-    if (!ref) return;
-    for (const id of ids) ref.set(id, "CLOSED");
-  }
-
-  const assign = useMutation({
-    mutationFn: ({ ticketId, adminId }: { ticketId: number; adminId: number | null }) =>
-      apiPost(`/api/support/${ticketId}/assign`, { adminId }),
-    onSuccess: () => {
-      invalidateAll();
-      toast.success("Ticket assigned.");
-    },
-    onError: (e: Error) => toast.error(describeError(e)),
-  });
-
-  const close = useMutation({
-    mutationFn: (ticketId: number) => apiPost(`/api/support/${ticketId}/close`, {}),
-    onSuccess: (_result, ticketId) => {
-      markClosedInRef([ticketId]);
-      invalidateAll();
-      toast.success("Ticket closed.");
-    },
-    onError: (e: Error) => toast.error(describeError(e)),
-  });
-
-  const resolve = useMutation({
-    mutationFn: (ticketId: number) => apiPost(`/api/support/${ticketId}/resolve`, {}),
-    onSuccess: () => {
-      invalidateAll();
-      toast.success("Ticket marked resolved.");
-    },
-    onError: (e: Error) => toast.error(describeError(e)),
-  });
-
-  const reopen = useMutation({
-    mutationFn: (ticketId: number) => apiPost(`/api/support/${ticketId}/reopen`, {}),
-    onSuccess: () => {
-      invalidateAll();
-      toast.success("Ticket reopened.");
-    },
-    onError: (e: Error) => toast.error(describeError(e)),
-  });
-
-  const classify = useMutation({
-    mutationFn: (vars: { ticketId: number; category: string }) =>
-      apiPost(`/api/support/${vars.ticketId}/classify`, { category: vars.category }),
-    onSuccess: () => {
-      invalidateAll();
-      toast.success("Ticket category updated.");
-    },
-    onError: (e: Error) => toast.error(describeError(e)),
-  });
-
-  const bulkAction = useMutation({
-    mutationFn: (vars: {
-      ids: number[];
-      action: "assign" | "close" | "priority" | "resolve";
-      adminId?: number | null;
-      priority?: string;
-    }) => apiPost<BulkActionResult>("/api/support/bulk-action", vars),
-    onSuccess: (result, vars) => {
-      if (vars.action === "close") markClosedInRef(result.succeeded);
-      invalidateAll();
-      setSelected(new Set());
-      const verb =
-        vars.action === "assign"
-          ? "Assigned"
-          : vars.action === "close"
-            ? "Closed"
-            : vars.action === "resolve"
-              ? "Resolved"
-              : "Updated priority for";
-      toast.success(
-        result.failed.length > 0
-          ? `${verb} ${result.succeeded.length} of ${vars.ids.length} tickets — ${result.failed.length} skipped.`
-          : `${verb} ${result.succeeded.length} ticket${result.succeeded.length === 1 ? "" : "s"}.`,
-      );
-    },
-    onError: (e: Error) => toast.error(describeError(e)),
-  });
 
   if (isError) {
     return (
@@ -458,20 +340,15 @@ export function SupportPage() {
 
   const hasActiveFilter = Boolean(
     filters.status ||
-      filters.priority ||
-      filters.category ||
-      filters.assigned ||
-      filters.sort !== DEFAULT_SORT ||
-      filters.overdue ||
-      q,
+    filters.priority ||
+    filters.category ||
+    filters.assigned ||
+    filters.sort !== DEFAULT_SORT ||
+    filters.overdue ||
+    q,
   );
 
-  const exportParams = new URLSearchParams();
-  if (q) exportParams.set("q", q);
-  if (filters.status) exportParams.set("status", filters.status);
-  if (filters.priority) exportParams.set("priority", filters.priority);
-  if (filters.category) exportParams.set("category", filters.category);
-  if (filters.assigned) exportParams.set("assigned", filters.assigned);
+  const { exportParams } = buildTicketExportParams({ q, filters });
 
   return (
     <PageLayout title="Support">
@@ -485,445 +362,13 @@ export function SupportPage() {
         }
       />
 
-      <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-        <StatCard label="Open" value={data?.stats.open ?? 0} icon={MessageCircle} isLoading={!data} />
-        <StatCard label="Waiting for customer" value={data?.stats.waitingCustomer ?? 0} icon={Clock} isLoading={!data} />
-        <StatCard
-          label="Overdue"
-          value={data?.stats.overdue ?? 0}
-          icon={AlertTriangle}
-          tone="danger"
-          isLoading={!data}
-          onClick={toggleOverdueFilter}
-        />
-        <StatCard label="Unassigned" value={data?.stats.unassigned ?? 0} icon={UserX} isLoading={!data} />
-        <StatCard
-          label="Resolved Today"
-          value={data?.stats.resolvedToday ?? 0}
-          icon={CheckCircle2}
-          tone="success"
-          isLoading={!data}
-        />
-      </div>
+      <SupportStats data={data} toggleOverdueFilter={toggleOverdueFilter} />
 
-      <FilterBar onApply={applyFilters} onClear={clearFilters} className="mb-4">
-        <SearchBar
-          value={qDraft}
-          onChange={setQDraft}
-          placeholder="Search ticket message or customer..."
-          className="w-full sm:w-64"
-        />
+      <SupportStatusFilter applyFilters={applyFilters} clearFilters={clearFilters} qDraft={qDraft} setQDraft={setQDraft} fieldId={fieldId} draft={draft} setDraft={setDraft} />
 
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-ink-soft">Status</label>
-          <Select
-            value={draft.status || ALL_STATUSES}
-            onValueChange={(v) => setDraft((d) => ({ ...d, status: v === ALL_STATUSES ? "" : v }))}
-          >
-            <SelectTrigger className="w-40" aria-label="Status filter">
-              <SelectValue placeholder="All statuses" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={ALL_STATUSES}>All</SelectItem>
-              {STATUS_VALUES.map((s) => (
-                <SelectItem key={s} value={s}>
-                  {ticketStatusLabel(s)}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
+      <SupportAssignSelectedTicketsTo visibleSelected={visibleSelected} bulkAction={bulkAction} assignableAdmins={assignableAdmins} setSelected={setSelected} />
 
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-ink-soft">Priority</label>
-          <Select
-            value={draft.priority || ALL_PRIORITIES}
-            onValueChange={(v) => setDraft((d) => ({ ...d, priority: v === ALL_PRIORITIES ? "" : v }))}
-          >
-            <SelectTrigger className="w-40" aria-label="Priority filter">
-              <SelectValue placeholder="All priorities" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={ALL_PRIORITIES}>All</SelectItem>
-              {PRIORITY_VALUES.map((p) => (
-                <SelectItem key={p} value={p}>
-                  {ticketPriorityLabel(p)}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-ink-soft">Category</label>
-          <Select
-            value={draft.category || ALL_CATEGORIES}
-            onValueChange={(v) => setDraft((d) => ({ ...d, category: v === ALL_CATEGORIES ? "" : v }))}
-          >
-            <SelectTrigger className="w-40" aria-label="Category filter">
-              <SelectValue placeholder="All categories" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={ALL_CATEGORIES}>All</SelectItem>
-              {CATEGORY_VALUES.map((c) => (
-                <SelectItem key={c} value={c}>
-                  {categoryLabel(c)}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-ink-soft">Assigned</label>
-          <Select
-            value={draft.assigned || ALL_ASSIGNED}
-            onValueChange={(v) => setDraft((d) => ({ ...d, assigned: v === ALL_ASSIGNED ? "" : v }))}
-          >
-            <SelectTrigger className="w-40" aria-label="Assigned filter">
-              <SelectValue placeholder="All" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={ALL_ASSIGNED}>All</SelectItem>
-              <SelectItem value="assigned">Assigned</SelectItem>
-              <SelectItem value="unassigned">Unassigned</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-ink-soft">Sort</label>
-          <Select value={draft.sort} onValueChange={(v) => setDraft((d) => ({ ...d, sort: v }))}>
-            <SelectTrigger className="w-40" aria-label="Sort">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="newest">Newest</SelectItem>
-              <SelectItem value="oldest">Oldest</SelectItem>
-              <SelectItem value="priority">Priority</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-      </FilterBar>
-
-      {visibleSelected.size > 0 && (
-        <div className="sticky bottom-4 z-10 mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-line bg-card px-3 py-2 text-sm shadow-lift transition-all duration-150">
-          <span className="text-ink-soft">{visibleSelected.size} selected</span>
-
-          <Select
-            onValueChange={(v) =>
-              bulkAction.mutate({
-                ids: Array.from(visibleSelected),
-                action: "assign",
-                adminId: v === UNASSIGNED ? null : Number(v),
-              })
-            }
-          >
-            <SelectTrigger className="w-44" aria-label="Assign selected tickets to">
-              <SelectValue placeholder="Assign to…" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={UNASSIGNED}>Unassigned</SelectItem>
-              {assignableAdmins.map((a) => (
-                <SelectItem key={a.id} value={String(a.id)}>
-                  {a.name ?? `Telegram ID ${a.telegramId}`}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-
-          <Select
-            onValueChange={(v) =>
-              bulkAction.mutate({ ids: Array.from(visibleSelected), action: "priority", priority: v })
-            }
-          >
-            <SelectTrigger className="w-40" aria-label="Set priority for selected tickets">
-              <SelectValue placeholder="Set priority…" />
-            </SelectTrigger>
-            <SelectContent>
-              {PRIORITY_VALUES.map((p) => (
-                <SelectItem key={p} value={p}>
-                  {ticketPriorityLabel(p)}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={bulkAction.isPending}
-            onClick={() => bulkAction.mutate({ ids: Array.from(visibleSelected), action: "resolve" })}
-          >
-            Resolve
-          </Button>
-
-          <ConfirmDialog
-            trigger={
-              <Button size="sm" variant="destructive" disabled={bulkAction.isPending}>
-                Close {visibleSelected.size} ticket{visibleSelected.size === 1 ? "" : "s"}
-              </Button>
-            }
-            title={`Close ${visibleSelected.size} ticket${visibleSelected.size === 1 ? "" : "s"}?`}
-            description="Customers will no longer be able to reply through these tickets."
-            confirmLabel="Close"
-            onConfirm={() => bulkAction.mutate({ ids: Array.from(visibleSelected), action: "close" })}
-          />
-
-          <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
-            Clear
-          </Button>
-        </div>
-      )}
-
-      <Card>
-        <CardContent>
-          <DataTable
-            nested
-            stickyHeader
-            columns={[
-              {
-                key: "select",
-                kind: "selection",
-                header: (
-                  <Checkbox
-                    checked={allOnPageSelected}
-                    onCheckedChange={toggleSelectAllOnPage}
-                    disabled={items.length === 0}
-                    aria-label="Select all tickets on this page"
-                  />
-                ),
-                render: (row) => (
-                  <Checkbox
-                    checked={selected.has(row.id)}
-                    onCheckedChange={() => toggleSelected(row.id)}
-                    onClick={(e) => e.stopPropagation()}
-                    aria-label={`Select ticket #${row.id}`}
-                  />
-                ),
-              },
-              {
-                key: "ticket",
-                header: "Ticket",
-                render: (row) => (
-                  <Popover
-                    open={hoveredMessageId === row.id}
-                    onOpenChange={(open) => setHoveredMessageId(open ? row.id : null)}
-                  >
-                    <PopoverTrigger asChild>
-                      <div
-                        className="flex max-w-[240px] cursor-default flex-col gap-0.5"
-                        onMouseEnter={() => setHoveredMessageId(row.id)}
-                        onMouseLeave={() => setHoveredMessageId((id) => (id === row.id ? null : id))}
-                      >
-                        <span className="font-mono text-xs text-ink-soft">{ticketDisplayLabel(row)}</span>
-                        {/* `items-start` (no cross-axis stretch) would let this span grow to its
-                            unwrapped content width and overflow past 240px into neighboring
-                            columns — line-clamp can only truncate a width-CONSTRAINED box. */}
-                        <span className="line-clamp-1 text-sm text-ink">{row.message}</span>
-                      </div>
-                    </PopoverTrigger>
-                    <PopoverContent
-                      className="max-w-sm text-sm whitespace-pre-wrap"
-                      onOpenAutoFocus={(e) => e.preventDefault()}
-                    >
-                      {row.message}
-                    </PopoverContent>
-                  </Popover>
-                ),
-              },
-              {
-                key: "customer",
-                header: "Customer",
-                render: (row) => (
-                  <div className="max-w-[240px]">
-                    <div
-                      className="truncate text-sm text-ink"
-                      title={row.user?.fullName ?? row.user?.username ?? undefined}
-                    >
-                      {row.user?.fullName ?? row.user?.username ?? "—"}
-                    </div>
-                    {row.user?.username && row.user.fullName && (
-                      <div className="truncate text-xs text-ink-soft" title={`@${row.user.username}`}>
-                        @{row.user.username}
-                      </div>
-                    )}
-                  </div>
-                ),
-              },
-              {
-                key: "priority",
-                header: "Priority",
-                render: (row) => <TicketPriorityBadge priority={row.priority} />,
-              },
-              {
-                key: "category",
-                header: "Category",
-                render: (row) => (
-                  <span className="text-sm text-ink-soft">{row.category ? categoryLabel(row.category) : "Uncategorized"}</span>
-                ),
-              },
-              {
-                key: "status",
-                header: "Status",
-                render: (row) => (
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <TicketStatusBadge status={row.status} />
-                    {row.isOverdue && <Badge variant="destructive">Overdue</Badge>}
-                  </div>
-                ),
-              },
-              {
-                key: "assigned",
-                header: "Assigned",
-                render: (row) => (
-                  // Stop the click from bubbling to the row's onRowClick (which
-                  // navigates to the ticket detail page) — covers both the
-                  // trigger button and item picks inside the portaled dropdown.
-                  <div onClick={(e) => e.stopPropagation()}>
-                    <Select
-                      value={row.adminId !== null ? String(row.adminId) : UNASSIGNED}
-                      onValueChange={(v) =>
-                        assign.mutate({ ticketId: row.id, adminId: v === UNASSIGNED ? null : Number(v) })
-                      }
-                    >
-                      <SelectTrigger className="w-40" aria-label={`Assignee for ticket #${row.id}`}>
-                        <SelectValue>
-                          {row.adminId !== null
-                            ? (adminNameById.get(row.adminId) ?? `Admin #${row.adminId}`)
-                            : "Unassigned"}
-                        </SelectValue>
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value={UNASSIGNED}>Unassigned</SelectItem>
-                        {assignableAdmins.map((a) => (
-                          <SelectItem key={a.id} value={String(a.id)}>
-                            {a.name ?? `Telegram ID ${a.telegramId}`}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                ),
-              },
-              {
-                key: "date",
-                header: "Date",
-                render: (row) => <span className="text-xs text-ink-soft">{row.createdAtDisplay ?? "—"}</span>,
-              },
-              {
-                key: "actions",
-                header: "",
-                render: (row) => (
-                  <div onClick={(e) => e.stopPropagation()}>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="icon-sm" aria-label={`Actions for ticket #${row.id}`}>
-                          <MoreVertical className="h-4 w-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem onSelect={() => navigate(`/support/${row.id}`)}>
-                          <Eye className="h-4 w-4" />
-                          View
-                        </DropdownMenuItem>
-                        <DropdownMenuSub>
-                          <DropdownMenuSubTrigger>
-                            <UserCog className="h-4 w-4" />
-                            Assign
-                          </DropdownMenuSubTrigger>
-                          <DropdownMenuSubContent>
-                            <DropdownMenuItem onSelect={() => assign.mutate({ ticketId: row.id, adminId: null })}>
-                              Unassigned
-                            </DropdownMenuItem>
-                            {assignableAdmins.map((a) => (
-                              <DropdownMenuItem
-                                key={a.id}
-                                onSelect={() => assign.mutate({ ticketId: row.id, adminId: a.id })}
-                              >
-                                {a.name ?? `Telegram ID ${a.telegramId}`}
-                              </DropdownMenuItem>
-                            ))}
-                          </DropdownMenuSubContent>
-                        </DropdownMenuSub>
-                        <DropdownMenuSub>
-                          <DropdownMenuSubTrigger>
-                            <Tag className="h-4 w-4" />
-                            Classify
-                          </DropdownMenuSubTrigger>
-                          <DropdownMenuSubContent>
-                            {CATEGORY_VALUES.map((c) => (
-                              <DropdownMenuItem
-                                key={c}
-                                onSelect={() => classify.mutate({ ticketId: row.id, category: c })}
-                              >
-                                {categoryLabel(c)}
-                              </DropdownMenuItem>
-                            ))}
-                          </DropdownMenuSubContent>
-                        </DropdownMenuSub>
-                        {/* Task 1 fix: mirrors the backend's actual resolveTicket guard
-                            (status NOT IN [RESOLVED, CLOSED]) instead of an OPEN/REPLIED
-                            whitelist — WAITING_ADMIN/WAITING_CUSTOMER tickets are now real
-                            and were silently losing this button under the old check. */}
-                        {row.status !== "RESOLVED" && row.status !== "CLOSED" && (
-                          <DropdownMenuItem onSelect={() => resolve.mutate(row.id)}>
-                            <CheckCircle2 className="h-4 w-4" />
-                            Resolve
-                          </DropdownMenuItem>
-                        )}
-                        {row.status === "CLOSED" && (
-                          <DropdownMenuItem onSelect={() => reopen.mutate(row.id)}>
-                            <RotateCcw className="h-4 w-4" />
-                            Reopen
-                          </DropdownMenuItem>
-                        )}
-                        {row.status !== "CLOSED" && (
-                          <>
-                            <DropdownMenuSeparator />
-                            <DropdownMenuItem
-                              variant="destructive"
-                              onSelect={(e) => {
-                                e.preventDefault();
-                                setCloseTarget(row.id);
-                              }}
-                            >
-                              <XCircle className="h-4 w-4" />
-                              Close
-                            </DropdownMenuItem>
-                          </>
-                        )}
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </div>
-                ),
-              },
-            ]}
-            data={items}
-            isLoading={!data}
-            keyExtractor={(row) => row.id}
-            onRowClick={(row) => navigate(`/support/${row.id}`)}
-            empty={
-              hasActiveFilter ? (
-                <EmptyState
-                  icon={MessageCircle}
-                  title="No matching tickets"
-                  description="Try a different search or filter."
-                  action={{ label: "Refresh", onClick: () => void refetch() }}
-                  secondaryAction={{ label: "Clear Filters", onClick: clearFilters }}
-                />
-              ) : (
-                <EmptyState
-                  icon={MessageCircle}
-                  title="No support tickets"
-                  description="Customer support tickets will appear here as customers create them."
-                  action={{ label: "Refresh", onClick: () => void refetch() }}
-                />
-              )
-            }
-          />
-        </CardContent>
-      </Card>
+      <SupportTicketsTable allOnPageSelected={allOnPageSelected} toggleSelectAllOnPage={toggleSelectAllOnPage} items={items} selected={selected} toggleSelected={toggleSelected} hoveredMessageId={hoveredMessageId} setHoveredMessageId={setHoveredMessageId} assign={assign} adminNameById={adminNameById} assignableAdmins={assignableAdmins} navigate={navigate} classify={classify} resolve={resolve} reopen={reopen} setCloseTarget={setCloseTarget} data={data} hasActiveFilter={hasActiveFilter} refetch={refetch} clearFilters={clearFilters} />
 
       {data && (
         <div className="mt-4">
@@ -954,4 +399,651 @@ export function SupportPage() {
       )}
     </PageLayout>
   );
+}
+
+function SupportStats({ data, toggleOverdueFilter }: {
+  data: NoInfer<SupportData> | undefined;
+  toggleOverdueFilter: () => void;
+}) {
+  return (<div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+    <StatCard label="Open" value={data?.stats.open ?? 0} icon={MessageCircle} isLoading={!data} />
+    <StatCard label="Waiting for customer" value={data?.stats.waitingCustomer ?? 0} icon={Clock} isLoading={!data} />
+    <StatCard
+      label="Overdue"
+      value={data?.stats.overdue ?? 0}
+      icon={AlertTriangle}
+      tone="danger"
+      isLoading={!data}
+      onClick={toggleOverdueFilter}
+    />
+    <StatCard label="Unassigned" value={data?.stats.unassigned ?? 0} icon={UserX} isLoading={!data} />
+    <StatCard
+      label="Resolved Today"
+      value={data?.stats.resolvedToday ?? 0}
+      icon={CheckCircle2}
+      tone="success"
+      isLoading={!data}
+    />
+  </div>);
+}
+
+function SupportStatusFilter({ applyFilters, clearFilters, qDraft, setQDraft, fieldId, draft, setDraft }: {
+  applyFilters: () => void;
+  clearFilters: () => void;
+  qDraft: string;
+  setQDraft: import("react").Dispatch<import("react").SetStateAction<string>>;
+  fieldId: string;
+  draft: { status: string; priority: string; category: string; assigned: string; sort: string; };
+  setDraft: import("react").Dispatch<import("react").SetStateAction<{ status: string; priority: string; category: string; assigned: string; sort: string; }>>;
+}) {
+  return (<FilterBar onApply={applyFilters} onClear={clearFilters} className="mb-4">
+    <SearchBar
+      value={qDraft}
+      onChange={setQDraft}
+      placeholder="Search ticket message or customer..."
+      className="w-full sm:w-64"
+    />
+
+    <SelectFilter id={`${fieldId}-status-1`} label="Status" value={draft.status || ALL_STATUSES} onValueChange={(v) => setDraft((d) => ({ ...d, status: v === ALL_STATUSES ? "" : v }))} triggerClassName="w-40" aria-label="Status filter" placeholder="All statuses">
+      <SelectItem value={ALL_STATUSES}>All</SelectItem>
+      {STATUS_VALUES.map((s) => (
+        <SelectItem key={s} value={s}>
+          {ticketStatusLabel(s)}
+        </SelectItem>
+      ))}
+    </SelectFilter>
+
+    <SelectFilter id={`${fieldId}-priority-2`} label="Priority" value={draft.priority || ALL_PRIORITIES} onValueChange={(v) => setDraft((d) => ({ ...d, priority: v === ALL_PRIORITIES ? "" : v }))} triggerClassName="w-40" aria-label="Priority filter" placeholder="All priorities">
+      <SelectItem value={ALL_PRIORITIES}>All</SelectItem>
+      {PRIORITY_VALUES.map((p) => (
+        <SelectItem key={p} value={p}>
+          {ticketPriorityLabel(p)}
+        </SelectItem>
+      ))}
+    </SelectFilter>
+
+    <div className="flex flex-col gap-1">
+      <label htmlFor={`${fieldId}-category-3`} className="text-xs text-ink-soft">Category</label>
+      <Select
+        value={draft.category || ALL_CATEGORIES}
+        onValueChange={(v) => setDraft((d) => ({ ...d, category: v === ALL_CATEGORIES ? "" : v }))}
+      >
+        <SelectTrigger id={`${fieldId}-category-3`} className="w-40" aria-label="Category filter">
+          <SelectValue placeholder="All categories" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value={ALL_CATEGORIES}>All</SelectItem>
+          {CATEGORY_VALUES.map((c) => (
+            <SelectItem key={c} value={c}>
+              {categoryLabel(c)}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+
+    <div className="flex flex-col gap-1">
+      <label htmlFor={`${fieldId}-assigned-4`} className="text-xs text-ink-soft">Assigned</label>
+      <Select
+        value={draft.assigned || ALL_ASSIGNED}
+        onValueChange={(v) => setDraft((d) => ({ ...d, assigned: v === ALL_ASSIGNED ? "" : v }))}
+      >
+        <SelectTrigger id={`${fieldId}-assigned-4`} className="w-40" aria-label="Assigned filter">
+          <SelectValue placeholder="All" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value={ALL_ASSIGNED}>All</SelectItem>
+          <SelectItem value="assigned">Assigned</SelectItem>
+          <SelectItem value="unassigned">Unassigned</SelectItem>
+        </SelectContent>
+      </Select>
+    </div>
+
+    <div className="flex flex-col gap-1">
+      <label htmlFor={`${fieldId}-sort-5`} className="text-xs text-ink-soft">Sort</label>
+      <Select value={draft.sort} onValueChange={(v) => setDraft((d) => ({ ...d, sort: v }))}>
+        <SelectTrigger id={`${fieldId}-sort-5`} className="w-40" aria-label="Sort">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="newest">Newest</SelectItem>
+          <SelectItem value="oldest">Oldest</SelectItem>
+          <SelectItem value="priority">Priority</SelectItem>
+        </SelectContent>
+      </Select>
+    </div>
+  </FilterBar>);
+}
+
+function SupportAssignSelectedTicketsTo({ visibleSelected, bulkAction, assignableAdmins, setSelected }: {
+  visibleSelected: Set<number>;
+  bulkAction: import("@tanstack/react-query").UseMutationResult<BulkActionResult, Error, { ids: number[]; action: "assign" | "close" | "priority" | "resolve"; adminId?: number | null; priority?: string; }, unknown>;
+  assignableAdmins: (AdminOption & { id: number; })[];
+  setSelected: import("react").Dispatch<import("react").SetStateAction<Set<number>>>;
+}) {
+  return (visibleSelected.size > 0 && (
+    <div className="sticky bottom-4 z-10 mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-line bg-card px-3 py-2 text-sm shadow-lift transition-[color,background-color,border-color,opacity,transform] duration-150">
+      <span className="text-ink-soft">{visibleSelected.size} selected</span>
+
+      <Select
+        onValueChange={(v) =>
+          bulkAction.mutate({
+            ids: Array.from(visibleSelected),
+            action: "assign",
+            adminId: v === UNASSIGNED ? null : Number(v),
+          })
+        }
+      >
+        <SelectTrigger className="w-44" aria-label="Assign selected tickets to">
+          <SelectValue placeholder="Assign to…" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value={UNASSIGNED}>Unassigned</SelectItem>
+          {assignableAdmins.map((a) => (
+            <SelectItem key={a.id} value={String(a.id)}>
+              {a.name ?? `Telegram ID ${a.telegramId}`}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+
+      <Select
+        onValueChange={(v) =>
+          bulkAction.mutate({ ids: Array.from(visibleSelected), action: "priority", priority: v })
+        }
+      >
+        <SelectTrigger className="w-40" aria-label="Set priority for selected tickets">
+          <SelectValue placeholder="Set priority…" />
+        </SelectTrigger>
+        <SelectContent>
+          {PRIORITY_VALUES.map((p) => (
+            <SelectItem key={p} value={p}>
+              {ticketPriorityLabel(p)}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+
+      <Button
+        size="sm"
+        variant="outline"
+        disabled={bulkAction.isPending}
+        onClick={() => bulkAction.mutate({ ids: Array.from(visibleSelected), action: "resolve" })}
+      >
+        Resolve
+      </Button>
+
+      <ConfirmDialog
+        trigger={
+          <Button size="sm" variant="destructive" disabled={bulkAction.isPending}>
+            Close {visibleSelected.size} ticket{visibleSelected.size === 1 ? "" : "s"}
+          </Button>
+        }
+        title={`Close ${visibleSelected.size} ticket${visibleSelected.size === 1 ? "" : "s"}?`}
+        description="Customers will no longer be able to reply through these tickets."
+        confirmLabel="Close"
+        onConfirm={() => bulkAction.mutate({ ids: Array.from(visibleSelected), action: "close" })}
+      />
+
+      <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
+        Clear
+      </Button>
+    </div>
+  ));
+}
+
+function TicketCustomerCell({ row }: {
+  row: TicketRow;
+}) {
+  return (<div className="max-w-[240px]">
+    <div
+      className="truncate text-sm text-ink"
+      title={row.user?.fullName ?? row.user?.username ?? undefined}
+    >
+      {row.user?.fullName ?? row.user?.username ?? "—"}
+    </div>
+    {row.user?.username && row.user.fullName && (
+      <div className="truncate text-xs text-ink-soft" title={`@${row.user.username}`}>
+        @{row.user.username}
+      </div>
+    )}
+  </div>);
+}
+
+function TicketAssigneeCell({ row, assign, adminNameById, assignableAdmins }: {
+  row: TicketRow;
+  assign: import("@tanstack/react-query").UseMutationResult<unknown, Error, { ticketId: number; adminId: number | null; }, unknown>;
+  adminNameById: Map<number, string>;
+  assignableAdmins: (AdminOption & { id: number; })[];
+}) {
+  return (<div onClick={(e) => e.stopPropagation()}>
+    <Select
+      value={row.adminId !== null ? String(row.adminId) : UNASSIGNED}
+      onValueChange={(v) =>
+        assign.mutate({ ticketId: row.id, adminId: v === UNASSIGNED ? null : Number(v) })
+      }
+    >
+      <SelectTrigger className="w-40" aria-label={`Assignee for ticket #${row.id}`}>
+        <SelectValue>
+          {row.adminId !== null
+            ? (adminNameById.get(row.adminId) ?? `Admin #${row.adminId}`)
+            : "Unassigned"}
+        </SelectValue>
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value={UNASSIGNED}>Unassigned</SelectItem>
+        {assignableAdmins.map((a) => (
+          <SelectItem key={a.id} value={String(a.id)}>
+            {a.name ?? `Telegram ID ${a.telegramId}`}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  </div>);
+}
+
+function TicketActionsCell({ row, navigate, assign, assignableAdmins, classify, resolve, reopen, setCloseTarget }: {
+  row: TicketRow;
+  navigate: import("react-router-dom").NavigateFunction;
+  assign: import("@tanstack/react-query").UseMutationResult<unknown, Error, { ticketId: number; adminId: number | null; }, unknown>;
+  assignableAdmins: (AdminOption & { id: number; })[];
+  classify: import("@tanstack/react-query").UseMutationResult<unknown, Error, { ticketId: number; category: string; }, unknown>;
+  resolve: import("@tanstack/react-query").UseMutationResult<unknown, Error, number, unknown>;
+  reopen: import("@tanstack/react-query").UseMutationResult<unknown, Error, number, unknown>;
+  setCloseTarget: import("react").Dispatch<import("react").SetStateAction<number | null>>;
+}) {
+  return (<div onClick={(e) => e.stopPropagation()}>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="ghost" size="icon-sm" aria-label={`Actions for ticket #${row.id}`}>
+          <MoreVertical className="h-4 w-4" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuItem onSelect={() => navigate(`/support/${row.id}`)}>
+          <Eye className="h-4 w-4" />
+          View
+        </DropdownMenuItem>
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger>
+            <UserCog className="h-4 w-4" />
+            Assign
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent>
+            <DropdownMenuItem onSelect={() => assign.mutate({ ticketId: row.id, adminId: null })}>
+              Unassigned
+            </DropdownMenuItem>
+            {assignableAdmins.map((a) => (
+              <DropdownMenuItem
+                key={a.id}
+                onSelect={() => assign.mutate({ ticketId: row.id, adminId: a.id })}
+              >
+                {a.name ?? `Telegram ID ${a.telegramId}`}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger>
+            <Tag className="h-4 w-4" />
+            Classify
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent>
+            {CATEGORY_VALUES.map((c) => (
+              <DropdownMenuItem
+                key={c}
+                onSelect={() => classify.mutate({ ticketId: row.id, category: c })}
+              >
+                {categoryLabel(c)}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
+        {/* Task 1 fix: mirrors the backend's actual resolveTicket guard
+                            (status NOT IN [RESOLVED, CLOSED]) instead of an OPEN/REPLIED
+                            whitelist — WAITING_ADMIN/WAITING_CUSTOMER tickets are now real
+                            and were silently losing this button under the old check. */}
+        {row.status !== "RESOLVED" && row.status !== "CLOSED" && (
+          <DropdownMenuItem onSelect={() => resolve.mutate(row.id)}>
+            <CheckCircle2 className="h-4 w-4" />
+            Resolve
+          </DropdownMenuItem>
+        )}
+        {row.status === "CLOSED" && (
+          <DropdownMenuItem onSelect={() => reopen.mutate(row.id)}>
+            <RotateCcw className="h-4 w-4" />
+            Reopen
+          </DropdownMenuItem>
+        )}
+        {row.status !== "CLOSED" && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              variant="destructive"
+              onSelect={(e) => {
+                e.preventDefault();
+                setCloseTarget(row.id);
+              }}
+            >
+              <XCircle className="h-4 w-4" />
+              Close
+            </DropdownMenuItem>
+          </>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  </div>);
+}
+
+function buildTicketExportParams({ q, filters }: {
+  q: string;
+  filters: Filters;
+}) {
+  const exportParams = new URLSearchParams();
+
+  if (q) exportParams.set("q", q);
+
+  if (filters.status) exportParams.set("status", filters.status);
+
+  if (filters.priority) exportParams.set("priority", filters.priority);
+
+  if (filters.category) exportParams.set("category", filters.category);
+
+  if (filters.assigned) exportParams.set("assigned", filters.assigned);
+  return { exportParams };
+}
+
+function SupportTicketsTable({ allOnPageSelected, toggleSelectAllOnPage, items, selected, toggleSelected, hoveredMessageId, setHoveredMessageId, assign, adminNameById, assignableAdmins, navigate, classify, resolve, reopen, setCloseTarget, data, hasActiveFilter, refetch, clearFilters }: {
+  allOnPageSelected: boolean;
+  toggleSelectAllOnPage: () => void;
+  items: TicketRow[];
+  selected: Set<number>;
+  toggleSelected: (id: number) => void;
+  hoveredMessageId: number | null;
+  setHoveredMessageId: import("react").Dispatch<import("react").SetStateAction<number | null>>;
+  assign: import("@tanstack/react-query").UseMutationResult<unknown, Error, { ticketId: number; adminId: number | null; }, unknown>;
+  adminNameById: Map<number, string>;
+  assignableAdmins: (AdminOption & { id: number; })[];
+  navigate: import("react-router-dom").NavigateFunction;
+  classify: import("@tanstack/react-query").UseMutationResult<unknown, Error, { ticketId: number; category: string; }, unknown>;
+  resolve: import("@tanstack/react-query").UseMutationResult<unknown, Error, number, unknown>;
+  reopen: import("@tanstack/react-query").UseMutationResult<unknown, Error, number, unknown>;
+  setCloseTarget: import("react").Dispatch<import("react").SetStateAction<number | null>>;
+  data: NoInfer<SupportData> | undefined;
+  hasActiveFilter: boolean;
+  refetch: (options?: import("@tanstack/react-query").RefetchOptions) => Promise<import("@tanstack/react-query").QueryObserverResult<NoInfer<SupportData>, Error>>;
+  clearFilters: () => void;
+}) {
+  return (<Card>
+    <CardContent>
+      <DataTable
+        nested
+        stickyHeader
+        columns={[
+          {
+            key: "select",
+            kind: "selection",
+            header: (
+              <Checkbox
+                checked={allOnPageSelected}
+                onCheckedChange={toggleSelectAllOnPage}
+                disabled={items.length === 0}
+                aria-label="Select all tickets on this page"
+              />
+            ),
+            render: (row) => (
+              <Checkbox
+                checked={selected.has(row.id)}
+                onCheckedChange={() => toggleSelected(row.id)}
+                onClick={(e) => e.stopPropagation()}
+                aria-label={`Select ticket #${row.id}`}
+              />
+            ),
+          },
+          {
+            key: "ticket",
+            header: "Ticket",
+            render: (row) => (
+              <Popover
+                open={hoveredMessageId === row.id}
+                onOpenChange={(open) => setHoveredMessageId(open ? row.id : null)}
+              >
+                <PopoverTrigger asChild>
+                  <div
+                    className="flex max-w-[240px] cursor-default flex-col gap-0.5"
+                    onMouseEnter={() => setHoveredMessageId(row.id)}
+                    onMouseLeave={() => setHoveredMessageId((id) => (id === row.id ? null : id))}
+                  >
+                    <span className="font-mono text-xs text-ink-soft">{ticketDisplayLabel(row)}</span>
+                    {/* `items-start` (no cross-axis stretch) would let this span grow to its
+                            unwrapped content width and overflow past 240px into neighboring
+                            columns — line-clamp can only truncate a width-CONSTRAINED box. */}
+                    <span className="line-clamp-1 text-sm text-ink">{row.message}</span>
+                  </div>
+                </PopoverTrigger>
+                <PopoverContent
+                  className="max-w-sm text-sm whitespace-pre-wrap"
+                  onOpenAutoFocus={(e) => e.preventDefault()}
+                >
+                  {row.message}
+                </PopoverContent>
+              </Popover>
+            ),
+          },
+          {
+            key: "customer",
+            header: "Customer",
+            render: (row) => (
+              <TicketCustomerCell row={row} />
+            ),
+          },
+          {
+            key: "priority",
+            header: "Priority",
+            render: (row) => <TicketPriorityBadge priority={row.priority} />,
+          },
+          {
+            key: "category",
+            header: "Category",
+            render: (row) => (
+              <span className="text-sm text-ink-soft">{row.category ? categoryLabel(row.category) : "Uncategorized"}</span>
+            ),
+          },
+          {
+            key: "status",
+            header: "Status",
+            render: (row) => (
+              <div className="flex flex-wrap items-center gap-1.5">
+                <TicketStatusBadge status={row.status} />
+                {row.isOverdue && <Badge variant="destructive">Overdue</Badge>}
+              </div>
+            ),
+          },
+          {
+            key: "assigned",
+            header: "Assigned",
+            render: (row) => (
+              // Stop the click from bubbling to the row's onRowClick (which
+              // navigates to the ticket detail page) — covers both the
+              // trigger button and item picks inside the portaled dropdown.
+              <TicketAssigneeCell row={row} assign={assign} adminNameById={adminNameById} assignableAdmins={assignableAdmins} />
+            ),
+          },
+          {
+            key: "date",
+            header: "Date",
+            render: (row) => <span className="text-xs text-ink-soft">{row.createdAtDisplay ?? "—"}</span>,
+          },
+          {
+            key: "actions",
+            header: "",
+            render: (row) => (
+              <TicketActionsCell row={row} navigate={navigate} assign={assign} assignableAdmins={assignableAdmins} classify={classify} resolve={resolve} reopen={reopen} setCloseTarget={setCloseTarget} />
+            ),
+          },
+        ]}
+        data={items}
+        isLoading={!data}
+        keyExtractor={(row) => row.id}
+        onRowClick={(row) => navigate(`/support/${row.id}`)}
+        empty={
+          hasActiveFilter ? (
+            <EmptyState
+              icon={MessageCircle}
+              title="No matching tickets"
+              description="Try a different search or filter."
+              action={{ label: "Refresh", onClick: () => void refetch() }}
+              secondaryAction={{ label: "Clear Filters", onClick: clearFilters }}
+            />
+          ) : (
+            <EmptyState
+              icon={MessageCircle}
+              title="No support tickets"
+              description="Customer support tickets will appear here as customers create them."
+              action={{ label: "Refresh", onClick: () => void refetch() }}
+            />
+          )
+        }
+      />
+    </CardContent>
+  </Card>);
+}
+
+function useTicketActions({ adminsData, q, filters, data, qc }: {
+  adminsData: NoInfer<{ admins: AdminOption[]; }> | undefined;
+  q: string;
+  filters: Filters;
+  data: NoInfer<SupportData> | undefined;
+  qc: import("@tanstack/react-query").QueryClient;
+}) {
+  const assignableAdmins = useMemo(
+    () => (adminsData?.admins ?? []).filter((a): a is AdminOption & { id: number } => a.id !== null),
+    [adminsData],
+  );
+
+  const adminNameById = useMemo(() => {
+    const map = new Map<number, string>();
+    for (const a of assignableAdmins) map.set(a.id, a.name ?? `Telegram ID ${a.telegramId}`);
+    return map;
+  }, [assignableAdmins]);
+
+  const [selection, setSelection] = useState<{ q: string; filters: Filters; ids: Set<number> } | null>(null);
+  const selected = selection?.q === q && selection.filters === filters ? selection.ids : new Set<number>();
+  const setSelected = (next: import("react").SetStateAction<Set<number>>) => setSelection(previous => {
+    const ids = previous?.q === q && previous.filters === filters ? previous.ids : new Set<number>();
+    return { q, filters, ids: typeof next === "function" ? next(ids) : next };
+  });
+
+  const [hoveredMessageId, setHoveredMessageId] = useState<number | null>(null);
+
+  const [closeTarget, setCloseTarget] = useState<number | null>(null);
+
+  const previousStatusesRef = useRef<Map<number, string> | null>(null);
+
+  useEffect(() => {
+    previousStatusesRef.current = null;
+  }, [q, filters]);
+
+  useEffect(() => {
+    if (!data) return;
+    const prev = previousStatusesRef.current;
+    if (prev) {
+      for (const item of data.items) {
+        const prevStatus = prev.get(item.id);
+        if (prevStatus === undefined) {
+          toast(`New ticket #${item.id} from ${customerLabel(item.user)}`);
+        } else if (prevStatus !== item.status) {
+          toast(`Ticket #${item.id} status changed to ${ticketStatusLabel(item.status)}`);
+        }
+      }
+    }
+    previousStatusesRef.current = new Map(data.items.map((item) => [item.id, item.status]));
+  }, [data]);
+
+  function invalidateAll() {
+    void qc.invalidateQueries({ queryKey: ["support"] });
+  }
+
+  function markClosedInRef(ids: number[]) {
+    const ref = previousStatusesRef.current;
+    if (!ref) return;
+    for (const id of ids) ref.set(id, "CLOSED");
+  }
+
+  const assign = useMutation({
+    mutationFn: ({ ticketId, adminId }: { ticketId: number; adminId: number | null }) =>
+      apiPost(`/api/support/${ticketId}/assign`, { adminId }),
+    onSuccess: () => {
+      invalidateAll();
+      toast.success("Ticket assigned.");
+    },
+    onError: (e: Error) => toast.error(describeError(e)),
+  });
+
+  const close = useMutation({
+    mutationFn: (ticketId: number) => apiPost(`/api/support/${ticketId}/close`, {}),
+    onSuccess: (_result, ticketId) => {
+      markClosedInRef([ticketId]);
+      invalidateAll();
+      toast.success("Ticket closed.");
+    },
+    onError: (e: Error) => toast.error(describeError(e)),
+  });
+
+  const resolve = useMutation({
+    mutationFn: (ticketId: number) => apiPost(`/api/support/${ticketId}/resolve`, {}),
+    onSuccess: () => {
+      invalidateAll();
+      toast.success("Ticket marked resolved.");
+    },
+    onError: (e: Error) => toast.error(describeError(e)),
+  });
+
+  const reopen = useMutation({
+    mutationFn: (ticketId: number) => apiPost(`/api/support/${ticketId}/reopen`, {}),
+    onSuccess: () => {
+      invalidateAll();
+      toast.success("Ticket reopened.");
+    },
+    onError: (e: Error) => toast.error(describeError(e)),
+  });
+
+  const classify = useMutation({
+    mutationFn: (vars: { ticketId: number; category: string }) =>
+      apiPost(`/api/support/${vars.ticketId}/classify`, { category: vars.category }),
+    onSuccess: () => {
+      invalidateAll();
+      toast.success("Ticket category updated.");
+    },
+    onError: (e: Error) => toast.error(describeError(e)),
+  });
+
+  const bulkAction = useMutation({
+    mutationFn: (vars: {
+      ids: number[];
+      action: "assign" | "close" | "priority" | "resolve";
+      adminId?: number | null;
+      priority?: string;
+    }) => apiPost<BulkActionResult>("/api/support/bulk-action", vars),
+    onSuccess: (result, vars) => {
+      if (vars.action === "close") markClosedInRef(result.succeeded);
+      invalidateAll();
+      setSelected(new Set());
+      const verb =
+        vars.action === "assign"
+          ? "Assigned"
+          : vars.action === "close"
+            ? "Closed"
+            : vars.action === "resolve"
+              ? "Resolved"
+              : "Updated priority for";
+      toast.success(
+        result.failed.length > 0
+          ? `${verb} ${result.succeeded.length} of ${vars.ids.length} tickets — ${result.failed.length} skipped.`
+          : `${verb} ${result.succeeded.length} ticket${result.succeeded.length === 1 ? "" : "s"}.`,
+      );
+    },
+    onError: (e: Error) => toast.error(describeError(e)),
+  });
+  return { assignableAdmins, adminNameById, selected, setSelected, hoveredMessageId, setHoveredMessageId, closeTarget, setCloseTarget, assign, close, resolve, reopen, classify, bulkAction };
 }

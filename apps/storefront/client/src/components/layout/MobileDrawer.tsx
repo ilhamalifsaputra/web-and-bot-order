@@ -1,3 +1,4 @@
+import * as m from "motion/react-m";
 /**
  * Mobile nav drawer — slide-in left panel, retained as the SECONDARY "more"
  * navigation now that the bottom tab bar carries the five primary
@@ -11,9 +12,6 @@
  * restore to the hamburger trigger on close. prefers-reduced-motion is
  * honoured by the app-wide <MotionConfig reducedMotion="user"> in main.tsx.
  */
-import { useEffect, useRef, type ReactNode, type RefObject } from "react";
-import { Link, useLocation } from "react-router-dom";
-import { AnimatePresence, motion } from "motion/react";
 import {
   Check,
   CircleUser,
@@ -32,23 +30,24 @@ import {
   Zap,
   type LucideIcon,
 } from "lucide-react";
+import { AnimatePresence } from "motion/react";
+import { useEffect, useRef, type ReactNode, type RefObject } from "react";
+import { Link, useLocation } from "react-router-dom";
 import type { ShopContext } from "../../api/types";
 import { t } from "../../lib/i18n";
 import { scrim, slideInLeft } from "../../lib/motion";
-import CurrencyToggle from "./CurrencyToggle";
 import BrandLogo from "../BrandLogo";
-import { useDialogA11y } from "../ui/useDialogA11y";
 import DialogLayer from "../ui/DialogLayer";
+import { useDialogA11y } from "../ui/useDialogA11y";
+import CurrencyToggle from "./CurrencyToggle";
 
 /** Row styling for the mobile nav drawer — hover/active both use the "pine"
  * token. Icons are `currentColor` (lucide-react), so tinting the row text also
  * tints its icon. 48px min height: the whole row is the tap target. */
 function drawerRowClass(active: boolean) {
-  return `flex min-h-12 w-full items-center gap-2 rounded-xl px-3 py-2.5 text-[15px] font-medium transition-colors duration-[180ms] ${
-    active ? "bg-pine-tint text-pine" : "text-ink-soft hover:bg-pine-tint/60"
-  }`;
+  return `flex min-h-12 w-full items-center gap-2 rounded-xl px-3 py-2.5 text-[15px] font-medium transition-colors duration-[180ms] ${active ? "bg-pine-tint text-pine" : "text-ink-soft hover:bg-pine-tint/60"
+    }`;
 }
-
 
 /** Every drawer icon renders at one size and one stroke weight. */
 const DRAWER_ICON = { className: "h-5 w-5 shrink-0", strokeWidth: 1.75 } as const;
@@ -149,7 +148,7 @@ export default function MobileDrawer({
     <AnimatePresence>
       {open && (
         <DialogLayer className="contents">
-          <motion.div
+          <m.div
             variants={scrim}
             initial="initial"
             animate="animate"
@@ -158,7 +157,7 @@ export default function MobileDrawer({
             className="fixed inset-0 z-40 bg-ink/35 sm:hidden"
             onClick={onClose}
           />
-          <motion.div
+          <m.div
             ref={panelRef}
             variants={slideInLeft}
             initial="initial"
@@ -322,7 +321,7 @@ export default function MobileDrawer({
                 <p className="mt-3">{t("web.trust_version", { version: APP_VERSION })}</p>
               )}
             </div>
-          </motion.div>
+          </m.div>
         </DialogLayer>
       )}
     </AnimatePresence>

@@ -1,3 +1,4 @@
+import { isTabBarHidden } from "./MobileTabBar.helpers";
 /**
  * Fixed mobile bottom tab bar — the PRIMARY mobile navigation (the left drawer
  * is now secondary "more" nav). Five destinations mapped to this shop's real
@@ -17,28 +18,8 @@
  */
 import type { LucideIcon } from "lucide-react";
 import { CircleUser, House, Package, Search, ShoppingBag } from "lucide-react";
-import { Link, matchPath, useLocation } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { t } from "../../lib/i18n";
-
-/**
- * Routes where the bar is HIDDEN: the six full-funnel screens that already
- * dock a sticky action bar at the bottom edge. Two fixed bottom elements must
- * never coexist on one screen (docs/archive/FRONTEND_IMPLEMENTATION_PROMPT_v3.md §15).
- * Keep this list in step with business-adaptation.md → Navigation (a).
- */
-export const TAB_BAR_HIDDEN_ROUTES = [
-  "/p/:slug",
-  "/cart",
-  "/checkout",
-  "/checkout/:code/pay",
-  "/wallet/topup",
-  "/wallet/topup/:code/pay",
-] as const;
-
-/** True when `pathname` is one of the sticky-action-bar funnel screens. */
-export function isTabBarHidden(pathname: string): boolean {
-  return TAB_BAR_HIDDEN_ROUTES.some((pattern) => matchPath(pattern, pathname) !== null);
-}
 
 interface Tab {
   key: string;
@@ -112,9 +93,8 @@ export default function MobileTabBar({
               <Link
                 to={tab.to}
                 aria-current={active ? "page" : undefined}
-                className={`relative flex h-full min-h-11 flex-col items-center justify-center gap-0.5 px-1 text-xs transition-colors ${
-                  active ? "font-semibold text-pine" : "font-medium text-ink-soft"
-                }`}
+                className={`relative flex h-full min-h-11 flex-col items-center justify-center gap-0.5 px-1 text-xs transition-colors ${active ? "font-semibold text-pine" : "font-medium text-ink-soft"
+                  }`}
               >
                 {/* Active state is signalled three ways, not by colour alone:
                     aria-current, the bolder label weight, and this top bar. */}

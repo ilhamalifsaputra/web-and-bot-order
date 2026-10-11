@@ -1,3 +1,4 @@
+import { keyedContent } from "../../lib/keyedContent";
 /** Renders a merged ticket timeline (see lib/ticketTimeline.ts) as chat
  * bubbles: customer right-aligned/tinted, support left-aligned/neutral,
  * system events centered. Groups consecutive entries under a date divider
@@ -14,12 +15,12 @@
  * hand-rolled bubble `<div class="card card-pad">` onto the `<Card>` primitive
  * and swapped the one off-scale `text-[11px]` avatar initial to `text-2xs`
  * (the `--gg-text-2xs` token from Task 6a); bubble geometry is unchanged. */
-import { PlusCircle, CheckCircle2, type LucideIcon } from "lucide-react";
+import { CheckCircle2, PlusCircle, type LucideIcon } from "lucide-react";
 import { t } from "../../lib/i18n";
+import type { TicketTimelineEntry } from "../../lib/ticketTimeline";
 import Card from "../ui/Card";
 import { cn } from "../ui/cn";
 import AttachmentGallery from "./AttachmentGallery";
-import type { TicketTimelineEntry } from "../../lib/ticketTimeline";
 
 const SYSTEM_ICON: Record<string, LucideIcon> = {
   created: PlusCircle,
@@ -40,13 +41,13 @@ export default function TicketMessageThread({ entries }: { entries: TicketTimeli
   let lastDateKey = "";
   return (
     <div className="space-y-3">
-      {entries.map((entry, idx) => {
+      {keyedContent(entries).map(({ item: entry, key }) => {
         const datePart = entry.created_at_display.slice(0, 10);
         const timePart = entry.created_at_display.slice(11);
         const showDivider = datePart !== lastDateKey;
         lastDateKey = datePart;
         return (
-          <div key={idx}>
+          <div key={key}>
             {showDivider && (
               <div className="my-4 flex items-center gap-3 text-xs font-semibold text-ink-faint">
                 <span className="h-px flex-1 bg-line" /> {dateGroupLabel(datePart)} <span className="h-px flex-1 bg-line" />

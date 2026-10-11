@@ -1,18 +1,18 @@
 /** Pemulihan guest: kode dan token order, pesan gagal generik, tanpa auto-login. */
-import { useEffect, useState, type FormEvent } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { Clock, PackageSearch, TriangleAlert } from "lucide-react";
+import { useEffect, useState, type FormEvent } from "react";
 import { publicPost } from "../api/client";
 import type { TrackOrderResponse } from "../api/types";
 import { useShopContext } from "../components/Layout";
-import { t } from "../lib/i18n";
 import type { EmptyStateAction } from "../components/shop/EmptyState";
 import EmptyState from "../components/shop/EmptyState";
 import Spinner from "../components/shop/Spinner";
-import Card from "../components/ui/Card";
 import Button from "../components/ui/Button";
+import Card from "../components/ui/Card";
 import FormField from "../components/ui/FormField";
 import Input from "../components/ui/Input";
+import { t } from "../lib/i18n";
 
 /**
  * Where a failed lookup sends someone who has NO way to sign in.
@@ -112,8 +112,8 @@ function FailureState({
 
 export default function TrackOrderPage() {
   const [recovery] = useState(() => new URLSearchParams(window.location.hash.slice(1)));
-  const [orderCode, setOrderCode] = useState(recovery.get("order_code") ?? "");
-  const [accessToken, setAccessToken] = useState(recovery.get("access_token") ?? "");
+  const [orderCode, setOrderCode] = useState(() => recovery.get("order_code") ?? "");
+  const [accessToken, setAccessToken] = useState(() => recovery.get("access_token") ?? "");
   useEffect(() => {
     if (window.location.hash) window.history.replaceState(null, "", window.location.pathname + window.location.search);
   }, []);

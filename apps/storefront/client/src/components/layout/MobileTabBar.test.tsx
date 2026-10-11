@@ -1,8 +1,9 @@
 import "@testing-library/jest-dom";
-import { describe, it, expect, beforeEach } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import MobileTabBar, { TAB_BAR_HIDDEN_ROUTES } from "./MobileTabBar";
+import { beforeEach, describe, expect, it } from "vitest";
+import MobileTabBar from "./MobileTabBar";
+import { TAB_BAR_HIDDEN_ROUTES } from "./MobileTabBar.helpers";
 
 function renderBar(
   { cartCount = 0, isSignedIn = false }: { cartCount?: number; isSignedIn?: boolean },

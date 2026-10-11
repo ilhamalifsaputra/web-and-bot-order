@@ -1,23 +1,23 @@
-import { useState } from "react";
+import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Wallet } from "lucide-react";
+import { useId, useState } from "react";
 import { Link } from "react-router-dom";
-import { PageLayout } from "../components/shared/PageLayout";
-import { PageHeader } from "../components/shared/PageHeader";
-import { FilterBar } from "../components/shared/FilterBar";
+import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount.helpers";
 import { DataTable } from "../components/shared/DataTable";
 import { DateInput } from "../components/shared/DateInput";
 import { EmptyState } from "../components/shared/EmptyState";
+import { FilterBar } from "../components/shared/FilterBar";
+import { PageHeader } from "../components/shared/PageHeader";
+import { PageLayout } from "../components/shared/PageLayout";
 import { Pagination } from "../components/shared/Pagination";
-import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount";
-import { Input } from "@/components/ui/input";
-import { Card, CardContent } from "@/components/ui/card";
-import {
-  Select,
-  SelectTrigger,
-  SelectValue,
-  SelectContent,
-  SelectItem,
-} from "@/components/ui/select";
-import { Wallet } from "lucide-react";
 import { useWalletTransactions, type WalletTransactionRow } from "../hooks/useWalletTransactions";
 
 /**
@@ -150,6 +150,7 @@ const COLUMNS = [
  * page mutates state.
  */
 export function WalletTransactionsPage() {
+  const fieldId = useId();
   const [page, setPage] = useState(1);
   const [reason, setReason] = useState("");
   const [currency, setCurrency] = useState("");
@@ -184,12 +185,12 @@ export function WalletTransactionsPage() {
       <div className="flex flex-col gap-4">
         <FilterBar onApply={applyFilters} onClear={clearFilters}>
           <div className="flex flex-col gap-1">
-            <label className="text-xs text-ink-soft">Reason</label>
+            <label htmlFor={`${fieldId}-reason-1`} className="text-xs text-ink-soft">Reason</label>
             <Select
               value={reason || "_all_"}
               onValueChange={v => { setReason(v === "_all_" ? "" : v); setPage(1); }}
             >
-              <SelectTrigger className="w-44" aria-label="Reason"><SelectValue placeholder="All reasons" /></SelectTrigger>
+              <SelectTrigger id={`${fieldId}-reason-1`} className="w-44" aria-label="Reason"><SelectValue placeholder="All reasons" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="_all_">All</SelectItem>
                 {(data?.reasons ?? []).map(r => (
@@ -199,12 +200,12 @@ export function WalletTransactionsPage() {
             </Select>
           </div>
           <div className="flex flex-col gap-1">
-            <label className="text-xs text-ink-soft">Currency</label>
+            <label htmlFor={`${fieldId}-currency-2`} className="text-xs text-ink-soft">Currency</label>
             <Select
               value={currency || "_all_"}
               onValueChange={v => { setCurrency(v === "_all_" ? "" : v); setPage(1); }}
             >
-              <SelectTrigger className="w-32" aria-label="Currency"><SelectValue placeholder="All" /></SelectTrigger>
+              <SelectTrigger id={`${fieldId}-currency-2`} className="w-32" aria-label="Currency"><SelectValue placeholder="All" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="_all_">All</SelectItem>
                 <SelectItem value="IDR">IDR</SelectItem>

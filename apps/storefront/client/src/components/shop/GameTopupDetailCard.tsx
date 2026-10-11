@@ -1,11 +1,12 @@
+import { keyedContent } from "../../lib/keyedContent";
 /** Post-purchase "top-up details" for a game order (OrderDetailPage, PayPage).
  * Shows only what exists: product + denomination, the Game/Zone/Server the buyer
  * typed per unit (the server reads them through the denomination's input
  * mapping — never other answers), the full provider SN with a Copy button, and
  * the buyer-safe Digiflazz status line. A missing value omits its line, so the
  * card never prints an empty label. */
-import { useState } from "react";
 import { BadgeCheck, Copy } from "lucide-react";
+import { useState } from "react";
 import type { GameTarget } from "../../api/types";
 import { t } from "../../lib/i18n";
 import Button from "../ui/Button";
@@ -45,8 +46,8 @@ export default function GameTopupDetailCard({
 
       {items.length > 0 && (
         <ul className="mt-3 space-y-1">
-          {items.map((item, idx) => (
-            <li key={idx} className="text-sm">
+          {keyedContent(items).map(({ item, key }) => (
+            <li key={key} className="text-sm">
               <span className="font-semibold break-words">{item.name}</span>
               {item.duration && <span className="ml-2 text-ink-soft break-words">{item.duration}</span>}
             </li>

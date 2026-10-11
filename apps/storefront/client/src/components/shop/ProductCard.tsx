@@ -1,11 +1,11 @@
+import * as m from "motion/react-m";
 /**
  * TSX port of `product_card(p, fx, low, lang)` in apps/storefront/views/_shop.njk
  * (design.md §4.2) — the grid card used by home/category/search. Links to the
  * product detail page.
  */
-import { Link } from "react-router-dom";
-import { motion } from "motion/react";
 import { Tag, Zap } from "lucide-react";
+import { Link } from "react-router-dom";
 import { t, tCount } from "../../lib/i18n";
 import { pressable } from "../../lib/motion";
 import DefaultThumb, { type ThumbnailKind } from "./DefaultThumb";
@@ -13,8 +13,9 @@ import FlashBadge, { FlashWasPrice } from "./FlashBadge";
 import Price from "./Price";
 import Stars from "./Stars";
 import StockBadge from "./StockBadge";
+;
 
-const MotionLink = motion.create(Link);
+const MotionLink = m.create(Link);
 
 /** Client-side twin of the server's ProductCard shape (apps/storefront/src/cards.ts)
  * — the JSON a grid endpoint returns for one card. Decimals arrive as strings. */
@@ -77,54 +78,64 @@ export default function ProductCard({ p, fx, lowThreshold }: ProductCardProps) {
       {...pressable}
       className="group h-full overflow-hidden rounded-2xl border border-line bg-card shadow-soft transition hover:shadow-lift hover:border-pine-tint flex flex-col"
     >
-      <div className="relative flex h-44 items-center justify-center bg-sand overflow-hidden shrink-0">
-        {p.image ? (
-          <picture className="block w-full h-full">
-            {/* block + full size: <picture> is inline by default, which would
-                drop the w-full/h-full the <img> relies on in this flex well. */}
-            {p.image_srcset && (
-              // Two cards per row on phones, a ~300px column on desktop.
-              <source
-                type="image/webp"
-                srcSet={p.image_srcset}
-                sizes="(max-width: 640px) 50vw, 300px"
-              />
-            )}
-            <img
-              src={p.image}
-              alt={p.name}
-              loading="lazy"
-              decoding="async"
-              // Intrinsic size for the card's 11rem-tall well. object-cover still
-              // decides the crop, but without these the browser can't reserve
-              // space before the image loads — the row jumps as each card fills
-              // in (layout shift), and an auditor comparing natural to displayed
-              // dimensions reports the image as distorted.
-              width={400}
-              height={176}
-              className="w-full h-full object-cover group-hover:scale-[1.03] transition-transform duration-300"
-            />
-          </picture>
-        ) : (
-          <DefaultThumb kind={p.image_kind ?? "generic"} name={p.name} />
-        )}
+      <ProductCardImage p={p} bulkPercent={bulkPercent} />
+      <ProductCardDetails p={p} fx={fx} preSale={preSale} lowThreshold={lowThreshold} bulkPercent={bulkPercent} />
+    </MotionLink>
+  );
+}
 
-        {/* Flash badge above the bulk badge in one stacked column — they can
+function ProductCardImage({ p, bulkPercent }: {
+  p: ProductCardData;
+  bulkPercent: number | null;
+}) {
+  return (<div className="relative flex h-44 items-center justify-center bg-sand overflow-hidden shrink-0">
+    {p.image ? (
+      <picture className="block w-full h-full">
+        {/* block + full size: <picture> is inline by default, which would
+                drop the w-full/h-full the <img> relies on in this flex well. */}
+        {p.image_srcset && (
+          // Two cards per row on phones, a ~300px column on desktop.
+          <source
+            type="image/webp"
+            srcSet={p.image_srcset}
+            sizes="(max-width: 640px) 50vw, 300px"
+          />
+        )}
+        <img
+          src={p.image}
+          alt={p.name}
+          loading="lazy"
+          decoding="async"
+          // Intrinsic size for the card's 11rem-tall well. object-cover still
+          // decides the crop, but without these the browser can't reserve
+          // space before the image loads — the row jumps as each card fills
+          // in (layout shift), and an auditor comparing natural to displayed
+          // dimensions reports the image as distorted.
+          width={400}
+          height={176}
+          className="w-full h-full object-cover group-hover:scale-[1.03] transition-transform duration-300"
+        />
+      </picture>
+    ) : (
+      <DefaultThumb kind={p.image_kind ?? "generic"} name={p.name} />
+    )}
+
+    {/* Flash badge above the bulk badge in one stacked column — they can
             both be live on the same product, and two absolutely-positioned
             badges at top-3 left-3 would sit on top of each other. */}
-        {(p.flash_discount || p.bulk_discount) && (
-          <div className="absolute top-2 left-2 sm:top-3 sm:left-3 flex max-w-2/3 flex-col items-start gap-1.5">
-            {p.flash_discount && (
-              <FlashBadge percent={p.flash_discount} endsAt={p.flash_ends_at ?? null} tone="solid" />
-            )}
-            {p.bulk_discount && (
-              <span className="inline-flex items-center rounded-full bg-rust/90 px-2.5 py-1 text-xs font-medium text-white shadow-xs backdrop-blur-sm">
-                −{bulkPercent}%
-              </span>
-            )}
-          </div>
+    {(p.flash_discount || p.bulk_discount) && (
+      <div className="absolute top-2 left-2 sm:top-3 sm:left-3 flex max-w-2/3 flex-col items-start gap-1.5">
+        {p.flash_discount && (
+          <FlashBadge percent={p.flash_discount} endsAt={p.flash_ends_at ?? null} tone="solid" />
         )}
-        {/* "instant delivery" is a positive capability → an opaque grass chip:
+        {p.bulk_discount && (
+          <span className="inline-flex items-center rounded-full bg-rust/90 px-2.5 py-1 text-xs font-medium text-white shadow-xs backdrop-blur-sm">
+            −{bulkPercent}%
+          </span>
+        )}
+      </div>
+    )}
+    {/* "instant delivery" is a positive capability → an opaque grass chip:
             solid bg-grass-dark + white text stays legible over BOTH a real
             photo and the light DefaultThumb well Fase 12 introduced. The old
             bg-black/40 + text-grass computed to ~2.3:1 over that pale
@@ -137,58 +148,65 @@ export default function ProductCard({ p, fx, lowThreshold }: ProductCardProps) {
             would mislead the buyer. (`available` counts local-inventory
             denominations only, so `available > 0` also proves a local plan is
             in stock on a mixed product.) */}
-        {!p.all_non_auto && p.available > 0 && (
-          <span className="absolute right-2 bottom-2 sm:right-3 sm:bottom-3 inline-flex items-center gap-1 rounded-full bg-grass-dark px-2.5 py-1 text-xs font-medium text-white">
-            <Zap className="w-3 h-3" /> {t("web.badge_instant")}
-          </span>
-        )}
+    {!p.all_non_auto && p.available > 0 && (
+      <span className="absolute right-2 bottom-2 sm:right-3 sm:bottom-3 inline-flex items-center gap-1 rounded-full bg-grass-dark px-2.5 py-1 text-xs font-medium text-white">
+        <Zap className="w-3 h-3" /> {t("web.badge_instant")}
+      </span>
+    )}
+  </div>);
+}
+
+function ProductCardDetails({ p, fx, preSale, lowThreshold, bulkPercent }: {
+  p: ProductCardData;
+  fx: string | null | undefined;
+  preSale: string | null;
+  lowThreshold: number;
+  bulkPercent: number | null;
+}) {
+  return (<div className="p-3 sm:p-4 flex flex-col flex-1 min-w-0">
+    <h3 className="font-semibold text-ink line-clamp-1 break-words">{p.name}</h3>
+    <p className="text-sm text-ink-faint">
+      {p.category_name}
+      {p.variant_count > 1 && (
+        <>
+          {" "}
+          <span className="text-ink-soft">·</span>{" "}
+          <span className="text-pine">{t("web.group_options", { count: p.variant_count })}</span>
+        </>
+      )}
+    </p>
+
+    {p.rating_count > 0 && (
+      <div className="flex items-center gap-1.5 text-xs text-ink-soft mt-1">
+        <Stars rating={p.rating ?? 0} /> <span>{String(Math.round((p.rating ?? 0) * 10) / 10)}</span>
+        <span className="text-ink-faint">· {tCount("web.review_count", p.rating_count)}</span>
       </div>
-      <div className="p-3 sm:p-4 flex flex-col flex-1 min-w-0">
-        <h3 className="font-semibold text-ink line-clamp-1 break-words">{p.name}</h3>
-        <p className="text-sm text-ink-faint">
-          {p.category_name}
-          {p.variant_count > 1 && (
-            <>
-              {" "}
-              <span className="text-ink-soft">·</span>{" "}
-              <span className="text-pine">{t("web.group_options", { count: p.variant_count })}</span>
-            </>
-          )}
-        </p>
+    )}
 
-        {p.rating_count > 0 && (
-          <div className="flex items-center gap-1.5 text-xs text-ink-soft mt-1">
-            <Stars rating={p.rating ?? 0} /> <span>{String(Math.round((p.rating ?? 0) * 10) / 10)}</span>
-            <span className="text-ink-faint">· {tCount("web.review_count", p.rating_count)}</span>
-          </div>
-        )}
-
-        <div className="mt-auto pt-3 flex items-center justify-between gap-2 flex-wrap">
-          <p className="min-w-0 text-sm text-ink-soft inline-flex items-baseline gap-1 flex-wrap">
-            {t("web.from_price")}
-            <Price value={p.from_price} fx={fx} size="text-sm" />
-            {/* The card payload carries no base price (cards.ts), so the
+    <div className="mt-auto pt-3 flex items-center justify-between gap-2 flex-wrap">
+      <p className="min-w-0 text-sm text-ink-soft inline-flex items-baseline gap-1 flex-wrap">
+        {t("web.from_price")}
+        <Price value={p.from_price} fx={fx} size="text-sm" />
+        {/* The card payload carries no base price (cards.ts), so the
                 pre-sale figure is reconstructed from the percent — display
                 only, and it never feeds a total. */}
-            {preSale !== null && <FlashWasPrice value={preSale} endsAt={p.flash_ends_at ?? null} />}
-          </p>
-          {/* A count badge only when every plan is local stock; a mixed
+        {preSale !== null && <FlashWasPrice value={preSale} endsAt={p.flash_ends_at ?? null} />}
+      </p>
+      {/* A count badge only when every plan is local stock; a mixed
               product is purchasable through its provider/manual plans
               whatever its partial local count says. */}
-          <StockBadge
-            available={p.available}
-            lowThreshold={lowThreshold}
-            allNonAuto={p.all_non_auto || p.all_local_inventory === false}
-          />
-        </div>
+      <StockBadge
+        available={p.available}
+        lowThreshold={lowThreshold}
+        allNonAuto={p.all_non_auto || p.all_local_inventory === false}
+      />
+    </div>
 
-        {p.bulk_discount && p.bulk_min_qty && (
-          <div className="text-xs text-grass-dark font-medium flex items-center gap-1 mt-2">
-            <Tag className="w-3 h-3" />
-            {t("web.bulk_hint", { qty: p.bulk_min_qty, percent: bulkPercent ?? 0 })}
-          </div>
-        )}
+    {p.bulk_discount && p.bulk_min_qty && (
+      <div className="text-xs text-grass-dark font-medium flex items-center gap-1 mt-2">
+        <Tag className="w-3 h-3" />
+        {t("web.bulk_hint", { qty: p.bulk_min_qty, percent: bulkPercent ?? 0 })}
       </div>
-    </MotionLink>
-  );
+    )}
+  </div>);
 }

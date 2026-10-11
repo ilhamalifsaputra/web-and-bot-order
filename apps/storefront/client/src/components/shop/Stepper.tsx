@@ -18,8 +18,8 @@
  * hears the same three steps on every viewport, and `aria-current="step"` names
  * the live one without relying on colour alone.
  */
-import { Fragment } from "react";
 import { Check } from "lucide-react";
+import { Fragment } from "react";
 import { t } from "../../lib/i18n";
 
 export interface StepperProps {
@@ -36,7 +36,7 @@ export default function Stepper({ step }: StepperProps) {
         const isCurrent = n === step;
         const isDone = n < step;
         return (
-          <Fragment key={n}>
+          <Fragment key={label}>
             <li
               aria-label={`${n} · ${label}`}
               aria-current={isCurrent ? "step" : undefined}
@@ -44,20 +44,18 @@ export default function Stepper({ step }: StepperProps) {
             >
               <span
                 aria-hidden="true"
-                className={`grid h-6 w-6 shrink-0 place-items-center rounded-full text-xs font-bold ${
-                  isDone
-                    ? "bg-grass text-white"
-                    : isCurrent
-                      ? "bg-pine text-white"
-                      : "bg-sand text-ink-faint"
-                }`}
+                className={`grid h-6 w-6 shrink-0 place-items-center rounded-full text-xs font-bold ${isDone
+                  ? "bg-grass text-white"
+                  : isCurrent
+                    ? "bg-pine text-white"
+                    : "bg-sand text-ink-faint"
+                  }`}
               >
                 {isDone ? <Check className="h-3.5 w-3.5" /> : n}
               </span>
               <span
-                className={`text-xs font-semibold ${
-                  isDone ? "text-grass-dark" : isCurrent ? "text-ink" : "text-ink-faint"
-                } ${isCurrent ? "" : "hidden sm:inline"}`}
+                className={`text-xs font-semibold ${isDone ? "text-grass-dark" : isCurrent ? "text-ink" : "text-ink-faint"
+                  } ${isCurrent ? "" : "hidden sm:inline"}`}
               >
                 {label}
               </span>

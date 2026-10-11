@@ -1,23 +1,25 @@
-import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { PageLayout } from "../components/shared/PageLayout";
-import { PageHeader } from "../components/shared/PageHeader";
-import { FilterBar } from "../components/shared/FilterBar";
-import { EmptyState } from "../components/shared/EmptyState";
-import { DataTable } from "../components/shared/DataTable";
-import { Card, CardContent } from "@/components/ui/card";
-import { StatusBadge, statusLabel } from "../components/shared/StatusBadge";
-import { Send, RefreshCw, ChevronLeft, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
 import {
   Select,
-  SelectTrigger,
-  SelectValue,
   SelectContent,
   SelectItem,
+  SelectTrigger,
+  SelectValue,
 } from "@/components/ui/select";
+import { useQuery } from "@tanstack/react-query";
+import { RefreshCw, Send } from "lucide-react";
+import { useState } from "react";
 import { toast } from "sonner";
 import { apiGet, apiPost } from "../api/client";
+import { CursorPagination } from "../components/shared/CursorPagination";
+import { DataTable } from "../components/shared/DataTable";
+import { EmptyState } from "../components/shared/EmptyState";
+import { FilterBar } from "../components/shared/FilterBar";
+import { PageHeader } from "../components/shared/PageHeader";
+import { PageLayout } from "../components/shared/PageLayout";
+import { StatusBadge } from "../components/shared/StatusBadge";
+import { statusLabel } from "../components/shared/StatusBadge.helpers";
 import { describeError } from "../lib/errorMessages";
 
 /** NotificationEvent values from packages/core/src/enums.ts, labeled
@@ -224,27 +226,7 @@ export function OutboxPage() {
         )}
 
         {data && (data.hasNext || page > 1) && (
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={page <= 1}
-              onClick={() => goPage(page - 1)}
-            >
-              <ChevronLeft className="h-4 w-4" />
-              Prev
-            </Button>
-            <span className="text-sm text-ink-soft">Page {page}</span>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={!data.hasNext}
-              onClick={() => goPage(page + 1)}
-            >
-              Next
-              <ChevronRight className="h-4 w-4" />
-            </Button>
-          </div>
+          <CursorPagination page={page} hasNext={data.hasNext} onPageChange={goPage} />
         )}
       </div>
     </PageLayout>

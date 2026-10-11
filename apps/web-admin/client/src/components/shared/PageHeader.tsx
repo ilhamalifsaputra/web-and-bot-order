@@ -1,7 +1,7 @@
-import * as React from "react"
-import type { ReactNode } from "react"
-import { Link } from "react-router-dom"
-import { ChevronRight } from "lucide-react"
+import { ChevronRight } from "lucide-react";
+import type { ReactNode } from "react";
+import * as React from "react";
+import { Link } from "react-router-dom";
 
 interface PageHeaderProps {
   title: string;
@@ -16,7 +16,7 @@ export function PageHeader({ title, description, breadcrumb, actions }: PageHead
       {breadcrumb && breadcrumb.length > 0 && (
         <nav aria-label="Breadcrumb" className="mb-2 flex flex-wrap items-center gap-1 text-xs text-ink-soft">
           {breadcrumb.map((crumb, i) => (
-            <React.Fragment key={i}>
+            <React.Fragment key={crumb.href ?? crumb.label}>
               {i > 0 && <ChevronRight className="h-3.5 w-3.5 text-ink-faint" />}
               {crumb.href ? (
                 <Link

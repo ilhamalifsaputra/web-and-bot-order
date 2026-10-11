@@ -27,8 +27,8 @@
  * per-block callout wrapper; it is optional so an unconfigured caller still
  * renders (a generic icon, no callouts) rather than breaking.
  */
-import { Link } from "react-router-dom";
 import { FileText, LifeBuoy, type LucideIcon } from "lucide-react";
+import { Link } from "react-router-dom";
 import { t } from "../../lib/i18n";
 import Card from "../ui/Card";
 import Callout, { type CalloutVariant } from "./Callout";
@@ -120,11 +120,11 @@ function ProseBody({ prefix, args, config, children }: BodyProps) {
   return (
     <article className="mt-10 space-y-8">
       {config.map((step, idx) => {
-        if (step.render) return <div key={idx}>{step.render}</div>;
         const n = step.block ?? idx + 1;
+        if (step.render) return <div key={t(`web.${prefix}_h${n}`)}>{step.render}</div>;
         const body = t(`web.${prefix}_p${n}`, args);
         return (
-          <section key={idx}>
+          <section key={body}>
             <h2 className="font-display text-xl font-semibold text-ink sm:text-2xl">
               {t(`web.${prefix}_h${n}`)}
             </h2>

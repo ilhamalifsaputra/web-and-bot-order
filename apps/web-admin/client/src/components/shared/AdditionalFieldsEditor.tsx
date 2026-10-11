@@ -1,16 +1,17 @@
-import { Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
 import {
   Select,
-  SelectTrigger,
-  SelectValue,
   SelectContent,
   SelectItem,
+  SelectTrigger,
+  SelectValue,
 } from "@/components/ui/select";
-import { emptyFieldDraft } from "../../lib/additionalFields";
+import { Plus } from "lucide-react";
+import { useId } from "react";
 import type { AdditionalFieldDraft } from "../../api/types";
+import { emptyFieldDraft } from "../../lib/additionalFields";
 
 const FIELD_TYPES: { value: AdditionalFieldDraft["type"]; label: string }[] = [
   { value: "text", label: "Text" },
@@ -38,6 +39,7 @@ export function AdditionalFieldsEditor({
   value: AdditionalFieldDraft[];
   onChange: (next: AdditionalFieldDraft[]) => void;
 }) {
+  const fieldId = useId();
   function updateRow(index: number, patch: Partial<AdditionalFieldDraft>) {
     onChange(value.map((row, i) => (i === index ? { ...row, ...patch } : row)));
   }
@@ -45,18 +47,18 @@ export function AdditionalFieldsEditor({
     onChange(value.filter((_, i) => i !== index));
   }
   function addRow() {
-    onChange([...value, emptyFieldDraft()]);
+    onChange([...value, { ...emptyFieldDraft(), draftId: crypto.randomUUID() }]);
   }
 
   return (
     <div className="flex flex-col gap-4">
       {value.map((row, index) => (
-        <div key={index} className="rounded-lg border border-line p-3 flex flex-col gap-3">
+        <div key={row.draftId ?? row.key} className="rounded-lg border border-line p-3 flex flex-col gap-3">
           <div className="flex items-start justify-between gap-3">
             <div className="flex-1 grid grid-cols-2 gap-3">
               <div>
-                <label className="text-xs font-medium text-ink">Question (Indonesian)</label>
-                <Input
+                <label htmlFor={`${fieldId}-question-indonesian-1-${row.draftId ?? row.key}`} className="text-xs font-medium text-ink">Question (Indonesian)</label>
+                <Input id={`${fieldId}-question-indonesian-1-${row.draftId ?? row.key}`}
                   className="mt-1"
                   placeholder={isGame ? "e.g. ID Game" : "e.g. Email akun"}
                   value={row.labelId}
@@ -64,8 +66,8 @@ export function AdditionalFieldsEditor({
                 />
               </div>
               <div>
-                <label className="text-xs font-medium text-ink">Question (English)</label>
-                <Input
+                <label htmlFor={`${fieldId}-question-english-2-${row.draftId ?? row.key}`} className="text-xs font-medium text-ink">Question (English)</label>
+                <Input id={`${fieldId}-question-english-2-${row.draftId ?? row.key}`}
                   className="mt-1"
                   placeholder={isGame ? "e.g. Game ID" : "e.g. Account email"}
                   value={row.labelEn}
@@ -80,12 +82,12 @@ export function AdditionalFieldsEditor({
 
           <div className="flex items-end gap-3">
             <div>
-              <label className="text-xs font-medium text-ink">Answer Type</label>
+              <label htmlFor={`${fieldId}-answer-type-3-${row.draftId ?? row.key}`} className="text-xs font-medium text-ink">Answer Type</label>
               <Select
                 value={row.type}
                 onValueChange={(v) => updateRow(index, { type: v as AdditionalFieldDraft["type"] })}
               >
-                <SelectTrigger className="mt-1">
+                <SelectTrigger id={`${fieldId}-answer-type-3-${row.draftId ?? row.key}`} className="mt-1">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -108,8 +110,8 @@ export function AdditionalFieldsEditor({
 
           {row.type === "select" && (
             <div>
-              <label className="text-xs font-medium text-ink">Options</label>
-              <Input
+              <label htmlFor={`${fieldId}-options-4-${row.draftId ?? row.key}`} className="text-xs font-medium text-ink">Options</label>
+              <Input id={`${fieldId}-options-4-${row.draftId ?? row.key}`}
                 className="mt-1"
                 placeholder="Comma-separated, e.g. Asia, EU, NA"
                 value={row.optionsText}
@@ -119,8 +121,8 @@ export function AdditionalFieldsEditor({
           )}
 
           <div>
-            <label className="text-xs font-medium text-ink">Placeholder (Optional)</label>
-            <Input
+            <label htmlFor={`${fieldId}-placeholder-optional-5-${row.draftId ?? row.key}`} className="text-xs font-medium text-ink">Placeholder (Optional)</label>
+            <Input id={`${fieldId}-placeholder-optional-5-${row.draftId ?? row.key}`}
               className="mt-1"
               placeholder={isGame ? "e.g. 1023849571" : "e.g. buyer@example.com"}
               value={row.placeholder}

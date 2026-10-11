@@ -1,8 +1,9 @@
-import { useLayoutEffect, useRef, type ReactNode, type RefObject } from "react";
-import { Dialog } from "radix-ui";
-import { AnimatePresence, motion, useIsPresent, useReducedMotion } from "motion/react";
 import { DURATION, fadeIn, scrim, slideInLeft } from "@/lib/motion";
 import { cn } from "@/lib/utils";
+import { AnimatePresence, useIsPresent, useReducedMotion } from "motion/react";
+import * as m from "motion/react-m";
+import { Dialog } from "radix-ui";
+import { useLayoutEffect, useRef, type ReactNode, type RefObject } from "react";
 
 interface MotionDialogProps {
   open: boolean;
@@ -37,7 +38,7 @@ function Content({ onOpenAutoFocus, onCloseAutoFocus, ...props }: MotionDialogPr
   return (
     <>
       <Dialog.Overlay forceMount asChild>
-        <motion.div
+        <m.div
           className="fixed inset-0 z-50 bg-ink/40"
           variants={reduced ? undefined : scrim}
           initial="initial" animate="animate" exit="exit"
@@ -48,7 +49,7 @@ function Content({ onOpenAutoFocus, onCloseAutoFocus, ...props }: MotionDialogPr
         forceMount asChild aria-describedby={undefined}
         onOpenAutoFocus={onOpenAutoFocus} onCloseAutoFocus={onCloseAutoFocus}
       >
-        <motion.div
+        <m.div
           ref={panelRef}
           variants={variants} initial="initial" animate="animate" exit="exit"
           transition={{ duration: reduced ? 0 : DURATION.base }}
@@ -65,7 +66,7 @@ function Content({ onOpenAutoFocus, onCloseAutoFocus, ...props }: MotionDialogPr
         >
           <Dialog.Title className="sr-only">{props.title}</Dialog.Title>
           {props.children}
-        </motion.div>
+        </m.div>
       </Dialog.Content>
     </>
   );
@@ -74,7 +75,7 @@ function Content({ onOpenAutoFocus, onCloseAutoFocus, ...props }: MotionDialogPr
 export function MotionDialog(props: MotionDialogProps) {
   const previousFocus = useRef<HTMLElement | null>(null);
   const openRef = useRef(props.open);
-  openRef.current = props.open;
+  useLayoutEffect(() => { openRef.current = props.open; }, [props.open]);
   return (
     <Dialog.Root open={props.open} onOpenChange={(open) => { if (!open) props.onClose(); }}>
       <AnimatePresence>

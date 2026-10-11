@@ -24,7 +24,7 @@ export default function Breadcrumb({ items }: BreadcrumbProps) {
       {items.map((c, i) => {
         const isLast = i === items.length - 1;
         return (
-          <Fragment key={i}>
+          <Fragment key={c.href ?? c.label}>
             {c.href && !isLast ? (
               <Link to={c.href} className="hover:text-pine">
                 {c.label}

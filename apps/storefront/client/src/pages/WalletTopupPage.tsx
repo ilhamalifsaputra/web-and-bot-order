@@ -1,3 +1,4 @@
+import { useQueryClient } from "@tanstack/react-query";
 /**
  * Buy wallet CREDIT itself through the existing payment gateways (Task 5,
  * apps/storefront/src/routes/apiWalletTopup.ts). Structure mirrors
@@ -20,28 +21,28 @@
  * §14-pay-topup-track. No mutation payload, endpoint, or gating logic
  * changed.
  */
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { AlertTriangle, Wallet } from "lucide-react";
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { useMutation, useQuery } from "@tanstack/react-query";
-import { AlertTriangle, Wallet } from "lucide-react";
 import { apiGet, apiPost } from "../api/client";
 import type { WalletTopupCreateResponse, WalletTopupData } from "../api/types";
-import { t } from "../lib/i18n";
-import { humanError } from "../lib/errors";
-import { formatIdr, formatNativeUsdt } from "../lib/format";
-import { normalizeMoneyInput } from "../lib/moneyInput";
 import EmptyState from "../components/shop/EmptyState";
+import { PaymentMethodRow } from "../components/shop/PaymentMethodSelector";
 import Skeleton from "../components/shop/Skeleton";
 import Spinner from "../components/shop/Spinner";
-import { PaymentMethodRow } from "../components/shop/PaymentMethodSelector";
-import Card from "../components/ui/Card";
-import Button from "../components/ui/Button";
 import Alert from "../components/ui/Alert";
+import Button from "../components/ui/Button";
+import Card from "../components/ui/Card";
 import FormField from "../components/ui/FormField";
 import Input from "../components/ui/Input";
 import Label from "../components/ui/Label";
 import { cn } from "../components/ui/cn";
+import { humanError } from "../lib/errors";
+import { formatIdr, formatNativeUsdt } from "../lib/format";
+import { t } from "../lib/i18n";
+import { normalizeMoneyInput } from "../lib/moneyInput";
 
 type Currency = "IDR" | "USDT";
 
@@ -76,11 +77,11 @@ function configuredMethodsFor(data: WalletTopupData, currency: Currency): Method
     currency === "IDR"
       ? { qris: data.idr_enabled, paydisini: data.paydisini_enabled }
       : {
-          binance: data.binance_enabled,
-          bybit: data.bybit_enabled,
-          bybit_bsc: data.bybit_bsc_enabled,
-          nowpayments: data.nowpayments_enabled,
-        };
+        binance: data.binance_enabled,
+        bybit: data.bybit_enabled,
+        bybit_bsc: data.bybit_bsc_enabled,
+        nowpayments: data.nowpayments_enabled,
+      };
   const list = currency === "IDR" ? IDR_METHODS : USDT_METHODS;
   return list.filter((m) => enabledMap[m.value]);
 }
@@ -241,12 +242,16 @@ export default function WalletTopupPage() {
     );
   }, [data, currency, parsed]);
 
+  const queryClient = useQueryClient();
   const submitMutation = useMutation({
     mutationFn: () =>
       // The canonical figure, never the raw text: the submit button is disabled
       // while `parsed` is null, so this always sends digits[.digits].
       apiPost<WalletTopupCreateResponse>("/api/v1/wallet/topup", { currency, amount: parsed, method }),
-    onSuccess: (resp) => navigate(`/wallet/topup/${resp.orderCode}/pay`),
+    onSuccess: (resp) => {
+      void queryClient.invalidateQueries({ queryKey: ["wallet-topup"] });
+      navigate(`/wallet/topup/${resp.orderCode}/pay`);
+    },
     onError: (err) => setSubmitError(err),
   });
 
@@ -301,82 +306,100 @@ export default function WalletTopupPage() {
         </Alert>
       )}
 
-      <form onSubmit={(e) => e.preventDefault()} className="space-y-6">
-        <Card className="space-y-4">
-          {/* Currency toggle */}
-          <div>
-            <Label className="mb-2 block">{t("web.wallet_topup_currency_label")}</Label>
-            <div className="grid grid-cols-2 gap-2">
-              {(["IDR", "USDT"] as const).map((cur) => (
-                <Button
-                  key={cur}
-                  variant={cur === currency ? "primary" : "soft"}
-                  onClick={() => setCurrency(cur)}
-                >
-                  {cur === "IDR" ? t("web.wallet_topup_currency_idr") : t("web.wallet_topup_currency_usdt")}
-                </Button>
-              ))}
-            </div>
-          </div>
-
-          {/* Amount */}
-          {/* type="text", not "number": a number input throws away "50.000" or
-              "5,5" before the shape reader ever sees it. */}
-          <FormField
-            label={t("web.wallet_topup_amount_label")}
-            htmlFor="topup_amount"
-            hint={hint ?? undefined}
-            error={amountUnreadable ? t("web.wallet_topup_amount_unreadable") : undefined}
-          >
-            <Input
-              id="topup_amount"
-              type="text"
-              inputMode="decimal"
-              value={amount}
-              onChange={(e) => setAmount(e.target.value)}
-              placeholder={currency === "IDR" ? "50000" : "10"}
-            />
-          </FormField>
-        </Card>
-
-        <Card>
-          <h2 className="section-title mb-3">{t("web.wallet_topup_method_label")}</h2>
-          <div className="space-y-3">
-            {options.map((opt) => (
-              <PaymentMethodRow
-                key={opt.value}
-                value={opt.value}
-                checked={method === opt.value}
-                onSelect={() => setMethod(opt.value)}
-                icon={iconFor(opt.value)}
-                title={t(opt.titleKey)}
-                subtitle={t(opt.subtitleKey)}
-              />
-            ))}
-            {options.length === 0 && (
-              <div className="text-center text-sm text-ink-soft border border-dashed border-line rounded-xl py-6 px-3">
-                <Wallet className="w-5 h-5 mx-auto mb-1.5 text-ink-faint" />
-                <p>
-                  {belowEveryRailMinimum
-                    ? t("web.wallet_topup_below_rail_minimum_all")
-                    : t("web.wallet_topup_none_available")}
-                </p>
-              </div>
-            )}
-          </div>
-        </Card>
-
-        <Button
-          variant="primary"
-          fullWidth
-          className={cn(submitBlocked && "opacity-50")}
-          disabled={submitDisabled}
-          onClick={() => submitMutation.mutate()}
-        >
-          {submitMutation.isPending && <Spinner />}
-          {t("web.wallet_topup_submit")}
-        </Button>
-      </form>
+      <WalletTopupTopupAmount currency={currency} setCurrency={setCurrency} hint={hint} amountUnreadable={amountUnreadable} amount={amount} setAmount={setAmount} options={options} method={method} setMethod={setMethod} belowEveryRailMinimum={belowEveryRailMinimum} submitBlocked={submitBlocked} submitDisabled={submitDisabled} submitMutation={submitMutation} />
     </div>
   );
+}
+
+function WalletTopupTopupAmount({ currency, setCurrency, hint, amountUnreadable, amount, setAmount, options, method, setMethod, belowEveryRailMinimum, submitBlocked, submitDisabled, submitMutation }: {
+  currency: Currency;
+  setCurrency: import("react").Dispatch<import("react").SetStateAction<Currency>>;
+  hint: string | null;
+  amountUnreadable: boolean;
+  amount: string;
+  setAmount: import("react").Dispatch<import("react").SetStateAction<string>>;
+  options: MethodOption[];
+  method: string | null;
+  setMethod: import("react").Dispatch<import("react").SetStateAction<string | null>>;
+  belowEveryRailMinimum: boolean;
+  submitBlocked: boolean;
+  submitDisabled: boolean;
+  submitMutation: import("@tanstack/react-query").UseMutationResult<WalletTopupCreateResponse, Error, void, unknown>;
+}) {
+  return (<form onSubmit={(e) => e.preventDefault()} className="space-y-6">
+    <Card className="space-y-4">
+      {/* Currency toggle */}
+      <div>
+        <Label className="mb-2 block">{t("web.wallet_topup_currency_label")}</Label>
+        <div className="grid grid-cols-2 gap-2">
+          {(["IDR", "USDT"] as const).map((cur) => (
+            <Button
+              key={cur}
+              variant={cur === currency ? "primary" : "soft"}
+              onClick={() => setCurrency(cur)}
+            >
+              {cur === "IDR" ? t("web.wallet_topup_currency_idr") : t("web.wallet_topup_currency_usdt")}
+            </Button>
+          ))}
+        </div>
+      </div>
+
+      {/* Amount */}
+      {/* type="text", not "number": a number input throws away "50.000" or
+              "5,5" before the shape reader ever sees it. */}
+      <FormField
+        label={t("web.wallet_topup_amount_label")}
+        htmlFor="topup_amount"
+        hint={hint ?? undefined}
+        error={amountUnreadable ? t("web.wallet_topup_amount_unreadable") : undefined}
+      >
+        <Input
+          id="topup_amount"
+          type="text"
+          inputMode="decimal"
+          value={amount}
+          onChange={(e) => setAmount(e.target.value)}
+          placeholder={currency === "IDR" ? "50000" : "10"}
+        />
+      </FormField>
+    </Card>
+
+    <Card>
+      <h2 className="section-title mb-3">{t("web.wallet_topup_method_label")}</h2>
+      <div className="space-y-3">
+        {options.map((opt) => (
+          <PaymentMethodRow
+            key={opt.value}
+            value={opt.value}
+            checked={method === opt.value}
+            onSelect={() => setMethod(opt.value)}
+            icon={iconFor(opt.value)}
+            title={t(opt.titleKey)}
+            subtitle={t(opt.subtitleKey)}
+          />
+        ))}
+        {options.length === 0 && (
+          <div className="text-center text-sm text-ink-soft border border-dashed border-line rounded-xl py-6 px-3">
+            <Wallet className="w-5 h-5 mx-auto mb-1.5 text-ink-faint" />
+            <p>
+              {belowEveryRailMinimum
+                ? t("web.wallet_topup_below_rail_minimum_all")
+                : t("web.wallet_topup_none_available")}
+            </p>
+          </div>
+        )}
+      </div>
+    </Card>
+
+    <Button
+      variant="primary"
+      fullWidth
+      className={cn(submitBlocked && "opacity-50")}
+      disabled={submitDisabled}
+      onClick={() => submitMutation.mutate()}
+    >
+      {submitMutation.isPending && <Spinner />}
+      {t("web.wallet_topup_submit")}
+    </Button>
+  </form>);
 }

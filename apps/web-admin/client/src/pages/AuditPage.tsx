@@ -1,22 +1,21 @@
-import { useMemo, useState } from "react";
-import { PageLayout } from "../components/shared/PageLayout";
-import { PageHeader } from "../components/shared/PageHeader";
-import { FilterBar } from "../components/shared/FilterBar";
-import { DataTable } from "../components/shared/DataTable";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import {
   Select,
-  SelectTrigger,
-  SelectValue,
   SelectContent,
   SelectItem,
+  SelectTrigger,
+  SelectValue,
 } from "@/components/ui/select";
+import { useId, useMemo, useState } from "react";
+import { CursorPagination } from "../components/shared/CursorPagination";
+import { DataTable } from "../components/shared/DataTable";
 import { DateInput } from "../components/shared/DateInput";
-import { ChevronLeft, ChevronRight } from "lucide-react";
-import { useAudit } from "../hooks/useAudit";
+import { FilterBar } from "../components/shared/FilterBar";
+import { PageHeader } from "../components/shared/PageHeader";
+import { PageLayout } from "../components/shared/PageLayout";
 import { useAdmins } from "../hooks/useAdmins";
+import { useAudit } from "../hooks/useAudit";
 
 interface AuditRow {
   id: number;
@@ -243,6 +242,7 @@ function buildAuditColumns(adminNames: Map<number, string>) {
 }
 
 export function AuditPage() {
+  const fieldId = useId();
   const [page, setPage] = useState(1);
   const [action, setAction] = useState("");
   const [targetType, setTargetType] = useState("");
@@ -302,9 +302,9 @@ export function AuditPage() {
             className="w-32"
           />
           <div className="flex flex-col gap-1">
-            <label className="text-xs text-ink-soft">Actor</label>
+            <label htmlFor={`${fieldId}-actor-1`} className="text-xs text-ink-soft">Actor</label>
             <Select value={actorType} onValueChange={setActorType}>
-              <SelectTrigger className="w-36" aria-label="Actor filter">
+              <SelectTrigger id={`${fieldId}-actor-1`} className="w-36" aria-label="Actor filter">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -342,27 +342,7 @@ export function AuditPage() {
         </Card>
 
         {data && (data.hasNext || page > 1) && (
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={page <= 1}
-              onClick={() => goPage(page - 1)}
-            >
-              <ChevronLeft className="h-4 w-4" />
-              Prev
-            </Button>
-            <span className="text-sm text-ink-soft">Page {page}</span>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={!data.hasNext}
-              onClick={() => goPage(page + 1)}
-            >
-              Next
-              <ChevronRight className="h-4 w-4" />
-            </Button>
-          </div>
+          <CursorPagination page={page} hasNext={data.hasNext} onPageChange={goPage} />
         )}
       </div>
     </PageLayout>

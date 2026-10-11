@@ -15,6 +15,8 @@ export type AdditionalField = import("@app/core/deliveryFields").AdditionalField
  * itself. AdditionalFieldsEditor is the controlled component that owns this
  * shape; the page components convert to real AdditionalField[] on submit. */
 export interface AdditionalFieldDraft {
+  /** Stable identity for a newly added, still unnamed editor row; never submitted. */
+  draftId?: string;
   key: string;
   labelId: string;
   labelEn: string;

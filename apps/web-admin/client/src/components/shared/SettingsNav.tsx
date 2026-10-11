@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from "react";
-import { ChevronDown, type LucideIcon } from "lucide-react";
-import { cn } from "@/lib/utils";
 import { DURATION } from "@/lib/motion";
+import { cn } from "@/lib/utils";
+import { ChevronDown, type LucideIcon } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { computeNavScrollLeft } from "./settingsNavScroll";
 
 export interface SettingsNavLink {
@@ -116,11 +116,9 @@ export function SettingsNav({ topLinks, group, bottomLinks }: SettingsNavProps):
   }, [activeId]);
 
   function toggleExpanded() {
-    setExpanded((prev) => {
-      const next = !prev;
-      writeExpandedStorage(next);
-      return next;
-    });
+    const next = !expanded;
+    setExpanded(next);
+    writeExpandedStorage(next);
   }
 
   function renderLink(link: SettingsNavLink, opts: { indent?: boolean; collapsedOnDesktop?: boolean } = {}) {

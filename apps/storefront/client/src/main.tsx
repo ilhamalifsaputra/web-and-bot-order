@@ -1,10 +1,10 @@
-import "./index.css";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { domAnimation, LazyMotion, MotionConfig } from "motion/react";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MotionConfig } from "motion/react";
 import App from "./App";
+import "./index.css";
 import ErrorPage from "./pages/ErrorPage";
 import SetupPendingPage from "./pages/SetupPendingPage";
 
@@ -32,22 +32,24 @@ const special = specialServerState();
 
 createRoot(root).render(
   <StrictMode>
-    <MotionConfig reducedMotion="user">
-      {special?.kind === "setup-pending" ? (
-        <SetupPendingPage />
-      ) : special?.kind === "server-error" ? (
-        // ErrorPage's "back home" link needs a Router context even standalone.
-        <BrowserRouter>
-          <ErrorPage statusCode={special.status} />
-        </BrowserRouter>
-      ) : (
-        <BrowserRouter>
-          <QueryClientProvider client={queryClient}>
-            <App />
-          </QueryClientProvider>
-        </BrowserRouter>
-      )}
-    </MotionConfig>
+    <LazyMotion features={domAnimation}>
+      <MotionConfig reducedMotion="user">
+        {special?.kind === "setup-pending" ? (
+          <SetupPendingPage />
+        ) : special?.kind === "server-error" ? (
+          // ErrorPage's "back home" link needs a Router context even standalone.
+          <BrowserRouter>
+            <ErrorPage statusCode={special.status} />
+          </BrowserRouter>
+        ) : (
+          <BrowserRouter>
+            <QueryClientProvider client={queryClient}>
+              <App />
+            </QueryClientProvider>
+          </BrowserRouter>
+        )}
+      </MotionConfig>
+    </LazyMotion>
   </StrictMode>,
 );
 

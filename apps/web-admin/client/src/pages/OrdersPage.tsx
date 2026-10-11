@@ -1,53 +1,55 @@
-import { useEffect, useState } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useNavigate, useSearchParams } from "react-router-dom";
-import { toast } from "sonner";
-import { PageLayout } from "../components/shared/PageLayout";
-import { PageHeader } from "../components/shared/PageHeader";
-import { FilterBar } from "../components/shared/FilterBar";
-import { SearchBar } from "../components/shared/SearchBar";
-import { DataTable } from "../components/shared/DataTable";
-import { EmptyState } from "../components/shared/EmptyState";
-import { OrderStatusBadge } from "../components/shared/OrderStatusBadge";
-import { PaymentMethodBadge } from "../components/shared/PaymentMethodBadge";
-import { Pagination } from "../components/shared/Pagination";
-import { OrdersKpiRow } from "./orders/OrdersKpiRow";
-import { OrderStatusTabs, statusesForTab, type StatusTabKey } from "./orders/OrderStatusTabs";
-import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Textarea } from "@/components/ui/textarea";
-import { DateInput } from "../components/shared/DateInput";
-import {
-  Select,
-  SelectTrigger,
-  SelectValue,
-  SelectContent,
-  SelectItem,
-} from "@/components/ui/select";
-import {
-  DropdownMenu,
-  DropdownMenuTrigger,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-} from "@/components/ui/dropdown-menu";
 import {
   Dialog,
   DialogContent,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogFooter,
 } from "@/components/ui/dialog";
-import { ShoppingCart, MoreVertical, Eye, Check, Send, RefreshCw, XCircle } from "lucide-react";
-import { formatCurrencyParts } from "../components/shared/CurrencyAmount";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Check, Eye, MoreVertical, RefreshCw, Send, ShoppingCart, XCircle } from "lucide-react";
+import { useEffect, useId, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { toast } from "sonner";
+import { apiGet, apiPost } from "../api/client";
+import { formatCurrencyParts } from "../components/shared/CurrencyAmount.helpers";
+import { DataTable } from "../components/shared/DataTable";
+import { DateInput } from "../components/shared/DateInput";
+import { EmptyState } from "../components/shared/EmptyState";
+import { FilterBar } from "../components/shared/FilterBar";
+import { OrderStatusBadge } from "../components/shared/OrderStatusBadge";
+import { PageHeader } from "../components/shared/PageHeader";
+import { PageLayout } from "../components/shared/PageLayout";
+import { Pagination } from "../components/shared/Pagination";
+import { PaymentMethodBadge } from "../components/shared/PaymentMethodBadge";
+import { SearchBar } from "../components/shared/SearchBar";
+import { useAction } from "../hooks/useAction";
 import { useOrdersKpis } from "../hooks/useOrdersKpis";
+import { describeError } from "../lib/errorMessages";
 import { orderStatusLabel } from "../lib/orderStatus";
 import { PAYMENT_METHOD_LABELS, paymentMethodLabel } from "../lib/paymentMethod";
-import { apiGet, apiPost } from "../api/client";
-import { describeError } from "../lib/errorMessages";
 import { visibleSelection } from "../lib/selection";
+import { OrdersKpiRow } from "./orders/OrdersKpiRow";
+import { OrderStatusTabs } from "./orders/OrderStatusTabs";
+import { statusesForTab, type StatusTabKey } from "./orders/OrderStatusTabs.helpers";
 
 interface OrderItemRow {
   id: number;
@@ -147,6 +149,7 @@ function useOrders(filters: Filters) {
 const PAYMENT_METHOD_VALUES = Object.keys(PAYMENT_METHOD_LABELS);
 
 export function OrdersPage() {
+  const fieldId = useId();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -199,7 +202,7 @@ export function OrdersPage() {
     onError: (e: Error) => toast.error(describeError(e)),
   });
 
-  const resendMutation = useMutation({
+  const resendMutation = useAction({
     mutationFn: (orderId: number) => apiPost(`/api/orders/${orderId}/resend`, {}),
     onSuccess: () => toast.success("Delivery credentials resent."),
     onError: (e: Error) => toast.error(describeError(e)),
@@ -295,12 +298,7 @@ export function OrdersPage() {
 
   const hasActiveFilter = Boolean(filters.status || filters.paymentMethod || filters.q || filters.since || filters.until);
 
-  const exportParams = new URLSearchParams();
-  if (filters.status) exportParams.set("status", filters.status);
-  if (filters.paymentMethod) exportParams.set("paymentMethod", filters.paymentMethod);
-  if (filters.q) exportParams.set("q", filters.q);
-  if (filters.since) exportParams.set("since", filters.since);
-  if (filters.until) exportParams.set("until", filters.until);
+  const { exportParams } = buildOrderExportParams({ filters });
 
   function toggleSelected(id: number) {
     setSelected((s) => {
@@ -372,314 +370,11 @@ export function OrdersPage() {
 
       <OrderStatusTabs active={activeTab} onChange={selectTab} />
 
-      <FilterBar onApply={applyFilters} onClear={clearFilters} className="mb-4">
-        <SearchBar
-          value={draft.q}
-          onChange={(v) => setDraft((f) => ({ ...f, q: v }))}
-          onSearch={applyFilters}
-          placeholder="Search order code, customer or product..."
-          className="w-full sm:w-[420px]"
-        />
+      <OrdersFilters applyFilters={applyFilters} clearFilters={clearFilters} draft={draft} setDraft={setDraft} fieldId={fieldId} statuses={statuses} />
 
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-ink-soft">Status</label>
-          <Select
-            value={draft.status || "_all_"}
-            onValueChange={(v) => setDraft((f) => ({ ...f, status: v === "_all_" ? "" : v }))}
-          >
-            <SelectTrigger className="w-40">
-              <SelectValue placeholder="All statuses" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="_all_">All</SelectItem>
-              {/* A deep link like the dashboard's Pending Payments card carries
-                  several statuses; without an item for it the trigger reads blank. */}
-              {draft.status.includes(",") && <SelectItem value={draft.status}>Several statuses</SelectItem>}
-              {statuses.map((s) => (
-                <SelectItem key={s} value={s}>
-                  {orderStatusLabel(s)}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
+      <OrdersBulkActions visibleSelected={visibleSelected} bulkMutation={bulkMutation} runBulk={runBulk} cancelMutation={cancelMutation} eligibleSelectedIds={eligibleSelectedIds} openCancelDialog={openCancelDialog} setSelected={setSelected} />
 
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-ink-soft">Payment Method</label>
-          <Select
-            value={draft.paymentMethod || "_all_"}
-            onValueChange={(v) => setDraft((f) => ({ ...f, paymentMethod: v === "_all_" ? "" : v }))}
-          >
-            <SelectTrigger className="w-40">
-              <SelectValue placeholder="All methods" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="_all_">All methods</SelectItem>
-              {PAYMENT_METHOD_VALUES.map((m) => (
-                <SelectItem key={m} value={m}>
-                  {paymentMethodLabel(m)}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-ink-soft">From</label>
-          <DateInput
-            value={draft.since}
-            onChange={(e) => setDraft((f) => ({ ...f, since: e.target.value }))}
-            className="w-36"
-          />
-        </div>
-
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-ink-soft">To</label>
-          <DateInput
-            value={draft.until}
-            onChange={(e) => setDraft((f) => ({ ...f, until: e.target.value }))}
-            className="w-36"
-          />
-        </div>
-      </FilterBar>
-
-      {visibleSelected.size > 0 && (
-        <div className="sticky bottom-4 z-10 mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-line bg-card px-3 py-2 text-sm shadow-lift transition-all duration-150">
-          <span className="text-ink-soft">{visibleSelected.size} selected</span>
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={bulkMutation.isPending}
-            onClick={() => runBulk("deliver", (o) => o.eligibility.canAct, "None of the selected orders can be delivered.")}
-          >
-            Mark Delivered
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={bulkMutation.isPending}
-            onClick={() => runBulk("resend", (o) => o.eligibility.canResend, "None of the selected orders can be resent.")}
-          >
-            Resend
-          </Button>
-          <Button
-            size="sm"
-            variant="destructive"
-            disabled={cancelMutation.isPending}
-            onClick={() => {
-              const ids = eligibleSelectedIds(canCancelOrder);
-              if (ids.length === 0) {
-                toast.error("None of the selected orders can be cancelled.");
-                return;
-              }
-              openCancelDialog(ids);
-            }}
-          >
-            Cancel
-          </Button>
-          <a href={`/api/orders/export?ids=${Array.from(visibleSelected).join(",")}`}>
-            <Button size="sm" variant="ghost">Export</Button>
-          </a>
-          <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
-            Clear
-          </Button>
-        </div>
-      )}
-
-      <Card>
-        <CardContent>
-          <DataTable
-            nested
-            stickyHeader
-            columns={[
-              {
-                key: "select",
-                kind: "selection",
-                header: (
-                  <Checkbox
-                    checked={allOnPageSelected}
-                    onCheckedChange={toggleSelectAllOnPage}
-                    aria-label="Select all orders on this page"
-                  />
-                ),
-                render: (row) => (
-                  <Checkbox
-                    checked={selected.has(row.id)}
-                    onCheckedChange={() => toggleSelected(row.id)}
-                    onClick={(e) => e.stopPropagation()}
-                    aria-label={`Select order ${row.orderCode}`}
-                  />
-                ),
-              },
-              {
-                key: "code",
-                header: "Order Code",
-                render: (row) => (
-                  <span className="font-mono text-sm font-semibold text-ink">{row.orderCode}</span>
-                ),
-              },
-              {
-                key: "customer",
-                header: "Customer",
-                render: (row) => {
-                  // A guest has no name of any kind, so the default branch below
-                  // would print a bare "—" and leave the admin with nothing to
-                  // act on. Show the Guest marker plus the contact email (the
-                  // guest's actual identity here) — and, if that email is
-                  // somehow missing, say that outright rather than blank out.
-                  if (row.user?.isGuest) {
-                    return (
-                      <div className="max-w-[240px]">
-                        <div className="flex min-w-0 items-start gap-2">
-                          <Badge variant="secondary" className="shrink-0">Guest</Badge>
-                          {/* The only way to reach a guest buyer, so it wraps and
-                              stays fully readable — never truncated. whitespace-normal
-                              defeats TableCell's default nowrap, matching the
-                              treatment on OrderDetailPage. */}
-                          <span className="text-sm break-all whitespace-normal text-ink">
-                            {row.user.guestEmail ?? "No contact email"}
-                          </span>
-                        </div>
-                        <div className="text-xs text-ink-soft">Guest checkout — no account</div>
-                      </div>
-                    );
-                  }
-                  return (
-                    <div className="max-w-[240px]">
-                      <div
-                        className="truncate text-sm text-ink"
-                        title={row.user?.fullName ?? row.user?.username ?? undefined}
-                      >
-                        {row.user?.fullName ?? row.user?.username ?? "—"}
-                      </div>
-                      <div className="truncate text-xs text-ink-soft">
-                        {row.user?.telegramId ? `Telegram ${row.user.telegramId}` : row.user ? "Registered Customer" : "—"}
-                      </div>
-                    </div>
-                  );
-                },
-              },
-              {
-                key: "products",
-                header: "Product Count",
-                render: (row) => {
-                  if (row.kind === "WALLET_TOPUP") {
-                    return <Badge variant="secondary">Wallet Top-Up ({row.currency})</Badge>;
-                  }
-                  if (row.items.length === 0) return <span className="text-sm text-ink-soft">—</span>;
-                  const first = row.items[0]!;
-                  const extra = row.items.length - 1;
-                  return (
-                    // The "+N more" suffix must never be the part that gets cut,
-                    // so only the product name truncates.
-                    <span className="flex max-w-[240px] items-baseline text-sm text-ink">
-                      <span className="truncate" title={first.product.name}>{first.product.name}</span>
-                      {extra > 0 && <span className="ml-1 shrink-0 text-ink-soft">+{extra}</span>}
-                    </span>
-                  );
-                },
-              },
-              {
-                key: "paymentMethod",
-                header: "Payment Method",
-                render: (row) => <PaymentMethodBadge method={row.paymentMethod} />,
-              },
-              {
-                key: "status",
-                header: "Status",
-                render: (row) => <OrderStatusBadge status={row.status} />,
-              },
-              {
-                key: "total",
-                header: "Total",
-                render: (row) => {
-                  const { amount, suffix } = formatCurrencyParts(row.totalAmount, row.currency as "IDR" | "USDT" | "USD");
-                  return (
-                    <span className="font-mono text-sm">
-                      <span className="font-semibold text-ink">{amount}</span>
-                      {suffix && <span className="ml-1 text-xs text-ink-soft">{suffix}</span>}
-                    </span>
-                  );
-                },
-              },
-              {
-                key: "date",
-                header: "Order Date",
-                render: (row) => (
-                  <span className="text-xs text-ink-soft">{row.createdAtDisplay ?? "—"}</span>
-                ),
-              },
-              {
-                key: "actions",
-                header: "",
-                render: (row) => (
-                  <div onClick={(e) => e.stopPropagation()}>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="icon-sm" aria-label={`Actions for ${row.orderCode}`}>
-                          <MoreVertical className="h-4 w-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem onSelect={() => navigate(`/orders/${row.id}`)}>
-                          <Eye className="h-4 w-4" />
-                          View Order
-                        </DropdownMenuItem>
-                        {row.eligibility.canAct && (
-                          <DropdownMenuItem onSelect={() => deliverMutation.mutate(row.id)}>
-                            <Check className="h-4 w-4" />
-                            Deliver
-                          </DropdownMenuItem>
-                        )}
-                        {row.eligibility.canFulfill && (
-                          <DropdownMenuItem onSelect={() => navigate(`/orders/${row.id}`)}>
-                            <Send className="h-4 w-4" />
-                            Fulfill Manually
-                          </DropdownMenuItem>
-                        )}
-                        {row.eligibility.canResend && (
-                          <DropdownMenuItem onSelect={() => resendMutation.mutate(row.id)}>
-                            <RefreshCw className="h-4 w-4" />
-                            Resend Delivery
-                          </DropdownMenuItem>
-                        )}
-                        {canCancelOrder(row) && (
-                          <>
-                            <DropdownMenuSeparator />
-                            <DropdownMenuItem
-                              variant="destructive"
-                              onSelect={(e) => {
-                                e.preventDefault();
-                                openCancelDialog([row.id]);
-                              }}
-                            >
-                              <XCircle className="h-4 w-4" />
-                              Cancel Order
-                            </DropdownMenuItem>
-                          </>
-                        )}
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </div>
-                ),
-              },
-            ]}
-            data={pageOrders}
-            isLoading={isLoading}
-            keyExtractor={(row) => row.id}
-            onRowClick={(row) => navigate(`/orders/${row.id}`)}
-            empty={
-              <EmptyState
-                icon={ShoppingCart}
-                title="No orders found."
-                description="Orders will appear here once customers start purchasing."
-                action={{ label: "Refresh", onClick: () => void refetch() }}
-                secondaryAction={hasActiveFilter ? { label: "Clear Filters", onClick: clearFilters } : undefined}
-              />
-            }
-          />
-        </CardContent>
-      </Card>
+      <OrdersSelectAllOrdersOnThis allOnPageSelected={allOnPageSelected} toggleSelectAllOnPage={toggleSelectAllOnPage} selected={selected} toggleSelected={toggleSelected} navigate={navigate} deliverMutation={deliverMutation} resendMutation={resendMutation} openCancelDialog={openCancelDialog} pageOrders={pageOrders} isLoading={isLoading} refetch={refetch} hasActiveFilter={hasActiveFilter} clearFilters={clearFilters} />
 
       {data && (
         <div className="mt-4">
@@ -693,34 +388,406 @@ export function OrdersPage() {
         </div>
       )}
 
-      {cancelTarget && (
-        <Dialog open onOpenChange={(open) => { if (!open) setCancelTarget(null); }}>
-          <DialogContent showCloseButton={false}>
-            <DialogHeader>
-              <DialogTitle>
-                {cancelTarget.ids.length > 1 ? `Cancel ${cancelTarget.ids.length} orders?` : "Cancel this order?"}
-              </DialogTitle>
-            </DialogHeader>
-            <div className="flex flex-col gap-2">
-              <p className="text-sm text-ink-soft">
-                Releases any wallet-credit/stock holds. This does not call a payment gateway refund.
-              </p>
-              <Textarea
-                value={cancelReason}
-                onChange={(e) => setCancelReason(e.target.value)}
-                placeholder="Cancellation reason (required)"
-                rows={3}
-              />
-            </div>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setCancelTarget(null)}>Back</Button>
-              <Button variant="destructive" disabled={cancelMutation.isPending} onClick={confirmCancel}>
-                {cancelMutation.isPending ? "Cancelling…" : "Cancel Order"}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-      )}
+      <Orders cancelTarget={cancelTarget} setCancelTarget={setCancelTarget} cancelReason={cancelReason} setCancelReason={setCancelReason} cancelMutation={cancelMutation} confirmCancel={confirmCancel} />
     </PageLayout>
   );
+}
+
+function OrdersFilters({ applyFilters, clearFilters, draft, setDraft, fieldId, statuses }: {
+  applyFilters: () => void;
+  clearFilters: () => void;
+  draft: { status: string; paymentMethod: string; q: string; since: string; until: string; };
+  setDraft: import("react").Dispatch<import("react").SetStateAction<{ status: string; paymentMethod: string; q: string; since: string; until: string; }>>;
+  fieldId: string;
+  statuses: string[];
+}) {
+  return (<FilterBar onApply={applyFilters} onClear={clearFilters} className="mb-4">
+    <SearchBar
+      value={draft.q}
+      onChange={(v) => setDraft((f) => ({ ...f, q: v }))}
+      onSearch={applyFilters}
+      placeholder="Search order code, customer or product..."
+      className="w-full sm:w-[420px]"
+    />
+
+    <div className="flex flex-col gap-1">
+      <label htmlFor={`${fieldId}-status-1`} className="text-xs text-ink-soft">Status</label>
+      <Select
+        value={draft.status || "_all_"}
+        onValueChange={(v) => setDraft((f) => ({ ...f, status: v === "_all_" ? "" : v }))}
+      >
+        <SelectTrigger id={`${fieldId}-status-1`} className="w-40">
+          <SelectValue placeholder="All statuses" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="_all_">All</SelectItem>
+          {/* A deep link like the dashboard's Pending Payments card carries
+                  several statuses; without an item for it the trigger reads blank. */}
+          {draft.status.includes(",") && <SelectItem value={draft.status}>Several statuses</SelectItem>}
+          {statuses.map((s) => (
+            <SelectItem key={s} value={s}>
+              {orderStatusLabel(s)}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+
+    <div className="flex flex-col gap-1">
+      <label htmlFor={`${fieldId}-payment-method-2`} className="text-xs text-ink-soft">Payment Method</label>
+      <Select
+        value={draft.paymentMethod || "_all_"}
+        onValueChange={(v) => setDraft((f) => ({ ...f, paymentMethod: v === "_all_" ? "" : v }))}
+      >
+        <SelectTrigger id={`${fieldId}-payment-method-2`} className="w-40">
+          <SelectValue placeholder="All methods" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="_all_">All methods</SelectItem>
+          {PAYMENT_METHOD_VALUES.map((m) => (
+            <SelectItem key={m} value={m}>
+              {paymentMethodLabel(m)}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+
+    <div className="flex flex-col gap-1">
+      <label htmlFor={`${fieldId}-from-3`} className="text-xs text-ink-soft">From</label>
+      <DateInput id={`${fieldId}-from-3`}
+        value={draft.since}
+        onChange={(e) => setDraft((f) => ({ ...f, since: e.target.value }))}
+        className="w-36"
+      />
+    </div>
+
+    <div className="flex flex-col gap-1">
+      <label htmlFor={`${fieldId}-to-4`} className="text-xs text-ink-soft">To</label>
+      <DateInput id={`${fieldId}-to-4`}
+        value={draft.until}
+        onChange={(e) => setDraft((f) => ({ ...f, until: e.target.value }))}
+        className="w-36"
+      />
+    </div>
+  </FilterBar>);
+}
+
+function OrdersSelectAllOrdersOnThis({ allOnPageSelected, toggleSelectAllOnPage, selected, toggleSelected, navigate, deliverMutation, resendMutation, openCancelDialog, pageOrders, isLoading, refetch, hasActiveFilter, clearFilters }: {
+  allOnPageSelected: boolean;
+  toggleSelectAllOnPage: () => void;
+  selected: Set<number>;
+  toggleSelected: (id: number) => void;
+  navigate: import("react-router-dom").NavigateFunction;
+  deliverMutation: import("@tanstack/react-query").UseMutationResult<unknown, Error, number, unknown>;
+  resendMutation: { mutate: (variables: number) => void; reset: () => void; data?: unknown; error: Error | null; isPending: boolean; };
+  openCancelDialog: (ids: number[]) => void;
+  pageOrders: OrderRow[];
+  isLoading: boolean;
+  refetch: (options?: import("@tanstack/react-query").RefetchOptions) => Promise<import("@tanstack/react-query").QueryObserverResult<NoInfer<OrdersData>, Error>>;
+  hasActiveFilter: boolean;
+  clearFilters: () => void;
+}) {
+  return (<Card>
+    <CardContent>
+      <DataTable
+        nested
+        stickyHeader
+        columns={[
+          {
+            key: "select",
+            kind: "selection",
+            header: (
+              <Checkbox
+                checked={allOnPageSelected}
+                onCheckedChange={toggleSelectAllOnPage}
+                aria-label="Select all orders on this page"
+              />
+            ),
+            render: (row) => (
+              <Checkbox
+                checked={selected.has(row.id)}
+                onCheckedChange={() => toggleSelected(row.id)}
+                onClick={(e) => e.stopPropagation()}
+                aria-label={`Select order ${row.orderCode}`}
+              />
+            ),
+          },
+          {
+            key: "code",
+            header: "Order Code",
+            render: (row) => (
+              <span className="font-mono text-sm font-semibold text-ink">{row.orderCode}</span>
+            ),
+          },
+          {
+            key: "customer",
+            header: "Customer",
+            render: (row) => {
+              // A guest has no name of any kind, so the default branch below
+              // would print a bare "—" and leave the admin with nothing to
+              // act on. Show the Guest marker plus the contact email (the
+              // guest's actual identity here) — and, if that email is
+              // somehow missing, say that outright rather than blank out.
+              if (row.user?.isGuest) {
+                return (
+                  <div className="max-w-[240px]">
+                    <div className="flex min-w-0 items-start gap-2">
+                      <Badge variant="secondary" className="shrink-0">Guest</Badge>
+                      {/* The only way to reach a guest buyer, so it wraps and
+                              stays fully readable — never truncated. whitespace-normal
+                              defeats TableCell's default nowrap, matching the
+                              treatment on OrderDetailPage. */}
+                      <span className="text-sm break-all whitespace-normal text-ink">
+                        {row.user.guestEmail ?? "No contact email"}
+                      </span>
+                    </div>
+                    <div className="text-xs text-ink-soft">Guest checkout — no account</div>
+                  </div>
+                );
+              }
+              return (
+                <div className="max-w-[240px]">
+                  <div
+                    className="truncate text-sm text-ink"
+                    title={row.user?.fullName ?? row.user?.username ?? undefined}
+                  >
+                    {row.user?.fullName ?? row.user?.username ?? "—"}
+                  </div>
+                  <div className="truncate text-xs text-ink-soft">
+                    {row.user?.telegramId ? `Telegram ${row.user.telegramId}` : row.user ? "Registered Customer" : "—"}
+                  </div>
+                </div>
+              );
+            },
+          },
+          {
+            key: "products",
+            header: "Product Count",
+            render: (row) => {
+              if (row.kind === "WALLET_TOPUP") {
+                return <Badge variant="secondary">Wallet Top-Up ({row.currency})</Badge>;
+              }
+              if (row.items.length === 0) return <span className="text-sm text-ink-soft">—</span>;
+              const first = row.items[0]!;
+              const extra = row.items.length - 1;
+              return (
+                // The "+N more" suffix must never be the part that gets cut,
+                // so only the product name truncates.
+                <span className="flex max-w-[240px] items-baseline text-sm text-ink">
+                  <span className="truncate" title={first.product.name}>{first.product.name}</span>
+                  {extra > 0 && <span className="ml-1 shrink-0 text-ink-soft">+{extra}</span>}
+                </span>
+              );
+            },
+          },
+          {
+            key: "paymentMethod",
+            header: "Payment Method",
+            render: (row) => <PaymentMethodBadge method={row.paymentMethod} />,
+          },
+          {
+            key: "status",
+            header: "Status",
+            render: (row) => <OrderStatusBadge status={row.status} />,
+          },
+          {
+            key: "total",
+            header: "Total",
+            render: (row) => {
+              const { amount, suffix } = formatCurrencyParts(row.totalAmount, row.currency as "IDR" | "USDT" | "USD");
+              return (
+                <span className="font-mono text-sm">
+                  <span className="font-semibold text-ink">{amount}</span>
+                  {suffix && <span className="ml-1 text-xs text-ink-soft">{suffix}</span>}
+                </span>
+              );
+            },
+          },
+          {
+            key: "date",
+            header: "Order Date",
+            render: (row) => (
+              <span className="text-xs text-ink-soft">{row.createdAtDisplay ?? "—"}</span>
+            ),
+          },
+          {
+            key: "actions",
+            header: "",
+            render: (row) => (
+              <div onClick={(e) => e.stopPropagation()}>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="ghost" size="icon-sm" aria-label={`Actions for ${row.orderCode}`}>
+                      <MoreVertical className="h-4 w-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onSelect={() => navigate(`/orders/${row.id}`)}>
+                      <Eye className="h-4 w-4" />
+                      View Order
+                    </DropdownMenuItem>
+                    {row.eligibility.canAct && (
+                      <DropdownMenuItem onSelect={() => deliverMutation.mutate(row.id)}>
+                        <Check className="h-4 w-4" />
+                        Deliver
+                      </DropdownMenuItem>
+                    )}
+                    {row.eligibility.canFulfill && (
+                      <DropdownMenuItem onSelect={() => navigate(`/orders/${row.id}`)}>
+                        <Send className="h-4 w-4" />
+                        Fulfill Manually
+                      </DropdownMenuItem>
+                    )}
+                    {row.eligibility.canResend && (
+                      <DropdownMenuItem onSelect={() => resendMutation.mutate(row.id)}>
+                        <RefreshCw className="h-4 w-4" />
+                        Resend Delivery
+                      </DropdownMenuItem>
+                    )}
+                    {canCancelOrder(row) && (
+                      <>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          variant="destructive"
+                          onSelect={(e) => {
+                            e.preventDefault();
+                            openCancelDialog([row.id]);
+                          }}
+                        >
+                          <XCircle className="h-4 w-4" />
+                          Cancel Order
+                        </DropdownMenuItem>
+                      </>
+                    )}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+            ),
+          },
+        ]}
+        data={pageOrders}
+        isLoading={isLoading}
+        keyExtractor={(row) => row.id}
+        onRowClick={(row) => navigate(`/orders/${row.id}`)}
+        empty={
+          <EmptyState
+            icon={ShoppingCart}
+            title="No orders found."
+            description="Orders will appear here once customers start purchasing."
+            action={{ label: "Refresh", onClick: () => void refetch() }}
+            secondaryAction={hasActiveFilter ? { label: "Clear Filters", onClick: clearFilters } : undefined}
+          />
+        }
+      />
+    </CardContent>
+  </Card>);
+}
+
+function Orders({ cancelTarget, setCancelTarget, cancelReason, setCancelReason, cancelMutation, confirmCancel }: {
+  cancelTarget: { ids: number[]; } | null;
+  setCancelTarget: import("react").Dispatch<import("react").SetStateAction<{ ids: number[]; } | null>>;
+  cancelReason: string;
+  setCancelReason: import("react").Dispatch<import("react").SetStateAction<string>>;
+  cancelMutation: import("@tanstack/react-query").UseMutationResult<BulkActionResult, Error, { ids: number[]; reason: string; }, unknown>;
+  confirmCancel: () => void;
+}) {
+  return (cancelTarget && (
+    <Dialog open onOpenChange={(open) => { if (!open) setCancelTarget(null); }}>
+      <DialogContent showCloseButton={false}>
+        <DialogHeader>
+          <DialogTitle>
+            {cancelTarget.ids.length > 1 ? `Cancel ${cancelTarget.ids.length} orders?` : "Cancel this order?"}
+          </DialogTitle>
+        </DialogHeader>
+        <div className="flex flex-col gap-2">
+          <p className="text-sm text-ink-soft">
+            Releases any wallet-credit/stock holds. This does not call a payment gateway refund.
+          </p>
+          <Textarea
+            value={cancelReason}
+            onChange={(e) => setCancelReason(e.target.value)}
+            placeholder="Cancellation reason (required)"
+            rows={3}
+          />
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setCancelTarget(null)}>Back</Button>
+          <Button variant="destructive" disabled={cancelMutation.isPending} onClick={confirmCancel}>
+            {cancelMutation.isPending ? "Cancelling…" : "Cancel Order"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  ));
+}
+
+function OrdersBulkActions({ visibleSelected, bulkMutation, runBulk, cancelMutation, eligibleSelectedIds, openCancelDialog, setSelected }: {
+  visibleSelected: Set<number>;
+  bulkMutation: import("@tanstack/react-query").UseMutationResult<BulkActionResult, Error, { ids: number[]; action: "deliver" | "resend"; }, unknown>;
+  runBulk: (action: "deliver" | "resend", predicate: (row: OrderRow) => boolean, ineligibleMessage: string) => void;
+  cancelMutation: import("@tanstack/react-query").UseMutationResult<BulkActionResult, Error, { ids: number[]; reason: string; }, unknown>;
+  eligibleSelectedIds: (predicate: (row: OrderRow) => boolean) => number[];
+  openCancelDialog: (ids: number[]) => void;
+  setSelected: import("react").Dispatch<import("react").SetStateAction<Set<number>>>;
+}) {
+  return (visibleSelected.size > 0 && (
+    <div className="sticky bottom-4 z-10 mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-line bg-card px-3 py-2 text-sm shadow-lift transition-[color,background-color,border-color,opacity,transform] duration-150">
+      <span className="text-ink-soft">{visibleSelected.size} selected</span>
+      <Button
+        size="sm"
+        variant="outline"
+        disabled={bulkMutation.isPending}
+        onClick={() => runBulk("deliver", (o) => o.eligibility.canAct, "None of the selected orders can be delivered.")}
+      >
+        Mark Delivered
+      </Button>
+      <Button
+        size="sm"
+        variant="outline"
+        disabled={bulkMutation.isPending}
+        onClick={() => runBulk("resend", (o) => o.eligibility.canResend, "None of the selected orders can be resent.")}
+      >
+        Resend
+      </Button>
+      <Button
+        size="sm"
+        variant="destructive"
+        disabled={cancelMutation.isPending}
+        onClick={() => {
+          const ids = eligibleSelectedIds(canCancelOrder);
+          if (ids.length === 0) {
+            toast.error("None of the selected orders can be cancelled.");
+            return;
+          }
+          openCancelDialog(ids);
+        }}
+      >
+        Cancel
+      </Button>
+      <a href={`/api/orders/export?ids=${Array.from(visibleSelected).join(",")}`}>
+        <Button size="sm" variant="ghost">Export</Button>
+      </a>
+      <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
+        Clear
+      </Button>
+    </div>
+  ));
+}
+
+function buildOrderExportParams({ filters }: {
+  filters: Filters;
+}) {
+  const exportParams = new URLSearchParams();
+
+  if (filters.status) exportParams.set("status", filters.status);
+
+  if (filters.paymentMethod) exportParams.set("paymentMethod", filters.paymentMethod);
+
+  if (filters.q) exportParams.set("q", filters.q);
+
+  if (filters.since) exportParams.set("since", filters.since);
+
+  if (filters.until) exportParams.set("until", filters.until);
+  return { exportParams };
 }

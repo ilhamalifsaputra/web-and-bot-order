@@ -1,14 +1,14 @@
-import * as React from "react";
-import { CircleCheckIcon } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
-  DialogHeader,
-  DialogTitle,
   DialogDescription,
   DialogFooter,
+  DialogHeader,
+  DialogTitle,
 } from "@/components/ui/dialog";
-import { Button } from "@/components/ui/button";
+import { CircleCheckIcon } from "lucide-react";
+import * as React from "react";
 
 type Phase = "confirm" | "saving" | "error" | "success";
 
@@ -35,7 +35,13 @@ interface SaveConfirmDialogProps {
  * controlled (no `trigger` prop) since callers include a Switch, a form
  * submit, and other non-button triggers.
  */
-export function SaveConfirmDialog({
+export function SaveConfirmDialog(props: SaveConfirmDialogProps): JSX.Element {
+  return <Dialog open={props.open} onOpenChange={props.onOpenChange}>
+    <SaveSession key={String(props.open)} {...props} />
+  </Dialog>;
+}
+
+function SaveSession({
   open,
   onOpenChange,
   title,
@@ -50,16 +56,12 @@ export function SaveConfirmDialog({
   const [errorMessage, setErrorMessage] = React.useState<string | null>(null);
   const [resolvedMessage, setResolvedMessage] = React.useState<string | null>(null);
   const closeTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mounted = React.useRef(true);
 
   React.useEffect(() => {
-    if (open) {
-      setPhase("confirm");
-      setErrorMessage(null);
-    }
-  }, [open]);
-
-  React.useEffect(() => {
+    mounted.current = true;
     return () => {
+      mounted.current = false;
       if (closeTimer.current) clearTimeout(closeTimer.current);
     };
   }, []);
@@ -69,12 +71,14 @@ export function SaveConfirmDialog({
     setErrorMessage(null);
     try {
       const result = await onConfirm();
+      if (!mounted.current) return;
       setResolvedMessage(result || successMessage);
       setPhase("success");
       closeTimer.current = setTimeout(() => {
         onOpenChange(false);
       }, 900);
     } catch (e) {
+      if (!mounted.current) return;
       setErrorMessage(e instanceof Error ? e.message : "Failed to save");
       setPhase("error");
     }
@@ -83,46 +87,41 @@ export function SaveConfirmDialog({
   const busy = phase === "saving" || phase === "success";
 
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(next) => {
-        if (busy) return;
-        onOpenChange(next);
-      }}
-    >
-      <DialogContent showCloseButton={false}>
-        {phase === "success" ? (
-          <>
-            <DialogHeader className="items-center text-center">
-              <div className="mb-1 flex size-16 items-center justify-center rounded-full bg-grass-tint">
-                <CircleCheckIcon className="size-10 text-grass-dark motion-safe:animate-checkmark-pop" />
-              </div>
-              <DialogTitle>Saved</DialogTitle>
-            </DialogHeader>
-            <p role="status" aria-live="polite" className="text-center text-sm text-ink-soft">
-              {resolvedMessage}
-            </p>
-          </>
-        ) : (
-          <>
-            <DialogHeader>
-              <DialogTitle>{title}</DialogTitle>
-              {description && <DialogDescription>{description}</DialogDescription>}
-            </DialogHeader>
-            {phase === "error" && errorMessage && (
-              <p className="text-sm text-rust">{errorMessage}</p>
-            )}
-            <DialogFooter>
-              <Button variant="outline" disabled={busy} onClick={() => onOpenChange(false)}>
-                {cancelLabel}
-              </Button>
-              <Button variant={variant} disabled={busy} onClick={() => void handleConfirm()}>
-                {phase === "saving" ? "Saving…" : confirmLabel}
-              </Button>
-            </DialogFooter>
-          </>
-        )}
-      </DialogContent>
-    </Dialog>
+    <DialogContent showCloseButton={false}
+      onEscapeKeyDown={(event) => { if (busy) event.preventDefault(); }}
+      onInteractOutside={(event) => { if (busy) event.preventDefault(); }}>
+
+      {phase === "success" ? (
+        <>
+          <DialogHeader className="items-center text-center">
+            <div className="mb-1 flex size-16 items-center justify-center rounded-full bg-grass-tint">
+              <CircleCheckIcon className="size-10 text-grass-dark motion-safe:animate-checkmark-pop" />
+            </div>
+            <DialogTitle>Saved</DialogTitle>
+          </DialogHeader>
+          <p role="status" aria-live="polite" className="text-center text-sm text-ink-soft">
+            {resolvedMessage}
+          </p>
+        </>
+      ) : (
+        <>
+          <DialogHeader>
+            <DialogTitle>{title}</DialogTitle>
+            {description && <DialogDescription>{description}</DialogDescription>}
+          </DialogHeader>
+          {phase === "error" && errorMessage && (
+            <p className="text-sm text-rust">{errorMessage}</p>
+          )}
+          <DialogFooter>
+            <Button variant="outline" disabled={busy} onClick={() => onOpenChange(false)}>
+              {cancelLabel}
+            </Button>
+            <Button variant={variant} disabled={busy} onClick={() => void handleConfirm()}>
+              {phase === "saving" ? "Saving…" : confirmLabel}
+            </Button>
+          </DialogFooter>
+        </>
+      )}
+    </DialogContent>
   );
 }

@@ -1,5 +1,5 @@
-import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { useEffect, useLayoutEffect, useRef } from "react";
 
 /**
  * Subscribes to a Server-Sent Events endpoint and writes each received
@@ -27,7 +27,11 @@ export function useSse<T>(
   const queryClient = useQueryClient();
   const queryKeySerialized = JSON.stringify(queryKey);
 
+  const mergeRef = useRef(merge);
+  useLayoutEffect(() => { mergeRef.current = merge; }, [merge]);
+
   useEffect(() => {
+    const stableQueryKey: unknown[] = JSON.parse(queryKeySerialized);
     if (url === null) return;
     const es = new EventSource(url, { withCredentials: true });
     es.onmessage = (ev) => {
@@ -37,7 +41,7 @@ export function useSse<T>(
       } catch {
         return;
       }
-      queryClient.setQueryData<T>(queryKey, (prev) => (merge ? merge(prev, parsed) : (parsed as T)));
+      queryClient.setQueryData<T>(stableQueryKey, (prev) => (mergeRef.current ? mergeRef.current(prev, parsed) : (parsed as T)));
     };
     return () => es.close();
   }, [url, queryKeySerialized, queryClient]);

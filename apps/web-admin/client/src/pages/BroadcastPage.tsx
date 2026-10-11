@@ -1,33 +1,33 @@
-import { useState } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { PageLayout } from "../components/shared/PageLayout";
-import { PageHeader } from "../components/shared/PageHeader";
-import { DataTable } from "../components/shared/DataTable";
-import { EmptyState } from "../components/shared/EmptyState";
-import { ConfirmDialog } from "../components/shared/ConfirmDialog";
-import { StatusBadge } from "../components/shared/StatusBadge";
-import { Megaphone, X, MoreVertical, Send, Trash2, MessageSquare } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import {
   Select,
-  SelectTrigger,
-  SelectValue,
   SelectContent,
   SelectItem,
+  SelectTrigger,
+  SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
-import {
-  DropdownMenu,
-  DropdownMenuTrigger,
-  DropdownMenuContent,
-  DropdownMenuItem,
-} from "@/components/ui/dropdown-menu";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Megaphone, MessageSquare, MoreVertical, Send, Trash2, X } from "lucide-react";
+import { useId, useState } from "react";
 import { toast } from "sonner";
 import { apiGet, apiPost } from "../api/client";
-import { describeError } from "../lib/errorMessages";
+import { ConfirmDialog } from "../components/shared/ConfirmDialog";
+import { DataTable } from "../components/shared/DataTable";
+import { EmptyState } from "../components/shared/EmptyState";
 import { ImageUploadField } from "../components/shared/ImageUploadField";
+import { PageHeader } from "../components/shared/PageHeader";
+import { PageLayout } from "../components/shared/PageLayout";
+import { StatusBadge } from "../components/shared/StatusBadge";
+import { describeError } from "../lib/errorMessages";
 
 interface BroadcastRow {
   id: number;
@@ -108,6 +108,7 @@ function useBroadcast() {
 }
 
 export function BroadcastPage() {
+  const fieldId = useId();
   const qc = useQueryClient();
   const { data, isError } = useBroadcast();
   const [form, setForm] = useState({ message: "", segment: "", scheduled_at: "", webImageUrl: "" });
@@ -184,220 +185,9 @@ export function BroadcastPage() {
         description="Send announcements, promotions, product updates, and offers to selected customer segments."
       />
 
-      <div className="grid grid-cols-1 gap-8 lg:grid-cols-[3fr_2fr]">
-        <Card>
-          <CardHeader><CardTitle as="h2">Compose Broadcast</CardTitle></CardHeader>
-          <CardContent className="flex flex-col gap-4">
-            {/* Quick Templates */}
-            <div className="flex flex-wrap gap-2">
-              {Object.keys(TEMPLATES).map(name => (
-                <Button
-                  key={name} type="button" variant="outline" size="sm"
-                  onClick={() => setForm(f => ({ ...f, message: TEMPLATES[name] ?? "" }))}
-                >
-                  {name}
-                </Button>
-              ))}
-            </div>
+      <BroadcastEditorLayout setForm={setForm} form={form} overLimit={overLimit} maxMessage={maxMessage} fieldId={fieldId} data={data} send={send} saveDraft={saveDraft} />
 
-            {/* Message + Image */}
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-              <div className="flex flex-col gap-1">
-                <Textarea
-                  placeholder={form.webImageUrl ? "Caption (max 1024 chars with an image)" : "Write your broadcast message..."}
-                  value={form.message}
-                  onChange={e => setForm(f => ({ ...f, message: e.target.value }))}
-                  rows={8}
-                />
-                <p className={`self-end text-xs ${overLimit ? "text-rust" : "text-ink-soft"}`}>
-                  {form.message.length} / {maxMessage}
-                  {overLimit ? ` — too long for ${form.webImageUrl ? "a photo caption" : "a broadcast"}` : ""}
-                </p>
-              </div>
-              <ImageUploadField
-                variant="dropzone"
-                label="Image (optional)"
-                imageUrl={form.webImageUrl}
-                uploadPath="/broadcast/photo"
-                fieldName="photo"
-                accept="image/jpeg,image/png,image/webp"
-                maxBytes={5 * 1024 * 1024}
-                onUploaded={url => setForm(f => ({ ...f, webImageUrl: url }))}
-                onRemove={() => setForm(f => ({ ...f, webImageUrl: "" }))}
-              />
-            </div>
-
-            {/* Segment + Schedule */}
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <div className="flex flex-col gap-1">
-                <label className="text-xs text-ink-soft">Segment</label>
-                <Select
-                  value={form.segment || "_none_"}
-                  onValueChange={v => setForm(f => ({ ...f, segment: v === "_none_" ? "" : v }))}
-                >
-                  <SelectTrigger className="w-full"><SelectValue placeholder="— pick segment —" /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="_none_">— pick segment —</SelectItem>
-                    {(data?.segments ?? []).map(s => (
-                      <SelectItem key={s} value={s}>{s} ({data?.counts[s] ?? 0})</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="flex flex-col gap-1">
-                <label className="text-xs text-ink-soft">Schedule (optional)</label>
-                <Input
-                  type="datetime-local"
-                  value={form.scheduled_at}
-                  onChange={e => setForm(f => ({ ...f, scheduled_at: e.target.value }))}
-                />
-                <p className="text-xs text-ink-soft">Leave empty to send immediately.</p>
-                {form.scheduled_at && (
-                  <p className="text-xs text-ink-soft">Note: schedule is ignored if you Save Draft instead — drafts send immediately once queued.</p>
-                )}
-              </div>
-            </div>
-
-            {/* Actions */}
-            <div className="flex flex-wrap gap-2">
-              <ConfirmDialog
-                trigger={
-                  <Button
-                    disabled={!form.message || !form.segment || overLimit || send.isPending || !data}
-                  >
-                    Send Broadcast
-                  </Button>
-                }
-                title={form.scheduled_at ? "Schedule broadcast?" : "Send broadcast now?"}
-                description={`This will ${form.scheduled_at ? "schedule a" : "immediately send a"} broadcast to ${data?.counts[form.segment] ?? 0} Telegram users in the ${form.segment} segment. This cannot be undone.`}
-                confirmLabel={form.scheduled_at ? "Schedule" : "Send"}
-                variant="default"
-                onConfirm={() => send.mutate()}
-              />
-              <Button
-                type="button" variant="secondary"
-                disabled={!form.message || !form.segment || overLimit || saveDraft.isPending}
-                onClick={() => saveDraft.mutate()}
-              >
-                Save Draft
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-
-        <TelegramPreview message={form.message} imageUrl={form.webImageUrl || null} />
-      </div>
-
-      <div className="mt-8">
-        <Card>
-          <CardHeader><CardTitle as="h2">History</CardTitle></CardHeader>
-          <CardContent>
-            <p className="mb-3 text-xs text-ink-soft">Recent broadcast activity.</p>
-            <DataTable
-              nested
-              columns={[
-                {
-                  key: "message",
-                  header: "Message",
-                  render: b => (
-                    <span className="text-sm text-ink truncate max-w-[240px] block">
-                      {b.message.slice(0, 80)}{b.message.length > 80 ? "…" : ""}
-                    </span>
-                  ),
-                },
-                {
-                  key: "image",
-                  header: "Image",
-                  render: b => b.webImageUrl
-                    ? <img src={b.webImageUrl} alt="" className="h-8 w-8 object-cover rounded border border-line" />
-                    : <span className="text-xs text-ink-soft">—</span>,
-                },
-                {
-                  key: "segment",
-                  header: "Segment",
-                  render: b => b.segment,
-                },
-                {
-                  key: "status",
-                  header: "Status",
-                  render: b => (
-                    <div className="flex flex-col gap-0.5">
-                      <StatusBadge status={b.status} />
-                      {b.status === "FAILED" && b.failureReason && (
-                        <span className="text-xs text-ink-faint">{b.failureReason}</span>
-                      )}
-                    </div>
-                  ),
-                },
-                {
-                  key: "sent",
-                  header: "Sent",
-                  render: b => (
-                    <span>
-                      {b.sent}/{b.total}
-                      {b.failed > 0 && <span className="text-rust"> ({b.failed} failed)</span>}
-                    </span>
-                  ),
-                },
-                {
-                  key: "scheduled",
-                  header: "Scheduled",
-                  render: b => (
-                    <span className="text-xs text-ink-soft">
-                      {b.scheduledAtDisplay ?? "immediate"}
-                    </span>
-                  ),
-                },
-                {
-                  key: "actions",
-                  header: "",
-                  render: b => {
-                    if (b.status !== "DRAFT" && b.status !== "PENDING") return null;
-                    return (
-                      <div onClick={(e) => e.stopPropagation()}>
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button variant="ghost" size="icon-sm" aria-label={`Actions for broadcast ${b.id}`}>
-                              <MoreVertical className="h-4 w-4" />
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                            {b.status === "DRAFT" && (
-                              <>
-                                <DropdownMenuItem onSelect={() => setPendingSendNow(b)}>
-                                  <Send className="h-4 w-4" /> Send Now
-                                </DropdownMenuItem>
-                                <DropdownMenuItem onSelect={() => setPendingDeleteDraft(b)} className="text-rust">
-                                  <Trash2 className="h-4 w-4" /> Delete draft
-                                </DropdownMenuItem>
-                              </>
-                            )}
-                            {b.status === "PENDING" && (
-                              <DropdownMenuItem onSelect={() => setPendingCancel(b)} className="text-rust">
-                                <X className="h-4 w-4" /> Cancel
-                              </DropdownMenuItem>
-                            )}
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                      </div>
-                    );
-                  },
-                },
-              ]}
-              data={data?.history ?? []}
-              isLoading={!data}
-              keyExtractor={b => b.id}
-              empty={
-                <EmptyState
-                  icon={Megaphone}
-                  title="No broadcasts yet"
-                  description="Sent and scheduled broadcasts will appear here."
-                />
-              }
-            />
-          </CardContent>
-        </Card>
-      </div>
+      <BroadcastHistory setPendingSendNow={setPendingSendNow} setPendingDeleteDraft={setPendingDeleteDraft} setPendingCancel={setPendingCancel} data={data} />
 
       {pendingSendNow && (
         <ConfirmDialog
@@ -429,4 +219,291 @@ export function BroadcastPage() {
       )}
     </PageLayout>
   );
+}
+
+function BroadcastEditorLayout({ setForm, form, overLimit, maxMessage, fieldId, data, send, saveDraft }: {
+  setForm: import("react").Dispatch<import("react").SetStateAction<{ message: string; segment: string; scheduled_at: string; webImageUrl: string; }>>;
+  form: { message: string; segment: string; scheduled_at: string; webImageUrl: string; };
+  overLimit: boolean;
+  maxMessage: 1024 | 4000;
+  fieldId: string;
+  data: NoInfer<BroadcastData> | undefined;
+  send: import("@tanstack/react-query").UseMutationResult<unknown, Error, void, unknown>;
+  saveDraft: import("@tanstack/react-query").UseMutationResult<unknown, Error, void, unknown>;
+}) {
+  return (<div className="grid grid-cols-1 gap-8 lg:grid-cols-[3fr_2fr]">
+    <BroadcastComposerCard setForm={setForm} form={form} overLimit={overLimit} maxMessage={maxMessage} fieldId={fieldId} data={data} send={send} saveDraft={saveDraft} />
+
+    <TelegramPreview message={form.message} imageUrl={form.webImageUrl || null} />
+  </div>);
+}
+
+function BroadcastHistory({ setPendingSendNow, setPendingDeleteDraft, setPendingCancel, data }: {
+  setPendingSendNow: import("react").Dispatch<import("react").SetStateAction<BroadcastRow | null>>;
+  setPendingDeleteDraft: import("react").Dispatch<import("react").SetStateAction<BroadcastRow | null>>;
+  setPendingCancel: import("react").Dispatch<import("react").SetStateAction<BroadcastRow | null>>;
+  data: NoInfer<BroadcastData> | undefined;
+}) {
+  return (<div className="mt-8">
+    <Card>
+      <CardHeader><CardTitle as="h2">History</CardTitle></CardHeader>
+      <CardContent>
+        <p className="mb-3 text-xs text-ink-soft">Recent broadcast activity.</p>
+        <DataTable
+          nested
+          columns={[
+            {
+              key: "message",
+              header: "Message",
+              render: b => (
+                <span className="text-sm text-ink truncate max-w-[240px] block">
+                  {b.message.slice(0, 80)}{b.message.length > 80 ? "…" : ""}
+                </span>
+              ),
+            },
+            {
+              key: "image",
+              header: "Image",
+              render: b => b.webImageUrl
+                ? <img src={b.webImageUrl} alt="" className="h-8 w-8 object-cover rounded border border-line" />
+                : <span className="text-xs text-ink-soft">—</span>,
+            },
+            {
+              key: "segment",
+              header: "Segment",
+              render: b => b.segment,
+            },
+            {
+              key: "status",
+              header: "Status",
+              render: b => (
+                <div className="flex flex-col gap-0.5">
+                  <StatusBadge status={b.status} />
+                  {b.status === "FAILED" && b.failureReason && (
+                    <span className="text-xs text-ink-faint">{b.failureReason}</span>
+                  )}
+                </div>
+              ),
+            },
+            {
+              key: "sent",
+              header: "Sent",
+              render: b => (
+                <span>
+                  {b.sent}/{b.total}
+                  {b.failed > 0 && <span className="text-rust"> ({b.failed} failed)</span>}
+                </span>
+              ),
+            },
+            {
+              key: "scheduled",
+              header: "Scheduled",
+              render: b => (
+                <span className="text-xs text-ink-soft">
+                  {b.scheduledAtDisplay ?? "immediate"}
+                </span>
+              ),
+            },
+            {
+              key: "actions",
+              header: "",
+              render: b => {
+                if (b.status !== "DRAFT" && b.status !== "PENDING") return null;
+                return (
+                  <div onClick={(e) => e.stopPropagation()}>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="ghost" size="icon-sm" aria-label={`Actions for broadcast ${b.id}`}>
+                          <MoreVertical className="h-4 w-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        {b.status === "DRAFT" && (
+                          <>
+                            <DropdownMenuItem onSelect={() => setPendingSendNow(b)}>
+                              <Send className="h-4 w-4" /> Send Now
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onSelect={() => setPendingDeleteDraft(b)} className="text-rust">
+                              <Trash2 className="h-4 w-4" /> Delete draft
+                            </DropdownMenuItem>
+                          </>
+                        )}
+                        {b.status === "PENDING" && (
+                          <DropdownMenuItem onSelect={() => setPendingCancel(b)} className="text-rust">
+                            <X className="h-4 w-4" /> Cancel
+                          </DropdownMenuItem>
+                        )}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </div>
+                );
+              },
+            },
+          ]}
+          data={data?.history ?? []}
+          isLoading={!data}
+          keyExtractor={b => b.id}
+          empty={
+            <EmptyState
+              icon={Megaphone}
+              title="No broadcasts yet"
+              description="Sent and scheduled broadcasts will appear here."
+            />
+          }
+        />
+      </CardContent>
+    </Card>
+  </div>);
+}
+
+function BroadcastComposerCard({ setForm, form, overLimit, maxMessage, fieldId, data, send, saveDraft }: {
+  setForm: import("react").Dispatch<import("react").SetStateAction<{ message: string; segment: string; scheduled_at: string; webImageUrl: string; }>>;
+  form: { message: string; segment: string; scheduled_at: string; webImageUrl: string; };
+  overLimit: boolean;
+  maxMessage: 1024 | 4000;
+  fieldId: string;
+  data: NoInfer<BroadcastData> | undefined;
+  send: import("@tanstack/react-query").UseMutationResult<unknown, Error, void, unknown>;
+  saveDraft: import("@tanstack/react-query").UseMutationResult<unknown, Error, void, unknown>;
+}) {
+  return (<Card>
+    <CardHeader><CardTitle as="h2">Compose Broadcast</CardTitle></CardHeader>
+    <BroadcastComposerFields setForm={setForm} form={form} overLimit={overLimit} maxMessage={maxMessage} fieldId={fieldId} data={data} send={send} saveDraft={saveDraft} />
+  </Card>);
+}
+
+function BroadcastComposerFields({ setForm, form, overLimit, maxMessage, fieldId, data, send, saveDraft }: {
+  setForm: import("react").Dispatch<import("react").SetStateAction<{ message: string; segment: string; scheduled_at: string; webImageUrl: string; }>>;
+  form: { message: string; segment: string; scheduled_at: string; webImageUrl: string; };
+  overLimit: boolean;
+  maxMessage: 1024 | 4000;
+  fieldId: string;
+  data: NoInfer<BroadcastData> | undefined;
+  send: import("@tanstack/react-query").UseMutationResult<unknown, Error, void, unknown>;
+  saveDraft: import("@tanstack/react-query").UseMutationResult<unknown, Error, void, unknown>;
+}) {
+  return (<CardContent className="flex flex-col gap-4">
+    {/* Quick Templates */}
+    <div className="flex flex-wrap gap-2">
+      {Object.keys(TEMPLATES).map(name => (
+        <Button
+          key={name} type="button" variant="outline" size="sm"
+          onClick={() => setForm(f => ({ ...f, message: TEMPLATES[name] ?? "" }))}
+        >
+          {name}
+        </Button>
+      ))}
+    </div>
+
+    {/* Message + Image */}
+    <BroadcastMessageFields form={form} setForm={setForm} overLimit={overLimit} maxMessage={maxMessage} />
+
+    {/* Segment + Schedule */}
+    <BroadcastAudienceAndSchedule fieldId={fieldId} form={form} setForm={setForm} data={data} />
+
+    {/* Actions */}
+    <BroadcastActions form={form} overLimit={overLimit} send={send} data={data} saveDraft={saveDraft} />
+  </CardContent>);
+}
+
+function BroadcastMessageFields({ form, setForm, overLimit, maxMessage }: {
+  form: { message: string; segment: string; scheduled_at: string; webImageUrl: string; };
+  setForm: import("react").Dispatch<import("react").SetStateAction<{ message: string; segment: string; scheduled_at: string; webImageUrl: string; }>>;
+  overLimit: boolean;
+  maxMessage: 1024 | 4000;
+}) {
+  return (<div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+    <div className="flex flex-col gap-1">
+      <Textarea
+        placeholder={form.webImageUrl ? "Caption (max 1024 chars with an image)" : "Write your broadcast message..."}
+        value={form.message}
+        onChange={e => setForm(f => ({ ...f, message: e.target.value }))}
+        rows={8}
+      />
+      <p className={`self-end text-xs ${overLimit ? "text-rust" : "text-ink-soft"}`}>
+        {form.message.length} / {maxMessage}
+        {overLimit ? ` — too long for ${form.webImageUrl ? "a photo caption" : "a broadcast"}` : ""}
+      </p>
+    </div>
+    <ImageUploadField
+      variant="dropzone"
+      label="Image (optional)"
+      imageUrl={form.webImageUrl}
+      uploadPath="/broadcast/photo"
+      fieldName="photo"
+      accept="image/jpeg,image/png,image/webp"
+      maxBytes={5 * 1024 * 1024}
+      onUploaded={url => setForm(f => ({ ...f, webImageUrl: url }))}
+      onRemove={() => setForm(f => ({ ...f, webImageUrl: "" }))}
+    />
+  </div>);
+}
+
+function BroadcastAudienceAndSchedule({ fieldId, form, setForm, data }: {
+  fieldId: string;
+  form: { message: string; segment: string; scheduled_at: string; webImageUrl: string; };
+  setForm: import("react").Dispatch<import("react").SetStateAction<{ message: string; segment: string; scheduled_at: string; webImageUrl: string; }>>;
+  data: NoInfer<BroadcastData> | undefined;
+}) {
+  return (<div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+    <div className="flex flex-col gap-1">
+      <label htmlFor={`${fieldId}-segment-1`} className="text-xs text-ink-soft">Segment</label>
+      <Select
+        value={form.segment || "_none_"}
+        onValueChange={v => setForm(f => ({ ...f, segment: v === "_none_" ? "" : v }))}
+      >
+        <SelectTrigger id={`${fieldId}-segment-1`} className="w-full"><SelectValue placeholder="— pick segment —" /></SelectTrigger>
+        <SelectContent>
+          <SelectItem value="_none_">— pick segment —</SelectItem>
+          {(data?.segments ?? []).map(s => (
+            <SelectItem key={s} value={s}>{s} ({data?.counts[s] ?? 0})</SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+    <div className="flex flex-col gap-1">
+      <label htmlFor={`${fieldId}-schedule-optional-2`} className="text-xs text-ink-soft">Schedule (optional)</label>
+      <Input id={`${fieldId}-schedule-optional-2`}
+        type="datetime-local"
+        value={form.scheduled_at}
+        onChange={e => setForm(f => ({ ...f, scheduled_at: e.target.value }))}
+      />
+      <p className="text-xs text-ink-soft">Leave empty to send immediately.</p>
+      {form.scheduled_at && (
+        <p className="text-xs text-ink-soft">Note: schedule is ignored if you Save Draft instead — drafts send immediately once queued.</p>
+      )}
+    </div>
+  </div>);
+}
+
+function BroadcastActions({ form, overLimit, send, data, saveDraft }: {
+  form: { message: string; segment: string; scheduled_at: string; webImageUrl: string; };
+  overLimit: boolean;
+  send: import("@tanstack/react-query").UseMutationResult<unknown, Error, void, unknown>;
+  data: NoInfer<BroadcastData> | undefined;
+  saveDraft: import("@tanstack/react-query").UseMutationResult<unknown, Error, void, unknown>;
+}) {
+  return (<div className="flex flex-wrap gap-2">
+    <ConfirmDialog
+      trigger={
+        <Button
+          disabled={!form.message || !form.segment || overLimit || send.isPending || !data}
+        >
+          Send Broadcast
+        </Button>
+      }
+      title={form.scheduled_at ? "Schedule broadcast?" : "Send broadcast now?"}
+      description={`This will ${form.scheduled_at ? "schedule a" : "immediately send a"} broadcast to ${data?.counts[form.segment] ?? 0} Telegram users in the ${form.segment} segment. This cannot be undone.`}
+      confirmLabel={form.scheduled_at ? "Schedule" : "Send"}
+      variant="default"
+      onConfirm={() => send.mutate()}
+    />
+    <Button
+      type="button" variant="secondary"
+      disabled={!form.message || !form.segment || overLimit || saveDraft.isPending}
+      onClick={() => saveDraft.mutate()}
+    >
+      Save Draft
+    </Button>
+  </div>);
 }

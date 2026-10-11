@@ -1,9 +1,9 @@
 import { useState } from "react";
-import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
-import { EmptyState } from "../shared/EmptyState";
-import { useAnalytics } from "../../hooks/useAnalytics";
 import type { AnalyticsCurrency, AnalyticsMetric, AnalyticsRange } from "../../api/types";
+import { useAnalytics } from "../../hooks/useAnalytics";
+import { EmptyState } from "../shared/EmptyState";
+import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { SalesLineChart } from "./SalesLineChart";
 
 function FilterGroup<T extends string>({
   options,
@@ -21,9 +21,8 @@ function FilterGroup<T extends string>({
           key={o.value}
           type="button"
           onClick={() => onChange(o.value)}
-          className={`rounded-md px-2 py-1 text-xs font-medium ${
-            value === o.value ? "bg-pine text-white" : "text-ink-soft hover:text-ink"
-          }`}
+          className={`rounded-md px-2 py-1 text-xs font-medium ${value === o.value ? "bg-pine text-white" : "text-ink-soft hover:text-ink"
+            }`}
         >
           {o.label}
         </button>
@@ -140,19 +139,7 @@ export function SalesAnalyticsCard() {
             <p className="mb-1 text-xs text-ink-soft">{yLabel} · {bucketLabel(range)}</p>
             <div className="h-64 w-full overflow-x-auto">
               <div className="h-full min-w-[480px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={chartData} margin={{ top: 8, right: 12, bottom: 8, left: 12 }}>
-                    <XAxis dataKey="day" tick={{ fontSize: 11 }} stroke="var(--color-ink-faint)" />
-                    <YAxis
-                      tick={{ fontSize: 11 }}
-                      stroke="var(--color-ink-faint)"
-                      width={72}
-                      label={{ value: yUnit, angle: -90, position: "insideLeft", style: { fontSize: 11, textAnchor: "middle" } }}
-                    />
-                    <Tooltip />
-                    <Line type="monotone" dataKey="value" stroke="var(--color-pine)" strokeWidth={2} dot={false} />
-                  </LineChart>
-                </ResponsiveContainer>
+                <SalesLineChart chartData={chartData} yUnit={yUnit} />
               </div>
             </div>
           </>

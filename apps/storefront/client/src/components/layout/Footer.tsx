@@ -1,3 +1,4 @@
+import { FOOTER_LINKS } from "./Footer.helpers";
 /**
  * Site footer — sand background, 1px line top border, brand + tagline, a
  * "Quick Links" nav block and a "Contact" block, centred copyright bar.
@@ -8,35 +9,16 @@
  * accordion). On < sm the two link blocks collapse behind a disclosure
  * button; from sm up they render as static columns.
  */
+import { ChevronDown, Clock, Mail, Phone } from "lucide-react";
 import { useId, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { ChevronDown, Clock, Mail, Phone } from "lucide-react";
-import BrandLogo from "../BrandLogo";
 import type { ShopContext } from "../../api/types";
 import { t } from "../../lib/i18n";
 import { isPlainEmail, telHref } from "../../lib/telHref";
+import BrandLogo from "../BrandLogo";
 import PaymentMarks from "../shop/PaymentMarks";
 import TelegramIcon from "../shop/TelegramIcon";
 import WhatsAppIcon from "../shop/WhatsAppIcon";
-
-/** Footer link row — keep in step with App.tsx's routes and with STATIC_PAGES
- * in apps/storefront/src/routes/spaShell.ts. One row here is a utility
- * destination rather than a policy page (/track). */
-export const FOOTER_LINKS = [
-  // The browse-all shelves are otherwise only linked from the mobile nav
-  // drawer / bottom tab bar — this row is how a desktop visitor (and a
-  // crawler) reaches them.
-  { to: "/products", key: "web.products_title" },
-  { to: "/categories", key: "web.categories_page_title" },
-  { to: "/track", key: "web.track_title" },
-  { to: "/help", key: "web.help_title" },
-  { to: "/about", key: "web.about_title" },
-  { to: "/contact", key: "web.contact_page_title" },
-  { to: "/how-to-order", key: "web.hto_title" },
-  { to: "/terms", key: "web.terms_title" },
-  { to: "/privacy", key: "web.privacy_title" },
-  { to: "/refund", key: "web.refund_title" },
-];
 
 /**
  * One footer block. Its heading is a disclosure button on mobile (collapsed by
@@ -102,136 +84,12 @@ export default function Footer({
 
   return (
     <footer
-      className={`mt-16 border-t border-line bg-sand ${
-        clearBottomNav
-          ? "pb-[calc(var(--spacing-bottom-nav)_+_env(safe-area-inset-bottom))] sm:pb-0"
-          : ""
-      }`}
+      className={`mt-16 border-t border-line bg-sand ${clearBottomNav
+        ? "pb-[calc(var(--spacing-bottom-nav)_+_env(safe-area-inset-bottom))] sm:pb-0"
+        : ""
+        }`}
     >
-      <div className="mx-auto max-w-6xl px-4 py-6 sm:py-10 lg:px-6">
-        <div className="grid gap-4 sm:gap-8 md:grid-cols-4">
-          {/* Columns 1-2: brand identity + tagline + the legal operator and
-              address (owner-set in Branding; each shown only when filled). No
-              social icons — this shop has no social-links Setting for them. */}
-          <div className="md:col-span-2">
-            <BrandLogo ctx={ctx} />
-            <p className="mt-2 max-w-sm text-sm text-ink-soft">{shopTagline || t("web.brand_description")}</p>
-            {legalName && (
-              <p className="mt-3 text-sm font-medium text-ink">
-                {t("web.footer_operated_by", { name: legalName })}
-              </p>
-            )}
-            {address && (
-              <p className="mt-1 max-w-sm whitespace-pre-line text-sm text-ink-soft">{address}</p>
-            )}
-          </div>
-
-          {/* Column 3: informational pages. The only internal link that lets a
-              crawler reach the policy pages, so this stays the primary footer
-              nav landmark. */}
-          <nav
-            aria-label={t("web.nav_footer")}
-            className="border-t border-line py-1 sm:border-0 sm:py-0"
-          >
-            <FooterBlock heading={t("web.footer_links_heading")}>
-              <ul className="mt-3 flex flex-col gap-2 text-sm">
-                {FOOTER_LINKS.map(({ to, key }) => (
-                  <li key={to}>
-                    <Link to={to} className="text-ink-soft transition-colors hover:text-pine">
-                      {t(key)}
-                    </Link>
-                  </li>
-                ))}
-              </ul>
-            </FooterBlock>
-          </nav>
-
-          {/* Column 4: direct contact. Each link is independently conditional on
-              the shop having set that channel up. */}
-          <div className="border-t border-line py-1 sm:border-0 sm:py-0">
-            <FooterBlock heading={t("web.footer_contact_heading")}>
-              {(
-                <ul className="mt-3 flex flex-col gap-2 text-sm">
-                  {waNumber && (
-                    <li>
-                      <a
-                        href={`https://wa.me/${waNumber}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="flex items-center gap-2 text-ink-soft transition-colors hover:text-pine"
-                      >
-                        <WhatsAppIcon className="h-4 w-4" /> WhatsApp
-                      </a>
-                    </li>
-                  )}
-                  {telegramUrl && (
-                    <li>
-                      <a
-                        href={telegramUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="flex items-center gap-2 text-ink-soft transition-colors hover:text-pine"
-                      >
-                        <TelegramIcon className="h-4 w-4" /> Telegram
-                      </a>
-                    </li>
-                  )}
-                  {phone && (
-                    <li>
-                      {phoneHref ? (
-                        <a
-                          href={phoneHref}
-                          className="flex items-center gap-2 text-ink-soft transition-colors hover:text-pine"
-                        >
-                          <Phone className="h-4 w-4" aria-hidden="true" /> {phone}
-                        </a>
-                      ) : (
-                        <span className="flex items-center gap-2 text-ink-soft">
-                          <Phone className="h-4 w-4" aria-hidden="true" /> {phone}
-                        </span>
-                      )}
-                    </li>
-                  )}
-                  {email && (
-                    <li>
-                      {isPlainEmail(email) ? (
-                        <a
-                          href={`mailto:${email}`}
-                          className="flex items-center gap-2 break-all text-ink-soft transition-colors hover:text-pine"
-                        >
-                          <Mail className="h-4 w-4 shrink-0" aria-hidden="true" /> {email}
-                        </a>
-                      ) : (
-                        <span className="flex items-center gap-2 break-all text-ink-soft">
-                          <Mail className="h-4 w-4 shrink-0" aria-hidden="true" /> {email}
-                        </span>
-                      )}
-                    </li>
-                  )}
-                  {hours && (
-                    <li className="flex items-start gap-2 text-ink-soft">
-                      <Clock className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-                      <span className="whitespace-pre-line">{hours}</span>
-                    </li>
-                  )}
-                  <li>
-                    <Link to="/contact" className="text-ink-soft transition-colors hover:text-pine">
-                      {t("web.contact_page_title")}
-                    </Link>
-                  </li>
-                </ul>
-              )}
-            </FooterBlock>
-          </div>
-        </div>
-
-        {showPayMarks && (
-          <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-line pt-4 sm:mt-8 sm:pt-6">
-            <span className="text-sm font-semibold text-ink">{t("web.footer_payment_methods")}</span>
-            <PaymentMarks methods={payMethods} />
-          </div>
-        )}
-      </div>
+      <FooterColumns ctx={ctx} shopTagline={shopTagline} legalName={legalName} address={address} waNumber={waNumber} telegramUrl={telegramUrl} phone={phone} phoneHref={phoneHref} email={email} hours={hours} showPayMarks={showPayMarks} payMethods={payMethods} />
 
       {/* Separator + centred copyright bar. */}
       <div className="border-t border-line px-4 py-4 text-center text-xs text-ink-soft sm:py-6 sm:text-sm lg:px-6">
@@ -251,4 +109,144 @@ export default function Footer({
       </div>
     </footer>
   );
+}
+
+function FooterColumns({ ctx, shopTagline, legalName, address, waNumber, telegramUrl, phone, phoneHref, email, hours, showPayMarks, payMethods }: {
+  ctx: ShopContext | undefined;
+  shopTagline: string;
+  legalName: string;
+  address: string;
+  waNumber: string;
+  telegramUrl: string;
+  phone: string;
+  phoneHref: string | null;
+  email: string;
+  hours: string;
+  showPayMarks: boolean;
+  payMethods: { qris: boolean; card: boolean; } | undefined;
+}) {
+  return (<div className="mx-auto max-w-6xl px-4 py-6 sm:py-10 lg:px-6">
+    <div className="grid gap-4 sm:gap-8 md:grid-cols-4">
+      {/* Columns 1-2: brand identity + tagline + the legal operator and
+              address (owner-set in Branding; each shown only when filled). No
+              social icons — this shop has no social-links Setting for them. */}
+      <div className="md:col-span-2">
+        <BrandLogo ctx={ctx} />
+        <p className="mt-2 max-w-sm text-sm text-ink-soft">{shopTagline || t("web.brand_description")}</p>
+        {legalName && (
+          <p className="mt-3 text-sm font-medium text-ink">
+            {t("web.footer_operated_by", { name: legalName })}
+          </p>
+        )}
+        {address && (
+          <p className="mt-1 max-w-sm whitespace-pre-line text-sm text-ink-soft">{address}</p>
+        )}
+      </div>
+
+      {/* Column 3: informational pages. The only internal link that lets a
+              crawler reach the policy pages, so this stays the primary footer
+              nav landmark. */}
+      <nav
+        aria-label={t("web.nav_footer")}
+        className="border-t border-line py-1 sm:border-0 sm:py-0"
+      >
+        <FooterBlock heading={t("web.footer_links_heading")}>
+          <ul className="mt-3 flex flex-col gap-2 text-sm">
+            {FOOTER_LINKS.map(({ to, key }) => (
+              <li key={to}>
+                <Link to={to} className="text-ink-soft transition-colors hover:text-pine">
+                  {t(key)}
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </FooterBlock>
+      </nav>
+
+      {/* Column 4: direct contact. Each link is independently conditional on
+              the shop having set that channel up. */}
+      <div className="border-t border-line py-1 sm:border-0 sm:py-0">
+        <FooterBlock heading={t("web.footer_contact_heading")}>
+          {(
+            <ul className="mt-3 flex flex-col gap-2 text-sm">
+              {waNumber && (
+                <li>
+                  <a
+                    href={`https://wa.me/${waNumber}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-2 text-ink-soft transition-colors hover:text-pine"
+                  >
+                    <WhatsAppIcon className="h-4 w-4" /> WhatsApp
+                  </a>
+                </li>
+              )}
+              {telegramUrl && (
+                <li>
+                  <a
+                    href={telegramUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-2 text-ink-soft transition-colors hover:text-pine"
+                  >
+                    <TelegramIcon className="h-4 w-4" /> Telegram
+                  </a>
+                </li>
+              )}
+              {phone && (
+                <li>
+                  {phoneHref ? (
+                    <a
+                      href={phoneHref}
+                      className="flex items-center gap-2 text-ink-soft transition-colors hover:text-pine"
+                    >
+                      <Phone className="h-4 w-4" aria-hidden="true" /> {phone}
+                    </a>
+                  ) : (
+                    <span className="flex items-center gap-2 text-ink-soft">
+                      <Phone className="h-4 w-4" aria-hidden="true" /> {phone}
+                    </span>
+                  )}
+                </li>
+              )}
+              {email && (
+                <li>
+                  {isPlainEmail(email) ? (
+                    <a
+                      href={`mailto:${email}`}
+                      className="flex items-center gap-2 break-all text-ink-soft transition-colors hover:text-pine"
+                    >
+                      <Mail className="h-4 w-4 shrink-0" aria-hidden="true" /> {email}
+                    </a>
+                  ) : (
+                    <span className="flex items-center gap-2 break-all text-ink-soft">
+                      <Mail className="h-4 w-4 shrink-0" aria-hidden="true" /> {email}
+                    </span>
+                  )}
+                </li>
+              )}
+              {hours && (
+                <li className="flex items-start gap-2 text-ink-soft">
+                  <Clock className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+                  <span className="whitespace-pre-line">{hours}</span>
+                </li>
+              )}
+              <li>
+                <Link to="/contact" className="text-ink-soft transition-colors hover:text-pine">
+                  {t("web.contact_page_title")}
+                </Link>
+              </li>
+            </ul>
+          )}
+        </FooterBlock>
+      </div>
+    </div>
+
+    {showPayMarks && (
+      <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-line pt-4 sm:mt-8 sm:pt-6">
+        <span className="text-sm font-semibold text-ink">{t("web.footer_payment_methods")}</span>
+        <PaymentMarks methods={payMethods} />
+      </div>
+    )}
+  </div>);
 }

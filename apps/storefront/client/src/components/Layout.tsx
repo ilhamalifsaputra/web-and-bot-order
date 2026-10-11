@@ -14,13 +14,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Outlet, useLocation, useSearchParams } from "react-router-dom";
 import { currentLang, t } from "../lib/i18n";
 import { useShopContext } from "../lib/useShopContext";
-import { PageTransition } from "./PageTransition";
-import Toast from "./shop/Toast";
-import Navbar from "./layout/Navbar";
 import Footer from "./layout/Footer";
 import MobileDrawer from "./layout/MobileDrawer";
-import MobileTabBar, { isTabBarHidden } from "./layout/MobileTabBar";
+import MobileTabBar from "./layout/MobileTabBar";
+import { isTabBarHidden } from "./layout/MobileTabBar.helpers";
+import Navbar from "./layout/Navbar";
+import { PageTransition } from "./PageTransition";
 import { SearchOverlayProvider } from "./shop/SearchOverlay";
+import Toast from "./shop/Toast";
 
 /** Re-exported for callers that historically imported it from Layout (25+
  * existing sites) — the implementation itself lives in lib/useShopContext.ts
@@ -29,7 +30,7 @@ import { SearchOverlayProvider } from "./shop/SearchOverlay";
 export { useShopContext };
 
 /** Re-exported for callers that historically imported it from Layout. */
-export { FOOTER_LINKS } from "./layout/Footer";
+export { FOOTER_LINKS } from "./layout/Footer.helpers";
 
 export default function Layout() {
   const { data: ctx } = useShopContext();

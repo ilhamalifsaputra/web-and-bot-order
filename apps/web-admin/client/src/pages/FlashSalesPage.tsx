@@ -1,41 +1,41 @@
-import { useEffect, useMemo, useState } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
-import { toast } from "sonner";
-import { PageLayout } from "../components/shared/PageLayout";
-import { PageHeader } from "../components/shared/PageHeader";
-import { FilterBar } from "../components/shared/FilterBar";
-import { SearchBar } from "../components/shared/SearchBar";
-import { DataTable } from "../components/shared/DataTable";
-import { EmptyState } from "../components/shared/EmptyState";
-import { ConfirmDialog } from "../components/shared/ConfirmDialog";
-import { StatusBadge } from "../components/shared/StatusBadge";
-import { StatCard } from "../components/shared/StatCard";
-import { ProgressBar } from "../components/shared/ProgressBar";
-import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import {
   Dialog,
+  DialogClose,
   DialogContent,
-  DialogHeader,
-  DialogTitle,
   DialogDescription,
   DialogFooter,
-  DialogClose,
+  DialogHeader,
+  DialogTitle,
 } from "@/components/ui/dialog";
 import {
   DropdownMenu,
-  DropdownMenuTrigger,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
+  DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Card, CardContent } from "@/components/ui/card";
-import { Zap, Plus, Clock, Ban, Tag, MoreVertical, Eye, Pencil, XCircle } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Ban, Clock, Eye, MoreVertical, Pencil, Plus, Tag, XCircle, Zap } from "lucide-react";
+import { useEffect, useId, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { toast } from "sonner";
 import { apiGet, apiPost } from "../api/client";
+import { ConfirmDialog } from "../components/shared/ConfirmDialog";
+import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount.helpers";
+import { DataTable } from "../components/shared/DataTable";
+import { EmptyState } from "../components/shared/EmptyState";
+import { FilterBar } from "../components/shared/FilterBar";
+import { PageHeader } from "../components/shared/PageHeader";
+import { PageLayout } from "../components/shared/PageLayout";
+import { ProgressBar } from "../components/shared/ProgressBar";
+import { SearchBar } from "../components/shared/SearchBar";
+import { StatCard } from "../components/shared/StatCard";
+import { StatusBadge } from "../components/shared/StatusBadge";
 import { visibleSelection } from "../lib/selection";
 
 type FlashStatus = "live" | "scheduled" | "ended";
@@ -117,6 +117,7 @@ function flashSubtext(flash: FlashInfo, now: Date): string | null {
 }
 
 export function FlashSalesPage() {
+  const fieldId = useId();
   const navigate = useNavigate();
   const qc = useQueryClient();
   const { data, isLoading, isError } = useFlashSaleDenominations();
@@ -264,8 +265,8 @@ export function FlashSalesPage() {
       setEndsAt("");
       setResultMsg(
         `Applied to ${result.applied} of ${result.applied + result.failed} selected SKU(s)` +
-          `${result.overwritten > 0 ? ` (${result.overwritten} replacing an existing schedule)` : ""}` +
-          `${result.failed > 0 ? `; ${result.failed} failed.` : "."}`,
+        `${result.overwritten > 0 ? ` (${result.overwritten} replacing an existing schedule)` : ""}` +
+        `${result.failed > 0 ? `; ${result.failed} failed.` : "."}`,
       );
       void qc.invalidateQueries({ queryKey: ["flash-sales", "denominations"] });
     },
@@ -303,60 +304,7 @@ export function FlashSalesPage() {
         title="Flash Sales"
         description="Schedule and manage time-limited discounts across your catalog."
         actions={
-          <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-            <Button size="sm" onClick={openNewFlashSale}>
-              <Plus className="h-4 w-4" />
-              New Flash Sale
-            </Button>
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Set flash sale on {visibleSelected.size} SKU(s)</DialogTitle>
-                <DialogDescription>
-                  Applies the same discount and window to every selected SKU.
-                  {alreadyScheduledCount > 0 &&
-                    ` ${alreadyScheduledCount} of the ${visibleSelected.size} selected already have a schedule — this will replace it.`}
-                </DialogDescription>
-              </DialogHeader>
-              <div className="flex flex-col gap-3">
-                <div>
-                  <label className="text-sm font-medium text-ink">Discount %</label>
-                  <Input
-                    className="mt-1"
-                    placeholder="e.g. 20"
-                    value={discountPercent}
-                    onChange={(e) => setDiscountPercent(e.target.value)}
-                  />
-                </div>
-                <div>
-                  <label className="text-sm font-medium text-ink">Starts</label>
-                  <Input
-                    className="mt-1"
-                    type="datetime-local"
-                    value={startsAt}
-                    onChange={(e) => setStartsAt(e.target.value)}
-                  />
-                </div>
-                <div>
-                  <label className="text-sm font-medium text-ink">Ends</label>
-                  <Input
-                    className="mt-1"
-                    type="datetime-local"
-                    value={endsAt}
-                    onChange={(e) => setEndsAt(e.target.value)}
-                  />
-                </div>
-                {formError && <p className="text-sm text-rust">{formError}</p>}
-              </div>
-              <DialogFooter>
-                <DialogClose asChild>
-                  <Button variant="outline">Cancel</Button>
-                </DialogClose>
-                <Button disabled={!canSubmit || bulkApply.isPending} onClick={() => bulkApply.mutate()}>
-                  {bulkApply.isPending ? "Applying…" : "Apply"}
-                </Button>
-              </DialogFooter>
-            </DialogContent>
-          </Dialog>
+          <FlashSalesSetFlashSaleOn dialogOpen={dialogOpen} setDialogOpen={setDialogOpen} openNewFlashSale={openNewFlashSale} visibleSelected={visibleSelected} alreadyScheduledCount={alreadyScheduledCount} fieldId={fieldId} discountPercent={discountPercent} setDiscountPercent={setDiscountPercent} startsAt={startsAt} setStartsAt={setStartsAt} endsAt={endsAt} setEndsAt={setEndsAt} formError={formError} canSubmit={canSubmit} bulkApply={bulkApply} />
         }
       />
 
@@ -367,63 +315,12 @@ export function FlashSalesPage() {
         <StatCard label="Discounted SKU" value={discountedCount} icon={Tag} isLoading={isLoading} />
       </div>
 
-      <FilterBar onClear={hasActiveFilter ? clearFilters : undefined} className="mb-4">
-        <SearchBar
-          value={filter}
-          onChange={setFilter}
-          placeholder="Filter by SKU, product, or category…"
-          className="w-full sm:w-[380px]"
-        />
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-ink-soft">Category</label>
-          <Select value={categoryFilter} onValueChange={setCategoryFilter}>
-            <SelectTrigger size="sm" className="w-40">
-              <SelectValue placeholder="All categories" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All categories</SelectItem>
-              {categories.map((c) => (
-                <SelectItem key={c} value={c}>
-                  {c}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-ink-soft">Status</label>
-          <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as StatusFilter)}>
-            <SelectTrigger size="sm" className="w-36">
-              <SelectValue placeholder="All statuses" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All statuses</SelectItem>
-              <SelectItem value="scheduled">Scheduled</SelectItem>
-              <SelectItem value="live">Running</SelectItem>
-              <SelectItem value="ended">Expired</SelectItem>
-              <SelectItem value="inactive">Inactive</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-ink-soft">Sort</label>
-          <Select value={sortBy} onValueChange={(v) => setSortBy(v as SortMode)}>
-            <SelectTrigger size="sm" className="w-36">
-              <SelectValue placeholder="Sort" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="name">SKU Name A–Z</SelectItem>
-              <SelectItem value="discount">Discount % (High–Low)</SelectItem>
-              <SelectItem value="product">Product Name</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-      </FilterBar>
+      <FlashSalesFilters hasActiveFilter={hasActiveFilter} clearFilters={clearFilters} filter={filter} setFilter={setFilter} fieldId={fieldId} categoryFilter={categoryFilter} setCategoryFilter={setCategoryFilter} categories={categories} statusFilter={statusFilter} setStatusFilter={setStatusFilter} sortBy={sortBy} setSortBy={setSortBy} />
 
       {resultMsg && <p className="mb-3 text-sm text-ink-soft">{resultMsg}</p>}
 
       {visibleSelected.size > 0 && (
-        <div className="sticky bottom-4 z-10 mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-line bg-card px-3 py-2 text-sm shadow-lift transition-all duration-150">
+        <div className="sticky bottom-4 z-10 mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-line bg-card px-3 py-2 text-sm shadow-lift transition-[color,background-color,border-color,opacity,transform] duration-150">
           <span className="text-ink-soft">{visibleSelected.size} selected</span>
           <Button size="sm" variant="outline" onClick={() => setDialogOpen(true)}>
             Set flash sale…
@@ -445,187 +342,345 @@ export function FlashSalesPage() {
         </div>
       )}
 
-      <Card>
-        <CardContent>
-          <DataTable
-            nested
-            columns={[
-              {
-                key: "select",
-                kind: "selection",
-                header: (
-                  <Checkbox
-                    checked={allFilteredSelected}
-                    onCheckedChange={toggleSelectAllFiltered}
-                    aria-label="Select all SKUs matching the current filters"
-                  />
-                ),
-                render: (row) => (
-                  <Checkbox
-                    checked={selected.has(row.id)}
-                    onCheckedChange={() => toggleSelected(row.id)}
-                    onClick={(e) => e.stopPropagation()}
-                    aria-label={`Select ${row.name}`}
-                  />
-                ),
-              },
-              {
-                key: "product",
-                header: "Product",
-                render: (row) => {
-                  const context = `${row.productName}${row.categoryName ? ` · ${row.categoryName}` : ""}`;
-                  return (
-                    <div className="max-w-[240px]">
-                      <div className="truncate font-medium text-sm text-ink" title={row.name}>
-                        {row.name}
-                      </div>
-                      <div className="truncate text-xs text-ink-soft" title={context}>
-                        {context}
-                      </div>
-                    </div>
-                  );
-                },
-              },
-              {
-                key: "price",
-                header: "Price",
-                render: (row) =>
-                  row.flash ? (
-                    <div className="flex flex-col gap-0.5">
-                      <span className="font-mono text-xs text-ink-faint line-through">
-                        {formatCurrencyDisplay(row.price, "IDR")}
-                      </span>
-                      <span className="font-mono text-sm font-medium text-ink">
-                        {formatCurrencyDisplay(row.flash.salePrice, "IDR")}
-                      </span>
-                      <span className="text-xs font-medium text-grass-dark">-{row.flash.discountPercent}%</span>
-                    </div>
-                  ) : (
-                    <span className="font-mono text-sm">{formatCurrencyDisplay(row.price, "IDR")}</span>
-                  ),
-              },
-              {
-                key: "window",
-                header: "Window",
-                render: (row) =>
-                  row.flash ? (
-                    <div className="flex flex-col gap-0.5 text-sm text-ink-soft">
-                      <span>Starts {row.flash.startsAtDisplay}</span>
-                      <span>Ends {row.flash.endsAtDisplay}</span>
-                    </div>
-                  ) : (
-                    <span className="text-sm text-ink-soft">—</span>
-                  ),
-              },
-              {
-                key: "status",
-                header: "Flash Status",
-                render: (row) => {
-                  const subtext = row.flash ? flashSubtext(row.flash, now) : null;
-                  return (
-                    <div className="flex flex-col items-start gap-1">
-                      <StatusBadge status={row.flash ? STATUS_BADGE[row.flash.status] : STATUS_BADGE.inactive} />
-                      {subtext && <span className="text-xs text-ink-soft">{subtext}</span>}
-                    </div>
-                  );
-                },
-              },
-              {
-                key: "performance",
-                header: "Performance",
-                render: (row) =>
-                  row.flash ? (
-                    <div className="flex flex-col gap-0.5">
-                      <span className="text-sm text-ink">Sold {row.flash.sold}</span>
-                      <span className="text-xs text-ink-soft">{formatCurrencyDisplay(row.flash.revenue, "IDR")}</span>
-                      <span className="text-xs text-ink-soft">
-                        {row.flash.orders} order{row.flash.orders === 1 ? "" : "s"}
-                      </span>
-                    </div>
-                  ) : (
-                    <span className="text-sm text-ink-soft">—</span>
-                  ),
-              },
-              {
-                key: "progress",
-                header: "Progress",
-                render: (row) => {
-                  if (!row.flash || row.flash.availableStock === null) {
-                    return <span className="text-sm text-ink-soft">—</span>;
-                  }
-                  const { sold, availableStock } = row.flash;
-                  const total = sold + availableStock;
-                  const pct = total > 0 ? Math.round((sold / total) * 100) : 0;
-                  // Deliberately inverted from the usual stock-health convention
-                  // (grass=healthy/low-risk, rust=danger): for a flash sale, a
-                  // HIGH sold-percentage is the good outcome ("almost sold out"),
-                  // not a low-stock warning, so rust marks high % here, not low %.
-                  const tone = pct >= 80 ? "rust" : pct >= 50 ? "amberx" : "grass";
-                  return (
-                    <div className="flex flex-col gap-1 w-28">
-                      <span className="text-xs text-ink-soft">{sold} / {total} sold</span>
-                      <ProgressBar value={pct} tone={tone} />
-                    </div>
-                  );
-                },
-              },
-              {
-                key: "actions",
-                header: "",
-                render: (row) => (
-                  <div onClick={(e) => e.stopPropagation()}>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="icon-sm" aria-label={`Actions for ${row.name}`}>
-                          <MoreVertical className="h-4 w-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem onSelect={() => navigate(`/catalog/${row.productId}/denominations/${row.id}/edit`)}>
-                          <Eye className="h-4 w-4" />
-                          View SKU
-                        </DropdownMenuItem>
-                        <DropdownMenuItem onSelect={() => openEditSchedule(row)}>
-                          <Pencil className="h-4 w-4" />
-                          Edit Schedule
-                        </DropdownMenuItem>
-                        {row.flash && (
-                          <>
-                            <DropdownMenuSeparator />
-                            <ConfirmDialog
-                              trigger={
-                                <DropdownMenuItem onSelect={(e) => e.preventDefault()} variant="destructive">
-                                  <XCircle className="h-4 w-4" />
-                                  End Sale Now
-                                </DropdownMenuItem>
-                              }
-                              title="End this flash sale?"
-                              description={`Cancel the flash sale on "${row.name}". It reverts to its base price immediately.`}
-                              confirmLabel="End now"
-                              onConfirm={() => bulkEnd.mutate([row.id])}
-                            />
-                          </>
-                        )}
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </div>
-                ),
-              },
-            ]}
-            data={filtered}
-            isLoading={isLoading}
-            keyExtractor={(row) => row.id}
-            empty={
-              <EmptyState
-                icon={Zap}
-                title="No SKUs found"
-                description="Try adjusting your search or filters."
-                secondaryAction={hasActiveFilter ? { label: "Clear Filters", onClick: clearFilters } : undefined}
-              />
-            }
-          />
-        </CardContent>
-      </Card>
+      <FlashSalesSelectAllSKUsMatchingThe allFilteredSelected={allFilteredSelected} toggleSelectAllFiltered={toggleSelectAllFiltered} selected={selected} toggleSelected={toggleSelected} now={now} navigate={navigate} openEditSchedule={openEditSchedule} bulkEnd={bulkEnd} filtered={filtered} isLoading={isLoading} hasActiveFilter={hasActiveFilter} clearFilters={clearFilters} />
     </PageLayout>
   );
+}
+
+function FlashSalesSetFlashSaleOn({ dialogOpen, setDialogOpen, openNewFlashSale, visibleSelected, alreadyScheduledCount, fieldId, discountPercent, setDiscountPercent, startsAt, setStartsAt, endsAt, setEndsAt, formError, canSubmit, bulkApply }: {
+  dialogOpen: boolean;
+  setDialogOpen: import("react").Dispatch<import("react").SetStateAction<boolean>>;
+  openNewFlashSale: () => void;
+  visibleSelected: Set<number>;
+  alreadyScheduledCount: number;
+  fieldId: string;
+  discountPercent: string;
+  setDiscountPercent: import("react").Dispatch<import("react").SetStateAction<string>>;
+  startsAt: string;
+  setStartsAt: import("react").Dispatch<import("react").SetStateAction<string>>;
+  endsAt: string;
+  setEndsAt: import("react").Dispatch<import("react").SetStateAction<string>>;
+  formError: string | null;
+  canSubmit: boolean;
+  bulkApply: import("@tanstack/react-query").UseMutationResult<{ ok: boolean; applied: number; overwritten: number; failed: number; }, Error, void, void>;
+}) {
+  return (<Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+    <Button size="sm" onClick={openNewFlashSale}>
+      <Plus className="h-4 w-4" />
+      New Flash Sale
+    </Button>
+    <DialogContent>
+      <DialogHeader>
+        <DialogTitle>Set flash sale on {visibleSelected.size} SKU(s)</DialogTitle>
+        <DialogDescription>
+          Applies the same discount and window to every selected SKU.
+          {alreadyScheduledCount > 0 &&
+            ` ${alreadyScheduledCount} of the ${visibleSelected.size} selected already have a schedule — this will replace it.`}
+        </DialogDescription>
+      </DialogHeader>
+      <div className="flex flex-col gap-3">
+        <div>
+          <label htmlFor={`${fieldId}-discount-1`} className="text-sm font-medium text-ink">Discount %</label>
+          <Input id={`${fieldId}-discount-1`}
+            className="mt-1"
+            placeholder="e.g. 20"
+            value={discountPercent}
+            onChange={(e) => setDiscountPercent(e.target.value)}
+          />
+        </div>
+        <div>
+          <label htmlFor={`${fieldId}-starts-2`} className="text-sm font-medium text-ink">Starts</label>
+          <Input id={`${fieldId}-starts-2`}
+            className="mt-1"
+            type="datetime-local"
+            value={startsAt}
+            onChange={(e) => setStartsAt(e.target.value)}
+          />
+        </div>
+        <div>
+          <label htmlFor={`${fieldId}-ends-3`} className="text-sm font-medium text-ink">Ends</label>
+          <Input id={`${fieldId}-ends-3`}
+            className="mt-1"
+            type="datetime-local"
+            value={endsAt}
+            onChange={(e) => setEndsAt(e.target.value)}
+          />
+        </div>
+        {formError && <p className="text-sm text-rust">{formError}</p>}
+      </div>
+      <DialogFooter>
+        <DialogClose asChild>
+          <Button variant="outline">Cancel</Button>
+        </DialogClose>
+        <Button disabled={!canSubmit || bulkApply.isPending} onClick={() => bulkApply.mutate()}>
+          {bulkApply.isPending ? "Applying…" : "Apply"}
+        </Button>
+      </DialogFooter>
+    </DialogContent>
+  </Dialog>);
+}
+
+function FlashSalesFilters({ hasActiveFilter, clearFilters, filter, setFilter, fieldId, categoryFilter, setCategoryFilter, categories, statusFilter, setStatusFilter, sortBy, setSortBy }: {
+  hasActiveFilter: boolean;
+  clearFilters: () => void;
+  filter: string;
+  setFilter: import("react").Dispatch<import("react").SetStateAction<string>>;
+  fieldId: string;
+  categoryFilter: string;
+  setCategoryFilter: import("react").Dispatch<import("react").SetStateAction<string>>;
+  categories: string[];
+  statusFilter: StatusFilter;
+  setStatusFilter: import("react").Dispatch<import("react").SetStateAction<StatusFilter>>;
+  sortBy: SortMode;
+  setSortBy: import("react").Dispatch<import("react").SetStateAction<SortMode>>;
+}) {
+  return (<FilterBar onClear={hasActiveFilter ? clearFilters : undefined} className="mb-4">
+    <SearchBar
+      value={filter}
+      onChange={setFilter}
+      placeholder="Filter by SKU, product, or category…"
+      className="w-full sm:w-[380px]"
+    />
+    <div className="flex flex-col gap-1">
+      <label htmlFor={`${fieldId}-category-4`} className="text-xs text-ink-soft">Category</label>
+      <Select value={categoryFilter} onValueChange={setCategoryFilter}>
+        <SelectTrigger id={`${fieldId}-category-4`} size="sm" className="w-40">
+          <SelectValue placeholder="All categories" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="all">All categories</SelectItem>
+          {categories.map((c) => (
+            <SelectItem key={c} value={c}>
+              {c}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+    <div className="flex flex-col gap-1">
+      <label htmlFor={`${fieldId}-status-5`} className="text-xs text-ink-soft">Status</label>
+      <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as StatusFilter)}>
+        <SelectTrigger id={`${fieldId}-status-5`} size="sm" className="w-36">
+          <SelectValue placeholder="All statuses" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="all">All statuses</SelectItem>
+          <SelectItem value="scheduled">Scheduled</SelectItem>
+          <SelectItem value="live">Running</SelectItem>
+          <SelectItem value="ended">Expired</SelectItem>
+          <SelectItem value="inactive">Inactive</SelectItem>
+        </SelectContent>
+      </Select>
+    </div>
+    <div className="flex flex-col gap-1">
+      <label htmlFor={`${fieldId}-sort-6`} className="text-xs text-ink-soft">Sort</label>
+      <Select value={sortBy} onValueChange={(v) => setSortBy(v as SortMode)}>
+        <SelectTrigger id={`${fieldId}-sort-6`} size="sm" className="w-36">
+          <SelectValue placeholder="Sort" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="name">SKU Name A–Z</SelectItem>
+          <SelectItem value="discount">Discount % (High–Low)</SelectItem>
+          <SelectItem value="product">Product Name</SelectItem>
+        </SelectContent>
+      </Select>
+    </div>
+  </FilterBar>);
+}
+
+function FlashSalesSelectAllSKUsMatchingThe({ allFilteredSelected, toggleSelectAllFiltered, selected, toggleSelected, now, navigate, openEditSchedule, bulkEnd, filtered, isLoading, hasActiveFilter, clearFilters }: {
+  allFilteredSelected: boolean;
+  toggleSelectAllFiltered: () => void;
+  selected: Set<number>;
+  toggleSelected: (id: number) => void;
+  now: Date;
+  navigate: import("react-router-dom").NavigateFunction;
+  openEditSchedule: (row: DenominationRow) => void;
+  bulkEnd: import("@tanstack/react-query").UseMutationResult<{ ok: boolean; cleared: number; skipped: number; }, Error, number[], unknown>;
+  filtered: DenominationRow[];
+  isLoading: boolean;
+  hasActiveFilter: boolean;
+  clearFilters: () => void;
+}) {
+  return (<Card>
+    <CardContent>
+      <DataTable
+        nested
+        columns={[
+          {
+            key: "select",
+            kind: "selection",
+            header: (
+              <Checkbox
+                checked={allFilteredSelected}
+                onCheckedChange={toggleSelectAllFiltered}
+                aria-label="Select all SKUs matching the current filters"
+              />
+            ),
+            render: (row) => (
+              <Checkbox
+                checked={selected.has(row.id)}
+                onCheckedChange={() => toggleSelected(row.id)}
+                onClick={(e) => e.stopPropagation()}
+                aria-label={`Select ${row.name}`}
+              />
+            ),
+          },
+          {
+            key: "product",
+            header: "Product",
+            render: (row) => {
+              const context = `${row.productName}${row.categoryName ? ` · ${row.categoryName}` : ""}`;
+              return (
+                <div className="max-w-[240px]">
+                  <div className="truncate font-medium text-sm text-ink" title={row.name}>
+                    {row.name}
+                  </div>
+                  <div className="truncate text-xs text-ink-soft" title={context}>
+                    {context}
+                  </div>
+                </div>
+              );
+            },
+          },
+          {
+            key: "price",
+            header: "Price",
+            render: (row) =>
+              row.flash ? (
+                <div className="flex flex-col gap-0.5">
+                  <span className="font-mono text-xs text-ink-faint line-through">
+                    {formatCurrencyDisplay(row.price, "IDR")}
+                  </span>
+                  <span className="font-mono text-sm font-medium text-ink">
+                    {formatCurrencyDisplay(row.flash.salePrice, "IDR")}
+                  </span>
+                  <span className="text-xs font-medium text-grass-dark">-{row.flash.discountPercent}%</span>
+                </div>
+              ) : (
+                <span className="font-mono text-sm">{formatCurrencyDisplay(row.price, "IDR")}</span>
+              ),
+          },
+          {
+            key: "window",
+            header: "Window",
+            render: (row) =>
+              row.flash ? (
+                <div className="flex flex-col gap-0.5 text-sm text-ink-soft">
+                  <span>Starts {row.flash.startsAtDisplay}</span>
+                  <span>Ends {row.flash.endsAtDisplay}</span>
+                </div>
+              ) : (
+                <span className="text-sm text-ink-soft">—</span>
+              ),
+          },
+          {
+            key: "status",
+            header: "Flash Status",
+            render: (row) => {
+              const subtext = row.flash ? flashSubtext(row.flash, now) : null;
+              return (
+                <div className="flex flex-col items-start gap-1">
+                  <StatusBadge status={row.flash ? STATUS_BADGE[row.flash.status] : STATUS_BADGE.inactive} />
+                  {subtext && <span className="text-xs text-ink-soft">{subtext}</span>}
+                </div>
+              );
+            },
+          },
+          {
+            key: "performance",
+            header: "Performance",
+            render: (row) =>
+              row.flash ? (
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-sm text-ink">Sold {row.flash.sold}</span>
+                  <span className="text-xs text-ink-soft">{formatCurrencyDisplay(row.flash.revenue, "IDR")}</span>
+                  <span className="text-xs text-ink-soft">
+                    {row.flash.orders} order{row.flash.orders === 1 ? "" : "s"}
+                  </span>
+                </div>
+              ) : (
+                <span className="text-sm text-ink-soft">—</span>
+              ),
+          },
+          {
+            key: "progress",
+            header: "Progress",
+            render: (row) => {
+              if (!row.flash || row.flash.availableStock === null) {
+                return <span className="text-sm text-ink-soft">—</span>;
+              }
+              const { sold, availableStock } = row.flash;
+              const total = sold + availableStock;
+              const pct = total > 0 ? Math.round((sold / total) * 100) : 0;
+              // Deliberately inverted from the usual stock-health convention
+              // (grass=healthy/low-risk, rust=danger): for a flash sale, a
+              // HIGH sold-percentage is the good outcome ("almost sold out"),
+              // not a low-stock warning, so rust marks high % here, not low %.
+              const tone = pct >= 80 ? "rust" : pct >= 50 ? "amberx" : "grass";
+              return (
+                <div className="flex flex-col gap-1 w-28">
+                  <span className="text-xs text-ink-soft">{sold} / {total} sold</span>
+                  <ProgressBar value={pct} tone={tone} />
+                </div>
+              );
+            },
+          },
+          {
+            key: "actions",
+            header: "",
+            render: (row) => (
+              <div onClick={(e) => e.stopPropagation()}>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="ghost" size="icon-sm" aria-label={`Actions for ${row.name}`}>
+                      <MoreVertical className="h-4 w-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onSelect={() => navigate(`/catalog/${row.productId}/denominations/${row.id}/edit`)}>
+                      <Eye className="h-4 w-4" />
+                      View SKU
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onSelect={() => openEditSchedule(row)}>
+                      <Pencil className="h-4 w-4" />
+                      Edit Schedule
+                    </DropdownMenuItem>
+                    {row.flash && (
+                      <>
+                        <DropdownMenuSeparator />
+                        <ConfirmDialog
+                          trigger={
+                            <DropdownMenuItem onSelect={(e) => e.preventDefault()} variant="destructive">
+                              <XCircle className="h-4 w-4" />
+                              End Sale Now
+                            </DropdownMenuItem>
+                          }
+                          title="End this flash sale?"
+                          description={`Cancel the flash sale on "${row.name}". It reverts to its base price immediately.`}
+                          confirmLabel="End now"
+                          onConfirm={() => bulkEnd.mutate([row.id])}
+                        />
+                      </>
+                    )}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+            ),
+          },
+        ]}
+        data={filtered}
+        isLoading={isLoading}
+        keyExtractor={(row) => row.id}
+        empty={
+          <EmptyState
+            icon={Zap}
+            title="No SKUs found"
+            description="Try adjusting your search or filters."
+            secondaryAction={hasActiveFilter ? { label: "Clear Filters", onClick: clearFilters } : undefined}
+          />
+        }
+      />
+    </CardContent>
+  </Card>);
 }

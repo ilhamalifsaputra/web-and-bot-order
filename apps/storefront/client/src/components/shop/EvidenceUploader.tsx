@@ -1,3 +1,5 @@
+import { keyedContent } from "../../lib/keyedContent";
+import { FilePreview } from "./FilePreview";
 /**
  * Dashed drop-zone evidence picker for the /help create-ticket form
  * (NewTicketCard, a later task). A visually distinct sibling of
@@ -8,10 +10,10 @@
  * files in the caller's state, nothing uploads until the surrounding form
  * submits.
  */
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent } from "react";
-import { Paperclip, FileVideo, X } from "lucide-react";
+import { Paperclip, X } from "lucide-react";
+import { useRef, useState, type ChangeEvent, type DragEvent } from "react";
+import { MAX_TICKET_ATTACHMENTS, validateNewFiles } from "../../lib/attachmentValidation";
 import { t } from "../../lib/i18n";
-import { MAX_TICKET_ATTACHMENTS, IMAGE_TYPES, validateNewFiles } from "../../lib/attachmentValidation";
 
 export interface EvidenceUploaderProps {
   files: File[];
@@ -23,16 +25,6 @@ export default function EvidenceUploader({ files, onChange, disabled }: Evidence
   const inputRef = useRef<HTMLInputElement>(null);
   const [error, setError] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
-
-  const previewUrls = useMemo(
-    () => files.map((f) => (IMAGE_TYPES.has(f.type) ? URL.createObjectURL(f) : null)),
-    [files],
-  );
-  useEffect(() => {
-    return () => {
-      previewUrls.forEach((u) => u && URL.revokeObjectURL(u));
-    };
-  }, [previewUrls]);
 
   const atLimit = files.length >= MAX_TICKET_ATTACHMENTS;
 
@@ -82,9 +74,8 @@ export default function EvidenceUploader({ files, onChange, disabled }: Evidence
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
         disabled={disabled || atLimit}
-        className={`flex min-h-24 w-full flex-col items-start gap-1 rounded-xl border-2 border-dashed px-4 py-5 text-left disabled:opacity-50 ${
-          isDragOver ? "border-pine bg-pine-tint/30" : "border-line bg-paper"
-        }`}
+        className={`flex min-h-24 w-full flex-col items-start gap-1 rounded-xl border-2 border-dashed px-4 py-5 text-left disabled:opacity-50 ${isDragOver ? "border-pine bg-pine-tint/30" : "border-line bg-paper"
+          }`}
       >
         <span className="flex items-center gap-2">
           <Paperclip className="h-4 w-4 text-pine" />
@@ -108,21 +99,17 @@ export default function EvidenceUploader({ files, onChange, disabled }: Evidence
       )}
       {files.length > 0 && (
         <ul className="mt-2 flex flex-wrap gap-2">
-          {files.map((file, idx) => (
+          {keyedContent(files, file => JSON.stringify([file.name, file.type, file.size, file.lastModified])).map(({ item: file, key }, idx) => (
             // L2 nested surface. These rows sit inside NewTicketCard's white
             // `.card` form; the old `bg-card` made them white-on-white, the one
             // real camouflage instance on /help. `.card-2` recesses them onto
             // sand. Padding stays the compact `px-2 py-1` — `card-pad-2`'s 1rem
             // is a panel padding, not a chip padding.
             <li
-              key={`${file.name}-${idx}`}
+              key={key}
               className="card-2 flex items-center gap-2 px-2 py-1 text-xs"
             >
-              {previewUrls[idx] ? (
-                <img src={previewUrls[idx]!} alt="" className="w-6 h-6 rounded object-cover" />
-              ) : (
-                <FileVideo className="w-4 h-4 text-ink-soft shrink-0" />
-              )}
+              <FilePreview file={file} />
               <span className="max-w-[8rem] truncate">{file.name}</span>
               <button
                 type="button"

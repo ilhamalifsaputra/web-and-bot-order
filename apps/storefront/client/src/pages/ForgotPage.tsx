@@ -1,3 +1,4 @@
+import { useAction } from "../hooks/useAction";
 /**
  * TSX port of apps/storefront/views/forgot.njk. forgot.njk overrides
  * base.njk's `nav`/`footer` blocks to empty — this page sits OUTSIDE
@@ -24,12 +25,10 @@
  * branch, `success` for the sent confirmation, `error` for a request
  * failure. No fetch/payload/copy changed, only presentation.
  */
+import { KeyRound } from "lucide-react";
 import { type FormEvent } from "react";
 import { Link } from "react-router-dom";
-import { useMutation } from "@tanstack/react-query";
-import { KeyRound } from "lucide-react";
 import { publicPost } from "../api/client";
-import { t } from "../lib/i18n";
 import AuthBrandPanel from "../components/AuthBrandPanel";
 import Spinner from "../components/shop/Spinner";
 import Alert from "../components/ui/Alert";
@@ -37,6 +36,7 @@ import Button from "../components/ui/Button";
 import Card from "../components/ui/Card";
 import FormField from "../components/ui/FormField";
 import Input from "../components/ui/Input";
+import { t } from "../lib/i18n";
 
 interface ForgotResponse {
   sent: boolean;
@@ -44,7 +44,7 @@ interface ForgotResponse {
 }
 
 export default function ForgotPage() {
-  const forgotMutation = useMutation({
+  const forgotMutation = useAction({
     mutationFn: (email: string) => publicPost<ForgotResponse>("/api/v1/auth/forgot", { email }),
   });
 

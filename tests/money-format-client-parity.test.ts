@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Decimal } from "@app/core/money";
 import { formatIdrFor, formatUsdFor } from "@app/core/moneyFormat";
 import { formatUsdtAmount, usdtFromIdr } from "@app/core/formatters";
-import { formatCurrencyDisplay, formatCurrencyParts } from "../apps/web-admin/client/src/components/shared/CurrencyAmount";
+import { formatCurrencyDisplay, formatCurrencyParts } from "../apps/web-admin/client/src/components/shared/CurrencyAmount.helpers";
 import { formatIdr, formatPriceFor, formatUsdtAmount as clientUsdt } from "../apps/storefront/client/src/lib/format";
 
 afterEach(() => { document.documentElement.lang = ""; });

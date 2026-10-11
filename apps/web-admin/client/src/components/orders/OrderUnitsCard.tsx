@@ -1,28 +1,29 @@
-import { useState, type ReactNode } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { DataTable } from "../shared/DataTable";
-import { EmptyState } from "../shared/EmptyState";
-import { StatusBadge } from "../shared/StatusBadge";
-import { ConfirmDialog } from "../shared/ConfirmDialog";
-import { StockHistoryDialog } from "../shared/StockHistoryDialog";
 import { Button } from "@/components/ui/button";
+import { Card, CardAction, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Textarea } from "@/components/ui/textarea";
-import { Card, CardHeader, CardTitle, CardAction, CardContent } from "@/components/ui/card";
 import {
   Dialog,
   DialogContent,
-  DialogHeader,
-  DialogTitle,
   DialogDescription,
   DialogFooter,
+  DialogHeader,
+  DialogTitle,
 } from "@/components/ui/dialog";
-import { formatCurrencyDisplay, formatMoneyOrCode } from "../shared/CurrencyAmount";
-import { TriangleAlert, RefreshCw, Undo2, History } from "lucide-react";
+import { Textarea } from "@/components/ui/textarea";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { History, RefreshCw, TriangleAlert, Undo2 } from "lucide-react";
+import { useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { apiPost } from "../../api/client";
 import { describeError } from "../../lib/errorMessages";
+import { mapWithConcurrency } from "../../lib/mapWithConcurrency";
 import { visibleSelection } from "../../lib/selection";
+import { ConfirmDialog } from "../shared/ConfirmDialog";
+import { formatCurrencyDisplay, formatMoneyOrCode } from "../shared/CurrencyAmount.helpers";
+import { DataTable } from "../shared/DataTable";
+import { EmptyState } from "../shared/EmptyState";
+import { StatusBadge } from "../shared/StatusBadge";
+import { StockHistoryDialog } from "../shared/StockHistoryDialog";
 
 /** The currencies this shop's money ever comes back as — same union
  *  api/types.ts uses, and the only ones `formatCurrencyDisplay` accepts. */
@@ -204,36 +205,23 @@ export function OrderUnitsCard({
 
   const report = useMutation({
     mutationFn: async (args: { orderItemIds: number[]; reason: string }) => {
-      let issued = 0;
-      let awaiting = 0;
-      /** Of the `issued` units, how many the shop could not tell the buyer
-       *  about — see the `buyerNotified` note on the toasts below. */
-      let unannounced = 0;
-      const failures: string[] = [];
-      // Sequential, one request per unit: each call opens its own
-      // StockReplacement and hands over its own credential, and the service
-      // locks the OrderItem row for the duration — firing them all at once
-      // would only queue behind each other with a worse failure story.
-      for (const orderItemId of args.orderItemIds) {
+      // Each request locks its own OrderItem; stock allocation uses SKIP LOCKED.
+      // Two workers overlap independent units without flooding the replacement endpoint.
+      const results = await mapWithConcurrency(args.orderItemIds, 2, async (orderItemId) => {
         try {
-          const res = await apiPost<{
-            status: string;
-            credentialIssued: boolean;
-            buyerNotified: boolean;
-          }>(
+          const response = await apiPost<{ status: string; credentialIssued: boolean; buyerNotified: boolean }>(
             `/api/orders/${orderId}/items/${orderItemId}/replace`,
-            supportTicketId != null
-              ? { reason: args.reason, supportTicketId }
-              : { reason: args.reason },
+            supportTicketId != null ? { reason: args.reason, supportTicketId } : { reason: args.reason },
           );
-          if (res.credentialIssued) {
-            issued += 1;
-            if (!res.buyerNotified) unannounced += 1;
-          } else awaiting += 1;
-        } catch (e) {
-          failures.push(describeError((e as Error).message));
+          return { ok: true, ...response } as const;
+        } catch (error) {
+          return { ok: false, error: describeError((error as Error).message) } as const;
         }
-      }
+      });
+      const issued = results.filter(result => result.ok && result.credentialIssued).length;
+      const awaiting = results.filter(result => result.ok && !result.credentialIssued).length;
+      const unannounced = results.filter(result => result.ok && result.credentialIssued && !result.buyerNotified).length;
+      const failures = results.flatMap(result => result.ok ? [] : [result.error]);
       return { issued, awaiting, unannounced, failures };
     },
     onSuccess: ({ issued, awaiting, unannounced, failures }) => {
@@ -334,232 +322,12 @@ export function OrderUnitsCard({
         <CardTitle as="h2">{title ?? `Items (${units.length})`}</CardTitle>
         {headerAction && <CardAction>{headerAction}</CardAction>}
       </CardHeader>
-      <CardContent>
-        {selectedIds.size > 0 && (
-          <div className="mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-line bg-sand px-3 py-2 text-sm">
-            <span className="text-ink-soft">{selectedIds.size} selected</span>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={report.isPending}
-              onClick={() => openReportDialog(Array.from(selectedIds))}
-            >
-              <TriangleAlert className="h-4 w-4" />
-              {reportLabel} ({selectedIds.size} {selectedIds.size === 1 ? "unit" : "units"})
-            </Button>
-            <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
-              Clear
-            </Button>
-          </div>
-        )}
-        <DataTable
-          nested
-          columns={[
-            // The checkbox column only appears once there is more than one unit
-            // an admin could report — on a single-unit order it would be a
-            // column of one checkbox next to the row's own button.
-            ...(reportable.length > 1
-              ? [
-                  {
-                    key: "select",
-                    kind: "selection" as const,
-                    header: (
-                      <Checkbox
-                        checked={allReportableSelected}
-                        onCheckedChange={() =>
-                          setSelected(allReportableSelected ? new Set() : new Set(reportable.map((r) => r.id)))
-                        }
-                        aria-label="Select every replaceable unit"
-                      />
-                    ),
-                    render: (row: UnitRow) =>
-                      canReport(row) ? (
-                        <Checkbox
-                          checked={selected.has(row.id)}
-                          onCheckedChange={() => toggleSelected(row.id)}
-                          onClick={(e) => e.stopPropagation()}
-                          aria-label={`Select unit ${row.unitLabel}`}
-                        />
-                      ) : null,
-                  },
-                ]
-              : []),
-            {
-              key: "product",
-              header: "Product",
-              render: (row: UnitRow) => (
-                <span className="block max-w-[240px] truncate text-sm" title={row.product.name}>
-                  {row.product.name}
-                </span>
-              ),
-            },
-            { key: "qty", header: "Qty", render: (row: UnitRow) => <span className="text-sm text-center">{row.quantity}</span> },
-            { key: "price", header: "Unit Price", render: (row: UnitRow) => <span className="text-sm font-mono">{formatMoneyOrCode(row.unitPrice, currency)}</span> },
-            ...(showCredentials
-              ? [
-                  // Credentials are email:password blobs an admin must read in
-                  // full, so they wrap instead of truncating. TableCell is
-                  // whitespace-nowrap by default, hence the explicit override —
-                  // without it break-all has nothing to act on.
-                  {
-                    key: "credentials",
-                    header: "Credentials",
-                    render: (row: UnitRow) => (
-                      <span className="block max-w-[280px] font-mono text-xs break-all whitespace-normal text-ink-soft">
-                        {row.stockItem
-                          ? revealedCredentials
-                            ? (revealedCredentials.get(row.id) ?? "—")
-                            : row.stockItem.credentials
-                          : "—"}
-                      </span>
-                    ),
-                  },
-                ]
-              : []),
-            {
-              key: "replacement",
-              header: "Replacement",
-              render: (row: UnitRow) =>
-                row.history.length === 0 ? (
-                  <span className="text-xs text-ink-soft">—</span>
-                ) : (
-                  <div className="flex max-w-[280px] flex-col gap-1.5">
-                    {row.history.map((request) => (
-                      <div key={request.id} className="flex flex-col gap-0.5">
-                        <div className="flex items-center gap-2">
-                          <StatusBadge status={request.status} />
-                          <span className="text-xs text-ink-soft">
-                            {request.resolvedAtDisplay ?? request.requestedAtDisplay ?? "—"}
-                          </span>
-                        </div>
-                        <span className="text-xs break-words whitespace-normal text-ink-soft">
-                          {outcomeText(request)}
-                        </span>
-                        {/* The buyer's own account of what was wrong, as the
-                            admin recorded it — unbounded free text, so it
-                            wraps rather than being clipped by the card. */}
-                        <span className="text-xs break-words whitespace-normal text-ink-faint">
-                          Reported: {request.reason}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                ),
-            },
-            {
-              key: "actions",
-              header: "",
-              render: (row: UnitRow) => (
-                <div className="flex flex-col items-end gap-2">
-                  {row.stockItem && (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      aria-label={`History of the account for unit ${row.unitLabel}`}
-                      onClick={() => setHistoryStockId(row.stockItem!.id)}
-                    >
-                      <History className="h-4 w-4" />
-                      History
-                    </Button>
-                  )}
-                  {canReport(row) && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={report.isPending}
-                      onClick={() => openReportDialog([row.id])}
-                    >
-                      <TriangleAlert className="h-4 w-4" />
-                      {reportLabel}
-                    </Button>
-                  )}
-                  {row.openRequest?.status === "AWAITING_STOCK" && (
-                    <>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={retry.isPending}
-                        onClick={() => retry.mutate(row.openRequest!.id)}
-                      >
-                        <RefreshCw className="h-4 w-4" />
-                        Retry now
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={refund.isPending}
-                        onClick={() => setRefundTarget(row.openRequest)}
-                      >
-                        <Undo2 className="h-4 w-4" />
-                        Refund instead
-                      </Button>
-                    </>
-                  )}
-                </div>
-              ),
-            },
-          ]}
-          data={rows}
-          keyExtractor={(row) => row.id}
-          empty={<EmptyState title="No items" />}
-        />
-      </CardContent>
+      <OrderUnitsTable selectedIds={selectedIds} report={report} openReportDialog={openReportDialog} reportLabel={reportLabel} setSelected={setSelected} reportable={reportable} allReportableSelected={allReportableSelected} canReport={canReport} selected={selected} toggleSelected={toggleSelected} currency={currency} showCredentials={showCredentials} revealedCredentials={revealedCredentials} setHistoryStockId={setHistoryStockId} retry={retry} refund={refund} setRefundTarget={setRefundTarget} rows={rows} />
 
       {/* Reporting a bad account needs a reason (the service requires one), so
           this is a small form rather than the plain ConfirmDialog the
           no-input actions on this page use. */}
-      <Dialog
-        open={reportTarget !== null}
-        onOpenChange={(open) => {
-          if (!open) setReportTarget(null);
-        }}
-      >
-        <DialogContent showCloseButton={false}>
-          <DialogHeader>
-            <DialogTitle>
-              {ticketMode
-                ? reportTarget && reportTarget.length > 1
-                  ? `Create replacements for ${reportTarget.length} units?`
-                  : "Create a replacement?"
-                : reportTarget && reportTarget.length > 1
-                  ? `Report ${reportTarget.length} bad accounts?`
-                  : "Report a bad account?"}
-            </DialogTitle>
-            <DialogDescription>
-              The delivered account is retired and a spare is sent to the buyer straight away. If none is in
-              stock, the request waits here until you retry it or refund the unit.
-            </DialogDescription>
-          </DialogHeader>
-          <Textarea
-            value={reason}
-            onChange={(e) => setReason(e.target.value)}
-            placeholder="What was wrong with the account? (required)"
-            rows={3}
-            autoFocus
-          />
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setReportTarget(null)}>
-              Cancel
-            </Button>
-            <Button
-              disabled={!reason.trim() || report.isPending}
-              onClick={() => {
-                if (!reportTarget || !reason.trim()) return;
-                report.mutate({ orderItemIds: reportTarget, reason: reason.trim() });
-                setReportTarget(null);
-              }}
-            >
-              {ticketMode
-                ? report.isPending
-                  ? "Creating…"
-                  : "Create replacement"
-                : report.isPending
-                  ? "Reporting…"
-                  : "Report"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <ReplacementReportDialog reportTarget={reportTarget} setReportTarget={setReportTarget} ticketMode={ticketMode} reason={reason} setReason={setReason} report={report} />
 
       {historyStockId !== null && (
         <StockHistoryDialog stockItemId={historyStockId} onClose={() => setHistoryStockId(null)} />
@@ -583,4 +351,258 @@ export function OrderUnitsCard({
       )}
     </Card>
   );
+}
+
+function ReplacementReportDialog({ reportTarget, setReportTarget, ticketMode, reason, setReason, report }: {
+  reportTarget: number[] | null;
+  setReportTarget: import("react").Dispatch<import("react").SetStateAction<number[] | null>>;
+  ticketMode: boolean;
+  reason: string;
+  setReason: import("react").Dispatch<import("react").SetStateAction<string>>;
+  report: import("@tanstack/react-query").UseMutationResult<{ issued: number; awaiting: number; unannounced: number; failures: string[]; }, Error, { orderItemIds: number[]; reason: string; }, unknown>;
+}) {
+  return (<Dialog
+    open={reportTarget !== null}
+    onOpenChange={(open) => {
+      if (!open) setReportTarget(null);
+    }}
+  >
+    <DialogContent showCloseButton={false}>
+      <DialogHeader>
+        <DialogTitle>
+          {ticketMode
+            ? reportTarget && reportTarget.length > 1
+              ? `Create replacements for ${reportTarget.length} units?`
+              : "Create a replacement?"
+            : reportTarget && reportTarget.length > 1
+              ? `Report ${reportTarget.length} bad accounts?`
+              : "Report a bad account?"}
+        </DialogTitle>
+        <DialogDescription>
+          The delivered account is retired and a spare is sent to the buyer straight away. If none is in
+          stock, the request waits here until you retry it or refund the unit.
+        </DialogDescription>
+      </DialogHeader>
+      <Textarea
+        value={reason}
+        onChange={(e) => setReason(e.target.value)}
+        placeholder="What was wrong with the account? (required)"
+        rows={3}
+        autoFocus
+      />
+      <DialogFooter>
+        <Button variant="outline" onClick={() => setReportTarget(null)}>
+          Cancel
+        </Button>
+        <Button
+          disabled={!reason.trim() || report.isPending}
+          onClick={() => {
+            if (!reportTarget || !reason.trim()) return;
+            report.mutate({ orderItemIds: reportTarget, reason: reason.trim() });
+            setReportTarget(null);
+          }}
+        >
+          {ticketMode
+            ? report.isPending
+              ? "Creating…"
+              : "Create replacement"
+            : report.isPending
+              ? "Reporting…"
+              : "Report"}
+        </Button>
+      </DialogFooter>
+    </DialogContent>
+  </Dialog>);
+}
+
+function OrderUnitsTable({ selectedIds, report, openReportDialog, reportLabel, setSelected, reportable, allReportableSelected, canReport, selected, toggleSelected, currency, showCredentials, revealedCredentials, setHistoryStockId, retry, refund, setRefundTarget, rows }: {
+  selectedIds: Set<number>;
+  report: import("@tanstack/react-query").UseMutationResult<{ issued: number; awaiting: number; unannounced: number; failures: string[]; }, Error, { orderItemIds: number[]; reason: string; }, unknown>;
+  openReportDialog: (orderItemIds: number[]) => void;
+  reportLabel: "Create replacement" | "Report Issue";
+  setSelected: import("react").Dispatch<import("react").SetStateAction<Set<number>>>;
+  reportable: UnitRow[];
+  allReportableSelected: boolean;
+  canReport: (row: UnitRow) => boolean;
+  selected: Set<number>;
+  toggleSelected: (id: number) => void;
+  currency: string;
+  showCredentials: boolean;
+  revealedCredentials: Map<number, string> | undefined;
+  setHistoryStockId: import("react").Dispatch<import("react").SetStateAction<number | null>>;
+  retry: import("@tanstack/react-query").UseMutationResult<{ credentialIssued: boolean; buyerNotified: boolean; }, Error, number, unknown>;
+  refund: import("@tanstack/react-query").UseMutationResult<{ refunded: string; currency: MoneyCurrency; }, Error, number, unknown>;
+  setRefundTarget: import("react").Dispatch<import("react").SetStateAction<StockReplacementRow | null>>;
+  rows: UnitRow[];
+}) {
+  return (<CardContent>
+    {selectedIds.size > 0 && (
+      <div className="mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-line bg-sand px-3 py-2 text-sm">
+        <span className="text-ink-soft">{selectedIds.size} selected</span>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={report.isPending}
+          onClick={() => openReportDialog(Array.from(selectedIds))}
+        >
+          <TriangleAlert className="h-4 w-4" />
+          {reportLabel} ({selectedIds.size} {selectedIds.size === 1 ? "unit" : "units"})
+        </Button>
+        <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
+          Clear
+        </Button>
+      </div>
+    )}
+    <DataTable
+      nested
+      columns={[
+        // The checkbox column only appears once there is more than one unit
+        // an admin could report — on a single-unit order it would be a
+        // column of one checkbox next to the row's own button.
+        ...(reportable.length > 1
+          ? [
+            {
+              key: "select",
+              kind: "selection" as const,
+              header: (
+                <Checkbox
+                  checked={allReportableSelected}
+                  onCheckedChange={() =>
+                    setSelected(allReportableSelected ? new Set() : new Set(reportable.map((r) => r.id)))
+                  }
+                  aria-label="Select every replaceable unit"
+                />
+              ),
+              render: (row: UnitRow) =>
+                canReport(row) ? (
+                  <Checkbox
+                    checked={selected.has(row.id)}
+                    onCheckedChange={() => toggleSelected(row.id)}
+                    onClick={(e) => e.stopPropagation()}
+                    aria-label={`Select unit ${row.unitLabel}`}
+                  />
+                ) : null,
+            },
+          ]
+          : []),
+        {
+          key: "product",
+          header: "Product",
+          render: (row: UnitRow) => (
+            <span className="block max-w-[240px] truncate text-sm" title={row.product.name}>
+              {row.product.name}
+            </span>
+          ),
+        },
+        { key: "qty", header: "Qty", render: (row: UnitRow) => <span className="text-sm text-center">{row.quantity}</span> },
+        { key: "price", header: "Unit Price", render: (row: UnitRow) => <span className="text-sm font-mono">{formatMoneyOrCode(row.unitPrice, currency)}</span> },
+        ...(showCredentials
+          ? [
+            // Credentials are email:password blobs an admin must read in
+            // full, so they wrap instead of truncating. TableCell is
+            // whitespace-nowrap by default, hence the explicit override —
+            // without it break-all has nothing to act on.
+            {
+              key: "credentials",
+              header: "Credentials",
+              render: (row: UnitRow) => (
+                <span className="block max-w-[280px] font-mono text-xs break-all whitespace-normal text-ink-soft">
+                  {row.stockItem
+                    ? revealedCredentials
+                      ? (revealedCredentials.get(row.id) ?? "—")
+                      : row.stockItem.credentials
+                    : "—"}
+                </span>
+              ),
+            },
+          ]
+          : []),
+        {
+          key: "replacement",
+          header: "Replacement",
+          render: (row: UnitRow) =>
+            row.history.length === 0 ? (
+              <span className="text-xs text-ink-soft">—</span>
+            ) : (
+              <div className="flex max-w-[280px] flex-col gap-1.5">
+                {row.history.map((request) => (
+                  <div key={request.id} className="flex flex-col gap-0.5">
+                    <div className="flex items-center gap-2">
+                      <StatusBadge status={request.status} />
+                      <span className="text-xs text-ink-soft">
+                        {request.resolvedAtDisplay ?? request.requestedAtDisplay ?? "—"}
+                      </span>
+                    </div>
+                    <span className="text-xs break-words whitespace-normal text-ink-soft">
+                      {outcomeText(request)}
+                    </span>
+                    {/* The buyer's own account of what was wrong, as the
+                            admin recorded it — unbounded free text, so it
+                            wraps rather than being clipped by the card. */}
+                    <span className="text-xs break-words whitespace-normal text-ink-faint">
+                      Reported: {request.reason}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ),
+        },
+        {
+          key: "actions",
+          header: "",
+          render: (row: UnitRow) => (
+            <div className="flex flex-col items-end gap-2">
+              {row.stockItem && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  aria-label={`History of the account for unit ${row.unitLabel}`}
+                  onClick={() => setHistoryStockId(row.stockItem!.id)}
+                >
+                  <History className="h-4 w-4" />
+                  History
+                </Button>
+              )}
+              {canReport(row) && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={report.isPending}
+                  onClick={() => openReportDialog([row.id])}
+                >
+                  <TriangleAlert className="h-4 w-4" />
+                  {reportLabel}
+                </Button>
+              )}
+              {row.openRequest?.status === "AWAITING_STOCK" && (
+                <>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={retry.isPending}
+                    onClick={() => retry.mutate(row.openRequest!.id)}
+                  >
+                    <RefreshCw className="h-4 w-4" />
+                    Retry now
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={refund.isPending}
+                    onClick={() => setRefundTarget(row.openRequest)}
+                  >
+                    <Undo2 className="h-4 w-4" />
+                    Refund instead
+                  </Button>
+                </>
+              )}
+            </div>
+          ),
+        },
+      ]}
+      data={rows}
+      keyExtractor={(row) => row.id}
+      empty={<EmptyState title="No items" />}
+    />
+  </CardContent>);
 }

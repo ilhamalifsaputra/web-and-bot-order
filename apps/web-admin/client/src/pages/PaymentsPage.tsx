@@ -1,52 +1,53 @@
-import { useEffect, useRef, useState } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Link, useSearchParams } from "react-router-dom";
-import { PageLayout } from "../components/shared/PageLayout";
-import { PageHeader } from "../components/shared/PageHeader";
-import { FilterBar } from "../components/shared/FilterBar";
-import { SearchBar } from "../components/shared/SearchBar";
-import { DataTable } from "../components/shared/DataTable";
-import { EmptyState } from "../components/shared/EmptyState";
-import { ConfirmDialog } from "../components/shared/ConfirmDialog";
-import { StatusBadge, statusLabel } from "../components/shared/StatusBadge";
-import { PaymentMethodBadge } from "../components/shared/PaymentMethodBadge";
-import { StatCard } from "../components/shared/StatCard";
-import { UrgencyDot } from "../components/shared/UrgencyDot";
-import { Pagination } from "../components/shared/Pagination";
-import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount";
-import { CreditCard, PackageCheck, Undo2, X, MoreVertical, Clock, Hourglass, XCircle, Wallet, Link2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectTrigger,
-  SelectValue,
-  SelectContent,
-  SelectItem,
-} from "@/components/ui/select";
-import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
-import {
-  DropdownMenu,
-  DropdownMenuTrigger,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-} from "@/components/ui/dropdown-menu";
 import {
   Dialog,
   DialogContent,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogFooter,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Clock, CreditCard, Hourglass, Link2, MoreVertical, PackageCheck, Undo2, Wallet, X, XCircle } from "lucide-react";
+import { useEffect, useId, useRef, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { apiGet } from "../api/client";
 import { useIdempotentPost } from "../api/idempotency";
-import { describeError } from "../lib/errorMessages";
-import { visibleSelection } from "../lib/selection";
-import { HEALTH_DOT } from "../lib/healthDot";
 import type { HealthLevel } from "../api/types";
+import { ConfirmDialog } from "../components/shared/ConfirmDialog";
+import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount.helpers";
+import { DataTable } from "../components/shared/DataTable";
+import { EmptyState } from "../components/shared/EmptyState";
+import { FilterBar } from "../components/shared/FilterBar";
+import { PageHeader } from "../components/shared/PageHeader";
+import { PageLayout } from "../components/shared/PageLayout";
+import { Pagination } from "../components/shared/Pagination";
+import { PaymentMethodBadge } from "../components/shared/PaymentMethodBadge";
+import { SearchBar } from "../components/shared/SearchBar";
+import { StatCard } from "../components/shared/StatCard";
+import { StatusBadge } from "../components/shared/StatusBadge";
+import { statusLabel } from "../components/shared/StatusBadge.helpers";
+import { UrgencyDot } from "../components/shared/UrgencyDot";
+import { describeError } from "../lib/errorMessages";
+import { HEALTH_DOT } from "../lib/healthDot";
+import { visibleSelection } from "../lib/selection";
 
 /** Which payment rail a ledger row came from. "bybit" covers BOTH Bybit
  *  sub-rails (off-chain Internal Transfer and on-chain BSC deposit) — they
@@ -272,6 +273,7 @@ function isActionableOutcome(outcome: string): boolean {
 }
 
 export function PaymentsPage() {
+  const fieldId = useId();
   const qc = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
   // `?actionable=1` (the dashboard "Pending Actions" links) limits the
@@ -295,7 +297,7 @@ export function PaymentsPage() {
   const [outcome, setOutcome] = useState(initialOutcome);
   // Same deep-link seeding for the order-kind filter, so /payments?kind=
   // WALLET_TOPUP lands on just the wallet top-ups.
-  const [kind, setKind] = useState(searchParams.get("kind") ?? "");
+  const [kind, setKind] = useState(() => searchParams.get("kind") ?? "");
   const [page, setPage] = useState(1);
   // The server only applies `actionable` to these two outcomes; for any other
   // choice the flag would do nothing, so drop it rather than leave the
@@ -313,7 +315,7 @@ export function PaymentsPage() {
   // order…"), so the server need not guess which ledger the reference is on.
   // Dropped as soon as the admin edits the Transfer ID by hand — the server
   // then resolves the typed reference across every ledger.
-  const [matchGateway, setMatchGateway] = useState<LedgerGateway | null>(null);
+  const matchGateway = useRef<LedgerGateway | null>(null);
   const matchCardRef = useRef<HTMLDivElement>(null);
   const [orderCodeFocused, setOrderCodeFocused] = useState(false);
   const [pendingDeliver, setPendingDeliver] = useState<UnderpaidOrderRow | null>(null);
@@ -330,17 +332,21 @@ export function PaymentsPage() {
     return () => clearTimeout(timer);
   }, [qDraft]);
   useEffect(() => { setSelected(new Set()); }, [outcome, kind, q, page]);
-  // Gated on the outcome as well as the URL flag: the URL update in
-  // `changeOutcome` lands a render after the outcome state, and without this the
-  // in-between render would fire one request with the stale flag.
   const actionableApplied = actionable && isActionableOutcome(outcome);
   const { data, isError } = usePayments(outcome, kind, q, page, actionableApplied);
   const { suggestion, searched, loading: suggestLoading } = useOrderCodeSuggest(matchForm.order_code);
   const { suggestion: creditSuggestion, loading: creditSuggestLoading } = useOrderCodeSuggest(creditOrderCode);
   const underpaid = data?.underpaid ?? [];
-  // The list is capped server-side; the badge must show the real total.
   const underpaidTotal = data?.underpaidCount ?? underpaid.length;
   const pendingInternal = data?.pendingInternal ?? [];
+  const idempotentPost = useIdempotentPost();
+  const { match, startMatchFromRow, dismiss, creditToBalance } = usePaymentMatching({ idempotentPost, qc, setMatchForm, matchGateway, setMatchError, matchCardRef, setPendingDismiss, pendingCredit, creditSuggestion, setPendingCredit, setCreditOrderCode });
+
+  // Gated on the outcome as well as the URL flag: the URL update in
+  // `changeOutcome` lands a render after the outcome state, and without this the
+  // in-between render would fire one request with the stale flag.
+
+  // The list is capped server-side; the badge must show the real total.
 
   // Every mutation below moves money or an order's state, and every one of the
   // six routes behind them reads an `Idempotency-Key` (see api/idempotency.ts
@@ -348,129 +354,21 @@ export function PaymentsPage() {
   // server does with it). One hook instance serves them all: the key is scoped
   // to the request, so the six never collide, and the bulk dismiss below gets
   // one key per transfer for free.
-  const idempotentPost = useIdempotentPost();
-
-  const match = useMutation({
-    mutationFn: (form: { binance_tx_id: string; order_code: string; gateway?: LedgerGateway }) =>
-      idempotentPost("/api/payments/match", form),
-    onSuccess: (_res, form) => {
-      void qc.invalidateQueries({ queryKey: ["payments"] });
-      toast.success(`Transfer matched to order ${form.order_code}.`);
-      setMatchForm({ binance_tx_id: "", order_code: "" });
-      setMatchGateway(null);
-      setMatchError(null);
-    },
-    onError: (e: Error) => setMatchError(describeError(e)),
-  });
 
   /** "Match to order…" on a ledger row: fill the Manual Match form with the
    *  row's reference (and its suggested order, a hint the admin still
    *  confirms) and bring the form into view. */
-  function startMatchFromRow(tx: TxRow) {
-    setMatchForm({ binance_tx_id: tx.reference, order_code: tx.suggestedOrderCode ?? "" });
-    setMatchGateway(tx.gateway);
-    setMatchError(null);
-    matchCardRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
-    // After the menu closes: Radix hands focus back to the menu trigger on
-    // close, which would otherwise steal it straight back.
-    setTimeout(() => {
-      matchCardRef.current?.querySelector<HTMLInputElement>("input[data-match-transfer-id]")?.focus({ preventScroll: true });
-    }, 0);
-  }
 
-  const dismiss = useMutation({
-    mutationFn: (tx: TxRow) => idempotentPost("/api/payments/dismiss", { binance_tx_id: tx.reference, gateway: tx.gateway }),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ["payments"] });
-      toast.success("Transfer dismissed.");
-      setPendingDismiss(null);
-    },
-    onError: (e: Error) => toast.error(describeError(e)),
-  });
-
-  const creditToBalance = useMutation({
-    mutationFn: () => idempotentPost("/api/payments/credit", { binance_tx_id: pendingCredit!.reference, order_code: creditSuggestion!.code }),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ["payments"] });
-      toast.success("Added to the buyer's credit balance.");
-      setPendingCredit(null);
-      setCreditOrderCode("");
-    },
-    onError: (e: Error) => toast.error(describeError(e)),
-  });
-
-  const deliverAnyway = useMutation({
-    mutationFn: (orderId: number) => idempotentPost(`/api/payments/order/${orderId}/deliver`, { reason: deliverReason.trim() }),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ["payments"] });
-      toast.success("Order delivered.");
-    },
-    onError: (e: Error) => toast.error(describeError(e)),
-  });
+  const { deliverAnyway, refundUnderpaid, cancelUnderpaid, creditAnyway } = useUnderpaidActions({ idempotentPost, deliverReason, qc });
 
   // Takes the whole row for the same reason `creditAnyway` below does: the
   // "nothing was refunded" branch has to name the order, and by the time the
   // toast shows the order is REFUNDED and gone from the Underpaid panel.
-  const refundUnderpaid = useMutation({
-    mutationFn: (order: UnderpaidOrderRow) =>
-      idempotentPost<RefundUnderpaidResult>(`/api/payments/order/${order.id}/refund`, {}),
-    onSuccess: (res, order) => {
-      void qc.invalidateQueries({ queryKey: ["payments"] });
-      // The route marks the order REFUNDED either way, but only pays the buyer
-      // back when some payment rail recorded what actually arrived. An order
-      // that was already UNDERPAID before this branch's ledger table landed has
-      // no such record, so it ends up REFUNDED with nothing returned — a green
-      // "refunded" toast there would tell the admin money moved when it did
-      // not, and REFUNDED is terminal, so nothing later would correct them.
-      const refunded = res.refunded ?? "0";
-      if (Number(refunded) > 0) {
-        const amount = formatCurrencyDisplay(refunded, (res.currency ?? order.currency) as "IDR" | "USDT" | "USD");
-        toast.success(`Order refunded and ${amount} returned to the buyer's balance.`);
-      } else {
-        toast.warning(
-          `Order ${order.orderCode} marked refunded but nothing could be returned automatically — no payment record shows what the buyer actually sent. Refund them by hand if they really did pay.`,
-        );
-      }
-    },
-    onError: (e: Error) => toast.error(describeError(e)),
-  });
-
-  const cancelUnderpaid = useMutation({
-    mutationFn: (orderId: number) => idempotentPost(`/api/payments/order/${orderId}/cancel`, {}),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ["payments"] });
-      toast.success("Order cancelled.");
-    },
-    onError: (e: Error) => toast.error(describeError(e)),
-  });
 
   // Takes the whole row, not just its id, so the "nothing was credited" branch
   // below can name the order in its warning — by then the order is CANCELLED
   // and gone from the Underpaid panel, so the code in the toast is the admin's
   // only remaining handle on it.
-  const creditAnyway = useMutation({
-    mutationFn: (order: UnderpaidOrderRow) =>
-      idempotentPost<CreditAnywayResult>(`/api/payments/order/${order.id}/credit-anyway`, {}),
-    onSuccess: (res, order) => {
-      void qc.invalidateQueries({ queryKey: ["payments"] });
-      // The route cancels the order either way, but only credits the buyer
-      // when some payment rail recorded what actually arrived. An order that
-      // was already UNDERPAID before this feature shipped has no such record,
-      // so it gets cancelled with nothing credited — a green "credited" toast
-      // there would tell the admin money moved when it did not, and CANCELLED
-      // is terminal, so nothing later would correct them.
-      const credited = res.credited ?? "0";
-      if (Number(credited) > 0) {
-        const amount = formatCurrencyDisplay(credited, (res.currency ?? order.currency) as "IDR" | "USDT" | "USD");
-        toast.success(`Order cancelled and ${amount} credited to the buyer's balance.`);
-      } else {
-        toast.warning(
-          `Order ${order.orderCode} cancelled but nothing could be credited automatically — no payment record shows what the buyer actually sent. Credit them by hand if they really did pay.`,
-        );
-      }
-    },
-    onError: (e: Error) => toast.error(describeError(e)),
-  });
 
   const ledgerRows = data?.ledger ?? [];
   // Every gateway's unmatched row can be dismissed (/api/payments/dismiss
@@ -504,7 +402,8 @@ export function PaymentsPage() {
 
   const bulkDismiss = useMutation({
     mutationFn: async (ids: number[]) => {
-      const rows = ledgerRows.filter(tx => ids.includes(tx.id));
+      const selectedIds = new Set(ids);
+      const rows = ledgerRows.filter(tx => selectedIds.has(tx.id));
       const results = await Promise.allSettled(rows.map(tx => idempotentPost("/api/payments/dismiss", { binance_tx_id: tx.reference, gateway: tx.gateway })));
       const failed = results.filter(r => r.status === "rejected").length;
       return { succeeded: results.length - failed, failed };
@@ -518,8 +417,7 @@ export function PaymentsPage() {
 
   if (isError) return <PageLayout title="Payments"><p className="text-sm text-rust">Failed to load payments.</p></PageLayout>;
 
-  const canSubmitMatch = matchForm.binance_tx_id.trim().length > 0 && matchForm.order_code.trim().length > 0;
-  const showSuggestions = orderCodeFocused && matchForm.order_code.trim().length > 0 && (suggestLoading || searched);
+  const { canSubmitMatch, showSuggestions } = paymentMatchingAvailability({ matchForm, orderCodeFocused, suggestLoading, searched });
 
   return (
     <PageLayout title="Payments">
@@ -532,468 +430,493 @@ export function PaymentsPage() {
         </div>
       )}
 
-      <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
-        <StatCard
-          label="Today's Transactions"
-          hint="Payment records of any outcome written today across every gateway."
-          value={data?.todayCount ?? 0}
-          icon={Clock}
-          isLoading={!data}
-        />
-        <StatCard
-          label="Unmatched"
-          hint="Transfers, across every gateway, that no order has been matched to yet."
-          value={data?.counts["unmatched"] ?? 0}
-          icon={Hourglass}
-          tone="warning"
-          isLoading={!data}
-        />
-        <StatCard
-          label="Failed Deliveries"
-          hint="Paid transfers, across every gateway, whose order could not be delivered."
-          value={data?.counts["delivery_failed"] ?? 0}
-          icon={XCircle}
-          tone="danger"
-          isLoading={!data}
-        />
-      </div>
+      <PaymentStats data={data} />
 
       {/* Manual match form. Wrapped so "Match to order…" can scroll to it:
           this React 18 Card/Input pair does not forward refs. */}
-      <div ref={matchCardRef}>
-      <Card className="mb-6">
-        <CardHeader><CardTitle>Manual Match</CardTitle></CardHeader>
-        <CardContent className="flex flex-col gap-3">
-          {matchError && <p className="text-sm text-rust">{matchError}</p>}
-          <div className="flex flex-wrap items-start gap-2">
-            <Input
-              placeholder="Transfer ID"
-              data-match-transfer-id
-              value={matchForm.binance_tx_id}
-              onChange={e => {
-                const value = e.target.value;
-                setMatchForm(f => ({ ...f, binance_tx_id: value }));
-                // A hand-typed reference may be on another ledger: let the
-                // server resolve it instead of sending the row's gateway.
-                setMatchGateway(null);
-              }}
-              className="w-48"
-            />
-            <div className="relative w-40">
-              <Input
-                placeholder="Order code"
-                value={matchForm.order_code}
-                onChange={e => setMatchForm(f => ({ ...f, order_code: e.target.value }))}
-                onFocus={() => setOrderCodeFocused(true)}
-                onBlur={() => setTimeout(() => setOrderCodeFocused(false), 150)}
-                autoComplete="off"
-              />
-              {showSuggestions && (
-                <div className="absolute left-0 right-0 top-full z-10 mt-1 rounded-md border border-line bg-card shadow-lift">
-                  {suggestLoading && (
-                    <div className="px-3 py-2 text-xs text-ink-faint">Searching…</div>
-                  )}
-                  {!suggestLoading && suggestion && (
-                    <button
-                      type="button"
-                      className="flex w-full items-baseline px-3 py-2 text-left text-sm hover:bg-sand"
-                      onMouseDown={e => e.preventDefault()}
-                      onClick={() => {
-                        setMatchForm(f => ({ ...f, order_code: suggestion.code }));
-                        setOrderCodeFocused(false);
-                      }}
-                    >
-                      <span className="font-mono truncate" title={suggestion.code}>
-                        {suggestion.code}
-                      </span>
-                      <span className="ml-2 shrink-0 text-xs text-ink-soft">order found</span>
-                    </button>
-                  )}
-                  {!suggestLoading && !suggestion && (
-                    <div className="px-3 py-2 text-xs text-ink-faint">No matching order code</div>
-                  )}
-                </div>
-              )}
-            </div>
-            <ConfirmDialog
-              trigger={<Button variant="outline" disabled={match.isPending || !canSubmitMatch}>Match</Button>}
-              title="Confirm manual match?"
-              description={`Match transfer ${matchForm.binance_tx_id} to order ${matchForm.order_code}.`}
-              confirmLabel="Match"
-              variant="default"
-              onConfirm={() => match.mutate(matchGateway ? { ...matchForm, gateway: matchGateway } : matchForm)}
-            />
-          </div>
-        </CardContent>
-      </Card>
-      </div>
+      <PaymentsManualMatch matchCardRef={matchCardRef} matchError={matchError} matchForm={matchForm} setMatchForm={setMatchForm} matchGateway={matchGateway} setOrderCodeFocused={setOrderCodeFocused} showSuggestions={showSuggestions} suggestLoading={suggestLoading} suggestion={suggestion} match={match} canSubmitMatch={canSubmitMatch} />
 
-      {underpaid.length > 0 && (
-        <Card className="mb-6">
-          <CardHeader className="pb-2">
-            <CardTitle className="flex items-center gap-1.5 text-sm font-semibold text-ink-soft">
-              Underpaid Orders
-              <span className="rounded-full bg-amberx-tint px-1.5 py-0.5 text-xs font-semibold text-amberx">{underpaidTotal}</span>
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-          {underpaidTotal > underpaid.length && (
-            <p className="mb-2 text-xs text-ink-soft">Showing the {underpaid.length} most recent of {underpaidTotal}.</p>
-          )}
-          <DataTable
-            nested
-            columns={[
-              {
-                key: "order",
-                header: "Order",
-                render: o => {
-                  const buyerName = o.user?.fullName ?? o.user?.username ?? "Unknown";
-                  return (
-                    <div className="flex flex-col max-w-[200px]">
-                      <span className="font-mono text-xs">{o.orderCode}</span>
-                      <span className="text-xs text-ink-soft truncate" title={buyerName}>
-                        {buyerName}
-                      </span>
-                    </div>
-                  );
-                },
-              },
-              {
-                key: "amount",
-                header: "Amount",
-                render: o => <span className="font-mono text-sm">{formatCurrencyDisplay(o.totalAmount, o.currency as "IDR" | "USDT" | "USD")}</span>,
-              },
-              {
-                key: "date",
-                header: "Date",
-                render: o => <span className="text-xs text-ink-soft whitespace-nowrap">{o.createdAtDisplay ?? "—"}</span>,
-              },
-              {
-                key: "actions",
-                header: "",
-                render: o => (
-                  <div onClick={(e) => e.stopPropagation()}>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="icon-sm" aria-label={`Actions for order ${o.orderCode}`}>
-                          <MoreVertical className="h-4 w-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        {o.kind === "WALLET_TOPUP" ? (
-                          <>
-                            <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setPendingCreditAnyway(o); }}>
-                              <Wallet className="h-4 w-4" />
-                              Credit to balance anyway
-                            </DropdownMenuItem>
-                            <DropdownMenuSeparator />
-                            <DropdownMenuItem variant="destructive" onSelect={(e) => { e.preventDefault(); setPendingCancel(o); }}>
-                              <X className="h-4 w-4" />
-                              Cancel order
-                            </DropdownMenuItem>
-                          </>
-                        ) : (
-                          <>
-                            <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setDeliverReason(""); setPendingDeliver(o); }}>
-                              <PackageCheck className="h-4 w-4" />
-                              Deliver anyway
-                            </DropdownMenuItem>
-                            <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setPendingRefund(o); }}>
-                              <Undo2 className="h-4 w-4" />
-                              Refund
-                            </DropdownMenuItem>
-                            <DropdownMenuSeparator />
-                            <DropdownMenuItem variant="destructive" onSelect={(e) => { e.preventDefault(); setPendingCancel(o); }}>
-                              <X className="h-4 w-4" />
-                              Cancel order
-                            </DropdownMenuItem>
-                          </>
-                        )}
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </div>
-                ),
-              },
-            ]}
-            data={underpaid}
-            keyExtractor={o => o.id}
-            empty={<EmptyState title="No underpaid orders" description="Orders will show here if a payment falls short of the total." />}
-          />
-          </CardContent>
-        </Card>
-      )}
+      <PaymentsUnderpaidOrders underpaid={underpaid} underpaidTotal={underpaidTotal} setPendingCreditAnyway={setPendingCreditAnyway} setPendingCancel={setPendingCancel} setDeliverReason={setDeliverReason} setPendingDeliver={setPendingDeliver} setPendingRefund={setPendingRefund} />
 
-      {pendingInternal.length > 0 && (
-        <Card className="mb-6">
-          <CardHeader className="pb-2">
-            <CardTitle className="flex items-center gap-1.5 text-sm font-semibold text-ink-soft">
-              Pending Internal Transfers
-              <span className="rounded-full bg-sand px-1.5 py-0.5 text-xs font-semibold text-ink-soft">{pendingInternal.length}</span>
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-          <DataTable
-            nested
-            columns={[
-              { key: "order", header: "Order", render: o => <span className="font-mono text-xs">{o.orderCode}</span> },
-              { key: "user", header: "Buyer", render: o => <span className="text-xs text-ink-soft">{o.user?.fullName ?? o.user?.username ?? "Unknown"}</span> },
-              { key: "amount", header: "Amount", render: o => <span className="font-mono text-sm">{formatCurrencyDisplay(o.totalAmount, o.currency as "IDR" | "USDT" | "USD")}</span> },
-              {
-                key: "ref",
-                header: "Transfer Ref",
-                render: o => (
-                  <span
-                    className="font-mono text-xs block max-w-[200px] truncate"
-                    title={o.paymentRef ?? undefined}
-                  >
-                    {o.paymentRef ?? "—"}
-                  </span>
-                ),
-              },
-              { key: "expires", header: "Expires", render: o => <span className="text-xs text-ink-soft whitespace-nowrap">{o.expiresAtDisplay ?? "—"}</span> },
-            ]}
-            data={pendingInternal}
-            keyExtractor={o => o.id}
-            empty={<EmptyState title="No pending internal transfers" description="Internal transfers awaiting confirmation will appear here." />}
-          />
-          </CardContent>
-        </Card>
-      )}
+      <PaymentsPendingInternalTransfers pendingInternal={pendingInternal} />
 
-      {actionableApplied && (
-        <p className="mb-2 text-xs text-ink-soft">
-          Showing only items still needing action.{" "}
-          <button type="button" className="font-medium text-pine hover:underline" onClick={clearActionable}>
-            Show all
-          </button>
-        </p>
-      )}
+      <ActionablePaymentsNotice actionableApplied={actionableApplied} clearActionable={clearActionable} />
 
       {/* Ledger search + outcome filter */}
-      <FilterBar className="mb-4">
-        <SearchBar
-          value={qDraft}
-          onChange={setQDraft}
-          placeholder="Search Transfer ID..."
-          className="w-full sm:w-64"
-        />
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-ink-soft">Outcome</label>
-          <Select
-            value={outcome || "_all_"}
-            onValueChange={v => changeOutcome(v === "_all_" ? "" : v)}
-          >
-            <SelectTrigger className="w-40" aria-label="Outcome"><SelectValue placeholder="All outcomes" /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="_all_">All</SelectItem>
-              {(data?.outcomes ?? []).map(o => (
-                <SelectItem key={o} value={o}>{o} ({data?.counts[o] ?? 0})</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-ink-soft">Type</label>
-          <Select
-            value={kind || "_all_"}
-            onValueChange={v => { setKind(v === "_all_" ? "" : v); setPage(1); }}
-          >
-            <SelectTrigger className="w-40" aria-label="Order type"><SelectValue placeholder="All types" /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="_all_">All</SelectItem>
-              {(data?.kinds ?? []).map(k => (
-                <SelectItem key={k} value={k}>{statusLabel(k)}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        {data && <span className="text-sm text-ink-soft self-end">{data.total} transactions</span>}
-      </FilterBar>
+      <PaymentsLedgerSearchOutcomeFilter qDraft={qDraft} setQDraft={setQDraft} fieldId={fieldId} outcome={outcome} changeOutcome={changeOutcome} data={data} kind={kind} setKind={setKind} setPage={setPage} />
 
-      {visibleSelected.size > 0 && (
-        <div className="sticky bottom-4 z-10 mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-line bg-card px-3 py-2 text-sm shadow-lift transition-all duration-150">
-          <span className="text-ink-soft">{visibleSelected.size} selected</span>
-          <Button
-            size="sm"
-            variant="destructive"
-            disabled={bulkDismiss.isPending}
-            onClick={() => bulkDismiss.mutate(Array.from(visibleSelected))}
-          >
-            Dismiss {visibleSelected.size} transfer{visibleSelected.size === 1 ? "" : "s"}
-          </Button>
-          <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>Clear</Button>
-        </div>
+      <PaymentBulkDismissBar visibleSelected={visibleSelected} bulkDismiss={bulkDismiss} setSelected={setSelected} />
+
+      <PaymentsSelectAllEligibleTransfers allEligibleSelected={allEligibleSelected} toggleSelectAllEligible={toggleSelectAllEligible} eligibleRows={eligibleRows} selected={selected} toggleSelected={toggleSelected} startMatchFromRow={startMatchFromRow} setPendingCredit={setPendingCredit} setCreditOrderCode={setCreditOrderCode} setPendingDismiss={setPendingDismiss} data={data} outcome={outcome} kind={kind} changeOutcome={changeOutcome} setKind={setKind} />
+
+      <PaymentsPagination data={data} page={page} setPage={setPage} />
+
+      {pendingDeliver && (
+        <PaymentOverrideDialog pendingDeliver={pendingDeliver} setPendingDeliver={setPendingDeliver} deliverReason={deliverReason} setDeliverReason={setDeliverReason} deliverAnyway={deliverAnyway} />
       )}
+      <PaymentsRefundToTheBuyerS pendingRefund={pendingRefund} setPendingRefund={setPendingRefund} refundUnderpaid={refundUnderpaid} />
+      <PaymentsCancelThisOrder pendingCancel={pendingCancel} setPendingCancel={setPendingCancel} cancelUnderpaid={cancelUnderpaid} />
+      <PaymentsCreditThisTopUpTo pendingCreditAnyway={pendingCreditAnyway} setPendingCreditAnyway={setPendingCreditAnyway} creditAnyway={creditAnyway} />
+      <PaymentsDismissTransfer pendingDismiss={pendingDismiss} setPendingDismiss={setPendingDismiss} dismiss={dismiss} />
+      <PaymentsAddToBuyerAposS pendingCredit={pendingCredit} setPendingCredit={setPendingCredit} setCreditOrderCode={setCreditOrderCode} creditOrderCode={creditOrderCode} creditSuggestLoading={creditSuggestLoading} creditSuggestion={creditSuggestion} creditToBalance={creditToBalance} />
+    </PageLayout>
+  );
+}
 
-      <Card className="mb-6">
-        <CardContent>
+function PaymentStats({ data }: {
+  data: NoInfer<PaymentsData> | undefined;
+}) {
+  return (<div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
+    <StatCard
+      label="Today's Transactions"
+      hint="Payment records of any outcome written today across every gateway."
+      value={data?.todayCount ?? 0}
+      icon={Clock}
+      isLoading={!data}
+    />
+    <StatCard
+      label="Unmatched"
+      hint="Transfers, across every gateway, that no order has been matched to yet."
+      value={data?.counts["unmatched"] ?? 0}
+      icon={Hourglass}
+      tone="warning"
+      isLoading={!data}
+    />
+    <StatCard
+      label="Failed Deliveries"
+      hint="Paid transfers, across every gateway, whose order could not be delivered."
+      value={data?.counts["delivery_failed"] ?? 0}
+      icon={XCircle}
+      tone="danger"
+      isLoading={!data}
+    />
+  </div>);
+}
+
+function PaymentsManualMatch({ matchCardRef, matchError, matchForm, setMatchForm, matchGateway, setOrderCodeFocused, showSuggestions, suggestLoading, suggestion, match, canSubmitMatch }: {
+  matchCardRef: import("react").RefObject<HTMLDivElement>;
+  matchError: string | null;
+  matchForm: { binance_tx_id: string; order_code: string; };
+  setMatchForm: import("react").Dispatch<import("react").SetStateAction<{ binance_tx_id: string; order_code: string; }>>;
+  matchGateway: import("react").MutableRefObject<LedgerGateway | null>;
+  setOrderCodeFocused: import("react").Dispatch<import("react").SetStateAction<boolean>>;
+  showSuggestions: boolean;
+  suggestLoading: boolean;
+  suggestion: { code: string; } | null;
+  match: import("@tanstack/react-query").UseMutationResult<unknown, Error, { binance_tx_id: string; order_code: string; gateway?: LedgerGateway; }, unknown>;
+  canSubmitMatch: boolean;
+}) {
+  return (<div ref={matchCardRef}>
+    <Card className="mb-6">
+      <CardHeader><CardTitle>Manual Match</CardTitle></CardHeader>
+      <CardContent className="flex flex-col gap-3">
+        {matchError && <p className="text-sm text-rust">{matchError}</p>}
+        <div className="flex flex-wrap items-start gap-2">
+          <Input
+            placeholder="Transfer ID"
+            data-match-transfer-id
+            value={matchForm.binance_tx_id}
+            onChange={e => {
+              const value = e.target.value;
+              setMatchForm(f => ({ ...f, binance_tx_id: value }));
+              // A hand-typed reference may be on another ledger: let the
+              // server resolve it instead of sending the row's gateway.
+              matchGateway.current = null;
+            }}
+            className="w-48"
+          />
+          <div className="relative w-40">
+            <Input
+              placeholder="Order code"
+              value={matchForm.order_code}
+              onChange={e => setMatchForm(f => ({ ...f, order_code: e.target.value }))}
+              onFocus={() => setOrderCodeFocused(true)}
+              onBlur={() => setTimeout(() => setOrderCodeFocused(false), 150)}
+              autoComplete="off"
+            />
+            {showSuggestions && (
+              <div className="absolute left-0 right-0 top-full z-10 mt-1 rounded-md border border-line bg-card shadow-lift">
+                {suggestLoading && (
+                  <div className="px-3 py-2 text-xs text-ink-faint">Searching…</div>
+                )}
+                {!suggestLoading && suggestion && (
+                  <button
+                    type="button"
+                    className="flex w-full items-baseline px-3 py-2 text-left text-sm hover:bg-sand"
+                    onMouseDown={e => e.preventDefault()}
+                    onClick={() => {
+                      setMatchForm(f => ({ ...f, order_code: suggestion.code }));
+                      setOrderCodeFocused(false);
+                    }}
+                  >
+                    <span className="font-mono truncate" title={suggestion.code}>
+                      {suggestion.code}
+                    </span>
+                    <span className="ml-2 shrink-0 text-xs text-ink-soft">order found</span>
+                  </button>
+                )}
+                {!suggestLoading && !suggestion && (
+                  <div className="px-3 py-2 text-xs text-ink-faint">No matching order code</div>
+                )}
+              </div>
+            )}
+          </div>
+          <ConfirmDialog
+            trigger={<Button variant="outline" disabled={match.isPending || !canSubmitMatch}>Match</Button>}
+            title="Confirm manual match?"
+            description={`Match transfer ${matchForm.binance_tx_id} to order ${matchForm.order_code}.`}
+            confirmLabel="Match"
+            variant="default"
+            onConfirm={() => match.mutate(matchGateway.current ? { ...matchForm, gateway: matchGateway.current } : matchForm)}
+          />
+        </div>
+      </CardContent>
+    </Card>
+  </div>);
+}
+
+function PaymentsUnderpaidOrders({ underpaid, underpaidTotal, setPendingCreditAnyway, setPendingCancel, setDeliverReason, setPendingDeliver, setPendingRefund }: {
+  underpaid: UnderpaidOrderRow[];
+  underpaidTotal: number;
+  setPendingCreditAnyway: import("react").Dispatch<import("react").SetStateAction<UnderpaidOrderRow | null>>;
+  setPendingCancel: import("react").Dispatch<import("react").SetStateAction<UnderpaidOrderRow | null>>;
+  setDeliverReason: import("react").Dispatch<import("react").SetStateAction<string>>;
+  setPendingDeliver: import("react").Dispatch<import("react").SetStateAction<UnderpaidOrderRow | null>>;
+  setPendingRefund: import("react").Dispatch<import("react").SetStateAction<UnderpaidOrderRow | null>>;
+}) {
+  return (underpaid.length > 0 && (
+    <Card className="mb-6">
+      <CardHeader className="pb-2">
+        <CardTitle className="flex items-center gap-1.5 text-sm font-semibold text-ink-soft">
+          Underpaid Orders
+          <span className="rounded-full bg-amberx-tint px-1.5 py-0.5 text-xs font-semibold text-amberx">{underpaidTotal}</span>
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        {underpaidTotal > underpaid.length && (
+          <p className="mb-2 text-xs text-ink-soft">Showing the {underpaid.length} most recent of {underpaidTotal}.</p>
+        )}
         <DataTable
           nested
           columns={[
             {
-              key: "select",
-              kind: "selection",
-              header: (
-                <Checkbox
-                  checked={allEligibleSelected}
-                  onCheckedChange={toggleSelectAllEligible}
-                  disabled={eligibleRows.length === 0}
-                  aria-label="Select all eligible transfers"
-                />
-              ),
-              render: tx => tx.outcome === "unmatched" && !dismissBlocked(tx) ? (
-                <Checkbox
-                  checked={selected.has(tx.id)}
-                  onCheckedChange={() => toggleSelected(tx.id)}
-                  onClick={e => e.stopPropagation()}
-                  aria-label={`Select transfer ${tx.reference}`}
-                />
-              ) : null,
-            },
-            {
-              key: "txid",
-              header: "Transfer ID",
-              render: tx => (
-                <span className="font-mono text-xs block max-w-[200px] truncate" title={tx.reference}>
-                  {tx.reference}
-                </span>
-              ),
-            },
-            {
-              key: "gateway",
-              header: "Gateway",
-              render: tx => <PaymentMethodBadge method={GATEWAY_PAYMENT_METHOD[tx.gateway] ?? tx.gateway} />,
-            },
-            {
               key: "order",
               header: "Order",
-              render: tx =>
-                tx.orderId != null ? (
-                  <span className="inline-flex flex-wrap items-center gap-2">
-                    <Link to={`/orders/${tx.orderId}`} className="font-mono text-xs text-ink hover:underline">
-                      {tx.orderCode ?? `#${tx.orderId}`}
-                    </Link>
-                    {tx.orderStatus && <StatusBadge status={tx.orderStatus} />}
-                  </span>
-                ) : tx.suggestedOrderId != null ? (
-                  // A hint, not a settlement: muted so it never reads as the
-                  // linked order above.
-                  <span
-                    className="inline-flex flex-wrap items-center gap-2"
-                    title="Order this payment was meant for — not settled."
-                  >
-                    <Link
-                      to={`/orders/${tx.suggestedOrderId}`}
-                      className="font-mono text-xs text-ink-soft hover:underline"
-                    >
-                      {tx.suggestedOrderCode ?? `#${tx.suggestedOrderId}`}
-                    </Link>
-                    <span className="text-xs text-ink-soft">suggested</span>
-                  </span>
-                ) : (
-                  <span className="font-mono text-xs">—</span>
-                ),
-            },
-            {
-              key: "kind",
-              header: "Type",
-              // Reuses StatusBadge (the same pill vocabulary the Outcome column
-              // uses) rather than a second badge system — WALLET_TOPUP/PRODUCT
-              // are registered in its tone map.
-              // Falls back to the suggested order's kind on an unmatched row,
-              // the same effective kind the server's `kind` filter matches.
-              render: tx => {
-                const kind = tx.orderKind ?? tx.suggestedOrderKind;
-                return kind ? <StatusBadge status={kind} /> : <span className="text-xs text-ink-soft">—</span>;
+              render: o => {
+                const buyerName = o.user?.fullName ?? o.user?.username ?? "Unknown";
+                return (
+                  <div className="flex flex-col max-w-[200px]">
+                    <span className="font-mono text-xs">{o.orderCode}</span>
+                    <span className="text-xs text-ink-soft truncate" title={buyerName}>
+                      {buyerName}
+                    </span>
+                  </div>
+                );
               },
             },
             {
               key: "amount",
               header: "Amount",
-              render: tx => (
-                tx.amount && !tx.currency ? (
-                  // NOWPayments: the amount is in whatever coin the buyer
-                  // paid with, which the ledger does not record — shown as
-                  // received, never formatted as a currency it is not.
-                  <span className="font-mono text-sm" title="Amount in the buyer's payment coin — not converted">
-                    {tx.amount}
-                  </span>
-                ) : (
-                  <span className="font-mono text-sm">
-                    {tx.amount && tx.currency
-                      ? formatCurrencyDisplay(tx.amount, tx.currency as "IDR" | "USDT" | "USD")
-                      : "—"}
-                  </span>
-                )
-              ),
-            },
-            {
-              key: "outcome",
-              header: "Outcome",
-              render: tx => <StatusBadge status={tx.outcome.toUpperCase()} />,
-            },
-            {
-              key: "memo",
-              header: "Memo",
-              render: tx => (
-                <span className="text-xs text-ink-soft truncate max-w-[200px] block">{tx.memo ?? "—"}</span>
-              ),
+              render: o => <span className="font-mono text-sm">{formatCurrencyDisplay(o.totalAmount, o.currency as "IDR" | "USDT" | "USD")}</span>,
             },
             {
               key: "date",
               header: "Date",
-              render: tx => (
-                <span className="text-xs text-ink-soft whitespace-nowrap">
-                  {tx.processedAtDisplay ?? "—"}
-                </span>
-              ),
+              render: o => <span className="text-xs text-ink-soft whitespace-nowrap">{o.createdAtDisplay ?? "—"}</span>,
             },
             {
               key: "actions",
               header: "",
-              // Every gateway's unmatched row gets this menu:
-              //  - "Match to order…" pre-fills the Manual Match form — except
-              //    on NOWPayments, whose amount is in the buyer's pay coin and
-              //    cannot be checked against an order (the server refuses it);
-              //  - "Add to buyer's credit balance" stays Binance-only
-              //    (/api/payments/credit reads the Binance ledger);
-              //  - "Dismiss" works on every gateway, except on a row the
-              //    gateway may still settle (`dismissBlocked`).
-              // A row left with no item at all (a blocked NOWPayments row)
-              // gets no menu.
-              render: tx => tx.outcome === "unmatched" && (tx.gateway !== "nowpayments" || !dismissBlocked(tx)) ? (
+              render: o => (
                 <div onClick={(e) => e.stopPropagation()}>
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
-                      <Button variant="ghost" size="icon-sm" aria-label={`Actions for transfer ${tx.reference}`}>
+                      <Button variant="ghost" size="icon-sm" aria-label={`Actions for order ${o.orderCode}`}>
                         <MoreVertical className="h-4 w-4" />
                       </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
-                      {tx.gateway !== "nowpayments" && (
-                        <DropdownMenuItem onSelect={() => startMatchFromRow(tx)}>
-                          <Link2 className="h-4 w-4" />
-                          Match to order…
-                        </DropdownMenuItem>
-                      )}
-                      {tx.gateway === "binance" && (
-                        <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setPendingCredit(tx); setCreditOrderCode(""); }}>
-                          <Wallet className="h-4 w-4" />
-                          Add to buyer&apos;s credit balance
-                        </DropdownMenuItem>
-                      )}
-                      {!dismissBlocked(tx) && (
-                        <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setPendingDismiss(tx); }}>
-                          <X className="h-4 w-4" />
-                          Dismiss
-                        </DropdownMenuItem>
+                      {o.kind === "WALLET_TOPUP" ? (
+                        <>
+                          <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setPendingCreditAnyway(o); }}>
+                            <Wallet className="h-4 w-4" />
+                            Credit to balance anyway
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem variant="destructive" onSelect={(e) => { e.preventDefault(); setPendingCancel(o); }}>
+                            <X className="h-4 w-4" />
+                            Cancel order
+                          </DropdownMenuItem>
+                        </>
+                      ) : (
+                        <>
+                          <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setDeliverReason(""); setPendingDeliver(o); }}>
+                            <PackageCheck className="h-4 w-4" />
+                            Deliver anyway
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setPendingRefund(o); }}>
+                            <Undo2 className="h-4 w-4" />
+                            Refund
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem variant="destructive" onSelect={(e) => { e.preventDefault(); setPendingCancel(o); }}>
+                            <X className="h-4 w-4" />
+                            Cancel order
+                          </DropdownMenuItem>
+                        </>
                       )}
                     </DropdownMenuContent>
                   </DropdownMenu>
                 </div>
-              ) : null,
+              ),
             },
           ]}
+          data={underpaid}
+          keyExtractor={o => o.id}
+          empty={<EmptyState title="No underpaid orders" description="Orders will show here if a payment falls short of the total." />}
+        />
+      </CardContent>
+    </Card>
+  ));
+}
+
+function PaymentsLedgerSearchOutcomeFilter({ qDraft, setQDraft, fieldId, outcome, changeOutcome, data, kind, setKind, setPage }: {
+  qDraft: string;
+  setQDraft: import("react").Dispatch<import("react").SetStateAction<string>>;
+  fieldId: string;
+  outcome: string;
+  changeOutcome: (v: string) => void;
+  data: NoInfer<PaymentsData> | undefined;
+  kind: string;
+  setKind: import("react").Dispatch<import("react").SetStateAction<string>>;
+  setPage: import("react").Dispatch<import("react").SetStateAction<number>>;
+}) {
+  return (<FilterBar className="mb-4">
+    <SearchBar
+      value={qDraft}
+      onChange={setQDraft}
+      placeholder="Search Transfer ID..."
+      className="w-full sm:w-64"
+    />
+    <div className="flex flex-col gap-1">
+      <label htmlFor={`${fieldId}-outcome-1`} className="text-xs text-ink-soft">Outcome</label>
+      <Select
+        value={outcome || "_all_"}
+        onValueChange={v => changeOutcome(v === "_all_" ? "" : v)}
+      >
+        <SelectTrigger id={`${fieldId}-outcome-1`} className="w-40" aria-label="Outcome"><SelectValue placeholder="All outcomes" /></SelectTrigger>
+        <SelectContent>
+          <SelectItem value="_all_">All</SelectItem>
+          {(data?.outcomes ?? []).map(o => (
+            <SelectItem key={o} value={o}>{o} ({data?.counts[o] ?? 0})</SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+    <div className="flex flex-col gap-1">
+      <label htmlFor={`${fieldId}-type-2`} className="text-xs text-ink-soft">Type</label>
+      <Select
+        value={kind || "_all_"}
+        onValueChange={v => { setKind(v === "_all_" ? "" : v); setPage(1); }}
+      >
+        <SelectTrigger id={`${fieldId}-type-2`} className="w-40" aria-label="Order type"><SelectValue placeholder="All types" /></SelectTrigger>
+        <SelectContent>
+          <SelectItem value="_all_">All</SelectItem>
+          {(data?.kinds ?? []).map(k => (
+            <SelectItem key={k} value={k}>{statusLabel(k)}</SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+    {data && <span className="text-sm text-ink-soft self-end">{data.total} transactions</span>}
+  </FilterBar>);
+}
+
+function PaymentsSelectAllEligibleTransfers({ allEligibleSelected, toggleSelectAllEligible, eligibleRows, selected, toggleSelected, startMatchFromRow, setPendingCredit, setCreditOrderCode, setPendingDismiss, data, outcome, kind, changeOutcome, setKind }: {
+  allEligibleSelected: boolean;
+  toggleSelectAllEligible: () => void;
+  eligibleRows: TxRow[];
+  selected: Set<number>;
+  toggleSelected: (id: number) => void;
+  startMatchFromRow: (tx: TxRow) => void;
+  setPendingCredit: import("react").Dispatch<import("react").SetStateAction<TxRow | null>>;
+  setCreditOrderCode: import("react").Dispatch<import("react").SetStateAction<string>>;
+  setPendingDismiss: import("react").Dispatch<import("react").SetStateAction<TxRow | null>>;
+  data: NoInfer<PaymentsData> | undefined;
+  outcome: string;
+  kind: string;
+  changeOutcome: (v: string) => void;
+  setKind: import("react").Dispatch<import("react").SetStateAction<string>>;
+}) {
+  return (<Card className="mb-6">
+    <CardContent>
+      <DataTable
+        nested
+        columns={[
+          {
+            key: "select",
+            kind: "selection",
+            header: (
+              <Checkbox
+                checked={allEligibleSelected}
+                onCheckedChange={toggleSelectAllEligible}
+                disabled={eligibleRows.length === 0}
+                aria-label="Select all eligible transfers"
+              />
+            ),
+            render: tx => tx.outcome === "unmatched" && !dismissBlocked(tx) ? (
+              <Checkbox
+                checked={selected.has(tx.id)}
+                onCheckedChange={() => toggleSelected(tx.id)}
+                onClick={e => e.stopPropagation()}
+                aria-label={`Select transfer ${tx.reference}`}
+              />
+            ) : null,
+          },
+          {
+            key: "txid",
+            header: "Transfer ID",
+            render: tx => (
+              <span className="font-mono text-xs block max-w-[200px] truncate" title={tx.reference}>
+                {tx.reference}
+              </span>
+            ),
+          },
+          {
+            key: "gateway",
+            header: "Gateway",
+            render: tx => <PaymentMethodBadge method={GATEWAY_PAYMENT_METHOD[tx.gateway] ?? tx.gateway} />,
+          },
+          {
+            key: "order",
+            header: "Order",
+            render: tx =>
+              tx.orderId != null ? (
+                <span className="inline-flex flex-wrap items-center gap-2">
+                  <Link to={`/orders/${tx.orderId}`} className="font-mono text-xs text-ink hover:underline">
+                    {tx.orderCode ?? `#${tx.orderId}`}
+                  </Link>
+                  {tx.orderStatus && <StatusBadge status={tx.orderStatus} />}
+                </span>
+              ) : tx.suggestedOrderId != null ? (
+                // A hint, not a settlement: muted so it never reads as the
+                // linked order above.
+                <span
+                  className="inline-flex flex-wrap items-center gap-2"
+                  title="Order this payment was meant for — not settled."
+                >
+                  <Link
+                    to={`/orders/${tx.suggestedOrderId}`}
+                    className="font-mono text-xs text-ink-soft hover:underline"
+                  >
+                    {tx.suggestedOrderCode ?? `#${tx.suggestedOrderId}`}
+                  </Link>
+                  <span className="text-xs text-ink-soft">suggested</span>
+                </span>
+              ) : (
+                <span className="font-mono text-xs">—</span>
+              ),
+          },
+          {
+            key: "kind",
+            header: "Type",
+            // Reuses StatusBadge (the same pill vocabulary the Outcome column
+            // uses) rather than a second badge system — WALLET_TOPUP/PRODUCT
+            // are registered in its tone map.
+            // Falls back to the suggested order's kind on an unmatched row,
+            // the same effective kind the server's `kind` filter matches.
+            render: tx => {
+              const kind = tx.orderKind ?? tx.suggestedOrderKind;
+              return kind ? <StatusBadge status={kind} /> : <span className="text-xs text-ink-soft">—</span>;
+            },
+          },
+          {
+            key: "amount",
+            header: "Amount",
+            render: tx => (
+              tx.amount && !tx.currency ? (
+                // NOWPayments: the amount is in whatever coin the buyer
+                // paid with, which the ledger does not record — shown as
+                // received, never formatted as a currency it is not.
+                <span className="font-mono text-sm" title="Amount in the buyer's payment coin — not converted">
+                  {tx.amount}
+                </span>
+              ) : (
+                <span className="font-mono text-sm">
+                  {tx.amount && tx.currency
+                    ? formatCurrencyDisplay(tx.amount, tx.currency as "IDR" | "USDT" | "USD")
+                    : "—"}
+                </span>
+              )
+            ),
+          },
+          {
+            key: "outcome",
+            header: "Outcome",
+            render: tx => <StatusBadge status={tx.outcome.toUpperCase()} />,
+          },
+          {
+            key: "memo",
+            header: "Memo",
+            render: tx => (
+              <span className="text-xs text-ink-soft truncate max-w-[200px] block">{tx.memo ?? "—"}</span>
+            ),
+          },
+          {
+            key: "date",
+            header: "Date",
+            render: tx => (
+              <span className="text-xs text-ink-soft whitespace-nowrap">
+                {tx.processedAtDisplay ?? "—"}
+              </span>
+            ),
+          },
+          {
+            key: "actions",
+            header: "",
+            // Every gateway's unmatched row gets this menu:
+            //  - "Match to order…" pre-fills the Manual Match form — except
+            //    on NOWPayments, whose amount is in the buyer's pay coin and
+            //    cannot be checked against an order (the server refuses it);
+            //  - "Add to buyer's credit balance" stays Binance-only
+            //    (/api/payments/credit reads the Binance ledger);
+            //  - "Dismiss" works on every gateway, except on a row the
+            //    gateway may still settle (`dismissBlocked`).
+            // A row left with no item at all (a blocked NOWPayments row)
+            // gets no menu.
+            render: tx => tx.outcome === "unmatched" && (tx.gateway !== "nowpayments" || !dismissBlocked(tx)) ? (
+              <div onClick={(e) => e.stopPropagation()}>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="ghost" size="icon-sm" aria-label={`Actions for transfer ${tx.reference}`}>
+                      <MoreVertical className="h-4 w-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    {tx.gateway !== "nowpayments" && (
+                      <DropdownMenuItem onSelect={() => startMatchFromRow(tx)}>
+                        <Link2 className="h-4 w-4" />
+                        Match to order…
+                      </DropdownMenuItem>
+                    )}
+                    {tx.gateway === "binance" && (
+                      <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setPendingCredit(tx); setCreditOrderCode(""); }}>
+                        <Wallet className="h-4 w-4" />
+                        Add to buyer&apos;s credit balance
+                      </DropdownMenuItem>
+                    )}
+                    {!dismissBlocked(tx) && (
+                      <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setPendingDismiss(tx); }}>
+                        <X className="h-4 w-4" />
+                        Dismiss
+                      </DropdownMenuItem>
+                    )}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+            ) : null,
+          },
+        ]}
         data={data?.ledger ?? []}
         isLoading={!data}
         keyExtractor={tx => tx.id}
@@ -1005,113 +928,384 @@ export function PaymentsPage() {
             secondaryAction={outcome || kind ? { label: "Clear Filters", onClick: () => { changeOutcome(""); setKind(""); } } : undefined}
           />
         }
-        />
-        </CardContent>
-      </Card>
+      />
+    </CardContent>
+  </Card>);
+}
 
-      {data && (
-        <div className="mt-4">
-          <Pagination
-            page={page}
-            pageSize={50}
-            total={data.total}
-            onPageChange={setPage}
+function PaymentsAddToBuyerAposS({ pendingCredit, setPendingCredit, setCreditOrderCode, creditOrderCode, creditSuggestLoading, creditSuggestion, creditToBalance }: {
+  pendingCredit: TxRow | null;
+  setPendingCredit: import("react").Dispatch<import("react").SetStateAction<TxRow | null>>;
+  setCreditOrderCode: import("react").Dispatch<import("react").SetStateAction<string>>;
+  creditOrderCode: string;
+  creditSuggestLoading: boolean;
+  creditSuggestion: { code: string; } | null;
+  creditToBalance: import("@tanstack/react-query").UseMutationResult<unknown, Error, void, unknown>;
+}) {
+  return (pendingCredit && (
+    <Dialog open onOpenChange={(open) => { if (!open) { setPendingCredit(null); setCreditOrderCode(""); } }}>
+      <DialogContent showCloseButton={false}>
+        <DialogHeader>
+          <DialogTitle>Add to buyer&apos;s credit balance</DialogTitle>
+        </DialogHeader>
+        <div className="flex flex-col gap-2">
+          <p className="text-sm text-ink-soft">
+            Adds transfer {pendingCredit.reference}&apos;s amount to the matching order&apos;s buyer credit balance and cancels the order. Enter the order code this transfer belongs to.
+          </p>
+          <Input
+            placeholder="Order code"
+            value={creditOrderCode}
+            onChange={e => setCreditOrderCode(e.target.value)}
+            autoComplete="off"
           />
+          {creditSuggestLoading && <p className="text-xs text-ink-faint">Searching…</p>}
+          {!creditSuggestLoading && creditOrderCode.trim() && !creditSuggestion && (
+            <p className="text-xs text-ink-faint">No matching order code</p>
+          )}
         </div>
-      )}
+        <DialogFooter>
+          <Button variant="outline" onClick={() => { setPendingCredit(null); setCreditOrderCode(""); }}>Back</Button>
+          <Button
+            disabled={!creditSuggestion || creditToBalance.isPending}
+            onClick={() => creditToBalance.mutate()}
+          >
+            Add to credit balance
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  ));
+}
 
-      {pendingDeliver && (
-        <Dialog open onOpenChange={(open) => { if (!open) setPendingDeliver(null); }}>
-          <DialogContent>
-            <DialogHeader><DialogTitle>Deliver this order anyway?</DialogTitle></DialogHeader>
-            <p className="text-sm text-muted-foreground">Order {pendingDeliver.orderCode} was underpaid. Accept the shortfall and fulfill this order. Payment remains incomplete.</p>
-            <label className="space-y-2 text-sm">Override reason
-              <Input aria-label="Override reason" value={deliverReason} onChange={(e) => setDeliverReason(e.target.value)} placeholder="Why is the shortfall being accepted?" />
-            </label>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setPendingDeliver(null)}>Cancel</Button>
-              <Button disabled={!deliverReason.trim() || deliverAnyway.isPending} onClick={() => {
-                deliverAnyway.mutate(pendingDeliver.id, { onSuccess: () => setPendingDeliver(null) });
-              }}>Deliver anyway</Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-      )}
-      {pendingRefund && (
-        <ConfirmDialog
-          open
-          onOpenChange={(open) => { if (!open) setPendingRefund(null); }}
-          title="Refund to the buyer's wallet?"
-          description={`Refund order ${pendingRefund.orderCode}'s payment to the buyer's wallet balance.`}
-          confirmLabel="Refund"
-          variant="default"
-          onConfirm={() => refundUnderpaid.mutate(pendingRefund)}
+function PaymentsPendingInternalTransfers({ pendingInternal }: {
+  pendingInternal: PendingInternalOrderRow[];
+}) {
+  return (pendingInternal.length > 0 && (
+    <Card className="mb-6">
+      <CardHeader className="pb-2">
+        <CardTitle className="flex items-center gap-1.5 text-sm font-semibold text-ink-soft">
+          Pending Internal Transfers
+          <span className="rounded-full bg-sand px-1.5 py-0.5 text-xs font-semibold text-ink-soft">{pendingInternal.length}</span>
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <DataTable
+          nested
+          columns={[
+            { key: "order", header: "Order", render: o => <span className="font-mono text-xs">{o.orderCode}</span> },
+            { key: "user", header: "Buyer", render: o => <span className="text-xs text-ink-soft">{o.user?.fullName ?? o.user?.username ?? "Unknown"}</span> },
+            { key: "amount", header: "Amount", render: o => <span className="font-mono text-sm">{formatCurrencyDisplay(o.totalAmount, o.currency as "IDR" | "USDT" | "USD")}</span> },
+            {
+              key: "ref",
+              header: "Transfer Ref",
+              render: o => (
+                <span
+                  className="font-mono text-xs block max-w-[200px] truncate"
+                  title={o.paymentRef ?? undefined}
+                >
+                  {o.paymentRef ?? "—"}
+                </span>
+              ),
+            },
+            { key: "expires", header: "Expires", render: o => <span className="text-xs text-ink-soft whitespace-nowrap">{o.expiresAtDisplay ?? "—"}</span> },
+          ]}
+          data={pendingInternal}
+          keyExtractor={o => o.id}
+          empty={<EmptyState title="No pending internal transfers" description="Internal transfers awaiting confirmation will appear here." />}
         />
-      )}
-      {pendingCancel && (
-        <ConfirmDialog
-          open
-          onOpenChange={(open) => { if (!open) setPendingCancel(null); }}
-          title="Cancel this order?"
-          description={`Cancel order ${pendingCancel.orderCode}. Any reserved stock or wallet holds are released.`}
-          confirmLabel="Cancel order"
-          onConfirm={() => cancelUnderpaid.mutate(pendingCancel.id)}
-        />
-      )}
-      {pendingCreditAnyway && (
-        <ConfirmDialog
-          open
-          onOpenChange={(open) => { if (!open) setPendingCreditAnyway(null); }}
-          title="Credit this top-up to the buyer's balance anyway?"
-          description={`Order ${pendingCreditAnyway.orderCode} was underpaid. Cancel it and credit the buyer's wallet with the amount actually received.`}
-          confirmLabel="Credit anyway"
-          variant="default"
-          onConfirm={() => creditAnyway.mutate(pendingCreditAnyway)}
-        />
-      )}
-      {pendingDismiss && (
-        <ConfirmDialog
-          open
-          onOpenChange={(open) => { if (!open) setPendingDismiss(null); }}
-          title="Dismiss transfer?"
-          description={`Mark transfer ${pendingDismiss.reference} as dismissed.`}
-          confirmLabel="Dismiss"
-          onConfirm={() => dismiss.mutate(pendingDismiss)}
-        />
-      )}
-      {pendingCredit && (
-        <Dialog open onOpenChange={(open) => { if (!open) { setPendingCredit(null); setCreditOrderCode(""); } }}>
-          <DialogContent showCloseButton={false}>
-            <DialogHeader>
-              <DialogTitle>Add to buyer&apos;s credit balance</DialogTitle>
-            </DialogHeader>
-            <div className="flex flex-col gap-2">
-              <p className="text-sm text-ink-soft">
-                Adds transfer {pendingCredit.reference}&apos;s amount to the matching order&apos;s buyer credit balance and cancels the order. Enter the order code this transfer belongs to.
-              </p>
-              <Input
-                placeholder="Order code"
-                value={creditOrderCode}
-                onChange={e => setCreditOrderCode(e.target.value)}
-                autoComplete="off"
-              />
-              {creditSuggestLoading && <p className="text-xs text-ink-faint">Searching…</p>}
-              {!creditSuggestLoading && creditOrderCode.trim() && !creditSuggestion && (
-                <p className="text-xs text-ink-faint">No matching order code</p>
-              )}
-            </div>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => { setPendingCredit(null); setCreditOrderCode(""); }}>Back</Button>
-              <Button
-                disabled={!creditSuggestion || creditToBalance.isPending}
-                onClick={() => creditToBalance.mutate()}
-              >
-                Add to credit balance
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-      )}
-    </PageLayout>
-  );
+      </CardContent>
+    </Card>
+  ));
+}
+
+function useUnderpaidActions({ idempotentPost, deliverReason, qc }: {
+  idempotentPost: import("../api/idempotency").IdempotentPost;
+  deliverReason: string;
+  qc: import("@tanstack/react-query").QueryClient;
+}) {
+  const deliverAnyway = useMutation({
+    mutationFn: (orderId: number) => idempotentPost(`/api/payments/order/${orderId}/deliver`, { reason: deliverReason.trim() }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["payments"] });
+      toast.success("Order delivered.");
+    },
+    onError: (e: Error) => toast.error(describeError(e)),
+  });
+
+  const refundUnderpaid = useMutation({
+    mutationFn: (order: UnderpaidOrderRow) =>
+      idempotentPost<RefundUnderpaidResult>(`/api/payments/order/${order.id}/refund`, {}),
+    onSuccess: (res, order) => {
+      void qc.invalidateQueries({ queryKey: ["payments"] });
+      // The route marks the order REFUNDED either way, but only pays the buyer
+      // back when some payment rail recorded what actually arrived. An order
+      // that was already UNDERPAID before this branch's ledger table landed has
+      // no such record, so it ends up REFUNDED with nothing returned — a green
+      // "refunded" toast there would tell the admin money moved when it did
+      // not, and REFUNDED is terminal, so nothing later would correct them.
+      const refunded = res.refunded ?? "0";
+      if (Number(refunded) > 0) {
+        const amount = formatCurrencyDisplay(refunded, (res.currency ?? order.currency) as "IDR" | "USDT" | "USD");
+        toast.success(`Order refunded and ${amount} returned to the buyer's balance.`);
+      } else {
+        toast.warning(
+          `Order ${order.orderCode} marked refunded but nothing could be returned automatically — no payment record shows what the buyer actually sent. Refund them by hand if they really did pay.`,
+        );
+      }
+    },
+    onError: (e: Error) => toast.error(describeError(e)),
+  });
+
+  const cancelUnderpaid = useMutation({
+    mutationFn: (orderId: number) => idempotentPost(`/api/payments/order/${orderId}/cancel`, {}),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["payments"] });
+      toast.success("Order cancelled.");
+    },
+    onError: (e: Error) => toast.error(describeError(e)),
+  });
+
+  const creditAnyway = useMutation({
+    mutationFn: (order: UnderpaidOrderRow) =>
+      idempotentPost<CreditAnywayResult>(`/api/payments/order/${order.id}/credit-anyway`, {}),
+    onSuccess: (res, order) => {
+      void qc.invalidateQueries({ queryKey: ["payments"] });
+      // The route cancels the order either way, but only credits the buyer
+      // when some payment rail recorded what actually arrived. An order that
+      // was already UNDERPAID before this feature shipped has no such record,
+      // so it gets cancelled with nothing credited — a green "credited" toast
+      // there would tell the admin money moved when it did not, and CANCELLED
+      // is terminal, so nothing later would correct them.
+      const credited = res.credited ?? "0";
+      if (Number(credited) > 0) {
+        const amount = formatCurrencyDisplay(credited, (res.currency ?? order.currency) as "IDR" | "USDT" | "USD");
+        toast.success(`Order cancelled and ${amount} credited to the buyer's balance.`);
+      } else {
+        toast.warning(
+          `Order ${order.orderCode} cancelled but nothing could be credited automatically — no payment record shows what the buyer actually sent. Credit them by hand if they really did pay.`,
+        );
+      }
+    },
+    onError: (e: Error) => toast.error(describeError(e)),
+  });
+  return { deliverAnyway, refundUnderpaid, cancelUnderpaid, creditAnyway };
+}
+
+function usePaymentMatching({ idempotentPost, qc, setMatchForm, matchGateway, setMatchError, matchCardRef, setPendingDismiss, pendingCredit, creditSuggestion, setPendingCredit, setCreditOrderCode }: {
+  idempotentPost: import("../api/idempotency").IdempotentPost;
+  qc: import("@tanstack/react-query").QueryClient;
+  setMatchForm: import("react").Dispatch<import("react").SetStateAction<{ binance_tx_id: string; order_code: string; }>>;
+  matchGateway: import("react").MutableRefObject<LedgerGateway | null>;
+  setMatchError: import("react").Dispatch<import("react").SetStateAction<string | null>>;
+  matchCardRef: import("react").RefObject<HTMLDivElement>;
+  setPendingDismiss: import("react").Dispatch<import("react").SetStateAction<TxRow | null>>;
+  pendingCredit: TxRow | null;
+  creditSuggestion: { code: string; } | null;
+  setPendingCredit: import("react").Dispatch<import("react").SetStateAction<TxRow | null>>;
+  setCreditOrderCode: import("react").Dispatch<import("react").SetStateAction<string>>;
+}) {
+  const match = useMutation({
+    mutationFn: (form: { binance_tx_id: string; order_code: string; gateway?: LedgerGateway }) =>
+      idempotentPost("/api/payments/match", form),
+    onSuccess: (_res, form) => {
+      void qc.invalidateQueries({ queryKey: ["payments"] });
+      toast.success(`Transfer matched to order ${form.order_code}.`);
+      setMatchForm({ binance_tx_id: "", order_code: "" });
+      matchGateway.current = null;
+      setMatchError(null);
+    },
+    onError: (e: Error) => setMatchError(describeError(e)),
+  });
+
+  function startMatchFromRow(tx: TxRow) {
+    setMatchForm({ binance_tx_id: tx.reference, order_code: tx.suggestedOrderCode ?? "" });
+    matchGateway.current = tx.gateway;
+    setMatchError(null);
+    matchCardRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    // After the menu closes: Radix hands focus back to the menu trigger on
+    // close, which would otherwise steal it straight back.
+    setTimeout(() => {
+      matchCardRef.current?.querySelector<HTMLInputElement>("input[data-match-transfer-id]")?.focus({ preventScroll: true });
+    }, 0);
+  }
+
+  const dismiss = useMutation({
+    mutationFn: (tx: TxRow) => idempotentPost("/api/payments/dismiss", { binance_tx_id: tx.reference, gateway: tx.gateway }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["payments"] });
+      toast.success("Transfer dismissed.");
+      setPendingDismiss(null);
+    },
+    onError: (e: Error) => toast.error(describeError(e)),
+  });
+
+  const creditToBalance = useMutation({
+    mutationFn: () => idempotentPost("/api/payments/credit", { binance_tx_id: pendingCredit!.reference, order_code: creditSuggestion!.code }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["payments"] });
+      toast.success("Added to the buyer's credit balance.");
+      setPendingCredit(null);
+      setCreditOrderCode("");
+    },
+    onError: (e: Error) => toast.error(describeError(e)),
+  });
+  return { match, startMatchFromRow, dismiss, creditToBalance };
+}
+
+function paymentMatchingAvailability({ matchForm, orderCodeFocused, suggestLoading, searched }: {
+  matchForm: { binance_tx_id: string; order_code: string; };
+  orderCodeFocused: boolean;
+  suggestLoading: boolean;
+  searched: boolean;
+}) {
+  const canSubmitMatch = matchForm.binance_tx_id.trim().length > 0 && matchForm.order_code.trim().length > 0;
+
+  const showSuggestions = orderCodeFocused && matchForm.order_code.trim().length > 0 && (suggestLoading || searched);
+  return { canSubmitMatch, showSuggestions } as const;
+}
+
+function PaymentOverrideDialog({ pendingDeliver, setPendingDeliver, deliverReason, setDeliverReason, deliverAnyway }: {
+  pendingDeliver: UnderpaidOrderRow;
+  setPendingDeliver: import("react").Dispatch<import("react").SetStateAction<UnderpaidOrderRow | null>>;
+  deliverReason: string;
+  setDeliverReason: import("react").Dispatch<import("react").SetStateAction<string>>;
+  deliverAnyway: ReturnType<typeof useUnderpaidActions>["deliverAnyway"];
+}) {
+  return (<Dialog open onOpenChange={(open) => { if (!open) setPendingDeliver(null); }}>
+    <DialogContent>
+      <DialogHeader><DialogTitle>Deliver this order anyway?</DialogTitle></DialogHeader>
+      <p className="text-sm text-muted-foreground">Order {pendingDeliver.orderCode} was underpaid. Accept the shortfall and fulfill this order. Payment remains incomplete.</p>
+      <label className="space-y-2 text-sm">Override reason
+        <Input aria-label="Override reason" value={deliverReason} onChange={(e) => setDeliverReason(e.target.value)} placeholder="Why is the shortfall being accepted?" />
+      </label>
+      <DialogFooter>
+        <Button variant="outline" onClick={() => setPendingDeliver(null)}>Cancel</Button>
+        <Button disabled={!deliverReason.trim() || deliverAnyway.isPending} onClick={() => {
+          deliverAnyway.mutate(pendingDeliver.id, { onSuccess: () => setPendingDeliver(null) });
+        }}>Deliver anyway</Button>
+      </DialogFooter>
+    </DialogContent>
+  </Dialog>);
+}
+
+function ActionablePaymentsNotice({ actionableApplied, clearActionable }: {
+  actionableApplied: boolean;
+  clearActionable: () => void;
+}) {
+  return (actionableApplied && (
+    <p className="mb-2 text-xs text-ink-soft">
+      Showing only items still needing action.{" "}
+      <button type="button" className="font-medium text-pine hover:underline" onClick={clearActionable}>
+        Show all
+      </button>
+    </p>
+  ));
+}
+
+function PaymentBulkDismissBar({ visibleSelected, bulkDismiss, setSelected }: {
+  visibleSelected: Set<number>;
+  bulkDismiss: import("@tanstack/react-query").UseMutationResult<{ succeeded: number; failed: number; }, Error, number[], unknown>;
+  setSelected: import("react").Dispatch<import("react").SetStateAction<Set<number>>>;
+}) {
+  return (visibleSelected.size > 0 && (
+    <div className="sticky bottom-4 z-10 mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-line bg-card px-3 py-2 text-sm shadow-lift transition-[color,background-color,border-color,opacity,transform] duration-150">
+      <span className="text-ink-soft">{visibleSelected.size} selected</span>
+      <Button
+        size="sm"
+        variant="destructive"
+        disabled={bulkDismiss.isPending}
+        onClick={() => bulkDismiss.mutate(Array.from(visibleSelected))}
+      >
+        Dismiss {visibleSelected.size} transfer{visibleSelected.size === 1 ? "" : "s"}
+      </Button>
+      <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>Clear</Button>
+    </div>
+  ));
+}
+
+function PaymentsPagination({ data, page, setPage }: {
+  data: NonNullable<import("@tanstack/react-query").UseQueryResult<NoInfer<PaymentsData>, Error>>["data"];
+  page: number;
+  setPage: import("react").Dispatch<import("react").SetStateAction<number>>;
+}) {
+  return (data && (
+    <div className="mt-4">
+      <Pagination
+        page={page}
+        pageSize={50}
+        total={data.total}
+        onPageChange={setPage}
+      />
+    </div>
+  ));
+}
+
+function PaymentsRefundToTheBuyerS({ pendingRefund, setPendingRefund, refundUnderpaid }: {
+  pendingRefund: UnderpaidOrderRow | null;
+  setPendingRefund: import("react").Dispatch<import("react").SetStateAction<UnderpaidOrderRow | null>>;
+  refundUnderpaid: NonNullable<{ deliverAnyway: import("@tanstack/react-query").UseMutationResult<unknown, Error, number, unknown>; refundUnderpaid: import("@tanstack/react-query").UseMutationResult<RefundUnderpaidResult, Error, UnderpaidOrderRow, unknown>; cancelUnderpaid: import("@tanstack/react-query").UseMutationResult<unknown, Error, number, unknown>; creditAnyway: import("@tanstack/react-query").UseMutationResult<CreditAnywayResult, Error, UnderpaidOrderRow, unknown>; }>["refundUnderpaid"];
+}) {
+  return (pendingRefund && (
+    <ConfirmDialog
+      open
+      onOpenChange={(open) => { if (!open) setPendingRefund(null); }}
+      title="Refund to the buyer's wallet?"
+      description={`Refund order ${pendingRefund.orderCode}'s payment to the buyer's wallet balance.`}
+      confirmLabel="Refund"
+      variant="default"
+      onConfirm={() => refundUnderpaid.mutate(pendingRefund)}
+    />
+  ));
+}
+
+function PaymentsCancelThisOrder({ pendingCancel, setPendingCancel, cancelUnderpaid }: {
+  pendingCancel: UnderpaidOrderRow | null;
+  setPendingCancel: import("react").Dispatch<import("react").SetStateAction<UnderpaidOrderRow | null>>;
+  cancelUnderpaid: NonNullable<{ deliverAnyway: import("@tanstack/react-query").UseMutationResult<unknown, Error, number, unknown>; refundUnderpaid: import("@tanstack/react-query").UseMutationResult<RefundUnderpaidResult, Error, UnderpaidOrderRow, unknown>; cancelUnderpaid: import("@tanstack/react-query").UseMutationResult<unknown, Error, number, unknown>; creditAnyway: import("@tanstack/react-query").UseMutationResult<CreditAnywayResult, Error, UnderpaidOrderRow, unknown>; }>["cancelUnderpaid"];
+}) {
+  return (pendingCancel && (
+    <ConfirmDialog
+      open
+      onOpenChange={(open) => { if (!open) setPendingCancel(null); }}
+      title="Cancel this order?"
+      description={`Cancel order ${pendingCancel.orderCode}. Any reserved stock or wallet holds are released.`}
+      confirmLabel="Cancel order"
+      onConfirm={() => cancelUnderpaid.mutate(pendingCancel.id)}
+    />
+  ));
+}
+
+function PaymentsCreditThisTopUpTo({ pendingCreditAnyway, setPendingCreditAnyway, creditAnyway }: {
+  pendingCreditAnyway: UnderpaidOrderRow | null;
+  setPendingCreditAnyway: import("react").Dispatch<import("react").SetStateAction<UnderpaidOrderRow | null>>;
+  creditAnyway: NonNullable<{ deliverAnyway: import("@tanstack/react-query").UseMutationResult<unknown, Error, number, unknown>; refundUnderpaid: import("@tanstack/react-query").UseMutationResult<RefundUnderpaidResult, Error, UnderpaidOrderRow, unknown>; cancelUnderpaid: import("@tanstack/react-query").UseMutationResult<unknown, Error, number, unknown>; creditAnyway: import("@tanstack/react-query").UseMutationResult<CreditAnywayResult, Error, UnderpaidOrderRow, unknown>; }>["creditAnyway"];
+}) {
+  return (pendingCreditAnyway && (
+    <ConfirmDialog
+      open
+      onOpenChange={(open) => { if (!open) setPendingCreditAnyway(null); }}
+      title="Credit this top-up to the buyer's balance anyway?"
+      description={`Order ${pendingCreditAnyway.orderCode} was underpaid. Cancel it and credit the buyer's wallet with the amount actually received.`}
+      confirmLabel="Credit anyway"
+      variant="default"
+      onConfirm={() => creditAnyway.mutate(pendingCreditAnyway)}
+    />
+  ));
+}
+
+function PaymentsDismissTransfer({ pendingDismiss, setPendingDismiss, dismiss }: {
+  pendingDismiss: TxRow | null;
+  setPendingDismiss: import("react").Dispatch<import("react").SetStateAction<TxRow | null>>;
+  dismiss: NonNullable<{ match: import("@tanstack/react-query").UseMutationResult<unknown, Error, { binance_tx_id: string; order_code: string; gateway?: LedgerGateway; }, unknown>; startMatchFromRow: (tx: TxRow) => void; dismiss: import("@tanstack/react-query").UseMutationResult<unknown, Error, TxRow, unknown>; creditToBalance: import("@tanstack/react-query").UseMutationResult<unknown, Error, void, unknown>; }>["dismiss"];
+}) {
+  return (pendingDismiss && (
+    <ConfirmDialog
+      open
+      onOpenChange={(open) => { if (!open) setPendingDismiss(null); }}
+      title="Dismiss transfer?"
+      description={`Mark transfer ${pendingDismiss.reference} as dismissed.`}
+      confirmLabel="Dismiss"
+      onConfirm={() => dismiss.mutate(pendingDismiss)}
+    />
+  ));
 }

@@ -1,3 +1,5 @@
+import { useAction } from "../hooks/useAction";
+import { keyedContent } from "../lib/keyedContent";
 /**
  * TSX port of apps/storefront/views/product.njk — image, denomination picker
  * (price/stock/qty-max/buy-vs-restock driven by the selected plan, replicating
@@ -5,8 +7,6 @@
  * mutation), reviews. Markup/classes copied verbatim apart from the mechanical
  * Tailwind v3→v4 renames (docs/REACT_STOREFRONT_MIGRATION.md).
  */
-import { useEffect, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Bell,
@@ -18,28 +18,30 @@ import {
   Star,
   Zap,
 } from "lucide-react";
+import { useEffect, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
 import { apiGet, apiPost } from "../api/client";
 import type { CartPageData, ProductPageData } from "../api/types";
 import { useShopContext } from "../components/Layout";
-import { useDocumentTitle } from "../lib/useDocumentTitle";
-import { t, tCount } from "../lib/i18n";
-import { tError } from "../lib/errors";
-import { formatPriceFor } from "../lib/format";
-import { useIsDesktop } from "../lib/useMediaQuery";
 import Breadcrumb from "../components/shop/Breadcrumb";
-import Stars from "../components/shop/Stars";
-import StockBadge from "../components/shop/StockBadge";
 import DefaultThumb from "../components/shop/DefaultThumb";
 import DenominationCard from "../components/shop/DenominationCard";
-import StickyPurchaseBar from "../components/shop/StickyPurchaseBar";
-import Alert from "../components/ui/Alert";
+import EmptyState from "../components/shop/EmptyState";
 import FlashBadge, { FlashCountdown, FlashWasPrice } from "../components/shop/FlashBadge";
 import ProductCard from "../components/shop/ProductCard";
+import Skeleton from "../components/shop/Skeleton";
+import Spinner from "../components/shop/Spinner";
+import Stars from "../components/shop/Stars";
+import StickyPurchaseBar from "../components/shop/StickyPurchaseBar";
+import StockBadge from "../components/shop/StockBadge";
+import Alert from "../components/ui/Alert";
+import { tError } from "../lib/errors";
+import { formatPriceFor } from "../lib/format";
+import { t, tCount } from "../lib/i18n";
+import { useDocumentTitle } from "../lib/useDocumentTitle";
+import { useIsDesktop } from "../lib/useMediaQuery";
 import ErrorPage from "./ErrorPage";
 import InstantBuyPage from "./InstantBuyPage";
-import Spinner from "../components/shop/Spinner";
-import Skeleton from "../components/shop/Skeleton";
-import EmptyState from "../components/shop/EmptyState";
 
 /** Qty input contract: 1..min(99, available) for a denomination that draws
  * from local stock (`uses_local_inventory`, decided by the server) — a
@@ -175,48 +177,13 @@ export default function ProductPage() {
     return () => observer.disconnect();
   }, [buyArea]);
 
-  const invalidateContext = () => queryClient.invalidateQueries({ queryKey: ["context"] });
-
-  const addMutation = useMutation({
-    mutationFn: (vars: { denomination_id: number; qty: number }) => apiPost<CartPageData>("/api/v1/cart", vars),
-    onMutate: () => setCartError(null),
-    onSuccess: () => {
-      invalidateContext();
-      navigate("/cart");
-    },
-    onError: (err) => setCartError(err),
-  });
-  const buyMutation = useMutation({
-    mutationFn: (vars: { denomination_id: number; qty: number }) => apiPost<CartPageData>("/api/v1/cart", vars),
-    onMutate: () => setCartError(null),
-    onSuccess: () => {
-      invalidateContext();
-      navigate("/checkout");
-    },
-    onError: (err) => setCartError(err),
-  });
-  const restockMutation = useMutation({
-    mutationFn: (denominationId: number) => apiPost<{ result: RestockResult }>(`/api/v1/restock/${denominationId}`, {}),
-    onError: (err) => {
-      if ((err as Error & { status?: number }).status === 401) {
-        navigate(`/login?next=/p/${slug}`);
-      }
-    },
-  });
-
-  // A result belongs to the plan it was requested for — clear it on a switch.
-  const resetRestock = restockMutation.reset;
-  useEffect(() => {
-    resetRestock();
-  }, [selectedId, slug, resetRestock]);
+  const { addMutation, buyMutation, restockMutation } = useProductPurchase({ queryClient, setCartError, navigate, slug });
 
   // Restock DMs go out over Telegram, so a signed-in account without a linked
   // Telegram can't be served — hide the button and say why instead. Anonymous
   // visitors keep it (tapping it sends them to log in).
   const needsTelegram = Boolean(ctx?.customer) && ctx?.customer?.telegram_linked === false;
-  const restockResult = restockMutation.data?.result;
-  const restockDone = restockResult === "subscribed" || restockResult === "already";
-  const restockFeedbackKey = restockResult ? `web.restock_${restockResult}` : null;
+  const { restockDone, restockFeedbackKey } = restockFeedback({ restockMutation, selectedId, data });
 
   if (error) {
     if ((error as Error & { status?: number }).status === 404) return <ErrorPage />;
@@ -275,293 +242,19 @@ export default function ProductPage() {
         ]}
       />
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 lg:gap-10">
-        {/* The product name spans both columns so it stays the first thing
-            read on mobile (where the grid collapses to image → description →
-            picker beneath it) while still heading the whole block on
-            desktop. */}
-        <h1 className="page-title md:col-span-2">{product.name}</h1>
-
-        {/* Image + short description. `self-start` on this wrapper (not the
-            image card) so the column doesn't stretch to the taller right
-            column: a photo-less product (every Digiflazz import) would
-            otherwise leave a tall empty DefaultThumb well with dead space
-            below it. The description sits here, under the banner, moved from
-            its old spot beneath the <h1>. */}
-        <div className="self-start">
-          <div className="card overflow-hidden">
-            <div className="flex h-48 items-center justify-center bg-sand sm:h-56 lg:h-64 xl:h-72">
-              {/* Bounded height (h-48..xl:h-72) with object-contain so the photo is
-                  never cropped or stretched; see ProductCard for why the intrinsic
-                  size is declared and why <picture> needs to be block. */}
-              {product.image ? (
-                <picture className="block w-full h-full">
-                  {product.image_srcset && (
-                    // Full width on phones, roughly half the grid on desktop.
-                    <source
-                      type="image/webp"
-                      srcSet={product.image_srcset}
-                      sizes="(max-width: 768px) 100vw, 600px"
-                    />
-                  )}
-                  {/* Eager on purpose: this is the page's LCP element and the only
-                      image above the fold on a phone, so deferring it would trade a
-                      measurable delay for nothing. Everything below (the
-                      related-products shelf) lazy-loads via ProductCard. The
-                      width/height pair is what stops the text below from jumping
-                      while it decodes — object-cover ignores the numbers for
-                      painting, but the browser still uses their ratio to reserve
-                      the box. */}
-                  <img
-                    src={product.image}
-                    alt={product.name}
-                    loading="eager"
-                    decoding="async"
-                    width={800}
-                    height={600}
-                    className="w-full h-full object-contain"
-                  />
-                </picture>
-              ) : (
-                <DefaultThumb kind={product.image_kind ?? "generic"} name={product.name} />
-              )}
-            </div>
-          </div>
-
-          {/* Optional lead paragraph, directly under the banner. Stays behind
-              the `product.description &&` guard — Digiflazz products have
-              `description: null` and must render nothing extra here. `mt-4`
-              spaces it from the image card. No heading: it's a plain lead
-              paragraph, same as it was under the <h1>. */}
-          {product.description && (
-            <div className="mt-4 text-sm leading-relaxed text-ink-soft whitespace-pre-line">
-              {product.description}
-            </div>
-          )}
-        </div>
-
-        {/* Facts + denomination picker + actions */}
-        <div id="product-detail" className="min-w-0">
-          {/* Denomination cards — pick a plan (never a dropdown). The cheapest
-              active denomination is preselected; selecting another updates the
-              live price / stock / warranty and the checkout payload below. */}
-          <div className="mt-6">
-            <h2 className="section-title mb-3">{t("web.choose_plan")}</h2>
-            <div id="denom-list" className="grid grid-cols-1 gap-3">
-              {denominations.map((d) => (
-                <DenominationCard
-                  key={d.id}
-                  d={d}
-                  fx={fx}
-                  lowThreshold={low_threshold}
-                  checked={d.id === selected.id}
-                  onChange={() => selectDenomination(d.id, d.available, d.uses_local_inventory)}
-                  iconKind={product.icon_kind}
-                />
-              ))}
-            </div>
-          </div>
-
-          {/* Live summary — price/stock/warranty of the selected denomination.
-              Also the sentinel the sticky mobile purchase bar watches, hence
-              the id and the callback ref. */}
-          <div id="buy-summary" ref={setBuyArea} className="card card-pad mt-5">
-            <div className="flex items-center justify-between gap-3 flex-wrap">
-              <div className="flex items-baseline gap-2 flex-wrap">
-                {/* `selected.price` already carries the flash discount — the
-                    struck figure beside it is the pre-sale one. */}
-                <div className="font-display font-semibold text-pine text-2xl">
-                  {selected.canonical?.formattedPrice ?? formatPriceFor(selected.price, ctx?.currency ?? null, fx)}
-                </div>
-                {selected.flash && (
-                  <FlashWasPrice value={selected.flash.base_price} endsAt={selected.flash.ends_at} />
-                )}
-              </div>
-              {/* T18: reuse the same StockBadge the catalog card and each
-                  denomination card use — it always renders a state (never
-                  nothing, unlike the old ad-hoc `.chip` markup this replaced,
-                  which returned null — and so showed no positive stock
-                  signal at all — for a purchasable non-auto denomination). */}
-              <div>
-                <StockBadge
-                  available={selected.available}
-                  lowThreshold={low_threshold}
-                  allNonAuto={!selectedUsesStock}
-                />
-              </div>
-            </div>
-            {selected.flash && (
-              <div className="mt-2 flex flex-wrap items-center gap-2">
-                <FlashBadge percent={selected.flash.discount_percent} endsAt={selected.flash.ends_at} />
-                <FlashCountdown endsAt={selected.flash.ends_at} />
-              </div>
-            )}
-            {fx && <div className="text-xs text-ink-faint mt-1.5">{t("web.usdt_note")}</div>}
-
-            {cartError !== null && (
-              <Alert variant="banner" tone="error" className="mt-3 mb-0">
-                {tError(cartError)}
-              </Alert>
-            )}
-
-            {purchasable(selected) ? (
-              // Buy Now / Add To Cart — both post the selected denomination_id.
-              <form id="buy-form" className="mt-5 flex flex-wrap items-end gap-2" onSubmit={(e) => e.preventDefault()}>
-                <div className="flex flex-col gap-1">
-                  <label className="text-xs text-ink-soft" htmlFor="qty">
-                    {t("web.qty")}
-                  </label>
-                  {/* inputMode="numeric" so phones open the digit keypad
-                      instead of the full keyboard — type="number" alone
-                      doesn't guarantee it on iOS. */}
-                  <input
-                    id="qty"
-                    type="number"
-                    inputMode="numeric"
-                    name="qty"
-                    value={qty}
-                    min={1}
-                    max={selectedUsesStock ? Math.max(1, Math.min(99, selected.available)) : 99}
-                    className="field w-20! text-center"
-                    onChange={(e) => setQty(clampQty(Number(e.target.value), selected.available, selectedUsesStock))}
-                  />
-                </div>
-                <button
-                  type="button"
-                  id="btn-cart"
-                  className="btn btn-soft"
-                  disabled={buying}
-                  onClick={() => addMutation.mutate({ denomination_id: selected.id, qty })}
-                >
-                  {addMutation.isPending && <Spinner />}
-                  <ShoppingCart className="w-4 h-4" /> {t("web.add_to_cart")}
-                </button>
-                <button
-                  type="button"
-                  id="btn-buy"
-                  className="btn btn-primary"
-                  disabled={buying}
-                  onClick={() => buyMutation.mutate({ denomination_id: selected.id, qty })}
-                >
-                  {buyMutation.isPending && <Spinner />}
-                  <Zap className="w-4 h-4" /> {t("web.buy_now")}
-                </button>
-              </form>
-            ) : !selectedUsesStock ? (
-              // Unavailable for a reason other than stock: a provider or
-              // manual SKU never offers "Notify me".
-              <p className="mt-3 text-sm text-ink-soft">{t("web.checkout_product_unavailable")}</p>
-            ) : (
-              // Out-of-stock restock CTA (works only when logged in).
-              <form id="restock-form" className="mt-3" onSubmit={(e) => e.preventDefault()}>
-                {needsTelegram ? (
-                  <p className="text-sm text-ink-soft">{t("web.restock_needs_telegram")}</p>
-                ) : (
-                  <button
-                    type="button"
-                    className="btn btn-soft"
-                    disabled={restockMutation.isPending || restockDone}
-                    onClick={() => restockMutation.mutate(selected.id)}
-                  >
-                    {restockMutation.isPending && <Spinner />}
-                    <Bell className="w-4 h-4" /> {t("web.notify_restock")}
-                  </button>
-                )}
-                {restockFeedbackKey && (
-                  <p role="status" className="mt-2 text-sm text-ink-soft">
-                    {t(restockFeedbackKey)}
-                  </p>
-                )}
-              </form>
-            )}
-          </div>
-        </div>
-      </div>
+      <ProductProductDetail product={product} denominations={denominations} fx={fx} low_threshold={low_threshold} selected={selected} selectDenomination={selectDenomination} setBuyArea={setBuyArea} ctx={ctx} selectedUsesStock={selectedUsesStock} cartError={cartError} qty={qty} setQty={setQty} buying={buying} addMutation={addMutation} buyMutation={buyMutation} needsTelegram={needsTelegram} restockMutation={restockMutation} restockDone={restockDone} restockFeedbackKey={restockFeedbackKey} />
 
       {/* Product detail blocks — deliberately BELOW the buy area, not next to
           the short description: these are what a buyer reads while deciding,
           and putting three paragraphs above the plan picker would push the
           buy action off the first screen. Each block disappears when the
           admin left that field empty, so no headings dangle over nothing. */}
-      {(product.what_you_get || product.terms || product.warranty_note) && (
-        <section className="mt-10 card card-pad">
-          {/* Deliberately not tabs or an accordion. All three blocks are short,
-              and each one answers a question a hesitant buyer asks before
-              paying — hiding two of them behind a tap costs a tap and hides
-              the reassurance that closes the sale. What the wall of text
-              actually lacked is landmarks, so each block now gets an icon,
-              a heading that outranks the body, and a rule + generous gap
-              separating it from the next: the eye can jump between the three
-              on a phone without reading a word. */}
-          {[
-            { key: "what_you_get", icon: Package, title: t("web.what_you_get"), body: product.what_you_get },
-            { key: "terms", icon: ScrollText, title: t("web.product_terms"), body: product.terms },
-            { key: "warranty", icon: ShieldCheck, title: t("web.warranty"), body: product.warranty_note },
-          ]
-            // An empty field means the admin left it blank — no dangling heading.
-            .filter((block) => Boolean(block.body))
-            .map((block, index) => (
-              <div
-                key={block.key}
-                className={index > 0 ? "mt-6 border-t border-line pt-6" : undefined}
-              >
-                <h2 className="flex items-center gap-2 font-display font-bold text-ink">
-                  {/* Decorative: the heading text already names the block, so
-                      announcing the icon too would just be noise. */}
-                  <block.icon className="w-4 h-4 text-pine shrink-0" aria-hidden="true" />
-                  {block.title}
-                </h2>
-                <p className="mt-2 text-sm leading-relaxed text-ink-soft whitespace-pre-line">
-                  {block.body}
-                </p>
-              </div>
-            ))}
-        </section>
-      )}
+      <Product product={product} />
 
       <ShareRow productName={product.name} />
 
       {/* Reviews */}
-      <section className="mt-10">
-        <h2 className="section-title mb-3">{t("web.reviews")}</h2>
-        {/* R4: the catalog card that links here already shows this same
-            aggregate (ProductCard.tsx) — without it, the signal a shopper saw
-            before clicking through disappears on arrival. Same rounding and
-            the same `web.review_count` copy as the card, computed by the
-            same aggregateRating helper server-side (cards.ts/pageData.ts), so
-            the two can never disagree. `rating_count` is the TRUE total of
-            non-hidden reviews, not `reviews.length` below — which is capped
-            at 10 fetched rows — so this can (correctly) read higher than the
-            number of review cards actually shown. */}
-        {product.rating_count > 0 && (
-          <div className="flex items-center gap-1.5 text-sm text-ink-soft mb-4">
-            <Stars rating={product.rating ?? 0} cls="w-4 h-4" />{" "}
-            <span className="font-medium text-ink">{String(Math.round((product.rating ?? 0) * 10) / 10)}</span>
-            <span className="text-ink-faint">· {tCount("web.review_count", product.rating_count)}</span>
-          </div>
-        )}
-        {reviews.length > 0 ? (
-          <div className="grid sm:grid-cols-2 gap-4 items-start">
-            {reviews.map((r, i) => (
-              <div key={i} className="card card-pad">
-                <div className="flex items-center gap-2">
-                  <Stars rating={r.rating} />
-                  <span className="text-xs text-ink-faint">
-                    {r.author} · {r.created_at_display}
-                  </span>
-                </div>
-                {r.comment && (
-                  <p className="text-sm text-ink-soft mt-2 whitespace-pre-line break-words">{r.comment}</p>
-                )}
-              </div>
-            ))}
-          </div>
-        ) : (
-          /* No CTA: the way to leave a review is to buy first, and the buy
-             control is already the loudest thing on this page. */
-          <EmptyState icon={Star} title={t("web.no_reviews")} description={t("web.no_reviews_desc")} />
-        )}
-      </section>
+      <ProductReviews product={product} reviews={reviews} />
 
       {/* STO-011: same-category "You might also like" shelf — this product
           detail page had no cross-sell/discovery path back into the catalog. */}
@@ -597,33 +290,451 @@ export default function ProductPage() {
           view beside the image, so it needs none of this. Shared component
           (components.md "Sticky purchase bar") — Add to Cart stays in the
           in-page form only, so just `primaryAction` is passed. */}
-      {!isDesktop && !buyAreaVisible && (purchasable(selected) || (selectedUsesStock && !needsTelegram)) && (
-        <StickyPurchaseBar
-          ariaLabel={t("web.purchase_bar")}
-          priceLabel={selected.canonical ? [selected.canonical.displayName, ...selected.canonical.qualifiers].join(" · ") : selected.duration_label || selected.name}
-          price={selected.canonical?.formattedPrice ?? formatPriceFor(selected.price, ctx?.currency ?? null, fx)}
-          primaryAction={
-            purchasable(selected)
-              ? {
-                  label: t("web.buy_now"),
-                  icon: <Zap className="w-4 h-4" />,
-                  onClick: () => buyMutation.mutate({ denomination_id: selected.id, qty }),
-                  pending: buyMutation.isPending,
-                  disabled: buying,
-                }
-              : {
-                  // Nothing to buy, but the bar still carries the one action
-                  // that does exist — an empty bar is wasted screen on 320px.
-                  label: restockFeedbackKey ? t(restockFeedbackKey) : t("web.notify_restock"),
-                  icon: <Bell className="w-4 h-4" />,
-                  onClick: () => restockMutation.mutate(selected.id),
-                  pending: restockMutation.isPending,
-                  disabled: restockMutation.isPending || restockDone,
-                  variant: "soft",
-                }
-          }
-        />
-      )}
+      <ProductMobilePurchaseBar qty={qty} isDesktop={isDesktop} buyAreaVisible={buyAreaVisible} selected={selected} selectedUsesStock={selectedUsesStock} needsTelegram={needsTelegram} ctx={ctx} fx={fx} buyMutation={buyMutation} buying={buying} restockFeedbackKey={restockFeedbackKey} restockMutation={restockMutation} restockDone={restockDone} />
     </>
   );
+}
+
+function ProductOverviewCard({ product }: {
+  product: { slug: string; name: string; description: string | null; what_you_get: string | null; terms: string | null; warranty_note: string | null; category_name: string; category_slug: string; image: string | null; image_srcset?: string | null; image_kind?: import("../api/types").ThumbnailKind | null; icon_kind?: import("../api/types").DenomIconKind | null; rating: number | null; rating_count: number; checkout_flow: "catalog" | "instant"; template: "game" | "catalog"; };
+}) {
+  return (<div className="self-start">
+    <div className="card overflow-hidden">
+      <div className="flex h-48 items-center justify-center bg-sand sm:h-56 lg:h-64 xl:h-72">
+        {/* Bounded height (h-48..xl:h-72) with object-contain so the photo is
+                  never cropped or stretched; see ProductCard for why the intrinsic
+                  size is declared and why <picture> needs to be block. */}
+        {product.image ? (
+          <picture className="block w-full h-full">
+            {product.image_srcset && (
+              // Full width on phones, roughly half the grid on desktop.
+              <source
+                type="image/webp"
+                srcSet={product.image_srcset}
+                sizes="(max-width: 768px) 100vw, 600px"
+              />
+            )}
+            {/* Eager on purpose: this is the page's LCP element and the only
+                      image above the fold on a phone, so deferring it would trade a
+                      measurable delay for nothing. Everything below (the
+                      related-products shelf) lazy-loads via ProductCard. The
+                      width/height pair is what stops the text below from jumping
+                      while it decodes — object-cover ignores the numbers for
+                      painting, but the browser still uses their ratio to reserve
+                      the box. */}
+            <img
+              src={product.image}
+              alt={product.name}
+              loading="eager"
+              decoding="async"
+              width={800}
+              height={600}
+              className="w-full h-full object-contain"
+            />
+          </picture>
+        ) : (
+          <DefaultThumb kind={product.image_kind ?? "generic"} name={product.name} />
+        )}
+      </div>
+    </div>
+
+    {/* Optional lead paragraph, directly under the banner. Stays behind
+              the `product.description &&` guard — Digiflazz products have
+              `description: null` and must render nothing extra here. `mt-4`
+              spaces it from the image card. No heading: it's a plain lead
+              paragraph, same as it was under the <h1>. */}
+    {product.description && (
+      <div className="mt-4 text-sm leading-relaxed text-ink-soft whitespace-pre-line">
+        {product.description}
+      </div>
+    )}
+  </div>);
+}
+
+function ProductPlanPrice({ selected, ctx, fx, low_threshold, selectedUsesStock }: {
+  selected: import("../api/types").ProductDenomination;
+  ctx: NoInfer<import("../api/types").ShopContext> | undefined;
+  fx: string | null | undefined;
+  low_threshold: number;
+  selectedUsesStock: boolean;
+}) {
+  return (<div className="flex items-center justify-between gap-3 flex-wrap">
+    <div className="flex items-baseline gap-2 flex-wrap">
+      {/* `selected.price` already carries the flash discount — the
+                    struck figure beside it is the pre-sale one. */}
+      <div className="font-display font-semibold text-pine text-2xl">
+        {selected.canonical?.formattedPrice ?? formatPriceFor(selected.price, ctx?.currency ?? null, fx)}
+      </div>
+      {selected.flash && (
+        <FlashWasPrice value={selected.flash.base_price} endsAt={selected.flash.ends_at} />
+      )}
+    </div>
+    {/* T18: reuse the same StockBadge the catalog card and each
+                  denomination card use — it always renders a state (never
+                  nothing, unlike the old ad-hoc `.chip` markup this replaced,
+                  which returned null — and so showed no positive stock
+                  signal at all — for a purchasable non-auto denomination). */}
+    <div>
+      <StockBadge
+        available={selected.available}
+        lowThreshold={low_threshold}
+        allNonAuto={!selectedUsesStock}
+      />
+    </div>
+  </div>);
+}
+
+function ProductBuyForm({ selected, qty, selectedUsesStock, setQty, buying, addMutation, buyMutation, needsTelegram, restockMutation, restockDone, restockFeedbackKey }: {
+  selected: import("../api/types").ProductDenomination;
+  qty: number;
+  selectedUsesStock: boolean;
+  setQty: import("react").Dispatch<import("react").SetStateAction<number>>;
+  buying: boolean;
+  addMutation: import("@tanstack/react-query").UseMutationResult<CartPageData, Error, { denomination_id: number; qty: number; }, void>;
+  buyMutation: import("@tanstack/react-query").UseMutationResult<CartPageData, Error, { denomination_id: number; qty: number; }, void>;
+  needsTelegram: boolean;
+  restockMutation: { mutate: (variables: number) => void; reset: () => void; data?: { denominationId: number; result: RestockResult; } | undefined; error: Error | null; isPending: boolean; };
+  restockDone: boolean;
+  restockFeedbackKey: string | null;
+}) {
+  return (purchasable(selected) ? (
+    // Buy Now / Add To Cart — both post the selected denomination_id.
+    <form id="buy-form" className="mt-5 flex flex-wrap items-end gap-2" onSubmit={(e) => e.preventDefault()}>
+      <div className="flex flex-col gap-1">
+        <label className="text-xs text-ink-soft" htmlFor="qty">
+          {t("web.qty")}
+        </label>
+        {/* inputMode="numeric" so phones open the digit keypad
+                      instead of the full keyboard — type="number" alone
+                      doesn't guarantee it on iOS. */}
+        <input
+          id="qty"
+          type="number"
+          inputMode="numeric"
+          name="qty"
+          value={qty}
+          min={1}
+          max={selectedUsesStock ? Math.max(1, Math.min(99, selected.available)) : 99}
+          className="field w-20! text-center"
+          onChange={(e) => {
+            const raw = e.target.value;
+            if (!raw.trim()) { setQty(1); return; }
+            const next = Number(raw);
+            if (Number.isFinite(next)) setQty(clampQty(next, selected.available, selectedUsesStock));
+          }}
+        />
+      </div>
+      <button
+        type="button"
+        id="btn-cart"
+        className="btn btn-soft"
+        disabled={buying}
+        onClick={() => addMutation.mutate({ denomination_id: selected.id, qty })}
+      >
+        {addMutation.isPending && <Spinner />}
+        <ShoppingCart className="w-4 h-4" /> {t("web.add_to_cart")}
+      </button>
+      <button
+        type="button"
+        id="btn-buy"
+        className="btn btn-primary"
+        disabled={buying}
+        onClick={() => buyMutation.mutate({ denomination_id: selected.id, qty })}
+      >
+        {buyMutation.isPending && <Spinner />}
+        <Zap className="w-4 h-4" /> {t("web.buy_now")}
+      </button>
+    </form>
+  ) : !selectedUsesStock ? (
+    // Unavailable for a reason other than stock: a provider or
+    // manual SKU never offers "Notify me".
+    <p className="mt-3 text-sm text-ink-soft">{t("web.checkout_product_unavailable")}</p>
+  ) : (
+    // Out-of-stock restock CTA (works only when logged in).
+    <form id="restock-form" className="mt-3" onSubmit={(e) => e.preventDefault()}>
+      {needsTelegram ? (
+        <p className="text-sm text-ink-soft">{t("web.restock_needs_telegram")}</p>
+      ) : (
+        <button
+          type="button"
+          className="btn btn-soft"
+          disabled={restockMutation.isPending || restockDone}
+          onClick={() => restockMutation.mutate(selected.id)}
+        >
+          {restockMutation.isPending && <Spinner />}
+          <Bell className="w-4 h-4" /> {t("web.notify_restock")}
+        </button>
+      )}
+      {restockFeedbackKey && (
+        <p role="status" className="mt-2 text-sm text-ink-soft">
+          {t(restockFeedbackKey)}
+        </p>
+      )}
+    </form>
+  ));
+}
+
+function Product({ product }: {
+  product: { slug: string; name: string; description: string | null; what_you_get: string | null; terms: string | null; warranty_note: string | null; category_name: string; category_slug: string; image: string | null; image_srcset?: string | null; image_kind?: import("../api/types").ThumbnailKind | null; icon_kind?: import("../api/types").DenomIconKind | null; rating: number | null; rating_count: number; checkout_flow: "catalog" | "instant"; template: "game" | "catalog"; };
+}) {
+  return ((product.what_you_get || product.terms || product.warranty_note) && (
+    <section className="mt-10 card card-pad">
+      {/* Deliberately not tabs or an accordion. All three blocks are short,
+              and each one answers a question a hesitant buyer asks before
+              paying — hiding two of them behind a tap costs a tap and hides
+              the reassurance that closes the sale. What the wall of text
+              actually lacked is landmarks, so each block now gets an icon,
+              a heading that outranks the body, and a rule + generous gap
+              separating it from the next: the eye can jump between the three
+              on a phone without reading a word. */}
+      {[
+        { key: "what_you_get", icon: Package, title: t("web.what_you_get"), body: product.what_you_get },
+        { key: "terms", icon: ScrollText, title: t("web.product_terms"), body: product.terms },
+        { key: "warranty", icon: ShieldCheck, title: t("web.warranty"), body: product.warranty_note },
+      ]
+        // An empty field means the admin left it blank — no dangling heading.
+        .filter((block) => Boolean(block.body))
+        .map((block, index) => (
+          <div
+            key={block.key}
+            className={index > 0 ? "mt-6 border-t border-line pt-6" : undefined}
+          >
+            <h2 className="flex items-center gap-2 font-display font-bold text-ink">
+              {/* Decorative: the heading text already names the block, so
+                      announcing the icon too would just be noise. */}
+              <block.icon className="w-4 h-4 text-pine shrink-0" aria-hidden="true" />
+              {block.title}
+            </h2>
+            <p className="mt-2 text-sm leading-relaxed text-ink-soft whitespace-pre-line">
+              {block.body}
+            </p>
+          </div>
+        ))}
+    </section>
+  ));
+}
+
+function ProductReviews({ product, reviews }: {
+  product: { slug: string; name: string; description: string | null; what_you_get: string | null; terms: string | null; warranty_note: string | null; category_name: string; category_slug: string; image: string | null; image_srcset?: string | null; image_kind?: import("../api/types").ThumbnailKind | null; icon_kind?: import("../api/types").DenomIconKind | null; rating: number | null; rating_count: number; checkout_flow: "catalog" | "instant"; template: "game" | "catalog"; };
+  reviews: import("../api/types").ProductReview[];
+}) {
+  return (<section className="mt-10">
+    <h2 className="section-title mb-3">{t("web.reviews")}</h2>
+    {/* R4: the catalog card that links here already shows this same
+            aggregate (ProductCard.tsx) — without it, the signal a shopper saw
+            before clicking through disappears on arrival. Same rounding and
+            the same `web.review_count` copy as the card, computed by the
+            same aggregateRating helper server-side (cards.ts/pageData.ts), so
+            the two can never disagree. `rating_count` is the TRUE total of
+            non-hidden reviews, not `reviews.length` below — which is capped
+            at 10 fetched rows — so this can (correctly) read higher than the
+            number of review cards actually shown. */}
+    {product.rating_count > 0 && (
+      <div className="flex items-center gap-1.5 text-sm text-ink-soft mb-4">
+        <Stars rating={product.rating ?? 0} cls="w-4 h-4" />{" "}
+        <span className="font-medium text-ink">{String(Math.round((product.rating ?? 0) * 10) / 10)}</span>
+        <span className="text-ink-faint">· {tCount("web.review_count", product.rating_count)}</span>
+      </div>
+    )}
+    {reviews.length > 0 ? (
+      <div className="grid sm:grid-cols-2 gap-4 items-start">
+        {keyedContent(reviews).map(({ item: r, key }) => (
+          <div key={key} className="card card-pad">
+            <div className="flex items-center gap-2">
+              <Stars rating={r.rating} />
+              <span className="text-xs text-ink-faint">
+                {r.author} · {r.created_at_display}
+              </span>
+            </div>
+            {r.comment && (
+              <p className="text-sm text-ink-soft mt-2 whitespace-pre-line break-words">{r.comment}</p>
+            )}
+          </div>
+        ))}
+      </div>
+    ) : (
+      /* No CTA: the way to leave a review is to buy first, and the buy
+         control is already the loudest thing on this page. */
+      <EmptyState icon={Star} title={t("web.no_reviews")} description={t("web.no_reviews_desc")} />
+    )}
+  </section>);
+}
+
+function ProductMobilePurchaseBar({ qty, isDesktop, buyAreaVisible, selected, selectedUsesStock, needsTelegram, ctx, fx, buyMutation, buying, restockFeedbackKey, restockMutation, restockDone }: {
+  qty: number;
+  isDesktop: boolean;
+  buyAreaVisible: boolean;
+  selected: import("../api/types").ProductDenomination;
+  selectedUsesStock: boolean;
+  needsTelegram: boolean;
+  ctx: NoInfer<import("../api/types").ShopContext> | undefined;
+  fx: string | null | undefined;
+  buyMutation: import("@tanstack/react-query").UseMutationResult<CartPageData, Error, { denomination_id: number; qty: number; }, void>;
+  buying: boolean;
+  restockFeedbackKey: string | null;
+  restockMutation: { mutate: (variables: number) => void; reset: () => void; data?: { denominationId: number; result: RestockResult; } | undefined; error: Error | null; isPending: boolean; };
+  restockDone: boolean;
+}) {
+  return (!isDesktop && !buyAreaVisible && (purchasable(selected) || (selectedUsesStock && !needsTelegram)) && (
+    <StickyPurchaseBar
+      ariaLabel={t("web.purchase_bar")}
+      priceLabel={selected.canonical ? [selected.canonical.displayName, ...selected.canonical.qualifiers].join(" · ") : selected.duration_label || selected.name}
+      price={selected.canonical?.formattedPrice ?? formatPriceFor(selected.price, ctx?.currency ?? null, fx)}
+      primaryAction={
+        purchasable(selected)
+          ? {
+            label: t("web.buy_now"),
+            icon: <Zap className="w-4 h-4" />,
+            onClick: () => buyMutation.mutate({ denomination_id: selected.id, qty }),
+            pending: buyMutation.isPending,
+            disabled: buying,
+          }
+          : {
+            // Nothing to buy, but the bar still carries the one action
+            // that does exist — an empty bar is wasted screen on 320px.
+            label: restockFeedbackKey ? t(restockFeedbackKey) : t("web.notify_restock"),
+            icon: <Bell className="w-4 h-4" />,
+            onClick: () => restockMutation.mutate(selected.id),
+            pending: restockMutation.isPending,
+            disabled: restockMutation.isPending || restockDone,
+            variant: "soft",
+          }
+      }
+    />
+  ));
+}
+
+function ProductProductDetail({ product, denominations, fx, low_threshold, selected, selectDenomination, setBuyArea, ctx, selectedUsesStock, cartError, qty, setQty, buying, addMutation, buyMutation, needsTelegram, restockMutation, restockDone, restockFeedbackKey }: {
+  product: { slug: string; name: string; description: string | null; what_you_get: string | null; terms: string | null; warranty_note: string | null; category_name: string; category_slug: string; image: string | null; image_srcset?: string | null; image_kind?: import("../api/types").ThumbnailKind | null; icon_kind?: import("../api/types").DenomIconKind | null; rating: number | null; rating_count: number; checkout_flow: "catalog" | "instant"; template: "game" | "catalog"; };
+  denominations: import("../api/types").ProductDenomination[];
+  fx: string | null | undefined;
+  low_threshold: number;
+  selected: import("../api/types").ProductDenomination;
+  selectDenomination: (id: number, available: number, usesLocalInventory: boolean) => void;
+  setBuyArea: import("react").Dispatch<import("react").SetStateAction<HTMLElement | null>>;
+  ctx: NoInfer<import("../api/types").ShopContext> | undefined;
+  selectedUsesStock: boolean;
+  cartError: unknown;
+  qty: number;
+  setQty: import("react").Dispatch<import("react").SetStateAction<number>>;
+  buying: boolean;
+  addMutation: import("@tanstack/react-query").UseMutationResult<CartPageData, Error, { denomination_id: number; qty: number; }, void>;
+  buyMutation: import("@tanstack/react-query").UseMutationResult<CartPageData, Error, { denomination_id: number; qty: number; }, void>;
+  needsTelegram: boolean;
+  restockMutation: { mutate: (variables: number) => void; reset: () => void; data?: { denominationId: number; result: RestockResult; } | undefined; error: Error | null; isPending: boolean; };
+  restockDone: boolean;
+  restockFeedbackKey: string | null;
+}) {
+  return (<div className="grid grid-cols-1 md:grid-cols-2 gap-6 lg:gap-10">
+    {/* The product name spans both columns so it stays the first thing
+            read on mobile (where the grid collapses to image → description →
+            picker beneath it) while still heading the whole block on
+            desktop. */}
+    <h1 className="page-title md:col-span-2">{product.name}</h1>
+
+    {/* Image + short description. `self-start` on this wrapper (not the
+            image card) so the column doesn't stretch to the taller right
+            column: a photo-less product (every Digiflazz import) would
+            otherwise leave a tall empty DefaultThumb well with dead space
+            below it. The description sits here, under the banner, moved from
+            its old spot beneath the <h1>. */}
+    <ProductOverviewCard product={product} />
+
+    {/* Facts + denomination picker + actions */}
+    <div id="product-detail" className="min-w-0">
+      {/* Denomination cards — pick a plan (never a dropdown). The cheapest
+              active denomination is preselected; selecting another updates the
+              live price / stock / warranty and the checkout payload below. */}
+      <div className="mt-6">
+        <h2 className="section-title mb-3">{t("web.choose_plan")}</h2>
+        <div id="denom-list" className="grid grid-cols-1 gap-3">
+          {denominations.map((d) => (
+            <DenominationCard
+              key={d.id}
+              d={d}
+              fx={fx}
+              lowThreshold={low_threshold}
+              checked={d.id === selected.id}
+              onChange={() => selectDenomination(d.id, d.available, d.uses_local_inventory)}
+              iconKind={product.icon_kind}
+            />
+          ))}
+        </div>
+      </div>
+
+      {/* Live summary — price/stock/warranty of the selected denomination.
+              Also the sentinel the sticky mobile purchase bar watches, hence
+              the id and the callback ref. */}
+      <div id="buy-summary" ref={setBuyArea} className="card card-pad mt-5">
+        <ProductPlanPrice selected={selected} ctx={ctx} fx={fx} low_threshold={low_threshold} selectedUsesStock={selectedUsesStock} />
+        {selected.flash && (
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <FlashBadge percent={selected.flash.discount_percent} endsAt={selected.flash.ends_at} />
+            <FlashCountdown endsAt={selected.flash.ends_at} />
+          </div>
+        )}
+        {fx && <div className="text-xs text-ink-faint mt-1.5">{t("web.usdt_note")}</div>}
+
+        {cartError !== null && (
+          <Alert variant="banner" tone="error" className="mt-3 mb-0">
+            {tError(cartError)}
+          </Alert>
+        )}
+
+        <ProductBuyForm selected={selected} qty={qty} selectedUsesStock={selectedUsesStock} setQty={setQty} buying={buying} addMutation={addMutation} buyMutation={buyMutation} needsTelegram={needsTelegram} restockMutation={restockMutation} restockDone={restockDone} restockFeedbackKey={restockFeedbackKey} />
+      </div>
+    </div>
+  </div>);
+}
+
+function useProductPurchase({ queryClient, setCartError, navigate, slug }: {
+  queryClient: import("@tanstack/react-query").QueryClient;
+  setCartError: import("react").Dispatch<unknown>;
+  navigate: import("react-router-dom").NavigateFunction;
+  slug: string;
+}) {
+  const invalidateContext = () => queryClient.invalidateQueries({ queryKey: ["context"] });
+
+  const addMutation = useMutation({
+    mutationFn: (vars: { denomination_id: number; qty: number }) => apiPost<CartPageData>("/api/v1/cart", vars),
+    onMutate: () => setCartError(null),
+    onSuccess: () => {
+      invalidateContext();
+      navigate("/cart");
+    },
+    onError: (err) => setCartError(err),
+  });
+
+  const buyMutation = useMutation({
+    mutationFn: (vars: { denomination_id: number; qty: number }) => apiPost<CartPageData>("/api/v1/cart", vars),
+    onMutate: () => setCartError(null),
+    onSuccess: () => {
+      invalidateContext();
+      navigate("/checkout");
+    },
+    onError: (err) => setCartError(err),
+  });
+
+  const restockMutation = useAction({
+    mutationFn: async (denominationId: number) => ({ ...(await apiPost<{ result: RestockResult }>(`/api/v1/restock/${denominationId}`, {})), denominationId }),
+    onError: (err) => {
+      if ((err as Error & { status?: number }).status === 401) {
+        navigate(`/login?next=/p/${slug}`);
+      }
+    },
+  });
+  return { addMutation, buyMutation, restockMutation };
+}
+
+function restockFeedback({ restockMutation, selectedId, data }: {
+  restockMutation: { mutate: (variables: number) => void; reset: () => void; data?: { denominationId: number; result: RestockResult; } | undefined; error: Error | null; isPending: boolean; };
+  selectedId: number | null;
+  data: NoInfer<ProductPageData> | undefined;
+}) {
+  const restockResult = restockMutation.data?.denominationId === (selectedId ?? data?.denominations.find(d => d.purchasable)?.id ?? data?.denominations[0]?.id) ? restockMutation.data?.result : undefined;
+
+  const restockDone = restockResult === "subscribed" || restockResult === "already";
+
+  const restockFeedbackKey = restockResult ? `web.restock_${restockResult}` : null;
+  return { restockDone, restockFeedbackKey } as const;
 }

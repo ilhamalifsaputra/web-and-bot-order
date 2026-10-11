@@ -1,3 +1,4 @@
+import * as m from "motion/react-m";
 /**
  * SearchOverlay — the storefront's product search, as an overlay panel instead
  * of a route (page-templates.md §10, user decision #2). It replaces the old
@@ -24,6 +25,9 @@
  * `Layout.tsx`, above the routed page, so the overlay can float over any route
  * AND be opened by the `/search` → `/` redirect (`pages/SearchRedirect.tsx`).
  */
+import { useQuery } from "@tanstack/react-query";
+import { Package, Search, X } from "lucide-react";
+import { AnimatePresence } from "motion/react";
 import {
   createContext,
   useCallback,
@@ -39,18 +43,15 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { Link, useNavigate } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
-import { AnimatePresence, motion } from "motion/react";
-import { Package, Search, X } from "lucide-react";
 import { apiGet } from "../../api/client";
 import type { SearchPageData } from "../../api/types";
-import type { ProductCardData } from "./ProductCard";
 import { t } from "../../lib/i18n";
 import { fadeIn, scrim } from "../../lib/motion";
 import { clearRecent, pushRecent, readRecent } from "../../lib/recentSearches";
-import { useDialogA11y } from "../ui/useDialogA11y";
 import DialogLayer from "../ui/DialogLayer";
+import { useDialogA11y } from "../ui/useDialogA11y";
 import Price from "./Price";
+import type { ProductCardData } from "./ProductCard";
 
 /** ~220ms: long enough to skip the per-keystroke fetch on a fast typist, short
  * enough that results feel live. */
@@ -82,9 +83,11 @@ export function SearchOverlayProvider({
   children: ReactNode;
 }) {
   const [isOpen, setIsOpen] = useState(false);
+  const [session, setSession] = useState(0);
   const [initialQuery, setInitialQuery] = useState("");
 
   const open = useCallback((query = "") => {
+    setSession(current => current + 1);
     setInitialQuery(query);
     setIsOpen(true);
   }, []);
@@ -95,7 +98,7 @@ export function SearchOverlayProvider({
   return (
     <SearchOverlayContext.Provider value={value}>
       {children}
-      <SearchOverlay open={isOpen} initialQuery={initialQuery} onClose={close} fx={fx} />
+      <SearchOverlay key={session} open={isOpen} initialQuery={initialQuery} onClose={close} fx={fx} />
     </SearchOverlayContext.Provider>
   );
 }
@@ -129,23 +132,13 @@ function SearchOverlay({
   const listboxId = useId();
 
   const [value, setValue] = useState(initialQuery);
-  const [debounced, setDebounced] = useState(initialQuery.trim());
-  const [recent, setRecent] = useState<string[]>([]);
+  const [debounced, setDebounced] = useState(() => initialQuery.trim());
+  const [recent, setRecent] = useState<string[]>(readRecent);
   const [activeIndex, setActiveIndex] = useState(-1);
 
   // Dialog a11y contract: scroll-lock, Esc→onClose, focus trap, focus restore
   // to whatever opened the panel (the header pill or the mobile search icon).
   useDialogA11y({ open, onClose, panelRef });
-
-  // Re-seed on every open so a `/search?q=x` deep link (or reopening the pill)
-  // starts from the right query and a fresh copy of the history.
-  useEffect(() => {
-    if (!open) return;
-    setValue(initialQuery);
-    setDebounced(initialQuery.trim());
-    setActiveIndex(-1);
-    setRecent(readRecent());
-  }, [open, initialQuery]);
 
   // Debounce the field into the query key.
   useEffect(() => {
@@ -160,21 +153,16 @@ function SearchOverlay({
     enabled,
   });
 
-  const results = enabled && data ? data.products : [];
-  const showSkeleton = enabled && isFetching && !data;
-  const showEmpty = enabled && !isFetching && data != null && data.products.length === 0;
-  const showResults = enabled && results.length > 0;
+  const { results, showSkeleton, showEmpty, showResults } = searchResultState({ enabled, data, isFetching });
 
-  // A stale active index (results shrank, or the query changed) must never point
-  // past the end — reset it whenever the result set identity changes.
-  useEffect(() => {
-    setActiveIndex(-1);
-  }, [data]);
+  // A keyboard selection belongs to the exact result set it was made in.
+  const [activeResults, setActiveResults] = useState<typeof data>(undefined);
+  const selectedIndex = activeResults === data ? activeIndex : -1;
 
   const optionId = (index: number) => `${listboxId}-opt-${index}`;
   const activeDescendant =
-    showResults && activeIndex >= 0 && activeIndex < results.length
-      ? optionId(activeIndex)
+    showResults && selectedIndex >= 0 && selectedIndex < results.length
+      ? optionId(selectedIndex)
       : undefined;
 
   // Keyboard selection can walk a highlighted row past the visible window of
@@ -182,11 +170,11 @@ function SearchOverlay({
   // `sm:max-h-[70vh]`); pull the active option back into view on every move.
   // Skip when nothing is highlighted (`activeIndex < 0`).
   useEffect(() => {
-    if (activeIndex < 0) return;
-    const row = document.getElementById(`${listboxId}-opt-${activeIndex}`);
+    if (selectedIndex < 0) return;
+    const row = document.getElementById(`${listboxId}-opt-${selectedIndex}`);
     // Optional call: jsdom (test env) has no `scrollIntoView` implementation.
     row?.scrollIntoView?.({ block: "nearest" });
-  }, [activeIndex, listboxId]);
+  }, [selectedIndex, listboxId]);
 
   const selectResult = useCallback(
     (product: ProductCardData) => {
@@ -206,8 +194,8 @@ function SearchOverlay({
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (activeIndex >= 0 && results[activeIndex]) {
-      selectResult(results[activeIndex]!);
+    if (selectedIndex >= 0 && results[selectedIndex]) {
+      selectResult(results[selectedIndex]!);
       return;
     }
     // No highlighted row: there is no dedicated results page to route to, so
@@ -220,14 +208,17 @@ function SearchOverlay({
   }
 
   function onKeyDown(event: KeyboardEvent<HTMLInputElement>) {
-    if (!showResults) return;
-    if (event.key === "ArrowDown") {
-      event.preventDefault();
-      setActiveIndex((i) => Math.min(i + 1, results.length - 1));
-    } else if (event.key === "ArrowUp") {
-      event.preventDefault();
-      setActiveIndex((i) => (i <= 0 ? -1 : i - 1));
-    }
+    if (!showResults || (event.key !== "ArrowDown" && event.key !== "ArrowUp")) return;
+    event.preventDefault();
+    setActiveResults(data);
+    setActiveIndex(event.key === "ArrowDown"
+      ? Math.min(selectedIndex + 1, results.length - 1)
+      : Math.max(-1, selectedIndex - 1));
+  }
+
+  function highlightResult(index: import("react").SetStateAction<number>) {
+    setActiveResults(data);
+    setActiveIndex(index);
   }
 
   function onClearRecent() {
@@ -239,7 +230,7 @@ function SearchOverlay({
     <AnimatePresence>
       {open && (
         <DialogLayer className="fixed inset-0 z-50">
-          <motion.div
+          <m.div
             variants={scrim}
             initial="initial"
             animate="animate"
@@ -248,7 +239,7 @@ function SearchOverlay({
             className="absolute inset-0 bg-ink/45 sm:bg-ink/25"
             onClick={onClose}
           />
-          <motion.div
+          <m.div
             ref={panelRef}
             variants={fadeIn}
             initial="initial"
@@ -288,104 +279,8 @@ function SearchOverlay({
               </button>
             </form>
 
-            <div className="min-h-0 flex-1 overflow-y-auto p-2">
-              {showSkeleton && (
-                <div aria-busy="true" aria-label={t("web.loading")} className="space-y-1">
-                  {SKELETON_ROWS.map((i) => (
-                    <div key={i} className="flex items-center gap-3 p-2">
-                      <div className="h-10 w-10 shrink-0 animate-pulse rounded-lg bg-sand" />
-                      <div className="flex-1 space-y-1.5">
-                        <div className="h-3.5 w-2/3 animate-pulse rounded bg-sand" />
-                        <div className="h-3 w-1/3 animate-pulse rounded bg-sand" />
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {showEmpty && (
-                <p className="px-2 py-6 text-center text-sm text-ink-soft">
-                  {t("web.search_no_results", { q: debounced })}{" "}
-                  <Link to="/products" onClick={onClose} className="font-medium text-pine hover:underline">
-                    {t("web.search_browse_all")}
-                  </Link>
-                </p>
-              )}
-
-              {showResults && (
-                <ul id={listboxId} role="listbox" aria-label={t("web.nav_search")}>
-                  {results.map((product, index) => (
-                    <li
-                      key={product.slug}
-                      id={optionId(index)}
-                      role="option"
-                      aria-selected={index === activeIndex}
-                      onClick={() => selectResult(product)}
-                      onMouseMove={() => setActiveIndex(index)}
-                      className={`flex cursor-pointer items-center gap-3 rounded-xl p-2 ${
-                        index === activeIndex ? "bg-sand" : ""
-                      }`}
-                    >
-                      <ResultThumb product={product} />
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-sm font-medium text-ink">
-                          {product.name}
-                        </span>
-                        <span className="block truncate text-xs text-ink-faint">
-                          {product.category_name}
-                        </span>
-                      </span>
-                      <Price value={product.from_price} fx={fx} />
-                    </li>
-                  ))}
-                </ul>
-              )}
-
-              {!enabled && (
-                <div className="p-2">
-                  {recent.length > 0 ? (
-                    <section aria-label={t("web.recent_searches")}>
-                      <div className="flex items-center justify-between gap-3 px-2 pb-1">
-                        <h2 className="text-xs font-semibold uppercase tracking-wide text-ink-faint">
-                          {t("web.recent_searches")}
-                        </h2>
-                        <button
-                          type="button"
-                          onClick={onClearRecent}
-                          className="text-xs font-medium text-pine hover:underline"
-                        >
-                          {t("web.clear_recent")}
-                        </button>
-                      </div>
-                      <ul>
-                        {recent.map((term) => (
-                          <li key={term}>
-                            <button
-                              type="button"
-                              onClick={() => runRecent(term)}
-                              className="flex w-full items-center gap-3 rounded-xl p-2 text-left hover:bg-sand"
-                            >
-                              <Search
-                                className="h-4 w-4 shrink-0 text-ink-faint"
-                                aria-hidden="true"
-                              />
-                              <span className="min-w-0 flex-1 truncate text-sm text-ink-soft">
-                                {term}
-                              </span>
-                            </button>
-                          </li>
-                        ))}
-                      </ul>
-                    </section>
-                  ) : (
-                    <p className="px-2 py-6 text-center text-sm text-ink-faint">
-                      {t("web.search_placeholder")}
-                    </p>
-                  )}
-                </div>
-              )}
-            </div>
-          </motion.div>
+            <SearchResultsPanel showSkeleton={showSkeleton} showEmpty={showEmpty} debounced={debounced} onClose={onClose} showResults={showResults} listboxId={listboxId} results={results} optionId={optionId} activeIndex={selectedIndex} selectResult={selectResult} setActiveIndex={highlightResult} fx={fx} enabled={enabled} recent={recent} onClearRecent={onClearRecent} runRecent={runRecent} />
+          </m.div>
         </DialogLayer>
       )}
     </AnimatePresence>,
@@ -394,3 +289,134 @@ function SearchOverlay({
 }
 
 export default SearchOverlay;
+
+function SearchResultsPanel({ showSkeleton, showEmpty, debounced, onClose, showResults, listboxId, results, optionId, activeIndex, selectResult, setActiveIndex, fx, enabled, recent, onClearRecent, runRecent }: {
+  showSkeleton: boolean;
+  showEmpty: boolean;
+  debounced: string;
+  onClose: () => void;
+  showResults: boolean;
+  listboxId: string;
+  results: ProductCardData[];
+  optionId: (index: number) => string;
+  activeIndex: number;
+  selectResult: (product: ProductCardData) => void;
+  setActiveIndex: import("react").Dispatch<import("react").SetStateAction<number>>;
+  fx: string | number | null | undefined;
+  enabled: boolean;
+  recent: string[];
+  onClearRecent: () => void;
+  runRecent: (term: string) => void;
+}) {
+  return (<div className="min-h-0 flex-1 overflow-y-auto p-2">
+    {showSkeleton && (
+      <div aria-busy="true" aria-label={t("web.loading")} className="space-y-1">
+        {SKELETON_ROWS.map((i) => (
+          <div key={i} className="flex items-center gap-3 p-2">
+            <div className="h-10 w-10 shrink-0 animate-pulse rounded-lg bg-sand" />
+            <div className="flex-1 space-y-1.5">
+              <div className="h-3.5 w-2/3 animate-pulse rounded bg-sand" />
+              <div className="h-3 w-1/3 animate-pulse rounded bg-sand" />
+            </div>
+          </div>
+        ))}
+      </div>
+    )}
+
+    {showEmpty && (
+      <p className="px-2 py-6 text-center text-sm text-ink-soft">
+        {t("web.search_no_results", { q: debounced })}{" "}
+        <Link to="/products" onClick={onClose} className="font-medium text-pine hover:underline">
+          {t("web.search_browse_all")}
+        </Link>
+      </p>
+    )}
+
+    {showResults && (
+      <ul id={listboxId} role="listbox" aria-label={t("web.nav_search")}>
+        {results.map((product, index) => (
+          <li
+            key={product.slug}
+            id={optionId(index)}
+            role="option"
+            aria-selected={index === activeIndex}
+            onClick={() => selectResult(product)}
+            onMouseMove={() => setActiveIndex(index)}
+            className={`flex cursor-pointer items-center gap-3 rounded-xl p-2 ${index === activeIndex ? "bg-sand" : ""
+              }`}
+          >
+            <ResultThumb product={product} />
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-sm font-medium text-ink">
+                {product.name}
+              </span>
+              <span className="block truncate text-xs text-ink-faint">
+                {product.category_name}
+              </span>
+            </span>
+            <Price value={product.from_price} fx={fx} />
+          </li>
+        ))}
+      </ul>
+    )}
+
+    {!enabled && (
+      <div className="p-2">
+        {recent.length > 0 ? (
+          <section aria-label={t("web.recent_searches")}>
+            <div className="flex items-center justify-between gap-3 px-2 pb-1">
+              <h2 className="text-xs font-semibold uppercase tracking-wide text-ink-faint">
+                {t("web.recent_searches")}
+              </h2>
+              <button
+                type="button"
+                onClick={onClearRecent}
+                className="text-xs font-medium text-pine hover:underline"
+              >
+                {t("web.clear_recent")}
+              </button>
+            </div>
+            <ul>
+              {recent.map((term) => (
+                <li key={term}>
+                  <button
+                    type="button"
+                    onClick={() => runRecent(term)}
+                    className="flex w-full items-center gap-3 rounded-xl p-2 text-left hover:bg-sand"
+                  >
+                    <Search
+                      className="h-4 w-4 shrink-0 text-ink-faint"
+                      aria-hidden="true"
+                    />
+                    <span className="min-w-0 flex-1 truncate text-sm text-ink-soft">
+                      {term}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : (
+          <p className="px-2 py-6 text-center text-sm text-ink-faint">
+            {t("web.search_placeholder")}
+          </p>
+        )}
+      </div>
+    )}
+  </div>);
+}
+
+function searchResultState({ enabled, data, isFetching }: {
+  enabled: boolean;
+  data: NoInfer<SearchPageData> | undefined;
+  isFetching: boolean;
+}) {
+  const results = enabled && data ? data.products : [];
+
+  const showSkeleton = enabled && isFetching && !data;
+
+  const showEmpty = enabled && !isFetching && data != null && data.products.length === 0;
+
+  const showResults = enabled && results.length > 0;
+  return { results, showSkeleton, showEmpty, showResults } as const;
+}

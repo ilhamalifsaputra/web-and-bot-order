@@ -1,9 +1,9 @@
-import { useState } from "react";
-import { useSearchParams } from "react-router-dom";
-import { publicPost } from "../api/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import { publicPost } from "../api/client";
 
 interface ResetResult {
   ok: boolean;
@@ -12,7 +12,7 @@ interface ResetResult {
 
 export function ResetPage() {
   const [searchParams] = useSearchParams();
-  const [telegramId, setTelegramId] = useState(searchParams.get("telegram_id") ?? "");
+  const [telegramId, setTelegramId] = useState(() => searchParams.get("telegram_id") ?? "");
   const [code, setCode] = useState("");
   const [password, setPassword] = useState("");
   const [passwordConfirm, setPasswordConfirm] = useState("");

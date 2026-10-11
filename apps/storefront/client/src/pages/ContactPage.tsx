@@ -9,13 +9,13 @@
  * renders the SAME title, intro and rows from the same settings; keep the two
  * in step or it becomes cloaking.
  */
-import { Link } from "react-router-dom";
 import { Clock, LifeBuoy, Mail, MapPin, Phone, Store } from "lucide-react";
 import type { ReactNode } from "react";
+import { Link } from "react-router-dom";
 import { useShopContext } from "../components/Layout";
-import Card from "../components/ui/Card";
 import TelegramIcon from "../components/shop/TelegramIcon";
 import WhatsAppIcon from "../components/shop/WhatsAppIcon";
+import Card from "../components/ui/Card";
 import { t } from "../lib/i18n";
 import { isPlainEmail, telHref } from "../lib/telHref";
 
@@ -51,75 +51,7 @@ export default function ContactPage() {
       </h1>
       <p className="mt-4 text-lg leading-relaxed text-ink-soft">{t("web.contact_intro")}</p>
 
-      {(hasRows || hasChannels) && (
-        <Card className="mt-8">
-          {hasRows && (
-            <dl className="space-y-4">
-              {legalName && (
-                <Row icon={<Store className="h-5 w-5" aria-hidden="true" />} label={t("web.contact_legal_name")}>
-                  {legalName}
-                </Row>
-              )}
-              {address && (
-                <Row icon={<MapPin className="h-5 w-5" aria-hidden="true" />} label={t("web.contact_address")}>
-                  {address}
-                </Row>
-              )}
-              {phone && (
-                <Row icon={<Phone className="h-5 w-5" aria-hidden="true" />} label={t("web.contact_phone")}>
-                  {phoneHref ? (
-                    <a href={phoneHref} className="text-pine hover:underline">
-                      {phone}
-                    </a>
-                  ) : (
-                    phone
-                  )}
-                </Row>
-              )}
-              {email && (
-                <Row icon={<Mail className="h-5 w-5" aria-hidden="true" />} label={t("web.contact_email")}>
-                  {isPlainEmail(email) ? (
-                    <a href={`mailto:${email}`} className="text-pine hover:underline">
-                      {email}
-                    </a>
-                  ) : (
-                    email
-                  )}
-                </Row>
-              )}
-              {hours && (
-                <Row icon={<Clock className="h-5 w-5" aria-hidden="true" />} label={t("web.contact_hours_label")}>
-                  {hours}
-                </Row>
-              )}
-            </dl>
-          )}
-          {hasChannels && (
-            <div className={`flex flex-wrap gap-2 ${hasRows ? "mt-6 border-t border-line pt-6" : ""}`}>
-              {waNumber && (
-                <a
-                  href={`https://wa.me/${waNumber}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="btn btn-soft"
-                >
-                  <WhatsAppIcon className="h-4 w-4" /> WhatsApp
-                </a>
-              )}
-              {telegramUrl && (
-                <a
-                  href={telegramUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="btn btn-soft"
-                >
-                  <TelegramIcon className="h-4 w-4" /> Telegram
-                </a>
-              )}
-            </div>
-          )}
-        </Card>
-      )}
+      <ContactDetailsCard hasRows={hasRows} hasChannels={hasChannels} legalName={legalName} address={address} phone={phone} phoneHref={phoneHref} email={email} hours={hours} waNumber={waNumber} telegramUrl={telegramUrl} />
 
       <Card className="mt-8">
         <h2 className="font-display text-lg font-semibold text-ink">{t("web.static_help_title")}</h2>
@@ -131,4 +63,87 @@ export default function ContactPage() {
       </Card>
     </div>
   );
+}
+
+function ContactDetailsCard({ hasRows, hasChannels, legalName, address, phone, phoneHref, email, hours, waNumber, telegramUrl }: {
+  hasRows: boolean;
+  hasChannels: boolean;
+  legalName: string;
+  address: string;
+  phone: string;
+  phoneHref: string | null;
+  email: string;
+  hours: string;
+  waNumber: string;
+  telegramUrl: string;
+}) {
+  return ((hasRows || hasChannels) && (
+    <Card className="mt-8">
+      {hasRows && (
+        <dl className="space-y-4">
+          {legalName && (
+            <Row icon={<Store className="h-5 w-5" aria-hidden="true" />} label={t("web.contact_legal_name")}>
+              {legalName}
+            </Row>
+          )}
+          {address && (
+            <Row icon={<MapPin className="h-5 w-5" aria-hidden="true" />} label={t("web.contact_address")}>
+              {address}
+            </Row>
+          )}
+          {phone && (
+            <Row icon={<Phone className="h-5 w-5" aria-hidden="true" />} label={t("web.contact_phone")}>
+              {phoneHref ? (
+                <a href={phoneHref} className="text-pine hover:underline">
+                  {phone}
+                </a>
+              ) : (
+                phone
+              )}
+            </Row>
+          )}
+          {email && (
+            <Row icon={<Mail className="h-5 w-5" aria-hidden="true" />} label={t("web.contact_email")}>
+              {isPlainEmail(email) ? (
+                <a href={`mailto:${email}`} className="text-pine hover:underline">
+                  {email}
+                </a>
+              ) : (
+                email
+              )}
+            </Row>
+          )}
+          {hours && (
+            <Row icon={<Clock className="h-5 w-5" aria-hidden="true" />} label={t("web.contact_hours_label")}>
+              {hours}
+            </Row>
+          )}
+        </dl>
+      )}
+      {hasChannels && (
+        <div className={`flex flex-wrap gap-2 ${hasRows ? "mt-6 border-t border-line pt-6" : ""}`}>
+          {waNumber && (
+            <a
+              href={`https://wa.me/${waNumber}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="btn btn-soft"
+            >
+              <WhatsAppIcon className="h-4 w-4" /> WhatsApp
+            </a>
+          )}
+          {telegramUrl && (
+            <a
+              href={telegramUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="btn btn-soft"
+            >
+              <TelegramIcon className="h-4 w-4" /> Telegram
+            </a>
+          )}
+        </div>
+      )}
+    </Card>
+  ));
 }

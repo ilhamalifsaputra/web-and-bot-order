@@ -8,37 +8,37 @@
  * variant / size / state (invalid, disabled, hover note). No business data,
  * no API calls, no router — just the primitives.
  */
+import { CheckCircle, ChevronLeft, Flame, Info, Receipt, ShieldCheck, X, Zap } from "lucide-react";
 import { useState } from "react";
-import { Flame, X, ChevronLeft, Info, Receipt, Zap, ShieldCheck, CheckCircle } from "lucide-react";
-import Button from "../../components/ui/Button";
-import IconButton from "../../components/ui/IconButton";
-import Input from "../../components/ui/Input";
-import Textarea from "../../components/ui/Textarea";
-import Select from "../../components/ui/Select";
-import Label from "../../components/ui/Label";
-import FormField from "../../components/ui/FormField";
-import Checkbox from "../../components/ui/Checkbox";
-import Radio from "../../components/ui/Radio";
-import Switch from "../../components/ui/Switch";
-import Card from "../../components/ui/Card";
-import Badge from "../../components/ui/Badge";
-import Divider from "../../components/ui/Divider";
-import Skeleton from "../../components/ui/Skeleton";
-import Spinner from "../../components/ui/Spinner";
-import Modal from "../../components/ui/Modal";
-import AlertDialog from "../../components/ui/AlertDialog";
-import Tabs from "../../components/ui/Tabs";
+import EmptyState from "../../components/shop/EmptyState";
+import ErrorState from "../../components/shop/ErrorState";
+import LoadingState from "../../components/shop/LoadingState";
+import NotFoundState from "../../components/shop/NotFoundState";
+import PermissionDeniedState from "../../components/shop/PermissionDeniedState";
+import StatusScreen from "../../components/shop/StatusScreen";
 import Accordion from "../../components/ui/Accordion";
 import Alert, { type AlertTone } from "../../components/ui/Alert";
+import AlertDialog from "../../components/ui/AlertDialog";
+import Badge from "../../components/ui/Badge";
+import Button from "../../components/ui/Button";
+import Card from "../../components/ui/Card";
+import Checkbox from "../../components/ui/Checkbox";
+import Divider from "../../components/ui/Divider";
+import FormField from "../../components/ui/FormField";
+import IconButton from "../../components/ui/IconButton";
+import Input from "../../components/ui/Input";
+import Label from "../../components/ui/Label";
+import Modal from "../../components/ui/Modal";
+import Radio from "../../components/ui/Radio";
+import Select from "../../components/ui/Select";
+import Skeleton from "../../components/ui/Skeleton";
+import Spinner from "../../components/ui/Spinner";
+import Switch from "../../components/ui/Switch";
+import Tabs from "../../components/ui/Tabs";
+import Textarea from "../../components/ui/Textarea";
 import Toast from "../../components/ui/Toast";
 import Tooltip from "../../components/ui/Tooltip";
 import TrustBadgeRow from "../../components/ui/TrustBadgeRow";
-import StatusScreen from "../../components/shop/StatusScreen";
-import EmptyState from "../../components/shop/EmptyState";
-import ErrorState from "../../components/shop/ErrorState";
-import NotFoundState from "../../components/shop/NotFoundState";
-import PermissionDeniedState from "../../components/shop/PermissionDeniedState";
-import LoadingState from "../../components/shop/LoadingState";
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -76,352 +76,57 @@ export default function UiGalleryPage() {
         <Button variant="danger">Danger</Button>
       </Section>
 
-      <Section title="Button — size sm">
-        <Button variant="primary" size="sm">
-          Primary
-        </Button>
-        <Button variant="soft" size="sm">
-          Soft
-        </Button>
-        <Button variant="ghost" size="sm">
-          Ghost
-        </Button>
-        <Button variant="danger" size="sm">
-          Danger
-        </Button>
-      </Section>
+      <UiGalleryButtonSizeSm />
 
-      <Section title="Button — disabled / fullWidth / pending">
-        <Button variant="primary" disabled>
-          Disabled
-        </Button>
-        <Button variant="danger" disabled>
-          Disabled
-        </Button>
-        <Button variant="primary" disabled>
-          <Spinner />
-          Submitting
-        </Button>
-        <div className="w-full">
-          <Button variant="primary" fullWidth>
-            Full width
-          </Button>
-        </div>
-      </Section>
+      <UiGalleryButtonDisabledFullWidthPending />
 
-      <Section title="IconButton (md 44px / sm 32px)">
-        <IconButton aria-label="Previous">
-          <ChevronLeft className="h-5 w-5" />
-        </IconButton>
-        <IconButton aria-label="Close">
-          <X className="h-5 w-5" />
-        </IconButton>
-        <IconButton aria-label="Close small" size="sm">
-          <X className="h-4 w-4" />
-        </IconButton>
-        <IconButton aria-label="Disabled" disabled>
-          <X className="h-5 w-5" />
-        </IconButton>
-      </Section>
+      <UiGalleryIconButtonMd44pxSm32px />
 
-      <Section title="Input">
-        <div className="w-64">
-          <Input placeholder="Normal field" />
-        </div>
-        <div className="w-64">
-          <Input placeholder="Invalid field" invalid defaultValue="bad@" />
-        </div>
-        <div className="w-64">
-          <Input placeholder="Disabled" disabled />
-        </div>
-      </Section>
+      <UiGalleryInput />
 
-      <Section title="Textarea">
-        <div className="w-64">
-          <Textarea placeholder="Normal" rows={3} />
-        </div>
-        <div className="w-64">
-          <Textarea placeholder="Invalid" invalid rows={3} />
-        </div>
-      </Section>
+      <UiGalleryTextarea />
 
-      <Section title="Select">
-        <div className="w-64">
-          <Select defaultValue="">
-            <option value="" disabled>
-              Pick one…
-            </option>
-            <option value="a">Option A</option>
-            <option value="b">Option B</option>
-          </Select>
-        </div>
-        <div className="w-64">
-          <Select invalid defaultValue="a">
-            <option value="a">Invalid</option>
-          </Select>
-        </div>
-      </Section>
+      <UiGallerySelect />
 
       <Section title="Label">
         <Label>Plain label</Label>
         <Label required>Required label</Label>
       </Section>
 
-      <Section title="FormField (label + hint + error wiring)">
-        <div className="w-72">
-          <FormField label="Email" hint="We never share it.">
-            <Input type="email" placeholder="you@example.com" />
-          </FormField>
-        </div>
-        <div className="w-72">
-          <FormField label="User ID" required error="Isi User ID kamu dulu ya.">
-            <Input placeholder="123456" defaultValue="" />
-          </FormField>
-        </div>
-        <div className="w-72">
-          <FormField label="Notes" hint="Optional.">
-            <Textarea rows={2} />
-          </FormField>
-        </div>
-      </Section>
+      <UiGalleryFormFieldLabelHintErrorWiring />
 
-      <Section title="Checkbox / Radio">
-        <label className="flex items-center gap-2 text-sm">
-          <Checkbox checked={checked} onChange={(e) => setChecked(e.target.checked)} />
-          Controlled checkbox
-        </label>
-        <label className="flex items-center gap-2 text-sm">
-          <Checkbox disabled />
-          Disabled
-        </label>
-        <label className="flex items-center gap-2 text-sm">
-          <Radio name="demo" value="a" checked={radio === "a"} onChange={() => setRadio("a")} />
-          Radio A
-        </label>
-        <label className="flex items-center gap-2 text-sm">
-          <Radio name="demo" value="b" checked={radio === "b"} onChange={() => setRadio("b")} />
-          Radio B
-        </label>
-      </Section>
+      <UiGalleryCheckboxRadio checked={checked} setChecked={setChecked} radio={radio} setRadio={setRadio} />
 
       <Section title="Switch">
         <Switch checked={switchOn} onCheckedChange={setSwitchOn} aria-label="Demo toggle" />
         <span className="text-sm text-ink-soft">{switchOn ? "on" : "off"}</span>
-        <Switch checked disabled onCheckedChange={() => {}} aria-label="Disabled on" />
-        <Switch checked={false} disabled onCheckedChange={() => {}} aria-label="Disabled off" />
+        <Switch checked disabled onCheckedChange={() => { }} aria-label="Disabled on" />
+        <Switch checked={false} disabled onCheckedChange={() => { }} aria-label="Disabled off" />
       </Section>
 
-      <Section title="Card">
-        <Card className="w-64">Default card (padded)</Card>
-        <Card className="w-64" padded={false}>
-          <div className="p-2 text-sm">padded=false</div>
-        </Card>
-        <Card className="w-64" interactive>
-          Interactive — hover for shadow-lift
-        </Card>
-      </Section>
+      <UiGalleryCard />
 
-      <Section title="Badge">
-        <Badge variant="discount">15% OFF</Badge>
-        <Badge variant="savings">Hemat Rp150</Badge>
-        <Badge variant="hot" icon={<Flame className="h-3.5 w-3.5" />}>
-          Hot
-        </Badge>
-        <Badge variant="category">topup</Badge>
-        <Badge variant="neutral">neutral</Badge>
-        <Badge variant="success">success</Badge>
-        <Badge variant="pending">pending</Badge>
-        <Badge variant="failed">failed</Badge>
-      </Section>
+      <UiGalleryBadge />
 
-      <Section title="Divider">
-        <div className="w-64">
-          above
-          <Divider className="my-2" />
-          below
-        </div>
-        <div className="flex h-10 items-center gap-3">
-          left
-          <Divider orientation="vertical" />
-          right
-        </div>
-      </Section>
+      <UiGalleryDivider />
 
-      <Section title="Skeleton / Spinner">
-        <div className="w-64 space-y-2">
-          <Skeleton className="h-4 w-3/4" />
-          <Skeleton className="h-4 w-1/2" />
-          <Skeleton className="h-24 w-full" />
-        </div>
-        <span className="inline-flex items-center text-sm text-ink-soft">
-          <Spinner />
-          loading
-        </span>
-      </Section>
+      <UiGallerySkeletonSpinner />
 
-      <Section title="Modal">
-        <Button variant="soft" onClick={() => setModalOpen(true)}>
-          Open modal
-        </Button>
-        <Modal
-          open={modalOpen}
-          onClose={() => setModalOpen(false)}
-          title="Modal title"
-          description="Derived from Card + tokens; a11y from the MobileDrawer pattern."
-          footer={
-            <>
-              <Button variant="ghost" onClick={() => setModalOpen(false)}>
-                Cancel
-              </Button>
-              <Button variant="primary" onClick={() => setModalOpen(false)}>
-                Confirm
-              </Button>
-            </>
-          }
-        >
-          <p>
-            Focus is trapped here, Esc closes, the scrim closes, body scroll is locked, and focus
-            returns to the trigger on close.
-          </p>
-        </Modal>
-      </Section>
+      <UiGalleryModal setModalOpen={setModalOpen} modalOpen={modalOpen} />
 
-      <Section title="AlertDialog (destructive confirm)">
-        <Button variant="danger" onClick={() => setConfirmOpen(true)}>
-          Delete something
-        </Button>
-        <AlertDialog
-          open={confirmOpen}
-          tone="danger"
-          confirmPending={confirmPending}
-          title="Delete this item?"
-          description="This action cannot be undone."
-          confirmLabel="Delete"
-          cancelLabel="Cancel"
-          onCancel={() => setConfirmOpen(false)}
-          onConfirm={() => {
-            setConfirmPending(true);
-            window.setTimeout(() => {
-              setConfirmPending(false);
-              setConfirmOpen(false);
-            }, 1200);
-          }}
-        />
-      </Section>
+      <UiGalleryAlertDialogDestructiveConfirm setConfirmOpen={setConfirmOpen} confirmOpen={confirmOpen} confirmPending={confirmPending} setConfirmPending={setConfirmPending} />
 
-      <Section title="Tabs — segmented control (with panels)">
-        <div className="w-full">
-          <Tabs
-            aria-label="Pricing view"
-            value={tab}
-            onValueChange={setTab}
-            items={[
-              { value: "cheap", label: "Termurah" },
-              { value: "member", label: "Membership" },
-              { value: "diamonds", label: "Diamonds" },
-              { value: "soon", label: "Coming soon", disabled: true },
-            ]}
-            panels={{
-              cheap: <p className="text-sm text-ink-soft">Cheapest-first listing.</p>,
-              member: <p className="text-sm text-ink-soft">Membership packages.</p>,
-              diamonds: <p className="text-sm text-ink-soft">Diamond top-ups.</p>,
-              soon: <p className="text-sm text-ink-soft">Not available yet.</p>,
-            }}
-          />
-        </div>
-      </Section>
+      <UiGalleryTabsSegmentedControlWithPanels tab={tab} setTab={setTab} />
 
-      <Section title="Accordion — single (FAQ)">
-        <div className="w-full max-w-xl">
-          <Accordion
-            defaultValue="ship"
-            items={[
-              {
-                value: "ship",
-                trigger: "How fast is delivery?",
-                content: "Instantly after your payment is confirmed.",
-              },
-              {
-                value: "refund",
-                trigger: "Can I get a refund?",
-                content: "Yes — within 24 hours if the item was not delivered.",
-              },
-              {
-                value: "safe",
-                trigger: "Is my account safe?",
-                content: "We never store your password and only ask for what a top-up needs.",
-              },
-            ]}
-          />
-        </div>
-      </Section>
+      <UiGalleryAccordionSingleFAQ />
 
-      <Section title="Accordion — multiple">
-        <div className="w-full max-w-xl">
-          <Accordion
-            type="multiple"
-            defaultValue={["a"]}
-            items={[
-              { value: "a", trigger: "First", content: "First body." },
-              { value: "b", trigger: "Second", content: "Second body." },
-            ]}
-          />
-        </div>
-      </Section>
+      <UiGalleryAccordionMultiple />
 
-      <Section title="Trust badge row">
-        <div className="w-full max-w-xl space-y-6">
-          <TrustBadgeRow
-            className="text-ink-soft"
-            items={[
-              { icon: <Zap className="h-4 w-4 text-grass" />, label: "Instant delivery" },
-              { icon: <ShieldCheck className="h-4 w-4 text-grass" />, label: "QRIS & USDT" },
-              { icon: <CheckCircle className="h-4 w-4 text-pine" />, label: "Warranty included" },
-            ]}
-          />
-          <div className="rounded-xl bg-ink p-5">
-            <TrustBadgeRow
-              className="text-ink-faint"
-              items={[
-                { icon: <Zap className="h-4 w-4 text-grass" />, label: "Instant delivery" },
-                { icon: <ShieldCheck className="h-4 w-4 text-grass" />, label: "QRIS & USDT" },
-              ]}
-            />
-          </div>
-          <TrustBadgeRow
-            orientation="column"
-            className="text-ink-soft"
-            items={[
-              { icon: <Zap className="h-4 w-4 text-grass" />, label: "Instant delivery" },
-              { icon: <ShieldCheck className="h-4 w-4 text-grass" />, label: "QRIS & USDT" },
-              { icon: <CheckCircle className="h-4 w-4 text-pine" />, label: "Warranty included" },
-            ]}
-          />
-        </div>
-      </Section>
+      <UiGalleryTrustBadgeRow />
 
-      <Section title="Alert — banner (ex-Flash)">
-        <div className="w-full max-w-xl space-y-3">
-          {ALERT_TONES.map((tone) => (
-            <Alert key={tone} variant="banner" tone={tone}>
-              Banner alert, tone <strong>{tone}</strong>.
-            </Alert>
-          ))}
-          <Alert variant="banner" tone="error" title="With a title">
-            Extra detail under the bold lead line.
-          </Alert>
-        </div>
-      </Section>
+      <UiGalleryAlertBannerExFlash />
 
-      <Section title="Alert — panel (ex-Callout)">
-        <div className="w-full max-w-xl space-y-3">
-          {ALERT_TONES.map((tone) => (
-            <Alert key={tone} variant="panel" tone={tone}>
-              Panel alert, tone <strong>{tone}</strong>.
-            </Alert>
-          ))}
-        </div>
-      </Section>
+      <UiGalleryAlertPanelExCallout />
 
       <Section title="Toast">
         <Button variant="soft" onClick={() => setToast("Saved to your account.")}>
@@ -430,18 +135,7 @@ export default function UiGalleryPage() {
         <Toast text={toast} onDismiss={() => setToast(null)} />
       </Section>
 
-      <Section title="Tooltip">
-        <Tooltip label="Copied to clipboard">
-          <Button variant="ghost" size="sm">
-            Hover or focus me
-          </Button>
-        </Tooltip>
-        <Tooltip label="More info about this field">
-          <IconButton aria-label="Info" size="sm">
-            <Info className="h-4 w-4" />
-          </IconButton>
-        </Tooltip>
-      </Section>
+      <UiGalleryTooltip />
 
       <h1 className="page-title mt-16">State components (§16)</h1>
       <p className="page-lead">
@@ -449,28 +143,9 @@ export default function UiGalleryPage() {
         <code className="codeish">StatusScreen</code>.
       </p>
 
-      <Section title="StatusScreen — the shared shell">
-        <div className="w-full max-w-2xl">
-          <StatusScreen
-            icon={Receipt}
-            title="Shared centred shell"
-            description="Icon, title, one line of copy, and up to two actions. Every state below is this."
-            action={{ label: "Primary action", to: "/__ui" }}
-            secondaryAction={{ label: "Secondary", to: "/__ui" }}
-          />
-        </div>
-      </Section>
+      <UiGalleryStatusScreenTheSharedShell />
 
-      <Section title="EmptyState — nothing here yet (composes StatusScreen)">
-        <div className="w-full max-w-2xl">
-          <EmptyState
-            icon={Receipt}
-            title="No orders yet"
-            description="Your purchases will show up here."
-            action={{ label: "Browse products", to: "/__ui" }}
-          />
-        </div>
-      </Section>
+      <UiGalleryEmptyStateNothingHereYetComposes />
 
       <Section title="ErrorState — with retry">
         <div className="w-full max-w-2xl">
@@ -521,4 +196,437 @@ export default function UiGalleryPage() {
       </Section>
     </main>
   );
+}
+
+function UiGalleryButtonSizeSm() {
+  return (<Section title="Button — size sm">
+    <Button variant="primary" size="sm">
+      Primary
+    </Button>
+    <Button variant="soft" size="sm">
+      Soft
+    </Button>
+    <Button variant="ghost" size="sm">
+      Ghost
+    </Button>
+    <Button variant="danger" size="sm">
+      Danger
+    </Button>
+  </Section>);
+}
+
+function UiGalleryButtonDisabledFullWidthPending() {
+  return (<Section title="Button — disabled / fullWidth / pending">
+    <Button variant="primary" disabled>
+      Disabled
+    </Button>
+    <Button variant="danger" disabled>
+      Disabled
+    </Button>
+    <Button variant="primary" disabled>
+      <Spinner />
+      Submitting
+    </Button>
+    <div className="w-full">
+      <Button variant="primary" fullWidth>
+        Full width
+      </Button>
+    </div>
+  </Section>);
+}
+
+function UiGalleryIconButtonMd44pxSm32px() {
+  return (<Section title="IconButton (md 44px / sm 32px)">
+    <IconButton aria-label="Previous">
+      <ChevronLeft className="h-5 w-5" />
+    </IconButton>
+    <IconButton aria-label="Close">
+      <X className="h-5 w-5" />
+    </IconButton>
+    <IconButton aria-label="Close small" size="sm">
+      <X className="h-4 w-4" />
+    </IconButton>
+    <IconButton aria-label="Disabled" disabled>
+      <X className="h-5 w-5" />
+    </IconButton>
+  </Section>);
+}
+
+function UiGalleryInput() {
+  return (<Section title="Input">
+    <div className="w-64">
+      <Input placeholder="Normal field" />
+    </div>
+    <div className="w-64">
+      <Input placeholder="Invalid field" invalid defaultValue="bad@" />
+    </div>
+    <div className="w-64">
+      <Input placeholder="Disabled" disabled />
+    </div>
+  </Section>);
+}
+
+function UiGalleryTextarea() {
+  return (<Section title="Textarea">
+    <div className="w-64">
+      <Textarea placeholder="Normal" rows={3} />
+    </div>
+    <div className="w-64">
+      <Textarea placeholder="Invalid" invalid rows={3} />
+    </div>
+  </Section>);
+}
+
+function UiGallerySelect() {
+  return (<Section title="Select">
+    <div className="w-64">
+      <Select defaultValue="">
+        <option value="" disabled>
+          Pick one…
+        </option>
+        <option value="a">Option A</option>
+        <option value="b">Option B</option>
+      </Select>
+    </div>
+    <div className="w-64">
+      <Select invalid defaultValue="a">
+        <option value="a">Invalid</option>
+      </Select>
+    </div>
+  </Section>);
+}
+
+function UiGalleryFormFieldLabelHintErrorWiring() {
+  return (<Section title="FormField (label + hint + error wiring)">
+    <div className="w-72">
+      <FormField label="Email" hint="We never share it.">
+        <Input type="email" placeholder="you@example.com" />
+      </FormField>
+    </div>
+    <div className="w-72">
+      <FormField label="User ID" required error="Isi User ID kamu dulu ya.">
+        <Input placeholder="123456" defaultValue="" />
+      </FormField>
+    </div>
+    <div className="w-72">
+      <FormField label="Notes" hint="Optional.">
+        <Textarea rows={2} />
+      </FormField>
+    </div>
+  </Section>);
+}
+
+function UiGalleryCheckboxRadio({ checked, setChecked, radio, setRadio }: {
+  checked: boolean;
+  setChecked: import("react").Dispatch<import("react").SetStateAction<boolean>>;
+  radio: string;
+  setRadio: import("react").Dispatch<import("react").SetStateAction<string>>;
+}) {
+  return (<Section title="Checkbox / Radio">
+    <label className="flex items-center gap-2 text-sm">
+      <Checkbox checked={checked} onChange={(e) => setChecked(e.target.checked)} />
+      Controlled checkbox
+    </label>
+    <label className="flex items-center gap-2 text-sm">
+      <Checkbox disabled />
+      Disabled
+    </label>
+    <label className="flex items-center gap-2 text-sm">
+      <Radio name="demo" value="a" checked={radio === "a"} onChange={() => setRadio("a")} />
+      Radio A
+    </label>
+    <label className="flex items-center gap-2 text-sm">
+      <Radio name="demo" value="b" checked={radio === "b"} onChange={() => setRadio("b")} />
+      Radio B
+    </label>
+  </Section>);
+}
+
+function UiGalleryCard() {
+  return (<Section title="Card">
+    <Card className="w-64">Default card (padded)</Card>
+    <Card className="w-64" padded={false}>
+      <div className="p-2 text-sm">padded=false</div>
+    </Card>
+    <Card className="w-64" interactive>
+      Interactive — hover for shadow-lift
+    </Card>
+  </Section>);
+}
+
+function UiGalleryBadge() {
+  return (<Section title="Badge">
+    <Badge variant="discount">15% OFF</Badge>
+    <Badge variant="savings">Hemat Rp150</Badge>
+    <Badge variant="hot" icon={<Flame className="h-3.5 w-3.5" />}>
+      Hot
+    </Badge>
+    <Badge variant="category">topup</Badge>
+    <Badge variant="neutral">neutral</Badge>
+    <Badge variant="success">success</Badge>
+    <Badge variant="pending">pending</Badge>
+    <Badge variant="failed">failed</Badge>
+  </Section>);
+}
+
+function UiGalleryDivider() {
+  return (<Section title="Divider">
+    <div className="w-64">
+      above
+      <Divider className="my-2" />
+      below
+    </div>
+    <div className="flex h-10 items-center gap-3">
+      left
+      <Divider orientation="vertical" />
+      right
+    </div>
+  </Section>);
+}
+
+function UiGallerySkeletonSpinner() {
+  return (<Section title="Skeleton / Spinner">
+    <div className="w-64 space-y-2">
+      <Skeleton className="h-4 w-3/4" />
+      <Skeleton className="h-4 w-1/2" />
+      <Skeleton className="h-24 w-full" />
+    </div>
+    <span className="inline-flex items-center text-sm text-ink-soft">
+      <Spinner />
+      loading
+    </span>
+  </Section>);
+}
+
+function UiGalleryModal({ setModalOpen, modalOpen }: {
+  setModalOpen: import("react").Dispatch<import("react").SetStateAction<boolean>>;
+  modalOpen: boolean;
+}) {
+  return (<Section title="Modal">
+    <Button variant="soft" onClick={() => setModalOpen(true)}>
+      Open modal
+    </Button>
+    <Modal
+      open={modalOpen}
+      onClose={() => setModalOpen(false)}
+      title="Modal title"
+      description="Derived from Card + tokens; a11y from the MobileDrawer pattern."
+      footer={
+        <>
+          <Button variant="ghost" onClick={() => setModalOpen(false)}>
+            Cancel
+          </Button>
+          <Button variant="primary" onClick={() => setModalOpen(false)}>
+            Confirm
+          </Button>
+        </>
+      }
+    >
+      <p>
+        Focus is trapped here, Esc closes, the scrim closes, body scroll is locked, and focus
+        returns to the trigger on close.
+      </p>
+    </Modal>
+  </Section>);
+}
+
+function UiGalleryAlertDialogDestructiveConfirm({ setConfirmOpen, confirmOpen, confirmPending, setConfirmPending }: {
+  setConfirmOpen: import("react").Dispatch<import("react").SetStateAction<boolean>>;
+  confirmOpen: boolean;
+  confirmPending: boolean;
+  setConfirmPending: import("react").Dispatch<import("react").SetStateAction<boolean>>;
+}) {
+  return (<Section title="AlertDialog (destructive confirm)">
+    <Button variant="danger" onClick={() => setConfirmOpen(true)}>
+      Delete something
+    </Button>
+    <AlertDialog
+      open={confirmOpen}
+      tone="danger"
+      confirmPending={confirmPending}
+      title="Delete this item?"
+      description="This action cannot be undone."
+      confirmLabel="Delete"
+      cancelLabel="Cancel"
+      onCancel={() => setConfirmOpen(false)}
+      onConfirm={() => {
+        setConfirmPending(true);
+        window.setTimeout(() => {
+          setConfirmPending(false);
+          setConfirmOpen(false);
+        }, 1200);
+      }}
+    />
+  </Section>);
+}
+
+function UiGalleryTabsSegmentedControlWithPanels({ tab, setTab }: {
+  tab: string;
+  setTab: import("react").Dispatch<import("react").SetStateAction<string>>;
+}) {
+  return (<Section title="Tabs — segmented control (with panels)">
+    <div className="w-full">
+      <Tabs
+        aria-label="Pricing view"
+        value={tab}
+        onValueChange={setTab}
+        items={[
+          { value: "cheap", label: "Termurah" },
+          { value: "member", label: "Membership" },
+          { value: "diamonds", label: "Diamonds" },
+          { value: "soon", label: "Coming soon", disabled: true },
+        ]}
+        panels={{
+          cheap: <p className="text-sm text-ink-soft">Cheapest-first listing.</p>,
+          member: <p className="text-sm text-ink-soft">Membership packages.</p>,
+          diamonds: <p className="text-sm text-ink-soft">Diamond top-ups.</p>,
+          soon: <p className="text-sm text-ink-soft">Not available yet.</p>,
+        }}
+      />
+    </div>
+  </Section>);
+}
+
+function UiGalleryAccordionSingleFAQ() {
+  return (<Section title="Accordion — single (FAQ)">
+    <div className="w-full max-w-xl">
+      <Accordion
+        defaultValue="ship"
+        items={[
+          {
+            value: "ship",
+            trigger: "How fast is delivery?",
+            content: "Instantly after your payment is confirmed.",
+          },
+          {
+            value: "refund",
+            trigger: "Can I get a refund?",
+            content: "Yes — within 24 hours if the item was not delivered.",
+          },
+          {
+            value: "safe",
+            trigger: "Is my account safe?",
+            content: "We never store your password and only ask for what a top-up needs.",
+          },
+        ]}
+      />
+    </div>
+  </Section>);
+}
+
+function UiGalleryAccordionMultiple() {
+  return (<Section title="Accordion — multiple">
+    <div className="w-full max-w-xl">
+      <Accordion
+        type="multiple"
+        defaultValue={["a"]}
+        items={[
+          { value: "a", trigger: "First", content: "First body." },
+          { value: "b", trigger: "Second", content: "Second body." },
+        ]}
+      />
+    </div>
+  </Section>);
+}
+
+function UiGalleryTrustBadgeRow() {
+  return (<Section title="Trust badge row">
+    <div className="w-full max-w-xl space-y-6">
+      <TrustBadgeRow
+        className="text-ink-soft"
+        items={[
+          { icon: <Zap className="h-4 w-4 text-grass" />, label: "Instant delivery" },
+          { icon: <ShieldCheck className="h-4 w-4 text-grass" />, label: "QRIS & USDT" },
+          { icon: <CheckCircle className="h-4 w-4 text-pine" />, label: "Warranty included" },
+        ]}
+      />
+      <div className="rounded-xl bg-ink p-5">
+        <TrustBadgeRow
+          className="text-ink-faint"
+          items={[
+            { icon: <Zap className="h-4 w-4 text-grass" />, label: "Instant delivery" },
+            { icon: <ShieldCheck className="h-4 w-4 text-grass" />, label: "QRIS & USDT" },
+          ]}
+        />
+      </div>
+      <TrustBadgeRow
+        orientation="column"
+        className="text-ink-soft"
+        items={[
+          { icon: <Zap className="h-4 w-4 text-grass" />, label: "Instant delivery" },
+          { icon: <ShieldCheck className="h-4 w-4 text-grass" />, label: "QRIS & USDT" },
+          { icon: <CheckCircle className="h-4 w-4 text-pine" />, label: "Warranty included" },
+        ]}
+      />
+    </div>
+  </Section>);
+}
+
+function UiGalleryAlertBannerExFlash() {
+  return (<Section title="Alert — banner (ex-Flash)">
+    <div className="w-full max-w-xl space-y-3">
+      {ALERT_TONES.map((tone) => (
+        <Alert key={tone} variant="banner" tone={tone}>
+          Banner alert, tone <strong>{tone}</strong>.
+        </Alert>
+      ))}
+      <Alert variant="banner" tone="error" title="With a title">
+        Extra detail under the bold lead line.
+      </Alert>
+    </div>
+  </Section>);
+}
+
+function UiGalleryAlertPanelExCallout() {
+  return (<Section title="Alert — panel (ex-Callout)">
+    <div className="w-full max-w-xl space-y-3">
+      {ALERT_TONES.map((tone) => (
+        <Alert key={tone} variant="panel" tone={tone}>
+          Panel alert, tone <strong>{tone}</strong>.
+        </Alert>
+      ))}
+    </div>
+  </Section>);
+}
+
+function UiGalleryTooltip() {
+  return (<Section title="Tooltip">
+    <Tooltip label="Copied to clipboard">
+      <Button variant="ghost" size="sm">
+        Hover or focus me
+      </Button>
+    </Tooltip>
+    <Tooltip label="More info about this field">
+      <IconButton aria-label="Info" size="sm">
+        <Info className="h-4 w-4" />
+      </IconButton>
+    </Tooltip>
+  </Section>);
+}
+
+function UiGalleryStatusScreenTheSharedShell() {
+  return (<Section title="StatusScreen — the shared shell">
+    <div className="w-full max-w-2xl">
+      <StatusScreen
+        icon={Receipt}
+        title="Shared centred shell"
+        description="Icon, title, one line of copy, and up to two actions. Every state below is this."
+        action={{ label: "Primary action", to: "/__ui" }}
+        secondaryAction={{ label: "Secondary", to: "/__ui" }}
+      />
+    </div>
+  </Section>);
+}
+
+function UiGalleryEmptyStateNothingHereYetComposes() {
+  return (<Section title="EmptyState — nothing here yet (composes StatusScreen)">
+    <div className="w-full max-w-2xl">
+      <EmptyState
+        icon={Receipt}
+        title="No orders yet"
+        description="Your purchases will show up here."
+        action={{ label: "Browse products", to: "/__ui" }}
+      />
+    </div>
+  </Section>);
 }

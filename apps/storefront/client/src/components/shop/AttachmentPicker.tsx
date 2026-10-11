@@ -1,3 +1,5 @@
+import { keyedContent } from "../../lib/keyedContent";
+import { FilePreview } from "./FilePreview";
 /**
  * Evidence attach control for the support-ticket forms (new ticket + reply).
  * Client-side type/size/count checks mirror the server's
@@ -7,10 +9,10 @@
  * (SupportPage/TicketDetailPage build the FormData and POST via
  * apiPostFormWithProgress).
  */
-import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
-import { Paperclip, FileVideo, X } from "lucide-react";
+import { Paperclip, X } from "lucide-react";
+import { useRef, useState, type ChangeEvent } from "react";
+import { MAX_TICKET_ATTACHMENTS, validateNewFiles } from "../../lib/attachmentValidation";
 import { t } from "../../lib/i18n";
-import { MAX_TICKET_ATTACHMENTS, IMAGE_TYPES, validateNewFiles } from "../../lib/attachmentValidation";
 
 // Re-exported for back-compat: other files import this constant from here.
 export { MAX_TICKET_ATTACHMENTS };
@@ -24,16 +26,6 @@ export interface AttachmentPickerProps {
 export default function AttachmentPicker({ files, onChange, disabled }: AttachmentPickerProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [error, setError] = useState<string | null>(null);
-
-  const previewUrls = useMemo(
-    () => files.map((f) => (IMAGE_TYPES.has(f.type) ? URL.createObjectURL(f) : null)),
-    [files],
-  );
-  useEffect(() => {
-    return () => {
-      previewUrls.forEach((u) => u && URL.revokeObjectURL(u));
-    };
-  }, [previewUrls]);
 
   function handlePick(e: ChangeEvent<HTMLInputElement>) {
     const picked = Array.from(e.target.files ?? []);
@@ -73,16 +65,12 @@ export default function AttachmentPicker({ files, onChange, disabled }: Attachme
       {error && <p className="mt-1 text-xs text-rust">{error}</p>}
       {files.length > 0 && (
         <ul className="mt-2 flex flex-wrap gap-2">
-          {files.map((file, idx) => (
+          {keyedContent(files, file => JSON.stringify([file.name, file.type, file.size, file.lastModified])).map(({ item: file, key }, idx) => (
             <li
-              key={`${file.name}-${idx}`}
+              key={key}
               className="flex items-center gap-2 rounded-md border border-line bg-card px-2 py-1 text-xs"
             >
-              {previewUrls[idx] ? (
-                <img src={previewUrls[idx]!} alt="" className="w-6 h-6 rounded object-cover" />
-              ) : (
-                <FileVideo className="w-4 h-4 text-ink-soft shrink-0" />
-              )}
+              <FilePreview file={file} />
               <span className="max-w-[8rem] truncate">{file.name}</span>
               <button
                 type="button"

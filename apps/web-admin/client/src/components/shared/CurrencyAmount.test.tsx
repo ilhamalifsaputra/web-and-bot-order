@@ -1,7 +1,8 @@
 import "@testing-library/jest-dom";
-import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { formatCurrencyDisplay, formatCurrencyParts, formatMoneyOrCode, CurrencyStack } from "./CurrencyAmount";
+import { describe, expect, it } from "vitest";
+import { CurrencyStack } from "./CurrencyAmount";
+import { formatCurrencyDisplay, formatCurrencyParts, formatMoneyOrCode } from "./CurrencyAmount.helpers";
 
 describe("formatMoneyOrCode", () => {
   it("formats known currencies like formatCurrencyDisplay", () => {

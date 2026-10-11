@@ -1,3 +1,8 @@
+import * as m from "motion/react-m";
+import ErrorState from "../components/shop/ErrorState";
+import NotFoundState from "../components/shop/NotFoundState";
+import { t } from "../lib/i18n";
+import { fadeUp } from "../lib/motion";
 /**
  * The SPA shell serves a real HTTP status (404 for an unmatched route, 500 for
  * a server fault) and renders this component for the body — a static bundle
@@ -9,11 +14,7 @@
  * conversations. The `statusCode` / `message` prop API the shell passes is
  * unchanged, as is the `fadeUp` entrance.
  */
-import { motion } from "motion/react";
-import { t } from "../lib/i18n";
-import { fadeUp } from "../lib/motion";
-import ErrorState from "../components/shop/ErrorState";
-import NotFoundState from "../components/shop/NotFoundState";
+;
 
 export interface ErrorPageProps {
   statusCode?: number;
@@ -25,7 +26,7 @@ export default function ErrorPage({ statusCode = 404, message }: ErrorPageProps)
   const description = message ?? (isServerError ? t("web.error_message") : t("web.not_found"));
 
   return (
-    <motion.div variants={fadeUp} initial="initial" animate="animate">
+    <m.div variants={fadeUp} initial="initial" animate="animate">
       {isServerError ? (
         <ErrorState description={description} titleAs="h1" />
       ) : (
@@ -41,6 +42,6 @@ export default function ErrorPage({ statusCode = 404, message }: ErrorPageProps)
       <p aria-hidden="true" className="mt-4 text-center text-xs font-medium text-ink-faint">
         {statusCode}
       </p>
-    </motion.div>
+    </m.div>
   );
 }

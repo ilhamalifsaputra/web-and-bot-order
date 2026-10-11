@@ -255,6 +255,20 @@ describe("SearchOverlay", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   });
 
+  it("gives the idle-state links a 44px tap target", async () => {
+    const user = userEvent.setup();
+    renderOverlay(emptyData);
+    await user.click(screen.getByRole("button", { name: "Open search" }));
+    const dialog = screen.getByRole("dialog");
+    for (const name of ["Categories", "Browse all products"]) {
+      expect(within(dialog).getByRole("link", { name })).toHaveClass(
+        "inline-flex",
+        "min-h-11",
+        "items-center",
+      );
+    }
+  });
+
   it("still opens when localStorage is unavailable (Safari private mode)", async () => {
     installStorage({
       getItem: () => {

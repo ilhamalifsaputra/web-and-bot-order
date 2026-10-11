@@ -383,10 +383,10 @@ function SearchOverlay({
                     </p>
                   )}
                   <p className="flex items-center justify-center gap-4 px-2 py-3 text-sm">
-                    <Link to="/categories" onClick={onClose} className="font-medium text-pine hover:underline">
+                    <Link to="/categories" onClick={onClose} className="inline-flex min-h-11 items-center font-medium text-pine hover:underline">
                       {t("web.nav_categories")}
                     </Link>
-                    <Link to="/products" onClick={onClose} className="font-medium text-pine hover:underline">
+                    <Link to="/products" onClick={onClose} className="inline-flex min-h-11 items-center font-medium text-pine hover:underline">
                       {t("web.search_browse_all")}
                     </Link>
                   </p>

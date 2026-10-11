@@ -224,6 +224,20 @@ describe("InstantBuyPage", () => {
     expect(container.querySelector('li[aria-label="1 · Cart"]')).not.toBeInTheDocument();
   });
 
+  it("styles Game detail-block headings with section-title (H-20) and has no Premium qty label", async () => {
+    vi.clearAllMocks();
+    renderInstantBuy({
+      product: {
+        ...productData,
+        product: { ...productData.product, warranty_note: "Delivered within minutes." },
+      },
+    });
+    const heading = await screen.findByRole("heading", { name: "Warranty" });
+    expect(heading).toHaveClass("section-title", "flex", "items-center");
+    expect(heading.className).not.toMatch(/font-bold|font-display/);
+    expect(document.querySelector('label[for="qty"]')).toBeNull();
+  });
+
   it("renders a retryable ErrorState on a non-404 product error and refetches on retry", async () => {
     vi.clearAllMocks();
     renderInstantBuy({ productError: Object.assign(new Error("boom"), { status: 500 }) });

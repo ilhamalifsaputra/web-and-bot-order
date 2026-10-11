@@ -364,7 +364,7 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
           Top Up (InstantBuy) and a wallet top-up never had a cart step. */}
       {!isGame && !isTopup && <Stepper step={state === "delivered" ? 3 : 2} />}
       <div className="max-w-2xl mx-auto">
-        <h1 className="page-title text-2xl! mb-1">{t("web.pay_title")}</h1>
+        <h1 className="page-title mb-1">{t("web.pay_title")}</h1>
       <p className={emailedTo ? "text-sm text-ink-soft mb-2" : "text-sm text-ink-soft mb-5"}>
         {t(isTopup ? "transaction.receipt" : "web.order_code")}: <span className="codeish break-all whitespace-normal">{order.code}</span>
       </p>

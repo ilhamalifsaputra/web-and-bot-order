@@ -97,6 +97,13 @@ describe("CategoryPage", () => {
     expect(otherPill).toHaveClass("bg-sand", "text-ink-soft");
   });
 
+  it("gives the category pills a 44px touch target (min-h-11, no py-1.5)", async () => {
+    renderCategory("streaming", () => categoryData);
+    const pill = await screen.findByRole("link", { name: "🎮 Gaming" });
+    expect(pill).toHaveClass("min-h-11", "inline-flex", "items-center");
+    expect(pill).not.toHaveClass("py-1.5");
+  });
+
   it("renders a breadcrumb: Home link → current category name", async () => {
     renderCategory("streaming", () => categoryData);
     const nav = await screen.findByRole("navigation", { name: "breadcrumb" });

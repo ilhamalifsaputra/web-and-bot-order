@@ -442,7 +442,7 @@ export default function CheckoutPage() {
     return (
       <>
         <Stepper step={2} />
-        <h1 className="page-title text-2xl! mb-5">{t("web.checkout_title")}</h1>
+        <h1 className="page-title mb-5">{t("web.checkout_title")}</h1>
         <EmptyState
           icon={AlertTriangle}
           title={t("web.checkout_unavailable")}
@@ -461,7 +461,7 @@ export default function CheckoutPage() {
     return (
       <>
         <Stepper step={2} />
-        <h1 className="page-title text-2xl! mb-5">{t("web.checkout_title")}</h1>
+        <h1 className="page-title mb-5">{t("web.checkout_title")}</h1>
         <EmptyState
           icon={ShoppingCart}
           title={t("web.checkout_empty_title")}
@@ -510,8 +510,11 @@ export default function CheckoutPage() {
 
   return (
     <>
+      {/* Stepper, title and form share one reading-width column so the heading
+          lines up with the form below it (single-column checkout, H-32). */}
+      <div data-testid="checkout-column" className="max-w-2xl mx-auto">
       <Stepper step={2} />
-      <h1 className="page-title text-2xl! mb-5">{t("web.checkout_title")}</h1>
+      <h1 className="page-title mb-5">{t("web.checkout_title")}</h1>
 
       <form
         onSubmit={(e) => e.preventDefault()}
@@ -582,6 +585,7 @@ export default function CheckoutPage() {
           />
         </div>
       </form>
+      </div>
 
       {/* Sticky mobile total: on a phone the summary card stacks *below* the method
           list, so the buyer chooses a payment rail with the amount they are

@@ -17,7 +17,7 @@ export function SearchForm({ inputAriaLabel }: { inputAriaLabel: string }) {
       onClick={() => open()}
       aria-label={inputAriaLabel}
       aria-haspopup="dialog"
-      className="flex h-10 w-full items-center gap-2 rounded-full border border-line bg-paper pl-3 pr-4 text-left text-sm text-ink-faint transition-colors hover:border-pine hover:bg-card focus:border-pine focus:bg-card focus:outline-none focus:ring-2 focus:ring-pine-tint"
+      className="flex h-11 w-full items-center gap-2 rounded-full border border-line bg-paper pl-3 pr-4 text-left text-sm text-ink-faint transition-colors hover:border-pine hover:bg-card focus:border-pine focus:bg-card focus:outline-none focus:ring-2 focus:ring-pine-tint"
     >
       <Search className="h-4 w-4 shrink-0" aria-hidden="true" />
       <span className="truncate">{t("web.search_placeholder")}</span>

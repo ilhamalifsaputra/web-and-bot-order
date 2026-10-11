@@ -24,7 +24,7 @@ export default function OrderProgress({ fulfillment, underpayment, children }: {
       <div role="status" aria-live="polite" className="flex items-start gap-3">
         <Icon aria-hidden="true" className={`mt-0.5 h-5 w-5 shrink-0 ${tone} ${state.active ? "animate-spin motion-reduce:animate-none" : ""}`} />
         <div className="min-w-0">
-          <h2 className="text-base font-semibold text-ink">{t(state.titleKey)}</h2>
+          <h2 className="section-title">{t(state.titleKey)}</h2>
           <p className="mt-1 text-sm text-ink-soft">{t(state.bodyKey)}</p>
         </div>
       </div>

@@ -669,7 +669,7 @@ export default function InstantBuyPage() {
             .filter((block) => Boolean(block.body))
             .map((block, index) => (
               <div key={block.key} className={index > 0 ? "mt-6 border-t border-line pt-6" : undefined}>
-                <h2 className="flex items-center gap-2 font-display font-bold text-ink">
+                <h2 className="section-title flex items-center gap-2">
                   <block.icon className="w-4 h-4 text-pine shrink-0" aria-hidden="true" />
                   {block.title}
                 </h2>

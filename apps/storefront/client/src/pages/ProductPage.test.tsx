@@ -846,6 +846,18 @@ describe("ProductPage sharing and image formats", () => {
     expect(screen.getByText("Full 30-day warranty.")).toBeInTheDocument();
     // `terms` is empty, so its heading must not dangle over nothing.
     expect(screen.queryByRole("heading", { name: "Terms of use" })).not.toBeInTheDocument();
+    // H-20: detail-block headings use the shared section-title style.
+    const heading = screen.getByRole("heading", { name: "Warranty" });
+    expect(heading).toHaveClass("section-title", "flex", "items-center");
+    expect(heading.className).not.toMatch(/font-bold|font-display/);
+  });
+
+  it("styles the quantity label with the shared field-label (H-18)", async () => {
+    renderProduct("netflix-premium", () => productData);
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    const label = document.querySelector('label[for="qty"]')!;
+    expect(label).toHaveClass("field-label");
+    expect(label.className).not.toContain("text-xs");
   });
 
   it("shows no detail section at all when all three blocks are empty", async () => {

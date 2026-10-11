@@ -116,6 +116,20 @@ describe("CheckoutPage", () => {
     expect(container.querySelectorAll('li[aria-label="1 · Cart"]')).toHaveLength(1);
   });
 
+  // H-36 / H-32 (batch 11): the title uses the plain page-title scale (no
+  // forced `text-2xl!`), and the stepper, title and form share one max-w-2xl
+  // column so the heading lines up with the form.
+  it("renders a plain page-title and keeps heading and form in one max-w-2xl column", async () => {
+    renderCheckout(() => checkoutData);
+    const h1 = await screen.findByRole("heading", { name: "Checkout" });
+    expect(h1).toHaveClass("page-title");
+    expect(h1.className).not.toContain("text-2xl");
+    const column = screen.getByTestId("checkout-column");
+    expect(column).toHaveClass("max-w-2xl", "mx-auto");
+    expect(column).toContainElement(h1);
+    expect(column.querySelector("form")).not.toBeNull();
+  });
+
   it("identifies two different parent products with the same canonical plan name", async () => {
     const items = [
       { ...checkoutData.items[0]!, denomination_id: 1, canonical: canonicalMonth(1, "Netflix Premium") },

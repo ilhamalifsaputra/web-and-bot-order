@@ -267,7 +267,7 @@ export default function WalletTopupPage() {
     }
     return (
       <>
-        <h1 className="page-title text-2xl! mb-5">{t("web.wallet_topup_title")}</h1>
+        <h1 className="page-title mb-5">{t("web.wallet_topup_title")}</h1>
         <EmptyState
           icon={AlertTriangle}
           title={t("web.checkout_unavailable")}
@@ -293,7 +293,7 @@ export default function WalletTopupPage() {
 
   return (
     <div className="max-w-lg mx-auto">
-      <h1 className="page-title text-2xl! mb-5">{t("web.wallet_topup_title")}</h1>
+      <h1 className="page-title mb-5">{t("web.wallet_topup_title")}</h1>
 
       {submitError !== null && (
         <Alert variant="banner" tone="error">

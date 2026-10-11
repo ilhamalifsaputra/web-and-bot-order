@@ -89,6 +89,14 @@ describe("canonical transaction presentation", () => {
     expect(container.querySelector(".animate-spin")).not.toBeInTheDocument();
     expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
   });
+  it("renders the status title as a section-title and the page title without a forced size (H-41, H-36)", async () => {
+    const { container } = renderPay(respondFor({ ...basePay, state: "processing", presentation: presentation({ phase: "MANUAL_WAITING", spinner: false, progress: null, topUp: false, transactionType: "PREMIUM_APPS", titleKey: "web.order_processing_title", bodyKey: "web.order_processing_body" }) }));
+    const heading = await screen.findByRole("heading", { name: "Waiting to be prepared" });
+    expect(heading).toHaveClass("section-title");
+    const h1 = container.querySelector("h1.page-title");
+    expect(h1).not.toBeNull();
+    expect(h1!.className).not.toContain("text-2xl");
+  });
   it("replaces stale processing with a static underpayment warning from the poll", async () => {
     const { container } = renderPay(respondFor({ ...basePay, state: "processing", presentation: presentation() }, {
       state: "underpaid", redirect: null,

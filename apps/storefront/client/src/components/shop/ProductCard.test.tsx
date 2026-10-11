@@ -85,6 +85,14 @@ describe("ProductCard", () => {
     expect(badge.className).not.toMatch(/rust/);
   });
 
+  it("renders the from-price at text-base while the 'From' label stays text-sm (H-12)", () => {
+    renderCard(<ProductCard p={base} fx="16000" lowThreshold={5} />);
+    const price = screen.getByText("Rp79,000");
+    expect(price).toHaveClass("text-base");
+    expect(price).not.toHaveClass("text-sm");
+    expect(price.closest("p")).toHaveClass("text-sm");
+  });
+
   it("shows the out-of-stock presentation when available is 0", () => {
     const outOfStock: ProductCardData = { ...base, available: 0 };
     renderCard(

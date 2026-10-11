@@ -105,7 +105,7 @@ export default function CategoryPage() {
           <Link
             key={c.slug}
             to={`/c/${c.slug}`}
-            className={`inline-flex items-center gap-2 whitespace-nowrap rounded-full px-3 py-1.5 text-sm font-semibold transition-colors ${
+            className={`inline-flex items-center gap-2 whitespace-nowrap min-h-11 rounded-full px-3 text-sm font-semibold transition-colors ${
               c.id === category.id
                 ? "bg-pine-tint text-pine-dark"
                 : "bg-sand text-ink-soft hover:bg-pine-tint hover:text-pine-dark"

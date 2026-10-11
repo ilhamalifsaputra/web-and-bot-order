@@ -409,7 +409,7 @@ export default function ProductPage() {
               // Buy Now / Add To Cart — both post the selected denomination_id.
               <form id="buy-form" className="mt-5 flex flex-wrap items-end gap-2" onSubmit={(e) => e.preventDefault()}>
                 <div className="flex flex-col gap-1">
-                  <label className="text-xs text-ink-soft" htmlFor="qty">
+                  <label className="field-label" htmlFor="qty">
                     {t("web.qty")}
                   </label>
                   {/* inputMode="numeric" so phones open the digit keypad
@@ -506,7 +506,7 @@ export default function ProductPage() {
                 key={block.key}
                 className={index > 0 ? "mt-6 border-t border-line pt-6" : undefined}
               >
-                <h2 className="flex items-center gap-2 font-display font-bold text-ink">
+                <h2 className="section-title flex items-center gap-2">
                   {/* Decorative: the heading text already names the block, so
                       announcing the icon too would just be noise. */}
                   <block.icon className="w-4 h-4 text-pine shrink-0" aria-hidden="true" />

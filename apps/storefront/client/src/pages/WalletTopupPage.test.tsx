@@ -79,6 +79,13 @@ describe("WalletTopupPage", () => {
     expect(screen.queryByText("QRIS")).not.toBeInTheDocument();
   });
 
+  it("renders a plain page-title without a forced text-2xl! override (H-36)", async () => {
+    renderTopup(() => baseData);
+    const h1 = await screen.findByRole("heading", { name: "Top up wallet" });
+    expect(h1).toHaveClass("page-title");
+    expect(h1.className).not.toContain("text-2xl");
+  });
+
   it("has exactly one primary button; the selected currency is a soft, aria-pressed toggle", async () => {
     renderTopup(() => baseData);
     await screen.findByRole("heading", { name: "Top up wallet" });

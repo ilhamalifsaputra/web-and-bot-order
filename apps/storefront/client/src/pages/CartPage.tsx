@@ -245,7 +245,7 @@ export default function CartPage() {
           2 · Payment → 3 · Done" above the empty state implied a checkout in
           progress. Only render the stepper once there's something in it. */}
       {items.length > 0 && <Stepper step={1} />}
-      <h1 className="page-title text-2xl! mb-5">
+      <h1 className="page-title mb-5">
         {t("web.cart_title")}
         {cartCount > 0 ? ` (${cartCount})` : ""}
       </h1>

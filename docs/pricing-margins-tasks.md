@@ -9,7 +9,7 @@ Branch: `worktree-pricing-margins-finish`. Continues commits through `6304d3ad` 
 - [x] T5: Admin catalog pricing metadata.
 - [x] T6: Pricing & Margins page, sidebar and Settings cleanup.
 - [x] T7: Catalog source/margin display and automatic/manual price controls.
-- [ ] T8: Sync master, full typecheck/tests, UI verification and final report.
+- [x] T8: Sync master, full typecheck/tests, UI verification and final report.
 
 ## Invariants
 
@@ -17,6 +17,6 @@ Stored `digiflazz_markup_*` values stay authoritative; no default/backfill. Cate
 
 ## Verification
 
-Focused API/UI checks and Playwright browser smoke passed. Final full gate is in progress. Use isolated Postgres on port 5549, admin/storefront ports 8319/8320. No production changes or provider calls.
+Focused API/UI checks and Playwright browser smoke passed. Final full typecheck and tests passed: 611 files, 11,457 tests. The first full run exposed a Digiflazz circular-import initialization issue; it was reproduced alone, fixed, and verified by the final full run. See `docs/pricing-margins-report.md`. Used isolated Postgres on port 5549, admin/storefront ports 8319/8320. No production changes or provider calls.
 
 User request: delegate final merge and push to Luna after the full gate passes.

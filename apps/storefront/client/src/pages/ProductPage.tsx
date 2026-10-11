@@ -335,7 +335,7 @@ export default function ProductPage() {
               spaces it from the image card. No heading: it's a plain lead
               paragraph, same as it was under the <h1>. */}
           {product.description && (
-            <div className="mt-4 text-sm leading-relaxed text-ink-soft whitespace-pre-line">
+            <div className="mt-4 text-sm leading-relaxed text-ink-soft whitespace-pre-line line-clamp-3 md:line-clamp-none">
               {product.description}
             </div>
           )}
@@ -346,7 +346,7 @@ export default function ProductPage() {
           {/* Denomination cards — pick a plan (never a dropdown). The cheapest
               active denomination is preselected; selecting another updates the
               live price / stock / warranty and the checkout payload below. */}
-          <div className="mt-6">
+          <div>
             <h2 className="section-title mb-3">{t("web.choose_plan")}</h2>
             <div id="denom-list" className="grid grid-cols-1 gap-3">
               {denominations.map((d) => (
@@ -366,7 +366,7 @@ export default function ProductPage() {
           {/* Live summary — price/stock/warranty of the selected denomination.
               Also the sentinel the sticky mobile purchase bar watches, hence
               the id and the callback ref. */}
-          <div id="buy-summary" ref={setBuyArea} className="card card-pad mt-5">
+          <div id="buy-summary" ref={setBuyArea} className="card card-pad mt-5 md:sticky md:bottom-4 md:z-10">
             <div className="flex items-center justify-between gap-3 flex-wrap">
               <div className="flex items-baseline gap-2 flex-wrap">
                 {/* `selected.price` already carries the flash discount — the
@@ -520,8 +520,6 @@ export default function ProductPage() {
         </section>
       )}
 
-      <ShareRow productName={product.name} />
-
       {/* Reviews */}
       <section className="mt-10">
         <h2 className="section-title mb-3">{t("web.reviews")}</h2>
@@ -563,6 +561,8 @@ export default function ProductPage() {
           <EmptyState icon={Star} title={t("web.no_reviews")} description={t("web.no_reviews_desc")} />
         )}
       </section>
+
+      <ShareRow productName={product.name} />
 
       {/* STO-011: same-category "You might also like" shelf — this product
           detail page had no cross-sell/discovery path back into the catalog. */}

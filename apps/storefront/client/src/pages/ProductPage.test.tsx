@@ -694,6 +694,48 @@ describe("ProductPage", () => {
     await screen.findByRole("heading", { name: "Netflix Premium" });
     expect(screen.queryByText("Shared account, instant delivery.")).not.toBeInTheDocument();
   });
+
+  // Batch 6 (H-14): the lead paragraph is clamped on phones so it cannot push
+  // the plan picker off the first screen; desktop shows it in full.
+  it("clamps the description to 3 lines on mobile only and keeps whitespace-pre-line", async () => {
+    renderProduct("netflix-premium", () => productData);
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    const desc = screen.getByText("Shared account, instant delivery.");
+    expect(desc).toHaveClass("line-clamp-3", "md:line-clamp-none", "whitespace-pre-line");
+  });
+});
+
+// Batch 6 (H-15/H-16/H-19): Premium buy area structure.
+describe("ProductPage premium buy area layout", () => {
+  beforeEach(() => {
+    document.documentElement.lang = "en";
+    observers.length = 0;
+    vi.clearAllMocks();
+  });
+
+  it("keeps #buy-summary in view on desktop via md sticky, as the last child of the plan column", async () => {
+    renderProduct("netflix-premium", () => productData);
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    const summary = document.querySelector("#buy-summary")!;
+    expect(summary).toHaveClass("md:sticky", "md:bottom-4", "md:z-10");
+    const column = document.querySelector("#product-detail")!;
+    expect(summary.parentElement).toBe(column);
+    expect(column.lastElementChild).toBe(summary);
+  });
+
+  it("does not add an extra mt-6 on the plan picker wrapper", async () => {
+    renderProduct("netflix-premium", () => productData);
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    const wrapper = document.querySelector("#denom-list")!.parentElement!;
+    expect(wrapper.className).not.toContain("mt-6");
+  });
+
+  it("renders reviews before the share row", async () => {
+    renderProduct("netflix-premium", () => productData);
+    const reviews = await screen.findByRole("heading", { name: "Customer reviews" });
+    const share = screen.getByRole("link", { name: /Share on WhatsApp/i });
+    expect(reviews.compareDocumentPosition(share) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
 });
 
 // Sticky mobile purchase bar. `useIsDesktop()` reports false under jsdom

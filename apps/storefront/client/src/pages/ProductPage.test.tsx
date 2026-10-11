@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, beforeEach, vi, type Mock } from "vitest";
 import { render, screen, fireEvent, waitFor, act, within } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { Link, MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import ProductPage from "./ProductPage";
 import { apiGet, apiPost } from "../api/client";
@@ -144,7 +144,7 @@ const productData: ProductPageData = {
   default_restock_denomination_id: 2,
   related_products: [],
   reviews: [
-    { rating: 4.5, comment: "Great service!", author: "A***", created_at_display: "2026-06-01" },
+    { id: 1, rating: 4.5, comment: "Great service!", author: "A***", created_at_display: "2026-06-01" },
   ],
   low_threshold: 5,
 };
@@ -164,7 +164,7 @@ const relatedProduct: ProductCardData = {
   all_non_auto: false,
 };
 
-function renderProduct(slug: string, respond: (path: string) => unknown, ctx: ShopContext = context) {
+function renderProduct(slug: string, respond: (path: string) => unknown, ctx: ShopContext = context, nextSlug?: string) {
   (apiGet as Mock).mockImplementation(async (path: string) => {
     if (path === "/api/v1/pages/context") return ctx;
     return respond(path);
@@ -173,6 +173,7 @@ function renderProduct(slug: string, respond: (path: string) => unknown, ctx: Sh
   return render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[`/p/${slug}`]}>
+        {nextSlug && <Link to={`/p/${nextSlug}`}>Next product</Link>}
         <Routes>
           <Route path="/p/:slug" element={<ProductPage />} />
           <Route path="/cart" element={<div>cart-page-stub</div>} />
@@ -271,6 +272,22 @@ describe("ProductPage", () => {
     expect(qtyInput.value).toBe("1");
   });
 
+  it.each(["", "abc", "1e", "-", "0", "-5", "1.8", "3", "50"])(
+    "keeps quantity %j finite and submits the established clamped value once",
+    async (raw) => {
+      (apiPost as Mock).mockResolvedValue({});
+      renderProduct("netflix-premium", () => productData);
+      const input = await screen.findByLabelText("Quantity");
+      fireEvent.change(input, { target: { value: "2" } });
+      fireEvent.change(input, { target: { value: raw } });
+      const expected = raw === "3" || raw === "50" ? 3 : 1;
+      expect(input).toHaveValue(expected);
+      fireEvent.click(screen.getByRole("button", { name: /Add to cart/ }));
+      await screen.findByText("cart-page-stub");
+      expect(apiPost).toHaveBeenCalledExactlyOnceWith("/api/v1/cart", { denomination_id: 2, qty: expected });
+    },
+  );
+
   it("shows the restock CTA instead of the buy form for an out-of-stock-only product", async () => {
     const allOut: ProductPageData = {
       ...productData,
@@ -287,6 +304,19 @@ describe("ProductPage", () => {
       ...productData,
       denominations: productData.denominations.map((d) => ({ ...d, available: 0, in_stock: false, purchasable: false })),
     };
+
+    it("ignores a previous plan's late restock result after selecting another plan", async () => {
+      let release!: (value: { result: string }) => void;
+      (apiPost as Mock).mockImplementation(() => new Promise((resolve) => { release = resolve; }));
+      renderProduct("netflix-premium", () => allOut);
+      fireEvent.click(await screen.findByRole("button", { name: /Notify me when ready/ }));
+      await waitFor(() => expect(apiPost).toHaveBeenCalledTimes(1));
+      fireEvent.click(screen.getByRole("radio", { name: /6 Months/ }));
+      await act(async () => { release({ result: "subscribed" }); });
+      expect(screen.queryByRole("status")).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /Notify me when ready/ })).toBeEnabled();
+      expect(apiPost).toHaveBeenCalledTimes(1);
+    });
 
     it("hides the Notify button and explains why for a signed-in account without a linked Telegram", async () => {
       renderProduct("netflix-premium", () => allOut, {
@@ -328,6 +358,20 @@ describe("ProductPage", () => {
       fireEvent.click(await screen.findByRole("button", { name: /Notify me when ready/ }));
       expect(await screen.findByRole("status")).toHaveTextContent(/already on the list/);
     });
+  });
+
+  it("starts a new product with its own initial plan and quantity", async () => {
+    renderProduct("netflix-premium", (path) => path.endsWith("spotify-premium")
+      ? { ...productData, product: { ...productData.product, slug: "spotify-premium", name: "Spotify Premium" } }
+      : productData, context, "spotify-premium");
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    fireEvent.click(screen.getByRole("radio", { name: /6 Months/ }));
+    fireEvent.change(screen.getByLabelText("Quantity"), { target: { value: "2" } });
+    fireEvent.click(screen.getByRole("link", { name: "Next product" }));
+    await screen.findByRole("heading", { name: "Spotify Premium" });
+    expect(screen.getByLabelText("Quantity")).toHaveValue(1);
+    expect(screen.getByRole("radio", { name: /6 Months/ })).not.toBeChecked();
+    expect(apiPost).not.toHaveBeenCalled();
   });
 
   it("renders reviews with masked author and the pre-formatted display date", async () => {
@@ -396,7 +440,7 @@ describe("ProductPage", () => {
     const multilineComment = `Barang sesuai deskripsi.\n\nPengiriman cepat, admin ramah.\n\n${longToken}`;
     renderProduct("netflix-premium", () => ({
       ...productData,
-      reviews: [{ rating: 4.5, comment: multilineComment, author: "A***", created_at_display: "2026-06-01" }],
+      reviews: [{ id: 2, rating: 4.5, comment: multilineComment, author: "A***", created_at_display: "2026-06-01" }],
     }));
     await screen.findByRole("heading", { name: "Netflix Premium" });
     const commentParagraph = document.querySelector("p.text-sm.text-ink-soft.mt-2");

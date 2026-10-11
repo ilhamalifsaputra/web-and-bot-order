@@ -61,9 +61,10 @@ interface CartLineProps {
 }
 
 function CartLine({ item, fx, onMutated }: CartLineProps) {
-  const [quantityDraft, setQuantityDraft] = useState<{ base: number; value: number } | null>(null);
-  const qty = quantityDraft?.base === item.qty ? quantityDraft.value : item.qty;
-  const setQty = (value: number) => setQuantityDraft({ base: item.qty, value });
+  // Untouched rows follow the server. A typed quantity is a deliberate draft
+  // until a successful update returns the server's accepted value.
+  const [qtyDraft, setQty] = useState<number | null>(null);
+  const qty = qtyDraft ?? item.qty;
   // Removal is destructive and used to fire on the first tap of a small icon
   // button — exactly the control a thumb hits by accident on a phone. The row
   // asks first instead, in place: an inline two-state control keeps the answer
@@ -73,7 +74,11 @@ function CartLine({ item, fx, onMutated }: CartLineProps) {
 
   const updateMutation = useMutation({
     mutationFn: (nextQty: number) => apiPost<CartPageData>("/api/v1/cart/update", { key: item.key, qty: nextQty }),
-    onSuccess: onMutated,
+    onSuccess: (next, submittedQty) => {
+      // A response owns only the submitted draft, not a newer edit.
+      setQty((current) => current === submittedQty ? null : current);
+      onMutated(next);
+    },
   });
   const removeMutation = useMutation({
     mutationFn: () => apiPost<CartPageData>("/api/v1/cart/remove", { key: item.key }),

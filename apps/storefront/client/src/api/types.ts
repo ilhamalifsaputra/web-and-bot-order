@@ -43,6 +43,7 @@ export type HomeCategory = Category;
 
 /** A real delivered-order review shown in the homepage testimonials grid. */
 export interface Testimonial {
+  id: number;
   name: string;
   initial: string;
   product: string;
@@ -141,6 +142,7 @@ export interface ProductDenomination {
 /** A masked-author review on the product detail page — `created_at_display`
  * arrives pre-formatted in the shop timezone (apps/storefront/src/routes/apiPages.ts). */
 export interface ProductReview {
+  id: number;
   rating: number;
   comment: string | null;
   author: string;
@@ -580,6 +582,7 @@ export interface AccountOrdersData {
 
 /** One line item on order_detail.njk. */
 export interface OrderDetailItem {
+  id: number;
   name: string;
   duration: string | null;
   /** Central-IDR price charged at order time, for every order (even a
@@ -688,6 +691,7 @@ export interface PendingReview {
 
 /** An already-submitted review — reviews.njk's read-only grid. */
 export interface AccountReview {
+  id: number;
   product_name: string;
   rating: number;
   comment: string | null;
@@ -750,6 +754,7 @@ export interface SupportFormOptions {
 
 /** A single message on the ticket thread (either side). */
 export interface TicketMessage {
+  id: number;
   from_user: boolean;
   content: string;
   created_at_display: string;
@@ -759,6 +764,7 @@ export interface TicketMessage {
 /** One line item on a ticket's linked order — JSON twin of the shape
  * apiAccount.ts's GET /account/support/:id builds from getTicketWithOrder(). */
 export interface TicketOrderItem {
+  id: number;
   name: string;
   duration: string | null;
   warranty_days: number;

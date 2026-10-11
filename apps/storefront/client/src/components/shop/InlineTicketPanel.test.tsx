@@ -26,7 +26,7 @@ const openTicket: TicketDetailData = {
     reopenable: false,
     attachments: [],
   },
-  messages: [{ from_user: false, content: "We're on it", created_at_display: "2026-07-01 09:05", attachments: [] }],
+  messages: [{ id: 1, from_user: false, content: "We're on it", created_at_display: "2026-07-01 09:05", attachments: [] }],
   order: null,
 };
 

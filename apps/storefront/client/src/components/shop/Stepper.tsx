@@ -26,17 +26,23 @@ export interface StepperProps {
   step: number;
 }
 
+const STEPS = [
+  { id: "cart", number: 1, labelKey: "web.step_cart" },
+  { id: "payment", number: 2, labelKey: "web.step_pay" },
+  { id: "done", number: 3, labelKey: "web.step_done" },
+];
+
 export default function Stepper({ step }: StepperProps) {
-  const labels = [t("web.step_cart"), t("web.step_pay"), t("web.step_done")];
   return (
     <ol className="mb-6 flex items-center gap-2 sm:gap-3">
-      {labels.map((label, idx) => {
-        const n = idx + 1;
-        const isLast = n === labels.length;
+      {STEPS.map((item) => {
+        const n = item.number;
+        const label = t(item.labelKey);
+        const isLast = n === STEPS.length;
         const isCurrent = n === step;
         const isDone = n < step;
         return (
-          <Fragment key={label}>
+          <Fragment key={item.id}>
             <li
               aria-label={`${n} · ${label}`}
               aria-current={isCurrent ? "step" : undefined}

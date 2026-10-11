@@ -183,13 +183,16 @@ export function UsersPage() {
     sort: "newest",
   });
   const [filters, setFilters] = useState<Filters>({ ...EMPTY_FILTERS, q: initialQ });
-  const [selection, setSelection] = useState<{ scope: Filters; ids: Set<number> } | null>(null);
-  const selected = selection?.scope === filters ? selection.ids : new Set<number>();
-  const setSelected = (next: Set<number> | ((previous: Set<number>) => Set<number>)) =>
-    setSelection(previous => ({
-      scope: filters, ids: typeof next === "function"
-        ? next(previous?.scope === filters ? previous.ids : new Set<number>()) : next
+  const [selection, setSelection] = useState<{ filters: Filters; ids: Set<number> } | null>(null);
+  const selected = selection?.filters === filters ? selection.ids : new Set<number>();
+  function setSelected(next: Set<number> | ((current: Set<number>) => Set<number>)) {
+    setSelection((current) => ({
+      filters,
+      ids: typeof next === "function"
+        ? next(current?.filters === filters ? current.ids : new Set<number>())
+        : next,
     }));
+  }
 
   // Search is live/debounced rather than Apply-gated (unlike the other
   // filters below) — its own immediate-typing state, separate from `draft`.
@@ -205,6 +208,9 @@ export function UsersPage() {
   }, [debouncedQ, setSearchParams]);
 
   const { data, isLoading, isFetching, isError, refetch } = useCustomers(filters);
+
+  // Selection is owned by its query context; a new filter/page immediately
+  // renders without the old ids, including when cached results are reused.
 
   const banMutation = useMutation({
     mutationFn: (vars: { id: number; doBan: boolean }) =>

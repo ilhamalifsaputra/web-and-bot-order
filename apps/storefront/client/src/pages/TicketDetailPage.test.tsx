@@ -130,7 +130,7 @@ describe("TicketDetailPage", () => {
   it("shows Issue Solved only after support has replied, and closing calls the close route", async () => {
     renderTicket(() => ({
       ...openTicket,
-      messages: [{ from_user: false, content: "try this fix", created_at_display: "2026-07-01 09:05", attachments: [] }],
+      messages: [{ id: 1, from_user: false, content: "try this fix", created_at_display: "2026-07-01 09:05", attachments: [] }],
     }));
     await screen.findByRole("heading", { name: "Ticket #7" });
     (apiPost as Mock).mockResolvedValue({ ok: true });
@@ -166,7 +166,7 @@ describe("TicketDetailPage", () => {
         total: "158000",
         voucher_code: null,
         delivered: true,
-        items: [{ name: "Netflix", duration: "1 month", warranty_days: 30, warranty_expires_at_display: "2026-08-01 10:00", warranty_active: true }],
+        items: [{ id: 2, name: "Netflix", duration: "1 month", warranty_days: 30, warranty_expires_at_display: "2026-08-01 10:00", warranty_active: true }],
       },
     }));
     await screen.findByRole("heading", { name: "Ticket #7" });
@@ -209,7 +209,7 @@ describe("TicketDetailPage", () => {
     renderTicket(() => ({
       ...openTicket,
       ticket: { ...openTicket.ticket, attachments: ["/uploads/tickets/evidence-a.png"] },
-      messages: [{ from_user: true, content: "more", created_at_display: "2026-07-01 09:05", attachments: ["/uploads/tickets/evidence-b.mp4"] }],
+      messages: [{ id: 3, from_user: true, content: "more", created_at_display: "2026-07-01 09:05", attachments: ["/uploads/tickets/evidence-b.mp4"] }],
     }));
     await screen.findByRole("heading", { name: "Ticket #7" });
     expect(document.querySelector('img[src="/uploads/tickets/evidence-a.png"]')).toBeInTheDocument();

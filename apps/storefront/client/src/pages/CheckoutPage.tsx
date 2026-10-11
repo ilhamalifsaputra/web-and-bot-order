@@ -473,8 +473,9 @@ function CheckoutForm({ data }: { data: CheckoutData }) {
   const barPriceAndPay = idrRailPriceAndPay(method, totals, ctx?.currency ?? null, ctx?.fx);
 
   function setAnswer(unitIdx: number, key: string, value: string): void {
-    setAnswers((prev) => prev.map((answer, position) =>
-      position === unitIdx ? { ...answer, [key]: value } : answer,
+    setAnswers(prev => Array.from(
+      { length: Math.max(prev.length, unitIdx + 1) },
+      (_, index) => index === unitIdx ? { ...prev[index], [key]: value } : (prev[index] ?? {}),
     ));
   }
 

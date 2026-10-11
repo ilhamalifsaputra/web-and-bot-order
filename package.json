@@ -7,6 +7,10 @@
     "node": ">=22.13"
   },
   "scripts": {
+    "doctor:bugs": "react-doctor --project @app/web-admin-client,@app/storefront-client --scope full --category Bugs --verbose --no-score",
+    "doctor:changed": "react-doctor --project @app/web-admin-client,@app/storefront-client --scope changed --base master --include-untracked --category Bugs --verbose --no-score",
+    "doctor:full": "react-doctor --project @app/web-admin-client,@app/storefront-client --scope full --verbose --no-score",
+    "lint": "pnpm --filter @app/storefront-client lint && pnpm doctor:bugs",
     "prisma:pull": "prisma db pull",
     "prisma:generate": "prisma generate",
     "build": "pnpm -r build",
@@ -58,6 +62,7 @@
     "esbuild": "^0.28.2",
     "fast-check": "^4.9.0",
     "prisma": "^5.22.0",
+    "react-doctor": "0.9.17",
     "tsx": "^4.19.2",
     "typescript": "^5.6.3",
     "vite": "^6.4.3",

@@ -27,6 +27,7 @@ import type { ReactNode } from "react";
 import { cn } from "./cn";
 
 export interface TrustBadge {
+  id: string;
   /** Rendered as-is — the caller sizes and colours it, e.g.
    *  `<Zap className="h-4 w-4 text-grass" />`. */
   icon: ReactNode;
@@ -52,11 +53,11 @@ export default function TrustBadgeRow({
         className,
       )}
     >
-      {items.map((badge, i) => (
+      {items.map((badge) => (
         // `flex` (not `inline-flex`): in a `flex-wrap` row the parent lays the
         // items out anyway, and in a `column` stack a block-level row is what
         // `space-y-*` needs to actually separate them.
-        <li key={String(badge.label)} className="flex items-center gap-1.5">
+        <li key={badge.id} className="flex items-center gap-1.5">
           {badge.icon}
           <span>{badge.label}</span>
         </li>

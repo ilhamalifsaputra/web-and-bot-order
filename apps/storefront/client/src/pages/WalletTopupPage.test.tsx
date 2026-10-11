@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
+import { MemoryRouter, Route, Routes, Link } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import WalletTopupPage from "./WalletTopupPage";
 import { apiGet, apiPost } from "../api/client";
@@ -45,9 +45,11 @@ function renderTopup(respond: (path: string) => unknown, initialPath = "/wallet/
   return render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[initialPath]}>
+        <Link to="/left">Leave form</Link>
         <Routes>
           <Route path="/wallet/topup" element={<WalletTopupPage />} />
           <Route path="/wallet/topup/:code/pay" element={<div>topup-pay-stub</div>} />
+          <Route path="/left" element={<div>another-page</div>} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -55,6 +57,34 @@ function renderTopup(respond: (path: string) => unknown, initialPath = "/wallet/
 }
 
 describe("WalletTopupPage", () => {
+  it("creates one pending invoice for rapid repeated clicks", async () => {
+    let resolve!: (value: WalletTopupCreateResponse) => void;
+    (apiPost as Mock).mockImplementation(() => new Promise(done => { resolve = done; }));
+    renderTopup(() => baseData);
+    fireEvent.change(await screen.findByLabelText("Amount"), { target: { value: "100000" } });
+    const button = screen.getByRole("button", { name: "Top up now" });
+    fireEvent.click(button);
+    fireEvent.click(button);
+    expect(apiPost).toHaveBeenCalledTimes(1);
+    expect(button).toBeDisabled();
+    await act(async () => { resolve({ orderCode: "TOPUP1" }); });
+    expect(await screen.findByText("topup-pay-stub")).toBeInTheDocument();
+  });
+
+  it("ignores a completed invoice after leaving the form", async () => {
+    let resolve!: (value: WalletTopupCreateResponse) => void;
+    (apiPost as Mock).mockImplementation(() => new Promise(done => { resolve = done; }));
+    renderTopup(() => baseData);
+    fireEvent.change(await screen.findByLabelText("Amount"), { target: { value: "100000" } });
+    fireEvent.click(screen.getByRole("button", { name: "Top up now" }));
+    fireEvent.click(screen.getByRole("link", { name: "Leave form" }));
+    expect(await screen.findByText("another-page")).toBeInTheDocument();
+    await act(async () => { resolve({ orderCode: "TOPUP1" }); });
+    expect(apiPost).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("another-page")).toBeInTheDocument();
+    expect(screen.queryByText("topup-pay-stub")).not.toBeInTheDocument();
+  });
+
   beforeEach(() => {
     document.documentElement.lang = "en";
     vi.clearAllMocks();

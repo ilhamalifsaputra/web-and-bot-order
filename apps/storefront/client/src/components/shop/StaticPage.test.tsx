@@ -40,7 +40,7 @@ describe("StaticPage", () => {
         prefix="hto"
         blocks={5}
         variant="timeline"
-        steps={[{ icon: ListChecks }, { icon: ListChecks }, { icon: ListChecks }, { icon: ListChecks }, { icon: ListChecks }]}
+        steps={[{ id: "fixture-1", icon: ListChecks }, { id: "fixture-2", icon: ListChecks }, { id: "fixture-3", icon: ListChecks }, { id: "fixture-4", icon: ListChecks }, { id: "fixture-5", icon: ListChecks }]}
       />,
     );
 

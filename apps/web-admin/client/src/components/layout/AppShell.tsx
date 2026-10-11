@@ -10,22 +10,28 @@ import { PageTransition } from "../shared/PageTransition";
 export function AppShell(): JSX.Element {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [searchSession, setSearchSession] = useState(0);
   const location = useLocation();
   const menuRef = useRef<HTMLButtonElement>(null);
   const closeSidebar = useCallback(() => setSidebarOpen(false), []);
   const closeSearch = useCallback(() => setSearchOpen(false), []);
+  const openSearch = useCallback(() => {
+    setSearchSession((current) => current + 1);
+    setSearchOpen(true);
+  }, []);
 
   // Ctrl+K / Cmd+K shortcut to open search
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if ((e.ctrlKey || e.metaKey) && e.key === "k") {
         e.preventDefault();
-        setSearchOpen((o) => !o);
+        if (searchOpen) closeSearch();
+        else openSearch();
       }
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, []);
+  }, [searchOpen, closeSearch, openSearch]);
 
   return (
     <>
@@ -38,7 +44,7 @@ export function AppShell(): JSX.Element {
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
           <TopBar
             onMenuClick={() => setSidebarOpen((o) => !o)}
-            onSearchOpen={() => setSearchOpen(true)}
+            onSearchOpen={openSearch}
             menuRef={menuRef}
             sidebarOpen={sidebarOpen}
           />
@@ -53,7 +59,7 @@ export function AppShell(): JSX.Element {
           </main>
         </div>
       </div>
-      <SearchModal open={searchOpen} onClose={closeSearch} />
+      <SearchModal open={searchOpen} onClose={closeSearch} session={searchSession} />
       <Toaster />
     </>
   );

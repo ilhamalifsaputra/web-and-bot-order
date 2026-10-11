@@ -109,6 +109,43 @@ describe("SearchOverlay", () => {
     expect(within(dialog).getByRole("combobox")).toHaveFocus();
   });
 
+  it("reopens with an empty focused input and freshly read recent searches", async () => {
+    const user = userEvent.setup();
+    renderOverlay(emptyData);
+    const trigger = screen.getByRole("button", { name: "Open search" });
+    await user.click(trigger);
+    await user.type(screen.getByRole("combobox"), "old query");
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    window.localStorage.setItem(RECENT_KEY, JSON.stringify(["spotify"]));
+    await user.click(trigger);
+    expect(screen.getByRole("combobox")).toHaveValue("");
+    expect(screen.getByRole("combobox")).toHaveFocus();
+    expect(screen.getByRole("button", { name: "spotify" })).toBeInTheDocument();
+  });
+
+  it("does not keep a highlighted index when the result snapshot changes", async () => {
+    const user = userEvent.setup();
+    renderOverlay({ q: "netflix", products: [product], low_threshold: 5 });
+    (apiGet as Mock).mockImplementation(async (path: string) => path.endsWith("q=spotify")
+      ? { q: "spotify", products: [product2], low_threshold: 5 }
+      : { q: "netflix", products: [product], low_threshold: 5 });
+    await user.click(screen.getByRole("button", { name: "Open search" }));
+    const input = screen.getByRole("combobox");
+    await user.type(input, "netflix");
+    await screen.findByRole("option", { name: /Netflix Premium/ });
+    await user.keyboard("{ArrowDown}");
+    expect(input).toHaveAttribute("aria-activedescendant");
+    await user.clear(input);
+    await user.type(input, "spotify");
+    const option = await screen.findByRole("option", { name: /Spotify Premium/ });
+    expect(option).toHaveAttribute("aria-selected", "false");
+    expect(input).not.toHaveAttribute("aria-activedescendant");
+    await user.keyboard("{Enter}");
+    expect(screen.getByTestId("loc")).toHaveTextContent("/");
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+  });
+
   it("debounces a fetch on the existing endpoint and renders result rows (no ?sort=)", async () => {
     const user = userEvent.setup();
     renderOverlay({ q: "netflix", products: [product], low_threshold: 5 });

@@ -45,7 +45,7 @@
  * comment on `#root` for the full explanation and how it was verified.
  */
 import { preferredScrollBehavior } from "../lib/scrollBehavior";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiPost, apiPostFormWithProgress } from "../api/client";
@@ -107,7 +107,7 @@ export default function HelpPage() {
   /** Updates one query param while preserving the rest. Functional form (vs.
    * building off the outer `params` snapshot) so a debounced search push
    * landing after a filter/sort click never clobbers it with a stale copy. */
-  function setParam(key: string, value: string | null, opts?: { resetPage?: boolean }) {
+  const setParam = useCallback((key: string, value: string | null, opts?: { resetPage?: boolean }) => {
     setParams((prev) => {
       const next = new URLSearchParams(prev);
       if (value) next.set(key, value);
@@ -115,7 +115,7 @@ export default function HelpPage() {
       if (opts?.resetPage) next.delete("page");
       return next;
     });
-  }
+  }, [setParams]);
 
   // The search box stays local so every keystroke is instant; it's only
   // pushed into the URL (and thus the list query's key) after
@@ -134,8 +134,7 @@ export default function HelpPage() {
       setParam("q", searchInput || null, { resetPage: true });
     }, SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchInput]);
+  }, [searchInput, q, setParam]);
 
   const [formValue, setFormValue] = useState<NewTicketFormValue>(EMPTY_FORM);
   const [fieldErrors, setFieldErrors] = useState<Partial<Record<FieldName, string>>>({});

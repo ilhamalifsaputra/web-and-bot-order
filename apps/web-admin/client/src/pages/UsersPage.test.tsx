@@ -463,6 +463,23 @@ describe("UsersPage", () => {
     expect(screen.queryByText("1 selected")).not.toBeInTheDocument();
   });
 
+  it("clears selection across search contexts even when the same customer remains visible", async () => {
+    const user = userEvent.setup();
+    const fetchSpy = mockFetchRouter();
+    render(<UsersPage />, { wrapper: Wrapper });
+    const checkbox = await screen.findByRole("checkbox", { name: /select customer andi santoso/i });
+    await user.click(checkbox);
+    expect(screen.getByText("1 selected")).toBeInTheDocument();
+    const search = screen.getByPlaceholderText(/Search by name, username, Telegram ID/);
+    await user.type(search, "andi");
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith("/api/users?q=andi", { credentials: "include" }));
+    expect(screen.queryByText("1 selected")).not.toBeInTheDocument();
+    expect(await screen.findByRole("checkbox", { name: /select customer andi santoso/i })).not.toBeChecked();
+    await user.clear(search);
+    await waitFor(() => expect(fetchSpy).toHaveBeenLastCalledWith("/api/users?", { credentials: "include" }));
+    expect(screen.queryByText("1 selected")).not.toBeInTheDocument();
+  });
+
   it("row action menu: View Customer always present, View Orders present only when an identifier resolves, and navigates to /orders?q=...", async () => {
     const user = userEvent.setup();
     mockFetchRouter();

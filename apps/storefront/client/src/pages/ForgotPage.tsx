@@ -1,4 +1,3 @@
-import { useAction } from "../hooks/useAction";
 /**
  * TSX port of apps/storefront/views/forgot.njk. forgot.njk overrides
  * base.njk's `nav`/`footer` blocks to empty — this page sits OUTSIDE
@@ -25,9 +24,9 @@ import { useAction } from "../hooks/useAction";
  * branch, `success` for the sent confirmation, `error` for a request
  * failure. No fetch/payload/copy changed, only presentation.
  */
-import { KeyRound } from "lucide-react";
-import { type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
+import { KeyRound } from "lucide-react";
 import { publicPost } from "../api/client";
 import AuthBrandPanel from "../components/AuthBrandPanel";
 import Spinner from "../components/shop/Spinner";
@@ -44,18 +43,34 @@ interface ForgotResponse {
 }
 
 export default function ForgotPage() {
-  const forgotMutation = useAction({
-    mutationFn: (email: string) => publicPost<ForgotResponse>("/api/v1/auth/forgot", { email }),
-  });
+  const request = useRef<symbol | null>(null);
+  const [pending, setPending] = useState(false);
+  const [result, setResult] = useState<ForgotResponse | null>(null);
+  const [failure, setFailure] = useState<Error | null>(null);
+  useEffect(() => () => { request.current = null; }, []);
 
-  function onSubmit(event: FormEvent<HTMLFormElement>) {
+  async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (request.current) return;
     const formData = new FormData(event.currentTarget);
-    forgotMutation.mutate(String(formData.get("email") ?? ""));
+    const token = Symbol();
+    request.current = token;
+    setPending(true);
+    setFailure(null);
+    try {
+      const response = await publicPost<ForgotResponse>("/api/v1/auth/forgot", { email: String(formData.get("email") ?? "") });
+      if (request.current === token) setResult(response);
+    } catch (error) {
+      if (request.current === token) setFailure(error as Error);
+    } finally {
+      if (request.current === token) {
+        request.current = null;
+      }
+      setPending(false);
+    }
   }
 
-  const error = forgotMutation.error ? t((forgotMutation.error as Error).message) : null;
-  const result = forgotMutation.data;
+  const error = failure ? t(failure.message) : null;
 
   return (
     // tabIndex=-1: RouteEffects.tsx moves focus here on client-side
@@ -87,8 +102,8 @@ export default function ForgotPage() {
               <FormField label={t("web.register_email")} htmlFor="email">
                 <Input id="email" type="email" name="email" autoComplete="email" required />
               </FormField>
-              <Button type="submit" variant="primary" fullWidth disabled={forgotMutation.isPending}>
-                {forgotMutation.isPending && <Spinner />}
+              <Button type="submit" variant="primary" fullWidth disabled={pending}>
+                {pending && <Spinner />}
                 {t("web.forgot_submit")}
               </Button>
             </form>

@@ -2168,6 +2168,18 @@ describe("/api/v1/account twins", () => {
       expect(reply.statusCode).toBe(200);
       const detail2 = await app.inject({ method: "GET", url: `/api/v1/account/support/${ticket.id}`, headers: { cookie } });
       expect(detail2.json().messages.some((m: { content: string }) => m.content === "more details")).toBe(true);
+      await app.inject({
+        method: "POST", url: `/api/v1/account/support/${ticket.id}/reply`,
+        headers: { cookie, "x-csrf-token": csrf }, payload: { message: "more details" },
+      });
+      const repeated = await app.inject({ method: "GET", url: `/api/v1/account/support/${ticket.id}`, headers: { cookie } });
+      const messageIds = repeated.json().messages.map((m: { id: number }) => m.id);
+      expect(messageIds).toHaveLength(2);
+      expect(new Set(messageIds).size).toBe(2);
+      const storedMessages = await prisma.ticketMessage.findMany({ where: { ticketId: ticket.id } });
+      expect([...messageIds].sort()).toEqual(storedMessages.map(m => m.id).sort());
+      const refetched = await app.inject({ method: "GET", url: `/api/v1/account/support/${ticket.id}`, headers: { cookie } });
+      expect(refetched.json().messages.map((m: { id: number }) => m.id)).toEqual(messageIds);
     });
 
     it("support ticket: create + reply with an image attachment (multipart), shown in list + detail", async () => {
@@ -2368,6 +2380,7 @@ describe("/api/v1/account twins", () => {
       expect(body.order.items).toHaveLength(1);
       expect(body.order.items[0].warranty_days).toBe(30);
       expect(body.order.items[0].warranty_active).toBe(true);
+      expect(body.order.items[0].id).toBe((await prisma.orderItem.findFirst({ where: { orderId: order.id } }))?.id);
     });
 
     it("support ticket: a second create against an order that already has an open ticket is rejected as a duplicate", async () => {
@@ -2648,6 +2661,7 @@ describe("/api/v1/account twins", () => {
       expect(pending.json().pending_payment).toBe(true);
       expect(pending.json().processing).toBe(false);
       expect(pending.json().order.items[0].credentials).toBeNull();
+      expect(pending.json().order.items[0].id).toBe((await prisma.orderItem.findFirst({ where: { orderId: order.id } }))?.id);
       // Task 10: an ordinary (auto-delivery) order has no manual_with_info
       // fields and no admin-typed delivered_content.
       expect(pending.json().order.customer_data_fields).toEqual([]);
@@ -2794,6 +2808,12 @@ describe("/api/v1/account twins", () => {
       expect(ok.json()).toEqual({ ok: true });
       const stored = await prisma.review.findFirst({ where: { orderId: order.id } });
       expect(stored).toMatchObject({ rating: 4, comment: "great" });
+      const accountReviews = await app.inject({ method: "GET", url: "/api/v1/account/reviews", headers: { cookie } });
+      expect(accountReviews.json().reviews).toEqual(expect.arrayContaining([expect.objectContaining({ id: stored!.id, rating: 4, comment: "great" })]));
+      const home = await app.inject({ method: "GET", url: "/api/v1/pages/home" });
+      expect(home.json().testimonials).toEqual(expect.arrayContaining([expect.objectContaining({ id: stored!.id, rating: 4, comment: "great" })]));
+      const productReviews = await app.inject({ method: "GET", url: `/api/v1/pages/product/${productSlug}` });
+      expect(productReviews.json().reviews).toEqual(expect.arrayContaining([expect.objectContaining({ id: stored!.id, rating: 4, comment: "great" })]));
 
       // Each refusal is a ValidationError inside createReview. The route used
       // to swallow them all into ok:true, so the buyer's form said "sent" for a

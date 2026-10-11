@@ -1,8 +1,8 @@
 // setup-env MUST be first — sets env that @app/core/config reads at import time.
 import "./setup-env";
 
-import { describe, it, expect, vi } from "vitest";
-import { Bot } from "grammy";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { Api, Bot } from "grammy";
 import { buildBot, start } from "../src/main";
 import { CONVERSATIONS } from "../src/conversations";
 
@@ -175,8 +175,27 @@ describe("order-bot wiring", () => {
 // root's start() calls every poller's startPolling exactly once, with the
 // same live bot.api instance, closing that gap for all seven.
 describe("bot-standalone payment poller wiring (Task 19)", () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
   it("bot-standalone boot starts every payment poller the combined server starts", async () => {
+    // Startup metadata/menu/webhook requests are unrelated to wiring. The fake
+    // token must never reach Telegram or make this smoke test network-dependent.
+    const getMe = vi.spyOn(Api.prototype, "getMe").mockResolvedValue({
+      id: 123, is_bot: true, first_name: "Wiring Test", username: "WiringTestBot",
+      can_join_groups: true, can_read_all_group_messages: false, supports_inline_queries: false,
+      can_connect_to_business: false, has_main_web_app: false,
+      can_manage_bots: false, has_topics_enabled: false, allows_users_to_create_topics: false,
+    });
+    const setCommands = vi.spyOn(Api.prototype, "setMyCommands").mockResolvedValue(true);
+    const deleteWebhook = vi.spyOn(Api.prototype, "deleteWebhook").mockResolvedValue(true);
     await start();
+    expect(getMe).toHaveBeenCalledTimes(1);
+    // General English, general Indonesian, and one menu for each mocked admin.
+    expect(setCommands).toHaveBeenCalledTimes(4);
+    expect(setCommands).toHaveBeenCalledWith(expect.any(Array), { scope: { type: "chat", chat_id: 999 } });
+    expect(setCommands).toHaveBeenCalledWith(expect.any(Array), { scope: { type: "chat", chat_id: 1000 } });
+    expect(deleteWebhook).toHaveBeenCalledTimes(1);
+    expect(deleteWebhook).toHaveBeenCalledWith({ drop_pending_updates: true });
 
     for (const [name, spies] of Object.entries(pollerSpies)) {
       expect(spies.startPolling, `${name}.startPolling`).toHaveBeenCalledTimes(1);

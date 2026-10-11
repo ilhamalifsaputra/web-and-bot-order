@@ -47,9 +47,8 @@ const basePay: PayData = {
   support_telegram_url: "https://t.me/shopsupport",
 };
 
-function renderPay(respond: (path: string) => unknown, code = "ORD1") {
+function renderPay(respond: (path: string) => unknown, code = "ORD1", queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
   (apiGet as Mock).mockImplementation(async (path: string) => respond(path));
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[`/checkout/${code}/pay`]}>
@@ -436,7 +435,12 @@ describe("PayPage", () => {
 
     it("confirming in the dialog calls the same cancel mutation and navigates to /cart", async () => {
       const pay: PayData = { ...basePay, state: "waiting", is_qris: true };
-      renderPay(respondFor(pay));
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      client.setQueryData(["account-order", "ORD1"], { status: "PENDING_PAYMENT" });
+      client.setQueryData(["account-orders"], { orders: [] });
+      client.setQueryData(["account-orders-preview"], { orders: [] });
+      client.setQueryData(["unrelated"], { retained: true });
+      renderPay(respondFor(pay), "ORD1", client);
       await screen.findByRole("heading", { name: "Payment" });
       (apiPost as Mock).mockResolvedValue({ ok: true });
 
@@ -446,6 +450,13 @@ describe("PayPage", () => {
 
       await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/v1/orders/ORD1/cancel", {}));
       expect(await screen.findByText("cart-page-stub")).toBeInTheDocument();
+      expect(apiPost).toHaveBeenCalledTimes(1);
+      expect(client.getQueryData(["pay", "/orders", "ORD1"])).toBeUndefined();
+      expect(client.getQueryData(["pay-status", "/orders", "ORD1"])).toBeUndefined();
+      expect(client.getQueryState(["account-order", "ORD1"])?.isInvalidated).toBe(true);
+      expect(client.getQueryState(["account-orders"])?.isInvalidated).toBe(true);
+      expect(client.getQueryState(["account-orders-preview"])?.isInvalidated).toBe(true);
+      expect(client.getQueryState(["unrelated"])?.isInvalidated).toBe(false);
     });
 
     it("cancelling the dialog closes it without calling the mutation", async () => {

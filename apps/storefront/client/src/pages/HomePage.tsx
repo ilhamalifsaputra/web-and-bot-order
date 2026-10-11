@@ -1,5 +1,4 @@
 import * as m from "motion/react-m";
-import { keyedContent } from "../lib/keyedContent";
 /**
  * TSX port of apps/storefront/views/home.njk (design.md §4.8) — hero, features,
  * categories, featured products, "Our Promise", real
@@ -231,6 +230,7 @@ export default function HomePage() {
           <StepTimeline
             layout="grid"
             steps={HOW_STEPS.map((n, idx) => ({
+              id: `web.how_s${n}`,
               icon: HOW_STEP_ICONS[idx]!,
               title: t(`web.how_s${n}`),
               description: t(`web.how_s${n}_d`),
@@ -348,8 +348,8 @@ export default function HomePage() {
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {keyedContent(testimonials).map(({ item: review, key }) => (
-              <Card key={key} className="flex flex-col gap-3">
+            {testimonials.map((review) => (
+              <Card key={review.id} className="flex flex-col gap-3">
                 <div className="flex items-start gap-3">
                   <div className="w-10 h-10 rounded-full bg-pine flex items-center justify-center text-white font-display font-bold text-sm shrink-0">
                     {review.initial}
@@ -452,10 +452,10 @@ function HomeHero({ hero_image, heroProducts, reducedMotion, fx }: {
       <TrustBadgeRow
         className="mt-8 border-t border-white/10 pt-5 text-ink-faint"
         items={[
-          { icon: <Zap className="h-4 w-4 text-grass" />, label: t("web.trust_instant") },
-          { icon: <Shield className="h-4 w-4 text-grass" />, label: t("web.payment_at_checkout") },
-          { icon: <CheckCircle className="h-4 w-4 text-pine-tint" />, label: t("web.feat_warranty") },
-          { icon: <Headphones className="h-4 w-4 text-pine-tint" />, label: t("web.badge_support") },
+          { id: "instant", icon: <Zap className="h-4 w-4 text-grass" />, label: t("web.trust_instant") },
+          { id: "payments", icon: <Shield className="h-4 w-4 text-grass" />, label: t("web.payment_at_checkout") },
+          { id: "warranty", icon: <CheckCircle className="h-4 w-4 text-pine-tint" />, label: t("web.feat_warranty") },
+          { id: "support", icon: <Headphones className="h-4 w-4 text-pine-tint" />, label: t("web.badge_support") },
         ]}
       />
     </div>

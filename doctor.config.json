@@ -1,0 +1,10 @@
+{
+  "$schema": "https://react.doctor/schema/config.json",
+  "lint": true,
+  "warnings": true,
+  "scope": "full",
+  "blocking": "error",
+  "categories": {
+    "Bugs": "error"
+  }
+}

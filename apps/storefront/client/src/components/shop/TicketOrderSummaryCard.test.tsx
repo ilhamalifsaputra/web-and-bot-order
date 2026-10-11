@@ -16,7 +16,7 @@ const order: TicketOrderSummary = {
   voucher_code: "SAVE10",
   delivered: true,
   items: [
-    { name: "Netflix", duration: "1 month", warranty_days: 30, warranty_expires_at_display: "2026-08-01 10:00", warranty_active: true },
+    { id: 1, name: "Netflix", duration: "1 month", warranty_days: 30, warranty_expires_at_display: "2026-08-01 10:00", warranty_active: true },
   ],
 };
 

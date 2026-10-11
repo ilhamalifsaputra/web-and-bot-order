@@ -16,7 +16,7 @@ export function PageHeader({ title, description, breadcrumb, actions }: PageHead
       {breadcrumb && breadcrumb.length > 0 && (
         <nav aria-label="Breadcrumb" className="mb-2 flex flex-wrap items-center gap-1 text-xs text-ink-soft">
           {breadcrumb.map((crumb, i) => (
-            <React.Fragment key={crumb.href ?? crumb.label}>
+            <React.Fragment key={crumb.href ?? "current"}>
               {i > 0 && <ChevronRight className="h-3.5 w-3.5 text-ink-faint" />}
               {crumb.href ? (
                 <Link

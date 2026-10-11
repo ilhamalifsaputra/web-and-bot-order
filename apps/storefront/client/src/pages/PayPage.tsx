@@ -208,6 +208,7 @@ function useCountdown(expiresAtIso: string | null): string {
 export default function PayPage({ variant = "order" }: { variant?: "order" | "topup" } = {}) {
   const { code = "" } = useParams<{ code: string }>();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const isTopup = variant === "topup";
   // The only seam between the two order kinds — see the file header.
   const { apiBase, loginNextBase, deliveredHref, closedHref, closedLabelKey, payPagePath } = paymentRoutePaths({ isTopup, code });
@@ -227,12 +228,21 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
   // (null for every other order type).
   const { isGame, retryHref, retryLabelKey, deliveredLabelKey } = paymentDestinations({ poll, data, isTopup });
 
-  const queryClient = useQueryClient();
   const cancelMutation = useMutation({
     mutationFn: () => apiPost<{ ok: boolean }>(`/api/v1${apiBase}/${code}/cancel`, {}),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["pay", apiBase, code] });
-      void queryClient.invalidateQueries({ queryKey: ["pay-status", apiBase, code] });
+      // Retire the payable invoice snapshots; revisiting must read the backend
+      // rather than briefly offering the cancelled invoice again.
+      queryClient.removeQueries({ queryKey: ["pay", apiBase, code], exact: true });
+      queryClient.removeQueries({ queryKey: ["pay-status", apiBase, code], exact: true });
+      if (!isTopup) {
+        void queryClient.invalidateQueries({ queryKey: ["account-order", code] });
+        void queryClient.invalidateQueries({ queryKey: ["account-orders"] });
+        void queryClient.invalidateQueries({ queryKey: ["account-orders-preview"] });
+        if (data?.product_slug) {
+          void queryClient.invalidateQueries({ queryKey: ["product", data.product_slug] });
+        }
+      }
       navigate(retryHref);
     },
   });

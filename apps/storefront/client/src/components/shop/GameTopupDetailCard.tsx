@@ -1,4 +1,3 @@
-import { keyedContent } from "../../lib/keyedContent";
 /** Post-purchase "top-up details" for a game order (OrderDetailPage, PayPage).
  * Shows only what exists: product + denomination, the Game/Zone/Server the buyer
  * typed per unit (the server reads them through the denomination's input
@@ -23,7 +22,7 @@ export default function GameTopupDetailCard({
   sn,
   digiflazzStatus,
 }: {
-  items: Array<{ name: string; duration?: string | null }>;
+  items: Array<{ id: number; name: string; duration?: string | null }>;
   targets: GameTarget[];
   sn: string | null;
   digiflazzStatus?: "pending" | "reviewing" | null;
@@ -46,8 +45,8 @@ export default function GameTopupDetailCard({
 
       {items.length > 0 && (
         <ul className="mt-3 space-y-1">
-          {keyedContent(items).map(({ item, key }) => (
-            <li key={key} className="text-sm">
+          {items.map((item) => (
+            <li key={item.id} className="text-sm">
               <span className="font-semibold break-words">{item.name}</span>
               {item.duration && <span className="ml-2 text-ink-soft break-words">{item.duration}</span>}
             </li>

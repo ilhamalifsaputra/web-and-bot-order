@@ -40,6 +40,13 @@ function Wrapper({ children }: { children: React.ReactNode }) {
   );
 }
 
+function CachedWrapper({ children, client }: { children: React.ReactNode; client: QueryClient }) {
+  return <MemoryRouter initialEntries={["/support/1"]}><QueryClientProvider client={client}>
+    <Routes><Route path="/support/:ticketId" element={children} />
+      <Route path="/support" element={<div>support-list-page</div>} /></Routes>
+  </QueryClientProvider></MemoryRouter>;
+}
+
 const ADMIN_ROW = { id: 7, telegramId: 555, name: "Rina" };
 
 const BASE_USER = {
@@ -451,7 +458,12 @@ describe("TicketDetailPage — ticket controls", () => {
   it("closes a ticket only after confirming", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     vi.mocked(apiPost).mockResolvedValueOnce({ ok: true });
-    await renderLoaded();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(["support", "", {}], { tickets: [] });
+    client.setQueryData(["unrelated"], { retained: true });
+    mockFetches(BASE_DETAIL);
+    render(<CachedWrapper client={client}><TicketDetailPage /></CachedWrapper>);
+    await screen.findByRole("button", { name: /close ticket/i });
 
     await user.click(screen.getByRole("button", { name: /close ticket/i }));
     expect(apiPost).not.toHaveBeenCalled();
@@ -459,6 +471,10 @@ describe("TicketDetailPage — ticket controls", () => {
     await user.click(within(dialog).getByRole("button", { name: "Close" }));
 
     await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/support/1/close", {}));
+    await screen.findByText("support-list-page");
+    expect(apiPost).toHaveBeenCalledTimes(1);
+    expect(client.getQueryState(["support", "", {}])?.isInvalidated).toBe(true);
+    expect(client.getQueryState(["unrelated"])?.isInvalidated).toBe(false);
   });
 });
 

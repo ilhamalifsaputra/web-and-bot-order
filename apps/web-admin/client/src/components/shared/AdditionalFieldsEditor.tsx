@@ -47,13 +47,13 @@ export function AdditionalFieldsEditor({
     onChange(value.filter((_, i) => i !== index));
   }
   function addRow() {
-    onChange([...value, { ...emptyFieldDraft(), draftId: crypto.randomUUID() }]);
+    onChange([...value, emptyFieldDraft()]);
   }
 
   return (
     <div className="flex flex-col gap-4">
       {value.map((row, index) => (
-        <div key={row.draftId ?? row.key} className="rounded-lg border border-line p-3 flex flex-col gap-3">
+        <div key={row.draftId ?? `stored:${row.key}`} className="rounded-lg border border-line p-3 flex flex-col gap-3">
           <div className="flex items-start justify-between gap-3">
             <div className="flex-1 grid grid-cols-2 gap-3">
               <div>

@@ -75,6 +75,7 @@ export async function homePageData() {
     .map((r) => {
       const name = reviewerName(r.user);
       return {
+        id: r.id,
         name,
         initial: name.charAt(0).toUpperCase() || "?",
         product: r.product.name,
@@ -261,6 +262,7 @@ export async function productPageData(rawSlug: string, isReseller = false, displ
     default_restock_denomination_id: defaultRestockDenominationId,
     related_products: relatedProducts,
     reviews: reviews.map((r) => ({
+      id: r.id,
       rating: r.rating,
       comment: r.comment,
       // Mask the reviewer: first letter + *** (never leak usernames).

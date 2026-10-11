@@ -535,17 +535,17 @@ function UiGalleryTrustBadgeRow() {
       <TrustBadgeRow
         className="text-ink-soft"
         items={[
-          { icon: <Zap className="h-4 w-4 text-grass" />, label: "Instant delivery" },
-          { icon: <ShieldCheck className="h-4 w-4 text-grass" />, label: "QRIS & USDT" },
-          { icon: <CheckCircle className="h-4 w-4 text-pine" />, label: "Warranty included" },
+          { id: "instant", icon: <Zap className="h-4 w-4 text-grass" />, label: "Instant delivery" },
+          { id: "payments", icon: <ShieldCheck className="h-4 w-4 text-grass" />, label: "QRIS & USDT" },
+          { id: "warranty", icon: <CheckCircle className="h-4 w-4 text-pine" />, label: "Warranty included" },
         ]}
       />
       <div className="rounded-xl bg-ink p-5">
         <TrustBadgeRow
           className="text-ink-faint"
           items={[
-            { icon: <Zap className="h-4 w-4 text-grass" />, label: "Instant delivery" },
-            { icon: <ShieldCheck className="h-4 w-4 text-grass" />, label: "QRIS & USDT" },
+            { id: "instant", icon: <Zap className="h-4 w-4 text-grass" />, label: "Instant delivery" },
+            { id: "payments", icon: <ShieldCheck className="h-4 w-4 text-grass" />, label: "QRIS & USDT" },
           ]}
         />
       </div>
@@ -553,9 +553,9 @@ function UiGalleryTrustBadgeRow() {
         orientation="column"
         className="text-ink-soft"
         items={[
-          { icon: <Zap className="h-4 w-4 text-grass" />, label: "Instant delivery" },
-          { icon: <ShieldCheck className="h-4 w-4 text-grass" />, label: "QRIS & USDT" },
-          { icon: <CheckCircle className="h-4 w-4 text-pine" />, label: "Warranty included" },
+          { id: "instant", icon: <Zap className="h-4 w-4 text-grass" />, label: "Instant delivery" },
+          { id: "payments", icon: <ShieldCheck className="h-4 w-4 text-grass" />, label: "QRIS & USDT" },
+          { id: "warranty", icon: <CheckCircle className="h-4 w-4 text-pine" />, label: "Warranty included" },
         ]}
       />
     </div>

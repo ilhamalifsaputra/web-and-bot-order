@@ -132,8 +132,9 @@ export default function OrderDetailPage() {
   }
 
   function setAnswer(unitIdx: number, key: string, value: string): void {
-    setAnswers((prev) => prev.map((answer, position) =>
-      position === unitIdx ? { ...answer, [key]: value } : answer,
+    setAnswers(prev => Array.from(
+      { length: Math.max(prev.length, unitIdx + 1) },
+      (_, index) => index === unitIdx ? { ...prev[index], [key]: value } : (prev[index] ?? {}),
     ));
   }
 
@@ -412,10 +413,10 @@ function OrderContents({ order, liveUpdates, pendingPayment, processing, isDeskt
         </h2>
         <p className="text-xs text-ink-faint mt-1">{t("web.credentials_hint")}</p>
         <div className="mt-3 space-y-2">
-          {keyedContent(order.items).map(
-            ({ item: i, key }) =>
+          {order.items.map(
+            (i) =>
               i.credentials && (
-                <div key={key} className="flex flex-wrap items-center gap-2">
+                <div key={i.id} className="flex flex-wrap items-center gap-2">
                   <code className="codeish min-w-0 flex-1 text-sm! break-all select-all">{i.credentials}</code>
                   <Button
                     variant="soft"
@@ -474,8 +475,8 @@ function OrderItemsSummary({ isDesktop, isGameTopup, order }: {
           </tr>
         </thead>
         <tbody>
-          {keyedContent(order.items).map(({ item: i, key }) => (
-            <tr key={key}>
+          {order.items.map((i) => (
+            <tr key={i.id}>
               <td>
                 <div className="font-semibold text-sm break-words">{i.name}</div>
                 <div className="text-xs text-ink-faint">{i.duration}</div>
@@ -491,8 +492,8 @@ function OrderItemsSummary({ isDesktop, isGameTopup, order }: {
     </Card>
   ) : (
     <ul className="card min-w-0 divide-y divide-line">
-      {keyedContent(order.items).map(({ item: i, key }) => (
-        <li key={key} className="p-4">
+      {order.items.map((i) => (
+        <li key={i.id} className="p-4">
           <div className="text-sm font-semibold text-ink break-words">{i.name}</div>
           {i.duration && <div className="text-xs text-ink-faint">{i.duration}</div>}
           <div className="mt-2 flex flex-wrap items-center justify-between gap-3">

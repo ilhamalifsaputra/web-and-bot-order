@@ -43,6 +43,38 @@ describe("SaveConfirmDialog", () => {
     expect(onOpenChange).not.toHaveBeenCalled();
   });
 
+  it("opens a fresh confirmation after an error was dismissed", async () => {
+    const onConfirm = vi.fn().mockRejectedValue(new Error("network"));
+    const props = { onConfirm, title: "Save this setting?", onOpenChange: vi.fn() };
+    const view = render(<SaveConfirmDialog {...props} open />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByText("network")).toBeInTheDocument();
+    view.rerender(<SaveConfirmDialog {...props} open={false} />);
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    view.rerender(<SaveConfirmDialog {...props} open />);
+    expect(screen.queryByText("network")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores completion from a save whose dialog was externally unmounted", async () => {
+    let resolveConfirm!: () => void;
+    const onConfirm = vi.fn(() => new Promise<void>((resolve) => { resolveConfirm = resolve; }));
+    const onOpenChange = vi.fn();
+    const props = { onConfirm, onOpenChange, title: "Save this setting?" };
+    const view = render(<SaveConfirmDialog {...props} open />);
+    await userEvent.setup().click(screen.getByRole("button", { name: "Save" }));
+    view.rerender(<SaveConfirmDialog {...props} open={false} />);
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    view.rerender(<SaveConfirmDialog {...props} open />);
+    resolveConfirm();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).toBeEnabled());
+    expect(screen.queryByText("Saved successfully")).not.toBeInTheDocument();
+    expect(onOpenChange).not.toHaveBeenCalled();
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+  });
+
   it("confirm -> saving -> success shows a checkmark and auto-closes", async () => {
     const onConfirm = vi.fn().mockResolvedValue(undefined);
     render(<Harness onConfirm={onConfirm} successMessage="Saved successfully" />);

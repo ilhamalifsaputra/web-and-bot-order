@@ -54,10 +54,10 @@ export default function AuthBrandPanel({ className = "" }: { className?: string 
         orientation="column"
         className="mt-6 text-pine-tint"
         items={[
-          { icon: <Zap className="h-4 w-4 shrink-0 text-grass" />, label: t("web.trust_instant") },
-          { icon: <Shield className="h-4 w-4 shrink-0 text-grass" />, label: t("web.payment_at_checkout") },
-          { icon: <CheckCircle className="h-4 w-4 shrink-0 text-pine-tint" />, label: t("web.feat_warranty") },
-          { icon: <Headphones className="h-4 w-4 shrink-0 text-pine-tint" />, label: t("web.badge_support") },
+          { id: "instant", icon: <Zap className="h-4 w-4 shrink-0 text-grass" />, label: t("web.trust_instant") },
+          { id: "payments", icon: <Shield className="h-4 w-4 shrink-0 text-grass" />, label: t("web.payment_at_checkout") },
+          { id: "warranty", icon: <CheckCircle className="h-4 w-4 shrink-0 text-pine-tint" />, label: t("web.feat_warranty") },
+          { id: "support", icon: <Headphones className="h-4 w-4 shrink-0 text-pine-tint" />, label: t("web.badge_support") },
         ]}
       />
 

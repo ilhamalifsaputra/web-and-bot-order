@@ -75,7 +75,9 @@ function Content({ onOpenAutoFocus, onCloseAutoFocus, ...props }: MotionDialogPr
 export function MotionDialog(props: MotionDialogProps) {
   const previousFocus = useRef<HTMLElement | null>(null);
   const openRef = useRef(props.open);
-  useLayoutEffect(() => { openRef.current = props.open; }, [props.open]);
+  useLayoutEffect(() => {
+    openRef.current = props.open;
+  }, [props.open]);
   return (
     <Dialog.Root open={props.open} onOpenChange={(open) => { if (!open) props.onClose(); }}>
       <AnimatePresence>

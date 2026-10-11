@@ -1,5 +1,6 @@
 import { Package, Search, ShoppingCart, Users } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
+import { useIsPresent } from "motion/react";
 import { useNavigate } from "react-router-dom";
 import { apiGet } from "../../api/client";
 import { MotionDialog } from "../shared/MotionDialog";
@@ -15,6 +16,8 @@ interface SearchResult {
 interface SearchModalProps {
   open: boolean;
   onClose: () => void;
+  /** Incremented by the opening event, preserving the dialog's exit shell. */
+  session?: number;
 }
 
 interface SearchApiResponse {
@@ -61,16 +64,15 @@ function userLabel(u: SearchApiResponse["users"][number]): { label: string; subl
   return { label: `Customer #${u.id}` };
 }
 
-export function SearchModal(props: SearchModalProps): JSX.Element {
+export function SearchModal({ open, onClose, session = 0 }: SearchModalProps): JSX.Element {
   const inputRef = useRef<HTMLInputElement>(null);
-  return (
-    <MotionDialog open={props.open} onClose={props.onClose} title="Search" initialFocusRef={inputRef} className="max-h-[70dvh] overflow-y-auto">
-      <SearchSession key={String(props.open)} {...props} inputRef={inputRef} />
-    </MotionDialog>
-  );
+  return <MotionDialog open={open} onClose={onClose} title="Search" initialFocusRef={inputRef} className="max-h-[70dvh] overflow-y-auto">
+    <SearchModalBody key={session} onClose={onClose} inputRef={inputRef} />
+  </MotionDialog>;
 }
 
-function SearchSession({ open, onClose, inputRef }: SearchModalProps & { inputRef: import("react").RefObject<HTMLInputElement> }): JSX.Element {
+function SearchModalBody({ onClose, inputRef }: { onClose: () => void; inputRef: RefObject<HTMLInputElement> }): JSX.Element {
+  const open = useIsPresent();
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
   const [loading, setLoading] = useState(false);

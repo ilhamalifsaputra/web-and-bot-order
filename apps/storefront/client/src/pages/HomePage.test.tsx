@@ -155,7 +155,7 @@ describe("HomePage", () => {
   it("renders testimonials when present, and hides the section when empty", async () => {
     const { unmount } = renderHome(
       homeFixture({
-        testimonials: [{ name: "Ahmad F.", initial: "A", product: "Netflix Premium", rating: 5, comment: "Great service!" }],
+        testimonials: [{ id: 1, name: "Ahmad F.", initial: "A", product: "Netflix Premium", rating: 5, comment: "Great service!" }],
       }),
     );
     expect(await screen.findByText("Ahmad F.")).toBeInTheDocument();

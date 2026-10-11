@@ -26,7 +26,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Eye, MoreVertical, RefreshCw, Send, ShoppingCart, XCircle } from "lucide-react";
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { apiGet, apiPost } from "../api/client";
@@ -41,7 +41,6 @@ import { PageLayout } from "../components/shared/PageLayout";
 import { Pagination } from "../components/shared/Pagination";
 import { PaymentMethodBadge } from "../components/shared/PaymentMethodBadge";
 import { SearchBar } from "../components/shared/SearchBar";
-import { useAction } from "../hooks/useAction";
 import { useOrdersKpis } from "../hooks/useOrdersKpis";
 import { describeError } from "../lib/errorMessages";
 import { orderStatusLabel } from "../lib/orderStatus";
@@ -202,11 +201,25 @@ export function OrdersPage() {
     onError: (e: Error) => toast.error(describeError(e)),
   });
 
-  const resendMutation = useAction({
-    mutationFn: (orderId: number) => apiPost(`/api/orders/${orderId}/resend`, {}),
-    onSuccess: () => toast.success("Delivery credentials resent."),
-    onError: (e: Error) => toast.error(describeError(e)),
-  });
+  const resendRequests = useRef(new Set<number>());
+  const [resendingIds, setResendingIds] = useState<number[]>([]);
+  useEffect(() => {
+    const requests = resendRequests.current;
+    return () => { requests.clear(); };
+  }, []);
+  async function resendDelivery(orderId: number) {
+    if (resendRequests.current.has(orderId)) return;
+    resendRequests.current.add(orderId);
+    setResendingIds(current => [...current, orderId]);
+    try {
+      await apiPost(`/api/orders/${orderId}/resend`, {});
+      if (resendRequests.current.has(orderId)) toast.success("Delivery credentials resent.");
+    } catch (error) {
+      if (resendRequests.current.has(orderId)) toast.error(describeError(error as Error));
+    } finally {
+      if (resendRequests.current.delete(orderId)) setResendingIds(current => current.filter(id => id !== orderId));
+    }
+  }
 
   const bulkMutation = useMutation({
     mutationFn: (vars: { ids: number[]; action: "deliver" | "resend" }) =>
@@ -374,7 +387,7 @@ export function OrdersPage() {
 
       <OrdersBulkActions visibleSelected={visibleSelected} bulkMutation={bulkMutation} runBulk={runBulk} cancelMutation={cancelMutation} eligibleSelectedIds={eligibleSelectedIds} openCancelDialog={openCancelDialog} setSelected={setSelected} />
 
-      <OrdersSelectAllOrdersOnThis allOnPageSelected={allOnPageSelected} toggleSelectAllOnPage={toggleSelectAllOnPage} selected={selected} toggleSelected={toggleSelected} navigate={navigate} deliverMutation={deliverMutation} resendMutation={resendMutation} openCancelDialog={openCancelDialog} pageOrders={pageOrders} isLoading={isLoading} refetch={refetch} hasActiveFilter={hasActiveFilter} clearFilters={clearFilters} />
+      <OrdersSelectAllOrdersOnThis allOnPageSelected={allOnPageSelected} toggleSelectAllOnPage={toggleSelectAllOnPage} selected={selected} toggleSelected={toggleSelected} navigate={navigate} deliverMutation={deliverMutation} resendingIds={resendingIds} resendDelivery={resendDelivery} openCancelDialog={openCancelDialog} pageOrders={pageOrders} isLoading={isLoading} refetch={refetch} hasActiveFilter={hasActiveFilter} clearFilters={clearFilters} />
 
       {data && (
         <div className="mt-4">
@@ -473,14 +486,15 @@ function OrdersFilters({ applyFilters, clearFilters, draft, setDraft, fieldId, s
   </FilterBar>);
 }
 
-function OrdersSelectAllOrdersOnThis({ allOnPageSelected, toggleSelectAllOnPage, selected, toggleSelected, navigate, deliverMutation, resendMutation, openCancelDialog, pageOrders, isLoading, refetch, hasActiveFilter, clearFilters }: {
+function OrdersSelectAllOrdersOnThis({ allOnPageSelected, toggleSelectAllOnPage, selected, toggleSelected, navigate, deliverMutation, resendingIds, resendDelivery, openCancelDialog, pageOrders, isLoading, refetch, hasActiveFilter, clearFilters }: {
   allOnPageSelected: boolean;
   toggleSelectAllOnPage: () => void;
   selected: Set<number>;
   toggleSelected: (id: number) => void;
   navigate: import("react-router-dom").NavigateFunction;
   deliverMutation: import("@tanstack/react-query").UseMutationResult<unknown, Error, number, unknown>;
-  resendMutation: { mutate: (variables: number) => void; reset: () => void; data?: unknown; error: Error | null; isPending: boolean; };
+  resendingIds: number[];
+  resendDelivery: (orderId: number) => Promise<void>;
   openCancelDialog: (ids: number[]) => void;
   pageOrders: OrderRow[];
   isLoading: boolean;
@@ -640,7 +654,7 @@ function OrdersSelectAllOrdersOnThis({ allOnPageSelected, toggleSelectAllOnPage,
                       </DropdownMenuItem>
                     )}
                     {row.eligibility.canResend && (
-                      <DropdownMenuItem onSelect={() => resendMutation.mutate(row.id)}>
+                      <DropdownMenuItem disabled={resendingIds.includes(row.id)} onSelect={() => void resendDelivery(row.id)}>
                         <RefreshCw className="h-4 w-4" />
                         Resend Delivery
                       </DropdownMenuItem>

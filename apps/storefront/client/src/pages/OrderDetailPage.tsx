@@ -189,11 +189,66 @@ export default function OrderDetailPage() {
       <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[minmax(0,1fr)_22rem]">
         <div className="min-w-0 space-y-6">
           {order.fulfillment && <OrderProgress fulfillment={order.fulfillment} underpayment={order.underpayment}>{liveUpdates}</OrderProgress>}
+          {/* Only once the order is being fulfilled or done, like PayPage: the
+              green card must not read as success on an unpaid/closed order. */}
+          {isGameTopup && (processing || delivered) && (
+            <GameTopupDetailCard
+              items={order.items}
+              targets={data.game_target ?? []}
+              sn={data.sn ?? null}
+              digiflazzStatus={order.digiflazz_status}
+            />
+          )}
+
+          {delivered && order.items.some((item) => item.credentials) && (
+            <section id="credentials" className="card card-pad border-grass/40 mb-5">
+              <h2 className="section-title flex items-center gap-2">
+                <BadgeCheck className="w-5 h-5 text-grass" /> {t("web.credentials")}
+              </h2>
+              <p className="text-xs text-ink-faint mt-1">{t("web.credentials_hint")}</p>
+              <div className="mt-3 space-y-2">
+                {order.items.map(
+                  (i, idx) =>
+                    i.credentials && (
+                      <div key={idx} className="flex flex-wrap items-center gap-2">
+                        <code className="codeish min-w-0 flex-1 text-sm! break-all select-all">{i.credentials}</code>
+                        <Button
+                          variant="soft"
+                          className="min-h-11"
+                          onClick={() => navigator.clipboard.writeText(i.credentials ?? "")}
+                        >
+                          <Copy className="w-3.5 h-3.5" /> {t("web.copy")}
+                        </Button>
+                      </div>
+                    ),
+                )}
+              </div>
+            </section>
+          )}
+
+          {!isGameTopup && delivered && order.delivered_content && (
+            <section className="card card-pad border-grass/40">
+              <h2 className="section-title flex items-center gap-2">
+                <BadgeCheck className="w-5 h-5 text-grass" /> {t("web.delivered_content_title")}
+              </h2>
+              <p className="text-xs text-ink-faint mt-1">{t("web.delivered_content_hint")}</p>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <code className="codeish min-w-0 flex-1 text-sm! break-all whitespace-pre-wrap select-all">
+                  {order.delivered_content}
+                </code>
+                <Button
+                  variant="soft"
+                  className="min-h-11"
+                  onClick={() => navigator.clipboard.writeText(order.delivered_content ?? "")}
+                >
+                  <Copy className="w-3.5 h-3.5" /> {t("web.copy")}
+                </Button>
+              </div>
+            </section>
+          )}
           {pendingPayment && (
             <Card className="flex items-center justify-between gap-3 flex-wrap bg-pine-tint/40">
-              <div className="text-sm text-ink-soft">
-                {t("web.order_status")}: <StatusBadge value={order.status} fulfillment={order.fulfillment} />
-              </div>
+              <div className="text-sm text-ink-soft">{t("web.order_status")}</div>
               <Link to={`/checkout/${order.code}/pay`} className="btn btn-primary min-h-11">
                 <Wallet className="w-4 h-4" /> {t("web.pay_now")}
               </Link>
@@ -344,64 +399,6 @@ export default function OrderDetailPage() {
                   ))}
                 </div>
               )}
-            </section>
-          )}
-
-          {/* Only once the order is being fulfilled or done, like PayPage: the
-              green card must not read as success on an unpaid/closed order. */}
-          {isGameTopup && (processing || delivered) && (
-            <GameTopupDetailCard
-              items={order.items}
-              targets={data.game_target ?? []}
-              sn={data.sn ?? null}
-              digiflazzStatus={order.digiflazz_status}
-            />
-          )}
-
-          {delivered && order.items.some((item) => item.credentials) && (
-            <section id="credentials" className="card card-pad border-grass/40 mb-5">
-              <h2 className="section-title flex items-center gap-2">
-                <BadgeCheck className="w-5 h-5 text-grass" /> {t("web.credentials")}
-              </h2>
-              <p className="text-xs text-ink-faint mt-1">{t("web.credentials_hint")}</p>
-              <div className="mt-3 space-y-2">
-                {order.items.map(
-                  (i, idx) =>
-                    i.credentials && (
-                      <div key={idx} className="flex flex-wrap items-center gap-2">
-                        <code className="codeish min-w-0 flex-1 text-sm! break-all select-all">{i.credentials}</code>
-                        <Button
-                          variant="soft"
-                          className="min-h-11"
-                          onClick={() => navigator.clipboard.writeText(i.credentials ?? "")}
-                        >
-                          <Copy className="w-3.5 h-3.5" /> {t("web.copy")}
-                        </Button>
-                      </div>
-                    ),
-                )}
-              </div>
-            </section>
-          )}
-
-          {!isGameTopup && delivered && order.delivered_content && (
-            <section className="card card-pad border-grass/40">
-              <h2 className="section-title flex items-center gap-2">
-                <BadgeCheck className="w-5 h-5 text-grass" /> {t("web.delivered_content_title")}
-              </h2>
-              <p className="text-xs text-ink-faint mt-1">{t("web.delivered_content_hint")}</p>
-              <div className="mt-3 flex flex-wrap items-center gap-2">
-                <code className="codeish min-w-0 flex-1 text-sm! break-all whitespace-pre-wrap select-all">
-                  {order.delivered_content}
-                </code>
-                <Button
-                  variant="soft"
-                  className="min-h-11"
-                  onClick={() => navigator.clipboard.writeText(order.delivered_content ?? "")}
-                >
-                  <Copy className="w-3.5 h-3.5" /> {t("web.copy")}
-                </Button>
-              </div>
             </section>
           )}
         </div>

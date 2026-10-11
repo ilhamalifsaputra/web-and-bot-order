@@ -789,4 +789,49 @@ describe("OrderDetailPage game top-up", () => {
     expect(screen.getByText(/30-day warranty/)).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Top-up details" })).not.toBeInTheDocument();
   });
+
+  const precedes = (a: Element, b: Element) =>
+    Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+
+  it("puts a delivered premium order's credentials and delivered content before the items and submitted information", async () => {
+    renderDetail(() => ({
+      order: {
+        ...baseOrder,
+        fulfillment: fulfillment("PREMIUM_APPS"),
+        customer_data_fields: infoFields,
+        customer_data: [{ game_id: "12345678" }],
+        delivered_content: "acct@example.com",
+        items: [{ ...baseOrder.items[0], credentials: "user:pass" }],
+      },
+      delivered: true, pending_payment: false, processing: false,
+    }));
+    const credentials = await screen.findByRole("heading", { name: "Your credentials" });
+    const content = screen.getByRole("heading", { name: "Delivered content" });
+    const item = screen.getByText("Netflix");
+    const info = screen.getByRole("heading", { name: "Your submitted information" });
+    expect(precedes(credentials, content)).toBe(true);
+    expect(precedes(content, item)).toBe(true);
+    expect(precedes(content, info)).toBe(true);
+    expect(screen.queryByRole("heading", { name: "Top-up details" })).not.toBeInTheDocument();
+  });
+
+  it("puts a delivered game order's top-up details before the items and submitted information", async () => {
+    renderDetail(() => gameData());
+    const card = await screen.findByRole("heading", { name: "Top-up details" });
+    // The name also appears inside the top-up card; pick the items list entry.
+    const item = screen.getAllByText("Mobile Legends").find((el) => el.closest("ul.divide-y"))!;
+    const info = screen.getByRole("heading", { name: "Your submitted information" });
+    expect(precedes(card, item)).toBe(true);
+    expect(precedes(card, info)).toBe(true);
+    expect(screen.queryByRole("heading", { name: "Delivered content" })).not.toBeInTheDocument();
+  });
+
+  it("shows the status chip once, with the Pay now action, on a pending order", async () => {
+    renderDetail(() => ({
+      order: { ...baseOrder, status: "pending_payment" },
+      delivered: false, pending_payment: true, processing: false,
+    }));
+    expect(await screen.findByRole("link", { name: /Pay now/ })).toBeInTheDocument();
+    expect(screen.getAllByText("Awaiting payment")).toHaveLength(1);
+  });
 });

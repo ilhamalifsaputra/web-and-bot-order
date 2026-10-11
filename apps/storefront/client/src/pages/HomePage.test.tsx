@@ -249,6 +249,15 @@ describe("HomePage", () => {
     expect(secondary.className).toContain("focus-on-dark");
   });
 
+  // The hero's second CTA targets #categories, which only renders when the shop
+  // has categories — without any, the link would scroll nowhere, so it is omitted.
+  it("omits the hero categories CTA when the shop has no categories", async () => {
+    const { container } = renderHome(homeFixture({ categories: [] }));
+    await screen.findByRole("link", { name: /Browse products/ });
+    expect(container.querySelector("#categories")).toBeNull();
+    expect(screen.queryByRole("link", { name: "Categories" })).toBeNull();
+  });
+
   // H-01: catalog first — hero → categories → products → features → how-to-order.
   it("orders the sections hero, categories, products, features, how-to-order", async () => {
     const { container } = renderHome(homeFixture());
@@ -407,7 +416,8 @@ describe("HomePage", () => {
     await screen.findByRole("heading", { name: "Netflix Premium" });
     const grid = screen.getByRole("heading", { name: "Netflix Premium" }).closest(".grid");
     expect(grid?.className).toContain("max-w-sm");
-    expect(grid?.className).not.toMatch(/sm:grid-cols-3|lg:grid-cols-4/);
+    // No `grid-cols-*` at all: a bare `grid-cols-2` would leave half the row empty.
+    expect(grid?.className).not.toMatch(/grid-cols-/);
   });
 
   it("keeps the multi-column grid when there's more than one product", async () => {

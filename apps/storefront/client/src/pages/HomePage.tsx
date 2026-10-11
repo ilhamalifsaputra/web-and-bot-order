@@ -216,13 +216,17 @@ export default function HomePage() {
               <ShoppingBag className="h-5 w-5" />
               {t("web.hero_cta")}
             </motion.a>
-            <a
-              href="#categories"
-              className="btn border border-white/20 text-white hover:bg-white/15 focus-on-dark"
-            >
-              <LayoutGrid className="h-5 w-5" />
-              {t("web.nav_categories")}
-            </a>
+            {/* #categories only renders when there are categories; without
+                them this link would scroll nowhere. */}
+            {categories.length > 0 && (
+              <a
+                href="#categories"
+                className="btn border border-white/20 text-white hover:bg-white/15 focus-on-dark"
+              >
+                <LayoutGrid className="h-5 w-5" />
+                {t("web.nav_categories")}
+              </a>
+            )}
           </div>
           {/* honest trust chips: capabilities/guarantees, no customer-count claims */}
           <TrustBadgeRow

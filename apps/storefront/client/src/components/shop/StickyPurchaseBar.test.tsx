@@ -72,6 +72,21 @@ describe("StickyPurchaseBar", () => {
     expect(screen.getByText("Diskon grosir")).toBeInTheDocument();
   });
 
+  it("renders a block-reason notice exactly once, ahead of the price row and the dimmed button", () => {
+    render(
+      <StickyPurchaseBar
+        price="Rp10.000"
+        notice="Complete valid account details to continue."
+        primaryAction={{ label: "Buy now", onClick: () => {}, disabled: true, blocked: true }}
+      />,
+    );
+    const notices = screen.getAllByText("Complete valid account details to continue.");
+    expect(notices).toHaveLength(1);
+    const button = screen.getByRole("button", { name: "Buy now" });
+    expect(notices[0]!.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(notices[0]!.compareDocumentPosition(screen.getByText("Rp10.000")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it("supports a two-action case, rendering the secondary CTA before the primary", () => {
     const primary = vi.fn();
     const secondary = vi.fn();

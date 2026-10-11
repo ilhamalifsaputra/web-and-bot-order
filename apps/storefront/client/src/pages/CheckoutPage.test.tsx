@@ -232,6 +232,22 @@ describe("CheckoutPage", () => {
     expect(await screen.findByText("That payment method isn't available right now — pick another one.")).toBeInTheDocument();
   });
 
+  it("renders the place-order error exactly once, directly above the summary and before the submit", async () => {
+    renderCheckout(() => checkoutData);
+    await screen.findByRole("heading", { name: "Checkout" });
+    (apiPost as Mock).mockRejectedValue(new Error("web.pay_method_unavailable"));
+    fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
+    const text = "That payment method isn't available right now — pick another one.";
+    const banner = await screen.findByText(text);
+    expect(screen.getAllByText(text)).toHaveLength(1);
+    const submit = screen.getByRole("button", { name: /Place order/ });
+    expect(banner.compareDocumentPosition(submit) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // It lives with the summary column, not above the form next to the title.
+    const form = document.querySelector("form")!;
+    expect(form.contains(banner)).toBe(true);
+    expect(screen.queryByText("Complete valid account details to continue.")).not.toBeInTheDocument();
+  });
+
   // Whole-branch review F4a. The rail-minimum refusal names the figure it was
   // judged against — "below the minimum this payment method accepts ({min}
   // {currency})" — and the API layer now carries the server's `error_args` on the
@@ -444,6 +460,27 @@ describe("CheckoutPage", () => {
 
       fireEvent.change(emailInputs[0]!, { target: { value: "unit1@mail.com" } });
       expect(placeOrderBtn).not.toBeDisabled();
+    });
+
+    it("explains why Place order is blocked: once in flow before the summary, once in the sticky bar", async () => {
+      renderCheckout(() => infoCheckoutData);
+      await screen.findByText("Order details");
+      const hint = "Complete valid account details to continue.";
+      const matches = screen.getAllByText(hint);
+      expect(matches).toHaveLength(2);
+      const bar = document.querySelector(".fixed.bottom-0")!;
+      const inFlow = matches.filter((el) => !bar.contains(el));
+      const inBar = matches.filter((el) => bar.contains(el));
+      expect(inFlow).toHaveLength(1);
+      expect(inBar).toHaveLength(1);
+      // In flow, the hint precedes the summary's Total row (and so the submit).
+      const summaryHeading = screen.getByRole("heading", { name: "Summary" });
+      expect(inFlow[0]!.compareDocumentPosition(summaryHeading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+      // Once the fields are valid the reason disappears everywhere.
+      screen.getAllByLabelText("Game ID").forEach((el) => fireEvent.change(el, { target: { value: "id1" } }));
+      screen.getAllByLabelText("Email").forEach((el) => fireEvent.change(el, { target: { value: "a@b.co" } }));
+      expect(screen.queryAllByText(hint)).toHaveLength(0);
     });
 
     it("submits the collected answers as customer_data on Place Order", async () => {

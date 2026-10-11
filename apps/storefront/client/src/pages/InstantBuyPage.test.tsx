@@ -606,6 +606,49 @@ describe("InstantBuyPage", () => {
     await waitFor(() => expect(screen.getAllByRole("button", { name: /Buy now/ })[0]).not.toBeDisabled());
   });
 
+  it("shows why Buy now is blocked once in flow above the summary and once in the sticky bar", async () => {
+    renderInstantBuy();
+    await screen.findByText("Summary");
+    const hint = "Complete valid account details to continue.";
+    // In flow: exactly one, before the summary card (and so before the submit).
+    const inFlow = screen.getAllByText(hint);
+    expect(inFlow).toHaveLength(1);
+    expect(inFlow[0]!.compareDocumentPosition(screen.getByRole("button", { name: /Buy now/ })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(inFlow[0]!.compareDocumentPosition(document.getElementById("checkout-summary")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    // Sticky bar visible (primary scrolled away): the same reason as its notice.
+    await waitFor(() => expect(NoOpIntersectionObserver.primaryCallback).not.toBeNull());
+    act(() => NoOpIntersectionObserver.primaryCallback?.([{ isIntersecting: false } as IntersectionObserverEntry], {} as IntersectionObserver));
+    const bar = screen.getByRole("region", { name: "Purchase" });
+    expect(within(bar).getAllByText(hint)).toHaveLength(1);
+    expect(screen.getAllByText(hint)).toHaveLength(2);
+
+    // Once the form is valid the reason disappears from both places.
+    fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "1234567" } });
+    fireEvent.change(screen.getByLabelText("Zone ID"), { target: { value: "1111" } });
+    await waitFor(() => expect(screen.queryAllByText(hint)).toHaveLength(0));
+  });
+
+  it("renders the place-order error once, directly above the summary and before the submit", async () => {
+    renderInstantBuy();
+    await screen.findByText("Summary");
+    fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "1234567" } });
+    fireEvent.change(screen.getByLabelText("Zone ID"), { target: { value: "1111" } });
+    (apiPost as Mock).mockImplementation(async (path: string) => {
+      if (path === "/api/v1/topup/order") throw new Error("web.pay_method_unavailable");
+      return checkoutData;
+    });
+    await waitFor(() => expect(screen.getByRole("button", { name: /Buy now/ })).not.toBeDisabled());
+    fireEvent.click(screen.getByRole("button", { name: /Buy now/ }));
+    const text = "That payment method isn't available right now — pick another one.";
+    const banner = await screen.findByText(text);
+    expect(screen.getAllByText(text)).toHaveLength(1);
+    const form = document.getElementById("buy-form")!;
+    expect(form.contains(banner)).toBe(true);
+    expect(banner.compareDocumentPosition(document.getElementById("checkout-summary")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(banner.compareDocumentPosition(screen.getByRole("button", { name: /Buy now/ })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it("never renders a cart or checkout page for this flow — success stays on a pay-page route", async () => {
     renderInstantBuy();
     await screen.findByRole("heading", { name: "Mobile Legends Diamonds" });

@@ -491,6 +491,10 @@ export default function CheckoutPage() {
   const guestEmailValid = !page.is_guest || isValidEmail(guestEmail);
   const placeOrderBlocked = !anyMethod || !infoValid || !guestEmailValid;
   const placeOrderDisabled = placeOrderBlocked || placeOrderMutation.isPending;
+  // Why the submit is dimmed — same order as InstantBuyPage's hint.
+  const checkoutHint = !infoValid ? t("web.checkout_account_hint")
+    : !guestEmailValid ? t("web.checkout_contact_hint")
+    : !anyMethod ? t("web.checkout_payment_hint") : null;
   // Final-review fix: the sticky bar's "Price $X · Pay RpY" line for a USD
   // viewer on QRIS/PayDisini — same helper (and so the same rule and figures)
   // as the summary card; null everywhere else, which leaves the bar unchanged.
@@ -508,17 +512,6 @@ export default function CheckoutPage() {
     <>
       <Stepper step={2} />
       <h1 className="page-title text-2xl! mb-5">{t("web.checkout_title")}</h1>
-
-      {/* A rejected guest email is rendered against the field it belongs to
-          instead (GuestContactCard) — same reasoning as STO-005 moved the
-          voucher error out of the summary column: repeating the identical
-          sentence in a page-level banner is noise, and the banner is a whole
-          column away from the input the buyer has to fix. */}
-      {placeOrderErrorKey && !(page.is_guest && placeOrderErrorKey === "web.guest_email_invalid") && (
-        <Alert variant="banner" tone="error">
-          {humanError(placeOrderError)}
-        </Alert>
-      )}
 
       <form
         onSubmit={(e) => e.preventDefault()}
@@ -559,6 +552,17 @@ export default function CheckoutPage() {
         </div>
 
         <div className="min-w-0">
+          {/* The rejection and the "why is Place order blocked" hint render
+              right above the summary/submit, where the buyer is looking. A
+              rejected guest email is rendered against the field it belongs to
+              instead (GuestContactCard) — repeating the identical sentence
+              here would be noise. */}
+          {placeOrderErrorKey && !(page.is_guest && placeOrderErrorKey === "web.guest_email_invalid") && (
+            <Alert variant="banner" tone="error">
+              {humanError(placeOrderError)}
+            </Alert>
+          )}
+          {checkoutHint && <p className="mb-3 text-sm text-ink-soft" role="status" data-testid="checkout-hint">{checkoutHint}</p>}
           <OrderSummaryCard
             totals={totals}
             method={method}
@@ -595,6 +599,7 @@ export default function CheckoutPage() {
           ariaLabel={t("web.purchase_bar")}
           priceLabel={t("web.order_total")}
           price={formatPriceFor(method === "qris" ? totals.qris_grand_total : totals.total, ctx?.currency ?? null, ctx?.fx)}
+          notice={checkoutHint}
           secondaryChip={barPriceAndPay && <span className="text-xs text-ink-soft">{barPriceAndPay}</span>}
           primaryAction={{
             label: t("web.place_order"),

@@ -461,12 +461,6 @@ export default function InstantBuyPage() {
           {humanError(previewQuery.error)}
         </Alert>
       )}
-      {placeOrderErrorKey && !(page?.is_guest && placeOrderErrorKey === "web.guest_email_invalid") && (
-        <Alert variant="banner" tone="error">
-          {humanError(placeOrderError)}
-        </Alert>
-      )}
-
       <form id="buy-form" noValidate onSubmit={(e) => { e.preventDefault(); submitOrder(); }} className="grid gap-6 items-start">
         <div className="space-y-6">
           {/* 1. Product header — image/title/description, ProductPage.tsx's
@@ -602,6 +596,14 @@ export default function InstantBuyPage() {
         {/* 6. Discount, summary and primary submit remain in document flow.
             Mobile also offers the same submit while the primary is offscreen. */}
         <div className="min-w-0">
+          {/* The place-order rejection and the "why is Buy blocked" hint sit
+              right above the summary/submit, where the buyer is looking. */}
+          {placeOrderErrorKey && !(page?.is_guest && placeOrderErrorKey === "web.guest_email_invalid") && (
+            <Alert variant="banner" tone="error">
+              {humanError(placeOrderError)}
+            </Alert>
+          )}
+          {configValid && checkoutHint && <p className="mb-3 text-sm text-ink-soft" role="status" data-testid="checkout-hint">{checkoutHint}</p>}
           {page && totals ? (
             <OrderSummaryCard
               totals={totals}
@@ -638,7 +640,6 @@ export default function InstantBuyPage() {
             </>
           )}
         </div>
-        {configValid && checkoutHint && <p className="text-sm text-ink-soft" role="status">{checkoutHint}</p>}
         {previewMutation.error && !voucherPending && previewMutation.variables?.context === previewContext && <Alert variant="banner" tone="error">{humanError(previewMutation.error)}</Alert>}
       </form>
 
@@ -676,6 +677,7 @@ export default function InstantBuyPage() {
           ariaLabel={t("web.purchase_bar")}
           priceLabel={t("web.order_total")}
           price={purchasePrice}
+          notice={submitBlocked && configValid ? checkoutHint : null}
           secondaryChip={barPriceAndPay && <span className="text-xs text-ink-soft">{barPriceAndPay}</span>}
           primaryAction={{
             label: placeOrderMutation.isPending ? t("web.checkout_processing") : t("web.buy_now"),

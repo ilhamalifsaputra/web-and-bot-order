@@ -29,6 +29,7 @@ export * from "./crud/bybit_bsc_deposit";
 export * from "./crud/broadcasts";
 export * from "./crud/orderMinimums";
 export * from "./crud/pricing";
+export * from "./crud/pricingPolicy";
 export * from "./crud/tokopay";
 export * from "./crud/xendit";
 export * from "./crud/payMethodDisplay";

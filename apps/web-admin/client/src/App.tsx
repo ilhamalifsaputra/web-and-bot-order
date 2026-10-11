@@ -49,6 +49,7 @@ const BroadcastPage = lazy(() => import("./pages/BroadcastPage").then((m) => ({ 
 const SupportPage = lazy(() => import("./pages/SupportPage").then((m) => ({ default: m.SupportPage })));
 const TicketDetailPage = lazy(() => import("./pages/TicketDetailPage").then((m) => ({ default: m.TicketDetailPage })));
 const TasksPage = lazy(() => import("./pages/TasksPage").then((m) => ({ default: m.TasksPage })));
+const PricingPage = lazy(() => import("./pages/PricingPage").then((m) => ({ default: m.PricingPage })));
 const SettingsPage = lazy(() => import("./pages/SettingsPage").then((m) => ({ default: m.SettingsPage })));
 const BrandingPage = lazy(() => import("./pages/BrandingPage").then((m) => ({ default: m.BrandingPage })));
 const StoragePage = lazy(() => import("./pages/StoragePage").then((m) => ({ default: m.StoragePage })));
@@ -115,6 +116,7 @@ export default function App() {
           <Route path="/support" element={<SupportPage />} />
           <Route path="/support/:ticketId" element={<TicketDetailPage />} />
           <Route path="/tasks" element={<TasksPage />} />
+          <Route path="/pricing" element={<PricingPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/branding" element={<BrandingPage />} />
           <Route path="/storage" element={<StoragePage />} />

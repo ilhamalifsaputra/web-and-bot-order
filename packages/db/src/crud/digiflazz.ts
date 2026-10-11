@@ -45,7 +45,15 @@
 import { OrderStatus, OrderItemStatus, ProductType, DeliveryType } from "@app/core/enums";
 import { Decimal, moneyEq } from "@app/core/money";
 import { quantizeMoney } from "@app/core/formatters";
-import { parseMoneyInput, parsePercentInput } from "@app/core/moneyFormat";
+import {
+  applyMarkupRule,
+  applyRounding,
+  readStoredMarkupRule,
+  readStoredMarkupValue,
+  resolveRule,
+  type MarkupRule,
+  type RoundingPolicy,
+} from "@app/core/pricingRule";
 import { randomUUID } from "node:crypto";
 import { logger } from "@app/core/logger";
 import { encryptDeliveredContent } from "@app/core/credentialCrypto";
@@ -73,6 +81,16 @@ import { getOrder, finalizeDeliverySideEffects, enqueueBuyerOrderReadyEmailIfGue
 import { resolveNicknameGate, buildNicknameProviderEntries } from "./nickname";
 import { isDenominationBelowCost } from "@app/core/denominationPrices";
 import { enqueueAdminDigiflazzBelowCost, enqueueDigiflazzReviewAlert, enqueueAdminDigiflazzResyncAborted, enqueueAdminDigiflazzSkusChanged } from "./notifications";
+// pricingPolicy imports this module too (keys, supplier scope, sync lease).
+// The cycle is safe: neither module touches the other's bindings at load
+// time, only inside functions.
+import {
+  getPricingPolicy,
+  getCategoryRule,
+  getCategoryRuleMap,
+  PricingPolicyUnreadableError,
+  PRICING_ROUNDING_KEY,
+} from "./pricingPolicy";
 import { logAdminAction } from "./audit";
 import { ensureFulfillmentMessage } from "./fulfillmentMessages";
 import {
@@ -1727,19 +1745,12 @@ export async function getDigiflazzMarkupSettings(db: Db): Promise<{ type: string
 }
 
 /**
- * The markup amount a stored setting holds (a percent for type "percent", a
- * rupiah amount otherwise), or null when the stored value cannot be read as a
- * non-negative number. Blank or unset is a zero markup. The settings route
- * stores the plain decimal (`10`, `12.345`, `1500`), read exactly; anything
- * else (a legacy hand-typed value) is read by its shape — parsePercentInput
- * for a percent (`1,5`), parseMoneyInput for rupiah (`1,500`). `10%`, signs,
- * `NaN` and exponents are null: never thrown, never a negative markup.
+ * The markup amount a stored setting holds, or null when unreadable. Kept for
+ * existing callers; the parsing now lives in `readStoredMarkupValue`
+ * (`@app/core/pricingRule`), the single authority for the pricing formula.
  */
 export function readDigiflazzMarkup(settings: { type: string | null; value: string | null }): Decimal | null {
-  const raw = (settings.value ?? "").trim();
-  if (raw === "") return new Decimal(0);
-  if (/^\d{1,30}(\.\d{1,30})?$/.test(raw)) return new Decimal(raw);
-  return settings.type === "percent" ? parsePercentInput(raw) : parseMoneyInput(raw, "IDR");
+  return readStoredMarkupValue(settings);
 }
 
 /** Thrown by {@link applyDigiflazzMarkup} when the stored markup is unreadable
@@ -1755,24 +1766,90 @@ export class InvalidDigiflazzMarkupError extends Error {
  * access, safe to call per-row inside a loop. Throws
  * InvalidDigiflazzMarkupError when the stored markup is unreadable. */
 export function applyDigiflazzMarkup(cost: Decimal, settings: { type: string | null; value: string | null }): Decimal {
-  const amount = readDigiflazzMarkup(settings);
-  if (amount === null) throw new InvalidDigiflazzMarkupError();
-  if (settings.type === "percent") return cost.plus(cost.times(amount).dividedBy(100));
-  if (settings.type === "flat") return cost.plus(amount);
-  return cost;
+  // The formula lives in core (applyMarkupRule); this legacy wrapper only
+  // reads the stored pair. Global rule only, unrounded — the category- and
+  // rounding-aware sell price is digiflazzSellPrice below.
+  const rule = readStoredMarkupRule(settings);
+  if (rule === null) throw new InvalidDigiflazzMarkupError();
+  return applyMarkupRule(cost, rule);
 }
 
-/** Suggest a sell price from a Digiflazz cost using the admin's configured
- * global markup rule. Defaults to zero markup (sell === cost) when unset —
- * a deliberately visible "no markup configured yet" price rather than a
- * silently wrong guess, so an admin who hasn't set a rule notices at the
- * review screen instead of shipping a $0-margin catalog unknowingly.
+/**
+ * Everything needed to price Digiflazz SKUs, read once per run (the I3 rule:
+ * never one Settings read per row): the global default rule (the
+ * `digiflazz_markup_*` Settings), the rounding policy and the per-category
+ * rules. Built by {@link loadDigiflazzPriceContext}.
+ */
+export interface DigiflazzPriceContext {
+  /** The raw stored global markup pair, for logs. */
+  markupSettings: { type: string | null; value: string | null };
+  /** Null when the stored global markup is unreadable. */
+  globalRule: MarkupRule | null;
+  rounding: RoundingPolicy;
+  /** False when the stored rounding policy is not one this version knows. */
+  roundingReadable: boolean;
+  /** categoryId → that category's own rule; a missing id inherits the global rule. */
+  categoryRules: Map<number, MarkupRule>;
+}
+
+/** Load the pricing context once. With `onlyCategoryId`, only that one
+ * category's rule is read (a single-product caller); otherwise every
+ * category rule is. */
+export async function loadDigiflazzPriceContext(db: Db, onlyCategoryId?: number | null): Promise<DigiflazzPriceContext> {
+  const policy = await getPricingPolicy(db);
+  let categoryRules: Map<number, MarkupRule>;
+  if (onlyCategoryId === undefined) {
+    categoryRules = await getCategoryRuleMap(db);
+  } else {
+    categoryRules = new Map();
+    const rule = onlyCategoryId === null ? null : await getCategoryRule(db, onlyCategoryId);
+    if (rule && onlyCategoryId !== null) categoryRules.set(onlyCategoryId, rule);
+  }
+  return {
+    markupSettings: policy.globalRaw,
+    globalRule: policy.globalRule,
+    rounding: policy.rounding,
+    roundingReadable: policy.roundingReadable,
+    categoryRules,
+  };
+}
+
+/** Which stored policy piece stops the context from pricing anything, or
+ * null when it can price. Callers treat both like the long-standing
+ * unreadable-markup case: never guess a price from them. */
+export function digiflazzPriceContextProblem(ctx: DigiflazzPriceContext): "markup" | "rounding" | null {
+  if (ctx.globalRule === null) return "markup";
+  if (!ctx.roundingReadable) return "rounding";
+  return null;
+}
+
+/**
+ * The rule-based sell price for a Digiflazz cost: the category's own rule
+ * when it has one, else the global default, then the rounding policy
+ * (`applyRounding`; "none" is exactly the legacy quantizeMoney(x, 4)).
+ * Always derived from the cost, never from a previous price, so re-running
+ * it can never stack markup. Throws InvalidDigiflazzMarkupError (unreadable
+ * markup) or PricingPolicyUnreadableError (unreadable rounding).
+ */
+export function digiflazzSellPrice(ctx: DigiflazzPriceContext, cost: Decimal, categoryId: number | null): Decimal {
+  if (ctx.globalRule === null) throw new InvalidDigiflazzMarkupError();
+  if (!ctx.roundingReadable) throw new PricingPolicyUnreadableError("rounding");
+  const categoryRule = categoryId === null ? null : (ctx.categoryRules.get(categoryId) ?? null);
+  const { rule } = resolveRule(categoryRule, ctx.globalRule);
+  return applyRounding(applyMarkupRule(cost, rule), ctx.rounding);
+}
+
+/** Suggest a sell price from a Digiflazz cost: the category's rule (or the
+ * global default when `categoryId` is omitted/null or the category has none),
+ * rounded. An unset global markup is zero markup (sell === cost) — a
+ * deliberately visible "no markup configured yet" price rather than a
+ * silently wrong guess.
  *
- * Kept working (one Settings read per call) for any single-row caller; a
- * caller iterating many rows in one run should call
- * getDigiflazzMarkupSettings once and applyDigiflazzMarkup per row instead. */
-export async function computeDigiflazzMarkupPrice(db: Db, cost: Decimal): Promise<Decimal> {
-  return applyDigiflazzMarkup(cost, await getDigiflazzMarkupSettings(db));
+ * For single-row callers (a few Settings reads per call); a caller pricing
+ * many rows loads {@link loadDigiflazzPriceContext} once and calls
+ * {@link digiflazzSellPrice} per row instead. Throws like digiflazzSellPrice. */
+export async function computeDigiflazzMarkupPrice(db: Db, cost: Decimal, categoryId?: number | null): Promise<Decimal> {
+  return digiflazzSellPrice(await loadDigiflazzPriceContext(db, categoryId ?? null), cost, categoryId ?? null);
 }
 
 /**
@@ -1792,23 +1869,37 @@ export async function computeDigiflazzMarkupPrice(db: Db, cost: Decimal): Promis
  * is actually about to persist (never a stale pre-request row value) — this
  * function only compares what it's given.
  *
+ * `categoryId` is the category of the denomination's product: the price is
+ * compared against that category's rule (else the global default), rounded,
+ * exactly as the resync would compute it. Required so every caller decides;
+ * null compares against the global default only.
+ *
  * importDigiflazzBrand below intentionally does NOT call this: looping many
- * rows per call, it needs applyDigiflazzMarkup with a markup-settings read
- * done ONCE for the whole run (I3 fix) rather than the per-call Settings
- * read computeDigiflazzMarkupPrice (and so this function) does — but it
- * must stay logically equivalent to the rule here if either ever changes.
+ * rows per call, it loads the price context ONCE for the whole run (I3 fix)
+ * and uses {@link isPriceOverriddenInContext} — the same rule.
  */
 export async function isDigiflazzPriceOverridden(
   db: Db,
   price: Decimal,
   costPrice: Decimal | null,
+  categoryId: number | null,
 ): Promise<boolean> {
   if (costPrice == null) return true;
-  const settings = await getDigiflazzMarkupSettings(db);
-  // An unreadable markup cannot confirm the price matches a suggestion, so
-  // the price is protected, same as having no cost to compare against.
-  if (readDigiflazzMarkup(settings) === null) return true;
-  return !moneyEq(price, applyDigiflazzMarkup(costPrice, settings));
+  return isPriceOverriddenInContext(await loadDigiflazzPriceContext(db, categoryId), price, costPrice, categoryId);
+}
+
+/** isDigiflazzPriceOverridden against an already-loaded context. An
+ * unreadable markup or rounding cannot confirm the price matches a
+ * suggestion, so the price is protected, same as having no cost. */
+function isPriceOverriddenInContext(
+  ctx: DigiflazzPriceContext,
+  price: Decimal,
+  costPrice: Decimal | null,
+  categoryId: number | null,
+): boolean {
+  if (costPrice == null) return true;
+  if (digiflazzPriceContextProblem(ctx) !== null) return true;
+  return !moneyEq(price, digiflazzSellPrice(ctx, costPrice, categoryId));
 }
 
 export interface DigiflazzImportRow {
@@ -1824,7 +1915,9 @@ export interface DigiflazzImportRow {
 
 // supplierSku predates multi-provider mappings. Null source on a legacy row
 // means Digiflazz; other explicit providers have their own identity namespace.
-const DIGIFLAZZ_SUPPLIER_SCOPE: Prisma.DenominationWhereInput = {
+// Exported for crud/pricingPolicy.ts's reprice, which must cover exactly the
+// rows the resync covers.
+export const DIGIFLAZZ_SUPPLIER_SCOPE: Prisma.DenominationWhereInput = {
   OR: [{ autoDeliverySource: "digiflazz" }, { autoDeliverySource: null }],
 };
 
@@ -2088,7 +2181,9 @@ export async function importDigiflazzBrand(
     // so a wizard import and an hourly auto-add of one brand cannot both create
     // the same SKU.
     await tx.$queryRaw`SELECT id FROM products WHERE id = ${product.id} FOR UPDATE`;
-    const markupSettings = await getDigiflazzMarkupSettings(tx);
+    // Loaded once for the whole import (I3): the policy plus this product's
+    // own category rule — the category the resync will price it by.
+    const priceContext = await loadDigiflazzPriceContext(tx, product.categoryId);
     // Threaded out to the post-commit Task 10 shadow-detection pass below —
     // {id, name} of every denomination this call created/updated, so that
     // pass never has to re-query for rows this same loop already touched.
@@ -2124,11 +2219,9 @@ export async function importDigiflazzBrand(
       if (ignoredSkus.has(row.buyerSkuCode) && existingDenomBySku.get(row.buyerSkuCode)?.isArchived !== false) { report.skipped++; continue; }
       const price = quantizeMoney(row.price, 4);
       const costPrice = quantizeMoney(row.costPrice, 4);
-      // An unreadable stored markup suggests nothing, so every imported price
-      // is protected as overridden (same rule as isDigiflazzPriceOverridden).
-      const priceOverridden =
-        readDigiflazzMarkup(markupSettings) === null ||
-        !price.equals(quantizeMoney(applyDigiflazzMarkup(costPrice, markupSettings), 4));
+      // An unreadable stored markup or rounding suggests nothing, so every
+      // imported price is protected as overridden (the isDigiflazzPriceOverridden rule).
+      const priceOverridden = isPriceOverriddenInContext(priceContext, price, costPrice, product.categoryId);
 
       // The Product itself is already region-scoped (args.brand is the
       // composite display name, e.g. "Mobile Legends (Indonesia)") once
@@ -2227,7 +2320,7 @@ type DigiflazzWriteReport = { created: number; updated: number; unchanged: numbe
 async function addNewDigiflazzSkusToImportedBrands(
   db: PrismaClient,
   rawPriceList: DigiflazzPriceListItem[],
-  markupSettings: { type: string | null; value: string | null },
+  priceContext: DigiflazzPriceContext,
   cap: number = DIGIFLAZZ_AUTO_ADD_CAP_PER_RUN,
   report?: DigiflazzWriteReport,
 ): Promise<number> {
@@ -2259,7 +2352,7 @@ async function addNewDigiflazzSkusToImportedBrands(
     const productId = group.existingProductId;
     let created: { id: number; name: string }[];
     try {
-      created = await createMissingSkusForBrand(db, productId, candidates, markupSettings);
+      created = await createMissingSkusForBrand(db, productId, candidates, priceContext);
     } catch (err) {
       if (report) report[(err as { code?: string }).code === "P2002" ? "conflicts" : "errors"]++;
       // One brand's failure must not stop the others or the rest of the sync.
@@ -2299,14 +2392,15 @@ async function createMissingSkusForBrand(
   db: PrismaClient,
   productId: number,
   candidates: DigiflazzPriceListItem[],
-  markupSettings: { type: string | null; value: string | null },
+  priceContext: DigiflazzPriceContext,
 ): Promise<{ id: number; name: string }[]> {
   return db.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT pg_advisory_xact_lock(73910421)::text`;
     await tx.$queryRaw`SELECT id FROM products WHERE id = ${productId} FOR UPDATE`;
     // Grouping happened before this lock. A duplicate repair or archive may
     // have retired its selected parent while this transaction was waiting.
-    const product = await tx.product.findUnique({ where: { id: productId }, select: { isActive: true, isArchived: true } });
+    // categoryId: new SKUs are priced by this product's category rule.
+    const product = await tx.product.findUnique({ where: { id: productId }, select: { isActive: true, isArchived: true, categoryId: true } });
     if (!product || product.isArchived) return [];
     const raced = await tx.denomination.findMany({
       where: { ...DIGIFLAZZ_SUPPLIER_SCOPE, supplierSku: { in: candidates.map((i) => i.buyerSkuCode) } },
@@ -2337,7 +2431,7 @@ async function createMissingSkusForBrand(
           productId,
           buyerSkuCode: item.buyerSkuCode,
           productName: item.productName,
-          price: quantizeMoney(applyDigiflazzMarkup(item.price, markupSettings), 4),
+          price: digiflazzSellPrice(priceContext, item.price, product.categoryId),
           costPrice: quantizeMoney(item.price, 4),
           priceOverridden: false,
           isActive: onSale,
@@ -2415,11 +2509,17 @@ async function resyncDigiflazzCatalogWithOutcome(
   const creds = await getDigiflazzCreds(db);
   if (!creds) return { counts: zero, abortReason: null };
 
-  const [rawPriceList, mapped, markupSettings] = await Promise.all([
+  const [rawPriceList, mapped, priceContext] = await Promise.all([
     fetchPriceList(creds),
-    db.denomination.findMany({ where: { ...DIGIFLAZZ_SUPPLIER_SCOPE, supplierSku: { not: null }, isArchived: false } }),
-    getDigiflazzMarkupSettings(db), // I3 fix: read once for the whole run, not once per denomination.
+    db.denomination.findMany({
+      where: { ...DIGIFLAZZ_SUPPLIER_SCOPE, supplierSku: { not: null }, isArchived: false },
+      include: { product: { select: { categoryId: true } } },
+    }),
+    // I3 fix: the policy and every category rule, read once for the whole
+    // run, not once per denomination.
+    loadDigiflazzPriceContext(db),
   ]);
+  const { markupSettings } = priceContext;
   // collapseToCheapestSeller first — a plain Map keyed by buyerSkuCode over
   // an uncollapsed list lets whichever duplicate-seller row happens to come
   // last in the array silently win, instead of the cheapest one.
@@ -2434,10 +2534,17 @@ async function resyncDigiflazzCatalogWithOutcome(
   // without repricing: each row keeps its current price, except that a price
   // the new cost has overtaken is lifted to the cost (never sold below cost).
   // Cost, raw name and deactivations still update; admins are told below.
-  const markupReadable = readDigiflazzMarkup(markupSettings) !== null;
-  const newSellPriceFor = (item: DigiflazzPriceListItem, currentPrice: Decimal) =>
+  // An unreadable stored rounding policy is treated the same way: no price is
+  // computed from a policy this version cannot read.
+  //
+  // The price is always cost → rule of the SKU's product category (else the
+  // global default) → rounding; never derived from the previous price, so a
+  // rule change followed by any number of syncs applies markup exactly once.
+  const pricingProblem = digiflazzPriceContextProblem(priceContext);
+  const markupReadable = pricingProblem === null;
+  const newSellPriceFor = (item: DigiflazzPriceListItem, currentPrice: Decimal, categoryId: number) =>
     markupReadable
-      ? quantizeMoney(applyDigiflazzMarkup(item.price, markupSettings), 4)
+      ? digiflazzSellPrice(priceContext, item.price, categoryId)
       : Decimal.max(currentPrice, quantizeMoney(item.price, 4));
 
   // Task 10 (backend audit 2026-08-21 C-1, second half) blast-radius circuit
@@ -2459,7 +2566,7 @@ async function resyncDigiflazzCatalogWithOutcome(
     const item = bySku.get(denom.supplierSku!);
     if (!item) continue;
     consideredRows++;
-    const newPrice = newSellPriceFor(item, denom.price);
+    const newPrice = newSellPriceFor(item, denom.price, denom.product.categoryId);
     const oldPrice = denom.price;
     // oldPrice.isZero() guards the ratio check below from dividing by zero:
     // any nonzero new price on a zero old price counts as a sharp change on
@@ -2566,7 +2673,10 @@ async function resyncDigiflazzCatalogWithOutcome(
     const counts = await db.$transaction(async tx => {
       const remembered = new Set(await lockDigiflazzAutoDeactivatedIds(tx));
       await tx.$queryRaw`SELECT id FROM denominations WHERE id = ${snapshot.id} FOR UPDATE`;
-      const denom = await tx.denomination.findUnique({ where: { id: snapshot.id } });
+      const denom = await tx.denomination.findUnique({
+        where: { id: snapshot.id },
+        include: { product: { select: { categoryId: true } } },
+      });
       if (!denom || denom.isArchived || denom.supplierSku !== snapshot.supplierSku) { writeReport.skipped++; return zero; }
       const item = bySku.get(denom.supplierSku!);
       const forget = remembered.has(denom.id) && denom.isActive ? [denom.id] : [];
@@ -2580,7 +2690,7 @@ async function resyncDigiflazzCatalogWithOutcome(
         costPrice: quantizeMoney(item.price, 4), supplierRawName: item.productName,
       };
       if (!denom.priceOverridden) {
-        const newPrice = newSellPriceFor(item, denom.price);
+        const newPrice = newSellPriceFor(item, denom.price, denom.product.categoryId);
         data.price = newPrice;
         if (!moneyEq(newPrice, denom.price)) counts.updated++;
       }
@@ -2624,7 +2734,7 @@ async function resyncDigiflazzCatalogWithOutcome(
   // and availability updates above are already committed.
   if (markupReadable) {
     try {
-      result.added = await addNewDigiflazzSkusToImportedBrands(db, rawPriceList, markupSettings, DIGIFLAZZ_AUTO_ADD_CAP_PER_RUN, writeReport);
+      result.added = await addNewDigiflazzSkusToImportedBrands(db, rawPriceList, priceContext, DIGIFLAZZ_AUTO_ADD_CAP_PER_RUN, writeReport);
       writeReport.created = result.added;
     } catch (err) {
       writeReport.errors++;
@@ -2655,7 +2765,7 @@ async function resyncDigiflazzCatalogWithOutcome(
     await tx.setting.update({ where: { key }, data: { value: JSON.stringify(belowCost) } });
   });
 
-  if (!markupReadable) {
+  if (pricingProblem === "markup") {
     logger.error(
       { setting: DIGIFLAZZ_MARKUP_VALUE_KEY, markupType: markupSettings.type },
       `The Digiflazz catalog sync could not read the stored markup setting "${DIGIFLAZZ_MARKUP_VALUE_KEY}" as a number of zero or more, so it kept every current sell price instead of repricing (only lifting a price the new supplier cost had overtaken up to that cost); costs and availability were still updated. Prices will keep drifting from the intended margin until an admin fixes the setting.`,
@@ -2667,6 +2777,21 @@ async function resyncDigiflazzCatalogWithOutcome(
       targetId: null,
       details:
         "The Digiflazz catalog sync could not read the markup value in Settings, so it kept the current sell prices instead of repricing them (a price below the new supplier cost was raised to that cost). Please fix the Digiflazz markup value in Settings; use 0 or leave it blank for no markup.",
+    });
+  } else if (pricingProblem === "rounding") {
+    logger.error(
+      { setting: PRICING_ROUNDING_KEY },
+      `The Digiflazz catalog sync could not read the stored rounding policy "${PRICING_ROUNDING_KEY}" as one this version knows, so it kept every current sell price instead of repricing (only lifting a price the new supplier cost had overtaken up to that cost); costs and availability were still updated. Prices will keep drifting from the intended margin until an admin saves the rounding policy again.`,
+    );
+    // Same action as the unreadable markup, so the existing admin surfaces
+    // that watch for it keep working; the sentence says which setting it is.
+    await logAdminAction(db, {
+      adminId: null,
+      action: "digiflazz_markup_unreadable",
+      targetType: "product",
+      targetId: null,
+      details:
+        "The Digiflazz catalog sync could not read the price rounding policy, so it kept the current sell prices instead of repricing them (a price below the new supplier cost was raised to that cost). Please save the rounding policy again on the Pricing & Margins page.",
     });
   } else if (result.updated > 0 || result.deactivated > 0 || result.added > 0 || result.reactivated > 0) {
     const parts = [
@@ -2708,7 +2833,13 @@ async function resyncDigiflazzCatalogWithOutcome(
   await recordPollHealth(db, "digiflazzCatalogSync", {
     lastTxCount: result.updated + result.deactivated + result.added + result.reactivated,
     success: markupReadable,
-    ...(markupReadable ? {} : { error: "Digiflazz markup setting is unreadable; prices were not repriced" }),
+    ...(markupReadable
+      ? {}
+      : {
+          error: pricingProblem === "rounding"
+            ? "Pricing rounding policy is unreadable; prices were not repriced"
+            : "Digiflazz markup setting is unreadable; prices were not repriced",
+        }),
   });
   emitDigiflazzCatalogSyncChanged();
   return { counts: result, abortReason: null };

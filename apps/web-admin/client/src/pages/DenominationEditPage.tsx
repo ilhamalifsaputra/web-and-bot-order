@@ -1,3 +1,6 @@
+import { PricingSummary, type CatalogPricingInfo } from "../components/catalog/PricingSummary";
+import { familyOfGroup } from "../lib/catalogFamily";
+import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
@@ -27,6 +30,7 @@ const DENOMINATION_TYPES = [
 ];
 
 interface EditableDenomination {
+  priceOverridden?: boolean;
   id: number;
   name: string;
   type: string;
@@ -77,7 +81,7 @@ interface ProductDetailForEdit {
     category: { id: number; name: string; group?: string | null } | null;
     denominations: EditableDenomination[];
   };
-  statsByDenom: Record<number, { rule: BulkPricingRule | null }>;
+  statsByDenom: Record<number, { rule: BulkPricingRule | null; pricing?: CatalogPricingInfo }>;
 }
 
 interface SiblingProduct {
@@ -113,7 +117,10 @@ export function DenominationEditPage() {
     enabled: !!productId,
   });
   const denomination = data?.product.denominations.find((d) => d.id === Number(denomId));
-  const isGame = data?.product.category?.group === "GAME_TOPUP";
+  const isGame = familyOfGroup(data?.product.category?.group) === "GAME_TOPUP";
+  const pricing = data?.statsByDenom?.[Number(denomId)]?.pricing;
+  const [pricingMode, setPricingMode] = useState<"auto" | "manual">("manual");
+  const [autoConfirm, setAutoConfirm] = useState(false);
 
   const { data: catalogList } = useQuery<CatalogListData>({
     queryKey: ["catalog"],
@@ -162,6 +169,7 @@ export function DenominationEditPage() {
     setType(denomination.type);
     setDurationLabel(denomination.durationLabel);
     setPrice(denomination.price);
+    setPricingMode(pricing?.automaticAvailable && !denomination.priceOverridden ? "auto" : "manual");
     setCostPrice(denomination.costPrice ?? "");
     setResellerPrice(denomination.resellerPrice ?? "");
     setPricePrefill({
@@ -195,6 +203,9 @@ export function DenominationEditPage() {
         name: name.trim(),
         type,
         durationLabel: durationLabel.trim(),
+        ...(isGame && autoDeliverySource === "digiflazz" && deliveryType === "manual_with_info" &&
+          (pricingMode !== (denomination?.priceOverridden ? "manual" : "auto") || price !== denomination?.price || costPrice !== (denomination?.costPrice ?? ""))
+          ? { pricingMode } : {}),
         price: price.trim(),
         ...(costPrice.trim() ? { costPrice: costPrice.trim() } : {}),
         ...(resellerPrice.trim() ? { resellerPrice: resellerPrice.trim() } : {}),
@@ -381,11 +392,23 @@ export function DenominationEditPage() {
           onNicknameCheckGameCodeChange={setNicknameCheckGameCode}
         />
 
+        {pricing && <PricingSummary pricing={pricing} />}
+        {isGame && autoDeliverySource === "digiflazz" && deliveryType === "manual_with_info" && (
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Mode harga</label>
+            <Select value={pricingMode} onValueChange={value => { if (value === "auto" && pricingMode === "manual") setAutoConfirm(true); else setPricingMode(value as "auto" | "manual"); }}>
+              <SelectTrigger aria-label="Mode harga"><SelectValue /></SelectTrigger>
+              <SelectContent><SelectItem value="auto" disabled={!costPrice.trim()}>Otomatis</SelectItem><SelectItem value="manual">Manual</SelectItem></SelectContent>
+            </Select>
+            <p className="text-xs text-ink-soft">Otomatis mengikuti HPP dan aturan kategori/global. Manual melindungi harga saat sync.</p>
+          </div>
+        )}
+        <ConfirmDialog open={autoConfirm} onOpenChange={setAutoConfirm} title="Gunakan harga otomatis?" description="Saat disimpan, harga manual akan diganti dengan hasil aturan terbaru dari HPP. Harga ditentukan kembali oleh server." variant="default" onConfirm={() => setPricingMode("auto")} />
         <div>
           <label className="text-sm font-medium text-ink">
             Price (IDR) <span className="text-rust">*</span>
           </label>
-          <Input className="mt-1" placeholder="e.g. 15000" value={price} onChange={(e) => setPrice(e.target.value)} />
+          <Input className="mt-1" placeholder="e.g. 15000" disabled={isGame && autoDeliverySource === "digiflazz" && deliveryType === "manual_with_info" && pricingMode === "auto"} value={price} onChange={(e) => setPrice(e.target.value)} />
           <p className="mt-1 text-xs text-ink-soft">Shown to customers.</p>
         </div>
 

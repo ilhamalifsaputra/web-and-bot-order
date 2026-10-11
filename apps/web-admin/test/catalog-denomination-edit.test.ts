@@ -854,3 +854,43 @@ describe("catalog below-cost flag", () => {
     expect(response.json().statsByDenom[String(denomId)].belowCost).toBe(belowCost);
   });
 });
+
+
+describe("pricing mode and unchanged-price regression", () => {
+  async function automaticSku() {
+    const category = await createCategory(prisma, "Game pricing");
+    await prisma.category.update({ where: { id: category.id }, data: { group: "GAME_TOPUP" } });
+    const product = await createCatalogProduct(prisma, { categoryId: category.id, name: "Game" });
+    const denom = await createDenomination(prisma, { productId: product.id, name: "86 Diamonds", type: "PRIVATE", durationLabel: "Instant", price: "11000", costPrice: "10000" });
+    await prisma.denomination.update({ where: { id: denom.id }, data: { autoDeliverySource: "digiflazz", supplierSku: "pricing-86", deliveryType: "manual_with_info" } });
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_TYPE_KEY, "percent");
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_VALUE_KEY, "20");
+    const body = { name: "Renamed", type: "PRIVATE", durationLabel: "Instant", price: "11000", costPrice: "10000", autoDeliverySource: "digiflazz", supplierSku: "pricing-86" };
+    return { denom, product, category, body };
+  }
+  it("keeps automatic status on an unrelated edit after the policy changes", async () => {
+    const { denom, body, product } = await automaticSku();
+    expect((await patchJson(`/api/catalog/denominations/${denom.id}`, cookie, csrf, body)).statusCode).toBe(200);
+    expect(await prisma.denomination.findUnique({ where: { id: denom.id } })).toMatchObject({ priceOverridden: false });
+    const res = await app.inject({ url: `/api/catalog/${product.id}`, cookies: { [COOKIE]: cookie } });
+    expect(res.json().statsByDenom[denom.id].pricing).toMatchObject({ effectivePrice: "11000", calculatedPrice: "12000", pendingReprice: true });
+  });
+  it("honors explicit manual even at calculated price, then auto applies category rounding", async () => {
+    const { denom, body, category } = await automaticSku();
+    expect((await patchJson(`/api/catalog/denominations/${denom.id}`, cookie, csrf, { ...body, price: "12000", pricingMode: "manual" })).statusCode).toBe(200);
+    expect((await prisma.denomination.findUniqueOrThrow({ where: { id: denom.id } })).priceOverridden).toBe(true);
+    await prisma.category.update({ where: { id: category.id }, data: { markupType: "percent", markupValue: "11" } });
+    await setSetting(prisma, "pricing_rounding", "ceil_500");
+    const response = await patchJson(`/api/catalog/denominations/${denom.id}`, cookie, csrf, { ...body, pricingMode: "auto" });
+    expect(response.statusCode, response.body).toBe(200);
+    const row = await prisma.denomination.findUniqueOrThrow({ where: { id: denom.id } });
+    expect(row.price.toString()).toBe("11500");
+    expect(row.priceOverridden).toBe(false);
+  });
+  it("refuses automatic without cost and on a Premium Apps SKU", async () => {
+    const { denom, body, category } = await automaticSku();
+    expect((await patchJson(`/api/catalog/denominations/${denom.id}`, cookie, csrf, { ...body, costPrice: null, pricingMode: "auto" })).statusCode).toBe(400);
+    await prisma.category.update({ where: { id: category.id }, data: { group: "PREMIUM_APPS" } });
+    expect((await patchJson(`/api/catalog/denominations/${denom.id}`, cookie, csrf, { ...body, pricingMode: "auto" })).statusCode).toBe(400);
+  });
+});

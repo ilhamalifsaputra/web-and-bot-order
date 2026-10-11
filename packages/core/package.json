@@ -8,6 +8,7 @@
     "./config": "./src/config.ts",
     "./money": "./src/money.ts",
     "./denominationPrices": "./src/denominationPrices.ts",
+    "./pricingRule": "./src/pricingRule.ts",
     "./canonicalProduct": "./src/canonicalProduct.ts",
     "./buttonLimits": "./src/buttonLimits.ts",
     "./telegramContact": "./src/telegramContact.ts",

@@ -4,9 +4,10 @@ import {
   getDigiflazzCreds,
   groupDigiflazzPriceListByBrand,
   isDigiflazzGameItem,
-  getDigiflazzMarkupSettings,
-  applyDigiflazzMarkup,
-  readDigiflazzMarkup,
+  loadDigiflazzPriceContext,
+  digiflazzPriceContextProblem,
+  digiflazzSellPrice,
+  PricingPolicyUnreadableError,
   InvalidDigiflazzMarkupError,
   importDigiflazzBrand,
   listAllCategories,
@@ -70,7 +71,7 @@ export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Prom
   // currentAdmin) because it makes a real paid outbound call to Digiflazz —
   // it must never be more permissive than /sync/apply right below it, which
   // it directly feeds into.
-  app.post("/api/catalog/digiflazz/sync/preview", { preHandler: csrfProtect }, async (_req, reply) => {
+  app.post("/api/catalog/digiflazz/sync/preview", { preHandler: csrfProtect }, async (req, reply) => {
     const creds = await getDigiflazzCreds(prisma);
     if (!creds) {
       return reply.code(400).send({ error: NO_CREDENTIALS_ERROR });
@@ -108,12 +109,21 @@ export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Prom
     // once per SKU — the old computeDigiflazzMarkupPrice-per-item shape could
     // issue thousands of concurrent Settings reads against the database on
     // one preview click.
-    const markupSettings = await getDigiflazzMarkupSettings(prisma);
-    // An unreadable stored markup cannot suggest any price: say so (400)
-    // instead of failing with a DecimalError deep in the mapping below.
-    if (readDigiflazzMarkup(markupSettings) === null) {
-      return reply.code(400).send({ error: new InvalidDigiflazzMarkupError().message });
+    const context = await loadDigiflazzPriceContext(prisma);
+    const problem = digiflazzPriceContextProblem(context);
+    if (problem) return reply.code(400).send({ error: problem === "markup"
+      ? new InvalidDigiflazzMarkupError().message : new PricingPolicyUnreadableError("rounding").message });
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const targetId = body.categoryId == null ? null : Number(body.categoryId);
+    if (targetId !== null && (!Number.isSafeInteger(targetId) || targetId <= 0 ||
+      !await prisma.category.findUnique({ where: { id: targetId } }))) {
+      return reply.code(400).send({ error: "Invalid target category." });
     }
+    const products = await prisma.product.findMany({
+      where: { id: { in: groups.flatMap(g => g.existingProductId === null ? [] : [g.existingProductId]) } },
+      select: { id: true, categoryId: true },
+    });
+    const categories = new Map(products.map(p => [p.id, p.categoryId]));
     const withPrices = groups.map((g) => ({
       brand: g.brand,
       rawBrand: g.rawBrand,
@@ -124,7 +134,7 @@ export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Prom
         buyerSkuCode: item.buyerSkuCode,
         productName: item.productName,
         costPrice: item.price.toString(),
-        suggestedPrice: applyDigiflazzMarkup(item.price, markupSettings).toString(),
+        suggestedPrice: digiflazzSellPrice(context, item.price, (g.existingProductId === null ? null : categories.get(g.existingProductId)) ?? targetId).toString(),
       })),
     }));
     return reply.send({ groups: withPrices });

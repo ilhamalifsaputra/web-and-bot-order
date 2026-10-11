@@ -339,7 +339,7 @@ export function DigiflazzSyncPage() {
         setRunError(message);
         if (err instanceof Error && (err.message === NO_CREDENTIALS_ERROR || err.message === RATE_LIMITED_ERROR)) return;
       }
-      const res = await apiPost<PreviewResponse>("/api/catalog/digiflazz/sync/preview", {});
+      const res = await apiPost<PreviewResponse>("/api/catalog/digiflazz/sync/preview", categoryId ? { categoryId: Number(categoryId) } : {});
       setPreview(res);
       setCheckedSkus(defaultCheckedSkus(res.groups));
     } catch (err) {
@@ -348,6 +348,20 @@ export function DigiflazzSyncPage() {
       clearInterval(elapsedInterval);
       setLoadingPreview(false);
     }
+  }
+
+  async function changeCategory(value: string) {
+    setCategoryId(value);
+    setLoadingPreview(true);
+    setPreviewError(null);
+    try {
+      // The endpoint reuses the cached provider list and recalculates suggestions
+      // with the target category. Explicitly typed price drafts remain manual.
+      const result = await apiPost<PreviewResponse>("/api/catalog/digiflazz/sync/preview", { categoryId: Number(value) });
+      setPreview(result);
+    } catch (err) {
+      setPreviewError(err instanceof Error ? err.message : "Could not calculate category prices.");
+    } finally { setLoadingPreview(false); }
   }
 
   function toggleExpanded(brand: string) {
@@ -525,7 +539,7 @@ export function DigiflazzSyncPage() {
               onChange={(e) => setFilter(e.target.value)}
               className="w-full sm:max-w-xs"
             />
-            <Select value={categoryId} onValueChange={setCategoryId}>
+            <Select value={categoryId} onValueChange={v => void changeCategory(v)} disabled={loadingPreview || importing}>
               <SelectTrigger className="w-full sm:max-w-xs">
                 <SelectValue placeholder="Target category" />
               </SelectTrigger>
@@ -618,7 +632,7 @@ export function DigiflazzSyncPage() {
 
           {newGroups.length > 0 && (
             <div className="flex flex-col items-start gap-1">
-              <Button onClick={() => void applyImport()} disabled={importing || !categoryId || hasInvalidCheckedPrice}>
+              <Button onClick={() => void applyImport()} disabled={importing || loadingPreview || !!previewError || !categoryId || hasInvalidCheckedPrice}>
                 {importing ? "Importing…" : "Impor Terpilih"}
               </Button>
               {hasInvalidCheckedPrice && (

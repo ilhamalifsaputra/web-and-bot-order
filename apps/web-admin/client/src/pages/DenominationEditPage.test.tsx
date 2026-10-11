@@ -443,3 +443,26 @@ describe("DenominationEditPage Telegram button hints", () => {
     await waitFor(() => expect(apiPatch).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ durationLabel: long })));
   });
 });
+
+describe("pricing family separation", () => {
+  const pricing = { automaticAvailable: true, source: "global_default", calculatedPrice: "12000", effectivePrice: "11000", costPrice: "10000", grossProfit: "1000", grossMarginPct: "9.09", warnings: [], pendingReprice: true };
+  it.each(["PREMIUM_APPS", null])("never offers automatic mode to app/legacy category %s", async group => {
+    vi.mocked(apiGet).mockResolvedValue({ product: { ...PRODUCT_DETAIL.product, category: { id: 1, name: "Apps", group } }, statsByDenom: { 10: { pricing: { ...pricing, automaticAvailable: false, source: "manual_sku", costPrice: null, grossMarginPct: null, grossProfit: null, calculatedPrice: null } } } });
+    render(<DenominationEditPage />, { wrapper: Wrapper });
+    await screen.findByText("HPP belum tersedia");
+    expect(screen.queryByRole("combobox", { name: "Mode harga" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Estimasi margin")).not.toBeInTheDocument();
+    expect(screen.queryByText("Harga hasil aturan")).not.toBeInTheDocument();
+  });
+  it("shows automatic/manual controls for Game Top Up and preserves mode on unrelated save", async () => {
+    vi.mocked(apiGet).mockImplementation(async url => url === "/api/catalog" ? { products: [] } : {
+      product: { ...PRODUCT_DETAIL.product, category: { id: 1, name: "Games", group: "GAME_TOPUP" }, denominations: [{ ...PRODUCT_DETAIL.product.denominations[0], price: "11000", priceOverridden: false, autoDeliverySource: "digiflazz", supplierSku: "game86", deliveryType: "manual_with_info", additionalFields: JSON.stringify(MANUAL_WITH_INFO_FIELDS) }] }, statsByDenom: { 10: { pricing } } });
+    vi.mocked(apiPatch).mockResolvedValue({ id: 10 });
+    render(<DenominationEditPage />, { wrapper: Wrapper });
+    await screen.findByRole("combobox", { name: "Mode harga" });
+    expect(screen.getByDisplayValue("11000")).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: /save changes/i }));
+    await waitFor(() => expect(apiPatch).toHaveBeenCalled());
+    expect(vi.mocked(apiPatch).mock.calls.at(-1)![1]).not.toHaveProperty("pricingMode");
+  });
+});

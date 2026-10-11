@@ -552,3 +552,18 @@ describe("POST /api/catalog/digiflazz/sync/run", () => {
     expect(audit[0]!.details).toMatch(/nothing was changed/i);
   });
 });
+
+it("previews the selected category markup and rounding without changing provider cost", async () => {
+  await setSetting(prisma, "digiflazz_username", "u");
+  await setSetting(prisma, "digiflazz_api_key", "k");
+  await setSetting(prisma, "digiflazz_markup_type", "percent");
+  await setSetting(prisma, "digiflazz_markup_value", "15");
+  await setSetting(prisma, "pricing_rounding", "ceil_500");
+  const category = await createCategory(prisma, { name: "Games", group: "GAME_TOPUP" });
+  await prisma.category.update({ where: { id: category.id }, data: { markupType: "percent", markupValue: "11" } });
+  digiflazzMock.getPriceList.mockResolvedValue([{ buyerSkuCode: "ml100", productName: "ML 100", category: "Game", brand: "Mobile Legends", type: "Umum", price: new Decimal(10000), buyerProductStatus: true, sellerProductStatus: true, stock: null }]);
+  const res = await postJson("/api/catalog/digiflazz/sync/preview", { categoryId: category.id });
+  expect(res.statusCode, res.body).toBe(200);
+  expect(res.json().groups[0].skus[0]).toMatchObject({ costPrice: "10000", suggestedPrice: "11500" });
+  expect(await prisma.denomination.count()).toBe(0);
+});

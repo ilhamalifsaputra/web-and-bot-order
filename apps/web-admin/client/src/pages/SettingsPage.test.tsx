@@ -420,7 +420,7 @@ describe("SettingsPage", () => {
   // block a value typed 10.000 / 1.500,50 that the server reads correctly.
   describe("money settings and exact_fields", () => {
     const USDT_MIN = { key: "wallet_topup_min_amount_usdt", label: "Wallet top-up min amount (USDT)", value: "1.234" };
-    const DIGIFLAZZ_MARKUP = { key: "digiflazz_markup_value", label: "Digiflazz markup value", value: "1500" };
+    const IDR_MIN = { key: "tokopay_min_amount", label: "TokoPay min amount", value: "1500" };
 
     async function saveMoneyField(
       field: { key: string; label: string; value: string },
@@ -464,8 +464,8 @@ describe("SettingsPage", () => {
     });
 
     it("does not block an amount typed in the Indonesian shape (1.500,50) that the server reads correctly", async () => {
-      const body = await saveMoneyField(DIGIFLAZZ_MARKUP, "1.500,50");
-      expect(body).toMatchObject({ key: "digiflazz_markup_value", value: "1.500,50" });
+      const body = await saveMoneyField(IDR_MIN, "1.500,50");
+      expect(body).toMatchObject({ key: "tokopay_min_amount", value: "1.500,50" });
       expect(body.exact_fields ?? []).toEqual([]);
     });
   });
@@ -880,4 +880,17 @@ describe("SettingsPage", () => {
     clickSpy.mockRestore();
     vi.unstubAllGlobals();
   });
+});
+
+it("keeps provider credentials but moves markup controls to Pricing & Margins", async () => {
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ ...SETTINGS_DATA, fields: [
+    { key: "digiflazz_username", label: "Digiflazz username", value: "demo", secret: false, hasValue: true, needsRestart: false },
+    { key: "digiflazz_markup_type", label: "Digiflazz markup type", value: "percent", secret: false, hasValue: true, needsRestart: false },
+    { key: "digiflazz_markup_value", label: "Digiflazz markup value", value: "15", secret: false, hasValue: true, needsRestart: false },
+  ] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+  render(<SettingsPage />, { wrapper: Wrapper });
+  expect(await screen.findByText("Digiflazz username")).toBeInTheDocument();
+  expect(screen.queryByText("Digiflazz markup type")).not.toBeInTheDocument();
+  expect(screen.queryByText("Digiflazz markup value")).not.toBeInTheDocument();
+  expect(screen.getByRole("link", { name: /Markup & pricing/ })).toHaveAttribute("href", "/pricing");
 });

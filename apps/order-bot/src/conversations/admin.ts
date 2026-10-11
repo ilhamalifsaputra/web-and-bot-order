@@ -997,7 +997,8 @@ export async function productEditConversation(conversation: MyConversation, ctx:
         const denom = await getDenomination(tx, denominationId);
         const data: { price: Decimal; priceOverridden?: boolean } = { price: p };
         if (denom?.autoDeliverySource === "digiflazz") {
-          data.priceOverridden = await isDigiflazzPriceOverridden(tx, p, denom.costPrice);
+          const parent = await tx.product.findUnique({ where: { id: denom.productId }, select: { categoryId: true } });
+          data.priceOverridden = await isDigiflazzPriceOverridden(tx, p, denom.costPrice, parent?.categoryId ?? null);
         }
         await updateDenomination(tx, denominationId, data);
         const admin = await getUserByTelegramId(tx, adminTg);

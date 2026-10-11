@@ -602,6 +602,29 @@ describe("InstantBuyPage", () => {
     expect(cartCalls()).toEqual([]);
   });
 
+  it("scrolls the place-order error into view exactly once when it appears", async () => {
+    const scrollIntoView = vi.fn();
+    (Element.prototype as unknown as { scrollIntoView: unknown }).scrollIntoView = scrollIntoView;
+    try {
+      renderInstantBuy();
+      await screen.findByText("Summary");
+      const basePost = (apiPost as Mock).getMockImplementation()!;
+      (apiPost as Mock).mockImplementation(async (path: string, body: Record<string, unknown>) => {
+        if (path === "/api/v1/topup/order") throw new Error("/api/v1/topup/order responded 500");
+        return basePost(path, body);
+      });
+      fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "1234567" } });
+      fireEvent.change(screen.getByLabelText("Zone ID"), { target: { value: "1111" } });
+      await waitFor(() => expect(screen.getAllByRole("button", { name: /Buy now/ })[0]).not.toBeDisabled());
+      expect(scrollIntoView).not.toHaveBeenCalled();
+      fireEvent.click(screen.getAllByRole("button", { name: /Buy now/ })[0]!);
+      expect(await screen.findByText("Something went wrong. Please try again.")).toBeInTheDocument();
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    } finally {
+      delete (Element.prototype as unknown as { scrollIntoView?: unknown }).scrollIntoView;
+    }
+  });
+
   // Batch 2 review finding: the preview query's own request never carries the
   // applied voucher code (previewMutation, a separate call, owns that
   // re-price) — with React Query's default staleTime:0, a background

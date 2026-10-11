@@ -46,6 +46,7 @@ import { useShopContext } from "../components/Layout";
 import { useDocumentTitle } from "../lib/useDocumentTitle";
 import { currentLang, t } from "../lib/i18n";
 import { humanError } from "../lib/errors";
+import { preferredScrollBehavior } from "../lib/scrollBehavior";
 import { formatPriceFor } from "../lib/format";
 import { rememberCodeEmailed } from "../lib/orderCodeEmailed";
 import { allFieldsValid, isValidEmail } from "../lib/deliveryFields";
@@ -132,6 +133,13 @@ export default function InstantBuyPage() {
   // guest-email branches compare against.
   const [placeOrderError, setPlaceOrderError] = useState<unknown>(null);
   const placeOrderErrorKey = placeOrderError instanceof Error ? placeOrderError.message : null;
+  // The banner sits above the summary card; a submit from the mobile sticky
+  // bar can leave it off-screen, so bring it into view when a new error lands.
+  const errorBannerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!placeOrderError) return;
+    errorBannerRef.current?.scrollIntoView?.({ block: "nearest", behavior: preferredScrollBehavior() });
+  }, [placeOrderError]);
   const [page, setPage] = useState<CheckoutData | null>(null);
   const [storedTotals, setTotals] = useState<CheckoutData | null>(null);
   const [pricedContext, setPricedContext] = useState("");
@@ -614,9 +622,11 @@ export default function InstantBuyPage() {
           {/* The place-order rejection and the "why is Buy blocked" hint sit
               right above the summary/submit, where the buyer is looking. */}
           {placeOrderErrorKey && !(page?.is_guest && placeOrderErrorKey === "web.guest_email_invalid") && (
-            <Alert variant="banner" tone="error">
-              {humanError(placeOrderError)}
-            </Alert>
+            <div ref={errorBannerRef}>
+              <Alert variant="banner" tone="error">
+                {humanError(placeOrderError)}
+              </Alert>
+            </div>
           )}
           {configValid && checkoutHint && <p className="mb-3 text-sm text-ink-soft" role="status" data-testid="checkout-hint">{checkoutHint}</p>}
           {page && totals ? (

@@ -841,6 +841,22 @@ describe("CheckoutPage", () => {
       expect(after).toBe(contextCallsBefore);
     });
 
+    it("scrolls the place-order error into view exactly once when it appears", async () => {
+      const scrollIntoView = vi.fn();
+      (Element.prototype as unknown as { scrollIntoView: unknown }).scrollIntoView = scrollIntoView;
+      try {
+        renderCheckout(() => checkoutData);
+        await screen.findByRole("heading", { name: "Checkout" });
+        (apiPost as Mock).mockRejectedValue(new Error("/api/v1/checkout responded 500"));
+        expect(scrollIntoView).not.toHaveBeenCalled();
+        fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
+        await screen.findByText("Something went wrong. Please try again.");
+        expect(scrollIntoView).toHaveBeenCalledTimes(1);
+      } finally {
+        delete (Element.prototype as unknown as { scrollIntoView?: unknown }).scrollIntoView;
+      }
+    });
+
     it("keeps the buyer on the page with a readable message when the server rejects the email", async () => {
       renderCheckout(() => guestData);
       await screen.findByRole("heading", { name: "Checkout" });

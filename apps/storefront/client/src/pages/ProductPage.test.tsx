@@ -695,13 +695,14 @@ describe("ProductPage", () => {
     expect(screen.queryByText("Shared account, instant delivery.")).not.toBeInTheDocument();
   });
 
-  // Batch 6 (H-14): the lead paragraph is clamped on phones so it cannot push
-  // the plan picker off the first screen; desktop shows it in full.
-  it("clamps the description to 3 lines on mobile only and keeps whitespace-pre-line", async () => {
+  // The description is rendered nowhere else, so it must never be clamped
+  // (a clamped paragraph on mobile would be unreadable content loss).
+  it("does not clamp the description and keeps whitespace-pre-line", async () => {
     renderProduct("netflix-premium", () => productData);
     await screen.findByRole("heading", { name: "Netflix Premium" });
     const desc = screen.getByText("Shared account, instant delivery.");
-    expect(desc).toHaveClass("line-clamp-3", "md:line-clamp-none", "whitespace-pre-line");
+    expect(desc).toHaveClass("whitespace-pre-line");
+    expect(desc.className).not.toMatch(/line-clamp/);
   });
 });
 

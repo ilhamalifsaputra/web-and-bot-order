@@ -335,7 +335,7 @@ export default function ProductPage() {
               spaces it from the image card. No heading: it's a plain lead
               paragraph, same as it was under the <h1>. */}
           {product.description && (
-            <div className="mt-4 text-sm leading-relaxed text-ink-soft whitespace-pre-line line-clamp-3 md:line-clamp-none">
+            <div className="mt-4 text-sm leading-relaxed text-ink-soft whitespace-pre-line">
               {product.description}
             </div>
           )}

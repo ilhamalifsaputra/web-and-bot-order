@@ -118,7 +118,7 @@ export default function ProductCard({ p, fx, lowThreshold }: ProductCardProps) {
               <FlashBadge percent={p.flash_discount} endsAt={p.flash_ends_at ?? null} tone="solid" />
             )}
             {p.bulk_discount && (
-              <span className="inline-flex items-center rounded-full bg-rust/90 px-2.5 py-1 text-xs font-medium text-white shadow-xs backdrop-blur-sm">
+              <span className="inline-flex items-center rounded-full bg-grass-tint px-2.5 py-1 text-xs font-medium text-grass-dark shadow-xs">
                 −{bulkPercent}%
               </span>
             )}

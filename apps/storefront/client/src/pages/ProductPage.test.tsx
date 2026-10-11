@@ -218,7 +218,7 @@ describe("ProductPage", () => {
     expect(await screen.findByRole("heading", { name: "Netflix Premium" })).toBeInTheDocument();
     const radio3mo = screen.getByRole("radio", { name: /3 Months/ });
     expect(radio3mo).toBeChecked();
-    const selectedPrice = document.querySelector(".font-display.font-semibold.text-pine.text-2xl");
+    const selectedPrice = document.querySelector(".font-display.font-semibold.text-ink.text-2xl");
     expect(selectedPrice).toHaveTextContent("Rp219,000");
     // In-stock plan selected -> buy form shown, not the restock CTA.
     expect(screen.getByRole("button", { name: /Add to cart/ })).toBeInTheDocument();
@@ -237,7 +237,7 @@ describe("ProductPage", () => {
     await screen.findByRole("heading", { name: "Netflix Premium" });
     const radio6mo = screen.getByRole("radio", { name: /6 Months/ });
     fireEvent.click(radio6mo);
-    const selectedPrice = document.querySelector(".font-display.font-semibold.text-pine.text-2xl");
+    const selectedPrice = document.querySelector(".font-display.font-semibold.text-ink.text-2xl");
     await waitFor(() => expect(selectedPrice).toHaveTextContent("Rp399,000"));
     const qtyInput = screen.getByLabelText("Quantity") as HTMLInputElement;
     expect(qtyInput.max).toBe("20");
@@ -616,7 +616,7 @@ describe("ProductPage", () => {
     };
     renderProduct("netflix-premium", () => onSale);
     await screen.findByRole("heading", { name: "Netflix Premium" });
-    const selectedPrice = document.querySelector(".font-display.font-semibold.text-pine.text-2xl");
+    const selectedPrice = document.querySelector(".font-display.font-semibold.text-ink.text-2xl");
     expect(selectedPrice).toHaveTextContent("Rp175,200");
     // One badge on the plan card, one in the live summary.
     expect(screen.getAllByText(/Flash sale/).length).toBeGreaterThan(0);

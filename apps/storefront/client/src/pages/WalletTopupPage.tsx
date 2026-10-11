@@ -310,7 +310,8 @@ export default function WalletTopupPage() {
               {(["IDR", "USDT"] as const).map((cur) => (
                 <Button
                   key={cur}
-                  variant={cur === currency ? "primary" : "soft"}
+                  variant={cur === currency ? "soft" : "ghost"}
+                  aria-pressed={cur === currency}
                   onClick={() => setCurrency(cur)}
                 >
                   {cur === "IDR" ? t("web.wallet_topup_currency_idr") : t("web.wallet_topup_currency_usdt")}

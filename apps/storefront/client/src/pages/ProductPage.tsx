@@ -371,7 +371,7 @@ export default function ProductPage() {
               <div className="flex items-baseline gap-2 flex-wrap">
                 {/* `selected.price` already carries the flash discount — the
                     struck figure beside it is the pre-sale one. */}
-                <div className="font-display font-semibold text-pine text-2xl">
+                <div className="font-display font-semibold text-ink text-2xl">
                   {selected.canonical?.formattedPrice ?? formatPriceFor(selected.price, ctx?.currency ?? null, fx)}
                 </div>
                 {selected.flash && (

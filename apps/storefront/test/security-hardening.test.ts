@@ -1,7 +1,7 @@
 import "./setup-env";
 import { beforeAll, afterAll, describe, it, expect, vi } from "vitest";
 import { createHmac, createHash } from "node:crypto";
-import { unlink } from "node:fs/promises";
+import { mkdir, writeFile, unlink } from "node:fs/promises";
 import { join, basename } from "node:path";
 import { prisma, initDb, setSetting, createTicket } from "@app/db";
 import { mintGuestOrderAccess } from "@app/core/guestOrderAccess";
@@ -11,7 +11,7 @@ import { buildApp } from "../src/server";
 import { buildApp as buildAdmin } from "../../web-admin/src/server";
 import { makeSession, sessionJtiKey } from "../../web-admin/src/auth";
 import { makeCustomerSession, SHOP_COOKIE_NAME, shopSessionJtiKey, verifyTelegramLoginResult } from "../src/auth";
-import { TICKET_DIR, writeAttachments } from "../src/lib/ticketAttachments";
+import { TICKET_DIR } from "../src/lib/ticketAttachments";
 import { supportRateLimited } from "../src/rateLimit";
 
 vi.mock("@app/core/mailer", () => ({ sendMail: vi.fn() }));
@@ -61,7 +61,9 @@ describe("hardening boundary", () => {
   it("attachment privat di kedua host: owner/admin boleh, anonim/akun B tidak", async () => {
     const a = await customer(); const b = await customer();
     const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", "base64");
-    const url = (await writeAttachments([{ buffer: png, ext: "png" }]))!; files.push(url);
+    const url = `/uploads/tickets/historical-${++sequence}.png`; files.push(url);
+    await mkdir(TICKET_DIR, { recursive: true });
+    await writeFile(join(TICKET_DIR, basename(url)), png);
     const ticket = await createTicket(prisma, a.user.id, "<svg onload=alert(1)>", null, url);
     const ownerFile = await app.inject({ url, headers: { cookie: a.cookie } });
     expect(ownerFile.statusCode).toBe(200);

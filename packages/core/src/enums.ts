@@ -442,6 +442,7 @@ export const zVoucherScope = z.nativeEnum(VoucherScope);
  * graduated from shadow to live.
  */
 export const TicketStatus = {
+  IN_PROGRESS: "IN_PROGRESS",
   OPEN: "OPEN",
   /** Retired as a normal write target (see this const's doc comment) —
    * `WAITING_CUSTOMER` is now written instead. Kept for historical rows and

@@ -248,7 +248,7 @@ const dispatchCurrency: DomainDispatcher = async (ctx, parts) => {
 const dispatchTicket: DomainDispatcher = async (ctx, parts) => {
   // user-side ticket management; 'reply' is owned by the ticket-reply conv
   const action = parts[2];
-  if (action === "list") await customer.listMyTickets(ctx);
+  if (action === "list") await customer.listMyTickets(ctx, Number(parts[3] ?? 1));
   else if (action === "view") await customer.viewMyTicket(ctx, parseInt(parts[3]!, 10));
   else if (action === "close") await closeTicketUser(ctx, parseInt(parts[3]!, 10));
   else if (action === "reopen") await reopenTicketUser(ctx, parseInt(parts[3]!, 10));

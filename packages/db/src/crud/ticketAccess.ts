@@ -8,7 +8,7 @@ export async function ownsTicketAttachment(db: PrismaClient, userId: number, url
   ];
   const [tickets, messages] = await Promise.all([
     db.supportTicket.findFirst({ where: { userId, OR }, select: { id: true } }),
-    db.ticketMessage.findFirst({ where: { ticket: { userId }, OR }, select: { id: true } }),
+    db.ticketMessage.findFirst({ where: { ticket: { userId }, internal: false, OR }, select: { id: true } }),
   ]);
   return tickets !== null || messages !== null;
 }

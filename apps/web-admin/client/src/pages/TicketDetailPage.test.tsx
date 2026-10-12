@@ -223,19 +223,19 @@ describe("TicketDetailPage — header", () => {
   it("uses the subject as the description, not the customer's full complaint", async () => {
     await renderLoaded();
     const h1 = screen.getByRole("heading", { level: 1 });
-    expect(h1).toHaveTextContent("Ticket #1");
+    expect(h1).toHaveTextContent("Order tidak sampai");
     expect(h1.parentElement).toHaveTextContent("Order tidak sampai");
     expect(h1.parentElement).not.toHaveTextContent("mohon bantuannya");
   });
 
   it("shows the ticketNumber when present", async () => {
     await renderLoaded({ ...BASE_DETAIL, ticket: { ...BASE_TICKET, ticketNumber: "TCK-20260828-00001" } });
-    expect(screen.getByText("Ticket TCK-20260828-00001")).toBeInTheDocument();
+    expect(screen.getByText("TCK-20260828-00001")).toBeInTheDocument();
   });
 
   it("falls back to #id for a historical ticket with no ticketNumber", async () => {
     await renderLoaded();
-    expect(screen.getByText("Ticket #1")).toBeInTheDocument();
+    expect(screen.getAllByText("#1").length).toBeGreaterThan(0);
   });
 
   it("labels a waiting-for-customer ticket in plain words", async () => {
@@ -350,7 +350,7 @@ describe("TicketDetailPage — conversation", () => {
     await user.click(within(conversation).getByRole("button", { name: /^send reply$/i }));
 
     await waitFor(() =>
-      expect(apiPost).toHaveBeenCalledWith("/api/support/1/reply", { content: "We're checking.", internal: false }),
+      expect(apiPost).toHaveBeenCalledWith("/api/support/1/reply", { content: "We're checking.", internal: false, request_id: expect.any(String), attachment_ids: [] }),
     );
   });
 
@@ -367,6 +367,8 @@ describe("TicketDetailPage — conversation", () => {
       expect(apiPost).toHaveBeenCalledWith("/api/support/1/reply", {
         content: "Checked with the courier.",
         internal: true,
+        request_id: expect.any(String),
+        attachment_ids: [],
       }),
     );
   });

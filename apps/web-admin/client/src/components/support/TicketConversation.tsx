@@ -1,3 +1,4 @@
+import { SupportMediaGallery } from "./SupportMediaGallery";
 import type { ReactNode } from "react";
 import { Lock } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -16,6 +17,7 @@ export interface ConversationMessage {
   timeTitle: string;
   content: string;
   photoIds: string[];
+  attachments?: string[];
 }
 
 interface TicketConversationProps {
@@ -75,7 +77,8 @@ export function TicketConversation({ messages, onPreviewPhoto, composer, closedN
               </div>
               {/* pre-wrap keeps the customer's line breaks; break-words stops a
                   pasted URL or token from overflowing the bubble. */}
-              <div className="text-sm whitespace-pre-wrap break-words text-ink">{m.content}</div>
+              <div className="text-sm whitespace-pre-wrap [overflow-wrap:anywhere] text-ink">{m.content}</div>
+              <SupportMediaGallery urls={m.attachments ?? []} />
               {m.photoIds.length > 0 && (
                 <div className="mt-2 flex flex-wrap gap-2">
                   {m.photoIds.map((fileId) => (

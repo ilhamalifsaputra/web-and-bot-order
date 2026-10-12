@@ -16,6 +16,8 @@ vi.mock("../api/client", () => ({
 const openTicket: TicketDetailData = {
   ticket: {
     id: 7,
+    subject: "Login issue",
+    ticket_number: "TKT-20260701-ABC123",
     message: "It broke",
     status: "open",
     created_at_display: "2026-07-01 09:00",
@@ -51,6 +53,7 @@ function renderTicket(respond: (path: string) => unknown, id = "7", ctx: object 
   (apiGet as Mock).mockImplementation(async (path: string) => {
     if (path === "/api/v1/pages/context") return ctx;
     if (path === "/api/v1/account/support") return emptySupportList;
+    if (path === "/api/v1/account/support/options") return { media: { enabled: true } };
     return respond(path);
   });
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -94,14 +97,14 @@ describe("TicketDetailPage", () => {
 
   it("renders the thread (opening message included) and posts a reply, then refetches", async () => {
     renderTicket(() => openTicket);
-    expect(await screen.findByRole("heading", { name: "Ticket #7" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Login issue" })).toBeInTheDocument();
     expect(screen.getByText("It broke")).toBeInTheDocument();
 
     fireEvent.change(screen.getByPlaceholderText("Tell us what's wrong…"), { target: { value: "Still broken" } });
     (apiPost as Mock).mockResolvedValue({ ok: true });
     fireEvent.click(screen.getByRole("button", { name: "Reply" }));
     await waitFor(() =>
-      expect(apiPost).toHaveBeenCalledWith("/api/v1/account/support/7/reply", { message: "Still broken" }),
+      expect(apiPost).toHaveBeenCalledWith("/api/v1/account/support/7/reply", { message: "Still broken", request_id: expect.any(String), attachment_ids: [] }),
     );
   });
 
@@ -110,7 +113,7 @@ describe("TicketDetailPage", () => {
       ...openTicket,
       ticket: { ...openTicket.ticket, status: "closed", closed: true, reopenable: false },
     }));
-    await screen.findByRole("heading", { name: "Ticket #7" });
+    await screen.findByRole("heading", { name: "Login issue" });
     expect(screen.queryByPlaceholderText("Tell us what's wrong…")).not.toBeInTheDocument();
     expect(screen.getByText("This ticket is closed.")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Reopen ticket" })).not.toBeInTheDocument();
@@ -121,7 +124,7 @@ describe("TicketDetailPage", () => {
       ...openTicket,
       ticket: { ...openTicket.ticket, status: "closed", closed: true, closed_at_display: "2026-07-02 09:00", reopenable: true },
     }));
-    await screen.findByRole("heading", { name: "Ticket #7" });
+    await screen.findByRole("heading", { name: "Login issue" });
     (apiPost as Mock).mockResolvedValue({ ok: true });
     fireEvent.click(screen.getByRole("button", { name: "Reopen ticket" }));
     await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/v1/account/support/7/reopen", {}));
@@ -132,7 +135,7 @@ describe("TicketDetailPage", () => {
       ...openTicket,
       messages: [{ id: 1, from_user: false, content: "try this fix", created_at_display: "2026-07-01 09:05", attachments: [] }],
     }));
-    await screen.findByRole("heading", { name: "Ticket #7" });
+    await screen.findByRole("heading", { name: "Login issue" });
     (apiPost as Mock).mockResolvedValue({ ok: true });
     fireEvent.click(screen.getByRole("button", { name: "Issue solved" }));
     await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/v1/account/support/7/close", {}));
@@ -140,13 +143,13 @@ describe("TicketDetailPage", () => {
 
   it("does not show Issue Solved before support has replied", async () => {
     renderTicket(() => openTicket);
-    await screen.findByRole("heading", { name: "Ticket #7" });
+    await screen.findByRole("heading", { name: "Login issue" });
     expect(screen.queryByRole("button", { name: "Issue solved" })).not.toBeInTheDocument();
   });
 
   it("a quick-reply template fills the composer instead of submitting", async () => {
     renderTicket(() => openTicket);
-    await screen.findByRole("heading", { name: "Ticket #7" });
+    await screen.findByRole("heading", { name: "Login issue" });
     fireEvent.click(screen.getByRole("button", { name: "Request a refund" }));
     expect(screen.getByPlaceholderText("Tell us what's wrong…")).toHaveValue(
       "I'd like to request a refund for this order. Reason: ",
@@ -169,14 +172,14 @@ describe("TicketDetailPage", () => {
         items: [{ id: 2, name: "Netflix", duration: "1 month", warranty_days: 30, warranty_expires_at_display: "2026-08-01 10:00", warranty_active: true }],
       },
     }));
-    await screen.findByRole("heading", { name: "Ticket #7" });
+    await screen.findByRole("heading", { name: "Login issue" });
     expect(screen.getByText("ORD-TICK-1")).toBeInTheDocument();
     expect(screen.getByText(/Netflix/)).toBeInTheDocument();
   });
 
   it("links the sidebar's Telegram help to support_contact, never to the bot username", async () => {
     renderTicket(() => openTicket);
-    await screen.findByRole("heading", { name: "Ticket #7" });
+    await screen.findByRole("heading", { name: "Login issue" });
     expect(screen.getByRole("link", { name: "Message us on Telegram" })).toHaveAttribute(
       "href",
       "https://t.me/shopsupport",
@@ -185,14 +188,14 @@ describe("TicketDetailPage", () => {
 
   it("hides the sidebar's Telegram help when support_contact is unset, even with a bot username", async () => {
     renderTicket(() => openTicket, "7", { ...context, support_telegram_url: null });
-    await screen.findByRole("heading", { name: "Ticket #7" });
+    await screen.findByRole("heading", { name: "Login issue" });
     expect(screen.queryByRole("link", { name: "Message us on Telegram" })).not.toBeInTheDocument();
     expect(document.querySelector('a[href*="tokobot"]')).toBeNull();
   });
 
   it("shows the generic no-order sidebar text when the ticket has no linked order", async () => {
     renderTicket(() => openTicket);
-    await screen.findByRole("heading", { name: "Ticket #7" });
+    await screen.findByRole("heading", { name: "Login issue" });
     expect(screen.getByText("This ticket isn't linked to a specific order.")).toBeInTheDocument();
   });
 
@@ -211,52 +214,44 @@ describe("TicketDetailPage", () => {
       ticket: { ...openTicket.ticket, attachments: ["/uploads/tickets/evidence-a.png"] },
       messages: [{ id: 3, from_user: true, content: "more", created_at_display: "2026-07-01 09:05", attachments: ["/uploads/tickets/evidence-b.mp4"] }],
     }));
-    await screen.findByRole("heading", { name: "Ticket #7" });
+    await screen.findByRole("heading", { name: "Login issue" });
     expect(document.querySelector('img[src="/uploads/tickets/evidence-a.png"]')).toBeInTheDocument();
     expect(document.querySelector('video[src="/uploads/tickets/evidence-b.mp4"]')).toBeInTheDocument();
   });
 
-  it("attaches a file to a reply and submits via apiPostFormWithProgress instead of apiPost", async () => {
-    renderTicket(() => openTicket);
-    await screen.findByRole("heading", { name: "Ticket #7" });
-    fireEvent.change(screen.getByPlaceholderText("Tell us what's wrong…"), { target: { value: "Still broken" } });
-    const file = new File(["fake video bytes"], "evidence.mp4", { type: "video/mp4" });
-    fireEvent.change(document.querySelector('input[type="file"]')!, { target: { files: [file] } });
-    (apiPostFormWithProgress as Mock).mockResolvedValue({ ok: true });
-    fireEvent.click(screen.getByRole("button", { name: "Reply" }));
-    await waitFor(() => expect(apiPostFormWithProgress).toHaveBeenCalled());
-    expect(apiPost).not.toHaveBeenCalled();
-    const [path, form] = (apiPostFormWithProgress as Mock).mock.calls[0] as [string, FormData, unknown];
-    expect(path).toBe("/api/v1/account/support/7/reply");
-    expect(form.get("message")).toBe("Still broken");
-    expect(form.get("attachments")).toBeInstanceOf(File);
-  });
-
-  it("shows a progress bar reflecting upload progress while a reply attachment is uploading", async () => {
-    renderTicket(() => openTicket);
-    await screen.findByRole("heading", { name: "Ticket #7" });
-    fireEvent.change(screen.getByPlaceholderText("Tell us what's wrong…"), { target: { value: "Still broken" } });
-    const file = new File(["fake video bytes"], "evidence.mp4", { type: "video/mp4" });
-    fireEvent.change(document.querySelector('input[type="file"]')!, { target: { files: [file] } });
-
-    let capturedOnProgress: ((pct: number) => void) | undefined;
-    (apiPostFormWithProgress as Mock).mockImplementation(
-      (_path: string, _form: FormData, onProgress: (pct: number) => void) => {
-        capturedOnProgress = onProgress;
-        return new Promise(() => {});
-      },
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Reply" }));
-    await waitFor(() => expect(apiPostFormWithProgress).toHaveBeenCalled());
-
-    act(() => capturedOnProgress?.(77));
-    await waitFor(() => expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "77"));
+  it("uploads directly, blocks send until verification, and sends only attachment IDs", async () => {
+    const requests: FakeUpload[] = [];
+    class FakeUpload {
+      upload = { onprogress: null as null | ((event: { lengthComputable: boolean; loaded: number; total: number }) => void) };
+      status = 200; timeout = 0;
+      onload: null | (() => void) = null;
+      onerror = null; ontimeout = null; onabort = null;
+      open = vi.fn(); setRequestHeader = vi.fn(); abort = vi.fn();
+      send() { requests.push(this); }
+    }
+    vi.stubGlobal("XMLHttpRequest", FakeUpload);
+    (apiPost as Mock).mockImplementation(async (path: string) => path.endsWith("/uploads") ? { id: "verified-file", url: "https://r2.example/upload", headers: { "Content-Type": "video/mp4" } } : { ok: true });
+    try {
+      renderTicket(() => openTicket);
+      await screen.findByRole("heading", { name: "Login issue" });
+      fireEvent.change(screen.getByPlaceholderText("Tell us what's wrong\u2026"), { target: { value: "Still broken" } });
+      fireEvent.change(document.querySelector('input[type="file"]')!, { target: { files: [new File(["video bytes"], "evidence.mp4", { type: "video/mp4" })] } });
+      await waitFor(() => expect(requests).toHaveLength(1));
+      expect(screen.getByRole("button", { name: "Reply" })).toBeDisabled();
+      act(() => requests[0]!.upload.onprogress!({ lengthComputable: true, loaded: 77, total: 100 }));
+      expect(screen.getByRole("progressbar")).toHaveAttribute("value", "77");
+      act(() => requests[0]!.onload!());
+      await waitFor(() => expect(screen.getByRole("button", { name: "Reply" })).toBeEnabled());
+      expect(apiPost).toHaveBeenCalledWith("/api/v1/account/support/uploads/verified-file/finalize", {});
+      fireEvent.click(screen.getByRole("button", { name: "Reply" }));
+      await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/v1/account/support/7/reply", { message: "Still broken", request_id: expect.any(String), attachment_ids: ["verified-file"] }));
+    } finally { vi.unstubAllGlobals(); }
   });
 
   it("loads a saved draft into the composer on mount", async () => {
     localStorage.setItem("ticket-draft:7", "resuming my draft");
     renderTicket(() => openTicket);
-    await screen.findByRole("heading", { name: "Ticket #7" });
+    await screen.findByRole("heading", { name: "Login issue" });
     expect(screen.getByPlaceholderText("Tell us what's wrong…")).toHaveValue("resuming my draft");
   });
 });

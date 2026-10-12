@@ -60,27 +60,27 @@ model User {
   referredBy User?  @relation("UserReferral", fields: [referredById], references: [id], onUpdate: NoAction)
   referees   User[] @relation("UserReferral")
 
-  orders                Order[]
-  cartItems             CartItem[]
-  reviews               Review[]
-  restockSubscriptions  RestockSubscription[]
-  auditLogs             AuditLog[]
-  auditLogsAsCustomer   AuditLog[]            @relation("AuditLogCustomer")
-  ticketMessages        TicketMessage[]
-  walletTransactions    WalletTransaction[]
-  passwordResetTokens   PasswordResetToken[]
-  referralsAsReferee    Referral?             @relation("ReferralReferee")
-  referralsAsReferrer   Referral[]            @relation("ReferralReferrer")
-  ticketsAsUser         SupportTicket[]       @relation("TicketUser")
-  ticketsAsAdmin        SupportTicket[]       @relation("TicketAdmin")
-  ticketsAssignedBy     SupportTicket[]       @relation("TicketAssignedBy")
-  voucherRedemptions    VoucherRedemption[]
-  reviewsRepliedAsAdmin Review[]              @relation("ReviewRepliedByAdmin")
-  adminTasksAssigned    AdminTask[]           @relation("AdminTaskAssignee")
-  stockItemsAddedAsAdmin      StockItem[]      @relation("StockItemAddedByAdmin")
-  stockItemsDeletedAsAdmin    StockItem[]      @relation("StockItemDeletedByAdmin")
-  stockItemEventsAsActorAdmin StockItemEvent[] @relation("StockItemEventActorAdmin")
-  stockItemEventsAsCustomer   StockItemEvent[] @relation("StockItemEventActorCustomer")
+  orders                      Order[]
+  cartItems                   CartItem[]
+  reviews                     Review[]
+  restockSubscriptions        RestockSubscription[]
+  auditLogs                   AuditLog[]
+  auditLogsAsCustomer         AuditLog[]            @relation("AuditLogCustomer")
+  ticketMessages              TicketMessage[]
+  walletTransactions          WalletTransaction[]
+  passwordResetTokens         PasswordResetToken[]
+  referralsAsReferee          Referral?             @relation("ReferralReferee")
+  referralsAsReferrer         Referral[]            @relation("ReferralReferrer")
+  ticketsAsUser               SupportTicket[]       @relation("TicketUser")
+  ticketsAsAdmin              SupportTicket[]       @relation("TicketAdmin")
+  ticketsAssignedBy           SupportTicket[]       @relation("TicketAssignedBy")
+  voucherRedemptions          VoucherRedemption[]
+  reviewsRepliedAsAdmin       Review[]              @relation("ReviewRepliedByAdmin")
+  adminTasksAssigned          AdminTask[]           @relation("AdminTaskAssignee")
+  stockItemsAddedAsAdmin      StockItem[]           @relation("StockItemAddedByAdmin")
+  stockItemsDeletedAsAdmin    StockItem[]           @relation("StockItemDeletedByAdmin")
+  stockItemEventsAsActorAdmin StockItemEvent[]      @relation("StockItemEventActorAdmin")
+  stockItemEventsAsCustomer   StockItemEvent[]      @relation("StockItemEventActorCustomer")
 
   @@index([role, createdAt], map: "ix_users_role_created_at")
   @@index([lastSeenAt], map: "ix_users_last_seen_at")
@@ -165,17 +165,17 @@ model PasswordResetToken {
 }
 
 model Category {
-  id           Int     @id @default(autoincrement())
-  name         String  @unique
+  id           Int      @id @default(autoincrement())
+  name         String   @unique
   /// URL-safe handle (storefront `/c/:slug`). Backfilled from name at the
   /// catalog-rename migration; UNIQUE + NOT NULL.
-  slug         String  @unique(map: "ix_categories_slug")
+  slug         String   @unique(map: "ix_categories_slug")
   emoji        String?
   description  String?
   /// Web-facing category image URL (admin-set, storefront only).
   image        String?
-  sortOrder    Int     @default(0) @map("sort_order")
-  isActive     Boolean @default(true) @map("is_active")
+  sortOrder    Int      @default(0) @map("sort_order")
+  isActive     Boolean  @default(true) @map("is_active")
   /// Top-level bucket for the bot's "🛍 Products" entry point — GAME_TOPUP |
   /// PREMIUM_APPS (packages/core/src/enums.ts CategoryGroup). Admin-set, null
   /// until classified. A category with no group is unreachable from the
@@ -187,7 +187,7 @@ model Category {
   /// "catalog" (default, unchanged behavior — normal cart/checkout flow) or
   /// "instant" (Digiflazz-backed top-up pilot — buyer enters a game ID/server
   /// at checkout and the order auto-dispatches to the supplier on payment).
-  checkoutFlow String  @default("catalog") @map("checkout_flow")
+  checkoutFlow String   @default("catalog") @map("checkout_flow")
   /// Category markup rule for supplier-costed (Digiflazz) SKUs in this
   /// category: "percent" | "flat", always set together with markupValue (a
   /// percent, or a rupiah amount for "flat"). Both null = inherit the global
@@ -350,7 +350,7 @@ model Denomination {
   /// product regardless of who (if anyone) auto-fulfils it.
   nicknameCheckGameCode String?   @map("nickname_check_game_code")
   /// Server-only JSON mapping: nickname parameter keys and supplier target format.
-  providerInputMapping String?   @map("provider_input_mapping")
+  providerInputMapping  String?   @map("provider_input_mapping")
   /// True once an admin has manually edited this SKU's price after import.
   /// The Digiflazz re-sync job (packages/db/src/crud/digiflazz.ts,
   /// resyncDigiflazzCatalog) skips price recomputation for any row where this
@@ -502,8 +502,8 @@ model StockItem {
   // the plaintext credential stored next to that same credential's own
   // ciphertext would let anyone with DB read access confirm a guessed
   // credential offline, undoing the point of Fase 6's encryption hardening.
-  identityFingerprint   String?   @map("identity_fingerprint")
-  credentialFingerprint String?   @map("credential_fingerprint")
+  identityFingerprint   String? @map("identity_fingerprint")
+  credentialFingerprint String? @map("credential_fingerprint")
 
   soldToOrderId     Int? @map("sold_to_order_id")
   soldToOrderItemId Int? @map("sold_to_order_item_id")
@@ -558,10 +558,10 @@ model StockItem {
   replacesStockItem StockItem?  @relation("StockItemReplacement", fields: [replacesStockItemId], references: [id], onDelete: SetNull, onUpdate: NoAction)
   replacedBy        StockItem[] @relation("StockItemReplacement")
 
-  events      StockItemEvent[]
-  importBatch StockImportBatch? @relation(fields: [importBatchId], references: [id], onUpdate: NoAction)
-  addedByAdmin   User? @relation("StockItemAddedByAdmin", fields: [addedByAdminId], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  deletedByAdmin User? @relation("StockItemDeletedByAdmin", fields: [deletedByAdminId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  events         StockItemEvent[]
+  importBatch    StockImportBatch? @relation(fields: [importBatchId], references: [id], onUpdate: NoAction)
+  addedByAdmin   User?             @relation("StockItemAddedByAdmin", fields: [addedByAdminId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  deletedByAdmin User?             @relation("StockItemDeletedByAdmin", fields: [deletedByAdminId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@index([status], map: "ix_stock_items_status")
   @@index([productId], map: "ix_stock_items_product_id")
@@ -601,9 +601,9 @@ model StockItemEvent {
   orderId     Int? @map("order_id")
   orderItemId Int? @map("order_item_id")
 
-  actorType       String  @map("actor_type")
-  actorAdminId    Int?    @map("actor_admin_id")
-  actorCustomerId Int?    @map("actor_customer_id")
+  actorType       String @map("actor_type")
+  actorAdminId    Int?   @map("actor_admin_id")
+  actorCustomerId Int?   @map("actor_customer_id")
 
   reasonCode    String?  @map("reason_code")
   // Intended (not yet enforced — additive phase) dedup key for a future
@@ -738,8 +738,8 @@ model Order {
   /// can never place the same top-up order twice. Null = not yet dispatched.
   digiflazzDispatchedAt  DateTime? @map("digiflazz_dispatched_at")
   /// Explicit route frozen at checkout; null only for legacy orders.
-  fulfillmentProvider String? @map("fulfillment_provider")
-  fulfillmentSku      String? @map("fulfillment_sku")
+  fulfillmentProvider    String?   @map("fulfillment_provider")
+  fulfillmentSku         String?   @map("fulfillment_sku")
   /// Digiflazz supplier-dispatch sub-status — separate from Order.status
   /// (which stays PROCESSING for every one of these until DELIVERED) because
   /// Order.status already carries broader lifecycle meaning (PROCESSING/
@@ -771,7 +771,7 @@ model Order {
   /// when a Digiflazz fulfillment failure gave no specific reason of its own; holds the
   /// result of a fallback KokinPay nickname lookup on the order's target account, to
   /// help distinguish "wrong ID/region" from other causes. NEVER shown to the buyer.
-  accountDiagnosticNote String? @map("account_diagnostic_note")
+  accountDiagnosticNote  String?   @map("account_diagnostic_note")
   /// Client-minted UUID (Task A1), stamped once when the bot's "Confirm & Pay"
   /// bubble is first rendered for a given checkout attempt and passed through
   /// to createOrderDirect/createOrderFromCart. The unique constraint is the
@@ -816,26 +816,26 @@ model Order {
 
 /// Durable single-message progress tracking; provider state remains on Order.
 model FulfillmentMessage {
-  orderId      Int       @id @map("order_id")
-  chatId       BigInt    @map("chat_id")
-  messageId    Int?      @map("message_id")
+  orderId        Int       @id @map("order_id")
+  chatId         BigInt    @map("chat_id")
+  messageId      Int?      @map("message_id")
   /// Which kind of Telegram message `messageId` points at: "photo" (a QR
   /// photo+caption payment screen) or "text", so the worker never calls
   /// editMessageText on a photo. Null = legacy/unknown.
-  messageKind  String?   @map("message_kind")
-  state        String   @default("READY")
-  claimedAt    DateTime? @map("claimed_at")
-  nextUpdateAt DateTime  @default(now()) @map("next_update_at")
-  lastText     String?  @map("last_text")
-  finishedAt   DateTime? @map("finished_at")
+  messageKind    String?   @map("message_kind")
+  state          String    @default("READY")
+  claimedAt      DateTime? @map("claimed_at")
+  nextUpdateAt   DateTime  @default(now()) @map("next_update_at")
+  lastText       String?   @map("last_text")
+  finishedAt     DateTime? @map("finished_at")
   /// Buyer-facing phase the message last rendered (CustomerProgressPhase) and
   /// when the message entered it; bounds how long one phase may spin.
   phase          String?   @map("phase")
   phaseStartedAt DateTime? @map("phase_started_at")
-  order        Order    @relation(fields: [orderId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  order          Order     @relation(fields: [orderId], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
-  @@index([state, nextUpdateAt], map: "ix_fulfillment_messages_due")
   @@unique([chatId, messageId], map: "ix_fulfillment_messages_chat_message")
+  @@index([state, nextUpdateAt], map: "ix_fulfillment_messages_due")
   @@map("fulfillment_messages")
 }
 
@@ -862,18 +862,18 @@ model OrderStatusHistory {
 }
 
 model OrderItem {
-  id                   Int     @id @default(autoincrement())
-  orderId              Int     @map("order_id")
+  id                   Int      @id @default(autoincrement())
+  orderId              Int      @map("order_id")
   /// Holds a denomination id (column kept as `product_id` to avoid a rename).
-  productId            Int     @map("product_id")
-  stockItemId          Int?    @map("stock_item_id")
-  quantity             Int     @default(1)
-  unitPrice            Decimal @map("unit_price")
+  productId            Int      @map("product_id")
+  stockItemId          Int?     @map("stock_item_id")
+  quantity             Int      @default(1)
+  unitPrice            Decimal  @map("unit_price")
   /// Per-unit denomination cost in IDR frozen at order creation. Nullable,
   /// without a default or backfill: legacy rows and unknown costs fall back
   /// to the live denomination cost when profit is reported.
   costSnapshot         Decimal? @map("cost_snapshot")
-  warrantyDaysSnapshot Int     @map("warranty_days_snapshot")
+  warrantyDaysSnapshot Int      @map("warranty_days_snapshot")
   /// Denomination.deliveryType frozen at order-creation time. settlePaidOrder
   /// reads THIS, not the live denomination row, so editing a SKU's
   /// deliveryType after an order was placed can never flip which branch
@@ -891,7 +891,7 @@ model OrderItem {
   /// this field exists to prevent. Null means "row predates this snapshot";
   /// settlePaidOrder falls back to the live denomination row for those, i.e.
   /// exactly the pre-Task-15 behavior — zero regression risk either way.
-  deliveryTypeSnapshot String? @map("delivery_type_snapshot")
+  deliveryTypeSnapshot String?  @map("delivery_type_snapshot")
   /// Per-line fulfilment state — OrderItemStatus (@app/core/enums): PENDING,
   /// WAITING_FOR_INFO, INFO_SUBMITTED, QUEUED, PROCESSING, DELIVERED, FAILED,
   /// CANCELLED. String, not a native enum, matching every other enum column in
@@ -913,7 +913,7 @@ model OrderItem {
   /// predates this column"; deriveOrderStatusFromItems reads it as "unknown"
   /// and declines to derive anything, which is exactly the pre-Task-3
   /// behavior for those rows.
-  status               String? @map("status")
+  status               String?  @map("status")
 
   // Restrict, not Cascade (Infra-5 fix, security audit 2026-06-23): line items
   // are the order's financial detail — deleting an Order must never silently
@@ -1488,6 +1488,11 @@ model SupportTicket {
   /// lastStatusChangeAt above). Admin UI must fall back to `#id` for rows
   /// where this is null.
   ticketNumber       String?   @unique @map("ticket_number")
+  subcategory        String?
+  origin             String    @default("WEB")
+  requestKey         String?   @map("request_key")
+  lastActivityAt     DateTime  @default(now()) @map("last_activity_at")
+  legalHold          Boolean   @default(false) @map("legal_hold")
   /// Set together with `assignedBy` by the assignment-with-audit-trail path
   /// (see `assignedBy`'s own comment) — when this ticket's `adminId` (the
   /// admin CURRENTLY working it) was last explicitly assigned.
@@ -1525,27 +1530,30 @@ model SupportTicket {
   /// Nullable, no default.
   closedAt           DateTime? @map("closed_at")
 
-  user              User               @relation("TicketUser", fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  admin             User?              @relation("TicketAdmin", fields: [adminId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  user              User                @relation("TicketUser", fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  admin             User?               @relation("TicketAdmin", fields: [adminId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   // Same "who acted, not who this row is about" reasoning as TicketAdmin
   // above (and AdminTask.assignee / Review.repliedByAdmin) — NoAction on
   // delete, not Restrict: losing the assigner pointer if that admin's User
   // row were ever removed is not the same category of data loss as losing
   // the order/customer this ticket is about.
-  assignedByAdmin   User?              @relation("TicketAssignedBy", fields: [assignedBy], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  order             Order?             @relation(fields: [orderId], references: [id], onUpdate: NoAction)
-  product           Product?           @relation(fields: [productId], references: [id], onUpdate: NoAction)
+  assignedByAdmin   User?               @relation("TicketAssignedBy", fields: [assignedBy], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  order             Order?              @relation(fields: [orderId], references: [id], onUpdate: NoAction)
+  product           Product?            @relation(fields: [productId], references: [id], onUpdate: NoAction)
   messages          TicketMessage[]
+  attachments       SupportAttachment[]
   /// Stock-replacement requests that arrived on this ticket (Financial Ledger
   /// M18). Empty for tickets that never led to one, and a replacement recorded
   /// from another channel has no ticket at all.
   stockReplacements StockReplacement[]
 
+  @@unique([userId, requestKey])
   @@index([userId], map: "ix_support_tickets_user_id")
   @@index([closedAt], map: "ix_support_tickets_closed_at")
   @@index([orderId], map: "ix_support_tickets_order_id")
   @@index([productId], map: "ix_support_tickets_product_id")
   @@index([status], map: "ix_support_tickets_status")
+  @@index([lastActivityAt])
   @@index([priority], map: "ix_support_tickets_priority")
   @@map("support_tickets")
 }
@@ -1565,13 +1573,44 @@ model TicketMessage {
   /// caller that hasn't been updated to pass `internal` explicitly) keeps
   /// today's customer-visible behavior unchanged.
   internal       Boolean  @default(false)
+  requestKey     String?  @map("request_key")
+  origin         String   @default("WEB")
   createdAt      DateTime @default(now()) @map("created_at")
 
-  ticket SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  sender User?         @relation(fields: [senderId], references: [id], onUpdate: NoAction)
+  ticket      SupportTicket       @relation(fields: [ticketId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  sender      User?               @relation(fields: [senderId], references: [id], onUpdate: NoAction)
+  attachments SupportAttachment[]
 
+  @@unique([ticketId, senderId, requestKey])
   @@index([ticketId], map: "ix_ticket_messages_ticket_id")
   @@map("ticket_messages")
+}
+
+model SupportAttachment {
+  id             String         @id @default(uuid())
+  ownerId        Int            @map("owner_id")
+  draftId        String         @map("draft_id")
+  ticketId       Int?           @map("ticket_id")
+  messageId      Int?           @map("message_id")
+  bucket         String
+  storageKey     String         @unique @map("storage_key")
+  filename       String
+  mime           String
+  bytes          Int
+  status         String         @default("PENDING")
+  etag           String?
+  telegramBotId  String?        @map("telegram_bot_id")
+  telegramFileId String?        @map("telegram_file_id")
+  attachedAt     DateTime?      @map("attached_at")
+  createdAt      DateTime       @default(now()) @map("created_at")
+  expiresAt      DateTime       @map("expires_at")
+  deletedAt      DateTime?      @map("deleted_at")
+  ticket         SupportTicket? @relation(fields: [ticketId], references: [id], onDelete: Restrict)
+  message        TicketMessage? @relation(fields: [messageId], references: [id], onDelete: Restrict)
+
+  @@index([ownerId, draftId])
+  @@index([status, expiresAt])
+  @@map("support_attachments")
 }
 
 model RestockSubscription {
@@ -1894,13 +1933,13 @@ model ProcessedTelegramUpdate {
 /// a distinct request (a client bug) and is rejected with 409 rather than
 /// silently replaying the wrong response or overwriting the original.
 model IdempotencyRecord {
-  id           Int      @id @default(autoincrement())
+  id           Int       @id @default(autoincrement())
   key          String
   endpoint     String
-  requestHash  String   @map("request_hash")
-  responseBody String   @map("response_body")
-  statusCode   Int      @map("status_code")
-  createdAt    DateTime @default(now()) @map("created_at")
+  requestHash  String    @map("request_hash")
+  responseBody String    @map("response_body")
+  statusCode   Int       @map("status_code")
+  createdAt    DateTime  @default(now()) @map("created_at")
   /// Set while the request that claimed this key is still running (backend
   /// audit E2): the row is inserted as a reservation BEFORE the mutation runs,
   /// so a concurrent duplicate waits for it instead of running it a second

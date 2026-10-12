@@ -1,3 +1,5 @@
+import { supportV2Routes } from "./supportV2";
+import { supportAttachmentLinks } from "@app/db";
 /**
  * JSON twins of the account area (routes/account.ts) + settings
  * (routes/settings.ts) for the React SPA. Same crud calls, same validation,
@@ -34,7 +36,6 @@ import { gameTopupDetails } from "./gameTopupDetails";
 import {
   parseTicketMultipart,
   parseNewTicketMultipart,
-  writeAttachments,
   type ParsedAttachment,
 } from "../lib/ticketAttachments";
 import {
@@ -148,6 +149,8 @@ function newestActivityIso(tk: {
  * extra query for nothing. */
 function mapSupportTicketRow(tk: {
   id: number;
+  ticketNumber?: string | null;
+  lastActivityAt?: Date;
   message: string;
   status: string;
   subject: string | null;
@@ -164,6 +167,7 @@ function mapSupportTicketRow(tk: {
 }) {
   return {
     id: tk.id,
+    ticket_number: tk.ticketNumber ?? null,
     message: tk.message,
     status: tk.status,
     created_at_display: dt(tk.createdAt),
@@ -173,12 +177,12 @@ function mapSupportTicketRow(tk: {
     subject: tk.subject ?? null,
     order_code: tk.order?.orderCode ?? null,
     product_name: tk.product?.name ?? null,
-    updated_at_iso: newestActivityIso(tk),
+    updated_at_iso: tk.lastActivityAt?.toISOString() ?? newestActivityIso(tk),
   };
 }
 
 /** JSON-flavored auth gate: 401 body instead of the HTML routes' 303. */
-async function requireCustomer(req: FastifyRequest, reply: FastifyReply): Promise<Customer | null> {
+export async function requireCustomer(req: FastifyRequest, reply: FastifyReply): Promise<Customer | null> {
   const customer = await optionalCustomer(req);
   if (!customer) {
     void reply.code(401).send({ error: "unauthorized" });
@@ -188,7 +192,7 @@ async function requireCustomer(req: FastifyRequest, reply: FastifyReply): Promis
 }
 
 /** x-csrf-token header check for signed-in JSON mutations. */
-function csrfHeaderOk(req: FastifyRequest, customer: Customer): boolean {
+export function csrfHeaderOk(req: FastifyRequest, customer: Customer): boolean {
   const token = req.headers["x-csrf-token"];
   return typeof token === "string" && constantTimeEqual(token, customer.csrf) && originOk(req);
 }
@@ -197,8 +201,8 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
   app.addHook("onRequest", async (req, reply) => {
     if (req.method !== "POST") return;
     const route = req.routeOptions.url;
-    const kind = ["/api/v1/account/support", "/api/v1/account/support/new"].includes(route ?? "") ? "create"
-      : ["/api/v1/account/support/:id/reply", "/api/v1/account/support/:id/reopen"].includes(route ?? "") ? "reply" : null;
+    const kind = ["/api/v1/account/support", "/api/v1/account/support/new", "/api/v1/account/support/v2"].includes(route ?? "") ? "create"
+      : ["/api/v1/account/support/:id/reply", "/api/v1/account/support/:id/reopen", "/api/v1/account/support/uploads"].includes(route ?? "") ? "reply" : null;
     if (!kind) return;
     const customer = await optionalCustomer(req);
     if (!customer || !csrfHeaderOk(req, customer)) return;
@@ -209,13 +213,15 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
   });
   app.addHook("preValidation", async (req, reply) => {
     if (req.method !== "POST" || !req.url.split("?", 1)[0]!.includes("/account/support") || req.isMultipart()) return;
+    if (/\/(?:v2|uploads)(?:\/|$)/.test(req.url.split("?", 1)[0]!)) return;
     const body = (req.body ?? {}) as Record<string, unknown> | null;
     if (!body || typeof body !== "object" || Array.isArray(body)) return reply.code(400).send({ error: "invalid_request" });
-    const allowed = new Set(["message", "order_code", "subject", "category", "product_id", "description"]);
-    if (Object.entries(body).some(([key, value]) => !allowed.has(key) || (key === "product_id" ? !["string", "number"].includes(typeof value) : typeof value !== "string"))) {
+    const allowed = new Set(["message", "order_code", "subject", "category", "product_id", "description", "request_id", "attachment_ids"]);
+    if (Object.entries(body).some(([key, value]) => !allowed.has(key) || (key === "attachment_ids" ? !Array.isArray(value) || value.length > 3 || value.some((id) => typeof id !== "string") : key === "product_id" ? !["string", "number"].includes(typeof value) : typeof value !== "string"))) {
       return reply.code(400).send({ error: "invalid_request" });
     }
   });
+  await supportV2Routes(app);
   // ---- Overview ----
   app.get("/account", async (req, reply) => {
     const customer = await requireCustomer(req, reply);
@@ -534,7 +540,7 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
     // leaves nothing on disk for storageCleanupJob to never find.
     let ticketId: number | null = null;
     if (message) {
-      const attachmentUrls = await writeAttachments(attachments);
+      const attachmentUrls = null;
       const ticket = await createTicket(prisma, customer.userId, message, null, attachmentUrls, orderId);
       ticketId = ticket.id;
     }
@@ -651,7 +657,7 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
       }
     }
 
-    const attachmentUrls = await writeAttachments(attachments);
+    const attachmentUrls = null;
     const ticket = await createTicket(
       prisma,
       customer.userId,
@@ -664,7 +670,7 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
     return reply.send({ ok: true, ticket_id: ticket.id });
   });
 
-  app.post<{ Params: { id: string }; Body: { message?: string } }>(
+  app.post<{ Params: { id: string }; Body: { message?: string; attachment_ids?: string[]; request_id?: string } }>(
     "/account/support/:id/reply",
     async (req, reply) => {
       const customer = await requireCustomer(req, reply);
@@ -672,6 +678,7 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
       if (!csrfHeaderOk(req, customer)) return reply.code(403).send({ error: "csrf_failed" });
       const ticket = await getTicket(prisma, Number(req.params.id));
       if (!ticket || ticket.userId !== customer.userId) return reply.code(404).send({ error: "not_found" });
+      if (ticket.status === TicketStatus.CLOSED) return reply.code(409).send({ error: "ticket.closed_cannot_reply" });
       let message: string;
       let attachments: ParsedAttachment[] = [];
       if (req.isMultipart()) {
@@ -682,19 +689,24 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
           throw e;
         }
       } else {
-        message = (req.body?.message ?? "").trim().slice(0, 2000);
+        message = (req.body?.message ?? "").trim();
       }
+      const mediaIds = req.body?.attachment_ids ?? [];
+      if (message.length > 2000 || (!message && !mediaIds.length)) return reply.code(400).send({ error: "helpdesk.description_quality" });
+      if (req.body?.request_id !== undefined && !/^[a-zA-Z0-9_-]{16,100}$/.test(req.body.request_id)) return reply.code(400).send({ error: "helpdesk.invalid_request" });
       // M-18 fix: same deferred-write rule as ticket creation above — nothing
-      // hits disk until ownership/status/message have all been checked.
-      if (ticket && ticket.userId === customer.userId && ticket.status !== TicketStatus.CLOSED && message) {
-        const attachmentUrls = await writeAttachments(attachments);
-        await addTicketMessage(prisma, {
+      // is published until ownership/status/message have all been checked.
+      if (ticket && ticket.userId === customer.userId && ticket.status !== TicketStatus.CLOSED && (message || mediaIds.length)) {
+        const attachmentUrls = null;
+        try { await addTicketMessage(prisma, {
           ticketId: ticket.id,
           senderType: SenderType.USER,
           senderId: customer.userId,
           content: message,
           attachmentUrls,
-        });
+          requestKey: req.body?.request_id,
+          attachmentIds: mediaIds,
+        }); } catch (err) { if (err instanceof ValidationError) return reply.code(400).send(errorBody(err)); throw err; }
       }
       return reply.send({ ok: true });
     },
@@ -716,6 +728,10 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
     return reply.send({
       ticket: {
         id: ticket.id,
+        ticket_number: ticket.ticketNumber,
+        subject: ticket.subject,
+        category: ticket.category,
+        subcategory: ticket.subcategory,
         message: ticket.message,
         status: ticket.status,
         created_at_display: dt(ticket.createdAt),
@@ -724,15 +740,15 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
         closed: ticket.status === TicketStatus.CLOSED,
         closed_at_display: ticket.closedAt ? dt(ticket.closedAt) : null,
         reopenable,
-        attachments: splitAttachments(ticket.attachmentUrls),
+        attachments: [...splitAttachments(ticket.attachmentUrls), ...await supportAttachmentLinks(prisma, ticket.id, null, "/api/v1/account/support/media")],
       },
-      messages: messages.map((m) => ({
+      messages: await Promise.all(messages.map(async (m) => ({
         id: m.id,
         from_user: m.senderType === SenderType.USER,
         content: m.content,
         created_at_display: dt(m.createdAt),
-        attachments: splitAttachments(m.attachmentUrls),
-      })),
+        attachments: [...splitAttachments(m.attachmentUrls), ...await supportAttachmentLinks(prisma, ticket.id, m.id, "/api/v1/account/support/media")],
+      }))),
       order: order
         ? {
             code: order.orderCode,

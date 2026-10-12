@@ -610,6 +610,8 @@ export async function enqueueAdminNewTicketDm(
     fromUsername: string | null;
     message: string;
     photoFileIds: string[];
+    customerReply?: boolean;
+    ticketNumber?: string | null;
   },
 ): Promise<void> {
   const targets: number[] = config.SUPPORT_GROUP_ID ? [config.SUPPORT_GROUP_ID] : await resolveAdminIds(db);
@@ -626,6 +628,8 @@ export async function enqueueAdminNewTicketDm(
           from_username: args.fromUsername,
           message: args.message,
           photo_file_ids: args.photoFileIds,
+          ticket_number: args.ticketNumber,
+          customer_reply: args.customerReply ?? false,
         }),
       },
     });
@@ -641,7 +645,7 @@ export async function enqueueAdminNewTicketDm(
  */
 export async function enqueueTicketReplyDm(
   db: Db,
-  args: { ticketId: number; chatId: number; message: string },
+  args: { ticketId: number; chatId: number; message: string; messageId?: number; language?: string | null; ticketNumber?: string | null },
 ): Promise<void> {
   await db.notificationOutbox.create({
     data: {
@@ -651,6 +655,9 @@ export async function enqueueTicketReplyDm(
         chat_id: args.chatId,
         ticket_id: args.ticketId,
         message: args.message,
+        message_id: args.messageId,
+        language: args.language,
+        ticket_number: args.ticketNumber,
       }),
     },
   });

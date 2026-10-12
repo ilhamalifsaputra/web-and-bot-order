@@ -377,7 +377,7 @@ describe("POST /api/v1/account/support/new", () => {
     expect(row!.message).toBe("I paid but the order still says pending.");
   });
 
-  it("happy path (multipart, with an attachment): 200, ticket created with the evidence URL", async () => {
+  it("legacy multipart file uploads return an explicit direct-upload migration error", async () => {
     const { cookie, csrf } = await freshCustomer();
     const mp = multipart(
       {
@@ -394,13 +394,8 @@ describe("POST /api/v1/account/support/new", () => {
       headers: { cookie, "x-csrf-token": csrf, ...mp.headers },
       payload: mp.payload,
     });
-    expect(res.statusCode).toBe(200);
-    const body = res.json();
-    expect(body.ok).toBe(true);
-    const row = await prisma.supportTicket.findUnique({ where: { id: body.ticket_id } });
-    expect(row!.subject).toBe("Screenshot of the error");
-    expect(row!.category).toBe(TicketCategory.TECHNICAL);
-    expect(row!.attachmentUrls).toMatch(/^\/uploads\/tickets\/evidence-[0-9a-f]+\.png$/);
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ error: "helpdesk.use_direct_upload" });
   });
 
   it("validation failures each 400 with the right key, and create NO ticket", async () => {
@@ -510,5 +505,50 @@ describe("POST /api/v1/account/support (legacy route — must stay byte-identica
     expect(row!.message).toBe("old route still works");
     expect(row!.subject).toBeNull();
     expect(row!.category).toBeNull();
+  });
+});
+
+
+describe("Support V2 contracts", () => {
+  const valid = () => ({ category: "ACCOUNT", issue: "login", description: "Cannot sign into my account today", request_id: `request-${crypto.randomUUID()}`, attachment_ids: [] });
+  it("requires login and CSRF, returns central taxonomy and keeps text usable without R2", async () => {
+    expect((await app.inject({ method: "GET", url: "/api/v1/account/support/options" })).statusCode).toBe(401);
+    const customer = await freshCustomer();
+    const options = await app.inject({ method: "GET", url: "/api/v1/account/support/options", headers: { cookie: customer.cookie } });
+    expect(options.json().categories).toHaveLength(4);
+    expect((await app.inject({ method: "POST", url: "/api/v1/account/support/v2", headers: { cookie: customer.cookie }, payload: valid() })).statusCode).toBe(403);
+  });
+  it("creates without manual product or subject and deduplicates a retried request", async () => {
+    const customer = await freshCustomer(); const payload = valid(); const headers = { cookie: customer.cookie, "x-csrf-token": customer.csrf };
+    const first = await app.inject({ method: "POST", url: "/api/v1/account/support/v2", headers, payload });
+    expect(first.statusCode).toBe(200); expect(first.json().ticket_number).toMatch(/^TKT-\d{8}-[A-F0-9]{6}$/);
+    const second = await app.inject({ method: "POST", url: "/api/v1/account/support/v2", headers, payload });
+    expect(second.json()).toEqual(first.json());
+    expect(await prisma.supportTicket.count({ where: { userId: customer.userId } })).toBe(1);
+    expect(await prisma.supportTicket.findUnique({ where: { id: first.json().ticket_id } })).toMatchObject({ category: "ACCOUNT", subcategory: "login", productId: null, orderId: null });
+  });
+  it("validates category pairs, description quality and owned orders", async () => {
+    const customer = await freshCustomer(); const other = await freshCustomer(); const order = await makeOrder(other.userId);
+    const headers = { cookie: customer.cookie, "x-csrf-token": customer.csrf };
+    for (const payload of [{ ...valid(), description: "Gg" }, { ...valid(), issue: "not_received" }, { ...valid(), category: "ORDER", issue: "not_received", order_code: order.orderCode }]) {
+      expect((await app.inject({ method: "POST", url: "/api/v1/account/support/v2", headers, payload })).statusCode).toBe(400);
+    }
+    expect(await prisma.supportTicket.count({ where: { userId: customer.userId } })).toBe(0);
+  });
+  it("blocks foreign file access and malformed upload intent metadata", async () => {
+    const customer = await freshCustomer(); const headers = { cookie: customer.cookie, "x-csrf-token": customer.csrf };
+    expect((await app.inject({ method: "GET", url: "/api/v1/account/support/media/missing/file.png", headers })).statusCode).toBe(404);
+    expect((await app.inject({ method: "POST", url: "/api/v1/account/support/uploads", headers, payload: { filename: "evidence.png", mime: "image/png", bytes: 10, draft_id: 123 } })).statusCode).toBe(400);
+  });
+  it("uses idempotent reply metadata without exposing internal notes or media", async () => {
+    const customer = await freshCustomer(); const ticket = await createTicket(prisma, customer.userId, "A real issue description");
+    const headers = { cookie: customer.cookie, "x-csrf-token": customer.csrf }; const payload = { message: "The issue is still happening", request_id: crypto.randomUUID(), attachment_ids: [] };
+    const first = await app.inject({ method: "POST", url: `/api/v1/account/support/${ticket.id}/reply`, headers, payload });
+    expect(first.statusCode).toBe(200);
+    expect((await app.inject({ method: "POST", url: `/api/v1/account/support/${ticket.id}/reply`, headers, payload })).statusCode).toBe(200);
+    expect(await prisma.ticketMessage.count({ where: { ticketId: ticket.id } })).toBe(1);
+    await prisma.ticketMessage.create({ data: { ticketId: ticket.id, senderType: "ADMIN", content: "Private staff note", internal: true } });
+    const detail = await app.inject({ method: "GET", url: `/api/v1/account/support/${ticket.id}`, headers });
+    expect(detail.body).not.toContain("Private staff note");
   });
 });

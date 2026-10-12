@@ -219,3 +219,14 @@ Historical Phase 1 changed-file inventory, before integration with the newer mas
 - Final source: all three Doctor commands passed again; full scan **628 files, 154ms cached, 0 errors and 0 warnings**, diagnostics `react-doctor-d3c56a41-5e44-44ce-ae41-30d4f634d7cd`. Fresh workspace production build and full typecheck passed; mailer, loopback SMTP and InstantBuy validation passed **67/67**.
 - Storefront lint and production workspace builds passed. Production Chromium smoke verified all 23 switches, locked mandatory recovery, keyboard Space, persisted refresh, failed-save previous state, render-only preview, no overflow at 390px and zero page errors; the QA script and desktop/mobile screenshots are preserved under `%TEMP%/trustance-auth-email-toggles/`. API fixtures were used; no customer mail or bot poller was started.
 - Final synchronized gate passed: **`pnpm typecheck` and `pnpm test`, exit 0; 628 files, 11,804 tests, 0 failures, 717.65 seconds**. All unchanged pretest gates passed. Final pipeline also rebuilt the workspace and passed 67 mailer/SMTP/InstantBuy tests before the full gate. Logs `.typecheck-verified.log`, `.test-verified.log`, `.build-verified.log` and `.doctor-*-verified.log` are preserved in the worktree and under `%TEMP%/trustance-auth-email-toggles/verification/`; details are in `docs/TRUSTANCE_AUTH_EMAIL_TOGGLES_REPORT.md`.
+
+
+## Ticketing V2 - 13 Oktober 2026
+
+- Worktree `ticketing-v2`, branch `worktree-ticketing-v2`.
+- Full Doctor (`pnpm doctor:full`): **635 files, 0 errors, 0 warnings**. Local output `.ticketing-doctor-final-2.log`, diagnostics `react-doctor-8f9ce023-939b-4bc2-9e4f-7f9b04126011`.
+- Object URL preview lifetime now belongs to a mounted component with effect cleanup; URLs are revoked when files change or previews unmount. No suppressions or exclusions added.
+- `pnpm doctor:changed`: 27 files, Bugs category clean. `pnpm lint`: Storefront eslint and both clients' full Bugs scan clean (latest rerun recorded below).
+- Browser runtime: customer help/detail and admin list/detail exercised with mocked API responses at **CSS viewport widths 320, 375, 768, 1024, 1440, 1920**. Document/main horizontal scroll stayed within client widths. Admin table scrolling is contained at 768/1024; mobile uses existing DataTable cards. Checked category switching clears order context, short description is invalid, long unbroken message text wraps, and internal notes are visually distinct in admin.
+- These browser fixtures verify rendering and interaction, not production authentication, live R2 or live Telegram delivery. Real authorization/domain behavior has separate Postgres integration tests. Screenshots: `docs/ticketing-{help-mobile,detail-mobile,admin-mobile,admin-desktop}.png`.
+- Full suite/typecheck final result will be recorded after branch sync.

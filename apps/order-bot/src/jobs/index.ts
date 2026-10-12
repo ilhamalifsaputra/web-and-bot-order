@@ -1,3 +1,4 @@
+import { cleanupSupportMedia } from "@app/db";
 /**
  * Background scheduled jobs — port of utils/jobs.py, scheduled via croner
  * (timezone-aware) instead of PTB's JobQueue. Each job takes the bot `Api` so
@@ -1514,6 +1515,8 @@ const UPLOADS_DIR = process.env.UPLOADS_DIR ?? join(HERE, "..", "..", "..", ".."
  * scheduled and manual paths can never drift apart.
  */
 export async function storageCleanupJob(): Promise<void> {
+  const media = await cleanupSupportMedia(prisma);
+  if (media.deleted) logger.info({ count: media.deleted }, "Removed expired private support media after checking ticket closure and retention holds.");
   const summary = await runStorageCleanup(prisma, UPLOADS_DIR);
   logger.info(
     `Storage cleanup finished — removed ${summary.broadcastFilesDeleted} broadcast image(s) and ` +

@@ -30,7 +30,7 @@ export interface TicketRowProps {
 const ticketRef = (id: number): string => `#TK-${id}`;
 
 export function TicketTableRow({ ticket, onSelect, selected }: TicketRowProps) {
-  const label = t("web.help_ticket_row_label", { id: ticketRef(ticket.id) });
+  const label = t("web.help_ticket_row_label", { id: (ticket.ticket_number ?? ticketRef(ticket.id)) });
   return (
     <tr
       onClick={() => onSelect(ticket.id)}
@@ -51,7 +51,7 @@ export function TicketTableRow({ ticket, onSelect, selected }: TicketRowProps) {
             onSelect(ticket.id);
           }}
         >
-          {ticketRef(ticket.id)}
+          {(ticket.ticket_number ?? ticketRef(ticket.id))}
         </button>
         {ticket.order_code && (
           <span className="block text-xs text-ink-faint">Order #{ticket.order_code}</span>
@@ -77,7 +77,7 @@ export function TicketTableRow({ ticket, onSelect, selected }: TicketRowProps) {
 }
 
 export function TicketCard({ ticket, onSelect, selected }: TicketRowProps) {
-  const label = t("web.help_ticket_row_label", { id: ticketRef(ticket.id) });
+  const label = t("web.help_ticket_row_label", { id: (ticket.ticket_number ?? ticketRef(ticket.id)) });
   return (
     <button
       type="button"
@@ -86,16 +86,17 @@ export function TicketCard({ ticket, onSelect, selected }: TicketRowProps) {
       onClick={() => onSelect(ticket.id)}
       // Same as the table row: the selected `ring-1` is a box-shadow, so it
       // belongs in the transition list alongside the background colour.
-      className={`card block w-full p-4 text-left transition-[background-color,box-shadow] ease-gg hover:bg-sand/40 ${selected ? "bg-pine-tint/40 ring-1 ring-pine" : ""
+      className={`card block w-full min-w-0 p-3 text-left transition-[background-color,box-shadow] ease-gg hover:bg-sand/40 ${selected ? "bg-pine-tint/40 ring-1 ring-pine" : ""
         }`}
     >
-      <div className="flex items-center justify-between gap-3">
-        <span className="font-semibold text-pine">{ticketRef(ticket.id)}</span>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="break-all text-xs font-medium text-pine">{(ticket.ticket_number ?? ticketRef(ticket.id))}</span>
         <TicketStatusBadge value={ticket.status} />
       </div>
       <p className="mt-1 line-clamp-2 text-sm text-ink">{subjectOf(ticket)}</p>
+      <p className="mt-1 line-clamp-2 break-words text-xs text-ink-soft">{ticket.message.replace(/^(Order number|Product|What happened):[^\n]*\n?/gim, "").trim()}</p>
       {ticket.order_code && <p className="text-xs text-ink-faint">Order #{ticket.order_code}</p>}
-      <div className="mt-3 flex items-center justify-between gap-3 text-xs text-ink-soft">
+      <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-ink-soft">
         <span>
           {formatRelativeTime(ticket.updated_at_iso)} • {ticket.created_at_display}
         </span>

@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { emailTransaction, enqueueEmailEvent } from "./emailEvents";
 /**
  * Support tickets + ticket messages — port of those sections of Python crud.py.
@@ -9,78 +10,20 @@ import { addDays, addMinutes, startOfDayUtc } from "@app/core/datetime";
 import { ValidationError } from "@app/core/errors";
 import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
-import { enqueueOwnerTicketReplyEmail } from "./notifications";
+import { enqueueOwnerTicketReplyEmail, enqueueTicketReplyDm, enqueueAdminNewTicketDm } from "./notifications";
 import { logAdminAction } from "./audit";
 import { withoutDeliveredContent } from "./orders";
+import { attachSupportMedia } from "./supportAttachments";
 
-/**
- * Mint a `ticketNumber` candidate: `TCK-YYYYMMDD-NNNNN` (current UTC date +
- * today's ticket count so far + 1, 5-digit zero-padded) — sequential, unlike
- * `Order.orderCode`'s random 4-char suffix (`generateOrderCode`/
- * `uniqueOrderCode`, packages/db/src/crud/orders.ts and packages/core/src/
- * formatters.ts), because that's the format this task's brief specifies.
- *
- * Exported (mirroring `uniqueOrderCode`'s own "exported so another crud file
- * can reuse it" precedent) so a future caller minting a preview candidate
- * outside `createTicket`'s own retry loop can reuse the same date/count
- * logic without duplicating it.
- *
- * On its own this does NOT guarantee uniqueness under concurrent writers — a
- * `count`-then-format candidate can race with a concurrent `createTicket`
- * call between this function's read and the caller's insert. That is fine:
- * `createTicket` is the only production caller, and it treats this as a
- * candidate to attempt, not a guarantee — see its own doc comment for the
- * actual safety net (retry-on-unique-constraint-violation, the same
- * `isUniqueViolation`-catch-and-retry shape `registerUser`/`generateReferralCode`
- * already use in users.ts, adapted here because a *sequential* number can't
- * just re-roll a fresh random string on collision the way a referral code
- * can — it has to re-derive the candidate from the now-updated count).
- */
-export async function uniqueTicketNumberCandidate(db: Db, now: Date = new Date()): Promise<string> {
-  const y = now.getUTCFullYear();
-  const m = String(now.getUTCMonth() + 1).padStart(2, "0");
-  const d = String(now.getUTCDate()).padStart(2, "0");
-  const prefix = `TCK-${y}${m}${d}-`;
-  const countSoFar = await db.supportTicket.count({
-    where: { ticketNumber: { startsWith: prefix } },
-  });
-  return `${prefix}${String(countSoFar + 1).padStart(5, "0")}`;
+/** Crypto-random public reference. Existing issued references stay immutable. */
+export async function uniqueTicketNumberCandidate(_db: Db, now: Date = new Date()): Promise<string> {
+  return `TKT-${now.toISOString().slice(0, 10).replaceAll("-", "")}-${randomBytes(4).toString("hex").slice(0, 6).toUpperCase()}`;
 }
 
-// Bounded generously above realistic contention (a burst of concurrent
-// ticket creations arriving in the same UTC day) — see createTicket's doc
-// comment for why a plain fixed retry count needs the jitter below to
-// actually converge at this kind of concurrency, not just a bigger number.
 const MAX_TICKET_NUMBER_ATTEMPTS = 25;
 
-/** Creates the ticket (minting a unique `ticketNumber`, see
- * `uniqueTicketNumberCandidate`), then enqueues the shop owner's "new
- * ticket" email (no-op unless owner-email is configured — see
- * enqueueOwnerNewTicketEmail). Covers both the storefront and the bot's
- * ticket-creation paths from this one call site. `opts` (Task 10) lets a
- * caller set `subject`/`category`/`productId` at creation time — the /help
- * create form's customer-picked triage fields; every existing caller that
- * omits it keeps getting all three as null, exactly as before this param
- * existed. `category` can also still be set/changed later by an admin via
- * `classifyTicket`. `opts.category` flows into
- * `enqueueOwnerNewTicketEmail`'s payload too (previously always hardcoded to
- * `null` there, back when category was admin-only-post-creation).
- *
- * `ticketNumber` generation retries on a genuine unique-constraint collision
- * (concurrent callers racing for the same candidate) up to
- * `MAX_TICKET_NUMBER_ATTEMPTS` times, re-deriving a fresh candidate from the
- * DB's current count each attempt — see `uniqueTicketNumberCandidate`'s doc
- * comment for why a fresh `count` read (not a fixed offset) is what makes the
- * retry converge at all. A losing attempt also waits a small RANDOMIZED
- * backoff before retrying: without it, N callers that collided on the same
- * candidate would all re-read the same (now-updated) count and race for the
- * SAME next candidate again, converging only one-at-a-time per round instead
- * of spreading out — verified empirically against a 20-way concurrent
- * `Promise.all` burst in support.test.ts ("every ticket gets a UNIQUE
- * ticketNumber even when many are created concurrently"), which is what
- * surfaced the need for both the higher bound and the jitter (a fixed
- * retry-5 pre-check, mirroring `uniqueOrderCode`'s shape verbatim, reliably
- * failed that test). */
+/** Create one ticket and its notifications atomically. The unique database
+ * constraints arbitrate random reference collisions and repeated request keys. */
 export async function createTicket(
   db: Db,
   userId: number,
@@ -92,8 +35,12 @@ export async function createTicket(
   // create form (see subject's/category's/productId's own doc comments in
   // schema.prisma). Optional and last so every existing call site (2-6
   // positional args) keeps compiling unchanged.
-  opts: { subject?: string | null; category?: TicketCategory | null; productId?: number | null } = {},
+  opts: { subject?: string | null; category?: TicketCategory | null; productId?: number | null; subcategory?: string; origin?: string; requestKey?: string; attachmentIds?: string[]; dedupeOrder?: boolean } = {},
 ): Promise<SupportTicket> {
+  if (opts.requestKey) {
+    const existing = await db.supportTicket.findUnique({ where: { userId_requestKey: { userId, requestKey: opts.requestKey } } });
+    if (existing) return existing;
+  }
   const subject = opts.subject ?? null;
   const category = opts.category ?? null;
   const productId = opts.productId ?? null;
@@ -103,15 +50,29 @@ export async function createTicket(
     const ticketNumber = await uniqueTicketNumberCandidate(db);
     try {
       ticket = await emailTransaction(db, async (tx) => {
+        if (orderId && opts.dedupeOrder) {
+          await tx.$queryRaw`SELECT id FROM orders WHERE id = ${orderId} FOR NO KEY UPDATE`;
+          const owned = await tx.order.findFirst({ where: { id: orderId, userId }, select: { id: true } });
+          if (!owned) throw new ValidationError("error.order_not_found");
+          const previous = await getOpenTicketForOrder(tx, orderId);
+          if (previous) return previous;
+        }
         const created = await tx.supportTicket.create({
-          data: { userId, message, photoFileIds, attachmentUrls, orderId, ticketNumber, subject, category, productId },
+          data: { userId, message, photoFileIds, attachmentUrls, orderId, ticketNumber, subject, category, productId, subcategory: opts.subcategory, origin: opts.origin ?? "WEB", requestKey: opts.requestKey },
         });
+        await attachSupportMedia(tx, opts.attachmentIds ?? [], userId, created.id);
+        const owner = await tx.user.findUnique({ where: { id: userId }, select: { telegramId: true, username: true } });
+        await enqueueAdminNewTicketDm(tx, { ticketId: created.id, ticketNumber: created.ticketNumber, fromUserId: Number(owner?.telegramId ?? 0), fromUsername: owner?.username ?? null, message: "A customer created a support ticket.", photoFileIds: [] });
         await enqueueEmailEvent(tx, { key: "support.ticket.created.admin", aggregateId: created.id, payload: { ticket_id: created.ticketNumber, category } });
         await enqueueEmailEvent(tx, { key: "support.ticket.created.customer", aggregateId: created.id, userId, payload: { ticket_id: created.ticketNumber } });
         return created;
       });
       break;
     } catch (e) {
+      if (isUniqueViolation(e) && opts.requestKey) {
+        const existing = await db.supportTicket.findUnique({ where: { userId_requestKey: { userId, requestKey: opts.requestKey } } });
+        if (existing) return existing;
+      }
       if (isUniqueViolation(e) && attempt < MAX_TICKET_NUMBER_ATTEMPTS - 1) {
         await new Promise((resolve) => setTimeout(resolve, Math.floor(Math.random() * 25)));
         continue;
@@ -203,6 +164,7 @@ export function getOpenTicketForOrder(db: Db, orderId: number) {
         in: [
           TicketStatus.OPEN,
           TicketStatus.WAITING_ADMIN,
+          TicketStatus.IN_PROGRESS,
           TicketStatus.REPLIED,
           TicketStatus.WAITING_CUSTOMER,
         ],
@@ -239,7 +201,7 @@ export function countOpenTickets(db: Db): Promise<number> {
 export async function closeTicket(db: Db, ticketId: number): Promise<bigint | null> {
   const res = await db.supportTicket.updateMany({
     where: { id: ticketId, status: { not: TicketStatus.CLOSED } },
-    data: { status: TicketStatus.CLOSED, closedAt: new Date(), lastStatusChangeAt: new Date() },
+    data: { status: TicketStatus.CLOSED, closedAt: new Date(), lastStatusChangeAt: new Date(), lastActivityAt: new Date() },
   });
   if (res.count === 0) return null;
   const ticket = await db.supportTicket.findUnique({ where: { id: ticketId } });
@@ -257,7 +219,7 @@ export async function closeTicketByUser(db: Db, ticketId: number): Promise<boole
   const now = new Date();
   const res = await db.supportTicket.updateMany({
     where: { id: ticketId, status: { not: TicketStatus.CLOSED } },
-    data: { status: TicketStatus.CLOSED, closedAt: now, lastStatusChangeAt: now },
+    data: { status: TicketStatus.CLOSED, closedAt: now, lastStatusChangeAt: now, lastActivityAt: now },
   });
   return res.count === 1;
 }
@@ -270,7 +232,7 @@ export async function resolveTicket(db: Db, ticketId: number): Promise<boolean> 
   const now = new Date();
   const res = await db.supportTicket.updateMany({
     where: { id: ticketId, status: { notIn: [TicketStatus.RESOLVED, TicketStatus.CLOSED] } },
-    data: { status: TicketStatus.RESOLVED, resolvedAt: now, lastStatusChangeAt: now },
+    data: { status: TicketStatus.RESOLVED, resolvedAt: now, lastStatusChangeAt: now, lastActivityAt: now },
   });
   return res.count === 1;
 }
@@ -288,6 +250,8 @@ export async function reopenTicket(
   db: Db,
   ticketId: number,
 ): Promise<{ ok: true } | { ok: false; reason: ReopenFailureReason }> {
+  if ("$transaction" in db) return emailTransaction(db, (tx) => reopenTicket(tx, ticketId));
+  await lockSupportRetention(db, ticketId);
   const ticket = await db.supportTicket.findUnique({ where: { id: ticketId } });
   if (!ticket || ticket.status !== TicketStatus.CLOSED || !ticket.closedAt) {
     return { ok: false, reason: "not_closed" };
@@ -297,7 +261,7 @@ export async function reopenTicket(
   }
   await db.supportTicket.update({
     where: { id: ticketId },
-    data: { status: TicketStatus.OPEN, closedAt: null, lastStatusChangeAt: new Date() },
+    data: { status: TicketStatus.OPEN, closedAt: null, lastStatusChangeAt: new Date(), lastActivityAt: new Date() },
   });
   return { ok: true };
 }
@@ -306,9 +270,11 @@ export async function reopenTicket(
  * time window; distinct from the customer-facing `reopenTicket` above).
  * Returns true iff this call performed the transition. */
 export async function reopenTicketAdmin(db: Db, ticketId: number): Promise<boolean> {
+  if ("$transaction" in db) return emailTransaction(db, (tx) => reopenTicketAdmin(tx, ticketId));
+  await lockSupportRetention(db, ticketId);
   const res = await db.supportTicket.updateMany({
     where: { id: ticketId, status: TicketStatus.CLOSED },
-    data: { status: TicketStatus.OPEN, closedAt: null, lastStatusChangeAt: new Date() },
+    data: { status: TicketStatus.OPEN, closedAt: null, lastStatusChangeAt: new Date(), lastActivityAt: new Date() },
   });
   return res.count === 1;
 }
@@ -346,10 +312,11 @@ export async function replyToTicket(
   db: Db,
   args: { ticketId: number; reply: string; adminDbId: number },
 ): Promise<bigint | null> {
-  const ticket = await db.supportTicket.findUnique({
-    where: { id: args.ticketId },
-  });
+  if ("$transaction" in db) return emailTransaction(db, (tx) => replyToTicket(tx, args));
+  await db.$queryRaw`SELECT id FROM support_tickets WHERE id = ${args.ticketId} FOR NO KEY UPDATE`;
+  const ticket = await db.supportTicket.findUnique({ where: { id: args.ticketId } });
   if (!ticket) return null;
+  if (ticket.status === TicketStatus.CLOSED) throw new ValidationError("ticket.closed_cannot_reply");
   const now = new Date();
   await db.supportTicket.update({
     where: { id: args.ticketId },
@@ -358,7 +325,7 @@ export async function replyToTicket(
       adminId: args.adminDbId,
       status: TicketStatus.WAITING_CUSTOMER,
       repliedAt: now,
-      lastStatusChangeAt: now,
+      lastStatusChangeAt: now, lastActivityAt: now,
       // Set once — true first-response time, unlike repliedAt (overwritten
       // on every admin reply). Mirrors addTicketMessage's ADMIN branch.
       firstResponseAt: ticket.firstResponseAt ?? now,
@@ -435,6 +402,9 @@ export async function addTicketMessage(
     /** Admin-only note — see this function's own doc comment. Defaults to
      * `false` (an ordinary customer-visible message, today's behavior). */
     internal?: boolean;
+    requestKey?: string;
+    origin?: string;
+    attachmentIds?: string[];
   },
 ): Promise<TicketMessage> {
   if ("$transaction" in db) return emailTransaction(db, (tx) => addTicketMessage(tx, args));
@@ -442,7 +412,15 @@ export async function addTicketMessage(
   // Otherwise two genuine messages can both read OPEN and one loses the
   // status claim, rolling its message and notification back.
   await db.$queryRaw`SELECT id FROM support_tickets WHERE id = ${args.ticketId} FOR NO KEY UPDATE`;
-  const internal = args.internal ?? false;
+  if (args.requestKey && args.senderId != null) {
+    const previous = await db.ticketMessage.findUnique({ where: { ticketId_senderId_requestKey: { ticketId: args.ticketId, senderId: args.senderId, requestKey: args.requestKey } } });
+    if (previous) return previous;
+  }
+  const currentTicket = await db.supportTicket.findUniqueOrThrow({ where: { id: args.ticketId } });
+  if (currentTicket.status === TicketStatus.CLOSED) throw new ValidationError("ticket.closed_cannot_reply");
+  if (args.senderType === SenderType.USER && currentTicket.userId !== args.senderId) throw new ValidationError("error.ticket_not_found");
+  if (args.content.length > 2000 || (!args.content.trim() && !(args.attachmentIds?.length))) throw new ValidationError("helpdesk.description_quality");
+  const internal = args.senderType === SenderType.ADMIN && (args.internal ?? false);
   const msg = await db.ticketMessage.create({
     data: {
       ticketId: args.ticketId,
@@ -452,11 +430,12 @@ export async function addTicketMessage(
       photoFileIds: args.photoFileIds ?? null,
       attachmentUrls: args.attachmentUrls ?? null,
       internal,
+      requestKey: args.requestKey,
+      origin: args.origin ?? "WEB",
     },
   });
-  const ticket = await db.supportTicket.findUnique({
-    where: { id: args.ticketId },
-  });
+  await attachSupportMedia(db, args.attachmentIds ?? [], args.senderId!, args.ticketId, msg.id);
+  const ticket = await db.supportTicket.update({ where: { id: args.ticketId }, data: { lastActivityAt: new Date() } });
   if (ticket) {
     const now = new Date();
     if (args.senderType === SenderType.USER) {
@@ -465,19 +444,13 @@ export async function addTicketMessage(
       // not move the ticket off whatever createTicket left it at (OPEN).
       const isOpeningMirror = args.notifyOwner === false;
       if (!isOpeningMirror) {
-        if (ticket.status === TicketStatus.RESOLVED || ticket.status === TicketStatus.CLOSED) {
-          // Out of this fix's scope — see this function's own doc comment.
-          await db.supportTicket.update({
-            where: { id: args.ticketId },
-            data: { status: TicketStatus.OPEN, lastStatusChangeAt: now },
-          });
-        } else if (ticket.status === TicketStatus.WAITING_ADMIN) {
+        if (ticket.status === TicketStatus.WAITING_ADMIN) {
           // Already waiting on admin — no real state move, just refresh the
           // wait-clock (see this function's own doc comment for why this
           // isn't a TICKET_LEGAL_TRANSITIONS self-edge instead).
           await db.supportTicket.update({
             where: { id: args.ticketId },
-            data: { lastStatusChangeAt: now },
+            data: { lastStatusChangeAt: now, lastActivityAt: now },
           });
         } else {
           await transitionTicketStatus(db, {
@@ -496,6 +469,7 @@ export async function addTicketMessage(
       // enqueueOwnerTicketReplyEmail). Also skipped when `notifyOwner` is
       // explicitly `false` — see that field's doc comment above.
       if (args.notifyOwner !== false) {
+        await enqueueAdminNewTicketDm(db, { ticketId: ticket.id, fromUserId: 0, fromUsername: null, message: "A customer replied to a support ticket.", photoFileIds: [], customerReply: true, ticketNumber: ticket.ticketNumber });
         await enqueueOwnerTicketReplyEmail(db, {
           ticketId: args.ticketId,
           userId: args.senderId,
@@ -509,20 +483,14 @@ export async function addTicketMessage(
       // flip, no repliedAt/firstResponseAt advance, because none of that is
       // true of a note the customer never sees.
       const replyStamps = { repliedAt: now, firstResponseAt: ticket.firstResponseAt ?? now };
-      if (ticket.status === TicketStatus.RESOLVED || ticket.status === TicketStatus.CLOSED) {
-        // Out of this fix's scope — see this function's own doc comment.
-        await db.supportTicket.update({
-          where: { id: args.ticketId },
-          data: { status: TicketStatus.REPLIED, lastStatusChangeAt: now, ...replyStamps },
-        });
-      } else if (ticket.status === TicketStatus.WAITING_CUSTOMER) {
+      if (ticket.status === TicketStatus.WAITING_CUSTOMER) {
         // Already waiting on customer (a second consecutive admin reply, or
         // `replyToTicket` already moved it here earlier in this same
         // transaction — see this function's own doc comment) — no real
         // state move, just refresh the reply timestamps/wait-clock.
         await db.supportTicket.update({
           where: { id: args.ticketId },
-          data: { lastStatusChangeAt: now, ...replyStamps },
+          data: { lastStatusChangeAt: now, lastActivityAt: now, ...replyStamps },
         });
       } else {
         await transitionTicketStatus(db, {
@@ -545,6 +513,8 @@ export async function addTicketMessage(
     }
   }
   if (ticket && args.senderType === SenderType.ADMIN && !internal) {
+    const recipient = await db.user.findUnique({ where: { id: ticket.userId }, select: { telegramId: true, language: true } });
+    if (recipient?.telegramId) await enqueueTicketReplyDm(db, { ticketId: ticket.id, chatId: Number(recipient.telegramId), message: "", messageId: msg.id, language: recipient.language, ticketNumber: ticket.ticketNumber });
     await enqueueEmailEvent(db, { key: "support.ticket.replied.customer", aggregateId: ticket.id, occurrence: msg.id, userId: ticket.userId, payload: { ticket_id: ticket.ticketNumber } });
   }
   return msg;
@@ -691,7 +661,9 @@ export async function assignTicketWithAudit(
  * reply lands on an already-RESOLVED/CLOSED ticket.
  */
 export const TICKET_LEGAL_TRANSITIONS: Record<string, readonly string[]> = {
+  [TicketStatus.IN_PROGRESS]: [TicketStatus.WAITING_ADMIN, TicketStatus.WAITING_CUSTOMER, TicketStatus.RESOLVED, TicketStatus.CLOSED],
   [TicketStatus.OPEN]: [
+    TicketStatus.IN_PROGRESS,
     TicketStatus.REPLIED,
     TicketStatus.WAITING_CUSTOMER,
     TicketStatus.RESOLVED,
@@ -699,6 +671,7 @@ export const TICKET_LEGAL_TRANSITIONS: Record<string, readonly string[]> = {
     TicketStatus.WAITING_ADMIN,
   ],
   [TicketStatus.WAITING_ADMIN]: [
+    TicketStatus.IN_PROGRESS,
     TicketStatus.REPLIED,
     TicketStatus.WAITING_CUSTOMER,
     TicketStatus.RESOLVED,
@@ -717,7 +690,7 @@ export const TICKET_LEGAL_TRANSITIONS: Record<string, readonly string[]> = {
     TicketStatus.RESOLVED,
     TicketStatus.CLOSED,
   ],
-  [TicketStatus.RESOLVED]: [TicketStatus.CLOSED],
+  [TicketStatus.RESOLVED]: [TicketStatus.OPEN, TicketStatus.WAITING_ADMIN, TicketStatus.WAITING_CUSTOMER, TicketStatus.CLOSED],
   [TicketStatus.CLOSED]: [TicketStatus.OPEN],
 };
 
@@ -756,7 +729,9 @@ export async function transitionTicketStatus(
     extraData?: { repliedAt?: Date; firstResponseAt?: Date };
   },
 ): Promise<SupportTicket> {
+  if ("$transaction" in db) return emailTransaction(db, (tx) => transitionTicketStatus(tx, args));
   const { ticketId, from, to, adminId, meta, extraData } = args;
+  if (from === TicketStatus.CLOSED && to !== TicketStatus.CLOSED) await lockSupportRetention(db, ticketId);
 
   if (!TICKET_LEGAL_TRANSITIONS[from]?.includes(to)) {
     throw new ValidationError("error.illegal_ticket_status_transition", { from, to });
@@ -768,6 +743,9 @@ export async function transitionTicketStatus(
     data: {
       status: to,
       lastStatusChangeAt: now,
+      lastActivityAt: now,
+      ...(from === TicketStatus.RESOLVED && to !== TicketStatus.CLOSED ? { resolvedAt: null } : {}),
+      ...(from === TicketStatus.CLOSED ? { closedAt: null } : {}),
       ...(to === TicketStatus.RESOLVED ? { resolvedAt: now } : {}),
       ...(to === TicketStatus.CLOSED ? { closedAt: now } : {}),
       ...(extraData ?? {}),
@@ -884,9 +862,9 @@ export function countOpenUserTickets(db: Db, userId: number): Promise<number> {
  * statuses each bucket maps to — edit this one object, not two copies.
  */
 const USER_TICKET_STATUS_SETS: Record<Exclude<SupportTicketStatusFilter, "all">, TicketStatus[]> = {
-  waiting_for_you: [TicketStatus.WAITING_CUSTOMER],
+  waiting_for_you: [TicketStatus.WAITING_CUSTOMER, TicketStatus.REPLIED],
   waiting_for_support: [TicketStatus.OPEN, TicketStatus.WAITING_ADMIN],
-  in_progress: [TicketStatus.REPLIED],
+  in_progress: [TicketStatus.IN_PROGRESS],
   resolved: [TicketStatus.RESOLVED],
   closed: [TicketStatus.CLOSED],
 };
@@ -952,7 +930,7 @@ export async function listUserTicketsPaged(
       ? { createdAt: "desc" }
       : sort === "created_asc"
         ? { createdAt: "asc" }
-        : { lastStatusChangeAt: "desc" };
+        : { lastActivityAt: "desc" };
 
   const page = Math.max(1, opts.page ?? 1);
   const pageSize = Math.min(50, Math.max(1, opts.pageSize ?? 10));
@@ -1027,6 +1005,7 @@ export interface TicketFilter {
   adminId?: number | null;
   overdue?: boolean | null;
   q?: string | null;
+  origin?: "WEB" | "BOT" | null;
   /** Restrict to this exact set of ticket ids — the export route's "export
    * only the selected rows" path. */
   ids?: number[] | null;
@@ -1117,6 +1096,7 @@ function buildTicketConditions(
         : Prisma.sql`status = ${f.status}`,
     });
   }
+  if (f.origin) conditions.push({ prisma: { origin: f.origin }, raw: Prisma.sql`origin = ${f.origin}` });
   if (f.priority != null) {
     conditions.push({
       prisma: { priority: Array.isArray(f.priority) ? { in: f.priority } : f.priority },
@@ -1167,13 +1147,16 @@ function buildTicketConditions(
       prisma: {
         OR: [
           { message: { contains: term, mode: "insensitive" } },
+          { ticketNumber: { contains: term, mode: "insensitive" } },
+          { subject: { contains: term, mode: "insensitive" } },
+          { order: { orderCode: { contains: term, mode: "insensitive" } } },
           { user: { fullName: { contains: term, mode: "insensitive" } } },
           { user: { username: { contains: term, mode: "insensitive" } } },
         ],
       },
       // ILIKE, not LIKE — Postgres's LIKE is case-sensitive, so this has to
       // match the Prisma side's `mode: "insensitive"`.
-      raw: Prisma.sql`(message ILIKE ${likeTerm} OR user_id IN (SELECT id FROM users WHERE full_name ILIKE ${likeTerm} OR username ILIKE ${likeTerm}))`,
+      raw: Prisma.sql`(message ILIKE ${likeTerm} OR ticket_number ILIKE ${likeTerm} OR subject ILIKE ${likeTerm} OR order_id IN (SELECT id FROM orders WHERE order_code ILIKE ${likeTerm}) OR user_id IN (SELECT id FROM users WHERE full_name ILIKE ${likeTerm} OR username ILIKE ${likeTerm}))`,
     });
   }
   return conditions;
@@ -1251,7 +1234,7 @@ export async function listTicketsPaged(
     if (ids.length === 0) return [];
     const rows = await db.supportTicket.findMany({
       where: { id: { in: ids } },
-      include: { user: { select: TICKET_USER_SELECT }, admin: { select: TICKET_ADMIN_SELECT } },
+      include: { order: { select: { id: true, orderCode: true } }, user: { select: TICKET_USER_SELECT }, admin: { select: TICKET_ADMIN_SELECT } },
     });
     const rowById = new Map(rows.map((r) => [r.id, r]));
     return ids.map((id) => rowById.get(id)).filter((r): r is (typeof rows)[number] => r !== undefined);
@@ -1259,8 +1242,8 @@ export async function listTicketsPaged(
 
   return db.supportTicket.findMany({
     where: ticketWhere(opts, cutoff),
-    include: { user: { select: TICKET_USER_SELECT }, admin: { select: TICKET_ADMIN_SELECT } },
-    orderBy: { createdAt: opts.sort === "oldest" ? "asc" : "desc" },
+    include: { order: { select: { id: true, orderCode: true } }, user: { select: TICKET_USER_SELECT }, admin: { select: TICKET_ADMIN_SELECT } },
+    orderBy: opts.sort === "oldest" ? { createdAt: "asc" } : { lastActivityAt: "desc" },
     skip: offset,
     take: limit,
   });
@@ -1280,12 +1263,12 @@ export function countTickets(db: Db, opts: TicketFilter = {}) {
 export async function getTicketStats(
   db: Db,
   now: Date = new Date(),
-): Promise<{ open: number; waitingCustomer: number; overdue: number; unassigned: number; resolvedToday: number }> {
+): Promise<{ open: number; waitingCustomer: number; overdue: number; unassigned: number; resolvedToday: number; inProgress: number }> {
   const cutoff = overdueCutoff(now);
   const todayStart = startOfDayUtc(now);
   const todayEnd = startOfDayUtc(addDays(now, 1));
 
-  const [open, waitingCustomer, overdue, unassigned, resolvedToday] = await Promise.all([
+  const [open, waitingCustomer, overdue, unassigned, resolvedToday, inProgress] = await Promise.all([
     db.supportTicket.count({ where: { status: { in: [TicketStatus.OPEN, TicketStatus.WAITING_ADMIN] } } }),
     db.supportTicket.count({ where: { status: { in: [TicketStatus.REPLIED, TicketStatus.WAITING_CUSTOMER] } } }),
     // Routed through ticketWhere (the same function the {overdue:true} filter
@@ -1295,11 +1278,12 @@ export async function getTicketStats(
     db.supportTicket.count({ where: ticketWhere({ overdue: true }, cutoff) }),
     db.supportTicket.count({ where: { status: { not: TicketStatus.CLOSED }, adminId: null } }),
     db.supportTicket.count({
-      where: { status: TicketStatus.CLOSED, closedAt: { gte: todayStart, lt: todayEnd } },
+      where: { status: TicketStatus.RESOLVED, resolvedAt: { gte: todayStart, lt: todayEnd } },
     }),
+    db.supportTicket.count({ where: { status: TicketStatus.IN_PROGRESS } }),
   ]);
 
-  return { open, waitingCustomer, overdue, unassigned, resolvedToday };
+  return { open, waitingCustomer, overdue, unassigned, resolvedToday, inProgress };
 }
 
 /** Which of the requested ids actually exist, split succeeded/failed — shared
@@ -1413,4 +1397,18 @@ export async function bulkResolveTickets(
     succeeded.push(id);
   }
   return { succeeded, failed };
+}
+
+/** Reopen/hold and cleanup use the same short ticket lock. Once a delete has
+ * started, callers receive a conflict instead of claiming evidence is held. */
+async function lockSupportRetention(db: Db, ticketId: number) {
+  await db.$queryRaw`SELECT id FROM support_tickets WHERE id = ${ticketId} FOR NO KEY UPDATE`;
+  if (await db.supportAttachment.count({ where: { ticketId, attachedAt: { not: null }, status: "DELETING" } })) throw new ValidationError("helpdesk.retention_busy");
+}
+
+export async function setSupportLegalHold(db: Db, ticketId: number, held: boolean, adminId: number): Promise<void> {
+  if ("$transaction" in db) return emailTransaction(db, (tx) => setSupportLegalHold(tx, ticketId, held, adminId));
+  await lockSupportRetention(db, ticketId);
+  await db.supportTicket.update({ where: { id: ticketId }, data: { legalHold: held } });
+  await logAdminAction(db, { adminId, action: "ticket_evidence_hold", targetType: "ticket", targetId: ticketId, details: held ? "Placed support evidence on hold; automatic retention is paused." : "Released the support evidence hold; normal retention applies." });
 }

@@ -316,6 +316,7 @@ export class FakeConversation {
     if (!c) throw new Error("FakeConversation: queue empty (conversation waited for more input than scripted)");
     return typeof c === "function" ? c() : c;
   }
+  now = async () => Date.now();
   waitFor = (_q?: unknown) => this.wait();
   waitForHears = (_t?: unknown) => this.wait();
   waitUntil = (_p?: unknown) => this.wait();
@@ -344,6 +345,7 @@ export class FakeConversation {
 export function captureExternalResults(conv: FakeConversation): { conversation: MyConversation; results: unknown[] } {
   const results: unknown[] = [];
   const wrapper = {
+    now: () => conv.now(),
     wait: () => conv.wait(),
     waitFor: (q?: unknown) => conv.waitFor(q),
     waitForHears: (t?: unknown) => conv.waitForHears(t),

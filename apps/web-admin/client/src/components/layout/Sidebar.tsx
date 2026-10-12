@@ -31,7 +31,8 @@ import {
 } from "lucide-react";
 import { useOperations } from "../../hooks/useOperations";
 import { useInventory } from "../../hooks/useInventory";
-import { logout } from "../../api/client";
+import { useQuery } from "@tanstack/react-query";
+import { apiGet, logout } from "../../api/client";
 
 interface SidebarProps {
   open: boolean;
@@ -44,7 +45,7 @@ interface NavItemConfig {
   label: string;
   icon: ComponentType<{ className?: string }>;
   end?: boolean;
-  badge?: "orders" | "stock";
+  badge?: "orders" | "stock" | "support";
 }
 
 interface NavGroup {
@@ -91,7 +92,7 @@ const NAV_GROUPS: NavGroup[] = [
   {
     header: "Support",
     items: [
-      { to: "/support", label: "Tickets", icon: MessageCircle },
+      { to: "/support", label: "Support Tickets", icon: MessageCircle, badge: "support" },
       { to: "/tasks", label: "Tasks", icon: ListChecks },
       { to: "/broadcast", label: "Broadcast", icon: Megaphone },
       { to: "/reviews", label: "Reviews", icon: Star },
@@ -118,6 +119,7 @@ const NAV_GROUPS: NavGroup[] = [
 ];
 
 function SidebarContent({ onClose }: { onClose: () => void }) {
+  const { data: support } = useQuery({ queryKey: ["support-stats"], queryFn: () => apiGet<{ open: number }>("/api/support/stats"), refetchInterval: 30_000 });
   const { data: operations } = useOperations();
   const { data: inventory } = useInventory();
   const { shopName } = useShopInfo();
@@ -144,7 +146,8 @@ function SidebarContent({ onClose }: { onClose: () => void }) {
     ? inventory.filter((row) => row.available <= row.threshold).length
     : 0;
 
-  function getBadgeValue(badge?: "orders" | "stock"): number {
+  function getBadgeValue(badge?: "orders" | "stock" | "support"): number {
+    if (badge === "support") return support?.open ?? 0;
     if (badge === "orders") return ordersBadge;
     if (badge === "stock") return stockBadge;
     return 0;

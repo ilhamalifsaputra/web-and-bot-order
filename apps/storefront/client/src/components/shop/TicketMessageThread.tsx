@@ -82,7 +82,7 @@ function MessageBubble({
 }) {
   const senderLabel = entry.from_user ? t("web.ticket_sender_you") : t("web.ticket_sender_support");
   return (
-    <Card className={cn("max-w-lg", entry.from_user ? "ml-auto bg-pine-tint/30" : "mr-auto")}>
+    <Card className={cn("min-w-0 max-w-lg p-3", entry.from_user ? "ml-auto bg-pine-tint/30" : "mr-auto")}>
       <div className="mb-1 flex items-center gap-2 text-xs text-ink-faint">
         <span
           className={cn(
@@ -97,7 +97,7 @@ function MessageBubble({
           {timePart}
         </span>
       </div>
-      <p className="text-sm whitespace-pre-line break-words">{entry.content}</p>
+      <p className="text-sm whitespace-pre-line [overflow-wrap:anywhere]">{entry.content}</p>
       <AttachmentGallery urls={entry.attachments} />
     </Card>
   );

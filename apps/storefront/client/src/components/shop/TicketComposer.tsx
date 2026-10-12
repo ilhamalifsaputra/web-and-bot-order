@@ -4,7 +4,7 @@
  * component only *saves* drafts on change (see lib/ticketDraft.ts) — loading
  * the initial draft and clearing it on success are the parent's job, since
  * those need to happen exactly once at mount / on mutation success. */
-import { useEffect, useRef, type KeyboardEvent } from "react";
+import { useEffect, useRef, type ReactNode, type KeyboardEvent } from "react";
 import { Send } from "lucide-react";
 import { t } from "../../lib/i18n";
 import { saveTicketDraft } from "../../lib/ticketDraft";
@@ -26,6 +26,9 @@ export interface TicketComposerProps {
   onSubmit: () => void;
   pending: boolean;
   uploadProgress: number;
+  uploadSlot?: ReactNode;
+  uploadBusy?: boolean;
+  hasUploads?: boolean;
 }
 
 export default function TicketComposer({
@@ -37,6 +40,9 @@ export default function TicketComposer({
   onSubmit,
   pending,
   uploadProgress,
+  uploadSlot,
+  uploadBusy = false,
+  hasUploads = false,
 }: TicketComposerProps) {
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -49,7 +55,7 @@ export default function TicketComposer({
   }, [ticketId, message]);
 
   function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
-    if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && message.trim() && !pending) {
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && (message.trim() || hasUploads) && !pending && !uploadBusy) {
       e.preventDefault();
       onSubmit();
     }
@@ -61,14 +67,17 @@ export default function TicketComposer({
         e.preventDefault();
         onSubmit();
       }}
-      className="card card-pad mt-5"
+      className="card min-w-0 p-3 mt-3"
     >
       <Textarea
+        aria-label={t("web.support_reply")}
+        disabled={pending}
+        className="min-h-0 max-h-40 resize-y [field-sizing:content]"
         value={message}
         onChange={(e) => onMessageChange(e.target.value)}
         onKeyDown={handleKeyDown}
-        rows={3}
-        required
+        rows={2}
+        required={!hasUploads}
         maxLength={MAX_MESSAGE_LENGTH}
         placeholder={t("web.support_placeholder")}
       />
@@ -78,14 +87,14 @@ export default function TicketComposer({
           {message.length}/{MAX_MESSAGE_LENGTH}
         </span>
       </div>
-      <AttachmentPicker files={files} onChange={onFilesChange} disabled={pending} />
+      {uploadSlot ?? <AttachmentPicker files={files} onChange={onFilesChange} disabled={pending} />}
       {pending && files.length > 0 && (
         <div className="mt-2">
           <ProgressBar value={uploadProgress} />
         </div>
       )}
       <div className="mt-3 text-right">
-        <Button type="submit" variant="primary" size="sm" disabled={pending || !message.trim()}>
+        <Button type="submit" variant="primary" size="sm" disabled={pending || uploadBusy || (!message.trim() && !hasUploads)}>
           {pending && <Spinner />}
           <Send className="w-3.5 h-3.5" /> {t("web.support_reply")}
         </Button>

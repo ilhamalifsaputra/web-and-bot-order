@@ -143,7 +143,9 @@ Run penuh kedua: 627 file, 11.801 tes, satu gagal dalam 815.43 detik; seluruh ke
 
 ## Status integrasi repository
 
-Implementasi berada di branch/worktree `worktree-auth-email-toggles` dengan baseline `aa2794f5`, sudah `git fetch origin` dan sync terhadap `master` pada baseline tersebut. Checkout utama tetap pada `master` dan memiliki file untracked di luar lingkup perubahan ini (`skills-lock.json`). Sesuai aturan integration lane pada `AGENTS.md`, checkout utama tersebut tidak dibersihkan atau dipaksa merge. Tidak ada merge, push, deployment atau perubahan konfigurasi/database produksi dalam pekerjaan ini. Worktree dipertahankan untuk review/integrasi; cleanup dilakukan setelah branch benar-benar digabung.
+Implementasi awal berada di branch/worktree `worktree-auth-email-toggles` dengan baseline `aa2794f5`. Setelah pengguna meminta merge dan deployment, branch disinkronkan kembali dan digabung ke `master` melalui merge commit `1dd65ae5`. File lokal `skills-lock.json` dicadangkan dengan verifikasi checksum sebelum merge, lalu dikembalikan utuh. Build, typecheck dan React Doctor penuh pada hasil merge sudah lulus; pemeriksaan penuh final dan deployment dilanjutkan pada revisi final. Schema diff read-only terhadap database lokal port 5432 melaporkan tidak ada perbedaan, sehingga tidak diperlukan migrasi skema.
+
+Percobaan menjalankan CLI audit sebelum deployment menemukan bahwa runner `tsx` root memakai output CommonJS dan menolak top-level await. Skrip audit kini memakai fungsi async `main`; eksekusi langsung pada database pengujian terisolasi berhasil dan tetap read-only. Run tes penuh hasil merge yang baru dimulai dihentikan agar gate final dijalankan sesudah koreksi CLI ini. Bukti integrasi/deployment lanjutan disimpan di `%TEMP%/trustance-auth-email-toggles/`.
 
 ## Risiko tersisa dan tindak lanjut
 

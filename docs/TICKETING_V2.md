@@ -51,11 +51,11 @@ Migration/backfill belum dijalankan ke produksi. Verifikasi schema lokal hanya k
 ## 5. Hasil verifikasi
 
 - `pnpm -r build`: lulus untuk semua workspace; output `.ticketing-build-complete-final.log`.
-- `pnpm typecheck`: lulus, termasuk semua workspace dan `tsconfig.test.json`; output `.ticketing-typecheck-compact-final.log`. Final synchronized gate sedang dijalankan ulang di `.ticketing-typecheck-compact-final.log` / `.ticketing-test-verified-final.log`.
+- `pnpm typecheck`: lulus, termasuk semua workspace dan `tsconfig.test.json`; output `.ticketing-typecheck-compact-final.log`.
 - `pnpm lint`: lulus, termasuk Storefront ESLint dan `pnpm doctor:bugs` untuk kedua client; output `.ticketing-lint-complete-final.log`.
 - `pnpm doctor:changed`: 38 files, Bugs clean. `pnpm doctor:full`: **637 files, 0 errors, 0 warnings**, 38.4 detik; diagnostics `react-doctor-19b65f01-13a6-45a1-8f0f-34a14d1e1f3d`. Tidak ada suppression, exclusion atau disabled rule baru.
 - Focused domain/backfill/delivery 152 tests lulus; lifecycle/retention-race/stream-limit 12 lulus; API/bot regressions 381 lulus. Final upload hooks + admin list/detail: **87 tests lulus**. Angka ini per-run, bukan total unik.
-- Full suite pertama: 632 files, 11,824 tests; 33 gagal. Ekspektasi label/nomor/placeholder lama diperbarui setelah failure direproduksi sendirian. Test order creation yang timeout lulus sendirian 7/7 tanpa perubahan logic atau timeout. Final full gate masih berjalan; jangan menganggap jumlah focused sebagai full pass.
+- Final synchronized gate pada source `50490bd7`, setelah sinkronisasi dengan `master` / `origin/master` di `c39b0150`: **`pnpm typecheck` dan `pnpm test` exit 0; 634 files, 11,845 tests, 0 failures, 757.39 detik**. Seluruh pretest gate lulus (migration drift/timestamps, frontend boundaries, lint dan detection purity). Output full suite `.ticketing-test-verified-final.log`. Perubahan setelah gate hanya laporan ini.
 - Browser fixtures: CSS viewport **320/375/768/1024/1440/1920** untuk customer help/detail dan admin list/detail. Tidak ada horizontal overflow dokumen/main. Tabel admin scroll hanya dalam panel pada ukuran menengah. `Pembayaran & Saldo`/refund dengan deskripsi `Gg` invalid; pergantian kategori membersihkan draft order. Nomor/teks panjang membungkus; title editor mobile dapat disimpan; internal note admin terpisah. Screenshots: `docs/ticketing-help-mobile.png`, `ticketing-detail-mobile.png`, `ticketing-admin-mobile.png`, `ticketing-admin-desktop.png`, `ticketing-admin-detail-mobile.png`.
 
 Ukuran chunk hasil production build lokal (minified / gzip; tidak termasuk shared chunks):

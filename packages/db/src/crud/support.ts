@@ -335,52 +335,13 @@ export async function replyToTicket(
   return user ? user.telegramId : null;
 }
 
-/** Add a thread message and update the ticket's status accordingly.
- *
- * `internal` (Task 1): when `true`, this message is an admin-only note.
- * Internal notes:
- *  - are stored with `TicketMessage.internal = true`, so `listTicketMessages`
- *    excludes them by default (see that function's `includeInternal` option)
- *    — an internal note must never appear in a customer-facing thread view;
- *  - never advance the ticket's customer-visible state: the ADMIN branch's
- *    `status -> REPLIED` / `repliedAt` / `firstResponseAt` writes are SKIPPED
- *    for an internal note, because those fields exist to tell the customer
- *    "an admin responded to you", which an internal note is not;
- *  - are still audited (`logAdminAction`) — adding an internal note is new,
- *    admin-only, ticket-affecting capability, so it gets its own audit
- *    action distinct from `ticket_reply` (which the route already logs)
- *    rather than trying to retrofit an existing action, and distinct from
- *    the caller possibly not touching audit itself at all today.
- * Only meaningful when `senderType` is `ADMIN` — a customer can never write
- * an internal note (the USER branch below never reads `internal`). Defaults
- * to `false`, so every existing call site's behavior is byte-for-byte
- * unchanged.
- *
- * Task 1 FIX (review Finding 1): this is the single universal choke point
- * for every real reply in the system (bot conversations, web-admin's reply
- * route, storefront's reply route) — so it's the one place that wires the
- * customer-reply -> `WAITING_ADMIN` / admin-reply -> `WAITING_CUSTOMER`
- * transitions via `transitionTicketStatus`, instead of the old hardcoded
- * `OPEN`/`REPLIED` bare writes. See `TICKET_LEGAL_TRANSITIONS`'s doc comment
- * for the full OPEN/REPLIED-vs-WAITING_ADMIN/WAITING_CUSTOMER resolution.
- * Each branch below carves out two cases that do NOT go through
- * `transitionTicketStatus`:
- *  - the ticket is already at the target status (WAITING_ADMIN for a second
- *    customer message before any admin responds; WAITING_CUSTOMER for a
- *    second consecutive admin reply, or because `replyToTicket` — this
- *    function's paired caller in the bot's admin-reply flow — already moved
- *    it there earlier in the SAME transaction): a same-status "transition"
- *    isn't a real state move, so it's a plain field refresh (wait-clock /
- *    reply timestamps only), not an audited transition. This is also why
- *    `TICKET_LEGAL_TRANSITIONS` deliberately has NO self-edges for these two
- *    states — adding one would make `OPEN`'s and `WAITING_ADMIN`'s (or
- *    `REPLIED`'s and `WAITING_CUSTOMER`'s) target lists byte-identical
- *    again, exactly Finding 2's redundancy.
- *  - the ticket is already `RESOLVED`/`CLOSED`: explicitly out of this fix's
- *    scope (brief: "CLOSED/RESOLVED handling ... unaffected") — a reply
- *    here still unconditionally reopens it via the OLD literal values
- *    (`OPEN`/`REPLIED`), byte-for-byte the pre-fix behavior, since neither
- *    of those two states' entries in `TICKET_LEGAL_TRANSITIONS` changed. */
+/** Persist one immutable thread message, attachment binding, status change
+ * and notifications atomically. Serialize concurrent replies with a short
+ * ticket row lock and deduplicate by ticket/sender/request key.
+ * Public customer/admin replies move to WAITING_ADMIN/WAITING_CUSTOMER;
+ * repeated same-side messages refresh the wait clock. Resolved tickets return
+ * to the appropriate queue with an audit; Closed tickets require reopen.
+ * Internal admin notes never change customer state or enqueue notifications. */
 export async function addTicketMessage(
   db: Db,
   args: {
@@ -592,74 +553,9 @@ export async function assignTicketWithAudit(
   return ticket;
 }
 
-/**
- * Legal `TicketStatus` transitions — mirrors `REFUND_LEGAL_TRANSITIONS`'s
- * shape (packages/db/src/crud/refunds.ts): a lookup table
- * `transitionTicketStatus` validates against before attempting its atomic
- * claim.
- *
- * ## Task 1 FIX (review Findings 1 & 2) — OPEN/REPLIED vs WAITING_ADMIN/WAITING_CUSTOMER
- *
- * The original Task 1 commit added `WAITING_ADMIN`/`WAITING_CUSTOMER` to
- * this table but left them unreachable by any real code path, and their
- * target lists were byte-for-byte identical to `OPEN`'s/`REPLIED`'s — two
- * exactly-synonymous pairs (review Findings 1 and 2). This fix wires
- * `addTicketMessage` (the single choke point for every real reply in the
- * system) to actually produce `WAITING_ADMIN`/`WAITING_CUSTOMER`, and
- * resolves the redundancy as follows — **investigated every existing usage
- * of `OPEN`/`REPLIED` across the codebase first** (bot keyboards/handlers,
- * web-admin filters/badges/resolve-reopen visibility, the
- * `listStaleRepliedTickets` auto-close job, every `.test.ts`/`.test.tsx`
- * touching them):
- *
- *  - `OPEN` is kept as the state for a genuinely NEW ticket with zero real
- *    messages yet (written only by `createTicket`, and by
- *    `reopenTicket`/`reopenTicketAdmin` — unaffected, out of this fix's
- *    scope). A customer's FIRST-EVER follow-up (the second real message on
- *    the ticket) now moves it to `WAITING_ADMIN` instead of re-asserting
- *    `OPEN` — that's the new `OPEN -> WAITING_ADMIN` edge below. This is
- *    what genuinely differentiates `OPEN` from `WAITING_ADMIN` (Finding 2):
- *    `OPEN` is a strictly one-way "entry" state nothing but ticket
- *    creation/reopen ever produces; `WAITING_ADMIN` is the recurring
- *    "needs admin attention" state every subsequent customer reply produces.
- *  - `REPLIED` is RETIRED as a normal write target — `addTicketMessage`'s
- *    ADMIN branch and `replyToTicket` now write `WAITING_CUSTOMER` instead,
- *    since the review confirmed they mean exactly the same thing and only
- *    one should be live. `REPLIED` is NOT removed from the enum or this
- *    table: historical rows already sitting at `REPLIED` in production must
- *    keep working (this is a plain `String` column, not a native enum — see
- *    @app/core/enums's header comment — existing rows never get rewritten),
- *    `listStaleRepliedTickets`/`getTicketStats`/`isTicketOverdue`/
- *    `buildTicketConditions` (this file) all now match `WAITING_CUSTOMER`
- *    ALONGSIDE `REPLIED` rather than replacing it, and `addTicketMessage`'s
- *    ADMIN branch still writes the literal `REPLIED` in exactly one
- *    preserved edge case (replying to an already-RESOLVED/CLOSED ticket —
- *    see that function's own doc comment for why that edge is intentionally
- *    unchanged). The new `REPLIED -> WAITING_CUSTOMER` edge below exists so
- *    a fresh admin reply landing on one of those historical `REPLIED` rows
- *    (or a doubled-up admin reply — see `addTicketMessage`'s own comment)
- *    can still legally move forward under the modern vocabulary.
- *
- * `WAITING_ADMIN`/`WAITING_CUSTOMER` deliberately have NO self-edges (e.g.
- * no `WAITING_ADMIN -> WAITING_ADMIN`) even though `addTicketMessage` can
- * hit that exact "already there" case (a second customer message, or a
- * second admin reply, before the other side responds) — adding one would
- * make `OPEN`'s/`REPLIED`'s target lists byte-identical to `WAITING_ADMIN`'s/
- * `WAITING_CUSTOMER`'s again, the very redundancy Finding 2 flagged.
- * `addTicketMessage` handles that case itself as a plain field refresh
- * instead of a `transitionTicketStatus` call — see its own doc comment.
- *
- * `RESOLVED`/`CLOSED` reachability mirrors the ACTUAL guards `resolveTicket`/
- * `closeTicket` already enforce today (any non-terminal status may resolve
- * or close), and `CLOSED -> OPEN` mirrors `reopenTicket`/`reopenTicketAdmin`
- * exactly (the only two functions that move a ticket OUT of CLOSED today).
- * `RESOLVED` has no outgoing edge back to an active state because no current
- * crud function reopens a RESOLVED ticket without closing it first — that
- * gap is left for a future task if such an action is ever added. Per this
- * fix's own brief, `RESOLVED`/`CLOSED` handling is UNAFFECTED — see
- * `addTicketMessage`'s doc comment for the one deliberate carve-out where a
- * reply lands on an already-RESOLVED/CLOSED ticket.
- */
+/** Legal business transitions. Legacy OPEN/REPLIED remain readable, while
+ * active handling uses IN_PROGRESS and explicit waiting states. Self-refresh
+ * is handled by addTicketMessage without creating a duplicate status event. */
 export const TICKET_LEGAL_TRANSITIONS: Record<string, readonly string[]> = {
   [TicketStatus.IN_PROGRESS]: [TicketStatus.WAITING_ADMIN, TicketStatus.WAITING_CUSTOMER, TicketStatus.RESOLVED, TicketStatus.CLOSED],
   [TicketStatus.OPEN]: [
@@ -1411,4 +1307,13 @@ export async function setSupportLegalHold(db: Db, ticketId: number, held: boolea
   await lockSupportRetention(db, ticketId);
   await db.supportTicket.update({ where: { id: ticketId }, data: { legalHold: held } });
   await logAdminAction(db, { adminId, action: "ticket_evidence_hold", targetType: "ticket", targetId: ticketId, details: held ? "Placed support evidence on hold; automatic retention is paused." : "Released the support evidence hold; normal retention applies." });
+}
+
+
+export async function setSupportTitle(db: Db, ticketId: number, title: string, adminId: number): Promise<void> {
+  if ("$transaction" in db) return emailTransaction(db, (tx) => setSupportTitle(tx, ticketId, title, adminId));
+  const subject = title.trim();
+  if (!subject || subject.length > 100) throw new ValidationError("helpdesk.invalid_request");
+  await db.supportTicket.update({ where: { id: ticketId }, data: { subject } });
+  await logAdminAction(db, { adminId, action: "ticket_title_change", targetType: "ticket", targetId: ticketId, details: "Updated the support ticket title." });
 }

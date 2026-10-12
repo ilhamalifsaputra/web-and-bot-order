@@ -224,9 +224,9 @@ Historical Phase 1 changed-file inventory, before integration with the newer mas
 ## Ticketing V2 - 13 Oktober 2026
 
 - Worktree `ticketing-v2`, branch `worktree-ticketing-v2`.
-- Full Doctor (`pnpm doctor:full`): **635 files, 0 errors, 0 warnings**. Local output `.ticketing-doctor-final-2.log`, diagnostics `react-doctor-8f9ce023-939b-4bc2-9e4f-7f9b04126011`.
+- Full Doctor (`pnpm doctor:full`): **635 files, 0 errors, 0 warnings**. Local output `.ticketing-doctor-final-3.log`, diagnostics `react-doctor-c7d1c12c-35c5-43ea-a157-ca92b37f7aab`.
 - Object URL preview lifetime now belongs to a mounted component with effect cleanup; URLs are revoked when files change or previews unmount. No suppressions or exclusions added.
-- `pnpm doctor:changed`: 27 files, Bugs category clean. `pnpm lint`: Storefront eslint and both clients' full Bugs scan clean (latest rerun recorded below).
+- `pnpm doctor:changed`: 29 files, Bugs category clean. `pnpm lint`: Storefront eslint and both clients' full Bugs scan clean (latest rerun recorded below).
 - Browser runtime: customer help/detail and admin list/detail exercised with mocked API responses at **CSS viewport widths 320, 375, 768, 1024, 1440, 1920**. Document/main horizontal scroll stayed within client widths. Admin table scrolling is contained at 768/1024; mobile uses existing DataTable cards. Checked category switching clears order context, short description is invalid, long unbroken message text wraps, and internal notes are visually distinct in admin.
 - These browser fixtures verify rendering and interaction, not production authentication, live R2 or live Telegram delivery. Real authorization/domain behavior has separate Postgres integration tests. Screenshots: `docs/ticketing-{help-mobile,detail-mobile,admin-mobile,admin-desktop}.png`.
 - Full suite/typecheck final result will be recorded after branch sync.

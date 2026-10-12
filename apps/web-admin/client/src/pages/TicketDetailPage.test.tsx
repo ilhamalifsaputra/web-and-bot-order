@@ -733,3 +733,23 @@ describe("TicketDetailPage — activity", () => {
     expect(screen.getByText("No additional activity yet.")).toBeInTheDocument();
   });
 });
+
+
+describe("ticket title correction", () => {
+  it("starts processing with the server's expected-status concurrency contract", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.mocked(apiPost).mockResolvedValue({ ok: true }); await renderLoaded();
+    await user.click(screen.getByRole("button", { name: "Start processing" }));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/support/1/status", { expected: "OPEN", status: "IN_PROGRESS" }));
+  });
+  it("lets staff correct the generated title without changing the public number", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.mocked(apiPost).mockResolvedValue({ ok: true });
+    await renderLoaded();
+    await user.click(screen.getByRole("button", { name: "Edit title" }));
+    const input = screen.getByRole("textbox", { name: "Title" });
+    await user.clear(input); await user.type(input, "Payment confirmation delayed");
+    await user.click(screen.getByRole("button", { name: "Save title" }));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/support/1/title", { title: "Payment confirmation delayed" }));
+  });
+});

@@ -32,7 +32,7 @@ beforeEach(async () => {
     }
     const object = objects.get(key); if (!object) return new Response(null, { status: 404 });
     if (headers.get("If-Match") && headers.get("If-Match") !== object.etag) return new Response(null, { status: 412 });
-    return new Response(method === "HEAD" ? null : object.bytes, { status: method === "HEAD" ? 200 : 206, headers: { "Content-Length": String(object.bytes.length), "Content-Type": object.type, ETag: object.etag } });
+    return new Response(method === "HEAD" ? null : new Uint8Array(object.bytes), { status: method === "HEAD" ? 200 : 206, headers: { "Content-Length": String(object.bytes.length), "Content-Type": object.type, ETag: object.etag } });
   }));
 });
 afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); });

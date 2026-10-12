@@ -1,6 +1,6 @@
 import { ValidationError } from "@app/core/errors";
 import { supportMediaRoutes } from "./supportMedia";
-import { supportAttachmentLinks, transitionTicketStatus, setSupportLegalHold } from "@app/db";
+import { supportAttachmentLinks, transitionTicketStatus, setSupportLegalHold, setSupportTitle } from "@app/db";
 import type { FastifyInstance } from "fastify";
 import { csvRow } from "../../lib/csv";
 import { parsePositiveId } from "../../lib/params";
@@ -197,6 +197,13 @@ function classifyDetails(args: { priority?: string; category?: string | null }):
 
 export default async function supportApiRoutes(app: FastifyInstance): Promise<void> {
   await supportMediaRoutes(app);
+  app.post<{ Params: { ticketId: string }; Body: { title: string } }>("/api/support/:ticketId/title", { preHandler: csrfProtect }, async (req, reply) => {
+    const id = parsePositiveId(req.params.ticketId);
+    if (!id || typeof req.body?.title !== "string" || !req.body.title.trim() || req.body.title.trim().length > 100) return reply.code(400).send({ error: "Title must contain 1-100 characters." });
+    if (!await getTicket(prisma, id)) return reply.code(404).send({ error: "Ticket not found." });
+    await setSupportTitle(prisma, id, req.body.title, req.admin!.userId);
+    return { ok: true };
+  });
   app.post<{ Params: { ticketId: string }; Body: { held: boolean } }>("/api/support/:ticketId/evidence-hold", { preHandler: csrfProtect }, async (req, reply) => {
     const id = Number(req.params.ticketId);
     if (!Number.isSafeInteger(id) || id <= 0 || typeof req.body?.held !== "boolean") return reply.code(400).send({ error: "Invalid evidence hold." });

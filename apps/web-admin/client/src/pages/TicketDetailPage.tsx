@@ -1,3 +1,4 @@
+import { Input } from "@/components/ui/input";
 import { useSupportUploads } from "../lib/supportUploads";
 import { SupportUploadPicker } from "../components/support/SupportUploadPicker";
 import { SettingsToggle } from "@/components/shared/SettingsToggle";
@@ -353,6 +354,7 @@ export function TicketDetailPage() {
         }
       />
 
+      <TicketTitleEditor key={ticket.subject} ticketId={ticket.id} initialTitle={ticket.subject} />
       <EvidenceHold ticketId={ticket.id} held={ticket.legalHold ?? false} />
       <TicketDetailTicketPriority ticket={ticket} setPriority={setPriority} setCategory={setCategory} assign={assign} adminLabel={adminLabel} assignableAdmins={assignableAdmins} />
 
@@ -706,4 +708,12 @@ function EvidenceHold({ ticketId, held }: { ticketId: number; held: boolean }) {
   const qc = useQueryClient();
   const hold = useMutation({ mutationFn: () => apiPost(`/api/support/${ticketId}/evidence-hold`, { held: !held }), onSuccess: () => { void qc.invalidateQueries({ queryKey: ["ticket", String(ticketId)] }); }, onError: (error: Error) => toast.error(describeError(error)) });
   return <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-ink-soft"><Button variant="outline" size="sm" disabled={hold.isPending} aria-pressed={held} onClick={() => hold.mutate()}><Lock className="h-3.5 w-3.5" />{held ? "Release evidence hold" : "Preserve evidence"}</Button><span>{held ? "Retention paused for this ticket." : "Closed-ticket evidence follows the retention policy."}</span></div>;
+}
+
+function TicketTitleEditor({ ticketId, initialTitle }: { ticketId: number; initialTitle: string }) {
+  const [open, setOpen] = useState(false);
+  const [title, setTitle] = useState(initialTitle);
+  const qc = useQueryClient();
+  const save = useMutation({ mutationFn: () => apiPost(`/api/support/${ticketId}/title`, { title }), onSuccess: () => { setOpen(false); void qc.invalidateQueries({ queryKey: ["ticket", String(ticketId)] }); }, onError: (error: Error) => toast.error(describeError(error)) });
+  return <><Button size="sm" variant="ghost" className="mb-2" onClick={() => setOpen(true)}>Edit title</Button><Dialog open={open} onOpenChange={setOpen}><DialogContent><DialogTitle>Edit ticket title</DialogTitle><form className="space-y-3" onSubmit={(event) => { event.preventDefault(); save.mutate(); }}><label htmlFor="support-title" className="text-sm">Title</label><Input id="support-title" value={title} onChange={(event) => setTitle(event.target.value)} required maxLength={100} disabled={save.isPending} /><Button type="submit" disabled={!title.trim() || save.isPending}>Save title</Button></form></DialogContent></Dialog></>;
 }

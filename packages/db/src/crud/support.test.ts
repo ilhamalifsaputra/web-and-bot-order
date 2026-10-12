@@ -9,6 +9,7 @@ import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import {
   closeTicket,
+  setSupportTitle,
   createTicket,
   addTicketMessage,
   getTicketWithOrder,
@@ -2103,4 +2104,14 @@ describe("V2 order deduplication and source filters", () => {
     expect(await countTickets(prisma, { origin: "BOT" })).toBe(1);
     for (const sort of ["newest", "priority"] as const) expect((await listTicketsPaged(prisma, { origin: "BOT", q: ticket.ticketNumber, sort })).map((row) => row.id)).toEqual([ticket.id]);
   });
+});
+
+
+it("audits a title correction while preserving the immutable ticket reference", async () => {
+  const user = await makeUser(98768n); const admin = await makeAdmin();
+  const ticket = await createTicket(prisma, user.id, "Payment confirmation delayed");
+  await setSupportTitle(prisma, ticket.id, "  Payment investigation  ", admin.id);
+  expect(await prisma.supportTicket.findUnique({ where: { id: ticket.id } })).toMatchObject({ subject: "Payment investigation", ticketNumber: ticket.ticketNumber, createdAt: ticket.createdAt });
+  expect(await prisma.auditLog.findFirst({ where: { action: "ticket_title_change", targetId: ticket.id } })).toMatchObject({ adminId: admin.id, details: "Updated the support ticket title." });
+  await expect(setSupportTitle(prisma, ticket.id, "   ", admin.id)).rejects.toBeInstanceOf(ValidationError);
 });

@@ -63,7 +63,7 @@ describe("TicketTableRow", () => {
     expect(screen.getByRole("button", { name: "Ticket #TK-10291" })).toHaveTextContent("#TK-10291");
     expect(screen.getByText("Alight Motion login issue")).toBeInTheDocument();
     expect(screen.getByText("Order #ORD-10421")).toBeInTheDocument();
-    expect(screen.getByText("Waiting for You")).toBeInTheDocument();
+    expect(screen.getByText("Waiting for you")).toBeInTheDocument();
     expect(screen.getByText("2 hours ago")).toBeInTheDocument();
     expect(screen.getByText("2025-09-03 10:24")).toBeInTheDocument();
   });
@@ -110,7 +110,7 @@ describe("TicketCard", () => {
     expect(within(card).getByText("#TK-10291")).toBeInTheDocument();
     expect(within(card).getByText("Alight Motion login issue")).toBeInTheDocument();
     expect(within(card).getByText("Order #ORD-10421")).toBeInTheDocument();
-    expect(within(card).getByText("Waiting for You")).toBeInTheDocument();
+    expect(within(card).getByText("Waiting for you")).toBeInTheDocument();
     expect(within(card).getByText(/2 hours ago/)).toBeInTheDocument();
     expect(within(card).getByText(/2025-09-03 10:24/)).toBeInTheDocument();
   });

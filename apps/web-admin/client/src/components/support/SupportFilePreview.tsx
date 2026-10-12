@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 export function SupportFilePreview({ file }: { file: File }) {
   const [preview, setPreview] = useState<{ file: File; url: string } | null>(null);
   useEffect(() => {
-    if (typeof URL.createObjectURL !== "function") return;
+    if (!["image/jpeg", "image/png", "image/webp", "video/mp4"].includes(file.type) || typeof URL.createObjectURL !== "function") return;
     const url = URL.createObjectURL(file);
     setPreview({ file, url });
     return () => URL.revokeObjectURL(url);

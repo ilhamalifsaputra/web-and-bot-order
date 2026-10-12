@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, within, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
@@ -43,7 +43,7 @@ function WrapperWithDetailRoute({ children }: { children: React.ReactNode }) {
   );
 }
 
-const STATS = { open: 3, waitingCustomer: 2, overdue: 1, unassigned: 4, resolvedToday: 5 };
+const STATS = { inProgress: 7, open: 3, waitingCustomer: 2, overdue: 1, unassigned: 4, resolvedToday: 5 };
 
 const TICKET_OPEN = {
   id: 1,
@@ -138,6 +138,8 @@ beforeEach(() => {
   Element.prototype.releasePointerCapture = vi.fn();
 });
 
+afterEach(() => { vi.useRealTimers(); });
+
 describe("SupportPage", () => {
   it("renders ticket rows with a message excerpt (no subject field) and the customer's name", async () => {
     mockFetchRouter();
@@ -152,7 +154,7 @@ describe("SupportPage", () => {
   it("shows a KPI row sourced from the server-wide stats field", async () => {
     mockFetchRouter({
       support: supportData([TICKET_OPEN], {
-        stats: { open: 12, waitingCustomer: 4, overdue: 2, unassigned: 6, resolvedToday: 9 },
+        stats: { inProgress: 8, open: 12, waitingCustomer: 4, overdue: 2, unassigned: 6, resolvedToday: 9 },
       }),
     });
     render(<SupportPage />, { wrapper: Wrapper });
@@ -163,7 +165,8 @@ describe("SupportPage", () => {
       return match!.closest('[data-slot="card"]') as HTMLElement;
     }
 
-    expect(within(statCard("Open")).getByText("12")).toBeInTheDocument();
+    expect(within(statCard("Needs attention")).getByText("12")).toBeInTheDocument();
+    expect(within(statCard("In progress")).getByText("8")).toBeInTheDocument();
     expect(within(statCard("Waiting for customer")).getByText("4")).toBeInTheDocument();
     expect(within(statCard("Overdue")).getByText("2")).toBeInTheDocument();
     expect(within(statCard("Unassigned")).getByText("6")).toBeInTheDocument();
@@ -291,7 +294,7 @@ describe("SupportPage", () => {
     render(<SupportPage />, { wrapper: Wrapper });
     await vi.waitFor(() => expect(screen.getByText(/no support tickets/i)).toBeInTheDocument());
 
-    const search = screen.getByPlaceholderText(/search ticket message/i);
+    const search = screen.getByPlaceholderText(/ticket, order, or customer/i);
     fireEvent.change(search, { target: { value: "refund" } });
     expect(fetchSpy).not.toHaveBeenCalledWith(
       expect.stringContaining("q=refund"),
@@ -347,7 +350,7 @@ describe("SupportPage", () => {
     await waitFor(() => expect(screen.getByText(/Order tidak sampai/)).toBeInTheDocument());
 
     await user.click(screen.getByRole("combobox", { name: "Status filter" }));
-    await user.click(await screen.findByRole("option", { name: "Open" }));
+    await user.click(await screen.findByRole("option", { name: "New" }));
 
     await user.click(screen.getByRole("button", { name: /^apply$/i }));
 
@@ -711,7 +714,7 @@ describe("SupportPage", () => {
     await waitFor(() => expect(screen.getByText(/Order tidak sampai/)).toBeInTheDocument());
 
     // TICKET_OPEN has category "ORDER", TICKET_REPLIED has category null.
-    expect(screen.getByText("Order")).toBeInTheDocument();
+    expect(within(screen.getAllByRole("row").find((row) => within(row).queryByText("#1"))!).getByText("Order")).toBeInTheDocument();
     expect(screen.getByText("Uncategorized")).toBeInTheDocument();
   });
 

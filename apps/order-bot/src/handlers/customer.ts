@@ -1843,8 +1843,8 @@ export async function viewMyTicket(ctx: MyContext, ticketId: number): Promise<vo
     [TicketStatus.OPEN]: t(ctx, "helpdesk.status_new"),
     [TicketStatus.WAITING_ADMIN]: t(ctx, "helpdesk.status_new"),
     [TicketStatus.IN_PROGRESS]: t(ctx, "helpdesk.status_progress"),
-    [TicketStatus.REPLIED]: t(ctx, "web.ticket_status_waiting_you"),
-    [TicketStatus.WAITING_CUSTOMER]: t(ctx, "web.ticket_status_waiting_you"),
+    [TicketStatus.REPLIED]: t(ctx, "helpdesk.status_waiting"),
+    [TicketStatus.WAITING_CUSTOMER]: t(ctx, "helpdesk.status_waiting"),
     [TicketStatus.RESOLVED]: t(ctx, "helpdesk.resolved"),
     [TicketStatus.CLOSED]: t(ctx, "helpdesk.closed"),
   };

@@ -27,9 +27,9 @@ import Badge, { type BadgeVariant } from "../ui/Badge";
 const LABEL_KEY: Record<string, string> = {
   open: "helpdesk.status_new",
   waiting_admin: "helpdesk.status_new",
-  replied: "web.ticket_status_waiting_you",
+  replied: "helpdesk.status_waiting",
   in_progress: "helpdesk.status_progress",
-  waiting_customer: "web.ticket_status_waiting_you",
+  waiting_customer: "helpdesk.status_waiting",
   resolved: "web.ticket_status_resolved",
   closed: "web.ticket_status_closed",
 };

@@ -10,12 +10,18 @@ describe("TicketStatusBadge", () => {
 
   it("shows the friendly label for OPEN", () => {
     render(<TicketStatusBadge value="OPEN" />);
-    expect(screen.getByText("Waiting for Support")).toBeInTheDocument();
+    expect(screen.getByText("New")).toBeInTheDocument();
   });
 
-  it("shows the 'In Progress' label for REPLIED (case-insensitive input)", () => {
+  it("maps historical REPLIED to waiting for the customer (case-insensitive input)", () => {
     render(<TicketStatusBadge value="replied" />);
-    expect(screen.getByText("In Progress")).toBeInTheDocument();
+    expect(screen.getByText("Waiting for you")).toBeInTheDocument();
+  });
+
+  it("distinguishes active processing from a customer action", () => {
+    render(<TicketStatusBadge value="IN_PROGRESS" />);
+    expect(screen.getByText("In progress")).toBeInTheDocument();
+    expect(screen.queryByText("Waiting for you")).not.toBeInTheDocument();
   });
 
   it("shows the friendly label for CLOSED", () => {
@@ -34,12 +40,12 @@ describe("TicketStatusBadge", () => {
   // showing a buyer the literal string "WAITING_ADMIN".
   it("buckets WAITING_ADMIN under the OPEN label (Task 1's automatic transition)", () => {
     render(<TicketStatusBadge value="WAITING_ADMIN" />);
-    expect(screen.getByText("Waiting for Support")).toBeInTheDocument();
+    expect(screen.getByText("New")).toBeInTheDocument();
   });
 
   it("shows the 'Waiting for You' label for WAITING_CUSTOMER (Task 1's automatic transition)", () => {
     render(<TicketStatusBadge value="waiting_customer" />);
-    expect(screen.getByText("Waiting for You")).toBeInTheDocument();
+    expect(screen.getByText("Waiting for you")).toBeInTheDocument();
   });
 
   it("falls back to the raw value for an unknown status", () => {

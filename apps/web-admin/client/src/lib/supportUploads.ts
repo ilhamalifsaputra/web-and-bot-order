@@ -1,6 +1,33 @@
 import { useEffect, useRef, useState } from "react";
 import { apiPost } from "../api/client";
-const t = (key: string) => ({ "helpdesk.upload_failed": "Upload failed. Retry or remove the file.", "web.support_attach_error_type": "Use JPG, PNG, WebP up to 5 MB or MP4 up to 20 MB." }[key] ?? key);
+const UPLOAD_LABELS: Record<string, string> = {
+  "helpdesk.upload_failed": "Upload failed. Retry or remove the file.",
+  "helpdesk.media_verification_failed": "The file could not be verified. Remove it and choose a valid photo or MP4.",
+  "helpdesk.media_unavailable": "Support uploads are unavailable.",
+  "helpdesk.upload_network": "Network unavailable. Check your connection and retry.",
+  "helpdesk.upload_timeout": "Upload timed out. Check your connection and retry.",
+  "helpdesk.upload_denied": "Upload access expired or was denied. Retry, or reload to sign in again.",
+  "helpdesk.upload_server": "Storage is temporarily unavailable. Please retry shortly.",
+  "helpdesk.upload_ticket_unavailable": "This ticket or upload is unavailable. Refresh the ticket before attaching files.",
+  "helpdesk.upload_type": "Use a JPG, PNG, WebP photo or MP4 video.",
+  "helpdesk.upload_size": "The file is empty or exceeds the {limit} MB limit.",
+  "helpdesk.upload_quota": "The upload limit has been reached. Remove unused files or try again later."
+};
+const t = (key: string, args?: { limit: number }) => (UPLOAD_LABELS[key] ?? key).replace("{limit}", String(args?.limit ?? ""));
+
+
+const UPLOAD_ERROR_KEYS = new Set(["helpdesk.upload_network", "helpdesk.upload_timeout", "helpdesk.upload_denied", "helpdesk.media_verification_failed", "helpdesk.media_unavailable", "helpdesk.upload_failed"]);
+export function supportUploadErrorKey(error: unknown): string {
+  if (!(error instanceof Error)) return "helpdesk.upload_failed";
+  if (UPLOAD_ERROR_KEYS.has(error.message)) return error.message;
+  if (error.message === "web.support_attach_error_count") return "helpdesk.upload_quota";
+  const status = (error as { status?: number }).status;
+  if (status === 401 || status === 403) return "helpdesk.upload_denied";
+  if (status === 404 || status === 409) return "helpdesk.upload_ticket_unavailable";
+  if (status === 429) return "helpdesk.upload_quota";
+  if (status && status >= 500) return "helpdesk.upload_server";
+  return "helpdesk.upload_failed";
+}
 
 export interface SupportUpload { key: string; file: File; attempts?: number; id?: string; progress: number; state: "uploading" | "verifying" | "ready" | "failed"; error?: string }
 const BASE = "/api/support/uploads";
@@ -33,21 +60,25 @@ export function useSupportUploads(ticketId?: number, limits?: SupportMediaLimits
         xhr.open("PUT", intent.url); xhr.timeout = 120_000;
         Object.entries(intent.headers).forEach(([key, value]) => xhr.setRequestHeader(key, value));
         xhr.upload.onprogress = (event) => { if (event.lengthComputable) update(item.key, { progress: Math.round(event.loaded / event.total * 100) }); };
-        xhr.onload = () => xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error(t("helpdesk.upload_failed")));
-        xhr.onerror = xhr.ontimeout = xhr.onabort = () => reject(new Error(t("helpdesk.upload_failed")));
+        xhr.onload = () => xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(Object.assign(new Error("Storage upload refused."), { status: xhr.status }));
+        xhr.onerror = () => reject(new Error("helpdesk.upload_network"));
+        xhr.ontimeout = () => reject(new Error("helpdesk.upload_timeout"));
+        xhr.onabort = () => reject(new Error("helpdesk.upload_failed"));
         xhr.send(item.file);
       });
       update(item.key, { state: "verifying", progress: 100 });
       await apiPost(`${BASE}/${intent.id}/finalize`, {});
       update(item.key, { state: "ready" });
-    } catch { update(item.key, { state: "failed", error: t("helpdesk.upload_failed") }); }
+    } catch (error) { update(item.key, { state: "failed", error: t(supportUploadErrorKey(error)) }); }
     finally { controllers.current.delete(item.key); }
   }
   function add(incoming: File[]) {
-    const items = incoming.slice(0, 3 - files.length).map((file): SupportUpload => {
-      const valid = ["image/jpeg", "image/png", "image/webp", "video/mp4"].includes(file.type) && file.size > 0 && file.size <= (file.type.startsWith("image/") ? (limits?.imageBytes ?? 5 * 1024 ** 2) : (limits?.videoBytes ?? 20 * 1024 ** 2));
+    const items = incoming.slice(0, 3 - active.current.size).map((file): SupportUpload => {
+      const allowed = ["image/jpeg", "image/png", "image/webp", "video/mp4"].includes(file.type);
+      const maximum = file.type.startsWith("image/") ? (limits?.imageBytes ?? 5 * 1024 ** 2) : (limits?.videoBytes ?? 20 * 1024 ** 2);
+      const valid = allowed && file.size > 0 && file.size <= maximum;
       const key = crypto.randomUUID();
-      return { key, file, progress: 0, state: valid ? "uploading" : "failed", error: valid ? undefined : t("web.support_attach_error_type") };
+      return { key, file, progress: 0, state: valid ? "uploading" : "failed", attempts: valid ? undefined : 3, error: valid ? undefined : !allowed ? t("helpdesk.upload_type") : t("helpdesk.upload_size", { limit: maximum / 1024 ** 2 }) };
     });
     items.forEach((item) => active.current.add(item.key));
     setFiles((previous) => [...previous, ...items]);

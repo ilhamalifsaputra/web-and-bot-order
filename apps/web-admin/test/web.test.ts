@@ -5527,7 +5527,7 @@ describe("support", () => {
       ticket: { ticketNumber: string | null; assignedAtDisplay: string | null };
       messages: { content: string; internal: boolean }[];
     };
-    expect(data.ticket.ticketNumber).toMatch(/^TCK-\d{8}-\d{5}$/);
+    expect(data.ticket.ticketNumber).toMatch(/^TKT-\d{8}-[A-F0-9]{6}$/);
     expect(data.ticket.assignedAtDisplay).toBeNull();
 
     // This is the route-level proof that Task 1's includeInternal opt-in is

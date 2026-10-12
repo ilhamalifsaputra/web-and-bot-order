@@ -1527,7 +1527,7 @@
   "helpdesk.issue.payment_other": "Kendala pembayaran lainnya",
   "helpdesk.issue.account_login": "Gagal login",
   "helpdesk.issue.account_telegram_login": "Login Telegram",
-  "helpdesk.issue.account_linking": "Hubungan akun web?Telegram",
+  "helpdesk.issue.account_linking": "Hubungan akun web dan Telegram",
   "helpdesk.issue.account_profile": "Profil atau pengaturan",
   "helpdesk.issue.account_security": "Keamanan akun",
   "helpdesk.issue.account_other": "Kendala akun lainnya",
@@ -1548,5 +1548,13 @@
   "helpdesk.use_direct_upload": "Muat ulang Pusat Bantuan lalu gunakan pemilih lampiran di halaman tersebut.",
   "helpdesk.status_waiting": "Menunggu Anda",
   "helpdesk.retention_busy": "Pembersihan bukti sedang berlangsung. Coba lagi sebentar.",
-  "helpdesk.media_limits_dynamic": "Maksimal 3 file. JPG/PNG/WebP: {image} MB. MP4: {video} MB."
+  "helpdesk.media_limits_dynamic": "Maksimal 3 file. JPG/PNG/WebP: {image} MB. MP4: {video} MB.",
+  "helpdesk.upload_network": "Jaringan tidak tersedia. Periksa koneksi lalu coba lagi.",
+  "helpdesk.upload_timeout": "Waktu unggah habis. Periksa koneksi lalu coba lagi.",
+  "helpdesk.upload_denied": "Akses unggah kedaluwarsa atau ditolak. Coba lagi, atau muat ulang untuk login kembali.",
+  "helpdesk.upload_server": "Penyimpanan sedang tidak tersedia. Coba lagi sebentar.",
+  "helpdesk.upload_ticket_unavailable": "Tiket atau unggahan ini tidak tersedia. Muat ulang tiket sebelum melampirkan file.",
+  "helpdesk.upload_type": "Gunakan foto JPG, PNG, WebP atau video MP4.",
+  "helpdesk.upload_size": "File kosong atau melebihi batas {limit} MB.",
+  "helpdesk.upload_quota": "Batas unggahan tercapai. Hapus file yang tidak digunakan atau coba lagi nanti."
 }

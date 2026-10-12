@@ -87,7 +87,7 @@ describe("TicketMessageThread", () => {
   // break-words a long unbroken token (e.g. a URL pasted as proof) overflows
   // its bubble. The parent has overflow-hidden, so the page doesn't shift --
   // the text just gets clipped and unreadable.
-  it("gives the message paragraph break-words alongside its existing whitespace-pre-line", () => {
+  it("preserves message text and wraps long tokens at any character", () => {
     const longToken = "https://proof.example.com/" + "a".repeat(80);
     const entries: TicketTimelineEntry[] = [
       { id: "fixture-9", kind: "message", from_user: true, content: `line one\n\n${longToken}`, created_at_display: "2026-07-01 09:00", attachments: [] },
@@ -96,6 +96,6 @@ describe("TicketMessageThread", () => {
     const messageParagraph = document.querySelector("p.text-sm.whitespace-pre-line");
     expect(messageParagraph).not.toBeNull();
     expect(messageParagraph?.textContent).toBe(`line one\n\n${longToken}`);
-    expect(messageParagraph).toHaveClass("break-words");
+    expect(messageParagraph).toHaveClass("[overflow-wrap:anywhere]");
   });
 });

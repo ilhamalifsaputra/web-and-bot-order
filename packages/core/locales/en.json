@@ -1548,5 +1548,13 @@
   "helpdesk.use_direct_upload": "Please reload the help center and use its direct attachment uploader.",
   "helpdesk.status_waiting": "Waiting for you",
   "helpdesk.retention_busy": "Evidence cleanup is in progress. Try again shortly.",
-  "helpdesk.media_limits_dynamic": "Up to 3 files. JPG/PNG/WebP: {image} MB. MP4: {video} MB."
+  "helpdesk.media_limits_dynamic": "Up to 3 files. JPG/PNG/WebP: {image} MB. MP4: {video} MB.",
+  "helpdesk.upload_network": "Network unavailable. Check your connection and retry.",
+  "helpdesk.upload_timeout": "Upload timed out. Check your connection and retry.",
+  "helpdesk.upload_denied": "Upload access expired or was denied. Retry, or reload to sign in again.",
+  "helpdesk.upload_server": "Storage is temporarily unavailable. Please retry shortly.",
+  "helpdesk.upload_ticket_unavailable": "This ticket or upload is unavailable. Refresh the ticket before attaching files.",
+  "helpdesk.upload_type": "Use a JPG, PNG, WebP photo or MP4 video.",
+  "helpdesk.upload_size": "The file is empty or exceeds the {limit} MB limit.",
+  "helpdesk.upload_quota": "The upload limit has been reached. Remove unused files or try again later."
 }

@@ -170,7 +170,7 @@ function renderProduct(slug: string, respond: (path: string) => unknown, ctx: Sh
     return respond(path);
   });
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  const view = render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[`/p/${slug}`]}>
         {nextSlug && <Link to={`/p/${nextSlug}`}>Next product</Link>}
@@ -183,6 +183,7 @@ function renderProduct(slug: string, respond: (path: string) => unknown, ctx: Sh
       </MemoryRouter>
     </QueryClientProvider>,
   );
+  return { ...view, queryClient };
 }
 
 describe("ProductPage", () => {
@@ -219,7 +220,7 @@ describe("ProductPage", () => {
     expect(await screen.findByRole("heading", { name: "Netflix Premium" })).toBeInTheDocument();
     const radio3mo = screen.getByRole("radio", { name: /3 Months/ });
     expect(radio3mo).toBeChecked();
-    const selectedPrice = document.querySelector(".font-display.font-semibold.text-pine.text-2xl");
+    const selectedPrice = document.querySelector(".font-display.font-semibold.text-ink.text-2xl");
     expect(selectedPrice).toHaveTextContent("Rp219,000");
     // In-stock plan selected -> buy form shown, not the restock CTA.
     expect(screen.getByRole("button", { name: /Add to cart/ })).toBeInTheDocument();
@@ -238,7 +239,7 @@ describe("ProductPage", () => {
     await screen.findByRole("heading", { name: "Netflix Premium" });
     const radio6mo = screen.getByRole("radio", { name: /6 Months/ });
     fireEvent.click(radio6mo);
-    const selectedPrice = document.querySelector(".font-display.font-semibold.text-pine.text-2xl");
+    const selectedPrice = document.querySelector(".font-display.font-semibold.text-ink.text-2xl");
     await waitFor(() => expect(selectedPrice).toHaveTextContent("Rp399,000"));
     const qtyInput = screen.getByLabelText("Quantity") as HTMLInputElement;
     expect(qtyInput.max).toBe("20");
@@ -492,6 +493,36 @@ describe("ProductPage", () => {
     expect(screen.getByText("That page doesn't exist.")).toBeInTheDocument();
   });
 
+  it("renders a retryable ErrorState on a non-404 error and refetches on retry", async () => {
+    const path = "/api/v1/pages/product/netflix-premium";
+    renderProduct("netflix-premium", () => {
+      throw Object.assign(new Error("boom"), { status: 500 });
+    });
+    const retry = await screen.findByRole("button", { name: /try again/i });
+    expect(screen.queryByText("404")).not.toBeInTheDocument();
+    const callsFor = () => (apiGet as Mock).mock.calls.filter((c) => c[0] === path).length;
+    const before = callsFor();
+    expect(before).toBeGreaterThanOrEqual(1);
+    fireEvent.click(retry);
+    await waitFor(() => expect(callsFor()).toBe(before + 1));
+  });
+
+  it("keeps the loaded page when a later background refetch fails", async () => {
+    let fail = false;
+    const { queryClient } = renderProduct("netflix-premium", () => {
+      if (fail) throw Object.assign(new Error("boom"), { status: 500 });
+      return productData;
+    });
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    fail = true;
+    await queryClient.refetchQueries({ queryKey: ["product"] });
+    await waitFor(() =>
+      expect(queryClient.getQueryCache().findAll({ queryKey: ["product"] })[0]?.state.status).toBe("error"),
+    );
+    expect(screen.getByRole("heading", { name: "Netflix Premium" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /try again/i })).not.toBeInTheDocument();
+  });
+
   it("adds to cart then navigates to /cart", async () => {
     (apiPost as Mock).mockResolvedValue({ items: [], subtotal: "0" });
     renderProduct("netflix-premium", () => productData);
@@ -646,7 +677,7 @@ describe("ProductPage", () => {
     };
     renderProduct("netflix-premium", () => onSale);
     await screen.findByRole("heading", { name: "Netflix Premium" });
-    const selectedPrice = document.querySelector(".font-display.font-semibold.text-pine.text-2xl");
+    const selectedPrice = document.querySelector(".font-display.font-semibold.text-ink.text-2xl");
     expect(selectedPrice).toHaveTextContent("Rp175,200");
     // One badge on the plan card, one in the live summary.
     expect(screen.getAllByText(/Flash sale/).length).toBeGreaterThan(0);
@@ -723,6 +754,49 @@ describe("ProductPage", () => {
     }));
     await screen.findByRole("heading", { name: "Netflix Premium" });
     expect(screen.queryByText("Shared account, instant delivery.")).not.toBeInTheDocument();
+  });
+
+  // The description is rendered nowhere else, so it must never be clamped
+  // (a clamped paragraph on mobile would be unreadable content loss).
+  it("does not clamp the description and keeps whitespace-pre-line", async () => {
+    renderProduct("netflix-premium", () => productData);
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    const desc = screen.getByText("Shared account, instant delivery.");
+    expect(desc).toHaveClass("whitespace-pre-line");
+    expect(desc.className).not.toMatch(/line-clamp/);
+  });
+});
+
+// Batch 6 (H-15/H-16/H-19): Premium buy area structure.
+describe("ProductPage premium buy area layout", () => {
+  beforeEach(() => {
+    document.documentElement.lang = "en";
+    observers.length = 0;
+    vi.clearAllMocks();
+  });
+
+  it("keeps #buy-summary in view on desktop via md sticky, as the last child of the plan column", async () => {
+    renderProduct("netflix-premium", () => productData);
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    const summary = document.querySelector("#buy-summary")!;
+    expect(summary).toHaveClass("md:sticky", "md:bottom-4", "md:z-10");
+    const column = document.querySelector("#product-detail")!;
+    expect(summary.parentElement).toBe(column);
+    expect(column.lastElementChild).toBe(summary);
+  });
+
+  it("does not add an extra mt-6 on the plan picker wrapper", async () => {
+    renderProduct("netflix-premium", () => productData);
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    const wrapper = document.querySelector("#denom-list")!.parentElement!;
+    expect(wrapper.className).not.toContain("mt-6");
+  });
+
+  it("renders reviews before the share row", async () => {
+    renderProduct("netflix-premium", () => productData);
+    const reviews = await screen.findByRole("heading", { name: "Customer reviews" });
+    const share = screen.getByRole("link", { name: /Share on WhatsApp/i });
+    expect(reviews.compareDocumentPosition(share) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });
 
@@ -834,6 +908,18 @@ describe("ProductPage sharing and image formats", () => {
     expect(screen.getByText("Full 30-day warranty.")).toBeInTheDocument();
     // `terms` is empty, so its heading must not dangle over nothing.
     expect(screen.queryByRole("heading", { name: "Terms of use" })).not.toBeInTheDocument();
+    // H-20: detail-block headings use the shared section-title style.
+    const heading = screen.getByRole("heading", { name: "Warranty" });
+    expect(heading).toHaveClass("section-title", "flex", "items-center");
+    expect(heading.className).not.toMatch(/font-bold|font-display/);
+  });
+
+  it("styles the quantity label with the shared field-label (H-18)", async () => {
+    renderProduct("netflix-premium", () => productData);
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    const label = document.querySelector('label[for="qty"]')!;
+    expect(label).toHaveClass("field-label");
+    expect(label.className).not.toContain("text-xs");
   });
 
   it("shows no detail section at all when all three blocks are empty", async () => {
@@ -882,6 +968,20 @@ describe("ProductPage sharing and image formats", () => {
     const picker = h1.parentElement?.querySelector("#product-detail");
     expect(picker).toHaveClass("min-w-0");
     expect(picker?.querySelector("#denom-list")).toHaveClass("grid-cols-1");
+  });
+
+  it("keeps the Premium plan picker on the default row layout (no stacked Game cards)", async () => {
+    renderProduct("netflix-premium", () => productData);
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    const list = document.querySelector("#denom-list")!;
+    expect(list).toHaveClass("grid-cols-1");
+    expect(list.className).not.toContain("sm:grid-cols-2");
+    const labels = list.querySelectorAll("label.denom-card");
+    expect(labels.length).toBeGreaterThan(0);
+    labels.forEach((l) => {
+      expect(l.className).toContain("grid-cols-[minmax(0,1fr)_auto]");
+      expect(l.className).not.toContain("flex-col");
+    });
   });
 
   it("asks phones for the numeric keypad on the qty field", async () => {

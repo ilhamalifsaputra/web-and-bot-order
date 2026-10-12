@@ -281,7 +281,7 @@ export default function WalletTopupPage() {
     }
     return (
       <>
-        <h1 className="page-title text-2xl! mb-5">{t("web.wallet_topup_title")}</h1>
+        <h1 className="page-title mb-5">{t("web.wallet_topup_title")}</h1>
         <EmptyState
           icon={AlertTriangle}
           title={t("web.checkout_unavailable")}
@@ -307,7 +307,7 @@ export default function WalletTopupPage() {
 
   return (
     <div className="max-w-lg mx-auto">
-      <h1 className="page-title text-2xl! mb-5">{t("web.wallet_topup_title")}</h1>
+      <h1 className="page-title mb-5">{t("web.wallet_topup_title")}</h1>
 
       {submitError !== null && (
         <Alert variant="banner" tone="error">
@@ -345,7 +345,8 @@ function WalletTopupTopupAmount({ currency, setCurrency, hint, amountUnreadable,
           {(["IDR", "USDT"] as const).map((cur) => (
             <Button
               key={cur}
-              variant={cur === currency ? "primary" : "soft"}
+              variant={cur === currency ? "soft" : "ghost"}
+              aria-pressed={cur === currency}
               onClick={() => setCurrency(cur)}
             >
               {cur === "IDR" ? t("web.wallet_topup_currency_idr") : t("web.wallet_topup_currency_usdt")}

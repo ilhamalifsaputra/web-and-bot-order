@@ -38,6 +38,7 @@ import { formatPriceFor } from "../lib/format";
 import { t, tCount } from "../lib/i18n";
 import { useDocumentTitle } from "../lib/useDocumentTitle";
 import { useIsDesktop } from "../lib/useMediaQuery";
+import ErrorState from "../components/shop/ErrorState";
 import ErrorPage from "./ErrorPage";
 import InstantBuyPage from "./InstantBuyPage";
 
@@ -124,11 +125,9 @@ export default function ProductPage() {
   return <ProductSession key={slug} slug={slug} />;
 }
 
-function ProductSession({ slug }: { slug: string }) {
-  const navigate = useNavigate();
-  const queryClient = useQueryClient();
+function useProductPageData(slug: string) {
   const { data: ctx } = useShopContext();
-  const { data, error } = useQuery({
+  const { data, error, refetch } = useQuery({
     queryKey: ["product", slug, ctx?.currency ?? null, ctx?.lang, ctx?.pricing_context],
     queryFn: () => apiGet<ProductPageData>(`/api/v1/pages/product/${slug}`),
     // Keep the instant checkout mounted while preferences reprice this product.
@@ -139,13 +138,20 @@ function ProductSession({ slug }: { slug: string }) {
 
   // T2: not covered by routeTitle.ts (RouteEffects.tsx) — the product name
   // isn't known until this fetch resolves. Called unconditionally, before
-  // the early returns below, per the rules of hooks; useDocumentTitle itself
+  // ProductSession's early returns, per the rules of hooks; useDocumentTitle itself
   // no-ops on undefined, so the previous page's title just stays put until
   // both the product and the shop name are in.
   useDocumentTitle(
     data && ctx?.shop_name ? `${data.product.name} — ${ctx.shop_name}` : undefined,
   );
 
+  return { ctx, data, error, refetch };
+}
+
+function ProductSession({ slug }: { slug: string }) {
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const { ctx, data, error, refetch } = useProductPageData(slug);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [qty, setQty] = useState(1);
   const [cartError, setCartError] = useState<unknown>(null);
@@ -162,7 +168,8 @@ function ProductSession({ slug }: { slug: string }) {
 
   if (error) {
     if ((error as Error & { status?: number }).status === 404) return <ErrorPage />;
-    return null;
+    // A failed background refetch must not replace an already-loaded page.
+    if (!data) return <ErrorState onRetry={() => void refetch()} />;
   }
   if (!data) {
     return (
@@ -227,10 +234,10 @@ function ProductSession({ slug }: { slug: string }) {
           admin left that field empty, so no headings dangle over nothing. */}
       <Product product={product} />
 
-      <ShareRow productName={product.name} />
-
       {/* Reviews */}
       <ProductReviews product={product} reviews={reviews} />
+
+      <ShareRow productName={product.name} />
 
       {/* STO-011: same-category "You might also like" shelf — this product
           detail page had no cross-sell/discovery path back into the catalog. */}
@@ -338,7 +345,7 @@ function ProductPlanPrice({ selected, ctx, fx, low_threshold, selectedUsesStock 
     <div className="flex items-baseline gap-2 flex-wrap">
       {/* `selected.price` already carries the flash discount — the
                     struck figure beside it is the pre-sale one. */}
-      <div className="font-display font-semibold text-pine text-2xl">
+      <div className="font-display font-semibold text-ink text-2xl">
         {selected.canonical?.formattedPrice ?? formatPriceFor(selected.price, ctx?.currency ?? null, fx)}
       </div>
       {selected.flash && (
@@ -378,7 +385,7 @@ function ProductBuyForm({ selected, qty, selectedUsesStock, setQty, buying, addM
     // Buy Now / Add To Cart — both post the selected denomination_id.
     <form id="buy-form" className="mt-5 flex flex-wrap items-end gap-2" onSubmit={(e) => e.preventDefault()}>
       <div className="flex flex-col gap-1">
-        <label className="text-xs text-ink-soft" htmlFor="qty">
+        <label className="field-label" htmlFor="qty">
           {t("web.qty")}
         </label>
         {/* inputMode="numeric" so phones open the digit keypad
@@ -475,7 +482,7 @@ function Product({ product }: {
             key={block.key}
             className={index > 0 ? "mt-6 border-t border-line pt-6" : undefined}
           >
-            <h2 className="flex items-center gap-2 font-display font-bold text-ink">
+            <h2 className="section-title flex items-center gap-2">
               {/* Decorative: the heading text already names the block, so
                       announcing the icon too would just be noise. */}
               <block.icon className="w-4 h-4 text-pine shrink-0" aria-hidden="true" />
@@ -623,7 +630,7 @@ function ProductProductDetail({ product, denominations, fx, low_threshold, selec
       {/* Denomination cards — pick a plan (never a dropdown). The cheapest
               active denomination is preselected; selecting another updates the
               live price / stock / warranty and the checkout payload below. */}
-      <div className="mt-6">
+      <div>
         <h2 className="section-title mb-3">{t("web.choose_plan")}</h2>
         <div id="denom-list" className="grid grid-cols-1 gap-3">
           {denominations.map((d) => (
@@ -643,7 +650,7 @@ function ProductProductDetail({ product, denominations, fx, low_threshold, selec
       {/* Live summary — price/stock/warranty of the selected denomination.
               Also the sentinel the sticky mobile purchase bar watches, hence
               the id and the callback ref. */}
-      <div id="buy-summary" ref={setBuyArea} className="card card-pad mt-5">
+      <div id="buy-summary" ref={setBuyArea} className="card card-pad mt-5 md:sticky md:bottom-4 md:z-10">
         <ProductPlanPrice selected={selected} ctx={ctx} fx={fx} low_threshold={low_threshold} selectedUsesStock={selectedUsesStock} />
         {selected.flash && (
           <div className="mt-2 flex flex-wrap items-center gap-2">

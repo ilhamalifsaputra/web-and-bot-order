@@ -38,7 +38,7 @@ import CheckoutErrorBanner from "../components/shop/CheckoutErrorBanner";
  * has touched them, are never clobbered by a later re-price.
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Package, ScrollText, ShieldCheck, Zap } from "lucide-react";
+import { BadgeCheck, Package, ScrollText, ShieldCheck, Zap } from "lucide-react";
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { apiGet, apiPost } from "../api/client";
@@ -57,15 +57,18 @@ import Skeleton from "../components/shop/Skeleton";
 import Spinner from "../components/shop/Spinner";
 import StickyPurchaseBar from "../components/shop/StickyPurchaseBar";
 import Alert from "../components/ui/Alert";
+import Card from "../components/ui/Card";
 import Button from "../components/ui/Button";
 import { allFieldsValid, isValidEmail } from "../lib/deliveryFields";
 import { humanError } from "../lib/errors";
+import { preferredScrollBehavior } from "../lib/scrollBehavior";
 import { formatPriceFor } from "../lib/format";
 import { currentLang, t } from "../lib/i18n";
 import { rememberCodeEmailed } from "../lib/orderCodeEmailed";
 import { useDocumentTitle } from "../lib/useDocumentTitle";
 import { useIsWideDesktop } from "../lib/useMediaQuery";
 import { GuestContactCard } from "./CheckoutPage";
+import ErrorState from "../components/shop/ErrorState";
 import ErrorPage from "./ErrorPage";
 
 /** The server's verdict (`purchasable`, @app/core/productAvailability via
@@ -105,7 +108,7 @@ export default function InstantBuyPage() {
   // when this page is reached via ProductPage's template branch, the
   // product payload is already cached from ProductPage's own fetch, so this
   // resolves instantly instead of a second round trip.
-  const { data, error } = useQuery({
+  const { data, error, refetch } = useQuery({
     queryKey: ["product", slug, ctx?.currency ?? null, ctx?.lang, ctx?.pricing_context],
     queryFn: () => apiGet<ProductPageData>(`/api/v1/pages/product/${slug}`),
     // Preference changes must not turn the selected plan/schema into an empty
@@ -127,6 +130,12 @@ export default function InstantBuyPage() {
   // guest-email branches compare against.
   const [placeOrderError, setPlaceOrderError] = useState<unknown>(null);
   const placeOrderErrorKey = placeOrderError instanceof Error ? placeOrderError.message : null;
+  const errorBannerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!placeOrderError) return;
+    const target = errorBannerRef.current ?? document.getElementById("guest_email");
+    target?.scrollIntoView?.({ block: "nearest", behavior: preferredScrollBehavior() });
+  }, [placeOrderError]);
 
   const submitLock = useRef(false);
 
@@ -191,14 +200,15 @@ export default function InstantBuyPage() {
 
   if (error) {
     if ((error as Error & { status?: number }).status === 404) return <ErrorPage />;
-    return null;
+    // A failed background refetch must not replace an already-loaded page.
+    if (!data) return <ErrorState onRetry={() => void refetch()} />;
   }
   if (!data) {
     return (
       <div aria-busy="true" aria-label={t("web.loading")}>
         <Skeleton className="mb-6 h-4 w-48" />
-        <div className="space-y-4">
-          <Skeleton className="aspect-[4/3] w-full" />
+        <div className="space-y-4 max-w-2xl mx-auto">
+          <Skeleton className="h-48 w-full sm:h-56" />
           <Skeleton className="h-8 w-3/4" />
           <Skeleton className="h-24 w-full" />
           <Skeleton className="h-14 w-full" />
@@ -250,9 +260,8 @@ export default function InstantBuyPage() {
           {humanError(previewQuery.error)}
         </Alert>
       )}
-      <CheckoutErrorBanner error={placeOrderError} isGuest={Boolean(page?.is_guest)} />
 
-      <form id="buy-form" noValidate onSubmit={(e) => { e.preventDefault(); submitOrder(); }} className="grid gap-6 items-start">
+      <form id="buy-form" noValidate onSubmit={(e) => { e.preventDefault(); submitOrder(); }} className="grid gap-6 items-start max-w-2xl mx-auto">
         <InstantBuyAccountAndPlan product={product} configValid={configValid} needsInfo={needsInfo} selected={selected} slug={slug} fieldConfigKey={fieldConfigKey} answers={answers} setAnswers={setAnswers} setTouched={setTouched} touched={touched} checkoutAttempted={checkoutAttempted} nicknameCheck={nicknameCheck} denominations={denominations} fx={fx} low_threshold={low_threshold} setSelectedId={setSelectedId} page={page} guestEmail={guestEmail} setGuestEmail={setGuestEmail} placeOrderErrorKey={placeOrderErrorKey} />
 
         {/* 5. Payment method — before the coupon and summary, using live
@@ -261,8 +270,7 @@ export default function InstantBuyPage() {
 
         {/* 6. Discount, summary and primary submit remain in document flow.
             Mobile also offers the same submit while the primary is offscreen. */}
-        <InstantBuySummaryAndSubmit page={page} totals={totals} method={method} fx={fx} voucherInput={voucherInput} setVoucherInput={setVoucherInput} applyVoucher={applyVoucher} onVoucherKeyDown={onVoucherKeyDown} voucherPending={voucherPending} placeOrderMutation={placeOrderMutation} setPrimaryElement={setPrimaryElement} purchasePrice={purchasePrice} selected={selected} answers={answers} submitDisabled={submitDisabled} submitBlocked={submitBlocked} submitOrder={submitOrder} previewErrorKey={previewErrorKey} configValid={configValid} />
-        {configValid && checkoutHint && <p className="text-sm text-ink-soft" role="status">{checkoutHint}</p>}
+        <InstantBuySummaryAndSubmit checkoutHint={checkoutHint} placeOrderError={placeOrderError} errorBannerRef={errorBannerRef} page={page} totals={totals} method={method} fx={fx} voucherInput={voucherInput} setVoucherInput={setVoucherInput} applyVoucher={applyVoucher} onVoucherKeyDown={onVoucherKeyDown} voucherPending={voucherPending} placeOrderMutation={placeOrderMutation} setPrimaryElement={setPrimaryElement} purchasePrice={purchasePrice} selected={selected} answers={answers} submitDisabled={submitDisabled} submitBlocked={submitBlocked} submitOrder={submitOrder} previewErrorKey={previewErrorKey} configValid={configValid} />
         {previewMutation.error && !voucherPending && previewMutation.variables?.context === previewContext && <Alert variant="banner" tone="error">{humanError(previewMutation.error)}</Alert>}
       </form>
 
@@ -276,7 +284,7 @@ export default function InstantBuyPage() {
           as the primary submit button in OrderSummaryCard above: one purchase
           path. `submitBlocked` mutes the button ("can't proceed yet"),
           `submitDisabled` (blocked OR pending) actually disables it. */}
-      <InstantBuyMobileTotal isDesktop={isDesktop} primaryVisible={primaryVisible} page={page} totals={totals} purchasePrice={purchasePrice} barPriceAndPay={barPriceAndPay} placeOrderMutation={placeOrderMutation} submitOrder={submitOrder} submitDisabled={submitDisabled} submitBlocked={submitBlocked} />
+      <InstantBuyMobileTotal checkoutHint={checkoutHint} configValid={configValid} isDesktop={isDesktop} primaryVisible={primaryVisible} page={page} totals={totals} purchasePrice={purchasePrice} barPriceAndPay={barPriceAndPay} placeOrderMutation={placeOrderMutation} submitOrder={submitOrder} submitDisabled={submitDisabled} submitBlocked={submitBlocked} />
     </>
   );
 }
@@ -285,7 +293,7 @@ function InstantBuyProductCard({ product }: {
   product: { slug: string; name: string; description: string | null; what_you_get: string | null; terms: string | null; warranty_note: string | null; category_name: string; category_slug: string; image: string | null; image_srcset?: string | null; image_kind?: import("../api/types").ThumbnailKind | null; icon_kind?: import("../api/types").DenomIconKind | null; rating: number | null; rating_count: number; checkout_flow: "catalog" | "instant"; template: "game" | "catalog"; };
 }) {
   return (<div className="card card-pad">
-    <div className="aspect-[4/3] w-full overflow-hidden rounded-xl bg-sand">
+    <div className="h-48 sm:h-56 w-full overflow-hidden rounded-xl bg-sand">
       {product.image ? (
         <picture className="block w-full h-full">
           {product.image_srcset && (
@@ -302,7 +310,7 @@ function InstantBuyProductCard({ product }: {
             decoding="async"
             width={800}
             height={600}
-            className="w-full h-full object-cover"
+            className="w-full h-full object-contain"
           />
         </picture>
       ) : (
@@ -358,14 +366,26 @@ function InstantBuyNicknameCheckPending({ needsInfo, configValid, selected, slug
         </p>
       )}
       {!nicknameCheck.pending && nicknameCheck.nickname && (
-        <p className="mt-2 text-xs text-grass-dark" data-testid="nickname-check-found">
-          {t("web.nickname_check_found", { nickname: nicknameCheck.nickname })}
-        </p>
+        <Card
+          variant="inset"
+          className="mt-3 flex items-center gap-2 text-sm text-ink-soft"
+          role="status"
+          data-testid="nickname-check-found"
+        >
+          <BadgeCheck className="h-5 w-5 shrink-0 text-grass" aria-hidden="true" />
+          <span className="sr-only">{t("web.nickname_check_found_label")}: </span>
+          <span className="font-semibold text-ink">{nicknameCheck.nickname}</span>
+        </Card>
       )}
       {!nicknameCheck.pending && !nicknameCheck.nickname && nicknameCheck.notFound && (
-        <p className="mt-2 text-xs text-ink-soft" data-testid="nickname-check-not-found">
+        <Alert
+          variant="banner"
+          tone="warning"
+          className="mt-3 mb-0!"
+          data-testid="nickname-check-not-found"
+        >
           {t("web.nickname_check_not_found")}
-        </p>
+        </Alert>
       )}
     </div>
   ));
@@ -384,7 +404,7 @@ function InstantBuy({ product }: {
         .filter((block) => Boolean(block.body))
         .map((block, index) => (
           <div key={block.key} className={index > 0 ? "mt-6 border-t border-line pt-6" : undefined}>
-            <h2 className="flex items-center gap-2 font-display font-bold text-ink">
+            <h2 className="section-title flex items-center gap-2">
               <block.icon className="w-4 h-4 text-pine shrink-0" aria-hidden="true" />
               {block.title}
             </h2>
@@ -439,10 +459,11 @@ function InstantBuyAccountAndPlan({ product, configValid, needsInfo, selected, s
               sequence could. */}
     <div className="card card-pad">
       <h2 className="section-title mb-3">{t("web.choose_option")}</h2>
-      <div className="grid gap-3">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {denominations.map((d) => (
           <DenominationCard
             key={d.id}
+            layout="stacked"
             d={d}
             fx={fx}
             lowThreshold={low_threshold}
@@ -466,7 +487,10 @@ function InstantBuyAccountAndPlan({ product, configValid, needsInfo, selected, s
   </div>);
 }
 
-function InstantBuySummaryAndSubmit({ page, totals, method, fx, voucherInput, setVoucherInput, applyVoucher, onVoucherKeyDown, voucherPending, placeOrderMutation, setPrimaryElement, purchasePrice, selected, answers, submitDisabled, submitBlocked, submitOrder, previewErrorKey, configValid }: {
+function InstantBuySummaryAndSubmit({ checkoutHint, placeOrderError, errorBannerRef, page, totals, method, fx, voucherInput, setVoucherInput, applyVoucher, onVoucherKeyDown, voucherPending, placeOrderMutation, setPrimaryElement, purchasePrice, selected, answers, submitDisabled, submitBlocked, submitOrder, previewErrorKey, configValid }: {
+  checkoutHint: string | null;
+  placeOrderError: unknown;
+  errorBannerRef: import("react").Ref<HTMLDivElement>;
   page: CheckoutData | null;
   totals: CheckoutData | null;
   method: string | null;
@@ -488,6 +512,8 @@ function InstantBuySummaryAndSubmit({ page, totals, method, fx, voucherInput, se
   configValid: boolean;
 }) {
   return (<div className="min-w-0">
+    <CheckoutErrorBanner error={placeOrderError} isGuest={Boolean(page?.is_guest)} anchorRef={errorBannerRef} />
+    {configValid && checkoutHint && <p className="mb-3 text-sm text-ink-soft" role="status" data-testid="checkout-hint">{checkoutHint}</p>}
     {page && totals ? (
       <OrderSummaryCard
         totals={totals}
@@ -526,7 +552,9 @@ function InstantBuySummaryAndSubmit({ page, totals, method, fx, voucherInput, se
   </div>);
 }
 
-function InstantBuyMobileTotal({ isDesktop, primaryVisible, page, totals, purchasePrice, barPriceAndPay, placeOrderMutation, submitOrder, submitDisabled, submitBlocked }: {
+function InstantBuyMobileTotal({ checkoutHint, configValid, isDesktop, primaryVisible, page, totals, purchasePrice, barPriceAndPay, placeOrderMutation, submitOrder, submitDisabled, submitBlocked }: {
+  checkoutHint: string | null;
+  configValid: boolean;
   isDesktop: boolean;
   primaryVisible: boolean;
   page: CheckoutData | null;
@@ -544,6 +572,7 @@ function InstantBuyMobileTotal({ isDesktop, primaryVisible, page, totals, purcha
       ariaLabel={t("web.purchase_bar")}
       priceLabel={t("web.order_total")}
       price={purchasePrice}
+      notice={submitBlocked && configValid ? checkoutHint : null}
       secondaryChip={barPriceAndPay && <span className="text-xs text-ink-soft">{barPriceAndPay}</span>}
       primaryAction={{
         label: placeOrderMutation.isPending ? t("web.checkout_processing") : t("web.buy_now"),

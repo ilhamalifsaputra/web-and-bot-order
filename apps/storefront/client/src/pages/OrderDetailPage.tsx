@@ -382,26 +382,6 @@ function OrderContents({ order, liveUpdates, pendingPayment, processing, isDeskt
 }) {
   return (<div className="min-w-0 space-y-6">
     {order.fulfillment && <OrderProgress fulfillment={order.fulfillment} underpayment={order.underpayment}>{liveUpdates}</OrderProgress>}
-    {pendingPayment && (
-      <Card className="flex items-center justify-between gap-3 flex-wrap bg-pine-tint/40">
-        <div className="text-sm text-ink-soft">
-          {t("web.order_status")}: <StatusBadge value={order.status} fulfillment={order.fulfillment} />
-        </div>
-        <Link to={`/checkout/${order.code}/pay`} className="btn btn-primary min-h-11">
-          <Wallet className="w-4 h-4" /> {t("web.pay_now")}
-        </Link>
-      </Card>
-    )}
-
-    <OrderProcessingNotice processing={processing} order={order} />
-    {!order.fulfillment && liveUpdates}
-
-    {/* Item lines: stacked on a phone, the three-column table from md up.
-              Only one of the two is ever in the DOM (lib/useMediaQuery.ts). */}
-    <OrderItemsSummary isDesktop={isDesktop} isGameTopup={isGameTopup} order={order} />
-
-    <CustomerInfoSection fields={fields} canEdit={canEdit} editMode={editMode} startEdit={startEdit} infoError={infoError} qty={qty} answers={answers} setAnswer={setAnswer} infoValid={infoValid} infoMutation={infoMutation} cancelEdit={cancelEdit} order={order} lang={lang} />
-
     {/* Only once the order is being fulfilled or done, like PayPage: the
               green card must not read as success on an unpaid/closed order. */}
     <OrderGameDetails isGameTopup={isGameTopup} processing={processing} delivered={delivered} order={order} data={data} />
@@ -433,6 +413,25 @@ function OrderContents({ order, liveUpdates, pendingPayment, processing, isDeskt
     )}
 
     <OrderDetail isGameTopup={isGameTopup} delivered={delivered} order={order} />
+
+    {pendingPayment && (
+      <Card className="flex items-center justify-end gap-3 flex-wrap bg-pine-tint/40">
+        <Link to={`/checkout/${order.code}/pay`} className="btn btn-primary min-h-11">
+          <Wallet className="w-4 h-4" /> {t("web.pay_now")}
+        </Link>
+      </Card>
+    )}
+
+    <OrderProcessingNotice processing={processing} order={order} />
+    {!order.fulfillment && liveUpdates}
+
+    {/* Item lines: stacked on a phone, the three-column table from md up.
+              Only one of the two is ever in the DOM (lib/useMediaQuery.ts). */}
+    <OrderItemsSummary isDesktop={isDesktop} isGameTopup={isGameTopup} order={order} />
+
+    <CustomerInfoSection fields={fields} canEdit={canEdit} editMode={editMode} startEdit={startEdit} infoError={infoError} qty={qty} answers={answers} setAnswer={setAnswer} infoValid={infoValid} infoMutation={infoMutation} cancelEdit={cancelEdit} order={order} lang={lang} />
+
+
   </div>);
 }
 

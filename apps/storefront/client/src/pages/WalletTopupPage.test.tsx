@@ -109,6 +109,30 @@ describe("WalletTopupPage", () => {
     expect(screen.queryByText("QRIS")).not.toBeInTheDocument();
   });
 
+  it("renders a plain page-title without a forced text-2xl! override (H-36)", async () => {
+    renderTopup(() => baseData);
+    const h1 = await screen.findByRole("heading", { name: "Top up wallet" });
+    expect(h1).toHaveClass("page-title");
+    expect(h1.className).not.toContain("text-2xl");
+  });
+
+  it("has exactly one primary button; the selected currency is a soft, aria-pressed toggle", async () => {
+    renderTopup(() => baseData);
+    await screen.findByRole("heading", { name: "Top up wallet" });
+    expect(document.querySelectorAll(".btn-primary")).toHaveLength(1);
+    const idr = screen.getByRole("button", { name: "IDR" });
+    const usdt = screen.getByRole("button", { name: "USDT" });
+    expect(idr).toHaveAttribute("aria-pressed", "true");
+    expect(idr).toHaveClass("btn-soft");
+    expect(usdt).toHaveAttribute("aria-pressed", "false");
+    expect(usdt).toHaveClass("btn-ghost");
+    fireEvent.click(usdt);
+    expect(usdt).toHaveAttribute("aria-pressed", "true");
+    expect(usdt).toHaveClass("btn-soft");
+    expect(idr).toHaveClass("btn-ghost");
+    expect(document.querySelectorAll(".btn-primary")).toHaveLength(1);
+  });
+
   it("keeps submit disabled until a valid amount is entered, and disables it again out of range", async () => {
     renderTopup(() => baseData);
     await screen.findByRole("heading", { name: "Top up wallet" });

@@ -106,6 +106,13 @@ describe("CartPage", () => {
     expect(screen.getAllByText("Rp158,000").length).toBeGreaterThan(0);
   });
 
+  it("renders a plain page-title without a forced text-2xl! override (H-36)", async () => {
+    renderCart(() => cartData);
+    const h1 = await screen.findByRole("heading", { name: "Cart (4)" });
+    expect(h1).toHaveClass("page-title");
+    expect(h1.className).not.toContain("text-2xl");
+  });
+
   it("identifies two different parent products with the same canonical plan name", async () => {
     const items = [
       { ...cartData.items[0]!, qty: 1, line_total: "79000", canonical: canonicalMonth(1, "Netflix Premium") },

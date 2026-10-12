@@ -64,6 +64,13 @@ describe("OrderProgress", () => {
     expect(screen.queryByText(/by hand|manual/i)).not.toBeInTheDocument();
   });
 
+  it("renders the status title with the shared section-title style (H-41)", () => {
+    render(<OrderProgress fulfillment={f({ mode: "MANUAL", provider: "MANUAL", status: "QUEUED" })} />);
+    const heading = screen.getByRole("heading", { name: "Waiting to be prepared" });
+    expect(heading).toHaveClass("section-title");
+    expect(heading.className).not.toMatch(/text-base|font-semibold/);
+  });
+
   it.each([
     ["NONE", false, null], ["PAYMENT_DETECTED", true, 25], ["VERIFYING", true, 35],
     ["AUTO_QUEUED", true, 55], ["AUTO_SUBMITTING", true, 65], ["AUTO_PROCESSING", true, 80],

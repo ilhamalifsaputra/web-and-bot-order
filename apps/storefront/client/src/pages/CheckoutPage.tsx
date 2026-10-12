@@ -49,7 +49,7 @@ import CheckoutErrorBanner from "../components/shop/CheckoutErrorBanner";
  */
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, ShoppingCart } from "lucide-react";
-import { useState, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { canonicalPurchaseName } from "../api/canonical";
 import { apiGet, apiPost } from "../api/client";
@@ -74,6 +74,7 @@ import { humanError } from "../lib/errors";
 import { formatPriceFor } from "../lib/format";
 import { t } from "../lib/i18n";
 import { rememberCodeEmailed } from "../lib/orderCodeEmailed";
+import { preferredScrollBehavior } from "../lib/scrollBehavior";
 import { useIsWideDesktop } from "../lib/useMediaQuery";
 import { useSuggestedProducts } from "../lib/useSuggestedProducts";
 
@@ -290,7 +291,7 @@ export default function CheckoutPage() {
     return (
       <>
         <Stepper step={2} />
-        <h1 className="page-title text-2xl! mb-5">{t("web.checkout_title")}</h1>
+        <h1 className="page-title mb-5">{t("web.checkout_title")}</h1>
         <EmptyState
           icon={AlertTriangle}
           title={t("web.checkout_unavailable")}
@@ -320,6 +321,16 @@ function CheckoutForm({ data }: { data: CheckoutData }) {
   // from it for the two places that branch on WHICH failure this was.
   const [placeOrderError, setPlaceOrderError] = useState<unknown>(null);
   const placeOrderErrorKey = placeOrderError instanceof Error ? placeOrderError.message : null;
+  // The banner sits above the summary card; a submit from the mobile sticky
+  // bar can leave it off-screen, so bring it into view when a new error lands.
+  const errorBannerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!placeOrderError) return;
+    // A rejected guest email has no banner (the error renders inside
+    // GuestContactCard), so bring that card's email field into view instead.
+    const target = errorBannerRef.current ?? document.getElementById("guest_email");
+    target?.scrollIntoView?.({ block: "nearest", behavior: preferredScrollBehavior() });
+  }, [placeOrderError]);
   // Guest checkout only — a registered buyer never sees the field, and the
   // value is never sent for them (the server ignores it anyway).
   const [guestEmail, setGuestEmail] = useState("");
@@ -441,7 +452,7 @@ function CheckoutForm({ data }: { data: CheckoutData }) {
     return (
       <>
         <Stepper step={2} />
-        <h1 className="page-title text-2xl! mb-5">{t("web.checkout_title")}</h1>
+        <h1 className="page-title mb-5">{t("web.checkout_title")}</h1>
         <EmptyState
           icon={ShoppingCart}
           title={t("web.checkout_empty_title")}
@@ -456,7 +467,7 @@ function CheckoutForm({ data }: { data: CheckoutData }) {
 
   // Wallet-credit radios — only offered when credit fully covers the live
   // total (post-voucher); hidden (not disabled) otherwise.
-  const { infoItem, placeOrderBlocked, placeOrderDisabled } = checkoutPurchaseStatus({ totals, page, answers, guestEmail, placeOrderMutation });
+  const { infoItem, placeOrderBlocked, placeOrderDisabled, checkoutHint } = checkoutPurchaseStatus({ totals, page, answers, guestEmail, placeOrderMutation });
 
   // Info step (Task 6): the single-SKU-per-non-auto-cart guard means there's
   // ever at most one manual_with_info line.
@@ -481,17 +492,12 @@ function CheckoutForm({ data }: { data: CheckoutData }) {
 
   return (
     <>
-      <Stepper step={2} />
-      <h1 className="page-title text-2xl! mb-5">{t("web.checkout_title")}</h1>
+      <div data-testid="checkout-column" className="max-w-2xl mx-auto">
+        <Stepper step={2} />
+        <h1 className="page-title mb-5">{t("web.checkout_title")}</h1>
 
-      {/* A rejected guest email is rendered against the field it belongs to
-          instead (GuestContactCard) — same reasoning as STO-005 moved the
-          voucher error out of the summary column: repeating the identical
-          sentence in a page-level banner is noise, and the banner is a whole
-          column away from the input the buyer has to fix. */}
-      <CheckoutErrorBanner error={placeOrderError} isGuest={Boolean(page?.is_guest)} />
-
-      <CheckoutPaymentForm isDesktop={isDesktop} page={page} guestEmail={guestEmail} setGuestEmail={setGuestEmail} placeOrderErrorKey={placeOrderErrorKey} infoItem={infoItem} answers={answers} setAnswer={setAnswer} totals={totals} method={method} setMethod={setMethod} ctx={ctx} voucherInput={voucherInput} setVoucherInput={setVoucherInput} applyVoucher={applyVoucher} onVoucherKeyDown={onVoucherKeyDown} previewMutation={previewMutation} placeOrderDisabled={placeOrderDisabled} placeOrderBlocked={placeOrderBlocked} placeOrderMutation={placeOrderMutation} />
+        <CheckoutPaymentForm checkoutHint={checkoutHint} placeOrderError={placeOrderError} errorBannerRef={errorBannerRef} isDesktop={isDesktop} page={page} guestEmail={guestEmail} setGuestEmail={setGuestEmail} placeOrderErrorKey={placeOrderErrorKey} infoItem={infoItem} answers={answers} setAnswer={setAnswer} totals={totals} method={method} setMethod={setMethod} ctx={ctx} voucherInput={voucherInput} setVoucherInput={setVoucherInput} applyVoucher={applyVoucher} onVoucherKeyDown={onVoucherKeyDown} previewMutation={previewMutation} placeOrderDisabled={placeOrderDisabled} placeOrderBlocked={placeOrderBlocked} placeOrderMutation={placeOrderMutation} />
+      </div>
 
       {/* Sticky mobile total: on a phone the summary card stacks *below* the method
           list, so the buyer chooses a payment rail with the amount they are
@@ -504,7 +510,7 @@ function CheckoutForm({ data }: { data: CheckoutData }) {
           keeps the in-card button below the methods. The IDR figure only, matching the previous
           hand-rolled bar: the USDT hint stays in the summary card, where
           there is room for it without crowding the button off a 320px row. */}
-      <CheckoutMobileTotal isDesktop={isDesktop} method={method} totals={totals} ctx={ctx} barPriceAndPay={barPriceAndPay} placeOrderMutation={placeOrderMutation} placeOrderDisabled={placeOrderDisabled} placeOrderBlocked={placeOrderBlocked} />
+      <CheckoutMobileTotal checkoutHint={checkoutHint} isDesktop={isDesktop} method={method} totals={totals} ctx={ctx} barPriceAndPay={barPriceAndPay} placeOrderMutation={placeOrderMutation} placeOrderDisabled={placeOrderDisabled} placeOrderBlocked={placeOrderBlocked} />
     </>
   );
 }
@@ -543,7 +549,10 @@ function CheckoutBuyerDetails({ page, guestEmail, setGuestEmail, placeOrderError
   </div>);
 }
 
-function CheckoutPaymentForm({ isDesktop, page, guestEmail, setGuestEmail, placeOrderErrorKey, infoItem, answers, setAnswer, totals, method, setMethod, ctx, voucherInput, setVoucherInput, applyVoucher, onVoucherKeyDown, previewMutation, placeOrderDisabled, placeOrderBlocked, placeOrderMutation }: {
+function CheckoutPaymentForm({ checkoutHint, placeOrderError, errorBannerRef, isDesktop, page, guestEmail, setGuestEmail, placeOrderErrorKey, infoItem, answers, setAnswer, totals, method, setMethod, ctx, voucherInput, setVoucherInput, applyVoucher, onVoucherKeyDown, previewMutation, placeOrderDisabled, placeOrderBlocked, placeOrderMutation }: {
+  checkoutHint: string | null;
+  placeOrderError: unknown;
+  errorBannerRef: import("react").Ref<HTMLDivElement>;
   isDesktop: boolean;
   page: { items: import("../api/types").CheckoutItem[]; items_empty: boolean; subtotal: string; bulk_discount: string; voucher_discount: string; total: string; qris_admin_fee: string; qris_grand_total: string; total_usdt: string | null; voucher_code: string; error_key: string | null; binance_enabled: boolean; bybit_enabled: boolean; bybit_bsc_enabled: boolean; idr_enabled: boolean; paydisini_enabled: boolean; nowpayments_enabled: boolean; wallet_idr: string; wallet_usdt: string; wallet_idr_enabled: boolean; wallet_usdt_enabled: boolean; is_guest: boolean; below_all_minimums: boolean; };
   guestEmail: string;
@@ -582,6 +591,8 @@ function CheckoutPaymentForm({ isDesktop, page, guestEmail, setGuestEmail, place
     </div>
 
     <div className="min-w-0">
+      <CheckoutErrorBanner error={placeOrderError} isGuest={page.is_guest} anchorRef={errorBannerRef} />
+      {checkoutHint && <p className="mb-3 text-sm text-ink-soft" role="status" data-testid="checkout-hint">{checkoutHint}</p>}
       <OrderSummaryCard
         totals={totals}
         method={method}
@@ -603,7 +614,8 @@ function CheckoutPaymentForm({ isDesktop, page, guestEmail, setGuestEmail, place
   </form>);
 }
 
-function CheckoutMobileTotal({ isDesktop, method, totals, ctx, barPriceAndPay, placeOrderMutation, placeOrderDisabled, placeOrderBlocked }: {
+function CheckoutMobileTotal({ checkoutHint, isDesktop, method, totals, ctx, barPriceAndPay, placeOrderMutation, placeOrderDisabled, placeOrderBlocked }: {
+  checkoutHint: string | null;
   isDesktop: boolean;
   method: string | null;
   totals: CheckoutData;
@@ -618,6 +630,7 @@ function CheckoutMobileTotal({ isDesktop, method, totals, ctx, barPriceAndPay, p
       ariaLabel={t("web.purchase_bar")}
       priceLabel={t("web.order_total")}
       price={formatPriceFor(method === "qris" ? totals.qris_grand_total : totals.total, ctx?.currency ?? null, ctx?.fx)}
+      notice={checkoutHint}
       secondaryChip={barPriceAndPay && <span className="text-xs text-ink-soft">{barPriceAndPay}</span>}
       primaryAction={{
         label: t("web.place_order"),
@@ -652,5 +665,8 @@ function checkoutPurchaseStatus({ totals, page, answers, guestEmail, placeOrderM
   const placeOrderBlocked = !anyMethod || !infoValid || !guestEmailValid;
 
   const placeOrderDisabled = placeOrderBlocked || placeOrderMutation.isPending;
-  return { infoItem, placeOrderBlocked, placeOrderDisabled };
+  const checkoutHint = !infoValid ? t("web.checkout_account_hint")
+    : !guestEmailValid ? t("web.checkout_contact_hint")
+    : !anyMethod ? t("web.checkout_payment_hint") : null;
+  return { infoItem, placeOrderBlocked, placeOrderDisabled, checkoutHint };
 }

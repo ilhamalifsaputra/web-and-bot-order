@@ -18,7 +18,7 @@ export default function TransactionStatus({ presentation, underpayment, children
       <div role="status" aria-live="polite" className="flex items-start gap-3">
         <Icon aria-hidden="true" className={`mt-0.5 h-5 w-5 shrink-0 ${problem ? "text-amberx" : complete ? "text-grass-dark" : "text-pine"} ${presentation.spinner ? "animate-spin motion-reduce:animate-none" : ""}`} />
         <div className="min-w-0">
-          <h2 className="text-base font-semibold text-ink">{t(presentation.titleKey)}</h2>
+          <h2 className="section-title">{t(presentation.titleKey)}</h2>
           <p className="mt-1 text-sm text-ink-soft">{t(presentation.bodyKey)}</p>
         </div>
       </div>

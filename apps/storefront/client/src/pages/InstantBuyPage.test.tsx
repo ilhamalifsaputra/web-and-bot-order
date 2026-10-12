@@ -168,6 +168,7 @@ function renderInstantBuy(
     preview?: (body: Record<string, unknown>) => CheckoutData;
     ctx?: ShopContext;
     throughProductPage?: boolean;
+    productError?: Error;
   } = {},
 ) {
   const ctx = options.ctx ?? context;
@@ -178,7 +179,10 @@ function renderInstantBuy(
 
   (apiGet as Mock).mockImplementation(async (path: string) => {
     if (path === "/api/v1/pages/context") return ctx;
-    if (path === `/api/v1/pages/product/${slug}`) return product;
+    if (path === `/api/v1/pages/product/${slug}`) {
+      if (options.productError) throw options.productError;
+      return product;
+    }
     if (path === "/api/v1/cart") return emptyCart;
     if (path === "/api/v1/checkout") return checkout;
     throw new Error(`unexpected GET ${path}`);
@@ -206,6 +210,64 @@ function renderInstantBuy(
 }
 
 describe("InstantBuyPage", () => {
+  // H-31 (batch 5): the Game Top Up summary total is the large figure too,
+  // and this flow (no cart) shows no Cart → Pay → Done stepper.
+  it("shows the order total at text-2xl in the display font and no stepper", async () => {
+    vi.clearAllMocks();
+    const { container } = renderInstantBuy();
+    await screen.findByText("Summary");
+    const summary = document.getElementById("checkout-summary")!;
+    const label = within(summary).getByText("Total", { exact: true });
+    const figure = label.parentElement!.querySelector(".text-2xl");
+    expect(figure).not.toBeNull();
+    expect(figure!.closest(".font-display")).not.toBeNull();
+    expect(container.querySelector('li[aria-label="1 · Cart"]')).not.toBeInTheDocument();
+  });
+
+  it("styles Game detail-block headings with section-title (H-20) and has no Premium qty label", async () => {
+    vi.clearAllMocks();
+    renderInstantBuy({
+      product: {
+        ...productData,
+        product: { ...productData.product, warranty_note: "Delivered within minutes." },
+      },
+    });
+    const heading = await screen.findByRole("heading", { name: "Warranty" });
+    expect(heading).toHaveClass("section-title", "flex", "items-center");
+    expect(heading.className).not.toMatch(/font-bold|font-display/);
+    expect(document.querySelector('label[for="qty"]')).toBeNull();
+  });
+
+  it("renders a retryable ErrorState on a non-404 product error and refetches on retry", async () => {
+    vi.clearAllMocks();
+    renderInstantBuy({ productError: Object.assign(new Error("boom"), { status: 500 }) });
+    const retry = await screen.findByRole("button", { name: /try again/i });
+    expect(screen.queryByText("404")).not.toBeInTheDocument();
+    const callsFor = () =>
+      (apiGet as Mock).mock.calls.filter((c) => c[0] === "/api/v1/pages/product/mobile-legends-diamonds").length;
+    const before = callsFor();
+    expect(before).toBeGreaterThanOrEqual(1);
+    fireEvent.click(retry);
+    await waitFor(() => expect(callsFor()).toBe(before + 1));
+  });
+
+  it("keeps the loaded form when a later background refetch fails", async () => {
+    vi.clearAllMocks();
+    const { queryClient } = renderInstantBuy();
+    await screen.findByText("Summary");
+    (apiGet as Mock).mockImplementation(async () => {
+      throw Object.assign(new Error("boom"), { status: 500 });
+    });
+    await queryClient.refetchQueries({ queryKey: ["product"] });
+    await waitFor(() =>
+      expect(
+        queryClient.getQueryCache().findAll({ queryKey: ["product"] }).some((q) => q.state.status === "error"),
+      ).toBe(true),
+    );
+    expect(screen.getByText("Summary")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /try again/i })).not.toBeInTheDocument();
+  });
+
   it.each([false, true])("preserves account answers when choosing a different diamond amount (product route: %s)", async (throughProductPage) => {
     renderInstantBuy({ throughProductPage });
     await screen.findByText("Summary");
@@ -358,6 +420,19 @@ describe("InstantBuyPage", () => {
     renderInstantBuy({ product: { ...productData, denominations: [{ ...productData.denominations[0]!, additional_fields: [], input_configuration_valid: false }] } });
     expect(await screen.findByText(/input configuration/i)).toBeInTheDocument();
     expect((apiPost as Mock).mock.calls.some((c) => c[0] === "/api/v1/topup/order")).toBe(false);
+  });
+
+  it("bounds the header image height and constrains the form width so the title and Player ID stay above the fold", async () => {
+    renderInstantBuy();
+    await screen.findByText("Summary");
+    const form = document.getElementById("buy-form")!;
+    expect(form).toHaveClass("max-w-2xl", "mx-auto");
+    const img = screen.getByRole("img", { name: "Mobile Legends Diamonds" });
+    expect(img).toHaveClass("object-contain");
+    expect(img).not.toHaveClass("object-cover");
+    const frame = img.parentElement!.parentElement!;
+    expect(frame).toHaveClass("h-48", "sm:h-56");
+    expect(frame).not.toHaveClass("aspect-[4/3]");
   });
 
   it("keeps field validation visible when selecting another plan with the same fields", async () => {
@@ -527,6 +602,75 @@ describe("InstantBuyPage", () => {
     expect(cartCalls()).toEqual([]);
   });
 
+  it("constrains the loading skeleton to the same max-w-2xl width as the loaded form", async () => {
+    vi.clearAllMocks();
+    (apiGet as Mock).mockImplementation(() => new Promise(() => {}));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/p/mobile-legends-diamonds"]}>
+          <Routes>
+            <Route path="/p/:slug" element={<InstantBuyPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    const busy = document.querySelector('[aria-busy="true"]')!;
+    expect(busy).not.toBeNull();
+    const body = busy.querySelector(".space-y-4")!;
+    expect(body).toHaveClass("max-w-2xl", "mx-auto");
+  });
+
+  it("scrolls the place-order error into view exactly once when it appears", async () => {
+    const scrollIntoView = vi.fn();
+    (Element.prototype as unknown as { scrollIntoView: unknown }).scrollIntoView = scrollIntoView;
+    try {
+      renderInstantBuy();
+      await screen.findByText("Summary");
+      const basePost = (apiPost as Mock).getMockImplementation()!;
+      (apiPost as Mock).mockImplementation(async (path: string, body: Record<string, unknown>) => {
+        if (path === "/api/v1/topup/order") throw new Error("/api/v1/topup/order responded 500");
+        return basePost(path, body);
+      });
+      fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "1234567" } });
+      fireEvent.change(screen.getByLabelText("Zone ID"), { target: { value: "1111" } });
+      await waitFor(() => expect(screen.getAllByRole("button", { name: /Buy now/ })[0]).not.toBeDisabled());
+      expect(scrollIntoView).not.toHaveBeenCalled();
+      fireEvent.click(screen.getAllByRole("button", { name: /Buy now/ })[0]!);
+      expect(await screen.findByText("Something went wrong. Please try again.")).toBeInTheDocument();
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    } finally {
+      delete (Element.prototype as unknown as { scrollIntoView?: unknown }).scrollIntoView;
+    }
+  });
+
+  it("scrolls the guest email field into view, once, when the server rejects the email", async () => {
+    // The banner is suppressed for this error (GuestContactCard shows it), so
+    // the email field is the scroll target instead.
+    const scrollIntoView = vi.fn();
+    (Element.prototype as unknown as { scrollIntoView: unknown }).scrollIntoView = scrollIntoView;
+    try {
+      renderInstantBuy({ checkout: { ...checkoutData, is_guest: true } });
+      await screen.findByText("Summary");
+      const basePost = (apiPost as Mock).getMockImplementation()!;
+      (apiPost as Mock).mockImplementation(async (path: string, body: Record<string, unknown>) => {
+        if (path === "/api/v1/topup/order") throw new Error("web.guest_email_invalid");
+        return basePost(path, body);
+      });
+      fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "1234567" } });
+      fireEvent.change(screen.getByLabelText("Zone ID"), { target: { value: "1111" } });
+      fireEvent.change(screen.getByLabelText("Email address"), { target: { value: "typo@example.com" } });
+      await waitFor(() => expect(screen.getAllByRole("button", { name: /Buy now/ })[0]).not.toBeDisabled());
+      expect(scrollIntoView).not.toHaveBeenCalled();
+      fireEvent.click(screen.getAllByRole("button", { name: /Buy now/ })[0]!);
+      await screen.findByText(/Enter a valid email address/);
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+      expect(scrollIntoView.mock.contexts[0]).toBe(screen.getByLabelText("Email address"));
+    } finally {
+      delete (Element.prototype as unknown as { scrollIntoView?: unknown }).scrollIntoView;
+    }
+  });
+
   // Batch 2 review finding: the preview query's own request never carries the
   // applied voucher code (previewMutation, a separate call, owns that
   // re-price) — with React Query's default staleTime:0, a background
@@ -604,6 +748,49 @@ describe("InstantBuyPage", () => {
     fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "1234567" } });
     fireEvent.change(screen.getByLabelText("Zone ID"), { target: { value: "1111" } });
     await waitFor(() => expect(screen.getAllByRole("button", { name: /Buy now/ })[0]).not.toBeDisabled());
+  });
+
+  it("shows why Buy now is blocked once in flow above the summary and once in the sticky bar", async () => {
+    renderInstantBuy();
+    await screen.findByText("Summary");
+    const hint = "Complete valid account details to continue.";
+    // In flow: exactly one, before the summary card (and so before the submit).
+    const inFlow = screen.getAllByText(hint);
+    expect(inFlow).toHaveLength(1);
+    expect(inFlow[0]!.compareDocumentPosition(screen.getByRole("button", { name: /Buy now/ })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(inFlow[0]!.compareDocumentPosition(document.getElementById("checkout-summary")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    // Sticky bar visible (primary scrolled away): the same reason as its notice.
+    await waitFor(() => expect(NoOpIntersectionObserver.primaryCallback).not.toBeNull());
+    act(() => NoOpIntersectionObserver.primaryCallback?.([{ isIntersecting: false } as IntersectionObserverEntry], {} as IntersectionObserver));
+    const bar = screen.getByRole("region", { name: "Purchase" });
+    expect(within(bar).getAllByText(hint)).toHaveLength(1);
+    expect(screen.getAllByText(hint)).toHaveLength(2);
+
+    // Once the form is valid the reason disappears from both places.
+    fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "1234567" } });
+    fireEvent.change(screen.getByLabelText("Zone ID"), { target: { value: "1111" } });
+    await waitFor(() => expect(screen.queryAllByText(hint)).toHaveLength(0));
+  });
+
+  it("renders the place-order error once, directly above the summary and before the submit", async () => {
+    renderInstantBuy();
+    await screen.findByText("Summary");
+    fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "1234567" } });
+    fireEvent.change(screen.getByLabelText("Zone ID"), { target: { value: "1111" } });
+    (apiPost as Mock).mockImplementation(async (path: string) => {
+      if (path === "/api/v1/topup/order") throw new Error("web.pay_method_unavailable");
+      return checkoutData;
+    });
+    await waitFor(() => expect(screen.getByRole("button", { name: /Buy now/ })).not.toBeDisabled());
+    fireEvent.click(screen.getByRole("button", { name: /Buy now/ }));
+    const text = "That payment method isn't available right now — pick another one.";
+    const banner = await screen.findByText(text);
+    expect(screen.getAllByText(text)).toHaveLength(1);
+    const form = document.getElementById("buy-form")!;
+    expect(form.contains(banner)).toBe(true);
+    expect(banner.compareDocumentPosition(document.getElementById("checkout-summary")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(banner.compareDocumentPosition(screen.getByRole("button", { name: /Buy now/ })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("never renders a cart or checkout page for this flow — success stays on a pay-page route", async () => {
@@ -934,7 +1121,7 @@ describe("InstantBuyPage", () => {
         fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "1234567" } });
         await act(async () => { await vi.advanceTimersByTimeAsync(800); });
 
-        await vi.waitFor(() => expect(screen.getByText("✓ ProGamer99")).toBeInTheDocument());
+        await vi.waitFor(() => expect(screen.getByText("ProGamer99")).toBeInTheDocument());
       } finally {
         vi.useRealTimers();
       }
@@ -986,6 +1173,57 @@ describe("InstantBuyPage", () => {
             expect.objectContaining({ signal: expect.any(AbortSignal) }),
           ),
         );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("presents a found nickname in an inset card with a check icon and a bold nickname", async () => {
+      try {
+        renderInstantBuy();
+        const baseApiPost = (apiPost as Mock).getMockImplementation()!;
+        (apiPost as Mock).mockImplementation(async (path: string, body: Record<string, unknown>, signal?: AbortSignal) => {
+          if (path === "/api/v1/topup/check-account") return { available: true, valid: true, nickname: "SultanMLBB" };
+          return baseApiPost(path, body, signal);
+        });
+        await screen.findByText("Summary");
+        vi.useFakeTimers();
+        fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "1234567" } });
+        fireEvent.change(screen.getByLabelText("Zone ID"), { target: { value: "1234" } });
+        await act(async () => { await vi.advanceTimersByTimeAsync(800); });
+        const found = await vi.waitFor(() => screen.getByTestId("nickname-check-found"));
+        expect(found).toHaveClass("card-inset");
+        expect(found).not.toHaveClass("text-xs");
+        expect(found.querySelector("svg")).not.toBeNull();
+        const name = within(found).getByText("SultanMLBB");
+        expect(name).toHaveClass("font-semibold", "text-ink");
+        // A screen reader hears what the bare nickname is, via a hidden label.
+        expect(found).toHaveTextContent("Account found: SultanMLBB");
+        expect(within(found).getByText("Account found:")).toHaveClass("sr-only");
+        expect(screen.queryByTestId("nickname-check-not-found")).not.toBeInTheDocument();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("presents a not-found nickname as a warning alert, not small grey text", async () => {
+      try {
+        renderInstantBuy();
+        const baseApiPost = (apiPost as Mock).getMockImplementation()!;
+        (apiPost as Mock).mockImplementation(async (path: string, body: Record<string, unknown>, signal?: AbortSignal) => {
+          if (path === "/api/v1/topup/check-account") return { available: true, valid: false, nickname: null };
+          return baseApiPost(path, body, signal);
+        });
+        await screen.findByText("Summary");
+        vi.useFakeTimers();
+        fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "1234567" } });
+        fireEvent.change(screen.getByLabelText("Zone ID"), { target: { value: "1234" } });
+        await act(async () => { await vi.advanceTimersByTimeAsync(800); });
+        const notFound = await vi.waitFor(() => screen.getByTestId("nickname-check-not-found"));
+        expect(notFound).toHaveClass("bg-amberx-tint");
+        expect(notFound).not.toHaveClass("text-xs");
+        expect(notFound).toHaveAttribute("role", "alert");
+        expect(screen.queryByTestId("nickname-check-found")).not.toBeInTheDocument();
       } finally {
         vi.useRealTimers();
       }
@@ -1070,6 +1308,21 @@ describe("InstantBuyPage", () => {
       await screen.findByText("Summary");
       await waitFor(() => expect(bar()).toHaveTextContent("Rp20,240"));
       expect(bar()).not.toHaveTextContent("Pay Rp");
+    });
+  });
+
+  describe("denomination grid (H-24)", () => {
+    it("lays the list out 2/3 columns from sm/lg with stacked cards", async () => {
+      renderInstantBuy({ product: productData });
+      const heading = await screen.findByRole("heading", { name: "Choose an option" });
+      const denomList = heading.nextElementSibling as HTMLElement;
+      expect(denomList).toHaveClass("grid", "gap-3", "sm:grid-cols-2", "lg:grid-cols-3");
+      const labels = denomList.querySelectorAll("label.denom-card");
+      expect(labels.length).toBeGreaterThan(0);
+      labels.forEach((l) => {
+        expect(l.className).toContain("flex-col");
+        expect(l.className).not.toContain("grid-cols-[");
+      });
     });
   });
 

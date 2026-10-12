@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, afterEach, beforeEach, vi, type Mock } from "vitest";
-import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import CheckoutPage from "./CheckoutPage";
@@ -101,6 +101,33 @@ describe("CheckoutPage", () => {
     expect(await screen.findByRole("heading", { name: "Checkout" })).toBeInTheDocument();
     expect(screen.getByText("Summary")).toBeInTheDocument();
     expect(screen.getAllByText("Rp158,000").length).toBeGreaterThan(0);
+  });
+
+  // H-31 / H-33 (batch 5): the Premium checkout total is the large figure, and
+  // the Cart → Pay → Done stepper stays on this (cart-based) flow.
+  it("shows the order total at text-2xl and keeps the stepper", async () => {
+    const { container } = renderCheckout(() => checkoutData);
+    await screen.findByRole("heading", { name: "Checkout" });
+    const summary = document.getElementById("checkout-summary")!;
+    const label = within(summary).getByText("Total", { exact: true });
+    const figure = label.parentElement!.querySelector(".text-2xl");
+    expect(figure).not.toBeNull();
+    expect(figure!.closest(".font-display")).not.toBeNull();
+    expect(container.querySelectorAll('li[aria-label="1 · Cart"]')).toHaveLength(1);
+  });
+
+  // H-36 / H-32 (batch 11): the title uses the plain page-title scale (no
+  // forced `text-2xl!`), and the stepper, title and form share one max-w-2xl
+  // column so the heading lines up with the form.
+  it("renders a plain page-title and keeps heading and form in one max-w-2xl column", async () => {
+    renderCheckout(() => checkoutData);
+    const h1 = await screen.findByRole("heading", { name: "Checkout" });
+    expect(h1).toHaveClass("page-title");
+    expect(h1.className).not.toContain("text-2xl");
+    const column = screen.getByTestId("checkout-column");
+    expect(column).toHaveClass("max-w-2xl", "mx-auto");
+    expect(column).toContainElement(h1);
+    expect(column.querySelector("form")).not.toBeNull();
   });
 
   it("identifies two different parent products with the same canonical plan name", async () => {
@@ -230,6 +257,22 @@ describe("CheckoutPage", () => {
     (apiPost as Mock).mockRejectedValue(new Error("web.pay_method_unavailable"));
     fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
     expect(await screen.findByText("That payment method isn't available right now — pick another one.")).toBeInTheDocument();
+  });
+
+  it("renders the place-order error exactly once, directly above the summary and before the submit", async () => {
+    renderCheckout(() => checkoutData);
+    await screen.findByRole("heading", { name: "Checkout" });
+    (apiPost as Mock).mockRejectedValue(new Error("web.pay_method_unavailable"));
+    fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
+    const text = "That payment method isn't available right now — pick another one.";
+    const banner = await screen.findByText(text);
+    expect(screen.getAllByText(text)).toHaveLength(1);
+    const submit = screen.getByRole("button", { name: /Place order/ });
+    expect(banner.compareDocumentPosition(submit) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // It lives with the summary column, not above the form next to the title.
+    const form = document.querySelector("form")!;
+    expect(form.contains(banner)).toBe(true);
+    expect(screen.queryByText("Complete valid account details to continue.")).not.toBeInTheDocument();
   });
 
   // Whole-branch review F4a. The rail-minimum refusal names the figure it was
@@ -444,6 +487,27 @@ describe("CheckoutPage", () => {
 
       fireEvent.change(emailInputs[0]!, { target: { value: "unit1@mail.com" } });
       expect(placeOrderBtn).not.toBeDisabled();
+    });
+
+    it("explains why Place order is blocked: once in flow before the summary, once in the sticky bar", async () => {
+      renderCheckout(() => infoCheckoutData);
+      await screen.findByText("Order details");
+      const hint = "Complete valid account details to continue.";
+      const matches = screen.getAllByText(hint);
+      expect(matches).toHaveLength(2);
+      const bar = document.querySelector(".fixed.bottom-0")!;
+      const inFlow = matches.filter((el) => !bar.contains(el));
+      const inBar = matches.filter((el) => bar.contains(el));
+      expect(inFlow).toHaveLength(1);
+      expect(inBar).toHaveLength(1);
+      // In flow, the hint precedes the summary's Total row (and so the submit).
+      const summaryHeading = screen.getByRole("heading", { name: "Summary" });
+      expect(inFlow[0]!.compareDocumentPosition(summaryHeading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+      // Once the fields are valid the reason disappears everywhere.
+      screen.getAllByLabelText("Game ID").forEach((el) => fireEvent.change(el, { target: { value: "id1" } }));
+      screen.getAllByLabelText("Email").forEach((el) => fireEvent.change(el, { target: { value: "a@b.co" } }));
+      expect(screen.queryAllByText(hint)).toHaveLength(0);
     });
 
     it("submits the collected answers as customer_data on Place Order", async () => {
@@ -775,6 +839,42 @@ describe("CheckoutPage", () => {
       await screen.findByText("Something went wrong. Please try again.");
       const after = (apiGet as Mock).mock.calls.filter((c) => c[0] === "/api/v1/pages/context").length;
       expect(after).toBe(contextCallsBefore);
+    });
+
+    it("scrolls the place-order error into view exactly once when it appears", async () => {
+      const scrollIntoView = vi.fn();
+      (Element.prototype as unknown as { scrollIntoView: unknown }).scrollIntoView = scrollIntoView;
+      try {
+        renderCheckout(() => checkoutData);
+        await screen.findByRole("heading", { name: "Checkout" });
+        (apiPost as Mock).mockRejectedValue(new Error("/api/v1/checkout responded 500"));
+        expect(scrollIntoView).not.toHaveBeenCalled();
+        fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
+        await screen.findByText("Something went wrong. Please try again.");
+        expect(scrollIntoView).toHaveBeenCalledTimes(1);
+      } finally {
+        delete (Element.prototype as unknown as { scrollIntoView?: unknown }).scrollIntoView;
+      }
+    });
+
+    it("scrolls the guest email field into view, once, when the server rejects the email", async () => {
+      // No banner renders for this error (it shows inside GuestContactCard), so
+      // the banner scroll has no target; the email field is scrolled instead.
+      const scrollIntoView = vi.fn();
+      (Element.prototype as unknown as { scrollIntoView: unknown }).scrollIntoView = scrollIntoView;
+      try {
+        renderCheckout(() => guestData);
+        await screen.findByRole("heading", { name: "Checkout" });
+        fireEvent.change(screen.getByLabelText("Email address"), { target: { value: "typo@example.com" } });
+        (apiPost as Mock).mockRejectedValue(new Error("web.guest_email_invalid"));
+        expect(scrollIntoView).not.toHaveBeenCalled();
+        fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
+        await screen.findByText(GUEST_EMAIL_INVALID);
+        expect(scrollIntoView).toHaveBeenCalledTimes(1);
+        expect(scrollIntoView.mock.contexts[0]).toBe(screen.getByLabelText("Email address"));
+      } finally {
+        delete (Element.prototype as unknown as { scrollIntoView?: unknown }).scrollIntoView;
+      }
     });
 
     it("keeps the buyer on the page with a readable message when the server rejects the email", async () => {

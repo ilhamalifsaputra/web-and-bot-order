@@ -129,7 +129,7 @@ function ProductCardImage({ p, bulkPercent }: {
           <FlashBadge percent={p.flash_discount} endsAt={p.flash_ends_at ?? null} tone="solid" />
         )}
         {p.bulk_discount && (
-          <span className="inline-flex items-center rounded-full bg-rust/90 px-2.5 py-1 text-xs font-medium text-white shadow-xs backdrop-blur-sm">
+          <span className="inline-flex items-center rounded-full bg-grass-tint px-2.5 py-1 text-xs font-medium text-grass-dark shadow-xs">
             −{bulkPercent}%
           </span>
         )}
@@ -141,7 +141,9 @@ function ProductCardImage({ p, bulkPercent }: {
             bg-black/40 + text-grass computed to ~2.3:1 over that pale
             placeholder (fails WCAG AA); white on bg-grass-dark is ~5:1.
             Still the grass family (positive capability), never off-palette
-            amber — same treatment as the sibling bulk-discount badge above.
+            amber. Deliberately distinct from the sibling bulk-discount badge
+            above (a savings pill: bg-grass-tint + text-grass-dark): this one
+            is a solid bg-grass-dark + white capability pill.
             Gated on !all_non_auto AND available > 0: when no denomination draws
             from local stock nothing is delivered from inventory, and a local
             product with no stock has nothing to deliver — either way the pill
@@ -186,7 +188,7 @@ function ProductCardDetails({ p, fx, preSale, lowThreshold, bulkPercent }: {
     <div className="mt-auto pt-3 flex items-center justify-between gap-2 flex-wrap">
       <p className="min-w-0 text-sm text-ink-soft inline-flex items-baseline gap-1 flex-wrap">
         {t("web.from_price")}
-        <Price value={p.from_price} fx={fx} size="text-sm" />
+        <Price value={p.from_price} fx={fx} size="text-base" />
         {/* The card payload carries no base price (cards.ts), so the
                 pre-sale figure is reconstructed from the percent — display
                 only, and it never feeds a total. */}

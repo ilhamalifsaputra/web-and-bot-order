@@ -79,11 +79,15 @@ describe("MobileTabBar", () => {
     "/cart",
     "/checkout",
     "/checkout/ORD-1/pay",
-    "/wallet/topup",
     "/wallet/topup/ORD-1/pay",
   ])("renders nothing on the full-funnel route %s", (path) => {
     const { container } = renderBar({}, path);
     expect(container).toBeEmptyDOMElement();
+  });
+
+  it("is present on the wallet top-up amount form (no sticky bar there)", () => {
+    renderBar({}, "/wallet/topup");
+    expect(bar()).toBeInTheDocument();
   });
 
   it("is present on ordinary routes such as a category page", () => {
@@ -91,13 +95,12 @@ describe("MobileTabBar", () => {
     expect(bar()).toBeInTheDocument();
   });
 
-  it("keeps its hidden-route list in step with the six sticky-bar funnel screens", () => {
+  it("keeps its hidden-route list in step with the five sticky-bar funnel screens", () => {
     expect([...TAB_BAR_HIDDEN_ROUTES]).toEqual([
       "/p/:slug",
       "/cart",
       "/checkout",
       "/checkout/:code/pay",
-      "/wallet/topup",
       "/wallet/topup/:code/pay",
     ]);
   });

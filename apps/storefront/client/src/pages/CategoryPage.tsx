@@ -18,6 +18,7 @@ import SortSelect from "../components/shop/SortSelect";
 import { t } from "../lib/i18n";
 import { useDocumentTitle } from "../lib/useDocumentTitle";
 import { useSuggestedProducts } from "../lib/useSuggestedProducts";
+import ErrorState from "../components/shop/ErrorState";
 import ErrorPage from "./ErrorPage";
 
 const SKELETON_CARDS = Array.from({ length: 8 }, (_, i) => i);
@@ -28,7 +29,7 @@ export default function CategoryPage() {
   const [params, setParams] = useSearchParams();
   const rawSort = params.get("sort");
   const sort: SortKey = SORT_KEYS.includes(rawSort as SortKey) ? (rawSort as SortKey) : "default";
-  const { data, error } = useQuery({
+  const { data, error, refetch } = useQuery({
     queryKey: ["category", slug, sort],
     queryFn: () => apiGet<CategoryPageData>(`/api/v1/pages/category/${slug}?sort=${sort}`),
     retry: false,
@@ -46,7 +47,8 @@ export default function CategoryPage() {
 
   if (error) {
     if ((error as Error & { status?: number }).status === 404) return <ErrorPage />;
-    return null;
+    // A failed background refetch must not replace an already-loaded page.
+    if (!data) return <ErrorState onRetry={() => void refetch()} />;
   }
   // STO-006/performance.md: rendering nothing while the initial query is
   // pending reads as a blank/broken page on a slow connection — show a
@@ -104,7 +106,7 @@ export default function CategoryPage() {
           <Link
             key={c.slug}
             to={`/c/${c.slug}`}
-            className={`inline-flex items-center gap-2 whitespace-nowrap rounded-full px-3 py-1.5 text-sm font-semibold transition-colors ${c.id === category.id
+            className={`inline-flex items-center gap-2 whitespace-nowrap min-h-11 rounded-full px-3 text-sm font-semibold transition-colors ${c.id === category.id
               ? "bg-pine-tint text-pine-dark"
               : "bg-sand text-ink-soft hover:bg-pine-tint hover:text-pine-dark"
               }`}

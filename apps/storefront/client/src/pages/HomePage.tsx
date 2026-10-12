@@ -20,8 +20,8 @@ import {
   CreditCard,
   Headphones,
   KeyRound,
+  LayoutGrid,
   LifeBuoy,
-  MessageCircle,
   Package,
   PackageCheck,
   PackageSearch,
@@ -172,14 +172,46 @@ export default function HomePage() {
   return (
     <>
       {/* 1. Hero (design.md §4.8, mockup perbaikan) */}
-      <HomeHero hero_image={hero_image} heroProducts={heroProducts} reducedMotion={reducedMotion} fx={fx} />
+      <HomeHero hero_image={hero_image} heroProducts={heroProducts} reducedMotion={reducedMotion} fx={fx} categories={categories} />
+
+      {/* 3. Kategori */}
+      {categories.length > 0 && (
+        <section className="mt-16" id="categories">
+          <p className="text-sm font-semibold uppercase tracking-wide text-pine">{t("web.categories")}</p>
+          <h2 className="mt-1 font-display text-2xl font-semibold text-ink sm:text-3xl">{t("web.categories_title")}</h2>
+
+          <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {categories.map((c) => (
+              <Link
+                key={c.slug}
+                to={`/c/${c.slug}`}
+                className="card card-pad group flex items-center gap-4 transition hover:-translate-y-0.5 hover:border-pine-tint hover:shadow-lift"
+              >
+                <span className="grid h-14 w-14 shrink-0 place-items-center rounded-xl bg-pine-tint text-2xl group-hover:scale-105 transition-transform">
+                  {c.emoji ? c.emoji : <Box className="w-6 h-6 text-pine" />}
+                </span>
+                <div className="min-w-0">
+                  <h3 className="font-semibold text-ink truncate">{c.name}</h3>
+                  <span className="inline-flex items-center gap-1 text-sm font-medium text-pine">
+                    {t("web.view_products")}
+                    <ChevronRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5" />
+                  </span>
+                </div>
+              </Link>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* 4. Produk unggulan */}
+      <Home4ProdukUnggulan categories={categories} products={products} fx={fx} low_threshold={low_threshold} suggested={suggested} />
 
       {/* 2. Fitur / keunggulan */}
       <section className="mt-16">
         <p className="text-center text-sm font-semibold uppercase tracking-wide text-pine">
           {t("web.features_kicker")}
         </p>
-        <h2 className="mt-1 text-center font-display text-3xl font-bold text-ink">{t("web.features_title")}</h2>
+        <h2 className="mt-1 text-center font-display text-2xl font-semibold text-ink sm:text-3xl">{t("web.features_title")}</h2>
         <p className="mt-2 text-center text-ink-soft">{t("web.features_sub")}</p>
 
         <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -223,7 +255,7 @@ export default function HomePage() {
           all four steps genuinely sit on one row. */}
       <section className="mt-16" id="how-to-order">
         <p className="text-center text-sm font-semibold uppercase tracking-wide text-pine">{t("web.how_kicker")}</p>
-        <h2 className="mt-1 text-center font-display text-3xl font-bold text-ink">{t("web.how_title")}</h2>
+        <h2 className="mt-1 text-center font-display text-2xl font-semibold text-ink sm:text-3xl">{t("web.how_title")}</h2>
         <p className="mx-auto mt-2 max-w-2xl text-center text-ink-soft">{t("web.how_sub")}</p>
 
         <div className="mt-10">
@@ -239,41 +271,9 @@ export default function HomePage() {
         </div>
       </section>
 
-      {/* 3. Kategori */}
-      {categories.length > 0 && (
-        <section className="mt-16" id="categories">
-          <p className="text-sm font-semibold uppercase tracking-wide text-pine">{t("web.categories")}</p>
-          <h2 className="mt-1 font-display text-2xl font-bold text-ink">{t("web.categories_title")}</h2>
-
-          <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {categories.map((c) => (
-              <Link
-                key={c.slug}
-                to={`/c/${c.slug}`}
-                className="card card-pad group flex items-center gap-4 transition hover:-translate-y-0.5 hover:border-pine-tint hover:shadow-lift"
-              >
-                <span className="grid h-14 w-14 shrink-0 place-items-center rounded-xl bg-pine-tint text-2xl group-hover:scale-105 transition-transform">
-                  {c.emoji ? c.emoji : <Box className="w-6 h-6 text-pine" />}
-                </span>
-                <div className="min-w-0">
-                  <h3 className="font-semibold text-ink truncate">{c.name}</h3>
-                  <span className="inline-flex items-center gap-1 text-sm font-medium text-pine">
-                    {t("web.view_products")}
-                    <ChevronRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5" />
-                  </span>
-                </div>
-              </Link>
-            ))}
-          </div>
-        </section>
-      )}
-
-      {/* 4. Produk unggulan */}
-      <Home4ProdukUnggulan categories={categories} products={products} fx={fx} low_threshold={low_threshold} suggested={suggested} />
-
       {/* 5. Our Promise (replaces vanity numbers) */}
       <section className="mt-16 overflow-hidden rounded-3xl bg-pine px-6 py-10 text-white sm:px-10">
-        <h2 className="text-center font-display text-2xl font-bold sm:text-3xl">{t("web.promise_title")}</h2>
+        <h2 className="text-center font-display text-2xl font-semibold sm:text-3xl">{t("web.promise_title")}</h2>
         <p className="mt-1 text-center text-pine-tint">{t("web.promise_sub")}</p>
         <div className="mt-8 grid gap-6 text-center sm:grid-cols-2 lg:grid-cols-4">
           <div>
@@ -318,7 +318,7 @@ export default function HomePage() {
             marketing band — the 24px band radius was wrong for it. */}
         <Card padded={false} className="p-6 sm:p-10">
           <p className="text-sm font-semibold uppercase tracking-wide text-pine">{t("web.trust_kicker")}</p>
-          <h2 className="mt-1 font-display text-2xl font-bold text-ink">{t("web.trust_title")}</h2>
+          <h2 className="mt-1 font-display text-2xl font-semibold text-ink sm:text-3xl">{t("web.trust_title")}</h2>
           <p className="mt-2 max-w-2xl text-ink-soft">{t("web.trust_sub")}</p>
           <ul className="mt-8 grid gap-x-8 gap-y-6 sm:grid-cols-2">
             {TRUST_POINTS.map((n) => (
@@ -341,7 +341,7 @@ export default function HomePage() {
         <section className="mt-16">
           <div className="text-center mb-8">
             <p className="text-xs font-semibold tracking-widest uppercase text-pine mb-2">{t("web.testi_kicker")}</p>
-            <h2 className="font-display text-2xl sm:text-3xl font-bold text-ink tracking-tight">
+            <h2 className="font-display text-2xl sm:text-3xl font-semibold text-ink tracking-tight">
               {t("web.testi_title")}
             </h2>
             <p className="mt-2 text-sm text-ink-soft">{t("web.testi_sub")}</p>
@@ -376,7 +376,7 @@ export default function HomePage() {
       {/* 7. FAQ */}
       <section className="mt-16">
         <p className="text-center text-sm font-semibold uppercase tracking-wide text-pine">{t("web.faq_kicker")}</p>
-        <h2 className="mt-1 text-center font-display text-3xl font-bold text-ink">{t("web.faq_title")}</h2>
+        <h2 className="mt-1 text-center font-display text-2xl font-semibold text-ink sm:text-3xl">{t("web.faq_title")}</h2>
         <p className="mt-2 text-center text-ink-soft">{t("web.faq_sub")}</p>
         <div className="mx-auto mt-8 max-w-3xl">
           <Accordion type="single" defaultValue={`faq-${FAQ_NUMBERS[0]}`} items={faqItems} />
@@ -389,7 +389,8 @@ export default function HomePage() {
   );
 }
 
-function HomeHero({ hero_image, heroProducts, reducedMotion, fx }: {
+function HomeHero({ hero_image, heroProducts, reducedMotion, fx, categories }: {
+  categories: import("../api/types").Category[];
   hero_image: string | null;
   heroProducts: import("../components/shop/ProductCard").ProductCardData[];
   reducedMotion: boolean | null;
@@ -430,7 +431,7 @@ function HomeHero({ hero_image, heroProducts, reducedMotion, fx }: {
       <h1 className="mt-5 text-4xl font-display font-bold leading-tight text-white sm:text-5xl">
         {t("web.hero_title")}
       </h1>
-      <p className="mt-4 text-lg text-ink-faint">{t("web.hero_sub")}</p>
+      <p className="mt-4 text-lg text-white/80">{t("web.hero_sub")}</p>
       <div className="mt-7 flex flex-wrap gap-3">
         {/* Dark-surface exception (foundations.md §7): pine-fill primary
                 works on bg-ink; the outline CTA keeps a white border/hover
@@ -440,17 +441,21 @@ function HomeHero({ hero_image, heroProducts, reducedMotion, fx }: {
           <ShoppingBag className="h-5 w-5" />
           {t("web.hero_cta")}
         </m.a>
-        <a
-          href="#contact"
-          className="btn border border-white/20 text-white hover:bg-white/15 focus-on-dark"
-        >
-          <MessageCircle className="h-5 w-5" />
-          {t("web.hero_cta2")}
-        </a>
+        {/* #categories only renders when there are categories; without
+            them this link would scroll nowhere. */}
+        {categories.length > 0 && (
+          <a
+            href="#categories"
+            className="btn border border-white/20 text-white hover:bg-white/15 focus-on-dark"
+          >
+            <LayoutGrid className="h-5 w-5" />
+            {t("web.nav_categories")}
+          </a>
+        )}
       </div>
       {/* honest trust chips: capabilities/guarantees, no customer-count claims */}
       <TrustBadgeRow
-        className="mt-8 border-t border-white/10 pt-5 text-ink-faint"
+        className="mt-8 border-t border-white/10 pt-5 text-white/80"
         items={[
           { id: "instant", icon: <Zap className="h-4 w-4 text-grass" />, label: t("web.trust_instant") },
           { id: "payments", icon: <Shield className="h-4 w-4 text-grass" />, label: t("web.payment_at_checkout") },
@@ -533,7 +538,7 @@ function Home4ProdukUnggulan({ categories, products, fx, low_threshold, suggeste
     <div className="flex items-end justify-between">
       <div>
         <p className="text-sm font-semibold uppercase tracking-wide text-pine">{t("web.featured_kicker")}</p>
-        <h2 className="mt-1 font-display text-2xl font-bold text-ink">{t("web.new_arrivals")}</h2>
+        <h2 className="mt-1 font-display text-2xl font-semibold text-ink sm:text-3xl">{t("web.new_arrivals")}</h2>
       </div>
       {categories.length > 0 && (
         <a href="#categories" className="inline-flex items-center gap-1 group text-sm font-medium text-pine hover:text-pine-dark">
@@ -547,7 +552,7 @@ function Home4ProdukUnggulan({ categories, products, fx, low_threshold, suggeste
       // the row empty, reading as broken rather than a deliberate
       // one-item shelf — clamp to one column with a capped width instead
       // of stretching an isolated card across the full row.
-      <div className={`mt-5 grid gap-5 ${products.length === 1 ? "max-w-sm" : "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3"}`}>
+      <div className={`mt-5 grid gap-4 ${products.length === 1 ? "max-w-sm" : "grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5"}`}>
         {products.map((p) => (
           <ProductCard key={p.slug} p={p} fx={fx} lowThreshold={low_threshold} />
         ))}
@@ -573,7 +578,7 @@ function HomeWhatsApp({ contactCols, wa_number, support_telegram_url }: {
 }) {
   return (<section className="mt-16" id="contact">
     <p className="text-center text-sm font-semibold uppercase tracking-wide text-pine">{t("web.contact_kicker")}</p>
-    <h2 className="mt-1 text-center font-display text-3xl font-bold text-ink">{t("web.contact_title")}</h2>
+    <h2 className="mt-1 text-center font-display text-2xl font-semibold text-ink sm:text-3xl">{t("web.contact_title")}</h2>
     <p className="mt-2 text-center text-ink-soft">{t("web.contact_sub")}</p>
 
     <div className={`mt-8 grid grid-cols-1 ${contactCols} gap-4 max-w-2xl mx-auto`}>

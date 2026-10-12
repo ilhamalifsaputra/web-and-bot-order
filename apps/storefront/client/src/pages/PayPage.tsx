@@ -75,6 +75,7 @@ import { formatOrderAmount, formatPriceFor, showsUsdDisplay } from "../lib/forma
 import { t } from "../lib/i18n";
 import { readCodeEmailed } from "../lib/orderCodeEmailed";
 import { useShopContext } from "../lib/useShopContext";
+import ErrorState from "../components/shop/ErrorState";
 import ErrorPage from "./ErrorPage";
 
 /**
@@ -216,7 +217,7 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
   // Full-reload retry link for GatewayDownFallback — the client route for
   // this page (App.tsx), not the API base above.
 
-  const { data, error, poll } = usePaymentStatus({ apiBase, code, loginNextBase });
+  const { data, error, poll, refetch } = usePaymentStatus({ apiBase, code, loginNextBase });
 
   // Polls every 5s (the HTMX twin); drives the small strip, the
   // delivered-redirect, and advances the big card to a later in-flight stage
@@ -272,7 +273,11 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
 
   if (error) {
     if ((error as Error & { status?: number }).status === 404) return <ErrorPage />;
-    return null;
+    // 401 is mid-redirect to /login (effect above): keep it blank, not an error.
+    if ((error as Error & { status?: number }).status === 401) return null;
+    // A failed background refetch must not replace an already-loaded page
+    // (the QR page above all): the error state is for the initial load only.
+    if (!data) return <ErrorState onRetry={() => void refetch()} />;
   }
   if (!data) {
     return (
@@ -311,7 +316,9 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
 
   return (
     <>
-      <Stepper step={state === "delivered" ? 3 : 2} />
+      {/* Cart → Pay → Done describes the Premium catalog checkout only: a Game
+          Top Up (InstantBuy) and a wallet top-up never had a cart step. */}
+      {!isGame && !isTopup && <Stepper step={state === "delivered" ? 3 : 2} />}
       <PaymentPageContent emailedTo={emailedTo} isTopup={isTopup} order={order} data={data} presentation={presentation} underpayment={underpayment} state={state} isGame={isGame} deliveredHref={deliveredHref} deliveredLabelKey={deliveredLabelKey} stripState={stripState} priceAndPayLine={priceAndPayLine} payPagePath={payPagePath} countdownText={countdownText} cancelMutation={cancelMutation} setCancelDialogOpen={setCancelDialogOpen} cancelDialogOpen={cancelDialogOpen} retryHref={retryHref} retryLabelKey={retryLabelKey} closedHref={closedHref} closedLabelKey={closedLabelKey} />
     </>
   );
@@ -435,7 +442,7 @@ function PaymentPageContent({ emailedTo, isTopup, order, data, presentation, und
   closedLabelKey: "web.account_title" | "web.account_orders";
 }) {
   return (<div className="max-w-2xl mx-auto">
-    <h1 className="page-title text-2xl! mb-1">{t("web.pay_title")}</h1>
+    <h1 className="page-title mb-1">{t("web.pay_title")}</h1>
     <p className={emailedTo ? "text-sm text-ink-soft mb-2" : "text-sm text-ink-soft mb-5"}>
       {t(isTopup ? "transaction.receipt" : "web.order_code")}: <span className="codeish break-all whitespace-normal">{order.code}</span>
     </p>
@@ -501,7 +508,7 @@ function usePaymentStatus({ apiBase, code, loginNextBase }: {
   loginNextBase: "/wallet/topup" | "/checkout";
 }) {
   const navigate = useNavigate();
-  const { data, error } = useQuery({
+  const { data, error, refetch } = useQuery({
     queryKey: ["pay", apiBase, code],
     queryFn: () => apiGet<PayData>(`/api/v1${apiBase}/${code}/pay`),
     retry: false,
@@ -523,7 +530,7 @@ function usePaymentStatus({ apiBase, code, loginNextBase }: {
   useEffect(() => {
     if (poll?.redirect) navigate(poll.redirect);
   }, [poll, navigate]);
-  return { data, error, poll };
+  return { data, error, poll, refetch };
 }
 
 function PaymentInstructionsCard({ data, order, priceAndPayLine, payPagePath, countdownText }: {
@@ -534,7 +541,7 @@ function PaymentInstructionsCard({ data, order, priceAndPayLine, payPagePath, co
   countdownText: string;
 }) {
   return (<Card>
-    <PaymentMethodInstructions data={data} order={order} priceAndPayLine={priceAndPayLine} payPagePath={payPagePath} />
+    <PaymentMethodInstructions data={data} order={order} priceAndPayLine={priceAndPayLine} payPagePath={payPagePath} countdownText={countdownText} />
 
     {data.min_amount && (
       <p className="text-xs text-amberx mt-3 flex items-start gap-1.5">
@@ -547,16 +554,6 @@ function PaymentInstructionsCard({ data, order, priceAndPayLine, payPagePath, co
       <ShieldCheck className="w-3.5 h-3.5 text-grass" />
       {t("web.pay_trust")}
     </div>
-
-    {order.expires_at_iso && (
-      <div className="flex items-center gap-2 mt-5 pt-4 border-t border-line text-sm text-ink-soft">
-        <Timer className="w-4 h-4 text-amberx" />
-        {t("web.pay_countdown")}
-        <span id="countdown" className="font-mono font-semibold text-ink">
-          {countdownText}
-        </span>
-      </div>
-    )}
   </Card>);
 }
 
@@ -599,7 +596,8 @@ function ProcessingPaymentNotice({ state, presentation, isTopup, deliveredHref }
   ));
 }
 
-function QrisInstructions({ order, priceAndPayLine, data, payPagePath }: {
+function QrisInstructions({ order, priceAndPayLine, data, payPagePath, countdownRow }: {
+  countdownRow: import("react").ReactNode;
   order: { code: string; status: string; currency: string; total: string; qris_admin_fee: string | null; qris_grand_total: string | null; payment_ref: string | null; expires_at_iso: string | null; };
   priceAndPayLine: (payable: string | null) => import("react").JSX.Element | null;
   data: PayData;
@@ -630,6 +628,7 @@ function QrisInstructions({ order, priceAndPayLine, data, payPagePath }: {
         {priceAndPayLine(order.total)}
       </>
     )}
+    {countdownRow}
     {data.gateway ? (
       <>
         {data.gateway.qrLink && (
@@ -660,7 +659,8 @@ function QrisInstructions({ order, priceAndPayLine, data, payPagePath }: {
   </>);
 }
 
-function PaydisiniInstructions({ order, priceAndPayLine, data, payPagePath }: {
+function PaydisiniInstructions({ order, priceAndPayLine, data, payPagePath, countdownRow }: {
+  countdownRow: import("react").ReactNode;
   order: { code: string; status: string; currency: string; total: string; qris_admin_fee: string | null; qris_grand_total: string | null; payment_ref: string | null; expires_at_iso: string | null; };
   priceAndPayLine: (payable: string | null) => import("react").JSX.Element | null;
   data: PayData;
@@ -672,6 +672,7 @@ function PaydisiniInstructions({ order, priceAndPayLine, data, payPagePath }: {
       {formatOrderAmount(order.total, order.currency)}
     </div>
     {priceAndPayLine(order.total)}
+    {countdownRow}
     {data.paydisini_gateway ? (
       <>
         {data.paydisini_gateway.qrUrl && (
@@ -707,7 +708,8 @@ function PaydisiniInstructions({ order, priceAndPayLine, data, payPagePath }: {
   </>);
 }
 
-function NowPaymentsInstructions({ order, data, payPagePath }: {
+function NowPaymentsInstructions({ order, data, payPagePath, countdownRow }: {
+  countdownRow: import("react").ReactNode;
   order: { code: string; status: string; currency: string; total: string; qris_admin_fee: string | null; qris_grand_total: string | null; payment_ref: string | null; expires_at_iso: string | null; };
   data: PayData;
   payPagePath: string;
@@ -715,6 +717,7 @@ function NowPaymentsInstructions({ order, data, payPagePath }: {
   return (<>
     <h2 className="section-title mb-3">{t("web.pay_nowpayments_title")}</h2>
     <div className="font-display font-semibold text-pine text-2xl">${order.total}</div>
+    {countdownRow}
     {data.nowpayments_gateway ? (
       <>
         {data.nowpayments_gateway.invoiceUrl && (
@@ -773,12 +776,20 @@ function paymentProgress({ poll, data }: {
   return { presentation, underpayment, state, stripState };
 }
 
-function PaymentMethodInstructions({ data, order, priceAndPayLine, payPagePath }: {
+function PaymentMethodInstructions({ data, order, priceAndPayLine, payPagePath, countdownText }: {
+  countdownText: string;
   data: PayData;
   order: { code: string; status: string; currency: string; total: string; qris_admin_fee: string | null; qris_grand_total: string | null; payment_ref: string | null; expires_at_iso: string | null; };
   priceAndPayLine: (payable: string | null) => import("react").JSX.Element | null;
   payPagePath: string;
 }) {
+  const countdownRow = order.expires_at_iso ? (
+    <div className="flex items-center gap-2 mt-3 text-sm text-ink-soft">
+      <Timer className="w-4 h-4 text-amberx" />
+      {t("web.pay_countdown")}
+      <span id="countdown" className="font-mono font-semibold text-ink">{countdownText}</span>
+    </div>
+  ) : null;
   if (data.is_binance) return (
     <>
       <h2 className="section-title mb-3">{t("web.pay_usdt_title")}</h2>
@@ -791,6 +802,7 @@ function PaymentMethodInstructions({ data, order, priceAndPayLine, payPagePath }
         <li>
           {t("web.binance_step_amount")}
           <div className="font-display font-semibold text-pine text-2xl mt-1">${order.total}</div>
+          {countdownRow}
         </li>
         <li>
           {t("web.binance_step_note")}
@@ -805,6 +817,7 @@ function PaymentMethodInstructions({ data, order, priceAndPayLine, payPagePath }
       <h2 className="section-title mb-3">{t("web.pay_bybit_title")}</h2>
       <p className="text-sm text-ink-soft mt-2">{t("web.pay_bybit_amount")}</p>
       <div className="font-display font-semibold text-pine text-2xl mt-1">${order.total}</div>
+      {countdownRow}
       {data.bybit_uid && (
         <>
           <p className="text-sm text-ink-soft mt-3">{t("web.pay_bybit_uid")}</p>
@@ -819,6 +832,7 @@ function PaymentMethodInstructions({ data, order, priceAndPayLine, payPagePath }
       <h2 className="section-title mb-3">{t("web.pay_bybit_bsc_title")}</h2>
       <p className="text-sm text-ink-soft mt-2">{t("web.pay_bybit_bsc_amount")}</p>
       <div className="font-display font-semibold text-pine text-2xl mt-1">${order.total}</div>
+      {countdownRow}
       {data.bybit_bsc_address && (
         <>
           <p className="text-sm text-ink-soft mt-3">{t("web.pay_bybit_bsc_address")}</p>
@@ -830,17 +844,18 @@ function PaymentMethodInstructions({ data, order, priceAndPayLine, payPagePath }
     </>
   );
   if (data.is_qris) return (
-    <QrisInstructions order={order} priceAndPayLine={priceAndPayLine} data={data} payPagePath={payPagePath} />
+    <QrisInstructions order={order} priceAndPayLine={priceAndPayLine} data={data} payPagePath={payPagePath} countdownRow={countdownRow} />
   );
   if (data.is_paydisini) return (
-    <PaydisiniInstructions order={order} priceAndPayLine={priceAndPayLine} data={data} payPagePath={payPagePath} />
+    <PaydisiniInstructions order={order} priceAndPayLine={priceAndPayLine} data={data} payPagePath={payPagePath} countdownRow={countdownRow} />
   );
   if (data.is_nowpayments) return (
-    <NowPaymentsInstructions order={order} data={data} payPagePath={payPagePath} />
+    <NowPaymentsInstructions order={order} data={data} payPagePath={payPagePath} countdownRow={countdownRow} />
   );
   return (
     <>
       <p className="text-sm text-ink-soft">{t("web.pay_method_elsewhere")}</p>
+      {countdownRow}
       {data.support_telegram_url && (
         <a
           href={data.support_telegram_url}

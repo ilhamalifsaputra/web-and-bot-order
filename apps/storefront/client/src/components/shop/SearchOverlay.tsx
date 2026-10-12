@@ -273,13 +273,13 @@ function SearchOverlay({
                 onKeyDown={onKeyDown}
                 placeholder={t("web.search_placeholder")}
                 aria-label={t("web.search_placeholder")}
-                className="min-w-0 flex-1 bg-transparent text-sm text-ink outline-none placeholder:text-ink-faint"
+                className="min-w-0 flex-1 bg-transparent text-base text-ink sm:text-sm outline-none placeholder:text-ink-faint"
               />
               <button
                 type="button"
                 onClick={onClose}
                 aria-label={t("web.search_close")}
-                className="shrink-0 rounded-lg p-1.5 text-ink-soft transition-colors hover:bg-sand hover:text-ink"
+                className="grid h-11 w-11 shrink-0 place-items-center rounded-lg text-ink-soft transition-colors hover:bg-sand hover:text-ink"
               >
                 <X className="h-5 w-5" />
               </button>
@@ -407,6 +407,14 @@ function SearchResultsPanel({ showSkeleton, showEmpty, debounced, onClose, showR
             {t("web.search_placeholder")}
           </p>
         )}
+        <p className="flex items-center justify-center gap-4 px-2 py-3 text-sm">
+          <Link to="/categories" onClick={onClose} className="inline-flex min-h-11 items-center font-medium text-pine hover:underline">
+            {t("web.nav_categories")}
+          </Link>
+          <Link to="/products" onClick={onClose} className="inline-flex min-h-11 items-center font-medium text-pine hover:underline">
+            {t("web.search_browse_all")}
+          </Link>
+        </p>
       </div>
     )}
   </div>);

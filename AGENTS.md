@@ -298,15 +298,21 @@ support, admin screens — and to the fulfillment-message worker
 - For React client changes, run the affected package's typecheck, relevant
   tests, the existing Storefront lint, and `pnpm doctor:changed`. This checks
   both clients against `master`, including untracked source files.
-- Before completing a React correctness task, run `pnpm doctor:bugs` and
-  `pnpm doctor:full` alongside the full verification gate below. The latter
-  keeps other diagnostic categories visible without expanding the task scope.
+- Before completing any React client change, run `pnpm doctor:bugs` and
+  `pnpm doctor:full` alongside the full verification gate below. The full scan
+  must report **0 errors and 0 warnings across both clients and all diagnostic
+  categories** before declaring completion, committing, merging or releasing.
+  Fix every finding, then repeat the full scan until it is clean. A changed
+  scan or a Bugs-only scan is supplementary and cannot satisfy this gate.
 - `pnpm lint` runs Storefront's token lint and the Doctor Bugs scan for both
   clients. Record full diagnostic and runtime verification results in
   `docs/REACT_DOCTOR_PHASE_1_REPORT.md`. A changed scan supplements this review;
   it does not prove runtime correctness or replace the full scan.
-- Fix confirmed failures rather than adding suppressions or dummy cache
-  invalidation. These checks are local scripts, not commit/deployment hooks.
+- Fix the underlying causes rather than adding suppressions, disabling rules,
+  excluding files, skipping checks or adding dummy cache invalidation to make
+  the scan clean. Record the final clean full-scan result in the report above.
+  This rule applies equally to Codex and Claude Code; `.claude/CLAUDE.md`
+  imports this file. These checks are local scripts, not commit/deployment hooks.
 
 ## Tests
 - **Three tiers; run the cheapest one that fits.** Add tests with each behavior

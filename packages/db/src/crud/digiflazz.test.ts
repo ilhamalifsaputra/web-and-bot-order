@@ -631,6 +631,33 @@ describe("resolveSingleDigiflazzItem", () => {
   });
 });
 
+describe("provider incident health facts", () => {
+  it("three ordinary supplier declines do not open an outage", async () => {
+    for (let i = 0; i < 3; i++) {
+      const order = await makeProcessingDigiflazzOrder();
+      digiflazzMock.createTransaction.mockResolvedValue({ refId: order.orderCode, status: "Gagal", sn: null, message: "Nomor salah", price: null });
+      expect((await dispatchDigiflazzOrderNow(prisma, order.id)).failed).toBe(1);
+    }
+    expect(await prisma.notificationOutbox.count({ where: { event: "provider.incident.opened" } })).toBe(0);
+    const state = await prisma.setting.findUniqueOrThrow({ where: { key: "email_provider_incident:digiflazz-transaction" } });
+    expect(JSON.parse(state.value)).toMatchObject({ failures: [], open: false });
+  });
+  it("request errors aggregate one outage and a valid pending response recovers it", async () => {
+    for (let i = 0; i < 3; i++) {
+      const order = await makeProcessingDigiflazzOrder();
+      digiflazzMock.createTransaction.mockRejectedValue(new Error("Fixture network unavailable"));
+      await dispatchDigiflazzOrderNow(prisma, order.id);
+    }
+    expect(await prisma.notificationOutbox.count({ where: { event: "provider.incident.opened" } })).toBe(1);
+    const healthy = await makeProcessingDigiflazzOrder();
+    digiflazzMock.createTransaction.mockResolvedValue({ refId: healthy.orderCode, status: "Pending", sn: null, message: null, price: null });
+    expect((await dispatchDigiflazzOrderNow(prisma, healthy.id)).pending).toBe(1);
+    const state = await prisma.setting.findUniqueOrThrow({ where: { key: "email_provider_incident:digiflazz-transaction" } });
+    expect(JSON.parse(state.value)).toMatchObject({ failures: [], open: false });
+    expect(await prisma.notificationOutbox.count({ where: { event: "provider.incident.opened" } })).toBe(1);
+  });
+});
+
 describe("dispatchPendingDigiflazzOrders", () => {
   it("delivers a Sukses order and flips it to DELIVERED", async () => {
     const order = await makeProcessingDigiflazzOrder();

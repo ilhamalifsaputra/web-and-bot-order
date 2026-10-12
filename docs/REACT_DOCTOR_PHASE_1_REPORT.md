@@ -208,3 +208,12 @@ Historical Phase 1 changed-file inventory, before integration with the newer mas
 - Shared repository rules and the global Codex and Claude instructions now require a full scan across both React clients and all diagnostic categories, fixing all errors and warnings before completion, commit, merge or release.
 - The full integration typecheck and test suite are pending.
 - Validation logs are retained in the Windows temporary directory with the prefix `storefront-merge-conflicts-`. Runtime/database tests use the isolated local PostgreSQL database `storefront_merge_conflicts` on port 55439. The integration checkout's `.env` is unchanged.
+
+
+## 11. Trustance toggles, Telegram callback, and 23 email events (2026-10-12)
+
+- Worktree `auth-email-toggles`, baseline `aa2794f5`; admin/shared toggles, event preferences/schedule/thresholds/diagnostics and legacy Telegram fragment adapter were tested without adding suppressions or exclusions.
+- `pnpm doctor:changed`: 30 files, no Bugs issues. `pnpm doctor:bugs`: 628 files, 12.6 seconds, no Bugs issues.
+- `pnpm doctor:full`: **628 files, 12.7 seconds, 0 errors and 0 warnings across both clients and all categories**. Diagnostics directory: `react-doctor-5a5ec21e-4a31-48e6-8e7c-abeaed16d916` under Windows Temp.
+- Storefront lint and production workspace builds passed. Production Chromium smoke verified all 23 switches, locked mandatory recovery, keyboard Space, persisted refresh, failed-save previous state, no overflow at 390px and zero page errors; desktop/mobile screenshots are in the worktree's ignored `.local/` directory. API fixtures were used; no customer mail or bot poller was started.
+- Final full typecheck/test results are recorded in `docs/TRUSTANCE_AUTH_EMAIL_TOGGLES_REPORT.md` when the synchronized gate finishes.

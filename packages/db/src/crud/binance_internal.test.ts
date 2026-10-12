@@ -898,7 +898,7 @@ describe("refundUnderpaidOrder — reads the received amount from whichever rail
         orderId: order.id,
         gateway: "NOWPayments",
         receivedAmount: "4.25",
-        expectedAmount: "10",
+        expectedAmount: order.totalAmount,
       }),
     ).toBe(true);
 

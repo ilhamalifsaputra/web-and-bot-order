@@ -1,3 +1,4 @@
+import { recordEmailProviderHealth } from "./emailSecurity";
 /**
  * Generic per-rail poller heartbeat storage.
  *
@@ -111,6 +112,7 @@ export async function recordPollHealth(
     error?: string | null;
   },
 ): Promise<void> {
+  if (rail !== "outbox" && !args.rateLimited) await recordEmailProviderHealth(db, rail, args.success);
   const prev = await getPollHealth(db, rail);
   const lastRateLimitAt = args.rateLimited ? new Date().toISOString() : prev.lastRateLimitAt;
   const consecutiveFailures = args.success

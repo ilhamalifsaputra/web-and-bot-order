@@ -20,6 +20,7 @@ vi.mock("@app/db", () => ({
 // environment this suite happens to run in.
 vi.mock("@app/core/config", () => ({
   config: {
+    LOG_LEVEL: "silent",
     ADMIN_PUBLIC_URL: undefined as string | undefined,
     SHOP_PUBLIC_URL: undefined as string | undefined,
     PUBLIC_URL: undefined as string | undefined,
@@ -331,7 +332,7 @@ describe("emailTemplates.renderEmail", () => {
   });
 
   describe("OWNER_EMAIL_NEW_TICKET", () => {
-    it("renders a fixed subject and a body with ticket id, category, and message", async () => {
+    it("renders the centralized ticket summary without copying private conversation text", async () => {
       const payload = {
         to: "owner@example.com",
         ticket_id: 42,
@@ -343,8 +344,9 @@ describe("emailTemplates.renderEmail", () => {
       expect(result).not.toBeNull();
       expect(result!.subject).toBe("New support ticket");
       expect(result!.text).toContain("42");
-      expect(result!.text).toContain("billing");
-      expect(result!.text).toContain("My payment did not go through, please help.");
+      expect(result!.text).toContain("A customer opened a support ticket.");
+      expect(result!.text).not.toContain("My payment did not go through, please help.");
+      expect(result!.html).not.toContain("My payment did not go through, please help.");
     });
 
     it("omits the category line entirely when category is null", async () => {
@@ -361,10 +363,11 @@ describe("emailTemplates.renderEmail", () => {
       expect(result!.text.toLowerCase()).not.toContain("category: undefined");
     });
 
-    it("has no html key (regression guard — stays plain text, unlike OWNER_EMAIL_ORDER_PAID)", async () => {
+    it("provides branded HTML with a plaintext fallback for the centralized ticket event", async () => {
       const payload = { to: "owner@example.com", ticket_id: 42, user_id: 7, message: "x" };
       const result = await renderEmail("OWNER_EMAIL_NEW_TICKET", payload);
-      expect(result!.html).toBeUndefined();
+      expect(result!.html).toContain("<!doctype html>");
+      expect(result!.text).toContain("Ticket: 42");
     });
   });
 

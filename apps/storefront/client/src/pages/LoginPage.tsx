@@ -193,7 +193,7 @@ export default function LoginPage() {
                 <span className="flex-1 border-t border-line" />
               </div>
               <div className="mt-4">
-                <TelegramLoginButton botId={widget?.bot_id} authUrl={widget?.auth_url ?? ""} />
+                <TelegramLoginButton botId={widget?.bot_id} authUrl={widget?.auth_url ?? ""} beforeNavigate={() => apiGet<TelegramWidgetData>(`/api/v1/auth/telegram-widget?${new URLSearchParams({ next, ...(ref ? {ref} : {}) })}`)} />
               </div>
             </>
           )}

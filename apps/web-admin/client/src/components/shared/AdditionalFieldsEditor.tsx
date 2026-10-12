@@ -1,5 +1,5 @@
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
+import { SettingsToggle } from "./SettingsToggle";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -99,13 +99,12 @@ export function AdditionalFieldsEditor({
                 </SelectContent>
               </Select>
             </div>
-            <label className="flex items-center gap-2 pb-2">
-              <Checkbox
-                checked={row.required}
-                onCheckedChange={(checked) => updateRow(index, { required: checked === true })}
-              />
-              <span className="text-sm text-ink">Required</span>
-            </label>
+            <SettingsToggle
+              id={`${fieldId}-required-${row.draftId ?? row.key}`}
+              label="Required"
+              checked={row.required}
+              onCheckedChange={(required) => updateRow(index, { required })}
+            />
           </div>
 
           {row.type === "select" && (

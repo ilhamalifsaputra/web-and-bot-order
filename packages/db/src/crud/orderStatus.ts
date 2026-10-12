@@ -1,3 +1,4 @@
+import { emailTransaction, enqueueOrderTransitionEmails } from "./emailEvents";
 /**
  * Centralized Order.status transition helper + the append-only
  * OrderStatusHistory audit trail it writes alongside every move.
@@ -17,6 +18,7 @@
 import { OrderStatus } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { Decimal } from "@app/core/money";
+import { qrisChargeAmount } from "@app/core/payments/tokopay";
 import type { PrismaClient, Tx } from "../client";
 import type { Db } from "./_types";
 import { wakeFulfillmentMessage, ensureFulfillmentMessage } from "./fulfillmentMessages";
@@ -137,6 +139,7 @@ export async function transitionOrderStatus(
   db: Db,
   args: { orderId: number; from: string; to: string; meta?: string | null },
 ): Promise<void> {
+  if ("$transaction" in db) return emailTransaction(db, (tx) => transitionOrderStatus(tx, args));
   const { orderId, from, to, meta } = args;
 
   if (!LEGAL_TRANSITIONS[from]?.includes(to)) {
@@ -162,6 +165,7 @@ export async function transitionOrderStatus(
   await db.orderStatusHistory.create({
     data: { orderId, status: to, meta: meta ?? null },
   });
+  await enqueueOrderTransitionEmails(db, orderId, to, meta, from);
   // A final status ends the buyer's progress message promptly; a manual
   // order's static WAITING line is not polled, so this is what moves it on.
   if (FINAL_ORDER_STATUSES.has(to) || to === OrderStatus.PAYMENT_DETECTED || to === OrderStatus.CONFIRMING || to === OrderStatus.CONFIRMED || to === OrderStatus.PROCESSING) {
@@ -249,7 +253,21 @@ export async function markOrderUnderpaid(
   db: PrismaClient,
   args: { orderId: number; gateway: string; receivedAmount: Decimal.Value; expectedAmount: Decimal.Value },
 ): Promise<boolean> {
+  let received: Decimal, expected: Decimal;
+  try { received = new Decimal(args.receivedAmount); expected = new Decimal(args.expectedAmount); }
+  catch { return false; }
+  if (!received.isFinite() || !expected.isFinite() || !received.greaterThan(0) || !expected.greaterThan(received)) return false;
+  const gateway = args.gateway.trim().toUpperCase();
+  if (!["TOKOPAY", "PAYDISINI", "NOWPAYMENTS"].includes(gateway)) return false;
   return db.$transaction(async (tx: Tx) => {
+    await tx.$queryRaw`SELECT id FROM orders WHERE id = ${args.orderId} FOR NO KEY UPDATE`;
+    const order = await tx.order.findUnique({ where: { id: args.orderId }, select: { status: true, paymentMethod: true, currency: true, totalAmount: true, paidAt: true, paymentState: true } });
+    if (!order || order.status !== OrderStatus.PENDING_PAYMENT || order.paidAt || order.paymentState === "PAID" || order.paymentMethod !== gateway) return false;
+    if (order.currency !== (gateway === "NOWPAYMENTS" ? "USDT" : "IDR")) return false;
+    // Legacy callers recorded the base principal on TokoPay; current invoice
+    // reconciliation records the fee-inclusive charge. Both demonstrate a
+    // real shortfall, but an unrelated expected amount must never flag it.
+    if (!expected.equals(order.totalAmount) && !(gateway === "TOKOPAY" && expected.equals(qrisChargeAmount(order.totalAmount)))) return false;
     const applied = await tryTransitionOrderStatus(tx, {
       orderId: args.orderId,
       from: OrderStatus.PENDING_PAYMENT,
@@ -261,15 +279,15 @@ export async function markOrderUnderpaid(
     await tx.order.update({
       where: { id: args.orderId },
       data: {
-        adminNote: `[underpaid] received ${new Decimal(args.receivedAmount).toString()} via ${args.gateway}, expected ${new Decimal(args.expectedAmount).toString()}`,
+        adminNote: `[underpaid] received ${received.toString()} via ${args.gateway}, expected ${expected.toString()}`,
       },
     });
     await tx.qrisUnderpaidTx.create({
       data: {
         orderId: args.orderId,
         gateway: args.gateway,
-        receivedAmount: new Decimal(args.receivedAmount),
-        expectedAmount: new Decimal(args.expectedAmount),
+        receivedAmount: received,
+        expectedAmount: expected,
       },
     });
     return true;

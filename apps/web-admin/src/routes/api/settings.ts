@@ -30,7 +30,10 @@ import {
 } from "@app/db";
 import { CUSTOMER_SERVICES, SERVICE_CHANNELS, type ServiceChannel } from "@app/core/services";
 import { CredentialKeyConfigError } from "@app/core/credentialCrypto";
-import { verifySmtp } from "@app/core/mailer";
+import { verifySmtp, sendMail, safeMailFailure, requireMailAcceptance, EMAIL_RECIPIENT_RE } from "@app/core/mailer";
+import { resolveBooleanSetting } from "@app/core";
+import { layout, components, toAbsoluteAssetUrl, type BrandConfig } from "@app/core/email";
+import { claimSmtpTest, emailDeliveryDiagnostics } from "@app/db";
 import {
   hashPassword,
   verifyPassword,
@@ -699,6 +702,7 @@ export default async function settingsApiRoutes(app: FastifyInstance): Promise<v
       hasValue: Boolean(currentValues[key]),
       value: isSecret(key) ? "" : (currentValues[key] ?? ""),
       needsRestart: BOT_TOKEN_FIELD_KEYS.has(key),
+      ...(resolveBooleanSetting(key,currentValues[key],{smtpSecure:config.SMTP_SECURE}) !== undefined ? {kind:"boolean",checked:resolveBooleanSetting(key,currentValues[key],{smtpSecure:config.SMTP_SECURE})} : {kind:"text"}),
     }));
 
     const payMethodState: Record<string, { enabled: boolean; configured: boolean }> = {};
@@ -748,12 +752,15 @@ export default async function settingsApiRoutes(app: FastifyInstance): Promise<v
     if (["digiflazz_markup_type", "digiflazz_markup_value", "pricing_rounding", "pricing_low_margin_warn_pct"].includes(String(pricingKey))) {
       return reply.code(400).send({ error: "Edit this policy in Pricing & Margins (/pricing)." });
     }
-    const body = (req.body ?? {}) as Record<string, string>;
+    const body = (req.body ?? {}) as {key?:unknown;value?:unknown};
+    if(typeof body.key !== "string") return reply.code(400).send({error:"A setting key is required."});
+    const isBoolean = resolveBooleanSetting(body.key,undefined,{smtpSecure:config.SMTP_SECURE}) !== undefined;
+    if(typeof body.value !== "string" && !(isBoolean && typeof body.value === "boolean")) return reply.code(400).send({error:"Invalid setting value."});
     try {
       // The settings form pre-fills each field with its stored value; an
       // untouched pre-fill is sent with "value" in `exact_fields` so a money
       // setting is read exactly rather than by shape (lib/moneyField.ts).
-      const result = await applyFieldEdit(req.admin!, body.key ?? "", body.value ?? "", exactFields(req.body).has("value"));
+      const result = await applyFieldEdit(req.admin!, body.key, String(body.value), exactFields(req.body).has("value"));
       return reply.send(result);
     } catch (err) {
       if (err instanceof FieldEditError) return reply.code(err.status).send({ error: err.message });
@@ -953,7 +960,7 @@ export default async function settingsApiRoutes(app: FastifyInstance): Promise<v
         await verifySmtp(smtp);
         result = { ok: true, detail: `Connected to ${smtp.host}:${smtp.port} and authenticated.` };
       } catch (err) {
-        result = { ok: false, detail: `SMTP connection failed: ${err instanceof Error ? err.message : String(err)}` };
+        result = { ok: false, detail: safeMailFailure(err).message };
       }
     }
     await logAdminAction(prisma, {
@@ -962,6 +969,33 @@ export default async function settingsApiRoutes(app: FastifyInstance): Promise<v
       targetType: "setting",
       details: `Tested the SMTP connection — ${result.ok ? "succeeded" : "failed"}.`,
     });
+    return reply.send(result);
+  });
+
+  app.get("/api/settings/email/diagnostics", {preHandler:currentAdmin}, async (_req,reply) => reply.send(await emailDeliveryDiagnostics(prisma)));
+
+  // Actual test delivery goes only to the saved owner recipient, never a caller-selected address.
+  app.post("/api/settings/smtp/send-test", {preHandler:csrfProtect}, async (req,reply) => {
+    const body = req.body as Record<string,unknown> | null;
+    if(body && Object.keys(body).length) return reply.code(400).send({error:"Test messages use only the configured owner email."});
+    const to = (await getSetting(prisma,"owner_email") ?? "").trim();
+    if(!EMAIL_RECIPIENT_RE.test(to)) return reply.code(400).send({ok:false,code:"NO_RECIPIENT",detail:"Configure a valid owner email before sending a test."});
+    if(!(await claimSmtpTest(prisma,req.admin!.userId))) return reply.code(429).send({ok:false,code:"RATE_LIMITED",detail:"Wait one minute before sending another test email."});
+    let result: {ok:boolean;detail:string;code?:string;messageId?:string|null;acceptedAt?:string};
+    try {
+      const smtp=await getSmtpCreds(prisma);
+      if(!smtp) result={ok:false,code:"NOT_CONFIGURED",detail:"SMTP host and from-address are not both set."};
+      else {
+        const [shopName,logo,accent,support] = await Promise.all(["shop_name","web_logo_url","email_brand_color","email_support_address"].map(key=>getSetting(prisma,key)));
+        const base=config.ADMIN_PUBLIC_URL ?? config.PUBLIC_URL ?? null;
+        const brand:BrandConfig={shopName:shopName?.trim() || "Trustance",logoUrl:toAbsoluteAssetUrl(logo ?? null,base),accentColor:accent || "#2563eb",supportEmail:support || null,storeUrl:base};
+        const text="This is a requested email configuration test. Mail server acceptance does not confirm inbox delivery.";
+        const html=layout.renderShell({brand,preheader:"Email configuration test",bodyHtml:components.title("Email configuration test") + components.subtitle(text) + components.footer(brand,{generatedByLine:"Requested by an authorized shop administrator."})});
+        const accepted=requireMailAcceptance(await sendMail(smtp,{to,subject:"[Trustance Test] Email configuration",text,html}));
+        result={ok:true,detail:"Test email accepted by mail server.",...accepted};
+      }
+    } catch(error) {const failure=safeMailFailure(error);result={ok:false,code:failure.code,detail:failure.message};}
+    await logAdminAction(prisma,{adminId:req.admin!.userId,action:"smtp_send_test",targetType:"setting",details:result.ok ? "Sent a test email; the mail server accepted it." : "The test email was not accepted by the mail server. Check the email configuration."});
     return reply.send(result);
   });
 

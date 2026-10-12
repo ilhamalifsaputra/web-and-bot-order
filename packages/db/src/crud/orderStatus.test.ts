@@ -241,6 +241,9 @@ describe("tryTransitionOrderStatus", () => {
 });
 
 describe("markOrderUnderpaid", () => {
+  beforeEach(async () => {
+    await prisma.order.update({ where: { id: orderId }, data: { paymentMethod: "TOKOPAY", currency: "IDR", totalAmount: "10000" } });
+  });
   it("flags the order UNDERPAID and writes an adminNote once (idempotent)", async () => {
     const first = await markOrderUnderpaid(prisma, {
       orderId,
@@ -274,6 +277,7 @@ describe("markOrderUnderpaid", () => {
   // (`refundUnderpaidOrder`, `creditUnderpaidTopupAnyway`) therefore read
   // "received 0" for a QRIS-flagged order and moved no money at all.
   it("records the received and expected amounts in the QrisUnderpaidTx ledger", async () => {
+    await prisma.order.update({ where: { id: orderId }, data: { paymentMethod: "PAYDISINI" } });
     await markOrderUnderpaid(prisma, {
       orderId,
       gateway: "PayDisini",

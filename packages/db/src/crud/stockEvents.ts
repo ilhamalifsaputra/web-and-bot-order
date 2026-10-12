@@ -6,6 +6,7 @@
 import type { Prisma } from "@prisma/client";
 import { StockEventType, StockActorType } from "@app/core/enums";
 import type { Db } from "./_types";
+import { evaluateEmailInventory } from "./emailInventory";
 
 /**
  * Who caused an event. Passed down explicitly through every mutator that can
@@ -78,13 +79,16 @@ function toRow(e: StockEventInput): Prisma.StockItemEventUncheckedCreateInput {
 }
 
 export async function recordStockEvent(db: Db, event: StockEventInput) {
-  return db.stockItemEvent.create({ data: toRow(event) });
+  const row = await db.stockItemEvent.create({ data: toRow(event) });
+  await evaluateEmailInventory(db, [event]);
+  return row;
 }
 
 /** Batch sibling — returns the number of rows written. */
 export async function recordStockEvents(db: Db, events: StockEventInput[]): Promise<number> {
   if (!events.length) return 0;
   const res = await db.stockItemEvent.createMany({ data: events.map(toRow) });
+  await evaluateEmailInventory(db, events);
   return res.count;
 }
 

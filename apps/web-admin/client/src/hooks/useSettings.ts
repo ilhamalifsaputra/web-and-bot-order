@@ -10,6 +10,8 @@ export interface SettingsField {
   hasValue: boolean;
   value: string;
   needsRestart: boolean;
+  kind?: "boolean" | "text";
+  checked?: boolean;
 }
 
 export interface PayMethodState {

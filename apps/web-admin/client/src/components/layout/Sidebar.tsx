@@ -21,6 +21,7 @@ import {
   Send,
   Shield,
   Settings,
+  Mail,
   Palette,
   Zap,
   HardDrive,
@@ -109,6 +110,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { to: "/admins", label: "Admins", icon: Shield },
       { to: "/settings", label: "Settings", icon: Settings },
+      { to: "/email-notifications", label: "Email Notifications", icon: Mail },
       { to: "/branding", label: "Branding", icon: Palette },
       { to: "/storage", label: "Storage", icon: HardDrive },
     ],

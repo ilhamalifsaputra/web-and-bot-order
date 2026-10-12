@@ -456,13 +456,13 @@ describe("StockProductPage", () => {
     expect(await screen.findByText("101")).toBeInTheDocument();
   });
 
-  it("ticks the restock broadcast checkbox optimistically, before the POST resolves", async () => {
+  it("ticks the restock broadcast switch optimistically, before the POST resolves", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     fetchSpy.mockResolvedValueOnce(jsonResponse(STOCK_PRODUCT_DATA));
     render(<StockProductPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("Available")).toBeInTheDocument());
 
-    const checkbox = screen.getByRole("checkbox", {
+    const checkbox = screen.getByRole("switch", {
       name: /broadcast to all customers when i add stock to this product/i,
     });
     expect(checkbox).not.toBeChecked();
@@ -490,13 +490,13 @@ describe("StockProductPage", () => {
     );
   });
 
-  it("rolls the broadcast checkbox back and shows a toast when the POST is rejected", async () => {
+  it("rolls the broadcast switch back and shows a toast when the POST is rejected", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     fetchSpy.mockResolvedValueOnce(jsonResponse(STOCK_PRODUCT_DATA));
     render(<StockProductPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("Available")).toBeInTheDocument());
 
-    const checkbox = screen.getByRole("checkbox", {
+    const checkbox = screen.getByRole("switch", {
       name: /broadcast to all customers when i add stock to this product/i,
     });
     expect(checkbox).not.toBeChecked();

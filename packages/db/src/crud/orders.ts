@@ -1,3 +1,4 @@
+import { enqueueOrderEmailFact, emailRecipientFor, enqueueEmailEvent, emailTransaction } from "./emailEvents";
 import { guestOrderRecoveryUrl } from "@app/core/guestOrderAccess";
 /**
  * Orders domain — the heart of the money/stock logic. Port of the "Orders"
@@ -1033,6 +1034,7 @@ export async function createOrderFromCart(
   await clearCart(db, args.user.id);
 
   logger.info(`Created order ${orderCode} for user ${args.user.id} with totals computed`);
+  await enqueueOrderEmailFact(db, order.id, ["order.received.customer", "order.received.admin"]);
   return getOrder(db, order.id);
 }
 
@@ -1266,6 +1268,7 @@ export async function createOrderDirect(
     `Created direct order ${orderCode} for user ${args.user.id}, product ${args.productId}, quantity ${args.quantity}`,
   );
   if (args.channel === "bot") await reserveTransactionMessage(db, order.id);
+  await enqueueOrderEmailFact(db, order.id, ["order.received.customer", "order.received.admin"]);
   return getOrder(db, order.id);
 }
 
@@ -1734,7 +1737,11 @@ async function assertNotPaidWithoutCredit(
  * note appended to `adminNote` and the status-history meta (plus the
  * `user_cancelled` anti-abuse guard below).
  */
-export async function cancelOrder(db: Db, orderId: number, reason: string, actor: StockEventActor) {
+export async function cancelOrder(db: Db, orderId: number, reason: string, actor: StockEventActor): ReturnType<typeof getOrderRaw> {
+  if ("$transaction" in db) return emailTransaction(db, (tx) => cancelOrder(tx, orderId, reason, actor));
+  // Claim the order before releasing any stock or wallet holds. A payment
+  // settling concurrently must finish before the unpaid cancellation check.
+  await db.$queryRaw`SELECT id FROM orders WHERE id = ${orderId} FOR NO KEY UPDATE`;
   const order = await getOrderRaw(db, orderId);
   if (!order) throw new ValidationError("error.order_not_found");
   if (
@@ -2135,6 +2142,7 @@ export async function approveOrder(
   await db.orderStatusHistory.create({
     data: { orderId, status: OrderStatus.DELIVERED, meta: `approved by admin_id=${args.adminId}` },
   });
+  if (order.completionMode !== "ADMIN_OVERRIDE") await enqueueOrderEmailFact(db, orderId, ["payment.confirmed.customer"]);
 
   // Per-item shadow of the claim above (Trustance Phase 1, Task 3). Placed
   // HERE, immediately behind the atomic claim, rather than in settlePaidOrder's
@@ -2281,6 +2289,7 @@ export async function approveOrder(
   // Referral + testimonial — shared with the manual-delivery path so both pay
   // the referee's commission and post the same channel testimonial.
   await finalizeDeliverySideEffects(db, order, now);
+  await enqueueBuyerOrderReadyEmailIfGuest(db, order);
 
   // Recognise the order's revenue in the double-entry ledger. `now` is the same
   // timestamp the atomic claim above stamped as `paidAt`, so the posting's
@@ -2429,30 +2438,10 @@ function storefrontBase(): string | null {
 }
 
 /**
- * Enqueue the guest buyer's "your order is ready" email — or nothing, for
- * anyone who isn't a guest with a contact address.
- *
- * ONE function called from BOTH points an order actually becomes ready
- * (`settlePaidOrder`'s AUTO branch and `fulfillManualOrder`) so the guard and
- * the payload can never drift between them. Two call sites are required, not
- * one: a MANUAL SKU never passes through the AUTO branch — it goes to
- * PROCESSING at settle time and only finishes later in `fulfillManualOrder` —
- * so an AUTO-only call site would silently send a guest who bought a manual
- * SKU nothing at all.
- *
- * THE GUARD IS `isGuest && guestEmail`, and it is narrow on purpose.
- * Registered buyers get their notifications by Telegram DM; a registered buyer
- * with no Telegram gets nothing today, which is a known gap deliberately left
- * open (widening it is a matter of relaxing this one condition, but that is
- * out of scope here). A guest with no `guestEmail` has nowhere to receive it.
- *
- * RETURNS WHETHER IT ACTUALLY ENQUEUED ANYTHING, so a caller that has to tell
- * an admin whether the buyer was reached can know rather than assume. The
- * delivery call sites above ignore it — for them "guest or not" is not a
- * decision, it is just the shape of the buyer — but the stock-replacement
- * service (crud/stockReplacement.ts) reports the answer in its audit line, and
- * it must be THIS function's guard that decides it rather than a second copy of
- * the condition that could drift away from this one.
+ * Enqueue the registered or guest buyer's receipt after fulfillment. Resolve
+ * account email privately rather than adding it to the public/admin order shape.
+ * Missing contact email records an explicit skipped outcome and returns false.
+ * The legacy function name stays compatible with stock replacement callers.
  *
  * NO CREDENTIALS CROSS THIS BOUNDARY. Note what is NOT read off `order` here:
  * `deliveredContent`, the admin-typed manual content, and the stock items'
@@ -2464,7 +2453,13 @@ export async function enqueueBuyerOrderReadyEmailIfGuest(
   db: Db,
   order: OrderWithIncludes,
 ): Promise<boolean> {
-  if (!order.user.isGuest || !order.user.guestEmail) return false;
+  // Account email is intentionally absent from the admin-facing order shape.
+  const buyer = await db.user.findUnique({ where: { id: order.userId }, select: { isGuest: true, guestEmail: true, email: true } });
+  const recipient = buyer ? emailRecipientFor(buyer) : null;
+  if (!recipient) {
+    await enqueueEmailEvent(db, { key: "order.completed.customer", aggregateId: order.id, orderId: order.id, to: null, payload: { order_code: order.orderCode } });
+    return false;
+  }
 
   const toOrderCurrency = orderCurrencyConverter(order);
   const base = storefrontBase();
@@ -2531,7 +2526,7 @@ export async function enqueueBuyerOrderReadyEmailIfGuest(
   await enqueueBuyerOrderReadyEmail(db, {
     orderId: order.id,
     orderCode: order.orderCode,
-    to: order.user.guestEmail,
+    to: recipient,
     items: order.items.map((item) => ({
       name: item.product.name,
       variant: item.product.durationLabel,
@@ -2932,6 +2927,7 @@ export async function settlePaidOrder(
   // Stamp paidAt for the "when did they pay" audit (deliveredAt stays null until
   // the admin fulfils via fulfillManualOrder).
   await db.order.update({ where: { id: orderId }, data: { paidAt: now, ...(order.completionMode !== "ADMIN_OVERRIDE" ? { paymentState: "PAID" } : {}) } });
+  if (order.completionMode !== "ADMIN_OVERRIDE") await enqueueOrderEmailFact(db, orderId, ["payment.confirmed.customer"]);
   // Recognise the order's revenue, using the same `now` just stamped as
   // `paidAt`. This branch is the MANUAL one and never calls `approveOrder`, so
   // it is the only place the posting can happen for a hand-fulfilled order —

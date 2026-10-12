@@ -10,6 +10,14 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 vi.mock("@app/core/mailer", () => ({
   sendMail: vi.fn().mockResolvedValue(undefined),
 }));
+const recoveryFailure = vi.hoisted(() => ({ sessionKey: null as string | null }));
+vi.mock("@app/db", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@app/db")>();
+  return { ...actual, setSetting: (...args: Parameters<typeof actual.setSetting>) => {
+    if (args[1] === recoveryFailure.sessionKey) throw new Error("Simulated recovery commit failure");
+    return actual.setSetting(...args);
+  } };
+});
 import type { FastifyInstance } from "fastify";
 import { cleanupTestDb } from "./setup-env";
 import {
@@ -577,6 +585,13 @@ describe("password login", () => {
 });
 
 describe("telegram login is lookup-only", () => {
+  async function callback(params: URLSearchParams) {
+    resetLoginAttempts("127.0.0.1");
+    resetLoginAttempts("telegram-start:127.0.0.1");
+    const start = await app.inject({url: `/api/v1/auth/telegram-widget?next=${encodeURIComponent(params.get("next") ?? "/")}`});
+    params.set("state", new URL(start.json().auth_url,"http://localhost").searchParams.get("state")!);
+    return app.inject({method:"GET",url:`/auth/telegram?${params}`,headers:{cookie:String(start.headers["set-cookie"]).split(";")[0]!}});
+  }
   function signedTgParams(id: number): Record<string, string> {
     const { createHash, createHmac } = require("node:crypto") as typeof import("node:crypto");
     const fields: Record<string, string> = {
@@ -595,7 +610,7 @@ describe("telegram login is lookup-only", () => {
       data: { telegramId: 424242n, referralCode: "TGOK42" },
     });
     const params = new URLSearchParams({ ...signedTgParams(424242), next: "/account" });
-    const res = await app.inject({ method: "GET", url: `/auth/telegram?${params}` });
+    const res = await callback(params);
     expect(res.statusCode).toBe(303);
     expect(res.headers.location).toBe("/account");
   });
@@ -603,7 +618,7 @@ describe("telegram login is lookup-only", () => {
   it("does NOT create an account for an unknown telegram id, and redirects to the React login page with err=tg_unlinked", async () => {
     const before = await prisma.user.count();
     const params = new URLSearchParams(signedTgParams(999999111));
-    const res = await app.inject({ method: "GET", url: `/auth/telegram?${params}` });
+    const res = await callback(params);
     expect(res.statusCode).toBe(303);
     expect(res.headers.location).toBe("/login?next=%2F&err=tg_unlinked");
     expect(await prisma.user.count()).toBe(before);
@@ -626,12 +641,12 @@ describe("telegram login is lookup-only", () => {
     await setSetting(prisma, "bot_token", LIVE_TOKEN);
     try {
       // Signed by the live bot → verification (which now reads the live token) passes.
-      const ok = await app.inject({ method: "GET", url: `/auth/telegram?${new URLSearchParams({ ...sign(LIVE_TOKEN), next: "/account" })}` });
+      const ok = await callback(new URLSearchParams({ ...sign(LIVE_TOKEN), next: "/account" }));
       expect(ok.statusCode).toBe(303);
       expect(ok.headers.location).toBe("/account");
       // Signed by a different bot (the env token) → bad hash → redirected to
       // the React login page with err=tg_failed.
-      const bad = await app.inject({ method: "GET", url: `/auth/telegram?${new URLSearchParams(sign(process.env.BOT_TOKEN!))}` });
+      const bad = await callback(new URLSearchParams(sign(process.env.BOT_TOKEN!)));
       expect(bad.statusCode).toBe(303);
       expect(bad.headers.location).toBe("/login?next=%2F&err=tg_failed");
     } finally {
@@ -805,7 +820,16 @@ describe("register", () => {
 });
 
 describe("forgot + reset password", () => {
-  it("always claims success, and mails only real accounts", async () => {
+  async function queuedResetEmail() {
+    const {renderEmail} = await import("../../../packages/outbox-dispatcher/src/emailTemplates");
+    const row=await prisma.notificationOutbox.findFirstOrThrow({where:{event:"account.password_reset.requested"},orderBy:{id:"desc"}});
+    const payload=JSON.parse(row.payloadJson);
+    expect(payload.reset_url).toBeUndefined();expect(payload.reset_url_encrypted).toEqual(expect.any(String));
+    const rendered=await renderEmail(row.event,payload);
+    expect(rendered).not.toBeNull();
+    return rendered!;
+  }
+  it("always claims success, and queues encrypted recovery only for password accounts", async () => {
     const { sendMail } = await import("@app/core/mailer");
     const { hashPassword } = await import("@app/core/password");
     vi.clearAllMocks();
@@ -826,8 +850,8 @@ describe("forgot + reset password", () => {
     expect(fake.statusCode).toBe(200);
     expect(fake.json()).toEqual({ sent: true, unavailable: false });
 
-    expect(sendMail).toHaveBeenCalledTimes(1);
-    const call = (sendMail as ReturnType<typeof vi.fn>).mock.calls[0]![1] as { text: string; html: string };
+    expect(sendMail).not.toHaveBeenCalled();
+    const call = await queuedResetEmail();
     expect(call.text).toMatch(/\/reset\/[A-Za-z0-9_-]{40,}/);
     // The visual HTML upgrade (packages/core/src/email) rides alongside the
     // bilingual plain-text fallback, not instead of it — sendMail always gets
@@ -852,7 +876,7 @@ describe("forgot + reset password", () => {
     });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ sent: true, unavailable: false });
-    expect(sendMail).toHaveBeenCalledTimes(1);
+    expect(sendMail).not.toHaveBeenCalled();
   });
 
   it("does not double up the expiry sentence in the default message — the template already states expiry via its own dedicated line", async () => {
@@ -861,8 +885,8 @@ describe("forgot + reset password", () => {
 
     const res = await app.inject({ method: "POST", url: "/api/v1/auth/forgot", payload: { email: "forget@me.test" } });
     expect(res.statusCode).toBe(200);
-    expect(sendMail).toHaveBeenCalledTimes(1);
-    const call = (sendMail as ReturnType<typeof vi.fn>).mock.calls[0]![1] as { html: string };
+    expect(sendMail).not.toHaveBeenCalled();
+    const call = await queuedResetEmail();
     // The default intro message used to restate the expiry in hours ("This
     // link expires in 1 hour.") right above the template's own dedicated
     // line stating it in minutes ("This link expires in 60 minutes.") —
@@ -873,20 +897,21 @@ describe("forgot + reset password", () => {
     expect(expiryMatches.length).toBe(1);
   });
 
-  it("falls back to the default subject when email_reset_password_subject is saved as an empty/whitespace string", async () => {
+  it("uses source-controlled copy even when a legacy subject override exists", async () => {
     const { sendMail } = await import("@app/core/mailer");
     vi.clearAllMocks();
-    await setSetting(prisma, "email_reset_password_subject", "   ");
+    await setSetting(prisma, "email_reset_password_subject", "Untrusted legacy override");
     try {
       const res = await app.inject({ method: "POST", url: "/api/v1/auth/forgot", payload: { email: "forget@me.test" } });
       expect(res.statusCode).toBe(200);
-      expect(sendMail).toHaveBeenCalledTimes(1);
-      const call = (sendMail as ReturnType<typeof vi.fn>).mock.calls[0]![1] as { subject: string };
+      expect(sendMail).not.toHaveBeenCalled();
+      const call = await queuedResetEmail();
       // A whitespace-only stored subject must not produce a genuinely blank
       // Subject header (spam-filter red flag) — it must fall back to the
       // coded default instead.
       expect(call.subject.trim().length).toBeGreaterThan(0);
-      expect(call.subject).not.toBe("   ");
+      expect(call.subject).toContain(" — reset your password");
+      expect(call.subject).not.toContain("Untrusted legacy override");
     } finally {
       await deleteSetting(prisma, "email_reset_password_subject");
     }
@@ -904,8 +929,8 @@ describe("forgot + reset password", () => {
       headers: { "user-agent": longUa },
     });
     expect(res.statusCode).toBe(200);
-    expect(sendMail).toHaveBeenCalledTimes(1);
-    const call = (sendMail as ReturnType<typeof vi.fn>).mock.calls[0]![1] as { html: string };
+    expect(sendMail).not.toHaveBeenCalled();
+    const call = await queuedResetEmail();
     expect(call.html).not.toContain(longUa);
     expect(call.html).toContain("X".repeat(180));
     expect(call.html).not.toContain("X".repeat(181));
@@ -922,9 +947,13 @@ describe("forgot + reset password", () => {
   // invalid-token test proves the route maps its `null` return to the same
   // generic 400.
   it("resets the password with a valid token", async () => {
-    const { createPasswordResetToken } = await import("@app/db");
+    const { createPasswordResetToken, getSetting } = await import("@app/db");
+    const { makeCustomerSession, shopSessionJtiKey } = await import("../src/auth");
     const { verifyPassword } = await import("@app/core/password");
     const user = (await prisma.user.findFirst({ where: { email: "forget@me.test" } }))!;
+    await setSetting(prisma,shopSessionJtiKey(user.id),"before-password-reset");
+    const oldSession=makeCustomerSession(user.id,null,"before-password-reset");
+    expect(await getSetting(prisma,shopSessionJtiKey(user.id))).toBe("before-password-reset");
     const { token } = await createPasswordResetToken(prisma, user.id);
 
     const res = await app.inject({
@@ -936,6 +965,25 @@ describe("forgot + reset password", () => {
     expect(res.json()).toEqual({ redirect: "/login?reset=1" });
     const updated = (await prisma.user.findUnique({ where: { id: user.id } }))!;
     expect(verifyPassword("brandnew-99", updated.passwordHash!)).toBe(true);
+    expect(await getSetting(prisma,shopSessionJtiKey(user.id))).not.toBe("before-password-reset");
+    expect((await app.inject({url:"/api/v1/account/orders",headers:{cookie:`shop_session=${oldSession.raw}`}})).statusCode).toBe(401);
+  });
+
+  it("rolls back the token, password, and security event when session invalidation cannot commit", async () => {
+    const { createPasswordResetToken } = await import("@app/db");
+    const { hashPassword, verifyPassword } = await import("@app/core/password");
+    const user=await prisma.user.create({data:{email:"reset-atomic@example.com",loginUsername:"reset-atomic",passwordHash:hashPassword("original-atomic"),referralCode:"RESETATOMIC"}});
+    const {token}=await createPasswordResetToken(prisma,user.id);
+    recoveryFailure.sessionKey=`shop_session_jti_user:${user.id}`;
+    try {
+      const response=await app.inject({method:"POST",url:`/api/v1/auth/reset/${token}`,payload:{password:"changed-atomic",password2:"changed-atomic"}});
+      expect(response.statusCode).toBe(500);
+    } finally { recoveryFailure.sessionKey=null; }
+    expect(verifyPassword("original-atomic",(await prisma.user.findUniqueOrThrow({where:{id:user.id}})).passwordHash!)).toBe(true);
+    expect((await prisma.passwordResetToken.findFirstOrThrow({where:{userId:user.id}})).usedAt).toBeNull();
+    expect(await prisma.notificationOutbox.count({where:{event:"security.password.changed",dedupeKey:{contains:`:${user.id}:`}}})).toBe(0);
+    const retry=await app.inject({method:"POST",url:`/api/v1/auth/reset/${token}`,payload:{password:"changed-atomic",password2:"changed-atomic"}});
+    expect(retry.statusCode).toBe(200);
   });
 
   it("resolves a relative web_logo_url to an absolute URL using the storefront's public URL, not the admin's", async () => {
@@ -958,8 +1006,8 @@ describe("forgot + reset password", () => {
     try {
       const res = await app.inject({ method: "POST", url: "/api/v1/auth/forgot", payload: { email: "logotest@me.test" } });
       expect(res.statusCode).toBe(200);
-      expect(sendMail).toHaveBeenCalledTimes(1);
-      const call = (sendMail as ReturnType<typeof vi.fn>).mock.calls[0]![1] as { html: string };
+      expect(sendMail).not.toHaveBeenCalled();
+      const call = await queuedResetEmail();
       // setup-env.ts sets SHOP_PUBLIC_URL to "https://shop.test.invalid" for
       // this whole test file (unlike ADMIN_PUBLIC_URL, which is unset for the
       // owner-email equivalent test), so a usable base IS available here —
@@ -989,6 +1037,7 @@ describe("forgot + reset password", () => {
 //     verbatim (as JSON assertions) into the same spa-api.test.ts test.
 describe("account settings — link-telegram (survives the cutover)", () => {
   let cookie: string;
+  let linkState = "";
   beforeAll(async () => {
     const { hashPassword } = await import("@app/core/password");
     await prisma.user.create({
@@ -1004,7 +1053,7 @@ describe("account settings — link-telegram (survives the cutover)", () => {
 
   /** The SPA's "Link Telegram" click: a CSRF-checked POST that arms one link
    * for this account before the browser leaves for oauth.telegram.org. */
-  async function startLink(c: string): Promise<void> {
+  async function startLink(c: string): Promise<string> {
     const shell = await app.inject({ method: "GET", url: "/spa-shell-probe", headers: { cookie: c } });
     const csrf = /name="csrf-token" content="([^"]*)"/.exec(shell.body)![1]!;
     const res = await app.inject({
@@ -1014,6 +1063,8 @@ describe("account settings — link-telegram (survives the cutover)", () => {
       payload: {},
     });
     expect(res.statusCode).toBe(200);
+    linkState = new URL(res.json().auth_url,"http://localhost").searchParams.get("state")!;
+    return c.split("; shop_telegram_intent=")[0] + "; " + String(res.headers["set-cookie"]).split(";")[0];
   }
 
   async function signedLinkParams(telegramId: number): Promise<URLSearchParams> {
@@ -1025,7 +1076,7 @@ describe("account settings — link-telegram (survives the cutover)", () => {
     const checkString = Object.keys(fields).sort().map((k) => `${k}=${fields[k]}`).join("\n");
     const secretKey = createHash("sha256").update(process.env.BOT_TOKEN!).digest();
     const hash = createHmac("sha256", secretKey).update(checkString).digest("hex");
-    return new URLSearchParams({ ...fields, hash });
+    return new URLSearchParams({ ...fields, hash, state: linkState });
   }
 
   // Backend audit Task C fix round: the link GET is cookie-authenticated and
@@ -1037,7 +1088,7 @@ describe("account settings — link-telegram (survives the cutover)", () => {
     await prisma.user.create({
       data: { loginUsername: "nointent", email: "nointent@u.test", passwordHash: hashPassword("nointent-pw-1"), referralCode: "NOINT1" },
     });
-    const c = await loginAs("nointent", "nointent-pw-1");
+    let c = await loginAs("nointent", "nointent-pw-1");
     const res = await app.inject({
       method: "GET",
       url: `/account/settings/link-telegram?${await signedLinkParams(646464)}`,
@@ -1053,8 +1104,8 @@ describe("account settings — link-telegram (survives the cutover)", () => {
     await prisma.user.create({
       data: { loginUsername: "onceintent", email: "onceintent@u.test", passwordHash: hashPassword("onceintent-pw"), referralCode: "ONCE01" },
     });
-    const c = await loginAs("onceintent", "onceintent-pw");
-    await startLink(c);
+    let c = await loginAs("onceintent", "onceintent-pw");
+    c = await startLink(c);
     const first = await app.inject({ method: "GET", url: `/account/settings/link-telegram?${await signedLinkParams(656565)}`, headers: { cookie: c } });
     expect(first.headers.location).toBe("/account/settings?linked=1");
     const second = await app.inject({ method: "GET", url: `/account/settings/link-telegram?${await signedLinkParams(656565)}`, headers: { cookie: c } });
@@ -1066,11 +1117,11 @@ describe("account settings — link-telegram (survives the cutover)", () => {
     await prisma.user.create({
       data: { loginUsername: "nooverwrite", email: "nooverwrite@u.test", passwordHash: hashPassword("nooverwrite-pw"), referralCode: "NOOVR1" },
     });
-    const c = await loginAs("nooverwrite", "nooverwrite-pw");
-    await startLink(c);
+    let c = await loginAs("nooverwrite", "nooverwrite-pw");
+    c = await startLink(c);
     const first = await app.inject({ method: "GET", url: `/account/settings/link-telegram?${await signedLinkParams(666001)}`, headers: { cookie: c } });
     expect(first.headers.location).toBe("/account/settings?linked=1");
-    await startLink(c);
+    c = await startLink(c);
     const swap = await app.inject({ method: "GET", url: `/account/settings/link-telegram?${await signedLinkParams(666002)}`, headers: { cookie: c } });
     expect(swap.statusCode).toBe(303);
     expect(swap.headers.location).toBe("/account/settings?err=tg_already_linked");
@@ -1090,7 +1141,8 @@ describe("account settings — link-telegram (survives the cutover)", () => {
     const hash = createHmac("sha256", secretKey).update(checkString).digest("hex");
     const params = new URLSearchParams({ ...fields, hash });
 
-    await startLink(cookie);
+    cookie = await startLink(cookie);
+    params.set("state",linkState);
     const res = await app.inject({
       method: "GET",
       url: `/account/settings/link-telegram?${params}`,
@@ -1123,7 +1175,8 @@ describe("account settings — link-telegram (survives the cutover)", () => {
     const secretKey = createHash("sha256").update(process.env.BOT_TOKEN!).digest();
     const hash = createHmac("sha256", secretKey).update(checkString).digest("hex");
     const params = new URLSearchParams({ ...fields, hash });
-    await startLink(cookie);
+    cookie = await startLink(cookie);
+    params.set("state",linkState);
     const res = await app.inject({
       method: "GET",
       url: `/account/settings/link-telegram?${params}`,
@@ -1158,18 +1211,20 @@ describe("account settings — link-telegram (survives the cutover)", () => {
         referralCode: "LNKRAT",
       },
     });
-    const rateCookie = await loginAs("linkratecust", "linkrate-pw-1");
+    let rateCookie = await loginAs("linkratecust", "linkrate-pw-1");
 
     const { createHash, createHmac } = await import("node:crypto");
+    let signedAttempt = 0;
     function sign(telegramId: number): URLSearchParams {
       const fields: Record<string, string> = {
         id: String(telegramId),
+        first_name: `Attempt ${++signedAttempt}`,
         auth_date: String(Math.floor(Date.now() / 1000)),
       };
       const checkString = Object.keys(fields).sort().map((k) => `${k}=${fields[k]}`).join("\n");
       const secretKey = createHash("sha256").update(process.env.BOT_TOKEN!).digest();
       const hash = createHmac("sha256", secretKey).update(checkString).digest("hex");
-      return new URLSearchParams({ ...fields, hash });
+      return new URLSearchParams({ ...fields, hash, state: linkState });
     }
 
     for (let i = 0; i < LINK_TELEGRAM_RATE_LIMIT_MAX; i++) {
@@ -1177,7 +1232,7 @@ describe("account settings — link-telegram (survives the cutover)", () => {
       // only refreshes it, so every one of these succeeds (a different id is
       // now refused as already_linked) and each still counts a hit against
       // the rate limit.
-      await startLink(rateCookie);
+      rateCookie = await startLink(rateCookie);
       const res = await app.inject({
         method: "GET",
         url: `/account/settings/link-telegram?${sign(900_000)}`,
@@ -1187,7 +1242,7 @@ describe("account settings — link-telegram (survives the cutover)", () => {
       expect(res.headers.location).toBe("/account/settings?linked=1");
     }
 
-    await startLink(rateCookie);
+    rateCookie = await startLink(rateCookie);
     const capped = await app.inject({
       method: "GET",
       url: `/account/settings/link-telegram?${sign(999_999)}`,

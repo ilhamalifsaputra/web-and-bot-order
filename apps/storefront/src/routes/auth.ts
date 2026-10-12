@@ -1,19 +1,4 @@
-/**
- * Customer session plumbing + the Telegram Login Widget callback.
- *
- * The HTML login/register forms were deleted on the React SPA cutover
- * (docs/REACT_STOREFRONT_MIGRATION.md Phase 5) — the SPA posts to their JSON
- * twins in routes/apiAuth.ts instead, which import `establishSession` and
- * `safeNext` from this file. `GET /auth/telegram` STAYS server-side (the
- * Telegram widget redirects the whole page, not an XHR): on success it
- * establishes the session and redirects like before; on failure it now
- * redirects to `/login?next=...&err=tg_failed|tg_unlinked` (303) instead of
- * re-rendering a Nunjucks page, so the React LoginPage can show the right
- * flash message. `POST /logout` was deleted on the account-area cutover
- * (docs/REACT_STOREFRONT_MIGRATION.md Phase 7) — the deleted account.njk's
- * logout form was its last consumer; AccountPage now posts to the JSON
- * twin, POST /api/v1/auth/logout (routes/apiAuth.ts).
- */
+/** Customer session plumbing and state-bound legacy Telegram callbacks (GET compatibility, POST fragment bridge). */
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { config } from "@app/core/config";
 import { logger } from "@app/core/logger";
@@ -38,6 +23,9 @@ import {
   SHOP_SESSION_TTL_HOURS,
   type CustomerSession,
 } from "../auth";
+import { consumeTelegramCallback, telegramCallbackShell } from "../telegramCallback";
+import { sessionMintOriginOk } from "./cart";
+import { clientIp, loginRateLimited } from "../rateLimit";
 import { readGuestCart, writeGuestCart, resolveBotToken, requestCurrency } from "../shop";
 
 /** Only ever redirect to a local path (open-redirect guard). Browsers read a
@@ -170,17 +158,21 @@ export async function establishSession(
 }
 
 const authRoutes: FastifyPluginAsync = async (app) => {
-  app.get<{ Querystring: Record<string, string> }>("/auth/telegram", async (req, reply) => {
-    const { next, ref, ...tgParams } = req.query;
+  app.route<{ Querystring: Record<string, string>; Body: Record<string, string> }>({ method: ["GET", "POST"], url: "/auth/telegram", handler: async (req, reply) => {
+    void reply.header("Cache-Control", "no-store").header("Referrer-Policy", "no-referrer");
+    if (req.method === "GET" && !req.query.hash) return telegramCallbackShell(reply);
+    const { next, ref, state, ...tgParams } = (req.method === "POST" ? req.body : req.query) ?? {};
     // Redirect back to the React LoginPage with an `err` code it already
     // understands (Cluster B, Task 1) instead of re-rendering HTML.
     const toLoginError = (err: "tg_failed" | "tg_unlinked") => {
+      if (req.method === "POST") return reply.code(403).send({ error: err });
       const params = new URLSearchParams({ next: safeNext(next), err });
-      if (ref) params.set("ref", ref.slice(0, 16));
+      if (typeof ref === "string") params.set("ref", ref.slice(0, 16));
       return reply.code(303).redirect(`/login?${params.toString()}`);
     };
     // Verify with the LIVE bot token (DB setting wins) so it matches the live
     // bot username the widget signed with — a mismatched bot = "bad_hash".
+    if ((req.method === "POST" && !sessionMintOriginOk(req)) || loginRateLimited(clientIp(req))) return toLoginError("tg_failed");
     const result = verifyTelegramLoginResult(tgParams, await resolveBotToken());
     if (!result.ok) {
       logger.warn(
@@ -190,6 +182,8 @@ const authRoutes: FastifyPluginAsync = async (app) => {
       );
       return toLoginError("tg_failed");
     }
+    const intent = await consumeTelegramCallback(req, reply, "login", state, tgParams.hash!);
+    if (!intent) return toLoginError("tg_failed");
     const auth = result.data;
     const user = await getUserByTelegramId(prisma, auth.id);
     if (!user) {
@@ -199,8 +193,8 @@ const authRoutes: FastifyPluginAsync = async (app) => {
       return toLoginError("tg_failed");
     }
     await establishSession(req, reply, user);
-    return reply.code(303).redirect(safeNext(next));
-  });
+    return req.method === "POST" ? reply.send({ redirect: safeNext(intent.next) }) : reply.code(303).redirect(safeNext(intent.next));
+  }});
 };
 
 export default authRoutes;

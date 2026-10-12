@@ -1,3 +1,4 @@
+import { consumeTelegramFragment } from "./lib/telegramCallback";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { domAnimation, LazyMotion, MotionConfig } from "motion/react";
 import { StrictMode } from "react";
@@ -8,10 +9,20 @@ import "./index.css";
 import ErrorPage from "./pages/ErrorPage";
 import SetupPendingPage from "./pages/SetupPendingPage";
 
-const root = document.getElementById("root");
-if (!root) throw new Error("Missing #root element");
+void consumeTelegramFragment(window.location, {
+  replace: path => window.history.replaceState(null, "", path),
+  post: async (url, body) => {
+    const response = await fetch(url, {method:"POST", credentials:"same-origin", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+    if (!response.ok) throw new Error("Telegram sign in failed");
+    return response.json() as Promise<{redirect:string}>;
+  },
+  navigate: path => window.location.replace(path),
+}).then(callbackHandled => { if (!callbackHandled) mountStorefront(); });
+function mountStorefront() {
+  const root = document.getElementById("root");
+  if (!root) throw new Error("Missing #root element");
 
-const queryClient = new QueryClient();
+  const queryClient = new QueryClient();
 
 /**
  * Full-page states the server injects a <meta> tag for (see
@@ -28,7 +39,7 @@ function specialServerState(): { kind: "setup-pending" } | { kind: "server-error
   return null;
 }
 
-const special = specialServerState();
+  const special = specialServerState();
 
 createRoot(root).render(
   <StrictMode>
@@ -59,3 +70,5 @@ createRoot(root).render(
 // text. Left in place until now so a slow connection still shows the page's
 // heading and links while the bundle loads.
 document.getElementById("seo-shell")?.remove();
+
+}

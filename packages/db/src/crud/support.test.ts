@@ -305,13 +305,13 @@ describe("createTicket — subject/category/productId opts (Task 10)", () => {
     });
 
     const rows = await prisma.notificationOutbox.findMany({
-      where: { event: NotificationEvent.OWNER_EMAIL_NEW_TICKET },
+      where: { event: "support.ticket.created.admin" },
       orderBy: { id: "desc" },
       take: 1,
     });
     const payload = JSON.parse(rows[0]!.payloadJson) as Record<string, unknown>;
     expect(payload.category).toBe(TicketCategory.PAYMENT);
-    expect(payload.ticket_id).toBe(ticket.id);
+    expect(payload.ticket_id).toBe(ticket.ticketNumber);
 
     await deleteSetting(prisma, "owner_email_enabled");
     await deleteSetting(prisma, "owner_email");
@@ -1407,43 +1407,42 @@ describe("owner-email ticket triggers (createTicket / addTicketMessage)", () => 
     await disableOwnerEmail();
   });
 
-  it("createTicket enqueues exactly one OWNER_EMAIL_NEW_TICKET row, with ticket/user id and message, when owner-email is configured", async () => {
+  it("createTicket enqueues exactly one canonical admin event with safe ticket details when owner-email is configured", async () => {
     await configureOwnerEmail("new_ticket");
     const user = await makeUser(2001n);
-    const before = await prisma.notificationOutbox.count({ where: { event: NotificationEvent.OWNER_EMAIL_NEW_TICKET } });
+    const before = await prisma.notificationOutbox.count({ where: { event: "support.ticket.created.admin" } });
 
     const ticket = await createTicket(prisma, user.id, "my order never arrived");
 
     expect(
-      await prisma.notificationOutbox.count({ where: { event: NotificationEvent.OWNER_EMAIL_NEW_TICKET } }),
+      await prisma.notificationOutbox.count({ where: { event: "support.ticket.created.admin" } }),
     ).toBe(before + 1);
     const rows = await prisma.notificationOutbox.findMany({
-      where: { event: NotificationEvent.OWNER_EMAIL_NEW_TICKET },
+      where: { event: "support.ticket.created.admin" },
       orderBy: { id: "desc" },
       take: 1,
     });
     expect(rows[0]!.channel).toBe("EMAIL");
     expect(rows[0]!.orderId).toBeNull();
     const payload = JSON.parse(rows[0]!.payloadJson) as Record<string, unknown>;
-    expect(payload).toEqual({
-      to: "owner@example.com",
-      ticket_id: ticket.id,
-      user_id: user.id,
-      category: null,
-      message: "my order never arrived",
-    });
+    expect(payload).toEqual(expect.objectContaining({
+      to: "owner@example.com", ticket_id: ticket.ticketNumber, category: null,
+      event_key: "support.ticket.created.admin",
+    }));
+    expect(payload).not.toHaveProperty("message");
   });
 
-  it("createTicket enqueues nothing when owner-email is not configured", async () => {
+  it("createTicket records a disabled outcome when owner-email is not configured", async () => {
     await disableOwnerEmail();
     const user = await makeUser(2002n);
-    const before = await prisma.notificationOutbox.count({ where: { event: NotificationEvent.OWNER_EMAIL_NEW_TICKET } });
+    const before = await prisma.notificationOutbox.count({ where: { event: "support.ticket.created.admin" } });
 
     await createTicket(prisma, user.id, "help please");
 
     expect(
-      await prisma.notificationOutbox.count({ where: { event: NotificationEvent.OWNER_EMAIL_NEW_TICKET } }),
-    ).toBe(before);
+      await prisma.notificationOutbox.count({ where: { event: "support.ticket.created.admin" } }),
+    ).toBe(before + 1);
+    expect(await prisma.notificationOutbox.findFirst({ where: { event: "support.ticket.created.admin", lastError: "SKIPPED_DISABLED", status: "FAILED" }, orderBy: { id: "desc" } })).not.toBeNull();
   });
 
   it("addTicketMessage with senderType USER enqueues exactly one OWNER_EMAIL_TICKET_REPLY row, carrying the ticket id", async () => {

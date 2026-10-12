@@ -1,6 +1,7 @@
+import { SettingsToggle } from "./SettingsToggle";
 import { Input } from "@/components/ui/input";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import { Ban, FileText, Hand, PlugZap, Zap, type LucideIcon } from "lucide-react";
+import { Ban, Hand, PlugZap, Zap, type LucideIcon } from "lucide-react";
 import { useId, useRef } from "react";
 import type { AdditionalFieldDraft } from "../../api/types";
 import { AdditionalFieldsEditor } from "./AdditionalFieldsEditor";
@@ -197,26 +198,13 @@ export function DeliveryTypeSection({
       {method === "manual" && (
         <fieldset>
           <legend className="text-sm font-medium text-ink">Buyer Information</legend>
-          <RadioGroup
-            className="mt-2"
-            value={requiresInfo ? "required" : "none"}
-            onValueChange={(v) => selectBuyerInfo(v as "required" | "none")}
-          >
-            <RadioOptionCard
-              id="buyer-info-none"
-              value="none"
-              title="No buyer information required"
-              description="Buyer pays first and waits for manual delivery."
-              icon={Hand}
-            />
-            <RadioOptionCard
-              id="buyer-info-required"
-              value="required"
-              title="Require buyer information"
-              description="Buyer must provide required information before checkout."
-              icon={FileText}
-            />
-          </RadioGroup>
+          <SettingsToggle
+            id={`${fieldId}-requires-info`}
+            label="Require buyer information"
+            description={requiresInfo ? "Buyer must provide required information before checkout." : "Buyer pays first and waits for manual delivery."}
+            checked={requiresInfo}
+            onCheckedChange={(checked) => selectBuyerInfo(checked ? "required" : "none")}
+          />
         </fieldset>
       )}
 

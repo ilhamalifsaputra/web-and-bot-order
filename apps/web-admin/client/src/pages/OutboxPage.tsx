@@ -59,7 +59,7 @@ const EVENT_LABELS: Record<string, string> = {
 
 function humanizeEventCode(event: string): string {
   return event
-    .split("_")
+    .split(/[_.]/)
     .filter(Boolean)
     .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
     .join(" ");
@@ -100,6 +100,35 @@ interface OutboxRow {
   createdAtDisplay: string | null;
   sentAt: string | null;
   sentAtDisplay: string | null;
+  emailAcceptedAt?: string | null;
+  emailRecipientMasked?: string | null;
+  emailErrorCode?: string | null;
+}
+
+const EMAIL_ERROR_GUIDANCE: Record<string, string> = {
+  SMTP_AUTH: "SMTP authentication failed. Check the saved credentials.",
+  SMTP_RECIPIENT: "The mail server rejected the recipient. Check the saved email address.",
+  SMTP_TLS: "SMTP certificate verification failed. Check the server settings.",
+  SMTP_REJECTED: "The mail server rejected the message. Review the provider diagnostics.",
+  SMTP_TEMPORARY: "The mail server temporarily rejected the message. Review the attempt count before retrying.",
+  SMTP_CONNECTION: "The mail server could not be reached. Check the connection and settings.",
+  SMTP_ACCEPTANCE_UNCONFIRMED: "The transport returned no valid acceptance evidence. Delivery is unconfirmed.",
+  SMTP_NOT_CONFIGURED: "Configure SMTP before retrying delivery.",
+  SMTP_SETTINGS_UNAVAILABLE: "SMTP settings could not be read. Check the configuration.",
+  EMAIL_POLICY_UNAVAILABLE: "Email preferences could not be read. Check the configuration before retrying.",
+  EMAIL_RENDER_FAILED: "The email template could not be rendered. Review application diagnostics.",
+  SKIPPED_DISABLED: "The event was disabled before delivery.",
+  SKIPPED_NO_RECIPIENT: "No valid recipient email was available.",
+  NO_RECIPIENT: "No valid recipient email was available.",
+};
+
+function OutboxDeliveryStatus({ row }: { row: OutboxRow }) {
+  if (row.channel !== "EMAIL") return <StatusBadge status={row.status} />;
+  if (row.status === "SENT") return <span className={`text-xs font-medium ${row.emailAcceptedAt ? "text-grass-dark" : "text-ink-soft"}`}>{row.emailAcceptedAt ? "Accepted by mail server" : "Sent (acceptance unverified)"}</span>;
+  const reason = row.emailErrorCode ?? row.lastError;
+  if (reason === "SKIPPED_DISABLED") return <span className="text-xs text-ink-soft">Skipped: disabled</span>;
+  if (reason === "NO_RECIPIENT" || reason === "SKIPPED_NO_RECIPIENT") return <span className="text-xs text-ink-soft">Skipped: no recipient</span>;
+  return <StatusBadge status={row.status} />;
 }
 
 interface OutboxResponse {
@@ -190,7 +219,9 @@ export function OutboxPage() {
                   { key: "id", header: "ID", render: (row) => <span className="block max-w-[200px] truncate font-mono text-xs text-ink-soft" title={String(row.id)}>{row.id}</span> },
                   { key: "event", header: "Event", render: (row) => <span className="text-ink" title={row.event}>{eventLabel(row.event)}</span> },
                   { key: "channel", header: "Channel", render: (row) => <ChannelBadge channel={row.channel} /> },
-                  { key: "status", header: "Status", render: (row) => <StatusBadge status={row.status} /> },
+                  { key: "status", header: "Status", render: (row) => <OutboxDeliveryStatus row={row} /> },
+                  { key: "recipient", header: "Recipient", render: (row) => <span className="text-xs text-ink-soft">{row.emailRecipientMasked ?? "—"}</span> },
+                  { key: "emailError", header: "Email diagnostics", render: (row) => <span className="text-xs text-ink-soft">{row.channel === "EMAIL" && row.emailErrorCode ? EMAIL_ERROR_GUIDANCE[row.emailErrorCode] ?? "Delivery could not be completed. Review the application diagnostics." : "—"}</span> },
                   { key: "attempts", header: "Attempts", render: (row) => <span className="text-ink-soft">{row.attempts}</span> },
                   { key: "created", header: "Created", render: (row) => <span className="whitespace-nowrap text-ink-soft">{row.createdAtDisplay ?? "—"}</span> },
                   { key: "sent", header: "Sent", render: (row) => <span className="whitespace-nowrap text-ink-soft">{row.sentAtDisplay ?? "—"}</span> },

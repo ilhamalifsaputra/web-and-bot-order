@@ -35,6 +35,14 @@ const ROW = {
 beforeEach(() => { vi.restoreAllMocks(); });
 
 describe("OutboxPage", () => {
+  it("distinguishes email acceptance evidence from an unverified historical SENT", async () => {
+    const rows = [{ ...ROW, id: 1, channel: "EMAIL", event: "order.received.customer", emailAcceptedAt: "2026-06-26T10:00:05Z" }, { ...ROW, id: 2, channel: "EMAIL", event: "order.completed.customer", emailAcceptedAt: null }];
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(JSON.stringify({ rows, total: 2, page: 1, hasNext: false, counts: { SENT: 2 } }), { status: 200 }));
+    render(<OutboxPage />, { wrapper: Wrapper });
+    expect(await screen.findByText("Accepted by mail server")).toBeInTheDocument();
+    expect(screen.getByText("Sent (acceptance unverified)")).toBeInTheDocument();
+  });
+
   it("shows outbox rows from /api/outbox", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       new Response(
@@ -165,6 +173,13 @@ describe("OutboxPage", () => {
       expect(fetchSpy).toHaveBeenCalledWith("/api/outbox/9/retry", expect.objectContaining({ method: "POST" })),
     );
     await waitFor(() => expect(screen.getAllByText("Pending").length).toBeGreaterThan(0));
+  });
+
+  it("shows safe email failure guidance without rendering raw transport errors", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(JSON.stringify({ rows: [{ ...ROW, channel: "EMAIL", status: "FAILED", emailErrorCode: "SMTP_AUTH", lastError: "smtp-secret-never-render" }], total: 1, page: 1, hasNext: false, counts: { FAILED: 1 } }), { status: 200 }));
+    render(<OutboxPage />, { wrapper: Wrapper });
+    expect(await screen.findByText("SMTP authentication failed. Check the saved credentials.")).toBeInTheDocument();
+    expect(screen.queryByText("smtp-secret-never-render")).not.toBeInTheDocument();
   });
 
   it("shows a toast when retrying a notification fails", async () => {

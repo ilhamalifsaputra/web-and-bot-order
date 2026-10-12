@@ -1,0 +1,20 @@
+import "@testing-library/jest-dom";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { afterEach, expect, it, vi } from "vitest";
+import { StockEmailThresholds } from "./StockEmailThresholds";
+afterEach(() => vi.restoreAllMocks());
+it("loads thresholds only when requested and saves the chosen SKU thresholds", async () => {
+  const fetch = vi.spyOn(globalThis, "fetch");
+  render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><StockEmailThresholds denominationId={10} /></QueryClientProvider>);
+  expect(fetch).not.toHaveBeenCalled();
+  fetch.mockResolvedValueOnce(new Response(JSON.stringify({ critical: 3, recovery: 4 }), { status: 200 }));
+  await userEvent.setup().click(screen.getByRole("button", { name: "Configure stock email thresholds" }));
+  const critical = await screen.findByLabelText("Critical stock threshold");
+  fireEvent.change(critical, { target: { value: "5" } });
+  fireEvent.change(screen.getByLabelText("Recovery stock threshold"), { target: { value: "8" } });
+  fetch.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+  await userEvent.setup().click(screen.getByRole("button", { name: "Save stock thresholds" }));
+  await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/settings/email-notifications/inventory/10", expect.objectContaining({ body: JSON.stringify({ critical: 5, recovery: 8 }) })));
+});

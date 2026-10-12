@@ -53,7 +53,10 @@ export default function TelegramLoginButton({ botId, authUrl, beforeNavigate }: 
       return;
     }
     beforeNavigate().then(
-      () => window.location.assign(buildTelegramOAuthUrl(resolvedBotId, authUrl)),
+      (result) => {
+        const armedUrl = result && typeof result === "object" && "auth_url" in result && typeof result.auth_url === "string" ? result.auth_url : authUrl;
+        window.location.assign(buildTelegramOAuthUrl(resolvedBotId, armedUrl));
+      },
       () => setConnecting(false),
     );
   }

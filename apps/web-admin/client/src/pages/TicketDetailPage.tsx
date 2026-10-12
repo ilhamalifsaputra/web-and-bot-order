@@ -1,6 +1,6 @@
+import { SettingsToggle } from "@/components/shared/SettingsToggle";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import {
   Select,
@@ -375,14 +375,7 @@ function TicketDetailReply({ replyError, reply, setReply, internal, setInternal,
     <div className="flex flex-wrap items-center justify-between gap-3">
       {/* Internal note: stored and audited, never sent to the customer,
             and it does not advance the ticket's status. */}
-      <label className="flex items-center gap-2">
-        <Checkbox
-          checked={internal}
-          onCheckedChange={(c) => setInternal(c === true)}
-          aria-label="Internal note (not visible to the customer)"
-        />
-        <span className="text-sm text-ink">Internal note (not visible to the customer)</span>
-      </label>
+      <SettingsToggle id="TicketDetailPage-mode" label="Internal note (not visible to the customer)" checked={internal} onCheckedChange={setInternal} disabled={sendReply.isPending} />
       <Button onClick={() => sendReply.mutate()} disabled={!reply || sendReply.isPending}>
         {internal ? <Lock className="h-4 w-4" /> : <Send className="h-4 w-4" />}
         {sendReply.isPending ? "Saving…" : internal ? "Save internal note" : "Send reply"}

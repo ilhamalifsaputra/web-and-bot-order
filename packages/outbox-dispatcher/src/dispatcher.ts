@@ -74,6 +74,8 @@ import {
   getOrderByCodeFull,
   markCredentialsDelivered,
   getSmtpCreds,
+  canonicalEmailEventFor,
+  isEmailEventEnabled,
   recordPollHealth,
 } from "@app/db";
 import { config } from "@app/core/config";
@@ -82,7 +84,7 @@ import { publicChannelId } from "@app/core/runtime";
 import { logger } from "@app/core/logger";
 import { NotificationEvent, NotificationChannel, langCode } from "@app/core/enums";
 import { fulfillmentProviderFor } from "@app/core/orderFulfillment";
-import { sendMail } from "@app/core/mailer";
+import { sendMail, safeMailFailure, requireMailAcceptance, EMAIL_RECIPIENT_RE, type MailAcceptance } from "@app/core/mailer";
 import {
   buildAccountFileContent,
   buildDeliveryCaption,
@@ -145,13 +147,13 @@ function failRow(row: ClaimedRow, error: string, maxAttempts: number): Promise<v
  * the row turns out to belong to someone else now). In-memory only — see the
  * residual-risk note on `recordSent`.
  */
-const unrecordedSends = new Map<number, Date>();
+const unrecordedSends = new Map<number, {claimedAt:Date;payloadJson?:string}>();
 
 /** Retry the SENT write for every send this process could not record yet. */
 async function flushUnrecordedSends(): Promise<void> {
-  for (const [id, claimedAt] of unrecordedSends) {
+  for (const [id, {claimedAt,payloadJson}] of unrecordedSends) {
     try {
-      const recorded = await markNotificationSent(prisma, id, claimedAt);
+      const recorded = await markNotificationSent(prisma, id, claimedAt, payloadJson);
       unrecordedSends.delete(id);
       if (recorded) {
         logger.info(`Recorded notification ${id} as SENT on a later tick — it had been sent earlier but the first SENT write failed`);
@@ -159,7 +161,7 @@ async function flushUnrecordedSends(): Promise<void> {
         logger.warn(`Gave up recording notification ${id} as SENT: it was sent earlier, but the row has since been reclaimed or changed by someone else, who now owns its outcome`);
       }
     } catch (err) {
-      logger.warn({ err, notificationId: id }, `Still could not record notification ${id} as SENT — it was already sent and will not be sent again by this process; retrying the write next tick`);
+      logger.warn({ notificationId: id }, `Still could not record notification ${id} as SENT — it was already sent and will not be sent again by this process; retrying the write next tick`);
     }
   }
 }
@@ -280,7 +282,7 @@ function sleepOrNudge(ms: number, signal?: AbortSignal): Promise<void> {
  * (apps/order-bot/src/jobs/index.ts) a heartbeat to page admins from, the
  * same pattern already shared by `binancePollWatchdog` and its five twins.
  */
-export async function runDispatcher(bot: Bot, signal?: AbortSignal): Promise<void> {
+export async function runDispatcher(bot: Bot | null, signal?: AbortSignal): Promise<void> {
   while (!signal?.aborted) {
     try {
       const seen = await drainBatch(bot, signal);
@@ -301,9 +303,9 @@ export async function runDispatcher(bot: Bot, signal?: AbortSignal): Promise<voi
  * the number of rows it saw this cycle (`pending.length`), regardless of how
  * many were actually claimed/sent/failed/rate-limit-bailed — `runDispatcher`
  * above records this as `lastTxCount` on the outbox heartbeat (Task 15 / I-3). */
-export async function drainBatch(bot: Bot, signal?: AbortSignal): Promise<number> {
+export async function drainBatch(bot: Bot | null, signal?: AbortSignal): Promise<number> {
   await flushUnrecordedSends();
-  const pending = await fetchPendingNotifications(prisma, 50);
+  const pending = await fetchPendingNotifications(prisma, 50, new Date(), bot ? undefined : NotificationChannel.EMAIL);
   if (pending.length === 0) return 0;
 
   logger.debug(`Draining ${pending.length} pending notification(s)`);
@@ -326,16 +328,18 @@ export async function drainBatch(bot: Bot, signal?: AbortSignal): Promise<number
     let payload: Record<string, unknown>;
     try {
       payload = JSON.parse(row.payloadJson);
-    } catch (e) {
-      await failRow(row, `bad payload json: ${e}`, 1);
+      if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("Invalid payload");
+    } catch {
+      await failRow(row, "INVALID_PAYLOAD", 1);
       continue;
     }
 
-    // EMAIL lane — decided by channel, not event name (checking channel first
-    // is clearer/cheaper than relying on event names never colliding with the
-    // Telegram-only special cases below). Owner- and buyer-addressed rows both
-    // come through here; see deliverEmail's own doc comment below. No
-    // rate-limit concept for email, so just move on to the next row either way.
+    if (row.channel === NotificationChannel.EMAIL) {
+      await deliverEmail(row, payload);
+      continue;
+    }
+    if (!bot) { await releaseNotificationClaim(prisma,row.id,row.claimedAt); continue; }
+
     // Upgrade compatibility: old settlement rows must not describe an automatic
     // order as manual or create a second buyer message next to its tracked one.
     // ORDER_PROCESSING_DM is also dropped for any order (manual included) that
@@ -345,32 +349,20 @@ export async function drainBatch(bot: Bot, signal?: AbortSignal): Promise<number
       await recordSent(row, "Telegram");
       continue;
     }
-    // Routine wallet credits are visible in transaction history; owner alerts
-    // are reserved for actionable financial exceptions.
-    if (row.event === NotificationEvent.OWNER_EMAIL_WALLET_TOPUP) {
-      await recordSent(row, "email");
-      continue;
-    }
     if (row.orderId != null && [
       NotificationEvent.ORDER_PROCESSING_DM,
       NotificationEvent.ADMIN_MANUAL_ORDER_QUEUED,
-      NotificationEvent.OWNER_EMAIL_MANUAL_ORDER_QUEUED,
-      NotificationEvent.OWNER_EMAIL_ORDER_PAID,
     ].includes(row.event as never)) {
       const order = await prisma.order.findUnique({ where: { id: row.orderId }, include: { items: { include: { product: true } } } });
       const tracked = order && (fulfillmentProviderFor(order) === "DIGIFLAZZ"
-        || row.event === NotificationEvent.OWNER_EMAIL_ORDER_PAID && fulfillmentProviderFor(order) !== "MANUAL"
         || row.event === NotificationEvent.ORDER_PROCESSING_DM
           && (await prisma.fulfillmentMessage.count({ where: { orderId: row.orderId } })) > 0);
       if (tracked) {
-        await recordSent(row, row.channel === NotificationChannel.EMAIL ? "email" : "Telegram");
+        await recordSent(row, "Telegram");
         continue;
       }
     }
-    if (row.channel === NotificationChannel.EMAIL) {
-      await deliverEmail(row, payload);
-      continue;
-    }
+
 
     // Buyer account-delivery DM: send the account(s) as a .txt document, with
     // credentials read live from the DB (never from the outbox payload).
@@ -810,9 +802,9 @@ async function trySend(bot: Bot, row: ClaimedRow, send: () => Promise<unknown>):
  * STALE_CLAIM_MS has passed. Closing that needs a durable "sent" record the
  * failing database could not take either.
  */
-async function recordSent(row: ClaimedRow, via: "Telegram" | "email"): Promise<void> {
+async function recordSent(row: ClaimedRow, via: "Telegram" | "email", payloadJson?: string): Promise<void> {
   try {
-    const recorded = await markNotificationSent(prisma, row.id, row.claimedAt);
+    const recorded = await markNotificationSent(prisma, row.id, row.claimedAt, payloadJson);
     if (recorded) {
       logger.info(`Sent notification ${row.id} (${row.event}) by ${via}`);
     } else {
@@ -821,9 +813,9 @@ async function recordSent(row: ClaimedRow, via: "Telegram" | "email"): Promise<v
       );
     }
   } catch (err) {
-    unrecordedSends.set(row.id, row.claimedAt);
+    unrecordedSends.set(row.id, {claimedAt:row.claimedAt,payloadJson});
     logger.error(
-      { err, notificationId: row.id },
+      { notificationId: row.id },
       `Sent notification ${row.id} (${row.event}) by ${via}, but could not record it as SENT — this process will not send it again and retries recording SENT at the start of every tick`,
     );
   }
@@ -846,6 +838,20 @@ async function recordSent(row: ClaimedRow, via: "Telegram" | "email"): Promise<v
  * — there's no email analogue of Telegram flood control.
  */
 async function deliverEmail(row: ClaimedRow, payload: Record<string, unknown>): Promise<void> {
+  try {
+    if (!(await isEmailEventEnabled(prisma, canonicalEmailEventFor(row.event)))) {
+      await failRow(row,"SKIPPED_DISABLED",1);
+      return;
+    }
+  } catch {
+    await failRow(row,"EMAIL_POLICY_UNAVAILABLE",config.NOTIF_MAX_ATTEMPTS);
+    return;
+  }
+  const to = payload.to;
+  if (typeof to !== "string" || !EMAIL_RECIPIENT_RE.test(to)) {
+    await failRow(row, "NO_RECIPIENT", 1);
+    return;
+  }
   // renderEmail is async (the OWNER_EMAIL_ORDER_PAID, OWNER_EMAIL_WALLET_TOPUP
   // and BUYER_EMAIL_ORDER_READY branches resolve brand — and for ORDER_PAID,
   // copy — from Settings via Prisma) — see emailTemplates.ts's header comment.
@@ -861,20 +867,14 @@ async function deliverEmail(row: ClaimedRow, payload: Record<string, unknown>): 
     rendered = await renderEmail(row.event, payload);
   } catch (e) {
     logger.error(
-      { err: e, notificationId: row.id, event: row.event },
+      { notificationId: row.id, event: row.event },
       `Could not render email notification ${row.id} (${row.event}), so it was not sent — recording a failed attempt; it retries with backoff and dead-letters at the attempt limit`,
     );
-    await failRow(row, `email render failed: ${e instanceof Error ? e.name : "error"}`, config.NOTIF_MAX_ATTEMPTS);
+    await failRow(row, "EMAIL_RENDER_FAILED", config.NOTIF_MAX_ATTEMPTS);
     return;
   }
   if (!rendered) {
-    await failRow(row, `no email template for event ${row.event}`, 1);
-    return;
-  }
-
-  const to = payload.to;
-  if (typeof to !== "string" || !to) {
-    await failRow(row, "missing to address", 1);
+    await failRow(row, "UNSUPPORTED_EVENT", 1);
     return;
   }
 
@@ -885,10 +885,10 @@ async function deliverEmail(row: ClaimedRow, payload: Record<string, unknown>): 
     // The error class only — never the message, which could echo SMTP
     // settings content.
     logger.error(
-      { notificationId: row.id, errorName: e instanceof Error ? e.name : "error" },
+      { notificationId: row.id },
       `Could not read the SMTP settings for email notification ${row.id}, so it was not sent — recording a failed attempt; it retries with backoff and dead-letters at the attempt limit`,
     );
-    await failRow(row, `could not read SMTP settings: ${e instanceof Error ? e.name : "error"}`, config.NOTIF_MAX_ATTEMPTS);
+    await failRow(row, "SMTP_SETTINGS_UNAVAILABLE", config.NOTIF_MAX_ATTEMPTS);
     return;
   }
   if (!creds) {
@@ -915,13 +915,15 @@ async function deliverEmail(row: ClaimedRow, payload: Record<string, unknown>): 
  * forbidden-recipient concept to special-case, so a failure always just
  * records the attempt for the standard backoff/retry cycle.
  */
-async function trySendEmail(row: ClaimedRow, send: () => Promise<void>): Promise<void> {
+async function trySendEmail(row: ClaimedRow, send: () => Promise<MailAcceptance>): Promise<void> {
+  let accepted: MailAcceptance;
   try {
-    await send();
+    accepted = requireMailAcceptance(await send());
   } catch (e) {
-    logger.error({ err: e }, `Failed to send notification ${row.id} — recording the attempt, it will retry until it hits the max attempt limit`);
-    await failRow(row, String(e), config.NOTIF_MAX_ATTEMPTS);
+    const failure = safeMailFailure(e);
+    logger.error({notificationId:row.id,event:row.event,errorCode:failure.code}, "The mail server did not accept this notification; its safe failure category has been recorded.");
+    await failRow(row, failure.code, failure.permanent ? 1 : config.NOTIF_MAX_ATTEMPTS);
     return;
   }
-  await recordSent(row, "email");
+  await recordSent(row, "email", JSON.stringify({...JSON.parse(row.payloadJson),delivery:accepted}));
 }

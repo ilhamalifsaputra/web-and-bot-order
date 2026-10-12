@@ -1,8 +1,4 @@
-/** Builds the oauth.telegram.org direct-link login URL (no JS widget/iframe
- *  needed — see https://core.telegram.org/widgets/login, "Redirect" option).
- *  Telegram 303s the whole browser back to `returnTo` with the same signed
- *  query params the widget script used to produce, landing on the existing
- *  /auth/telegram or /account/settings/link-telegram routes unchanged. */
+/** Legacy Telegram direct authorization. Return paths accept a fragment bridge as well as signed query callbacks. */
 export function buildTelegramOAuthUrl(
   botId: string,
   authUrl: string,

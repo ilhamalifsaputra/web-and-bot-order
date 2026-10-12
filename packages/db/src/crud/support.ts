@@ -1,14 +1,15 @@
+import { emailTransaction, enqueueEmailEvent } from "./emailEvents";
 /**
  * Support tickets + ticket messages — port of those sections of Python crud.py.
  */
 import { Prisma } from "@prisma/client";
-import type { SupportTicket } from "@prisma/client";
+import type { SupportTicket, TicketMessage } from "@prisma/client";
 import { TicketStatus, TicketPriority, TicketCategory, SenderType } from "@app/core/enums";
 import { addDays, addMinutes, startOfDayUtc } from "@app/core/datetime";
 import { ValidationError } from "@app/core/errors";
 import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
-import { enqueueOwnerNewTicketEmail, enqueueOwnerTicketReplyEmail } from "./notifications";
+import { enqueueOwnerTicketReplyEmail } from "./notifications";
 import { logAdminAction } from "./audit";
 import { withoutDeliveredContent } from "./orders";
 
@@ -92,7 +93,7 @@ export async function createTicket(
   // schema.prisma). Optional and last so every existing call site (2-6
   // positional args) keeps compiling unchanged.
   opts: { subject?: string | null; category?: TicketCategory | null; productId?: number | null } = {},
-) {
+): Promise<SupportTicket> {
   const subject = opts.subject ?? null;
   const category = opts.category ?? null;
   const productId = opts.productId ?? null;
@@ -101,8 +102,13 @@ export async function createTicket(
   for (let attempt = 0; attempt < MAX_TICKET_NUMBER_ATTEMPTS; attempt++) {
     const ticketNumber = await uniqueTicketNumberCandidate(db);
     try {
-      ticket = await db.supportTicket.create({
-        data: { userId, message, photoFileIds, attachmentUrls, orderId, ticketNumber, subject, category, productId },
+      ticket = await emailTransaction(db, async (tx) => {
+        const created = await tx.supportTicket.create({
+          data: { userId, message, photoFileIds, attachmentUrls, orderId, ticketNumber, subject, category, productId },
+        });
+        await enqueueEmailEvent(tx, { key: "support.ticket.created.admin", aggregateId: created.id, payload: { ticket_id: created.ticketNumber, category } });
+        await enqueueEmailEvent(tx, { key: "support.ticket.created.customer", aggregateId: created.id, userId, payload: { ticket_id: created.ticketNumber } });
+        return created;
       });
       break;
     } catch (e) {
@@ -114,7 +120,6 @@ export async function createTicket(
     }
   }
   if (!ticket) throw new Error("Could not generate a unique ticket number");
-  await enqueueOwnerNewTicketEmail(db, { ticketId: ticket.id, userId, category, message });
   return ticket;
 }
 
@@ -431,7 +436,12 @@ export async function addTicketMessage(
      * `false` (an ordinary customer-visible message, today's behavior). */
     internal?: boolean;
   },
-) {
+): Promise<TicketMessage> {
+  if ("$transaction" in db) return emailTransaction(db, (tx) => addTicketMessage(tx, args));
+  // Serialize the status read with all concurrent replies to this ticket.
+  // Otherwise two genuine messages can both read OPEN and one loses the
+  // status claim, rolling its message and notification back.
+  await db.$queryRaw`SELECT id FROM support_tickets WHERE id = ${args.ticketId} FOR NO KEY UPDATE`;
   const internal = args.internal ?? false;
   const msg = await db.ticketMessage.create({
     data: {
@@ -533,6 +543,9 @@ export async function addTicketMessage(
         details: `Added an internal note to ticket #${args.ticketId} (not visible to the customer).`,
       });
     }
+  }
+  if (ticket && args.senderType === SenderType.ADMIN && !internal) {
+    await enqueueEmailEvent(db, { key: "support.ticket.replied.customer", aggregateId: ticket.id, occurrence: msg.id, userId: ticket.userId, payload: { ticket_id: ticket.ticketNumber } });
   }
   return msg;
 }

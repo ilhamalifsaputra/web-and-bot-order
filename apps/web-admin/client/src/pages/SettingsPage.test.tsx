@@ -46,6 +46,38 @@ beforeEach(() => {
 });
 
 describe("SettingsPage", () => {
+  it("sends a real test email separately from verifying the SMTP connection", async () => {
+    const data = { ...SETTINGS_DATA, fields: [
+      { key: "smtp_host", label: "SMTP host", secret: false, hasValue: true, value: "smtp.example.com", needsRestart: false },
+      { key: "owner_email", label: "Owner notification email", secret: false, hasValue: true, value: "owner@example.com", needsRestart: false },
+    ] };
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(JSON.stringify(data), { status: 200 }));
+    render(<SettingsPage />, { wrapper: Wrapper });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Send Test Email" }));
+    const dialog = await screen.findByRole("dialog");
+    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, detail: "Test email accepted by mail server", messageId: "test-id", acceptedAt: "2026-10-12T00:00:00Z" }), { status: 200 }));
+    await user.click(within(dialog).getByRole("button", { name: "Send Test Email" }));
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith(expect.stringContaining("/api/settings/smtp/send-test"), expect.objectContaining({ body: "{}" })));
+    expect(await screen.findByText("Test email accepted by mail server")).toBeInTheDocument();
+    expect(within(document.getElementById("settings-email")!).getByRole("button", { name: "Test Connection" })).toBeInTheDocument();
+  });
+
+  it("saves a boolean as an ON/OFF switch and retains the previous state on failure", async () => {
+    const data = { ...SETTINGS_DATA, fields: [{ key: "smtp_secure", label: "Use SSL/TLS (port 465)", secret: false, hasValue: true, value: "false", needsRestart: false, kind: "boolean", checked: false }] };
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(JSON.stringify(data), { status: 200 }));
+    render(<SettingsPage />, { wrapper: Wrapper });
+    const toggle = await screen.findByRole("switch", { name: "Use SSL/TLS (port 465)" });
+    expect(toggle).not.toBeChecked();
+    expect(screen.queryByText('Type "true" for port 465 (SSL/TLS), or "false" for port 587 (STARTTLS).')).not.toBeInTheDocument();
+    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify({ error: "Settings could not be saved." }), { status: 400 }));
+    await userEvent.setup().click(toggle);
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith(expect.stringContaining("/api/settings/edit"), expect.objectContaining({ body: JSON.stringify({ key: "smtp_secure", value: true }) })));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Settings could not be saved.");
+    expect(toggle).not.toBeChecked();
+    expect(toggle).toBeEnabled();
+  });
+
   it("shows a bot and a website switch per service and saves one channel through the services endpoint", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify(SETTINGS_DATA), { status: 200, headers: { "Content-Type": "application/json" } }));

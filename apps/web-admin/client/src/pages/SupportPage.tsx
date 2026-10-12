@@ -451,15 +451,15 @@ function SupportStatusFilter({ applyFilters, clearFilters, qDraft, setQDraft, fi
   draft: { status: string; origin: string; priority: string; category: string; assigned: string; sort: string; };
   setDraft: import("react").Dispatch<import("react").SetStateAction<{ status: string; origin: string; priority: string; category: string; assigned: string; sort: string; }>>;
 }) {
-  return (<FilterBar onApply={applyFilters} onClear={clearFilters} className="mb-4">
+  return (<FilterBar onApply={applyFilters} onClear={clearFilters} className="mb-4 grid grid-cols-2 sm:flex [&>div:last-child]:col-span-2">
     <SearchBar
       value={qDraft}
       onChange={setQDraft}
       placeholder="Ticket, order, or customer..."
-      className="w-full sm:w-64"
+      className="col-span-2 w-full sm:w-64"
     />
 
-    <SelectFilter id={`${fieldId}-status-1`} label="Status" value={draft.status || ALL_STATUSES} onValueChange={(v) => setDraft((d) => ({ ...d, status: v === ALL_STATUSES ? "" : v }))} triggerClassName="w-40" aria-label="Status filter" placeholder="All statuses">
+    <SelectFilter id={`${fieldId}-status-1`} label="Status" value={draft.status || ALL_STATUSES} onValueChange={(v) => setDraft((d) => ({ ...d, status: v === ALL_STATUSES ? "" : v }))} triggerClassName="w-full sm:w-40" aria-label="Status filter" placeholder="All statuses">
       <SelectItem value={ALL_STATUSES}>All</SelectItem>
       {STATUS_VALUES.map((s) => (
         <SelectItem key={s} value={s}>
@@ -468,10 +468,10 @@ function SupportStatusFilter({ applyFilters, clearFilters, qDraft, setQDraft, fi
       ))}
     </SelectFilter>
 
-    <SelectFilter id={`${fieldId}-source`} label="Source" value={draft.origin || "_all_"} onValueChange={(v) => setDraft((d) => ({ ...d, origin: v === "_all_" ? "" : v }))} triggerClassName="w-40" aria-label="Source filter" placeholder="All sources">
+    <SelectFilter id={`${fieldId}-source`} label="Source" value={draft.origin || "_all_"} onValueChange={(v) => setDraft((d) => ({ ...d, origin: v === "_all_" ? "" : v }))} triggerClassName="w-full sm:w-40" aria-label="Source filter" placeholder="All sources">
       <SelectItem value="_all_">All</SelectItem><SelectItem value="WEB">Website</SelectItem><SelectItem value="BOT">Telegram</SelectItem>
     </SelectFilter>
-    <SelectFilter id={`${fieldId}-priority-2`} label="Priority" value={draft.priority || ALL_PRIORITIES} onValueChange={(v) => setDraft((d) => ({ ...d, priority: v === ALL_PRIORITIES ? "" : v }))} triggerClassName="w-40" aria-label="Priority filter" placeholder="All priorities">
+    <SelectFilter id={`${fieldId}-priority-2`} label="Priority" value={draft.priority || ALL_PRIORITIES} onValueChange={(v) => setDraft((d) => ({ ...d, priority: v === ALL_PRIORITIES ? "" : v }))} triggerClassName="w-full sm:w-40" aria-label="Priority filter" placeholder="All priorities">
       <SelectItem value={ALL_PRIORITIES}>All</SelectItem>
       {PRIORITY_VALUES.map((p) => (
         <SelectItem key={p} value={p}>
@@ -486,7 +486,7 @@ function SupportStatusFilter({ applyFilters, clearFilters, qDraft, setQDraft, fi
         value={draft.category || ALL_CATEGORIES}
         onValueChange={(v) => setDraft((d) => ({ ...d, category: v === ALL_CATEGORIES ? "" : v }))}
       >
-        <SelectTrigger id={`${fieldId}-category-3`} className="w-40" aria-label="Category filter">
+        <SelectTrigger id={`${fieldId}-category-3`} className="w-full sm:w-40" aria-label="Category filter">
           <SelectValue placeholder="All categories" />
         </SelectTrigger>
         <SelectContent>
@@ -506,7 +506,7 @@ function SupportStatusFilter({ applyFilters, clearFilters, qDraft, setQDraft, fi
         value={draft.assigned || ALL_ASSIGNED}
         onValueChange={(v) => setDraft((d) => ({ ...d, assigned: v === ALL_ASSIGNED ? "" : v }))}
       >
-        <SelectTrigger id={`${fieldId}-assigned-4`} className="w-40" aria-label="Assigned filter">
+        <SelectTrigger id={`${fieldId}-assigned-4`} className="w-full sm:w-40" aria-label="Assigned filter">
           <SelectValue placeholder="All" />
         </SelectTrigger>
         <SelectContent>
@@ -520,7 +520,7 @@ function SupportStatusFilter({ applyFilters, clearFilters, qDraft, setQDraft, fi
     <div className="flex flex-col gap-1">
       <label htmlFor={`${fieldId}-sort-5`} className="text-xs text-ink-soft">Sort</label>
       <Select value={draft.sort} onValueChange={(v) => setDraft((d) => ({ ...d, sort: v }))}>
-        <SelectTrigger id={`${fieldId}-sort-5`} className="w-40" aria-label="Sort">
+        <SelectTrigger id={`${fieldId}-sort-5`} className="w-full sm:w-40" aria-label="Sort">
           <SelectValue />
         </SelectTrigger>
         <SelectContent>

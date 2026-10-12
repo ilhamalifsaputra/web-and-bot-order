@@ -50,10 +50,10 @@ Migration/backfill belum dijalankan ke produksi. Verifikasi schema lokal hanya k
 
 ## 5. Hasil verifikasi
 
-- `pnpm -r build`: lulus untuk semua workspace; output `.ticketing-build-final-3.log`.
-- `pnpm typecheck`: lulus, termasuk semua workspace dan `tsconfig.test.json`; output `.ticketing-typecheck-final-3.log`. Final synchronized gate sedang dijalankan ulang di `.ticketing-final-typecheck.log` / `.ticketing-final-test.log`.
-- `pnpm lint`: lulus, termasuk Storefront ESLint dan `pnpm doctor:bugs` untuk kedua client; output `.ticketing-lint-final-3.log`.
-- `pnpm doctor:changed`: 37 files, Bugs clean. `pnpm doctor:full`: **637 files, 0 errors, 0 warnings**, 14.2 detik; diagnostics `react-doctor-8734ca1e-7204-471e-8102-f5eb8e81a5a8`. Tidak ada suppression, exclusion atau disabled rule baru.
+- `pnpm -r build`: lulus untuk semua workspace; output `.ticketing-build-complete-final.log`.
+- `pnpm typecheck`: lulus, termasuk semua workspace dan `tsconfig.test.json`; output `.ticketing-typecheck-compact-final.log`. Final synchronized gate sedang dijalankan ulang di `.ticketing-typecheck-compact-final.log` / `.ticketing-test-verified-final.log`.
+- `pnpm lint`: lulus, termasuk Storefront ESLint dan `pnpm doctor:bugs` untuk kedua client; output `.ticketing-lint-complete-final.log`.
+- `pnpm doctor:changed`: 38 files, Bugs clean. `pnpm doctor:full`: **637 files, 0 errors, 0 warnings**, 38.4 detik; diagnostics `react-doctor-19b65f01-13a6-45a1-8f0f-34a14d1e1f3d`. Tidak ada suppression, exclusion atau disabled rule baru.
 - Focused domain/backfill/delivery 152 tests lulus; lifecycle/retention-race/stream-limit 12 lulus; API/bot regressions 381 lulus. Final upload hooks + admin list/detail: **87 tests lulus**. Angka ini per-run, bukan total unik.
 - Full suite pertama: 632 files, 11,824 tests; 33 gagal. Ekspektasi label/nomor/placeholder lama diperbarui setelah failure direproduksi sendirian. Test order creation yang timeout lulus sendirian 7/7 tanpa perubahan logic atau timeout. Final full gate masih berjalan; jangan menganggap jumlah focused sebagai full pass.
 - Browser fixtures: CSS viewport **320/375/768/1024/1440/1920** untuk customer help/detail dan admin list/detail. Tidak ada horizontal overflow dokumen/main. Tabel admin scroll hanya dalam panel pada ukuran menengah. `Pembayaran & Saldo`/refund dengan deskripsi `Gg` invalid; pergantian kategori membersihkan draft order. Nomor/teks panjang membungkus; title editor mobile dapat disimpan; internal note admin terpisah. Screenshots: `docs/ticketing-help-mobile.png`, `ticketing-detail-mobile.png`, `ticketing-admin-mobile.png`, `ticketing-admin-desktop.png`, `ticketing-admin-detail-mobile.png`.
@@ -64,7 +64,7 @@ Ukuran chunk hasil production build lokal (minified / gzip; tidak termasuk share
 | --- | ---: | ---: |
 | Customer Help | 10.02 kB | 3.59 kB |
 | Customer Ticket Detail | 22.42 kB | 6.96 kB |
-| Admin Support | 19.79 kB | 6.38 kB |
+| Admin Support | 19.92 kB | 6.41 kB |
 | Admin Ticket Detail | 31.10 kB | 9.83 kB |
 
 ## 6. Konfigurasi operasional
@@ -95,8 +95,10 @@ Environment contoh ada di `.env.example`. `SUPPORT_IMAGE_MB` / `SUPPORT_VIDEO_MB
 - R2 account/token/CORS belum dikonfigurasi untuk pengujian live. Tidak ada live Telegram send/poller. Test transport memakai mock, sementara domain/API memakai PostgreSQL isolated. Smoke test layanan asli tetap wajib saat rollout.
 - Pemeriksaan file menggunakan signature gambar dan bounded MP4 ftyp, size, MIME dan pinned ETag. Ini bukan antivirus atau full media decoder. Bucket tetap private; tidak ada klaim malware-free. Integrasi scanner eksternal tidak ditambahkan.
 - Telegram API tidak menawarkan transaksi dengan database. Checkpoint mencegah pengulangan text/media yang telah tercatat saat retry; crash tepat sesudah transport menerima namun sebelum checkpoint dapat mengulang satu bagian. Salinan media Telegram tidak ikut terhapus saat retensi R2.
-- Baseline latency/RSS/volume produksi tidak tersedia. Ukuran build dicatat di atas; log integration mencatat durasi request lokal. Peak RSS upload live, jumlah file/ukuran volume produksi dan delta terhadap baseline belum diukur. Web upload hanya membawa metadata melalui Fastify; Telegram dibatasi dua stream per proses, timeout 90 detik, byte-count/backpressure, inspection 4 KiB.
+- Baseline latency/RSS/volume produksi tidak tersedia. Ukuran build dicatat di atas; log integration mencatat durasi request lokal. Peak RSS upload live, jumlah file/ukuran volume produksi dan delta terhadap baseline belum diukur. Web upload hanya membawa metadata melalui Fastify; Jalur ingest dan delivery Telegram masing-masing dibatasi dua stream per proses, timeout 90 detik, byte-count/backpressure, inspection 4 KiB.
 - QA browser memakai Chromium dengan response fixture. Real-service E2E upload/download R2, recipient Telegram, mobile keyboard fisik serta Safari/Firefox belum dilakukan; jangan mengklaim cross-browser atau production ready dari fixture ini.
 - Vite build masih memberikan warning existing untuk shared admin chunk di atas 500 kB. Ukuran chunk ticketing di atas terpisah; batas warning tidak dinaikkan/disembunyikan.
 - Permission R2 discovery lebih luas daripada object-only token. Jika operator memilih least privilege per-bucket, isi `SUPPORT_R2_BUCKET` secara eksplisit. Kredensial dan CORS tidak dapat muncul otomatis hanya dari pembuatan bucket.
 - Branch implementasi `worktree-ticketing-v2` belum diintegrasikan/dideploy. Folder utama memiliki `skills-lock.json` untracked milik pekerjaan yang belum dikonfirmasi; AGENTS.md mewajibkan integration checkout bersih sebelum merge. File tersebut tidak disentuh oleh task ini.
+
+Screenshot tambahan: `docs/ticketing-admin-320.png`. Filter admin tetap dua kolom pada 320 px; setiap trigger sekitar 131 px dan tidak menyebabkan overflow.

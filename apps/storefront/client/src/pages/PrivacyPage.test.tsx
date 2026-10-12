@@ -104,7 +104,7 @@ describe("informational pages", () => {
       return heading.closest("section")?.textContent ?? "";
     };
     const delivery = await bodyOf("Delivery of digital products");
-    expect(delivery).toContain("queues and provider issues can delay fulfillment");
+    expect(delivery).toContain("queues and provider issues can delay delivery");
     expect(delivery).not.toContain("can be cancelled");
     const cancel = await bodyOf("Cancelling an order");
     expect(cancel).toContain("An order can be cancelled as long as it hasn't been paid.");

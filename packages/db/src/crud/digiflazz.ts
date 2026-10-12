@@ -1,3 +1,5 @@
+import { enqueueOrderEmailFact } from "./emailEvents";
+import { recordEmailProviderHealth } from "./emailSecurity";
 /**
  * CRUD for the Digiflazz-backed "Top Up Game" instant-checkout pilot —
  * plan for the checkoutFlow="instant" category (schema.prisma Category
@@ -766,6 +768,7 @@ async function terminalFailDigiflazzOrder(
     if (claim.count === 1) {
       await ensureFulfillmentMessage(tx, order.id);
       await alertDigiflazzDispatchFailed(tx, order, reason, accountDiagnosticNote);
+      await enqueueOrderEmailFact(tx, order.id, ["order.failed.customer", "order.failed.admin"]);
     }
     return claim.count === 1;
   });
@@ -1173,10 +1176,15 @@ async function processDigiflazzOrder(
       });
     } catch (requestErr) {
       logDigiflazzResponse(order, { status: "error", durationMs: Date.now() - requestStartedAt, error: requestErr, isRecheck: !isFreshDispatch });
+      await recordEmailProviderHealth(db, "digiflazz-transaction", false);
       throw requestErr;
     }
     const apiDurationMs = Date.now() - requestStartedAt;
     logDigiflazzResponse(order, { status: result.status, durationMs: apiDurationMs });
+    // A valid supplier response proves the API is reachable. Pending and
+    // order-level declines (such as an invalid player ID) are fulfillment
+    // outcomes, not evidence of a provider outage.
+    await recordEmailProviderHealth(db, "digiflazz-transaction", true);
 
     if (result.status === "Sukses") {
       try {
@@ -1398,6 +1406,7 @@ export async function fulfillDigiflazzOrder(
     await tx.orderStatusHistory.create({
       data: { orderId, status: OrderStatus.DELIVERED, meta: "digiflazz_fulfill" },
     });
+    await enqueueBuyerOrderReadyEmailIfGuest(tx, order);
   };
   // Commit the receipt, items and message anchor together. A database failure
   // leaves PROCESSING retryable with the original supplier reference.
@@ -1409,14 +1418,13 @@ export async function fulfillDigiflazzOrder(
 
   await finalizeDeliverySideEffects(db, order, now);
 
-  await enqueueBuyerOrderReadyEmailIfGuest(db, order);
 
   await logAdminAction(db, {
     adminId: null,
     action: "order.auto_fulfill_digiflazz",
     targetType: "order",
     targetId: order.id,
-    details: `Auto-fulfilled Digiflazz order ${order.orderCode} and sent the receipt to the buyer.`,
+    details: `Auto-fulfilled Digiflazz order ${order.orderCode}.`,
   });
 
   logger.info(`Auto-fulfilled Digiflazz order ${order.orderCode}`);

@@ -155,7 +155,7 @@ describe("DenominationEditPage", () => {
     expect(screen.getByRole("radio", { name: /^automatic delivery/i })).not.toBeChecked();
     // Step 2 (Buyer Information) is visible once Manual is loaded, defaulted
     // to "no info required" — Step 3 (the field editor) stays hidden.
-    expect(screen.getByRole("radio", { name: /^no buyer information required/i })).toBeChecked();
+    expect(screen.getByRole("switch", { name: /^require buyer information/i })).not.toBeChecked();
     expect(screen.queryByRole("button", { name: /add field/i })).not.toBeInTheDocument();
   });
 
@@ -165,7 +165,7 @@ describe("DenominationEditPage", () => {
 
     await waitFor(() => expect(screen.getByDisplayValue("Netflix 1 Month")).toBeInTheDocument());
     expect(screen.getByRole("radio", { name: /^manual delivery/i })).toBeChecked();
-    expect(screen.getByRole("radio", { name: /^require buyer information/i })).toBeChecked();
+    expect(screen.getByRole("switch", { name: /^require buyer information/i })).toBeChecked();
     expect(screen.getAllByDisplayValue("IGN")).toHaveLength(2);
   });
 
@@ -310,7 +310,7 @@ describe("DenominationEditPage", () => {
 
     // A slip of the mouse is recoverable: the draft comes back untouched.
     await user.click(screen.getByRole("radio", { name: /^manual delivery/i }));
-    await user.click(screen.getByRole("radio", { name: /^require buyer information/i }));
+    await user.click(screen.getByRole("switch", { name: /^require buyer information/i }));
     expect(screen.getAllByDisplayValue("IGN")).toHaveLength(2);
   });
 
@@ -377,7 +377,7 @@ describe("DenominationEditPage", () => {
     await user.click(screen.getByRole("radio", { name: /^manual delivery/i }));
     expect(btn).not.toBeDisabled(); // Step 2 defaults to "no info required" — still submittable.
 
-    await user.click(screen.getByRole("radio", { name: /^require buyer information/i }));
+    await user.click(screen.getByRole("switch", { name: /^require buyer information/i }));
     expect(btn).toBeDisabled();
   });
 

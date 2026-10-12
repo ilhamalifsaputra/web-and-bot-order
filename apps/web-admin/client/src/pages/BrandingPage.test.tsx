@@ -239,65 +239,16 @@ describe("BrandingPage", () => {
     expect(screen.getAllByRole("button", { name: "Reset to default" })).toHaveLength(2);
   });
 
-  it("renders the Email Branding, New Paid Order Email, and Reset Password Email cards with their fields", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-      new Response(JSON.stringify(BRANDING_DATA), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      }),
-    );
+  it("keeps email branding and replaces manual transactional copy with event preferences", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(JSON.stringify(BRANDING_DATA), { status: 200, headers: { "Content-Type": "application/json" } }));
     render(<BrandingPage />, { wrapper: Wrapper });
-    await waitFor(() => expect(screen.getByText("My Test Shop")).toBeInTheDocument());
-
-    function cardFor(title: string): HTMLElement {
-      const el = screen.getByText(title).closest('[data-slot="card"]');
-      if (!el) throw new Error(`Card containing "${title}" not found`);
-      return el as HTMLElement;
-    }
-
-    const brandingCard = cardFor("Email Branding");
-    expect(within(brandingCard).getByText("#4F46E5")).toBeInTheDocument();
-    expect(within(brandingCard).getByText("support@example.com")).toBeInTheDocument();
-
-    const orderPaidCard = cardFor("New Paid Order Email");
-    expect(within(orderPaidCard).getByText("New paid order")).toBeInTheDocument();
-    expect(within(orderPaidCard).getByText("You've got a new order")).toBeInTheDocument();
-    expect(within(orderPaidCard).getByText("A customer just completed payment.")).toBeInTheDocument();
-    expect(within(orderPaidCard).getByText("Here are the details.")).toBeInTheDocument();
-
-    const resetPasswordCard = cardFor("Reset Password Email");
-    expect(within(resetPasswordCard).getByText("{shop_name} — reset your password")).toBeInTheDocument();
-    expect(within(resetPasswordCard).getByText("Reset your password")).toBeInTheDocument();
-    expect(within(resetPasswordCard).getByText("We received a request to reset your password.")).toBeInTheDocument();
-    expect(within(resetPasswordCard).getByText("Click the button below to choose a new password.")).toBeInTheDocument();
-  });
-
-  it("shows a helper hint mentioning {order_code} and {shop_name} under the New Paid Order Email Subject field only", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-      new Response(JSON.stringify(BRANDING_DATA), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      }),
-    );
-    render(<BrandingPage />, { wrapper: Wrapper });
-    await waitFor(() => expect(screen.getByText("My Test Shop")).toBeInTheDocument());
-
-    function cardFor(title: string): HTMLElement {
-      const el = screen.getByText(title).closest('[data-slot="card"]');
-      if (!el) throw new Error(`Card containing "${title}" not found`);
-      return el as HTMLElement;
-    }
-
-    const orderPaidCard = cardFor("New Paid Order Email");
-    expect(
-      within(orderPaidCard).getByText(/use \{order_code\} to include the order code, and \{shop_name\}/i),
-    ).toBeInTheDocument();
-
-    // The Reset Password Email card's Subject field must not get this hint —
-    // its buildSubject call has no extraTokens, so {order_code} never
-    // substitutes there.
-    const resetPasswordCard = cardFor("Reset Password Email");
-    expect(within(resetPasswordCard).queryByText(/order_code/i)).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("Email Branding")).toBeInTheDocument());
+    const card = screen.getByText("Email Branding").closest('[data-slot="card"]') as HTMLElement;
+    expect(within(card).getByText("#4F46E5")).toBeInTheDocument();
+    expect(within(card).getByText("support@example.com")).toBeInTheDocument();
+    expect(screen.queryByText("New Paid Order Email")).not.toBeInTheDocument();
+    expect(screen.queryByText("Reset Password Email")).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Manage email notifications" })).toHaveAttribute("href", "/email-notifications");
   });
 
   it("shows a native color picker alongside the text input when editing Brand color, in sync with the typed value", async () => {

@@ -118,7 +118,7 @@ describe("DenominationCreatePage", () => {
     // The buyer-info choice (Step 2) only appears once Manual Delivery is
     // chosen, but the field editor is available on Automatic too: any SKU
     // may declare the input it needs (e.g. a top-up's Player ID).
-    expect(screen.queryByRole("radio", { name: /^require buyer information/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("switch", { name: /^require buyer information/i })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /add field/i })).toBeInTheDocument();
   });
 
@@ -160,7 +160,7 @@ describe("DenominationCreatePage", () => {
     // Step 2 appears, defaulting to "no info required" — Step 3 (the field
     // editor) stays hidden and submit stays enabled until the seller
     // explicitly opts into requiring buyer information.
-    expect(screen.getByRole("radio", { name: /^no buyer information required/i })).toBeChecked();
+    expect(screen.getByRole("switch", { name: /^require buyer information/i })).not.toBeChecked();
     expect(screen.queryByRole("button", { name: /add field/i })).not.toBeInTheDocument();
     expect(btn).not.toBeDisabled();
   });
@@ -174,7 +174,7 @@ describe("DenominationCreatePage", () => {
     await waitFor(() => expect(btn).not.toBeDisabled());
 
     await user.click(screen.getByRole("radio", { name: /^manual delivery/i }));
-    await user.click(screen.getByRole("radio", { name: /^require buyer information/i }));
+    await user.click(screen.getByRole("switch", { name: /^require buyer information/i }));
 
     expect(screen.getByRole("button", { name: /add field/i })).toBeInTheDocument();
     expect(btn).toBeDisabled();
@@ -199,11 +199,11 @@ describe("DenominationCreatePage", () => {
     await fillBaseFields(user);
 
     await user.click(screen.getByRole("radio", { name: /^manual delivery/i }));
-    await user.click(screen.getByRole("radio", { name: /^require buyer information/i }));
+    await user.click(screen.getByRole("switch", { name: /^require buyer information/i }));
     expect(screen.getByRole("button", { name: /add field/i })).toBeInTheDocument();
 
     await user.click(screen.getByRole("radio", { name: /^automatic delivery/i }));
-    expect(screen.queryByRole("radio", { name: /^require buyer information/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("switch", { name: /^require buyer information/i })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /add field/i })).toBeInTheDocument();
 
     // Submit is unblocked again — Automatic Delivery never needs fields.
@@ -217,11 +217,11 @@ describe("DenominationCreatePage", () => {
     await fillBaseFields(user);
 
     await user.click(screen.getByRole("radio", { name: /^manual delivery/i }));
-    await user.click(screen.getByRole("radio", { name: /^require buyer information/i }));
+    await user.click(screen.getByRole("switch", { name: /^require buyer information/i }));
     await user.click(screen.getByRole("radio", { name: /^automatic delivery/i }));
     await user.click(screen.getByRole("radio", { name: /^manual delivery/i }));
 
-    expect(screen.getByRole("radio", { name: /^no buyer information required/i })).toBeChecked();
+    expect(screen.getByRole("switch", { name: /^require buyer information/i })).not.toBeChecked();
     expect(screen.queryByRole("button", { name: /add field/i })).not.toBeInTheDocument();
   });
 
@@ -285,7 +285,7 @@ describe("DenominationCreatePage", () => {
     render(<DenominationCreatePage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByRole("radio", { name: /^manual delivery/i })).toBeChecked());
     expect(screen.getByRole("radio", { name: /^automatic delivery/i })).not.toBeChecked();
-    expect(screen.getByRole("radio", { name: /^require buyer information/i })).toBeChecked();
+    expect(screen.getByRole("switch", { name: /^require buyer information/i })).toBeChecked();
     expect(screen.getAllByDisplayValue("Game ID").length).toBeGreaterThan(0);
 
     await fillBaseFields(user);
@@ -357,7 +357,7 @@ describe("DenominationCreatePage", () => {
     await fillBaseFields(user);
 
     await user.click(screen.getByRole("radio", { name: /^manual delivery/i }));
-    await user.click(screen.getByRole("radio", { name: /^require buyer information/i }));
+    await user.click(screen.getByRole("switch", { name: /^require buyer information/i }));
     await user.click(screen.getByRole("button", { name: /add field/i }));
     fireEvent.change(screen.getByPlaceholderText(/e\.g\. email akun/i), { target: { value: "IGN" } });
     fireEvent.change(screen.getByPlaceholderText(/e\.g\. account email/i), { target: { value: "IGN" } });
@@ -395,7 +395,7 @@ describe("DenominationCreatePage", () => {
     await fillBaseFields(user);
 
     await user.click(screen.getByRole("radio", { name: /^manual delivery/i }));
-    await user.click(screen.getByRole("radio", { name: /^require buyer information/i }));
+    await user.click(screen.getByRole("switch", { name: /^require buyer information/i }));
     await user.click(screen.getByRole("button", { name: /add field/i }));
     fireEvent.change(screen.getByPlaceholderText(/e\.g\. email akun/i), { target: { value: "IGN" } });
     fireEvent.change(screen.getByPlaceholderText(/e\.g\. account email/i), { target: { value: "IGN" } });
@@ -404,7 +404,7 @@ describe("DenominationCreatePage", () => {
 
     // Back out of "Require buyer information" without changing the method —
     // Step 4 should disappear along with its Digiflazz/Supplier SKU state.
-    await user.click(screen.getByRole("radio", { name: /^no buyer information required/i }));
+    await user.click(screen.getByRole("switch", { name: /^require buyer information/i }));
     expect(screen.queryByRole("radio", { name: /^digiflazz/i })).not.toBeInTheDocument();
 
     const btn = screen.getByRole("button", { name: /create denomination/i });

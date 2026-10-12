@@ -981,8 +981,11 @@ export async function enqueueBuyerOrderReadyEmail(
     trackUrl: string | null;
   },
 ): Promise<void> {
-  await db.notificationOutbox.create({
-    data: {
+  const dedupeKey = `buyer-ready:${args.orderId}`;
+  await db.notificationOutbox.upsert({
+    where: { dedupeKey }, update: {},
+    create: {
+      dedupeKey,
       event: NotificationEvent.BUYER_EMAIL_ORDER_READY,
       orderId: args.orderId,
       channel: NotificationChannel.EMAIL,
@@ -1050,9 +1053,9 @@ const BROADCAST_EVENTS = new Set<string>([
  * `enqueueFlashSaleBroadcast` fan-out sitting in the same FIFO queue could
  * delay an urgent DM enqueued moments later by many minutes.
  */
-export async function fetchPendingNotifications(db: Db, limit = 50, now: Date = new Date()) {
+export async function fetchPendingNotifications(db: Db, limit = 50, now: Date = new Date(), channel?: string) {
   const staleCutoff = new Date(now.getTime() - STALE_CLAIM_MS);
-  const where = claimableWhere(staleCutoff, now);
+  const where = { ...claimableWhere(staleCutoff, now), ...(channel ? { channel } : {}) };
 
   const urgent = await db.notificationOutbox.findMany({
     where: { ...where, event: { notIn: [...BROADCAST_EVENTS] } },
@@ -1124,10 +1127,11 @@ export async function markNotificationSent(
   db: Db,
   notifId: number,
   claimedAt?: Date,
+  payloadJson?: string,
 ): Promise<boolean> {
   const res = await db.notificationOutbox.updateMany({
     where: { id: notifId, ...claimGuard(claimedAt) },
-    data: { status: NotificationStatus.SENT, sentAt: new Date(), claimedAt: null },
+    data: { status: NotificationStatus.SENT, sentAt: new Date(), claimedAt: null, ...(payloadJson === undefined ? {} : {payloadJson}), lastError: null },
   });
   return res.count === 1;
 }
@@ -1808,11 +1812,10 @@ export async function outboxStatusCounts(db: Db): Promise<Record<string, number>
   return counts;
 }
 
-/** A single outbox row's `event` type — just enough for an audit-log `details`
- * sentence (e.g. "Requeued a ${event} notification for delivery.") without
- * pulling the full row (payload JSON, timestamps, etc.) into a route. */
+/** Minimal outbox metadata for retry eligibility and the audit sentence,
+ * without pulling recipient or payload details into the retry route. */
 export function getNotification(db: Db, notifId: number) {
-  return db.notificationOutbox.findUnique({ where: { id: notifId }, select: { event: true } });
+  return db.notificationOutbox.findUnique({ where: { id: notifId }, select: { event: true, channel: true, status: true } });
 }
 
 /**
@@ -1824,11 +1827,9 @@ export function getNotification(db: Db, notifId: number) {
  * sends Telegram itself.
  */
 export async function retryNotification(db: Db, notifId: number): Promise<boolean> {
-  const row = await db.notificationOutbox.findUnique({ where: { id: notifId } });
-  if (!row) return false;
-  await db.notificationOutbox.update({
-    where: { id: notifId },
-    data: { status: NotificationStatus.PENDING, attempts: 0, lastError: null, sentAt: null, nextRetryAt: null },
+  const result = await db.notificationOutbox.updateMany({
+    where: { id: notifId, OR: [{channel:{not:NotificationChannel.EMAIL}}, {channel:NotificationChannel.EMAIL,status:{in:[NotificationStatus.FAILED,NotificationStatus.DEAD_LETTER]}}] },
+    data: { status: NotificationStatus.PENDING, attempts: 0, lastError: null, sentAt: null, nextRetryAt: null, claimedAt: null },
   });
-  return true;
+  return result.count === 1;
 }

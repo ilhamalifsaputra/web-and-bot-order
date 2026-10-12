@@ -741,7 +741,8 @@ describe("manualMatchLedgerTx — a short payment already in the underpaid flow 
   it("a legacy row is NOT refused for an underpaid record of the same amount on a different gateway", async () => {
     const { c } = await shortPaidSetup("tokopay", "c1-legacy-gw", { hint: false, markUnderpaid: false });
     const other = await makePendingOrder(PaymentMethod.PAYDISINI, "IDR");
-    await markOrderUnderpaid(prisma, { orderId: other.id, gateway: "PayDisini", receivedAmount: "50000", expectedAmount: other.totalAmount });
+    await prisma.order.update({ where: { id: other.id }, data: { totalAmount: "100000" } });
+    expect(await markOrderUnderpaid(prisma, { orderId: other.id, gateway: "PayDisini", receivedAmount: "50000", expectedAmount: "100000" })).toBe(true);
     const result = await manualMatchLedgerTx(prisma, { reference: "c1-legacy-gw", orderId: c.id, adminId });
     expect(result.order.id).toBe(c.id);
   });

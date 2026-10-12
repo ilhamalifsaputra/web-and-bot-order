@@ -40,6 +40,7 @@ import broadcastApiRoutes from "./routes/api/broadcast";
 import supportApiRoutes from "./routes/api/support";
 import adminTasksApiRoutes from "./routes/api/adminTasks";
 import settingsApiRoutes from "./routes/api/settings";
+import { emailNotificationsApi } from "./routes/api/emailNotifications";
 import brandingApiRoutes from "./routes/api/branding";
 import catalogApiRoutes from "./routes/api/catalog";
 import pricingApiRoutes from "./routes/api/pricing";
@@ -175,6 +176,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(supportApiRoutes);
   await app.register(adminTasksApiRoutes);
   await app.register(settingsApiRoutes);
+  await app.register(emailNotificationsApi);
   await app.register(brandingApiRoutes);
   await app.register(catalogApiRoutes);
   await app.register(pricingApiRoutes);

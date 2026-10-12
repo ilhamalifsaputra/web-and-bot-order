@@ -1,3 +1,4 @@
+import { emailTransaction, enqueueEmailEvent } from "./emailEvents";
 /**
  * Refund domain — the workflow state machine (Trustance Master Architecture
  * Task 8b, following Task 8a's schema-only `Refund`/`RefundItem` models) plus
@@ -263,6 +264,7 @@ export async function transitionRefundStatus(
     acknowledgeNoPayout?: boolean;
   },
 ): Promise<Refund> {
+  if ("$transaction" in db) return emailTransaction(db, (tx) => transitionRefundStatus(tx, args));
   const { refundId, from, to, adminId, meta } = args;
 
   if (!REFUND_LEGAL_TRANSITIONS[from]?.includes(to)) {
@@ -303,7 +305,7 @@ export async function transitionRefundStatus(
       ? await db.refundExecution.findFirst({
           where: { refundId, status: RefundExecutionStatus.COMPLETED },
           orderBy: { id: "asc" },
-          select: { id: true },
+          select: { id: true, amount: true, currency: true, method: true },
         })
       : null;
 
@@ -315,6 +317,13 @@ export async function transitionRefundStatus(
         ? ` The buyer has been paid — that was recorded separately as refund execution #${paidOut.id}; this transition only closed the refund record.`
         : " Record-keeping only — no payout was triggered by this transition, and none has been recorded against this refund.");
   await logAdminAction(db, { adminId, action: "refund_status_change", targetType: "refund", targetId: refundId, details });
+  if (to === RefundStatus.PROCESSING || (to === RefundStatus.COMPLETED && paidOut)) {
+    const buyerOrder = await db.order.findUnique({ where: { id: refund.orderId }, select: { userId: true } });
+    if (buyerOrder) await enqueueEmailEvent(db, { key: to === RefundStatus.PROCESSING ? "refund.initiated.customer" : "refund.completed.customer", aggregateId: refundId, orderId: refund.orderId, userId: buyerOrder.userId, payload: {
+      refund_id: refundId, amount: (paidOut?.amount ?? refund.amount).toString(), currency: paidOut?.currency ?? refund.currency,
+      ...(paidOut ? { payout_method: paidOut.method, execution_id: paidOut.id } : {}),
+    } });
+  }
 
   if (to === RefundStatus.FAILED) {
     // The one transition worth a developer's attention on its own: a buyer was

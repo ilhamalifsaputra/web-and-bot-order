@@ -4,11 +4,12 @@ import type { FastifyInstance } from "fastify";
 import { config } from "@app/core/config";
 import { Decimal } from "@app/core/money";
 import { applyCustomEmoji, resetCustomEmojiMap } from "@app/core/customEmoji";
-import { verifySmtp } from "@app/core/mailer";
+import { verifySmtp, sendMail } from "@app/core/mailer";
 
 vi.mock("@app/core/mailer", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@app/core/mailer")>()),
   verifySmtp: vi.fn(),
+  sendMail: vi.fn(),
 }));
 import { prisma, initDb, upsertUser, setSetting, getSetting, getDecryptedSetting, setFxRateFetcher, getShopMinOrderAmountIdr } from "@app/db";
 import { resetDb } from "../../../tests/helpers/sampleData";
@@ -156,6 +157,7 @@ describe("POST /api/settings/edit", () => {
       .find((entry) => entry.key === "coingecko_api_key");
     expect(field).toEqual({
       key: "coingecko_api_key",
+      kind: "text",
       label: "CoinGecko API key",
       secret: true,
       hasValue: true,
@@ -852,6 +854,19 @@ describe("POST /api/settings/telegram/test", () => {
   });
 });
 
+describe("boolean settings metadata and writes", () => {
+  it("shows effective boolean defaults and persists actual JSON booleans", async () => {
+    const get = await app.inject({url:"/api/settings",cookies:{[COOKIE]:cookie}});
+    const fields=get.json().fields as Array<{key:string;kind:string;checked:boolean}>;
+    expect(fields.find(f=>f.key==="digiflazz_enabled")).toMatchObject({kind:"boolean",checked:true});
+    expect(fields.find(f=>f.key==="owner_email_enabled")).toMatchObject({kind:"boolean",checked:false});
+    const save = await postJson("/api/settings/edit",cookie,csrf,{key:"owner_email_enabled",value:true});
+    expect(save.statusCode).toBe(200); expect(await getSetting(prisma,"owner_email_enabled")).toBe("true");
+    const invalid = await postJson("/api/settings/edit",cookie,csrf,{key:"shop_name",value:true});
+    expect(invalid.statusCode).toBe(400);
+  });
+});
+
 describe("POST /api/settings/smtp/test", () => {
   afterEach(() => {
     vi.mocked(verifySmtp).mockReset();
@@ -882,7 +897,7 @@ describe("POST /api/settings/smtp/test", () => {
     vi.mocked(verifySmtp).mockRejectedValue(new Error("Invalid login"));
     const res = await postJson("/api/settings/smtp/test", cookie, csrf);
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ ok: false, detail: "SMTP connection failed: Invalid login" });
+    expect(res.json()).toEqual({ ok: false, detail: "The mail server could not be reached or did not accept the request. Check the connection and retry." });
   });
 
   it("requires auth (anon → 401)", async () => {
@@ -894,6 +909,41 @@ describe("POST /api/settings/smtp/test", () => {
   it("rejects bad CSRF (403)", async () => {
     const res = await postJson("/api/settings/smtp/test", cookie, "bad");
     expect(res.statusCode).toBe(403);
+  });
+});
+
+describe("POST /api/settings/smtp/send-test", () => {
+  beforeEach(async () => {
+    await setSetting(prisma,"smtp_host","smtp.test.invalid"); await setSetting(prisma,"smtp_from","Shop <no-reply@example.com>");
+    await setSetting(prisma,"owner_email","owner@example.com");
+    vi.mocked(sendMail).mockReset(); vi.mocked(verifySmtp).mockReset();
+    vi.mocked(sendMail).mockResolvedValue({messageId:"<test-accepted@example.invalid>",acceptedAt:"2026-10-12T00:00:00.000Z"});
+  });
+  it("sends to the configured owner only and returns transport acceptance evidence", async () => {
+    const r=await postJson("/api/settings/smtp/send-test",cookie,csrf);
+    expect(r.statusCode).toBe(200); expect(r.json()).toMatchObject({ok:true,detail:"Test email accepted by mail server.",messageId:"<test-accepted@example.invalid>",acceptedAt:"2026-10-12T00:00:00.000Z"});
+    expect(sendMail).toHaveBeenCalledTimes(1); expect(sendMail).toHaveBeenCalledWith(expect.objectContaining({host:"smtp.test.invalid"}),expect.objectContaining({to:"owner@example.com",subject:expect.stringContaining("[Trustance Test]"),html:expect.any(String)}));
+    expect(verifySmtp).not.toHaveBeenCalled(); expect(await prisma.auditLog.count({where:{action:"smtp_send_test"}})).toBe(1);
+  });
+  it("rejects arbitrary recipients without transport and enforces CSRF/auth", async () => {
+    expect((await postJson("/api/settings/smtp/send-test",cookie,csrf,{to:"arbitrary@example.com"})).statusCode).toBe(400);
+    expect((await postJson("/api/settings/smtp/send-test",cookie,"bad")).statusCode).toBe(403);
+    expect((await postJson("/api/settings/smtp/send-test",null,csrf)).statusCode).toBe(401);
+    expect(sendMail).not.toHaveBeenCalled();
+  });
+  it("redacts provider errors and limits repeated test sends", async () => {
+    vi.mocked(sendMail).mockRejectedValue(Object.assign(new Error("password=SECRET recipient@private.invalid"),{code:"EAUTH"}));
+    const first=await postJson("/api/settings/smtp/send-test",cookie,csrf);
+    expect(first.json()).toMatchObject({ok:false,code:"SMTP_AUTH"}); expect(first.body).not.toContain("SECRET");
+    const second=await postJson("/api/settings/smtp/send-test",cookie,csrf); expect(second.statusCode).toBe(429); expect(sendMail).toHaveBeenCalledTimes(1);
+  });
+  it("does not report a successful send without transport acceptance evidence", async () => {
+    vi.mocked(sendMail).mockResolvedValueOnce(undefined as never);
+    const response=await postJson("/api/settings/smtp/send-test",cookie,csrf);
+    expect(response.json()).toMatchObject({ok:false,code:"SMTP_ACCEPTANCE_UNCONFIRMED"});
+    expect(sendMail).toHaveBeenCalledTimes(1);
+    expect(response.json().acceptedAt).toBeUndefined();
+    expect((await prisma.auditLog.findFirstOrThrow({where:{action:"smtp_send_test"}})).details).toContain("not accepted");
   });
 });
 

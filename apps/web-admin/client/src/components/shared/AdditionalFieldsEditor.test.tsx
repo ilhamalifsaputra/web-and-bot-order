@@ -108,12 +108,12 @@ describe("AdditionalFieldsEditor", () => {
     expect(onChange).toHaveBeenCalledWith([{ ...drafts[0], labelEn: "Server ID" }]);
   });
 
-  it("toggling the required checkbox reports the flipped value via onChange", async () => {
+  it("toggling the required switch reports the flipped value via onChange", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     const onChange = vi.fn();
     const drafts: AdditionalFieldDraft[] = [{ ...emptyFieldDraft(), key: "ign", required: true }];
     render(<AdditionalFieldsEditor value={drafts} onChange={onChange} />);
-    await user.click(screen.getByRole("checkbox"));
+    await user.click(screen.getByRole("switch", { name: "Required" }));
     expect(onChange).toHaveBeenCalledWith([{ ...drafts[0], required: false }]);
   });
 

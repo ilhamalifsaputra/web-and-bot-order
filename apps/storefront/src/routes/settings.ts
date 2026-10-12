@@ -10,18 +10,30 @@
  */
 import type { FastifyPluginAsync } from "fastify";
 import { prisma, linkTelegram, logCustomerAction } from "@app/db";
+import { consumeTelegramCallback, telegramCallbackShell } from "../telegramCallback";
+import { sessionMintOriginOk } from "./cart";
 import { verifyTelegramLogin } from "../auth";
-import { currentCustomer } from "../plugins/auth";
+import { optionalCustomer } from "../plugins/auth";
 import { resolveBotToken } from "../shop";
 import { linkTelegramRateLimited } from "../rateLimit";
 import { consumeTelegramLinkIntent } from "../telegramLinkIntent";
 
 const settingsRoutes: FastifyPluginAsync = async (app) => {
   // ---- GET /account/settings/link-telegram ----------------------------------
-  app.get<{ Querystring: Record<string, string> }>(
-    "/account/settings/link-telegram",
-    { preHandler: currentCustomer },
-    async (req, reply) => {
+  app.route<{ Querystring: Record<string, string>; Body: Record<string,string> }>({
+    method: ["GET", "POST"], url: "/account/settings/link-telegram",
+    preHandler: async (req, reply) => {
+      void reply.header("Cache-Control", "no-store").header("Referrer-Policy", "no-referrer");
+      const customer = await optionalCustomer(req);
+      // A callback can carry signed query fields; never copy them into a login destination.
+      if (!customer) return reply.code(303).redirect("/login?next=%2Faccount%2Fsettings");
+      req.customer = customer;
+    },
+    handler: async (req, reply) => {
+      void reply.header("Cache-Control", "no-store").header("Referrer-Policy", "no-referrer");
+      if (req.method === "GET" && !req.query.hash) return telegramCallbackShell(reply);
+      const finish = (path: string) => req.method === "POST" ? reply.send({redirect:path}) : reply.code(303).redirect(path);
+      if (req.method === "POST" && !sessionMintOriginOk(req)) return reply.code(403).send({error:"csrf_failed"});
       const customer = req.customer!;
       // Rate limit: linking is a rare, deliberate action (5/10min, mirrors
       // guestCheckoutRateLimited) — keyed by customer id since this route
@@ -29,7 +41,7 @@ const settingsRoutes: FastifyPluginAsync = async (app) => {
       // ?err=tg_invalid redirect target rather than inventing a new `err`
       // value the client doesn't recognize.
       if (linkTelegramRateLimited(customer.userId)) {
-        return reply.code(303).redirect("/account/settings?err=tg_invalid");
+        return finish("/account/settings?err=tg_invalid");
       }
       // A guest row's session can be minted from the order code alone
       // (POST /api/v1/track), so linking Telegram here would let whoever
@@ -37,14 +49,16 @@ const settingsRoutes: FastifyPluginAsync = async (app) => {
       // first claim it through the credentials form, which needs the order's
       // contact email (backend audit Task C fix round). linkTelegram refuses
       // too; this early exit just keeps the guest's link intent untouched.
-      if (customer.user.isGuest) return reply.code(303).redirect("/account/settings?err=tg_guest");
-      const auth = verifyTelegramLogin(req.query, await resolveBotToken());
-      if (!auth) return reply.code(303).redirect("/account/settings?err=tg_invalid");
+      if (customer.user.isGuest) return finish("/account/settings?err=tg_guest");
+      const {state, next: _next, ...fields} = (req.method === "POST" ? req.body : req.query) ?? {};
+      const auth = verifyTelegramLogin(fields, await resolveBotToken());
+      if (!auth) return finish("/account/settings?err=tg_invalid");
       // Only a link this account armed from its own settings page (CSRF-checked
       // POST .../link-telegram/start) — see telegramLinkIntent.ts.
       if (!consumeTelegramLinkIntent(customer.userId)) {
-        return reply.code(303).redirect("/account/settings?err=tg_invalid");
+        return finish("/account/settings?err=tg_invalid");
       }
+      if (!(await consumeTelegramCallback(req, reply, "link", state, fields.hash!))) return finish("/account/settings?err=tg_invalid");
       const fullName =
         [auth.first_name, auth.last_name].filter(Boolean).join(" ") || null;
       const res = await linkTelegram(
@@ -56,7 +70,7 @@ const settingsRoutes: FastifyPluginAsync = async (app) => {
       );
       if (!res.ok) {
         const err = res.reason === "guest" ? "tg_guest" : res.reason === "already_linked" ? "tg_already_linked" : "tg_taken";
-        return reply.code(303).redirect(`/account/settings?err=${err}`);
+        return finish(`/account/settings?err=${err}`);
       }
       // Phase H customer-audit trail. This route is the one account-linking
       // entry point (see the file header comment) and it lives on the
@@ -76,9 +90,9 @@ const settingsRoutes: FastifyPluginAsync = async (app) => {
           ? `Linked the account to Telegram (@${auth.username}).`
           : "Linked the account to Telegram.",
       });
-      return reply.code(303).redirect("/account/settings?linked=1");
+      return finish("/account/settings?linked=1");
     },
-  );
+  });
 };
 
 export default settingsRoutes;

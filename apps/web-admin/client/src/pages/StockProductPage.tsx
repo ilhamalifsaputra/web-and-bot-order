@@ -1,3 +1,5 @@
+import { SettingsToggle } from "@/components/shared/SettingsToggle";
+import { StockEmailThresholds } from "@/components/shared/StockEmailThresholds";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -341,6 +343,7 @@ export function StockProductPage() {
 
       {/* Bulk add */}
       <StockProductBulkAddCredentials bulkMsg={bulkMsg} bulkError={bulkError} credentials={credentials} setCredentials={setCredentials} bulkAdd={bulkAdd} product={product} toggleBroadcast={toggleBroadcast} />
+      <StockEmailThresholds denominationId={product.id} />
 
       {/* Items table, grouped by status */}
       <h2 className="text-sm font-semibold text-ink mb-3">Stock Items</h2>
@@ -428,15 +431,7 @@ function StockProductBulkAddCredentials({ bulkMsg, bulkError, credentials, setCr
       <Button onClick={() => bulkAdd.mutate()} disabled={bulkAdd.isPending || !credentials.trim()} className="self-start">
         {bulkAdd.isPending ? "Adding…" : "Add Stock"}
       </Button>
-      <label className="flex items-center gap-2 text-sm text-ink cursor-pointer">
-        <Checkbox
-          checked={product.broadcastOnRestock}
-          onCheckedChange={(checked) => toggleBroadcast.mutate(checked === true)}
-          disabled={toggleBroadcast.isPending}
-          aria-label="Broadcast to all customers when I add stock to this product"
-        />
-        Broadcast to all customers when I add stock to this product
-      </label>
+      <SettingsToggle id="StockProductPage-mode" label="Broadcast to all customers when I add stock to this product" checked={product.broadcastOnRestock} onCheckedChange={(checked) => toggleBroadcast.mutate(checked)} pending={toggleBroadcast.isPending} />
     </CardContent>
   </Card>);
 }

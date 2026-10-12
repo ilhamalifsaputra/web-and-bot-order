@@ -14,6 +14,7 @@
  * server-side route in routes/settings.ts — it's a whole-page redirect flow.
  */
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
+import { armTelegramCallback } from "../telegramCallback";
 import { config } from "@app/core/config";
 import { guestOrderRecoveryUrl } from "@app/core/guestOrderAccess";
 import { clientIp, supportRateLimited } from "../rateLimit";
@@ -846,7 +847,8 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
     if (!csrfHeaderOk(req, customer)) return reply.code(403).send({ error: "csrf_failed" });
     if (customer.user.isGuest) return reply.code(400).send({ error: "web.settings_tg_guest" });
     startTelegramLinkIntent(customer.userId);
-    return reply.send({ ok: true });
+    const state = await armTelegramCallback(reply, "link", "/account/settings");
+    return reply.send({ ok: true, auth_url: `/account/settings/link-telegram?${new URLSearchParams({state})}` });
   });
 
   app.post<{

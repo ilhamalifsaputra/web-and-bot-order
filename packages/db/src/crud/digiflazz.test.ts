@@ -29,13 +29,8 @@ vi.mock("@app/core/suppliers/kokinpay", async (importOriginal) => ({
   checkGameNickname: kokinpayHttpMock.checkGameNickname,
 }));
 
-// Fix-pass regression test support (Critical #2): enqueueManualDeliveredDm is
-// called INSIDE fulfillDigiflazzOrder, AFTER its own PROCESSING->DELIVERED
-// claim and finalizeDeliverySideEffects have already run — mocking it to
-// reject for one test is the cleanest way to reproduce "a side effect after
-// the DELIVERED claim already committed threw". Defaults to the real
-// implementation (set below once importOriginal resolves) so every other
-// test in this file keeps exercising the genuine notification-enqueue path.
+// Receipt failure exercises the atomic delivery transaction. Referral failure
+// exercises a side effect after that transaction has already committed.
 const notificationsMock = vi.hoisted(() => ({
   enqueueBuyerOrderReadyEmail: vi.fn(),
 }));
@@ -46,6 +41,12 @@ vi.mock("./notifications", async (importOriginal) => {
     ...actual,
     enqueueBuyerOrderReadyEmail: notificationsMock.enqueueBuyerOrderReadyEmail,
   };
+});
+const referralMock = vi.hoisted(() => ({ maybePayReferralCommission: vi.fn() }));
+vi.mock("./referrals", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./referrals")>();
+  referralMock.maybePayReferralCommission.mockImplementation(actual.maybePayReferralCommission);
+  return { ...actual, maybePayReferralCommission: referralMock.maybePayReferralCommission };
 });
 
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
@@ -631,6 +632,33 @@ describe("resolveSingleDigiflazzItem", () => {
   });
 });
 
+describe("provider incident health facts", () => {
+  it("three ordinary supplier declines do not open an outage", async () => {
+    for (let i = 0; i < 3; i++) {
+      const order = await makeProcessingDigiflazzOrder();
+      digiflazzMock.createTransaction.mockResolvedValue({ refId: order.orderCode, status: "Gagal", sn: null, message: "Nomor salah", price: null });
+      expect((await dispatchDigiflazzOrderNow(prisma, order.id)).failed).toBe(1);
+    }
+    expect(await prisma.notificationOutbox.count({ where: { event: "provider.incident.opened" } })).toBe(0);
+    const state = await prisma.setting.findUniqueOrThrow({ where: { key: "email_provider_incident:digiflazz-transaction" } });
+    expect(JSON.parse(state.value)).toMatchObject({ failures: [], open: false });
+  });
+  it("request errors aggregate one outage and a valid pending response recovers it", async () => {
+    for (let i = 0; i < 3; i++) {
+      const order = await makeProcessingDigiflazzOrder();
+      digiflazzMock.createTransaction.mockRejectedValue(new Error("Fixture network unavailable"));
+      await dispatchDigiflazzOrderNow(prisma, order.id);
+    }
+    expect(await prisma.notificationOutbox.count({ where: { event: "provider.incident.opened" } })).toBe(1);
+    const healthy = await makeProcessingDigiflazzOrder();
+    digiflazzMock.createTransaction.mockResolvedValue({ refId: healthy.orderCode, status: "Pending", sn: null, message: null, price: null });
+    expect((await dispatchDigiflazzOrderNow(prisma, healthy.id)).pending).toBe(1);
+    const state = await prisma.setting.findUniqueOrThrow({ where: { key: "email_provider_incident:digiflazz-transaction" } });
+    expect(JSON.parse(state.value)).toMatchObject({ failures: [], open: false });
+    expect(await prisma.notificationOutbox.count({ where: { event: "provider.incident.opened" } })).toBe(1);
+  });
+});
+
 describe("dispatchPendingDigiflazzOrders", () => {
   it("delivers a Sukses order and flips it to DELIVERED", async () => {
     const order = await makeProcessingDigiflazzOrder();
@@ -1019,15 +1047,26 @@ describe("dispatchPendingDigiflazzOrders", () => {
     expect(refreshed.status).toBe(OrderStatus.DELIVERED);
   });
 
-  // Fix-pass regression guard (Critical #2): fulfillDigiflazzOrder used to be
-  // called inside the SAME try/catch as createTransaction, so a failure AFTER
-  // its own PROCESSING->DELIVERED claim committed (e.g. a side effect like
-  // enqueueManualDeliveredDm throwing) was miscategorized as a retryable
-  // transient error — no admin alert, and a scheduled "retry" that could
-  // never fire because the order no longer matches the PROCESSING candidate
-  // query. Mock enqueueManualDeliveredDm (called INSIDE fulfillDigiflazzOrder
-  // after the DELIVERED claim and finalizeDeliverySideEffects have already
-  // run) to reject once, reproducing exactly that shape.
+  it("rolls delivery back when the receipt outbox write fails, then completes once with the same supplier result", async () => {
+    const order = await makeProcessingDigiflazzOrder();
+    await prisma.user.update({ where: { id: sample.user.id }, data: { isGuest: true, guestEmail: "guest@example.com" } });
+    notificationsMock.enqueueBuyerOrderReadyEmail.mockRejectedValueOnce(new Error("outbox write failed"));
+    await expect(fulfillDigiflazzOrder(prisma, order.id, { sn: "SN-ATOMIC" })).rejects.toThrow("outbox write failed");
+    const rolledBack = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(rolledBack.status).toBe(OrderStatus.PROCESSING);
+    expect(rolledBack.deliveredContent).toBeNull();
+    expect(await prisma.orderItem.count({ where: { orderId: order.id, status: "DELIVERED" } })).toBe(0);
+    expect(await prisma.orderStatusHistory.count({ where: { orderId: order.id, status: OrderStatus.DELIVERED } })).toBe(0);
+    expect(await prisma.notificationOutbox.count({ where: { orderId: order.id, event: NotificationEvent.BUYER_EMAIL_ORDER_READY } })).toBe(0);
+    await fulfillDigiflazzOrder(prisma, order.id, { sn: "SN-ATOMIC" });
+    const delivered = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(delivered.status).toBe(OrderStatus.DELIVERED);
+    expect(decryptDeliveredContent(delivered.deliveredContent, order.id)).toBe("SN-ATOMIC");
+    expect(await prisma.notificationOutbox.count({ where: { orderId: order.id, event: NotificationEvent.BUYER_EMAIL_ORDER_READY } })).toBe(1);
+  });
+
+  // A post-commit side effect must alert an admin rather than schedule a
+  // supplier retry for an order that has already reached DELIVERED.
   it("a failure inside fulfillDigiflazzOrder after Sukses alerts admins instead of being silently retried", async () => {
     await setSetting(prisma, ADMIN_IDS_KEY, "555");
     const order = await makeProcessingDigiflazzOrder();
@@ -1036,7 +1075,7 @@ describe("dispatchPendingDigiflazzOrders", () => {
     digiflazzMock.createTransaction.mockResolvedValue({
       refId: order.orderCode, status: "Sukses", sn: "SN-POST-FAIL", message: "ok", price: null,
     });
-    notificationsMock.enqueueBuyerOrderReadyEmail.mockRejectedValueOnce(new Error("outbox write failed"));
+    referralMock.maybePayReferralCommission.mockRejectedValueOnce(new Error("referral write failed"));
 
     const summary = await dispatchPendingDigiflazzOrders(prisma);
     expect(summary).toEqual({ claimed: 1, delivered: 0, pending: 0, failed: 1 });
@@ -1050,7 +1089,7 @@ describe("dispatchPendingDigiflazzOrders", () => {
     // PROCESSING->DELIVERED claim now unconditionally clears digiflazzStatus/
     // digiflazzNextRecheckAt/digiflazzFailureDetail as part of that SAME
     // atomic update — the order genuinely delivered (the claim committed
-    // before the later enqueueManualDeliveredDm side effect threw), so it's
+    // before the later referral side effect threw), so it's
     // no longer "in flight at the supplier" regardless of that later
     // failure. digiflazzAttempts staying at its untouched default (0) is
     // what actually proves recordDigiflazzOutcome's transient_error branch

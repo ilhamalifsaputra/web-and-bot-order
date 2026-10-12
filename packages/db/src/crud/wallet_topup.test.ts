@@ -1601,7 +1601,16 @@ describe("creditUnderpaidTopupAnyway", () => {
     [PaymentMethod.PAYDISINI, "51000", "50000"],
   ] as const)("credits net principal on %s for received %s", async (method, received, expected) => {
     const order = await prisma.$transaction(tx => createWalletTopupOrder(tx, { userId: sample.user.id, amount: "50000", currency: "IDR", method }));
-    await markOrderUnderpaid(prisma, { orderId: order.id, gateway: method, receivedAmount: received, expectedAmount: method === PaymentMethod.TOKOPAY ? "50450" : "50000" });
+    const expectedAmount = method === PaymentMethod.TOKOPAY ? "50450" : "50000";
+    if (new Decimal(received).lessThan(expectedAmount)) {
+      expect(await markOrderUnderpaid(prisma, { orderId: order.id, gateway: method, receivedAmount: received, expectedAmount })).toBe(true);
+    } else {
+      // Historical/manual rows can be mislabeled UNDERPAID. The resolution
+      // still caps wallet principal, while the producer refuses this evidence.
+      expect(await markOrderUnderpaid(prisma, { orderId: order.id, gateway: method, receivedAmount: received, expectedAmount })).toBe(false);
+      await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.UNDERPAID } });
+      await prisma.qrisUnderpaidTx.create({ data: { orderId: order.id, gateway: method, receivedAmount: received, expectedAmount } });
+    }
     const result = await creditUnderpaidTopupAnyway(prisma, { orderId: order.id, adminId: ADMIN_ID });
     expect(result.credited.toString()).toBe(expected);
     expect((await freshUser()).walletBalance.toString()).toBe(expected);
@@ -1611,7 +1620,14 @@ describe("creditUnderpaidTopupAnyway", () => {
 
   it.each(["0", "449", "450"])("refuses TokoPay credit when received %s does not cover the fee", async (received) => {
     const order = await prisma.$transaction(tx => createWalletTopupOrder(tx, { userId: sample.user.id, amount: "50000", currency: "IDR", method: PaymentMethod.TOKOPAY }));
-    await markOrderUnderpaid(prisma, { orderId: order.id, gateway: "TokoPay", receivedAmount: received, expectedAmount: "50450" });
+    if (received === "0") {
+      expect(await markOrderUnderpaid(prisma, { orderId: order.id, gateway: "TokoPay", receivedAmount: received, expectedAmount: "50450" })).toBe(false);
+      // Exercise defensive resolution of a legacy zero-evidence row.
+      await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.UNDERPAID } });
+      await prisma.qrisUnderpaidTx.create({ data: { orderId: order.id, gateway: "TokoPay", receivedAmount: received, expectedAmount: "50450" } });
+    } else {
+      expect(await markOrderUnderpaid(prisma, { orderId: order.id, gateway: "TokoPay", receivedAmount: received, expectedAmount: "50450" })).toBe(true);
+    }
     await expect(creditUnderpaidTopupAnyway(prisma, { orderId: order.id, adminId: ADMIN_ID })).rejects.toMatchObject({ key: "error.underpaid_topup_fee_not_covered" });
     expect((await freshUser()).walletBalance.toString()).toBe("0");
     expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.UNDERPAID);

@@ -1,62 +1,32 @@
 /**
- * Render notification_outbox EMAIL-channel payloads into mail. Sibling to
- * templates.ts's `render()`. It handles the five OWNER_EMAIL_* events (the
- * enqueueOwner*Email helpers in packages/db/src/crud/notifications.ts) plus
- * the one BUYER_EMAIL_* event — everything else returns `null`, which the
- * dispatcher treats as "no template", same as templates.ts's `""` sentinel
- * for an unrendered Telegram event.
+ * Render all canonical email registry events and the retained legacy email
+ * extensions from the shared notification outbox. Canonical events use the
+ * central HTML/plaintext renderer; account recovery decrypts its stored URL
+ * only while rendering. Legacy receipts and wallet summaries keep their
+ * existing compatible presentation. Unknown events return null.
  *
- * NOT ALL OF THESE GO TO THE SHOP OWNER. BUYER_EMAIL_ORDER_READY lands in a
- * customer's inbox, which is why it resolves its brand through
- * `resolveBuyerBrandConfig` (storefront origin) rather than
- * `resolveOwnerBrandConfig` (admin origin), and why its subject rule below is
- * the strictest in this file. Keep the two brand resolvers separate.
- *
- * PLAIN TEXT, WITH ONE EXCEPTION: OWNER_EMAIL_MANUAL_ORDER_QUEUED,
- * OWNER_EMAIL_NEW_TICKET, and OWNER_EMAIL_TICKET_REPLY stay plain text (no
- * HTML, no `escape()`) — out of scope for the email-design-system plan, not
- * because they can't be upgraded, but because that plan's blast radius is
- * deliberately limited to the two templates it actually redesigned.
- * OWNER_EMAIL_ORDER_PAID is the one exception among those original four: the
- * shared HTML design system (packages/core/src/email) now exists, and this
- * event is one of the two it targets, so its branch resolves brand/copy from
- * Settings and calls `renderOrderPaidEmail`, returning a real `html`
- * alongside `text`. OWNER_EMAIL_WALLET_TOPUP (added later) also renders full
- * HTML via `renderWalletTopupEmail`, but — unlike ORDER_PAID — with a fixed
- * title/subtitle/message and NO Settings-driven copy override; see that
- * branch's own note and templates/walletTopup.ts's header for why. This
- * function is therefore `async` (Settings reads go through Prisma) even
- * though the plain-text branches remain pure string-building.
- *
- * SUBJECT-LINE CONSTRAINT — read before touching this file: sendMail
- * (packages/core/src/mailer.ts) logs the subject on every send. For four of
- * the five OWNER_EMAIL_* events (MANUAL_ORDER_QUEUED, NEW_TICKET,
- * TICKET_REPLY, WALLET_TOPUP) the subject is a fixed string literal with zero
- * interpolation — no payload value may ever be substituted into those.
- * OWNER_EMAIL_ORDER_PAID is the deliberate exception: its subject (via
- * renderOrderPaidEmail/buildSubject) substitutes {shop_name} and,
- * additionally, {order_code} — an accepted, narrowly-scoped risk because this
- * email's only recipient is the trusted shop admin (see
- * packages/core/src/email/subject.ts's header for the full rationale). Do not
- * extend {order_code} substitution to any other event's subject, and do not
- * add new tokens to the four fixed-subject events (including WALLET_TOPUP).
- *
- * BUYER_EMAIL_ORDER_READY is the hardest line of all here: its subject is a
- * fixed literal and its order code must stay out of BOTH the subject and the
- * renderShell preheader. That accepted risk taken for ORDER_PAID does not
- * transfer — ORDER_PAID's reader is the trusted shop admin, whereas for a
- * guest order the order code IS the entire credential (POST /api/v1/track
- * swaps it for a session), and subject + preheader are exactly what a
- * lock-screen notification preview renders.
+ * Branding comes from existing Settings. Copy is source-controlled; saved
+ * legacy copy settings remain stored for compatibility but do not override it.
+ * Admin and customer branding use separate public origins so customer emails
+ * never expose the admin host. Customer subjects and preheaders must not
+ * contain order codes, recovery tokens, product credentials, or other secrets.
+ * sendMail records acceptance without logging message subjects or recipients.
  */
 import { NotificationEvent } from "@app/core/enums";
 import { config } from "@app/core/config";
+import { decryptCredentials } from "@app/core/credentialCrypto";
 import { Decimal } from "@app/core/money";
 import { formatMoney, formatUsdt } from "@app/core/formatters";
 import { prisma, getSetting } from "@app/db";
 import { manualQueueMoneyLines, type ManualQueueMoneyKey, type ManualQueueMoneyPayload } from "./manualQueueMoney";
 import {
   renderOrderPaidEmail,
+  renderEventNotification,
+  renderResetPasswordEmail,
+  PASSWORD_RESET_EMAIL_COPY,
+  EMAIL_EVENT_REGISTRY,
+  canonicalEmailEventFor,
+  type EmailEventKey,
   renderOrderReadyEmail,
   renderWalletTopupEmail,
   toAbsoluteAssetUrl,
@@ -292,26 +262,9 @@ function formatWarranty(warrantyDays: unknown): string | null {
   return `${days} days / ${days} hari`;
 }
 
-/** Resolve the "New Paid Order" `EmailCopy` from its four `email_order_paid_*`
- * Settings keys, each falling back to its documented default (Global
- * Constraints table) when unset. */
+/** Source-controlled paid-order copy; saved legacy copy overrides remain untouched. */
 async function resolveOrderPaidCopy(): Promise<EmailCopy> {
-  const [subject, title, subtitle, message] = await Promise.all([
-    getSetting(prisma, "email_order_paid_subject"),
-    getSetting(prisma, "email_order_paid_title"),
-    getSetting(prisma, "email_order_paid_subtitle"),
-    getSetting(prisma, "email_order_paid_message"),
-  ]);
-  return {
-    // A blank Subject header is a spam-filter red flag in a way a blank
-    // title/subtitle/message is not (those are harmless empty body text),
-    // so subject alone also falls back on a whitespace-only stored value,
-    // not just on a genuinely unset (null) Setting.
-    subject: subject?.trim() || "New Paid Order - {order_code}",
-    title: title ?? "You've got a new order",
-    subtitle: subtitle ?? "A customer just completed payment.",
-    message: message ?? "Here are the details.",
-  };
+  return { subject: "New Paid Order - {order_code}", title: "You've got a new order", subtitle: "A customer just completed payment.", message: "Here are the details." };
 }
 
 /** Owner summary rows retain native USDT precision so the visible marker and
@@ -331,11 +284,8 @@ function toOrderPaidItem(it: OrderPaidPayloadItem, currency: string): OrderPaidI
   };
 }
 
-/** Render an EMAIL-channel outbox row into a subject + body, or `null` for
- * anything that isn't one of the five OWNER_EMAIL_* events. `async` because
- * the OWNER_EMAIL_ORDER_PAID and OWNER_EMAIL_WALLET_TOPUP branches resolve
- * brand (and, for ORDER_PAID only, copy) from Settings via Prisma — see the
- * file header for why the plain-text branches don't need it. */
+/** Render canonical registry events and retained legacy extensions, resolving
+ * audience-specific branding and encrypted recovery data. Unknown events return null. */
 export async function renderEmail(
   event: string,
   payload: OrderPaidPayload &
@@ -345,6 +295,21 @@ export async function renderEmail(
     WalletTopupPayload &
     OrderReadyPayload,
 ): Promise<{ subject: string; text: string; html?: string } | null> {
+  const canonical = canonicalEmailEventFor(event);
+  if (event !== NotificationEvent.BUYER_EMAIL_ORDER_READY && EMAIL_EVENT_REGISTRY.some((row) => row.key === canonical)) {
+    const facts = { ...payload } as Record<string, unknown>;
+    if (canonical === "account.password_reset.requested" && typeof facts.reset_url_encrypted === "string") {
+      facts.reset_url = decryptCredentials(facts.reset_url_encrypted, "notification.password-reset:v1");
+    }
+    if (canonical === "account.password_reset.requested") {
+      if (typeof facts.reset_url !== "string") return null;
+      return renderResetPasswordEmail({ resetUrl: facts.reset_url, expiryMinutes: Number(facts.expiry_minutes ?? 60), requestedAt: String(facts.requested_at ?? facts.occurred_at ?? ""), ip: typeof facts.ip === "string" ? facts.ip : null, userAgent: typeof facts.user_agent === "string" ? facts.user_agent : null }, await resolveBuyerBrandConfig(), PASSWORD_RESET_EMAIL_COPY);
+    }
+    const definition = EMAIL_EVENT_REGISTRY.find((row) => row.key === canonical)!;
+    const brand = definition.audience === "admin" ? await resolveOwnerBrandConfig() : await resolveBuyerBrandConfig();
+    return renderEventNotification(canonical as EmailEventKey, facts, brand);
+  }
+
   // The one BUYER-facing branch — first, so it is impossible to miss when
   // reading this if-chain. Everything below it is addressed to the shop
   // owner. It resolves brand from Settings (like the two HTML owner

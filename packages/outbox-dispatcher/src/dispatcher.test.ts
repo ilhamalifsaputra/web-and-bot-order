@@ -7,8 +7,9 @@
 // module), it only takes effect once "@app/core/mailer" is actually imported
 // further down. `vi` itself comes from the named-imports block below —
 // hoisted the same way, so it's already bound by the time this call runs.
-vi.mock("@app/core/mailer", () => ({
-  sendMail: vi.fn().mockResolvedValue(undefined),
+vi.mock("@app/core/mailer", async (original) => ({
+  ...await original<typeof import("@app/core/mailer")>(),
+  sendMail: vi.fn().mockResolvedValue({messageId:"<accepted@test.invalid>",acceptedAt:"2026-10-12T00:00:00.000Z"}),
 }));
 
 /**
@@ -91,7 +92,7 @@ import { cleanupTestDb } from "./dispatcher.test-setup";
  * `bot.api.sendMessage` is ever called for a DM event like ADMIN_PW_RESET, so
  * no real Telegram/HTTP is involved).
  */
-import { describe, it, expect, afterAll, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterAll, afterEach, vi } from "vitest";
 import type { Bot, InlineKeyboard } from "grammy";
 import { GrammyError } from "grammy";
 import {
@@ -146,6 +147,11 @@ afterAll(async () => {
   await prisma.$disconnect();
   cleanupTestDb();
 });
+
+async function enableLegacyEmailPolicies() {
+  for(const key of ["owner_email_enabled","owner_email_on_paid_order","owner_email_on_manual_queue","owner_email_on_new_ticket","owner_email_on_ticket_reply","owner_email_on_wallet_topup"]) await setSetting(prisma,key,"true");
+  await prisma.setting.deleteMany({where:{key:{startsWith:"email_event_enabled:"}}});
+}
 
 function fakeBot() {
   const sendMessage = vi.fn().mockResolvedValue({ message_id: 1 });
@@ -931,7 +937,7 @@ async function makeManualDenom(deliveryType: string = DeliveryType.MANUAL) {
  * hand-crafted outbox rows.
  */
 describe("drainBatch delivers the per-SKU manual delivery-flow DMs", () => {
-  it("suppresses duplicate wallet success DMs and routine automatic owner email", async () => {
+  it("suppresses duplicate wallet DMs but never records unsent owner email as SENT", async () => {
     const buyer = await upsertUser(prisma, { telegramId: 500_997, username: "wallet-tracked", fullName: "Buyer" });
     const order = await prisma.order.create({ data: { userId: buyer.id, orderCode: `WLT-${crypto.randomUUID()}`, kind: "WALLET_TOPUP", status: "DELIVERED", subtotalAmount: 1000, totalAmount: 1000, paymentState: "PAID", walletCreditState: "CREDITED" } });
     await prisma.fulfillmentMessage.create({ data: { orderId: order.id, chatId: 500_997n, messageId: 444, state: "FINISHED" } });
@@ -944,7 +950,8 @@ describe("drainBatch delivers the per-SKU manual delivery-flow DMs", () => {
     await drainBatch(bot);
     expect(sendMessage.mock.calls.filter(call => call[0] === 500_997)).toHaveLength(0);
     expect(vi.mocked(sendMail).mock.calls.length).toBe(emailsBefore);
-    expect(await prisma.notificationOutbox.count({ where: { orderId: order.id, status: "SENT" } })).toBe(3);
+    expect(await prisma.notificationOutbox.count({ where: { orderId: order.id, status: "SENT" } })).toBe(1);
+    expect(await prisma.notificationOutbox.count({where:{orderId:order.id,channel:"EMAIL",status:"FAILED"}})).toBe(2);
   });
   it("suppresses legacy manual notifications already queued for a Digiflazz order", async () => {
     const buyer = await upsertUser(prisma, { telegramId: 500_999, username: "auto-buyer", fullName: "Buyer" });
@@ -1507,8 +1514,9 @@ describe("RESTOCK_SUBSCRIBER_NOTIFIED", () => {
  * per-test reset, same as every other describe block here).
  */
 describe("drainBatch EMAIL lane (owner email notifications)", () => {
+  beforeEach(enableLegacyEmailPolicies);
   afterEach(() => {
-    vi.mocked(sendMail).mockReset().mockResolvedValue(undefined);
+    vi.mocked(sendMail).mockReset().mockResolvedValue({messageId:"<accepted@test.invalid>",acceptedAt:"2026-10-12T00:00:00.000Z"});
   });
 
   it("leaves the row PENDING with a backoff nextRetryAt (never FAILED) when SMTP is unconfigured, and never calls sendMail", async () => {
@@ -1557,7 +1565,7 @@ describe("drainBatch EMAIL lane (owner email notifications)", () => {
     });
     expect(row!.status).toBe("FAILED");
     expect(row!.attempts).toBe(1);
-    expect(row!.lastError).toContain("no email template for event");
+    expect(row!.lastError).toBe("UNSUPPORTED_EVENT");
   });
 
   it("fails an EMAIL row at once (maxAttempts=1) when payload.to is missing, without calling sendMail", async () => {
@@ -1580,7 +1588,7 @@ describe("drainBatch EMAIL lane (owner email notifications)", () => {
     });
     expect(row!.status).toBe("FAILED");
     expect(row!.attempts).toBe(1);
-    expect(row!.lastError).toContain("missing to address");
+    expect(row!.lastError).toBe("NO_RECIPIENT");
   });
 
   it("once SMTP is configured, sends a valid EMAIL row via sendMail with the rendered {to, subject, text, html} and marks it SENT, never touching bot.api.sendMessage", async () => {
@@ -1634,7 +1642,57 @@ describe("drainBatch EMAIL lane (owner email notifications)", () => {
     expect(row!.status).toBe("SENT");
   });
 
-  it("sends a plain-text-only event (OWNER_EMAIL_NEW_TICKET) via sendMail with no html key (undefined), confirming the html upgrade is scoped to OWNER_EMAIL_ORDER_PAID alone", async () => {
+  it("sends email without a bot even behind fifty older Telegram notifications", async () => {
+    await setSetting(prisma,SMTP_HOST_KEY,"smtp.test.invalid");await setSetting(prisma,SMTP_FROM_KEY,"Shop <no-reply@example.com>");
+    const telegram = await prisma.notificationOutbox.createMany({data:Array.from({length:51},()=>({event:"ADMIN_PW_RESET",channel:"TELEGRAM",payloadJson:JSON.stringify({chat_id:999,code:"TESTONLY"})}))});
+    expect(telegram.count).toBe(51);
+    const row=await prisma.notificationOutbox.create({data:{event:"OWNER_EMAIL_NEW_TICKET",channel:"EMAIL",payloadJson:JSON.stringify({to:"owner@example.com",ticket_id:56})}});
+    await drainBatch(null);
+    expect((await prisma.notificationOutbox.findUniqueOrThrow({where:{id:row.id}})).status).toBe("SENT");
+    expect(await prisma.notificationOutbox.count({where:{event:"ADMIN_PW_RESET",payloadJson:{contains:"TESTONLY"},status:"PENDING",claimedAt:null}})).toBe(51);
+    await prisma.notificationOutbox.deleteMany({where:{event:"ADMIN_PW_RESET",payloadJson:{contains:"TESTONLY"}}});
+  });
+
+  it("rechecks OFF policy for an already queued message without recording SENT", async () => {
+    await setSetting(prisma,"email_event_enabled:legacy.owner_order_paid","false");
+    const row=await prisma.notificationOutbox.create({data:{event:"OWNER_EMAIL_ORDER_PAID",channel:"EMAIL",payloadJson:JSON.stringify({to:"owner@example.com"})}});
+    await drainBatch(fakeBot().bot);
+    const saved=await prisma.notificationOutbox.findUniqueOrThrow({where:{id:row.id}});
+    expect(saved.status).toBe("FAILED"); expect(saved.lastError).toBe("SKIPPED_DISABLED");expect(sendMail).not.toHaveBeenCalled();
+  });
+  it("permanently rejected recipients fail once without leaking provider messages", async () => {
+    await setSetting(prisma,SMTP_HOST_KEY,"smtp.test.invalid");await setSetting(prisma,SMTP_FROM_KEY,"Shop <no-reply@example.com>");
+    const row=await prisma.notificationOutbox.create({data:{event:"OWNER_EMAIL_NEW_TICKET",channel:"EMAIL",payloadJson:JSON.stringify({to:"owner@example.com",ticket_id:55})}});
+    vi.mocked(sendMail).mockRejectedValueOnce(Object.assign(new Error("secret=smtp-password owner@example.com"),{code:"EENVELOPE",responseCode:550}));
+    await drainBatch(fakeBot().bot);
+    const saved=await prisma.notificationOutbox.findUniqueOrThrow({where:{id:row.id}});
+    expect(saved.status).toBe("FAILED");expect(saved.attempts).toBe(1);expect(saved.lastError).toBe("SMTP_RECIPIENT");
+  });
+
+  it.each([undefined, {}, {acceptedAt:"invalid",messageId:null}])("never marks resolved mail without valid acceptance evidence SENT %#", async evidence => {
+    await setSetting(prisma,SMTP_HOST_KEY,"smtp.test.invalid");await setSetting(prisma,SMTP_FROM_KEY,"Shop <no-reply@example.com>");
+    const row=await prisma.notificationOutbox.create({data:{event:"OWNER_EMAIL_NEW_TICKET",channel:"EMAIL",payloadJson:JSON.stringify({to:"owner@example.com",ticket_id:57})}});
+    vi.mocked(sendMail).mockResolvedValueOnce(evidence as never);
+    await drainBatch(null);
+    const saved=await prisma.notificationOutbox.findUniqueOrThrow({where:{id:row.id}});
+    expect(sendMail).toHaveBeenCalledTimes(1);
+    expect(saved.status).toBe("PENDING");expect(saved.sentAt).toBeNull();expect(saved.lastError).toBe("SMTP_ACCEPTANCE_UNCONFIRMED");
+    expect(JSON.parse(saved.payloadJson).delivery).toBeUndefined();
+  });
+
+  it("actually sends automatic order admin email and stores acceptance evidence", async () => {
+    await setSetting(prisma, SMTP_HOST_KEY, "smtp.test.invalid"); await setSetting(prisma, SMTP_FROM_KEY, "Shop <noreply@example.com>");
+    const buyer = await upsertUser(prisma,{telegramId:500_987,username:"auto-mail",fullName:"Buyer"});
+    const order = await prisma.order.create({data:{userId:buyer.id,orderCode:`AUTOMAIL-${crypto.randomUUID()}`,status:"DELIVERED",fulfillmentProvider:"DIGIFLAZZ",subtotalAmount:1000,totalAmount:1000}});
+    const row=await prisma.notificationOutbox.create({data:{event:"OWNER_EMAIL_ORDER_PAID",channel:"EMAIL",orderId:order.id,payloadJson:JSON.stringify({to:"owner@example.com",order_code:order.orderCode,items:[],total:"1000",currency:"IDR"})}});
+    const before=vi.mocked(sendMail).mock.calls.length;
+    await drainBatch(fakeBot().bot);
+    expect(vi.mocked(sendMail).mock.calls.length).toBe(before+1);
+    const saved=await prisma.notificationOutbox.findUniqueOrThrow({where:{id:row.id}});
+    expect(saved.status).toBe("SENT");expect(JSON.parse(saved.payloadJson).delivery).toEqual({messageId:"<accepted@test.invalid>",acceptedAt:"2026-10-12T00:00:00.000Z"});
+  });
+
+  it("renders a legacy support-ticket event with the centralized HTML and plaintext template", async () => {
     // SMTP is already configured by the previous test (persists — no
     // per-test DB reset in this file).
     await prisma.notificationOutbox.create({
@@ -1649,10 +1707,11 @@ describe("drainBatch EMAIL lane (owner email notifications)", () => {
     const { bot } = fakeBot();
     await drainBatch(bot);
 
-    const call = vi.mocked(sendMail).mock.calls.find((c) => (c[1].text as string).includes("Plain-text event check"));
+    const call = vi.mocked(sendMail).mock.calls.find((c) => (c[1].text as string).includes("Ticket: 5001"));
     expect(call).toBeDefined();
     const [, args] = call!;
-    expect(args.html).toBeUndefined();
+    expect(args.html).toContain("New support ticket");
+    expect(args.text).not.toContain("Plain-text event check");
     expect(args.subject).toBe("New support ticket");
 
     const row = await prisma.notificationOutbox.findFirst({
@@ -1704,7 +1763,7 @@ describe("drainBatch EMAIL lane (owner email notifications)", () => {
     // FAILED (which is reserved for maxAttempts<=1 one-shot invalid rows).
     expect(final!.status).toBe("DEAD_LETTER");
     expect(final!.attempts).toBe(config.NOTIF_MAX_ATTEMPTS);
-    expect(final!.lastError).toContain("smtp connection refused");
+    expect(final!.lastError).toBe("SMTP_CONNECTION");
   });
 
   it("a TELEGRAM-channel row (schema default channel, no channel set) is unaffected by the EMAIL lane — still sent via bot.api.sendMessage, and sendMail is never called", async () => {
@@ -1755,8 +1814,8 @@ describe("drainBatch EMAIL lane (owner email notifications)", () => {
     const [, args] = vi.mocked(sendMail).mock.calls[0]!;
     expect(args.to).toBe("owner@example.com");
     expect(args.subject).toBe("New support ticket");
-    expect(args.text).toContain(`#${ticket.id}`);
-    expect(args.text).toContain("The full chain test message");
+    expect(args.text).toContain(`Ticket: ${ticket.ticketNumber}`);
+    expect(args.html).toContain("New support ticket");
     expect(sendMessage).not.toHaveBeenCalled();
 
     const row = await prisma.notificationOutbox.findFirst({
@@ -1925,10 +1984,11 @@ describe("runDispatcher records an outbox heartbeat (Task 15 / I-3)", () => {
  * must never be retried; recording SENT is retried on its own instead.
  */
 describe("a send that succeeded is never repeated when recording SENT fails (Task B1.1)", () => {
+  beforeEach(enableLegacyEmailPolicies);
   afterEach(() => {
     dbMockState.markSentFailuresLeft = 0;
     vi.useRealTimers();
-    vi.mocked(sendMail).mockReset().mockResolvedValue(undefined);
+    vi.mocked(sendMail).mockReset().mockResolvedValue({messageId:"<accepted@test.invalid>",acceptedAt:"2026-10-12T00:00:00.000Z"});
   });
 
   it("Telegram: sends exactly once and records SENT on a later tick once the database recovers", async () => {
@@ -2002,10 +2062,11 @@ describe("a send that succeeded is never repeated when recording SENT fails (Tas
  * without ever counting an attempt. Same pattern readOrderForDelivery fixed.
  */
 describe("drainBatch isolates an email render or SMTP-settings failure (Task B1.3)", () => {
+  beforeEach(enableLegacyEmailPolicies);
   afterEach(() => {
     dbMockState.smtpCredsError = null;
     dbMockState.renderEmailError = null;
-    vi.mocked(sendMail).mockReset().mockResolvedValue(undefined);
+    vi.mocked(sendMail).mockReset().mockResolvedValue({messageId:"<accepted@test.invalid>",acceptedAt:"2026-10-12T00:00:00.000Z"});
   });
 
   for (const which of ["renderEmail", "getSmtpCreds"] as const) {

@@ -71,6 +71,13 @@ async function makeFailedNotif(): Promise<number> {
 }
 
 describe("GET /api/outbox", () => {
+  it("never exposes email auth material or full recipients in diagnostics", async () => {
+    await prisma.notificationOutbox.create({data:{event:"account.password_reset.requested",channel:"EMAIL",payloadJson:JSON.stringify({to:"private@example.com",reset_url:"https://shop/reset/SECRET",reset_url_encrypted:"CIPHERTEXT",reset_token_hash:"HASHSECRET"}),lastError:"SMTP private@example.com SECRET"}});
+    const res=await app.inject({url:"/api/outbox",cookies:{[COOKIE]:cookie}});
+    expect(res.statusCode).toBe(200);
+    for(const secret of ["private@example.com","SECRET","CIPHERTEXT","HASHSECRET"]) expect(res.body).not.toContain(secret);
+    const row=res.json().rows[0];expect(row.emailRecipientMasked).toBe("p***@example.com");expect(row.deliveryOutcome).toBe("queued");
+  });
   it("includes channel in every row, defaulting to TELEGRAM and passing EMAIL through unchanged", async () => {
     await prisma.notificationOutbox.create({
       data: { event: "ORDER_DELIVERED", payloadJson: JSON.stringify({ x: 1 }), status: "SENT" },
@@ -89,6 +96,11 @@ describe("GET /api/outbox", () => {
 });
 
 describe("POST /api/outbox/:id/retry", () => {
+  it("refuses an already accepted email resend and leaves it SENT", async () => {
+    const row=await prisma.notificationOutbox.create({data:{event:"OWNER_EMAIL_NEW_TICKET",channel:"EMAIL",status:"SENT",payloadJson:JSON.stringify({to:"owner@example.com"})}});
+    const res=await postJson(`/api/outbox/${row.id}/retry`,cookie,csrf);
+    expect(res.statusCode).toBe(409);expect((await prisma.notificationOutbox.findUniqueOrThrow({where:{id:row.id}})).status).toBe("SENT");
+  });
   it("happy path: requeues a FAILED notification back to PENDING and audits", async () => {
     const id = await makeFailedNotif();
     const res = await postJson(`/api/outbox/${id}/retry`, cookie, csrf);

@@ -257,7 +257,7 @@ describe("support + reject conversations", () => {
     expect(audit?.correlationId).toBe(String(photosDone.update.update_id));
   });
 
-  it("support: a bot-created ticket enqueues exactly ONE owner email (NEW_TICKET), not a second false TICKET_REPLY from the thread-mirroring addTicketMessage call", async () => {
+  it("support: a bot-created ticket enqueues exactly one canonical owner email without a duplicate legacy or mirrored reply email", async () => {
     // Both owner-email triggers configured, so a bug that double-fires would
     // actually enqueue a second (wrong) row instead of silently no-op'ing.
     await setSetting(prisma, "owner_email_enabled", "true");
@@ -276,8 +276,11 @@ describe("support + reject conversations", () => {
     const ticket = await prisma.supportTicket.findFirst({ where: { userId: sample.user.id } });
     expect(ticket).toBeTruthy();
     expect(
-      await prisma.notificationOutbox.count({ where: { event: NotificationEvent.OWNER_EMAIL_NEW_TICKET } }),
+      await prisma.notificationOutbox.count({ where: { event: "support.ticket.created.admin" } }),
     ).toBe(1);
+    expect(
+      await prisma.notificationOutbox.count({ where: { event: NotificationEvent.OWNER_EMAIL_NEW_TICKET } }),
+    ).toBe(0);
     expect(
       await prisma.notificationOutbox.count({ where: { event: NotificationEvent.OWNER_EMAIL_TICKET_REPLY } }),
     ).toBe(0);

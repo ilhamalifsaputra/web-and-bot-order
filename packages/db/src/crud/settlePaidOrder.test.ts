@@ -1044,8 +1044,8 @@ describe("BUYER_EMAIL_ORDER_READY (guest buyer's order-ready email)", () => {
     );
   });
 
-  it("registered (non-guest) buyer: no row, in either branch", async () => {
-    // sample.user is a normal Telegram-account user — isGuest defaults false.
+  it("registered buyer with an account email receives a receipt in both delivery branches", async () => {
+    await prisma.user.update({ where: { id: sample.user.id }, data: { email: "registered@example.com" } });
     const autoOrder = await makePendingVerificationOrder(sample.product.id, 1);
     await settlePaidOrder(prisma, autoOrder.id, { adminId });
 
@@ -1054,14 +1054,15 @@ describe("BUYER_EMAIL_ORDER_READY (guest buyer's order-ready email)", () => {
     await settlePaidOrder(prisma, manualOrder.id, { adminId });
     await fulfillManualOrder(prisma, manualOrder.id, { adminId, content: "user:pass" });
 
-    expect(
-      await prisma.notificationOutbox.count({
-        where: { event: NotificationEvent.BUYER_EMAIL_ORDER_READY },
-      }),
-    ).toBe(0);
+    const receipts = await prisma.notificationOutbox.findMany({ where: { event: NotificationEvent.BUYER_EMAIL_ORDER_READY } });
+    expect(receipts).toHaveLength(2);
+    for (const row of receipts) {
+      expect(row.status).toBe("PENDING");
+      expect(JSON.parse(row.payloadJson).to).toBe("registered@example.com");
+    }
   });
 
-  it("guest with no guestEmail: no row, in either branch — there is nowhere to send it", async () => {
+  it("guest without an email records an explicit no-recipient outcome in both branches", async () => {
     await makeSampleUserAGuest(null);
 
     const autoOrder = await makePendingVerificationOrder(sample.product.id, 1);
@@ -1077,6 +1078,9 @@ describe("BUYER_EMAIL_ORDER_READY (guest buyer's order-ready email)", () => {
         where: { event: NotificationEvent.BUYER_EMAIL_ORDER_READY },
       }),
     ).toBe(0);
+    const skipped = await prisma.notificationOutbox.findMany({ where: { event: "order.completed.customer" } });
+    expect(skipped).toHaveLength(2);
+    for (const row of skipped) expect(row).toMatchObject({ status: "FAILED", lastError: "SKIPPED_NO_RECIPIENT" });
   });
 
   // The guard that matters most. This email exists BECAUSE credentials are

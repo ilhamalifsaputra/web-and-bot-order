@@ -360,7 +360,7 @@ describe("TicketDetailPage — conversation", () => {
     await renderLoaded();
 
     await user.type(screen.getByPlaceholderText(/write a reply/i), "Checked with the courier.");
-    await user.click(screen.getByRole("checkbox", { name: /internal note/i }));
+    await user.click(screen.getByRole("switch", { name: /internal note/i }));
     await user.click(screen.getByRole("button", { name: /save internal note/i }));
 
     await waitFor(() =>

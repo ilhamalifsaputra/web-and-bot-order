@@ -533,6 +533,7 @@ describe("deliverPaidTokopayOrder — WALLET_TOPUP routing", () => {
     // Snapshot AFTER the cancel: the cancel itself legitimately released the
     // reservation. What must not change is anything the late callback does.
     const stockBefore = await prisma.stockItem.findMany({ where: { productId: sample.product.id } });
+    const outboxBefore = await prisma.notificationOutbox.findMany({ where: { orderId: order.id }, orderBy: { id: "asc" } });
 
     const result = await deliverPaidTokopayOrder(prisma, {
       orderId: order.id,
@@ -554,8 +555,8 @@ describe("deliverPaidTokopayOrder — WALLET_TOPUP routing", () => {
     expect(stockAfter.map((s) => `${s.id}:${s.status}`).sort()).toEqual(
       stockBefore.map((s) => `${s.id}:${s.status}`).sort(),
     );
-    const outbox = await prisma.notificationOutbox.count({ where: { orderId: order.id } });
-    expect(outbox).toBe(0);
+    const outbox = await prisma.notificationOutbox.findMany({ where: { orderId: order.id }, orderBy: { id: "asc" } });
+    expect(outbox).toEqual(outboxBefore);
   });
 
   it("a duplicate gateway tx id does not double-credit the wallet", async () => {

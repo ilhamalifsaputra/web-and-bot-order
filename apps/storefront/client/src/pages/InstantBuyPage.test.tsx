@@ -514,9 +514,13 @@ describe("InstantBuyPage", () => {
     fireEvent.change(screen.getByPlaceholderText("Code"), { target: { value: "OLD" } });
     fireEvent.click(screen.getByRole("button", { name: "Apply" }));
     await waitFor(() => expect(screen.getByRole("button", { name: /Buy now/ })).toBeDisabled());
+    // A disabled button can render before React Query starts its mutation.
+    // Establish the in-flight request before abandoning this denomination.
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/v1/topup/preview", { denomination_id: 1, qty: 1, voucher_code: "OLD" }));
     fireEvent.click(screen.getByRole("radio", { name: /172 Diamonds/ }));
     await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/v1/topup/preview", { denomination_id: 2, qty: 1 }));
     await act(async () => { resolveVoucher({ ...checkoutData, total: "1", qris_grand_total: "1", voucher_code: "OLD" }); });
+    await waitFor(() => expect(document.getElementById("checkout-summary")).toBeInTheDocument());
     expect(within(document.getElementById("checkout-summary")!).queryByText("Rp1")).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("User ID"), { target: { value: " 4531475056881819915 " } });
     fireEvent.change(screen.getByLabelText("Zone ID"), { target: { value: " 0012 " } });

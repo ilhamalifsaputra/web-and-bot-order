@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { RotateCcw, Save, SquarePen } from "lucide-react";
@@ -440,65 +441,10 @@ export function BrandingPage() {
           </Card>
 
           <Card>
-            <CardHeader><CardTitle>New Paid Order Email</CardTitle></CardHeader>
-            <CardContent className="divide-y divide-line">
-              <TextFieldRow
-                label="Subject"
-                fieldKey="email_order_paid_subject"
-                value={data.emailOrderPaidSubject}
-                onSaved={invalidate}
-                helperText="Use {order_code} to include the order code, and {shop_name} for the shop name."
-              />
-              <TextFieldRow
-                label="Title"
-                fieldKey="email_order_paid_title"
-                value={data.emailOrderPaidTitle}
-                onSaved={invalidate}
-              />
-              <TextFieldRow
-                label="Subtitle"
-                fieldKey="email_order_paid_subtitle"
-                value={data.emailOrderPaidSubtitle}
-                onSaved={invalidate}
-              />
-              <TextFieldRow
-                label="Message"
-                fieldKey="email_order_paid_message"
-                value={data.emailOrderPaidMessage}
-                onSaved={invalidate}
-                multiline
-              />
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader><CardTitle>Reset Password Email</CardTitle></CardHeader>
-            <CardContent className="divide-y divide-line">
-              <TextFieldRow
-                label="Subject"
-                fieldKey="email_reset_password_subject"
-                value={data.emailResetPasswordSubject}
-                onSaved={invalidate}
-              />
-              <TextFieldRow
-                label="Title"
-                fieldKey="email_reset_password_title"
-                value={data.emailResetPasswordTitle}
-                onSaved={invalidate}
-              />
-              <TextFieldRow
-                label="Subtitle"
-                fieldKey="email_reset_password_subtitle"
-                value={data.emailResetPasswordSubtitle}
-                onSaved={invalidate}
-              />
-              <TextFieldRow
-                label="Message"
-                fieldKey="email_reset_password_message"
-                value={data.emailResetPasswordMessage}
-                onSaved={invalidate}
-                multiline
-              />
+            <CardHeader><CardTitle>Transactional email notifications</CardTitle></CardHeader>
+            <CardContent className="space-y-2">
+              <p className="text-sm text-ink-soft">Transactional email content is maintained with the application. Choose which events send email in Email Notifications.</p>
+              <Link to="/email-notifications" className="text-sm text-pine underline">Manage email notifications</Link>
             </CardContent>
           </Card>
         </div>

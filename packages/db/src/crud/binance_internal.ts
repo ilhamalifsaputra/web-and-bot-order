@@ -21,6 +21,7 @@
  * (QRIS_RECLAIMABLE_OUTCOMES) — the two are NOT meant to be identical.
  */
 import { config } from "@app/core/config";
+import { enqueueEmailEvent } from "./emailEvents";
 import { OrderStatus, OrderCurrency, OrderKind, PaymentMethod, RefundStatus } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { logger } from "@app/core/logger";
@@ -1090,6 +1091,10 @@ export async function refundUnderpaidOrderTx(
     from: OrderStatus.UNDERPAID,
     to: OrderStatus.REFUNDED,
     meta: `refund ${received.toString()} by admin_id=${args.adminId}`,
+  });
+  if (refund) await enqueueEmailEvent(tx, {
+    key: "refund.completed.customer", aggregateId: refund.id, orderId: order.id, userId: order.userId,
+    payload: { refund_id: refund.id, amount: received.toString(), currency: order.currency, payout_method: "WALLET" },
   });
   // No log line here: this runs inside the caller's transaction, and a later
   // rollback (e.g. its audit insert failing) would leave a log claiming money

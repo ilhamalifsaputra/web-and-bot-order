@@ -57,6 +57,7 @@ import { PageHeader } from "../components/shared/PageHeader";
 import { PageLayout } from "../components/shared/PageLayout";
 import { SaveConfirmDialog } from "../components/shared/SaveConfirmDialog";
 import { exactFieldsOf } from "../lib/exactFields";
+import { SettingsToggle } from "@/components/shared/SettingsToggle";
 
 // Per-channel service switches: the same service can be on for the Telegram
 // bot and off for the website (or vice versa).
@@ -447,7 +448,39 @@ interface FieldRowProps {
   selectOptions?: { value: string; label: string }[];
 }
 
-function FieldRow({ field, query, onSaved, onStatusChange, onNeedsRestart, selectOptions }: FieldRowProps) {
+function FieldRow(props: FieldRowProps) {
+  if (props.field.kind === "boolean") return <BooleanFieldRow {...props} />;
+  return <TextFieldRow {...props} />;
+}
+
+function BooleanFieldRow({ field, query, onSaved, onStatusChange, onNeedsRestart }: FieldRowProps) {
+  const [error, setError] = useState<string | null>(null);
+  const save = useMutation({
+    mutationFn: (checked: boolean) => apiPost("/api/settings/edit", { key: field.key, value: checked }),
+    onMutate: () => { setError(null); onStatusChange(field.key, "saving"); },
+    onSuccess: () => { if (field.needsRestart) onNeedsRestart?.(); onSaved(); },
+    onError: (err: Error) => setError(err.message),
+    onSettled: () => onStatusChange(field.key, null),
+  });
+  if (query && !matchesQuery(field.label, query)) return null;
+  return <div className="py-2">
+    <SettingsToggle id={`setting-${field.key}`} label={field.label} checked={field.checked ?? false} pending={save.isPending} onCheckedChange={(checked) => save.mutate(checked)} description={BOOLEAN_DESCRIPTIONS[field.key]} />
+    {field.needsRestart && <RestartRequiredBadge />}
+    {error && <p role="alert" className="text-xs text-rust">{error}</p>}
+  </div>;
+}
+
+const BOOLEAN_DESCRIPTIONS: Record<string, string> = {
+  smtp_secure: "ON uses implicit TLS, usually port 465. OFF uses STARTTLS, usually port 587.",
+  usd_idr_rate_auto: "Automatically refresh the market exchange rate.",
+  digiflazz_enabled: "Allow Digiflazz automatic fulfillment for Game Top Up.",
+  owner_email_enabled: "Allow owner email notifications. Transport readiness is shown separately.",
+  xendit_qris_enabled: "Show QRIS in the storefront footer. Checkout availability follows the payment integration.",
+  xendit_card_enabled: "Show card payment logos in the storefront footer. Checkout availability follows the payment integration.",
+  bulk_purchase_broadcast_enabled: "Publish qualifying bulk purchases using the configured threshold.",
+};
+
+function TextFieldRow({ field, query, onSaved, onStatusChange, onNeedsRestart, selectOptions }: FieldRowProps) {
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(field.value);
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -1086,6 +1119,10 @@ function SettingsEmailSMTP({ smtpVisible, smtpFields, fieldQueryFor, onSaved, on
             {testResults.__smtp__.detail}
           </p>
         )}
+        <Button size="sm" variant="outline" disabled={!smtpFields.find((f) => f.key === "smtp_host")?.hasValue || !smtpFields.find((f) => f.key === "owner_email")?.hasValue} onClick={() => setPendingTest({ methodKey: "__smtp_send__", label: "Test Email" })}>
+          Send Test Email
+        </Button>
+        {testResults.__smtp_send__ && <p className={`text-xs ${testResults.__smtp_send__.ok ? "text-grass-dark" : "text-rust"}`}>{testResults.__smtp_send__.detail}</p>}
       </CardContent>
     </Card>
   ));
@@ -1877,9 +1914,9 @@ function SettingsConnectionTestDialog({ pendingTest, setPendingTest, setTestResu
   return (<SaveConfirmDialog
     open={pendingTest !== null}
     onOpenChange={(open) => { if (!open) setPendingTest(null); }}
-    title={pendingTest ? `Test the ${pendingTest.label} connection?` : ""}
-    description="This checks whether the currently-saved credentials work, without changing anything."
-    confirmLabel="Test"
+    title={pendingTest?.methodKey === "__smtp_send__" ? "Send a test email?" : pendingTest ? `Test the ${pendingTest.label} connection?` : ""}
+    description={pendingTest?.methodKey === "__smtp_send__" ? "Sends a labeled test message to the saved owner email address. Acceptance by the mail server does not prove inbox delivery." : "This checks whether the currently-saved credentials work, without changing anything."}
+    confirmLabel={pendingTest?.methodKey === "__smtp_send__" ? "Send Test Email" : "Test"}
     onConfirm={async () => {
       if (!pendingTest) return "";
       if (pendingTest.methodKey === "__telegram_bot_token__") {
@@ -1895,6 +1932,11 @@ function SettingsConnectionTestDialog({ pendingTest, setPendingTest, setTestResu
       if (pendingTest.methodKey === "__telegram_join_group__") {
         const result = await apiPost<TestResult>("/api/settings/telegram/test", { target: "join_gate_group_id" });
         setTestResults((prev) => ({ ...prev, __telegram_join_group__: result }));
+        return result.detail;
+      }
+      if (pendingTest.methodKey === "__smtp_send__") {
+        const result = await apiPost<TestResult>("/api/settings/smtp/send-test", {});
+        setTestResults((prev) => ({ ...prev, __smtp_send__: result }));
         return result.detail;
       }
       if (pendingTest.methodKey === "__smtp__") {

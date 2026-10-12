@@ -40,6 +40,11 @@ export interface ResetPasswordInput {
   userAgent: string | null;
 }
 
+export const PASSWORD_RESET_EMAIL_COPY: EmailCopy = {
+  subject: "{shop_name} \u2014 reset your password", title: "Reset your password",
+  subtitle: "We received a request to reset your password.", message: "Click the button below to choose a new password.",
+};
+
 export function renderResetPasswordEmail(
   input: ResetPasswordInput,
   brand: BrandConfig,

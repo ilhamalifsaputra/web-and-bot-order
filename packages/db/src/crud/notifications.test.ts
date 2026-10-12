@@ -381,12 +381,12 @@ describe("outbox CRUD", () => {
 });
 
 describe("getNotification", () => {
-  it("returns just the event type for an existing outbox row", async () => {
+  it("returns event, channel and status for safe retry decisions without loading the payload", async () => {
     const orderId = await seedOrder();
     await enqueueNotification(prisma, NotificationEvent.ORDER_DELIVERED, orderId, {});
     const [row] = await fetchPendingNotifications(prisma, 1);
     const found = await getNotification(prisma, row!.id);
-    expect(found).toEqual({ event: NotificationEvent.ORDER_DELIVERED });
+    expect(found).toEqual({ event: NotificationEvent.ORDER_DELIVERED, channel: "TELEGRAM", status: "PENDING" });
   });
 
   it("returns null for a notification that doesn't exist", async () => {

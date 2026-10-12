@@ -60,7 +60,11 @@ export function verifyTelegramLoginResult(
   botToken = botToken_(),
   now = Date.now(),
 ): TgLoginResult {
+  if (!params || typeof params !== "object" || Array.isArray(params)) return {ok:false,reason:"malformed"};
+  const allowed = new Set(["id", "auth_date", "hash", "first_name", "last_name", "username", "photo_url"]);
+  if (Object.entries(params).some(([key,value]) => !allowed.has(key) || typeof value !== "string" || value.length > 4096)) return {ok:false,reason:"malformed"};
   const { hash, ...fields } = params;
+  if (!/^[a-f0-9]{64}$/.test(hash ?? "") || !/^[1-9]\d*$/.test(fields.id ?? "") || !/^[1-9]\d*$/.test(fields.auth_date ?? "")) return {ok:false,reason:"malformed"};
   if (!hash || !fields.id || !fields.auth_date) return { ok: false, reason: "malformed" };
   if (!botToken) return { ok: false, reason: "no_bot_token" };
 
@@ -77,7 +81,7 @@ export function verifyTelegramLoginResult(
   if (now / 1000 - authDate > TG_AUTH_MAX_AGE_SECONDS) return { ok: false, reason: "stale" }; // replay risk
 
   const id = Number(fields.id);
-  if (!Number.isInteger(id) || id <= 0) return { ok: false, reason: "malformed" };
+  if (!Number.isSafeInteger(id) || id <= 0) return { ok: false, reason: "malformed" };
 
   return {
     ok: true,

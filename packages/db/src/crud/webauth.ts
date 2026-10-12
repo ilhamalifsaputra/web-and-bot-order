@@ -1,3 +1,5 @@
+import { emailTransaction, enqueueEmailEvent } from "./emailEvents";
+import { passwordChangeOccurrence } from "./emailSecurity";
 import { createHash, randomBytes } from "node:crypto";
 import { UserRole, Language } from "@app/core/enums";
 import { config } from "@app/core/config";
@@ -180,7 +182,9 @@ export async function setLoginCredentials(
   db: Db,
   userId: number,
   args: { loginUsername?: string; email?: string; passwordHash?: string },
-) {
+): Promise<void> {
+  if ("$transaction" in db) return emailTransaction(db, (tx) => setLoginCredentials(tx, userId, args));
+  const before = args.passwordHash ? await db.user.findUnique({ where: { id: userId }, select: { passwordHash: true } }) : null;
   const data: Record<string, string | boolean | null> = {};
   if (args.loginUsername !== undefined) data.loginUsername = args.loginUsername.toLowerCase();
   if (args.email !== undefined) data.email = args.email.toLowerCase();
@@ -194,6 +198,9 @@ export async function setLoginCredentials(
   if (Object.keys(data).length === 0) return;
   try {
     await db.user.update({ where: { id: userId }, data });
+    if (args.passwordHash && before?.passwordHash && before.passwordHash !== args.passwordHash) {
+      await enqueueEmailEvent(db, { key: "security.password.changed", aggregateId: userId, occurrence: passwordChangeOccurrence(args.passwordHash), userId });
+    }
   } catch (e) {
     if (isUniqueViolation(e)) mapUniqueViolation(e);
     throw e;

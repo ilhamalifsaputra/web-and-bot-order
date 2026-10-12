@@ -1,3 +1,4 @@
+import { recordEmailLoginFailure, clearEmailLoginFailures } from "@app/db";
 /**
  * JSON twins of the (now-deleted) HTML auth routes — login / register /
  * logout / forgot / reset — for the React SPA. Same semantics the HTML forms
@@ -14,17 +15,15 @@
  */
 import type { FastifyPluginAsync } from "fastify";
 import { logger } from "@app/core/logger";
-import { sendMail } from "@app/core/mailer";
+import { createHash } from "node:crypto";
 import { hashPassword, verifyPassword } from "@app/core/password";
 import { ValidationError } from "@app/core/errors";
-import { config } from "@app/core/config";
 import { utcStamp } from "@app/core/datetime";
-import { renderResetPasswordEmail, toAbsoluteAssetUrl } from "@app/core/email";
-import type { BrandConfig, EmailCopy } from "@app/core/email";
 import {
   prisma,
-  getSetting,
+  enqueueEmailEvent,
   setSetting,
+  invalidateSettingCache,
   findUserByLoginIdentifier,
   createWebUser,
   createPasswordResetToken,
@@ -48,6 +47,7 @@ import {
 } from "../rateLimit";
 import { publicBase, resolveBotId, resolveBotUsername } from "../shop";
 import { establishSession, safeNext } from "./auth";
+import { armTelegramCallback } from "../telegramCallback";
 import { sessionMintOriginOk } from "./cart";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -57,7 +57,10 @@ const apiAuthRoutes: FastifyPluginAsync = async (app) => {
   app.get<{ Querystring: { next?: string; ref?: string } }>(
     "/auth/telegram-widget",
     async (req, reply) => {
+      if (!sessionMintOriginOk(req)) return reply.code(403).send({error:"csrf_failed"});
+      if (loginRateLimited(`telegram-start:${clientIp(req)}`)) return reply.code(429).send({error:"error.rate_limited"});
       const params = new URLSearchParams();
+      params.set("state", await armTelegramCallback(reply, "login", safeNext(req.query.next)));
       params.set("next", safeNext(req.query.next));
       if (req.query.ref) params.set("ref", req.query.ref.slice(0, 16));
       return reply.send({
@@ -96,10 +99,12 @@ const apiAuthRoutes: FastifyPluginAsync = async (app) => {
       // Generic failure for every miss — no enumeration. Banned accounts also
       // get the generic error (don't reveal credential correctness).
       if (!user || user.banned || !user.passwordHash || !verifyPassword(password, user.passwordHash)) {
+        if (user?.passwordHash && !user.banned) await recordEmailLoginFailure(prisma, user.id);
         if (idKey) recordAccountFailure(idKey);
         return reply.code(403).send({ error: "web.login_failed" });
       }
       await establishSession(req, reply, user);
+      await clearEmailLoginFailures(prisma, user.id);
       resetLoginAttempts(ip);
       if (idKey) resetAccountFailures(idKey);
       return reply.send({ redirect: safeNext(req.body?.next) });
@@ -181,90 +186,31 @@ const apiAuthRoutes: FastifyPluginAsync = async (app) => {
     }
     if (email) {
       const user = await findUserByLoginIdentifier(prisma, email);
-      if (user && !user.banned) {
-        const { token } = await createPasswordResetToken(prisma, user.id);
-        const link = `${publicBase(req)}/reset/${token}`;
-        const shopName = (await getSetting(prisma, "shop_name")) ?? "Toko Digital";
-        // Same Settings-driven brand/copy resolution Task 3's emailTemplates.ts
-        // uses for the owner-facing "New Paid Order" mail — `??` (not `||`) so
-        // an explicitly-saved-but-empty Setting isn't silently overridden by
-        // the default, only a genuinely unset (null) one.
-        const [logoUrl, accentColor, supportEmail, copySubject, copyTitle, copySubtitle, copyMessage] =
-          await Promise.all([
-            getSetting(prisma, "web_logo_url"),
-            getSetting(prisma, "email_brand_color"),
-            getSetting(prisma, "email_support_address"),
-            getSetting(prisma, "email_reset_password_subject"),
-            getSetting(prisma, "email_reset_password_title"),
-            getSetting(prisma, "email_reset_password_subtitle"),
-            getSetting(prisma, "email_reset_password_message"),
-          ]);
-        const brand: BrandConfig = {
-          shopName,
-          // web_logo_url is stored relative to this app's own origin (e.g.
-          // "/uploads/branding/logo-abc123.png") — meaningless inside an
-          // email client with no page to resolve it against, so join it
-          // with the storefront's own public URL (this recipient is always
-          // a storefront customer, never the admin) via the shared
-          // toAbsoluteAssetUrl helper (packages/core/src/email/assetUrl.ts).
-          logoUrl: toAbsoluteAssetUrl(logoUrl, config.SHOP_PUBLIC_URL ?? config.PUBLIC_URL),
-          accentColor: accentColor ?? "#4F46E5",
-          supportEmail: supportEmail ?? null,
-          storeUrl: config.SHOP_PUBLIC_URL ?? config.PUBLIC_URL ?? null,
-        };
-        const copy: EmailCopy = {
-          // A blank Subject header is a spam-filter red flag in a way a
-          // blank title/subtitle/message is not (those are harmless empty
-          // body text), so subject alone also falls back on a
-          // whitespace-only stored value, not just on a genuinely unset
-          // (null) Setting.
-          subject: copySubject?.trim() || "{shop_name} — reset your password",
-          title: copyTitle ?? "Reset your password",
-          subtitle: copySubtitle ?? "We received a request to reset your password.",
-          // No expiry clause here — packages/core/src/email/templates/
-          // resetPassword.ts already renders its own dedicated expiry line
-          // from `expiryMinutes`; restating it here (previously "...This
-          // link expires in 1 hour.") duplicated it in a different, mismatched
-          // unit (hours vs. the template's minutes).
-          message: copyMessage ?? "Click the button below to choose a new password.",
-        };
-        // Fastify hands back a string, an array (repeated header), or
-        // undefined for a missing header — normalize to string | null, taking
-        // the first value of an array the same way the rest of this codebase
-        // would treat a repeated header.
+      // Telegram-only identities cannot request password recovery.
+      if (user && !user.banned && user.passwordHash && user.email) {
         const uaHeader = req.headers["user-agent"];
-        const uaValue = Array.isArray(uaHeader) ? (uaHeader[0] ?? null) : (uaHeader ?? null);
-        // /auth/forgot is unauthenticated (no CSRF, no login) and can be
-        // triggered against any registered email by anyone who knows/guesses
-        // it — the raw User-Agent header rides verbatim (HTML-escaped, but
-        // otherwise unvalidated) into a real, correctly-branded email sent to
-        // the victim's inbox as the "Device" line. A normal browser can't set
-        // an arbitrary value here, but curl/any raw HTTP client can, so this
-        // caps how much attacker-controlled text can ride in that one field —
-        // no attempt at UA parsing/validation, just a length bound. Kept here
-        // (app-specific truncation policy) rather than inside the shared
-        // packages/core/src/email/ template layer.
-        const userAgent = uaValue == null ? null : uaValue.slice(0, 180);
-        const rendered = renderResetPasswordEmail(
-          {
-            resetUrl: link,
-            expiryMinutes: RESET_TOKEN_TTL_MINUTES,
-            requestedAt: utcStamp(new Date()),
-            ip,
-            userAgent,
-          },
-          brand,
-          copy,
-        );
+        const userAgent = (Array.isArray(uaHeader) ? uaHeader[0] : uaHeader)?.slice(0, 180) ?? null;
         try {
-          await sendMail(smtp, {
-            to: email,
-            subject: rendered.subject,
-            html: rendered.html,
-            text: rendered.text,
+          // A recoverable token and its durable delivery obligation commit together.
+          await prisma.$transaction(async (db) => {
+            const { token } = await createPasswordResetToken(db, user.id);
+            await enqueueEmailEvent(db, {
+              key: "account.password_reset.requested",
+              aggregateId: user.id,
+              occurrence: createHash("sha256").update(token).digest("hex"),
+              to: user.email!,
+              payload: {
+                reset_url: `${publicBase(req)}/reset/${token}`,
+                expiry_minutes: RESET_TOKEN_TTL_MINUTES,
+                requested_at: utcStamp(new Date()),
+                ip,
+                user_agent: userAgent,
+              },
+            });
           });
-        } catch (e) {
-          logger.error({ err: e }, "Failed to send the password reset email — the user still sees the generic check-your-inbox confirmation, so they have no signal to retry");
+        } catch {
+          // Provider/database details may contain recovery credentials.
+          logger.error("The password recovery request could not be queued; no recovery token was committed.");
         }
       }
     }
@@ -305,11 +251,23 @@ const apiAuthRoutes: FastifyPluginAsync = async (app) => {
       if (password.length < 8) return reply.code(400).send({ error: "web.register_password_short" });
       if (password !== (req.body?.password2 ?? "")) return reply.code(400).send({ error: "web.register_password_mismatch" });
 
-      const user = await consumePasswordResetToken(prisma, req.params.token);
-      if (!user) return reply.code(400).send({ error: "web.reset_invalid" });
-
-      await setLoginCredentials(prisma, user.id, { passwordHash: hashPassword(password) });
-      await setSetting(prisma, shopSessionJtiKey(user.id), newJti());
+      const passwordHash = hashPassword(password);
+      let reset: number | null;
+      try {
+        reset = await prisma.$transaction(async (db) => {
+          const user = await consumePasswordResetToken(db, req.params.token);
+          if (!user || user.banned || !user.passwordHash) return null;
+          await setLoginCredentials(db, user.id, { passwordHash });
+          await setSetting(db, shopSessionJtiKey(user.id), newJti());
+          return user.id;
+        });
+      } catch {
+        // Prisma errors can contain password hashes or recovery-token query values.
+        logger.error("The password recovery change could not be confirmed. Retry or request a new recovery link.");
+        return reply.code(500).send({ error: "error.generic" });
+      }
+      if (!reset) return reply.code(400).send({ error: "web.reset_invalid" });
+      invalidateSettingCache(prisma, [shopSessionJtiKey(reset)]);
       return reply.send({ redirect: "/login?reset=1" });
     },
   );

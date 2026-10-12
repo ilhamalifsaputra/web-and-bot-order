@@ -102,9 +102,10 @@ describe("HomePage", () => {
 
   it("renders the static Our Promise section with always-true wording and no customer-count or timing claims", async () => {
     const { container } = renderHome(homeFixture());
-    expect(await screen.findByText("What every order comes with")).toBeInTheDocument();
-    expect(screen.getByText("Automatic delivery")).toBeInTheDocument();
-    expect(screen.getByText("Warranty as listed")).toBeInTheDocument();
+    const promiseHeading = await screen.findByRole("heading", { name: "What every order comes with" });
+    const promiseSection = within(promiseHeading.closest("section")!);
+    expect(promiseSection.getByText("Automatic delivery")).toBeInTheDocument();
+    expect(promiseSection.getByText("Product-specific warranty")).toBeInTheDocument();
     // Nothing on the home page may promise what the shop cannot prove.
     const text = container.textContent ?? "";
     for (const claim of [/10,000/, /24\/7/, /24 hours/i, /under (an|1) hour/i, /Trusted by thousands/i, /Delivered in minutes/i, /1[–-]10 minutes/]) {
@@ -307,7 +308,7 @@ describe("HomePage", () => {
       .getAllByRole("listitem")
       .map((li) => li.textContent);
     expect(labels).toEqual(
-      expect.arrayContaining(["Automatic delivery where available", "Payment options at checkout", "Warranty per plan", "Help via support ticket"]),
+      expect.arrayContaining(["Automatic delivery where available", "Payment options at checkout", "Product-specific warranty", "Help via support ticket"]),
     );
   });
 

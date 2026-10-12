@@ -215,7 +215,7 @@ describe("Layout", () => {
       const { drawer } = await openDrawer();
       expect(within(drawer).getByText("Digital Products & Services")).toBeInTheDocument();
       expect(within(drawer).getByText("Automatic delivery where available")).toBeInTheDocument();
-      expect(within(drawer).getByText("Warranty per plan")).toBeInTheDocument();
+      expect(within(drawer).getByText("Product-specific warranty")).toBeInTheDocument();
     });
 
     it("closes on Escape and returns focus to the hamburger button", async () => {

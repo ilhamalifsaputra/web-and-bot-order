@@ -707,6 +707,7 @@ export interface ReviewsData {
 /** One row of GET /api/v1/account/support — support.njk's ticket table. */
 export interface SupportTicketSummary {
   id: number;
+  ticket_number?: string | null;
   message: string;
   status: string;
   created_at_display: string;
@@ -796,6 +797,10 @@ export interface TicketOrderSummary {
 export interface TicketDetailData {
   ticket: {
     id: number;
+    ticket_number?: string | null;
+    subject?: string | null;
+    category?: string | null;
+    subcategory?: string | null;
     message: string;
     status: string;
     created_at_display: string;

@@ -106,7 +106,7 @@ describe("InlineTicketPanel", () => {
     expect(await screen.findByText("#TK-7")).toBeInTheDocument();
     expect(screen.getByText("Alight Motion login issue")).toBeInTheDocument();
     expect(screen.getByText("Order #ORD-10421")).toBeInTheDocument();
-    expect(screen.getByText("Waiting for Support")).toBeInTheDocument();
+    expect(screen.getByText("New")).toBeInTheDocument();
     expect(screen.getByText(/Last updated/)).toBeInTheDocument();
     expect(screen.getByText(/Created on 2026-07-01 09:00/)).toBeInTheDocument();
     // Thread renders both bubbles (subject appears once in the header, once

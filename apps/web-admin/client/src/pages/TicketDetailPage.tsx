@@ -1,7 +1,10 @@
+import { Input } from "@/components/ui/input";
+import { useSupportUploads } from "../lib/supportUploads";
+import { SupportUploadPicker } from "../components/support/SupportUploadPicker";
 import { SettingsToggle } from "@/components/shared/SettingsToggle";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import {
   Select,
   SelectContent,
@@ -37,7 +40,7 @@ import { describeTicketCustomer, type TicketCustomerUser } from "../lib/ticketCu
 import { ticketPriorityLabel } from "../lib/ticketPriority";
 
 const PRIORITY_VALUES = ["LOW", "MEDIUM", "HIGH", "URGENT"];
-const CATEGORY_VALUES = ["ORDER", "PAYMENT", "ACCOUNT", "PRODUCT", "OTHER"];
+const CATEGORY_VALUES = ["ORDER", "PAYMENT", "ACCOUNT", "OTHER"];
 const UNCATEGORIZED = "_uncategorized_";
 const UNASSIGNED = "_unassigned_";
 
@@ -60,7 +63,9 @@ interface Ticket {
   /** The customer's original complaint — the first message of the conversation. */
   message: string;
   photoFileIds: string | null;
+  attachments?: string[];
   status: string;
+  legalHold?: boolean;
   priority: string;
   category: string | null;
   adminId: number | null;
@@ -85,6 +90,7 @@ interface TicketMessageRow {
   createdAtDisplay: string | null;
   createdAtShort: string | null;
   photoFileIds: string | null;
+  attachments?: string[];
 }
 
 interface CustomerContext {
@@ -136,7 +142,7 @@ function useAdmins() {
  * a readonly admin gets a 403, which the page treats as "not shown" rather
  * than an error. Any other failure offers a retry.
  *
- * NOTE ON CREDENTIALS: that route returns each unit's `stockItem.credentials`,
+ * Historical note (GET now masks secrets; explicit audited reveal remains on the order page): that route returns each unit's `stockItem.credentials`,
  * so the delivered credentials DO arrive in this page's React Query cache even
  * though `showCredentials={false}` never renders them. That is a presentation
  * choice, not a fetch scope; if this page must not see them, the route needs a
@@ -213,6 +219,9 @@ export function TicketDetailPage() {
   const { ticketId } = useParams<{ ticketId: string }>();
   const navigate = useNavigate();
   const qc = useQueryClient();
+  const [requestId, setRequestId] = useState(() => crypto.randomUUID());
+  const mediaOptions = useQuery({ queryKey: ["support-media-options"], queryFn: () => apiGet<{ enabled: boolean; imageBytes?: number; videoBytes?: number }>("/api/support/media/options") });
+  const uploads = useSupportUploads(Number(ticketId), mediaOptions.data);
   const { data, isError } = useTicket(ticketId ?? "");
   const { data: adminsData } = useAdmins();
   const linkedOrder = useLinkedOrderUnits(data?.ticket.orderId ?? null);
@@ -231,9 +240,11 @@ export function TicketDetailPage() {
   // genuine admin id (or null meaning "unset"), never a customer actor.
 
   const sendReply = useMutation({
-    mutationFn: () => apiPost(`/api/support/${ticketId}/reply`, { content: reply, internal }),
+    mutationFn: () => apiPost(`/api/support/${ticketId}/reply`, { content: reply, internal, request_id: requestId, attachment_ids: uploads.ids }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["ticket", ticketId] });
+      uploads.reset();
+      setRequestId(crypto.randomUUID());
       setReply("");
       setInternal(false);
       setReplyError(null);
@@ -282,6 +293,12 @@ export function TicketDetailPage() {
     onError: (e: Error) => toast.error(describeError(e)),
   });
 
+  const progress = useMutation({
+    mutationFn: () => apiPost(`/api/support/${ticketId}/status`, { expected: data?.ticket.status, status: "IN_PROGRESS" }),
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ["ticket", ticketId] }); void qc.invalidateQueries({ queryKey: ["support-stats"] }); },
+    onError: (e: Error) => toast.error(describeError(e)),
+  });
+
   const resolve = useMutation({
     mutationFn: () => apiPost(`/api/support/${ticketId}/resolve`, {}),
     onSuccess: () => {
@@ -323,20 +340,22 @@ export function TicketDetailPage() {
   const identity = describeTicketCustomer(user);
 
   const composer = isClosed ? null : (
-    <TicketDetailReply replyError={replyError} reply={reply} setReply={setReply} internal={internal} setInternal={setInternal} sendReply={sendReply} />
+    <TicketDetailReply uploads={uploads} mediaEnabled={mediaOptions.data?.enabled ?? false} replyError={replyError} reply={reply} setReply={setReply} internal={internal} setInternal={setInternal} sendReply={sendReply} />
   );
 
   return (
     <PageLayout title={`Ticket ${ticketLabel}`}>
       <PageHeader
-        title={`Ticket ${ticketLabel}`}
-        description={<span className="break-words">{ticket.subject}</span>}
+        title={ticket.subject}
+        description={<button type="button" className="break-all text-xs hover:underline" aria-label="Copy ticket number" onClick={() => { void navigator.clipboard.writeText(ticketLabel).then(() => toast.success("Ticket number copied")).catch(() => toast.error("Copy failed")); }}>{ticketLabel}</button>}
         breadcrumb={[{ label: "Support", href: "/support" }]}
         actions={
-          <TicketResolutionActions ticket={ticket} isClosed={isClosed} resolve={resolve} reopen={reopen} close={close} />
+          <TicketResolutionActions ticket={ticket} isClosed={isClosed} progress={progress} resolve={resolve} reopen={reopen} close={close} />
         }
       />
 
+      <TicketTitleEditor key={ticket.subject} ticketId={ticket.id} initialTitle={ticket.subject} />
+      <EvidenceHold ticketId={ticket.id} held={ticket.legalHold ?? false} />
       <TicketDetailTicketPriority ticket={ticket} setPriority={setPriority} setCategory={setCategory} assign={assign} adminLabel={adminLabel} assignableAdmins={assignableAdmins} />
 
       {/* DOM order is the mobile order: conversation, issue context, customer,
@@ -355,7 +374,9 @@ export function TicketDetailPage() {
   );
 }
 
-function TicketDetailReply({ replyError, reply, setReply, internal, setInternal, sendReply }: {
+function TicketDetailReply({ uploads, mediaEnabled, replyError, reply, setReply, internal, setInternal, sendReply }: {
+  uploads: ReturnType<typeof useSupportUploads>;
+  mediaEnabled: boolean;
   replyError: string | null;
   reply: string;
   setReply: import("react").Dispatch<import("react").SetStateAction<string>>;
@@ -370,13 +391,17 @@ function TicketDetailReply({ replyError, reply, setReply, internal, setInternal,
       onChange={(e) => setReply(e.target.value)}
       placeholder="Write a reply…"
       aria-label="Reply"
-      rows={4}
+      rows={3}
+      maxLength={2000}
+      disabled={sendReply.isPending}
     />
+    <SupportUploadPicker uploads={uploads} enabled={mediaEnabled} disabled={sendReply.isPending} />
+    {internal && <p className="rounded-md border border-dashed border-line bg-sand p-2 text-xs" role="status">Internal note: visible to admins only. No customer notification.</p>}
     <div className="flex flex-wrap items-center justify-between gap-3">
       {/* Internal note: stored and audited, never sent to the customer,
             and it does not advance the ticket's status. */}
       <SettingsToggle id="TicketDetailPage-mode" label="Internal note (not visible to the customer)" checked={internal} onCheckedChange={setInternal} disabled={sendReply.isPending} />
-      <Button onClick={() => sendReply.mutate()} disabled={!reply || sendReply.isPending}>
+      <Button onClick={() => sendReply.mutate()} disabled={(!reply.trim() && !uploads.ids.length) || sendReply.isPending || uploads.busy}>
         {internal ? <Lock className="h-4 w-4" /> : <Send className="h-4 w-4" />}
         {sendReply.isPending ? "Saving…" : internal ? "Save internal note" : "Send reply"}
       </Button>
@@ -384,14 +409,16 @@ function TicketDetailReply({ replyError, reply, setReply, internal, setInternal,
   </div>);
 }
 
-function TicketResolutionActions({ ticket, isClosed, resolve, reopen, close }: {
+function TicketResolutionActions({ ticket, isClosed, progress, resolve, reopen, close }: {
   ticket: Ticket;
   isClosed: boolean;
+  progress: import("@tanstack/react-query").UseMutationResult<unknown, Error, void, unknown>;
   resolve: import("@tanstack/react-query").UseMutationResult<unknown, Error, void, unknown>;
   reopen: import("@tanstack/react-query").UseMutationResult<unknown, Error, void, unknown>;
   close: import("@tanstack/react-query").UseMutationResult<unknown, Error, void, unknown>;
 }) {
   return (<>
+    {["OPEN", "WAITING_ADMIN"].includes(ticket.status) && <Button variant="outline" disabled={progress.isPending} onClick={() => progress.mutate()}>Start processing</Button>}
     {/* Mirrors the backend's resolveTicket guard (status NOT IN
                 [RESOLVED, CLOSED]). */}
     {ticket.status !== "RESOLVED" && !isClosed && (
@@ -612,6 +639,7 @@ function buildTicketConversation({ ticket, messages, adminNameById, timeline, ti
       timeTitle: ticket.createdAtDisplay ?? "",
       content: ticket.message,
       photoIds: parsePhotoIds(ticket.photoFileIds),
+      attachments: ticket.attachments ?? [],
     },
     ...messages.map((m) => {
       const fromAdmin = m.senderType === "ADMIN";
@@ -624,6 +652,7 @@ function buildTicketConversation({ ticket, messages, adminNameById, timeline, ti
         timeTitle: m.createdAtDisplay ?? "",
         content: m.content,
         photoIds: parsePhotoIds(m.photoFileIds),
+        attachments: m.attachments ?? [],
       };
     }),
   ];
@@ -673,4 +702,18 @@ function ticketAdminLabels({ adminsData }: {
     (a): a is AdminOption & { id: number } => a.id !== null,
   );
   return { adminNameById, actorLabel, adminLabel, assignableAdmins };
+}
+
+function EvidenceHold({ ticketId, held }: { ticketId: number; held: boolean }) {
+  const qc = useQueryClient();
+  const hold = useMutation({ mutationFn: () => apiPost(`/api/support/${ticketId}/evidence-hold`, { held: !held }), onSuccess: () => { void qc.invalidateQueries({ queryKey: ["ticket", String(ticketId)] }); }, onError: (error: Error) => toast.error(describeError(error)) });
+  return <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-ink-soft"><Button variant="outline" size="sm" disabled={hold.isPending} aria-pressed={held} onClick={() => hold.mutate()}><Lock className="h-3.5 w-3.5" />{held ? "Release evidence hold" : "Preserve evidence"}</Button><span>{held ? "Retention paused for this ticket." : "Closed-ticket evidence follows the retention policy."}</span></div>;
+}
+
+function TicketTitleEditor({ ticketId, initialTitle }: { ticketId: number; initialTitle: string }) {
+  const [open, setOpen] = useState(false);
+  const [title, setTitle] = useState(initialTitle);
+  const qc = useQueryClient();
+  const save = useMutation({ mutationFn: () => apiPost(`/api/support/${ticketId}/title`, { title }), onSuccess: () => { setOpen(false); void qc.invalidateQueries({ queryKey: ["ticket", String(ticketId)] }); }, onError: (error: Error) => toast.error(describeError(error)) });
+  return <><Button size="sm" variant="ghost" className="mb-2" onClick={() => setOpen(true)}>Edit title</Button><Dialog open={open} onOpenChange={setOpen}><DialogContent><DialogTitle>Edit ticket title</DialogTitle><DialogDescription>Correct the issue title without changing the public ticket number.</DialogDescription><form className="space-y-3" onSubmit={(event) => { event.preventDefault(); save.mutate(); }}><label htmlFor="support-title" className="text-sm">Title</label><Input id="support-title" value={title} onChange={(event) => setTitle(event.target.value)} required maxLength={100} disabled={save.isPending} /><Button type="submit" disabled={!title.trim() || save.isPending}>Save title</Button></form></DialogContent></Dialog></>;
 }

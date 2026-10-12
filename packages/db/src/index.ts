@@ -84,3 +84,5 @@ export * from "./crud/emailEvents";
 export * from "./crud/emailInventory";
 export * from "./crud/emailSecurity";
 export * from "./crud/emailReports";
+
+export * from "./crud/supportAttachments";

@@ -15,6 +15,7 @@ import { ticketStatusLabel } from "@/lib/ticketStatus"
  * for domain-specific status styling.
  */
 const TONE_CLASS: Record<string, string> = {
+  IN_PROGRESS: "bg-pine-tint text-pine-dark",
   OPEN: "bg-amberx-tint text-amberx",
   WAITING_ADMIN: "bg-amberx-tint text-amberx",
   REPLIED: "bg-pine-tint text-pine-dark",
@@ -35,7 +36,7 @@ interface TicketStatusBadgeProps {
 export function TicketStatusBadge({ status }: TicketStatusBadgeProps): JSX.Element {
   const tone = TONE_CLASS[status] ?? FALLBACK_TONE;
   return (
-    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ${tone}`}>
+    <span className={`inline-flex items-center whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-semibold ${tone}`}>
       {ticketStatusLabel(status)}
     </span>
   )

@@ -6,13 +6,13 @@ import { TicketStatusBadge } from "./TicketStatusBadge";
 describe("TicketStatusBadge", () => {
   it("renders the friendly label, not the raw enum", () => {
     render(<TicketStatusBadge status="OPEN" />);
-    expect(screen.getByText("Open")).toBeInTheDocument();
+    expect(screen.getByText("New")).toBeInTheDocument();
     expect(screen.queryByText("OPEN")).not.toBeInTheDocument();
   });
 
   it("renders the OPEN status with amber tone", () => {
     const { container } = render(<TicketStatusBadge status="OPEN" />);
-    expect(screen.getByText("Open")).toBeInTheDocument();
+    expect(screen.getByText("New")).toBeInTheDocument();
     expect(container.querySelector(".bg-amberx-tint")).not.toBeNull();
     expect(container.querySelector(".text-amberx")).not.toBeNull();
   });

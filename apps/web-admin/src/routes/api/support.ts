@@ -1,3 +1,6 @@
+import { ValidationError } from "@app/core/errors";
+import { supportMediaRoutes } from "./supportMedia";
+import { supportAttachmentLinks, transitionTicketStatus, setSupportLegalHold, setSupportTitle } from "@app/db";
 import type { FastifyInstance } from "fastify";
 import { csvRow } from "../../lib/csv";
 import { parsePositiveId } from "../../lib/params";
@@ -123,6 +126,7 @@ function parseIdsFilter(raw: string | undefined): number[] | null {
  * silently diverge — mirrors `orders.ts`'s `buildOrderFilter`. */
 function buildTicketFilter(q: Record<string, string | undefined>): TicketFilter {
   return {
+    origin: q.origin === "WEB" || q.origin === "BOT" ? q.origin : undefined,
     status: parseCsvFilter(q.status, STATUS_VALUES) as TicketStatus[] | null,
     priority: parseCsvFilter(q.priority, PRIORITY_VALUES) as TicketPriority[] | null,
     category: parseCsvFilter(q.category, CATEGORY_VALUES) as TicketCategory[] | null,
@@ -192,6 +196,22 @@ function classifyDetails(args: { priority?: string; category?: string | null }):
 }
 
 export default async function supportApiRoutes(app: FastifyInstance): Promise<void> {
+  await supportMediaRoutes(app);
+  app.post<{ Params: { ticketId: string }; Body: { title: string } }>("/api/support/:ticketId/title", { preHandler: csrfProtect }, async (req, reply) => {
+    const id = parsePositiveId(req.params.ticketId);
+    if (!id || typeof req.body?.title !== "string" || !req.body.title.trim() || req.body.title.trim().length > 100) return reply.code(400).send({ error: "Title must contain 1-100 characters." });
+    if (!await getTicket(prisma, id)) return reply.code(404).send({ error: "Ticket not found." });
+    await setSupportTitle(prisma, id, req.body.title, req.admin!.userId);
+    return { ok: true };
+  });
+  app.post<{ Params: { ticketId: string }; Body: { held: boolean } }>("/api/support/:ticketId/evidence-hold", { preHandler: csrfProtect }, async (req, reply) => {
+    const id = Number(req.params.ticketId);
+    if (!Number.isSafeInteger(id) || id <= 0 || typeof req.body?.held !== "boolean") return reply.code(400).send({ error: "Invalid evidence hold." });
+    try { await setSupportLegalHold(prisma, id, req.body.held, req.admin!.userId); return { ok: true }; }
+    catch (err) { if (err instanceof ValidationError) return reply.code(409).send({ error: err.key }); throw err; }
+  });
+
+  app.get("/api/support/stats", { preHandler: currentAdmin }, async () => getTicketStats(prisma));
   app.get("/api/support", { preHandler: currentAdmin }, async (req, reply) => {
     const q = req.query as Record<string, string | undefined>;
     const page = Math.max(Number(q.page) || 1, 1);
@@ -214,6 +234,7 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
       ...t,
       subject: t.subject?.trim() || deriveSubject(t.message),
       createdAtDisplay: displayDate(t.createdAt),
+      lastActivityAtDisplay: displayDateTime(t.lastActivityAt),
       repliedAtDisplay: displayDateTime(t.repliedAt),
       waitingSince: displayDateTime(t.lastStatusChangeAt),
       isOverdue: isTicketOverdue(t, cutoff),
@@ -306,6 +327,7 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
     return reply.send({
       ticket: {
         ...ticket,
+        attachments: [...(ticket.attachmentUrls?.split(",").filter(Boolean) ?? []), ...await supportAttachmentLinks(prisma, ticket.id, null, "/api/support/media")],
         subject: ticket.subject?.trim() || deriveSubject(ticket.message),
         createdAtDisplay: displayDateTime(ticket.createdAt),
         createdAtShort: displayShortDateTime(ticket.createdAt, now),
@@ -321,11 +343,12 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
         assignedAtDisplay: displayDateTime(ticket.assignedAt),
         order: ticket.order ? { ...ticket.order, createdAtDisplay: displayDate(ticket.order.createdAt) } : null,
       },
-      messages: messages.map((m) => ({
+      messages: await Promise.all(messages.map(async (m) => ({
         ...m,
+        attachments: [...(m.attachmentUrls?.split(",").filter(Boolean) ?? []), ...await supportAttachmentLinks(prisma, ticket.id, m.id, "/api/support/media")],
         createdAtDisplay: displayDateTime(m.createdAt),
         createdAtShort: displayShortDateTime(m.createdAt, now),
-      })),
+      }))),
       user: ticketPartyUser(ticketUser, ticketUserContact),
       customer: {
         totalSpent,
@@ -368,14 +391,22 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
     // existing caller (including the reply tests written before this field
     // existed) is unaffected.
     const internal = body.internal === true;
-    if (!content) return reply.code(400).send({ error: "Reply cannot be empty." });
-    if (!(await getTicket(prisma, ticketId))) return reply.code(404).send({ error: "Ticket not found." });
+    if (content.length > 2000) return reply.code(400).send({ error: "Reply must contain at most 2,000 characters." });
+    if (body.internal !== undefined && typeof body.internal !== "boolean") return reply.code(400).send({ error: "Choose an explicit reply visibility." });
+    const mediaIds = body.attachment_ids ?? [];
+    if (!Array.isArray(mediaIds) || mediaIds.some((id) => typeof id !== "string") || mediaIds.length > 3) return reply.code(400).send({ error: "Invalid attachments." });
+    if (!content && !mediaIds.length) return reply.code(400).send({ error: "Add a reply or verified evidence." });
+    const ticket = await getTicket(prisma, ticketId);
+    if (!ticket) return reply.code(404).send({ error: "Ticket not found." });
+    if (ticket.status === TicketStatus.CLOSED) return reply.code(409).send({ error: "Reopen this ticket before replying." });
     await addTicketMessage(prisma, {
       ticketId,
       senderType: SenderType.ADMIN,
       senderId: req.admin!.userId,
       content,
       internal,
+      requestKey: typeof body.request_id === "string" ? body.request_id.slice(0, 100) : undefined,
+      attachmentIds: mediaIds as string[],
     });
     // addTicketMessage's internal branch already writes its own
     // "ticket_internal_note" audit row (packages/db/src/crud/support.ts) —
@@ -392,6 +423,13 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
       });
     }
     return reply.send({ ok: true });
+  });
+
+  app.post<{ Params: { ticketId: string }; Body: { status: string; expected: string } }>("/api/support/:ticketId/status", { preHandler: csrfProtect }, async (req, reply) => {
+    const id = parsePositiveId(req.params.ticketId);
+    if (!id || !["IN_PROGRESS", "WAITING_CUSTOMER", "RESOLVED", "CLOSED", "OPEN"].includes(req.body?.status)) return reply.code(400).send({ error: "Invalid status." });
+    try { await prisma.$transaction((tx) => transitionTicketStatus(tx, { ticketId: id, from: req.body.expected, to: req.body.status, adminId: req.admin!.userId })); return { ok: true }; }
+    catch { return reply.code(409).send({ error: "Ticket changed. Reload and try again." }); }
   });
 
   app.post("/api/support/:ticketId/close", { preHandler: csrfProtect }, async (req, reply) => {

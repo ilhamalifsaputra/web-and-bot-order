@@ -1,3 +1,5 @@
+import { useSupportUploads } from "../lib/supportUploads";
+import SupportUploadPicker from "../components/shop/SupportUploadPicker";
 /**
  * Two-column support workspace: conversation thread (merged via
  * lib/ticketTimeline.ts) + composer on the left, order/trust/recent-tickets/
@@ -10,7 +12,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { CheckCircle2, Clock, RotateCcw } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useParams } from "react-router-dom";
-import { apiGet, apiPost, apiPostFormWithProgress } from "../api/client";
+import { apiGet, apiPost } from "../api/client";
 import type { SupportData, TicketDetailData } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import EmptyState from "../components/shop/EmptyState";
@@ -38,6 +40,9 @@ const QUICK_REPLY_TEMPLATES: Array<{ key: string; labelKey: string; templateKey:
 export default function TicketDetailPage() {
   const { id = "" } = useParams<{ id: string }>();
   const ticketId = Number(id);
+  const mediaOptions = useQuery({ queryKey: ["support-v2-options"], queryFn: () => apiGet<{ media: { enabled: boolean; imageBytes?: number; videoBytes?: number } }>("/api/v1/account/support/options"), retry: false });
+  const uploads = useSupportUploads(ticketId, mediaOptions.data?.media);
+  const [requestId, setRequestId] = useState(() => crypto.randomUUID());
   const { data: ctx } = useShopContext();
   const location = useLocation();
   const [message, setMessage] = useState(() => loadTicketDraft(ticketId));
@@ -69,18 +74,12 @@ export default function TicketDetailPage() {
   }, [error, id]);
 
   const replyMutation = useMutation({
-    mutationFn: (vars: { message: string; files: File[] }) => {
-      if (vars.files.length === 0) {
-        return apiPost<{ ok: boolean }>(`/api/v1/account/support/${id}/reply`, { message: vars.message });
-      }
-      const form = new FormData();
-      form.append("message", vars.message);
-      for (const file of vars.files) form.append("attachments", file);
-      return apiPostFormWithProgress<{ ok: boolean }>(`/api/v1/account/support/${id}/reply`, form, setUploadProgress);
-    },
+    mutationFn: (vars: { message: string; files: File[] }) => apiPost<{ ok: boolean }>(`/api/v1/account/support/${id}/reply`, { message: vars.message, attachment_ids: uploads.ids, request_id: requestId }),
     onSuccess: () => {
       setMessage("");
       setFiles([]);
+      uploads.reset();
+      setRequestId(crypto.randomUUID());
       clearTicketDraft(ticketId);
       refetch();
     },
@@ -126,7 +125,7 @@ export default function TicketDetailPage() {
     return (
       <div aria-busy="true" aria-label={t("web.loading")}>
         <Skeleton className="mb-6 h-16 w-full" />
-        <div className="grid gap-5 lg:grid-cols-[1fr_320px]">
+        <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_280px]">
           <div className="space-y-3">
             <Skeleton className="h-24 w-full" />
             <Skeleton className="h-24 w-3/4" />
@@ -149,35 +148,10 @@ export default function TicketDetailPage() {
         kind={noticeText ? "info" : "error"}
       />
 
-      <div className="mb-6">
-        <div className="text-xs text-ink-faint mb-1">
-          <Link to="/account/support" className="hover:text-pine">
-            {t("web.account_support")}
-          </Link>
-          <span className="mx-1">/</span> #{ticket.id}
-        </div>
-        <div className="flex items-center justify-between gap-3 flex-wrap">
-          <h1 className="page-title text-2xl!">
-            {t("web.ticket")} #{ticket.id}
-          </h1>
-          <TicketStatusBadge value={ticket.status} />
-        </div>
-        {order && (
-          <p className="mt-1 text-sm text-ink-soft">
-            {t("web.ticket_re_order")}{" "}
-            <Link to={`/account/orders/${order.code}`} className="link font-mono">
-              #{order.code}
-            </Link>
-          </p>
-        )}
-        <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-ink-faint">
-          <span>{t("web.ticket_created_at", { date: ticket.created_at_display })}</span>
-          {!hasSupportReplied && <span>{t("web.ticket_estimated_reply")}</span>}
-        </div>
-      </div>
+      <TicketHeader ticket={ticket} order={order} hasSupportReplied={hasSupportReplied} onCopied={() => setNoticeText(t("helpdesk.copied"))} onCopyError={() => setErrorText(t("helpdesk.invalid_request"))} />
 
-      <div className="grid gap-5 lg:grid-cols-[1fr_320px]">
-        <TicketConversationPanel timeline={timeline} hasSupportReplied={hasSupportReplied} ticket={ticket} reopenMutation={reopenMutation} closeMutation={closeMutation} applyTemplate={applyTemplate} ticketId={ticketId} message={message} setMessage={setMessage} files={files} setFiles={setFiles} submitReply={submitReply} replyMutation={replyMutation} uploadProgress={uploadProgress} />
+      <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_280px]">
+        <TicketConversationPanel mediaEnabled={mediaOptions.data?.media.enabled ?? false} uploads={uploads} timeline={timeline} hasSupportReplied={hasSupportReplied} ticket={ticket} reopenMutation={reopenMutation} closeMutation={closeMutation} applyTemplate={applyTemplate} ticketId={ticketId} message={message} setMessage={setMessage} files={files} setFiles={setFiles} submitReply={submitReply} replyMutation={replyMutation} uploadProgress={uploadProgress} />
 
         <TicketSidebar
           order={order}
@@ -190,7 +164,9 @@ export default function TicketDetailPage() {
   );
 }
 
-function TicketConversationPanel({ timeline, hasSupportReplied, ticket, reopenMutation, closeMutation, applyTemplate, ticketId, message, setMessage, files, setFiles, submitReply, replyMutation, uploadProgress }: {
+function TicketConversationPanel({ mediaEnabled, uploads, timeline, hasSupportReplied, ticket, reopenMutation, closeMutation, applyTemplate, ticketId, message, setMessage, files, setFiles, submitReply, replyMutation, uploadProgress }: {
+  mediaEnabled: boolean;
+  uploads: ReturnType<typeof useSupportUploads>;
   timeline: import("../lib/ticketTimeline").TicketTimelineEntry[];
   hasSupportReplied: boolean;
   ticket: { id: number; message: string; status: string; created_at_display: string; admin_reply: string | null; replied_at_display: string | null; closed: boolean; closed_at_display: string | null; reopenable: boolean; attachments: string[]; };
@@ -206,7 +182,7 @@ function TicketConversationPanel({ timeline, hasSupportReplied, ticket, reopenMu
   replyMutation: import("@tanstack/react-query").UseMutationResult<{ ok: boolean; }, Error, { message: string; files: File[]; }, unknown>;
   uploadProgress: number;
 }) {
-  return (<div>
+  return (<div className="min-w-0">
     <Card className="mb-4">
       <TicketMessageThread entries={timeline} />
       {!hasSupportReplied && (
@@ -261,9 +237,44 @@ function TicketConversationPanel({ timeline, hasSupportReplied, ticket, reopenMu
           onFilesChange={setFiles}
           onSubmit={submitReply}
           pending={replyMutation.isPending}
-          uploadProgress={uploadProgress}
+          uploadSlot={<SupportUploadPicker uploads={uploads} enabled={mediaEnabled} disabled={replyMutation.isPending} />}
+      uploadBusy={uploads.busy} hasUploads={uploads.ids.length > 0}
+      uploadProgress={uploadProgress}
         />
       </>
     )}
   </div>);
+}
+
+function TicketHeader({ ticket, order, hasSupportReplied, onCopied, onCopyError }: { ticket: TicketDetailData["ticket"]; order: TicketDetailData["order"]; hasSupportReplied: boolean; onCopied: () => void; onCopyError: () => void }) {
+  return (
+      <div className="mb-4 min-w-0">
+        <div className="text-xs text-ink-faint mb-1">
+          <Link to="/help" className="hover:text-pine">
+            {t("web.account_support")}
+          </Link>
+          <span className="mx-1">/</span> {ticket.ticket_number ?? `#${ticket.id}`}
+        </div>
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <h1 className="page-title text-2xl!">
+            {ticket.subject ?? t("web.ticket")}
+          </h1>
+          <TicketStatusBadge value={ticket.status} />
+          <Button variant="soft" size="sm" aria-label={t("helpdesk.copy")} onClick={() => { void navigator.clipboard.writeText(ticket.ticket_number ?? `#${ticket.id}`).then(() => onCopied()).catch(() => onCopyError()); }}><span className="break-all text-xs">{ticket.ticket_number ?? `#${ticket.id}`}</span></Button>
+        </div>
+        {order && (
+          <p className="mt-1 text-sm text-ink-soft">
+            {t("web.ticket_re_order")}{" "}
+            <Link to={`/account/orders/${order.code}`} className="link font-mono">
+              #{order.code}
+            </Link>
+          </p>
+        )}
+        <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-ink-faint">
+          <span>{t("web.ticket_created_at", { date: ticket.created_at_display })}</span>
+          {!hasSupportReplied && <span>{t("web.ticket_estimated_reply")}</span>}
+        </div>
+      </div>
+
+  );
 }

@@ -80,6 +80,7 @@ interface OrderLike {
   items?: Array<{ deliveryTypeSnapshot?: string | null; product: { deliveryType: string; autoDeliverySource?: string | null } }>;
 }
 interface TicketLike {
+  ticketNumber?: string | null;
   id: number;
   status: string;
   createdAt: Date;
@@ -628,6 +629,7 @@ export function orderDetailKb(order: OrderLike, lang: string): InlineKeyboard {
       ]);
     }
   }
+  rows.push([{ text: coreT("help.support_btn", lang), data: cb("support", "open", order.id) }]);
   rows.push([
     { text: coreT("menu.back", lang), data: cb("order", "list") },
     { text: coreT("menu.main", lang), data: cb("menu", "main") },
@@ -952,6 +954,7 @@ export function ticketResolvedKb(ticketId: number, lang = "en"): InlineKeyboard 
 // TicketStatus's own doc comment, @app/core/enums) — same icon as their
 // OPEN/REPLIED counterpart.
 const TICKET_ICONS: Record<string, string> = {
+  [TicketStatus.IN_PROGRESS]: "\u23f3",
   [TicketStatus.OPEN]: "🔴",
   [TicketStatus.WAITING_ADMIN]: "🔴",
   [TicketStatus.REPLIED]: "🟡",
@@ -961,12 +964,16 @@ const TICKET_ICONS: Record<string, string> = {
 };
 
 /** User's ticket list with status icons. */
-export function myTicketsKb(tickets: TicketLike[], lang: string): InlineKeyboard {
+export function myTicketsKb(tickets: TicketLike[], lang: string, page = 1, total = tickets.length): InlineKeyboard {
   const rows: Btn[][] = tickets.map((tk) => {
     const icon = TICKET_ICONS[tk.status] ?? "⚪";
-    const label = `${icon} #${tk.id} — ${ensureUtc(tk.createdAt).toFormat("yyyy-LL-dd")}`;
+    const label = `${icon} ${tk.ticketNumber ?? `#${tk.id}`} — ${ensureUtc(tk.createdAt).toFormat("yyyy-LL-dd")}`;
     return [{ text: label, data: cb("ticket", "view", tk.id) }];
   });
+  const navigation: Btn[] = [];
+  if (page > 1) navigation.push({ text: coreT("helpdesk.previous", lang), data: cb("ticket", "list", page - 1) });
+  if (page * 6 < total) navigation.push({ text: coreT("helpdesk.next", lang), data: cb("ticket", "list", page + 1) });
+  if (navigation.length) rows.push(navigation);
   rows.push([{ text: coreT("menu.main", lang), data: cb("menu", "main") }]);
   return ik(rows);
 }

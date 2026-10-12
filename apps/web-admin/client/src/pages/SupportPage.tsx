@@ -69,15 +69,20 @@ interface TicketRow {
   ticketNumber: string | null;
   userId: number;
   message: string;
+  subject?: string | null;
+  subcategory?: string | null;
+  lastActivityAt?: string;
   status: string;
   priority: string;
   category: string | null;
   adminId: number | null;
   createdAt: string;
   createdAtDisplay: string | null;
+  lastActivityAtDisplay?: string;
   repliedAt: string | null;
   repliedAtDisplay: string | null;
   isOverdue: boolean;
+  order?: { id: number; orderCode: string } | null;
   user: TicketUser | null;
 }
 
@@ -87,6 +92,7 @@ interface TicketStats {
   overdue: number;
   unassigned: number;
   resolvedToday: number;
+  inProgress?: number;
 }
 
 interface SupportData {
@@ -110,6 +116,7 @@ interface BulkActionResult {
 
 interface Filters {
   status: string;
+  origin: string;
   priority: string;
   category: string;
   assigned: string;
@@ -124,7 +131,7 @@ const ALL_STATUSES = "_all_";
 const ALL_PRIORITIES = "_all_";
 const ALL_CATEGORIES = "_all_";
 const ALL_ASSIGNED = "_all_";
-const STATUS_VALUES = ["OPEN", "REPLIED", "RESOLVED", "CLOSED"];
+const STATUS_VALUES = ["OPEN", "IN_PROGRESS", "REPLIED", "RESOLVED", "CLOSED"];
 /** Task 1 fix review (Important finding): the dropdown still shows the 4
  *  legacy buckets (OPEN also covers WAITING_ADMIN, REPLIED also covers
  *  WAITING_CUSTOMER). The filter labels are bucket names and do NOT mirror the
@@ -137,12 +144,13 @@ const STATUS_VALUES = ["OPEN", "REPLIED", "RESOLVED", "CLOSED"];
  *  already accepts a comma-separated status list, same as the KPI tiles use. */
 const STATUS_FILTER_QUERY: Record<string, string> = {
   OPEN: "OPEN,WAITING_ADMIN",
+  IN_PROGRESS: "IN_PROGRESS",
   REPLIED: "REPLIED,WAITING_CUSTOMER",
   RESOLVED: "RESOLVED",
   CLOSED: "CLOSED",
 };
 const PRIORITY_VALUES = ["LOW", "MEDIUM", "HIGH", "URGENT"];
-const CATEGORY_VALUES = ["ORDER", "PAYMENT", "ACCOUNT", "PRODUCT", "OTHER"];
+const CATEGORY_VALUES = ["ORDER", "PAYMENT", "ACCOUNT", "OTHER"];
 const DEFAULT_SORT = "newest";
 
 function categoryLabel(category: string): string {
@@ -164,6 +172,7 @@ function useTickets(q: string, filters: Filters) {
       const params = new URLSearchParams();
       if (q) params.set("q", q);
       if (filters.status) params.set("status", filters.status);
+      if (filters.origin) params.set("origin", filters.origin);
       if (filters.priority) params.set("priority", filters.priority);
       if (filters.category) params.set("category", filters.category);
       if (filters.assigned) params.set("assigned", filters.assigned);
@@ -195,9 +204,10 @@ export function SupportPage() {
 
   const [qDraft, setQDraft] = useState("");
   const [q, setQ] = useState("");
-  const [draft, setDraft] = useState({ status: "", priority: "", category: "", assigned: "", sort: DEFAULT_SORT });
+  const [draft, setDraft] = useState({ status: "", origin: "", priority: "", category: "", assigned: "", sort: DEFAULT_SORT });
   const [filters, setFilters] = useState<Filters>({
     status: "",
+    origin: "",
     priority: "",
     category: "",
     assigned: "",
@@ -257,7 +267,7 @@ export function SupportPage() {
 
   if (isError) {
     return (
-      <PageLayout title="Support">
+      <PageLayout title="Support Tickets">
         <p className="text-sm text-rust">Failed to load tickets.</p>
       </PageLayout>
     );
@@ -293,6 +303,7 @@ export function SupportPage() {
     setFilters((f) => ({
       ...f,
       status: draft.status ? (STATUS_FILTER_QUERY[draft.status] ?? draft.status) : "",
+      origin: draft.origin,
       priority: draft.priority,
       category: draft.category,
       assigned: draft.assigned,
@@ -302,11 +313,12 @@ export function SupportPage() {
   }
 
   function clearFilters() {
-    setDraft({ status: "", priority: "", category: "", assigned: "", sort: DEFAULT_SORT });
+    setDraft({ status: "", origin: "", priority: "", category: "", assigned: "", sort: DEFAULT_SORT });
     setQDraft("");
     setQ("");
     setFilters({
       status: "",
+    origin: "",
       priority: "",
       category: "",
       assigned: "",
@@ -323,11 +335,12 @@ export function SupportPage() {
    * every other filter/search/sort so the count on the card and the rows on
    * screen never disagree, and clicking it again toggles back to no filter. */
   function toggleOverdueFilter() {
-    setDraft({ status: "", priority: "", category: "", assigned: "", sort: DEFAULT_SORT });
+    setDraft({ status: "", origin: "", priority: "", category: "", assigned: "", sort: DEFAULT_SORT });
     setQDraft("");
     setQ("");
     setFilters((f) => ({
       status: "",
+    origin: "",
       priority: "",
       category: "",
       assigned: "",
@@ -340,6 +353,7 @@ export function SupportPage() {
 
   const hasActiveFilter = Boolean(
     filters.status ||
+    filters.origin ||
     filters.priority ||
     filters.category ||
     filters.assigned ||
@@ -351,9 +365,9 @@ export function SupportPage() {
   const { exportParams } = buildTicketExportParams({ q, filters });
 
   return (
-    <PageLayout title="Support">
+    <PageLayout title="Support Tickets">
       <PageHeader
-        title="Support"
+        title="Support Tickets"
         description="Manage customer support tickets, assignments and escalations."
         actions={
           <a href={`/api/support/export?${exportParams.toString()}`}>
@@ -405,8 +419,9 @@ function SupportStats({ data, toggleOverdueFilter }: {
   data: NoInfer<SupportData> | undefined;
   toggleOverdueFilter: () => void;
 }) {
-  return (<div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-    <StatCard label="Open" value={data?.stats.open ?? 0} icon={MessageCircle} isLoading={!data} />
+  return (<div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
+    <StatCard label="Needs attention" value={data?.stats.open ?? 0} icon={MessageCircle} isLoading={!data} />
+    <StatCard label="In progress" value={data?.stats.inProgress ?? 0} icon={Clock} isLoading={!data} />
     <StatCard label="Waiting for customer" value={data?.stats.waitingCustomer ?? 0} icon={Clock} isLoading={!data} />
     <StatCard
       label="Overdue"
@@ -433,18 +448,18 @@ function SupportStatusFilter({ applyFilters, clearFilters, qDraft, setQDraft, fi
   qDraft: string;
   setQDraft: import("react").Dispatch<import("react").SetStateAction<string>>;
   fieldId: string;
-  draft: { status: string; priority: string; category: string; assigned: string; sort: string; };
-  setDraft: import("react").Dispatch<import("react").SetStateAction<{ status: string; priority: string; category: string; assigned: string; sort: string; }>>;
+  draft: { status: string; origin: string; priority: string; category: string; assigned: string; sort: string; };
+  setDraft: import("react").Dispatch<import("react").SetStateAction<{ status: string; origin: string; priority: string; category: string; assigned: string; sort: string; }>>;
 }) {
-  return (<FilterBar onApply={applyFilters} onClear={clearFilters} className="mb-4">
+  return (<FilterBar onApply={applyFilters} onClear={clearFilters} className="mb-4 grid grid-cols-2 sm:flex [&>div:last-child]:col-span-2">
     <SearchBar
       value={qDraft}
       onChange={setQDraft}
-      placeholder="Search ticket message or customer..."
-      className="w-full sm:w-64"
+      placeholder="Ticket, order, or customer..."
+      className="col-span-2 w-full sm:w-64"
     />
 
-    <SelectFilter id={`${fieldId}-status-1`} label="Status" value={draft.status || ALL_STATUSES} onValueChange={(v) => setDraft((d) => ({ ...d, status: v === ALL_STATUSES ? "" : v }))} triggerClassName="w-40" aria-label="Status filter" placeholder="All statuses">
+    <SelectFilter id={`${fieldId}-status-1`} label="Status" value={draft.status || ALL_STATUSES} onValueChange={(v) => setDraft((d) => ({ ...d, status: v === ALL_STATUSES ? "" : v }))} triggerClassName="w-full sm:w-40" aria-label="Status filter" placeholder="All statuses">
       <SelectItem value={ALL_STATUSES}>All</SelectItem>
       {STATUS_VALUES.map((s) => (
         <SelectItem key={s} value={s}>
@@ -453,7 +468,10 @@ function SupportStatusFilter({ applyFilters, clearFilters, qDraft, setQDraft, fi
       ))}
     </SelectFilter>
 
-    <SelectFilter id={`${fieldId}-priority-2`} label="Priority" value={draft.priority || ALL_PRIORITIES} onValueChange={(v) => setDraft((d) => ({ ...d, priority: v === ALL_PRIORITIES ? "" : v }))} triggerClassName="w-40" aria-label="Priority filter" placeholder="All priorities">
+    <SelectFilter id={`${fieldId}-source`} label="Source" value={draft.origin || "_all_"} onValueChange={(v) => setDraft((d) => ({ ...d, origin: v === "_all_" ? "" : v }))} triggerClassName="w-full sm:w-40" aria-label="Source filter" placeholder="All sources">
+      <SelectItem value="_all_">All</SelectItem><SelectItem value="WEB">Website</SelectItem><SelectItem value="BOT">Telegram</SelectItem>
+    </SelectFilter>
+    <SelectFilter id={`${fieldId}-priority-2`} label="Priority" value={draft.priority || ALL_PRIORITIES} onValueChange={(v) => setDraft((d) => ({ ...d, priority: v === ALL_PRIORITIES ? "" : v }))} triggerClassName="w-full sm:w-40" aria-label="Priority filter" placeholder="All priorities">
       <SelectItem value={ALL_PRIORITIES}>All</SelectItem>
       {PRIORITY_VALUES.map((p) => (
         <SelectItem key={p} value={p}>
@@ -468,7 +486,7 @@ function SupportStatusFilter({ applyFilters, clearFilters, qDraft, setQDraft, fi
         value={draft.category || ALL_CATEGORIES}
         onValueChange={(v) => setDraft((d) => ({ ...d, category: v === ALL_CATEGORIES ? "" : v }))}
       >
-        <SelectTrigger id={`${fieldId}-category-3`} className="w-40" aria-label="Category filter">
+        <SelectTrigger id={`${fieldId}-category-3`} className="w-full sm:w-40" aria-label="Category filter">
           <SelectValue placeholder="All categories" />
         </SelectTrigger>
         <SelectContent>
@@ -488,7 +506,7 @@ function SupportStatusFilter({ applyFilters, clearFilters, qDraft, setQDraft, fi
         value={draft.assigned || ALL_ASSIGNED}
         onValueChange={(v) => setDraft((d) => ({ ...d, assigned: v === ALL_ASSIGNED ? "" : v }))}
       >
-        <SelectTrigger id={`${fieldId}-assigned-4`} className="w-40" aria-label="Assigned filter">
+        <SelectTrigger id={`${fieldId}-assigned-4`} className="w-full sm:w-40" aria-label="Assigned filter">
           <SelectValue placeholder="All" />
         </SelectTrigger>
         <SelectContent>
@@ -502,7 +520,7 @@ function SupportStatusFilter({ applyFilters, clearFilters, qDraft, setQDraft, fi
     <div className="flex flex-col gap-1">
       <label htmlFor={`${fieldId}-sort-5`} className="text-xs text-ink-soft">Sort</label>
       <Select value={draft.sort} onValueChange={(v) => setDraft((d) => ({ ...d, sort: v }))}>
-        <SelectTrigger id={`${fieldId}-sort-5`} className="w-40" aria-label="Sort">
+        <SelectTrigger id={`${fieldId}-sort-5`} className="w-full sm:w-40" aria-label="Sort">
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
@@ -745,6 +763,7 @@ function buildTicketExportParams({ q, filters }: {
 
   if (filters.status) exportParams.set("status", filters.status);
 
+  if (filters.origin) exportParams.set("origin", filters.origin);
   if (filters.priority) exportParams.set("priority", filters.priority);
 
   if (filters.category) exportParams.set("category", filters.category);
@@ -818,7 +837,7 @@ function SupportTicketsTable({ allOnPageSelected, toggleSelectAllOnPage, items, 
                     {/* `items-start` (no cross-axis stretch) would let this span grow to its
                             unwrapped content width and overflow past 240px into neighboring
                             columns — line-clamp can only truncate a width-CONSTRAINED box. */}
-                    <span className="line-clamp-1 text-sm text-ink">{row.message}</span>
+                    <span className="line-clamp-1 text-sm text-ink">{row.subject ?? row.message}</span>
                   </div>
                 </PopoverTrigger>
                 <PopoverContent
@@ -836,6 +855,11 @@ function SupportTicketsTable({ allOnPageSelected, toggleSelectAllOnPage, items, 
             render: (row) => (
               <TicketCustomerCell row={row} />
             ),
+          },
+          {
+            key: "order",
+            header: "Order",
+            render: (row) => <span className="break-all text-xs text-ink-soft">{row.order?.orderCode ?? "—"}</span>,
           },
           {
             key: "priority",
@@ -871,8 +895,8 @@ function SupportTicketsTable({ allOnPageSelected, toggleSelectAllOnPage, items, 
           },
           {
             key: "date",
-            header: "Date",
-            render: (row) => <span className="text-xs text-ink-soft">{row.createdAtDisplay ?? "—"}</span>,
+            header: "Last activity",
+            render: (row) => <span className="text-xs text-ink-soft">{row.lastActivityAtDisplay ?? row.createdAtDisplay ?? "—"}</span>,
           },
           {
             key: "actions",
@@ -951,9 +975,9 @@ function useTicketActions({ adminsData, q, filters, data, qc }: {
       for (const item of data.items) {
         const prevStatus = prev.get(item.id);
         if (prevStatus === undefined) {
-          toast(`New ticket #${item.id} from ${customerLabel(item.user)}`);
+          toast(`New ticket ${ticketDisplayLabel(item)} from ${customerLabel(item.user)}`);
         } else if (prevStatus !== item.status) {
-          toast(`Ticket #${item.id} status changed to ${ticketStatusLabel(item.status)}`);
+          toast(`Ticket ${ticketDisplayLabel(item)} status changed to ${ticketStatusLabel(item.status)}`);
         }
       }
     }

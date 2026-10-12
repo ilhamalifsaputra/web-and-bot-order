@@ -117,19 +117,21 @@ describe("customer conversations", () => {
     const ticket = await prisma.supportTicket.create({ data: { userId: sample.user.id, message: "broken", status: TicketStatus.OPEN } });
     const sink: SentCall[] = [];
     const entry = entryCust(sink, `v1:ticket:reply:${ticket.id}`);
-    const conv = new FakeConversation([msg(sink, { text: "Still not working" })]);
+    const conv = new FakeConversation([msg(sink, { text: "Still not working" }), msg(sink, { callbackData: "v1:support:reply:submit" })]);
     await ticketUserReplyConversation(conv.asMyConversation(), entry);
 
     const msgs = await prisma.ticketMessage.findMany({ where: { ticketId: ticket.id, senderType: SenderType.USER } });
     expect(msgs.some((m) => m.content === "Still not working")).toBe(true);
-    expect(calls(sink, "sendMessage").some((c) => c.args[0] === 999)).toBe(true); // admin notified
+    expect(calls(sink, "sendMessage")).toHaveLength(0);
+    expect(calls(sink, "deleteMessage")).toHaveLength(1);
+    expect(await prisma.notificationOutbox.count({ where: { event: NotificationEvent.ADMIN_NEW_TICKET } })).toBe(2);
   });
 
   it("ticketUserReply: the reply prompt offers a Back action (never strands)", async () => {
     const ticket = await prisma.supportTicket.create({ data: { userId: sample.user.id, message: "x", status: TicketStatus.OPEN } });
     const sink: SentCall[] = [];
     const entry = entryCust(sink, `v1:ticket:reply:${ticket.id}`);
-    const conv = new FakeConversation([msg(sink, { text: "hello" })]);
+    const conv = new FakeConversation([msg(sink, { text: "hello" }), msg(sink, { callbackData: "v1:support:reply:submit" })]);
     await ticketUserReplyConversation(conv.asMyConversation(), entry);
     // The very first screen (the ask-reply prompt) must carry an inline keyboard.
     const firstEdit = calls(sink, "editMessageText")[0];
@@ -217,337 +219,71 @@ describe("checkout conversations", () => {
 // ===========================================================================
 
 describe("support + reject conversations", () => {
-  it("support: description + submit creates a ticket, a message, and forwards to admins", async () => {
+  it("support: category, issue, description, review and submit create one ticket and one notification per admin", async () => {
     const sink: SentCall[] = [];
-    const entry = entryCust(sink, "v1:support:open");
-    // Captured by name (not inlined into the queue) so the assertion below
-    // can check correlationId against the exact update logCustomerAction
-    // threaded — support.ts's own logCustomerAction call uses `lastCtx`,
-    // the freshest waited update, which is this one (the photos:done tap is
-    // the last wait before the ticket is created).
-    const photosDone = msg(sink, { callbackData: "v1:support:photos:done" });
-    const conv = new FakeConversation([
-      msg(sink, { text: "My account stopped working yesterday" }),
-      photosDone,
-    ]);
-    await supportConversation(conv.asMyConversation(), entry);
-
-    const ticket = await prisma.supportTicket.findFirst({ where: { userId: sample.user.id } });
-    expect(ticket).toBeTruthy();
-    expect(await prisma.ticketMessage.count({ where: { ticketId: ticket!.id } })).toBe(1);
-    // Task 2 (Phase C): the admin forward is now enqueued as an
-    // ADMIN_NEW_TICKET notification_outbox row (setup-db.ts sets
-    // ADMIN_IDS=999,1000, so both resolve as targets) rather than a direct
-    // ctx.api.sendMessage() — asserted on the outbox row instead of the
-    // sink's captured sendMessage calls.
-    const rows = await prisma.notificationOutbox.findMany({ where: { event: NotificationEvent.ADMIN_NEW_TICKET } });
-    expect(rows.some((r) => (JSON.parse(r.payloadJson) as { chat_id: number }).chat_id === 999)).toBe(true); // forwarded
-
-    // Phase H customer-audit trail. actorType filtered in the where-clause
-    // (M-6, final whole-branch review) rather than asserted after the fact.
-    const audit = await prisma.auditLog.findFirst({ where: { actorType: "CUSTOMER", targetType: "ticket", targetId: ticket!.id } });
-    expect(audit?.customerId).toBe(sample.user.id);
-    expect(audit?.telegramUserId).toBe(42n);
-    expect(audit?.channel).toBe("BOT");
-    expect(audit?.action).toBe("ticket_create");
-    expect(audit?.details).toBe("Created a support ticket via Telegram.");
-    // I-2 (final whole-branch review): correlationId is the one field that
-    // lets this row be joined back to the exact update that created the
-    // ticket — assert equality, not just truthiness.
-    expect(audit?.correlationId).toBe(String(photosDone.update.update_id));
-  });
-
-  it("support: a bot-created ticket enqueues exactly one canonical owner email without a duplicate legacy or mirrored reply email", async () => {
-    // Both owner-email triggers configured, so a bug that double-fires would
-    // actually enqueue a second (wrong) row instead of silently no-op'ing.
-    await setSetting(prisma, "owner_email_enabled", "true");
-    await setSetting(prisma, "owner_email", "owner@example.com");
-    await setSetting(prisma, "owner_email_on_new_ticket", "true");
-    await setSetting(prisma, "owner_email_on_ticket_reply", "true");
-
-    const sink: SentCall[] = [];
-    const entry = entryCust(sink, "v1:support:open");
-    const conv = new FakeConversation([
-      msg(sink, { text: "My account stopped working yesterday" }),
-      msg(sink, { callbackData: "v1:support:photos:done" }),
-    ]);
-    await supportConversation(conv.asMyConversation(), entry);
-
-    const ticket = await prisma.supportTicket.findFirst({ where: { userId: sample.user.id } });
-    expect(ticket).toBeTruthy();
-    expect(
-      await prisma.notificationOutbox.count({ where: { event: "support.ticket.created.admin" } }),
-    ).toBe(1);
-    expect(
-      await prisma.notificationOutbox.count({ where: { event: NotificationEvent.OWNER_EMAIL_NEW_TICKET } }),
-    ).toBe(0);
-    expect(
-      await prisma.notificationOutbox.count({ where: { event: NotificationEvent.OWNER_EMAIL_TICKET_REPLY } }),
-    ).toBe(0);
-  });
-
-  it("support: with an existing order, picking it from the order picker links orderId on the ticket", async () => {
-    const order = await prisma.order.create({
-      data: {
-        orderCode: `ORD-SUPPORTPICK-${Math.random()}`,
-        userId: sample.user.id,
-        subtotalAmount: "45000",
-        totalAmount: "45000",
-        status: OrderStatus.DELIVERED,
-      },
-    });
-    await prisma.orderItem.create({
-      data: { orderId: order.id, productId: sample.product.id, unitPrice: "45000", warrantyDaysSnapshot: 30 },
-    });
-
-    const sink: SentCall[] = [];
-    const entry = entryCust(sink, "v1:support:open");
-    const conv = new FakeConversation([
-      msg(sink, { text: "My account stopped working yesterday" }),
-      msg(sink, { callbackData: `v1:support:order:${order.id}` }),
-      msg(sink, { callbackData: "v1:support:photos:done" }),
-    ]);
-    await supportConversation(conv.asMyConversation(), entry);
-
-    const ticket = await prisma.supportTicket.findFirst({ where: { userId: sample.user.id } });
-    expect(ticket).toBeTruthy();
-    expect(ticket!.orderId).toBe(order.id);
-  });
-
-  it("support: skipping the order picker still creates a ticket with orderId: null", async () => {
-    const order = await prisma.order.create({
-      data: {
-        orderCode: `ORD-SUPPORTSKIP-${Math.random()}`,
-        userId: sample.user.id,
-        subtotalAmount: "45000",
-        totalAmount: "45000",
-        status: OrderStatus.DELIVERED,
-      },
-    });
-    await prisma.orderItem.create({
-      data: { orderId: order.id, productId: sample.product.id, unitPrice: "45000", warrantyDaysSnapshot: 30 },
-    });
-
-    const sink: SentCall[] = [];
-    const entry = entryCust(sink, "v1:support:open");
-    const conv = new FakeConversation([
-      msg(sink, { text: "General question, not order-specific" }),
-      msg(sink, { callbackData: "v1:support:order:skip" }),
-      msg(sink, { callbackData: "v1:support:photos:done" }),
-    ]);
-    await supportConversation(conv.asMyConversation(), entry);
-
-    const ticket = await prisma.supportTicket.findFirst({ where: { userId: sample.user.id } });
-    expect(ticket!.orderId).toBeNull();
-  });
-
-  it("support: an unrecognized tap during the order-picker wait answers error.stale_screen and the conversation keeps waiting (M-22 fix)", async () => {
-    const order = await prisma.order.create({
-      data: {
-        orderCode: `ORD-SUPPORTSTALE-${Math.random()}`,
-        userId: sample.user.id,
-        subtotalAmount: "45000",
-        totalAmount: "45000",
-        status: OrderStatus.DELIVERED,
-      },
-    });
-    await prisma.orderItem.create({
-      data: { orderId: order.id, productId: sample.product.id, unitPrice: "45000", warrantyDaysSnapshot: 30 },
-    });
-
-    const sink: SentCall[] = [];
-    const entry = entryCust(sink, "v1:support:open");
-    const conv = new FakeConversation([
-      msg(sink, { text: "My account stopped working yesterday" }),
-      msg(sink, { callbackData: "v1:menu:main" }), // unrecognized in this wait loop
-      msg(sink, { callbackData: "v1:support:order:skip" }),
-      msg(sink, { callbackData: "v1:support:photos:done" }),
-    ]);
-    await supportConversation(conv.asMyConversation(), entry);
-
-    const answers = calls(sink, "answerCallbackQuery");
-    expect(answers.some((c) => (c.args[0] as { text?: string } | undefined)?.text === t(entry, "error.stale_screen"))).toBe(true);
-    // Conversation was unaffected — it kept waiting and completed normally.
-    const ticket = await prisma.supportTicket.findFirst({ where: { userId: sample.user.id } });
-    expect(ticket).toBeTruthy();
-    expect(ticket!.orderId).toBeNull(); // the picker was ultimately skipped
-  });
-
-  it("support: an unrecognized tap during the photos wait answers error.stale_screen and the conversation keeps waiting (M-22 fix)", async () => {
-    const sink: SentCall[] = [];
-    const entry = entryCust(sink, "v1:support:open");
-    const conv = new FakeConversation([
-      msg(sink, { text: "My account stopped working yesterday" }),
-      msg(sink, { callbackData: "v1:menu:main" }), // unrecognized in this wait loop
-      msg(sink, { callbackData: "v1:support:photos:done" }),
-    ]);
-    await supportConversation(conv.asMyConversation(), entry);
-
-    const answers = calls(sink, "answerCallbackQuery");
-    expect(answers.some((c) => (c.args[0] as { text?: string } | undefined)?.text === t(entry, "error.stale_screen"))).toBe(true);
-    const ticket = await prisma.supportTicket.findFirst({ where: { userId: sample.user.id } });
-    expect(ticket).toBeTruthy();
-  });
-
-  it("support: the order-picker, photo-prompt, and received screens all edit the same anchor bubble instead of leaving stray keyboards (M-23 fix)", async () => {
-    const order = await prisma.order.create({
-      data: {
-        orderCode: `ORD-SUPPORTANCHOR-${Math.random()}`,
-        userId: sample.user.id,
-        subtotalAmount: "45000",
-        totalAmount: "45000",
-        status: OrderStatus.DELIVERED,
-      },
-    });
-    await prisma.orderItem.create({
-      data: { orderId: order.id, productId: sample.product.id, unitPrice: "45000", warrantyDaysSnapshot: 30 },
-    });
-
-    const sink: SentCall[] = [];
-    // One chat = ONE session object, shared by the entry update and every
-    // resumed turn — that's how grammY + @grammyjs/conversations really
-    // behave, and it's the only way this test can observe whether the anchor
-    // id survives across waits at all. (Per-update sessions, the harness
-    // default, silently swallow every cross-wait anchor write.)
     const shared = { ...custSession(), scratch: {} } as SessionData;
     const chat = { id: 42, type: "private" as const };
-    const mk = (o: MakeCtxOptions) =>
-      makeCtx({ sink, from: { id: 42, username: "tester" }, sharedSession: shared, ...o }).ctx;
-
-    // Entered via a typed /support command (no callback query yet), so the
-    // anchor bubble is established by a fresh ctx.reply() and every later
-    // step must reuse it through menuAnchor — this is the strongest exercise
-    // of the M-23 fix, since pre-fix each of the three sends below (ask_order,
-    // ask_photos, received) used a bare ctx.api.sendMessage that created its
-    // own new, never-retired bubble.
+    const mk = (o: MakeCtxOptions) => makeCtx({ sink, from: { id: 42, username: "tester" }, sharedSession: shared, ...o }).ctx;
+    const tap = (action: string) => () => mk({ callbackData: `v1:support:v2:${action}`, cbMessage: { message_id: shared.menuMsgId!, chat, date: 0 } });
     const entry = mk({ text: "/support" });
-    // Thunks, not ready-made contexts: the skip/done buttons live ON the
-    // anchor bubble, so each tap's callbackQuery.message.message_id has to be
-    // the anchor id — which doesn't exist until the intro reply has run.
-    const conv = new FakeConversation([
-      () => mk({ text: "My account stopped working yesterday" }),
-      () => mk({ callbackData: "v1:support:order:skip", cbMessage: { message_id: shared.menuMsgId!, chat, date: 0 } }),
-      () => mk({ callbackData: "v1:support:photos:done", cbMessage: { message_id: shared.menuMsgId!, chat, date: 0 } }),
-    ]);
+    const conv = new FakeConversation([tap("category:ACCOUNT"), tap("issue:login"), () => mk({ text: "Cannot sign into my account" }), tap("review"), tap("submit")]);
     await supportConversation(conv.asMyConversation(), entry);
-
-    // Invariant 1 — exactly one anchor bubble is ever born. The intro screen
-    // has no prior anchor and no callback query to edit, so it falls through
-    // to a single fresh send; nothing afterwards may add a second bubble.
-    // (Deliberately NOT asserting how many edits of which kind happened: a
-    // typed-input step renders through editAnchor's api-level edit and a tap
-    // renders through smartEdit's ctx-level edit, and which is which is a
-    // mechanism detail, not the behavior M-23 is about.)
-    expect(calls(sink, "reply").length).toBe(1);
-
-    // Invariant 2 — the anchor never moved. Every api-level edit (the
-    // wizard-anchor path; it alone carries an explicit message id) targeted
-    // one and the same bubble, and the session still points at it after all
-    // three post-wait renders. Since the single reply above is the only thing
-    // that can seed menuMsgId, that shared id IS the intro reply's message id.
-    const anchorEdits = calls(sink, "editMessageText").filter((c) => typeof c.args[1] === "number");
-    expect(anchorEdits.length).toBeGreaterThan(0);
-    expect(new Set(anchorEdits.map((c) => c.args[1])).size).toBe(1);
-    expect(shared.menuMsgId).toBe(anchorEdits[0]!.args[1]);
-
-    // Invariant 3 — no bubble ever had to have its keyboard retired, because
-    // a second live keyboard never existed in the first place.
-    expect(calls(sink, "editMessageReplyMarkup").length).toBe(0);
-
-    // None of those three customer-facing screens were ever sent as a fresh
-    // message into the user's own chat (the bug this task fixes).
-    const strayCustomerSends = calls(sink, "sendMessage").filter((c) => c.args[0] === entry.chat!.id);
-    expect(strayCustomerSends.length).toBe(0);
-
-    const ticket = await prisma.supportTicket.findFirst({ where: { userId: sample.user.id } });
-    expect(ticket).toBeTruthy();
-    expect(ticket!.orderId).toBeNull(); // the picker was skipped
+    const ticket = await prisma.supportTicket.findFirstOrThrow({ where: { userId: sample.user.id } });
+    expect(ticket).toMatchObject({ category: "ACCOUNT", subcategory: "login", origin: "BOT", orderId: null });
+    expect(ticket.ticketNumber).toMatch(/^TKT-\d{8}-[A-F0-9]{6}$/);
+    expect(await prisma.ticketMessage.count({ where: { ticketId: ticket.id } })).toBe(0);
+    const notices = await prisma.notificationOutbox.findMany({ where: { event: NotificationEvent.ADMIN_NEW_TICKET } });
+    expect(notices).toHaveLength(2);
+    expect(new Set(notices.map((row) => JSON.parse(row.payloadJson).chat_id))).toEqual(new Set([999, 1000]));
+    expect(await prisma.auditLog.count({ where: { action: "ticket_create", targetId: ticket.id } })).toBe(1);
+    expect(calls(sink, "reply")).toHaveLength(1);
+    expect(calls(sink, "sendMessage")).toHaveLength(0);
+    expect(calls(sink, "editMessageText")).toHaveLength(5);
+    expect(calls(sink, "deleteMessage")).toHaveLength(1);
+    expect(calls(sink, "editMessageReplyMarkup")).toHaveLength(0);
+    expect(calls(sink, "sendDocument")).toHaveLength(0);
   });
 
-  it("support: when the anchor edit fails, the fresh-send fallback's new anchor id lands in the live session (M-23 fix)", async () => {
-    const order = await prisma.order.create({
-      data: {
-        orderCode: `ORD-SUPPORTFALLBACK-${Math.random()}`,
-        userId: sample.user.id,
-        subtotalAmount: "45000",
-        totalAmount: "45000",
-        status: OrderStatus.DELIVERED,
-      },
-    });
-    await prisma.orderItem.create({
-      data: { orderId: order.id, productId: sample.product.id, unitPrice: "45000", warrantyDaysSnapshot: 30 },
-    });
-
-    const sink: SentCall[] = [];
-    const chat = { id: 42, type: "private" as const };
-    // The bubble the "🆘 Support" button was tapped on. The intro edits it in
-    // place, so it is the anchor when the first wait() returns.
-    const ANCHOR = 500_001;
-
-    // The live session — the one grammY actually persists, shared by every
-    // resumed turn.
-    const live = { ...custSession(), scratch: {}, menuMsgId: ANCHOR } as SessionData;
-    // The entry `ctx` parameter's session. @grammyjs/conversations replays the
-    // conversation on each resume, and from the second turn onwards that
-    // parameter is a reconstruction whose session is a detached clone of the
-    // first turn's — writes to it never reach storage. Modeled here as a
-    // separate object holding the same first-turn state.
-    const entrySnapshot = { ...custSession(), scratch: {}, menuMsgId: ANCHOR } as SessionData;
-
-    const entry = makeCtx({
-      sink,
-      from: { id: 42, username: "tester" },
-      sharedSession: entrySnapshot,
-      callbackData: "v1:support:open",
-      cbMessage: { message_id: ANCHOR, chat, date: 0 },
-    }).ctx;
-
+  it("support: an order issue links only an order from the authenticated user's picker", async () => {
+    const order = await prisma.order.create({ data: { userId: sample.user.id, orderCode: "ORD-SUPPORT-OWNED", subtotalAmount: "1000", totalAmount: "1000" } });
+    const sink: SentCall[] = []; const entry = entryCust(sink, "v1:support:open");
     const conv = new FakeConversation([
-      // The user deleted the anchor bubble before typing, so the ask_order
-      // render's edit of it fails and editAnchor must fall back to a fresh
-      // send — the one path where a post-wait render mints a NEW anchor id.
-      () =>
-        makeCtx({
-          sink,
-          from: { id: 42, username: "tester" },
-          sharedSession: live,
-          text: "My account stopped working yesterday",
-          deletedMessageIds: [ANCHOR],
-        }).ctx,
-      () =>
-        makeCtx({
-          sink,
-          from: { id: 42, username: "tester" },
-          sharedSession: live,
-          callbackData: "v1:support:order:skip",
-          cbMessage: { message_id: live.menuMsgId!, chat, date: 0 },
-        }).ctx,
-      () =>
-        makeCtx({
-          sink,
-          from: { id: 42, username: "tester" },
-          sharedSession: live,
-          callbackData: "v1:support:photos:done",
-          cbMessage: { message_id: live.menuMsgId!, chat, date: 0 },
-        }).ctx,
+      msg(sink, { callbackData: "v1:support:v2:category:ORDER" }), msg(sink, { callbackData: "v1:support:v2:issue:not_received" }),
+      msg(sink, { callbackData: "v1:support:v2:order:999999" }), msg(sink, { callbackData: `v1:support:v2:order:${order.id}` }),
+      msg(sink, { text: "My order has not arrived yet" }), msg(sink, { callbackData: "v1:support:v2:review" }), msg(sink, { callbackData: "v1:support:v2:submit" }),
     ]);
     await supportConversation(conv.asMyConversation(), entry);
+    expect(await prisma.supportTicket.findFirst({ where: { userId: sample.user.id } })).toMatchObject({ orderId: order.id });
+    expect(calls(sink, "sendMessage")).toHaveLength(0);
+    expect(calls(sink, "deleteMessage")).toHaveLength(1);
+  });
 
-    // The discriminator: the new anchor id must be written onto the context
-    // that actually gets persisted (the freshest waited one), not back onto
-    // the replayed entry ctx. If a post-wait render used the entry ctx, `live`
-    // would still point at the deleted ANCHOR while a brand-new bubble carried
-    // a live, never-retired keyboard — the exact stray-keyboard failure M-23
-    // exists to prevent.
-    expect(live.menuMsgId).toBeDefined();
-    expect(live.menuMsgId).not.toBe(ANCHOR);
+  it("support: an order detail shortcut prefills only a validated owned order", async () => {
+    const order = await prisma.order.create({ data: { userId: sample.user.id, orderCode: "ORD-SUPPORT-PREFILL", subtotalAmount: "1000", totalAmount: "1000" } });
+    const sink: SentCall[] = [];
+    const conv = new FakeConversation([msg(sink, { callbackData: "v1:support:v2:category:ORDER" }), msg(sink, { callbackData: "v1:support:v2:issue:not_received" }), msg(sink, { text: "My order has not arrived yet" }), msg(sink, { callbackData: "v1:support:v2:review" }), msg(sink, { callbackData: "v1:support:v2:submit" })]);
+    await supportConversation(conv.asMyConversation(), entryCust(sink, `v1:support:open:${order.id}`));
+    expect(await prisma.supportTicket.findFirst({ where: { userId: sample.user.id } })).toMatchObject({ orderId: order.id });
+    expect(calls(sink, "sendMessage")).toHaveLength(0); expect(calls(sink, "deleteMessage")).toHaveLength(1);
+  });
 
-    // That new id came from the fallback's fresh send, and the two later taps
-    // (which ride on live.menuMsgId) kept landing on it.
-    expect(calls(sink, "reply").length).toBe(1);
+  it("support: a short description stays editable and cancellation creates no ticket", async () => {
+    const sink: SentCall[] = [];
+    const conv = new FakeConversation([msg(sink, { callbackData: "v1:support:v2:category:PAYMENT" }), msg(sink, { callbackData: "v1:support:v2:issue:refund" }), msg(sink, { text: "Gg" }), msg(sink, { callbackData: "v1:support:v2:cancel" })]);
+    await supportConversation(conv.asMyConversation(), entryCust(sink, "v1:support:open"));
+    expect(sentIncludes(sink, coreT("helpdesk.description_quality", "en"))).toBe(true);
+    expect(await prisma.supportTicket.count()).toBe(0);
+    expect(calls(sink, "deleteMessage")).toHaveLength(0);
+    expect(calls(sink, "sendDocument")).toHaveLength(0);
+  });
 
-    const ticket = await prisma.supportTicket.findFirst({ where: { userId: sample.user.id } });
-    expect(ticket).toBeTruthy();
+  it("support: returning from review to description never auto-submits a draft", async () => {
+    const sink: SentCall[] = [];
+    const conv = new FakeConversation([msg(sink, { callbackData: "v1:support:v2:category:ACCOUNT" }), msg(sink, { callbackData: "v1:support:v2:issue:login" }), msg(sink, { text: "My login is not working today" }), msg(sink, { callbackData: "v1:support:v2:review" }), msg(sink, { callbackData: "v1:support:v2:back" }), msg(sink, { callbackData: "v1:support:v2:cancel" })]);
+    await supportConversation(conv.asMyConversation(), entryCust(sink, "v1:support:open"));
+    expect(await prisma.supportTicket.count()).toBe(0);
+    expect(calls(sink, "deleteMessage")).toHaveLength(0);
+    expect(calls(sink, "sendMessage")).toHaveLength(0);
   });
 
   it("reject: admin reason rejects the order, audits, and DMs the buyer", async () => {

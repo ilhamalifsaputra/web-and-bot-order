@@ -3,8 +3,9 @@ import { ticketStatusLabel } from "./ticketStatus";
 
 describe("ticketStatusLabel", () => {
   it("maps each status to its admin-facing label", () => {
-    expect(ticketStatusLabel("OPEN")).toBe("Open");
-    expect(ticketStatusLabel("WAITING_ADMIN")).toBe("Waiting for admin");
+    expect(ticketStatusLabel("OPEN")).toBe("New");
+    expect(ticketStatusLabel("WAITING_ADMIN")).toBe("New");
+    expect(ticketStatusLabel("IN_PROGRESS")).toBe("In progress");
     expect(ticketStatusLabel("REPLIED")).toBe("Waiting for customer");
     expect(ticketStatusLabel("WAITING_CUSTOMER")).toBe("Waiting for customer");
     expect(ticketStatusLabel("RESOLVED")).toBe("Resolved");

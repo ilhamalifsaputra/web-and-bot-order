@@ -223,19 +223,19 @@ describe("TicketDetailPage — header", () => {
   it("uses the subject as the description, not the customer's full complaint", async () => {
     await renderLoaded();
     const h1 = screen.getByRole("heading", { level: 1 });
-    expect(h1).toHaveTextContent("Ticket #1");
+    expect(h1).toHaveTextContent("Order tidak sampai");
     expect(h1.parentElement).toHaveTextContent("Order tidak sampai");
     expect(h1.parentElement).not.toHaveTextContent("mohon bantuannya");
   });
 
   it("shows the ticketNumber when present", async () => {
     await renderLoaded({ ...BASE_DETAIL, ticket: { ...BASE_TICKET, ticketNumber: "TCK-20260828-00001" } });
-    expect(screen.getByText("Ticket TCK-20260828-00001")).toBeInTheDocument();
+    expect(screen.getByText("TCK-20260828-00001")).toBeInTheDocument();
   });
 
   it("falls back to #id for a historical ticket with no ticketNumber", async () => {
     await renderLoaded();
-    expect(screen.getByText("Ticket #1")).toBeInTheDocument();
+    expect(screen.getAllByText("#1").length).toBeGreaterThan(0);
   });
 
   it("labels a waiting-for-customer ticket in plain words", async () => {
@@ -350,7 +350,7 @@ describe("TicketDetailPage — conversation", () => {
     await user.click(within(conversation).getByRole("button", { name: /^send reply$/i }));
 
     await waitFor(() =>
-      expect(apiPost).toHaveBeenCalledWith("/api/support/1/reply", { content: "We're checking.", internal: false }),
+      expect(apiPost).toHaveBeenCalledWith("/api/support/1/reply", { content: "We're checking.", internal: false, request_id: expect.any(String), attachment_ids: [] }),
     );
   });
 
@@ -367,6 +367,8 @@ describe("TicketDetailPage — conversation", () => {
       expect(apiPost).toHaveBeenCalledWith("/api/support/1/reply", {
         content: "Checked with the courier.",
         internal: true,
+        request_id: expect.any(String),
+        attachment_ids: [],
       }),
     );
   });
@@ -729,5 +731,25 @@ describe("TicketDetailPage — activity", () => {
     await renderLoaded({ ...BASE_DETAIL, timeline: { ticket: [], order: [] } });
     expect(screen.getByText("Activity (1)")).toBeInTheDocument();
     expect(screen.getByText("No additional activity yet.")).toBeInTheDocument();
+  });
+});
+
+
+describe("ticket title correction", () => {
+  it("starts processing with the server's expected-status concurrency contract", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.mocked(apiPost).mockResolvedValue({ ok: true }); await renderLoaded();
+    await user.click(screen.getByRole("button", { name: "Start processing" }));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/support/1/status", { expected: "OPEN", status: "IN_PROGRESS" }));
+  });
+  it("lets staff correct the generated title without changing the public number", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.mocked(apiPost).mockResolvedValue({ ok: true });
+    await renderLoaded();
+    await user.click(screen.getByRole("button", { name: "Edit title" }));
+    const input = screen.getByRole("textbox", { name: "Title" });
+    await user.clear(input); await user.type(input, "Payment confirmation delayed");
+    await user.click(screen.getByRole("button", { name: "Save title" }));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/support/1/title", { title: "Payment confirmation delayed" }));
   });
 });

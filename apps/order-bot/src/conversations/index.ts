@@ -66,7 +66,7 @@ export const CONVERSATIONS: ConvSpec[] = [
   // customerInfo above (Task 9).
   { name: "editCustomerInfo", fn: editCustomerInfoConversation },
   // support (entry via the inline Help Center button + /support command)
-  { name: "support", fn: supportConversation, callback: /^v1:support:open$/, command: "support" },
+  { name: "support", fn: supportConversation, callback: /^v1:support:open(?::\d+)?$/, command: "support" },
   // admin
   { name: "reject", fn: rejectConversation, callback: /^v1:adm:verif:reject:\d+$/ },
   { name: "stockUpload", fn: stockUploadConversation, callback: /^v1:adm:stock:add:\d+$/ },

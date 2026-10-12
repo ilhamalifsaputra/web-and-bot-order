@@ -1258,7 +1258,7 @@ describe("ADMIN_NEW_TICKET, TICKET_REPLY_DM, TICKET_CLOSED_DM (Task 2, Phase C)"
     await addAdminIdToDb(prisma, 910_100_001);
     await addAdminIdToDb(prisma, 910_100_002);
     const user = await upsertUser(prisma, { telegramId: 610_001, username: "ticketuser1", fullName: "Ticket User 1" });
-    const ticket = await createTicket(prisma, user.id, "I need help with my order");
+    const ticket = await prisma.supportTicket.create({ data: { userId: user.id, message: "I need help with my order" } });
     await enqueueAdminNewTicketDm(prisma, {
       ticketId: ticket.id,
       fromUserId: 610_001,
@@ -1311,7 +1311,7 @@ describe("ADMIN_NEW_TICKET, TICKET_REPLY_DM, TICKET_CLOSED_DM (Task 2, Phase C)"
   it("ADMIN_NEW_TICKET sends no media group and no photo note when the ticket has no photos", async () => {
     await addAdminIdToDb(prisma, 910_100_003);
     const user = await upsertUser(prisma, { telegramId: 610_002, username: null, fullName: "Ticket User 2" });
-    const ticket = await createTicket(prisma, user.id, "Second ticket, no photos");
+    const ticket = await prisma.supportTicket.create({ data: { userId: user.id, message: "Second ticket, no photos" } });
     await enqueueAdminNewTicketDm(prisma, {
       ticketId: ticket.id,
       fromUserId: 610_002,
@@ -1333,7 +1333,7 @@ describe("ADMIN_NEW_TICKET, TICKET_REPLY_DM, TICKET_CLOSED_DM (Task 2, Phase C)"
   it("HTML-escapes ADMIN_NEW_TICKET's message and username", async () => {
     await addAdminIdToDb(prisma, 910_100_004);
     const user = await upsertUser(prisma, { telegramId: 610_007, username: null, fullName: "Ticket User 7" });
-    const ticket = await createTicket(prisma, user.id, "<script>alert(1)</script>");
+    const ticket = await prisma.supportTicket.create({ data: { userId: user.id, message: "<script>alert(1)</script>" } });
     await enqueueAdminNewTicketDm(prisma, {
       ticketId: ticket.id,
       fromUserId: 610_007,
@@ -1381,7 +1381,7 @@ describe("ADMIN_NEW_TICKET, TICKET_REPLY_DM, TICKET_CLOSED_DM (Task 2, Phase C)"
 
   it("TICKET_REPLY_DM sends the admin's reply in English with a Mark-as-Resolved keyboard", async () => {
     const user = await upsertUser(prisma, { telegramId: 610_003, username: "ticketuser3", fullName: "Ticket User 3" });
-    const ticket = await createTicket(prisma, user.id, "Reply test ticket");
+    const ticket = await prisma.supportTicket.create({ data: { userId: user.id, message: "Reply test ticket" } });
     await enqueueTicketReplyDm(prisma, { ticketId: ticket.id, chatId: 610_003, message: "We refunded your order." });
 
     const { bot, sendMessage } = fakeMediaBot();
@@ -1405,7 +1405,7 @@ describe("ADMIN_NEW_TICKET, TICKET_REPLY_DM, TICKET_CLOSED_DM (Task 2, Phase C)"
 
   it("HTML-escapes TICKET_REPLY_DM's message", async () => {
     const user = await upsertUser(prisma, { telegramId: 610_004, username: "ticketuser4", fullName: "Ticket User 4" });
-    const ticket = await createTicket(prisma, user.id, "Escape test ticket");
+    const ticket = await prisma.supportTicket.create({ data: { userId: user.id, message: "Escape test ticket" } });
     await enqueueTicketReplyDm(prisma, { ticketId: ticket.id, chatId: 610_004, message: "<script>alert(1)</script>" });
 
     const { bot, sendMessage } = fakeMediaBot();
@@ -1419,7 +1419,7 @@ describe("ADMIN_NEW_TICKET, TICKET_REPLY_DM, TICKET_CLOSED_DM (Task 2, Phase C)"
 
   it("TICKET_CLOSED_DM sends the buyer's own-language closed message with no keyboard", async () => {
     const user = await upsertUser(prisma, { telegramId: 610_005, username: "ticketuser5", fullName: "Ticket User 5" });
-    const ticket = await createTicket(prisma, user.id, "Closed test ticket");
+    const ticket = await prisma.supportTicket.create({ data: { userId: user.id, message: "Closed test ticket" } });
     await enqueueTicketClosedDm(prisma, { ticketId: ticket.id, chatId: 610_005, buyerLanguage: "id" });
 
     const { bot, sendMessage } = fakeMediaBot();
@@ -1439,7 +1439,7 @@ describe("ADMIN_NEW_TICKET, TICKET_REPLY_DM, TICKET_CLOSED_DM (Task 2, Phase C)"
 
   it("TICKET_CLOSED_DM defaults to English when buyerLanguage is null", async () => {
     const user = await upsertUser(prisma, { telegramId: 610_006, username: "ticketuser6", fullName: "Ticket User 6" });
-    const ticket = await createTicket(prisma, user.id, "Closed test ticket 2");
+    const ticket = await prisma.supportTicket.create({ data: { userId: user.id, message: "Closed test ticket 2" } });
     await enqueueTicketClosedDm(prisma, { ticketId: ticket.id, chatId: 610_006, buyerLanguage: null });
 
     const { bot, sendMessage } = fakeMediaBot();
@@ -1816,7 +1816,8 @@ describe("drainBatch EMAIL lane (owner email notifications)", () => {
     expect(args.subject).toBe("New support ticket");
     expect(args.text).toContain(`Ticket: ${ticket.ticketNumber}`);
     expect(args.html).toContain("New support ticket");
-    expect(sendMessage).not.toHaveBeenCalled();
+    expect(sendMessage.mock.calls.length).toBeGreaterThan(0);
+    expect(sendMessage.mock.calls.every((call) => String(call[1]).includes(ticket.ticketNumber!))).toBe(true);
 
     const row = await prisma.notificationOutbox.findFirst({
       where: { event: NotificationEvent.OWNER_EMAIL_NEW_TICKET, orderId: null },

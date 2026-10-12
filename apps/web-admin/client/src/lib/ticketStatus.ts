@@ -8,8 +8,9 @@
 // @app/core/enums). REPLIED means the same as WAITING_CUSTOMER to an admin
 // (the ball is in the customer's court), so they share a label.
 export const TICKET_STATUS_LABELS: Record<string, string> = {
-  OPEN: "Open",
-  WAITING_ADMIN: "Waiting for admin",
+  OPEN: "New",
+  IN_PROGRESS: "In progress",
+  WAITING_ADMIN: "New",
   REPLIED: "Waiting for customer",
   WAITING_CUSTOMER: "Waiting for customer",
   RESOLVED: "Resolved",

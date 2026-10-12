@@ -59,7 +59,7 @@ export default function TicketSidebar({ order, recentTickets, currentTicketId, t
             {others.map((tk) => (
               <li key={tk.id} className="py-2 first:pt-0 last:pb-0">
                 <Link to={`/account/support/${tk.id}`} className="flex items-center justify-between gap-2 text-sm hover:text-pine">
-                  <span>#{tk.id}</span>
+                  <span className="min-w-0 break-all text-xs">{tk.ticket_number ?? `#${tk.id}`}</span>
                   <TicketStatusBadge value={tk.status} />
                 </Link>
               </li>

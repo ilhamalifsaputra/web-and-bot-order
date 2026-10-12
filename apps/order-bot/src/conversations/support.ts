@@ -1,193 +1,106 @@
-/**
- * Support ticket conversation — port of support.py.
- * User: /support → describe issue → optionally attach up to 3 photos → submit.
- * The ticket is persisted and forwarded to the support group / admin DMs.
- */
-import { SenderType } from "@app/core/enums";
-import { ValidationError } from "@app/core/errors";
-import { prisma, getSetting, createTicket, addTicketMessage, listUserOrders, logCustomerAction, enqueueAdminNewTicketDm, getOpenTicketForOrder } from "@app/db";
+import { randomUUID } from "node:crypto";
+import { InlineKeyboard } from "grammy";
+import { SUPPORT_CATEGORIES, supportIssue } from "@app/core/supportCatalog";
+import { supportMediaAvailable } from "@app/core/supportMedia";
+import { botToken } from "@app/core/runtime";
+import { prisma, createTicket, getOrder, listUserOrders, getOpenTicketForOrder, logCustomerAction, ingestSupportTelegramMedia } from "@app/db";
 import type { MyContext, MyConversation } from "../context";
-import { smartEdit, menuAnchor } from "../util/chat";
+import { consumeInput, menuAnchor } from "../util/chat";
 import { t } from "../util/i18n";
 import { esc } from "../util/format";
-import { validateText } from "../util/validators";
 import * as ckb from "../keyboards/customer";
-import { startCommand, handleProductNumber } from "../handlers/customer";
+import { handleProductNumber, showMainMenu } from "../handlers/customer";
 
-function isCmd(ctx: MyContext, cmd: string): boolean {
-  const text = ctx.message?.text ?? "";
-  return text === `/${cmd}` || text.startsWith(`/${cmd} `) || text.startsWith(`/${cmd}@`);
+const TTL = 30 * 60_000;
+const callback = (action: string) => `v1:support:v2:${action}`;
+function navigation(ctx: MyContext, back = true) {
+  const keyboard = new InlineKeyboard();
+  if (back) keyboard.text(t(ctx, "helpdesk.back"), callback("back"));
+  return keyboard.text(t(ctx, "helpdesk.cancel"), callback("cancel"));
 }
 
 export async function supportConversation(conversation: MyConversation, ctx: MyContext): Promise<void> {
-  const info = ctx.session.dbUser!;
-  const lang = ctx.session.lang;
-
+  const user = ctx.session.dbUser!;
+  const draftId = await conversation.external(() => randomUUID());
+  const started = await conversation.now();
+  const orders = await conversation.external(() => listUserOrders(prisma, user.id, 50, 0));
+  const entryOrderId = Number(ctx.callbackQuery?.data?.match(/^v1:support:open:(\d+)$/)?.[1]);
+  const linkedOrder = Number.isSafeInteger(entryOrderId) && entryOrderId > 0 ? await conversation.external(() => getOrder(prisma, entryOrderId)) : null;
+  const preselectedOrder = linkedOrder?.userId === user.id ? linkedOrder : null;
+  const mediaEnabled = await conversation.external(() => supportMediaAvailable());
+  let current = ctx;
+  let step: "category" | "issue" | "order" | "description" | "media" | "review" = "category";
+  let category = ""; let issueKey = ""; let orderId: number | null = preselectedOrder?.id ?? null; let body = ""; let orderPage = 0;
+  const attachments: string[] = [];
+  const acceptedInputs: MyContext[] = [];
+  let error = "";
   if (ctx.callbackQuery) await ctx.answerCallbackQuery();
-
-  let intro = t(ctx, "support.intro");
-  const contact = await conversation.external(() => getSetting(prisma, "support_contact"));
-  if (contact) intro += `\n\nDirect contact: ${esc(contact)}`;
-  await smartEdit(ctx, intro, ckb.backToMain(lang));
-
-  // --- AWAITING_TICKET: description ---
-  // lastCtx tracks the freshest waited context. @grammyjs/conversations
-  // replays the conversation on every resume, so the entry `ctx` parameter
-  // is a throwaway reconstruction of the FIRST update only — a menuAnchor
-  // fallback (fresh send) after any wait() must write its new anchor id onto
-  // the update that's actually being persisted (the latest `u`), never back
-  // onto `ctx`, or the write is silently lost and the next render re-derives
-  // a stale, already-abandoned anchor id (same "stray keyboard" bug this
-  // conversation exists to avoid, just reached a different way). Matches the
-  // ctx-then-u pattern used throughout checkout.ts/customerInfo.ts.
-  let lastCtx: MyContext = ctx;
-  let body: string;
   for (;;) {
-    const u = await conversation.wait();
-    lastCtx = u;
-    if (isCmd(u, "start")) return void (await startCommand(u));
-    if (isCmd(u, "cancel")) return void (await smartEdit(u, t(u, "menu.main"), ckb.backToMain(lang)));
-    const text = u.message?.text;
-    if (!text) continue;
-    // A reply-keyboard menu tap (Terms, FAQ, My Orders, …) must not be captured
-    // as the ticket text. Exit the conversation and run the tapped action so the
-    // button behaves normally instead of silently filing a ticket.
-    if (ckb.isPersistentLabel(text)) return void (await handleProductNumber(u));
-    try {
-      body = validateText(text, 2000, 3);
-      break;
-    } catch (e) {
-      if (e instanceof ValidationError) {
-        await u.reply(t(u, e.key, e.formatArgs), { parse_mode: "HTML" });
-        continue;
-      }
-      throw e;
+    const issue = supportIssue(category, issueKey);
+    let text: string; let keyboard: InlineKeyboard;
+    if (step === "category") {
+      text = t(current, "helpdesk.choose_category"); keyboard = new InlineKeyboard();
+      for (const item of SUPPORT_CATEGORIES) keyboard.text(t(current, `helpdesk.category_${item.key.toLowerCase()}`), callback(`category:${item.key}`)).row();
+      keyboard.text(t(current, "helpdesk.cancel"), callback("cancel"));
+    } else if (step === "issue") {
+      text = t(current, "helpdesk.choose_issue"); keyboard = new InlineKeyboard();
+      const selected = SUPPORT_CATEGORIES.find((item) => item.key === category)!;
+      for (const key of selected.issues) keyboard.text(t(current, `helpdesk.issue.${category.toLowerCase()}_${key}`), callback(`issue:${key}`)).row();
+      keyboard.row().text(t(current, "helpdesk.back"), callback("back")).text(t(current, "helpdesk.cancel"), callback("cancel"));
+    } else if (step === "order") {
+      const slice = orders.slice(orderPage * 5, orderPage * 5 + 5);
+      text = t(current, "helpdesk.choose_order") + "\n\n" + slice.map((o, index) => `${index + 1}. <code>${esc(o.orderCode)}</code> ${esc(o.items[0]?.product?.name?.slice(0, 60) ?? "")}`).join("\n");
+      keyboard = new InlineKeyboard();
+      slice.forEach((o, index) => keyboard.text(String(index + 1), callback(`order:${o.id}`)).row());
+      if (orderPage) keyboard.text(t(current, "helpdesk.previous"), callback("previous"));
+      if ((orderPage + 1) * 5 < orders.length) keyboard.text(t(current, "helpdesk.next"), callback("next"));
+      keyboard.row().text(t(current, "helpdesk.no_order"), callback("order:skip")).row().text(t(current, "helpdesk.back"), callback("back")).text(t(current, "helpdesk.cancel"), callback("cancel"));
+    } else if (step === "description") { text = t(current, "helpdesk.ask_description"); keyboard = navigation(current); }
+    else if (step === "media") { text = `${t(current, mediaEnabled ? "helpdesk.ask_media" : "helpdesk.media_unavailable")}\n${attachments.length}/3`; keyboard = new InlineKeyboard().text(t(current, attachments.length ? "helpdesk.review" : "helpdesk.skip"), callback("review")).row().text(t(current, "helpdesk.back"), callback("back")).text(t(current, "helpdesk.cancel"), callback("cancel")); }
+    else {
+      const order = preselectedOrder?.id === orderId ? preselectedOrder : orders.find((item) => item.id === orderId);
+      text = `<b>${t(current, "helpdesk.review")}</b>\n${t(current, `helpdesk.category_${category.toLowerCase()}`)} / ${t(current, issue!.labelKey)}\n${order ? `<code>${esc(order.orderCode)}</code>` : t(current, "helpdesk.no_order")}\n\n${esc(body.slice(0, 1200))}\n\n${t(current, "helpdesk.attachments")}: ${attachments.length}`;
+      keyboard = new InlineKeyboard().text(t(current, "helpdesk.confirm"), callback("submit")).row().text(t(current, "helpdesk.back"), callback("back")).text(t(current, "helpdesk.cancel"), callback("cancel"));
     }
-  }
-
-  // --- AWAITING_ORDER (optional): link a past order, or skip ---
-  // listUserOrders is a DB read that happens BEFORE the photo step's wait()
-  // calls below — it must be wrapped in conversation.external() (same reason
-  // getSetting is, above line 34) so a replay triggered by a later wait()
-  // doesn't re-run it.
-  const orders = await conversation.external(() => listUserOrders(prisma, info.id, 5, 0));
-  let orderId: number | null = null;
-  if (orders.length) {
-    await menuAnchor(lastCtx, t(lastCtx, "support.ask_order"), ckb.orderPickerKb(orders, lang));
-    for (;;) {
-      const u = await conversation.wait();
-      lastCtx = u;
-      if (isCmd(u, "start")) return void (await startCommand(u));
-      if (isCmd(u, "cancel")) return void (await smartEdit(u, t(u, "menu.main"), ckb.backToMain(lang)));
-      const labelText = u.message?.text;
-      if (labelText && ckb.isPersistentLabel(labelText)) return void (await handleProductNumber(u));
-      const data = u.callbackQuery?.data ?? "";
-      if (data === "v1:support:order:skip") {
-        await u.answerCallbackQuery();
-        break;
+    await menuAnchor(current, `${text}${error ? `\n\n${error}` : ""}`, keyboard);
+    error = "";
+    current = await conversation.wait();
+    const data = current.callbackQuery?.data ?? "";
+    const action = data.startsWith(callback("")) ? data.slice(callback("").length) : "";
+    if (current.callbackQuery) await current.answerCallbackQuery();
+    const input = current.message?.text;
+    if (input && ckb.isPersistentLabel(input)) return void await handleProductNumber(current);
+    if (input?.startsWith("/start") || data === "v1:menu:main" || action === "cancel" || input === "/cancel") return void await showMainMenu(current);
+    if (await conversation.now() - started > TTL) { await menuAnchor(current, t(current, "helpdesk.session_expired"), ckb.backToMain(current.session.lang)); return; }
+    if (action === "back") { step = step === "issue" ? "category" : step === "order" ? "issue" : step === "description" ? (issue?.order && orders.length ? "order" : "issue") : step === "media" ? "description" : "media"; continue; }
+    if (step === "category" && action.startsWith("category:")) { const candidate = action.slice(9); if (SUPPORT_CATEGORIES.some((item) => item.key === candidate)) { category = candidate; issueKey = ""; orderId = (candidate === "ORDER" || candidate === "PAYMENT") ? preselectedOrder?.id ?? null : null; step = "issue"; } }
+    else if (step === "issue" && action.startsWith("issue:")) { const selected = supportIssue(category, action.slice(6)); if (selected) { issueKey = selected.issue; step = selected.order && !orderId && orders.length ? "order" : "description"; } }
+    else if (step === "order") {
+      if (action === "previous") orderPage = Math.max(0, orderPage - 1);
+      if (action === "next" && (orderPage + 1) * 5 < orders.length) orderPage++;
+      if (action === "order:skip") { orderId = null; step = "description"; }
+      else if (action.startsWith("order:")) { const selected = orders.find((item) => item.id === Number(action.slice(6))); if (selected) { const existing = await conversation.external(() => getOpenTicketForOrder(prisma, selected.id)); if (existing) { await menuAnchor(current, t(current, "support.duplicate_open_ticket", { id: existing.ticketNumber ?? existing.id, code: selected.orderCode }), ckb.ticketDuplicateKb(existing.id, current.session.lang)); return; } orderId = selected.id; step = "description"; } }
+    } else if (step === "description" && input) {
+      const trimmed = input.trim(); if (trimmed.length >= 10 && trimmed.length <= 2000) { body = trimmed; acceptedInputs.push(current); step = "media"; } else error = t(current, "helpdesk.description_quality");
+    } else if (step === "media") {
+      if (action === "review") step = "review";
+      else if (current.message?.photo || current.message?.video) {
+        if (!mediaEnabled || attachments.length >= 3) { error = t(current, mediaEnabled ? "web.support_attach_error_count" : "helpdesk.media_unavailable"); continue; }
+        const photo = current.message.photo?.at(-1); const video = current.message.video; const media = photo ?? video!;
+        try {
+          const file = await current.api.getFile(media.file_id);
+          const args = { ownerId: user.id, draftId, fileId: media.file_id, filePath: file.file_path ?? "", mime: photo ? "image/jpeg" : video?.mime_type ?? "video/mp4", bytes: file.file_size ?? media.file_size ?? 0 };
+          const id = await conversation.external(async () => ingestSupportTelegramMedia(prisma, { ...args, token: botToken() ?? "" })); attachments.push(id); acceptedInputs.push(current);
+        } catch { error = t(current, "helpdesk.upload_failed"); }
       }
-      const m = /^v1:support:order:(\d+)$/.exec(data);
-      if (m) {
-        const picked = parseInt(m[1]!, 10);
-        const match = orders.find((o) => o.id === picked);
-        if (match) {
-          const existing = await conversation.external(() => getOpenTicketForOrder(prisma, picked));
-          if (existing) {
-            await u.answerCallbackQuery();
-            await menuAnchor(
-              u,
-              t(u, "support.duplicate_open_ticket", { id: existing.id, code: match.orderCode }),
-              ckb.ticketDuplicateKb(existing.id, lang),
-            );
-            return;
-          }
-          orderId = picked;
-          await u.answerCallbackQuery({ text: t(u, "support.order_linked_toast", { code: match.orderCode }) });
-          break;
-        }
-      }
-      // Anything else (stray text, unrecognized tap) — keep waiting, but a
-      // tap must still get its spinner cleared with feedback instead of
-      // spinning until Telegram gives up (M-22 fix).
-      if (u.callbackQuery) await u.answerCallbackQuery({ text: t(u, "error.stale_screen") });
-    }
-  }
-
-  await menuAnchor(lastCtx, t(lastCtx, "support.ask_photos"), ckb.supportPhotoPromptKb(0, lang));
-
-  // --- AWAITING_PHOTOS: up to 3, auto-submit at 3, or Submit button ---
-  const photos: string[] = [];
-  for (;;) {
-    const u = await conversation.wait();
-    lastCtx = u;
-    const data = u.callbackQuery?.data ?? "";
-    if (data === "v1:support:photos:done") {
-      await u.answerCallbackQuery();
-      break;
-    }
-    if (isCmd(u, "start")) return void (await startCommand(u));
-    if (isCmd(u, "cancel")) return void (await smartEdit(u, t(u, "menu.main"), ckb.backToMain(lang)));
-    const labelText = u.message?.text;
-    if (labelText && ckb.isPersistentLabel(labelText)) return void (await handleProductNumber(u));
-    const ph = u.message?.photo;
-    if (ph && ph.length) {
-      photos.push(ph.at(-1)!.file_id);
-      if (photos.length >= 3) break;
-      await u.api.sendMessage(u.chat!.id, t(u, "support.photo_added", { count: photos.length }), {
-        parse_mode: "HTML",
-        reply_markup: ckb.supportPhotoPromptKb(photos.length, lang),
+    } else if (step === "review" && action === "submit") {
+      const ticket = await conversation.external(async () => {
+        const created = await createTicket(prisma, user.id, body, null, null, orderId, { category: issue!.category, subcategory: issueKey, subject: t(current, issue!.labelKey), origin: "BOT", requestKey: draftId, attachmentIds: attachments, dedupeOrder: true });
+        await logCustomerAction(prisma, { customerId: user.id, telegramUserId: BigInt(current.from!.id), channel: "BOT", correlationId: String(current.update.update_id), action: "ticket_create", targetType: "ticket", targetId: created.id, details: "Created a support ticket via Telegram." });
+        return { id: created.id, number: created.ticketNumber };
       });
-    } else if (u.callbackQuery) {
-      // An inline tap that isn't "photos:done" (e.g. a stale/duplicate tap) —
-      // clear its spinner instead of leaving it hanging (M-22 fix).
-      await u.answerCallbackQuery({ text: t(u, "error.stale_screen") });
+      for (const accepted of acceptedInputs) await consumeInput(accepted);
+      await menuAnchor(current, t(current, "helpdesk.received", { number: ticket.number }), new InlineKeyboard().text(t(current, "helpdesk.view"), `v1:ticket:view:${ticket.id}`).row().text(t(current, "menu.main"), "v1:menu:main")); return;
     }
   }
-
-  // --- Submit (terminal) ---
-  const photoFileIds = photos.length ? photos.join(",") : null;
-  const ticket = await createTicket(prisma, info.id, body, photoFileIds, null, orderId);
-  // Phase H customer-audit trail — logged right after the ticket itself
-  // exists (not gated on the best-effort admin-forward below, which can fail
-  // per-chat without undoing a ticket that was genuinely created). Uses
-  // lastCtx (the freshest waited update), not the entry `ctx`, for the same
-  // reason menuAnchor above does — see the comment on `lastCtx`'s declaration.
-  await logCustomerAction(prisma, {
-    customerId: info.id,
-    telegramUserId: lastCtx.from ? BigInt(lastCtx.from.id) : null,
-    channel: "BOT",
-    correlationId: String(lastCtx.update.update_id),
-    action: "ticket_create",
-    targetType: "ticket",
-    targetId: ticket.id,
-    details: "Created a support ticket via Telegram.",
-  });
-  // Mirrors the ticket's own opening message into the thread for display —
-  // createTicket already enqueued the "new ticket" owner email for this same
-  // content, so notifyOwner: false stops this from also enqueueing a
-  // (false) "customer replied" email. See addTicketMessage's doc comment.
-  await addTicketMessage(prisma, {
-    ticketId: ticket.id,
-    senderType: SenderType.USER,
-    senderId: info.id,
-    content: body,
-    photoFileIds,
-    notifyOwner: false,
-  });
-
-  await menuAnchor(lastCtx, t(lastCtx, "support.received"), ckb.backToMain(lang));
-
-  // Task 2 (Phase C): routed through notification_outbox instead of a direct
-  // ctx.api.sendMessage() loop — the dispatcher (packages/outbox-dispatcher)
-  // now owns delivery/retry, resolves the same support-group-or-admin-ids
-  // target list, and HTML-escapes these raw values itself at render time
-  // (see ADMIN_NEW_TICKET's dispatcher branch), so `body`/username ride the
-  // payload unescaped, same convention every other enqueue call site follows.
-  await enqueueAdminNewTicketDm(prisma, {
-    ticketId: ticket.id,
-    fromUserId: ctx.from!.id,
-    fromUsername: ctx.from!.username ?? null,
-    message: body,
-    photoFileIds: photos,
-  });
 }

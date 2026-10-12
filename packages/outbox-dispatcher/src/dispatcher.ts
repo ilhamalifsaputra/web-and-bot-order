@@ -1,3 +1,5 @@
+import { deliverSupportReply } from "./supportDelivery";
+import { t as coreT } from "@app/core/i18n";
 /**
  * Polling loop that drains notification_outbox -> Telegram or -> email,
  * decided per row by `row.channel` (NotificationChannel.TELEGRAM, the
@@ -704,8 +706,8 @@ async function deliverAdminNewTicketDm(
   const photoNote = photoFileIds.length ? `\n📎 ${photoFileIds.length} photo(s) attached` : "";
   // Mirrors conversations/support.ts's pre-outbox forwardText exactly.
   const text =
-    `🆘 <b>New support ticket #${ticketId}</b>\n` +
-    `From: <code>${fromUserId}</code> (@${fromUsername})${photoNote}\n\n` +
+    `🆘 <b>${payload.customer_reply ? "Customer replied to" : "New support ticket"} ${escape(String(payload.ticket_number ?? `#${ticketId}`))}</b>\n` +
+    `${payload.customer_reply ? "Customer replied.\n" : ""}From: <code>${fromUserId}</code> (@${fromUsername})${photoNote}\n\n` +
     `${message}`;
   const keyboard = new InlineKeyboard()
     .text("💬 Reply", `v1:adm:ticket:reply:${ticketId}`)
@@ -743,12 +745,14 @@ async function deliverTicketReplyDm(
     return "ok";
   }
   const ticketId = Number(payload.ticket_id);
-  const message = escape(String(payload.message ?? ""));
   // Mirrors conversations/admin.ts's pre-outbox coreT("support.admin_reply", "en", …) exactly.
-  const text =
-    `<b>Reply from support:</b>\n\n${message}\n\n` +
-    `<i>If your issue is resolved, tap the button below to close this ticket.</i>`;
-  const keyboard = new InlineKeyboard().text("✅ Mark as Resolved", `v1:ticket:close:${ticketId}`);
+  if (payload.message_id) return trySend(bot, row, () => deliverSupportReply(bot, row, payload));
+  const lang = typeof payload.language === "string" ? payload.language : "en";
+  const number = escape(String(payload.ticket_number ?? `#${ticketId}`));
+  const text = payload.language ? coreT("helpdesk.reply_notice", lang, { number }) : coreT("support.admin_reply", "en", { message: escape(String(payload.message ?? "")) });
+  const keyboard = payload.language
+    ? new InlineKeyboard().text(coreT("helpdesk.view", lang), `v1:ticket:view:${ticketId}`)
+    : new InlineKeyboard().text("\u2705 Mark as Resolved", `v1:ticket:close:${ticketId}`);
 
   return trySend(bot, row, () => bot.api.sendMessage(chatId, text, { parse_mode: "HTML", reply_markup: keyboard }));
 }

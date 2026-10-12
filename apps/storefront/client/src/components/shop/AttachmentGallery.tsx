@@ -1,3 +1,6 @@
+import { useState } from "react";
+import Modal from "../ui/Modal";
+import { t } from "../../lib/i18n";
 /**
  * Read-only render of a ticket/message's evidence URLs (SupportPage's
  * `attachments`/TicketDetailPage's thread) — image extensions render as a
@@ -28,23 +31,25 @@ function basenameOf(url: string): string {
 }
 
 export default function AttachmentGallery({ urls }: { urls: string[] }) {
+  const [preview, setPreview] = useState<string | null>(null);
   if (urls.length === 0) return null;
   return (
     <div className="mt-2 flex flex-wrap gap-2">
       {urls.map((url) => (
         <div key={url} className="flex flex-col items-start gap-1">
           {VIDEO_EXT.has(extOf(url)) ? (
-            <video src={url} controls className="w-40 max-w-full rounded-md border border-line bg-ink/5" />
+            <video src={url} controls preload="none" className="w-40 max-w-full rounded-md border border-line bg-ink/5" />
           ) : (
-            <a aria-label={`Open attachment ${basenameOf(url)}`} href={url} target="_blank" rel="noreferrer" className="block rounded-md border border-line overflow-hidden">
-              <img src={url} alt="" className="w-20 h-20 object-cover" />
-            </a>
+            <button type="button" aria-label={`Open attachment ${basenameOf(url)}`} onClick={() => setPreview(url)} className="block rounded-md border border-line overflow-hidden">
+              <img src={url} alt="" loading="lazy" width={80} height={80} className="w-20 h-20 object-cover" />
+            </button>
           )}
           <a href={url} download className="inline-flex items-center gap-1 text-xs text-ink-faint hover:text-pine">
             <Download className="w-3 h-3" /> {basenameOf(url)}
           </a>
         </div>
       ))}
+      <Modal open={preview !== null} onClose={() => setPreview(null)} title={t("helpdesk.attachments")} size="lg">{preview && <img src={preview} alt={t("helpdesk.attachments")} className="max-h-[65dvh] w-full object-contain" />}</Modal>
     </div>
   );
 }

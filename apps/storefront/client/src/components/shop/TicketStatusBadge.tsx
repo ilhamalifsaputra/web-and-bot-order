@@ -25,10 +25,11 @@ import Badge, { type BadgeVariant } from "../ui/Badge";
 // waiting_customer ("your move") no longer share a label/tone, and
 // resolved gets its own copy distinct from a hard closed.
 const LABEL_KEY: Record<string, string> = {
-  open: "web.ticket_status_open",
-  waiting_admin: "web.ticket_status_open",
-  replied: "web.ticket_status_in_progress",
-  waiting_customer: "web.ticket_status_waiting_you",
+  open: "helpdesk.status_new",
+  waiting_admin: "helpdesk.status_new",
+  replied: "helpdesk.status_waiting",
+  in_progress: "helpdesk.status_progress",
+  waiting_customer: "helpdesk.status_waiting",
   resolved: "web.ticket_status_resolved",
   closed: "web.ticket_status_closed",
 };
@@ -36,6 +37,7 @@ const ICON: Record<string, LucideIcon> = {
   open: Clock,
   waiting_admin: Clock,
   replied: MessageCircle,
+  in_progress: MessageCircle,
   waiting_customer: MessageCircle,
   resolved: CheckCircle2,
   closed: CheckCircle2,
@@ -49,7 +51,8 @@ const ICON: Record<string, LucideIcon> = {
 const VARIANT: Record<string, BadgeVariant> = {
   open: "pending",
   waiting_admin: "pending",
-  replied: "info",
+  replied: "attention",
+  in_progress: "info",
   waiting_customer: "attention",
   resolved: "success",
   closed: "neutral",

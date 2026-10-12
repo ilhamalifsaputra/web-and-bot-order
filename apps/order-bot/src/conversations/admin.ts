@@ -45,7 +45,6 @@ import {
   replyToTicket,
   addTicketMessage,
   resolveSegmentRecipients,
-  enqueueTicketReplyDm,
 } from "@app/db";
 import type { MyContext, MyConversation } from "../context";
 import { adminEdit, adminAnchor, consumeInput } from "../util/chat";
@@ -1139,13 +1138,13 @@ export async function ticketReplyConversation(conversation: MyConversation, ctx:
   }
 
   const adminTg = ctx.from!.id;
-  const customerTgId = await prisma.$transaction(async (tx) => {
+  await conversation.external(() => prisma.$transaction(async (tx) => {
     const admin = await getUserByTelegramId(tx, adminTg);
     const adminDbId = requireAdminId(admin);
     const tgId = await replyToTicket(tx, { ticketId, reply: replyText, adminDbId });
     await addTicketMessage(tx, { ticketId, senderType: SenderType.ADMIN, senderId: adminDbId, content: replyText });
     return tgId;
-  });
+  }));
 
   // The typed reply was consumed above — keep its content in the confirmation
   // so the admin still has a record of what was sent.
@@ -1155,14 +1154,5 @@ export async function ticketReplyConversation(conversation: MyConversation, ctx:
     akb.backToAdminKb(lang),
   );
 
-  // Task 2 (Phase C): routed through notification_outbox instead of a direct
-  // ctx.api.sendMessage() — placed after the $transaction above commits,
-  // same position the direct send it replaces already had: the DB write
-  // (replyToTicket + addTicketMessage) stays inside the transaction, the
-  // notification enqueue stays a separate step outside it. The dispatcher's
-  // TICKET_REPLY_DM branch renders the exact same text/keyboard this used to
-  // send directly.
-  if (customerTgId) {
-    await enqueueTicketReplyDm(prisma, { ticketId, chatId: Number(customerTgId), message: replyText });
-  }
+
 }

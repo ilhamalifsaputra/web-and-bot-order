@@ -56,6 +56,7 @@ import {
   setSetting,
   searchCatalog,
   listUserTickets,
+  listUserTicketsPaged,
   activeServiceGroups,
   isServiceActive,
   getTicketWithOrder,
@@ -1811,15 +1812,16 @@ export async function subscribeRestock(ctx: MyContext, denominationId: number): 
 // My Tickets (user-side ticket history)
 // ---------------------------------------------------------------------------
 
-export async function listMyTickets(ctx: MyContext): Promise<void> {
+export async function listMyTickets(ctx: MyContext, requestedPage = 1): Promise<void> {
   const info = requireUser(ctx);
   const lang = ctx.session.lang;
-  const tickets = await listUserTickets(prisma, info.id);
+  const page = Number.isSafeInteger(requestedPage) ? Math.max(1, requestedPage) : 1;
+  const { rows: tickets, total } = await listUserTicketsPaged(prisma, info.id, { page, pageSize: 6 });
   if (!tickets.length) {
     await smartEdit(ctx, t(ctx, "ticket.list_empty"), ckb.backToMain(lang));
     return;
   }
-  await smartEdit(ctx, t(ctx, "ticket.list_title"), ckb.myTicketsKb(tickets, lang));
+  await smartEdit(ctx, t(ctx, "ticket.list_title"), ckb.myTicketsKb(tickets, lang, page, total));
 }
 
 export async function viewMyTicket(ctx: MyContext, ticketId: number): Promise<void> {
@@ -1838,20 +1840,21 @@ export async function viewMyTicket(ctx: MyContext, ticketId: number): Promise<vo
   // same bucket as their OPEN/REPLIED counterpart so a ticket doesn't show
   // a raw enum string once it's been replied to more than once.
   const statusLabels: Record<string, string> = {
-    [TicketStatus.OPEN]: "Open",
-    [TicketStatus.WAITING_ADMIN]: "Open",
-    [TicketStatus.REPLIED]: "Replied",
-    [TicketStatus.WAITING_CUSTOMER]: "Replied",
-    [TicketStatus.RESOLVED]: "Resolved",
-    [TicketStatus.CLOSED]: "Closed",
+    [TicketStatus.OPEN]: t(ctx, "helpdesk.status_new"),
+    [TicketStatus.WAITING_ADMIN]: t(ctx, "helpdesk.status_new"),
+    [TicketStatus.IN_PROGRESS]: t(ctx, "helpdesk.status_progress"),
+    [TicketStatus.REPLIED]: t(ctx, "helpdesk.status_waiting"),
+    [TicketStatus.WAITING_CUSTOMER]: t(ctx, "helpdesk.status_waiting"),
+    [TicketStatus.RESOLVED]: t(ctx, "helpdesk.resolved"),
+    [TicketStatus.CLOSED]: t(ctx, "helpdesk.closed"),
   };
   const header = t(ctx, "ticket.view_title", {
-    id: ticketId,
+    id: ticket.ticketNumber ?? ticketId,
     status: statusLabels[ticket.status] ?? ticket.status,
     date: ensureUtc(ticket.createdAt).toFormat("yyyy-LL-dd HH:mm"),
   });
 
-  const parts = [header];
+  const parts = [header, `<code>${esc(ticket.ticketNumber ?? `#${ticketId}`)}</code>`];
   if (ticket.order) {
     const s = summarizeTicketOrder(ticket.order);
     const warrantyLine = s.warranty
@@ -1871,21 +1874,22 @@ export async function viewMyTicket(ctx: MyContext, ticketId: number): Promise<vo
   parts.push("");
 
   if (messages.length) {
+    if (!messages.some((message) => message.senderType === SenderType.USER && message.content === ticket.message && Math.abs(message.createdAt.getTime() - ticket.createdAt.getTime()) < 5000)) parts.push(t(ctx, "ticket.message_user", { time: ensureUtc(ticket.createdAt).toFormat("HH:mm dd/LL"), content: esc(ticket.message.slice(0, 600)) }));
     for (const msg of messages) {
       const timeStr = ensureUtc(msg.createdAt).toFormat("HH:mm dd/LL");
       const key = msg.senderType === SenderType.USER ? "ticket.message_user" : "ticket.message_admin";
-      parts.push(t(ctx, key, { time: timeStr, content: esc(msg.content) }));
+      parts.push(t(ctx, key, { time: timeStr, content: esc(msg.content.slice(0, 180)) }));
     }
   } else {
     parts.push(
       t(ctx, "ticket.message_user", {
         time: ensureUtc(ticket.createdAt).toFormat("HH:mm dd/LL"),
-        content: esc(ticket.message),
+        content: esc(ticket.message.slice(0, 1200)),
       }),
     );
     if (ticket.adminReply) {
       const replyTime = ticket.repliedAt ? ensureUtc(ticket.repliedAt).toFormat("HH:mm dd/LL") : "—";
-      parts.push(t(ctx, "ticket.message_admin", { time: replyTime, content: esc(ticket.adminReply) }));
+      parts.push(t(ctx, "ticket.message_admin", { time: replyTime, content: esc(ticket.adminReply.slice(0, 1200)) }));
     }
   }
 

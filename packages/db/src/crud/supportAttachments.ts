@@ -65,10 +65,26 @@ export async function finalizeSupportUpload(db: Db, id: string, ownerId: number)
   // A presigned PUT can be replayed until expiry, so READY must never refer
   // to that mutable staging object. Conditional copy pins the inspected ETag.
   const readyKey = `support-ready/${randomUUID()}.${row.mime === "video/mp4" ? "mp4" : row.mime.split("/")[1]}`;
+  // Register the destination before network I/O. A crash or failed commit
+  // leaves this orphan record eligible for the existing cleanup job.
+  // The ticket attachment and retirement of this record commit together.
+  const orphan = await db.supportAttachment.create({ data: {
+    ownerId, draftId: row.draftId, bucket: row.bucket, storageKey: readyKey,
+    filename: row.filename, mime: row.mime, bytes: row.bytes,
+    status: "REJECTED", expiresAt: new Date(Date.now() + 3600_000),
+  } });
   const copyHeaders = { "x-amz-copy-source": `/${row.bucket}/${row.storageKey}`, "x-amz-copy-source-if-match": etag };
   const copied = await fetch(await supportObjectUrl(readyKey, "PUT", undefined, copyHeaders, row.bucket), { method: "PUT", headers: copyHeaders, signal: AbortSignal.timeout(20_000) });
   if (!copied.ok || /<(?:[\w-]+:)?Error(?:\s|>)/.test(await copied.text())) throw new ValidationError("helpdesk.media_verification_failed");
-  const changed = await db.supportAttachment.updateMany({ where: { id, status: "PENDING" }, data: { status: "READY", storageKey: readyKey, etag } });
+  const persist = async (tx: Db) => {
+    await tx.$queryRaw`SELECT id FROM support_attachments WHERE id = ${id} FOR UPDATE`;
+    const current = await tx.supportAttachment.findUnique({ where: { id } });
+    if (current?.status !== "PENDING") return { count: 0 };
+    // Transfer the unique key from the temporary cleanup record atomically.
+    await tx.supportAttachment.delete({ where: { id: orphan.id } });
+    return tx.supportAttachment.updateMany({ where: { id, status: "PENDING" }, data: { status: "READY", storageKey: readyKey, etag } });
+  };
+  const changed = "$transaction" in db ? await db.$transaction(persist) : await persist(db);
   if (!changed.count) {
     await fetch(await supportObjectUrl(readyKey, "DELETE", undefined, undefined, row.bucket), { method: "DELETE", signal: AbortSignal.timeout(15_000) }).catch(() => undefined);
     const current = await db.supportAttachment.findUnique({ where: { id } });

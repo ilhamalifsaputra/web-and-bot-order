@@ -52,6 +52,33 @@ describe("verified support attachment lifecycle", () => {
     expect(fetch).not.toHaveBeenCalled();
     await expect(finalizeSupportUpload(db.prisma, id, otherId)).rejects.toMatchObject({ key: "helpdesk.invalid_request" });
   });
+  it("recovers a copied orphan after a failed metadata commit without deleting retried active evidence", async () => {
+    const intent = await createSupportUpload(db.prisma, { ownerId, draftId: randomUUID(), filename: "proof.png", mime: "image/png", bytes: png.length });
+    objects.set(new URL(intent.url).pathname, { bytes: png, type: "image/png", etag: '\"verified-bytes\"' });
+    const commit = vi.spyOn(db.prisma, "$transaction").mockRejectedValueOnce(new Error("Metadata commit unavailable."));
+    await expect(finalizeSupportUpload(db.prisma, intent.id, ownerId)).rejects.toThrow("Metadata commit unavailable.");
+    commit.mockRestore();
+    const orphan = await db.prisma.supportAttachment.findFirstOrThrow({ where: { ownerId, status: "REJECTED", storageKey: { startsWith: "support-ready/" } } });
+    expect(objects.has(`/${orphan.bucket}/${orphan.storageKey}`)).toBe(true);
+    expect(await db.prisma.supportAttachment.findUnique({ where: { id: intent.id } })).toMatchObject({ status: "PENDING" });
+    await finalizeSupportUpload(db.prisma, intent.id, ownerId);
+    const ticket = await createTicket(db.prisma, ownerId, "An issue with verified evidence", null, null, null, { attachmentIds: [intent.id] });
+    const active = await db.prisma.supportAttachment.findUniqueOrThrow({ where: { id: intent.id } });
+    await db.prisma.supportAttachment.update({ where: { id: orphan.id }, data: { expiresAt: new Date(Date.now() - 1000) } });
+    expect(await cleanupSupportMedia(db.prisma)).toEqual({ deleted: 1 });
+    expect(objects.has(`/${orphan.bucket}/${orphan.storageKey}`)).toBe(false);
+    expect(objects.has(`/${active.bucket}/${active.storageKey}`)).toBe(true);
+    expect(await db.prisma.supportAttachment.findUnique({ where: { id: active.id } })).toMatchObject({ status: "READY", ticketId: ticket.id });
+  });
+  it("keeps concurrent finalize attempts idempotent and preserves the winning object", async () => {
+    const intent = await createSupportUpload(db.prisma, { ownerId, draftId: randomUUID(), filename: "proof.png", mime: "image/png", bytes: png.length });
+    objects.set(new URL(intent.url).pathname, { bytes: png, type: "image/png", etag: '\"verified-bytes\"' });
+    const outcomes = await Promise.all(Array.from({ length: 3 }, () => finalizeSupportUpload(db.prisma, intent.id, ownerId)));
+    expect(outcomes).toEqual(Array(3).fill({ id: intent.id, status: "READY" }));
+    const row = await db.prisma.supportAttachment.findUniqueOrThrow({ where: { id: intent.id } });
+    expect(objects.has(`/${row.bucket}/${row.storageKey}`)).toBe(true);
+    expect(await db.prisma.supportAttachment.count({ where: { ownerId, status: "READY" } })).toBe(1);
+  });
   it("refuses MIME spoofing, mismatched size, unverified attachments and foreign ownership", async () => {
     const intent = await createSupportUpload(db.prisma, { ownerId, draftId: randomUUID(), filename: "fake.png", mime: "image/png", bytes: png.length });
     objects.set(new URL(intent.url).pathname, { bytes: Buffer.alloc(png.length), type: "image/png", etag: "bad" });

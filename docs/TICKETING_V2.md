@@ -1,6 +1,6 @@
 # Trustance Ticketing V2
 
-## Audit sebelum implementasi — 12 Oktober 2026
+## 1. Audit hasil temuan
 
 Source yang dibaca: `prisma/schema.prisma` (SupportTicket/TicketMessage), `packages/db/src/crud/{support,ticketAccess,notifications,orders}.ts`, `packages/core/src/enums.ts`, `apps/storefront/src/routes/apiAccount.ts`, `apps/storefront/src/lib/ticketAttachments.ts`, `apps/storefront/src/{auth.ts,routes/auth.ts}`, customer `pages/{HelpPage,SupportPage,TicketDetailPage}.tsx` dan komponen support, admin `routes/api/support.ts`, `pages/{SupportPage,TicketDetailPage}.tsx`, `components/support/TicketConversation.tsx`, bot `conversations/{support,customer,index}.ts`, ticket handlers/keyboards, `packages/outbox-dispatcher/src/dispatcher.ts`, `package.json`, `vitest.config.ts`, dan `docker-compose.postgres.yml`. Graphify dikonsultasikan sebelum pembacaan source.
 
@@ -15,6 +15,8 @@ Kondisi/gap:
 - Outbox existing menangani new ticket/reply/closed dan email. Web admin reply baru mengantre email, Telegram reply notification belum konsisten. Internal note sudah tidak memicu notifikasi customer.
 - Admin sudah memiliki filter/pagination/assignment/priority, split context dan activity audit. Context per-unit memakai endpoint order yang sudah menyamarkan credential; pengungkapan tetap melalui endpoint khusus yang diaudit.
 
+## 2. Keputusan desain dan arsitektur
+
 Strategi: reuse Prisma, auth/RBAC/CSRF, outbox + dispatcher, UI token/komponen, dan audit existing. Replace customer entry dengan satu /help dan detail canonical. Tambah konfigurasi kategori di core yang disajikan backend untuk web dan dipakai bot. Tambah metadata R2, tanpa Redis/microservice/storage disk baru. Request idempotency diikat owner dan tiket. Legacy consumer tetap diterima selama transisi; histori tidak dihapus.
 
 Risiko: schema harus terpasang sebelum worker/API baru; R2 memerlukan konfigurasi operator; perubahan nomor tidak boleh mengganti nomor yang sudah publik. Migration additive, nomor null di-backfill dengan random kriptografis berdasarkan createdAt. Rollback kode dapat memakai kolom lama; jangan drop tabel/kolom baru atau hapus objek saat rollback. Media disk historis tetap dapat diakses melalui ownership existing sampai migrasi media eksplisit; jangan hapus histori secara spekulatif.
@@ -23,8 +25,49 @@ Urutan: domain/schema + backfill → private media/API → customer compact → 
 
 Lingkungan lokal: worktree `ticketing-v2`, port admin 8419/customer 8420, Postgres container `ticketing-v2-postgres-1` port 55459 dan database khusus `ticketing_v2`. Token bot produksi tidak dijalankan untuk QA.
 
+Seluruh antarmuka menggunakan domain `packages/db/src/crud/support.ts` dan katalog `packages/core/src/supportCatalog.ts`. Metadata privat ada di `supportAttachments.ts`; signing, discovery bucket, dan bounded format inspection ada di `packages/core/src/supportMedia.ts`. Browser tidak mengirim byte bukti melalui Fastify. Jalur Telegram memakai stream dan outbox existing. React menggunakan komponen/token Trustance existing; nomor publik selalu berasal dari backend.
 
-## Konfigurasi R2
+## 3. Perubahan yang diimplementasikan
+
+- Customer Web: `/help` menggantikan entry lama; layout ringkas, kategori/jenis dinamis, order conditional, validasi deskripsi, history server paging, detail/percakapan dan foto/video. Canonical detail tetap kompatibel dengan link lama. Label status pelanggan dan bot konsisten. Composer dua baris awal, form tiga baris, teks panjang dapat membungkus tanpa memaksa halaman melebar.
+- Admin: daftar dengan enam statistik riil, filter source, order number lengkap, desktop table dan mobile cards. Detail mendukung status Diproses, koreksi judul, hold evidence, balasan foto/video dan internal note yang jelas privacy-nya. Context/audit/assignment/priority existing dipertahankan.
+- Telegram: kategori, jenis, order milik user dengan paging, deskripsi, lampiran, review dan konfirmasi. Shortcut detail order memvalidasi/prefill order. Reply mode berakhir lewat Done/Cancel atau TTL 30 menit. Navigasi mengedit anchor; pesan teks/media tiket tetap tersimpan sebagai histori baru.
+- API/DB: ownership/RBAC/CSRF, idempotent request keys, deduplikasi tiket aktif untuk order secara transactional, status authoritative dan audit. Nomor `TKT-YYYYMMDD-XXXXXX` acak kriptografis, unique-index retry, immutable. Tidak ada refund/order/payment/wallet mutation dari tiket.
+- R2/media: upload intent, direct PUT, progress nyata, finalize HEAD + signature + ETag, copy ke key immutable, authorized short-lived download. Maksimal tiga file bahkan saat input event bersamaan; retry intent baru maksimal tiga percobaan. SVG/HTML ditolak tanpa upload. UI membedakan tipe/ukuran, timeout, network, 403/expired access, quota, ticket unavailable, 5xx dan verification failure; tidak merender error upstream atau signed URL.
+- Notification: create/reply mengantre event melalui outbox dalam transaksi domain. Public admin reply worker memvalidasi recipient dan visibility, mengirim actual text/media dengan checkpoint per bagian, reuse file ID hanya untuk bot yang sama, serta fallback stream R2 yang dibatasi. Internal note tidak mengantre customer notification. Worker menunggu transport sebelum mengakui pengiriman.
+
+## 4. Migrasi, kompatibilitas dan rollback
+
+Schema additive: `prisma/migrations/20261012100000_ticketing_v2/migration.sql`. Tambahan metadata attachment, request keys, origin, subcategory, legal hold dan last activity. SQL mengisi last activity historis dari timestamp bisnis/messages, bukan waktu deploy. Status lama tetap terbaca; OPEN/WAITING_ADMIN ditampilkan Baru, REPLIED/WAITING_CUSTOMER Menunggu Pelanggan. Resolved dan Closed berbeda. Balasan pada Resolved membuka antrean yang benar dengan audit; Closed harus reopen dulu.
+
+Rollout operator: backup DB, apply migration sesuai prosedur repo sebelum menjalankan API/worker/bot baru; regenerate Prisma; jalankan `pnpm exec tsx scripts/backfill-ticket-numbers.ts` pada target DB yang sudah diverifikasi. Script import-safe, batch 100, hanya nomor null, cryptographic random, unique-index retry, repeatable; nomor yang sudah diterbitkan tetap utuh. Bandingkan jumlah tiket/pesan, timestamps dan relasi sebelum/sesudah. Ship server + kedua SPA + bot/worker bersama, restart, reload tab lama, smoke-test auth/create/reply/upload/download dan outbox. Jangan mengaktifkan poller kedua pada token bot produksi.
+
+Sebelum copy ke R2, tujuan salinan dicatat sebagai record cleanup sementara. Commit metadata READY sekaligus menghapus record sementara tersebut dalam transaksi pendek; jika copy/commit berhenti atau gagal, record tetap tersedia untuk cleanup setelah TTL satu jam. Test meliputi kegagalan commit, retry yang berhasil, cleanup orphan, dan concurrent finalize tanpa menghapus objek pemenang.
+
+Cleanup mengklaim bukti dengan status DELETING di transaksi pendek; tidak ada network transfer dalam lock tersebut. Reopen/hold memakai lock tiket yang sama dan menolak konflik saat penghapusan sudah berjalan. Failed delete tetap diklaim untuk retry siklus selanjutnya. Bukti yang sudah dihapus menurut kebijakan tidak dapat dipulihkan dengan reopen. Hold perlu dipasang sebelum masa retensi berakhir. Rollback: rollback kode sebagai satu release; pertahankan kolom/tabel baru, nomor, media R2, dan histori disk; jangan reverse migration destruktif atau hapus bukti.
+
+Migration/backfill belum dijalankan ke produksi. Verifikasi schema lokal hanya ke database isolated `ticketing_v2` pada port 55459. Existing ticket number tidak diganti; backfill hanya mengisi null dan dapat dijalankan ulang. Database menyimpan metadata/tombstone, bukan binary atau presigned URL permanen.
+
+## 5. Hasil verifikasi
+
+- `pnpm -r build`: lulus untuk semua workspace; output `.ticketing-build-final-3.log`.
+- `pnpm typecheck`: lulus, termasuk semua workspace dan `tsconfig.test.json`; output `.ticketing-typecheck-final-3.log`. Final synchronized gate sedang dijalankan ulang di `.ticketing-final-typecheck.log` / `.ticketing-final-test.log`.
+- `pnpm lint`: lulus, termasuk Storefront ESLint dan `pnpm doctor:bugs` untuk kedua client; output `.ticketing-lint-final-3.log`.
+- `pnpm doctor:changed`: 37 files, Bugs clean. `pnpm doctor:full`: **637 files, 0 errors, 0 warnings**, 14.2 detik; diagnostics `react-doctor-8734ca1e-7204-471e-8102-f5eb8e81a5a8`. Tidak ada suppression, exclusion atau disabled rule baru.
+- Focused domain/backfill/delivery 152 tests lulus; lifecycle/retention-race/stream-limit 12 lulus; API/bot regressions 381 lulus. Final upload hooks + admin list/detail: **87 tests lulus**. Angka ini per-run, bukan total unik.
+- Full suite pertama: 632 files, 11,824 tests; 33 gagal. Ekspektasi label/nomor/placeholder lama diperbarui setelah failure direproduksi sendirian. Test order creation yang timeout lulus sendirian 7/7 tanpa perubahan logic atau timeout. Final full gate masih berjalan; jangan menganggap jumlah focused sebagai full pass.
+- Browser fixtures: CSS viewport **320/375/768/1024/1440/1920** untuk customer help/detail dan admin list/detail. Tidak ada horizontal overflow dokumen/main. Tabel admin scroll hanya dalam panel pada ukuran menengah. `Pembayaran & Saldo`/refund dengan deskripsi `Gg` invalid; pergantian kategori membersihkan draft order. Nomor/teks panjang membungkus; title editor mobile dapat disimpan; internal note admin terpisah. Screenshots: `docs/ticketing-help-mobile.png`, `ticketing-detail-mobile.png`, `ticketing-admin-mobile.png`, `ticketing-admin-desktop.png`, `ticketing-admin-detail-mobile.png`.
+
+Ukuran chunk hasil production build lokal (minified / gzip; tidak termasuk shared chunks):
+
+| Halaman | Minified | Gzip |
+| --- | ---: | ---: |
+| Customer Help | 10.02 kB | 3.59 kB |
+| Customer Ticket Detail | 22.42 kB | 6.96 kB |
+| Admin Support | 19.79 kB | 6.38 kB |
+| Admin Ticket Detail | 31.10 kB | 9.83 kB |
+
+## 6. Konfigurasi operasional
 
 Bucket dibuat operator. Nama bucket opsional: jika `SUPPORT_R2_BUCKET` kosong, aplikasi memakai S3 ListBuckets dan memilih otomatis hanya bila hasilnya tepat satu bucket. Tidak pernah memilih bucket pertama saat hasilnya lebih dari satu. Discovery di-cache 10 menit (kegagalan 60 detik) dan digabung untuk permintaan bersamaan. Bucket aktual disimpan pada setiap metadata lampiran, sehingga download/finalize/cleanup tetap memakai bucket asli meski konfigurasi berubah. Contoh: `SUPPORT_R2_BUCKET=trustanceid-bucket`; nama lain tetap didukung cukup dengan mengubah environment. Isi `SUPPORT_R2_ACCOUNT_ID`, `SUPPORT_R2_ACCESS_KEY_ID`, dan `SUPPORT_R2_SECRET_ACCESS_KEY` melalui secret environment server, bukan source code atau chat. Mode eksplisit mendukung token Object Read & Write hanya untuk bucket yang dipilih. Mode otomatis membutuhkan izin ListBuckets; menurut [izin Cloudflare R2](https://developers.cloudflare.com/r2/api/tokens/), token Object Read & Write saja tidak memiliki izin tersebut. Token Admin Read & Write mendukung daftar bucket dan upload, tetapi cakupannya lebih luas. Aplikasi tidak mengubah permission atau membuat bucket otomatis. Public Access tetap Disabled. Restart API dan bot setelah perubahan environment.
 
@@ -45,22 +88,15 @@ Presigned URL berlaku 180 detik. Upload browser hanya ke prefix staging `support
 
 Endpoint JSON dan multipart teks lama tetap diterima selama transisi. Seluruh consumer aktif berpindah ke upload-intent/finalize; multipart **file** lama ditolak eksplisit dengan `helpdesk.use_direct_upload`. Tidak ada fallback upload baru ke disk, termasuk ketika R2 belum tersedia. API dan kedua client harus dirilis bersama; tab lama perlu reload. Static mount disk hanya untuk lampiran historis, dengan ownership dan internal-note guard tetap berlaku.
 
-## Implementasi dan migrasi
+Environment contoh ada di `.env.example`. `SUPPORT_IMAGE_MB` / `SUPPORT_VIDEO_MB` dapat menurunkan batas default (maksimum kebijakan 5/20 MB); options backend menjadi sumber limit browser/bot. Retensi default 90 hari setelah Closed dapat disesuaikan melalui `SUPPORT_RETENTION_DAYS`. Cleanup bounded batch berjalan melalui job bot existing, bukan scheduler baru. Jangan menjalankan dua poller pada token bot yang sama.
 
-Customer: satu halaman `/help`, form kategori/jenis dari backend, order conditional milik user, deskripsi 10-2000 karakter, history server paging/search/filter dan detail canonical. Route `/account/support` lama redirect. Form dan composer memakai direct PUT R2, progress XHR, finalize, preview foto/video, retry maksimal tiga percobaan dan remove. Batas file mengikuti options backend; default 3 file, foto 5 MB, MP4 20 MB. Admin: nomor publik/copy, aktivitas terakhir, pencarian nomor tiket/order/customer, source filter, statistik nyata, start processing, catatan internal, upload/preview, hold evidence dan reuse context/audit/assignment/priority existing. Telegram: kategori, jenis, optional order paging, deskripsi, media, review, submit; reply mode hingga Done/Cancel dengan TTL 30 menit. Domain, idempotensi, kepemilikan dan outbox bersama, tanpa mutasi finansial.
+## 7. Sisa risiko dan batasan
 
-Schema additive: `prisma/migrations/20261012100000_ticketing_v2/migration.sql`. Tambahan metadata attachment, request keys, origin, subcategory, legal hold dan last activity. SQL mengisi last activity historis dari timestamp bisnis/messages, bukan waktu deploy. Status lama tetap terbaca; OPEN/WAITING_ADMIN ditampilkan Baru, REPLIED/WAITING_CUSTOMER Menunggu Pelanggan. Resolved dan Closed berbeda. Balasan pada Resolved membuka antrean yang benar dengan audit; Closed harus reopen dulu.
-
-Rollout operator: backup DB, apply migration sesuai prosedur repo sebelum menjalankan API/worker/bot baru; regenerate Prisma; jalankan `pnpm exec tsx scripts/backfill-ticket-numbers.ts` pada target DB yang sudah diverifikasi. Script import-safe, batch 100, hanya nomor null, cryptographic random, unique-index retry, repeatable; nomor yang sudah diterbitkan tetap utuh. Bandingkan jumlah tiket/pesan, timestamps dan relasi sebelum/sesudah. Ship server + kedua SPA + bot/worker bersama, restart, reload tab lama, smoke-test auth/create/reply/upload/download dan outbox. Jangan mengaktifkan poller kedua pada token bot produksi.
-
-Cleanup mengklaim bukti dengan status DELETING di transaksi pendek; tidak ada network transfer dalam lock tersebut. Reopen/hold memakai lock tiket yang sama dan menolak konflik saat penghapusan sudah berjalan. Failed delete tetap diklaim untuk retry siklus selanjutnya. Bukti yang sudah dihapus menurut kebijakan tidak dapat dipulihkan dengan reopen. Hold perlu dipasang sebelum masa retensi berakhir. Rollback: rollback kode sebagai satu release; pertahankan kolom/tabel baru, nomor, media R2, dan histori disk; jangan reverse migration destruktif atau hapus bukti.
-
-## Verifikasi lokal dan batasan
-
-- Build semua workspace lulus (`pnpm -r build`), Prisma development schema hanya diterapkan ke database isolated port 55459.
-- Focused domain/backfill/delivery: 152 tests lulus; lifecycle/retention-race/stream-limit: 12 tests lulus; API admin/storefront/bot regression: 381 tests lulus. Full typecheck/tests masih menunggu final gate, jangan menyimpulkan semua test sudah hijau dari angka focused.
-- Browser menggunakan response fixture, bukan akun produksi. CSS widths 320/375/768/1024/1440/1920: customer help/detail dan admin list/detail tanpa overflow dokumen; tabel admin horizontal scroll hanya di panel pada ukuran menengah. Short refund description `Gg` invalid; category switch menghapus draft order. Full React Doctor 635 files: 0 errors/0 warnings.
 - R2 account/token/CORS belum dikonfigurasi untuk pengujian live. Tidak ada live Telegram send/poller. Test transport memakai mock, sementara domain/API memakai PostgreSQL isolated. Smoke test layanan asli tetap wajib saat rollout.
 - Pemeriksaan file menggunakan signature gambar dan bounded MP4 ftyp, size, MIME dan pinned ETag. Ini bukan antivirus atau full media decoder. Bucket tetap private; tidak ada klaim malware-free. Integrasi scanner eksternal tidak ditambahkan.
 - Telegram API tidak menawarkan transaksi dengan database. Checkpoint mencegah pengulangan text/media yang telah tercatat saat retry; crash tepat sesudah transport menerima namun sebelum checkpoint dapat mengulang satu bagian. Salinan media Telegram tidak ikut terhapus saat retensi R2.
-- Baseline latency/RSS/volume produksi tidak tersedia. Build artifact size dan latency integration lokal dicatat sebagai pengukuran lokal, bukan klaim peningkatan terhadap baseline yang tidak diukur. Web upload hanya membawa metadata melalui Fastify; Telegram dibatasi dua stream per proses, timeout 90 detik, byte-count/backpressure, inspection 4 KiB.
+- Baseline latency/RSS/volume produksi tidak tersedia. Ukuran build dicatat di atas; log integration mencatat durasi request lokal. Peak RSS upload live, jumlah file/ukuran volume produksi dan delta terhadap baseline belum diukur. Web upload hanya membawa metadata melalui Fastify; Telegram dibatasi dua stream per proses, timeout 90 detik, byte-count/backpressure, inspection 4 KiB.
+- QA browser memakai Chromium dengan response fixture. Real-service E2E upload/download R2, recipient Telegram, mobile keyboard fisik serta Safari/Firefox belum dilakukan; jangan mengklaim cross-browser atau production ready dari fixture ini.
+- Vite build masih memberikan warning existing untuk shared admin chunk di atas 500 kB. Ukuran chunk ticketing di atas terpisah; batas warning tidak dinaikkan/disembunyikan.
+- Permission R2 discovery lebih luas daripada object-only token. Jika operator memilih least privilege per-bucket, isi `SUPPORT_R2_BUCKET` secara eksplisit. Kredensial dan CORS tidak dapat muncul otomatis hanya dari pembuatan bucket.
+- Branch implementasi `worktree-ticketing-v2` belum diintegrasikan/dideploy. Folder utama memiliki `skills-lock.json` untracked milik pekerjaan yang belum dikonfirmasi; AGENTS.md mewajibkan integration checkout bersih sebelum merge. File tersebut tidak disentuh oleh task ini.

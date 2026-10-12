@@ -1,4 +1,11 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+// Incident persistence is tested against PostgreSQL in emailEvents.test.ts;
+// this suite pins heartbeat state and delegation to that incident boundary.
+vi.mock("./emailSecurity", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./emailSecurity")>()),
+  recordEmailProviderHealth: vi.fn(async () => {}),
+}));
+import { recordEmailProviderHealth } from "./emailSecurity";
 import { getPollHealth, recordPollHealth, POLL_HEALTH_KEYS } from "./poll_health";
 import { getBinancePollHealth, recordBinancePollHealth, BINANCE_POLL_HEALTH_KEY } from "./binance_internal";
 import type { Db } from "./_types";
@@ -22,6 +29,17 @@ function mutableStubDb(initial: Record<string, string> = {}): Db {
 }
 
 describe("Generic poll health — rate-limit tracking fields", () => {
+  it("forwards provider operation outcomes while excluding outbox ticks and rate-limit backoff", async () => {
+    const db = mutableStubDb();
+    vi.mocked(recordEmailProviderHealth).mockClear();
+    await recordPollHealth(db, "tokopay", { lastTxCount: 0, success: false });
+    await recordPollHealth(db, "tokopay", { lastTxCount: 2, success: true });
+    await recordPollHealth(db, "outbox", { lastTxCount: 0, success: false });
+    await recordPollHealth(db, "bybit", { lastTxCount: 0, success: false, rateLimited: true });
+    expect(recordEmailProviderHealth).toHaveBeenCalledTimes(2);
+    expect(recordEmailProviderHealth).toHaveBeenNthCalledWith(1, db, "tokopay", false);
+    expect(recordEmailProviderHealth).toHaveBeenNthCalledWith(2, db, "tokopay", true);
+  });
   it("getPollHealth on a never-run poller is all-null", async () => {
     const health = await getPollHealth(mutableStubDb(), "tokopay");
     expect(health).toEqual({

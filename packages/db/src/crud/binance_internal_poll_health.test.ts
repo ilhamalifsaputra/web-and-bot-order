@@ -1,4 +1,10 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+// Incident persistence is tested against PostgreSQL in emailEvents.test.ts;
+// this suite pins the independent Settings heartbeat contract.
+vi.mock("./emailSecurity", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./emailSecurity")>()),
+  recordEmailProviderHealth: vi.fn(async () => {}),
+}));
 import { getBinancePollHealth, recordBinancePollHealth } from "./binance_internal";
 import type { Db } from "./_types";
 

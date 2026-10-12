@@ -757,7 +757,8 @@ describe("customer handlers", () => {
     const text = JSON.stringify(sink);
     expect(text).toContain("FAQ");
     expect(text).not.toMatch(/30 minutes|30-day|30 hari|30 menit/);
-    expect(text).toContain("each plan");
+    expect(text).toContain("Warranty applies where listed on the product page");
+    expect(text).toContain("Review its duration and coverage before buying");
   });
 
   it("browseDenomination renders the product's own photo as a photo+caption bubble when webImageUrl is set", async () => {
@@ -5889,7 +5890,8 @@ describe("verification handlers", () => {
     const after = await getOrder(prisma, order.id);
     expect(after!.status).toBe(OrderStatus.DELIVERED);
     expect(await prisma.stockItem.count({ where: { status: StockStatus.SOLD } })).toBe(1);
-    expect(await prisma.notificationOutbox.count()).toBe(1);
+    expect(await prisma.notificationOutbox.count({ where: { channel: "TELEGRAM" } })).toBe(1);
+    expect(await prisma.notificationOutbox.count({ where: { channel: "EMAIL", status: "SENT" } })).toBe(0);
     expect(await prisma.auditLog.count({ where: { action: "approve_order" } })).toBe(1);
     // account file (.txt) DM goes to the buyer's telegram id (42)
     const dm = calls(sink, "sendDocument").find((c) => c.args[0] === 42);

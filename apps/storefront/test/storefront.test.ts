@@ -826,8 +826,10 @@ describe("forgot + reset password", () => {
     const payload=JSON.parse(row.payloadJson);
     expect(payload.reset_url).toBeUndefined();expect(payload.reset_url_encrypted).toEqual(expect.any(String));
     const rendered=await renderEmail(row.event,payload);
-    expect(rendered).not.toBeNull();
-    return rendered!;
+    if (!rendered || typeof rendered.html !== "string") {
+      throw new Error("Queued password recovery must render an HTML email.");
+    }
+    return { ...rendered, html: rendered.html };
   }
   it("always claims success, and queues encrypted recovery only for password accounts", async () => {
     const { sendMail } = await import("@app/core/mailer");

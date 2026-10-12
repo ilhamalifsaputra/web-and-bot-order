@@ -1,5 +1,6 @@
 import type { Db } from "./_types";
 import { StockStatus } from "@app/core/enums";
+import { usesLocalInventory } from "@app/core/productAvailability";
 import { enqueueEmailEvent } from "./emailEvents";
 
 export async function emailInventoryThresholds(db: Db, id: number): Promise<{ critical: number; recovery: number }> {
@@ -10,7 +11,7 @@ export async function emailInventoryThresholds(db: Db, id: number): Promise<{ cr
 }
 export async function isFiniteEmailInventorySku(db: Db, id: number): Promise<boolean> {
   const sku = await db.denomination.findUnique({ where: { id }, select: { deliveryType: true, autoDeliverySource: true } });
-  return !!sku && sku.deliveryType === "auto" && (sku.autoDeliverySource == null || sku.autoDeliverySource.toLowerCase() === "stock");
+  return !!sku && usesLocalInventory(sku) && (sku.autoDeliverySource == null || sku.autoDeliverySource.toLowerCase() === "stock");
 }
 export function inventoryBand(available: number, critical: number): "NORMAL" | "CRITICAL" | "OUT_OF_STOCK" {
   return available === 0 ? "OUT_OF_STOCK" : available <= critical ? "CRITICAL" : "NORMAL";

@@ -1812,9 +1812,8 @@ export async function outboxStatusCounts(db: Db): Promise<Record<string, number>
   return counts;
 }
 
-/** A single outbox row's `event` type — just enough for an audit-log `details`
- * sentence (e.g. "Requeued a ${event} notification for delivery.") without
- * pulling the full row (payload JSON, timestamps, etc.) into a route. */
+/** Minimal outbox metadata for retry eligibility and the audit sentence,
+ * without pulling recipient or payload details into the retry route. */
 export function getNotification(db: Db, notifId: number) {
   return db.notificationOutbox.findUnique({ where: { id: notifId }, select: { event: true, channel: true, status: true } });
 }

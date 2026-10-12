@@ -108,8 +108,10 @@ describe("automatic fulfillment routing", () => {
     await db.prisma.notificationOutbox.deleteMany({ where: { orderId: order.id } });
     await recordDigiflazzOutcome(db.prisma, order, { kind: "terminal", reason: "provider rejected", supplierGaveReason: true }, new Date());
     await recordDigiflazzOutcome(db.prisma, order, { kind: "terminal", reason: "provider rejected", supplierGaveReason: true }, new Date());
-    expect(await db.prisma.notificationOutbox.count({ where: { orderId: order.id } })).toBe(1);
-    expect((await db.prisma.notificationOutbox.findFirstOrThrow({ where: { orderId: order.id } })).event).toBe(NotificationEvent.ORDER_PIPELINE_FAILED);
+    const rows = await db.prisma.notificationOutbox.findMany({ where: { orderId: order.id } });
+    expect(rows.filter((row) => row.channel === "TELEGRAM").map((row) => row.event)).toEqual([NotificationEvent.ORDER_PIPELINE_FAILED]);
+    expect(rows.filter((row) => row.channel === "EMAIL").map((row) => row.event).sort()).toEqual(["order.failed.admin", "order.failed.customer"]);
+    expect(rows.filter((row) => row.channel === "EMAIL").every((row) => row.status === "FAILED")).toBe(true);
   });
 
   it("does not allow hand-delivery while automatic fulfillment is in flight", async () => {

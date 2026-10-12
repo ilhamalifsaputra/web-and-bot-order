@@ -12,7 +12,7 @@
 - [x] Parent: source copy for existing paid-order/reset templates, remove manual copy UI after cutover, retain stored legacy settings. Test renderer escaping, reset contract and links.
 - [x] Parent: shared SettingsToggle from existing Switch; generic Settings boolean FieldRow with rollback/server refresh; convert actual boolean checkbox/radio only. UI regression tests, typecheck and focused Doctor.
 - [x] Parent: email event rows and diagnostics in existing Settings, ON/OFF, audience, mandatory/config health separate. Test save error/boolean payload/readiness.
-- [ ] Integration: sync own branch with latest master; full typecheck and tests once, lint, doctor:changed/bugs/full (0 errors, 0 warnings), production build and runtime smoke. Record commands/results and final review.
+- [x] Integration verification: sync own branch with master; full typecheck and tests, lint, doctor:changed/bugs/full (0 errors, 0 warnings), production build and runtime smoke. Record commands/results and final review. Merge remains separate because the main checkout contains unrelated untracked work.
 
 ## Review focus
 
@@ -22,4 +22,4 @@ Telegram callback state remains bound to the initiating browser; unknown users k
 
 Audit completed before product edits. Main checkout contains unrelated untracked `skills-lock.json`; do not modify or remove it.
 
-V2: seluruh 23 producers/prerequisites dibuat dan diuji; report akhir di docs/TRUSTANCE_AUTH_EMAIL_TOGGLES_REPORT.md. Full gate tetap pending sampai output aktual direkam.
+V2: seluruh 23 producers/prerequisites dibuat dan diuji; report akhir di docs/TRUSTANCE_AUTH_EMAIL_TOGGLES_REPORT.md. Final gate exit 0: full typecheck, 628 test files / 11,804 tests PASS in 717.65 seconds; production build/lint and all Doctor commands PASS (0 errors / 0 warnings). Real loopback SMTP regression coverage supplements all 23 worker integrations. Main remains unchanged; own worktree is preserved for review/integration.

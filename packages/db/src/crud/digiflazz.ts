@@ -1424,7 +1424,7 @@ export async function fulfillDigiflazzOrder(
     action: "order.auto_fulfill_digiflazz",
     targetType: "order",
     targetId: order.id,
-    details: `Auto-fulfilled Digiflazz order ${order.orderCode} and sent the receipt to the buyer.`,
+    details: `Auto-fulfilled Digiflazz order ${order.orderCode}.`,
   });
 
   logger.info(`Auto-fulfilled Digiflazz order ${order.orderCode}`);

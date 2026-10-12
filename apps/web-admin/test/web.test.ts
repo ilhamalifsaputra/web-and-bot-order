@@ -671,7 +671,8 @@ describe("orders", () => {
     expect(order.status).toBe("DELIVERED");
 
     const rows = await prisma.notificationOutbox.findMany({ where: { orderId } });
-    expect(rows.length).toBe(2);
+    expect(rows.filter((r) => r.channel === "TELEGRAM")).toHaveLength(2);
+    expect(rows.filter((r) => r.channel === "EMAIL").every((r) => r.status === "FAILED")).toBe(true);
     const testimonial = rows.find((r) => r.event === "ORDER_DELIVERED")!;
     expect(JSON.parse(testimonial.payloadJson).buyer_language).toBe("en");
     const dm = rows.find((r) => r.event === "ORDER_DELIVERED_DM")!;
@@ -7001,10 +7002,11 @@ describe("payments", () => {
     const tx = await prisma.processedBinanceTx.findUnique({ where: { binanceTxId: "MTX1" } });
     expect(tx!.outcome).toBe("matched");
     expect(tx!.orderId).toBe(order.id);
-    // Like an admin approve: the testimonial post and the buyer's credentials
-    // DM, nothing else.
+    // Telegram still has exactly the testimonial post and buyer credentials
+    // DM; disabled/missing-recipient email outcomes are recorded separately.
     const rows = await prisma.notificationOutbox.findMany({ where: { orderId: order.id } });
-    expect(rows.map((r) => r.event).sort()).toEqual(["ORDER_DELIVERED", "ORDER_DELIVERED_DM"]);
+    expect(rows.filter((r) => r.channel === "TELEGRAM").map((r) => r.event).sort()).toEqual(["ORDER_DELIVERED", "ORDER_DELIVERED_DM"]);
+    expect(rows.filter((r) => r.channel === "EMAIL").every((r) => r.status === "FAILED")).toBe(true);
     const dms = await deliveredDms(order.id);
     expect(dms).toHaveLength(1);
     expect(dms[0]).toMatchObject({ chat_id: CUSTOMER_TG, order_code: order.orderCode });

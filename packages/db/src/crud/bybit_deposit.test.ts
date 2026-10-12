@@ -1,6 +1,13 @@
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 
+// Heartbeat unit tests use a Settings-only store. Persistent incident state
+// and its outbox are covered with real PostgreSQL in emailEvents.test.ts.
+vi.mock("./emailSecurity", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./emailSecurity")>()),
+  recordEmailProviderHealth: vi.fn(async () => {}),
+}));
+
 vi.mock("@app/core/config", () => ({
   config: {
     LOG_LEVEL: "info",

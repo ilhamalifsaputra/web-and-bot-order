@@ -17,7 +17,7 @@ beforeEach(async () => {
   await setSetting(prisma, "setup_completed", "true");
 });
 const get = (path = "", authenticated = true) => app.inject({ method: "GET", url: `/api/settings/email-notifications${path}`, cookies: authenticated ? { [config.WEB_COOKIE_NAME]: cookie } : {} });
-const post = (body: unknown, path = "", token = csrf) => app.inject({ method: "POST", url: `/api/settings/email-notifications${path}`, headers: { "x-csrf-token": token }, cookies: { [config.WEB_COOKIE_NAME]: cookie }, payload: body });
+const post = (body: Record<string, unknown>, path = "", token = csrf) => app.inject({ method: "POST", url: `/api/settings/email-notifications${path}`, headers: { "x-csrf-token": token }, cookies: { [config.WEB_COOKIE_NAME]: cookie }, payload: body });
 
 describe("email preferences API", () => {
   it("returns all 23 source events, locks recovery and preserves boolean values after refresh", async () => {

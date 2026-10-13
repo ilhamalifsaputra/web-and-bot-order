@@ -461,6 +461,13 @@ ini hanya untuk pekerjaan pemulihan manual pada database yang sudah diverifikasi
 Semua SQL deploy wajib idempoten. File migrasi historis yang tidak idempoten
 jangan dimasukkan langsung ke daftar startup.
 
+Verifikasi 2026-10-13: harness entrypoint 15 skenario dan tes SQL PostgreSQL
+8 skenario lulus. Image Docker berhasil dibangun; instalasi kosong, upgrade
+skema sebelum ticketing, dan restart container berhasil. Aktivitas tiket dan
+jumlah tiket/pesan tetap terjaga saat restart. Health check admin/storefront
+mengembalikan 200. Injeksi kegagalan migrasi menghasilkan exit 1 tanpa menjalankan
+perintah aplikasi. Full typecheck dan suite penuh lulus: 635 file, 11.853 tes.
+
 ## Kegagalan umum & pemulihan
 
 ### `P2022: column ... does not exist`

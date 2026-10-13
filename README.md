@@ -144,10 +144,10 @@ docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml logs -f
 ```
 
 > ⚠️ Baca baris `entrypoint:` itu sekali. Skema yang gagal diterapkan membuat
-> container **menolak start** (tak mungkin terlewat), tapi seed chart of accounts
-> ledger dan migrasi data-only hanya memunculkan **WARNING** lalu tetap
-> melanjutkan start — supaya pertanyaan pembukuan tidak mematikan toko. Baris itu
-> satu-satunya tempat keduanya terlihat.
+> container **menolak start**, begitu juga SQL wajib dan migrasi data-only yang
+> gagal. Seed chart of accounts ledger tetap memunculkan **WARNING** jika chart
+> perlu ditinjau admin. Detail upgrade ticketing dan constraint supplier otomatis
+> ada di [panduan migrasi](docs/MIGRATIONS.md#upgrade-docker-otomatis).
 
 - Panel admin: `http://IP-VPS-KAMU:8000/login`
 - Toko web (jika dinyalakan): `http://IP-VPS-KAMU:8100/`
@@ -313,8 +313,9 @@ pm2 restart bot-order
 > membangun bundle SPA React (panel admin + toko web) di builder stage Dockerfile,
 > lalu `docker-entrypoint.sh` menjalankan `prisma db push` → seed chart of accounts
 > ledger → migrasi data-only rilis ini, **sebelum** aplikasi start. Jadi urutan
-> "skema dulu, kode baru kemudian" dijamin secara struktural. Hanya push skema
-> yang fatal; dua langkah sesudahnya cuma **WARNING** — karena itu baris `grep
+> "skema dulu, kode baru kemudian" dijamin secara struktural. Skema, SQL wajib,
+> dan migrasi data-only yang gagal menghentikan startup. Seed ledger dapat
+> memberi WARNING jika chart perlu ditinjau admin, jadi baris `grep
 > entrypoint` di atas ada di daftar perintah, bukan sebagai opsi. Cara mengambil
 > alih manual (`AUTO_MIGRATE=0`) dan kontrak idempotensi migrasi data-only ada di
 > [`docs/MIGRATIONS.md`](docs/MIGRATIONS.md).
@@ -333,7 +334,7 @@ pm2 restart bot-order
 
 > 🛠️ **Periksa migrasi data saat update.** `prisma db push` hanya menyelaraskan
 > skema. Pada jalur Docker, entrypoint menjalankan migrasi data-only yang
-> terdaftar untuk rilis ini dan melaporkan kegagalan sebagai WARNING. Baca log
+> terdaftar untuk rilis ini dan menghentikan startup jika migrasi wajib gagal. Baca log
 > `entrypoint:` setelah deploy; jika perlu penanganan manual, ikuti
 > [`docs/MIGRATIONS.md`](docs/MIGRATIONS.md).
 

@@ -257,8 +257,10 @@ tanpa satu pun perintah manual sesudahnya:
    jeda ini, race beberapa detik itu menjadi crash-loop.
 2. **`prisma db push --skip-generate`** (lewat `db_push()`, jadi **tetap tanpa**
    `--accept-data-loss`): perubahan yang akan
-   membuang data **menggagalkan push** dan container **menolak start**. Ini satu-
-   satunya langkah yang fatal.
+   membuang data **menggagalkan push** dan container **menolak start**.
+   Sebelum push, SQL persiapan fulfillment/ticketing menyiapkan unique index dan
+   backfill aktivitas tiket. Setelah push, SQL integritas denominasi memasang
+   constraint yang tidak dapat diwakili Prisma. SQL wajib ini juga fatal jika gagal.
 3. **Seed chart of accounts ledger** (`scripts/seed-chart-of-accounts.ts`, sama
    dengan `pnpm seed-chart-of-accounts`). Setiap posting ledger mencari akunnya
    **berdasarkan `code`**, jadi di database yang belum pernah di-seed, settlement
@@ -274,14 +276,11 @@ tanpa satu pun perintah manual sesudahnya:
    sudah `DELIVERED` sebelum kolom `credentials_delivered_at` ada, supaya file
    kredensialnya tidak dikirim ulang otomatis).
 
-**Langkah 3 dan 4 hanya WARNING kalau gagal, tidak pernah crash-loop.** Alasannya
-dua. Pertama, skema sudah ter-push di titik itu; container yang menolak start
-justru menghilangkan satu-satunya tempat untuk membetulkannya. Kedua, seed
-chart-of-accounts **sengaja** keluar non-zero juga untuk hal yang bukan
-kegagalan: akun yang `type`/`currency`-nya berbeda dari `CHART_OF_ACCOUNTS`, dan
-akun aktif yang sudah tidak ada lagi di chart. Keduanya keputusan **akuntansi**
-atas baris yang mungkin sudah memuat entri terposting (lihat komentar kepala
-skripnya) — mematikan toko karena pertanyaan pembukuan adalah trade yang salah.
+**Migrasi data-only wajib berhasil; kegagalan menghentikan startup.** Seed
+chart-of-accounts tetap memberi WARNING: exit non-zero juga dipakai untuk chart
+yang berbeda, seperti akun dengan `type`/`currency` berbeda atau akun aktif yang
+tidak lagi ada di chart. Perbedaan itu memerlukan keputusan akuntansi atas baris
+yang mungkin sudah memuat entri terposting.
 
 Karena itu **baca baris entrypoint setiap habis deploy**:
 
@@ -300,8 +299,7 @@ Saat sebuah rilis membawa migrasi data-only baru: tambahkan nama foldernya ke
 `$DATA_MIGRATIONS` (dipisah spasi, terlama dulu) **dan** tulis di komentar kepala
 file SQL-nya kenapa re-run-nya aman.
 `deploy/test-entrypoint-auto-migrate.sh` ikut memverifikasi setiap nama di daftar
-itu benar-benar ada di `prisma/migrations/`, supaya salah tulis tidak berakhir
-sebagai WARNING produksi yang tak pernah dibaca.
+itu benar-benar ada di `prisma/migrations/`; file yang hilang menghentikan startup.
 
 **Tidak ada snapshot pra-push**, dan itu disengaja: `deploy/backup/backup.sh`
 mengambil dump dengan menjalankan `pg_dump` **di dalam** container `postgres`
@@ -422,12 +420,53 @@ container `server`), jadi langkah 1 adalah **satu-satunya** titik rollback
 deploy ini. Yang melindungi data dari push itu sendiri adalah penolakan
 `db push` terhadap perubahan yang membuang data — bukan backup.
 
-**Langkah 3 wajib dibaca, bukan sekadar dijalankan.** Hanya `db push` yang fatal;
-seed chart-of-accounts dan migrasi data-only **hanya WARNING** kalau gagal, dan
-container tetap start. Jadi satu-satunya tanda bahwa seed ledger perlu keputusan
-Anda (akun ter-drift, atau akun aktif yang tak ada lagi di chart) ada di baris
-`entrypoint: WARNING ...` itu. Kalau skema tidak berubah, `db push` cuma bilang
-sudah sinkron; seed dan migrasi data-only tetap jalan dan tetap no-op.
+**Langkah 3 wajib dibaca, bukan sekadar dijalankan.** Schema push, SQL wajib,
+dan migrasi data-only yang gagal sekarang menghentikan startup. Seed ledger
+masih memberi WARNING pada chart yang berbeda dari definisi repo; ini memerlukan
+keputusan pembukuan, bukan perubahan data otomatis.
+
+## Upgrade Docker otomatis
+
+Cukup rebuild dan recreate container; tidak perlu menjalankan SQL ticketing
+secara manual:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml up -d --build
+docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml logs -f server
+```
+
+Urutan pada setiap start, termasuk restart:
+
+1. Tunggu database, siapkan unique index fulfillment, lalu jalankan
+   `deploy/sql/ticketing-upgrade.sql`. Pada tabel existing, script menambah
+   request key nullable dan unique index sebelum `db push`, sehingga Prisma
+   tidak berhenti pada peringatan unique constraint. Saat kolom aktivitas tiket
+   pertama ditambahkan, riwayat waktunya diisi dari tiket dan pesan lama.
+   Restart berikutnya mempertahankan aktivitas yang sudah ditulis aplikasi.
+2. Jalankan `prisma db push --skip-generate` tanpa `--accept-data-loss`.
+3. Jalankan `deploy/sql/denomination-integrity.sql` untuk CHECK arsip dan
+   unique index supplier parsial yang tidak dapat diwakili schema Prisma.
+   SKU bentrok atau denominasi arsip yang masih aktif menghentikan startup;
+   tidak ada baris yang otomatis digabung, diperbaiki, atau dihapus.
+4. Seed chart of accounts, lalu terapkan setiap file `DATA_MIGRATIONS`.
+5. Setelah semua migrasi wajib berhasil, log menampilkan
+   `Automatic database migrations completed; starting the requested command.`
+   dan aplikasi baru dijalankan.
+
+Prisma CLI atau file migrasi wajib yang hilang juga menghentikan startup.
+Perbaiki penyebab SQL/image, kemudian restart. Untuk diagnosis saat startup
+terblokir, gunakan `docker compose ... run --rm -e AUTO_MIGRATE=0 server <command>`;
+ini hanya untuk pekerjaan pemulihan manual pada database yang sudah diverifikasi.
+`AUTO_MIGRATE=0` dan sentinel rollback tetap melewati seluruh urutan otomatis.
+Semua SQL deploy wajib idempoten. File migrasi historis yang tidak idempoten
+jangan dimasukkan langsung ke daftar startup.
+
+Verifikasi 2026-10-13: harness entrypoint 15 skenario dan tes SQL PostgreSQL
+8 skenario lulus. Image Docker berhasil dibangun; instalasi kosong, upgrade
+skema sebelum ticketing, dan restart container berhasil. Aktivitas tiket dan
+jumlah tiket/pesan tetap terjaga saat restart. Health check admin/storefront
+mengembalikan 200. Injeksi kegagalan migrasi menghasilkan exit 1 tanpa menjalankan
+perintah aplikasi. Full typecheck dan suite penuh lulus: 635 file, 11.853 tes.
 
 ## Kegagalan umum & pemulihan
 

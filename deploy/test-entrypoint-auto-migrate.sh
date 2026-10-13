@@ -1,7 +1,7 @@
 #!/bin/sh
 # Manual test harness for docker-entrypoint.sh's auto_migrate() — specifically
-# the Postgres deploy sequence it automates (unique index → schema push → ledger chart-of-accounts
-# seed → data-only migrations) and the four ways that sequence is allowed to stop.
+# the Postgres deploy sequence (unique indexes → ticketing upgrade → schema push
+# → denomination integrity → ledger seed → data migrations), failures and opt-outs.
 #
 # No container and no database needed: the same APP_ROOT override plus
 # ENTRYPOINT_TEST_SOURCE_ONLY that deploy/test-entrypoint-credential-key.sh uses
@@ -38,7 +38,7 @@ make_app_root() {
   : > "$TMP_ROOT/prisma/schema.prisma"
   : > "$TMP_ROOT/scripts/seed-chart-of-accounts.ts"
   mkdir -p "$TMP_ROOT/deploy/sql"
-  cp "$SCRIPT_DIR/deploy/sql/fulfillment-message-unique-index.sql" "$TMP_ROOT/deploy/sql/"
+  cp "$SCRIPT_DIR"/deploy/sql/*.sql "$TMP_ROOT/deploy/sql/"
   for _name in $DATA_MIGRATIONS_LIST; do
     mkdir -p "$TMP_ROOT/prisma/migrations/$_name"
     : > "$TMP_ROOT/prisma/migrations/$_name/migration.sql"
@@ -52,6 +52,8 @@ case " $* " in
   *" migrate deploy "*) exit "${STUB_MIGRATE_RC:-0}" ;;
   *" db push "*) exit "${STUB_PUSH_RC:-0}" ;;
   *fulfillment-message-unique-index.sql*) exit "${STUB_INDEX_RC:-0}" ;;
+  *ticketing-upgrade.sql*) exit "${STUB_TICKETING_RC:-0}" ;;
+  *denomination-integrity.sql*) exit "${STUB_INTEGRITY_RC:-0}" ;;
   *" --file "*) exit "${STUB_EXECUTE_RC:-0}" ;;
 esac
 exit 0
@@ -69,7 +71,7 @@ STUB
 }
 
 # The recorded commands reduced to one word each, in order, so a case can assert
-# the whole sequence as a single string: probe index push seed data.
+# the whole sequence as a single string: probe index ticketing push integrity seed data.
 steps() {
   _out=""
   while IFS= read -r _line; do
@@ -79,6 +81,8 @@ steps() {
       *"db push"*) _out="$_out push" ;;
       tsx*seed-chart-of-accounts.ts) _out="$_out seed" ;;
       *fulfillment-message-unique-index.sql*) _out="$_out index" ;;
+      *ticketing-upgrade.sql*) _out="$_out ticketing" ;;
+      *denomination-integrity.sql*) _out="$_out integrity" ;;
       *--file*) _out="$_out data" ;;
       *) _out="$_out unexpected[$_line]" ;;
     esac
@@ -121,7 +125,7 @@ expect_output() {
 # --- Case 1: the full Postgres sequence, in order ---------------------------
 case_postgres_runs_push_then_seed_then_data() {
   make_app_root
-  _want="probe index push seed"
+  _want="probe index ticketing push integrity seed"
   for _name in $DATA_MIGRATIONS_LIST; do _want="$_want data"; done
 
   rc=0
@@ -147,7 +151,7 @@ case_push_failure_exits_and_skips_rest() {
     # Nothing after the push may run: seeding or backfilling rows against a
     # schema that was not applied is exactly the P2022 order the entrypoint exists
     # to prevent.
-    expect_steps "probe index push" || rc=1
+    expect_steps "probe index ticketing push" || rc=1
     expect_output "will not start" || rc=1
   fi
   rm -rf "$TMP_ROOT"
@@ -157,7 +161,7 @@ case_push_failure_exits_and_skips_rest() {
 # --- Case 3: a non-zero seed warns and start-up continues -------------------
 case_seed_failure_warns_and_continues() {
   make_app_root
-  _want="probe index push seed"
+  _want="probe index ticketing push integrity seed"
   for _name in $DATA_MIGRATIONS_LIST; do _want="$_want data"; done
 
   rc=0
@@ -263,6 +267,90 @@ case_index_failure_refuses_to_start() {
   return $rc
 }
 
+case_required_sql_failure_refuses() {
+  make_app_root
+  rc=0
+  if DATABASE_URL_PRISMA="postgresql://u:p@postgres:5432/db" STUB_TICKETING_RC=1 run_auto_migrate; then
+    rc=1
+  else
+    expect_steps "probe index ticketing" || rc=1
+    expect_output "will not start" || rc=1
+  fi
+  rm -rf "$TMP_ROOT"
+  return $rc
+}
+
+case_integrity_failure_refuses() {
+  make_app_root
+  rc=0
+  if DATABASE_URL_PRISMA="postgresql://u:p@postgres:5432/db" STUB_INTEGRITY_RC=1 run_auto_migrate; then
+    rc=1
+  else
+    expect_steps "probe index ticketing push integrity" || rc=1
+    expect_output "will not start" || rc=1
+  fi
+  rm -rf "$TMP_ROOT"
+  return $rc
+}
+
+case_data_failure_refuses() {
+  make_app_root
+  rc=0
+  if DATABASE_URL_PRISMA="postgresql://u:p@postgres:5432/db" STUB_EXECUTE_RC=1 run_auto_migrate; then
+    rc=1
+  else
+    expect_steps "probe index ticketing push integrity seed data" || rc=1
+    expect_output "will not start" || rc=1
+  fi
+  rm -rf "$TMP_ROOT"
+  return $rc
+}
+
+case_missing_data_file_refuses() {
+  make_app_root
+  for _name in $DATA_MIGRATIONS_LIST; do
+    rm "$TMP_ROOT/prisma/migrations/$_name/migration.sql"
+    break
+  done
+  rc=0
+  if DATABASE_URL_PRISMA="postgresql://u:p@postgres:5432/db" run_auto_migrate; then
+    rc=1
+  else
+    expect_steps "probe index ticketing push integrity seed" || rc=1
+    expect_output "missing from this image" || rc=1
+  fi
+  rm -rf "$TMP_ROOT"
+  return $rc
+}
+
+case_missing_prisma_refuses() {
+  make_app_root
+  rm "$TMP_ROOT/node_modules/.bin/prisma"
+  rc=0
+  if DATABASE_URL_PRISMA="postgresql://u:p@postgres:5432/db" run_auto_migrate; then
+    rc=1
+  else
+    expect_steps "" || rc=1
+    expect_output "will not start" || rc=1
+  fi
+  rm -rf "$TMP_ROOT"
+  return $rc
+}
+
+case_missing_required_sql_refuses() {
+  make_app_root
+  rm "$TMP_ROOT/deploy/sql/ticketing-upgrade.sql"
+  rc=0
+  if DATABASE_URL_PRISMA="postgresql://u:p@postgres:5432/db" run_auto_migrate; then
+    rc=1
+  else
+    expect_steps "probe index" || rc=1
+    expect_output "missing from this image" || rc=1
+  fi
+  rm -rf "$TMP_ROOT"
+  return $rc
+}
+
 if [ -z "$DATA_MIGRATIONS_LIST" ]; then
   echo "FAIL: could not read \$DATA_MIGRATIONS from $ENTRYPOINT"
   exit 1
@@ -278,8 +366,16 @@ case_non_postgres_url_refuses && pass "non-postgresql URL refuses to start" || f
 case_listed_data_migrations_exist && pass "every listed data migration exists" || fail "every listed data migration exists"
 case_index_failure_refuses_to_start && pass "index failure refuses to start before push" || fail "index failure refuses to start before push"
 
+case_required_sql_failure_refuses && pass "ticketing upgrade failure blocks push and startup" || fail "ticketing upgrade failure blocks push and startup"
+case_integrity_failure_refuses && pass "integrity failure blocks startup" || fail "integrity failure blocks startup"
+case_data_failure_refuses && pass "data migration failure blocks startup" || fail "data migration failure blocks startup"
+case_missing_data_file_refuses && pass "missing data migration blocks startup" || fail "missing data migration blocks startup"
+case_missing_prisma_refuses && pass "missing Prisma blocks startup" || fail "missing Prisma blocks startup"
+case_missing_required_sql_refuses && pass "missing required SQL blocks startup" || fail "missing required SQL blocks startup"
+
 if [ "$FAILURES" -gt 0 ]; then
   echo "$FAILURES case(s) failed."
   exit 1
 fi
-echo "All 9 cases passed."
+
+echo "All 15 cases passed."

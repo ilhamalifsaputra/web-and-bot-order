@@ -75,9 +75,12 @@ build step on the Docker path. Then `docker-entrypoint.sh` runs, before the app
 process starts and on every start path (`up`, `restart`, and the automatic restart
 after a crash):
 
-1. `prisma db push --skip-generate` — never with `--accept-data-loss`, so a change
+1. Prepare fulfillment and ticketing unique indexes with idempotent release SQL,
+   including the historical ticket activity backfill, then `prisma db push --skip-generate` — never with `--accept-data-loss`, so a change
    that would drop rows fails the push and **the container refuses to start**.
-   This is the only fatal step.
+   Required SQL and data migrations also refuse startup on failure. After schema
+   push, apply the denomination archive CHECK and partial supplier identity index
+   that Prisma cannot represent.
 2. The ledger chart-of-accounts seed (`scripts/seed-chart-of-accounts.ts`). Every
    ledger posting resolves its account by `code`, so on a database where this has
    never run, order settlements, wallet top-ups and referral commissions record
@@ -86,13 +89,12 @@ after a crash):
    `docker-entrypoint.sh`) via `prisma db execute` — `db push` only syncs
    structure, never rows.
 
-**Why step 3 of the deploy command is `grep entrypoint`:** steps 2 and 3 above only
-**warn** on failure and let start-up continue, because the schema is already pushed
-by then and a container that refuses to start cannot be used to repair anything.
-The seed also exits non-zero for a *drifted chart* — an account classified
-differently from `CHART_OF_ACCOUNTS`, or an active account the chart no longer
-lists — which is an accounting decision about rows that may already carry posted
-entries, not a deploy failure. Those warnings are visible nowhere else.
+**Read the entrypoint logs:** schema push, required release SQL and data-only
+migrations must all succeed before the application starts. A missing Prisma CLI
+or required SQL file also blocks startup. The ledger seed still warns on a
+*drifted chart*, which needs an accounting decision rather than automatic repair.
+Successful migrations end with `Automatic database migrations completed`.
+See [the upgrade sequence](../docs/MIGRATIONS.md#upgrade-docker-otomatis).
 
 Opting out: `AUTO_MIGRATE=0` in `.env`, or `deploy/backup/restore.sh`'s
 `data/SKIP_AUTO_MIGRATE` sentinel for one boot after a rollback. Then the steps are

@@ -1,6 +1,6 @@
 #!/bin/sh
 # Container entrypoint: fix the bind-mounted data dir's ownership, bring the
-# database schema up to date (snapshot first), then drop privileges to the
+# database schema and release migrations up to date, then drop privileges to the
 # non-root `app` user before running the service.
 #
 # Why the chown: ./data is bind-mounted from the host (docker-compose.yml). A
@@ -36,6 +36,8 @@ SCHEMA="$APP_ROOT/prisma/schema.prisma"
 CREDENTIAL_KEY_FILE="$DATA_DIR/credential_encryption.key"
 LEDGER_SEED="$APP_ROOT/scripts/seed-chart-of-accounts.ts"
 FULFILLMENT_INDEX_SQL="$APP_ROOT/deploy/sql/fulfillment-message-unique-index.sql"
+TICKETING_UPGRADE_SQL="$APP_ROOT/deploy/sql/ticketing-upgrade.sql"
+DENOMINATION_INTEGRITY_SQL="$APP_ROOT/deploy/sql/denomination-integrity.sql"
 
 # Data-only migrations re-applied after every successful schema push on the
 # Postgres path. These are the releases' steps that `prisma db push` cannot
@@ -65,6 +67,22 @@ DB_WAIT_SECONDS="${DB_WAIT_SECONDS:-2}"
 RUN_AS=""
 
 log() { echo "entrypoint: $*"; }
+
+# Required release SQL must finish before the new application serves traffic.
+# Every file passed here must be idempotent, since restart runs it again.
+apply_required_sql() {
+  _sql_file="$1"
+  if [ ! -f "$_sql_file" ]; then
+    log "ERROR: required migration $_sql_file is missing from this image; the container will not start. Rebuild the image." >&2
+    exit 1
+  fi
+  log "Applying required migration $_sql_file..."
+  # shellcheck disable=SC2086 # RUN_AS is an intentional word-split prefix
+  if ! $RUN_AS "$PRISMA" db execute --schema "$SCHEMA" --file "$_sql_file"; then
+    log "ERROR: required migration $_sql_file failed; the container will not start. Read the SQL error above, fix the cause, then restart. No automatic data deletion is permitted. Procedure: docs/MIGRATIONS.md." >&2
+    exit 1
+  fi
+}
 
 # This deployment uses db push, without a Prisma migration-history baseline.
 # Do not run migrate deploy here: existing databases would fail with P3005.
@@ -153,26 +171,12 @@ seed_ledger_accounts() {
   log "Ledger chart of accounts is seeded."
 }
 
-# Re-applies every file in $DATA_MIGRATIONS (see its comment for the idempotency
-# contract). A failure warns rather than exits for the same reason the seed does:
-# the schema is already pushed, and a container that refuses to start cannot be
-# used to repair anything.
+# Re-applies every file in $DATA_MIGRATIONS (see its idempotency contract).
+# Missing or failed migrations must stop startup, even after schema push.
 apply_data_migrations() {
   for _name in $DATA_MIGRATIONS; do
     _file="$APP_ROOT/prisma/migrations/$_name/migration.sql"
-    if [ ! -f "$_file" ]; then
-      log "WARNING: the data-only migration $_name is listed in docker-entrypoint.sh but $_file is not in this image, so it was skipped. Either the image predates that migration (rebuild it) or the list and prisma/migrations/ disagree." >&2
-      continue
-    fi
-    set +e
-    # shellcheck disable=SC2086 # RUN_AS is an intentional word-split prefix
-    $RUN_AS "$PRISMA" db execute --schema "$SCHEMA" --file "$_file"
-    _rc=$?
-    set -e
-    if [ "$_rc" -ne 0 ]; then
-      log "WARNING: the data-only migration $_name failed (prisma db execute exited $_rc). Start-up continues, because the schema push already succeeded and these migrations only seed or backfill rows. Each one documents in its header what an unapplied state means for the app; fix the cause, then re-run just that file: docker compose run --rm server pnpm exec prisma db execute --schema prisma/schema.prisma --file prisma/migrations/$_name/migration.sql" >&2
-      continue
-    fi
+    apply_required_sql "$_file"
     log "Applied the data-only migration $_name (it is written to be safe to re-run, so this is a no-op once it has taken effect)."
   done
 }
@@ -194,10 +198,13 @@ postgres_migrate() {
   log "No pre-deploy snapshot is taken on the Postgres path (the dump runs on the host, not in this container). 'prisma db push' below still refuses any change that would drop data. Recommended before every deploy: take a dump yourself — see 'Backup — Postgres' in deploy/backup/README.md."
   wait_for_database
   prepare_fulfillment_index
+  apply_required_sql "$TICKETING_UPGRADE_SQL"
   db_push
   log "Schema is in sync with schema.prisma."
+  apply_required_sql "$DENOMINATION_INTEGRITY_SQL"
   seed_ledger_accounts
   apply_data_migrations
+  log "Automatic database migrations completed; starting the requested command."
 }
 
 auto_migrate() {
@@ -218,8 +225,8 @@ auto_migrate() {
   fi
 
   if [ ! -x "$PRISMA" ]; then
-    log "WARNING: no Prisma CLI at $PRISMA, so the schema cannot be checked. Starting anyway — if the image was built correctly this should never happen."
-    return 0
+    log "ERROR: no Prisma CLI at $PRISMA, so automatic migration cannot run; the container will not start. Rebuild the image." >&2
+    exit 1
   fi
 
   # schema.prisma's datasource provider is "postgresql", so there is no default

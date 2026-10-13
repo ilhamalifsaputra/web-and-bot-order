@@ -36,9 +36,10 @@ curl -i http://127.0.0.1:8000/healthz
 ```
 
 `up -d --build` membangun image/bundle SPA dan entrypoint menjalankan
-**schema push → seed chart of accounts → migrasi data-only** sebelum aplikasi
+**SQL persiapan → schema push → constraint tambahan → seed ledger → migrasi data-only** sebelum aplikasi
 start. Baca hasil tiap langkah di log: schema push yang gagal menolak start,
-sedangkan seed/migrasi data-only yang gagal hanya menghasilkan WARNING.
+SQL wajib dan migrasi data-only yang gagal juga menolak start. Seed ledger
+yang mendeteksi perbedaan chart tetap menghasilkan WARNING untuk ditinjau admin.
 Periksa juga storefront (`:8100/healthz` jika diekspos) dan balasan `/start`
 di bot. `AUTO_MIGRATE=0` adalah pengecualian untuk operator yang menjalankan
 langkah database secara manual; lihat [MIGRATIONS.md](MIGRATIONS.md).

@@ -9,6 +9,7 @@
  * Replay-safety: DB/IO that precedes another wait() is wrapped in
  * conversation.external(); terminal mutations run once.
  */
+import { BodyTooLargeError, readBodyWithLimit } from "@app/core/boundedBody";
 import { buttonNameBudget, PLAN_LABEL_MAX_CHARS } from "@app/core/buttonLimits";
 import { InputMediaBuilder } from "grammy";
 import type { MessageEntity } from "grammy/types";
@@ -98,11 +99,24 @@ async function denyAdmin(ctx: MyContext): Promise<void> {
   await ctx.answerCallbackQuery({ text: t(ctx, "error.admin_only"), show_alert: true });
 }
 
-async function downloadTgText(ctx: MyContext, fileId: string): Promise<string> {
+/** A stock/credential .txt upload is rejected above 1 MB (checked up front from Telegram's file_size). */
+const MAX_TG_TEXT_BYTES = 1_000_000;
+
+/**
+ * Download an uploaded text file, or `null` when its body is larger than
+ * {@link MAX_TG_TEXT_BYTES}. Telegram's `file_size` can be absent or wrong, so
+ * the limit is enforced on the bytes actually received, not just declared.
+ */
+export async function downloadTgText(ctx: MyContext, fileId: string): Promise<string | null> {
   const file = await ctx.api.getFile(fileId);
   const url = `https://api.telegram.org/file/bot${botToken()}/${file.file_path}`;
   const res = await fetch(url);
-  return res.text();
+  try {
+    return (await readBodyWithLimit(res, MAX_TG_TEXT_BYTES)).toString("utf8");
+  } catch (e) {
+    if (e instanceof BodyTooLargeError) return null;
+    throw e;
+  }
 }
 
 // ===========================================================================
@@ -141,7 +155,12 @@ export async function stockUploadConversation(conversation: MyConversation, ctx:
         await adminAnchor(u, t(u, "admin.stock_err_too_large"), akb.cancelInputKb());
         continue;
       }
-      rawText = await conversation.external(() => downloadTgText(u, doc.file_id));
+      const downloaded = await conversation.external(() => downloadTgText(u, doc.file_id));
+      if (downloaded === null) {
+        await adminAnchor(u, t(u, "admin.stock_err_too_large"), akb.cancelInputKb());
+        continue;
+      }
+      rawText = downloaded;
       // Only the file's name labels the import batch; its contents never do.
       sourceLabel = doc.file_name.slice(0, 200);
       // Delete only after the download — keeps pasted credentials out of the

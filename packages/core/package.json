@@ -23,6 +23,7 @@
     "./customEmoji": "./src/customEmoji.ts",
     "./errors": "./src/errors.ts",
     "./params": "./src/params.ts",
+    "./boundedBody": "./src/boundedBody.ts",
     "./errorBody": "./src/errorBody.ts",
     "./logger": "./src/logger.ts",
     "./enums": "./src/enums.ts",

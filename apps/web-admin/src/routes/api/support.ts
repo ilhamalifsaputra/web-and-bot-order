@@ -41,6 +41,10 @@ import {
 } from "@app/db";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
 import { getFileResolver } from "../../lib/telegramCheck";
+import { BodyTooLargeError, readBodyWithLimit } from "@app/core/boundedBody";
+
+/** Telegram photos top out at 20 MB; anything larger is not a legitimate ticket photo. */
+const MAX_SUPPORT_PHOTO_BYTES = 20 * 1024 * 1024;
 import { displayDate, displayDateTime, displayShortDateTime } from "../../dateDisplay";
 import { parseStatusChange } from "../../lib/ticketStatusChange";
 
@@ -748,8 +752,16 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
     if (contentType === null) {
       return reply.code(415).send({ error: "This attachment is not an image." });
     }
+    let bytes: Buffer;
+    try {
+      bytes = await readBodyWithLimit(upstream, MAX_SUPPORT_PHOTO_BYTES);
+    } catch (e) {
+      if (e instanceof BodyTooLargeError) return reply.code(413).send({ error: "This photo is too large to preview." });
+      return reply.code(502).send({ error: "Could not retrieve the photo from Telegram." });
+    }
+    // Headers go on only now: an error reply above must stay JSON, not an image.
     reply.header("content-type", contentType);
     reply.header("x-content-type-options", "nosniff");
-    return reply.send(Buffer.from(await upstream.arrayBuffer()));
+    return reply.send(bytes);
   });
 }

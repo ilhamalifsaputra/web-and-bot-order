@@ -1139,6 +1139,36 @@ describe("GET /api/support/photo/:fileId", () => {
     }
   });
 
+  it("refuses (413) a photo whose declared or streamed size exceeds the 20 MB cap, without buffering it", async () => {
+    const originalFetch = global.fetch;
+    setFileResolver(async () => ({ ok: true, filePath: "photos/huge.jpg" }));
+    try {
+      // 1. Declared Content-Length above the cap.
+      global.fetch = (async () => new Response("tiny", { headers: { "content-type": "image/jpeg", "content-length": String(25 * 1024 * 1024) } })) as unknown as typeof fetch;
+      const declared = await get("/api/support/photo/FAKE_FILE_ID", cookie);
+      expect(declared.statusCode).toBe(413);
+
+      // 2. No Content-Length: the stream itself crosses the cap and is cut off.
+      let chunks = 0;
+      global.fetch = (async () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              chunks += 1;
+              controller.enqueue(new Uint8Array(1024 * 1024));
+              if (chunks > 200) controller.close();
+            },
+          }),
+          { headers: { "content-type": "image/jpeg" } },
+        )) as unknown as typeof fetch;
+      const streamed = await get("/api/support/photo/FAKE_FILE_ID", cookie);
+      expect(streamed.statusCode).toBe(413);
+      expect(chunks).toBeLessThan(60);
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
   it("returns 503 when no bot token is configured", async () => {
     setFileResolver(async () => ({ ok: true, filePath: "photos/fake.jpg" }));
     const originalToken = config.BOT_TOKEN;

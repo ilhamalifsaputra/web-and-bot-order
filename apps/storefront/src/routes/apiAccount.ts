@@ -23,6 +23,7 @@ import { clientIp, supportRateLimited } from "../rateLimit";
 import { logger } from "@app/core/logger";
 import { localize, addDays } from "@app/core/datetime";
 import { CategoryGroup, SenderType, OrderStatus, OrderKind, TicketStatus, zTicketCategory } from "@app/core/enums";
+import { parsePositiveId, parsePageParam } from "@app/core/params";
 import { ValidationError } from "@app/core/errors";
 import { usesLocalInventory } from "@app/core/productAvailability";
 import { hashPassword, verifyPassword } from "@app/core/password";
@@ -477,8 +478,8 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
     const sortValue: SupportTicketListSort = SUPPORT_LIST_SORTS.includes(sort as SupportTicketListSort)
       ? (sort as SupportTicketListSort)
       : "latest_update";
-    // Fastify querystring values are always strings — parse + guard NaN.
-    const pageNum = Number(page) || 1;
+    // Fastify querystring values are always strings; parsePageParam falls back to 1 on junk and clamps huge values.
+    const pageNum = parsePageParam(page);
     const pageSizeNum = Number(page_size) || 10;
 
     const [{ rows, total }, stats] = await Promise.all([
@@ -689,7 +690,7 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
       const customer = await requireCustomer(req, reply);
       if (!customer) return;
       if (!csrfHeaderOk(req, customer)) return reply.code(403).send({ error: "csrf_failed" });
-      const ticket = await getTicket(prisma, Number(req.params.id));
+      const ticket = await getTicket(prisma, parsePositiveId(req.params.id) ?? 0);
       if (!ticket || ticket.userId !== customer.userId) return reply.code(404).send({ error: "not_found" });
       if (ticket.status === TicketStatus.CLOSED) return reply.code(409).send({ error: "ticket.closed_cannot_reply" });
       let message: string;
@@ -728,7 +729,7 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
   app.get<{ Params: { id: string } }>("/account/support/:id", async (req, reply) => {
     const customer = await requireCustomer(req, reply);
     if (!customer) return;
-    const ticket = await getTicketWithOrder(prisma, Number(req.params.id));
+    const ticket = await getTicketWithOrder(prisma, parsePositiveId(req.params.id) ?? 0);
     if (!ticket || ticket.userId !== customer.userId) {
       return reply.code(404).send({ error: "not_found" });
     }
@@ -799,7 +800,7 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
     const customer = await requireCustomer(req, reply);
     if (!customer) return;
     if (!csrfHeaderOk(req, customer)) return reply.code(403).send({ error: "csrf_failed" });
-    const ticket = await getTicket(prisma, Number(req.params.id));
+    const ticket = await getTicket(prisma, parsePositiveId(req.params.id) ?? 0);
     if (!ticket || ticket.userId !== customer.userId) {
       return reply.code(404).send({ error: "not_found" });
     }
@@ -812,7 +813,7 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
     const customer = await requireCustomer(req, reply);
     if (!customer) return;
     if (!csrfHeaderOk(req, customer)) return reply.code(403).send({ error: "csrf_failed" });
-    const ticket = await getTicket(prisma, Number(req.params.id));
+    const ticket = await getTicket(prisma, parsePositiveId(req.params.id) ?? 0);
     if (!ticket || ticket.userId !== customer.userId) {
       return reply.code(404).send({ error: "not_found" });
     }
@@ -829,7 +830,7 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
     const customer = await requireCustomer(req, reply);
     if (!customer) return;
     if (!csrfHeaderOk(req, customer)) return reply.code(403).send({ error: "csrf_failed" });
-    const denom = await getDenominationWithProduct(prisma, Number(req.params.id));
+    const denom = await getDenominationWithProduct(prisma, parsePositiveId(req.params.id) ?? 0);
     // The SPA bounces back to the parent product detail (slug URL).
     const redirect = denom ? `/p/${denom.product.slug}` : "/";
     if (!denom?.isActive || !(await isServiceActive(prisma, denom.product.category.group as CategoryGroup | null, "web"))) {

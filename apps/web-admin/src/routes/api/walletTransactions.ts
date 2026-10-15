@@ -7,6 +7,7 @@ import {
 } from "@app/db";
 import { currentAdmin } from "../../plugins/auth";
 import { displayDateTime } from "../../dateDisplay";
+import { parsePageParam } from "../../lib/params";
 
 const PAGE_SIZE = 50;
 
@@ -26,7 +27,7 @@ function parseDate(value: string | undefined): Date | null {
 export default async function walletTransactionsApiRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/wallet-transactions", { preHandler: currentAdmin }, async (req, reply) => {
     const q = req.query as Record<string, string | undefined>;
-    const page = Math.max(Number(q.page) || 1, 1);
+    const page = parsePageParam(q.page);
     const offset = (page - 1) * PAGE_SIZE;
     // Unrecognized filter values are ignored rather than applied, so a stale
     // or hand-edited link shows the full ledger instead of an empty page.

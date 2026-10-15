@@ -3,6 +3,7 @@ import { EMAIL_EVENT_REGISTRY, renderEmailEventPreview, type EmailEventKey } fro
 import { prisma, getSmtpCreds, isEmailEventEnabled, setEmailEventEnabled, logAdminAction,
   emailInventoryThresholds, isFiniteEmailInventorySku, getEmailReportSchedule, validateEmailSchedule, setSetting } from "@app/db";
 import { currentAdmin, csrfProtect, blockReadonlyReads } from "../../plugins/auth";
+import { parsePositiveId } from "../../lib/params";
 
 export async function emailNotificationsApi(app: FastifyInstance): Promise<void> {
   app.get<{ Params: { key: string } }>("/api/settings/email-notifications/:key/preview", { preHandler: blockReadonlyReads }, async (req, reply) => {
@@ -36,14 +37,14 @@ export async function emailNotificationsApi(app: FastifyInstance): Promise<void>
     return { schedule: req.body };
   });
   app.get<{ Params: { id: string } }>("/api/settings/email-notifications/inventory/:id", { preHandler: currentAdmin }, async (req, reply) => {
-    const id = Number(req.params.id);
-    if (!Number.isSafeInteger(id) || id <= 0 || !(await isFiniteEmailInventorySku(prisma, id))) return reply.code(404).send({ error: "This SKU does not use finite local stock." });
+    const id = parsePositiveId(req.params.id);
+    if (id === null || !(await isFiniteEmailInventorySku(prisma, id))) return reply.code(404).send({ error: "This SKU does not use finite local stock." });
     return emailInventoryThresholds(prisma, id);
   });
   app.post<{ Params: { id: string }; Body: { critical?: unknown; recovery?: unknown } }>("/api/settings/email-notifications/inventory/:id", { preHandler: csrfProtect }, async (req, reply) => {
-    const id = Number(req.params.id);
+    const id = parsePositiveId(req.params.id);
     const { critical, recovery } = req.body ?? {};
-    if (!Number.isSafeInteger(id) || id <= 0 || !(await isFiniteEmailInventorySku(prisma, id))) return reply.code(404).send({ error: "This SKU does not use finite local stock." });
+    if (id === null || !(await isFiniteEmailInventorySku(prisma, id))) return reply.code(404).send({ error: "This SKU does not use finite local stock." });
     if (typeof critical !== "number" || typeof recovery !== "number" || !Number.isSafeInteger(critical) || !Number.isSafeInteger(recovery) || critical < 0 || recovery <= critical || recovery > 1_000_000) return reply.code(400).send({ error: "Critical must be a nonnegative integer, and recovery must be greater than critical (maximum 1000000)." });
     await prisma.$transaction(async (tx) => {
       await setSetting(tx, `email_inventory_critical_threshold:${id}`, String(critical));

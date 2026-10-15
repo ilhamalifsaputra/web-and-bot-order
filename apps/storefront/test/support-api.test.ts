@@ -592,3 +592,43 @@ describe("concurrent ticket creation for one order yields one ticket", () => {
     expect(await prisma.supportTicket.count({ where: { orderId: order.id } })).toBe(1);
   });
 });
+
+// Backend audit B8: `Number(req.params.id)` handed NaN / fractions / ids above
+// the 32-bit ceiling to Prisma (500), and `page` was unbounded.
+describe("malformed ids and pages never reach Prisma as a 500", () => {
+  const BAD_IDS = ["abc", "1.5", "-1", "0", "99999999999"];
+
+  it("ticket detail / reply / close / reopen answer 404 for a bad id", async () => {
+    const { cookie, csrf } = await freshCustomer();
+    for (const bad of BAD_IDS) {
+      const get = await app.inject({ method: "GET", url: `/api/v1/account/support/${encodeURIComponent(bad)}`, headers: { cookie } });
+      expect({ bad, route: "get", status: get.statusCode }).toEqual({ bad, route: "get", status: 404 });
+      for (const action of ["reply", "close", "reopen"]) {
+        const res = await app.inject({
+          method: "POST",
+          url: `/api/v1/account/support/${encodeURIComponent(bad)}/${action}`,
+          headers: { cookie, "x-csrf-token": csrf },
+          payload: { message: "hello" },
+        });
+        expect({ bad, action, status: res.statusCode }).toEqual({ bad, action, status: 404 });
+      }
+    }
+  });
+
+  it("restock with a bad id is the normal 'unavailable' answer", async () => {
+    const { cookie, csrf } = await freshCustomer();
+    for (const bad of BAD_IDS) {
+      const res = await app.inject({ method: "POST", url: `/api/v1/restock/${encodeURIComponent(bad)}`, headers: { cookie, "x-csrf-token": csrf } });
+      expect({ bad, status: res.statusCode }).toEqual({ bad, status: 200 });
+      expect(res.json().result).toBe("unavailable");
+    }
+  });
+
+  it("ticket list clamps an absurd page instead of failing", async () => {
+    const { cookie } = await freshCustomer();
+    for (const page of ["99999999999999", "1e999", "abc", "-5"]) {
+      const res = await app.inject({ method: "GET", url: `/api/v1/account/support?page=${page}`, headers: { cookie } });
+      expect({ page, status: res.statusCode }).toEqual({ page, status: 200 });
+    }
+  });
+});

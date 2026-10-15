@@ -12,6 +12,7 @@ import { handleUpload } from "../lib/upload";
 import { PRODUCT_WIDTHS } from "../lib/webpVariants";
 import { prisma, getCatalogProduct, updateCatalogProduct } from "@app/db";
 import { currentAdmin } from "../plugins/auth";
+import { parsePositiveId } from "../lib/params";
 
 const PRODUCT_PHOTO_MIME: Record<string, string> = {
   "image/jpeg": "jpg",
@@ -26,8 +27,8 @@ export default async function catalogPhotoRoutes(app: FastifyInstance): Promise<
     "/catalog/product/:productId/photo",
     { preHandler: currentAdmin },
     async (req, reply) => {
-      const productId = Number(req.params.productId);
-      if (!Number.isInteger(productId) || productId <= 0) {
+      const productId = parsePositiveId(req.params.productId);
+      if (productId === null) {
         return reply.code(400).type("text/plain").send("Invalid product.");
       }
       const product = await getCatalogProduct(prisma, productId);

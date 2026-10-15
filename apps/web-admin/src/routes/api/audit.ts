@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { prisma, listAuditLogs, countAuditLogs } from "@app/db";
 import { currentAdmin } from "../../plugins/auth";
 import { displayDateTime } from "../../dateDisplay";
+import { parsePageParam } from "../../lib/params";
 
 const PAGE_SIZE = 100;
 
@@ -14,7 +15,7 @@ function parseDate(value: string | undefined): Date | null {
 export default async function auditApiRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/audit", { preHandler: currentAdmin }, async (req, reply) => {
     const q = req.query as Record<string, string | undefined>;
-    const page = Math.max(Number(q.page) || 1, 1);
+    const page = parsePageParam(q.page);
     const offset = (page - 1) * PAGE_SIZE;
     const adminId = q.admin_id && /^\d+$/.test(q.admin_id) ? Number(q.admin_id) : null;
     const customerId = q.customer_id && /^\d+$/.test(q.customer_id) ? Number(q.customer_id) : null;

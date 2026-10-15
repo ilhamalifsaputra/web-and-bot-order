@@ -3,7 +3,7 @@ import { supportMediaRoutes } from "./supportMedia";
 import { supportAttachmentLinks, transitionTicketStatus, setSupportLegalHold, setSupportTitle } from "@app/db";
 import type { FastifyInstance } from "fastify";
 import { csvRow } from "../../lib/csv";
-import { parsePositiveId } from "../../lib/params";
+import { parsePositiveId, parsePageParam } from "../../lib/params";
 import { SenderType, TicketStatus, TicketPriority, TicketCategory } from "@app/core/enums";
 import { logger } from "@app/core/logger";
 import {
@@ -214,7 +214,7 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
   app.get("/api/support/stats", { preHandler: currentAdmin }, async () => getTicketStats(prisma));
   app.get("/api/support", { preHandler: currentAdmin }, async (req, reply) => {
     const q = req.query as Record<string, string | undefined>;
-    const page = Math.max(Number(q.page) || 1, 1);
+    const page = parsePageParam(q.page);
     const requestedPageSize = Number(q.pageSize);
     const pageSize = PAGE_SIZE_OPTIONS.includes(requestedPageSize) ? requestedPageSize : DEFAULT_PAGE_SIZE;
     const offset = (page - 1) * pageSize;

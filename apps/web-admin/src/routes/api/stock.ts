@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { csvRow } from "../../lib/csv";
-import { parsePositiveId } from "../../lib/params";
+import { parsePositiveId, parsePageParam } from "../../lib/params";
 import { logger } from "@app/core/logger";
 import { config } from "@app/core/config";
 import { fulfillmentSourceOf, usesLocalInventory, type FulfillmentSource } from "@app/core/productAvailability";
@@ -181,7 +181,7 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
         : tab === "dead"
           ? [StockStatus.DEAD]
           : [StockStatus.AVAILABLE];
-    const page = Math.max(Number(query.page) || 1, 1);
+    const page = parsePageParam(query.page);
     const q = (query.q ?? "").trim();
 
     const [statusCounts, waiting] = await Promise.all([

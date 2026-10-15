@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { parsePositiveId } from "../../lib/params";
+import { parsePositiveId, parsePageParam } from "../../lib/params";
 import { ReviewStatus, ReviewSentiment, ReviewSource } from "@app/core/enums";
 import {
   prisma,
@@ -46,7 +46,7 @@ function buildReviewFilter(q: Record<string, string | undefined>): ReviewFilter 
 export default async function reviewsApiRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/reviews", { preHandler: currentAdmin }, async (req, reply) => {
     const q = req.query as Record<string, string | undefined>;
-    const page = Math.max(Number(q.page) || 1, 1);
+    const page = parsePageParam(q.page);
     const offset = (page - 1) * PAGE_SIZE;
 
     const filter = buildReviewFilter(q);

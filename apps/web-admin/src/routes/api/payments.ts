@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { parsePositiveId } from "../../lib/params";
+import { parsePositiveId, parsePageParam } from "../../lib/params";
 import { OrderStatus, OrderKind, StockActorType } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { errorBody } from "@app/core/errorBody";
@@ -131,7 +131,7 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
     // the list shows exactly what the card counted. It has no effect on any
     // other outcome. Absent, the full ledger history is listed.
     const actionable = q.actionable === "1" || q.actionable === "true";
-    const page = Math.max(Number(q.page) || 1, 1);
+    const page = parsePageParam(q.page);
     const offset = (page - 1) * PAGE_SIZE;
 
     // `listCombinedLedger` returns rows AND their total together: the `kind`

@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { parsePositiveId } from "../../lib/params";
+import { parsePositiveId, parsePageParam } from "../../lib/params";
 import { EMAIL_RECIPIENT_RE } from "@app/core/mailer";
 import { NotificationStatus } from "@app/core/enums";
 import { prisma, listNotifications, countNotifications, outboxStatusCounts, retryNotification, getNotification, logAdminAction } from "@app/db";
@@ -50,7 +50,7 @@ export default async function outboxApiRoutes(app: FastifyInstance): Promise<voi
   app.get("/api/outbox", { preHandler: currentAdmin }, async (req, reply) => {
     const q = req.query as Record<string, string | undefined>;
     const status = q.status && STATUS_VALUES.includes(q.status) ? q.status : null;
-    const page = Math.max(Number(q.page) || 1, 1);
+    const page = parsePageParam(q.page);
     const offset = (page - 1) * PAGE_SIZE;
 
     const [rows, total, counts] = await Promise.all([

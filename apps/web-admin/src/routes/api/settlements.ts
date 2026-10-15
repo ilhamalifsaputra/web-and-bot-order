@@ -44,6 +44,7 @@ import { prisma, listSettlements, recordSettlement, type SettlementLineInput } f
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
 import { displayDate, displayDateTime } from "../../dateDisplay";
 import { moneyFieldError } from "../../lib/moneyField";
+import { parsePageParam } from "../../lib/params";
 
 const PAGE_SIZE_OPTIONS = [20, 50, 100];
 const DEFAULT_PAGE_SIZE = 20;
@@ -132,7 +133,7 @@ function serializeSettlement(row: Awaited<ReturnType<typeof listSettlements>>["r
 export default async function settlementsApiRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/settlements", { preHandler: currentAdmin }, async (req, reply) => {
     const q = req.query as Record<string, string | undefined>;
-    const page = Math.max(Number(q.page) || 1, 1);
+    const page = parsePageParam(q.page);
     const requestedPageSize = Number(q.pageSize);
     const pageSize = PAGE_SIZE_OPTIONS.includes(requestedPageSize) ? requestedPageSize : DEFAULT_PAGE_SIZE;
     const offset = (page - 1) * pageSize;

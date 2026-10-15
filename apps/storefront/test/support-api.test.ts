@@ -552,3 +552,43 @@ describe("Support V2 contracts", () => {
     expect(detail.body).not.toContain("Private staff note");
   });
 });
+
+// Backend audit A9: the duplicate pre-check ran outside any lock, so concurrent
+// creates for one order each passed it and each inserted a ticket.
+describe("concurrent ticket creation for one order yields one ticket", () => {
+  it("POST /account/support/new (parallel creates)", async () => {
+    const validBody = () => ({
+      subject: "Payment did not go through",
+      category: TicketCategory.PAYMENT,
+      product_id: productId,
+      description: "I paid but the order still says pending.",
+    });
+    const { userId, cookie, csrf } = await freshCustomer();
+    const order = await makeOrder(userId);
+    const fire = () =>
+      app.inject({
+        method: "POST",
+        url: "/api/v1/account/support/new",
+        headers: { cookie, "x-csrf-token": csrf },
+        payload: { ...validBody(), order_code: order.orderCode },
+      });
+    const results = await Promise.all([fire(), fire(), fire()]);
+    for (const r of results) expect(r.statusCode).toBe(200);
+    expect(await prisma.supportTicket.count({ where: { orderId: order.id } })).toBe(1);
+  });
+
+  it("POST /account/support (legacy, parallel creates)", async () => {
+    const { userId, cookie, csrf } = await freshCustomer();
+    const order = await makeOrder(userId);
+    const fire = () =>
+      app.inject({
+        method: "POST",
+        url: "/api/v1/account/support",
+        headers: { cookie, "x-csrf-token": csrf },
+        payload: { message: "Order has a problem", order_code: order.orderCode },
+      });
+    const results = await Promise.all([fire(), fire(), fire()]);
+    for (const r of results) expect(r.statusCode).toBe(200);
+    expect(await prisma.supportTicket.count({ where: { orderId: order.id } })).toBe(1);
+  });
+});

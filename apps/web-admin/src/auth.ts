@@ -296,10 +296,28 @@ function nowMs(): number {
 
 const attempts = new Map<string, number[]>();
 
+// Both login limiters are keyed by attacker-controlled values (client IP,
+// typed telegram_id), so each map is capped and swept — modeled on the
+// storefront's MAX_RATE_LIMIT_BUCKETS. At capacity a brand-new key is refused
+// (fail closed) instead of growing the map without bound.
+export const MAX_LOGIN_LIMITER_BUCKETS = 10_000;
+const lastSweepAt = new WeakMap<object, number>();
+
+/** Drops buckets whose newest hit left the window; runs at most once per window per map. */
+function sweepExpired<K>(store: Map<K, number[]>, nowSeconds: number, windowSeconds: number): void {
+  if (nowSeconds - (lastSweepAt.get(store) ?? -Infinity) < windowSeconds) return;
+  for (const [key, hits] of store) {
+    if (!hits.length || nowSeconds - hits[hits.length - 1]! > windowSeconds) store.delete(key);
+  }
+  lastSweepAt.set(store, nowSeconds);
+}
+
 export function loginRateLimited(ip: string): boolean {
   const window = config.WEB_LOGIN_RATE_LIMIT_WINDOW_SECONDS;
   const maxHits = config.WEB_LOGIN_RATE_LIMIT_MAX;
   const now = Date.now() / 1000;
+  sweepExpired(attempts, now, window);
+  if (!attempts.has(ip) && attempts.size >= MAX_LOGIN_LIMITER_BUCKETS) return true;
   const dq = attempts.get(ip) ?? [];
   while (dq.length && now - dq[0]! > window) dq.shift();
   if (dq.length >= maxHits) {
@@ -316,6 +334,42 @@ export function resetLoginAttempts(ip: string): void {
   attempts.delete(ip);
 }
 
+/** Current bucket counts of the two login limiters (tests and diagnostics). */
+export function loginLimiterSizes(): { ips: number; accounts: number } {
+  return { ips: attempts.size, accounts: accountFailures.size };
+}
+
+// ---------------------------------------------------------------------------
+// First-run wizard throttle (per IP). POST /setup/bot and /setup/owner are
+// pre-auth and carry no CSRF token, so they get their own budget — separate
+// from the login limiter so a few honest wizard retries cannot lock someone
+// out of login, and the other way around. Shared by both routes.
+// ---------------------------------------------------------------------------
+
+const setupAttempts = new Map<string, number[]>();
+export const SETUP_RATE_LIMIT_WINDOW_SECONDS = 600;
+export const SETUP_RATE_LIMIT_MAX = 20;
+
+export function setupRateLimited(ip: string): boolean {
+  const now = Date.now() / 1000;
+  sweepExpired(setupAttempts, now, SETUP_RATE_LIMIT_WINDOW_SECONDS);
+  if (!setupAttempts.has(ip) && setupAttempts.size >= MAX_LOGIN_LIMITER_BUCKETS) return true;
+  const dq = setupAttempts.get(ip) ?? [];
+  while (dq.length && now - dq[0]! > SETUP_RATE_LIMIT_WINDOW_SECONDS) dq.shift();
+  if (dq.length >= SETUP_RATE_LIMIT_MAX) {
+    setupAttempts.set(ip, dq);
+    return true;
+  }
+  dq.push(now);
+  setupAttempts.set(ip, dq);
+  return false;
+}
+
+/** Test-only reset, mirrors resetLoginAttempts. */
+export function resetSetupRateLimit(ip: string): void {
+  setupAttempts.delete(ip);
+}
+
 // Per-account failure throttle. The per-IP limiter above doesn't stop an
 // attacker rotating IPs against ONE admin, so we also lock a telegram_id after
 // too many *failed* logins in the window. Unlike the IP limiter this only counts
@@ -329,6 +383,7 @@ const accountFailures = new Map<number, number[]>();
 // `accountLockedOut` path below, which never pushes afterward.
 function pruneFailures(tg: number, now: number): number[] {
   const window = config.WEB_LOGIN_RATE_LIMIT_WINDOW_SECONDS;
+  sweepExpired(accountFailures, now, window);
   const dq = accountFailures.get(tg) ?? [];
   while (dq.length && now - dq[0]! > window) dq.shift();
   accountFailures.set(tg, dq);
@@ -346,6 +401,8 @@ export function accountLockedOut(telegramId: number): boolean {
 /** Record one failed login against `telegramId`. */
 export function recordAccountFailure(telegramId: number): void {
   if (!Number.isInteger(telegramId)) return;
+  // At capacity a brand-new id is not tracked (the per-IP limiter still applies).
+  if (!accountFailures.has(telegramId) && accountFailures.size >= MAX_LOGIN_LIMITER_BUCKETS) return;
   pruneFailures(telegramId, Date.now() / 1000).push(Date.now() / 1000);
 }
 

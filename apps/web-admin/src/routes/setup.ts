@@ -42,7 +42,7 @@ import {
   logAdminAction,
   resolveAdminIds,
 } from "@app/db";
-import { hashPassword, makeSession, newJti, passwordHashKey, sessionJtiKey } from "../auth";
+import { hashPassword, makeSession, newJti, passwordHashKey, sessionJtiKey, setupRateLimited } from "../auth";
 import { setTokenValidator, getTokenValidator } from "../lib/telegramCheck";
 import { csrfProtect } from "../plugins/auth";
 
@@ -115,6 +115,9 @@ export default async function setupRoutes(app: FastifyInstance): Promise<void> {
   // ---- Step 1: connect bot ----
   app.post("/setup/bot", async (req, reply) => {
     const isJson = (req.headers["content-type"] ?? "").includes("application/json");
+    if (setupRateLimited(req.ip || "unknown")) {
+      return reply.code(429).send({ error: "Too many attempts. Try again later." });
+    }
     if (await checkSetupLock(reply)) {
       if (isJson) return reply.code(403).send({ error: "Setup already complete.", redirect: "/login" });
       return;
@@ -143,6 +146,9 @@ export default async function setupRoutes(app: FastifyInstance): Promise<void> {
   // ---- Step 2: create owner (admin) ----
   app.post("/setup/owner", async (req, reply) => {
     const isJson = (req.headers["content-type"] ?? "").includes("application/json");
+    if (setupRateLimited(req.ip || "unknown")) {
+      return reply.code(429).send({ error: "Too many attempts. Try again later." });
+    }
     if (await checkSetupLock(reply)) {
       if (isJson) return reply.code(403).send({ error: "Setup already complete.", redirect: "/login" });
       return;
@@ -156,6 +162,10 @@ export default async function setupRoutes(app: FastifyInstance): Promise<void> {
     let error: string | null = null;
     if (!Number.isInteger(telegramId) || telegramId <= 0) {
       error = "Telegram ID harus berupa angka. Dapatkan dari @userinfobot.";
+    } else if (!config.ADMIN_IDS.includes(telegramId)) {
+      // Same allow-list as POST /bootstrap: this route is pre-auth, so without
+      // it whoever reaches the wizard first could make themselves the owner.
+      error = "Telegram ID ini belum ada di daftar ADMIN_IDS bot. Tambahkan ID Telegram-mu ke ADMIN_IDS di file .env lalu mulai ulang server.";
     } else if (password.length < 8) {
       error = "Password minimal 8 karakter.";
     } else if (password !== passwordConfirm) {

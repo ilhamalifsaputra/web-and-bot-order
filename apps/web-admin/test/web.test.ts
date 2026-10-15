@@ -96,6 +96,7 @@ import {
   pwResetKey,
   PW_RESET_MAX_ATTEMPTS,
   resetLoginAttempts,
+  resetSetupRateLimit,
   accountLockedOut,
   recordAccountFailure,
   resetAccountFailures,
@@ -143,6 +144,7 @@ beforeEach(async () => {
   // Limiters are in-process Maps shared across tests; clear what the auth flows
   // touch (app.inject's IP + the seeded admin ids) so attempts don't leak.
   resetLoginAttempts("127.0.0.1");
+  resetSetupRateLimit("127.0.0.1");
   resetAccountFailures(ADMIN_TG);
   resetAccountFailures(1000);
   resetBotIdentity();
@@ -8543,6 +8545,7 @@ describe("setup wizard — restart trigger", () => {
     await deleteSetting(prisma, "setup_completed");
     await deleteSetting(prisma, "setup_owner_tg");
     resetAccountFailures(RESTART_OWNER_TG);
+    config.ADMIN_IDS.push(RESTART_OWNER_TG); // the wizard only accepts allow-listed owners
     setAdminIds([...config.ADMIN_IDS]);
 
     await app.inject({
@@ -8597,6 +8600,8 @@ describe("setup wizard — restart trigger", () => {
       if (existsSync(target)) rmSync(target);
       delete process.env.RESTART_TRIGGER_FILE;
       await setSetting(prisma, "setup_completed", "true"); // restore suite default
+      config.ADMIN_IDS.splice(config.ADMIN_IDS.indexOf(RESTART_OWNER_TG), 1);
+      setAdminIds([...config.ADMIN_IDS]);
     }
   });
 });
@@ -8620,6 +8625,17 @@ describe("setup wizard — restart trigger is owner-only (Task C3)", () => {
 
 describe("setup wizard — step 2/3/finish", () => {
   const OWNER_TG = 7000123;
+  const CORRECTED_OWNER_TG = 7000456;
+  // POST /setup/owner now only accepts ids from the ADMIN_IDS allow-list
+  // (same rule as /bootstrap), so these tests register their owners there.
+  const addedToAllowList = [OWNER_TG, CORRECTED_OWNER_TG];
+  beforeAll(() => {
+    config.ADMIN_IDS.push(...addedToAllowList);
+  });
+  afterAll(() => {
+    for (const id of addedToAllowList) config.ADMIN_IDS.splice(config.ADMIN_IDS.indexOf(id), 1);
+    setAdminIds([...config.ADMIN_IDS]);
+  });
   beforeEach(async () => {
     await deleteSetting(prisma, "setup_completed");
     await deleteSetting(prisma, "setup_owner_tg");
@@ -8628,12 +8644,17 @@ describe("setup wizard — step 2/3/finish", () => {
   });
 
   async function createOwner() {
-    return app.inject({
+    const res = await app.inject({
       method: "POST",
       url: "/setup/owner",
       payload: form({ telegram_id: String(OWNER_TG), username: "owner", password: "supersecret", password_confirm: "supersecret" }),
       headers: { "content-type": "application/x-www-form-urlencoded" },
     });
+    // The owner is allow-listed, so the wizard's lock check already read (and
+    // cached) this password-hash key as empty before the write transaction
+    // stored it. Drop that stale cache so later reads see persisted state.
+    __clearSettingsCacheForTests(prisma);
+    return res;
   }
 
   it("rejects mismatched passwords without creating an admin", async () => {
@@ -8644,7 +8665,8 @@ describe("setup wizard — step 2/3/finish", () => {
       headers: { "content-type": "application/x-www-form-urlencoded" },
     });
     expect(res.statusCode).toBe(400);
-    expect(isAdmin(OWNER_TG)).toBe(false);
+    expect(await getSetting(prisma, passwordHashKey(OWNER_TG))).toBeNull();
+    expect(await getSetting(prisma, "setup_owner_tg")).toBeNull();
   });
 
   it("creates an ADMIN owner with a password and advances to step 3", async () => {
@@ -8758,14 +8780,12 @@ describe("setup wizard — step 2/3/finish", () => {
     expect(retryRes.statusCode).toBe(303);
     expect(retryRes.headers.location).toBe("/setup/shop");
 
-    // The corrected id replaced the mistyped one — exactly one wizard-granted
-    // admin exists at a time, not two.
+    // The corrected id is now the pending owner. Both ids are ADMIN_IDS
+    // (env) members — the wizard only accepts those — and env admins are
+    // never demoted by a retry, so the first id keeps its admin status.
     expect(isAdmin(CORRECTED_TG)).toBe(true);
-    expect(isAdmin(OWNER_TG)).toBe(false);
-    expect(adminIds()).toContain(CORRECTED_TG);
-    expect(adminIds()).not.toContain(OWNER_TG);
+    expect(isAdmin(OWNER_TG)).toBe(true);
     expect(await getSetting(prisma, "setup_owner_tg")).toBe(String(CORRECTED_TG));
-    expect(await getSetting(prisma, passwordHashKey(OWNER_TG))).toBeNull(); // old credential retracted
 
     // The critical assertion: the retry did NOT reset the clock. The
     // timestamp is still the backdated value from round 1, not "now".
@@ -8856,6 +8876,58 @@ describe("setup wizard — step 2/3/finish", () => {
     expect(res.headers.location).toBe("/login");
     expect(isAdmin(1234567)).toBe(false); // attacker was NOT promoted
     expect(await getSetting(prisma, "setup_completed")).toBe("true"); // self-healed
+  });
+});
+
+describe("setup wizard — pre-auth takeover hardening", () => {
+  const ENV_OWNER_TG = 1000; // in the test ADMIN_IDS allow-list ("999,1000")
+  const STRANGER_TG = 6660777; // not in ADMIN_IDS
+  beforeEach(async () => {
+    await deleteSetting(prisma, "setup_completed");
+    await deleteSetting(prisma, "setup_owner_tg");
+    await deleteSetting(prisma, "setup_owner_tg_at");
+    resetAccountFailures(ENV_OWNER_TG);
+    resetSetupRateLimit("127.0.0.1");
+    setAdminIds([...config.ADMIN_IDS]);
+  });
+
+  function ownerBody(telegramId: number) {
+    return form({ telegram_id: String(telegramId), username: "o", password: "supersecret", password_confirm: "supersecret" });
+  }
+  const urlencoded = { "content-type": "application/x-www-form-urlencoded" };
+
+  it("refuses a Telegram ID that is not in ADMIN_IDS and grants nothing", async () => {
+    const res = await app.inject({ method: "POST", url: "/setup/owner", payload: ownerBody(STRANGER_TG), headers: urlencoded });
+    expect(res.statusCode).toBe(400);
+    expect(isAdmin(STRANGER_TG)).toBe(false);
+    expect(await getSetting(prisma, passwordHashKey(STRANGER_TG))).toBeNull();
+    expect(await getSetting(prisma, "setup_owner_tg")).toBeNull();
+  });
+
+  it("still lets the real operator (an ADMIN_IDS member) create the owner", async () => {
+    const res = await app.inject({ method: "POST", url: "/setup/owner", payload: ownerBody(ENV_OWNER_TG), headers: urlencoded });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/setup/shop");
+    expect(await getSetting(prisma, "setup_owner_tg")).toBe(String(ENV_OWNER_TG));
+  });
+
+  it("rate-limits pre-auth POST /setup/owner per IP", async () => {
+    let limited = 0;
+    for (let i = 0; i < 40; i++) {
+      const res = await app.inject({ method: "POST", url: "/setup/owner", payload: ownerBody(STRANGER_TG), headers: urlencoded });
+      if (res.statusCode === 429) limited++;
+    }
+    expect(limited).toBeGreaterThan(0);
+  });
+
+  it("rate-limits pre-auth POST /setup/bot per IP", async () => {
+    setSetupTokenValidator(async () => ({ ok: false }));
+    let limited = 0;
+    for (let i = 0; i < 40; i++) {
+      const res = await app.inject({ method: "POST", url: "/setup/bot", payload: form({ bot_token: "garbage" }), headers: urlencoded });
+      if (res.statusCode === 429) limited++;
+    }
+    expect(limited).toBeGreaterThan(0);
   });
 });
 

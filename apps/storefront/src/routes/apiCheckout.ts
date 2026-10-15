@@ -17,7 +17,7 @@
  *     the voucher preview answers "does this code exist?" at line rate
  *     (computeTotals looks the code up whatever the cart holds), and the
  *     summary fans out to eight settings/credential lookups per call.
- *     Signed-in callers are never throttled by this — see rateLimit.ts.
+ *     Signed-in callers have their own per-user/per-IP quotas — see rateLimit.ts.
  *   - the three order routes (pay / status / cancel) stay session-locked with
  *     an ownership check, deliberately: a guest buyer holds a real session
  *     from the moment their order is created (routes/api.ts mints one), so
@@ -33,7 +33,7 @@ import { optionalCustomer, type Customer } from "../plugins/auth";
 import { checkoutView, payView, payState, transactionStatusView } from "./checkout";
 import { decryptGameSn, gameTopupDetails } from "./gameTopupDetails";
 import { csrfOk } from "./cart";
-import { clientIp, checkoutPreviewRateLimited } from "../rateLimit";
+import { clientIp, checkoutPreviewRateLimited, checkoutPreviewAuthedRateLimited } from "../rateLimit";
 
 /** JSON-flavored auth gate: 401 body instead of the HTML routes' 303. */
 async function requireCustomer(req: FastifyRequest, reply: FastifyReply): Promise<Customer | null> {
@@ -43,6 +43,13 @@ async function requireCustomer(req: FastifyRequest, reply: FastifyReply): Promis
     return null;
   }
   return customer;
+}
+
+/** Anonymous callers share the per-IP quota; signed-in ones get per-user + per-IP quotas of their own. */
+function checkoutReadLimited(req: FastifyRequest, customer: Customer | null): boolean {
+  return customer
+    ? checkoutPreviewAuthedRateLimited(customer.userId, clientIp(req))
+    : checkoutPreviewRateLimited(clientIp(req));
 }
 
 const apiCheckoutRoutes: FastifyPluginAsync = async (app) => {
@@ -55,11 +62,11 @@ const apiCheckoutRoutes: FastifyPluginAsync = async (app) => {
   //
   // Fix pass 1 (review finding I-2): the anonymous path is per-IP throttled —
   // this is the heaviest unauthenticated read in the storefront (eight
-  // settings/credential lookups per call). Signed-in callers skip the check
+  // settings/credential lookups per call). Signed-in callers use separate per-user and per-IP quotas instead of this one
   // entirely; they're already bounded by having had to register and log in.
   app.get("/checkout", async (req, reply) => {
     const customer = await optionalCustomer(req);
-    if (!customer && checkoutPreviewRateLimited(clientIp(req))) {
+    if (checkoutReadLimited(req, customer)) {
       return reply.code(429).send({ error: "error.rate_limited" });
     }
     return reply.send(await checkoutView(req, customer, null, null));
@@ -82,7 +89,7 @@ const apiCheckoutRoutes: FastifyPluginAsync = async (app) => {
     if (!csrfOk(req, customer)) {
       return reply.code(403).send({ error: "csrf_failed" });
     }
-    if (!customer && checkoutPreviewRateLimited(clientIp(req))) {
+    if (checkoutReadLimited(req, customer)) {
       return reply.code(429).send({ error: "error.rate_limited" });
     }
     const voucherCode = (req.body?.voucher_code ?? "").trim().toUpperCase() || null;

@@ -241,6 +241,33 @@ export function checkoutPreviewRateLimited(ip: string): boolean {
   );
 }
 
+// Signed-in callers of the same two reads used to skip throttling entirely, so
+// one registered account could hammer the voucher oracle / settings fan-out at
+// line rate. They get their own, more generous quotas: one per user id, and a
+// wider per-IP one (shared NATs host many real shoppers). Separate Maps so
+// signed-in traffic never spends the anonymous quota.
+const checkoutPreviewUserHits = new Map<string, number[]>();
+const checkoutPreviewAuthIpHits = new Map<string, number[]>();
+export const CHECKOUT_PREVIEW_USER_RATE_LIMIT_MAX = 60;
+export const CHECKOUT_PREVIEW_AUTH_IP_RATE_LIMIT_MAX = 240;
+
+/** True if a signed-in user (or the IP they come from) exceeded its checkout-read quota. */
+export function checkoutPreviewAuthedRateLimited(userId: number, ip: string): boolean {
+  const userLimited = slidingWindowLimited(
+    checkoutPreviewUserHits,
+    String(userId),
+    CHECKOUT_PREVIEW_RATE_LIMIT_WINDOW_SECONDS,
+    CHECKOUT_PREVIEW_USER_RATE_LIMIT_MAX,
+  );
+  const ipLimited = slidingWindowLimited(
+    checkoutPreviewAuthIpHits,
+    ip,
+    CHECKOUT_PREVIEW_RATE_LIMIT_WINDOW_SECONDS,
+    CHECKOUT_PREVIEW_AUTH_IP_RATE_LIMIT_MAX,
+  );
+  return userLimited || ipLimited;
+}
+
 // ---------------------------------------------------------------------------
 // Order-tracking lookup rate limit (per IP, in-process) — Task 3, guest
 // checkout. The order-tracking endpoint (a later task) validates a bare

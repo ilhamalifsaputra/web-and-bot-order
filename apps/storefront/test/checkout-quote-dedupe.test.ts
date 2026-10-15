@@ -243,3 +243,131 @@ describe("A6 — expected_total binds a wallet checkout to the quoted price", ()
   });
 });
 
+// ---------------------------------------------------------------- A7
+describe("A7 — keyless double submit on the instant-buy rail", () => {
+  it("two concurrent keyless wallet_idr submits → ONE order, ONE debit, both answered with the same order", async () => {
+    const b = await buyer({ idr: "100000" });
+    const [a, c] = await Promise.all([
+      topupOrder(b, { method: "wallet_idr" }),
+      topupOrder(b, { method: "wallet_idr" }),
+    ]);
+    expect(a.statusCode).toBe(201);
+    expect(c.statusCode).toBe(201);
+    expect(c.json().order_code).toBe(a.json().order_code);
+    expect(await ordersOf(b.id)).toBe(1);
+    expect((await balances(b.id)).idr).toBe("60000");
+    expect(await prisma.walletTransaction.count({ where: { userId: b.id } })).toBe(1);
+  });
+
+  it("two concurrent keyless gateway submits → ONE pending order", async () => {
+    const b = await buyer();
+    const [a, c] = await Promise.all([topupOrder(b, { method: "bybit" }), topupOrder(b, { method: "bybit" })]);
+    expect(a.statusCode).toBe(201);
+    expect(c.statusCode).toBe(201);
+    expect(c.json().order_code).toBe(a.json().order_code);
+    expect(await ordersOf(b.id)).toBe(1);
+  });
+
+  it("the same content sent again AFTER the window is a new, deliberate purchase", async () => {
+    const b = await buyer({ idr: "100000" });
+    const first = await topupOrder(b, { method: "wallet_idr" });
+    expect(first.statusCode).toBe(201);
+    await ageKeylessRecords();
+    const second = await topupOrder(b, { method: "wallet_idr" });
+    expect(second.statusCode).toBe(201);
+    expect(second.json().order_code).not.toBe(first.json().order_code);
+    expect(await ordersOf(b.id)).toBe(2);
+    expect((await balances(b.id)).idr).toBe("20000");
+  });
+
+  it("different content inside the window is not deduplicated", async () => {
+    const b = await buyer({ idr: "200000" });
+    const one = await topupOrder(b, { method: "wallet_idr", qty: 1 });
+    const two = await topupOrder(b, { method: "wallet_idr", qty: 2 });
+    expect(one.statusCode).toBe(201);
+    expect(two.statusCode).toBe(201);
+    expect(two.json().order_code).not.toBe(one.json().order_code);
+    expect((await balances(b.id)).idr).toBe("80000");
+  });
+
+  it("a failed keyless attempt is not replayed: topping up the balance and retrying at once succeeds", async () => {
+    const b = await buyer({ idr: "1000" });
+    const short = await topupOrder(b, { method: "wallet_idr" });
+    expect(short.statusCode).toBe(400);
+    expect(short.json()).toEqual({ error: "error.insufficient_wallet" });
+    await prisma.user.update({ where: { id: b.id }, data: { walletBalance: "50000" } });
+    const retry = await topupOrder(b, { method: "wallet_idr" });
+    expect(retry.statusCode).toBe(201);
+    expect((await balances(b.id)).idr).toBe("10000");
+  });
+
+  it("two different buyers sending identical content are never merged", async () => {
+    const x = await buyer({ idr: "100000" });
+    const y = await buyer({ idr: "100000" });
+    const [a, c] = await Promise.all([topupOrder(x, { method: "wallet_idr" }), topupOrder(y, { method: "wallet_idr" })]);
+    expect(a.statusCode).toBe(201);
+    expect(c.statusCode).toBe(201);
+    expect(c.json().order_code).not.toBe(a.json().order_code);
+    expect(await ordersOf(x.id)).toBe(1);
+    expect(await ordersOf(y.id)).toBe(1);
+  });
+
+  it("header path unchanged: two DIFFERENT keys inside the window still make two orders", async () => {
+    const b = await buyer({ idr: "100000" });
+    const a = await topupOrder(b, { method: "wallet_idr" }, { "idempotency-key": "dedupe-hdr-a" });
+    const c = await topupOrder(b, { method: "wallet_idr" }, { "idempotency-key": "dedupe-hdr-b" });
+    expect(a.statusCode).toBe(201);
+    expect(c.statusCode).toBe(201);
+    expect(c.json().order_code).not.toBe(a.json().order_code);
+    expect((await balances(b.id)).idr).toBe("20000");
+  });
+});
+
+describe("A7 — keyless double submit on the cart checkout", () => {
+  it("two concurrent keyless wallet_idr cart checkouts → ONE order, ONE debit (cart lock, verified already safe)", async () => {
+    const b = await buyer({ idr: "100000" });
+    await addToCart(prisma, b.id, denomId, 1);
+    const [a, c] = await Promise.all([cartCheckout(b, { method: "wallet_idr" }), cartCheckout(b, { method: "wallet_idr" })]);
+    const codes = [a.statusCode, c.statusCode].sort();
+    expect(codes).toEqual([201, 400]);
+    expect([a, c].find((r) => r.statusCode === 400)!.json()).toEqual({ error: "error.cart_empty" });
+    expect(await ordersOf(b.id)).toBe(1);
+    expect((await balances(b.id)).idr).toBe("60000");
+  });
+});
+
+describe("A7 — wallet top-up creation reuses an equivalent pending top-up", () => {
+  it("two concurrent identical top-up requests → ONE pending top-up, same orderCode", async () => {
+    const b = await buyer();
+    const [a, c] = await Promise.all([
+      walletTopup(b, { currency: "IDR", amount: "50000", method: "qris" }),
+      walletTopup(b, { currency: "IDR", amount: "50000", method: "qris" }),
+    ]);
+    expect(a.statusCode).toBe(201);
+    expect(c.statusCode).toBe(201);
+    expect(c.json().orderCode).toBe(a.json().orderCode);
+    expect(await ordersOf(b.id)).toBe(1);
+  });
+
+  it("a different amount or method is a different top-up", async () => {
+    const b = await buyer();
+    const a = await walletTopup(b, { currency: "IDR", amount: "50000", method: "qris" });
+    const c = await walletTopup(b, { currency: "IDR", amount: "60000", method: "qris" });
+    const d = await walletTopup(b, { currency: "USDT", amount: "5", method: "bybit" });
+    expect(new Set([a.json().orderCode, c.json().orderCode, d.json().orderCode]).size).toBe(3);
+    expect(await ordersOf(b.id)).toBe(3);
+  });
+
+  it("after the window, or once the first is no longer pending, the same amount opens a new top-up", async () => {
+    const b = await buyer();
+    const first = await walletTopup(b, { currency: "IDR", amount: "50000", method: "qris" });
+    await prisma.order.updateMany({ where: { userId: b.id }, data: { createdAt: new Date(Date.now() - 60 * 60_000) } });
+    const second = await walletTopup(b, { currency: "IDR", amount: "50000", method: "qris" });
+    expect(second.json().orderCode).not.toBe(first.json().orderCode);
+
+    await prisma.order.update({ where: { orderCode: second.json().orderCode }, data: { status: "CANCELLED" } });
+    const third = await walletTopup(b, { currency: "IDR", amount: "50000", method: "qris" });
+    expect(third.json().orderCode).not.toBe(second.json().orderCode);
+    expect(await ordersOf(b.id)).toBe(3);
+  });
+});

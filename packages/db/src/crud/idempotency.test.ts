@@ -9,6 +9,8 @@ import {
   IdempotencyKeyReuseError,
   IdempotencyRequestInProgressError,
   IDEMPOTENCY_CLAIM_EXPIRY_MS,
+  KEYLESS_DEDUPE_WINDOW_MS,
+  deriveKeylessIdempotencyKey,
   type IdempotentReplay,
 } from "./idempotency";
 
@@ -255,6 +257,57 @@ describe("claimIdempotentRequest — in-flight reservation (backend audit E2 ite
     await releaseIdempotentClaim(prisma, { key: "done", endpoint: ENDPOINT, requestHash });
     expect(await claimIdempotentRequest(prisma, { key: "done", endpoint: ENDPOINT, requestHash })).toEqual({
       statusCode: 200,
+      responseBody: "{}",
+    });
+  });
+});
+
+// Backend audit pass 2, A7: keyless requests are deduplicated on a derived key
+// for a short window only. `replayWindowMs` is what bounds that window; header
+// callers never pass it and keep replaying forever.
+describe("keyless dedupe window (replayWindowMs)", () => {
+  const content = { userId: 7, denominationId: 3, quantity: 1, method: "wallet_idr" };
+  const key = deriveKeylessIdempotencyKey(content);
+  const requestHash = hashIdempotentRequest(content);
+
+  it("derives a stable, prefixed key from the content, different for different content", () => {
+    expect(key).toBe(deriveKeylessIdempotencyKey({ ...content }));
+    expect(key.startsWith("keyless:")).toBe(true);
+    expect(deriveKeylessIdempotencyKey({ ...content, userId: 8 })).not.toBe(key);
+  });
+
+  it("replays a completed response inside the window", async () => {
+    await claimIdempotentRequest(prisma, { key, endpoint: ENDPOINT, requestHash });
+    await saveIdempotentResponse(prisma, { key, endpoint: ENDPOINT, requestHash, statusCode: 201, responseBody: '{"n":1}' });
+    expect(
+      await claimIdempotentRequest(prisma, { key, endpoint: ENDPOINT, requestHash, replayWindowMs: KEYLESS_DEDUPE_WINDOW_MS }),
+    ).toEqual({ statusCode: 201, responseBody: '{"n":1}' });
+  });
+
+  it("re-claims (runs again) once the completed response is older than the window, exactly once under a race", async () => {
+    await claimIdempotentRequest(prisma, { key, endpoint: ENDPOINT, requestHash });
+    await saveIdempotentResponse(prisma, { key, endpoint: ENDPOINT, requestHash, statusCode: 201, responseBody: '{"n":1}' });
+    const later = new Date(Date.now() + KEYLESS_DEDUPE_WINDOW_MS + 1_000);
+    const results = await Promise.allSettled([
+      claimIdempotentRequest(prisma, { key, endpoint: ENDPOINT, requestHash, replayWindowMs: KEYLESS_DEDUPE_WINDOW_MS, now: later, waitMs: 0 }),
+      claimIdempotentRequest(prisma, { key, endpoint: ENDPOINT, requestHash, replayWindowMs: KEYLESS_DEDUPE_WINDOW_MS, now: later, waitMs: 0 }),
+    ]);
+    const owners = results.filter((r) => r.status === "fulfilled" && r.value === null);
+    expect(owners).toHaveLength(1);
+    const other = results.find((r) => !(r.status === "fulfilled" && r.value === null))!;
+    expect(other.status).toBe("rejected");
+    expect((other as PromiseRejectedResult).reason).toBeInstanceOf(IdempotencyRequestInProgressError);
+    const row = await prisma.idempotencyRecord.findUniqueOrThrow({ where: { key_endpoint: { key, endpoint: ENDPOINT } } });
+    expect(row.pendingSince).not.toBeNull();
+    expect(row.responseBody).toBe("");
+  });
+
+  it("without replayWindowMs (header callers) an old completed response is still replayed", async () => {
+    await claimIdempotentRequest(prisma, { key: "hdr-old", endpoint: ENDPOINT, requestHash });
+    await saveIdempotentResponse(prisma, { key: "hdr-old", endpoint: ENDPOINT, requestHash, statusCode: 201, responseBody: "{}" });
+    const muchLater = new Date(Date.now() + 24 * 60 * 60_000);
+    expect(await claimIdempotentRequest(prisma, { key: "hdr-old", endpoint: ENDPOINT, requestHash, now: muchLater })).toEqual({
+      statusCode: 201,
       responseBody: "{}",
     });
   });

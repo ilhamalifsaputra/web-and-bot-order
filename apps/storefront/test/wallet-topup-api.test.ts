@@ -408,6 +408,13 @@ describe("POST /api/v1/wallet/topup — validation matrix", () => {
   });
 
   it("creates a WALLET_TOPUP order (kind + no items) on a valid request", async () => {
+    // Earlier tests in this block opened identical IDR 50000 top-ups moments
+    // ago; inside the keyless dedupe window the route would hand one of those
+    // back (backend audit pass 2, A7). Age them so this request is a new one.
+    await prisma.order.updateMany({
+      where: { kind: "WALLET_TOPUP" },
+      data: { createdAt: new Date(Date.now() - 60 * 60_000) },
+    });
     const before = await prisma.order.count();
     const res = await post({ currency: "IDR", amount: "50000", method: "qris" });
     expect(res.statusCode).toBe(201);

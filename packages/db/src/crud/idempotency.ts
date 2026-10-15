@@ -77,6 +77,39 @@ export function hashIdempotentRequest(payload: unknown): string {
 }
 
 /**
+ * How long a KEYLESS request is treated as a duplicate of an earlier one with
+ * the same buyer and the same content (backend audit pass 2, A7).
+ *
+ * Ten seconds, because the duplicates this exists for all land well inside it:
+ * a double tap is milliseconds apart, a browser/proxy retry of a request whose
+ * response never arrived is a second or two, and the order-creating work itself
+ * is one transaction capped at 10 s (packages/db/src/client.ts) — a second tap
+ * while the first is still running waits for it whatever the window. A buyer who
+ * deliberately buys the same thing again first has to see the result of the
+ * first purchase (the order page) and walk back through the product page, which
+ * takes longer than this; anything sent after the window is a new purchase. Kept
+ * to seconds, not minutes, because inside the window an identical deliberate
+ * repeat IS folded into the first — the cost this window trades for safety.
+ */
+export const KEYLESS_DEDUPE_WINDOW_MS = 10_000;
+
+/**
+ * The idempotency key for a request that carried no `Idempotency-Key` header
+ * (A7), derived from what it asks for instead of from a client-minted id.
+ *
+ * `content` must identify both WHO is asking — an authenticated user id, never
+ * anything a stranger could also send — and WHAT, in a fixed, deterministic
+ * shape (see hashIdempotentRequest). Use it with its own endpoint name and with
+ * `replayWindowMs: KEYLESS_DEDUPE_WINDOW_MS`, so it never shares a ledger row
+ * with a header key and a completed response is replayed only for the window,
+ * and save only successful responses, so a refused attempt can be retried at
+ * once. The `keyless:` prefix keeps these rows recognisable in the table.
+ */
+export function deriveKeylessIdempotencyKey(content: unknown): string {
+  return `keyless:${hashIdempotentRequest(content)}`;
+}
+
+/**
  * Thrown by `claimIdempotentRequest` when another request holding the same
  * key+endpoint is still running and did not finish within the wait budget.
  * Nothing ran for this caller; it should answer 409 and let the client retry
@@ -131,7 +164,19 @@ const CLAIM_POLL_INTERVAL_MS = 100;
  */
 export async function claimIdempotentRequest(
   db: Db,
-  args: { key: string; endpoint: string; requestHash: string; waitMs?: number; now?: Date },
+  args: {
+    key: string;
+    endpoint: string;
+    requestHash: string;
+    waitMs?: number;
+    now?: Date;
+    /** Keyless dedupe only (see deriveKeylessIdempotencyKey): a COMPLETED
+     * response older than this many milliseconds is no longer replayed — the
+     * caller takes the row over and runs the mutation again. Omitted (every
+     * `Idempotency-Key` caller): a completed response is replayed forever, as
+     * before. */
+    replayWindowMs?: number;
+  },
 ): Promise<IdempotentReplay | null> {
   const where = { key_endpoint: { key: args.key, endpoint: args.endpoint } };
   const waitMs = args.waitMs ?? DEFAULT_CLAIM_WAIT_MS;
@@ -162,6 +207,18 @@ export async function claimIdempotentRequest(
       throw new IdempotencyKeyReuseError(args.key, args.endpoint);
     }
     if (existing.pendingSince === null) {
+      if (args.replayWindowMs !== undefined && now.getTime() - existing.createdAt.getTime() > args.replayWindowMs) {
+        // Outside the keyless dedupe window: this is a new, deliberate request
+        // with the same content, not a duplicate. Re-claim the row by a
+        // compare-and-swap on its createdAt, so of two such requests racing
+        // only one wins; the loser goes round again and waits on the winner.
+        const reclaimed = await db.idempotencyRecord.updateMany({
+          where: { id: existing.id, pendingSince: null, createdAt: existing.createdAt },
+          data: { pendingSince: now, createdAt: now, statusCode: 0, responseBody: "" },
+        });
+        if (reclaimed.count === 1) return null;
+        continue;
+      }
       return { statusCode: existing.statusCode, responseBody: existing.responseBody };
     }
     if (now.getTime() - existing.pendingSince.getTime() > IDEMPOTENCY_CLAIM_EXPIRY_MS) {
@@ -242,7 +299,11 @@ export class IdempotencyClaimTracker {
   private readonly unsettled = new WeakMap<object, IdempotencyClaim>();
 
   /** `claimIdempotentRequest`, remembering the claim when this request owns it. */
-  async claim(db: Db, request: object, args: IdempotencyClaim & { waitMs?: number }): Promise<IdempotentReplay | null> {
+  async claim(
+    db: Db,
+    request: object,
+    args: IdempotencyClaim & { waitMs?: number; replayWindowMs?: number },
+  ): Promise<IdempotentReplay | null> {
     const replay = await claimIdempotentRequest(db, args);
     if (replay === null) {
       this.unsettled.set(request, { key: args.key, endpoint: args.endpoint, requestHash: args.requestHash });

@@ -54,6 +54,7 @@ import { enqueueAdminOverpaid, enqueueOwnerWalletTopupEmail, enqueueWalletTopupC
 import { ensureFulfillmentMessage, wakeFulfillmentMessage, reserveTransactionMessage } from "./fulfillmentMessages";
 import { confirmPaymentAttempt, getPendingPaymentAttempt } from "./payments";
 import { logAdminAction } from "./audit";
+import { KEYLESS_DEDUPE_WINDOW_MS } from "./idempotency";
 
 const ZERO = new Decimal(0);
 
@@ -523,6 +524,67 @@ export async function createWalletTopupOrder(
   if (!finalized) throw new ValidationError("error.order_not_found");
   if (args.channel === "bot") await reserveTransactionMessage(db, order.id);
   return finalized;
+}
+
+/**
+ * `createWalletTopupOrder` for the storefront form, which sends no idempotency
+ * key: a request equivalent to a top-up this buyer opened moments ago gets that
+ * top-up back instead of a second invoice (backend audit pass 2, A7). Before
+ * this, a double-tapped "Top up" opened two pending invoices for one intention.
+ *
+ * Equivalent means the same buyer, amount (compared by value), currency and
+ * rail, still PENDING_PAYMENT and still payable (not past `expiresAt`), created
+ * within KEYLESS_DEDUPE_WINDOW_MS — the same window, and the same reasoning, as
+ * the keyless order dedupe in ./idempotency. Outside the window, or once the
+ * earlier top-up is paid, cancelled or expired, the same request opens a new
+ * top-up, so a buyer who really wants a second one still gets it.
+ *
+ * Race-safe on its own: the buyer's user row is locked (`FOR UPDATE`, the lock
+ * `adjustWallet` already takes for every balance change) before the lookup, so
+ * two concurrent requests are serialized and the second one finds the first's
+ * top-up. Must run inside the caller's `$transaction` for the lock to hold until
+ * the new order is committed. Nothing is debited or credited here, so the lock
+ * is held only for the lookup and the order insert.
+ */
+export async function createOrReuseWalletTopupOrder(
+  db: Db,
+  args: Parameters<typeof createWalletTopupOrder>[1] & { now?: Date },
+): Promise<{ order: NonNullable<Awaited<ReturnType<typeof getOrder>>>; reused: boolean }> {
+  let amount: Decimal | null = null;
+  try {
+    amount = new Decimal(args.amount);
+  } catch {
+    // Unreadable — createWalletTopupOrder refuses it with its own error below.
+  }
+  if (amount && amount.isFinite()) {
+    await db.$queryRaw`SELECT id FROM users WHERE id = ${args.userId} FOR UPDATE`;
+    const now = args.now ?? new Date();
+    const existing = await db.order.findFirst({
+      where: {
+        userId: args.userId,
+        kind: OrderKind.WALLET_TOPUP,
+        status: OrderStatus.PENDING_PAYMENT,
+        currency: args.currency,
+        paymentMethod: args.method,
+        subtotalAmount: { equals: amount },
+        createdAt: { gte: new Date(now.getTime() - KEYLESS_DEDUPE_WINDOW_MS) },
+        OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+      },
+      orderBy: { id: "desc" },
+      select: { id: true },
+    });
+    if (existing) {
+      const order = await getOrder(db, existing.id);
+      if (order) {
+        logger.info(
+          { orderId: order.id, userId: args.userId },
+          `Reused pending wallet top-up ${order.orderCode} for an identical request sent within ${KEYLESS_DEDUPE_WINDOW_MS / 1000} seconds, instead of opening a second invoice.`,
+        );
+        return { order, reused: true };
+      }
+    }
+  }
+  return { order: await createWalletTopupOrder(db, args), reused: false };
 }
 
 /**

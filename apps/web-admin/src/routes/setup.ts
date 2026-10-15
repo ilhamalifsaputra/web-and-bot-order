@@ -5,6 +5,13 @@
  * mitigations. /setup* is excluded from the setup gate (see plugins/setupGate),
  * and locks itself once `setup_completed` is set (final step only).
  *
+ * Takeover hardening: step 2 only accepts a Telegram ID that is in the
+ * ADMIN_IDS allow-list (same rule as /bootstrap), every pre-auth wizard POST
+ * is rate limited per IP, and step 2 hands the browser that completed it a
+ * random nonce cookie (only its hash is stored). The finish step (/setup/shop)
+ * refuses to mint the owner session unless that cookie matches, so a third
+ * party who reaches /setup/shop inside the window cannot take the session.
+ *
  * M-30: an abandoned wizard (browser closed, deploy interrupted) between step
  * 2 and step 3 must not hold the pre-auth, no-CSRF POST /setup/owner open
  * forever. OWNER_TG_KEY is timestamped when step 2 sets it and treated as
@@ -24,6 +31,7 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { createHash, randomBytes } from "node:crypto";
 import { logger } from "@app/core/logger";
 import { config } from "@app/core/config";
 import { addAdminId, removeAdminId, setAdminIds } from "@app/core/runtime";
@@ -42,7 +50,7 @@ import {
   logAdminAction,
   resolveAdminIds,
 } from "@app/db";
-import { hashPassword, makeSession, newJti, passwordHashKey, sessionJtiKey, setupRateLimited } from "../auth";
+import { constantTimeEqual, hashPassword, makeSession, newJti, passwordHashKey, sessionJtiKey, setupRateLimited } from "../auth";
 import { setTokenValidator, getTokenValidator } from "../lib/telegramCheck";
 import { csrfProtect } from "../plugins/auth";
 
@@ -53,6 +61,10 @@ export const OWNER_TG_KEY = "setup_owner_tg"; // carries the owner id from step 
 // Paired with OWNER_TG_KEY: the Date.now() (ms) at which step 2 wrote it, so
 // checkSetupLock can tell a fresh mid-wizard state from an abandoned one (M-30).
 const OWNER_TG_SET_AT_KEY = "setup_owner_tg_at";
+// Hash of the nonce cookie issued to the browser that completed step 2.
+const OWNER_NONCE_HASH_KEY = "setup_owner_nonce_hash";
+export const SETUP_NONCE_COOKIE = "setup_owner_nonce";
+const sha256Hex = (s: string): string => createHash("sha256").update(s).digest("hex");
 const OWNER_SETUP_WINDOW_MS = 30 * 60 * 1000; // 30 minutes
 
 /**
@@ -220,6 +232,16 @@ export default async function setupRoutes(app: FastifyInstance): Promise<void> {
       // or every re-POST would extend the window indefinitely.
       await setSetting(prisma, OWNER_TG_SET_AT_KEY, String(Date.now()));
     }
+    // Bind the finish step to THIS browser (a retry replaces the nonce).
+    const nonce = randomBytes(24).toString("base64url");
+    await setSetting(prisma, OWNER_NONCE_HASH_KEY, sha256Hex(nonce));
+    reply.setCookie(SETUP_NONCE_COOKIE, nonce, {
+      path: "/",
+      maxAge: OWNER_SETUP_WINDOW_MS / 1000,
+      httpOnly: true,
+      sameSite: "lax",
+      secure: config.WEB_COOKIE_SECURE,
+    });
     logger.info(`Setup wizard: created owner admin with Telegram id ${telegramId}`); // never log the password
     if (isJson) return reply.send({ ok: true, redirect: "/setup/shop" });
     return reply.code(303).redirect("/setup/shop");
@@ -228,6 +250,9 @@ export default async function setupRoutes(app: FastifyInstance): Promise<void> {
   // ---- Step 3: shop basics (skippable) + finish ----
   app.post("/setup/shop", async (req, reply) => {
     const isJson = (req.headers["content-type"] ?? "").includes("application/json");
+    if (setupRateLimited(req.ip || "unknown")) {
+      return reply.code(429).send({ error: "Too many attempts. Try again later." });
+    }
     if (await checkSetupLock(reply)) {
       if (isJson) return reply.code(403).send({ error: "Setup already complete.", redirect: "/login" });
       return;
@@ -238,6 +263,15 @@ export default async function setupRoutes(app: FastifyInstance): Promise<void> {
     const ownerTg = Number(await getSetting(prisma, OWNER_TG_KEY));
     if (!Number.isInteger(ownerTg) || ownerTg <= 0) {
       return reply.code(303).redirect("/setup/owner");
+    }
+
+    // Only the browser that completed step 2 may finish and receive the owner
+    // session: it must present the nonce cookie issued there.
+    const storedNonceHash = await getSetting(prisma, OWNER_NONCE_HASH_KEY);
+    const presented = req.cookies?.[SETUP_NONCE_COOKIE];
+    if (!storedNonceHash || !presented || !constantTimeEqual(sha256Hex(presented), storedNonceHash)) {
+      logger.warn("Setup wizard finish was refused because the request did not carry the owner nonce cookie issued at the owner step. No session was issued.");
+      return reply.code(403).send({ error: "Langkah ini hanya bisa diselesaikan dari browser yang membuat akun pemilik. Ulangi langkah pemilik." });
     }
 
     if (body.skip !== "1") {
@@ -273,6 +307,8 @@ export default async function setupRoutes(app: FastifyInstance): Promise<void> {
     }
     await deleteSetting(prisma, OWNER_TG_KEY);
     await deleteSetting(prisma, OWNER_TG_SET_AT_KEY);
+    await deleteSetting(prisma, OWNER_NONCE_HASH_KEY);
+    reply.clearCookie(SETUP_NONCE_COOKIE, { path: "/" });
     logger.info(`Setup wizard completed — owner with Telegram id ${ownerTg} auto-logged-in`);
     if (isJson) return reply.send({ ok: true, redirect: "/setup/done" });
     return reply.code(303).redirect("/setup/done");

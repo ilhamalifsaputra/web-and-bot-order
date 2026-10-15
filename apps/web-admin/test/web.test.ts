@@ -200,6 +200,14 @@ function form(fields: Record<string, string>): string {
   return new URLSearchParams(fields).toString();
 }
 
+/** Cookie request header carrying the step-2 nonce from a /setup/owner response ("" if none was set). */
+function setupNonceCookie(res: { headers: Record<string, unknown> }): string {
+  const raw = res.headers["set-cookie"];
+  const list = Array.isArray(raw) ? (raw as string[]) : raw ? [String(raw)] : [];
+  const hit = list.find((c) => c.startsWith("setup_owner_nonce="));
+  return hit ? hit.split(";")[0]! : "";
+}
+
 function post(url: string, cookie: string | null, fields: Record<string, string>) {
   return app.inject({
     method: "POST",
@@ -8548,7 +8556,7 @@ describe("setup wizard — restart trigger", () => {
     config.ADMIN_IDS.push(RESTART_OWNER_TG); // the wizard only accepts allow-listed owners
     setAdminIds([...config.ADMIN_IDS]);
 
-    await app.inject({
+    const ownerRes = await app.inject({
       method: "POST",
       url: "/setup/owner",
       payload: form({
@@ -8564,7 +8572,7 @@ describe("setup wizard — restart trigger", () => {
       method: "POST",
       url: "/setup/shop",
       payload: form({ shop_name: "Toko Demo" }),
-      headers: { "content-type": "application/x-www-form-urlencoded" },
+      headers: { "content-type": "application/x-www-form-urlencoded", cookie: setupNonceCookie(ownerRes) },
     });
     expect(finishRes.statusCode).toBe(303);
     expect(finishRes.headers.location).toBe("/setup/done");
@@ -8682,12 +8690,12 @@ describe("setup wizard — step 2/3/finish", () => {
   });
 
   it("finish: marks setup complete, sets a session cookie, locks the wizard", async () => {
-    await createOwner();
+    const ownerRes = await createOwner();
     const res = await app.inject({
       method: "POST",
       url: "/setup/shop",
       payload: form({ shop_name: "Toko Demo" }),
-      headers: { "content-type": "application/x-www-form-urlencoded" },
+      headers: { "content-type": "application/x-www-form-urlencoded", cookie: setupNonceCookie(ownerRes) },
     });
     expect(res.statusCode).toBe(303);
     expect(res.headers.location).toBe("/setup/done");
@@ -8909,6 +8917,51 @@ describe("setup wizard — pre-auth takeover hardening", () => {
     expect(res.statusCode).toBe(303);
     expect(res.headers.location).toBe("/setup/shop");
     expect(await getSetting(prisma, "setup_owner_tg")).toBe(String(ENV_OWNER_TG));
+  });
+
+  describe("finish step is bound to the browser that completed step 2", () => {
+    const shopPost = (cookie?: string) =>
+      app.inject({
+        method: "POST",
+        url: "/setup/shop",
+        payload: form({ shop_name: "Hijacked" }),
+        headers: { ...urlencoded, ...(cookie ? { cookie } : {}) },
+      });
+
+    it("with the nonce cookie: finishes and issues the owner session", async () => {
+      const owner = await app.inject({ method: "POST", url: "/setup/owner", payload: ownerBody(ENV_OWNER_TG), headers: urlencoded });
+      const nonce = setupNonceCookie(owner);
+      expect(nonce).not.toBe("");
+      expect(owner.headers["set-cookie"]).toMatch(/HttpOnly/i);
+      const res = await shopPost(nonce);
+      expect(res.statusCode).toBe(303);
+      expect(String(res.headers["set-cookie"])).toContain(`${COOKIE}=`);
+    });
+
+    it("without the nonce cookie: rejected, no session, wizard not finished", async () => {
+      await app.inject({ method: "POST", url: "/setup/owner", payload: ownerBody(ENV_OWNER_TG), headers: urlencoded });
+      const res = await shopPost();
+      expect(res.statusCode).toBe(403);
+      expect(String(res.headers["set-cookie"] ?? "")).not.toContain(`${COOKIE}=`);
+      expect(await getSetting(prisma, "setup_completed")).toBeNull();
+      expect(await getSetting(prisma, "shop_name")).toBeNull();
+    });
+
+    it("with a wrong nonce cookie: rejected, no session", async () => {
+      await app.inject({ method: "POST", url: "/setup/owner", payload: ownerBody(ENV_OWNER_TG), headers: urlencoded });
+      const res = await shopPost("setup_owner_nonce=not-the-real-nonce");
+      expect(res.statusCode).toBe(403);
+      expect(String(res.headers["set-cookie"] ?? "")).not.toContain(`${COOKIE}=`);
+      expect(await getSetting(prisma, "setup_completed")).toBeNull();
+    });
+
+    it("rate-limits POST /setup/shop per IP", async () => {
+      let limited = 0;
+      for (let i = 0; i < 40; i++) {
+        if ((await shopPost()).statusCode === 429) limited++;
+      }
+      expect(limited).toBeGreaterThan(0);
+    });
   });
 
   it("rate-limits pre-auth POST /setup/owner per IP", async () => {

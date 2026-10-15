@@ -1150,6 +1150,32 @@ describe("settleWalletTopup — money that arrives after the payment window clos
     expect(new Decimal(user.walletBalance).equals(0)).toBe(true);
   });
 
+  // B11 (backend audit pass 2): the late credit's CANCELLED -> DELIVERED move
+  // used to leave no OrderStatusHistory row at all, so the order's timeline
+  // ended at CANCELLED although it was delivered and credited.
+  it("a late credit leaves a DELIVERED status-history row after the CANCELLED one, naming it a late credit", async () => {
+    const order = await makeExpiredCancelledTopup({ currency: "IDR", amount: "20000" });
+
+    await prisma.$transaction((tx) => settleWalletTopup(tx, order.id, { amount: order.totalAmount }));
+
+    const history = await prisma.orderStatusHistory.findMany({ where: { orderId: order.id }, orderBy: { id: "asc" } });
+    expect(history.map((h) => h.status)).toEqual([OrderStatus.CANCELLED, OrderStatus.DELIVERED]);
+    expect(history[1]!.meta).toBe("wallet_topup_late_credit");
+  });
+
+  it("an on-time credit leaves exactly one DELIVERED status-history row", async () => {
+    const order = await prisma.$transaction((tx) =>
+      createWalletTopupOrder(tx, { userId: sample.user.id, amount: "20000", currency: "IDR", method: PaymentMethod.TOKOPAY }),
+    );
+
+    await prisma.$transaction((tx) => settleWalletTopup(tx, order.id, { amount: order.totalAmount }));
+    // A repeated settle is the no-op double-settlement path: no second row.
+    await prisma.$transaction((tx) => settleWalletTopup(tx, order.id, { amount: order.totalAmount }));
+
+    const history = await prisma.orderStatusHistory.findMany({ where: { orderId: order.id }, orderBy: { id: "asc" } });
+    expect(history.map((h) => [h.status, h.meta])).toEqual([[OrderStatus.DELIVERED, "wallet_topup_credited"]]);
+  });
+
   it("a revived top-up settled a second time is still a no-op — the anti-double-credit claim survives the relaxation", async () => {
     const order = await makeExpiredCancelledTopup({ currency: "IDR", amount: "20000" });
 

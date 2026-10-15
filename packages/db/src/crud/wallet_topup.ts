@@ -616,11 +616,25 @@ export async function settleWalletTopup(
   // top-up reserves nothing that cancelling gave away. Every other status —
   // DELIVERED above all — still fails the claim, so the double-settlement
   // no-op below is untouched.
-  const wasCancelled = order.status === OrderStatus.CANCELLED;
-  const claim = await db.order.updateMany({
-    where: { id: orderId, status: { in: [OrderStatus.PENDING_PAYMENT, OrderStatus.CANCELLED] } },
-    data: { status: OrderStatus.DELIVERED, paidAt: now, deliveredAt: now, paymentState: "PAID", walletCreditState: "CREDITED" },
+  //
+  // B11 (backend audit pass 2): the claim is tried PENDING_PAYMENT first, then
+  // CANCELLED — the same two statuses as one `status IN (...)` claim, so the
+  // same orders get credited — but each attempt names the one status it
+  // takes, so `wasCancelled` is what the claim actually took (not what the
+  // earlier read saw) and the history row below records the right move.
+  const settledData = { status: OrderStatus.DELIVERED, paidAt: now, deliveredAt: now, paymentState: "PAID", walletCreditState: "CREDITED" };
+  let wasCancelled = false;
+  let claim = await db.order.updateMany({
+    where: { id: orderId, status: OrderStatus.PENDING_PAYMENT },
+    data: settledData,
   });
+  if (claim.count !== 1) {
+    claim = await db.order.updateMany({
+      where: { id: orderId, status: OrderStatus.CANCELLED },
+      data: settledData,
+    });
+    wasCancelled = claim.count === 1;
+  }
   if (claim.count !== 1) {
     const current = await getOrder(db, orderId);
     const currentUser = await db.user.findUniqueOrThrow({ where: { id: current!.userId } });
@@ -638,6 +652,19 @@ export async function settleWalletTopup(
     );
     return { order: current!, credited: new Decimal(0), newBalance: currentBalance };
   }
+
+  // The claim above is this order's move to DELIVERED (PENDING_PAYMENT ->
+  // DELIVERED, or the WALLET_TOPUP-only CANCELLED -> DELIVERED edge in
+  // LEGAL_TRANSITIONS, orderStatus.ts). It keeps its own `updateMany` because
+  // it stamps paidAt/deliveredAt/paymentState/walletCreditState in the same
+  // write, and records its history row here, as approveOrder does.
+  await db.orderStatusHistory.create({
+    data: {
+      orderId,
+      status: OrderStatus.DELIVERED,
+      meta: wasCancelled ? "wallet_topup_late_credit" : "wallet_topup_credited",
+    },
+  });
 
   if (wasCancelled) {
     logger.warn(

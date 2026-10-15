@@ -24,8 +24,9 @@
  *      - still PENDING_PAYMENT (or a CANCELLED top-up) → it did not;
  *      - a product order → the status-history row the settlement writes, whose
  *        meta names this transaction id (`manual_match trxId=<id> by ...`);
- *      - a settled top-up → no such proof exists (`settleWalletTopup` writes no
- *        history row), so the row is left matched and an admin is told.
+ *      - a settled top-up → no such proof exists (the history row
+ *        `settleWalletTopup` writes does not name the transaction id), so the
+ *        row is left matched and an admin is told.
  */
 import { OrderKind, OrderStatus } from "@app/core/enums";
 import { logger } from "@app/core/logger";

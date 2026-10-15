@@ -90,7 +90,9 @@ import {
   resolveSingleDigiflazzItem,
   buildDigiflazzCustomerNo,
   triggerDigiflazzDispatch,
+  type QuoteMismatchError,
 } from "@app/db";
+import { readCanonicalMoney } from "@app/core/moneyFormat";
 import { type Customer } from "../plugins/auth";
 import { clientIp, webhookRateLimited } from "../rateLimit";
 import {
@@ -820,6 +822,8 @@ export async function performWalletCheckout(
   currency: typeof OrderCurrency.IDR | typeof OrderCurrency.USDT,
   voucherCode: string | null,
   customerData?: unknown,
+  /** The total the buyer was quoted, in `currency` (A6). See readExpectedTotal. */
+  expectedTotal?: Decimal | null,
 ): Promise<{ orderCode: string }> {
   const rate = currency === OrderCurrency.USDT ? await getUsdIdrRate(prisma) : null;
   if (currency === OrderCurrency.USDT && !rate) throw new ValidationError("web.pay_method_unavailable");
@@ -840,6 +844,7 @@ export async function performWalletCheckout(
       currency,
       rate: rate ?? undefined,
       customerData,
+      expectedTotal,
     });
   });
   // The settlement has committed: start a Digiflazz-routed order's supplier
@@ -952,6 +957,8 @@ export async function performDirectWalletCheckout(
   currency: typeof OrderCurrency.IDR | typeof OrderCurrency.USDT,
   voucherCode: string | null,
   customerData?: unknown,
+  /** The total the buyer was quoted, in `currency` (A6). See readExpectedTotal. */
+  expectedTotal?: Decimal | null,
 ): Promise<{ orderCode: string }> {
   const rate = currency === OrderCurrency.USDT ? await getUsdIdrRate(prisma) : null;
   if (currency === OrderCurrency.USDT && !rate) throw new ValidationError("web.pay_method_unavailable");
@@ -980,12 +987,45 @@ export async function performDirectWalletCheckout(
       // cart twin, which stringifies raw input itself), so validation happens
       // here — same call performDirectCheckout makes above.
       customerData: directCustomerDataJson(denom, line.quantity, customerData),
+      expectedTotal,
     });
   });
   // The settlement has committed: start a Digiflazz-routed order's supplier
   // request now (fire-and-forget, ignores non-Digiflazz orders, never throws).
   if (result.kind === "processing") triggerDigiflazzDispatch(result.order.id);
   return { orderCode: result.order.orderCode };
+}
+
+/**
+ * Read the optional `expected_total` a wallet checkout request may carry (A6):
+ * the total the buyer was shown — the preview's `total` for `wallet_idr`, its
+ * `total_usdt` for `wallet_usdt` — echoed back so the server can refuse to debit
+ * a different figure.
+ *
+ * Returns `{ ok: true, value: null }` when the field is absent (null, undefined
+ * or ""), which keeps every existing client exactly as it was. The value is a
+ * machine echo of the server's own Decimal string, not something a person typed,
+ * so it is read with `readCanonicalMoney` — the same exact wire-format reader the
+ * wallet top-up form's amount uses — rather than by shape: `parseMoneyInput`
+ * would read an IDR `40000.125` as grouping. Any other shape (a typed spelling,
+ * an exponent, a sign, a number instead of a string) is `{ ok: false }`, and the
+ * route answers 400 before anything runs.
+ */
+export function readExpectedTotal(raw: unknown): { ok: true; value: Decimal | null } | { ok: false } {
+  if (raw === undefined || raw === null || raw === "") return { ok: true, value: null };
+  const value = readCanonicalMoney(raw);
+  return value === null ? { ok: false } : { ok: true, value };
+}
+
+/** The 409 body for a refused quote (A6): both figures in the rail's currency,
+ * as plain decimal strings, so the client can show the new price and ask again. */
+export function quoteChangedBody(e: QuoteMismatchError) {
+  return {
+    error: "error.quote_changed",
+    currency: e.currency,
+    expected_total: e.expectedTotal,
+    current_total: e.currentTotal,
+  };
 }
 
 /**

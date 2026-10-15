@@ -59,6 +59,7 @@ import {
   IdempotencyKeyReuseError,
   IdempotencyRequestInProgressError,
   type IdempotentReplay,
+  QuoteMismatchError,
 } from "@app/db";
 import { NicknameService } from "@app/core/nickname/service";
 import { logger } from "@app/core/logger";
@@ -73,7 +74,13 @@ import {
   guestCheckoutRateLimited,
   checkoutSubmitRateLimited,
 } from "../rateLimit";
-import { checkoutView, performDirectCheckout, performDirectWalletCheckout } from "./checkout";
+import {
+  checkoutView,
+  performDirectCheckout,
+  performDirectWalletCheckout,
+  readExpectedTotal,
+  quoteChangedBody,
+} from "./checkout";
 import { csrfOk, originOk } from "./cart";
 import { normalizeGuestEmail, normalizeIdempotencyKey, sendGuestOrderCodeEmail, withGuestCsrf } from "./api";
 import { establishSession } from "./auth";
@@ -274,6 +281,9 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
       /** Guest checkout only — the contact address the order is tracked by.
        * Ignored entirely for a signed-in buyer. */
       guest_email?: string;
+      /** Wallet methods only (A6): the total the buyer was quoted, in the
+       * wallet's currency — see readExpectedTotal (./checkout). Optional. */
+      expected_total?: unknown;
     };
   }>("/topup/order", async (req, reply) => {
     // Rate limit FIRST — cheapest possible short-circuit, before any
@@ -319,6 +329,16 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
 
     const method = (req.body?.method ?? "").toLowerCase();
     const voucherCode = (req.body?.voucher_code ?? "").trim().toUpperCase() || null;
+    const isWalletMethod = method === "wallet_idr" || method === "wallet_usdt";
+
+    // Quote binding (A6) — same rule as POST /api/v1/checkout (routes/api.ts):
+    // only the wallet methods, which debit in this request, read it; a
+    // malformed value is refused before anything runs; and it joins the
+    // idempotency hash only when present, so quote-less requests hash exactly
+    // as they did before.
+    const expected = isWalletMethod ? readExpectedTotal(req.body?.expected_total) : { ok: true as const, value: null };
+    if (!expected.ok) return reply.code(400).send({ error: "invalid_request" });
+    const quoteHashPart = expected.value ? { expectedTotal: expected.value.toString() } : {};
 
     // Idempotency (Task 3): an `Idempotency-Key` header lets a double-tapped
     // "Beli" button or a network retry replay the exact response from the
@@ -354,6 +374,7 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
                   voucherCode,
                   userId: signedIn.userId,
                   customerData: req.body?.customer_data ?? null,
+                  ...quoteHashPart,
                 }
               : {
                   denominationId: denom.id,
@@ -362,6 +383,7 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
                   voucherCode,
                   guestEmail: (req.body?.guest_email ?? "").trim().toLowerCase(),
                   customerData: req.body?.customer_data ?? null,
+                  ...quoteHashPart,
                 },
           ),
         }
@@ -421,7 +443,7 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
 
     // Wallet credit — no gateway, settles synchronously. Only ever reachable
     // for a signed-in buyer: establishGuestTopupCustomer rejects these tokens.
-    if (method === "wallet_idr" || method === "wallet_usdt") {
+    if (isWalletMethod) {
       try {
         const { orderCode } = await performDirectWalletCheckout(
           customer,
@@ -429,6 +451,7 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
           method === "wallet_idr" ? OrderCurrency.IDR : OrderCurrency.USDT,
           voucherCode,
           req.body?.customer_data,
+          expected.value,
         );
         return respond(
           201,
@@ -437,6 +460,9 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
       } catch (e) {
         if (e instanceof ValidationError) {
           return respond(400, withGuestCsrf(errorBody(e), isGuest, customer));
+        }
+        if (e instanceof QuoteMismatchError) {
+          return respond(409, withGuestCsrf(quoteChangedBody(e), isGuest, customer));
         }
         throw e;
       }

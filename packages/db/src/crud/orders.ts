@@ -126,6 +126,57 @@ export class DuplicateCheckoutIntentError extends Error {
 }
 
 /**
+ * The total a buyer was quoted before they clicked "pay", in the currency the
+ * chosen rail charges (backend audit pass 2, A6). `createOrderFromCart` and
+ * `createOrderDirect` re-price from the live denomination, so without this a
+ * price raised between the preview and the click was simply charged.
+ *
+ * - IDR: compared with the order's total after bulk discount and voucher, before
+ *   any wallet credit and before unique cents — the figure the storefront
+ *   preview reports as `total`, and the amount the IDR wallet rail debits.
+ * - USDT: that same IDR figure converted with `usdtFromIdr` at `rate`, the rate
+ *   the USDT wallet rail is about to charge at — the preview's `total_usdt`, and
+ *   the amount `finalizeOrderPayment` + `applyUsdtWalletToOrder` debit. A rate
+ *   that moved since the preview therefore also counts as a changed quote.
+ */
+export type ExpectedTotal =
+  | { currency: typeof OrderCurrency.IDR; amount: Decimal.Value }
+  | { currency: typeof OrderCurrency.USDT; amount: Decimal.Value; rate: Decimal.Value };
+
+/**
+ * Thrown before anything is written or debited when the server-computed total
+ * differs from the caller's {@link ExpectedTotal}. Deliberately not a
+ * `ValidationError`: the routes answer it with 409 and both figures, so the
+ * client can show the new price and ask the buyer to confirm it.
+ */
+export class QuoteMismatchError extends Error {
+  constructor(
+    public readonly currency: string,
+    public readonly expectedTotal: string,
+    public readonly currentTotal: string,
+  ) {
+    super(`The ${currency} total changed from the quoted ${expectedTotal} to ${currentTotal}; refusing to charge an unconfirmed price.`);
+    this.name = "QuoteMismatchError";
+  }
+}
+
+/**
+ * Refuse the order when `expected` is given and the total the buyer would now
+ * be charged differs from it. Compared by value (`Decimal.equals`), so "40000"
+ * and "40000.00" are the same quote. No-op when `expected` is absent, which keeps
+ * every caller that never sends a quote exactly as it was.
+ */
+export function assertQuotedTotal(expected: ExpectedTotal | null | undefined, afterDiscountIdr: Decimal): void {
+  if (!expected) return;
+  const current =
+    expected.currency === OrderCurrency.USDT ? usdtFromIdr(afterDiscountIdr, expected.rate) : afterDiscountIdr;
+  const quoted = new Decimal(expected.amount);
+  if (!current.equals(quoted)) {
+    throw new QuoteMismatchError(expected.currency, quoted.toString(), current.toString());
+  }
+}
+
+/**
  * Look up the order a given `checkoutIntentId` already created — for a
  * `DuplicateCheckoutIntentError` catch site that wants to know more about the
  * existing order than "it exists" (today's bot UX doesn't need this; it's
@@ -719,6 +770,10 @@ export async function createOrderFromCart(
      * unchanged); see {@link DuplicateCheckoutIntentError} for the collision
      * contract. */
     checkoutIntentId?: string | null;
+    /** The total the buyer was quoted (A6). When given and the live total
+     * differs, {@link QuoteMismatchError} is thrown before anything is written
+     * or debited. Omit for the existing behavior. */
+    expectedTotal?: ExpectedTotal | null;
   },
 ) {
   // Only lines whose product is still active are eligible to become an order
@@ -824,6 +879,9 @@ export async function createOrderFromCart(
   }
 
   const afterDiscount = Decimal.max(ZERO, subtotal.minus(bulkDiscount).minus(discount));
+  // Quote binding (A6): before the order shell, the stock reservation and the
+  // wallet debit below, so a refused quote leaves nothing behind.
+  assertQuotedTotal(args.expectedTotal, afterDiscount);
 
   // 4. Wallet debit. Whole rupiah only (floored — never more than asked): the
   // discounts above are whole rupiah (B5, money audit), so `afterDiscount` is
@@ -1061,6 +1119,9 @@ export async function createOrderDirect(
      * unchanged); see {@link DuplicateCheckoutIntentError} for the collision
      * contract. */
     checkoutIntentId?: string | null;
+    /** The total the buyer was quoted (A6) — see createOrderFromCart's
+     * matching argument. Checked before anything is written or debited. */
+    expectedTotal?: ExpectedTotal | null;
   },
 ) {
   // args.productId is a denomination id (the sellable SKU).
@@ -1120,6 +1181,16 @@ export async function createOrderDirect(
       pricedAt,
     );
   }
+
+  // Clamped for the same reason createOrderFromCart clamps (Money-2): a
+  // negative here would be persisted as a negative walletUsed/totalAmount and
+  // corrupt the audit trail. The voucher cap above makes it unreachable today —
+  // the clamp keeps it unreachable if either discount's own guards ever slip.
+  // Computed here, before any write, so the quote binding (A6) can refuse a
+  // changed price before the order shell, the stock reservation, the voucher
+  // bump or the wallet debit below.
+  const afterDiscount = Decimal.max(ZERO, subtotal.minus(bulkDiscount).minus(voucherDiscount));
+  assertQuotedTotal(args.expectedTotal, afterDiscount);
 
   const orderCode = await uniqueOrderCode(db);
 
@@ -1236,12 +1307,6 @@ export async function createOrderDirect(
       data: { voucherId: voucher.id, userId: args.user.id, orderId: order.id },
     });
   }
-
-  // Clamped for the same reason createOrderFromCart clamps (Money-2): a
-  // negative here would be persisted as a negative walletUsed/totalAmount and
-  // corrupt the audit trail. The voucher cap above makes it unreachable today —
-  // the clamp keeps it unreachable if either discount's own guards ever slip.
-  const afterDiscount = Decimal.max(ZERO, subtotal.minus(bulkDiscount).minus(voucherDiscount));
 
   // IDR wallet credit — mirrors createOrderFromCart's deduction logic.
   const walletAmountReq = idrWalletRequest(args.walletAmount);

@@ -25,6 +25,7 @@ import {
   getOrder,
   settlePaidOrder,
   applyUsdtWalletToOrder,
+  type ExpectedTotal,
   type SettleResult,
 } from "./orders";
 import { finalizeOrderPayment } from "./pricing";
@@ -33,6 +34,25 @@ import { getCart, cartCompositionLineOfCartItem } from "./cart";
 import { cartCompositionError } from "@app/core/cartComposition";
 
 export type WalletCheckoutResult = SettleResult;
+
+/**
+ * The quote a wallet checkout is bound to (A6), in the currency this rail
+ * debits: an IDR wallet checkout is quoted in Rupiah, a USDT one in USDT at the
+ * same `rate` the rail is about to charge at. Null when the caller sent no quote.
+ * A USDT quote with no rate cannot be checked, so it is refused rather than
+ * skipped — the rail refuses a USDT checkout without a rate a few lines later
+ * anyway.
+ */
+function walletExpectedTotal(args: {
+  currency: typeof OrderCurrency.IDR | typeof OrderCurrency.USDT;
+  rate?: Decimal.Value;
+  expectedTotal?: Decimal.Value | null;
+}): ExpectedTotal | null {
+  if (args.expectedTotal == null) return null;
+  if (args.currency === OrderCurrency.IDR) return { currency: OrderCurrency.IDR, amount: args.expectedTotal };
+  if (!args.rate) throw new ValidationError("error.generic");
+  return { currency: OrderCurrency.USDT, amount: args.expectedTotal, rate: args.rate };
+}
 
 /**
  * Create + immediately deliver an order paid entirely by wallet credit.
@@ -70,6 +90,9 @@ export async function completeOrderWithWalletCredit(
      * INSERT below — before any wallet credit is spent or stock claimed — so the
      * loser's whole transaction rolls back with nothing debited or delivered. */
     checkoutIntentId?: string | null;
+    /** The total the buyer was quoted, in `currency` (A6) — see
+     * {@link walletExpectedTotal}. Absent: no quote check, as before. */
+    expectedTotal?: Decimal.Value | null;
   },
 ): Promise<WalletCheckoutResult> {
   const created = await createOrderDirect(db, {
@@ -84,6 +107,7 @@ export async function completeOrderWithWalletCredit(
     // exactly like createInternalOrder does for a partial USDT credit today.
     walletAmount: args.currency === OrderCurrency.IDR ? args.user.walletBalance : undefined,
     customerData: args.customerData,
+    expectedTotal: walletExpectedTotal(args),
   });
   if (!created) throw new ValidationError("error.order_not_found");
 
@@ -223,6 +247,9 @@ export async function completeCartOrderWithWalletCredit(
     rate?: Decimal.Value;
     /** Buyer's raw manual_with_info answers, if any (not pre-stringified). */
     customerData?: unknown;
+    /** The total the buyer was quoted, in `currency` (A6) — see
+     * {@link walletExpectedTotal}. Absent: no quote check, as before. */
+    expectedTotal?: Decimal.Value | null;
   },
 ): Promise<WalletCheckoutResult> {
   const cartLines = await getCart(db, args.user.id);
@@ -245,6 +272,7 @@ export async function completeCartOrderWithWalletCredit(
     // mirroring the single-SKU rail above.
     walletAmount: args.currency === OrderCurrency.IDR ? args.user.walletBalance : undefined,
     customerData: args.customerData != null ? JSON.stringify(args.customerData) : null,
+    expectedTotal: walletExpectedTotal(args),
   });
   if (!created) throw new ValidationError("error.generic");
 

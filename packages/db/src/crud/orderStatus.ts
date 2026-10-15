@@ -21,6 +21,7 @@ import { Decimal } from "@app/core/money";
 import { qrisChargeAmount } from "@app/core/payments/tokopay";
 import type { PrismaClient, Tx } from "../client";
 import type { Db } from "./_types";
+import { enqueueNotificationSafely } from "./notificationIsolation";
 import { wakeFulfillmentMessage, ensureFulfillmentMessage } from "./fulfillmentMessages";
 
 /** Statuses after which the buyer's Telegram progress message shows its last text. */
@@ -194,7 +195,10 @@ export async function transitionOrderStatus(
   await db.orderStatusHistory.create({
     data: { orderId, status: to, meta: meta ?? null },
   });
-  await enqueueOrderTransitionEmails(db, orderId, to, meta, from);
+  // A failed email enqueue is logged and skipped; it must never undo the
+  // status move (enqueueNotificationSafely explains the savepoint).
+  await enqueueNotificationSafely(db, { orderId, notification: `order ${to} transition email` }, () =>
+    enqueueOrderTransitionEmails(db, orderId, to, meta, from));
   // A final status ends the buyer's progress message promptly; a manual
   // order's static WAITING line is not polled, so this is what moves it on.
   if (FINAL_ORDER_STATUSES.has(to) || to === OrderStatus.PAYMENT_DETECTED || to === OrderStatus.CONFIRMING || to === OrderStatus.CONFIRMED || to === OrderStatus.PROCESSING) {

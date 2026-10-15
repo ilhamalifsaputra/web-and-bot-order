@@ -90,6 +90,7 @@ import {
 import { logAdminAction } from "./audit";
 import { ensureFulfillmentMessage, wakeFulfillmentMessage, reserveTransactionMessage } from "./fulfillmentMessages";
 import { transitionOrderStatus, tryTransitionOrderStatus } from "./orderStatus";
+import { enqueueNotificationSafely } from "./notificationIsolation";
 
 /**
  * Thrown by `createOrderDirect`/`createOrderFromCart` when the caller-supplied
@@ -2142,7 +2143,12 @@ export async function approveOrder(
   await db.orderStatusHistory.create({
     data: { orderId, status: OrderStatus.DELIVERED, meta: `approved by admin_id=${args.adminId}` },
   });
-  if (order.completionMode !== "ADMIN_OVERRIDE") await enqueueOrderEmailFact(db, orderId, ["payment.confirmed.customer"]);
+  // Notification enqueues on the paid path never roll the payment back
+  // (enqueueNotificationSafely explains the savepoint).
+  if (order.completionMode !== "ADMIN_OVERRIDE") {
+    await enqueueNotificationSafely(db, { orderId, notification: "payment-confirmed customer email" }, () =>
+      enqueueOrderEmailFact(db, orderId, ["payment.confirmed.customer"]));
+  }
 
   // Per-item shadow of the claim above (Trustance Phase 1, Task 3). Placed
   // HERE, immediately behind the atomic claim, rather than in settlePaidOrder's
@@ -2289,7 +2295,8 @@ export async function approveOrder(
   // Referral + testimonial — shared with the manual-delivery path so both pay
   // the referee's commission and post the same channel testimonial.
   await finalizeDeliverySideEffects(db, order, now);
-  await enqueueBuyerOrderReadyEmailIfGuest(db, order);
+  await enqueueNotificationSafely(db, { orderId: order.id, notification: "buyer order-ready email" }, () =>
+    enqueueBuyerOrderReadyEmailIfGuest(db, order));
 
   // Recognise the order's revenue in the double-entry ledger. `now` is the same
   // timestamp the atomic claim above stamped as `paidAt`, so the posting's
@@ -2866,7 +2873,10 @@ export async function settlePaidOrder(
     const toOrderCurrency = orderCurrencyConverter(order);
     const moneyRows = reconciledOrderMoneyRows(order);
 
-    await enqueueOwnerOrderPaidEmail(db, {
+    // Every enqueue below is isolated: a failure is logged and skipped, never
+    // allowed to roll back the payment this transaction is committing
+    // (enqueueNotificationSafely explains the savepoint).
+    await enqueueNotificationSafely(db, { orderId, notification: "owner paid-order email" }, () => enqueueOwnerOrderPaidEmail(db, {
       orderId,
       orderCode: order.orderCode,
       total: moneyRows.total,
@@ -2889,13 +2899,14 @@ export async function settlePaidOrder(
       voucherCode: order.voucher?.code ?? null,
       paidAt: result.order.paidAt ?? new Date(),
       orderUrl: config.ADMIN_PUBLIC_URL ? `${config.ADMIN_PUBLIC_URL.replace(/\/+$/, "")}/orders/${orderId}` : null,
-    });
+    }));
     // The BUYER's own receipt, for a guest shopper — a different recipient,
     // a different template, and no owner toggle, unlike the owner email just
     // above. An AUTO order is genuinely finished at this point, so "your
     // order is ready" is true here; the MANUAL branch below is NOT ready yet
     // and must not send it (fulfillManualOrder does, when it really is).
-    await enqueueBuyerOrderReadyEmailIfGuest(db, order);
+    await enqueueNotificationSafely(db, { orderId, notification: "buyer order-ready email" }, () =>
+      enqueueBuyerOrderReadyEmailIfGuest(db, order));
     // Consistency check, not a state change: approveOrder just wrote DELIVERED
     // to the order AND to every one of its items, so this derives DELIVERED,
     // sees the order already has it, and returns null without touching
@@ -2927,7 +2938,12 @@ export async function settlePaidOrder(
   // Stamp paidAt for the "when did they pay" audit (deliveredAt stays null until
   // the admin fulfils via fulfillManualOrder).
   await db.order.update({ where: { id: orderId }, data: { paidAt: now, ...(order.completionMode !== "ADMIN_OVERRIDE" ? { paymentState: "PAID" } : {}) } });
-  if (order.completionMode !== "ADMIN_OVERRIDE") await enqueueOrderEmailFact(db, orderId, ["payment.confirmed.customer"]);
+  // Notification enqueues in this branch are isolated: a failure is logged and
+  // skipped, never allowed to roll back the payment (enqueueNotificationSafely).
+  if (order.completionMode !== "ADMIN_OVERRIDE") {
+    await enqueueNotificationSafely(db, { orderId, notification: "payment-confirmed customer email" }, () =>
+      enqueueOrderEmailFact(db, orderId, ["payment.confirmed.customer"]));
+  }
   // Recognise the order's revenue, using the same `now` just stamped as
   // `paidAt`. This branch is the MANUAL one and never calls `approveOrder`, so
   // it is the only place the posting can happen for a hand-fulfilled order —
@@ -2960,12 +2976,12 @@ export async function settlePaidOrder(
     emitDigiflazzOrderStatusChanged(orderId);
     return { kind: "processing", order: refreshed!, credentials: [] };
   }
-  await enqueueOrderProcessingDm(db, {
+  await enqueueNotificationSafely(db, { orderId, notification: "buyer order-processing Telegram message" }, () => enqueueOrderProcessingDm(db, {
     orderId,
     orderCode: order.orderCode,
     telegramId: order.user.telegramId,
     language: order.user.language,
-  });
+  }));
   // Same mutual-exclusivity guarantee noted above the AUTO branch: this call
   // only ever runs on the MANUAL side of the `if (!isManual)` split, so it
   // can never fire alongside enqueueOwnerOrderPaidEmail for the same order.
@@ -2975,20 +2991,20 @@ export async function settlePaidOrder(
   // the amount still due after wallet credit, so a wallet-paid order would be
   // reported as worth 0.
   const manualMoney = reconciledOrderMoneyRows(order);
-  await enqueueManualOrderAdminAlert(db, {
+  await enqueueNotificationSafely(db, { orderId, notification: "admin manual-order Telegram alert" }, () => enqueueManualOrderAdminAlert(db, {
     orderId,
     orderCode: order.orderCode,
     items: manualItems,
     currency: order.currency,
     money: manualMoney,
-  });
-  await enqueueOwnerManualQueueEmail(db, {
+  }));
+  await enqueueNotificationSafely(db, { orderId, notification: "owner manual-queue email" }, () => enqueueOwnerManualQueueEmail(db, {
     orderId,
     orderCode: order.orderCode,
     items: manualItems,
     currency: order.currency,
     money: manualMoney,
-  });
+  }));
   logger.info(
     `Order ${order.orderCode} payment confirmed; queued for manual fulfilment (admin ${args.adminId}).`,
   );

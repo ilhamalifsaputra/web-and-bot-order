@@ -163,3 +163,16 @@ describe("remaining id/page routes never answer 500", () => {
     });
   }
 });
+
+// Backend audit B10: /uploads/tickets/* refuses the readonly role, but the
+// ticket-media redirect route only required "any admin".
+describe("support media follows the same role gate as /uploads/tickets/*", () => {
+  it("refuses readonly admins and still reaches the lookup for other roles", async () => {
+    const url = "/api/support/media/00000000000000000000000000000000/file.png";
+    const asSuper = await app.inject({ method: "GET", url, cookies: { [COOKIE]: cookie } });
+    expect(asSuper.statusCode).toBe(404); // reaches the attachment lookup, finds nothing
+    await setSetting(prisma, webRoleKey(ADMIN_TG), "readonly");
+    const asReadonly = await app.inject({ method: "GET", url, cookies: { [COOKIE]: cookie } });
+    expect(asReadonly.statusCode).toBe(403);
+  });
+});

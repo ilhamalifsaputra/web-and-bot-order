@@ -11,6 +11,8 @@ function stubDb(values: Record<string, string>): Db {
     setting: {
       findUnique: async ({ where }: { where: { key: string } }) =>
         values[where.key] != null ? { key: where.key, value: values[where.key] } : null,
+      findMany: async ({ where }: { where: { key: { in: string[] } } }) =>
+        where.key.in.filter((k) => values[k] != null).map((k) => ({ key: k, value: values[k] })),
     },
   } as unknown as Db;
 }
@@ -120,5 +122,16 @@ describe("resolveOwnerEmailRecipient", () => {
     expect(await resolveOwnerEmailRecipient(db, "manual_queue")).toBeNull();
     expect(await resolveOwnerEmailRecipient(db, "new_ticket")).toBeNull();
     expect(await resolveOwnerEmailRecipient(db, "ticket_reply")).toBeNull();
+  });
+});
+
+describe("resolveOwnerEmailRecipient follows the dispatch policy (email_event_enabled)", () => {
+  it("returns null when the explicit policy is off even though the legacy toggles are on", async () => {
+    const db = fullyConfigured("paid_order", { "email_event_enabled:legacy.owner_order_paid": "false" });
+    expect(await resolveOwnerEmailRecipient(db, "paid_order")).toBeNull();
+  });
+  it("returns the address when the explicit policy is on even though the legacy toggles are off", async () => {
+    const db = stubDb({ owner_email: "owner@example.com", "email_event_enabled:legacy.owner_order_paid": "true" });
+    expect(await resolveOwnerEmailRecipient(db, "paid_order")).toBe("owner@example.com");
   });
 });

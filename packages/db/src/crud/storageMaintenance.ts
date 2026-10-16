@@ -21,6 +21,7 @@ const TERMINAL_OUTBOX_STATUSES: string[] = [
   NotificationStatus.SENT,
   NotificationStatus.FAILED,
   NotificationStatus.DEAD_LETTER,
+  NotificationStatus.SKIPPED,
 ];
 
 /**
@@ -36,7 +37,7 @@ export async function getDatabaseSizeBytes(db: Db): Promise<number> {
   return Number.isFinite(bytes) ? bytes : 0;
 }
 
-/** Delete SENT/FAILED/DEAD_LETTER outbox rows older than `cutoff`. Returns the count removed. */
+/** Delete SENT/FAILED/DEAD_LETTER/SKIPPED outbox rows older than `cutoff`. Returns the count removed. */
 export async function pruneSentOutbox(db: Db, cutoff: Date): Promise<number> {
   const { count } = await db.notificationOutbox.deleteMany({
     where: { status: { in: TERMINAL_OUTBOX_STATUSES }, createdAt: { lt: cutoff } },

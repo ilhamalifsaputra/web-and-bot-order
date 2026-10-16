@@ -119,41 +119,41 @@ async function makeOrder(userId: number) {
 }
 
 describe("closeTicket atomic guard", () => {
-  it("closes an OPEN ticket and returns the owner's telegramId", async () => {
+  it("closes an OPEN ticket and returns closed=true with the owner's telegramId", async () => {
     const user = await makeUser(555n);
     const ticket = await createTicket(prisma, user.id, "help me");
 
-    const tgId = await closeTicket(prisma, ticket.id);
+    const result = await closeTicket(prisma, ticket.id);
 
-    expect(tgId).toBe(555n);
+    expect(result).toEqual({ closed: true, telegramId: 555n });
     const fresh = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
     expect(fresh!.status).toBe(TicketStatus.CLOSED);
     // Storage-efficiency cleanup keys off this timestamp to age out evidence files.
     expect(fresh!.closedAt).not.toBeNull();
   });
 
-  it("a SECOND close call on an already-CLOSED ticket returns null — no second DM", async () => {
+  it("a SECOND close call on an already-CLOSED ticket reports closed=false — no second DM", async () => {
     const user = await makeUser(556n);
     const ticket = await createTicket(prisma, user.id, "help me");
 
     const first = await closeTicket(prisma, ticket.id);
     const second = await closeTicket(prisma, ticket.id);
 
-    expect(first).toBe(556n);
-    expect(second).toBeNull(); // double-tap: no second notification
+    expect(first).toEqual({ closed: true, telegramId: 556n });
+    expect(second).toEqual({ closed: false, telegramId: null }); // double-tap: no second notification
   });
 
-  it("returns null for a non-existent ticket id", async () => {
-    expect(await closeTicket(prisma, 999999)).toBeNull();
+  it("reports closed=false for a non-existent ticket id", async () => {
+    expect(await closeTicket(prisma, 999999)).toEqual({ closed: false, telegramId: null });
   });
 
-  it("returns null when the owner has no telegramId (web-only buyer) even though the ticket DID close", async () => {
+  it("reports closed=true with a null telegramId for a web-only buyer — the ticket DID close", async () => {
     const user = await makeUser(null);
     const ticket = await createTicket(prisma, user.id, "help me");
 
-    const tgId = await closeTicket(prisma, ticket.id);
+    const result = await closeTicket(prisma, ticket.id);
 
-    expect(tgId).toBeNull();
+    expect(result).toEqual({ closed: true, telegramId: null });
     const fresh = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
     expect(fresh!.status).toBe(TicketStatus.CLOSED); // still closed — just nobody to DM
   });
@@ -1050,6 +1050,9 @@ describe("bulk ticket operations", () => {
 
       const result = await bulkCloseTickets(prisma, [alreadyClosed.id, stillOpen.id]);
       expect(new Set(result.succeeded)).toEqual(new Set([alreadyClosed.id, stillOpen.id]));
+      // Only the ticket this call actually closed is reported as closed, so
+      // the route audits it alone and never re-audits the already-closed one.
+      expect(result.closed).toEqual([stillOpen.id]);
       expect(result.failed).toEqual([]);
       // Confirm the double-tap guard actually fired (not just that the final
       // status happens to be CLOSED, which an unconditional re-close would
@@ -1443,7 +1446,7 @@ describe("owner-email ticket triggers (createTicket / addTicketMessage)", () => 
     expect(
       await prisma.notificationOutbox.count({ where: { event: "support.ticket.created.admin" } }),
     ).toBe(before + 1);
-    expect(await prisma.notificationOutbox.findFirst({ where: { event: "support.ticket.created.admin", lastError: "SKIPPED_DISABLED", status: "FAILED" }, orderBy: { id: "desc" } })).not.toBeNull();
+    expect(await prisma.notificationOutbox.findFirst({ where: { event: "support.ticket.created.admin", lastError: "SKIPPED_DISABLED", status: "SKIPPED" }, orderBy: { id: "desc" } })).not.toBeNull();
   });
 
   it("addTicketMessage with senderType USER enqueues exactly one OWNER_EMAIL_TICKET_REPLY row, carrying the ticket id", async () => {
@@ -2097,6 +2100,17 @@ describe("V2 order deduplication and source filters", () => {
     const stranger = await makeUser(98766n);
     await expect(createTicket(prisma, stranger.id, "Not my order", null, null, order.id, { dedupeOrder: true })).rejects.toMatchObject({ key: "error.order_not_found" });
   });
+  it("flags only a reused ticket as `reused`; a brand-new ticket never carries the flag", async () => {
+    const user = await makeUser(98770n); const order = await makeOrder(user.id);
+    const first = await createTicket(prisma, user.id, "The order has not arrived", null, null, order.id, { dedupeOrder: true });
+    expect(first.reused).toBeUndefined();
+    const again = await createTicket(prisma, user.id, "Still nothing", null, null, order.id, { dedupeOrder: true });
+    expect(again.id).toBe(first.id);
+    expect(again.reused).toBe(true);
+    const replay = await createTicket(prisma, user.id, "x", null, null, null, { requestKey: "reuse-key-1" });
+    expect(replay.reused).toBeUndefined();
+    expect((await createTicket(prisma, user.id, "x", null, null, null, { requestKey: "reuse-key-1" })).reused).toBe(true);
+  });
   it("filters by source and searches public references consistently across sort paths", async () => {
     const user = await makeUser(98767n);
     await createTicket(prisma, user.id, "Web support request", null, null, null, { origin: "WEB" });
@@ -2114,4 +2128,77 @@ it("audits a title correction while preserving the immutable ticket reference", 
   expect(await prisma.supportTicket.findUnique({ where: { id: ticket.id } })).toMatchObject({ subject: "Payment investigation", ticketNumber: ticket.ticketNumber, createdAt: ticket.createdAt });
   expect(await prisma.auditLog.findFirst({ where: { action: "ticket_title_change", targetId: ticket.id } })).toMatchObject({ adminId: admin.id, details: "Updated the support ticket title." });
   await expect(setSupportTitle(prisma, ticket.id, "   ", admin.id)).rejects.toBeInstanceOf(ValidationError);
+});
+
+// Backend audit pass 2, B6: every path that closes a ticket must enqueue the
+// buyer's TICKET_CLOSED_DM exactly once per actual close, not only the bot.
+describe("ticket-closed buyer notification (B6)", () => {
+  async function closedDms(ticketId: number) {
+    const rows = await prisma.notificationOutbox.findMany({ where: { event: NotificationEvent.TICKET_CLOSED_DM } });
+    return rows.filter((r) => (JSON.parse(r.payloadJson) as { ticket_id: number }).ticket_id === ticketId);
+  }
+
+  beforeEach(async () => {
+    await prisma.notificationOutbox.deleteMany();
+  });
+
+  it("closeTicket enqueues exactly one DM in the buyer's language; a re-close adds none", async () => {
+    const user = await prisma.user.create({ data: { telegramId: 7001n, referralCode: "b6-1", language: "id" } });
+    const ticket = await createTicket(prisma, user.id, "help");
+    await closeTicket(prisma, ticket.id);
+    await closeTicket(prisma, ticket.id);
+    const rows = await closedDms(ticket.id);
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0]!.payloadJson)).toEqual({ chat_id: 7001, ticket_id: ticket.id, buyer_language: "id" });
+  });
+
+  it("closeTicket enqueues nothing for a web-only buyer or a missing ticket", async () => {
+    const user = await makeUser(null);
+    const ticket = await createTicket(prisma, user.id, "help");
+    await closeTicket(prisma, ticket.id);
+    await closeTicket(prisma, 999999);
+    expect(await prisma.notificationOutbox.count({ where: { event: NotificationEvent.TICKET_CLOSED_DM } })).toBe(0);
+  });
+
+  it("bulkCloseTickets enqueues one DM per newly closed ticket and none for an already-closed one", async () => {
+    const user = await makeUser(7002n);
+    const already = await createTicket(prisma, user.id, "already");
+    await closeTicket(prisma, already.id);
+    const open = await createTicket(prisma, user.id, "open");
+    await prisma.notificationOutbox.deleteMany();
+
+    await bulkCloseTickets(prisma, [already.id, open.id]);
+    await bulkCloseTickets(prisma, [already.id, open.id]);
+
+    expect(await closedDms(already.id)).toHaveLength(0);
+    expect(await closedDms(open.id)).toHaveLength(1);
+  });
+
+  it("transitionTicketStatus to CLOSED enqueues one DM; other transitions enqueue none", async () => {
+    const user = await makeUser(7003n);
+    const ticket = await createTicket(prisma, user.id, "help");
+    await transitionTicketStatus(prisma, { ticketId: ticket.id, from: TicketStatus.OPEN, to: TicketStatus.IN_PROGRESS, adminId: null });
+    expect(await closedDms(ticket.id)).toHaveLength(0);
+    await transitionTicketStatus(prisma, { ticketId: ticket.id, from: TicketStatus.IN_PROGRESS, to: TicketStatus.CLOSED, adminId: null });
+    expect(await closedDms(ticket.id)).toHaveLength(1);
+  });
+
+  it("a ticket reopened and closed again notifies again (one DM per close)", async () => {
+    const user = await makeUser(7004n);
+    const ticket = await createTicket(prisma, user.id, "help");
+    await closeTicket(prisma, ticket.id);
+    await transitionTicketStatus(prisma, { ticketId: ticket.id, from: TicketStatus.CLOSED, to: TicketStatus.OPEN, adminId: null });
+    await new Promise((r) => setTimeout(r, 5));
+    await closeTicket(prisma, ticket.id);
+    expect(await closedDms(ticket.id)).toHaveLength(2);
+  });
+
+  it("auto-close variant carries the auto_closed marker", async () => {
+    const user = await makeUser(7005n);
+    const ticket = await createTicket(prisma, user.id, "help");
+    await closeTicket(prisma, ticket.id, { autoClosed: true });
+    const rows = await closedDms(ticket.id);
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0]!.payloadJson).auto_closed).toBe(true);
+  });
 });

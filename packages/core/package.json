@@ -6,6 +6,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./config": "./src/config.ts",
+    "./startupWarnings": "./src/startupWarnings.ts",
     "./money": "./src/money.ts",
     "./denominationPrices": "./src/denominationPrices.ts",
     "./pricingRule": "./src/pricingRule.ts",
@@ -21,6 +22,8 @@
     "./moneyFormat": "./src/moneyFormat.ts",
     "./customEmoji": "./src/customEmoji.ts",
     "./errors": "./src/errors.ts",
+    "./params": "./src/params.ts",
+    "./boundedBody": "./src/boundedBody.ts",
     "./errorBody": "./src/errorBody.ts",
     "./logger": "./src/logger.ts",
     "./enums": "./src/enums.ts",

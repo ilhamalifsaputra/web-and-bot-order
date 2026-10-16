@@ -90,6 +90,7 @@ import {
 import { logAdminAction } from "./audit";
 import { ensureFulfillmentMessage, wakeFulfillmentMessage, reserveTransactionMessage } from "./fulfillmentMessages";
 import { transitionOrderStatus, tryTransitionOrderStatus } from "./orderStatus";
+import { enqueueNotificationSafely } from "./notificationIsolation";
 
 /**
  * Thrown by `createOrderDirect`/`createOrderFromCart` when the caller-supplied
@@ -121,6 +122,57 @@ export class DuplicateCheckoutIntentError extends Error {
   constructor(public readonly checkoutIntentId: string) {
     super(`checkoutIntentId "${checkoutIntentId}" already has an order — refusing to create a second one`);
     this.name = "DuplicateCheckoutIntentError";
+  }
+}
+
+/**
+ * The total a buyer was quoted before they clicked "pay", in the currency the
+ * chosen rail charges (backend audit pass 2, A6). `createOrderFromCart` and
+ * `createOrderDirect` re-price from the live denomination, so without this a
+ * price raised between the preview and the click was simply charged.
+ *
+ * - IDR: compared with the order's total after bulk discount and voucher, before
+ *   any wallet credit and before unique cents — the figure the storefront
+ *   preview reports as `total`, and the amount the IDR wallet rail debits.
+ * - USDT: that same IDR figure converted with `usdtFromIdr` at `rate`, the rate
+ *   the USDT wallet rail is about to charge at — the preview's `total_usdt`, and
+ *   the amount `finalizeOrderPayment` + `applyUsdtWalletToOrder` debit. A rate
+ *   that moved since the preview therefore also counts as a changed quote.
+ */
+export type ExpectedTotal =
+  | { currency: typeof OrderCurrency.IDR; amount: Decimal.Value }
+  | { currency: typeof OrderCurrency.USDT; amount: Decimal.Value; rate: Decimal.Value };
+
+/**
+ * Thrown before anything is written or debited when the server-computed total
+ * differs from the caller's {@link ExpectedTotal}. Deliberately not a
+ * `ValidationError`: the routes answer it with 409 and both figures, so the
+ * client can show the new price and ask the buyer to confirm it.
+ */
+export class QuoteMismatchError extends Error {
+  constructor(
+    public readonly currency: string,
+    public readonly expectedTotal: string,
+    public readonly currentTotal: string,
+  ) {
+    super(`The ${currency} total changed from the quoted ${expectedTotal} to ${currentTotal}; refusing to charge an unconfirmed price.`);
+    this.name = "QuoteMismatchError";
+  }
+}
+
+/**
+ * Refuse the order when `expected` is given and the total the buyer would now
+ * be charged differs from it. Compared by value (`Decimal.equals`), so "40000"
+ * and "40000.00" are the same quote. No-op when `expected` is absent, which keeps
+ * every caller that never sends a quote exactly as it was.
+ */
+export function assertQuotedTotal(expected: ExpectedTotal | null | undefined, afterDiscountIdr: Decimal): void {
+  if (!expected) return;
+  const current =
+    expected.currency === OrderCurrency.USDT ? usdtFromIdr(afterDiscountIdr, expected.rate) : afterDiscountIdr;
+  const quoted = new Decimal(expected.amount);
+  if (!current.equals(quoted)) {
+    throw new QuoteMismatchError(expected.currency, quoted.toString(), current.toString());
   }
 }
 
@@ -718,6 +770,10 @@ export async function createOrderFromCart(
      * unchanged); see {@link DuplicateCheckoutIntentError} for the collision
      * contract. */
     checkoutIntentId?: string | null;
+    /** The total the buyer was quoted (A6). When given and the live total
+     * differs, {@link QuoteMismatchError} is thrown before anything is written
+     * or debited. Omit for the existing behavior. */
+    expectedTotal?: ExpectedTotal | null;
   },
 ) {
   // Only lines whose product is still active are eligible to become an order
@@ -823,6 +879,9 @@ export async function createOrderFromCart(
   }
 
   const afterDiscount = Decimal.max(ZERO, subtotal.minus(bulkDiscount).minus(discount));
+  // Quote binding (A6): before the order shell, the stock reservation and the
+  // wallet debit below, so a refused quote leaves nothing behind.
+  assertQuotedTotal(args.expectedTotal, afterDiscount);
 
   // 4. Wallet debit. Whole rupiah only (floored — never more than asked): the
   // discounts above are whole rupiah (B5, money audit), so `afterDiscount` is
@@ -1060,6 +1119,9 @@ export async function createOrderDirect(
      * unchanged); see {@link DuplicateCheckoutIntentError} for the collision
      * contract. */
     checkoutIntentId?: string | null;
+    /** The total the buyer was quoted (A6) — see createOrderFromCart's
+     * matching argument. Checked before anything is written or debited. */
+    expectedTotal?: ExpectedTotal | null;
   },
 ) {
   // args.productId is a denomination id (the sellable SKU).
@@ -1119,6 +1181,16 @@ export async function createOrderDirect(
       pricedAt,
     );
   }
+
+  // Clamped for the same reason createOrderFromCart clamps (Money-2): a
+  // negative here would be persisted as a negative walletUsed/totalAmount and
+  // corrupt the audit trail. The voucher cap above makes it unreachable today —
+  // the clamp keeps it unreachable if either discount's own guards ever slip.
+  // Computed here, before any write, so the quote binding (A6) can refuse a
+  // changed price before the order shell, the stock reservation, the voucher
+  // bump or the wallet debit below.
+  const afterDiscount = Decimal.max(ZERO, subtotal.minus(bulkDiscount).minus(voucherDiscount));
+  assertQuotedTotal(args.expectedTotal, afterDiscount);
 
   const orderCode = await uniqueOrderCode(db);
 
@@ -1235,12 +1307,6 @@ export async function createOrderDirect(
       data: { voucherId: voucher.id, userId: args.user.id, orderId: order.id },
     });
   }
-
-  // Clamped for the same reason createOrderFromCart clamps (Money-2): a
-  // negative here would be persisted as a negative walletUsed/totalAmount and
-  // corrupt the audit trail. The voucher cap above makes it unreachable today —
-  // the clamp keeps it unreachable if either discount's own guards ever slip.
-  const afterDiscount = Decimal.max(ZERO, subtotal.minus(bulkDiscount).minus(voucherDiscount));
 
   // IDR wallet credit — mirrors createOrderFromCart's deduction logic.
   const walletAmountReq = idrWalletRequest(args.walletAmount);
@@ -2142,7 +2208,12 @@ export async function approveOrder(
   await db.orderStatusHistory.create({
     data: { orderId, status: OrderStatus.DELIVERED, meta: `approved by admin_id=${args.adminId}` },
   });
-  if (order.completionMode !== "ADMIN_OVERRIDE") await enqueueOrderEmailFact(db, orderId, ["payment.confirmed.customer"]);
+  // Notification enqueues on the paid path never roll the payment back
+  // (enqueueNotificationSafely explains the savepoint).
+  if (order.completionMode !== "ADMIN_OVERRIDE") {
+    await enqueueNotificationSafely(db, { orderId, notification: "payment-confirmed customer email" }, () =>
+      enqueueOrderEmailFact(db, orderId, ["payment.confirmed.customer"]));
+  }
 
   // Per-item shadow of the claim above (Trustance Phase 1, Task 3). Placed
   // HERE, immediately behind the atomic claim, rather than in settlePaidOrder's
@@ -2289,7 +2360,8 @@ export async function approveOrder(
   // Referral + testimonial — shared with the manual-delivery path so both pay
   // the referee's commission and post the same channel testimonial.
   await finalizeDeliverySideEffects(db, order, now);
-  await enqueueBuyerOrderReadyEmailIfGuest(db, order);
+  await enqueueNotificationSafely(db, { orderId: order.id, notification: "buyer order-ready email" }, () =>
+    enqueueBuyerOrderReadyEmailIfGuest(db, order));
 
   // Recognise the order's revenue in the double-entry ledger. `now` is the same
   // timestamp the atomic claim above stamped as `paidAt`, so the posting's
@@ -2866,7 +2938,10 @@ export async function settlePaidOrder(
     const toOrderCurrency = orderCurrencyConverter(order);
     const moneyRows = reconciledOrderMoneyRows(order);
 
-    await enqueueOwnerOrderPaidEmail(db, {
+    // Every enqueue below is isolated: a failure is logged and skipped, never
+    // allowed to roll back the payment this transaction is committing
+    // (enqueueNotificationSafely explains the savepoint).
+    await enqueueNotificationSafely(db, { orderId, notification: "owner paid-order email" }, () => enqueueOwnerOrderPaidEmail(db, {
       orderId,
       orderCode: order.orderCode,
       total: moneyRows.total,
@@ -2889,13 +2964,14 @@ export async function settlePaidOrder(
       voucherCode: order.voucher?.code ?? null,
       paidAt: result.order.paidAt ?? new Date(),
       orderUrl: config.ADMIN_PUBLIC_URL ? `${config.ADMIN_PUBLIC_URL.replace(/\/+$/, "")}/orders/${orderId}` : null,
-    });
+    }));
     // The BUYER's own receipt, for a guest shopper — a different recipient,
     // a different template, and no owner toggle, unlike the owner email just
     // above. An AUTO order is genuinely finished at this point, so "your
     // order is ready" is true here; the MANUAL branch below is NOT ready yet
     // and must not send it (fulfillManualOrder does, when it really is).
-    await enqueueBuyerOrderReadyEmailIfGuest(db, order);
+    await enqueueNotificationSafely(db, { orderId, notification: "buyer order-ready email" }, () =>
+      enqueueBuyerOrderReadyEmailIfGuest(db, order));
     // Consistency check, not a state change: approveOrder just wrote DELIVERED
     // to the order AND to every one of its items, so this derives DELIVERED,
     // sees the order already has it, and returns null without touching
@@ -2927,7 +3003,12 @@ export async function settlePaidOrder(
   // Stamp paidAt for the "when did they pay" audit (deliveredAt stays null until
   // the admin fulfils via fulfillManualOrder).
   await db.order.update({ where: { id: orderId }, data: { paidAt: now, ...(order.completionMode !== "ADMIN_OVERRIDE" ? { paymentState: "PAID" } : {}) } });
-  if (order.completionMode !== "ADMIN_OVERRIDE") await enqueueOrderEmailFact(db, orderId, ["payment.confirmed.customer"]);
+  // Notification enqueues in this branch are isolated: a failure is logged and
+  // skipped, never allowed to roll back the payment (enqueueNotificationSafely).
+  if (order.completionMode !== "ADMIN_OVERRIDE") {
+    await enqueueNotificationSafely(db, { orderId, notification: "payment-confirmed customer email" }, () =>
+      enqueueOrderEmailFact(db, orderId, ["payment.confirmed.customer"]));
+  }
   // Recognise the order's revenue, using the same `now` just stamped as
   // `paidAt`. This branch is the MANUAL one and never calls `approveOrder`, so
   // it is the only place the posting can happen for a hand-fulfilled order —
@@ -2960,12 +3041,12 @@ export async function settlePaidOrder(
     emitDigiflazzOrderStatusChanged(orderId);
     return { kind: "processing", order: refreshed!, credentials: [] };
   }
-  await enqueueOrderProcessingDm(db, {
+  await enqueueNotificationSafely(db, { orderId, notification: "buyer order-processing Telegram message" }, () => enqueueOrderProcessingDm(db, {
     orderId,
     orderCode: order.orderCode,
     telegramId: order.user.telegramId,
     language: order.user.language,
-  });
+  }));
   // Same mutual-exclusivity guarantee noted above the AUTO branch: this call
   // only ever runs on the MANUAL side of the `if (!isManual)` split, so it
   // can never fire alongside enqueueOwnerOrderPaidEmail for the same order.
@@ -2975,20 +3056,20 @@ export async function settlePaidOrder(
   // the amount still due after wallet credit, so a wallet-paid order would be
   // reported as worth 0.
   const manualMoney = reconciledOrderMoneyRows(order);
-  await enqueueManualOrderAdminAlert(db, {
+  await enqueueNotificationSafely(db, { orderId, notification: "admin manual-order Telegram alert" }, () => enqueueManualOrderAdminAlert(db, {
     orderId,
     orderCode: order.orderCode,
     items: manualItems,
     currency: order.currency,
     money: manualMoney,
-  });
-  await enqueueOwnerManualQueueEmail(db, {
+  }));
+  await enqueueNotificationSafely(db, { orderId, notification: "owner manual-queue email" }, () => enqueueOwnerManualQueueEmail(db, {
     orderId,
     orderCode: order.orderCode,
     items: manualItems,
     currency: order.currency,
     money: manualMoney,
-  });
+  }));
   logger.info(
     `Order ${order.orderCode} payment confirmed; queued for manual fulfilment (admin ${args.adminId}).`,
   );

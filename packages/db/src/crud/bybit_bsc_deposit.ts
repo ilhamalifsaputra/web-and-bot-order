@@ -620,6 +620,43 @@ export async function deliverPaidBybitBscOrder(
 }
 
 /**
+ * Move a Bybit BSC WALLET_TOPUP order from the on-chain milestone it sits in
+ * (PAYMENT_DETECTED/CONFIRMING/CONFIRMED) back to PENDING_PAYMENT, so
+ * settleWalletTopup's claim can take it, through the state machine's guarded
+ * claim (one OrderStatusHistory row per applied hop).
+ *
+ * The caller's read of the order took no row lock, so another connection may
+ * have committed a different status since:
+ *  - the confirmation tracker advanced it to a later milestone — retry the
+ *    compare-and-swap from the status now actually stored;
+ *  - an admin cancelled it, or another path already settled it — stop and
+ *    leave it as it is. settleWalletTopup then decides on the real status:
+ *    it credits a CANCELLED top-up as a late payment (isLateSettleableWalletTopup)
+ *    and is a no-op on one that is already DELIVERED, so a committed cancel is
+ *    never resurrected and a settled top-up is never settled twice.
+ * Milestones only ever move forward, so the loop is bounded by their count.
+ */
+async function normalizeTopupToPendingPayment(
+  tx: Tx,
+  args: { orderId: number; readStatus: string; meta: string },
+): Promise<void> {
+  let from = args.readStatus;
+  for (let attempt = 0; attempt <= PRE_DELIVERY_STATUSES.length; attempt++) {
+    if (from === OrderStatus.PENDING_PAYMENT || !PRE_DELIVERY_STATUSES.includes(from)) return;
+    const moved = await tryTransitionOrderStatus(tx, {
+      orderId: args.orderId,
+      from,
+      to: OrderStatus.PENDING_PAYMENT,
+      meta: `wallet_topup_settling ${args.meta}`,
+    });
+    if (moved) return;
+    const current = await tx.order.findUnique({ where: { id: args.orderId }, select: { status: true } });
+    if (!current) return;
+    from = current.status;
+  }
+}
+
+/**
  * The settlement half of Bybit BSC delivery, run inside the caller's
  * transaction once the `processed_bybit_tx` row has been claimed for
  * `args.order` and the order has been checked as payable. Shared by the
@@ -667,17 +704,20 @@ export async function settleClaimedBybitBscDeposit(
     // established this is a legitimate pre-delivery state (not stale), so
     // it's safe to normalize back to PENDING_PAYMENT here, inside the SAME
     // transaction settleWalletTopup's own claim runs in — the transient
-    // state is never externally observable (no separate commit, and
-    // settleWalletTopup writes no OrderStatusHistory row for this
-    // transition either, mirroring approveOrder's claim idiom).
+    // state is never externally observable (no separate commit).
     //
     // Scoped to PRE_DELIVERY_STATUSES on purpose: a CANCELLED top-up also
     // reaches this line now (a late-arriving deposit on a window that had
     // already closed), and settleWalletTopup claims CANCELLED directly —
     // normalizing that one away would erase the very fact it needs in
     // order to log that a top-up was credited past its window.
+    //
+    // A2 (backend audit pass 2): `order` was read earlier in this transaction
+    // without a row lock, so the normalization is a compare-and-swap on the
+    // status that read saw, never a blind overwrite — see
+    // normalizeTopupToPendingPayment.
     if (order.status !== OrderStatus.PENDING_PAYMENT && PRE_DELIVERY_STATUSES.includes(order.status)) {
-      await tx.order.update({ where: { id: order.id }, data: { status: OrderStatus.PENDING_PAYMENT } });
+      await normalizeTopupToPendingPayment(tx, { orderId: order.id, readStatus: order.status, meta: args.transitionMeta });
     }
     const { order: settled, credited } = await settleWalletTopup(tx, order.id, { amount: args.amount });
     // Manual match only: a zero credit means another path settled this

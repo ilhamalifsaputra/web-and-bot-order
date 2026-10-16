@@ -44,6 +44,7 @@ import {
   IdempotencyRequestInProgressError,
   type IdempotentReplay,
   type CatalogProduct,
+  QuoteMismatchError,
 } from "@app/db";
 import type { Category, Denomination } from "@prisma/client";
 import { optionalCustomer, type Customer } from "../plugins/auth";
@@ -59,7 +60,7 @@ import {
 } from "../shop";
 import { loadCartLines, loadGuestCartItems, cartCompositionLineOf, originOk } from "./cart";
 import { cartAdditionError } from "@app/core/cartComposition";
-import { performCheckout, performWalletCheckout } from "./checkout";
+import { performCheckout, performWalletCheckout, readExpectedTotal, quoteChangedBody } from "./checkout";
 import { establishSession } from "./auth";
 import { clientIp, guestCheckoutRateLimited, checkoutSubmitRateLimited } from "../rateLimit";
 import { constantTimeEqual } from "../auth";
@@ -576,6 +577,9 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
       /** Guest checkout only — the contact address the order is tracked by.
        * Ignored entirely for a signed-in buyer. */
       guest_email?: string;
+      /** Wallet methods only (A6): the total the buyer was quoted, in the
+       * wallet's currency — see readExpectedTotal (./checkout). Optional. */
+      expected_total?: unknown;
     };
   }>("/checkout", async (req, reply) => {
     // Rate limit FIRST — cheapest possible short-circuit, before any
@@ -595,6 +599,18 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
 
     const method = (req.body?.method ?? "").toLowerCase();
     const voucherCode = (req.body?.voucher_code ?? "").trim().toUpperCase() || null;
+    const isWalletMethod = method === "wallet_idr" || method === "wallet_usdt";
+
+    // Quote binding (A6): a wallet checkout debits the balance in this very
+    // request, so a client may echo the total it showed the buyer and have the
+    // debit refused (409) if the live total differs. Only the wallet methods
+    // read it — a gateway order's amount is shown on the pay page before any
+    // money moves. A malformed value is refused here, before anything runs.
+    const expected = isWalletMethod ? readExpectedTotal(req.body?.expected_total) : { ok: true as const, value: null };
+    if (!expected.ok) return reply.code(400).send({ error: "invalid_request" });
+    // Appended to the idempotency hash only when present, so a request without
+    // a quote hashes byte-for-byte as it did before this field existed.
+    const quoteHashPart = expected.value ? { expectedTotal: expected.value.toString() } : {};
 
     // Idempotency (Task 1): an `Idempotency-Key` header lets a double-tapped
     // "Pay" button or a network retry replay the exact response from the
@@ -641,12 +657,13 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
           key: idempotencyKeyHeader,
           requestHash: hashIdempotentRequest(
             signedIn
-              ? { userId: signedIn.userId, method, voucherCode, customerData: req.body?.customer_data ?? null }
+              ? { userId: signedIn.userId, method, voucherCode, customerData: req.body?.customer_data ?? null, ...quoteHashPart }
               : {
                   method,
                   voucherCode,
                   customerData: req.body?.customer_data ?? null,
                   guestEmail: (req.body?.guest_email ?? "").trim().toLowerCase(),
+                  ...quoteHashPart,
                 },
           ),
         }
@@ -718,18 +735,22 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
     // Wallet credit as a payment method — no gateway, settles synchronously.
     // Separate method tokens from the gateway ones below; performCheckout
     // is untouched by this branch.
-    if (method === "wallet_idr" || method === "wallet_usdt") {
+    if (isWalletMethod) {
       try {
         const { orderCode } = await performWalletCheckout(
           customer,
           method === "wallet_idr" ? OrderCurrency.IDR : OrderCurrency.USDT,
           voucherCode,
           req.body?.customer_data,
+          expected.value,
         );
         return respond(201, withGuestCsrf({ order_code: orderCode, pay_url: `/account/orders/${orderCode}` }, isGuest, customer));
       } catch (e) {
         if (e instanceof ValidationError) {
           return respond(400, withGuestCsrf(errorBody(e), isGuest, customer));
+        }
+        if (e instanceof QuoteMismatchError) {
+          return respond(409, withGuestCsrf(quoteChangedBody(e), isGuest, customer));
         }
         throw e;
       }

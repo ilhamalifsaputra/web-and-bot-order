@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { parsePositiveId } from "../../lib/params";
+import { parsePositiveId, parsePageParam } from "../../lib/params";
 import { readMoneyField, readPercentField, moneyFieldError, percentFieldError, exactFields } from "../../lib/moneyField";
 import { VoucherType, VoucherScope } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
@@ -71,7 +71,7 @@ export default async function vouchersApiRoutes(app: FastifyInstance): Promise<v
     const q = req.query as Record<string, string | undefined>;
     const search = q.q?.trim() || null;
     const status = q.status && (VOUCHER_STATUSES as readonly string[]).includes(q.status) ? (q.status as VoucherStatus) : null;
-    const page = Math.max(Number(q.page) || 1, 1);
+    const page = parsePageParam(q.page);
     const offset = (page - 1) * PAGE_SIZE;
 
     const [{ rows, total }, stats] = await Promise.all([

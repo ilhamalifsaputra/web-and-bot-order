@@ -10,7 +10,7 @@ import { addDays, addMinutes, startOfDayUtc } from "@app/core/datetime";
 import { ValidationError } from "@app/core/errors";
 import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
-import { enqueueOwnerTicketReplyEmail, enqueueTicketReplyDm, enqueueAdminNewTicketDm } from "./notifications";
+import { enqueueOwnerTicketReplyEmail, enqueueTicketReplyDm, enqueueAdminNewTicketDm, enqueueTicketClosedDm } from "./notifications";
 import { logAdminAction } from "./audit";
 import { withoutDeliveredContent } from "./orders";
 import { attachSupportMedia } from "./supportAttachments";
@@ -36,16 +36,16 @@ export async function createTicket(
   // schema.prisma). Optional and last so every existing call site (2-6
   // positional args) keeps compiling unchanged.
   opts: { subject?: string | null; category?: TicketCategory | null; productId?: number | null; subcategory?: string; origin?: string; requestKey?: string; attachmentIds?: string[]; dedupeOrder?: boolean } = {},
-): Promise<SupportTicket> {
+): Promise<SupportTicket & { reused?: true }> {
   if (opts.requestKey) {
     const existing = await db.supportTicket.findUnique({ where: { userId_requestKey: { userId, requestKey: opts.requestKey } } });
-    if (existing) return existing;
+    if (existing) return { ...existing, reused: true };
   }
   const subject = opts.subject ?? null;
   const category = opts.category ?? null;
   const productId = opts.productId ?? null;
 
-  let ticket: SupportTicket | undefined;
+  let ticket: (SupportTicket & { reused?: true }) | undefined;
   for (let attempt = 0; attempt < MAX_TICKET_NUMBER_ATTEMPTS; attempt++) {
     const ticketNumber = await uniqueTicketNumberCandidate(db);
     try {
@@ -55,7 +55,7 @@ export async function createTicket(
           const owned = await tx.order.findFirst({ where: { id: orderId, userId }, select: { id: true } });
           if (!owned) throw new ValidationError("error.order_not_found");
           const previous = await getOpenTicketForOrder(tx, orderId);
-          if (previous) return previous;
+          if (previous) return { ...previous, reused: true as const };
         }
         const created = await tx.supportTicket.create({
           data: { userId, message, photoFileIds, attachmentUrls, orderId, ticketNumber, subject, category, productId, subcategory: opts.subcategory, origin: opts.origin ?? "WEB", requestKey: opts.requestKey },
@@ -71,7 +71,7 @@ export async function createTicket(
     } catch (e) {
       if (isUniqueViolation(e) && opts.requestKey) {
         const existing = await db.supportTicket.findUnique({ where: { userId_requestKey: { userId, requestKey: opts.requestKey } } });
-        if (existing) return existing;
+        if (existing) return { ...existing, reused: true };
       }
       if (isUniqueViolation(e) && attempt < MAX_TICKET_NUMBER_ATTEMPTS - 1) {
         await new Promise((resolve) => setTimeout(resolve, Math.floor(Math.random() * 25)));
@@ -193,21 +193,56 @@ export function countOpenTickets(db: Db): Promise<number> {
 // ---- Operational queue (web-admin) ----------------------------------------
 
 /**
- * Close a ticket; return the ticket owner's telegram_id (to notify) or null.
- * Atomic conditional claim — `count===1` means THIS call is the one that
+ * Close a ticket; report whether THIS call closed it and the owner's
+ * telegram_id (see `CloseTicketResult`). Atomic conditional claim — `count===1` means THIS call is the one that
  * actually flipped it, so a double-tap "Close" can never fire two DMs to the
  * buyer (Bot-3 fix, security audit 2026-06-23).
  */
-export async function closeTicket(db: Db, ticketId: number): Promise<bigint | null> {
+export async function closeTicket(
+  db: Db,
+  ticketId: number,
+  opts: { autoClosed?: boolean } = {},
+): Promise<CloseTicketResult> {
+  // The close and the buyer's TICKET_CLOSED_DM row commit together.
+  if ("$transaction" in db) return db.$transaction((tx) => closeTicket(tx, ticketId, opts));
+  const closedAt = new Date();
   const res = await db.supportTicket.updateMany({
     where: { id: ticketId, status: { not: TicketStatus.CLOSED } },
-    data: { status: TicketStatus.CLOSED, closedAt: new Date(), lastStatusChangeAt: new Date(), lastActivityAt: new Date() },
+    data: { status: TicketStatus.CLOSED, closedAt, lastStatusChangeAt: closedAt, lastActivityAt: closedAt },
   });
-  if (res.count === 0) return null;
-  const ticket = await db.supportTicket.findUnique({ where: { id: ticketId } });
-  if (!ticket) return null;
+  if (res.count === 0) return { closed: false, telegramId: null };
+  const ticket = await db.supportTicket.findUniqueOrThrow({ where: { id: ticketId } });
   const user = await db.user.findUnique({ where: { id: ticket.userId } });
-  return user ? user.telegramId : null;
+  if (!user) return { closed: true, telegramId: null };
+  await enqueueTicketClosedNotice(db, ticketId, closedAt, user, opts.autoClosed);
+  return { closed: true, telegramId: user.telegramId };
+}
+
+/** What `closeTicket` did. `closed` is true only when THIS call moved the
+ * ticket to CLOSED (false for a missing or already-closed ticket), so callers
+ * audit exactly once per real close. `telegramId` is the owner's Telegram id,
+ * null for a web-only buyer (who gets no DM) or when nothing was closed. */
+export type CloseTicketResult = { closed: boolean; telegramId: bigint | null };
+
+/** Queue the buyer's "your ticket was closed" DM for one actual close. The
+ * dedupe key is per close (ticket id + close time), so a repeated call for the
+ * same close is a no-op while a reopen-then-close notifies again. A web-only
+ * buyer (no telegramId) has nobody to DM. */
+async function enqueueTicketClosedNotice(
+  db: Db,
+  ticketId: number,
+  closedAt: Date,
+  user: { telegramId: bigint | null; language: string | null },
+  autoClosed?: boolean,
+): Promise<void> {
+  if (user.telegramId === null) return;
+  await enqueueTicketClosedDm(db, {
+    ticketId,
+    chatId: Number(user.telegramId),
+    buyerLanguage: user.language,
+    autoClosed,
+    dedupeKey: `ticket-closed:${ticketId}:${closedAt.getTime()}`,
+  });
 }
 
 /** Customer self-close ("Issue Solved"). Same atomic conditional guard as
@@ -656,6 +691,11 @@ export async function transitionTicketStatus(
   }
 
   const ticket = await db.supportTicket.findUniqueOrThrow({ where: { id: ticketId } });
+
+  if (to === TicketStatus.CLOSED) {
+    const owner = await db.user.findUnique({ where: { id: ticket.userId } });
+    if (owner) await enqueueTicketClosedNotice(db, ticketId, now, owner);
+  }
 
   await logAdminAction(db, {
     adminId,
@@ -1254,8 +1294,9 @@ export async function bulkSetTicketPriority(
 export async function bulkCloseTickets(
   db: Db,
   ids: number[],
-): Promise<{ succeeded: number[]; failed: { id: number; error: string }[] }> {
+): Promise<{ succeeded: number[]; closed: number[]; failed: { id: number; error: string }[] }> {
   const succeeded: number[] = [];
+  const closed: number[] = [];
   const failed: { id: number; error: string }[] = [];
   for (const id of ids) {
     const ticket = await db.supportTicket.findUnique({ where: { id } });
@@ -1263,10 +1304,13 @@ export async function bulkCloseTickets(
       failed.push({ id, error: "ticket not found" });
       continue;
     }
-    await closeTicket(db, id); // no-op via the atomic guard if already CLOSED
+    // No-op via the atomic guard if already CLOSED; `closed` lists only the
+    // tickets this call actually closed, so the caller audits each once.
+    const result = await closeTicket(db, id);
+    if (result.closed) closed.push(id);
     succeeded.push(id);
   }
-  return { succeeded, failed };
+  return { succeeded, closed, failed };
 }
 
 /** Bulk resolve — unlike bulkCloseTickets, an already-RESOLVED-or-CLOSED

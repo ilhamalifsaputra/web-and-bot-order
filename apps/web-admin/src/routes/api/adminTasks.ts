@@ -33,6 +33,7 @@ import {
 } from "@app/db";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
 import { displayDateTime } from "../../dateDisplay";
+import { parsePageParam } from "../../lib/params";
 
 const STATUS_VALUES = Object.values(AdminTaskStatus) as string[];
 const TYPE_VALUES = Object.values(AdminTaskType) as string[];
@@ -106,7 +107,7 @@ export default async function adminTasksApiRoutes(app: FastifyInstance): Promise
 
   app.get("/api/admin-tasks", { preHandler: currentAdmin }, async (req, reply) => {
     const q = req.query as Record<string, string | undefined>;
-    const page = Math.max(Number(q.page) || 1, 1);
+    const page = parsePageParam(q.page);
     const requestedPageSize = Number(q.pageSize);
     const pageSize = PAGE_SIZE_OPTIONS.includes(requestedPageSize) ? requestedPageSize : DEFAULT_PAGE_SIZE;
     const offset = (page - 1) * pageSize;

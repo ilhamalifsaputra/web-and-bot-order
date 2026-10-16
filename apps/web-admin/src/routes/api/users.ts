@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { csvRow } from "../../lib/csv";
-import { parsePositiveId } from "../../lib/params";
+import { parsePositiveId, parsePageParam } from "../../lib/params";
 import { readMoneyField, moneyFieldError } from "../../lib/moneyField";
 import { UserRole } from "@app/core/enums";
 import { Decimal, isValidWalletAdjustment } from "@app/core/money";
@@ -93,7 +93,7 @@ function buildUserFilter(q: Record<string, string | undefined>): UserFilter {
 export default async function usersApiRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/users", { preHandler: currentAdmin }, async (req, reply) => {
     const q = req.query as Record<string, string | undefined>;
-    const page = Math.max(Number(q.page) || 1, 1);
+    const page = parsePageParam(q.page);
     const requestedPageSize = Number(q.pageSize);
     const pageSize = PAGE_SIZE_OPTIONS.includes(requestedPageSize) ? requestedPageSize : DEFAULT_PAGE_SIZE;
     const offset = (page - 1) * pageSize;

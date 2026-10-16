@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { parsePositiveId } from "../../lib/params";
+import { parsePositiveId, parsePageParam } from "../../lib/params";
 import { EMAIL_RECIPIENT_RE } from "@app/core/mailer";
 import { NotificationStatus } from "@app/core/enums";
 import { prisma, listNotifications, countNotifications, outboxStatusCounts, retryNotification, getNotification, logAdminAction } from "@app/db";
@@ -33,7 +33,7 @@ function emailDiagnostics(row: { channel: string; event: string; status: string;
     ? new Date(evidence.acceptedAt).toISOString() : null;
   const emailErrorCode = row.lastError ? SAFE_EMAIL_ERRORS.has(row.lastError) ? row.lastError : "LEGACY_ERROR_REDACTED" : null;
   const deliveryOutcome = row.status === "SENT" ? emailAcceptedAt ? "transport_accepted" : "sent_without_evidence"
-    : emailErrorCode?.startsWith("SKIPPED_") ? "skipped" : emailErrorCode === "NO_RECIPIENT" ? "no_recipient"
+    : row.status === "SKIPPED" || emailErrorCode?.startsWith("SKIPPED_") ? "skipped" : emailErrorCode === "NO_RECIPIENT" ? "no_recipient"
     : row.status === "PENDING" ? "queued" : row.status === "SENDING" ? "attempting" : "failed";
   return {
     payloadJson: JSON.stringify({ recipient: emailRecipientMasked, accepted_at: emailAcceptedAt }),
@@ -50,7 +50,7 @@ export default async function outboxApiRoutes(app: FastifyInstance): Promise<voi
   app.get("/api/outbox", { preHandler: currentAdmin }, async (req, reply) => {
     const q = req.query as Record<string, string | undefined>;
     const status = q.status && STATUS_VALUES.includes(q.status) ? q.status : null;
-    const page = Math.max(Number(q.page) || 1, 1);
+    const page = parsePageParam(q.page);
     const offset = (page - 1) * PAGE_SIZE;
 
     const [rows, total, counts] = await Promise.all([
@@ -77,7 +77,7 @@ export default async function outboxApiRoutes(app: FastifyInstance): Promise<voi
     const id = parsePositiveId((req.params as { id: string }).id);
     if (id === null) return reply.code(400).send({ error: "Invalid notification id." });
     const existing = await getNotification(prisma, id);
-    if (existing?.channel === "EMAIL" && !["FAILED","DEAD_LETTER"].includes(existing.status)) return reply.code(409).send({error:"Only failed email notifications may be retried."});
+    if (existing && !["FAILED","DEAD_LETTER"].includes(existing.status)) return reply.code(409).send({error:"Only failed notifications may be retried."});
     const ok = await retryNotification(prisma, id);
     if (!ok) return reply.code(404).send({ error: "That notification no longer exists." });
     await logAdminAction(prisma, {

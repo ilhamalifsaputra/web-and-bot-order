@@ -51,9 +51,11 @@ import { adjustWallet } from "./users";
 import { postUnderpaidTopupCreditPosting, postWalletTopupPosting } from "./ledgerPostings";
 import { finalizeOrderPayment, writeWithUniqueRailAmount, type UniqueAmountRail } from "./pricing";
 import { enqueueAdminOverpaid, enqueueOwnerWalletTopupEmail, enqueueWalletTopupCreditedDm, enqueueTransactionReviewAlert } from "./notifications";
+import { enqueueNotificationSafely } from "./notificationIsolation";
 import { ensureFulfillmentMessage, wakeFulfillmentMessage, reserveTransactionMessage } from "./fulfillmentMessages";
 import { confirmPaymentAttempt, getPendingPaymentAttempt } from "./payments";
 import { logAdminAction } from "./audit";
+import { KEYLESS_DEDUPE_WINDOW_MS } from "./idempotency";
 
 const ZERO = new Decimal(0);
 
@@ -526,6 +528,67 @@ export async function createWalletTopupOrder(
 }
 
 /**
+ * `createWalletTopupOrder` for the storefront form, which sends no idempotency
+ * key: a request equivalent to a top-up this buyer opened moments ago gets that
+ * top-up back instead of a second invoice (backend audit pass 2, A7). Before
+ * this, a double-tapped "Top up" opened two pending invoices for one intention.
+ *
+ * Equivalent means the same buyer, amount (compared by value), currency and
+ * rail, still PENDING_PAYMENT and still payable (not past `expiresAt`), created
+ * within KEYLESS_DEDUPE_WINDOW_MS — the same window, and the same reasoning, as
+ * the keyless order dedupe in ./idempotency. Outside the window, or once the
+ * earlier top-up is paid, cancelled or expired, the same request opens a new
+ * top-up, so a buyer who really wants a second one still gets it.
+ *
+ * Race-safe on its own: the buyer's user row is locked (`FOR UPDATE`, the lock
+ * `adjustWallet` already takes for every balance change) before the lookup, so
+ * two concurrent requests are serialized and the second one finds the first's
+ * top-up. Must run inside the caller's `$transaction` for the lock to hold until
+ * the new order is committed. Nothing is debited or credited here, so the lock
+ * is held only for the lookup and the order insert.
+ */
+export async function createOrReuseWalletTopupOrder(
+  db: Db,
+  args: Parameters<typeof createWalletTopupOrder>[1] & { now?: Date },
+): Promise<{ order: NonNullable<Awaited<ReturnType<typeof getOrder>>>; reused: boolean }> {
+  let amount: Decimal | null = null;
+  try {
+    amount = new Decimal(args.amount);
+  } catch {
+    // Unreadable — createWalletTopupOrder refuses it with its own error below.
+  }
+  if (amount && amount.isFinite()) {
+    await db.$queryRaw`SELECT id FROM users WHERE id = ${args.userId} FOR UPDATE`;
+    const now = args.now ?? new Date();
+    const existing = await db.order.findFirst({
+      where: {
+        userId: args.userId,
+        kind: OrderKind.WALLET_TOPUP,
+        status: OrderStatus.PENDING_PAYMENT,
+        currency: args.currency,
+        paymentMethod: args.method,
+        subtotalAmount: { equals: amount },
+        createdAt: { gte: new Date(now.getTime() - KEYLESS_DEDUPE_WINDOW_MS) },
+        OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+      },
+      orderBy: { id: "desc" },
+      select: { id: true },
+    });
+    if (existing) {
+      const order = await getOrder(db, existing.id);
+      if (order) {
+        logger.info(
+          { orderId: order.id, userId: args.userId },
+          `Reused pending wallet top-up ${order.orderCode} for an identical request sent within ${KEYLESS_DEDUPE_WINDOW_MS / 1000} seconds, instead of opening a second invoice.`,
+        );
+        return { order, reused: true };
+      }
+    }
+  }
+  return { order: await createWalletTopupOrder(db, args), reused: false };
+}
+
+/**
  * Settle a paid wallet-topup order: atomically claim PENDING_PAYMENT (or
  * CANCELLED — see `isLateSettleableWalletTopup`) -> DELIVERED (same idiom as
  * `approveOrder`, orders.ts:1284), then credit the
@@ -616,11 +679,25 @@ export async function settleWalletTopup(
   // top-up reserves nothing that cancelling gave away. Every other status —
   // DELIVERED above all — still fails the claim, so the double-settlement
   // no-op below is untouched.
-  const wasCancelled = order.status === OrderStatus.CANCELLED;
-  const claim = await db.order.updateMany({
-    where: { id: orderId, status: { in: [OrderStatus.PENDING_PAYMENT, OrderStatus.CANCELLED] } },
-    data: { status: OrderStatus.DELIVERED, paidAt: now, deliveredAt: now, paymentState: "PAID", walletCreditState: "CREDITED" },
+  //
+  // B11 (backend audit pass 2): the claim is tried PENDING_PAYMENT first, then
+  // CANCELLED — the same two statuses as one `status IN (...)` claim, so the
+  // same orders get credited — but each attempt names the one status it
+  // takes, so `wasCancelled` is what the claim actually took (not what the
+  // earlier read saw) and the history row below records the right move.
+  const settledData = { status: OrderStatus.DELIVERED, paidAt: now, deliveredAt: now, paymentState: "PAID", walletCreditState: "CREDITED" };
+  let wasCancelled = false;
+  let claim = await db.order.updateMany({
+    where: { id: orderId, status: OrderStatus.PENDING_PAYMENT },
+    data: settledData,
   });
+  if (claim.count !== 1) {
+    claim = await db.order.updateMany({
+      where: { id: orderId, status: OrderStatus.CANCELLED },
+      data: settledData,
+    });
+    wasCancelled = claim.count === 1;
+  }
   if (claim.count !== 1) {
     const current = await getOrder(db, orderId);
     const currentUser = await db.user.findUniqueOrThrow({ where: { id: current!.userId } });
@@ -638,6 +715,19 @@ export async function settleWalletTopup(
     );
     return { order: current!, credited: new Decimal(0), newBalance: currentBalance };
   }
+
+  // The claim above is this order's move to DELIVERED (PENDING_PAYMENT ->
+  // DELIVERED, or the WALLET_TOPUP-only CANCELLED -> DELIVERED edge in
+  // LEGAL_TRANSITIONS, orderStatus.ts). It keeps its own `updateMany` because
+  // it stamps paidAt/deliveredAt/paymentState/walletCreditState in the same
+  // write, and records its history row here, as approveOrder does.
+  await db.orderStatusHistory.create({
+    data: {
+      orderId,
+      status: OrderStatus.DELIVERED,
+      meta: wasCancelled ? "wallet_topup_late_credit" : "wallet_topup_credited",
+    },
+  });
 
   if (wasCancelled) {
     logger.warn(
@@ -698,17 +788,24 @@ export async function settleWalletTopup(
   // has configured the master toggle, owner_email_on_wallet_topup, and a
   // valid owner_email — same inert-until-configured contract every other
   // OWNER_EMAIL_* event follows.
-  await enqueueOwnerWalletTopupEmail(db, {
-    orderId: order.id,
-    orderCode: order.orderCode,
-    customerLabel: customerLabel(order.user),
-    amount: new Decimal(order.totalAmount),
-    currency: order.currency,
-    newBalance,
-    paymentMethod: order.paymentMethod,
-    transactionId: order.paymentRef ?? order.binanceTxid ?? order.bybitTxid ?? null,
-    toppedUpAt: now,
-  });
+  //
+  // Each notification below runs behind enqueueNotificationSafely: the gateway
+  // already holds the buyer's money, so a failed enqueue (a JS throw or a
+  // database error) is logged and skipped, never allowed to roll back the
+  // credit and ledger posting above.
+  await enqueueNotificationSafely(db, { orderId: order.id, notification: "owner wallet top-up email" }, () =>
+    enqueueOwnerWalletTopupEmail(db, {
+      orderId: order.id,
+      orderCode: order.orderCode,
+      customerLabel: customerLabel(order.user),
+      amount: new Decimal(order.totalAmount),
+      currency: order.currency,
+      newBalance,
+      paymentMethod: order.paymentMethod,
+      transactionId: order.paymentRef ?? order.binanceTxid ?? order.bybitTxid ?? null,
+      toppedUpAt: now,
+    }),
+  );
 
   // Buyer notification — the single call site for WALLET_TOPUP_CREDITED_DM
   // across all six top-up rails (see this function's own doc-comment).
@@ -719,14 +816,17 @@ export async function settleWalletTopup(
   await ensureFulfillmentMessage(db, orderId);
   await wakeFulfillmentMessage(db, orderId, now, { correctFinishedOutcome: true });
   if (credited.greaterThan(0) && order.user.telegramId != null) {
-    await enqueueWalletTopupCreditedDm(db, {
-      orderId: order.id,
-      orderCode: order.orderCode,
-      chatId: Number(order.user.telegramId),
-      amount: credited,
-      currency: order.currency,
-      newBalance,
-    });
+    const chatId = Number(order.user.telegramId);
+    await enqueueNotificationSafely(db, { orderId: order.id, notification: "buyer wallet top-up credited Telegram message" }, () =>
+      enqueueWalletTopupCreditedDm(db, {
+        orderId: order.id,
+        orderCode: order.orderCode,
+        chatId,
+        amount: credited,
+        currency: order.currency,
+        newBalance,
+      }),
+    );
   }
 
   const refreshed = await getOrder(db, orderId);
@@ -860,15 +960,21 @@ export async function flagWalletTopupOverpayment(
   if (!excess.greaterThan(0)) return null;
 
   await args.markLedgerOverpaid();
-  await enqueueAdminOverpaid(db, {
-    orderId: args.order.id,
-    orderCode: args.order.orderCode,
-    paid,
-    expected,
-    excess,
-    currency: args.order.currency,
-    walletTopup: true,
-  });
+  // The alert is a side effect of a credit that already landed in this same
+  // transaction: a failed enqueue is logged and skipped, never allowed to roll
+  // the credit back (enqueueNotificationSafely explains the savepoint). The
+  // ledger "overpaid" flag above still commits, so the order page shows it.
+  await enqueueNotificationSafely(db, { orderId: args.order.id, notification: "admin wallet top-up overpaid alert" }, () =>
+    enqueueAdminOverpaid(db, {
+      orderId: args.order.id,
+      orderCode: args.order.orderCode,
+      paid,
+      expected,
+      excess,
+      currency: args.order.currency,
+      walletTopup: true,
+    }),
+  );
   logger.warn(
     `${args.rail} wallet top-up order ${args.order.orderCode} was overpaid — got ${paid.toString()}, expected ${expected.toString()} (excess ${excess.toString()} ${args.order.currency}). The buyer's balance was credited the order total only; the ledger row is flagged overpaid and an admin alert was enqueued so the excess can be returned from the order page.`,
   );

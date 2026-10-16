@@ -721,6 +721,15 @@ describe("notifier templates.render", () => {
     expect(out).toBe("Your ticket has been closed. Open a new one if you need further help.");
   });
 
+  it("renders the auto-closed TICKET_CLOSED_DM wording like the locale keys ticket.auto_closed", () => {
+    expect(render("TICKET_CLOSED_DM", { ticket_id: 7, auto_closed: true, buyer_language: "en" })).toBe(
+      "Ticket <b>#7</b> was automatically closed after 48 hours of inactivity. Open a new one if you still need help.",
+    );
+    expect(render("TICKET_CLOSED_DM", { ticket_id: 7, auto_closed: true, buyer_language: "id" })).toBe(
+      "Tiket <b>#7</b> ditutup otomatis setelah 48 jam tanpa aktivitas.\nBuka tiket baru jika masih butuh bantuan.",
+    );
+  });
+
   it("renders TICKET_CLOSED_DM in Indonesian when buyer_language is 'id'", () => {
     const out = render("TICKET_CLOSED_DM", { buyer_language: "id" });
     expect(out).toBe("Tiket ditutup. Buka tiket baru jika masih butuh bantuan.");

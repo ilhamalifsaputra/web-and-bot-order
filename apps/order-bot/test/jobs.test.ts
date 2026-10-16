@@ -929,15 +929,18 @@ describe("autoCloseStaleTickets", () => {
     const healthy = await makeStaleTicket(secondUser.id);
     const api = fakeApi();
 
-    const originalUpdateMany = prisma.supportTicket.updateMany.bind(prisma.supportTicket);
+    // closeTicket now runs its close + outbox write in one interactive
+    // transaction, so inject the failure there: the first ticket's
+    // transaction is the one that times out.
+    const originalTransaction = prisma.$transaction.bind(prisma) as (...a: unknown[]) => Promise<unknown>;
+    let transactionCalls = 0;
     const spy = vi
-      .spyOn(prisma.supportTicket, "updateMany")
-      .mockImplementation(((args: { where?: { id?: number } }) => {
-        if (args.where?.id === failing.id) {
-          return Promise.reject(new Error("simulated write-lock timeout"));
-        }
-        return originalUpdateMany(args as Parameters<typeof originalUpdateMany>[0]);
-      }) as typeof prisma.supportTicket.updateMany);
+      .spyOn(prisma, "$transaction")
+      .mockImplementation(((...a: unknown[]) => {
+        transactionCalls += 1;
+        if (transactionCalls === 1) return Promise.reject(new Error("simulated write-lock timeout"));
+        return originalTransaction(...a);
+      }) as unknown as typeof prisma.$transaction);
 
     await autoCloseStaleTickets(api);
     spy.mockRestore();
@@ -948,8 +951,12 @@ describe("autoCloseStaleTickets", () => {
     const healthyRow = await prisma.supportTicket.findUnique({ where: { id: healthy.id } });
     expect(healthyRow!.status).toBe(TicketStatus.CLOSED); // still processed despite the earlier failure
 
-    expect(api.sendMessage).toHaveBeenCalledTimes(1);
-    expect(api.sendMessage).toHaveBeenCalledWith(9001, expect.any(String), expect.anything());
+    // B6: the buyer's notice goes through the outbox (retryable), never a
+    // one-shot direct send from the job.
+    expect(api.sendMessage).not.toHaveBeenCalled();
+    const rows = await prisma.notificationOutbox.findMany({ where: { event: NotificationEvent.TICKET_CLOSED_DM } });
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0]!.payloadJson)).toMatchObject({ chat_id: 9001, ticket_id: healthy.id, auto_closed: true });
   });
 });
 

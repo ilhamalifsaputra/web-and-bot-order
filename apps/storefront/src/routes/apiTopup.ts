@@ -59,6 +59,9 @@ import {
   IdempotencyKeyReuseError,
   IdempotencyRequestInProgressError,
   type IdempotentReplay,
+  QuoteMismatchError,
+  deriveKeylessIdempotencyKey,
+  KEYLESS_DEDUPE_WINDOW_MS,
 } from "@app/db";
 import { NicknameService } from "@app/core/nickname/service";
 import { logger } from "@app/core/logger";
@@ -73,7 +76,13 @@ import {
   guestCheckoutRateLimited,
   checkoutSubmitRateLimited,
 } from "../rateLimit";
-import { checkoutView, performDirectCheckout, performDirectWalletCheckout } from "./checkout";
+import {
+  checkoutView,
+  performDirectCheckout,
+  performDirectWalletCheckout,
+  readExpectedTotal,
+  quoteChangedBody,
+} from "./checkout";
 import { csrfOk, originOk } from "./cart";
 import { normalizeGuestEmail, normalizeIdempotencyKey, sendGuestOrderCodeEmail, withGuestCsrf } from "./api";
 import { establishSession } from "./auth";
@@ -97,6 +106,11 @@ const NOT_AVAILABLE: CheckAccountResponse = { available: false };
  * (routes/api.ts) under its own name so the two routes' ledger rows can never
  * collide even if a client (mistakenly) reused the same key across both. */
 const TOPUP_ORDER_IDEMPOTENCY_ENDPOINT = "storefront.topup.order.create";
+
+/** Ledger name for the server-derived keys of signed-in requests that sent no
+ * `Idempotency-Key` (A7, see deriveKeylessIdempotencyKey). Separate from the
+ * header endpoint above so a client-chosen key can never match a derived one. */
+const TOPUP_ORDER_KEYLESS_IDEMPOTENCY_ENDPOINT = "storefront.topup.order.create.keyless";
 
 /** Shared body shape of the two instant-buy routes below. */
 interface TopupLineBody {
@@ -274,6 +288,9 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
       /** Guest checkout only — the contact address the order is tracked by.
        * Ignored entirely for a signed-in buyer. */
       guest_email?: string;
+      /** Wallet methods only (A6): the total the buyer was quoted, in the
+       * wallet's currency — see readExpectedTotal (./checkout). Optional. */
+      expected_total?: unknown;
     };
   }>("/topup/order", async (req, reply) => {
     // Rate limit FIRST — cheapest possible short-circuit, before any
@@ -319,6 +336,16 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
 
     const method = (req.body?.method ?? "").toLowerCase();
     const voucherCode = (req.body?.voucher_code ?? "").trim().toUpperCase() || null;
+    const isWalletMethod = method === "wallet_idr" || method === "wallet_usdt";
+
+    // Quote binding (A6) — same rule as POST /api/v1/checkout (routes/api.ts):
+    // only the wallet methods, which debit in this request, read it; a
+    // malformed value is refused before anything runs; and it joins the
+    // idempotency hash only when present, so quote-less requests hash exactly
+    // as they did before.
+    const expected = isWalletMethod ? readExpectedTotal(req.body?.expected_total) : { ok: true as const, value: null };
+    if (!expected.ok) return reply.code(400).send({ error: "invalid_request" });
+    const quoteHashPart = expected.value ? { expectedTotal: expected.value.toString() } : {};
 
     // Idempotency (Task 3): an `Idempotency-Key` header lets a double-tapped
     // "Beli" button or a network retry replay the exact response from the
@@ -341,39 +368,67 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
     // `customerData` instead — same trade-off checkout's guest branch makes:
     // a guest's Idempotency-Key is unique per checkout ATTEMPT, not tied to
     // an account, since no account exists until the attempt succeeds.
+    //
+    // No header (backend audit pass 2, A7): a SIGNED-IN keyless request is
+    // deduplicated on a key derived from the same signed-in content the header
+    // path hashes — which includes the authenticated `userId`, so only the same
+    // buyer can ever match it — for KEYLESS_DEDUPE_WINDOW_MS. Before this, a
+    // double-tapped "Beli" with no header created two orders and, on the wallet
+    // rail, debited the balance twice. It has its own ledger endpoint so it can
+    // never collide with a header key, a completed response is replayed only
+    // inside the window, and only a success is stored (see `respond`), so a
+    // refused attempt — insufficient balance, a changed quote — can be retried
+    // at once. Keyless GUESTS are deliberately left alone: they have no
+    // authenticated identity, so a key derived from guessable content (email,
+    // denomination) would let a stranger replay someone else's response — and
+    // with it the order code, which is a /track credential — and a guest cannot
+    // pay from a balance, so a duplicate guest order never moves money.
     const idempotencyKeyHeader = normalizeIdempotencyKey(req.headers["idempotency-key"]);
+    const signedInContent = signedIn
+      ? {
+          denominationId: denom.id,
+          quantity,
+          method,
+          voucherCode,
+          userId: signedIn.userId,
+          customerData: req.body?.customer_data ?? null,
+          ...quoteHashPart,
+        }
+      : null;
     const idem = idempotencyKeyHeader
       ? {
           key: idempotencyKeyHeader,
+          endpoint: TOPUP_ORDER_IDEMPOTENCY_ENDPOINT,
+          keyless: false,
           requestHash: hashIdempotentRequest(
-            signedIn
-              ? {
-                  denominationId: denom.id,
-                  quantity,
-                  method,
-                  voucherCode,
-                  userId: signedIn.userId,
-                  customerData: req.body?.customer_data ?? null,
-                }
-              : {
-                  denominationId: denom.id,
-                  quantity,
-                  method,
-                  voucherCode,
-                  guestEmail: (req.body?.guest_email ?? "").trim().toLowerCase(),
-                  customerData: req.body?.customer_data ?? null,
-                },
+            signedInContent ?? {
+              denominationId: denom.id,
+              quantity,
+              method,
+              voucherCode,
+              guestEmail: (req.body?.guest_email ?? "").trim().toLowerCase(),
+              customerData: req.body?.customer_data ?? null,
+              ...quoteHashPart,
+            },
           ),
         }
-      : null;
+      : signedInContent
+        ? {
+            key: deriveKeylessIdempotencyKey(signedInContent),
+            endpoint: TOPUP_ORDER_KEYLESS_IDEMPOTENCY_ENDPOINT,
+            keyless: true,
+            requestHash: hashIdempotentRequest(signedInContent),
+          }
+        : null;
 
     if (idem) {
       let replay: IdempotentReplay | null;
       try {
         replay = await idempotencyClaims.claim(prisma, req, {
           key: idem.key,
-          endpoint: TOPUP_ORDER_IDEMPOTENCY_ENDPOINT,
+          endpoint: idem.endpoint,
           requestHash: idem.requestHash,
+          ...(idem.keyless ? { replayWindowMs: KEYLESS_DEDUPE_WINDOW_MS } : {}),
         });
       } catch (e) {
         if (e instanceof IdempotencyKeyReuseError) {
@@ -394,11 +449,15 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
     // instead of re-running the mutation. Used for every exit below,
     // including the 400s: a validation failure is just as safe and just as
     // worth replaying as a success, since replaying it re-runs nothing.
+    // A keyless claim stores successes only: an unsaved claim is released when
+    // the response goes out (the onResponse hook above), so a buyer who fixes
+    // what was refused can retry straight away instead of being replayed the
+    // refusal for the rest of the window.
     const respond = async (statusCode: number, body: unknown) => {
-      if (idem) {
+      if (idem && (!idem.keyless || (statusCode >= 200 && statusCode < 300))) {
         await idempotencyClaims.save(prisma, req, {
           key: idem.key,
-          endpoint: TOPUP_ORDER_IDEMPOTENCY_ENDPOINT,
+          endpoint: idem.endpoint,
           requestHash: idem.requestHash,
           statusCode,
           responseBody: JSON.stringify(body),
@@ -421,7 +480,7 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
 
     // Wallet credit — no gateway, settles synchronously. Only ever reachable
     // for a signed-in buyer: establishGuestTopupCustomer rejects these tokens.
-    if (method === "wallet_idr" || method === "wallet_usdt") {
+    if (isWalletMethod) {
       try {
         const { orderCode } = await performDirectWalletCheckout(
           customer,
@@ -429,6 +488,7 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
           method === "wallet_idr" ? OrderCurrency.IDR : OrderCurrency.USDT,
           voucherCode,
           req.body?.customer_data,
+          expected.value,
         );
         return respond(
           201,
@@ -437,6 +497,9 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
       } catch (e) {
         if (e instanceof ValidationError) {
           return respond(400, withGuestCsrf(errorBody(e), isGuest, customer));
+        }
+        if (e instanceof QuoteMismatchError) {
+          return respond(409, withGuestCsrf(quoteChangedBody(e), isGuest, customer));
         }
         throw e;
       }

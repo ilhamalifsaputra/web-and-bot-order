@@ -3,7 +3,7 @@ import { prisma, createSupportUpload, finalizeSupportUpload } from "@app/db";
 import { supportMediaAvailable, supportMediaLimits, supportObjectUrl } from "@app/core/supportMedia";
 import { ValidationError } from "@app/core/errors";
 import { errorBody } from "@app/core/errorBody";
-import { csrfProtect, currentAdmin } from "../../plugins/auth";
+import { blockReadonlyReads, csrfProtect, currentAdmin } from "../../plugins/auth";
 
 export async function supportMediaRoutes(app: FastifyInstance) {
   app.get("/api/support/media/options", { preHandler: currentAdmin }, async () => ({ enabled: await supportMediaAvailable(), ...supportMediaLimits() }));
@@ -23,7 +23,7 @@ export async function supportMediaRoutes(app: FastifyInstance) {
     await prisma.supportAttachment.updateMany({ where: { id: req.params.id, ownerId: req.admin!.userId, attachedAt: null }, data: { status: "REJECTED", expiresAt: new Date() } });
     return { ok: true };
   });
-  app.get<{ Params: { id: string; filename: string } }>("/api/support/media/:id/:filename", { preHandler: currentAdmin }, async (req, reply) => {
+  app.get<{ Params: { id: string; filename: string } }>("/api/support/media/:id/:filename", { preHandler: blockReadonlyReads }, async (req, reply) => {
     const row = await prisma.supportAttachment.findFirst({ where: { id: req.params.id, ticketId: { not: null }, attachedAt: { not: null }, status: "READY" } });
     if (!row) return reply.code(404).send({ error: "Attachment unavailable." });
     reply.header("Cache-Control", "private, no-store").header("Referrer-Policy", "no-referrer");

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 
 // Heartbeat unit tests use a Settings-only store. Persistent incident state
@@ -45,7 +45,8 @@ import { createOrderDirect, cancelOrder } from "./orders";
 import { ADMIN_IDS_KEY } from "./admins";
 import { setSetting } from "./settings";
 import { createCategory, createCatalogProduct, createDenomination } from "./catalog";
-import { createWalletTopupOrder } from "./wallet_topup";
+import { createWalletTopupOrder, settleWalletTopup } from "./wallet_topup";
+import { logger } from "@app/core/logger";
 import { upsertUser } from "./users";
 import { bulkAddStock } from "./stock";
 import { createPaymentAttempt } from "./payments";
@@ -933,6 +934,135 @@ describe("deliverPaidBybitBscOrder — WALLET_TOPUP routing", () => {
     expect(dmRows).toHaveLength(1);
     const payload = JSON.parse(dmRows[0]!.payloadJson) as Record<string, unknown>;
     expect(payload.order_code).toBe(order.orderCode);
+  });
+});
+
+// A2 (backend audit pass 2): a Bybit BSC top-up sitting in a pre-delivery
+// milestone (PAYMENT_DETECTED/CONFIRMING/CONFIRMED) is normalized back to
+// PENDING_PAYMENT before settleWalletTopup claims it. That normalization used
+// to be an unguarded `order.update` decided on the delivery transaction's own
+// earlier read, so any status another connection committed in between — an
+// admin cancel, another path settling the same top-up — was silently
+// overwritten. These tests commit that concurrent write on a separate
+// connection between the transaction's read and its first write.
+describe("deliverPaidBybitBscOrder — WALLET_TOPUP normalization is a guarded compare-and-swap (A2)", () => {
+  let db: TestDb;
+  let prisma: PrismaClient;
+  let sample: SampleData;
+
+  beforeAll(async () => {
+    db = await makeTestDb();
+    prisma = db.prisma;
+  });
+  afterAll(async () => {
+    await db.cleanup();
+  });
+  beforeEach(async () => {
+    await resetDb(prisma);
+    sample = await buildSampleData(prisma);
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  async function makeConfirmedTopup() {
+    const order = await prisma.$transaction((tx) =>
+      createWalletTopupOrder(tx, { userId: sample.user.id, amount: "10", currency: "USDT", method: PaymentMethod.BYBIT_BSC, rate: "16000" }),
+    );
+    await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.CONFIRMED } });
+    return order;
+  }
+
+  /** `prisma` whose delivery transaction runs `between` (on the real,
+   *  separate `prisma` connection, committed) right after the transaction's
+   *  first `order.findUnique` resolves — i.e. after deliverPaidBybitBscOrder
+   *  read the order as payable, before it wrote anything to it. */
+  function afterFirstOrderRead(between: () => Promise<void>): PrismaClient {
+    type Fn = (...a: unknown[]) => unknown;
+    let fired = false;
+    const wrapTx = (tx: object) =>
+      new Proxy(tx, {
+        get(t, p) {
+          const v = Reflect.get(t, p, t) as unknown;
+          if (p !== "order") return typeof v === "function" ? (v as Fn).bind(t) : v;
+          return new Proxy(v as object, {
+            get(d, q) {
+              const f = Reflect.get(d, q, d) as unknown;
+              if (q === "findUnique" && !fired) {
+                return async (...a: unknown[]) => {
+                  fired = true;
+                  const result = await (f as Fn).apply(d, a);
+                  await between();
+                  return result;
+                };
+              }
+              return typeof f === "function" ? (f as Fn).bind(d) : f;
+            },
+          });
+        },
+      });
+    return new Proxy(prisma, {
+      get(target, prop) {
+        const value = Reflect.get(target, prop, target) as unknown;
+        if (prop === "$transaction") {
+          return (cb: (tx: object) => Promise<unknown>, opts?: unknown) =>
+            (value as Fn).call(target, (tx: object) => cb(wrapTx(tx)), opts);
+        }
+        return typeof value === "function" ? (value as Fn).bind(target) : value;
+      },
+    }) as PrismaClient;
+  }
+
+  it("an admin cancel committed between the read and the write is not overwritten back to PENDING_PAYMENT", async () => {
+    const order = await makeConfirmedTopup();
+    const warn = vi.spyOn(logger, "warn");
+    const racing = afterFirstOrderRead(async () => {
+      await prisma.$transaction((tx) => cancelOrder(tx, order.id, "admin_cancelled", { type: StockActorType.ADMIN, adminId: 1 }));
+    });
+
+    const result = await deliverPaidBybitBscOrder(racing, { orderId: order.id, bybitTxId: "0x" + "c".repeat(64), amount: order.totalAmount });
+
+    // The deposit genuinely arrived, and a cancelled top-up is still
+    // late-settleable (isLateSettleableWalletTopup), so the buyer is credited
+    // exactly once — but as a late credit on the CANCELLED order it really
+    // is, not by silently resurrecting it to PENDING_PAYMENT first.
+    expect(result.status).toBe("delivered");
+    const rows = await prisma.walletTransaction.findMany({ where: { orderId: order.id, reason: "wallet_topup" } });
+    expect(rows).toHaveLength(1);
+    expect(warn.mock.calls.some((c) => String(c[0]).includes("was credited after its payment window had already closed"))).toBe(true);
+    const history = await prisma.orderStatusHistory.findMany({ where: { orderId: order.id }, orderBy: { id: "asc" } });
+    expect(history.map((h) => h.status)).not.toContain(OrderStatus.PENDING_PAYMENT);
+  });
+
+  it("another path settling the same top-up in between is not undone — no second settlement, no failure", async () => {
+    const order = await makeConfirmedTopup();
+    const racing = afterFirstOrderRead(async () => {
+      // The other path (manual match, a second deposit) normalizes and
+      // settles it first, exactly as the guarded code would.
+      await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.PENDING_PAYMENT } });
+      await prisma.$transaction((tx) => settleWalletTopup(tx, order.id, { amount: order.totalAmount }));
+    });
+
+    const result = await deliverPaidBybitBscOrder(racing, { orderId: order.id, bybitTxId: "0x" + "d".repeat(64), amount: order.totalAmount });
+
+    expect(result.status).toBe("delivered");
+    const settled = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(settled.status).toBe(OrderStatus.DELIVERED);
+    expect(settled.walletCreditState).toBe("CREDITED");
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
+    expect(new Decimal(user.walletBalanceUsdt).equals(order.totalAmount)).toBe(true);
+    expect(await prisma.walletTransaction.count({ where: { orderId: order.id, reason: "wallet_topup" } })).toBe(1);
+  });
+
+  it("without a race, the normalization is recorded in the status history before the credit", async () => {
+    const order = await makeConfirmedTopup();
+
+    const result = await deliverPaidBybitBscOrder(prisma, { orderId: order.id, bybitTxId: "0x" + "e".repeat(64), amount: order.totalAmount });
+
+    expect(result.status).toBe("delivered");
+    const history = await prisma.orderStatusHistory.findMany({ where: { orderId: order.id }, orderBy: { id: "asc" } });
+    expect(history.map((h) => h.status)).toEqual([OrderStatus.PENDING_PAYMENT, OrderStatus.DELIVERED]);
+    expect(await prisma.walletTransaction.count({ where: { orderId: order.id, reason: "wallet_topup" } })).toBe(1);
   });
 });
 

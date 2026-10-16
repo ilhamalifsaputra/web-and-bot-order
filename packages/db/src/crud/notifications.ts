@@ -673,18 +673,37 @@ export async function enqueueTicketReplyDm(
  */
 export async function enqueueTicketClosedDm(
   db: Db,
-  args: { ticketId: number; chatId: number; buyerLanguage: string | null },
+  args: {
+    ticketId: number;
+    chatId: number;
+    buyerLanguage: string | null;
+    /** Render the "closed automatically after 48 hours" wording instead of the
+     * plain admin-closed one (autoCloseStaleTickets). */
+    autoClosed?: boolean;
+    /** When given, a second enqueue with the same key is a silent no-op, so a
+     * repeated close call can never DM the buyer twice. */
+    dedupeKey?: string;
+  },
 ): Promise<void> {
+  const payloadJson = JSON.stringify({
+    chat_id: args.chatId,
+    ticket_id: args.ticketId,
+    buyer_language: langCode(args.buyerLanguage),
+    ...(args.autoClosed ? { auto_closed: true } : {}),
+  });
+  if (args.dedupeKey !== undefined) {
+    // Same ON CONFLICT DO NOTHING shape as enqueueNotification: a collision
+    // must not throw, because a UNIQUE violation would abort the caller's
+    // open Postgres transaction. (enqueueNotification itself needs an order id.)
+    await db.$executeRaw`
+      INSERT INTO notification_outbox (event, order_id, payload_json, dedupe_key)
+      VALUES (${NotificationEvent.TICKET_CLOSED_DM}, NULL, ${payloadJson}, ${args.dedupeKey})
+      ON CONFLICT (dedupe_key) DO NOTHING
+    `;
+    return;
+  }
   await db.notificationOutbox.create({
-    data: {
-      event: NotificationEvent.TICKET_CLOSED_DM,
-      orderId: null,
-      payloadJson: JSON.stringify({
-        chat_id: args.chatId,
-        ticket_id: args.ticketId,
-        buyer_language: langCode(args.buyerLanguage),
-      }),
-    },
+    data: { event: NotificationEvent.TICKET_CLOSED_DM, orderId: null, payloadJson },
   });
 }
 
@@ -1139,6 +1158,43 @@ export async function markNotificationSent(
   const res = await db.notificationOutbox.updateMany({
     where: { id: notifId, ...claimGuard(claimedAt) },
     data: { status: NotificationStatus.SENT, sentAt: new Date(), claimedAt: null, ...(payloadJson === undefined ? {} : {payloadJson}), lastError: null },
+  });
+  return res.count === 1;
+}
+
+/**
+ * Mark a row SKIPPED: the dispatcher deliberately did not deliver it (the
+ * email event was switched off, or the same news was already delivered by
+ * another row). SKIPPED is terminal and is not a failure: no attempt is
+ * counted, `sentAt` stays empty, and `reason` goes into `lastError`. It is
+ * never retried or counted by the FAILED metrics, and is pruned like any
+ * other terminal row.
+ *
+ * `releaseDedupeKey` clears the row's `dedupeKey` so the unique slot is free
+ * again. Pass it when the skip is conditional on configuration that can
+ * change (an event switched off): once the owner re-enables it, a new
+ * occurrence of the same fact must be able to enqueue. Leave it off when the
+ * skip IS the dedupe (the news was already delivered): the slot must stay
+ * taken so the same fact is never delivered twice.
+ *
+ * Returns false when nothing was written (row gone, or the caller's claim was
+ * lost to another dispatcher).
+ */
+export async function markNotificationSkipped(
+  db: Db,
+  notifId: number,
+  reason: string,
+  opts: { claimedAt?: Date; releaseDedupeKey?: boolean } = {},
+): Promise<boolean> {
+  const res = await db.notificationOutbox.updateMany({
+    where: { id: notifId, ...claimGuard(opts.claimedAt) },
+    data: {
+      status: NotificationStatus.SKIPPED,
+      lastError: reason.slice(0, 500),
+      claimedAt: null,
+      nextRetryAt: null,
+      ...(opts.releaseDedupeKey ? { dedupeKey: null } : {}),
+    },
   });
   return res.count === 1;
 }
@@ -1826,16 +1882,18 @@ export function getNotification(db: Db, notifId: number) {
 }
 
 /**
- * Requeue a FAILED (or stuck) notification: back to PENDING, attempts reset to
+ * Requeue a FAILED or DEAD_LETTER notification (any channel; never a
+ * PENDING/SENDING/SENT/SKIPPED one, which would re-deliver or revive a
+ * deliberate skip): back to PENDING, attempts reset to
  * 0, error/sent cleared, so the notifier drains it again on its next cycle.
  * `nextRetryAt` is cleared too (Infra-3 fix, security audit 2026-06-23) — an
  * admin clicking "retry" means NOW, not "wait out whatever backoff window
- * this row was already in." Returns false if the row is gone. The web NEVER
+ * this row was already in." Returns false if the row is gone or not retryable. The web NEVER
  * sends Telegram itself.
  */
 export async function retryNotification(db: Db, notifId: number): Promise<boolean> {
   const result = await db.notificationOutbox.updateMany({
-    where: { id: notifId, OR: [{channel:{not:NotificationChannel.EMAIL}}, {channel:NotificationChannel.EMAIL,status:{in:[NotificationStatus.FAILED,NotificationStatus.DEAD_LETTER]}}] },
+    where: { id: notifId, status: { in: [NotificationStatus.FAILED, NotificationStatus.DEAD_LETTER] } },
     data: { status: NotificationStatus.PENDING, attempts: 0, lastError: null, sentAt: null, nextRetryAt: null, claimedAt: null },
   });
   return result.count === 1;

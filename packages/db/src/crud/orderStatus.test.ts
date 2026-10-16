@@ -15,8 +15,9 @@ import {
   tryTransitionOrderStatus,
   markOrderUnderpaid,
   LEGAL_TRANSITIONS,
+  WALLET_TOPUP_ONLY_TRANSITIONS,
 } from "@app/db";
-import { OrderStatus } from "@app/core/enums";
+import { OrderKind, OrderStatus } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 
 let db: TestDb;
@@ -93,10 +94,52 @@ describe("transitionOrderStatus", () => {
     expect(await prisma.orderStatusHistory.count({ where: { orderId } })).toBe(0);
   });
 
-  it.each(["CANCELLED", "REJECTED", "REFUNDED"])(
+  it.each(["REJECTED", "REFUNDED"])(
     "%s is terminal — has zero legal outgoing transitions",
     (status) => {
       expect(LEGAL_TRANSITIONS[status]).toEqual([]);
+    },
+  );
+
+  // B11 (backend audit pass 2): settleWalletTopup's late credit moves a
+  // CANCELLED top-up to DELIVERED. The edge is declared here on purpose, and
+  // is WALLET_TOPUP-only: a cancelled product order released its stock and
+  // must stay undeliverable through every path that uses this helper.
+  it("CANCELLED's only legal target is DELIVERED, and only for a WALLET_TOPUP order", () => {
+    expect(LEGAL_TRANSITIONS[OrderStatus.CANCELLED]).toEqual([OrderStatus.DELIVERED]);
+    expect(WALLET_TOPUP_ONLY_TRANSITIONS.has(`${OrderStatus.CANCELLED}->${OrderStatus.DELIVERED}`)).toBe(true);
+  });
+
+  it("refuses CANCELLED -> DELIVERED on a cancelled PRODUCT order — nothing written", async () => {
+    await prisma.order.update({ where: { id: orderId }, data: { status: OrderStatus.CANCELLED } });
+    await expect(
+      transitionOrderStatus(prisma, { orderId, from: OrderStatus.CANCELLED, to: OrderStatus.DELIVERED }),
+    ).rejects.toMatchObject({ key: "error.illegal_status_transition" });
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: orderId } })).status).toBe(OrderStatus.CANCELLED);
+    expect(await prisma.orderStatusHistory.count({ where: { orderId } })).toBe(0);
+  });
+
+  it("allows CANCELLED -> DELIVERED on a cancelled WALLET_TOPUP order and writes one history row", async () => {
+    await prisma.order.update({ where: { id: orderId }, data: { status: OrderStatus.CANCELLED, kind: OrderKind.WALLET_TOPUP } });
+    await transitionOrderStatus(prisma, { orderId, from: OrderStatus.CANCELLED, to: OrderStatus.DELIVERED });
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: orderId } })).status).toBe(OrderStatus.DELIVERED);
+    expect(await prisma.orderStatusHistory.count({ where: { orderId, status: OrderStatus.DELIVERED } })).toBe(1);
+  });
+
+  // A2 (backend audit pass 2): the Bybit BSC top-up normalization back to
+  // PENDING_PAYMENT goes through the guarded claim; the backward edge is
+  // WALLET_TOPUP-only so no product order can ever be rewound by it.
+  it.each([OrderStatus.PAYMENT_DETECTED, OrderStatus.CONFIRMING, OrderStatus.CONFIRMED])(
+    "%s -> PENDING_PAYMENT is refused for a PRODUCT order and allowed for a WALLET_TOPUP order",
+    async (from) => {
+      await prisma.order.update({ where: { id: orderId }, data: { status: from } });
+      expect(await tryTransitionOrderStatus(prisma, { orderId, from, to: OrderStatus.PENDING_PAYMENT })).toBe(false);
+      expect((await prisma.order.findUniqueOrThrow({ where: { id: orderId } })).status).toBe(from);
+
+      await prisma.order.update({ where: { id: orderId }, data: { kind: OrderKind.WALLET_TOPUP } });
+      expect(await tryTransitionOrderStatus(prisma, { orderId, from, to: OrderStatus.PENDING_PAYMENT })).toBe(true);
+      expect((await prisma.order.findUniqueOrThrow({ where: { id: orderId } })).status).toBe(OrderStatus.PENDING_PAYMENT);
+      expect(await prisma.orderStatusHistory.count({ where: { orderId, status: OrderStatus.PENDING_PAYMENT } })).toBe(1);
     },
   );
 

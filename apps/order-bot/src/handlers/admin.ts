@@ -15,7 +15,7 @@ import { parseMoneyInput } from "@app/core/moneyFormat";
 import { fulfillmentSourceOf, usesLocalInventory } from "@app/core/productAvailability";
 import { serviceForCategoryGroup } from "@app/core/services";
 import { ensureUtc } from "@app/core/datetime";
-import { UserRole, DeadReason, langCode, OrderKind } from "@app/core/enums";
+import { UserRole, DeadReason, OrderKind } from "@app/core/enums";
 import { logger } from "@app/core/logger";
 import { tryDecryptCredentials } from "@app/core/credentialCrypto";
 import {
@@ -42,13 +42,12 @@ import {
   listOpenTickets,
   countOpenTickets,
   closeTicket,
-  enqueueTicketClosedDm,
   logAdminAction,
 } from "@app/db";
 import type { MyContext } from "../context";
 import { adminEdit } from "../util/chat";
 import { BANNER_FILEID_KEY } from "../util/banner";
-import { coreT, t } from "../util/i18n";
+import { t } from "../util/i18n";
 import { esc, formatIdr, formatUsdt, mixedAmount } from "../util/format";
 import { requireAdminId } from "../util/adminAudit";
 import * as akb from "../keyboards/admin";
@@ -651,8 +650,11 @@ async function closeTicketAdmin(ctx: MyContext, ticketId: number): Promise<void>
   // $transaction means a crash between them can never silently lose the
   // audit row for a ticket that DID close (Bot-3 fix, security audit
   // 2026-06-23).
-  const customerTgId = await prisma.$transaction(async (tx) => {
-    const tgId = await closeTicket(tx, ticketId);
+  await prisma.$transaction(async (tx) => {
+    // A repeat tap (or a ticket closed elsewhere) closes nothing, so it is not
+    // audited a second time.
+    const { closed } = await closeTicket(tx, ticketId);
+    if (!closed) return;
     const admin = await getUserByTelegramId(tx, adminTg);
     await logAdminAction(tx, {
       adminId: requireAdminId(admin),
@@ -661,19 +663,11 @@ async function closeTicketAdmin(ctx: MyContext, ticketId: number): Promise<void>
       targetId: ticketId,
       details: `Closed ticket #${ticketId}.`,
     });
-    return tgId;
   });
   await ctx.answerCallbackQuery({ text: t(ctx, "admin.toast.ticket_closed") });
 
-  // Task 2 (Phase C): routed through notification_outbox instead of a direct
-  // ctx.api.sendMessage() — the dispatcher's TICKET_CLOSED_DM branch renders
-  // the exact same coreT("support.ticket_closed", buyerLang) text, in the
-  // buyer's own language.
-  if (customerTgId) {
-    const buyer = await getUserByTelegramId(prisma, customerTgId);
-    const buyerLang = buyer ? langCode(buyer.language) : "en";
-    await enqueueTicketClosedDm(prisma, { ticketId, chatId: Number(customerTgId), buyerLanguage: buyerLang });
-  }
+  // The buyer's TICKET_CLOSED_DM is queued by closeTicket itself, in the same
+  // transaction as the close.
   await adminEdit(ctx, t(ctx, "admin.ticket_closed_body", { id: ticketId }), akb.backToAdminKb(lang));
 }
 

@@ -127,3 +127,52 @@ describe("admin routes reject malformed path ids with 400", () => {
     });
   }
 });
+
+// Backend audit B8: routes that guarded with Number.isInteger/isSafeInteger let
+// ids above the 32-bit ceiling reach Prisma (500), and `page` was unbounded.
+describe("remaining id/page routes never answer 500", () => {
+  const EXTRA: [Method, string][] = [
+    ["GET", "/api/settings/email-notifications/inventory/:id"],
+    ["POST", "/api/settings/email-notifications/inventory/:id"],
+    ["GET", "/api/orders/:id/digiflazz/stream"],
+    ["POST", "/catalog/product/:id/photo"],
+  ];
+  for (const [method, pattern] of EXTRA) {
+    it(`${method} ${pattern}`, async () => {
+      for (const bad of ["abc", "1.5", "-1", "0", "99999999999", "9007199254740991"]) {
+        const res = await app.inject({
+          method,
+          url: pattern.replace(":id", encodeURIComponent(bad)),
+          headers: method === "GET" ? {} : { "content-type": "application/json", "x-csrf-token": csrf },
+          cookies: { [COOKIE]: cookie },
+          ...(method === "GET" ? {} : { payload: "{}" }),
+        });
+        expect({ bad, ok: res.statusCode === 400 || res.statusCode === 404 }).toEqual({ bad, ok: true });
+      }
+    });
+  }
+
+  const PAGE_ROUTES = [
+    "/api/admin-tasks", "/api/audit", "/api/orders", "/api/outbox", "/api/payments", "/api/reviews",
+    "/api/settlements", "/api/stock", "/api/support", "/api/users", "/api/vouchers", "/api/wallet-transactions",
+  ];
+  for (const url of PAGE_ROUTES) {
+    it(`GET ${url}?page=<huge> is clamped, not a 500`, async () => {
+      const res = await app.inject({ method: "GET", url: `${url}?page=1e999`, cookies: { [COOKIE]: cookie } });
+      expect({ url, status: res.statusCode }).toEqual({ url, status: 200 });
+    });
+  }
+});
+
+// Backend audit B10: /uploads/tickets/* refuses the readonly role, but the
+// ticket-media redirect route only required "any admin".
+describe("support media follows the same role gate as /uploads/tickets/*", () => {
+  it("refuses readonly admins and still reaches the lookup for other roles", async () => {
+    const url = "/api/support/media/00000000000000000000000000000000/file.png";
+    const asSuper = await app.inject({ method: "GET", url, cookies: { [COOKIE]: cookie } });
+    expect(asSuper.statusCode).toBe(404); // reaches the attachment lookup, finds nothing
+    await setSetting(prisma, webRoleKey(ADMIN_TG), "readonly");
+    const asReadonly = await app.inject({ method: "GET", url, cookies: { [COOKIE]: cookie } });
+    expect(asReadonly.statusCode).toBe(403);
+  });
+});

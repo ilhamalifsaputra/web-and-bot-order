@@ -16,6 +16,7 @@ import multipart from "@fastify/multipart";
 import { config } from "@app/core/config";
 import { assertCredentialKeyConfigured } from "@app/core/credentialCrypto";
 import { logger } from "@app/core/logger";
+import { collectProductionWarnings } from "@app/core/startupWarnings";
 import { redactSecretPath } from "@app/core/redactPath";
 import authPlugin from "./plugins/auth";
 import setupGatePlugin from "./plugins/setupGate";
@@ -90,6 +91,16 @@ export async function buildApp(): Promise<FastifyInstance> {
     ? config.TRUST_PROXY.split(",").map((s) => s.trim()).filter(Boolean)
     : false;
   const app = Fastify({ logger: false, trustProxy });
+
+  // Loud (never fatal) production hardening hints — see startupWarnings.ts.
+  for (const warning of collectProductionWarnings({
+    nodeEnv: process.env.NODE_ENV,
+    trustProxy: config.TRUST_PROXY,
+    cookieSecure: config.WEB_COOKIE_SECURE,
+    webhookSecret: config.WEBHOOK_SECRET,
+  })) {
+    logger.warn(`Production configuration warning: ${warning}`);
+  }
 
   // L-01: lightweight access log for 502/4xx/5xx diagnosis. Method + path +
   // status + duration only — never the query string (may carry reset tokens),

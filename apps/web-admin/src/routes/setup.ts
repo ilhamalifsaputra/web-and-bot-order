@@ -5,6 +5,13 @@
  * mitigations. /setup* is excluded from the setup gate (see plugins/setupGate),
  * and locks itself once `setup_completed` is set (final step only).
  *
+ * Takeover hardening: step 2 only accepts a Telegram ID that is in the
+ * ADMIN_IDS allow-list (same rule as /bootstrap), every pre-auth wizard POST
+ * is rate limited per IP, and step 2 hands the browser that completed it a
+ * random nonce cookie (only its hash is stored). The finish step (/setup/shop)
+ * refuses to mint the owner session unless that cookie matches, so a third
+ * party who reaches /setup/shop inside the window cannot take the session.
+ *
  * M-30: an abandoned wizard (browser closed, deploy interrupted) between step
  * 2 and step 3 must not hold the pre-auth, no-CSRF POST /setup/owner open
  * forever. OWNER_TG_KEY is timestamped when step 2 sets it and treated as
@@ -24,6 +31,7 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { createHash, randomBytes } from "node:crypto";
 import { logger } from "@app/core/logger";
 import { config } from "@app/core/config";
 import { addAdminId, removeAdminId, setAdminIds } from "@app/core/runtime";
@@ -32,6 +40,7 @@ import {
   getSetting,
   setSetting,
   deleteSetting,
+  invalidateSettingCache,
   getUserByTelegramId,
   addAdminIdToDb,
   removeAdminIdFromDb,
@@ -42,7 +51,7 @@ import {
   logAdminAction,
   resolveAdminIds,
 } from "@app/db";
-import { hashPassword, makeSession, newJti, passwordHashKey, sessionJtiKey } from "../auth";
+import { constantTimeEqual, hashPassword, makeSession, newJti, passwordHashKey, sessionJtiKey, setupRateLimited } from "../auth";
 import { setTokenValidator, getTokenValidator } from "../lib/telegramCheck";
 import { csrfProtect } from "../plugins/auth";
 
@@ -53,6 +62,10 @@ export const OWNER_TG_KEY = "setup_owner_tg"; // carries the owner id from step 
 // Paired with OWNER_TG_KEY: the Date.now() (ms) at which step 2 wrote it, so
 // checkSetupLock can tell a fresh mid-wizard state from an abandoned one (M-30).
 const OWNER_TG_SET_AT_KEY = "setup_owner_tg_at";
+// Hash of the nonce cookie issued to the browser that completed step 2.
+const OWNER_NONCE_HASH_KEY = "setup_owner_nonce_hash";
+export const SETUP_NONCE_COOKIE = "setup_owner_nonce";
+const sha256Hex = (s: string): string => createHash("sha256").update(s).digest("hex");
 const OWNER_SETUP_WINDOW_MS = 30 * 60 * 1000; // 30 minutes
 
 /**
@@ -115,6 +128,9 @@ export default async function setupRoutes(app: FastifyInstance): Promise<void> {
   // ---- Step 1: connect bot ----
   app.post("/setup/bot", async (req, reply) => {
     const isJson = (req.headers["content-type"] ?? "").includes("application/json");
+    if (setupRateLimited(req.ip || "unknown")) {
+      return reply.code(429).send({ error: "Too many attempts. Try again later." });
+    }
     if (await checkSetupLock(reply)) {
       if (isJson) return reply.code(403).send({ error: "Setup already complete.", redirect: "/login" });
       return;
@@ -143,6 +159,9 @@ export default async function setupRoutes(app: FastifyInstance): Promise<void> {
   // ---- Step 2: create owner (admin) ----
   app.post("/setup/owner", async (req, reply) => {
     const isJson = (req.headers["content-type"] ?? "").includes("application/json");
+    if (setupRateLimited(req.ip || "unknown")) {
+      return reply.code(429).send({ error: "Too many attempts. Try again later." });
+    }
     if (await checkSetupLock(reply)) {
       if (isJson) return reply.code(403).send({ error: "Setup already complete.", redirect: "/login" });
       return;
@@ -156,6 +175,10 @@ export default async function setupRoutes(app: FastifyInstance): Promise<void> {
     let error: string | null = null;
     if (!Number.isInteger(telegramId) || telegramId <= 0) {
       error = "Telegram ID harus berupa angka. Dapatkan dari @userinfobot.";
+    } else if (!config.ADMIN_IDS.includes(telegramId)) {
+      // Same allow-list as POST /bootstrap: this route is pre-auth, so without
+      // it whoever reaches the wizard first could make themselves the owner.
+      error = "Telegram ID ini belum ada di daftar ADMIN_IDS bot. Tambahkan ID Telegram-mu ke ADMIN_IDS di file .env lalu mulai ulang server.";
     } else if (password.length < 8) {
       error = "Password minimal 8 karakter.";
     } else if (password !== passwordConfirm) {
@@ -171,26 +194,35 @@ export default async function setupRoutes(app: FastifyInstance): Promise<void> {
     // password), not a brand-new attacker session. Replace the pending owner
     // in place instead of minting a second admin, and (below) never rewrite
     // OWNER_TG_SET_AT_KEY on a re-POST, so repeated calls can't slide the
-    // 30-minute window forward. Env-configured admins (config.ADMIN_IDS) are
-    // never demoted here — same rule ../routes/api/admins.ts enforces for its
-    // own remove endpoint — this only ever retracts an id the wizard itself
-    // granted moments earlier.
+    // 30-minute window forward.
+    //
+    // A retry with a DIFFERENT id always retracts the password this wizard run
+    // wrote for the previous id (OWNER_TG_KEY is only set after that write,
+    // and checkSetupLock locks the wizard if any admin already had a password
+    // before it started, so that hash is the wizard's own). The previous id's
+    // admin STATUS is retracted only when the wizard granted it: env-configured
+    // admins (config.ADMIN_IDS) are never demoted here — same rule
+    // ../routes/api/admins.ts enforces for its own remove endpoint.
     const previousOwnerRaw = await getSetting(prisma, OWNER_TG_KEY);
     const previousOwnerTg = previousOwnerRaw !== null ? Number(previousOwnerRaw) : null;
     const isFirstAttempt = previousOwnerTg === null;
-    const shouldReplacePrevious =
-      previousOwnerTg !== null && previousOwnerTg !== telegramId && !config.ADMIN_IDS.includes(previousOwnerTg);
+    const shouldRetractPreviousCredential = previousOwnerTg !== null && previousOwnerTg !== telegramId;
+    const shouldReplacePrevious = shouldRetractPreviousCredential && !config.ADMIN_IDS.includes(previousOwnerTg!);
 
     // Make the id an admin in the runtime FIRST so upsertUser resolves role=ADMIN,
     // then persist everything in one short transaction.
     addAdminId(telegramId); // runtime first so upsertUser resolves role=ADMIN
     try {
       await prisma.$transaction(async (tx) => {
+        if (shouldRetractPreviousCredential) {
+          // The mistyped id must not keep a login the operator never meant to
+          // create, even when it stays an (env) admin.
+          await deleteSetting(tx, passwordHashKey(previousOwnerTg!));
+        }
         if (shouldReplacePrevious) {
           // Retract the previous attempt's admin grant so a corrected retry
           // (different Telegram ID) doesn't leave a second admin behind.
           await removeAdminIdFromDb(tx, previousOwnerTg!);
-          await deleteSetting(tx, passwordHashKey(previousOwnerTg!));
         }
         await addAdminIdToDb(tx, telegramId);
         await upsertUser(tx, { telegramId, username, fullName: null });
@@ -202,6 +234,9 @@ export default async function setupRoutes(app: FastifyInstance): Promise<void> {
       setAdminIds(await resolveAdminIds(prisma));
       throw err;
     }
+    // The delete ran on the transaction's client; drop the request client's
+    // cached copy too, so a login straight after cannot read the old hash.
+    if (shouldRetractPreviousCredential) invalidateSettingCache(prisma, [passwordHashKey(previousOwnerTg!)]);
     if (shouldReplacePrevious) removeAdminId(previousOwnerTg!);
     await setSetting(prisma, OWNER_TG_KEY, String(telegramId));
     if (isFirstAttempt) {
@@ -210,6 +245,16 @@ export default async function setupRoutes(app: FastifyInstance): Promise<void> {
       // or every re-POST would extend the window indefinitely.
       await setSetting(prisma, OWNER_TG_SET_AT_KEY, String(Date.now()));
     }
+    // Bind the finish step to THIS browser (a retry replaces the nonce).
+    const nonce = randomBytes(24).toString("base64url");
+    await setSetting(prisma, OWNER_NONCE_HASH_KEY, sha256Hex(nonce));
+    reply.setCookie(SETUP_NONCE_COOKIE, nonce, {
+      path: "/",
+      maxAge: OWNER_SETUP_WINDOW_MS / 1000,
+      httpOnly: true,
+      sameSite: "lax",
+      secure: config.WEB_COOKIE_SECURE,
+    });
     logger.info(`Setup wizard: created owner admin with Telegram id ${telegramId}`); // never log the password
     if (isJson) return reply.send({ ok: true, redirect: "/setup/shop" });
     return reply.code(303).redirect("/setup/shop");
@@ -218,6 +263,9 @@ export default async function setupRoutes(app: FastifyInstance): Promise<void> {
   // ---- Step 3: shop basics (skippable) + finish ----
   app.post("/setup/shop", async (req, reply) => {
     const isJson = (req.headers["content-type"] ?? "").includes("application/json");
+    if (setupRateLimited(req.ip || "unknown")) {
+      return reply.code(429).send({ error: "Too many attempts. Try again later." });
+    }
     if (await checkSetupLock(reply)) {
       if (isJson) return reply.code(403).send({ error: "Setup already complete.", redirect: "/login" });
       return;
@@ -228,6 +276,15 @@ export default async function setupRoutes(app: FastifyInstance): Promise<void> {
     const ownerTg = Number(await getSetting(prisma, OWNER_TG_KEY));
     if (!Number.isInteger(ownerTg) || ownerTg <= 0) {
       return reply.code(303).redirect("/setup/owner");
+    }
+
+    // Only the browser that completed step 2 may finish and receive the owner
+    // session: it must present the nonce cookie issued there.
+    const storedNonceHash = await getSetting(prisma, OWNER_NONCE_HASH_KEY);
+    const presented = req.cookies?.[SETUP_NONCE_COOKIE];
+    if (!storedNonceHash || !presented || !constantTimeEqual(sha256Hex(presented), storedNonceHash)) {
+      logger.warn("Setup wizard finish was refused because the request did not carry the owner nonce cookie issued at the owner step. No session was issued.");
+      return reply.code(403).send({ error: "Langkah ini hanya bisa diselesaikan dari browser yang membuat akun pemilik. Ulangi langkah pemilik." });
     }
 
     if (body.skip !== "1") {
@@ -263,6 +320,8 @@ export default async function setupRoutes(app: FastifyInstance): Promise<void> {
     }
     await deleteSetting(prisma, OWNER_TG_KEY);
     await deleteSetting(prisma, OWNER_TG_SET_AT_KEY);
+    await deleteSetting(prisma, OWNER_NONCE_HASH_KEY);
+    reply.clearCookie(SETUP_NONCE_COOKIE, { path: "/" });
     logger.info(`Setup wizard completed — owner with Telegram id ${ownerTg} auto-logged-in`);
     if (isJson) return reply.send({ ok: true, redirect: "/setup/done" });
     return reply.code(303).redirect("/setup/done");

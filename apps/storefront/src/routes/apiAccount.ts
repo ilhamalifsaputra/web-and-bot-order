@@ -23,6 +23,7 @@ import { clientIp, supportRateLimited } from "../rateLimit";
 import { logger } from "@app/core/logger";
 import { localize, addDays } from "@app/core/datetime";
 import { CategoryGroup, SenderType, OrderStatus, OrderKind, TicketStatus, zTicketCategory } from "@app/core/enums";
+import { parsePositiveId, parsePageParam, parseQueryInt } from "@app/core/params";
 import { ValidationError } from "@app/core/errors";
 import { usesLocalInventory } from "@app/core/productAvailability";
 import { hashPassword, verifyPassword } from "@app/core/password";
@@ -477,9 +478,12 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
     const sortValue: SupportTicketListSort = SUPPORT_LIST_SORTS.includes(sort as SupportTicketListSort)
       ? (sort as SupportTicketListSort)
       : "latest_update";
-    // Fastify querystring values are always strings — parse + guard NaN.
-    const pageNum = Number(page) || 1;
-    const pageSizeNum = Number(page_size) || 10;
+    // Fastify querystring values are always strings; parsePageParam falls back to 1 on junk and clamps huge values.
+    const pageNum = parsePageParam(page);
+    // Same lenient reading for page_size: a negative, exponent or Infinity
+    // value falls back to 10 and a huge one is clamped to 50, so it can never
+    // reach Prisma's take/skip as a bad number.
+    const pageSizeNum = parseQueryInt(page_size, { fallback: 10, min: 1, max: 50 }) ?? 10;
 
     const [{ rows, total }, stats] = await Promise.all([
       listUserTicketsPaged(prisma, customer.userId, {
@@ -541,7 +545,13 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
     let ticketId: number | null = null;
     if (message) {
       const attachmentUrls = null;
-      const ticket = await createTicket(prisma, customer.userId, message, null, attachmentUrls, orderId);
+      // dedupeOrder takes the order-row lock inside the ticket transaction, so
+      // two parallel creates for one order collapse into a single ticket (the
+      // pre-check above is only a fast path and races without it).
+      const ticket = await createTicket(prisma, customer.userId, message, null, attachmentUrls, orderId, { dedupeOrder: orderId !== null });
+      if (orderId !== null && ticket.reused) {
+        return reply.send({ ok: false, duplicate: true, ticket_id: ticket.id });
+      }
       ticketId = ticket.id;
     }
     // STO-020: the client shows a "Ticket #N created" success toast — needs
@@ -658,6 +668,8 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
     }
 
     const attachmentUrls = null;
+    // dedupeOrder: see the legacy route above — the order-row lock makes the
+    // duplicate check atomic with the insert.
     const ticket = await createTicket(
       prisma,
       customer.userId,
@@ -665,8 +677,11 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
       null,
       attachmentUrls,
       orderId,
-      { subject, category, productId },
+      { subject, category, productId, dedupeOrder: orderId !== null },
     );
+    if (orderId !== null && ticket.reused) {
+      return reply.send({ ok: false, duplicate: true, ticket_id: ticket.id });
+    }
     return reply.send({ ok: true, ticket_id: ticket.id });
   });
 
@@ -676,7 +691,7 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
       const customer = await requireCustomer(req, reply);
       if (!customer) return;
       if (!csrfHeaderOk(req, customer)) return reply.code(403).send({ error: "csrf_failed" });
-      const ticket = await getTicket(prisma, Number(req.params.id));
+      const ticket = await getTicket(prisma, parsePositiveId(req.params.id) ?? 0);
       if (!ticket || ticket.userId !== customer.userId) return reply.code(404).send({ error: "not_found" });
       if (ticket.status === TicketStatus.CLOSED) return reply.code(409).send({ error: "ticket.closed_cannot_reply" });
       let message: string;
@@ -715,7 +730,7 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
   app.get<{ Params: { id: string } }>("/account/support/:id", async (req, reply) => {
     const customer = await requireCustomer(req, reply);
     if (!customer) return;
-    const ticket = await getTicketWithOrder(prisma, Number(req.params.id));
+    const ticket = await getTicketWithOrder(prisma, parsePositiveId(req.params.id) ?? 0);
     if (!ticket || ticket.userId !== customer.userId) {
       return reply.code(404).send({ error: "not_found" });
     }
@@ -786,7 +801,7 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
     const customer = await requireCustomer(req, reply);
     if (!customer) return;
     if (!csrfHeaderOk(req, customer)) return reply.code(403).send({ error: "csrf_failed" });
-    const ticket = await getTicket(prisma, Number(req.params.id));
+    const ticket = await getTicket(prisma, parsePositiveId(req.params.id) ?? 0);
     if (!ticket || ticket.userId !== customer.userId) {
       return reply.code(404).send({ error: "not_found" });
     }
@@ -799,7 +814,7 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
     const customer = await requireCustomer(req, reply);
     if (!customer) return;
     if (!csrfHeaderOk(req, customer)) return reply.code(403).send({ error: "csrf_failed" });
-    const ticket = await getTicket(prisma, Number(req.params.id));
+    const ticket = await getTicket(prisma, parsePositiveId(req.params.id) ?? 0);
     if (!ticket || ticket.userId !== customer.userId) {
       return reply.code(404).send({ error: "not_found" });
     }
@@ -816,7 +831,7 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
     const customer = await requireCustomer(req, reply);
     if (!customer) return;
     if (!csrfHeaderOk(req, customer)) return reply.code(403).send({ error: "csrf_failed" });
-    const denom = await getDenominationWithProduct(prisma, Number(req.params.id));
+    const denom = await getDenominationWithProduct(prisma, parsePositiveId(req.params.id) ?? 0);
     // The SPA bounces back to the parent product detail (slug URL).
     const redirect = denom ? `/p/${denom.product.slug}` : "/";
     if (!denom?.isActive || !(await isServiceActive(prisma, denom.product.category.group as CategoryGroup | null, "web"))) {

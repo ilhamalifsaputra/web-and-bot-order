@@ -30,7 +30,7 @@ import {
   resolveWalletTopupLimits,
   resolveWalletTopupRailFloor,
   resolveWalletTopupEffectiveMin,
-  createWalletTopupOrder,
+  createOrReuseWalletTopupOrder,
   type WalletTopupIdrMethod,
   type WalletTopupUsdtMethod,
   type WalletTopupMethod,
@@ -284,9 +284,13 @@ const apiWalletTopupRoutes: FastifyPluginAsync = async (app) => {
     const amount = readCanonicalMoney((req.body as { amount?: unknown } | undefined)?.amount);
     if (amount === null) return reply.code(400).send({ error: "error.wallet_topup_amount_invalid" });
 
+    // This form sends no idempotency key, so an identical request moments
+    // after the first (a double tap) is answered with the top-up it already
+    // opened rather than a second invoice — see createOrReuseWalletTopupOrder
+    // (backend audit pass 2, A7). The response is the same either way.
     try {
-      const order = await prisma.$transaction((tx) =>
-        createWalletTopupOrder(tx, {
+      const { order } = await prisma.$transaction((tx) =>
+        createOrReuseWalletTopupOrder(tx, {
           userId: customer.userId,
           amount,
           currency: choice.currency,

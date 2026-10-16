@@ -74,13 +74,14 @@ describe("pruneSentOutbox", () => {
         { event: "ORDER_DELIVERED", payloadJson: "{}", status: "SENT", createdAt: daysAgo(5) },
         { event: "ORDER_DELIVERED", payloadJson: "{}", status: "FAILED", createdAt: daysAgo(40) },
         { event: "ORDER_DELIVERED", payloadJson: "{}", status: "DEAD_LETTER", createdAt: daysAgo(40) },
+        { event: "ORDER_DELIVERED", payloadJson: "{}", status: "SKIPPED", createdAt: daysAgo(40) },
         { event: "ORDER_DELIVERED", payloadJson: "{}", status: "PENDING", createdAt: daysAgo(40) },
       ],
     });
 
     const count = await pruneSentOutbox(prisma, cutoff);
 
-    expect(count).toBe(3);
+    expect(count).toBe(4);
     const remaining = await prisma.notificationOutbox.findMany({ orderBy: { id: "asc" } });
     expect(remaining).toHaveLength(2);
     expect(remaining.map((r) => r.status).sort()).toEqual(["PENDING", "SENT"]);

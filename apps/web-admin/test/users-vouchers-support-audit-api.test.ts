@@ -504,6 +504,50 @@ describe("POST /api/support/:ticketId/reply + /close", () => {
   it("close 404s for a non-existent ticket", async () => {
     const res = await postJson("/api/support/999999/close", cookie, csrf);
     expect(res.statusCode).toBe(404);
+    expect(await prisma.auditLog.count({ where: { action: "ticket_close" } })).toBe(0);
+  });
+
+  it("close of a web-only buyer's ticket (no telegramId) succeeds, audits once and queues no Telegram DM", async () => {
+    const web = await createWebUser(prisma, {
+      loginUsername: "webcloser",
+      email: "webcloser@shop.test",
+      passwordHash: "x",
+      fullName: "Web Closer",
+    });
+    const ticket = await createTicket(prisma, web.id, "Help please");
+
+    const res = await postJson(`/api/support/${ticket.id}/close`, cookie, csrf);
+
+    expect(res.statusCode).toBe(200);
+    expect((await prisma.supportTicket.findUniqueOrThrow({ where: { id: ticket.id } })).status).toBe("CLOSED");
+    expect(await prisma.auditLog.count({ where: { action: "ticket_close", targetId: ticket.id } })).toBe(1);
+    expect(await prisma.notificationOutbox.count({ where: { event: "TICKET_CLOSED_DM" } })).toBe(0);
+  });
+
+  it("closing an already-closed ticket writes no second audit row and no second DM", async () => {
+    const ticket = await createTicket(prisma, customerId, "Help please");
+    expect((await postJson(`/api/support/${ticket.id}/close`, cookie, csrf)).statusCode).toBe(200);
+
+    const again = await postJson(`/api/support/${ticket.id}/close`, cookie, csrf);
+
+    expect(again.statusCode).toBe(200);
+    expect(await prisma.auditLog.count({ where: { action: "ticket_close", targetId: ticket.id } })).toBe(1);
+    expect(await prisma.notificationOutbox.count({ where: { event: "TICKET_CLOSED_DM" } })).toBe(1);
+  });
+
+  it("bulk close audits only tickets it actually closed, not one that was already closed", async () => {
+    const already = await createTicket(prisma, customerId, "Already");
+    expect((await postJson(`/api/support/${already.id}/close`, cookie, csrf)).statusCode).toBe(200);
+    const open = await createTicket(prisma, customerId, "Open");
+
+    const res = await postJson("/api/support/bulk-action", cookie, csrf, { ids: [already.id, open.id], action: "close" });
+
+    expect(res.statusCode).toBe(200);
+    expect(await prisma.auditLog.count({ where: { action: "ticket_bulk_close", targetId: already.id } })).toBe(0);
+    expect(await prisma.auditLog.count({ where: { action: "ticket_bulk_close", targetId: open.id } })).toBe(1);
+    const summary = await prisma.auditLog.findFirstOrThrow({ where: { action: "ticket_bulk_close", targetId: null } });
+    expect(summary.details).toBe("Closed 1 ticket; 1 was already closed.");
+    expect(await prisma.notificationOutbox.count({ where: { event: "TICKET_CLOSED_DM" } })).toBe(2);
   });
 
   it("reply requires auth (anon → 401)", async () => {
@@ -1134,6 +1178,36 @@ describe("GET /api/support/photo/:fileId", () => {
       const res = await get("/api/support/photo/FAKE_FILE_ID", cookie);
       expect(res.statusCode).toBe(502);
       expect(JSON.stringify(res.json())).not.toContain(config.BOT_TOKEN);
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it("refuses (413) a photo whose declared or streamed size exceeds the 20 MB cap, without buffering it", async () => {
+    const originalFetch = global.fetch;
+    setFileResolver(async () => ({ ok: true, filePath: "photos/huge.jpg" }));
+    try {
+      // 1. Declared Content-Length above the cap.
+      global.fetch = (async () => new Response("tiny", { headers: { "content-type": "image/jpeg", "content-length": String(25 * 1024 * 1024) } })) as unknown as typeof fetch;
+      const declared = await get("/api/support/photo/FAKE_FILE_ID", cookie);
+      expect(declared.statusCode).toBe(413);
+
+      // 2. No Content-Length: the stream itself crosses the cap and is cut off.
+      let chunks = 0;
+      global.fetch = (async () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              chunks += 1;
+              controller.enqueue(new Uint8Array(1024 * 1024));
+              if (chunks > 200) controller.close();
+            },
+          }),
+          { headers: { "content-type": "image/jpeg" } },
+        )) as unknown as typeof fetch;
+      const streamed = await get("/api/support/photo/FAKE_FILE_ID", cookie);
+      expect(streamed.statusCode).toBe(413);
+      expect(chunks).toBeLessThan(60);
     } finally {
       global.fetch = originalFetch;
     }

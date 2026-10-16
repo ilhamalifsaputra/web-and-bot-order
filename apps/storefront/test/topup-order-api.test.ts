@@ -109,6 +109,16 @@ function sessionCookieFrom(setCookie: string | string[] | undefined): string {
 
 const countUsers = () => prisma.user.count();
 
+/** Move every keyless dedupe record (backend audit pass 2, A7) past its window,
+ * as if the buyer came back later — so an identical keyless request is a new
+ * purchase rather than a replay of the previous one. */
+async function ageKeylessDedupeRecords() {
+  await prisma.idempotencyRecord.updateMany({
+    where: { key: { startsWith: "keyless:" } },
+    data: { createdAt: new Date(Date.now() - 60 * 60_000) },
+  });
+}
+
 describe("checkout configuration guard", () => {
   it.each([
     { additionalFields: "not json", providerInputMapping: null, autoDeliverySource: null },
@@ -661,6 +671,9 @@ describe("POST /api/v1/topup/order — signed-in gateway branch", () => {
         payload: { denomination_id: denomId, qty: 1, method: "bybit" },
       });
       expect(res.statusCode).toBe(201);
+      // Each identical keyless request is a separate purchase only once the
+      // keyless dedupe window has passed (backend audit pass 2, A7).
+      await ageKeylessDedupeRecords();
     }
     const capped = await app.inject({
       method: "POST",
@@ -904,27 +917,33 @@ describe("POST /api/v1/topup/order — guest branch", () => {
 // with any other test's rate-limit budget (a future task adds rate limiting
 // to this same route).
 describe("POST /api/v1/topup/order — Idempotency-Key", () => {
-  it("with no header, two identical requests create two separate orders (opt-in feature)", async () => {
+  // Backend audit pass 2, A7: with no header, a signed-in buyer's identical
+  // repeat inside the keyless dedupe window is the same purchase (a double tap)
+  // and replays the first response; after the window it is a new purchase.
+  // (Was: "two identical requests create two separate orders" — the double-tap
+  // defect A7 closes.)
+  it("with no header, an identical repeat inside the dedupe window replays the first order; after it, a second order is created", async () => {
     const uid = await makeUser("topupidemnohdr", "topupidemnohdr-pw-1", "TPINHD");
     const { cookie, csrf } = await loginAs("topupidemnohdr", "topupidemnohdr-pw-1");
+    const place = () =>
+      app.inject({
+        method: "POST",
+        url: "/api/v1/topup/order",
+        headers: { cookie, "x-csrf-token": csrf, "x-forwarded-for": freshIp() },
+        payload: { denomination_id: denomId, qty: 1, method: "bybit" },
+      });
 
-    const first = await app.inject({
-      method: "POST",
-      url: "/api/v1/topup/order",
-      headers: { cookie, "x-csrf-token": csrf, "x-forwarded-for": freshIp() },
-      payload: { denomination_id: denomId, qty: 1, method: "bybit" },
-    });
+    const first = await place();
     expect(first.statusCode).toBe(201);
+    const repeat = await place();
+    expect(repeat.statusCode).toBe(201);
+    expect(repeat.json()).toEqual(first.json());
+    expect(await prisma.order.count({ where: { userId: uid } })).toBe(1);
 
-    const second = await app.inject({
-      method: "POST",
-      url: "/api/v1/topup/order",
-      headers: { cookie, "x-csrf-token": csrf, "x-forwarded-for": freshIp() },
-      payload: { denomination_id: denomId, qty: 1, method: "bybit" },
-    });
-    expect(second.statusCode).toBe(201);
-    expect(second.json().order_code).not.toBe(first.json().order_code);
-
+    await ageKeylessDedupeRecords();
+    const later = await place();
+    expect(later.statusCode).toBe(201);
+    expect(later.json().order_code).not.toBe(first.json().order_code);
     expect(await prisma.order.count({ where: { userId: uid } })).toBe(2);
   });
 

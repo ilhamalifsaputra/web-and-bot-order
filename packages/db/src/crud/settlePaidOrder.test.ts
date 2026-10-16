@@ -1080,7 +1080,7 @@ describe("BUYER_EMAIL_ORDER_READY (guest buyer's order-ready email)", () => {
     ).toBe(0);
     const skipped = await prisma.notificationOutbox.findMany({ where: { event: "order.completed.customer" } });
     expect(skipped).toHaveLength(2);
-    for (const row of skipped) expect(row).toMatchObject({ status: "FAILED", lastError: "SKIPPED_NO_RECIPIENT" });
+    for (const row of skipped) expect(row).toMatchObject({ status: "SKIPPED", lastError: "SKIPPED_NO_RECIPIENT" });
   });
 
   // The guard that matters most. This email exists BECAUSE credentials are

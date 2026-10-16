@@ -22,7 +22,7 @@ import { hashPassword } from "@app/core/password";
 import { buildApp } from "../src/server";
 import { CART_COOKIE, CART_COOKIE_VERSION } from "../src/shop";
 import { SHOP_COOKIE_NAME } from "../src/auth";
-import { GUEST_CHECKOUT_RATE_LIMIT_MAX, CHECKOUT_PREVIEW_RATE_LIMIT_MAX } from "../src/rateLimit";
+import { GUEST_CHECKOUT_RATE_LIMIT_MAX, CHECKOUT_PREVIEW_RATE_LIMIT_MAX, CHECKOUT_PREVIEW_USER_RATE_LIMIT_MAX } from "../src/rateLimit";
 
 let app: FastifyInstance;
 let denomId: number;
@@ -642,5 +642,34 @@ describe("pay / status / cancel stay session-locked (Task 4b)", () => {
 
     const anonCancel = await app.inject({ method: "POST", url: `/api/v1/orders/${code}/cancel` });
     expect(anonCancel.statusCode).toBe(401);
+  });
+});
+
+// ------------------------------- signed-in read throttle (backend audit A8)
+describe("signed-in checkout reads are throttled per user", () => {
+  it("429s both reads once one signed-in user exceeds the per-user quota, leaving other users alone", async () => {
+    const uid = await makeUser("auththrottle", "auththrottle-pw-1", "AUTHTHR");
+    const { cookie, csrf } = await loginAs("auththrottle", "auththrottle-pw-1");
+    await addToCart(prisma, uid, denomId, 1);
+    // A distinct IP per request so only the per-USER cap can trip.
+    for (let i = 0; i < CHECKOUT_PREVIEW_USER_RATE_LIMIT_MAX; i++) {
+      const res = await app.inject({ method: "GET", url: "/api/v1/checkout", headers: { cookie, "x-forwarded-for": freshIp() } });
+      expect(res.statusCode).toBe(200);
+    }
+    const cappedGet = await app.inject({ method: "GET", url: "/api/v1/checkout", headers: { cookie, "x-forwarded-for": freshIp() } });
+    expect(cappedGet.statusCode).toBe(429);
+    expect(cappedGet.json()).toEqual({ error: "error.rate_limited" });
+    const cappedPreview = await app.inject({
+      method: "POST",
+      url: "/api/v1/checkout/voucher/preview",
+      headers: { cookie, "x-csrf-token": csrf, "x-forwarded-for": freshIp() },
+      payload: { voucher_code: "GUESS1" },
+    });
+    expect(cappedPreview.statusCode).toBe(429);
+
+    await makeUser("auththrottle2", "auththrottle2-pw-1", "AUTHTH2");
+    const other = await loginAs("auththrottle2", "auththrottle2-pw-1");
+    const ok = await app.inject({ method: "GET", url: "/api/v1/checkout", headers: { cookie: other.cookie, "x-forwarded-for": freshIp() } });
+    expect(ok.statusCode).toBe(200);
   });
 });

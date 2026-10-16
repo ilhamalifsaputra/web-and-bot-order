@@ -15,12 +15,13 @@ import { emailTransaction, enqueueOrderTransitionEmails } from "./emailEvents";
  * (bybitBscConfirmationTracker.ts) — every other payment method's deliver
  * functions never pass those as `to`.
  */
-import { OrderStatus } from "@app/core/enums";
+import { OrderKind, OrderStatus } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { Decimal } from "@app/core/money";
 import { qrisChargeAmount } from "@app/core/payments/tokopay";
 import type { PrismaClient, Tx } from "../client";
 import type { Db } from "./_types";
+import { enqueueNotificationSafely } from "./notificationIsolation";
 import { wakeFulfillmentMessage, ensureFulfillmentMessage } from "./fulfillmentMessages";
 
 /** Statuses after which the buyer's Telegram progress message shows its last text. */
@@ -44,22 +45,29 @@ export const LEGAL_TRANSITIONS: Record<string, readonly string[]> = {
     OrderStatus.REJECTED,
     OrderStatus.FAILED,
   ],
+  // The PENDING_PAYMENT edge on the three on-chain milestones below is a
+  // WALLET_TOPUP-only edge (WALLET_TOPUP_ONLY_TRANSITIONS): a Bybit BSC top-up
+  // is normalized back to PENDING_PAYMENT right before settleWalletTopup
+  // claims it (settleClaimedBybitBscDeposit, bybit_bsc_deposit.ts).
   [OrderStatus.PAYMENT_DETECTED]: [
     OrderStatus.CONFIRMING,
     OrderStatus.PENDING_VERIFICATION,
     OrderStatus.CANCELLED,
     OrderStatus.FAILED,
+    OrderStatus.PENDING_PAYMENT,
   ],
   [OrderStatus.CONFIRMING]: [
     OrderStatus.CONFIRMED,
     OrderStatus.PENDING_VERIFICATION,
     OrderStatus.CANCELLED,
     OrderStatus.FAILED,
+    OrderStatus.PENDING_PAYMENT,
   ],
   [OrderStatus.CONFIRMED]: [
     OrderStatus.PENDING_VERIFICATION,
     OrderStatus.CANCELLED,
     OrderStatus.FAILED,
+    OrderStatus.PENDING_PAYMENT,
   ],
   [OrderStatus.PENDING_VERIFICATION]: [
     OrderStatus.DELIVERED,
@@ -108,12 +116,30 @@ export const LEGAL_TRANSITIONS: Record<string, readonly string[]> = {
   // refund DELIVERED now allows — and that path has no caller yet, so the
   // outgoing edge stays unlisted until one exists.
   [OrderStatus.PARTIALLY_DELIVERED]: [],
+  // Terminal for every order except a wallet top-up whose money arrived after
+  // it was cancelled: settleWalletTopup credits it and claims CANCELLED ->
+  // DELIVERED (see isLateSettleableWalletTopup, wallet_topup.ts). That edge is
+  // WALLET_TOPUP-only (WALLET_TOPUP_ONLY_TRANSITIONS), so a cancelled PRODUCT
+  // order — whose stock went back to the pool — still cannot be delivered.
+  [OrderStatus.CANCELLED]: [OrderStatus.DELIVERED],
   // Terminal states — no outgoing transitions.
-  [OrderStatus.CANCELLED]: [],
   [OrderStatus.REJECTED]: [],
   [OrderStatus.REFUNDED]: [],
   [OrderStatus.FAILED]: [OrderStatus.CANCELLED, OrderStatus.REFUNDED],
 };
+
+/**
+ * Edges in LEGAL_TRANSITIONS that only a WALLET_TOPUP order may take.
+ * `transitionOrderStatus` adds `kind = WALLET_TOPUP` to its atomic claim for
+ * these, so the same shape on any other order fails exactly like a stale
+ * caller does (`error.illegal_status_transition`, nothing written).
+ */
+export const WALLET_TOPUP_ONLY_TRANSITIONS: ReadonlySet<string> = new Set([
+  `${OrderStatus.CANCELLED}->${OrderStatus.DELIVERED}`,
+  `${OrderStatus.PAYMENT_DETECTED}->${OrderStatus.PENDING_PAYMENT}`,
+  `${OrderStatus.CONFIRMING}->${OrderStatus.PENDING_PAYMENT}`,
+  `${OrderStatus.CONFIRMED}->${OrderStatus.PENDING_PAYMENT}`,
+]);
 
 /**
  * Move an order from `from` to `to`: validates the shape against
@@ -147,7 +173,11 @@ export async function transitionOrderStatus(
   }
 
   const claim = await db.order.updateMany({
-    where: { id: orderId, status: from },
+    where: {
+      id: orderId,
+      status: from,
+      ...(WALLET_TOPUP_ONLY_TRANSITIONS.has(`${from}->${to}`) ? { kind: OrderKind.WALLET_TOPUP } : {}),
+    },
     data: {
       status: to,
       ...(to === OrderStatus.UNDERPAID ? { paymentState: "UNDERPAID" } : {}),
@@ -165,7 +195,10 @@ export async function transitionOrderStatus(
   await db.orderStatusHistory.create({
     data: { orderId, status: to, meta: meta ?? null },
   });
-  await enqueueOrderTransitionEmails(db, orderId, to, meta, from);
+  // A failed email enqueue is logged and skipped; it must never undo the
+  // status move (enqueueNotificationSafely explains the savepoint).
+  await enqueueNotificationSafely(db, { orderId, notification: `order ${to} transition email` }, () =>
+    enqueueOrderTransitionEmails(db, orderId, to, meta, from));
   // A final status ends the buyer's progress message promptly; a manual
   // order's static WAITING line is not polled, so this is what moves it on.
   if (FINAL_ORDER_STATUSES.has(to) || to === OrderStatus.PAYMENT_DETECTED || to === OrderStatus.CONFIRMING || to === OrderStatus.CONFIRMED || to === OrderStatus.PROCESSING) {

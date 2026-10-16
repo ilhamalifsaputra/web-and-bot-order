@@ -3,6 +3,7 @@ import { prisma, getOrderDigiflazzSnapshot } from "@app/db";
 import { onDigiflazzOrderStatusChanged } from "@app/core/realtime/digiflazzEvents";
 import { streamSse } from "@app/core/realtime/sseRoute";
 import { requireSseAdmin } from "../../plugins/sseAuth";
+import { parsePositiveId } from "../../lib/params";
 
 interface OrderDigiflazzSnapshot {
   orderStatus: string;
@@ -35,8 +36,8 @@ const orderDigiflazzStreamRoutes: FastifyPluginAsync = async (app) => {
     const admin = await requireSseAdmin(req, reply, { blockReadonly: true });
     if (!admin) return;
 
-    const orderId = Number(req.params.orderId);
-    if (!Number.isInteger(orderId) || orderId <= 0) {
+    const orderId = parsePositiveId(req.params.orderId);
+    if (orderId === null) {
       reply.code(400).send();
       return;
     }

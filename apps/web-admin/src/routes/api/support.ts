@@ -3,7 +3,7 @@ import { supportMediaRoutes } from "./supportMedia";
 import { supportAttachmentLinks, transitionTicketStatus, setSupportLegalHold, setSupportTitle } from "@app/db";
 import type { FastifyInstance } from "fastify";
 import { csvRow } from "../../lib/csv";
-import { parsePositiveId } from "../../lib/params";
+import { parsePositiveId, parsePageParam } from "../../lib/params";
 import { SenderType, TicketStatus, TicketPriority, TicketCategory } from "@app/core/enums";
 import { logger } from "@app/core/logger";
 import {
@@ -41,6 +41,10 @@ import {
 } from "@app/db";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
 import { getFileResolver } from "../../lib/telegramCheck";
+import { BodyTooLargeError, readBodyWithLimit } from "@app/core/boundedBody";
+
+/** Telegram photos top out at 20 MB; anything larger is not a legitimate ticket photo. */
+const MAX_SUPPORT_PHOTO_BYTES = 20 * 1024 * 1024;
 import { displayDate, displayDateTime, displayShortDateTime } from "../../dateDisplay";
 import { parseStatusChange } from "../../lib/ticketStatusChange";
 
@@ -214,7 +218,7 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
   app.get("/api/support/stats", { preHandler: currentAdmin }, async () => getTicketStats(prisma));
   app.get("/api/support", { preHandler: currentAdmin }, async (req, reply) => {
     const q = req.query as Record<string, string | undefined>;
-    const page = Math.max(Number(q.page) || 1, 1);
+    const page = parsePageParam(q.page);
     const requestedPageSize = Number(q.pageSize);
     const pageSize = PAGE_SIZE_OPTIONS.includes(requestedPageSize) ? requestedPageSize : DEFAULT_PAGE_SIZE;
     const offset = (page - 1) * pageSize;
@@ -435,15 +439,26 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
   app.post("/api/support/:ticketId/close", { preHandler: csrfProtect }, async (req, reply) => {
     const ticketId = parsePositiveId((req.params as { ticketId: string }).ticketId);
     if (ticketId === null) return reply.code(400).send({ error: "Invalid ticket id." });
-    const result = await closeTicket(prisma, ticketId);
-    if (result === null) return reply.code(404).send({ error: "Ticket not found." });
-    await logAdminAction(prisma, {
-      adminId: req.admin!.userId,
-      action: "ticket_close",
-      targetType: "ticket",
-      targetId: ticketId,
-      details: `Closed ticket #${ticketId}.`,
+    // The close, the buyer's DM row and the audit row commit together, and the
+    // audit is written only when this call really closed the ticket (a
+    // web-only buyer's ticket closes too; it just has nobody to DM).
+    const { closed } = await prisma.$transaction(async (tx) => {
+      const result = await closeTicket(tx, ticketId);
+      if (result.closed) {
+        await logAdminAction(tx, {
+          adminId: req.admin!.userId,
+          action: "ticket_close",
+          targetType: "ticket",
+          targetId: ticketId,
+          details: `Closed ticket #${ticketId}.`,
+        });
+      }
+      return result;
     });
+    // Nothing closed by this call: either there is no such ticket, or it was
+    // already closed (a double-click or another admin), which is an idempotent
+    // success with no second audit row and no second DM.
+    if (!closed && !(await getTicket(prisma, ticketId))) return reply.code(404).send({ error: "Ticket not found." });
     return reply.send({ ok: true });
   });
 
@@ -681,18 +696,23 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
     }
 
     // "close"
-    const result = await bulkCloseTickets(prisma, ids);
+    const { closed, ...result } = await bulkCloseTickets(prisma, ids);
+    // An already-closed ticket still counts as succeeded for the caller, but
+    // only tickets this call actually closed are audited as closed by it.
+    const alreadyClosed = result.succeeded.length - closed.length;
+    const notes = [
+      ...(alreadyClosed > 0 ? [`${alreadyClosed} ${alreadyClosed === 1 ? "was" : "were"} already closed`] : []),
+      ...(result.failed.length > 0 ? [`skipped ${result.failed.length} not found`] : []),
+    ];
     await logAdminAction(prisma, {
       adminId: req.admin!.userId,
       action: "ticket_bulk_close",
       targetType: "ticket",
-      details:
-        `Closed ${result.succeeded.length} ${pluralTicket(result.succeeded.length)}` +
-        (result.failed.length > 0 ? `; skipped ${result.failed.length} not found.` : "."),
+      details: `Closed ${closed.length} ${pluralTicket(closed.length)}${notes.map((n) => `; ${n}`).join("")}.`,
     });
     // Per-ticket rows — same reasoning as the other two branches above.
     await Promise.all(
-      result.succeeded.map((id) =>
+      closed.map((id) =>
         logAdminAction(prisma, {
           adminId: req.admin!.userId,
           action: "ticket_bulk_close",
@@ -742,14 +762,24 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
       return reply.code(502).send({ error: "Could not retrieve the photo from Telegram." });
     }
     if (!upstream.ok) {
+      await upstream.body?.cancel().catch(() => undefined);
       return reply.code(502).send({ error: "Could not retrieve the photo from Telegram." });
     }
     const contentType = photoContentType(upstream.headers.get("content-type"), result.filePath);
     if (contentType === null) {
+      await upstream.body?.cancel().catch(() => undefined);
       return reply.code(415).send({ error: "This attachment is not an image." });
     }
+    let bytes: Buffer;
+    try {
+      bytes = await readBodyWithLimit(upstream, MAX_SUPPORT_PHOTO_BYTES);
+    } catch (e) {
+      if (e instanceof BodyTooLargeError) return reply.code(413).send({ error: "This photo is too large to preview." });
+      return reply.code(502).send({ error: "Could not retrieve the photo from Telegram." });
+    }
+    // Headers go on only now: an error reply above must stay JSON, not an image.
     reply.header("content-type", contentType);
     reply.header("x-content-type-options", "nosniff");
-    return reply.send(Buffer.from(await upstream.arrayBuffer()));
+    return reply.send(bytes);
   });
 }

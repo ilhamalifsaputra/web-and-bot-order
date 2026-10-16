@@ -699,8 +699,8 @@ async function alertDigiflazzUnresolvedAtSupplier(
 ): Promise<void> {
   const reason =
     kind === "entered"
-      ? `Unresolved at Digiflazz: no final answer 24 hours after dispatch. Not failed — Digiflazz may still deliver it, so credit, refund and manual delivery stay locked. Reconcile it with Digiflazz; mark it failed only if Digiflazz confirms it did not go through.`
-      : `Still unresolved at Digiflazz 7 days after dispatch and no longer checked automatically; it stays locked. Reconcile it with Digiflazz; mark it failed only if Digiflazz confirms it did not go through.`;
+      ? `Unresolved at Digiflazz: no final answer within the first 24 hours of checks. Not failed — Digiflazz may still deliver it, so credit, refund and manual delivery stay locked. Reconcile it with Digiflazz; mark it failed only if Digiflazz confirms it did not go through.`
+      : `Still unresolved at Digiflazz more than 7 days after dispatch and no longer checked automatically; it stays locked. Reconcile it with Digiflazz; mark it failed only if Digiflazz confirms it did not go through.`;
   await enqueueDigiflazzReviewAlert(db, {
     orderId: order.id,
     orderCode: order.orderCode,
@@ -713,11 +713,11 @@ async function alertDigiflazzUnresolvedAtSupplier(
       action: "order.digiflazz_unresolved_at_supplier",
       targetType: "order",
       targetId: order.id,
-      details: `Digiflazz gave no final answer for order ${order.orderCode} within 24 hours, so it was marked unresolved at the supplier (not failed) and admins were asked to reconcile it with Digiflazz.`,
+      details: `Digiflazz gave no final answer for order ${order.orderCode} within its first 24 hours of checks, so it was marked unresolved at the supplier (not failed) and admins were asked to reconcile it with Digiflazz.`,
     });
     logger.warn(
       { orderId: order.id },
-      `Order ${order.orderCode} is unresolved at Digiflazz after 24 hours without a final answer; it stays locked against credit, refund and manual delivery, will be rechecked every 6 hours for up to 7 days, and admins were alerted to reconcile it.`,
+      `Order ${order.orderCode} is unresolved at Digiflazz because its first 24 hours of checks ended without a final answer; it stays locked against credit, refund and manual delivery, will be rechecked every 6 hours for up to 7 days, and admins were alerted to reconcile it.`,
     );
   } else {
     logger.warn(
@@ -1387,19 +1387,37 @@ async function processDigiflazzOrder(
   // exactly one at quantity 1" — see its doc comment above for the two
   // failure shapes (no/unconfigured item vs. more than one unit) it
   // distinguishes.
-  const resolution = resolveSingleDigiflazzItem(order);
-  if (!resolution.ok) {
-    // A structural resolution failure (missing supplierSku, wrong
-    // quantity) is always a specific, meaningful explanation — a config
-    // problem, not a "Digiflazz gave no reason" one — so the reactive
-    // diagnostic must never run for it.
-    await recordDigiflazzOutcome(
+  // A structural problem (missing supplierSku, wrong quantity, unreadable
+  // player input) is a specific, meaningful explanation — a config problem,
+  // not a "Digiflazz gave no reason" one — so the reactive diagnostic never
+  // runs for it. On a FRESH dispatch nothing was submitted, so it is terminal.
+  // On a RECHECK the order was already submitted under its ref id and
+  // Digiflazz may still deliver it (e.g. a legacy order whose SKU was edited
+  // after dispatch), so failing it would unlock credit/refund (backend audit
+  // A5): it takes the transient path, ending up unresolved_at_supplier after
+  // 24h, never failed.
+  const recordStructuralProblem = async (reason: string) => {
+    if (isFreshDispatch) {
+      await recordDigiflazzOutcome(db, order, { kind: "terminal", reason, supplierGaveReason: true }, dispatchedAt);
+      summary.failed++;
+      return;
+    }
+    const outcome = await recordDigiflazzOutcome(
       db,
       order,
-      { kind: "terminal", reason: resolution.reason, supplierGaveReason: true },
+      { kind: "transient_error", message: `The order's status could not be rechecked with Digiflazz: ${reason}` },
       dispatchedAt,
     );
-    summary.failed++;
+    if (outcome === "pending") summary.pending++;
+    else summary.failed++;
+    logger.warn(
+      { orderId: order.id },
+      `Could not recheck order ${order.orderCode} with Digiflazz because ${reason}; the order was already submitted, so it stays locked and is retried on its schedule instead of being failed.`,
+    );
+  };
+  const resolution = resolveSingleDigiflazzItem(order);
+  if (!resolution.ok) {
+    await recordStructuralProblem(resolution.reason);
     return;
   }
   const { supplierSku } = resolution;
@@ -1410,8 +1428,7 @@ async function processDigiflazzOrder(
   const submittedInput = await db.order.findUniqueOrThrow({ where: { id: order.id }, select: { customerData: true, inputConfigSnapshot: true } });
   try { customerNo = buildDigiflazzCustomerNo(resolution.product, submittedInput.customerData, submittedInput.inputConfigSnapshot); }
   catch {
-    await recordDigiflazzOutcome(db, order, { kind: "terminal", reason: "Invalid player input configuration or answers; needs manual review", supplierGaveReason: true }, dispatchedAt);
-    summary.failed++;
+    await recordStructuralProblem("Invalid player input configuration or answers; needs manual review");
     return;
   }
 

@@ -4,7 +4,7 @@ import type { FastifyInstance } from "fastify";
 import { config } from "@app/core/config";
 import { prisma, initDb, upsertUser, setSetting } from "@app/db";
 import { resetDb } from "../../../tests/helpers/sampleData";
-import { makeSession, sessionJtiKey, newJti } from "../src/auth";
+import { makeSession, sessionJtiKey, newJti, webRoleKey } from "../src/auth";
 import { buildApp } from "../src/server";
 
 /**
@@ -94,7 +94,9 @@ describe("order eligibility for Digiflazz orders", () => {
         cookies: { [COOKIE]: cookie },
         payload: new URLSearchParams({ csrf_token: csrf, note }).toString(),
       });
-    expect((await markFailed(unresolved.id, "  ")).statusCode).toBe(400);
+    const noNote = await markFailed(unresolved.id, "  ");
+    expect(noNote.statusCode).toBe(400);
+    expect(noNote.json()).toEqual({ error: "error.digiflazz_failure_note_required" });
     expect((await markFailed(inFlight.id, "checked")).statusCode).toBe(422);
 
     const res = await markFailed(unresolved.id, "Digiflazz support confirmed it never went through");
@@ -104,5 +106,27 @@ describe("order eligibility for Digiflazz orders", () => {
     const audit = await prisma.auditLog.findFirstOrThrow({ where: { action: "order.digiflazz_marked_failed_by_admin", targetId: unresolved.id } });
     expect(audit.adminId).toBe(adminId);
     expect(await detail(unresolved.id)).toMatchObject({ canFulfill: true, canCredit: true, canMarkSupplierFailed: false });
+  });
+
+  it("refuses the mark-failed override for a readonly admin, changing nothing", async () => {
+    const unresolved = await makeOrder({
+      fulfillmentProvider: "DIGIFLAZZ",
+      digiflazzStatus: "unresolved_at_supplier",
+      digiflazzDispatchedAt: new Date(Date.now() - 3 * 24 * 3_600_000),
+      digiflazzNextRecheckAt: new Date(Date.now() + 3 * 3_600_000),
+    });
+    await setSetting(prisma, webRoleKey(ADMIN_TG), "readonly");
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/orders/${unresolved.id}/digiflazz/mark-failed`,
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      cookies: { [COOKIE]: cookie },
+      payload: new URLSearchParams({ csrf_token: csrf, note: "checked with Digiflazz" }).toString(),
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: unresolved.id } })).digiflazzStatus).toBe("unresolved_at_supplier");
+    expect(await prisma.auditLog.count({ where: { action: "order.digiflazz_marked_failed_by_admin" } })).toBe(0);
   });
 });

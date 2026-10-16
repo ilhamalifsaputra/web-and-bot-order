@@ -565,7 +565,8 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
     const body = (req.body ?? {}) as Record<string, unknown>;
     const note = typeof body.note === "string" ? body.note.trim() : "";
     if (!note) {
-      return reply.code(400).send({ error: "A note saying what Digiflazz confirmed is required." });
+      // Same key the crud function throws, so the client maps one message.
+      return reply.code(400).send(errorBody(new ValidationError("error.digiflazz_failure_note_required")));
     }
     try {
       await markDigiflazzOrderFailedByAdmin(prisma, orderId, { adminId: req.admin!.userId, note });

@@ -212,6 +212,60 @@ describe("exhausted 24h window -> unresolved_at_supplier (still locked)", () => 
     expect(isDigiflazzInFlight(row)).toBe(false);
   });
 
+  it("a late Gagal after the unresolved alert still raises its own needs_review alert", async () => {
+    const order = await makeDispatchedOrder({ dispatchedAgoMs: 25 * HOUR });
+    digiflazzMock.createTransaction.mockResolvedValue(pending(order.orderCode));
+    await dispatchPendingDigiflazzOrders(prisma);
+    expect(await reviewAlerts(order.id)).toHaveLength(1);
+
+    await prisma.order.update({ where: { id: order.id }, data: { digiflazzNextRecheckAt: new Date(Date.now() - 1_000) } });
+    digiflazzMock.createTransaction.mockResolvedValue({ refId: order.orderCode, status: "Gagal", sn: null, message: "Nomor salah", price: null });
+    await dispatchPendingDigiflazzOrders(prisma);
+
+    const alerts = await reviewAlerts(order.id);
+    expect(alerts).toHaveLength(2);
+    expect(alerts.map((a) => a.dedupeKey).sort()).toEqual([
+      `order:${order.id}:digiflazz_unresolved:555`,
+      `order:${order.id}:needs_review:555`,
+    ]);
+    expect((await reloaded(order.id)).digiflazzStatus).toBe("failed");
+  });
+
+  // Review fix: on a RECHECK the order was already submitted, so a structural
+  // problem found afterwards (here: a legacy order whose SKU lost its
+  // supplierSku after dispatch) must not fail it — it stays locked.
+  it.each([
+    { label: "inside the 24h window", dispatchedAgoMs: HOUR, attempts: 3, status: "pending_at_supplier", expected: "pending_at_supplier" },
+    { label: "after the 24h window", dispatchedAgoMs: 25 * HOUR, attempts: 20, status: "pending_at_supplier", expected: DIGIFLAZZ_STATUS_UNRESOLVED },
+    { label: "already unresolved", dispatchedAgoMs: 3 * DAY, attempts: 25, status: DIGIFLAZZ_STATUS_UNRESOLVED, expected: DIGIFLAZZ_STATUS_UNRESOLVED },
+  ])("a recheck of a legacy order whose supplierSku was cleared after dispatch stays locked ($label)", async ({ dispatchedAgoMs, attempts, status, expected }) => {
+    const order = await makeDispatchedOrder({ dispatchedAgoMs, attempts, status });
+    await prisma.order.update({ where: { id: order.id }, data: { fulfillmentProvider: null, fulfillmentSku: null } });
+    await prisma.denomination.update({ where: { id: sample.product.id }, data: { supplierSku: null } });
+
+    const summary = await dispatchPendingDigiflazzOrders(prisma);
+
+    expect(summary).toEqual({ claimed: 1, delivered: 0, pending: 1, failed: 0 });
+    expect(digiflazzMock.createTransaction).not.toHaveBeenCalled();
+    const row = await reloaded(order.id);
+    expect(row.status).toBe(OrderStatus.PROCESSING);
+    expect(row.digiflazzStatus).toBe(expected);
+    expect(row.digiflazzFailureDetail).toMatch(/supplierSku/);
+    expect(isDigiflazzInFlight(row)).toBe(true);
+    expect(isDigiflazzCreditLocked(row)).toBe(true);
+    await expect(creditOrderToBalance(prisma, { orderId: order.id, adminId: sample.user.id })).rejects.toMatchObject({ key: "error.order_in_flight_at_supplier" });
+    expect(await prisma.auditLog.count({ where: { action: "order.digiflazz_dispatch_failed", targetId: order.id } })).toBe(0);
+  });
+
+  it("a fresh dispatch with no supplierSku still fails immediately (nothing was submitted)", async () => {
+    const order = await makeDispatchedOrder({ dispatchedAgoMs: 0 });
+    await prisma.order.update({ where: { id: order.id }, data: { digiflazzDispatchedAt: null, digiflazzStatus: null, digiflazzAttempts: 0, digiflazzNextRecheckAt: null, fulfillmentProvider: null, fulfillmentSku: null } });
+    await prisma.denomination.update({ where: { id: sample.product.id }, data: { supplierSku: null } });
+
+    expect(await dispatchPendingDigiflazzOrders(prisma)).toEqual({ claimed: 1, delivered: 0, pending: 0, failed: 1 });
+    expect((await reloaded(order.id)).digiflazzStatus).toBe("failed");
+  });
+
   it("missing Digiflazz credentials on a recheck never fail an already-dispatched order", async () => {
     const order = await makeDispatchedOrder({ dispatchedAgoMs: 3 * DAY, status: DIGIFLAZZ_STATUS_UNRESOLVED });
     await deleteSetting(prisma, DIGIFLAZZ_API_KEY_KEY);
@@ -249,9 +303,45 @@ describe("after the 7-day slow window", () => {
     expect(row.digiflazzStatus).toBe(DIGIFLAZZ_STATUS_UNRESOLVED);
     expect(isDigiflazzCreditLocked(row)).toBe(true);
   });
+
+  it("reminds admins again on the next UTC day", async () => {
+    const order = await makeDispatchedOrder({ dispatchedAgoMs: 8 * DAY, status: DIGIFLAZZ_STATUS_UNRESOLVED });
+    await dispatchPendingDigiflazzOrders(prisma);
+    expect(await reviewAlerts(order.id)).toHaveLength(1);
+
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      // The scheduled reminder 24h later; +25h is always the next UTC day.
+      vi.setSystemTime(new Date(Date.now() + 25 * HOUR));
+      await dispatchPendingDigiflazzOrders(prisma);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    const alerts = await reviewAlerts(order.id);
+    expect(alerts).toHaveLength(2);
+    const days = alerts.map((a) => /digiflazz_unresolved_reminder_(\d{4}-\d{2}-\d{2})/.exec(a.dedupeKey ?? "")?.[1]);
+    expect(days[0]).toBeTruthy();
+    expect(days[1]).toBeTruthy();
+    expect(days[0]).not.toBe(days[1]);
+    expect(digiflazzMock.createTransaction).not.toHaveBeenCalled();
+    expect((await reloaded(order.id)).digiflazzStatus).toBe(DIGIFLAZZ_STATUS_UNRESOLVED);
+  });
 });
 
 describe("markDigiflazzOrderFailedByAdmin (human override)", () => {
+  it("is idempotent: a second override is refused and writes nothing more", async () => {
+    const order = await makeDispatchedOrder({ dispatchedAgoMs: 3 * DAY, status: DIGIFLAZZ_STATUS_UNRESOLVED, nextRecheckAt: new Date(Date.now() + 3 * HOUR) });
+    await markDigiflazzOrderFailedByAdmin(prisma, order.id, { adminId: sample.user.id, note: "confirmed not processed" });
+    const outboxBefore = await prisma.notificationOutbox.count({ where: { orderId: order.id } });
+
+    await expect(markDigiflazzOrderFailedByAdmin(prisma, order.id, { adminId: sample.user.id, note: "again" })).rejects.toMatchObject({ key: "error.digiflazz_not_unresolved" });
+
+    expect(await prisma.auditLog.count({ where: { action: "order.digiflazz_marked_failed_by_admin", targetId: order.id } })).toBe(1);
+    expect(await prisma.notificationOutbox.count({ where: { orderId: order.id } })).toBe(outboxBefore);
+    expect((await reloaded(order.id)).digiflazzFailureDetail).toContain("confirmed not processed");
+  });
+
   it("moves an unresolved order to failed, audits the admin, and unlocks credit and manual fulfilment", async () => {
     const order = await makeDispatchedOrder({ dispatchedAgoMs: 3 * DAY, status: DIGIFLAZZ_STATUS_UNRESOLVED, nextRecheckAt: new Date(Date.now() + 3 * HOUR) });
 

@@ -111,7 +111,7 @@ describe("automatic fulfillment routing", () => {
     const rows = await db.prisma.notificationOutbox.findMany({ where: { orderId: order.id } });
     expect(rows.filter((row) => row.channel === "TELEGRAM").map((row) => row.event)).toEqual([NotificationEvent.ORDER_PIPELINE_FAILED]);
     expect(rows.filter((row) => row.channel === "EMAIL").map((row) => row.event).sort()).toEqual(["order.failed.admin", "order.failed.customer"]);
-    expect(rows.filter((row) => row.channel === "EMAIL").every((row) => row.status === "FAILED")).toBe(true);
+    expect(rows.filter((row) => row.channel === "EMAIL").every((row) => row.status === "SKIPPED")).toBe(true);
   });
 
   it("does not allow hand-delivery while automatic fulfillment is in flight", async () => {

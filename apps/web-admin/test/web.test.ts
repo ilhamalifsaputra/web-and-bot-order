@@ -682,7 +682,7 @@ describe("orders", () => {
 
     const rows = await prisma.notificationOutbox.findMany({ where: { orderId } });
     expect(rows.filter((r) => r.channel === "TELEGRAM")).toHaveLength(2);
-    expect(rows.filter((r) => r.channel === "EMAIL").every((r) => r.status === "FAILED")).toBe(true);
+    expect(rows.filter((r) => r.channel === "EMAIL").every((r) => r.status === "SKIPPED")).toBe(true);
     const testimonial = rows.find((r) => r.event === "ORDER_DELIVERED")!;
     expect(JSON.parse(testimonial.payloadJson).buyer_language).toBe("en");
     const dm = rows.find((r) => r.event === "ORDER_DELIVERED_DM")!;
@@ -7016,7 +7016,7 @@ describe("payments", () => {
     // DM; disabled/missing-recipient email outcomes are recorded separately.
     const rows = await prisma.notificationOutbox.findMany({ where: { orderId: order.id } });
     expect(rows.filter((r) => r.channel === "TELEGRAM").map((r) => r.event).sort()).toEqual(["ORDER_DELIVERED", "ORDER_DELIVERED_DM"]);
-    expect(rows.filter((r) => r.channel === "EMAIL").every((r) => r.status === "FAILED")).toBe(true);
+    expect(rows.filter((r) => r.channel === "EMAIL").every((r) => r.status === "SKIPPED")).toBe(true);
     const dms = await deliveredDms(order.id);
     expect(dms).toHaveLength(1);
     expect(dms[0]).toMatchObject({ chat_id: CUSTOMER_TG, order_code: order.orderCode });

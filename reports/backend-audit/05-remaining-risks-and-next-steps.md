@@ -23,6 +23,10 @@
 - **Minor code items**: `_api` parameter unused in `autoCloseStaleTickets`; a malformed `auto_closed` payload renders `#undefined`; admin `Number(id)` in `catalog.ts` and `digiflazzSync.ts` untouched; Bybit top-up timelines now show a transient `PENDING_PAYMENT` hop.
 - **No runtime measurements** were taken; no performance claim is made.
 
+- Product-order branches of `settlePaidOrder` still call `enqueueAdminOverpaid` as a bare await, and `finalizeDeliverySideEffects`, `cancelOrder` and `fulfillManualOrder` enqueue without isolation; a failure there can still roll back its transaction.
+- Closing an already-closed ticket from the web admin now returns 200 instead of 404 (the shared `closeTicket` reports whether it closed).
+- Deploy note: with an empty `ADMIN_IDS`, the setup wizard's owner step is refused (same as `/bootstrap`); set `ADMIN_IDS` before first run.
+
 ## Prior open owner decisions, untouched
 Settlement double-submit, `/track` second factor, and support-role refund remain exactly as before this pass.
 

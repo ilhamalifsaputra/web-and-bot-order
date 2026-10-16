@@ -53,4 +53,12 @@ All results below are as reported by the task reports (`.superpowers/sdd/task-N-
 `.superpowers/sdd/gate-typecheck.log` holds a `pnpm typecheck` run in the worktree; its first lines show all package typechecks starting and the first ones finishing. (The tail was not inspected for this report.)
 
 ## Final full gate
-PENDING — to be filled by the controller
+Run on the final code (HEAD 32a94d41 plus the test-only fix below), against an isolated Postgres.
+
+- `pnpm -r --workspace-concurrency=1 typecheck` then `tsc -p tsconfig.test.json`: exit 0. (Run one package at a time because the machine had about 2 GB free; the parallel run had been killed for memory.)
+- `pnpm test -- --maxWorkers=2` (includes the pretest guards: migration drift/timestamps, frontend boundaries, storefront lint, detection purity): 642 of 644 files and 11,981 of 11,984 tests passed.
+- 3 tests failed, reproducibly when re-run alone, so they were real, not load flakes:
+  `web.test.ts` "approve → DELIVERED + outbox rows" and "manual match unmatched tx → delivered + ledger updated", and `automaticFulfillment.test.ts` "alerts once when terminal failure is repeated". All three still asserted the old rule that a disabled email is stored as `FAILED`. Task 6 (B1) deliberately changed that to `SKIPPED`, so the assertions were updated to `SKIPPED` (test-only change, no production code touched).
+- Re-run of those two files after the update: 661 of 661 passed.
+- Not re-run: the whole suite a second time after this test-only edit.
+

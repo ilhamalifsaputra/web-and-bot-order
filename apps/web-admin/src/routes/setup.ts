@@ -5,8 +5,9 @@
  * mitigations. /setup* is excluded from the setup gate (see plugins/setupGate),
  * and locks itself once `setup_completed` is set (final step only).
  *
- * Takeover hardening: step 2 only accepts a Telegram ID that is in the
- * ADMIN_IDS allow-list (same rule as /bootstrap), every pre-auth wizard POST
+ * Takeover hardening: when ADMIN_IDS is set in .env, step 2 only accepts a
+ * Telegram ID from that allow-list (same rule as /bootstrap); with it empty,
+ * step 2 sets the first admin itself. Every pre-auth wizard POST
  * is rate limited per IP, and step 2 hands the browser that completed it a
  * random nonce cookie (only its hash is stored). The finish step (/setup/shop)
  * refuses to mint the owner session unless that cookie matches, so a third
@@ -175,9 +176,13 @@ export default async function setupRoutes(app: FastifyInstance): Promise<void> {
     let error: string | null = null;
     if (!Number.isInteger(telegramId) || telegramId <= 0) {
       error = "Telegram ID harus berupa angka. Dapatkan dari @userinfobot.";
-    } else if (!config.ADMIN_IDS.includes(telegramId)) {
-      // Same allow-list as POST /bootstrap: this route is pre-auth, so without
-      // it whoever reaches the wizard first could make themselves the owner.
+    } else if (config.ADMIN_IDS.length > 0 && !config.ADMIN_IDS.includes(telegramId)) {
+      // When the operator pre-declared admins in .env, this pre-auth route only
+      // accepts one of them (same allow-list as POST /bootstrap); otherwise
+      // whoever reaches the wizard first could make themselves the owner. With
+      // an empty ADMIN_IDS the wizard is the designed way to set the first admin
+      // (it stores it in the admin_ids setting), guarded by the per-IP rate
+      // limit, the nonce cookie and the 30 minute window.
       error = "Telegram ID ini belum ada di daftar ADMIN_IDS bot. Tambahkan ID Telegram-mu ke ADMIN_IDS di file .env lalu mulai ulang server.";
     } else if (password.length < 8) {
       error = "Password minimal 8 karakter.";

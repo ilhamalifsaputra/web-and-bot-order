@@ -25,7 +25,7 @@
 
 - Product-order branches of `settlePaidOrder` still call `enqueueAdminOverpaid` as a bare await, and `finalizeDeliverySideEffects`, `cancelOrder` and `fulfillManualOrder` enqueue without isolation; a failure there can still roll back its transaction.
 - Closing an already-closed ticket from the web admin now returns 200 instead of 404 (the shared `closeTicket` reports whether it closed).
-- Deploy note: with an empty `ADMIN_IDS`, the setup wizard's owner step is refused (same as `/bootstrap`); set `ADMIN_IDS` before first run.
+- Setup wizard: with `ADMIN_IDS` set in `.env`, step 2 accepts only those ids; with it empty, step 2 sets the first admin itself (the original design), protected by the per-IP rate limit, the nonce cookie and the 30 minute window. In that empty-env case the first visitor to reach the wizard can still claim the owner account, so run first-time setup on a private network or set `ADMIN_IDS` first.
 
 ## Prior open owner decisions, untouched
 Settlement double-submit, `/track` second factor, and support-role refund remain exactly as before this pass.

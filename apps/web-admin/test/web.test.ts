@@ -69,6 +69,7 @@ import {
   BYBIT_API_KEY_KEY,
   BYBIT_API_SECRET_KEY,
   __clearSettingsCacheForTests,
+  removeAdminIdFromDb,
 } from "@app/db";
 import { resetDb } from "../../../tests/helpers/sampleData";
 import { buildApp } from "../src/server";
@@ -8919,6 +8920,24 @@ describe("setup wizard — pre-auth takeover hardening", () => {
     expect(isAdmin(STRANGER_TG)).toBe(false);
     expect(await getSetting(prisma, passwordHashKey(STRANGER_TG))).toBeNull();
     expect(await getSetting(prisma, "setup_owner_tg")).toBeNull();
+  });
+
+  it("lets the wizard set the first admin when the env ADMIN_IDS list is empty", async () => {
+    const saved = [...config.ADMIN_IDS];
+    config.ADMIN_IDS.splice(0, config.ADMIN_IDS.length);
+    setAdminIds([]);
+    try {
+      const res = await app.inject({ method: "POST", url: "/setup/owner", payload: ownerBody(STRANGER_TG), headers: urlencoded });
+      expect(res.statusCode).toBe(303);
+      expect(res.headers.location).toBe("/setup/shop");
+      expect(isAdmin(STRANGER_TG)).toBe(true);
+      expect(await getSetting(prisma, "setup_owner_tg")).toBe(String(STRANGER_TG));
+    } finally {
+      await removeAdminIdFromDb(prisma, STRANGER_TG);
+      await deleteSetting(prisma, passwordHashKey(STRANGER_TG));
+      config.ADMIN_IDS.push(...saved);
+      setAdminIds([...config.ADMIN_IDS]);
+    }
   });
 
   it("still lets the real operator (an ADMIN_IDS member) create the owner", async () => {

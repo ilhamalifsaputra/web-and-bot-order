@@ -841,6 +841,46 @@ describe("OrderDetailPage game top-up", () => {
     expect(screen.queryByRole("heading", { name: "Delivered content" })).not.toBeInTheDocument();
   });
 
+  const review = (transactionType: "GAME_TOPUP" | "PREMIUM_APPS", unresolved: boolean): OrderDetailData => {
+    const prefix = transactionType === "GAME_TOPUP" ? "game" : "premium";
+    const copy = unresolved ? "game_unresolved" : `${prefix}_review`;
+    const base = gameData();
+    return {
+      ...base,
+      order: { ...base.order, status: "processing", delivered_content: null, digiflazz_status: "reviewing", fulfillment: {
+        ...fulfillment(transactionType), status: "NEEDS_REVIEW", payment_status: "PAID",
+        presentation: { phase: "REVIEW", spinner: false, topUp: transactionType === "GAME_TOPUP", progress: null, transactionType,
+          titleKey: `transaction.${copy}_title`, bodyKey: `transaction.${copy}_body`, ...(unresolved ? { reason: "unresolved_at_supplier" as const } : {}) },
+      } },
+      delivered: false, processing: true, sn: null,
+    };
+  };
+
+  it("tells the buyer of a top-up unresolved at the supplier that it is still being checked, with a support link for the order", async () => {
+    renderDetail(() => review("GAME_TOPUP", true));
+    expect(await screen.findByRole("heading", { name: "Still checking your top-up" })).toBeInTheDocument();
+    expect(screen.getByText(/Your payment has been received\..*pay again or place a new order/)).toBeInTheDocument();
+    expect(screen.queryByText(/needs attention|24 hours|7 days/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Contact support" })).toHaveAttribute("href", "/help?order=ORD1");
+  });
+
+  it("keeps the existing review copy for a failed top-up and a Premium App, still offering the support link", async () => {
+    const { unmount } = renderDetail(() => review("GAME_TOPUP", false));
+    expect(await screen.findByRole("heading", { name: "Top-up needs attention" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Contact support" })).toHaveAttribute("href", "/help?order=ORD1");
+    unmount();
+    renderDetail(() => review("PREMIUM_APPS", false));
+    expect(await screen.findByRole("heading", { name: "Order needs attention" })).toBeInTheDocument();
+    expect(screen.queryByText(/Still checking your top-up/)).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Contact support" })).toHaveAttribute("href", "/help?order=ORD1");
+  });
+
+  it("shows no support link outside the review phase", async () => {
+    renderDetail(() => gameData());
+    await screen.findByRole("heading", { name: "Top-up details" });
+    expect(screen.queryByRole("link", { name: "Contact support" })).not.toBeInTheDocument();
+  });
+
   it("shows the status chip once, with the Pay now action, on a pending order", async () => {
     renderDetail(() => ({
       order: { ...baseOrder, status: "pending_payment" },

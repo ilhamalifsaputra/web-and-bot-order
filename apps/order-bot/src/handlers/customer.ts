@@ -1555,7 +1555,10 @@ export async function viewOrder(ctx: MyContext, orderId: number): Promise<void> 
       lines: itemLines.join("\n"),
     });
     const fulfillment = getOrderFulfillment(order);
-    const automaticKey = fulfillment.status === "NEEDS_REVIEW" ? "order.fulfillment_review" : fulfillment.status === "QUEUED" ? "order.fulfillment_queued" : fulfillment.status === "SUBMITTING" ? "order.fulfillment_submitting" : "order.fulfillment_processing";
+    // A game top-up still unresolved at the supplier gets its own wording (audit A5);
+    // Premium Apps and a supplier failure keep the generic review line.
+    const reviewKey = fulfillment.presentation.reason === "unresolved_at_supplier" ? "order.fulfillment_unresolved" : "order.fulfillment_review";
+    const automaticKey = fulfillment.status === "NEEDS_REVIEW" ? reviewKey : fulfillment.status === "QUEUED" ? "order.fulfillment_queued" : fulfillment.status === "SUBMITTING" ? "order.fulfillment_submitting" : "order.fulfillment_processing";
     text += `\n\n${t(ctx, fulfillment.provider === "DIGIFLAZZ" ? automaticKey : "order.processing_reassurance")}`;
 
     if (order.items[0]?.product.deliveryType === DeliveryType.MANUAL_WITH_INFO) {

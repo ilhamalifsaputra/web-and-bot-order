@@ -798,7 +798,9 @@ describe("a QR photo is retired to one status text once payment is no longer pen
       markups.push(options.reply_markup); return tg.api.editMessageText(chat, id, text);
     } } as unknown as FulfillmentTelegramApi;
     advance(); await worker(api).tick();
-    expect(buttons(markups[0]).includes("v1:support:open")).toBe(support);
+    expect(buttons(markups[0]).some(b => b.startsWith("v1:support:open"))).toBe(support);
+    // Only a review status links its Support button to the order.
+    if (support) expect(buttons(markups[0])).toContain(_phase === "REVIEW" ? `v1:support:open:${order.id}` : "v1:support:open");
     expect(buttons(markups[0])).toContain("v1:menu:main");
   });
 
@@ -1175,7 +1177,45 @@ describe("a delivered Digiflazz game top-up shows its Game ID, Zone/Server ID an
     const text = tg.edits[0]!.text;
     expect(text).not.toMatch(/Top-up completed|delivered successfully|Game ID|SN:|12345678|rc 53|stack/i);
     expect(text).toContain("contact support");
-    expect(buttons(tg.edits[0]!.markup)).toContain("v1:support:open");
+    expect(buttons(tg.edits[0]!.markup)).toContain(_name === "REVIEW" ? `v1:support:open:${order.id}` : "v1:support:open");
+  });
+
+  it("edits one message through processing, unresolved at the supplier and delivered, with the order-linked Support button (audit A5)", async () => {
+    const order = await gameOrder({ group: "GAME_TOPUP" });
+    const tg = telegram(); const w = worker(tg.api);
+    await w.tick(); // processing
+    await db.order.update({ where: { id: order.id }, data: { digiflazzStatus: "unresolved_at_supplier" } });
+    advance(); await w.tick();
+    const review = tg.edits[0]!;
+    expect(review.text).toContain("⚠️ <b>Still checking your top-up</b>");
+    expect(review.text).toContain("Your payment has been received.");
+    expect(review.text).toContain("need to pay again or place a new order.");
+    expect(review.text).not.toMatch(/needs attention|could not be completed|failed|24 hours|7 days/i);
+    expect(review.markup).toEqual({ inline_keyboard: [[
+      { text: "💬 Support", callback_data: `v1:support:open:${order.id}` }, { text: "🏠 Menu", callback_data: "v1:menu:main" },
+    ]] });
+    expect(Buffer.byteLength(`v1:support:open:${order.id}`)).toBeLessThanOrEqual(64);
+    expect(await db.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } })).toMatchObject({ state: "REVIEW", phase: "REVIEW" });
+    // Re-polled while unresolved: an unchanged status costs nothing.
+    advance(30_000); await w.tick();
+    advance(30_000); await w.tick();
+    await db.order.update({ where: { id: order.id }, data: { status: "DELIVERED", deliveredAt: now } });
+    await wakeFulfillmentMessage(db, order.id, now); advance(); await w.tick();
+    expect(tg.calls).toEqual({ sendMessage: 1, editMessageText: 2 });
+    expect(tg.edits.map(e => e.id)).toEqual([tg.sent[0]!.id, tg.sent[0]!.id]);
+    expect(tg.edits[1]!.text).toContain("Top-up completed");
+    expect(buttons(tg.edits[1]!.markup)).not.toContain(`v1:support:open:${order.id}`);
+  });
+
+  it("keeps the generic review copy for a Premium App unresolved at the supplier", async () => {
+    const order = await gameOrder({ group: "PREMIUM_APPS" });
+    const tg = telegram(); const w = worker(tg.api);
+    await w.tick();
+    await db.order.update({ where: { id: order.id }, data: { digiflazzStatus: "unresolved_at_supplier" } });
+    advance(); await w.tick();
+    expect(tg.calls).toEqual({ sendMessage: 1, editMessageText: 1 });
+    expect(tg.edits[0]!.text).toContain("⚠️ <b>Order needs attention</b>");
+    expect(tg.edits[0]!.text).not.toMatch(/Still checking your top-up|top-up/i);
   });
 });
 

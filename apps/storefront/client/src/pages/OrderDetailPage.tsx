@@ -381,7 +381,18 @@ function OrderContents({ order, liveUpdates, pendingPayment, processing, isDeskt
   data: OrderDetailData;
 }) {
   return (<div className="min-w-0 space-y-6">
-    {order.fulfillment && <OrderProgress fulfillment={order.fulfillment} underpayment={order.underpayment}>{liveUpdates}</OrderProgress>}
+    {order.fulfillment && (
+      <OrderProgress fulfillment={order.fulfillment} underpayment={order.underpayment}>
+        {order.fulfillment.presentation?.phase === "REVIEW" || order.fulfillment.status === "NEEDS_REVIEW" ? (
+          <div className="space-y-2">
+            <Link to={`/help?order=${encodeURIComponent(order.code)}`} className="inline-flex min-h-11 items-center text-sm font-semibold text-pine hover:underline">
+              {t("web.order_contact_support")}
+            </Link>
+            {liveUpdates}
+          </div>
+        ) : liveUpdates}
+      </OrderProgress>
+    )}
     {/* Only once the order is being fulfilled or done, like PayPage: the
               green card must not read as success on an unpaid/closed order. */}
     <OrderGameDetails isGameTopup={isGameTopup} processing={processing} delivered={delivered} order={order} data={data} />

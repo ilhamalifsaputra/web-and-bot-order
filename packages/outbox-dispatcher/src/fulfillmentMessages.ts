@@ -86,7 +86,7 @@ export class FulfillmentMessageWorker {
     this.signal = opts.signal;
   }
 
-  private keyboard(phase: string, kind: string, lang: string, slow: boolean) {
+  private keyboard(phase: string, kind: string, lang: string, slow: boolean, orderId: number) {
     const menu = { text: t("menu.main", lang), callback_data: "v1:menu:main" };
     if (["SUCCESS", "WALLET_CREDITED", "CREDITED"].includes(phase)) {
       return { inline_keyboard: kind === "WALLET_TOPUP"
@@ -94,7 +94,10 @@ export class FulfillmentMessageWorker {
         : [[{ text: t("checkout.buy_again_btn", lang), callback_data: "v1:browse:prods" }], [{ text: t("order.all_history_btn", lang), callback_data: "v1:order:list" }, menu]] };
     }
     // The same entry as the Help Center's Support button (the support conversation).
-    if (supportButtonFor(phase, slow)) return { inline_keyboard: [[{ text: t("menu.support", lang), callback_data: "v1:support:open" }, menu]] };
+    // A review status links the order, which the support conversation preselects
+    // once it has checked the order belongs to the buyer.
+    const support = phase === "REVIEW" ? `v1:support:open:${orderId}` : "v1:support:open";
+    if (supportButtonFor(phase, slow)) return { inline_keyboard: [[{ text: t("menu.support", lang), callback_data: support }, menu]] };
     return { inline_keyboard: [[menu]] };
   }
 
@@ -312,7 +315,7 @@ export class FulfillmentMessageWorker {
     // grammY types its signal with the abort-controller shim; native Node
     // signals implement the same runtime contract accepted by fetch.
     const apiSignal = controller.signal as unknown as NonNullable<Parameters<FulfillmentTelegramApi["sendMessage"]>[3]>;
-    const options = { parse_mode: "HTML" as const, reply_markup: this.keyboard(progress.phase, progress.transactionType, lang, slow) };
+    const options = { parse_mode: "HTML" as const, reply_markup: this.keyboard(progress.phase, progress.transactionType, lang, slow, order.id) };
     const qrLive = QR_LIVE_PHASES.has(progress.phase);
     // The lease this pass holds; retiring a photo upgrades it to SENDING.
     let claim: MessageRow = row;

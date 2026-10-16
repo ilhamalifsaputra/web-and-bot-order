@@ -25,6 +25,29 @@ describe("canonical fulfillment state", () => {
     expect(toBuyerDigiflazzStatus("pending_at_supplier")).toBe("pending");
     expect(toBuyerDigiflazzStatus("failed")).toBe("reviewing");
   });
+  it("gives an unresolved game top-up its own buyer copy and reason, keeping phase REVIEW (audit A5 follow-up)", () => {
+    const game = { ...order, digiflazzDispatchedAt: new Date(), digiflazzAttempts: 21, digiflazzStatus: DIGIFLAZZ_STATUS_UNRESOLVED,
+      items: [{ product: { autoDeliverySource: "digiflazz", deliveryType: "auto", product: { category: { group: "GAME_TOPUP" } } } }] };
+    expect(customerProgressPhase(game)).toMatchObject({
+      phase: "REVIEW", spinner: false, transactionType: "GAME_TOPUP", reason: "unresolved_at_supplier",
+      titleKey: "transaction.game_unresolved_title", bodyKey: "transaction.game_unresolved_body",
+    });
+    // A legacy order without a category group is a Digiflazz game top-up too.
+    expect(customerProgressPhase({ ...order, digiflazzStatus: DIGIFLAZZ_STATUS_UNRESOLVED }).titleKey).toBe("transaction.game_unresolved_title");
+    expect(getOrderFulfillment(game).presentation.reason).toBe("unresolved_at_supplier");
+  });
+  it("keeps the existing review copy for a failed game top-up, a Premium App and a wallet top-up", () => {
+    const failed = customerProgressPhase({ ...order, digiflazzStatus: "failed" });
+    expect(failed).toMatchObject({ phase: "REVIEW", titleKey: "transaction.game_review_title", bodyKey: "transaction.game_review_body" });
+    expect(failed.reason).toBeUndefined();
+    const premium = customerProgressPhase({ ...order, digiflazzStatus: DIGIFLAZZ_STATUS_UNRESOLVED,
+      items: [{ product: { autoDeliverySource: "digiflazz", deliveryType: "auto", product: { category: { group: "PREMIUM_APPS" } } } }] });
+    expect(premium).toMatchObject({ phase: "REVIEW", transactionType: "PREMIUM_APPS", titleKey: "transaction.premium_review_title", bodyKey: "transaction.premium_review_body" });
+    expect(premium.reason).toBeUndefined();
+    const wallet = customerProgressPhase({ status: "PAID", kind: "WALLET_TOPUP", paymentState: "PAID", walletCreditState: "NEEDS_REVIEW", digiflazzStatus: DIGIFLAZZ_STATUS_UNRESOLVED, items: [] });
+    expect(wallet).toMatchObject({ phase: "REVIEW", transactionType: "WALLET_TOPUP", titleKey: "transaction.wallet_review_title", bodyKey: "transaction.wallet_review_body" });
+    expect(wallet.reason).toBeUndefined();
+  });
   it("delivery takes precedence over stale supplier fields", () => {
     expect(getOrderFulfillment({ ...order, status: "DELIVERED", digiflazzStatus: "failed" })).toMatchObject({ status: "SUCCESS", can_edit_customer_data: false });
   });

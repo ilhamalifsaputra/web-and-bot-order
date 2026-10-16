@@ -62,3 +62,8 @@ Run on the final code (HEAD 32a94d41 plus the test-only fix below), against an i
 - Re-run of those two files after the update: 661 of 661 passed.
 - Not re-run: the whole suite a second time after this test-only edit.
 
+
+## Follow-up pass (wizard fix, A4, A5) — gate status
+- `pnpm -r --workspace-concurrency=1 typecheck` and `tsc -p tsconfig.test.json`: exit 0 on HEAD 6f021f8f.
+- Focused tests: wizard 31/31, A4 196/196, A5 375/375 (after review fixes), `pnpm test:guards` 198/198.
+- Full `pnpm test`: NOT completed. The run was stopped by the system for low memory. This pass was merged and pushed on the owner's explicit instruction without a finished full-suite run. The locale JSON and `prisma/schema.prisma` comment changes mean `test:changed` would have run everything; run `pnpm test -- --maxWorkers=2` on master when memory allows.

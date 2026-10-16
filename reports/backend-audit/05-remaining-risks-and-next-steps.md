@@ -1,8 +1,8 @@
 # 05 - Remaining risks and next steps
 
 ## Approval-gated proposals (not implemented)
-- **A4 UNDERPAID/FAILED hold with no expiry** (`orders.ts:1447`, `apps/order-bot/src/jobs/index.ts:494`). Stock, vouchers and wallet holds stay indefinitely. Needs an owner-chosen TTL and release semantics (interaction with late payments), so it was not changed.
-- **A5 Digiflazz 24 h Pending treated as definite failure** (`digiflazz.ts:583-590`, `orders.ts:3159`). Touches refund and payment semantics. Suggested design: keep an in-flight "unknown" state and check supplier status before unlocking credit or manual fulfilment.
+- **A4 (implemented, default off)**: the sweep for aged UNDERPAID orders exists but `underpaid_auto_resolve_hours` defaults to "0". Owner decision: pick a TTL (72 h suggested), review the UNDERPAID list, then set it in the admin settings. FAILED orders are alert-only. Follow-ups: batch starvation, re-alert after outbox pruning, one-off repair of older admin refunds, over-credit in `creditOrderToBalance` for UNDERPAID, admin underpaid-cancel without credit, TokoPay fee refunded.
+- **A5 (implemented)**: Pending after 24 h now becomes `unresolved_at_supplier` (locked, rechecked every 6 h for 7 days, admin override only). Needs the admin client (badge, "mark failed" button, error message keys). Orders failed by the old code stay `failed`; reconcile them by `digiflazzFailureDetail`.
 - **Login lockout DoS and timing leak**: UX/security decision.
 - **TOTP replay protection and secret encryption**.
 - **DB CHECK constraints** (wallet balance >= 0, status enums): migration plus live-data validation.

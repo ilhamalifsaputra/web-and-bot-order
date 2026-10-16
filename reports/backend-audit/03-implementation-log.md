@@ -89,3 +89,12 @@ Chronological, from `git log --reverse master..HEAD` on `worktree-backend-audit-
 ## 16. e123731b - fix wave
 - Files/functions: `createTicket` returns `reused?: true` (apiAccount routes use it; timestamp heuristic removed); `notificationIsolation.ts` logs the original error before `ROLLBACK TO` (new `notificationIsolation.test.ts`, 2 tests); photo proxy cancels the unused upstream body on `!ok` and 415; new characterization tests in `dispatcher.test.ts` (SMTP_RECIPIENT/SMTP_REJECTED do not block, flag resets per tick) and `web.test.ts` (nonce invalidated on retry, cleared on finish).
 - Regressions prevented: clock-skew misdetection of duplicate tickets, a lost original error when rollback fails, leaked upstream bodies.
+
+## Follow-up pass: wizard fix, A4 and A5
+| # | Commit | Summary |
+|---|--------|---------|
+| 17 | cf946938 | fix(setup): the wizard sets the first admin when env ADMIN_IDS is empty (corrects the Task 1 over-restriction) |
+| 18 | 330e5d3d | fix(orders): resolve aged UNDERPAID orders and alert on aged FAILED ones (A4) |
+| 19 | 42a561b3 | fix(orders): A4 review fixes (default off, owner-settable keys, minors) |
+| 20 | bb44592b | fix(digiflazz): keep orders still Pending after 24h locked as unresolved, not failed (A5) |
+| 21 | 76dce158 | fix(digiflazz): A5 review fixes (recheck structural errors are transient, alert wording, tests) |

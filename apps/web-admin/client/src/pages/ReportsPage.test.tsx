@@ -1,4 +1,4 @@
-import "@testing-library/jest-dom";
+import "@testing-library/jest-dom/vitest";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // Recharts' ResponsiveContainer uses ResizeObserver which jsdom doesn't provide.

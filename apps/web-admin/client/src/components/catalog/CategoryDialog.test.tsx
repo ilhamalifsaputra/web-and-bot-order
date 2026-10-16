@@ -1,4 +1,4 @@
-import "@testing-library/jest-dom";
+import "@testing-library/jest-dom/vitest";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -152,9 +152,9 @@ describe("CategoryDialog", () => {
       />,
     );
     expect(screen.getByRole("radio", { name: /^instant/i })).toBeChecked();
-    expect(screen.getByRole("radio", { name: /^catalog\b/i })).not.toBeChecked();
+    expect(screen.getByRole("radio", { name: /^catalog/i })).not.toBeChecked();
 
-    fireEvent.click(screen.getByRole("radio", { name: /^catalog\b/i }));
+    fireEvent.click(screen.getByRole("radio", { name: /^catalog/i }));
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => expect(onSaved).toHaveBeenCalled());

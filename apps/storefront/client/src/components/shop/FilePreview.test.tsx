@@ -1,4 +1,4 @@
-import "@testing-library/jest-dom";
+import "@testing-library/jest-dom/vitest";
 import { render } from "@testing-library/react";
 import { StrictMode } from "react";
 import { afterEach, expect, it, vi } from "vitest";

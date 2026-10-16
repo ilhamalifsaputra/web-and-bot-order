@@ -1,9 +1,10 @@
-import "@testing-library/jest-dom";
+import "@testing-library/jest-dom/vitest";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, within, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { Toaster } from "@/components/ui/sonner";
 import { SupportPage } from "./SupportPage";
 
@@ -138,7 +139,9 @@ beforeEach(() => {
   Element.prototype.releasePointerCapture = vi.fn();
 });
 
-afterEach(() => { vi.useRealTimers(); });
+// sonner keeps toasts in a module-level store; clear it so a toast raised by one
+// test is not rendered again by the next test's <Toaster />.
+afterEach(() => { vi.useRealTimers(); toast.dismiss(); });
 
 describe("SupportPage", () => {
   it("renders ticket rows with a message excerpt (no subject field) and the customer's name", async () => {

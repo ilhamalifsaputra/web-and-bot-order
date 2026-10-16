@@ -1,4 +1,4 @@
-import "@testing-library/jest-dom";
+import "@testing-library/jest-dom/vitest";
 import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from "vitest";
 import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, Link } from "react-router-dom";

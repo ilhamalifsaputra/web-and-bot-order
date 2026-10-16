@@ -1,4 +1,4 @@
-import "@testing-library/jest-dom";
+import "@testing-library/jest-dom/vitest";
 import { useState } from "react";
 import { describe, it, expect, vi } from "vitest";
 import { act, render, screen, waitFor, waitForElementToBeRemoved } from "@testing-library/react";

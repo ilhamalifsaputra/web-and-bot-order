@@ -1,9 +1,10 @@
-import "@testing-library/jest-dom";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import "@testing-library/jest-dom/vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, within, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { Toaster } from "@/components/ui/sonner";
 import { PaymentsPage } from "./PaymentsPage";
 import { apiGet, apiPost } from "../api/client";
@@ -54,6 +55,10 @@ let searchPayload: { q: string; exactOrderId: number | null } = { q: "", exactOr
 function mockPaymentsFetch(payload: Record<string, unknown>) {
   paymentsPayload = payload;
 }
+
+// sonner keeps toasts in a module-level store; clear it so a toast raised by one
+// test is not rendered again by the next test's <Toaster />.
+afterEach(() => { toast.dismiss(); });
 
 beforeEach(() => {
   vi.restoreAllMocks();

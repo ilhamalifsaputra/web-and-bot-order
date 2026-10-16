@@ -24,8 +24,9 @@ export const DIGIFLAZZ_RECHECK_WINDOW_HOURS = 24;
 /** Given the attempt number about to be made (1 = first recheck after the
  * original dispatch, 2 = second, ...) and the order's first-dispatch time,
  * returns the next recheck due-at Date, or null if that attempt would fall
- * beyond the 24h window (caller must mark the order terminally failed
- * instead of scheduling another recheck). */
+ * beyond the 24h window (caller then moves the order to the still-locked
+ * "unresolved_at_supplier" state and its slow schedule below — never to
+ * failed, since the supplier may still complete it). */
 export function nextDigiflazzRecheckAt(
   dispatchedAt: Date,
   attempt: number,
@@ -38,6 +39,35 @@ export function nextDigiflazzRecheckAt(
       ? steps[attempt - 1]!
       : steps.at(-1)! + (attempt - steps.length) * DIGIFLAZZ_RECHECK_STEADY_INTERVAL_MINUTES * 60;
   const candidate = new Date(dispatchedAt.getTime() + stepSeconds * 1000);
-  if (candidate >= elapsedCap) return null; // window exhausted — caller marks terminal failed
+  if (candidate >= elapsedCap) return null; // window exhausted — caller moves the order to unresolved_at_supplier
   return candidate < now ? now : candidate; // never schedule in the past
+}
+
+/** Slow cadence for an order still unresolved at the supplier after the 24h
+ * window (backend audit A5): one status check every 6 hours... */
+export const DIGIFLAZZ_UNRESOLVED_RECHECK_INTERVAL_HOURS = 6;
+/** ...for at most 7 days after the first dispatch. After that the supplier is
+ * no longer asked; the order stays locked and admins are reminded. */
+export const DIGIFLAZZ_UNRESOLVED_WINDOW_DAYS = 7;
+/** How often admins are reminded about an order that is still unresolved once
+ * the 7-day window is over. */
+export const DIGIFLAZZ_UNRESOLVED_REALERT_INTERVAL_HOURS = 24;
+
+function unresolvedWindowEnd(dispatchedAt: Date): number {
+  return dispatchedAt.getTime() + DIGIFLAZZ_UNRESOLVED_WINDOW_DAYS * 24 * 3_600_000;
+}
+
+/** Whether the 7-day slow-recheck window of an unresolved order is over. */
+export function isDigiflazzUnresolvedWindowOver(dispatchedAt: Date, now = new Date()): boolean {
+  return now.getTime() >= unresolvedWindowEnd(dispatchedAt);
+}
+
+/** When the next slow status check of an unresolved order is due: 6 hours
+ * from `now`, capped at the end of the 7-day window, or null once that window
+ * is over (the caller then stops asking the supplier and only reminds admins —
+ * it never fails the order). */
+export function nextDigiflazzUnresolvedRecheckAt(dispatchedAt: Date, now = new Date()): Date | null {
+  const end = unresolvedWindowEnd(dispatchedAt);
+  if (now.getTime() >= end) return null;
+  return new Date(Math.min(now.getTime() + DIGIFLAZZ_UNRESOLVED_RECHECK_INTERVAL_HOURS * 3_600_000, end));
 }

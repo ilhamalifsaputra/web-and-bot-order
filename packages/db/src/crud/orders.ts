@@ -23,7 +23,7 @@ import {
   type CategoryGroup,
 } from "@app/core/enums";
 import { deriveOrderStatusFromItems } from "@app/core/orderItemStatus";
-import { fulfillmentProviderFor, getOrderFulfillment } from "@app/core/orderFulfillment";
+import { fulfillmentProviderFor, getOrderFulfillment, DIGIFLAZZ_STATUS_UNRESOLVED } from "@app/core/orderFulfillment";
 import { cartCompositionError } from "@app/core/cartComposition";
 import { usesLocalInventory } from "@app/core/productAvailability";
 import { emitDigiflazzOrderStatusChanged } from "@app/core/realtime/digiflazzEvents";
@@ -1595,8 +1595,10 @@ export function countUnderpaid(db: Db): Promise<number> {
  */
 export async function countAwaitingManualFulfillment(db: Db): Promise<number> {
   // A Digiflazz order sitting in PROCESSING is normally in flight at the
-  // provider (queued, submitting or pending_at_supplier) and needs no admin;
-  // it only joins the manual queue once the provider failed it. The provider
+  // provider (queued, submitting, pending_at_supplier or unresolved_at_supplier)
+  // and cannot be hand-fulfilled; it only joins the manual queue once the
+  // provider (or an admin override) failed it. Unresolved orders reach admins
+  // through their own review alert instead. The provider
   // is resolved by `fulfillmentProviderFor` (stored column, else the SKU), the
   // same rule the order detail uses — never a category name.
   const rows = await db.order.findMany({
@@ -3233,10 +3235,14 @@ export interface OrderEligibility {
 
 /**
  * A PROCESSING order routed to Digiflazz that the provider has not failed yet
- * (queued, submitting, or pending at the supplier). Such an order needs no
- * admin: `fulfillManualOrder` refuses it, and `countAwaitingManualFulfillment`
- * leaves it out. The provider comes from `fulfillmentProviderFor` (stored
- * column, else the SKU) — never a category name.
+ * (queued, submitting, pending at the supplier, or unresolved at the supplier
+ * — `DIGIFLAZZ_STATUS_UNRESOLVED`, no final answer after 24h, which Digiflazz
+ * may still complete; backend audit A5). Only `digiflazzStatus === "failed"`
+ * (a supplier Gagal, or an admin override via `markDigiflazzOrderFailedByAdmin`)
+ * ends it. Such an order is not hand-fulfilled: `fulfillManualOrder` refuses
+ * it, credit refuses it, and `countAwaitingManualFulfillment` leaves it out.
+ * The provider comes from `fulfillmentProviderFor` (stored column, else the
+ * SKU) — never a category name.
  */
 export function isDigiflazzInFlight(
   order: { status: string; digiflazzStatus: string | null } & Parameters<typeof fulfillmentProviderFor>[0],
@@ -3265,7 +3271,9 @@ export function isDigiflazzCreditLocked(
   if (isDigiflazzInFlight(order)) return true;
   return (
     order.status === OrderStatus.CANCELLED &&
-    (order.digiflazzDispatchedAt != null || order.digiflazzStatus === "pending_at_supplier") &&
+    (order.digiflazzDispatchedAt != null ||
+      order.digiflazzStatus === "pending_at_supplier" ||
+      order.digiflazzStatus === DIGIFLAZZ_STATUS_UNRESOLVED) &&
     isDigiflazzInFlight({ ...order, status: OrderStatus.PROCESSING })
   );
 }

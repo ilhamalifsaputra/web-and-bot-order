@@ -29,8 +29,24 @@ export function fulfillmentProviderFor(order: Pick<FulfillmentOrder, "fulfillmen
   return order.items.some(i => (i.deliveryTypeSnapshot ?? i.product.deliveryType) !== "auto") ? "MANUAL" : "STOCK";
 }
 
+/**
+ * `Order.digiflazzStatus` for an order whose automatic checks ran past the 24h
+ * backoff window with Digiflazz still answering Pending (or the requests still
+ * failing). Not a failure: the supplier may still complete the top-up, so the
+ * order stays locked (no credit, refund or hand-fulfilment) until Digiflazz
+ * answers Sukses/Gagal or an admin who reconciled with Digiflazz marks it
+ * failed (backend audit A5). Shown as a static review state, never as failed.
+ */
+export const DIGIFLAZZ_STATUS_UNRESOLVED = "unresolved_at_supplier";
+
+/** Whether a stored digiflazzStatus means "needs a human to look at it":
+ * failed by the supplier, or unresolved at the supplier. */
+function digiflazzNeedsReview(internal: string | null | undefined): boolean {
+  return internal === "failed" || internal === DIGIFLAZZ_STATUS_UNRESOLVED;
+}
+
 export function toBuyerDigiflazzStatus(internal: string | null): "pending" | "reviewing" | null {
-  return internal === "pending_at_supplier" ? "pending" : internal === "failed" ? "reviewing" : null;
+  return internal === "pending_at_supplier" ? "pending" : digiflazzNeedsReview(internal) ? "reviewing" : null;
 }
 
 export function getOrderFulfillment(order: FulfillmentOrder): OrderFulfillment {
@@ -44,7 +60,7 @@ export function getOrderFulfillment(order: FulfillmentOrder): OrderFulfillment {
   else if (["FAILED", "REJECTED"].includes(orderStatus)) status = "FAILED";
   else if (orderStatus === "PROCESSING") {
     if (provider === "DIGIFLAZZ") {
-      status = order.digiflazzStatus === "failed" ? "NEEDS_REVIEW" : !order.digiflazzDispatchedAt ? "QUEUED" : (order.digiflazzAttempts ?? 0) === 0 ? "SUBMITTING" : "PROCESSING";
+      status = digiflazzNeedsReview(order.digiflazzStatus) ? "NEEDS_REVIEW" : !order.digiflazzDispatchedAt ? "QUEUED" : (order.digiflazzAttempts ?? 0) === 0 ? "SUBMITTING" : "PROCESSING";
     } else status = "QUEUED";
   }
   return {
@@ -173,6 +189,6 @@ export function customerProgressPhase(order: FulfillmentOrder, opts: { messageSe
   if (status !== "PROCESSING" && status !== "PAID") return of("NONE", false);
   if (provider === "MANUAL") return of("MANUAL_WAITING", false);
   if (provider === "STOCK") return of("PREPARING", true);
-  if (order.digiflazzStatus === "failed") return of("REVIEW", false);
+  if (digiflazzNeedsReview(order.digiflazzStatus)) return of("REVIEW", false);
   return of(!order.digiflazzDispatchedAt ? "AUTO_QUEUED" : (order.digiflazzAttempts ?? 0) === 0 ? "AUTO_SUBMITTING" : "AUTO_PROCESSING", true);
 }

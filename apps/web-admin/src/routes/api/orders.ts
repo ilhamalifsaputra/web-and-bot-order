@@ -41,7 +41,9 @@ import {
   type OrderFilter,
   type StockReplacementWithRefund,
   triggerDigiflazzDispatch,
+  markDigiflazzOrderFailedByAdmin,
 } from "@app/db";
+import { DIGIFLAZZ_STATUS_UNRESOLVED } from "@app/core/orderFulfillment";
 import { currentAdmin, csrfProtect, blockReadonlyReads } from "../../plugins/auth";
 import { orderMoneyView } from "../orderMoneyView";
 import { displayDate, displayDateTime } from "../../dateDisplay";
@@ -295,6 +297,12 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
       // Lets the page say WHY there is no "Credit to Balance" button: the
       // supplier may still deliver, and creditOrderToBalance refuses it.
       creditLockedBySupplier: digiflazzCreditLocked,
+      // Backend audit A5: the order is unresolved at Digiflazz (no final answer
+      // after 24h) and an admin who reconciled it with Digiflazz may mark it
+      // failed (POST /api/orders/:orderId/digiflazz/mark-failed) — the only
+      // human way out; the server re-checks the state and the in-flight lease.
+      canMarkSupplierFailed:
+        order.status === OrderStatus.PROCESSING && order.digiflazzStatus === DIGIFLAZZ_STATUS_UNRESOLVED,
       customerDataFields,
       customerData,
       stockReplacements: stockReplacements.map(serializeStockReplacement),
@@ -544,6 +552,32 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
       return reply.send({ ok: true });
     },
   );
+
+  // Backend audit A5: an admin who reconciled an order unresolved at Digiflazz
+  // and confirmed with Digiflazz that it did not go through marks it failed,
+  // which unlocks credit and manual delivery. markDigiflazzOrderFailedByAdmin
+  // writes its own audit row (order.digiflazz_marked_failed_by_admin), so this
+  // route does not add a second one. A note saying what Digiflazz confirmed
+  // is required.
+  app.post("/api/orders/:orderId/digiflazz/mark-failed", { preHandler: csrfProtect }, async (req, reply) => {
+    const orderId = parsePositiveId((req.params as { orderId: string }).orderId);
+    if (orderId === null) return reply.code(400).send({ error: "Invalid order id." });
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const note = typeof body.note === "string" ? body.note.trim() : "";
+    if (!note) {
+      return reply.code(400).send({ error: "A note saying what Digiflazz confirmed is required." });
+    }
+    try {
+      await markDigiflazzOrderFailedByAdmin(prisma, orderId, { adminId: req.admin!.userId, note });
+    } catch (e) {
+      if (e instanceof ValidationError) {
+        return reply.code(422).send(errorBody(e));
+      }
+      throw e;
+    }
+    nudgeOutboxDispatcher();
+    return reply.send({ ok: true });
+  });
 
   // Manual hand-fulfilment: an admin types the account content for a
   // PROCESSING (manual/manual_with_info) order and sends it to the buyer.

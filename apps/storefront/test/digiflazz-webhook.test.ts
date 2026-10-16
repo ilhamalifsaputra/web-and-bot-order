@@ -1002,6 +1002,46 @@ describe("POST /pay/digiflazz/callback", () => {
     expect(await prisma.auditLog.count({ where: { action: "order.digiflazz_dispatch_failed", targetId: order.id } })).toBe(0);
   });
 
+  // Backend audit A5: an order whose automatic checks ran past 24h without a
+  // final answer sits in "unresolved_at_supplier". A signed callback for it
+  // still gets its live re-check, so a late Sukses delivers it...
+  it("a signed Sukses for an order unresolved at the supplier delivers it", async () => {
+    const order = await createProcessingDigiflazzOrder("ORD-DF-UNRESOLVED-OK", "15000", {
+      digiflazzDispatchedAt: new Date(Date.now() - 3 * 24 * 3_600_000),
+      digiflazzStatus: "unresolved_at_supplier",
+      digiflazzNextRecheckAt: new Date(Date.now() + 3 * 3_600_000),
+    });
+    digiflazzSupplierMock.createTransaction.mockResolvedValue({ refId: order.orderCode, status: "Sukses", sn: "SN-LATE-WEBHOOK", message: "ok", price: null });
+
+    const res = await app.inject(signedPayload({ refId: order.orderCode, status: "Sukses" }));
+
+    expect(res.statusCode).toBe(200);
+    expect(digiflazzSupplierMock.createTransaction).toHaveBeenCalledTimes(1);
+    const updated = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(updated.status).toBe("DELIVERED");
+    expect(updated.digiflazzStatus).toBeNull();
+  });
+
+  // ...while a Pending re-check keeps it unresolved and puts its slow schedule back.
+  it("a signed Pending for an unresolved order keeps it unresolved without spending an attempt", async () => {
+    const scheduled = new Date(Date.now() + 3 * 3_600_000);
+    const order = await createProcessingDigiflazzOrder("ORD-DF-UNRESOLVED-PENDING", "15000", {
+      digiflazzDispatchedAt: new Date(Date.now() - 3 * 24 * 3_600_000),
+      digiflazzStatus: "unresolved_at_supplier",
+      digiflazzNextRecheckAt: scheduled,
+    });
+    await prisma.order.update({ where: { id: order.id }, data: { digiflazzAttempts: 25 } });
+    digiflazzSupplierMock.createTransaction.mockResolvedValue({ refId: order.orderCode, status: "Pending", sn: null, message: null, price: null });
+
+    expect((await app.inject(signedPayload({ refId: order.orderCode, status: "Pending" }))).statusCode).toBe(200);
+
+    const updated = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(updated.status).toBe("PROCESSING");
+    expect(updated.digiflazzStatus).toBe("unresolved_at_supplier");
+    expect(updated.digiflazzAttempts).toBe(25);
+    expect(updated.digiflazzNextRecheckAt).toEqual(scheduled);
+  });
+
   // Task 4 review fix (I-1): the webhook's restore is a compare-and-set on
   // the lease it took. If another check took the recheck slot while the live
   // check was running (lease ran out, the cron claimed and recorded), the

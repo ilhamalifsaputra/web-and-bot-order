@@ -98,3 +98,12 @@ Chronological, from `git log --reverse master..HEAD` on `worktree-backend-audit-
 | 19 | 42a561b3 | fix(orders): A4 review fixes (default off, owner-settable keys, minors) |
 | 20 | bb44592b | fix(digiflazz): keep orders still Pending after 24h locked as unresolved, not failed (A5) |
 | 21 | 76dce158 | fix(digiflazz): A5 review fixes (recheck structural errors are transient, alert wording, tests) |
+
+## Follow-up pass 2: ways out of `unresolved_at_supplier`
+| # | Commit | Summary |
+|---|--------|---------|
+| 22 | 05ff7929 | feat(digiflazz): admin ways out (mark delivered, recheck now, flags, Reject guard, queue count, list filter) |
+| 23 | 73be00cf | feat(buyer): own copy and an order-linked support path for unresolved top-ups |
+| 24 | 8dcad453 | fix: one support prompt in the Telegram text, lease margin for overrides, `sn` cap in the crud function |
+| 25 | c3bd363f | feat(admin): banner, badge, three actions, list indicator and queue card for unresolved orders |
+| 26 | 08f63c46 | fix(admin): day-7 banner wording, `check_failed` outcome, note cap, banner role |

@@ -504,6 +504,50 @@ describe("POST /api/support/:ticketId/reply + /close", () => {
   it("close 404s for a non-existent ticket", async () => {
     const res = await postJson("/api/support/999999/close", cookie, csrf);
     expect(res.statusCode).toBe(404);
+    expect(await prisma.auditLog.count({ where: { action: "ticket_close" } })).toBe(0);
+  });
+
+  it("close of a web-only buyer's ticket (no telegramId) succeeds, audits once and queues no Telegram DM", async () => {
+    const web = await createWebUser(prisma, {
+      loginUsername: "webcloser",
+      email: "webcloser@shop.test",
+      passwordHash: "x",
+      fullName: "Web Closer",
+    });
+    const ticket = await createTicket(prisma, web.id, "Help please");
+
+    const res = await postJson(`/api/support/${ticket.id}/close`, cookie, csrf);
+
+    expect(res.statusCode).toBe(200);
+    expect((await prisma.supportTicket.findUniqueOrThrow({ where: { id: ticket.id } })).status).toBe("CLOSED");
+    expect(await prisma.auditLog.count({ where: { action: "ticket_close", targetId: ticket.id } })).toBe(1);
+    expect(await prisma.notificationOutbox.count({ where: { event: "TICKET_CLOSED_DM" } })).toBe(0);
+  });
+
+  it("closing an already-closed ticket writes no second audit row and no second DM", async () => {
+    const ticket = await createTicket(prisma, customerId, "Help please");
+    expect((await postJson(`/api/support/${ticket.id}/close`, cookie, csrf)).statusCode).toBe(200);
+
+    const again = await postJson(`/api/support/${ticket.id}/close`, cookie, csrf);
+
+    expect(again.statusCode).toBe(200);
+    expect(await prisma.auditLog.count({ where: { action: "ticket_close", targetId: ticket.id } })).toBe(1);
+    expect(await prisma.notificationOutbox.count({ where: { event: "TICKET_CLOSED_DM" } })).toBe(1);
+  });
+
+  it("bulk close audits only tickets it actually closed, not one that was already closed", async () => {
+    const already = await createTicket(prisma, customerId, "Already");
+    expect((await postJson(`/api/support/${already.id}/close`, cookie, csrf)).statusCode).toBe(200);
+    const open = await createTicket(prisma, customerId, "Open");
+
+    const res = await postJson("/api/support/bulk-action", cookie, csrf, { ids: [already.id, open.id], action: "close" });
+
+    expect(res.statusCode).toBe(200);
+    expect(await prisma.auditLog.count({ where: { action: "ticket_bulk_close", targetId: already.id } })).toBe(0);
+    expect(await prisma.auditLog.count({ where: { action: "ticket_bulk_close", targetId: open.id } })).toBe(1);
+    const summary = await prisma.auditLog.findFirstOrThrow({ where: { action: "ticket_bulk_close", targetId: null } });
+    expect(summary.details).toBe("Closed 1 ticket; 1 was already closed.");
+    expect(await prisma.notificationOutbox.count({ where: { event: "TICKET_CLOSED_DM" } })).toBe(2);
   });
 
   it("reply requires auth (anon → 401)", async () => {

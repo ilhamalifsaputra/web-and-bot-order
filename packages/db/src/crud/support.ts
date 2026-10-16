@@ -193,8 +193,8 @@ export function countOpenTickets(db: Db): Promise<number> {
 // ---- Operational queue (web-admin) ----------------------------------------
 
 /**
- * Close a ticket; return the ticket owner's telegram_id (to notify) or null.
- * Atomic conditional claim — `count===1` means THIS call is the one that
+ * Close a ticket; report whether THIS call closed it and the owner's
+ * telegram_id (see `CloseTicketResult`). Atomic conditional claim — `count===1` means THIS call is the one that
  * actually flipped it, so a double-tap "Close" can never fire two DMs to the
  * buyer (Bot-3 fix, security audit 2026-06-23).
  */
@@ -202,7 +202,7 @@ export async function closeTicket(
   db: Db,
   ticketId: number,
   opts: { autoClosed?: boolean } = {},
-): Promise<bigint | null> {
+): Promise<CloseTicketResult> {
   // The close and the buyer's TICKET_CLOSED_DM row commit together.
   if ("$transaction" in db) return db.$transaction((tx) => closeTicket(tx, ticketId, opts));
   const closedAt = new Date();
@@ -210,14 +210,19 @@ export async function closeTicket(
     where: { id: ticketId, status: { not: TicketStatus.CLOSED } },
     data: { status: TicketStatus.CLOSED, closedAt, lastStatusChangeAt: closedAt, lastActivityAt: closedAt },
   });
-  if (res.count === 0) return null;
-  const ticket = await db.supportTicket.findUnique({ where: { id: ticketId } });
-  if (!ticket) return null;
+  if (res.count === 0) return { closed: false, telegramId: null };
+  const ticket = await db.supportTicket.findUniqueOrThrow({ where: { id: ticketId } });
   const user = await db.user.findUnique({ where: { id: ticket.userId } });
-  if (!user) return null;
+  if (!user) return { closed: true, telegramId: null };
   await enqueueTicketClosedNotice(db, ticketId, closedAt, user, opts.autoClosed);
-  return user.telegramId;
+  return { closed: true, telegramId: user.telegramId };
 }
+
+/** What `closeTicket` did. `closed` is true only when THIS call moved the
+ * ticket to CLOSED (false for a missing or already-closed ticket), so callers
+ * audit exactly once per real close. `telegramId` is the owner's Telegram id,
+ * null for a web-only buyer (who gets no DM) or when nothing was closed. */
+export type CloseTicketResult = { closed: boolean; telegramId: bigint | null };
 
 /** Queue the buyer's "your ticket was closed" DM for one actual close. The
  * dedupe key is per close (ticket id + close time), so a repeated call for the
@@ -1289,8 +1294,9 @@ export async function bulkSetTicketPriority(
 export async function bulkCloseTickets(
   db: Db,
   ids: number[],
-): Promise<{ succeeded: number[]; failed: { id: number; error: string }[] }> {
+): Promise<{ succeeded: number[]; closed: number[]; failed: { id: number; error: string }[] }> {
   const succeeded: number[] = [];
+  const closed: number[] = [];
   const failed: { id: number; error: string }[] = [];
   for (const id of ids) {
     const ticket = await db.supportTicket.findUnique({ where: { id } });
@@ -1298,10 +1304,13 @@ export async function bulkCloseTickets(
       failed.push({ id, error: "ticket not found" });
       continue;
     }
-    await closeTicket(db, id); // no-op via the atomic guard if already CLOSED
+    // No-op via the atomic guard if already CLOSED; `closed` lists only the
+    // tickets this call actually closed, so the caller audits each once.
+    const result = await closeTicket(db, id);
+    if (result.closed) closed.push(id);
     succeeded.push(id);
   }
-  return { succeeded, failed };
+  return { succeeded, closed, failed };
 }
 
 /** Bulk resolve — unlike bulkCloseTickets, an already-RESOLVED-or-CLOSED

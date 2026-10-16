@@ -119,41 +119,41 @@ async function makeOrder(userId: number) {
 }
 
 describe("closeTicket atomic guard", () => {
-  it("closes an OPEN ticket and returns the owner's telegramId", async () => {
+  it("closes an OPEN ticket and returns closed=true with the owner's telegramId", async () => {
     const user = await makeUser(555n);
     const ticket = await createTicket(prisma, user.id, "help me");
 
-    const tgId = await closeTicket(prisma, ticket.id);
+    const result = await closeTicket(prisma, ticket.id);
 
-    expect(tgId).toBe(555n);
+    expect(result).toEqual({ closed: true, telegramId: 555n });
     const fresh = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
     expect(fresh!.status).toBe(TicketStatus.CLOSED);
     // Storage-efficiency cleanup keys off this timestamp to age out evidence files.
     expect(fresh!.closedAt).not.toBeNull();
   });
 
-  it("a SECOND close call on an already-CLOSED ticket returns null — no second DM", async () => {
+  it("a SECOND close call on an already-CLOSED ticket reports closed=false — no second DM", async () => {
     const user = await makeUser(556n);
     const ticket = await createTicket(prisma, user.id, "help me");
 
     const first = await closeTicket(prisma, ticket.id);
     const second = await closeTicket(prisma, ticket.id);
 
-    expect(first).toBe(556n);
-    expect(second).toBeNull(); // double-tap: no second notification
+    expect(first).toEqual({ closed: true, telegramId: 556n });
+    expect(second).toEqual({ closed: false, telegramId: null }); // double-tap: no second notification
   });
 
-  it("returns null for a non-existent ticket id", async () => {
-    expect(await closeTicket(prisma, 999999)).toBeNull();
+  it("reports closed=false for a non-existent ticket id", async () => {
+    expect(await closeTicket(prisma, 999999)).toEqual({ closed: false, telegramId: null });
   });
 
-  it("returns null when the owner has no telegramId (web-only buyer) even though the ticket DID close", async () => {
+  it("reports closed=true with a null telegramId for a web-only buyer — the ticket DID close", async () => {
     const user = await makeUser(null);
     const ticket = await createTicket(prisma, user.id, "help me");
 
-    const tgId = await closeTicket(prisma, ticket.id);
+    const result = await closeTicket(prisma, ticket.id);
 
-    expect(tgId).toBeNull();
+    expect(result).toEqual({ closed: true, telegramId: null });
     const fresh = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
     expect(fresh!.status).toBe(TicketStatus.CLOSED); // still closed — just nobody to DM
   });
@@ -1050,6 +1050,9 @@ describe("bulk ticket operations", () => {
 
       const result = await bulkCloseTickets(prisma, [alreadyClosed.id, stillOpen.id]);
       expect(new Set(result.succeeded)).toEqual(new Set([alreadyClosed.id, stillOpen.id]));
+      // Only the ticket this call actually closed is reported as closed, so
+      // the route audits it alone and never re-audits the already-closed one.
+      expect(result.closed).toEqual([stillOpen.id]);
       expect(result.failed).toEqual([]);
       // Confirm the double-tap guard actually fired (not just that the final
       // status happens to be CLOSED, which an unconditional re-close would

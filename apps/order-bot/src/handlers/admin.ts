@@ -651,7 +651,10 @@ async function closeTicketAdmin(ctx: MyContext, ticketId: number): Promise<void>
   // audit row for a ticket that DID close (Bot-3 fix, security audit
   // 2026-06-23).
   await prisma.$transaction(async (tx) => {
-    await closeTicket(tx, ticketId);
+    // A repeat tap (or a ticket closed elsewhere) closes nothing, so it is not
+    // audited a second time.
+    const { closed } = await closeTicket(tx, ticketId);
+    if (!closed) return;
     const admin = await getUserByTelegramId(tx, adminTg);
     await logAdminAction(tx, {
       adminId: requireAdminId(admin),

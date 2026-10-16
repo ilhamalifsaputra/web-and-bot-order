@@ -439,15 +439,26 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
   app.post("/api/support/:ticketId/close", { preHandler: csrfProtect }, async (req, reply) => {
     const ticketId = parsePositiveId((req.params as { ticketId: string }).ticketId);
     if (ticketId === null) return reply.code(400).send({ error: "Invalid ticket id." });
-    const result = await closeTicket(prisma, ticketId);
-    if (result === null) return reply.code(404).send({ error: "Ticket not found." });
-    await logAdminAction(prisma, {
-      adminId: req.admin!.userId,
-      action: "ticket_close",
-      targetType: "ticket",
-      targetId: ticketId,
-      details: `Closed ticket #${ticketId}.`,
+    // The close, the buyer's DM row and the audit row commit together, and the
+    // audit is written only when this call really closed the ticket (a
+    // web-only buyer's ticket closes too; it just has nobody to DM).
+    const { closed } = await prisma.$transaction(async (tx) => {
+      const result = await closeTicket(tx, ticketId);
+      if (result.closed) {
+        await logAdminAction(tx, {
+          adminId: req.admin!.userId,
+          action: "ticket_close",
+          targetType: "ticket",
+          targetId: ticketId,
+          details: `Closed ticket #${ticketId}.`,
+        });
+      }
+      return result;
     });
+    // Nothing closed by this call: either there is no such ticket, or it was
+    // already closed (a double-click or another admin), which is an idempotent
+    // success with no second audit row and no second DM.
+    if (!closed && !(await getTicket(prisma, ticketId))) return reply.code(404).send({ error: "Ticket not found." });
     return reply.send({ ok: true });
   });
 
@@ -685,18 +696,23 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
     }
 
     // "close"
-    const result = await bulkCloseTickets(prisma, ids);
+    const { closed, ...result } = await bulkCloseTickets(prisma, ids);
+    // An already-closed ticket still counts as succeeded for the caller, but
+    // only tickets this call actually closed are audited as closed by it.
+    const alreadyClosed = result.succeeded.length - closed.length;
+    const notes = [
+      ...(alreadyClosed > 0 ? [`${alreadyClosed} ${alreadyClosed === 1 ? "was" : "were"} already closed`] : []),
+      ...(result.failed.length > 0 ? [`skipped ${result.failed.length} not found`] : []),
+    ];
     await logAdminAction(prisma, {
       adminId: req.admin!.userId,
       action: "ticket_bulk_close",
       targetType: "ticket",
-      details:
-        `Closed ${result.succeeded.length} ${pluralTicket(result.succeeded.length)}` +
-        (result.failed.length > 0 ? `; skipped ${result.failed.length} not found.` : "."),
+      details: `Closed ${closed.length} ${pluralTicket(closed.length)}${notes.map((n) => `; ${n}`).join("")}.`,
     });
     // Per-ticket rows — same reasoning as the other two branches above.
     await Promise.all(
-      result.succeeded.map((id) =>
+      closed.map((id) =>
         logAdminAction(prisma, {
           adminId: req.admin!.userId,
           action: "ticket_bulk_close",

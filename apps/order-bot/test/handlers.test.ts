@@ -6410,6 +6410,8 @@ describe("admin handlers", () => {
     const rows = await prisma.notificationOutbox.findMany({ where: { event: NotificationEvent.TICKET_CLOSED_DM } });
     const matching = rows.filter((r) => (JSON.parse(r.payloadJson) as { ticket_id: number }).ticket_id === ticket.id);
     expect(matching).toHaveLength(1);
+    // The second tap closed nothing, so it is not audited again either.
+    expect(await prisma.auditLog.count({ where: { action: "ticket_close", targetId: ticket.id } })).toBe(1);
   });
 
   it("mark stock dead flips the status and writes an audit row (Bot-4 fix)", async () => {

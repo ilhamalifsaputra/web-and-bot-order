@@ -627,7 +627,9 @@ export async function autoCloseStaleTickets(_api: Api): Promise<void> {
       if (user === null) continue;
       // The buyer's notice is queued in the same transaction as the close, so
       // the outbox retries it instead of a one-shot direct send.
-      await closeTicket(prisma, ticket.id, { autoClosed: true });
+      const { closed } = await closeTicket(prisma, ticket.id, { autoClosed: true });
+      // An admin or the buyer closed it between the listing and now; nothing to report.
+      if (!closed) continue;
       logger.info(`Support ticket #${ticket.id} (user ${ticket.userId}) auto-closed after 48h with no customer reply`);
     } catch (err) {
       logger.error({ err }, `Failed to auto-close stale support ticket #${ticket.id} — ticket is still open and will be retried next tick`);

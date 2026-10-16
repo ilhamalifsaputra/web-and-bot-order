@@ -24,8 +24,11 @@ import {
   DIGIFLAZZ_USERNAME_KEY,
   DIGIFLAZZ_API_KEY_KEY,
   DIGIFLAZZ_RECHECK_CLAIM_LEASE_MS,
+  DIGIFLAZZ_OVERRIDE_LEASE_MARGIN_MS,
+  DIGIFLAZZ_ADMIN_SN_MAX_LENGTH,
   fulfillDigiflazzOrder,
   markDigiflazzOrderDeliveredByAdmin,
+  markDigiflazzOrderFailedByAdmin,
   recheckDigiflazzOrderNow,
   countDigiflazzUnresolved,
   countAwaitingManualFulfillment,
@@ -187,6 +190,42 @@ describe("markDigiflazzOrderDeliveredByAdmin", () => {
     expect(row.digiflazzStatus).toBe(DIGIFLAZZ_STATUS_UNRESOLVED);
     expect(await deliveredHistory(order.id)).toBe(0);
     expect(await prisma.auditLog.count({ where: { action: "order.digiflazz_marked_delivered_by_admin" } })).toBe(0);
+  });
+
+  // Review M1: the lease check reads the clock right before the claim, so a
+  // poller that took the lease after the override started (its `now`) is not
+  // overridden; a lease ending just past the override's own window is too.
+  it.each([
+    ["a lease taken after the override started", 0],
+    ["a lease ending within the safety margin", DIGIFLAZZ_OVERRIDE_LEASE_MARGIN_MS / 2],
+  ])("both overrides respect %s", async (_name, extraMs) => {
+    const startedAt = new Date(Date.now() - 10_000);
+    const order = await makeDispatchedOrder({ dispatchedAgoMs: 3 * DAY, nextRecheckAt: new Date(Date.now() + DIGIFLAZZ_RECHECK_CLAIM_LEASE_MS + extraMs) });
+    await expect(
+      markDigiflazzOrderDeliveredByAdmin(prisma, { orderId: order.id, adminId: sample.user.id, note: "x" }, startedAt),
+    ).rejects.toMatchObject({ key: "error.digiflazz_check_in_flight" });
+    await expect(
+      markDigiflazzOrderFailedByAdmin(prisma, order.id, { adminId: sample.user.id, note: "x" }, startedAt),
+    ).rejects.toMatchObject({ key: "error.digiflazz_check_in_flight" });
+    const row = await reloaded(order.id);
+    expect(row.status).toBe(OrderStatus.PROCESSING);
+    expect(row.digiflazzStatus).toBe(DIGIFLAZZ_STATUS_UNRESOLVED);
+    expect(await prisma.auditLog.count({ where: { action: { in: ["order.digiflazz_marked_delivered_by_admin", "order.digiflazz_marked_failed_by_admin"] } } })).toBe(0);
+  });
+
+  it("still overrides a scheduled recheck beyond the lease and its margin", async () => {
+    const order = await makeDispatchedOrder({ dispatchedAgoMs: 3 * DAY, nextRecheckAt: new Date(Date.now() + DIGIFLAZZ_RECHECK_CLAIM_LEASE_MS + DIGIFLAZZ_OVERRIDE_LEASE_MARGIN_MS + 30_000) });
+    await markDigiflazzOrderDeliveredByAdmin(prisma, { orderId: order.id, adminId: sample.user.id, note: "confirmed" });
+    expect((await reloaded(order.id)).status).toBe(OrderStatus.DELIVERED);
+  });
+
+  // Review M3: every caller is bounded, not only the admin route.
+  it("trims and caps the serial number at 200 characters", async () => {
+    const order = await makeDispatchedOrder({ dispatchedAgoMs: 3 * DAY });
+    const long = "S".repeat(250);
+    await markDigiflazzOrderDeliveredByAdmin(prisma, { orderId: order.id, adminId: sample.user.id, note: "confirmed", sn: `  ${long}  ` });
+    expect(DIGIFLAZZ_ADMIN_SN_MAX_LENGTH).toBe(200);
+    expect(decryptDeliveredContent((await reloaded(order.id)).deliveredContent, order.id)).toBe("S".repeat(200));
   });
 
   it("override first, late supplier Sukses second: the supplier's delivery is refused, nothing is duplicated", async () => {

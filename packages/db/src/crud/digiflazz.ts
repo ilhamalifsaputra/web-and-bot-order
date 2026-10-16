@@ -744,6 +744,29 @@ async function remindDigiflazzUnresolvedOrder(db: PrismaClient, order: Digiflazz
   });
 }
 
+/** Extra room above a supplier check's lease before an admin override treats
+ * a future digiflazzNextRecheckAt as a scheduled recheck instead of a held lease,
+ * so a check claimed a moment ago (or on a server whose clock runs slightly
+ * ahead) is never overridden. */
+export const DIGIFLAZZ_OVERRIDE_LEASE_MARGIN_MS = 5_000;
+
+/**
+ * The "no supplier check holds the in-flight lease" condition of an admin
+ * override, built immediately before the claiming UPDATE. The clock is read
+ * here, not when the override started, because a poller can take the lease in
+ * between; `requestedNow` (the caller's injected time) only ever moves it later.
+ */
+function adminOverrideLeaseFree(requestedNow: Date): Prisma.OrderWhereInput {
+  const claimNow = new Date(Math.max(requestedNow.getTime(), Date.now()));
+  return {
+    OR: [
+      { digiflazzNextRecheckAt: null },
+      { digiflazzNextRecheckAt: { lte: claimNow } },
+      { digiflazzNextRecheckAt: { gt: new Date(claimNow.getTime() + DIGIFLAZZ_RECHECK_CLAIM_LEASE_MS + DIGIFLAZZ_OVERRIDE_LEASE_MARGIN_MS) } },
+    ],
+  };
+}
+
 /**
  * The human way out of DIGIFLAZZ_STATUS_UNRESOLVED (backend audit A5): an admin
  * who reconciled with Digiflazz and confirmed the top-up did not go through
@@ -772,7 +795,6 @@ export async function markDigiflazzOrderFailedByAdmin(
   if (order.status !== OrderStatus.PROCESSING || order.digiflazzStatus !== DIGIFLAZZ_STATUS_UNRESOLVED) {
     throw new ValidationError("error.digiflazz_not_unresolved", { orderCode: order.orderCode });
   }
-  const leaseUntil = new Date(now.getTime() + DIGIFLAZZ_RECHECK_CLAIM_LEASE_MS);
   const shortNote = note.slice(0, 300);
   const applied = await db.$transaction(async (tx) => {
     const claim = await tx.order.updateMany({
@@ -780,11 +802,7 @@ export async function markDigiflazzOrderFailedByAdmin(
         id: orderId,
         status: OrderStatus.PROCESSING,
         digiflazzStatus: DIGIFLAZZ_STATUS_UNRESOLVED,
-        OR: [
-          { digiflazzNextRecheckAt: null },
-          { digiflazzNextRecheckAt: { lte: now } },
-          { digiflazzNextRecheckAt: { gt: leaseUntil } },
-        ],
+        ...adminOverrideLeaseFree(now),
       },
       data: {
         digiflazzStatus: "failed",
@@ -840,6 +858,9 @@ export async function markDigiflazzOrderFailedByAdmin(
  * the answer to a second call, so it is idempotent); a supplier check holding
  * the in-flight lease.
  */
+/** Longest serial number an admin override stores; longer input is truncated. */
+export const DIGIFLAZZ_ADMIN_SN_MAX_LENGTH = 200;
+
 export async function markDigiflazzOrderDeliveredByAdmin(
   db: PrismaClient,
   args: { orderId: number; adminId: number; note: string; sn?: string },
@@ -855,7 +876,7 @@ export async function markDigiflazzOrderDeliveredByAdmin(
   }
   try {
     await fulfillDigiflazzOrder(db, orderId, {
-      sn: (args.sn ?? "").trim(),
+      sn: (args.sn ?? "").trim().slice(0, DIGIFLAZZ_ADMIN_SN_MAX_LENGTH),
       adminOverride: { adminId: args.adminId, note: note.slice(0, 300), now },
     });
   } catch (err) {
@@ -1880,19 +1901,13 @@ export async function fulfillDigiflazzOrder(
   }
 
   const now = override?.now ?? new Date();
-  const overrideGuard: Prisma.OrderWhereInput = override
-    ? {
-        digiflazzStatus: DIGIFLAZZ_STATUS_UNRESOLVED,
-        // Same lease rule as claimDigiflazzWebhookRecheck: a supplier check in
-        // flight may be about to report its own answer.
-        OR: [
-          { digiflazzNextRecheckAt: null },
-          { digiflazzNextRecheckAt: { lte: now } },
-          { digiflazzNextRecheckAt: { gt: new Date(now.getTime() + DIGIFLAZZ_RECHECK_CLAIM_LEASE_MS) } },
-        ],
-      }
-    : {};
   const complete = async (tx: Db) => {
+    // Same lease rule as claimDigiflazzWebhookRecheck: a supplier check in
+    // flight may be about to report its own answer. Built right before the
+    // claim so a lease taken since the override started is respected.
+    const overrideGuard: Prisma.OrderWhereInput = override
+      ? { digiflazzStatus: DIGIFLAZZ_STATUS_UNRESOLVED, ...adminOverrideLeaseFree(now) }
+      : {};
     const claim = await tx.order.updateMany({
       where: { id: orderId, status: OrderStatus.PROCESSING, ...overrideGuard },
       data: {

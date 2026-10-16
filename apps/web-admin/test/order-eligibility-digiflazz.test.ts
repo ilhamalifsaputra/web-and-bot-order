@@ -4,6 +4,7 @@ import type { FastifyInstance } from "fastify";
 import { config } from "@app/core/config";
 import { prisma, initDb, upsertUser, setSetting, createOrderDirect, DIGIFLAZZ_USERNAME_KEY, DIGIFLAZZ_API_KEY_KEY } from "@app/db";
 import { DeliveryType } from "@app/core/enums";
+import { decryptDeliveredContent } from "@app/core/credentialCrypto";
 import { resetDb, buildSampleData } from "../../../tests/helpers/sampleData";
 import { makeSession, sessionJtiKey, newJti, webRoleKey } from "../src/auth";
 import { buildApp } from "../src/server";
@@ -220,6 +221,15 @@ describe("unresolved at the supplier: mark delivered, check now, reject, list fi
     expect(again.statusCode).toBe(422);
     expect(again.json()).toMatchObject({ error: "error.digiflazz_not_unresolved" });
     expect(await prisma.orderStatusHistory.count({ where: { orderId: order.id, status: "DELIVERED" } })).toBe(1);
+  });
+
+  it("mark-delivered: a serial number longer than 200 characters is trimmed and capped, still answering ok", async () => {
+    const order = await makeUnresolvedWithItem();
+    const res = await post(`/api/orders/${order.id}/digiflazz/mark-delivered`, { note: "confirmed", sn: `  ${"9".repeat(260)}  ` });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ ok: true });
+    const row = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(decryptDeliveredContent(row.deliveredContent, order.id)).toBe("9".repeat(200));
   });
 
   it("recheck: refused outside the unresolved state, busy while a check holds the lease", async () => {

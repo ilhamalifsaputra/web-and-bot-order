@@ -607,7 +607,8 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
     if (orderId === null) return reply.code(400).send({ error: "Invalid order id." });
     const body = (req.body ?? {}) as Record<string, unknown>;
     const note = typeof body.note === "string" ? body.note.trim() : "";
-    const sn = typeof body.sn === "string" ? body.sn.trim().slice(0, 200) : "";
+    // Trimmed and capped by the crud function, so every caller is bounded.
+    const sn = typeof body.sn === "string" ? body.sn : "";
     if (!note) {
       return reply.code(400).send(errorBody(new ValidationError("error.digiflazz_delivery_note_required")));
     }

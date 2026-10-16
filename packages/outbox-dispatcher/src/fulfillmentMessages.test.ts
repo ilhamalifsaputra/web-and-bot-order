@@ -1065,8 +1065,8 @@ describe("a delivered Digiflazz game top-up shows its Game ID, Zone/Server ID an
     { key: "zone", label: { id: "Zone", en: "Zone" }, type: "text", required: true },
     { key: "password", label: { id: "Password", en: "Password" }, type: "text", required: false },
   ]);
-  async function gameOrder(opts: { fields?: string; mapping?: string; customerData?: unknown; sn?: string | null; provider?: string; group?: string } = {}) {
-    const order = await seed("en", { provider: opts.provider ?? "DIGIFLAZZ" });
+  async function gameOrder(opts: { fields?: string; mapping?: string; customerData?: unknown; sn?: string | null; provider?: string; group?: string; language?: string } = {}) {
+    const order = await seed(opts.language ?? "en", { provider: opts.provider ?? "DIGIFLAZZ" });
     const category = await createCategory(db, { name: crypto.randomUUID(), ...(opts.group ? { group: opts.group } : {}) });
     const product = await createCatalogProduct(db, { categoryId: category.id, name: "Game" });
     const denomination = await createDenomination(db, {
@@ -1205,6 +1205,30 @@ describe("a delivered Digiflazz game top-up shows its Game ID, Zone/Server ID an
     expect(tg.edits.map(e => e.id)).toEqual([tg.sent[0]!.id, tg.sent[0]!.id]);
     expect(tg.edits[1]!.text).toContain("Top-up completed");
     expect(buttons(tg.edits[1]!.markup)).not.toContain(`v1:support:open:${order.id}`);
+  });
+
+  // Review fix: the unresolved body already asks the buyer to contact support,
+  // so the bot's own Support hint line is left out (exactly one prompt).
+  it.each([
+    ["en", "Still checking your top-up", /support/gi, "Need help? Tap"],
+    ["id", "Top-up masih dicek", /bantuan/gi, "Butuh bantuan? Ketuk"],
+  ])("asks a %s buyer of an unresolved top-up to contact support exactly once", async (language, title, prompt, hint) => {
+    const order = await gameOrder({ group: "GAME_TOPUP", language });
+    const tg = telegram(); const w = worker(tg.api);
+    await w.tick();
+    await db.order.update({ where: { id: order.id }, data: { digiflazzStatus: "unresolved_at_supplier" } });
+    advance(); await w.tick();
+    expect(tg.calls).toEqual({ sendMessage: 1, editMessageText: 1 });
+    const text = tg.edits[0]!.text;
+    expect(text).toContain(`⚠️ <b>${title}</b>`);
+    expect(text.match(prompt)).toHaveLength(1);
+    expect(text).not.toContain(hint);
+    expect(buttons(tg.edits[0]!.markup)).toEqual([`v1:support:open:${order.id}`, "v1:menu:main"]);
+    // A supplier failure in review keeps its Support hint line.
+    await db.order.update({ where: { id: order.id }, data: { digiflazzStatus: "failed" } });
+    advance(30_000); await w.tick();
+    expect(tg.calls).toEqual({ sendMessage: 1, editMessageText: 2 });
+    expect(tg.edits[1]!.text).toContain(hint);
   });
 
   it("keeps the generic review copy for a Premium App unresolved at the supplier", async () => {

@@ -19,6 +19,7 @@ import {
   prisma,
   getSettledBubbleOrder,
   listExpiredPendingOrders,
+  sweepAgedUnderpaidAndFailedOrders,
   cancelOrder,
   listStaleRepliedTickets,
   closeTicket,
@@ -513,6 +514,21 @@ export async function autoCancelExpiredOrders(api: Api): Promise<void> {
     } catch (err) {
       logger.error({ err }, `Failed to auto-cancel expired order ${o.id} — order is still pending and will be retried next tick`);
     }
+  }
+}
+
+/**
+ * Resolve UNDERPAID orders older than the owner's limit and raise long-FAILED
+ * ones to the admins (backend audit A4) — see `sweepAgedUnderpaidAndFailedOrders`
+ * for the rules. Sends nothing to Telegram itself: the refund's status change
+ * and e-mail, and the admin alerts, all go through the outbox.
+ */
+export async function resolveAgedUnderpaidAndFailedOrders(_api: Api): Promise<void> {
+  const summary = await sweepAgedUnderpaidAndFailedOrders(prisma);
+  if (summary.underpaidErrored > 0) {
+    logger.warn(
+      `The aged-order sweep could not resolve ${summary.underpaidErrored} underpaid orders this run; each was left unchanged and will be retried on the next run.`,
+    );
   }
 }
 
@@ -1846,5 +1862,10 @@ export function scheduleJobs(api: Api): Cron[] {
     // (drainBroadcasts), 40 (announceStartedFlashSales), 15/17/19 (the QRIS
     // watchdogs) and 30 (storageCleanupJob).
     new Cron("25 * * * * *", { protect: true }, wrap("sweepPaidOrderBubbles", sweepPaidOrderBubbles)),
+    // Aged UNDERPAID/FAILED orders (backend audit A4). Every ten minutes is
+    // plenty for a limit measured in hours. Second 52: clear of every second
+    // already used above, and not a multiple of 5, so it also never meets the
+    // five-second outbox job registered outside this list.
+    new Cron("52 */10 * * * *", { protect: true }, wrap("resolveAgedUnderpaidAndFailedOrders", resolveAgedUnderpaidAndFailedOrders)),
   ];
 }

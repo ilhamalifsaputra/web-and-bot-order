@@ -70,10 +70,13 @@ function refund(orderId: number, headers: Record<string, string> = {}) {
 describe("POST /api/payments/order/:orderId/refund — audit is atomic with the refund (Task C3)", () => {
   it("a failed audit insert rolls the whole refund back: no wallet credit, order stays UNDERPAID", async () => {
     const order = await makeUnderpaidOrder("tx-audit-atomic");
-    // Force the audit insert to fail: audit_logs.admin_id references users,
-    // so once the acting admin's row is gone the insert is an FK violation
-    // (same technique as web.test.ts's dismiss-atomicity test). Nothing else
-    // in the refund references the admin row, so only the audit write fails.
+    // Force a write that names the acting admin to fail: audit_logs.admin_id
+    // references users, so once the acting admin's row is gone the insert is
+    // an FK violation (same technique as web.test.ts's dismiss-atomicity
+    // test). Since backend audit A4 the refund also releases the order's
+    // reserved stock, whose stock event names the admin by users.id too, so
+    // that write may be the one that fails first — either way the whole
+    // refund has to roll back, which is what this pins.
     const admin = await prisma.user.findFirstOrThrow({ where: { telegramId: ADMIN_TG } });
     await prisma.user.delete({ where: { id: admin.id } });
 

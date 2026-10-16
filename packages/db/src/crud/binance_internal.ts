@@ -22,7 +22,7 @@
  */
 import { config } from "@app/core/config";
 import { enqueueEmailEvent } from "./emailEvents";
-import { OrderStatus, OrderCurrency, OrderKind, PaymentMethod, RefundStatus } from "@app/core/enums";
+import { OrderStatus, OrderCurrency, OrderKind, PaymentMethod, RefundStatus, StockActorType } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { logger } from "@app/core/logger";
 import { PaymentLogEvent } from "@app/core/payments/logEvents";
@@ -35,6 +35,8 @@ import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
 import {
   getOrder,
+  getOrderRaw,
+  releaseOrderHolds,
   createOrderDirect,
   approveOrder,
   settlePaidOrder,
@@ -46,7 +48,6 @@ import {
 } from "./orders";
 import { transitionOrderStatus } from "./orderStatus";
 import { adjustWallet } from "./users";
-import { releaseVoucherUse } from "./vouchers";
 import { postOrderWalletCreditPosting } from "./ledgerPostings";
 import { getSetting, getDecryptedSetting, setSetting } from "./settings";
 import { finalizeOrderPayment } from "./pricing";
@@ -978,8 +979,18 @@ export async function deliverUnderpaidOrder(
 
 /**
  * Resolve UNDERPAID by refunding what the buyer actually sent to their wallet
- * and marking the order REFUNDED. Rolls back voucher usage so reconciliation
- * stays clean. (UNDERPAID orders never reserved stock, so nothing to release.)
+ * and marking the order REFUNDED, releasing every hold the order still has.
+ *
+ * An UNDERPAID order is a PENDING_PAYMENT order a rail flagged short, so it
+ * still holds everything checkout gave it: its reserved stock rows, the wallet
+ * credit it spent (`walletUsed`) and its voucher use + redemption row. This
+ * used to roll back only the voucher counter (on the mistaken belief that
+ * UNDERPAID orders never reserved stock), which left the stock RESERVED and
+ * the spent wallet credit unreturned forever (backend audit A4). Both now go
+ * back through `releaseOrderHolds`, the same release `cancelOrder` uses.
+ *
+ * `adminId: null` means the automatic aged-UNDERPAID sweep
+ * (`sweepAgedUnderpaidAndFailedOrders`, ./underpaidExpiry) is resolving it.
  *
  * The credit goes to the balance matching the ORDER's own currency, so a USDT
  * order returns USDT and a rupiah order returns rupiah — `adjustWallet`
@@ -1002,8 +1013,8 @@ export async function deliverUnderpaidOrder(
  * audit log, so this Refund row is pure structured record-keeping, not a
  * second audit line.
  *
- * No `RefundItem` rows: an UNDERPAID order never reserved stock or resolved
- * any specific OrderItem, and the refunded amount is the shortfall the buyer
+ * No `RefundItem` rows: an UNDERPAID order never resolved any specific
+ * OrderItem, and the refunded amount is the part the buyer
  * actually sent — a quantity with no relationship to any OrderItem's
  * subtotal. Attaching RefundItem rows here would misrepresent this as a
  * per-item partial refund, which it structurally isn't. A whole-order Refund
@@ -1019,7 +1030,7 @@ export async function refundUnderpaidOrder(
   db: PrismaClient,
   args: { orderId: number; adminId: number },
 ): Promise<{ refunded: Decimal; refundId: number | null; currency: string; orderCode: string }> {
-  const result = await db.$transaction((tx: Tx) => refundUnderpaidOrderTx(tx, args));
+  const result = await db.$transaction((tx: Tx) => refundUnderpaidOrderTx(tx, args), { timeout: 15000 });
   logUnderpaidRefundCommitted(result, args.adminId);
   return result;
 }
@@ -1033,13 +1044,21 @@ export async function refundUnderpaidOrder(
  */
 export async function refundUnderpaidOrderTx(
   tx: Tx,
-  args: { orderId: number; adminId: number },
+  args: { orderId: number; adminId: number | null },
 ): Promise<{ refunded: Decimal; refundId: number | null; currency: string; orderCode: string }> {
-  const order = await getOrder(tx, args.orderId);
+  // Serialise on the order row before reading it, like `cancelOrder`: a second
+  // resolution (another admin, or the aged-UNDERPAID sweep) waits here and then
+  // reads the committed REFUNDED status, instead of both passing the check.
+  await tx.$queryRaw`SELECT id FROM orders WHERE id = ${args.orderId} FOR NO KEY UPDATE`;
+  // Raw on purpose: nothing here needs decrypted credentials, and a decrypt
+  // failure on one row must not block returning the buyer's money.
+  const order = await getOrderRaw(tx, args.orderId);
   if (!order) throw new ValidationError("error.order_not_found");
   if (order.status !== OrderStatus.UNDERPAID) {
     throw new ValidationError("error.order_not_underpaid");
   }
+  const by = args.adminId === null ? "the automatic underpaid-order expiry" : `admin_id=${args.adminId}`;
+  const now = new Date();
   const received = (await findUnderpaidReceived(tx, args.orderId)) ?? new Decimal(0);
   if (received.greaterThan(0)) {
     const { transactionId } = await adjustWallet(tx, order.userId, received, {
@@ -1057,17 +1076,22 @@ export async function refundUnderpaidOrderTx(
       walletTransactionId: transactionId,
       orderId: order.id,
       orderCode: order.orderCode,
-      occurredAt: new Date(),
+      occurredAt: now,
     });
   }
-  if (order.voucherId) {
-    // One guarded decrement; never below zero even when two releases race.
-    await releaseVoucherUse(tx, order.voucherId);
-  }
+  // Reserved stock back to the pool, the spent wallet credit back to the buyer
+  // (`order_refund`, in the order's currency) and the voucher use + redemption
+  // rolled back — the same release `cancelOrder` performs.
+  await releaseOrderHolds(
+    tx,
+    order,
+    args.adminId === null ? { type: StockActorType.SYSTEM } : { type: StockActorType.ADMIN, adminId: args.adminId },
+    now,
+  );
   await tx.order.update({
     where: { id: args.orderId },
     data: {
-      adminNote: `${order.adminNote ?? ""}\n[refund] ${received.toString()} ${order.currency} to wallet by admin_id=${args.adminId}`,
+      adminNote: `${order.adminNote ?? ""}\n[refund] ${received.toString()} ${order.currency} to wallet by ${by}`,
     },
   });
   // Only write a Refund record when money actually moved (`received > 0`,
@@ -1080,9 +1104,9 @@ export async function refundUnderpaidOrderTx(
           orderId: order.id,
           amount: received,
           currency: order.currency,
-          reason: `Underpaid order refunded to buyer's wallet balance by admin_id=${args.adminId}.`,
+          reason: `Underpaid order refunded to buyer's wallet balance by ${by}.`,
           status: RefundStatus.COMPLETED,
-          processedAt: new Date(),
+          processedAt: now,
         },
       })
     : null;
@@ -1090,7 +1114,7 @@ export async function refundUnderpaidOrderTx(
     orderId: args.orderId,
     from: OrderStatus.UNDERPAID,
     to: OrderStatus.REFUNDED,
-    meta: `refund ${received.toString()} by admin_id=${args.adminId}`,
+    meta: `refund ${received.toString()} by ${by}`,
   });
   if (refund) await enqueueEmailEvent(tx, {
     key: "refund.completed.customer", aggregateId: refund.id, orderId: order.id, userId: order.userId,

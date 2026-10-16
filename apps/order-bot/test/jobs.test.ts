@@ -1745,6 +1745,10 @@ describe("scheduleJobs cron registration (Bot-5 fix)", () => {
       // list (0, 5/20/35/50, 40, 15/17/19, 30, 10, 45).
       expect(crons[15]!.getPattern()).toBe("25 * * * * *");
       expect(crons[15]!.options.protect).toBe(true);
+      // resolveAgedUnderpaidAndFailedOrders (backend audit A4) — every ten
+      // minutes on second 52, protected so two runs never race one order.
+      expect(crons[16]!.getPattern()).toBe("52 */10 * * * *");
+      expect(crons[16]!.options.protect).toBe(true);
 
       // The write-lock collision guard itself, rather than just the literal
       // patterns above: no second-resolution job may share a firing second

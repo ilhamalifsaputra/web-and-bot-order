@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { customerProgressPhase, getOrderFulfillment } from "./orderFulfillment";
+import { customerProgressPhase, getOrderFulfillment, toBuyerDigiflazzStatus, DIGIFLAZZ_STATUS_UNRESOLVED } from "./orderFulfillment";
 
 const order = { status: "PROCESSING", paidAt: new Date(), fulfillmentProvider: "DIGIFLAZZ", items: [{ product: { autoDeliverySource: "digiflazz", deliveryType: "manual_with_info" } }] };
 describe("canonical fulfillment state", () => {
@@ -15,6 +15,15 @@ describe("canonical fulfillment state", () => {
   it("reports supplier pending after the first outcome and review after terminal failure", () => {
     expect(getOrderFulfillment({ ...order, digiflazzDispatchedAt: new Date(), digiflazzAttempts: 1, digiflazzStatus: "pending_at_supplier" }).status).toBe("PROCESSING");
     expect(getOrderFulfillment({ ...order, digiflazzStatus: "failed" }).status).toBe("NEEDS_REVIEW");
+  });
+  it("an order unresolved at the supplier is a static review state, never failed or still spinning (audit A5)", () => {
+    const unresolved = { ...order, digiflazzDispatchedAt: new Date(), digiflazzAttempts: 21, digiflazzStatus: DIGIFLAZZ_STATUS_UNRESOLVED };
+    expect(DIGIFLAZZ_STATUS_UNRESOLVED).toBe("unresolved_at_supplier");
+    expect(getOrderFulfillment(unresolved)).toMatchObject({ status: "NEEDS_REVIEW", can_edit_customer_data: false });
+    expect(customerProgressPhase(unresolved)).toMatchObject({ phase: "REVIEW", spinner: false });
+    expect(toBuyerDigiflazzStatus(DIGIFLAZZ_STATUS_UNRESOLVED)).toBe("reviewing");
+    expect(toBuyerDigiflazzStatus("pending_at_supplier")).toBe("pending");
+    expect(toBuyerDigiflazzStatus("failed")).toBe("reviewing");
   });
   it("delivery takes precedence over stale supplier fields", () => {
     expect(getOrderFulfillment({ ...order, status: "DELIVERED", digiflazzStatus: "failed" })).toMatchObject({ status: "SUCCESS", can_edit_customer_data: false });

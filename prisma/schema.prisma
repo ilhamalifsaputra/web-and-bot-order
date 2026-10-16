@@ -747,11 +747,15 @@ model Order {
   /// — conflating "how the supplier call is going" into it risks breaking
   /// those. Null = not yet dispatched (mirrors digiflazzDispatchedAt: null).
   /// One of: "pending_at_supplier" (dispatched, awaiting Sukses/Gagal —
-  /// covers both a fresh dispatch and a later backoff recheck), "failed"
-  /// (terminal — either an explicit Gagal, or the recheck backoff window was
-  /// exhausted still Pending/erroring; requires manual admin fulfilment,
-  /// same remedy as today). No "delivered" value here — that's
-  /// Order.status=DELIVERED.
+  /// covers both a fresh dispatch and a later backoff recheck),
+  /// "unresolved_at_supplier" (the 24h backoff window ran out still
+  /// Pending/erroring — NOT a failure, Digiflazz may still deliver, so credit/
+  /// refund/manual delivery stay locked; rechecked every 6h for up to 7 days,
+  /// then admins are reminded daily; left only by Sukses/Gagal or the audited
+  /// admin override markDigiflazzOrderFailedByAdmin — backend audit A5),
+  /// "failed" (terminal — an explicit Gagal, a permanent error on a fresh
+  /// dispatch, or that admin override; requires manual admin fulfilment or
+  /// credit). No "delivered" value here — that's Order.status=DELIVERED.
   digiflazzStatus        String?   @map("digiflazz_status")
   /// Recheck/retry attempt counter for the backoff schedule (0 at first
   /// dispatch, incremented on each recheck attempt whether it's a re-poll of

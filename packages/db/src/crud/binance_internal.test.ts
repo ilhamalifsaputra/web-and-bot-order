@@ -810,11 +810,38 @@ describe("markUnderpaid — transactional (Task 18)", () => {
 // The lookup used to read only `processedBinanceTx`, so a Bybit-flagged order
 // refunded to 0.00 — the buyer's money silently vanished.
 describe("refundUnderpaidOrder — reads the received amount from whichever rail flagged the order", () => {
+  // The refund now also releases the order's reserved stock, and that stock
+  // event names the acting admin by users.id (a real FK), as the web route
+  // passes `req.admin.userId`.
+  async function adminUserId() {
+    const admin = await upsertUser(prisma, { telegramId: 444, username: "admin", fullName: "Admin" });
+    return admin.id;
+  }
+
+  it("releases the reserved stock, the spent wallet credit and the voucher along with the refund", async () => {
+    await prisma.user.update({ where: { id: sample.user.id }, data: { walletBalance: "10" } });
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
+    const order = (await createOrderDirect(prisma, {
+      channel: "bot", user, productId: sample.product.id, quantity: 1, voucherCode: "SAVE10", walletAmount: "1",
+    }))!;
+    await prisma.order.update({ where: { id: order.id }, data: { paymentMethod: PaymentMethod.BINANCE_INTERNAL } });
+    expect(await markUnderpaid(prisma, { orderId: order.id, binanceTxId: "tx-refund-holds-1", amount: "2" })).toBe(true);
+    expect(await prisma.stockItem.count({ where: { orderId: order.id, status: StockStatus.RESERVED } })).toBe(1);
+
+    await refundUnderpaidOrder(prisma, { orderId: order.id, adminId: await adminUserId() });
+
+    expect(await prisma.stockItem.count({ where: { orderId: order.id, status: StockStatus.RESERVED } })).toBe(0);
+    // 9 after checkout + 1 spent credit returned + 2 that arrived.
+    expect(new Decimal((await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } })).walletBalance).toString()).toBe("12");
+    expect((await prisma.voucher.findUniqueOrThrow({ where: { id: sample.voucher.id } })).usedCount).toBe(0);
+    expect(await prisma.voucherRedemption.count({ where: { voucherId: sample.voucher.id } })).toBe(0);
+  });
+
   it("credits the amount from processedBinanceTx for a Binance-Internal-flagged order", async () => {
     const order = await makePendingInternalOrder();
     expect(await markUnderpaid(prisma, { orderId: order.id, binanceTxId: "tx-refund-binance-1", amount: "4.25" })).toBe(true);
 
-    const { refunded } = await refundUnderpaidOrder(prisma, { orderId: order.id, adminId: 444 });
+    const { refunded } = await refundUnderpaidOrder(prisma, { orderId: order.id, adminId: await adminUserId() });
 
     expect(refunded.toString()).toBe("4.25");
     const buyer = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
@@ -829,7 +856,7 @@ describe("refundUnderpaidOrder — reads the received amount from whichever rail
     expect(await markUnderpaidBybit(prisma, { orderId: order.id, bybitTxId: "tx-refund-bybit-1", amount: "3.75" })).toBe(true);
     expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.UNDERPAID);
 
-    const { refunded, refundId } = await refundUnderpaidOrder(prisma, { orderId: order.id, adminId: 444 });
+    const { refunded, refundId } = await refundUnderpaidOrder(prisma, { orderId: order.id, adminId: await adminUserId() });
 
     expect(refunded.toString()).toBe("3.75");
     expect(refundId).not.toBeNull();
@@ -852,7 +879,7 @@ describe("refundUnderpaidOrder — reads the received amount from whichever rail
     await prisma.order.update({ where: { id: order.id }, data: { paymentMethod: PaymentMethod.BYBIT_BSC } });
     expect(await markUnderpaidBybitBsc(prisma, { orderId: order.id, bybitTxId: "0xdeadbeef-refund-1", amount: "2.5" })).toBe(true);
 
-    const { refunded } = await refundUnderpaidOrder(prisma, { orderId: order.id, adminId: 444 });
+    const { refunded } = await refundUnderpaidOrder(prisma, { orderId: order.id, adminId: await adminUserId() });
 
     expect(refunded.toString()).toBe("2.5");
     const buyer = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
@@ -866,7 +893,7 @@ describe("refundUnderpaidOrder — reads the received amount from whichever rail
     const order = await makePendingInternalOrder();
     await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.UNDERPAID } });
 
-    const { refunded, refundId } = await refundUnderpaidOrder(prisma, { orderId: order.id, adminId: 444 });
+    const { refunded, refundId } = await refundUnderpaidOrder(prisma, { orderId: order.id, adminId: await adminUserId() });
 
     expect(refunded.toString()).toBe("0");
     expect(refundId).toBeNull();
@@ -902,7 +929,7 @@ describe("refundUnderpaidOrder — reads the received amount from whichever rail
       }),
     ).toBe(true);
 
-    const { refunded, refundId, currency } = await refundUnderpaidOrder(prisma, { orderId: order.id, adminId: 444 });
+    const { refunded, refundId, currency } = await refundUnderpaidOrder(prisma, { orderId: order.id, adminId: await adminUserId() });
 
     expect(refunded.toString()).toBe("4.25");
     expect(refundId).not.toBeNull();

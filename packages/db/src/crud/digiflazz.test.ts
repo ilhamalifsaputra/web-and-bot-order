@@ -899,7 +899,10 @@ describe("dispatchPendingDigiflazzOrders", () => {
     expect(refreshed.status).toBe(OrderStatus.DELIVERED);
   });
 
-  it("marks failed after the backoff window is exhausted while still Pending", async () => {
+  // Backend audit A5: still Pending after 24h is not a definite failure — the
+  // supplier may complete it later — so the order stays locked as
+  // "unresolved_at_supplier" (full coverage: digiflazzUnresolved.test.ts).
+  it("keeps the order locked as unresolved_at_supplier after the backoff window is exhausted while still Pending", async () => {
     await setSetting(prisma, ADMIN_IDS_KEY, "555");
     const order = await makeProcessingDigiflazzOrder();
     // Simulate a long-running retry sequence: first dispatch was 25h ago (past
@@ -920,12 +923,11 @@ describe("dispatchPendingDigiflazzOrders", () => {
 
     const summary = await dispatchPendingDigiflazzOrders(prisma);
 
-    expect(summary).toEqual({ claimed: 1, delivered: 0, pending: 0, failed: 1 });
+    expect(summary).toEqual({ claimed: 1, delivered: 0, pending: 1, failed: 0 });
     const refreshed = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
-    expect(refreshed.digiflazzStatus).toBe("failed");
-    expect(refreshed.digiflazzNextRecheckAt).toBeNull();
-    expect(refreshed.digiflazzFailureDetail).toBeTruthy();
-    expect(refreshed.digiflazzFailureDetail).toMatch(/24h|never resolved/i);
+    expect(refreshed.digiflazzStatus).toBe("unresolved_at_supplier");
+    expect(refreshed.digiflazzNextRecheckAt).not.toBeNull();
+    expect(refreshed.digiflazzFailureDetail).toMatch(/24 hours|unresolved/i);
     const alertRow = await prisma.notificationOutbox.findFirst({ where: { orderId: order.id } });
     expect(alertRow).not.toBeNull();
   });

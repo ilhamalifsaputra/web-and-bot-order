@@ -26,7 +26,7 @@ import { parseInputFields } from "@app/core/playerInput";
 import { logger } from "@app/core/logger";
 import { Decimal } from "@app/core/money";
 import { canonicalProduct } from "@app/core/canonicalProduct";
-import { customerProgressPhase, paymentStatusFor, type FulfillmentOrder } from "@app/core/orderFulfillment";
+import { customerProgressPhase, paymentStatusFor, DIGIFLAZZ_STATUS_UNRESOLVED, type FulfillmentOrder } from "@app/core/orderFulfillment";
 import { effectiveUnitPrice, type FlashFields } from "@app/core/flash";
 import { bulkDiscountFor } from "@app/core/bulk";
 import { ensureUtc } from "@app/core/datetime";
@@ -1803,8 +1803,11 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
       // dispatched, or already failed terminally — must not reach
       // createTransaction: from here that call could be a first or a second
       // purchase rather than a status check (its ref_id dedup is unverified).
+      // An order "unresolved_at_supplier" (no final answer within 24h — backend
+      // audit A5) is still waiting on Digiflazz too: a late Sukses must deliver
+      // it and a late Gagal must fail it.
       const dispatchedAt = order.digiflazzDispatchedAt;
-      if (!dispatchedAt || order.digiflazzStatus !== "pending_at_supplier") {
+      if (!dispatchedAt || (order.digiflazzStatus !== "pending_at_supplier" && order.digiflazzStatus !== DIGIFLAZZ_STATUS_UNRESOLVED)) {
         logger.warn(
           `Ignored a signed Digiflazz callback for order ${order.orderCode} without a live re-check, because the order is not waiting on Digiflazz (${dispatchedAt ? `its dispatch status is "${order.digiflazzStatus ?? "none"}"` : "it has not been dispatched yet"}) — re-posting the transaction from here could place a purchase instead of checking one`,
         );

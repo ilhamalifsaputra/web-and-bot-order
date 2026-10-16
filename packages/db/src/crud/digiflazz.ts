@@ -103,7 +103,13 @@ import {
   ensureUniqueSlug,
   slugify,
 } from "./catalog";
-import { nextDigiflazzRecheckAt } from "./digiflazzBackoff";
+import {
+  nextDigiflazzRecheckAt,
+  nextDigiflazzUnresolvedRecheckAt,
+  isDigiflazzUnresolvedWindowOver,
+  DIGIFLAZZ_UNRESOLVED_REALERT_INTERVAL_HOURS,
+} from "./digiflazzBackoff";
+import { DIGIFLAZZ_STATUS_UNRESOLVED } from "@app/core/orderFulfillment";
 import { emitDigiflazzOrderStatusChanged, emitDigiflazzCatalogSyncChanged } from "@app/core/realtime/digiflazzEvents";
 import { recordDigiflazzSyncStatus } from "./digiflazzSyncStatus";
 import {
@@ -275,6 +281,9 @@ type DigiflazzCandidateOrder = {
   currency: string;
   digiflazzDispatchedAt: Date | null;
   digiflazzAttempts: number;
+  /** Read to tell an order unresolved at the supplier (slow schedule) from
+   * one still inside the 24h window; optional so narrower callers compile. */
+  digiflazzStatus?: string | null;
   /** Only read for the timing log events; optional so a caller that never
    * loaded it simply gets the payment-relative durations omitted. */
   paidAt?: Date | null;
@@ -321,15 +330,14 @@ export interface DigiflazzDispatchSummary {
   delivered: number;
   /** Of the claimed orders, how many are still in flight — either Digiflazz
    * reported Pending, or the HTTP call itself failed transiently, and either
-   * way a recheck is scheduled within the 24h backoff window (see
-   * digiflazzBackoff.ts). */
+   * way a recheck is scheduled (within the 24h backoff window, or on the slow
+   * schedule of an order unresolved at the supplier — see digiflazzBackoff.ts). */
   pending: number;
   /** Of the claimed orders, how many reached a terminal failure this pass —
-   * Digiflazz explicitly reported Gagal, the order failed structural
-   * validation (missing supplierSku / wrong quantity), or a Pending/
-   * transient-error recheck exhausted its 24h backoff window without
-   * resolving. Each of these enqueued an admin alert and left the order
-   * PROCESSING for a human to finish via fulfillManualOrder. */
+   * Digiflazz explicitly reported Gagal, a fresh dispatch was refused
+   * permanently, or the order failed structural validation (missing
+   * supplierSku / wrong quantity). Each of these enqueued an admin alert and
+   * left the order PROCESSING for a human to finish via fulfillManualOrder. */
   failed: number;
 }
 
@@ -351,6 +359,14 @@ export interface DigiflazzDispatchSummary {
  * about 50 seconds instead of minutes. */
 export const DIGIFLAZZ_RECHECK_CLAIM_LEASE_MS = 45_000;
 
+/** The digiflazzStatus values of an order that was submitted to Digiflazz and
+ * whose status is still checked with the same ref id: inside the 24h backoff
+ * window ("pending_at_supplier") or after it, on the slow schedule
+ * (DIGIFLAZZ_STATUS_UNRESOLVED, backend audit A5). Both are still in flight —
+ * the supplier may deliver — so neither unlocks credit, refund or manual
+ * delivery (isDigiflazzInFlight, ./orders). */
+const DIGIFLAZZ_CHECKABLE_STATUSES = ["pending_at_supplier", DIGIFLAZZ_STATUS_UNRESOLVED];
+
 /**
  * Atomically claim the right for a Digiflazz callback to run one live
  * re-check (`createTransaction` with the order's refId) — backend audit,
@@ -365,8 +381,10 @@ export const DIGIFLAZZ_RECHECK_CLAIM_LEASE_MS = 45_000;
  *   - is PROCESSING and has already been dispatched by the poller
  *     (digiflazzDispatchedAt set) — a callback must never place the FIRST
  *     purchase;
- *   - is still "pending_at_supplier" — never one whose dispatch already
- *     failed terminally and is waiting for a human;
+ *   - is still "pending_at_supplier" or "unresolved_at_supplier" (past the
+ *     24h window but not failed — a late Sukses must still deliver it) —
+ *     never one whose dispatch already failed terminally and is waiting for
+ *     a human;
  *   - has no /transaction call in flight. Every in-flight call (poller fresh
  *     dispatch, poller recheck, a previous callback) holds a lease by setting
  *     digiflazzNextRecheckAt to at most now + DIGIFLAZZ_RECHECK_CLAIM_LEASE_MS,
@@ -407,7 +425,7 @@ export async function claimDigiflazzWebhookRecheck(
       id: orderId,
       status: OrderStatus.PROCESSING,
       digiflazzDispatchedAt: { not: null },
-      digiflazzStatus: "pending_at_supplier",
+      digiflazzStatus: { in: DIGIFLAZZ_CHECKABLE_STATUSES },
       digiflazzNextRecheckAt: scheduledRecheckAt,
     },
     data: { digiflazzNextRecheckAt: leaseUntil },
@@ -532,9 +550,10 @@ export type DigiflazzOutcome =
  *   "pending" (nothing is actually wrong), but set to the error message
  *   on "transient_error" — so an admin can see WHY the last attempt
  *   failed even while it's still being retried, not only once it goes
- *   terminal. If the 24h window is exhausted, falls through to the same
- *   terminal handling "terminal" gets below (same remedy either way: a
- *   human must finish the order).
+ *   terminal. If the 24h window is exhausted the order is NOT failed
+ *   (backend audit A5): Digiflazz may still complete it, so it moves to the
+ *   still-locked "unresolved_at_supplier" state on a slow 6-hour schedule
+ *   with a one-time admin alert (recordUnresolvedAtSupplier).
  * - "terminal" (explicit "Gagal", a permanent DigiflazzRequestError on a
  *   fresh dispatch, or a structural resolution failure like a missing
  *   supplierSku) never retries — the same input would fail
@@ -569,7 +588,13 @@ export async function recordDigiflazzOutcome(
     const nextRecheckAt = nextDigiflazzRecheckAt(dispatchedAt, attempt);
     if (nextRecheckAt) {
       const claim = await db.order.updateMany({
-        where: { id: order.id, status: OrderStatus.PROCESSING, OR: [{ digiflazzStatus: null }, { digiflazzStatus: { not: "failed" } }] },
+        where: {
+          id: order.id,
+          status: OrderStatus.PROCESSING,
+          // Never pulls an unresolved order back into the fast schedule, and
+          // never reopens a failed one.
+          OR: [{ digiflazzStatus: null }, { digiflazzStatus: { notIn: ["failed", DIGIFLAZZ_STATUS_UNRESOLVED] } }],
+        },
         data: {
           digiflazzStatus: "pending_at_supplier",
           digiflazzAttempts: attempt,
@@ -580,16 +605,218 @@ export async function recordDigiflazzOutcome(
       if (claim.count === 1) emitDigiflazzOrderStatusChanged(order.id);
       return "pending";
     }
-    const reason =
-      outcome.kind === "pending"
-        ? "Digiflazz never resolved this order within 24h of dispatch — still reporting Pending"
-        : `Digiflazz dispatch kept failing transiently for 24h and gave up retrying (last error: ${outcome.message})`;
-    // Both of these reasons are always-meaningful, structural explanations
-    // (a 24h backoff window exhausted) — never a "Digiflazz gave no reason"
-    // case, so the reactive diagnostic below must not run for them.
-    return terminalFailDigiflazzOrder(db, order, reason, true);
+    // Backend audit A5: no final answer within 24h is NOT a failure.
+    return recordUnresolvedAtSupplier(db, order, outcome, dispatchedAt, attempt);
   }
   return terminalFailDigiflazzOrder(db, order, outcome.reason, outcome.supplierGaveReason);
+}
+
+/**
+ * recordDigiflazzOutcome's tail for a Pending/transient result once the 24h
+ * backoff window is over (backend audit A5). Such an order may still be
+ * completed by Digiflazz, so failing it would unlock credit, refund and manual
+ * delivery and could pay the buyer twice. Instead it moves to (or stays in)
+ * DIGIFLAZZ_STATUS_UNRESOLVED, which every money exit treats as still in
+ * flight, and is rechecked every 6 hours for up to 7 days after dispatch
+ * (digiflazzBackoff.ts). Once that window is over the supplier is no longer
+ * asked and admins are reminded once a day (remindDigiflazzUnresolvedOrder);
+ * the order never fails automatically. Only Digiflazz's own Sukses/Gagal or an
+ * admin override (markDigiflazzOrderFailedByAdmin) takes it out.
+ *
+ * Compare-and-set on the expected status: entering only from
+ * "pending_at_supplier" (and that one transition is what alerts admins, so the
+ * alert fires once), staying only while still unresolved. A late Sukses that
+ * already delivered the order (status DELIVERED) or a Gagal that failed it
+ * makes both writes miss, and that outcome stands.
+ */
+async function recordUnresolvedAtSupplier(
+  db: PrismaClient,
+  order: DigiflazzCandidateOrder,
+  outcome: Extract<DigiflazzOutcome, { kind: "pending" | "transient_error" }>,
+  dispatchedAt: Date,
+  attempt: number,
+): Promise<"pending"> {
+  const now = new Date();
+  const slowRecheckAt = nextDigiflazzUnresolvedRecheckAt(dispatchedAt, now);
+  const nextRecheckAt = slowRecheckAt ?? new Date(now.getTime() + DIGIFLAZZ_UNRESOLVED_REALERT_INTERVAL_HOURS * 3_600_000);
+  const detail =
+    outcome.kind === "pending"
+      ? "Unresolved at Digiflazz: still reporting Pending more than 24 hours after dispatch. Not failed — Digiflazz may still deliver it; reconcile it with Digiflazz."
+      : `Unresolved at Digiflazz: the status checks kept failing for more than 24 hours after dispatch (last error: ${outcome.message}). Not failed — Digiflazz may still deliver it; reconcile it with Digiflazz.`;
+  const result = await db.$transaction(async (tx) => {
+    const entered = await tx.order.updateMany({
+      where: { id: order.id, status: OrderStatus.PROCESSING, digiflazzStatus: "pending_at_supplier" },
+      data: {
+        digiflazzStatus: DIGIFLAZZ_STATUS_UNRESOLVED,
+        digiflazzAttempts: attempt,
+        digiflazzNextRecheckAt: nextRecheckAt,
+        digiflazzFailureDetail: detail,
+      },
+    });
+    if (entered.count === 1) {
+      // The buyer's progress message moves to the static review line.
+      await ensureFulfillmentMessage(tx, order.id);
+      await alertDigiflazzUnresolvedAtSupplier(tx, order, "entered", now);
+      return "entered" as const;
+    }
+    const stayed = await tx.order.updateMany({
+      where: { id: order.id, status: OrderStatus.PROCESSING, digiflazzStatus: DIGIFLAZZ_STATUS_UNRESOLVED },
+      data: { digiflazzAttempts: attempt, digiflazzNextRecheckAt: nextRecheckAt, digiflazzFailureDetail: detail },
+    });
+    if (stayed.count !== 1) return "lost" as const;
+    // This was the last slow check: from now on admins are only reminded.
+    if (!slowRecheckAt) await alertDigiflazzUnresolvedAtSupplier(tx, order, "reminder", now);
+    return "stayed" as const;
+  });
+  if (result === "lost") {
+    logger.info(
+      { orderId: order.id },
+      `Did not record Digiflazz's unresolved answer for order ${order.orderCode}, because the order had already left the supplier-check state (delivered, failed or resolved by an admin) and that outcome stands.`,
+    );
+  } else {
+    emitDigiflazzOrderStatusChanged(order.id);
+  }
+  return "pending";
+}
+
+/**
+ * Admin alert for an order unresolved at the supplier — the same outbox event
+ * and Telegram layout as every other order review alert
+ * (enqueueDigiflazzReviewAlert), with wording that says the order is
+ * unresolved and needs reconciling with Digiflazz, not that it failed.
+ *
+ * "entered" is sent once, when the order leaves the 24h window (its own
+ * dedupe incident, so a later Gagal alert for the same order is still sent),
+ * and is audited. "reminder" is sent once the 7-day slow window is over, at
+ * most once per UTC day per admin (the day is part of the dedupe key, on top of
+ * the 24h reminder schedule).
+ */
+async function alertDigiflazzUnresolvedAtSupplier(
+  db: Db,
+  order: Pick<DigiflazzCandidateOrder, "id" | "orderCode">,
+  kind: "entered" | "reminder",
+  now: Date,
+): Promise<void> {
+  const reason =
+    kind === "entered"
+      ? `Unresolved at Digiflazz: no final answer within the first 24 hours of checks. Not failed — Digiflazz may still deliver it, so credit, refund and manual delivery stay locked. Reconcile it with Digiflazz; mark it failed only if Digiflazz confirms it did not go through.`
+      : `Still unresolved at Digiflazz more than 7 days after dispatch and no longer checked automatically; it stays locked. Reconcile it with Digiflazz; mark it failed only if Digiflazz confirms it did not go through.`;
+  await enqueueDigiflazzReviewAlert(db, {
+    orderId: order.id,
+    orderCode: order.orderCode,
+    reason,
+    incident: kind === "entered" ? "digiflazz_unresolved" : `digiflazz_unresolved_reminder_${now.toISOString().slice(0, 10)}`,
+  });
+  if (kind === "entered") {
+    await logAdminAction(db, {
+      adminId: null,
+      action: "order.digiflazz_unresolved_at_supplier",
+      targetType: "order",
+      targetId: order.id,
+      details: `Digiflazz gave no final answer for order ${order.orderCode} within its first 24 hours of checks, so it was marked unresolved at the supplier (not failed) and admins were asked to reconcile it with Digiflazz.`,
+    });
+    logger.warn(
+      { orderId: order.id },
+      `Order ${order.orderCode} is unresolved at Digiflazz because its first 24 hours of checks ended without a final answer; it stays locked against credit, refund and manual delivery, will be rechecked every 6 hours for up to 7 days, and admins were alerted to reconcile it.`,
+    );
+  } else {
+    logger.warn(
+      { orderId: order.id },
+      `Order ${order.orderCode} is still unresolved at Digiflazz after the 7-day check window; it stays locked and admins were reminded to reconcile it with Digiflazz.`,
+    );
+  }
+}
+
+/**
+ * The poller's step for an unresolved order whose 7-day slow window is over:
+ * no supplier call, no failure — it only reminds admins and schedules the next
+ * reminder 24 hours out. The claim is a compare-and-set on the due recheck
+ * time, so concurrent ticks remind once. A webhook or an admin override can
+ * still resolve the order at any time.
+ */
+async function remindDigiflazzUnresolvedOrder(db: PrismaClient, order: DigiflazzCandidateOrder, now: Date): Promise<void> {
+  await db.$transaction(async (tx) => {
+    const claim = await tx.order.updateMany({
+      where: { id: order.id, status: OrderStatus.PROCESSING, digiflazzStatus: DIGIFLAZZ_STATUS_UNRESOLVED, digiflazzNextRecheckAt: { lte: now } },
+      data: { digiflazzNextRecheckAt: new Date(now.getTime() + DIGIFLAZZ_UNRESOLVED_REALERT_INTERVAL_HOURS * 3_600_000) },
+    });
+    if (claim.count === 1) await alertDigiflazzUnresolvedAtSupplier(tx, order, "reminder", now);
+  });
+}
+
+/**
+ * The human way out of DIGIFLAZZ_STATUS_UNRESOLVED (backend audit A5): an admin
+ * who reconciled with Digiflazz and confirmed the top-up did not go through
+ * marks the order failed, which unlocks credit, refund and manual delivery
+ * exactly as a supplier "Gagal" does (same "failed" state, same failure
+ * emails). Nothing else leaves the unresolved state except Digiflazz's own
+ * Sukses/Gagal.
+ *
+ * Refused (ValidationError) when the note is empty, when the order is not
+ * PROCESSING and unresolved (an order still inside its 24h checks keeps its
+ * automatic resolution), and while a supplier status check holds the in-flight
+ * lease (same lease rule as claimDigiflazzWebhookRecheck), so a check that may
+ * be about to report Sukses is never overridden mid-flight. The write is a
+ * compare-and-set on that state; the audit row carries the acting admin.
+ */
+export async function markDigiflazzOrderFailedByAdmin(
+  db: PrismaClient,
+  orderId: number,
+  args: { adminId: number; note: string },
+  now: Date = new Date(),
+): Promise<{ orderCode: string }> {
+  const note = args.note.trim();
+  if (!note) throw new ValidationError("error.digiflazz_failure_note_required");
+  const order = await db.order.findUnique({ where: { id: orderId }, select: { id: true, orderCode: true, status: true, digiflazzStatus: true } });
+  if (!order) throw new ValidationError("error.order_not_found");
+  if (order.status !== OrderStatus.PROCESSING || order.digiflazzStatus !== DIGIFLAZZ_STATUS_UNRESOLVED) {
+    throw new ValidationError("error.digiflazz_not_unresolved", { orderCode: order.orderCode });
+  }
+  const leaseUntil = new Date(now.getTime() + DIGIFLAZZ_RECHECK_CLAIM_LEASE_MS);
+  const shortNote = note.slice(0, 300);
+  const applied = await db.$transaction(async (tx) => {
+    const claim = await tx.order.updateMany({
+      where: {
+        id: orderId,
+        status: OrderStatus.PROCESSING,
+        digiflazzStatus: DIGIFLAZZ_STATUS_UNRESOLVED,
+        OR: [
+          { digiflazzNextRecheckAt: null },
+          { digiflazzNextRecheckAt: { lte: now } },
+          { digiflazzNextRecheckAt: { gt: leaseUntil } },
+        ],
+      },
+      data: {
+        digiflazzStatus: "failed",
+        digiflazzNextRecheckAt: null,
+        digiflazzFailureDetail: `Marked failed by an admin after reconciling with Digiflazz: ${shortNote}`,
+      },
+    });
+    if (claim.count !== 1) return false;
+    await ensureFulfillmentMessage(tx, orderId);
+    await logAdminAction(tx, {
+      adminId: args.adminId,
+      action: "order.digiflazz_marked_failed_by_admin",
+      targetType: "order",
+      targetId: orderId,
+      details: `Marked order ${order.orderCode} as failed at Digiflazz after confirming with Digiflazz that it did not go through, which unlocks credit, refund and manual delivery. Note: "${shortNote.slice(0, 200)}".`,
+    });
+    await enqueueOrderEmailFact(tx, orderId, ["order.failed.customer", "order.failed.admin"]);
+    return true;
+  });
+  if (!applied) {
+    const current = await db.order.findUnique({ where: { id: orderId }, select: { status: true, digiflazzStatus: true } });
+    if (current?.status === OrderStatus.PROCESSING && current.digiflazzStatus === DIGIFLAZZ_STATUS_UNRESOLVED) {
+      throw new ValidationError("error.digiflazz_check_in_flight", { orderCode: order.orderCode });
+    }
+    throw new ValidationError("error.digiflazz_not_unresolved", { orderCode: order.orderCode });
+  }
+  emitDigiflazzOrderStatusChanged(orderId);
+  logger.info(
+    { orderId },
+    `Admin ${args.adminId} marked order ${order.orderCode} as failed at Digiflazz after reconciling it, so credit, refund and manual delivery are now available for it.`,
+  );
+  return { orderCode: order.orderCode };
 }
 
 /** Who produced an outcome. The default ("dispatch", or no options) is the
@@ -629,7 +856,9 @@ async function recordWebhookNonTerminalOutcome(
     where: {
       id: order.id,
       status: OrderStatus.PROCESSING,
-      digiflazzStatus: "pending_at_supplier",
+      // Either checkable state; the status itself is never changed here, so an
+      // unresolved order stays unresolved and keeps its slow schedule.
+      digiflazzStatus: { in: DIGIFLAZZ_CHECKABLE_STATUSES },
       digiflazzNextRecheckAt: claim.leaseUntil,
     },
     data: {
@@ -865,7 +1094,9 @@ function digiflazzCandidateWhere(now: Date): Prisma.OrderWhereInput {
     ] }],
     OR: [
       { digiflazzDispatchedAt: null, OR: [{ digiflazzStatus: null }, { digiflazzStatus: { not: "failed" } }] },
-      { digiflazzStatus: "pending_at_supplier", digiflazzNextRecheckAt: { lte: now } },
+      // A due recheck, inside the 24h window or on the slow schedule of an
+      // order unresolved at the supplier (backend audit A5).
+      { digiflazzStatus: { in: DIGIFLAZZ_CHECKABLE_STATUSES }, digiflazzNextRecheckAt: { lte: now } },
     ],
   };
 }
@@ -1057,12 +1288,26 @@ async function processDigiflazzOrder(
   options: { ensureFulfillmentMessage: boolean; trigger: "direct" | "cron" },
 ): Promise<void> {
   if (options.ensureFulfillmentMessage) await ensureFulfillmentMessage(db, order.id);
-  if (!creds) {
+  const isFreshDispatch = order.digiflazzDispatchedAt === null;
+  // An order unresolved at the supplier past its 7-day slow window is no
+  // longer checked with Digiflazz: it stays locked and admins are reminded.
+  if (
+    order.digiflazzStatus === DIGIFLAZZ_STATUS_UNRESOLVED &&
+    order.digiflazzDispatchedAt !== null &&
+    isDigiflazzUnresolvedWindowOver(order.digiflazzDispatchedAt)
+  ) {
+    await remindDigiflazzUnresolvedOrder(db, order, new Date());
+    return;
+  }
+  // Missing credentials fail only an order that was never submitted. One
+  // already submitted under its ref id may still be delivered by Digiflazz, so
+  // failing it would unlock credit/refund (backend audit A5); it takes the
+  // transient path below instead, after its claim.
+  if (!creds && isFreshDispatch) {
     await terminalFailDigiflazzOrder(db, order, "Payment received but Digiflazz credentials are not configured; restore the provider connection and review this order", true);
     summary.failed++;
     return;
   }
-  const isFreshDispatch = order.digiflazzDispatchedAt === null;
   const claimNow = new Date();
   // Atomic claim: only proceed to call Digiflazz if THIS call wins the
   // race (count === 1). A concurrent tick, a restarted poller, or a retry
@@ -1092,7 +1337,7 @@ async function processDigiflazzOrder(
         where: {
           id: order.id,
           status: OrderStatus.PROCESSING,
-          digiflazzStatus: "pending_at_supplier",
+          digiflazzStatus: { in: DIGIFLAZZ_CHECKABLE_STATUSES },
           digiflazzNextRecheckAt: { lte: claimNow },
         },
         data: { digiflazzNextRecheckAt: new Date(claimNow.getTime() + DIGIFLAZZ_RECHECK_CLAIM_LEASE_MS) },
@@ -1107,6 +1352,22 @@ async function processDigiflazzOrder(
   // still its pre-claim null here); for a recheck it's the already-set
   // original dispatch time, unchanged by this claim.
   const dispatchedAt = order.digiflazzDispatchedAt ?? claimNow;
+  if (!creds) {
+    // Only reachable on a recheck (see the fresh-dispatch guard above).
+    const outcome = await recordDigiflazzOutcome(
+      db,
+      order,
+      { kind: "transient_error", message: "Digiflazz credentials are not configured, so the order's status could not be checked" },
+      dispatchedAt,
+    );
+    if (outcome === "pending") summary.pending++;
+    else summary.failed++;
+    logger.warn(
+      { orderId: order.id },
+      `Could not recheck order ${order.orderCode} with Digiflazz because the Digiflazz credentials are not configured; the order stays locked and is retried on its schedule until the provider connection is restored.`,
+    );
+    return;
+  }
   const attempt = order.digiflazzAttempts + 1;
   logDigiflazzTimingEvent(
     {
@@ -1126,19 +1387,37 @@ async function processDigiflazzOrder(
   // exactly one at quantity 1" — see its doc comment above for the two
   // failure shapes (no/unconfigured item vs. more than one unit) it
   // distinguishes.
-  const resolution = resolveSingleDigiflazzItem(order);
-  if (!resolution.ok) {
-    // A structural resolution failure (missing supplierSku, wrong
-    // quantity) is always a specific, meaningful explanation — a config
-    // problem, not a "Digiflazz gave no reason" one — so the reactive
-    // diagnostic must never run for it.
-    await recordDigiflazzOutcome(
+  // A structural problem (missing supplierSku, wrong quantity, unreadable
+  // player input) is a specific, meaningful explanation — a config problem,
+  // not a "Digiflazz gave no reason" one — so the reactive diagnostic never
+  // runs for it. On a FRESH dispatch nothing was submitted, so it is terminal.
+  // On a RECHECK the order was already submitted under its ref id and
+  // Digiflazz may still deliver it (e.g. a legacy order whose SKU was edited
+  // after dispatch), so failing it would unlock credit/refund (backend audit
+  // A5): it takes the transient path, ending up unresolved_at_supplier after
+  // 24h, never failed.
+  const recordStructuralProblem = async (reason: string) => {
+    if (isFreshDispatch) {
+      await recordDigiflazzOutcome(db, order, { kind: "terminal", reason, supplierGaveReason: true }, dispatchedAt);
+      summary.failed++;
+      return;
+    }
+    const outcome = await recordDigiflazzOutcome(
       db,
       order,
-      { kind: "terminal", reason: resolution.reason, supplierGaveReason: true },
+      { kind: "transient_error", message: `The order's status could not be rechecked with Digiflazz: ${reason}` },
       dispatchedAt,
     );
-    summary.failed++;
+    if (outcome === "pending") summary.pending++;
+    else summary.failed++;
+    logger.warn(
+      { orderId: order.id },
+      `Could not recheck order ${order.orderCode} with Digiflazz because ${reason}; the order was already submitted, so it stays locked and is retried on its schedule instead of being failed.`,
+    );
+  };
+  const resolution = resolveSingleDigiflazzItem(order);
+  if (!resolution.ok) {
+    await recordStructuralProblem(resolution.reason);
     return;
   }
   const { supplierSku } = resolution;
@@ -1149,8 +1428,7 @@ async function processDigiflazzOrder(
   const submittedInput = await db.order.findUniqueOrThrow({ where: { id: order.id }, select: { customerData: true, inputConfigSnapshot: true } });
   try { customerNo = buildDigiflazzCustomerNo(resolution.product, submittedInput.customerData, submittedInput.inputConfigSnapshot); }
   catch {
-    await recordDigiflazzOutcome(db, order, { kind: "terminal", reason: "Invalid player input configuration or answers; needs manual review", supplierGaveReason: true }, dispatchedAt);
-    summary.failed++;
+    await recordStructuralProblem("Invalid player input configuration or answers; needs manual review");
     return;
   }
 

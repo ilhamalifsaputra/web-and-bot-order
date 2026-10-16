@@ -23,7 +23,7 @@ import {
   type CategoryGroup,
 } from "@app/core/enums";
 import { deriveOrderStatusFromItems } from "@app/core/orderItemStatus";
-import { fulfillmentProviderFor, getOrderFulfillment } from "@app/core/orderFulfillment";
+import { fulfillmentProviderFor, getOrderFulfillment, DIGIFLAZZ_STATUS_UNRESOLVED } from "@app/core/orderFulfillment";
 import { cartCompositionError } from "@app/core/cartComposition";
 import { usesLocalInventory } from "@app/core/productAvailability";
 import { emitDigiflazzOrderStatusChanged } from "@app/core/realtime/digiflazzEvents";
@@ -1595,8 +1595,10 @@ export function countUnderpaid(db: Db): Promise<number> {
  */
 export async function countAwaitingManualFulfillment(db: Db): Promise<number> {
   // A Digiflazz order sitting in PROCESSING is normally in flight at the
-  // provider (queued, submitting or pending_at_supplier) and needs no admin;
-  // it only joins the manual queue once the provider failed it. The provider
+  // provider (queued, submitting, pending_at_supplier or unresolved_at_supplier)
+  // and cannot be hand-fulfilled; it only joins the manual queue once the
+  // provider (or an admin override) failed it. Unresolved orders reach admins
+  // through their own review alert instead. The provider
   // is resolved by `fulfillmentProviderFor` (stored column, else the SKU), the
   // same rule the order detail uses — never a category name.
   const rows = await db.order.findMany({
@@ -1678,8 +1680,10 @@ async function unlinkIfDeadHere(db: Db, orderId: number, orderItemId: number, st
 /**
  * Release any reserved stock + refund wallet + roll back voucher usage.
  *
- * Called from three places with genuinely different accounting consequences —
- * `rejectOrder`, `cancelOrder` and `creditOrderToBalance` — which is why the
+ * Called from four places with genuinely different accounting consequences —
+ * `rejectOrder`, `cancelOrder`, `creditOrderToBalance` and the UNDERPAID
+ * refund-to-wallet resolution (`refundUnderpaidOrderTx`, which the admin
+ * route and the aged-UNDERPAID sweep both use) — which is why the
  * ledger posting for the wallet release is decided HERE, from the order's own
  * posting history, rather than at each caller. Only the
  * `creditOrderToBalance`-on-an-already-settled-order path has anything to post;
@@ -1694,7 +1698,7 @@ async function unlinkIfDeadHere(db: Db, orderId: number, orderItemId: number, st
  * The RESERVATION_RELEASED event written here is the trace that replaces the
  * pointer: it keeps the order, the line and the actor on record.
  */
-async function releaseOrderHolds(
+export async function releaseOrderHolds(
   db: Db,
   order: NonNullable<Awaited<ReturnType<typeof getOrderRaw>>>,
   actor: StockEventActor,
@@ -1934,13 +1938,12 @@ async function creditOrderToBalanceLocked(
   // payout and a credit on one order queue behind each other instead of both
   // reading "nothing returned yet".
   //
-  // Not every caller agrees on that order: `refundUnderpaidOrder`
-  // (./binance_internal) and `cancelOrder` (whose `releaseOrderHolds` locks the
-  // buyer's wallet row via `adjustWallet` before `transitionOrderStatus` writes
-  // the order row) both take user-then-order, so either could in principle
-  // deadlock with this function on one order+buyer — `cancelOrder` more
-  // plausibly now that this path accepts CANCELLED orders, since a sweep cancel
-  // and an admin credit can land on the same order. Postgres detects the cycle
+  // `refundUnderpaidOrder` (./binance_internal) and `cancelOrder` now lock the
+  // order row before anything touches the buyer's wallet as well (backend
+  // audit A4 / order-state CAS). A caller that still locks user-then-order
+  // (via `adjustWallet` before `transitionOrderStatus` writes the order row)
+  // could in principle deadlock with this function on one order+buyer.
+  // Postgres detects the cycle
   // and aborts one transaction, which is the harmless direction here: nothing is
   // credited and nothing recorded, versus a buyer credited twice (same reasoning
   // as `executeRefund`'s note in ./refunds).
@@ -3232,10 +3235,14 @@ export interface OrderEligibility {
 
 /**
  * A PROCESSING order routed to Digiflazz that the provider has not failed yet
- * (queued, submitting, or pending at the supplier). Such an order needs no
- * admin: `fulfillManualOrder` refuses it, and `countAwaitingManualFulfillment`
- * leaves it out. The provider comes from `fulfillmentProviderFor` (stored
- * column, else the SKU) — never a category name.
+ * (queued, submitting, pending at the supplier, or unresolved at the supplier
+ * — `DIGIFLAZZ_STATUS_UNRESOLVED`, no final answer after 24h, which Digiflazz
+ * may still complete; backend audit A5). Only `digiflazzStatus === "failed"`
+ * (a supplier Gagal, or an admin override via `markDigiflazzOrderFailedByAdmin`)
+ * ends it. Such an order is not hand-fulfilled: `fulfillManualOrder` refuses
+ * it, credit refuses it, and `countAwaitingManualFulfillment` leaves it out.
+ * The provider comes from `fulfillmentProviderFor` (stored column, else the
+ * SKU) — never a category name.
  */
 export function isDigiflazzInFlight(
   order: { status: string; digiflazzStatus: string | null } & Parameters<typeof fulfillmentProviderFor>[0],
@@ -3264,7 +3271,9 @@ export function isDigiflazzCreditLocked(
   if (isDigiflazzInFlight(order)) return true;
   return (
     order.status === OrderStatus.CANCELLED &&
-    (order.digiflazzDispatchedAt != null || order.digiflazzStatus === "pending_at_supplier") &&
+    (order.digiflazzDispatchedAt != null ||
+      order.digiflazzStatus === "pending_at_supplier" ||
+      order.digiflazzStatus === DIGIFLAZZ_STATUS_UNRESOLVED) &&
     isDigiflazzInFlight({ ...order, status: OrderStatus.PROCESSING })
   );
 }

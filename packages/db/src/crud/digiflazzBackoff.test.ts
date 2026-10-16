@@ -5,6 +5,11 @@ import {
   DIGIFLAZZ_RECHECK_SCHEDULE_MINUTES,
   DIGIFLAZZ_RECHECK_STEADY_INTERVAL_MINUTES,
   DIGIFLAZZ_RECHECK_WINDOW_HOURS,
+  nextDigiflazzUnresolvedRecheckAt,
+  isDigiflazzUnresolvedWindowOver,
+  DIGIFLAZZ_UNRESOLVED_RECHECK_INTERVAL_HOURS,
+  DIGIFLAZZ_UNRESOLVED_WINDOW_DAYS,
+  DIGIFLAZZ_UNRESOLVED_REALERT_INTERVAL_HOURS,
 } from "./digiflazzBackoff";
 
 const T0 = new Date("2026-08-22T10:00:00.000Z");
@@ -55,5 +60,26 @@ describe("Digiflazz backoff schedule", () => {
 
   it("respects DIGIFLAZZ_RECHECK_WINDOW_HOURS constant", () => {
     expect(DIGIFLAZZ_RECHECK_WINDOW_HOURS).toBe(24);
+  });
+});
+
+describe("Digiflazz unresolved-at-supplier slow schedule (audit A5)", () => {
+  const HOUR = 3600;
+
+  it("rechecks every 6 hours and stays within 7 days of the first dispatch", () => {
+    expect(DIGIFLAZZ_UNRESOLVED_RECHECK_INTERVAL_HOURS).toBe(6);
+    expect(DIGIFLAZZ_UNRESOLVED_WINDOW_DAYS).toBe(7);
+    expect(DIGIFLAZZ_UNRESOLVED_REALERT_INTERVAL_HOURS).toBe(24);
+    expect(nextDigiflazzUnresolvedRecheckAt(T0, at(25 * HOUR))).toEqual(at(31 * HOUR));
+  });
+
+  it("caps the last slow recheck at the end of the 7-day window", () => {
+    expect(nextDigiflazzUnresolvedRecheckAt(T0, at(7 * 24 * HOUR - HOUR))).toEqual(at(7 * 24 * HOUR));
+  });
+
+  it("returns null once the 7-day window is over", () => {
+    expect(nextDigiflazzUnresolvedRecheckAt(T0, at(7 * 24 * HOUR))).toBeNull();
+    expect(isDigiflazzUnresolvedWindowOver(T0, at(7 * 24 * HOUR))).toBe(true);
+    expect(isDigiflazzUnresolvedWindowOver(T0, at(7 * 24 * HOUR - 1))).toBe(false);
   });
 });

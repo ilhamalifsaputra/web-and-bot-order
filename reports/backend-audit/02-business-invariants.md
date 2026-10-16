@@ -45,7 +45,7 @@
 - Path ids and `page` are parsed with `parsePositiveId`/`parsePageParam` (`@app/core/params`, page clamped 1..100000); bad ids give 400/404, not 500.
 - Admin `/api/support/media/:id/:filename` uses `blockReadonlyReads` (403 for readonly).
 - Download caps: admin photo proxy 20 MB (`MAX_SUPPORT_PHOTO_BYTES`, `apps/web-admin/src/routes/api/support.ts:47`, 413), bot text download 1 MB, via `readBodyWithLimit` (`packages/core/src/boundedBody.ts`).
-- First-run setup: owner Telegram ID must be in `config.ADMIN_IDS`; setup routes share a per-IP limiter (20 per 600 s, 429); `/setup/shop` needs the step-2 nonce cookie (sha256 stored in Setting `setup_owner_nonce_hash`).
+- First-run setup: when `config.ADMIN_IDS` is non-empty the owner Telegram ID must be in it (empty: the wizard sets the first admin); setup routes share a per-IP limiter (20 per 600 s, 429); `/setup/shop` needs the step-2 nonce cookie (sha256 stored in Setting `setup_owner_nonce_hash`).
 
 ## Owner decisions still open and untouched
 Settlement double-submit, `/track` second factor, and support-role refund were not changed in this pass.

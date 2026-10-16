@@ -1,8 +1,8 @@
 # 05 - Remaining risks and next steps
 
 ## Approval-gated proposals (not implemented)
-- **A4 UNDERPAID/FAILED hold with no expiry** (`orders.ts:1447`, `apps/order-bot/src/jobs/index.ts:494`). Stock, vouchers and wallet holds stay indefinitely. Needs an owner-chosen TTL and release semantics (interaction with late payments), so it was not changed.
-- **A5 Digiflazz 24 h Pending treated as definite failure** (`digiflazz.ts:583-590`, `orders.ts:3159`). Touches refund and payment semantics. Suggested design: keep an in-flight "unknown" state and check supplier status before unlocking credit or manual fulfilment.
+- **A4 (implemented, default off)**: the sweep for aged UNDERPAID orders exists but `underpaid_auto_resolve_hours` defaults to "0". Owner decision: pick a TTL (72 h suggested), review the UNDERPAID list, then set it in the admin settings. FAILED orders are alert-only. Follow-ups: batch starvation, re-alert after outbox pruning, one-off repair of older admin refunds, over-credit in `creditOrderToBalance` for UNDERPAID, admin underpaid-cancel without credit, TokoPay fee refunded.
+- **A5 (implemented)**: Pending after 24 h now becomes `unresolved_at_supplier` (locked, rechecked every 6 h for 7 days, admin override only). Needs the admin client (badge, "mark failed" button, error message keys). Orders failed by the old code stay `failed`; reconcile them by `digiflazzFailureDetail`.
 - **Login lockout DoS and timing leak**: UX/security decision.
 - **TOTP replay protection and secret encryption**.
 - **DB CHECK constraints** (wallet balance >= 0, status enums): migration plus live-data validation.
@@ -25,7 +25,7 @@
 
 - Product-order branches of `settlePaidOrder` still call `enqueueAdminOverpaid` as a bare await, and `finalizeDeliverySideEffects`, `cancelOrder` and `fulfillManualOrder` enqueue without isolation; a failure there can still roll back its transaction.
 - Closing an already-closed ticket from the web admin now returns 200 instead of 404 (the shared `closeTicket` reports whether it closed).
-- Deploy note: with an empty `ADMIN_IDS`, the setup wizard's owner step is refused (same as `/bootstrap`); set `ADMIN_IDS` before first run.
+- Setup wizard: with `ADMIN_IDS` set in `.env`, step 2 accepts only those ids; with it empty, step 2 sets the first admin itself (the original design), protected by the per-IP rate limit, the nonce cookie and the 30 minute window. In that empty-env case the first visitor to reach the wizard can still claim the owner account, so run first-time setup on a private network or set `ADMIN_IDS` first.
 
 ## Prior open owner decisions, untouched
 Settlement double-submit, `/track` second factor, and support-role refund remain exactly as before this pass.

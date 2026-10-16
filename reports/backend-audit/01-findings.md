@@ -9,9 +9,9 @@ Pass 2 on base 7d92dcfa. Line numbers in Evidence are those of the base commit a
 - **Impact**: the first visitor to an unfinished install could become super-admin; limiter maps could grow without bound under a flood of keys; unsafe production config went unnoticed.
 - **Reproduction**: RED tests failed: `startupWarnings.test.ts` (module missing), `login-limiter-cap.test.ts` (`loginLimiterSizes is not a function`), 4 new "pre-auth takeover hardening" tests in `web.test.ts` (ADMIN_IDS refusal and both 429 behaviours absent). Nonce tests for the finish step were written together with the fix, so no separate RED run exists.
 - **Root cause**: setup routes trusted any caller; limiter maps had no size cap.
-- **Change**: `/setup/owner` requires `config.ADMIN_IDS` membership; `/setup/bot`, `/setup/owner`, `/setup/shop` share a per-IP limiter (20 per 600 s, 429). `/setup/shop` is bound to the step-2 browser via a random nonce cookie (only its sha256 is stored in Setting `setup_owner_nonce_hash`, constant-time compare, 403 otherwise). B9: `MAX_LOGIN_LIMITER_BUCKETS = 10_000` (`auth.ts:303`) with a once-per-window sweep; a new key at capacity fails closed (eviction was rejected because a flood could evict an attacker's own bucket). B12: pure `collectProductionWarnings` (`packages/core/src/startupWarnings.ts`) logs `logger.warn` in production when `TRUST_PROXY` is unset, `WEB_COOKIE_SECURE` is false, or `WEBHOOK_SECRET` is set but under 24 chars; never echoes the secret; warning only, no crash.
+- **Change**: `/setup/owner` requires `config.ADMIN_IDS` membership when that list is non-empty (an empty list lets the wizard set the first admin, as originally designed); `/setup/bot`, `/setup/owner`, `/setup/shop` share a per-IP limiter (20 per 600 s, 429). `/setup/shop` is bound to the step-2 browser via a random nonce cookie (only its sha256 is stored in Setting `setup_owner_nonce_hash`, constant-time compare, 403 otherwise). B9: `MAX_LOGIN_LIMITER_BUCKETS = 10_000` (`auth.ts:303`) with a once-per-window sweep; a new key at capacity fails closed (eviction was rejected because a flood could evict an attacker's own bucket). B12: pure `collectProductionWarnings` (`packages/core/src/startupWarnings.ts`) logs `logger.warn` in production when `TRUST_PROXY` is unset, `WEB_COOKIE_SECURE` is false, or `WEBHOOK_SECRET` is set but under 24 chars; never echoes the secret; warning only, no crash.
 - **Tests**: `web.test.ts`, `login-limiter-cap.test.ts`, `startupWarnings.test.ts`: 3 files, 652 passed after review round 1. Existing wizard tests were adapted (owner ids pushed into `config.ADMIN_IDS`).
-- **Compatibility/Rollback**: a fresh install with empty `ADMIN_IDS` can no longer finish the wizard owner step (same rule as `/bootstrap`); owner confirmation needed (see 05). Revert commits 060c0d36 and 43241baf; no schema change.
+- **Compatibility/Rollback**: none for installs with `ADMIN_IDS` set; a fresh install with empty `ADMIN_IDS` still sets its first admin through the wizard (an earlier version of this fix wrongly blocked that; corrected afterwards). Revert commits 060c0d36 and 43241baf; no schema change.
 - **Status**: fixed (accepted residual: `/setup/bot` token overwrite while the wizard is open, mitigated only by the rate limit).
 
 ### [P1] A2 Bybit BSC top-up status written from a stale read
@@ -187,27 +187,22 @@ Pass 2 on base 7d92dcfa. Line numbers in Evidence are those of the base commit a
 ## Proposed or not implemented (approval-gated)
 
 ### [P1] A4 UNDERPAID/FAILED orders hold stock, vouchers and wallet with no expiry
-- **Evidence**: `orders.ts:1447`, `apps/order-bot/src/jobs/index.ts:494` (from the audit plan; not re-verified in this pass).
-- **Impact**: reservations are held indefinitely.
-- **Reproduction**: not reproduced in this pass.
-- **Root cause**: the expiry sweep covers PENDING_PAYMENT only.
-- **Change**: none. Proposal: extend the sweep to UNDERPAID with a TTL and release stock/voucher/wallet holds.
-- **Tests**: none.
-- **Compatibility/Rollback**: changes who keeps a hold and when it is released, which can interact with late payments; the TTL and release semantics are an owner decision.
-- **Status**: proposed.
+- **Evidence**: the expiry sweep (`listExpiredPendingOrders`, `apps/order-bot/src/jobs/index.ts` `autoCancelExpiredOrders`) selects PENDING_PAYMENT only; UNDERPAID and FAILED orders were never resolved.
+- **Impact**: stock, voucher use and spent wallet credit stayed reserved indefinitely.
+- **Change**: new `packages/db/src/crud/underpaidExpiry.ts` and an order-bot job every 10 minutes. An UNDERPAID product order older than the Setting `underpaid_auto_resolve_hours` is resolved under the order row lock through the existing `refundUnderpaidOrderTx`: the received amount is credited once in the order currency, all holds are released, the order becomes REFUNDED, audited as a system action. **Default is "0" (off)** so a deploy never refunds the existing backlog; the owner turns it on through the admin settings API (keys added to `routes/api/settings.ts`). Wallet top-ups, orders with no recorded received amount, anything handed to Digiflazz and orders marked paid are left to an admin with one alert. FAILED orders are never changed (they are usually fully paid; the only writer runs after a confirmed Bybit deposit); after `failed_order_alert_hours` (default 24) admins get one alert. `refundUnderpaidOrderTx` also had a bug: an admin refund left stock RESERVED and never returned `walletUsed`; it now locks the order and releases all holds.
+- **Tests**: `underpaidExpiry.test.ts`, `aged-orders-job.test.ts`, `settings-aged-orders.test.ts`, updated `binance_internal.test.ts` and `payments-refund-idempotency.test.ts`.
+- **Compatibility/Rollback**: setting "0" disables the sweep; no schema change. Admin "refund to wallet" now also returns `walletUsed` and frees stock.
+- **Status**: fixed (default off). Commits 330e5d3d, 42a561b3. Follow-ups: batch starvation on orders that keep erroring, re-alert after outbox pruning, one-off repair of refunds made before this change, `creditOrderToBalance` credits full `totalAmount` for UNDERPAID, the admin "underpaid cancel" route (`payments.ts` ~483) cancels without crediting the amount paid, TokoPay refunds include the buyer-paid fee.
 
 ### [P1] A5 Digiflazz 24 h Pending treated as definite failure
-- **Evidence**: `digiflazz.ts:583-590`, `orders.ts:3159` (from the audit plan; not re-verified in this pass).
-- **Impact**: refund or manual fulfilment can happen while the supplier still delivers.
-- **Reproduction**: not reproduced in this pass.
-- **Root cause**: a time-based give-up is treated as a definite supplier failure.
-- **Change**: none. Suggested design: keep an in-flight "unknown" state and run a supplier status check before unlocking credit or manual fulfilment.
-- **Tests**: none.
-- **Compatibility/Rollback**: touches refund and payment semantics, so it needs approval.
-- **Status**: proposed.
+- **Evidence**: `recordDigiflazzOutcome` (`packages/db/src/crud/digiflazz.ts`) sent an exhausted 24 h window to `terminalFailDigiflazzOrder`, setting `digiflazzStatus = "failed"`, which unlocks credit, refund and manual fulfilment while the supplier can still deliver.
+- **Change**: a Pending or transient-exhausted order now becomes `unresolved_at_supplier` (free String column, no schema change). It stays locked everywhere `digiflazzStatus !== "failed"` is read, is rechecked every 6 h for up to 7 days, a late Sukses delivers it and a late Gagal fails it through the normal paths, admins get one alert on entry and a daily reminder after 7 days. The only human exit is the new audited `markDigiflazzOrderFailedByAdmin` (`POST /api/orders/:id/digiflazz/mark-failed`). A recheck of an already submitted order no longer fails it for missing credentials or a missing/unbuildable SKU or customer number (treated as transient); a fresh dispatch is unchanged.
+- **Tests**: `digiflazzUnresolved.test.ts` (new), `digiflazz.test.ts`, `digiflazzBackoff.test.ts`, `digiflazz-webhook.test.ts`, `order-eligibility-digiflazz.test.ts`, `orderFulfillment.test.ts`.
+- **Compatibility/Rollback**: revert commits bb44592b and 76dce158. Orders the old code already failed with "never resolved within 24h" stay `failed` and unlocked; admins should reconcile them (query `digiflazzFailureDetail`).
+- **Status**: fixed. Follow-ups: admin UI (badge, "mark failed" button, error message keys `error.digiflazz_*` in `errorMessages.ts`), the reused alert heading still says "tracking failed", the override sends the same failure emails as a supplier Gagal, a CANCELLED dispatched unresolved order cannot be overridden.
 
 ### [P2] Other proposed items (not changed)
-- **Evidence**: lockout-DoS and login timing leak in admin auth; TOTP replay and secret encryption; no DB CHECK constraints (wallet balance >= 0, status enums); CI disabled (`ci.yml:10`); `/setup/bot` pre-auth token overwrite; empty `ADMIN_IDS` blocks the wizard owner step; enqueues still unisolated in `finalizeDeliverySideEffects`, `cancelOrder`, `fulfillManualOrder` and wallet top-up settlement; poller `credited=0` leaves a deposit `matched` with no alert; a paid-after-expiry product order only alerts the admin; `settleWalletTopup` credits `order.totalAmount` regardless of the reported amount; outbox index `(status, next_retry_at)` and a redundant index (P3).
+- **Evidence**: lockout-DoS and login timing leak in admin auth; TOTP replay and secret encryption; no DB CHECK constraints (wallet balance >= 0, status enums); CI disabled (`ci.yml:10`); `/setup/bot` pre-auth token overwrite; enqueues still unisolated in `finalizeDeliverySideEffects`, `cancelOrder`, `fulfillManualOrder` and wallet top-up settlement; poller `credited=0` leaves a deposit `matched` with no alert; a paid-after-expiry product order only alerts the admin; `settleWalletTopup` credits `order.totalAmount` regardless of the reported amount; outbox index `(status, next_retry_at)` and a redundant index (P3).
 - **Impact**: see `05-remaining-risks-and-next-steps.md` for each.
 - **Reproduction**: none recorded in this pass.
 - **Root cause**: see 05.

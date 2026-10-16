@@ -80,16 +80,16 @@
   "dependencies": {
     "aws4fetch": "1.0.20",
     "bcryptjs": "^2.4.3",
-    "decimal.js": "^10.4.3",
-    "dotenv": "^16.4.5",
-    "luxon": "^3.5.0",
-    "nodemailer": "^10.0.6",
-    "pino": "^9.5.0",
-    "zod": "^3.23.8"
+    "decimal.js": "^10.6.0",
+    "dotenv": "^16.6.1",
+    "luxon": "^3.7.2",
+    "nodemailer": "^10.1.1",
+    "pino": "^9.14.0",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",
-    "@types/luxon": "^3.4.2",
-    "@types/nodemailer": "^8.0.1"
+    "@types/luxon": "^3.7.6",
+    "@types/nodemailer": "^8.0.2"
   }
 }

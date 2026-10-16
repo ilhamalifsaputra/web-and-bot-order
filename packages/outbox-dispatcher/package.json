@@ -12,6 +12,6 @@
   "dependencies": {
     "@app/core": "workspace:*",
     "@app/db": "workspace:*",
-    "grammy": "^1.30.0"
+    "grammy": "^1.46.0"
   }
 }

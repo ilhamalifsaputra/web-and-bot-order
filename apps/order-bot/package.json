@@ -27,6 +27,6 @@
     "@grammyjs/conversations": "^1.2.0",
     "@grammyjs/runner": "^2.0.3",
     "croner": "^8.1.2",
-    "grammy": "^1.30.0"
+    "grammy": "^1.46.0"
   }
 }

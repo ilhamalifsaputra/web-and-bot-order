@@ -19,6 +19,6 @@
     "@app/storefront": "workspace:*",
     "@app/web-admin": "workspace:*",
     "@grammyjs/runner": "^2.0.3",
-    "grammy": "^1.30.0"
+    "grammy": "^1.46.0"
   }
 }

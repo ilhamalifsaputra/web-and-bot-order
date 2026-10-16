@@ -525,9 +525,10 @@ export async function autoCancelExpiredOrders(api: Api): Promise<void> {
  */
 export async function resolveAgedUnderpaidAndFailedOrders(_api: Api): Promise<void> {
   const summary = await sweepAgedUnderpaidAndFailedOrders(prisma);
-  if (summary.underpaidErrored > 0) {
+  const n = summary.underpaidErrored;
+  if (n > 0) {
     logger.warn(
-      `The aged-order sweep could not resolve ${summary.underpaidErrored} underpaid orders this run; each was left unchanged and will be retried on the next run.`,
+      `The aged-order sweep could not resolve ${n} underpaid ${n === 1 ? "order" : "orders"} this run; ${n === 1 ? "it was" : "each was"} left unchanged and will be retried on the next run.`,
     );
   }
 }

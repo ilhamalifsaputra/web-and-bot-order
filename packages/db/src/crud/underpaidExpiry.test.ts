@@ -38,6 +38,8 @@ import {
   __clearSettingsCacheForTests,
 } from "@app/db";
 import { OrderStatus, OrderKind, PaymentMethod, NotificationEvent, StockStatus } from "@app/core/enums";
+import { config } from "@app/core/config";
+import { logger } from "@app/core/logger";
 import { Decimal } from "@app/core/money";
 
 let db: TestDb;
@@ -58,6 +60,9 @@ beforeEach(async () => {
   await resetDb(prisma);
   __clearSettingsCacheForTests(prisma);
   sample = await buildSampleData(prisma);
+  // Auto-refund is OFF by default; the tests that exercise it switch it on
+  // explicitly, the way an owner would (the default itself is pinned below).
+  await setSetting(prisma, UNDERPAID_AUTO_RESOLVE_HOURS_KEY, "72");
 });
 
 /** Make the order look like it entered `status` `hoursAgo` hours before NOW. */
@@ -114,7 +119,22 @@ async function reviewAlerts(orderId: number) {
 }
 
 describe("sweepAgedUnderpaidAndFailedOrders — UNDERPAID product orders", () => {
-  it("resolves an UNDERPAID order past the default 72h TTL: received amount credited once, every hold released", async () => {
+  it("is OFF by default: with no setting row an aged UNDERPAID order is neither refunded nor alerted", async () => {
+    await prisma.setting.delete({ where: { key: UNDERPAID_AUTO_RESOLVE_HOURS_KEY } });
+    __clearSettingsCacheForTests(prisma);
+    const order = await makeUnderpaidQrisOrder();
+    await ageStatus(order.id, OrderStatus.UNDERPAID, 10_000);
+
+    const summary = await sweepAgedUnderpaidAndFailedOrders(prisma, NOW);
+
+    expect(summary).toMatchObject({ underpaidResolved: 0, underpaidNeedsAdmin: 0, underpaidErrored: 0 });
+    expect(await statusOf(order.id)).toBe(OrderStatus.UNDERPAID);
+    expect(await walletIdr()).toBe("9");
+    expect(await reservedFor(order.id)).toBe(1);
+    expect(await reviewAlerts(order.id)).toHaveLength(0);
+  });
+
+  it("resolves an UNDERPAID order past a 72h limit: received amount credited once, every hold released", async () => {
     const order = await makeUnderpaidQrisOrder("2");
     await ageStatus(order.id, OrderStatus.UNDERPAID, 73);
     expect(await walletIdr()).toBe("9");
@@ -285,6 +305,94 @@ describe("sweepAgedUnderpaidAndFailedOrders — UNDERPAID product orders", () =>
     expect(await statusOf(topup.id)).toBe(OrderStatus.UNDERPAID);
     expect(await prisma.walletTransaction.count({ where: { orderId: topup.id } })).toBe(0);
     expect(await reviewAlerts(topup.id)).toHaveLength(1);
+  });
+
+  it("leaves an UNDERPAID order that is marked paid for an admin (refunding part could be wrong), alerting once", async () => {
+    const order = await makeUnderpaidQrisOrder();
+    await prisma.order.update({ where: { id: order.id }, data: { paidAt: new Date(NOW.getTime() - 90 * HOUR) } });
+    await ageStatus(order.id, OrderStatus.UNDERPAID, 100);
+
+    const direct = await autoResolveExpiredUnderpaidOrder(prisma, order.id, { now: NOW, ttlHours: 72 });
+    expect(direct).toMatchObject({ kind: "needs_admin", reason: "looks_paid" });
+    const summary = await sweepAgedUnderpaidAndFailedOrders(prisma, NOW);
+
+    expect(summary).toMatchObject({ underpaidResolved: 0, underpaidNeedsAdmin: 1, underpaidErrored: 0 });
+    expect(await statusOf(order.id)).toBe(OrderStatus.UNDERPAID);
+    expect(await walletIdr()).toBe("9");
+    expect(await reservedFor(order.id)).toBe(1);
+    expect(await reviewAlerts(order.id)).toHaveLength(1);
+  });
+
+  it("with no admin configured: still refunds what it safely can, queues no alert, and leaves the rest untouched", async () => {
+    const cfg = config as unknown as { ADMIN_IDS: number[] };
+    const saved = cfg.ADMIN_IDS;
+    cfg.ADMIN_IDS = [];
+    try {
+      const resolvable = await makeUnderpaidQrisOrder("2");
+      await ageStatus(resolvable.id, OrderStatus.UNDERPAID, 100);
+      const topup = await createWalletTopupOrder(prisma, { userId: sample.user.id, amount: "20000", currency: "IDR", method: PaymentMethod.TOKOPAY });
+      await markOrderUnderpaid(prisma, { orderId: topup.id, gateway: "TOKOPAY", receivedAmount: "5000", expectedAmount: topup.totalAmount });
+      await ageStatus(topup.id, OrderStatus.UNDERPAID, 100);
+      const failed = (await createOrderDirect(prisma, { channel: "bot", user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+      await transitionOrderStatus(prisma, { orderId: failed.id, from: OrderStatus.PENDING_PAYMENT, to: OrderStatus.FAILED });
+      await ageStatus(failed.id, OrderStatus.FAILED, 100);
+
+      const summary = await sweepAgedUnderpaidAndFailedOrders(prisma, NOW);
+
+      expect(summary).toEqual({ underpaidResolved: 1, underpaidNeedsAdmin: 1, underpaidErrored: 0, failedAlerted: 0 });
+      expect(await statusOf(resolvable.id)).toBe(OrderStatus.REFUNDED);
+      expect(await statusOf(topup.id)).toBe(OrderStatus.UNDERPAID);
+      expect(await statusOf(failed.id)).toBe(OrderStatus.FAILED);
+      expect(await prisma.notificationOutbox.count({ where: { event: NotificationEvent.ORDER_PIPELINE_FAILED } })).toBe(0);
+    } finally {
+      cfg.ADMIN_IDS = saved;
+    }
+  });
+
+  it("an alert that cannot be queued is not counted as a failed resolution", async () => {
+    const created = (await createOrderDirect(prisma, { channel: "bot", user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    await transitionOrderStatus(prisma, { orderId: created.id, from: OrderStatus.PENDING_PAYMENT, to: OrderStatus.UNDERPAID });
+    await ageStatus(created.id, OrderStatus.UNDERPAID, 100);
+    // The deduped enqueue is the only raw INSERT the sweep runs on the bare
+    // client (the resolution runs on its own transaction client); fail just it.
+    const original = prisma.$queryRaw.bind(prisma) as (q: TemplateStringsArray, ...v: unknown[]) => Promise<unknown>;
+    const spy = vi.spyOn(prisma, "$queryRaw").mockImplementation(((query: TemplateStringsArray, ...values: unknown[]) => {
+      if (query.join("?").includes("INSERT INTO notification_outbox")) return Promise.reject(new Error("outbox down"));
+      return original(query, ...values);
+    }) as unknown as typeof prisma.$queryRaw);
+    try {
+      const summary = await sweepAgedUnderpaidAndFailedOrders(prisma, NOW);
+      expect(summary).toMatchObject({ underpaidNeedsAdmin: 1, underpaidErrored: 0 });
+      expect(await statusOf(created.id)).toBe(OrderStatus.UNDERPAID);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
+describe("sweepAgedUnderpaidAndFailedOrders — setting values", () => {
+  it("treats an invalid value as off and warns about it once per process, not every run", async () => {
+    const order = await makeUnderpaidQrisOrder();
+    await ageStatus(order.id, OrderStatus.UNDERPAID, 100);
+    await setSetting(prisma, UNDERPAID_AUTO_RESOLVE_HOURS_KEY, "72h-typo");
+    const warn = vi.spyOn(logger, "warn");
+    try {
+      await sweepAgedUnderpaidAndFailedOrders(prisma, NOW);
+      await sweepAgedUnderpaidAndFailedOrders(prisma, NOW);
+      const about = warn.mock.calls.filter((c) => c.some((a) => typeof a === "string" && a.includes(UNDERPAID_AUTO_RESOLVE_HOURS_KEY)));
+      expect(about).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+    }
+    expect(await statusOf(order.id)).toBe(OrderStatus.UNDERPAID);
+  });
+
+  it('"00" means off, never "refund immediately"', async () => {
+    const order = await makeUnderpaidQrisOrder();
+    await ageStatus(order.id, OrderStatus.UNDERPAID, 1);
+    await setSetting(prisma, UNDERPAID_AUTO_RESOLVE_HOURS_KEY, "00");
+    expect((await sweepAgedUnderpaidAndFailedOrders(prisma, NOW)).underpaidResolved).toBe(0);
+    expect(await statusOf(order.id)).toBe(OrderStatus.UNDERPAID);
   });
 });
 

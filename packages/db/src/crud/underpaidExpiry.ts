@@ -8,8 +8,9 @@
  * act on it, which could be never.
  *
  * UNDERPAID (part of the money arrived, never settled):
- *   After the owner's TTL (`underpaid_auto_resolve_hours`, default 72 h, "0"
- *   turns it off) a PRODUCT order is resolved through the existing admin
+ *   Once the owner sets a limit (`underpaid_auto_resolve_hours`, OFF by
+ *   default — "0" or blank; 72 h is the suggested value), a PRODUCT order
+ *   older than it is resolved through the existing admin
  *   resolution `refundUnderpaidOrderTx`: the amount a rail recorded as
  *   received goes to the buyer's balance in the order's own currency, every
  *   hold is released, a Refund record is written and the order becomes
@@ -51,9 +52,13 @@ import { resolveAdminIds } from "./admins";
 import { enqueueTransactionReviewAlert } from "./notifications";
 
 /** Settings key: hours an UNDERPAID product order may wait before the sweep
- * refunds what arrived to the buyer's wallet. Blank or "0" = never. */
+ * refunds what arrived to the buyer's wallet. Blank or "0" = never.
+ *
+ * OFF by default: switching it on for the first time refunds the whole
+ * existing UNDERPAID backlog older than the limit, which is the owner's call
+ * to make (72 is a sensible value once they do), never a deploy side effect. */
 export const UNDERPAID_AUTO_RESOLVE_HOURS_KEY = "underpaid_auto_resolve_hours";
-export const DEFAULT_UNDERPAID_AUTO_RESOLVE_HOURS = "72";
+export const DEFAULT_UNDERPAID_AUTO_RESOLVE_HOURS = "0";
 
 /** Settings key: hours a FAILED order may sit before the admins are alerted
  * (once). Blank or "0" = no alert. */
@@ -75,15 +80,26 @@ const FAILED_INCIDENT = "failed_aging";
 async function readHoursSetting(db: Db, key: string, fallback: string): Promise<number | null> {
   const raw = (await getSetting(db, key)) ?? fallback;
   const trimmed = raw.trim();
-  if (trimmed === "" || trimmed === "0") return null;
+  if (trimmed === "") return null;
   if (!/^\d+$/.test(trimmed)) {
-    logger.warn(
-      `The setting ${key} holds "${trimmed.slice(0, 20)}", which is not a whole number of hours, so the aged-order sweep treats it as switched off until an admin fixes it.`,
-    );
+    // Once per process and value: the sweep runs every ten minutes, and the
+    // same unchanged typo is not news the second time.
+    const warnKey = `${key}=${trimmed.slice(0, 20)}`;
+    if (!warnedInvalidSettings.has(warnKey)) {
+      warnedInvalidSettings.add(warnKey);
+      logger.warn(
+        `The setting ${key} holds "${trimmed.slice(0, 20)}", which is not a whole number of hours, so the aged-order sweep treats it as switched off until an admin fixes it.`,
+      );
+    }
     return null;
   }
-  return Number(trimmed);
+  // "0", "00", … all mean off — never "act immediately".
+  const hours = Number(trimmed);
+  return hours > 0 ? hours : null;
 }
+
+/** Invalid setting values already warned about by this process. */
+const warnedInvalidSettings = new Set<string>();
 
 export function getUnderpaidAutoResolveHours(db: Db): Promise<number | null> {
   return readHoursSetting(db, UNDERPAID_AUTO_RESOLVE_HOURS_KEY, DEFAULT_UNDERPAID_AUTO_RESOLVE_HOURS);
@@ -224,19 +240,31 @@ export async function sweepAgedUnderpaidAndFailedOrders(
       take: SWEEP_BATCH,
     });
     for (const candidate of candidates) {
+      let outcome: UnderpaidAutoResolveOutcome;
       try {
-        const outcome = await autoResolveExpiredUnderpaidOrder(db, candidate.id, { now, ttlHours: underpaidTtl });
-        if (outcome.kind === "resolved") {
-          summary.underpaidResolved++;
-          logger.info(
-            `Underpaid order ${outcome.orderCode} passed the ${underpaidTtl}-hour limit, so the ${outcome.refunded.toString()} ${outcome.currency} that arrived was refunded to the buyer's balance and its stock, voucher and wallet credit were released.`,
-          );
-        } else if (outcome.kind === "needs_admin") {
-          summary.underpaidNeedsAdmin++;
-          if (!hasAdmins) {
-            unalertable++;
-            continue;
-          }
+        outcome = await autoResolveExpiredUnderpaidOrder(db, candidate.id, { now, ttlHours: underpaidTtl });
+      } catch (err) {
+        summary.underpaidErrored++;
+        logger.error(
+          { err, orderId: candidate.id },
+          `Could not resolve aged underpaid order ${candidate.orderCode}; nothing was changed and the next sweep will try again.`,
+        );
+        continue;
+      }
+      if (outcome.kind === "resolved") {
+        summary.underpaidResolved++;
+        logger.info(
+          `Underpaid order ${outcome.orderCode} passed the ${underpaidTtl}-hour limit, so the ${outcome.refunded.toString()} ${outcome.currency} that arrived was refunded to the buyer's balance and its stock, voucher and wallet credit were released.`,
+        );
+      } else if (outcome.kind === "needs_admin") {
+        summary.underpaidNeedsAdmin++;
+        if (!hasAdmins) {
+          unalertable++;
+          continue;
+        }
+        // The order itself was not touched; a failed alert is only retried,
+        // never counted as a failed resolution.
+        try {
           await enqueueTransactionReviewAlert(db, {
             orderId: candidate.id,
             orderCode: outcome.orderCode,
@@ -246,13 +274,12 @@ export async function sweepAgedUnderpaidAndFailedOrders(
           logger.warn(
             `Underpaid order ${outcome.orderCode} passed the ${underpaidTtl}-hour limit but was left for an admin because ${NEEDS_ADMIN_TEXT[outcome.reason]}; the admins were alerted once.`,
           );
+        } catch (err) {
+          logger.error(
+            { err, orderId: candidate.id },
+            `Could not queue the admin alert for aged underpaid order ${outcome.orderCode}; the order was left unchanged and the next sweep will try the alert again.`,
+          );
         }
-      } catch (err) {
-        summary.underpaidErrored++;
-        logger.error(
-          { err, orderId: candidate.id },
-          `Could not resolve aged underpaid order ${candidate.orderCode}; nothing was changed and the next sweep will try again.`,
-        );
       }
     }
   }
@@ -285,8 +312,9 @@ export async function sweepAgedUnderpaidAndFailedOrders(
         }
       }
       if (summary.failedAlerted > 0) {
+        const n = summary.failedAlerted;
         logger.warn(
-          `${summary.failedAlerted} failed orders have waited more than ${failedHours} hours without an admin resolving them; the admins were alerted once for each.`,
+          `${n} failed ${n === 1 ? "order has" : "orders have"} waited more than ${failedHours} hours without an admin resolving ${n === 1 ? "it" : "them"}; the admins were alerted once for ${n === 1 ? "it" : "each"}.`,
         );
       }
     }
@@ -294,7 +322,7 @@ export async function sweepAgedUnderpaidAndFailedOrders(
 
   if (unalertable > 0) {
     logger.warn(
-      `${unalertable} aged underpaid or failed orders need an admin, but no admin account is configured to alert, so they stay as they are until someone resolves them from the admin panel.`,
+      `${unalertable} aged underpaid or failed ${unalertable === 1 ? "order needs" : "orders need"} an admin, but no admin account is configured to alert, so ${unalertable === 1 ? "it stays" : "they stay"} as ${unalertable === 1 ? "it is" : "they are"} until someone resolves ${unalertable === 1 ? "it" : "them"} from the admin panel.`,
     );
   }
   return summary;

@@ -27,6 +27,8 @@ import {
   setEncryptedSetting,
   listServiceStates,
   DIGIFLAZZ_WEBHOOK_SECRET_KEY,
+  UNDERPAID_AUTO_RESOLVE_HOURS_KEY,
+  FAILED_ORDER_ALERT_HOURS_KEY,
 } from "@app/db";
 import { CUSTOMER_SERVICES, SERVICE_CHANNELS, type ServiceChannel } from "@app/core/services";
 import { CredentialKeyConfigError } from "@app/core/credentialCrypto";
@@ -90,6 +92,10 @@ const EDITABLE: Record<string, string> = {
   // both already read an unusable value as "this check is off".
   fx_quote_ttl_minutes: "Stop offering USDT checkout if the rate is older than (minutes)",
   min_order_amount_idr: "Shop-wide minimum order total (IDR)",
+  // Backend audit A4 (crud/underpaidExpiry.ts). Whole hours, validated below;
+  // 0 or blank switches each off. Auto-refund is OFF until the owner sets it.
+  [UNDERPAID_AUTO_RESOLVE_HOURS_KEY]: "Auto-refund underpaid orders to the buyer's balance after (hours, 0 = off)",
+  [FAILED_ORDER_ALERT_HOURS_KEY]: "Alert admins about failed orders still unresolved after (hours, 0 = off)",
   tokopay_merchant_id: "TokoPay merchant ID",
   tokopay_secret: "TokoPay secret key",
   tokopay_enabled: "TokoPay enabled",
@@ -546,6 +552,15 @@ async function applyFieldEdit(
   if (key === "bybit_bsc_required_confirmations" && value !== "") {
     const n = Number(value);
     if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) throw new FieldEditError(400, "Required confirmations must be a positive whole number.");
+  }
+
+  // A non-negative whole number of hours. Stored canonically ("072" -> "72")
+  // so the audit line and the sweep read the same figure.
+  if ((key === UNDERPAID_AUTO_RESOLVE_HOURS_KEY || key === FAILED_ORDER_ALERT_HOURS_KEY) && value !== "") {
+    if (!/^\d{1,6}$/.test(value)) {
+      throw new FieldEditError(400, "Enter a whole number of hours, like 72, or 0 to turn it off.");
+    }
+    value = String(Number(value));
   }
 
   if (key === "smtp_port" && value !== "") {

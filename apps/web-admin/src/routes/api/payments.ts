@@ -347,7 +347,9 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
             : "Marked an underpaid order refunded, but returned nothing to the buyer's wallet because no payment record shows how much they actually sent. Refund them by hand if they really did pay.",
         });
         return refunded;
-      });
+        // Same budget as refundUnderpaidOrder: the refund now also releases
+        // stock, wallet credit and voucher inside this transaction.
+      }, { timeout: 15000 });
     } catch (e) {
       if (e instanceof ValidationError) return respond(422, errorBody(e));
       throw e;

@@ -8794,6 +8794,15 @@ describe("setup wizard — step 2/3/finish", () => {
     expect(isAdmin(CORRECTED_TG)).toBe(true);
     expect(isAdmin(OWNER_TG)).toBe(true);
     expect(await getSetting(prisma, "setup_owner_tg")).toBe(String(CORRECTED_TG));
+    // The old credential is retracted even though the first id stays an env
+    // admin: the wizard wrote that password for the mistyped id moments ago,
+    // so leaving it would keep a login nobody meant to create. Only the
+    // corrected id can log in with a wizard-set password now.
+    __clearSettingsCacheForTests(prisma);
+    expect(await getSetting(prisma, passwordHashKey(OWNER_TG))).toBeNull();
+    const correctedHash = await getSetting(prisma, passwordHashKey(CORRECTED_TG));
+    expect(correctedHash).not.toBeNull();
+    expect(verifyPassword("supersecret2", correctedHash!)).toBe(true);
 
     // The critical assertion: the retry did NOT reset the clock. The
     // timestamp is still the backdated value from round 1, not "now".

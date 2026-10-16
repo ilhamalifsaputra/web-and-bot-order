@@ -40,6 +40,7 @@ import {
   getSetting,
   setSetting,
   deleteSetting,
+  invalidateSettingCache,
   getUserByTelegramId,
   addAdminIdToDb,
   removeAdminIdFromDb,
@@ -193,26 +194,35 @@ export default async function setupRoutes(app: FastifyInstance): Promise<void> {
     // password), not a brand-new attacker session. Replace the pending owner
     // in place instead of minting a second admin, and (below) never rewrite
     // OWNER_TG_SET_AT_KEY on a re-POST, so repeated calls can't slide the
-    // 30-minute window forward. Env-configured admins (config.ADMIN_IDS) are
-    // never demoted here — same rule ../routes/api/admins.ts enforces for its
-    // own remove endpoint — this only ever retracts an id the wizard itself
-    // granted moments earlier.
+    // 30-minute window forward.
+    //
+    // A retry with a DIFFERENT id always retracts the password this wizard run
+    // wrote for the previous id (OWNER_TG_KEY is only set after that write,
+    // and checkSetupLock locks the wizard if any admin already had a password
+    // before it started, so that hash is the wizard's own). The previous id's
+    // admin STATUS is retracted only when the wizard granted it: env-configured
+    // admins (config.ADMIN_IDS) are never demoted here — same rule
+    // ../routes/api/admins.ts enforces for its own remove endpoint.
     const previousOwnerRaw = await getSetting(prisma, OWNER_TG_KEY);
     const previousOwnerTg = previousOwnerRaw !== null ? Number(previousOwnerRaw) : null;
     const isFirstAttempt = previousOwnerTg === null;
-    const shouldReplacePrevious =
-      previousOwnerTg !== null && previousOwnerTg !== telegramId && !config.ADMIN_IDS.includes(previousOwnerTg);
+    const shouldRetractPreviousCredential = previousOwnerTg !== null && previousOwnerTg !== telegramId;
+    const shouldReplacePrevious = shouldRetractPreviousCredential && !config.ADMIN_IDS.includes(previousOwnerTg!);
 
     // Make the id an admin in the runtime FIRST so upsertUser resolves role=ADMIN,
     // then persist everything in one short transaction.
     addAdminId(telegramId); // runtime first so upsertUser resolves role=ADMIN
     try {
       await prisma.$transaction(async (tx) => {
+        if (shouldRetractPreviousCredential) {
+          // The mistyped id must not keep a login the operator never meant to
+          // create, even when it stays an (env) admin.
+          await deleteSetting(tx, passwordHashKey(previousOwnerTg!));
+        }
         if (shouldReplacePrevious) {
           // Retract the previous attempt's admin grant so a corrected retry
           // (different Telegram ID) doesn't leave a second admin behind.
           await removeAdminIdFromDb(tx, previousOwnerTg!);
-          await deleteSetting(tx, passwordHashKey(previousOwnerTg!));
         }
         await addAdminIdToDb(tx, telegramId);
         await upsertUser(tx, { telegramId, username, fullName: null });
@@ -224,6 +234,9 @@ export default async function setupRoutes(app: FastifyInstance): Promise<void> {
       setAdminIds(await resolveAdminIds(prisma));
       throw err;
     }
+    // The delete ran on the transaction's client; drop the request client's
+    // cached copy too, so a login straight after cannot read the old hash.
+    if (shouldRetractPreviousCredential) invalidateSettingCache(prisma, [passwordHashKey(previousOwnerTg!)]);
     if (shouldReplacePrevious) removeAdminId(previousOwnerTg!);
     await setSetting(prisma, OWNER_TG_KEY, String(telegramId));
     if (isFirstAttempt) {

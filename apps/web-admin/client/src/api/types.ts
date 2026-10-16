@@ -74,6 +74,10 @@ export interface OperationsSummary {
    * (status PROCESSING). Distinct from `ordersProcessing`, which counts the
    * unrelated legacy CONFIRMED/PAID payment-gateway metric. */
   awaitingFulfillment: number;
+  /** Paid Digiflazz orders unresolved at the supplier: no final answer after
+   * their first 24 hours of checks. Not part of `awaitingFulfillment`; an admin
+   * has to reconcile each one with Digiflazz. */
+  digiflazzUnresolved: number;
 }
 
 export interface InventoryRow {

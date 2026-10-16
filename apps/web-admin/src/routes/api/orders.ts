@@ -288,7 +288,14 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
     const unresolvedAtSupplier =
       order.status === OrderStatus.PROCESSING && order.digiflazzStatus === DIGIFLAZZ_STATUS_UNRESOLVED;
     return reply.send({
-      order: { ...masked, createdAtDisplay: displayDateTime(order.createdAt) },
+      // The next automatic Digiflazz check, in the shop TIMEZONE, for the
+      // unresolved-at-supplier banner; the browser cannot localize it itself
+      // without the server's TIMEZONE setting.
+      order: {
+        ...masked,
+        createdAtDisplay: displayDateTime(order.createdAt),
+        digiflazzNextRecheckAtDisplay: displayDateTime(order.digiflazzNextRecheckAt),
+      },
       hasDeliveredContent,
       money: serializeMoneyView(orderMoneyView(order)),
       // isDelivered/canAct/canCredit/canFulfill/canReject/canResend/

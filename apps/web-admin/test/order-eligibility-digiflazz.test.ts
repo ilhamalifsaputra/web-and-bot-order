@@ -182,6 +182,16 @@ describe("unresolved at the supplier: mark delivered, check now, reject, list fi
     expect(await detail(manual.id)).toMatchObject({ canMarkSupplierDelivered: false, canRecheckSupplier: false, canReject: true });
   });
 
+  it("sends the next automatic check in the shop timezone for the unresolved banner, and null when none is scheduled", async () => {
+    const next = new Date("2026-10-16T05:30:00.000Z");
+    const scheduled = await makeOrder({ fulfillmentProvider: "DIGIFLAZZ", digiflazzStatus: "unresolved_at_supplier", digiflazzDispatchedAt: new Date(Date.now() - 3 * 24 * 3_600_000), digiflazzNextRecheckAt: next });
+    const none = await makeOrder({ fulfillmentProvider: "DIGIFLAZZ", digiflazzStatus: "unresolved_at_supplier", digiflazzDispatchedAt: new Date(Date.now() - 3 * 24 * 3_600_000), digiflazzNextRecheckAt: null });
+
+    const { displayDateTime } = await import("../src/dateDisplay");
+    expect(((await detail(scheduled.id)).order as Record<string, unknown>).digiflazzNextRecheckAtDisplay).toBe(displayDateTime(next));
+    expect(((await detail(none.id)).order as Record<string, unknown>).digiflazzNextRecheckAtDisplay).toBeNull();
+  });
+
   it("Reject is refused server-side for an order unresolved at the supplier", async () => {
     const unresolved = await makeOrder({ fulfillmentProvider: "DIGIFLAZZ", digiflazzStatus: "unresolved_at_supplier", digiflazzDispatchedAt: new Date(Date.now() - 3 * 24 * 3_600_000) });
     const res = await post(`/api/orders/${unresolved.id}/reject`, { reason: "buyer asked" });

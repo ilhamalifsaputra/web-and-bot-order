@@ -25,11 +25,12 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Eye, MoreVertical, RefreshCw, Send, ShoppingCart, XCircle } from "lucide-react";
+import { Check, Eye, MoreVertical, RefreshCw, Send, ShoppingCart, X, XCircle } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { apiGet, apiPost } from "../api/client";
+import { UnresolvedAtSupplierBadge } from "../components/orders/UnresolvedAtSupplierBadge";
 import { formatCurrencyParts } from "../components/shared/CurrencyAmount.helpers";
 import { DataTable } from "../components/shared/DataTable";
 import { DateInput } from "../components/shared/DateInput";
@@ -43,7 +44,7 @@ import { PaymentMethodBadge } from "../components/shared/PaymentMethodBadge";
 import { SearchBar } from "../components/shared/SearchBar";
 import { useOrdersKpis } from "../hooks/useOrdersKpis";
 import { describeError } from "../lib/errorMessages";
-import { orderStatusLabel } from "../lib/orderStatus";
+import { DIGIFLAZZ_UNRESOLVED, orderStatusLabel } from "../lib/orderStatus";
 import { PAYMENT_METHOD_LABELS, paymentMethodLabel } from "../lib/paymentMethod";
 import { visibleSelection } from "../lib/selection";
 import { OrdersKpiRow } from "./orders/OrdersKpiRow";
@@ -92,6 +93,10 @@ interface OrderRow {
     guestEmail: string | null;
   } | null;
   items: OrderItemRow[];
+  /** Digiflazz's own sub-status (null for any order not routed there). The
+   * list marks `unresolved_at_supplier` beside the status badge. `optional`
+   * only because older cached/mocked rows predate the field. */
+  digiflazzStatus?: string | null;
   eligibility: OrderEligibility;
 }
 
@@ -109,8 +114,17 @@ interface BulkActionResult {
   failed: { id: number; error: string }[];
 }
 
+/** The one narrowing the list accepts beyond status: orders unresolved at
+ * Digiflazz (`?digiflazz=unresolved`, the Operation Center card's link). */
+type DigiflazzFilter = "" | "unresolved";
+
+function digiflazzFilterFrom(value: string | null): DigiflazzFilter {
+  return value === "unresolved" ? "unresolved" : "";
+}
+
 interface Filters {
   status: string;
+  digiflazz: DigiflazzFilter;
   paymentMethod: string;
   q: string;
   since: string;
@@ -134,6 +148,7 @@ function useOrders(filters: Filters) {
     queryFn: async () => {
       const params = new URLSearchParams();
       if (filters.status) params.set("status", filters.status);
+      if (filters.digiflazz) params.set("digiflazz", filters.digiflazz);
       if (filters.paymentMethod) params.set("paymentMethod", filters.paymentMethod);
       if (filters.q) params.set("q", filters.q);
       if (filters.since) params.set("since", filters.since);
@@ -156,6 +171,7 @@ export function OrdersPage() {
   // Lets other pages (e.g. Support's "Order History" row action) deep-link
   // straight into a pre-filtered Orders search via /orders?q=<term>.
   const initialQ = searchParams.get("q") ?? "";
+  const initialDigiflazz = digiflazzFilterFrom(searchParams.get("digiflazz"));
 
   // `draft.status` is the granular single-status Select (still useful for
   // narrowing WITHIN a tab, e.g. tab=Awaiting + Select=UNDERPAID). When it
@@ -167,6 +183,7 @@ export function OrdersPage() {
   const [draft, setDraft] = useState({ status: initialStatus, paymentMethod: "", q: initialQ, since: "", until: "" });
   const [filters, setFilters] = useState<Filters>({
     status: initialStatus,
+    digiflazz: initialDigiflazz,
     paymentMethod: "",
     q: initialQ,
     since: "",
@@ -284,7 +301,8 @@ export function OrdersPage() {
     setActiveTab(tab);
     setDraft((d) => ({ ...d, status: "" })); // clear the granular override so the tab's bucket is what's shown
     const status = statusesForTab(tab);
-    setFilters((f) => ({ ...f, status, page: 1 }));
+    // A tab is a fresh view, so it drops the unresolved-at-supplier narrowing.
+    setFilters((f) => ({ ...f, status, digiflazz: "", page: 1 }));
     setSearchParams(status ? { status } : {});
   }
 
@@ -299,17 +317,22 @@ export function OrdersPage() {
       until: draft.until,
       page: 1,
     }));
-    setSearchParams(status ? { status } : {});
+    setSearchParams(listSearchParams(status, filters.digiflazz));
+  }
+
+  function clearDigiflazzFilter() {
+    setFilters((f) => ({ ...f, digiflazz: "", page: 1 }));
+    setSearchParams(listSearchParams(filters.status, ""));
   }
 
   function clearFilters() {
     setActiveTab("all");
     setDraft({ status: "", paymentMethod: "", q: "", since: "", until: "" });
-    setFilters({ status: "", paymentMethod: "", q: "", since: "", until: "", page: 1, pageSize: 20 });
+    setFilters({ status: "", digiflazz: "", paymentMethod: "", q: "", since: "", until: "", page: 1, pageSize: 20 });
     setSearchParams({});
   }
 
-  const hasActiveFilter = Boolean(filters.status || filters.paymentMethod || filters.q || filters.since || filters.until);
+  const hasActiveFilter = Boolean(filters.status || filters.digiflazz || filters.paymentMethod || filters.q || filters.since || filters.until);
 
   const { exportParams } = buildOrderExportParams({ filters });
 
@@ -384,6 +407,22 @@ export function OrdersPage() {
       <OrderStatusTabs active={activeTab} onChange={selectTab} />
 
       <OrdersFilters applyFilters={applyFilters} clearFilters={clearFilters} draft={draft} setDraft={setDraft} fieldId={fieldId} statuses={statuses} />
+
+      {filters.digiflazz === "unresolved" && (
+        <div className="mb-4 flex flex-wrap items-center gap-2 text-sm">
+          <span className="inline-flex items-center gap-1 rounded-full border border-line bg-card py-0.5 pr-1 pl-3 text-ink">
+            Only orders unresolved at the supplier
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label="Show all orders, not only unresolved ones"
+              onClick={clearDigiflazzFilter}
+            >
+              <X className="h-3.5 w-3.5" />
+            </Button>
+          </span>
+        </div>
+      )}
 
       <OrdersBulkActions visibleSelected={visibleSelected} bulkMutation={bulkMutation} runBulk={runBulk} cancelMutation={cancelMutation} eligibleSelectedIds={eligibleSelectedIds} openCancelDialog={openCancelDialog} setSelected={setSelected} />
 
@@ -603,7 +642,15 @@ function OrdersSelectAllOrdersOnThis({ allOnPageSelected, toggleSelectAllOnPage,
           {
             key: "status",
             header: "Status",
-            render: (row) => <OrderStatusBadge status={row.status} />,
+            render: (row) =>
+              row.digiflazzStatus === DIGIFLAZZ_UNRESOLVED ? (
+                <span className="flex flex-wrap items-center gap-1">
+                  <OrderStatusBadge status={row.status} />
+                  <UnresolvedAtSupplierBadge />
+                </span>
+              ) : (
+                <OrderStatusBadge status={row.status} />
+              ),
           },
           {
             key: "total",
@@ -796,6 +843,8 @@ function buildOrderExportParams({ filters }: {
 
   if (filters.status) exportParams.set("status", filters.status);
 
+  if (filters.digiflazz) exportParams.set("digiflazz", filters.digiflazz);
+
   if (filters.paymentMethod) exportParams.set("paymentMethod", filters.paymentMethod);
 
   if (filters.q) exportParams.set("q", filters.q);
@@ -804,4 +853,13 @@ function buildOrderExportParams({ filters }: {
 
   if (filters.until) exportParams.set("until", filters.until);
   return { exportParams };
+}
+
+/** The list's URL: the status filter, plus the unresolved-at-supplier
+ * narrowing when it is on, so a reload or a shared link keeps both. */
+function listSearchParams(status: string, digiflazz: DigiflazzFilter): Record<string, string> {
+  const params: Record<string, string> = {};
+  if (status) params.status = status;
+  if (digiflazz) params.digiflazz = digiflazz;
+  return params;
 }

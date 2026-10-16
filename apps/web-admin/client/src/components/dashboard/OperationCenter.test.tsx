@@ -18,7 +18,7 @@ function renderWith(ops: unknown) {
 }
 
 describe("OperationCenter", () => {
-  it("renders all six operation cards with their counts as links", async () => {
+  it("renders the operation cards with their counts as links", async () => {
     renderWith({
       pendingPayments: 4,
       manualReviews: 2,
@@ -26,6 +26,7 @@ describe("OperationCenter", () => {
       ordersProcessing: 3,
       expiredPayments: 0,
       awaitingFulfillment: 5,
+      digiflazzUnresolved: 0,
     });
     await waitFor(() => expect(screen.getByText("Pending Payments")).toBeInTheDocument());
     expect(screen.getByText("Manual Reviews")).toBeInTheDocument();
@@ -55,5 +56,28 @@ describe("OperationCenter", () => {
     // counter leaves out, so the card explains what the number counts.
     expect(awaitingFulfillmentLink).toHaveAttribute("title", expect.stringMatching(/manual hand-off/i));
     expect(awaitingFulfillmentLink).toHaveAttribute("title", expect.stringMatching(/provider/i));
+  });
+
+  // Audit A5 follow-up: paid orders Digiflazz never gave a final answer on. Money
+  // is at risk until an admin reconciles them, so the card escalates to red.
+  it("shows the Unresolved at supplier card, linking to exactly those orders, red when any are waiting", async () => {
+    const { container } = renderWith({
+      pendingPayments: 0,
+      manualReviews: 0,
+      failedDeliveries: 0,
+      ordersProcessing: 0,
+      expiredPayments: 0,
+      awaitingFulfillment: 0,
+      digiflazzUnresolved: 2,
+    });
+    await waitFor(() => expect(screen.getByText("Unresolved at supplier")).toBeInTheDocument());
+    const link = screen.getByText("Unresolved at supplier").closest("a") as HTMLElement;
+    expect(link).toHaveAttribute("href", "/orders?status=PROCESSING&digiflazz=unresolved");
+    expect(link).toHaveTextContent("2");
+    expect(link).toHaveAttribute("title", expect.stringMatching(/reconcile/i));
+    // UrgencyDot's critical level is the rust dot.
+    expect(link.querySelector(".bg-rust")).not.toBeNull();
+    // Six counter links plus "Manage Tasks".
+    expect(container.querySelectorAll("a").length).toBe(7);
   });
 });

@@ -6,6 +6,7 @@ import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { OrderDetailPage } from "./OrderDetailPage";
 import { apiPost } from "../api/client";
+import { Toaster } from "@/components/ui/sonner";
 
 // Task 2 (fetch → shared Application Client): OrderDetailPage's useOrderDetail
 // now calls apiGet(...) instead of raw fetch(), so the mocked module needs an
@@ -1201,5 +1202,287 @@ describe("OrderDetailPage — credential reveal", () => {
     render(<OrderDetailPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("CapCut Pro 1M")).toBeInTheDocument());
     expect(screen.queryByRole("button", { name: /show delivered/i })).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * Audit A5 follow-up: an order unresolved at Digiflazz (no final answer after
+ * its first 24 hours of checks). The page explains the state in a banner and
+ * offers the three ways out the server allows: check now, mark delivered,
+ * mark failed.
+ */
+describe("OrderDetailPage — unresolved at the supplier", () => {
+  const UNRESOLVED_DATA = {
+    ...ORDER_DETAIL_DATA,
+    order: {
+      ...ORDER_DETAIL_DATA.order,
+      status: "PROCESSING",
+      digiflazzStatus: "unresolved_at_supplier",
+      digiflazzAttempts: 30,
+      digiflazzNextRecheckAt: "2026-10-16T05:30:00.000Z",
+      digiflazzNextRecheckAtDisplay: "2026-10-16 12:30",
+      digiflazzFailureDetail: "Unresolved at Digiflazz: no final status after 24 hours of checks.",
+    },
+    canAct: false,
+    canCredit: false,
+    canCreditCancelled: false,
+    canFulfill: false,
+    canReject: false,
+    creditLockedBySupplier: true,
+    canMarkSupplierFailed: true,
+    canMarkSupplierDelivered: true,
+    canRecheckSupplier: true,
+  };
+
+  function json(body: unknown) {
+    return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+  }
+
+  function ToastWrapper({ children }: { children: React.ReactNode }) {
+    return (
+      <Wrapper>
+        {children}
+        <Toaster />
+      </Wrapper>
+    );
+  }
+
+  async function renderUnresolved(body: unknown = UNRESOLVED_DATA) {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => json(body));
+    render(<OrderDetailPage />, { wrapper: ToastWrapper });
+    await waitFor(() => expect(screen.getByText("CapCut Pro 1M")).toBeInTheDocument());
+    return fetchSpy;
+  }
+
+  it("explains the state in a banner with the next check, plus an amber badge, and drops the generic credit-lock hint", async () => {
+    await renderUnresolved();
+    const banner = screen.getByRole("alert");
+    expect(within(banner).getByText("Waiting for Digiflazz's final answer.")).toBeInTheDocument();
+    expect(within(banner).getByText(/We re-check automatically every 6 hours \(next check: 2026-10-16 12:30\)\./)).toBeInTheDocument();
+    expect(
+      within(banner).getByText(/Don't refund, credit or fulfil by hand until you have confirmed the result with Digiflazz\./),
+    ).toBeInTheDocument();
+    expect(within(banner).getByText("Unresolved at Digiflazz: no final status after 24 hours of checks.")).toBeInTheDocument();
+    expect(screen.getByText("Unresolved at supplier")).toBeInTheDocument();
+    expect(screen.queryByText(/credit to balance is locked until its status is final/i)).not.toBeInTheDocument();
+    // canReject is false for an order in flight at the supplier.
+    expect(screen.queryByRole("button", { name: /^reject$/i })).not.toBeInTheDocument();
+  });
+
+  it("says no further automatic check is scheduled when there is none", async () => {
+    await renderUnresolved({
+      ...UNRESOLVED_DATA,
+      order: { ...UNRESOLVED_DATA.order, digiflazzNextRecheckAt: null, digiflazzNextRecheckAtDisplay: null },
+    });
+    expect(screen.getByText(/Automatic checks have ended, so no further check is scheduled\./)).toBeInTheDocument();
+    expect(screen.queryByText(/next check:/)).not.toBeInTheDocument();
+  });
+
+  it("offers the three actions in order: check now, mark delivered, mark failed", async () => {
+    await renderUnresolved();
+    const actions = screen.getByRole("button", { name: "Check supplier now" }).closest("[data-slot='card-content']") as HTMLElement;
+    const names = within(actions).getAllByRole("button").map((b) => b.textContent?.trim());
+    expect(names).toEqual(["Check supplier now", "Mark delivered", "Mark failed"]);
+  });
+
+  it("shows each action only with its own flag", async () => {
+    await renderUnresolved({ ...UNRESOLVED_DATA, canMarkSupplierDelivered: false, canMarkSupplierFailed: false });
+    expect(screen.getByRole("button", { name: "Check supplier now" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Mark delivered" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Mark failed" })).not.toBeInTheDocument();
+  });
+
+  it("shows no banner, badge or supplier actions while the order is still pending at the supplier", async () => {
+    await renderUnresolved({
+      ...UNRESOLVED_DATA,
+      order: { ...UNRESOLVED_DATA.order, digiflazzStatus: "pending_at_supplier", digiflazzAttempts: 2 },
+      canMarkSupplierFailed: false,
+      canMarkSupplierDelivered: false,
+      canRecheckSupplier: false,
+    });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByText("Unresolved at supplier")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Check supplier now" })).not.toBeInTheDocument();
+    // The generic in-flight hint stays for this state.
+    expect(screen.getByText(/waiting for the supplier's result/i)).toBeInTheDocument();
+  });
+
+  it("leaves a Premium Apps manual order awaiting fulfilment unchanged", async () => {
+    await renderUnresolved({
+      ...ORDER_DETAIL_DATA,
+      order: { ...ORDER_DETAIL_DATA.order, status: "PROCESSING", digiflazzStatus: null },
+      canAct: false,
+      canCredit: true,
+      canFulfill: true,
+      canReject: true,
+      canCreditCancelled: false,
+    });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByText("Unresolved at supplier")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Check supplier now" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Mark delivered" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /send to buyer/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^reject$/i })).toBeInTheDocument();
+  });
+
+  it.each([
+    ["delivered", "Digiflazz confirmed the top-up was delivered. The order is now marked delivered."],
+    ["failed", "Digiflazz reported the top-up as failed. You can now credit, refund or fulfil the order by hand."],
+    ["still_pending", "Digiflazz still has no final answer. We'll keep checking automatically."],
+    ["busy", "A check just ran — try again in a minute."],
+  ])("Check supplier now posts with no note and toasts the %s outcome", async (outcome, message) => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const fetchSpy = await renderUnresolved();
+    vi.mocked(apiPost).mockResolvedValueOnce({ ok: true, outcome });
+    const before = fetchSpy.mock.calls.length;
+
+    await user.click(screen.getByRole("button", { name: "Check supplier now" }));
+
+    expect(apiPost).toHaveBeenCalledWith("/api/orders/1/digiflazz/recheck", {});
+    expect(await screen.findByText(message)).toBeInTheDocument();
+    // The order is refetched whatever the outcome (the next check time moves too).
+    await waitFor(() => expect(fetchSpy.mock.calls.length).toBeGreaterThan(before));
+  });
+
+  it("shows a refused check as a readable error", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    await renderUnresolved();
+    vi.mocked(apiPost).mockRejectedValueOnce(
+      Object.assign(new Error("error.digiflazz_not_configured"), { errorArgs: { orderCode: "ORD-0001" } }),
+    );
+    await user.click(screen.getByRole("button", { name: "Check supplier now" }));
+    expect(
+      await screen.findByText("Digiflazz is not connected, so order ORD-0001 can't be checked right now. Add the Digiflazz credentials in Settings first."),
+    ).toBeInTheDocument();
+  });
+
+  it("Mark delivered: the note is required, the serial is optional, and both are posted", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    await renderUnresolved();
+    vi.mocked(apiPost).mockResolvedValueOnce({ ok: true });
+
+    await user.click(screen.getByRole("button", { name: "Mark delivered" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      within(dialog).getByText("Use this only after Digiflazz confirmed the top-up was delivered. The order will be marked delivered and no refund is created."),
+    ).toBeInTheDocument();
+    const confirm = within(dialog).getByRole("button", { name: "Mark delivered" });
+    expect(confirm).toBeDisabled();
+
+    await user.type(within(dialog).getByLabelText(/what did digiflazz confirm/i), "   ");
+    expect(confirm).toBeDisabled();
+    await user.type(within(dialog).getByLabelText(/what did digiflazz confirm/i), "CS ticket 4411 says it went through");
+    await user.type(within(dialog).getByLabelText(/serial number or reference/i), "  SN-777  ");
+    expect(confirm).toBeEnabled();
+    await user.click(confirm);
+
+    expect(apiPost).toHaveBeenCalledWith("/api/orders/1/digiflazz/mark-delivered", {
+      note: "CS ticket 4411 says it went through",
+      sn: "SN-777",
+    });
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(await screen.findByText("Order marked delivered.")).toBeInTheDocument();
+  });
+
+  it("Mark delivered without a serial sends only the note", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    await renderUnresolved();
+    vi.mocked(apiPost).mockResolvedValueOnce({ ok: true });
+    await user.click(screen.getByRole("button", { name: "Mark delivered" }));
+    const dialog = await screen.findByRole("dialog");
+    await user.type(within(dialog).getByLabelText(/what did digiflazz confirm/i), "confirmed by CS");
+    await user.click(within(dialog).getByRole("button", { name: "Mark delivered" }));
+    expect(apiPost).toHaveBeenCalledWith("/api/orders/1/digiflazz/mark-delivered", { note: "confirmed by CS" });
+  });
+
+  it("Mark failed: the note is required, the request is posted, and a refusal stays visible in the open dialog", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    await renderUnresolved();
+    vi.mocked(apiPost).mockRejectedValueOnce(
+      Object.assign(new Error("error.digiflazz_check_in_flight"), { errorArgs: { orderCode: "ORD-0001" } }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Mark failed" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      within(dialog).getByText("Use this only after Digiflazz confirmed it was not delivered. You can then credit, refund or fulfil the order by hand."),
+    ).toBeInTheDocument();
+    // Mark failed has no serial field.
+    expect(within(dialog).queryByLabelText(/serial number or reference/i)).not.toBeInTheDocument();
+    const confirm = within(dialog).getByRole("button", { name: "Mark failed" });
+    expect(confirm).toBeDisabled();
+    await user.type(within(dialog).getByLabelText(/what did digiflazz confirm/i), "Digiflazz says Gagal, refunded to our deposit");
+    await user.click(confirm);
+
+    expect(apiPost).toHaveBeenCalledWith("/api/orders/1/digiflazz/mark-failed", {
+      note: "Digiflazz says Gagal, refunded to our deposit",
+    });
+    expect(
+      await within(dialog).findByText("A status check for order ORD-0001 is running with Digiflazz right now. Try again in a minute."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    // The typed note survives, so a retry needs no retyping.
+    expect(within(dialog).getByLabelText(/what did digiflazz confirm/i)).toHaveValue("Digiflazz says Gagal, refunded to our deposit");
+    expect(within(dialog).getByRole("button", { name: "Mark failed" })).toBeEnabled();
+  });
+
+  it("shows the actions without a reload once the stream reports the order entered the unresolved state", async () => {
+    const pending = {
+      ...UNRESOLVED_DATA,
+      order: { ...UNRESOLVED_DATA.order, digiflazzStatus: "pending_at_supplier", digiflazzFailureDetail: null },
+      canMarkSupplierFailed: false,
+      canMarkSupplierDelivered: false,
+      canRecheckSupplier: false,
+    };
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementationOnce(async () => json(pending));
+    render(<OrderDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("CapCut Pro 1M")).toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: "Check supplier now" })).not.toBeInTheDocument();
+
+    fetchSpy.mockImplementation(async () => json(UNRESOLVED_DATA));
+    act(() => {
+      MockEventSource.instances[0].emit({
+        orderStatus: "PROCESSING",
+        digiflazzStatus: "unresolved_at_supplier",
+        digiflazzAttempts: 30,
+        digiflazzNextRecheckAt: "2026-10-16T05:30:00.000Z",
+        digiflazzFailureDetail: "Unresolved at Digiflazz: no final status after 24 hours of checks.",
+        accountDiagnosticNote: null,
+      });
+    });
+
+    expect(await screen.findByRole("button", { name: "Check supplier now" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Mark delivered" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Mark failed" })).toBeInTheDocument();
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("refetches once the stream reports the order left the unresolved state", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementationOnce(async () => json(UNRESOLVED_DATA));
+    render(<OrderDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("CapCut Pro 1M")).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Check supplier now" })).toBeInTheDocument();
+
+    fetchSpy.mockImplementation(async () =>
+      json({
+        ...UNRESOLVED_DATA,
+        order: { ...UNRESOLVED_DATA.order, digiflazzStatus: "pending_at_supplier" },
+        canMarkSupplierFailed: false,
+        canMarkSupplierDelivered: false,
+        canRecheckSupplier: false,
+      }),
+    );
+    act(() => {
+      MockEventSource.instances[0].emit({
+        orderStatus: "PROCESSING",
+        digiflazzStatus: "pending_at_supplier",
+        digiflazzAttempts: 31,
+        digiflazzNextRecheckAt: "2026-10-16T05:30:00.000Z",
+        digiflazzFailureDetail: null,
+        accountDiagnosticNote: null,
+      });
+    });
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Check supplier now" })).not.toBeInTheDocument());
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
 });

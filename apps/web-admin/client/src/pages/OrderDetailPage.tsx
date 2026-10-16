@@ -1,15 +1,18 @@
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, CircleDollarSign, Eye, EyeOff, HandCoins, MailX, RefreshCw, Send, X } from "lucide-react";
+import { Check, CircleCheck, CircleDollarSign, CircleX, Eye, EyeOff, HandCoins, Hourglass, MailX, RefreshCw, Search, Send, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { toast } from "sonner";
 import { apiGet, apiPost } from "../api/client";
 import { OrderUnitsCard, type StockReplacementRow } from "../components/orders/OrderUnitsCard";
+import { SupplierNoteDialog, type SupplierNoteInput } from "../components/orders/SupplierNoteDialog";
+import { UnresolvedAtSupplierBadge } from "../components/orders/UnresolvedAtSupplierBadge";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount.helpers";
 import { EmptyState } from "../components/shared/EmptyState";
@@ -18,6 +21,7 @@ import { PageLayout } from "../components/shared/PageLayout";
 import { StatusBadge } from "../components/shared/StatusBadge";
 import { useSse } from "../hooks/useSse";
 import { describeError } from "../lib/errorMessages";
+import { DIGIFLAZZ_UNRESOLVED } from "../lib/orderStatus";
 
 interface OrderItem {
   id: number;
@@ -79,6 +83,10 @@ interface OrderDetail {
   digiflazzStatus?: string | null;
   digiflazzAttempts?: number;
   digiflazzNextRecheckAt?: string | null;
+  /** `digiflazzNextRecheckAt` in the shop TIMEZONE, formatted by the server
+   * (the browser has no access to that setting). Sent by the detail route
+   * only, so an SSE push that moves the next check refetches it. */
+  digiflazzNextRecheckAtDisplay?: string | null;
   digiflazzFailureDetail?: string | null;
   /** Set automatically when a Digiflazz fulfillment failure gave no specific
    * reason of its own — the result of a fallback KokinPay nickname lookup on
@@ -137,6 +145,14 @@ interface OrderDetailData {
    * latter is how an admin unsticks a paid manual order they can't source).
    * Distinct from canAct: PROCESSING has no "Approve & Deliver" action. */
   canReject: boolean;
+  /** Audit A5: the order is unresolved at Digiflazz (no final answer after its
+   * first 24 hours of checks). Each flag offers one way out: a live check now,
+   * or, after reconciling with Digiflazz, marking it delivered or failed. The
+   * server re-checks the state on every action. `optional` only because older
+   * cached/mocked responses predate the fields. */
+  canRecheckSupplier?: boolean;
+  canMarkSupplierDelivered?: boolean;
+  canMarkSupplierFailed?: boolean;
   /** The SKU's custom-field spec (empty for auto orders and manual orders
    * with no custom fields — nothing to render in that case). */
   customerDataFields: CustomerDataField[];
@@ -197,6 +213,8 @@ function OrderDetailSession({ orderId }: { orderId: string | undefined }) {
   const refresh = () => {
     void qc.invalidateQueries({ queryKey: ["order", orderId] });
     void qc.invalidateQueries({ queryKey: ["orders"] });
+    // The Operation Center counts orders by state (e.g. unresolved at supplier).
+    void qc.invalidateQueries({ queryKey: ["dashboard", "operations"] });
   };
 
   const approve = useMutation({
@@ -372,6 +390,8 @@ function OrderDetailSession({ orderId }: { orderId: string | undefined }) {
 
       {actionError && <p className="mb-4 text-sm text-rust">{actionError}</p>}
 
+      {order.digiflazzStatus === DIGIFLAZZ_UNRESOLVED && <UnresolvedAtSupplierBanner order={order} />}
+
       {/* Order info */}
       <OrderDetailOrderInfo isWalletTopup={isWalletTopup} order={order} isGuestBuyer={isGuestBuyer} buyerName={buyerName} money={money} />
 
@@ -455,7 +475,7 @@ function OrderDetailSession({ orderId }: { orderId: string | undefined }) {
       <OrderDetailDeliveredContent isDelivered={isDelivered} hasDeliveredContent={hasDeliveredContent} revealButton={revealButton} shown={shown} order={order} />
 
       {/* Actions */}
-      <OrderDetailActions canAct={canAct} canCredit={canCredit} canCreditCancelled={canCreditCancelled} canResend={canResend} canFulfill={canFulfill} canReject={canReject} resending={resending} resendDelivery={resendDelivery} approve={approve} rejectReason={rejectReason} setRejectReason={setRejectReason} reject={reject} setActionError={setActionError} creditBalance={creditBalance} data={data} fulfillContent={fulfillContent} setFulfillContent={setFulfillContent} fulfill={fulfill} />
+      <OrderDetailActions orderId={orderId} refresh={refresh} canAct={canAct} canCredit={canCredit} canCreditCancelled={canCreditCancelled} canResend={canResend} canFulfill={canFulfill} canReject={canReject} resending={resending} resendDelivery={resendDelivery} approve={approve} rejectReason={rejectReason} setRejectReason={setRejectReason} reject={reject} setActionError={setActionError} creditBalance={creditBalance} data={data} fulfillContent={fulfillContent} setFulfillContent={setFulfillContent} fulfill={fulfill} />
     </PageLayout>
   );
 }
@@ -623,6 +643,12 @@ function OrderDetailOrderInfoOrderInfo({ isWalletTopup, order, isGuestBuyer, buy
           </Badge>
         </div>
       )}
+      {order.digiflazzStatus === DIGIFLAZZ_UNRESOLVED && (
+        <div className="flex justify-between gap-3">
+          <span className="shrink-0 text-ink-soft">Digiflazz</span>
+          <UnresolvedAtSupplierBadge />
+        </div>
+      )}
       {order.digiflazzStatus === "failed" && (
         <div className="flex flex-col gap-1">
           <div className="flex justify-between">
@@ -662,6 +688,112 @@ function OrderDetailOrderInfoOrderInfo({ isWalletTopup, order, isGuestBuyer, buy
       )}
     </CardContent>
   </Card>);
+}
+
+/** Audit A5: why an order unresolved at Digiflazz is locked, when the next
+ * automatic check runs, and what the admin must not do by hand meanwhile. */
+function UnresolvedAtSupplierBanner({ order }: { order: OrderDetail }) {
+  const nextCheck = order.digiflazzNextRecheckAtDisplay ?? null;
+  return (
+    <Alert className="mb-6 border-amberx/40 bg-amberx-tint text-ink">
+      <Hourglass className="text-amberx" aria-hidden="true" />
+      <AlertTitle>Waiting for Digiflazz's final answer.</AlertTitle>
+      <AlertDescription className="flex flex-col gap-1 text-ink">
+        <p>
+          {nextCheck
+            ? `We re-check automatically every 6 hours (next check: ${nextCheck}).`
+            : "Automatic checks have ended, so no further check is scheduled."}{" "}
+          Don't refund, credit or fulfil by hand until you have confirmed the result with Digiflazz.
+        </p>
+        {order.digiflazzFailureDetail && (
+          <p className="text-xs break-words text-ink-soft">{order.digiflazzFailureDetail}</p>
+        )}
+      </AlertDescription>
+    </Alert>
+  );
+}
+
+/** What the admin is told after "Check supplier now", one sentence per outcome
+ * of POST /api/orders/:id/digiflazz/recheck. */
+type SupplierRecheckOutcome = "delivered" | "failed" | "still_pending" | "busy";
+
+function toastRecheckOutcome(outcome: SupplierRecheckOutcome) {
+  switch (outcome) {
+    case "delivered":
+      toast.success("Digiflazz confirmed the top-up was delivered. The order is now marked delivered.");
+      return;
+    case "failed":
+      toast.warning("Digiflazz reported the top-up as failed. You can now credit, refund or fulfil the order by hand.");
+      return;
+    case "still_pending":
+      toast.info("Digiflazz still has no final answer. We'll keep checking automatically.");
+      return;
+    case "busy":
+      toast.info("A check just ran — try again in a minute.");
+      return;
+  }
+}
+
+/** Audit A5: the three ways out of an order unresolved at Digiflazz, each shown
+ * only with its own server flag, in the order an admin should try them. */
+function SupplierActions({ orderId, data, refresh }: {
+  orderId: string | undefined;
+  data: OrderDetailData;
+  refresh: () => void;
+}) {
+  const qc = useQueryClient();
+  const recheck = useMutation({
+    mutationFn: () =>
+      apiPost<{ ok: true; outcome: SupplierRecheckOutcome }>(`/api/orders/${orderId}/digiflazz/recheck`, {}),
+    onSuccess: (res) => {
+      // Every outcome changes the order: delivered/failed end the state, and
+      // still_pending moves the next automatic check.
+      void qc.invalidateQueries({ queryKey: ["order", orderId] });
+      void qc.invalidateQueries({ queryKey: ["orders"] });
+      void qc.invalidateQueries({ queryKey: ["dashboard", "operations"] });
+      toastRecheckOutcome(res.outcome);
+    },
+    onError: (e: Error) => toast.error(describeError(e)),
+  });
+
+  return (
+    <>
+      {data.canRecheckSupplier && (
+        <Button disabled={recheck.isPending} aria-busy={recheck.isPending} onClick={() => recheck.mutate()}>
+          <Search className="h-4 w-4" />
+          {recheck.isPending ? "Checking…" : "Check supplier now"}
+        </Button>
+      )}
+      {data.canMarkSupplierDelivered && (
+        <SupplierNoteDialog
+          trigger={<Button variant="outline"><CircleCheck className="h-4 w-4 text-grass" />Mark delivered</Button>}
+          title="Mark this order delivered?"
+          helper="Use this only after Digiflazz confirmed the top-up was delivered. The order will be marked delivered and no refund is created."
+          confirmLabel="Mark delivered"
+          withSerial
+          onSubmit={(input: SupplierNoteInput) => apiPost(`/api/orders/${orderId}/digiflazz/mark-delivered`, input)}
+          onSuccess={() => {
+            refresh();
+            toast.success("Order marked delivered.");
+          }}
+        />
+      )}
+      {data.canMarkSupplierFailed && (
+        <SupplierNoteDialog
+          trigger={<Button variant="outline"><CircleX className="h-4 w-4 text-rust" />Mark failed</Button>}
+          title="Mark this order failed?"
+          helper="Use this only after Digiflazz confirmed it was not delivered. You can then credit, refund or fulfil the order by hand."
+          confirmLabel="Mark failed"
+          confirmVariant="destructive"
+          onSubmit={(input: SupplierNoteInput) => apiPost(`/api/orders/${orderId}/digiflazz/mark-failed`, input)}
+          onSuccess={() => {
+            refresh();
+            toast.success("Order marked failed. You can now credit, refund or fulfil it by hand.");
+          }}
+        />
+      )}
+    </>
+  );
 }
 
 function OrderDetailOrderInfoPayment({ money }: {
@@ -707,7 +839,9 @@ function OrderDetailDeliveredContent({ isDelivered, hasDeliveredContent, revealB
   ));
 }
 
-function OrderDetailActions({ canAct, canCredit, canCreditCancelled, canResend, canFulfill, canReject, resending, resendDelivery, approve, rejectReason, setRejectReason, reject, setActionError, creditBalance, data, fulfillContent, setFulfillContent, fulfill }: {
+function OrderDetailActions({ orderId, refresh, canAct, canCredit, canCreditCancelled, canResend, canFulfill, canReject, resending, resendDelivery, approve, rejectReason, setRejectReason, reject, setActionError, creditBalance, data, fulfillContent, setFulfillContent, fulfill }: {
+  orderId: string | undefined;
+  refresh: () => void;
   canAct: boolean;
   canCredit: boolean;
   canCreditCancelled: boolean;
@@ -727,12 +861,16 @@ function OrderDetailActions({ canAct, canCredit, canCreditCancelled, canResend, 
   setFulfillContent: import("react").Dispatch<import("react").SetStateAction<string>>;
   fulfill: import("@tanstack/react-query").UseMutationResult<unknown, Error, void, unknown>;
 }) {
-  return ((canAct || canCredit || canCreditCancelled || canResend || canFulfill || canReject) && (
-    <OrderDetailActionsActions canResend={canResend} resending={resending} resendDelivery={resendDelivery} canAct={canAct} approve={approve} canReject={canReject} rejectReason={rejectReason} setRejectReason={setRejectReason} reject={reject} setActionError={setActionError} canCredit={canCredit} creditBalance={creditBalance} data={data} canCreditCancelled={canCreditCancelled} canFulfill={canFulfill} fulfillContent={fulfillContent} setFulfillContent={setFulfillContent} fulfill={fulfill} />
+  const hasSupplierAction = Boolean(data.canRecheckSupplier || data.canMarkSupplierDelivered || data.canMarkSupplierFailed);
+  // Reject is now refused for every order in flight at Digiflazz, so a pending
+  // order may have no button at all; the card still shows to say why credit is
+  // locked.
+  return ((hasSupplierAction || data.creditLockedBySupplier || canAct || canCredit || canCreditCancelled || canResend || canFulfill || canReject) && (
+    <OrderDetailActionsActions orderId={orderId} refresh={refresh} canResend={canResend} resending={resending} resendDelivery={resendDelivery} canAct={canAct} approve={approve} canReject={canReject} rejectReason={rejectReason} setRejectReason={setRejectReason} reject={reject} setActionError={setActionError} canCredit={canCredit} creditBalance={creditBalance} data={data} canCreditCancelled={canCreditCancelled} canFulfill={canFulfill} fulfillContent={fulfillContent} setFulfillContent={setFulfillContent} fulfill={fulfill} />
   ));
 }
 
-function OrderDetailActionsActions({ canResend, resending, resendDelivery, canAct, approve, canReject, rejectReason, setRejectReason, reject, setActionError, canCredit, creditBalance, data, canCreditCancelled, canFulfill, fulfillContent, setFulfillContent, fulfill }: {
+function OrderDetailActionsActions({ orderId, refresh, canResend, resending, resendDelivery, canAct, approve, canReject, rejectReason, setRejectReason, reject, setActionError, canCredit, creditBalance, data, canCreditCancelled, canFulfill, fulfillContent, setFulfillContent, fulfill }: {
   canResend: boolean;
   resending: boolean;
   resendDelivery: () => Promise<void>;
@@ -751,10 +889,14 @@ function OrderDetailActionsActions({ canResend, resending, resendDelivery, canAc
   fulfillContent: string;
   setFulfillContent: import("react").Dispatch<import("react").SetStateAction<string>>;
   fulfill: import("@tanstack/react-query").UseMutationResult<unknown, Error, void, unknown>;
+  orderId: string | undefined;
+  refresh: () => void;
 }) {
   return (<Card className="mt-6">
     <CardHeader><CardTitle>Actions</CardTitle></CardHeader>
     <CardContent className="flex flex-wrap gap-3">
+      <SupplierActions orderId={orderId} data={data} refresh={refresh} />
+
       {canResend && (
         <ConfirmDialog
           trigger={<Button variant="outline" disabled={resending}><RefreshCw className="h-4 w-4" />{resending ? "Resending…" : "Resend to Telegram"}</Button>}
@@ -790,7 +932,9 @@ function OrderDetailActionsActions({ canResend, resending, resendDelivery, canAc
         />
       )}
 
-      {data.creditLockedBySupplier && (
+      {/* An order unresolved at the supplier has its own banner at the top of
+          the page, which says the same thing in more detail. */}
+      {data.creditLockedBySupplier && data.order.digiflazzStatus !== DIGIFLAZZ_UNRESOLVED && (
         <p className="w-full text-xs text-ink-soft">
           Waiting for the supplier's result — Credit to Balance is locked until its status is final.
         </p>
@@ -859,7 +1003,15 @@ function useOrderProviderStream({ orderId, qc }: {
       // change (credit and hand-fulfil unlock once Digiflazz says `failed`),
       // so it refetches too.
       const failedChanged = (snapshot.digiflazzStatus === "failed") !== (prev.order.digiflazzStatus === "failed");
-      if (snapshot.orderStatus !== prev.order.status || failedChanged) {
+      // Entering or leaving "unresolved at supplier" flips the three supplier
+      // actions (canRecheckSupplier/canMarkSupplier*) the same way, and a new
+      // next-check time while unresolved needs the server's shop-timezone
+      // display string for the banner.
+      const wasUnresolved = prev.order.digiflazzStatus === DIGIFLAZZ_UNRESOLVED;
+      const isUnresolved = snapshot.digiflazzStatus === DIGIFLAZZ_UNRESOLVED;
+      const unresolvedChanged = wasUnresolved !== isUnresolved;
+      const nextCheckMoved = isUnresolved && snapshot.digiflazzNextRecheckAt !== (prev.order.digiflazzNextRecheckAt ?? null);
+      if (snapshot.orderStatus !== prev.order.status || failedChanged || unresolvedChanged || nextCheckMoved) {
         // The order's overall status changed (e.g. a Sukses-driven
         // DELIVERED transition) — canAct/canCredit/canFulfill/canReject/
         // isDelivered are server-computed siblings of order.status, not

@@ -129,3 +129,43 @@ describe("describeError", () => {
     }
   });
 });
+
+// Audit A5 follow-up: the refusals of the three ways out of an order
+// unresolved at Digiflazz (check now, mark delivered, mark failed) and of Reject
+// on an order still in flight there. Every throw site passes `orderCode`.
+describe("describeError — unresolved at the supplier", () => {
+  const withCode = (key: string) => Object.assign(new Error(key), { errorArgs: { orderCode: "ORD-7" } });
+
+  it("maps the two required-note refusals", () => {
+    expect(describeError("error.digiflazz_failure_note_required")).toBe(
+      "Write down what Digiflazz confirmed about this order before marking it as failed.",
+    );
+    expect(describeError("error.digiflazz_delivery_note_required")).toBe(
+      "Write down what Digiflazz confirmed about this order before marking it as delivered.",
+    );
+  });
+
+  it("maps the state refusals with the order code", () => {
+    expect(describeError(withCode("error.digiflazz_not_unresolved"))).toBe(
+      "This action is only available for order ORD-7 while it is unresolved at Digiflazz. Refresh the page to see the current state.",
+    );
+    expect(describeError(withCode("error.digiflazz_check_in_flight"))).toBe(
+      "A status check for order ORD-7 is running with Digiflazz right now. Try again in a minute.",
+    );
+    expect(describeError(withCode("error.digiflazz_not_configured"))).toBe(
+      "Digiflazz is not connected, so order ORD-7 can't be checked right now. Add the Digiflazz credentials in Settings first.",
+    );
+  });
+
+  it("maps the refusal Mark delivered gets for an order with no usable Digiflazz item", () => {
+    expect(describeError("error.order_not_digiflazz")).toBe(
+      "This order isn't a single-item Digiflazz order, so it can't be delivered through Digiflazz. If Digiflazz confirmed it was not delivered, mark it failed instead; otherwise check its product's supplier code.",
+    );
+  });
+
+  it("says the in-flight lock covers credit and Reject alike", () => {
+    expect(describeError(withCode("error.order_in_flight_at_supplier"))).toBe(
+      "Order ORD-7 is still waiting for the supplier's result, so it can't be credited or rejected until that status is final. Refresh the page to see the current state.",
+    );
+  });
+});

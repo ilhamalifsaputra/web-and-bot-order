@@ -235,6 +235,11 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | "ti
  * until another dispatcher reclaims and re-sends it. A timeout is recorded as
  * an ordinary failed attempt, so the row retries with backoff. */
 const TELEGRAM_SEND_TIMEOUT_MS = 60_000;
+/** Longer bound for the support-reply step, which sends text and then streams
+ * up to three photos/videos (each with its own 90 s storage fetch). Still
+ * safely below STALE_CLAIM_MS (5 min), so a slow big upload is not cut off
+ * and re-sent as a duplicate, yet a truly hung call cannot hold the claim. */
+export const SUPPORT_REPLY_SEND_TIMEOUT_MS = 4 * 60_000;
 let telegramSendTimeoutMs = TELEGRAM_SEND_TIMEOUT_MS;
 /** Test hook: shorten (or, with null, restore) the per-send timeout. */
 export function setTelegramSendTimeoutMsForTests(ms: number | null): void {
@@ -340,6 +345,9 @@ export async function drainBatch(bot: Bot | null, signal?: AbortSignal): Promise
 
   logger.debug(`Draining ${pending.length} pending notification(s)`);
 
+  // Set once an email hits a shop-wide SMTP failure (bad credentials / TLS):
+  // the rest of the tick's email rows are backed off without a login attempt.
+  let smtpBlocked = false;
   for (const fetched of pending) {
     // Already sent by this process, only the SENT write is outstanding — even
     // once its claim goes stale it must not be claimed and sent again.
@@ -365,7 +373,11 @@ export async function drainBatch(bot: Bot | null, signal?: AbortSignal): Promise
     }
 
     if (row.channel === NotificationChannel.EMAIL) {
-      await deliverEmail(row, payload);
+      if (smtpBlocked) {
+        await releaseNotificationClaimWithBackoff(prisma, row.id, new Date(), row.claimedAt);
+        continue;
+      }
+      if ((await deliverEmail(row, payload)) === "smtp_blocked") smtpBlocked = true;
       continue;
     }
     if (!bot) { await releaseNotificationClaim(prisma,row.id,row.claimedAt); continue; }
@@ -774,7 +786,7 @@ async function deliverTicketReplyDm(
   }
   const ticketId = Number(payload.ticket_id);
   // Mirrors conversations/admin.ts's pre-outbox coreT("support.admin_reply", "en", …) exactly.
-  if (payload.message_id) return trySend(bot, row, () => deliverSupportReply(bot, row, payload));
+  if (payload.message_id) return trySend(bot, row, () => deliverSupportReply(bot, row, payload), SUPPORT_REPLY_SEND_TIMEOUT_MS);
   const lang = typeof payload.language === "string" ? payload.language : "en";
   const number = escape(String(payload.ticket_number ?? `#${ticketId}`));
   const text = payload.language ? coreT("helpdesk.reply_notice", lang, { number }) : coreT("support.admin_reply", "en", { message: escape(String(payload.message ?? "")) });
@@ -794,10 +806,10 @@ async function deliverTicketReplyDm(
  * succeeded the row is finished from the buyer's side, whatever happens to
  * the SENT write afterwards (Task B1.1) — see `recordSent`.
  */
-async function trySend(bot: Bot, row: ClaimedRow, send: () => Promise<unknown>): Promise<"ok" | "ratelimited"> {
+async function trySend(bot: Bot, row: ClaimedRow, send: () => Promise<unknown>, limitMs: number = telegramSendTimeoutMs): Promise<"ok" | "ratelimited"> {
   try {
-    const outcome = await withTimeout(send(), telegramSendTimeoutMs);
-    if (outcome === "timeout") throw new Error(`Telegram send timed out after ${telegramSendTimeoutMs} ms`);
+    const outcome = await withTimeout(send(), limitMs);
+    if (outcome === "timeout") throw new Error(`Telegram send timed out after ${limitMs} ms`);
   } catch (e) {
     if (e instanceof GrammyError && e.parameters?.retry_after) {
       logger.warn(`Telegram rate-limited the dispatcher — sleeping ${e.parameters.retry_after}s before retrying, or less if the dispatcher is shutting down`);
@@ -870,7 +882,7 @@ async function recordSent(row: ClaimedRow, via: "Telegram" | "email", payloadJso
  * PENDING when PUBLIC_CHANNEL_ID is unset. Never returns a rate-limit signal
  * — there's no email analogue of Telegram flood control.
  */
-async function deliverEmail(row: ClaimedRow, payload: Record<string, unknown>): Promise<void> {
+async function deliverEmail(row: ClaimedRow, payload: Record<string, unknown>): Promise<"smtp_blocked" | void> {
   try {
     if (!(await isEmailEventEnabled(prisma, canonicalEmailEventFor(row.event)))) {
       await skipRow(row, "SKIPPED_DISABLED", true);
@@ -939,7 +951,7 @@ async function deliverEmail(row: ClaimedRow, payload: Record<string, unknown>): 
   // OWNER_EMAIL_WALLET_TOPUP, and BUYER_EMAIL_ORDER_READY — sendMail's `html`
   // param is optional (Task 2), so passing `undefined` here is a no-op for
   // the plain-text three, unchanged from before this field existed.
-  await trySendEmail(row, () => sendMail(creds, { to, subject: rendered.subject, text: rendered.text, html: rendered.html }));
+  return trySendEmail(row, () => sendMail(creds, { to, subject: rendered.subject, text: rendered.text, html: rendered.html }));
 }
 
 /** Failure categories caused by the shop's SMTP configuration, not the row. */
@@ -956,7 +968,7 @@ async function markGlobalSmtpFailure(row: ClaimedRow, code: string): Promise<voi
  * forbidden-recipient concept to special-case, so a failure always just
  * records the attempt for the standard backoff/retry cycle.
  */
-async function trySendEmail(row: ClaimedRow, send: () => Promise<MailAcceptance>): Promise<void> {
+async function trySendEmail(row: ClaimedRow, send: () => Promise<MailAcceptance>): Promise<"smtp_blocked" | void> {
   let accepted: MailAcceptance;
   try {
     accepted = requireMailAcceptance(await send());
@@ -969,7 +981,7 @@ async function trySendEmail(row: ClaimedRow, send: () => Promise<MailAcceptance>
       // of terminally failing the whole queue; it goes out once the owner fixes
       // the SMTP settings.
       await markGlobalSmtpFailure(row, failure.code);
-      return;
+      return "smtp_blocked";
     }
     await failRow(row, failure.code, failure.permanent ? 1 : config.NOTIF_MAX_ATTEMPTS);
     return;

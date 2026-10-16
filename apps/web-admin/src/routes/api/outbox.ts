@@ -77,7 +77,7 @@ export default async function outboxApiRoutes(app: FastifyInstance): Promise<voi
     const id = parsePositiveId((req.params as { id: string }).id);
     if (id === null) return reply.code(400).send({ error: "Invalid notification id." });
     const existing = await getNotification(prisma, id);
-    if (existing?.channel === "EMAIL" && !["FAILED","DEAD_LETTER"].includes(existing.status)) return reply.code(409).send({error:"Only failed email notifications may be retried."});
+    if (existing && !["FAILED","DEAD_LETTER"].includes(existing.status)) return reply.code(409).send({error:"Only failed notifications may be retried."});
     const ok = await retryNotification(prisma, id);
     if (!ok) return reply.code(404).send({ error: "That notification no longer exists." });
     await logAdminAction(prisma, {

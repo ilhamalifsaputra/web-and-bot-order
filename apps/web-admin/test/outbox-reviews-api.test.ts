@@ -101,6 +101,13 @@ describe("POST /api/outbox/:id/retry", () => {
     const res=await postJson(`/api/outbox/${row.id}/retry`,cookie,csrf);
     expect(res.statusCode).toBe(409);expect((await prisma.notificationOutbox.findUniqueOrThrow({where:{id:row.id}})).status).toBe("SENT");
   });
+  it.each(["PENDING", "SENDING", "SENT", "SKIPPED"])("refuses to retry an existing %s Telegram notification with 409, not 404, and audits nothing", async (status) => {
+    const row = await prisma.notificationOutbox.create({ data: { event: "ORDER_DELIVERED", channel: "TELEGRAM", status, payloadJson: "{}" } });
+    const res = await postJson(`/api/outbox/${row.id}/retry`, cookie, csrf);
+    expect(res.statusCode).toBe(409);
+    expect((await prisma.notificationOutbox.findUniqueOrThrow({ where: { id: row.id } })).status).toBe(status);
+    expect(await prisma.auditLog.findFirst({ where: { action: "outbox_retry" } })).toBeNull();
+  });
   it("happy path: requeues a FAILED notification back to PENDING and audits", async () => {
     const id = await makeFailedNotif();
     const res = await postJson(`/api/outbox/${id}/retry`, cookie, csrf);

@@ -1,11 +1,11 @@
 /**
- * Owner email recipient/toggle resolution for the owner-notifications feature
+ * Owner email recipient resolution for the owner-notifications feature
  * (paid order, manual queue, new ticket, ticket reply, wallet top-up).
- * Resolved from
- * web-admin Settings — no env fallback, unlike SMTP: an owner email address
- * has no bootstrap/recovery equivalent, it's DB-only. Same pattern as
- * getSmtpCreds (./smtp.ts): an edit takes effect on the next enqueue,
- * bounded by getSetting's 30s cache.
+ * Whether an event is on is decided by `isEmailEventEnabled` (./emailPolicy),
+ * the same policy the dispatcher rechecks at send time; the address comes from
+ * the `owner_email` web-admin Setting — no env fallback, unlike SMTP: an owner
+ * email address has no bootstrap/recovery equivalent, it's DB-only. The
+ * address read is bounded by getSetting's 30s cache.
  */
 import type { Db } from "./_types";
 import { getSetting } from "./settings";

@@ -38,7 +38,22 @@ const dbMockState = vi.hoisted(() => ({
   smtpCredsError: null as Error | null,
   /** Task B1.3: forces renderEmail to reject. */
   renderEmailError: null as Error | null,
+  /** Delay (ms) injected into deliverSupportReply to simulate a slow media upload. */
+  supportReplyDelayMs: 0,
 }));
+vi.mock("./supportDelivery", async () => {
+  const actual = await vi.importActual<typeof import("./supportDelivery")>("./supportDelivery");
+  return {
+    ...actual,
+    deliverSupportReply: async (...args: Parameters<typeof actual.deliverSupportReply>) => {
+      if (dbMockState.supportReplyDelayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, dbMockState.supportReplyDelayMs));
+        return;
+      }
+      return actual.deliverSupportReply(...args);
+    },
+  };
+});
 vi.mock("./emailTemplates", async () => {
   const actual = await vi.importActual<typeof import("./emailTemplates")>("./emailTemplates");
   return {
@@ -141,7 +156,8 @@ import { config } from "@app/core/config";
 import { Decimal } from "@app/core/money";
 import { sendMail } from "@app/core/mailer";
 import { buildSampleData } from "../../../tests/helpers/sampleData";
-import { drainBatch, runDispatcher, setTelegramSendTimeoutMsForTests } from "./dispatcher";
+import { drainBatch, runDispatcher, setTelegramSendTimeoutMsForTests, SUPPORT_REPLY_SEND_TIMEOUT_MS } from "./dispatcher";
+import { STALE_CLAIM_MS } from "@app/db";
 import { FulfillmentMessageWorker, type FulfillmentTelegramApi } from "./fulfillmentMessages";
 
 afterAll(async () => {
@@ -169,7 +185,17 @@ function fakeDocBot() {
 }
 
 describe("drainBatch bounds every Telegram send (backend audit B7)", () => {
-  afterEach(() => setTelegramSendTimeoutMsForTests(null));
+  afterEach(() => { setTelegramSendTimeoutMsForTests(null); dbMockState.supportReplyDelayMs = 0; });
+  it("gives the support-reply media step a longer limit that is still below the stale-claim window", async () => {
+    expect(SUPPORT_REPLY_SEND_TIMEOUT_MS).toBeGreaterThan(120_000);
+    expect(SUPPORT_REPLY_SEND_TIMEOUT_MS).toBeLessThan(STALE_CLAIM_MS);
+    setTelegramSendTimeoutMsForTests(50); // the single-message limit is far shorter than the slow upload below
+    dbMockState.supportReplyDelayMs = 300;
+    const row = await prisma.notificationOutbox.create({ data: { event: NotificationEvent.TICKET_REPLY_DM, payloadJson: JSON.stringify({ chat_id: 700_002, ticket_id: 1, message_id: 1 }) } });
+    await drainBatch({ api: { sendMessage: vi.fn() } } as unknown as Bot);
+    const saved = await prisma.notificationOutbox.findUniqueOrThrow({ where: { id: row.id } });
+    expect([saved.status, saved.attempts]).toEqual(["SENT", 0]);
+  });
   it("treats a send that never settles as a retryable failed attempt instead of holding the claim", async () => {
     setTelegramSendTimeoutMsForTests(50);
     const row = await enqueueAdminPasswordReset(prisma, { telegramId: 700_001, code: "TIMEOUT", ttlMinutes: 5 }).then(() => prisma.notificationOutbox.findFirstOrThrow({ where: { event: "ADMIN_PW_RESET", payloadJson: { contains: "TIMEOUT" } } }));
@@ -1696,6 +1722,20 @@ describe("drainBatch EMAIL lane (owner email notifications)", () => {
     const again=await prisma.notificationOutbox.createMany({skipDuplicates:true,data:[{event:"OWNER_EMAIL_ORDER_PAID",channel:"EMAIL",dedupeKey:key,payloadJson:JSON.stringify({to:"owner@example.com"})}]});
     expect(again.count).toBe(1);
     await prisma.notificationOutbox.deleteMany({where:{dedupeKey:key}});
+  });
+  it("after one shop-wide SMTP failure, the rest of the tick's emails are backed off without another login attempt", async () => {
+    await setSetting(prisma,SMTP_HOST_KEY,"smtp.test.invalid");await setSetting(prisma,SMTP_FROM_KEY,"Shop <no-reply@example.com>");
+    const rows = [];
+    for (const n of [61, 62, 63]) rows.push(await prisma.notificationOutbox.create({data:{event:"OWNER_EMAIL_NEW_TICKET",channel:"EMAIL",payloadJson:JSON.stringify({to:"owner@example.com",ticket_id:n})}}));
+    vi.mocked(sendMail).mockRejectedValue(Object.assign(new Error("fixture"),{code:"EAUTH"}));
+    const before = vi.mocked(sendMail).mock.calls.length;
+    await drainBatch(null);
+    expect(vi.mocked(sendMail).mock.calls.length - before).toBe(1);
+    for (const r of rows) {
+      const saved = await prisma.notificationOutbox.findUniqueOrThrow({where:{id:r.id}});
+      expect(saved.status).toBe("PENDING");expect(saved.nextRetryAt!.getTime()).toBeGreaterThan(Date.now());
+    }
+    await prisma.notificationOutbox.deleteMany({where:{id:{in:rows.map((r)=>r.id)}}});
   });
   it.each([
     ["EAUTH",{code:"EAUTH"},"SMTP_AUTH"],

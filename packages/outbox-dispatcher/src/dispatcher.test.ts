@@ -1738,6 +1738,35 @@ describe("drainBatch EMAIL lane (owner email notifications)", () => {
     await prisma.notificationOutbox.deleteMany({where:{id:{in:rows.map((r)=>r.id)}}});
   });
   it.each([
+    ["SMTP_RECIPIENT",{code:"EENVELOPE",responseCode:550}],
+    ["SMTP_REJECTED",{code:"EMESSAGE",responseCode:554}],
+  ])("a per-message %s failure does not short-circuit the following emails in the tick", async (code, errProps) => {
+    await setSetting(prisma,SMTP_HOST_KEY,"smtp.test.invalid");await setSetting(prisma,SMTP_FROM_KEY,"Shop <no-reply@example.com>");
+    const rows = [];
+    for (const n of [71, 72]) rows.push(await prisma.notificationOutbox.create({data:{event:"OWNER_EMAIL_NEW_TICKET",channel:"EMAIL",payloadJson:JSON.stringify({to:"owner@example.com",ticket_id:n})}}));
+    vi.mocked(sendMail).mockRejectedValueOnce(Object.assign(new Error("fixture"),errProps));
+    const before = vi.mocked(sendMail).mock.calls.length;
+    await drainBatch(null);
+    expect(vi.mocked(sendMail).mock.calls.length - before).toBe(2);
+    const first = await prisma.notificationOutbox.findUniqueOrThrow({where:{id:rows[0]!.id}});
+    expect([first.status, first.lastError]).toEqual(["FAILED", code]);
+    expect((await prisma.notificationOutbox.findUniqueOrThrow({where:{id:rows[1]!.id}})).status).toBe("SENT");
+    await prisma.notificationOutbox.deleteMany({where:{id:{in:rows.map((r)=>r.id)}}});
+  });
+  it("the shop-wide SMTP block flag resets on the next drain tick", async () => {
+    await setSetting(prisma,SMTP_HOST_KEY,"smtp.test.invalid");await setSetting(prisma,SMTP_FROM_KEY,"Shop <no-reply@example.com>");
+    const rows = [];
+    for (const n of [73, 74]) rows.push(await prisma.notificationOutbox.create({data:{event:"OWNER_EMAIL_NEW_TICKET",channel:"EMAIL",payloadJson:JSON.stringify({to:"owner@example.com",ticket_id:n})}}));
+    vi.mocked(sendMail).mockRejectedValueOnce(Object.assign(new Error("fixture"),{code:"EAUTH"}));
+    await drainBatch(null);
+    for (const r of rows) await prisma.notificationOutbox.update({where:{id:r.id},data:{nextRetryAt:new Date(0)}});
+    const before = vi.mocked(sendMail).mock.calls.length;
+    await drainBatch(null);
+    expect(vi.mocked(sendMail).mock.calls.length - before).toBe(2);
+    for (const r of rows) expect((await prisma.notificationOutbox.findUniqueOrThrow({where:{id:r.id}})).status).toBe("SENT");
+    await prisma.notificationOutbox.deleteMany({where:{id:{in:rows.map((r)=>r.id)}}});
+  });
+  it.each([
     ["EAUTH",{code:"EAUTH"},"SMTP_AUTH"],
     ["TLS",{code:"ETLS"},"SMTP_TLS"],
   ])("a global SMTP %s failure never terminally fails the queued row: it backs off and stays PENDING", async (_n, errProps, code) => {

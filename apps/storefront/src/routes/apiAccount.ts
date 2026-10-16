@@ -545,9 +545,8 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
       // dedupeOrder takes the order-row lock inside the ticket transaction, so
       // two parallel creates for one order collapse into a single ticket (the
       // pre-check above is only a fast path and races without it).
-      const startedAt = Date.now();
       const ticket = await createTicket(prisma, customer.userId, message, null, attachmentUrls, orderId, { dedupeOrder: orderId !== null });
-      if (orderId !== null && ticket.createdAt.getTime() < startedAt) {
+      if (orderId !== null && ticket.reused) {
         return reply.send({ ok: false, duplicate: true, ticket_id: ticket.id });
       }
       ticketId = ticket.id;
@@ -668,7 +667,6 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
     const attachmentUrls = null;
     // dedupeOrder: see the legacy route above — the order-row lock makes the
     // duplicate check atomic with the insert.
-    const startedAt = Date.now();
     const ticket = await createTicket(
       prisma,
       customer.userId,
@@ -678,7 +676,7 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
       orderId,
       { subject, category, productId, dedupeOrder: orderId !== null },
     );
-    if (orderId !== null && ticket.createdAt.getTime() < startedAt) {
+    if (orderId !== null && ticket.reused) {
       return reply.send({ ok: false, duplicate: true, ticket_id: ticket.id });
     }
     return reply.send({ ok: true, ticket_id: ticket.id });

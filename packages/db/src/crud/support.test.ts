@@ -2097,6 +2097,17 @@ describe("V2 order deduplication and source filters", () => {
     const stranger = await makeUser(98766n);
     await expect(createTicket(prisma, stranger.id, "Not my order", null, null, order.id, { dedupeOrder: true })).rejects.toMatchObject({ key: "error.order_not_found" });
   });
+  it("flags only a reused ticket as `reused`; a brand-new ticket never carries the flag", async () => {
+    const user = await makeUser(98770n); const order = await makeOrder(user.id);
+    const first = await createTicket(prisma, user.id, "The order has not arrived", null, null, order.id, { dedupeOrder: true });
+    expect(first.reused).toBeUndefined();
+    const again = await createTicket(prisma, user.id, "Still nothing", null, null, order.id, { dedupeOrder: true });
+    expect(again.id).toBe(first.id);
+    expect(again.reused).toBe(true);
+    const replay = await createTicket(prisma, user.id, "x", null, null, null, { requestKey: "reuse-key-1" });
+    expect(replay.reused).toBeUndefined();
+    expect((await createTicket(prisma, user.id, "x", null, null, null, { requestKey: "reuse-key-1" })).reused).toBe(true);
+  });
   it("filters by source and searches public references consistently across sort paths", async () => {
     const user = await makeUser(98767n);
     await createTicket(prisma, user.id, "Web support request", null, null, null, { origin: "WEB" });

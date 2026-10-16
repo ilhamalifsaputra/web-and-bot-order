@@ -8938,6 +8938,28 @@ describe("setup wizard — pre-auth takeover hardening", () => {
       expect(String(res.headers["set-cookie"])).toContain(`${COOKIE}=`);
     });
 
+    it("a /setup/owner retry invalidates the earlier nonce: the old cookie is rejected, the new one finishes", async () => {
+      const first = await app.inject({ method: "POST", url: "/setup/owner", payload: ownerBody(ENV_OWNER_TG), headers: urlencoded });
+      const oldNonce = setupNonceCookie(first);
+      const second = await app.inject({ method: "POST", url: "/setup/owner", payload: ownerBody(ENV_OWNER_TG), headers: urlencoded });
+      const newNonce = setupNonceCookie(second);
+      expect(oldNonce).not.toBe("");
+      expect(newNonce).not.toBe("");
+      expect(newNonce).not.toBe(oldNonce);
+      const stale = await shopPost(oldNonce);
+      expect(stale.statusCode).toBe(403);
+      expect(String(stale.headers["set-cookie"] ?? "")).not.toContain(`${COOKIE}=`);
+      expect(await getSetting(prisma, "setup_completed")).toBeNull();
+      expect((await shopPost(newNonce)).statusCode).toBe(303);
+    });
+
+    it("finishing clears the stored nonce hash", async () => {
+      const owner = await app.inject({ method: "POST", url: "/setup/owner", payload: ownerBody(ENV_OWNER_TG), headers: urlencoded });
+      expect(await getSetting(prisma, "setup_owner_nonce_hash")).not.toBeNull();
+      expect((await shopPost(setupNonceCookie(owner))).statusCode).toBe(303);
+      expect(await getSetting(prisma, "setup_owner_nonce_hash")).toBeNull();
+    });
+
     it("without the nonce cookie: rejected, no session, wizard not finished", async () => {
       await app.inject({ method: "POST", url: "/setup/owner", payload: ownerBody(ENV_OWNER_TG), headers: urlencoded });
       const res = await shopPost();

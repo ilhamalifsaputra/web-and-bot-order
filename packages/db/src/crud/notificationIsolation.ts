@@ -54,11 +54,12 @@ export async function enqueueNotificationSafely(
   try {
     await enqueue();
   } catch (err) {
-    // If this rollback itself fails the transaction is genuinely broken, and
-    // that error must propagate rather than be swallowed.
+    // Log the enqueue's own error first: if the rollback below fails the
+    // transaction is genuinely broken and that error propagates, which would
+    // otherwise hide why the enqueue failed.
+    logEnqueueFailure(err, context);
     await db.$executeRaw`ROLLBACK TO SAVEPOINT notification_enqueue`;
     await db.$executeRaw`RELEASE SAVEPOINT notification_enqueue`;
-    logEnqueueFailure(err, context);
     return;
   }
   await db.$executeRaw`RELEASE SAVEPOINT notification_enqueue`;

@@ -746,10 +746,12 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
       return reply.code(502).send({ error: "Could not retrieve the photo from Telegram." });
     }
     if (!upstream.ok) {
+      await upstream.body?.cancel().catch(() => undefined);
       return reply.code(502).send({ error: "Could not retrieve the photo from Telegram." });
     }
     const contentType = photoContentType(upstream.headers.get("content-type"), result.filePath);
     if (contentType === null) {
+      await upstream.body?.cancel().catch(() => undefined);
       return reply.code(415).send({ error: "This attachment is not an image." });
     }
     let bytes: Buffer;

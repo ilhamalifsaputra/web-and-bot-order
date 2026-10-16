@@ -36,16 +36,16 @@ export async function createTicket(
   // schema.prisma). Optional and last so every existing call site (2-6
   // positional args) keeps compiling unchanged.
   opts: { subject?: string | null; category?: TicketCategory | null; productId?: number | null; subcategory?: string; origin?: string; requestKey?: string; attachmentIds?: string[]; dedupeOrder?: boolean } = {},
-): Promise<SupportTicket> {
+): Promise<SupportTicket & { reused?: true }> {
   if (opts.requestKey) {
     const existing = await db.supportTicket.findUnique({ where: { userId_requestKey: { userId, requestKey: opts.requestKey } } });
-    if (existing) return existing;
+    if (existing) return { ...existing, reused: true };
   }
   const subject = opts.subject ?? null;
   const category = opts.category ?? null;
   const productId = opts.productId ?? null;
 
-  let ticket: SupportTicket | undefined;
+  let ticket: (SupportTicket & { reused?: true }) | undefined;
   for (let attempt = 0; attempt < MAX_TICKET_NUMBER_ATTEMPTS; attempt++) {
     const ticketNumber = await uniqueTicketNumberCandidate(db);
     try {
@@ -55,7 +55,7 @@ export async function createTicket(
           const owned = await tx.order.findFirst({ where: { id: orderId, userId }, select: { id: true } });
           if (!owned) throw new ValidationError("error.order_not_found");
           const previous = await getOpenTicketForOrder(tx, orderId);
-          if (previous) return previous;
+          if (previous) return { ...previous, reused: true as const };
         }
         const created = await tx.supportTicket.create({
           data: { userId, message, photoFileIds, attachmentUrls, orderId, ticketNumber, subject, category, productId, subcategory: opts.subcategory, origin: opts.origin ?? "WEB", requestKey: opts.requestKey },
@@ -71,7 +71,7 @@ export async function createTicket(
     } catch (e) {
       if (isUniqueViolation(e) && opts.requestKey) {
         const existing = await db.supportTicket.findUnique({ where: { userId_requestKey: { userId, requestKey: opts.requestKey } } });
-        if (existing) return existing;
+        if (existing) return { ...existing, reused: true };
       }
       if (isUniqueViolation(e) && attempt < MAX_TICKET_NUMBER_ATTEMPTS - 1) {
         await new Promise((resolve) => setTimeout(resolve, Math.floor(Math.random() * 25)));

@@ -23,7 +23,7 @@ import { clientIp, supportRateLimited } from "../rateLimit";
 import { logger } from "@app/core/logger";
 import { localize, addDays } from "@app/core/datetime";
 import { CategoryGroup, SenderType, OrderStatus, OrderKind, TicketStatus, zTicketCategory } from "@app/core/enums";
-import { parsePositiveId, parsePageParam } from "@app/core/params";
+import { parsePositiveId, parsePageParam, parseQueryInt } from "@app/core/params";
 import { ValidationError } from "@app/core/errors";
 import { usesLocalInventory } from "@app/core/productAvailability";
 import { hashPassword, verifyPassword } from "@app/core/password";
@@ -480,7 +480,10 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
       : "latest_update";
     // Fastify querystring values are always strings; parsePageParam falls back to 1 on junk and clamps huge values.
     const pageNum = parsePageParam(page);
-    const pageSizeNum = Number(page_size) || 10;
+    // Same lenient reading for page_size: a negative, exponent or Infinity
+    // value falls back to 10 and a huge one is clamped to 50, so it can never
+    // reach Prisma's take/skip as a bad number.
+    const pageSizeNum = parseQueryInt(page_size, { fallback: 10, min: 1, max: 50 }) ?? 10;
 
     const [{ rows, total }, stats] = await Promise.all([
       listUserTicketsPaged(prisma, customer.userId, {

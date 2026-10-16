@@ -246,6 +246,24 @@ describe("GET /api/v1/account/support", () => {
     expect(body.total).toBe(1);
   });
 
+  it("a junk or out-of-range page_size never reaches the query: -5 and 1e999 fall back to 10, 1000 clamps to 50", async () => {
+    const { userId, cookie } = await freshCustomer();
+    await createTicket(prisma, userId, "only", null, null, null, { subject: "paging sanity" });
+
+    for (const [raw, expected] of [["-5", 10], ["1e999", 10], ["Infinity", 10], ["1000", 50]] as const) {
+      const res = await app.inject({
+        method: "GET",
+        url: `/api/v1/account/support?page=1&page_size=${encodeURIComponent(raw)}`,
+        headers: { cookie },
+      });
+      expect(res.statusCode, `page_size=${raw}`).toBe(200);
+      const body = res.json();
+      expect(body.page_size, `page_size=${raw}`).toBe(expected);
+      expect(body.total).toBe(1);
+      expect(body.tickets).toHaveLength(1);
+    }
+  });
+
   it("?page=2&page_size=1 with 2 tickets: second page holds a different ticket, total is 2", async () => {
     const { userId, cookie } = await freshCustomer();
     await createTicket(prisma, userId, "first", null, null, null, { subject: "pager one" });

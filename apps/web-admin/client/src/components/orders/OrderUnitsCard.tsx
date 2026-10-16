@@ -165,7 +165,7 @@ export function OrderUnitsCard({
   revealedCredentials,
   headerAction,
   onRefetched,
-}: OrderUnitsCardProps): JSX.Element {
+}: OrderUnitsCardProps): React.JSX.Element {
   const qc = useQueryClient();
   const [selected, setSelected] = useState<Set<number>>(new Set());
   /** The units a not-yet-submitted report is about — one row's, or the current

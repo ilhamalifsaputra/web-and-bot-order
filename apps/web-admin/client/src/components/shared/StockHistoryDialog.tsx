@@ -53,7 +53,7 @@ interface StockHistoryDialogProps {
 }
 
 /** Real ledger events only (GET /api/stock/item/:id/history); never credentials. */
-export function StockHistoryDialog({ stockItemId, onClose }: StockHistoryDialogProps): JSX.Element {
+export function StockHistoryDialog({ stockItemId, onClose }: StockHistoryDialogProps): React.JSX.Element {
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ["stock-history", stockItemId],
     queryFn: () => apiGet<{ events: StockHistoryEvent[] }>(`/api/stock/item/${stockItemId}/history`),

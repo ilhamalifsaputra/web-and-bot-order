@@ -125,7 +125,7 @@ function SubjectField({
   value: string;
   onChange: (v: string) => void;
   error?: string | null;
-  inputRef: RefObject<HTMLInputElement>;
+  inputRef: RefObject<HTMLInputElement | null>;
 }) {
   return (
     <FormField
@@ -157,7 +157,7 @@ function CategorySelect({
   value: string;
   onChange: (v: string) => void;
   error?: string | null;
-  selectRef: RefObject<HTMLSelectElement>;
+  selectRef: RefObject<HTMLSelectElement | null>;
 }) {
   return (
     <FormField
@@ -191,7 +191,7 @@ function ProductSelect({
   onChange: (v: string) => void;
   products: { id: number; name: string }[];
   error?: string | null;
-  selectRef: RefObject<HTMLSelectElement>;
+  selectRef: RefObject<HTMLSelectElement | null>;
 }) {
   return (
     <FormField
@@ -254,7 +254,7 @@ function DescriptionField({
   value: string;
   onChange: (v: string) => void;
   error?: string | null;
-  textareaRef: RefObject<HTMLTextAreaElement>;
+  textareaRef: RefObject<HTMLTextAreaElement | null>;
 }) {
   return (
     <FormField
@@ -315,7 +315,7 @@ export default function NewTicketCard({
     const found = validate();
     setClientErrors(found);
 
-    const focusOrder: [FieldName, RefObject<HTMLElement>][] = [
+    const focusOrder: [FieldName, RefObject<HTMLElement | null>][] = [
       ["subject", subjectRef],
       ["category", categoryRef],
       ["product", productRef],

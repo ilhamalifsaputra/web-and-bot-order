@@ -10,7 +10,7 @@ interface PageHeaderProps {
   actions?: ReactNode;
 }
 
-export function PageHeader({ title, description, breadcrumb, actions }: PageHeaderProps): JSX.Element {
+export function PageHeader({ title, description, breadcrumb, actions }: PageHeaderProps): React.JSX.Element {
   return (
     <div className="mb-6 sm:mb-8">
       {breadcrumb && breadcrumb.length > 0 && (

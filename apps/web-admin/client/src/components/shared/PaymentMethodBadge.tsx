@@ -28,7 +28,7 @@ interface PaymentMethodBadgeProps {
   method: string;
 }
 
-export function PaymentMethodBadge({ method }: PaymentMethodBadgeProps): JSX.Element {
+export function PaymentMethodBadge({ method }: PaymentMethodBadgeProps): React.JSX.Element {
   const family = RAIL_FAMILY[method] ?? "unknown";
   return (
     <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ${FAMILY_CLASS[family]}`}>

@@ -66,7 +66,7 @@ interface ProductRatingsCardProps {
  * Top-5 product analytics widget. "Needing Attention" (a trend/recency
  * aggregate) is explicitly deferred — not built in Phase A, see task brief.
  */
-export function ProductRatingsCard({ summaries, isLoading }: ProductRatingsCardProps): JSX.Element {
+export function ProductRatingsCard({ summaries, isLoading }: ProductRatingsCardProps): React.JSX.Element {
   const [sort, setSort] = useState<SortMode>("most_reviewed");
   const top5 = [...summaries].sort(SORTERS[sort]).slice(0, 5);
 

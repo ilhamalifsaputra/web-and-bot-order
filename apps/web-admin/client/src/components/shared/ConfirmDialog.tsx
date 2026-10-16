@@ -47,7 +47,7 @@ export function ConfirmDialog({
   children,
   open: openProp,
   onOpenChange: onOpenChangeProp,
-}: ConfirmDialogProps): JSX.Element {
+}: ConfirmDialogProps): React.JSX.Element {
   const [openState, setOpenState] = React.useState(false)
   const [busy, setBusy] = React.useState(false)
   const busyRef = React.useRef(false)

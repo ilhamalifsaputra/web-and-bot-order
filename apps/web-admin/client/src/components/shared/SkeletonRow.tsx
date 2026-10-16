@@ -6,7 +6,7 @@ interface SkeletonRowProps {
   columns: number;
 }
 
-export function SkeletonRow({ columns }: SkeletonRowProps): JSX.Element {
+export function SkeletonRow({ columns }: SkeletonRowProps): React.JSX.Element {
   return (
     <TableRow>
       {Array.from({ length: columns }).map((_, i) => (

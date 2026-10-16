@@ -34,7 +34,7 @@ interface ReplyDialogProps {
  * overwrites an existing one (the backend flips the review's status to
  * REPLIED either way — see apps/web-admin/src/routes/api/reviews.ts).
  */
-export function ReplyDialog({ open, onOpenChange, review }: ReplyDialogProps): JSX.Element {
+export function ReplyDialog({ open, onOpenChange, review }: ReplyDialogProps): React.JSX.Element {
   const qc = useQueryClient();
   const [text, setText] = useState("");
   const isEditing = review?.adminReply != null;

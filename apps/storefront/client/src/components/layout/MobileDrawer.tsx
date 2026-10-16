@@ -122,7 +122,7 @@ export default function MobileDrawer({
 }: {
   open: boolean;
   onClose: () => void;
-  triggerRef: RefObject<HTMLButtonElement>;
+  triggerRef: RefObject<HTMLButtonElement | null>;
   ctx: ShopContext | undefined;
   lang: string;
   otherLang: string;

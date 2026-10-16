@@ -16,7 +16,7 @@ export function ReviewsKpiRow({
   onPendingReplyClick,
   onNegativeClick,
   onHiddenClick,
-}: ReviewsKpiRowProps): JSX.Element {
+}: ReviewsKpiRowProps): React.JSX.Element {
   const { data, isError } = useReviewsKpis();
 
   // See OrdersKpiRow's identical comment: `!data`, not react-query's

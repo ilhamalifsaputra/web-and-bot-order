@@ -54,7 +54,7 @@ function Content({ onOpenAutoFocus, onCloseAutoFocus, ...props }: MotionDialogPr
           variants={variants} initial="initial" animate="animate" exit="exit"
           transition={{ duration: reduced ? 0 : DURATION.base }}
           aria-hidden={!present || undefined}
-          {...(!present ? { inert: "" } : {})}
+          {...(!present ? { inert: true } : {})}
           style={{ pointerEvents: present ? "auto" : "none" }}
           className={cn(
             "fixed z-50 border border-line bg-card shadow-lift outline-none",

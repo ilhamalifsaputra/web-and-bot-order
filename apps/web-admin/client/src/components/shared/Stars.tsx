@@ -14,7 +14,7 @@ interface StarsProps {
 /** Shared 5-star rating display — used by ReviewsPage.tsx's table rows and
  *  ReplyDialog.tsx's review preview, so both read the same rating the same
  *  way instead of carrying two near-identical local components. */
-export function Stars({ rating, className = "h-4 w-4" }: StarsProps): JSX.Element {
+export function Stars({ rating, className = "h-4 w-4" }: StarsProps): React.JSX.Element {
   return (
     <span className="inline-flex items-center gap-0.5">
       {[1, 2, 3, 4, 5].map((i) => (

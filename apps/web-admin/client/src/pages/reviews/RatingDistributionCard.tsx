@@ -17,7 +17,7 @@ const STAR_TONE: Record<Star, "grass" | "amberx" | "rust"> = {
 
 const STARS: Star[] = [5, 4, 3, 2, 1];
 
-export function RatingDistributionCard(): JSX.Element {
+export function RatingDistributionCard(): React.JSX.Element {
   const { data, isLoading, isError } = useReviewsKpis();
   const dist = data?.ratingDistribution;
   const total = dist ? STARS.reduce((sum, s) => sum + dist[s], 0) : 0;

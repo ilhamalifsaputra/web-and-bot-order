@@ -64,14 +64,14 @@ function userLabel(u: SearchApiResponse["users"][number]): { label: string; subl
   return { label: `Customer #${u.id}` };
 }
 
-export function SearchModal({ open, onClose, session = 0 }: SearchModalProps): JSX.Element {
+export function SearchModal({ open, onClose, session = 0 }: SearchModalProps): React.JSX.Element {
   const inputRef = useRef<HTMLInputElement>(null);
   return <MotionDialog open={open} onClose={onClose} title="Search" initialFocusRef={inputRef} className="max-h-[70dvh] overflow-y-auto">
     <SearchModalBody key={session} onClose={onClose} inputRef={inputRef} />
   </MotionDialog>;
 }
 
-function SearchModalBody({ onClose, inputRef }: { onClose: () => void; inputRef: RefObject<HTMLInputElement> }): JSX.Element {
+function SearchModalBody({ onClose, inputRef }: { onClose: () => void; inputRef: RefObject<HTMLInputElement | null> }): React.JSX.Element {
   const open = useIsPresent();
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);

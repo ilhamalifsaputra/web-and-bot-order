@@ -18,7 +18,7 @@ interface SettingsHealthCardProps {
  * deliberately small (`Card size="sm"`, one progress bar, one row of
  * badges): a glance, not a dashboard. Sits above the search+nav+content grid.
  */
-export function SettingsHealthCard({ sections }: SettingsHealthCardProps): JSX.Element {
+export function SettingsHealthCard({ sections }: SettingsHealthCardProps): React.JSX.Element {
   const total = sections.length;
   const configured = sections.filter((s) => s.status === "CONFIGURED").length;
   const pct = total > 0 ? Math.round((configured / total) * 100) : 0;

@@ -7,7 +7,7 @@ import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuIte
 interface TopBarProps {
   onMenuClick: () => void;
   onSearchOpen: () => void;
-  menuRef?: RefObject<HTMLButtonElement>;
+  menuRef?: RefObject<HTMLButtonElement | null>;
   sidebarOpen?: boolean;
 }
 
@@ -19,7 +19,7 @@ const QUICK_ACTIONS = [
   { label: "Reports", to: "/reports", icon: false },
 ] as const;
 
-export function TopBar({ onMenuClick, onSearchOpen, menuRef, sidebarOpen = false }: TopBarProps): JSX.Element {
+export function TopBar({ onMenuClick, onSearchOpen, menuRef, sidebarOpen = false }: TopBarProps): React.JSX.Element {
   const navigate = useNavigate();
   async function handleLogout() {
     try { await logout(); } finally { navigate("/login", { replace: true }); }

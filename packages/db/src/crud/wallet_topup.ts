@@ -51,6 +51,7 @@ import { adjustWallet } from "./users";
 import { postUnderpaidTopupCreditPosting, postWalletTopupPosting } from "./ledgerPostings";
 import { finalizeOrderPayment, writeWithUniqueRailAmount, type UniqueAmountRail } from "./pricing";
 import { enqueueAdminOverpaid, enqueueOwnerWalletTopupEmail, enqueueWalletTopupCreditedDm, enqueueTransactionReviewAlert } from "./notifications";
+import { enqueueNotificationSafely } from "./notificationIsolation";
 import { ensureFulfillmentMessage, wakeFulfillmentMessage, reserveTransactionMessage } from "./fulfillmentMessages";
 import { confirmPaymentAttempt, getPendingPaymentAttempt } from "./payments";
 import { logAdminAction } from "./audit";
@@ -787,17 +788,24 @@ export async function settleWalletTopup(
   // has configured the master toggle, owner_email_on_wallet_topup, and a
   // valid owner_email — same inert-until-configured contract every other
   // OWNER_EMAIL_* event follows.
-  await enqueueOwnerWalletTopupEmail(db, {
-    orderId: order.id,
-    orderCode: order.orderCode,
-    customerLabel: customerLabel(order.user),
-    amount: new Decimal(order.totalAmount),
-    currency: order.currency,
-    newBalance,
-    paymentMethod: order.paymentMethod,
-    transactionId: order.paymentRef ?? order.binanceTxid ?? order.bybitTxid ?? null,
-    toppedUpAt: now,
-  });
+  //
+  // Each notification below runs behind enqueueNotificationSafely: the gateway
+  // already holds the buyer's money, so a failed enqueue (a JS throw or a
+  // database error) is logged and skipped, never allowed to roll back the
+  // credit and ledger posting above.
+  await enqueueNotificationSafely(db, { orderId: order.id, notification: "owner wallet top-up email" }, () =>
+    enqueueOwnerWalletTopupEmail(db, {
+      orderId: order.id,
+      orderCode: order.orderCode,
+      customerLabel: customerLabel(order.user),
+      amount: new Decimal(order.totalAmount),
+      currency: order.currency,
+      newBalance,
+      paymentMethod: order.paymentMethod,
+      transactionId: order.paymentRef ?? order.binanceTxid ?? order.bybitTxid ?? null,
+      toppedUpAt: now,
+    }),
+  );
 
   // Buyer notification — the single call site for WALLET_TOPUP_CREDITED_DM
   // across all six top-up rails (see this function's own doc-comment).
@@ -808,14 +816,17 @@ export async function settleWalletTopup(
   await ensureFulfillmentMessage(db, orderId);
   await wakeFulfillmentMessage(db, orderId, now, { correctFinishedOutcome: true });
   if (credited.greaterThan(0) && order.user.telegramId != null) {
-    await enqueueWalletTopupCreditedDm(db, {
-      orderId: order.id,
-      orderCode: order.orderCode,
-      chatId: Number(order.user.telegramId),
-      amount: credited,
-      currency: order.currency,
-      newBalance,
-    });
+    const chatId = Number(order.user.telegramId);
+    await enqueueNotificationSafely(db, { orderId: order.id, notification: "buyer wallet top-up credited Telegram message" }, () =>
+      enqueueWalletTopupCreditedDm(db, {
+        orderId: order.id,
+        orderCode: order.orderCode,
+        chatId,
+        amount: credited,
+        currency: order.currency,
+        newBalance,
+      }),
+    );
   }
 
   const refreshed = await getOrder(db, orderId);
@@ -949,15 +960,21 @@ export async function flagWalletTopupOverpayment(
   if (!excess.greaterThan(0)) return null;
 
   await args.markLedgerOverpaid();
-  await enqueueAdminOverpaid(db, {
-    orderId: args.order.id,
-    orderCode: args.order.orderCode,
-    paid,
-    expected,
-    excess,
-    currency: args.order.currency,
-    walletTopup: true,
-  });
+  // The alert is a side effect of a credit that already landed in this same
+  // transaction: a failed enqueue is logged and skipped, never allowed to roll
+  // the credit back (enqueueNotificationSafely explains the savepoint). The
+  // ledger "overpaid" flag above still commits, so the order page shows it.
+  await enqueueNotificationSafely(db, { orderId: args.order.id, notification: "admin wallet top-up overpaid alert" }, () =>
+    enqueueAdminOverpaid(db, {
+      orderId: args.order.id,
+      orderCode: args.order.orderCode,
+      paid,
+      expected,
+      excess,
+      currency: args.order.currency,
+      walletTopup: true,
+    }),
+  );
   logger.warn(
     `${args.rail} wallet top-up order ${args.order.orderCode} was overpaid — got ${paid.toString()}, expected ${expected.toString()} (excess ${excess.toString()} ${args.order.currency}). The buyer's balance was credited the order total only; the ledger row is flagged overpaid and an admin alert was enqueued so the excess can be returned from the order page.`,
   );

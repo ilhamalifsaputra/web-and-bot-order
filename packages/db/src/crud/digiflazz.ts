@@ -819,6 +819,206 @@ export async function markDigiflazzOrderFailedByAdmin(
   return { orderCode: order.orderCode };
 }
 
+/**
+ * The second human way out of DIGIFLAZZ_STATUS_UNRESOLVED (audit A5 follow-up):
+ * an admin who reconciled with Digiflazz and confirmed the top-up DID go
+ * through marks the order delivered. No refund and no credit are created.
+ *
+ * The order is completed by fulfillDigiflazzOrder itself (its `adminOverride`
+ * mode), so the receipt, item status, status history row, buyer status message,
+ * emails and referral/channel side effects are exactly those of a supplier
+ * Sukses. Its DELIVERED claim is a compare-and-set on PROCESSING + unresolved +
+ * no in-flight lease, taken under the order row lock, so it races safely with a
+ * late supplier Sukses or Gagal: exactly one of them wins and the other finds
+ * the order already moved on.
+ *
+ * `note` (required) is the admin's private reconciliation note and goes only to
+ * the audit log. `sn` (optional) is the serial number Digiflazz gave the admin;
+ * it becomes the buyer-visible receipt, like a supplier Sukses's SN.
+ *
+ * Refused (ValidationError): empty note; not PROCESSING and unresolved (also
+ * the answer to a second call, so it is idempotent); a supplier check holding
+ * the in-flight lease.
+ */
+export async function markDigiflazzOrderDeliveredByAdmin(
+  db: PrismaClient,
+  args: { orderId: number; adminId: number; note: string; sn?: string },
+  now: Date = new Date(),
+): Promise<{ orderCode: string }> {
+  const note = args.note.trim();
+  if (!note) throw new ValidationError("error.digiflazz_delivery_note_required");
+  const orderId = args.orderId;
+  const order = await db.order.findUnique({ where: { id: orderId }, select: { orderCode: true, status: true, digiflazzStatus: true } });
+  if (!order) throw new ValidationError("error.order_not_found");
+  if (order.status !== OrderStatus.PROCESSING || order.digiflazzStatus !== DIGIFLAZZ_STATUS_UNRESOLVED) {
+    throw new ValidationError("error.digiflazz_not_unresolved", { orderCode: order.orderCode });
+  }
+  try {
+    await fulfillDigiflazzOrder(db, orderId, {
+      sn: (args.sn ?? "").trim(),
+      adminOverride: { adminId: args.adminId, note: note.slice(0, 300), now },
+    });
+  } catch (err) {
+    if (!(err instanceof ValidationError) || err.key !== "error.order_not_processing") throw err;
+    // The compare-and-set missed: either a supplier check holds the lease, or
+    // the order already left the unresolved state (delivered, failed, or this
+    // same override applied a moment ago).
+    const current = await db.order.findUnique({ where: { id: orderId }, select: { status: true, digiflazzStatus: true } });
+    if (current?.status === OrderStatus.PROCESSING && current.digiflazzStatus === DIGIFLAZZ_STATUS_UNRESOLVED) {
+      throw new ValidationError("error.digiflazz_check_in_flight", { orderCode: order.orderCode });
+    }
+    throw new ValidationError("error.digiflazz_not_unresolved", { orderCode: order.orderCode });
+  }
+  return { orderCode: order.orderCode };
+}
+
+/** What one admin "check supplier now" ended in, without supplier jargon:
+ * delivered (Sukses), failed (explicit Gagal), still_pending (Pending or the
+ * check itself failed; the order stays unresolved), busy (another check holds
+ * the order, or the order was checked by an admin less than a minute ago). */
+export type DigiflazzAdminRecheckOutcome = "delivered" | "failed" | "still_pending" | "busy";
+
+/** At most one admin-requested live check per order in this window. */
+export const DIGIFLAZZ_ADMIN_RECHECK_MIN_INTERVAL_MS = 60_000;
+
+/**
+ * One live Digiflazz status check of an order unresolved at the supplier,
+ * requested by an admin (audit A5 follow-up). It is the webhook's live re-check
+ * with an admin trigger: the same in-flight lease (claimDigiflazzWebhookRecheck,
+ * so it never overlaps the poller or a callback), the same createTransaction
+ * with the order's ref id, and the same "webhook" outcome semantics
+ * (recordDigiflazzOutcome source "webhook"): a Pending or failed request never
+ * spends the backoff budget, puts the scheduled recheck back and never fails
+ * the order by its time window. Sukses goes through fulfillDigiflazzOrder, an
+ * explicit Gagal through the normal terminal path.
+ *
+ * Rate limit: one check per order per DIGIFLAZZ_ADMIN_RECHECK_MIN_INTERVAL_MS,
+ * read from this action's own audit rows (each finished check writes one), so
+ * it holds across processes without a schema change; a check still running is
+ * refused by the lease. Both return "busy".
+ */
+export async function recheckDigiflazzOrderNow(
+  db: PrismaClient,
+  args: { orderId: number; adminId: number },
+  now: Date = new Date(),
+): Promise<{ orderCode: string; outcome: DigiflazzAdminRecheckOutcome }> {
+  const orderId = args.orderId;
+  const order = await db.order.findUnique({ where: { id: orderId }, include: DIGIFLAZZ_CANDIDATE_INCLUDE });
+  if (!order) throw new ValidationError("error.order_not_found");
+  const dispatchedAt = order.digiflazzDispatchedAt;
+  if (order.status !== OrderStatus.PROCESSING || order.digiflazzStatus !== DIGIFLAZZ_STATUS_UNRESOLVED || !dispatchedAt) {
+    throw new ValidationError("error.digiflazz_not_unresolved", { orderCode: order.orderCode });
+  }
+  const creds = await getDigiflazzCreds(db);
+  if (!creds) throw new ValidationError("error.digiflazz_not_configured", { orderCode: order.orderCode });
+
+  const recent = await db.auditLog.findFirst({
+    where: {
+      action: "order.digiflazz_rechecked_by_admin",
+      targetType: "order",
+      targetId: orderId,
+      createdAt: { gt: new Date(now.getTime() - DIGIFLAZZ_ADMIN_RECHECK_MIN_INTERVAL_MS) },
+    },
+    select: { id: true },
+  });
+  if (recent) return { orderCode: order.orderCode, outcome: "busy" };
+
+  const claim = await claimDigiflazzWebhookRecheck(db, orderId, now);
+  if (!claim) {
+    const current = await db.order.findUnique({ where: { id: orderId }, select: { status: true, digiflazzStatus: true } });
+    if (current?.status !== OrderStatus.PROCESSING || current.digiflazzStatus !== DIGIFLAZZ_STATUS_UNRESOLVED) {
+      throw new ValidationError("error.digiflazz_not_unresolved", { orderCode: order.orderCode });
+    }
+    return { orderCode: order.orderCode, outcome: "busy" };
+  }
+  const webhookOptions = { source: "webhook" as const, ...claim };
+  emitDigiflazzOrderStatusChanged(orderId);
+
+  let outcome: DigiflazzAdminRecheckOutcome;
+  let detail: string;
+  const resolution = resolveSingleDigiflazzItem(order);
+  let customerNo: string | null = null;
+  let structuralProblem: string | null = resolution.ok ? null : resolution.reason;
+  if (resolution.ok) {
+    try {
+      customerNo = buildDigiflazzCustomerNo(resolution.product, order.customerData, order.inputConfigSnapshot);
+    } catch {
+      structuralProblem = "Invalid player input configuration or answers; needs manual review";
+    }
+  }
+  if (!resolution.ok || customerNo === null) {
+    // Nothing could be asked; the order was already submitted, so it stays
+    // locked and its lease is handed back (never failed from here).
+    await recordDigiflazzOutcome(
+      db,
+      order,
+      { kind: "transient_error", message: `The order's status could not be rechecked with Digiflazz: ${structuralProblem}` },
+      dispatchedAt,
+      webhookOptions,
+    );
+    outcome = "still_pending";
+    detail = `the check could not be sent (${structuralProblem}), so it stays unresolved`;
+  } else {
+    let result: Awaited<ReturnType<typeof createTransaction>> | null = null;
+    let requestError: string | null = null;
+    try {
+      result = await createTransaction(creds, { refId: order.orderCode, buyerSkuCode: resolution.supplierSku, customerNo });
+    } catch (err) {
+      requestError = err instanceof Error ? err.message : String(err);
+    }
+    if (!result) {
+      await recordDigiflazzOutcome(db, order, { kind: "transient_error", message: requestError ?? "unknown error" }, dispatchedAt, webhookOptions);
+      outcome = "still_pending";
+      detail = `the request to Digiflazz failed (${requestError}), so it stays unresolved`;
+    } else if (result.status === "Sukses") {
+      try {
+        await fulfillDigiflazzOrder(db, orderId, { sn: result.sn ?? "" });
+      } catch (fulfillErr) {
+        // Same remedy as the poller: Digiflazz confirmed Sukses, so this order
+        // must never be re-dispatched; a human finishes it.
+        const current = await db.order.findUnique({ where: { id: orderId }, select: { status: true } });
+        if (current?.status !== OrderStatus.DELIVERED) {
+          await alertDigiflazzDispatchFailed(db, order, `Digiflazz confirmed Sukses but fulfilling the order failed (${describeFulfillFailure(fulfillErr)})`);
+          emitDigiflazzOrderStatusChanged(orderId);
+          throw fulfillErr;
+        }
+      }
+      outcome = "delivered";
+      detail = "Digiflazz reported Sukses, so it was delivered";
+    } else if (result.status === "Pending") {
+      await recordDigiflazzOutcome(db, order, { kind: "pending" }, dispatchedAt, webhookOptions);
+      outcome = "still_pending";
+      detail = "Digiflazz still reports Pending, so it stays unresolved";
+    } else {
+      await recordDigiflazzOutcome(
+        db,
+        order,
+        {
+          kind: "terminal",
+          reason: `Digiflazz reported Gagal on an admin-requested check${result.message ? ` (${result.message})` : ""}`,
+          supplierGaveReason: Boolean(result.message),
+        },
+        dispatchedAt,
+      );
+      outcome = "failed";
+      detail = "Digiflazz reported Gagal, so it was marked failed";
+    }
+  }
+
+  await logAdminAction(db, {
+    adminId: args.adminId,
+    action: "order.digiflazz_rechecked_by_admin",
+    targetType: "order",
+    targetId: orderId,
+    details: `Asked Digiflazz for the current status of order ${order.orderCode}: ${detail}.`,
+  });
+  logger.info(
+    { orderId, outcome },
+    `Admin ${args.adminId} ran a live Digiflazz status check for order ${order.orderCode}: ${detail}.`,
+  );
+  return { orderCode: order.orderCode, outcome };
+}
+
 /** Who produced an outcome. The default ("dispatch", or no options) is the
  * poller or the direct dispatch, whose attempt counts against the backoff
  * schedule. "webhook" is the callback's live re-check, which never does; it
@@ -863,7 +1063,12 @@ async function recordWebhookNonTerminalOutcome(
     },
     data: {
       digiflazzNextRecheckAt: nextRecheckAt,
-      digiflazzFailureDetail: outcome.kind === "transient_error" ? outcome.message : null,
+      // An unresolved order keeps the explanation the poller wrote when it
+      // became unresolved (recordUnresolvedAtSupplier): a single Pending or
+      // failed live check changes nothing about it, and admins read it.
+      ...(order.digiflazzStatus === DIGIFLAZZ_STATUS_UNRESOLVED
+        ? {}
+        : { digiflazzFailureDetail: outcome.kind === "transient_error" ? outcome.message : null }),
     },
   });
   if (write.count === 1) {
@@ -1649,10 +1854,20 @@ export async function fulfillDigiflazzOrder(
     /** Duration of the createTransaction call that reported Sukses, for the
      * order.completed timing event; omitted when the caller did not time it. */
     digiflazzApiDurationMs?: number;
+    /** Set only by markDigiflazzOrderDeliveredByAdmin: an admin who reconciled
+     * an order unresolved at the supplier confirmed Digiflazz delivered it. The
+     * DELIVERED claim then also requires the order to still be unresolved and
+     * no supplier check to hold the in-flight lease (compare-and-set), the
+     * status history and audit row name the admin instead of the system, and
+     * no Digiflazz timing event is logged (nothing was timed). Every other
+     * effect — receipt, items, buyer status message, emails, referral and
+     * channel side effects — is exactly the supplier-Sukses path. */
+    adminOverride?: { adminId: number; note: string; now: Date };
   },
 ) {
   const order = await getOrder(db, orderId);
   if (!order) throw new ValidationError("error.order_not_found");
+  const override = args.adminOverride;
 
   // I-4 fix (backend audit 2026-08-21): refuse to deliver an order that
   // isn't actually a single-unit Digiflazz-routed order, regardless of
@@ -1664,10 +1879,22 @@ export async function fulfillDigiflazzOrder(
     throw new ValidationError("error.order_not_digiflazz");
   }
 
-  const now = new Date();
+  const now = override?.now ?? new Date();
+  const overrideGuard: Prisma.OrderWhereInput = override
+    ? {
+        digiflazzStatus: DIGIFLAZZ_STATUS_UNRESOLVED,
+        // Same lease rule as claimDigiflazzWebhookRecheck: a supplier check in
+        // flight may be about to report its own answer.
+        OR: [
+          { digiflazzNextRecheckAt: null },
+          { digiflazzNextRecheckAt: { lte: now } },
+          { digiflazzNextRecheckAt: { gt: new Date(now.getTime() + DIGIFLAZZ_RECHECK_CLAIM_LEASE_MS) } },
+        ],
+      }
+    : {};
   const complete = async (tx: Db) => {
     const claim = await tx.order.updateMany({
-      where: { id: orderId, status: OrderStatus.PROCESSING },
+      where: { id: orderId, status: OrderStatus.PROCESSING, ...overrideGuard },
       data: {
         status: OrderStatus.DELIVERED,
         deliveredContent: encryptDeliveredContent(args.sn, orderId),
@@ -1682,9 +1909,23 @@ export async function fulfillDigiflazzOrder(
     await ensureFulfillmentMessage(tx, orderId);
     await tx.orderItem.updateMany({ where: { orderId }, data: { status: OrderItemStatus.DELIVERED } });
     await tx.orderStatusHistory.create({
-      data: { orderId, status: OrderStatus.DELIVERED, meta: "digiflazz_fulfill" },
+      data: {
+        orderId,
+        status: OrderStatus.DELIVERED,
+        meta: override ? `digiflazz_marked_delivered by admin_id=${override.adminId}` : "digiflazz_fulfill",
+      },
     });
     await enqueueBuyerOrderReadyEmailIfGuest(tx, order);
+    if (override) {
+      // Audited in the same transaction as the claim it records.
+      await logAdminAction(tx, {
+        adminId: override.adminId,
+        action: "order.digiflazz_marked_delivered_by_admin",
+        targetType: "order",
+        targetId: order.id,
+        details: `Marked order ${order.orderCode} as delivered after confirming with Digiflazz that the top-up went through; no refund or credit was made. Note: "${override.note.slice(0, 200)}".`,
+      });
+    }
   };
   // Commit the receipt, items and message anchor together. A database failure
   // leaves PROCESSING retryable with the original supplier reference.
@@ -1692,20 +1933,25 @@ export async function fulfillDigiflazzOrder(
   else await complete(db);
   // Logged right after the DELIVERED commit (the moment the buyer's order is
   // done), before the side effects below, which have their own failure path.
-  logDigiflazzOrderCompleted(order, "Sukses", order.digiflazzDispatchedAt, now, args.digiflazzApiDurationMs);
+  if (!override) logDigiflazzOrderCompleted(order, "Sukses", order.digiflazzDispatchedAt, now, args.digiflazzApiDurationMs);
 
   await finalizeDeliverySideEffects(db, order, now);
 
-
-  await logAdminAction(db, {
-    adminId: null,
-    action: "order.auto_fulfill_digiflazz",
-    targetType: "order",
-    targetId: order.id,
-    details: `Auto-fulfilled Digiflazz order ${order.orderCode}.`,
-  });
-
-  logger.info(`Auto-fulfilled Digiflazz order ${order.orderCode}`);
+  if (override) {
+    logger.info(
+      { orderId },
+      `Admin ${override.adminId} marked order ${order.orderCode} as delivered after confirming with Digiflazz that the top-up went through, so it was completed through the normal delivery path without a refund.`,
+    );
+  } else {
+    await logAdminAction(db, {
+      adminId: null,
+      action: "order.auto_fulfill_digiflazz",
+      targetType: "order",
+      targetId: order.id,
+      details: `Auto-fulfilled Digiflazz order ${order.orderCode}.`,
+    });
+    logger.info(`Auto-fulfilled Digiflazz order ${order.orderCode}`);
+  }
   const refreshed = await getOrder(db, orderId);
   emitDigiflazzOrderStatusChanged(orderId);
   return { order: refreshed! };

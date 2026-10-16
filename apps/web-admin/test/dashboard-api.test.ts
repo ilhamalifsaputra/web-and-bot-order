@@ -333,6 +333,22 @@ describe("GET /api/dashboard/operations", () => {
     expect(res.json()).toMatchObject({ awaitingFulfillment: 1, ordersProcessing: 1 });
   });
 
+  // Audit A5 follow-up: orders unresolved at Digiflazz get their own queue and
+  // stay out of awaitingFulfillment (they cannot be hand-fulfilled).
+  it("reports digiflazzUnresolved separately from awaitingFulfillment", async () => {
+    const buyer = await upsertUser(prisma, { telegramId: 42, username: "buyer", fullName: "Buyer" });
+    const mk = (orderCode: string, digiflazzStatus: string | null, fulfillmentProvider: string) =>
+      prisma.order.create({ data: { orderCode, userId: buyer.id, subtotalAmount: "1", totalAmount: "1", status: "PROCESSING", digiflazzStatus, fulfillmentProvider } });
+    await mk("ORD-unres", "unresolved_at_supplier", "DIGIFLAZZ");
+    await mk("ORD-pend", "pending_at_supplier", "DIGIFLAZZ");
+    await mk("ORD-failed", "failed", "DIGIFLAZZ");
+    await mk("ORD-manual", null, "MANUAL");
+
+    const res = await get("/api/dashboard/operations", cookie);
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ digiflazzUnresolved: 1, awaitingFulfillment: 2 });
+  });
+
   // Task 47 audit: confirms actionableManualMatchQueueCounts (which drives this
   // failedDeliveries figure) already sums delivery_failed rows across every
   // non-Binance gateway table too — there is no sixth `processedBybitBscTx`

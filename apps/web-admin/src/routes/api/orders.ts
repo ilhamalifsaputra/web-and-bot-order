@@ -42,6 +42,8 @@ import {
   type StockReplacementWithRefund,
   triggerDigiflazzDispatch,
   markDigiflazzOrderFailedByAdmin,
+  markDigiflazzOrderDeliveredByAdmin,
+  recheckDigiflazzOrderNow,
 } from "@app/db";
 import { DIGIFLAZZ_STATUS_UNRESOLVED } from "@app/core/orderFulfillment";
 import { currentAdmin, csrfProtect, blockReadonlyReads } from "../../plugins/auth";
@@ -100,6 +102,8 @@ function buildOrderFilter(q: Record<string, string | undefined>): OrderFilter {
     ids: parseIdsFilter(q.ids),
     since: parseDate(q.since),
     until: parseDate(q.until),
+    // The Operation Center's "Unresolved at supplier" queue link.
+    digiflazz: q.digiflazz === "unresolved" ? "unresolved" : null,
   };
 }
 
@@ -281,6 +285,8 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
           }
         : undefined;
     const digiflazzCreditLocked = isDigiflazzCreditLocked(order);
+    const unresolvedAtSupplier =
+      order.status === OrderStatus.PROCESSING && order.digiflazzStatus === DIGIFLAZZ_STATUS_UNRESOLVED;
     return reply.send({
       order: { ...masked, createdAtDisplay: displayDateTime(order.createdAt) },
       hasDeliveredContent,
@@ -298,11 +304,14 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
       // supplier may still deliver, and creditOrderToBalance refuses it.
       creditLockedBySupplier: digiflazzCreditLocked,
       // Backend audit A5: the order is unresolved at Digiflazz (no final answer
-      // after 24h) and an admin who reconciled it with Digiflazz may mark it
-      // failed (POST /api/orders/:orderId/digiflazz/mark-failed) — the only
-      // human way out; the server re-checks the state and the in-flight lease.
-      canMarkSupplierFailed:
-        order.status === OrderStatus.PROCESSING && order.digiflazzStatus === DIGIFLAZZ_STATUS_UNRESOLVED,
+      // after 24h). The three human ways out, all offered together: run one
+      // live check now (.../digiflazz/recheck), or, after reconciling with
+      // Digiflazz, mark it delivered (.../digiflazz/mark-delivered) or failed
+      // (.../digiflazz/mark-failed). The server re-checks the state and the
+      // in-flight lease on each.
+      canMarkSupplierFailed: unresolvedAtSupplier,
+      canMarkSupplierDelivered: unresolvedAtSupplier,
+      canRecheckSupplier: unresolvedAtSupplier,
       customerDataFields,
       customerData,
       stockReplacements: stockReplacements.map(serializeStockReplacement),
@@ -578,6 +587,53 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
     }
     nudgeOutboxDispatcher();
     return reply.send({ ok: true });
+  });
+
+  // Audit A5 follow-up: an admin who confirmed with Digiflazz that an
+  // unresolved order's top-up DID go through marks it delivered — the normal
+  // delivery path, no refund or credit. `note` (required) is the private
+  // reconciliation note for the audit row (written by the crud function, so not
+  // repeated here); `sn` (optional) is the serial number Digiflazz gave, shown
+  // to the buyer as the receipt.
+  app.post("/api/orders/:orderId/digiflazz/mark-delivered", { preHandler: csrfProtect }, async (req, reply) => {
+    const orderId = parsePositiveId((req.params as { orderId: string }).orderId);
+    if (orderId === null) return reply.code(400).send({ error: "Invalid order id." });
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const note = typeof body.note === "string" ? body.note.trim() : "";
+    const sn = typeof body.sn === "string" ? body.sn.trim().slice(0, 200) : "";
+    if (!note) {
+      return reply.code(400).send(errorBody(new ValidationError("error.digiflazz_delivery_note_required")));
+    }
+    try {
+      await markDigiflazzOrderDeliveredByAdmin(prisma, { orderId, adminId: req.admin!.userId, note, sn });
+    } catch (e) {
+      if (e instanceof ValidationError) {
+        return reply.code(422).send(errorBody(e));
+      }
+      throw e;
+    }
+    nudgeOutboxDispatcher();
+    return reply.send({ ok: true });
+  });
+
+  // Audit A5 follow-up: one live Digiflazz status check for an unresolved order
+  // (at most one per order per minute). Changes no money by itself; a Sukses or
+  // Gagal answer goes through the normal delivery / failure path. Returns the
+  // outcome (delivered | failed | still_pending | busy) for the admin's toast.
+  app.post("/api/orders/:orderId/digiflazz/recheck", { preHandler: csrfProtect }, async (req, reply) => {
+    const orderId = parsePositiveId((req.params as { orderId: string }).orderId);
+    if (orderId === null) return reply.code(400).send({ error: "Invalid order id." });
+    let outcome: Awaited<ReturnType<typeof recheckDigiflazzOrderNow>>["outcome"];
+    try {
+      ({ outcome } = await recheckDigiflazzOrderNow(prisma, { orderId, adminId: req.admin!.userId }));
+    } catch (e) {
+      if (e instanceof ValidationError) {
+        return reply.code(422).send(errorBody(e));
+      }
+      throw e;
+    }
+    if (outcome === "delivered" || outcome === "failed") nudgeOutboxDispatcher();
+    return reply.send({ ok: true, outcome });
   });
 
   // Manual hand-fulfilment: an admin types the account content for a

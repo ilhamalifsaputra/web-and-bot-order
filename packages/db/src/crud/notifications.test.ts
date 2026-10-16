@@ -37,6 +37,7 @@ import {
   releaseNotificationClaimWithBackoff,
   markNotificationSent,
   markNotificationFailed,
+  markNotificationSkipped,
   retryNotification,
   getNotification,
   outboxStatusCounts,
@@ -332,7 +333,9 @@ describe("outbox CRUD", () => {
       await enqueueNotification(prisma, NotificationEvent.ORDER_DELIVERED, orderId, {});
       const [row] = await fetchPendingNotifications(prisma, 1);
       const now = new Date();
-      await markNotificationFailed(prisma, row!.id, "transient", 5, now);
+      await markNotificationFailed(prisma, row!.id, "permanent", 1, now);
+      // Only a terminal row is retryable; simulate a leftover backoff window on it.
+      await prisma.notificationOutbox.update({ where: { id: row!.id }, data: { nextRetryAt: new Date(now.getTime() + 600_000) } });
 
       await retryNotification(prisma, row!.id);
       const r = await prisma.notificationOutbox.findUnique({ where: { id: row!.id } });
@@ -357,6 +360,36 @@ describe("outbox CRUD", () => {
       expect(r!.status).toBe("PENDING");
       expect(r!.attempts).toBe(0);
       expect(r!.nextRetryAt).toBeNull();
+    });
+
+    it("retryNotification only requeues FAILED/DEAD_LETTER rows, never PENDING/SENDING/SENT/SKIPPED ones (any channel)", async () => {
+      for (const status of ["PENDING", "SENDING", "SENT", "SKIPPED"]) {
+        const row = await prisma.notificationOutbox.create({
+          data: { event: NotificationEvent.ORDER_DELIVERED, payloadJson: "{}", status, attempts: 2, lastError: status === "SKIPPED" ? "DEDUPED" : null },
+        });
+        expect(await retryNotification(prisma, row.id)).toBe(false);
+        const after = await prisma.notificationOutbox.findUniqueOrThrow({ where: { id: row.id } });
+        expect(after.status).toBe(status);
+        expect(after.attempts).toBe(2);
+      }
+      const failed = await prisma.notificationOutbox.create({ data: { event: NotificationEvent.ORDER_DELIVERED, payloadJson: "{}", status: "FAILED", attempts: 1 } });
+      expect(await retryNotification(prisma, failed.id)).toBe(true);
+      expect((await prisma.notificationOutbox.findUniqueOrThrow({ where: { id: failed.id } })).status).toBe("PENDING");
+    });
+
+    it("markNotificationSkipped records SKIPPED with a reason, no attempt, and optionally frees the dedupe slot", async () => {
+      const keep = await prisma.notificationOutbox.create({ data: { event: "X", payloadJson: "{}", status: "SENDING", claimedAt: new Date(), dedupeKey: "skip-keep" } });
+      const claimed = (await prisma.notificationOutbox.findUniqueOrThrow({ where: { id: keep.id } })).claimedAt!;
+      expect(await markNotificationSkipped(prisma, keep.id, "ALREADY_COVERED", { claimedAt: claimed })).toBe(true);
+      let r = await prisma.notificationOutbox.findUniqueOrThrow({ where: { id: keep.id } });
+      expect([r.status, r.lastError, r.attempts, r.claimedAt, r.dedupeKey, r.sentAt]).toEqual(["SKIPPED", "ALREADY_COVERED", 0, null, "skip-keep", null]);
+      const free = await prisma.notificationOutbox.create({ data: { event: "X", payloadJson: "{}", status: "SENDING", claimedAt: new Date(), dedupeKey: "skip-free" } });
+      expect(await markNotificationSkipped(prisma, free.id, "SKIPPED_DISABLED", { releaseDedupeKey: true })).toBe(true);
+      r = await prisma.notificationOutbox.findUniqueOrThrow({ where: { id: free.id } });
+      expect([r.status, r.dedupeKey]).toEqual(["SKIPPED", null]);
+      // A lost claim writes nothing.
+      const lost = await prisma.notificationOutbox.create({ data: { event: "X", payloadJson: "{}", status: "SENDING", claimedAt: new Date() } });
+      expect(await markNotificationSkipped(prisma, lost.id, "R", { claimedAt: new Date(0) })).toBe(false);
     });
 
     it("a backed-off row never starves a VALID row enqueued after it, once the batch is limit-constrained", async () => {

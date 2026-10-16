@@ -39,13 +39,13 @@ describe.each(EMAIL_EVENT_REGISTRY)("$key worker integration", (event) => {
     await setSetting(prisma, emailPolicyKey(event.key), "false");
     await drainBatch(null);
     const pending = await prisma.notificationOutbox.findFirstOrThrow();
-    expect(pending.status).toBe(event.mandatory ? "SENT" : "FAILED");
+    expect(pending.status).toBe(event.mandatory ? "SENT" : "SKIPPED");
     if (!event.mandatory) expect(pending.lastError).toBe("SKIPPED_DISABLED");
     expect(sendMail).toHaveBeenCalledTimes(event.mandatory ? 1 : 0);
     await setSetting(prisma, emailPolicyKey(event.key), "true");
     await enqueueEmailEvent(prisma, args("missing", null)); await drainBatch(null);
     expect(sendMail).toHaveBeenCalledTimes(event.mandatory ? 1 : 0);
-    expect(await prisma.notificationOutbox.findFirst({ where: { lastError: "SKIPPED_NO_RECIPIENT", status: "FAILED" } })).not.toBeNull();
+    expect(await prisma.notificationOutbox.findFirst({ where: { lastError: "SKIPPED_NO_RECIPIENT", status: "SKIPPED" } })).not.toBeNull();
   });
   it("retries transient SMTP failures and records permanent rejection without fake SENT", async () => {
     await setSetting(prisma, emailPolicyKey(event.key), "true");

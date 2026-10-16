@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { EMAIL_EVENT_REGISTRY, type EmailEventKey } from "@app/core/email";
 import { config } from "@app/core/config";
 import { encryptCredentials } from "@app/core/credentialCrypto";
-import { OrderStatus } from "@app/core/enums";
+import { NotificationStatus, OrderStatus } from "@app/core/enums";
 import type { Db } from "./_types";
 import { isEmailEventEnabled } from "./emailPolicy";
 
@@ -39,10 +39,15 @@ export async function enqueueEmailEvent(db: Db, args: {
   const allowed = await isEmailEventEnabled(db, args.key);
   const skip = !allowed ? "SKIPPED_DISABLED" : !to ? "SKIPPED_NO_RECIPIENT" : null;
   const recipientKey = createHash("sha256").update(to ?? "none").digest("hex").slice(0, 24);
-  const dedupeKey = `email:${args.key}:${args.aggregateId}:${args.occurrence ?? "first"}:${recipientKey}`;
+  const factKey = `email:${args.key}:${args.aggregateId}:${args.occurrence ?? "first"}:${recipientKey}`;
+  // A skipped row is only a record that this fact was not emailed. It lives in
+  // its own `:skipped` slot so it can never block a real send of the same fact
+  // after the owner re-enables the event or a recipient appears, while repeated
+  // enqueues of the same skipped fact still collapse into one SKIPPED row.
+  const dedupeKey = skip ? `${factKey}:skipped` : factKey;
   const result = await db.notificationOutbox.createMany({ skipDuplicates: true, data: [{
     event: args.key, channel: "EMAIL", orderId: args.orderId ?? null, dedupeKey,
-    status: skip ? "FAILED" : "PENDING", lastError: skip,
+    status: skip ? NotificationStatus.SKIPPED : NotificationStatus.PENDING, lastError: skip,
     payloadJson: JSON.stringify({ ...safePayload, to, event_key: args.key, occurred_at: new Date().toISOString(), ...(skip ? { outcome: skip } : {}) }),
   }] });
   return result.count === 1;

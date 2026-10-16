@@ -835,6 +835,12 @@ export const NotificationStatus = {
   // FAILED so operators can page on "retried to the ceiling, still failing"
   // without the metric being drowned out by one-shot invalid-data failures.
   DEAD_LETTER: "DEAD_LETTER",
+  // Terminal, never retried, NOT a failure: the dispatcher or enqueue path
+  // deliberately did not deliver this row (the owner switched the email event
+  // off, there is no recipient, or the same news was already delivered by
+  // another row). `lastError` carries the reason. The column is a free String
+  // (no DB CHECK), so adding this value needs no migration.
+  SKIPPED: "SKIPPED",
 } as const;
 export type NotificationStatus =
   (typeof NotificationStatus)[keyof typeof NotificationStatus];

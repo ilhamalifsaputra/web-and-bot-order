@@ -11,7 +11,9 @@ const legacyFlags: Record<string, string> = {
   "legacy.owner_wallet_topup": "owner_email_on_wallet_topup",
   "support.ticket.created.admin": "owner_email_on_new_ticket",
 };
-const enabled = (value?: string | null) => value === "true" || value === "1";
+// Case/whitespace-insensitive, as the legacy owner-email toggles always were,
+// so a legacy "TRUE" keeps meaning on now that enqueue and dispatch share this.
+const enabled = (value?: string | null) => { const v = (value ?? "").trim().toLowerCase(); return v === "true" || v === "1"; };
 /** Read fresh: turning a switch OFF must affect rows already waiting in the outbox. */
 export async function isEmailEventEnabled(db: Db, event: string): Promise<boolean> {
   const key = canonicalEmailEventFor(event);

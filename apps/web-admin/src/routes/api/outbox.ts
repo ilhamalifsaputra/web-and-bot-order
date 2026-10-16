@@ -33,7 +33,7 @@ function emailDiagnostics(row: { channel: string; event: string; status: string;
     ? new Date(evidence.acceptedAt).toISOString() : null;
   const emailErrorCode = row.lastError ? SAFE_EMAIL_ERRORS.has(row.lastError) ? row.lastError : "LEGACY_ERROR_REDACTED" : null;
   const deliveryOutcome = row.status === "SENT" ? emailAcceptedAt ? "transport_accepted" : "sent_without_evidence"
-    : emailErrorCode?.startsWith("SKIPPED_") ? "skipped" : emailErrorCode === "NO_RECIPIENT" ? "no_recipient"
+    : row.status === "SKIPPED" || emailErrorCode?.startsWith("SKIPPED_") ? "skipped" : emailErrorCode === "NO_RECIPIENT" ? "no_recipient"
     : row.status === "PENDING" ? "queued" : row.status === "SENDING" ? "attempting" : "failed";
   return {
     payloadJson: JSON.stringify({ recipient: emailRecipientMasked, accepted_at: emailAcceptedAt }),

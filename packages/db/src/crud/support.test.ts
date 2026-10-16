@@ -1443,7 +1443,7 @@ describe("owner-email ticket triggers (createTicket / addTicketMessage)", () => 
     expect(
       await prisma.notificationOutbox.count({ where: { event: "support.ticket.created.admin" } }),
     ).toBe(before + 1);
-    expect(await prisma.notificationOutbox.findFirst({ where: { event: "support.ticket.created.admin", lastError: "SKIPPED_DISABLED", status: "FAILED" }, orderBy: { id: "desc" } })).not.toBeNull();
+    expect(await prisma.notificationOutbox.findFirst({ where: { event: "support.ticket.created.admin", lastError: "SKIPPED_DISABLED", status: "SKIPPED" }, orderBy: { id: "desc" } })).not.toBeNull();
   });
 
   it("addTicketMessage with senderType USER enqueues exactly one OWNER_EMAIL_TICKET_REPLY row, carrying the ticket id", async () => {

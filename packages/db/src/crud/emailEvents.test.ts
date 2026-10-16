@@ -41,11 +41,29 @@ describe("all 23 event policies and durable target dedup", () => {
     await setSetting(db, emailPolicyKey(row.key), "false");
     expect(await isEmailEventEnabled(db, row.key)).toBe(row.mandatory);
     await enqueueEmailEvent(db, { ...args, aggregateId: "disabled" });
-    rows = await events(); expect(rows[1]!.status).toBe(row.mandatory ? "PENDING" : "FAILED");
+    rows = await events(); expect(rows[1]!.status).toBe(row.mandatory ? "PENDING" : "SKIPPED");
     if (!row.mandatory) expect(rows[1]!.lastError).toBe("SKIPPED_DISABLED");
     await setSetting(db, emailPolicyKey(row.key), "true");
     await enqueueEmailEvent(db, { ...args, aggregateId: "no-email", to: null });
-    rows = await events(); expect(rows[2]!.status).toBe("FAILED"); expect(rows[2]!.lastError).toBe("SKIPPED_NO_RECIPIENT");
+    rows = await events(); expect(rows[2]!.status).toBe("SKIPPED"); expect(rows[2]!.lastError).toBe("SKIPPED_NO_RECIPIENT");
+  });
+});
+
+describe("skipped email events never hold the dedupe slot", () => {
+  it("re-enabling an event lets a later occurrence of the same fact enqueue, while repeats of a skip stay deduped", async () => {
+    const key = "support.ticket.created.admin" as const;
+    const args = { key, aggregateId: "ticket-1", userId: sample.user.id, payload: {} };
+    await setSetting(db, emailPolicyKey(key), "false");
+    expect(await enqueueEmailEvent(db, args)).toBe(true);
+    expect(await enqueueEmailEvent(db, args)).toBe(false); // repeated skip: no pile-up of SKIPPED rows
+    let rows = await events();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.status).toBe("SKIPPED");
+    await setSetting(db, emailPolicyKey(key), "true");
+    expect(await enqueueEmailEvent(db, args)).toBe(true);
+    rows = await events();
+    expect(rows.map((r) => r.status)).toEqual(["SKIPPED", "PENDING"]);
+    expect(await enqueueEmailEvent(db, args)).toBe(false); // the real PENDING row still dedupes
   });
 });
 

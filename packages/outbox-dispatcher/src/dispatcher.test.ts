@@ -130,6 +130,7 @@ import {
   enqueueTicketReplyDm,
   enqueueTicketClosedDm,
   manualMatchTx,
+  retryNotification,
   recordUnmatchedTx,
   adoptTransactionMessage,
 } from "@app/db";
@@ -140,7 +141,7 @@ import { config } from "@app/core/config";
 import { Decimal } from "@app/core/money";
 import { sendMail } from "@app/core/mailer";
 import { buildSampleData } from "../../../tests/helpers/sampleData";
-import { drainBatch, runDispatcher } from "./dispatcher";
+import { drainBatch, runDispatcher, setTelegramSendTimeoutMsForTests } from "./dispatcher";
 import { FulfillmentMessageWorker, type FulfillmentTelegramApi } from "./fulfillmentMessages";
 
 afterAll(async () => {
@@ -166,6 +167,21 @@ function fakeDocBot() {
   const bot = { api: { sendDocument, sendMessage } } as unknown as Bot;
   return { bot, sendDocument, sendMessage };
 }
+
+describe("drainBatch bounds every Telegram send (backend audit B7)", () => {
+  afterEach(() => setTelegramSendTimeoutMsForTests(null));
+  it("treats a send that never settles as a retryable failed attempt instead of holding the claim", async () => {
+    setTelegramSendTimeoutMsForTests(50);
+    const row = await enqueueAdminPasswordReset(prisma, { telegramId: 700_001, code: "TIMEOUT", ttlMinutes: 5 }).then(() => prisma.notificationOutbox.findFirstOrThrow({ where: { event: "ADMIN_PW_RESET", payloadJson: { contains: "TIMEOUT" } } }));
+    const sendMessage = vi.fn().mockReturnValue(new Promise(() => undefined));
+    await drainBatch({ api: { sendMessage } } as unknown as Bot);
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    const saved = await prisma.notificationOutbox.findUniqueOrThrow({ where: { id: row.id } });
+    expect([saved.status, saved.attempts, saved.claimedAt]).toEqual(["PENDING", 1, null]);
+    expect(saved.lastError).toContain("timed out");
+    expect(saved.nextRetryAt!.getTime()).toBeGreaterThan(Date.now());
+  });
+});
 
 describe("drainBatch claim/release (Infra-2)", () => {
   it("sends a PENDING row once and marks it SENT", async () => {
@@ -623,7 +639,8 @@ describe("ORDER_DELIVERED_DM never sends an acknowledged credentials file twice"
     await drainBatch(replay.bot);
     expect(replay.sendDocument).toHaveBeenCalledTimes(0);
     expect(replay.sendMessage).toHaveBeenCalledTimes(0);
-    expect((await lastRow(order.id)).status).toBe("SENT");
+    const dropped = await lastRow(order.id);
+    expect([dropped.status, dropped.lastError]).toEqual(["SKIPPED", "CREDENTIALS_ALREADY_DELIVERED"]);
     expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).credentialsDocMsgId).toBe(7001);
   });
 
@@ -950,8 +967,13 @@ describe("drainBatch delivers the per-SKU manual delivery-flow DMs", () => {
     await drainBatch(bot);
     expect(sendMessage.mock.calls.filter(call => call[0] === 500_997)).toHaveLength(0);
     expect(vi.mocked(sendMail).mock.calls.length).toBe(emailsBefore);
-    expect(await prisma.notificationOutbox.count({ where: { orderId: order.id, status: "SENT" } })).toBe(1);
-    expect(await prisma.notificationOutbox.count({where:{orderId:order.id,channel:"EMAIL",status:"FAILED"}})).toBe(2);
+    // The deduped wallet DM is SKIPPED (never SENT: nothing was sent), and the
+    // two emails the owner never enabled are SKIPPED too, not FAILED.
+    expect(await prisma.notificationOutbox.count({ where: { orderId: order.id, status: "SENT" } })).toBe(0);
+    const skipped = await prisma.notificationOutbox.findMany({ where: { orderId: order.id, status: "SKIPPED" } });
+    expect(skipped).toHaveLength(3);
+    expect(skipped.find((r) => r.event === NotificationEvent.WALLET_TOPUP_CREDITED_DM)!.lastError).toBe("ALREADY_COVERED_BY_TRACKED_MESSAGE");
+    expect(await prisma.notificationOutbox.count({where:{orderId:order.id,channel:"EMAIL",status:"FAILED"}})).toBe(0);
   });
   it("suppresses legacy manual notifications already queued for a Digiflazz order", async () => {
     const buyer = await upsertUser(prisma, { telegramId: 500_999, username: "auto-buyer", fullName: "Buyer" });
@@ -962,7 +984,9 @@ describe("drainBatch delivers the per-SKU manual delivery-flow DMs", () => {
     const { bot, sendMessage } = fakeBot();
     await drainBatch(bot);
     expect(sendMessage.mock.calls.filter(call => call[0] === 500_999)).toHaveLength(0);
-    expect((await prisma.notificationOutbox.findFirstOrThrow({ where: { orderId: order!.id, event: NotificationEvent.ORDER_PROCESSING_DM } })).status).toBe("SENT");
+    const dropped = await prisma.notificationOutbox.findFirstOrThrow({ where: { orderId: order!.id, event: NotificationEvent.ORDER_PROCESSING_DM } });
+    expect([dropped.status, dropped.sentAt]).toEqual(["SKIPPED", null]);
+    expect(dropped.lastError).toBe("ALREADY_COVERED_BY_TRACKED_MESSAGE");
   });
   it("suppresses ORDER_PROCESSING_DM for a manual order that already has a tracked progress message", async () => {
     const buyer = await upsertUser(prisma, { telegramId: 500_998, username: "manual-tracked", fullName: "Buyer" });
@@ -974,7 +998,7 @@ describe("drainBatch delivers the per-SKU manual delivery-flow DMs", () => {
     const { bot, sendMessage } = fakeBot();
     await drainBatch(bot);
     expect(sendMessage.mock.calls.filter(call => call[0] === 500_998)).toHaveLength(0);
-    expect((await prisma.notificationOutbox.findFirstOrThrow({ where: { orderId: order!.id, event: NotificationEvent.ORDER_PROCESSING_DM } })).status).toBe("SENT");
+    expect((await prisma.notificationOutbox.findFirstOrThrow({ where: { orderId: order!.id, event: NotificationEvent.ORDER_PROCESSING_DM } })).status).toBe("SKIPPED");
   });
   /** Each test creates its own buyer (unique telegramId — this file runs many
    * tests against one shared temp DB with no per-test reset, so ids/names
@@ -1008,7 +1032,7 @@ describe("drainBatch delivers the per-SKU manual delivery-flow DMs", () => {
     const row = await prisma.notificationOutbox.findFirst({
       where: { orderId: order!.id, event: NotificationEvent.ORDER_PROCESSING_DM },
     });
-    expect(row!.status).toBe("SENT");
+    expect(row!.status).toBe("SKIPPED");
   });
 
   it("also alerts admins (ADMIN_MANUAL_ORDER_QUEUED) that the order needs hand-fulfilment", async () => {
@@ -1658,7 +1682,36 @@ describe("drainBatch EMAIL lane (owner email notifications)", () => {
     const row=await prisma.notificationOutbox.create({data:{event:"OWNER_EMAIL_ORDER_PAID",channel:"EMAIL",payloadJson:JSON.stringify({to:"owner@example.com"})}});
     await drainBatch(fakeBot().bot);
     const saved=await prisma.notificationOutbox.findUniqueOrThrow({where:{id:row.id}});
-    expect(saved.status).toBe("FAILED"); expect(saved.lastError).toBe("SKIPPED_DISABLED");expect(sendMail).not.toHaveBeenCalled();
+    expect(saved.status).toBe("SKIPPED"); expect(saved.lastError).toBe("SKIPPED_DISABLED");expect(sendMail).not.toHaveBeenCalled();
+  });
+  it("a disabled-at-dispatch row is SKIPPED, not retryable, and frees its dedupe slot for a later occurrence", async () => {
+    await setSetting(prisma,"email_event_enabled:legacy.owner_order_paid","false");
+    const key = `email:legacy.owner_order_paid:slot-${crypto.randomUUID()}`;
+    const row=await prisma.notificationOutbox.create({data:{event:"OWNER_EMAIL_ORDER_PAID",channel:"EMAIL",dedupeKey:key,payloadJson:JSON.stringify({to:"owner@example.com"})}});
+    await drainBatch(fakeBot().bot);
+    const saved=await prisma.notificationOutbox.findUniqueOrThrow({where:{id:row.id}});
+    expect([saved.status,saved.attempts,saved.dedupeKey]).toEqual(["SKIPPED",0,null]);
+    expect(await retryNotification(prisma,row.id)).toBe(false);
+    await setSetting(prisma,"email_event_enabled:legacy.owner_order_paid","true");
+    const again=await prisma.notificationOutbox.createMany({skipDuplicates:true,data:[{event:"OWNER_EMAIL_ORDER_PAID",channel:"EMAIL",dedupeKey:key,payloadJson:JSON.stringify({to:"owner@example.com"})}]});
+    expect(again.count).toBe(1);
+    await prisma.notificationOutbox.deleteMany({where:{dedupeKey:key}});
+  });
+  it.each([
+    ["EAUTH",{code:"EAUTH"},"SMTP_AUTH"],
+    ["TLS",{code:"ETLS"},"SMTP_TLS"],
+  ])("a global SMTP %s failure never terminally fails the queued row: it backs off and stays PENDING", async (_n, errProps, code) => {
+    await setSetting(prisma,SMTP_HOST_KEY,"smtp.test.invalid");await setSetting(prisma,SMTP_FROM_KEY,"Shop <no-reply@example.com>");
+    const row=await prisma.notificationOutbox.create({data:{event:"OWNER_EMAIL_NEW_TICKET",channel:"EMAIL",payloadJson:JSON.stringify({to:"owner@example.com",ticket_id:58})}});
+    vi.mocked(sendMail).mockRejectedValueOnce(Object.assign(new Error("secret=smtp-password"),errProps));
+    await drainBatch(fakeBot().bot);
+    const saved=await prisma.notificationOutbox.findUniqueOrThrow({where:{id:row.id}});
+    expect(saved.status).toBe("PENDING");expect(saved.nextRetryAt!.getTime()).toBeGreaterThan(Date.now());
+    expect(saved.lastError).toBe(code);
+    // Once the owner fixes the SMTP settings the same row is delivered.
+    await prisma.notificationOutbox.update({where:{id:row.id},data:{nextRetryAt:new Date(0)}});
+    await drainBatch(fakeBot().bot);
+    expect((await prisma.notificationOutbox.findUniqueOrThrow({where:{id:row.id}})).status).toBe("SENT");
   });
   it("permanently rejected recipients fail once without leaking provider messages", async () => {
     await setSetting(prisma,SMTP_HOST_KEY,"smtp.test.invalid");await setSetting(prisma,SMTP_FROM_KEY,"Shop <no-reply@example.com>");

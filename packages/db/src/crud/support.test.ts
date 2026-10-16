@@ -2115,3 +2115,76 @@ it("audits a title correction while preserving the immutable ticket reference", 
   expect(await prisma.auditLog.findFirst({ where: { action: "ticket_title_change", targetId: ticket.id } })).toMatchObject({ adminId: admin.id, details: "Updated the support ticket title." });
   await expect(setSupportTitle(prisma, ticket.id, "   ", admin.id)).rejects.toBeInstanceOf(ValidationError);
 });
+
+// Backend audit pass 2, B6: every path that closes a ticket must enqueue the
+// buyer's TICKET_CLOSED_DM exactly once per actual close, not only the bot.
+describe("ticket-closed buyer notification (B6)", () => {
+  async function closedDms(ticketId: number) {
+    const rows = await prisma.notificationOutbox.findMany({ where: { event: NotificationEvent.TICKET_CLOSED_DM } });
+    return rows.filter((r) => (JSON.parse(r.payloadJson) as { ticket_id: number }).ticket_id === ticketId);
+  }
+
+  beforeEach(async () => {
+    await prisma.notificationOutbox.deleteMany();
+  });
+
+  it("closeTicket enqueues exactly one DM in the buyer's language; a re-close adds none", async () => {
+    const user = await prisma.user.create({ data: { telegramId: 7001n, referralCode: "b6-1", language: "id" } });
+    const ticket = await createTicket(prisma, user.id, "help");
+    await closeTicket(prisma, ticket.id);
+    await closeTicket(prisma, ticket.id);
+    const rows = await closedDms(ticket.id);
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0]!.payloadJson)).toEqual({ chat_id: 7001, ticket_id: ticket.id, buyer_language: "id" });
+  });
+
+  it("closeTicket enqueues nothing for a web-only buyer or a missing ticket", async () => {
+    const user = await makeUser(null);
+    const ticket = await createTicket(prisma, user.id, "help");
+    await closeTicket(prisma, ticket.id);
+    await closeTicket(prisma, 999999);
+    expect(await prisma.notificationOutbox.count({ where: { event: NotificationEvent.TICKET_CLOSED_DM } })).toBe(0);
+  });
+
+  it("bulkCloseTickets enqueues one DM per newly closed ticket and none for an already-closed one", async () => {
+    const user = await makeUser(7002n);
+    const already = await createTicket(prisma, user.id, "already");
+    await closeTicket(prisma, already.id);
+    const open = await createTicket(prisma, user.id, "open");
+    await prisma.notificationOutbox.deleteMany();
+
+    await bulkCloseTickets(prisma, [already.id, open.id]);
+    await bulkCloseTickets(prisma, [already.id, open.id]);
+
+    expect(await closedDms(already.id)).toHaveLength(0);
+    expect(await closedDms(open.id)).toHaveLength(1);
+  });
+
+  it("transitionTicketStatus to CLOSED enqueues one DM; other transitions enqueue none", async () => {
+    const user = await makeUser(7003n);
+    const ticket = await createTicket(prisma, user.id, "help");
+    await transitionTicketStatus(prisma, { ticketId: ticket.id, from: TicketStatus.OPEN, to: TicketStatus.IN_PROGRESS, adminId: null });
+    expect(await closedDms(ticket.id)).toHaveLength(0);
+    await transitionTicketStatus(prisma, { ticketId: ticket.id, from: TicketStatus.IN_PROGRESS, to: TicketStatus.CLOSED, adminId: null });
+    expect(await closedDms(ticket.id)).toHaveLength(1);
+  });
+
+  it("a ticket reopened and closed again notifies again (one DM per close)", async () => {
+    const user = await makeUser(7004n);
+    const ticket = await createTicket(prisma, user.id, "help");
+    await closeTicket(prisma, ticket.id);
+    await transitionTicketStatus(prisma, { ticketId: ticket.id, from: TicketStatus.CLOSED, to: TicketStatus.OPEN, adminId: null });
+    await new Promise((r) => setTimeout(r, 5));
+    await closeTicket(prisma, ticket.id);
+    expect(await closedDms(ticket.id)).toHaveLength(2);
+  });
+
+  it("auto-close variant carries the auto_closed marker", async () => {
+    const user = await makeUser(7005n);
+    const ticket = await createTicket(prisma, user.id, "help");
+    await closeTicket(prisma, ticket.id, { autoClosed: true });
+    const rows = await closedDms(ticket.id);
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0]!.payloadJson).auto_closed).toBe(true);
+  });
+});

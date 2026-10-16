@@ -10,7 +10,7 @@ import { addDays, addMinutes, startOfDayUtc } from "@app/core/datetime";
 import { ValidationError } from "@app/core/errors";
 import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
-import { enqueueOwnerTicketReplyEmail, enqueueTicketReplyDm, enqueueAdminNewTicketDm } from "./notifications";
+import { enqueueOwnerTicketReplyEmail, enqueueTicketReplyDm, enqueueAdminNewTicketDm, enqueueTicketClosedDm } from "./notifications";
 import { logAdminAction } from "./audit";
 import { withoutDeliveredContent } from "./orders";
 import { attachSupportMedia } from "./supportAttachments";
@@ -198,16 +198,46 @@ export function countOpenTickets(db: Db): Promise<number> {
  * actually flipped it, so a double-tap "Close" can never fire two DMs to the
  * buyer (Bot-3 fix, security audit 2026-06-23).
  */
-export async function closeTicket(db: Db, ticketId: number): Promise<bigint | null> {
+export async function closeTicket(
+  db: Db,
+  ticketId: number,
+  opts: { autoClosed?: boolean } = {},
+): Promise<bigint | null> {
+  // The close and the buyer's TICKET_CLOSED_DM row commit together.
+  if ("$transaction" in db) return db.$transaction((tx) => closeTicket(tx, ticketId, opts));
+  const closedAt = new Date();
   const res = await db.supportTicket.updateMany({
     where: { id: ticketId, status: { not: TicketStatus.CLOSED } },
-    data: { status: TicketStatus.CLOSED, closedAt: new Date(), lastStatusChangeAt: new Date(), lastActivityAt: new Date() },
+    data: { status: TicketStatus.CLOSED, closedAt, lastStatusChangeAt: closedAt, lastActivityAt: closedAt },
   });
   if (res.count === 0) return null;
   const ticket = await db.supportTicket.findUnique({ where: { id: ticketId } });
   if (!ticket) return null;
   const user = await db.user.findUnique({ where: { id: ticket.userId } });
-  return user ? user.telegramId : null;
+  if (!user) return null;
+  await enqueueTicketClosedNotice(db, ticketId, closedAt, user, opts.autoClosed);
+  return user.telegramId;
+}
+
+/** Queue the buyer's "your ticket was closed" DM for one actual close. The
+ * dedupe key is per close (ticket id + close time), so a repeated call for the
+ * same close is a no-op while a reopen-then-close notifies again. A web-only
+ * buyer (no telegramId) has nobody to DM. */
+async function enqueueTicketClosedNotice(
+  db: Db,
+  ticketId: number,
+  closedAt: Date,
+  user: { telegramId: bigint | null; language: string | null },
+  autoClosed?: boolean,
+): Promise<void> {
+  if (user.telegramId === null) return;
+  await enqueueTicketClosedDm(db, {
+    ticketId,
+    chatId: Number(user.telegramId),
+    buyerLanguage: user.language,
+    autoClosed,
+    dedupeKey: `ticket-closed:${ticketId}:${closedAt.getTime()}`,
+  });
 }
 
 /** Customer self-close ("Issue Solved"). Same atomic conditional guard as
@@ -656,6 +686,11 @@ export async function transitionTicketStatus(
   }
 
   const ticket = await db.supportTicket.findUniqueOrThrow({ where: { id: ticketId } });
+
+  if (to === TicketStatus.CLOSED) {
+    const owner = await db.user.findUnique({ where: { id: ticket.userId } });
+    if (owner) await enqueueTicketClosedNotice(db, ticketId, now, owner);
+  }
 
   await logAdminAction(db, {
     adminId,

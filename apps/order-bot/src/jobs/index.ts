@@ -618,24 +618,17 @@ export async function sweepPaidOrderBubbles(
   }
 }
 
-export async function autoCloseStaleTickets(api: Api): Promise<void> {
+export async function autoCloseStaleTickets(_api: Api): Promise<void> {
   const cutoff = new Date(Date.now() - 48 * 3_600_000);
   const stale = await listStaleRepliedTickets(prisma, cutoff);
   for (const ticket of stale) {
     try {
       const user = await getUser(prisma, ticket.userId);
       if (user === null) continue;
-      await closeTicket(prisma, ticket.id);
+      // The buyer's notice is queued in the same transaction as the close, so
+      // the outbox retries it instead of a one-shot direct send.
+      await closeTicket(prisma, ticket.id, { autoClosed: true });
       logger.info(`Support ticket #${ticket.id} (user ${ticket.userId}) auto-closed after 48h with no customer reply`);
-      try {
-        await api.sendMessage(
-          Number(user.telegramId),
-          coreT("ticket.auto_closed", langCode(user.language), { ticket_id: ticket.id }),
-          { parse_mode: "HTML" },
-        );
-      } catch (err) {
-        logger.error({ err }, `Failed to notify the customer that ticket #${ticket.id} was auto-closed — ticket is closed, but they won't see it until they reopen the bot`);
-      }
     } catch (err) {
       logger.error({ err }, `Failed to auto-close stale support ticket #${ticket.id} — ticket is still open and will be retried next tick`);
     }

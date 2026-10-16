@@ -228,6 +228,8 @@ interface RestockSubscriberPayload {
 
 interface TicketClosedPayload {
   buyer_language?: unknown;
+  ticket_id?: unknown;
+  auto_closed?: unknown;
 }
 
 /** M13 / audit P0-3 — the hourly market-rate refresh refused what it fetched.
@@ -296,6 +298,14 @@ export function render(
     // text itself, the same way it already does for
     // ORDER_DELIVERED_DM/ORDER_MANUAL_DELIVERED_DM.
     const lang = typeof payload.buyer_language === "string" ? payload.buyer_language.toLowerCase() : "en";
+    if (payload.auto_closed === true) {
+      // Mirrors locale key ticket.auto_closed, which autoCloseStaleTickets
+      // sent directly before it was routed through the outbox.
+      const id = String(payload.ticket_id);
+      return lang === "id"
+        ? `Tiket <b>#${id}</b> ditutup otomatis setelah 48 jam tanpa aktivitas.\nBuka tiket baru jika masih butuh bantuan.`
+        : `Ticket <b>#${id}</b> was automatically closed after 48 hours of inactivity. Open a new one if you still need help.`;
+    }
     return lang === "id"
       ? "Tiket ditutup. Buka tiket baru jika masih butuh bantuan."
       : "Your ticket has been closed. Open a new one if you need further help.";

@@ -673,18 +673,37 @@ export async function enqueueTicketReplyDm(
  */
 export async function enqueueTicketClosedDm(
   db: Db,
-  args: { ticketId: number; chatId: number; buyerLanguage: string | null },
+  args: {
+    ticketId: number;
+    chatId: number;
+    buyerLanguage: string | null;
+    /** Render the "closed automatically after 48 hours" wording instead of the
+     * plain admin-closed one (autoCloseStaleTickets). */
+    autoClosed?: boolean;
+    /** When given, a second enqueue with the same key is a silent no-op, so a
+     * repeated close call can never DM the buyer twice. */
+    dedupeKey?: string;
+  },
 ): Promise<void> {
+  const payloadJson = JSON.stringify({
+    chat_id: args.chatId,
+    ticket_id: args.ticketId,
+    buyer_language: langCode(args.buyerLanguage),
+    ...(args.autoClosed ? { auto_closed: true } : {}),
+  });
+  if (args.dedupeKey !== undefined) {
+    // Same ON CONFLICT DO NOTHING shape as enqueueNotification: a collision
+    // must not throw, because a UNIQUE violation would abort the caller's
+    // open Postgres transaction. (enqueueNotification itself needs an order id.)
+    await db.$executeRaw`
+      INSERT INTO notification_outbox (event, order_id, payload_json, dedupe_key)
+      VALUES (${NotificationEvent.TICKET_CLOSED_DM}, NULL, ${payloadJson}, ${args.dedupeKey})
+      ON CONFLICT (dedupe_key) DO NOTHING
+    `;
+    return;
+  }
   await db.notificationOutbox.create({
-    data: {
-      event: NotificationEvent.TICKET_CLOSED_DM,
-      orderId: null,
-      payloadJson: JSON.stringify({
-        chat_id: args.chatId,
-        ticket_id: args.ticketId,
-        buyer_language: langCode(args.buyerLanguage),
-      }),
-    },
+    data: { event: NotificationEvent.TICKET_CLOSED_DM, orderId: null, payloadJson },
   });
 }
 

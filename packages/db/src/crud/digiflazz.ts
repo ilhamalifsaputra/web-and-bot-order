@@ -894,10 +894,12 @@ export async function markDigiflazzOrderDeliveredByAdmin(
 }
 
 /** What one admin "check supplier now" ended in, without supplier jargon:
- * delivered (Sukses), failed (explicit Gagal), still_pending (Pending or the
- * check itself failed; the order stays unresolved), busy (another check holds
- * the order, or the order was checked by an admin less than a minute ago). */
-export type DigiflazzAdminRecheckOutcome = "delivered" | "failed" | "still_pending" | "busy";
+ * delivered (Sukses), failed (explicit Gagal), still_pending (Digiflazz
+ * answered Pending), check_failed (the check could not be sent or the request
+ * to Digiflazz failed, so nothing was learned), busy (another check holds the
+ * order, or the order was checked by an admin less than a minute ago). In
+ * still_pending and check_failed the order stays unresolved. */
+export type DigiflazzAdminRecheckOutcome = "delivered" | "failed" | "still_pending" | "check_failed" | "busy";
 
 /** At most one admin-requested live check per order in this window. */
 export const DIGIFLAZZ_ADMIN_RECHECK_MIN_INTERVAL_MS = 60_000;
@@ -977,7 +979,7 @@ export async function recheckDigiflazzOrderNow(
       dispatchedAt,
       webhookOptions,
     );
-    outcome = "still_pending";
+    outcome = "check_failed";
     detail = `the check could not be sent (${structuralProblem}), so it stays unresolved`;
   } else {
     let result: Awaited<ReturnType<typeof createTransaction>> | null = null;
@@ -989,7 +991,7 @@ export async function recheckDigiflazzOrderNow(
     }
     if (!result) {
       await recordDigiflazzOutcome(db, order, { kind: "transient_error", message: requestError ?? "unknown error" }, dispatchedAt, webhookOptions);
-      outcome = "still_pending";
+      outcome = "check_failed";
       detail = `the request to Digiflazz failed (${requestError}), so it stays unresolved`;
     } else if (result.status === "Sukses") {
       try {

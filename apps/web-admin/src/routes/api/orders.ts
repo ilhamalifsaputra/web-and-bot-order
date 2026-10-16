@@ -44,6 +44,9 @@ import {
   markDigiflazzOrderFailedByAdmin,
   markDigiflazzOrderDeliveredByAdmin,
   recheckDigiflazzOrderNow,
+  isDigiflazzUnresolvedWindowOver,
+  DIGIFLAZZ_RECHECK_CLAIM_LEASE_MS,
+  DIGIFLAZZ_OVERRIDE_LEASE_MARGIN_MS,
 } from "@app/db";
 import { DIGIFLAZZ_STATUS_UNRESOLVED } from "@app/core/orderFulfillment";
 import { currentAdmin, csrfProtect, blockReadonlyReads } from "../../plugins/auth";
@@ -288,13 +291,15 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
     const unresolvedAtSupplier =
       order.status === OrderStatus.PROCESSING && order.digiflazzStatus === DIGIFLAZZ_STATUS_UNRESOLVED;
     return reply.send({
-      // The next automatic Digiflazz check, in the shop TIMEZONE, for the
-      // unresolved-at-supplier banner; the browser cannot localize it itself
-      // without the server's TIMEZONE setting.
+      // For the unresolved-at-supplier banner: the next automatic Digiflazz
+      // check in the shop TIMEZONE (the browser has no TIMEZONE setting), and
+      // whether the 7-day window of automatic checks is over. After the window,
+      // digiflazzNextRecheckAt only schedules the next admin reminder, so it is
+      // not presented as a check.
       order: {
         ...masked,
         createdAtDisplay: displayDateTime(order.createdAt),
-        digiflazzNextRecheckAtDisplay: displayDateTime(order.digiflazzNextRecheckAt),
+        ...unresolvedCheckSchedule(order),
       },
       hasDeliveredContent,
       money: serializeMoneyView(orderMoneyView(order)),
@@ -627,7 +632,8 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
   // Audit A5 follow-up: one live Digiflazz status check for an unresolved order
   // (at most one per order per minute). Changes no money by itself; a Sukses or
   // Gagal answer goes through the normal delivery / failure path. Returns the
-  // outcome (delivered | failed | still_pending | busy) for the admin's toast.
+  // outcome (delivered | failed | still_pending | check_failed | busy) for the
+  // admin's toast.
   app.post("/api/orders/:orderId/digiflazz/recheck", { preHandler: csrfProtect }, async (req, reply) => {
     const orderId = parsePositiveId((req.params as { orderId: string }).orderId);
     if (orderId === null) return reply.code(400).send({ error: "Invalid order id." });
@@ -866,4 +872,30 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
     );
     return reply.send({ succeeded, failed });
   });
+}
+
+/**
+ * What the unresolved-at-supplier banner may say about automatic checks.
+ *
+ * - `digiflazzAutoChecksEnded`: the order's 7-day window of automatic Digiflazz
+ *   checks is over. From then on the poller only reminds admins, and
+ *   `digiflazzNextRecheckAt` is the next reminder, not a check.
+ * - `digiflazzNextRecheckAtDisplay`: the next automatic check in the shop
+ *   TIMEZONE, or null when none is scheduled. It is also null while a check
+ *   holds the order's in-flight lease (a time at most a lease plus margin
+ *   ahead), because that time is the lease's expiry, not a scheduled check;
+ *   the same rule the admin overrides use to tell the two apart.
+ */
+function unresolvedCheckSchedule(
+  order: { digiflazzDispatchedAt: Date | null; digiflazzNextRecheckAt: Date | null },
+  now: Date = new Date(),
+): { digiflazzAutoChecksEnded: boolean; digiflazzNextRecheckAtDisplay: string | null } {
+  const ended = order.digiflazzDispatchedAt !== null && isDigiflazzUnresolvedWindowOver(order.digiflazzDispatchedAt, now);
+  const next = order.digiflazzNextRecheckAt;
+  const leaseHorizon = now.getTime() + DIGIFLAZZ_RECHECK_CLAIM_LEASE_MS + DIGIFLAZZ_OVERRIDE_LEASE_MARGIN_MS;
+  const isLease = next !== null && next.getTime() > now.getTime() && next.getTime() <= leaseHorizon;
+  return {
+    digiflazzAutoChecksEnded: ended,
+    digiflazzNextRecheckAtDisplay: ended || isLease ? null : displayDateTime(next),
+  };
 }

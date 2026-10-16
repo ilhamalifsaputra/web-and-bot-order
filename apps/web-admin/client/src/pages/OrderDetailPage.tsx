@@ -87,6 +87,10 @@ interface OrderDetail {
    * (the browser has no access to that setting). Sent by the detail route
    * only, so an SSE push that moves the next check refetches it. */
   digiflazzNextRecheckAtDisplay?: string | null;
+  /** The order's 7-day window of automatic Digiflazz checks is over; from then
+   * on admins are only reminded, so the banner shows no next check. Detail
+   * route only. */
+  digiflazzAutoChecksEnded?: boolean;
   digiflazzFailureDetail?: string | null;
   /** Set automatically when a Digiflazz fulfillment failure gave no specific
    * reason of its own — the result of a fallback KokinPay nickname lookup on
@@ -694,15 +698,20 @@ function OrderDetailOrderInfoOrderInfo({ isWalletTopup, order, isGuestBuyer, buy
  * automatic check runs, and what the admin must not do by hand meanwhile. */
 function UnresolvedAtSupplierBanner({ order }: { order: OrderDetail }) {
   const nextCheck = order.digiflazzNextRecheckAtDisplay ?? null;
+  const schedule = order.digiflazzAutoChecksEnded
+    ? "Automatic checks have ended. Confirm the result with Digiflazz and use Mark delivered or Mark failed."
+    : nextCheck
+      ? `We re-check automatically every 6 hours (next check: ${nextCheck}).`
+      : "We re-check automatically every 6 hours.";
   return (
-    <Alert className="mb-6 border-amberx/40 bg-amberx-tint text-ink">
+    // A standing explanation of the page's state, not an event: role="status"
+    // so screen readers don't announce it as an alert on every load.
+    <Alert role="status" className="mb-6 border-amberx/40 bg-amberx-tint text-ink">
       <Hourglass className="text-amberx" aria-hidden="true" />
       <AlertTitle>Waiting for Digiflazz's final answer.</AlertTitle>
       <AlertDescription className="flex flex-col gap-1 text-ink">
         <p>
-          {nextCheck
-            ? `We re-check automatically every 6 hours (next check: ${nextCheck}).`
-            : "Automatic checks have ended, so no further check is scheduled."}{" "}
+          {schedule}{" "}
           Don't refund, credit or fulfil by hand until you have confirmed the result with Digiflazz.
         </p>
         {order.digiflazzFailureDetail && (
@@ -715,7 +724,7 @@ function UnresolvedAtSupplierBanner({ order }: { order: OrderDetail }) {
 
 /** What the admin is told after "Check supplier now", one sentence per outcome
  * of POST /api/orders/:id/digiflazz/recheck. */
-type SupplierRecheckOutcome = "delivered" | "failed" | "still_pending" | "busy";
+type SupplierRecheckOutcome = "delivered" | "failed" | "still_pending" | "check_failed" | "busy";
 
 function toastRecheckOutcome(outcome: SupplierRecheckOutcome) {
   switch (outcome) {
@@ -726,7 +735,11 @@ function toastRecheckOutcome(outcome: SupplierRecheckOutcome) {
       toast.warning("Digiflazz reported the top-up as failed. You can now credit, refund or fulfil the order by hand.");
       return;
     case "still_pending":
-      toast.info("Digiflazz still has no final answer. We'll keep checking automatically.");
+      // True both while automatic checks run and after they have ended.
+      toast.info("Digiflazz still has no final answer.");
+      return;
+    case "check_failed":
+      toast.warning("Could not reach Digiflazz — try again shortly.");
       return;
     case "busy":
       toast.info("A check just ran — try again in a minute.");
@@ -753,7 +766,14 @@ function SupplierActions({ orderId, data, refresh }: {
       void qc.invalidateQueries({ queryKey: ["dashboard", "operations"] });
       toastRecheckOutcome(res.outcome);
     },
-    onError: (e: Error) => toast.error(describeError(e)),
+    onError: (e: Error) => {
+      // A refusal usually means the order moved on (resolved elsewhere, or a
+      // check is running), so the page must not keep showing the old state.
+      void qc.invalidateQueries({ queryKey: ["order", orderId] });
+      void qc.invalidateQueries({ queryKey: ["orders"] });
+      void qc.invalidateQueries({ queryKey: ["dashboard", "operations"] });
+      toast.error(describeError(e));
+    },
   });
 
   return (

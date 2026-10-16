@@ -189,8 +189,28 @@ describe("unresolved at the supplier: mark delivered, check now, reject, list fi
     const none = await makeOrder({ fulfillmentProvider: "DIGIFLAZZ", digiflazzStatus: "unresolved_at_supplier", digiflazzDispatchedAt: new Date(Date.now() - 3 * 24 * 3_600_000), digiflazzNextRecheckAt: null });
 
     const { displayDateTime } = await import("../src/dateDisplay");
-    expect(((await detail(scheduled.id)).order as Record<string, unknown>).digiflazzNextRecheckAtDisplay).toBe(displayDateTime(next));
-    expect(((await detail(none.id)).order as Record<string, unknown>).digiflazzNextRecheckAtDisplay).toBeNull();
+    expect((await detail(scheduled.id)).order).toMatchObject({ digiflazzNextRecheckAtDisplay: displayDateTime(next), digiflazzAutoChecksEnded: false });
+    expect((await detail(none.id)).order).toMatchObject({ digiflazzNextRecheckAtDisplay: null, digiflazzAutoChecksEnded: false });
+  });
+
+  it("after the 7-day window the next time is an admin reminder, so it is not shown as a check", async () => {
+    const pastWindow = await makeOrder({
+      fulfillmentProvider: "DIGIFLAZZ",
+      digiflazzStatus: "unresolved_at_supplier",
+      digiflazzDispatchedAt: new Date(Date.now() - 8 * 24 * 3_600_000),
+      digiflazzNextRecheckAt: new Date(Date.now() + 20 * 3_600_000),
+    });
+    expect((await detail(pastWindow.id)).order).toMatchObject({ digiflazzAutoChecksEnded: true, digiflazzNextRecheckAtDisplay: null });
+  });
+
+  it("does not present a held check lease as the next check", async () => {
+    const leased = await makeOrder({
+      fulfillmentProvider: "DIGIFLAZZ",
+      digiflazzStatus: "unresolved_at_supplier",
+      digiflazzDispatchedAt: new Date(Date.now() - 3 * 24 * 3_600_000),
+      digiflazzNextRecheckAt: new Date(Date.now() + 30_000),
+    });
+    expect((await detail(leased.id)).order).toMatchObject({ digiflazzAutoChecksEnded: false, digiflazzNextRecheckAtDisplay: null });
   });
 
   it("Reject is refused server-side for an order unresolved at the supplier", async () => {

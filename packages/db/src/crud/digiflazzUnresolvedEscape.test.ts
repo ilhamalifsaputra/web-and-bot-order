@@ -311,18 +311,31 @@ describe("recheckDigiflazzOrderNow", () => {
     expect(row.digiflazzFailureDetail).toMatch(/Unresolved at Digiflazz/);
   });
 
-  it("a transient error keeps the order unresolved and restores its schedule", async () => {
+  it("a transient error reports check_failed, keeps the order unresolved and restores its schedule", async () => {
     const scheduled = new Date(Date.now() + 3 * HOUR);
     const order = await makeDispatchedOrder({ dispatchedAgoMs: 3 * DAY, nextRecheckAt: scheduled });
     digiflazzMock.createTransaction.mockRejectedValue(new Error("network blip"));
 
     const res = await recheckDigiflazzOrderNow(prisma, { orderId: order.id, adminId: sample.user.id });
 
-    expect(res.outcome).toBe("still_pending");
+    // Nothing was learned from Digiflazz, which the admin is told apart from Pending.
+    expect(res.outcome).toBe("check_failed");
     const row = await reloaded(order.id);
     expect(row.digiflazzStatus).toBe(DIGIFLAZZ_STATUS_UNRESOLVED);
     expect(row.digiflazzNextRecheckAt!.getTime()).toBe(scheduled.getTime());
     expect(row.digiflazzAttempts).toBe(25);
+  });
+
+  it("a check that cannot be sent (no supplier code on the order) reports check_failed without calling Digiflazz", async () => {
+    const order = await makeDispatchedOrder({ dispatchedAgoMs: 3 * DAY });
+    await prisma.denomination.update({ where: { id: sample.product.id }, data: { supplierSku: null } });
+    await prisma.order.update({ where: { id: order.id }, data: { fulfillmentProvider: "DIGIFLAZZ", fulfillmentSku: null } });
+
+    const res = await recheckDigiflazzOrderNow(prisma, { orderId: order.id, adminId: sample.user.id });
+
+    expect(res.outcome).toBe("check_failed");
+    expect(digiflazzMock.createTransaction).not.toHaveBeenCalled();
+    expect((await reloaded(order.id)).digiflazzStatus).toBe(DIGIFLAZZ_STATUS_UNRESOLVED);
   });
 
   it("an order past its 7-day window is checked but never failed by the window", async () => {

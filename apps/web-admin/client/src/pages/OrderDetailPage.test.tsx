@@ -1256,8 +1256,10 @@ describe("OrderDetailPage — unresolved at the supplier", () => {
 
   it("explains the state in a banner with the next check, plus an amber badge, and drops the generic credit-lock hint", async () => {
     await renderUnresolved();
-    const banner = screen.getByRole("alert");
-    expect(within(banner).getByText("Waiting for Digiflazz's final answer.")).toBeInTheDocument();
+    const banner = screen.getByText("Waiting for Digiflazz's final answer.").closest("[data-slot='alert']") as HTMLElement;
+    // A standing explanation, not an event: announced politely, not as an alert.
+    expect(banner).toHaveAttribute("role", "status");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(within(banner).getByText(/We re-check automatically every 6 hours \(next check: 2026-10-16 12:30\)\./)).toBeInTheDocument();
     expect(
       within(banner).getByText(/Don't refund, credit or fulfil by hand until you have confirmed the result with Digiflazz\./),
@@ -1269,12 +1271,24 @@ describe("OrderDetailPage — unresolved at the supplier", () => {
     expect(screen.queryByRole("button", { name: /^reject$/i })).not.toBeInTheDocument();
   });
 
-  it("says no further automatic check is scheduled when there is none", async () => {
+  it("leaves the time out when the server sends none (no schedule, or a check holds the lease)", async () => {
     await renderUnresolved({
       ...UNRESOLVED_DATA,
-      order: { ...UNRESOLVED_DATA.order, digiflazzNextRecheckAt: null, digiflazzNextRecheckAtDisplay: null },
+      order: { ...UNRESOLVED_DATA.order, digiflazzNextRecheckAtDisplay: null, digiflazzAutoChecksEnded: false },
     });
-    expect(screen.getByText(/Automatic checks have ended, so no further check is scheduled\./)).toBeInTheDocument();
+    expect(screen.getByText(/We re-check automatically every 6 hours\./)).toBeInTheDocument();
+    expect(screen.queryByText(/next check:/)).not.toBeInTheDocument();
+  });
+
+  it("once the 7-day window is over, says automatic checks have ended and shows no time", async () => {
+    await renderUnresolved({
+      ...UNRESOLVED_DATA,
+      order: { ...UNRESOLVED_DATA.order, digiflazzNextRecheckAtDisplay: null, digiflazzAutoChecksEnded: true },
+    });
+    expect(
+      screen.getByText(/Automatic checks have ended\. Confirm the result with Digiflazz and use Mark delivered or Mark failed\./),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/re-check automatically/)).not.toBeInTheDocument();
     expect(screen.queryByText(/next check:/)).not.toBeInTheDocument();
   });
 
@@ -1300,7 +1314,7 @@ describe("OrderDetailPage — unresolved at the supplier", () => {
       canMarkSupplierDelivered: false,
       canRecheckSupplier: false,
     });
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByText("Waiting for Digiflazz's final answer.")).not.toBeInTheDocument();
     expect(screen.queryByText("Unresolved at supplier")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Check supplier now" })).not.toBeInTheDocument();
     // The generic in-flight hint stays for this state.
@@ -1317,7 +1331,7 @@ describe("OrderDetailPage — unresolved at the supplier", () => {
       canReject: true,
       canCreditCancelled: false,
     });
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByText("Waiting for Digiflazz's final answer.")).not.toBeInTheDocument();
     expect(screen.queryByText("Unresolved at supplier")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Check supplier now" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Mark delivered" })).not.toBeInTheDocument();
@@ -1328,7 +1342,8 @@ describe("OrderDetailPage — unresolved at the supplier", () => {
   it.each([
     ["delivered", "Digiflazz confirmed the top-up was delivered. The order is now marked delivered."],
     ["failed", "Digiflazz reported the top-up as failed. You can now credit, refund or fulfil the order by hand."],
-    ["still_pending", "Digiflazz still has no final answer. We'll keep checking automatically."],
+    ["still_pending", "Digiflazz still has no final answer."],
+    ["check_failed", "Could not reach Digiflazz — try again shortly."],
     ["busy", "A check just ran — try again in a minute."],
   ])("Check supplier now posts with no note and toasts the %s outcome", async (outcome, message) => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
@@ -1344,16 +1359,28 @@ describe("OrderDetailPage — unresolved at the supplier", () => {
     await waitFor(() => expect(fetchSpy.mock.calls.length).toBeGreaterThan(before));
   });
 
-  it("shows a refused check as a readable error", async () => {
+  it("shows a refused check as a readable error and refetches the order", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
-    await renderUnresolved();
+    const fetchSpy = await renderUnresolved();
     vi.mocked(apiPost).mockRejectedValueOnce(
       Object.assign(new Error("error.digiflazz_not_configured"), { errorArgs: { orderCode: "ORD-0001" } }),
     );
+    const before = fetchSpy.mock.calls.length;
     await user.click(screen.getByRole("button", { name: "Check supplier now" }));
     expect(
       await screen.findByText("Digiflazz is not connected, so order ORD-0001 can't be checked right now. Add the Digiflazz credentials in Settings first."),
     ).toBeInTheDocument();
+    // A refusal can mean the order moved on, so the page reloads its state too.
+    await waitFor(() => expect(fetchSpy.mock.calls.length).toBeGreaterThan(before));
+  });
+
+  it("caps the note at the 200 characters the audit row records", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    await renderUnresolved();
+    await user.click(screen.getByRole("button", { name: "Mark failed" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByLabelText(/what did digiflazz confirm/i)).toHaveAttribute("maxlength", "200");
+    expect(within(dialog).getByText(/up to 200 characters/)).toBeInTheDocument();
   });
 
   it("Mark delivered: the note is required, the serial is optional, and both are posted", async () => {

@@ -39,8 +39,14 @@ interface SupplierNoteDialogProps {
   onSuccess: () => void;
 }
 
-/** Longest serial the server keeps (the route trims it to 200 characters). */
+/** Longest serial the server keeps (DIGIFLAZZ_ADMIN_SN_MAX_LENGTH in
+ * packages/db/src/crud/digiflazz.ts). */
 const SERIAL_MAX_LENGTH = 200;
+
+/** Longest note the audit row records: both overrides quote at most the first
+ * 200 characters of the note in their audit sentence (crud/digiflazz.ts), so a
+ * longer note would be cut there without the admin knowing. */
+const NOTE_MAX_LENGTH = 200;
 
 /**
  * Confirm dialog for an admin override on an order unresolved at Digiflazz
@@ -105,10 +111,13 @@ export function SupplierNoteDialog({
             onChange={(e) => setNote(e.target.value)}
             placeholder="For example: Digiflazz support confirmed it in ticket 4411."
             rows={3}
+            maxLength={NOTE_MAX_LENGTH}
             aria-describedby={submit.isError ? errorId : undefined}
             autoFocus
           />
-          <p className="text-xs text-ink-soft">Saved to the audit log only. The buyer never sees it.</p>
+          <p className="text-xs text-ink-soft">
+            Saved to the audit log only, up to {NOTE_MAX_LENGTH} characters. The buyer never sees it.
+          </p>
         </div>
         {withSerial && (
           <div className="flex flex-col gap-1.5">

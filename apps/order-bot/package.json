@@ -26,7 +26,7 @@
     "@app/outbox-dispatcher": "workspace:*",
     "@grammyjs/conversations": "^1.2.0",
     "@grammyjs/runner": "^2.0.3",
-    "croner": "^8.1.2",
+    "croner": "^10.0.1",
     "grammy": "^1.46.0"
   }
 }

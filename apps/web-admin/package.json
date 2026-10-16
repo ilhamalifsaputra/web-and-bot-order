@@ -17,16 +17,13 @@
     "@app/db": "workspace:*",
     "@fastify/compress": "^9.2.2",
     "@fastify/cookie": "^11.1.3",
-    "@fastify/formbody": "^8.0.2",
+    "@fastify/formbody": "^9.0.1",
     "@fastify/multipart": "^10.1.4",
     "@fastify/static": "^10.1.6",
-    "bcryptjs": "^2.4.3",
+    "bcryptjs": "^3.0.3",
     "fastify": "^5.12.7",
-    "fastify-plugin": "^5.1.0",
+    "fastify-plugin": "^6.0.1",
     "prom-client": "^15.1.3",
     "sharp": "^0.35.5"
-  },
-  "devDependencies": {
-    "@types/bcryptjs": "^2.4.6"
   }
 }

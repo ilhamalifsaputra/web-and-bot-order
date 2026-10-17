@@ -67,3 +67,8 @@ Run on the final code (HEAD 32a94d41 plus the test-only fix below), against an i
 - `pnpm -r --workspace-concurrency=1 typecheck` and `tsc -p tsconfig.test.json`: exit 0 on HEAD 6f021f8f.
 - Focused tests: wizard 31/31, A4 196/196, A5 375/375 (after review fixes), `pnpm test:guards` 198/198.
 - Full `pnpm test`: NOT completed. The run was stopped by the system for low memory. This pass was merged and pushed on the owner's explicit instruction without a finished full-suite run. The locale JSON and `prisma/schema.prisma` comment changes mean `test:changed` would have run everything; run `pnpm test -- --maxWorkers=2` on master when memory allows.
+
+## Follow-up pass 2 (unresolved-at-supplier ways out) — gate status
+- `pnpm doctor:full` and `pnpm doctor:bugs`: 0 errors, 0 warnings. `pnpm -r --workspace-concurrency=1 typecheck` and `tsc -p tsconfig.test.json`: exit 0 on HEAD af5f8b96.
+- Focused tests: admin client 1162/1162, B1 crud/route suites, `pnpm test:guards` 198/198, per-task review fixes re-run.
+- Full `pnpm test`: NOT completed. The run was stopped by the system for low memory. Merged and pushed on the owner's explicit instruction ("merge dan push aja"). Run `pnpm test -- --maxWorkers=1` on master when memory allows.

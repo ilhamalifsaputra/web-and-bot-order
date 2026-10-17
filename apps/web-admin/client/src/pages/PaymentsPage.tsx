@@ -494,7 +494,7 @@ function PaymentStats({ data }: {
 }
 
 function PaymentsManualMatch({ matchCardRef, matchError, matchForm, setMatchForm, matchGateway, setOrderCodeFocused, showSuggestions, suggestLoading, suggestion, match, canSubmitMatch }: {
-  matchCardRef: import("react").RefObject<HTMLDivElement>;
+  matchCardRef: import("react").RefObject<HTMLDivElement | null>;
   matchError: string | null;
   matchForm: { binance_tx_id: string; order_code: string; };
   setMatchForm: import("react").Dispatch<import("react").SetStateAction<{ binance_tx_id: string; order_code: string; }>>;
@@ -1097,7 +1097,7 @@ function usePaymentMatching({ idempotentPost, qc, setMatchForm, matchGateway, se
   setMatchForm: import("react").Dispatch<import("react").SetStateAction<{ binance_tx_id: string; order_code: string; }>>;
   matchGateway: import("react").MutableRefObject<LedgerGateway | null>;
   setMatchError: import("react").Dispatch<import("react").SetStateAction<string | null>>;
-  matchCardRef: import("react").RefObject<HTMLDivElement>;
+  matchCardRef: import("react").RefObject<HTMLDivElement | null>;
   setPendingDismiss: import("react").Dispatch<import("react").SetStateAction<TxRow | null>>;
   pendingCredit: TxRow | null;
   creditSuggestion: { code: string; } | null;

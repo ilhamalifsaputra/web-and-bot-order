@@ -7,7 +7,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { ErrorBoundary } from "../shared/ErrorBoundary";
 import { PageTransition } from "../shared/PageTransition";
 
-export function AppShell(): JSX.Element {
+export function AppShell(): React.JSX.Element {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchSession, setSearchSession] = useState(0);

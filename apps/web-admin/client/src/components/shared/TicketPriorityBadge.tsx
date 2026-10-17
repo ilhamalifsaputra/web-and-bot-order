@@ -25,7 +25,7 @@ interface TicketPriorityBadgeProps {
   priority: string;
 }
 
-export function TicketPriorityBadge({ priority }: TicketPriorityBadgeProps): JSX.Element {
+export function TicketPriorityBadge({ priority }: TicketPriorityBadgeProps): React.JSX.Element {
   const tone = TONE_CLASS[priority] ?? FALLBACK_TONE;
   return (
     <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ${tone}`}>

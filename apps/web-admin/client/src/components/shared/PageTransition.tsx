@@ -5,7 +5,7 @@ import { Suspense, useEffect, useRef, type ReactNode } from "react";
 import { useLocation } from "react-router-dom";
 
 /** Keep route content available immediately; lazy chunks preserve the shell. */
-export function PageTransition({ children }: { children: ReactNode }): JSX.Element {
+export function PageTransition({ children }: { children: ReactNode }): React.JSX.Element {
   const location = useLocation();
   const reduced = useReducedMotion();
   const mounted = useRef(false);

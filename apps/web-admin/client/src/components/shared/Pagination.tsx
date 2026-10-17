@@ -53,7 +53,7 @@ export function Pagination({
   onPageChange,
   onPageSizeChange,
   pageSizeOptions = [20, 50, 100],
-}: PaginationProps): JSX.Element {
+}: PaginationProps): React.JSX.Element {
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const start = total === 0 ? 0 : (page - 1) * pageSize + 1;
   const end = Math.min(page * pageSize, total);

@@ -7,7 +7,7 @@ interface OrderStatusTabsProps {
   onChange: (key: StatusTabKey) => void;
 }
 
-export function OrderStatusTabs({ active, onChange }: OrderStatusTabsProps): JSX.Element {
+export function OrderStatusTabs({ active, onChange }: OrderStatusTabsProps): React.JSX.Element {
   const { data: kpis } = useOrdersKpis();
 
   // Only tabs whose status set maps 1:1 onto a single /api/orders/kpis field

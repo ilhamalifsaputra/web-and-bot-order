@@ -15,7 +15,7 @@ interface SettingsSearchProps {
  * for, which SearchBar has no equivalent of. Purely a controlled input —
  * SettingsPage owns the actual filtering logic.
  */
-export function SettingsSearch({ value, onChange }: SettingsSearchProps): JSX.Element {
+export function SettingsSearch({ value, onChange }: SettingsSearchProps): React.JSX.Element {
   return (
     <div className="relative mb-3 w-full">
       <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-faint" />

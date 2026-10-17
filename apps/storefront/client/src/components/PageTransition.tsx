@@ -1,12 +1,12 @@
 import { useReducedMotion } from "motion/react";
 import * as m from "motion/react-m";
-import { Suspense, useEffect, useRef, type ReactNode } from "react";
+import { Suspense, useEffect, useRef, type ReactElement, type ReactNode } from "react";
 import { useLocation } from "react-router-dom";
 import { DURATION, EASE } from "../lib/motion";
 import RouteFallback from "./shop/RouteFallback";
 
 /** Keep route content available immediately; lazy chunks preserve the shell. */
-export function PageTransition({ children }: { children: ReactNode }): JSX.Element {
+export function PageTransition({ children }: { children: ReactNode }): ReactElement {
   const location = useLocation();
   const reduced = useReducedMotion();
   const mounted = useRef(false);

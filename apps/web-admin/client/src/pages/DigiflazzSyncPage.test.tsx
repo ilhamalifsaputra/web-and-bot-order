@@ -1,4 +1,4 @@
-import "@testing-library/jest-dom";
+import "@testing-library/jest-dom/vitest";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -305,7 +305,7 @@ describe("DigiflazzSyncPage", () => {
     render(<DigiflazzSyncPage />, { wrapper: Wrapper });
     await user.click(screen.getByRole("button", { name: /sync dari digiflazz/i }));
 
-    const card = await screen.findByRole("button", { name: /mobile legends \(indonesia\)/i });
+    const card = await screen.findByRole("button", { name: /mobile legends\s*\(indonesia\)/i });
     expect(card).toHaveTextContent("Mobile Legends (Indonesia) — 1 SKU(s), Baru");
   });
 

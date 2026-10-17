@@ -1,4 +1,4 @@
-import "@testing-library/jest-dom";
+import "@testing-library/jest-dom/vitest";
 import { lazy } from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, within, act } from "@testing-library/react";
@@ -424,7 +424,7 @@ describe("Layout", () => {
   // a `React.lazy` whose import we control by hand instead of a real dynamic
   // import, so the pending state can be asserted on before resolving it.
   describe("a lazily-loaded route (T-task-12)", () => {
-    function renderWithLazyRoute(lazyElement: JSX.Element, initialEntries: string[]) {
+    function renderWithLazyRoute(lazyElement: React.JSX.Element, initialEntries: string[]) {
       const client = new QueryClient();
       (apiGet as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(context);
       return render(
@@ -447,8 +447,8 @@ describe("Layout", () => {
       // wrapped in React Router's navigation `startTransition` (see the
       // other test below), so this is the one path where Suspense's fallback
       // is actually shown rather than deferred.
-      let resolveImport!: (mod: { default: () => JSX.Element }) => void;
-      const importPromise = new Promise<{ default: () => JSX.Element }>((resolve) => {
+      let resolveImport!: (mod: { default: () => React.JSX.Element }) => void;
+      const importPromise = new Promise<{ default: () => React.JSX.Element }>((resolve) => {
         resolveImport = resolve;
       });
       const LazyProducts = lazy(() => importPromise);
@@ -491,8 +491,8 @@ describe("Layout", () => {
       // frame" or "double-fired transition" is really about, so it's worth
       // asserting explicitly rather than assuming it from the deep-link case
       // above.
-      let resolveImport!: (mod: { default: () => JSX.Element }) => void;
-      const importPromise = new Promise<{ default: () => JSX.Element }>((resolve) => {
+      let resolveImport!: (mod: { default: () => React.JSX.Element }) => void;
+      const importPromise = new Promise<{ default: () => React.JSX.Element }>((resolve) => {
         resolveImport = resolve;
       });
       const LazyProducts = lazy(() => importPromise);

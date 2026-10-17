@@ -4,12 +4,12 @@ import { Fragment } from "react";
  * in `<mark>` (Settings refinement §1 "Highlight matching results"). Returns
  * `text` unchanged (still wrapped in a Fragment for a stable return type)
  * when `query` is empty or doesn't occur. */
-export function highlightMatch(text: string, query: string): JSX.Element {
+export function highlightMatch(text: string, query: string): React.JSX.Element {
   const q = query.trim();
   if (!q) return <>{text}</>;
   const lower = text.toLowerCase();
   const needle = q.toLowerCase();
-  const parts: JSX.Element[] = [];
+  const parts: React.JSX.Element[] = [];
   let cursor = 0;
   let i = lower.indexOf(needle, cursor);
   let key = 0;

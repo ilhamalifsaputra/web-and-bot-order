@@ -27,7 +27,7 @@ const DECAY_MS = 2 * 60 * 1000;
  * FieldRow/GatewayCard) and the timestamp of the most recent successful
  * mutation, not a real "unsaved form" indicator.
  */
-export function SettingsSaveStatus({ fieldStatuses, lastSavedAt }: SettingsSaveStatusProps): JSX.Element | null {
+export function SettingsSaveStatus({ fieldStatuses, lastSavedAt }: SettingsSaveStatusProps): React.JSX.Element | null {
   // Re-render every 15s so "Saved 2 minutes ago" keeps advancing and the
   // decay-to-"All changes saved" threshold actually fires without a save.
   const [, setTick] = useState(0);

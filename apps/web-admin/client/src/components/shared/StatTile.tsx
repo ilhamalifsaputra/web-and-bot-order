@@ -15,7 +15,7 @@ interface StatTileProps {
 
 /** Compact stat card for a quick-stats row above a table — deliberately
  *  smaller/quieter than the Dashboard's `OrdersKpiCard`-style KPI cards. */
-export function StatTile({ label, value, onClick, isLoading }: StatTileProps): JSX.Element {
+export function StatTile({ label, value, onClick, isLoading }: StatTileProps): React.JSX.Element {
   const tile = (
     <Card
       size="sm"

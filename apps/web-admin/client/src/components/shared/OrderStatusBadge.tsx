@@ -61,7 +61,7 @@ interface OrderStatusBadgeProps {
   status: string;
 }
 
-export function OrderStatusBadge({ status }: OrderStatusBadgeProps): JSX.Element {
+export function OrderStatusBadge({ status }: OrderStatusBadgeProps): React.JSX.Element {
   const style = BUCKET_STYLE[status] ?? FALLBACK_STYLE;
   const Icon = style.icon;
   return (

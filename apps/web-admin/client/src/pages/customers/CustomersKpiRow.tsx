@@ -3,7 +3,7 @@ import { StatCard } from "../../components/shared/StatCard";
 import { CurrencyStack, type CurrencyAmount } from "../../components/shared/CurrencyAmount";
 import { useCustomersKpis } from "../../hooks/useCustomersKpis";
 
-export function CustomersKpiRow(): JSX.Element {
+export function CustomersKpiRow(): React.JSX.Element {
   const { data, isError } = useCustomersKpis();
 
   // See OrdersKpiRow's identical comment: `!data`, not react-query's

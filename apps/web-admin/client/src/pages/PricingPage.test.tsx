@@ -1,4 +1,4 @@
-import "@testing-library/jest-dom";
+import "@testing-library/jest-dom/vitest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -71,14 +71,14 @@ describe("PricingPage", () => {
     expect(apiPost).not.toHaveBeenCalled();
   });
   it("saves and removes category overrides", async () => {
-    renderPage(); await screen.findByRole("button", { name: "Edit Games" });
-    await userEvent.click(screen.getByRole("button", { name: "Edit Games" }));
+    renderPage(); await screen.findByRole("button", { name: /^edit\s*games$/i });
+    await userEvent.click(screen.getByRole("button", { name: /^edit\s*games$/i }));
     fireEvent.change(screen.getByLabelText("Markup (%)", { selector: "#category-markup" }), { target: { value: "8" } });
     vi.mocked(apiPut).mockResolvedValue({ changed: true });
     vi.mocked(apiGet).mockResolvedValue({ ...DATA, categories: [{ ...DATA.categories[0], markupType: "percent", markupValue: "8" }] });
     await userEvent.click(screen.getByRole("button", { name: "Simpan aturan" }));
     await waitFor(() => expect(apiPut).toHaveBeenCalledWith("/api/pricing/categories/1", expect.objectContaining({ markupValue: "8" })));
-    await userEvent.click(await screen.findByRole("button", { name: "Hapus aturan Games" }));
+    await userEvent.click(await screen.findByRole("button", { name: /^hapus\s*aturan\s*games$/i }));
     await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Confirm" }));
     await waitFor(() => expect(apiDelete).toHaveBeenCalledWith("/api/pricing/categories/1"));
   });

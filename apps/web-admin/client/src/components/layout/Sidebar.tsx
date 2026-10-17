@@ -37,7 +37,7 @@ import { apiGet, logout } from "../../api/client";
 interface SidebarProps {
   open: boolean;
   onClose: () => void;
-  triggerRef?: RefObject<HTMLButtonElement>;
+  triggerRef?: RefObject<HTMLButtonElement | null>;
 }
 
 interface NavItemConfig {
@@ -231,7 +231,7 @@ function SidebarContent({ onClose }: { onClose: () => void }) {
   );
 }
 
-export function Sidebar({ open, onClose, triggerRef }: SidebarProps): JSX.Element {
+export function Sidebar({ open, onClose, triggerRef }: SidebarProps): React.JSX.Element {
   useEffect(() => {
     if (!open || typeof window.matchMedia !== "function") return;
     const media = window.matchMedia("(min-width: 1024px)");

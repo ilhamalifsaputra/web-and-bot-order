@@ -94,7 +94,7 @@ export function DataTable<T>({
   onRowClick,
   stickyHeader = false,
   nested = false,
-}: DataTableProps<T>): JSX.Element {
+}: DataTableProps<T>): React.JSX.Element {
   const isMobile = useIsMobile();
   const emptyNode = empty ?? <EmptyState title="No results found." />
 

@@ -7,7 +7,7 @@ interface CardRowProps {
   className?: string;
 }
 
-export function CardRow({ label, value, className }: CardRowProps): JSX.Element {
+export function CardRow({ label, value, className }: CardRowProps): React.JSX.Element {
   return (
     <div className={cn("flex items-center justify-between gap-3 py-2", className)}>
       <span className="text-sm text-ink-soft shrink-0">{label}</span>

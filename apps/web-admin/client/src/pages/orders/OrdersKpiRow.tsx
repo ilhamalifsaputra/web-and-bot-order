@@ -6,7 +6,7 @@ import { useOrdersKpis } from "../../hooks/useOrdersKpis";
 
 const ALL_KINDS = "Counts every order, including wallet top-up orders, across the whole shop (not just the filtered list below).";
 
-export function OrdersKpiRow(): JSX.Element {
+export function OrdersKpiRow(): React.JSX.Element {
   const { data, isError } = useOrdersKpis();
 
   // `!data` (not react-query's own `isLoading`) is the loading flag every

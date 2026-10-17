@@ -67,7 +67,7 @@ export const zAdditionalFields = z.array(zAdditionalField).refine(
 );
 
 /** Buyer answers stored on Order.customerData: one { key: value } map per unit. */
-export const zCustomerData = z.array(z.record(z.string()));
+export const zCustomerData = z.array(z.record(z.string(), z.string()));
 export type CustomerData = z.infer<typeof zCustomerData>;
 
 /** Parse the stored field spec; returns [] on null/blank/invalid (never throws). */

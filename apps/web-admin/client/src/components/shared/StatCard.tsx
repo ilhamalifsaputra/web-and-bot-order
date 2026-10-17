@@ -47,7 +47,7 @@ export function StatCard({
   tone = "neutral",
   isLoading,
   onClick,
-}: StatCardProps): JSX.Element {
+}: StatCardProps): React.JSX.Element {
   function handleKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
     if (!onClick) return;
     // Space/Enter activation for a div acting as a button, matching native

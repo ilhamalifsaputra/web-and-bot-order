@@ -15,7 +15,7 @@ export function FilterBar({
   onApply,
   onClear,
   className,
-}: FilterBarProps): JSX.Element {
+}: FilterBarProps): React.JSX.Element {
   return (
     <div className={cn("flex flex-wrap items-end gap-2", className)}>
       {children}

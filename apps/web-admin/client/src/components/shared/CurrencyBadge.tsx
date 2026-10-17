@@ -28,7 +28,7 @@ export interface CurrencyBadgeProps {
   currency: "USD" | "IDR" | null;
 }
 
-export function CurrencyBadge({ currency }: CurrencyBadgeProps): JSX.Element {
+export function CurrencyBadge({ currency }: CurrencyBadgeProps): React.JSX.Element {
   const state: CurrencyState = currency ?? "UNSET";
   return (
     <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ${TONE_CLASS[state]}`}>

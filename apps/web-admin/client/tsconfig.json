@@ -5,7 +5,6 @@
     "jsx": "react-jsx",
     "rootDir": "src",
     "types": ["vite/client"],
-    "baseUrl": ".",
     "paths": {
       "@/*": ["./src/*"]
     }

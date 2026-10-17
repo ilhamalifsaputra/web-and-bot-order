@@ -66,7 +66,7 @@ function writeExpandedStorage(value: boolean): void {
  * from the original inline nav — only data-driven now instead of hand-written
  * per section.
  */
-export function SettingsNav({ topLinks, group, bottomLinks }: SettingsNavProps): JSX.Element {
+export function SettingsNav({ topLinks, group, bottomLinks }: SettingsNavProps): React.JSX.Element {
   const [expanded, setExpanded] = useState<boolean>(() => {
     if (typeof window === "undefined") return true;
     const stored = readExpandedStorage();

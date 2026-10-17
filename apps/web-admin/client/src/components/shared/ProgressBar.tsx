@@ -14,7 +14,7 @@ const TONE_CLASS: Record<ProgressBarTone, string> = {
   rust: "bg-rust",
 };
 
-export function ProgressBar({ value, tone, className }: ProgressBarProps): JSX.Element {
+export function ProgressBar({ value, tone, className }: ProgressBarProps): React.JSX.Element {
   const pct = Math.max(0, Math.min(100, value));
   return (
     <div className={cn("h-1.5 w-full overflow-hidden rounded-full bg-sand", className)}>

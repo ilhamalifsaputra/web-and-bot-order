@@ -16,7 +16,7 @@ interface SearchBarProps {
   loading?: boolean;
 }
 
-export function SearchBar({ value, onChange, onSearch, placeholder, className, loading }: SearchBarProps): JSX.Element {
+export function SearchBar({ value, onChange, onSearch, placeholder, className, loading }: SearchBarProps): React.JSX.Element {
   return (
     <div className={cn("relative w-full sm:w-64", className)}>
       {loading ? (

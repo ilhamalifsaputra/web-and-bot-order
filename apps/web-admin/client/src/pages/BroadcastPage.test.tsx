@@ -1,4 +1,4 @@
-import "@testing-library/jest-dom";
+import "@testing-library/jest-dom/vitest";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, fireEvent, within, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -124,6 +124,10 @@ describe("BroadcastPage", () => {
     );
     fetchSpy.mockResolvedValueOnce(
       new Response(JSON.stringify({ id: 10 }), { status: 201, headers: { "Content-Type": "application/json" } }),
+    );
+    // The save invalidates the broadcast query, which refetches the list.
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ segments: ["ALL"], counts: { ALL: 200 }, history: [] }), { status: 200, headers: { "Content-Type": "application/json" } }),
     );
     const user = userEvent.setup();
     render(<BroadcastPage />, { wrapper: Wrapper });

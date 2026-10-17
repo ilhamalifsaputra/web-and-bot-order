@@ -32,7 +32,7 @@ export function EmptyState({
   description,
   action,
   secondaryAction,
-}: EmptyStateProps): JSX.Element {
+}: EmptyStateProps): React.JSX.Element {
   const displayTitle = title ?? message ?? "";
 
   return (

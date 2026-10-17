@@ -35,7 +35,7 @@ interface SaveConfirmDialogProps {
  * controlled (no `trigger` prop) since callers include a Switch, a form
  * submit, and other non-button triggers.
  */
-export function SaveConfirmDialog(props: SaveConfirmDialogProps): JSX.Element {
+export function SaveConfirmDialog(props: SaveConfirmDialogProps): React.JSX.Element {
   const busyRef = React.useRef(false);
   return <Dialog open={props.open} onOpenChange={(next) => {
     if (!busyRef.current) props.onOpenChange(next);
@@ -58,7 +58,7 @@ function SaveSession({
   variant = "default",
   onConfirm,
   busyRef,
-}: SaveConfirmDialogProps & { busyRef: React.MutableRefObject<boolean> }): JSX.Element {
+}: SaveConfirmDialogProps & { busyRef: React.MutableRefObject<boolean> }): React.JSX.Element {
   const [phase, setPhase] = React.useState<Phase>("confirm");
   const [errorMessage, setErrorMessage] = React.useState<string | null>(null);
   const [resolvedMessage, setResolvedMessage] = React.useState<string | null>(null);

@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-quer
 import { render, screen, fireEvent } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { useCurrencySwitch } from "./currency";
-import "@testing-library/jest-dom";
+import "@testing-library/jest-dom/vitest";
 
 let preference = "IDR";
 vi.mock("../api/client", () => ({ apiPost: vi.fn(async (_path: string, body: { currency: string }) => { preference = body.currency; return body; }) }));

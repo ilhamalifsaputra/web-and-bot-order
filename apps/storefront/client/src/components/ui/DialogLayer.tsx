@@ -7,7 +7,7 @@ export default function DialogLayer({ style, ...props }: HTMLAttributes<HTMLDivE
   return (
     <div
       {...props}
-      {...(!present ? { inert: "" } : {})}
+      {...(!present ? { inert: true } : {})}
       aria-hidden={!present || undefined}
       style={{ ...style, pointerEvents: present ? style?.pointerEvents : "none" }}
     />

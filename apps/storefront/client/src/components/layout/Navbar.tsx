@@ -28,7 +28,7 @@ export default function Navbar({
   ctx: ShopContext | undefined;
   drawerOpen: boolean;
   onOpenDrawer: () => void;
-  triggerRef: RefObject<HTMLButtonElement>;
+  triggerRef: RefObject<HTMLButtonElement | null>;
 }) {
   const location = useLocation();
   const lang = currentLang();

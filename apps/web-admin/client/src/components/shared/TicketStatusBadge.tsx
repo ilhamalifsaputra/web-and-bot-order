@@ -33,7 +33,7 @@ interface TicketStatusBadgeProps {
   status: string;
 }
 
-export function TicketStatusBadge({ status }: TicketStatusBadgeProps): JSX.Element {
+export function TicketStatusBadge({ status }: TicketStatusBadgeProps): React.JSX.Element {
   const tone = TONE_CLASS[status] ?? FALLBACK_TONE;
   return (
     <span className={`inline-flex items-center whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-semibold ${tone}`}>

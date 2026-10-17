@@ -232,3 +232,12 @@ Historical Phase 1 changed-file inventory, before integration with the newer mas
 - Workspace build and full typecheck passed on final source `50490bd7`, synchronized with `master` / `origin/master` at `c39b0150`. Final full verification passed: **`pnpm typecheck` and `pnpm test`, exit 0; 634 files, 11,845 tests, 0 failures, 757.39 seconds**. All unchanged pretest gates passed. Logs `.ticketing-build-complete-final.log`, `.ticketing-typecheck-compact-final.log` and `.ticketing-test-verified-final.log`. Subsequent changes only record verification in documentation.
 
 - Final mobile filter QA: admin Status/Source controls share the same row at CSS width 320 (about 131 px each), with no document/main overflow across all six widths. Screenshot `docs/ticketing-admin-320.png`; 30/30 SupportPage tests passed.
+
+
+## Dependency upgrade - 17 Oktober 2026
+
+- Worktree `deps-upgrade`, branch `worktree-deps-upgrade`, based on `master` at `2f86c643`. Upgraded React 19, recharts 3, motion 14, vite 8, vitest 5, jsdom 30, plugin-react 6, eslint 10, TypeScript 6.0.3, zod 4 and the other majors listed in the commit log. React 19 type fallout (global `JSX` namespace, nullable `RefObject`, boolean `inert`) was fixed in source; no suppression, exclusion or disabled rule was added.
+- `react-doctor` stays at 0.9.17: 0.9.18 adds a `click-events-have-key-events` warning for the clickable row in `apps/storefront/client/src/components/shop/TicketRow.tsx`, which is a design decision still open.
+- Final source `pnpm doctor:full`: **637 files, 0 errors and 0 warnings across both clients and all categories**. `pnpm doctor:bugs` and `pnpm lint` clean (637 files); `pnpm doctor:changed` 245 files, no Bugs issues.
+- `pnpm typecheck`, `pnpm run pretest` and `pnpm exec vitest run --maxWorkers=2` all exit 0 against an isolated local PostgreSQL on port 5560: **644 test files, 11,984 tests, 0 failures**. Production build passed. Runtime check is covered by the client test suites (React 19, jsdom 30); no live browser session was run.
+- Not upgraded on purpose: TypeScript 7 (breaks typescript-eslint and the AST guard tests), Prisma 7 and `@grammyjs/conversations` 2 (separate branches), `prom-client` replacement, `@types/node` stays 22 to match `engines`.

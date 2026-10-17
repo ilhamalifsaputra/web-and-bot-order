@@ -37,6 +37,15 @@ const CARDS: OpCardDef[] = [
     // still in flight at Digiflazz that the counter deliberately leaves out.
     hint: AWAITING_FULFILLMENT_HINT,
   },
+  // Paid orders Digiflazz never gave a final answer on. The buyer's money is
+  // held until an admin reconciles each one, so it escalates like other
+  // money-at-risk queues. The link adds the narrowing filter to the same
+  // PROCESSING status, so the list shows exactly the counted rows.
+  { key: "digiflazzUnresolved", label: "Unresolved at supplier",
+    href: "/orders?status=PROCESSING&digiflazz=unresolved",
+    hint: "Paid top-ups with no final answer from Digiflazz after 24 hours of checks. Reconcile each one with Digiflazz, then check it again or mark it delivered or failed.",
+    critical: true,
+  },
 ];
 
 function level(count: number, critical?: boolean): "ok" | "warn" | "critical" | "idle" {

@@ -1118,6 +1118,25 @@ describe("viewOrder — PROCESSING branch", () => {
     expect(body).not.toContain("submitted information");
   });
 
+  it.each([
+    ["GAME_TOPUP", "need to pay again or place a new order", "reviewing your order"],
+    ["PREMIUM_APPS", "reviewing your order", "need to pay again"],
+  ])("words a %s Digiflazz order unresolved at the supplier for the buyer (audit A5)", async (group, shown, hidden) => {
+    const denom = await makeManualDenom();
+    const product = await prisma.denomination.findUniqueOrThrow({ where: { id: denom.id }, select: { product: { select: { categoryId: true } } } });
+    await prisma.category.update({ where: { id: product.product.categoryId }, data: { group } });
+    const orderId = await makeProcessingOrder(denom.id, 1);
+    await prisma.order.update({ where: { id: orderId }, data: { fulfillmentProvider: "DIGIFLAZZ", digiflazzDispatchedAt: new Date(), digiflazzAttempts: 21, digiflazzStatus: "unresolved_at_supplier" } });
+
+    const { ctx, sink } = customerCtx();
+    await customer.viewOrder(ctx, orderId);
+
+    const body = JSON.stringify(sink);
+    expect(body).toContain(shown);
+    expect(body).not.toContain(hidden);
+    expect(body).not.toContain("being prepared by hand");
+  });
+
   it("echoes the buyer's submitted customerData, labeled per the SKU's field spec, for a manual_with_info order", async () => {
     const fields: AdditionalField[] = [
       { key: "invite_email", label: { id: "Email Undangan", en: "Invite Email" }, type: AdditionalFieldType.EMAIL, required: true, options: [], placeholder: "" },

@@ -33,3 +33,8 @@ export const ORDER_STATUS_LABELS: Record<string, string> = {
 export function orderStatusLabel(status: string): string {
   return ORDER_STATUS_LABELS[status] ?? status;
 }
+
+/** `Order.digiflazzStatus` for a paid Digiflazz order with no final answer
+ * after its first 24 hours of checks (mirrors the server's
+ * DIGIFLAZZ_STATUS_UNRESOLVED). The order itself stays PROCESSING. */
+export const DIGIFLAZZ_UNRESOLVED = "unresolved_at_supplier";

@@ -47,9 +47,28 @@ const KNOWN_ERROR_MESSAGES: Record<string, string> = {
     "This order is no longer awaiting fulfilment — it may have already been processed.",
   "error.order_paid_needs_credit":
     "This order was already paid — use \"Credit to Balance\" instead of Reject/Cancel, so the payment isn't lost.",
-  // `{orderCode}` is always passed by creditOrderToBalance, the only throw site.
+  // `{orderCode}` is always passed by both throw sites: creditOrderToBalance
+  // and rejectOrder (crud/orders.ts).
   "error.order_in_flight_at_supplier":
-    "Order {orderCode} is still waiting for the supplier's result, so credit is locked until that status is final. Refresh the page to see the current state.",
+    "Order {orderCode} is still waiting for the supplier's result, so it can't be credited or rejected until that status is final. Refresh the page to see the current state.",
+  // The ways out of an order unresolved at Digiflazz (crud/digiflazz.ts): check
+  // now, mark delivered, mark failed. Every throw site that names an order
+  // passes `{orderCode}`; the two note refusals name none.
+  "error.digiflazz_failure_note_required":
+    "Write down what Digiflazz confirmed about this order before marking it as failed.",
+  "error.digiflazz_delivery_note_required":
+    "Write down what Digiflazz confirmed about this order before marking it as delivered.",
+  "error.digiflazz_not_unresolved":
+    "This action is only available for order {orderCode} while it is unresolved at Digiflazz. Refresh the page to see the current state.",
+  "error.digiflazz_check_in_flight":
+    "A status check for order {orderCode} is running with Digiflazz right now. Try again in a minute.",
+  // Mark delivered reuses the supplier delivery path, which needs the order's
+  // one Digiflazz item; an older order whose SKU lost its supplier code after
+  // dispatch can't go that way. Mark failed is its way out.
+  "error.order_not_digiflazz":
+    "This order isn't a single-item Digiflazz order, so it can't be delivered through Digiflazz. If Digiflazz confirmed it was not delivered, mark it failed instead; otherwise check its product's supplier code.",
+  "error.digiflazz_not_configured":
+    "Digiflazz is not connected, so order {orderCode} can't be checked right now. Add the Digiflazz credentials in Settings first.",
   "error.already_credited":
     "This order's payment has already been credited to the buyer's balance, so nothing was handed over a second time. Refresh the page to see the current state.",
   "error.order_already_refunded":

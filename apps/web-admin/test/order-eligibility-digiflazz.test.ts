@@ -2,8 +2,10 @@ import "./setup-env"; // MUST be first: sets env + builds the temp DB schema.
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { config } from "@app/core/config";
-import { prisma, initDb, upsertUser, setSetting } from "@app/db";
-import { resetDb } from "../../../tests/helpers/sampleData";
+import { prisma, initDb, upsertUser, setSetting, createOrderDirect, DIGIFLAZZ_USERNAME_KEY, DIGIFLAZZ_API_KEY_KEY } from "@app/db";
+import { DeliveryType } from "@app/core/enums";
+import { decryptDeliveredContent } from "@app/core/credentialCrypto";
+import { resetDb, buildSampleData } from "../../../tests/helpers/sampleData";
 import { makeSession, sessionJtiKey, newJti, webRoleKey } from "../src/auth";
 import { buildApp } from "../src/server";
 
@@ -128,5 +130,160 @@ describe("order eligibility for Digiflazz orders", () => {
     expect(res.statusCode).toBe(403);
     expect((await prisma.order.findUniqueOrThrow({ where: { id: unresolved.id } })).digiflazzStatus).toBe("unresolved_at_supplier");
     expect(await prisma.auditLog.count({ where: { action: "order.digiflazz_marked_failed_by_admin" } })).toBe(0);
+  });
+});
+
+// Audit A5 follow-up: the other two ways out (mark delivered, check now), the
+// Reject guard, and the unresolved queue filter.
+describe("unresolved at the supplier: mark delivered, check now, reject, list filter", () => {
+  const post = (url: string, fields: Record<string, string> = {}) =>
+    app.inject({
+      method: "POST",
+      url,
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      cookies: { [COOKIE]: cookie },
+      payload: new URLSearchParams({ csrf_token: csrf, ...fields }).toString(),
+    });
+  const detail = async (id: number) =>
+    (await app.inject({ method: "GET", url: `/api/orders/${id}`, cookies: { [COOKIE]: cookie } })).json() as Record<string, unknown>;
+
+  /** A real single-item Digiflazz order (fulfillDigiflazzOrder needs the item). */
+  async function makeUnresolvedWithItem() {
+    const sample = await buildSampleData(prisma);
+    await prisma.denomination.update({
+      where: { id: sample.product.id },
+      data: {
+        autoDeliverySource: "digiflazz",
+        supplierSku: "ml100",
+        deliveryType: DeliveryType.MANUAL_WITH_INFO,
+        additionalFields: JSON.stringify([{ key: "user_id", label: { id: "Game ID", en: "Game ID" }, type: "text", required: true, options: [], placeholder: "" }]),
+      },
+    });
+    const order = (await createOrderDirect(prisma, { channel: "bot", user: sample.user, productId: sample.product.id, quantity: 1, customerData: JSON.stringify([{ user_id: "123456789" }]) }))!;
+    await prisma.order.update({
+      where: { id: order.id },
+      data: {
+        status: "PROCESSING",
+        paidAt: new Date(Date.now() - 3 * 24 * 3_600_000),
+        digiflazzDispatchedAt: new Date(Date.now() - 3 * 24 * 3_600_000),
+        digiflazzStatus: "unresolved_at_supplier",
+        digiflazzNextRecheckAt: new Date(Date.now() + 3 * 3_600_000),
+      },
+    });
+    return order;
+  }
+
+  it("offers all three ways out (and not Reject) only for an unresolved order", async () => {
+    const unresolved = await makeOrder({ fulfillmentProvider: "DIGIFLAZZ", digiflazzStatus: "unresolved_at_supplier", digiflazzDispatchedAt: new Date(Date.now() - 3 * 24 * 3_600_000) });
+    const inFlight = await makeOrder({ fulfillmentProvider: "DIGIFLAZZ", digiflazzStatus: "pending_at_supplier", digiflazzDispatchedAt: new Date() });
+    const manual = await makeOrder({ fulfillmentProvider: "MANUAL" });
+
+    expect(await detail(unresolved.id)).toMatchObject({ canMarkSupplierFailed: true, canMarkSupplierDelivered: true, canRecheckSupplier: true, canReject: false });
+    expect(await detail(inFlight.id)).toMatchObject({ canMarkSupplierFailed: false, canMarkSupplierDelivered: false, canRecheckSupplier: false, canReject: false });
+    expect(await detail(manual.id)).toMatchObject({ canMarkSupplierDelivered: false, canRecheckSupplier: false, canReject: true });
+  });
+
+  it("sends the next automatic check in the shop timezone for the unresolved banner, and null when none is scheduled", async () => {
+    const next = new Date("2026-10-16T05:30:00.000Z");
+    const scheduled = await makeOrder({ fulfillmentProvider: "DIGIFLAZZ", digiflazzStatus: "unresolved_at_supplier", digiflazzDispatchedAt: new Date(Date.now() - 3 * 24 * 3_600_000), digiflazzNextRecheckAt: next });
+    const none = await makeOrder({ fulfillmentProvider: "DIGIFLAZZ", digiflazzStatus: "unresolved_at_supplier", digiflazzDispatchedAt: new Date(Date.now() - 3 * 24 * 3_600_000), digiflazzNextRecheckAt: null });
+
+    const { displayDateTime } = await import("../src/dateDisplay");
+    expect((await detail(scheduled.id)).order).toMatchObject({ digiflazzNextRecheckAtDisplay: displayDateTime(next), digiflazzAutoChecksEnded: false });
+    expect((await detail(none.id)).order).toMatchObject({ digiflazzNextRecheckAtDisplay: null, digiflazzAutoChecksEnded: false });
+  });
+
+  it("after the 7-day window the next time is an admin reminder, so it is not shown as a check", async () => {
+    const pastWindow = await makeOrder({
+      fulfillmentProvider: "DIGIFLAZZ",
+      digiflazzStatus: "unresolved_at_supplier",
+      digiflazzDispatchedAt: new Date(Date.now() - 8 * 24 * 3_600_000),
+      digiflazzNextRecheckAt: new Date(Date.now() + 20 * 3_600_000),
+    });
+    expect((await detail(pastWindow.id)).order).toMatchObject({ digiflazzAutoChecksEnded: true, digiflazzNextRecheckAtDisplay: null });
+  });
+
+  it("does not present a held check lease as the next check", async () => {
+    const leased = await makeOrder({
+      fulfillmentProvider: "DIGIFLAZZ",
+      digiflazzStatus: "unresolved_at_supplier",
+      digiflazzDispatchedAt: new Date(Date.now() - 3 * 24 * 3_600_000),
+      digiflazzNextRecheckAt: new Date(Date.now() + 30_000),
+    });
+    expect((await detail(leased.id)).order).toMatchObject({ digiflazzAutoChecksEnded: false, digiflazzNextRecheckAtDisplay: null });
+  });
+
+  it("Reject is refused server-side for an order unresolved at the supplier", async () => {
+    const unresolved = await makeOrder({ fulfillmentProvider: "DIGIFLAZZ", digiflazzStatus: "unresolved_at_supplier", digiflazzDispatchedAt: new Date(Date.now() - 3 * 24 * 3_600_000) });
+    const res = await post(`/api/orders/${unresolved.id}/reject`, { reason: "buyer asked" });
+    expect(res.statusCode).toBe(422);
+    expect(res.json()).toMatchObject({ error: "error.order_in_flight_at_supplier" });
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: unresolved.id } })).status).toBe("PROCESSING");
+  });
+
+  it("mark-delivered: note required, refused outside the unresolved state, delivers and audits the session admin, then refuses a repeat", async () => {
+    const order = await makeUnresolvedWithItem();
+    const inFlight = await makeOrder({ fulfillmentProvider: "DIGIFLAZZ", digiflazzStatus: "pending_at_supplier", digiflazzDispatchedAt: new Date() });
+
+    const noNote = await post(`/api/orders/${order.id}/digiflazz/mark-delivered`, { note: " " });
+    expect(noNote.statusCode).toBe(400);
+    expect(noNote.json()).toEqual({ error: "error.digiflazz_delivery_note_required" });
+    expect((await post(`/api/orders/${inFlight.id}/digiflazz/mark-delivered`, { note: "checked" })).statusCode).toBe(422);
+
+    const res = await post(`/api/orders/${order.id}/digiflazz/mark-delivered`, { note: "Digiflazz CS confirmed it went through", sn: "SN-777" });
+    expect(res.statusCode).toBe(200);
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe("DELIVERED");
+    const audit = await prisma.auditLog.findFirstOrThrow({ where: { action: "order.digiflazz_marked_delivered_by_admin", targetId: order.id } });
+    expect(audit.adminId).toBe(adminId);
+    expect(await detail(order.id)).toMatchObject({ canMarkSupplierDelivered: false, canRecheckSupplier: false });
+
+    const again = await post(`/api/orders/${order.id}/digiflazz/mark-delivered`, { note: "again" });
+    expect(again.statusCode).toBe(422);
+    expect(again.json()).toMatchObject({ error: "error.digiflazz_not_unresolved" });
+    expect(await prisma.orderStatusHistory.count({ where: { orderId: order.id, status: "DELIVERED" } })).toBe(1);
+  });
+
+  it("mark-delivered: a serial number longer than 200 characters is trimmed and capped, still answering ok", async () => {
+    const order = await makeUnresolvedWithItem();
+    const res = await post(`/api/orders/${order.id}/digiflazz/mark-delivered`, { note: "confirmed", sn: `  ${"9".repeat(260)}  ` });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ ok: true });
+    const row = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(decryptDeliveredContent(row.deliveredContent, order.id)).toBe("9".repeat(200));
+  });
+
+  it("recheck: refused outside the unresolved state, busy while a check holds the lease", async () => {
+    const inFlight = await makeOrder({ fulfillmentProvider: "DIGIFLAZZ", digiflazzStatus: "pending_at_supplier", digiflazzDispatchedAt: new Date() });
+    expect((await post(`/api/orders/${inFlight.id}/digiflazz/recheck`)).json()).toMatchObject({ error: "error.digiflazz_not_unresolved" });
+
+    const order = await makeUnresolvedWithItem();
+    await setSetting(prisma, DIGIFLAZZ_USERNAME_KEY, "shopuser");
+    await setSetting(prisma, DIGIFLAZZ_API_KEY_KEY, "shopkey");
+    await prisma.order.update({ where: { id: order.id }, data: { digiflazzNextRecheckAt: new Date(Date.now() + 20_000) } });
+    const res = await post(`/api/orders/${order.id}/digiflazz/recheck`);
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ ok: true, outcome: "busy" });
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).digiflazzStatus).toBe("unresolved_at_supplier");
+  });
+
+  it("readonly admins cannot mark delivered or recheck", async () => {
+    const order = await makeUnresolvedWithItem();
+    await setSetting(prisma, webRoleKey(ADMIN_TG), "readonly");
+    expect((await post(`/api/orders/${order.id}/digiflazz/mark-delivered`, { note: "checked with Digiflazz" })).statusCode).toBe(403);
+    expect((await post(`/api/orders/${order.id}/digiflazz/recheck`)).statusCode).toBe(403);
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe("PROCESSING");
+    expect(await prisma.auditLog.count({ where: { action: { in: ["order.digiflazz_marked_delivered_by_admin", "order.digiflazz_rechecked_by_admin"] } } })).toBe(0);
+  });
+
+  it("the list's digiflazz=unresolved filter returns only unresolved PROCESSING orders, with digiflazzStatus in each row", async () => {
+    const unresolved = await makeOrder({ fulfillmentProvider: "DIGIFLAZZ", digiflazzStatus: "unresolved_at_supplier" });
+    await makeOrder({ fulfillmentProvider: "DIGIFLAZZ", digiflazzStatus: "pending_at_supplier" });
+    await makeOrder({ fulfillmentProvider: "MANUAL" });
+
+    const res = await app.inject({ method: "GET", url: "/api/orders?status=PROCESSING&digiflazz=unresolved", cookies: { [COOKIE]: cookie } });
+    const body = res.json() as { orders: Array<{ id: number; digiflazzStatus: string | null }>; total: number };
+    expect(body.total).toBe(1);
+    expect(body.orders.map((o) => o.id)).toEqual([unresolved.id]);
+    expect(body.orders[0]!.digiflazzStatus).toBe("unresolved_at_supplier");
   });
 });

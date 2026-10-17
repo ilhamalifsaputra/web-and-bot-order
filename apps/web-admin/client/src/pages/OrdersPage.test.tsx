@@ -278,6 +278,65 @@ describe("OrdersPage", () => {
     );
   });
 
+  // Audit A5 follow-up: the dashboard's "Unresolved at supplier" card links here.
+  it("pre-filters by ?digiflazz=unresolved alongside ?status=, names the narrowing, and lets it be removed", async () => {
+    const user = userEvent.setup();
+    const fetchSpy = mockFetchRouter();
+    render(
+      <WrapperAt initialEntries={["/orders?status=PROCESSING&digiflazz=unresolved"]}>
+        <OrdersPage />
+      </WrapperAt>,
+    );
+    await waitFor(() =>
+      expect(fetchSpy).toHaveBeenCalledWith(
+        "/api/orders?status=PROCESSING&digiflazz=unresolved",
+        expect.objectContaining({ credentials: "include" }),
+      ),
+    );
+    expect(screen.getByText("Only orders unresolved at the supplier")).toBeInTheDocument();
+    // The CSV export follows the same narrowing.
+    expect(screen.getByRole("link", { name: /export csv/i })).toHaveAttribute(
+      "href",
+      "/api/orders/export?status=PROCESSING&digiflazz=unresolved",
+    );
+
+    await user.click(screen.getByRole("button", { name: /show all orders, not only unresolved/i }));
+    await waitFor(() =>
+      expect(fetchSpy).toHaveBeenCalledWith("/api/orders?status=PROCESSING", expect.objectContaining({ credentials: "include" })),
+    );
+    expect(screen.queryByText("Only orders unresolved at the supplier")).not.toBeInTheDocument();
+  });
+
+  it("ignores an unknown ?digiflazz= value", async () => {
+    const fetchSpy = mockFetchRouter();
+    render(
+      <WrapperAt initialEntries={["/orders?digiflazz=anything"]}>
+        <OrdersPage />
+      </WrapperAt>,
+    );
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith("/api/orders?", expect.objectContaining({ credentials: "include" })));
+    expect(screen.queryByText("Only orders unresolved at the supplier")).not.toBeInTheDocument();
+  });
+
+  it("marks a row unresolved at the supplier next to its status, and only that row", async () => {
+    mockFetchRouter({
+      orders: {
+        ...ORDERS_DATA,
+        orders: [
+          { ...ORDER_CAN_FULFILL, id: 7, orderCode: "ORD-0007", digiflazzStatus: "unresolved_at_supplier", eligibility: ELIGIBILITY_NONE },
+          { ...ORDER_CAN_FULFILL, digiflazzStatus: "pending_at_supplier" },
+          ORDER_CAN_ACT,
+        ],
+      },
+    });
+    render(<OrdersPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("ORD-0007")).toBeInTheDocument());
+    const unresolvedRow = screen.getByText("ORD-0007").closest("tr") as HTMLElement;
+    expect(within(unresolvedRow).getByText("Processing")).toBeInTheDocument();
+    expect(within(unresolvedRow).getByText("Unresolved at supplier")).toBeInTheDocument();
+    expect(screen.getAllByText("Unresolved at supplier")).toHaveLength(1);
+  });
+
   it("status tabs set the status filter and reset to page 1 (replaces the old Awaiting Fulfillment chip, F-001)", async () => {
     const user = userEvent.setup();
     const fetchSpy = mockFetchRouter();

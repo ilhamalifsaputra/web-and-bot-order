@@ -1612,6 +1612,18 @@ export async function countAwaitingManualFulfillment(db: Db): Promise<number> {
   return rows.filter((o) => !isDigiflazzInFlight({ ...o, status: OrderStatus.PROCESSING })).length;
 }
 
+/**
+ * Orders unresolved at Digiflazz (`DIGIFLAZZ_STATUS_UNRESOLVED`, audit A5): paid,
+ * still locked because the supplier may yet deliver, and waiting for an admin to
+ * reconcile them with Digiflazz (check now, mark delivered or mark failed). Not
+ * part of `countAwaitingManualFulfillment` — they cannot be hand-fulfilled. The
+ * Operation Center's "Unresolved at supplier" queue; the same set as the Orders
+ * list filter `digiflazz: "unresolved"`.
+ */
+export function countDigiflazzUnresolved(db: Db): Promise<number> {
+  return db.order.count({ where: { status: OrderStatus.PROCESSING, digiflazzStatus: DIGIFLAZZ_STATUS_UNRESOLVED } });
+}
+
 /** Orders successfully delivered — the Orders page KPI's "Delivered" count and
  * its "Delivered" tab badge, so it counts both order kinds to stay equal to
  * the row count that tab shows (see this block's header comment). For
@@ -2129,6 +2141,14 @@ export async function rejectOrder(
   const rejectable: string[] = [OrderStatus.PENDING_VERIFICATION, OrderStatus.PROCESSING];
   if (!rejectable.includes(order.status)) {
     throw new ValidationError("error.order_not_pending_verification");
+  }
+  // A Digiflazz order the supplier may still deliver (queued, pending or
+  // unresolved at the supplier — isDigiflazzInFlight) must not be rejected:
+  // that would release its holds while the top-up can still reach the player.
+  // Same lock as credit and hand-fulfilment; it lifts once Digiflazz (or an
+  // admin override) fails the order.
+  if (isDigiflazzInFlight(order)) {
+    throw new ValidationError("error.order_in_flight_at_supplier", { orderCode: order.orderCode });
   }
   // H-2 (backend audit, 2026-07-31): a PROCESSING order reaches here already
   // paid (settlePaidOrder stamped paidAt) — rejecting it directly would
@@ -3284,7 +3304,7 @@ export function computeOrderEligibility(
   opts?: {
     cancelledOrderHasMoneyReturned?: boolean;
     cancelledOrderWasPaid?: boolean;
-    /** `isDigiflazzInFlight(order)` — locks canFulfill and canCredit. */
+    /** `isDigiflazzInFlight(order)` — locks canFulfill, canCredit and canReject. */
     digiflazzInFlight?: boolean;
     /** `isDigiflazzCreditLocked(order)` — locks canCreditCancelled. */
     digiflazzCreditLocked?: boolean;
@@ -3304,7 +3324,10 @@ export function computeOrderEligibility(
     // Mirrors fulfillManualOrder's claim, which refuses a Digiflazz order the
     // provider has not failed (`isDigiflazzInFlight`).
     canFulfill: status === OrderStatus.PROCESSING && opts?.digiflazzInFlight !== true,
-    canReject: status === OrderStatus.PENDING_VERIFICATION || status === OrderStatus.PROCESSING,
+    // Mirrors rejectOrder, which refuses a Digiflazz order still in flight.
+    canReject:
+      (status === OrderStatus.PENDING_VERIFICATION || status === OrderStatus.PROCESSING) &&
+      opts?.digiflazzInFlight !== true,
     canResend: isDelivered && telegramId != null,
     canCreditCancelled:
       status === OrderStatus.CANCELLED &&
@@ -3347,12 +3370,18 @@ export interface OrderFilter {
    * sales/revenue caller must pass `OrderKind.PRODUCT` explicitly.
    */
   kind?: OrderKind | null;
+  /** "unresolved": only PROCESSING orders unresolved at Digiflazz — the same
+   * set `countDigiflazzUnresolved` counts. Narrows any `status` filter. */
+  digiflazz?: "unresolved" | null;
 }
 
 function orderWhere(f: OrderFilter): Prisma.OrderWhereInput {
   const where: Prisma.OrderWhereInput = {};
   if (f.status != null) {
     where.status = Array.isArray(f.status) ? { in: f.status } : f.status;
+  }
+  if (f.digiflazz === "unresolved") {
+    where.AND = [{ status: OrderStatus.PROCESSING }, { digiflazzStatus: DIGIFLAZZ_STATUS_UNRESOLVED }];
   }
   if (f.userId != null) where.userId = f.userId;
   // Top-level (AND) clause, so it narrows the `q` free-text OR below rather

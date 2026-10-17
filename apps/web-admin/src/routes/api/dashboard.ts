@@ -29,6 +29,7 @@ import {
   countPendingPaymentLike,
   countProcessing,
   countAwaitingManualFulfillment,
+  countDigiflazzUnresolved,
   countExpiredPending,
   lowStockDenominations,
   listOrderItemsExpiringWarranty,
@@ -244,7 +245,7 @@ export default async function dashboardApiRoutes(app: FastifyInstance): Promise<
 
   app.get("/api/dashboard/operations", { preHandler: currentAdmin }, async () => {
     const now = new Date();
-    const [pendingPayments, manualReviews, manualQueue, ordersProcessing, expiredPayments, awaitingFulfillment] =
+    const [pendingPayments, manualReviews, manualQueue, ordersProcessing, expiredPayments, awaitingFulfillment, digiflazzUnresolved] =
       await Promise.all([
         countPendingPaymentLike(prisma),
         countPendingVerifications(prisma),
@@ -252,6 +253,9 @@ export default async function dashboardApiRoutes(app: FastifyInstance): Promise<
         countProcessing(prisma),
         countExpiredPending(prisma, now),
         countAwaitingManualFulfillment(prisma),
+        // Paid Digiflazz orders with no final supplier answer (audit A5): not
+        // part of awaitingFulfillment, since they cannot be hand-fulfilled.
+        countDigiflazzUnresolved(prisma),
       ]);
     return {
       pendingPayments,
@@ -260,6 +264,7 @@ export default async function dashboardApiRoutes(app: FastifyInstance): Promise<
       ordersProcessing,
       expiredPayments,
       awaitingFulfillment,
+      digiflazzUnresolved,
     };
   });
 

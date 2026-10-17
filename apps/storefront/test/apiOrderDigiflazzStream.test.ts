@@ -430,6 +430,30 @@ describe("GET /api/v1/account/orders/:code/digiflazz/stream", () => {
     await closeSseConnection(res);
   });
 
+  it("keeps 'reviewing' for an order unresolved at the supplier but streams its own buyer copy and reason (audit A5)", async () => {
+    const { userId, cookie } = await makeCustomer();
+    const order = await makeProductOrder(userId, freshOrderCode("ORD-UNRES"), {
+      digiflazzStatus: "unresolved_at_supplier",
+      digiflazzAttempts: 21,
+      digiflazzNextRecheckAt: null,
+    });
+
+    const res = await injectStream(`/api/v1/account/orders/${order.orderCode}/digiflazz/stream`, cookie);
+    expect(res.statusCode).toBe(200);
+    const chunk = await readOneChunk(res.stream());
+    expect(parseSseData(chunk)).toMatchObject({
+      digiflazzStatus: "reviewing",
+      fulfillment: {
+        status: "NEEDS_REVIEW",
+        presentation: {
+          phase: "REVIEW", spinner: false, progress: null, transactionType: "GAME_TOPUP", reason: "unresolved_at_supplier",
+          titleKey: "transaction.game_unresolved_title", bodyKey: "transaction.game_unresolved_body",
+        },
+      },
+    });
+    await closeSseConnection(res);
+  });
+
   it("passes through digiflazzStatus: null (order not yet dispatched) as null in the initial frame", async () => {
     const { userId, cookie } = await makeCustomer();
     const order = await makeProductOrder(userId, freshOrderCode("ORD-NULL"), {

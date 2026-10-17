@@ -55,6 +55,8 @@ export function renderTransactionStatusMessage(input: {
     lines.push("", `${"█".repeat(cells)}${"░".repeat(10 - cells)} ${p.progress}%`);
   }
   lines.push("", escape(t(input.slow ? slowLineKey(p.phase) : p.bodyKey, lang)));
-  if (SUPPORT_PHASES.has(p.phase)) lines.push(escape(t("transaction.support_hint", lang)));
+  // A body with a reason (unresolved at the supplier) already asks the buyer
+  // to contact support, so the hint would repeat it.
+  if (SUPPORT_PHASES.has(p.phase) && !p.reason) lines.push(escape(t("transaction.support_hint", lang)));
   return lines.join("\n");
 }

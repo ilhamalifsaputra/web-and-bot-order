@@ -1091,12 +1091,12 @@ describe("H-2 — paid PROCESSING orders: canCredit, successful credit, and reje
     expect((await getOrder(prisma, order.id))!.status).toBe("CANCELLED");
   });
 
-  it("canFulfill and canCredit are false while a Digiflazz order is in flight; reject flag is unchanged", () => {
+  it("canFulfill, canCredit and canReject are false while a Digiflazz order is in flight", () => {
     expect(computeOrderEligibility("PROCESSING", null, { digiflazzInFlight: true })).toMatchObject({
-      canFulfill: false, canReject: true, canCredit: false,
+      canFulfill: false, canReject: false, canCredit: false,
     });
     expect(computeOrderEligibility("PROCESSING", null, { digiflazzInFlight: false })).toMatchObject({
-      canFulfill: true, canCredit: true,
+      canFulfill: true, canCredit: true, canReject: true,
     });
     // CANCELLED recovery credit mirrors isDigiflazzCreditLocked.
     const paidCancelled = { cancelledOrderHasMoneyReturned: false, cancelledOrderWasPaid: true };
@@ -1166,13 +1166,13 @@ describe("H-2 — paid PROCESSING orders: canCredit, successful credit, and reje
     }
   });
 
-  it("rejectOrder refuses a paid in-flight Digiflazz order (paid guard), leaving it PROCESSING", async () => {
+  it("rejectOrder refuses a paid in-flight Digiflazz order (in-flight guard, checked before the paid guard), leaving it PROCESSING", async () => {
     const order = await makeOrder("PROCESSING", {
       paidAt: new Date(), fulfillmentProvider: "DIGIFLAZZ",
       digiflazzStatus: "pending_at_supplier", digiflazzDispatchedAt: new Date(),
     });
     await expect(rejectOrder(prisma, order.id, { adminId: 1, reason: "x" })).rejects.toMatchObject({
-      key: "error.order_paid_needs_credit",
+      key: "error.order_in_flight_at_supplier",
     });
     expect((await getOrder(prisma, order.id))!.status).toBe("PROCESSING");
   });

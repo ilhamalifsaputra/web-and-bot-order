@@ -42,6 +42,11 @@ import {
   type StockReplacementWithRefund,
   triggerDigiflazzDispatch,
   markDigiflazzOrderFailedByAdmin,
+  markDigiflazzOrderDeliveredByAdmin,
+  recheckDigiflazzOrderNow,
+  isDigiflazzUnresolvedWindowOver,
+  DIGIFLAZZ_RECHECK_CLAIM_LEASE_MS,
+  DIGIFLAZZ_OVERRIDE_LEASE_MARGIN_MS,
 } from "@app/db";
 import { DIGIFLAZZ_STATUS_UNRESOLVED } from "@app/core/orderFulfillment";
 import { currentAdmin, csrfProtect, blockReadonlyReads } from "../../plugins/auth";
@@ -100,6 +105,8 @@ function buildOrderFilter(q: Record<string, string | undefined>): OrderFilter {
     ids: parseIdsFilter(q.ids),
     since: parseDate(q.since),
     until: parseDate(q.until),
+    // The Operation Center's "Unresolved at supplier" queue link.
+    digiflazz: q.digiflazz === "unresolved" ? "unresolved" : null,
   };
 }
 
@@ -281,8 +288,19 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
           }
         : undefined;
     const digiflazzCreditLocked = isDigiflazzCreditLocked(order);
+    const unresolvedAtSupplier =
+      order.status === OrderStatus.PROCESSING && order.digiflazzStatus === DIGIFLAZZ_STATUS_UNRESOLVED;
     return reply.send({
-      order: { ...masked, createdAtDisplay: displayDateTime(order.createdAt) },
+      // For the unresolved-at-supplier banner: the next automatic Digiflazz
+      // check in the shop TIMEZONE (the browser has no TIMEZONE setting), and
+      // whether the 7-day window of automatic checks is over. After the window,
+      // digiflazzNextRecheckAt only schedules the next admin reminder, so it is
+      // not presented as a check.
+      order: {
+        ...masked,
+        createdAtDisplay: displayDateTime(order.createdAt),
+        ...unresolvedCheckSchedule(order),
+      },
       hasDeliveredContent,
       money: serializeMoneyView(orderMoneyView(order)),
       // isDelivered/canAct/canCredit/canFulfill/canReject/canResend/
@@ -298,11 +316,14 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
       // supplier may still deliver, and creditOrderToBalance refuses it.
       creditLockedBySupplier: digiflazzCreditLocked,
       // Backend audit A5: the order is unresolved at Digiflazz (no final answer
-      // after 24h) and an admin who reconciled it with Digiflazz may mark it
-      // failed (POST /api/orders/:orderId/digiflazz/mark-failed) — the only
-      // human way out; the server re-checks the state and the in-flight lease.
-      canMarkSupplierFailed:
-        order.status === OrderStatus.PROCESSING && order.digiflazzStatus === DIGIFLAZZ_STATUS_UNRESOLVED,
+      // after 24h). The three human ways out, all offered together: run one
+      // live check now (.../digiflazz/recheck), or, after reconciling with
+      // Digiflazz, mark it delivered (.../digiflazz/mark-delivered) or failed
+      // (.../digiflazz/mark-failed). The server re-checks the state and the
+      // in-flight lease on each.
+      canMarkSupplierFailed: unresolvedAtSupplier,
+      canMarkSupplierDelivered: unresolvedAtSupplier,
+      canRecheckSupplier: unresolvedAtSupplier,
       customerDataFields,
       customerData,
       stockReplacements: stockReplacements.map(serializeStockReplacement),
@@ -580,6 +601,55 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
     return reply.send({ ok: true });
   });
 
+  // Audit A5 follow-up: an admin who confirmed with Digiflazz that an
+  // unresolved order's top-up DID go through marks it delivered — the normal
+  // delivery path, no refund or credit. `note` (required) is the private
+  // reconciliation note for the audit row (written by the crud function, so not
+  // repeated here); `sn` (optional) is the serial number Digiflazz gave, shown
+  // to the buyer as the receipt.
+  app.post("/api/orders/:orderId/digiflazz/mark-delivered", { preHandler: csrfProtect }, async (req, reply) => {
+    const orderId = parsePositiveId((req.params as { orderId: string }).orderId);
+    if (orderId === null) return reply.code(400).send({ error: "Invalid order id." });
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const note = typeof body.note === "string" ? body.note.trim() : "";
+    // Trimmed and capped by the crud function, so every caller is bounded.
+    const sn = typeof body.sn === "string" ? body.sn : "";
+    if (!note) {
+      return reply.code(400).send(errorBody(new ValidationError("error.digiflazz_delivery_note_required")));
+    }
+    try {
+      await markDigiflazzOrderDeliveredByAdmin(prisma, { orderId, adminId: req.admin!.userId, note, sn });
+    } catch (e) {
+      if (e instanceof ValidationError) {
+        return reply.code(422).send(errorBody(e));
+      }
+      throw e;
+    }
+    nudgeOutboxDispatcher();
+    return reply.send({ ok: true });
+  });
+
+  // Audit A5 follow-up: one live Digiflazz status check for an unresolved order
+  // (at most one per order per minute). Changes no money by itself; a Sukses or
+  // Gagal answer goes through the normal delivery / failure path. Returns the
+  // outcome (delivered | failed | still_pending | check_failed | busy) for the
+  // admin's toast.
+  app.post("/api/orders/:orderId/digiflazz/recheck", { preHandler: csrfProtect }, async (req, reply) => {
+    const orderId = parsePositiveId((req.params as { orderId: string }).orderId);
+    if (orderId === null) return reply.code(400).send({ error: "Invalid order id." });
+    let outcome: Awaited<ReturnType<typeof recheckDigiflazzOrderNow>>["outcome"];
+    try {
+      ({ outcome } = await recheckDigiflazzOrderNow(prisma, { orderId, adminId: req.admin!.userId }));
+    } catch (e) {
+      if (e instanceof ValidationError) {
+        return reply.code(422).send(errorBody(e));
+      }
+      throw e;
+    }
+    if (outcome === "delivered" || outcome === "failed") nudgeOutboxDispatcher();
+    return reply.send({ ok: true, outcome });
+  });
+
   // Manual hand-fulfilment: an admin types the account content for a
   // PROCESSING (manual/manual_with_info) order and sends it to the buyer.
   // fulfillManualOrder itself always writes its own logAdminAction row
@@ -802,4 +872,30 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
     );
     return reply.send({ succeeded, failed });
   });
+}
+
+/**
+ * What the unresolved-at-supplier banner may say about automatic checks.
+ *
+ * - `digiflazzAutoChecksEnded`: the order's 7-day window of automatic Digiflazz
+ *   checks is over. From then on the poller only reminds admins, and
+ *   `digiflazzNextRecheckAt` is the next reminder, not a check.
+ * - `digiflazzNextRecheckAtDisplay`: the next automatic check in the shop
+ *   TIMEZONE, or null when none is scheduled. It is also null while a check
+ *   holds the order's in-flight lease (a time at most a lease plus margin
+ *   ahead), because that time is the lease's expiry, not a scheduled check;
+ *   the same rule the admin overrides use to tell the two apart.
+ */
+function unresolvedCheckSchedule(
+  order: { digiflazzDispatchedAt: Date | null; digiflazzNextRecheckAt: Date | null },
+  now: Date = new Date(),
+): { digiflazzAutoChecksEnded: boolean; digiflazzNextRecheckAtDisplay: string | null } {
+  const ended = order.digiflazzDispatchedAt !== null && isDigiflazzUnresolvedWindowOver(order.digiflazzDispatchedAt, now);
+  const next = order.digiflazzNextRecheckAt;
+  const leaseHorizon = now.getTime() + DIGIFLAZZ_RECHECK_CLAIM_LEASE_MS + DIGIFLAZZ_OVERRIDE_LEASE_MARGIN_MS;
+  const isLease = next !== null && next.getTime() > now.getTime() && next.getTime() <= leaseHorizon;
+  return {
+    digiflazzAutoChecksEnded: ended,
+    digiflazzNextRecheckAtDisplay: ended || isLease ? null : displayDateTime(next),
+  };
 }

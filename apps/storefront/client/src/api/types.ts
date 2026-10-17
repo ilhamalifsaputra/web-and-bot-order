@@ -364,6 +364,8 @@ export interface CustomerProgress {
   transactionType: "GAME_TOPUP" | "PREMIUM_APPS" | "WALLET_TOPUP";
   titleKey: string;
   bodyKey: string;
+  /** Set only for a Digiflazz game top-up still unresolved at the supplier (its own copy keys). */
+  reason?: "unresolved_at_supplier";
 }
 
 export interface Underpayment {

@@ -86,6 +86,10 @@ export interface CustomerProgress {
   progress: number | null;
   titleKey: string;
   bodyKey: string;
+  /** Why a REVIEW phase is shown, when the buyer gets distinct copy for it.
+   * Only a Digiflazz game top-up still unresolved at the supplier sets it
+   * (its own title/body); absent for every other phase and family. */
+  reason?: "unresolved_at_supplier";
 }
 
 /** Full canonical source used by wallet history, invoices and status messages. */
@@ -189,6 +193,15 @@ export function customerProgressPhase(order: FulfillmentOrder, opts: { messageSe
   if (status !== "PROCESSING" && status !== "PAID") return of("NONE", false);
   if (provider === "MANUAL") return of("MANUAL_WAITING", false);
   if (provider === "STOCK") return of("PREPARING", true);
-  if (digiflazzNeedsReview(order.digiflazzStatus)) return of("REVIEW", false);
+  if (digiflazzNeedsReview(order.digiflazzStatus)) {
+    // Unresolved at the supplier is not a failure: the buyer of a game top-up
+    // is told the payment arrived and the answer is still being checked. The
+    // wording stays true if the same message later turns delivered or failed.
+    // Premium Apps keep their generic review copy.
+    if (order.digiflazzStatus === DIGIFLAZZ_STATUS_UNRESOLVED && transactionType === "GAME_TOPUP") {
+      return { ...of("REVIEW", false), titleKey: "transaction.game_unresolved_title", bodyKey: "transaction.game_unresolved_body", reason: "unresolved_at_supplier" };
+    }
+    return of("REVIEW", false);
+  }
   return of(!order.digiflazzDispatchedAt ? "AUTO_QUEUED" : (order.digiflazzAttempts ?? 0) === 0 ? "AUTO_SUBMITTING" : "AUTO_PROCESSING", true);
 }

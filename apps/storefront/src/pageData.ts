@@ -6,7 +6,8 @@
  * helper returns exactly the keys its page needs.
  */
 import { config } from "@app/core/config";
-import { canonicalProduct, type CanonicalProductContext } from "@app/core/canonicalProduct";
+import type { CanonicalProductContext } from "@app/core/canonicalProduct";
+import { storefrontCanonicalProduct } from "./canonicalView";
 import { Decimal } from "@app/core/money";
 import { activeFlashPercent, effectiveUnitPrice, flashPrice } from "@app/core/flash";
 import { hasSellableStock, usesLocalInventory } from "@app/core/productAvailability";
@@ -163,7 +164,7 @@ export async function productPageData(rawSlug: string, isReseller = false, displ
     // Badge only when the flash price is the one this viewer actually gets —
     // the same rule flashViewFor applies to a cart line.
     const flashPct = salePrice !== null && unit.equals(salePrice) ? activeFlashPercent(d) : null;
-    const canonical = canonicalProduct({ denomination: { ...d, createdAt: d.createdAt.toISOString() }, product, category: product.category, stockAvailable: hasSellableStock(d, available) }, { ...displayContext, effectivePriceIDR: unit.toString() });
+    const canonical = storefrontCanonicalProduct({ denomination: { ...d, createdAt: d.createdAt.toISOString() }, product, category: product.category, stockAvailable: hasSellableStock(d, available) }, { ...displayContext, effectivePriceIDR: unit.toString() });
     return {
       id: d.id,
       canonical,

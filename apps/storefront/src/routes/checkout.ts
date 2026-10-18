@@ -25,7 +25,7 @@ import { parseAdditionalFields, validateCustomerData } from "@app/core/deliveryF
 import { parseInputFields } from "@app/core/playerInput";
 import { logger } from "@app/core/logger";
 import { Decimal } from "@app/core/money";
-import { canonicalProduct } from "@app/core/canonicalProduct";
+import { storefrontCanonicalProduct } from "../canonicalView";
 import { customerProgressPhase, paymentStatusFor, DIGIFLAZZ_STATUS_UNRESOLVED, type FulfillmentOrder } from "@app/core/orderFulfillment";
 import { effectiveUnitPrice, type FlashFields } from "@app/core/flash";
 import { bulkDiscountFor } from "@app/core/bulk";
@@ -413,7 +413,7 @@ export async function checkoutView(
   const display = { ...rateContext, preferredCurrency: resolveDisplayCurrency(customer?.user, requestCurrency(req)) ?? "IDR", locale: requestLang(req), generatedAt: new Date().toISOString() };
   const canonicalItems = await Promise.all(totals.lines.map(async (ci) => {
     const [denom, available] = await Promise.all([getDenominationWithProduct(prisma, ci.productId), countAvailableStock(prisma, ci.productId)]);
-    return denom ? canonicalProduct({ denomination: { ...denom, createdAt: denom.createdAt.toISOString() }, product: denom.product, category: denom.product.category, stockAvailable: hasSellableStock(denom, available) }, { ...display, effectivePriceIDR: effectiveUnitPrice(ci.product, totals.isReseller, totals.pricedAt).toString() }) : null;
+    return denom ? storefrontCanonicalProduct({ denomination: { ...denom, createdAt: denom.createdAt.toISOString() }, product: denom.product, category: denom.product.category, stockAvailable: hasSellableStock(denom, available) }, { ...display, effectivePriceIDR: effectiveUnitPrice(ci.product, totals.isReseller, totals.pricedAt).toString() }) : null;
   }));
   const haveRate = Boolean(fxRate);
   // Third condition on every USDT rail, beyond "configured" and "clears the

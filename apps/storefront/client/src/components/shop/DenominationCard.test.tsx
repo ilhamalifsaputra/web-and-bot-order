@@ -52,7 +52,7 @@ describe("DenominationCard", () => {
     const canonical = {
       id: 1, supplierSku: null, rawName: "Supplier full name", rawNameProvenance: "supplier" as const,
       displayName: "86 Diamonds + 8 Bonus Global via ID Promo", variant: { type: "unknown" as const, name: "86 Diamonds + 8 Bonus Global via ID Promo", residual: [] },
-      qualifiers: ["Indonesia", "Server A"], product: { id: 3, name: "Mobile Legends", gameRegion: "Indonesia", gameVariant: null }, category: { id: 1, name: "Top Up", group: "GAME_TOPUP" },
+      qualifiers: ["Indonesia", "Server A"], product: { id: 3, name: "Mobile Legends", gameRegion: "Indonesia", gameVariant: null, gameServer: null }, category: { id: 1, name: "Top Up", group: "GAME_TOPUP" },
       priceIDR: { currency: "IDR" as const, amountMinor: "210001254", scale: 4 }, displayPrice: { currency: "IDR" as const, amountMinor: "210001254", scale: 4 },
       formattedPrice: "Rp21.000,1254", currencyFallback: false, conversion: null,
       availability: { status: "available" as const, purchasable: true }, createdAt: null, generatedAt: "2026-09-30T00:00:00.000Z",

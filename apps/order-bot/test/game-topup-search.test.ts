@@ -10,6 +10,7 @@ import { makeCtx, calls, lastMarkup, sentIncludes, type SentCall } from "./helpe
 import type { SessionData } from "../src/context";
 import * as customer from "../src/handlers/customer";
 import { routeCallback } from "../src/handlers/callbacks";
+import { enterConversation } from "../src/conversations";
 import { searchResultsKb } from "../src/keyboards/customer";
 import { t } from "../src/util/i18n";
 
@@ -226,6 +227,21 @@ describe("flag ON", () => {
       const tap = update(session, { callbackData: "v1:search:page:9" });
       await routeCallback(tap.ctx);
       expect(session.scratch.searchAwaiting).toBeUndefined();
+      const typed = update(session, { text: `${TAG} Quest` });
+      await customer.handleProductNumber(typed.ctx);
+      expect(typed.sink).toEqual([]);
+    });
+
+    it("is ended by entering a conversation (support, ticket reply, voucher), so a later text is not a query", async () => {
+      const { session } = await armed();
+      const enter = update(session, { callbackData: "v1:support:open" });
+      const entered: string[] = [];
+      (enter.ctx as unknown as { conversation: { enter: (n: string) => Promise<void> } }).conversation = { enter: async (n) => { entered.push(n); } };
+      await enterConversation(enter.ctx, "support");
+      expect(entered).toEqual(["support"]);
+      expect(session.scratch.searchAwaiting).toBeUndefined();
+      expect(enter.sink).toEqual([]);
+
       const typed = update(session, { text: `${TAG} Quest` });
       await customer.handleProductNumber(typed.ctx);
       expect(typed.sink).toEqual([]);

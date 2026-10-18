@@ -134,7 +134,7 @@ describe("From price, flag ON", () => {
     await product(cat.id, "Zz Reseller Filler", [90000]);
     const reseller = await openList(cat.id, { role: UserRole.RESELLER });
     expect(bubbleText(reseller.sink)).toContain(`1. Reseller Game — ${fromLine(reseller.ctx, "Rp12,000")}`);
-    const buyer = await openList(cat.id, { role: UserRole.USER });
+    const buyer = await openList(cat.id, { role: UserRole.CUSTOMER });
     expect(bubbleText(buyer.sink)).toContain(`1. Reseller Game — ${fromLine(buyer.ctx, "Rp15,000")}`);
   });
 

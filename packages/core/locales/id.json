@@ -3,6 +3,8 @@
   "web.payment_at_checkout": "Pilihan pembayaran di checkout",
   "web.brand_description": "Produk & Layanan Digital",
   "web.save_recovery_link": "Simpan tautan akses pesanan (30 hari)",
+  "web.read_more": "Baca selengkapnya",
+  "web.read_less": "Tampilkan lebih sedikit",
   "web.track_access_token": "Token akses pesanan",
   "web.field_optional": "Opsional",
   "web.field_required_hint": "Isi {field} untuk melanjutkan.",

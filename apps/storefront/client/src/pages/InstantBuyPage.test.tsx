@@ -238,6 +238,21 @@ describe("InstantBuyPage", () => {
     expect(document.querySelector('label[for="qty"]')).toBeNull();
   });
 
+  it("renders the Game description through the read-more component, and nothing for a null description", async () => {
+    vi.clearAllMocks();
+    const { unmount } = renderInstantBuy();
+    const desc = await screen.findByText("Instant top-up.");
+    expect(desc).toHaveClass("whitespace-pre-line", "mt-3", "line-clamp-3", "md:line-clamp-none");
+    expect(screen.queryByRole("button", { name: "Read more" })).toBeNull();
+    unmount();
+
+    renderInstantBuy({
+      product: { ...productData, product: { ...productData.product, description: null } },
+    });
+    await screen.findByText("Summary");
+    expect(screen.queryByText("Instant top-up.")).not.toBeInTheDocument();
+  });
+
   it("renders a retryable ErrorState on a non-404 product error and refetches on retry", async () => {
     vi.clearAllMocks();
     renderInstantBuy({ productError: Object.assign(new Error("boom"), { status: 500 }) });

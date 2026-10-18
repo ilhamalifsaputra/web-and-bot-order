@@ -49,6 +49,7 @@ import Breadcrumb from "../components/shop/Breadcrumb";
 import DefaultThumb from "../components/shop/DefaultThumb";
 import DeliveryFieldInput from "../components/shop/DeliveryFieldInput";
 import DenominationCard from "../components/shop/DenominationCard";
+import ProductDescription from "../components/shop/ProductDescription";
 import OrderSummaryCard from "../components/shop/OrderSummaryCard";
 import { idrRailPriceAndPay } from "../components/shop/OrderSummaryCard.helpers";
 import PaymentMethodSelector from "../components/shop/PaymentMethodSelector";
@@ -319,9 +320,7 @@ function InstantBuyProductCard({ product }: {
     </div>
     <h1 className="page-title mt-4">{product.name}</h1>
     {product.description && (
-      <div className="mt-3 text-sm leading-relaxed text-ink-soft whitespace-pre-line">
-        {product.description}
-      </div>
+      <ProductDescription key={product.description} text={product.description} className="mt-3" />
     )}
   </div>);
 }
